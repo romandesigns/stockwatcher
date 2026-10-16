@@ -1,0 +1,13 @@
+{
+  "name": "stockwatcher",
+  "private": true,
+  "type": "module",
+  "workspaces": ["apps/*", "packages/*"],
+  "scripts": {
+    "dev": "bun scripts/dev.ts",
+    "build": "bun run --filter @stockwatcher/web build && cargo build --release -p stockwatcher-server --locked",
+    "test": "bun run --filter '*' test && cargo test --workspace --locked",
+    "lint": "bun run --filter '*' lint && cargo fmt --all --check && cargo clippy --workspace --all-targets --locked -- -D warnings",
+    "typecheck": "bun run --filter '*' typecheck"
+  }
+}

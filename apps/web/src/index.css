@@ -1,0 +1,90 @@
+@import "tailwindcss";
+
+/* Palette, 60/30/10 (workspace rule; Soundbox's :root is the reference):
+   60  --bg / --bg-panel / --bg-row        quiet dominant neutrals
+   30  --text* / --border                  structure and body text
+   10  --accent                            primary action, active state, focus.
+       Never a background or body text, so it keeps meaning "look here".
+   good/warning/critical are status colours, always paired with a word.
+   Dark-first; a light theme is not built yet. */
+:root {
+  color-scheme: dark;
+
+  --bg: #0f1216;
+  --bg-panel: #151a20;
+  --bg-row: #1c222a;
+
+  --border: #262d36;
+  --text: #e4e8ed;
+  --text-dim: #98a2ae;
+  --text-faint: #66707c;
+
+  --accent: #8b9cff;
+  --accent-fg: #0f1216;
+
+  --good: #3fb97a;
+  --good-bg: rgb(63 185 122 / 0.14);
+  --warning: #e0a63a;
+  --warning-bg: rgb(224 166 58 / 0.14);
+  --critical: #f0645c;
+  --critical-bg: rgb(240 100 92 / 0.14);
+
+  --radius: 8px;
+}
+
+/* shadcn/ui's class names (bg-background, text-muted-foreground, ...)
+   mapped onto the palette above, so components added later with
+   `bunx shadcn add` pick it up. shadcn's "accent" is a hover surface, so
+   it maps to a neutral, not to --accent. */
+@theme inline {
+  --font-sans: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, "Cascadia Code", "SF Mono", monospace;
+
+  --color-background: var(--bg);
+  --color-foreground: var(--text);
+  --color-card: var(--bg-panel);
+  --color-card-foreground: var(--text);
+  --color-popover: var(--bg-row);
+  --color-popover-foreground: var(--text);
+  --color-primary: var(--accent);
+  --color-primary-foreground: var(--accent-fg);
+  --color-secondary: var(--bg-row);
+  --color-secondary-foreground: var(--text);
+  --color-muted: var(--bg-row);
+  --color-muted-foreground: var(--text-dim);
+  --color-accent: var(--bg-row);
+  --color-accent-foreground: var(--text);
+  --color-destructive: var(--critical);
+  --color-border: var(--border);
+  --color-input: var(--border);
+  --color-ring: var(--accent);
+  --color-good: var(--good);
+  --color-good-bg: var(--good-bg);
+  --color-warning: var(--warning);
+  --color-warning-bg: var(--warning-bg);
+  --color-critical: var(--critical);
+  --color-critical-bg: var(--critical-bg);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Every visible layout change animates; this switches it off for users
+   who ask for reduced motion. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

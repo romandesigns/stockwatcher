@@ -1,0 +1,5 @@
+# deploy.sh runs on Linux; a CRLF checkout on Windows would break its shebang.
+* text=auto eol=lf
+*.png binary
+*.ico binary
+*.woff2 binary

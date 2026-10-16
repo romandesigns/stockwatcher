@@ -1,0 +1,21 @@
+# Keep the context small and secret-free. infra/docker/Dockerfile reads
+# manifests and sources only.
+.git
+.github
+**/node_modules
+**/dist
+**/target
+**/.expo
+**/*.log
+.env
+.env.*
+**/.env
+**/.env.*
+!**/.env.example
+data
+docs
+infra/vps
+apps/mobile/android
+apps/mobile/ios
+apps/desktop/src-tauri/gen
+apps/desktop/src-tauri/icons

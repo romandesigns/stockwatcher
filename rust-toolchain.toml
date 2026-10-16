@@ -1,0 +1,7 @@
+# Same toolchain locally, in CI and in infra/docker/Dockerfile (rust:1.98),
+# so a new stable release can't turn CI red through new clippy lints.
+# Bump all three together.
+[toolchain]
+channel = "1.98.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

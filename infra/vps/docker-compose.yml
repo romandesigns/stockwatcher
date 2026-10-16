@@ -1,0 +1,33 @@
+# Lives at ~/apps/stockwatcher/docker-compose.yml on the VPS, next to .env
+# (secrets, hand-made per host) and image.env (written by deploy.sh).
+# Always run compose with the tag file, e.g.
+#   docker compose --env-file image.env ps
+name: stockwatcher
+
+services:
+  server:
+    image: ghcr.io/romandesigns/stockwatcher-server:${STOCKWATCHER_IMAGE_TAG:?run via deploy.sh or pass --env-file image.env}
+    restart: unless-stopped
+    # Loopback only: Caddy (systemd, on the host) is the public entry point.
+    ports:
+      - "127.0.0.1:8790:8790"
+    env_file: .env
+    volumes:
+      - stockwatcher_data:/app/data
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    stop_grace_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+volumes:
+  stockwatcher_data:
+    # Fixed name (not project-prefixed) so publish-updates.sh and backups
+    # can address it directly.
+    name: stockwatcher_data

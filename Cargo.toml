@@ -1,0 +1,19 @@
+[workspace]
+# apps/desktop/src-tauri is added here when the desktop shell lands:
+#   members = ["crates/*", "apps/desktop/src-tauri"]
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license = "UNLICENSED"
+publish = false
+repository = "https://github.com/romandesigns/stockwatcher"
+authors = ["Roman <wavystackmedia@gmail.com>"]
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

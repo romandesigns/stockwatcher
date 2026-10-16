@@ -1,0 +1,29 @@
+# Append to /etc/caddy/Caddyfile on the VPS (needs sudo), then:
+#   sudo caddy validate --config /etc/caddy/Caddyfile && sudo systemctl reload caddy
+# Caddy gets the Let's Encrypt certificate itself once DNS points here.
+# reverse_proxy passes WebSocket upgrades (/ws) through with no extra config.
+stockwatcher.wavystyle.io {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
+		# 'unsafe-inline' for styles only: Radix positions popovers with
+		# inline style attributes. Scripts, fonts and data stay same-origin.
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' wss://stockwatcher.wavystyle.io; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
+		-Server
+	}
+
+	reverse_proxy 127.0.0.1:8790
+
+	log {
+		output file /var/log/caddy/stockwatcher.access.log {
+			roll_size 10MiB
+			roll_keep 5
+		}
+		format json
+	}
+}

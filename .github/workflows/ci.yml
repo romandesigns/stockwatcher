@@ -1,0 +1,57 @@
+# Pull-request checks. release.yml calls this same workflow as its `checks`
+# job, so a push to main is gated by exactly what a PR is.
+# Desktop and mobile checks (Tauri compile, Expo tsc) are added here as
+# extra jobs by their agents, so both callers pick them up.
+name: CI
+
+on:
+  pull_request:
+  workflow_call:
+
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.ref }}
+  # Supersede stale PR runs; never cancel the run gating a release.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  web:
+    name: Web and shared (test, lint, build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - name: Install
+        run: bun install --frozen-lockfile
+      - name: Shared package
+        run: |
+          bun run --filter @stockwatcher/shared typecheck
+          bun run --filter @stockwatcher/shared lint
+          bun run --filter @stockwatcher/shared test
+      - name: Web app
+        run: |
+          bun run --filter @stockwatcher/web lint
+          bun run --filter @stockwatcher/web test
+          bun run --filter @stockwatcher/web build
+
+  server:
+    name: Server (fmt, clippy, test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Toolchain
+        # rustup reads rust-toolchain.toml and installs the pinned version.
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Test
+        run: cargo test --workspace --locked
