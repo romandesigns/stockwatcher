@@ -75,6 +75,7 @@ import {
 } from "@stockwatcher/chart-core";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type MouseEvent, type PointerEvent } from "react";
 import { createPortal } from "react-dom";
+import { TimeframeSelector } from "./TimeframeSelector.tsx";
 import { CandleInspector } from "./CandleInspector.tsx";
 import { ChartToolbar } from "./ChartToolbar.tsx";
 import { drawDisplayList } from "./draw.ts";
@@ -388,7 +389,12 @@ export function CandleChart({
 
   // The top-left overlay (heading + readout) takes the corner; the indicator legend moves below it.
   const overlayTop = (heading ? 22 : 0) + (inspector ? 20 : 0);
-  const chartOptions = useMemo(() => (overlayTop ? { ...options, legendTop: overlayTop + 6 } : options), [options, overlayTop]);
+  // The timeframe picker sits at the top-right inside the chart; top-edge tags start below it.
+  const topRight = onTimeframeChange ? 34 : 0;
+  const chartOptions = useMemo(
+    () => (overlayTop || topRight ? { ...options, ...(overlayTop ? { legendTop: overlayTop + 6 } : {}), ...(topRight ? { topRightInset: topRight } : {}) } : options),
+    [options, overlayTop, topRight],
+  );
   const state: ChartState = useMemo(
     () => ({
       timeframe,
@@ -952,6 +958,12 @@ export function CandleChart({
           )}
         </div>
       )}
+      {onTimeframeChange && (
+        // Top-right corner of the chart, just inside the price axis.
+        <div className="absolute top-1.5 z-[5]" style={{ right: model.options.priceAxisWidth + 6 }}>
+          <TimeframeSelector value={timeframe} onValueChange={onTimeframeChange} />
+        </div>
+      )}
       {toolbar && toolsVisible && (
         <DrawingToolbox
           placement={toolbox}
@@ -1025,8 +1037,6 @@ export function CandleChart({
       <ChartToolbar
         toolsVisible={toolsVisible}
         onToolsVisibleChange={changeToolsVisible}
-        timeframe={timeframe}
-        onTimeframeChange={onTimeframeChange}
 
         tool={tool}
         onToolChange={changeTool}

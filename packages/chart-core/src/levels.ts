@@ -140,7 +140,7 @@ export function layoutHalts(model: ChartModel, halts: readonly Halt[], now: numb
     const len = h.end === null ? (now !== null ? now - h.start : null) : h.end - h.start;
     const text = `HALT${h.reason ? ` ${h.reason}` : ""}${len !== null ? ` · ${duration(len)}` : ""}`;
     // A row down from the top edge, where an off-screen LULD band's tag is pinned.
-    out.push({ kind: "text", x: x0 + 5, y: plot.y + 24, text, fill: theme.haltText, fontSize: fs, fontFamily: theme.fontMono, fontWeight: 600, align: "left", baseline: "top", layer: "overlay" });
+    out.push({ kind: "text", x: x0 + 5, y: plot.y + 24 + model.options.topRightInset, text, fill: theme.haltText, fontSize: fs, fontFamily: theme.fontMono, fontWeight: 600, align: "left", baseline: "top", layer: "overlay" });
   }
   const ongoing = halts.find((h) => h.end === null);
   if (ongoing) {
@@ -183,7 +183,7 @@ export function layoutLuld(model: ChartModel, luld: readonly LuldPoint[], theme:
       // A band outside the visible range (±10% usually is, zoomed in) is pinned to the
       // nearest edge with an arrow, so the limit is always readable.
       const off = raw < plot.y + 8 ? "↑ " : raw > plot.y + plot.h - 8 ? "↓ " : "";
-      const y = Math.min(plot.y + plot.h - 10, Math.max(plot.y + 10, raw));
+      const y = Math.min(plot.y + plot.h - 10, Math.max(plot.y + 10 + model.options.topRightInset, raw));
       const text = `${off}LULD ${arrow} ${formatPrice(v)}`;
       const w = Math.ceil(text.length * fs * 0.62) + 10;
       out.push({ kind: "rect", x: right - w - 4, y: y - 8, w, h: 16, radius: 3, fill: theme.crosshairLabelBg, layer: "axes" });
@@ -241,7 +241,7 @@ export function layoutKeyLevels(model: ChartModel, levels: readonly KeyLevel[], 
     }
   };
   // Nearest level first, reading away from the price.
-  edge(above.reverse(), plot.y + 30, "↑");
+  edge(above.reverse(), plot.y + 30 + model.options.topRightInset, "↑");
   edge(below, plot.y + plot.h - 30, "↓");
   return out;
 }

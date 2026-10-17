@@ -45,6 +45,8 @@ export interface ChartOptions {
   indicatorPaneHeight: number;
   /** Space kept free at the top-left of the plot for a host overlay (the ticker and candle readout); the indicator legend starts below it. */
   legendTop: number;
+  /** Space kept free along the top-right of the plot for a host overlay (the timeframe picker); top-edge tags start below it. */
+  topRightInset: number;
 }
 
 export const DEFAULT_CHART_OPTIONS: ChartOptions = {
@@ -59,6 +61,7 @@ export const DEFAULT_CHART_OPTIONS: ChartOptions = {
   timeLabelSpacing: 72,
   indicatorPaneHeight: 64,
   legendTop: 0,
+  topRightInset: 0,
 };
 
 export interface Size {
