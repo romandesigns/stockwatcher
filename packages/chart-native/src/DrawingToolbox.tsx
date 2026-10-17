@@ -46,8 +46,8 @@ const lineLength = (n: number) => PAD * 2 + GRIP + GAP + n * BTN + (n - 1) * GAP
  * A phone is too narrow for every button in one row (about 500 pt against
  * ~370), and letting the row wrap stranded a few buttons under the grip.
  * So when one line does not fit, the palette splits on purpose: the tools on
- * the first line, the actions (colour, delete | undo, redo, flip) on the
- * second, spread to the same length, and the grip spans both. A column
+ * the first line, the actions (colour, then delete, undo, redo and flip in
+ * one pill) on the second, and the grip spans both. A column
  * splits the same way into two columns.
  */
 export function DrawingToolbox({ placement, onPlacementChange, container, tool, onToolChange, color, canColor, onColorChange, canDelete, onDelete, canUndo, canRedo, onUndo, onRedo, haptics = true }: DrawingToolboxProps) {
@@ -121,8 +121,8 @@ export function DrawingToolbox({ placement, onPlacementChange, container, tool, 
       })}
       </View>
       {!split && <View style={vertical ? s.sepV : s.sepH} />}
-      {/* Actions: colour (the selection) on its own, then the editing pill, pushed apart when split. */}
-      <View style={{ flexDirection: line, alignItems: "center", gap: GAP, justifyContent: "space-between" }}>
+      {/* Actions: colour (the selection), then the editing pill right beside it (owner: no space between). */}
+      <View style={{ flexDirection: line, alignItems: "center", gap: GAP }}>
       <View style={{ flexDirection: line, alignItems: "center", gap: GAP }}>
       <Pressable accessibilityRole="button" accessibilityLabel="Drawing colour" accessibilityState={{ disabled: !canColor, expanded: colorsOpen }} disabled={!canColor} onPress={() => setColorsOpen((o) => !o)} style={[s.btn, !canColor && { opacity: 0.4 }]}>
         {swatch(canColor ? current : UI.textDim, 14)}
