@@ -111,7 +111,8 @@ does not run in Expo Go.
 
 - **Over-the-air updates:** `tauri-plugin-updater` and `tauri-plugin-process`, used for relaunch.
   - The endpoint is `https://stockwatcher.wavystyle.io/updates/desktop/latest.json`, signed with the pubkey in `tauri.conf.json`.
-  - The app checks on start and every 30 minutes, downloads in the background, verifies the signature, and shows "Restart to update". The user is never interrupted mid-session without consent.
+  - **Fully automatic (owner decision, 2026-10-16):** every push to `main` reaches installed apps with no clicks. The app checks on start and every 2 minutes. When a version is newer, it downloads it, verifies the signature, then installs immediately in Windows `passive` mode (a progress bar, no input) and relaunches. There is no prompt and no dialog plugin.
+  - The only manual step is the very first install on a machine. CI cannot reach into a PC that has no stockwatcher on it.
 - **Also:** `tauri-plugin-single-instance`, `tauri-plugin-window-state` (remembers size and position), `tauri-plugin-notification` (native alerts), `tauri-plugin-log` (a rotating file log for support), `tauri-plugin-os` and `tauri-plugin-opener` (open links in the browser).
 - **Least-privilege capabilities:** `src-tauri/capabilities/` grants only what's used. The updater and process permissions are scoped.
 - **Version:** `0.1.0` in the repo; CI sets `0.1.<run_number>` for each release.
