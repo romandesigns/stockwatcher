@@ -168,6 +168,9 @@ export function dragPosition(model: ChartModel, original: Drawing, part: Drawing
   const below = (p: number, ceil: number) => Math.max(tick(ceil), Math.min(p, snapPrice(ceil - tick(ceil))));
   const { a, b, c } = { a: original.a, b: original.b, c: original.c };
   switch (part) {
+    case "rotate":
+      // Positions do not turn: their zones are horizontal price bands.
+      return original;
     case "b": {
       const p = at(to.y);
       return { ...original, b: { ...b, p: long ? above(p, a.p) : below(p, a.p) } };

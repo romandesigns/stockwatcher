@@ -53,6 +53,8 @@ export interface Drawing {
   qty?: number | null;
   /** The drawing's colour (one of DRAWING_COLORS); absent = the theme's neutral drawing colour. */
   color?: string;
+  /** A range's rotation in radians, clockwise on screen, about its centre; absent = 0. */
+  angle?: number;
 }
 
 /**
@@ -84,7 +86,7 @@ export const isOnePoint = (k: DrawingKind) => k === "hline" || k === "vline" || 
  * The part of a drawing under the pointer: its body, or one of its handles.
  * A position adds c (its stop) and end (where its zones end in time).
  */
-export type DrawingPart = "body" | "a" | "b" | "c" | "end";
+export type DrawingPart = "body" | "a" | "b" | "c" | "end" | "rotate";
 
 /** Hit tolerance in px: fingers need more room than a mouse. */
 export const DRAWING_HIT_PX = { mouse: 6, touch: 14 } as const;
@@ -175,6 +177,112 @@ export function clipSegment(p: Point, q: Point, r: Rect): [Point, Point] | null 
   ];
 }
 
+// ---- Rotated ranges -------------------------------------------------------
+//
+// A range is the box between its two anchors (time and price, so it stays on
+// its candles), turned by `angle` about its centre ON SCREEN. The angle is a
+// screen angle, not a data one: time and price have no common unit, so a
+// "45 degrees in data" would change on every zoom; a screen angle stays as
+// drawn. Corner handles sit on the turned corners; the rotate handle floats
+// above the turned top edge on a short stem.
+
+/** Snap to multiples of this while rotating, within ROTATE_SNAP of one. */
+export const ROTATE_STEP = Math.PI / 12; // 15 degrees
+export const ROTATE_SNAP = (4 * Math.PI) / 180;
+/** Distance of the rotate handle above the box's top edge, px. */
+export const ROTATE_HANDLE_GAP = 22;
+
+const rot = (p: Point, c: Point, ang: number): Point => {
+  const cos = Math.cos(ang);
+  const sin = Math.sin(ang);
+  const dx = p.x - c.x;
+  const dy = p.y - c.y;
+  return { x: c.x + dx * cos - dy * sin, y: c.y + dx * sin + dy * cos };
+};
+
+interface RectFrame {
+  c: Point;
+  hw: number;
+  hh: number;
+  angle: number;
+  /** Turned corners, clockwise from top-left. */
+  corners: [Point, Point, Point, Point];
+  /** Turned anchor handles. */
+  a: Point;
+  b: Point;
+  /** The rotate handle, and the end of its stem on the top edge. */
+  knob: Point;
+  stem: Point;
+}
+
+function rectFrame(model: ChartModel, d: Drawing): RectFrame | null {
+  const a = anchorXY(model, d.a);
+  const b = anchorXY(model, d.b);
+  if (!a || !b) return null;
+  const c = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+  const hw = Math.abs(b.x - a.x) / 2;
+  const hh = Math.abs(b.y - a.y) / 2;
+  const angle = d.angle ?? 0;
+  const r = (q: Point) => rot(q, c, angle);
+  const corners: [Point, Point, Point, Point] = [r({ x: c.x - hw, y: c.y - hh }), r({ x: c.x + hw, y: c.y - hh }), r({ x: c.x + hw, y: c.y + hh }), r({ x: c.x - hw, y: c.y + hh })];
+  return { c, hw, hh, angle, corners, a: r(a), b: r(b), knob: r({ x: c.x, y: c.y - hh - ROTATE_HANDLE_GAP }), stem: r({ x: c.x, y: c.y - hh }) };
+}
+
+function hitRect(model: ChartModel, d: Drawing, x: number, y: number, tol: number, selected: boolean): DrawingPart | null {
+  const f = rectFrame(model, d);
+  if (!f) return null;
+  if (selected && Math.hypot(f.knob.x - x, f.knob.y - y) <= tol + 2) return "rotate";
+  if (Math.hypot(f.a.x - x, f.a.y - y) <= tol) return "a";
+  if (Math.hypot(f.b.x - x, f.b.y - y) <= tol) return "b";
+  // Inside the turned box: un-turn the point and test the plain box.
+  const u = rot({ x, y }, f.c, -f.angle);
+  return Math.abs(u.x - f.c.x) <= f.hw + tol && Math.abs(u.y - f.c.y) <= f.hh + tol ? "body" : null;
+}
+
+/**
+ * The angle for a rotate handle dragged to `to`: the handle points straight
+ * up at 0, so the angle is the pointer's direction from the centre plus a
+ * quarter turn; within ROTATE_SNAP of a 15 degree step it snaps, and it is
+ * kept in (-pi, pi].
+ */
+export function rotateAngle(center: Point, to: Point): number {
+  let ang = Math.atan2(to.y - center.y, to.x - center.x) + Math.PI / 2;
+  const snapped = Math.round(ang / ROTATE_STEP) * ROTATE_STEP;
+  if (Math.abs(ang - snapped) <= ROTATE_SNAP) ang = snapped;
+  while (ang > Math.PI) ang -= 2 * Math.PI;
+  while (ang <= -Math.PI) ang += 2 * Math.PI;
+  return Math.abs(ang) < 1e-9 ? 0 : ang;
+}
+
+function layoutRect(model: ChartModel, d: Drawing, sel: boolean, stroke: string, theme: ChartTheme): DisplayList {
+  const out: DisplayList = [];
+  const f = rectFrame(model, d);
+  if (!f) return out;
+  const plot = model.geometry.plot;
+  const pts = f.corners.flatMap((q) => [q.x, q.y]);
+  out.push({ kind: "path", points: pts, closed: true, fill: d.color ? withAlpha(d.color, sel ? 0.2 : 0.14) : theme.drawingFill, clip: plot, layer: "overlay" });
+  if (!sel) return out;
+  const inPlot = (q: Point) => q.x >= plot.x && q.x <= plot.x + plot.w && q.y >= plot.y && q.y <= plot.y + plot.h;
+  // The rotate handle: a stem from the top edge and a ring with a dot, so it reads as a different grip from the corners.
+  out.push({ kind: "line", x1: f.stem.x, y1: f.stem.y, x2: f.knob.x, y2: f.knob.y, stroke, lineWidth: 1.5, clip: plot, layer: "overlay" });
+  if (inPlot(f.knob)) {
+    out.push({ kind: "rect", x: f.knob.x - 6, y: f.knob.y - 6, w: 12, h: 12, radius: 6, fill: stroke, layer: "overlay" });
+    out.push({ kind: "rect", x: f.knob.x - 4.5, y: f.knob.y - 4.5, w: 9, h: 9, radius: 4.5, fill: theme.handleFill, layer: "overlay" });
+    out.push({ kind: "rect", x: f.knob.x - 1.5, y: f.knob.y - 1.5, w: 3, h: 3, radius: 1.5, fill: stroke, layer: "overlay" });
+  }
+  for (const h of [f.a, f.b]) {
+    if (!inPlot(h)) continue;
+    out.push({ kind: "rect", x: h.x - 5, y: h.y - 5, w: 10, h: 10, radius: 5, fill: stroke, layer: "overlay" });
+    out.push({ kind: "rect", x: h.x - 3, y: h.y - 3, w: 6, h: 6, radius: 3, fill: theme.handleFill, layer: "overlay" });
+  }
+  if (f.angle !== 0) {
+    // While turned, the angle reads beside the knob.
+    const deg = Math.round((f.angle * 180) / Math.PI);
+    out.push({ kind: "text", x: f.knob.x + 10, y: f.knob.y, text: deg + "\u00b0", fill: theme.textDim, fontSize: model.options.fontSize, fontFamily: theme.fontMono, fontWeight: 500, align: "left", baseline: "middle", layer: "overlay" });
+  }
+  return out;
+}
+
 /** The pixel segments of a drawing, already clipped to the plot (rects: their box). */
 function geometryOf(model: ChartModel, d: Drawing): { segments: [Point, Point][]; box: Rect | null; a: Point | null; b: Point | null } {
   const plot = model.geometry.plot;
@@ -244,6 +352,11 @@ export function hitDrawing(model: ChartModel, drawings: readonly Drawing[], x: n
       if (part) return { id: d.id, part };
       continue;
     }
+    if (d.kind === "rect") {
+      const part = hitRect(model, d, x, y, tol, d.id === selectedId);
+      if (part) return { id: d.id, part };
+      continue;
+    }
     const g = geometryOf(model, d);
     if (!isOnePoint(d.kind)) {
       if (g.a && Math.hypot(g.a.x - x, g.a.y - y) <= tol) return { id: d.id, part: "a" };
@@ -265,6 +378,20 @@ export function hitDrawing(model: ChartModel, drawings: readonly Drawing[], x: n
 export function dragDrawing(model: ChartModel, original: Drawing, part: DrawingPart, from: Point, to: Point): Drawing {
   if (!model.price) return original;
   if (isPositionKind(original.kind)) return dragPosition(model, original, part, from, to);
+  if (original.kind === "rect" && part === "rotate") {
+    const f = rectFrame(model, original);
+    return f ? { ...original, angle: rotateAngle(f.c, to) } : original;
+  }
+  if (original.kind === "rect" && (part === "a" || part === "b") && original.angle) {
+    // A corner of a turned box: take the pointer back into the box's unturned frame (about the
+    // centre as it was when the drag began), so the corner follows the finger along the turned edges.
+    const f = rectFrame(model, original);
+    if (f) {
+      const u = rot(to, f.c, -f.angle);
+      const at = anchorAt(model, u.x, u.y, true);
+      if (at) return part === "a" ? { ...original, a: at } : { ...original, b: at };
+    }
+  }
   const price = model.price;
   if (part === "body") {
     const dIdx = (to.x - from.x) / model.index.barSpacing;
@@ -298,6 +425,10 @@ export function layoutDrawings(model: ChartModel, drawings: readonly Drawing[], 
     const sel = d.id === selectedId;
     if (isPositionKind(d.kind)) {
       out.push(...layoutPosition(model, d, sel, theme));
+      continue;
+    }
+    if (d.kind === "rect") {
+      out.push(...layoutRect(model, d, sel, d.color ?? (sel ? theme.drawingSelected : theme.drawing), theme));
       continue;
     }
     // A drawing keeps its own colour when selected; selection shows as a

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { anchorXY, clipSegment, dragDrawing, drawingFromPoints, hitDrawing, indexToT, layoutDrawings, tToIndex, type Drawing } from "./drawings.ts";
+import { anchorXY, clipSegment, ROTATE_HANDLE_GAP, dragDrawing, drawingFromPoints, hitDrawing, indexToT, layoutDrawings, tToIndex, type Drawing } from "./drawings.ts";
 import { computeChartModel, type ChartState } from "./layout.ts";
 import { defaultViewport, slotX } from "./scale.ts";
 import { DEFAULT_CHART_THEME } from "./theme.ts";
@@ -89,6 +89,50 @@ test("a coloured drawing draws in its colour, selected or not; a range fills wit
     expect(list.some((p) => p.kind === "line" && p.stroke === "#d55181")).toBe(true);
   }
   const range = { ...drawingFromPoints(model, "r1", "rect", a, b)!, color: "#3987e5" };
-  const fill = layoutDrawings(model, [range], null, DEFAULT_CHART_THEME).find((p) => p.kind === "rect");
+  // A range is drawn as a closed path, so it can be turned.
+  const fill = layoutDrawings(model, [range], null, DEFAULT_CHART_THEME).find((p) => p.kind === "path");
   expect(fill && "fill" in fill ? fill.fill : "").toBe("rgba(57, 135, 229, 0.14)");
+});
+
+describe("rotating a range", () => {
+  const a = { x: slotX(model.index, 6), y: 60 };
+  const b = { x: slotX(model.index, 14), y: 140 };
+  const box = drawingFromPoints(model, "r", "rect", a, b)!;
+  const pa = anchorXY(model, box.a)!;
+  const pb = anchorXY(model, box.b)!;
+  const c = { x: (pa.x + pb.x) / 2, y: (pa.y + pb.y) / 2 };
+  const top = Math.min(pa.y, pb.y);
+
+  test("selected, it has a rotate handle above its top edge; unselected, it does not", () => {
+    expect(hitDrawing(model, [box], c.x, top - ROTATE_HANDLE_GAP, 6, "r")).toEqual({ id: "r", part: "rotate" });
+    expect(hitDrawing(model, [box], c.x, top - ROTATE_HANDLE_GAP, 6, null)).toBeNull();
+  });
+
+  test("dragging the handle turns it about its centre, snapping near 15 degree steps", () => {
+    const right = dragDrawing(model, box, "rotate", { x: c.x, y: top - ROTATE_HANDLE_GAP }, { x: c.x + 100, y: c.y + 2 });
+    expect(right.angle).toBeCloseTo(Math.PI / 2, 9);
+    expect(right.a).toEqual(box.a);
+    // About 37.6 degrees: more than 4 degrees from both 30 and 45, so it does not snap.
+    const free = dragDrawing(model, box, "rotate", { x: 0, y: 0 }, { x: c.x + 100, y: c.y - 130 });
+    expect(free.angle! * (180 / Math.PI)).toBeCloseTo(90 - (Math.atan2(130, 100) * 180) / Math.PI, 6);
+    // About 59 degrees is within 4 of 60, so it snaps there.
+    const near = dragDrawing(model, box, "rotate", { x: 0, y: 0 }, { x: c.x + 100, y: c.y - 60 });
+    expect(near.angle! * (180 / Math.PI)).toBeCloseTo(60, 9);
+  });
+
+  test("hit testing follows the turn: a turned box covers what the plain one did not", () => {
+    const turned = { ...box, angle: Math.PI / 4 };
+    const hw = Math.abs(pb.x - pa.x) / 2;
+    // The plain box's corner region is outside once turned 45 degrees...
+    expect(hitDrawing(model, [turned], c.x + hw - 1, top + 1, 0)).toBeNull();
+    // ...and the centre is always inside.
+    expect(hitDrawing(model, [turned], c.x, c.y, 0)?.part).toBe("body");
+  });
+
+  test("drawn as a turned closed path, with the angle shown while selected", () => {
+    const list = layoutDrawings(model, [{ ...box, angle: Math.PI / 6 }], "r", DEFAULT_CHART_THEME);
+    const path = list.find((p) => p.kind === "path");
+    expect(path && "points" in path ? path.points.length : 0).toBe(8);
+    expect(list.some((p) => p.kind === "text" && p.text === "30°")).toBe(true);
+  });
 });
