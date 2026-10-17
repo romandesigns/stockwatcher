@@ -121,17 +121,18 @@ export function DrawingToolbox({ placement, onPlacementChange, container, tool, 
       })}
       </View>
       {!split && <View style={vertical ? s.sepV : s.sepH} />}
-      {/* Actions: colour and delete act on the selection, then history and layout, pushed apart when split. */}
+      {/* Actions: colour (the selection) on its own, then the editing pill, pushed apart when split. */}
       <View style={{ flexDirection: line, alignItems: "center", gap: GAP, justifyContent: "space-between" }}>
       <View style={{ flexDirection: line, alignItems: "center", gap: GAP }}>
       <Pressable accessibilityRole="button" accessibilityLabel="Drawing colour" accessibilityState={{ disabled: !canColor, expanded: colorsOpen }} disabled={!canColor} onPress={() => setColorsOpen((o) => !o)} style={[s.btn, !canColor && { opacity: 0.4 }]}>
         {swatch(canColor ? current : UI.textDim, 14)}
       </Pressable>
+      </View>
+      {/* Delete, undo, redo and flip: one pill on a dimmed white surface, buttons touching. */}
+      <View style={[s.group, { flexDirection: line }]}>
       <Pressable accessibilityRole="button" accessibilityLabel="Delete selected drawing" disabled={!canDelete} onPress={onDelete} style={[s.btn, !canDelete && { opacity: 0.4 }]}>
         <ToolIcon kind="trash" color={UI.textDim} />
       </Pressable>
-      </View>
-      <View style={{ flexDirection: line, alignItems: "center", gap: GAP }}>
       <Pressable accessibilityRole="button" accessibilityLabel="Undo" disabled={!canUndo} onPress={onUndo} style={[s.btn, !canUndo && { opacity: 0.4 }]}>
         <ToolIcon kind="undo" color={UI.textDim} />
       </Pressable>
@@ -182,5 +183,6 @@ const s = StyleSheet.create({
   btn: { width: BTN, height: BTN, borderRadius: 7, alignItems: "center", justifyContent: "center" },
   sepV: { width: 18, height: 1, backgroundColor: UI.row, marginVertical: 2 },
   sepH: { width: 1, height: 18, backgroundColor: UI.row, marginHorizontal: 2 },
+  group: { alignItems: "center", gap: 0, borderRadius: 9, backgroundColor: "rgba(228,232,237,0.07)" },
   colors: { gap: 2, padding: 2, borderRadius: 9, backgroundColor: UI.row },
 });

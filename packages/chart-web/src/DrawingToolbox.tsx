@@ -156,6 +156,8 @@ export function DrawingToolbox({ placement, onPlacementChange, container, tool, 
           <span className="block size-3.5 rounded-full" style={{ background: canColor ? (color ?? DRAWING_COLORS[0]!.value) : "var(--color-muted-foreground)", opacity: canColor ? 1 : 0.5 }} />
         </Button>
       </Tip>
+      {/* Delete, undo, redo and flip: one pill on a dimmed white surface, buttons touching (as on the phone). */}
+      <div role="group" aria-label="Edit" className={cn("flex shrink-0 rounded-lg bg-foreground/[0.07]", vertical ? "flex-col" : "flex-row")}>
       <Tip label={"Delete selected drawing (Del)"} side={vertical ? "right" : "bottom"}>
         <Button variant="ghost" size="icon" className={iconButton} aria-label="Delete selected drawing" disabled={!canDelete} onClick={onDelete}>
           {TrashIcon}
@@ -182,6 +184,7 @@ export function DrawingToolbox({ placement, onPlacementChange, container, tool, 
         {RotateIcon}
       </Button>
       </Tip>
+      </div>
 
       <Popover open={colorsOpen && canColor} onOpenChange={setColorsOpen}>
         <PopoverContent anchor={colorRef} side={vertical ? "right" : "bottom"} align="start" sideOffset={8} className="w-auto" aria-label="Drawing colour">
