@@ -4,6 +4,7 @@ import { StatusBar } from "expo-status-bar";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
+import { ErrorBoundary } from "./ErrorBoundary";
 import { RootStack, type RootStackParamList } from "./navigation/RootStack";
 import { colors } from "./theme";
 import { useForegroundUpdates } from "./updates/useForegroundUpdates";
@@ -43,9 +44,11 @@ export default function App() {
   return (
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: colors.bg }}>
       <SafeAreaProvider>
-        <NavigationContainer linking={linking} theme={navigationTheme}>
-          <RootStack />
-        </NavigationContainer>
+        <ErrorBoundary>
+          <NavigationContainer linking={linking} theme={navigationTheme}>
+            <RootStack />
+          </NavigationContainer>
+        </ErrorBoundary>
         <StatusBar style="light" />
       </SafeAreaProvider>
     </GestureHandlerRootView>

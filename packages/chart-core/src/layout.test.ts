@@ -7,7 +7,7 @@ import { DEFAULT_CHART_THEME } from "./theme.ts";
 import { etToUtc } from "./time.ts";
 import { fixtureSnapshot, T0 } from "./testFixture.ts";
 import { sessionBands } from "./time.ts";
-import { layoutTimeline, volumeBuckets } from "./timeline.ts";
+import { layoutTimeline, timelineTimeAt, volumeBuckets } from "./timeline.ts";
 
 // Token NAMES as colors, so snapshots show which token each primitive uses.
 const theme = new Proxy({} as ChartTheme, { get: (_, k) => (k === "fontSans" ? "sans" : k === "fontMono" ? "mono" : String(k)) });
@@ -161,4 +161,14 @@ test("session shading: candles outside regular hours sit on a faint band; regula
   const bands = list.filter((p) => p.layer === "background" && p.kind === "rect");
   expect(bands.length).toBe(1);
   expect((bands[0] as { fill?: string }).fill).toBe(theme.shadePre);
+});
+
+test("timelineTimeAt maps x back to the day, clamped", () => {
+  const bands = sessionBands({ year: 2026, month: 10, day: 15 });
+  const start = bands[0]!.start;
+  const end = bands[3]!.end;
+  expect(timelineTimeAt(bands, 1000, 0)).toBe(start);
+  expect(timelineTimeAt(bands, 1000, 500)).toBe(Math.round(start + (end - start) / 2));
+  expect(timelineTimeAt(bands, 1000, 5000)).toBe(end);
+  expect(timelineTimeAt([], 1000, 10)).toBeNull();
 });

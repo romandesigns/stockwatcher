@@ -1,6 +1,6 @@
 import type { DrawingKind, HapticStyle } from "@stockwatcher/chart-core";
 import * as Haptics from "expo-haptics";
-import type { ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Pressable, StyleSheet, Text, View, type StyleProp, type ViewStyle } from "react-native";
 import Svg, { Circle, Path, Rect } from "react-native-svg";
 
@@ -169,19 +169,55 @@ export function Segmented<T extends string>({ options, value, onChange, style, f
   );
 }
 
-export function ToolButton({ onPress, label, children, disabled, primary, style }: { onPress: () => void; label: string; children: ReactNode; disabled?: boolean; primary?: boolean; style?: StyleProp<ViewStyle> }) {
+/**
+ * A toolbar button. Touch has no hover tooltips, so a long press shows the
+ * button's name in a small bubble for a moment (with a selection haptic):
+ * the phone's version of the web's shadcn tooltips. Screen readers get the
+ * same name as the accessible label.
+ */
+export function ToolButton({ onPress, label, children, disabled, primary, style, hint = true }: { onPress: () => void; label: string; children: ReactNode; disabled?: boolean; primary?: boolean; style?: StyleProp<ViewStyle>; hint?: boolean }) {
+  const [showHint, setShowHint] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (timer.current) clearTimeout(timer.current);
+  }, []);
+  // The wrapper (which anchors the hint) takes the button's place in the row, so layout props
+  // given for the button (flex, margins, alignment) apply to it; the button fills it.
+  const flat = StyleSheet.flatten(style) ?? {};
+  const outer: ViewStyle = { flex: flat.flex, flexGrow: flat.flexGrow, alignSelf: flat.alignSelf, margin: flat.margin, marginLeft: flat.marginLeft, marginRight: flat.marginRight, marginTop: flat.marginTop, marginBottom: flat.marginBottom, marginHorizontal: flat.marginHorizontal };
+  const inner: ViewStyle = { ...flat, flex: undefined, flexGrow: undefined, alignSelf: undefined, margin: undefined, marginLeft: undefined, marginRight: undefined, marginTop: undefined, marginBottom: undefined, marginHorizontal: undefined };
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      accessibilityState={{ disabled: !!disabled }}
-      disabled={disabled}
-      onPress={onPress}
-      hitSlop={4}
-      style={({ pressed }) => [styles.button, primary && styles.primary, pressed && !primary && styles.pressed, disabled && styles.disabled, style]}
-    >
-      {typeof children === "string" ? <Text style={[styles.buttonText, primary && { color: UI.accentFg, fontWeight: "600" }]}>{children}</Text> : children}
-    </Pressable>
+    <View style={[styles.hintWrap, outer]}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={label}
+        accessibilityState={{ disabled: !!disabled }}
+        disabled={disabled}
+        onPress={onPress}
+        onLongPress={
+          hint
+            ? () => {
+                playHaptic("selection");
+                setShowHint(true);
+                if (timer.current) clearTimeout(timer.current);
+                timer.current = setTimeout(() => setShowHint(false), 1400);
+              }
+            : undefined
+        }
+        delayLongPress={350}
+        hitSlop={4}
+        style={({ pressed }) => [styles.button, primary && styles.primary, pressed && !primary && styles.pressed, disabled && styles.disabled, inner]}
+      >
+        {typeof children === "string" ? <Text style={[styles.buttonText, primary && { color: UI.accentFg, fontWeight: "600" }]}>{children}</Text> : children}
+      </Pressable>
+      {showHint && (
+        <View pointerEvents="none" style={styles.hint} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+          <Text style={styles.hintText} numberOfLines={1}>
+            {label}
+          </Text>
+        </View>
+      )}
+    </View>
   );
 }
 
@@ -196,4 +232,7 @@ export const styles = StyleSheet.create({
   pressed: { backgroundColor: UI.row },
   disabled: { opacity: 0.4 },
   buttonText: { color: UI.textDim, fontSize: 12, fontWeight: "500" },
+  hintWrap: { position: "relative", zIndex: 1 },
+  hint: { position: "absolute", top: 36, right: 0, zIndex: 20, elevation: 8, backgroundColor: UI.raised, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4, minWidth: 64 },
+  hintText: { color: UI.text, fontSize: 11 },
 });

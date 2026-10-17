@@ -15,6 +15,7 @@ import {
   INDICATOR_PLACEMENT,
   INDICATOR_PRESETS,
   orderTypeAt,
+  priceDecimals,
   snapPrice,
   toggleIndicator,
   type IndicatorSpec,
@@ -341,6 +342,10 @@ const s = StyleSheet.create({
   input: { height: 40, backgroundColor: UI.row, borderRadius: 8, paddingHorizontal: 10, color: UI.text, fontSize: 15, fontVariant: ["tabular-nums"] },
   small: { color: UI.textDim, fontSize: 12 },
   note: { color: UI.textFaint, fontSize: 11, lineHeight: 15 },
+  sim: { color: UI.warning, fontSize: 10, fontWeight: "500", letterSpacing: 0.4 },
+  big: { flex: 1, height: 52, borderRadius: 12 },
+  bigText: { fontSize: 15, fontWeight: "600" },
+  mid: { flex: 1, height: 40, backgroundColor: UI.row, borderRadius: 10 },
 });
 
 /** The context layers as switches (halts, LULD, key levels, fills), the phone's twin of chart-web's LayersMenu. */
@@ -396,5 +401,83 @@ export function TradeHistory({ fills, realized }: { fills: readonly FillMark[]; 
         ))
       )}
     </View>
+  );
+}
+
+export const QUICK_TRADE_SIZES = [100, 500, 1000] as const;
+
+/**
+ * Trade at a price, the phone's twin of chart-web's right-click TradeMenu:
+ * opened from the "+" chip a scrub leaves on the chart (Robinhood's
+ * scrub-then-tap). One tap places a simulated order at the price: the
+ * resting order it means for each side (below the market a buy limit or
+ * sell stop, above it a sell limit or buy stop), or a market order; the
+ * share size is picked once and kept. It also opens the full ticket or
+ * drops a position plan at that price.
+ */
+export function QuickTradeSheet({
+  open,
+  onClose,
+  symbol,
+  price,
+  last,
+  qty,
+  onQtyChange,
+  onOrder,
+  onTicket,
+  onPosition,
+  reducedMotion,
+}: {
+  open: boolean;
+  onClose: () => void;
+  symbol: string;
+  price: number;
+  last: number | null;
+  qty: number;
+  onQtyChange: (q: number) => void;
+  onOrder: (side: OrderSide, type: "limit" | "stop" | "market") => void;
+  onTicket: () => void;
+  onPosition: (kind: "long" | "short") => void;
+  reducedMotion?: boolean;
+}) {
+  const buyType = last === null ? "limit" : orderTypeAt("buy", price, last);
+  const sellType = last === null ? "limit" : orderTypeAt("sell", price, last);
+  const p = formatPrice(price);
+  const diff = last === null ? null : Math.abs(price - last);
+  const where = last === null ? null : price < last ? "below" : price > last ? "above" : "at";
+  const act = (f: () => void) => () => {
+    f();
+    onClose();
+  };
+  return (
+    <Sheet open={open} onClose={onClose} title={`${symbol} · ${p}`} reducedMotion={reducedMotion}>
+      <View style={{ gap: 8 }}>
+        <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
+          <Text style={s.small}>{where === null ? "" : where === "at" ? "At the last trade" : `${formatPrice(diff!, priceDecimals(price))} ${where} the last trade`}</Text>
+          <Text style={s.sim}>SIMULATED</Text>
+        </View>
+        <View style={{ flexDirection: "row", gap: 8 }}>
+          <ToolButton label={`Buy ${buyType} ${qty} at ${p}`} onPress={act(() => onOrder("buy", buyType))} style={[s.big, { backgroundColor: "rgba(63,185,122,0.16)" }]}>
+            <Text style={[s.bigText, { color: UI.good }]}>{`Buy ${buyType}`}</Text>
+          </ToolButton>
+          <ToolButton label={`Sell ${sellType} ${qty} at ${p}`} onPress={act(() => onOrder("sell", sellType))} style={[s.big, { backgroundColor: "rgba(240,100,92,0.16)" }]}>
+            <Text style={[s.bigText, { color: UI.critical }]}>{`Sell ${sellType}`}</Text>
+          </ToolButton>
+        </View>
+        <View style={{ flexDirection: "row", gap: 8 }}>
+          <ToolButton label={`Buy ${qty} at market`} onPress={act(() => onOrder("buy", "market"))} style={[s.mid]}>
+            Buy at market
+          </ToolButton>
+          <ToolButton label={`Sell ${qty} at market`} onPress={act(() => onOrder("sell", "market"))} style={[s.mid]}>
+            Sell at market
+          </ToolButton>
+        </View>
+        <Text style={s.label}>Shares</Text>
+        <Segmented fill value={String(qty)} onChange={(v) => onQtyChange(Number(v))} options={QUICK_TRADE_SIZES.map((n) => ({ value: String(n), label: n.toLocaleString("en-US"), a11y: `${n} shares` }))} />
+        <Row label={`Order ticket at ${p}…`} onPress={act(onTicket)} />
+        <Row label="Long position here" onPress={act(() => onPosition("long"))} />
+        <Row label="Short position here" onPress={act(() => onPosition("short"))} />
+      </View>
+    </Sheet>
   );
 }

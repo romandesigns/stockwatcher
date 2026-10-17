@@ -59,9 +59,17 @@ export function timelineGeometry(input: TimelineInput, size: Size): TimelineGeom
   return { start, end, headLabelH: 4, minimap: { y: 4, h: minimapH - 4 }, bands: { y: minimapH + gap, h: bandH }, labelsY: minimapH + gap + bandH + 4 };
 }
 
-/** Epoch ms ↔ x on the timeline (for future seeking). */
+/** Epoch ms → x on the timeline. */
 export function timelineX(geo: TimelineGeometry, width: number, t: number): number {
   return ((t - geo.start) / (geo.end - geo.start)) * width;
+}
+
+/** x on the timeline → epoch ms, clamped to the day: what a tap or click seeks to. */
+export function timelineTimeAt(bands: readonly SessionBand[], width: number, x: number): number | null {
+  const start = bands[0]?.start;
+  const end = bands[bands.length - 1]?.end;
+  if (start === undefined || end === undefined || width <= 0) return null;
+  return Math.round(start + Math.min(1, Math.max(0, x / width)) * (end - start));
 }
 
 const BAND_FILL: Record<SessionKind, keyof ChartTheme> = {

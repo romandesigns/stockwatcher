@@ -5,6 +5,10 @@ import {
   formatPrice,
   lastCandle,
   sessionOf,
+  formatEtDateKey,
+  sessionBands,
+  tradingDayOf,
+  volumeBuckets,
   slotIndexOf,
   type Drawing,
   type IndicatorSpec,
@@ -17,7 +21,7 @@ import {
   type ToolboxPlacement,
   type Timeframe,
 } from "@stockwatcher/chart-core";
-import { CandleChart, CandleInspector, Segmented, ToolButton, UI } from "@stockwatcher/chart-native";
+import { CandleChart, CandleInspector, Segmented, SessionTimeline, TapeSheet, ToolButton, UI } from "@stockwatcher/chart-native";
 import type { ConnectionStatus } from "@stockwatcher/shared";
 import { useEffect, useMemo, useState } from "react";
 import { StyleSheet, Text, View } from "react-native";
@@ -31,6 +35,8 @@ import { getAccessToken } from "../storage/secure";
 import { colors, fonts } from "../theme";
 
 const SPEEDS = [1, 2, 10, 60, 0] as const;
+/** Timeline minimap bucket: 20 minutes, as on the web's phone layout. */
+const bucketMs = 20 * 60_000;
 const speedLabel = (s: number) => (s === 0 ? "Max" : `${s}×`);
 const SESSION = { overnight: "Overnight", pre: "Premarket", regular: "Regular", after: "After hours" } as const;
 
@@ -106,7 +112,17 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
 
   // Follow the price band: a symbol that leaves it is no longer let through.
   const active = symbol && candidates.includes(symbol) ? symbol : (candidates[0] ?? null);
-  const { series, clock } = useChartFeed(feed, active ?? "", timeframe);
+  const { series, clock, tape } = useChartFeed(feed, active ?? "", timeframe);
+  const [tapeOpen, setTapeOpen] = useState(false);
+
+  // The day's session bands and a 20-minute volume minimap for the timeline (bands change only with the day).
+  const dayKey = clock ? formatEtDateKey(tradingDayOf(clock.now)) : "";
+  const bands = useMemo(() => {
+    if (!dayKey) return [];
+    const [year, month, day] = dayKey.split("-").map(Number) as [number, number, number];
+    return sessionBands({ year, month, day });
+  }, [dayKey]);
+  const buckets = useMemo(() => (series && bands.length ? volumeBuckets(series.candles, bands[0]!.start, bands[3]!.end, bucketMs) : []), [series, bands]);
   const trading = usePaperTrading(feed);
 
   const slots = useMemo(() => (series ? buildSlots(series.candles, series.gaps) : []), [series]);
@@ -204,13 +220,15 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
         onLayersChange={changeLayers}
         now={clock?.now ?? null}
         onToolboxPlacementChange={changeToolbox}
-        options={{ priceAxisWidth: 46, volumeHeight: 40, timeAxisHeight: 18, paneGap: 4, fontSize: 9, timeLabelSpacing: 60, indicatorPaneHeight: 56 }}
+        // The session volume profile sits inside the chart on a phone (no room for a side panel), as on the web's phone layout.
+        options={{ priceAxisWidth: 46, volumeHeight: 40, timeAxisHeight: 18, paneGap: 4, fontSize: 9, timeLabelSpacing: 60, indicatorPaneHeight: 56, showProfile: true, profileWidth: 0.26 }}
         barSpacing={8}
         label={`${active ?? ""} ${timeframe} candles`}
       />
 
       <CandleInspector slot={inspected} timeframe={timeframe} />
 
+      <View style={styles.replayCard}>
       <View style={styles.replay}>
         <ToolButton primary label={playing ? "Pause replay" : "Play replay"} disabled={!clock || live} onPress={() => feed.control({ action: playing ? "pause" : "play" })} style={styles.play}>
           {playing ? "❚❚" : "▶"}
@@ -228,7 +246,16 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
         >
           {speedLabel(speed)}
         </ToolButton>
+        <ToolButton label="Time and sales" onPress={() => setTapeOpen(true)} style={styles.tapeButton}>
+          <Svg width={16} height={16} viewBox="0 0 16 16" fill="none" stroke={colors.textDim} strokeWidth={1.5} strokeLinecap="round">
+            <Path d="M3 4h10M3 8h10M3 12h6" />
+          </Svg>
+        </ToolButton>
       </View>
+      {/* Tap a time to jump the replay there. */}
+      <SessionTimeline bands={bands} buckets={buckets} bucketMs={bucketMs} now={clock?.now ?? null} onSeek={live ? undefined : (t) => feed.control({ action: "seek", value: t })} />
+      </View>
+      <TapeSheet open={tapeOpen} onClose={() => setTapeOpen(false)} trades={tape} note={active ?? undefined} />
     </View>
   );
 }
@@ -243,7 +270,9 @@ const styles = StyleSheet.create({
   chipText: { color: colors.textDim, fontSize: 11, fontWeight: "500" },
   row: { flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" },
   chart: { flex: 1 },
-  replay: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: UI.panel, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 8 },
+  replayCard: { backgroundColor: UI.panel, borderRadius: 12, paddingHorizontal: 10, paddingTop: 8, paddingBottom: 4, gap: 4 },
+  replay: { flexDirection: "row", alignItems: "center", gap: 8 },
+  tapeButton: { backgroundColor: UI.row, height: 36, width: 36, paddingHorizontal: 0 },
   play: { width: 36, height: 36, paddingHorizontal: 0 },
   clock: { color: colors.text, fontSize: 14, fontVariant: ["tabular-nums"] },
   session: { color: colors.textFaint, fontSize: 10 },

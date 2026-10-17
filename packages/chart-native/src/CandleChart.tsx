@@ -43,6 +43,7 @@ import {
   priceY,
   slotIndexOf,
   snapPrice,
+  newPosition,
   stepInspection,
   unrealizedPnl,
   yPrice,
@@ -81,7 +82,7 @@ import Svg, { Path } from "react-native-svg";
 import { recordPicture } from "./drawSkia.ts";
 import { DrawingToolbox } from "./DrawingToolbox.tsx";
 import { PositionPlanPanel } from "./PositionPlanPanel.tsx";
-import { AxisSheet, IndicatorSheet, LayersSheet, OrderTicketSheet, SCALE_LABELS } from "./sheets.tsx";
+import { AxisSheet, IndicatorSheet, LayersSheet, OrderTicketSheet, QUICK_TRADE_SIZES, QuickTradeSheet, SCALE_LABELS } from "./sheets.tsx";
 import { playHaptic, Segmented, ToolButton, ToolIcon, UI } from "./ui.tsx";
 
 export interface ChartSeriesLike {
@@ -258,7 +259,7 @@ export function CandleChart({
   const [selected, setSelected] = useState<ObjectHit | null>(null);
   const [draft, setDraft] = useState<DrawingDraft | null>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
-  const [sheet, setSheet] = useState<{ kind: "none" } | { kind: "indicators" } | { kind: "layers" } | { kind: "axis"; price: number | null } | { kind: "ticket"; price: number | null }>({ kind: "none" });
+  const [sheet, setSheet] = useState<{ kind: "none" } | { kind: "indicators" } | { kind: "layers" } | { kind: "quick"; price: number; x: number; y: number } | { kind: "axis"; price: number | null } | { kind: "ticket"; price: number | null }>({ kind: "none" });
   const [reducedMotion, setReducedMotion] = useState(false);
   useEffect(() => {
     AccessibilityInfo.isReduceMotionEnabled().then(setReducedMotion, () => {});
@@ -447,6 +448,27 @@ export function CandleChart({
   }, [gestures]);
   useEffect(() => () => cancelAnimationFrame(frame.current), []);
 
+  // Trade at a price, the touch twin of the web's right-click menu (Robinhood's scrub-then-tap):
+  // lifting a scrub leaves a "+ price" chip at the scrubbed price for a few seconds; tapping it
+  // opens the quick-trade sheet. Any new touch on the chart dismisses it.
+  const lastScrub = useRef<Point | null>(null);
+  const chipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [tradeChip, setTradeChip] = useState<{ x: number; y: number; price: number } | null>(null);
+  const clearTradeChip = () => {
+    if (chipTimer.current) clearTimeout(chipTimer.current);
+    chipTimer.current = null;
+    setTradeChip(null);
+  };
+  const showTradeChip = (c: { x: number; y: number; price: number }) => {
+    if (chipTimer.current) clearTimeout(chipTimer.current);
+    setTradeChip(c);
+    chipTimer.current = setTimeout(() => setTradeChip(null), 5000);
+  };
+  useEffect(() => () => {
+    if (chipTimer.current) clearTimeout(chipTimer.current);
+  }, []);
+  const [quickQty, setQuickQty] = useState<number>(QUICK_TRADE_SIZES[0]);
+
   // Back to latest (see chart-web): an eased slide home, instant with reduced
   // motion; a touch on the chart stops it where it is.
   const slide = useRef(0);
@@ -490,8 +512,19 @@ export function CandleChart({
     if (type === "down") {
       stopSlide();
       setMeasurement(null);
+      clearTradeChip();
     }
-    for (const t of touches) l.apply(gestures.handle({ type, pointerId: t.id, pointerType: "touch", x: t.x, y: t.y, t: now() }, l.ctx), l.ctx.model);
+    const wasScrub = gestures.state === "scrub";
+    for (const t of touches) {
+      const acts = gestures.handle({ type, pointerId: t.id, pointerType: "touch", x: t.x, y: t.y, t: now() }, l.ctx);
+      // Remember where a scrub is, so lifting the finger can leave a trade chip there.
+      if (gestures.state === "scrub") for (const a of acts) if (a.kind === "crosshair" && a.point) lastScrub.current = a.point;
+      l.apply(acts, l.ctx.model);
+    }
+    if (wasScrub && gestures.state !== "scrub" && lastScrub.current && trading && l.ctx.model.price) {
+      const pt = lastScrub.current;
+      showTradeChip({ x: pt.x, y: pt.y, price: snapPrice(yPrice(l.ctx.model.price, pt.y)) });
+    }
     pump();
   };
 
@@ -635,6 +668,28 @@ export function CandleChart({
             haptics={haptics}
           />
         )}
+        {tradeChip && (
+          <Animated.View
+            entering={FadeIn.duration(140).reduceMotion(ReduceMotion.System)}
+            exiting={FadeOut.duration(120).reduceMotion(ReduceMotion.System)}
+            style={[s.chipWrap, { top: Math.max(model.geometry.plot.y, tradeChip.y - 15), right: model.options.priceAxisWidth + 6 }]}
+          >
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Trade at ${formatPrice(tradeChip.price)}`}
+              hitSlop={8}
+              onPress={() => {
+                const c = tradeChip;
+                clearTradeChip();
+                if (haptics) playHaptic("light");
+                setSheet({ kind: "quick", price: c.price, x: c.x, y: c.y });
+              }}
+              style={({ pressed }) => [s.chip, pressed && { opacity: 0.85 }]}
+            >
+              <Text style={s.chipText}>{`+ ${formatPrice(tradeChip.price)}`}</Text>
+            </Pressable>
+          </Animated.View>
+        )}
         {isPannedBack(vp) && (
           <Animated.View
             entering={FadeIn.duration(150).reduceMotion(ReduceMotion.System)}
@@ -674,6 +729,31 @@ export function CandleChart({
         reducedMotion={reducedMotion}
       />
       {trading && (
+        <>
+        <QuickTradeSheet
+          open={sheet.kind === "quick"}
+          onClose={() => setSheet({ kind: "none" })}
+          symbol={symbol}
+          price={sheet.kind === "quick" ? sheet.price : 0}
+          last={last}
+          qty={quickQty}
+          onQtyChange={setQuickQty}
+          onOrder={(side, type) => {
+            if (sheet.kind !== "quick") return;
+            const price = sheet.price;
+            trading.onPlace({ clientOrderId: newId("c"), symbol, side, orderType: type, qty: quickQty, ...(type === "limit" ? { limitPrice: price } : type === "stop" ? { stopPrice: price } : {}) });
+            if (haptics) playHaptic("medium");
+          }}
+          onTicket={() => sheet.kind === "quick" && setTimeout(() => setSheet({ kind: "ticket", price: sheet.price }), 0)}
+          onPosition={(kind) => {
+            if (sheet.kind !== "quick") return;
+            const d = newPosition(model, newId("d"), kind, { x: sheet.x, y: sheet.y });
+            if (!d) return;
+            setDrawings([...drawings, d]);
+            setSelected({ kind: "drawing", id: d.id, part: "body" });
+          }}
+          reducedMotion={reducedMotion}
+        />
         <OrderTicketSheet
           open={sheet.kind === "ticket"}
           onClose={() => setSheet({ kind: "none" })}
@@ -685,6 +765,7 @@ export function CandleChart({
           fills={fills}
           realized={trading.state?.account.realizedPnl ?? 0}
         />
+        </>
       )}
     </View>
   );
@@ -698,6 +779,9 @@ const s = StyleSheet.create({
   surfaceWrap: { flex: 1, minHeight: 120 },
   surface: { flex: 1, minHeight: 120 },
   latest: { position: "absolute" },
+  chipWrap: { position: "absolute" },
+  chip: { height: 30, paddingHorizontal: 12, borderRadius: 15, backgroundColor: UI.accent, alignItems: "center", justifyContent: "center", shadowColor: "#000", shadowOpacity: 0.35, shadowRadius: 6, shadowOffset: { width: 0, height: 2 }, elevation: 5 },
+  chipText: { color: UI.accentFg, fontSize: 13, fontWeight: "700", fontVariant: ["tabular-nums"] },
   divider: { width: 1, height: 20, borderRadius: 1, backgroundColor: UI.raised, marginHorizontal: 4 },
   indicators: { flexDirection: "row", gap: 3 },
   count: { color: UI.text, fontSize: 11, fontVariant: ["tabular-nums"] },
