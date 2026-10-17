@@ -3,33 +3,36 @@ import { useEffect, useRef } from "react";
 import { StyleSheet, View } from "react-native";
 import { GestureDetector, usePanGesture } from "react-native-gesture-handler";
 import Animated, { Extrapolation, interpolate, ReduceMotion, useAnimatedStyle, useSharedValue, withTiming, type SharedValue } from "react-native-reanimated";
+import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 import { playHaptic, UI } from "./ui.tsx";
 
-/** Row pitch: less than half the wheel, so the neighbours peek in above and below the current one. */
-const ITEM = 15;
+/** Finger travel for one step: a short swipe turns one notch. */
+const STEP_PX = 18;
 const HEIGHT = 36;
-const WIDTH = 46;
+/** Label row pitch inside the window; only the current one shows, the others slide past out of sight. */
+const LABEL = 18;
 /** Past either end the wheel gives a little, then stops: rubber band, not a wall. */
 const OVERSCROLL = 0.35;
+/** The wheel graphic: a slim drum with ridges. */
+const DRUM_W = 10;
+const DRUM_H = 24;
+const RIDGE = 3.5;
+const RIDGES = Math.ceil(DRUM_H / RIDGE) + 2;
 
-function Item({ label, index, pos }: { label: string; index: number; pos: SharedValue<number> }) {
-  // Centre item full strength; neighbours fade and shrink a little, like a picker wheel's drum.
-  const style = useAnimatedStyle(() => {
-    const d = Math.abs(pos.value - index);
-    return {
-      opacity: interpolate(d, [0, 1, 1.6], [1, 0.32, 0], Extrapolation.CLAMP),
-      transform: [{ scale: interpolate(d, [0, 1], [1, 0.82], Extrapolation.CLAMP) }],
-    };
-  });
-  return <Animated.Text style={[s.item, style]}>{label}</Animated.Text>;
+function Label({ text, index, pos }: { text: string; index: number; pos: SharedValue<number> }) {
+  // Only the current label is visible; a neighbour fades in as the wheel turns towards it.
+  const style = useAnimatedStyle(() => ({ opacity: interpolate(Math.abs(pos.value - index), [0, 0.6], [1, 0], Extrapolation.CLAMP) }));
+  return <Animated.Text style={[s.label, style]}>{text}</Animated.Text>;
 }
 
 /**
- * The phone's timeframe picker as a small wheel: swipe up for the next
- * (longer) timeframe, down for the previous. The neighbours peek above and
- * below; each step clicks with a selection haptic; a release settles on the
- * nearest one. Screen readers adjust it with swipe up/down. One control the
- * size of a button, instead of four segments.
+ * The phone's timeframe picker, a scroll wheel: swipe up for the next
+ * (longer) timeframe, down for the previous. It looks like a mouse wheel:
+ * a slim ridged drum, shaded at its ends, whose ridges roll with the finger,
+ * beside the current timeframe, which slides as it changes. Each step clicks
+ * with a selection haptic; a release settles on the nearest timeframe; a
+ * flick carries one more. Screen readers adjust it with swipe up/down. It is
+ * a toolbar button in size and surface, so it sits with the other controls.
  */
 export function TimeframeWheel({ value, onChange, haptics = true, reducedMotion = false }: { value: Timeframe; onChange: (tf: Timeframe) => void; haptics?: boolean; reducedMotion?: boolean }) {
   const index = Math.max(0, TIMEFRAMES.indexOf(value));
@@ -62,7 +65,7 @@ export function TimeframeWheel({ value, onChange, haptics = true, reducedMotion 
     },
     onUpdate: (e) => {
       // Up (negative y) turns to longer timeframes.
-      const raw = start.current - e.translationY / ITEM;
+      const raw = start.current - e.translationY / STEP_PX;
       const p = Math.min(last + OVERSCROLL, Math.max(-OVERSCROLL, raw));
       pos.value = p;
       const near = Math.min(last, Math.max(0, Math.round(p)));
@@ -72,13 +75,19 @@ export function TimeframeWheel({ value, onChange, haptics = true, reducedMotion 
       }
     },
     onDeactivate: (e) => {
-      // A flick carries one step further in its direction.
       const fling = Math.abs(e.velocityY) > 600 ? -Math.sign(e.velocityY) * 0.5 : 0;
-      settle(start.current - e.translationY / ITEM + fling);
+      settle(start.current - e.translationY / STEP_PX + fling);
     },
   });
 
-  const strip = useAnimatedStyle(() => ({ transform: [{ translateY: (HEIGHT - ITEM) / 2 - pos.value * ITEM }] }));
+  // Labels slide with the turn: up for longer timeframes.
+  const labels = useAnimatedStyle(() => ({ transform: [{ translateY: (HEIGHT - LABEL) / 2 - pos.value * LABEL }] }));
+  // Ridges roll the same way as the finger, wrapping every ridge spacing, so the drum looks like it turns.
+  const ridges = useAnimatedStyle(() => {
+    const travel = -pos.value * STEP_PX * 0.5;
+    const phase = ((travel % RIDGE) + RIDGE) % RIDGE;
+    return { transform: [{ translateY: phase - RIDGE }] };
+  });
 
   return (
     <GestureDetector gesture={pan}>
@@ -91,18 +100,43 @@ export function TimeframeWheel({ value, onChange, haptics = true, reducedMotion 
         accessibilityActions={[{ name: "increment" }, { name: "decrement" }]}
         onAccessibilityAction={(e) => settle(index + (e.nativeEvent.actionName === "increment" ? 1 : -1))}
       >
-        <Animated.View style={strip}>
-          {TIMEFRAMES.map((tf, i) => (
-            <Item key={tf} label={tf} index={i} pos={pos} />
-          ))}
-        </Animated.View>
+        <View style={s.window}>
+          <Animated.View style={labels}>
+            {TIMEFRAMES.map((tf, i) => (
+              <Label key={tf} text={tf} index={i} pos={pos} />
+            ))}
+          </Animated.View>
+        </View>
+        <View style={s.drum}>
+          <Animated.View style={ridges}>
+            {Array.from({ length: RIDGES }, (_, i) => (
+              <View key={i} style={s.ridge} />
+            ))}
+          </Animated.View>
+          {/* Curvature: the drum darkens towards its ends, as a wheel turning away from you does. */}
+          <Svg style={StyleSheet.absoluteFill} width={DRUM_W} height={DRUM_H}>
+            <Defs>
+              <LinearGradient id="drum" x1="0" y1="0" x2="0" y2="1">
+                <Stop offset="0" stopColor={UI.row} stopOpacity={1} />
+                <Stop offset="0.32" stopColor={UI.row} stopOpacity={0} />
+                <Stop offset="0.68" stopColor={UI.row} stopOpacity={0} />
+                <Stop offset="1" stopColor={UI.row} stopOpacity={1} />
+              </LinearGradient>
+            </Defs>
+            <Rect x={0} y={0} width={DRUM_W} height={DRUM_H} fill="url(#drum)" />
+          </Svg>
+        </View>
       </View>
     </GestureDetector>
   );
 }
 
 const s = StyleSheet.create({
-  wheel: { width: WIDTH, height: HEIGHT, borderRadius: 9, backgroundColor: UI.row, overflow: "hidden" },
-  // includeFontPadding off: Android pads text vertically, which pushed the centred label low.
-  item: { height: ITEM, lineHeight: ITEM, includeFontPadding: false, textAlignVertical: "center", textAlign: "center", color: UI.text, fontSize: 13, fontWeight: "600", fontVariant: ["tabular-nums"] },
+  // A toolbar button's size and surface.
+  wheel: { height: HEIGHT, flexDirection: "row", alignItems: "center", gap: 8, paddingLeft: 12, paddingRight: 9, borderRadius: 9, backgroundColor: UI.row },
+  window: { width: 26, height: HEIGHT, overflow: "hidden" },
+  // includeFontPadding off: Android pads text vertically, which pushes a centred label low.
+  label: { height: LABEL, lineHeight: LABEL, includeFontPadding: false, textAlignVertical: "center", textAlign: "center", color: UI.text, fontSize: 12, fontWeight: "600", fontVariant: ["tabular-nums"] },
+  drum: { width: DRUM_W, height: DRUM_H, borderRadius: DRUM_W / 2, backgroundColor: UI.raised, overflow: "hidden" },
+  ridge: { height: RIDGE, borderBottomWidth: 1, borderBottomColor: "rgba(228,232,237,0.28)" },
 });
