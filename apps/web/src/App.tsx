@@ -5,14 +5,13 @@ import {
   formatPrice,
   lastCandle,
   sessionBands,
-  slotIndexOf,
   tradingDayOf,
   volumeBuckets,
   type ChartOptions,
   type PriceScaleType,
   type Timeframe,
 } from "@stockwatcher/chart-core";
-import { CandleChart, CandleInspector, ReplayControls, SessionTimeline, Tape, VolumeProfile } from "@stockwatcher/chart-web";
+import { CandleChart, ReplayControls, SessionTimeline, Tape, VolumeProfile } from "@stockwatcher/chart-web";
 import { Tip, ToggleGroup, ToggleGroupItem, cn } from "@stockwatcher/chart-web/ui";
 import { tickerUniverse } from "@stockwatcher/shared";
 import { useEffect, useMemo, useState } from "react";
@@ -170,7 +169,6 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
   );
 
   const slots = useMemo(() => (series ? buildSlots(series.candles, series.gaps) : []), [series]);
-  const inspected = inspectT === null ? (slots.at(-1) ?? null) : (slots[slotIndexOf(slots, inspectT) ?? -1] ?? null);
   const last = useMemo(() => lastCandle(slots), [slots]);
 
   // Change vs the first candle of the anchor session (e.g. the regular open).
@@ -233,11 +231,10 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
           <SourceChip className="ml-auto" choice={choice} mode={mode} />
           {search}
         </header>
-        <CandleChart className="h-[360px]" toolbar symbol={symbol} persistKey="sw-chart" trading={trading} now={clock?.now ?? null} onTimeframeChange={changeTf} series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={setInspectT} priceScaleType={priceScale} onPriceScaleTypeChange={setPriceScale} options={PHONE_CHART} barSpacing={10} label={chartLabel} />
-        <CandleInspector className="-mt-1" slot={inspected} timeframe={timeframe} variant="compact" />
+        <CandleChart className="h-[360px]" toolbar inspector symbol={symbol} persistKey="sw-chart" trading={trading} now={clock?.now ?? null} onTimeframeChange={changeTf} series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={setInspectT} priceScaleType={priceScale} onPriceScaleTypeChange={setPriceScale} options={PHONE_CHART} barSpacing={10} label={chartLabel} />
         <section aria-label="Session timeline and replay" className="flex flex-col gap-1.5 rounded-xl bg-card px-3 py-2">
           <ReplayControls {...replay} variant="compact" />
-          <SessionTimeline bands={bands} buckets={buckets} bucketMs={bucketMs} now={clock?.now ?? null} variant="compact" onSeek={seek} />
+          <SessionTimeline bands={bands} buckets={buckets} bucketMs={bucketMs} now={clock?.now ?? null} variant="minimal" onSeek={seek} />
         </section>
         <section aria-label="Time and sales" className="flex flex-col gap-1.5 rounded-xl bg-card p-3">
           <div className="flex items-baseline">
@@ -289,7 +286,7 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
           </div>
           <section aria-label="Session timeline and replay" className="flex flex-col gap-2 rounded-xl bg-card px-3 py-2.5">
             <ReplayControls {...replay} />
-            <SessionTimeline bands={bands} buckets={buckets} bucketMs={bucketMs} now={clock?.now ?? null} onSeek={seek} />
+            <SessionTimeline bands={bands} buckets={buckets} bucketMs={bucketMs} now={clock?.now ?? null} variant="minimal" onSeek={seek} />
           </section>
         </main>
 

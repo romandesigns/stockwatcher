@@ -40,12 +40,12 @@ export function CandleInspector({ slot, timeframe, style }: { slot: Slot | null 
 }
 
 const s = StyleSheet.create({
-  row: { flexDirection: "row", alignItems: "baseline", gap: 9, flexWrap: "wrap" },
-  line: { fontSize: 11 },
-  mono: { color: UI.text, fontSize: 11, fontVariant: ["tabular-nums"] },
+  row: { flexDirection: "row", alignItems: "baseline", gap: 7, flexWrap: "wrap" },
+  line: { fontSize: 10 },
+  mono: { color: UI.text, fontSize: 10, fontVariant: ["tabular-nums"] },
   dim: { color: UI.textDim },
-  faint: { color: UI.textFaint, fontSize: 11 },
+  faint: { color: UI.textFaint, fontSize: 10 },
   live: { flexDirection: "row", alignItems: "center", gap: 4, alignSelf: "center" },
-  dot: { width: 6, height: 6, borderRadius: 3, backgroundColor: UI.warning },
-  liveText: { color: UI.warning, fontSize: 10, fontWeight: "500" },
+  dot: { width: 5, height: 5, borderRadius: 2.5, backgroundColor: UI.warning },
+  liveText: { color: UI.warning, fontSize: 9, fontWeight: "500" },
 });

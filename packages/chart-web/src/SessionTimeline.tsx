@@ -13,7 +13,7 @@ export interface SessionTimelineProps {
   /** Replay head / live clock; null hides it. */
   now: number | null;
   /** "full": labelled bands + head time (desktop). "compact": thin bands, labels below (phone). */
-  variant?: "full" | "compact";
+  variant?: "full" | "compact" | "minimal";
   theme?: ChartTheme;
   className?: string;
   /** Click (or arrow keys) to jump the replay there; absent = display only. */
@@ -33,7 +33,7 @@ export function SessionTimeline({ bands, buckets, bucketMs, now, variant = "full
   const label = now === null ? "Session timeline" : `Session timeline: ${formatEtTime(now, true)} Eastern, ${SESSION_NAME[sessionOf(now)]}.`;
   if (!onSeek)
     return (
-      <div ref={containerRef} className={cn("relative", variant === "full" ? "h-[76px]" : "h-14", className)}>
+      <div ref={containerRef} className={cn("relative", variant === "full" ? "h-[76px]" : variant === "minimal" ? "h-8" : "h-14", className)}>
         <canvas ref={canvasRef} role="img" aria-label={label} className="absolute inset-0 size-full" />
       </div>
     );
@@ -42,7 +42,7 @@ export function SessionTimeline({ bands, buckets, bucketMs, now, variant = "full
   // Seeking (owner, 2026-10-17; the spec's pending "UI seek"): a click jumps there; with focus,
   // arrows step 5 minutes (Shift: 30). It is a slider over the trading day for assistive tech.
   return (
-    <div ref={containerRef} className={cn("relative", variant === "full" ? "h-[76px]" : "h-14", className)}>
+    <div ref={containerRef} className={cn("relative", variant === "full" ? "h-[76px]" : variant === "minimal" ? "h-8" : "h-14", className)}>
       <canvas
         ref={canvasRef}
         role="slider"

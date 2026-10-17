@@ -217,7 +217,33 @@ export function slotIndexOf(slots: readonly Slot[], t: number): number | null {
   return slots[i]?.t === t ? i : null;
 }
 
-export function computeChartModel(state: ChartState, viewport: Viewport, size: Size): ChartModel {
+/** Smallest price column, so a short label still leaves room for the crosshair tag. */
+const MIN_PRICE_AXIS = 30;
+/** Monospaced digits: advance per character as a share of the font size (Geist Mono / Menlo / monospace). */
+const MONO_ADVANCE = 0.62;
+
+/**
+ * The width the price column needs: its widest label (tick labels, the last-price tag in bold at
+ * fontSize + 1, a crosshair value at the top of the range) plus padding. ChartOptions.priceAxisWidth
+ * is the maximum, so a $3 stock's "3.38" column is narrower than a sub-$1 stock's "0.9179".
+ */
+function priceAxisNeed(model: ChartModel): number {
+  const o = model.options;
+  const price = model.price;
+  if (!price) return o.priceAxisWidth;
+  const w = (text: string, fs: number) => text.length * fs * MONO_ADVANCE;
+  let need = 0;
+  for (const label of model.priceTicks.labels) need = Math.max(need, AXIS_LABEL_PAD + w(label, o.fontSize) + 4);
+  const last = lastCandle(model.slots);
+  if (last) need = Math.max(need, 2 + 5 + w(formatAxisValue(price, last.c), o.fontSize + 1) * 1.04 + 6);
+  need = Math.max(need, 4 + w(formatAxisValue(price, price.hi), o.fontSize) + 6);
+  return Math.min(o.priceAxisWidth, Math.max(MIN_PRICE_AXIS, Math.ceil(need)));
+}
+
+/** Gap between the plot's edge and a price label. */
+const AXIS_LABEL_PAD = 5;
+
+export function computeChartModel(state: ChartState, viewport: Viewport, size: Size, fitted = false): ChartModel {
   const options = { ...DEFAULT_CHART_OPTIONS, ...state.options };
   const paneIds = state.indicators?.filter((r) => r.placement === "pane").map((r) => r.spec.id) ?? [];
   const geometry = chartGeometry(size, options, paneIds.map((id) => state.paneHeights?.[id] ?? options.indicatorPaneHeight));
@@ -239,7 +265,13 @@ export function computeChartModel(state: ChartState, viewport: Viewport, size: S
     if (s?.kind === "candle" && s.candle.v > volumeMax) volumeMax = s.candle.v;
   }
   const inspected = state.inspectT === null ? (slots.length ? slots.length - 1 : null) : slotIndexOf(slots, state.inspectT);
-  return { options, geometry, slots, index, price, priceTicks, volumeMax, timeframeMs: TIMEFRAME_MS[state.timeframe], inspected };
+  const model = { options, geometry, slots, index, price, priceTicks, volumeMax, timeframeMs: TIMEFRAME_MS[state.timeframe], inspected };
+  // Second pass with the price column fitted to its labels (narrower than the maximum when it can be).
+  if (!fitted) {
+    const need = priceAxisNeed(model);
+    if (need < options.priceAxisWidth) return computeChartModel({ ...state, options: { ...state.options, priceAxisWidth: need } }, viewport, size, true);
+  }
+  return model;
 }
 
 /** Percent mode's base: the open of the first candle in [from, to]. */
@@ -431,7 +463,7 @@ export function layoutChart(model: ChartModel, state: ChartState, theme: ChartTh
       const y = priceY(price, v);
       if (y < g.plot.y + 5 || y > g.plot.y + g.plot.h - 5) return;
       if (lastY !== null && Math.abs(y - lastY) < 11) return;
-      out.push({ kind: "text", x: g.priceAxis.x + 8, y, text: model.priceTicks.labels[k] ?? formatPrice(v, model.priceTicks.decimals), fill: theme.axisText, fontSize: fs, fontFamily: mono, fontWeight: 400, align: "left", baseline: "middle", layer: "axes" });
+      out.push({ kind: "text", x: g.priceAxis.x + AXIS_LABEL_PAD, y, text: model.priceTicks.labels[k] ?? formatPrice(v, model.priceTicks.decimals), fill: theme.axisText, fontSize: fs, fontFamily: mono, fontWeight: 400, align: "left", baseline: "middle", layer: "axes" });
     });
     if (last && lastY !== null) {
       const ax = g.priceAxis.x + 2;
@@ -685,7 +717,7 @@ function paneIndicator(model: ChartModel, r: IndicatorResult, rect: Rect, theme:
   for (const gv of r.guides ?? []) {
     const gy = Math.round(y(gv)) + 0.5;
     out.push({ kind: "line", x1: rect.x, y1: gy, x2: rect.x + rect.w, y2: gy, stroke: theme.guide, lineWidth: 1, dash: [3, 3], layer: "grid" });
-    out.push({ kind: "text", x: g.priceAxis.x + 8, y: gy, text: String(gv), fill: theme.axisText, fontSize: fs, fontFamily: theme.fontMono, fontWeight: 400, align: "left", baseline: "middle", layer: "axes" });
+    out.push({ kind: "text", x: g.priceAxis.x + AXIS_LABEL_PAD, y: gy, text: String(gv), fill: theme.axisText, fontSize: fs, fontFamily: theme.fontMono, fontWeight: 400, align: "left", baseline: "middle", layer: "axes" });
   }
   const bw = bodyWidth(model.index.barSpacing);
   r.lines.forEach((l, k) => {

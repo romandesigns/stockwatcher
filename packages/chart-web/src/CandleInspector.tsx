@@ -26,7 +26,7 @@ export function CandleInspector({ slot, timeframe, variant = "full", className }
   if (!slot) return <div className={cn("h-4 text-xs text-text-faint", className)}>Waiting for data…</div>;
   const info = describeSlot(slot, timeframe);
   return (
-    <div className={cn("flex flex-wrap items-baseline font-mono tabular-nums", full ? "gap-x-3.5 gap-y-1 text-xs" : "gap-x-2.5 gap-y-0.5 text-[11px]", className)}>
+    <div className={cn("flex flex-wrap items-baseline font-mono tabular-nums", full ? "gap-x-3 gap-y-1 text-[11px]" : "gap-x-2 gap-y-0.5 text-[10px]", className)}>
       <span className="text-muted-foreground">{info.time}</span>
       {info.kind === "gap" ? (
         <span className="font-sans text-text-faint">No candle: {info.note}</span>
@@ -45,7 +45,7 @@ export function CandleInspector({ slot, timeframe, variant = "full", className }
           )}
           {info.forming && (
             <Tip label="This candle is still forming">
-              <span className="inline-flex items-center gap-1 font-sans text-[10px] font-medium text-warning">
+              <span className="inline-flex items-center gap-1 font-sans text-[9px] font-medium text-warning">
                 <span aria-hidden="true" className="size-1.5 rounded-full bg-warning" />
                 Live
               </span>
