@@ -13,3 +13,4 @@ export { DrawingToolbox, type DrawingToolboxProps } from "./DrawingToolbox.tsx";
 export { SessionTimeline } from "./SessionTimeline.tsx";
 export { Tape, TapeSheet } from "./Tape.tsx";
 export { QuickTradeSheet, QUICK_TRADE_SIZES } from "./sheets.tsx";
+export { TimeframeWheel } from "./TimeframeWheel.tsx";

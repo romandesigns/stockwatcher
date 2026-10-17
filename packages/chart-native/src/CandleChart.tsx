@@ -1,7 +1,6 @@
 import { Canvas, Picture } from "@shopify/react-native-skia";
 import {
   applyGesture,
-  TIMEFRAMES,
   emptyHistory,
   record,
   redo,
@@ -86,7 +85,8 @@ import { recordPicture } from "./drawSkia.ts";
 import { DrawingToolbox } from "./DrawingToolbox.tsx";
 import { PositionPlanPanel } from "./PositionPlanPanel.tsx";
 import { AxisSheet, IndicatorSheet, LayersSheet, OrderTicketSheet, QUICK_TRADE_SIZES, QuickTradeSheet, SCALE_LABELS } from "./sheets.tsx";
-import { playHaptic, Segmented, ToolButton, ToolIcon, UI } from "./ui.tsx";
+import { TimeframeWheel } from "./TimeframeWheel.tsx";
+import { playHaptic, ToolButton, ToolIcon, UI } from "./ui.tsx";
 
 export interface ChartSeriesLike {
   candles: readonly Candle[];
@@ -631,20 +631,14 @@ export function CandleChart({
     <View style={[s.root, style]}>
       {toolbar && (
         <View style={s.toolbar}>
-          {/* One group on the right: position, timeframes, drawing tools, indicators, levels, Trade. */}
+          {/* The timeframe wheel on the left, in line with the ticker above; the chart's tools on the right. */}
+          {onTimeframeChange && <TimeframeWheel value={timeframe} onChange={onTimeframeChange} haptics={haptics} reducedMotion={reducedMotion} />}
           <View style={s.trade}>
               {trading && pnl !== null && position && (
                 <Text style={s.pos} accessibilityLabel={`Simulated position ${position.qty} at ${formatPrice(position.avgPrice)}`}>
                   {position.qty > 0 ? "+" : ""}
                   {formatSize(position.qty)} <Text style={{ color: pnl >= 0 ? UI.good : UI.critical }}>{`${pnl >= 0 ? "+" : "−"}$${Math.abs(pnl).toFixed(2)}`}</Text>
                 </Text>
-              )}
-              {onTimeframeChange && (
-                <>
-                  <Segmented value={timeframe} onChange={onTimeframeChange} options={TIMEFRAMES.map((tf) => ({ value: tf, label: tf, a11y: tf }))} />
-                  {/* Divider between the timeframes and the chart icons (owner request): a soft bar, not a hard line. */}
-                  <View style={s.divider} />
-                </>
               )}
               <ToolButton label={toolsVisible ? "Hide drawing tools" : "Show drawing tools"} onPress={() => changeToolsVisible(!toolsVisible)} style={toolsVisible ? { backgroundColor: UI.raised } : undefined}>
                 <ToolIcon kind="pencil" color={toolsVisible ? UI.text : UI.textDim} />
@@ -836,7 +830,6 @@ const s = StyleSheet.create({
   chipWrap: { position: "absolute" },
   chip: { height: 30, paddingHorizontal: 12, borderRadius: 15, backgroundColor: UI.accent, alignItems: "center", justifyContent: "center", shadowColor: "#000", shadowOpacity: 0.35, shadowRadius: 6, shadowOffset: { width: 0, height: 2 }, elevation: 5 },
   chipText: { color: UI.accentFg, fontSize: 13, fontWeight: "700", fontVariant: ["tabular-nums"] },
-  divider: { width: 1, height: 20, borderRadius: 1, backgroundColor: UI.raised, marginHorizontal: 4 },
   indicators: { flexDirection: "row", gap: 3 },
   count: { color: UI.text, fontSize: 11, fontVariant: ["tabular-nums"] },
   latestButton: { width: 40, height: 40, borderRadius: 20, backgroundColor: UI.panel, alignItems: "center", justifyContent: "center", shadowColor: "#000", shadowOpacity: 0.35, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 6 },
