@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { type ChartTheme, type DisplayList, type LinePrim, LAYER_ORDER, sortByLayer } from "./displayList.ts";
 import { describeCounted, describeSlot } from "./inspect.ts";
-import { computeChartModel, hitTest, layout, layoutProfile, stepInspection, type ChartState } from "./layout.ts";
+import { candleCountdown, computeChartModel, formatCountdown, hitTest, layout, layoutProfile, stepInspection, type ChartState } from "./layout.ts";
 import { buildSlots, defaultViewport, slotX } from "./scale.ts";
 import { fixtureSnapshot, T0 } from "./testFixture.ts";
 import { sessionBands } from "./time.ts";
@@ -134,5 +134,19 @@ describe("profile and timeline layouts", () => {
     expect(list.some((p) => p.kind === "rect" && p.fill === "minimapPastRegular")).toBe(true);
     expect(list.some((p) => p.kind === "rect" && p.fill === "minimapFuture")).toBe(true);
     expect(round(layoutTimeline({ bands, buckets, bucketMs: 15 * 60_000, now: T0, variant: "compact" }, theme, { width: 358, height: 64 }))).toMatchSnapshot();
+  });
+});
+
+describe("candle countdown", () => {
+  test("counts down the forming candle only, rounded up to whole seconds", () => {
+    const c = { t: 60_000, o: 1, h: 1, l: 1, c: 1, v: 1, n: 1, final: false };
+    expect(candleCountdown(c, 60_000, 78_000)).toBe(42_000);
+    expect(formatCountdown(42_000)).toBe("0:42");
+    expect(formatCountdown(271_500)).toBe("4:32");
+    expect(candleCountdown({ ...c, final: true }, 60_000, 78_000)).toBeNull();
+    expect(candleCountdown(c, 60_000, 130_000)).toBeNull();
+    expect(candleCountdown(c, 60_000, null)).toBeNull();
+    // A clock trailing the candle's opening print by a moment still shows the full interval.
+    expect(candleCountdown(c, 60_000, 59_900)).toBe(60_000);
   });
 });

@@ -82,6 +82,15 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
     setLayers(l);
     void setPreference("chart.layers", l);
   };
+  // Drawing tools shown or hidden, kept across launches.
+  const [toolsVisible, setToolsVisible] = useState(true);
+  useEffect(() => {
+    void getPreference<boolean>("chart.toolsVisible").then((v) => v === false && setToolsVisible(false));
+  }, []);
+  const changeToolsVisible = (v: boolean) => {
+    setToolsVisible(v);
+    void setPreference("chart.toolsVisible", v);
+  };
   const changeToolbox = (p: ToolboxPlacement) => {
     setToolbox(p);
     void setPreference("chart.toolbox", p);
@@ -171,6 +180,8 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
         onDrawingsChange={changeDrawings}
         trading={trading}
         toolboxPlacement={toolbox}
+        toolsVisible={toolsVisible}
+        onToolsVisibleChange={changeToolsVisible}
         layers={layers}
         onLayersChange={changeLayers}
         now={clock?.now ?? null}

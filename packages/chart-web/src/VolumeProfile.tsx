@@ -1,6 +1,7 @@
 import { formatPrice, formatVolume, layoutProfile, type ChartTheme, type ProfileWire, type Size } from "@stockwatcher/chart-core";
 import { useCallback, type ReactNode } from "react";
 import { drawDisplayList } from "./draw.ts";
+import { Tip } from "./ui/tooltip.tsx";
 import { cn } from "./ui/utils.ts";
 import { useCanvas, useChartTheme } from "./useCanvas.ts";
 
@@ -55,9 +56,11 @@ export function VolumeProfile({ profile, range, showHeader = true, actions, them
             <div className="flex items-center gap-2 text-[11px] text-text-faint">
               {actions}
               {va && (
-                <span className="ml-auto" title="Value area: the 70% of volume around the POC">
+                <Tip label="Value area: the 70% of volume around the POC">
+                <span className="ml-auto">
                   VA <span className="font-mono text-foreground">{formatPrice(va.low)}–{formatPrice(va.high)}</span>
                 </span>
+                </Tip>
               )}
             </div>
           )}

@@ -79,6 +79,7 @@ import { drawDisplayList } from "./draw.ts";
 import { DrawingToolbox } from "./DrawingToolbox.tsx";
 import { OrderTicket } from "./OrderTicket.tsx";
 import { PositionPlanCard } from "./PositionPlanCard.tsx";
+import { Tip, TooltipProvider } from "./ui/tooltip.tsx";
 import { TradeMenu, TRADE_MENU_SIZES } from "./TradeMenu.tsx";
 import { PRICE_SCALE_LABELS, PriceAxisMenu } from "./PriceAxisMenu.tsx";
 import { cn } from "./ui/utils.ts";
@@ -300,6 +301,15 @@ export function CandleChart({
   const [tradeMenu, setTradeMenu] = useState<{ open: boolean; at: { x: number; y: number } | null; local: { x: number; y: number }; price: number }>({ open: false, at: null, local: { x: 0, y: 0 }, price: 0 });
   const tradeMenuOpen = tradeMenu.open;
   const tradeMenuAt = tradeMenu.local;
+  // The floating drawing tools can be hidden from the toolbar's pencil; the choice persists.
+  const [toolsVisible, setToolsVisible] = useState<boolean>(() => loadJson<unknown>(persistKey && `${persistKey}:toolsVisible`, true) !== false);
+  const changeToolsVisible = (v: boolean) => {
+    setToolsVisible(v);
+    saveJson(persistKey && `${persistKey}:toolsVisible`, v);
+    // Hiding the tools mid-drawing would leave an invisible tool armed: back to the cursor.
+    if (!v) changeTool(null);
+  };
+
   const [tool, setTool] = useState<DrawingKind | null>(null);
   // A measurement is shown until the next press, Escape or a tool change; it is never stored.
   const [measurement, setMeasurement] = useState<Drawing | null>(null);
@@ -380,8 +390,9 @@ export function CandleChart({
       draft,
       trading: trading ? { orders, position, last, dragging: drag?.order ? { id: drag.order.id, price: drag.order.price } : null, placeY } : null,
       context,
+      now,
     }),
-    [timeframe, series, slots, inspectT, pointer, tradeMenuOpen, tradeMenuAt, options, scaleType, indicatorResults, shownDrawings, selectedDrawing, draft, trading, orders, position, last, drag, placeY, context],
+    [timeframe, series, slots, inspectT, pointer, tradeMenuOpen, tradeMenuAt, options, scaleType, indicatorResults, shownDrawings, selectedDrawing, draft, trading, orders, position, last, drag, placeY, context, now],
   );
 
   const paint = useCallback((ctx: CanvasRenderingContext2D, size: Size) => drawDisplayList(ctx, layoutChart(computeChartModel(state, vp, size), state, theme)), [state, vp, theme]);
@@ -898,10 +909,10 @@ export function CandleChart({
         />
       )}
       {pannedBack && (
+        <Tip label="Back to latest (End)" side="left">
         <button
           type="button"
           aria-label="Back to latest"
-          title="Back to latest (End)"
           onClick={backToLatest}
           // Bottom-right of the price pane, clear of the price axis and the volume bars.
           style={{ left: model.geometry.plot.x + model.geometry.plot.w - 40, top: model.geometry.plot.y + model.geometry.plot.h - 40 }}
@@ -911,8 +922,9 @@ export function CandleChart({
             <path d="M2.5 8h9M8 4.5 11.5 8 8 11.5M13.5 3.5v9" />
           </svg>
         </button>
+        </Tip>
       )}
-      {toolbar && (
+      {toolbar && toolsVisible && (
         <DrawingToolbox
           placement={toolbox}
           onPlacementChange={moveToolbox}
@@ -957,7 +969,7 @@ export function CandleChart({
       {selectedPosition && (
         <PositionPlanCard
           // Beside the drawing tools when they are parked on the left as a column, else in the corner.
-          className={cn("absolute top-2 z-10", toolbar && toolbox.orientation === "vertical" && toolbox.x < 0.5 ? "left-14" : "left-2")}
+          className={cn("absolute top-2 z-10", toolbar && toolsVisible && toolbox.orientation === "vertical" && toolbox.x < 0.5 ? "left-14" : "left-2")}
           drawing={selectedPosition}
           onChange={(d) => setDrawings(drawings.map((x) => (x.id === d.id ? d : x)))}
           onPlace={trading ? () => placeBracket(selectedPosition) : undefined}
@@ -978,10 +990,13 @@ export function CandleChart({
     </div>
   );
 
-  if (!toolbar) return canvasEl;
+  if (!toolbar) return <TooltipProvider>{canvasEl}</TooltipProvider>;
   return (
+    <TooltipProvider>
     <div className={cn("flex min-h-0 min-w-0 flex-col gap-1.5", className)}>
       <ChartToolbar
+        toolsVisible={toolsVisible}
+        onToolsVisibleChange={changeToolsVisible}
         tool={tool}
         onToolChange={changeTool}
         indicators={indicatorSpecs}
@@ -996,5 +1011,6 @@ export function CandleChart({
       />
       {canvasEl}
     </div>
+    </TooltipProvider>
   );
 }

@@ -1,4 +1,5 @@
 import { describeSlot, type Slot, type Timeframe } from "@stockwatcher/chart-core";
+import { Tip } from "./ui/tooltip.tsx";
 import { cn } from "./ui/utils.ts";
 
 export interface CandleInspectorProps {
@@ -43,10 +44,12 @@ export function CandleInspector({ slot, timeframe, variant = "full", className }
             </span>
           )}
           {info.forming && (
-            <span className="inline-flex items-center gap-1 font-sans text-[10px] font-medium text-warning" title="This candle is still forming">
-              <span aria-hidden="true" className="size-1.5 rounded-full bg-warning" />
-              Live
-            </span>
+            <Tip label="This candle is still forming">
+              <span className="inline-flex items-center gap-1 font-sans text-[10px] font-medium text-warning">
+                <span aria-hidden="true" className="size-1.5 rounded-full bg-warning" />
+                Live
+              </span>
+            </Tip>
           )}
         </>
       )}

@@ -93,6 +93,8 @@ export interface ChartState {
   trading?: TradingLayer | null;
   /** Halts, LULD bands, key levels and fill markers (each list already filtered by its layer toggle). */
   context?: ContextLayer | null;
+  /** The feed clock (ms): drives the countdown to the forming candle's close under the last-price tag. */
+  now?: number | null;
 }
 
 export interface ChartGeometry {
@@ -327,6 +329,14 @@ export function layoutChart(model: ChartModel, state: ChartState, theme: ChartTh
       const fill = last.c >= last.o ? theme.up : theme.down;
       out.push({ kind: "path", points: [ax, lastY, ax + 5, lastY - 9, right, lastY - 9, right, lastY + 9, ax + 5, lastY + 9], closed: true, fill, layer: "axes" });
       out.push({ kind: "text", x: (ax + 5 + right) / 2, y: lastY, text: formatAxisValue(price, last.c), fill: theme.onTag, fontSize: fs + 1, fontFamily: mono, fontWeight: 600, align: "center", baseline: "middle", layer: "axes" });
+      // Countdown to the forming candle's close, tucked under the tag (above it near the bottom edge).
+      const left = candleCountdown(last, model.timeframeMs, state.now ?? null);
+      if (left !== null) {
+        const below = lastY + 9 + 16 <= g.plot.y + g.plot.h;
+        const cy = below ? lastY + 9 + 8 : lastY - 9 - 8;
+        out.push({ kind: "rect", x: ax + 5, y: cy - 7, w: right - ax - 5, h: 14, radius: 3, fill: theme.crosshairLabelBg, layer: "axes" });
+        out.push({ kind: "text", x: (ax + 5 + right) / 2, y: cy, text: formatCountdown(left), fill: theme.textDim, fontSize: fs - 1, fontFamily: mono, fontWeight: 500, align: "center", baseline: "middle", layer: "axes" });
+      }
     }
     const p = state.pointer;
     if (p && inside(g.plot, p.x, p.y)) {
@@ -583,4 +593,25 @@ function paneIndicator(model: ChartModel, r: IndicatorResult, rect: Rect, theme:
     x += 12 + Math.ceil(text.length * fs * 0.62) + 10;
   });
   return out;
+}
+
+/**
+ * Milliseconds until the forming candle closes, or null when there is no
+ * forming candle at `now` (it is final, the clock is unknown, or the clock
+ * has left its interval: the next print will open a new one).
+ */
+export function candleCountdown(last: Candle, timeframeMs: number, now: number | null): number | null {
+  if (now === null || last.final) return null;
+  const end = last.t + timeframeMs;
+  // The clock reaches clients a few times a second, so it can trail the print that opened the
+  // candle: a clock just behind the candle's start counts the whole interval, it is not "no candle".
+  if (now >= end || now < last.t - timeframeMs) return null;
+  return end - Math.max(now, last.t);
+}
+
+/** 42_000 → "0:42", 272_000 → "4:32"; rounded up, so it reads 0:01 until the very end. */
+export function formatCountdown(ms: number): string {
+  const s = Math.ceil(ms / 1000);
+  const m = Math.floor(s / 60);
+  return `${m}:${String(s % 60).padStart(2, "0")}`;
 }

@@ -10,7 +10,8 @@ import {
   type ToolboxPlacement,
 } from "@stockwatcher/chart-core";
 import { useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
-import { TOOL_ICONS } from "./ChartToolbar.tsx";
+import { TOOL_ICONS, toolTip } from "./ChartToolbar.tsx";
+import { Tip } from "./ui/tooltip.tsx";
 import { Button } from "./ui/button.tsx";
 import { Popover, PopoverContent } from "./ui/popover.tsx";
 import { ToggleGroup, ToggleGroupItem } from "./ui/toggle-group.tsx";
@@ -116,10 +117,10 @@ export function DrawingToolbox({ placement, onPlacementChange, container, tool, 
       style={{ left: at.left, top: at.top, ...(vertical ? { maxHeight: Math.max(120, container.height - 12) } : { maxWidth: Math.max(120, container.width - 12) }) }}
       className={cn("absolute z-10 flex flex-wrap items-center gap-0.5 rounded-xl bg-card/95 p-1 shadow-lg backdrop-blur-sm", vertical ? "flex-col" : "flex-row")}
     >
+      <Tip label="Drag to move (or arrow keys)" side={vertical ? "right" : "bottom"}>
       <button
         type="button"
         aria-label="Move drawing tools (drag, or arrow keys)"
-        title="Drag to move"
         onPointerDown={onGripDown}
         onPointerMove={onGripMove}
         onPointerUp={onGripUp}
@@ -129,6 +130,7 @@ export function DrawingToolbox({ placement, onPlacementChange, container, tool, 
       >
         <span className={cn(!vertical && "rotate-90")}>{GripIcon}</span>
       </button>
+      </Tip>
       <ToggleGroup
         aria-label="Drawing tool"
         size="sm"
@@ -141,34 +143,45 @@ export function DrawingToolbox({ placement, onPlacementChange, container, tool, 
         onValueChange={(v) => v[0] && onToolChange(v[0] === "cursor" ? null : (v[0] as DrawingKind))}
       >
         {(["cursor", ...DRAWING_KINDS, "measure"] as const).map((k) => (
-          <ToggleGroupItem key={k} value={k} aria-label={k === "cursor" ? "Cursor" : DRAWING_LABELS[k]} title={k === "cursor" ? "Cursor (Esc)" : k === "long" ? "Long position (L)" : k === "short" ? "Short position (S)" : k === "measure" ? "Measure (or Shift+drag)" : DRAWING_LABELS[k]} className="w-7 px-0 [&_svg]:size-3.5">
-            {TOOL_ICONS[k]}
-          </ToggleGroupItem>
+          <Tip key={k} label={toolTip(k)} side={vertical ? "right" : "bottom"}>
+            <ToggleGroupItem value={k} aria-label={k === "cursor" ? "Cursor" : DRAWING_LABELS[k]} className="w-7 px-0 [&_svg]:size-3.5">
+              {TOOL_ICONS[k]}
+            </ToggleGroupItem>
+          </Tip>
         ))}
       </ToggleGroup>
       <span aria-hidden="true" className={cn("shrink-0 rounded-full bg-bg-row", vertical ? "my-0.5 h-px w-5" : "mx-0.5 h-5 w-px")} />
-      <Button ref={colorRef} variant="ghost" size="icon" className={iconButton} aria-label="Drawing colour" title="Colour of the selected drawing" disabled={!canColor} onClick={() => setColorsOpen(true)}>
-        <span className="block size-3.5 rounded-full" style={{ background: canColor ? (color ?? DRAWING_COLORS[0]!.value) : "var(--color-muted-foreground)", opacity: canColor ? 1 : 0.5 }} />
-      </Button>
-      <Button variant="ghost" size="icon" className={iconButton} aria-label="Delete selected drawing" title="Delete selected drawing (Del)" disabled={!canDelete} onClick={onDelete}>
-        {TrashIcon}
-      </Button>
-      <Button variant="ghost" size="icon" className={iconButton} aria-label="Undo" title="Undo (Ctrl+Z)" disabled={!canUndo} onClick={onUndo}>
-        {UndoIcon}
-      </Button>
-      <Button variant="ghost" size="icon" className={iconButton} aria-label="Redo" title="Redo (Ctrl+Shift+Z)" disabled={!canRedo} onClick={onRedo}>
-        {RedoIcon}
-      </Button>
+      <Tip label={"Colour of the selected drawing"} side={vertical ? "right" : "bottom"}>
+        <Button ref={colorRef} variant="ghost" size="icon" className={iconButton} aria-label="Drawing colour" disabled={!canColor} onClick={() => setColorsOpen(true)}>
+          <span className="block size-3.5 rounded-full" style={{ background: canColor ? (color ?? DRAWING_COLORS[0]!.value) : "var(--color-muted-foreground)", opacity: canColor ? 1 : 0.5 }} />
+        </Button>
+      </Tip>
+      <Tip label={"Delete selected drawing (Del)"} side={vertical ? "right" : "bottom"}>
+        <Button variant="ghost" size="icon" className={iconButton} aria-label="Delete selected drawing" disabled={!canDelete} onClick={onDelete}>
+          {TrashIcon}
+        </Button>
+      </Tip>
+      <Tip label={"Undo (Ctrl+Z)"} side={vertical ? "right" : "bottom"}>
+        <Button variant="ghost" size="icon" className={iconButton} aria-label="Undo" disabled={!canUndo} onClick={onUndo}>
+          {UndoIcon}
+        </Button>
+      </Tip>
+      <Tip label={"Redo (Ctrl+Shift+Z)"} side={vertical ? "right" : "bottom"}>
+        <Button variant="ghost" size="icon" className={iconButton} aria-label="Redo" disabled={!canRedo} onClick={onRedo}>
+          {RedoIcon}
+        </Button>
+      </Tip>
+      <Tip label={vertical ? "Lay out as a row" : "Lay out as a column"} side={vertical ? "right" : "bottom"}>
       <Button
         variant="ghost"
         size="icon"
         className={iconButton}
         aria-label={vertical ? "Lay the tools out in a row" : "Lay the tools out in a column"}
-        title={vertical ? "Row" : "Column"}
         onClick={() => onPlacementChange({ ...placement, orientation: vertical ? "horizontal" : "vertical" }, true)}
       >
         {RotateIcon}
       </Button>
+      </Tip>
 
       <Popover open={colorsOpen && canColor} onOpenChange={setColorsOpen}>
         <PopoverContent anchor={colorRef} side={vertical ? "right" : "bottom"} align="start" sideOffset={8} className="w-auto p-2" aria-label="Drawing colour">
@@ -182,7 +195,6 @@ export function DrawingToolbox({ placement, onPlacementChange, container, tool, 
                   role="radio"
                   aria-checked={on}
                   aria-label={c.name}
-                  title={c.name}
                   onClick={() => {
                     onColorChange(c.value);
                     setColorsOpen(false);

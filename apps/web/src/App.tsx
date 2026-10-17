@@ -13,7 +13,7 @@ import {
   type Timeframe,
 } from "@stockwatcher/chart-core";
 import { CandleChart, CandleInspector, ReplayControls, SessionTimeline, Tape, TimeframeSelector, VolumeProfile } from "@stockwatcher/chart-web";
-import { ToggleGroup, ToggleGroupItem, cn } from "@stockwatcher/chart-web/ui";
+import { Tip, ToggleGroup, ToggleGroupItem, cn } from "@stockwatcher/chart-web/ui";
 import { useEffect, useMemo, useState } from "react";
 import { createServerFeed } from "./feed/serverFeed.ts";
 import { chooseSource, followCandidates, initialSymbol, probeServer, type SourceChoice } from "./feed/source.ts";
@@ -47,15 +47,16 @@ function sourceText(choice: SourceChoice): string {
 function SourceChip({ choice, mode, className }: { choice: SourceChoice; mode: "replay" | "live"; className?: string }) {
   const fixture = choice.kind === "fixture" || choice.fixtureData;
   return (
+    <Tip label={sourceText(choice)}>
     <span
       className={cn("inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium", fixture ? "bg-warning-bg text-warning" : "bg-card text-muted-foreground", className)}
-      title={sourceText(choice)}
     >
       <span aria-hidden="true" className={cn("size-1.5 rounded-full", fixture ? "bg-warning" : mode === "live" ? "bg-good" : "bg-text-faint")} />
       {mode === "live" ? "Live" : "Replay"}
       {fixture && <span aria-hidden="true">· Fixture</span>}
       <span className="sr-only">: {sourceText(choice)}</span>
     </span>
+    </Tip>
   );
 }
 
@@ -211,9 +212,9 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
         <div className="flex items-baseline gap-2">
           <span className="text-[15px] font-semibold">{symbol}</span>
           <span className="font-mono text-[15px] tabular-nums">{price}</span>
-          <span className={cn("font-mono text-[11px]", changeColor)} title="Change since the session's first candle">
-            {change}
-          </span>
+          <Tip label="Change since the session's first candle">
+            <span className={cn("font-mono text-[11px]", changeColor)}>{change}</span>
+          </Tip>
         </div>
         <div className="ml-auto flex items-center gap-2">
           <SourceChip choice={choice} mode={mode} />

@@ -4,10 +4,16 @@ import { createRoot } from "react-dom/client";
 import "@fontsource-variable/geist";
 import "@fontsource-variable/geist-mono";
 import "./index.css";
+import { TooltipProvider } from "@stockwatcher/chart-web/ui";
 import App from "./App";
+import { ErrorBoundary } from "./ErrorBoundary";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <App />
+    <ErrorBoundary>
+      <TooltipProvider>
+        <App />
+      </TooltipProvider>
+    </ErrorBoundary>
   </StrictMode>,
 );

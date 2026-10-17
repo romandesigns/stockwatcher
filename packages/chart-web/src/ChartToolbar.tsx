@@ -21,6 +21,7 @@ import {
 } from "@stockwatcher/chart-core";
 import type { ReactNode } from "react";
 import { LayersMenu, TradesMenu } from "./ContextMenus.tsx";
+import { Tip } from "./ui/tooltip.tsx";
 import { Button } from "./ui/button.tsx";
 import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "./ui/dropdown-menu.tsx";
 import { ToggleGroup, ToggleGroupItem } from "./ui/toggle-group.tsx";
@@ -85,6 +86,18 @@ const IndicatorIcon = svg(
 
 const DEFAULT_SERIES = [DEFAULT_CHART_THEME.series1, DEFAULT_CHART_THEME.series2, DEFAULT_CHART_THEME.series3] as const;
 
+/** The drawing tools switch: a pencil. */
+const PencilIcon = svg(<path d="M10.5 2.5 13.5 5.5 5.5 13.5H2.5v-3zM9 4l3 3" />);
+
+/** A drawing tool's tooltip: its name, and its key where it has one. */
+export function toolTip(k: DrawingKind | "cursor"): string {
+  if (k === "cursor") return "Cursor (Esc)";
+  if (k === "long") return "Long position (L)";
+  if (k === "short") return "Short position (S)";
+  if (k === "measure") return "Measure (or Shift+drag)";
+  return DRAWING_LABELS[k];
+}
+
 const TrashIcon = svg(<path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5" />);
 
 export interface ChartToolbarProps {
@@ -105,6 +118,9 @@ export interface ChartToolbarProps {
   /** The context layers switch (halts, LULD, key levels, fills); absent hides the Levels menu. */
   layers?: ChartLayers;
   onLayersChange?: (l: ChartLayers) => void;
+  /** The floating drawing tools: shown or hidden, and the switch (absent hides the switch). */
+  toolsVisible?: boolean;
+  onToolsVisibleChange?: (visible: boolean) => void;
   className?: string;
 }
 
@@ -115,7 +131,7 @@ export interface ChartToolbarProps {
  * One compact row; selection is a raised segment, and the accent is spent
  * only on the Trade button (the primary action).
  */
-export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChange, seriesColors, drawingTools = true, canDelete, onDelete, trading, layers, onLayersChange, className }: ChartToolbarProps) {
+export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChange, seriesColors, drawingTools = true, canDelete, onDelete, trading, layers, onLayersChange, toolsVisible, onToolsVisibleChange, className }: ChartToolbarProps) {
   const pos = trading?.position && trading.position.qty !== 0 ? trading.position : null;
   const pnl = pos && trading?.last !== null && trading?.last !== undefined ? unrealizedPnl(pos, trading.last) : null;
   return (
@@ -124,33 +140,58 @@ export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChang
       <>
       <ToggleGroup aria-label="Drawing tool" size="sm" spacing={0.5} variant="segmented" value={[tool ?? "cursor"]} onValueChange={(v) => v[0] && onToolChange(v[0] === "cursor" ? null : (v[0] as DrawingKind))}>
         {(["cursor", ...DRAWING_KINDS] as const).map((k) => (
-          <ToggleGroupItem key={k} value={k} aria-label={k === "cursor" ? "Cursor" : DRAWING_LABELS[k]} title={k === "cursor" ? "Cursor (Esc)" : k === "long" ? "Long position (L)" : k === "short" ? "Short position (S)" : DRAWING_LABELS[k]} className="w-7 px-0 [&_svg]:size-3.5">
-            {TOOL_ICONS[k]}
-          </ToggleGroupItem>
+          <Tip key={k} label={toolTip(k)}>
+            <ToggleGroupItem value={k} aria-label={k === "cursor" ? "Cursor" : DRAWING_LABELS[k]} className="w-7 px-0 [&_svg]:size-3.5">
+              {TOOL_ICONS[k]}
+            </ToggleGroupItem>
+          </Tip>
         ))}
       </ToggleGroup>
-      <Button variant="ghost" size="icon" className="size-7 rounded-md text-muted-foreground [&_svg]:size-3.5" aria-label="Delete selected drawing" title="Delete selected drawing (Del)" disabled={!canDelete} onClick={onDelete}>
-        {TrashIcon}
-      </Button>
+      <Tip label="Delete selected drawing (Del)">
+        <Button variant="ghost" size="icon" className="size-7 rounded-md text-muted-foreground [&_svg]:size-3.5" aria-label="Delete selected drawing" disabled={!canDelete} onClick={onDelete}>
+          {TrashIcon}
+        </Button>
+      </Tip>
       </>
       )}
-      <IndicatorMenu indicators={indicators} onChange={onIndicatorsChange} seriesColors={seriesColors ?? DEFAULT_SERIES} />
-      {layers && onLayersChange && <LayersMenu layers={layers} onChange={onLayersChange} />}
-      {trading && (
-        <div className="ml-auto flex items-center gap-2">
-          {pos && (
-            <span className="font-mono text-[11px] text-muted-foreground tabular-nums" title="Simulated position">
+      {onToolsVisibleChange && (
+        <Tip label={toolsVisible ? "Hide drawing tools" : "Show drawing tools"}>
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="Drawing tools"
+            aria-pressed={!!toolsVisible}
+            onClick={() => onToolsVisibleChange(!toolsVisible)}
+            className={cn("size-7 rounded-md [&_svg]:size-3.5", toolsVisible ? "bg-bg-raised text-foreground hover:bg-bg-raised" : "text-muted-foreground")}
+          >
+            {PencilIcon}
+          </Button>
+        </Tip>
+      )}
+      {/* Everything else on the far right: position, indicators, levels, trades, Trade. */}
+      <div className="ml-auto flex items-center gap-1.5">
+        {pos && (
+          <Tip label="Simulated position and unrealized P&L">
+            <span className="font-mono text-[11px] text-muted-foreground tabular-nums">
               {pos.qty > 0 ? "+" : ""}
               {formatSize(pos.qty)} @ {formatPrice(pos.avgPrice)}
               {pnl !== null && <span className={cn("ml-1.5", pnl >= 0 ? "text-good" : "text-critical")}>{`${pnl >= 0 ? "+" : "−"}$${Math.abs(pnl).toFixed(2)}`}</span>}
             </span>
-          )}
-          <TradesMenu fills={trading.fills ?? []} realized={trading.realized ?? 0} />
-          <Button size="sm" className="h-7 rounded-md px-3 text-xs" onClick={trading.onTrade} title="Simulated order (fills against the replay tape)">
-            Trade
-          </Button>
-        </div>
-      )}
+          </Tip>
+        )}
+        <IndicatorMenu indicators={indicators} onChange={onIndicatorsChange} seriesColors={seriesColors ?? DEFAULT_SERIES} />
+        {layers && onLayersChange && <LayersMenu layers={layers} onChange={onLayersChange} />}
+        {trading && (
+          <>
+            <TradesMenu fills={trading.fills ?? []} realized={trading.realized ?? 0} />
+            <Tip label="Simulated order (fills against the replay tape)">
+              <Button size="sm" className="ml-0.5 h-7 rounded-md px-3 text-xs" onClick={trading.onTrade}>
+                Trade
+              </Button>
+            </Tip>
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -215,15 +256,16 @@ function IndicatorMenu({ indicators, onChange, seriesColors }: { indicators: rea
   );
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger
-        aria-label={indicators.length ? `Indicators, ${indicators.length} on` : "Indicators"}
-        title="Indicators"
-        render={<Button variant="ghost" size="sm" className="h-7 min-w-7 gap-1 rounded-md px-1.5 text-xs text-muted-foreground [&_svg]:size-3.5" />}
-      >
-        {IndicatorIcon}
-        {indicators.length ? <span className="font-mono text-[11px] text-foreground">{indicators.length}</span> : null}
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" aria-label="Indicators" className="w-80 p-1.5">
+      <Tip label="Indicators">
+        <DropdownMenuTrigger
+          aria-label={indicators.length ? `Indicators, ${indicators.length} on` : "Indicators"}
+          render={<Button variant="ghost" size="sm" className="h-7 min-w-7 gap-1 rounded-md px-1.5 text-xs text-muted-foreground [&_svg]:size-3.5" />}
+        >
+          {IndicatorIcon}
+          {indicators.length ? <span className="font-mono text-[11px] text-foreground">{indicators.length}</span> : null}
+        </DropdownMenuTrigger>
+      </Tip>
+      <DropdownMenuContent align="end" aria-label="Indicators" className="w-80 p-1.5">
         <DropdownMenuGroup>
           {header("On the chart", active("overlay").length, MAX_OVERLAYS)}
           {group("overlay").map(item)}

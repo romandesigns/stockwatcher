@@ -1,7 +1,8 @@
 import { formatEtTime, formatPrice, formatSize, LAYER_IDS, LAYER_INFO, type ChartLayers, type FillMark, type LayerId } from "@stockwatcher/chart-core";
 import type { ReactNode } from "react";
 import { Button } from "./ui/button.tsx";
-import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuLabel, DropdownMenuTrigger } from "./ui/dropdown-menu.tsx";
+import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuGroup, DropdownMenuLabel, DropdownMenuTrigger } from "./ui/dropdown-menu.tsx";
+import { Tip } from "./ui/tooltip.tsx";
 import { cn } from "./ui/utils.ts";
 
 const icon = (children: ReactNode) => (
@@ -65,10 +66,14 @@ export function LayersMenu({ layers, onChange }: { layers: ChartLayers; onChange
   const on = LAYER_IDS.filter((id) => layers[id]).length;
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger aria-label={`Levels, ${on} of ${LAYER_IDS.length} on`} title="Levels" render={<Button variant="ghost" size="sm" className="h-7 min-w-7 rounded-md px-1.5 text-muted-foreground [&_svg]:size-3.5" />}>
-        {LevelsIcon}
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" aria-label="Levels" className="w-80 p-1.5">
+      <Tip label="Levels">
+        <DropdownMenuTrigger aria-label={`Levels, ${on} of ${LAYER_IDS.length} on`} render={<Button variant="ghost" size="sm" className="h-7 min-w-7 rounded-md px-1.5 text-muted-foreground [&_svg]:size-3.5" />}>
+          {LevelsIcon}
+        </DropdownMenuTrigger>
+      </Tip>
+      <DropdownMenuContent align="end" aria-label="Levels" className="w-80 p-1.5">
+        {/* Base UI requires a group around a menu label: without it the menu throws and takes the app down. */}
+        <DropdownMenuGroup>
         <DropdownMenuLabel className="px-1.5 pt-1.5 pb-1 text-[11px] font-medium text-muted-foreground">On the chart</DropdownMenuLabel>
         {LAYER_IDS.map((id) => (
           <DropdownMenuCheckboxItem key={id} checked={layers[id]} onCheckedChange={(v) => onChange({ ...layers, [id]: !!v })} closeOnClick={false} className="gap-2.5 py-1.5 pr-9">
@@ -81,6 +86,7 @@ export function LayersMenu({ layers, onChange }: { layers: ChartLayers; onChange
             </span>
           </DropdownMenuCheckboxItem>
         ))}
+        </DropdownMenuGroup>
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -96,10 +102,12 @@ export function TradesMenu({ fills, realized }: { fills: readonly FillMark[]; re
   const list = [...fills].reverse();
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger aria-label={`Trades, ${fills.length}`} title="Trades" render={<Button variant="ghost" size="sm" className="h-7 min-w-7 gap-1 rounded-md px-1.5 text-xs text-muted-foreground [&_svg]:size-3.5" />}>
-        {TradesIcon}
-        {fills.length ? <span className="font-mono text-[11px] text-foreground">{fills.length}</span> : null}
-      </DropdownMenuTrigger>
+      <Tip label="Trades">
+        <DropdownMenuTrigger aria-label={`Trades, ${fills.length}`} render={<Button variant="ghost" size="sm" className="h-7 min-w-7 gap-1 rounded-md px-1.5 text-xs text-muted-foreground [&_svg]:size-3.5" />}>
+          {TradesIcon}
+          {fills.length ? <span className="font-mono text-[11px] text-foreground">{fills.length}</span> : null}
+        </DropdownMenuTrigger>
+      </Tip>
       <DropdownMenuContent align="end" aria-label="Trades" className="w-80 p-1.5">
         <div className="flex items-baseline justify-between px-1.5 pt-1.5 pb-2">
           <span className="text-[11px] font-medium text-muted-foreground">Trades · simulated</span>

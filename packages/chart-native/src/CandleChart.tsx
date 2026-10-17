@@ -121,6 +121,9 @@ export interface CandleChartProps {
   /** Where the floating drawing tools sit. Controlled when onToolboxPlacementChange is set (the host persists it); else kept for the session. */
   toolboxPlacement?: ToolboxPlacement;
   onToolboxPlacementChange?: (p: ToolboxPlacement) => void;
+  /** Whether the floating drawing tools show. Controlled when onToolsVisibleChange is set (the host persists it). */
+  toolsVisible?: boolean;
+  onToolsVisibleChange?: (visible: boolean) => void;
   /** Which context layers show (halts, LULD, key levels, fills). Controlled when onLayersChange is set (the host persists it). */
   layers?: ChartLayers;
   onLayersChange?: (layers: ChartLayers) => void;
@@ -177,6 +180,8 @@ export function CandleChart({
   onToolboxPlacementChange,
   layers: layersProp,
   onLayersChange,
+  toolsVisible: toolsVisibleProp,
+  onToolsVisibleChange,
   // Renamed: this module's now() is the monotonic clock the gestures use.
   now: clockNow = null,
   label,
@@ -222,6 +227,15 @@ export function CandleChart({
   const setVp = useCallback((f: (vp: Viewport) => Viewport) => setView((v) => ({ tf: timeframe, vp: f(v.tf === timeframe ? v.vp : defaultViewport(barSpacing)) })), [timeframe, barSpacing]);
 
   const [pointer, setPointer] = useState<Point | null>(null);
+  const [ownToolsVisible, setOwnToolsVisible] = useState(true);
+  const toolsVisible = onToolsVisibleChange ? (toolsVisibleProp ?? true) : ownToolsVisible;
+  const changeToolsVisible = (v: boolean) => {
+    if (onToolsVisibleChange) onToolsVisibleChange(v);
+    else setOwnToolsVisible(v);
+    // Hiding the tools mid-drawing would leave an invisible tool armed: back to the cursor.
+    if (!v) changeTool(null);
+  };
+
   const [tool, setTool] = useState<DrawingKind | null>(null);
   // A measurement is shown until the next touch or a tool change; it is never stored.
   const [measurement, setMeasurement] = useState<Drawing | null>(null);
@@ -291,8 +305,9 @@ export function CandleChart({
       draft,
       trading: trading ? { orders, position, last, dragging: drag?.order ?? null, placeY: null } : null,
       context,
+      now: clockNow,
     }),
-    [timeframe, series, slots, inspectT, pointer, options, scaleType, indicatorResults, shownDrawings, selectedDrawing, draft, trading, orders, position, last, drag, context],
+    [timeframe, series, slots, inspectT, pointer, options, scaleType, indicatorResults, shownDrawings, selectedDrawing, draft, trading, orders, position, last, drag, context, clockNow],
   );
   const model = useMemo(() => computeChartModel(state, vp, size), [state, vp, size]);
   const picture = useMemo(() => (size.width > 0 && size.height > 0 ? recordPicture(layoutChart(model, state, theme), size.width, size.height) : null), [model, state, theme, size]);
@@ -533,30 +548,36 @@ export function CandleChart({
     <View style={[s.root, style]}>
       {toolbar && (
         <View style={s.toolbar}>
-          <ToolButton label="Levels" onPress={() => setSheet({ kind: "layers" })}>
-            <ToolIcon kind="levels" color={UI.textDim} />
+          <ToolButton label={toolsVisible ? "Hide drawing tools" : "Show drawing tools"} onPress={() => changeToolsVisible(!toolsVisible)} style={toolsVisible ? { backgroundColor: UI.raised } : undefined}>
+            <ToolIcon kind="pencil" color={toolsVisible ? UI.text : UI.textDim} />
           </ToolButton>
-          <ToolButton label={indicatorSpecs.length ? `Indicators, ${indicatorSpecs.length} on` : "Indicators"} onPress={() => setSheet({ kind: "indicators" })} style={s.indicators}>
-            <ToolIcon kind="indicators" color={UI.textDim} />
-            {indicatorSpecs.length ? <Text style={s.count}>{indicatorSpecs.length}</Text> : null}
-          </ToolButton>
-          {trading && (
-            <View style={s.trade}>
-              {pnl !== null && position && (
+          {/* Everything else on the far right: position, indicators, levels, trades, Trade. */}
+          <View style={s.trade}>
+              {trading && pnl !== null && position && (
                 <Text style={s.pos} accessibilityLabel={`Simulated position ${position.qty} at ${formatPrice(position.avgPrice)}`}>
                   {position.qty > 0 ? "+" : ""}
                   {formatSize(position.qty)} <Text style={{ color: pnl >= 0 ? UI.good : UI.critical }}>{`${pnl >= 0 ? "+" : "−"}$${Math.abs(pnl).toFixed(2)}`}</Text>
                 </Text>
               )}
-              <ToolButton label={`Trades, ${fills.length}`} onPress={() => setSheet({ kind: "trades" })} style={s.indicators}>
-                <ToolIcon kind="trades" color={UI.textDim} />
-                {fills.length ? <Text style={s.count}>{fills.length}</Text> : null}
+              <ToolButton label={indicatorSpecs.length ? `Indicators, ${indicatorSpecs.length} on` : "Indicators"} onPress={() => setSheet({ kind: "indicators" })} style={s.indicators}>
+                <ToolIcon kind="indicators" color={UI.textDim} />
+                {indicatorSpecs.length ? <Text style={s.count}>{indicatorSpecs.length}</Text> : null}
               </ToolButton>
-              <ToolButton primary label="Simulated order" onPress={() => setSheet({ kind: "ticket", price: null })}>
-                Trade
+              <ToolButton label="Levels" onPress={() => setSheet({ kind: "layers" })}>
+                <ToolIcon kind="levels" color={UI.textDim} />
               </ToolButton>
-            </View>
-          )}
+              {trading && (
+                <>
+                  <ToolButton label={`Trades, ${fills.length}`} onPress={() => setSheet({ kind: "trades" })} style={s.indicators}>
+                    <ToolIcon kind="trades" color={UI.textDim} />
+                    {fills.length ? <Text style={s.count}>{fills.length}</Text> : null}
+                  </ToolButton>
+                  <ToolButton primary label="Simulated order" onPress={() => setSheet({ kind: "ticket", price: null })}>
+                    Trade
+                  </ToolButton>
+                </>
+              )}
+          </View>
         </View>
       )}
       {/* The button is a sibling of the gesture surface, not inside it: the chart claims every touch it gets. */}
@@ -588,7 +609,7 @@ export function CandleChart({
             )}
           </View>
         </GestureDetector>
-        {toolbar && (
+        {toolbar && toolsVisible && (
           <DrawingToolbox
             placement={toolbox}
             onPlacementChange={moveToolbox}

@@ -1,4 +1,5 @@
 import { describeCounted, formatEtMillis, formatEtTime, formatPrice, formatSize, type CountedTone, type TapeTrade } from "@stockwatcher/chart-core";
+import { Tip } from "./ui/tooltip.tsx";
 import { cn } from "./ui/utils.ts";
 
 export interface TapeProps {
@@ -65,9 +66,11 @@ export function Tape({ trades, variant = "full", maxRows = 14, className }: Tape
             <span role="cell">{full ? formatEtMillis(tr.t) : formatEtTime(tr.t, true)}</span>
             <span role="cell">{formatPrice(tr.p)}</span>
             <span role="cell">{formatSize(tr.s)}</span>
-            <span role="cell" className={cn("truncate font-sans no-underline", NOTE[d.tone], !full && "text-right text-[10px]")} title={`Exchange ${tr.exchange} · seq ${tr.seq}${tr.conditions.length ? ` · conditions ${tr.conditions.join(" ")}` : ""}`}>
-              {full ? d.label : d.short}
-            </span>
+            <Tip label={`Exchange ${tr.exchange} · seq ${tr.seq}${tr.conditions.length ? ` · conditions ${tr.conditions.join(" ")}` : ""}`} side="left">
+              <span role="cell" className={cn("truncate font-sans no-underline", NOTE[d.tone], !full && "text-right text-[10px]")}>
+                {full ? d.label : d.short}
+              </span>
+            </Tip>
           </div>
         );
       })}
