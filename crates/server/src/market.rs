@@ -10,6 +10,13 @@
 //! Snapshots are taken under the same lock as the sequence number, so a client skips every
 //! broadcast increment with `seq ≤ snapshot seq` (already contained in the snapshot) and never
 //! sees a candle move backwards.
+//!
+//! The paper broker (crates/paper-broker, docs/architecture/chart-trading-sim.md) rides on the
+//! same path: every price-qualifying trade is fed to it after the engine, and its `paper.state` /
+//! `paper.fill` frames go out on the same broadcast to every connection. A rebuild (`Reset`, i.e.
+//! a seek or the initial catch-up) resets it, and the rebuild's re-read of the day is not fed to it:
+//! orders cannot survive the tape being rewritten under them, nor fill against history replayed
+//! only to rebuild candles.
 
 use chart_engine::wire::{ChartSnapshot, ChartUpdate, ClockInfo};
 use chart_engine::{ChartEngine, DataQuality, Timeframe};
@@ -22,6 +29,8 @@ use market_providers::{
     ClockMode, ClockState, Command, FeedItem, MarketDataMode, ProviderConfig, ProviderError,
     ProviderInfo, ReplayHandle, Speed,
 };
+use paper_broker::wire::{ModifyCommand, PaperFill, PlaceCommand};
+use paper_broker::{Broker, CommandError, Fill};
 use provider_sim::{Sim, SimConfig};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -130,6 +139,10 @@ pub enum OutKind {
     Clock(String),
     /// A rebuild (seek) finished: every subscriber must take a fresh snapshot.
     Resync,
+    /// A pre-serialized `paper.state` or `paper.fill` frame for every connection, whatever it
+    /// subscribes to. Not filtered by `seq` (the frame carries the broker's own `seq`); its
+    /// `Outbound::seq` is 0.
+    Paper(String),
 }
 
 struct Core {
@@ -170,6 +183,9 @@ struct Inner {
     control: Option<ReplayHandle>,
     bin: Price,
     band: PriceBand,
+    /// The one paper account (single-user app). Never locked while `core` is held, or the other
+    /// way round, so the two locks cannot deadlock.
+    paper: Mutex<Broker>,
 }
 
 /// Shared market state; cheap to clone.
@@ -238,6 +254,7 @@ impl Market {
             control,
             bin: ChartEngine::default().config().profile_bin,
             band,
+            paper: Mutex::new(Broker::new()),
         }))
     }
 
@@ -413,15 +430,19 @@ impl Market {
     fn apply(&self, item: FeedItem) {
         match item {
             FeedItem::Event(e) => {
+                // Price-band and paper-broker input: the same price rule the candles use (a
+                // print that may not set OHLC, e.g. an odd lot or average-price report, can
+                // neither move a stock into or out of the candidate set nor fill an order).
+                let qualifying = match &e {
+                    MarketEvent::Trade(t) if trade_effect(&t.conditions, t.tape).updates_ohlc => {
+                        Some((t.symbol.clone(), t.price, t.event_ts.millis()))
+                    }
+                    _ => None,
+                };
                 let (seq, ups, rebuilding) = {
                     let mut core = self.0.core.lock().expect("core lock");
-                    // Price-band input: the same price rule the candles use (a print that may
-                    // not set OHLC, e.g. an odd lot or average-price report, cannot move a stock
-                    // into or out of the candidate set).
-                    if let MarketEvent::Trade(t) = &e
-                        && trade_effect(&t.conditions, t.tape).updates_ohlc
-                    {
-                        core.last_price.insert(t.symbol.clone(), t.price);
+                    if let Some((symbol, price, _)) = &qualifying {
+                        core.last_price.insert(symbol.clone(), *price);
                     }
                     let ups = core.engine.apply(&e);
                     core.seq += 1;
@@ -430,6 +451,14 @@ impl Market {
                 };
                 if !rebuilding {
                     self.send_all(seq, ups);
+                    // After the tape row went out, so a client sees the print before its fill.
+                    if let Some((symbol, price, t)) = qualifying {
+                        let mut paper = self.0.paper.lock().expect("paper lock");
+                        let out = paper.on_trade(&symbol, price, t);
+                        if out.changed {
+                            self.publish_paper(&paper, &out.fills);
+                        }
+                    }
                 }
             }
             FeedItem::Advance(t) => {
@@ -447,11 +476,19 @@ impl Market {
             FeedItem::Reset(_) => {
                 // The visible clock stays where it was until the rebuild's closing `Clock`, so a
                 // client never sees the target time over a half-rebuilt engine.
-                let mut core = self.0.core.lock().expect("core lock");
-                let seq = core.seq + 1;
-                *core = Core::new();
-                core.seq = seq;
-                core.rebuilding = true;
+                {
+                    let mut core = self.0.core.lock().expect("core lock");
+                    let seq = core.seq + 1;
+                    *core = Core::new();
+                    core.seq = seq;
+                    core.rebuilding = true;
+                }
+                // Time travel resets the account (contract). Announced now rather than at the
+                // rebuild's end: the flat account is already the truth, and a command arriving
+                // mid-rebuild then works on it.
+                let mut paper = self.0.paper.lock().expect("paper lock");
+                paper.reset();
+                self.publish_paper(&paper, &[]);
             }
             FeedItem::Clock(c) => {
                 let frame = clock_frame(&c);
@@ -515,6 +552,79 @@ impl Market {
             // No receivers is fine (nobody connected).
             let _ = self.0.tx.send(Arc::new(Outbound { seq, kind }));
         }
+    }
+
+    /// Broadcasts the current `paper.state`, then one `paper.fill` per fill. Called with the
+    /// paper lock held, so frames from the ingest task and from commands go out in `seq` order.
+    fn publish_paper(&self, paper: &Broker, fills: &[Fill]) {
+        let mut frames =
+            vec![serde_json::to_string(&paper.state()).expect("paper state serializes")];
+        frames.extend(
+            fills
+                .iter()
+                .map(|f| serde_json::to_string(&PaperFill::from(f)).expect("fill serializes")),
+        );
+        for frame in frames {
+            let _ = self.0.tx.send(Arc::new(Outbound {
+                seq: 0,
+                kind: OutKind::Paper(frame),
+            }));
+        }
+    }
+
+    /// The current `paper.state` frame (sent to a connection right after `welcome`).
+    pub fn paper_state_frame(&self) -> String {
+        let paper = self.0.paper.lock().expect("paper lock");
+        serde_json::to_string(&paper.state()).expect("paper state serializes")
+    }
+
+    /// The broker's notion of "now" for commands: the virtual (replay) or wall (live) clock the
+    /// provider publishes, in epoch ms. 0 before any clock exists (an idle market).
+    fn paper_now(&self) -> i64 {
+        self.clock().map_or(0, |c| c.now.millis())
+    }
+
+    /// `order.place`. Always changes the state (a failing order is created `rejected`), so this
+    /// always broadcasts. Returns the new order's id.
+    pub fn paper_place(&self, cmd: PlaceCommand) -> String {
+        let order = cmd.into_new_order();
+        // Looked up before taking the paper lock: `known` needs the core lock, and the two are
+        // never nested. "Known" is the full symbol list, candidates or not.
+        let known = {
+            let core = self.0.core.lock().expect("core lock");
+            self.known(&core, &order.symbol)
+        };
+        let now = self.paper_now();
+        let mut paper = self.0.paper.lock().expect("paper lock");
+        let id = paper.place(order, now, |_| known);
+        self.publish_paper(&paper, &[]);
+        id
+    }
+
+    /// `order.modify`. On error nothing changed and nothing is broadcast.
+    pub fn paper_modify(&self, cmd: ModifyCommand) -> Result<(), CommandError> {
+        let (id, m) = cmd.into_modify();
+        let now = self.paper_now();
+        let mut paper = self.0.paper.lock().expect("paper lock");
+        paper.modify(&id, m, now)?;
+        self.publish_paper(&paper, &[]);
+        Ok(())
+    }
+
+    /// `order.cancel`. On error nothing changed and nothing is broadcast.
+    pub fn paper_cancel(&self, id: &str) -> Result<(), CommandError> {
+        let now = self.paper_now();
+        let mut paper = self.0.paper.lock().expect("paper lock");
+        paper.cancel(id, now)?;
+        self.publish_paper(&paper, &[]);
+        Ok(())
+    }
+
+    /// `paper.reset`.
+    pub fn paper_reset(&self) {
+        let mut paper = self.0.paper.lock().expect("paper lock");
+        paper.reset();
+        self.publish_paper(&paper, &[]);
     }
 
     /// A `chart.snapshot` (with the clock) plus recent tape rows, consistent with `seq`.

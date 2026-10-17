@@ -35,3 +35,6 @@ Thumbs.db
 .vscode/*
 !.vscode/extensions.json
 *.log
+
+# Separate cargo target used while a dev server holds target/ (Windows locks the running exe)
+/target-broker/

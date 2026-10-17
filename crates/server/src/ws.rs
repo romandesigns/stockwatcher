@@ -19,6 +19,15 @@
 //!   Success has no direct reply; the resulting `replay.clock` is the answer.
 //! - A client that falls more than the broadcast capacity behind, and every
 //!   client after a seek, gets a fresh `chart.snapshot` (resync).
+//!
+//! Simulated trading (docs/architecture/chart-trading-sim.md, after `welcome`):
+//! - server `paper.state` once right after `welcome`, then to every connection
+//!   on any change, with a `paper.fill` per fill. A lagged client gets a fresh
+//!   `paper.state` too, since it may have missed one.
+//! - client `order.place`, `order.modify`, `order.cancel`, `paper.reset`.
+//!   Success has no direct reply; the broadcast `paper.state` is the answer.
+//!   A malformed or unknown `order.*`/`paper.*` command gets `error bad_order`;
+//!   a refused modify/cancel gets `error` with the broker's code (`not_open`, ...).
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -32,6 +41,7 @@ use crate::market::{ControlError, Market, OutKind, SnapshotError};
 use crate::{AppState, COMMIT, VERSION, api, auth};
 use chart_engine::Timeframe;
 use market_events::Price;
+use paper_broker::wire::{CancelCommand, ModifyCommand, PlaceCommand};
 use tokio::sync::broadcast::error::RecvError;
 
 pub const HEARTBEAT: Duration = Duration::from_secs(15);
@@ -65,6 +75,24 @@ enum ClientMessage {
         #[serde(default)]
         value: Option<serde_json::Value>,
     },
+    #[serde(rename = "order.place")]
+    OrderPlace(PlaceCommand),
+    #[serde(rename = "order.modify")]
+    OrderModify(ModifyCommand),
+    #[serde(rename = "order.cancel")]
+    OrderCancel(CancelCommand),
+    #[serde(rename = "paper.reset")]
+    PaperReset,
+}
+
+/// True for a frame whose `type` is in the paper-trading namespace. Such a frame that failed to
+/// parse is a bad order (`bad_order`), not a generic `bad_request`, so the client's order ticket
+/// can tell its own bug apart from a protocol mismatch.
+fn is_paper_command(text: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|v| v.get("type")?.as_str().map(str::to_owned))
+        .is_some_and(|t| t.starts_with("order.") || t.starts_with("paper."))
 }
 
 /// The connection's chart subscription.
@@ -228,12 +256,16 @@ async fn session(mut socket: WebSocket, state: AppState) {
         commit: COMMIT,
         heartbeat_secs: HEARTBEAT.as_secs(),
     };
+    // Subscribed before the paper snapshot below, so no change can fall between the two (at
+    // worst the client gets the same state twice, which is harmless: it replaces, never merges).
+    let market = state.market().clone();
+    let mut feed = market.subscribe();
     if !send(&mut socket, &welcome).await {
         return;
     }
-
-    let market = state.market().clone();
-    let mut feed = market.subscribe();
+    if !send_text(&mut socket, market.paper_state_frame()).await {
+        return;
+    }
     if let Some(frame) = market.clock_frame()
         && !send_text(&mut socket, frame).await
     {
@@ -257,7 +289,9 @@ async fn session(mut socket: WebSocket, state: AppState) {
             out = feed.recv() => {
                 let ok = match out {
                     Ok(o) => match &o.kind {
-                        OutKind::Clock(frame) => send_text(&mut socket, frame.clone()).await,
+                        OutKind::Clock(frame) | OutKind::Paper(frame) => {
+                            send_text(&mut socket, frame.clone()).await
+                        }
                         OutKind::Resync => match sub.as_mut() {
                             Some(s) => send_snapshot(&mut socket, &market, s).await,
                             None => true,
@@ -288,10 +322,11 @@ async fn session(mut socket: WebSocket, state: AppState) {
                     },
                     Err(RecvError::Lagged(n)) => {
                         tracing::debug!(skipped = n, "ws client lagged; resyncing with a snapshot");
-                        match sub.as_mut() {
-                            Some(s) => send_snapshot(&mut socket, &market, s).await,
-                            None => true,
-                        }
+                        send_text(&mut socket, market.paper_state_frame()).await
+                            && match sub.as_mut() {
+                                Some(s) => send_snapshot(&mut socket, &market, s).await,
+                                None => true,
+                            }
                     }
                     Err(RecvError::Closed) => true,
                 };
@@ -354,6 +389,26 @@ async fn session(mut socket: WebSocket, state: AppState) {
                             }),
                         }
                     }
+                    Ok(ClientMessage::OrderPlace(cmd)) => {
+                        market.paper_place(cmd);
+                        None
+                    }
+                    Ok(ClientMessage::OrderModify(cmd)) => match market.paper_modify(cmd) {
+                        Ok(()) => None,
+                        Err(e) => Some(ServerMessage::Error { code: e.code(), message: e.message() }),
+                    },
+                    Ok(ClientMessage::OrderCancel(cmd)) => match market.paper_cancel(&cmd.id) {
+                        Ok(()) => None,
+                        Err(e) => Some(ServerMessage::Error { code: e.code(), message: e.message() }),
+                    },
+                    Ok(ClientMessage::PaperReset) => {
+                        market.paper_reset();
+                        None
+                    }
+                    Err(_) if is_paper_command(&text) => Some(ServerMessage::Error {
+                        code: "bad_order",
+                        message: "malformed or unknown order command",
+                    }),
                     Ok(ClientMessage::Hello { .. }) | Err(_) => Some(ServerMessage::Error {
                         code: "bad_request",
                         message: "unexpected message",

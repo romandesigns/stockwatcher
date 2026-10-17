@@ -461,3 +461,170 @@ async fn the_price_band_is_configurable() {
     });
     assert!(bad.is_err(), "an inverted band must be refused at startup");
 }
+
+// --- simulated chart trading (docs/architecture/chart-trading-sim.md) -----------------------
+
+/// The next `paper.state` matching `pred`.
+async fn paper_state(ws: &mut Ws, pred: impl Fn(&Value) -> bool) -> Value {
+    next(ws, |m| m["type"] == "paper.state" && pred(m)).await
+}
+
+fn order<'a>(state: &'a Value, id: &str) -> Option<&'a Value> {
+    state["orders"].as_array()?.iter().find(|o| o["id"] == id)
+}
+
+#[tokio::test]
+async fn a_limit_order_fills_during_replay_and_every_connection_hears_it() {
+    let s = stack(&[]).await;
+    let mut ws = connect(&s.url).await;
+    // paper.state comes right after welcome: a flat, empty, clearly simulated account.
+    let first = next(&mut ws, |m| m["type"] != "replay.clock").await;
+    assert_eq!(first["type"], "paper.state");
+    assert_eq!(first["simulated"], true);
+    assert_eq!(first["account"]["cash"], 100_000.0);
+    assert_eq!(first["orders"], json!([]));
+    assert_eq!(first["positions"], json!([]));
+    let mut other = connect(&s.url).await;
+    wait_for_replay(&mut ws).await;
+
+    // A price-qualifying print tells us where SMPL trades; a buy limit 10 cents above it is
+    // traded through by the next print near that level.
+    send(
+        &mut ws,
+        json!({"type":"chart.subscribe","symbol":"SMPL","timeframe":"1m","profileBin":0.01}),
+    )
+    .await;
+    let print = next(&mut ws, |m| {
+        m["type"] == "tape.trade" && m["counted"] == "ohlc_and_volume"
+    })
+    .await;
+    let p = print["p"].as_f64().unwrap();
+    let limit = ((p + 0.10) * 100.0).ceil() / 100.0;
+    send(
+        &mut ws,
+        json!({"type":"order.place","clientOrderId":"c-1","symbol":"smpl","side":"buy",
+               "orderType":"limit","qty":100,"limitPrice":limit}),
+    )
+    .await;
+    let placed = paper_state(&mut ws, |m| !m["orders"].as_array().unwrap().is_empty()).await;
+    let o = &placed["orders"][0];
+    assert_eq!(o["clientOrderId"], "c-1");
+    assert_eq!(o["symbol"], "SMPL");
+    assert_eq!(o["limitPrice"], limit);
+    assert!(
+        o["createdAt"].as_i64().unwrap() >= T1040,
+        "virtual clock, not wall clock"
+    );
+    let id = o["id"].as_str().unwrap().to_string();
+
+    // The state that contains a fill goes out first, then the fill event itself.
+    let filled = paper_state(&mut ws, |m| {
+        order(m, &id).is_some_and(|o| o["status"] == "filled")
+    })
+    .await;
+    let fill = next(&mut ws, is("paper.fill")).await;
+    assert_eq!(fill["simulated"], true);
+    assert_eq!(fill["orderId"], id.as_str());
+    assert_eq!(
+        (fill["side"].as_str(), fill["qty"].as_i64()),
+        (Some("buy"), Some(100))
+    );
+    assert_eq!(fill["price"], limit, "a limit fills at its limit");
+    assert_eq!(order(&filled, &id).unwrap()["avgFillPrice"], limit);
+    assert_eq!(filled["positions"][0]["symbol"], "SMPL");
+    assert_eq!(filled["positions"][0]["qty"], 100);
+    let cash = filled["account"]["cash"].as_f64().unwrap();
+    assert!((cash - (100_000.0 - 100.0 * limit)).abs() < 1e-6, "{cash}");
+
+    // The other connection (no chart subscription) got the same broadcast. Matched on the state
+    // rather than the fill: this socket is not read while the replay plays, so it may lag, and a
+    // lagged client is resynchronized with a fresh paper.state, not the missed fill.
+    paper_state(&mut other, |m| {
+        order(m, &id).is_some_and(|o| o["status"] == "filled")
+    })
+    .await;
+
+    // Time travel resets the account for everyone.
+    send(
+        &mut ws,
+        json!({"type":"replay.control","action":"seek","value":T1040 + 5 * 60_000}),
+    )
+    .await;
+    for c in [&mut ws, &mut other] {
+        let reset = paper_state(c, |m| m["orders"].as_array().unwrap().is_empty()).await;
+        assert_eq!(reset["positions"], json!([]));
+        assert_eq!(reset["account"]["cash"], 100_000.0);
+        assert_eq!(reset["account"]["realizedPnl"], 0.0);
+    }
+}
+
+#[tokio::test]
+async fn rejections_show_up_in_state_and_bad_commands_get_errors() {
+    let s = stack(&[("REPLAY_AUTOPLAY", "0")]).await;
+    let mut ws = connect(&s.url).await;
+    wait_for_replay(&mut ws).await;
+
+    send(
+        &mut ws,
+        json!({"type":"order.place","symbol":"SMPL","side":"buy","orderType":"limit",
+               "qty":10,"limitPrice":3.385}),
+    )
+    .await;
+    let st = paper_state(&mut ws, |m| !m["orders"].as_array().unwrap().is_empty()).await;
+    assert_eq!(st["orders"][0]["status"], "rejected");
+    assert_eq!(st["orders"][0]["rejectReason"], "sub_penny");
+
+    // Unknown means not in the market's symbol list at all.
+    send(
+        &mut ws,
+        json!({"type":"order.place","symbol":"NOPE","side":"sell","orderType":"market","qty":1}),
+    )
+    .await;
+    let st = paper_state(&mut ws, |m| m["orders"].as_array().unwrap().len() == 2).await;
+    assert_eq!(st["orders"][1]["rejectReason"], "unknown_symbol");
+
+    // Malformed (bad side) and unknown commands: error bad_order, no state change.
+    send(
+        &mut ws,
+        json!({"type":"order.place","symbol":"SMPL","side":"hold","orderType":"market","qty":1}),
+    )
+    .await;
+    assert_eq!(next(&mut ws, is("error")).await["code"], "bad_order");
+    send(&mut ws, json!({"type":"order.replace","id":"o-1"})).await;
+    assert_eq!(next(&mut ws, is("error")).await["code"], "bad_order");
+
+    // Modifying or cancelling a finished order: not_open.
+    send(&mut ws, json!({"type":"order.modify","id":"o-1","qty":5})).await;
+    assert_eq!(next(&mut ws, is("error")).await["code"], "not_open");
+    send(&mut ws, json!({"type":"order.cancel","id":"o-1"})).await;
+    assert_eq!(next(&mut ws, is("error")).await["code"], "not_open");
+
+    // A working order can be modified and cancelled; each change is broadcast.
+    send(
+        &mut ws,
+        json!({"type":"order.place","symbol":"SMPL","side":"buy","orderType":"stop",
+               "qty":10,"stopPrice":24.0}),
+    )
+    .await;
+    paper_state(&mut ws, |m| {
+        order(m, "o-3").is_some_and(|o| o["status"] == "open")
+    })
+    .await;
+    send(
+        &mut ws,
+        json!({"type":"order.modify","id":"o-3","stopPrice":24.5}),
+    )
+    .await;
+    paper_state(&mut ws, |m| {
+        order(m, "o-3").is_some_and(|o| o["stopPrice"] == 24.5)
+    })
+    .await;
+    send(&mut ws, json!({"type":"order.cancel","id":"o-3"})).await;
+    paper_state(&mut ws, |m| {
+        order(m, "o-3").is_some_and(|o| o["status"] == "cancelled")
+    })
+    .await;
+
+    send(&mut ws, json!({"type":"paper.reset"})).await;
+    paper_state(&mut ws, |m| m["orders"].as_array().unwrap().is_empty()).await;
+}
