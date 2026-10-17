@@ -24,3 +24,4 @@ export { OrderTicket, type OrderTicketOrder, type OrderTicketProps } from "./Ord
 export { PositionPlanCard, type PositionPlanCardProps } from "./PositionPlanCard.tsx";
 export { DrawingToolbox, type DrawingToolboxProps } from "./DrawingToolbox.tsx";
 export { LayersMenu, TradesMenu } from "./ContextMenus.tsx";
+export { TradeMenu, TRADE_MENU_SIZES, type TradeMenuProps } from "./TradeMenu.tsx";

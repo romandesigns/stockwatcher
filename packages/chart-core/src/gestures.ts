@@ -49,8 +49,9 @@ import { autoScalePrice, followLatest, isAutoPrice, manualPrice, panSlots, scale
 // - Ctrl+wheel (what a trackpad pinch arrives as in browsers): zooms time.
 // - Double-click in the plot, volume or price axis: auto-scales price; on the
 //   time axis: follows the latest candle.
-// - Right-click on the price axis: opens the price axis menu (the renderer
-//   suppresses the platform's own menu there and only there).
+// - Right-click on the price axis: opens the price axis menu; in the plot of a
+//   chart that trades (ctx.tradeMenu), the trade menu at that point. The
+//   renderer suppresses the platform's own menu exactly where ours opens.
 //
 // Objects (2026-10-17: drawings and simulated orders, both chart-owned)
 // - The renderer passes ctx.hitObject, which names the drawing part, order
@@ -111,6 +112,8 @@ export interface GestureContext {
   priceManual?: boolean;
   /** Active drawing tool, or null/absent for none. */
   tool?: DrawingKind | null;
+  /** The chart trades (simulated): a right-click in the plot opens the trade menu instead of the browser's. */
+  tradeMenu?: boolean;
   /** The object under a point (touch: true gives fingers a wider tolerance), or null. */
   hitObject?: (x: number, y: number, touch: boolean) => ObjectHit | null;
 }
@@ -138,6 +141,8 @@ export type GestureAction =
   | { kind: "crosshair"; point: Point | null }
   /** Open the price axis menu at x, y (chart surface px). */
   | { kind: "openAxisMenu"; x: number; y: number }
+  /** Open the trade menu at x, y (chart surface px): a right-click in the plot of a chart that trades. */
+  | { kind: "openTradeMenu"; x: number; y: number }
   /** A vertical swipe: the platform should scroll the page; the chart has let go of this pointer. */
   | { kind: "release" }
   /** A drawing being placed (px), or null when placement ended or was abandoned. */
@@ -364,7 +369,10 @@ export class GestureController {
       case "contextmenu": {
         // A touch long press is recognized by tick(); its contextmenu is noise.
         if (input.pointerType !== "mouse") return [];
-        return regionAt(ctx.model, input.x, input.y) === "priceAxis" ? [{ kind: "openAxisMenu", x: input.x, y: input.y }] : [];
+        const region = regionAt(ctx.model, input.x, input.y);
+        if (region === "priceAxis") return [{ kind: "openAxisMenu", x: input.x, y: input.y }];
+        // Right-click in the plot opens the trade menu at that point (when the chart trades).
+        return region === "plot" && ctx.tradeMenu ? [{ kind: "openTradeMenu", x: input.x, y: input.y }] : [];
       }
     }
   }

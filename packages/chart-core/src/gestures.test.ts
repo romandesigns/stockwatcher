@@ -468,3 +468,12 @@ describe("objects and drawing tools", () => {
     expect(send("up", 100, 70, 30)).toEqual([{ kind: "createDrawing", tool: "hline", a: { x: 100, y: 70 }, b: { x: 100, y: 70 } }]);
   });
 });
+
+test("right-click: price axis menu on the axis; trade menu in the plot only when the chart trades", () => {
+  const g = new GestureController();
+  const at = (x: number, y: number, extra: Partial<GestureContext> = {}) => g.handle({ type: "contextmenu", pointerId: 0, pointerType: "mouse", x, y, t: 0 }, { ...ctx(), ...extra });
+  expect(at(AXIS_X, PLOT_Y)).toEqual([{ kind: "openAxisMenu", x: AXIS_X, y: PLOT_Y }]);
+  expect(at(100, PLOT_Y)).toEqual([]);
+  expect(at(100, PLOT_Y, { tradeMenu: true })).toEqual([{ kind: "openTradeMenu", x: 100, y: PLOT_Y }]);
+  expect(at(100, TIME_Y, { tradeMenu: true })).toEqual([]);
+});

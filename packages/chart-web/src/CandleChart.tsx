@@ -19,6 +19,7 @@ import {
   isColorable,
   parseToolboxPlacement,
   isPositionKind,
+  newPosition,
   positionPlan,
   DRAWING_HIT_PX,
   dragDrawing,
@@ -78,6 +79,7 @@ import { drawDisplayList } from "./draw.ts";
 import { DrawingToolbox } from "./DrawingToolbox.tsx";
 import { OrderTicket } from "./OrderTicket.tsx";
 import { PositionPlanCard } from "./PositionPlanCard.tsx";
+import { TradeMenu, TRADE_MENU_SIZES } from "./TradeMenu.tsx";
 import { PRICE_SCALE_LABELS, PriceAxisMenu } from "./PriceAxisMenu.tsx";
 import { cn } from "./ui/utils.ts";
 import { useCanvas, useChartTheme } from "./useCanvas.ts";
@@ -293,6 +295,11 @@ export function CandleChart({
     }
   };
 
+  // The right-click trade menu: where it opened (client px for the menu, chart px for a position
+  // plan dropped from it) and the price at that height, on the tick grid.
+  const [tradeMenu, setTradeMenu] = useState<{ open: boolean; at: { x: number; y: number } | null; local: { x: number; y: number }; price: number }>({ open: false, at: null, local: { x: 0, y: 0 }, price: 0 });
+  const tradeMenuOpen = tradeMenu.open;
+  const tradeMenuAt = tradeMenu.local;
   const [tool, setTool] = useState<DrawingKind | null>(null);
   // A measurement is shown until the next press, Escape or a tool change; it is never stored.
   const [measurement, setMeasurement] = useState<Drawing | null>(null);
@@ -363,7 +370,8 @@ export function CandleChart({
       profile: series?.profile ?? null,
       slots,
       inspectT,
-      pointer,
+      // While the trade menu is open its price stays marked, even though the mouse has left the canvas for the menu.
+      pointer: tradeMenuOpen ? tradeMenuAt : pointer,
       options,
       priceScaleType: scaleType,
       indicators: indicatorResults,
@@ -373,7 +381,7 @@ export function CandleChart({
       trading: trading ? { orders, position, last, dragging: drag?.order ? { id: drag.order.id, price: drag.order.price } : null, placeY } : null,
       context,
     }),
-    [timeframe, series, slots, inspectT, pointer, options, scaleType, indicatorResults, shownDrawings, selectedDrawing, draft, trading, orders, position, last, drag, placeY, context],
+    [timeframe, series, slots, inspectT, pointer, tradeMenuOpen, tradeMenuAt, options, scaleType, indicatorResults, shownDrawings, selectedDrawing, draft, trading, orders, position, last, drag, placeY, context],
   );
 
   const paint = useCallback((ctx: CanvasRenderingContext2D, size: Size) => drawDisplayList(ctx, layoutChart(computeChartModel(state, vp, size), state, theme)), [state, vp, theme]);
@@ -431,9 +439,31 @@ export function CandleChart({
     return d ? { kind: "drawing", ...d } : null;
   };
 
-  const openTicket = (price: number | null, clientY: number | null) => {
+  const openTicket = (price: number | null, clientY: number | null, clientX?: number) => {
     const r = canvasRef.current!.getBoundingClientRect();
-    setTicket({ open: true, at: { x: r.right - 4, y: clientY ?? r.top + 40 }, price });
+    setTicket({ open: true, at: { x: clientX ?? r.right - 4, y: clientY ?? r.top + 40 }, price });
+  };
+
+  // The menu's share size, remembered between uses (and across reloads with persistKey).
+  const [tradeQty, setTradeQty] = useState<number>(() => {
+    const q = loadJson<unknown>(persistKey && `${persistKey}:tradeQty`, 100);
+    return typeof q === "number" && (TRADE_MENU_SIZES as readonly number[]).includes(q) ? q : 100;
+  });
+  const changeTradeQty = (q: number) => {
+    setTradeQty(q);
+    saveJson(persistKey && `${persistKey}:tradeQty`, q);
+  };
+  const orderFromMenu = (side: "buy" | "sell", type: "limit" | "stop" | "market") => {
+    if (!trading) return;
+    const price = tradeMenu.price;
+    trading.onPlace({
+      clientOrderId: newId("c"),
+      symbol,
+      side,
+      orderType: type,
+      qty: tradeQty,
+      ...(type === "limit" ? { limitPrice: price } : type === "stop" ? { stopPrice: price } : {}),
+    });
   };
 
   const onObjectDrag = (a: Extract<GestureAction, { kind: "objectDrag" }>, m: ChartModel) => {
@@ -508,6 +538,14 @@ export function CandleChart({
         case "crosshair":
           setPointer(a.point);
           break;
+        case "openTradeMenu": {
+          if (!m.price) break;
+          const r = canvasRef.current!.getBoundingClientRect();
+          // The crosshair stays on the clicked price while the menu is open, so the level being traded is visible.
+          setPointer({ x: a.x, y: a.y });
+          setTradeMenu({ open: true, at: { x: r.left + a.x, y: r.top + a.y }, local: { x: a.x, y: a.y }, price: snapPrice(yPrice(m.price, a.y)) });
+          break;
+        }
         case "openAxisMenu":
           // A touch long press opened it: the finger is still down, and the
           // compatibility mousedown the browser sends after it lifts would
@@ -532,7 +570,7 @@ export function CandleChart({
   const suppressCompatMouse = useRef(false);
   const latest = useRef<{ ctx: GestureContext; apply: typeof apply } | null>(null);
   const auto0 = isAutoPrice(vp);
-  const gestureCtx = (m: ChartModel): GestureContext => ({ model: m, inspectT, priceManual: !auto0, tool, hitObject: hitObject(m) });
+  const gestureCtx = (m: ChartModel): GestureContext => ({ model: m, inspectT, priceManual: !auto0, tool, hitObject: hitObject(m), tradeMenu: !!trading });
   useLayoutEffect(() => {
     latest.current = { ctx: gestureCtx(model), apply };
   });
@@ -890,6 +928,30 @@ export function CandleChart({
           canRedo={history.future.length > 0}
           onUndo={() => stepHistory("undo")}
           onRedo={() => stepHistory("redo")}
+        />
+      )}
+      {trading && (
+        <TradeMenu
+          open={tradeMenu.open}
+          onOpenChange={(open) => {
+            setTradeMenu((t) => ({ ...t, open }));
+            if (!open) setPointer(null);
+          }}
+          anchor={tradeMenu.at}
+          symbol={symbol}
+          price={tradeMenu.price}
+          last={last}
+          qty={tradeQty}
+          onQtyChange={changeTradeQty}
+          onOrder={orderFromMenu}
+          onTicket={() => tradeMenu.at && openTicket(tradeMenu.price, tradeMenu.at.y, tradeMenu.at.x)}
+          onPosition={(kind) => {
+            const d = newPosition(model, newId("d"), kind, tradeMenu.local);
+            if (!d) return;
+            setDrawings([...drawings, d]);
+            setSelected({ kind: "drawing", id: d.id, part: "body" });
+          }}
+          finalFocus={canvasRef}
         />
       )}
       {selectedPosition && (
