@@ -4,6 +4,9 @@ import {
   buildSlots,
   computeChartModel,
   computeIndicators,
+  DEFAULT_TOOLBOX,
+  isColorable,
+  parseToolboxPlacement,
   isPositionKind,
   positionPlan,
   DRAWING_HIT_PX,
@@ -42,6 +45,7 @@ import {
   type OrderModify,
   type OrderPlace,
   type PaperState,
+  type ToolboxPlacement,
   type ChartOptions,
   type ChartState,
   type ChartTheme,
@@ -60,6 +64,7 @@ import {
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type PointerEvent } from "react";
 import { ChartToolbar } from "./ChartToolbar.tsx";
 import { drawDisplayList } from "./draw.ts";
+import { DrawingToolbox } from "./DrawingToolbox.tsx";
 import { OrderTicket } from "./OrderTicket.tsx";
 import { PositionPlanCard } from "./PositionPlanCard.tsx";
 import { PRICE_SCALE_LABELS, PriceAxisMenu } from "./PriceAxisMenu.tsx";
@@ -111,6 +116,9 @@ export interface CandleChartProps {
   persistKey?: string;
   /** Simulated trading: order and position lines, drag to modify, cancel, the ticket. Absent = off. */
   trading?: ChartTrading | null;
+  /** Where the floating drawing tools sit. Controlled when onToolboxPlacementChange is set; else kept (and persisted with persistKey). */
+  toolboxPlacement?: ToolboxPlacement;
+  onToolboxPlacementChange?: (p: ToolboxPlacement) => void;
 }
 
 /** What the host wires for simulated trading (the chart never talks to a server). */
@@ -192,6 +200,8 @@ export function CandleChart({
   onDrawingsChange,
   persistKey,
   trading,
+  toolboxPlacement: toolboxProp,
+  onToolboxPlacementChange,
 }: CandleChartProps) {
   const theme = useChartTheme(themeProp);
 
@@ -217,6 +227,23 @@ export function CandleChart({
         saveJson(persistKey && `${persistKey}:drawings`, out);
         return out;
       });
+  };
+
+  // The floating drawing tools' place: controlled, or kept here and persisted on drop.
+  const [ownToolbox, setOwnToolbox] = useState<ToolboxPlacement>(() => parseToolboxPlacement(loadJson<unknown>(persistKey && `${persistKey}:toolbox`, null), DEFAULT_TOOLBOX));
+  const [dragToolbox, setDragToolbox] = useState<ToolboxPlacement | null>(null);
+  const toolbox = dragToolbox ?? (onToolboxPlacementChange ? (toolboxProp ?? DEFAULT_TOOLBOX) : ownToolbox);
+  const moveToolbox = (p: ToolboxPlacement, done: boolean) => {
+    if (!done) {
+      setDragToolbox(p);
+      return;
+    }
+    setDragToolbox(null);
+    if (onToolboxPlacementChange) onToolboxPlacementChange(p);
+    else {
+      setOwnToolbox(p);
+      saveJson(persistKey && `${persistKey}:toolbox`, p);
+    }
   };
 
   const [tool, setTool] = useState<DrawingKind | null>(null);
@@ -604,6 +631,7 @@ export function CandleChart({
     setSelected(null);
   };
 
+  const selectedDrawingObj = selected?.kind === "drawing" ? drawings.find((d) => d.id === selected.id) : undefined;
   // The selected position tool, if any: its plan card shows over the chart.
   const selectedPosition = selected?.kind === "drawing" ? drawings.find((d) => d.id === selected.id && isPositionKind(d.kind)) : undefined;
   const placeBracket = (d: Drawing) => {
@@ -761,9 +789,24 @@ export function CandleChart({
           </svg>
         </button>
       )}
+      {toolbar && (
+        <DrawingToolbox
+          placement={toolbox}
+          onPlacementChange={moveToolbox}
+          container={size}
+          tool={tool}
+          onToolChange={changeTool}
+          color={selectedDrawingObj?.color ?? null}
+          canColor={!!selectedDrawingObj && isColorable(selectedDrawingObj)}
+          onColorChange={(color) => selectedDrawingObj && setDrawings(drawings.map((d) => (d.id === selectedDrawingObj.id ? { ...d, color } : d)))}
+          canDelete={selected?.kind === "drawing"}
+          onDelete={deleteSelected}
+        />
+      )}
       {selectedPosition && (
         <PositionPlanCard
-          className="absolute top-2 left-2 z-10"
+          // Beside the drawing tools when they are parked on the left as a column, else in the corner.
+          className={cn("absolute top-2 z-10", toolbar && toolbox.orientation === "vertical" && toolbox.x < 0.5 ? "left-14" : "left-2")}
           drawing={selectedPosition}
           onChange={(d) => setDrawings(drawings.map((x) => (x.id === d.id ? d : x)))}
           onPlace={trading ? () => placeBracket(selectedPosition) : undefined}
@@ -793,6 +836,7 @@ export function CandleChart({
         indicators={indicatorSpecs}
         onIndicatorsChange={setIndicators}
         seriesColors={[theme.series1, theme.series2, theme.series3]}
+        drawingTools={false}
         canDelete={selected?.kind === "drawing"}
         onDelete={deleteSelected}
         trading={trading ? { position, last, onTrade: () => openTicket(null, null) } : null}

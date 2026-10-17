@@ -1,6 +1,8 @@
 import { Canvas, Picture } from "@shopify/react-native-skia";
 import {
   applyGesture,
+  DEFAULT_TOOLBOX_PHONE,
+  isColorable,
   backToLatestMs,
   backToLatestStep,
   followLatest,
@@ -15,8 +17,6 @@ import {
   defaultViewport,
   describeSlot,
   DRAWING_HIT_PX,
-  DRAWING_KINDS,
-  DRAWING_LABELS,
   dragDrawing,
   drawingFromPoints,
   GestureController,
@@ -54,6 +54,7 @@ import {
   type OrderModify,
   type OrderPlace,
   type PaperState,
+  type ToolboxPlacement,
   type Point,
   type PriceScaleType,
   type ProfileWire,
@@ -67,6 +68,7 @@ import { GestureDetector, GestureStateManager, useManualGesture } from "react-na
 import Animated, { FadeIn, FadeOut, ReduceMotion } from "react-native-reanimated";
 import Svg, { Path } from "react-native-svg";
 import { recordPicture } from "./drawSkia.ts";
+import { DrawingToolbox } from "./DrawingToolbox.tsx";
 import { PositionPlanPanel } from "./PositionPlanPanel.tsx";
 import { AxisSheet, IndicatorSheet, OrderTicketSheet, SCALE_LABELS } from "./sheets.tsx";
 import { playHaptic, ToolButton, ToolIcon, UI } from "./ui.tsx";
@@ -104,6 +106,9 @@ export interface CandleChartProps {
   drawings?: Drawing[];
   onDrawingsChange?: (drawings: Drawing[]) => void;
   trading?: ChartTrading | null;
+  /** Where the floating drawing tools sit. Controlled when onToolboxPlacementChange is set (the host persists it); else kept for the session. */
+  toolboxPlacement?: ToolboxPlacement;
+  onToolboxPlacementChange?: (p: ToolboxPlacement) => void;
   /** Haptic feedback on scrub, grabs, placements and fills (default true). */
   haptics?: boolean;
   label?: string;
@@ -151,6 +156,8 @@ export function CandleChart({
   onDrawingsChange,
   trading,
   haptics = true,
+  toolboxPlacement: toolboxProp,
+  onToolboxPlacementChange,
   label,
   style,
 }: CandleChartProps) {
@@ -180,6 +187,18 @@ export function CandleChart({
 
   const [pointer, setPointer] = useState<Point | null>(null);
   const [tool, setTool] = useState<DrawingKind | null>(null);
+  const [ownToolbox, setOwnToolbox] = useState<ToolboxPlacement>(DEFAULT_TOOLBOX_PHONE);
+  const [dragToolbox, setDragToolbox] = useState<ToolboxPlacement | null>(null);
+  const toolbox = dragToolbox ?? (onToolboxPlacementChange ? (toolboxProp ?? DEFAULT_TOOLBOX_PHONE) : ownToolbox);
+  const moveToolbox = (p: ToolboxPlacement, done: boolean) => {
+    if (!done) {
+      setDragToolbox(p);
+      return;
+    }
+    setDragToolbox(null);
+    if (onToolboxPlacementChange) onToolboxPlacementChange(p);
+    else setOwnToolbox(p);
+  };
   const [selected, setSelected] = useState<ObjectHit | null>(null);
   const [draft, setDraft] = useState<DrawingDraft | null>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
@@ -420,6 +439,7 @@ export function CandleChart({
     setSelected(null);
   };
 
+  const selectedDrawingObj = selected?.kind === "drawing" ? drawings.find((d) => d.id === selected.id) : undefined;
   const selectedPosition = selected?.kind === "drawing" ? drawings.find((d) => d.id === selected.id && isPositionKind(d.kind)) : undefined;
   const placeBracket = (d: Drawing) => {
     const plan = positionPlan(d);
@@ -447,19 +467,6 @@ export function CandleChart({
     <View style={[s.root, style]}>
       {toolbar && (
         <View style={s.toolbar}>
-          <View style={s.track} accessibilityRole="radiogroup" accessibilityLabel="Drawing tool">
-            {(["cursor", ...DRAWING_KINDS] as const).map((k) => {
-              const on = (tool ?? "cursor") === k;
-              return (
-                <ToolButton key={k} label={k === "cursor" ? "Cursor" : DRAWING_LABELS[k]} onPress={() => changeTool(k === "cursor" ? null : k)} style={[s.tool, on && { backgroundColor: UI.raised }]}>
-                  <ToolIcon kind={k} color={on ? UI.text : UI.textDim} />
-                </ToolButton>
-              );
-            })}
-          </View>
-          <ToolButton label="Delete selected drawing" disabled={selected?.kind !== "drawing"} onPress={deleteSelected}>
-            <ToolIcon kind="trash" color={UI.textDim} />
-          </ToolButton>
           <ToolButton label={indicatorSpecs.length ? `Indicators, ${indicatorSpecs.length} on` : "Indicators"} onPress={() => setSheet({ kind: "indicators" })} style={s.indicators}>
             <ToolIcon kind="indicators" color={UI.textDim} />
             {indicatorSpecs.length ? <Text style={s.count}>{indicatorSpecs.length}</Text> : null}
@@ -508,6 +515,21 @@ export function CandleChart({
             )}
           </View>
         </GestureDetector>
+        {toolbar && (
+          <DrawingToolbox
+            placement={toolbox}
+            onPlacementChange={moveToolbox}
+            container={size}
+            tool={tool}
+            onToolChange={changeTool}
+            color={selectedDrawingObj?.color ?? null}
+            canColor={!!selectedDrawingObj && isColorable(selectedDrawingObj)}
+            onColorChange={(color) => selectedDrawingObj && setDrawings(drawings.map((d) => (d.id === selectedDrawingObj.id ? { ...d, color } : d)))}
+            canDelete={selected?.kind === "drawing"}
+            onDelete={deleteSelected}
+            haptics={haptics}
+          />
+        )}
         {isPannedBack(vp) && (
           <Animated.View
             entering={FadeIn.duration(150).reduceMotion(ReduceMotion.System)}
@@ -563,8 +585,6 @@ export function CandleChart({
 const s = StyleSheet.create({
   root: { minHeight: 0, gap: 6 },
   toolbar: { flexDirection: "row", alignItems: "center", gap: 4, flexWrap: "wrap" },
-  track: { flexDirection: "row", backgroundColor: UI.panel, borderRadius: 8, padding: 2, gap: 2 },
-  tool: { width: 30, minWidth: 30, paddingHorizontal: 0 },
   trade: { marginLeft: "auto", flexDirection: "row", alignItems: "center", gap: 8 },
   pos: { color: UI.textDim, fontSize: 11, fontVariant: ["tabular-nums"] },
   surfaceWrap: { flex: 1, minHeight: 120 },

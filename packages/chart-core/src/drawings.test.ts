@@ -79,3 +79,16 @@ describe("drawings on the chart", () => {
     expect(list.filter((p) => p.kind === "rect" && p.radius === 5).length).toBe(2);
   });
 });
+
+test("a coloured drawing draws in its colour, selected or not; a range fills with it", () => {
+  const a = { x: slotX(model.index, 8), y: 60 };
+  const b = { x: slotX(model.index, 14), y: 120 };
+  const line = { ...drawingFromPoints(model, "c1", "trend", a, b)!, color: "#d55181" };
+  for (const sel of [null, "c1"]) {
+    const list = layoutDrawings(model, [line], sel, DEFAULT_CHART_THEME);
+    expect(list.some((p) => p.kind === "line" && p.stroke === "#d55181")).toBe(true);
+  }
+  const range = { ...drawingFromPoints(model, "r1", "rect", a, b)!, color: "#3987e5" };
+  const fill = layoutDrawings(model, [range], null, DEFAULT_CHART_THEME).find((p) => p.kind === "rect");
+  expect(fill && "fill" in fill ? fill.fill : "").toBe("rgba(57, 135, 229, 0.14)");
+});

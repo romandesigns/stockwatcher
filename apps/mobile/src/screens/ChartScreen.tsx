@@ -9,7 +9,10 @@ import {
   TIMEFRAMES,
   type Drawing,
   type IndicatorSpec,
+  parseToolboxPlacement,
+  DEFAULT_TOOLBOX_PHONE,
   type PriceScaleType,
+  type ToolboxPlacement,
   type Timeframe,
 } from "@stockwatcher/chart-core";
 import { CandleChart, CandleInspector, Segmented, ToolButton, UI } from "@stockwatcher/chart-native";
@@ -62,6 +65,15 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
   // Indicators and drawings are the chart's; the screen only persists them.
   const [indicators, setIndicators] = useState<IndicatorSpec[]>([]);
   const [drawings, setDrawings] = useState<Record<string, Drawing[]>>({});
+  // Where the floating drawing tools were left, kept across launches.
+  const [toolbox, setToolbox] = useState<ToolboxPlacement>(DEFAULT_TOOLBOX_PHONE);
+  useEffect(() => {
+    void getPreference<unknown>("chart.toolbox").then((v) => v && setToolbox(parseToolboxPlacement(v, DEFAULT_TOOLBOX_PHONE)));
+  }, []);
+  const changeToolbox = (p: ToolboxPlacement) => {
+    setToolbox(p);
+    void setPreference("chart.toolbox", p);
+  };
   useEffect(() => {
     void getPreference<IndicatorSpec[]>("chart.indicators").then((v) => v && setIndicators(v));
     void getPreference<Record<string, Drawing[]>>("chart.drawings").then((v) => v && setDrawings(v));
@@ -146,6 +158,8 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
         drawings={active ? (drawings[active] ?? []) : []}
         onDrawingsChange={changeDrawings}
         trading={trading}
+        toolboxPlacement={toolbox}
+        onToolboxPlacementChange={changeToolbox}
         options={{ priceAxisWidth: 46, volumeHeight: 40, timeAxisHeight: 18, paneGap: 4, fontSize: 9, timeLabelSpacing: 60, indicatorPaneHeight: 56 }}
         barSpacing={8}
         label={`${active ?? ""} ${timeframe} candles`}

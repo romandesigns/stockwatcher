@@ -9,3 +9,4 @@ export { AxisSheet, IndicatorSheet, OrderTicketSheet, Sheet } from "./sheets.tsx
 export { playHaptic, Segmented, ToolButton, ToolIcon, UI } from "./ui.tsx";
 export { PositionPlanPanel } from "./PositionPlanPanel.tsx";
 export { CandleInspector } from "./CandleInspector.tsx";
+export { DrawingToolbox, type DrawingToolboxProps } from "./DrawingToolbox.tsx";

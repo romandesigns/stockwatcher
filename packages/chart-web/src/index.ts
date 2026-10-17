@@ -22,3 +22,4 @@ export { useCanvas, useChartTheme, type Paint } from "./useCanvas.ts";
 export { ChartToolbar, TOOL_ICONS, type ChartToolbarProps } from "./ChartToolbar.tsx";
 export { OrderTicket, type OrderTicketOrder, type OrderTicketProps } from "./OrderTicket.tsx";
 export { PositionPlanCard, type PositionPlanCardProps } from "./PositionPlanCard.tsx";
+export { DrawingToolbox, type DrawingToolboxProps } from "./DrawingToolbox.tsx";

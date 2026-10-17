@@ -85,6 +85,8 @@ export interface ChartToolbarProps {
   onIndicatorsChange: (specs: IndicatorSpec[]) => void;
   /** The chart's indicator colours (theme series1..3), so the menu's icons match the lines. */
   seriesColors?: readonly string[];
+  /** Show the drawing tools and delete in this row (default true). CandleChart turns this off and floats them in a DrawingToolbox instead. */
+  drawingTools?: boolean;
   /** A drawing is selected, so Delete applies to it. */
   canDelete: boolean;
   onDelete: () => void;
@@ -100,11 +102,13 @@ export interface ChartToolbarProps {
  * One compact row; selection is a raised segment, and the accent is spent
  * only on the Trade button (the primary action).
  */
-export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChange, seriesColors, canDelete, onDelete, trading, className }: ChartToolbarProps) {
+export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChange, seriesColors, drawingTools = true, canDelete, onDelete, trading, className }: ChartToolbarProps) {
   const pos = trading?.position && trading.position.qty !== 0 ? trading.position : null;
   const pnl = pos && trading?.last !== null && trading?.last !== undefined ? unrealizedPnl(pos, trading.last) : null;
   return (
     <div className={cn("flex flex-wrap items-center gap-1.5", className)}>
+      {drawingTools && (
+      <>
       <ToggleGroup aria-label="Drawing tool" size="sm" spacing={0.5} variant="segmented" value={[tool ?? "cursor"]} onValueChange={(v) => v[0] && onToolChange(v[0] === "cursor" ? null : (v[0] as DrawingKind))}>
         {(["cursor", ...DRAWING_KINDS] as const).map((k) => (
           <ToggleGroupItem key={k} value={k} aria-label={k === "cursor" ? "Cursor" : DRAWING_LABELS[k]} title={k === "cursor" ? "Cursor (Esc)" : k === "long" ? "Long position (L)" : k === "short" ? "Short position (S)" : DRAWING_LABELS[k]} className="w-7 px-0 [&_svg]:size-3.5">
@@ -115,6 +119,8 @@ export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChang
       <Button variant="ghost" size="icon" className="size-7 rounded-md text-muted-foreground [&_svg]:size-3.5" aria-label="Delete selected drawing" title="Delete selected drawing (Del)" disabled={!canDelete} onClick={onDelete}>
         {TrashIcon}
       </Button>
+      </>
+      )}
       <IndicatorMenu indicators={indicators} onChange={onIndicatorsChange} seriesColors={seriesColors ?? DEFAULT_SERIES} />
       {trading && (
         <div className="ml-auto flex items-center gap-2">

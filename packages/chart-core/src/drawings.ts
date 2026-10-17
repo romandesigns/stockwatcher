@@ -3,6 +3,7 @@ import type { ChartTheme } from "./displayList.ts";
 import { formatPrice } from "./format.ts";
 import type { ChartModel, Point } from "./layout.ts";
 import { priceY, slotX, yPrice, type Slot } from "./scale.ts";
+import { withAlpha } from "./theme.ts";
 import { dragPosition, hitPosition, isPositionKind, layoutPosition, newPosition } from "./position.ts";
 import { lowerBound } from "./store.ts";
 
@@ -50,7 +51,31 @@ export interface Drawing {
   risk?: number;
   /** A position's share count when set by hand; absent = sized from risk. */
   qty?: number | null;
+  /** The drawing's colour (one of DRAWING_COLORS); absent = the theme's neutral drawing colour. */
+  color?: string;
 }
+
+/**
+ * Colours a drawing can take, picked from the toolbox. Drawings are the
+ * user's own marks, so this is a choice, not a data encoding: the neutral
+ * default, the three indicator hues (validated for colour-blind contrast on
+ * the dark surface), the up and down colours, the accent and white. Fixed
+ * hex values, so a drawing keeps its colour whatever theme reads it.
+ * Position tools are not recoloured: their green and red mean profit and loss.
+ */
+export const DRAWING_COLORS: readonly { value: string; name: string }[] = [
+  { value: "#b8c0ca", name: "Grey" },
+  { value: "#e4e8ed", name: "White" },
+  { value: "#3987e5", name: "Blue" },
+  { value: "#8b9cff", name: "Periwinkle" },
+  { value: "#d55181", name: "Magenta" },
+  { value: "#c98500", name: "Amber" },
+  { value: "#3fb97a", name: "Green" },
+  { value: "#f0645c", name: "Red" },
+];
+
+/** Whether the toolbox offers a colour for this drawing (positions keep theirs). */
+export const isColorable = (d: Drawing) => !isPositionKind(d.kind);
 
 /** Whether a kind is placed with one point (a level, a marker) or two. */
 export const isOnePoint = (k: DrawingKind) => k === "hline" || k === "vline" || isPositionKind(k);
@@ -275,9 +300,11 @@ export function layoutDrawings(model: ChartModel, drawings: readonly Drawing[], 
       out.push(...layoutPosition(model, d, sel, theme));
       continue;
     }
-    const stroke = sel ? theme.drawingSelected : theme.drawing;
+    // A drawing keeps its own colour when selected; selection shows as a
+    // heavier line and handles, so recolouring is visible as it happens.
+    const stroke = d.color ?? (sel ? theme.drawingSelected : theme.drawing);
     const geo = geometryOf(model, d);
-    if (geo.box) out.push({ kind: "rect", ...geo.box, fill: theme.drawingFill, layer: "overlay" });
+    if (geo.box) out.push({ kind: "rect", ...geo.box, fill: d.color ? withAlpha(d.color, sel ? 0.2 : 0.14) : theme.drawingFill, layer: "overlay" });
     for (const [p, q] of geo.segments) out.push({ kind: "line", x1: p.x, y1: p.y, x2: q.x, y2: q.y, stroke, lineWidth: sel ? 2 : 1.5, layer: "overlay" });
     if (d.kind === "hline" && geo.a && model.price && geo.segments.length) {
       const y = geo.a.y;
@@ -288,7 +315,7 @@ export function layoutDrawings(model: ChartModel, drawings: readonly Drawing[], 
     const handles = isOnePoint(d.kind) ? [] : [geo.a, geo.b];
     for (const h of handles) {
       if (!h || h.x < g.plot.x || h.x > g.plot.x + g.plot.w || h.y < g.plot.y || h.y > g.plot.y + g.plot.h) continue;
-      out.push({ kind: "rect", x: h.x - 5, y: h.y - 5, w: 10, h: 10, radius: 5, fill: theme.drawingSelected, layer: "overlay" });
+      out.push({ kind: "rect", x: h.x - 5, y: h.y - 5, w: 10, h: 10, radius: 5, fill: stroke, layer: "overlay" });
       out.push({ kind: "rect", x: h.x - 3, y: h.y - 3, w: 6, h: 6, radius: 3, fill: theme.handleFill, layer: "overlay" });
     }
   }
