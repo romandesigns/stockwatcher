@@ -29,6 +29,7 @@ import {
 } from "@stockwatcher/chart-core";
 import { useEffect, useState, type ReactNode } from "react";
 import { Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { Path } from "react-native-svg";
 import { Segmented, ToolButton, UI } from "./ui.tsx";
 
@@ -38,10 +39,13 @@ import { Segmented, ToolButton, UI } from "./ui.tsx";
  * with reduced motion the host passes reducedMotion and it only fades.
  */
 export function Sheet({ open, onClose, title, badge, children, reducedMotion }: { open: boolean; onClose: () => void; title: string; badge?: ReactNode; children: ReactNode; reducedMotion?: boolean }) {
+  // The modal draws under Android's translucent navigation bar: pad by its real height, so the last row
+  // is never under the gesture handle.
+  const insets = useSafeAreaInsets();
   return (
     <Modal visible={open} transparent animationType={reducedMotion ? "fade" : "slide"} onRequestClose={onClose} statusBarTranslucent navigationBarTranslucent>
       <Pressable style={s.backdrop} onPress={onClose} accessibilityLabel="Close" accessibilityRole="button" />
-      <View style={s.sheet} accessibilityViewIsModal>
+      <View style={[s.sheet, { paddingBottom: Math.max(20, insets.bottom + 14) }]} accessibilityViewIsModal>
         <View style={s.grabber} />
         <View style={s.titleRow}>
           <Text style={s.title} accessibilityRole="header">
@@ -166,13 +170,25 @@ export function IndicatorSheet({
     </View>
   );
   return (
-    <Sheet open={open} onClose={onClose} title="Indicators" reducedMotion={reducedMotion}>
+    <Sheet
+      open={open}
+      onClose={onClose}
+      title="Indicators"
+      reducedMotion={reducedMotion}
+      badge={
+        indicators.length > 0 ? (
+          // A quiet action beside the title, not another row that reads like an indicator.
+          <Pressable accessibilityRole="button" onPress={() => onChange([])} hitSlop={8} style={({ pressed }) => [s.titleAction, pressed && { opacity: 0.6 }]}>
+            <Text style={s.titleActionText}>Turn all off</Text>
+          </Pressable>
+        ) : undefined
+      }
+    >
       <ScrollView>
         {header("On the chart", active("overlay").length, MAX_OVERLAYS)}
         {group("overlay").map(row)}
         {header("Below the chart", active("pane").length, MAX_PANES)}
         {group("pane").map(row)}
-        {indicators.length > 0 && <Row label="Turn all off" onPress={() => onChange([])} />}
       </ScrollView>
     </Sheet>
   );
@@ -207,13 +223,51 @@ export function AxisSheet({
     onClose();
   };
   return (
-    <Sheet open={open} onClose={onClose} title={price === null ? "Price axis" : `Price axis · ${formatPrice(price)}`} reducedMotion={reducedMotion}>
-      {onOrderAt && <Row label="Order at this price…" onPress={close(onOrderAt)} />}
-      <Row label="Auto-scale price axis" right={autoScaled ? "on" : ""} onPress={close(onAutoScale)} />
-      <Text style={s.label}>Scale</Text>
-      {(Object.keys(SCALE_LABELS) as PriceScaleType[]).map((t) => (
-        <Row key={t} label={SCALE_LABELS[t]} on={scaleType === t} onPress={close(() => onScaleType(t))} />
-      ))}
+    <Sheet
+      open={open}
+      onClose={onClose}
+      title="Price axis"
+      badge={price !== null ? <Text style={s.priceChip}>{formatPrice(price)}</Text> : undefined}
+      reducedMotion={reducedMotion}
+    >
+      <View style={{ gap: 12 }}>
+        {onOrderAt && price !== null && (
+          <Pressable accessibilityRole="button" onPress={close(onOrderAt)} style={({ pressed }) => [s.actionRow, pressed && { backgroundColor: UI.raised }]}>
+            <Text style={s.actionText}>{`Order at ${formatPrice(price)}`}</Text>
+            <Text style={s.chevron}>›</Text>
+          </Pressable>
+        )}
+        {/* The three scales are one choice, so they are one control. */}
+        <View style={{ gap: 6 }}>
+          <Text style={s.fieldLabel}>Scale</Text>
+          <Segmented
+            fill
+            value={scaleType}
+            onChange={(t) => {
+              onScaleType(t);
+              onClose();
+            }}
+            options={[
+              { value: "linear", label: "Price", a11y: SCALE_LABELS.linear },
+              { value: "percent", label: "Percent", a11y: SCALE_LABELS.percent },
+              { value: "log", label: "Log", a11y: SCALE_LABELS.log },
+            ]}
+          />
+        </View>
+        <View style={s.actionRow}>
+          <View style={{ flex: 1, gap: 2 }}>
+            <Text style={[s.actionText, { flex: 0 }]}>Auto-scale</Text>
+            <Text style={s.indDesc}>{autoScaled ? "Fits the visible candles" : "Off: you set the range by dragging"}</Text>
+          </View>
+          {autoScaled ? (
+            <Text style={s.onChip}>On</Text>
+          ) : (
+            <Pressable accessibilityRole="button" accessibilityLabel="Turn auto-scale on" onPress={close(onAutoScale)} hitSlop={8} style={({ pressed }) => [s.turnOn, pressed && { opacity: 0.7 }]}>
+              <Text style={s.turnOnText}>Turn on</Text>
+            </Pressable>
+          )}
+        </View>
+      </View>
     </Sheet>
   );
 }
@@ -363,6 +417,15 @@ const s = StyleSheet.create({
   sheet: { backgroundColor: UI.panel, borderTopLeftRadius: 16, borderTopRightRadius: 16, paddingHorizontal: 16, paddingTop: 8, paddingBottom: 28, maxHeight: "75%" },
   grabber: { alignSelf: "center", width: 36, height: 4, borderRadius: 2, backgroundColor: UI.raised, marginBottom: 10 },
   titleRow: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 },
+  priceChip: { color: UI.text, fontSize: 12, fontVariant: ["tabular-nums"], backgroundColor: UI.bg, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 3, overflow: "hidden" },
+  actionRow: { minHeight: 48, flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 12, backgroundColor: UI.row },
+  actionText: { color: UI.text, fontSize: 14, fontWeight: "500", flex: 1 },
+  chevron: { color: UI.textDim, fontSize: 20, lineHeight: 22 },
+  onChip: { color: UI.accent, fontSize: 12, fontWeight: "600", backgroundColor: "rgba(139,156,255,0.14)", borderRadius: 6, paddingHorizontal: 8, paddingVertical: 3, overflow: "hidden" },
+  turnOn: { borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6, backgroundColor: UI.raised },
+  turnOnText: { color: UI.text, fontSize: 12, fontWeight: "600" },
+  titleAction: { marginLeft: "auto", paddingHorizontal: 4, paddingVertical: 2 },
+  titleActionText: { color: UI.textDim, fontSize: 13 },
   title: { color: UI.text, fontSize: 15, fontWeight: "600" },
   simChip: { color: UI.warning, fontSize: 9, fontWeight: "600", letterSpacing: 0.6, backgroundColor: "rgba(224,166,58,0.14)", borderRadius: 4, paddingHorizontal: 6, paddingVertical: 2, overflow: "hidden" },
   track: { backgroundColor: UI.bg, borderRadius: 10, padding: 3 },
@@ -379,7 +442,8 @@ const s = StyleSheet.create({
   indRow: { minHeight: 56, flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 8, borderRadius: 10 },
   tile: { width: 36, height: 36, borderRadius: 9, alignItems: "center", justifyContent: "center" },
   indName: { color: UI.text, fontSize: 14, fontWeight: "500" },
-  chip: { color: UI.textDim, fontSize: 10, backgroundColor: UI.row, borderRadius: 4, paddingHorizontal: 4, paddingVertical: 1, overflow: "hidden", fontVariant: ["tabular-nums"] },
+  // A translucent chip reads on both an unselected row (panel) and a selected one (row colour).
+  chip: { color: UI.textDim, fontSize: 10, backgroundColor: "rgba(228,232,237,0.08)", borderRadius: 4, paddingHorizontal: 4, paddingVertical: 1, overflow: "hidden", fontVariant: ["tabular-nums"] },
   indDesc: { color: UI.textFaint, fontSize: 11 },
   profile: { gap: 6, paddingBottom: 6 },
   profileRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 8 },
