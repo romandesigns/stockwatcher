@@ -127,6 +127,16 @@ export interface ChartTheme {
   profileValueArea: string;
   profilePoc: string;
   /** The profile drawn inside the price pane, behind the candles (a phone): thin bars, one quiet tone, the POC lightly accented. */
+  /** Oscillator panes: RSI's shaded 30–70 zone and its 50 line; MACD's histogram in four shades
+   * (above/below zero × growing/shrinking, as TradingView and so Robinhood Legend draw it); the
+   * translucent backing behind a pane's legend so lines never run through its text. */
+  oscZone: string;
+  oscMid: string;
+  histUp: string;
+  histUpFade: string;
+  histDown: string;
+  histDownFade: string;
+  paneLegendBg: string;
   profileOverlayBar: string;
   profileOverlayPoc: string;
   sessionOvernight: string;

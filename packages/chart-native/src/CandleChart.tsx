@@ -9,6 +9,8 @@ import {
   type History,
   DEFAULT_LAYERS,
   layerIdsFor,
+  applyPaneGesture,
+  paneIdsOf,
   keyLevels,
   type ChartLayers,
   type Halt,
@@ -134,6 +136,9 @@ export interface CandleChartProps {
   now?: number | null;
   /** Show the timeframe picker in the toolbar row; the host switches the subscription. */
   onTimeframeChange?: (tf: Timeframe) => void;
+  /** Oscillator pane heights by indicator id. Controlled when onPaneHeightsChange is set (the host persists it); else kept for the session. */
+  paneHeights?: Readonly<Record<string, number>>;
+  onPaneHeightsChange?: (heights: Record<string, number>) => void;
   /** The session volume profile's bin widths; with onProfileBinChange the Levels sheet offers them (the host resubscribes). */
   profileBins?: readonly number[];
   profileBin?: number;
@@ -197,6 +202,8 @@ export function CandleChart({
   profileBins,
   profileBin,
   onProfileBinChange,
+  paneHeights: paneHeightsProp,
+  onPaneHeightsChange,
   label,
   style,
 }: CandleChartProps) {
@@ -278,6 +285,24 @@ export function CandleChart({
   const slots = useMemo(() => (series ? buildSlots(series.candles, series.gaps) : []), [series]);
   const indicatorResults = useMemo(() => computeIndicators(slots, indicatorSpecs), [slots, indicatorSpecs]);
   const last = useMemo(() => lastCandle(slots)?.c ?? null, [slots]);
+  // Pane heights: drag a pane's top edge, double-tap a pane to expand it. A drag is shown live and
+  // reported to the host once, when the finger lifts.
+  const [ownPaneHeights, setOwnPaneHeights] = useState<Record<string, number>>({});
+  const [livePaneHeights, setLivePaneHeights] = useState<Record<string, number> | null>(null);
+  // Mirrors the live heights, so the release (often in the same batch as the last move) commits the latest.
+  const livePaneHeightsRef = useRef<Record<string, number> | null>(null);
+  const setLive = (f: (h: Record<string, number> | null) => Record<string, number>) => {
+    livePaneHeightsRef.current = f(livePaneHeightsRef.current);
+    setLivePaneHeights(livePaneHeightsRef.current);
+  };
+  const storedPaneHeights = onPaneHeightsChange ? (paneHeightsProp ?? {}) : ownPaneHeights;
+  const paneHeights = livePaneHeights ?? storedPaneHeights;
+  const commitPaneHeights = (h: Record<string, number>) => {
+    livePaneHeightsRef.current = null;
+    setLivePaneHeights(null);
+    if (onPaneHeightsChange) onPaneHeightsChange(h);
+    else setOwnPaneHeights(h);
+  };
   const [ownLayers, setOwnLayers] = useState<ChartLayers>(DEFAULT_LAYERS);
   const layers = onLayersChange ? (layersProp ?? DEFAULT_LAYERS) : ownLayers;
   const setLayers = (l: ChartLayers) => (onLayersChange ? onLayersChange(l) : setOwnLayers(l));
@@ -320,8 +345,9 @@ export function CandleChart({
       trading: trading ? { orders, position, last, dragging: drag?.order ?? null, placeY: null } : null,
       context,
       now: clockNow,
+      paneHeights,
     }),
-    [timeframe, series, slots, inspectT, pointer, options, layers.profile, scaleType, indicatorResults, shownDrawings, selectedDrawing, draft, trading, orders, position, last, drag, context, clockNow],
+    [timeframe, series, slots, inspectT, pointer, options, layers.profile, scaleType, indicatorResults, shownDrawings, selectedDrawing, draft, trading, orders, position, last, drag, context, clockNow, paneHeights],
   );
   const model = useMemo(() => computeChartModel(state, vp, size), [state, vp, size]);
   const picture = useMemo(() => (size.width > 0 && size.height > 0 ? recordPicture(layoutChart(model, state, theme), size.width, size.height) : null), [model, state, theme, size]);
@@ -428,6 +454,17 @@ export function CandleChart({
         case "haptic":
           if (haptics) playHaptic(a.style);
           break;
+        case "resizePane":
+        case "togglePane": {
+          const ids = paneIdsOf({ indicators: indicatorResults });
+          if (a.kind === "resizePane" && !a.done) setLive((h) => applyPaneGesture(h ?? storedPaneHeights, a, m, ids, size));
+          else if (a.kind === "resizePane") commitPaneHeights(livePaneHeightsRef.current ?? storedPaneHeights);
+          else {
+            commitPaneHeights(applyPaneGesture(storedPaneHeights, a, m, ids, size));
+            if (haptics) playHaptic("light");
+          }
+          break;
+        }
         default:
           setVp((v) => applyGesture(v, a, m));
       }

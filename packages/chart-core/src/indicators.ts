@@ -95,6 +95,9 @@ export interface IndicatorResult {
   fixedRange?: { lo: number; hi: number };
   /** pane: horizontal guide values (RSI 30/70, MACD 0). */
   guides?: number[];
+  /** pane: a shaded zone between two values (RSI 30–70) and an unlabelled faint midline (RSI 50). */
+  zone?: { lo: number; hi: number };
+  midline?: number;
   /** Categorical colour slot of the first line (overlays only; panes start at 0). */
   colorSlot: number;
 }
@@ -282,7 +285,7 @@ export function computeIndicators(slots: readonly Slot[], specs: readonly Indica
         break;
       }
       case "rsi":
-        out.push({ spec, placement, colorSlot, lines: [line("RSI", rsi(c, spec.period ?? 14))], fixedRange: { lo: 0, hi: 100 }, guides: [30, 70] });
+        out.push({ spec, placement, colorSlot, lines: [line("RSI", rsi(c, spec.period ?? 14))], fixedRange: { lo: 0, hi: 100 }, guides: [30, 70], zone: { lo: 30, hi: 70 }, midline: 50 });
         break;
       case "macd": {
         const [l, s, h] = macd(c, spec.fast ?? 12, spec.slow ?? 26, spec.signal ?? 9);

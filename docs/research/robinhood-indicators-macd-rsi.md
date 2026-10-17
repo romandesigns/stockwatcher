@@ -51,13 +51,13 @@ marks things neither source confirms.
 | Settings | Gear: lengths and styling | Fixed presets (RSI 14, MACD 12/26/9, …) | **No parameter editing** |
 | Sets and sync | Named sets, synced web↔mobile | One global list per device, the same for every symbol | No named sets; no sync across devices |
 | Count | 10 | 3 overlays + 2 panes | Deliberate: colour-blind safety |
-| RSI look | 70/30 bands, shaded zone, 50 midline (TV) | Dashed 30/70 guides, no zone, no 50 | Add the **shaded 30–70 zone** and a faint 50 |
-| MACD look | Four-shade histogram (TV) | Two shades (up and down colour) | Add **momentum shades** (growing vs. shrinking) |
-| Pane legend | Values at the crosshair (TV) | Name and line values at the inspected candle | **No histogram value**; the legend has no backing, so lines run through its text |
+| RSI look | 70/30 bands, shaded zone, 50 midline (TV) | Dashed 30/70 guides, shaded 30–70 zone, faint 50 line | **Done** 2026-10-17 |
+| MACD look | Four-shade histogram (TV) | Four shades: above or below zero × growing or shrinking | **Done** 2026-10-17 |
+| Pane legend | Values at the crosshair (TV) | Name, histogram and line values at the inspected candle, on a translucent backing | **Done** 2026-10-17 |
 | Scrub | Long press scrubs | Long press scrubs; the inspection line crosses every pane and the legends follow it | Parity |
 | Zoom and pan | Shared across panes | Shared | Parity |
-| Pane size | Drag the border (TV) | Fixed (64 px web, 56 px phone) | **No resize** |
-| Maximize / collapse | Double-click / button (TV) | — | **None** |
+| Pane size | Drag the border (TV) | Drag a pane's top edge (mouse or finger); heights persist; panes together never exceed 60 % of the chart | **Done** 2026-10-17 |
+| Maximize / collapse | Double-click / button (TV) | Double-tap or double-click a pane: expand to 40 %, again to restore | Expand **done**; collapse not built |
 | Y-axis | "Fit all indicators" | Oscillator panes always auto-fit; RSI is fixed 0–100 | Parity in effect |
 
 ## 5. Recommended next steps (smallest first)

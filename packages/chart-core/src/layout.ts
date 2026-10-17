@@ -102,6 +102,8 @@ export interface ChartState {
   context?: ContextLayer | null;
   /** The feed clock (ms): drives the countdown to the forming candle's close under the last-price tag. */
   now?: number | null;
+  /** Oscillator pane heights in px by indicator id (dragged or expanded by the user); absent = options.indicatorPaneHeight. */
+  paneHeights?: Readonly<Record<string, number>>;
 }
 
 export interface ChartGeometry {
@@ -125,18 +127,42 @@ export interface ChartModel {
   inspected: number | null;
 }
 
-export function chartGeometry(size: Size, o: ChartOptions, paneCount = 0): ChartGeometry {
+/** The smallest an oscillator pane can be dragged to, and the share of the chart's height the panes may take together. */
+export const MIN_PANE_HEIGHT = 32;
+export const MAX_PANES_SHARE = 0.6;
+
+/** Room the price plot and the oscillator panes share: everything but the time axis and the volume pane. */
+function paneRoom(size: Size, o: ChartOptions): number {
+  const volH = o.volumeHeight > 0 ? o.volumeHeight + o.paneGap : 0;
+  return Math.max(0, size.height - o.timeAxisHeight - volH);
+}
+
+/** An expanded pane (double tap / double click): 40 % of the shared room, never less than its default. */
+export function expandedPaneHeight(size: Size, o: ChartOptions): number {
+  return Math.max(o.indicatorPaneHeight, Math.round(paneRoom(size, o) * 0.4));
+}
+
+/**
+ * `paneSizes` is a pane count (every pane at options.indicatorPaneHeight) or each pane's height. Heights
+ * are clamped to MIN_PANE_HEIGHT, and scaled down together if they would take more than
+ * MAX_PANES_SHARE of the room, so the price plot always keeps the larger part of the chart.
+ */
+export function chartGeometry(size: Size, o: ChartOptions, paneSizes: number | readonly number[] = 0): ChartGeometry {
   const plotW = Math.max(0, size.width - o.priceAxisWidth);
   const volH = o.volumeHeight > 0 ? o.volumeHeight : 0;
-  const paneH = paneCount * (o.indicatorPaneHeight + o.paneGap);
+  let heights = typeof paneSizes === "number" ? Array.from({ length: paneSizes }, () => o.indicatorPaneHeight) : paneSizes.map((h) => Math.max(MIN_PANE_HEIGHT, h));
+  const cap = paneRoom(size, o) * MAX_PANES_SHARE - heights.length * o.paneGap;
+  const sum = heights.reduce((a, b) => a + b, 0);
+  if (heights.length && sum > cap && cap > 0) heights = heights.map((h) => Math.max(1, Math.floor((h * cap) / sum)));
+  const paneH = heights.reduce((a, h) => a + h + o.paneGap, 0);
   const plotH = Math.max(0, size.height - o.timeAxisHeight - (volH ? volH + o.paneGap : 0) - paneH);
   const plot = { x: 0, y: 0, w: plotW, h: plotH };
   const volume = volH ? { x: 0, y: plotH + o.paneGap, w: plotW, h: volH } : null;
   let y = volume ? volume.y + volume.h : plotH;
   const panes: Rect[] = [];
-  for (let k = 0; k < paneCount; k++) {
-    panes.push({ x: 0, y: y + o.paneGap, w: plotW, h: o.indicatorPaneHeight });
-    y += o.paneGap + o.indicatorPaneHeight;
+  for (const h of heights) {
+    panes.push({ x: 0, y: y + o.paneGap, w: plotW, h });
+    y += o.paneGap + h;
   }
   return {
     plot,
@@ -147,6 +173,44 @@ export function chartGeometry(size: Size, o: ChartOptions, paneCount = 0): Chart
   };
 }
 
+/** The oscillator panes' indicator ids, top to bottom: the keys of ChartState.paneHeights. */
+export function paneIdsOf(state: Pick<ChartState, "indicators">): string[] {
+  return state.indicators?.filter((r) => r.placement === "pane").map((r) => r.spec.id) ?? [];
+}
+
+/**
+ * Applies a pane gesture to the stored heights (pure, shared by web and phone). A resize sets the
+ * pane to its drawn height minus dy (dragging the border up grows it), never below MIN_PANE_HEIGHT;
+ * a toggle expands a pane to expandedPaneHeight, or drops its entry so it returns to the default.
+ */
+export function applyPaneGesture(
+  heights: Readonly<Record<string, number>>,
+  action: { kind: "resizePane"; pane: number; dy: number } | { kind: "togglePane"; pane: number },
+  model: ChartModel,
+  paneIds: readonly string[],
+  size: Size,
+): Record<string, number> {
+  const id = paneIds[action.pane];
+  const drawn = model.geometry.panes[action.pane]?.h;
+  if (id === undefined || drawn === undefined) return { ...heights };
+  const next = { ...heights };
+  if (action.kind === "resizePane") {
+    // Build on the stored height, not the drawn one: several moves can arrive before the next render.
+    // The ceiling is what the share cap leaves this pane beside the others, so a drag past it has no
+    // dead zone on the way back.
+    const o = model.options;
+    const others = model.geometry.panes.reduce((a, r, k) => (k === action.pane ? a : a + r.h), 0);
+    const max = Math.max(MIN_PANE_HEIGHT, Math.floor(paneRoom(size, o) * MAX_PANES_SHARE - model.geometry.panes.length * o.paneGap - others));
+    const current = Math.min(heights[id] ?? drawn, max);
+    next[id] = Math.round(Math.min(max, Math.max(MIN_PANE_HEIGHT, current - action.dy)));
+    return next;
+  }
+  const expanded = expandedPaneHeight(size, model.options);
+  if (drawn >= expanded - 1) delete next[id];
+  else next[id] = expanded;
+  return next;
+}
+
 /** Index of the slot with exactly t, or null. */
 export function slotIndexOf(slots: readonly Slot[], t: number): number | null {
   const i = lowerBound(slots, t);
@@ -155,8 +219,8 @@ export function slotIndexOf(slots: readonly Slot[], t: number): number | null {
 
 export function computeChartModel(state: ChartState, viewport: Viewport, size: Size): ChartModel {
   const options = { ...DEFAULT_CHART_OPTIONS, ...state.options };
-  const paneCount = state.indicators?.filter((r) => r.placement === "pane").length ?? 0;
-  const geometry = chartGeometry(size, options, paneCount);
+  const paneIds = state.indicators?.filter((r) => r.placement === "pane").map((r) => r.spec.id) ?? [];
+  const geometry = chartGeometry(size, options, paneIds.map((id) => state.paneHeights?.[id] ?? options.indicatorPaneHeight));
   const slots = state.slots ?? buildSlots(state.candles, state.gaps);
   const index = indexScale(viewport, slots, geometry.plot.x, geometry.plot.x + geometry.plot.w);
   const type = state.priceScaleType ?? "linear";
@@ -187,10 +251,17 @@ export function firstVisibleOpen(slots: readonly Slot[], from: number, to: numbe
   return undefined;
 }
 
-export type HitRegion = "plot" | "volume" | "pane" | "priceAxis" | "timeAxis" | "none";
+/** paneBorder: the strip on an oscillator pane's top edge that resizes it when dragged. */
+export type HitRegion = "plot" | "volume" | "pane" | "paneBorder" | "priceAxis" | "timeAxis" | "none";
+
+/** How far around a pane's top edge a press grabs its border: a touch-sized strip, mostly inside the pane. */
+const BORDER_ABOVE = 6;
+const BORDER_BELOW = 8;
 
 export interface Hit {
   region: HitRegion;
+  /** The oscillator pane under the pointer (or whose border it is on), else null. */
+  pane: number | null;
   index: number | null;
   slot: Slot | null;
   /** Price under the pointer (plot and price axis only). */
@@ -202,7 +273,12 @@ const inside = (r: Rect | null, x: number, y: number) => !!r && x >= r.x && x <=
 /** x, y (CSS px on the chart surface) → region, slot under x, and price under y. */
 export function hitTest(model: ChartModel, x: number, y: number): Hit {
   const g = model.geometry;
-  const region: HitRegion = inside(g.plot, x, y)
+  // A pane's border wins over whatever it overlaps (the gap, the volume pane's last pixels, the pane's top).
+  const border = x >= 0 && x <= g.plot.w ? g.panes.findIndex((r) => y >= r.y - model.options.paneGap - BORDER_ABOVE && y <= r.y + BORDER_BELOW) : -1;
+  const paneIdx = border >= 0 ? border : g.panes.findIndex((r) => inside(r, x, y));
+  const region: HitRegion = border >= 0
+    ? "paneBorder"
+    : inside(g.plot, x, y)
     ? "plot"
     : inside(g.volume, x, y)
       ? "volume"
@@ -215,7 +291,7 @@ export function hitTest(model: ChartModel, x: number, y: number): Hit {
           : "none";
   const index = region === "none" || region === "priceAxis" ? null : slotAt(model.index, x, model.slots.length);
   const price = model.price && (region === "plot" || region === "priceAxis") ? yPrice(model.price, y) : null;
-  return { region, index, slot: index === null ? null : model.slots[index]!, price };
+  return { region, pane: paneIdx >= 0 ? paneIdx : null, index, slot: index === null ? null : model.slots[index]!, price };
 }
 
 /**
@@ -598,6 +674,14 @@ function paneIndicator(model: ChartModel, r: IndicatorResult, rect: Rect, theme:
   const y = (v: number) => rect.y + rect.h - ((v - lo) / (hi - lo)) * rect.h;
   const digits = r.spec.kind === "rsi" ? 1 : 4;
 
+  if (r.zone) {
+    const top = y(r.zone.hi);
+    out.push({ kind: "rect", x: rect.x, y: top, w: rect.w, h: y(r.zone.lo) - top, fill: theme.oscZone, layer: "grid" });
+  }
+  if (r.midline !== undefined) {
+    const my = Math.round(y(r.midline)) + 0.5;
+    out.push({ kind: "line", x1: rect.x, y1: my, x2: rect.x + rect.w, y2: my, stroke: theme.oscMid, lineWidth: 1, layer: "grid" });
+  }
   for (const gv of r.guides ?? []) {
     const gy = Math.round(y(gv)) + 0.5;
     out.push({ kind: "line", x1: rect.x, y1: gy, x2: rect.x + rect.w, y2: gy, stroke: theme.guide, lineWidth: 1, dash: [3, 3], layer: "grid" });
@@ -613,26 +697,37 @@ function paneIndicator(model: ChartModel, r: IndicatorResult, rect: Rect, theme:
         const vy = y(v);
         const cx = Math.round(slotX(model.index, i));
         if (cx < rect.x || cx > rect.x + rect.w) continue;
-        out.push({ kind: "rect", x: cx - Math.floor(bw / 2), y: Math.min(zero, vy), w: bw, h: Math.max(1, Math.abs(vy - zero)), fill: v >= 0 ? theme.upVolume : theme.downVolume, layer: "volume" });
+        // Four shades: strong while the bar grows away from zero (momentum building), faded while it shrinks.
+        const prev = i > 0 ? l.values[i - 1]! : NaN;
+        const growing = Number.isNaN(prev) || Math.abs(v) >= Math.abs(prev);
+        const fill = v >= 0 ? (growing ? theme.histUp : theme.histUpFade) : growing ? theme.histDown : theme.histDownFade;
+        out.push({ kind: "rect", x: cx - Math.floor(bw / 2), y: Math.min(zero, vy), w: bw, h: Math.max(1, Math.abs(vy - zero)), fill, layer: "volume" });
       }
       return;
     }
     out.push(...polylines(model, l.values, y, indicatorColor(theme, r, k), 1.5, rect, "overlay"));
   });
 
-  // Pane legend: name, then a swatch and value per line, at the inspected candle.
+  // Pane legend: name, then a swatch and value per line (the histogram too), at the inspected candle,
+  // on a translucent backing so the lines never run through the text.
   const name = indicatorLabel(r.spec);
-  let x = rect.x + 8;
   const ly = rect.y + 8;
-  out.push({ kind: "text", x, y: ly, text: name, fill: theme.textDim, fontSize: fs, fontFamily: theme.fontSans, fontWeight: 500, align: "left", baseline: "middle", layer: "axes" });
+  const legend: DisplayList = [];
+  let x = rect.x + 8;
+  legend.push({ kind: "text", x, y: ly, text: name, fill: theme.textDim, fontSize: fs, fontFamily: theme.fontSans, fontWeight: 500, align: "left", baseline: "middle", layer: "axes" });
   x += Math.ceil(name.length * fs * 0.62) + 8;
   r.lines.forEach((l, k) => {
-    if (l.style === "histogram") return;
-    out.push({ kind: "rect", x, y: ly - 1, w: 8, h: 2, fill: indicatorColor(theme, r, k), layer: "axes" });
     const text = valueAt(model, l.values, digits);
-    out.push({ kind: "text", x: x + 12, y: ly, text, fill: theme.text, fontSize: fs, fontFamily: theme.fontMono, fontWeight: 400, align: "left", baseline: "middle", layer: "axes" });
+    if (l.style === "histogram") {
+      const v = model.inspected === null ? NaN : l.values[model.inspected]!;
+      legend.push({ kind: "rect", x, y: ly - 3, w: 3, h: 6, fill: !Number.isNaN(v) && v < 0 ? theme.histDown : theme.histUp, layer: "axes" });
+      legend.push({ kind: "rect", x: x + 4, y: ly - 3, w: 3, h: 6, fill: !Number.isNaN(v) && v < 0 ? theme.histDownFade : theme.histUpFade, layer: "axes" });
+    } else legend.push({ kind: "rect", x, y: ly - 1, w: 8, h: 2, fill: indicatorColor(theme, r, k), layer: "axes" });
+    legend.push({ kind: "text", x: x + 12, y: ly, text, fill: theme.text, fontSize: fs, fontFamily: theme.fontMono, fontWeight: 400, align: "left", baseline: "middle", layer: "axes" });
     x += 12 + Math.ceil(text.length * fs * 0.62) + 10;
   });
+  const bgW = Math.min(rect.w - 8, x - 10 - (rect.x + 4) + 6);
+  out.push({ kind: "rect", x: rect.x + 4, y: ly - fs / 2 - 3, w: bgW, h: fs + 6, fill: theme.paneLegendBg, radius: 4, layer: "axes" }, ...legend);
   return out;
 }
 

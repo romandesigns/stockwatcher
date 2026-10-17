@@ -156,7 +156,11 @@ export type GestureAction =
   | { kind: "cancelOrder"; id: string }
   /** The place button was tapped at y: open the order ticket at that price. */
   | { kind: "placeOrder"; x: number; y: number }
-  | { kind: "haptic"; style: HapticStyle };
+  | { kind: "haptic"; style: HapticStyle }
+  /** Drag an oscillator pane's top border: dy px this move (negative grows the pane); done on release. */
+  | { kind: "resizePane"; pane: number; dy: number; done: boolean }
+  /** Double tap / double click an oscillator pane: expand it, or back to its default height. */
+  | { kind: "togglePane"; pane: number };
 
 export type HapticStyle = "selection" | "light" | "medium";
 
@@ -199,7 +203,7 @@ type Phase =
    * a double tap. obj: pressed on an object. draw: pressed with a drawing
    * tool in the plot. quiet: this press stopped a fling, so it is not a tap.
    */
-  | { k: "pending"; id: number; type: PointerKind; region: Region; x0: number; y0: number; t0: number; second: boolean; obj: ObjectHit | null; draw: DrawingKind | null; quiet: boolean }
+  | { k: "pending"; id: number; type: PointerKind; region: Region; pane: number | null; x0: number; y0: number; t0: number; second: boolean; obj: ObjectHit | null; draw: DrawingKind | null; quiet: boolean }
   /** free: vertical movement pans price too (see touchPricePan). */
   | { k: "pan"; id: number; type: PointerKind; lastX: number; lastY: number; free: boolean; samples: { x: number; y: number; t: number }[] }
   | { k: "drag"; id: number; target: ObjectHit; from: Point; to: Point }
@@ -207,6 +211,7 @@ type Phase =
   | { k: "fling"; vx: number; vy: number; free: boolean; lastT: number }
   | { k: "scrub"; id: number }
   | { k: "axisScale"; id: number; lastY: number }
+  | { k: "paneResize"; id: number; pane: number; lastY: number }
   | { k: "pinch"; a: number; b: number; lastDist: number; lastMidX: number }
   /** Waiting for every pointer to lift (after a release, a pinch, a menu or an ignored button). */
   | { k: "ignore" };
@@ -218,6 +223,7 @@ interface Tap {
   y: number;
   t: number;
   region: Region;
+  pane: number | null;
 }
 
 const regionAt = (model: ChartModel, x: number, y: number): HitRegion => hitTest(model, x, y).region;
@@ -361,11 +367,13 @@ export class GestureController {
         ];
       case "wheel":
         return wheel(input, ctx);
-      case "dblclick":
+      case "dblclick": {
         // Touch double taps are recognized from pointers; a compatibility
         // dblclick the browser synthesizes after one must not act twice.
         if (this.lastType !== "mouse") return [];
-        return doubleTap(regionAt(ctx.model, input.x, input.y));
+        const hit = hitTest(ctx.model, input.x, input.y);
+        return doubleTap(hit.region, hit.pane);
+      }
       case "contextmenu": {
         // A touch long press is recognized by tick(); its contextmenu is noise.
         if (input.pointerType !== "mouse") return [];
@@ -404,7 +412,8 @@ export class GestureController {
       return [];
     }
 
-    const region = regionAt(ctx.model, e.x, e.y);
+    const downHit = hitTest(ctx.model, e.x, e.y);
+    const region = downHit.region;
     if (region === "none") {
       this.phase = { k: "ignore" };
       return [];
@@ -421,12 +430,12 @@ export class GestureController {
     // sit inside the plot) takes it.
     // Shift+drag with a mouse measures, whatever the tool.
     const draw: DrawingKind | null = region !== "plot" ? null : e.pointerType === "mouse" && e.shiftKey ? "measure" : (ctx.tool ?? null);
-    const obj = draw || region === "priceAxis" || region === "timeAxis" ? null : (ctx.hitObject?.(e.x, e.y, touchLike(e.pointerType)) ?? null);
+    const obj = draw || region === "priceAxis" || region === "timeAxis" || region === "paneBorder" ? null : (ctx.hitObject?.(e.x, e.y, touchLike(e.pointerType)) ?? null);
     if (obj || draw) {
       second = false;
       this.pendingTap = null;
     }
-    this.phase = { k: "pending", id: e.pointerId, type: e.pointerType, region, x0: e.x, y0: e.y, t0: e.t, second, obj, draw, quiet };
+    this.phase = { k: "pending", id: e.pointerId, type: e.pointerType, region, pane: downHit.pane, x0: e.x, y0: e.y, t0: e.t, second, obj, draw, quiet };
     return out;
   }
 
@@ -465,6 +474,10 @@ export class GestureController {
         if (p.region === "priceAxis") {
           this.phase = { k: "axisScale", id: p.id, lastY: p.y0 };
           return this.move(e, ctx);
+        }
+        if (p.region === "paneBorder" && p.pane !== null) {
+          this.phase = { k: "paneResize", id: p.id, pane: p.pane, lastY: p.y0 };
+          return [...this.haptic("light"), ...this.move(e, ctx)];
         }
         let free = p.type === "mouse" || !!ctx.priceManual;
         if (touchLike(p.type) && Math.abs(dy) > Math.abs(dx)) {
@@ -511,6 +524,12 @@ export class GestureController {
         // A light tick each time the scrub crosses into another candle.
         return acts.some((a) => a.kind === "inspect") ? [...this.haptic("selection"), ...acts] : acts;
       }
+      case "paneResize": {
+        if (e.pointerId !== p.id) return [];
+        const dy = e.y - p.lastY;
+        p.lastY = e.y;
+        return dy === 0 ? [] : [{ kind: "resizePane", pane: p.pane, dy, done: false }];
+      }
       case "axisScale": {
         if (e.pointerId !== p.id) return [];
         const dy = e.y - p.lastY;
@@ -556,10 +575,15 @@ export class GestureController {
         if (p.type === "mouse") return clear;
         if (p.second) {
           this.pendingTap = null;
-          return doubleTap(p.region);
+          return doubleTap(p.region, p.pane);
         }
-        this.pendingTap = { x: p.x0, y: p.y0, t: e.t, region: p.region };
+        this.pendingTap = { x: p.x0, y: p.y0, t: e.t, region: p.region, pane: p.pane };
         return clear;
+      }
+      case "paneResize": {
+        if (e.pointerId !== p.id) return [];
+        this.phase = { k: "idle" };
+        return [{ kind: "resizePane", pane: p.pane, dy: 0, done: true }];
       }
       case "pan": {
         if (e.pointerId !== p.id) return [];
@@ -615,8 +639,10 @@ export class GestureController {
     const wasDraw = p.k === "draw" && p.id === e.pointerId;
     // A cancelled object drag snaps back: done with the original point.
     const dragBack: GestureAction[] = p.k === "drag" && p.id === e.pointerId ? [{ kind: "objectDrag", target: p.target, from: p.from, to: p.from, done: true }] : [];
+    // A cancelled pane resize keeps the height it reached, and is finished so the host persists it.
+    const resized: GestureAction[] = p.k === "paneResize" && p.id === e.pointerId ? [{ kind: "resizePane", pane: p.pane, dy: 0, done: true }] : [];
     if (p.k !== "idle" && p.k !== "fling") this.phase = this.pointers.size ? { k: "ignore" } : { k: "idle" };
-    return [...(wasScrub ? endScrub() : []), ...(wasDraw ? [{ kind: "draft" as const, draft: null }] : []), ...dragBack];
+    return [...(wasScrub ? endScrub() : []), ...(wasDraw ? [{ kind: "draft" as const, draft: null }] : []), ...dragBack, ...resized];
   }
 
   /** A tap with a drawing tool: one-point tools place at once; two-point tools take two taps. */
@@ -656,8 +682,10 @@ function pinchDistance(a: Point, b: Point): number {
   return Math.max(MIN_PINCH_DISTANCE_PX, Math.hypot(a.x - b.x, a.y - b.y));
 }
 
-function doubleTap(region: HitRegion): GestureAction[] {
+function doubleTap(region: HitRegion, pane: number | null = null): GestureAction[] {
   if (region === "timeAxis") return [{ kind: "followLatest" }];
+  // On an oscillator pane (or its border) a double tap expands that pane, or returns it to its height.
+  if ((region === "pane" || region === "paneBorder") && pane !== null) return [{ kind: "togglePane", pane }];
   if (region === "none") return [];
   return [{ kind: "autoScalePrice" }];
 }

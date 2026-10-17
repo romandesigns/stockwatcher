@@ -11,6 +11,9 @@ import {
   type History,
   DEFAULT_LAYERS,
   layerIdsFor,
+  applyPaneGesture,
+  hitTest,
+  paneIdsOf,
   keyLevels,
   parseLayers,
   type ChartLayers,
@@ -305,6 +308,11 @@ export function CandleChart({
     }
   };
 
+  // Oscillator pane heights by indicator id: drag a pane's top border, double-click to expand (kept with persistKey).
+  const [paneHeights, setPaneHeights] = useState<Record<string, number>>(() => {
+    const v = loadJson<unknown>(persistKey && `${persistKey}:panes`, null);
+    return v && typeof v === "object" ? Object.fromEntries(Object.entries(v).filter(([, h]) => typeof h === "number")) : {};
+  });
   const [ownLayers, setOwnLayers] = useState<ChartLayers>(() => parseLayers(loadJson<unknown>(persistKey && `${persistKey}:layers`, null)));
   const layers = onLayersChange ? (layersProp ?? DEFAULT_LAYERS) : ownLayers;
   const setLayers = (next: ChartLayers) => {
@@ -425,8 +433,9 @@ export function CandleChart({
       trading: trading ? { orders, position, last, dragging: drag?.order ? { id: drag.order.id, price: drag.order.price } : null, placeY } : null,
       context,
       now,
+      paneHeights,
     }),
-    [timeframe, series, slots, inspectT, pointer, tradeMenuOpen, tradeMenuAt, chartOptions, scaleType, indicatorResults, shownDrawings, selectedDrawing, draft, trading, orders, position, last, drag, placeY, context, now],
+    [timeframe, series, slots, inspectT, pointer, tradeMenuOpen, tradeMenuAt, chartOptions, scaleType, indicatorResults, shownDrawings, selectedDrawing, draft, trading, orders, position, last, drag, placeY, context, now, paneHeights],
   );
 
   const paint = useCallback((ctx: CanvasRenderingContext2D, size: Size) => drawDisplayList(ctx, layoutChart(computeChartModel(state, vp, size), state, theme)), [state, vp, theme]);
@@ -601,6 +610,17 @@ export function CandleChart({
         case "release":
           // The browser scrolls the page (touch-action: pan-y); nothing to do.
           break;
+        case "resizePane":
+        case "togglePane": {
+          const ids = paneIdsOf({ indicators: indicatorResults });
+          const persist = a.kind === "togglePane" || a.done;
+          setPaneHeights((h) => {
+            const next = a.kind === "resizePane" && a.done ? h : applyPaneGesture(h, a, m, ids, size);
+            if (persist) saveJson(persistKey && `${persistKey}:panes`, next);
+            return next;
+          });
+          break;
+        }
         default:
           setVp((v) => applyGesture(v, a, m));
       }
@@ -651,7 +671,9 @@ export function CandleChart({
     if (extra.pointerType === "mouse" && (type === "move" || type === "down" || type === "up")) {
       const hit = ctx.hitObject?.(p.x, p.y, false) ?? null;
       setCursor(
-        gestures.state === "drag"
+        gestures.state === "paneResize" || (gestures.state === "idle" && hitTest(model, p.x, p.y).region === "paneBorder")
+          ? "row-resize"
+          : gestures.state === "drag"
           ? "grabbing"
           : tool
             ? "crosshair"

@@ -92,6 +92,15 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
     setLayers(l);
     void setPreference("chart.layers", l);
   };
+  // Oscillator pane heights (dragged or expanded), kept across launches.
+  const [paneHeights, setPaneHeights] = useState<Record<string, number>>({});
+  useEffect(() => {
+    void getPreference<Record<string, number>>("chart.paneHeights").then((v) => v && typeof v === "object" && setPaneHeights(v));
+  }, []);
+  const changePaneHeights = (h: Record<string, number>) => {
+    setPaneHeights(h);
+    void setPreference("chart.paneHeights", h);
+  };
   // Drawing tools shown or hidden, kept across launches.
   const [toolsVisible, setToolsVisible] = useState(true);
   useEffect(() => {
@@ -227,6 +236,8 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
         onLayersChange={changeLayers}
         now={clock?.now ?? null}
         onToolboxPlacementChange={changeToolbox}
+        paneHeights={paneHeights}
+        onPaneHeightsChange={changePaneHeights}
         profileBins={BINS}
         profileBin={bin}
         onProfileBinChange={setBin}
