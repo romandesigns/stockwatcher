@@ -37,15 +37,18 @@ import { Segmented, ToolButton, UI } from "./ui.tsx";
  * back closes it. RN's Modal "slide" is the same motion on both platforms;
  * with reduced motion the host passes reducedMotion and it only fades.
  */
-export function Sheet({ open, onClose, title, children, reducedMotion }: { open: boolean; onClose: () => void; title: string; children: ReactNode; reducedMotion?: boolean }) {
+export function Sheet({ open, onClose, title, badge, children, reducedMotion }: { open: boolean; onClose: () => void; title: string; badge?: ReactNode; children: ReactNode; reducedMotion?: boolean }) {
   return (
     <Modal visible={open} transparent animationType={reducedMotion ? "fade" : "slide"} onRequestClose={onClose} statusBarTranslucent navigationBarTranslucent>
       <Pressable style={s.backdrop} onPress={onClose} accessibilityLabel="Close" accessibilityRole="button" />
       <View style={s.sheet} accessibilityViewIsModal>
         <View style={s.grabber} />
-        <Text style={s.title} accessibilityRole="header">
-          {title}
-        </Text>
+        <View style={s.titleRow}>
+          <Text style={s.title} accessibilityRole="header">
+            {title}
+          </Text>
+          {badge}
+        </View>
         {children}
       </View>
     </Modal>
@@ -280,19 +283,28 @@ export function OrderTicketSheet({
   };
 
   return (
-    <Sheet open={open} onClose={onClose} title={`${symbol} · simulated order`} reducedMotion={reducedMotion}>
-      <View style={{ gap: 10 }}>
+    <Sheet
+      open={open}
+      onClose={onClose}
+      title={`${side === "buy" ? "Buy" : "Sell"} ${symbol}`}
+      badge={<Text style={s.simChip}>SIMULATED</Text>}
+      reducedMotion={reducedMotion}
+    >
+      <View style={{ gap: 12 }}>
+        {/* Controls on a recessed track: the sheet is the panel colour, so a panel track would vanish into it. */}
         <Segmented
           fill
+          style={s.track}
           value={side}
           onChange={changeSide}
           options={[
-            { value: "buy", label: "Buy", a11y: "Buy", tint: UI.good },
-            { value: "sell", label: "Sell", a11y: "Sell", tint: UI.critical },
+            { value: "buy", label: "Buy", a11y: "Buy", tint: UI.good, activeBg: "rgba(63,185,122,0.16)" },
+            { value: "sell", label: "Sell", a11y: "Sell", tint: UI.critical, activeBg: "rgba(240,100,92,0.16)" },
           ]}
         />
         <Segmented
           fill
+          style={s.track}
           value={type}
           onChange={(v) => {
             setType(v);
@@ -304,18 +316,21 @@ export function OrderTicketSheet({
             { value: "stop", label: "Stop", a11y: "Stop order" },
           ]}
         />
-        <Text style={s.label}>Shares</Text>
-        <TextInput style={s.input} keyboardType="number-pad" value={qty} onChangeText={(t) => setQty(t.replace(/[^\d]/g, ""))} accessibilityLabel="Shares" selectionColor={UI.accent} />
-        <View style={{ flexDirection: "row", gap: 6 }}>
-          {[100, 500, 1000].map((q) => (
-            <ToolButton key={q} label={`${q} shares`} onPress={() => setQty(String(q))} style={{ flex: 1, backgroundColor: UI.row }}>
-              {q.toLocaleString("en-US")}
-            </ToolButton>
-          ))}
+        {/* Shares: the field and the presets on one row. */}
+        <View style={{ gap: 6 }}>
+          <Text style={s.fieldLabel}>Shares</Text>
+          <View style={{ flexDirection: "row", gap: 6 }}>
+            <TextInput style={[s.input, { flex: 1 }]} keyboardType="number-pad" value={qty} onChangeText={(t) => setQty(t.replace(/[^\d]/g, ""))} accessibilityLabel="Shares" selectionColor={UI.accent} />
+            {[100, 500, 1000].map((q) => (
+              <ToolButton key={q} label={`${q} shares`} onPress={() => setQty(String(q))} style={[s.preset, qty === String(q) && { backgroundColor: UI.raised }]}>
+                {q === 1000 ? "1K" : String(q)}
+              </ToolButton>
+            ))}
+          </View>
         </View>
         {type !== "market" && (
-          <>
-            <Text style={s.label}>{type === "limit" ? "Limit price" : "Stop price"}</Text>
+          <View style={{ gap: 6 }}>
+            <Text style={s.fieldLabel}>{type === "limit" ? "Limit price" : "Stop price"}</Text>
             <TextInput
               style={s.input}
               keyboardType="decimal-pad"
@@ -325,16 +340,18 @@ export function OrderTicketSheet({
               accessibilityLabel={type === "limit" ? "Limit price" : "Stop price"}
               selectionColor={UI.accent}
             />
-          </>
+          </View>
         )}
-        <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
-          <Text style={s.small}>{type === "market" ? "Est. at last" : "Value"}</Text>
-          <Text style={[s.small, { color: UI.text, fontVariant: ["tabular-nums"] }]}>{est !== null && qtyOk ? `$${(est * n).toFixed(2)}` : "—"}</Text>
+        <View style={s.summary}>
+          <Text style={s.small}>{side === "buy" ? "Est. cost" : "Est. proceeds"}</Text>
+          <Text style={[s.small, { color: UI.text, fontVariant: ["tabular-nums"] }]}>{est !== null && qtyOk ? `$${(est * n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}</Text>
         </View>
-        <ToolButton primary label="Place simulated order" disabled={!qtyOk || !priceOk} onPress={submit} style={{ height: 40 }}>
-          {`${side === "buy" ? "Buy" : "Sell"} ${qtyOk ? n.toLocaleString("en-US") : ""} ${type === "market" ? "at market" : `${type} ${snapped !== null ? formatPrice(snapped) : ""}`}`}
-        </ToolButton>
-        <Text style={s.note}>Simulated: fills in the simulator against the replay tape, in full, when a trade prints through the price. No money, no broker.</Text>
+        <View style={{ gap: 6 }}>
+          <ToolButton primary label="Place simulated order" disabled={!qtyOk || !priceOk} onPress={submit} style={s.cta}>
+            <Text style={s.ctaText}>{`${side === "buy" ? "Buy" : "Sell"} ${qtyOk ? n.toLocaleString("en-US") : ""} ${symbol} · ${type === "market" ? "Market" : `${type === "limit" ? "Limit" : "Stop"} ${snapped !== null ? formatPrice(snapped) : ""}`}`}</Text>
+          </ToolButton>
+          <Text style={[s.note, { textAlign: "center" }]}>Fills against the replay tape · no money, no broker</Text>
+        </View>
         {fills && <TradeHistory fills={fills} realized={realized} />}
       </View>
     </Sheet>
@@ -345,7 +362,16 @@ const s = StyleSheet.create({
   backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.45)" },
   sheet: { backgroundColor: UI.panel, borderTopLeftRadius: 16, borderTopRightRadius: 16, paddingHorizontal: 16, paddingTop: 8, paddingBottom: 28, maxHeight: "75%" },
   grabber: { alignSelf: "center", width: 36, height: 4, borderRadius: 2, backgroundColor: UI.raised, marginBottom: 10 },
-  title: { color: UI.text, fontSize: 15, fontWeight: "600", marginBottom: 8 },
+  titleRow: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 },
+  title: { color: UI.text, fontSize: 15, fontWeight: "600" },
+  simChip: { color: UI.warning, fontSize: 9, fontWeight: "600", letterSpacing: 0.6, backgroundColor: "rgba(224,166,58,0.14)", borderRadius: 4, paddingHorizontal: 6, paddingVertical: 2, overflow: "hidden" },
+  track: { backgroundColor: UI.bg, borderRadius: 10, padding: 3 },
+  fieldLabel: { color: UI.textDim, fontSize: 11, fontWeight: "500" },
+  preset: { width: 48, height: 42, borderRadius: 10, backgroundColor: UI.row },
+  summary: { flexDirection: "row", justifyContent: "space-between", alignItems: "baseline", paddingHorizontal: 2 },
+  cta: { height: 48, borderRadius: 12 },
+  ctaText: { color: UI.accentFg, fontSize: 15, fontWeight: "600" },
+  historyHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "baseline", paddingBottom: 4 },
   label: { color: UI.textFaint, fontSize: 11, marginTop: 8, marginBottom: 2 },
   row: { minHeight: 44, flexDirection: "row", alignItems: "center", paddingHorizontal: 8, borderRadius: 8 },
   rowText: { flex: 1, color: UI.text, fontSize: 14 },
@@ -357,11 +383,12 @@ const s = StyleSheet.create({
   indDesc: { color: UI.textFaint, fontSize: 11 },
   profile: { gap: 6, paddingBottom: 6 },
   profileRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 8 },
-  history: { gap: 4, marginTop: 4, padding: 8, borderRadius: 10, backgroundColor: "rgba(28,34,42,0.5)" },
-  tradeRow: { flexDirection: "row", alignItems: "center", gap: 8, minHeight: 32, paddingHorizontal: 8, borderRadius: 6 },
+  history: { gap: 2, marginTop: 2, padding: 12, borderRadius: 12, backgroundColor: UI.bg },
+  // Rows bleed into the card's padding so their text lines up with the header above.
+  tradeRow: { flexDirection: "row", alignItems: "center", gap: 8, minHeight: 32, paddingHorizontal: 8, marginHorizontal: -8, borderRadius: 6 },
   tradeCell: { color: UI.text, fontSize: 12, fontVariant: ["tabular-nums"] },
   rowRight: { color: UI.textDim, fontSize: 13, marginLeft: 8 },
-  input: { height: 40, backgroundColor: UI.row, borderRadius: 8, paddingHorizontal: 10, color: UI.text, fontSize: 15, fontVariant: ["tabular-nums"] },
+  input: { height: 42, backgroundColor: UI.row, borderRadius: 10, paddingHorizontal: 10, color: UI.text, fontSize: 15, fontVariant: ["tabular-nums"] },
   small: { color: UI.textDim, fontSize: 12 },
   note: { color: UI.textFaint, fontSize: 11, lineHeight: 15 },
   sim: { color: UI.warning, fontSize: 10, fontWeight: "500", letterSpacing: 0.4 },
@@ -468,8 +495,8 @@ export function TradeHistory({ fills, realized }: { fills: readonly FillMark[]; 
   const list = [...fills].reverse().slice(0, 30);
   return (
     <View style={s.history} accessibilityLabel="Trade history">
-      <View style={s.indHeader}>
-        <Text style={s.label}>Trades</Text>
+      <View style={s.historyHeader}>
+        <Text style={s.fieldLabel}>Trades</Text>
         <Text style={[s.small, { color: realized > 0 ? UI.good : realized < 0 ? UI.critical : UI.text, fontVariant: ["tabular-nums"] }]}>{`Realized ${realized >= 0 ? "+" : "\u2212"}$${Math.abs(realized).toFixed(2)}`}</Text>
       </View>
       {list.length === 0 ? (

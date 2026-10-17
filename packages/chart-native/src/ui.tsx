@@ -136,7 +136,8 @@ export function ToolIcon({ kind, color }: { kind: DrawingKind | "cursor" | "tras
 }
 
 export interface SegmentedProps<T extends string> {
-  options: readonly { value: T; label?: string; icon?: ReactNode; a11y: string; tint?: string }[];
+  /** tint colours the selected label; activeBg replaces the selected segment's raised surface (Buy/Sell). */
+  options: readonly { value: T; label?: string; icon?: ReactNode; a11y: string; tint?: string; activeBg?: string }[];
   value: T;
   onChange: (v: T) => void;
   style?: StyleProp<ViewStyle>;
@@ -158,7 +159,7 @@ export function Segmented<T extends string>({ options, value, onChange, style, f
             accessibilityLabel={o.a11y}
             onPress={() => onChange(o.value)}
             hitSlop={4}
-            style={[styles.segment, fill && styles.grow, on && styles.segmentOn]}
+            style={[styles.segment, fill && styles.grow, on && styles.segmentOn, on && o.activeBg ? { backgroundColor: o.activeBg } : null]}
           >
             {o.icon}
             {o.label !== undefined && <Text style={[styles.segmentText, { color: on ? (o.tint ?? UI.text) : UI.textDim }]}>{o.label}</Text>}
@@ -222,8 +223,9 @@ export function ToolButton({ onPress, label, children, disabled, primary, style,
 }
 
 export const styles = StyleSheet.create({
-  track: { flexDirection: "row", backgroundColor: UI.panel, borderRadius: 8, padding: 2, gap: 2 },
-  segment: { minWidth: 32, height: 30, paddingHorizontal: 8, borderRadius: 6, alignItems: "center", justifyContent: "center", flexDirection: "row", gap: 4 },
+  // Recessed: segmented controls sit in sheets (the panel colour), so the track is the darker base.
+  track: { flexDirection: "row", backgroundColor: UI.bg, borderRadius: 10, padding: 3, gap: 2 },
+  segment: { minWidth: 32, height: 32, paddingHorizontal: 10, borderRadius: 8, alignItems: "center", justifyContent: "center", flexDirection: "row", gap: 4 },
   grow: { flex: 1 },
   segmentOn: { backgroundColor: UI.raised },
   segmentText: { fontSize: 12, fontWeight: "500" },

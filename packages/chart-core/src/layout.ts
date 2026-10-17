@@ -647,7 +647,16 @@ function overlayIndicator(model: ChartModel, r: IndicatorResult, theme: ChartThe
 function valueAt(model: ChartModel, values: Float64Array, digits: number): string {
   const i = model.inspected;
   const v = i === null ? Number.NaN : values[i]!;
-  return Number.isNaN(v) ? "—" : v.toFixed(digits);
+  if (Number.isNaN(v)) return "—";
+  return digits >= 0 ? v.toFixed(digits) : formatSignificant(v, -digits);
+}
+
+/** v to `sig` significant digits in plain notation (no exponent), at most 6 decimals; 0 reads "0". */
+export function formatSignificant(v: number, sig: number): string {
+  if (v === 0) return "0";
+  const mag = Math.floor(Math.log10(Math.abs(v)));
+  const decimals = Math.min(6, Math.max(0, sig - 1 - mag));
+  return v.toFixed(decimals);
 }
 
 /**
@@ -704,7 +713,9 @@ function paneIndicator(model: ChartModel, r: IndicatorResult, rect: Rect, theme:
     lo -= pad;
   }
   const y = (v: number) => rect.y + rect.h - ((v - lo) / (hi - lo)) * rect.h;
-  const digits = r.spec.kind === "rsi" ? 1 : 4;
+  // RSI reads to one decimal; MACD's scale follows the price (a sub-$1 stock's MACD is ~0.0001), so it
+  // shows three significant digits rather than a fixed four decimals that would read "-0.0000".
+  const digits = r.spec.kind === "rsi" ? 1 : -3;
 
   if (r.zone) {
     const top = y(r.zone.hi);

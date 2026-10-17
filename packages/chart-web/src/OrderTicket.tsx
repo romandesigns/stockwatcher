@@ -102,15 +102,18 @@ export function OrderTicket({ open, onOpenChange, anchor, symbol, last, price, o
             submit();
           }}
         >
-          <div className="flex items-baseline justify-between">
-            <span className="text-sm font-semibold">{symbol}</span>
-            <span className="text-[10px] font-medium tracking-wide text-warning">SIMULATED</span>
+          {/* Same layout as the phone's ticket: "Buy SMPL" with a simulated chip, recessed controls, one shares row. */}
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-semibold">
+              {side === "buy" ? "Buy" : "Sell"} {symbol}
+            </span>
+            <span className="rounded bg-warning-bg px-1.5 py-0.5 text-[9px] font-semibold tracking-wider text-warning">SIMULATED</span>
           </div>
-          <ToggleGroup aria-label="Side" size="sm" spacing={0.5} variant="segmented" className="w-full" value={[side]} onValueChange={(v) => v[0] && changeSide(v[0] as OrderSide)}>
-            <ToggleGroupItem value="buy" className="flex-1 aria-pressed:text-good">
+          <ToggleGroup aria-label="Side" size="sm" spacing={0.5} variant="segmented" className="w-full bg-background p-0.5" value={[side]} onValueChange={(v) => v[0] && changeSide(v[0] as OrderSide)}>
+            <ToggleGroupItem value="buy" className="flex-1 aria-pressed:bg-good-bg aria-pressed:text-good">
               Buy
             </ToggleGroupItem>
-            <ToggleGroupItem value="sell" className="flex-1 aria-pressed:text-critical">
+            <ToggleGroupItem value="sell" className="flex-1 aria-pressed:bg-critical-bg aria-pressed:text-critical">
               Sell
             </ToggleGroupItem>
           </ToggleGroup>
@@ -119,7 +122,7 @@ export function OrderTicket({ open, onOpenChange, anchor, symbol, last, price, o
             size="sm"
             spacing={0.5}
             variant="segmented"
-            className="w-full"
+            className="w-full bg-background p-0.5"
             value={[type]}
             onValueChange={(v) => {
               if (!v[0]) return;
@@ -133,16 +136,26 @@ export function OrderTicket({ open, onOpenChange, anchor, symbol, last, price, o
               </ToggleGroupItem>
             ))}
           </ToggleGroup>
-          <label className="flex flex-col gap-1 text-[11px] text-muted-foreground">
-            Shares
-            <input className={inputClass} inputMode="numeric" value={qty} onChange={(e) => setQty(e.target.value.replace(/[^\d]/g, ""))} aria-invalid={!qtyOk} />
-          </label>
-          <div className="flex gap-1">
-            {QUICK_QTY.map((q) => (
-              <Button key={q} type="button" variant="ghost" size="sm" className="h-6 flex-1 rounded-md bg-bg-row font-mono text-[11px] text-muted-foreground" onClick={() => setQty(String(q))}>
-                {q.toLocaleString("en-US")}
-              </Button>
-            ))}
+          <div className="flex flex-col gap-1">
+            <label htmlFor="ticket-qty" className="text-[11px] font-medium text-muted-foreground">
+              Shares
+            </label>
+            <div className="flex gap-1">
+              <input id="ticket-qty" className={cn(inputClass, "min-w-0 flex-1")} inputMode="numeric" value={qty} onChange={(e) => setQty(e.target.value.replace(/[^\d]/g, ""))} aria-invalid={!qtyOk} />
+              {QUICK_QTY.map((q) => (
+                <Button
+                  key={q}
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  aria-label={`${q} shares`}
+                  className={cn("h-8 w-10 shrink-0 rounded-md bg-bg-row font-mono text-[11px] text-muted-foreground", qty === String(q) && "bg-bg-raised text-foreground")}
+                  onClick={() => setQty(String(q))}
+                >
+                  {q === 1000 ? "1K" : q}
+                </Button>
+              ))}
+            </div>
           </div>
           {type !== "market" && (
             <label className="flex flex-col gap-1 text-[11px] text-muted-foreground">
@@ -159,15 +172,15 @@ export function OrderTicket({ open, onOpenChange, anchor, symbol, last, price, o
             </label>
           )}
           <div className="flex items-baseline justify-between text-[11px] text-muted-foreground">
-            <span>{type === "market" ? "Est. at last" : "Value"}</span>
-            <span className="font-mono text-foreground tabular-nums">{est !== null && qtyOk ? `$${(est * n).toFixed(2)}` : "—"}</span>
+            <span>{side === "buy" ? "Est. cost" : "Est. proceeds"}</span>
+            <span className="font-mono text-foreground tabular-nums">{est !== null && qtyOk ? `$${(est * n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}</span>
           </div>
-          <Button type="submit" className={cn("h-8 w-full text-xs")} disabled={!qtyOk || !priceOk}>
-            {side === "buy" ? "Buy" : "Sell"} {qtyOk ? n.toLocaleString("en-US") : ""} {type === "market" ? "at market" : `${type} ${snapped !== null ? formatPrice(snapped) : ""}`}
+          <Button type="submit" className={cn("h-9 w-full rounded-lg text-[13px] font-semibold")} disabled={!qtyOk || !priceOk}>
+            {side === "buy" ? "Buy" : "Sell"} {qtyOk ? n.toLocaleString("en-US") : ""} {symbol} · {type === "market" ? "Market" : `${type === "limit" ? "Limit" : "Stop"} ${snapped !== null ? formatPrice(snapped) : ""}`}
           </Button>
-          <p className="m-0 text-[10px] leading-snug text-text-faint">Fills in the simulator against the replay tape, in full, when a trade prints through the price. No money, no broker.</p>
+          <p className="m-0 text-center text-[10px] leading-snug text-text-faint">Fills against the replay tape · no money, no broker</p>
         </form>
-        {fills && <TradeHistory fills={fills} realized={realized} className="mt-2.5 rounded-lg bg-bg-row/40 p-2" />}
+        {fills && <TradeHistory fills={fills} realized={realized} className="mt-2.5 rounded-lg bg-background p-2.5" />}
       </PopoverContent>
     </Popover>
   );

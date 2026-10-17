@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { GestureController, type GestureAction, type GestureInput } from "./gestures.ts";
 import { computeIndicators } from "./indicators.ts";
-import { applyPaneGesture, chartGeometry, computeChartModel, DEFAULT_CHART_OPTIONS, expandedPaneHeight, hitTest, layoutChart, MAX_PANES_SHARE, MIN_PANE_HEIGHT, paneIdsOf, type ChartState } from "./layout.ts";
+import { applyPaneGesture, chartGeometry, formatSignificant, computeChartModel, DEFAULT_CHART_OPTIONS, expandedPaneHeight, hitTest, layoutChart, MAX_PANES_SHARE, MIN_PANE_HEIGHT, paneIdsOf, type ChartState } from "./layout.ts";
 import { buildSlots } from "./scale.ts";
 import { defaultViewport } from "./scale.ts";
 import { fixtureSnapshot } from "./testFixture.ts";
@@ -118,5 +118,15 @@ describe("oscillator look", () => {
     const macdPane = modelOf(base).geometry.panes[1]!;
     const values = list.filter((p) => p.kind === "text" && p.fontFamily === DEFAULT_CHART_THEME.fontMono && Math.abs(p.y - (macdPane.y + 8)) < 1);
     expect(values.length).toBe(3);
+  });
+});
+
+describe("formatSignificant", () => {
+  test("a sub-$1 stock's MACD keeps three significant digits instead of reading -0.0000", () => {
+    expect(formatSignificant(-0.0000123, 3)).toBe("-0.000012"); // capped at 6 decimals
+    expect(formatSignificant(0.0004567, 3)).toBe("0.000457");
+    expect(formatSignificant(1.23456, 3)).toBe("1.23");
+    expect(formatSignificant(123.4, 3)).toBe("123");
+    expect(formatSignificant(0, 3)).toBe("0");
   });
 });
