@@ -60,17 +60,34 @@ export function TradeMenu({ open, onOpenChange, anchor, symbol, price, last, qty
   return (
     <DropdownMenu open={open && virtual !== null} onOpenChange={(o) => onOpenChange(o)}>
       <DropdownMenuContent anchor={virtual} side="bottom" align="start" sideOffset={2} finalFocus={finalFocus} aria-label={`Trade ${symbol} at ${p}`} className="w-64 p-1.5">
-        <div className="flex items-baseline justify-between px-1.5 pt-1 pb-1.5">
-          <span className="text-[13px] font-semibold">
-            {symbol} <span className="font-mono">{p}</span>
-          </span>
-          <span className="text-[10px] font-medium tracking-wide text-warning">SIMULATED</span>
+        {/* Same header as the phone's quick-trade sheet and the order ticket. */}
+        <div className="flex items-center gap-1.5 px-1.5 pt-1 pb-1.5">
+          <span className="text-[13px] font-semibold">Trade {symbol}</span>
+          <span className="rounded bg-background px-1.5 py-0.5 font-mono text-[11px]">{p}</span>
+          <span className="rounded bg-warning-bg px-1.5 py-0.5 text-[9px] font-semibold tracking-wider text-warning">SIMULATED</span>
         </div>
         {vs && (
           <p className="m-0 px-1.5 pb-1.5 text-[11px] text-text-faint">
             {vs === "at" ? "At the last trade" : `${formatPrice(Math.abs(price - (last ?? price)), priceDecimals(price))} ${vs} the last trade`}
           </p>
         )}
+        {/* Size first: it is what the items below place. */}
+        <DropdownMenuRadioGroup value={String(qty)} onValueChange={(v) => onQtyChange(Number(v))}>
+          <DropdownMenuLabel className="px-1.5 pt-1 pb-1 text-[11px] font-medium text-muted-foreground">Shares</DropdownMenuLabel>
+          <div className="grid grid-cols-3 gap-1 px-1 pb-1">
+            {TRADE_MENU_SIZES.map((n) => (
+              <DropdownMenuRadioItem
+                key={n}
+                value={String(n)}
+                closeOnClick={false}
+                className={cn("justify-center rounded-md bg-bg-row py-1 pr-1.5 pl-1.5 font-mono text-xs data-highlighted:bg-bg-raised [&_[data-slot=dropdown-menu-radio-item-indicator]]:hidden", qty === n && "bg-bg-raised text-foreground")}
+              >
+                {formatSize(n)}
+              </DropdownMenuRadioItem>
+            ))}
+          </div>
+        </DropdownMenuRadioGroup>
+        <DropdownMenuSeparator />
         <DropdownMenuGroup>
           <DropdownMenuItem onClick={() => onOrder("buy", buyType)} className="gap-2">
             <span aria-hidden="true" className="size-2 rounded-full bg-good" />
@@ -94,22 +111,6 @@ export function TradeMenu({ open, onOpenChange, anchor, symbol, price, last, qty
             Sell <span className="font-mono">{formatSize(qty)}</span> at market
           </DropdownMenuItem>
         </DropdownMenuGroup>
-        <DropdownMenuSeparator />
-        <DropdownMenuRadioGroup value={String(qty)} onValueChange={(v) => onQtyChange(Number(v))}>
-          <DropdownMenuLabel className="px-1.5 pt-1 pb-1 text-[11px] font-medium text-muted-foreground">Shares</DropdownMenuLabel>
-          <div className="grid grid-cols-3 gap-1 px-1 pb-1">
-            {TRADE_MENU_SIZES.map((n) => (
-              <DropdownMenuRadioItem
-                key={n}
-                value={String(n)}
-                closeOnClick={false}
-                className={cn("justify-center rounded-md bg-bg-row py-1 pr-1.5 pl-1.5 font-mono text-xs data-highlighted:bg-bg-raised [&_[data-slot=dropdown-menu-radio-item-indicator]]:hidden", qty === n && "bg-bg-raised text-foreground")}
-              >
-                {formatSize(n)}
-              </DropdownMenuRadioItem>
-            ))}
-          </div>
-        </DropdownMenuRadioGroup>
         <DropdownMenuSeparator />
         <DropdownMenuGroup>
           <DropdownMenuItem onClick={onTicket}>Order ticket at {p}…</DropdownMenuItem>
