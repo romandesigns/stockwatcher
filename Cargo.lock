@@ -2364,6 +2364,7 @@ dependencies = [
  "chart-engine",
  "chrono",
  "chrono-tz",
+ "flate2",
  "market-archive",
  "market-events",
  "market-replay",

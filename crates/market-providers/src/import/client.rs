@@ -24,7 +24,8 @@ impl ReqwestHttp {
 
 impl Http for ReqwestHttp {
     fn get(&mut self, url: &str, headers: &[(&str, &str)]) -> Result<HttpResponse, String> {
-        let mut req = self.client.get(url);
+        // Ask for gzip and decode it here (flate2): trade pages shrink about 7x on the wire.
+        let mut req = self.client.get(url).header("Accept-Encoding", "gzip");
         for (k, v) in headers {
             req = req.header(*k, *v);
         }
@@ -37,10 +38,19 @@ impl Http for ReqwestHttp {
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.trim().parse::<u64>().ok())
             .map(Duration::from_secs);
-        let body = resp
-            .bytes()
-            .map_err(|e| e.without_url().to_string())?
-            .to_vec();
+        let gzipped = resp
+            .headers()
+            .get(reqwest::header::CONTENT_ENCODING)
+            .is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"gzip"));
+        let raw = resp.bytes().map_err(|e| e.without_url().to_string())?;
+        let body = if gzipped {
+            let mut out = Vec::with_capacity(raw.len() * 8);
+            std::io::Read::read_to_end(&mut flate2::read::GzDecoder::new(&raw[..]), &mut out)
+                .map_err(|e| format!("gzip: {e}"))?;
+            out
+        } else {
+            raw.to_vec()
+        };
         Ok(HttpResponse {
             status,
             body,

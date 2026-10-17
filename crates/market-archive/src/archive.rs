@@ -11,6 +11,9 @@ use sha2::{Digest, Sha256};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+/// Serializes manifest read-modify-writes within the process (see `update_manifest`).
+static MANIFEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// The archive rooted at [`ArchiveConfig::root`].
 #[derive(Clone, Debug)]
 pub struct Archive {
@@ -210,6 +213,9 @@ impl Archive {
         day: NaiveDate,
         f: impl FnOnce(&mut DayManifest),
     ) -> Result<DayManifest, ArchiveError> {
+        // One writer at a time in this process: parallel importers finishing symbols of the same
+        // day would otherwise each read the old manifest and drop each other's entries.
+        let _guard = MANIFEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let key = day.format("%Y-%m-%d").to_string();
         let mut m = self
             .manifest(day)?

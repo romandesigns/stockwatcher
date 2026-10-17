@@ -4,6 +4,7 @@
 //! swimport credentials                                   # which variables are set (never values)
 //! swimport alpaca-trades <SYMBOL> <YYYY-MM-DD> [--feed sip] [--limit 10000] [--force]
 //! swimport fmp-bars <SYMBOL> <YYYY-MM-DD> [--force]
+//! swimport alpaca-batch --from <YYYY-MM-DD> --to <YYYY-MM-DD> [--jobs 12] [--per-minute 9000] [--plan-only]
 //! swimport check <SYMBOL> <YYYY-MM-DD>                   # verify, replay twice, compare with FMP
 //! ```
 //!
@@ -33,7 +34,7 @@ use std::time::Duration;
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage:\n  swimport credentials\n  swimport alpaca-trades <SYMBOL> <YYYY-MM-DD> [--feed sip|iex|boats] [--limit N] [--force]\n  swimport fmp-bars <SYMBOL> <YYYY-MM-DD> [--force]\n  swimport check <SYMBOL> <YYYY-MM-DD>"
+        "usage:\n  swimport credentials\n  swimport alpaca-trades <SYMBOL> <YYYY-MM-DD> [--feed sip|iex|boats] [--limit N] [--force]\n  swimport fmp-bars <SYMBOL> <YYYY-MM-DD> [--force]\n  swimport check <SYMBOL> <YYYY-MM-DD>\n  swimport alpaca-batch --from <YYYY-MM-DD> --to <YYYY-MM-DD> [--jobs N] [--per-minute N] [--plan-only]"
     );
     ExitCode::from(2)
 }
@@ -64,6 +65,7 @@ fn main() -> ExitCode {
             Some("alpaca-trades") => alpaca_trades(&args[1..]),
             Some("fmp-bars") => fmp_bars(&args[1..]),
             Some("check") => check(&args[1..]),
+            Some("alpaca-batch") => alpaca_batch(&args[1..]),
             _ => Ok(usage()),
         }
     };
@@ -398,6 +400,128 @@ fn check(args: &[String]) -> Result<ExitCode, String> {
         }
     }
     Ok(if ok {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
+}
+
+/// Every symbol inside the configured price band on each completed trading day of a range.
+fn alpaca_batch(args: &[String]) -> Result<ExitCode, String> {
+    use market_providers::import::batch::{plan_universe, run_batch};
+    let day = |name: &str| -> Result<NaiveDate, String> {
+        let v = flag(args, name).ok_or_else(|| format!("missing {name} <YYYY-MM-DD>"))?;
+        NaiveDate::parse_from_str(&v, "%Y-%m-%d").map_err(|_| format!("invalid {name} {v:?}"))
+    };
+    let (from, to) = (day("--from")?, day("--to")?);
+    if from > to {
+        return Err("--from is after --to".into());
+    }
+    let today = Utc::now().with_timezone(&New_York).date_naive();
+    if to >= today {
+        return Err(format!(
+            "--to {to} is not a completed session (today in New York is {today})"
+        ));
+    }
+    let jobs: usize = flag(args, "--jobs").map_or(Ok(12), |v| {
+        v.parse().map_err(|_| format!("invalid --jobs {v:?}"))
+    })?;
+    let per_minute: u32 = flag(args, "--per-minute").map_or(Ok(9000), |v| {
+        v.parse().map_err(|_| format!("invalid --per-minute {v:?}"))
+    })?;
+    let creds = alpaca_creds()?;
+    let data_base = env("ALPACA_DATA_BASE").unwrap_or_else(|| "https://data.alpaca.markets".into());
+    let trading_base =
+        env("ALPACA_TRADING_BASE").unwrap_or_else(|| "https://paper-api.alpaca.markets".into());
+    let band = price_band()?;
+    let archive = archive()?;
+    let plans = archive.root().join("plans");
+    std::fs::create_dir_all(&plans).map_err(|e| format!("{}: {e}", plans.display()))?;
+
+    println!(
+        "planning {from} .. {to}, band {}..={} (daily close), SIP",
+        band.min, band.max
+    );
+    let mut http = ReqwestHttp::new()?;
+    let plan = plan_universe(
+        &mut http,
+        &trading_base,
+        &data_base,
+        &creds,
+        from,
+        to,
+        band,
+        &mut |l: &str| eprintln!("  {l}"),
+    )?;
+    let plan_path = plans.join(format!("universe-{from}-{to}.json"));
+    std::fs::write(
+        &plan_path,
+        serde_json::to_vec_pretty(&plan).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| format!("{}: {e}", plan_path.display()))?;
+    let mut days: Vec<NaiveDate> = plan.tasks.iter().map(|t| t.day).collect();
+    days.sort();
+    days.dedup();
+    let symbols: std::collections::BTreeSet<&str> =
+        plan.tasks.iter().map(|t| t.symbol.as_str()).collect();
+    println!(
+        "plan: {} assets, {} trading days, {} symbol-days across {} symbols, {} trades, ~{} requests; saved {}",
+        plan.assets,
+        days.len(),
+        plan.tasks.len(),
+        symbols.len(),
+        plan.trades(),
+        plan.requests(alpaca::MAX_LIMIT),
+        plan_path.display()
+    );
+    if !plan.skipped_symbols.is_empty() {
+        println!(
+            "not storable as archive file names (skipped): {:?}",
+            plan.skipped_symbols
+        );
+    }
+    if args.iter().any(|a| a == "--plan-only") {
+        return Ok(ExitCode::SUCCESS);
+    }
+    println!(
+        "importing with {jobs} workers, at most {per_minute} requests/min, into {}",
+        archive.root().display()
+    );
+    let report = run_batch(
+        &plan,
+        &ReqwestHttp::new,
+        &data_base,
+        &creds,
+        &archive,
+        jobs,
+        per_minute,
+        Duration::from_secs(30),
+        &|line: &str| println!("{line}"),
+        &|line: &str| eprintln!("  {line}"),
+    );
+    let failures_path = plans.join(format!("failures-{from}-{to}.json"));
+    std::fs::write(
+        &failures_path,
+        serde_json::to_vec_pretty(&report.failed).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| format!("{}: {e}", failures_path.display()))?;
+    println!(
+        "done in {:.0}s: {} tasks, {} imported, {} already complete, {} failed ({}), {} events, {} requests",
+        report.elapsed.as_secs_f64(),
+        report.tasks,
+        report.imported,
+        report.skipped,
+        report.failed.len(),
+        failures_path.display(),
+        report.events,
+        report.requests
+    );
+    if !report.failed.is_empty() {
+        println!(
+            "re-run the same command to retry the failed symbol-days; completed ones are skipped"
+        );
+    }
+    Ok(if report.failed.is_empty() {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE

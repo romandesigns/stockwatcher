@@ -12,7 +12,7 @@ authors.workspace = true
 [features]
 # The real HTTP client and the `swimport` command (provider history import). Off by default so
 # the server, which links this crate, does not compile an HTTP/TLS stack it never uses.
-import = ["dep:reqwest", "dep:rustls"]
+import = ["dep:reqwest", "dep:rustls", "dep:flate2"]
 
 [[bin]]
 name = "swimport"
@@ -33,6 +33,8 @@ serde_json = "1.0.154"
 # builds on Windows and the Pi without CMake/NASM.
 reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "rustls-no-provider"], optional = true }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"], optional = true }
+# Alpaca gzips trade pages ~7x; reqwest's own gzip feature would pull in new crates, flate2 is locked.
+flate2 = { version = "1.1.10", optional = true }
 
 [dev-dependencies]
 tempfile = "3.27.0"
