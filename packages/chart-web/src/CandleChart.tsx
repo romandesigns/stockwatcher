@@ -944,8 +944,8 @@ export function CandleChart({
       {(heading || inspector) && (
         // Top-left corner of the chart: the ticker line, then the readout, left-aligned. It does not
         // take pointer events, so the chart under it still pans, scrubs and inspects.
-        // A soft backdrop in the page tone (no border) keeps the text readable when a level line runs behind it.
-        <div className="pointer-events-none absolute top-1 left-1.5 z-[5] flex max-w-[calc(100%-120px)] flex-col gap-0.5 rounded-lg bg-background/75 px-1.5 py-1 backdrop-blur-[2px]">
+        // Transparent (owner, 2026-10-17): the text sits straight on the chart.
+        <div className="pointer-events-none absolute top-1 left-1.5 z-[5] flex max-w-[calc(100%-120px)] flex-col gap-0.5 px-1.5 py-1">
           {heading}
           {inspector && (
             <CandleInspector className="pointer-events-auto flex-nowrap overflow-hidden" slot={inspectT === null ? (slots.at(-1) ?? null) : (slots[slotIndexOf(slots, inspectT) ?? -1] ?? null)} timeframe={timeframe} />
