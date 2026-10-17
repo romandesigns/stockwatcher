@@ -28,7 +28,9 @@ const navigationTheme: Theme = {
     background: colors.bg,
     card: colors.bgPanel,
     text: colors.text,
-    border: colors.border,
+    // No borders (owner rule): the hairlines React Navigation draws under
+    // headers and above tab bars take the panel colour, so they vanish.
+    border: colors.bgPanel,
     notification: colors.critical,
   },
 };

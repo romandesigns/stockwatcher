@@ -192,9 +192,9 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
 
   return (
     <div className="flex min-h-dvh flex-col bg-background text-foreground">
-      <header className="flex flex-wrap items-center gap-3.5 border-b border-border px-4.5 py-3">
+      <header className="flex flex-wrap items-center gap-3.5 bg-card px-4.5 py-3">
         <div className="text-[15px] font-semibold">StockWatcher</div>
-        <div className="flex items-baseline gap-2 border-l border-border pl-3.5">
+        <div className="flex items-baseline gap-2 pl-2">
           <span className="text-[17px] font-semibold">{symbol}</span>
           <span className="font-mono text-[17px] tabular-nums">{price}</span>
           <span className={cn("font-mono text-xs", changeColor)} title="Change since the session's first candle">
@@ -229,11 +229,11 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
           </section>
         </main>
 
-        <aside className="grid border-border min-[601px]:max-[900px]:grid-cols-2 min-[601px]:max-[900px]:border-t min-[901px]:flex min-[901px]:w-[340px] min-[901px]:shrink-0 min-[901px]:flex-col min-[901px]:border-l">
-          <section aria-label="Session volume profile" className="border-border px-4 py-3.5 max-[900px]:border-r min-[901px]:border-b">
+        <aside className="grid gap-3 px-4.5 pb-3.5 min-[601px]:max-[900px]:grid-cols-2 min-[901px]:flex min-[901px]:w-[340px] min-[901px]:shrink-0 min-[901px]:flex-col min-[901px]:pt-3.5 min-[901px]:pl-0">
+          <section aria-label="Session volume profile" className="rounded-xl bg-card px-4 py-3.5">
             <VolumeProfile className="h-[248px]" profile={series?.profile} actions={binSelector} />
           </section>
-          <section aria-label="Time and sales" className="flex min-h-0 flex-1 flex-col gap-1.5 px-4 py-3.5">
+          <section aria-label="Time and sales" className="flex min-h-0 flex-1 flex-col gap-1.5 rounded-xl bg-card px-4 py-3.5">
             <h2 className="m-0 mb-1 text-xs font-semibold tracking-wider text-text-faint">TAPE · CONDITIONS</h2>
             <Tape trades={tape} maxRows={14} />
           </section>
