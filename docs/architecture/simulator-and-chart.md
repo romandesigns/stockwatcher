@@ -52,7 +52,7 @@ makes the chart reusable: `ChartData` (from the server) + `ChartView` (timeframe
 ```jsonc
 // subscribe: {"type":"chart.subscribe","symbol":"SMPL","timeframe":"1m","profileBin":0.01}
 {"type":"chart.snapshot","symbol":"SMPL","timeframe":"1m","session":{"id":"2026-10-15/regular","start":"…","end":"…"},
- "candles":[{"t":1760535600000,"o":3.18,"h":3.21,"l":3.17,"c":3.20,"v":41200,"n":87,"final":true}],
+ "candles":[{"t":1792071000000,"o":3.18,"h":3.21,"l":3.17,"c":3.20,"v":41200,"n":87,"final":true}],
  "gaps":[{"t":…,"reason":"no_trades"}],
  "profile":{"bin":0.01,"anchor":"2026-10-15/regular","rows":[{"p":3.18,"v":120400}]},
  "clock":{"mode":"replay","now":…,"speed":10,"playing":true}}
@@ -86,3 +86,68 @@ displays it.
    BOATS, news, FMP float.
 4. `market-archive` + `market-replay` + `ReplayProvider` + `provider-sim`.
 5. `LiveProvider` + recorder, and a live-vs-replay parity test on a real session.
+
+## Appendix A: chart-engine policies (implemented 2026-10-17)
+
+Code: `crates/market-events` (contract, calendar, condition policy) and `crates/chart-engine`
+(aggregation). The crate docs (`cargo doc -p chart-engine`) are the full reference; this is the summary.
+
+**Contract units.** Times are `i64` UTC nanoseconds; prices are `i64` micro-dollars (exact, never `f64`
+for keys or sums); sizes are `u64` shares. Persisted events are JSON `{"v":1,"type":"trade",...}`;
+readers refuse another `v`. Trade identity is `(source, exchange, source_seq)`.
+
+**Sessions (ET, `chrono-tz` America/New_York).** overnight 20:00 (previous calendar day)–04:00, pre
+04:00–09:30, regular 09:30–16:00, after 16:00–20:00. On early-close days: regular to 13:00, after
+13:00–17:00, and 17:00–20:00 is no session. The overnight session belongs to the **next trading day**
+(`"2026-10-16/overnight"` starts Thursday 20:00) and exists only if that day trades, so Friday evenings and
+the evenings before holidays have none. Holidays and early closes come from the NYSE calendar for
+2025–2027. Still to verify against live BOATS data: that Blue Ocean follows the NYSE holiday table.
+
+**Trade conditions.** These follow Alpaca's minute-bar table ("How are bars aggregated?"), and the
+strictest rule wins:
+- `M` `Q` `9` update nothing.
+- `B` (on tapes A/B) and `C` `G` `H` `I` `N` `P` `R` `U` `V` `W` `Z` `4` `7` update volume only.
+- Everything else in the table updates OHLC and volume. That includes `T`, and `B` on tape C, where it
+  means a bunched trade.
+- Codes not in the table are treated as regular sales and counted in `unrecognizedConditions`.
+
+**Candles.** Intervals are half-open and epoch-aligned (`10:00:00.000` belongs to the 10:00:00 interval).
+O/H/L/C come from price-qualifying trades in `(event_ts, source_seq)` order. V is the sum of
+volume-qualifying sizes. All four timeframes come from the same accepted trades. A candle is final once
+the symbol's watermark reaches its end; the watermark is its newest trade, or the replay/live clock
+through `advance_clock`, whichever is later.
+
+**Gaps.** An interval with no trades gets no candle. A run of empty intervals inside one session is
+marked `no_trades`. An interval that has only volume-only prints has volume but no qualifying price, so
+it is marked `volume_only_trades` and carries its volume. Alpaca emits no bar for such an interval
+either.
+
+**Late and out-of-order trades.** A trade is accepted iff `watermark < end of its 15s interval + 2 s`
+(the settle window is configurable). The decision is made once, on the finest timeframe, and applies to
+every timeframe, so switching timeframe never changes the source data. An accepted trade is placed in
+key order and its interval is recomputed exactly; it never moves or resets the forming candle. Rejected
+trades are counted (`lateExcluded`) and shown on the tape as `excluded:late`. Duplicates are ignored and
+counted.
+
+**Corrections and cancels.** Trade-level records are kept for the retention window (10 min by default,
+pruned on 5-minute boundaries). A cancel or correction recomputes the affected interval of every
+timeframe and adjusts the profile's per-price volume exactly. It may revise a final candle, which is
+re-emitted. A target beyond retention is counted as unapplied.
+
+**Profile.** There is one profile per symbol per session id. Volume is stored per exact price, so any
+bin width is exact; bins are `floor(price/bin)*bin` anchored at zero. The profile includes
+price-qualifying trades and odd lots. It excludes other volume-only prints (average price, prior
+reference, derivatively priced, …) because their price is not where shares traded at that moment, so a
+session's profile total can be below the sum of its candle volumes. POC is the largest bin; the value
+area covers 70%.
+
+**Wire additions to the format above.**
+- `chart.remove {t}`: a cancel or correction emptied an interval.
+- `chart.gap {gap}`: a gap opened.
+- Gaps carry `end`, `v` and `intervals`.
+- Candle, gap and remove messages carry `profileBin` and `profile`, the touched bins as **absolute**
+  totals.
+- `tape.trade` also carries `tsNs`, `exchange`, `seq`, `reason` and `session`.
+- Snapshots carry `quality`, plus `profile.total`, `profile.poc` and `profile.valueArea`.
+- Clients upsert a candle by `t`, and a candle at `t` supersedes any gap that covers `t`. A snapshot is
+  authoritative.
