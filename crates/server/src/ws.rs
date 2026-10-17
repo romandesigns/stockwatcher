@@ -3,6 +3,22 @@
 //! The client must send `hello` (with the token when auth is on) within
 //! HELLO_TIMEOUT; the server answers `welcome`, then pings every HEARTBEAT
 //! and drops a client that has been silent for 3 heartbeats.
+//!
+//! Chart protocol (after `welcome`; crates/chart-engine wire types, mirrored by
+//! packages/chart-core/src/types.ts):
+//! - client `chart.subscribe {symbol, timeframe, profileBin}` -> server
+//!   `chart.snapshot`, the recent `tape.trade` rows, then increments
+//!   (`chart.update` / `chart.remove` / `chart.gap`) for that symbol and
+//!   timeframe and `tape.trade` for the symbol. One subscription per
+//!   connection: a new subscribe (e.g. another timeframe) replaces it and
+//!   starts with a fresh snapshot of the same engine state.
+//! - server `replay.clock {clock}` to every client, on change and ~4 Hz while
+//!   playing.
+//! - client `replay.control {action, value}` (play, pause, step, stepInterval,
+//!   seek, speed): honoured in replay mode, `error not_replay` in live mode.
+//!   Success has no direct reply; the resulting `replay.clock` is the answer.
+//! - A client that falls more than the broadcast capacity behind, and every
+//!   client after a seek, gets a fresh `chart.snapshot` (resync).
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -12,7 +28,11 @@ use axum::response::Response;
 use serde::{Deserialize, Serialize};
 use tokio::time::{Instant, interval_at, timeout};
 
-use crate::{AppState, COMMIT, VERSION, auth};
+use crate::market::{ControlError, Market, OutKind, SnapshotError};
+use crate::{AppState, COMMIT, VERSION, api, auth};
+use chart_engine::Timeframe;
+use market_events::Price;
+use tokio::sync::broadcast::error::RecvError;
 
 pub const HEARTBEAT: Duration = Duration::from_secs(15);
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
@@ -32,6 +52,60 @@ enum ClientMessage {
         #[allow(dead_code)]
         ts: u64,
     },
+    #[serde(rename = "chart.subscribe")]
+    ChartSubscribe {
+        symbol: String,
+        timeframe: Timeframe,
+        #[serde(rename = "profileBin", default)]
+        profile_bin: Option<f64>,
+    },
+    #[serde(rename = "replay.control")]
+    ReplayControl {
+        action: String,
+        #[serde(default)]
+        value: Option<serde_json::Value>,
+    },
+}
+
+/// The connection's chart subscription.
+struct Sub {
+    symbol: String,
+    timeframe: Timeframe,
+    bin: Price,
+    /// Increments with `seq` <= this are already in the snapshot.
+    seq: u64,
+}
+
+async fn send_text(socket: &mut WebSocket, text: String) -> bool {
+    socket.send(Message::Text(text.into())).await.is_ok()
+}
+
+/// Sends a snapshot and the recent tape for `sub`, and records its sequence.
+async fn send_snapshot(socket: &mut WebSocket, market: &Market, sub: &mut Sub) -> bool {
+    match market.snapshot(&sub.symbol, sub.timeframe, sub.bin) {
+        Ok(s) => {
+            sub.seq = s.seq;
+            if !send_text(socket, s.json).await {
+                return false;
+            }
+            for row in s.tape {
+                if !send_text(socket, row).await {
+                    return false;
+                }
+            }
+            true
+        }
+        Err(SnapshotError::UnknownSymbol) => {
+            send(
+                socket,
+                &ServerMessage::Error {
+                    code: "unknown_symbol",
+                    message: "no data for this symbol",
+                },
+            )
+            .await
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -148,6 +222,15 @@ async fn session(mut socket: WebSocket, state: AppState) {
         return;
     }
 
+    let market = state.market().clone();
+    let mut feed = market.subscribe();
+    if let Some(frame) = market.clock_frame()
+        && !send_text(&mut socket, frame).await
+    {
+        return;
+    }
+    let mut sub: Option<Sub> = None;
+
     let mut heartbeat = interval_at(Instant::now() + HEARTBEAT, HEARTBEAT);
     let mut last_seen = Instant::now();
     loop {
@@ -158,6 +241,38 @@ async fn session(mut socket: WebSocket, state: AppState) {
                     break;
                 }
                 if !send(&mut socket, &ServerMessage::Ping { ts: now_ms() }).await {
+                    break;
+                }
+            }
+            out = feed.recv() => {
+                let ok = match out {
+                    Ok(o) => match &o.kind {
+                        OutKind::Clock(frame) => send_text(&mut socket, frame.clone()).await,
+                        OutKind::Resync => match sub.as_mut() {
+                            Some(s) => send_snapshot(&mut socket, &market, s).await,
+                            None => true,
+                        },
+                        OutKind::Chart { symbol, timeframe, update, json } => match sub.as_ref() {
+                            Some(s)
+                                if *symbol == s.symbol
+                                    && o.seq > s.seq
+                                    && timeframe.is_none_or(|tf| tf == s.timeframe) =>
+                            {
+                                send_text(&mut socket, market.rebin(update, json, s.bin)).await
+                            }
+                            _ => true,
+                        },
+                    },
+                    Err(RecvError::Lagged(n)) => {
+                        tracing::debug!(skipped = n, "ws client lagged; resyncing with a snapshot");
+                        match sub.as_mut() {
+                            Some(s) => send_snapshot(&mut socket, &market, s).await,
+                            None => true,
+                        }
+                    }
+                    Err(RecvError::Closed) => true,
+                };
+                if !ok {
                     break;
                 }
             }
@@ -175,6 +290,47 @@ async fn session(mut socket: WebSocket, state: AppState) {
                 let reply = match serde_json::from_str::<ClientMessage>(&text) {
                     Ok(ClientMessage::Ping { ts }) => Some(ServerMessage::Pong { ts }),
                     Ok(ClientMessage::Pong { .. }) => None,
+                    Ok(ClientMessage::ChartSubscribe { symbol, timeframe, profile_bin }) => {
+                        match api::parse_bin(profile_bin, market.default_bin()) {
+                            Ok(bin) => {
+                                let mut s = Sub {
+                                    symbol: symbol.trim().to_ascii_uppercase(),
+                                    timeframe,
+                                    bin,
+                                    seq: 0,
+                                };
+                                if !send_snapshot(&mut socket, &market, &mut s).await {
+                                    break;
+                                }
+                                sub = Some(s);
+                                None
+                            }
+                            Err(_) => Some(ServerMessage::Error {
+                                code: "bad_request",
+                                message: "invalid profileBin",
+                            }),
+                        }
+                    }
+                    Ok(ClientMessage::ReplayControl { action, value }) => {
+                        match market.control(&action, value.as_ref()).await {
+                            Ok(_) => None,
+                            Err(ControlError::NotReplay) => Some(ServerMessage::Error {
+                                code: "not_replay",
+                                message: "replay controls are only available in replay mode",
+                            }),
+                            Err(ControlError::BadRequest(m)) => {
+                                tracing::debug!(error = %m, "bad replay.control");
+                                Some(ServerMessage::Error {
+                                    code: "bad_request",
+                                    message: "invalid replay.control",
+                                })
+                            }
+                            Err(ControlError::Failed(_)) => Some(ServerMessage::Error {
+                                code: "replay_unavailable",
+                                message: "replay is not running",
+                            }),
+                        }
+                    }
                     Ok(ClientMessage::Hello { .. }) | Err(_) => Some(ServerMessage::Error {
                         code: "bad_request",
                         message: "unexpected message",

@@ -47,7 +47,16 @@ export function useCanvas(paint: Paint) {
     });
   }, []);
 
-  useEffect(() => () => cancelAnimationFrame(frame.current), []);
+  // Reset the handle too: StrictMode runs this cleanup and then re-mounts,
+  // and a stale non-zero handle made schedule() think a frame was pending,
+  // so the canvas never painted again in dev.
+  useEffect(
+    () => () => {
+      cancelAnimationFrame(frame.current);
+      frame.current = 0;
+    },
+    [],
+  );
 
   useLayoutEffect(() => {
     const el = containerRef.current;

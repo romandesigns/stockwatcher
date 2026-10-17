@@ -151,3 +151,222 @@ area covers 70%.
 - Snapshots carry `quality`, plus `profile.total`, `profile.poc` and `profile.valueArea`.
 - Clients upsert a candle by `t`, and a candle at `t` supersedes any gap that covers `t`. A snapshot is
   authoritative.
+
+## Appendix B: archive, replay and providers (implemented 2026-10-17)
+
+Code: `crates/market-archive`, `crates/market-replay`, `crates/market-providers`. Crate docs are the
+full reference.
+
+**Archive layout.** `$ARCHIVE_ROOT/<trading date>/<SYMBOL>.swa` plus `manifest.json` per day. The
+day is the trading date of the sessions, so the overnight session that starts at 20:00 ET the
+evening before is in the next day's directory.
+
+**File format v1 (`.swa`).** A 16-byte prefix: magic `SWARCHV\0`, format version (u16 LE, 1), event
+contract version (u16 LE, 1), and the header length (u32 LE). Then a JSON header
+`{symbol, day, created_by}`, then **one zstd frame** of records. Each record is a u32 LE length
+(1 B to 1 MiB) and the `VersionedEvent` JSON (`{"v":1,"type":"trade",…}`). Records stay in
+**arrival order** and are never re-sorted, so a live recording keeps late and out-of-order prints
+where they arrived. JSON inside zstd was chosen over a bespoke binary encoding because:
+- the contract's persisted form is already that JSON, so there is no second serialization to keep
+  in step;
+- zstd (level 6) shrinks a fixture day roughly 10×;
+- `swarchive inspect` can show records as they are.
+Readers refuse another format or contract version, and any oversized length.
+
+**Writing and integrity.**
+- A writer writes `<SYMBOL>.swa.partial`. On finalize it finishes the frame, fsyncs, and renames
+  the file atomically. The manifest is then rewritten atomically (temp file and rename).
+- SHA-256 is computed while writing and stored in the manifest with the size, the per-type
+  counts, first and last `event_ts`, and the sources. `fixture` is true only when every source is
+  `fixture`.
+- fsync policy: on finalize (the default), every N records, or never.
+- Writers refuse to open, and stop writing, below `ARCHIVE_MIN_FREE_MB` (default 1024; checked
+  every 8 MiB written).
+- `ARCHIVE_RETENTION_DAYS` (default 0, keep forever) prunes whole days older than the ET trading
+  date. The server prunes at startup in replay mode.
+
+**`swarchive`** (`cargo run -p market-archive --bin swarchive -- …`):
+- `days`;
+- `fixture <day> [SYMBOL…] [--seed N]` writes a deterministic **fixture** day (default SMPL, FXLO,
+  FXMD, FXHI, seed 7);
+- `inspect <day> [--symbol S] [--records N]`;
+- `verify <day>` recomputes checksums and decodes every record; it exits non-zero on mismatch;
+- `prune [--today D]`;
+- `import alpaca …` is a skeleton. It refuses to run unless `SWARCHIVE_IMPORT=alpaca`, and even
+  then reports "not implemented". It never reads credentials and never calls the network.
+
+**Fixture day.** A port of the in-browser fixture: mulberry32, the same constants and draw order,
+and the first prints identical (tested), so the screens look alike. Real condition codes are used:
+- `I` odd lot, `W` average price, `Q`/`M` official open/close, `T` extended hours;
+- late prints executed 20 s before their arrival position, carrying `receive_ts`;
+- out-of-order prints inside the settle window, and duplicates;
+- quotes, and a halt/resume status pair around the 10:05–10:06:30 silence;
+- one correction (11:00 print, published 30 s later) and one cancel (12:00, published 20 s later).
+
+Symbol `i` uses seed `7 + 101·i` and a price scale of `[1, 0.27, 6.2, 13][i % 4]`, so FXLO trades
+below $1 (with $0.0001 ticks) and FXHI above $25. Every event is `source: fixture`, so none of it
+is market evidence.
+
+**Replay ordering.**
+- Each event's delivery time is the per-symbol running maximum of `receive_ts`, or of `event_ts`
+  when there is no `receive_ts`.
+- Symbol streams are merged by
+  `(delivery, event_ts, source_seq, exchange, source, symbol, stream)`. A time-sorted file without
+  `receive_ts` therefore merges exactly by `(event_ts, source_seq, exchange, source)`.
+- The same archive always yields the same event sequence (tested twice with different batch sizes
+  and stops, through the sync core and through the async driver at max speed).
+
+**Engine clock.** Replay emits `Advance(t)` marks quantized to 1 s. Before an event delivered at
+`D`, the engine has been advanced to exactly `floor_1s(D)`, and at the end of a step to `T`, to
+`floor_1s(T)`. Wall pacing only coalesces marks, so the engine state at virtual time `T` is
+identical whether `T` is reached by playing at any speed, stepping or seeking. Tested: seek
+rebuild equals linear play, comparing candles at all four timeframes, profiles at three bin widths,
+and quality counters.
+
+**Controls.**
+- `play` / `pause`.
+- `step` emits exactly one event.
+- `stepInterval <tf>` moves to the next multiple of the interval, inclusive: events delivered
+  exactly on the boundary are emitted.
+- `seek <t>` emits `Reset`, re-reads the day from its start up to `t` (consumers rebuild silently),
+  then a `Clock`.
+- `speed` takes 1…3600× or max (wire value 0).
+
+One tokio task drives everything, with no per-symbol tasks. A 50 ms pacing tick while playing,
+`virtual = anchor + wall_elapsed × speed`, re-anchored on every control. Output goes through a
+bounded channel (8192), so a slow consumer slows replay rather than growing memory; at max speed,
+batches of 2048 events keep commands responsive. A seek over a whole fixture day (~48k events by
+10:40) takes about 2–3 s in a debug build.
+
+**Providers.** `MarketDataProvider::start() → ProviderSession { info, items, clock, control }`.
+- `MARKET_DATA_MODE=replay|live` (default `replay`).
+- Replay settings: `REPLAY_DAY` (default: the latest archived day), `REPLAY_START` (ET `HH:MM[:SS]`,
+  default 10:40, matching the browser fixture), `REPLAY_SPEED` (default 10), `REPLAY_AUTOPLAY`
+  (default 1).
+- `LiveProvider` is the boundary only. Without a `LiveFeed` it fails with **not configured**: the
+  Alpaca SIP and BOATS WebSocket client waits for entitlement verification. It reads no
+  credentials in this build.
+- With a feed, `LiveProvider` stamps `receive_ts` and applies the same mark rule, plus a 1 s idle
+  tick.
+- Parity test: the fixture archive through `ReplayProvider`, and the same events through a
+  `ChannelFeed` into `LiveProvider`, give identical tape rows, snapshots (all timeframes), profiles
+  and quality counters. The late, cancel and correction paths are exercised.
+
+## Appendix C: provider-compatible simulator (`crates/provider-sim`)
+
+It is served by the server process on its own listener: `SIM_HOST` (default 127.0.0.1) and
+`SIM_PORT` (default 8791). It runs in replay mode only, while a replay is running, and
+`SIM_ENABLED=0` turns it off. Swap the base URLs to `http://127.0.0.1:8791`, or `ws://` for the
+streams:
+- `data.alpaca.markets`
+- `paper-api.alpaca.markets`
+- `stream.data.alpaca.markets`
+- `financialmodelingprep.com`
+
+Auth uses **dummy** local credentials only:
+- Alpaca: `SIM_ALPACA_KEY` / `SIM_ALPACA_SECRET` (default `sim-key` / `sim-secret`), sent as the
+  `APCA-API-KEY-ID` / `APCA-API-SECRET-KEY` headers or HTTP Basic;
+- FMP: `SIM_FMP_KEY` (default `sim-fmp-key`) as `apikey=`.
+
+Shapes follow docs.alpaca.markets as read on 2026-10-17. Golden tests cover every implemented
+route and stream message. Error bodies (`{"code":40010001,"message":…}`,
+`{"code":40110000,"message":"request is not authorized"}`) approximate Alpaca's; the docs give no
+JSON error bodies.
+
+**No future data.**
+- REST reads the archive file up to the replay clock: an event is visible iff its delivery time is
+  at or before `now`, and `end` is clamped to `now`.
+- Page tokens pin `end`, so pages stay consistent while the clock moves.
+- The streams emit exactly what replay emits, in replay order.
+
+| Implemented | Notes |
+|---|---|
+| `GET /v2/stocks/{symbol}/trades` | `start`/`end` (RFC 3339 or `YYYY-MM-DD` = ET day), `limit` 1–10000 (default 1000), `page_token`, `sort`; `feed=sip` (default; pre/regular/after) or `boats`/`overnight` (overnight session only). Response `{trades:[{t,x,p,s,c,i,z[,u]}],symbol,currency,next_page_token}`. Cancelled prints carry `u:"canceled"`; a corrected print appears as `u:"incorrect"` plus a new `u:"corrected"` entry (simulator interpretation of Alpaca's `u`) |
+| `GET /v2/stocks/{symbol}/bars` | `timeframe=1Min`/`1T` **only** (Alpaca has no 15 s bars), `adjustment=raw` only. Final 1m candles from the real chart engine (same rules as the chart); `vw` = VWAP of the prints the engine counted toward volume, net of cancels/corrections (Alpaca does not document its `vw` inclusion rules) |
+| `GET /v2/stocks/snapshots?symbols=` | `latestTrade` (last print delivered, uncorrected), `latestQuote`, `minuteBar` (last final 1m bar), `dailyBar` (regular-session 1m candles so far, `t` = ET midnight), `prevDailyBar: null`; unknown symbols omitted |
+| `GET /v2/assets` | From the manifest's symbols; `status`, `asset_class`, `exchange` filters; deterministic ids; fixture names say "simulator fixture, not a real security". Alpaca's endpoint has no price filter |
+| WS `/v2/sip` | connected → auth (message or headers, 10 s timeout) → `subscribe`/`unsubscribe` for `trades` `quotes` `bars` `updatedBars` `dailyBars` `statuses` `lulds`. `corrections` and `cancelErrors` follow `trades`. Messages `t q b u s c x` in Alpaca's fields; frames are arrays and may coalesce. Errors 400/401/402/403/404/407 (slow client, then close) |
+| WS `/v1beta1/boats`, `/v1beta1/overnight` | Same protocol; carry only overnight-session events (SIP carries the rest) |
+| WS `/v1beta1/news` | Auth plus a `news` subscription; emits nothing (the contract has no news events yet) |
+| `GET /stable/shares-float?symbol=&apikey=` | FMP shape `[{symbol,date,freeFloat,floatShares,outstandingShares}]`, **synthetic** values per symbol, header `x-stockwatcher-fixture: true`. FMP's docs refused automated fetching on 2026-10-17, so check the field list against a real response |
+| `GET /sim/universe?min=&max=` | **Simulator-only**, not Alpaca: each symbol's latest price at the clock and whether it is inside $0.15–$25 (`provider_sim::universe::in_price_band`) |
+
+**Not implemented** (all answer 404 or are accepted but silent):
+- quotes, latest-trade, latest-quote, latest-bar and multi-symbol `/v2/stocks/trades` and `/bars`;
+- bars other than 1Min, adjustments, `asof` symbol mapping, `currency` other than USD;
+- `/v2/assets/{symbol}`, the trading API beyond assets (orders, account, positions, clock,
+  calendar), and screener/movers;
+- IEX, `delayed_sip` and OTC feeds;
+- `dailyBars`, `lulds` and `imbalances` stream messages;
+- msgpack encoding;
+- connection, symbol and entitlement limits (406, 405, 409);
+- news content and FMP routes other than shares-float.
+
+## Appendix D: server wiring, protocol and running it
+
+**Ingest.** One task runs: provider → `provider-sim` → one `ChartEngine`, with per-symbol state
+for every timeframe. Each item is applied under a short lock, and an engine sequence number is
+stamped on it. The increments are serialized to JSON once and broadcast on a bounded channel of
+16,384 items, which is each connection's queue.
+- A client that lags gets a fresh `chart.snapshot` (resync) instead of more memory.
+- Snapshots are taken under the same lock as the sequence number. A client drops increments with
+  `seq` at or below its snapshot's, so a candle never moves backwards.
+- During a seek's rebuild nothing is broadcast. The rebuild's closing `Clock` triggers a resync
+  for every subscriber, and the visible clock does not jump until then.
+
+**`/ws`.** The existing hello/token/heartbeat handshake is unchanged. After `welcome`:
+- client `chart.subscribe {symbol, timeframe, profileBin}` → `chart.snapshot` (with `clock`), the
+  last 40 `tape.trade` rows, then `chart.update` / `chart.remove` / `chart.gap` for that symbol and
+  timeframe and `tape.trade` for the symbol;
+- there is one subscription per connection. Switching timeframe or bin is a new subscribe on the
+  same engine state;
+- other bin widths are re-binned from the engine's exact per-price volume, with absolute totals;
+- server `replay.clock {clock:{mode,now,speed,playing}}` goes to every client after `welcome`, on
+  every change, and about 4 Hz while playing;
+- client `replay.control {action, value}`: `play`, `pause`, `step`, `stepInterval` (`"15s"`…`"5m"`,
+  default `"1m"`), `seek` (epoch ms or RFC 3339), `speed` (multiplier, 0 = max). There is no
+  direct reply; the next `replay.clock` is the answer;
+- errors: `not_replay` (live mode), `bad_request`, `unknown_symbol`.
+
+**REST** (behind the bearer token when one is set):
+- `GET /api/chart/{symbol}/snapshot?timeframe=1m&bin=0.01`;
+- `GET /api/replay/state` returns mode, provider status (`running`, `no_data`, `not_configured`,
+  `error`, `stopped`), source, day, `fixture`, symbols, `controllable`, clock, start/end, events
+  and seq;
+- `GET /api/symbols` returns mode, status, source, day, `fixture` and symbols.
+
+`/api/health` is unchanged and stays healthy when no provider runs.
+
+**Web.**
+- `VITE_CHART_SOURCE` unset or `server` (the default): the app probes `GET /api/symbols` and uses
+  the server.
+- It falls back to the in-browser fixture **only** if the server is unreachable, refuses, or
+  reports no symbols.
+- The header always shows which source is active, with SERVER/BROWSER and FIXTURE badges and the
+  reason.
+- The play, pause, step and speed buttons send `replay.control`, and the displayed clock is the
+  server's.
+- `VITE_CHART_SOURCE=fixture` forces the in-browser fixture.
+
+**Run it locally.**
+
+```sh
+SIM_AUTOFIXTURE=1 bun dev        # server :8790 (+ simulator :8791) and Vite :5173; writes a fixture day into ./data/archive on first run
+# or separately:
+SIM_AUTOFIXTURE=1 cargo run -p stockwatcher-server
+bun run --filter @stockwatcher/web dev
+# archive tools
+cargo run -p market-archive --bin swarchive -- fixture 2026-10-15 SMPL FXLO
+cargo run -p market-archive --bin swarchive -- verify 2026-10-15
+# simulator smoke test (dummy keys)
+curl -H 'APCA-API-KEY-ID: sim-key' -H 'APCA-API-SECRET-KEY: sim-secret' 'http://127.0.0.1:8791/v2/stocks/snapshots?symbols=SMPL'
+```
+
+Live mode is `MARKET_DATA_MODE=live`. In this build it reports `not_configured` and the web app
+falls back to the labelled fixture. The production image sets `ARCHIVE_ROOT=/app/data/archive` and
+does not auto-generate fixtures.
+
+Known dev-only issue: in `vite dev`, React StrictMode leaves chart canvases blank. `useCanvas` in
+`packages/chart-web` cancels its pending frame in cleanup without resetting `frame.current`, so it
+never schedules again. Production builds are unaffected. The fix is one line
+(`frame.current = 0` after `cancelAnimationFrame`).

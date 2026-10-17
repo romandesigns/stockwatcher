@@ -3,7 +3,7 @@ use std::net::{SocketAddr, TcpStream};
 use std::process::ExitCode;
 use std::time::Duration;
 
-use stockwatcher_server::{AppState, COMMIT, Config, VERSION, router};
+use stockwatcher_server::{AppState, COMMIT, Config, Market, VERSION, router};
 use tracing_subscriber::EnvFilter;
 
 fn main() -> ExitCode {
@@ -51,7 +51,32 @@ async fn serve(config: Config) -> std::io::Result<()> {
         tracing::warn!(static_dir = %config.static_dir.display(), "no index.html; web app will 404 (run the web build)");
     }
 
-    let state = AppState::new(config.api_token.clone());
+    let (market, sim) = Market::start(&config.market);
+    let state = AppState::with_market(config.api_token.clone(), market);
+    if let Some(sim) = sim {
+        // The provider-compatible simulator on its own port (loopback by default), so Alpaca/FMP
+        // base URLs can point at it by configuration. Dummy credentials only.
+        let addr = SocketAddr::new(sim.config().host, sim.config().port);
+        match tokio::net::TcpListener::bind(addr).await {
+            Ok(listener) => {
+                tracing::info!(%addr, "provider simulator listening (Alpaca/FMP subset, dummy auth)");
+                let mut stop = state.shutdown_signal();
+                tokio::spawn(async move {
+                    let res = axum::serve(listener, sim.router())
+                        .with_graceful_shutdown(async move {
+                            let _ = stop.changed().await;
+                        })
+                        .await;
+                    if let Err(e) = res {
+                        tracing::error!(error = %e, "provider simulator stopped");
+                    }
+                });
+            }
+            Err(e) => {
+                tracing::error!(%addr, error = %e, "provider simulator could not bind; continuing without it")
+            }
+        }
+    }
     let app = router(state.clone(), &config.static_dir, &config.data_dir);
     let addr = SocketAddr::new(config.host, config.port);
     let listener = tokio::net::TcpListener::bind(addr).await?;

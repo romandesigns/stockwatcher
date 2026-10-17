@@ -200,8 +200,8 @@ export interface TapeTrade {
 
 /**
  * Replay/live clock tick. NOT produced by chart-engine: the server owns the
- * clock. Proposed client-facing message (the snapshot carries `clock` too);
- * confirm the name when the server forwards chart messages.
+ * clock (crates/server/src/market.rs). Sent to every client on change and
+ * about 4 Hz while replay plays; the snapshot carries `clock` too.
  */
 export interface ClockMessage {
   type: "replay.clock";
@@ -236,10 +236,20 @@ export interface ChartSubscribe {
   profileBin: number;
 }
 
-/** Client → server replay control. Proposed; not in the architecture doc yet. */
+/**
+ * Client → server replay control (crates/server/src/market.rs `parse_control`).
+ * Honoured in replay mode only; live mode answers `error not_replay`. There is
+ * no direct reply: the resulting `replay.clock` is the answer.
+ *
+ * `value` by action:
+ * - `play`, `pause`, `step` (exactly one event): none;
+ * - `stepInterval`: a timeframe label ("15s" | "30s" | "1m" | "5m"), default "1m";
+ * - `seek`: epoch ms (or an RFC 3339 string); the server rebuilds from the
+ *   session start and resends `chart.snapshot`;
+ * - `speed`: multiplier (1, 2, 10, 60, …), 0 = max.
+ */
 export interface ReplayControl {
   type: "replay.control";
-  action: "play" | "pause" | "step" | "speed";
-  /** For action "speed": multiplier, 0 = max. */
-  speed?: number;
+  action: "play" | "pause" | "step" | "stepInterval" | "seek" | "speed";
+  value?: number | string;
 }

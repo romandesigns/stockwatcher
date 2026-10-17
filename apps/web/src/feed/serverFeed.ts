@@ -9,9 +9,10 @@ export interface ServerFeedOptions {
 }
 
 /**
- * The real feed: the server's `/ws`, via @stockwatcher/shared's client (hello
- * + token, heartbeat, backoff). Not the default until the Rust chart-engine
- * serves chart.* messages.
+ * The real feed and the default source: the server's `/ws` (chart-engine
+ * output from the replay or live provider), via @stockwatcher/shared's client
+ * (hello + token, heartbeat, backoff). Replay controls go to the server as
+ * `replay.control {action, value}`; the server answers with `replay.clock`.
  *
  * shared's parseServerMessage only knows hello/welcome/ping/pong/error and
  * drops everything else, so this wraps the socket and tees raw frames to

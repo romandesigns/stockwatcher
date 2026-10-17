@@ -54,9 +54,9 @@ jobs:
       # -p, not --workspace: the workspace also holds the Tauri crate, which
       # needs WebKitGTK on Linux. The `desktop` job checks it on Windows.
       - name: Clippy
-        run: cargo clippy -p stockwatcher-server -p market-events -p chart-engine --all-targets --locked -- -D warnings
+        run: cargo clippy -p stockwatcher-server -p market-events -p chart-engine -p market-archive -p market-replay -p market-providers -p provider-sim --all-targets --locked -- -D warnings
       - name: Test
-        run: cargo test -p stockwatcher-server -p market-events -p chart-engine --locked
+        run: cargo test -p stockwatcher-server -p market-events -p chart-engine -p market-archive -p market-replay -p market-providers -p provider-sim --locked
 
   mobile:
     name: Mobile (typecheck, lint, test, doctor, bundle)

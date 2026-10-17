@@ -1,7 +1,9 @@
 // FIXTURE DATA: NOT MARKET DATA.
 //
-// A deterministic stand-in for the server until it forwards chart-engine
-// output over /ws. It generates synthetic prints for one fictional symbol
+// A deterministic in-browser stand-in, used when the server is unreachable or
+// has no data (see feed/source.ts) or with VITE_CHART_SOURCE=fixture. The
+// server's own fixture day (crates/market-archive/src/fixture.rs) ports this
+// generator, so both look alike. It generates synthetic prints for one fictional symbol
 // from a seeded PRNG and emits EXACTLY the engine's wire shapes
 // (crates/chart-engine/src/wire.rs: chart.snapshot / chart.update /
 // chart.gap / tape.trade), on a virtual clock with play/pause/step/speed.
@@ -18,7 +20,8 @@
 // - tape `counted`/`reason` use the engine's vocabulary.
 // Not modelled: corrections and cancels (so no chart.remove), late-but-
 // applied prints, volume_only_trades gaps (volume-only prints are generated
-// only after an OHLC print in the same 15 s interval), early closes.
+// only after an OHLC print in the same 15 s interval), early closes, and the
+// replay actions stepInterval and seek (ignored here).
 
 import {
   TIMEFRAME_MS,
@@ -413,7 +416,7 @@ export function createFixtureFeed(opts: FixtureOptions = {}): ChartFeed & { now(
     control(cmd: ReplayCommand) {
       if (cmd.action === "play") playing = true;
       else if (cmd.action === "pause") playing = false;
-      else if (cmd.action === "speed" && cmd.speed !== undefined) speed = cmd.speed;
+      else if (cmd.action === "speed" && typeof cmd.value === "number") speed = cmd.value;
       else if (cmd.action === "step") {
         playing = false;
         publish(advance(Infinity, 1), true);

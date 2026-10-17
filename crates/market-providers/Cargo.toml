@@ -1,0 +1,25 @@
+[package]
+name = "market-providers"
+description = "MarketDataProvider boundary: ReplayProvider (archive) and LiveProvider (skeleton)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+market-events = { path = "../market-events" }
+market-archive = { path = "../market-archive" }
+market-replay = { path = "../market-replay" }
+chrono = { version = "0.4.45", default-features = false, features = ["std", "clock", "serde"] }
+chrono-tz = "0.10.4"
+serde = { version = "1.0.229", features = ["derive"] }
+tokio = { version = "1.53.3", features = ["rt", "macros", "sync", "time"] }
+tracing = "0.1.44"
+
+[dev-dependencies]
+chart-engine = { path = "../chart-engine" }
+tempfile = "3.27.0"
+tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "sync", "time"] }

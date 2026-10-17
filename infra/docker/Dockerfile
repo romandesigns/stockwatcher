@@ -35,7 +35,9 @@ WORKDIR /src
 COPY --from=inputs /js/ ./
 RUN --mount=type=cache,target=/root/.bun/install/cache \
     bun install --frozen-lockfile --filter @stockwatcher/web
-COPY packages/shared packages/shared
+# Every package: apps/web imports chart-core and chart-web too (node_modules
+# stay out via .dockerignore).
+COPY packages packages
 COPY apps/web apps/web
 RUN bun run --filter @stockwatcher/web build
 
@@ -74,6 +76,7 @@ ENV HOST=0.0.0.0 \
     PORT=8790 \
     STATIC_DIR=/app/web \
     DATA_DIR=/app/data \
+    ARCHIVE_ROOT=/app/data/archive \
     LOG_FORMAT=json \
     RUST_LOG=info
 USER nonroot
