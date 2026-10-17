@@ -723,3 +723,95 @@ async fn a_bracket_fills_its_entry_then_one_exit_and_cancels_the_other() {
     .await;
     assert_eq!(next(&mut ws, is("error")).await["code"], "bad_bracket");
 }
+
+/// docs/architecture/halts-luld-fills.md: the fixture day halts every symbol 10:05–10:06:30.
+/// Replayed through the server, a subscriber sees `chart.halt` start and end and LULD points,
+/// whatever its timeframe, and a later snapshot carries both.
+#[tokio::test]
+async fn fixture_halt_and_luld_bands_reach_subscribers_and_snapshots() {
+    const T1004: i64 = T1040 - 36 * 60_000;
+    const T1005: i64 = T1040 - 35 * 60_000;
+    const T100630: i64 = T1040 - 33 * 60_000 - 30_000;
+    let s = stack(&[
+        ("REPLAY_START", "10:04"),
+        ("REPLAY_AUTOPLAY", "0"),
+        ("REPLAY_SPEED", "60"),
+    ])
+    .await;
+    let mut ws = connect(&s.url).await;
+    next(&mut ws, |m| {
+        m["type"] == "replay.clock" && m["clock"]["now"].as_i64().unwrap_or(0) >= T1004
+    })
+    .await;
+    send(
+        &mut ws,
+        json!({"type":"chart.subscribe","symbol":"SMPL","timeframe":"1m","profileBin":0.01}),
+    )
+    .await;
+    let snap = next(&mut ws, is("chart.snapshot")).await;
+    assert_eq!(snap["halts"], json!([]));
+    let bands = snap["luld"].as_array().unwrap();
+    assert!(!bands.is_empty(), "bands since 09:30");
+    assert!(bands.last().unwrap()["up"].is_number());
+    assert!(
+        bands
+            .windows(2)
+            .all(|w| w[0]["t"].as_i64() < w[1]["t"].as_i64())
+    );
+
+    send(&mut ws, json!({"type":"replay.control","action":"play"})).await;
+    let mut halt_frames = Vec::new();
+    let mut luld_frames = Vec::new();
+    // Until the first bands after the resume.
+    loop {
+        let m = next(&mut ws, |m| {
+            m["type"] == "chart.halt" || m["type"] == "chart.luld"
+        })
+        .await;
+        assert_eq!(m["symbol"], "SMPL");
+        assert!(m.get("timeframe").is_none());
+        if m["type"] == "chart.halt" {
+            halt_frames.push(m["halt"].clone());
+        } else {
+            let p = m["point"].clone();
+            let after_resume = p["t"].as_i64().unwrap() >= T100630 && p["up"].is_number();
+            luld_frames.push(p);
+            if after_resume {
+                break;
+            }
+        }
+    }
+    let start = json!({"start": T1005, "end": null, "reason": "LUDP", "code": "H"});
+    let end = json!({"start": T1005, "end": T100630, "reason": "LUDP", "code": "H"});
+    assert_eq!(halt_frames, vec![start, end.clone()]);
+    assert!(
+        luld_frames
+            .iter()
+            .any(|p| *p == json!({"t": T1005, "ref": null, "up": null, "down": null})),
+        "{luld_frames:?}"
+    );
+    let first_after = luld_frames.last().unwrap().clone();
+
+    send(&mut ws, json!({"type":"replay.control","action":"pause"})).await;
+    next(&mut ws, |m| {
+        m["type"] == "replay.clock" && m["clock"]["playing"] == false
+    })
+    .await;
+    // Another timeframe: the same halts and bands.
+    send(
+        &mut ws,
+        json!({"type":"chart.subscribe","symbol":"SMPL","timeframe":"5m","profileBin":0.01}),
+    )
+    .await;
+    let snap = next(&mut ws, is("chart.snapshot")).await;
+    assert_eq!(snap["halts"], json!([end]));
+    let bands = snap["luld"].as_array().unwrap();
+    assert!(bands.contains(&json!({"t": T1005, "ref": null, "up": null, "down": null})));
+    assert!(bands.contains(&first_after), "{bands:?}");
+    // No bands are published while halted.
+    assert!(
+        !bands
+            .iter()
+            .any(|p| (T1005 + 1..T100630).contains(&p["t"].as_i64().unwrap()))
+    );
+}

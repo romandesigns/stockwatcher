@@ -33,10 +33,59 @@ fn increment_json_shapes() {
         ups.iter().filter_map(|u| u.timeframe()).collect::<Vec<_>>(),
         Timeframe::ALL.to_vec()
     );
+    // The first regular-session trade publishes LULD bands (09:30–09:45 not involved: 10% of
+    // $3.18 is 3.498 → 3.49 and 2.862 → 2.87), sent to every timeframe.
+    assert_eq!(
+        json[5],
+        format!(
+            r#"{{"type":"chart.luld","symbol":"SMPL","point":{{"t":{t},"ref":3.18,"up":3.49,"down":2.87}}}}"#
+        )
+    );
+    assert_eq!(ups.len(), 6);
     // Increments round-trip, so the server can also read them back (e.g. from a recording).
     for (u, j) in ups.iter().zip(&json) {
         assert_eq!(
             &serde_json::from_str::<chart_engine::wire::ChartUpdate>(j).unwrap(),
+            u
+        );
+    }
+}
+
+#[test]
+fn halt_json_shapes() {
+    let mut e = ChartEngine::default();
+    let halt = |kind, code: &str| {
+        market_events::MarketEvent::Status(market_events::Status {
+            symbol: Some(SYM.into()),
+            event_ts: at(10, 0, 1, 250),
+            receive_ts: None,
+            source: market_events::Source::Fixture,
+            kind,
+            code: code.into(),
+            reason: "LUDP".into(),
+            tape: market_events::Tape::C,
+        })
+    };
+    let ups = e.apply(&halt(market_events::StatusKind::Halt, "H"));
+    let t = ms(at(10, 0, 1, 250));
+    assert_eq!(
+        serde_json::to_string(&ups[0]).unwrap(),
+        format!(
+            r#"{{"type":"chart.halt","symbol":"SMPL","halt":{{"start":{t},"end":null,"reason":"LUDP","code":"H"}}}}"#
+        )
+    );
+    let ups = e.apply(&halt(market_events::StatusKind::Resume, "T"));
+    // The resume closes the same halt: same start and the halt's own code.
+    assert_eq!(
+        serde_json::to_string(&ups[0]).unwrap(),
+        format!(
+            r#"{{"type":"chart.halt","symbol":"SMPL","halt":{{"start":{t},"end":{t},"reason":"LUDP","code":"H"}}}}"#
+        )
+    );
+    for u in &ups {
+        let j = serde_json::to_string(u).unwrap();
+        assert_eq!(
+            &serde_json::from_str::<chart_engine::wire::ChartUpdate>(&j).unwrap(),
             u
         );
     }
@@ -71,5 +120,11 @@ fn snapshot_json_shape() {
         serde_json::json!({"low": 3.18, "high": 3.20, "v": 150})
     );
     assert_eq!(v["quality"]["duplicates"], 0);
+    assert_eq!(v["quality"]["haltsUnmatched"], 0);
     assert!(v.get("clock").is_none());
+    assert_eq!(v["halts"], serde_json::json!([]));
+    assert_eq!(
+        v["luld"],
+        serde_json::json!([{"t": ms(at(10, 0, 1, 0)), "ref": 3.18, "up": 3.49, "down": 2.87}])
+    );
 }

@@ -2,14 +2,17 @@
 //!
 //! JSON, camelCase, times in **epoch milliseconds UTC**, prices as JSON numbers in dollars
 //! (converted from exact micro-dollars only here, for display). Messages carry `"type"`:
-//! `chart.snapshot`, `chart.update`, `chart.remove`, `chart.gap`, `tape.trade`.
+//! `chart.snapshot`, `chart.update`, `chart.remove`, `chart.gap`, `tape.trade`, `chart.halt`,
+//! `chart.luld`.
 //!
 //! Client rules:
 //! - a snapshot is authoritative and replaces everything for its symbol/timeframe;
 //! - `chart.update` upserts the candle at `candle.t` (it may be an older, already-final candle that
 //!   a late trade, correction or cancel revised); a candle at `t` supersedes any gap covering `t`;
 //! - `chart.remove` deletes whatever is at `t` (a cancel/correction emptied that interval);
-//! - `chart.gap` adds a gap marker; `profile` rows carry **absolute** bin totals, not deltas.
+//! - `chart.gap` adds a gap marker; `profile` rows carry **absolute** bin totals, not deltas;
+//! - `chart.halt` and `chart.luld` do not depend on the timeframe (docs/architecture/
+//!   halts-luld-fills.md): a client upserts a halt by `start` and a LULD point by `t`.
 
 use crate::quality::DataQuality;
 use crate::timeframe::Timeframe;
@@ -128,6 +131,56 @@ pub struct ChartSnapshot {
     pub quality: DataQuality,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clock: Option<ClockInfo>,
+    /// Every retained halt of the symbol, ascending by `start` (the same for every timeframe).
+    #[serde(default)]
+    pub halts: Vec<HaltWire>,
+    /// The LULD band changes of the current trading date's regular session, ascending.
+    #[serde(default)]
+    pub luld: Vec<LuldWire>,
+}
+
+/// A trading halt. `end` is `None` while the halt is still on.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HaltWire {
+    /// The halt's `event_ts`, epoch ms.
+    pub start: i64,
+    /// The resume's `event_ts`, epoch ms.
+    pub end: Option<i64>,
+    /// Provider reason (Alpaca `rc`), e.g. `"LUDP"`.
+    pub reason: String,
+    /// Provider status code of the halt (Alpaca `sc`), e.g. `"H"`.
+    pub code: String,
+}
+
+/// LULD bands in effect from `t` until the next point. `up`/`down` (and `ref`) `None` means no
+/// bands from `t` (a halt, or the close). Modelled, not the exchange's numbers.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LuldWire {
+    /// Epoch ms.
+    pub t: i64,
+    /// The reference price (5-minute mean), dollars.
+    #[serde(rename = "ref")]
+    pub reference: Option<f64>,
+    pub up: Option<f64>,
+    pub down: Option<f64>,
+}
+
+/// `chart.halt`: a halt started, or (same `start`, `end` now set) resumed.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HaltUpdate {
+    pub symbol: String,
+    pub halt: HaltWire,
+}
+
+/// `chart.luld`: a LULD band change.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LuldUpdate {
+    pub symbol: String,
+    pub point: LuldWire,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -199,6 +252,10 @@ pub enum ChartUpdate {
     Gap(GapUpdate),
     #[serde(rename = "tape.trade")]
     Tape(TapeTrade),
+    #[serde(rename = "chart.halt")]
+    Halt(HaltUpdate),
+    #[serde(rename = "chart.luld")]
+    Luld(LuldUpdate),
 }
 
 impl ChartUpdate {
@@ -207,7 +264,18 @@ impl ChartUpdate {
             ChartUpdate::Candle(u) => Some(u.timeframe),
             ChartUpdate::Remove(u) => Some(u.timeframe),
             ChartUpdate::Gap(u) => Some(u.timeframe),
-            ChartUpdate::Tape(_) => None,
+            ChartUpdate::Tape(_) | ChartUpdate::Halt(_) | ChartUpdate::Luld(_) => None,
+        }
+    }
+
+    pub fn symbol(&self) -> &str {
+        match self {
+            ChartUpdate::Candle(u) => &u.symbol,
+            ChartUpdate::Remove(u) => &u.symbol,
+            ChartUpdate::Gap(u) => &u.symbol,
+            ChartUpdate::Tape(u) => &u.symbol,
+            ChartUpdate::Halt(u) => &u.symbol,
+            ChartUpdate::Luld(u) => &u.symbol,
         }
     }
 
@@ -221,6 +289,20 @@ impl ChartUpdate {
     pub fn as_tape(&self) -> Option<&TapeTrade> {
         match self {
             ChartUpdate::Tape(u) => Some(u),
+            _ => None,
+        }
+    }
+
+    pub fn as_halt(&self) -> Option<&HaltWire> {
+        match self {
+            ChartUpdate::Halt(u) => Some(&u.halt),
+            _ => None,
+        }
+    }
+
+    pub fn as_luld(&self) -> Option<&LuldWire> {
+        match self {
+            ChartUpdate::Luld(u) => Some(&u.point),
             _ => None,
         }
     }

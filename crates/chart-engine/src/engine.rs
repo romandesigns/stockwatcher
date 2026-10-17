@@ -1,14 +1,16 @@
 use crate::config::EngineConfig;
+use crate::luld::{LuldPoint, LuldState};
 use crate::profile::{TickProfile, poc, value_area};
 use crate::quality::DataQuality;
 use crate::timeframe::Timeframe;
 use crate::wire::{
     CandleRemove, CandleUpdate, CandleWire, ChartSnapshot, ChartUpdate, GapReason, GapUpdate,
-    GapWire, ProfileRow, ProfileWire, SessionInfo, TapeTrade, ValueArea,
+    GapWire, HaltUpdate, HaltWire, LuldUpdate, LuldWire, ProfileRow, ProfileWire, SessionInfo,
+    TapeTrade, ValueArea,
 };
 use market_events::{
-    Cancel, Correction, EffectReason, MarketEvent, Price, SessionId, Source, Trade, TradeId,
-    UnixNanos, classify, trade_effect,
+    Cancel, Correction, EffectReason, MarketEvent, Price, SessionId, SessionKind, Source, Status,
+    StatusKind, Trade, TradeId, UnixNanos, classify, trade_effect,
 };
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, HashMap, VecDeque};
@@ -367,6 +369,44 @@ impl Series {
     }
 }
 
+/// A trading halt, from a `Halt` status to its `Resume`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct HaltRec {
+    start: i64,
+    end: Option<i64>,
+    reason: String,
+    code: String,
+}
+
+impl HaltRec {
+    fn wire(&self) -> HaltWire {
+        HaltWire {
+            start: ms(self.start),
+            end: self.end.map(ms),
+            reason: self.reason.clone(),
+            code: self.code.clone(),
+        }
+    }
+}
+
+fn luld_wire(p: &LuldPoint) -> LuldWire {
+    LuldWire {
+        t: ms(p.t),
+        reference: p.reference.map(Price::to_f64),
+        up: p.up.map(Price::to_f64),
+        down: p.down.map(Price::to_f64),
+    }
+}
+
+fn luld_updates(symbol: &str, points: Vec<LuldPoint>, out: &mut Vec<ChartUpdate>) {
+    out.extend(points.iter().map(|p| {
+        ChartUpdate::Luld(LuldUpdate {
+            symbol: symbol.to_string(),
+            point: luld_wire(p),
+        })
+    }));
+}
+
 #[derive(Clone, Debug)]
 struct SymbolState {
     symbol: String,
@@ -381,6 +421,10 @@ struct SymbolState {
     quality: BTreeMap<Option<SessionId>, DataQuality>,
     /// The finalization deadline currently queued in the engine's heap.
     scheduled: Option<i64>,
+    /// Retained halts, ascending by start; at most the last one is open.
+    halts: Vec<HaltRec>,
+    /// LULD bands of the latest regular session the symbol traded in.
+    luld: Option<LuldState>,
 }
 
 impl SymbolState {
@@ -389,10 +433,40 @@ impl SymbolState {
     }
 
     fn next_deadline(&self) -> Option<i64> {
-        self.series
+        let candles = self
+            .series
             .iter()
             .filter_map(|s| s.buckets.back().filter(|b| !b.final_emitted).map(|b| b.end))
-            .min()
+            .min();
+        let luld = self.luld.as_ref().and_then(LuldState::next_deadline);
+        candles.into_iter().chain(luld).min()
+    }
+
+    fn halted(&self) -> bool {
+        self.halts.last().is_some_and(|h| h.end.is_none())
+    }
+
+    /// LULD for one accepted trade: a price-qualifying regular-session print while not halted
+    /// feeds the reference; any other print only moves LULD time forward (so a print after the
+    /// close ends the bands even if the clock has not got there yet).
+    fn luld_trade(&mut self, ts: i64, rec: &TradeRec) -> Vec<LuldPoint> {
+        let mut pts = Vec::new();
+        let regular = rec.session.kind == SessionKind::Regular;
+        if regular && rec.ohlc && !self.halted() {
+            if self.luld.as_ref().is_none_or(|l| l.session < rec.session)
+                && let Some((open, close)) = rec.session.bounds()
+            {
+                self.luld = Some(LuldState::new(rec.session, open.0, close.0));
+            }
+            if let Some(l) = self.luld.as_mut().filter(|l| l.session == rec.session) {
+                l.on_trade(ts, rec.price, &mut pts);
+                return pts;
+            }
+        }
+        if let Some(l) = self.luld.as_mut() {
+            l.advance(ts, true, &mut pts);
+        }
+        pts
     }
 
     fn profile_rows(&self, session: SessionId, bin: Price, prices: &[Price]) -> Vec<ProfileRow> {
@@ -470,14 +544,64 @@ impl ChartEngine {
 
     /// Applies one normalized event and returns the increments it caused, in order: the tape row,
     /// then per timeframe (ascending) any finalized candles, a gap marker if a new interval opened
-    /// after a hole, and the touched candle. Quotes and status events produce nothing yet.
+    /// after a hole, the touched candle, and any LULD band change. A symbol's `Halt`/`Resume`
+    /// status produces `chart.halt` (and a LULD null point at a halt); quotes and every other
+    /// status produce nothing.
     pub fn apply(&mut self, event: &MarketEvent) -> Vec<ChartUpdate> {
         match event {
             MarketEvent::Trade(t) => self.apply_trade(t),
             MarketEvent::Correction(c) => self.apply_correction(c),
             MarketEvent::Cancel(c) => self.apply_cancel(c),
-            MarketEvent::Quote(_) | MarketEvent::Status(_) => Vec::new(),
+            MarketEvent::Status(s) => self.apply_status(s),
+            MarketEvent::Quote(_) => Vec::new(),
         }
+    }
+
+    /// Halts (docs/architecture/halts-luld-fills.md section 1). A `Halt` opens a halt at its
+    /// `event_ts` and a `Resume` closes the open one; a second `Halt` while halted and a `Resume`
+    /// with nothing open are ignored and counted (`haltsUnmatched`). Market-wide statuses and
+    /// every other kind change nothing.
+    fn apply_status(&mut self, s: &Status) -> Vec<ChartUpdate> {
+        let Some(symbol) = s.symbol.as_deref() else {
+            return Vec::new();
+        };
+        if !matches!(s.kind, StatusKind::Halt | StatusKind::Resume) {
+            return Vec::new();
+        }
+        let st = Self::state(&mut self.symbols, &self.cfg, symbol);
+        let ts = s.event_ts.0;
+        let mut out = Vec::new();
+        match (s.kind, st.halted()) {
+            (StatusKind::Halt, false) => {
+                let halt = HaltRec {
+                    start: ts,
+                    end: None,
+                    reason: s.reason.clone(),
+                    code: s.code.clone(),
+                };
+                out.push(ChartUpdate::Halt(HaltUpdate {
+                    symbol: symbol.to_string(),
+                    halt: halt.wire(),
+                }));
+                st.halts.push(halt);
+                let mut pts = Vec::new();
+                if let Some(l) = st.luld.as_mut() {
+                    l.on_halt(ts, &mut pts);
+                }
+                luld_updates(symbol, pts, &mut out);
+            }
+            (StatusKind::Resume, true) => {
+                let h = st.halts.last_mut().expect("halted means an open halt");
+                h.end = Some(ts.max(h.start));
+                out.push(ChartUpdate::Halt(HaltUpdate {
+                    symbol: symbol.to_string(),
+                    halt: h.wire(),
+                }));
+            }
+            _ => st.q(classify(s.event_ts)).halts_unmatched += 1,
+        }
+        Self::reschedule(&mut self.pending, st);
+        out
     }
 
     /// Moves the clock forward (never back) and finalizes every interval that has ended, so a
@@ -510,6 +634,11 @@ impl ChartEngine {
             for s in &mut st.series {
                 s.sweep(&ctx, &mut out);
             }
+            let mut pts = Vec::new();
+            if let Some(l) = st.luld.as_mut() {
+                l.advance(now, true, &mut pts);
+            }
+            luld_updates(&st.symbol, pts, &mut out);
             Self::reschedule(&mut self.pending, st);
             Self::prune(
                 st,
@@ -556,6 +685,8 @@ impl ChartEngine {
                 profiles: BTreeMap::new(),
                 quality: BTreeMap::new(),
                 scheduled: None,
+                halts: Vec::new(),
+                luld: None,
             })
     }
 
@@ -668,6 +799,8 @@ impl ChartEngine {
                 s.apply(&key, &rec, &st.trades, &ctx, &mut out);
             }
         }
+        let pts = st.luld_trade(ts, &rec);
+        luld_updates(&t.symbol, pts, &mut out);
         Self::reschedule(&mut self.pending, st);
         Self::prune(st, wm, retention, max_tf, keep);
         out
@@ -795,6 +928,20 @@ impl ChartEngine {
         while st.profiles.len() > keep {
             st.profiles.pop_first();
         }
+        // Halts follow the candles: one that ended before every retained interval goes.
+        if let Some(oldest) = st
+            .series
+            .iter()
+            .filter_map(|s| s.buckets.front().map(|b| b.start))
+            .min()
+        {
+            let gone = st
+                .halts
+                .iter()
+                .take_while(|h| h.end.is_some_and(|e| e < oldest))
+                .count();
+            st.halts.drain(..gone);
+        }
         while st.quality.keys().filter(|k| k.is_some()).count() > keep {
             let oldest = *st
                 .quality
@@ -858,6 +1005,13 @@ impl ChartEngine {
                 .and_then(|s| st.quality.get(&Some(s)).copied())
                 .unwrap_or_default(),
             clock: None,
+            halts: st.halts.iter().map(HaltRec::wire).collect(),
+            luld: st
+                .luld
+                .as_ref()
+                .filter(|l| session.is_some_and(|s| s.date == l.session.date))
+                .map(|l| l.points.iter().map(luld_wire).collect())
+                .unwrap_or_default(),
         })
     }
 

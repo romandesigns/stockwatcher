@@ -114,8 +114,12 @@ fn finalized_state(events: &[MarketEvent]) -> String {
     let mut out = String::new();
     for tf in Timeframe::ALL {
         let mut s = e.snapshot(SYM, tf, None).unwrap();
-        // Counters legitimately depend on arrival order (how many prints were reordered).
+        // Counters legitimately depend on arrival order (how many prints were reordered), and so
+        // do LULD bands: they are published as trades arrive, so a print reordered inside the
+        // settle window joins the 5-minute mean when it arrives. Replaying one arrival order is
+        // still byte-identical (below).
         s.quality = Default::default();
+        s.luld.clear();
         assert!(s.candles.iter().all(|c| c.is_final));
         out.push_str(&serde_json::to_string(&s).unwrap());
     }

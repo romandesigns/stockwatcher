@@ -83,6 +83,18 @@
 //! **Outside sessions.** A trade whose time is in no session (weekend, holiday, a closed evening)
 //! is excluded and counted (`outsideSession`).
 //!
+//! **Halts.** A symbol's `Halt` status opens a halt at its `event_ts`, `Resume` closes it
+//! (`chart.halt` both times; clients upsert by `start`). A second `Halt` while halted and a
+//! `Resume` with nothing open are ignored and counted (`haltsUnmatched`); market-wide statuses
+//! and every other kind change nothing. Halts are timeframe-independent and are dropped once
+//! they ended before every retained interval.
+//!
+//! **LULD bands.** Modelled, not the exchange's numbers: see [`luld`] for the model and the
+//! pure band function. Points are stamped at the time of the change (a doubling boundary, the
+//! close, a halt, or the trade that moved the reference), whoever notices it first (the clock or
+//! a trade), so play, step and a seek rebuild give the same list. Being published as trades
+//! arrive, the bands (unlike candles) depend on arrival order inside the settle window.
+//!
 //! **Memory.** Per symbol: a ring buffer of `max_intervals_per_timeframe` intervals per timeframe,
 //! trade records for the retention window, and profiles/counters for `sessions_retained`
 //! sessions. No thread or timer per symbol: `advance_clock` walks a min-heap of pending interval
@@ -90,6 +102,7 @@
 
 mod config;
 mod engine;
+pub mod luld;
 pub mod profile;
 mod quality;
 mod timeframe;

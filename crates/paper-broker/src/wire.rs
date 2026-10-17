@@ -201,6 +201,38 @@ pub struct PaperState {
     pub account: AccountWire,
     pub orders: Vec<OrderWire>,
     pub positions: Vec<PositionWire>,
+    /// The last [`crate::FILLS_RETAINED`] fills, oldest first, so a client that connects later or
+    /// reloads can still draw fill markers and the trade list.
+    pub fills: Vec<FillWire>,
+}
+
+/// One retained fill in `paper.state`.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FillWire {
+    pub order_id: String,
+    pub symbol: String,
+    pub side: Side,
+    pub qty: i64,
+    pub price: f64,
+    /// The filling trade's time, epoch ms.
+    pub t: i64,
+    /// The order's bracket role; `None` outside a bracket.
+    pub role: Option<Role>,
+}
+
+impl FillWire {
+    fn new(f: &Fill, role: Option<Role>) -> Self {
+        FillWire {
+            order_id: format!("o-{}", f.order_num),
+            symbol: f.symbol.clone(),
+            side: f.side,
+            qty: f.qty,
+            price: f.price.to_f64(),
+            t: f.t,
+            role,
+        }
+    }
 }
 
 /// One execution, sent alongside the `paper.state` that contains it.
@@ -249,6 +281,7 @@ impl Broker {
                 .positions()
                 .map(|(s, p)| PositionWire::new(s, p))
                 .collect(),
+            fills: self.fills().map(|(f, r)| FillWire::new(f, r)).collect(),
         }
     }
 }

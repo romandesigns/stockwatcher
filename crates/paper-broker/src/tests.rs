@@ -614,7 +614,8 @@ fn state_json_matches_the_contract() {
                 "createdAt": T0, "updatedAt": T0,
                 "parentId": null, "role": null, "ocoGroup": null
             }],
-            "positions": []
+            "positions": [],
+            "fills": []
         })
     );
     let out = b.on_trade("SMPL", c(337), T0 + 12_345);
@@ -632,6 +633,11 @@ fn state_json_matches_the_contract() {
     );
     assert_eq!(v["orders"][0]["status"], "filled");
     assert_eq!(v["orders"][0]["avgFillPrice"], 3.38);
+    assert_eq!(
+        v["fills"],
+        json!([{"orderId": "o-1", "symbol": "SMPL", "side": "buy", "qty": 100, "price": 3.38,
+                "t": T0 + 12_345, "role": null}])
+    );
 }
 
 #[test]
@@ -1279,4 +1285,60 @@ fn bracket_json_shape() {
     let bad = json!({"symbol":"SMPL","side":"buy","orderType":"market","qty":1,
                      "bracket": {"takeProfit": "3.50", "stopLoss": 3.31}});
     assert!(serde_json::from_value::<PlaceCommand>(bad).is_err());
+}
+
+// --- fill history (docs/architecture/halts-luld-fills.md section 3) ------------------------
+
+#[test]
+fn fills_history_keeps_the_last_200_oldest_first_with_roles() {
+    let mut b = Broker::new();
+    for i in 0..(FILLS_RETAINED as i64 + 5) {
+        place(&mut b, order(Side::Buy, OrderType::Market, 1));
+        assert_eq!(b.on_trade("SMPL", c(300 + i), T0 + i).fills.len(), 1);
+    }
+    let fills: Vec<_> = b.fills().collect();
+    assert_eq!(fills.len(), FILLS_RETAINED);
+    // The five oldest went; the rest are oldest first.
+    assert_eq!(fills[0].0.t, T0 + 5);
+    assert_eq!(fills.last().unwrap().0.t, T0 + FILLS_RETAINED as i64 + 4);
+    assert!(
+        fills
+            .windows(2)
+            .all(|w| w[0].0.order_num < w[1].0.order_num)
+    );
+    assert!(fills.iter().all(|(_, r)| r.is_none()));
+    // Finished orders are capped at 50, but their fills stay in the history.
+    assert!(b.orders().len() <= FINISHED_RETAINED);
+    let v = serde_json::to_value(b.state()).unwrap();
+    assert_eq!(v["fills"].as_array().unwrap().len(), FILLS_RETAINED);
+    assert_eq!(v["fills"][0]["orderId"], "o-6");
+}
+
+#[test]
+fn fills_history_carries_the_bracket_role() {
+    let mut b = Broker::new();
+    let (e, tp, _sl) = place_bracket(&mut b, limit(Side::Buy, 100, c(338)), c(350), c(331));
+    assert_eq!(b.on_trade("SMPL", c(337), T0 + 1).fills.len(), 1); // entry
+    assert_eq!(b.on_trade("SMPL", c(351), T0 + 2).fills.len(), 1); // take-profit
+    let v = serde_json::to_value(b.state()).unwrap();
+    assert_eq!(
+        v["fills"],
+        json!([
+            {"orderId": e, "symbol": "SMPL", "side": "buy", "qty": 100, "price": 3.38,
+             "t": T0 + 1, "role": "entry"},
+            {"orderId": tp, "symbol": "SMPL", "side": "sell", "qty": 100, "price": 3.50,
+             "t": T0 + 2, "role": "take_profit"},
+        ])
+    );
+}
+
+#[test]
+fn reset_clears_the_fill_history() {
+    let mut b = Broker::new();
+    place(&mut b, order(Side::Buy, OrderType::Market, 10));
+    b.on_trade("SMPL", c(338), T0);
+    assert_eq!(b.fills().count(), 1);
+    b.reset();
+    assert_eq!(b.fills().count(), 0);
+    assert_eq!(serde_json::to_value(b.state()).unwrap()["fills"], json!([]));
 }

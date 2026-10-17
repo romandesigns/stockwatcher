@@ -28,6 +28,9 @@ pub const STARTING_CASH_MICROS: i128 = 100_000 * 1_000_000;
 pub const MAX_QTY: i64 = 1_000_000;
 /// How many finished (filled, cancelled, rejected) orders stay in the state, newest kept.
 pub const FINISHED_RETAINED: usize = 50;
+/// How many fills `paper.state` carries (docs/architecture/halts-luld-fills.md section 3), newest
+/// kept. Independent of [`FINISHED_RETAINED`]: a fill outlives its order's place in the list.
+pub const FILLS_RETAINED: usize = 200;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -404,6 +407,9 @@ pub struct Broker {
     /// Finished orders, oldest first, at most [`FINISHED_RETAINED`].
     finished: VecDeque<Order>,
     positions: BTreeMap<String, Position>,
+    /// The latest fills with their order's bracket role, oldest first, at most
+    /// [`FILLS_RETAINED`].
+    fills: VecDeque<(Fill, Option<Role>)>,
 }
 
 impl Default for Broker {
@@ -423,6 +429,7 @@ impl Broker {
             working: Vec::new(),
             finished: VecDeque::new(),
             positions: BTreeMap::new(),
+            fills: VecDeque::new(),
         }
     }
 
@@ -446,6 +453,12 @@ impl Broker {
 
     pub fn positions(&self) -> impl Iterator<Item = (&str, &Position)> {
         self.positions.iter().map(|(s, p)| (s.as_str(), p))
+    }
+
+    /// The retained fills, oldest first, each with its order's bracket role (`None` outside a
+    /// bracket).
+    pub fn fills(&self) -> impl Iterator<Item = (&Fill, Option<Role>)> {
+        self.fills.iter().map(|(f, r)| (f, *r))
     }
 
     /// Every working order plus the retained finished ones, in creation order.
@@ -739,6 +752,7 @@ impl Broker {
         self.working.clear();
         self.finished.clear();
         self.positions.clear();
+        self.fills.clear();
         self.seq += 1;
     }
 
@@ -757,6 +771,7 @@ impl Broker {
         // Brackets whose exit filled on this trade, and entries that filled on it.
         let mut closed_groups = Vec::new();
         let mut filled_entries = Vec::new();
+        let mut roles = Vec::new();
         for o in self.working.iter_mut() {
             if o.symbol != symbol {
                 continue;
@@ -809,6 +824,7 @@ impl Broker {
                     (Some(_), Some(g)) => closed_groups.push(g),
                     _ => {}
                 }
+                roles.push(o.role);
                 out.fills.push(Fill {
                     order_num: o.num,
                     symbol: o.symbol.clone(),
@@ -834,8 +850,12 @@ impl Broker {
                 o.updated_at = t;
             }
         }
-        for f in &out.fills {
+        for (f, role) in out.fills.iter().zip(roles) {
             self.apply_fill(f);
+            if self.fills.len() == FILLS_RETAINED {
+                self.fills.pop_front();
+            }
+            self.fills.push_back((f.clone(), role));
         }
         self.retire_finished();
         if !out.fills.is_empty() {

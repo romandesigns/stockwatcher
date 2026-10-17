@@ -27,4 +27,7 @@ pub struct DataQuality {
     pub unrecognized_conditions: u64,
     /// Prints outside every session (weekend, holiday, closed evening); excluded.
     pub outside_session: u64,
+    /// A `Halt` while already halted, or a `Resume` with no open halt; ignored.
+    #[serde(default)]
+    pub halts_unmatched: u64,
 }

@@ -9,7 +9,8 @@
 //! - client `chart.subscribe {symbol, timeframe, profileBin}` -> server
 //!   `chart.snapshot`, the recent `tape.trade` rows, then increments
 //!   (`chart.update` / `chart.remove` / `chart.gap`) for that symbol and
-//!   timeframe and `tape.trade` for the symbol. One subscription per
+//!   timeframe, and `tape.trade`, `chart.halt` and `chart.luld` for the symbol
+//!   whatever its timeframe (docs/architecture/halts-luld-fills.md). One subscription per
 //!   connection: a new subscribe (e.g. another timeframe) replaces it and
 //!   starts with a fresh snapshot of the same engine state.
 //! - server `replay.clock {clock}` to every client, on change and ~4 Hz while

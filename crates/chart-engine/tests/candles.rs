@@ -444,7 +444,20 @@ fn quotes_and_status_do_not_touch_candles() {
         reason: String::new(),
         tape: market_events::Tape::C,
     });
-    assert!(e.apply(&q).is_empty());
+    // A halt is recorded (chart.halt) but makes no candle, gap or tape row.
+    let ups = e.apply(&q);
+    assert_eq!(ups.len(), 1);
+    assert!(ups[0].as_halt().is_some() && ups[0].timeframe().is_none());
+    let snap = e.snapshot(SYM, Timeframe::M1, None).unwrap();
+    assert!(snap.candles.is_empty() && snap.gaps.is_empty() && snap.luld.is_empty());
+    assert_eq!(snap.halts.len(), 1);
+    // A market-wide status changes nothing.
+    let mut e = ChartEngine::default();
+    let mut wide = q.clone();
+    if let market_events::MarketEvent::Status(s) = &mut wide {
+        s.symbol = None;
+    }
+    assert!(e.apply(&wide).is_empty());
     assert!(e.snapshot(SYM, Timeframe::M1, None).is_none());
     let _ = UnixNanos(0);
 }

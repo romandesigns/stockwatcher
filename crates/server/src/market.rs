@@ -524,19 +524,16 @@ impl Market {
         ups.into_iter()
             .map(|u| {
                 let json = serde_json::to_string(&u).expect("wire types serialize");
-                let (symbol, timeframe) = match &u {
-                    ChartUpdate::Candle(c) => (c.symbol.clone(), Some(c.timeframe)),
-                    ChartUpdate::Remove(c) => (c.symbol.clone(), Some(c.timeframe)),
-                    ChartUpdate::Gap(c) => (c.symbol.clone(), Some(c.timeframe)),
-                    ChartUpdate::Tape(t) => {
-                        let ring = core.tape.entry(t.symbol.clone()).or_default();
-                        if ring.len() == TAPE_HISTORY {
-                            ring.pop_front();
-                        }
-                        ring.push_back(json.clone());
-                        (t.symbol.clone(), None)
+                if let ChartUpdate::Tape(t) = &u {
+                    let ring = core.tape.entry(t.symbol.clone()).or_default();
+                    if ring.len() == TAPE_HISTORY {
+                        ring.pop_front();
                     }
-                };
+                    ring.push_back(json.clone());
+                }
+                // Tape rows, `chart.halt` and `chart.luld` have no timeframe, so every
+                // subscriber of the symbol gets them whatever timeframe it watches.
+                let (symbol, timeframe) = (u.symbol().to_string(), u.timeframe());
                 OutKind::Chart {
                     symbol,
                     timeframe,
@@ -651,6 +648,8 @@ impl Market {
                 profile: None,
                 quality: DataQuality::default(),
                 clock: None,
+                halts: Vec::new(),
+                luld: Vec::new(),
             },
             None => return Err(SnapshotError::UnknownSymbol),
         };
@@ -676,7 +675,9 @@ impl Market {
             ChartUpdate::Candle(c) => (&c.session, &c.profile),
             ChartUpdate::Remove(c) => (&c.session, &c.profile),
             ChartUpdate::Gap(c) => (&c.session, &c.profile),
-            ChartUpdate::Tape(_) => return json.to_string(),
+            ChartUpdate::Tape(_) | ChartUpdate::Halt(_) | ChartUpdate::Luld(_) => {
+                return json.to_string();
+            }
         };
         let mut touched: Vec<Price> = rows
             .iter()
@@ -685,12 +686,7 @@ impl Market {
             .collect();
         touched.sort();
         touched.dedup();
-        let symbol = match update {
-            ChartUpdate::Candle(c) => &c.symbol,
-            ChartUpdate::Remove(c) => &c.symbol,
-            ChartUpdate::Gap(c) => &c.symbol,
-            ChartUpdate::Tape(t) => &t.symbol,
-        };
+        let symbol = update.symbol();
         let all = session
             .parse::<SessionId>()
             .ok()
@@ -720,7 +716,7 @@ impl Market {
                 c.profile_bin = bin.to_f64();
                 c.profile = new_rows;
             }
-            ChartUpdate::Tape(_) => {}
+            ChartUpdate::Tape(_) | ChartUpdate::Halt(_) | ChartUpdate::Luld(_) => {}
         }
         serde_json::to_string(&u).expect("wire types serialize")
     }
