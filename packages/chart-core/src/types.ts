@@ -1,0 +1,291 @@
+// Wire format, server → client. Mirrors crates/chart-engine/src/wire.rs
+// (the source of truth; JSON, camelCase) and Appendix A of
+// docs/architecture/simulator-and-chart.md. Change both sides together; the
+// contract test (wire.contract.test.ts) reads the engine's golden JSON.
+//
+// These types live in chart-core rather than @stockwatcher/shared because
+// only chart consumers need them and chart-core must stay dependency-free;
+// shared can re-export them once the server forwards them.
+//
+// Times are epoch ms UTC (`tsNs` is epoch ns, and LOSES PRECISION as a JS
+// number: use it for display only, never as a key). Prices are dollars as
+// JSON numbers, for display only; the engine keeps exact micro-dollars.
+// Sessions and labels are computed in America/New_York by time.ts.
+
+export type Timeframe = "15s" | "30s" | "1m" | "5m";
+
+export const TIMEFRAMES: readonly Timeframe[] = ["15s", "30s", "1m", "5m"];
+
+export const TIMEFRAME_MS: Readonly<Record<Timeframe, number>> = {
+  "15s": 15_000,
+  "30s": 30_000,
+  "1m": 60_000,
+  "5m": 300_000,
+};
+
+/** One candle over the half-open interval [t, t + timeframe). Built by the server only. */
+export interface Candle {
+  t: number;
+  o: number;
+  h: number;
+  l: number;
+  c: number;
+  /** Sum of volume-qualifying sizes (includes volume-only prints such as odd lots). */
+  v: number;
+  /** Number of volume-qualifying trades. */
+  n: number;
+  /** True once the symbol's watermark (or the clock) passed the interval end. */
+  final: boolean;
+}
+
+/**
+ * - `no_trades`: no trade at all in the interval(s);
+ * - `volume_only_trades`: only volume-only prints, so there is volume (`v`)
+ *   but no qualifying price and no candle (Alpaca emits no bar either).
+ */
+export type GapReason = "no_trades" | "volume_only_trades";
+
+/**
+ * A run of empty intervals [t, end) inside one session. Never drawn as fake
+ * candles; on the index-based time axis a gap occupies exactly ONE slot
+ * however many `intervals` it spans, so a long lull does not squeeze the
+ * candles around it.
+ */
+export interface Gap {
+  t: number;
+  end: number;
+  reason: GapReason;
+  v: number;
+  intervals: number;
+}
+
+export type SessionKind = "overnight" | "pre" | "regular" | "after";
+
+export interface SessionRef {
+  /** e.g. "2026-10-15/regular" */
+  id: string;
+  start: number;
+  end: number;
+}
+
+/** One profile bin: bin start `p` = floor(price / bin) * bin, absolute volume `v`. */
+export interface ProfileRow {
+  p: number;
+  v: number;
+}
+
+/** 70 % value area: lowest and highest BIN START inside it, and the volume inside. */
+export interface ValueArea {
+  low: number;
+  high: number;
+  v: number;
+}
+
+export interface ProfileWire {
+  bin: number;
+  /** Session id the profile accumulates over; independent of the candle timeframe. */
+  anchor: string;
+  /** Non-empty bins, ascending by price. */
+  rows: ProfileRow[];
+  total: number;
+  /** Bin with the most volume (lowest price on a tie). */
+  poc: number | null;
+  valueArea: ValueArea | null;
+}
+
+/** Data-quality counters of the current session (crates/chart-engine/src/quality.rs). */
+export interface DataQuality {
+  duplicates: number;
+  lateExcluded: number;
+  lateApplied: number;
+  outOfOrderReordered: number;
+  correctionsApplied: number;
+  correctionsUnapplied: number;
+  cancelsApplied: number;
+  cancelsUnapplied: number;
+  conditionExcluded: number;
+  volumeOnly: number;
+  unrecognizedConditions: number;
+  outsideSession: number;
+  /** A resume with no open halt, or a second halt while halted (docs/architecture/halts-luld-fills.md). */
+  haltsUnmatched: number;
+}
+
+export type ClockMode = "replay" | "live";
+
+/** Filled in by the server (the engine does not know the mode). */
+export interface Clock {
+  mode: ClockMode | (string & {});
+  now: number;
+  /** Replay speed multiplier; 0 means "max" (client convention, see ReplayControl). */
+  speed: number;
+  playing: boolean;
+}
+
+/** A trading halt (docs/architecture/halts-luld-fills.md). end null = still halted. */
+export interface Halt {
+  start: number;
+  end: number | null;
+  reason: string;
+  code: string;
+}
+
+/** LULD bands in effect from t until the next point; up/down null = no bands from t. */
+export interface LuldPoint {
+  t: number;
+  ref: number | null;
+  up: number | null;
+  down: number | null;
+}
+
+export interface ChartSnapshot {
+  type: "chart.snapshot";
+  symbol: string;
+  timeframe: Timeframe;
+  /** The symbol's current session; null before it ever traded. */
+  session: SessionRef | null;
+  /** Every retained candle of this timeframe, all sessions, ascending. */
+  candles: Candle[];
+  gaps: Gap[];
+  /** Profile of the current session. */
+  profile: ProfileWire | null;
+  quality: DataQuality;
+  clock?: Clock;
+  /** Retained halts, ascending (timeframe-independent). Absent from servers that predate halts. */
+  halts?: Halt[];
+  /** LULD band changes of the current session, ascending (timeframe-independent). */
+  luld?: LuldPoint[];
+}
+
+/**
+ * Upserts the candle at candle.t. It may be an older, already-final candle
+ * revised by a late trade, correction or cancel. A candle at t supersedes any
+ * gap covering t. `profile` holds the bins this event touched, as ABSOLUTE
+ * totals in `session`'s profile (replace, never add).
+ */
+export interface ChartUpdate {
+  type: "chart.update";
+  symbol: string;
+  timeframe: Timeframe;
+  session: string;
+  candle: Candle;
+  profileBin: number;
+  profile: ProfileRow[];
+}
+
+/** A cancel or correction emptied the interval at t: delete whatever is there. */
+export interface ChartRemove {
+  type: "chart.remove";
+  symbol: string;
+  timeframe: Timeframe;
+  session: string;
+  t: number;
+  profileBin: number;
+  profile: ProfileRow[];
+}
+
+/** A gap opened. */
+export interface ChartGap {
+  type: "chart.gap";
+  symbol: string;
+  timeframe: Timeframe;
+  session: string;
+  gap: Gap;
+  profileBin: number;
+  profile: ProfileRow[];
+}
+
+/**
+ * How the engine counted a print: toward OHLC and volume, volume only, or not
+ * at all. Excluded reasons: `duplicate`, `late`, `outside_session`,
+ * `condition_<code>`.
+ */
+export type Counted = "ohlc_and_volume" | "volume_only" | `excluded:${string}`;
+
+export interface TapeTrade {
+  type: "tape.trade";
+  symbol: string;
+  /** Execution time, epoch ms. */
+  t: number;
+  /** Execution time, epoch ns. Lossy as a JS number: display only. */
+  tsNs: number;
+  p: number;
+  s: number;
+  exchange: string;
+  seq: number;
+  conditions: string[];
+  counted: Counted;
+  /** Why it was restricted: `odd_lot`, `condition_<code>`; null for a regular sale. */
+  reason: string | null;
+  session: string | null;
+}
+
+/**
+ * Replay/live clock tick. NOT produced by chart-engine: the server owns the
+ * clock (crates/server/src/market.rs). Sent to every client on change and
+ * about 4 Hz while replay plays; the snapshot carries `clock` too.
+ */
+export interface ClockMessage {
+  type: "replay.clock";
+  clock: Clock;
+}
+
+/** A halt started, or (same start, end set) resumed. Sent to every subscriber of the symbol. */
+export interface ChartHalt {
+  type: "chart.halt";
+  symbol: string;
+  halt: Halt;
+}
+
+/** A LULD band change. Sent to every subscriber of the symbol. */
+export interface ChartLuld {
+  type: "chart.luld";
+  symbol: string;
+  point: LuldPoint;
+}
+
+export type ChartIncrement = ChartUpdate | ChartRemove | ChartGap;
+export type ChartMessage = ChartSnapshot | ChartIncrement | TapeTrade | ClockMessage | ChartHalt | ChartLuld;
+
+const CHART_TYPES = new Set(["chart.snapshot", "chart.update", "chart.remove", "chart.gap", "tape.trade", "replay.clock", "chart.halt", "chart.luld"]);
+
+/** Parses one frame (string or already-parsed object); null if it is not a chart message. */
+export function parseChartMessage(raw: unknown): ChartMessage | null {
+  let value: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      value = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  if (typeof value !== "object" || value === null) return null;
+  const type = (value as { type?: unknown }).type;
+  return typeof type === "string" && CHART_TYPES.has(type) ? (value as ChartMessage) : null;
+}
+
+/** Client → server subscription (architecture doc: `chart.subscribe`). */
+export interface ChartSubscribe {
+  type: "chart.subscribe";
+  symbol: string;
+  timeframe: Timeframe;
+  profileBin: number;
+}
+
+/**
+ * Client → server replay control (crates/server/src/market.rs `parse_control`).
+ * Honoured in replay mode only; live mode answers `error not_replay`. There is
+ * no direct reply: the resulting `replay.clock` is the answer.
+ *
+ * `value` by action:
+ * - `play`, `pause`, `step` (exactly one event): none;
+ * - `stepInterval`: a timeframe label ("15s" | "30s" | "1m" | "5m"), default "1m";
+ * - `seek`: epoch ms (or an RFC 3339 string); the server rebuilds from the
+ *   session start and resends `chart.snapshot`;
+ * - `speed`: multiplier (1, 2, 10, 60, …), 0 = max.
+ */
+export interface ReplayControl {
+  type: "replay.control";
+  action: "play" | "pause" | "step" | "stepInterval" | "seek" | "speed";
+  value?: number | string;
+}

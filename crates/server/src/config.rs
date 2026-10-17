@@ -1,6 +1,8 @@
 use std::net::IpAddr;
 use std::path::PathBuf;
 
+use crate::market::MarketConfig;
+
 pub const MIN_TOKEN_LEN: usize = 32;
 
 #[derive(Clone, Debug)]
@@ -11,6 +13,8 @@ pub struct Config {
     pub data_dir: PathBuf,
     /// None = auth off (local dev only; logged loudly at startup).
     pub api_token: Option<String>,
+    /// Market data: provider mode, archive, replay and simulator settings.
+    pub market: MarketConfig,
 }
 
 impl Config {
@@ -55,6 +59,7 @@ impl Config {
                 .into(),
             data_dir: var("DATA_DIR").unwrap_or_else(|| "./data".into()).into(),
             api_token,
+            market: MarketConfig::from_lookup(&get)?,
         })
     }
 }

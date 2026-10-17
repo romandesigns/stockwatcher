@@ -2,7 +2,12 @@
 // /api and /ws to it). Either process exiting stops the other, so a
 // crashed server never leaves a UI that silently shows "disconnected".
 const procs = [
-  Bun.spawn(["cargo", "run", "-p", "stockwatcher-server"], { stdio: ["inherit", "inherit", "inherit"] }),
+  // Dev only: replay a deterministic, clearly labelled fixture day when the
+  // archive is empty, so the chart has data without any market credentials.
+  Bun.spawn(["cargo", "run", "-p", "stockwatcher-server"], {
+    stdio: ["inherit", "inherit", "inherit"],
+    env: { ...process.env, SIM_AUTOFIXTURE: process.env.SIM_AUTOFIXTURE ?? "1" },
+  }),
   Bun.spawn(["bun", "run", "--filter", "@stockwatcher/web", "dev"], { stdio: ["inherit", "inherit", "inherit"] }),
 ];
 

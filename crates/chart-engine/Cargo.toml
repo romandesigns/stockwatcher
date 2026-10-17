@@ -1,0 +1,18 @@
+[package]
+name = "chart-engine"
+description = "Incremental 15s/30s/1m/5m candles and session volume profile from normalized trades"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+market-events = { path = "../market-events" }
+serde = { version = "1.0.229", features = ["derive"] }
+
+[dev-dependencies]
+chrono = { version = "0.4.45", default-features = false, features = ["std"] }
+serde_json = "1.0.154"

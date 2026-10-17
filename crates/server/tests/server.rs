@@ -201,6 +201,11 @@ async fn ws_handshake_with_token_then_ping_pong() {
     let welcome = recv(&mut ws).await;
     assert_eq!(welcome["type"], "welcome");
     assert_eq!(welcome["heartbeatSecs"], 15);
+    // The simulated account follows immediately (docs/architecture/chart-trading-sim.md).
+    let paper = recv(&mut ws).await;
+    assert_eq!(paper["type"], "paper.state");
+    assert_eq!(paper["simulated"], true);
+    assert_eq!(paper["orders"], json!([]));
 
     send(&mut ws, json!({ "type": "ping", "ts": 42 })).await;
     assert_eq!(recv(&mut ws).await, json!({ "type": "pong", "ts": 42 }));

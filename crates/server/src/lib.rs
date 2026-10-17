@@ -1,5 +1,7 @@
+pub mod api;
 pub mod auth;
 pub mod config;
+pub mod market;
 pub mod ws;
 
 use std::path::Path;
@@ -17,6 +19,7 @@ use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
 pub use config::Config;
+pub use market::{Market, MarketConfig};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Set by build.rs from the GIT_SHA build env ("unknown" for local builds).
@@ -27,17 +30,31 @@ pub struct AppState(Arc<Inner>);
 
 struct Inner {
     api_token: Option<String>,
+    market: Market,
     /// Only WebSocket sessions subscribe, so `closed()` resolving means
     /// every session has finished.
     shutdown: watch::Sender<bool>,
 }
 
 impl AppState {
+    /// No market data (an idle market reports `idle`). Used by tests that don't need it.
     pub fn new(api_token: Option<String>) -> Self {
+        Self::with_market(
+            api_token,
+            Market::idle(market_providers::ClockMode::Replay, "idle", None),
+        )
+    }
+
+    pub fn with_market(api_token: Option<String>, market: Market) -> Self {
         Self(Arc::new(Inner {
             api_token,
+            market,
             shutdown: watch::Sender::new(false),
         }))
+    }
+
+    pub fn market(&self) -> &Market {
+        &self.0.market
     }
 
     pub fn api_token(&self) -> Option<&str> {
@@ -117,13 +134,15 @@ async fn update_content_type(req: Request, next: Next) -> Response {
 /// `static_dir` holds the built web app; `data_dir` is the persistent
 /// volume, whose `updates/` subtree publish-updates.sh fills.
 pub fn router(state: AppState, static_dir: &Path, data_dir: &Path) -> Router {
-    let protected =
-        Router::new()
-            .route("/version", get(version))
-            .route_layer(middleware::from_fn_with_state(
-                state.clone(),
-                auth::require_bearer,
-            ));
+    let protected = Router::new()
+        .route("/version", get(version))
+        .route("/chart/{symbol}/snapshot", get(api::chart_snapshot))
+        .route("/replay/state", get(api::replay_state))
+        .route("/symbols", get(api::symbols))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_bearer,
+        ));
     let api = Router::new()
         .route("/health", get(health))
         .merge(protected)

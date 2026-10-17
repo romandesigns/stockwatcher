@@ -1,0 +1,23 @@
+[package]
+name = "market-replay"
+description = "Deterministic replay of archived market events on a controllable virtual clock"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+market-events = { path = "../market-events" }
+market-archive = { path = "../market-archive" }
+chrono = { version = "0.4.45", default-features = false, features = ["std"] }
+serde = { version = "1.0.229", features = ["derive"] }
+tokio = { version = "1.53.3", features = ["rt", "macros", "sync", "time"] }
+tracing = "0.1.44"
+
+[dev-dependencies]
+chart-engine = { path = "../chart-engine" }
+tempfile = "3.27.0"
+tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "sync", "time", "test-util"] }

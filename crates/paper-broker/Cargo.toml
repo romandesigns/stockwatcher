@@ -1,0 +1,17 @@
+[package]
+name = "paper-broker"
+description = "Simulated (paper) order matching, positions and account for chart trading; pure and deterministic"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+market-events = { path = "../market-events" }
+serde = { version = "1.0.229", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1.0.154"

@@ -1,4 +1,6 @@
 @import "tailwindcss";
+/* chart-web's components (and its vendored shadcn ui) use utility classes. */
+@source "../../../packages/chart-web/src";
 
 /* Palette, 60/30/10 (workspace rule; Soundbox's :root is the reference):
    60  --bg / --bg-panel / --bg-row        quiet dominant neutrals
@@ -10,9 +12,16 @@
 :root {
   color-scheme: dark;
 
+  /* The header's search pill and the quick-open panel share this width, so the panel drops down
+     exactly over the pill. It leaves room for the logo and the data-source icon either side. */
+  --search-w: min(560px, max(280px, calc(100vw - 420px)));
+
   --bg: #0f1216;
   --bg-panel: #151a20;
   --bg-row: #1c222a;
+  /* The selected segment on a --bg-panel track: one more surface step, so
+     selection reads by contrast alone (no borders, no accent spent). */
+  --bg-raised: #272e38;
 
   --border: #262d36;
   --text: #e4e8ed;
@@ -30,6 +39,26 @@
   --critical-bg: rgb(240 100 92 / 0.14);
 
   --radius: 8px;
+
+  /* Chart canvas tokens, read by @stockwatcher/chart-web (readChartTheme).
+     Derived from the palette above so there is one source of truth: up/down
+     are the status colors, the accent marks only POC, value area, the
+     inspection line and the replay head. Unset tokens use chart-web's
+     defaults (the same design values). */
+  --chart-grid: var(--bg-row);
+  --chart-axis-text: var(--text-faint);
+  --chart-text: var(--text);
+  --chart-text-dim: var(--text-dim);
+  --chart-up: var(--good);
+  --chart-down: var(--critical);
+  --chart-crosshair-label-bg: var(--border);
+  --chart-crosshair-label-text: var(--text);
+  --chart-on-tag: var(--bg);
+  --chart-profile-poc: var(--accent);
+  --chart-replay-head: var(--accent);
+  --chart-session-overnight: var(--bg-row);
+  --chart-session-text: var(--text-dim);
+  --chart-session-text-strong: var(--text);
 }
 
 /* shadcn/ui's class names (bg-background, text-muted-foreground, ...)
@@ -38,7 +67,7 @@
    it maps to a neutral, not to --accent. */
 @theme inline {
   --font-sans: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: ui-monospace, "Cascadia Code", "SF Mono", monospace;
+  --font-mono: "Geist Mono Variable", ui-monospace, "Cascadia Code", "SF Mono", monospace;
 
   --color-background: var(--bg);
   --color-foreground: var(--text);
@@ -64,9 +93,24 @@
   --color-warning-bg: var(--warning-bg);
   --color-critical: var(--critical);
   --color-critical-bg: var(--critical-bg);
+  --color-text-faint: var(--text-faint);
+  --color-bg-row: var(--bg-row);
+  --color-bg-panel: var(--bg-panel);
+  --color-bg-raised: var(--bg-raised);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
+}
+
+/* New tape rows slide in (switched off by the reduced-motion rule below). */
+@theme {
+  --animate-tape-in: tape-in 180ms ease-out;
+  @keyframes tape-in {
+    from {
+      opacity: 0;
+      transform: translateY(-3px);
+    }
+  }
 }
 
 body {
