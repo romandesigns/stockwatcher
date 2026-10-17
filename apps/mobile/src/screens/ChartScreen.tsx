@@ -1,6 +1,5 @@
 import {
   buildSlots,
-  describeSlot,
   formatChange,
   formatEtTime,
   formatPrice,
@@ -13,7 +12,7 @@ import {
   type PriceScaleType,
   type Timeframe,
 } from "@stockwatcher/chart-core";
-import { CandleChart, Segmented, ToolButton, UI } from "@stockwatcher/chart-native";
+import { CandleChart, CandleInspector, Segmented, ToolButton, UI } from "@stockwatcher/chart-native";
 import type { ConnectionStatus } from "@stockwatcher/shared";
 import { useEffect, useMemo, useState } from "react";
 import { StyleSheet, Text, View } from "react-native";
@@ -152,9 +151,7 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
         label={`${active ?? ""} ${timeframe} candles`}
       />
 
-      <Text style={styles.inspector} numberOfLines={1}>
-        {inspected ? describeSlot(inspected, timeframe).summary : "Waiting for data…"}
-      </Text>
+      <CandleInspector slot={inspected} timeframe={timeframe} />
 
       <View style={styles.replay}>
         <ToolButton primary label={playing ? "Pause replay" : "Play replay"} disabled={!clock || live} onPress={() => feed.control({ action: playing ? "pause" : "play" })} style={styles.play}>
@@ -189,7 +186,6 @@ const styles = StyleSheet.create({
   chipText: { color: colors.textDim, fontSize: 11, fontWeight: "500" },
   row: { flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" },
   chart: { flex: 1 },
-  inspector: { color: colors.textDim, fontSize: 11, fontVariant: ["tabular-nums"] },
   replay: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: UI.panel, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 8 },
   play: { width: 36, height: 36, paddingHorizontal: 0 },
   clock: { color: colors.text, fontSize: 14, fontVariant: ["tabular-nums"] },

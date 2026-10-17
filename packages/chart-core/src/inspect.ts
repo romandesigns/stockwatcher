@@ -21,20 +21,31 @@ export interface Inspection {
   note?: string;
   /** One sentence for an aria-live region. */
   summary: string;
+  /**
+   * The compact readout every inspector line shows (owner: simpler, easier
+   * to read): the start time only (seconds only for sub-minute candles),
+   * O/H/L/C, the change since the open with its direction, and volume.
+   */
+  time: string;
+  ohlc: InspectionRow[];
+  change: { text: string; dir: "up" | "down" | "flat" } | null;
+  volume: string | null;
+  forming: boolean;
 }
 
 export function describeSlot(slot: Slot, timeframe: Timeframe): Inspection {
   const tf = TIMEFRAME_MS[timeframe];
+  const time = formatEtTime(slot.t, tf < 60_000);
   if (slot.kind === "gap") {
     const g = slot.gap;
     const timeLabel = `${formatEtTime(g.t, true)} – ${formatEtTime(g.end, true)}`;
     const span = `${g.intervals} interval${g.intervals === 1 ? "" : "s"}`;
     if (g.reason === "volume_only_trades") {
       const note = `${span}, volume-only prints (${formatVolume(g.v)}), no qualifying price`;
-      return { kind: "gap", timeLabel, rows: [], state: "Volume only", note, summary: `${timeLabel} Eastern: ${note}; no candle.` };
+      return { kind: "gap", timeLabel, rows: [], state: "Volume only", note, summary: `${timeLabel} Eastern: ${note}; no candle.`, time, ohlc: [], change: null, volume: formatVolume(g.v), forming: false };
     }
     const note = `${span}, no trades`;
-    return { kind: "gap", timeLabel, rows: [], state: "No trades", note, summary: `${timeLabel} Eastern: ${note}; no candle.` };
+    return { kind: "gap", timeLabel, rows: [], state: "No trades", note, summary: `${timeLabel} Eastern: ${note}; no candle.`, time, ohlc: [], change: null, volume: null, forming: false };
   }
   const c = slot.candle;
   const timeLabel = `${formatEtTime(c.t, true)} – ${formatEtTime(c.t + tf, true)}`;
@@ -48,7 +59,11 @@ export function describeSlot(slot: Slot, timeframe: Timeframe): Inspection {
   ];
   const state = c.final ? "Final" : "Forming";
   const summary = `${state} ${timeframe} candle ${timeLabel} Eastern: open ${rows[0]!.v}, high ${rows[1]!.v}, low ${rows[2]!.v}, close ${rows[3]!.v}, volume ${rows[4]!.v}, change ${rows[5]!.v}.`;
-  return { kind: "candle", timeLabel, rows, state, summary };
+  const pct = c.o ? (c.c / c.o - 1) * 100 : 0;
+  const dir = pct > 0.0049 ? "up" : pct < -0.0049 ? "down" : "flat";
+  // A real minus sign: a hyphen reads as a dash beside the other figures.
+  const change = { text: `${dir === "up" ? "+" : dir === "down" ? "−" : ""}${Math.abs(pct).toFixed(2)}%`, dir } as const;
+  return { kind: "candle", timeLabel, rows, state, summary, time, ohlc: rows.slice(0, 4), change, volume: rows[4]!.v, forming: !c.final };
 }
 
 /**
