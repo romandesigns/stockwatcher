@@ -133,6 +133,10 @@ export interface CandleChartProps {
   now?: number | null;
   /** Show the timeframe picker in the toolbar row; the host switches the subscription. */
   onTimeframeChange?: (tf: Timeframe) => void;
+  /** The session volume profile's bin widths; with onProfileBinChange the Levels sheet offers them (the host resubscribes). */
+  profileBins?: readonly number[];
+  profileBin?: number;
+  onProfileBinChange?: (bin: number) => void;
   /** Haptic feedback on scrub, grabs, placements and fills (default true). */
   haptics?: boolean;
   label?: string;
@@ -189,6 +193,9 @@ export function CandleChart({
   // Renamed: this module's now() is the monotonic clock the gestures use.
   now: clockNow = null,
   onTimeframeChange,
+  profileBins,
+  profileBin,
+  onProfileBinChange,
   label,
   style,
 }: CandleChartProps) {
@@ -715,7 +722,14 @@ export function CandleChart({
         />
       )}
 
-      <LayersSheet open={sheet.kind === "layers"} onClose={() => setSheet({ kind: "none" })} layers={layers} onChange={setLayers} reducedMotion={reducedMotion} />
+      <LayersSheet open={sheet.kind === "layers"} onClose={() => setSheet({ kind: "none" })} layers={layers}
+        onChange={setLayers}
+        reducedMotion={reducedMotion}
+        profile={series?.profile ?? null}
+        profileBins={profileBins}
+        profileBin={profileBin}
+        onProfileBinChange={onProfileBinChange}
+      />
       <IndicatorSheet open={sheet.kind === "indicators"} onClose={() => setSheet({ kind: "none" })} indicators={indicatorSpecs} onChange={setIndicators} seriesColors={[theme.series1, theme.series2, theme.series3]} reducedMotion={reducedMotion} />
       <AxisSheet
         open={sheet.kind === "axis"}

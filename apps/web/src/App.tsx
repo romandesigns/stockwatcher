@@ -14,6 +14,7 @@ import {
 } from "@stockwatcher/chart-core";
 import { CandleChart, CandleInspector, ReplayControls, SessionTimeline, Tape, VolumeProfile } from "@stockwatcher/chart-web";
 import { Tip, ToggleGroup, ToggleGroupItem, cn } from "@stockwatcher/chart-web/ui";
+import { tickerUniverse } from "@stockwatcher/shared";
 import { useEffect, useMemo, useState } from "react";
 import { createServerFeed } from "./feed/serverFeed.ts";
 import { chooseSource, followCandidates, initialSymbol, probeServer, type SourceChoice } from "./feed/source.ts";
@@ -23,7 +24,6 @@ import { useChartFeed } from "./feed/useChartFeed.ts";
 import { usePaperTrading } from "./feed/usePaperTrading.ts";
 import { createFixtureFeed, FIXTURE_SYMBOL } from "./fixtures/fixtureFeed.ts";
 import { useMediaQuery } from "./lib/useMediaQuery.ts";
-import { tickerUniverse } from "./search/mockTickers.ts";
 import { TickerSearch } from "./search/TickerSearch.tsx";
 
 /** The search icon for the quick-open pill and the phone header. */

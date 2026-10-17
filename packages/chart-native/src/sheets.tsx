@@ -23,6 +23,7 @@ import {
   type OrderSide,
   type OrderType,
   type PriceScaleType,
+  type ProfileWire,
 } from "@stockwatcher/chart-core";
 import { useEffect, useState, type ReactNode } from "react";
 import { Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
@@ -335,6 +336,8 @@ const s = StyleSheet.create({
   indName: { color: UI.text, fontSize: 14, fontWeight: "500" },
   chip: { color: UI.textDim, fontSize: 10, backgroundColor: UI.row, borderRadius: 4, paddingHorizontal: 4, paddingVertical: 1, overflow: "hidden", fontVariant: ["tabular-nums"] },
   indDesc: { color: UI.textFaint, fontSize: 11 },
+  profile: { gap: 6, paddingBottom: 6 },
+  profileRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 8 },
   history: { gap: 4, marginTop: 4, padding: 8, borderRadius: 10, backgroundColor: "rgba(28,34,42,0.5)" },
   tradeRow: { flexDirection: "row", alignItems: "center", gap: 8, minHeight: 32, paddingHorizontal: 8, borderRadius: 6 },
   tradeCell: { color: UI.text, fontSize: 12, fontVariant: ["tabular-nums"] },
@@ -349,10 +352,58 @@ const s = StyleSheet.create({
 });
 
 /** The context layers as switches (halts, LULD, key levels, fills), the phone's twin of chart-web's LayersMenu. */
-export function LayersSheet({ open, onClose, layers, onChange, reducedMotion }: { open: boolean; onClose: () => void; layers: ChartLayers; onChange: (l: ChartLayers) => void; reducedMotion?: boolean }) {
+/**
+ * The Levels sheet: the context layers, and the session volume profile's
+ * readout and bin width (the web's side panel; a phone draws the profile
+ * inside the chart, so its settings live here, beside the other overlays).
+ */
+export function LayersSheet({
+  open,
+  onClose,
+  layers,
+  onChange,
+  reducedMotion,
+  profile,
+  profileBins,
+  profileBin,
+  onProfileBinChange,
+}: {
+  open: boolean;
+  onClose: () => void;
+  layers: ChartLayers;
+  onChange: (l: ChartLayers) => void;
+  reducedMotion?: boolean;
+  profile?: ProfileWire | null;
+  profileBins?: readonly number[];
+  profileBin?: number;
+  onProfileBinChange?: (bin: number) => void;
+}) {
+  const va = profile?.valueArea ?? null;
   return (
     <Sheet open={open} onClose={onClose} title="Levels" reducedMotion={reducedMotion}>
       <ScrollView>
+        {profileBins && profileBin !== undefined && onProfileBinChange && (
+          <View style={s.profile} accessibilityLabel="Session volume profile">
+            <View style={s.indHeader}>
+              <Text style={s.label}>Volume profile</Text>
+              {profile?.poc != null && (
+                <Text style={s.small}>
+                  POC <Text style={{ color: UI.accent, fontVariant: ["tabular-nums"] }}>{formatPrice(profile.poc)}</Text>
+                  {va ? `  ·  VA ${formatPrice(va.low)}–${formatPrice(va.high)}` : ""}
+                </Text>
+              )}
+            </View>
+            <View style={s.profileRow}>
+              <Text style={s.small}>Bin</Text>
+              <Segmented
+                value={String(profileBin)}
+                onChange={(v) => onProfileBinChange(Number(v))}
+                options={profileBins.map((b) => ({ value: String(b), label: b.toFixed(2), a11y: `Bin ${b.toFixed(2)} dollars` }))}
+              />
+            </View>
+          </View>
+        )}
+        <Text style={[s.label, { paddingHorizontal: 8 }]}>On the chart</Text>
         {LAYER_IDS.map((id) => (
           <Pressable
             key={id}

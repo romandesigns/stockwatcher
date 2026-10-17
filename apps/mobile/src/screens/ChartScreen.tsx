@@ -21,15 +21,17 @@ import {
   type ToolboxPlacement,
   type Timeframe,
 } from "@stockwatcher/chart-core";
-import { CandleChart, CandleInspector, Segmented, SessionTimeline, TapeSheet, ToolButton, UI } from "@stockwatcher/chart-native";
-import type { ConnectionStatus } from "@stockwatcher/shared";
+import { CandleChart, CandleInspector, SessionTimeline, TapeSheet, ToolButton, UI } from "@stockwatcher/chart-native";
+import { tickerUniverse, type ConnectionStatus } from "@stockwatcher/shared";
 import { useEffect, useMemo, useState } from "react";
-import { StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { Circle, Path } from "react-native-svg";
 
 import { useCandidates, useChartFeed, usePaperTrading } from "../feed/hooks";
 import { createMobileFeed, type MobileFeed } from "../feed/serverFeed";
+import { useReducedMotion } from "../motion/useReducedMotion";
+import { TickerSearchSheet } from "../search/TickerSearchSheet";
 import { getPreference, setPreference } from "../storage/preferences";
 import { getAccessToken } from "../storage/secure";
 import { colors, fonts } from "../theme";
@@ -38,6 +40,8 @@ const SPEEDS = [1, 2, 10, 60, 0] as const;
 /** Timeline minimap bucket: 20 minutes, as on the web's phone layout. */
 const bucketMs = 20 * 60_000;
 const speedLabel = (s: number) => (s === 0 ? "Max" : `${s}×`);
+/** Profile bin widths, as on the web's profile panel. */
+const BINS = [0.01, 0.02, 0.05] as const;
 const SESSION = { overnight: "Overnight", pre: "Premarket", regular: "Regular", after: "After hours" } as const;
 
 /** The chart screen: connects once (token from the keystore), then renders the chart. */
@@ -112,8 +116,13 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
 
   // Follow the price band: a symbol that leaves it is no longer let through.
   const active = symbol && candidates.includes(symbol) ? symbol : (candidates[0] ?? null);
-  const { series, clock, tape } = useChartFeed(feed, active ?? "", timeframe);
+  const [bin, setBin] = useState<number>(BINS[0]);
+  const { series, clock, tape } = useChartFeed(feed, active ?? "", timeframe, bin);
   const [tapeOpen, setTapeOpen] = useState(false);
+  // Ticker quick-open, the web's Ctrl+P: tap the ticker (or the search icon) in the header.
+  const [searchOpen, setSearchOpen] = useState(false);
+  const tickers = useMemo(() => tickerUniverse(candidates), [candidates]);
+  const reducedMotion = useReducedMotion();
 
   // The day's session bands and a 20-minute volume minimap for the timeline (bands change only with the day).
   const dayKey = clock ? formatEtDateKey(tradingDayOf(clock.now)) : "";
@@ -149,9 +158,20 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
   return (
     <View style={[styles.screen, { paddingTop: insets.top + 8, paddingBottom: insets.bottom + 8 }]}>
       <View style={styles.header}>
-        <Text style={styles.symbol}>{active ?? "—"}</Text>
+        <Pressable accessibilityRole="button" accessibilityLabel={`${active ?? "No ticker"}, search tickers`} onPress={() => setSearchOpen(true)} hitSlop={8} style={({ pressed }) => [styles.tickerButton, pressed && { opacity: 0.6 }]}>
+          <Text style={styles.symbol}>{active ?? "—"}</Text>
+          <Svg width={10} height={10} viewBox="0 0 10 10" fill="none" stroke={colors.textDim} strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
+            <Path d="M2 3.5 5 6.5 8 3.5" />
+          </Svg>
+        </Pressable>
         <Text style={styles.price}>{last ? formatPrice(last.c) : "—"}</Text>
         <Text style={[styles.change, { color: change.startsWith("-") ? colors.critical : colors.good }]}>{change}</Text>
+        <Pressable accessibilityRole="button" accessibilityLabel="Search tickers" onPress={() => setSearchOpen(true)} hitSlop={6} style={({ pressed }) => [styles.searchButton, pressed && { backgroundColor: colors.bgRow }]}>
+          <Svg width={15} height={15} viewBox="0 0 16 16" fill="none" stroke={colors.textDim} strokeWidth={1.5} strokeLinecap="round">
+            <Circle cx={7} cy={7} r={4.5} />
+            <Path d="M10.5 10.5 14 14" />
+          </Svg>
+        </Pressable>
         {/* An icon, not words (owner, 2026-10-17): replay clock or live broadcast; offline still says so in words. */}
         <View
           style={[styles.chip, offline ? { backgroundColor: colors.criticalBg } : live ? { backgroundColor: colors.goodBg } : null]}
@@ -181,19 +201,6 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
         </View>
       </View>
 
-      <View style={styles.row}>
-        {candidates.length > 1 && (
-          <Segmented
-            value={active ?? ""}
-            onChange={(s) => {
-              setSymbol(s);
-              setInspectT(null);
-            }}
-            options={candidates.slice(0, 4).map((s) => ({ value: s, label: s, a11y: s }))}
-          />
-        )}
-      </View>
-
       <CandleChart
         style={styles.chart}
         toolbar
@@ -220,6 +227,9 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
         onLayersChange={changeLayers}
         now={clock?.now ?? null}
         onToolboxPlacementChange={changeToolbox}
+        profileBins={BINS}
+        profileBin={bin}
+        onProfileBinChange={setBin}
         // The session volume profile sits inside the chart on a phone (no room for a side panel), as on the web's phone layout.
         options={{ priceAxisWidth: 46, volumeHeight: 40, timeAxisHeight: 18, paneGap: 4, fontSize: 9, timeLabelSpacing: 60, indicatorPaneHeight: 56, showProfile: true, profileWidth: 0.26 }}
         barSpacing={8}
@@ -232,6 +242,12 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
       <View style={styles.replay}>
         <ToolButton primary label={playing ? "Pause replay" : "Play replay"} disabled={!clock || live} onPress={() => feed.control({ action: playing ? "pause" : "play" })} style={styles.play}>
           {playing ? "❚❚" : "▶"}
+        </ToolButton>
+        <ToolButton label="Step one event" disabled={!clock || live || playing} onPress={() => feed.control({ action: "step" })} style={styles.step}>
+          <Svg width={14} height={14} viewBox="0 0 16 16" fill="none" stroke={colors.textDim} strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
+            <Path d="M4 3.5 9.5 8 4 12.5z" fill={colors.textDim} />
+            <Path d="M12 3.5v9" />
+          </Svg>
         </ToolButton>
         <Text style={styles.clock}>{clock ? formatEtTime(clock.now, true) : "--:--:--"}</Text>
         <Text style={styles.session}>{clock ? `ET · ${SESSION[sessionOf(clock.now)]}` : "ET"}</Text>
@@ -255,6 +271,17 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
       {/* Tap a time to jump the replay there. */}
       <SessionTimeline bands={bands} buckets={buckets} bucketMs={bucketMs} now={clock?.now ?? null} onSeek={live ? undefined : (t) => feed.control({ action: "seek", value: t })} />
       </View>
+      <TickerSearchSheet
+        open={searchOpen}
+        onClose={() => setSearchOpen(false)}
+        tickers={tickers}
+        current={active ?? ""}
+        onSelect={(sym) => {
+          setSymbol(sym);
+          setInspectT(null);
+        }}
+        reducedMotion={reducedMotion}
+      />
       <TapeSheet open={tapeOpen} onClose={() => setTapeOpen(false)} trades={tape} note={active ?? undefined} />
     </View>
   );
@@ -262,13 +289,15 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.bg, paddingHorizontal: 12, gap: 8 },
-  header: { flexDirection: "row", alignItems: "baseline", gap: 8 },
+  header: { flexDirection: "row", alignItems: "center", gap: 8 },
+  tickerButton: { flexDirection: "row", alignItems: "center", gap: 4 },
+  searchButton: { marginLeft: "auto", width: 32, height: 32, borderRadius: 16, alignItems: "center", justifyContent: "center", backgroundColor: colors.bgPanel },
+  step: { width: 36, height: 36, paddingHorizontal: 0, backgroundColor: UI.row },
   symbol: { color: colors.text, fontFamily: fonts.semibold, fontSize: 16 },
   price: { color: colors.text, fontSize: 16, fontVariant: ["tabular-nums"] },
   change: { fontSize: 11, fontVariant: ["tabular-nums"] },
-  chip: { marginLeft: "auto", flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: colors.bgPanel, borderRadius: 999, paddingHorizontal: 10, paddingVertical: 4, alignSelf: "center" },
+  chip: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: colors.bgPanel, borderRadius: 999, paddingHorizontal: 10, paddingVertical: 4, alignSelf: "center" },
   chipText: { color: colors.textDim, fontSize: 11, fontWeight: "500" },
-  row: { flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" },
   chart: { flex: 1 },
   replayCard: { backgroundColor: UI.panel, borderRadius: 12, paddingHorizontal: 10, paddingTop: 8, paddingBottom: 4, gap: 4 },
   replay: { flexDirection: "row", alignItems: "center", gap: 8 },
