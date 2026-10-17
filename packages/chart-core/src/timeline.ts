@@ -30,7 +30,9 @@ export interface TimelineInput {
   bucketMs: number;
   /** Replay head / live clock position; null hides it. */
   now: number | null;
-  variant: "full" | "compact";
+  /** full: labelled bands (desktop). compact: short labels under the bands. minimal: no labels, a thin band
+   *  strip under the minimap (the phone's playback card, where the clock already names the session). */
+  variant: "full" | "compact" | "minimal";
 }
 
 export interface TimelineGeometry {
@@ -51,6 +53,12 @@ export function timelineGeometry(input: TimelineInput, size: Size): TimelineGeom
     const gap = 10;
     const minimapH = Math.max(8, size.height - headLabelH - gap - bandH);
     return { start, end, headLabelH, minimap: { y: headLabelH, h: minimapH }, bands: { y: headLabelH + minimapH + gap, h: bandH }, labelsY: null };
+  }
+  if (input.variant === "minimal") {
+    const bandH = 4;
+    const gap = 4;
+    const minimapH = Math.max(8, size.height - gap - bandH);
+    return { start, end, headLabelH: 4, minimap: { y: 4, h: minimapH - 4 }, bands: { y: minimapH + gap, h: bandH }, labelsY: null };
   }
   const bandH = 6;
   const gap = 8;

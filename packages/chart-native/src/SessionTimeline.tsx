@@ -28,7 +28,7 @@ export function SessionTimeline({
   buckets: readonly VolumeBucket[];
   bucketMs: number;
   now: number | null;
-  variant?: "full" | "compact";
+  variant?: "full" | "compact" | "minimal";
   theme?: ChartTheme;
   onSeek?: (t: number) => void;
   style?: StyleProp<ViewStyle>;
@@ -57,7 +57,7 @@ export function SessionTimeline({
     </View>
   );
   return (
-    <View style={[{ height: variant === "full" ? 76 : 56 }, style]}>
+    <View style={[{ height: variant === "full" ? 76 : variant === "minimal" ? 30 : 56 }, style]}>
       {onSeek ? (
         <Pressable
           style={StyleSheet.absoluteFill}

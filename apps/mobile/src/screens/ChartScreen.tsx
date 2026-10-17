@@ -24,6 +24,7 @@ import {
 import { CandleChart, CandleInspector, SessionTimeline, TapeSheet, ToolButton, UI } from "@stockwatcher/chart-native";
 import { tickerUniverse, type ConnectionStatus } from "@stockwatcher/shared";
 import { useEffect, useMemo, useState } from "react";
+import Animated, { FadeIn, FadeOut, ReduceMotion } from "react-native-reanimated";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { Circle, Path } from "react-native-svg";
@@ -43,6 +44,7 @@ const speedLabel = (s: number) => (s === 0 ? "Max" : `${s}×`);
 /** Profile bin widths, as on the web's profile panel. */
 const BINS = [0.01, 0.02, 0.05] as const;
 const SESSION = { overnight: "Overnight", pre: "Premarket", regular: "Regular", after: "After hours" } as const;
+const SESSION_A11Y = { overnight: "overnight session", pre: "premarket", regular: "regular session", after: "after hours" } as const;
 
 /** The chart screen: connects once (token from the keystore), then renders the chart. */
 export function ChartScreen() {
@@ -254,14 +256,23 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
         <ToolButton primary label={playing ? "Pause replay" : "Play replay"} disabled={!clock || live} onPress={() => feed.control({ action: playing ? "pause" : "play" })} style={styles.play}>
           {playing ? "❚❚" : "▶"}
         </ToolButton>
-        <ToolButton label="Step one event" disabled={!clock || live || playing} onPress={() => feed.control({ action: "step" })} style={styles.step}>
-          <Svg width={14} height={14} viewBox="0 0 16 16" fill="none" stroke={colors.textDim} strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
-            <Path d="M4 3.5 9.5 8 4 12.5z" fill={colors.textDim} />
-            <Path d="M12 3.5v9" />
-          </Svg>
-        </ToolButton>
-        <Text style={styles.clock}>{clock ? formatEtTime(clock.now, true) : "--:--:--"}</Text>
-        <Text style={styles.session}>{clock ? `ET · ${SESSION[sessionOf(clock.now)]}` : "ET"}</Text>
+        {/* One line: the replay clock (Eastern) and the session it is in. */}
+        <Text style={styles.clock} accessibilityLabel={clock ? `${formatEtTime(clock.now, true)} Eastern, ${SESSION_A11Y[sessionOf(clock.now)]}` : "Clock not started"}>
+          {clock ? formatEtTime(clock.now, true) : "--:--:--"}
+          <Text style={styles.session}>{clock ? `  ${SESSION[sessionOf(clock.now)]}` : ""}</Text>
+        </Text>
+        {/* Step only does something while paused, so it only shows then. It sits beside the speed button,
+            in space the clock does not use, so nothing shifts when it appears. */}
+        {!playing && !live && clock && (
+          <Animated.View entering={FadeIn.duration(150).reduceMotion(ReduceMotion.System)} exiting={FadeOut.duration(120).reduceMotion(ReduceMotion.System)} style={styles.stepWrap}>
+            <ToolButton label="Step one event" onPress={() => feed.control({ action: "step" })} style={styles.step}>
+              <Svg width={14} height={14} viewBox="0 0 16 16" fill="none" stroke={colors.textDim} strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
+                <Path d="M4 3.5 9.5 8 4 12.5z" fill={colors.textDim} />
+                <Path d="M12 3.5v9" />
+              </Svg>
+            </ToolButton>
+          </Animated.View>
+        )}
         <ToolButton
           label={`Replay speed ${speedLabel(speed)}, change`}
           disabled={!clock || live}
@@ -280,7 +291,7 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
         </ToolButton>
       </View>
       {/* Tap a time to jump the replay there. */}
-      <SessionTimeline bands={bands} buckets={buckets} bucketMs={bucketMs} now={clock?.now ?? null} onSeek={live ? undefined : (t) => feed.control({ action: "seek", value: t })} />
+      <SessionTimeline variant="minimal" bands={bands} buckets={buckets} bucketMs={bucketMs} now={clock?.now ?? null} onSeek={live ? undefined : (t) => feed.control({ action: "seek", value: t })} />
       </View>
       <TickerSearchSheet
         open={searchOpen}
@@ -303,6 +314,7 @@ const styles = StyleSheet.create({
   header: { flexDirection: "row", alignItems: "center", gap: 8 },
   tickerButton: { flexDirection: "row", alignItems: "center", gap: 4 },
   searchButton: { marginLeft: "auto", width: 32, height: 32, borderRadius: 16, alignItems: "center", justifyContent: "center", backgroundColor: colors.bgPanel },
+  stepWrap: {},
   step: { width: 36, height: 36, paddingHorizontal: 0, backgroundColor: UI.row },
   symbol: { color: colors.text, fontFamily: fonts.semibold, fontSize: 16 },
   price: { color: colors.text, fontSize: 16, fontVariant: ["tabular-nums"] },
@@ -310,11 +322,12 @@ const styles = StyleSheet.create({
   chip: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: colors.bgPanel, borderRadius: 999, paddingHorizontal: 10, paddingVertical: 4, alignSelf: "center" },
   chipText: { color: colors.textDim, fontSize: 11, fontWeight: "500" },
   chart: { flex: 1 },
-  replayCard: { backgroundColor: UI.panel, borderRadius: 12, paddingHorizontal: 10, paddingTop: 8, paddingBottom: 4, gap: 4 },
+  replayCard: { backgroundColor: UI.panel, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 8, gap: 6 },
   replay: { flexDirection: "row", alignItems: "center", gap: 8 },
   tapeButton: { backgroundColor: UI.row, height: 36, width: 36, paddingHorizontal: 0 },
   play: { width: 36, height: 36, paddingHorizontal: 0 },
-  clock: { color: colors.text, fontSize: 14, fontVariant: ["tabular-nums"] },
+  // The clock takes the free width, so step, speed and tape stay pinned right.
+  clock: { flex: 1, color: colors.text, fontSize: 14, fontVariant: ["tabular-nums"] },
   session: { color: colors.textFaint, fontSize: 10 },
-  speed: { marginLeft: "auto", backgroundColor: UI.row, height: 36, minWidth: 48 },
+  speed: { backgroundColor: UI.row, height: 36, minWidth: 48 },
 });
