@@ -5,7 +5,7 @@ import { colors, type } from "../theme";
 export function HelloScreen() {
   return (
     <View style={styles.container}>
-      <Text style={styles.text}>Hello world</Text>
+      <Text style={styles.text}>Hello World from StockWatcher</Text>
     </View>
   );
 }
