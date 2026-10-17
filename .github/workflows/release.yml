@@ -84,12 +84,100 @@ jobs:
         if: always()
         run: rm -f ~/.ssh/deploy_key
 
-  # --- desktop: added by the desktop agent ----------------------------------
-  # desktop:
-  #   needs: checks
-  #   runs-on: windows-latest
-  #   (version 0.1.<run_number>, signed NSIS+MSI, latest.json, upload via
-  #    VPS_PUBLISH_KEY -> infra/vps/publish-updates.sh)
+  desktop:
+    name: Desktop installers and update publish
+    needs: checks
+    runs-on: windows-latest
+    timeout-minutes: 45
+    environment:
+      name: production
+      url: https://stockwatcher.wavystyle.io/updates/desktop/latest.json
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    defaults:
+      run:
+        # Git Bash: GNU tar and OpenSSH from /usr/bin, same commands as Linux.
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - name: Toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Set version
+        id: version
+        # This checkout only; the committed version stays 0.1.0. The
+        # updater installs a release only if its version is newer, so the
+        # run number is what orders releases.
+        run: |
+          set -euo pipefail
+          version="0.1.${GITHUB_RUN_NUMBER}"
+          bun apps/desktop/scripts/set-version.ts "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build signed installers
+        # beforeBuildCommand builds apps/web first. With the key in the
+        # environment, each installer gets a .sig whose trusted comment
+        # records the version (the app sets requireSignedVersion).
+        working-directory: apps/desktop
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: bun run tauri build --ci
+
+      - name: Stage update files
+        # make-latest.ts writes latest.json, applies publish-updates.sh's
+        # rules locally and appends the file list to the job summary.
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          bun apps/desktop/scripts/make-latest.ts \
+            --bundle target/release/bundle \
+            --out target/updates \
+            --version "$VERSION" \
+            --notes "${GITHUB_SHA::7}"
+          /usr/bin/tar --version | head -n 1
+          /usr/bin/tar -czf target/upload.tgz --owner=0 --group=0 --numeric-owner \
+            -C target/updates desktop
+          /usr/bin/tar -tvzf target/upload.tgz
+
+      - name: Publish to VPS
+        # The forced command runs publish-updates.sh, which validates the tar
+        # from stdin and swaps /updates/desktop atomically. The version is
+        # passed as the release label (SSH_ORIGINAL_COMMAND).
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          VPS_PUBLISH_KEY: ${{ secrets.VPS_PUBLISH_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$VPS_PUBLISH_KEY" > ~/.ssh/publish_key
+          chmod 600 ~/.ssh/publish_key
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          /usr/bin/ssh \
+            -i ~/.ssh/publish_key \
+            -o IdentitiesOnly=yes \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            -o ConnectTimeout=20 \
+            "wavystack@${VPS_HOST}" "$VERSION" < target/upload.tgz
+          {
+            echo
+            echo "Published desktop $VERSION to https://stockwatcher.wavystyle.io/updates/desktop/latest.json"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/publish_key
 
   mobile:
     name: Mobile OTA update and preview APK

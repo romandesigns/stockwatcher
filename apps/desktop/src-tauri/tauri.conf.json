@@ -1,0 +1,61 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "stockwatcher",
+  "version": "0.1.0",
+  "identifier": "io.wavystyle.stockwatcher",
+  "build": {
+    "beforeDevCommand": "bun run --filter @stockwatcher/web dev",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "bun run --filter @stockwatcher/web build",
+    "frontendDist": "../../web/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "stockwatcher",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 375,
+        "minHeight": 560,
+        "center": true,
+        "backgroundColor": "#0f1216"
+      }
+    ],
+    "security": {
+      "csp": {
+        "default-src": "'self'",
+        "connect-src": "'self' ipc: http://ipc.localhost https://stockwatcher.wavystyle.io wss://stockwatcher.wavystyle.io",
+        "img-src": "'self' data:",
+        "style-src": "'self' 'unsafe-inline'",
+        "font-src": "'self' data:",
+        "object-src": "'none'",
+        "base-uri": "'self'"
+      },
+      "devCsp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis", "msi"],
+    "createUpdaterArtifacts": true,
+    "category": "Finance",
+    "shortDescription": "stockwatcher",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEYwMTA5NEJFN0QxQ0E4OEMKUldTTXFCeDl2cFFROERqWVZ5ZVBGK1JDMklxMk9QOGE1VjJ6NjEzR2c5aXF0aEhMWitiQ2FHcEcK",
+      "endpoints": ["https://stockwatcher.wavystyle.io/updates/desktop/latest.json"],
+      "requireSignedVersion": true,
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
+}

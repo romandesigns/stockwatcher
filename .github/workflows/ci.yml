@@ -1,7 +1,7 @@
 # Pull-request checks. release.yml calls this same workflow as its `checks`
 # job, so a push to main is gated by exactly what a PR is.
-# Desktop and mobile checks (Tauri compile, Expo tsc) are added here as
-# extra jobs by their agents, so both callers pick them up.
+# Every job here gates a release, so desktop and mobile checks live here
+# too and both callers pick them up.
 name: CI
 
 on:
@@ -51,10 +51,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Format
         run: cargo fmt --all --check
+      # -p, not --workspace: the workspace also holds the Tauri crate, which
+      # needs WebKitGTK on Linux. The `desktop` job checks it on Windows.
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        run: cargo clippy -p stockwatcher-server --all-targets --locked -- -D warnings
       - name: Test
-        run: cargo test --workspace --locked
+        run: cargo test -p stockwatcher-server --locked
 
   mobile:
     name: Mobile (typecheck, lint, test, doctor, bundle)
@@ -93,3 +95,35 @@ jobs:
           if ! bun audit; then
             echo "::warning title=bun audit::Dependency advisories reported (non-blocking); see this step's log."
           fi
+
+  desktop:
+    name: Desktop (clippy, test, release scripts)
+    # Windows, like the release build: no WebKitGTK packages to keep in sync.
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - name: Toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Install
+        run: bun install --frozen-lockfile
+      - name: Release scripts (set-version, make-latest)
+        run: |
+          bun run --filter @stockwatcher/desktop typecheck
+          bun run --filter @stockwatcher/desktop lint
+          bun run --filter @stockwatcher/desktop test
+      - name: Web build
+        # tauri::generate_context!() embeds apps/web/dist at compile time,
+        # so the crate doesn't compile without it.
+        run: bun run --filter @stockwatcher/web build
+      - name: Clippy
+        run: cargo clippy -p stockwatcher-desktop --all-targets --locked -- -D warnings
+      - name: Test
+        run: cargo test -p stockwatcher-desktop --locked
