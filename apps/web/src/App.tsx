@@ -127,8 +127,6 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
   }, [candidates.symbols, symbol]);
   const { series, tape, clock } = useChartFeed(feed, symbol, timeframe, bin);
   const trading = usePaperTrading(feed);
-  // The header slot the chart portals its toolbar into (a state ref, so the chart re-renders once it exists).
-  const [toolbarSlot, setToolbarSlot] = useState<HTMLDivElement | null>(null);
   const phone = useMediaQuery("(max-width: 600px)");
 
   const slots = useMemo(() => (series ? buildSlots(series.candles, series.gaps) : []), [series]);
@@ -218,8 +216,6 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
           <div className="text-sm font-semibold tracking-tight">StockWatcher</div>
           <SourceChip choice={choice} mode={mode} />
         </div>
-        {/* The chart's toolbar (timeframes, drawing tools, indicators, levels, trade) renders here. */}
-        <div ref={setToolbarSlot} className="ml-auto flex min-w-0 items-center" />
       </header>
 
       <div className="flex min-h-0 flex-1 flex-col gap-2 px-4 pb-3 min-[901px]:flex-row">
@@ -229,7 +225,7 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
               className="min-h-[360px] flex-1"
               toolbar
               inspector
-              toolbarContainer={toolbarSlot}
+              toolbarInChart
               heading={
                 <div className="flex items-baseline gap-2">
                   <span className="text-[15px] font-semibold">{symbol}</span>

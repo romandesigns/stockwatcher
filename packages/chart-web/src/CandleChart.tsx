@@ -152,6 +152,8 @@ export interface CandleChartProps {
   heading?: ReactNode;
   /** Render the toolbar into this element (e.g. a slot in the app header) instead of a row above the chart. */
   toolbarContainer?: HTMLElement | null;
+  /** Put the whole toolbar (timeframes, divider, drawing tools, indicators, levels, trade) inside the chart, at its top-right. */
+  toolbarInChart?: boolean;
 }
 
 /** What the host wires for simulated trading (the chart never talks to a server). */
@@ -242,6 +244,7 @@ export function CandleChart({
   inspector = false,
   heading,
   toolbarContainer,
+  toolbarInChart = false,
 }: CandleChartProps) {
   const theme = useChartTheme(themeProp);
 
@@ -878,6 +881,27 @@ export function CandleChart({
     if (idx !== null && idx >= 0) setVp((v) => ensureVisible(v, slots, idx, plotW));
   };
 
+  const toolbarEl = (
+      <ChartToolbar
+        toolsVisible={toolsVisible}
+        onToolsVisibleChange={changeToolsVisible}
+        timeframe={toolbarInChart ? timeframe : undefined}
+        onTimeframeChange={toolbarInChart ? onTimeframeChange : undefined}
+
+        tool={tool}
+        onToolChange={changeTool}
+        indicators={indicatorSpecs}
+        onIndicatorsChange={setIndicators}
+        seriesColors={[theme.series1, theme.series2, theme.series3]}
+        drawingTools={false}
+        canDelete={selected?.kind === "drawing"}
+        onDelete={deleteSelected}
+        trading={trading ? { position, last, onTrade: () => openTicket(null, null), fills, realized: trading.state?.account.realizedPnl ?? 0 } : null}
+        layers={layers}
+        onLayersChange={setLayers}
+      />
+  );
+
   const canvasEl = (
     <div ref={containerRef} className={cn("relative min-h-0 min-w-0", toolbar ? "flex-1" : className)}>
       <canvas
@@ -958,12 +982,13 @@ export function CandleChart({
           )}
         </div>
       )}
-      {onTimeframeChange && (
-        // Top-right corner of the chart, just inside the price axis.
+      {(toolbarInChart && toolbar) || onTimeframeChange ? (
+        // Top-right corner of the chart, just inside the price axis: the whole toolbar when it lives
+        // in the chart (timeframes, divider, icons on one line), else the timeframes alone.
         <div className="absolute top-1.5 z-[5]" style={{ right: model.options.priceAxisWidth + 6 }}>
-          <TimeframeSelector value={timeframe} onValueChange={onTimeframeChange} />
+          {toolbarInChart && toolbar ? toolbarEl : onTimeframeChange ? <TimeframeSelector value={timeframe} onValueChange={onTimeframeChange} /> : null}
         </div>
-      )}
+      ) : null}
       {toolbar && toolsVisible && (
         <DrawingToolbox
           placement={toolbox}
@@ -1033,32 +1058,14 @@ export function CandleChart({
   );
 
   if (!toolbar) return <TooltipProvider>{canvasEl}</TooltipProvider>;
-  const toolbarEl = (
-      <ChartToolbar
-        toolsVisible={toolsVisible}
-        onToolsVisibleChange={changeToolsVisible}
-
-        tool={tool}
-        onToolChange={changeTool}
-        indicators={indicatorSpecs}
-        onIndicatorsChange={setIndicators}
-        seriesColors={[theme.series1, theme.series2, theme.series3]}
-        drawingTools={false}
-        canDelete={selected?.kind === "drawing"}
-        onDelete={deleteSelected}
-        trading={trading ? { position, last, onTrade: () => openTicket(null, null), fills, realized: trading.state?.account.realizedPnl ?? 0 } : null}
-        layers={layers}
-        onLayersChange={setLayers}
-      />
-  );
   // With a host slot (the app header) the toolbar is portalled there and the chart fills its box.
   // The tree keeps the same shape either way: the slot appears a render later, and moving the
   // canvas to a new parent would remount it under the size observer and leave it at 0×0.
   return (
     <TooltipProvider>
-    {toolbarContainer ? createPortal(toolbarEl, toolbarContainer) : null}
-    <div className={cn("flex min-h-0 min-w-0 flex-col", !toolbarContainer && "gap-1.5", className)}>
-      {toolbarContainer ? null : toolbarEl}
+    {toolbarContainer && !toolbarInChart ? createPortal(toolbarEl, toolbarContainer) : null}
+    <div className={cn("flex min-h-0 min-w-0 flex-col", !toolbarContainer && !toolbarInChart && "gap-1.5", className)}>
+      {toolbarContainer || toolbarInChart ? null : toolbarEl}
       {canvasEl}
     </div>
     </TooltipProvider>
