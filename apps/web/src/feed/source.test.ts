@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chooseSource, initialSymbol, probeServer, type ServerSymbols } from "./source.ts";
+import { chooseSource, initialSymbol, probeServer, followCandidates, type ServerSymbols } from "./source.ts";
 
 const data = (over: Partial<ServerSymbols> = {}): ServerSymbols => ({ mode: "replay", status: "running", source: "archive 2026-10-15 (fixture)", day: "2026-10-15", fixture: true, symbols: ["FXLO", "SMPL"], ...over });
 
@@ -30,5 +30,17 @@ describe("chart source", () => {
     expect(await probeServer(fakeFetch({ status: 401 }))).toEqual({ ok: false, reason: "server answered HTTP 401" });
     expect(await probeServer(fakeFetch({ type: "text/html" }))).toMatchObject({ ok: false });
     expect(await probeServer(fakeFetch(new Error("ECONNREFUSED")))).toEqual({ ok: false, reason: "server unreachable (ECONNREFUSED)" });
+  });
+});
+
+describe("followCandidates", () => {
+  test("keeps the current symbol while it is a candidate", () => {
+    expect(followCandidates("SMPL", ["FXLO", "SMPL"])).toBe("SMPL");
+  });
+  test("moves to the first candidate when the current one left the price band", () => {
+    expect(followCandidates("FXHI", ["FXLO", "SMPL"])).toBe("FXLO");
+  });
+  test("keeps the current symbol when no candidates are known yet", () => {
+    expect(followCandidates("SMPL", [])).toBe("SMPL");
   });
 });

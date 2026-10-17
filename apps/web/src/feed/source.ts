@@ -15,7 +15,12 @@ export interface ServerSymbols {
   day: string | null;
   /** Every event the server replays is fixture data (never market evidence). */
   fixture: boolean;
+  /** Candidates only: symbols whose latest price is inside the server's price band. */
   symbols: string[];
+  /** The band the server screens with, as decimal strings (e.g. "0.10" / "25.00"). */
+  priceBand?: { min: string; max: string };
+  /** How many known symbols were screened and how many passed. */
+  screened?: { total: number; candidates: number };
 }
 
 export type Probe = { ok: true; data: ServerSymbols } | { ok: false; reason: string };
@@ -69,4 +74,15 @@ export function chooseSource(env: string | undefined, probe: Probe | null, fixtu
 /** The symbol to show first: the fixture's symbol if the server has it, else the first one. */
 export function initialSymbol(choice: SourceChoice, preferred: string): string {
   return choice.symbols.includes(preferred) ? preferred : (choice.symbols[0] ?? preferred);
+}
+
+/**
+ * The symbol to keep showing after the candidate list changed. The server lets through only
+ * stocks inside its price band, so a stock that trades out of the band disappears from the list;
+ * the view then moves to the first remaining candidate rather than showing a stale chart.
+ * Returns the current symbol when it is still a candidate (or no candidates are known yet).
+ */
+export function followCandidates(current: string, candidates: readonly string[]): string {
+  if (candidates.length === 0 || candidates.includes(current)) return current;
+  return candidates[0]!;
 }

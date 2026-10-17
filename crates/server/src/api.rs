@@ -65,6 +65,11 @@ pub async fn chart_snapshot(
             Json(json!({ "error": "unknown_symbol" })),
         )
             .into_response(),
+        Err(SnapshotError::OutsidePriceBand) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "outside_price_band" })),
+        )
+            .into_response(),
     }
 }
 

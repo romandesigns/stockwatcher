@@ -23,7 +23,7 @@
 //!
 //! Symbol `i` (0-based) uses seed `seed + 101·i` and multiplies the price path by
 //! `[1.0, 0.27, 6.2, 13.0][i % 4]` (so a default 4-symbol day spans ~$0.82 to ~$45 and exercises
-//! the $0.15–$25 universe filter).
+//! the $0.10–$25 universe filter).
 
 use crate::archive::Archive;
 use crate::error::ArchiveError;
@@ -382,11 +382,17 @@ fn add_correction_and_cancel(out: &mut Vec<MarketEvent>, day: &Day, symbol: &str
     }
 }
 
-/// Seed and price scale of the `i`-th symbol of a fixture day.
-pub fn symbol_params(base_seed: u32, i: usize) -> (u32, f64) {
+/// Seed and price scale of a fixture symbol. A default symbol keeps its own slot whatever its
+/// position in the list, so FXLO is always the sub-dollar one and FXHI always trades above $25
+/// (it exists to exercise the price band); other symbols use their position.
+pub fn symbol_params(base_seed: u32, i: usize, symbol: &str) -> (u32, f64) {
+    let slot = DEFAULT_SYMBOLS
+        .iter()
+        .position(|d| *d == symbol)
+        .unwrap_or(i);
     (
-        base_seed.wrapping_add(101 * i as u32),
-        SCALES[i % SCALES.len()] * (1.0 + (i / SCALES.len()) as f64 * 0.1),
+        base_seed.wrapping_add(101 * slot as u32),
+        SCALES[slot % SCALES.len()] * (1.0 + (slot / SCALES.len()) as f64 * 0.1),
     )
 }
 
@@ -399,7 +405,7 @@ pub fn write_fixture_day(
 ) -> Result<DayManifest, ArchiveError> {
     let mut manifest = None;
     for (i, sym) in symbols.iter().enumerate() {
-        let (seed, scale) = symbol_params(base_seed, i);
+        let (seed, scale) = symbol_params(base_seed, i, sym);
         let events = fixture_symbol(date, sym, seed, scale).map_err(|m| ArchiveError::Format {
             path: archive.day_dir(date),
             message: m,

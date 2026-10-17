@@ -17,7 +17,7 @@ use chrono::{NaiveDate, Utc};
 use chrono_tz::America::New_York;
 use market_archive::Archive;
 use market_archive::fixture::{DEFAULT_SEED, DEFAULT_SYMBOLS, write_fixture_day};
-use market_events::{Price, SessionId, UnixNanos};
+use market_events::{MarketEvent, Price, PriceBand, SessionId, UnixNanos, trade_effect};
 use market_providers::{
     ClockMode, ClockState, Command, FeedItem, MarketDataMode, ProviderConfig, ProviderError,
     ProviderInfo, ReplayHandle, Speed,
@@ -42,6 +42,7 @@ pub const BROADCAST_CAPACITY: usize = 16_384;
 /// | `SIM_AUTOFIXTURE` | `0` | in replay mode, write a FIXTURE day when the archive is empty (dev) |
 /// | `SIM_FIXTURE_DAY` | `2026-10-15` | that day |
 /// | `SIM_FIXTURE_SYMBOLS` | `SMPL,FXLO,FXMD,FXHI` | its symbols |
+/// | `PRICE_BAND_MIN` / `PRICE_BAND_MAX` | `0.10` / `25.00` | the candidate price band (inclusive) |
 #[derive(Clone, Debug)]
 pub struct MarketConfig {
     pub provider: ProviderConfig,
@@ -49,6 +50,8 @@ pub struct MarketConfig {
     pub autofixture: bool,
     pub fixture_day: NaiveDate,
     pub fixture_symbols: Vec<String>,
+    /// Only stocks whose latest price-qualifying trade is inside this band are let through.
+    pub band: PriceBand,
 }
 
 impl Default for MarketConfig {
@@ -59,6 +62,7 @@ impl Default for MarketConfig {
             autofixture: false,
             fixture_day: NaiveDate::from_ymd_opt(2026, 10, 15).expect("valid"),
             fixture_symbols: DEFAULT_SYMBOLS.iter().map(|s| s.to_string()).collect(),
+            band: PriceBand::DEFAULT,
         }
     }
 }
@@ -89,6 +93,18 @@ impl MarketConfig {
                 .filter(|x| !x.is_empty())
                 .collect();
         }
+        let price = |k: &str, d: Price| -> Result<Price, String> {
+            match var(k) {
+                Some(v) => v
+                    .parse::<Price>()
+                    .map_err(|e| format!("{k} is not a price: {v:?} ({e})")),
+                None => Ok(d),
+            }
+        };
+        c.band = PriceBand::new(
+            price("PRICE_BAND_MIN", PriceBand::DEFAULT.min)?,
+            price("PRICE_BAND_MAX", PriceBand::DEFAULT.max)?,
+        )?;
         Ok(c)
     }
 }
@@ -120,6 +136,8 @@ struct Core {
     engine: ChartEngine,
     seq: u64,
     tape: HashMap<String, VecDeque<String>>,
+    /// Latest price-qualifying trade per symbol at the engine clock; drives the price band.
+    last_price: HashMap<String, Price>,
     rebuilding: bool,
 }
 
@@ -129,6 +147,7 @@ impl Core {
             engine: ChartEngine::default(),
             seq: 0,
             tape: HashMap::new(),
+            last_price: HashMap::new(),
             rebuilding: false,
         }
     }
@@ -150,6 +169,7 @@ struct Inner {
     tx: broadcast::Sender<Arc<Outbound>>,
     control: Option<ReplayHandle>,
     bin: Price,
+    band: PriceBand,
 }
 
 /// Shared market state; cheap to clone.
@@ -176,6 +196,8 @@ pub fn clock_info(c: &ClockState) -> ClockInfo {
 #[derive(Debug, PartialEq, Eq)]
 pub enum SnapshotError {
     UnknownSymbol,
+    /// Known, but its latest price is outside the candidate band (or it has not traded yet).
+    OutsidePriceBand,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -204,6 +226,7 @@ impl Market {
         info: Option<ProviderInfo>,
         status: ProviderStatus,
         control: Option<ReplayHandle>,
+        band: PriceBand,
     ) -> Self {
         Market(Arc::new(Inner {
             mode,
@@ -214,12 +237,19 @@ impl Market {
             tx: broadcast::channel(BROADCAST_CAPACITY).0,
             control,
             bin: ChartEngine::default().config().profile_bin,
+            band,
         }))
     }
 
     /// No provider (tests, or a provider that could not start).
     pub fn idle(mode: ClockMode, state: &'static str, detail: Option<String>) -> Self {
-        Market::build(mode, None, ProviderStatus { state, detail }, None)
+        Market::build(
+            mode,
+            None,
+            ProviderStatus { state, detail },
+            None,
+            PriceBand::DEFAULT,
+        )
     }
 
     /// Starts the configured provider and the ingest task. Never fails: a provider that cannot
@@ -288,6 +318,7 @@ impl Market {
                 detail: None,
             },
             session.control.clone(),
+            cfg.band,
         );
         tokio::spawn(ingest(session.items, market.clone(), sim.clone()));
         (market, sim)
@@ -303,6 +334,7 @@ impl Market {
                 detail: None,
             },
             session.control.clone(),
+            PriceBand::DEFAULT,
         );
         tokio::spawn(ingest(session.items, market.clone(), sim));
         market
@@ -336,9 +368,8 @@ impl Market {
             || core.engine.symbols().any(|s| s == symbol)
     }
 
-    /// Symbols this market can serve, sorted.
-    pub fn symbols(&self) -> Vec<String> {
-        let core = self.0.core.lock().expect("core lock");
+    /// Every symbol the provider knows, sorted, whether or not it is a candidate.
+    fn all_symbols(&self, core: &Core) -> Vec<String> {
         let mut v: Vec<String> = self
             .0
             .info
@@ -351,11 +382,47 @@ impl Market {
         v
     }
 
+    /// The price band applied to every client-facing surface.
+    pub fn band(&self) -> PriceBand {
+        self.0.band
+    }
+
+    /// True when `symbol`'s latest price-qualifying trade at the clock is inside the band.
+    /// A symbol with no such trade yet is not a candidate.
+    pub fn is_candidate(&self, symbol: &str) -> bool {
+        let core = self.0.core.lock().expect("core lock");
+        Self::candidate_in(&core, self.0.band, symbol)
+    }
+
+    fn candidate_in(core: &Core, band: PriceBand, symbol: &str) -> bool {
+        core.last_price
+            .get(symbol)
+            .is_some_and(|p| band.contains(*p))
+    }
+
+    /// The candidates: symbols currently inside the price band, sorted. This is the only symbol
+    /// list clients get; out-of-band stocks never reach them.
+    pub fn symbols(&self) -> Vec<String> {
+        let core = self.0.core.lock().expect("core lock");
+        self.all_symbols(&core)
+            .into_iter()
+            .filter(|s| Self::candidate_in(&core, self.0.band, s))
+            .collect()
+    }
+
     fn apply(&self, item: FeedItem) {
         match item {
             FeedItem::Event(e) => {
                 let (seq, ups, rebuilding) = {
                     let mut core = self.0.core.lock().expect("core lock");
+                    // Price-band input: the same price rule the candles use (a print that may
+                    // not set OHLC, e.g. an odd lot or average-price report, cannot move a stock
+                    // into or out of the candidate set).
+                    if let MarketEvent::Trade(t) = &e
+                        && trade_effect(&t.conditions, t.tape).updates_ohlc
+                    {
+                        core.last_price.insert(t.symbol.clone(), t.price);
+                    }
                     let ups = core.engine.apply(&e);
                     core.seq += 1;
                     let seq = core.seq;
@@ -459,6 +526,9 @@ impl Market {
     ) -> Result<SnapshotOut, SnapshotError> {
         let clock = self.clock().map(|c| clock_info(&c));
         let core = self.0.core.lock().expect("core lock");
+        if self.known(&core, symbol) && !Self::candidate_in(&core, self.0.band, symbol) {
+            return Err(SnapshotError::OutsidePriceBand);
+        }
         let mut snap = match core.engine.snapshot(symbol, tf, Some(bin)) {
             Some(s) => s,
             None if self.known(&core, symbol) => ChartSnapshot {
@@ -590,7 +660,20 @@ impl Market {
             "day": info.and_then(|i| i.day).map(|d| d.to_string()),
             "fixture": info.is_some_and(|i| i.fixture),
             "symbols": self.symbols(),
+            "priceBand": {"min": self.0.band.min.to_string(), "max": self.0.band.max.to_string()},
+            "screened": self.screened(),
         })
+    }
+
+    /// How many known symbols were screened and how many are candidates.
+    fn screened(&self) -> Value {
+        let core = self.0.core.lock().expect("core lock");
+        let all = self.all_symbols(&core);
+        let candidates = all
+            .iter()
+            .filter(|s| Self::candidate_in(&core, self.0.band, s))
+            .count();
+        json!({"total": all.len(), "candidates": candidates})
     }
 }
 

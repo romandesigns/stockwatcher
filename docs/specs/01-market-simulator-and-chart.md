@@ -222,6 +222,8 @@ When finished, report:
 
 **Pi (as found 2026-10-16):** `/storage` md RAID, 7.3 TB, about 6.7 TB free after the stockspotter cleanup. Compute and network are still to be checked before it is assigned archive work.
 
+**Price universe (decided 2026-10-17, supersedes the brief's $0.15 floor):** only stocks priced **$0.10 through $25.00** (inclusive) are candidates. The Rust server lets nothing else through: `/api/symbols` lists candidates only, snapshots and subscriptions for other stocks are refused (`outside_price_band`), and a live subscription ends when its stock trades out of the band. Membership uses the latest price-qualifying trade at the clock, so stocks enter and leave as they trade; the engine keeps tracking every stock, so a stock entering the band arrives with full chart history. The band is defined once (`market_events::PriceBand`) and is configurable (`PRICE_BAND_MIN` / `PRICE_BAND_MAX`).
+
 **Phase scope vs. the pipeline (decided 2026-10-17):** work happens on the branch `feat/simulator-chart` and merges to `main` only after validation, because the spec rules out deployment in this phase. This is the safer default; the owner can change it.
 
 **Design (decided 2026-10-17):** the owner chose **C · Session timeline** (design canvas https://claude.ai/artifact/ECxnETgKWmPAEBmPdkvnrY): the chart above a full-day session timeline with a volume minimap, plus a side column with the session profile and a trade tape showing how each trade was counted. Owner priorities: **the simulator, which feeds future features, and a modular, reusable chart**.

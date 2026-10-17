@@ -7,7 +7,7 @@
 //!   0.0001 exactly, so two identical trades could land in different bins depending on the
 //!   arithmetic path. Integers make every comparison and bin assignment exact.
 //! - US equities print in whole cents at or above $1.00 and in up to four decimals below $1.00
-//!   (Reg NMS sub-penny rule; the universe here starts at $0.15). Six decimals cover both with two
+//!   (Reg NMS sub-penny rule; the universe here starts at $0.10). Six decimals cover both with two
 //!   digits of headroom for average-price prints.
 //! - `i64` is `Copy`, hashable, ordered and dependency-free; `rust_decimal` would also be exact but
 //!   is 16 bytes, slower, and buys nothing this range needs. `i64::MAX` micro-dollars is ~9.2e12 USD.

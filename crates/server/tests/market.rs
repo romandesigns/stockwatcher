@@ -408,3 +408,56 @@ async fn empty_archive_without_autofixture_reports_no_data() {
     // Health is unaffected.
     assert_eq!(get(&s.app, "/api/health").await.0, StatusCode::OK);
 }
+
+#[tokio::test]
+async fn only_price_band_candidates_are_let_through() {
+    // FXHI trades above $25 in the fixture day; SMPL and FXLO are inside $0.10–$25.
+    let s = stack(&[
+        ("REPLAY_AUTOPLAY", "0"),
+        ("SIM_FIXTURE_SYMBOLS", "SMPL,FXLO,FXHI"),
+    ])
+    .await;
+    let mut ws = connect(&s.url).await;
+    wait_for_replay(&mut ws).await;
+
+    let (st, v) = get(&s.app, "/api/symbols").await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(v["symbols"], json!(["FXLO", "SMPL"]));
+    assert_eq!(v["screened"], json!({"total": 3, "candidates": 2}));
+    let band = |k: &str| v["priceBand"][k].as_str().unwrap().parse::<f64>().unwrap();
+    assert_eq!((band("min"), band("max")), (0.10, 25.0));
+
+    let (st, body) = get(&s.app, "/api/chart/FXHI/snapshot").await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"], "outside_price_band");
+
+    send(
+        &mut ws,
+        json!({"type": "chart.subscribe", "symbol": "FXHI", "timeframe": "1m", "profileBin": 0.01}),
+    )
+    .await;
+    let err = next(&mut ws, is("error")).await;
+    assert_eq!(err["code"], "outside_price_band");
+}
+
+#[tokio::test]
+async fn the_price_band_is_configurable() {
+    // A $0.10–$1.00 band keeps only the sub-dollar fixture symbol.
+    let s = stack(&[
+        ("REPLAY_AUTOPLAY", "0"),
+        ("SIM_FIXTURE_SYMBOLS", "SMPL,FXLO,FXHI"),
+        ("PRICE_BAND_MAX", "1.00"),
+    ])
+    .await;
+    let mut ws = connect(&s.url).await;
+    wait_for_replay(&mut ws).await;
+    let (_, v) = get(&s.app, "/api/symbols").await;
+    assert_eq!(v["symbols"], json!(["FXLO"]));
+
+    let bad = MarketConfig::from_lookup(|k| match k {
+        "PRICE_BAND_MIN" => Some("5".into()),
+        "PRICE_BAND_MAX" => Some("1".into()),
+        _ => None,
+    });
+    assert!(bad.is_err(), "an inverted band must be refused at startup");
+}

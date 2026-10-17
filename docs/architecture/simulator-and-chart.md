@@ -289,7 +289,7 @@ JSON error bodies.
 | WS `/v1beta1/boats`, `/v1beta1/overnight` | Same protocol; carry only overnight-session events (SIP carries the rest) |
 | WS `/v1beta1/news` | Auth plus a `news` subscription; emits nothing (the contract has no news events yet) |
 | `GET /stable/shares-float?symbol=&apikey=` | FMP shape `[{symbol,date,freeFloat,floatShares,outstandingShares}]`, **synthetic** values per symbol, header `x-stockwatcher-fixture: true`. FMP's docs refused automated fetching on 2026-10-17, so check the field list against a real response |
-| `GET /sim/universe?min=&max=` | **Simulator-only**, not Alpaca: each symbol's latest price at the clock and whether it is inside $0.15–$25 (`provider_sim::universe::in_price_band`) |
+| `GET /sim/universe?min=&max=` | **Simulator-only**, not Alpaca: each symbol's latest price at the clock and whether it is inside $0.10–$25 (`market_events::PriceBand`) |
 
 **Not implemented** (all answer 404 or are accepted but silent):
 - quotes, latest-trade, latest-quote, latest-bar and multi-symbol `/v2/stocks/trades` and `/bars`;

@@ -105,6 +105,16 @@ async fn send_snapshot(socket: &mut WebSocket, market: &Market, sub: &mut Sub) -
             )
             .await
         }
+        Err(SnapshotError::OutsidePriceBand) => {
+            send(
+                socket,
+                &ServerMessage::Error {
+                    code: "outside_price_band",
+                    message: "not a candidate: price outside the configured band",
+                },
+            )
+            .await
+        }
     }
 }
 
@@ -253,6 +263,19 @@ async fn session(mut socket: WebSocket, state: AppState) {
                             None => true,
                         },
                         OutKind::Chart { symbol, timeframe, update, json } => match sub.as_ref() {
+                            // The stock traded out of the price band: it is no longer a
+                            // candidate, so its stream stops here and the client is told why.
+                            Some(s) if *symbol == s.symbol && !market.is_candidate(symbol) => {
+                                sub = None;
+                                send(
+                                    &mut socket,
+                                    &ServerMessage::Error {
+                                        code: "outside_price_band",
+                                        message: "no longer a candidate: price left the configured band",
+                                    },
+                                )
+                                .await
+                            }
                             Some(s)
                                 if *symbol == s.symbol
                                     && o.seq > s.seq

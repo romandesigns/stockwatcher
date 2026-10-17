@@ -28,7 +28,7 @@
 //! - WebSocket `/v1beta1/news` (auth, `news` subscription; emits nothing: the archive has no news)
 //! - FMP `GET /stable/shares-float?symbol=` (fixture values, header `x-stockwatcher-fixture: true`)
 //! - `GET /sim/universe?min=&max=` — **simulator-only**, not an Alpaca route: symbols whose latest
-//!   trade at the replay clock is inside the $0.15–$25 band (or the given one)
+//!   trade at the replay clock is inside the $0.10–$25 band (or the given one)
 //!
 //! Everything else answers 404. The full list, including what is deliberately not implemented,
 //! is in `docs/architecture/simulator-and-chart.md`, Appendix B.

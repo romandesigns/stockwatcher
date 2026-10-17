@@ -15,7 +15,8 @@ import { CandleChart, CandleInspector, ReplayControls, SessionTimeline, Tape, Ti
 import { ToggleGroup, ToggleGroupItem, cn } from "@stockwatcher/chart-web/ui";
 import { useEffect, useMemo, useState } from "react";
 import { createServerFeed } from "./feed/serverFeed.ts";
-import { chooseSource, initialSymbol, probeServer, type SourceChoice } from "./feed/source.ts";
+import { chooseSource, followCandidates, initialSymbol, probeServer, type SourceChoice } from "./feed/source.ts";
+import { useCandidates } from "./feed/useCandidates.ts";
 import type { ChartFeed } from "./feed/types.ts";
 import { useChartFeed } from "./feed/useChartFeed.ts";
 import { createFixtureFeed, FIXTURE_SYMBOL } from "./fixtures/fixtureFeed.ts";
@@ -86,9 +87,18 @@ export default function App() {
 function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
 
   const [symbol, setSymbol] = useState(() => initialSymbol(choice, FIXTURE_SYMBOL));
+  const candidates = useCandidates(choice);
   const [timeframe, setTimeframe] = useState<Timeframe>("1m");
   const [bin, setBin] = useState<number>(0.01);
   const [inspectT, setInspectT] = useState<number | null>(null);
+  // A stock that traded out of the price band is no longer let through by the server.
+  useEffect(() => {
+    const next = followCandidates(symbol, candidates.symbols);
+    if (next !== symbol) {
+      setSymbol(next);
+      setInspectT(null);
+    }
+  }, [candidates.symbols, symbol]);
   const { series, tape, clock } = useChartFeed(feed, symbol, timeframe, bin);
   const phone = useMediaQuery("(max-width: 600px)");
 
@@ -158,7 +168,7 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
           </span>
         </header>
         <p className="-mt-2 truncate text-[11px] text-muted-foreground">{sourceText(choice)}</p>
-        <SymbolSelector symbols={choice.symbols} value={symbol} onChange={changeSymbol} />
+        <SymbolSelector symbols={candidates.symbols} value={symbol} onChange={changeSymbol} />
         <TimeframeSelector value={timeframe} onValueChange={changeTf} variant="grid" />
         <CandleChart className="h-[300px]" series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={setInspectT} options={PHONE_CHART} barSpacing={10} label={chartLabel} />
         <CandleInspector className="-mt-1" slot={inspected} timeframe={timeframe} variant="compact" />
@@ -189,7 +199,7 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
           </span>
         </div>
         <SourceBadge choice={choice} />
-        <SymbolSelector symbols={choice.symbols} value={symbol} onChange={changeSymbol} />
+        <SymbolSelector symbols={candidates.symbols} value={symbol} onChange={changeSymbol} />
         <div className="ml-auto flex flex-wrap items-center gap-2.5">
           <span className="text-xs text-muted-foreground">Mode</span>
           <ToggleGroup aria-label="Data mode" spacing={0} variant="outline" value={[clock?.mode === "live" ? "live" : "replay"]}>
