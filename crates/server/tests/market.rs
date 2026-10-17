@@ -628,3 +628,98 @@ async fn rejections_show_up_in_state_and_bad_commands_get_errors() {
     send(&mut ws, json!({"type":"paper.reset"})).await;
     paper_state(&mut ws, |m| m["orders"].as_array().unwrap().is_empty()).await;
 }
+
+#[tokio::test]
+async fn a_bracket_fills_its_entry_then_one_exit_and_cancels_the_other() {
+    let s = stack(&[]).await;
+    let mut ws = connect(&s.url).await;
+    wait_for_replay(&mut ws).await;
+    send(
+        &mut ws,
+        json!({"type":"chart.subscribe","symbol":"SMPL","timeframe":"1m","profileBin":0.01}),
+    )
+    .await;
+    let print = next(&mut ws, |m| {
+        m["type"] == "tape.trade" && m["counted"] == "ohlc_and_volume"
+    })
+    .await;
+    let p = print["p"].as_f64().unwrap();
+    // A market entry fills on the next print near p. Its take-profit, a sell limit 10 cents
+    // under that, is traded through by the very same print but must wait for the one after;
+    // the stop-loss 30 cents under is out of reach, so it is the one the OCO cancels.
+    let cents = |x: f64| (x * 100.0).round() / 100.0;
+    let (tp, sl) = (cents(p - 0.10), cents(p - 0.30));
+    send(
+        &mut ws,
+        json!({"type":"order.place","clientOrderId":"c-b","symbol":"SMPL","side":"buy",
+               "orderType":"market","qty":100,"bracket":{"takeProfit":tp,"stopLoss":sl}}),
+    )
+    .await;
+    let placed = paper_state(&mut ws, |m| m["orders"].as_array().unwrap().len() == 3).await;
+    let ids: Vec<String> = placed["orders"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["id"].as_str().unwrap().to_string())
+        .collect();
+    let [entry, tp_id, sl_id] = [&ids[0], &ids[1], &ids[2]];
+    let group = placed["orders"][0]["ocoGroup"].clone();
+    assert!(group.as_str().unwrap().starts_with("b-"));
+    for (o, role, status) in [
+        (entry, "entry", "open"),
+        (tp_id, "take_profit", "pending"),
+        (sl_id, "stop_loss", "pending"),
+    ] {
+        let o = order(&placed, o).unwrap();
+        assert_eq!((&o["role"], &o["status"]), (&json!(role), &json!(status)));
+        assert_eq!(o["ocoGroup"], group);
+    }
+    assert_eq!(order(&placed, tp_id).unwrap()["parentId"], entry.as_str());
+    assert_eq!(order(&placed, tp_id).unwrap()["limitPrice"], tp);
+    assert_eq!(order(&placed, sl_id).unwrap()["stopPrice"], sl);
+
+    // The entry's fill opens both exits, and fills neither of them on that print.
+    let opened = paper_state(&mut ws, |m| {
+        order(m, entry).is_some_and(|o| o["status"] == "filled")
+    })
+    .await;
+    assert_eq!(order(&opened, tp_id).unwrap()["status"], "open");
+    assert_eq!(order(&opened, sl_id).unwrap()["status"], "open");
+    assert_eq!(opened["positions"][0]["qty"], 100);
+
+    // The next print fills the take-profit at its limit and cancels the stop-loss.
+    let closed = paper_state(&mut ws, |m| {
+        order(m, tp_id).is_some_and(|o| o["status"] == "filled")
+    })
+    .await;
+    let sib = order(&closed, sl_id).unwrap();
+    assert_eq!(
+        (&sib["status"], &sib["rejectReason"]),
+        (&json!("cancelled"), &Value::Null)
+    );
+    assert_eq!(closed["positions"], json!([]), "flat");
+    let fill = next(&mut ws, is("paper.fill")).await;
+    assert_eq!(fill["orderId"], tp_id.as_str());
+    assert_eq!(
+        (fill["side"].as_str(), fill["price"].as_f64()),
+        (Some("sell"), Some(tp))
+    );
+
+    // A bracket out of order is refused when modified, and the order stays as it was.
+    send(&mut ws, json!({"type":"paper.reset"})).await;
+    paper_state(&mut ws, |m| m["orders"].as_array().unwrap().is_empty()).await;
+    send(
+        &mut ws,
+        json!({"type":"order.place","symbol":"SMPL","side":"buy","orderType":"limit",
+               "qty":1,"limitPrice":1.00,"bracket":{"takeProfit":1.50,"stopLoss":0.50}}),
+    )
+    .await;
+    let st = paper_state(&mut ws, |m| m["orders"].as_array().unwrap().len() == 3).await;
+    let tp_id = st["orders"][1]["id"].as_str().unwrap().to_string();
+    send(
+        &mut ws,
+        json!({"type":"order.modify","id":tp_id,"limitPrice":0.40}),
+    )
+    .await;
+    assert_eq!(next(&mut ws, is("error")).await["code"], "bad_bracket");
+}

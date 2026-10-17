@@ -7,7 +7,8 @@
 //! `sub_penny` by the broker.
 
 use crate::{
-    Broker, Fill, Modify, NewOrder, Order, OrderType, Position, RejectReason, Side, Status,
+    Bracket, Broker, Fill, Modify, NewOrder, Order, OrderType, Position, RejectReason, Role, Side,
+    Status,
 };
 use market_events::{PRICE_SCALE, Price};
 use serde::{Deserialize, Serialize};
@@ -26,6 +27,20 @@ pub struct PlaceCommand {
     pub limit_price: Option<f64>,
     #[serde(default)]
     pub stop_price: Option<f64>,
+    /// Places the order as a bracket entry (`null` is the same as absent).
+    #[serde(default)]
+    pub bracket: Option<BracketCommand>,
+}
+
+/// `order.place`'s `bracket`. A missing leg parses (and is rejected as `missing_price`, like a
+/// limit order without its limit); a non-numeric one is `bad_order`.
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BracketCommand {
+    #[serde(default)]
+    pub take_profit: Option<f64>,
+    #[serde(default)]
+    pub stop_loss: Option<f64>,
 }
 
 /// `order.modify`.
@@ -75,6 +90,10 @@ impl PlaceCommand {
             qty: qty_from_json(self.qty),
             limit_price: self.limit_price.map(price_from_json),
             stop_price: self.stop_price.map(price_from_json),
+            bracket: self.bracket.map(|b| Bracket {
+                take_profit: b.take_profit.map(price_from_json),
+                stop_loss: b.stop_loss.map(price_from_json),
+            }),
         }
     }
 }
@@ -121,6 +140,11 @@ pub struct OrderWire {
     pub reject_reason: Option<RejectReason>,
     pub created_at: i64,
     pub updated_at: i64,
+    /// The entry's id, on a bracket exit.
+    pub parent_id: Option<String>,
+    pub role: Option<Role>,
+    /// `b-<n>`, the same on a bracket's entry and both exits.
+    pub oco_group: Option<String>,
 }
 
 impl From<&Order> for OrderWire {
@@ -140,6 +164,9 @@ impl From<&Order> for OrderWire {
             reject_reason: o.reject_reason,
             created_at: o.created_at,
             updated_at: o.updated_at,
+            parent_id: o.parent_num.map(|n| format!("o-{n}")),
+            role: o.role,
+            oco_group: o.oco_group.map(|g| format!("b-{g}")),
         }
     }
 }

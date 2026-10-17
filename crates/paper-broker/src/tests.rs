@@ -21,6 +21,7 @@ fn order(side: Side, order_type: OrderType, qty: i64) -> NewOrder {
         qty,
         limit_price: None,
         stop_price: None,
+        bracket: None,
     }
 }
 
@@ -610,7 +611,8 @@ fn state_json_matches_the_contract() {
                 "id": "o-1", "clientOrderId": "c-1697", "symbol": "SMPL", "side": "buy",
                 "orderType": "limit", "qty": 100, "filledQty": 0, "avgFillPrice": null,
                 "limitPrice": 3.38, "stopPrice": null, "status": "open", "rejectReason": null,
-                "createdAt": T0, "updatedAt": T0
+                "createdAt": T0, "updatedAt": T0,
+                "parentId": null, "role": null, "ocoGroup": null
             }],
             "positions": []
         })
@@ -683,4 +685,598 @@ fn wire_conversion_rounds_to_micros_then_the_broker_checks_the_grid() {
             ..Modify::default()
         }
     );
+}
+
+// --- brackets ------------------------------------------------------------------------------
+
+fn bracket(o: NewOrder, tp: Price, sl: Price) -> NewOrder {
+    NewOrder {
+        bracket: Some(Bracket {
+            take_profit: Some(tp),
+            stop_loss: Some(sl),
+        }),
+        ..o
+    }
+}
+
+/// Places a bracket and returns the (entry, take-profit, stop-loss) ids.
+fn place_bracket(b: &mut Broker, o: NewOrder, tp: Price, sl: Price) -> (String, String, String) {
+    let entry = place(b, bracket(o, tp, sl));
+    let n = parse_id(&entry).unwrap();
+    assert_eq!(status(b, &entry), Status::Open, "bracket accepted");
+    (entry, format!("o-{}", n + 1), format!("o-{}", n + 2))
+}
+
+fn statuses(b: &Broker, ids: [&str; 3]) -> [Status; 3] {
+    ids.map(|id| status(b, id))
+}
+
+fn set_limit(p: Price) -> Modify {
+    Modify {
+        limit_price: Some(p),
+        ..Modify::default()
+    }
+}
+
+fn set_stop(p: Price) -> Modify {
+    Modify {
+        stop_price: Some(p),
+        ..Modify::default()
+    }
+}
+
+#[test]
+fn a_long_bracket_is_an_entry_and_two_pending_opposite_exits_in_one_step() {
+    let mut b = Broker::new();
+    let seq = b.seq();
+    let entry = place(
+        &mut b,
+        bracket(limit(Side::Buy, 1428, c(338)), c(350), c(331)),
+    );
+    assert_eq!(b.seq(), seq + 1, "one state change for all three");
+    let orders = b.orders();
+    assert_eq!(orders.len(), 3);
+    let [e, tp, sl] = [orders[0], orders[1], orders[2]];
+    assert_eq!(e.id(), entry);
+    assert_eq!(
+        (e.status, e.role, e.parent_num, e.oco_group),
+        (Status::Open, Some(Role::Entry), None, Some(1))
+    );
+    assert_eq!(
+        (
+            tp.num,
+            tp.side,
+            tp.order_type,
+            tp.qty,
+            tp.limit_price,
+            tp.stop_price
+        ),
+        (2, Side::Sell, OrderType::Limit, 1428, Some(c(350)), None)
+    );
+    assert_eq!(
+        (
+            sl.num,
+            sl.side,
+            sl.order_type,
+            sl.qty,
+            sl.limit_price,
+            sl.stop_price
+        ),
+        (3, Side::Sell, OrderType::Stop, 1428, None, Some(c(331)))
+    );
+    for (x, role) in [(tp, Role::TakeProfit), (sl, Role::StopLoss)] {
+        assert_eq!(
+            (x.status, x.role, x.parent_num, x.oco_group, x.created_at),
+            (Status::Pending, Some(role), Some(1), Some(1), T0)
+        );
+        assert!(x.status.is_working());
+        assert_eq!(x.client_order_id, None);
+    }
+    // The next order (bracket or not) continues the ids; the next bracket the groups.
+    let (e2, ..) = place_bracket(
+        &mut b,
+        order(Side::Buy, OrderType::Market, 1),
+        c(400),
+        c(300),
+    );
+    assert_eq!(e2, "o-4");
+    assert_eq!(b.order("o-4").unwrap().oco_group, Some(2));
+}
+
+#[test]
+fn a_short_bracket_exits_with_a_buy_limit_and_a_buy_stop() {
+    let mut b = Broker::new();
+    let (_, tp, sl) = place_bracket(&mut b, limit(Side::Sell, 10, c(400)), c(380), c(410));
+    let tp = b.order(&tp).unwrap();
+    assert_eq!(
+        (tp.side, tp.order_type, tp.limit_price),
+        (Side::Buy, OrderType::Limit, Some(c(380)))
+    );
+    let sl = b.order(&sl).unwrap();
+    assert_eq!(
+        (sl.side, sl.order_type, sl.stop_price),
+        (Side::Buy, OrderType::Stop, Some(c(410)))
+    );
+}
+
+#[test]
+fn pending_exits_neither_fill_nor_trigger_before_the_entry_fills() {
+    let mut b = Broker::new();
+    let (e, tp, sl) = place_bracket(&mut b, limit(Side::Buy, 100, c(338)), c(350), c(331));
+    // Through the take-profit, then a touch of the entry: neither fills the buy limit 3.38, and
+    // the exits do not react to either.
+    assert!(!b.on_trade("SMPL", c(360), T0).changed);
+    assert!(
+        !b.on_trade("SMPL", c(338), T0).changed,
+        "touch of the entry"
+    );
+    assert_eq!(
+        statuses(&b, [&e, &tp, &sl]),
+        [Status::Open, Status::Pending, Status::Pending]
+    );
+}
+
+#[test]
+fn exits_open_on_the_entry_fill_but_never_fill_on_that_same_trade() {
+    // Long: a print at 3.20 fills the buy limit 3.38 and is through the 3.31 stop-loss.
+    let mut b = Broker::new();
+    let (e, tp, sl) = place_bracket(&mut b, limit(Side::Buy, 100, c(338)), c(350), c(331));
+    let out = b.on_trade("SMPL", c(320), T0 + 1);
+    assert_eq!(out.fills.len(), 1, "only the entry");
+    assert_eq!(
+        statuses(&b, [&e, &tp, &sl]),
+        [Status::Filled, Status::Open, Status::Open]
+    );
+    assert_eq!(b.order(&tp).unwrap().updated_at, T0 + 1);
+    // From the next trade the stop-loss is live: 3.25 <= 3.31 fills it at the print.
+    let out = b.on_trade("SMPL", c(325), T0 + 2);
+    assert_eq!(out.fills.len(), 1);
+    assert_eq!(out.fills[0].order_num, 3);
+    assert_eq!(out.fills[0].price, c(325));
+    assert_eq!(
+        statuses(&b, [&e, &tp, &sl]),
+        [Status::Filled, Status::Cancelled, Status::Filled]
+    );
+    assert!(b.position("SMPL").is_none(), "flat again");
+
+    // A buy stop entry gapping through the take-profit: the exit waits for the next print.
+    let mut b = Broker::new();
+    let (e, tp, sl) = place_bracket(&mut b, stop(Side::Buy, 100, c(340)), c(350), c(331));
+    let out = b.on_trade("SMPL", c(360), T0);
+    assert_eq!(out.fills.len(), 1);
+    assert_eq!(statuses(&b, [&e, &tp, &sl])[1], Status::Open);
+    let out = b.on_trade("SMPL", c(355), T0 + 1);
+    assert_eq!(
+        (out.fills[0].order_num, out.fills[0].price),
+        (2, c(350)),
+        "sell limit 3.50 traded through, fills at its limit"
+    );
+    assert_eq!(b.realized(), -10 * 1_000_000, "(3.50 - 3.60) x 100");
+
+    // Short, market entry: the entry's own print is through the take-profit.
+    let mut b = Broker::new();
+    let (e, tp, sl) = place_bracket(
+        &mut b,
+        order(Side::Sell, OrderType::Market, 10),
+        c(380),
+        c(420),
+    );
+    assert_eq!(b.on_trade("SMPL", c(370), T0).fills.len(), 1);
+    assert_eq!(
+        statuses(&b, [&e, &tp, &sl]),
+        [Status::Filled, Status::Open, Status::Open]
+    );
+    assert_eq!(b.on_trade("SMPL", c(379), T0).fills[0].price, c(380));
+    assert_eq!(
+        statuses(&b, [&e, &tp, &sl]),
+        [Status::Filled, Status::Filled, Status::Cancelled]
+    );
+}
+
+#[test]
+fn either_exit_filling_cancels_the_other() {
+    for (side, tp_px, sl_px, tp_hit, sl_hit) in [
+        (Side::Buy, 350, 330, 351, 330),
+        (Side::Sell, 330, 350, 329, 350),
+    ] {
+        // Take-profit side.
+        let mut b = Broker::new();
+        let mkt = order(side, OrderType::Market, 5);
+        let (_, tp, sl) = place_bracket(&mut b, mkt.clone(), c(tp_px), c(sl_px));
+        b.on_trade("SMPL", c(340), T0);
+        let out = b.on_trade("SMPL", c(tp_hit), T0 + 7);
+        assert_eq!(out.fills.len(), 1);
+        let sib = b.order(&sl).unwrap();
+        assert_eq!(
+            (
+                status(&b, &tp),
+                sib.status,
+                sib.reject_reason,
+                sib.updated_at
+            ),
+            (Status::Filled, Status::Cancelled, None, T0 + 7),
+            "{side:?}"
+        );
+        assert!(b.position("SMPL").is_none());
+        assert!(!b.on_trade("SMPL", c(sl_hit), T0).changed, "nothing left");
+
+        // Stop-loss side.
+        let mut b = Broker::new();
+        let (_, tp, sl) = place_bracket(&mut b, mkt, c(tp_px), c(sl_px));
+        b.on_trade("SMPL", c(340), T0);
+        assert_eq!(b.on_trade("SMPL", c(sl_hit), T0).fills.len(), 1);
+        assert_eq!(
+            (status(&b, &tp), status(&b, &sl)),
+            (Status::Cancelled, Status::Filled),
+            "{side:?}"
+        );
+        assert!(b.position("SMPL").is_none());
+    }
+}
+
+#[test]
+fn cancelling_the_entry_cancels_its_pending_exits() {
+    let mut b = Broker::new();
+    let (e, tp, sl) = place_bracket(&mut b, limit(Side::Buy, 100, c(338)), c(350), c(331));
+    let other = place(&mut b, limit(Side::Buy, 1, c(100)));
+    let seq = b.seq();
+    b.cancel(&e, T0 + 4).unwrap();
+    assert_eq!(b.seq(), seq + 1);
+    assert_eq!(statuses(&b, [&e, &tp, &sl]), [Status::Cancelled; 3]);
+    assert_eq!(b.order(&sl).unwrap().updated_at, T0 + 4);
+    assert_eq!(status(&b, &other), Status::Open, "unrelated orders stay");
+    let out = b.on_trade("SMPL", c(99), T0);
+    assert_eq!(out.fills.len(), 1, "only the unrelated limit");
+
+    // Also once a stop-limit entry has triggered (still unfilled, exits still pending).
+    let mut b = Broker::new();
+    let (e, tp, sl) = place_bracket(
+        &mut b,
+        stop_limit(Side::Sell, 10, c(300), c(299)),
+        c(280),
+        c(310),
+    );
+    b.on_trade("SMPL", c(300), T0);
+    assert_eq!(
+        statuses(&b, [&e, &tp, &sl]),
+        [Status::Triggered, Status::Pending, Status::Pending]
+    );
+    b.cancel(&e, T0).unwrap();
+    assert_eq!(statuses(&b, [&e, &tp, &sl]), [Status::Cancelled; 3]);
+}
+
+#[test]
+fn cancelling_one_exit_leaves_the_other_working_and_unlinked() {
+    // While pending: the survivor opens with the entry and works alone.
+    let mut b = Broker::new();
+    let (e, tp, sl) = place_bracket(&mut b, limit(Side::Buy, 100, c(338)), c(350), c(331));
+    b.cancel(&tp, T0).unwrap();
+    assert_eq!(
+        statuses(&b, [&e, &tp, &sl]),
+        [Status::Open, Status::Cancelled, Status::Pending]
+    );
+    b.on_trade("SMPL", c(337), T0);
+    assert_eq!(status(&b, &sl), Status::Open);
+    assert_eq!(b.order(&sl).unwrap().oco_group, Some(1), "group kept");
+    assert_eq!(b.on_trade("SMPL", c(330), T0).fills[0].order_num, 3);
+
+    // While open: cancelling the stop-loss leaves the take-profit open.
+    let mut b = Broker::new();
+    let mkt = order(Side::Buy, OrderType::Market, 1);
+    let (e, tp, sl) = place_bracket(&mut b, mkt, c(350), c(331));
+    b.on_trade("SMPL", c(340), T0);
+    b.cancel(&sl, T0).unwrap();
+    assert_eq!(
+        statuses(&b, [&e, &tp, &sl]),
+        [Status::Filled, Status::Open, Status::Cancelled]
+    );
+    assert!(
+        b.on_trade("SMPL", c(300), T0).fills.is_empty(),
+        "no stop any more"
+    );
+    assert_eq!(b.on_trade("SMPL", c(351), T0).fills[0].order_num, 2);
+}
+
+#[test]
+fn a_pending_exit_can_be_modified() {
+    let mut b = Broker::new();
+    let (_, tp, sl) = place_bracket(&mut b, limit(Side::Buy, 100, c(338)), c(350), c(331));
+    let seq = b.seq();
+    b.modify(&tp, set_limit(c(355)), T0 + 3).unwrap();
+    b.modify(&sl, set_stop(c(320)), T0 + 3).unwrap();
+    let qty = Modify {
+        qty: Some(50),
+        ..Modify::default()
+    };
+    b.modify(&sl, qty, T0 + 3).unwrap();
+    assert_eq!(b.seq(), seq + 3);
+    let o = b.order(&tp).unwrap();
+    assert_eq!(
+        (o.status, o.limit_price, o.updated_at),
+        (Status::Pending, Some(c(355)), T0 + 3)
+    );
+    let o = b.order(&sl).unwrap();
+    assert_eq!(
+        (o.status, o.stop_price, o.qty),
+        (Status::Pending, Some(c(320)), 50)
+    );
+    // Exits keep their own type's field: a take-profit has no stop, a stop-loss no limit.
+    assert!(matches!(
+        b.modify(&tp, set_stop(c(330)), T0),
+        Err(CommandError::BadOrder(_))
+    ));
+    assert!(matches!(
+        b.modify(&sl, set_limit(c(330)), T0),
+        Err(CommandError::BadOrder(_))
+    ));
+}
+
+#[test]
+fn bad_bracket_on_place_for_longs_and_shorts() {
+    let bad = |o: NewOrder, tp: i64, sl: i64| {
+        let mut b = Broker::new();
+        let r = reject(&mut b, bracket(o, c(tp), c(sl)));
+        assert_eq!(b.orders().len(), 1, "no exits for a rejected bracket");
+        let e = b.orders()[0];
+        assert_eq!((e.role, e.oco_group), (Some(Role::Entry), Some(1)));
+        r
+    };
+    let bb = Some(RejectReason::BadBracket);
+    let buy = || limit(Side::Buy, 10, c(338));
+    let sell = || limit(Side::Sell, 10, c(338));
+    // Long: tp > entry > sl, strictly.
+    assert_eq!(bad(buy(), 331, 350), bb, "inverted");
+    assert_eq!(bad(buy(), 338, 331), bb, "tp at the entry");
+    assert_eq!(bad(buy(), 337, 331), bb, "tp below the entry");
+    assert_eq!(bad(buy(), 350, 338), bb, "sl at the entry");
+    assert_eq!(bad(buy(), 350, 340), bb, "sl above the entry");
+    // Short: tp < entry < sl.
+    assert_eq!(bad(sell(), 350, 331), bb, "long-shaped on a short");
+    assert_eq!(bad(sell(), 339, 350), bb);
+    assert_eq!(bad(sell(), 320, 337), bb);
+    // A market entry has no price: only tp against sl.
+    let mkt = |s| order(s, OrderType::Market, 10);
+    assert_eq!(bad(mkt(Side::Buy), 331, 331), bb);
+    assert_eq!(bad(mkt(Side::Sell), 350, 331), bb);
+    // A stop entry is checked at its stop; a stop-limit at its limit.
+    assert_eq!(bad(stop(Side::Buy, 10, c(345)), 344, 331), bb);
+    assert_eq!(
+        bad(stop_limit(Side::Buy, 10, c(330), c(345)), 344, 331),
+        bb,
+        "the 3.30 stop is between the exits, the 3.45 limit is not"
+    );
+
+    // And the good versions are accepted.
+    let mut b = Broker::new();
+    place_bracket(&mut b, mkt(Side::Buy), c(331), c(330));
+    place_bracket(&mut b, mkt(Side::Sell), c(330), c(331));
+    place_bracket(&mut b, stop(Side::Sell, 10, c(300)), c(290), c(301));
+    place_bracket(
+        &mut b,
+        stop_limit(Side::Buy, 10, c(345), c(330)),
+        c(331),
+        c(329),
+    );
+}
+
+#[test]
+fn bracket_validation_order_entry_first_then_legs_then_order() {
+    let mut b = Broker::new();
+    // The entry's own reason wins over a bad bracket.
+    let o = bracket(limit(Side::Buy, 0, c(338)), c(300), c(400));
+    assert_eq!(reject(&mut b, o), Some(RejectReason::BadQty));
+    let off_grid = Price::from_micros(3_385_000);
+    let o = bracket(limit(Side::Buy, 1, off_grid), c(300), c(400));
+    assert_eq!(reject(&mut b, o), Some(RejectReason::SubPenny));
+    // A missing leg.
+    let o = NewOrder {
+        bracket: Some(Bracket {
+            take_profit: Some(c(350)),
+            stop_loss: None,
+        }),
+        ..limit(Side::Buy, 1, c(338))
+    };
+    assert_eq!(reject(&mut b, o), Some(RejectReason::MissingPrice));
+    // Leg values before their order: off-grid and out of order is sub_penny.
+    let o = bracket(
+        limit(Side::Buy, 1, c(338)),
+        Price::from_micros(3_005_000),
+        c(400),
+    );
+    assert_eq!(reject(&mut b, o), Some(RejectReason::SubPenny));
+    let o = bracket(limit(Side::Buy, 1, c(338)), c(350), Price::ZERO);
+    assert_eq!(reject(&mut b, o), Some(RejectReason::BadPrice));
+    // The sub-dollar grid applies to legs too.
+    let o = bracket(
+        limit(Side::Buy, 1, c(50)),
+        Price::from_micros(500_100),
+        Price::from_micros(499_900),
+    );
+    let id = place(&mut b, o);
+    assert_eq!(status(&b, &id), Status::Open);
+    // Rejected brackets consumed one id each; the accepted one three.
+    assert_eq!(place(&mut b, limit(Side::Buy, 1, c(100))), "o-9");
+}
+
+#[test]
+fn modify_inside_a_bracket_must_keep_it_in_order() {
+    let mut b = Broker::new();
+    let (e, tp, sl) = place_bracket(&mut b, limit(Side::Buy, 100, c(338)), c(350), c(331));
+    let before = b.state();
+    let bb = Err(CommandError::Invalid(RejectReason::BadBracket));
+    assert_eq!(b.modify(&tp, set_limit(c(330)), T0), bb, "tp under sl");
+    assert_eq!(b.modify(&tp, set_limit(c(338)), T0), bb, "tp at the entry");
+    assert_eq!(b.modify(&sl, set_stop(c(340)), T0), bb, "sl over the entry");
+    assert_eq!(b.modify(&e, set_limit(c(351)), T0), bb, "entry over tp");
+    assert_eq!(b.modify(&e, set_limit(c(330)), T0), bb, "entry under sl");
+    assert_eq!(b.state(), before, "all refused, nothing changed");
+    assert_eq!(
+        CommandError::Invalid(RejectReason::BadBracket).code(),
+        "bad_bracket"
+    );
+    // Grid checks still come first.
+    assert_eq!(
+        b.modify(&tp, set_limit(Price::from_micros(3_301_000)), T0),
+        Err(CommandError::Invalid(RejectReason::SubPenny))
+    );
+    // Moving within the bracket is fine.
+    b.modify(&e, set_limit(c(345)), T0).unwrap();
+    b.modify(&tp, set_limit(c(346)), T0).unwrap();
+
+    // Once the entry filled it no longer bounds the exits; the sibling still does.
+    b.on_trade("SMPL", c(340), T0);
+    assert_eq!(status(&b, &tp), Status::Open);
+    b.modify(&tp, set_limit(c(335)), T0).unwrap();
+    assert_eq!(b.modify(&sl, set_stop(c(335)), T0), bb);
+    b.modify(&sl, set_stop(c(334)), T0).unwrap();
+    // Unlinked by a cancel: the survivor is free.
+    b.cancel(&sl, T0).unwrap();
+    b.modify(&tp, set_limit(c(200)), T0).unwrap();
+
+    // Short mirror, against a stop entry's stop.
+    let mut b = Broker::new();
+    let (e, tp, sl) = place_bracket(&mut b, stop(Side::Sell, 10, c(300)), c(280), c(310));
+    assert_eq!(b.modify(&tp, set_limit(c(300)), T0), bb);
+    assert_eq!(b.modify(&sl, set_stop(c(279)), T0), bb);
+    assert_eq!(b.modify(&e, set_stop(c(311)), T0), bb);
+    b.modify(&e, set_stop(c(305)), T0).unwrap();
+    // An exit with its sibling cancelled is still bounded by the unfilled entry.
+    b.cancel(&sl, T0).unwrap();
+    assert_eq!(b.modify(&tp, set_limit(c(306)), T0), bb);
+    b.modify(&tp, set_limit(c(304)), T0).unwrap();
+}
+
+#[test]
+fn retention_never_drops_a_bracket_still_working() {
+    let mut b = Broker::new();
+    let (e, tp, sl) = place_bracket(&mut b, limit(Side::Buy, 1, c(100)), c(150), c(50));
+    for _ in 0..(FINISHED_RETAINED + 10) {
+        place(&mut b, order(Side::Buy, OrderType::Market, 0));
+    }
+    assert_eq!(b.orders().len(), 3 + FINISHED_RETAINED);
+    assert_eq!(
+        statuses(&b, [&e, &tp, &sl]),
+        [Status::Open, Status::Pending, Status::Pending]
+    );
+    // An exit outlives its aged-out entry: parentId may then name an order no longer listed.
+    b.on_trade("SMPL", c(99), T0);
+    for _ in 0..(FINISHED_RETAINED + 10) {
+        place(&mut b, order(Side::Buy, OrderType::Market, 0));
+    }
+    assert!(b.order(&e).is_none());
+    assert_eq!(
+        (status(&b, &tp), status(&b, &sl)),
+        (Status::Open, Status::Open)
+    );
+}
+
+#[test]
+fn reset_clears_brackets_and_groups_keep_counting() {
+    let mut b = Broker::new();
+    place_bracket(&mut b, limit(Side::Buy, 1, c(338)), c(350), c(331));
+    b.reset();
+    assert!(b.orders().is_empty());
+    assert!(!b.on_trade("SMPL", c(300), T0).changed);
+    let (e, ..) = place_bracket(&mut b, limit(Side::Buy, 1, c(338)), c(350), c(331));
+    assert_eq!(e, "o-4");
+    assert_eq!(
+        b.order(&e).unwrap().oco_group,
+        Some(2),
+        "b-1 is never reused"
+    );
+}
+
+#[test]
+fn bracket_json_shape() {
+    let mut b = Broker::new();
+    let cmd: PlaceCommand = serde_json::from_value(json!({
+        "type": "order.place", "clientOrderId": "c-1", "symbol": "SMPL", "side": "buy",
+        "orderType": "limit", "qty": 1428, "limitPrice": 3.38,
+        "bracket": {"takeProfit": 3.50, "stopLoss": 3.31}
+    }))
+    .unwrap();
+    b.place(cmd.into_new_order(), T0, known);
+    let v = serde_json::to_value(b.state()).unwrap();
+    let pick = |o: &serde_json::Value| {
+        let keys = [
+            "id",
+            "side",
+            "orderType",
+            "qty",
+            "limitPrice",
+            "stopPrice",
+            "status",
+            "clientOrderId",
+            "parentId",
+            "role",
+            "ocoGroup",
+        ];
+        serde_json::Value::Array(keys.iter().map(|k| o[*k].clone()).collect())
+    };
+    let got: Vec<_> = v["orders"].as_array().unwrap().iter().map(pick).collect();
+    assert_eq!(
+        got,
+        vec![
+            json!([
+                "o-1", "buy", "limit", 1428, 3.38, null, "open", "c-1", null, "entry", "b-1"
+            ]),
+            json!([
+                "o-2",
+                "sell",
+                "limit",
+                1428,
+                3.5,
+                null,
+                "pending",
+                null,
+                "o-1",
+                "take_profit",
+                "b-1"
+            ]),
+            json!([
+                "o-3",
+                "sell",
+                "stop",
+                1428,
+                null,
+                3.31,
+                "pending",
+                null,
+                "o-1",
+                "stop_loss",
+                "b-1"
+            ]),
+        ]
+    );
+    // A rejected bracket names its reason; `bracket: null` is a plain order.
+    let cases = [
+        (
+            json!({"symbol":"SMPL","side":"sell","orderType":"market","qty":1,
+                   "bracket": {"takeProfit": 3.50, "stopLoss": 3.31}}),
+            json!("bad_bracket"),
+            json!("entry"),
+        ),
+        (
+            json!({"symbol":"SMPL","side":"sell","orderType":"market","qty":1,
+                   "bracket": {"takeProfit": 3.50}}),
+            json!("missing_price"),
+            json!("entry"),
+        ),
+        (
+            json!({"symbol":"SMPL","side":"sell","orderType":"market","qty":1,"bracket": null}),
+            json!(null),
+            json!(null),
+        ),
+    ];
+    for (cmd, reason, role) in cases {
+        let cmd: PlaceCommand = serde_json::from_value(cmd).unwrap();
+        let id = b.place(cmd.into_new_order(), T0, known);
+        let v = serde_json::to_value(wire::OrderWire::from(b.order(&id).unwrap())).unwrap();
+        assert_eq!((&v["rejectReason"], &v["role"]), (&reason, &role));
+        assert_eq!(v["parentId"], json!(null));
+    }
+    // A non-numeric leg is a malformed command, not an order.
+    let bad = json!({"symbol":"SMPL","side":"buy","orderType":"market","qty":1,
+                     "bracket": {"takeProfit": "3.50", "stopLoss": 3.31}});
+    assert!(serde_json::from_value::<PlaceCommand>(bad).is_err());
 }

@@ -94,6 +94,48 @@ fill or trigger anything.
 - The account starts with $100,000. Buying power is not enforced. Cash is debited on buys and credited on
   sells, so it can go negative.
 
+## Bracket orders (position tool, 2026-10-17)
+
+The chart's position tool (Long/Short drawing: entry, target and stop zones; design canvas
+https://claude.ai/artifact/UkBuQdEMyZjAYmdMsTzatW) places one **bracket**: an entry plus two linked
+exits that cancel each other (OCO).
+
+```jsonc
+{ "type": "order.place", "clientOrderId": "c-1", "symbol": "SMPL", "side": "buy",
+  "orderType": "limit", "qty": 1428, "limitPrice": 3.38,
+  "bracket": { "takeProfit": 3.50, "stopLoss": 3.31 } }
+```
+
+- `bracket` is optional on any entry (`market`, `limit`, `stop`, `stop_limit`). Both legs are required
+  when it is present. The broker creates **three** orders in one step: the entry, then
+  `takeProfit` as a limit on the opposite side, then `stopLoss` as a stop on the opposite side, each
+  for the entry's `qty`. For a buy entry these are a sell limit and a sell stop; for a sell (short)
+  entry, a buy limit and a buy stop.
+- New order fields, present on every order and `null` outside a bracket:
+  - `parentId`: on the two exits, the entry's id.
+  - `role`: `"entry" | "take_profit" | "stop_loss"`.
+  - `ocoGroup`: the same string on the entry and both exits, e.g. `"b-3"`.
+- New status `"pending"`: an exit waiting for its entry to fill. It neither fills nor triggers. It
+  counts as working for display (`isWorking` on the client includes it), so its line shows, faintly.
+- **Validation** (first failure wins, after the entry's own checks): both legs are on the tick grid
+  (`sub_penny`) and positive (`bad_price`). Then `bad_bracket`: for a buy entry,
+  `takeProfit > stopLoss` and, when the entry has a price (its limit, or its stop for a stop entry),
+  `takeProfit > entry > stopLoss`; for a sell entry, the mirror. A rejected bracket creates the entry
+  as `rejected` with that reason, and no exits.
+- **Lifecycle:**
+  - The entry fills: both exits go `pending → open` on that same trade. They are only checked from the
+    **next** trade, the same conservative rule as a triggered stop-limit.
+  - One exit fills: the other goes to `cancelled`. `rejectReason` stays `null`; a client tells it
+    apart through its sibling's fill.
+  - The entry is cancelled (or rejected) while the exits are pending: both exits are cancelled.
+  - One exit is cancelled by the user: the other stays open, no longer linked. Its `ocoGroup` stays
+    as it was.
+  - Modify works on a `pending` exit, as on an open one. Modifying an exit is checked against the
+    bracket rule: a long's take-profit must stay above its stop-loss, and above the entry price while
+    the entry is unfilled; otherwise the modify is refused with `error bad_bracket`. Modifying the
+    entry's price is checked the same way against its pending exits.
+- `paper.reset` and time travel clear brackets like everything else.
+
 ## Implemented (server, 2026-10-17)
 
 - `crates/paper-broker`: `src/lib.rs` (`Broker`: `place`, `modify`, `cancel`, `reset`, `on_trade`,
@@ -132,3 +174,40 @@ Decisions the contract left open:
 - **Avg price** is the exact average (it can be off the tick grid); per-position `realizedPnl`
   restarts at 0 when a position goes flat and reopens, while flipping through zero in a single fill
   keeps it.
+
+## Implemented (brackets, 2026-10-17)
+
+- `crates/paper-broker`: `NewOrder.bracket` (`Bracket { take_profit, stop_loss }`), `Role`,
+  `Status::Pending` (counted by `Status::is_working`), `RejectReason::BadBracket`, and
+  `parent_num` / `role` / `oco_group` on `Order`; `wire.rs` adds `PlaceCommand.bracket` and
+  `parentId` / `role` / `ocoGroup` on every order. Unit tests in `src/tests.rs` (`// --- brackets`),
+  one WS test in `crates/server/tests/market.rs` (market entry, take-profit fills, stop-loss
+  cancelled, then a `bad_bracket` modify). The server needed no code change.
+
+Decisions the bracket section left open:
+
+- **A missing leg** (`"bracket": {"takeProfit": 3.5}`) is a `missing_price` rejection, like a limit
+  without its limit; a non-numeric leg is `error bad_order`. `"bracket": null` is a plain order.
+- **Leg checks** run per leg, take-profit first, each `bad_price` then `sub_penny` (the same order
+  as an entry's own prices), then `bad_bracket`. The bracket rule is **strict**: an exit at the
+  entry price, or a take-profit equal to the stop-loss, is `bad_bracket`.
+- **A stop-limit entry is checked at its limit** (the price it fills at), not its stop.
+- **A rejected bracket** still uses one id and one `ocoGroup`: the rejected entry carries
+  `role: "entry"` and its `ocoGroup` (so the client can tie the rejection to its position tool),
+  with no exits. An entry rejected for its own reasons (`bad_qty`, ...) looks the same.
+- **Exits have `clientOrderId: null`**; the ticket's id stays on the entry only, and clients link
+  exits through `parentId`.
+- **`ocoGroup` numbering** (`b-1`, `b-2`, ...) is its own counter, never reset, like ids.
+- **Exit qty does not follow the entry.** Modifying the entry's qty leaves its exits as they are;
+  a client resizing a bracket modifies all three.
+- **What bounds a modify:** only members still working. Once the entry filled, the exits are
+  checked only against each other; once one exit is cancelled, the survivor is checked only
+  against the entry while that is unfilled. A qty-only modify is never `bad_bracket`.
+- **Cancelling the entry** cancels its pending exits in the same state change, also when the entry
+  is a triggered stop-limit. Exits never become `open` without their entry having filled.
+- **OCO inside one trade:** an exit filling cancels its sibling on that same trade (`updatedAt` is
+  the trade's time) before the sibling could match. A valid bracket cannot have both exits hit by
+  one print anyway.
+- **Retention:** pending exits are working orders, so `FINISHED_RETAINED` never drops them. An
+  exit can outlive its filled entry in `orders`, so a `parentId` may name an order that has aged
+  out of the list.

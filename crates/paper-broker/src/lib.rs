@@ -68,6 +68,9 @@ impl OrderType {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Status {
+    /// A bracket exit waiting for its entry to fill. It neither fills nor triggers, but it is
+    /// working: it can be modified and cancelled, and it is never aged out of the state.
+    Pending,
     Open,
     /// A stop-limit whose stop was crossed: now a working limit order.
     Triggered,
@@ -77,9 +80,27 @@ pub enum Status {
 }
 
 impl Status {
-    /// Still able to fill (and to be modified or cancelled).
+    /// Not finished: able to fill (or, for `pending`, about to be able to) and to be modified or
+    /// cancelled. Matches the client's `isWorking`, which shows a pending exit's line faintly.
     pub fn is_working(self) -> bool {
-        matches!(self, Status::Open | Status::Triggered)
+        matches!(self, Status::Pending | Status::Open | Status::Triggered)
+    }
+}
+
+/// An order's part in a bracket. `None` on an order placed without one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Role {
+    Entry,
+    /// A limit on the opposite side, at the bracket's `takeProfit`.
+    TakeProfit,
+    /// A stop on the opposite side, at the bracket's `stopLoss`.
+    StopLoss,
+}
+
+impl Role {
+    fn is_exit(self) -> bool {
+        matches!(self, Role::TakeProfit | Role::StopLoss)
     }
 }
 
@@ -98,6 +119,9 @@ pub enum RejectReason {
     BadPrice,
     /// Off the Reg NMS tick grid ($0.01 at or above $1.00, $0.0001 below).
     SubPenny,
+    /// Bracket prices out of order: for a long, not `takeProfit > entry > stopLoss` (the entry
+    /// only when it has a price); for a short, the mirror.
+    BadBracket,
 }
 
 impl RejectReason {
@@ -108,6 +132,7 @@ impl RejectReason {
             RejectReason::MissingPrice => "missing_price",
             RejectReason::BadPrice => "bad_price",
             RejectReason::SubPenny => "sub_penny",
+            RejectReason::BadBracket => "bad_bracket",
         }
     }
 }
@@ -144,6 +169,9 @@ impl CommandError {
             CommandError::Invalid(RejectReason::MissingPrice) => "missing price",
             CommandError::Invalid(RejectReason::BadPrice) => "price must be positive",
             CommandError::Invalid(RejectReason::SubPenny) => "price is off the tick grid",
+            CommandError::Invalid(RejectReason::BadBracket) => {
+                "take-profit, entry and stop-loss are out of order"
+            }
         }
     }
 }
@@ -185,6 +213,33 @@ fn check_price(p: Price) -> Result<(), RejectReason> {
     }
 }
 
+/// True when `tp`, `entry` and `sl` are in bracket order: for a long `tp > entry > sl`, for a
+/// short `tp < entry < sl`. Only the pairs where both prices are present are compared, so the
+/// same rule serves a priceless (market) entry, an entry that already filled, and an exit whose
+/// sibling the user cancelled. Strict: an exit at the entry price would close at zero P&L at
+/// best, which no position tool draws on purpose.
+fn bracket_ok(long: bool, tp: Option<Price>, entry: Option<Price>, sl: Option<Price>) -> bool {
+    let beyond = |a: Option<Price>, b: Option<Price>| match (a, b) {
+        (Some(a), Some(b)) => {
+            if long {
+                a > b
+            } else {
+                a < b
+            }
+        }
+        _ => true,
+    };
+    beyond(tp, sl) && beyond(tp, entry) && beyond(entry, sl)
+}
+
+/// The exits of a bracket as they arrive. A leg is `None` when the client left it out, which is
+/// a `missing_price` rejection like a limit order without its limit.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Bracket {
+    pub take_profit: Option<Price>,
+    pub stop_loss: Option<Price>,
+}
+
 /// An `order.place` after the JSON edge: prices already exact.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NewOrder {
@@ -197,6 +252,8 @@ pub struct NewOrder {
     pub qty: i64,
     pub limit_price: Option<Price>,
     pub stop_price: Option<Price>,
+    /// Places this order as a bracket's entry with two linked exits.
+    pub bracket: Option<Bracket>,
 }
 
 /// An `order.modify` after the JSON edge. `None` leaves the field alone.
@@ -224,12 +281,33 @@ pub struct Order {
     pub reject_reason: Option<RejectReason>,
     pub created_at: i64,
     pub updated_at: i64,
+    /// On a bracket exit, the entry's `num`.
+    pub parent_num: Option<u64>,
+    pub role: Option<Role>,
+    /// Numeric part of the wire `b-<n>`, shared by a bracket's entry and exits. Like ids it is
+    /// never reused, not even across a reset.
+    pub oco_group: Option<u64>,
 }
 
 impl Order {
     /// The wire id, e.g. `o-7`.
     pub fn id(&self) -> String {
         format!("o-{}", self.num)
+    }
+
+    fn is_exit(&self) -> bool {
+        self.role.is_some_and(Role::is_exit)
+    }
+}
+
+/// The price a bracket's exits are checked against while the entry is unfilled: the limit (also
+/// for a stop-limit, where it is the price the order fills at), the stop for a stop, and nothing
+/// for a market order.
+fn entry_price(t: OrderType, limit: Option<Price>, stop: Option<Price>) -> Option<Price> {
+    match t {
+        OrderType::Limit | OrderType::StopLimit => limit,
+        OrderType::Stop => stop,
+        OrderType::Market => None,
     }
 }
 
@@ -315,10 +393,13 @@ pub struct Broker {
     /// Next order number. Never reset either, so an id seen before a reset is never reused for a
     /// different order after it.
     next_num: u64,
+    /// Next bracket (`ocoGroup`) number; never reset, for the same reason as `next_num`.
+    next_group: u64,
     cash: i128,
     realized: i128,
-    /// Working (open or triggered) orders in creation order; that order decides who fills first
-    /// within one trade.
+    /// Working (pending, open or triggered) orders in creation order; that order decides who
+    /// fills first within one trade. Pending exits live here, not in `finished`, so retention can
+    /// never age one out.
     working: Vec<Order>,
     /// Finished orders, oldest first, at most [`FINISHED_RETAINED`].
     finished: VecDeque<Order>,
@@ -336,6 +417,7 @@ impl Broker {
         Broker {
             seq: 0,
             next_num: 1,
+            next_group: 1,
             cash: STARTING_CASH_MICROS,
             realized: 0,
             working: Vec::new(),
@@ -390,13 +472,32 @@ impl Broker {
 
     /// Creates an order. Always changes the state: a well-formed order that fails validation is
     /// still created, as `rejected` with a reason, so the rejection shows up for every client.
-    /// `known` answers whether a symbol is in the market's full symbol list. Returns the wire id.
+    /// `known` answers whether a symbol is in the market's full symbol list. Returns the wire id
+    /// (of the entry, for a bracket).
+    ///
+    /// A bracket is created in this one step, so no client ever sees an entry without its exits:
+    /// the entry, then the take-profit, then the stop-loss, with consecutive ids, both exits
+    /// `pending`. A rejected bracket is only the rejected entry; it still carries its role and
+    /// group, so a client can tell which ticket it came from.
     pub fn place(&mut self, req: NewOrder, now: i64, known: impl Fn(&str) -> bool) -> String {
         let num = self.next_num;
         self.next_num += 1;
         let limit_price = req.limit_price.filter(|_| req.order_type.takes_limit());
         let stop_price = req.stop_price.filter(|_| req.order_type.takes_stop());
-        let reject = Self::validate(&req, limit_price, stop_price, &known).err();
+        let group = req.bracket.map(|_| {
+            self.next_group += 1;
+            self.next_group - 1
+        });
+        let reject = Self::validate(&req, limit_price, stop_price, &known)
+            .and_then(|()| match req.bracket {
+                Some(b) => Self::validate_bracket(
+                    req.side,
+                    entry_price(req.order_type, limit_price, stop_price),
+                    b,
+                ),
+                None => Ok(()),
+            })
+            .err();
         let order = Order {
             num,
             client_order_id: req.client_order_id,
@@ -416,15 +517,70 @@ impl Broker {
             reject_reason: reject,
             created_at: now,
             updated_at: now,
+            parent_num: None,
+            role: group.map(|_| Role::Entry),
+            oco_group: group,
         };
         let id = order.id();
-        if reject.is_some() {
-            self.finish(order);
-        } else {
-            self.working.push(order);
+        match (reject, req.bracket) {
+            (Some(_), _) => self.finish(order),
+            (None, Some(b)) => {
+                let exit = |n, role, order_type, limit_price, stop_price| Order {
+                    num: n,
+                    // The exits are the server's, not the ticket's: a client that keys its
+                    // tickets by clientOrderId must not find three orders under one key.
+                    client_order_id: None,
+                    symbol: order.symbol.clone(),
+                    side: match order.side {
+                        Side::Buy => Side::Sell,
+                        Side::Sell => Side::Buy,
+                    },
+                    order_type,
+                    qty: order.qty,
+                    filled_qty: 0,
+                    avg_fill_price: None,
+                    limit_price,
+                    stop_price,
+                    status: Status::Pending,
+                    reject_reason: None,
+                    created_at: now,
+                    updated_at: now,
+                    parent_num: Some(num),
+                    role: Some(role),
+                    oco_group: group,
+                };
+                let tp = exit(
+                    num + 1,
+                    Role::TakeProfit,
+                    OrderType::Limit,
+                    b.take_profit,
+                    None,
+                );
+                let sl = exit(num + 2, Role::StopLoss, OrderType::Stop, None, b.stop_loss);
+                self.next_num += 2;
+                self.working.extend([order, tp, sl]);
+            }
+            (None, None) => self.working.push(order),
         }
         self.seq += 1;
         id
+    }
+
+    /// A bracket's own checks, after the entry passed its: each leg present (`missing_price`),
+    /// positive and on the grid (`bad_price`, `sub_penny`, per leg in the same order as an
+    /// entry's prices, take-profit first), then the three prices in bracket order
+    /// (`bad_bracket`).
+    fn validate_bracket(side: Side, entry: Option<Price>, b: Bracket) -> Result<(), RejectReason> {
+        let (Some(tp), Some(sl)) = (b.take_profit, b.stop_loss) else {
+            return Err(RejectReason::MissingPrice);
+        };
+        check_price(tp)?;
+        check_price(sl)?;
+        if bracket_ok(side == Side::Buy, Some(tp), entry, Some(sl)) {
+            Ok(())
+        } else {
+            Err(RejectReason::BadBracket)
+        }
     }
 
     /// First failing check wins: size, symbol, presence of prices, then each price's value.
@@ -449,14 +605,17 @@ impl Broker {
         Ok(())
     }
 
-    /// Changes a working order in place (same id, same place in the fill queue).
+    /// Changes a working order in place (same id, same place in the fill queue). A pending exit
+    /// can be modified like an open one. A price change inside a bracket must keep the bracket
+    /// in order against the members still working (see [`bracket_ok`]), else `bad_bracket`.
     pub fn modify(&mut self, id: &str, m: Modify, now: i64) -> Result<(), CommandError> {
         let num = parse_id(id).ok_or(CommandError::NotOpen)?;
-        let order = self
+        let idx = self
             .working
-            .iter_mut()
-            .find(|o| o.num == num)
+            .iter()
+            .position(|o| o.num == num)
             .ok_or(CommandError::NotOpen)?;
+        let order = &self.working[idx];
         if m.qty.is_none() && m.limit_price.is_none() && m.stop_price.is_none() {
             return Err(CommandError::BadOrder("nothing to modify"));
         }
@@ -477,6 +636,13 @@ impl Broker {
         for p in [m.limit_price, m.stop_price].into_iter().flatten() {
             check_price(p).map_err(CommandError::Invalid)?;
         }
+        if let Some(g) = order.oco_group
+            && (m.limit_price.is_some() || m.stop_price.is_some())
+            && !self.bracket_ok_after(g, num, &m)
+        {
+            return Err(CommandError::Invalid(RejectReason::BadBracket));
+        }
+        let order = &mut self.working[idx];
         if let Some(q) = m.qty {
             order.qty = q;
         }
@@ -491,6 +657,42 @@ impl Broker {
         Ok(())
     }
 
+    /// Whether bracket `group` would still be in order with `m` applied to order `num`. Only
+    /// working members count: a filled entry no longer bounds its exits, and an exit whose
+    /// sibling was cancelled is bounded by the entry alone (if that is still unfilled).
+    fn bracket_ok_after(&self, group: u64, num: u64, m: &Modify) -> bool {
+        let (mut tp, mut entry, mut sl, mut long) = (None, None, None, true);
+        for o in self.working.iter().filter(|o| o.oco_group == Some(group)) {
+            let (limit, stop) = if o.num == num {
+                (
+                    m.limit_price.or(o.limit_price),
+                    m.stop_price.or(o.stop_price),
+                )
+            } else {
+                (o.limit_price, o.stop_price)
+            };
+            match o.role {
+                Some(Role::Entry) => {
+                    entry = entry_price(o.order_type, limit, stop);
+                    long = o.side == Side::Buy;
+                }
+                Some(Role::TakeProfit) => {
+                    tp = limit;
+                    long = o.side == Side::Sell;
+                }
+                Some(Role::StopLoss) => {
+                    sl = stop;
+                    long = o.side == Side::Sell;
+                }
+                None => {}
+            }
+        }
+        bracket_ok(long, tp, entry, sl)
+    }
+
+    /// Cancels a working order. Cancelling a bracket's entry cancels its exits too (they are
+    /// still pending, since the entry has not filled): exits without a position to close would
+    /// open one. Cancelling one exit leaves the other working, and no longer linked.
     pub fn cancel(&mut self, id: &str, now: i64) -> Result<(), CommandError> {
         let num = parse_id(id).ok_or(CommandError::NotOpen)?;
         let idx = self
@@ -501,9 +703,32 @@ impl Broker {
         let mut order = self.working.remove(idx);
         order.status = Status::Cancelled;
         order.updated_at = now;
+        let entry = order.role == Some(Role::Entry);
         self.finish(order);
+        if entry {
+            for o in self
+                .working
+                .iter_mut()
+                .filter(|o| o.parent_num == Some(num))
+            {
+                o.status = Status::Cancelled;
+                o.updated_at = now;
+            }
+            self.retire_finished();
+        }
         self.seq += 1;
         Ok(())
+    }
+
+    /// Moves every order that is no longer working to the finished list, in creation order.
+    fn retire_finished(&mut self) {
+        let (done, working): (Vec<Order>, Vec<Order>) = std::mem::take(&mut self.working)
+            .into_iter()
+            .partition(|o| !o.status.is_working());
+        self.working = working;
+        for o in done {
+            self.finish(o);
+        }
     }
 
     /// Flat account, no orders. Used by `paper.reset` and by every replay rebuild (seek): orders
@@ -520,18 +745,33 @@ impl Broker {
     /// Feeds one price-qualifying trade (the caller applies the OHLC filter). Matching follows the
     /// contract's table; every order fills in full on one trade, and within one trade working
     /// orders are visited in creation order.
+    ///
+    /// Brackets: an entry's fill opens its pending exits, but only after this trade's matching
+    /// is done, so they are checked from the next trade (as a triggered stop-limit is). An exit's
+    /// fill cancels its sibling (OCO) on the same trade, before the sibling can be visited.
     pub fn on_trade(&mut self, symbol: &str, price: Price, t: i64) -> TradeOutcome {
         let mut out = TradeOutcome::default();
         if !self.working.iter().any(|o| o.symbol == symbol) {
             return out;
         }
-        let mut filled = Vec::new();
-        for (idx, o) in self.working.iter_mut().enumerate() {
+        // Brackets whose exit filled on this trade, and entries that filled on it.
+        let mut closed_groups = Vec::new();
+        let mut filled_entries = Vec::new();
+        for o in self.working.iter_mut() {
             if o.symbol != symbol {
+                continue;
+            }
+            if o.is_exit() && o.oco_group.is_some_and(|g| closed_groups.contains(&g)) {
+                // The sibling already closed the position on this print. Prices keep the two
+                // exits apart (a take-profit is beyond its stop-loss), so this is a guard, not
+                // a path a valid bracket takes.
+                o.status = Status::Cancelled;
+                o.updated_at = t;
                 continue;
             }
             // The status is read before this trade touches the order, so a stop-limit triggered
             // by this very trade is not also limit-checked against it ("from the next trade").
+            // A pending exit matches nothing.
             let fill_at = match (o.order_type, o.status) {
                 (OrderType::Market, Status::Open) => Some(price),
                 (OrderType::Limit, Status::Open) | (OrderType::StopLimit, Status::Triggered) => {
@@ -564,7 +804,11 @@ impl Broker {
                 o.filled_qty = o.qty;
                 o.avg_fill_price = Some(p);
                 o.updated_at = t;
-                filled.push(idx);
+                match (o.role, o.oco_group) {
+                    (Some(Role::Entry), _) => filled_entries.push(o.num),
+                    (Some(_), Some(g)) => closed_groups.push(g),
+                    _ => {}
+                }
                 out.fills.push(Fill {
                     order_num: o.num,
                     symbol: o.symbol.clone(),
@@ -575,17 +819,25 @@ impl Broker {
                 });
             }
         }
+        for o in self.working.iter_mut() {
+            let parent_filled = o.parent_num.is_some_and(|n| filled_entries.contains(&n));
+            if o.status == Status::Pending && parent_filled {
+                o.status = Status::Open;
+                o.updated_at = t;
+            } else if o.status.is_working()
+                && o.is_exit()
+                && o.oco_group.is_some_and(|g| closed_groups.contains(&g))
+            {
+                // OCO: the sibling filled. Visited earlier in this trade (a take-profit comes
+                // before its stop-loss), so it is still working here. rejectReason stays null.
+                o.status = Status::Cancelled;
+                o.updated_at = t;
+            }
+        }
         for f in &out.fills {
             self.apply_fill(f);
         }
-        // Remove back to front so earlier indices stay valid.
-        let mut done = Vec::with_capacity(filled.len());
-        for idx in filled.into_iter().rev() {
-            done.push(self.working.remove(idx));
-        }
-        for o in done.into_iter().rev() {
-            self.finish(o);
-        }
+        self.retire_finished();
         if !out.fills.is_empty() {
             out.changed = true;
         }
