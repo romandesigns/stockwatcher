@@ -10,6 +10,7 @@ import {
   undo,
   type History,
   DEFAULT_LAYERS,
+  layerIdsFor,
   keyLevels,
   parseLayers,
   type ChartLayers,
@@ -394,9 +395,16 @@ export function CandleChart({
   const overlayTop = (heading ? 22 : 0) + (inspector ? 20 : 0);
   // The timeframe picker sits at the top-right inside the chart; top-edge tags start below it.
   const topRight = onTimeframeChange ? 34 : 0;
+  const inChartProfile = !!options?.showProfile;
   const chartOptions = useMemo(
-    () => (overlayTop || topRight ? { ...options, ...(overlayTop ? { legendTop: overlayTop + 6 } : {}), ...(topRight ? { topRightInset: topRight } : {}) } : options),
-    [options, overlayTop, topRight],
+    () => ({
+      ...options,
+      ...(overlayTop ? { legendTop: overlayTop + 6 } : {}),
+      ...(topRight ? { topRightInset: topRight } : {}),
+      // The Levels menu's "Volume profile" switch turns the in-chart profile off.
+      ...(inChartProfile && !layers.profile ? { showProfile: false } : {}),
+    }),
+    [options, overlayTop, topRight, inChartProfile, layers.profile],
   );
   const state: ChartState = useMemo(
     () => ({
@@ -898,6 +906,7 @@ export function CandleChart({
         onDelete={deleteSelected}
         trading={trading ? { position, last, onTrade: () => openTicket(null, null), fills, realized: trading.state?.account.realizedPnl ?? 0 } : null}
         layers={layers}
+        layerIds={layerIdsFor(inChartProfile)}
         onLayersChange={setLayers}
       />
   );

@@ -42,7 +42,7 @@ const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigat
 const ENV_SOURCE = import.meta.env.VITE_CHART_SOURCE;
 const BINS = [0.01, 0.02, 0.05] as const;
 
-const PHONE_CHART: Partial<ChartOptions> = { priceAxisWidth: 42, volumeHeight: 36, timeAxisHeight: 18, paneGap: 4, fontSize: 9, showProfile: true, profileWidth: 0.26, timeLabelSpacing: 60 };
+const PHONE_CHART: Partial<ChartOptions> = { priceAxisWidth: 42, volumeHeight: 36, timeAxisHeight: 18, paneGap: 4, fontSize: 9, showProfile: true, profileWidth: 0.2, timeLabelSpacing: 60 };
 const DESKTOP_CHART: Partial<ChartOptions> = {};
 
 /** One line saying where the chart's data comes from, and whether it is fixture data. */

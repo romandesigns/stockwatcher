@@ -415,8 +415,11 @@ export function lastCandle(slots: readonly Slot[]): Candle | null {
  * by the store with the engine's rules) get their own colors.
  */
 export function profileBars(profile: ProfileWire, price: PriceScale, area: Rect, align: "left" | "right", theme: ChartTheme, overlay = false): DisplayList {
+  // Inside the chart the profile is a quiet backdrop: no value-area tone (its numbers are in the Levels
+  // menu), and each bin a thin bar centred in its band instead of a block filling it, so a coarse bin on
+  // a sub-$1 stock reads as lines, not slabs.
   const colors = overlay
-    ? { bar: theme.profileOverlayBar, va: theme.profileOverlayValueArea, poc: theme.profileOverlayPoc }
+    ? { bar: theme.profileOverlayBar, va: theme.profileOverlayBar, poc: theme.profileOverlayPoc }
     : { bar: theme.profileBar, va: theme.profileValueArea, poc: theme.profilePoc };
   const out: DisplayList = [];
   let max = 0;
@@ -432,14 +435,15 @@ export function profileBars(profile: ProfileWire, price: PriceScale, area: Rect,
     if (yBot < area.y || yTop > area.y + area.h) continue;
     const top = Math.max(area.y, yTop);
     const fullH = Math.min(area.y + area.h, yBot) - top;
-    // 1 px separation between bins once they are tall enough to afford it.
-    const h = fullH > 3 ? fullH - 1 : Math.max(0.5, fullH);
+    // 1 px separation between bins once they are tall enough to afford it; an overlay bar is at most 3 px.
+    const h = overlay ? Math.min(3, Math.max(1, fullH - 1)) : fullH > 3 ? fullH - 1 : Math.max(0.5, fullH);
+    const y = overlay ? top + (fullH - h) / 2 : top;
     const w = Math.max(1, (r.v / max) * area.w);
     const isPoc = poc !== null && Math.abs(r.p - poc) < eps;
     // low and high are bin starts, both inside the value area.
     const inVa = va !== null && r.p >= va.low - eps && r.p <= va.high + eps;
     const fill = isPoc ? colors.poc : inVa ? colors.va : colors.bar;
-    out.push({ kind: "rect", x: align === "left" ? area.x : area.x + area.w - w, y: top, w, h, fill, radius: h > 3 ? 1.5 : 0, layer: "profile" });
+    out.push({ kind: "rect", x: align === "left" ? area.x : area.x + area.w - w, y, w, h, fill, radius: overlay ? h / 2 : h > 3 ? 1.5 : 0, layer: "profile" });
   }
   return out;
 }

@@ -382,6 +382,7 @@ export function LayersSheet({
   layers,
   onChange,
   reducedMotion,
+  layerIds = LAYER_IDS,
   profile,
   profileBins,
   profileBin,
@@ -392,17 +393,19 @@ export function LayersSheet({
   layers: ChartLayers;
   onChange: (l: ChartLayers) => void;
   reducedMotion?: boolean;
+  /** Which layers to list (default all). */
+  layerIds?: readonly LayerId[];
   profile?: ProfileWire | null;
   profileBins?: readonly number[];
   profileBin?: number;
   onProfileBinChange?: (bin: number) => void;
 }) {
   const va = profile?.valueArea ?? null;
-  const onCount = LAYER_IDS.filter((id) => layers[id]).length;
+  const onCount = layerIds.filter((id) => layers[id]).length;
   return (
     <Sheet open={open} onClose={onClose} title="Levels" reducedMotion={reducedMotion}>
       <ScrollView>
-        {profileBins && profileBin !== undefined && onProfileBinChange && (
+        {profileBins && profileBin !== undefined && onProfileBinChange && (!layerIds.includes("profile") || layers.profile) && (
           <View style={s.profile} accessibilityLabel="Session volume profile">
             <View style={s.indHeader}>
               <Text style={s.label}>Volume profile</Text>
@@ -426,9 +429,9 @@ export function LayersSheet({
         {/* Rows in the Indicators sheet's design: a tile showing how the layer looks on the chart, name and description, a check when on. */}
         <View style={s.indHeader}>
           <Text style={s.label}>On the chart</Text>
-          <Text style={[s.label, { color: onCount === LAYER_IDS.length ? UI.text : UI.textFaint, fontVariant: ["tabular-nums"] }]}>{`${onCount}/${LAYER_IDS.length}`}</Text>
+          <Text style={[s.label, { color: onCount === layerIds.length ? UI.text : UI.textFaint, fontVariant: ["tabular-nums"] }]}>{`${onCount}/${layerIds.length}`}</Text>
         </View>
-        {LAYER_IDS.map((id) => {
+        {layerIds.map((id) => {
           const checked = layers[id];
           return (
             <Pressable

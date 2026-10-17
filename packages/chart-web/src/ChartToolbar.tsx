@@ -18,6 +18,7 @@ import {
   type PaperPosition,
   type Timeframe,
   type ChartLayers,
+  type LayerId,
   type FillMark,
 } from "@stockwatcher/chart-core";
 import type { ReactNode } from "react";
@@ -122,6 +123,8 @@ export interface ChartToolbarProps {
   trading?: { position: PaperPosition | null; last: number | null; onTrade: () => void; fills?: readonly FillMark[]; realized?: number } | null;
   /** The context layers switch (halts, LULD, key levels, fills); absent hides the Levels menu. */
   layers?: ChartLayers;
+  /** Which layers the menu lists (default all). */
+  layerIds?: readonly LayerId[];
   onLayersChange?: (l: ChartLayers) => void;
   /** The floating drawing tools: shown or hidden, and the switch (absent hides the switch). */
   toolsVisible?: boolean;
@@ -141,7 +144,7 @@ export interface ChartToolbarProps {
  * One compact row; selection is a raised segment, and the accent is spent
  * only on the Trade button (the primary action).
  */
-export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChange, seriesColors, drawingTools = true, canDelete, onDelete, trading, layers, onLayersChange, toolsVisible, onToolsVisibleChange, timeframe, onTimeframeChange, start, className }: ChartToolbarProps) {
+export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChange, seriesColors, drawingTools = true, canDelete, onDelete, trading, layers, layerIds, onLayersChange, toolsVisible, onToolsVisibleChange, timeframe, onTimeframeChange, start, className }: ChartToolbarProps) {
   const pos = trading?.position && trading.position.qty !== 0 ? trading.position : null;
   const pnl = pos && trading?.last !== null && trading?.last !== undefined ? unrealizedPnl(pos, trading.last) : null;
   return (
@@ -198,7 +201,7 @@ export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChang
           </Tip>
         )}
         <IndicatorMenu indicators={indicators} onChange={onIndicatorsChange} seriesColors={seriesColors ?? DEFAULT_SERIES} />
-        {layers && onLayersChange && <LayersMenu layers={layers} onChange={onLayersChange} />}
+        {layers && onLayersChange && <LayersMenu layers={layers} ids={layerIds} onChange={onLayersChange} />}
         {trading && (
           <>
             <Tip label="Simulated order (fills against the replay tape)">

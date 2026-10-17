@@ -16,11 +16,21 @@ import type { Halt, LuldPoint } from "./types.ts";
 // bands come from the server (docs/architecture/halts-luld-fills.md); fills
 // come from paper.state.
 
-export type LayerId = "halts" | "luld" | "premarket" | "dayRange" | "open" | "prevClose" | "fills";
+export type LayerId = "profile" | "halts" | "luld" | "premarket" | "dayRange" | "open" | "prevClose" | "fills";
 
-export const LAYER_IDS: readonly LayerId[] = ["halts", "luld", "premarket", "dayRange", "open", "prevClose", "fills"];
+export const LAYER_IDS: readonly LayerId[] = ["profile", "halts", "luld", "premarket", "dayRange", "open", "prevClose", "fills"];
+
+/**
+ * The layers a chart can show. "profile" is the session profile drawn inside
+ * the chart (a phone, the web's narrow layout); a chart that shows the
+ * profile in a side panel instead (options.showProfile off) does not list it.
+ */
+export function layerIdsFor(inChartProfile: boolean): readonly LayerId[] {
+  return inChartProfile ? LAYER_IDS : LAYER_IDS.filter((id) => id !== "profile");
+}
 
 export const LAYER_INFO: Readonly<Record<LayerId, { name: string; description: string }>> = {
+  profile: { name: "Volume profile", description: "Shares traded at each price today" },
   halts: { name: "Halts", description: "Shaded while trading was halted, with its length" },
   luld: { name: "LULD bands", description: "Limit up / limit down price bands (modelled)" },
   premarket: { name: "Premarket high / low", description: "Extremes of 04:00–09:30" },
@@ -45,6 +55,10 @@ export interface LayerSwatchShape {
  * Shared here (like INDICATOR_GLYPHS) so both platforms show the same marks.
  */
 export const LAYER_SWATCHES: Readonly<Record<LayerId, readonly LayerSwatchShape[]>> = {
+  profile: [
+    { d: "M13 3.5h9M15 12.5h7", paint: "stroke", color: "dim", opacity: 0.8 },
+    { d: "M7 8h15", paint: "stroke", color: "text", opacity: 0.9 },
+  ],
   halts: [
     { d: "M6 1h12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V3a2 2 0 0 1 2-2z", paint: "fill", color: "warning", opacity: 0.18 },
     { d: "M4 1h2v14H4z", paint: "fill", color: "warning", opacity: 0.6 },
@@ -63,7 +77,7 @@ export const LAYER_SWATCHES: Readonly<Record<LayerId, readonly LayerSwatchShape[
 export type ChartLayers = Readonly<Record<LayerId, boolean>>;
 
 /** Everything on except the open, which most small-cap traders read off the candles anyway. */
-export const DEFAULT_LAYERS: ChartLayers = { halts: true, luld: true, premarket: true, dayRange: true, open: false, prevClose: true, fills: true };
+export const DEFAULT_LAYERS: ChartLayers = { profile: true, halts: true, luld: true, premarket: true, dayRange: true, open: false, prevClose: true, fills: true };
 
 export function parseLayers(raw: unknown): ChartLayers {
   const out: Record<LayerId, boolean> = { ...DEFAULT_LAYERS };

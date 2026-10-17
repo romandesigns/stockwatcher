@@ -43,12 +43,12 @@ function LayerSwatch({ id }: { id: LayerId }) {
  * levels (premarket, day range, open, previous close) and your fills. Every
  * row shows how the layer looks on the chart, so the menu is also its key.
  */
-export function LayersMenu({ layers, onChange }: { layers: ChartLayers; onChange: (l: ChartLayers) => void }) {
-  const on = LAYER_IDS.filter((id) => layers[id]).length;
+export function LayersMenu({ layers, ids = LAYER_IDS, onChange }: { layers: ChartLayers; ids?: readonly LayerId[]; onChange: (l: ChartLayers) => void }) {
+  const on = ids.filter((id) => layers[id]).length;
   return (
     <DropdownMenu>
       <Tip label="Levels">
-        <DropdownMenuTrigger aria-label={`Levels, ${on} of ${LAYER_IDS.length} on`} render={<Button variant="ghost" size="sm" className="h-7 min-w-7 rounded-md px-1.5 text-muted-foreground [&_svg]:size-3.5" />}>
+        <DropdownMenuTrigger aria-label={`Levels, ${on} of ${ids.length} on`} render={<Button variant="ghost" size="sm" className="h-7 min-w-7 rounded-md px-1.5 text-muted-foreground [&_svg]:size-3.5" />}>
           {LevelsIcon}
         </DropdownMenuTrigger>
       </Tip>
@@ -57,9 +57,9 @@ export function LayersMenu({ layers, onChange }: { layers: ChartLayers; onChange
         <DropdownMenuGroup>
         <DropdownMenuLabel className="flex justify-between px-1.5 pt-1.5 pb-1 text-[11px] font-medium text-muted-foreground">
           On the chart
-          <span className={cn("tabular-nums", on === LAYER_IDS.length ? "text-foreground" : "text-text-faint")}>{`${on}/${LAYER_IDS.length}`}</span>
+          <span className={cn("tabular-nums", on === ids.length ? "text-foreground" : "text-text-faint")}>{`${on}/${ids.length}`}</span>
         </DropdownMenuLabel>
-        {LAYER_IDS.map((id) => (
+        {ids.map((id) => (
           <DropdownMenuCheckboxItem key={id} checked={layers[id]} onCheckedChange={(v) => onChange({ ...layers, [id]: !!v })} closeOnClick={false} className="gap-2.5 py-1.5 pr-9">
             <span className={cn("grid h-8 w-10 shrink-0 place-items-center rounded-lg", layers[id] ? "bg-bg-raised" : "bg-bg-row opacity-60")}>
               <LayerSwatch id={id} />

@@ -8,6 +8,7 @@ import {
   undo,
   type History,
   DEFAULT_LAYERS,
+  layerIdsFor,
   keyLevels,
   type ChartLayers,
   type Halt,
@@ -309,7 +310,8 @@ export function CandleChart({
       slots,
       inspectT,
       pointer,
-      options,
+      // The Levels sheet's "Volume profile" switch turns the in-chart profile off.
+      options: options?.showProfile && !layers.profile ? { ...options, showProfile: false } : options,
       priceScaleType: scaleType,
       indicators: indicatorResults,
       drawings: shownDrawings,
@@ -319,7 +321,7 @@ export function CandleChart({
       context,
       now: clockNow,
     }),
-    [timeframe, series, slots, inspectT, pointer, options, scaleType, indicatorResults, shownDrawings, selectedDrawing, draft, trading, orders, position, last, drag, context, clockNow],
+    [timeframe, series, slots, inspectT, pointer, options, layers.profile, scaleType, indicatorResults, shownDrawings, selectedDrawing, draft, trading, orders, position, last, drag, context, clockNow],
   );
   const model = useMemo(() => computeChartModel(state, vp, size), [state, vp, size]);
   const picture = useMemo(() => (size.width > 0 && size.height > 0 ? recordPicture(layoutChart(model, state, theme), size.width, size.height) : null), [model, state, theme, size]);
@@ -726,6 +728,7 @@ export function CandleChart({
         onChange={setLayers}
         reducedMotion={reducedMotion}
         profile={series?.profile ?? null}
+        layerIds={layerIdsFor(!!options?.showProfile)}
         profileBins={profileBins}
         profileBin={profileBin}
         onProfileBinChange={onProfileBinChange}
