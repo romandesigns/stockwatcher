@@ -69,7 +69,8 @@ Then delete the local private key files.
 Append `Caddyfile.snippet` to `/etc/caddy/Caddyfile`, then:
 
 ```sh
-sudo caddy validate --config /etc/caddy/Caddyfile && sudo systemctl reload caddy
+sudo rm -f /var/log/caddy/stockwatcher.access.log   # a root-owned log file makes the reload fail
+sudo -u caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile && sudo systemctl reload caddy
 ```
 
 ## 5. DNS

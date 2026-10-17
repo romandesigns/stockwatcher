@@ -91,11 +91,123 @@ jobs:
   #   (version 0.1.<run_number>, signed NSIS+MSI, latest.json, upload via
   #    VPS_PUBLISH_KEY -> infra/vps/publish-updates.sh)
 
-  # --- mobile: added by the mobile agent ------------------------------------
-  # mobile:
-  #   needs: checks
-  #   (eas update --channel preview --platform android; EAS preview build
-  #    only when the native fingerprint changed)
+  mobile:
+    name: Mobile OTA update and preview APK
+    # Every push publishes an OTA update. A new APK is queued only when the
+    # native fingerprint differs from the latest finished preview build,
+    # because EAS build quota is limited and an unchanged native layer
+    # would produce an identical APK (docs/CONVENTIONS.md, "Release
+    # pipeline").
+    needs: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      update_group: ${{ steps.update.outputs.group }}
+      runtime_version: ${{ steps.fingerprint.outputs.hash }}
+      build_url: ${{ steps.build.outputs.url }}
+    env:
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+      # Pinned: 25.x shipped 2026-10-15; the build:list JSON shape
+      # (runtime.version) was verified on 24.x.
+      EAS_CLI: eas-cli@24.14.0
+      EAS_BUILDS_URL: https://expo.dev/accounts/creativecoder87/projects/stockwatcher/builds
+    defaults:
+      run:
+        working-directory: apps/mobile
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+
+      - name: Install
+        working-directory: .
+        run: bun install --frozen-lockfile
+
+      - name: Require EXPO_TOKEN
+        run: |
+          if [ -z "${EXPO_TOKEN}" ]; then
+            echo "::error::The EXPO_TOKEN repository secret is not set."
+            exit 1
+          fi
+
+      - name: Publish OTA update (channel preview)
+        id: update
+        run: |
+          set -euo pipefail
+          bunx "$EAS_CLI" update \
+            --channel preview \
+            --platform android \
+            --environment preview \
+            --message "$GITHUB_SHA" \
+            --non-interactive \
+            --json > "$RUNNER_TEMP/update.json"
+          # The update is already live; a JSON shape change must not fail the job.
+          group="$(jq -r 'if type == "array" then (.[0].group // "") else "" end' "$RUNNER_TEMP/update.json" 2>/dev/null || true)"
+          echo "group=${group}" >> "$GITHUB_OUTPUT"
+          echo "OTA update published to channel preview, group \`${group:-unknown}\`." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fingerprint of this commit
+        id: fingerprint
+        # Same computation `eas build` records as runtime.version, with the
+        # preview profile's environment applied.
+        run: |
+          set -euo pipefail
+          bunx "$EAS_CLI" fingerprint:generate \
+            --platform android \
+            --build-profile preview \
+            --json > "$RUNNER_TEMP/fingerprint.json"
+          hash="$(jq -r '.hash // empty' "$RUNNER_TEMP/fingerprint.json")"
+          if [ -z "$hash" ]; then
+            echo "::error::Could not compute the native fingerprint."
+            exit 1
+          fi
+          echo "hash=${hash}" >> "$GITHUB_OUTPUT"
+
+      - name: Runtime of the latest finished preview build
+        id: latest
+        run: |
+          set -euo pipefail
+          bunx "$EAS_CLI" build:list \
+            --platform android \
+            --buildProfile preview \
+            --status finished \
+            --limit 1 \
+            --json \
+            --non-interactive > "$RUNNER_TEMP/builds.json"
+          # eas-cli 24 exposes this as runtime.version, not runtimeVersion.
+          runtime="$(jq -r '.[0].runtime.version // empty' "$RUNNER_TEMP/builds.json")"
+          echo "runtime=${runtime}" >> "$GITHUB_OUTPUT"
+
+      - name: Queue preview APK build if the native layer changed
+        id: build
+        env:
+          HEAD_RUNTIME: ${{ steps.fingerprint.outputs.hash }}
+          BUILT_RUNTIME: ${{ steps.latest.outputs.runtime }}
+        run: |
+          set -euo pipefail
+          if [ -n "$BUILT_RUNTIME" ] && [ "$BUILT_RUNTIME" = "$HEAD_RUNTIME" ]; then
+            echo "OTA only: native fingerprint \`${HEAD_RUNTIME}\` matches the latest preview build." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "Native fingerprint \`${HEAD_RUNTIME}\` differs from the latest preview build (\`${BUILT_RUNTIME:-none}\`); queueing a build."
+          bunx "$EAS_CLI" build \
+            --platform android \
+            --profile preview \
+            --non-interactive \
+            --no-wait \
+            --json > "$RUNNER_TEMP/build.json"
+          # The build is already queued; an unparsable reply links the list.
+          id="$(jq -r 'if type == "array" then (.[0].id // "") else (.id // "") end' "$RUNNER_TEMP/build.json" 2>/dev/null || true)"
+          if [ -n "$id" ]; then
+            url="${EAS_BUILDS_URL}/${id}"
+          else
+            echo "::warning::eas build gave no build id; see the builds list."
+            url="${EAS_BUILDS_URL}"
+          fi
+          echo "url=${url}" >> "$GITHUB_OUTPUT"
+          echo "Preview APK build queued: ${url}" >> "$GITHUB_STEP_SUMMARY"
 
   # --- summary: added once desktop and mobile exist -------------------------
   # summary:

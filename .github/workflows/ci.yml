@@ -55,3 +55,41 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Test
         run: cargo test --workspace --locked
+
+  mobile:
+    name: Mobile (typecheck, lint, test, doctor, bundle)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: apps/mobile
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - name: Install
+        working-directory: .
+        run: bun install --frozen-lockfile
+      - name: Typecheck, lint and test
+        run: |
+          bun run typecheck
+          bun run lint
+          bun run test
+      - name: Expo doctor
+        # Tolerates only same-version duplicates from Bun's isolated linker;
+        # the reasoning is in apps/mobile/scripts/doctor-policy.ts.
+        run: bun run doctor
+      - name: JS bundle builds (Android export)
+        run: bunx expo export --platform android --output-dir "$RUNNER_TEMP/mobile-export"
+      - name: Dependency advisories (non-blocking)
+        # Report only. On 2026-10-16 the advisories were braces 3.0.3 and
+        # node-forge 1.4.0 (no fixed release) and uuid 7.0.3, all reached
+        # through Metro / Expo CLI / config-plugin build tooling and none
+        # in the app bundle. Making this blocking would freeze every
+        # release until upstream ships fixes; review the warning instead.
+        working-directory: .
+        run: |
+          if ! bun audit; then
+            echo "::warning title=bun audit::Dependency advisories reported (non-blocking); see this step's log."
+          fi

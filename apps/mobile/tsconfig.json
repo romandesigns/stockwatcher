@@ -1,0 +1,29 @@
+{
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": {
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "verbatimModuleSyntax": true,
+    // @stockwatcher/shared imports its siblings with explicit .ts
+    // extensions; Metro resolves those, tsc needs this to accept them.
+    "allowImportingTsExtensions": true,
+    // "bun" so the colocated *.test.ts files typecheck with the app.
+    "types": ["bun"],
+    // react-native-screen-transitions exports raw src/*.ts under the
+    // "react-native" condition (for Metro), so tsc would type-check the
+    // library source, which fails under our stricter flags. Point tsc at its
+    // published declarations instead; Metro still bundles src.
+    "paths": {
+      "react-native-screen-transitions": [
+        "./node_modules/react-native-screen-transitions/lib/typescript/index.d.ts"
+      ],
+      "react-native-screen-transitions/react-navigation": [
+        "./node_modules/react-native-screen-transitions/lib/typescript/navigators/react-navigation/index.d.ts"
+      ]
+    }
+  },
+  "include": ["index.ts", "app.config.ts", "src", "scripts", "expo-env.d.ts"]
+}
