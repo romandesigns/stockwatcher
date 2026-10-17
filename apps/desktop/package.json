@@ -1,0 +1,21 @@
+{
+  "name": "@stockwatcher/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "tauri": "tauri",
+    "make-latest": "bun scripts/make-latest.ts",
+    "test": "bun test",
+    "lint": "oxlint scripts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.3",
+    "@types/bun": "1.4.3",
+    "oxlint": "1.88.0",
+    "typescript": "7.0.2"
+  }
+}

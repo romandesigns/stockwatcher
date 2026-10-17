@@ -1,7 +1,5 @@
 [workspace]
-# apps/desktop/src-tauri is added here when the desktop shell lands:
-#   members = ["crates/*", "apps/desktop/src-tauri"]
-members = ["crates/*"]
+members = ["crates/*", "apps/desktop/src-tauri"]
 resolver = "3"
 
 [workspace.package]
