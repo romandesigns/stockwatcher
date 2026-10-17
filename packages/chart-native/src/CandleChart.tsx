@@ -82,6 +82,7 @@ import { GestureDetector, GestureStateManager, useManualGesture } from "react-na
 import Animated, { FadeIn, FadeOut, ReduceMotion } from "react-native-reanimated";
 import Svg, { Path } from "react-native-svg";
 import { recordPicture } from "./drawSkia.ts";
+import { CandleInspector } from "./CandleInspector.tsx";
 import { DrawingToolbox } from "./DrawingToolbox.tsx";
 import { PositionPlanPanel } from "./PositionPlanPanel.tsx";
 import { AxisSheet, IndicatorSheet, LayersSheet, OrderTicketSheet, QUICK_TRADE_SIZES, QuickTradeSheet, SCALE_LABELS } from "./sheets.tsx";
@@ -116,6 +117,8 @@ export interface CandleChartProps {
   barSpacing?: number;
   /** Drawings are kept per symbol; trading filters orders by it. */
   symbol?: string;
+  /** Show the inspected candle's readout (time, O/H/L/C, change, Live) at the chart's top-left, as chart-web's `inspector` does. */
+  inspector?: boolean;
   /** Show the toolbar: drawing tools, delete, indicators, and Trade when trading is on. */
   toolbar?: boolean;
   indicators?: IndicatorSpec[];
@@ -148,6 +151,9 @@ export interface CandleChartProps {
   label?: string;
   style?: StyleProp<ViewStyle>;
 }
+
+/** Height the top-left readout takes, which overlay legends start below. */
+const READOUT_H = 18;
 
 let idSeq = 0;
 const newId = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${(idSeq++).toString(36)}`;
@@ -184,6 +190,7 @@ export function CandleChart({
   barSpacing = 9,
   symbol = "",
   toolbar = false,
+  inspector = false,
   indicators: indicatorsProp,
   onIndicatorsChange,
   drawings: drawingsProp,
@@ -336,7 +343,12 @@ export function CandleChart({
       inspectT,
       pointer,
       // The Levels sheet's "Volume profile" switch turns the in-chart profile off.
-      options: options?.showProfile && !layers.profile ? { ...options, showProfile: false } : options,
+      options: {
+        ...options,
+        // The readout takes the top-left corner; overlay indicator legends start under it.
+        ...(inspector ? { legendTop: READOUT_H } : {}),
+        ...(options?.showProfile && !layers.profile ? { showProfile: false } : {}),
+      },
       priceScaleType: scaleType,
       indicators: indicatorResults,
       drawings: shownDrawings,
@@ -347,7 +359,7 @@ export function CandleChart({
       now: clockNow,
       paneHeights,
     }),
-    [timeframe, series, slots, inspectT, pointer, options, layers.profile, scaleType, indicatorResults, shownDrawings, selectedDrawing, draft, trading, orders, position, last, drag, context, clockNow, paneHeights],
+    [timeframe, series, slots, inspectT, pointer, options, layers.profile, scaleType, indicatorResults, shownDrawings, selectedDrawing, draft, trading, orders, position, last, drag, context, clockNow, paneHeights, inspector],
   );
   const model = useMemo(() => computeChartModel(state, vp, size), [state, vp, size]);
   const picture = useMemo(() => (size.width > 0 && size.height > 0 ? recordPicture(layoutChart(model, state, theme), size.width, size.height) : null), [model, state, theme, size]);
@@ -689,6 +701,12 @@ export function CandleChart({
             )}
           </View>
         </GestureDetector>
+        {inspector && (
+          // Over the plot's top-left on a transparent background, like the web; touches pass through to the chart.
+          <View pointerEvents="none" style={[s.readout, { left: model.geometry.plot.x + 6, right: model.options.priceAxisWidth + 6 }]}>
+            <CandleInspector slot={inspectT === null ? slots.at(-1) : slots[slotIndexOf(slots, inspectT) ?? -1]} timeframe={timeframe} />
+          </View>
+        )}
         {toolbar && toolsVisible && (
           <DrawingToolbox
             placement={toolbox}
@@ -827,6 +845,7 @@ const s = StyleSheet.create({
   surfaceWrap: { flex: 1, minHeight: 120 },
   surface: { flex: 1, minHeight: 120 },
   latest: { position: "absolute" },
+  readout: { position: "absolute", top: 4 },
   chipWrap: { position: "absolute" },
   chip: { height: 30, paddingHorizontal: 12, borderRadius: 15, backgroundColor: UI.accent, alignItems: "center", justifyContent: "center", shadowColor: "#000", shadowOpacity: 0.35, shadowRadius: 6, shadowOffset: { width: 0, height: 2 }, elevation: 5 },
   chipText: { color: UI.accentFg, fontSize: 13, fontWeight: "700", fontVariant: ["tabular-nums"] },

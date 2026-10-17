@@ -9,7 +9,6 @@ import {
   sessionBands,
   tradingDayOf,
   volumeBuckets,
-  slotIndexOf,
   type Drawing,
   type IndicatorSpec,
   parseToolboxPlacement,
@@ -21,7 +20,7 @@ import {
   type ToolboxPlacement,
   type Timeframe,
 } from "@stockwatcher/chart-core";
-import { CandleChart, CandleInspector, SessionTimeline, TapeSheet, ToolButton, UI } from "@stockwatcher/chart-native";
+import { CandleChart, SessionTimeline, TapeSheet, ToolButton, UI } from "@stockwatcher/chart-native";
 import { tickerUniverse, type ConnectionStatus } from "@stockwatcher/shared";
 import { useEffect, useMemo, useState } from "react";
 import Animated, { FadeIn, FadeOut, ReduceMotion } from "react-native-reanimated";
@@ -151,7 +150,6 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
     const start = series?.session?.start;
     return start === undefined ? undefined : series?.candles.find((c) => c.t >= start)?.o;
   }, [series]);
-  const inspected = inspectT === null ? slots.at(-1) : slots[slotIndexOf(slots, inspectT) ?? -1];
   const change = last && sessionOpen ? formatChange(sessionOpen, last.c) : "";
 
   const changeDrawings = (d: Drawing[]) => {
@@ -215,6 +213,7 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
       <CandleChart
         style={styles.chart}
         toolbar
+        inspector
         symbol={active ?? ""}
         series={series}
         timeframe={timeframe}
@@ -249,7 +248,6 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
         label={`${active ?? ""} ${timeframe} candles`}
       />
 
-      <CandleInspector slot={inspected} timeframe={timeframe} />
 
       <View style={styles.replayCard}>
       <View style={styles.replay}>
