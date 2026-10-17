@@ -15,6 +15,7 @@
 //!   credentials in this build.
 
 mod config;
+pub mod import;
 mod live;
 mod replay;
 

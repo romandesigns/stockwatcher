@@ -433,3 +433,61 @@ Behaviour:
 - **Order lines:** bracket exits waiting for their entry draw faintly. Pills read "TP · …" and
   "SL · …", and two working exits of one group show an OCO link.
 - **Keys:** L and S pick the tools on the web.
+
+## Appendix F: provider history import (2026-10-17)
+
+Code: `crates/market-providers/src/import/` (logic, network-free), `src/import/client.rs` and
+`src/bin/swimport.rs` (feature `import`), `crates/market-archive/src/bars.rs`. Tests:
+`crates/market-providers/tests/import.rs` (scripted HTTP, no credentials).
+
+**Roles.**
+- **Alpaca historical trades** (`GET /v2/stocks/{symbol}/trades`, `feed=sip`, `sort=asc`,
+  `limit` ≤ 10 000, `next_page_token`) are the trade-faithful replay source. Each print becomes a
+  contract `Trade` once, streamed page by page into the archive writer.
+- **FMP 1-minute bars** (`GET /stable/historical-chart/1min`) are a separate comparison dataset in
+  `bars/fmp-1min/<SYMBOL>.json`, listed in the day manifest's `bars` map with their own checksum.
+  They are never events, never replayed and never turned into trades, sub-minute candles or a
+  volume profile.
+
+**Field mapping.** `t` becomes `event_ts` exactly (ns, UTC). No receive time is invented. `p`
+becomes an exact decimal price; `s`, `x`, `z`, `c` and `i` become size, exchange, tape,
+conditions and `source_seq`. The feed decides the source (`sip` → `alpaca_sip`, `iex` →
+`alpaca_iex`, `boats` → `alpaca_boats`).
+
+**Corrections and cancels.** Historical responses mark a print with `u` (`canceled`,
+`incorrect`, `corrected`) but give no publication time and no link from a corrected print to the
+original. That cannot become a `Correction` or `Cancel` event without guessing, so `u` is kept
+raw in the new optional `Trade::update` (contract v1, additive). `Trade::effect` excludes
+`canceled` / `incorrect` prints (tape reason `withdrawn_*`) and counts `corrected` ones. The
+chart engine and the paper broker use it. Per-import counts are kept in the manifest.
+
+**Completeness and idempotency.**
+- Pages are followed until the token runs out, whatever a page's length. A repeated token is
+  refused.
+- Retries are bounded: 5 attempts, exponential from 0.5 s to a 30 s cap, `Retry-After` honoured.
+  Only 408, 429, 5xx and network errors are retried; 401/403/400 fail at once.
+- Any failure leaves `<SYMBOL>.swa.partial` and no manifest entry, so it is never labelled
+  complete.
+- `SymbolEntry.import` records the provider, dataset, endpoint, feed, requested range,
+  `imported_at`, pages, `complete`, update counts and out-of-order count. Re-running the same
+  request is a no-op; a different one needs `--force`; a re-run after an interruption starts over.
+
+**Credentials.** `ALPACA_API_KEY` / `ALPACA_API_SECRET` (or `APCA_*`) and `FMP_API_KEY`, from the
+environment only.
+- Never printed: `Debug` is redacted, `swimport credentials` shows set / not set.
+- FMP's `apikey` is shown as `REDACTED` in every log line and error. Error bodies are scrubbed of
+  every secret. reqwest errors are taken `without_url`.
+
+**Statuses and LULD.** Historical trades carry no halt, resume or LULD messages. An imported day
+therefore has no authoritative halts, and the LULD bands on the chart remain the labelled model
+built from trades.
+
+**Running it** (a completed trading date only; SIP range = premarket open through the end of after
+hours, from the session calendar):
+
+```sh
+cargo run -p market-providers --features import --bin swimport -- credentials
+cargo run -p market-providers --features import --bin swimport -- alpaca-trades ABCD 2026-10-14
+cargo run -p market-providers --features import --bin swimport -- fmp-bars ABCD 2026-10-14
+cargo run -p market-providers --features import --bin swimport -- check ABCD 2026-10-14
+```

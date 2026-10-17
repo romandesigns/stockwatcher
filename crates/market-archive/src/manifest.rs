@@ -1,8 +1,50 @@
 //! The per-day `manifest.json`.
 
+use crate::bars::BarEntry;
 use market_events::Source;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+
+/// Where an imported (non-fixture, non-live-recorded) file came from, so a re-run of the same
+/// import can be recognized and an incomplete one is never mistaken for a full session.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportProvenance {
+    /// e.g. `"alpaca"`.
+    pub provider: String,
+    /// e.g. `"trades"`.
+    pub dataset: String,
+    /// Endpoint path without credentials, e.g. `/v2/stocks/ABC/trades`.
+    pub endpoint: String,
+    /// e.g. `"sip"`.
+    pub feed: String,
+    /// The requested range, RFC 3339 UTC, `[start, end]` as sent to the provider.
+    pub start: String,
+    pub end: String,
+    /// UTC RFC 3339 time the import finished.
+    pub imported_at: String,
+    /// Pages fetched (each one response).
+    pub pages: u64,
+    /// True only when every page was fetched and the provider returned no further page token.
+    pub complete: bool,
+    /// Counts of the provider's raw per-print update markers (Alpaca `u`), e.g. `{"canceled": 2}`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub updates: BTreeMap<String, u64>,
+    /// Prints whose time went backwards against the previous one (expected 0 with `sort=asc`).
+    #[serde(default)]
+    pub out_of_order: u64,
+}
+
+impl ImportProvenance {
+    /// Same provider, dataset, endpoint, feed and range: a re-run of the same import.
+    pub fn same_request(&self, other: &ImportProvenance) -> bool {
+        self.provider == other.provider
+            && self.dataset == other.dataset
+            && self.endpoint == other.endpoint
+            && self.feed == other.feed
+            && self.start == other.start
+            && self.end == other.end
+    }
+}
 
 pub const MANIFEST_FORMAT: &str = "stockwatcher-archive";
 
@@ -26,6 +68,9 @@ pub struct SymbolEntry {
     pub bytes: u64,
     /// Lowercase hex SHA-256 of the whole file.
     pub sha256: String,
+    /// Set for files written by a provider import (absent for fixtures and live recordings).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub import: Option<ImportProvenance>,
 }
 
 impl SymbolEntry {
@@ -48,6 +93,9 @@ pub struct DayManifest {
     pub fixture: bool,
     /// Keyed by symbol, so the JSON is stably ordered.
     pub symbols: BTreeMap<String, SymbolEntry>,
+    /// Provider bar datasets (never events), keyed `provider/granularity/SYMBOL`; see `bars`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub bars: BTreeMap<String, BarEntry>,
 }
 
 impl DayManifest {
@@ -60,6 +108,7 @@ impl DayManifest {
             sources: Vec::new(),
             fixture: false,
             symbols: BTreeMap::new(),
+            bars: BTreeMap::new(),
         }
     }
 

@@ -1,3 +1,4 @@
+use crate::bars::{BARS_DIR, BarDataset, BarEntry};
 use crate::config::ArchiveConfig;
 use crate::error::ArchiveError;
 use crate::format::{FileHeader, MANIFEST};
@@ -9,6 +10,9 @@ use chrono::{Duration, NaiveDate};
 use sha2::{Digest, Sha256};
 use std::io::Read;
 use std::path::{Path, PathBuf};
+
+/// Serializes manifest read-modify-writes within the process (see `update_manifest`).
+static MANIFEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// The archive rooted at [`ArchiveConfig::root`].
 #[derive(Clone, Debug)]
@@ -126,11 +130,97 @@ impl Archive {
 
     /// Records a finalized file in the day's manifest (atomic rewrite).
     pub fn commit(&self, day: NaiveDate, entry: SymbolEntry) -> Result<DayManifest, ArchiveError> {
+        self.update_manifest(day, |m| m.upsert(entry))
+    }
+
+    /// Writes a provider bar dataset (never events) to `bars/<provider>-<granularity>/<SYMBOL>.json`
+    /// atomically and records it, with its checksum, in the day manifest's `bars` map.
+    pub fn write_bars(&self, day: NaiveDate, ds: &BarDataset) -> Result<BarEntry, ArchiveError> {
+        if !valid_symbol(&ds.symbol) {
+            return Err(ArchiveError::InvalidSymbol(ds.symbol.clone()));
+        }
+        let safe =
+            |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+        if !safe(&ds.provider) || !safe(&ds.granularity) {
+            return Err(ArchiveError::format(
+                self.day_dir(day),
+                format!(
+                    "invalid provider/granularity {:?}/{:?}",
+                    ds.provider, ds.granularity
+                ),
+            ));
+        }
+        let rel = format!(
+            "{BARS_DIR}/{}-{}/{}.json",
+            ds.provider, ds.granularity, ds.symbol
+        );
+        let path = self.day_dir(day).join(&rel);
+        let dir = path.parent().expect("has a parent").to_path_buf();
+        std::fs::create_dir_all(&dir).map_err(|e| ArchiveError::io(&dir, e))?;
+        space::ensure_floor(&dir, self.cfg.min_free_bytes)?;
+        let json = serde_json::to_vec_pretty(ds).expect("bar dataset serializes");
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, &json).map_err(|e| ArchiveError::io(&tmp, e))?;
+        if let Ok(f) = std::fs::File::open(&tmp) {
+            let _ = f.sync_all();
+        }
+        std::fs::rename(&tmp, &path).map_err(|e| ArchiveError::io(&path, e))?;
+        let entry = BarEntry {
+            provider: ds.provider.clone(),
+            granularity: ds.granularity.clone(),
+            symbol: ds.symbol.clone(),
+            file: rel,
+            bars: ds.bars.len() as u64,
+            first_ts: ds.bars.first().map(|b| b.t),
+            last_ts: ds.bars.last().map(|b| b.t),
+            query: ds.query.clone(),
+            fetched_at: ds.fetched_at.clone(),
+            bytes: json.len() as u64,
+            sha256: hex::encode(Sha256::digest(&json)),
+        };
+        let key = BarEntry::key(&ds.provider, &ds.granularity, &ds.symbol);
+        let recorded = entry.clone();
+        self.update_manifest(day, move |m| {
+            m.bars.insert(key, recorded);
+        })?;
+        Ok(entry)
+    }
+
+    /// Reads a bar dataset recorded in the day manifest.
+    pub fn read_bars(
+        &self,
+        day: NaiveDate,
+        provider: &str,
+        granularity: &str,
+        symbol: &str,
+    ) -> Result<Option<BarDataset>, ArchiveError> {
+        let Some(m) = self.manifest(day)? else {
+            return Ok(None);
+        };
+        let Some(e) = m.bars.get(&BarEntry::key(provider, granularity, symbol)) else {
+            return Ok(None);
+        };
+        let path = self.day_dir(day).join(&e.file);
+        let bytes = std::fs::read(&path).map_err(|err| ArchiveError::io(&path, err))?;
+        serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|err| ArchiveError::format(&path, err.to_string()))
+    }
+
+    /// Read-modify-write of the day manifest, then an atomic rename.
+    fn update_manifest(
+        &self,
+        day: NaiveDate,
+        f: impl FnOnce(&mut DayManifest),
+    ) -> Result<DayManifest, ArchiveError> {
+        // One writer at a time in this process: parallel importers finishing symbols of the same
+        // day would otherwise each read the old manifest and drop each other's entries.
+        let _guard = MANIFEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let key = day.format("%Y-%m-%d").to_string();
         let mut m = self
             .manifest(day)?
             .unwrap_or_else(|| DayManifest::new(&key));
-        m.upsert(entry);
+        f(&mut m);
         let path = self.manifest_path(day);
         let tmp = path.with_extension("json.tmp");
         let json = serde_json::to_vec_pretty(&m).expect("manifest serializes");
@@ -223,10 +313,42 @@ impl Archive {
                 problems,
             });
         }
+        for b in m.bars.values() {
+            let path = dir.join(&b.file);
+            let mut problems = Vec::new();
+            match sha256_file(&path) {
+                Ok((sha, bytes)) if sha == b.sha256 && bytes == b.bytes => {}
+                Ok((sha, bytes)) => problems.push(format!(
+                    "checksum mismatch: file {sha} ({bytes} B), manifest {} ({} B)",
+                    b.sha256, b.bytes
+                )),
+                Err(e) => problems.push(e.to_string()),
+            }
+            if problems.is_empty() {
+                let decoded = std::fs::read(&path)
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<BarDataset>(&bytes).ok());
+                match decoded {
+                    Some(ds) if ds.bars.len() as u64 == b.bars => {}
+                    Some(ds) => problems.push(format!(
+                        "{} bars decoded, manifest says {}",
+                        ds.bars.len(),
+                        b.bars
+                    )),
+                    None => problems.push("bar dataset does not decode".into()),
+                }
+            }
+            symbols.push(VerifySymbol {
+                symbol: format!("{} ({}/{} bars)", b.symbol, b.provider, b.granularity),
+                sha256_ok: problems.is_empty(),
+                records_ok: problems.is_empty(),
+                problems,
+            });
+        }
         let mut unlisted: Vec<String> = std::fs::read_dir(&dir)
             .map_err(|e| ArchiveError::io(&dir, e))?
             .filter_map(|e| e.ok()?.file_name().into_string().ok())
-            .filter(|n| n != MANIFEST && !m.symbols.values().any(|e| &e.file == n))
+            .filter(|n| n != MANIFEST && n != BARS_DIR && !m.symbols.values().any(|e| &e.file == n))
             .collect();
         unlisted.sort();
         Ok(VerifyReport {

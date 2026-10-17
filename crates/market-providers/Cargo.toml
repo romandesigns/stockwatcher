@@ -9,7 +9,17 @@ publish.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+# The real HTTP client and the `swimport` command (provider history import). Off by default so
+# the server, which links this crate, does not compile an HTTP/TLS stack it never uses.
+import = ["dep:reqwest", "dep:rustls", "dep:flate2"]
+
+[[bin]]
+name = "swimport"
+required-features = ["import"]
+
 [dependencies]
+chart-engine = { path = "../chart-engine" }
 market-events = { path = "../market-events" }
 market-archive = { path = "../market-archive" }
 market-replay = { path = "../market-replay" }
@@ -18,8 +28,14 @@ chrono-tz = "0.10.4"
 serde = { version = "1.0.229", features = ["derive"] }
 tokio = { version = "1.53.3", features = ["rt", "macros", "sync", "time"] }
 tracing = "0.1.44"
+serde_json = "1.0.154"
+# Same versions the workspace already locks (via the desktop updater); ring, not aws-lc, so it
+# builds on Windows and the Pi without CMake/NASM.
+reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "rustls-no-provider"], optional = true }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"], optional = true }
+# Alpaca gzips trade pages ~7x; reqwest's own gzip feature would pull in new crates, flate2 is locked.
+flate2 = { version = "1.1.10", optional = true }
 
 [dev-dependencies]
-chart-engine = { path = "../chart-engine" }
 tempfile = "3.27.0"
 tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "sync", "time"] }

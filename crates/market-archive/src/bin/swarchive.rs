@@ -6,7 +6,7 @@
 //! swarchive inspect <YYYY-MM-DD> [--records N] [--symbol S]
 //! swarchive verify  <YYYY-MM-DD>
 //! swarchive prune   [--today YYYY-MM-DD]               # honours ARCHIVE_RETENTION_DAYS
-//! swarchive import alpaca …                            # skeleton only; see below
+//! swarchive import …                                   # moved: see `swimport` (market-providers)
 //! ```
 //!
 //! Configuration comes from `ARCHIVE_ROOT`, `ARCHIVE_RETENTION_DAYS` and `ARCHIVE_MIN_FREE_MB`.
@@ -22,7 +22,7 @@ use std::process::ExitCode;
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage:\n  swarchive days\n  swarchive fixture <YYYY-MM-DD> [SYMBOL...] [--seed N]\n  swarchive inspect <YYYY-MM-DD> [--records N] [--symbol S]\n  swarchive verify <YYYY-MM-DD>\n  swarchive prune [--today YYYY-MM-DD]\n  swarchive import alpaca <YYYY-MM-DD> <SYMBOL...>   (skeleton, refuses to run)"
+        "usage:\n  swarchive days\n  swarchive fixture <YYYY-MM-DD> [SYMBOL...] [--seed N]\n  swarchive inspect <YYYY-MM-DD> [--records N] [--symbol S]\n  swarchive verify <YYYY-MM-DD>\n  swarchive prune [--today YYYY-MM-DD]\n  (provider imports: swimport, in market-providers with the `import` feature)"
     );
     ExitCode::from(2)
 }
@@ -62,7 +62,7 @@ fn main() -> ExitCode {
         Some("inspect") => inspect(&archive, &args[1..]),
         Some("verify") => verify(&archive, &args[1..]),
         Some("prune") => prune(&archive, &args[1..]),
-        Some("import") => import(&args[1..]),
+        Some("import") => import(),
         _ => return usage(),
     };
     match result {
@@ -154,6 +154,24 @@ fn inspect(archive: &Archive, args: &[String]) -> Result<ExitCode, String> {
             "  events {}  trades {}  quotes {}  corrections {}  cancels {}  statuses {}",
             e.events, e.trades, e.quotes, e.corrections, e.cancels, e.statuses
         );
+        if let Some(p) = &e.import {
+            println!(
+                "  imported from {} {} feed={} {} .. {}  pages {}  {}  at {}{}",
+                p.provider,
+                p.dataset,
+                p.feed,
+                p.start,
+                p.end,
+                p.pages,
+                if p.complete { "complete" } else { "INCOMPLETE" },
+                p.imported_at,
+                if p.updates.is_empty() {
+                    String::new()
+                } else {
+                    format!("  provider updates {:?}", p.updates)
+                }
+            );
+        }
         if let (Some(a), Some(b)) = (e.first_ts, e.last_ts) {
             println!("  first {}  last {}", et_string(a), et_string(b));
         }
@@ -175,6 +193,23 @@ fn inspect(archive: &Archive, args: &[String]) -> Result<ExitCode, String> {
         }
         for (s, n) in per_session {
             println!("  trades in {s}: {n}");
+        }
+    }
+    for b in m.bars.values() {
+        if only.as_deref().is_some_and(|s| s != b.symbol) {
+            continue;
+        }
+        println!(
+            "\n{}  {} {} BARS (comparison only, not events)  {}  {} bars  sha256 {}",
+            b.symbol, b.provider, b.granularity, b.file, b.bars, b.sha256
+        );
+        if let (Some(a), Some(z)) = (b.first_ts, b.last_ts) {
+            println!(
+                "  first {}  last {}  query {}",
+                et_string(a),
+                et_string(z),
+                b.query
+            );
         }
     }
     Ok(ExitCode::SUCCESS)
@@ -217,19 +252,8 @@ fn prune(archive: &Archive, args: &[String]) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// Skeleton for importing Alpaca historical trades (`GET /v2/stocks/{symbol}/trades`, feed=sip)
-/// into the archive. Deliberately inert in this build: it needs an explicit opt-in
-/// (`SWARCHIVE_IMPORT=alpaca`), entitlement verification and credentials from the environment,
-/// none of which this phase provides. It never reads credentials and never calls the network.
-fn import(args: &[String]) -> Result<ExitCode, String> {
-    if args.first().map(String::as_str) != Some("alpaca") {
-        return Err("only `import alpaca` is defined".into());
-    }
-    if std::env::var("SWARCHIVE_IMPORT").ok().as_deref() != Some("alpaca") {
-        return Err(
-            "import is disabled: set SWARCHIVE_IMPORT=alpaca to opt in explicitly (and see docs/architecture/simulator-and-chart.md, Appendix B)"
-                .into(),
-        );
-    }
-    Err("the Alpaca importer is not implemented yet: it waits for entitlement verification (spec 01, build step 2)".into())
+/// Provider imports moved to `swimport` (market-providers, feature `import`), where the provider
+/// normalization lives; this crate stays free of HTTP and credentials.
+fn import() -> Result<ExitCode, String> {
+    Err("imports are done by swimport: cargo run -p market-providers --features import --bin swimport -- help".into())
 }

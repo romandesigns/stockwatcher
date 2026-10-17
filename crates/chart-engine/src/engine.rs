@@ -691,7 +691,7 @@ impl ChartEngine {
     }
 
     fn apply_trade(&mut self, t: &Trade) -> Vec<ChartUpdate> {
-        let effect = trade_effect(&t.conditions, t.tape);
+        let effect = t.effect();
         let (clock, base_tf, settle) = (self.clock, self.base_tf, self.cfg.settle_window_ns);
         let (cap, bin) = (self.cfg.max_intervals_per_timeframe, self.cfg.profile_bin);
         let (retention, max_tf, keep) = (self.retention, self.max_tf, self.cfg.sessions_retained);
