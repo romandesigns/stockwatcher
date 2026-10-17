@@ -207,19 +207,20 @@ export function TickerSearchSheet({ open, onClose, tickers, current, onSelect, r
 
 const s = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.bg, paddingHorizontal: 12 },
-  inputRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+  inputRow: { height: 42, flexDirection: "row", alignItems: "center", gap: 10 },
   field: { flex: 1, height: 42, flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: colors.bgPanel, borderRadius: 12, paddingHorizontal: 12 },
   input: { flex: 1, height: 42, color: colors.text, fontSize: 15, fontFamily: fonts.regular, padding: 0 },
   clearQuery: { width: 18, height: 18, borderRadius: 9, backgroundColor: colors.textFaint, alignItems: "center", justifyContent: "center" },
   cancel: { height: 42, justifyContent: "center" },
   cancelText: { color: colors.accent, fontSize: 15 },
-  chipsScroll: { flexGrow: 0, marginTop: 10, marginHorizontal: -12 },
+  chipsScroll: { flexGrow: 0, height: 32, marginTop: 10, marginHorizontal: -12 },
   chips: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 12 },
   groupBar: { width: 1, height: 18, borderRadius: 1, backgroundColor: "#272e38", marginHorizontal: 2 },
   chip: { height: 32, paddingHorizontal: 12, borderRadius: 16, backgroundColor: colors.bgPanel, justifyContent: "center" },
   chipOn: { backgroundColor: "#272e38" },
   chipText: { color: colors.textDim, fontSize: 13 },
-  countRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 4, paddingTop: 10, paddingBottom: 4 },
+  // Fixed height: "Clear filters" appearing must not nudge the list (no layout jumps).
+  countRow: { height: 34, flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 4 },
   count: { color: colors.textFaint, fontSize: 11, fontVariant: ["tabular-nums"] },
   clearText: { color: colors.textDim, fontSize: 12 },
   section: { color: colors.textFaint, fontSize: 10, fontWeight: "600", letterSpacing: 0.6, textTransform: "uppercase", paddingHorizontal: 8, paddingTop: 12, paddingBottom: 4 },

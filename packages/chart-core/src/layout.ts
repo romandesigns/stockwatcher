@@ -293,7 +293,8 @@ export function layoutChart(model: ChartModel, state: ChartState, theme: ChartTh
 
   // session profile overlay, right-anchored inside the price pane
   if (o.showProfile && price && state.profile && state.profile.rows.length) {
-    out.push(...profileBars(state.profile, price, { x: g.plot.x + g.plot.w * (1 - o.profileWidth), y: g.plot.y, w: g.plot.w * o.profileWidth, h: g.plot.h }, "right", theme));
+    // Behind the candles, so it takes the overlay's quieter colours: the panel's solid POC would hide price.
+    out.push(...profileBars(state.profile, price, { x: g.plot.x + g.plot.w * (1 - o.profileWidth), y: g.plot.y, w: g.plot.w * o.profileWidth, h: g.plot.h }, "right", theme, true));
   }
 
   // volume + candles
@@ -413,7 +414,10 @@ export function lastCandle(slots: readonly Slot[]): Candle | null {
  * POC and the value area (the profile's own, from the server or recomputed
  * by the store with the engine's rules) get their own colors.
  */
-export function profileBars(profile: ProfileWire, price: PriceScale, area: Rect, align: "left" | "right", theme: ChartTheme): DisplayList {
+export function profileBars(profile: ProfileWire, price: PriceScale, area: Rect, align: "left" | "right", theme: ChartTheme, overlay = false): DisplayList {
+  const colors = overlay
+    ? { bar: theme.profileOverlayBar, va: theme.profileOverlayValueArea, poc: theme.profileOverlayPoc }
+    : { bar: theme.profileBar, va: theme.profileValueArea, poc: theme.profilePoc };
   const out: DisplayList = [];
   let max = 0;
   for (const r of profile.rows) if (r.v > max) max = r.v;
@@ -434,7 +438,7 @@ export function profileBars(profile: ProfileWire, price: PriceScale, area: Rect,
     const isPoc = poc !== null && Math.abs(r.p - poc) < eps;
     // low and high are bin starts, both inside the value area.
     const inVa = va !== null && r.p >= va.low - eps && r.p <= va.high + eps;
-    const fill = isPoc ? theme.profilePoc : inVa ? theme.profileValueArea : theme.profileBar;
+    const fill = isPoc ? colors.poc : inVa ? colors.va : colors.bar;
     out.push({ kind: "rect", x: align === "left" ? area.x : area.x + area.w - w, y: top, w, h, fill, radius: h > 3 ? 1.5 : 0, layer: "profile" });
   }
   return out;

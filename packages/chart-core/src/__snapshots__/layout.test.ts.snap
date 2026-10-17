@@ -353,7 +353,7 @@ exports[`layout display list snapshot for the fixture 1`] = `
     "y2": 203,
   },
   {
-    "fill": "profileValueArea",
+    "fill": "profileOverlayValueArea",
     "h": 5.9,
     "kind": "rect",
     "layer": "profile",
@@ -363,7 +363,7 @@ exports[`layout display list snapshot for the fixture 1`] = `
     "y": 172.97,
   },
   {
-    "fill": "profilePoc",
+    "fill": "profileOverlayPoc",
     "h": 5.9,
     "kind": "rect",
     "layer": "profile",
@@ -373,7 +373,7 @@ exports[`layout display list snapshot for the fixture 1`] = `
     "y": 166.07,
   },
   {
-    "fill": "profileValueArea",
+    "fill": "profileOverlayValueArea",
     "h": 5.9,
     "kind": "rect",
     "layer": "profile",
@@ -383,7 +383,7 @@ exports[`layout display list snapshot for the fixture 1`] = `
     "y": 159.17,
   },
   {
-    "fill": "profileBar",
+    "fill": "profileOverlayBar",
     "h": 5.9,
     "kind": "rect",
     "layer": "profile",
@@ -393,7 +393,7 @@ exports[`layout display list snapshot for the fixture 1`] = `
     "y": 152.28,
   },
   {
-    "fill": "profileBar",
+    "fill": "profileOverlayBar",
     "h": 5.9,
     "kind": "rect",
     "layer": "profile",

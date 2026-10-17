@@ -126,6 +126,10 @@ export interface ChartTheme {
   profileBar: string;
   profileValueArea: string;
   profilePoc: string;
+  /** The profile drawn inside the price pane, behind the candles (a phone): the same hues, much quieter. */
+  profileOverlayBar: string;
+  profileOverlayValueArea: string;
+  profileOverlayPoc: string;
   sessionOvernight: string;
   sessionPre: string;
   sessionRegular: string;
