@@ -579,8 +579,8 @@ export function CandleChart({
               </ToolButton>
               {trading && (
                 <>
-                  <ToolButton primary label="Simulated order" onPress={() => setSheet({ kind: "ticket", price: null })}>
-                    Trade
+                  <ToolButton primary label="Trade (simulated order)" onPress={() => setSheet({ kind: "ticket", price: null })} style={{ width: 34, paddingHorizontal: 0 }}>
+                    <ToolIcon kind="trade" color={UI.accentFg} />
                   </ToolButton>
                 </>
               )}

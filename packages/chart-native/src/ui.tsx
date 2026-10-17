@@ -43,7 +43,7 @@ const icon = (children: ReactNode, color: string) => (
 );
 
 /** The same 16 px icons as chart-web's toolbar. */
-export function ToolIcon({ kind, color }: { kind: DrawingKind | "cursor" | "trash" | "indicators" | "levels" | "trades" | "undo" | "redo" | "pencil"; color: string }) {
+export function ToolIcon({ kind, color }: { kind: DrawingKind | "cursor" | "trash" | "indicators" | "levels" | "trades" | "undo" | "redo" | "pencil" | "trade"; color: string }) {
   switch (kind) {
     case "cursor":
       return icon(<Path d="M4 2.5v10l3-3 2 4.5 1.6-.7-2-4.4H13z" fill={color} stroke="none" />, color);
@@ -114,6 +114,8 @@ export function ToolIcon({ kind, color }: { kind: DrawingKind | "cursor" | "tras
         </>,
         color,
       );
+    case "trade":
+      return icon(<Path d="M5 13V3M2.5 5.5 5 3l2.5 2.5M11 3v10M8.5 10.5 11 13l2.5-2.5" />, color);
     case "pencil":
       return icon(<Path d="M10.5 2.5 13.5 5.5 5.5 13.5H2.5v-3zM9 4l3 3" />, color);
     case "measure":

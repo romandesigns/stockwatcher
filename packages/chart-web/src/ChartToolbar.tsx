@@ -88,6 +88,9 @@ const IndicatorIcon = svg(
 
 const DEFAULT_SERIES = [DEFAULT_CHART_THEME.series1, DEFAULT_CHART_THEME.series2, DEFAULT_CHART_THEME.series3] as const;
 
+/** Trade: an up arrow and a down arrow, buy and sell. The one accent button in the row. */
+const TradeIcon = svg(<path d="M5 13V3M2.5 5.5 5 3l2.5 2.5M11 3v10M8.5 10.5 11 13l2.5-2.5" />);
+
 /** The drawing tools switch: a pencil. */
 const PencilIcon = svg(<path d="M10.5 2.5 13.5 5.5 5.5 13.5H2.5v-3zM9 4l3 3" />);
 
@@ -199,8 +202,8 @@ export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChang
         {trading && (
           <>
             <Tip label="Simulated order (fills against the replay tape)">
-              <Button size="sm" className="ml-0.5 h-7 rounded-md px-3 text-xs" onClick={trading.onTrade}>
-                Trade
+              <Button size="icon" aria-label="Trade (simulated order)" className="ml-0.5 size-7 rounded-md [&_svg]:size-4" onClick={trading.onTrade}>
+                {TradeIcon}
               </Button>
             </Tip>
           </>
