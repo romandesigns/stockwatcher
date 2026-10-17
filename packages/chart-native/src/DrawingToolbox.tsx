@@ -99,6 +99,9 @@ export function DrawingToolbox({ placement, onPlacementChange, container, tool, 
           </Svg>
         </View>
       </GestureDetector>
+      {/* Lines stack across the orientation: the main line(s), then the colour swatches when open. The swatches
+          get a line of their own so opening them never widens a row past the chart (it pushed flip off-screen). */}
+      <View style={{ flexDirection: across, gap: GAP }}>
       <View style={{ flexDirection: split ? across : line, gap: GAP }}>
       <View style={{ flexDirection: line, alignItems: "center", gap: GAP }} accessibilityRole="radiogroup" accessibilityLabel="Tool">
       {TOOL_KEYS.map((k) => {
@@ -124,26 +127,6 @@ export function DrawingToolbox({ placement, onPlacementChange, container, tool, 
       <Pressable accessibilityRole="button" accessibilityLabel="Drawing colour" accessibilityState={{ disabled: !canColor, expanded: colorsOpen }} disabled={!canColor} onPress={() => setColorsOpen((o) => !o)} style={[s.btn, !canColor && { opacity: 0.4 }]}>
         {swatch(canColor ? current : UI.textDim, 14)}
       </Pressable>
-      {colorsOpen && canColor && (
-        <View style={[s.colors, { flexDirection: vertical ? "column" : "row" }]} accessibilityRole="radiogroup" accessibilityLabel="Drawing colour">
-          {DRAWING_COLORS.map((c) => (
-            <Pressable
-              key={c.value}
-              accessibilityRole="radio"
-              accessibilityState={{ checked: current === c.value }}
-              accessibilityLabel={c.name}
-              onPress={() => {
-                onColorChange(c.value);
-                setColorsOpen(false);
-                if (haptics) playHaptic("selection");
-              }}
-              style={[s.btn, current === c.value && { backgroundColor: UI.raised }]}
-            >
-              {swatch(c.value, 16)}
-            </Pressable>
-          ))}
-        </View>
-      )}
       <Pressable accessibilityRole="button" accessibilityLabel="Delete selected drawing" disabled={!canDelete} onPress={onDelete} style={[s.btn, !canDelete && { opacity: 0.4 }]}>
         <ToolIcon kind="trash" color={UI.textDim} />
       </Pressable>
@@ -167,6 +150,27 @@ export function DrawingToolbox({ placement, onPlacementChange, container, tool, 
       </Pressable>
       </View>
       </View>
+      </View>
+        {colorsOpen && canColor && (
+          <View style={[s.colors, { flexDirection: line, alignSelf: "flex-start" }]} accessibilityRole="radiogroup" accessibilityLabel="Drawing colour">
+            {DRAWING_COLORS.map((c) => (
+              <Pressable
+                key={c.value}
+                accessibilityRole="radio"
+                accessibilityState={{ checked: current === c.value }}
+                accessibilityLabel={c.name}
+                onPress={() => {
+                  onColorChange(c.value);
+                  setColorsOpen(false);
+                  if (haptics) playHaptic("selection");
+                }}
+                style={[s.btn, current === c.value && { backgroundColor: UI.raised }]}
+              >
+                {swatch(c.value, 16)}
+              </Pressable>
+            ))}
+          </View>
+        )}
       </View>
     </View>
   );
