@@ -123,6 +123,8 @@ export interface ChartToolbarProps {
   /** The floating drawing tools: shown or hidden, and the switch (absent hides the switch). */
   toolsVisible?: boolean;
   onToolsVisibleChange?: (visible: boolean) => void;
+  /** Shown at the left of the row (CandleChart puts the inspected candle's readout here). */
+  start?: ReactNode;
   /** The candle timeframe, shown at the left of the row (absent hides it). */
   timeframe?: Timeframe;
   onTimeframeChange?: (tf: Timeframe) => void;
@@ -136,7 +138,7 @@ export interface ChartToolbarProps {
  * One compact row; selection is a raised segment, and the accent is spent
  * only on the Trade button (the primary action).
  */
-export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChange, seriesColors, drawingTools = true, canDelete, onDelete, trading, layers, onLayersChange, toolsVisible, onToolsVisibleChange, timeframe, onTimeframeChange, className }: ChartToolbarProps) {
+export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChange, seriesColors, drawingTools = true, canDelete, onDelete, trading, layers, onLayersChange, toolsVisible, onToolsVisibleChange, timeframe, onTimeframeChange, start, className }: ChartToolbarProps) {
   const pos = trading?.position && trading.position.qty !== 0 ? trading.position : null;
   const pnl = pos && trading?.last !== null && trading?.last !== undefined ? unrealizedPnl(pos, trading.last) : null;
   return (
@@ -159,6 +161,7 @@ export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChang
       </Tip>
       </>
       )}
+      {start && <div className="min-w-0 flex-1 overflow-hidden">{start}</div>}
       {/* One group on the right, kept on one line: position, timeframes, drawing tools, indicators, levels, Trade. */}
       <div className="ml-auto flex flex-nowrap items-center gap-1.5">
         {pos && (

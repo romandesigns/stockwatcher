@@ -223,8 +223,7 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
       <div className="flex min-h-0 flex-1 flex-col gap-2 px-4 pb-3 min-[901px]:flex-row">
         <main className="flex min-w-0 flex-1 flex-col gap-2">
           <div className="flex min-h-[360px] flex-1 flex-col gap-1">
-            <CandleInspector slot={inspected} timeframe={timeframe} />
-            <CandleChart className="min-h-[360px] flex-1" toolbar symbol={symbol} persistKey="sw-chart" trading={trading} now={clock?.now ?? null} onTimeframeChange={changeTf} series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={setInspectT} priceScaleType={priceScale} onPriceScaleTypeChange={setPriceScale} options={DESKTOP_CHART} label={chartLabel} />
+            <CandleChart className="min-h-[360px] flex-1" toolbar inspector symbol={symbol} persistKey="sw-chart" trading={trading} now={clock?.now ?? null} onTimeframeChange={changeTf} series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={setInspectT} priceScaleType={priceScale} onPriceScaleTypeChange={setPriceScale} options={DESKTOP_CHART} label={chartLabel} />
           </div>
           <section aria-label="Session timeline and replay" className="flex flex-col gap-2 rounded-xl bg-card px-3 py-2.5">
             <ReplayControls {...replay} />

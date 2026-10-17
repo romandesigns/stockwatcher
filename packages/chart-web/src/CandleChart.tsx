@@ -74,6 +74,7 @@ import {
   type Viewport,
 } from "@stockwatcher/chart-core";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type PointerEvent } from "react";
+import { CandleInspector } from "./CandleInspector.tsx";
 import { ChartToolbar } from "./ChartToolbar.tsx";
 import { drawDisplayList } from "./draw.ts";
 import { DrawingToolbox } from "./DrawingToolbox.tsx";
@@ -143,6 +144,8 @@ export interface CandleChartProps {
   now?: number | null;
   /** Show the timeframe picker in the toolbar row; the host switches the subscription. */
   onTimeframeChange?: (tf: Timeframe) => void;
+  /** Show the inspected candle's readout (time, O/H/L/C, change, volume) at the left of the toolbar row. */
+  inspector?: boolean;
 }
 
 /** What the host wires for simulated trading (the chart never talks to a server). */
@@ -230,6 +233,7 @@ export function CandleChart({
   onLayersChange,
   now = null,
   onTimeframeChange,
+  inspector = false,
 }: CandleChartProps) {
   const theme = useChartTheme(themeProp);
 
@@ -1004,6 +1008,7 @@ export function CandleChart({
         onToolsVisibleChange={changeToolsVisible}
         timeframe={timeframe}
         onTimeframeChange={onTimeframeChange}
+        start={inspector ? <CandleInspector className="flex-nowrap" slot={inspectT === null ? (slots.at(-1) ?? null) : (slots[slotIndexOf(slots, inspectT) ?? -1] ?? null)} timeframe={timeframe} /> : undefined}
         tool={tool}
         onToolChange={changeTool}
         indicators={indicatorSpecs}
