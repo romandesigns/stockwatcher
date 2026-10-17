@@ -158,16 +158,17 @@ jobs:
           VPS_HOST: ${{ secrets.VPS_HOST }}
         run: |
           set -euo pipefail
-          install -m 700 -d ~/.ssh
-          printf '%s\n' "$VPS_PUBLISH_KEY" > ~/.ssh/publish_key
-          chmod 600 ~/.ssh/publish_key
-          printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          # Not ~/.ssh: the Windows runner refuses mode changes on it.
+          mkdir -p "$RUNNER_TEMP/ssh"
+          printf '%s\n' "$VPS_PUBLISH_KEY" > "$RUNNER_TEMP/ssh/publish_key"
+          chmod 600 "$RUNNER_TEMP/ssh/publish_key"
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > "$RUNNER_TEMP/ssh/known_hosts"
           /usr/bin/ssh \
-            -i ~/.ssh/publish_key \
+            -i "$RUNNER_TEMP/ssh/publish_key" \
             -o IdentitiesOnly=yes \
             -o BatchMode=yes \
             -o StrictHostKeyChecking=yes \
-            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            -o UserKnownHostsFile="$RUNNER_TEMP/ssh/known_hosts" \
             -o ConnectTimeout=20 \
             "wavystack@${VPS_HOST}" "$VERSION" < target/upload.tgz
           {
@@ -177,7 +178,7 @@ jobs:
 
       - name: Remove SSH key
         if: always()
-        run: rm -f ~/.ssh/publish_key
+        run: rm -rf "$RUNNER_TEMP/ssh"
 
   mobile:
     name: Mobile OTA update and preview APK
