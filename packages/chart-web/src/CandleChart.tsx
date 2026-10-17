@@ -792,6 +792,7 @@ export function CandleChart({
         onToolChange={changeTool}
         indicators={indicatorSpecs}
         onIndicatorsChange={setIndicators}
+        seriesColors={[theme.series1, theme.series2, theme.series3]}
         canDelete={selected?.kind === "drawing"}
         onDelete={deleteSelected}
         trading={trading ? { position, last, onTrade: () => openTicket(null, null) } : null}

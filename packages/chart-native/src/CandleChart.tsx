@@ -533,7 +533,7 @@ export function CandleChart({
         />
       )}
 
-      <IndicatorSheet open={sheet.kind === "indicators"} onClose={() => setSheet({ kind: "none" })} indicators={indicatorSpecs} onChange={setIndicators} reducedMotion={reducedMotion} />
+      <IndicatorSheet open={sheet.kind === "indicators"} onClose={() => setSheet({ kind: "none" })} indicators={indicatorSpecs} onChange={setIndicators} seriesColors={[theme.series1, theme.series2, theme.series3]} reducedMotion={reducedMotion} />
       <AxisSheet
         open={sheet.kind === "axis"}
         onClose={() => setSheet({ kind: "none" })}

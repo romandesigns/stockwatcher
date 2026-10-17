@@ -316,3 +316,60 @@ export function canAddIndicator(specs: readonly IndicatorSpec[], preset: Indicat
   const placement = INDICATOR_PLACEMENT[preset.kind];
   return specs.filter((s) => INDICATOR_PLACEMENT[s.kind] === placement).length < (placement === "overlay" ? MAX_OVERLAYS : MAX_PANES);
 }
+
+/** What a menu shows for an indicator: its short name, its settings, and one line on what it measures. */
+export interface IndicatorInfo {
+  name: string;
+  params: string;
+  description: string;
+}
+
+export function indicatorInfo(s: IndicatorSpec): IndicatorInfo {
+  switch (s.kind) {
+    case "vwap":
+      return { name: "VWAP", params: "", description: "Volume-weighted average price, resets daily" };
+    case "ema":
+      return { name: "EMA", params: String(s.period ?? 9), description: (s.period ?? 9) <= 10 ? "Fast exponential average" : "Exponential moving average" };
+    case "sma":
+      return { name: "SMA", params: String(s.period ?? 20), description: "Simple moving average" };
+    case "bb":
+      return { name: "Bollinger", params: `${s.period ?? 20} · ${s.mult ?? 2}σ`, description: "Volatility bands around the average" };
+    case "rsi":
+      return { name: "RSI", params: String(s.period ?? 14), description: "Momentum from 0 to 100, lines at 30 and 70" };
+    case "macd":
+      return { name: "MACD", params: `${s.fast ?? 12} ${s.slow ?? 26} ${s.signal ?? 9}`, description: "Trend momentum, with signal and histogram" };
+  }
+}
+
+/**
+ * Icon glyphs per indicator kind, as SVG path data on a 16 px grid, so the
+ * web (inline <svg>) and the phone (react-native-svg) draw the same icon.
+ * `faint` paths are context (price, guide lines), drawn at lower opacity;
+ * `fill` paths are areas.
+ */
+export const INDICATOR_GLYPHS: Readonly<Record<IndicatorKind, readonly { d: string; faint?: boolean; fill?: boolean }[]>> = {
+  vwap: [
+    { d: "M2 14v-2.5M5 14v-4M8 14v-1.5M11 14v-3M14 14v-2", faint: true },
+    { d: "M1.5 8.5c2-1.5 4-3.5 6.5-3.5s4.5 1.5 6.5 0.5" },
+  ],
+  ema: [
+    { d: "M1.5 12 4.5 8.5l2.5 2 3.5-6 4 3", faint: true },
+    { d: "M1.5 11c3-1 4.5-4.5 7-5.5s4 0 6-1.5" },
+  ],
+  sma: [
+    { d: "M1.5 12 4.5 8.5l2.5 2 3.5-6 4 3", faint: true },
+    { d: "M1.5 12c3.5-.5 5-3 7-4s4-.5 6-1.5" },
+  ],
+  bb: [
+    { d: "M1.5 6c3-2 5-2.5 7-1.5s4 1 6-1v6c-2 1.5-4 2-6 1s-4-.5-7 1.5z", fill: true },
+    { d: "M1.5 6c3-2 5-2.5 7-1.5s4 1 6-1M1.5 12c3-2 5-2.5 7-1.5s4 1 6-1" },
+  ],
+  rsi: [
+    { d: "M1.5 4.5h13M1.5 11.5h13", faint: true },
+    { d: "M1.5 9c1.5-5 3-5 4.5-1s3 5 4.5 1 2.5-4.5 4-3" },
+  ],
+  macd: [
+    { d: "M3 8v3M5.5 8v4.5M8 8v2M10.5 8V6M13 8V4.5", faint: true },
+    { d: "M1.5 10c3-1 5-5 8-5.5s4 .5 5 1" },
+  ],
+};

@@ -1,8 +1,12 @@
 import {
   canAddIndicator,
+  DEFAULT_CHART_THEME,
+  INDICATOR_GLYPHS,
+  indicatorInfo,
+  MAX_OVERLAYS,
+  MAX_PANES,
   formatPrice,
   INDICATOR_PLACEMENT,
-  indicatorLabel,
   INDICATOR_PRESETS,
   orderTypeAt,
   snapPrice,
@@ -15,6 +19,7 @@ import {
 } from "@stockwatcher/chart-core";
 import { useEffect, useState, type ReactNode } from "react";
 import { Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import Svg, { Path } from "react-native-svg";
 import { Segmented, ToolButton, UI } from "./ui.tsx";
 
 /**
@@ -53,20 +58,91 @@ function Row({ label, on, disabled, onPress, right }: { label: string; on?: bool
   );
 }
 
-export function IndicatorSheet({ open, onClose, indicators, onChange, reducedMotion }: { open: boolean; onClose: () => void; indicators: readonly IndicatorSpec[]; onChange: (s: IndicatorSpec[]) => void; reducedMotion?: boolean }) {
+/** An indicator's glyph (shared with chart-web through chart-core), tinted with its line colour. */
+function Glyph({ kind, color }: { kind: IndicatorSpec["kind"]; color: string }) {
+  return (
+    <Svg width={18} height={18} viewBox="0 0 16 16" fill="none" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
+      {INDICATOR_GLYPHS[kind].map((g, i) => (
+        <Path key={i} d={g.d} fill={g.fill ? color : "none"} fillOpacity={g.fill ? 0.18 : undefined} stroke={g.fill ? "none" : color} strokeOpacity={g.faint ? 0.4 : 1} />
+      ))}
+    </Svg>
+  );
+}
+
+/**
+ * The indicator sheet, the phone's twin of chart-web's menu: per row the
+ * glyph tile tinted with the line's colour, name, settings chip, one line on
+ * what it measures and a check; section headers count against the caps.
+ */
+export function IndicatorSheet({
+  open,
+  onClose,
+  indicators,
+  onChange,
+  seriesColors = [DEFAULT_CHART_THEME.series1, DEFAULT_CHART_THEME.series2, DEFAULT_CHART_THEME.series3],
+  reducedMotion,
+}: {
+  open: boolean;
+  onClose: () => void;
+  indicators: readonly IndicatorSpec[];
+  onChange: (s: IndicatorSpec[]) => void;
+  seriesColors?: readonly string[];
+  reducedMotion?: boolean;
+}) {
   const on = new Set(indicators.map((x) => x.id));
+  const active = (placement: "overlay" | "pane") => indicators.filter((x) => INDICATOR_PLACEMENT[x.kind] === placement);
   const group = (placement: "overlay" | "pane") => INDICATOR_PRESETS.filter((p) => INDICATOR_PLACEMENT[p.kind] === placement);
+  const colorOf = (p: IndicatorSpec) => {
+    if (INDICATOR_PLACEMENT[p.kind] === "pane") return seriesColors[0]!;
+    const list = active("overlay");
+    const i = list.findIndex((x) => x.id === p.id);
+    return seriesColors[(i >= 0 ? i : list.length) % seriesColors.length]!;
+  };
+  const row = (p: IndicatorSpec) => {
+    const checked = on.has(p.id);
+    const allowed = canAddIndicator(indicators, p);
+    const info = indicatorInfo(p);
+    return (
+      <Pressable
+        key={p.id}
+        accessibilityRole="checkbox"
+        accessibilityState={{ checked, disabled: !allowed }}
+        accessibilityLabel={`${info.name} ${info.params}`}
+        accessibilityHint={info.description}
+        disabled={!allowed}
+        onPress={() => onChange(toggleIndicator(indicators, p))}
+        style={({ pressed }) => [s.indRow, checked && { backgroundColor: UI.row }, pressed && { backgroundColor: UI.raised }, !allowed && { opacity: 0.45 }]}
+      >
+        <View style={[s.tile, { backgroundColor: checked ? UI.raised : UI.row }]}>
+          <Glyph kind={p.kind} color={checked ? colorOf(p) : UI.textDim} />
+        </View>
+        <View style={{ flex: 1, gap: 2 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+            <Text style={s.indName}>{info.name}</Text>
+            {info.params ? <Text style={s.chip}>{info.params}</Text> : null}
+          </View>
+          <Text style={s.indDesc} numberOfLines={1}>
+            {allowed ? info.description : "Section full: turn one off first"}
+          </Text>
+        </View>
+        {checked && <Text style={[s.rowRight, { color: UI.accent }]}>✓</Text>}
+      </Pressable>
+    );
+  };
+  const header = (label: string, used: number, cap: number) => (
+    <View style={s.indHeader}>
+      <Text style={s.label}>{label}</Text>
+      <Text style={[s.label, { color: used >= cap ? UI.text : UI.textFaint, fontVariant: ["tabular-nums"] }]}>{`${used}/${cap}`}</Text>
+    </View>
+  );
   return (
     <Sheet open={open} onClose={onClose} title="Indicators" reducedMotion={reducedMotion}>
       <ScrollView>
-        <Text style={s.label}>On the chart · up to 3</Text>
-        {group("overlay").map((p) => (
-          <Row key={p.id} label={indicatorLabel(p)} on={on.has(p.id)} disabled={!canAddIndicator(indicators, p)} onPress={() => onChange(toggleIndicator(indicators, p))} />
-        ))}
-        <Text style={s.label}>Below · up to 2</Text>
-        {group("pane").map((p) => (
-          <Row key={p.id} label={indicatorLabel(p)} on={on.has(p.id)} disabled={!canAddIndicator(indicators, p)} onPress={() => onChange(toggleIndicator(indicators, p))} />
-        ))}
+        {header("On the chart", active("overlay").length, MAX_OVERLAYS)}
+        {group("overlay").map(row)}
+        {header("Below the chart", active("pane").length, MAX_PANES)}
+        {group("pane").map(row)}
+        {indicators.length > 0 && <Row label="Turn all off" onPress={() => onChange([])} />}
       </ScrollView>
     </Sheet>
   );
@@ -240,6 +316,12 @@ const s = StyleSheet.create({
   label: { color: UI.textFaint, fontSize: 11, marginTop: 8, marginBottom: 2 },
   row: { minHeight: 44, flexDirection: "row", alignItems: "center", paddingHorizontal: 8, borderRadius: 8 },
   rowText: { flex: 1, color: UI.text, fontSize: 14 },
+  indHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "baseline", paddingHorizontal: 8, marginTop: 6 },
+  indRow: { minHeight: 56, flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 8, borderRadius: 10 },
+  tile: { width: 36, height: 36, borderRadius: 9, alignItems: "center", justifyContent: "center" },
+  indName: { color: UI.text, fontSize: 14, fontWeight: "500" },
+  chip: { color: UI.textDim, fontSize: 10, backgroundColor: UI.row, borderRadius: 4, paddingHorizontal: 4, paddingVertical: 1, overflow: "hidden", fontVariant: ["tabular-nums"] },
+  indDesc: { color: UI.textFaint, fontSize: 11 },
   rowRight: { color: UI.textDim, fontSize: 13, marginLeft: 8 },
   input: { height: 40, backgroundColor: UI.row, borderRadius: 8, paddingHorizontal: 10, color: UI.text, fontSize: 15, fontVariant: ["tabular-nums"] },
   small: { color: UI.textDim, fontSize: 12 },
