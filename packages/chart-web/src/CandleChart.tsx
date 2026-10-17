@@ -20,7 +20,12 @@ import {
   defaultViewport,
   describeSlot,
   ensureVisible,
+  backToLatestMs,
+  backToLatestStep,
   followLatest,
+  isPannedBack,
+  panSlots,
+  slotsBehindLatest,
   GestureController,
   isAutoPrice,
   layoutChart,
@@ -485,8 +490,51 @@ export function CandleChart({
     }
   };
 
+  // Back to latest: slides the view home with an ease-out (instant with
+  // reduced motion), then follows the latest candle again. Any press on the
+  // chart stops the slide where it is, like catching a scroll.
+  const slide = useRef<{ frame: number } | null>(null);
+  const slotsRef = useRef(slots);
+  slotsRef.current = slots;
+  const stopSlide = () => {
+    if (slide.current) cancelAnimationFrame(slide.current.frame);
+    slide.current = null;
+  };
+  useEffect(() => stopSlide, []);
+  const backToLatest = () => {
+    stopSlide();
+    // A fling still coasting would fight the slide.
+    apply(gestures.reset(), model);
+    const total = slotsBehindLatest(vp, slots);
+    const reduce = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduce || total <= 0) {
+      setVp(followLatest);
+      return;
+    }
+    const duration = backToLatestMs(total, vp.barSpacing);
+    const start = performance.now();
+    let panned = 0;
+    const run = { frame: 0 };
+    const frame = (now: number) => {
+      const elapsed = now - start;
+      const d = backToLatestStep(total, panned, elapsed, duration);
+      panned -= d;
+      if (elapsed >= duration) {
+        setVp(followLatest);
+        slide.current = null;
+        return;
+      }
+      setVp((v) => panSlots(v, slotsRef.current, d));
+      run.frame = requestAnimationFrame(frame);
+    };
+    run.frame = requestAnimationFrame(frame);
+    slide.current = run;
+  };
+  const pannedBack = isPannedBack(vp);
+
   const onPointer = (type: "down" | "move" | "up" | "cancel" | "leave") => (e: PointerEvent<HTMLCanvasElement>) => {
     const kind = pointerKind(e.pointerType) ?? "mouse";
+    if (type === "down") stopSlide();
     if (type === "down" && (kind !== "mouse" || e.button === 0)) e.currentTarget.setPointerCapture(e.pointerId);
     feed(type, e, { pointerId: e.pointerId, pointerType: kind, button: e.button });
   };
@@ -626,7 +674,7 @@ export function CandleChart({
         setVp((v) => zoom(v, slots, 0.8, plotW, plotW));
         break;
       case "0":
-        setVp(followLatest);
+        backToLatest();
         break;
       case "a":
       case "A":
@@ -697,6 +745,21 @@ export function CandleChart({
               : undefined
           }
         />
+      )}
+      {pannedBack && (
+        <button
+          type="button"
+          aria-label="Back to latest"
+          title="Back to latest (End)"
+          onClick={backToLatest}
+          // Bottom-right of the price pane, clear of the price axis and the volume bars.
+          style={{ left: model.geometry.plot.x + model.geometry.plot.w - 40, top: model.geometry.plot.y + model.geometry.plot.h - 40 }}
+          className="absolute z-10 grid size-8 place-items-center rounded-full bg-card text-foreground shadow-lg transition-[opacity,scale,background-color] duration-150 outline-none hover:bg-bg-row focus-visible:ring-2 focus-visible:ring-ring starting:scale-90 starting:opacity-0"
+        >
+          <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M2.5 8h9M8 4.5 11.5 8 8 11.5M13.5 3.5v9" />
+          </svg>
+        </button>
       )}
       {selectedPosition && (
         <PositionPlanCard

@@ -127,6 +127,35 @@ export function followLatest(vp: Viewport): Viewport {
   return { ...vp, anchorT: null, anchorFrac: 0 };
 }
 
+/** Whether the view is panned back from the latest candle (the "back to latest" button shows then). */
+export function isPannedBack(vp: Viewport): boolean {
+  return vp.anchorT !== null;
+}
+
+/** Slots between the view's right edge and where following the latest would put it (0 when following). */
+export function slotsBehindLatest(vp: Viewport, slots: readonly Slot[]): number {
+  if (vp.anchorT === null) return 0;
+  return Math.max(0, slots.length + vp.rightMargin - rightEdge(vp, slots));
+}
+
+/** Duration of the slide back to the latest candle: quick from nearby, capped from far back. */
+export function backToLatestMs(behind: number, barSpacing: number): number {
+  return Math.round(Math.min(520, 220 + Math.sqrt(behind * barSpacing) * 6));
+}
+
+/**
+ * One frame of the slide back to the latest candle: the slots to pan
+ * (negative = toward now) after `elapsed` ms of `duration`, given the
+ * distance `total` at the start and what has been panned so far. Ease-out
+ * cubic, so it starts fast and settles; the renderer calls followLatest at
+ * the end, so new candles keep the view pinned from then on.
+ */
+export function backToLatestStep(total: number, panned: number, elapsed: number, duration: number): number {
+  const t = Math.min(1, elapsed / duration);
+  const eased = 1 - (1 - t) ** 3;
+  return -(total * eased - panned);
+}
+
 export interface IndexScale {
   edge: number;
   barSpacing: number;

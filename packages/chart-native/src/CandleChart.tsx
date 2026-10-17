@@ -1,6 +1,12 @@
 import { Canvas, Picture } from "@shopify/react-native-skia";
 import {
   applyGesture,
+  backToLatestMs,
+  backToLatestStep,
+  followLatest,
+  isPannedBack,
+  panSlots,
+  slotsBehindLatest,
   autoScalePrice,
   buildSlots,
   computeChartModel,
@@ -56,8 +62,10 @@ import {
   type Viewport,
 } from "@stockwatcher/chart-core";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { AccessibilityInfo, StyleSheet, Text, View, type LayoutChangeEvent, type StyleProp, type ViewStyle } from "react-native";
+import { AccessibilityInfo, Pressable, StyleSheet, Text, View, type LayoutChangeEvent, type StyleProp, type ViewStyle } from "react-native";
 import { GestureDetector, GestureStateManager, useManualGesture } from "react-native-gesture-handler";
+import Animated, { FadeIn, FadeOut, ReduceMotion } from "react-native-reanimated";
+import Svg, { Path } from "react-native-svg";
 import { recordPicture } from "./drawSkia.ts";
 import { PositionPlanPanel } from "./PositionPlanPanel.tsx";
 import { AxisSheet, IndicatorSheet, OrderTicketSheet, SCALE_LABELS } from "./sheets.tsx";
@@ -339,9 +347,47 @@ export function CandleChart({
   }, [gestures]);
   useEffect(() => () => cancelAnimationFrame(frame.current), []);
 
+  // Back to latest (see chart-web): an eased slide home, instant with reduced
+  // motion; a touch on the chart stops it where it is.
+  const slide = useRef(0);
+  const slotsRef = useRef(slots);
+  slotsRef.current = slots;
+  const stopSlide = () => {
+    cancelAnimationFrame(slide.current);
+    slide.current = 0;
+  };
+  useEffect(() => stopSlide, []);
+  const backToLatest = () => {
+    stopSlide();
+    apply(gestures.reset(), model);
+    if (haptics) playHaptic("light");
+    const total = slotsBehindLatest(vp, slots);
+    if (reducedMotion || total <= 0) {
+      setVp(followLatest);
+      return;
+    }
+    const duration = backToLatestMs(total, vp.barSpacing);
+    const start = now();
+    let panned = 0;
+    const frame = () => {
+      const elapsed = now() - start;
+      const d = backToLatestStep(total, panned, elapsed, duration);
+      panned -= d;
+      if (elapsed >= duration) {
+        setVp(followLatest);
+        slide.current = 0;
+        return;
+      }
+      setVp((v) => panSlots(v, slotsRef.current, d));
+      slide.current = requestAnimationFrame(frame);
+    };
+    slide.current = requestAnimationFrame(frame);
+  };
+
   const feed = (type: GestureInput["type"], touches: readonly { id: number; x: number; y: number }[]) => {
     const l = latest.current;
     if (!l) return;
+    if (type === "down") stopSlide();
     for (const t of touches) l.apply(gestures.handle({ type, pointerId: t.id, pointerType: "touch", x: t.x, y: t.y, t: now() }, l.ctx), l.ctx.model);
     pump();
   };
@@ -432,33 +478,50 @@ export function CandleChart({
           )}
         </View>
       )}
-      <GestureDetector gesture={gesture}>
-        <View
-          style={s.surface}
-          onLayout={onLayout}
-          accessible
-          accessibilityRole="adjustable"
-          accessibilityLabel={a11yLabel}
-          accessibilityActions={[{ name: "increment" }, { name: "decrement" }, { name: "activate", label: "Auto-scale price" }]}
-          onAccessibilityAction={(e) => {
-            if (e.nativeEvent.actionName === "activate") {
-              setVp(autoScalePrice);
-              return;
-            }
-            const next = stepInspection(slots, inspectT, e.nativeEvent.actionName === "increment" ? 1 : -1);
-            setInspect(next);
-            const idx = next === null ? slots.length - 1 : slotIndexOf(slots, next);
-            const slot = idx === null || idx < 0 ? null : slots[idx];
-            if (slot) AccessibilityInfo.announceForAccessibility(describeSlot(slot, timeframe).summary);
-          }}
-        >
-          {picture && (
-            <Canvas style={StyleSheet.absoluteFill}>
-              <Picture picture={picture} />
-            </Canvas>
-          )}
-        </View>
-      </GestureDetector>
+      {/* The button is a sibling of the gesture surface, not inside it: the chart claims every touch it gets. */}
+      <View style={s.surfaceWrap}>
+        <GestureDetector gesture={gesture}>
+          <View
+            style={s.surface}
+            onLayout={onLayout}
+            accessible
+            accessibilityRole="adjustable"
+            accessibilityLabel={a11yLabel}
+            accessibilityActions={[{ name: "increment" }, { name: "decrement" }, { name: "activate", label: "Auto-scale price" }]}
+            onAccessibilityAction={(e) => {
+              if (e.nativeEvent.actionName === "activate") {
+                setVp(autoScalePrice);
+                return;
+              }
+              const next = stepInspection(slots, inspectT, e.nativeEvent.actionName === "increment" ? 1 : -1);
+              setInspect(next);
+              const idx = next === null ? slots.length - 1 : slotIndexOf(slots, next);
+              const slot = idx === null || idx < 0 ? null : slots[idx];
+              if (slot) AccessibilityInfo.announceForAccessibility(describeSlot(slot, timeframe).summary);
+            }}
+          >
+            {picture && (
+              <Canvas style={StyleSheet.absoluteFill}>
+                <Picture picture={picture} />
+              </Canvas>
+            )}
+          </View>
+        </GestureDetector>
+        {isPannedBack(vp) && (
+          <Animated.View
+            entering={FadeIn.duration(150).reduceMotion(ReduceMotion.System)}
+            exiting={FadeOut.duration(120).reduceMotion(ReduceMotion.System)}
+            // Bottom-right of the price pane, clear of the price axis and the volume bars.
+            style={[s.latest, { left: model.geometry.plot.x + model.geometry.plot.w - 46, top: model.geometry.plot.y + model.geometry.plot.h - 46 }]}
+          >
+            <Pressable accessibilityRole="button" accessibilityLabel="Back to latest" onPress={backToLatest} hitSlop={6} style={({ pressed }) => [s.latestButton, pressed && { backgroundColor: UI.row }]}>
+              <Svg width={16} height={16} viewBox="0 0 16 16" fill="none" stroke={UI.text} strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
+                <Path d="M2.5 8h9M8 4.5 11.5 8 8 11.5M13.5 3.5v9" />
+              </Svg>
+            </Pressable>
+          </Animated.View>
+        )}
+      </View>
       {selectedPosition && (
         // Over the bottom of the chart, never below it: the chart keeps its size, so nothing jumps.
         <PositionPlanPanel
@@ -503,6 +566,9 @@ const s = StyleSheet.create({
   tool: { width: 30, minWidth: 30, paddingHorizontal: 0 },
   trade: { marginLeft: "auto", flexDirection: "row", alignItems: "center", gap: 8 },
   pos: { color: UI.textDim, fontSize: 11, fontVariant: ["tabular-nums"] },
+  surfaceWrap: { flex: 1, minHeight: 120 },
   surface: { flex: 1, minHeight: 120 },
+  latest: { position: "absolute" },
+  latestButton: { width: 40, height: 40, borderRadius: 20, backgroundColor: UI.panel, alignItems: "center", justifyContent: "center", shadowColor: "#000", shadowOpacity: 0.35, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 6 },
   plan: { position: "absolute", left: 0, right: 0, bottom: 0 },
 });

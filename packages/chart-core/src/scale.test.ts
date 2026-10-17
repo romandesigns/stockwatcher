@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildSlots, defaultViewport, ensureVisible, indexScale, niceTicks, pan, rightEdge, slotAt, slotX, timeTicks, zoom } from "./scale.ts";
+import { backToLatestMs, backToLatestStep, buildSlots, defaultViewport, ensureVisible, indexScale, isPannedBack, niceTicks, pan, panSlots, rightEdge, slotAt, slotsBehindLatest, slotX, timeTicks, zoom } from "./scale.ts";
 import { fixtureCandles, T0 } from "./testFixture.ts";
 
 describe("buildSlots", () => {
@@ -101,5 +101,27 @@ describe("timeTicks", () => {
     const s = indexScale(defaultViewport(3), slots, 0, 900);
     const xs = timeTicks(slots, s, 60_000, 72).map((t) => slotX(s, t.index));
     for (let i = 1; i < xs.length; i++) expect(xs[i]! - xs[i - 1]!).toBeGreaterThanOrEqual(72);
+  });
+});
+
+describe("back to latest", () => {
+  test("is shown only when panned back, and slides the whole way in eased steps", () => {
+    const slots = Array.from({ length: 100 }, (_, i) => ({ kind: "gap" as const, t: i * 60_000, gap: { t: i * 60_000, end: (i + 1) * 60_000, reason: "no_trades" as const, v: 0, intervals: 1 } }));
+    const vp = defaultViewport(8);
+    expect(isPannedBack(vp)).toBe(false);
+    const back = panSlots(vp, slots, 40);
+    expect(isPannedBack(back)).toBe(true);
+    const total = slotsBehindLatest(back, slots);
+    expect(total).toBeCloseTo(40, 6);
+    const ms = backToLatestMs(total, 8);
+    let v = back;
+    let panned = 0;
+    for (let t = 16; t <= ms + 16; t += 16) {
+      const d = backToLatestStep(total, panned, t, ms);
+      panned -= d;
+      v = panSlots(v, slots, d);
+    }
+    expect(panned).toBeCloseTo(total, 6);
+    expect(isPannedBack(v)).toBe(false);
   });
 });
