@@ -5,6 +5,7 @@ import { withAlpha } from "./theme.ts";
 import { layoutContext, type ContextLayer } from "./levels.ts";
 import { layoutTrading, type TradingLayer } from "./trading.ts";
 import { formatPrice } from "./format.ts";
+import { sessionOf } from "./time.ts";
 import {
   buildSlots,
   formatAxisValue,
@@ -235,6 +236,32 @@ export function layoutChart(model: ChartModel, state: ChartState, theme: ChartTh
   if (g.plot.w <= 0 || g.plot.h <= 0) return out;
   const mono = theme.fontMono;
   const fs = o.fontSize;
+
+  // Session shading: one faint band per run of consecutive slots outside regular hours, over the
+  // price and volume panes, behind everything (gaps take their session from their start).
+  {
+    const bottom = (g.volume ?? g.plot).y + (g.volume ?? g.plot).h;
+    const shade = { pre: theme.shadePre, after: theme.shadeAfter, overnight: theme.shadeOvernight } as const;
+    let runStart = -1;
+    let runKind: keyof typeof shade | null = null;
+    const flush = (end: number) => {
+      if (runKind === null || runStart < 0) return;
+      const x0 = Math.max(g.plot.x, slotX(ix, runStart) - ix.barSpacing / 2);
+      const x1 = Math.min(g.plot.x + g.plot.w, slotX(ix, end) + ix.barSpacing / 2);
+      if (x1 > x0) out.push({ kind: "rect", x: x0, y: g.plot.y, w: x1 - x0, h: bottom - g.plot.y, fill: shade[runKind], layer: "background" });
+    };
+    for (let i = ix.from; i <= ix.to; i++) {
+      const s = sessionOf(slots[i]!.t);
+      const kind = s === "regular" ? null : s;
+      if (kind !== runKind) {
+        flush(i - 1);
+        runKind = kind;
+        runStart = i;
+      }
+    }
+    // The last run reaches the plot's right edge when it is the live end of the data.
+    flush(ix.to === slots.length - 1 ? ix.to + 2 : ix.to);
+  }
 
   // grid + price labels
   if (price) {

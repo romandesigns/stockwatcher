@@ -167,6 +167,14 @@ export interface ChartTheme {
   /** Key level lines (premarket, open, previous close), and the stronger high/low of day. */
   level: string;
   levelStrong: string;
+  /**
+   * Faint backgrounds behind candles outside the regular session, so the
+   * session a candle belongs to is visible in the chart itself. Regular
+   * hours stay the plain background: it is the normal state.
+   */
+  shadePre: string;
+  shadeAfter: string;
+  shadeOvernight: string;
   fontSans: string;
   fontMono: string;
 }

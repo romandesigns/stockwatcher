@@ -22,6 +22,7 @@ import type { ConnectionStatus } from "@stockwatcher/shared";
 import { useEffect, useMemo, useState } from "react";
 import { StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import Svg, { Circle, Path } from "react-native-svg";
 
 import { useCandidates, useChartFeed, usePaperTrading } from "../feed/hooks";
 import { createMobileFeed, type MobileFeed } from "../feed/serverFeed";
@@ -135,9 +136,32 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
         <Text style={styles.symbol}>{active ?? "—"}</Text>
         <Text style={styles.price}>{last ? formatPrice(last.c) : "—"}</Text>
         <Text style={[styles.change, { color: change.startsWith("-") ? colors.critical : colors.good }]}>{change}</Text>
-        <View style={[styles.chip, offline && { backgroundColor: colors.criticalBg }]} accessibilityLabel={offline ? `Connection ${status}` : `${live ? "Live" : "Replay"}, simulated trading`}>
-          <View style={[styles.dot, { backgroundColor: offline ? colors.critical : live ? colors.good : colors.textFaint }]} />
-          <Text style={[styles.chipText, offline && { color: colors.critical }]}>{offline ? status : live ? "Live" : "Replay"}</Text>
+        {/* An icon, not words (owner, 2026-10-17): replay clock or live broadcast; offline still says so in words. */}
+        <View
+          style={[styles.chip, offline ? { backgroundColor: colors.criticalBg } : live ? { backgroundColor: colors.goodBg } : null]}
+          accessible
+          accessibilityRole="image"
+          accessibilityLabel={offline ? `Connection ${status}` : `${live ? "Live market" : "Replay"}, simulated trading`}
+        >
+          {offline ? (
+            <Text style={[styles.chipText, { color: colors.critical }]}>{status}</Text>
+          ) : (
+            <Svg width={15} height={15} viewBox="0 0 16 16" fill="none" stroke={live ? colors.good : colors.textDim} strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
+              {live ? (
+                <>
+                  <Circle cx={8} cy={8} r={1.6} fill={colors.good} stroke="none" />
+                  <Path d="M5.2 5.2a4 4 0 0 0 0 5.6M10.8 5.2a4 4 0 0 1 0 5.6" />
+                  <Path d="M3.1 3.1a7 7 0 0 0 0 9.8M12.9 3.1a7 7 0 0 1 0 9.8" strokeOpacity={0.55} />
+                </>
+              ) : (
+                <>
+                  <Path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9" />
+                  <Path d="M2.5 2.5v2.2h2.2" />
+                  <Path d="M8 5.2V8l1.9 1.3" />
+                </>
+              )}
+            </Svg>
+          )}
         </View>
       </View>
 
@@ -216,7 +240,6 @@ const styles = StyleSheet.create({
   price: { color: colors.text, fontSize: 16, fontVariant: ["tabular-nums"] },
   change: { fontSize: 11, fontVariant: ["tabular-nums"] },
   chip: { marginLeft: "auto", flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: colors.bgPanel, borderRadius: 999, paddingHorizontal: 10, paddingVertical: 4, alignSelf: "center" },
-  dot: { width: 6, height: 6, borderRadius: 3 },
   chipText: { color: colors.textDim, fontSize: 11, fontWeight: "500" },
   row: { flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" },
   chart: { flex: 1 },

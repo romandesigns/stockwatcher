@@ -55,6 +55,10 @@ export const DEFAULT_CHART_THEME: ChartTheme = {
   luldText: "#e0a63a",
   level: "rgba(152, 162, 174, 0.45)",
   levelStrong: "rgba(228, 232, 237, 0.55)",
+  // Barely there: enough to see where the session changes, never enough to compete with candles.
+  shadePre: "rgba(139, 156, 255, 0.045)",
+  shadeAfter: "rgba(139, 156, 255, 0.045)",
+  shadeOvernight: "rgba(152, 162, 174, 0.07)",
   fontSans: '"Geist Variable", ui-sans-serif, system-ui, sans-serif',
   fontMono: '"Geist Mono Variable", ui-monospace, "Cascadia Code", "SF Mono", monospace',
 };

@@ -39,23 +39,46 @@ function sourceText(choice: SourceChoice): string {
   return choice.fixtureData ? `${choice.label} · fixture archive — not market data` : `${choice.label} · ${choice.reason}`;
 }
 
+/** Replay: a clock turned back. */
+const ReplayIcon = (
+  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9" />
+    <path d="M2.5 2.5v2.2h2.2" />
+    <path d="M8 5.2V8l1.9 1.3" />
+  </svg>
+);
+
+/** Live: a broadcast dot with its waves. */
+const LiveIcon = (
+  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true">
+    <circle cx="8" cy="8" r="1.6" fill="currentColor" stroke="none" />
+    <path d="M5.2 5.2a4 4 0 0 0 0 5.6M10.8 5.2a4 4 0 0 1 0 5.6" />
+    <path d="M3.1 3.1a7 7 0 0 0 0 9.8M12.9 3.1a7 7 0 0 1 0 9.8" strokeOpacity="0.55" />
+  </svg>
+);
+
 /**
- * One chip that always says where the data comes from: the mode (replay or
- * live, which is server configuration) and, in the warning tone, that it is
- * fixture data. The full sentence is the tooltip and is read by screen readers.
+ * Where the data comes from, as an icon beside the logo (owner, 2026-10-17:
+ * an icon instead of words): a turned-back clock for replay, a broadcast
+ * mark for live. Fixture data keeps the warning tone so it can never pass
+ * for market data; the full sentence is the tooltip and is read by screen
+ * readers.
  */
 function SourceChip({ choice, mode, className }: { choice: SourceChoice; mode: "replay" | "live"; className?: string }) {
   const fixture = choice.kind === "fixture" || choice.fixtureData;
   return (
-    <Tip label={sourceText(choice)}>
-    <span
-      className={cn("inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium", fixture ? "bg-warning-bg text-warning" : "bg-card text-muted-foreground", className)}
-    >
-      <span aria-hidden="true" className={cn("size-1.5 rounded-full", fixture ? "bg-warning" : mode === "live" ? "bg-good" : "bg-text-faint")} />
-      {mode === "live" ? "Live" : "Replay"}
-      {fixture && <span aria-hidden="true">· Fixture</span>}
-      <span className="sr-only">: {sourceText(choice)}</span>
-    </span>
+    <Tip label={`${mode === "live" ? "Live market" : "Replay"}${fixture ? " · fixture data" : ""}: ${sourceText(choice)}`}>
+      <span
+        role="img"
+        aria-label={`${mode === "live" ? "Live market" : "Replay"}: ${sourceText(choice)}`}
+        className={cn(
+          "inline-grid size-7 shrink-0 place-items-center rounded-full [&_svg]:size-3.5",
+          fixture ? "bg-warning-bg text-warning" : mode === "live" ? "bg-good-bg text-good" : "bg-card text-muted-foreground",
+          className,
+        )}
+      >
+        {mode === "live" ? LiveIcon : ReplayIcon}
+      </span>
     </Tip>
   );
 }
@@ -206,7 +229,10 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
   return (
     <div className="flex min-h-dvh flex-col bg-background text-foreground">
       <header className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-2.5">
-        <div className="text-sm font-semibold tracking-tight">StockWatcher</div>
+        <div className="flex items-center gap-2">
+          <div className="text-sm font-semibold tracking-tight">StockWatcher</div>
+          <SourceChip choice={choice} mode={mode} />
+        </div>
         <SymbolSelector symbols={candidates.symbols} value={symbol} onChange={changeSymbol} />
         <div className="flex items-baseline gap-2">
           <span className="text-[15px] font-semibold">{symbol}</span>
@@ -214,9 +240,6 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
           <Tip label="Change since the session's first candle">
             <span className={cn("font-mono text-[11px]", changeColor)}>{change}</span>
           </Tip>
-        </div>
-        <div className="ml-auto flex items-center gap-2">
-          <SourceChip choice={choice} mode={mode} />
         </div>
       </header>
 

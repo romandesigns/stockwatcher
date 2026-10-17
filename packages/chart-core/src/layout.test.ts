@@ -3,6 +3,8 @@ import { type ChartTheme, type DisplayList, type LinePrim, LAYER_ORDER, sortByLa
 import { describeCounted, describeSlot } from "./inspect.ts";
 import { candleCountdown, computeChartModel, formatCountdown, hitTest, layout, layoutProfile, stepInspection, type ChartState } from "./layout.ts";
 import { buildSlots, defaultViewport, slotX } from "./scale.ts";
+import { DEFAULT_CHART_THEME } from "./theme.ts";
+import { etToUtc } from "./time.ts";
 import { fixtureSnapshot, T0 } from "./testFixture.ts";
 import { sessionBands } from "./time.ts";
 import { layoutTimeline, volumeBuckets } from "./timeline.ts";
@@ -149,4 +151,14 @@ describe("candle countdown", () => {
     // A clock trailing the candle's opening print by a moment still shows the full interval.
     expect(candleCountdown(c, 60_000, 59_900)).toBe(60_000);
   });
+});
+
+test("session shading: candles outside regular hours sit on a faint band; regular hours stay plain", () => {
+  const mk = (h: number, m: number) => ({ t: etToUtc(2026, 10, 15, h, m), o: 3, h: 3.1, l: 2.9, c: 3, v: 100, n: 1, final: true });
+  const candles = [mk(9, 27), mk(9, 28), mk(9, 29), mk(9, 30), mk(9, 31), mk(9, 32)];
+  const theme = DEFAULT_CHART_THEME;
+  const list = layout({ timeframe: "1m", candles, gaps: [], profile: null, inspectT: null, pointer: null }, defaultViewport(20), theme, { width: 400, height: 300 });
+  const bands = list.filter((p) => p.layer === "background" && p.kind === "rect");
+  expect(bands.length).toBe(1);
+  expect((bands[0] as { fill?: string }).fill).toBe(theme.shadePre);
 });
