@@ -73,7 +73,8 @@ import {
   type Timeframe,
   type Viewport,
 } from "@stockwatcher/chart-core";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type PointerEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type MouseEvent, type PointerEvent } from "react";
+import { createPortal } from "react-dom";
 import { CandleInspector } from "./CandleInspector.tsx";
 import { ChartToolbar } from "./ChartToolbar.tsx";
 import { drawDisplayList } from "./draw.ts";
@@ -144,8 +145,12 @@ export interface CandleChartProps {
   now?: number | null;
   /** Show the timeframe picker in the toolbar row; the host switches the subscription. */
   onTimeframeChange?: (tf: Timeframe) => void;
-  /** Show the inspected candle's readout (time, O/H/L/C, change, volume) at the left of the toolbar row. */
+  /** Show the inspected candle's readout (time, O/H/L/C, change, volume): at the chart's top-left, under `heading`. */
   inspector?: boolean;
+  /** Shown at the chart's top-left corner (e.g. ticker, price and change), above the readout. */
+  heading?: ReactNode;
+  /** Render the toolbar into this element (e.g. a slot in the app header) instead of a row above the chart. */
+  toolbarContainer?: HTMLElement | null;
 }
 
 /** What the host wires for simulated trading (the chart never talks to a server). */
@@ -234,6 +239,8 @@ export function CandleChart({
   now = null,
   onTimeframeChange,
   inspector = false,
+  heading,
+  toolbarContainer,
 }: CandleChartProps) {
   const theme = useChartTheme(themeProp);
 
@@ -379,6 +386,9 @@ export function CandleChart({
   }, [drawings, drag, measurement]);
   const selectedDrawing = selected?.kind === "drawing" ? selected.id : null;
 
+  // The top-left overlay (heading + readout) takes the corner; the indicator legend moves below it.
+  const overlayTop = (heading ? 22 : 0) + (inspector ? 20 : 0);
+  const chartOptions = useMemo(() => (overlayTop ? { ...options, legendTop: overlayTop + 6 } : options), [options, overlayTop]);
   const state: ChartState = useMemo(
     () => ({
       timeframe,
@@ -389,7 +399,7 @@ export function CandleChart({
       inspectT,
       // While the trade menu is open its price stays marked, even though the mouse has left the canvas for the menu.
       pointer: tradeMenuOpen ? tradeMenuAt : pointer,
-      options,
+      options: chartOptions,
       priceScaleType: scaleType,
       indicators: indicatorResults,
       drawings: shownDrawings,
@@ -399,7 +409,7 @@ export function CandleChart({
       context,
       now,
     }),
-    [timeframe, series, slots, inspectT, pointer, tradeMenuOpen, tradeMenuAt, options, scaleType, indicatorResults, shownDrawings, selectedDrawing, draft, trading, orders, position, last, drag, placeY, context, now],
+    [timeframe, series, slots, inspectT, pointer, tradeMenuOpen, tradeMenuAt, chartOptions, scaleType, indicatorResults, shownDrawings, selectedDrawing, draft, trading, orders, position, last, drag, placeY, context, now],
   );
 
   const paint = useCallback((ctx: CanvasRenderingContext2D, size: Size) => drawDisplayList(ctx, layoutChart(computeChartModel(state, vp, size), state, theme)), [state, vp, theme]);
@@ -931,6 +941,17 @@ export function CandleChart({
         </button>
         </Tip>
       )}
+      {(heading || inspector) && (
+        // Top-left corner of the chart: the ticker line, then the readout, left-aligned. It does not
+        // take pointer events, so the chart under it still pans, scrubs and inspects.
+        // A soft backdrop in the page tone (no border) keeps the text readable when a level line runs behind it.
+        <div className="pointer-events-none absolute top-1 left-1.5 z-[5] flex max-w-[calc(100%-120px)] flex-col gap-0.5 rounded-lg bg-background/75 px-1.5 py-1 backdrop-blur-[2px]">
+          {heading}
+          {inspector && (
+            <CandleInspector className="pointer-events-auto flex-nowrap overflow-hidden" slot={inspectT === null ? (slots.at(-1) ?? null) : (slots[slotIndexOf(slots, inspectT) ?? -1] ?? null)} timeframe={timeframe} />
+          )}
+        </div>
+      )}
       {toolbar && toolsVisible && (
         <DrawingToolbox
           placement={toolbox}
@@ -1000,15 +1021,13 @@ export function CandleChart({
   );
 
   if (!toolbar) return <TooltipProvider>{canvasEl}</TooltipProvider>;
-  return (
-    <TooltipProvider>
-    <div className={cn("flex min-h-0 min-w-0 flex-col gap-1.5", className)}>
+  const toolbarEl = (
       <ChartToolbar
         toolsVisible={toolsVisible}
         onToolsVisibleChange={changeToolsVisible}
         timeframe={timeframe}
         onTimeframeChange={onTimeframeChange}
-        start={inspector ? <CandleInspector className="flex-nowrap" slot={inspectT === null ? (slots.at(-1) ?? null) : (slots[slotIndexOf(slots, inspectT) ?? -1] ?? null)} timeframe={timeframe} /> : undefined}
+
         tool={tool}
         onToolChange={changeTool}
         indicators={indicatorSpecs}
@@ -1021,6 +1040,15 @@ export function CandleChart({
         layers={layers}
         onLayersChange={setLayers}
       />
+  );
+  // With a host slot (the app header) the toolbar is portalled there and the chart fills its box.
+  // The tree keeps the same shape either way: the slot appears a render later, and moving the
+  // canvas to a new parent would remount it under the size observer and leave it at 0×0.
+  return (
+    <TooltipProvider>
+    {toolbarContainer ? createPortal(toolbarEl, toolbarContainer) : null}
+    <div className={cn("flex min-h-0 min-w-0 flex-col", !toolbarContainer && "gap-1.5", className)}>
+      {toolbarContainer ? null : toolbarEl}
       {canvasEl}
     </div>
     </TooltipProvider>

@@ -139,6 +139,8 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
   }, [candidates.symbols, symbol]);
   const { series, tape, clock } = useChartFeed(feed, symbol, timeframe, bin);
   const trading = usePaperTrading(feed);
+  // The header slot the chart portals its toolbar into (a state ref, so the chart re-renders once it exists).
+  const [toolbarSlot, setToolbarSlot] = useState<HTMLDivElement | null>(null);
   const phone = useMediaQuery("(max-width: 600px)");
 
   const slots = useMemo(() => (series ? buildSlots(series.candles, series.gaps) : []), [series]);
@@ -171,6 +173,8 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
     onStep: () => feed.control({ action: "step" }),
     onSpeedChange: (speed: number) => feed.control({ action: "speed", value: speed }),
   };
+  // Jump the replay; the server rebuilds from the session start and resends snapshots.
+  const seek = (t: number) => feed.control({ action: "seek", value: t });
   const changeSymbol = (s: string) => {
     setSymbol(s);
     setInspectT(null);
@@ -213,7 +217,7 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
         <CandleInspector className="-mt-1" slot={inspected} timeframe={timeframe} variant="compact" />
         <section aria-label="Session timeline and replay" className="flex flex-col gap-1.5 rounded-xl bg-card px-3 py-2">
           <ReplayControls {...replay} variant="compact" />
-          <SessionTimeline bands={bands} buckets={buckets} bucketMs={bucketMs} now={clock?.now ?? null} variant="compact" />
+          <SessionTimeline bands={bands} buckets={buckets} bucketMs={bucketMs} now={clock?.now ?? null} variant="compact" onSeek={seek} />
         </section>
         <section aria-label="Time and sales" className="flex flex-col gap-1.5 rounded-xl bg-card p-3">
           <div className="flex items-baseline">
@@ -234,23 +238,31 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
           <SourceChip choice={choice} mode={mode} />
         </div>
         <SymbolSelector symbols={candidates.symbols} value={symbol} onChange={changeSymbol} />
-        <div className="flex items-baseline gap-2">
-          <span className="text-[15px] font-semibold">{symbol}</span>
-          <span className="font-mono text-[15px] tabular-nums">{price}</span>
-          <Tip label="Change since the session's first candle">
-            <span className={cn("font-mono text-[11px]", changeColor)}>{change}</span>
-          </Tip>
-        </div>
+        {/* The chart's toolbar (timeframes, drawing tools, indicators, levels, trade) renders here. */}
+        <div ref={setToolbarSlot} className="ml-auto flex min-w-0 items-center" />
       </header>
 
       <div className="flex min-h-0 flex-1 flex-col gap-2 px-4 pb-3 min-[901px]:flex-row">
         <main className="flex min-w-0 flex-1 flex-col gap-2">
           <div className="flex min-h-[360px] flex-1 flex-col gap-1">
-            <CandleChart className="min-h-[360px] flex-1" toolbar inspector symbol={symbol} persistKey="sw-chart" trading={trading} now={clock?.now ?? null} onTimeframeChange={changeTf} series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={setInspectT} priceScaleType={priceScale} onPriceScaleTypeChange={setPriceScale} options={DESKTOP_CHART} label={chartLabel} />
+            <CandleChart
+              className="min-h-[360px] flex-1"
+              toolbar
+              inspector
+              toolbarContainer={toolbarSlot}
+              heading={
+                <div className="flex items-baseline gap-2">
+                  <span className="text-[15px] font-semibold">{symbol}</span>
+                  <span className="font-mono text-[15px] tabular-nums">{price}</span>
+                  <Tip label="Change since the session's first candle">
+                    <span className={cn("pointer-events-auto font-mono text-[11px]", changeColor)}>{change}</span>
+                  </Tip>
+                </div>
+              } symbol={symbol} persistKey="sw-chart" trading={trading} now={clock?.now ?? null} onTimeframeChange={changeTf} series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={setInspectT} priceScaleType={priceScale} onPriceScaleTypeChange={setPriceScale} options={DESKTOP_CHART} label={chartLabel} />
           </div>
           <section aria-label="Session timeline and replay" className="flex flex-col gap-2 rounded-xl bg-card px-3 py-2.5">
             <ReplayControls {...replay} />
-            <SessionTimeline bands={bands} buckets={buckets} bucketMs={bucketMs} now={clock?.now ?? null} />
+            <SessionTimeline bands={bands} buckets={buckets} bucketMs={bucketMs} now={clock?.now ?? null} onSeek={seek} />
           </section>
         </main>
 

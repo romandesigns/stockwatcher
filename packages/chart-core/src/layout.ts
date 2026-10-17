@@ -43,6 +43,8 @@ export interface ChartOptions {
   timeLabelSpacing: number;
   /** Height of each oscillator pane (RSI, MACD) below the volume pane. */
   indicatorPaneHeight: number;
+  /** Space kept free at the top-left of the plot for a host overlay (the ticker and candle readout); the indicator legend starts below it. */
+  legendTop: number;
 }
 
 export const DEFAULT_CHART_OPTIONS: ChartOptions = {
@@ -56,6 +58,7 @@ export const DEFAULT_CHART_OPTIONS: ChartOptions = {
   hatchSpacing: 7,
   timeLabelSpacing: 72,
   indicatorPaneHeight: 64,
+  legendTop: 0,
 };
 
 export interface Size {
@@ -537,7 +540,7 @@ function overlayLegend(model: ChartModel, results: readonly IndicatorResult[], t
   const out: DisplayList = [];
   const plot = model.geometry.plot;
   const fs = model.options.fontSize;
-  let y = plot.y + 8;
+  let y = plot.y + 8 + model.options.legendTop;
   for (const r of results) {
     if (r.placement !== "overlay") continue;
     const color = indicatorColor(theme, r, 0);
