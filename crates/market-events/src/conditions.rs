@@ -85,6 +85,9 @@ pub enum EffectReason {
         rule: Rule,
         description: String,
     },
+    /// The provider later withdrew the print (historical `u` = `canceled` / `incorrect`); see
+    /// `Trade::effect`. Never produced by [`trade_effect`], which sees conditions only.
+    Withdrawn { update: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -111,6 +114,7 @@ impl Effect {
             EffectReason::Regular => None,
             EffectReason::OddLot => Some("odd_lot".to_string()),
             EffectReason::Condition { code, .. } => Some(format!("condition_{code}")),
+            EffectReason::Withdrawn { update } => Some(format!("withdrawn_{update}")),
         }
     }
 }

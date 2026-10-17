@@ -24,7 +24,7 @@ use chrono::{NaiveDate, Utc};
 use chrono_tz::America::New_York;
 use market_archive::Archive;
 use market_archive::fixture::{DEFAULT_SEED, DEFAULT_SYMBOLS, write_fixture_day};
-use market_events::{MarketEvent, Price, PriceBand, SessionId, UnixNanos, trade_effect};
+use market_events::{MarketEvent, Price, PriceBand, SessionId, UnixNanos};
 use market_providers::{
     ClockMode, ClockState, Command, FeedItem, MarketDataMode, ProviderConfig, ProviderError,
     ProviderInfo, ReplayHandle, Speed,
@@ -434,7 +434,7 @@ impl Market {
                 // print that may not set OHLC, e.g. an odd lot or average-price report, can
                 // neither move a stock into or out of the candidate set nor fill an order).
                 let qualifying = match &e {
-                    MarketEvent::Trade(t) if trade_effect(&t.conditions, t.tape).updates_ohlc => {
+                    MarketEvent::Trade(t) if t.effect().updates_ohlc => {
                         Some((t.symbol.clone(), t.price, t.event_ts.millis()))
                     }
                     _ => None,

@@ -62,6 +62,7 @@
 //!
 //! [`market-replay`]: ../market_replay/index.html
 
+pub mod bars;
 pub mod config;
 pub mod fixture;
 pub mod format;
@@ -74,9 +75,10 @@ mod archive;
 mod error;
 
 pub use archive::{Archive, VerifyReport, VerifySymbol};
+pub use bars::{Bar, BarDataset, BarEntry};
 pub use config::ArchiveConfig;
 pub use error::ArchiveError;
-pub use manifest::{DayManifest, SymbolEntry};
+pub use manifest::{DayManifest, ImportProvenance, SymbolEntry};
 pub use reader::SymbolReader;
 pub use writer::{FsyncPolicy, SymbolWriter};
 

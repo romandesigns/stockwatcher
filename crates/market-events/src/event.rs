@@ -17,7 +17,7 @@
 //! Changing a field's meaning or unit requires bumping [`CONTRACT_VERSION`]; adding an optional
 //! field with `#[serde(default)]` does not.
 
-use crate::conditions::Tape;
+use crate::conditions::{Effect, EffectReason, Tape, trade_effect};
 use crate::price::Price;
 use crate::session::{SessionId, classify};
 use crate::time::UnixNanos;
@@ -77,6 +77,14 @@ pub struct Trade {
     /// Sale conditions as delivered (Alpaca `c`), e.g. `["@", "I"]`.
     #[serde(default)]
     pub conditions: Vec<String>,
+    /// The provider's later verdict on this print, as delivered (Alpaca historical `u`:
+    /// `"canceled"`, `"incorrect"` or `"corrected"`). Historical responses carry it on the print
+    /// itself, with no publication time and no link from a corrected print to the one it
+    /// replaces, so it cannot become a [`Correction`] or [`Cancel`] without guessing. It is kept
+    /// raw instead; [`Trade::effect`] excludes `canceled` and `incorrect` prints. Absent for live
+    /// prints and fixtures (live corrections arrive as their own events).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update: Option<String>,
 }
 
 impl Trade {
@@ -101,6 +109,31 @@ impl Trade {
             tape: Tape::Unknown,
             source: Source::Fixture,
             conditions: Vec::new(),
+            update: None,
+        }
+    }
+
+    /// The provider's update marker (see [`Trade::update`]).
+    pub fn with_update(mut self, update: impl Into<String>) -> Self {
+        self.update = Some(update.into());
+        self
+    }
+
+    /// What this print may update: the condition table ([`trade_effect`]), except that a print
+    /// the provider has since marked `canceled` or `incorrect` updates nothing. Every consumer that
+    /// counts trades (chart engine, paper broker, simulator bars) should use this, not the
+    /// condition table alone, so a withdrawn print never moves a candle or fills an order.
+    pub fn effect(&self) -> Effect {
+        match self.update.as_deref().map(str::trim) {
+            Some(u @ ("canceled" | "cancelled" | "incorrect")) => Effect {
+                updates_ohlc: false,
+                updates_volume: false,
+                reason: EffectReason::Withdrawn {
+                    update: u.to_string(),
+                },
+                unrecognized: Vec::new(),
+            },
+            _ => trade_effect(&self.conditions, self.tape),
         }
     }
 
@@ -372,6 +405,30 @@ mod tests {
         );
         let back: VersionedEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(back.event, MarketEvent::Trade(t));
+    }
+
+    #[test]
+    fn provider_update_is_kept_raw_and_withdrawn_prints_count_for_nothing() {
+        let ts = et(day(), 10, 0, 0, 0).unwrap();
+        let t = Trade::new("SMPL", ts, Price::from_cents(318), 100, 1).with_conditions(["@"]);
+        // Absent: the serialized form is unchanged (no "update" key).
+        assert!(!serde_json::to_string(&t).unwrap().contains("update"));
+        assert!(t.effect().updates_ohlc);
+        let c = t.clone().with_update("canceled");
+        let json = serde_json::to_string(&MarketEvent::Trade(c.clone()).versioned()).unwrap();
+        assert!(json.ends_with(r#""update":"canceled"}"#), "{json}");
+        let back: VersionedEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.event, MarketEvent::Trade(c.clone()));
+        for u in ["canceled", "incorrect"] {
+            let e = t.clone().with_update(u).effect();
+            assert!(!e.updates_ohlc && !e.updates_volume, "{u}");
+            assert_eq!(e.reason_code(), Some(format!("withdrawn_{u}")));
+        }
+        // A corrected print is a real execution: it counts like any other.
+        assert_eq!(t.clone().with_update("corrected").effect(), t.effect());
+        // An odd lot keeps its condition rule.
+        let odd = Trade::new("SMPL", ts, Price::from_cents(318), 37, 2).with_conditions(["@", "I"]);
+        assert!(!odd.effect().updates_ohlc && odd.effect().updates_volume);
     }
 
     #[test]
