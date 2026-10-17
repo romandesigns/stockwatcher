@@ -5,7 +5,8 @@
 //
 // Host-app requirements: Tailwind v4 with this package in @source, the
 // shadcn token names mapped onto the palette (bg-primary, text-muted-
-// foreground, text-text-faint, text-warning, text-critical, bg-bg-row),
+// foreground, text-text-faint, text-warning, text-critical, bg-bg-row,
+// bg-bg-raised),
 // and optionally `--chart-*` CSS variables to theme the canvas (theme.ts).
 export { CandleChart, type CandleChartProps, type ChartSeriesLike } from "./CandleChart.tsx";
 export { PriceAxisMenu, PRICE_SCALE_LABELS, type PriceAxisMenuProps } from "./PriceAxisMenu.tsx";

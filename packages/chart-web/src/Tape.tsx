@@ -44,7 +44,7 @@ export function Tape({ trades, variant = "full", maxRows = 14, className }: Tape
     keys[i] = `${id}-${n}`;
   }
   return (
-    <div className={cn("flex min-h-0 flex-col gap-1.5", className)} role="table" aria-label="Time and sales">
+    <div className={cn("flex min-h-0 flex-col gap-1", className)} role="table" aria-label="Time and sales">
       {full && (
         <div role="row" className={cn("grid pb-1 text-[10px] text-text-faint", cols)}>
           <span role="columnheader">Time</span>

@@ -30,7 +30,7 @@ export function SessionTimeline({ bands, buckets, bucketMs, now, variant = "full
   const { containerRef, canvasRef } = useCanvas(paint);
   const label = now === null ? "Session timeline" : `Session timeline: ${formatEtTime(now, true)} Eastern, ${SESSION_NAME[sessionOf(now)]}.`;
   return (
-    <div ref={containerRef} className={cn("relative", variant === "full" ? "h-[104px]" : "h-16", className)}>
+    <div ref={containerRef} className={cn("relative", variant === "full" ? "h-[76px]" : "h-14", className)}>
       <canvas ref={canvasRef} role="img" aria-label={label} className="absolute inset-0 size-full" />
     </div>
   );

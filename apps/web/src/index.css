@@ -15,6 +15,9 @@
   --bg: #0f1216;
   --bg-panel: #151a20;
   --bg-row: #1c222a;
+  /* The selected segment on a --bg-panel track: one more surface step, so
+     selection reads by contrast alone (no borders, no accent spent). */
+  --bg-raised: #272e38;
 
   --border: #262d36;
   --text: #e4e8ed;
@@ -89,6 +92,7 @@
   --color-text-faint: var(--text-faint);
   --color-bg-row: var(--bg-row);
   --color-bg-panel: var(--bg-panel);
+  --color-bg-raised: var(--bg-raised);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);

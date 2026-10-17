@@ -38,12 +38,22 @@ function sourceText(choice: SourceChoice): string {
   return choice.fixtureData ? `${choice.label} · fixture archive — not market data` : `${choice.label} · ${choice.reason}`;
 }
 
-function SourceBadge({ choice, compact = false }: { choice: SourceChoice; compact?: boolean }) {
+/**
+ * One chip that always says where the data comes from: the mode (replay or
+ * live, which is server configuration) and, in the warning tone, that it is
+ * fixture data. The full sentence is the tooltip and is read by screen readers.
+ */
+function SourceChip({ choice, mode, className }: { choice: SourceChoice; mode: "replay" | "live"; className?: string }) {
+  const fixture = choice.kind === "fixture" || choice.fixtureData;
   return (
-    <span className="inline-flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground" title={sourceText(choice)}>
-      <span className="rounded-full bg-bg-row px-2 py-0.5 text-[10px] font-semibold tracking-wider text-foreground">{choice.kind === "server" ? "SERVER" : "BROWSER"}</span>
-      {choice.fixtureData && <span className="rounded-full bg-warning-bg px-2 py-0.5 text-[10px] font-semibold tracking-wider text-warning">FIXTURE</span>}
-      {!compact && <span className="truncate">{sourceText(choice)}</span>}
+    <span
+      className={cn("inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium", fixture ? "bg-warning-bg text-warning" : "bg-card text-muted-foreground", className)}
+      title={sourceText(choice)}
+    >
+      <span aria-hidden="true" className={cn("size-1.5 rounded-full", fixture ? "bg-warning" : mode === "live" ? "bg-good" : "bg-text-faint")} />
+      {mode === "live" ? "Live" : "Replay"}
+      {fixture && <span aria-hidden="true">· Fixture</span>}
+      <span className="sr-only">: {sourceText(choice)}</span>
     </span>
   );
 }
@@ -51,9 +61,9 @@ function SourceBadge({ choice, compact = false }: { choice: SourceChoice; compac
 function SymbolSelector({ symbols, value, onChange }: { symbols: string[]; value: string; onChange: (s: string) => void }) {
   if (symbols.length < 2) return null;
   return (
-    <ToggleGroup aria-label="Symbol" size="sm" spacing={0} variant="outline" value={[value]} onValueChange={(v) => v[0] && onChange(v[0])}>
+    <ToggleGroup aria-label="Symbol" size="sm" spacing={0.5} variant="segmented" value={[value]} onValueChange={(v) => v[0] && onChange(v[0])}>
       {symbols.map((s) => (
-        <ToggleGroupItem key={s} value={s} className="h-7 px-2 font-mono text-[11px] text-muted-foreground aria-pressed:bg-bg-row aria-pressed:text-foreground">
+        <ToggleGroupItem key={s} value={s} className="px-2 font-mono text-[11px]">
           {s}
         </ToggleGroupItem>
       ))}
@@ -144,13 +154,14 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
   const changeColor = change.startsWith("-") ? "text-critical" : "text-good";
   const chartLabel = `${symbol} ${timeframe} candles, ${choice.fixtureData ? "fixture data" : "market data"} from ${choice.kind === "server" ? "the server" : "the in-browser fixture"}`;
   const tapeNote = choice.fixtureData ? "Fixture data" : choice.label;
+  const mode = clock?.mode === "live" ? "live" : "replay";
 
   const binSelector = (
     <>
       <span>Bin</span>
-      <ToggleGroup aria-label="Profile bin width" size="sm" spacing={0} variant="outline" value={[String(bin)]} onValueChange={(v) => v[0] && setBin(Number(v[0]))}>
+      <ToggleGroup aria-label="Profile bin width" size="sm" spacing={0.5} variant="segmented" value={[String(bin)]} onValueChange={(v) => v[0] && setBin(Number(v[0]))}>
         {BINS.map((b) => (
-          <ToggleGroupItem key={b} value={String(b)} className="h-6 px-2 font-mono text-[11px] text-muted-foreground aria-pressed:bg-bg-row aria-pressed:text-foreground">
+          <ToggleGroupItem key={b} value={String(b)} className="h-6 px-1.5 font-mono text-[11px]">
             {b.toFixed(2)}
           </ToggleGroupItem>
         ))}
@@ -160,28 +171,28 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
 
   if (phone) {
     return (
-      <div className="flex min-h-dvh flex-col gap-3 bg-background p-4 text-foreground">
-        <header className="flex items-baseline gap-2">
-          <span className="text-lg font-semibold">{symbol}</span>
-          <span className="font-mono text-lg tabular-nums">{price}</span>
-          <span className={cn("font-mono text-xs", changeColor)}>{change}</span>
-          <span className="ml-auto flex items-center gap-1.5">
-            <SourceBadge choice={choice} compact />
-            <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-semibold tracking-wider text-primary">{clock?.mode === "live" ? "LIVE" : "REPLAY"}</span>
-          </span>
+      <div className="flex min-h-dvh flex-col gap-2.5 bg-background p-3 text-foreground">
+        <header className="flex items-center gap-2">
+          <div className="flex min-w-0 items-baseline gap-2">
+            <span className="text-base font-semibold">{symbol}</span>
+            <span className="font-mono text-base tabular-nums">{price}</span>
+            <span className={cn("font-mono text-[11px]", changeColor)}>{change}</span>
+          </div>
+          <SourceChip className="ml-auto" choice={choice} mode={mode} />
         </header>
-        <p className="-mt-2 truncate text-[11px] text-muted-foreground">{sourceText(choice)}</p>
-        <SymbolSelector symbols={candidates.symbols} value={symbol} onChange={changeSymbol} />
-        <TimeframeSelector value={timeframe} onValueChange={changeTf} variant="grid" />
+        <div className="flex flex-wrap items-center gap-2">
+          <SymbolSelector symbols={candidates.symbols} value={symbol} onChange={changeSymbol} />
+          <TimeframeSelector className="ml-auto" value={timeframe} onValueChange={changeTf} />
+        </div>
         <CandleChart className="h-[300px]" series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={setInspectT} priceScaleType={priceScale} onPriceScaleTypeChange={setPriceScale} options={PHONE_CHART} barSpacing={10} label={chartLabel} />
         <CandleInspector className="-mt-1" slot={inspected} timeframe={timeframe} variant="compact" />
-        <section aria-label="Session timeline and replay" className="flex flex-col gap-2 rounded-xl bg-card px-3 py-2.5">
+        <section aria-label="Session timeline and replay" className="flex flex-col gap-1.5 rounded-xl bg-card px-3 py-2">
           <ReplayControls {...replay} variant="compact" />
           <SessionTimeline bands={bands} buckets={buckets} bucketMs={bucketMs} now={clock?.now ?? null} variant="compact" />
         </section>
-        <section aria-label="Time and sales" className="flex min-h-0 flex-1 flex-col gap-1.5">
+        <section aria-label="Time and sales" className="flex flex-col gap-1.5 rounded-xl bg-card p-3">
           <div className="flex items-baseline">
-            <h2 className="m-0 flex-1 text-[11px] font-semibold tracking-wider text-text-faint">TAPE</h2>
+            <h2 className="m-0 flex-1 text-xs font-medium text-muted-foreground">Time &amp; sales</h2>
             <span className="text-[10px] text-text-faint">{tapeNote}</span>
           </div>
           <Tape trades={tape} variant="compact" maxRows={8} />
@@ -192,50 +203,41 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
 
   return (
     <div className="flex min-h-dvh flex-col bg-background text-foreground">
-      <header className="flex flex-wrap items-center gap-3.5 bg-card px-4.5 py-3">
-        <div className="text-[15px] font-semibold">StockWatcher</div>
-        <div className="flex items-baseline gap-2 pl-2">
-          <span className="text-[17px] font-semibold">{symbol}</span>
-          <span className="font-mono text-[17px] tabular-nums">{price}</span>
-          <span className={cn("font-mono text-xs", changeColor)} title="Change since the session's first candle">
+      <header className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-2.5">
+        <div className="text-sm font-semibold tracking-tight">StockWatcher</div>
+        <SymbolSelector symbols={candidates.symbols} value={symbol} onChange={changeSymbol} />
+        <div className="flex items-baseline gap-2">
+          <span className="text-[15px] font-semibold">{symbol}</span>
+          <span className="font-mono text-[15px] tabular-nums">{price}</span>
+          <span className={cn("font-mono text-[11px]", changeColor)} title="Change since the session's first candle">
             {change}
           </span>
         </div>
-        <SourceBadge choice={choice} />
-        <SymbolSelector symbols={candidates.symbols} value={symbol} onChange={changeSymbol} />
-        <div className="ml-auto flex flex-wrap items-center gap-2.5">
-          <span className="text-xs text-muted-foreground">Mode</span>
-          <ToggleGroup aria-label="Data mode" spacing={0} variant="outline" value={[clock?.mode === "live" ? "live" : "replay"]}>
-            <ToggleGroupItem value="replay" className="text-xs text-muted-foreground aria-pressed:bg-bg-row aria-pressed:font-semibold aria-pressed:text-foreground">
-              Replay
-            </ToggleGroupItem>
-            <ToggleGroupItem value="live" disabled title="Mode is server configuration (MARKET_DATA_MODE); the live provider is not connected yet" className="text-xs text-text-faint">
-              Live
-            </ToggleGroupItem>
-          </ToggleGroup>
+        <div className="ml-auto flex items-center gap-2">
+          <SourceChip choice={choice} mode={mode} />
           <TimeframeSelector value={timeframe} onValueChange={changeTf} />
         </div>
       </header>
 
-      <div className="flex min-h-0 flex-1 flex-col min-[901px]:flex-row">
-        <main className="flex min-w-0 flex-1 flex-col gap-3 px-4.5 py-3.5">
-          <div className="flex min-h-[380px] flex-1 flex-col gap-1.5">
+      <div className="flex min-h-0 flex-1 flex-col gap-2 px-4 pb-3 min-[901px]:flex-row">
+        <main className="flex min-w-0 flex-1 flex-col gap-2">
+          <div className="flex min-h-[360px] flex-1 flex-col gap-1">
             <CandleInspector slot={inspected} timeframe={timeframe} />
-            <CandleChart className="min-h-[340px] flex-1" series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={setInspectT} priceScaleType={priceScale} onPriceScaleTypeChange={setPriceScale} options={DESKTOP_CHART} label={chartLabel} />
+            <CandleChart className="min-h-[330px] flex-1" series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={setInspectT} priceScaleType={priceScale} onPriceScaleTypeChange={setPriceScale} options={DESKTOP_CHART} label={chartLabel} />
           </div>
-          <section aria-label="Session timeline and replay" className="flex flex-col gap-2.5 rounded-xl bg-card px-3.5 py-3">
+          <section aria-label="Session timeline and replay" className="flex flex-col gap-2 rounded-xl bg-card px-3 py-2.5">
             <ReplayControls {...replay} />
             <SessionTimeline bands={bands} buckets={buckets} bucketMs={bucketMs} now={clock?.now ?? null} />
           </section>
         </main>
 
-        <aside className="grid gap-3 px-4.5 pb-3.5 min-[601px]:max-[900px]:grid-cols-2 min-[901px]:flex min-[901px]:w-[340px] min-[901px]:shrink-0 min-[901px]:flex-col min-[901px]:pt-3.5 min-[901px]:pl-0">
-          <section aria-label="Session volume profile" className="rounded-xl bg-card px-4 py-3.5">
-            <VolumeProfile className="h-[248px]" profile={series?.profile} actions={binSelector} />
+        <aside className="grid gap-2 min-[601px]:max-[900px]:grid-cols-2 min-[901px]:flex min-[901px]:w-[300px] min-[901px]:shrink-0 min-[901px]:flex-col">
+          <section aria-label="Session volume profile" className="rounded-xl bg-card p-3">
+            <VolumeProfile className="h-[210px]" profile={series?.profile} actions={binSelector} />
           </section>
-          <section aria-label="Time and sales" className="flex min-h-0 flex-1 flex-col gap-1.5 rounded-xl bg-card px-4 py-3.5">
-            <h2 className="m-0 mb-1 text-xs font-semibold tracking-wider text-text-faint">TAPE · CONDITIONS</h2>
-            <Tape trades={tape} maxRows={14} />
+          <section aria-label="Time and sales" className="flex min-h-0 flex-1 flex-col gap-1.5 rounded-xl bg-card p-3">
+            <h2 className="m-0 text-xs font-medium text-muted-foreground">Time &amp; sales</h2>
+            <Tape trades={tape} maxRows={16} />
           </section>
         </aside>
       </div>

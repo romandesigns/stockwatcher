@@ -42,21 +42,21 @@ export function VolumeProfile({ profile, range, showHeader = true, actions, them
   return (
     <div className={cn("flex min-h-0 flex-col gap-2", className)}>
       {showHeader && (
-        <div className="flex flex-col gap-1.5">
+        <div className="flex flex-col gap-1">
           <div className="flex items-baseline gap-2">
-            <h2 className="m-0 flex-1 text-xs font-semibold tracking-wider text-text-faint uppercase">Session profile · bin ${profile?.bin ?? "—"}</h2>
+            <h2 className="m-0 flex-1 text-xs font-medium text-muted-foreground">Volume profile</h2>
             {poc !== null && (
-              <span className="text-[11px] text-muted-foreground">
+              <span className="text-[11px] text-text-faint">
                 POC <span className="font-mono text-primary">{formatPrice(poc)}</span>
               </span>
             )}
           </div>
           {(actions || va) && (
-            <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+            <div className="flex items-center gap-2 text-[11px] text-text-faint">
               {actions}
               {va && (
-                <span className="ml-auto">
-                  Value area 70% <span className="font-mono text-foreground">{formatPrice(va.low)}–{formatPrice(va.high)}</span>
+                <span className="ml-auto" title="Value area: the 70% of volume around the POC">
+                  VA <span className="font-mono text-foreground">{formatPrice(va.low)}–{formatPrice(va.high)}</span>
                 </span>
               )}
             </div>

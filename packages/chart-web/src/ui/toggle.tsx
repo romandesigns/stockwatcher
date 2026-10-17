@@ -11,6 +11,10 @@ const toggleVariants = cva(
         // "outline" keeps its name for API compatibility but is a filled
         // segment: the owner's rule is no borders, boundaries by contrast.
         outline: "bg-card hover:bg-bg-row",
+        // One option of a segmented control: transparent on the group's
+        // panel track, the selected one raised a surface step. Pair with
+        // size="sm" and spacing={0.5} on the ToggleGroup.
+        segmented: "bg-transparent text-muted-foreground hover:bg-transparent hover:text-foreground aria-pressed:bg-bg-raised aria-pressed:text-foreground",
       },
       size: {
         default:

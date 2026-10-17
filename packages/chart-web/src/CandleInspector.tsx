@@ -22,7 +22,7 @@ export function CandleInspector({ slot, timeframe, variant = "full", className }
   const rows = full ? info.rows : info.rows.filter((r) => r.k !== "Δ");
   const time = full ? info.timeLabel : `${info.timeLabel.split(" – ")[0]}${forming ? "*" : ""}`;
   return (
-    <div className={cn("flex flex-wrap font-mono tabular-nums text-muted-foreground", full ? "gap-x-4.5 gap-y-1 text-xs" : "gap-x-3 gap-y-0.5 text-[11px]", className)}>
+    <div className={cn("flex flex-wrap font-mono tabular-nums text-muted-foreground", full ? "gap-x-3.5 gap-y-1 text-[11px]" : "gap-x-3 gap-y-0.5 text-[11px]", className)}>
       <span className="text-foreground">{time}</span>
       {info.kind === "gap" ? (
         <span className="font-sans text-text-faint">No candle: {info.note}</span>

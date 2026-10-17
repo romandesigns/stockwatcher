@@ -6,7 +6,7 @@ export interface TimeframeSelectorProps {
   value: Timeframe;
   onValueChange: (tf: Timeframe) => void;
   options?: readonly Timeframe[];
-  /** "inline" (desktop header) or "grid" (phone: full width, 40 px targets). */
+  /** "inline" (a compact segmented control) or "grid" (full width, 36 px targets). */
   variant?: "inline" | "grid";
   className?: string;
 }
@@ -18,8 +18,9 @@ export function TimeframeSelector({ value, onValueChange, options = TIMEFRAMES, 
   return (
     <ToggleGroup
       aria-label="Timeframe"
-      spacing={0}
-      variant="outline"
+      size="sm"
+      spacing={0.5}
+      variant="segmented"
       value={[value]}
       // Single select: pressing the active item would empty the group; ignore that.
       onValueChange={(v) => v[0] && onValueChange(v[0] as Timeframe)}
@@ -31,8 +32,8 @@ export function TimeframeSelector({ value, onValueChange, options = TIMEFRAMES, 
           value={tf}
           aria-label={NAMES[tf]}
           className={cn(
-            "font-mono text-xs text-muted-foreground aria-pressed:bg-primary aria-pressed:text-primary-foreground hover:aria-pressed:bg-primary",
-            variant === "grid" ? "h-10 text-[13px]" : "min-w-11",
+            "font-mono text-[11px]",
+            variant === "grid" ? "h-9 text-xs" : "min-w-9 px-2",
           )}
         >
           {tf}
