@@ -33,7 +33,8 @@ import { createMobileFeed, type MobileFeed } from "../feed/serverFeed";
 import { useReducedMotion } from "../motion/useReducedMotion";
 import { TickerSearchSheet } from "../search/TickerSearchSheet";
 import { getPreference, setPreference } from "../storage/preferences";
-import { getAccessToken } from "../storage/secure";
+import { getAccessToken, setAccessToken } from "../storage/secure";
+import { SignInScreen } from "./SignInScreen";
 import { colors, fonts } from "../theme";
 
 const SPEEDS = [1, 2, 10, 60, 0] as const;
@@ -49,6 +50,8 @@ const SESSION_A11Y = { overnight: "overnight session", pre: "premarket", regular
 export function ChartScreen() {
   const [ready, setReady] = useState<{ feed: MobileFeed; token: string | null } | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
+  // Each sign-in restarts the connection with the new token.
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let feed: MobileFeed | null = null;
     let alive = true;
@@ -63,8 +66,22 @@ export function ChartScreen() {
       alive = false;
       feed?.close();
     };
-  }, []);
+  }, [attempt]);
   if (!ready) return <View style={styles.screen} />;
+  // The server refused the hello: no token yet, or not this one (production requires one).
+  if (status === "unauthorized") {
+    return (
+      <SignInScreen
+        rejected={ready.token !== null}
+        onSubmit={(t) => {
+          void setAccessToken(t).then(() => {
+            setStatus("connecting");
+            setAttempt((n) => n + 1);
+          });
+        }}
+      />
+    );
+  }
   return <ChartView feed={ready.feed} token={ready.token} status={status} />;
 }
 

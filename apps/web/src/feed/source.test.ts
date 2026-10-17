@@ -27,7 +27,9 @@ describe("chart source", () => {
 
   test("probe maps HTTP, non-JSON and network failures to reasons", async () => {
     expect(await probeServer(fakeFetch({ body: data() }))).toEqual({ ok: true, data: data() });
-    expect(await probeServer(fakeFetch({ status: 401 }))).toEqual({ ok: false, reason: "server answered HTTP 401" });
+    // 401 means the server wants an access token: the app shows its sign-in card instead of the fixture.
+    expect(await probeServer(fakeFetch({ status: 401 }))).toEqual({ ok: false, reason: "the server needs an access token", unauthorized: true });
+    expect(await probeServer(fakeFetch({ status: 500 }))).toEqual({ ok: false, reason: "server answered HTTP 500" });
     expect(await probeServer(fakeFetch({ type: "text/html" }))).toMatchObject({ ok: false });
     expect(await probeServer(fakeFetch(new Error("ECONNREFUSED")))).toEqual({ ok: false, reason: "server unreachable (ECONNREFUSED)" });
   });

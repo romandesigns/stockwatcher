@@ -23,7 +23,8 @@ export interface ServerSymbols {
   screened?: { total: number; candidates: number };
 }
 
-export type Probe = { ok: true; data: ServerSymbols } | { ok: false; reason: string };
+/** unauthorized: the server wants an access token and has none, or not this one (HTTP 401). */
+export type Probe = { ok: true; data: ServerSymbols } | { ok: false; reason: string; unauthorized?: boolean };
 
 export interface SourceChoice {
   kind: "server" | "fixture";
@@ -42,6 +43,7 @@ export async function probeServer(fetchImpl: typeof fetch = fetch, timeoutMs = 2
   const timer = setTimeout(() => ctl.abort(), timeoutMs);
   try {
     const res = await fetchImpl("/api/symbols", { signal: ctl.signal, headers: token ? { Authorization: `Bearer ${token}` } : {} });
+    if (res.status === 401) return { ok: false, reason: "the server needs an access token", unauthorized: true };
     if (!res.ok) return { ok: false, reason: `server answered HTTP ${res.status}` };
     const type = res.headers.get("content-type") ?? "";
     if (!type.includes("json")) return { ok: false, reason: "server did not answer with JSON (no Rust server behind /api?)" };

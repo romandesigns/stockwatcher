@@ -16,6 +16,7 @@ import { Tip, ToggleGroup, ToggleGroupItem, cn } from "@stockwatcher/chart-web/u
 import { tickerUniverse } from "@stockwatcher/shared";
 import { useEffect, useMemo, useState } from "react";
 import { createServerFeed } from "./feed/serverFeed.ts";
+import { clearToken, getToken, setToken } from "./feed/token.ts";
 import { chooseSource, followCandidates, initialSymbol, probeServer, type SourceChoice } from "./feed/source.ts";
 import { useCandidates } from "./feed/useCandidates.ts";
 import type { ChartFeed } from "./feed/types.ts";
@@ -99,24 +100,84 @@ export default function App() {
   // The feed is created and closed by the same effect, so React StrictMode's
   // dev-only mount → unmount → mount gets a fresh feed, never a closed one.
   const [ready, setReady] = useState<{ choice: SourceChoice; feed: ChartFeed } | null>(null);
+  // The server wants an access token (production): show the sign-in card instead of falling back to the fixture.
+  const [signIn, setSignIn] = useState<{ rejected: boolean } | null>(null);
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let alive = true;
     let feed: ChartFeed | null = null;
-    void (ENV_SOURCE === "fixture" ? Promise.resolve(null) : probeServer()).then((probe) => {
+    const token = getToken();
+    void (ENV_SOURCE === "fixture" ? Promise.resolve(null) : probeServer(fetch, 2500, token)).then((probe) => {
       if (!alive) return;
+      if (probe && !probe.ok && probe.unauthorized) {
+        if (token) clearToken();
+        setSignIn({ rejected: !!token });
+        return;
+      }
+      setSignIn(null);
       const choice = chooseSource(ENV_SOURCE, probe, FIXTURE_SYMBOL);
-      feed = choice.kind === "server" ? createServerFeed() : createFixtureFeed();
+      feed = choice.kind === "server" ? createServerFeed({ token }) : createFixtureFeed();
       setReady({ choice, feed });
     });
     return () => {
       alive = false;
       feed?.close();
     };
-  }, []);
+  }, [attempt]);
+  if (signIn) {
+    return (
+      <SignIn
+        rejected={signIn.rejected}
+        onSubmit={(t) => {
+          setToken(t);
+          setAttempt((n) => n + 1);
+        }}
+      />
+    );
+  }
   if (!ready) {
     return <div className="flex min-h-dvh items-center justify-center bg-background text-sm text-muted-foreground">Connecting to the server…</div>;
   }
   return <ChartApp choice={ready.choice} feed={ready.feed} />;
+}
+
+/** The one-field sign-in for a server that requires its access token. */
+function SignIn({ rejected, onSubmit }: { rejected: boolean; onSubmit: (token: string) => void }) {
+  const [value, setValue] = useState("");
+  return (
+    <div className="flex min-h-dvh items-center justify-center bg-background p-4 text-foreground">
+      <form
+        className="flex w-full max-w-sm flex-col gap-3 rounded-2xl bg-card p-5"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (value.trim()) onSubmit(value.trim());
+        }}
+      >
+        <div className="flex flex-col gap-1">
+          <h1 className="m-0 text-base font-semibold">StockWatcher</h1>
+          <p className="m-0 text-xs text-muted-foreground">Enter your access token to connect to the server.</p>
+        </div>
+        <label htmlFor="access-token" className="sr-only">
+          Access token
+        </label>
+        <input
+          id="access-token"
+          type="password"
+          autoComplete="current-password"
+          autoFocus
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          placeholder="Access token"
+          aria-invalid={rejected}
+          className="h-10 rounded-lg bg-bg-row px-3 font-mono text-sm outline-none placeholder:text-text-faint focus-visible:ring-2 focus-visible:ring-ring"
+        />
+        {rejected && <p className="m-0 text-xs text-critical">That token wasn't accepted. Check it and try again.</p>}
+        <button type="submit" disabled={!value.trim()} className="h-10 rounded-lg bg-primary text-sm font-semibold text-primary-foreground disabled:opacity-50">
+          Sign in
+        </button>
+      </form>
+    </div>
+  );
 }
 
 function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
