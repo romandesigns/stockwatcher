@@ -490,6 +490,9 @@ export function CandleChart({
     latest.current = { ctx: { model, inspectT, priceManual: !isAutoPrice(vp), tool, hitObject: hitObject(model) }, apply };
   });
 
+  // Where the current scrub is, so lifting the finger can leave a trade chip there (set by moves and by tick()).
+  const lastScrubRef = useRef<Point | null>(null);
+
   // tick() decides long presses and deferred taps and drives momentum: run
   // it every frame only while the controller has a deadline.
   const frame = useRef(0);
@@ -499,7 +502,11 @@ export function CandleChart({
       frame.current = 0;
       const l = latest.current;
       if (!l) return;
-      l.apply(gestures.tick(now(), l.ctx), l.ctx.model);
+      const acts = gestures.tick(now(), l.ctx);
+      // A scrub that starts from a still finger begins here (the long-press timer), not in a touch move,
+      // so record its point too: otherwise lifting a steady finger leaves no trade chip.
+      if (gestures.state === "scrub") for (const a of acts) if (a.kind === "crosshair" && a.point) lastScrubRef.current = a.point;
+      l.apply(acts, l.ctx.model);
       if (gestures.nextDeadline() !== null) frame.current = requestAnimationFrame(loop);
     };
     frame.current = requestAnimationFrame(loop);
@@ -509,7 +516,7 @@ export function CandleChart({
   // Trade at a price, the touch twin of the web's right-click menu (Robinhood's scrub-then-tap):
   // lifting a scrub leaves a "+ price" chip at the scrubbed price for a few seconds; tapping it
   // opens the quick-trade sheet. Any new touch on the chart dismisses it.
-  const lastScrub = useRef<Point | null>(null);
+  const lastScrub = lastScrubRef;
   const chipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [tradeChip, setTradeChip] = useState<{ x: number; y: number; price: number } | null>(null);
   const clearTradeChip = () => {

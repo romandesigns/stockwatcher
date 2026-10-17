@@ -59,22 +59,6 @@ export function Sheet({ open, onClose, title, badge, children, reducedMotion }: 
   );
 }
 
-function Row({ label, on, disabled, onPress, right }: { label: string; on?: boolean; disabled?: boolean; onPress: () => void; right?: string }) {
-  return (
-    <Pressable
-      accessibilityRole={on === undefined ? "button" : "checkbox"}
-      accessibilityState={on === undefined ? { disabled: !!disabled } : { checked: on, disabled: !!disabled }}
-      disabled={disabled}
-      onPress={onPress}
-      style={({ pressed }) => [s.row, pressed && { backgroundColor: UI.row }, disabled && { opacity: 0.4 }]}
-    >
-      <Text style={s.rowText}>{label}</Text>
-      {right !== undefined && <Text style={s.rowRight}>{right}</Text>}
-      {on && <Text style={[s.rowRight, { color: UI.accent }]}>✓</Text>}
-    </Pressable>
-  );
-}
-
 const SWATCH_COLOR = { warning: UI.warning, dim: UI.textDim, text: UI.text, good: UI.good, critical: UI.critical } as const;
 
 /** A layer's swatch (shapes shared with chart-web through chart-core); faded while the layer is off, as an off indicator's glyph is. */
@@ -422,6 +406,8 @@ const s = StyleSheet.create({
   actionText: { color: UI.text, fontSize: 14, fontWeight: "500", flex: 1 },
   chevron: { color: UI.textDim, fontSize: 20, lineHeight: 22 },
   onChip: { color: UI.accent, fontSize: 12, fontWeight: "600", backgroundColor: "rgba(139,156,255,0.14)", borderRadius: 6, paddingHorizontal: 8, paddingVertical: 3, overflow: "hidden" },
+  halfAction: { flex: 1, height: 44, borderRadius: 12, backgroundColor: UI.row, alignItems: "center", justifyContent: "center" },
+  halfText: { fontSize: 14, fontWeight: "600" },
   turnOn: { borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6, backgroundColor: UI.raised },
   turnOnText: { color: UI.text, fontSize: 12, fontWeight: "600" },
   titleAction: { marginLeft: "auto", paddingHorizontal: 4, paddingVertical: 2 },
@@ -625,33 +611,56 @@ export function QuickTradeSheet({
     onClose();
   };
   return (
-    <Sheet open={open} onClose={onClose} title={`${symbol} · ${p}`} reducedMotion={reducedMotion}>
-      <View style={{ gap: 8 }}>
-        <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
-          <Text style={s.small}>{where === null ? "" : where === "at" ? "At the last trade" : `${formatPrice(diff!, priceDecimals(price))} ${where} the last trade`}</Text>
-          <Text style={s.sim}>SIMULATED</Text>
+    <Sheet
+      open={open}
+      onClose={onClose}
+      title={`Trade ${symbol}`}
+      badge={
+        <>
+          <Text style={s.priceChip}>{p}</Text>
+          <Text style={s.simChip}>SIMULATED</Text>
+        </>
+      }
+      reducedMotion={reducedMotion}
+    >
+      <View style={{ gap: 12 }}>
+        {where !== null && <Text style={[s.small, { marginTop: -4 }]}>{where === "at" ? "At the last trade" : `${formatPrice(diff!, priceDecimals(price))} ${where} the last trade`}</Text>}
+        {/* Size first: it is what every button below places. */}
+        <View style={{ gap: 6 }}>
+          <Text style={s.fieldLabel}>Shares</Text>
+          <Segmented fill value={String(qty)} onChange={(v) => onQtyChange(Number(v))} options={QUICK_TRADE_SIZES.map((n) => ({ value: String(n), label: n.toLocaleString("en-US"), a11y: `${n} shares` }))} />
         </View>
+        <View style={{ gap: 8 }}>
+          <View style={{ flexDirection: "row", gap: 8 }}>
+            <ToolButton label={`Buy ${buyType} ${qty} at ${p}`} onPress={act(() => onOrder("buy", buyType))} style={[s.big, { backgroundColor: "rgba(63,185,122,0.16)" }]}>
+              <Text style={[s.bigText, { color: UI.good }]}>{`Buy ${buyType}`}</Text>
+            </ToolButton>
+            <ToolButton label={`Sell ${sellType} ${qty} at ${p}`} onPress={act(() => onOrder("sell", sellType))} style={[s.big, { backgroundColor: "rgba(240,100,92,0.16)" }]}>
+              <Text style={[s.bigText, { color: UI.critical }]}>{`Sell ${sellType}`}</Text>
+            </ToolButton>
+          </View>
+          <View style={{ flexDirection: "row", gap: 8 }}>
+            <ToolButton label={`Buy ${qty} at market`} onPress={act(() => onOrder("buy", "market"))} style={[s.mid]}>
+              Buy at market
+            </ToolButton>
+            <ToolButton label={`Sell ${qty} at market`} onPress={act(() => onOrder("sell", "market"))} style={[s.mid]}>
+              Sell at market
+            </ToolButton>
+          </View>
+        </View>
+        {/* More: the full ticket, or plan a position here; buttons, not loose text. */}
+        <Pressable accessibilityRole="button" onPress={act(onTicket)} style={({ pressed }) => [s.actionRow, pressed && { backgroundColor: UI.raised }]}>
+          <Text style={s.actionText}>{`Order ticket at ${p}`}</Text>
+          <Text style={s.chevron}>›</Text>
+        </Pressable>
         <View style={{ flexDirection: "row", gap: 8 }}>
-          <ToolButton label={`Buy ${buyType} ${qty} at ${p}`} onPress={act(() => onOrder("buy", buyType))} style={[s.big, { backgroundColor: "rgba(63,185,122,0.16)" }]}>
-            <Text style={[s.bigText, { color: UI.good }]}>{`Buy ${buyType}`}</Text>
-          </ToolButton>
-          <ToolButton label={`Sell ${sellType} ${qty} at ${p}`} onPress={act(() => onOrder("sell", sellType))} style={[s.big, { backgroundColor: "rgba(240,100,92,0.16)" }]}>
-            <Text style={[s.bigText, { color: UI.critical }]}>{`Sell ${sellType}`}</Text>
-          </ToolButton>
+          <Pressable accessibilityRole="button" accessibilityLabel="Plan a long position here" onPress={act(() => onPosition("long"))} style={({ pressed }) => [s.halfAction, pressed && { backgroundColor: UI.raised }]}>
+            <Text style={[s.halfText, { color: UI.good }]}>Long here</Text>
+          </Pressable>
+          <Pressable accessibilityRole="button" accessibilityLabel="Plan a short position here" onPress={act(() => onPosition("short"))} style={({ pressed }) => [s.halfAction, pressed && { backgroundColor: UI.raised }]}>
+            <Text style={[s.halfText, { color: UI.critical }]}>Short here</Text>
+          </Pressable>
         </View>
-        <View style={{ flexDirection: "row", gap: 8 }}>
-          <ToolButton label={`Buy ${qty} at market`} onPress={act(() => onOrder("buy", "market"))} style={[s.mid]}>
-            Buy at market
-          </ToolButton>
-          <ToolButton label={`Sell ${qty} at market`} onPress={act(() => onOrder("sell", "market"))} style={[s.mid]}>
-            Sell at market
-          </ToolButton>
-        </View>
-        <Text style={s.label}>Shares</Text>
-        <Segmented fill value={String(qty)} onChange={(v) => onQtyChange(Number(v))} options={QUICK_TRADE_SIZES.map((n) => ({ value: String(n), label: n.toLocaleString("en-US"), a11y: `${n} shares` }))} />
-        <Row label={`Order ticket at ${p}…`} onPress={act(onTicket)} />
-        <Row label="Long position here" onPress={act(() => onPosition("long"))} />
-        <Row label="Short position here" onPress={act(() => onPosition("short"))} />
       </View>
     </Sheet>
   );
