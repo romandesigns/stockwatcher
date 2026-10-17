@@ -23,6 +23,18 @@ import { useChartFeed } from "./feed/useChartFeed.ts";
 import { usePaperTrading } from "./feed/usePaperTrading.ts";
 import { createFixtureFeed, FIXTURE_SYMBOL } from "./fixtures/fixtureFeed.ts";
 import { useMediaQuery } from "./lib/useMediaQuery.ts";
+import { tickerUniverse } from "./search/mockTickers.ts";
+import { TickerSearch } from "./search/TickerSearch.tsx";
+
+/** The search icon for the quick-open pill and the phone header. */
+const SearchIcon = (
+  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true">
+    <circle cx="7" cy="7" r="4.5" />
+    <path d="M10.5 10.5 14 14" />
+  </svg>
+);
+
+const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 
 // Data source: the Rust server by default, the in-browser fixture only when the
 // server is unreachable or has no data (feed/source.ts), or when forced with
@@ -127,6 +139,33 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
   }, [candidates.symbols, symbol]);
   const { series, tape, clock } = useChartFeed(feed, symbol, timeframe, bin);
   const trading = usePaperTrading(feed);
+
+  // Ticker quick-open, VS Code's Ctrl+P (Cmd+P on a Mac): the browser's print shortcut is taken
+  // over on purpose while the app is focused.
+  const [searchOpen, setSearchOpen] = useState(false);
+  const tickers = useMemo(() => tickerUniverse(candidates.symbols), [candidates.symbols]);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === "p" || e.key === "P")) {
+        e.preventDefault();
+        setSearchOpen(true);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  const openTicker = (s: string) => {
+    setSymbol(s);
+    setInspectT(null);
+  };
+  const search = <TickerSearch open={searchOpen} onOpenChange={setSearchOpen} tickers={tickers} current={symbol} onSelect={openTicker} />;
+  const tickerButton = (size: string) => (
+    <Tip label={`Search tickers (${isMac ? "⌘" : "Ctrl+"}P)`}>
+      <button type="button" onClick={() => setSearchOpen(true)} className={cn("pointer-events-auto cursor-pointer rounded-md font-semibold outline-none hover:text-primary focus-visible:ring-2 focus-visible:ring-ring", size)}>
+        {symbol}
+      </button>
+    </Tip>
+  );
   const phone = useMediaQuery("(max-width: 600px)");
 
   const slots = useMemo(() => (series ? buildSlots(series.candles, series.gaps) : []), [series]);
@@ -186,11 +225,12 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
       <div className="flex min-h-dvh flex-col gap-2.5 bg-background p-3 text-foreground">
         <header className="flex items-center gap-2">
           <div className="flex min-w-0 items-baseline gap-2">
-            <span className="text-base font-semibold">{symbol}</span>
+            {tickerButton("text-base")}
             <span className="font-mono text-base tabular-nums">{price}</span>
             <span className={cn("font-mono text-[11px]", changeColor)}>{change}</span>
           </div>
           <SourceChip className="ml-auto" choice={choice} mode={mode} />
+          {search}
         </header>
         <CandleChart className="h-[360px]" toolbar symbol={symbol} persistKey="sw-chart" trading={trading} now={clock?.now ?? null} onTimeframeChange={changeTf} series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={setInspectT} priceScaleType={priceScale} onPriceScaleTypeChange={setPriceScale} options={PHONE_CHART} barSpacing={10} label={chartLabel} />
         <CandleInspector className="-mt-1" slot={inspected} timeframe={timeframe} variant="compact" />
@@ -216,6 +256,16 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
           <div className="text-sm font-semibold tracking-tight">StockWatcher</div>
           <SourceChip choice={choice} mode={mode} />
         </div>
+        <button
+          type="button"
+          onClick={() => setSearchOpen(true)}
+          className="mx-auto flex h-8 w-[min(420px,40vw)] items-center gap-2 rounded-lg bg-card px-3 text-xs text-text-faint outline-none hover:bg-bg-row hover:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-3.5"
+        >
+          {SearchIcon}
+          <span>Search tickers</span>
+          <kbd className="ml-auto rounded bg-bg-row px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">{isMac ? "⌘P" : "Ctrl P"}</kbd>
+        </button>
+        {search}
       </header>
 
       <div className="flex min-h-0 flex-1 flex-col gap-2 px-4 pb-3 min-[901px]:flex-row">
@@ -228,7 +278,7 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
               toolbarInChart
               heading={
                 <div className="flex items-baseline gap-2">
-                  <span className="text-[15px] font-semibold">{symbol}</span>
+                  {tickerButton("text-[15px]")}
                   <span className="font-mono text-[15px] tabular-nums">{price}</span>
                   <Tip label="Change since the session's first candle">
                     <span className={cn("pointer-events-auto font-mono text-[11px]", changeColor)}>{change}</span>
