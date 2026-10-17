@@ -83,18 +83,6 @@ function SourceChip({ choice, mode, className }: { choice: SourceChoice; mode: "
   );
 }
 
-function SymbolSelector({ symbols, value, onChange }: { symbols: string[]; value: string; onChange: (s: string) => void }) {
-  if (symbols.length < 2) return null;
-  return (
-    <ToggleGroup aria-label="Symbol" size="sm" spacing={0.5} variant="segmented" value={[value]} onValueChange={(v) => v[0] && onChange(v[0])}>
-      {symbols.map((s) => (
-        <ToggleGroupItem key={s} value={s} className="px-2 font-mono text-[11px]">
-          {s}
-        </ToggleGroupItem>
-      ))}
-    </ToggleGroup>
-  );
-}
 
 export default function App() {
   // The feed is created and closed by the same effect, so React StrictMode's
@@ -175,10 +163,6 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
   };
   // Jump the replay; the server rebuilds from the session start and resends snapshots.
   const seek = (t: number) => feed.control({ action: "seek", value: t });
-  const changeSymbol = (s: string) => {
-    setSymbol(s);
-    setInspectT(null);
-  };
   const price = last ? formatPrice(last.c) : "—";
   const change = last && sessionOpen ? formatChange(sessionOpen, last.c) : "";
   const changeColor = change.startsWith("-") ? "text-critical" : "text-good";
@@ -210,9 +194,6 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
           </div>
           <SourceChip className="ml-auto" choice={choice} mode={mode} />
         </header>
-        <div className="flex flex-wrap items-center gap-2">
-          <SymbolSelector symbols={candidates.symbols} value={symbol} onChange={changeSymbol} />
-        </div>
         <CandleChart className="h-[360px]" toolbar symbol={symbol} persistKey="sw-chart" trading={trading} now={clock?.now ?? null} onTimeframeChange={changeTf} series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={setInspectT} priceScaleType={priceScale} onPriceScaleTypeChange={setPriceScale} options={PHONE_CHART} barSpacing={10} label={chartLabel} />
         <CandleInspector className="-mt-1" slot={inspected} timeframe={timeframe} variant="compact" />
         <section aria-label="Session timeline and replay" className="flex flex-col gap-1.5 rounded-xl bg-card px-3 py-2">
@@ -237,7 +218,6 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
           <div className="text-sm font-semibold tracking-tight">StockWatcher</div>
           <SourceChip choice={choice} mode={mode} />
         </div>
-        <SymbolSelector symbols={candidates.symbols} value={symbol} onChange={changeSymbol} />
         {/* The chart's toolbar (timeframes, drawing tools, indicators, levels, trade) renders here. */}
         <div ref={setToolbarSlot} className="ml-auto flex min-w-0 items-center" />
       </header>
