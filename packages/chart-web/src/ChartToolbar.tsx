@@ -159,9 +159,8 @@ export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChang
       </Tip>
       </>
       )}
-      {timeframe && onTimeframeChange && <TimeframeSelector value={timeframe} onValueChange={onTimeframeChange} />}
-      {/* Everything else on the far right: position, drawing tools, indicators, levels, Trade. */}
-      <div className="ml-auto flex items-center gap-1.5">
+      {/* One group on the right, kept on one line: position, timeframes, drawing tools, indicators, levels, Trade. */}
+      <div className="ml-auto flex flex-nowrap items-center gap-1.5">
         {pos && (
           <Tip label="Simulated position and unrealized P&L">
             <span className="font-mono text-[11px] text-muted-foreground tabular-nums">
@@ -171,6 +170,7 @@ export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChang
             </span>
           </Tip>
         )}
+        {timeframe && onTimeframeChange && <TimeframeSelector value={timeframe} onValueChange={onTimeframeChange} className="mr-1" />}
         {onToolsVisibleChange && (
           <Tip label={toolsVisible ? "Hide drawing tools" : "Show drawing tools"}>
             <Button

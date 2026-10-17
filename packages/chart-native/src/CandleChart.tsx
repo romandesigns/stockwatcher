@@ -552,16 +552,16 @@ export function CandleChart({
     <View style={[s.root, style]}>
       {toolbar && (
         <View style={s.toolbar}>
-          {onTimeframeChange && (
-            <Segmented value={timeframe} onChange={onTimeframeChange} options={TIMEFRAMES.map((tf) => ({ value: tf, label: tf, a11y: tf }))} />
-          )}
-          {/* Everything else on the far right: position, drawing tools, indicators, levels, Trade. */}
+          {/* One group on the right: position, timeframes, drawing tools, indicators, levels, Trade. */}
           <View style={s.trade}>
               {trading && pnl !== null && position && (
                 <Text style={s.pos} accessibilityLabel={`Simulated position ${position.qty} at ${formatPrice(position.avgPrice)}`}>
                   {position.qty > 0 ? "+" : ""}
                   {formatSize(position.qty)} <Text style={{ color: pnl >= 0 ? UI.good : UI.critical }}>{`${pnl >= 0 ? "+" : "−"}$${Math.abs(pnl).toFixed(2)}`}</Text>
                 </Text>
+              )}
+              {onTimeframeChange && (
+                <Segmented value={timeframe} onChange={onTimeframeChange} options={TIMEFRAMES.map((tf) => ({ value: tf, label: tf, a11y: tf }))} />
               )}
               <ToolButton label={toolsVisible ? "Hide drawing tools" : "Show drawing tools"} onPress={() => changeToolsVisible(!toolsVisible)} style={toolsVisible ? { backgroundColor: UI.raised } : undefined}>
                 <ToolIcon kind="pencil" color={toolsVisible ? UI.text : UI.textDim} />
