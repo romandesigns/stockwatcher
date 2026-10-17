@@ -1,4 +1,8 @@
 import { hatch, sortByLayer, type ChartTheme, type DisplayList, type Rect } from "./displayList.ts";
+import { layoutDraft, layoutDrawings, type Drawing, type DrawingDraft } from "./drawings.ts";
+import { indicatorColor, indicatorLabel, type IndicatorResult } from "./indicators.ts";
+import { withAlpha } from "./theme.ts";
+import { layoutTrading, type TradingLayer } from "./trading.ts";
 import { formatPrice } from "./format.ts";
 import {
   buildSlots,
@@ -35,6 +39,8 @@ export interface ChartOptions {
   hatchSpacing: number;
   /** Minimum px between time labels. */
   timeLabelSpacing: number;
+  /** Height of each oscillator pane (RSI, MACD) below the volume pane. */
+  indicatorPaneHeight: number;
 }
 
 export const DEFAULT_CHART_OPTIONS: ChartOptions = {
@@ -47,6 +53,7 @@ export const DEFAULT_CHART_OPTIONS: ChartOptions = {
   fontSize: 10,
   hatchSpacing: 7,
   timeLabelSpacing: 72,
+  indicatorPaneHeight: 64,
 };
 
 export interface Size {
@@ -74,11 +81,22 @@ export interface ChartState {
   /** Price axis scale type; default "linear". Whether the range is auto or manual lives in the Viewport. */
   priceScaleType?: PriceScaleType;
   options?: Partial<ChartOptions>;
+  /** computeIndicators(slots, specs): overlays on the plot, oscillators in panes. */
+  indicators?: readonly IndicatorResult[];
+  drawings?: readonly Drawing[];
+  /** Id of the selected drawing (handles shown), or null. */
+  selectedDrawing?: string | null;
+  /** A drawing being placed, in px. */
+  draft?: DrawingDraft | null;
+  /** Simulated orders and position for this symbol; absent hides trading. */
+  trading?: TradingLayer | null;
 }
 
 export interface ChartGeometry {
   plot: Rect;
   volume: Rect | null;
+  /** Oscillator panes, top to bottom, between the volume pane and the time axis. */
+  panes: Rect[];
   priceAxis: Rect;
   timeAxis: Rect;
 }
@@ -95,18 +113,25 @@ export interface ChartModel {
   inspected: number | null;
 }
 
-export function chartGeometry(size: Size, o: ChartOptions): ChartGeometry {
+export function chartGeometry(size: Size, o: ChartOptions, paneCount = 0): ChartGeometry {
   const plotW = Math.max(0, size.width - o.priceAxisWidth);
   const volH = o.volumeHeight > 0 ? o.volumeHeight : 0;
-  const plotH = Math.max(0, size.height - o.timeAxisHeight - (volH ? volH + o.paneGap : 0));
+  const paneH = paneCount * (o.indicatorPaneHeight + o.paneGap);
+  const plotH = Math.max(0, size.height - o.timeAxisHeight - (volH ? volH + o.paneGap : 0) - paneH);
   const plot = { x: 0, y: 0, w: plotW, h: plotH };
   const volume = volH ? { x: 0, y: plotH + o.paneGap, w: plotW, h: volH } : null;
-  const timeY = volume ? volume.y + volume.h : plotH;
+  let y = volume ? volume.y + volume.h : plotH;
+  const panes: Rect[] = [];
+  for (let k = 0; k < paneCount; k++) {
+    panes.push({ x: 0, y: y + o.paneGap, w: plotW, h: o.indicatorPaneHeight });
+    y += o.paneGap + o.indicatorPaneHeight;
+  }
   return {
     plot,
     volume,
+    panes,
     priceAxis: { x: plotW, y: 0, w: o.priceAxisWidth, h: plotH },
-    timeAxis: { x: 0, y: timeY, w: plotW, h: o.timeAxisHeight },
+    timeAxis: { x: 0, y, w: plotW, h: o.timeAxisHeight },
   };
 }
 
@@ -118,7 +143,8 @@ export function slotIndexOf(slots: readonly Slot[], t: number): number | null {
 
 export function computeChartModel(state: ChartState, viewport: Viewport, size: Size): ChartModel {
   const options = { ...DEFAULT_CHART_OPTIONS, ...state.options };
-  const geometry = chartGeometry(size, options);
+  const paneCount = state.indicators?.filter((r) => r.placement === "pane").length ?? 0;
+  const geometry = chartGeometry(size, options, paneCount);
   const slots = state.slots ?? buildSlots(state.candles, state.gaps);
   const index = indexScale(viewport, slots, geometry.plot.x, geometry.plot.x + geometry.plot.w);
   const type = state.priceScaleType ?? "linear";
@@ -149,7 +175,7 @@ export function firstVisibleOpen(slots: readonly Slot[], from: number, to: numbe
   return undefined;
 }
 
-export type HitRegion = "plot" | "volume" | "priceAxis" | "timeAxis" | "none";
+export type HitRegion = "plot" | "volume" | "pane" | "priceAxis" | "timeAxis" | "none";
 
 export interface Hit {
   region: HitRegion;
@@ -168,7 +194,9 @@ export function hitTest(model: ChartModel, x: number, y: number): Hit {
     ? "plot"
     : inside(g.volume, x, y)
       ? "volume"
-      : inside(g.priceAxis, x, y)
+      : g.panes.some((r) => inside(r, x, y))
+        ? "pane"
+        : inside(g.priceAxis, x, y)
         ? "priceAxis"
         : inside(g.timeAxis, x, y)
           ? "timeAxis"
@@ -256,10 +284,26 @@ export function layoutChart(model: ChartModel, state: ChartState, theme: ChartTh
     }
   }
 
-  // inspection line at the inspected (or latest) slot
+  // indicators: overlays on the plot, oscillators in their panes
+  const results = state.indicators ?? [];
+  if (price) for (const r of results) if (r.placement === "overlay") out.push(...overlayIndicator(model, r, theme));
+  const paneResults = results.filter((r) => r.placement === "pane");
+  paneResults.forEach((r, k) => {
+    const rect = g.panes[k];
+    if (rect) out.push(...paneIndicator(model, r, rect, theme));
+  });
+
+  // drawings, a drawing being placed, then simulated orders on top
+  if (state.drawings?.length) out.push(...layoutDrawings(model, state.drawings, state.selectedDrawing ?? null, theme));
+  if (state.draft) out.push(...layoutDraft(model, state.draft, theme));
+  if (state.trading) out.push(...layoutTrading(model, state.trading, theme));
+  if (price && results.some((r) => r.placement === "overlay")) out.push(...overlayLegend(model, results, theme));
+
+  // inspection line at the inspected (or latest) slot, through every time-aligned pane
   if (model.inspected !== null && model.inspected >= ix.from && model.inspected <= ix.to) {
     const x = Math.round(slotX(ix, model.inspected)) + 0.5;
-    const bottom = g.volume ? g.volume.y + g.volume.h : g.plot.y + g.plot.h;
+    const last = g.panes.at(-1) ?? g.volume ?? g.plot;
+    const bottom = last.y + last.h;
     out.push({ kind: "line", x1: x, y1: g.plot.y, x2: x, y2: bottom, stroke: theme.crosshair, lineWidth: 1, layer: "crosshair" });
   }
 
@@ -373,4 +417,166 @@ export function layoutProfile(input: ProfileLayoutInput, theme: ChartTheme, size
   }
   const price: PriceScale = { lo: range.lo, hi: range.hi, top: 0, bottom: size.height };
   return profileBars(profile, price, { x: 0, y: 0, w: size.width, h: size.height }, "left", theme);
+}
+
+/** Visible slot range with one slot of margin each side, so lines run off the plot edge instead of stopping short. */
+function visibleRange(model: ChartModel): [number, number] {
+  return [Math.max(0, model.index.from - 1), Math.min(model.slots.length - 1, model.index.to + 1)];
+}
+
+/** Polylines through `values` (one per run of non-NaN slots), clipped to `clip`. */
+function polylines(model: ChartModel, values: Float64Array, y: (v: number) => number, stroke: string, lineWidth: number, clip: Rect, layer: "overlay" | "volume"): DisplayList {
+  const out: DisplayList = [];
+  const [from, to] = visibleRange(model);
+  let pts: number[] = [];
+  const flush = () => {
+    if (pts.length >= 4) out.push({ kind: "path", points: pts, closed: false, stroke, lineWidth, clip, layer });
+    pts = [];
+  };
+  for (let i = from; i <= to; i++) {
+    const v = values[i];
+    if (v === undefined || Number.isNaN(v)) {
+      flush();
+      continue;
+    }
+    pts.push(slotX(model.index, i), y(v));
+  }
+  flush();
+  return out;
+}
+
+function overlayIndicator(model: ChartModel, r: IndicatorResult, theme: ChartTheme): DisplayList {
+  const out: DisplayList = [];
+  const price = model.price!;
+  const plot = model.geometry.plot;
+  const color = indicatorColor(theme, r, 0);
+  const y = (v: number) => priceY(price, v);
+  if (r.band) {
+    // Fill between the band lines, run by run, so a gap leaves a hole like the lines do.
+    const up = r.lines[r.band[0]]!.values;
+    const lo = r.lines[r.band[1]]!.values;
+    const [from, to] = visibleRange(model);
+    let run: number[] = [];
+    const flush = () => {
+      if (run.length >= 2) {
+        const pts: number[] = [];
+        for (const i of run) pts.push(slotX(model.index, i), y(up[i]!));
+        for (const i of [...run].reverse()) pts.push(slotX(model.index, i), y(lo[i]!));
+        out.push({ kind: "path", points: pts, closed: true, fill: withAlpha(color, 0.08), clip: plot, layer: "overlay" });
+      }
+      run = [];
+    };
+    for (let i = from; i <= to; i++) {
+      if (Number.isNaN(up[i]!) || Number.isNaN(lo[i]!)) flush();
+      else run.push(i);
+    }
+    flush();
+  }
+  r.lines.forEach((l, k) => {
+    // The basis of a band is the quieter line; its edges carry the identity.
+    const width = r.band && k === 0 ? 1 : 1.5;
+    out.push(...polylines(model, l.values, y, r.band && k === 0 ? withAlpha(color, 0.7) : color, width, plot, "overlay"));
+  });
+  return out;
+}
+
+/** Value of a line at the inspected slot, formatted, or an em dash. */
+function valueAt(model: ChartModel, values: Float64Array, digits: number): string {
+  const i = model.inspected;
+  const v = i === null ? Number.NaN : values[i]!;
+  return Number.isNaN(v) ? "—" : v.toFixed(digits);
+}
+
+/**
+ * One legend row per overlay, top-left of the plot: a swatch in the line's
+ * colour, then the name and the value at the inspected candle in text tones
+ * (text never wears the series colour; the swatch carries the identity).
+ */
+function overlayLegend(model: ChartModel, results: readonly IndicatorResult[], theme: ChartTheme): DisplayList {
+  const out: DisplayList = [];
+  const plot = model.geometry.plot;
+  const fs = model.options.fontSize;
+  let y = plot.y + 8;
+  for (const r of results) {
+    if (r.placement !== "overlay") continue;
+    const color = indicatorColor(theme, r, 0);
+    const main = r.lines[0]!.values;
+    const sample = model.inspected === null ? Number.NaN : main[model.inspected]!;
+    const digits = Number.isNaN(sample) ? 2 : sample < 1 ? 4 : 2;
+    const name = indicatorLabel(r.spec);
+    out.push({ kind: "rect", x: plot.x + 8, y: y - 1, w: 10, h: 2, fill: color, layer: "axes" });
+    out.push({ kind: "text", x: plot.x + 24, y, text: name, fill: theme.textDim, fontSize: fs, fontFamily: theme.fontSans, fontWeight: 500, align: "left", baseline: "middle", layer: "axes" });
+    out.push({ kind: "text", x: plot.x + 24 + Math.ceil(name.length * fs * 0.62) + 6, y, text: valueAt(model, main, digits), fill: theme.text, fontSize: fs, fontFamily: theme.fontMono, fontWeight: 400, align: "left", baseline: "middle", layer: "axes" });
+    y += fs + 5;
+  }
+  return out;
+}
+
+function paneIndicator(model: ChartModel, r: IndicatorResult, rect: Rect, theme: ChartTheme): DisplayList {
+  const out: DisplayList = [];
+  const g = model.geometry;
+  const fs = model.options.fontSize;
+  const [from, to] = visibleRange(model);
+  let lo = r.fixedRange?.lo ?? Infinity;
+  let hi = r.fixedRange?.hi ?? -Infinity;
+  if (!r.fixedRange) {
+    for (const l of r.lines)
+      for (let i = from; i <= to; i++) {
+        const v = l.values[i]!;
+        if (Number.isNaN(v)) continue;
+        if (v < lo) lo = v;
+        if (v > hi) hi = v;
+      }
+    for (const gv of r.guides ?? []) {
+      lo = Math.min(lo, gv);
+      hi = Math.max(hi, gv);
+    }
+    if (!Number.isFinite(lo)) return out;
+    if (hi === lo) {
+      hi += 1;
+      lo -= 1;
+    }
+    const pad = (hi - lo) * 0.1;
+    hi += pad;
+    lo -= pad;
+  }
+  const y = (v: number) => rect.y + rect.h - ((v - lo) / (hi - lo)) * rect.h;
+  const digits = r.spec.kind === "rsi" ? 1 : 4;
+
+  for (const gv of r.guides ?? []) {
+    const gy = Math.round(y(gv)) + 0.5;
+    out.push({ kind: "line", x1: rect.x, y1: gy, x2: rect.x + rect.w, y2: gy, stroke: theme.guide, lineWidth: 1, dash: [3, 3], layer: "grid" });
+    out.push({ kind: "text", x: g.priceAxis.x + 8, y: gy, text: String(gv), fill: theme.axisText, fontSize: fs, fontFamily: theme.fontMono, fontWeight: 400, align: "left", baseline: "middle", layer: "axes" });
+  }
+  const bw = bodyWidth(model.index.barSpacing);
+  r.lines.forEach((l, k) => {
+    if (l.style === "histogram") {
+      const zero = y(0);
+      for (let i = from; i <= to; i++) {
+        const v = l.values[i]!;
+        if (Number.isNaN(v)) continue;
+        const vy = y(v);
+        const cx = Math.round(slotX(model.index, i));
+        if (cx < rect.x || cx > rect.x + rect.w) continue;
+        out.push({ kind: "rect", x: cx - Math.floor(bw / 2), y: Math.min(zero, vy), w: bw, h: Math.max(1, Math.abs(vy - zero)), fill: v >= 0 ? theme.upVolume : theme.downVolume, layer: "volume" });
+      }
+      return;
+    }
+    out.push(...polylines(model, l.values, y, indicatorColor(theme, r, k), 1.5, rect, "overlay"));
+  });
+
+  // Pane legend: name, then a swatch and value per line, at the inspected candle.
+  const name = indicatorLabel(r.spec);
+  let x = rect.x + 8;
+  const ly = rect.y + 8;
+  out.push({ kind: "text", x, y: ly, text: name, fill: theme.textDim, fontSize: fs, fontFamily: theme.fontSans, fontWeight: 500, align: "left", baseline: "middle", layer: "axes" });
+  x += Math.ceil(name.length * fs * 0.62) + 8;
+  r.lines.forEach((l, k) => {
+    if (l.style === "histogram") return;
+    out.push({ kind: "rect", x, y: ly - 1, w: 8, h: 2, fill: indicatorColor(theme, r, k), layer: "axes" });
+    const text = valueAt(model, l.values, digits);
+    out.push({ kind: "text", x: x + 12, y: ly, text, fill: theme.text, fontSize: fs, fontFamily: theme.fontMono, fontWeight: 400, align: "left", baseline: "middle", layer: "axes" });
+    x += 12 + Math.ceil(text.length * fs * 0.62) + 10;
+  });
+  return out;
 }

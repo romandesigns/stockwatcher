@@ -1,5 +1,5 @@
 // Number formatting shared by the axes, inspector and tape. Stockwatcher
-// covers $0.15–$25, so sub-dollar prices get 4 decimals (sub-penny quotes are
+// covers $0.10–$25, so sub-dollar prices get 4 decimals (sub-penny quotes are
 // legal below $1) and everything else 2.
 
 export function priceDecimals(p: number): number {

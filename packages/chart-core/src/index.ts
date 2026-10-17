@@ -12,3 +12,7 @@ export * from "./layout.ts";
 export * from "./timeline.ts";
 export * from "./inspect.ts";
 export * from "./gestures.ts";
+export * from "./theme.ts";
+export * from "./indicators.ts";
+export * from "./drawings.ts";
+export * from "./trading.ts";

@@ -30,6 +30,8 @@ export interface RectPrim extends Base {
 }
 
 export interface LinePrim extends Base {
+  /** Clip to this rect (a line that may cross into another pane). */
+  clip?: Rect;
   kind: "line";
   x1: number;
   y1: number;
@@ -58,6 +60,8 @@ export interface PathPrim extends Base {
   kind: "path";
   points: number[];
   closed: boolean;
+  /** Clip to this rect (indicator lines, which may leave their pane on a manual price range). */
+  clip?: Rect;
   fill?: string;
   stroke?: string;
   lineWidth?: number;
@@ -132,6 +136,28 @@ export interface ChartTheme {
   minimapPastRegular: string;
   minimapFuture: string;
   replayHead: string;
+  /**
+   * Categorical slots for indicator lines, in this FIXED order (never cycled).
+   * Validated all-pairs on the dark surface; see indicators.ts.
+   */
+  series1: string;
+  series2: string;
+  series3: string;
+  /** Indicator pane guides (RSI 30/70, MACD zero). */
+  guide: string;
+  /** A drawing (trend line, ray, level, range), unselected and selected. */
+  drawing: string;
+  drawingSelected: string;
+  /** Fill of a range (rectangle) drawing. */
+  drawingFill: string;
+  /** Inside of a drawing handle (its ring is drawingSelected). */
+  handleFill: string;
+  /** Simulated order lines and their pills; text on a pill. */
+  orderBuy: string;
+  orderSell: string;
+  onOrder: string;
+  /** The position line (average price). */
+  position: string;
   fontSans: string;
   fontMono: string;
 }

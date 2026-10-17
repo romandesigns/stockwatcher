@@ -332,3 +332,139 @@ describe("applyGesture", () => {
     expect(applyGesture(vp, { kind: "zoomTime", factor: 2, anchorX: 300 }, model).barSpacing).toBe(32);
   });
 });
+
+describe("options: momentum, touch price pan, haptics", () => {
+  function opt(options: ConstructorParameters<typeof GestureController>[0], extra: Partial<GestureContext> = {}) {
+    const g = new GestureController(options);
+    const log: GestureAction[] = [];
+    const c = { ...ctx(), ...extra };
+    return {
+      g,
+      log,
+      send: (type: GestureInput["type"], x: number, y: number, t: number) => {
+        const a = g.handle(ev(type, x, y, t), c);
+        log.push(...a);
+        return a;
+      },
+      tick: (t: number) => {
+        const a = g.tick(t, c);
+        log.push(...a);
+        return a;
+      },
+    };
+  }
+
+  test("a fast touch pan keeps going after release and decays to a stop", () => {
+    const d = opt({ momentum: true });
+    d.send("down", 200, PLOT_Y, 0);
+    d.send("move", 180, PLOT_Y, 10);
+    d.send("move", 120, PLOT_Y, 30);
+    d.send("up", 100, PLOT_Y, 40);
+    expect(d.g.state).toBe("fling");
+    expect(d.g.nextDeadline()).toBe(40);
+    const first = d.tick(56).find((a) => a.kind === "pan") as Extract<GestureAction, { kind: "pan" }>;
+    expect(first.dxSlots).toBeLessThan(0);
+    let t = 56;
+    while (d.g.state === "fling" && t < 5000) d.tick((t += 16));
+    expect(d.g.state).toBe("idle");
+  });
+
+  test("a press during a fling stops it and is not a tap", () => {
+    const d = opt({ momentum: true });
+    d.send("down", 200, PLOT_Y, 0);
+    d.send("move", 120, PLOT_Y, 30);
+    d.send("up", 100, PLOT_Y, 40);
+    d.send("down", 150, PLOT_Y, 60);
+    d.send("up", 150, PLOT_Y, 80);
+    d.tick(80 + DOUBLE_TAP_MS + 1);
+    expect(kinds(d.log).includes("inspect")).toBe(false);
+  });
+
+  test("lifting after a pause does not fling", () => {
+    const d = opt({ momentum: true });
+    d.send("down", 200, PLOT_Y, 0);
+    d.send("move", 120, PLOT_Y, 30);
+    d.send("up", 120, PLOT_Y, 300);
+    expect(d.g.state).toBe("idle");
+  });
+
+  test('touchPricePan "always": a vertical swipe pans price from auto; "manual" releases it', () => {
+    const free = opt({ touchPricePan: "always" });
+    free.send("down", 200, PLOT_Y, 0);
+    const acts = free.send("move", 202, PLOT_Y + 30, 20);
+    const pan = acts.find((a) => a.kind === "pan") as Extract<GestureAction, { kind: "pan" }>;
+    expect(pan.pricePan).toBe(true);
+    expect(pan.dy).toBe(30);
+    const after = applyGesture(vp, pan, model);
+    expect(isAutoPrice(after)).toBe(false);
+
+    const web = opt({});
+    web.send("down", 200, PLOT_Y, 0);
+    expect(kinds(web.send("move", 202, PLOT_Y + 30, 20))).toEqual(["release"]);
+  });
+
+  test("a horizontal touch swipe stays time-only on an auto range, even with jitter", () => {
+    const d = opt({ touchPricePan: "always" });
+    d.send("down", 200, PLOT_Y, 0);
+    const pan = d.send("move", 170, PLOT_Y + 4, 20).find((a) => a.kind === "pan") as Extract<GestureAction, { kind: "pan" }>;
+    expect(pan.dy).toBe(0);
+  });
+
+  test("haptics: entering a scrub, and each new candle while scrubbing", () => {
+    const d = opt({ haptics: true });
+    d.send("down", xOf(10), PLOT_Y, 0);
+    expect(d.tick(LONG_PRESS_MS)[0]).toEqual({ kind: "haptic", style: "light" });
+    expect(kinds(d.send("move", xOf(12), PLOT_Y, LONG_PRESS_MS + 20))).toContain("haptic");
+  });
+});
+
+describe("objects and drawing tools", () => {
+  const order = { kind: "order" as const, id: "o-1", part: "drag" as const };
+  const hitObject = (x: number, y: number) => (Math.abs(y - 50) <= 6 ? (x > 300 ? { ...order, part: "cancel" as const } : order) : null);
+
+  function run(extra: Partial<GestureContext>, pointerType: PointerKind = "touch") {
+    const g = new GestureController();
+    const c = { ...ctx(), ...extra };
+    return (type: GestureInput["type"], x: number, y: number, t: number) => g.handle(ev(type, x, y, t, { pointerType }), c);
+  }
+
+  test("dragging an order emits objectDrag, then done on release, and never pans", () => {
+    const send = run({ hitObject });
+    send("down", 100, 50, 0);
+    const mid = send("move", 100, 80, 20);
+    expect(mid).toEqual([{ kind: "objectDrag", target: order, from: { x: 100, y: 50 }, to: { x: 100, y: 80 }, done: false }]);
+    expect(send("up", 100, 90, 40)).toEqual([{ kind: "objectDrag", target: order, from: { x: 100, y: 50 }, to: { x: 100, y: 90 }, done: true }]);
+  });
+
+  test("tapping the cancel cell cancels; tapping empty chart clears the selection", () => {
+    const send = run({ hitObject });
+    send("down", 320, 50, 0);
+    expect(send("up", 320, 50, 30)).toEqual([{ kind: "cancelOrder", id: "o-1" }]);
+    send("down", 100, 150, 500);
+    expect(send("up", 100, 150, 530)).toEqual([{ kind: "select", target: null }]);
+  });
+
+  test("a two-point tool: press-drag-release places it", () => {
+    const send = run({ tool: "trend" }, "mouse");
+    send("down", 100, 50, 0);
+    expect(kinds(send("move", 160, 90, 20))).toEqual(["draft"]);
+    expect(send("up", 170, 95, 40)).toEqual([
+      { kind: "draft", draft: null },
+      { kind: "createDrawing", tool: "trend", a: { x: 100, y: 50 }, b: { x: 170, y: 95 } },
+    ]);
+  });
+
+  test("a two-point tool: tap, then tap again", () => {
+    const send = run({ tool: "ray" });
+    send("down", 100, 50, 0);
+    expect(send("up", 100, 50, 30)).toEqual([{ kind: "draft", draft: { kind: "ray", a: { x: 100, y: 50 }, b: { x: 100, y: 50 } } }]);
+    send("down", 200, 80, 500);
+    expect(kinds(send("up", 200, 80, 530))).toEqual(["draft", "createDrawing"]);
+  });
+
+  test("a one-point tool places on a single tap", () => {
+    const send = run({ tool: "hline" });
+    send("down", 100, 70, 0);
+    expect(send("up", 100, 70, 30)).toEqual([{ kind: "createDrawing", tool: "hline", a: { x: 100, y: 70 }, b: { x: 100, y: 70 } }]);
+  });
+});

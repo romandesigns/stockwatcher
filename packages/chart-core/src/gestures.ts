@@ -1,3 +1,4 @@
+import { isOnePoint, type DrawingDraft, type DrawingKind, type DrawingPart } from "./drawings.ts";
 import { hitTest, type ChartModel, type HitRegion, type Point } from "./layout.ts";
 import { autoScalePrice, followLatest, isAutoPrice, manualPrice, panSlots, scalePriceRange, shiftPriceRange, slotAt, zoom, type PriceScale, type Viewport } from "./scale.ts";
 
@@ -50,6 +51,34 @@ import { autoScalePrice, followLatest, isAutoPrice, manualPrice, panSlots, scale
 //   time axis: follows the latest candle.
 // - Right-click on the price axis: opens the price axis menu (the renderer
 //   suppresses the platform's own menu there and only there).
+//
+// Objects (2026-10-17: drawings and simulated orders, both chart-owned)
+// - The renderer passes ctx.hitObject, which names the drawing part, order
+//   pill, cancel cell or place button under a point. A press on one never
+//   pans: past the slop it drags the object (objectDrag, done on release; the
+//   renderer commits then, so an order is modified once, not per frame); a
+//   tap selects a drawing, cancels via the cancel cell, or opens the order
+//   ticket via the place button. A tap on empty chart clears the selection.
+// - With a drawing tool active (ctx.tool), a press in the plot draws instead:
+//   press-drag-release places a two-point drawing; a tap places the first
+//   point and a second tap the other (the draft follows the mouse between);
+//   a one-point drawing (level, marker) goes where the tap or drag ends.
+//
+// Options (constructor; all off by default, so the plain recognizer above is
+// what the unit tests pin):
+// - momentum: a touch pan released at speed keeps going and decays (iOS
+//   scroll feel, time constant MOMENTUM_TAU_MS). tick() drives it; the
+//   renderer pumps tick() every frame while nextDeadline() is not null, as it
+//   already does for long presses. A press during a fling stops it and is not
+//   a tap.
+// - touchPricePan: "manual" (web): a vertical swipe pans price only when the
+//   range is already manual, otherwise it scrolls the page. "always" (native,
+//   where the chart screen does not scroll): a mostly vertical swipe pans
+//   price and makes the range manual; a mostly horizontal one stays time-only
+//   unless the range is manual, so jitter never knocks price out of auto.
+// - haptics: emits haptic actions (entering a scrub, each slot while
+//   scrubbing, opening a menu by long press, grabbing an object, placing a
+//   drawing). Renderers with a haptic engine play them; others ignore them.
 
 export type PointerKind = "mouse" | "touch" | "pen";
 
@@ -76,11 +105,21 @@ export interface GestureContext {
   model: ChartModel;
   /** The inspected slot's t (null = latest), for tap-to-toggle. */
   inspectT: number | null;
+  /** Whether the price range is manual (touch vertical pans follow it; see touchPricePan). */
+  priceManual?: boolean;
+  /** Active drawing tool, or null/absent for none. */
+  tool?: DrawingKind | null;
+  /** The object under a point (touch: true gives fingers a wider tolerance), or null. */
+  hitObject?: (x: number, y: number, touch: boolean) => ObjectHit | null;
 }
 
 export type GestureAction =
-  /** Pan time by slots (positive = look back) and, while the price range is manual, price by dy px. */
-  | { kind: "pan"; dxSlots: number; dy: number }
+  /**
+   * Pan time by slots (positive = look back) and, while the price range is
+   * manual, price by dy px. pricePan: pan price by dy even from an auto range,
+   * which makes it manual (a free touch pan, see touchPricePan).
+   */
+  | { kind: "pan"; dxSlots: number; dy: number; pricePan?: boolean }
   /** Zoom time by factor (> 1 = wider candles) keeping the slot at anchorX (px from plot left) fixed. */
   | { kind: "zoomTime"; factor: number; anchorX: number }
   /** Scale price by factor (> 1 = zoom in) around the price at anchorY; makes the range manual. */
@@ -98,7 +137,30 @@ export type GestureAction =
   /** Open the price axis menu at x, y (chart surface px). */
   | { kind: "openAxisMenu"; x: number; y: number }
   /** A vertical swipe: the platform should scroll the page; the chart has let go of this pointer. */
-  | { kind: "release" };
+  | { kind: "release" }
+  /** A drawing being placed (px), or null when placement ended or was abandoned. */
+  | { kind: "draft"; draft: DrawingDraft | null }
+  /** Place a drawing of `tool` from a to b (px; one-point tools use a). */
+  | { kind: "createDrawing"; tool: DrawingKind; a: Point; b: Point }
+  /** Select an object (a drawing; an order pill), or clear the selection. */
+  | { kind: "select"; target: ObjectHit | null }
+  /** Drag of an object from `from` to `to` (px). done: the pointer lifted; commit now. */
+  | { kind: "objectDrag"; target: ObjectHit; from: Point; to: Point; done: boolean }
+  | { kind: "cancelOrder"; id: string }
+  /** The place button was tapped at y: open the order ticket at that price. */
+  | { kind: "placeOrder"; x: number; y: number }
+  | { kind: "haptic"; style: HapticStyle };
+
+export type HapticStyle = "selection" | "light" | "medium";
+
+/** What ctx.hitObject reports under a point. */
+export type ObjectHit = { kind: "drawing"; id: string; part: DrawingPart } | { kind: "order"; id: string; part: "drag" | "cancel" } | { kind: "place"; y: number };
+
+export interface GestureOptions {
+  momentum?: boolean;
+  touchPricePan?: "manual" | "always";
+  haptics?: boolean;
+}
 
 export const LONG_PRESS_MS = 450;
 export const TOUCH_SLOP_PX = 8;
@@ -113,14 +175,29 @@ export const WHEEL_ZOOM_PER_PX = 0.0015;
 export const PINCH_WHEEL_ZOOM_PER_PX = 0.01;
 /** Pinch distances are floored here so two nearly touching fingers cannot explode the factor. */
 export const MIN_PINCH_DISTANCE_PX = 16;
+/** Momentum: velocity decays as exp(−dt / TAU), close to iOS scroll deceleration. */
+export const MOMENTUM_TAU_MS = 325;
+/** A release slower than this (px/ms) does not fling; below MOMENTUM_STOP a fling ends. */
+export const MOMENTUM_MIN_PX_MS = 0.25;
+export const MOMENTUM_STOP_PX_MS = 0.02;
+/** Velocity is measured over the last this-many ms of the pan, so a pause before lifting means no fling. */
+export const VELOCITY_WINDOW_MS = 80;
 
 type Region = Exclude<HitRegion, "none">;
 
 type Phase =
   | { k: "idle" }
-  /** Pressed, not yet a drag, scrub or menu. second: may be the second tap of a double tap. */
-  | { k: "pending"; id: number; type: PointerKind; region: Region; x0: number; y0: number; t0: number; second: boolean }
-  | { k: "pan"; id: number; type: PointerKind; lastX: number; lastY: number }
+  /**
+   * Pressed, not yet a drag, scrub or menu. second: may be the second tap of
+   * a double tap. obj: pressed on an object. draw: pressed with a drawing
+   * tool in the plot. quiet: this press stopped a fling, so it is not a tap.
+   */
+  | { k: "pending"; id: number; type: PointerKind; region: Region; x0: number; y0: number; t0: number; second: boolean; obj: ObjectHit | null; draw: boolean; quiet: boolean }
+  /** free: vertical movement pans price too (see touchPricePan). */
+  | { k: "pan"; id: number; type: PointerKind; lastX: number; lastY: number; free: boolean; samples: { x: number; y: number; t: number }[] }
+  | { k: "drag"; id: number; target: ObjectHit; from: Point; to: Point }
+  | { k: "draw"; id: number; tool: DrawingKind; a: Point; b: Point }
+  | { k: "fling"; vx: number; vy: number; free: boolean; lastT: number }
   | { k: "scrub"; id: number }
   | { k: "axisScale"; id: number; lastY: number }
   | { k: "pinch"; a: number; b: number; lastDist: number; lastMidX: number }
@@ -145,6 +222,29 @@ export class GestureController {
   /** A finished tap waiting out the double-tap window before it pins. */
   private pendingTap: Tap | null = null;
   private lastType: PointerKind = "mouse";
+  /** The first point of a two-point drawing placed by a tap, waiting for the second. */
+  private placing: { tool: DrawingKind; a: Point } | null = null;
+  private readonly opts: Required<GestureOptions>;
+
+  constructor(options: GestureOptions = {}) {
+    this.opts = { momentum: false, touchPricePan: "manual", haptics: false, ...options };
+  }
+
+  private haptic(style: HapticStyle): GestureAction[] {
+    return this.opts.haptics ? [{ kind: "haptic", style }] : [];
+  }
+
+  /** Abandons a tap-placed first point (Escape, or the tool was switched). */
+  cancelPlacing(): GestureAction[] {
+    if (!this.placing) return [];
+    this.placing = null;
+    return [{ kind: "draft", draft: null }];
+  }
+
+  /** True while a tap-placed drawing waits for its second point. */
+  get isPlacing(): boolean {
+    return this.placing !== null;
+  }
 
   /** The current recognizer state, for renderers and tests. */
   get state(): GesturePhase {
@@ -165,15 +265,18 @@ export class GestureController {
    */
   get capturing(): boolean {
     const p = this.phase;
-    if (p.k === "pan" || p.k === "scrub" || p.k === "axisScale" || p.k === "pinch") return true;
-    return p.k === "pending" && p.region === "priceAxis";
+    if (p.k === "pan" || p.k === "scrub" || p.k === "axisScale" || p.k === "pinch" || p.k === "drag" || p.k === "draw") return true;
+    return p.k === "pending" && (p.region === "priceAxis" || p.obj !== null || p.draw);
   }
 
   /** When tick() next has something to decide (a long press or a deferred tap), or null. */
   nextDeadline(): number | null {
     let d: number | null = null;
     const p = this.phase;
-    if (p.k === "pending" && touchLike(p.type)) d = p.t0 + LONG_PRESS_MS;
+    // A fling wants every frame.
+    if (p.k === "fling") return p.lastT;
+    // Objects and drawing tools have no long press (no scrub on top of a drag).
+    if (p.k === "pending" && touchLike(p.type) && !p.obj && !p.draw) d = p.t0 + LONG_PRESS_MS;
     // While a possible second tap is down, the first one waits for its outcome.
     if (this.pendingTap && !(p.k === "pending" && p.second)) {
       const tapDue = this.pendingTap.t + DOUBLE_TAP_MS;
@@ -185,26 +288,43 @@ export class GestureController {
   /** Abandons any gesture (e.g. the chart lost its data or was hidden). */
   reset(): GestureAction[] {
     const wasScrub = this.phase.k === "scrub";
+    const wasDraft = this.phase.k === "draw" || this.placing !== null;
     this.phase = { k: "idle" };
     this.pointers.clear();
     this.pendingTap = null;
-    return wasScrub ? endScrub() : [];
+    this.placing = null;
+    return [...(wasScrub ? endScrub() : []), ...(wasDraft ? [{ kind: "draft" as const, draft: null }] : [])];
   }
 
   /** Advances time-driven decisions: long press → scrub or axis menu; an expired tap → pin. */
   tick(t: number, ctx: GestureContext): GestureAction[] {
     const out: GestureAction[] = [];
     const p = this.phase;
-    if (p.k === "pending" && touchLike(p.type) && t - p.t0 >= LONG_PRESS_MS) {
+    if (p.k === "fling") {
+      const dt = t - p.lastT;
+      if (dt <= 0) return out;
+      const decay = Math.exp(-dt / MOMENTUM_TAU_MS);
+      // Distance covered over dt by a velocity decaying exponentially: v·τ·(1 − e^(−dt/τ)).
+      const k = MOMENTUM_TAU_MS * (1 - decay);
+      const dx = p.vx * k;
+      const dy = p.free ? p.vy * k : 0;
+      p.vx *= decay;
+      p.vy *= decay;
+      p.lastT = t;
+      if (dx || dy) out.push({ kind: "pan", dxSlots: dx / ctx.model.index.barSpacing, dy, ...(p.free ? { pricePan: true } : {}) });
+      if (Math.hypot(p.vx, p.free ? p.vy : 0) < MOMENTUM_STOP_PX_MS) this.phase = { k: "idle" };
+      return out;
+    }
+    if (p.k === "pending" && touchLike(p.type) && !p.obj && !p.draw && t - p.t0 >= LONG_PRESS_MS) {
       // A long press is never the second tap of a double tap.
       if (p.second) this.pendingTap = null;
       const pt = this.pointers.get(p.id) ?? { x: p.x0, y: p.y0 };
       if (p.region === "priceAxis") {
         this.phase = { k: "ignore" };
-        out.push({ kind: "openAxisMenu", x: pt.x, y: pt.y });
+        out.push(...this.haptic("medium"), { kind: "openAxisMenu", x: pt.x, y: pt.y });
       } else {
         this.phase = { k: "scrub", id: p.id };
-        out.push(...scrubAt(ctx, pt.x, pt.y));
+        out.push(...this.haptic("light"), ...scrubAt(ctx, pt.x, pt.y));
       }
     }
     const q = this.phase;
@@ -221,12 +341,13 @@ export class GestureController {
       case "move":
         return this.move(input, ctx);
       case "up":
-        return this.up(input);
+        return this.up(input, ctx);
       case "cancel":
         return this.cancel(input);
       case "leave":
         // Only a mouse hovers; with a button held the pointer is captured.
         if (input.pointerType !== "mouse" || this.phase.k !== "idle") return [];
+        if (this.placing) return [{ kind: "crosshair", point: null }];
         return [
           { kind: "crosshair", point: null },
           { kind: "inspect", t: null, pinned: false, announce: false },
@@ -251,13 +372,19 @@ export class GestureController {
     // Only the primary mouse button drags; right-click arrives as contextmenu.
     if (e.pointerType === "mouse" && (e.button ?? 0) !== 0) return [];
     this.pointers.set(e.pointerId, { x: e.x, y: e.y });
+    let quiet = false;
+    if (this.phase.k === "fling") {
+      // Catching a fling stops it, and the catching press is not a tap.
+      this.phase = { k: "idle" };
+      quiet = true;
+    }
     const p = this.phase;
 
     if (p.k === "pinch" || p.k === "ignore") return [];
     if (p.k !== "idle") {
       // A second finger during an undecided press or a pan becomes a pinch.
       // During a scrub or a price drag it is ignored (one gesture at a time).
-      if (touchLike(e.pointerType) && (p.k === "pending" || p.k === "pan")) {
+      if (touchLike(e.pointerType) && ((p.k === "pending" && !p.obj && !p.draw) || p.k === "pan")) {
         const a = p.id;
         const pa = this.pointers.get(a);
         if (!pa) return [];
@@ -279,7 +406,16 @@ export class GestureController {
       if (touchLike(e.pointerType) && e.t - tap.t <= DOUBLE_TAP_MS && Math.hypot(e.x - tap.x, e.y - tap.y) <= DOUBLE_TAP_SLOP_PX) second = true;
       else out.push(...this.flushTap(ctx));
     }
-    this.phase = { k: "pending", id: e.pointerId, type: e.pointerType, region, x0: e.x, y0: e.y, t0: e.t, second };
+    // A drawing tool owns presses in the plot; otherwise an object under the
+    // press (never on the axes' own gestures, except the order pills that
+    // sit inside the plot) takes it.
+    const draw = !!ctx.tool && region === "plot";
+    const obj = draw || region === "priceAxis" || region === "timeAxis" ? null : (ctx.hitObject?.(e.x, e.y, touchLike(e.pointerType)) ?? null);
+    if (obj || draw) {
+      second = false;
+      this.pendingTap = null;
+    }
+    this.phase = { k: "pending", id: e.pointerId, type: e.pointerType, region, x0: e.x, y0: e.y, t0: e.t, second, obj, draw, quiet };
     return out;
   }
 
@@ -288,8 +424,13 @@ export class GestureController {
     if (this.pointers.has(e.pointerId)) this.pointers.set(e.pointerId, { x: e.x, y: e.y });
 
     switch (p.k) {
-      case "idle":
-        return e.pointerType === "mouse" ? hover(ctx, e.x, e.y) : [];
+      case "idle": {
+        if (e.pointerType !== "mouse") return [];
+        const out = hover(ctx, e.x, e.y);
+        // The second point of a tap-placed drawing follows the mouse.
+        if (this.placing) out.push({ kind: "draft", draft: { kind: this.placing.tool, a: this.placing.a, b: { x: e.x, y: e.y } } });
+        return out;
+      }
       case "pending": {
         if (e.pointerId !== p.id) return [];
         const dx = e.x - p.x0;
@@ -298,29 +439,67 @@ export class GestureController {
         if (Math.hypot(dx, dy) < slop) return p.type === "mouse" ? hover(ctx, e.x, e.y) : [];
         // Past the slop: whatever this becomes, it is not a tap.
         if (p.second) this.pendingTap = null;
+        if (p.draw && ctx.tool) {
+          const a = this.placing?.a ?? { x: p.x0, y: p.y0 };
+          this.placing = null;
+          this.phase = { k: "draw", id: p.id, tool: ctx.tool, a, b: { x: e.x, y: e.y } };
+          return [{ kind: "draft", draft: draftOf(ctx.tool, a, { x: e.x, y: e.y }) }];
+        }
+        if (p.obj && p.obj.kind !== "place" && !(p.obj.kind === "order" && p.obj.part === "cancel")) {
+          const from = { x: p.x0, y: p.y0 };
+          const to = { x: e.x, y: e.y };
+          this.phase = { k: "drag", id: p.id, target: p.obj, from, to };
+          return [...this.haptic("light"), { kind: "objectDrag", target: p.obj, from, to, done: false }];
+        }
         if (p.region === "priceAxis") {
           this.phase = { k: "axisScale", id: p.id, lastY: p.y0 };
           return this.move(e, ctx);
         }
+        let free = p.type === "mouse" || !!ctx.priceManual;
         if (touchLike(p.type) && Math.abs(dy) > Math.abs(dx)) {
-          this.phase = { k: "ignore" };
-          return [{ kind: "release" }];
+          if (this.opts.touchPricePan === "always" || ctx.priceManual) free = true;
+          else {
+            this.phase = { k: "ignore" };
+            return [{ kind: "release" }];
+          }
         }
-        this.phase = { k: "pan", id: p.id, type: p.type, lastX: p.x0, lastY: p.y0 };
+        this.phase = { k: "pan", id: p.id, type: p.type, lastX: p.x0, lastY: p.y0, free, samples: [{ x: p.x0, y: p.y0, t: p.t0 }] };
         return this.move(e, ctx);
       }
       case "pan": {
         if (e.pointerId !== p.id) return [];
         const dx = e.x - p.lastX;
-        // A touch pan is horizontal only: the vertical axis belongs to the page.
-        const dy = p.type === "mouse" ? e.y - p.lastY : 0;
+        // A touch pan is horizontal only unless it is free (see touchPricePan):
+        // by default the vertical axis belongs to the page.
+        const dy = p.free ? e.y - p.lastY : 0;
         p.lastX = e.x;
         p.lastY = e.y;
+        p.samples.push({ x: e.x, y: e.y, t: e.t });
+        while (p.samples.length > 2 && e.t - p.samples[0]!.t > VELOCITY_WINDOW_MS) p.samples.shift();
         if (dx === 0 && dy === 0) return [];
-        return [{ kind: "pan", dxSlots: dx / ctx.model.index.barSpacing, dy }];
+        // A mouse drag pans price only on a manual range (applyGesture checks);
+        // a free touch pan may start one from auto.
+        const pricePan = p.free && p.type !== "mouse";
+        return [{ kind: "pan", dxSlots: dx / ctx.model.index.barSpacing, dy, ...(pricePan ? { pricePan: true } : {}) }];
       }
-      case "scrub":
-        return e.pointerId === p.id ? scrubAt(ctx, e.x, e.y) : [];
+      case "drag": {
+        if (e.pointerId !== p.id) return [];
+        p.to = { x: e.x, y: e.y };
+        return [{ kind: "objectDrag", target: p.target, from: p.from, to: p.to, done: false }];
+      }
+      case "draw": {
+        if (e.pointerId !== p.id) return [];
+        p.b = { x: e.x, y: e.y };
+        return [{ kind: "draft", draft: draftOf(p.tool, p.a, p.b) }];
+      }
+      case "fling":
+        return [];
+      case "scrub": {
+        if (e.pointerId !== p.id) return [];
+        const acts = scrubAt(ctx, e.x, e.y);
+        // A light tick each time the scrub crosses into another candle.
+        return acts.some((a) => a.kind === "inspect") ? [...this.haptic("selection"), ...acts] : acts;
+      }
       case "axisScale": {
         if (e.pointerId !== p.id) return [];
         const dy = e.y - p.lastY;
@@ -350,25 +529,57 @@ export class GestureController {
     }
   }
 
-  private up(e: GestureInput): GestureAction[] {
+  private up(e: GestureInput, ctx: GestureContext): GestureAction[] {
     this.pointers.delete(e.pointerId);
     const p = this.phase;
     switch (p.k) {
       case "pending": {
         if (e.pointerId !== p.id) return [];
         this.phase = { k: "idle" };
-        // A mouse click inspects by hover already; nothing more to do.
-        if (p.type === "mouse") return [];
+        if (p.quiet) return [];
+        if (p.draw && ctx.tool) return this.tapDraw(ctx.tool, { x: p.x0, y: p.y0 });
+        if (p.obj) return this.tapObject(p.obj);
+        // A click or tap on empty chart clears any selection (when the chart
+        // has objects at all); a mouse click inspects by hover already.
+        const clear: GestureAction[] = ctx.hitObject ? [{ kind: "select", target: null }] : [];
+        if (p.type === "mouse") return clear;
         if (p.second) {
           this.pendingTap = null;
           return doubleTap(p.region);
         }
         this.pendingTap = { x: p.x0, y: p.y0, t: e.t, region: p.region };
+        return clear;
+      }
+      case "pan": {
+        if (e.pointerId !== p.id) return [];
+        this.phase = { k: "idle" };
+        if (!this.opts.momentum || p.type === "mouse") return [];
+        const first = p.samples[0]!;
+        const dt = e.t - first.t;
+        // Lifting after a pause (no sample inside the window but the first) is no fling.
+        if (dt <= 0 || e.t - p.samples[p.samples.length - 1]!.t > VELOCITY_WINDOW_MS) return [];
+        const vx = (e.x - first.x) / dt;
+        const vy = p.free ? (e.y - first.y) / dt : 0;
+        if (Math.hypot(vx, vy) < MOMENTUM_MIN_PX_MS) return [];
+        this.phase = { k: "fling", vx, vy, free: p.free, lastT: e.t };
         return [];
       }
-      case "pan":
       case "axisScale":
         if (e.pointerId === p.id) this.phase = { k: "idle" };
+        return [];
+      case "drag":
+        if (e.pointerId !== p.id) return [];
+        this.phase = { k: "idle" };
+        return [{ kind: "objectDrag", target: p.target, from: p.from, to: { x: e.x, y: e.y }, done: true }];
+      case "draw": {
+        if (e.pointerId !== p.id) return [];
+        this.phase = { k: "idle" };
+        const b = { x: e.x, y: e.y };
+        // A one-point drawing goes where the drag ended.
+        const a = isOnePoint(p.tool) ? b : p.a;
+        return [{ kind: "draft", draft: null }, ...this.haptic("light"), { kind: "createDrawing", tool: p.tool, a, b }];
+      }
+      case "fling":
         return [];
       case "scrub":
         if (e.pointerId !== p.id) return [];
@@ -390,8 +601,29 @@ export class GestureController {
     const p = this.phase;
     if (p.k === "pending" && p.second) this.pendingTap = null;
     const wasScrub = p.k === "scrub" && p.id === e.pointerId;
-    if (p.k !== "idle") this.phase = this.pointers.size ? { k: "ignore" } : { k: "idle" };
-    return wasScrub ? endScrub() : [];
+    const wasDraw = p.k === "draw" && p.id === e.pointerId;
+    // A cancelled object drag snaps back: done with the original point.
+    const dragBack: GestureAction[] = p.k === "drag" && p.id === e.pointerId ? [{ kind: "objectDrag", target: p.target, from: p.from, to: p.from, done: true }] : [];
+    if (p.k !== "idle" && p.k !== "fling") this.phase = this.pointers.size ? { k: "ignore" } : { k: "idle" };
+    return [...(wasScrub ? endScrub() : []), ...(wasDraw ? [{ kind: "draft" as const, draft: null }] : []), ...dragBack];
+  }
+
+  /** A tap with a drawing tool: one-point tools place at once; two-point tools take two taps. */
+  private tapDraw(tool: DrawingKind, at: Point): GestureAction[] {
+    if (isOnePoint(tool)) return [...this.haptic("light"), { kind: "createDrawing", tool, a: at, b: at }];
+    if (this.placing && this.placing.tool === tool) {
+      const a = this.placing.a;
+      this.placing = null;
+      return [{ kind: "draft", draft: null }, ...this.haptic("light"), { kind: "createDrawing", tool, a, b: at }];
+    }
+    this.placing = { tool, a: at };
+    return [...this.haptic("selection"), { kind: "draft", draft: { kind: tool, a: at, b: at } }];
+  }
+
+  private tapObject(obj: ObjectHit): GestureAction[] {
+    if (obj.kind === "place") return [{ kind: "placeOrder", x: 0, y: obj.y }];
+    if (obj.kind === "order" && obj.part === "cancel") return [...this.haptic("medium"), { kind: "cancelOrder", id: obj.id }];
+    return [...this.haptic("selection"), { kind: "select", target: obj }];
   }
 
   private flushTap(ctx: GestureContext): GestureAction[] {
@@ -403,6 +635,10 @@ export class GestureController {
     const next = hit.slot && hit.slot.t !== ctx.inspectT ? hit.slot.t : null;
     return [{ kind: "inspect", t: next, pinned: next !== null, announce: true }];
   }
+}
+
+function draftOf(kind: DrawingKind, a: Point, b: Point): DrawingDraft {
+  return { kind, a: isOnePoint(kind) ? b : a, b };
 }
 
 function pinchDistance(a: Point, b: Point): number {
@@ -474,7 +710,7 @@ export function applyGesture(vp: Viewport, action: GestureAction, model: ChartMo
   switch (action.kind) {
     case "pan": {
       let next = panSlots(vp, model.slots, action.dxSlots);
-      if (action.dy && !isAutoPrice(next)) {
+      if (action.dy && (action.pricePan || !isAutoPrice(next))) {
         const s = currentPriceScale(next, model);
         if (s) next = manualPrice(next, shiftPriceRange(s, action.dy));
       }
