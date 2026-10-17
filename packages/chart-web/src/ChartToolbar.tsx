@@ -170,7 +170,13 @@ export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChang
             </span>
           </Tip>
         )}
-        {timeframe && onTimeframeChange && <TimeframeSelector value={timeframe} onValueChange={onTimeframeChange} className="mr-1" />}
+        {timeframe && onTimeframeChange && (
+          <>
+            <TimeframeSelector value={timeframe} onValueChange={onTimeframeChange} />
+            {/* Owner-requested divider between the timeframes and the chart icons: a soft bar in a surface tone, not a hard line. */}
+            <span aria-hidden="true" className="mx-1.5 h-5 w-px shrink-0 rounded-full bg-bg-raised" />
+          </>
+        )}
         {onToolsVisibleChange && (
           <Tip label={toolsVisible ? "Hide drawing tools" : "Show drawing tools"}>
             <Button

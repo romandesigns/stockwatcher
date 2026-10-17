@@ -561,7 +561,11 @@ export function CandleChart({
                 </Text>
               )}
               {onTimeframeChange && (
-                <Segmented value={timeframe} onChange={onTimeframeChange} options={TIMEFRAMES.map((tf) => ({ value: tf, label: tf, a11y: tf }))} />
+                <>
+                  <Segmented value={timeframe} onChange={onTimeframeChange} options={TIMEFRAMES.map((tf) => ({ value: tf, label: tf, a11y: tf }))} />
+                  {/* Divider between the timeframes and the chart icons (owner request): a soft bar, not a hard line. */}
+                  <View style={s.divider} />
+                </>
               )}
               <ToolButton label={toolsVisible ? "Hide drawing tools" : "Show drawing tools"} onPress={() => changeToolsVisible(!toolsVisible)} style={toolsVisible ? { backgroundColor: UI.raised } : undefined}>
                 <ToolIcon kind="pencil" color={toolsVisible ? UI.text : UI.textDim} />
@@ -694,6 +698,7 @@ const s = StyleSheet.create({
   surfaceWrap: { flex: 1, minHeight: 120 },
   surface: { flex: 1, minHeight: 120 },
   latest: { position: "absolute" },
+  divider: { width: 1, height: 20, borderRadius: 1, backgroundColor: UI.raised, marginHorizontal: 4 },
   indicators: { flexDirection: "row", gap: 3 },
   count: { color: UI.text, fontSize: 11, fontVariant: ["tabular-nums"] },
   latestButton: { width: 40, height: 40, borderRadius: 20, backgroundColor: UI.panel, alignItems: "center", justifyContent: "center", shadowColor: "#000", shadowOpacity: 0.35, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 6 },
