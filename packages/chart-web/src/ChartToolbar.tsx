@@ -1,0 +1,132 @@
+import {
+  canAddIndicator,
+  DRAWING_KINDS,
+  DRAWING_LABELS,
+  formatPrice,
+  formatSize,
+  INDICATOR_PLACEMENT,
+  indicatorLabel,
+  INDICATOR_PRESETS,
+  toggleIndicator,
+  unrealizedPnl,
+  type DrawingKind,
+  type IndicatorSpec,
+  type PaperPosition,
+} from "@stockwatcher/chart-core";
+import type { ReactNode } from "react";
+import { Button } from "./ui/button.tsx";
+import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuGroup, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "./ui/dropdown-menu.tsx";
+import { ToggleGroup, ToggleGroupItem } from "./ui/toggle-group.tsx";
+import { cn } from "./ui/utils.ts";
+
+const svg = (children: ReactNode) => (
+  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true">
+    {children}
+  </svg>
+);
+
+/** Inline icons (no icon dependency), drawn on a 16 px grid. */
+export const TOOL_ICONS: Readonly<Record<DrawingKind | "cursor", ReactNode>> = {
+  cursor: svg(<path d="M4 2.5v10l3-3 2 4.5 1.6-.7-2-4.4H13z" fill="currentColor" stroke="none" />),
+  trend: svg(
+    <>
+      <path d="M3 12.5 13 3.5" />
+      <circle cx="3" cy="12.5" r="1.3" fill="currentColor" />
+      <circle cx="13" cy="3.5" r="1.3" fill="currentColor" />
+    </>,
+  ),
+  ray: svg(
+    <>
+      <path d="M3 12.5 15 2" />
+      <circle cx="3" cy="12.5" r="1.3" fill="currentColor" />
+    </>,
+  ),
+  hline: svg(<path d="M1.5 8h13" />),
+  vline: svg(<path d="M8 1.5v13" />),
+  rect: svg(<rect x="3" y="4" width="10" height="8" rx="1" fill="currentColor" fillOpacity="0.35" stroke="none" />),
+};
+
+const TrashIcon = svg(<path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5" />);
+
+export interface ChartToolbarProps {
+  /** Active drawing tool; null is the cursor (pan, inspect, select). */
+  tool: DrawingKind | null;
+  onToolChange: (tool: DrawingKind | null) => void;
+  indicators: readonly IndicatorSpec[];
+  onIndicatorsChange: (specs: IndicatorSpec[]) => void;
+  /** A drawing is selected, so Delete applies to it. */
+  canDelete: boolean;
+  onDelete: () => void;
+  /** Simulated trading summary and the ticket button; absent hides both. */
+  trading?: { position: PaperPosition | null; last: number | null; onTrade: () => void } | null;
+  className?: string;
+}
+
+/**
+ * The chart's own toolbar: drawing tools, the indicator menu, delete, and
+ * (with trading) the simulated position and a Trade button. Part of the
+ * chart package, so every screen that shows a chart gets the same tools.
+ * One compact row; selection is a raised segment, and the accent is spent
+ * only on the Trade button (the primary action).
+ */
+export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChange, canDelete, onDelete, trading, className }: ChartToolbarProps) {
+  const pos = trading?.position && trading.position.qty !== 0 ? trading.position : null;
+  const pnl = pos && trading?.last !== null && trading?.last !== undefined ? unrealizedPnl(pos, trading.last) : null;
+  return (
+    <div className={cn("flex flex-wrap items-center gap-1.5", className)}>
+      <ToggleGroup aria-label="Drawing tool" size="sm" spacing={0.5} variant="segmented" value={[tool ?? "cursor"]} onValueChange={(v) => v[0] && onToolChange(v[0] === "cursor" ? null : (v[0] as DrawingKind))}>
+        {(["cursor", ...DRAWING_KINDS] as const).map((k) => (
+          <ToggleGroupItem key={k} value={k} aria-label={k === "cursor" ? "Cursor" : DRAWING_LABELS[k]} title={k === "cursor" ? "Cursor (Esc)" : DRAWING_LABELS[k]} className="w-7 px-0 [&_svg]:size-3.5">
+            {TOOL_ICONS[k]}
+          </ToggleGroupItem>
+        ))}
+      </ToggleGroup>
+      <Button variant="ghost" size="icon" className="size-7 rounded-md text-muted-foreground [&_svg]:size-3.5" aria-label="Delete selected drawing" title="Delete selected drawing (Del)" disabled={!canDelete} onClick={onDelete}>
+        {TrashIcon}
+      </Button>
+      <IndicatorMenu indicators={indicators} onChange={onIndicatorsChange} />
+      {trading && (
+        <div className="ml-auto flex items-center gap-2">
+          {pos && (
+            <span className="font-mono text-[11px] text-muted-foreground tabular-nums" title="Simulated position">
+              {pos.qty > 0 ? "+" : ""}
+              {formatSize(pos.qty)} @ {formatPrice(pos.avgPrice)}
+              {pnl !== null && <span className={cn("ml-1.5", pnl >= 0 ? "text-good" : "text-critical")}>{`${pnl >= 0 ? "+" : "−"}$${Math.abs(pnl).toFixed(2)}`}</span>}
+            </span>
+          )}
+          <Button size="sm" className="h-7 rounded-md px-3 text-xs" onClick={trading.onTrade} title="Simulated order (fills against the replay tape)">
+            Trade
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function IndicatorMenu({ indicators, onChange }: { indicators: readonly IndicatorSpec[]; onChange: (s: IndicatorSpec[]) => void }) {
+  const on = new Set(indicators.map((s) => s.id));
+  const group = (placement: "overlay" | "pane") => INDICATOR_PRESETS.filter((p) => INDICATOR_PLACEMENT[p.kind] === placement);
+  const item = (p: IndicatorSpec) => (
+    <DropdownMenuCheckboxItem key={p.id} checked={on.has(p.id)} disabled={!canAddIndicator(indicators, p)} onCheckedChange={() => onChange(toggleIndicator(indicators, p))} closeOnClick={false}>
+      {indicatorLabel(p)}
+    </DropdownMenuCheckboxItem>
+  );
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger render={<Button variant="ghost" size="sm" className="h-7 rounded-md px-2 text-xs text-muted-foreground" />}>
+        Indicators{indicators.length ? <span className="font-mono text-foreground">{indicators.length}</span> : null}
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" aria-label="Indicators">
+        <DropdownMenuGroup>
+          <DropdownMenuLabel>On the chart · up to 3</DropdownMenuLabel>
+          {group("overlay").map(item)}
+        </DropdownMenuGroup>
+        <DropdownMenuSeparator />
+        <DropdownMenuGroup>
+          <DropdownMenuLabel>Below · up to 2</DropdownMenuLabel>
+          {group("pane").map(item)}
+        </DropdownMenuGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}

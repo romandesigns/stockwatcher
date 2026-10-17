@@ -8,7 +8,7 @@
 // foreground, text-text-faint, text-warning, text-critical, bg-bg-row,
 // bg-bg-raised),
 // and optionally `--chart-*` CSS variables to theme the canvas (theme.ts).
-export { CandleChart, type CandleChartProps, type ChartSeriesLike } from "./CandleChart.tsx";
+export { CandleChart, type CandleChartProps, type ChartSeriesLike, type ChartTrading } from "./CandleChart.tsx";
 export { PriceAxisMenu, PRICE_SCALE_LABELS, type PriceAxisMenuProps } from "./PriceAxisMenu.tsx";
 export { CandleInspector, type CandleInspectorProps } from "./CandleInspector.tsx";
 export { ReplayControls, DEFAULT_SPEEDS, speedLabel, type ReplayControlsProps } from "./ReplayControls.tsx";
@@ -19,3 +19,5 @@ export { VolumeProfile, type VolumeProfileProps } from "./VolumeProfile.tsx";
 export { drawDisplayList, type Ctx2D } from "./draw.ts";
 export { CSS_VARS, DEFAULT_CHART_THEME, readChartTheme } from "./theme.ts";
 export { useCanvas, useChartTheme, type Paint } from "./useCanvas.ts";
+export { ChartToolbar, TOOL_ICONS, type ChartToolbarProps } from "./ChartToolbar.tsx";
+export { OrderTicket, type OrderTicketOrder, type OrderTicketProps } from "./OrderTicket.tsx";

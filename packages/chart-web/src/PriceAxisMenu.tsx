@@ -29,6 +29,8 @@ export interface PriceAxisMenuProps {
   onAutoScale: () => void;
   /** Where focus returns on close (the chart, so keyboard users keep their place). */
   finalFocus?: RefObject<HTMLElement | null>;
+  /** With simulated trading: an item opening the order ticket at the menu's price (touch reaches the ticket here). */
+  trade?: { onBuyAt: () => void };
 }
 
 /**
@@ -38,7 +40,7 @@ export interface PriceAxisMenuProps {
  * anchor), and it is a Base UI menu, so arrow keys, Enter, Escape and
  * type-ahead work and focus returns to the chart.
  */
-export function PriceAxisMenu({ open, onOpenChange, anchor, scaleType, onScaleTypeChange, autoScaled, onAutoScale, finalFocus }: PriceAxisMenuProps) {
+export function PriceAxisMenu({ open, onOpenChange, anchor, scaleType, onScaleTypeChange, autoScaled, onAutoScale, finalFocus, trade }: PriceAxisMenuProps) {
   const virtual = useMemo(() => {
     if (!anchor) return null;
     const { x, y } = anchor;
@@ -48,6 +50,12 @@ export function PriceAxisMenu({ open, onOpenChange, anchor, scaleType, onScaleTy
   return (
     <DropdownMenu open={open && virtual !== null} onOpenChange={(next) => onOpenChange(next)}>
       <DropdownMenuContent anchor={virtual} side="bottom" align="end" sideOffset={2} finalFocus={finalFocus} aria-label="Price axis">
+        {trade && (
+          <>
+            <DropdownMenuItem onClick={trade.onBuyAt}>Order at this price…</DropdownMenuItem>
+            <DropdownMenuSeparator />
+          </>
+        )}
         <DropdownMenuItem onClick={onAutoScale}>
           Auto-scale price axis
           {autoScaled && <span className="text-xs text-muted-foreground">(on)</span>}

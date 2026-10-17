@@ -12,6 +12,8 @@ export { ToggleGroup, ToggleGroupItem } from "./toggle-group.tsx";
 export { cn } from "./utils.ts";
 export {
   DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuItem,
@@ -21,3 +23,4 @@ export {
   DropdownMenuSeparator,
   DropdownMenuShortcut,
 } from "./dropdown-menu.tsx";
+export { Popover, PopoverContent } from "./popover.tsx";

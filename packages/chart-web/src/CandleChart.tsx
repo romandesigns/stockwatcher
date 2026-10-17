@@ -3,6 +3,18 @@ import {
   autoScalePrice,
   buildSlots,
   computeChartModel,
+  computeIndicators,
+  DRAWING_HIT_PX,
+  dragDrawing,
+  drawingFromPoints,
+  hitDrawing,
+  hitTrading,
+  isWorking,
+  lastCandle,
+  orderLinePrice,
+  priceY,
+  snapPrice,
+  yPrice,
   defaultViewport,
   describeSlot,
   ensureVisible,
@@ -15,6 +27,14 @@ import {
   zoom,
   type Candle,
   type ChartModel,
+  type Drawing,
+  type DrawingDraft,
+  type DrawingKind,
+  type IndicatorSpec,
+  type ObjectHit,
+  type OrderModify,
+  type OrderPlace,
+  type PaperState,
   type ChartOptions,
   type ChartState,
   type ChartTheme,
@@ -31,7 +51,9 @@ import {
   type Viewport,
 } from "@stockwatcher/chart-core";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type PointerEvent } from "react";
+import { ChartToolbar } from "./ChartToolbar.tsx";
 import { drawDisplayList } from "./draw.ts";
+import { OrderTicket } from "./OrderTicket.tsx";
 import { PRICE_SCALE_LABELS, PriceAxisMenu } from "./PriceAxisMenu.tsx";
 import { cn } from "./ui/utils.ts";
 import { useCanvas, useChartTheme } from "./useCanvas.ts";
@@ -67,7 +89,52 @@ export interface CandleChartProps {
   className?: string;
   /** Accessible name, e.g. "SMPL 1 minute candles". */
   label?: string;
+  /** The symbol shown: drawings are kept per symbol, and trading filters orders by it. */
+  symbol?: string;
+  /** Show the chart's toolbar: drawing tools, indicators, delete, and Trade when trading is on. */
+  toolbar?: boolean;
+  /** Indicators on the chart. Controlled when onIndicatorsChange is set. */
+  indicators?: IndicatorSpec[];
+  onIndicatorsChange?: (specs: IndicatorSpec[]) => void;
+  /** This symbol's drawings. Controlled when onDrawingsChange is set. */
+  drawings?: Drawing[];
+  onDrawingsChange?: (drawings: Drawing[]) => void;
+  /** Keep uncontrolled indicators and drawings in localStorage under this key. */
+  persistKey?: string;
+  /** Simulated trading: order and position lines, drag to modify, cancel, the ticket. Absent = off. */
+  trading?: ChartTrading | null;
 }
+
+/** What the host wires for simulated trading (the chart never talks to a server). */
+export interface ChartTrading {
+  state: PaperState | null;
+  onPlace: (order: Omit<OrderPlace, "type">) => void;
+  onModify: (change: Omit<OrderModify, "type">) => void;
+  onCancel: (id: string) => void;
+}
+
+const loadJson = <T,>(key: string | undefined, fallback: T): T => {
+  if (!key) return fallback;
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : fallback;
+  } catch {
+    return fallback;
+  }
+};
+const saveJson = (key: string | undefined, value: unknown) => {
+  if (!key) return;
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Private mode or blocked storage: the chart still works, it just forgets.
+  }
+};
+
+let idSeq = 0;
+const newId = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${(idSeq++).toString(36)}`;
+
+type DragState = { target: ObjectHit; drawing?: Drawing; order?: { id: string; price: number; original: number; field: "limitPrice" | "stopPrice" } };
 
 const pointerKind = (t: string | undefined): PointerKind | null => (t === "mouse" || t === "touch" || t === "pen" ? t : null);
 
@@ -84,7 +151,13 @@ const pointerKind = (t: string | undefined): PointerKind | null => (t === "mouse
  *   axis for its menu.
  * Keyboard (when focused): ←/→ step (Shift ×10), Home/End, Esc = latest,
  * +/− zoom, 0 = follow latest, A = auto-scale price, Shift+F10 or the Menu
- * key = price axis menu. Taps, keyboard inspection and scale changes are
+ * key = price axis menu, Delete = remove the selected drawing (Esc first
+ * abandons a drawing being placed, then clears the selection).
+ *
+ * Everything chart-related lives here so any screen reuses it whole: the
+ * toolbar (toolbar prop), indicators, drawings (kept per symbol), and
+ * simulated trading (trading prop): order and position lines, drag a pill
+ * to modify, ✕ to cancel, "+" at the hover price or Trade for the ticket. Taps, keyboard inspection and scale changes are
  * announced through a polite live region; hover and scrub are not, to avoid
  * chatter.
  */
@@ -102,8 +175,48 @@ export function CandleChart({
   barSpacing = 9,
   className,
   label,
+  symbol = "",
+  toolbar = false,
+  indicators: indicatorsProp,
+  onIndicatorsChange,
+  drawings: drawingsProp,
+  onDrawingsChange,
+  persistKey,
+  trading,
 }: CandleChartProps) {
   const theme = useChartTheme(themeProp);
+
+  // Indicators: controlled, or kept here (and persisted with persistKey).
+  const [ownIndicators, setOwnIndicators] = useState<IndicatorSpec[]>(() => loadJson(persistKey && `${persistKey}:indicators`, []));
+  const indicatorSpecs = onIndicatorsChange ? (indicatorsProp ?? []) : ownIndicators;
+  const setIndicators = (next: IndicatorSpec[]) => {
+    if (onIndicatorsChange) onIndicatorsChange(next);
+    else {
+      setOwnIndicators(next);
+      saveJson(persistKey && `${persistKey}:indicators`, next);
+    }
+  };
+
+  // Drawings: controlled for this symbol, or kept here per symbol.
+  const [ownDrawings, setOwnDrawings] = useState<Record<string, Drawing[]>>(() => loadJson(persistKey && `${persistKey}:drawings`, {}));
+  const drawings = onDrawingsChange ? (drawingsProp ?? []) : (ownDrawings[symbol] ?? []);
+  const setDrawings = (next: Drawing[]) => {
+    if (onDrawingsChange) onDrawingsChange(next);
+    else
+      setOwnDrawings((all) => {
+        const out = { ...all, [symbol]: next };
+        saveJson(persistKey && `${persistKey}:drawings`, out);
+        return out;
+      });
+  };
+
+  const [tool, setTool] = useState<DrawingKind | null>(null);
+  const [selected, setSelected] = useState<ObjectHit | null>(null);
+  const [draft, setDraft] = useState<DrawingDraft | null>(null);
+  const [drag, setDrag] = useState<DragState | null>(null);
+  const [ticket, setTicket] = useState<{ open: boolean; at: { x: number; y: number } | null; price: number | null }>({ open: false, at: null, price: null });
+  const [cursor, setCursor] = useState<string | undefined>(undefined);
+  const gesturesRef = useRef<GestureController | null>(null);
   const [ownInspect, setOwnInspect] = useState<number | null>(null);
   const controlled = onInspectChange !== undefined;
   const inspectT = controlled ? (inspectProp ?? null) : ownInspect;
@@ -132,10 +245,34 @@ export function CandleChart({
   const [menu, setMenu] = useState<{ open: boolean; at: { x: number; y: number } | null }>({ open: false, at: null });
 
   const slots = useMemo(() => (series ? buildSlots(series.candles, series.gaps) : []), [series]);
+  const indicatorResults = useMemo(() => computeIndicators(slots, indicatorSpecs), [slots, indicatorSpecs]);
+
+  const last = useMemo(() => lastCandle(slots)?.c ?? null, [slots]);
+  const orders = useMemo(() => (trading?.state?.orders ?? []).filter((o) => o.symbol === symbol && isWorking(o)), [trading?.state, symbol]);
+  const position = useMemo(() => trading?.state?.positions.find((p) => p.symbol === symbol) ?? null, [trading?.state, symbol]);
+  // The "+" place button follows a hovering mouse (touch opens the ticket from the price axis menu or Trade).
+  const placeY = trading && !tool && !drag && pointer && gesturesRef.current?.lastPointerType === "mouse" ? pointer.y : null;
+  const shownDrawings = useMemo(() => (drag?.drawing ? drawings.map((d) => (d.id === drag.drawing!.id ? drag.drawing! : d)) : drawings), [drawings, drag]);
+  const selectedDrawing = selected?.kind === "drawing" ? selected.id : null;
 
   const state: ChartState = useMemo(
-    () => ({ timeframe, candles: series?.candles ?? [], gaps: series?.gaps ?? [], profile: series?.profile ?? null, slots, inspectT, pointer, options, priceScaleType: scaleType }),
-    [timeframe, series, slots, inspectT, pointer, options, scaleType],
+    () => ({
+      timeframe,
+      candles: series?.candles ?? [],
+      gaps: series?.gaps ?? [],
+      profile: series?.profile ?? null,
+      slots,
+      inspectT,
+      pointer,
+      options,
+      priceScaleType: scaleType,
+      indicators: indicatorResults,
+      drawings: shownDrawings,
+      selectedDrawing,
+      draft,
+      trading: trading ? { orders, position, last, dragging: drag?.order ? { id: drag.order.id, price: drag.order.price } : null, placeY } : null,
+    }),
+    [timeframe, series, slots, inspectT, pointer, options, scaleType, indicatorResults, shownDrawings, selectedDrawing, draft, trading, orders, position, last, drag, placeY],
   );
 
   const paint = useCallback((ctx: CanvasRenderingContext2D, size: Size) => drawDisplayList(ctx, layoutChart(computeChartModel(state, vp, size), state, theme)), [state, vp, theme]);
@@ -182,9 +319,82 @@ export function CandleChart({
     setMenu({ open: true, at: { x: r.left + x, y: r.top + y } });
   };
 
+  const tradingLayer = state.trading ?? null;
+  const hitObject = (m: ChartModel) => (x: number, y: number, touch: boolean): ObjectHit | null => {
+    const tol = touch ? DRAWING_HIT_PX.touch : DRAWING_HIT_PX.mouse;
+    if (tradingLayer) {
+      const t = hitTrading(m, tradingLayer, x, y, tol);
+      if (t) return t;
+    }
+    const d = hitDrawing(m, drawings, x, y, tol, selectedDrawing);
+    return d ? { kind: "drawing", ...d } : null;
+  };
+
+  const openTicket = (price: number | null, clientY: number | null) => {
+    const r = canvasRef.current!.getBoundingClientRect();
+    setTicket({ open: true, at: { x: r.right - 4, y: clientY ?? r.top + 40 }, price });
+  };
+
+  const onObjectDrag = (a: Extract<GestureAction, { kind: "objectDrag" }>, m: ChartModel) => {
+    const t = a.target;
+    if (t.kind === "drawing") {
+      const original = drawings.find((d) => d.id === t.id);
+      if (!original) return;
+      const moved = dragDrawing(m, original, t.part, a.from, a.to);
+      if (a.done) {
+        setDrag(null);
+        setDrawings(drawings.map((d) => (d.id === t.id ? moved : d)));
+        setSelected(t);
+      } else setDrag({ target: t, drawing: moved });
+      return;
+    }
+    if (t.kind !== "order" || !m.price) return;
+    const o = orders.find((x) => x.id === t.id);
+    const line = o && orderLinePrice(o);
+    if (!o || !line) return;
+    const price = snapPrice(yPrice(m.price, priceY(m.price, line.price) + (a.to.y - a.from.y)));
+    if (!a.done) {
+      setDrag({ target: t, order: { id: o.id, price, original: line.price, field: line.field } });
+      return;
+    }
+    setDrag(null);
+    if (price !== line.price && price > 0) trading?.onModify({ id: o.id, [line.field]: price });
+  };
+
   const apply = (actions: readonly GestureAction[], m: ChartModel) => {
     for (const a of actions) {
       switch (a.kind) {
+        case "draft":
+          setDraft(a.draft);
+          break;
+        case "createDrawing": {
+          const d = drawingFromPoints(m, newId("d"), a.tool, a.a, a.b);
+          if (d) {
+            setDrawings([...drawings, d]);
+            setSelected({ kind: "drawing", id: d.id, part: "body" });
+          }
+          // Back to the cursor after each drawing, as most charting tools do.
+          setTool(null);
+          break;
+        }
+        case "select":
+          setSelected(a.target);
+          break;
+        case "objectDrag":
+          onObjectDrag(a, m);
+          break;
+        case "cancelOrder":
+          trading?.onCancel(a.id);
+          break;
+        case "placeOrder": {
+          if (!m.price) break;
+          const r = canvasRef.current!.getBoundingClientRect();
+          openTicket(snapPrice(yPrice(m.price, a.y)), r.top + a.y);
+          break;
+        }
+        case "haptic":
+          // No haptic engine worth using on the web.
+          break;
         case "inspect":
           setInspect(a.t);
           if (a.announce) announce(a.t);
@@ -211,11 +421,14 @@ export function CandleChart({
   // The recognizer is pure; this component only feeds it events and runs
   // its actions. `latest` gives native listeners and the tick loop the
   // current render's model, inspection and handlers.
-  const [gestures] = useState(() => new GestureController());
+  const [gestures] = useState(() => new GestureController({ momentum: true, touchPricePan: "manual" }));
+  gesturesRef.current = gestures;
   const suppressCompatMouse = useRef(false);
   const latest = useRef<{ ctx: GestureContext; apply: typeof apply } | null>(null);
+  const auto0 = isAutoPrice(vp);
+  const gestureCtx = (m: ChartModel): GestureContext => ({ model: m, inspectT, priceManual: !auto0, tool, hitObject: hitObject(m) });
   useLayoutEffect(() => {
-    latest.current = { ctx: { model, inspectT }, apply };
+    latest.current = { ctx: gestureCtx(model), apply };
   });
 
   // Long presses and deferred taps are decided by tick(); run it once per
@@ -242,9 +455,30 @@ export function CandleChart({
 
   const feed = (type: GestureInput["type"], e: { clientX: number; clientY: number; timeStamp: number }, extra: Partial<GestureInput> & { pointerType: PointerKind; pointerId?: number }) => {
     const p = local(e);
-    const ctx = { model, inspectT };
+    const ctx = gestureCtx(model);
     apply(gestures.handle({ type, pointerId: 0, x: p.x, y: p.y, t: e.timeStamp, ...extra }, ctx), model);
     pump();
+    // Mouse cursor: what a press here would do.
+    if (extra.pointerType === "mouse" && (type === "move" || type === "down" || type === "up")) {
+      const hit = ctx.hitObject?.(p.x, p.y, false) ?? null;
+      setCursor(
+        gestures.state === "drag"
+          ? "grabbing"
+          : tool
+            ? "crosshair"
+            : hit?.kind === "order"
+              ? hit.part === "cancel"
+                ? "pointer"
+                : "ns-resize"
+              : hit?.kind === "place"
+                ? "pointer"
+                : hit?.kind === "drawing"
+                  ? hit.part === "body"
+                    ? "move"
+                    : "grab"
+                  : undefined,
+      );
+    }
   };
 
   const onPointer = (type: "down" | "move" | "up" | "cancel" | "leave") => (e: PointerEvent<HTMLCanvasElement>) => {
@@ -259,7 +493,7 @@ export function CandleChart({
     // contextmenu is a PointerEvent in current browsers; fall back to the last press's type.
     const kind = pointerKind((e.nativeEvent as { pointerType?: string }).pointerType) ?? gestures.lastPointerType;
     const p = local(e);
-    const acts = gestures.handle({ type: "contextmenu", pointerId: 0, pointerType: kind, x: p.x, y: p.y, t: e.timeStamp }, { model, inspectT });
+    const acts = gestures.handle({ type: "contextmenu", pointerId: 0, pointerType: kind, x: p.x, y: p.y, t: e.timeStamp }, gestureCtx(model));
     // Suppress the browser's menu on the price axis (ours opens) and for every
     // touch long press (the chart's own long press is in charge); elsewhere a
     // mouse right-click keeps the browser's menu.
@@ -306,9 +540,34 @@ export function CandleChart({
     };
   }, [canvasRef, gestures]);
 
+  const changeTool = (t: DrawingKind | null) => {
+    apply(gestures.cancelPlacing(), model);
+    setDraft(null);
+    setTool(t);
+  };
+
+  const deleteSelected = () => {
+    if (selected?.kind !== "drawing") return;
+    setDrawings(drawings.filter((d) => d.id !== selected.id));
+    setSelected(null);
+  };
+
   const onKeyDown = (e: KeyboardEvent<HTMLCanvasElement>) => {
     const plotW = model.geometry.plot.w;
     let next: number | null | undefined;
+    // Escape unwinds one layer at a time: a drawing being placed, the tool, the selection, then inspection.
+    if (e.key === "Escape" && (gestures.isPlacing || tool || selected)) {
+      e.preventDefault();
+      if (gestures.isPlacing) apply(gestures.cancelPlacing(), model);
+      else if (tool) changeTool(null);
+      else setSelected(null);
+      return;
+    }
+    if ((e.key === "Delete" || e.key === "Backspace") && selected?.kind === "drawing") {
+      e.preventDefault();
+      deleteSelected();
+      return;
+    }
     if (e.key === "ContextMenu" || (e.key === "F10" && e.shiftKey)) {
       e.preventDefault();
       const g = model.geometry;
@@ -357,8 +616,8 @@ export function CandleChart({
     if (idx !== null && idx >= 0) setVp((v) => ensureVisible(v, slots, idx, plotW));
   };
 
-  return (
-    <div ref={containerRef} className={cn("relative min-h-0 min-w-0", className)}>
+  const canvasEl = (
+    <div ref={containerRef} className={cn("relative min-h-0 min-w-0", toolbar ? "flex-1" : className)}>
       <canvas
         ref={canvasRef}
         tabIndex={0}
@@ -369,7 +628,13 @@ export function CandleChart({
         data-price-range={auto ? "auto" : "manual"}
         // touch-pan-y: the browser keeps vertical page scroll and hands us
         // horizontal pans and pinches; no callout or selection on long press.
-        className="absolute inset-0 size-full touch-pan-y rounded-md outline-none select-none [-webkit-touch-callout:none] focus-visible:ring-2 focus-visible:ring-ring"
+        // With a manual price range or a drawing tool, vertical finger moves
+        // belong to the chart (price pan, drawing), so touch-action is none.
+        className={cn(
+          "absolute inset-0 size-full rounded-md outline-none select-none [-webkit-touch-callout:none] focus-visible:ring-2 focus-visible:ring-ring",
+          auto && !tool ? "touch-pan-y" : "touch-none",
+        )}
+        style={cursor ? { cursor } : undefined}
         onPointerDown={onPointer("down")}
         onPointerMove={onPointer("move")}
         onPointerUp={onPointer("up")}
@@ -395,8 +660,43 @@ export function CandleChart({
             setVp(autoScalePrice);
           }}
           finalFocus={canvasRef}
+          trade={
+            trading && model.price && menu.at
+              ? {
+                  onBuyAt: () => openTicket(snapPrice(yPrice(model.price!, menu.at!.y - canvasRef.current!.getBoundingClientRect().top)), menu.at!.y),
+                }
+              : undefined
+          }
         />
       )}
+      {trading && (
+        <OrderTicket
+          open={ticket.open}
+          onOpenChange={(open) => setTicket((t) => ({ ...t, open }))}
+          anchor={ticket.at}
+          symbol={symbol}
+          last={last}
+          price={ticket.price}
+          onSubmit={(o) => trading.onPlace({ ...o, clientOrderId: newId("c") })}
+          finalFocus={canvasRef}
+        />
+      )}
+    </div>
+  );
+
+  if (!toolbar) return canvasEl;
+  return (
+    <div className={cn("flex min-h-0 min-w-0 flex-col gap-1.5", className)}>
+      <ChartToolbar
+        tool={tool}
+        onToolChange={changeTool}
+        indicators={indicatorSpecs}
+        onIndicatorsChange={setIndicators}
+        canDelete={selected?.kind === "drawing"}
+        onDelete={deleteSelected}
+        trading={trading ? { position, last, onTrade: () => openTicket(null, null) } : null}
+      />
+      {canvasEl}
     </div>
   );
 }

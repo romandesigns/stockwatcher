@@ -7,15 +7,19 @@ const buttonVariants = cva(
   {
     variants: {
       // Cut down to what the chart controls use. default spends the accent
-      // (primary actions: play/pause); secondary is the neutral one.
+      // (primary actions: play/pause, Trade); secondary is the neutral one;
+      // ghost is a toolbar button.
       variant: {
         default: "bg-primary text-primary-foreground hover:bg-primary/80",
         secondary:
           "bg-secondary text-secondary-foreground hover:bg-[color-mix(in_oklch,var(--secondary),var(--foreground)_5%)] aria-expanded:bg-secondary aria-expanded:text-secondary-foreground",
+        // Toolbar buttons: no surface until hovered or open.
+        ghost: "bg-transparent hover:bg-bg-row hover:text-foreground aria-expanded:bg-bg-row aria-expanded:text-foreground",
       },
       size: {
         default:
           "h-8 gap-1.5 px-2.5 has-data-[icon=inline-end]:pr-2 has-data-[icon=inline-start]:pl-2",
+        sm: "h-7 gap-1 px-2 text-xs",
         icon: "size-8",
       },
     },

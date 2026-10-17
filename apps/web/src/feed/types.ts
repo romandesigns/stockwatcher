@@ -1,4 +1,4 @@
-import type { ChartMessage, ReplayControl, Timeframe } from "@stockwatcher/chart-core";
+import type { ChartMessage, OrderCancel, OrderModify, OrderPlace, PaperMessage, PaperState, ReplayControl, Timeframe } from "@stockwatcher/chart-core";
 
 export interface ChartSubscription {
   symbol: string;
@@ -18,5 +18,17 @@ export interface ChartFeed {
   /** Sends a snapshot first, then updates, until the returned function is called. */
   subscribe(sub: ChartSubscription, emit: (m: ChartMessage) => void): () => void;
   control(cmd: ReplayCommand): void;
+  /** The simulated paper broker (server feed only; the fixture has none, so trading stays off). */
+  readonly paper?: PaperChannel;
   close(): void;
+}
+
+export type PaperCommand = OrderPlace | OrderModify | OrderCancel | { type: "paper.reset" };
+
+/** docs/architecture/chart-trading-sim.md: state is broadcast whole; fills are events. */
+export interface PaperChannel {
+  /** Latest paper.state (it arrives right after welcome, before anyone may listen). */
+  latest(): PaperState | null;
+  subscribe(fn: (m: PaperMessage) => void): () => void;
+  send(cmd: PaperCommand): void;
 }

@@ -1,6 +1,6 @@
-import { parseChartMessage, type ChartMessage, type ChartSubscribe, type ReplayControl } from "@stockwatcher/chart-core";
+import { parseChartMessage, parsePaperMessage, type ChartMessage, type ChartSubscribe, type PaperMessage, type PaperState, type ReplayControl } from "@stockwatcher/chart-core";
 import { createWsClient, sameOriginWsUrl, type ConnectionStatus, type WebSocketLike } from "@stockwatcher/shared";
-import type { ChartFeed, ChartSubscription, ReplayCommand } from "./types.ts";
+import type { ChartFeed, ChartSubscription, PaperCommand, ReplayCommand } from "./types.ts";
 
 export interface ServerFeedOptions {
   url?: string;
@@ -23,8 +23,10 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
   const listeners = new Set<(m: ChartMessage) => void>();
   const active = new Set<ChartSubscription>();
   let raw: WebSocketLike | null = null;
+  const paperListeners = new Set<(m: PaperMessage) => void>();
+  let paperState: PaperState | null = null;
 
-  const sendRaw = (msg: ChartSubscribe | ReplayControl) => {
+  const sendRaw = (msg: ChartSubscribe | ReplayControl | PaperCommand) => {
     if (raw && raw.readyState === 1) raw.send(JSON.stringify(msg));
   };
   const resubscribe = () => {
@@ -47,8 +49,17 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
       let inner: WebSocketLike["onmessage"] = null;
       socket.addEventListener("message", (ev) => {
         const chart = parseChartMessage(ev.data);
-        if (chart) for (const l of listeners) l(chart);
-        else inner?.({ data: ev.data });
+        if (chart) {
+          for (const l of listeners) l(chart);
+          return;
+        }
+        const paper = parsePaperMessage(ev.data);
+        if (paper) {
+          if (paper.type === "paper.state") paperState = paper;
+          for (const l of paperListeners) l(paper);
+          return;
+        }
+        inner?.({ data: ev.data });
       });
       Object.defineProperty(socket, "onmessage", { configurable: true, get: () => inner, set: (fn: WebSocketLike["onmessage"]) => (inner = fn) });
       raw = socket as unknown as WebSocketLike;
@@ -70,10 +81,19 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
     control(cmd: ReplayCommand) {
       sendRaw({ type: "replay.control", ...cmd });
     },
+    paper: {
+      latest: () => paperState,
+      subscribe(fn) {
+        paperListeners.add(fn);
+        return () => paperListeners.delete(fn);
+      },
+      send: (cmd) => sendRaw(cmd),
+    },
     close() {
       client.close();
       listeners.clear();
       active.clear();
+      paperListeners.clear();
     },
   };
 }
