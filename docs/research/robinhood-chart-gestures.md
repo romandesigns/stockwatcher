@@ -83,29 +83,40 @@ The data runs down to **2-tick live candles**, with 80+ indicators and web/mobil
 
 With auto-send off, a shortcut opens a prefilled order form; with auto-send on, it submits.
 
-## Compared with Stockwatcher's chart (`packages/chart-web`, today)
+## Compared with Stockwatcher's chart (`packages/chart-web`, after the gesture work of 2026-10-17)
+
+The gestures are recognized by a pure state machine in `chart-core` (`src/gestures.ts`, `GestureController`),
+which takes normalized pointer input and returns actions, so the web and the future React Native renderer share
+one set of rules and thresholds. Price scale types and the auto/manual price range live in `chart-core` too
+(`scale.ts`, `Viewport.price`, `ChartState.priceScaleType`).
 
 | Robinhood | Stockwatcher now | Note |
 |---|---|---|
-| Pinch to zoom (mobile) | ✗ (deferred) | **Gap**: add pinch zoom |
-| Swipe to pan (mobile) | ✗ (the page scrolls vertically; tap pins a candle) | **Gap**: horizontal pan on touch |
-| Long press to scrub (mobile) | Tap pins a candle | **Adopt** long-press scrubbing with live inspector updates |
-| Drag the y-axis to rescale; double-tap to auto-scale | ✗ | **Gap**: price-axis drag and double-tap reset |
-| Wheel zoom (desktop) | ✓ (zooms around the pointer) | Parity |
-| Drag to pan (desktop) | ✓ | Parity |
-| Hover readout | ✓ (crosshair and inspector) | Parity |
-| Right-click y-axis: auto-scale, linear/% /log | ✗ | **Gap**: auto-scale and scale modes |
+| Pinch to zoom (mobile) | ✓ Pinch zooms **time only** around the fingers' midpoint; the midpoint's travel pans | Parity. Price is never pinched, as in Robinhood |
+| Swipe to pan (mobile) | ✓ A horizontal swipe pans; a mostly vertical one is released so the page scrolls (`touch-action: pan-y`) | Parity. Direction is decided once the finger leaves an 8 px slop. No momentum (inertia) yet |
+| Long press to scrub (mobile) | ✓ Long press (450 ms) scrubs: the inspector and crosshair follow the finger, clamped to the plot; lifting returns to the latest candle | Parity, without haptics (the web has no usable haptics; React Native can add them on entering scrub) |
+| Tap | Tap pins a candle; tapping it again returns to the latest | Ours. The pin waits out the 300 ms double-tap window so a double tap never pins first |
+| Drag the y-axis to rescale (mobile) | ✓ Drag the price axis (touch or mouse): up zooms in, down zooms out, around the plot's centre; the range becomes **manual** | Parity. The axis drag claims the touch, so it never scrolls the page |
+| Double-tap to auto-scale (mobile) | ✓ Double tap (300 ms, 24 px) in the plot or on the price axis auto-scales; on the time axis it follows the latest candle | Parity |
+| Wheel zoom (desktop) | ✓ Zooms time around the pointer; over the price axis it scales price; Ctrl+wheel (trackpad pinch) zooms time | Parity, plus price-axis wheel |
+| Drag to pan (desktop) | ✓ Drag pans time, and also price while the range is manual | Parity |
+| Hover readout | ✓ Crosshair and inspector | Parity |
+| Double-click (desktop) | ✓ Plot or price axis: auto-scale price. Time axis: follow the latest candle | Changed: double-click in the plot used to follow latest (still on the time axis, `0` and `End`) |
+| Right-click y-axis: auto-scale, Linear (price), Linear (%), Logarithmic | ✓ Right-click (or long-press, or Shift+F10 / the Menu key) the price axis opens `PriceAxisMenu`: auto-scale and the three scale types | Parity for these four items. Legend's "fit indicators/orders/positions" and options price type do not apply (none of those exist here) |
+| Scale types | ✓ Linear; Linear (%) from the first visible candle's open (moves as you pan); Logarithmic (1-2-5 × 10ⁿ ticks once the range spans 2×) | Hit testing, the profile overlay, the crosshair label and the last-price tag all use the same mapping |
 | Preset ranges and interval picker | Timeframe selector 15s/30s/1m/5m | Ours fits the spec; preset ranges could come later |
-| Keyboard | ←/→ (Shift ×10), Home/End/Esc, +/−/0 | Ours is richer for chart navigation; Legend's shortcuts are for trading and layouts |
+| Keyboard | ←/→ (Shift ×10), Home/End/Esc, +/−/0, **A** = auto-scale price, **Shift+F10** = price axis menu | Ours is richer for chart navigation; Legend's shortcuts are for trading and layouts |
 | Drawing tools, indicators, chart trading | ✗ | Out of scope for spec 01 (no strategies or trading this phase) |
 
-**Suggested next chart step, gestures only:**
-- **Touch:** pinch zoom, horizontal swipe pan, and long-press scrub.
-- **Price axis:** drag the y-axis to rescale, and double-tap or double-click to auto-scale.
-- **Scale menu:** a y-axis menu with auto-scale and linear/% /log.
+Scale changes are announced through the chart's polite live region ("Price axis: Logarithmic.", "Price axis
+scaled manually…", "Price axis auto-scaled."); hover and scrub are not announced.
 
-All of this goes in `chart-core` (hit regions and viewport math) so the web and React Native renderers share
-it.
+**Not done, or not possible in a browser:**
+- Haptic feedback on entering scrub (no reliable web API; `navigator.vibrate` is absent on iOS and not a tick).
+- Pan momentum (fling). Kept out deliberately; it needs a per-frame decay driven by the renderer.
+- Vertical price panning by touch: a vertical finger move belongs to the page scroll, so manual-range price panning
+  is mouse-only for now.
+- The React Native mapping of these inputs (responder or Gesture Handler events onto `GestureInput`).
 
 ## Sources
 - [Using advanced charts | Robinhood](https://robinhood.com/us/en/support/articles/using-advanced-charts)

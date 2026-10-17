@@ -1,3 +1,4 @@
+import { formatPrice } from "./format.ts";
 import { lowerBound } from "./store.ts";
 import { etParts, formatEtDate, formatEtTime, tradingDayOf } from "./time.ts";
 import type { Candle, Gap } from "./types.ts";
@@ -43,7 +44,25 @@ export interface Viewport {
   anchorFrac: number;
   /** Empty slots kept right of the latest candle while following. */
   rightMargin: number;
+  /**
+   * Price axis range. Absent or "auto" fits the visible candles (the default,
+   * and what a double-tap / double-click / "A" returns to); "manual" holds
+   * the explicit range a price-axis drag produced, in price units whatever
+   * the scale type, so switching linear/percent/log keeps the range.
+   */
+  price?: PriceRangeMode;
 }
+
+export type PriceRangeMode = { mode: "auto" } | { mode: "manual"; lo: number; hi: number };
+
+/**
+ * How price maps to y. "linear": y is affine in price. "percent": the same
+ * mapping as linear (a percent of a fixed base is affine in price), but ticks
+ * and labels are percent changes from the first visible candle's open, so
+ * the base moves as you pan (Robinhood Legend's "Linear (%)"). "log": y is
+ * affine in ln(price), so equal percent moves have equal heights.
+ */
+export type PriceScaleType = "linear" | "percent" | "log";
 
 export const MIN_BAR_SPACING = 2;
 export const MAX_BAR_SPACING = 48;
@@ -72,6 +91,11 @@ function withEdge(vp: Viewport, slots: readonly Slot[], edge: number): Viewport 
 /** Pans by dx pixels (positive = drag right = look back in time). */
 export function pan(vp: Viewport, slots: readonly Slot[], dx: number): Viewport {
   return withEdge(vp, slots, rightEdge(vp, slots) - dx / vp.barSpacing);
+}
+
+/** Pans by whole or fractional slots (positive = look back in time). */
+export function panSlots(vp: Viewport, slots: readonly Slot[], dxSlots: number): Viewport {
+  return withEdge(vp, slots, rightEdge(vp, slots) - dxSlots);
 }
 
 /** Zooms by `factor` keeping the slot under `anchorX` (px from plot left) fixed. */
@@ -138,10 +162,30 @@ export interface PriceScale {
   hi: number;
   top: number;
   bottom: number;
+  /** Absent = linear (standalone profile panels never set it). */
+  type?: PriceScaleType;
+  /** Percent mode's 0 %: the first visible candle's open. */
+  base?: number;
 }
 
-/** Visible price range over candles [from, to] with fractional padding. */
-export function priceRange(slots: readonly Slot[], from: number, to: number, pad = 0.08): { lo: number; hi: number } | null {
+/** Smallest price a log scale accepts; real prices here are >= $0.0001. */
+const LOG_FLOOR = 1e-6;
+
+/** Price → the space y is affine in (ln for log, price otherwise). */
+export function priceToUnit(type: PriceScaleType | undefined, p: number): number {
+  return type === "log" ? Math.log(Math.max(LOG_FLOOR, p)) : p;
+}
+
+export function unitToPrice(type: PriceScaleType | undefined, u: number): number {
+  return type === "log" ? Math.exp(u) : u;
+}
+
+/**
+ * Visible price range over candles [from, to] with fractional padding. For
+ * a log scale the padding is applied in log space, so it stays a fixed share
+ * of the height and lo can never reach zero.
+ */
+export function priceRange(slots: readonly Slot[], from: number, to: number, pad = 0.08, type: PriceScaleType = "linear"): { lo: number; hi: number } | null {
   let lo = Infinity;
   let hi = -Infinity;
   for (let i = from; i <= to; i++) {
@@ -157,16 +201,95 @@ export function priceRange(slots: readonly Slot[], from: number, to: number, pad
     lo -= half;
     hi += half;
   }
+  if (type === "log") {
+    const ul = priceToUnit("log", lo);
+    const uh = priceToUnit("log", hi);
+    const p = (uh - ul) * pad;
+    return { lo: Math.exp(ul - p), hi: Math.exp(uh + p) };
+  }
   const p = (hi - lo) * pad;
   return { lo: lo - p, hi: hi + p };
 }
 
 export function priceY(s: PriceScale, p: number): number {
-  return s.top + ((s.hi - p) / (s.hi - s.lo)) * (s.bottom - s.top);
+  const ul = priceToUnit(s.type, s.lo);
+  const uh = priceToUnit(s.type, s.hi);
+  return s.top + ((uh - priceToUnit(s.type, p)) / (uh - ul)) * (s.bottom - s.top);
 }
 
 export function yPrice(s: PriceScale, y: number): number {
-  return s.hi - ((y - s.top) / (s.bottom - s.top)) * (s.hi - s.lo);
+  const ul = priceToUnit(s.type, s.lo);
+  const uh = priceToUnit(s.type, s.hi);
+  return unitToPrice(s.type, uh - ((y - s.top) / (s.bottom - s.top)) * (uh - ul));
+}
+
+/** Percent change of p from the scale's base (percent mode's axis value). */
+export function pricePercent(s: PriceScale, p: number): number {
+  return s.base ? (p / s.base - 1) * 100 : 0;
+}
+
+/** "+1.25%", "\u22120.50%" (a true minus sign), "0.00%". */
+export function formatPercentAxis(pct: number, decimals = 2): string {
+  const r = Number(pct.toFixed(decimals));
+  if (r === 0) return `${(0).toFixed(decimals)}%`;
+  return `${r > 0 ? "+" : "\u2212"}${Math.abs(r).toFixed(decimals)}%`;
+}
+
+/** One axis value as the axis words it: a price, or a percent in percent mode. */
+export function formatAxisValue(s: PriceScale, p: number, decimals?: number): string {
+  if (s.type === "percent" && s.base) return formatPercentAxis(pricePercent(s, p));
+  return formatPrice(p, decimals);
+}
+
+// Price zoom limits: span / |mid| for linear and percent, the ln-span for log.
+const MIN_REL_SPAN = 1e-5;
+const MAX_REL_SPAN = 50;
+const MAX_LOG_SPAN = Math.log(1e4);
+
+/**
+ * Scales the price range by `factor` around the price at `anchorY`. factor
+ * > 1 zooms in (a smaller range, taller candles), < 1 zooms out. Works in the
+ * scale's own space, so a log axis zooms evenly in percent terms.
+ */
+export function scalePriceRange(s: PriceScale, factor: number, anchorY: number): { lo: number; hi: number } {
+  const ul = priceToUnit(s.type, s.lo);
+  const uh = priceToUnit(s.type, s.hi);
+  const ua = priceToUnit(s.type, yPrice(s, anchorY));
+  const f = factor > 0 && Number.isFinite(factor) ? factor : 1;
+  let nl = ua - (ua - ul) / f;
+  let nh = ua + (uh - ua) / f;
+  const span = nh - nl;
+  const mid = Math.max(Math.abs((nl + nh) / 2), 1e-9);
+  const minSpan = s.type === "log" ? MIN_REL_SPAN : mid * MIN_REL_SPAN;
+  const maxSpan = s.type === "log" ? MAX_LOG_SPAN : mid * MAX_REL_SPAN;
+  const clamped = Math.min(maxSpan, Math.max(minSpan, span));
+  if (clamped !== span) {
+    // Keep the anchor at the same height while clamping.
+    const k = (ua - nl) / span;
+    nl = ua - k * clamped;
+    nh = nl + clamped;
+  }
+  return { lo: unitToPrice(s.type, nl), hi: unitToPrice(s.type, nh) };
+}
+
+/** Moves the price range with a vertical drag of dy pixels: the content follows the pointer. */
+export function shiftPriceRange(s: PriceScale, dy: number): { lo: number; hi: number } {
+  const ul = priceToUnit(s.type, s.lo);
+  const uh = priceToUnit(s.type, s.hi);
+  const du = (dy / (s.bottom - s.top)) * (uh - ul);
+  return { lo: unitToPrice(s.type, ul + du), hi: unitToPrice(s.type, uh + du) };
+}
+
+export function manualPrice(vp: Viewport, range: { lo: number; hi: number }): Viewport {
+  return { ...vp, price: { mode: "manual", lo: range.lo, hi: range.hi } };
+}
+
+export function autoScalePrice(vp: Viewport): Viewport {
+  return isAutoPrice(vp) ? vp : { ...vp, price: { mode: "auto" } };
+}
+
+export function isAutoPrice(vp: Viewport): boolean {
+  return vp.price === undefined || vp.price.mode === "auto";
 }
 
 export interface NiceTicks {
@@ -175,8 +298,11 @@ export interface NiceTicks {
   values: number[];
 }
 
-/** "Nice" steps of 1, 2, 2.5 and 5 × 10^k, at most ~maxCount ticks in [lo, hi]. */
-export function niceTicks(lo: number, hi: number, maxCount: number): NiceTicks {
+/**
+ * "Nice" steps of 1, 2, 2.5 and 5 × 10^k, at most ~maxCount ticks in [lo, hi].
+ * `minDecimals` defaults to 2 because prices always show at least cents.
+ */
+export function niceTicks(lo: number, hi: number, maxCount: number, minDecimals = 2): NiceTicks {
   const range = hi - lo;
   if (!(range > 0) || maxCount < 1) return { step: 0, decimals: 2, values: [] };
   const raw = range / maxCount;
@@ -185,12 +311,70 @@ export function niceTicks(lo: number, hi: number, maxCount: number): NiceTicks {
   const nice = norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 2.5 ? 2.5 : norm <= 5 ? 5 : 10;
   const step = nice * mag;
   const stepDecimals = Math.max(0, -Math.floor(Math.log10(step) + 1e-9) + (nice === 2.5 ? 1 : 0));
-  // Prices always show at least cents.
-  const decimals = Math.max(2, stepDecimals);
+  const decimals = Math.max(minDecimals, stepDecimals);
   const values: number[] = [];
   const first = Math.ceil(lo / step - 1e-9);
   for (let k = first; k * step <= hi + step * 1e-9; k++) values.push(Number((k * step).toFixed(decimals + 2)));
   return { step, decimals, values };
+}
+
+export interface PriceTicks extends NiceTicks {
+  /** Axis label per value (a price, or a percent in percent mode). */
+  labels: string[];
+}
+
+/** A log range narrower than this (hi / lo) is nearly linear, so it gets linear nice steps. */
+const LOG_LINEAR_RATIO = 2;
+const LOG_MANTISSAS: readonly (readonly number[])[] = [[1, 2, 3, 4, 5, 6, 7, 8, 9], [1, 2, 5], [1]];
+
+/**
+ * Ticks and labels for a price axis of any scale type. Values are always
+ * prices (so the grid, the profile and hit testing share one mapping); only
+ * which values and how they are worded depend on the type:
+ * - linear: niceTicks over the price range.
+ * - percent: niceTicks over the percent range from the base, mapped back to
+ *   prices and labelled "+1.50%".
+ * - log: m × 10^k for the densest mantissa set (1..9, then 1-2-5, then
+ *   decades) that fits maxCount, which comes out roughly evenly spaced on a
+ *   log axis, once the range spans at least 2×.
+ */
+export function priceAxisTicks(s: PriceScale, maxCount: number): PriceTicks {
+  if (s.type === "percent" && s.base) {
+    const base = s.base;
+    const t = niceTicks(pricePercent(s, s.lo), pricePercent(s, s.hi), maxCount, 0);
+    const d = Math.min(4, Math.max(2, t.decimals));
+    return { step: t.step, decimals: d, values: t.values.map((v) => base * (1 + v / 100)), labels: t.values.map((v) => formatPercentAxis(v, d)) };
+  }
+  if (s.type === "log" && s.lo > 0 && s.hi / s.lo >= LOG_LINEAR_RATIO) {
+    for (const m of LOG_MANTISSAS) {
+      const values = logCandidates(s.lo, s.hi, m);
+      if (values.length <= maxCount || m.length === 1) {
+        // Decades only and still too many: keep every k-th one.
+        const k = Math.max(1, Math.ceil(values.length / Math.max(1, maxCount)));
+        const kept = values.filter((_, i) => i % k === 0);
+        return { step: 0, decimals: 2, values: kept, labels: kept.map((v) => formatPrice(v, Math.max(2, exactDecimals(v)))) };
+      }
+    }
+  }
+  const t = niceTicks(s.lo, s.hi, maxCount);
+  return { ...t, labels: t.values.map((v) => formatPrice(v, t.decimals)) };
+}
+
+function logCandidates(lo: number, hi: number, mantissas: readonly number[]): number[] {
+  const out: number[] = [];
+  for (let e = Math.floor(Math.log10(lo)); e <= Math.ceil(Math.log10(hi)); e++) {
+    for (const m of mantissas) {
+      const v = Number((m * 10 ** e).toPrecision(6));
+      if (v >= lo && v <= hi) out.push(v);
+    }
+  }
+  return out;
+}
+
+/** Decimals needed to print v exactly (0.005 → 3). */
+function exactDecimals(v: number): number {
+  for (let d = 0; d <= 6; d++) if (Math.abs(Number(v.toFixed(d)) - v) < 1e-9) return d;
+  return 6;
 }
 
 const TIME_STEPS = [15_000, 30_000, 60_000, 120_000, 300_000, 600_000, 900_000, 1_800_000, 3_600_000, 7_200_000, 14_400_000];

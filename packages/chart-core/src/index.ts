@@ -11,3 +11,4 @@ export * from "./displayList.ts";
 export * from "./layout.ts";
 export * from "./timeline.ts";
 export * from "./inspect.ts";
+export * from "./gestures.ts";

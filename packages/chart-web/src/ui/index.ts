@@ -10,3 +10,14 @@ export { Button, buttonVariants } from "./button.tsx";
 export { Toggle, toggleVariants } from "./toggle.tsx";
 export { ToggleGroup, ToggleGroupItem } from "./toggle-group.tsx";
 export { cn } from "./utils.ts";
+export {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuShortcut,
+} from "./dropdown-menu.tsx";

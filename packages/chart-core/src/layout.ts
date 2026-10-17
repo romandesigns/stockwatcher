@@ -2,8 +2,9 @@ import { hatch, sortByLayer, type ChartTheme, type DisplayList, type Rect } from
 import { formatPrice } from "./format.ts";
 import {
   buildSlots,
+  formatAxisValue,
   indexScale,
-  niceTicks,
+  priceAxisTicks,
   priceRange,
   priceY,
   slotAt,
@@ -11,8 +12,9 @@ import {
   timeTicks,
   yPrice,
   type IndexScale,
-  type NiceTicks,
   type PriceScale,
+  type PriceScaleType,
+  type PriceTicks,
   type Slot,
   type Viewport,
 } from "./scale.ts";
@@ -69,6 +71,8 @@ export interface ChartState {
   inspectT: number | null;
   /** Pointer position for the horizontal crosshair; null when the pointer is away. */
   pointer: Point | null;
+  /** Price axis scale type; default "linear". Whether the range is auto or manual lives in the Viewport. */
+  priceScaleType?: PriceScaleType;
   options?: Partial<ChartOptions>;
 }
 
@@ -85,7 +89,7 @@ export interface ChartModel {
   slots: Slot[];
   index: IndexScale;
   price: PriceScale | null;
-  priceTicks: NiceTicks;
+  priceTicks: PriceTicks;
   volumeMax: number;
   timeframeMs: number;
   inspected: number | null;
@@ -117,9 +121,16 @@ export function computeChartModel(state: ChartState, viewport: Viewport, size: S
   const geometry = chartGeometry(size, options);
   const slots = state.slots ?? buildSlots(state.candles, state.gaps);
   const index = indexScale(viewport, slots, geometry.plot.x, geometry.plot.x + geometry.plot.w);
-  const range = priceRange(slots, index.from, index.to);
-  const price = range ? { lo: range.lo, hi: range.hi, top: geometry.plot.y, bottom: geometry.plot.y + geometry.plot.h } : null;
-  const priceTicks = price ? niceTicks(price.lo, price.hi, Math.max(2, Math.floor(geometry.plot.h / 48))) : niceTicks(0, 0, 0);
+  const type = state.priceScaleType ?? "linear";
+  const auto = priceRange(slots, index.from, index.to, 0.08, type);
+  // A manual range (from a price-axis drag) holds until auto-scale; it still
+  // needs candles to exist, so an empty chart has no price scale either way.
+  let range = auto && viewport.price?.mode === "manual" ? { lo: viewport.price.lo, hi: viewport.price.hi } : auto;
+  // A manual range dragged below zero on a linear axis cannot be drawn in log.
+  if (range && type === "log" && range.lo <= 0) range = { lo: Math.max(range.hi * 1e-3, 1e-6), hi: range.hi };
+  const base = type === "percent" ? firstVisibleOpen(slots, index.from, index.to) : undefined;
+  const price: PriceScale | null = range && range.hi > range.lo ? { lo: range.lo, hi: range.hi, top: geometry.plot.y, bottom: geometry.plot.y + geometry.plot.h, type, ...(base !== undefined ? { base } : {}) } : null;
+  const priceTicks = price ? priceAxisTicks(price, Math.max(2, Math.floor(geometry.plot.h / 48))) : { step: 0, decimals: 2, values: [], labels: [] };
   let volumeMax = 0;
   for (let i = index.from; i <= index.to; i++) {
     const s = slots[i];
@@ -127,6 +138,15 @@ export function computeChartModel(state: ChartState, viewport: Viewport, size: S
   }
   const inspected = state.inspectT === null ? (slots.length ? slots.length - 1 : null) : slotIndexOf(slots, state.inspectT);
   return { options, geometry, slots, index, price, priceTicks, volumeMax, timeframeMs: TIMEFRAME_MS[state.timeframe], inspected };
+}
+
+/** Percent mode's base: the open of the first candle in [from, to]. */
+export function firstVisibleOpen(slots: readonly Slot[], from: number, to: number): number | undefined {
+  for (let i = Math.max(0, from); i <= to; i++) {
+    const s = slots[i];
+    if (s?.kind === "candle") return s.candle.o;
+  }
+  return undefined;
 }
 
 export type HitRegion = "plot" | "volume" | "priceAxis" | "timeAxis" | "none";
@@ -247,25 +267,25 @@ export function layoutChart(model: ChartModel, state: ChartState, theme: ChartTh
   if (price) {
     const last = lastCandle(slots);
     const lastY = last ? clamp(priceY(price, last.c), g.plot.y + 9, g.plot.y + g.plot.h - 9) : null;
-    for (const v of model.priceTicks.values) {
+    model.priceTicks.values.forEach((v, k) => {
       const y = priceY(price, v);
-      if (y < g.plot.y + 5 || y > g.plot.y + g.plot.h - 5) continue;
-      if (lastY !== null && Math.abs(y - lastY) < 11) continue;
-      out.push({ kind: "text", x: g.priceAxis.x + 8, y, text: formatPrice(v, model.priceTicks.decimals), fill: theme.axisText, fontSize: fs, fontFamily: mono, fontWeight: 400, align: "left", baseline: "middle", layer: "axes" });
-    }
+      if (y < g.plot.y + 5 || y > g.plot.y + g.plot.h - 5) return;
+      if (lastY !== null && Math.abs(y - lastY) < 11) return;
+      out.push({ kind: "text", x: g.priceAxis.x + 8, y, text: model.priceTicks.labels[k] ?? formatPrice(v, model.priceTicks.decimals), fill: theme.axisText, fontSize: fs, fontFamily: mono, fontWeight: 400, align: "left", baseline: "middle", layer: "axes" });
+    });
     if (last && lastY !== null) {
       const ax = g.priceAxis.x + 2;
       const right = g.priceAxis.x + g.priceAxis.w - 2;
       const fill = last.c >= last.o ? theme.up : theme.down;
       out.push({ kind: "path", points: [ax, lastY, ax + 5, lastY - 9, right, lastY - 9, right, lastY + 9, ax + 5, lastY + 9], closed: true, fill, layer: "axes" });
-      out.push({ kind: "text", x: (ax + 5 + right) / 2, y: lastY, text: formatPrice(last.c), fill: theme.onTag, fontSize: fs + 1, fontFamily: mono, fontWeight: 600, align: "center", baseline: "middle", layer: "axes" });
+      out.push({ kind: "text", x: (ax + 5 + right) / 2, y: lastY, text: formatAxisValue(price, last.c), fill: theme.onTag, fontSize: fs + 1, fontFamily: mono, fontWeight: 600, align: "center", baseline: "middle", layer: "axes" });
     }
     const p = state.pointer;
     if (p && inside(g.plot, p.x, p.y)) {
       const y = Math.round(p.y) + 0.5;
       out.push({ kind: "line", x1: g.plot.x, y1: y, x2: g.plot.x + g.plot.w, y2: y, stroke: theme.crosshair, lineWidth: 1, dash: [3, 3], layer: "crosshair" });
       out.push({ kind: "rect", x: g.priceAxis.x + 2, y: y - 9, w: g.priceAxis.w - 4, h: 18, fill: theme.crosshairLabelBg, radius: 3, layer: "crosshair" });
-      out.push({ kind: "text", x: g.priceAxis.x + g.priceAxis.w / 2, y, text: formatPrice(yPrice(price, p.y)), fill: theme.crosshairLabelText, fontSize: fs, fontFamily: mono, fontWeight: 500, align: "center", baseline: "middle", layer: "crosshair" });
+      out.push({ kind: "text", x: g.priceAxis.x + g.priceAxis.w / 2, y, text: formatAxisValue(price, yPrice(price, p.y)), fill: theme.crosshairLabelText, fontSize: fs, fontFamily: mono, fontWeight: 500, align: "center", baseline: "middle", layer: "crosshair" });
     }
   }
 

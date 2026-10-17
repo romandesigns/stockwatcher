@@ -1,13 +1,15 @@
 import {
+  applyGesture,
+  autoScalePrice,
   buildSlots,
   computeChartModel,
   defaultViewport,
   describeSlot,
   ensureVisible,
   followLatest,
-  hitTest,
+  GestureController,
+  isAutoPrice,
   layoutChart,
-  pan,
   slotIndexOf,
   stepInspection,
   zoom,
@@ -17,14 +19,20 @@ import {
   type ChartState,
   type ChartTheme,
   type Gap,
+  type GestureAction,
+  type GestureContext,
+  type GestureInput,
   type Point,
+  type PointerKind,
+  type PriceScaleType,
   type ProfileWire,
   type Size,
   type Timeframe,
   type Viewport,
 } from "@stockwatcher/chart-core";
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type PointerEvent } from "react";
 import { drawDisplayList } from "./draw.ts";
+import { PRICE_SCALE_LABELS, PriceAxisMenu } from "./PriceAxisMenu.tsx";
 import { cn } from "./ui/utils.ts";
 import { useCanvas, useChartTheme } from "./useCanvas.ts";
 
@@ -45,6 +53,13 @@ export interface CandleChartProps {
   /** t of the inspected slot; null = latest. Controlled when onInspectChange is set. */
   inspectT?: number | null;
   onInspectChange?: (t: number | null) => void;
+  /** Price axis scale type. Controlled when onPriceScaleTypeChange is set. */
+  priceScaleType?: PriceScaleType;
+  onPriceScaleTypeChange?: (type: PriceScaleType) => void;
+  /** Initial scale type when uncontrolled (default "linear"). */
+  defaultPriceScaleType?: PriceScaleType;
+  /** Offer the price axis menu on right-click / long press / Shift+F10 (default true). */
+  priceAxisMenu?: boolean;
   options?: Partial<ChartOptions>;
   theme?: ChartTheme;
   /** Initial pixels per candle. */
@@ -54,17 +69,40 @@ export interface CandleChartProps {
   label?: string;
 }
 
-const DRAG_THRESHOLD = 4;
+const pointerKind = (t: string | undefined): PointerKind | null => (t === "mouse" || t === "touch" || t === "pen" ? t : null);
 
 /**
  * Canvas candlestick chart: candles, volume, gaps, axes, last-price tag,
- * optional profile overlay. Mouse hover / touch tap inspects a candle; drag
- * pans; wheel zooms around the pointer; double-click returns to the latest.
+ * optional profile overlay, with Robinhood-style gestures recognized by
+ * chart-core's GestureController (the behaviour list lives there):
+ * - touch: tap pins a candle, long press scrubs, horizontal swipe pans,
+ *   vertical swipe scrolls the page, pinch zooms time, drag the price axis to
+ *   scale price, double-tap auto-scales, long-press the price axis for its menu;
+ * - mouse: hover inspects, drag pans, wheel zooms (Ctrl+wheel / trackpad
+ *   pinch too), drag or wheel the price axis to scale price, double-click
+ *   auto-scales (on the time axis: back to latest), right-click the price
+ *   axis for its menu.
  * Keyboard (when focused): ←/→ step (Shift ×10), Home/End, Esc = latest,
- * +/− zoom, 0 = follow latest. Inspections made by keyboard or tap are
- * announced through a polite live region; hover is not, to avoid chatter.
+ * +/− zoom, 0 = follow latest, A = auto-scale price, Shift+F10 or the Menu
+ * key = price axis menu. Taps, keyboard inspection and scale changes are
+ * announced through a polite live region; hover and scrub are not, to avoid
+ * chatter.
  */
-export function CandleChart({ series, timeframe, inspectT: inspectProp, onInspectChange, options, theme: themeProp, barSpacing = 9, className, label }: CandleChartProps) {
+export function CandleChart({
+  series,
+  timeframe,
+  inspectT: inspectProp,
+  onInspectChange,
+  priceScaleType: scaleProp,
+  onPriceScaleTypeChange,
+  defaultPriceScaleType = "linear",
+  priceAxisMenu = true,
+  options,
+  theme: themeProp,
+  barSpacing = 9,
+  className,
+  label,
+}: CandleChartProps) {
   const theme = useChartTheme(themeProp);
   const [ownInspect, setOwnInspect] = useState<number | null>(null);
   const controlled = onInspectChange !== undefined;
@@ -77,31 +115,30 @@ export function CandleChart({ series, timeframe, inspectT: inspectProp, onInspec
     [controlled, onInspectChange],
   );
 
-  // Each timeframe gets a fresh viewport: zoom/pan positions do not carry
-  // across timeframes whose slots mean different durations.
+  const [ownScale, setOwnScale] = useState<PriceScaleType>(defaultPriceScaleType);
+  const scaleControlled = onPriceScaleTypeChange !== undefined;
+  const scaleType = scaleControlled ? (scaleProp ?? "linear") : ownScale;
+
+  // Each timeframe gets a fresh viewport: zoom/pan positions (and a manual
+  // price range) do not carry across timeframes whose slots mean different
+  // durations. The scale TYPE is a preference and does carry.
   const [view, setView] = useState<{ tf: Timeframe; vp: Viewport }>(() => ({ tf: timeframe, vp: defaultViewport(barSpacing) }));
   const vp = view.tf === timeframe ? view.vp : defaultViewport(barSpacing);
   const setVp = useCallback((f: (vp: Viewport) => Viewport) => setView((v) => ({ tf: timeframe, vp: f(v.tf === timeframe ? v.vp : defaultViewport(barSpacing)) })), [timeframe, barSpacing]);
 
   const [pointer, setPointer] = useState<Point | null>(null);
   const [announcement, setAnnouncement] = useState("");
+  // The anchor outlives `open` so the menu can animate out where it opened.
+  const [menu, setMenu] = useState<{ open: boolean; at: { x: number; y: number } | null }>({ open: false, at: null });
 
   const slots = useMemo(() => (series ? buildSlots(series.candles, series.gaps) : []), [series]);
 
   const state: ChartState = useMemo(
-    () => ({ timeframe, candles: series?.candles ?? [], gaps: series?.gaps ?? [], profile: series?.profile ?? null, slots, inspectT, pointer, options }),
-    [timeframe, series, slots, inspectT, pointer, options],
+    () => ({ timeframe, candles: series?.candles ?? [], gaps: series?.gaps ?? [], profile: series?.profile ?? null, slots, inspectT, pointer, options, priceScaleType: scaleType }),
+    [timeframe, series, slots, inspectT, pointer, options, scaleType],
   );
 
-  const modelRef = useRef<ChartModel | null>(null);
-  const paint = useCallback(
-    (ctx: CanvasRenderingContext2D, size: Size) => {
-      const model = computeChartModel(state, vp, size);
-      modelRef.current = model;
-      drawDisplayList(ctx, layoutChart(model, state, theme));
-    },
-    [state, vp, theme],
-  );
+  const paint = useCallback((ctx: CanvasRenderingContext2D, size: Size) => drawDisplayList(ctx, layoutChart(computeChartModel(state, vp, size), state, theme)), [state, vp, theme]);
   const { containerRef, canvasRef, size } = useCanvas(paint);
   const model = useMemo(() => computeChartModel(state, vp, size), [state, vp, size]);
 
@@ -110,85 +147,174 @@ export function CandleChart({ series, timeframe, inspectT: inspectProp, onInspec
     if (inspectT !== null && slotIndexOf(slots, inspectT) === null) setInspect(null);
   }, [slots, inspectT, setInspect]);
 
-  const drag = useRef<{ id: number; x: number; lastX: number; moved: boolean; type: string } | null>(null);
-
-  const local = (e: { clientX: number; clientY: number }) => {
-    const r = canvasRef.current!.getBoundingClientRect();
-    return { x: e.clientX - r.left, y: e.clientY - r.top };
-  };
-
   const announce = (t: number | null) => {
     const idx = t === null ? slots.length - 1 : slotIndexOf(slots, t);
     const slot = idx === null || idx < 0 ? null : slots[idx];
     setAnnouncement(slot ? describeSlot(slot, timeframe).summary : "");
   };
 
-  const onPointerDown = (e: PointerEvent<HTMLCanvasElement>) => {
-    if (e.button !== 0) return;
-    e.currentTarget.setPointerCapture(e.pointerId);
-    const p = local(e);
-    drag.current = { id: e.pointerId, x: p.x, lastX: p.x, moved: false, type: e.pointerType };
+  const setScaleType = (t: PriceScaleType) => {
+    if (scaleControlled) onPriceScaleTypeChange?.(t);
+    else setOwnScale(t);
   };
 
-  const onPointerMove = (e: PointerEvent<HTMLCanvasElement>) => {
-    const p = local(e);
-    const d = drag.current;
-    if (d && d.id === e.pointerId) {
-      if (!d.moved && Math.abs(p.x - d.x) > DRAG_THRESHOLD) d.moved = true;
-      if (d.moved) {
-        const dx = p.x - d.lastX;
-        d.lastX = p.x;
-        setVp((v) => pan(v, slots, dx));
-        return;
+  // Announce scale changes (type and auto/manual), never on first render.
+  const auto = isAutoPrice(vp);
+  const announced = useRef<{ auto: boolean; type: PriceScaleType } | null>(null);
+  useEffect(() => {
+    const prev = announced.current;
+    announced.current = { auto, type: scaleType };
+    if (!prev) return;
+    if (prev.type !== scaleType) setAnnouncement(`Price axis: ${PRICE_SCALE_LABELS[scaleType]}.`);
+    else if (prev.auto && !auto) setAnnouncement("Price axis scaled manually. Press A, double-tap or double-click to auto-scale.");
+    else if (!prev.auto && auto) setAnnouncement("Price axis auto-scaled.");
+  }, [auto, scaleType]);
+
+  const local = (e: { clientX: number; clientY: number }) => {
+    const r = canvasRef.current!.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
+  };
+
+  const openMenuAt = (x: number, y: number) => {
+    if (!priceAxisMenu) return;
+    const r = canvasRef.current!.getBoundingClientRect();
+    setPointer(null);
+    setMenu({ open: true, at: { x: r.left + x, y: r.top + y } });
+  };
+
+  const apply = (actions: readonly GestureAction[], m: ChartModel) => {
+    for (const a of actions) {
+      switch (a.kind) {
+        case "inspect":
+          setInspect(a.t);
+          if (a.announce) announce(a.t);
+          break;
+        case "crosshair":
+          setPointer(a.point);
+          break;
+        case "openAxisMenu":
+          // A touch long press opened it: the finger is still down, and the
+          // compatibility mousedown the browser sends after it lifts would
+          // count as an outside press and close the menu at once.
+          if (gestures.lastPointerType !== "mouse") suppressCompatMouse.current = true;
+          openMenuAt(a.x, a.y);
+          break;
+        case "release":
+          // The browser scrolls the page (touch-action: pan-y); nothing to do.
+          break;
+        default:
+          setVp((v) => applyGesture(v, a, m));
       }
     }
-    if (e.pointerType === "mouse") {
-      setPointer(p);
-      const hit = hitTest(model, p.x, p.y);
-      if (hit.slot && hit.slot.t !== inspectT) setInspect(hit.slot.t);
-    }
   };
 
-  const onPointerUp = (e: PointerEvent<HTMLCanvasElement>) => {
-    const d = drag.current;
-    drag.current = null;
-    if (!d || d.moved || e.pointerType === "mouse") return;
-    // Tap (touch/pen): pin the tapped candle; tapping it again returns to latest.
+  // The recognizer is pure; this component only feeds it events and runs
+  // its actions. `latest` gives native listeners and the tick loop the
+  // current render's model, inspection and handlers.
+  const [gestures] = useState(() => new GestureController());
+  const suppressCompatMouse = useRef(false);
+  const latest = useRef<{ ctx: GestureContext; apply: typeof apply } | null>(null);
+  useLayoutEffect(() => {
+    latest.current = { ctx: { model, inspectT }, apply };
+  });
+
+  // Long presses and deferred taps are decided by tick(); run it once per
+  // frame only while the controller has a deadline pending.
+  const tickFrame = useRef(0);
+  const pump = useCallback(() => {
+    if (tickFrame.current || gestures.nextDeadline() === null) return;
+    const loop = () => {
+      tickFrame.current = 0;
+      const l = latest.current;
+      if (!l) return;
+      l.apply(gestures.tick(performance.now(), l.ctx), l.ctx.model);
+      if (gestures.nextDeadline() !== null) tickFrame.current = requestAnimationFrame(loop);
+    };
+    tickFrame.current = requestAnimationFrame(loop);
+  }, [gestures]);
+  useEffect(
+    () => () => {
+      cancelAnimationFrame(tickFrame.current);
+      tickFrame.current = 0;
+    },
+    [],
+  );
+
+  const feed = (type: GestureInput["type"], e: { clientX: number; clientY: number; timeStamp: number }, extra: Partial<GestureInput> & { pointerType: PointerKind; pointerId?: number }) => {
     const p = local(e);
-    const hit = hitTest(model, p.x, p.y);
-    const next = hit.slot && hit.slot.t !== inspectT ? hit.slot.t : null;
-    setInspect(next);
-    announce(next);
+    const ctx = { model, inspectT };
+    apply(gestures.handle({ type, pointerId: 0, x: p.x, y: p.y, t: e.timeStamp, ...extra }, ctx), model);
+    pump();
   };
 
-  const onPointerLeave = (e: PointerEvent<HTMLCanvasElement>) => {
-    if (e.pointerType !== "mouse" || drag.current) return;
-    setPointer(null);
-    setInspect(null);
+  const onPointer = (type: "down" | "move" | "up" | "cancel" | "leave") => (e: PointerEvent<HTMLCanvasElement>) => {
+    const kind = pointerKind(e.pointerType) ?? "mouse";
+    if (type === "down" && (kind !== "mouse" || e.button === 0)) e.currentTarget.setPointerCapture(e.pointerId);
+    feed(type, e, { pointerId: e.pointerId, pointerType: kind, button: e.button });
   };
 
-  // Wheel must be a non-passive native listener to preventDefault page scroll.
+  const onDoubleClick = (e: MouseEvent<HTMLCanvasElement>) => feed("dblclick", e, { pointerType: gestures.lastPointerType });
+
+  const onContextMenu = (e: MouseEvent<HTMLCanvasElement>) => {
+    // contextmenu is a PointerEvent in current browsers; fall back to the last press's type.
+    const kind = pointerKind((e.nativeEvent as { pointerType?: string }).pointerType) ?? gestures.lastPointerType;
+    const p = local(e);
+    const acts = gestures.handle({ type: "contextmenu", pointerId: 0, pointerType: kind, x: p.x, y: p.y, t: e.timeStamp }, { model, inspectT });
+    // Suppress the browser's menu on the price axis (ours opens) and for every
+    // touch long press (the chart's own long press is in charge); elsewhere a
+    // mouse right-click keeps the browser's menu.
+    if (acts.length || kind !== "mouse") e.preventDefault();
+    apply(acts, model);
+  };
+
+  // Wheel must be a non-passive native listener to preventDefault page
+  // scroll (and the browser zoom a Ctrl+wheel / trackpad pinch would do).
+  // touchmove likewise: preventDefault only while the chart owns the touch
+  // (pan, scrub, pinch, price-axis drag), so a vertical swipe still scrolls.
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const onWheel = (e: WheelEvent) => {
+      const l = latest.current;
+      if (!l) return;
       e.preventDefault();
+      const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? l.ctx.model.geometry.plot.h || 400 : 1;
       const r = canvas.getBoundingClientRect();
-      const plotW = modelRef.current?.geometry.plot.w ?? r.width;
-      if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
-        const dx = e.shiftKey ? e.deltaY : e.deltaX;
-        setVp((v) => pan(v, slots, -dx));
-      } else {
-        setVp((v) => zoom(v, slots, Math.exp(-e.deltaY * 0.0015), e.clientX - r.left, plotW));
-      }
+      const acts = gestures.handle(
+        { type: "wheel", pointerId: 0, pointerType: "mouse", x: e.clientX - r.left, y: e.clientY - r.top, t: e.timeStamp, deltaX: e.deltaX * unit, deltaY: e.deltaY * unit, ctrlKey: e.ctrlKey, shiftKey: e.shiftKey },
+        l.ctx,
+      );
+      l.apply(acts, l.ctx.model);
+    };
+    const onTouchMove = (e: TouchEvent) => {
+      if (gestures.capturing && e.cancelable) e.preventDefault();
+    };
+    // preventDefault on touchend cancels the compatibility mouse events
+    // (mousedown/mouseup/click) for that touch; see openAxisMenu above.
+    const onTouchEnd = (e: TouchEvent) => {
+      if (!suppressCompatMouse.current || e.touches.length) return;
+      suppressCompatMouse.current = false;
+      if (e.cancelable) e.preventDefault();
     };
     canvas.addEventListener("wheel", onWheel, { passive: false });
-    return () => canvas.removeEventListener("wheel", onWheel);
-  }, [canvasRef, slots, setVp]);
+    canvas.addEventListener("touchmove", onTouchMove, { passive: false });
+    canvas.addEventListener("touchend", onTouchEnd, { passive: false });
+    return () => {
+      canvas.removeEventListener("wheel", onWheel);
+      canvas.removeEventListener("touchmove", onTouchMove);
+      canvas.removeEventListener("touchend", onTouchEnd);
+    };
+  }, [canvasRef, gestures]);
 
   const onKeyDown = (e: KeyboardEvent<HTMLCanvasElement>) => {
     const plotW = model.geometry.plot.w;
     let next: number | null | undefined;
+    if (e.key === "ContextMenu" || (e.key === "F10" && e.shiftKey)) {
+      e.preventDefault();
+      const g = model.geometry;
+      openMenuAt(g.priceAxis.x + g.priceAxis.w / 2, g.plot.y + g.plot.h / 2);
+      return;
+    }
     switch (e.key) {
       case "ArrowLeft":
         next = stepInspection(slots, inspectT, e.shiftKey ? -10 : -1);
@@ -214,6 +340,12 @@ export function CandleChart({ series, timeframe, inspectT: inspectProp, onInspec
       case "0":
         setVp(followLatest);
         break;
+      case "a":
+      case "A":
+        if (e.ctrlKey || e.metaKey || e.altKey) return;
+        if (auto) setAnnouncement("Price axis auto-scaled.");
+        setVp(autoScalePrice);
+        break;
       default:
         return;
     }
@@ -232,19 +364,39 @@ export function CandleChart({ series, timeframe, inspectT: inspectProp, onInspec
         tabIndex={0}
         role="application"
         aria-roledescription="candlestick chart"
-        aria-label={`${label ?? "Candlestick chart"}. Arrow keys inspect candles; plus and minus zoom.`}
-        className="absolute inset-0 size-full touch-pan-y rounded-md outline-none select-none focus-visible:ring-2 focus-visible:ring-ring"
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={() => (drag.current = null)}
-        onPointerLeave={onPointerLeave}
-        onDoubleClick={() => setVp(followLatest)}
+        aria-label={`${label ?? "Candlestick chart"}. Arrow keys inspect candles; plus and minus zoom; A auto-scales price${priceAxisMenu ? "; Shift+F10 opens the price axis menu" : ""}. Price axis: ${PRICE_SCALE_LABELS[scaleType]}${auto ? ", auto-scaled" : ", manual"}.`}
+        data-price-scale={scaleType}
+        data-price-range={auto ? "auto" : "manual"}
+        // touch-pan-y: the browser keeps vertical page scroll and hands us
+        // horizontal pans and pinches; no callout or selection on long press.
+        className="absolute inset-0 size-full touch-pan-y rounded-md outline-none select-none [-webkit-touch-callout:none] focus-visible:ring-2 focus-visible:ring-ring"
+        onPointerDown={onPointer("down")}
+        onPointerMove={onPointer("move")}
+        onPointerUp={onPointer("up")}
+        onPointerCancel={onPointer("cancel")}
+        onPointerLeave={onPointer("leave")}
+        onDoubleClick={onDoubleClick}
+        onContextMenu={onContextMenu}
         onKeyDown={onKeyDown}
       />
       <div aria-live="polite" className="sr-only">
         {announcement}
       </div>
+      {priceAxisMenu && (
+        <PriceAxisMenu
+          open={menu.open}
+          onOpenChange={(open) => setMenu((m) => ({ ...m, open }))}
+          anchor={menu.at}
+          scaleType={scaleType}
+          onScaleTypeChange={setScaleType}
+          autoScaled={auto}
+          onAutoScale={() => {
+            if (auto) setAnnouncement("Price axis auto-scaled.");
+            setVp(autoScalePrice);
+          }}
+          finalFocus={canvasRef}
+        />
+      )}
     </div>
   );
 }

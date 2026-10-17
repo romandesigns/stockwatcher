@@ -9,6 +9,7 @@ import {
   tradingDayOf,
   volumeBuckets,
   type ChartOptions,
+  type PriceScaleType,
   type Timeframe,
 } from "@stockwatcher/chart-core";
 import { CandleChart, CandleInspector, ReplayControls, SessionTimeline, Tape, TimeframeSelector, VolumeProfile } from "@stockwatcher/chart-web";
@@ -91,6 +92,8 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
   const [timeframe, setTimeframe] = useState<Timeframe>("1m");
   const [bin, setBin] = useState<number>(0.01);
   const [inspectT, setInspectT] = useState<number | null>(null);
+  // Held here, not in the chart, so it survives switching phone/desktop layouts.
+  const [priceScale, setPriceScale] = useState<PriceScaleType>("linear");
   // A stock that traded out of the price band is no longer let through by the server.
   useEffect(() => {
     const next = followCandidates(symbol, candidates.symbols);
@@ -170,7 +173,7 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
         <p className="-mt-2 truncate text-[11px] text-muted-foreground">{sourceText(choice)}</p>
         <SymbolSelector symbols={candidates.symbols} value={symbol} onChange={changeSymbol} />
         <TimeframeSelector value={timeframe} onValueChange={changeTf} variant="grid" />
-        <CandleChart className="h-[300px]" series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={setInspectT} options={PHONE_CHART} barSpacing={10} label={chartLabel} />
+        <CandleChart className="h-[300px]" series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={setInspectT} priceScaleType={priceScale} onPriceScaleTypeChange={setPriceScale} options={PHONE_CHART} barSpacing={10} label={chartLabel} />
         <CandleInspector className="-mt-1" slot={inspected} timeframe={timeframe} variant="compact" />
         <section aria-label="Session timeline and replay" className="flex flex-col gap-2 rounded-xl bg-card px-3 py-2.5">
           <ReplayControls {...replay} variant="compact" />
@@ -218,7 +221,7 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
         <main className="flex min-w-0 flex-1 flex-col gap-3 px-4.5 py-3.5">
           <div className="flex min-h-[380px] flex-1 flex-col gap-1.5">
             <CandleInspector slot={inspected} timeframe={timeframe} />
-            <CandleChart className="min-h-[340px] flex-1" series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={setInspectT} options={DESKTOP_CHART} label={chartLabel} />
+            <CandleChart className="min-h-[340px] flex-1" series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={setInspectT} priceScaleType={priceScale} onPriceScaleTypeChange={setPriceScale} options={DESKTOP_CHART} label={chartLabel} />
           </div>
           <section aria-label="Session timeline and replay" className="flex flex-col gap-2.5 rounded-xl bg-card px-3.5 py-3">
             <ReplayControls {...replay} />
