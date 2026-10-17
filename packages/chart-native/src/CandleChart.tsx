@@ -1,6 +1,7 @@
 import { Canvas, Picture } from "@shopify/react-native-skia";
 import {
   applyGesture,
+  TIMEFRAMES,
   emptyHistory,
   record,
   redo,
@@ -80,8 +81,8 @@ import Svg, { Path } from "react-native-svg";
 import { recordPicture } from "./drawSkia.ts";
 import { DrawingToolbox } from "./DrawingToolbox.tsx";
 import { PositionPlanPanel } from "./PositionPlanPanel.tsx";
-import { AxisSheet, IndicatorSheet, LayersSheet, OrderTicketSheet, SCALE_LABELS, TradesSheet } from "./sheets.tsx";
-import { playHaptic, ToolButton, ToolIcon, UI } from "./ui.tsx";
+import { AxisSheet, IndicatorSheet, LayersSheet, OrderTicketSheet, SCALE_LABELS } from "./sheets.tsx";
+import { playHaptic, Segmented, ToolButton, ToolIcon, UI } from "./ui.tsx";
 
 export interface ChartSeriesLike {
   candles: readonly Candle[];
@@ -129,6 +130,8 @@ export interface CandleChartProps {
   onLayersChange?: (layers: ChartLayers) => void;
   /** The feed clock (ms), for an ongoing halt's length. */
   now?: number | null;
+  /** Show the timeframe picker in the toolbar row; the host switches the subscription. */
+  onTimeframeChange?: (tf: Timeframe) => void;
   /** Haptic feedback on scrub, grabs, placements and fills (default true). */
   haptics?: boolean;
   label?: string;
@@ -184,6 +187,7 @@ export function CandleChart({
   onToolsVisibleChange,
   // Renamed: this module's now() is the monotonic clock the gestures use.
   now: clockNow = null,
+  onTimeframeChange,
   label,
   style,
 }: CandleChartProps) {
@@ -254,7 +258,7 @@ export function CandleChart({
   const [selected, setSelected] = useState<ObjectHit | null>(null);
   const [draft, setDraft] = useState<DrawingDraft | null>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
-  const [sheet, setSheet] = useState<{ kind: "none" } | { kind: "indicators" } | { kind: "layers" } | { kind: "trades" } | { kind: "axis"; price: number | null } | { kind: "ticket"; price: number | null }>({ kind: "none" });
+  const [sheet, setSheet] = useState<{ kind: "none" } | { kind: "indicators" } | { kind: "layers" } | { kind: "axis"; price: number | null } | { kind: "ticket"; price: number | null }>({ kind: "none" });
   const [reducedMotion, setReducedMotion] = useState(false);
   useEffect(() => {
     AccessibilityInfo.isReduceMotionEnabled().then(setReducedMotion, () => {});
@@ -548,10 +552,10 @@ export function CandleChart({
     <View style={[s.root, style]}>
       {toolbar && (
         <View style={s.toolbar}>
-          <ToolButton label={toolsVisible ? "Hide drawing tools" : "Show drawing tools"} onPress={() => changeToolsVisible(!toolsVisible)} style={toolsVisible ? { backgroundColor: UI.raised } : undefined}>
-            <ToolIcon kind="pencil" color={toolsVisible ? UI.text : UI.textDim} />
-          </ToolButton>
-          {/* Everything else on the far right: position, indicators, levels, trades, Trade. */}
+          {onTimeframeChange && (
+            <Segmented value={timeframe} onChange={onTimeframeChange} options={TIMEFRAMES.map((tf) => ({ value: tf, label: tf, a11y: tf }))} />
+          )}
+          {/* Everything else on the far right: position, drawing tools, indicators, levels, Trade. */}
           <View style={s.trade}>
               {trading && pnl !== null && position && (
                 <Text style={s.pos} accessibilityLabel={`Simulated position ${position.qty} at ${formatPrice(position.avgPrice)}`}>
@@ -559,6 +563,9 @@ export function CandleChart({
                   {formatSize(position.qty)} <Text style={{ color: pnl >= 0 ? UI.good : UI.critical }}>{`${pnl >= 0 ? "+" : "−"}$${Math.abs(pnl).toFixed(2)}`}</Text>
                 </Text>
               )}
+              <ToolButton label={toolsVisible ? "Hide drawing tools" : "Show drawing tools"} onPress={() => changeToolsVisible(!toolsVisible)} style={toolsVisible ? { backgroundColor: UI.raised } : undefined}>
+                <ToolIcon kind="pencil" color={toolsVisible ? UI.text : UI.textDim} />
+              </ToolButton>
               <ToolButton label={indicatorSpecs.length ? `Indicators, ${indicatorSpecs.length} on` : "Indicators"} onPress={() => setSheet({ kind: "indicators" })} style={s.indicators}>
                 <ToolIcon kind="indicators" color={UI.textDim} />
                 {indicatorSpecs.length ? <Text style={s.count}>{indicatorSpecs.length}</Text> : null}
@@ -568,10 +575,6 @@ export function CandleChart({
               </ToolButton>
               {trading && (
                 <>
-                  <ToolButton label={`Trades, ${fills.length}`} onPress={() => setSheet({ kind: "trades" })} style={s.indicators}>
-                    <ToolIcon kind="trades" color={UI.textDim} />
-                    {fills.length ? <Text style={s.count}>{fills.length}</Text> : null}
-                  </ToolButton>
                   <ToolButton primary label="Simulated order" onPress={() => setSheet({ kind: "ticket", price: null })}>
                     Trade
                   </ToolButton>
@@ -654,7 +657,6 @@ export function CandleChart({
       )}
 
       <LayersSheet open={sheet.kind === "layers"} onClose={() => setSheet({ kind: "none" })} layers={layers} onChange={setLayers} reducedMotion={reducedMotion} />
-      <TradesSheet open={sheet.kind === "trades"} onClose={() => setSheet({ kind: "none" })} fills={fills} realized={trading?.state?.account.realizedPnl ?? 0} reducedMotion={reducedMotion} />
       <IndicatorSheet open={sheet.kind === "indicators"} onClose={() => setSheet({ kind: "none" })} indicators={indicatorSpecs} onChange={setIndicators} seriesColors={[theme.series1, theme.series2, theme.series3]} reducedMotion={reducedMotion} />
       <AxisSheet
         open={sheet.kind === "axis"}
@@ -676,6 +678,8 @@ export function CandleChart({
           price={sheet.kind === "ticket" ? sheet.price : null}
           onSubmit={(o) => trading.onPlace({ ...o, clientOrderId: newId("c") })}
           reducedMotion={reducedMotion}
+          fills={fills}
+          realized={trading.state?.account.realizedPnl ?? 0}
         />
       )}
     </View>

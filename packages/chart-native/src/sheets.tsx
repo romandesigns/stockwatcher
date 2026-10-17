@@ -205,6 +205,8 @@ export function OrderTicketSheet({
   price,
   onSubmit,
   reducedMotion,
+  fills,
+  realized = 0,
 }: {
   open: boolean;
   onClose: () => void;
@@ -213,6 +215,9 @@ export function OrderTicketSheet({
   price: number | null;
   onSubmit: (o: TicketOrder) => void;
   reducedMotion?: boolean;
+  /** This symbol's fills and realized P&L: the history under the action buttons. */
+  fills?: readonly FillMark[];
+  realized?: number;
 }) {
   const [side, setSide] = useState<OrderSide>("buy");
   const [type, setType] = useState<Exclude<OrderType, "stop_limit">>("market");
@@ -309,6 +314,7 @@ export function OrderTicketSheet({
           {`${side === "buy" ? "Buy" : "Sell"} ${qtyOk ? n.toLocaleString("en-US") : ""} ${type === "market" ? "at market" : `${type} ${snapped !== null ? formatPrice(snapped) : ""}`}`}
         </ToolButton>
         <Text style={s.note}>Simulated: fills in the simulator against the replay tape, in full, when a trade prints through the price. No money, no broker.</Text>
+        {fills && <TradeHistory fills={fills} realized={realized} />}
       </View>
     </Sheet>
   );
@@ -328,6 +334,7 @@ const s = StyleSheet.create({
   indName: { color: UI.text, fontSize: 14, fontWeight: "500" },
   chip: { color: UI.textDim, fontSize: 10, backgroundColor: UI.row, borderRadius: 4, paddingHorizontal: 4, paddingVertical: 1, overflow: "hidden", fontVariant: ["tabular-nums"] },
   indDesc: { color: UI.textFaint, fontSize: 11 },
+  history: { gap: 4, marginTop: 4, padding: 8, borderRadius: 10, backgroundColor: "rgba(28,34,42,0.5)" },
   tradeRow: { flexDirection: "row", alignItems: "center", gap: 8, minHeight: 32, paddingHorizontal: 8, borderRadius: 6 },
   tradeCell: { color: UI.text, fontSize: 12, fontVariant: ["tabular-nums"] },
   rowRight: { color: UI.textDim, fontSize: 13, marginLeft: 8 },
@@ -367,29 +374,27 @@ export function LayersSheet({ open, onClose, layers, onChange, reducedMotion }: 
 
 const ROLE: Record<string, string> = { take_profit: "TP", stop_loss: "SL", entry: "Entry" };
 
-/** Your simulated fills for this symbol, newest first, with realized P&L. */
-export function TradesSheet({ open, onClose, fills, realized, reducedMotion }: { open: boolean; onClose: () => void; fills: readonly FillMark[]; realized: number; reducedMotion?: boolean }) {
-  const list = [...fills].reverse();
+/** This symbol's simulated fills, newest first, with realized P&L: the bottom of the order ticket. */
+export function TradeHistory({ fills, realized }: { fills: readonly FillMark[]; realized: number }) {
+  const list = [...fills].reverse().slice(0, 30);
   return (
-    <Sheet open={open} onClose={onClose} title="Trades · simulated" reducedMotion={reducedMotion}>
-      <View style={[s.indHeader, { marginBottom: 6 }]}>
-        <Text style={s.label}>Realized</Text>
-        <Text style={[s.indName, { color: realized > 0 ? UI.good : realized < 0 ? UI.critical : UI.text, fontVariant: ["tabular-nums"] }]}>{`${realized >= 0 ? "+" : "\u2212"}$${Math.abs(realized).toFixed(2)}`}</Text>
+    <View style={s.history} accessibilityLabel="Trade history">
+      <View style={s.indHeader}>
+        <Text style={s.label}>Trades</Text>
+        <Text style={[s.small, { color: realized > 0 ? UI.good : realized < 0 ? UI.critical : UI.text, fontVariant: ["tabular-nums"] }]}>{`Realized ${realized >= 0 ? "+" : "\u2212"}$${Math.abs(realized).toFixed(2)}`}</Text>
       </View>
-      <ScrollView>
-        {list.length === 0 ? (
-          <Text style={s.note}>No fills yet. Place an order with Trade, the price axis menu, or the position tool.</Text>
-        ) : (
-          list.map((f, i) => (
-            <View key={`${f.orderId}-${i}`} style={[s.tradeRow, i % 2 === 0 && { backgroundColor: UI.row }]}>
-              <Text style={[s.tradeCell, { color: UI.textDim, width: 64 }]}>{formatEtTime(f.t, true)}</Text>
-              <Text style={[s.tradeCell, { color: f.side === "buy" ? UI.good : UI.critical, width: 36 }]}>{f.side === "buy" ? "Buy" : "Sell"}</Text>
-              <Text style={[s.tradeCell, { flex: 1 }]}>{`${formatSize(f.qty)} @ ${formatPrice(f.price)}`}</Text>
-              <Text style={[s.tradeCell, { color: UI.textFaint }]}>{f.role ? ROLE[f.role] : ""}</Text>
-            </View>
-          ))
-        )}
-      </ScrollView>
-    </Sheet>
+      {list.length === 0 ? (
+        <Text style={s.note}>No fills yet.</Text>
+      ) : (
+        list.map((f, i) => (
+          <View key={`${f.orderId}-${i}`} style={[s.tradeRow, i % 2 === 0 && { backgroundColor: UI.row }]}>
+            <Text style={[s.tradeCell, { color: UI.textDim, width: 64 }]}>{formatEtTime(f.t, true)}</Text>
+            <Text style={[s.tradeCell, { color: f.side === "buy" ? UI.good : UI.critical, width: 36 }]}>{f.side === "buy" ? "Buy" : "Sell"}</Text>
+            <Text style={[s.tradeCell, { flex: 1 }]}>{`${formatSize(f.qty)} @ ${formatPrice(f.price)}`}</Text>
+            <Text style={[s.tradeCell, { color: UI.textFaint }]}>{f.role ? ROLE[f.role] : ""}</Text>
+          </View>
+        ))
+      )}
+    </View>
   );
 }

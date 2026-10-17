@@ -23,5 +23,5 @@ export { ChartToolbar, TOOL_ICONS, type ChartToolbarProps } from "./ChartToolbar
 export { OrderTicket, type OrderTicketOrder, type OrderTicketProps } from "./OrderTicket.tsx";
 export { PositionPlanCard, type PositionPlanCardProps } from "./PositionPlanCard.tsx";
 export { DrawingToolbox, type DrawingToolboxProps } from "./DrawingToolbox.tsx";
-export { LayersMenu, TradesMenu } from "./ContextMenus.tsx";
+export { LayersMenu, TradeHistory } from "./ContextMenus.tsx";
 export { TradeMenu, TRADE_MENU_SIZES, type TradeMenuProps } from "./TradeMenu.tsx";

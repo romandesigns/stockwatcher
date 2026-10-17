@@ -20,15 +20,6 @@ const LevelsIcon = icon(
   </>,
 );
 
-/** Trades: a list with buy and sell marks. */
-const TradesIcon = icon(
-  <>
-    <path d="M6.5 4h8M6.5 8h8M6.5 12h8" strokeOpacity="0.6" />
-    <path d="M2 5.5 3.5 3 5 5.5z" fill="currentColor" stroke="none" />
-    <path d="M2 10.5 3.5 13 5 10.5z" fill="currentColor" stroke="none" />
-  </>,
-);
-
 /** The swatch each layer row shows: how that layer looks on the chart. */
 function LayerSwatch({ id }: { id: LayerId }) {
   const amber = "#e0a63a";
@@ -95,46 +86,39 @@ export function LayersMenu({ layers, onChange }: { layers: ChartLayers; onChange
 const ROLE: Record<string, string> = { take_profit: "TP", stop_loss: "SL", entry: "Entry" };
 
 /**
- * Your simulated fills for this symbol, newest first, with realized P&L.
- * The same fills are drawn on the chart as arrows (the "My fills" layer).
+ * Your simulated fills for this symbol, newest first, with realized P&L:
+ * the bottom of the Trade widget, under its action buttons. The same fills
+ * are drawn on the chart as arrows (the "My fills" layer).
  */
-export function TradesMenu({ fills, realized }: { fills: readonly FillMark[]; realized: number }) {
+export function TradeHistory({ fills, realized, className }: { fills: readonly FillMark[]; realized: number; className?: string }) {
   const list = [...fills].reverse();
   return (
-    <DropdownMenu>
-      <Tip label="Trades">
-        <DropdownMenuTrigger aria-label={`Trades, ${fills.length}`} render={<Button variant="ghost" size="sm" className="h-7 min-w-7 gap-1 rounded-md px-1.5 text-xs text-muted-foreground [&_svg]:size-3.5" />}>
-          {TradesIcon}
-          {fills.length ? <span className="font-mono text-[11px] text-foreground">{fills.length}</span> : null}
-        </DropdownMenuTrigger>
-      </Tip>
-      <DropdownMenuContent align="end" aria-label="Trades" className="w-80 p-1.5">
-        <div className="flex items-baseline justify-between px-1.5 pt-1.5 pb-2">
-          <span className="text-[11px] font-medium text-muted-foreground">Trades · simulated</span>
-          <span className="text-[11px] text-muted-foreground">
-            Realized{" "}
-            <span className={cn("font-mono tabular-nums", realized > 0 ? "text-good" : realized < 0 ? "text-critical" : "text-foreground")}>
-              {realized >= 0 ? "+" : "−"}${Math.abs(realized).toFixed(2)}
-            </span>
+    <section aria-label="Trade history" className={cn("flex flex-col gap-1", className)}>
+      <div className="flex items-baseline justify-between">
+        <h3 className="m-0 text-[11px] font-medium text-muted-foreground">Trades</h3>
+        <span className="text-[11px] text-muted-foreground">
+          Realized{" "}
+          <span className={cn("font-mono tabular-nums", realized > 0 ? "text-good" : realized < 0 ? "text-critical" : "text-foreground")}>
+            {realized >= 0 ? "+" : "\u2212"}${Math.abs(realized).toFixed(2)}
           </span>
-        </div>
-        {list.length === 0 ? (
-          <p className="m-0 px-1.5 pb-2 text-xs text-text-faint">No fills yet. Place an order with Trade, the + on the price axis, or the position tool.</p>
-        ) : (
-          <ul className="m-0 flex max-h-80 list-none flex-col gap-0.5 overflow-y-auto p-0">
-            {list.map((f, i) => (
-              <li key={`${f.orderId}-${i}`} className="grid grid-cols-[52px_40px_minmax(0,1fr)_auto] items-baseline gap-2 rounded-md px-1.5 py-1 font-mono text-xs tabular-nums odd:bg-bg-row/40">
-                <span className="text-muted-foreground">{formatEtTime(f.t, true)}</span>
-                <span className={f.side === "buy" ? "text-good" : "text-critical"}>{f.side === "buy" ? "Buy" : "Sell"}</span>
-                <span>
-                  {formatSize(f.qty)} @ {formatPrice(f.price)}
-                </span>
-                <span className="font-sans text-[10px] text-text-faint">{f.role ? ROLE[f.role] : ""}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </DropdownMenuContent>
-    </DropdownMenu>
+        </span>
+      </div>
+      {list.length === 0 ? (
+        <p className="m-0 text-[11px] text-text-faint">No fills yet.</p>
+      ) : (
+        <ul className="m-0 flex max-h-36 list-none flex-col gap-0.5 overflow-y-auto p-0">
+          {list.map((f, i) => (
+            <li key={`${f.orderId}-${i}`} className="grid grid-cols-[52px_32px_minmax(0,1fr)_auto] items-baseline gap-1.5 rounded-md px-1 py-0.5 font-mono text-[11px] tabular-nums odd:bg-bg-row/50">
+              <span className="text-muted-foreground">{formatEtTime(f.t, true)}</span>
+              <span className={f.side === "buy" ? "text-good" : "text-critical"}>{f.side === "buy" ? "Buy" : "Sell"}</span>
+              <span className="truncate">
+                {formatSize(f.qty)} @ {formatPrice(f.price)}
+              </span>
+              <span className="font-sans text-[10px] text-text-faint">{f.role ? ROLE[f.role] : ""}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }

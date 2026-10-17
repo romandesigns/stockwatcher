@@ -12,7 +12,7 @@ import {
   type PriceScaleType,
   type Timeframe,
 } from "@stockwatcher/chart-core";
-import { CandleChart, CandleInspector, ReplayControls, SessionTimeline, Tape, TimeframeSelector, VolumeProfile } from "@stockwatcher/chart-web";
+import { CandleChart, CandleInspector, ReplayControls, SessionTimeline, Tape, VolumeProfile } from "@stockwatcher/chart-web";
 import { Tip, ToggleGroup, ToggleGroupItem, cn } from "@stockwatcher/chart-web/ui";
 import { useEffect, useMemo, useState } from "react";
 import { createServerFeed } from "./feed/serverFeed.ts";
@@ -185,9 +185,8 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
         </header>
         <div className="flex flex-wrap items-center gap-2">
           <SymbolSelector symbols={candidates.symbols} value={symbol} onChange={changeSymbol} />
-          <TimeframeSelector className="ml-auto" value={timeframe} onValueChange={changeTf} />
         </div>
-        <CandleChart className="h-[360px]" toolbar symbol={symbol} persistKey="sw-chart" trading={trading} now={clock?.now ?? null} series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={setInspectT} priceScaleType={priceScale} onPriceScaleTypeChange={setPriceScale} options={PHONE_CHART} barSpacing={10} label={chartLabel} />
+        <CandleChart className="h-[360px]" toolbar symbol={symbol} persistKey="sw-chart" trading={trading} now={clock?.now ?? null} onTimeframeChange={changeTf} series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={setInspectT} priceScaleType={priceScale} onPriceScaleTypeChange={setPriceScale} options={PHONE_CHART} barSpacing={10} label={chartLabel} />
         <CandleInspector className="-mt-1" slot={inspected} timeframe={timeframe} variant="compact" />
         <section aria-label="Session timeline and replay" className="flex flex-col gap-1.5 rounded-xl bg-card px-3 py-2">
           <ReplayControls {...replay} variant="compact" />
@@ -218,7 +217,6 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
         </div>
         <div className="ml-auto flex items-center gap-2">
           <SourceChip choice={choice} mode={mode} />
-          <TimeframeSelector value={timeframe} onValueChange={changeTf} />
         </div>
       </header>
 
@@ -226,7 +224,7 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
         <main className="flex min-w-0 flex-1 flex-col gap-2">
           <div className="flex min-h-[360px] flex-1 flex-col gap-1">
             <CandleInspector slot={inspected} timeframe={timeframe} />
-            <CandleChart className="min-h-[360px] flex-1" toolbar symbol={symbol} persistKey="sw-chart" trading={trading} now={clock?.now ?? null} series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={setInspectT} priceScaleType={priceScale} onPriceScaleTypeChange={setPriceScale} options={DESKTOP_CHART} label={chartLabel} />
+            <CandleChart className="min-h-[360px] flex-1" toolbar symbol={symbol} persistKey="sw-chart" trading={trading} now={clock?.now ?? null} onTimeframeChange={changeTf} series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={setInspectT} priceScaleType={priceScale} onPriceScaleTypeChange={setPriceScale} options={DESKTOP_CHART} label={chartLabel} />
           </div>
           <section aria-label="Session timeline and replay" className="flex flex-col gap-2 rounded-xl bg-card px-3 py-2.5">
             <ReplayControls {...replay} />

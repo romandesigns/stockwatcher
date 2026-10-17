@@ -6,7 +6,6 @@ import {
   lastCandle,
   sessionOf,
   slotIndexOf,
-  TIMEFRAMES,
   type Drawing,
   type IndicatorSpec,
   parseToolboxPlacement,
@@ -153,15 +152,6 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
             options={candidates.slice(0, 4).map((s) => ({ value: s, label: s, a11y: s }))}
           />
         )}
-        <Segmented
-          style={{ marginLeft: "auto" }}
-          value={timeframe}
-          onChange={(tf) => {
-            setTimeframe(tf);
-            setInspectT(null);
-          }}
-          options={TIMEFRAMES.map((tf) => ({ value: tf, label: tf, a11y: tf }))}
-        />
       </View>
 
       <CandleChart
@@ -180,6 +170,10 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
         onDrawingsChange={changeDrawings}
         trading={trading}
         toolboxPlacement={toolbox}
+        onTimeframeChange={(tf) => {
+          setTimeframe(tf);
+          setInspectT(null);
+        }}
         toolsVisible={toolsVisible}
         onToolsVisibleChange={changeToolsVisible}
         layers={layers}

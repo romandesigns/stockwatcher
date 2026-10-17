@@ -1,4 +1,5 @@
-import { formatPrice, orderTypeAt, snapPrice, tickSize, type OrderPlace, type OrderSide, type OrderType } from "@stockwatcher/chart-core";
+import { formatPrice, orderTypeAt, snapPrice, tickSize, type FillMark, type OrderPlace, type OrderSide, type OrderType } from "@stockwatcher/chart-core";
+import { TradeHistory } from "./ContextMenus.tsx";
 import { useEffect, useMemo, useState, type RefObject } from "react";
 import { Button } from "./ui/button.tsx";
 import { Popover, PopoverContent } from "./ui/popover.tsx";
@@ -19,6 +20,9 @@ export interface OrderTicketProps {
   price: number | null;
   onSubmit: (order: OrderTicketOrder) => void;
   finalFocus?: RefObject<HTMLElement | null>;
+  /** This symbol's simulated fills and realized P&L: the history at the bottom of the widget. */
+  fills?: readonly FillMark[];
+  realized?: number;
 }
 
 const TYPES: readonly { v: Exclude<OrderType, "stop_limit">; label: string }[] = [
@@ -39,7 +43,7 @@ const inputClass = "h-8 w-full rounded-md bg-bg-row px-2 font-mono text-sm tabul
  * grid the broker accepts. Nothing here talks to a server: it hands the order
  * to onSubmit.
  */
-export function OrderTicket({ open, onOpenChange, anchor, symbol, last, price, onSubmit, finalFocus }: OrderTicketProps) {
+export function OrderTicket({ open, onOpenChange, anchor, symbol, last, price, onSubmit, finalFocus, fills, realized = 0 }: OrderTicketProps) {
   const [side, setSide] = useState<OrderSide>("buy");
   const [type, setType] = useState<Exclude<OrderType, "stop_limit">>("market");
   const [typeByHand, setTypeByHand] = useState(false);
@@ -163,6 +167,7 @@ export function OrderTicket({ open, onOpenChange, anchor, symbol, last, price, o
           </Button>
           <p className="m-0 text-[10px] leading-snug text-text-faint">Fills in the simulator against the replay tape, in full, when a trade prints through the price. No money, no broker.</p>
         </form>
+        {fills && <TradeHistory fills={fills} realized={realized} className="mt-2.5 rounded-lg bg-bg-row/40 p-2" />}
       </PopoverContent>
     </Popover>
   );

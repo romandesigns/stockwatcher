@@ -16,11 +16,13 @@ import {
   type DrawingKind,
   type IndicatorSpec,
   type PaperPosition,
+  type Timeframe,
   type ChartLayers,
   type FillMark,
 } from "@stockwatcher/chart-core";
 import type { ReactNode } from "react";
-import { LayersMenu, TradesMenu } from "./ContextMenus.tsx";
+import { LayersMenu } from "./ContextMenus.tsx";
+import { TimeframeSelector } from "./TimeframeSelector.tsx";
 import { Tip } from "./ui/tooltip.tsx";
 import { Button } from "./ui/button.tsx";
 import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "./ui/dropdown-menu.tsx";
@@ -121,6 +123,9 @@ export interface ChartToolbarProps {
   /** The floating drawing tools: shown or hidden, and the switch (absent hides the switch). */
   toolsVisible?: boolean;
   onToolsVisibleChange?: (visible: boolean) => void;
+  /** The candle timeframe, shown at the left of the row (absent hides it). */
+  timeframe?: Timeframe;
+  onTimeframeChange?: (tf: Timeframe) => void;
   className?: string;
 }
 
@@ -131,7 +136,7 @@ export interface ChartToolbarProps {
  * One compact row; selection is a raised segment, and the accent is spent
  * only on the Trade button (the primary action).
  */
-export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChange, seriesColors, drawingTools = true, canDelete, onDelete, trading, layers, onLayersChange, toolsVisible, onToolsVisibleChange, className }: ChartToolbarProps) {
+export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChange, seriesColors, drawingTools = true, canDelete, onDelete, trading, layers, onLayersChange, toolsVisible, onToolsVisibleChange, timeframe, onTimeframeChange, className }: ChartToolbarProps) {
   const pos = trading?.position && trading.position.qty !== 0 ? trading.position : null;
   const pnl = pos && trading?.last !== null && trading?.last !== undefined ? unrealizedPnl(pos, trading.last) : null;
   return (
@@ -154,21 +159,8 @@ export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChang
       </Tip>
       </>
       )}
-      {onToolsVisibleChange && (
-        <Tip label={toolsVisible ? "Hide drawing tools" : "Show drawing tools"}>
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-label="Drawing tools"
-            aria-pressed={!!toolsVisible}
-            onClick={() => onToolsVisibleChange(!toolsVisible)}
-            className={cn("size-7 rounded-md [&_svg]:size-3.5", toolsVisible ? "bg-bg-raised text-foreground hover:bg-bg-raised" : "text-muted-foreground")}
-          >
-            {PencilIcon}
-          </Button>
-        </Tip>
-      )}
-      {/* Everything else on the far right: position, indicators, levels, trades, Trade. */}
+      {timeframe && onTimeframeChange && <TimeframeSelector value={timeframe} onValueChange={onTimeframeChange} />}
+      {/* Everything else on the far right: position, drawing tools, indicators, levels, Trade. */}
       <div className="ml-auto flex items-center gap-1.5">
         {pos && (
           <Tip label="Simulated position and unrealized P&L">
@@ -179,11 +171,24 @@ export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChang
             </span>
           </Tip>
         )}
+        {onToolsVisibleChange && (
+          <Tip label={toolsVisible ? "Hide drawing tools" : "Show drawing tools"}>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label="Drawing tools"
+              aria-pressed={!!toolsVisible}
+              onClick={() => onToolsVisibleChange(!toolsVisible)}
+              className={cn("size-7 rounded-md [&_svg]:size-3.5", toolsVisible ? "bg-bg-raised text-foreground hover:bg-bg-raised" : "text-muted-foreground")}
+            >
+              {PencilIcon}
+            </Button>
+          </Tip>
+        )}
         <IndicatorMenu indicators={indicators} onChange={onIndicatorsChange} seriesColors={seriesColors ?? DEFAULT_SERIES} />
         {layers && onLayersChange && <LayersMenu layers={layers} onChange={onLayersChange} />}
         {trading && (
           <>
-            <TradesMenu fills={trading.fills ?? []} realized={trading.realized ?? 0} />
             <Tip label="Simulated order (fills against the replay tape)">
               <Button size="sm" className="ml-0.5 h-7 rounded-md px-3 text-xs" onClick={trading.onTrade}>
                 Trade

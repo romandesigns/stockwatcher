@@ -141,6 +141,8 @@ export interface CandleChartProps {
   onLayersChange?: (layers: ChartLayers) => void;
   /** The feed clock (ms), for an ongoing halt's length. */
   now?: number | null;
+  /** Show the timeframe picker in the toolbar row; the host switches the subscription. */
+  onTimeframeChange?: (tf: Timeframe) => void;
 }
 
 /** What the host wires for simulated trading (the chart never talks to a server). */
@@ -227,6 +229,7 @@ export function CandleChart({
   layers: layersProp,
   onLayersChange,
   now = null,
+  onTimeframeChange,
 }: CandleChartProps) {
   const theme = useChartTheme(themeProp);
 
@@ -985,6 +988,8 @@ export function CandleChart({
           price={ticket.price}
           onSubmit={(o) => trading.onPlace({ ...o, clientOrderId: newId("c") })}
           finalFocus={canvasRef}
+          fills={fills}
+          realized={trading.state?.account.realizedPnl ?? 0}
         />
       )}
     </div>
@@ -997,6 +1002,8 @@ export function CandleChart({
       <ChartToolbar
         toolsVisible={toolsVisible}
         onToolsVisibleChange={changeToolsVisible}
+        timeframe={timeframe}
+        onTimeframeChange={onTimeframeChange}
         tool={tool}
         onToolChange={changeTool}
         indicators={indicatorSpecs}
