@@ -3,6 +3,7 @@ import type { ChartTheme } from "./displayList.ts";
 import { formatPrice } from "./format.ts";
 import type { ChartModel, Point } from "./layout.ts";
 import { priceY, slotX, yPrice, type Slot } from "./scale.ts";
+import { dragPosition, hitPosition, isPositionKind, layoutPosition, newPosition } from "./position.ts";
 import { lowerBound } from "./store.ts";
 
 // User drawings: trend lines, rays, horizontal levels, vertical markers and
@@ -16,9 +17,10 @@ import { lowerBound } from "./store.ts";
 // the plot. The no-borders rule (UI chrome) does not apply to them, but a
 // range is still a fill only, with no outline.
 
-export type DrawingKind = "trend" | "ray" | "hline" | "vline" | "rect";
+/** long and short are the position tool (position.ts). */
+export type DrawingKind = "trend" | "ray" | "hline" | "vline" | "rect" | "long" | "short";
 
-export const DRAWING_KINDS: readonly DrawingKind[] = ["trend", "ray", "hline", "vline", "rect"];
+export const DRAWING_KINDS: readonly DrawingKind[] = ["trend", "ray", "hline", "vline", "rect", "long", "short"];
 
 export const DRAWING_LABELS: Readonly<Record<DrawingKind, string>> = {
   trend: "Trend line",
@@ -26,6 +28,8 @@ export const DRAWING_LABELS: Readonly<Record<DrawingKind, string>> = {
   hline: "Horizontal line",
   vline: "Vertical line",
   rect: "Range",
+  long: "Long position",
+  short: "Short position",
 };
 
 /** One anchor: epoch ms and price. */
@@ -38,15 +42,24 @@ export interface Drawing {
   id: string;
   kind: DrawingKind;
   a: Anchor;
-  /** Second anchor; hline and vline ignore it (it equals a). */
+  /** Second anchor; hline and vline ignore it (it equals a). A position: the target (its t ends the zones). */
   b: Anchor;
+  /** A position's stop (its t equals b's). */
+  c?: Anchor;
+  /** A position's risk budget in dollars (sizes the quantity). */
+  risk?: number;
+  /** A position's share count when set by hand; absent = sized from risk. */
+  qty?: number | null;
 }
 
 /** Whether a kind is placed with one point (a level, a marker) or two. */
-export const isOnePoint = (k: DrawingKind) => k === "hline" || k === "vline";
+export const isOnePoint = (k: DrawingKind) => k === "hline" || k === "vline" || isPositionKind(k);
 
-/** The part of a drawing under the pointer: its body, or one of its handles. */
-export type DrawingPart = "body" | "a" | "b";
+/**
+ * The part of a drawing under the pointer: its body, or one of its handles.
+ * A position adds c (its stop) and end (where its zones end in time).
+ */
+export type DrawingPart = "body" | "a" | "b" | "c" | "end";
 
 /** Hit tolerance in px: fingers need more room than a mouse. */
 export const DRAWING_HIT_PX = { mouse: 6, touch: 14 } as const;
@@ -165,6 +178,10 @@ function geometryOf(model: ChartModel, d: Drawing): { segments: [Point, Point][]
       if (a.x < plot.x || a.x > plot.x + plot.w) return none;
       return { segments: [[{ x: a.x, y: plot.y }, { x: a.x, y: timeAlignedBottom(model) }]], box: null, a, b: a };
     }
+    case "long":
+    case "short":
+      // Drawn and hit-tested by position.ts.
+      return none;
     case "rect": {
       const x0 = Math.max(plot.x, Math.min(a.x, b.x));
       const x1 = Math.min(plot.x + plot.w, Math.max(a.x, b.x));
@@ -197,6 +214,11 @@ export function hitDrawing(model: ChartModel, drawings: readonly Drawing[], x: n
   const p = { x, y };
   const ordered = [...drawings].reverse().sort((m, n) => Number(n.id === selectedId) - Number(m.id === selectedId));
   for (const d of ordered) {
+    if (isPositionKind(d.kind)) {
+      const part = hitPosition(model, d, x, y, tol);
+      if (part) return { id: d.id, part };
+      continue;
+    }
     const g = geometryOf(model, d);
     if (!isOnePoint(d.kind)) {
       if (g.a && Math.hypot(g.a.x - x, g.a.y - y) <= tol) return { id: d.id, part: "a" };
@@ -217,6 +239,7 @@ export function hitDrawing(model: ChartModel, drawings: readonly Drawing[], x: n
  */
 export function dragDrawing(model: ChartModel, original: Drawing, part: DrawingPart, from: Point, to: Point): Drawing {
   if (!model.price) return original;
+  if (isPositionKind(original.kind)) return dragPosition(model, original, part, from, to);
   const price = model.price;
   if (part === "body") {
     const dIdx = (to.x - from.x) / model.index.barSpacing;
@@ -235,6 +258,7 @@ export function dragDrawing(model: ChartModel, original: Drawing, part: DrawingP
 
 /** Builds a drawing from two pixel points (one-point kinds use `a`). */
 export function drawingFromPoints(model: ChartModel, id: string, kind: DrawingKind, a: Point, b: Point): Drawing | null {
+  if (isPositionKind(kind)) return newPosition(model, id, kind, a);
   const pa = anchorAt(model, a.x, a.y, true);
   const pb = anchorAt(model, b.x, b.y, true);
   if (!pa || !pb) return null;
@@ -247,14 +271,18 @@ export function layoutDrawings(model: ChartModel, drawings: readonly Drawing[], 
   const g = model.geometry;
   for (const d of drawings) {
     const sel = d.id === selectedId;
+    if (isPositionKind(d.kind)) {
+      out.push(...layoutPosition(model, d, sel, theme));
+      continue;
+    }
     const stroke = sel ? theme.drawingSelected : theme.drawing;
     const geo = geometryOf(model, d);
     if (geo.box) out.push({ kind: "rect", ...geo.box, fill: theme.drawingFill, layer: "overlay" });
     for (const [p, q] of geo.segments) out.push({ kind: "line", x1: p.x, y1: p.y, x2: q.x, y2: q.y, stroke, lineWidth: sel ? 2 : 1.5, layer: "overlay" });
     if (d.kind === "hline" && geo.a && model.price && geo.segments.length) {
       const y = geo.a.y;
-      out.push({ kind: "rect", x: g.priceAxis.x + 2, y: y - 9, w: g.priceAxis.w - 4, h: 18, fill: stroke, radius: 3, layer: "axes" });
-      out.push({ kind: "text", x: g.priceAxis.x + g.priceAxis.w / 2, y, text: formatPrice(d.a.p), fill: theme.onTag, fontSize: model.options.fontSize, fontFamily: theme.fontMono, fontWeight: 600, align: "center", baseline: "middle", layer: "axes" });
+      out.push({ kind: "rect", x: g.priceAxis.x + 2, y: y - 9, w: g.priceAxis.w - 4, h: 18, fill: stroke, radius: 3, layer: "crosshair" });
+      out.push({ kind: "text", x: g.priceAxis.x + g.priceAxis.w / 2, y, text: formatPrice(d.a.p), fill: theme.onTag, fontSize: model.options.fontSize, fontFamily: theme.fontMono, fontWeight: 600, align: "center", baseline: "middle", layer: "crosshair" });
     }
     if (!sel) continue;
     const handles = isOnePoint(d.kind) ? [] : [geo.a, geo.b];

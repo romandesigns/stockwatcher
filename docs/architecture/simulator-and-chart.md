@@ -408,3 +408,28 @@ changes); OTA alone cannot deliver it.
 **Indicator caps:** at most 3 overlays and 2 panes. The overlay colours are three fixed categorical
 slots that the dataviz validator passes **all-pairs** on the dark surface (worst CVD ΔE 13.2), and lines
 over candles are effectively all-pairs. A fourth colour would fail, so the menus never offer a fourth.
+
+**Position tool (2026-10-17;** design canvas https://claude.ai/artifact/UkBuQdEMyZjAYmdMsTzatW**).**
+`chart-core/src/position.ts` adds Long and Short as drawing kinds:
+- Three anchors: `a` is the entry, `b` the target, `c` the stop. The zones run from `a.t` to `b.t`.
+- A `risk` budget in dollars, and an optional `qty` override.
+
+Behaviour:
+- **Sizing:** qty = floor(risk ÷ |entry − stop|), and R:R = reward per share ÷ risk per share.
+- **Default plan:** a tap places entry, stop and target at 2R. The stop distance is an eighth of the
+  visible price range, but at least 1% of the price.
+- **Handles:**
+  - target and stop drag their price;
+  - entry drags price and start time;
+  - an end handle sets how far the zones reach;
+  - the body moves the whole plan.
+- **Editing limits:** prices stay on the broker's tick grid and in order, one tick apart at least, so
+  the tool can never show a plan the broker would reject.
+- **Plan card:** a selected position shows its plan: `PositionPlanCard` over the web chart, and
+  `PositionPlanPanel` sliding up over the bottom of the native chart, so the chart never resizes.
+  "Place bracket" sends one simulated bracket order: a limit entry plus a take-profit and a
+  stop-loss that cancel each other (contract: `chart-trading-sim.md`, "Bracket orders"). The
+  drawing then goes, and the order lines take its place.
+- **Order lines:** bracket exits waiting for their entry draw faintly. Pills read "TP · …" and
+  "SL · …", and two working exits of one group show an OCO link.
+- **Keys:** L and S pick the tools on the web.

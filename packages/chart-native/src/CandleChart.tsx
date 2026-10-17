@@ -17,6 +17,8 @@ import {
   hitDrawing,
   hitTrading,
   isAutoPrice,
+  isPositionKind,
+  positionPlan,
   isWorking,
   lastCandle,
   layoutChart,
@@ -57,6 +59,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { AccessibilityInfo, StyleSheet, Text, View, type LayoutChangeEvent, type StyleProp, type ViewStyle } from "react-native";
 import { GestureDetector, GestureStateManager, useManualGesture } from "react-native-gesture-handler";
 import { recordPicture } from "./drawSkia.ts";
+import { PositionPlanPanel } from "./PositionPlanPanel.tsx";
 import { AxisSheet, IndicatorSheet, OrderTicketSheet, SCALE_LABELS } from "./sheets.tsx";
 import { playHaptic, ToolButton, ToolIcon, UI } from "./ui.tsx";
 
@@ -371,6 +374,25 @@ export function CandleChart({
     setSelected(null);
   };
 
+  const selectedPosition = selected?.kind === "drawing" ? drawings.find((d) => d.id === selected.id && isPositionKind(d.kind)) : undefined;
+  const placeBracket = (d: Drawing) => {
+    const plan = positionPlan(d);
+    if (!trading || !plan.valid) return;
+    trading.onPlace({
+      clientOrderId: newId("c"),
+      symbol,
+      side: plan.side === "long" ? "buy" : "sell",
+      orderType: "limit",
+      qty: plan.qty,
+      limitPrice: plan.entry,
+      bracket: { takeProfit: plan.target, stopLoss: plan.stop },
+    });
+    if (haptics) playHaptic("medium");
+    // The plan became orders: their lines replace the zones.
+    setDrawings(drawings.filter((x) => x.id !== d.id));
+    setSelected(null);
+  };
+
   const auto = isAutoPrice(vp);
   const a11yLabel = `${label ?? "Candlestick chart"}. Price axis ${SCALE_LABELS[scaleType]}${auto ? ", auto-scaled" : ", manual"}. Swipe up or down to inspect candles.`;
   const pnl = position && position.qty !== 0 && last !== null ? unrealizedPnl(position, last) : null;
@@ -437,6 +459,15 @@ export function CandleChart({
           )}
         </View>
       </GestureDetector>
+      {selectedPosition && (
+        // Over the bottom of the chart, never below it: the chart keeps its size, so nothing jumps.
+        <PositionPlanPanel
+          style={s.plan}
+          drawing={selectedPosition}
+          onChange={(d) => setDrawings(drawings.map((x) => (x.id === d.id ? d : x)))}
+          onPlace={trading ? () => placeBracket(selectedPosition) : undefined}
+        />
+      )}
 
       <IndicatorSheet open={sheet.kind === "indicators"} onClose={() => setSheet({ kind: "none" })} indicators={indicatorSpecs} onChange={setIndicators} reducedMotion={reducedMotion} />
       <AxisSheet
@@ -473,4 +504,5 @@ const s = StyleSheet.create({
   trade: { marginLeft: "auto", flexDirection: "row", alignItems: "center", gap: 8 },
   pos: { color: UI.textDim, fontSize: 11, fontVariant: ["tabular-nums"] },
   surface: { flex: 1, minHeight: 120 },
+  plan: { position: "absolute", left: 0, right: 0, bottom: 0 },
 });

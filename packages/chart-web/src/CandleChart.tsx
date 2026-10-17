@@ -4,6 +4,8 @@ import {
   buildSlots,
   computeChartModel,
   computeIndicators,
+  isPositionKind,
+  positionPlan,
   DRAWING_HIT_PX,
   dragDrawing,
   drawingFromPoints,
@@ -54,6 +56,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { ChartToolbar } from "./ChartToolbar.tsx";
 import { drawDisplayList } from "./draw.ts";
 import { OrderTicket } from "./OrderTicket.tsx";
+import { PositionPlanCard } from "./PositionPlanCard.tsx";
 import { PRICE_SCALE_LABELS, PriceAxisMenu } from "./PriceAxisMenu.tsx";
 import { cn } from "./ui/utils.ts";
 import { useCanvas, useChartTheme } from "./useCanvas.ts";
@@ -151,7 +154,8 @@ const pointerKind = (t: string | undefined): PointerKind | null => (t === "mouse
  *   axis for its menu.
  * Keyboard (when focused): ←/→ step (Shift ×10), Home/End, Esc = latest,
  * +/− zoom, 0 = follow latest, A = auto-scale price, Shift+F10 or the Menu
- * key = price axis menu, Delete = remove the selected drawing (Esc first
+ * key = price axis menu, L / S = long / short position tool, Delete = remove
+ * the selected drawing (Esc first
  * abandons a drawing being placed, then clears the selection).
  *
  * Everything chart-related lives here so any screen reuses it whole: the
@@ -552,6 +556,25 @@ export function CandleChart({
     setSelected(null);
   };
 
+  // The selected position tool, if any: its plan card shows over the chart.
+  const selectedPosition = selected?.kind === "drawing" ? drawings.find((d) => d.id === selected.id && isPositionKind(d.kind)) : undefined;
+  const placeBracket = (d: Drawing) => {
+    const plan = positionPlan(d);
+    if (!trading || !plan.valid) return;
+    trading.onPlace({
+      clientOrderId: newId("c"),
+      symbol,
+      side: plan.side === "long" ? "buy" : "sell",
+      orderType: "limit",
+      qty: plan.qty,
+      limitPrice: plan.entry,
+      bracket: { takeProfit: plan.target, stopLoss: plan.stop },
+    });
+    // The plan became orders: their lines replace the zones.
+    setDrawings(drawings.filter((x) => x.id !== d.id));
+    setSelected(null);
+  };
+
   const onKeyDown = (e: KeyboardEvent<HTMLCanvasElement>) => {
     const plotW = model.geometry.plot.w;
     let next: number | null | undefined;
@@ -561,6 +584,12 @@ export function CandleChart({
       if (gestures.isPlacing) apply(gestures.cancelPlacing(), model);
       else if (tool) changeTool(null);
       else setSelected(null);
+      return;
+    }
+    // L / S pick the long / short position tool (TradingView's habit of one-key tools).
+    if ((e.key === "l" || e.key === "L" || e.key === "s" || e.key === "S") && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      changeTool(e.key.toLowerCase() === "l" ? "long" : "short");
       return;
     }
     if ((e.key === "Delete" || e.key === "Backspace") && selected?.kind === "drawing") {
@@ -667,6 +696,14 @@ export function CandleChart({
                 }
               : undefined
           }
+        />
+      )}
+      {selectedPosition && (
+        <PositionPlanCard
+          className="absolute top-2 left-2 z-10"
+          drawing={selectedPosition}
+          onChange={(d) => setDrawings(drawings.map((x) => (x.id === d.id ? d : x)))}
+          onPlace={trading ? () => placeBracket(selectedPosition) : undefined}
         />
       )}
       {trading && (

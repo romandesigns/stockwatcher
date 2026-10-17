@@ -82,3 +82,25 @@ test("parsePaperMessage accepts only paper frames", () => {
   expect(parsePaperMessage('{"type":"chart.update"}')).toBeNull();
   expect(parsePaperMessage("not json")).toBeNull();
 });
+
+describe("bracket orders", () => {
+  const price = model.price!;
+  const mid = Number(((price.lo + price.hi) / 2).toFixed(2));
+  const entry = order({ id: "o-1", limitPrice: mid, role: "entry", ocoGroup: "b-1" });
+  const tp = order({ id: "o-2", side: "sell", limitPrice: mid + 0.1, role: "take_profit", parentId: "o-1", ocoGroup: "b-1", status: "pending" });
+  const sl = order({ id: "o-3", side: "sell", orderType: "stop", stopPrice: mid - 0.05, role: "stop_loss", parentId: "o-1", ocoGroup: "b-1", status: "pending" });
+
+  test("exits waiting for their entry still draw (faintly) and carry TP / SL in their pill", () => {
+    const list = layoutTrading(model, { orders: [entry, tp, sl], position: null, last: null }, DEFAULT_CHART_THEME);
+    expect(list.some((p) => p.kind === "text" && p.text.startsWith("TP · Sell LMT"))).toBe(true);
+    expect(list.some((p) => p.kind === "text" && p.text.startsWith("SL · Sell STP"))).toBe(true);
+    expect(list.some((p) => p.kind === "line" && p.stroke.startsWith("rgba("))).toBe(true);
+  });
+
+  test("two working exits of one group get an OCO link; one alone does not", () => {
+    const both = layoutTrading(model, { orders: [{ ...tp, status: "open" }, { ...sl, status: "open" }], position: null, last: null }, DEFAULT_CHART_THEME);
+    expect(both.some((p) => p.kind === "text" && p.text === "OCO")).toBe(true);
+    const one = layoutTrading(model, { orders: [{ ...tp, status: "open" }, { ...sl, status: "cancelled" }], position: null, last: null }, DEFAULT_CHART_THEME);
+    expect(one.some((p) => p.kind === "text" && p.text === "OCO")).toBe(false);
+  });
+});

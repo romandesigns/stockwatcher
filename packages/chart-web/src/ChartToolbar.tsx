@@ -44,6 +44,21 @@ export const TOOL_ICONS: Readonly<Record<DrawingKind | "cursor", ReactNode>> = {
   hline: svg(<path d="M1.5 8h13" />),
   vline: svg(<path d="M8 1.5v13" />),
   rect: svg(<rect x="3" y="4" width="10" height="8" rx="1" fill="currentColor" fillOpacity="0.35" stroke="none" />),
+  // Position tools: the green zone on the side the trade profits, the red one on the side it loses.
+  long: svg(
+    <>
+      <rect x="3" y="2" width="10" height="6" rx="1" fill="#3fb97a" fillOpacity="0.55" stroke="none" />
+      <rect x="3" y="8" width="10" height="5" rx="1" fill="#f0645c" fillOpacity="0.55" stroke="none" />
+      <path d="M2 8h12" />
+    </>,
+  ),
+  short: svg(
+    <>
+      <rect x="3" y="3" width="10" height="5" rx="1" fill="#f0645c" fillOpacity="0.55" stroke="none" />
+      <rect x="3" y="8" width="10" height="6" rx="1" fill="#3fb97a" fillOpacity="0.55" stroke="none" />
+      <path d="M2 8h12" />
+    </>,
+  ),
 };
 
 const TrashIcon = svg(<path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5" />);
@@ -76,7 +91,7 @@ export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChang
     <div className={cn("flex flex-wrap items-center gap-1.5", className)}>
       <ToggleGroup aria-label="Drawing tool" size="sm" spacing={0.5} variant="segmented" value={[tool ?? "cursor"]} onValueChange={(v) => v[0] && onToolChange(v[0] === "cursor" ? null : (v[0] as DrawingKind))}>
         {(["cursor", ...DRAWING_KINDS] as const).map((k) => (
-          <ToggleGroupItem key={k} value={k} aria-label={k === "cursor" ? "Cursor" : DRAWING_LABELS[k]} title={k === "cursor" ? "Cursor (Esc)" : DRAWING_LABELS[k]} className="w-7 px-0 [&_svg]:size-3.5">
+          <ToggleGroupItem key={k} value={k} aria-label={k === "cursor" ? "Cursor" : DRAWING_LABELS[k]} title={k === "cursor" ? "Cursor (Esc)" : k === "long" ? "Long position (L)" : k === "short" ? "Short position (S)" : DRAWING_LABELS[k]} className="w-7 px-0 [&_svg]:size-3.5">
             {TOOL_ICONS[k]}
           </ToggleGroupItem>
         ))}

@@ -13,7 +13,10 @@ import { withAlpha } from "./theme.ts";
 
 export type OrderSide = "buy" | "sell";
 export type OrderType = "market" | "limit" | "stop" | "stop_limit";
-export type OrderStatus = "open" | "triggered" | "filled" | "cancelled" | "rejected";
+/** pending: a bracket exit waiting for its entry to fill (it neither fills nor triggers yet). */
+export type OrderStatus = "pending" | "open" | "triggered" | "filled" | "cancelled" | "rejected";
+
+export type OrderRole = "entry" | "take_profit" | "stop_loss";
 
 export interface PaperOrder {
   id: string;
@@ -30,6 +33,10 @@ export interface PaperOrder {
   rejectReason: string | null;
   createdAt: number;
   updatedAt: number;
+  /** Bracket fields (null outside a bracket): the exits' entry, the order's role, and the group shared by all three. */
+  parentId?: string | null;
+  role?: OrderRole | null;
+  ocoGroup?: string | null;
 }
 
 export interface PaperPosition {
@@ -75,6 +82,8 @@ export interface OrderPlace {
   qty: number;
   limitPrice?: number;
   stopPrice?: number;
+  /** Attach a take-profit limit and a stop-loss stop that cancel each other once the entry fills. */
+  bracket?: { takeProfit: number; stopLoss: number };
 }
 
 export interface OrderModify {
@@ -145,7 +154,8 @@ export function orderLinePrice(o: PaperOrder): { price: number; field: "limitPri
 const TYPE_SHORT: Readonly<Record<OrderType, string>> = { market: "MKT", limit: "LMT", stop: "STP", stop_limit: "STP LMT" };
 
 export function orderLabel(o: PaperOrder): string {
-  return `${o.side === "buy" ? "Buy" : "Sell"} ${TYPE_SHORT[o.orderType]}${o.status === "triggered" ? " ·trig" : ""} ${formatSize(o.qty)}`;
+  const role = o.role === "take_profit" ? "TP · " : o.role === "stop_loss" ? "SL · " : "";
+  return `${role}${o.side === "buy" ? "Buy" : "Sell"} ${TYPE_SHORT[o.orderType]}${o.status === "triggered" ? " ·trig" : ""} ${formatSize(o.qty)}`;
 }
 
 /** What the chart draws for trading: this symbol's working orders and position. */
@@ -176,8 +186,8 @@ const PILL_H = 18;
 const CANCEL_W = 18;
 const PLACE_R = 9;
 
-/** Only working orders have lines: open ones, and triggered stop-limits. */
-export const isWorking = (o: PaperOrder) => o.status === "open" || o.status === "triggered";
+/** Only working orders have lines: open ones, triggered stop-limits, and bracket exits waiting for their entry. */
+export const isWorking = (o: PaperOrder) => o.status === "open" || o.status === "triggered" || o.status === "pending";
 
 function pills(model: ChartModel, layer: TradingLayer): Pill[] {
   const out: Pill[] = [];
@@ -227,7 +237,11 @@ export function layoutTrading(model: ChartModel, layer: TradingLayer, theme: Cha
   const byId = new Map(layer.orders.map((o) => [o.id, o]));
   for (const pill of pills(model, layer)) {
     const o = byId.get(pill.id)!;
-    const color = o.side === "buy" ? theme.orderBuy : theme.orderSell;
+    const pending = o.status === "pending";
+    // A take-profit reads as the good outcome and a stop-loss as the bad one, whatever side they sell on.
+    const base = o.role === "take_profit" ? theme.up : o.role === "stop_loss" ? theme.down : o.side === "buy" ? theme.orderBuy : theme.orderSell;
+    // An exit waiting for its entry is drawn faintly: it cannot fill yet.
+    const color = pending ? withAlpha(base, 0.45) : base;
     const line = orderLinePrice(o)!;
     const p = layer.dragging?.id === o.id ? layer.dragging.price : line.price;
     const y = priceY(price, p);
@@ -235,15 +249,35 @@ export function layoutTrading(model: ChartModel, layer: TradingLayer, theme: Cha
     if (inPlot(y)) out.push({ kind: "line", x1: plot.x, y1: Math.round(y) + 0.5, x2: plot.x + plot.w, y2: Math.round(y) + 0.5, stroke: color, lineWidth: 1, dash: [4, 3], layer: "overlay" });
     out.push({ kind: "rect", x: pill.x, y: pill.y, w: pill.w, h: pill.h, radius: 4, fill: color, layer: "overlay" });
     const arrow = y < plot.y ? "↑ " : y > plot.y + plot.h ? "↓ " : "";
-    out.push({ kind: "text", x: pill.x + 7, y: cy, text: `${arrow}${orderLabel(o)}`, fill: theme.onOrder, fontSize: fs, fontFamily: mono, fontWeight: 600, align: "left", baseline: "middle", layer: "overlay" });
+    out.push({ kind: "text", x: pill.x + 7, y: cy, text: `${arrow}${orderLabel(o)}`, fill: pending ? theme.text : theme.onOrder, fontSize: fs, fontFamily: mono, fontWeight: 600, align: "left", baseline: "middle", layer: "overlay" });
     // The cancel cell: a darker step of the pill, so it reads as its own target without a divider line.
     out.push({ kind: "rect", x: pill.cancelX, y: pill.y, w: CANCEL_W, h: pill.h, radius: 4, fill: withAlpha(theme.onOrder, 0.28), layer: "overlay" });
     out.push({ kind: "text", x: pill.cancelX + CANCEL_W / 2, y: cy, text: "✕", fill: theme.onOrder, fontSize: fs, fontFamily: mono, fontWeight: 700, align: "center", baseline: "middle", layer: "overlay" });
     // The price tag on the axis while it is being dragged, so the new price is readable.
     if (layer.dragging?.id === o.id && inPlot(y)) {
-      out.push({ kind: "rect", x: g.priceAxis.x + 2, y: y - 9, w: g.priceAxis.w - 4, h: 18, fill: color, radius: 3, layer: "axes" });
-      out.push({ kind: "text", x: g.priceAxis.x + g.priceAxis.w / 2, y, text: formatPrice(p), fill: theme.onOrder, fontSize: fs, fontFamily: mono, fontWeight: 600, align: "center", baseline: "middle", layer: "axes" });
+      out.push({ kind: "rect", x: g.priceAxis.x + 2, y: y - 9, w: g.priceAxis.w - 4, h: 18, fill: color, radius: 3, layer: "crosshair" });
+      out.push({ kind: "text", x: g.priceAxis.x + g.priceAxis.w / 2, y, text: formatPrice(p), fill: theme.onOrder, fontSize: fs, fontFamily: mono, fontWeight: 600, align: "center", baseline: "middle", layer: "crosshair" });
     }
+  }
+
+  // OCO: a connector between a bracket's two exits, just left of their pills (right of them is the
+  // price axis), with its label left of the connector.
+  const pillById = new Map(pills(model, layer).map((p) => [p.id, p]));
+  const groups = new Map<string, Pill[]>();
+  for (const o of layer.orders) {
+    if (!o.ocoGroup || !o.role || o.role === "entry" || !isWorking(o)) continue;
+    const p = pillById.get(o.id);
+    if (p) groups.set(o.ocoGroup, [...(groups.get(o.ocoGroup) ?? []), p]);
+  }
+  for (const pair of groups.values()) {
+    if (pair.length !== 2) continue;
+    const [p1, p2] = pair as [Pill, Pill];
+    const x = Math.min(p1.x, p2.x) - 8;
+    const y1 = Math.min(p1.y, p2.y) + PILL_H / 2;
+    const y2 = Math.max(p1.y, p2.y) + PILL_H / 2;
+    out.push({ kind: "rect", x: x - 1, y: y1, w: 2, h: y2 - y1, radius: 1, fill: theme.crosshairLabelBg, layer: "overlay" });
+    out.push({ kind: "rect", x: x - 30, y: (y1 + y2) / 2 - 8, w: 26, h: 16, radius: 4, fill: theme.crosshairLabelBg, layer: "overlay" });
+    out.push({ kind: "text", x: x - 17, y: (y1 + y2) / 2, text: "OCO", fill: theme.text, fontSize: fs - 1, fontFamily: mono, fontWeight: 600, align: "center", baseline: "middle", layer: "overlay" });
   }
 
   if (layer.placeY !== null && layer.placeY !== undefined && inPlot(layer.placeY)) {

@@ -70,6 +70,24 @@ export function ToolIcon({ kind, color }: { kind: DrawingKind | "cursor" | "tras
       return icon(<Path d="M8 1.5v13" />, color);
     case "rect":
       return icon(<Rect x={3} y={4} width={10} height={8} rx={1} fill={color} fillOpacity={0.35} stroke="none" />, color);
+    case "long":
+      return icon(
+        <>
+          <Rect x={3} y={2} width={10} height={6} rx={1} fill={UI.good} fillOpacity={0.55} stroke="none" />
+          <Rect x={3} y={8} width={10} height={5} rx={1} fill={UI.critical} fillOpacity={0.55} stroke="none" />
+          <Path d="M2 8h12" />
+        </>,
+        color,
+      );
+    case "short":
+      return icon(
+        <>
+          <Rect x={3} y={3} width={10} height={5} rx={1} fill={UI.critical} fillOpacity={0.55} stroke="none" />
+          <Rect x={3} y={8} width={10} height={6} rx={1} fill={UI.good} fillOpacity={0.55} stroke="none" />
+          <Path d="M2 8h12" />
+        </>,
+        color,
+      );
     case "trash":
       return icon(<Path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5" />, color);
   }

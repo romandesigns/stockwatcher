@@ -75,7 +75,7 @@ describe("drawings on the chart", () => {
     const level: Drawing = { id: "h", kind: "hline", a: trend.a, b: trend.a };
     const list = layoutDrawings(model, [level, trend], "t1", DEFAULT_CHART_THEME);
     expect(list.some((p) => p.kind === "line" && p.x1 === 0 && p.x2 === model.geometry.plot.w)).toBe(true);
-    expect(list.some((p) => p.kind === "text" && p.layer === "axes")).toBe(true);
+    expect(list.some((p) => p.kind === "text" && p.layer === "crosshair")).toBe(true);
     expect(list.filter((p) => p.kind === "rect" && p.radius === 5).length).toBe(2);
   });
 });
