@@ -1,4 +1,4 @@
-import { formatEtTime, formatPrice, formatSize, LAYER_IDS, LAYER_INFO, type ChartLayers, type FillMark, type LayerId } from "@stockwatcher/chart-core";
+import { formatEtTime, formatPrice, formatSize, LAYER_IDS, LAYER_INFO, LAYER_SWATCHES, type ChartLayers, type FillMark, type LayerId } from "@stockwatcher/chart-core";
 import type { ReactNode } from "react";
 import { Button } from "./ui/button.tsx";
 import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuGroup, DropdownMenuLabel, DropdownMenuTrigger } from "./ui/dropdown-menu.tsx";
@@ -21,29 +21,18 @@ const LevelsIcon = icon(
   </>,
 );
 
-/** The swatch each layer row shows: how that layer looks on the chart. */
+const SWATCH_COLOR = { warning: "#e0a63a", dim: "#98a2ae", text: "#e4e8ed", good: "#3fb97a", critical: "#f0645c" } as const;
+
+/** The swatch each layer row shows: how that layer looks on the chart (shapes shared with the phone). */
 function LayerSwatch({ id }: { id: LayerId }) {
-  const amber = "#e0a63a";
   return (
     <svg viewBox="0 0 24 16" width="24" height="16" aria-hidden="true">
-      {id === "halts" && (
-        <>
-          <rect x="4" y="1" width="16" height="14" rx="2" fill={amber} fillOpacity="0.18" />
-          <rect x="4" y="1" width="2" height="14" fill={amber} fillOpacity="0.6" />
-        </>
-      )}
-      {id === "luld" && (
-        <>
-          <path d="M2 4h20M2 12h20" stroke={amber} strokeOpacity="0.7" strokeWidth="1.5" strokeDasharray="3 2" />
-        </>
-      )}
-      {(id === "premarket" || id === "open" || id === "prevClose") && <path d="M2 8h20" stroke="#98a2ae" strokeOpacity="0.7" strokeWidth="1.5" strokeDasharray="2 2.5" />}
-      {id === "dayRange" && <path d="M2 4h20M2 12h20" stroke="#e4e8ed" strokeOpacity="0.6" strokeWidth="1.5" strokeDasharray="5 2.5" />}
-      {id === "fills" && (
-        <>
-          <path d="M7 6 10 11H4z" fill="#3fb97a" />
-          <path d="M17 10 20 5h-6z" fill="#f0645c" />
-        </>
+      {LAYER_SWATCHES[id].map((g, i) =>
+        g.paint === "fill" ? (
+          <path key={i} d={g.d} fill={SWATCH_COLOR[g.color]} fillOpacity={g.opacity} />
+        ) : (
+          <path key={i} d={g.d} fill="none" stroke={SWATCH_COLOR[g.color]} strokeOpacity={g.opacity} strokeWidth="1.5" strokeDasharray={g.dash?.join(" ")} />
+        ),
       )}
     </svg>
   );
@@ -66,7 +55,10 @@ export function LayersMenu({ layers, onChange }: { layers: ChartLayers; onChange
       <DropdownMenuContent align="end" aria-label="Levels" className="w-80 p-1.5">
         {/* Base UI requires a group around a menu label: without it the menu throws and takes the app down. */}
         <DropdownMenuGroup>
-        <DropdownMenuLabel className="px-1.5 pt-1.5 pb-1 text-[11px] font-medium text-muted-foreground">On the chart</DropdownMenuLabel>
+        <DropdownMenuLabel className="flex justify-between px-1.5 pt-1.5 pb-1 text-[11px] font-medium text-muted-foreground">
+          On the chart
+          <span className={cn("tabular-nums", on === LAYER_IDS.length ? "text-foreground" : "text-text-faint")}>{`${on}/${LAYER_IDS.length}`}</span>
+        </DropdownMenuLabel>
         {LAYER_IDS.map((id) => (
           <DropdownMenuCheckboxItem key={id} checked={layers[id]} onCheckedChange={(v) => onChange({ ...layers, [id]: !!v })} closeOnClick={false} className="gap-2.5 py-1.5 pr-9">
             <span className={cn("grid h-8 w-10 shrink-0 place-items-center rounded-lg", layers[id] ? "bg-bg-raised" : "bg-bg-row opacity-60")}>

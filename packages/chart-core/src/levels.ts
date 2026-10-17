@@ -30,6 +30,36 @@ export const LAYER_INFO: Readonly<Record<LayerId, { name: string; description: s
   fills: { name: "My fills", description: "Your simulated buys and sells" },
 };
 
+/** A swatch shape in a 24×16 box; `color` names a theme role each renderer maps to its own palette. */
+export interface LayerSwatchShape {
+  d: string;
+  paint: "fill" | "stroke";
+  color: "warning" | "dim" | "text" | "good" | "critical";
+  opacity?: number;
+  dash?: readonly number[];
+}
+
+/**
+ * How each layer looks on the chart, drawn small: the row icon in the web's
+ * Levels menu and the phone's Levels sheet, so the menu is also the key.
+ * Shared here (like INDICATOR_GLYPHS) so both platforms show the same marks.
+ */
+export const LAYER_SWATCHES: Readonly<Record<LayerId, readonly LayerSwatchShape[]>> = {
+  halts: [
+    { d: "M6 1h12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V3a2 2 0 0 1 2-2z", paint: "fill", color: "warning", opacity: 0.18 },
+    { d: "M4 1h2v14H4z", paint: "fill", color: "warning", opacity: 0.6 },
+  ],
+  luld: [{ d: "M2 4h20M2 12h20", paint: "stroke", color: "warning", opacity: 0.7, dash: [3, 2] }],
+  premarket: [{ d: "M2 8h20", paint: "stroke", color: "dim", opacity: 0.7, dash: [2, 2.5] }],
+  dayRange: [{ d: "M2 4h20M2 12h20", paint: "stroke", color: "text", opacity: 0.6, dash: [5, 2.5] }],
+  open: [{ d: "M2 8h20", paint: "stroke", color: "dim", opacity: 0.7, dash: [2, 2.5] }],
+  prevClose: [{ d: "M2 8h20", paint: "stroke", color: "dim", opacity: 0.7, dash: [2, 2.5] }],
+  fills: [
+    { d: "M7 6 10 11H4z", paint: "fill", color: "good" },
+    { d: "M17 10 20 5h-6z", paint: "fill", color: "critical" },
+  ],
+};
+
 export type ChartLayers = Readonly<Record<LayerId, boolean>>;
 
 /** Everything on except the open, which most small-cap traders read off the candles anyway. */

@@ -3,6 +3,8 @@ import {
   formatSize,
   LAYER_IDS,
   LAYER_INFO,
+  LAYER_SWATCHES,
+  type LayerId,
   type ChartLayers,
   type FillMark,
   canAddIndicator,
@@ -63,6 +65,23 @@ function Row({ label, on, disabled, onPress, right }: { label: string; on?: bool
       {right !== undefined && <Text style={s.rowRight}>{right}</Text>}
       {on && <Text style={[s.rowRight, { color: UI.accent }]}>✓</Text>}
     </Pressable>
+  );
+}
+
+const SWATCH_COLOR = { warning: UI.warning, dim: UI.textDim, text: UI.text, good: UI.good, critical: UI.critical } as const;
+
+/** A layer's swatch (shapes shared with chart-web through chart-core); faded while the layer is off, as an off indicator's glyph is. */
+function LayerSwatch({ id, on }: { id: LayerId; on: boolean }) {
+  return (
+    <Svg width={24} height={16} viewBox="0 0 24 16" opacity={on ? 1 : 0.5}>
+      {LAYER_SWATCHES[id].map((g, i) =>
+        g.paint === "fill" ? (
+          <Path key={i} d={g.d} fill={SWATCH_COLOR[g.color]} fillOpacity={g.opacity ?? 1} />
+        ) : (
+          <Path key={i} d={g.d} fill="none" stroke={SWATCH_COLOR[g.color]} strokeOpacity={g.opacity ?? 1} strokeWidth={1.5} strokeDasharray={g.dash ? [...g.dash] : undefined} />
+        ),
+      )}
+    </Svg>
   );
 }
 
@@ -379,6 +398,7 @@ export function LayersSheet({
   onProfileBinChange?: (bin: number) => void;
 }) {
   const va = profile?.valueArea ?? null;
+  const onCount = LAYER_IDS.filter((id) => layers[id]).length;
   return (
     <Sheet open={open} onClose={onClose} title="Levels" reducedMotion={reducedMotion}>
       <ScrollView>
@@ -403,26 +423,36 @@ export function LayersSheet({
             </View>
           </View>
         )}
-        <Text style={[s.label, { paddingHorizontal: 8 }]}>On the chart</Text>
-        {LAYER_IDS.map((id) => (
-          <Pressable
-            key={id}
-            accessibilityRole="switch"
-            accessibilityState={{ checked: layers[id] }}
-            accessibilityLabel={LAYER_INFO[id].name}
-            accessibilityHint={LAYER_INFO[id].description}
-            onPress={() => onChange({ ...layers, [id]: !layers[id] })}
-            style={({ pressed }) => [s.indRow, layers[id] && { backgroundColor: UI.row }, pressed && { backgroundColor: UI.raised }]}
-          >
-            <View style={{ flex: 1, gap: 2 }}>
-              <Text style={s.indName}>{LAYER_INFO[id].name}</Text>
-              <Text style={s.indDesc} numberOfLines={1}>
-                {LAYER_INFO[id].description}
-              </Text>
-            </View>
-            {layers[id] && <Text style={[s.rowRight, { color: UI.accent }]}>{"\u2713"}</Text>}
-          </Pressable>
-        ))}
+        {/* Rows in the Indicators sheet's design: a tile showing how the layer looks on the chart, name and description, a check when on. */}
+        <View style={s.indHeader}>
+          <Text style={s.label}>On the chart</Text>
+          <Text style={[s.label, { color: onCount === LAYER_IDS.length ? UI.text : UI.textFaint, fontVariant: ["tabular-nums"] }]}>{`${onCount}/${LAYER_IDS.length}`}</Text>
+        </View>
+        {LAYER_IDS.map((id) => {
+          const checked = layers[id];
+          return (
+            <Pressable
+              key={id}
+              accessibilityRole="checkbox"
+              accessibilityState={{ checked }}
+              accessibilityLabel={LAYER_INFO[id].name}
+              accessibilityHint={LAYER_INFO[id].description}
+              onPress={() => onChange({ ...layers, [id]: !checked })}
+              style={({ pressed }) => [s.indRow, checked && { backgroundColor: UI.row }, pressed && { backgroundColor: UI.raised }]}
+            >
+              <View style={[s.tile, { backgroundColor: checked ? UI.raised : UI.row }]}>
+                <LayerSwatch id={id} on={checked} />
+              </View>
+              <View style={{ flex: 1, gap: 2 }}>
+                <Text style={s.indName}>{LAYER_INFO[id].name}</Text>
+                <Text style={s.indDesc} numberOfLines={1}>
+                  {LAYER_INFO[id].description}
+                </Text>
+              </View>
+              {checked && <Text style={[s.rowRight, { color: UI.accent }]}>{"\u2713"}</Text>}
+            </Pressable>
+          );
+        })}
       </ScrollView>
     </Sheet>
   );
