@@ -107,6 +107,8 @@ export interface DataQuality {
   volumeOnly: number;
   unrecognizedConditions: number;
   outsideSession: number;
+  /** A resume with no open halt, or a second halt while halted (docs/architecture/halts-luld-fills.md). */
+  haltsUnmatched: number;
 }
 
 export type ClockMode = "replay" | "live";
@@ -118,6 +120,22 @@ export interface Clock {
   /** Replay speed multiplier; 0 means "max" (client convention, see ReplayControl). */
   speed: number;
   playing: boolean;
+}
+
+/** A trading halt (docs/architecture/halts-luld-fills.md). end null = still halted. */
+export interface Halt {
+  start: number;
+  end: number | null;
+  reason: string;
+  code: string;
+}
+
+/** LULD bands in effect from t until the next point; up/down null = no bands from t. */
+export interface LuldPoint {
+  t: number;
+  ref: number | null;
+  up: number | null;
+  down: number | null;
 }
 
 export interface ChartSnapshot {
@@ -133,6 +151,10 @@ export interface ChartSnapshot {
   profile: ProfileWire | null;
   quality: DataQuality;
   clock?: Clock;
+  /** Retained halts, ascending (timeframe-independent). Absent from servers that predate halts. */
+  halts?: Halt[];
+  /** LULD band changes of the current session, ascending (timeframe-independent). */
+  luld?: LuldPoint[];
 }
 
 /**
@@ -208,10 +230,24 @@ export interface ClockMessage {
   clock: Clock;
 }
 
-export type ChartIncrement = ChartUpdate | ChartRemove | ChartGap;
-export type ChartMessage = ChartSnapshot | ChartIncrement | TapeTrade | ClockMessage;
+/** A halt started, or (same start, end set) resumed. Sent to every subscriber of the symbol. */
+export interface ChartHalt {
+  type: "chart.halt";
+  symbol: string;
+  halt: Halt;
+}
 
-const CHART_TYPES = new Set(["chart.snapshot", "chart.update", "chart.remove", "chart.gap", "tape.trade", "replay.clock"]);
+/** A LULD band change. Sent to every subscriber of the symbol. */
+export interface ChartLuld {
+  type: "chart.luld";
+  symbol: string;
+  point: LuldPoint;
+}
+
+export type ChartIncrement = ChartUpdate | ChartRemove | ChartGap;
+export type ChartMessage = ChartSnapshot | ChartIncrement | TapeTrade | ClockMessage | ChartHalt | ChartLuld;
+
+const CHART_TYPES = new Set(["chart.snapshot", "chart.update", "chart.remove", "chart.gap", "tape.trade", "replay.clock", "chart.halt", "chart.luld"]);
 
 /** Parses one frame (string or already-parsed object); null if it is not a chart message. */
 export function parseChartMessage(raw: unknown): ChartMessage | null {

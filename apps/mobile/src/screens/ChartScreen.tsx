@@ -10,6 +10,9 @@ import {
   type Drawing,
   type IndicatorSpec,
   parseToolboxPlacement,
+  parseLayers,
+  DEFAULT_LAYERS,
+  type ChartLayers,
   DEFAULT_TOOLBOX_PHONE,
   type PriceScaleType,
   type ToolboxPlacement,
@@ -70,6 +73,15 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
   useEffect(() => {
     void getPreference<unknown>("chart.toolbox").then((v) => v && setToolbox(parseToolboxPlacement(v, DEFAULT_TOOLBOX_PHONE)));
   }, []);
+  // Which context layers show (halts, LULD, key levels, fills), kept across launches.
+  const [layers, setLayers] = useState<ChartLayers>(DEFAULT_LAYERS);
+  useEffect(() => {
+    void getPreference<unknown>("chart.layers").then((v) => v && setLayers(parseLayers(v)));
+  }, []);
+  const changeLayers = (l: ChartLayers) => {
+    setLayers(l);
+    void setPreference("chart.layers", l);
+  };
   const changeToolbox = (p: ToolboxPlacement) => {
     setToolbox(p);
     void setPreference("chart.toolbox", p);
@@ -159,6 +171,9 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
         onDrawingsChange={changeDrawings}
         trading={trading}
         toolboxPlacement={toolbox}
+        layers={layers}
+        onLayersChange={changeLayers}
+        now={clock?.now ?? null}
         onToolboxPlacementChange={changeToolbox}
         options={{ priceAxisWidth: 46, volumeHeight: 40, timeAxisHeight: 18, paneGap: 4, fontSize: 9, timeLabelSpacing: 60, indicatorPaneHeight: 56 }}
         barSpacing={8}

@@ -3,6 +3,7 @@ import { formatPrice, formatSize } from "./format.ts";
 import type { ChartModel } from "./layout.ts";
 import { priceY } from "./scale.ts";
 import { withAlpha } from "./theme.ts";
+import type { FillMark } from "./levels.ts";
 
 // Simulated chart trading, chart side: the wire types of the paper broker
 // (docs/architecture/chart-trading-sim.md; crates/paper-broker is the source
@@ -60,6 +61,8 @@ export interface PaperState {
   account: PaperAccount;
   orders: PaperOrder[];
   positions: PaperPosition[];
+  /** The last 200 fills, oldest first (absent from servers that predate it). */
+  fills?: FillMark[];
 }
 
 export interface PaperFill {

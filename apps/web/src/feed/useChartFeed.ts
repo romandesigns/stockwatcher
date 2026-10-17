@@ -33,6 +33,8 @@ export function useChartFeed(feed: ChartFeed, symbol: string, timeframe: Timefra
         store.applyIncrement(m);
       } else if (m.type === "replay.clock") {
         store.applyClock(m.clock);
+      } else if (m.type === "chart.halt" || m.type === "chart.luld") {
+        store.applySymbolEvent(m);
       } else if (m.symbol === symbol) {
         pending.push(m);
         if (!frame) frame = requestAnimationFrame(flush);

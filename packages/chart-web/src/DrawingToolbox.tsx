@@ -31,6 +31,10 @@ export interface DrawingToolboxProps {
   onColorChange: (color: string) => void;
   canDelete: boolean;
   onDelete: () => void;
+  canUndo: boolean;
+  canRedo: boolean;
+  onUndo: () => void;
+  onRedo: () => void;
 }
 
 const svg = (d: string) => (
@@ -44,6 +48,8 @@ const GripIcon = (
   </svg>
 );
 const TrashIcon = svg("M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5");
+const UndoIcon = svg("M5.5 3 2.5 6l3 3M2.5 6h7a4 4 0 0 1 0 8h-2");
+const RedoIcon = svg("M10.5 3l3 3-3 3M13.5 6h-7a4 4 0 0 0 0 8h2");
 const RotateIcon = svg("M3 8a5 5 0 0 1 8.5-3.5L13 6M13 3v3h-3M13 8a5 5 0 0 1-8.5 3.5L3 10M3 13v-3h3");
 
 /**
@@ -54,7 +60,7 @@ const RotateIcon = svg("M3 8a5 5 0 0 1 8.5-3.5L13 6M13 3v3h-3M13 8a5 5 0 0 1-8.5
  * drawing's colour and delete, so everything about drawings is in one spot.
  * It sits on a card surface with a shadow, no border (owner rule).
  */
-export function DrawingToolbox({ placement, onPlacementChange, container, tool, onToolChange, color, canColor, onColorChange, canDelete, onDelete }: DrawingToolboxProps) {
+export function DrawingToolbox({ placement, onPlacementChange, container, tool, onToolChange, color, canColor, onColorChange, canDelete, onDelete, canUndo, canRedo, onUndo, onRedo }: DrawingToolboxProps) {
   const ref = useRef<HTMLDivElement>(null);
   const colorRef = useRef<HTMLButtonElement>(null);
   const [box, setBox] = useState<Size>({ width: 40, height: 300 });
@@ -106,8 +112,9 @@ export function DrawingToolbox({ placement, onPlacementChange, container, tool, 
       role="toolbar"
       aria-label="Drawing tools"
       aria-orientation={vertical ? "vertical" : "horizontal"}
-      style={{ left: at.left, top: at.top }}
-      className={cn("absolute z-10 flex items-center gap-0.5 rounded-xl bg-card/95 p-1 shadow-lg backdrop-blur-sm", vertical ? "flex-col" : "flex-row")}
+      // Wraps to a second row (or column) when the chart is too small for one, so it never spills out.
+      style={{ left: at.left, top: at.top, ...(vertical ? { maxHeight: Math.max(120, container.height - 12) } : { maxWidth: Math.max(120, container.width - 12) }) }}
+      className={cn("absolute z-10 flex flex-wrap items-center gap-0.5 rounded-xl bg-card/95 p-1 shadow-lg backdrop-blur-sm", vertical ? "flex-col" : "flex-row")}
     >
       <button
         type="button"
@@ -133,8 +140,8 @@ export function DrawingToolbox({ placement, onPlacementChange, container, tool, 
         value={[tool ?? "cursor"]}
         onValueChange={(v) => v[0] && onToolChange(v[0] === "cursor" ? null : (v[0] as DrawingKind))}
       >
-        {(["cursor", ...DRAWING_KINDS] as const).map((k) => (
-          <ToggleGroupItem key={k} value={k} aria-label={k === "cursor" ? "Cursor" : DRAWING_LABELS[k]} title={k === "cursor" ? "Cursor (Esc)" : k === "long" ? "Long position (L)" : k === "short" ? "Short position (S)" : DRAWING_LABELS[k]} className="w-7 px-0 [&_svg]:size-3.5">
+        {(["cursor", ...DRAWING_KINDS, "measure"] as const).map((k) => (
+          <ToggleGroupItem key={k} value={k} aria-label={k === "cursor" ? "Cursor" : DRAWING_LABELS[k]} title={k === "cursor" ? "Cursor (Esc)" : k === "long" ? "Long position (L)" : k === "short" ? "Short position (S)" : k === "measure" ? "Measure (or Shift+drag)" : DRAWING_LABELS[k]} className="w-7 px-0 [&_svg]:size-3.5">
             {TOOL_ICONS[k]}
           </ToggleGroupItem>
         ))}
@@ -145,6 +152,12 @@ export function DrawingToolbox({ placement, onPlacementChange, container, tool, 
       </Button>
       <Button variant="ghost" size="icon" className={iconButton} aria-label="Delete selected drawing" title="Delete selected drawing (Del)" disabled={!canDelete} onClick={onDelete}>
         {TrashIcon}
+      </Button>
+      <Button variant="ghost" size="icon" className={iconButton} aria-label="Undo" title="Undo (Ctrl+Z)" disabled={!canUndo} onClick={onUndo}>
+        {UndoIcon}
+      </Button>
+      <Button variant="ghost" size="icon" className={iconButton} aria-label="Redo" title="Redo (Ctrl+Shift+Z)" disabled={!canRedo} onClick={onRedo}>
+        {RedoIcon}
       </Button>
       <Button
         variant="ghost"

@@ -229,6 +229,7 @@ const ZERO_QUALITY: DataQuality = {
   volumeOnly: 0,
   unrecognizedConditions: 0,
   outsideSession: 0,
+  haltsUnmatched: 0,
 };
 
 export interface FixtureOptions {
@@ -292,6 +293,9 @@ export function createFixtureFeed(opts: FixtureOptions = {}): ChartFeed & { now(
       profile: session ? { bin: sub.profileBin, anchor: session, rows, total: profileTotal(rows), poc: pointOfControl(rows), valueArea: valueArea(rows, sub.profileBin) } : null,
       quality: { ...quality },
       clock: clock(),
+      // The browser fixture models no halts or LULD bands (the server's fixture day does).
+      halts: [],
+      luld: [],
     };
   };
 

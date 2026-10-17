@@ -1,4 +1,10 @@
 import {
+  formatEtTime,
+  formatSize,
+  LAYER_IDS,
+  LAYER_INFO,
+  type ChartLayers,
+  type FillMark,
   canAddIndicator,
   DEFAULT_CHART_THEME,
   INDICATOR_GLYPHS,
@@ -322,8 +328,68 @@ const s = StyleSheet.create({
   indName: { color: UI.text, fontSize: 14, fontWeight: "500" },
   chip: { color: UI.textDim, fontSize: 10, backgroundColor: UI.row, borderRadius: 4, paddingHorizontal: 4, paddingVertical: 1, overflow: "hidden", fontVariant: ["tabular-nums"] },
   indDesc: { color: UI.textFaint, fontSize: 11 },
+  tradeRow: { flexDirection: "row", alignItems: "center", gap: 8, minHeight: 32, paddingHorizontal: 8, borderRadius: 6 },
+  tradeCell: { color: UI.text, fontSize: 12, fontVariant: ["tabular-nums"] },
   rowRight: { color: UI.textDim, fontSize: 13, marginLeft: 8 },
   input: { height: 40, backgroundColor: UI.row, borderRadius: 8, paddingHorizontal: 10, color: UI.text, fontSize: 15, fontVariant: ["tabular-nums"] },
   small: { color: UI.textDim, fontSize: 12 },
   note: { color: UI.textFaint, fontSize: 11, lineHeight: 15 },
 });
+
+/** The context layers as switches (halts, LULD, key levels, fills), the phone's twin of chart-web's LayersMenu. */
+export function LayersSheet({ open, onClose, layers, onChange, reducedMotion }: { open: boolean; onClose: () => void; layers: ChartLayers; onChange: (l: ChartLayers) => void; reducedMotion?: boolean }) {
+  return (
+    <Sheet open={open} onClose={onClose} title="Levels" reducedMotion={reducedMotion}>
+      <ScrollView>
+        {LAYER_IDS.map((id) => (
+          <Pressable
+            key={id}
+            accessibilityRole="switch"
+            accessibilityState={{ checked: layers[id] }}
+            accessibilityLabel={LAYER_INFO[id].name}
+            accessibilityHint={LAYER_INFO[id].description}
+            onPress={() => onChange({ ...layers, [id]: !layers[id] })}
+            style={({ pressed }) => [s.indRow, layers[id] && { backgroundColor: UI.row }, pressed && { backgroundColor: UI.raised }]}
+          >
+            <View style={{ flex: 1, gap: 2 }}>
+              <Text style={s.indName}>{LAYER_INFO[id].name}</Text>
+              <Text style={s.indDesc} numberOfLines={1}>
+                {LAYER_INFO[id].description}
+              </Text>
+            </View>
+            {layers[id] && <Text style={[s.rowRight, { color: UI.accent }]}>{"\u2713"}</Text>}
+          </Pressable>
+        ))}
+      </ScrollView>
+    </Sheet>
+  );
+}
+
+const ROLE: Record<string, string> = { take_profit: "TP", stop_loss: "SL", entry: "Entry" };
+
+/** Your simulated fills for this symbol, newest first, with realized P&L. */
+export function TradesSheet({ open, onClose, fills, realized, reducedMotion }: { open: boolean; onClose: () => void; fills: readonly FillMark[]; realized: number; reducedMotion?: boolean }) {
+  const list = [...fills].reverse();
+  return (
+    <Sheet open={open} onClose={onClose} title="Trades · simulated" reducedMotion={reducedMotion}>
+      <View style={[s.indHeader, { marginBottom: 6 }]}>
+        <Text style={s.label}>Realized</Text>
+        <Text style={[s.indName, { color: realized > 0 ? UI.good : realized < 0 ? UI.critical : UI.text, fontVariant: ["tabular-nums"] }]}>{`${realized >= 0 ? "+" : "\u2212"}$${Math.abs(realized).toFixed(2)}`}</Text>
+      </View>
+      <ScrollView>
+        {list.length === 0 ? (
+          <Text style={s.note}>No fills yet. Place an order with Trade, the price axis menu, or the position tool.</Text>
+        ) : (
+          list.map((f, i) => (
+            <View key={`${f.orderId}-${i}`} style={[s.tradeRow, i % 2 === 0 && { backgroundColor: UI.row }]}>
+              <Text style={[s.tradeCell, { color: UI.textDim, width: 64 }]}>{formatEtTime(f.t, true)}</Text>
+              <Text style={[s.tradeCell, { color: f.side === "buy" ? UI.good : UI.critical, width: 36 }]}>{f.side === "buy" ? "Buy" : "Sell"}</Text>
+              <Text style={[s.tradeCell, { flex: 1 }]}>{`${formatSize(f.qty)} @ ${formatPrice(f.price)}`}</Text>
+              <Text style={[s.tradeCell, { color: UI.textFaint }]}>{f.role ? ROLE[f.role] : ""}</Text>
+            </View>
+          ))
+        )}
+      </ScrollView>
+    </Sheet>
+  );
+}

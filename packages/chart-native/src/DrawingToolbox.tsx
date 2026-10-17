@@ -17,6 +17,10 @@ export interface DrawingToolboxProps {
   onColorChange: (color: string) => void;
   canDelete: boolean;
   onDelete: () => void;
+  canUndo: boolean;
+  canRedo: boolean;
+  onUndo: () => void;
+  onRedo: () => void;
   haptics?: boolean;
 }
 
@@ -30,7 +34,7 @@ const BTN = 30;
  * Its place is stored as fractions of the room it can move in (chart-core
  * toolbox.ts), so it lands in the same spot on any screen size.
  */
-export function DrawingToolbox({ placement, onPlacementChange, container, tool, onToolChange, color, canColor, onColorChange, canDelete, onDelete, haptics = true }: DrawingToolboxProps) {
+export function DrawingToolbox({ placement, onPlacementChange, container, tool, onToolChange, color, canColor, onColorChange, canDelete, onDelete, canUndo, canRedo, onUndo, onRedo, haptics = true }: DrawingToolboxProps) {
   const [box, setBox] = useState<Size>({ width: 300, height: 40 });
   const [colorsOpen, setColorsOpen] = useState(false);
   const start = useRef<{ left: number; top: number } | null>(null);
@@ -65,7 +69,13 @@ export function DrawingToolbox({ placement, onPlacementChange, container, tool, 
   const current = color ?? DRAWING_COLORS[0]!.value;
 
   return (
-    <View style={[s.box, { left: at.left, top: at.top, flexDirection: vertical ? "column" : "row" }]} onLayout={onLayout} accessibilityRole="toolbar" accessibilityLabel="Drawing tools">
+    // Wraps to a second row (or column) when the chart is too small for one, so it never spills out.
+    <View
+      style={[s.box, { left: at.left, top: at.top, flexDirection: vertical ? "column" : "row", flexWrap: "wrap" }, vertical ? { maxHeight: Math.max(BTN * 3, container.height - 12) } : { maxWidth: Math.max(BTN * 3, container.width - 12) }]}
+      onLayout={onLayout}
+      accessibilityRole="toolbar"
+      accessibilityLabel="Drawing tools"
+    >
       <GestureDetector gesture={pan}>
         <View style={[s.grip, vertical ? { width: BTN, height: 18 } : { width: 18, height: BTN }]} accessible accessibilityLabel="Move drawing tools" accessibilityHint="Drag to move the drawing tools">
           <Svg width={14} height={14} viewBox="0 0 16 16" style={vertical ? undefined : { transform: [{ rotate: "90deg" }] }}>
@@ -73,7 +83,7 @@ export function DrawingToolbox({ placement, onPlacementChange, container, tool, 
           </Svg>
         </View>
       </GestureDetector>
-      {(["cursor", ...DRAWING_KINDS] as const).map((k) => {
+      {(["cursor", ...DRAWING_KINDS, "measure"] as const).map((k) => {
         const on = (tool ?? "cursor") === k;
         return (
           <Pressable
@@ -114,6 +124,12 @@ export function DrawingToolbox({ placement, onPlacementChange, container, tool, 
       )}
       <Pressable accessibilityRole="button" accessibilityLabel="Delete selected drawing" disabled={!canDelete} onPress={onDelete} style={[s.btn, !canDelete && { opacity: 0.4 }]}>
         <ToolIcon kind="trash" color={UI.textDim} />
+      </Pressable>
+      <Pressable accessibilityRole="button" accessibilityLabel="Undo" disabled={!canUndo} onPress={onUndo} style={[s.btn, !canUndo && { opacity: 0.4 }]}>
+        <ToolIcon kind="undo" color={UI.textDim} />
+      </Pressable>
+      <Pressable accessibilityRole="button" accessibilityLabel="Redo" disabled={!canRedo} onPress={onRedo} style={[s.btn, !canRedo && { opacity: 0.4 }]}>
+        <ToolIcon kind="redo" color={UI.textDim} />
       </Pressable>
       <Pressable
         accessibilityRole="button"

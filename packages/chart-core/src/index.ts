@@ -18,3 +18,5 @@ export * from "./drawings.ts";
 export * from "./trading.ts";
 export * from "./position.ts";
 export * from "./toolbox.ts";
+export * from "./levels.ts";
+export * from "./history.ts";

@@ -43,7 +43,7 @@ const icon = (children: ReactNode, color: string) => (
 );
 
 /** The same 16 px icons as chart-web's toolbar. */
-export function ToolIcon({ kind, color }: { kind: DrawingKind | "cursor" | "trash" | "indicators"; color: string }) {
+export function ToolIcon({ kind, color }: { kind: DrawingKind | "cursor" | "trash" | "indicators" | "levels" | "trades" | "undo" | "redo"; color: string }) {
   switch (kind) {
     case "cursor":
       return icon(<Path d="M4 2.5v10l3-3 2 4.5 1.6-.7-2-4.4H13z" fill={color} stroke="none" />, color);
@@ -96,6 +96,36 @@ export function ToolIcon({ kind, color }: { kind: DrawingKind | "cursor" | "tras
         </>,
         color,
       );
+    case "levels":
+      return icon(
+        <>
+          <Path d="M1.5 4h13" strokeDasharray="2 2" />
+          <Path d="M1.5 8h13" />
+          <Path d="M1.5 12h13" strokeOpacity={0.5} />
+        </>,
+        color,
+      );
+    case "trades":
+      return icon(
+        <>
+          <Path d="M6.5 4h8M6.5 8h8M6.5 12h8" strokeOpacity={0.6} />
+          <Path d="M2 5.5 3.5 3 5 5.5z" fill={color} stroke="none" />
+          <Path d="M2 10.5 3.5 13 5 10.5z" fill={color} stroke="none" />
+        </>,
+        color,
+      );
+    case "measure":
+      return icon(
+        <>
+          <Path d="M2 11.5 11.5 2l2.5 2.5L4.5 14z" />
+          <Path d="M5 9.5l1 1M7 7.5l1.5 1.5M9 5.5l1 1" />
+        </>,
+        color,
+      );
+    case "undo":
+      return icon(<Path d="M5.5 3 2.5 6l3 3M2.5 6h7a4 4 0 0 1 0 8h-2" />, color);
+    case "redo":
+      return icon(<Path d="M10.5 3l3 3-3 3M13.5 6h-7a4 4 0 0 0 0 8h2" />, color);
     case "trash":
       return icon(<Path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5" />, color);
   }

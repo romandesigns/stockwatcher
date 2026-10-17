@@ -4,6 +4,17 @@ import {
   buildSlots,
   computeChartModel,
   computeIndicators,
+  emptyHistory,
+  record,
+  redo,
+  undo,
+  type History,
+  DEFAULT_LAYERS,
+  keyLevels,
+  parseLayers,
+  type ChartLayers,
+  type Halt,
+  type LuldPoint,
   DEFAULT_TOOLBOX,
   isColorable,
   parseToolboxPlacement,
@@ -80,6 +91,9 @@ export interface ChartSeriesLike {
   candles: readonly Candle[];
   gaps: readonly Gap[];
   profile: ProfileWire | null;
+  /** Halts and LULD band changes (the store keeps them per symbol). */
+  halts?: readonly Halt[];
+  luld?: readonly LuldPoint[];
 }
 
 export interface CandleChartProps {
@@ -119,6 +133,11 @@ export interface CandleChartProps {
   /** Where the floating drawing tools sit. Controlled when onToolboxPlacementChange is set; else kept (and persisted with persistKey). */
   toolboxPlacement?: ToolboxPlacement;
   onToolboxPlacementChange?: (p: ToolboxPlacement) => void;
+  /** Which context layers show (halts, LULD, key levels, fills). Controlled when onLayersChange is set; else kept and persisted with persistKey. */
+  layers?: ChartLayers;
+  onLayersChange?: (layers: ChartLayers) => void;
+  /** The feed clock (ms), for an ongoing halt's length. */
+  now?: number | null;
 }
 
 /** What the host wires for simulated trading (the chart never talks to a server). */
@@ -202,6 +221,9 @@ export function CandleChart({
   trading,
   toolboxPlacement: toolboxProp,
   onToolboxPlacementChange,
+  layers: layersProp,
+  onLayersChange,
+  now = null,
 }: CandleChartProps) {
   const theme = useChartTheme(themeProp);
 
@@ -219,7 +241,22 @@ export function CandleChart({
   // Drawings: controlled for this symbol, or kept here per symbol.
   const [ownDrawings, setOwnDrawings] = useState<Record<string, Drawing[]>>(() => loadJson(persistKey && `${persistKey}:drawings`, {}));
   const drawings = onDrawingsChange ? (drawingsProp ?? []) : (ownDrawings[symbol] ?? []);
+  // Undo / redo per symbol. Every committed change goes through setDrawings and is recorded;
+  // drag previews never are, so one undo undoes one thing the user did.
+  const [histories, setHistories] = useState<Record<string, History<Drawing[]>>>({});
+  const history = histories[symbol] ?? emptyHistory<Drawing[]>();
   const setDrawings = (next: Drawing[]) => {
+    setHistories((all) => ({ ...all, [symbol]: record(all[symbol] ?? emptyHistory<Drawing[]>(), drawings) }));
+    writeDrawings(next);
+  };
+  const stepHistory = (dir: "undo" | "redo") => {
+    const r = dir === "undo" ? undo(history, drawings) : redo(history, drawings);
+    if (!r) return;
+    setHistories((all) => ({ ...all, [symbol]: r.history }));
+    setSelected(null);
+    writeDrawings(r.state);
+  };
+  const writeDrawings = (next: Drawing[]) => {
     if (onDrawingsChange) onDrawingsChange(next);
     else
       setOwnDrawings((all) => {
@@ -246,7 +283,19 @@ export function CandleChart({
     }
   };
 
+  const [ownLayers, setOwnLayers] = useState<ChartLayers>(() => parseLayers(loadJson<unknown>(persistKey && `${persistKey}:layers`, null)));
+  const layers = onLayersChange ? (layersProp ?? DEFAULT_LAYERS) : ownLayers;
+  const setLayers = (next: ChartLayers) => {
+    if (onLayersChange) onLayersChange(next);
+    else {
+      setOwnLayers(next);
+      saveJson(persistKey && `${persistKey}:layers`, next);
+    }
+  };
+
   const [tool, setTool] = useState<DrawingKind | null>(null);
+  // A measurement is shown until the next press, Escape or a tool change; it is never stored.
+  const [measurement, setMeasurement] = useState<Drawing | null>(null);
   const [selected, setSelected] = useState<ObjectHit | null>(null);
   const [draft, setDraft] = useState<DrawingDraft | null>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
@@ -284,11 +333,26 @@ export function CandleChart({
   const indicatorResults = useMemo(() => computeIndicators(slots, indicatorSpecs), [slots, indicatorSpecs]);
 
   const last = useMemo(() => lastCandle(slots)?.c ?? null, [slots]);
+  const levels = useMemo(() => keyLevels(slots), [slots]);
+  const fills = useMemo(() => (trading?.state?.fills ?? []).filter((f) => f.symbol === symbol), [trading?.state, symbol]);
+  const context = useMemo(
+    () => ({
+      levels: levels.filter((l) => layers[l.layer]),
+      halts: layers.halts ? (series?.halts ?? []) : [],
+      luld: layers.luld ? (series?.luld ?? []) : [],
+      fills: layers.fills ? fills : [],
+      now,
+    }),
+    [levels, layers, series, fills, now],
+  );
   const orders = useMemo(() => (trading?.state?.orders ?? []).filter((o) => o.symbol === symbol && isWorking(o)), [trading?.state, symbol]);
   const position = useMemo(() => trading?.state?.positions.find((p) => p.symbol === symbol) ?? null, [trading?.state, symbol]);
   // The "+" place button follows a hovering mouse (touch opens the ticket from the price axis menu or Trade).
   const placeY = trading && !tool && !drag && pointer && gesturesRef.current?.lastPointerType === "mouse" ? pointer.y : null;
-  const shownDrawings = useMemo(() => (drag?.drawing ? drawings.map((d) => (d.id === drag.drawing!.id ? drag.drawing! : d)) : drawings), [drawings, drag]);
+  const shownDrawings = useMemo(() => {
+    const list = drag?.drawing ? drawings.map((d) => (d.id === drag.drawing!.id ? drag.drawing! : d)) : drawings;
+    return measurement ? [...list, measurement] : list;
+  }, [drawings, drag, measurement]);
   const selectedDrawing = selected?.kind === "drawing" ? selected.id : null;
 
   const state: ChartState = useMemo(
@@ -307,8 +371,9 @@ export function CandleChart({
       selectedDrawing,
       draft,
       trading: trading ? { orders, position, last, dragging: drag?.order ? { id: drag.order.id, price: drag.order.price } : null, placeY } : null,
+      context,
     }),
-    [timeframe, series, slots, inspectT, pointer, options, scaleType, indicatorResults, shownDrawings, selectedDrawing, draft, trading, orders, position, last, drag, placeY],
+    [timeframe, series, slots, inspectT, pointer, options, scaleType, indicatorResults, shownDrawings, selectedDrawing, draft, trading, orders, position, last, drag, placeY, context],
   );
 
   const paint = useCallback((ctx: CanvasRenderingContext2D, size: Size) => drawDisplayList(ctx, layoutChart(computeChartModel(state, vp, size), state, theme)), [state, vp, theme]);
@@ -404,6 +469,11 @@ export function CandleChart({
           setDraft(a.draft);
           break;
         case "createDrawing": {
+          if (a.tool === "measure") {
+            setMeasurement(drawingFromPoints(m, "measure", "measure", a.a, a.b));
+            setTool(null);
+            break;
+          }
           const d = drawingFromPoints(m, newId("d"), a.tool, a.a, a.b);
           if (d) {
             setDrawings([...drawings, d]);
@@ -561,9 +631,13 @@ export function CandleChart({
 
   const onPointer = (type: "down" | "move" | "up" | "cancel" | "leave") => (e: PointerEvent<HTMLCanvasElement>) => {
     const kind = pointerKind(e.pointerType) ?? "mouse";
-    if (type === "down") stopSlide();
+    if (type === "down") {
+      stopSlide();
+      setMeasurement(null);
+    }
     if (type === "down" && (kind !== "mouse" || e.button === 0)) e.currentTarget.setPointerCapture(e.pointerId);
-    feed(type, e, { pointerId: e.pointerId, pointerType: kind, button: e.button });
+    // shiftKey: Shift+drag measures.
+    feed(type, e, { pointerId: e.pointerId, pointerType: kind, button: e.button, shiftKey: e.shiftKey });
   };
 
   const onDoubleClick = (e: MouseEvent<HTMLCanvasElement>) => feed("dblclick", e, { pointerType: gestures.lastPointerType });
@@ -622,6 +696,7 @@ export function CandleChart({
   const changeTool = (t: DrawingKind | null) => {
     apply(gestures.cancelPlacing(), model);
     setDraft(null);
+    setMeasurement(null);
     setTool(t);
   };
 
@@ -655,6 +730,16 @@ export function CandleChart({
     const plotW = model.geometry.plot.w;
     let next: number | null | undefined;
     // Escape unwinds one layer at a time: a drawing being placed, the tool, the selection, then inspection.
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === "z" || e.key === "Z" || e.key === "y" || e.key === "Y")) {
+      e.preventDefault();
+      stepHistory(e.key.toLowerCase() === "y" || e.shiftKey ? "redo" : "undo");
+      return;
+    }
+    if (e.key === "Escape" && measurement) {
+      e.preventDefault();
+      setMeasurement(null);
+      return;
+    }
     if (e.key === "Escape" && (gestures.isPlacing || tool || selected)) {
       e.preventDefault();
       if (gestures.isPlacing) apply(gestures.cancelPlacing(), model);
@@ -801,6 +886,10 @@ export function CandleChart({
           onColorChange={(color) => selectedDrawingObj && setDrawings(drawings.map((d) => (d.id === selectedDrawingObj.id ? { ...d, color } : d)))}
           canDelete={selected?.kind === "drawing"}
           onDelete={deleteSelected}
+          canUndo={history.past.length > 0}
+          canRedo={history.future.length > 0}
+          onUndo={() => stepHistory("undo")}
+          onRedo={() => stepHistory("redo")}
         />
       )}
       {selectedPosition && (
@@ -839,7 +928,9 @@ export function CandleChart({
         drawingTools={false}
         canDelete={selected?.kind === "drawing"}
         onDelete={deleteSelected}
-        trading={trading ? { position, last, onTrade: () => openTicket(null, null) } : null}
+        trading={trading ? { position, last, onTrade: () => openTicket(null, null), fills, realized: trading.state?.account.realizedPnl ?? 0 } : null}
+        layers={layers}
+        onLayersChange={setLayers}
       />
       {canvasEl}
     </div>

@@ -3,11 +3,15 @@ import { sessionRefFromId } from "./time.ts";
 import {
   TIMEFRAME_MS,
   type Candle,
+  type ChartHalt,
   type ChartIncrement,
+  type ChartLuld,
   type ChartSnapshot,
   type Clock,
   type DataQuality,
   type Gap,
+  type Halt,
+  type LuldPoint,
   type ProfileRow,
   type ProfileWire,
   type SessionRef,
@@ -33,6 +37,10 @@ export interface Series {
   profile: ProfileWire | null;
   /** From the last snapshot (increments do not carry counters). */
   quality: DataQuality | null;
+  /** Halts, ascending by start (shared by every timeframe of the symbol). */
+  halts: Halt[];
+  /** LULD band changes, ascending by t (shared by every timeframe of the symbol). */
+  luld: LuldPoint[];
   version: number;
 }
 
@@ -118,6 +126,8 @@ export function applySnapshot(prev: Series | undefined, snap: ChartSnapshot, opt
     // A snapshot is authoritative: its poc/valueArea are taken as sent.
     profile: snap.profile ? { ...snap.profile, rows: [...snap.profile.rows] } : null,
     quality: snap.quality,
+    halts: [...(snap.halts ?? [])].sort((a, b) => a.start - b.start),
+    luld: [...(snap.luld ?? [])].sort((a, b) => a.t - b.t),
     version: (prev?.version ?? 0) + 1,
   };
   trim(series, opts.maxCandles ?? DEFAULT_MAX);
@@ -164,6 +174,27 @@ export function applyIncrement(prev: Series, inc: ChartIncrement, opts: StoreOpt
   mergeProfile(next, inc.session, inc.profileBin, inc.profile);
   trim(next, opts.maxCandles ?? DEFAULT_MAX);
   return next;
+}
+
+/** Upserts a halt (by start) into a series, returning a new Series. */
+export function applyHalt(prev: Series, halt: Halt): Series {
+  const halts = [...prev.halts];
+  const i = halts.findIndex((h) => h.start === halt.start);
+  if (i >= 0) halts[i] = halt;
+  else {
+    halts.push(halt);
+    halts.sort((a, b) => a.start - b.start);
+  }
+  return { ...prev, halts, version: prev.version + 1 };
+}
+
+/** Upserts a LULD point (by t) into a series, returning a new Series. */
+export function applyLuld(prev: Series, point: LuldPoint): Series {
+  const luld = [...prev.luld];
+  const i = lowerBound(luld, point.t);
+  if (luld[i]?.t === point.t) luld[i] = point;
+  else luld.splice(i, 0, point);
+  return { ...prev, luld, version: prev.version + 1 };
 }
 
 function trim(s: Series, max: number): void {
@@ -214,6 +245,17 @@ export class ChartStore {
     this.series.set(key, applyIncrement(prev, inc, this.opts));
     this.emit();
     return true;
+  }
+
+  /** Halts and LULD points belong to the symbol: every timeframe's series of it takes them. */
+  applySymbolEvent(m: ChartHalt | ChartLuld): void {
+    let changed = false;
+    for (const [key, s] of this.series) {
+      if (s.symbol !== m.symbol) continue;
+      this.series.set(key, m.type === "chart.halt" ? applyHalt(s, m.halt) : applyLuld(s, m.point));
+      changed = true;
+    }
+    if (changed) this.emit();
   }
 
   applyClock(clock: Clock): void {

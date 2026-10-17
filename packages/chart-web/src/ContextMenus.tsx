@@ -1,0 +1,132 @@
+import { formatEtTime, formatPrice, formatSize, LAYER_IDS, LAYER_INFO, type ChartLayers, type FillMark, type LayerId } from "@stockwatcher/chart-core";
+import type { ReactNode } from "react";
+import { Button } from "./ui/button.tsx";
+import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuLabel, DropdownMenuTrigger } from "./ui/dropdown-menu.tsx";
+import { cn } from "./ui/utils.ts";
+
+const icon = (children: ReactNode) => (
+  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true">
+    {children}
+  </svg>
+);
+
+/** Levels: three stacked lines, the dashed one a level. */
+const LevelsIcon = icon(
+  <>
+    <path d="M1.5 4h13" strokeDasharray="2 2" />
+    <path d="M1.5 8h13" />
+    <path d="M1.5 12h13" strokeOpacity="0.5" />
+  </>,
+);
+
+/** Trades: a list with buy and sell marks. */
+const TradesIcon = icon(
+  <>
+    <path d="M6.5 4h8M6.5 8h8M6.5 12h8" strokeOpacity="0.6" />
+    <path d="M2 5.5 3.5 3 5 5.5z" fill="currentColor" stroke="none" />
+    <path d="M2 10.5 3.5 13 5 10.5z" fill="currentColor" stroke="none" />
+  </>,
+);
+
+/** The swatch each layer row shows: how that layer looks on the chart. */
+function LayerSwatch({ id }: { id: LayerId }) {
+  const amber = "#e0a63a";
+  return (
+    <svg viewBox="0 0 24 16" width="24" height="16" aria-hidden="true">
+      {id === "halts" && (
+        <>
+          <rect x="4" y="1" width="16" height="14" rx="2" fill={amber} fillOpacity="0.18" />
+          <rect x="4" y="1" width="2" height="14" fill={amber} fillOpacity="0.6" />
+        </>
+      )}
+      {id === "luld" && (
+        <>
+          <path d="M2 4h20M2 12h20" stroke={amber} strokeOpacity="0.7" strokeWidth="1.5" strokeDasharray="3 2" />
+        </>
+      )}
+      {(id === "premarket" || id === "open" || id === "prevClose") && <path d="M2 8h20" stroke="#98a2ae" strokeOpacity="0.7" strokeWidth="1.5" strokeDasharray="2 2.5" />}
+      {id === "dayRange" && <path d="M2 4h20M2 12h20" stroke="#e4e8ed" strokeOpacity="0.6" strokeWidth="1.5" strokeDasharray="5 2.5" />}
+      {id === "fills" && (
+        <>
+          <path d="M7 6 10 11H4z" fill="#3fb97a" />
+          <path d="M17 10 20 5h-6z" fill="#f0645c" />
+        </>
+      )}
+    </svg>
+  );
+}
+
+/**
+ * The chart's context layers, each a switch: halts, LULD bands, the key
+ * levels (premarket, day range, open, previous close) and your fills. Every
+ * row shows how the layer looks on the chart, so the menu is also its key.
+ */
+export function LayersMenu({ layers, onChange }: { layers: ChartLayers; onChange: (l: ChartLayers) => void }) {
+  const on = LAYER_IDS.filter((id) => layers[id]).length;
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger aria-label={`Levels, ${on} of ${LAYER_IDS.length} on`} title="Levels" render={<Button variant="ghost" size="sm" className="h-7 min-w-7 rounded-md px-1.5 text-muted-foreground [&_svg]:size-3.5" />}>
+        {LevelsIcon}
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" aria-label="Levels" className="w-80 p-1.5">
+        <DropdownMenuLabel className="px-1.5 pt-1.5 pb-1 text-[11px] font-medium text-muted-foreground">On the chart</DropdownMenuLabel>
+        {LAYER_IDS.map((id) => (
+          <DropdownMenuCheckboxItem key={id} checked={layers[id]} onCheckedChange={(v) => onChange({ ...layers, [id]: !!v })} closeOnClick={false} className="gap-2.5 py-1.5 pr-9">
+            <span className={cn("grid h-8 w-10 shrink-0 place-items-center rounded-lg", layers[id] ? "bg-bg-raised" : "bg-bg-row opacity-60")}>
+              <LayerSwatch id={id} />
+            </span>
+            <span className="flex min-w-0 flex-col gap-0.5">
+              <span className="text-[13px] font-medium">{LAYER_INFO[id].name}</span>
+              <span className="truncate text-[11px] text-text-faint">{LAYER_INFO[id].description}</span>
+            </span>
+          </DropdownMenuCheckboxItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+const ROLE: Record<string, string> = { take_profit: "TP", stop_loss: "SL", entry: "Entry" };
+
+/**
+ * Your simulated fills for this symbol, newest first, with realized P&L.
+ * The same fills are drawn on the chart as arrows (the "My fills" layer).
+ */
+export function TradesMenu({ fills, realized }: { fills: readonly FillMark[]; realized: number }) {
+  const list = [...fills].reverse();
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger aria-label={`Trades, ${fills.length}`} title="Trades" render={<Button variant="ghost" size="sm" className="h-7 min-w-7 gap-1 rounded-md px-1.5 text-xs text-muted-foreground [&_svg]:size-3.5" />}>
+        {TradesIcon}
+        {fills.length ? <span className="font-mono text-[11px] text-foreground">{fills.length}</span> : null}
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" aria-label="Trades" className="w-80 p-1.5">
+        <div className="flex items-baseline justify-between px-1.5 pt-1.5 pb-2">
+          <span className="text-[11px] font-medium text-muted-foreground">Trades · simulated</span>
+          <span className="text-[11px] text-muted-foreground">
+            Realized{" "}
+            <span className={cn("font-mono tabular-nums", realized > 0 ? "text-good" : realized < 0 ? "text-critical" : "text-foreground")}>
+              {realized >= 0 ? "+" : "−"}${Math.abs(realized).toFixed(2)}
+            </span>
+          </span>
+        </div>
+        {list.length === 0 ? (
+          <p className="m-0 px-1.5 pb-2 text-xs text-text-faint">No fills yet. Place an order with Trade, the + on the price axis, or the position tool.</p>
+        ) : (
+          <ul className="m-0 flex max-h-80 list-none flex-col gap-0.5 overflow-y-auto p-0">
+            {list.map((f, i) => (
+              <li key={`${f.orderId}-${i}`} className="grid grid-cols-[52px_40px_minmax(0,1fr)_auto] items-baseline gap-2 rounded-md px-1.5 py-1 font-mono text-xs tabular-nums odd:bg-bg-row/40">
+                <span className="text-muted-foreground">{formatEtTime(f.t, true)}</span>
+                <span className={f.side === "buy" ? "text-good" : "text-critical"}>{f.side === "buy" ? "Buy" : "Sell"}</span>
+                <span>
+                  {formatSize(f.qty)} @ {formatPrice(f.price)}
+                </span>
+                <span className="font-sans text-[10px] text-text-faint">{f.role ? ROLE[f.role] : ""}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}

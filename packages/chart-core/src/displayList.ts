@@ -158,6 +158,15 @@ export interface ChartTheme {
   onOrder: string;
   /** The position line (average price). */
   position: string;
+  /** A trading halt's shading, and its label and badge. */
+  halt: string;
+  haltText: string;
+  /** LULD band lines and their tags' text. */
+  luld: string;
+  luldText: string;
+  /** Key level lines (premarket, open, previous close), and the stronger high/low of day. */
+  level: string;
+  levelStrong: string;
   fontSans: string;
   fontMono: string;
 }

@@ -59,6 +59,8 @@ import { autoScalePrice, followLatest, isAutoPrice, manualPrice, panSlots, scale
 //   renderer commits then, so an order is modified once, not per frame); a
 //   tap selects a drawing, cancels via the cancel cell, or opens the order
 //   ticket via the place button. A tap on empty chart clears the selection.
+// - Shift+drag with a mouse in the plot measures (the "measure" tool for that
+//   one drag), whatever tool is active.
 // - With a drawing tool active (ctx.tool), a press in the plot draws instead:
 //   press-drag-release places a two-point drawing; a tap places the first
 //   point and a second tap the other (the draft follows the mouse between);
@@ -192,7 +194,7 @@ type Phase =
    * a double tap. obj: pressed on an object. draw: pressed with a drawing
    * tool in the plot. quiet: this press stopped a fling, so it is not a tap.
    */
-  | { k: "pending"; id: number; type: PointerKind; region: Region; x0: number; y0: number; t0: number; second: boolean; obj: ObjectHit | null; draw: boolean; quiet: boolean }
+  | { k: "pending"; id: number; type: PointerKind; region: Region; x0: number; y0: number; t0: number; second: boolean; obj: ObjectHit | null; draw: DrawingKind | null; quiet: boolean }
   /** free: vertical movement pans price too (see touchPricePan). */
   | { k: "pan"; id: number; type: PointerKind; lastX: number; lastY: number; free: boolean; samples: { x: number; y: number; t: number }[] }
   | { k: "drag"; id: number; target: ObjectHit; from: Point; to: Point }
@@ -266,7 +268,7 @@ export class GestureController {
   get capturing(): boolean {
     const p = this.phase;
     if (p.k === "pan" || p.k === "scrub" || p.k === "axisScale" || p.k === "pinch" || p.k === "drag" || p.k === "draw") return true;
-    return p.k === "pending" && (p.region === "priceAxis" || p.obj !== null || p.draw);
+    return p.k === "pending" && (p.region === "priceAxis" || p.obj !== null || p.draw !== null);
   }
 
   /** When tick() next has something to decide (a long press or a deferred tap), or null. */
@@ -409,7 +411,8 @@ export class GestureController {
     // A drawing tool owns presses in the plot; otherwise an object under the
     // press (never on the axes' own gestures, except the order pills that
     // sit inside the plot) takes it.
-    const draw = !!ctx.tool && region === "plot";
+    // Shift+drag with a mouse measures, whatever the tool.
+    const draw: DrawingKind | null = region !== "plot" ? null : e.pointerType === "mouse" && e.shiftKey ? "measure" : (ctx.tool ?? null);
     const obj = draw || region === "priceAxis" || region === "timeAxis" ? null : (ctx.hitObject?.(e.x, e.y, touchLike(e.pointerType)) ?? null);
     if (obj || draw) {
       second = false;
@@ -439,11 +442,11 @@ export class GestureController {
         if (Math.hypot(dx, dy) < slop) return p.type === "mouse" ? hover(ctx, e.x, e.y) : [];
         // Past the slop: whatever this becomes, it is not a tap.
         if (p.second) this.pendingTap = null;
-        if (p.draw && ctx.tool) {
+        if (p.draw) {
           const a = this.placing?.a ?? { x: p.x0, y: p.y0 };
           this.placing = null;
-          this.phase = { k: "draw", id: p.id, tool: ctx.tool, a, b: { x: e.x, y: e.y } };
-          return [{ kind: "draft", draft: draftOf(ctx.tool, a, { x: e.x, y: e.y }) }];
+          this.phase = { k: "draw", id: p.id, tool: p.draw, a, b: { x: e.x, y: e.y } };
+          return [{ kind: "draft", draft: draftOf(p.draw, a, { x: e.x, y: e.y }) }];
         }
         if (p.obj && p.obj.kind !== "place" && !(p.obj.kind === "order" && p.obj.part === "cancel")) {
           const from = { x: p.x0, y: p.y0 };
@@ -537,7 +540,7 @@ export class GestureController {
         if (e.pointerId !== p.id) return [];
         this.phase = { k: "idle" };
         if (p.quiet) return [];
-        if (p.draw && ctx.tool) return this.tapDraw(ctx.tool, { x: p.x0, y: p.y0 });
+        if (p.draw) return this.tapDraw(p.draw, { x: p.x0, y: p.y0 });
         if (p.obj) return this.tapObject(p.obj);
         // A click or tap on empty chart clears any selection (when the chart
         // has objects at all); a mouse click inspects by hover already.

@@ -1,6 +1,6 @@
 import type { DisplayList, Rect } from "./displayList.ts";
 import type { ChartTheme } from "./displayList.ts";
-import { formatPrice } from "./format.ts";
+import { formatPrice, priceDecimals } from "./format.ts";
 import type { ChartModel, Point } from "./layout.ts";
 import { priceY, slotX, yPrice, type Slot } from "./scale.ts";
 import { withAlpha } from "./theme.ts";
@@ -18,8 +18,12 @@ import { lowerBound } from "./store.ts";
 // the plot. The no-borders rule (UI chrome) does not apply to them, but a
 // range is still a fill only, with no outline.
 
-/** long and short are the position tool (position.ts). */
-export type DrawingKind = "trend" | "ray" | "hline" | "vline" | "rect" | "long" | "short";
+/**
+ * long and short are the position tool (position.ts). measure is the ruler:
+ * placed like a two-point drawing but never stored (the host keeps it until
+ * the next press, Escape or tool change).
+ */
+export type DrawingKind = "trend" | "ray" | "hline" | "vline" | "rect" | "long" | "short" | "measure";
 
 export const DRAWING_KINDS: readonly DrawingKind[] = ["trend", "ray", "hline", "vline", "rect", "long", "short"];
 
@@ -31,6 +35,7 @@ export const DRAWING_LABELS: Readonly<Record<DrawingKind, string>> = {
   rect: "Range",
   long: "Long position",
   short: "Short position",
+  measure: "Measure",
 };
 
 /** One anchor: epoch ms and price. */
@@ -283,6 +288,59 @@ function layoutRect(model: ChartModel, d: Drawing, sel: boolean, stroke: string,
   return out;
 }
 
+// ---- Measure ----------------------------------------------------------------
+
+export interface Measurement {
+  /** Price change from the first point to the second, and in percent of the first. */
+  change: number;
+  pct: number;
+  /** Slots (bars) between the points, and the time between them. */
+  bars: number;
+  ms: number;
+}
+
+export function measure(model: ChartModel, d: Drawing): Measurement {
+  const change = d.b.p - d.a.p;
+  const bars = Math.round(tToIndex(model.slots, d.b.t, model.timeframeMs) - tToIndex(model.slots, d.a.t, model.timeframeMs));
+  return { change, pct: d.a.p ? (change / d.a.p) * 100 : 0, bars, ms: d.b.t - d.a.t };
+}
+
+function span(ms: number): string {
+  const s = Math.round(Math.abs(ms) / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return s % 60 ? `${m}m ${s % 60}s` : `${m}m`;
+  const h = Math.floor(m / 60);
+  return m % 60 ? `${h}h ${m % 60}m` : `${h}h`;
+}
+
+/** The ruler: a box from a to b tinted by direction, a diagonal, and a label with the numbers. */
+function layoutMeasure(model: ChartModel, d: Drawing, theme: ChartTheme): DisplayList {
+  const out: DisplayList = [];
+  const a = anchorXY(model, d.a);
+  const b = anchorXY(model, d.b);
+  if (!a || !b) return out;
+  const plot = model.geometry.plot;
+  const m = measure(model, d);
+  const color = m.change >= 0 ? theme.up : theme.down;
+  const x = Math.min(a.x, b.x);
+  const y = Math.min(a.y, b.y);
+  out.push({ kind: "path", points: [x, y, x + Math.abs(b.x - a.x), y, x + Math.abs(b.x - a.x), y + Math.abs(b.y - a.y), x, y + Math.abs(b.y - a.y)], closed: true, fill: withAlpha(color, 0.14), clip: plot, layer: "overlay" });
+  out.push({ kind: "line", x1: a.x, y1: a.y, x2: b.x, y2: b.y, stroke: color, lineWidth: 1.5, dash: [4, 3], clip: plot, layer: "overlay" });
+  const fs = model.options.fontSize;
+  const sign = m.change >= 0 ? "+" : "\u2212";
+  // The change takes the stock's own precision: a $3 stock's 3-cent move is 0.03, not 0.0300.
+  const lines = [`${sign}${formatPrice(Math.abs(m.change), priceDecimals(d.a.p))}  (${sign}${Math.abs(m.pct).toFixed(2)}%)`, `${Math.abs(m.bars)} bars \u00b7 ${span(m.ms)}`];
+  const w = Math.ceil(Math.max(...lines.map((l) => l.length)) * fs * 0.62) + 16;
+  const h = (fs + 5) * 2 + 8;
+  // Beyond the end point, on the side the ruler was pulled toward, kept inside the plot.
+  const lx = Math.min(plot.x + plot.w - w - 4, Math.max(plot.x + 4, b.x - w / 2));
+  const ly = b.y < a.y ? Math.max(plot.y + 4, b.y - h - 8) : Math.min(plot.y + plot.h - h - 4, b.y + 8);
+  out.push({ kind: "rect", x: lx, y: ly, w, h, radius: 6, fill: color, layer: "crosshair" });
+  lines.forEach((t, i) => out.push({ kind: "text", x: lx + w / 2, y: ly + 4 + i * (fs + 5) + (fs + 5) / 2, text: t, fill: theme.onTag, fontSize: fs, fontFamily: theme.fontMono, fontWeight: 600, align: "center", baseline: "middle", layer: "crosshair" }));
+  return out;
+}
+
 /** The pixel segments of a drawing, already clipped to the plot (rects: their box). */
 function geometryOf(model: ChartModel, d: Drawing): { segments: [Point, Point][]; box: Rect | null; a: Point | null; b: Point | null } {
   const plot = model.geometry.plot;
@@ -314,6 +372,9 @@ function geometryOf(model: ChartModel, d: Drawing): { segments: [Point, Point][]
     case "long":
     case "short":
       // Drawn and hit-tested by position.ts.
+      return none;
+    case "measure":
+      // Drawn by layoutMeasure; never hit-tested (it is not a stored drawing).
       return none;
     case "rect": {
       const x0 = Math.max(plot.x, Math.min(a.x, b.x));
@@ -425,6 +486,10 @@ export function layoutDrawings(model: ChartModel, drawings: readonly Drawing[], 
     const sel = d.id === selectedId;
     if (isPositionKind(d.kind)) {
       out.push(...layoutPosition(model, d, sel, theme));
+      continue;
+    }
+    if (d.kind === "measure") {
+      out.push(...layoutMeasure(model, d, theme));
       continue;
     }
     if (d.kind === "rect") {

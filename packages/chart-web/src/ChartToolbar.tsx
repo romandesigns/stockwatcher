@@ -16,8 +16,11 @@ import {
   type DrawingKind,
   type IndicatorSpec,
   type PaperPosition,
+  type ChartLayers,
+  type FillMark,
 } from "@stockwatcher/chart-core";
 import type { ReactNode } from "react";
+import { LayersMenu, TradesMenu } from "./ContextMenus.tsx";
 import { Button } from "./ui/button.tsx";
 import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "./ui/dropdown-menu.tsx";
 import { ToggleGroup, ToggleGroupItem } from "./ui/toggle-group.tsx";
@@ -48,6 +51,13 @@ export const TOOL_ICONS: Readonly<Record<DrawingKind | "cursor", ReactNode>> = {
   hline: svg(<path d="M1.5 8h13" />),
   vline: svg(<path d="M8 1.5v13" />),
   rect: svg(<rect x="3" y="4" width="10" height="8" rx="1" fill="currentColor" fillOpacity="0.35" stroke="none" />),
+  // The ruler: a measure is not stored, it reads between two points.
+  measure: svg(
+    <>
+      <path d="M2 11.5 11.5 2l2.5 2.5L4.5 14z" />
+      <path d="M5 9.5l1 1M7 7.5l1.5 1.5M9 5.5l1 1" />
+    </>,
+  ),
   // Position tools: the green zone on the side the trade profits, the red one on the side it loses.
   long: svg(
     <>
@@ -90,8 +100,11 @@ export interface ChartToolbarProps {
   /** A drawing is selected, so Delete applies to it. */
   canDelete: boolean;
   onDelete: () => void;
-  /** Simulated trading summary and the ticket button; absent hides both. */
-  trading?: { position: PaperPosition | null; last: number | null; onTrade: () => void } | null;
+  /** Simulated trading summary, the trade list and the ticket button; absent hides them. */
+  trading?: { position: PaperPosition | null; last: number | null; onTrade: () => void; fills?: readonly FillMark[]; realized?: number } | null;
+  /** The context layers switch (halts, LULD, key levels, fills); absent hides the Levels menu. */
+  layers?: ChartLayers;
+  onLayersChange?: (l: ChartLayers) => void;
   className?: string;
 }
 
@@ -102,7 +115,7 @@ export interface ChartToolbarProps {
  * One compact row; selection is a raised segment, and the accent is spent
  * only on the Trade button (the primary action).
  */
-export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChange, seriesColors, drawingTools = true, canDelete, onDelete, trading, className }: ChartToolbarProps) {
+export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChange, seriesColors, drawingTools = true, canDelete, onDelete, trading, layers, onLayersChange, className }: ChartToolbarProps) {
   const pos = trading?.position && trading.position.qty !== 0 ? trading.position : null;
   const pnl = pos && trading?.last !== null && trading?.last !== undefined ? unrealizedPnl(pos, trading.last) : null;
   return (
@@ -122,6 +135,7 @@ export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChang
       </>
       )}
       <IndicatorMenu indicators={indicators} onChange={onIndicatorsChange} seriesColors={seriesColors ?? DEFAULT_SERIES} />
+      {layers && onLayersChange && <LayersMenu layers={layers} onChange={onLayersChange} />}
       {trading && (
         <div className="ml-auto flex items-center gap-2">
           {pos && (
@@ -131,6 +145,7 @@ export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChang
               {pnl !== null && <span className={cn("ml-1.5", pnl >= 0 ? "text-good" : "text-critical")}>{`${pnl >= 0 ? "+" : "−"}$${Math.abs(pnl).toFixed(2)}`}</span>}
             </span>
           )}
+          <TradesMenu fills={trading.fills ?? []} realized={trading.realized ?? 0} />
           <Button size="sm" className="h-7 rounded-md px-3 text-xs" onClick={trading.onTrade} title="Simulated order (fills against the replay tape)">
             Trade
           </Button>

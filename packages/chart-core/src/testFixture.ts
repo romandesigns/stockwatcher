@@ -18,6 +18,7 @@ export const ZERO_QUALITY: DataQuality = {
   volumeOnly: 0,
   unrecognizedConditions: 0,
   outsideSession: 0,
+  haltsUnmatched: 0,
 };
 
 /** Candles every interval except `skip` indices, which become single-interval no_trades gaps. */

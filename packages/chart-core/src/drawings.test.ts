@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { anchorXY, clipSegment, ROTATE_HANDLE_GAP, dragDrawing, drawingFromPoints, hitDrawing, indexToT, layoutDrawings, tToIndex, type Drawing } from "./drawings.ts";
+import { anchorXY, clipSegment, measure, ROTATE_HANDLE_GAP, dragDrawing, drawingFromPoints, hitDrawing, indexToT, layoutDrawings, tToIndex, type Drawing } from "./drawings.ts";
 import { computeChartModel, type ChartState } from "./layout.ts";
 import { defaultViewport, slotX } from "./scale.ts";
 import { DEFAULT_CHART_THEME } from "./theme.ts";
@@ -134,5 +134,17 @@ describe("rotating a range", () => {
     const path = list.find((p) => p.kind === "path");
     expect(path && "points" in path ? path.points.length : 0).toBe(8);
     expect(list.some((p) => p.kind === "text" && p.text === "30°")).toBe(true);
+  });
+});
+
+describe("measure", () => {
+  test("reads change, percent, bars and time between two points", () => {
+    const d = drawingFromPoints(model, "m", "measure", { x: slotX(model.index, 4), y: 150 }, { x: slotX(model.index, 12), y: 70 })!;
+    const m = measure(model, d);
+    expect(m.bars).toBe(8);
+    expect(m.ms).toBe(8 * 60_000); // the one-interval gap at slot 5 is one minute, like a candle
+    expect(m.change).toBeGreaterThan(0);
+    const list = layoutDrawings(model, [d], null, DEFAULT_CHART_THEME);
+    expect(list.some((p) => p.kind === "text" && p.text.includes("bars"))).toBe(true);
   });
 });

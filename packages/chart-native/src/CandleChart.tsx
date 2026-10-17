@@ -1,6 +1,16 @@
 import { Canvas, Picture } from "@shopify/react-native-skia";
 import {
   applyGesture,
+  emptyHistory,
+  record,
+  redo,
+  undo,
+  type History,
+  DEFAULT_LAYERS,
+  keyLevels,
+  type ChartLayers,
+  type Halt,
+  type LuldPoint,
   DEFAULT_TOOLBOX_PHONE,
   isColorable,
   backToLatestMs,
@@ -70,13 +80,15 @@ import Svg, { Path } from "react-native-svg";
 import { recordPicture } from "./drawSkia.ts";
 import { DrawingToolbox } from "./DrawingToolbox.tsx";
 import { PositionPlanPanel } from "./PositionPlanPanel.tsx";
-import { AxisSheet, IndicatorSheet, OrderTicketSheet, SCALE_LABELS } from "./sheets.tsx";
+import { AxisSheet, IndicatorSheet, LayersSheet, OrderTicketSheet, SCALE_LABELS, TradesSheet } from "./sheets.tsx";
 import { playHaptic, ToolButton, ToolIcon, UI } from "./ui.tsx";
 
 export interface ChartSeriesLike {
   candles: readonly Candle[];
   gaps: readonly Gap[];
   profile: ProfileWire | null;
+  halts?: readonly Halt[];
+  luld?: readonly LuldPoint[];
 }
 
 /** What the host wires for simulated trading (the chart never talks to a server). */
@@ -109,6 +121,11 @@ export interface CandleChartProps {
   /** Where the floating drawing tools sit. Controlled when onToolboxPlacementChange is set (the host persists it); else kept for the session. */
   toolboxPlacement?: ToolboxPlacement;
   onToolboxPlacementChange?: (p: ToolboxPlacement) => void;
+  /** Which context layers show (halts, LULD, key levels, fills). Controlled when onLayersChange is set (the host persists it). */
+  layers?: ChartLayers;
+  onLayersChange?: (layers: ChartLayers) => void;
+  /** The feed clock (ms), for an ongoing halt's length. */
+  now?: number | null;
   /** Haptic feedback on scrub, grabs, placements and fills (default true). */
   haptics?: boolean;
   label?: string;
@@ -158,6 +175,10 @@ export function CandleChart({
   haptics = true,
   toolboxPlacement: toolboxProp,
   onToolboxPlacementChange,
+  layers: layersProp,
+  onLayersChange,
+  // Renamed: this module's now() is the monotonic clock the gestures use.
+  now: clockNow = null,
   label,
   style,
 }: CandleChartProps) {
@@ -179,7 +200,22 @@ export function CandleChart({
   const setIndicators = (s: IndicatorSpec[]) => (onIndicatorsChange ? onIndicatorsChange(s) : setOwnIndicators(s));
   const [ownDrawings, setOwnDrawings] = useState<Record<string, Drawing[]>>({});
   const drawings = onDrawingsChange ? (drawingsProp ?? []) : (ownDrawings[symbol] ?? []);
-  const setDrawings = (d: Drawing[]) => (onDrawingsChange ? onDrawingsChange(d) : setOwnDrawings((all) => ({ ...all, [symbol]: d })));
+  const writeDrawings = (d: Drawing[]) => (onDrawingsChange ? onDrawingsChange(d) : setOwnDrawings((all) => ({ ...all, [symbol]: d })));
+  // Undo / redo per symbol (see chart-web): every committed change is recorded, previews never.
+  const [histories, setHistories] = useState<Record<string, History<Drawing[]>>>({});
+  const history = histories[symbol] ?? emptyHistory<Drawing[]>();
+  const setDrawings = (d: Drawing[]) => {
+    setHistories((all) => ({ ...all, [symbol]: record(all[symbol] ?? emptyHistory<Drawing[]>(), drawings) }));
+    writeDrawings(d);
+  };
+  const stepHistory = (dir: "undo" | "redo") => {
+    const r = dir === "undo" ? undo(history, drawings) : redo(history, drawings);
+    if (!r) return;
+    setHistories((all) => ({ ...all, [symbol]: r.history }));
+    setSelected(null);
+    writeDrawings(r.state);
+    if (haptics) playHaptic("selection");
+  };
 
   const [view, setView] = useState<{ tf: Timeframe; vp: Viewport }>(() => ({ tf: timeframe, vp: defaultViewport(barSpacing) }));
   const vp = view.tf === timeframe ? view.vp : defaultViewport(barSpacing);
@@ -187,6 +223,8 @@ export function CandleChart({
 
   const [pointer, setPointer] = useState<Point | null>(null);
   const [tool, setTool] = useState<DrawingKind | null>(null);
+  // A measurement is shown until the next touch or a tool change; it is never stored.
+  const [measurement, setMeasurement] = useState<Drawing | null>(null);
   const [ownToolbox, setOwnToolbox] = useState<ToolboxPlacement>(DEFAULT_TOOLBOX_PHONE);
   const [dragToolbox, setDragToolbox] = useState<ToolboxPlacement | null>(null);
   const toolbox = dragToolbox ?? (onToolboxPlacementChange ? (toolboxProp ?? DEFAULT_TOOLBOX_PHONE) : ownToolbox);
@@ -202,7 +240,7 @@ export function CandleChart({
   const [selected, setSelected] = useState<ObjectHit | null>(null);
   const [draft, setDraft] = useState<DrawingDraft | null>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
-  const [sheet, setSheet] = useState<{ kind: "none" } | { kind: "indicators" } | { kind: "axis"; price: number | null } | { kind: "ticket"; price: number | null }>({ kind: "none" });
+  const [sheet, setSheet] = useState<{ kind: "none" } | { kind: "indicators" } | { kind: "layers" } | { kind: "trades" } | { kind: "axis"; price: number | null } | { kind: "ticket"; price: number | null }>({ kind: "none" });
   const [reducedMotion, setReducedMotion] = useState(false);
   useEffect(() => {
     AccessibilityInfo.isReduceMotionEnabled().then(setReducedMotion, () => {});
@@ -213,9 +251,27 @@ export function CandleChart({
   const slots = useMemo(() => (series ? buildSlots(series.candles, series.gaps) : []), [series]);
   const indicatorResults = useMemo(() => computeIndicators(slots, indicatorSpecs), [slots, indicatorSpecs]);
   const last = useMemo(() => lastCandle(slots)?.c ?? null, [slots]);
+  const [ownLayers, setOwnLayers] = useState<ChartLayers>(DEFAULT_LAYERS);
+  const layers = onLayersChange ? (layersProp ?? DEFAULT_LAYERS) : ownLayers;
+  const setLayers = (l: ChartLayers) => (onLayersChange ? onLayersChange(l) : setOwnLayers(l));
+  const levels = useMemo(() => keyLevels(slots), [slots]);
+  const fills = useMemo(() => (trading?.state?.fills ?? []).filter((f) => f.symbol === symbol), [trading?.state, symbol]);
+  const context = useMemo(
+    () => ({
+      levels: levels.filter((l) => layers[l.layer]),
+      halts: layers.halts ? (series?.halts ?? []) : [],
+      luld: layers.luld ? (series?.luld ?? []) : [],
+      fills: layers.fills ? fills : [],
+      now: clockNow,
+    }),
+    [levels, layers, series, fills, clockNow],
+  );
   const orders = useMemo(() => (trading?.state?.orders ?? []).filter((o) => o.symbol === symbol && isWorking(o)), [trading?.state, symbol]);
   const position = useMemo(() => trading?.state?.positions.find((p) => p.symbol === symbol) ?? null, [trading?.state, symbol]);
-  const shownDrawings = useMemo(() => (drag?.drawing ? drawings.map((d) => (d.id === drag.drawing!.id ? drag.drawing! : d)) : drawings), [drawings, drag]);
+  const shownDrawings = useMemo(() => {
+    const list = drag?.drawing ? drawings.map((d) => (d.id === drag.drawing!.id ? drag.drawing! : d)) : drawings;
+    return measurement ? [...list, measurement] : list;
+  }, [drawings, drag, measurement]);
   const selectedDrawing = selected?.kind === "drawing" ? selected.id : null;
 
   const state: ChartState = useMemo(
@@ -234,8 +290,9 @@ export function CandleChart({
       selectedDrawing,
       draft,
       trading: trading ? { orders, position, last, dragging: drag?.order ?? null, placeY: null } : null,
+      context,
     }),
-    [timeframe, series, slots, inspectT, pointer, options, scaleType, indicatorResults, shownDrawings, selectedDrawing, draft, trading, orders, position, last, drag],
+    [timeframe, series, slots, inspectT, pointer, options, scaleType, indicatorResults, shownDrawings, selectedDrawing, draft, trading, orders, position, last, drag, context],
   );
   const model = useMemo(() => computeChartModel(state, vp, size), [state, vp, size]);
   const picture = useMemo(() => (size.width > 0 && size.height > 0 ? recordPicture(layoutChart(model, state, theme), size.width, size.height) : null), [model, state, theme, size]);
@@ -314,6 +371,11 @@ export function CandleChart({
           setDraft(a.draft);
           break;
         case "createDrawing": {
+          if (a.tool === "measure") {
+            setMeasurement(drawingFromPoints(m, "measure", "measure", a.a, a.b));
+            setTool(null);
+            break;
+          }
           const d = drawingFromPoints(m, newId("d"), a.tool, a.a, a.b);
           if (d) {
             setDrawings([...drawings, d]);
@@ -406,7 +468,10 @@ export function CandleChart({
   const feed = (type: GestureInput["type"], touches: readonly { id: number; x: number; y: number }[]) => {
     const l = latest.current;
     if (!l) return;
-    if (type === "down") stopSlide();
+    if (type === "down") {
+      stopSlide();
+      setMeasurement(null);
+    }
     for (const t of touches) l.apply(gestures.handle({ type, pointerId: t.id, pointerType: "touch", x: t.x, y: t.y, t: now() }, l.ctx), l.ctx.model);
     pump();
   };
@@ -431,6 +496,7 @@ export function CandleChart({
   const changeTool = (t: DrawingKind | null) => {
     apply(gestures.cancelPlacing(), model);
     setDraft(null);
+    setMeasurement(null);
     setTool(t);
   };
   const deleteSelected = () => {
@@ -467,6 +533,9 @@ export function CandleChart({
     <View style={[s.root, style]}>
       {toolbar && (
         <View style={s.toolbar}>
+          <ToolButton label="Levels" onPress={() => setSheet({ kind: "layers" })}>
+            <ToolIcon kind="levels" color={UI.textDim} />
+          </ToolButton>
           <ToolButton label={indicatorSpecs.length ? `Indicators, ${indicatorSpecs.length} on` : "Indicators"} onPress={() => setSheet({ kind: "indicators" })} style={s.indicators}>
             <ToolIcon kind="indicators" color={UI.textDim} />
             {indicatorSpecs.length ? <Text style={s.count}>{indicatorSpecs.length}</Text> : null}
@@ -479,6 +548,10 @@ export function CandleChart({
                   {formatSize(position.qty)} <Text style={{ color: pnl >= 0 ? UI.good : UI.critical }}>{`${pnl >= 0 ? "+" : "−"}$${Math.abs(pnl).toFixed(2)}`}</Text>
                 </Text>
               )}
+              <ToolButton label={`Trades, ${fills.length}`} onPress={() => setSheet({ kind: "trades" })} style={s.indicators}>
+                <ToolIcon kind="trades" color={UI.textDim} />
+                {fills.length ? <Text style={s.count}>{fills.length}</Text> : null}
+              </ToolButton>
               <ToolButton primary label="Simulated order" onPress={() => setSheet({ kind: "ticket", price: null })}>
                 Trade
               </ToolButton>
@@ -527,6 +600,10 @@ export function CandleChart({
             onColorChange={(color) => selectedDrawingObj && setDrawings(drawings.map((d) => (d.id === selectedDrawingObj.id ? { ...d, color } : d)))}
             canDelete={selected?.kind === "drawing"}
             onDelete={deleteSelected}
+            canUndo={history.past.length > 0}
+            canRedo={history.future.length > 0}
+            onUndo={() => stepHistory("undo")}
+            onRedo={() => stepHistory("redo")}
             haptics={haptics}
           />
         )}
@@ -555,6 +632,8 @@ export function CandleChart({
         />
       )}
 
+      <LayersSheet open={sheet.kind === "layers"} onClose={() => setSheet({ kind: "none" })} layers={layers} onChange={setLayers} reducedMotion={reducedMotion} />
+      <TradesSheet open={sheet.kind === "trades"} onClose={() => setSheet({ kind: "none" })} fills={fills} realized={trading?.state?.account.realizedPnl ?? 0} reducedMotion={reducedMotion} />
       <IndicatorSheet open={sheet.kind === "indicators"} onClose={() => setSheet({ kind: "none" })} indicators={indicatorSpecs} onChange={setIndicators} seriesColors={[theme.series1, theme.series2, theme.series3]} reducedMotion={reducedMotion} />
       <AxisSheet
         open={sheet.kind === "axis"}

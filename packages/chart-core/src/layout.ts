@@ -2,6 +2,7 @@ import { hatch, sortByLayer, type ChartTheme, type DisplayList, type Rect } from
 import { layoutDraft, layoutDrawings, type Drawing, type DrawingDraft } from "./drawings.ts";
 import { indicatorColor, indicatorLabel, type IndicatorResult } from "./indicators.ts";
 import { withAlpha } from "./theme.ts";
+import { layoutContext, type ContextLayer } from "./levels.ts";
 import { layoutTrading, type TradingLayer } from "./trading.ts";
 import { formatPrice } from "./format.ts";
 import {
@@ -90,6 +91,8 @@ export interface ChartState {
   draft?: DrawingDraft | null;
   /** Simulated orders and position for this symbol; absent hides trading. */
   trading?: TradingLayer | null;
+  /** Halts, LULD bands, key levels and fill markers (each list already filtered by its layer toggle). */
+  context?: ContextLayer | null;
 }
 
 export interface ChartGeometry {
@@ -296,6 +299,7 @@ export function layoutChart(model: ChartModel, state: ChartState, theme: ChartTh
   // drawings, a drawing being placed, then simulated orders on top
   if (state.drawings?.length) out.push(...layoutDrawings(model, state.drawings, state.selectedDrawing ?? null, theme));
   if (state.draft) out.push(...layoutDraft(model, state.draft, theme));
+  if (state.context) out.push(...layoutContext(model, state.context, theme));
   if (state.trading) out.push(...layoutTrading(model, state.trading, theme));
   if (price && results.some((r) => r.placement === "overlay")) out.push(...overlayLegend(model, results, theme));
 

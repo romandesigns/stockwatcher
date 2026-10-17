@@ -42,7 +42,7 @@ const TS_FIELDS: Record<string, string[]> = {
   ProfileWire: ["bin", "anchor", "rows", "total", "poc", "valueArea"],
   SessionInfo: ["id", "start", "end"],
   ClockInfo: ["mode", "now", "speed", "playing"],
-  ChartSnapshot: ["type", "symbol", "timeframe", "session", "candles", "gaps", "profile", "quality", "clock"],
+  ChartSnapshot: ["type", "symbol", "timeframe", "session", "candles", "gaps", "profile", "quality", "clock", "halts", "luld"],
   CandleUpdate: ["symbol", "timeframe", "session", "candle", "profileBin", "profile"],
   CandleRemove: ["symbol", "timeframe", "session", "t", "profileBin", "profile"],
   GapUpdate: ["symbol", "timeframe", "session", "gap", "profileBin", "profile"],
