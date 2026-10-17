@@ -228,4 +228,8 @@ When finished, report:
 
 **Design (decided 2026-10-17):** the owner chose **C · Session timeline** (design canvas https://claude.ai/artifact/ECxnETgKWmPAEBmPdkvnrY): the chart above a full-day session timeline with a volume minimap, plus a side column with the session profile and a trade tape showing how each trade was counted. Owner priorities: **the simulator, which feeds future features, and a modular, reusable chart**.
 
+**Chart scope widened (decided 2026-10-17):** drawings, indicators and **simulated** chart trading move into this phase, and the mobile app gets the chart. Trading is **simulator only** (owner's choice): orders fill inside our own server against the replay or live tape, with no broker, no keys and no money, so the brief's "no live order execution" still holds. Everything chart-related lives in the chart packages (`chart-core` logic, `chart-web` and `chart-native` renderers and controls) so any screen reuses the whole chart; apps only pass data and wire callbacks. Contract: `docs/architecture/chart-trading-sim.md`.
+
+**Mobile gestures (decided 2026-10-17):** the items the web cannot do are done on the phone: a haptic cue on entering a scrub (plus a tick per candle, grabs, placements and fills), fling momentum, and vertical price panning (the chart screen does not scroll, so a mostly vertical swipe pans price). Details in `docs/research/robinhood-chart-gestures.md`.
+
 **Architecture:** `docs/architecture/simulator-and-chart.md`.

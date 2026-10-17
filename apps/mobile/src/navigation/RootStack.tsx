@@ -2,7 +2,7 @@ import { createBlankStackNavigator } from "react-native-screen-transitions/react
 
 import { motion } from "../motion/transitions";
 import { useReducedMotion } from "../motion/useReducedMotion";
-import { HelloScreen } from "../screens/HelloScreen";
+import { ChartScreen } from "../screens/ChartScreen";
 
 // Blank stack, not native-stack: motion runs in our Reanimated worklets so
 // a push looks the same on iOS and Android (CLAUDE.md "Screen transitions
@@ -19,7 +19,7 @@ export function RootStack() {
 
   return (
     <Stack.Navigator initialRouteName="Home" screenOptions={m.screenPush}>
-      <Stack.Screen name="Home" component={HelloScreen} options={m.root} />
+      <Stack.Screen name="Home" component={ChartScreen} options={m.root} />
     </Stack.Navigator>
   );
 }

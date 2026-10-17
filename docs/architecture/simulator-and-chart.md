@@ -370,3 +370,41 @@ Known dev-only issue: in `vite dev`, React StrictMode leaves chart canvases blan
 `packages/chart-web` cancels its pending frame in cleanup without resetting `frame.current`, so it
 never schedules again. Production builds are unaffected. The fix is one line
 (`frame.current = 0` after `cancelAnimationFrame`).
+
+## Appendix E: the whole chart in the chart packages (2026-10-17)
+
+Owner rule: everything chart-related is boxed into the chart, so any screen reuses all of it. Apps
+pass data in and wire callbacks out, and nothing else.
+
+| Package | Holds |
+|---|---|
+| `chart-core` (pure TS, no DOM, no RN) | Layout and display list, scales, `GestureController`, **indicators** (`indicators.ts`: SMA, EMA, session VWAP, Bollinger, Wilder RSI, MACD, aligned to slots, NaN on gaps), **drawings** (`drawings.ts`: time and price anchors, hit testing, drag maths, clipping), **trading** (`trading.ts`: paper-broker wire types, tick grid `snapPrice`, order and position lines, the place button, hit testing), and the shared `DEFAULT_CHART_THEME` |
+| `chart-web` (React + Canvas 2D, shadcn on Base UI) | `CandleChart` with `toolbar`, `indicators`, `drawings`, `persistKey` and `trading` props; `ChartToolbar`, `OrderTicket`, `PriceAxisMenu` |
+| `chart-native` (React Native + Skia + Gesture Handler + expo-haptics) | The same `CandleChart` API; Skia executes the display list (`drawSkia.ts`); touches go into the same `GestureController`; native toolbar and bottom sheets (indicators, price axis menu, order ticket) |
+
+**Display list additions:**
+- Lines and paths take an optional `clip` rect, so an indicator line never bleeds into another pane on
+  a manual price range.
+- Oscillators get panes stacked between the volume pane and the time axis (`indicatorPaneHeight`,
+  hit region `"pane"`). The inspection line runs through all of them.
+
+**Gesture controller additions** (constructor options, all off by default so the original recognizer
+is what the existing tests pin):
+- `momentum`: fling after a fast touch pan.
+- `touchPricePan`: `"manual"` on the web, `"always"` on the phone.
+- `haptics`: emits `haptic` actions.
+
+Objects come in through `ctx.hitObject` and `ctx.tool`. The new actions are `draft`, `createDrawing`,
+`select`, `objectDrag` (with `done` on release, so an order is modified once), `cancelOrder`,
+`placeOrder` and `haptic`.
+
+**Why Skia on the phone:** `@shopify/react-native-skia` is MIT, maintained by Shopify with many
+contributors, supported by Expo, and widely used for charts. It draws the whole display list as one
+picture per frame, natively, so the phone renders exactly what the browser renders. react-native-svg
+(already in the app) would have meant hundreds of React elements per frame on a pan. It is a native
+module, so the phone needs a new binary (the release pipeline builds an APK when the fingerprint
+changes); OTA alone cannot deliver it.
+
+**Indicator caps:** at most 3 overlays and 2 panes. The overlay colours are three fixed categorical
+slots that the dataviz validator passes **all-pairs** on the dark surface (worst CVD ΔE 13.2), and lines
+over candles are effectively all-pairs. A fourth colour would fail, so the menus never offer a fourth.

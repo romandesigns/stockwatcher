@@ -106,17 +106,26 @@ one set of rules and thresholds. Price scale types and the auto/manual price ran
 | Scale types | ✓ Linear; Linear (%) from the first visible candle's open (moves as you pan); Logarithmic (1-2-5 × 10ⁿ ticks once the range spans 2×) | Hit testing, the profile overlay, the crosshair label and the last-price tag all use the same mapping |
 | Preset ranges and interval picker | Timeframe selector 15s/30s/1m/5m | Ours fits the spec; preset ranges could come later |
 | Keyboard | ←/→ (Shift ×10), Home/End/Esc, +/−/0, **A** = auto-scale price, **Shift+F10** = price axis menu | Ours is richer for chart navigation; Legend's shortcuts are for trading and layouts |
-| Drawing tools, indicators, chart trading | ✗ | Out of scope for spec 01 (no strategies or trading this phase) |
+| Drawing tools | ✓ Trend line, ray, horizontal line (with its price tag), vertical line, range. Press-drag-release, or tap then tap; drag a handle or the body to edit; Delete removes | Chart-owned (`chart-core/src/drawings.ts`); anchors are time and price, so drawings survive pans, zooms and timeframe switches. Kept per symbol |
+| Indicators (max 10) | ✓ VWAP, EMA 9/20, SMA 50, Bollinger 20/2 on the chart (up to 3); RSI 14, MACD below (up to 2) | Fewer than Robinhood's 10 on purpose: three overlay colours validate all-pairs for colour-blind readers, so a fourth would be indistinguishable |
+| Chart trading: + on the price axis, drag an order, ✕ to cancel | ✓ **Simulated**: "+" at the hover price (web) or "Order at this price…" in the price axis menu (long press on touch), a Trade button, drag a pill to modify (one modify on release), ✕ to cancel; position line with unrealized P&L | Fills only in our simulator (`docs/architecture/chart-trading-sim.md`); every surface says "Simulated" |
 
 Scale changes are announced through the chart's polite live region ("Price axis: Logarithmic.", "Price axis
 scaled manually…", "Price axis auto-scaled."); hover and scrub are not announced.
 
-**Not done, or not possible in a browser:**
-- Haptic feedback on entering scrub (no reliable web API; `navigator.vibrate` is absent on iOS and not a tick).
-- Pan momentum (fling). Kept out deliberately; it needs a per-frame decay driven by the renderer.
-- Vertical price panning by touch: a vertical finger move belongs to the page scroll, so manual-range price panning
-  is mouse-only for now.
-- The React Native mapping of these inputs (responder or Gesture Handler events onto `GestureInput`).
+**Phone only (chart-native, 2026-10-17):** what the browser cannot do is done in the React Native chart,
+which feeds Gesture Handler touches into the same `GestureController` with the phone's options on:
+- **Haptics** (expo-haptics): a light impact on entering a scrub, a selection tick per candle while
+  scrubbing, a medium bump when a long press opens the price axis menu, a light bump on grabbing an order
+  or a drawing and on placing a drawing, and a success notification when one of the symbol's simulated
+  orders fills.
+- **Momentum:** a touch pan released faster than 0.25 px/ms keeps going and decays with a 325 ms time
+  constant (close to iOS scrolling); a press during the fling stops it and is not a tap. The web chart
+  has it too.
+- **Vertical price panning:** the phone's chart screen does not scroll, so a mostly vertical swipe pans
+  price and makes the range manual; a double tap returns to auto. A mostly horizontal swipe stays
+  time-only while the range is auto, so jitter never knocks it out of auto. On the web a vertical swipe
+  still scrolls the page unless the range is already manual (`touchPricePan: "manual"`).
 
 ## Sources
 - [Using advanced charts | Robinhood](https://robinhood.com/us/en/support/articles/using-advanced-charts)
