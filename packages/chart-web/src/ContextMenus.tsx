@@ -2,6 +2,7 @@ import { formatEtTime, formatPrice, formatSize, LAYER_IDS, LAYER_INFO, type Char
 import type { ReactNode } from "react";
 import { Button } from "./ui/button.tsx";
 import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuGroup, DropdownMenuLabel, DropdownMenuTrigger } from "./ui/dropdown-menu.tsx";
+import { ScrollArea } from "./ui/scroll-area.tsx";
 import { Tip } from "./ui/tooltip.tsx";
 import { cn } from "./ui/utils.ts";
 
@@ -106,7 +107,8 @@ export function TradeHistory({ fills, realized, className }: { fills: readonly F
       {list.length === 0 ? (
         <p className="m-0 text-[11px] text-text-faint">No fills yet.</p>
       ) : (
-        <ul className="m-0 flex max-h-36 list-none flex-col gap-0.5 overflow-y-auto p-0">
+        <ScrollArea viewportClassName="max-h-36">
+        <ul className="m-0 flex list-none flex-col gap-0.5 p-0 pr-2">
           {list.map((f, i) => (
             <li key={`${f.orderId}-${i}`} className="grid grid-cols-[52px_32px_minmax(0,1fr)_auto] items-baseline gap-1.5 rounded-md px-1 py-0.5 font-mono text-[11px] tabular-nums odd:bg-bg-row/50">
               <span className="text-muted-foreground">{formatEtTime(f.t, true)}</span>
@@ -118,6 +120,7 @@ export function TradeHistory({ fills, realized, className }: { fills: readonly F
             </li>
           ))}
         </ul>
+        </ScrollArea>
       )}
     </section>
   );

@@ -1,5 +1,6 @@
 import type * as React from "react"
 import { Menu as MenuPrimitive } from "@base-ui/react/menu"
+import { ScrollArea } from "./scroll-area.tsx"
 import { cn } from "./utils.ts"
 
 // shadcn/ui dropdown-menu, Base UI variant ("base-nova"), from the shadcn CLI
@@ -32,6 +33,7 @@ function DropdownMenuContent({
   sideOffset = 4,
   anchor,
   className,
+  children,
   ...props
 }: MenuPrimitive.Popup.Props &
   Pick<
@@ -50,9 +52,14 @@ function DropdownMenuContent({
       >
         <MenuPrimitive.Popup
           data-slot="dropdown-menu-content"
-          className={cn("z-50 max-h-(--available-height) min-w-44 origin-(--transform-origin) overflow-x-hidden overflow-y-auto rounded-lg bg-card p-1 text-card-foreground shadow-lg outline-none transition-[opacity,scale] duration-100 data-ending-style:scale-95 data-ending-style:opacity-0 data-starting-style:scale-95 data-starting-style:opacity-0", className)}
+          className={cn("z-50 flex max-h-(--available-height) min-w-44 origin-(--transform-origin) flex-col overflow-hidden rounded-lg bg-card p-1 text-card-foreground shadow-lg outline-none transition-[opacity,scale] duration-100 data-ending-style:scale-95 data-ending-style:opacity-0 data-starting-style:scale-95 data-starting-style:opacity-0", className)}
           {...props}
-        />
+        >
+          {/* A long menu on a short screen scrolls with the shadcn scrollbar, not the browser's. */}
+          <ScrollArea className="flex min-h-0 flex-col" viewportClassName="max-h-[calc(var(--available-height)-8px)]">
+            {children}
+          </ScrollArea>
+        </MenuPrimitive.Popup>
       </MenuPrimitive.Positioner>
     </MenuPrimitive.Portal>
   )

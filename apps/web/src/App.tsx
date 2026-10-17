@@ -140,6 +140,7 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
   const { series, tape, clock } = useChartFeed(feed, symbol, timeframe, bin);
   const trading = usePaperTrading(feed);
 
+  const phone = useMediaQuery("(max-width: 600px)");
   // Ticker quick-open, VS Code's Ctrl+P (Cmd+P on a Mac): the browser's print shortcut is taken
   // over on purpose while the app is focused.
   const [searchOpen, setSearchOpen] = useState(false);
@@ -158,7 +159,8 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
     setSymbol(s);
     setInspectT(null);
   };
-  const search = <TickerSearch open={searchOpen} onOpenChange={setSearchOpen} tickers={tickers} current={symbol} onSelect={openTicker} />;
+  // On the desktop the panel drops down right under the header's search pill, at its width.
+  const search = <TickerSearch open={searchOpen} onOpenChange={setSearchOpen} tickers={tickers} current={symbol} onSelect={openTicker} anchored={!phone} />;
   const tickerButton = (size: string) => (
     <Tip label={`Search tickers (${isMac ? "⌘" : "Ctrl+"}P)`}>
       <button type="button" onClick={() => setSearchOpen(true)} className={cn("pointer-events-auto cursor-pointer rounded-md font-semibold outline-none hover:text-primary focus-visible:ring-2 focus-visible:ring-ring", size)}>
@@ -166,7 +168,6 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
       </button>
     </Tip>
   );
-  const phone = useMediaQuery("(max-width: 600px)");
 
   const slots = useMemo(() => (series ? buildSlots(series.candles, series.gaps) : []), [series]);
   const inspected = inspectT === null ? (slots.at(-1) ?? null) : (slots[slotIndexOf(slots, inspectT) ?? -1] ?? null);
@@ -251,20 +252,20 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
 
   return (
     <div className="flex min-h-dvh flex-col bg-background text-foreground">
-      <header className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-2.5">
-        <div className="flex items-center gap-2">
-          <div className="text-sm font-semibold tracking-tight">StockWatcher</div>
-          <SourceChip choice={choice} mode={mode} />
-        </div>
+      {/* Three columns (logo | search | data source): equal side columns put the search pill at the
+          page's exact centre, where the quick-open panel drops down, at the same width. */}
+      <header className="grid grid-cols-[1fr_auto_1fr] items-center gap-4 px-4 py-2.5">
+        <div className="text-sm font-semibold tracking-tight">StockWatcher</div>
         <button
           type="button"
           onClick={() => setSearchOpen(true)}
-          className="mx-auto flex h-8 w-[min(420px,40vw)] items-center gap-2 rounded-lg bg-card px-3 text-xs text-text-faint outline-none hover:bg-bg-row hover:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-3.5"
+          className="flex h-8 w-(--search-w) items-center gap-2 rounded-lg bg-card px-3 text-xs text-text-faint outline-none hover:bg-bg-row hover:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-3.5"
         >
           {SearchIcon}
           <span>Search tickers</span>
           <kbd className="ml-auto rounded bg-bg-row px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">{isMac ? "⌘P" : "Ctrl P"}</kbd>
         </button>
+        <SourceChip className="justify-self-end" choice={choice} mode={mode} />
         {search}
       </header>
 

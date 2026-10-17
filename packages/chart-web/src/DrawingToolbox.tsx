@@ -184,7 +184,7 @@ export function DrawingToolbox({ placement, onPlacementChange, container, tool, 
       </Tip>
 
       <Popover open={colorsOpen && canColor} onOpenChange={setColorsOpen}>
-        <PopoverContent anchor={colorRef} side={vertical ? "right" : "bottom"} align="start" sideOffset={8} className="w-auto p-2" aria-label="Drawing colour">
+        <PopoverContent anchor={colorRef} side={vertical ? "right" : "bottom"} align="start" sideOffset={8} className="w-auto" aria-label="Drawing colour">
           <div role="radiogroup" aria-label="Drawing colour" className="grid grid-cols-4 gap-1.5">
             {DRAWING_COLORS.map((c) => {
               const on = (color ?? DRAWING_COLORS[0]!.value) === c.value;

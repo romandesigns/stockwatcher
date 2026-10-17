@@ -1,10 +1,41 @@
 import { formatPrice } from "@stockwatcher/chart-core";
-import { cn, Dialog, DialogContent, DialogTitle } from "@stockwatcher/chart-web/ui";
+import { cn, Dialog, DialogContent, DialogTitle, ScrollArea } from "@stockwatcher/chart-web/ui";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { rankTickers, type Ranked } from "./fuzzy.ts";
 import type { TickerInfo } from "./mockTickers.ts";
 
 const RECENTS_KEY = "sw-search:recent";
+
+// Filters under the input. Within a group the chips are alternatives (any
+// of them), across groups they narrow (all groups). Movers also sort by the
+// size of the move when there is no query. Rows without a price (the
+// simulator's, until subscribed) drop out while a price or mover filter is on.
+type FilterId = "sim" | "mock" | "under1" | "1to5" | "5to25" | "gainers" | "losers" | "nasdaq" | "nyse";
+const FILTER_GROUPS: readonly { id: string; chips: readonly { id: FilterId; label: string }[] }[] = [
+  { id: "status", chips: [{ id: "sim", label: "Simulator" }, { id: "mock", label: "Mock" }] },
+  { id: "price", chips: [{ id: "under1", label: "Under $1" }, { id: "1to5", label: "$1–5" }, { id: "5to25", label: "$5–25" }] },
+  { id: "movers", chips: [{ id: "gainers", label: "Gainers" }, { id: "losers", label: "Losers" }] },
+  { id: "exchange", chips: [{ id: "nasdaq", label: "NASDAQ" }, { id: "nyse", label: "NYSE" }] },
+];
+const TEST: Record<FilterId, (t: TickerInfo) => boolean> = {
+  sim: (t) => t.available,
+  mock: (t) => t.mock,
+  under1: (t) => t.price !== undefined && t.price < 1,
+  "1to5": (t) => t.price !== undefined && t.price >= 1 && t.price < 5,
+  "5to25": (t) => t.price !== undefined && t.price >= 5 && t.price <= 25,
+  gainers: (t) => (t.changePct ?? 0) > 0,
+  losers: (t) => (t.changePct ?? 0) < 0,
+  nasdaq: (t) => t.exchange === "NASDAQ",
+  nyse: (t) => t.exchange === "NYSE",
+};
+
+function passes(t: TickerInfo, on: ReadonlySet<FilterId>): boolean {
+  for (const g of FILTER_GROUPS) {
+    const active = g.chips.filter((c) => on.has(c.id));
+    if (active.length && !active.some((c) => TEST[c.id](t))) return false;
+  }
+  return true;
+}
 const MAX_RECENTS = 5;
 
 function loadRecents(): string[] {
@@ -49,6 +80,8 @@ export interface TickerSearchProps {
   tickers: readonly TickerInfo[];
   current: string;
   onSelect: (symbol: string) => void;
+  /** Drop down right under the header's search pill, at its width (desktop); else a centred panel. */
+  anchored?: boolean;
 }
 
 /**
@@ -59,10 +92,21 @@ export interface TickerSearchProps {
  * recently opened tickers come first. Rows the simulator has no data for
  * (the mock universe) are shown, labelled, and cannot be opened.
  */
-export function TickerSearch({ open, onOpenChange, tickers, current, onSelect }: TickerSearchProps) {
+export function TickerSearch({ open, onOpenChange, tickers, current, onSelect, anchored = false }: TickerSearchProps) {
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
-  const listRef = useRef<HTMLUListElement>(null);
+  // Filters persist between openings (unlike the query): they are a way of working, not a search.
+  const [filters, setFilters] = useState<ReadonlySet<FilterId>>(new Set());
+  const toggleFilter = (id: FilterId) => {
+    setFilters((f) => {
+      const next = new Set(f);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+    setActive(0);
+  };
+  const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Every opening starts clean, like VS Code.
@@ -73,15 +117,22 @@ export function TickerSearch({ open, onOpenChange, tickers, current, onSelect }:
   }, [open]);
 
   const rows: (Ranked<TickerInfo> & { recent?: boolean })[] = useMemo(() => {
-    if (query.trim()) return rankTickers(tickers, query);
+    const pool = filters.size ? tickers.filter((t) => passes(t, filters)) : tickers;
+    if (query.trim()) return rankTickers(pool, query);
+    // A mover filter sorts by the size of the move, biggest first.
+    const mover = filters.has("gainers") || filters.has("losers");
+    if (filters.size)
+      return [...pool]
+        .sort((a, b) => (mover ? Math.abs(b.changePct ?? 0) - Math.abs(a.changePct ?? 0) : 0))
+        .map((item) => ({ item, score: 0, symbolIdx: [], nameIdx: [] }));
     const recents = loadRecents();
-    const bySym = new Map(tickers.map((t) => [t.symbol, t]));
+    const bySym = new Map(pool.map((t) => [t.symbol, t]));
     const recent = recents.map((s) => bySym.get(s)).filter((t): t is TickerInfo => !!t);
-    const rest = tickers.filter((t) => !recents.includes(t.symbol));
+    const rest = pool.filter((t) => !recents.includes(t.symbol));
     return [...recent.map((item) => ({ item, score: 0, symbolIdx: [], nameIdx: [], recent: true })), ...rest.map((item) => ({ item, score: 0, symbolIdx: [], nameIdx: [] }))];
     // `open` re-reads recents each time the panel opens.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tickers, query, open]);
+  }, [tickers, query, open, filters]);
 
   useEffect(() => setActive((a) => Math.min(a, Math.max(0, rows.length - 1))), [rows.length]);
   useEffect(() => {
@@ -113,7 +164,7 @@ export function TickerSearch({ open, onOpenChange, tickers, current, onSelect }:
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent initialFocus={inputRef} className="top-16 left-1/2 w-[min(560px,calc(100vw-32px))] -translate-x-1/2 overflow-hidden p-0">
+      <DialogContent initialFocus={inputRef} className={cn("left-1/2 -translate-x-1/2 overflow-hidden p-0", anchored ? "top-2.5 w-(--search-w)" : "top-16 w-[min(560px,calc(100vw-32px))]")}>
         <DialogTitle>Go to ticker</DialogTitle>
         <div className="flex items-center gap-2 px-3 pt-3 pb-2">
           <svg viewBox="0 0 16 16" className="size-4 shrink-0 text-muted-foreground" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true">
@@ -140,8 +191,33 @@ export function TickerSearch({ open, onOpenChange, tickers, current, onSelect }:
           />
           <kbd className="shrink-0 rounded bg-bg-row px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">Esc</kbd>
         </div>
-        <ul ref={listRef} id="ticker-search-list" role="listbox" aria-label="Tickers" className="m-0 max-h-[min(420px,60vh)] list-none overflow-y-auto p-1.5 pt-0">
-          {rows.length === 0 && <li className="px-3 py-6 text-center text-xs text-text-faint">No ticker matches “{query}”.</li>}
+        <div role="group" aria-label="Filters" className="flex flex-wrap items-center gap-y-1 px-3 pb-2">
+          {FILTER_GROUPS.map((g, gi) => (
+            <div key={g.id} className="flex items-center gap-0.5">
+              {gi > 0 && <span aria-hidden="true" className="mx-1 h-4 w-px rounded-full bg-bg-raised" />}
+              {g.chips.map((c) => {
+                const on = filters.has(c.id);
+                return (
+                  <button
+                    key={c.id}
+                    type="button"
+                    aria-pressed={on}
+                    onClick={() => toggleFilter(c.id)}
+                    className={cn(
+                      "h-6 rounded-md px-1.5 text-[11px] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring",
+                      on ? "bg-bg-raised text-foreground" : "bg-bg-row/60 text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    {c.label}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+        <ScrollArea viewportRef={listRef} viewportClassName="max-h-[min(420px,55vh)]">
+        <ul id="ticker-search-list" role="listbox" aria-label="Tickers" className="m-0 list-none p-1.5 pt-0 pr-2.5">
+          {rows.length === 0 && <li className="px-3 py-6 text-center text-xs text-text-faint">{query ? `No ticker matches “${query}”` : "No ticker matches these filters"}.</li>}
           {rows.map((r, i) => {
             const t = r.item;
             const showHeader = (i === 0 && r.recent) || (i === firstMockIndex && firstMockIndex > 0);
@@ -187,6 +263,7 @@ export function TickerSearch({ open, onOpenChange, tickers, current, onSelect }:
             );
           })}
         </ul>
+        </ScrollArea>
         <div className="flex items-center gap-3 bg-bg-row/50 px-3 py-1.5 text-[10px] text-text-faint">
           <span>
             <kbd className="font-mono">↑↓</kbd> move
@@ -197,7 +274,14 @@ export function TickerSearch({ open, onOpenChange, tickers, current, onSelect }:
           <span>
             <kbd className="font-mono">Esc</kbd> close
           </span>
-          <span className="ml-auto">Mock list until real symbols are imported</span>
+          <span className="ml-auto tabular-nums">
+            {rows.length} {rows.length === 1 ? "ticker" : "tickers"}
+            {filters.size > 0 && (
+              <button type="button" onClick={() => setFilters(new Set())} className="ml-2 rounded text-muted-foreground underline-offset-2 outline-none hover:text-foreground hover:underline focus-visible:ring-2 focus-visible:ring-ring">
+                Clear
+              </button>
+            )}
+          </span>
         </div>
       </DialogContent>
     </Dialog>

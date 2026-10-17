@@ -12,6 +12,10 @@
 :root {
   color-scheme: dark;
 
+  /* The header's search pill and the quick-open panel share this width, so the panel drops down
+     exactly over the pill. It leaves room for the logo and the data-source icon either side. */
+  --search-w: min(560px, max(280px, calc(100vw - 420px)));
+
   --bg: #0f1216;
   --bg-panel: #151a20;
   --bg-row: #1c222a;
