@@ -61,6 +61,14 @@ export const TOOL_ICONS: Readonly<Record<DrawingKind | "cursor", ReactNode>> = {
   ),
 };
 
+/** Indicators: a smooth line riding over price, the usual glyph for studies. */
+const IndicatorIcon = svg(
+  <>
+    <path d="M1.5 12.5 4.5 9l2.5 2 3.5-5 4 3" strokeOpacity="0.45" />
+    <path d="M1.5 9.5c2.5-4 4.5-5 6.5-3s4 1.5 6.5-3" />
+  </>,
+);
+
 const TrashIcon = svg(<path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5" />);
 
 export interface ChartToolbarProps {
@@ -128,8 +136,13 @@ function IndicatorMenu({ indicators, onChange }: { indicators: readonly Indicato
   );
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger render={<Button variant="ghost" size="sm" className="h-7 rounded-md px-2 text-xs text-muted-foreground" />}>
-        Indicators{indicators.length ? <span className="font-mono text-foreground">{indicators.length}</span> : null}
+      <DropdownMenuTrigger
+        aria-label={indicators.length ? `Indicators, ${indicators.length} on` : "Indicators"}
+        title="Indicators"
+        render={<Button variant="ghost" size="sm" className="h-7 min-w-7 gap-1 rounded-md px-1.5 text-xs text-muted-foreground [&_svg]:size-3.5" />}
+      >
+        {IndicatorIcon}
+        {indicators.length ? <span className="font-mono text-[11px] text-foreground">{indicators.length}</span> : null}
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" aria-label="Indicators">
         <DropdownMenuGroup>

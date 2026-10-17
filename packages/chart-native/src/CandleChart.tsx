@@ -460,8 +460,9 @@ export function CandleChart({
           <ToolButton label="Delete selected drawing" disabled={selected?.kind !== "drawing"} onPress={deleteSelected}>
             <ToolIcon kind="trash" color={UI.textDim} />
           </ToolButton>
-          <ToolButton label="Indicators" onPress={() => setSheet({ kind: "indicators" })}>
-            {indicatorSpecs.length ? `Ind ${indicatorSpecs.length}` : "Ind"}
+          <ToolButton label={indicatorSpecs.length ? `Indicators, ${indicatorSpecs.length} on` : "Indicators"} onPress={() => setSheet({ kind: "indicators" })} style={s.indicators}>
+            <ToolIcon kind="indicators" color={UI.textDim} />
+            {indicatorSpecs.length ? <Text style={s.count}>{indicatorSpecs.length}</Text> : null}
           </ToolButton>
           {trading && (
             <View style={s.trade}>
@@ -569,6 +570,8 @@ const s = StyleSheet.create({
   surfaceWrap: { flex: 1, minHeight: 120 },
   surface: { flex: 1, minHeight: 120 },
   latest: { position: "absolute" },
+  indicators: { flexDirection: "row", gap: 3 },
+  count: { color: UI.text, fontSize: 11, fontVariant: ["tabular-nums"] },
   latestButton: { width: 40, height: 40, borderRadius: 20, backgroundColor: UI.panel, alignItems: "center", justifyContent: "center", shadowColor: "#000", shadowOpacity: 0.35, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 6 },
   plan: { position: "absolute", left: 0, right: 0, bottom: 0 },
 });
