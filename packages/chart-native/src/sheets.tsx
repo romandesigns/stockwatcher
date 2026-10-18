@@ -39,13 +39,16 @@ import { Icon, Segmented, ToolButton, UI } from "./ui.tsx";
  * `tall` makes it a full-height sheet (the Settings sheet): a fixed 92 %
  * height, so the backdrop still shows above it and it still reads as a
  * sheet you can dismiss, and its children get the room to fill (flex: 1).
+ * `onBack` takes over the Android hardware / gesture back (Modal's
+ * onRequestClose) when back should mean less than "close": the Settings
+ * sheet pops a section first. The backdrop tap still calls onClose.
  */
-export function Sheet({ open, onClose, title, badge, children, reducedMotion, tall }: { open: boolean; onClose: () => void; title: string; badge?: ReactNode; children: ReactNode; reducedMotion?: boolean; tall?: boolean }) {
+export function Sheet({ open, onClose, onBack, title, badge, children, reducedMotion, tall }: { open: boolean; onClose: () => void; onBack?: () => void; title: string; badge?: ReactNode; children: ReactNode; reducedMotion?: boolean; tall?: boolean }) {
   // The modal draws under Android's translucent navigation bar: pad by its real height, so the last row
   // is never under the gesture handle.
   const insets = useSafeAreaInsets();
   return (
-    <Modal visible={open} transparent animationType={reducedMotion ? "fade" : "slide"} onRequestClose={onClose} statusBarTranslucent navigationBarTranslucent>
+    <Modal visible={open} transparent animationType={reducedMotion ? "fade" : "slide"} onRequestClose={onBack ?? onClose} statusBarTranslucent navigationBarTranslucent>
       <Pressable style={s.backdrop} onPress={onClose} accessibilityLabel="Close" accessibilityRole="button" />
       <View style={[s.sheet, tall && s.tall, { paddingBottom: Math.max(20, insets.bottom + 14) }]} accessibilityViewIsModal>
         <View style={s.grabber} />

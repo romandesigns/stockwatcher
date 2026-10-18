@@ -102,6 +102,7 @@ export type IconName =
   | "toLatest"
   | "chevronDown"
   | "chevronRight"
+  | "chevronLeft"
   | "check"
   | "menu"
   | "chart"
@@ -173,6 +174,8 @@ export const ICONS: Readonly<Record<IconName, IconDef>> = {
   // Affordances: a caret with a soft wedge inside it; the check's long stroke primary, its short leg secondary.
   chevronDown: icon([S("M3.2 5.6 8 10.4 12.8 5.6z", { paint: "fill" }), P("M3.2 5.6 8 10.4 12.8 5.6")], 2.4),
   chevronRight: icon([S("M5.6 3.2 10.4 8 5.6 12.8z", { paint: "fill" }), P("M5.6 3.2 10.4 8 5.6 12.8")], 1.8),
+  // The single-column Settings' back button: chevronRight mirrored, so "in" and "back" read as one mark.
+  chevronLeft: icon([S("M10.4 3.2 5.6 8 10.4 12.8z", { paint: "fill" }), P("M10.4 3.2 5.6 8 10.4 12.8")], 1.8),
   check: icon([S("M2.7 8.3 6 11.6"), P("M6 11.6 13.3 4.3")], 1.6),
   // The phone's tape button: the rows of prints, the newest two primary.
   menu: icon([P("M3 4h10M3 8h10"), S("M3 12h6")]),
