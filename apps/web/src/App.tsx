@@ -13,7 +13,6 @@ import {
 } from "@stockwatcher/chart-core";
 import { CandleChart, ReplayControls, SessionTimeline, Tape, VolumeProfile } from "@stockwatcher/chart-web";
 import { Tip, ToggleGroup, ToggleGroupItem, cn } from "@stockwatcher/chart-web/ui";
-import { tickerUniverse } from "@stockwatcher/shared";
 import { useEffect, useMemo, useState } from "react";
 import { createServerFeed } from "./feed/serverFeed.ts";
 import { clearToken, getToken, setToken } from "./feed/token.ts";
@@ -204,7 +203,6 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
   // Ticker quick-open, VS Code's Ctrl+P (Cmd+P on a Mac): the browser's print shortcut is taken
   // over on purpose while the app is focused.
   const [searchOpen, setSearchOpen] = useState(false);
-  const tickers = useMemo(() => tickerUniverse(candidates.symbols), [candidates.symbols]);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === "p" || e.key === "P")) {
@@ -220,7 +218,7 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
     setInspectT(null);
   };
   // On the desktop the panel drops down right under the header's search pill, at its width.
-  const search = <TickerSearch open={searchOpen} onOpenChange={setSearchOpen} tickers={tickers} current={symbol} onSelect={openTicker} anchored={!phone} />;
+  const search = <TickerSearch open={searchOpen} onOpenChange={setSearchOpen} symbols={candidates.symbols} quotes={feed.quotes} mock={choice.fixtureData} current={symbol} onSelect={openTicker} anchored={!phone} />;
   const tickerButton = (size: string) => (
     <Tip label={`Search tickers (${isMac ? "⌘" : "Ctrl+"}P)`}>
       <button type="button" onClick={() => setSearchOpen(true)} className={cn("pointer-events-auto cursor-pointer rounded-md font-semibold outline-none hover:text-primary focus-visible:ring-2 focus-visible:ring-ring", size)}>

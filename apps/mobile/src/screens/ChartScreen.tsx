@@ -21,7 +21,7 @@ import {
   type Timeframe,
 } from "@stockwatcher/chart-core";
 import { CandleChart, SessionTimeline, TapeSheet, ToolButton, UI } from "@stockwatcher/chart-native";
-import { tickerUniverse, type ConnectionStatus } from "@stockwatcher/shared";
+import type { ConnectionStatus } from "@stockwatcher/shared";
 import { useEffect, useMemo, useState } from "react";
 import Animated, { FadeIn, FadeOut, ReduceMotion } from "react-native-reanimated";
 import { Pressable, StyleSheet, Text, View } from "react-native";
@@ -87,7 +87,7 @@ export function ChartScreen() {
 
 function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | null; status: ConnectionStatus }) {
   const insets = useSafeAreaInsets();
-  const candidates = useCandidates(token);
+  const { symbols: candidates, fixture } = useCandidates(token);
   const [symbol, setSymbol] = useState<string | null>(null);
   const [timeframe, setTimeframe] = useState<Timeframe>("1m");
   const [inspectT, setInspectT] = useState<number | null>(null);
@@ -148,7 +148,6 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
   const [tapeOpen, setTapeOpen] = useState(false);
   // Ticker quick-open, the web's Ctrl+P: tap the ticker (or the search icon) in the header.
   const [searchOpen, setSearchOpen] = useState(false);
-  const tickers = useMemo(() => tickerUniverse(candidates), [candidates]);
   const reducedMotion = useReducedMotion();
 
   // The day's session bands and a 20-minute volume minimap for the timeline (bands change only with the day).
@@ -311,7 +310,9 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
       <TickerSearchSheet
         open={searchOpen}
         onClose={() => setSearchOpen(false)}
-        tickers={tickers}
+        symbols={candidates}
+        quotes={feed.quotes}
+        mock={fixture}
         current={active ?? ""}
         onSelect={(sym) => {
           setSymbol(sym);

@@ -1,4 +1,5 @@
 import type { ChartMessage, OrderCancel, OrderModify, OrderPlace, PaperMessage, PaperState, ReplayControl, Timeframe } from "@stockwatcher/chart-core";
+import type { QuoteChannel } from "@stockwatcher/shared";
 
 export interface ChartSubscription {
   symbol: string;
@@ -20,6 +21,9 @@ export interface ChartFeed {
   control(cmd: ReplayCommand): void;
   /** The simulated paper broker (server feed only; the fixture has none, so trading stays off). */
   readonly paper?: PaperChannel;
+  /** The server's live quote board for the ticker search (server feed only; the fixture has
+   *  none, so its rows show no quote). Subscribing opts the connection in. */
+  readonly quotes?: QuoteChannel;
   close(): void;
 }
 

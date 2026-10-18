@@ -1,6 +1,6 @@
 import { ChartStore, type ChartMessage, type Clock, type PaperState, type Series, type TapeTrade, type Timeframe } from "@stockwatcher/chart-core";
 import type { ChartTrading } from "@stockwatcher/chart-native";
-import { authenticatedFetch } from "@stockwatcher/shared";
+import { authenticatedFetch, EMPTY_QUOTE_BOARD, type QuoteBoard, type QuoteChannel } from "@stockwatcher/shared";
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 
 import { SERVER_URL } from "./server";
@@ -62,17 +62,36 @@ export function usePaperTrading(feed: MobileFeed): ChartTrading {
   );
 }
 
+const NOOP = () => {};
+
+/**
+ * The server's live quote board, only while `enabled` (the ticker search is open): subscribing
+ * opts the connection in to quotes.* frames and closing the search opts it out, so the server
+ * builds and sends nothing for a search nobody is looking at (the web's useQuoteBoard).
+ */
+export function useQuoteBoard(channel: QuoteChannel, enabled: boolean): QuoteBoard {
+  const subscribe = useCallback((cb: () => void) => (enabled ? channel.subscribe(cb) : NOOP), [channel, enabled]);
+  const get = useCallback(() => (enabled ? channel.get() : EMPTY_QUOTE_BOARD), [channel, enabled]);
+  return useSyncExternalStore(subscribe, get);
+}
+
+export interface Candidates {
+  symbols: string[];
+  /** The server replays a fixture archive (not market data): the search may list mock rows. */
+  fixture: boolean;
+}
+
 /** The server's price-band candidates, refreshed every 10 s (they change as prices move). */
-export function useCandidates(token: string | null): string[] {
-  const [symbols, setSymbols] = useState<string[]>([]);
+export function useCandidates(token: string | null): Candidates {
+  const [state, setState] = useState<Candidates>({ symbols: [], fixture: false });
   useEffect(() => {
     let alive = true;
     const refresh = async () => {
       try {
         const res = await authenticatedFetch(`${SERVER_URL}/api/symbols`, token);
         if (!res.ok) return;
-        const d = (await res.json()) as { symbols?: unknown };
-        if (alive && Array.isArray(d.symbols)) setSymbols(d.symbols.filter((x): x is string => typeof x === "string"));
+        const d = (await res.json()) as { symbols?: unknown; fixture?: unknown };
+        if (alive && Array.isArray(d.symbols)) setState({ symbols: d.symbols.filter((x): x is string => typeof x === "string"), fixture: d.fixture === true });
       } catch {
         // Offline or server down: keep the last list; the socket status says so.
       }
@@ -84,5 +103,5 @@ export function useCandidates(token: string | null): string[] {
       clearInterval(id);
     };
   }, [token]);
-  return symbols;
+  return state;
 }
