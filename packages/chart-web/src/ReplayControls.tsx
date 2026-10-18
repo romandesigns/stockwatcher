@@ -2,6 +2,7 @@ import { formatDayKey, formatEtDate, formatEtTime, formatSymbolCount, sessionOf,
 import { Button } from "./ui/button.tsx";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger } from "./ui/dropdown-menu.tsx";
 import { cn } from "./ui/utils.ts";
+import { Icon } from "./Icon.tsx";
 
 export interface ReplayControlsProps {
   clock: Clock | null;
@@ -31,17 +32,9 @@ export const speedLabel = (s: number) => (s === 0 ? "Max" : `${s}×`);
 
 const SESSION_LABEL = { overnight: "Overnight", pre: "Premarket", regular: "Regular", after: "After hours" } as const;
 
+/** Play and pause share one duotone family (soft body, crisp outline) with step, so the transport reads as a set. */
 function PlayIcon({ playing }: { playing: boolean }) {
-  return playing ? (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-      <rect x="6" y="5" width="4" height="14" />
-      <rect x="14" y="5" width="4" height="14" />
-    </svg>
-  ) : (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-      <path d="M7 5v14l12-7z" />
-    </svg>
-  );
+  return <Icon name={playing ? "pause" : "play"} />;
 }
 
 /**
@@ -61,9 +54,7 @@ function ReplayDayMenu({ day, days, onDayChange, onOpenChange }: { day: string; 
         className="-mx-1 inline-flex shrink-0 cursor-pointer items-center gap-0.5 rounded px-1 text-[11px] text-muted-foreground outline-none transition-colors duration-150 hover:bg-bg-row hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring data-popup-open:bg-bg-row data-popup-open:text-foreground"
       >
         {formatDayKey(day)}
-        <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M2 3.5 5 6.5 8 3.5" />
-        </svg>
+        <Icon name="chevronDown" width={10} height={10} />
       </DropdownMenuTrigger>
       <DropdownMenuContent side="top" align="start" aria-label="Replay day" className="min-w-56">
         <DropdownMenuRadioGroup value={day} onValueChange={(v) => typeof v === "string" && v !== day && onDayChange(v)}>
@@ -137,10 +128,7 @@ export function ReplayControls({ clock, onPlayPause, onStep, onSpeedChange, spee
           aria-label="Step one event"
           onClick={onStep}
         >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-            <path d="M18 5v14" />
-            <path d="M6 6l9 6-9 6z" />
-          </svg>
+          <Icon name="step" />
         </Button>
       )}
       <Button

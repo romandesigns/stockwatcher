@@ -2,6 +2,7 @@ import type * as React from "react"
 import { Menu as MenuPrimitive } from "@base-ui/react/menu"
 import { ScrollArea } from "./scroll-area.tsx"
 import { cn } from "./utils.ts"
+import { Icon } from "../Icon.tsx"
 
 // shadcn/ui dropdown-menu, Base UI variant ("base-nova"), from the shadcn CLI
 // (`bunx shadcn@latest add dropdown-menu`), cut down to what the price axis
@@ -11,8 +12,9 @@ import { cn } from "./utils.ts"
 // - The popup sits on bg-card and a focused item on bg-bg-row: this app maps
 //   shadcn's popover AND accent to --bg-row, which made the highlight
 //   invisible on the popup.
-// - lucide-react's CheckIcon is an inline SVG (no icon dependency here), and
-//   the selected mark uses the accent (text-primary): it is the active state.
+// - lucide-react's CheckIcon became chart-core's shared duotone check (no icon
+//   dependency here), and the selected mark uses the accent (text-primary):
+//   it is the active state.
 // - tw-animate-css classes became Base UI's starting/ending-style transitions
 //   (the app has no tw-animate-css); reduced motion is handled globally.
 // - Submenus and the destructive variant were dropped. Trigger and checkbox
@@ -109,12 +111,11 @@ function DropdownMenuItem({
   )
 }
 
+// The menus' check: chart-core's duotone "check" (its long stroke primary,
+// short leg secondary), in the indicator's text-primary, so a checked row
+// spends accent in both tones.
 function CheckIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M20 6 9 17l-5-5" />
-    </svg>
-  )
+  return <Icon name="check" />
 }
 
 function DropdownMenuRadioGroup({ ...props }: MenuPrimitive.RadioGroup.Props) {

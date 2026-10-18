@@ -10,7 +10,8 @@ import {
   type ToolboxPlacement,
 } from "@stockwatcher/chart-core";
 import { useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
-import { TOOL_ICONS, toolTip } from "./ChartToolbar.tsx";
+import { ARMED, TOOL_ICONS, toolTip } from "./ChartToolbar.tsx";
+import { Icon } from "./Icon.tsx";
 import { Tip } from "./ui/tooltip.tsx";
 import { Button } from "./ui/button.tsx";
 import { Popover, PopoverContent } from "./ui/popover.tsx";
@@ -37,21 +38,6 @@ export interface DrawingToolboxProps {
   onUndo: () => void;
   onRedo: () => void;
 }
-
-const svg = (d: string) => (
-  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true">
-    <path d={d} />
-  </svg>
-);
-const GripIcon = (
-  <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-    {[4, 8, 12].flatMap((y) => [6, 10].map((x) => <circle key={`${x}-${y}`} cx={x} cy={y} r="1.1" />))}
-  </svg>
-);
-const TrashIcon = svg("M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5");
-const UndoIcon = svg("M5.5 3 2.5 6l3 3M2.5 6h7a4 4 0 0 1 0 8h-2");
-const RedoIcon = svg("M10.5 3l3 3-3 3M13.5 6h-7a4 4 0 0 0 0 8h2");
-const RotateIcon = svg("M3 8a5 5 0 0 1 8.5-3.5L13 6M13 3v3h-3M13 8a5 5 0 0 1-8.5 3.5L3 10M3 13v-3h3");
 
 /**
  * The drawing tools as a floating palette over the chart (owner request
@@ -128,7 +114,7 @@ export function DrawingToolbox({ placement, onPlacementChange, container, tool, 
         onKeyDown={onGripKey}
         className={cn("grid touch-none place-items-center rounded-md text-text-faint outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-3.5", vertical ? "h-4 w-7 cursor-grab active:cursor-grabbing" : "h-7 w-4 cursor-grab active:cursor-grabbing")}
       >
-        <span className={cn(!vertical && "rotate-90")}>{GripIcon}</span>
+        <span className={cn(!vertical && "rotate-90")}><Icon name="grip" /></span>
       </button>
       </Tip>
       <ToggleGroup
@@ -144,7 +130,7 @@ export function DrawingToolbox({ placement, onPlacementChange, container, tool, 
       >
         {(["cursor", ...DRAWING_KINDS, "measure"] as const).map((k) => (
           <Tip key={k} label={toolTip(k)} side={vertical ? "right" : "bottom"}>
-            <ToggleGroupItem value={k} aria-label={k === "cursor" ? "Cursor" : DRAWING_LABELS[k]} className="w-7 px-0 [&_svg]:size-3.5">
+            <ToggleGroupItem value={k} aria-label={k === "cursor" ? "Cursor" : DRAWING_LABELS[k]} className={cn("w-7 px-0 [&_svg]:size-3.5", k !== "cursor" && ARMED)}>
               {TOOL_ICONS[k]}
             </ToggleGroupItem>
           </Tip>
@@ -160,17 +146,17 @@ export function DrawingToolbox({ placement, onPlacementChange, container, tool, 
       <div role="group" aria-label="Edit" className={cn("flex shrink-0 rounded-lg bg-foreground/[0.07]", vertical ? "flex-col" : "flex-row")}>
       <Tip label={"Delete selected drawing (Del)"} side={vertical ? "right" : "bottom"}>
         <Button variant="ghost" size="icon" className={iconButton} aria-label="Delete selected drawing" disabled={!canDelete} onClick={onDelete}>
-          {TrashIcon}
+          <Icon name="trash" />
         </Button>
       </Tip>
       <Tip label={"Undo (Ctrl+Z)"} side={vertical ? "right" : "bottom"}>
         <Button variant="ghost" size="icon" className={iconButton} aria-label="Undo" disabled={!canUndo} onClick={onUndo}>
-          {UndoIcon}
+          <Icon name="undo" />
         </Button>
       </Tip>
       <Tip label={"Redo (Ctrl+Shift+Z)"} side={vertical ? "right" : "bottom"}>
         <Button variant="ghost" size="icon" className={iconButton} aria-label="Redo" disabled={!canRedo} onClick={onRedo}>
-          {RedoIcon}
+          <Icon name="redo" />
         </Button>
       </Tip>
       <Tip label={vertical ? "Lay out as a row" : "Lay out as a column"} side={vertical ? "right" : "bottom"}>
@@ -181,7 +167,7 @@ export function DrawingToolbox({ placement, onPlacementChange, container, tool, 
         aria-label={vertical ? "Lay the tools out in a row" : "Lay the tools out in a column"}
         onClick={() => onPlacementChange({ ...placement, orientation: vertical ? "horizontal" : "vertical" }, true)}
       >
-        {RotateIcon}
+        <Icon name="rotate" />
       </Button>
       </Tip>
       </div>

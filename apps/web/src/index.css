@@ -40,6 +40,17 @@
 
   --radius: 8px;
 
+  /* Duotone icons (owner, 2026-10-18: "two complementary tones"). Every icon
+     comes from chart-core icons.ts, where each path has a role, not a colour:
+     primary is the icon's current colour, so it follows state (text-dim when
+     idle, --text when raised, --accent only where a state spends accent: an
+     armed drawing tool, a menu check, the Trade and Play buttons); secondary
+     is that same colour softened. currentColor resolves at each path, so a
+     status-hued path (a long position's green zone) splits the same way.
+     The 40% is ICON_SECONDARY_OPACITY; tokens.test.ts keeps them equal. */
+  --icon-primary: currentColor;
+  --icon-secondary: color-mix(in srgb, currentColor 40%, transparent);
+
   /* Chart canvas tokens, read by @stockwatcher/chart-web (readChartTheme).
      Derived from the palette above so there is one source of truth: up/down
      are the status colors, the accent marks only POC, value area, the

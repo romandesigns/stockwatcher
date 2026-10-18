@@ -82,14 +82,13 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { AccessibilityInfo, Pressable, StyleSheet, Text, View, type LayoutChangeEvent, type StyleProp, type ViewStyle } from "react-native";
 import { GestureDetector, GestureStateManager, useManualGesture } from "react-native-gesture-handler";
 import Animated, { FadeIn, FadeOut, ReduceMotion } from "react-native-reanimated";
-import Svg, { Path } from "react-native-svg";
 import { recordPicture } from "./drawSkia.ts";
 import { CandleInspector } from "./CandleInspector.tsx";
 import { DrawingToolbox } from "./DrawingToolbox.tsx";
 import { PositionPlanPanel } from "./PositionPlanPanel.tsx";
 import { AxisSheet, IndicatorSheet, LayersSheet, OrderTicketSheet, QUICK_TRADE_SIZES, QuickTradeSheet, SCALE_LABELS } from "./sheets.tsx";
 import { TimeframeWheel } from "./TimeframeWheel.tsx";
-import { playHaptic, ToolButton, ToolIcon, UI } from "./ui.tsx";
+import { Icon, playHaptic, ToolButton, ToolIcon, UI } from "./ui.tsx";
 
 export interface ChartSeriesLike {
   candles: readonly Candle[];
@@ -775,9 +774,7 @@ export function CandleChart({
             style={[s.latest, { left: model.geometry.plot.x + model.geometry.plot.w - 46, top: model.geometry.plot.y + model.geometry.plot.h - 46 }]}
           >
             <Pressable accessibilityRole="button" accessibilityLabel="Back to latest" onPress={backToLatest} hitSlop={6} style={({ pressed }) => [s.latestButton, pressed && { backgroundColor: UI.row }]}>
-              <Svg width={16} height={16} viewBox="0 0 16 16" fill="none" stroke={UI.text} strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
-                <Path d="M2.5 8h9M8 4.5 11.5 8 8 11.5M13.5 3.5v9" />
-              </Svg>
+              <Icon name="toLatest" color={UI.text} />
             </Pressable>
           </Animated.View>
         )}

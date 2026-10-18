@@ -24,13 +24,12 @@ import {
   type ToolboxPlacement,
   type Timeframe,
 } from "@stockwatcher/chart-core";
-import { CandleChart, ReplayDaySheet, SessionTimeline, TapeSheet, ToolButton, UI } from "@stockwatcher/chart-native";
+import { CandleChart, Icon, ReplayDaySheet, SessionTimeline, TapeSheet, ToolButton, UI } from "@stockwatcher/chart-native";
 import type { ConnectionStatus } from "@stockwatcher/shared";
 import { useEffect, useMemo, useState } from "react";
 import Animated, { FadeIn, FadeOut, ReduceMotion } from "react-native-reanimated";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import Svg, { Circle, Path } from "react-native-svg";
 
 import { useCandidates, useChartFeed, usePaperTrading, useReplayDays } from "../feed/hooks";
 import { createMobileFeed, type MobileFeed } from "../feed/serverFeed";
@@ -199,17 +198,12 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
       <View style={styles.header}>
         <Pressable accessibilityRole="button" accessibilityLabel={`${active ?? "No ticker"}, search tickers`} onPress={() => setSearchOpen(true)} hitSlop={8} style={({ pressed }) => [styles.tickerButton, pressed && { opacity: 0.6 }]}>
           <Text style={styles.symbol}>{active ?? "—"}</Text>
-          <Svg width={10} height={10} viewBox="0 0 10 10" fill="none" stroke={colors.textDim} strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
-            <Path d="M2 3.5 5 6.5 8 3.5" />
-          </Svg>
+          <Icon name="chevronDown" color={colors.textDim} size={10} />
         </Pressable>
         <Text style={styles.price}>{last ? formatPrice(last.c) : "—"}</Text>
         <Text style={[styles.change, { color: change.startsWith("-") ? colors.critical : colors.good }]}>{change}</Text>
         <Pressable accessibilityRole="button" accessibilityLabel="Search tickers" onPress={() => setSearchOpen(true)} hitSlop={6} style={({ pressed }) => [styles.searchButton, pressed && { backgroundColor: colors.bgRow }]}>
-          <Svg width={15} height={15} viewBox="0 0 16 16" fill="none" stroke={colors.textDim} strokeWidth={1.5} strokeLinecap="round">
-            <Circle cx={7} cy={7} r={4.5} />
-            <Path d="M10.5 10.5 14 14" />
-          </Svg>
+          <Icon name="search" color={colors.textDim} size={15} />
         </Pressable>
         {/* An icon, not words (owner, 2026-10-17): replay clock or live broadcast; offline still says so in words. */}
         <View
@@ -221,21 +215,7 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
           {offline ? (
             <Text style={[styles.chipText, { color: colors.critical }]}>{status}</Text>
           ) : (
-            <Svg width={15} height={15} viewBox="0 0 16 16" fill="none" stroke={live ? colors.good : colors.textDim} strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
-              {live ? (
-                <>
-                  <Circle cx={8} cy={8} r={1.6} fill={colors.good} stroke="none" />
-                  <Path d="M5.2 5.2a4 4 0 0 0 0 5.6M10.8 5.2a4 4 0 0 1 0 5.6" />
-                  <Path d="M3.1 3.1a7 7 0 0 0 0 9.8M12.9 3.1a7 7 0 0 1 0 9.8" strokeOpacity={0.55} />
-                </>
-              ) : (
-                <>
-                  <Path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9" />
-                  <Path d="M2.5 2.5v2.2h2.2" />
-                  <Path d="M8 5.2V8l1.9 1.3" />
-                </>
-              )}
-            </Svg>
+            <Icon name={live ? "live" : "replay"} color={live ? colors.good : colors.textDim} size={15} />
           )}
         </View>
       </View>
@@ -282,7 +262,7 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
       <View style={styles.replayCard}>
       <View style={styles.replay}>
         <ToolButton primary label={playing ? "Pause replay" : "Play replay"} disabled={!clock || live} onPress={() => feed.control({ action: playing ? "pause" : "play" })} style={styles.play}>
-          {playing ? "❚❚" : "▶"}
+          <Icon name={playing ? "pause" : "play"} color={UI.accentFg} />
         </ToolButton>
         {/* The replay clock (Eastern) over its session and the replay date. The date is the day
             picker: there is no room for another button in this row, and the date is what it changes. */}
@@ -307,9 +287,7 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
                 style={({ pressed }) => [styles.dayButton, pressed && { backgroundColor: UI.row }]}
               >
                 <Text style={styles.session}>· {formatDayKey(replayDay)}</Text>
-                <Svg width={8} height={8} viewBox="0 0 10 10" fill="none" stroke={colors.textFaint} strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
-                  <Path d="M2 3.5 5 6.5 8 3.5" />
-                </Svg>
+                <Icon name="chevronDown" color={colors.textFaint} size={8} />
               </Pressable>
             )}
           </View>
@@ -319,10 +297,7 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
         {!playing && !live && clock && (
           <Animated.View entering={FadeIn.duration(150).reduceMotion(ReduceMotion.System)} exiting={FadeOut.duration(120).reduceMotion(ReduceMotion.System)} style={styles.stepWrap}>
             <ToolButton label="Step one event" onPress={() => feed.control({ action: "step" })} style={styles.step}>
-              <Svg width={14} height={14} viewBox="0 0 16 16" fill="none" stroke={colors.textDim} strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
-                <Path d="M4 3.5 9.5 8 4 12.5z" fill={colors.textDim} />
-                <Path d="M12 3.5v9" />
-              </Svg>
+              <Icon name="step" color={colors.textDim} size={14} />
             </ToolButton>
           </Animated.View>
         )}
@@ -338,9 +313,7 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
           {speedLabel(speed)}
         </ToolButton>
         <ToolButton label="Time and sales" onPress={() => setTapeOpen(true)} style={styles.tapeButton}>
-          <Svg width={16} height={16} viewBox="0 0 16 16" fill="none" stroke={colors.textDim} strokeWidth={1.5} strokeLinecap="round">
-            <Path d="M3 4h10M3 8h10M3 12h6" />
-          </Svg>
+          <Icon name="menu" color={colors.textDim} />
         </ToolButton>
       </View>
       {/* Tap a time to jump the replay there. */}

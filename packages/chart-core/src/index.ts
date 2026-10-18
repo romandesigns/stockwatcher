@@ -21,3 +21,4 @@ export * from "./toolbox.ts";
 export * from "./levels.ts";
 export * from "./history.ts";
 export * from "./replayDays.ts";
+export * from "./icons.ts";

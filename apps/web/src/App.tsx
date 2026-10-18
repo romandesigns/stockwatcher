@@ -14,7 +14,7 @@ import {
   type PriceScaleType,
   type Timeframe,
 } from "@stockwatcher/chart-core";
-import { CandleChart, ReplayControls, SessionTimeline, Tape, VolumeProfile } from "@stockwatcher/chart-web";
+import { CandleChart, Icon, ReplayControls, SessionTimeline, Tape, VolumeProfile } from "@stockwatcher/chart-web";
 import { Tip, ToggleGroup, ToggleGroupItem, cn } from "@stockwatcher/chart-web/ui";
 import { useEffect, useMemo, useState } from "react";
 import { createServerFeed } from "./feed/serverFeed.ts";
@@ -29,13 +29,8 @@ import { createFixtureFeed, FIXTURE_SYMBOL } from "./fixtures/fixtureFeed.ts";
 import { useMediaQuery } from "./lib/useMediaQuery.ts";
 import { TickerSearch } from "./search/TickerSearch.tsx";
 
-/** The search icon for the quick-open pill and the phone header. */
-const SearchIcon = (
-  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true">
-    <circle cx="7" cy="7" r="4.5" />
-    <path d="M10.5 10.5 14 14" />
-  </svg>
-);
+/** The search icon for the quick-open pill and the phone header (chart-core's shared duotone set, like every icon). */
+const SearchIcon = <Icon name="search" />;
 
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 
@@ -54,23 +49,9 @@ function sourceText(choice: SourceChoice): string {
   return choice.fixtureData ? `${choice.label} · fixture archive — not market data` : `${choice.label} · ${choice.reason}`;
 }
 
-/** Replay: a clock turned back. */
-const ReplayIcon = (
-  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9" />
-    <path d="M2.5 2.5v2.2h2.2" />
-    <path d="M8 5.2V8l1.9 1.3" />
-  </svg>
-);
-
-/** Live: a broadcast dot with its waves. */
-const LiveIcon = (
-  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true">
-    <circle cx="8" cy="8" r="1.6" fill="currentColor" stroke="none" />
-    <path d="M5.2 5.2a4 4 0 0 0 0 5.6M10.8 5.2a4 4 0 0 1 0 5.6" />
-    <path d="M3.1 3.1a7 7 0 0 0 0 9.8M12.9 3.1a7 7 0 0 1 0 9.8" strokeOpacity="0.55" />
-  </svg>
-);
+/** Replay: a clock turned back. Live: a broadcast dot with its waves. */
+const ReplayIcon = <Icon name="replay" />;
+const LiveIcon = <Icon name="live" />;
 
 /**
  * Where the data comes from, as an icon beside the logo (owner, 2026-10-17:

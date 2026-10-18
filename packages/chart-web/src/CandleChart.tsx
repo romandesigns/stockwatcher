@@ -86,6 +86,7 @@ import { CandleInspector } from "./CandleInspector.tsx";
 import { ChartToolbar } from "./ChartToolbar.tsx";
 import { drawDisplayList } from "./draw.ts";
 import { DrawingToolbox } from "./DrawingToolbox.tsx";
+import { Icon } from "./Icon.tsx";
 import { OrderTicket } from "./OrderTicket.tsx";
 import { PositionPlanCard } from "./PositionPlanCard.tsx";
 import { Tip, TooltipProvider } from "./ui/tooltip.tsx";
@@ -1008,9 +1009,7 @@ export function CandleChart({
           style={{ left: model.geometry.plot.x + model.geometry.plot.w - 40, top: model.geometry.plot.y + model.geometry.plot.h - 40 }}
           className="absolute z-10 grid size-8 place-items-center rounded-full bg-card text-foreground shadow-lg transition-[opacity,scale,background-color] duration-150 outline-none hover:bg-bg-row focus-visible:ring-2 focus-visible:ring-ring starting:scale-90 starting:opacity-0"
         >
-          <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M2.5 8h9M8 4.5 11.5 8 8 11.5M13.5 3.5v9" />
-          </svg>
+          <Icon name="toLatest" width={14} height={14} />
         </button>
         </Tip>
       )}

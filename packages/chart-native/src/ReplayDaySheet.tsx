@@ -1,7 +1,7 @@
 import { formatSymbolCount, type ReplayDayOption } from "@stockwatcher/chart-core";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { Sheet } from "./sheets.tsx";
-import { UI } from "./ui.tsx";
+import { Icon, UI } from "./ui.tsx";
 
 /**
  * The replay day picker, the phone's twin of chart-web's ReplayDayMenu: the
@@ -54,7 +54,7 @@ export function ReplayDaySheet({
                 <View style={s.right}>
                   <Text style={s.count}>{d.symbols.toLocaleString("en-US")}</Text>
                   {/* Fixed width, so the counts line up whether or not the row has the check. */}
-                  <Text style={s.check}>{current ? "✓" : ""}</Text>
+                  <View style={s.check}>{current && <Icon name="check" color={UI.accent} size={14} />}</View>
                 </View>
               </Pressable>
             );
@@ -72,6 +72,6 @@ const s = StyleSheet.create({
   fixture: { color: UI.warning, fontSize: 9, fontWeight: "600", letterSpacing: 0.6, backgroundColor: "rgba(224,166,58,0.14)", borderRadius: 4, paddingHorizontal: 6, paddingVertical: 2, overflow: "hidden" },
   right: { marginLeft: "auto", flexDirection: "row", alignItems: "center", gap: 6 },
   count: { color: UI.textFaint, fontSize: 11, fontVariant: ["tabular-nums"] },
-  check: { width: 16, textAlign: "right", color: UI.accent, fontSize: 13 },
+  check: { width: 16, alignItems: "flex-end" },
   empty: { color: UI.textFaint, fontSize: 12, paddingVertical: 8 },
 });

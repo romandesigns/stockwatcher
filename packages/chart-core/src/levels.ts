@@ -1,6 +1,7 @@
 import type { ChartTheme, DisplayList } from "./displayList.ts";
 import { tToIndex } from "./drawings.ts";
 import { formatPrice } from "./format.ts";
+import type { IconDef, IconPath } from "./icons.ts";
 import type { ChartModel } from "./layout.ts";
 import { priceY, slotX, type Slot } from "./scale.ts";
 import { withAlpha } from "./theme.ts";
@@ -51,43 +52,45 @@ export const LAYER_INFO: Readonly<Record<LayerId, { name: string; description: s
   fills: { name: "My fills", description: "Your simulated buys and sells" },
 };
 
-/** A swatch shape in a 24×16 box; `color` names a theme role each renderer maps to its own palette. */
-export interface LayerSwatchShape {
-  d: string;
-  paint: "fill" | "stroke";
-  color: "warning" | "dim" | "text" | "good" | "critical";
-  opacity?: number;
-  dash?: readonly number[];
-}
+/** A layer's swatch: a duotone icon (icons.ts) in a 24 × 16 box. */
+export type LayerSwatchShape = IconPath;
+
+const swatch = (paths: readonly IconPath[]): IconDef => ({ w: 24, h: 16, strokeWidth: 1.5, paths });
+/** Price, drawn soft behind a level so the swatch says what the line is measured against. */
+const PRICE = (d: string): IconPath => ({ d, role: "secondary" });
 
 /**
  * How each layer looks on the chart, drawn small: the row icon in the web's
  * Levels menu and the phone's Levels sheet, so the menu is also the key.
  * Shared here (like INDICATOR_GLYPHS) so both platforms show the same marks.
+ * Duotone like every icon: the layer's own mark is primary (in its status
+ * hue where the hue is the meaning), the price it relates to secondary.
  */
-export const LAYER_SWATCHES: Readonly<Record<LayerId, readonly LayerSwatchShape[]>> = {
-  profile: [
-    { d: "M13 3.5h9M15 12.5h7", paint: "stroke", color: "dim", opacity: 0.8 },
-    { d: "M7 8h15", paint: "stroke", color: "text", opacity: 0.9 },
-  ],
-  halts: [
-    { d: "M6 1h12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V3a2 2 0 0 1 2-2z", paint: "fill", color: "warning", opacity: 0.18 },
-    { d: "M4 1h2v14H4z", paint: "fill", color: "warning", opacity: 0.6 },
-  ],
-  luld: [{ d: "M2 4h20M2 12h20", paint: "stroke", color: "warning", opacity: 0.7, dash: [3, 2] }],
-  premarket: [{ d: "M2 8h20", paint: "stroke", color: "dim", opacity: 0.7, dash: [2, 2.5] }],
-  dayRange: [{ d: "M2 4h20M2 12h20", paint: "stroke", color: "text", opacity: 0.6, dash: [5, 2.5] }],
-  open: [{ d: "M2 8h20", paint: "stroke", color: "dim", opacity: 0.7, dash: [2, 2.5] }],
-  // The first regular candle and the dimmed box it spans to the close.
-  openingRange: [
-    { d: "M3 4h18a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H3z", paint: "fill", color: "dim", opacity: 0.25 },
-    { d: "M5 2.5v11M3.5 4h3v8h-3z", paint: "stroke", color: "text", opacity: 0.9 },
-  ],
-  prevClose: [{ d: "M2 8h20", paint: "stroke", color: "dim", opacity: 0.7, dash: [2, 2.5] }],
-  fills: [
-    { d: "M7 6 10 11H4z", paint: "fill", color: "good" },
-    { d: "M17 10 20 5h-6z", paint: "fill", color: "critical" },
-  ],
+export const LAYER_SWATCHES: Readonly<Record<LayerId, IconDef>> = {
+  profile: swatch([
+    { d: "M13 3.5h9M15 12.5h7", role: "secondary" },
+    { d: "M7 8h15", role: "primary" },
+  ]),
+  halts: swatch([
+    { d: "M6 1h12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V3a2 2 0 0 1 2-2z", paint: "fill", role: "secondary", hue: "warning" },
+    { d: "M4 1h2v14H4z", paint: "fill", role: "primary", hue: "warning" },
+  ]),
+  luld: swatch([PRICE("M3 10.5 7 7.5l4 2 4-4 6 2"), { d: "M2 3h20M2 13h20", role: "primary", hue: "warning", dash: [3, 2] }]),
+  premarket: swatch([PRICE("M2 13 6 10.5l3 1.5 4-3"), { d: "M2 6.5h20", role: "primary", dash: [2, 2.5] }]),
+  dayRange: swatch([PRICE("M3 11.5 8 5.5l4 3 4-2.5 5 5"), { d: "M2 4h20M2 12.5h20", role: "primary", dash: [5, 2.5] }]),
+  open: swatch([{ d: "M2 8h20", role: "primary", dash: [2, 2.5] }, PRICE("M8 8 12 4.5l3 2 6-4")]),
+  // The first regular candle (primary) and the dimmed box it spans to the close (secondary).
+  openingRange: swatch([
+    { d: "M3 4h18a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H3z", paint: "fill", role: "secondary" },
+    { d: "M5 2.5v11", role: "primary" },
+    { d: "M3.5 4h3v8h-3z", paint: "fill", role: "primary" },
+  ]),
+  prevClose: swatch([PRICE("M2 8 6 7l3-3 4 2 4-2.5 5 1"), { d: "M2 11h20", role: "primary", dash: [2, 2.5] }]),
+  fills: swatch([
+    PRICE("M2 12 8 9l5 2 9-6"),
+    { d: "M7 6 10 11H4z", paint: "fill", role: "primary", hue: "good" },
+    { d: "M17 10 20 5h-6z", paint: "fill", role: "primary", hue: "critical" },
+  ]),
 };
 
 export type ChartLayers = Readonly<Record<LayerId, boolean>>;
