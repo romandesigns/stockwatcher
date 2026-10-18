@@ -43,7 +43,29 @@ export interface PongMessage {
   ts: number;
 }
 
-export type ErrorCode = "unauthorized" | "bad_request" | "hello_timeout" | "shutting_down";
+/**
+ * Error codes. The handshake ones are acted on here (ws.ts); the rest answer
+ * chart/replay/paper commands and are listed so a client can tell them apart:
+ * `not_replay` (a replay.control in live mode), `unknown_symbol` /
+ * `outside_price_band` (chart.subscribe, and the resync after a replay day
+ * switch when the new day lacks the symbol), `unknown_day` (replay.control
+ * `day` not in GET /api/replay/state's `days`) and `day_unavailable` (offered,
+ * but the server could not open it); after either day error nothing changed.
+ * The paper broker adds `bad_order` and its own refusal codes (`not_open`, …;
+ * docs/architecture/chart-trading-sim.md).
+ */
+export type ErrorCode =
+  | "unauthorized"
+  | "bad_request"
+  | "hello_timeout"
+  | "shutting_down"
+  | "not_replay"
+  | "replay_unavailable"
+  | "unknown_symbol"
+  | "outside_price_band"
+  | "unknown_day"
+  | "day_unavailable"
+  | (string & {});
 
 export interface ErrorMessage {
   type: "error";

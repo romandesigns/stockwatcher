@@ -303,3 +303,123 @@ async fn driver_seek_matches_linear_state() {
     feed(&mut linear, &items);
     assert_same_state(&engine, &linear, &src.symbols());
 }
+
+/// Two fixture days of one archive with different symbol sets, the source opened on `day()`.
+fn two_day_source() -> (tempfile::TempDir, Arc<dyn EventSource>, NaiveDate) {
+    let tmp = tempfile::tempdir().unwrap();
+    let archive = Archive::new(ArchiveConfig {
+        root: tmp.path().join("archive"),
+        retention_days: 0,
+        min_free_bytes: 0,
+    });
+    let other = NaiveDate::from_ymd_opt(2026, 10, 14).unwrap();
+    let syms = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    write_fixture_day(&archive, day(), &syms(&["SMPL", "FXLO"]), 7).unwrap();
+    write_fixture_day(&archive, other, &syms(&["FXMD", "FXHI", "SMPL"]), 11).unwrap();
+    let src = ArchiveDaySource::new(archive, day()).unwrap();
+    (tmp, Arc::new(src), other)
+}
+
+#[tokio::test]
+async fn day_switch_announces_the_source_then_rebuilds_like_a_seek_at_the_start_time() {
+    let (_tmp, src, other) = two_day_source();
+    let start_time = chrono::NaiveTime::from_hms_opt(10, 40, 0).unwrap();
+    let (h, mut rx) = spawn(
+        src.clone(),
+        ReplayOptions {
+            start: Some(et(day(), 10, 40, 0, 0).unwrap()),
+            start_time: Some(start_time),
+            autoplay: false,
+            ..ReplayOptions::default()
+        },
+    )
+    .unwrap();
+    // The initial catch-up ends with its Clock; then only the switch's items arrive.
+    let consumer = tokio::spawn(async move {
+        let mut items = Vec::new();
+        let mut caught_up = false;
+        while let Some(i) = rx.recv().await {
+            let clock = matches!(i, FeedItem::Clock(_));
+            if caught_up {
+                items.push(i);
+                if clock {
+                    return items;
+                }
+            } else if clock {
+                caught_up = true;
+            }
+        }
+        panic!("stream ended");
+    });
+    let s = h.command(Command::Day(other)).await.unwrap();
+    assert_eq!(s.day, Some(other));
+    assert_eq!(s.now, et(other, 10, 40, 0, 0).unwrap());
+    assert!(!s.playing, "paused before, paused after");
+    let items = consumer.await.unwrap();
+    let FeedItem::Source(info) = &items[0] else {
+        panic!("expected Source first, got {:?}", items[0]);
+    };
+    assert_eq!(info.day, other);
+    assert_eq!(info.symbols, ["FXHI", "FXMD", "SMPL"]);
+    assert!(info.fixture);
+    assert!(info.label.contains("2026-10-14"));
+    assert!(matches!(&items[1], FeedItem::Reset(c) if c.day == Some(other)));
+    // What follows the Reset is exactly a linear play of the new day to the start time.
+    let new_src: Arc<dyn EventSource> = src.for_day(other).unwrap();
+    let mut core = ReplayCore::new(new_src.clone(), 1_000_000_000).unwrap();
+    let linear = run_core_to(&mut core, et(other, 10, 40, 0, 0).unwrap());
+    assert_eq!(events_of(&items[2..]), events_of(&linear));
+    let mut switched = ChartEngine::default();
+    let mut expected = ChartEngine::default();
+    feed(&mut switched, &items[2..]);
+    feed(&mut expected, &linear);
+    assert_same_state(&switched, &expected, &new_src.symbols());
+}
+
+#[tokio::test]
+async fn a_day_that_cannot_be_opened_is_refused_and_nothing_changes() {
+    let (_tmp, src, _) = two_day_source();
+    let (h, mut rx) = spawn(
+        src,
+        ReplayOptions {
+            autoplay: false,
+            ..ReplayOptions::default()
+        },
+    )
+    .unwrap();
+    let before = h.command(Command::Pause).await.unwrap();
+    while let Ok(i) = rx.try_recv() {
+        drop(i);
+    }
+    let missing = NaiveDate::from_ymd_opt(2026, 10, 13).unwrap();
+    let err = h.command(Command::Day(missing)).await.unwrap_err();
+    assert!(
+        matches!(&err, market_replay::CommandError::Rejected(m) if m.contains("2026-10-13")),
+        "{err:?}"
+    );
+    assert_eq!(h.state(), before);
+    // No Source, no Reset: the consumer saw nothing at all.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn a_playing_replay_keeps_playing_on_the_new_day() {
+    let (_tmp, src, other) = two_day_source();
+    let (h, mut rx) = spawn(
+        src,
+        ReplayOptions {
+            speed: Speed::Times(1),
+            autoplay: true,
+            ..ReplayOptions::default()
+        },
+    )
+    .unwrap();
+    let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let s = h.command(Command::Day(other)).await.unwrap();
+    assert!(s.playing);
+    assert_eq!(s.speed, Speed::Times(1));
+    // No start_time configured: the new day starts at its first session start.
+    assert_eq!(s.now, market_replay::day_bounds(other).unwrap().0);
+    drain.abort();
+}

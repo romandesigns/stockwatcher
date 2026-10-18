@@ -51,7 +51,8 @@ pub async fn shares_float(State(sim): State<Sim>, Query(q): Query<FloatQuery>) -
                 .into_response(),
         );
     };
-    if !sim.0.symbols.contains(&symbol) {
+    let day = sim.day_info();
+    if !day.symbols.contains(&symbol) {
         return fixture_header(Json(json!([])).into_response());
     }
     let h = Sha256::digest(symbol.as_bytes());
@@ -61,7 +62,7 @@ pub async fn shares_float(State(sim): State<Sim>, Query(q): Query<FloatQuery>) -
     fixture_header(
         Json(json!([{
             "symbol": symbol,
-            "date": format!("{} 00:00:00", sim.0.day.format("%Y-%m-%d")),
+            "date": format!("{} 00:00:00", day.day.format("%Y-%m-%d")),
             "freeFloat": free_pct,
             "floatShares": float_shares,
             "outstandingShares": outstanding,

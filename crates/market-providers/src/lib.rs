@@ -21,7 +21,9 @@ mod replay;
 
 pub use config::{MarketDataMode, ProviderConfig};
 pub use live::{ChannelFeed, LiveFeed, LiveOptions, LiveProvider};
-pub use market_replay::{ClockMode, ClockState, Command, FeedItem, ReplayHandle, Speed};
+pub use market_replay::{
+    ClockMode, ClockState, Command, CommandError, FeedItem, ReplayHandle, SourceInfo, Speed,
+};
 pub use replay::ReplayProvider;
 
 use chrono::NaiveDate;
@@ -39,6 +41,19 @@ pub struct ProviderInfo {
     pub symbols: Vec<String>,
     /// Every event is fixture data (never market evidence).
     pub fixture: bool,
+}
+
+impl ProviderInfo {
+    /// The description of a replay after a day switch ([`FeedItem::Source`]).
+    pub fn replay(src: &SourceInfo) -> Self {
+        ProviderInfo {
+            mode: ClockMode::Replay,
+            label: src.label.clone(),
+            day: Some(src.day),
+            symbols: src.symbols.clone(),
+            fixture: src.fixture,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -39,6 +39,18 @@
 //! [`FeedItem::Clock`]); that is how a seek rebuilds the engine deterministically from the session
 //! start rather than patching state. Step-interval moves now to the next multiple of the interval
 //! (inclusive, like everything else: events delivered exactly at the boundary are emitted).
+//!
+//! # Switching days
+//!
+//! [`Command::Day`] swaps the driver's [`EventSource`] for the same origin's source of another day
+//! ([`EventSource::for_day`]) and then runs exactly the seek path above: [`FeedItem::Source`]
+//! (what the new day is: label, symbols, fixture), [`FeedItem::Reset`], the catch-up to the
+//! configured ET start time-of-day ([`ReplayOptions::start_time`]) on the new day, and the closing
+//! [`FeedItem::Clock`]. So a consumer that already handles a seek handles a day switch with one
+//! extra item, and one provider session (one channel, one handle) serves every day. The new source
+//! is opened before anything is emitted: a day that cannot be opened is refused with nothing
+//! changed. The old source, its open readers and its merger are dropped at the swap; nothing of the
+//! old day stays in the driver.
 
 pub mod core;
 pub mod driver;
@@ -48,11 +60,11 @@ pub mod pacing;
 pub mod source;
 
 pub use crate::core::ReplayCore;
-pub use driver::{Command, ReplayHandle, ReplayOptions, spawn};
+pub use driver::{Command, CommandError, ReplayHandle, ReplayOptions, spawn};
 pub use marks::MarkClock;
 pub use merge::Merger;
 pub use pacing::Speed;
-pub use source::{ArchiveDaySource, EventSource, EventStream, VecSource, day_bounds};
+pub use source::{ArchiveDaySource, EventSource, EventStream, SourceInfo, VecSource, day_bounds};
 
 use chrono::NaiveDate;
 use market_events::{MarketEvent, UnixNanos};
@@ -106,4 +118,9 @@ pub enum FeedItem {
     Reset(ClockState),
     /// The source failed (e.g. a corrupt record); replay paused.
     Error(String),
+    /// The replay switched to another day ([`Command::Day`]). Always immediately followed by the
+    /// `Reset` that rebuilds on it, so a consumer replaces whatever it knows about the day (label,
+    /// symbol list, fixture flag) here and drops its derived state on the `Reset` as for a seek.
+    /// Not emitted at startup: the session's initial description is the provider's own.
+    Source(std::sync::Arc<SourceInfo>),
 }

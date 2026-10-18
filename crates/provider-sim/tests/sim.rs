@@ -643,3 +643,29 @@ async fn news_stream_accepts_subscriptions_and_header_auth() {
         json!([{"T":"error","code":400,"msg":"invalid syntax"}])
     );
 }
+
+#[tokio::test]
+async fn a_day_switch_moves_rest_to_the_new_day() {
+    let f = fixture();
+    let other = NaiveDate::from_ymd_opt(2026, 10, 14).unwrap();
+    f.sim.ingest(&FeedItem::Source(std::sync::Arc::new(
+        market_replay::SourceInfo {
+            day: other,
+            label: "archive 2026-10-14".into(),
+            symbols: vec!["ABCD".into(), "WXYZ".into()],
+            fixture: false,
+        },
+    )));
+    let d = f.sim.day_info();
+    assert_eq!(d.day, other);
+    assert!(!d.fixture);
+    let (_, v, _) = get(&f.sim, "/v2/assets", true).await;
+    let symbols: Vec<&str> = v
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["symbol"].as_str().unwrap())
+        .collect();
+    assert_eq!(symbols, ["ABCD", "WXYZ"]);
+    assert_eq!(v[0]["name"], "ABCD (archived; simulator)");
+}

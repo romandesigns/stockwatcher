@@ -1,10 +1,12 @@
 import {
   buildSlots,
   changeReference,
+  currentReplayDay,
   formatChange,
   formatEtDateKey,
   formatPrice,
   lastCandle,
+  replayDayOptions,
   sessionBands,
   tradingDayOf,
   volumeBuckets,
@@ -17,11 +19,12 @@ import { Tip, ToggleGroup, ToggleGroupItem, cn } from "@stockwatcher/chart-web/u
 import { useEffect, useMemo, useState } from "react";
 import { createServerFeed } from "./feed/serverFeed.ts";
 import { clearToken, getToken, setToken } from "./feed/token.ts";
-import { chooseSource, followCandidates, initialSymbol, probeServer, type SourceChoice } from "./feed/source.ts";
+import { chooseSource, followCandidates, followServer, initialSymbol, probeServer, type SourceChoice } from "./feed/source.ts";
 import { useCandidates } from "./feed/useCandidates.ts";
 import type { ChartFeed } from "./feed/types.ts";
 import { useChartFeed } from "./feed/useChartFeed.ts";
 import { usePaperTrading } from "./feed/usePaperTrading.ts";
+import { useReplayDays } from "./feed/useReplayDays.ts";
 import { createFixtureFeed, FIXTURE_SYMBOL } from "./fixtures/fixtureFeed.ts";
 import { useMediaQuery } from "./lib/useMediaQuery.ts";
 import { TickerSearch } from "./search/TickerSearch.tsx";
@@ -183,9 +186,15 @@ function SignIn({ rejected, onSubmit }: { rejected: boolean; onSubmit: (token: s
 function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
 
   const [symbol, setSymbol] = useState(() => initialSymbol(choice, FIXTURE_SYMBOL));
-  const candidates = useCandidates(choice);
   const [timeframe, setTimeframe] = useState<Timeframe>("1m");
   const [bin, setBin] = useState<number>(0.01);
+  // The trading day the replay clock is on; it changes on a day switch (and once a night while playing).
+  const [clockDay, setClockDay] = useState<string | null>(null);
+  const candidates = useCandidates(choice, clockDay);
+  // What is playing now (the day can be switched under a running page): drives the source chip,
+  // the tape note, the chart's label and the search's mock rows. `choice` stays the startup
+  // decision (server or fixture), which never changes.
+  const current = useMemo(() => followServer(choice, candidates.server), [choice, candidates.server]);
   const [inspectT, setInspectT] = useState<number | null>(null);
   // Held here, not in the chart, so it survives switching phone/desktop layouts.
   const [priceScale, setPriceScale] = useState<PriceScaleType>("linear");
@@ -199,6 +208,8 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
   }, [candidates.symbols, symbol]);
   const { series, tape, clock } = useChartFeed(feed, symbol, timeframe, bin);
   const trading = usePaperTrading(feed);
+  const replayDays = useReplayDays(choice, clockDay);
+  const dayOptions = useMemo(() => replayDayOptions(replayDays.state?.days ?? []), [replayDays.state]);
 
   const phone = useMediaQuery("(max-width: 600px)");
   // Ticker quick-open, VS Code's Ctrl+P (Cmd+P on a Mac): the browser's print shortcut is taken
@@ -219,7 +230,7 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
     setInspectT(null);
   };
   // On the desktop the panel drops down right under the header's search pill, at its width.
-  const search = <TickerSearch open={searchOpen} onOpenChange={setSearchOpen} symbols={candidates.symbols} quotes={feed.quotes} mock={choice.fixtureData} current={symbol} onSelect={openTicker} anchored={!phone} />;
+  const search = <TickerSearch open={searchOpen} onOpenChange={setSearchOpen} symbols={candidates.symbols} quotes={feed.quotes} mock={current.fixtureData} current={symbol} onSelect={openTicker} anchored={!phone} />;
   const tickerButton = (size: string) => (
     <Tip label={`Search tickers (${isMac ? "⌘" : "Ctrl+"}P)`}>
       <button type="button" onClick={() => setSearchOpen(true)} className={cn("pointer-events-auto cursor-pointer rounded-md font-semibold outline-none hover:text-primary focus-visible:ring-2 focus-visible:ring-ring", size)}>
@@ -237,6 +248,9 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
 
   // Bands change only when the trading day does, not on every clock tick.
   const dayKey = clock ? formatEtDateKey(tradingDayOf(clock.now)) : "";
+  // Derived during render (React's "adjusting state when a prop changes"), not in an effect: the hooks
+  // above that read it run before the clock is known, and an effect would cost an extra commit.
+  if ((dayKey || null) !== clockDay) setClockDay(dayKey || null);
   const bands = useMemo(() => {
     if (!dayKey) return [];
     const [year, month, day] = dayKey.split("-").map(Number) as [number, number, number];
@@ -254,14 +268,20 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
     onPlayPause: (play: boolean) => feed.control({ action: play ? "play" : "pause" }),
     onStep: () => feed.control({ action: "step" }),
     onSpeedChange: (speed: number) => feed.control({ action: "speed", value: speed }),
+    days: dayOptions,
+    day: currentReplayDay(replayDays.state, clock),
+    // The server rebuilds on the new day and resends every snapshot; the clock's new trading day
+    // then refetches the candidates and this list.
+    onDayChange: (day: string) => feed.control({ action: "day", value: day }),
+    onDayMenuOpenChange: (open: boolean) => open && replayDays.refresh(),
   };
   // Jump the replay; the server rebuilds from the session start and resends snapshots.
   const seek = (t: number) => feed.control({ action: "seek", value: t });
   const price = last ? formatPrice(last.c) : "—";
   const change = last && reference ? formatChange(reference.price, last.c) : "";
   const changeColor = change.startsWith("-") ? "text-critical" : "text-good";
-  const chartLabel = `${symbol} ${timeframe} candles, ${choice.fixtureData ? "fixture data" : "market data"} from ${choice.kind === "server" ? "the server" : "the in-browser fixture"}`;
-  const tapeNote = choice.fixtureData ? "Fixture data" : choice.label;
+  const chartLabel = `${symbol} ${timeframe} candles, ${current.fixtureData ? "fixture data" : "market data"} from ${current.kind === "server" ? "the server" : "the in-browser fixture"}`;
+  const tapeNote = current.fixtureData ? "Fixture data" : current.label;
   const mode = clock?.mode === "live" ? "live" : "replay";
 
   const binSelector = (
@@ -286,7 +306,7 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
             <span className="font-mono text-base tabular-nums">{price}</span>
             <span className={cn("font-mono text-[11px]", changeColor)}>{change}</span>
           </div>
-          <SourceChip className="ml-auto" choice={choice} mode={mode} />
+          <SourceChip className="ml-auto" choice={current} mode={mode} />
           {search}
         </header>
         <CandleChart className="h-[360px]" toolbar inspector symbol={symbol} persistKey="sw-chart" trading={trading} now={clock?.now ?? null} onTimeframeChange={changeTf} series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={setInspectT} priceScaleType={priceScale} onPriceScaleTypeChange={setPriceScale} options={PHONE_CHART} barSpacing={10} label={chartLabel} />
@@ -320,7 +340,7 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
           <span>Search tickers</span>
           <kbd className="ml-auto rounded bg-bg-row px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">{isMac ? "⌘P" : "Ctrl P"}</kbd>
         </button>
-        <SourceChip className="justify-self-end" choice={choice} mode={mode} />
+        <SourceChip className="justify-self-end" choice={current} mode={mode} />
         {search}
       </header>
 
