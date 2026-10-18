@@ -1,4 +1,4 @@
-//! The rolling replay archive: always the last month of SIP trading days, kept current by
+//! The rolling replay archive: always the last 21 SIP trading days (a trading month), kept current by
 //! `swimport maintain`, a long-running process beside the server (the `archiver` compose service
 //! on the VPS, same image, same volume).
 //!
@@ -7,19 +7,17 @@
 //! Let **L** be the latest *completed* trading day: today in New York if it is a trading day and
 //! the clock has passed the daily run time (`MAINTAIN_AT`, 21:15 ET by default: the extended
 //! session ends at 20:00 and Alpaca's historical SIP is final shortly after), else the trading day
-//! before. The window is every trading day **D** with
+//! before. The window is the last `ARCHIVE_WINDOW_DAYS` trading days ending at L (default 21:
+//! 252 trading days a year / 12, the market's "one month").
 //!
-//! ```text
-//! L - ARCHIVE_WINDOW_MONTHS calendar months  <  D  <=  L
-//! ```
-//!
-//! (chrono's month arithmetic: the same day-of-month, clamped to the month's end, so
-//! 03-31 − 1 month = 02-28). With the default of one month that is 19–23 trading days depending
-//! on the month and its holidays. Anchoring on L rather than on today keeps the window the same
-//! size over a weekend instead of shrinking by two days every Saturday; the strict `<` makes
-//! "a month" mean a month, not a month and a day. Example: on Sunday 2026-10-18, L = Friday
-//! 10-16, L − 1 month = 09-16, so the window is 2026-09-17 ..= 2026-10-16: 22 trading days, which
-//! is exactly the archive the VPS was seeded with.
+//! A fixed count of sessions, not a calendar month, by the owner's decision (2026-10-18): each
+//! completed trading day brings one day in and pushes exactly one out, the archive's size and disk
+//! use stay flat (~0.6 GB a day), and a month that happens to hold holidays does not quietly offer
+//! fewer sessions to replay. A calendar month drifted between 19 and 23 days and could drop two
+//! days at once around a month end. Anchoring on L rather than on today keeps the window the same
+//! over a weekend or a holiday: nothing comes in, so nothing goes out. Example: on Sunday
+//! 2026-10-18, L = Friday 10-16 and the window is 2026-09-18 ..= 2026-10-16; the VPS was seeded
+//! with 22 days from 09-17, so the first cycle prunes 09-17 (unless it is being replayed).
 //!
 //! # A cycle
 //!
@@ -59,7 +57,7 @@ use super::batch::{
     Failure, Plan, Task, asset_metadata, daily_closes, plan_universe, run_batch_until, sip_range,
 };
 use super::http::{Http, HttpResponse};
-use chrono::{DateTime, Months, NaiveDate, NaiveTime, SecondsFormat, TimeZone, Utc};
+use chrono::{DateTime, NaiveDate, NaiveTime, SecondsFormat, TimeZone, Utc};
 use chrono_tz::America::New_York;
 use market_archive::{Archive, DailyCloses, merge_daily_closes};
 use market_events::{Price, PriceBand, is_trading_day};
@@ -82,7 +80,7 @@ pub const MAX_FAILED_PER_MILLE: usize = 10;
 ///
 /// | Variable | Default | Meaning |
 /// |---|---|---|
-/// | `ARCHIVE_WINDOW_MONTHS` | `1` | window length in calendar months (module docs), 1–24 |
+/// | `ARCHIVE_WINDOW_DAYS` | `21` | window length in trading days (module docs), 1–504 |
 /// | `MAINTAIN_AT` | `21:15` | ET wall time of the daily cycle (`HH:MM`) |
 /// | `MAINTAIN_JOBS` | `12` | parallel import workers |
 /// | `MAINTAIN_PER_MINUTE` | `9000` | request ceiling across all workers (plan limit is 10,000) |
@@ -94,7 +92,7 @@ pub const MAX_FAILED_PER_MILLE: usize = 10;
 /// | `ALPACA_DATA_BASE` / `ALPACA_TRADING_BASE` | Alpaca's | API bases |
 #[derive(Clone, Debug)]
 pub struct MaintainConfig {
-    pub window_months: u32,
+    pub window_days: u32,
     pub run_at: NaiveTime,
     pub jobs: usize,
     pub per_minute: u32,
@@ -110,7 +108,7 @@ pub struct MaintainConfig {
 impl Default for MaintainConfig {
     fn default() -> Self {
         MaintainConfig {
-            window_months: 1,
+            window_days: 21,
             run_at: NaiveTime::from_hms_opt(21, 15, 0).expect("valid"),
             jobs: 12,
             per_minute: 9000,
@@ -152,10 +150,14 @@ impl MaintainConfig {
             })
         }
         let d = MaintainConfig::default();
-        let window_months = num("ARCHIVE_WINDOW_MONTHS", var("ARCHIVE_WINDOW_MONTHS"), 1u32)?;
-        if !(1..=24).contains(&window_months) {
+        let window_days = num(
+            "ARCHIVE_WINDOW_DAYS",
+            var("ARCHIVE_WINDOW_DAYS"),
+            d.window_days,
+        )?;
+        if !(1..=504).contains(&window_days) {
             return Err(format!(
-                "ARCHIVE_WINDOW_MONTHS must be 1..=24, got {window_months}"
+                "ARCHIVE_WINDOW_DAYS must be 1..=504 trading days, got {window_days}"
             ));
         }
         let run_at = match var("MAINTAIN_AT") {
@@ -173,7 +175,7 @@ impl MaintainConfig {
             return Err("MAINTAIN_PER_MINUTE must be at least 1".into());
         }
         Ok(MaintainConfig {
-            window_months,
+            window_days,
             run_at,
             jobs,
             per_minute,
@@ -227,14 +229,12 @@ pub struct Window {
     pub days: Vec<NaiveDate>,
 }
 
-/// The window ending at `latest` (a trading day), `months` calendar months long.
-pub fn window(latest: NaiveDate, months: u32) -> Window {
-    let cutoff = latest
-        .checked_sub_months(Months::new(months.max(1)))
-        .expect("date in range");
-    let mut days = Vec::new();
+/// The window ending at `latest` (a trading day): the last `count` trading days, `latest` included.
+pub fn window(latest: NaiveDate, count: u32) -> Window {
+    let count = count.max(1) as usize;
+    let mut days = Vec::with_capacity(count);
     let mut d = latest;
-    while d > cutoff {
+    while days.len() < count {
         if is_trading_day(d) {
             days.push(d);
         }
@@ -584,7 +584,7 @@ impl<H: Http + Send + 'static> Maintainer<'_, H> {
             Err(e) => r.errors.push(format!("sweep: {e}")),
         }
         let latest = latest_completed_day(now, self.cfg.run_at);
-        let w = window(latest, self.cfg.window_months);
+        let w = window(latest, self.cfg.window_days);
         r.latest_completed_day = Some(latest);
         r.missing_days = missing_days(&w, self.archive);
         r.window = Some(w.clone());
@@ -1007,34 +1007,38 @@ mod tests {
     }
 
     #[test]
-    fn the_window_is_one_calendar_month_of_trading_days_ending_at_the_latest() {
-        // The seeded VPS archive: 2026-09-17 ..= 2026-10-16, 22 trading days.
-        let w = window(d("2026-10-16"), 1);
+    fn the_window_is_the_last_21_trading_days_one_in_one_out() {
+        // Sunday 2026-10-18: L = Friday 10-16; the seeded 09-17 is the 22nd day back, so it is out.
+        let w = window(d("2026-10-16"), 21);
         assert_eq!(
             (w.first, w.last, w.days.len()),
-            (d("2026-09-17"), d("2026-10-16"), 22)
+            (d("2026-09-18"), d("2026-10-16"), 21)
         );
-        // Monday: Friday 09-18 and the weekend fall out, 09-21 is the first day.
-        let w = window(d("2026-10-19"), 1);
+        // Monday's day comes in, exactly one goes out (Friday 09-18), the weekend changes nothing.
+        let w = window(d("2026-10-19"), 21);
         assert_eq!((w.first, w.days.len()), (d("2026-09-21"), 21));
         assert!(!w.days.contains(&d("2026-10-17")) && !w.days.contains(&d("2026-10-18")));
-        // Across Thanksgiving: 11-02 ..= 12-01 without 11-26 (and 11-27 is an early close, kept).
-        let w = window(d("2026-12-01"), 1);
-        assert_eq!(w.first, d("2026-11-02"));
+        // Across Thanksgiving: 11-26 is skipped and the window reaches one day further back; 11-27
+        // (an early close) is a session and counts.
+        let w = window(d("2026-12-01"), 21);
         assert!(!w.days.contains(&d("2026-11-26")));
         assert!(w.days.contains(&d("2026-11-27")));
         assert_eq!(w.days.len(), 21);
-        // Month-end clamping: 2027-03-31 − 1 month = 2027-02-28, so the window starts 03-01.
-        let w = window(d("2027-03-31"), 1);
-        assert_eq!(w.first, d("2027-03-01"));
-        // Two months.
-        assert_eq!(window(d("2026-10-16"), 2).first, d("2026-08-17"));
-        // Every month of the calendar keeps 19..=23 trading days.
+        // Another length.
+        assert_eq!(window(d("2026-10-16"), 5).first, d("2026-10-12"));
+        // Every trading day of two years: always exactly 21, and from one trading day to the next
+        // exactly one day enters and one leaves.
+        let mut prev: Option<Window> = None;
         let mut day = d("2026-01-02");
         while day < d("2027-12-31") {
             if is_trading_day(day) {
-                let n = window(day, 1).days.len();
-                assert!((19..=23).contains(&n), "{day}: {n}");
+                let w = window(day, 21);
+                assert_eq!(w.days.len(), 21, "{day}");
+                assert!(w.days.iter().all(|x| is_trading_day(*x)));
+                if let Some(p) = &prev {
+                    assert_eq!(&w.days[..20], &p.days[1..], "{day}: one in, one out");
+                }
+                prev = Some(w);
             }
             day = day.succ_opt().unwrap();
         }
@@ -1173,24 +1177,25 @@ mod tests {
     fn config_defaults_and_validation() {
         let c = MaintainConfig::from_lookup(|_| None).unwrap();
         assert_eq!(
-            (c.window_months, c.jobs, c.per_minute, c.retries),
-            (1, 12, 9000, 3)
+            (c.window_days, c.jobs, c.per_minute, c.retries),
+            (21, 12, 9000, 3)
         );
         assert_eq!(c.run_at, at());
         assert_eq!(c.server_url, "http://127.0.0.1:8790");
         let c = MaintainConfig::from_lookup(|k| match k {
             "MAINTAIN_AT" => Some("22:05".into()),
             "STOCKWATCHER_SERVER_URL" => Some("http://server:8790/".into()),
-            "ARCHIVE_WINDOW_MONTHS" => Some("2".into()),
+            "ARCHIVE_WINDOW_DAYS" => Some("42".into()),
             _ => None,
         })
         .unwrap();
         assert_eq!(c.run_at, NaiveTime::from_hms_opt(22, 5, 0).unwrap());
         assert_eq!(c.server_url, "http://server:8790");
-        assert_eq!(c.window_months, 2);
+        assert_eq!(c.window_days, 42);
         for (k, v) in [
             ("MAINTAIN_AT", "9pm"),
-            ("ARCHIVE_WINDOW_MONTHS", "0"),
+            ("ARCHIVE_WINDOW_DAYS", "0"),
+            ("ARCHIVE_WINDOW_DAYS", "505"),
             ("MAINTAIN_PER_MINUTE", "0"),
             ("PRICE_BAND_MIN", "x"),
         ] {

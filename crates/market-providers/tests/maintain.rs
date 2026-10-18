@@ -121,6 +121,10 @@ fn config() -> MaintainConfig {
         trading_base: "https://trading.example".into(),
         retries: 2,
         jobs: 2,
+        // 22, not the default 21: these scenarios were written around 2026-09-21 ..= 10-20 (22
+        // trading days). They test the cycle (import, retries, prune safety), not the length,
+        // which the unit tests pin to 21.
+        window_days: 22,
         ..MaintainConfig::default()
     }
 }
@@ -189,7 +193,7 @@ fn a_cycle_fills_the_window_holds_a_failing_day_back_and_only_then_prunes() {
     let world = Arc::new(World::default());
     world.fail.store(true, Ordering::Relaxed);
     *world.replaying.lock().unwrap() = Some(Some("2026-09-18"));
-    let w = window(d("2026-10-20"), 1);
+    let w = window(d("2026-10-20"), 22);
     assert_eq!((w.first, w.days.len()), (d("2026-09-21"), 22));
     assert_eq!(missing_days(&w, &a).len(), 22, "nothing of the window yet");
 

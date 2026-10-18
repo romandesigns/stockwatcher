@@ -88,15 +88,16 @@ the `stockwatcher_data` volume.
 
 ## 7. Rolling replay archive (the `archiver` service)
 
-The replay archive keeps **one calendar month of SIP trading days** and moves
+The replay archive keeps **the last 21 SIP trading days** (a trading month) and moves
 forward by itself: the `archiver` service (same image as the server,
 `swimport maintain`) imports each new day after the session (21:15 ET), deletes
 days older than the window, and refreshes `assets.json` and
 `daily-closes.json`. The server picks all of that up without a restart (new days
 appear in the day menu, removed ones disappear, names and previous closes reload
-within a minute). The window is every trading day D with
-`L − 1 month < D ≤ L`, L being the latest completed trading day: 19–23 days
-(on 2026-10-18 that is 2026-09-17 ..= 2026-10-16, the 22 days seeded by hand).
+within a minute). The window is the 21 trading days ending at L, the latest
+completed trading day: each new session brings one day in and pushes exactly one
+out, so the archive stays ~13 GB. On 2026-10-18 that is 2026-09-18 ..= 2026-10-16;
+the 22 days seeded by hand start at 09-17, so the first cycle prunes 09-17.
 Full rules: `crates/market-providers/src/import/maintain.rs`.
 
 Safety, in short: the day the server is replaying is never deleted; if the
@@ -149,7 +150,7 @@ docker run --rm -v stockwatcher_data:/data:ro --user 65532:65532 debian:trixie-s
   cat /data/archive/plans/maintainer-status.json             # last cycle, next run
 ```
 
-Optional, in `.env`: `ARCHIVE_WINDOW_MONTHS` (default 1), `MAINTAIN_AT`
+Optional, in `.env`: `ARCHIVE_WINDOW_DAYS` (default 21), `MAINTAIN_AT`
 (`21:15`, ET), `MAINTAIN_JOBS` (12), `MAINTAIN_PER_MINUTE` (9000),
 `MAINTAIN_RETRIES` (3) and `MAINTAIN_RETRY_DELAY_SECS` (120, doubling) for the
 archiver; for the server `ARCHIVE_META_CHECK_SECS` (60) and

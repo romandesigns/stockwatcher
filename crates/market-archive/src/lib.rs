@@ -57,7 +57,7 @@
 //! - Free-space floor: a writer refuses to open, and refuses further writes, when the volume's
 //!   available space is below [`ArchiveConfig::min_free_bytes`] (`ArchiveError::InsufficientSpace`).
 //! - Retention: [`Archive::prune`] deletes day directories older than
-//!   [`ArchiveConfig::retention_days`] (0 = keep forever, the default). The rolling one-month
+//!   [`ArchiveConfig::retention_days`] (0 = keep forever, the default). The rolling 21-trading-day
 //!   window on the VPS is not this: `swimport maintain` (market-providers) owns it, because it
 //!   must ask the server which day is being replayed before deleting anything.
 //! - A day being filled by a background import carries an `.importing` marker and is left out of
