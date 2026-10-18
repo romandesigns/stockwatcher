@@ -762,7 +762,8 @@ function sansWidth(text: string, fs: number): number {
  * edge, so a phone-width chart still shows all of them (the owner asked for
  * "EMA 9, EMA 20 and VWAP inline" rather than one row each, 2026-10-18).
  * An entry never splits across lines; the first entry on a line always fits
- * there even if it is wider than the plot, so the loop cannot stall.
+ * there even if it is wider than the plot, so the loop cannot stall. Each
+ * line sits on the pane legends' translucent backing (paneLegendBg).
  * Both web and phone draw this display list, so the change lands on both.
  */
 function overlayLegend(model: ChartModel, results: readonly IndicatorResult[], theme: ChartTheme): DisplayList {
@@ -777,6 +778,9 @@ function overlayLegend(model: ChartModel, results: readonly IndicatorResult[], t
   const ENTRY_GAP = 12; // value → next entry's swatch
   let x = left;
   let y = plot.y + 8 + model.options.legendTop;
+  // Each line's right end, for its backing (one per line, so a wrapped legend's short last line gets a short one).
+  const lines: { y: number; end: number }[] = [];
+  const marks: DisplayList = [];
   for (const r of results) {
     if (r.placement !== "overlay") continue;
     const color = indicatorColor(theme, r, 0);
@@ -789,14 +793,21 @@ function overlayLegend(model: ChartModel, results: readonly IndicatorResult[], t
     const w = SWATCH + SWATCH_GAP + nameW + VALUE_GAP + textWidth(value, fs);
     if (x > left && x + w > right) {
       x = left;
-      y += fs + 5;
+      y += fs + 6;
     }
-    out.push({ kind: "rect", x, y: y - 1, w: SWATCH, h: 2, fill: color, layer: "axes" });
+    marks.push({ kind: "rect", x, y: y - 1, w: SWATCH, h: 2, fill: color, layer: "axes" });
     const nx = x + SWATCH + SWATCH_GAP;
-    out.push({ kind: "text", x: nx, y, text: name, fill: theme.textDim, fontSize: fs, fontFamily: theme.fontSans, fontWeight: 500, align: "left", baseline: "middle", layer: "axes" });
-    out.push({ kind: "text", x: nx + nameW + VALUE_GAP, y, text: value, fill: theme.text, fontSize: fs, fontFamily: theme.fontMono, fontWeight: 400, align: "left", baseline: "middle", layer: "axes" });
+    marks.push({ kind: "text", x: nx, y, text: name, fill: theme.textDim, fontSize: fs, fontFamily: theme.fontSans, fontWeight: 500, align: "left", baseline: "middle", layer: "axes" });
+    marks.push({ kind: "text", x: nx + nameW + VALUE_GAP, y, text: value, fill: theme.text, fontSize: fs, fontFamily: theme.fontMono, fontWeight: 400, align: "left", baseline: "middle", layer: "axes" });
+    const last = lines.at(-1);
+    if (last && last.y === y) last.end = x + w;
+    else lines.push({ y, end: x + w });
     x += w + ENTRY_GAP;
   }
+  // The pane legends' translucent backing, behind each line, so candles and lines never run through the
+  // text now that a line can reach across the plot (the price candles often sit under a long one).
+  for (const l of lines) out.push({ kind: "rect", x: left - 4, y: l.y - fs / 2 - 3, w: Math.min(right + 4, l.end + 4) - (left - 4), h: fs + 6, fill: theme.paneLegendBg, radius: 4, layer: "axes" });
+  out.push(...marks);
   return out;
 }
 
