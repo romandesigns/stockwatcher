@@ -33,6 +33,53 @@ services:
         max-size: "10m"
         max-file: "5"
 
+  # The rolling replay archive: keeps the last calendar month of SIP trading
+  # days on the shared volume (imports each new day after 21:15 ET, deletes
+  # days older than the window, refreshes assets.json and daily-closes.json,
+  # which the server reloads on its own). Same image and tag as the server, so
+  # deploy.sh moves both together. Rules and variables:
+  # crates/market-providers/src/import/maintain.rs. Status: one log line per
+  # cycle (`docker compose --env-file image.env logs --tail 20 archiver`) and
+  # archive/plans/maintainer-status.json on the volume (SETUP.md, section 7).
+  archiver:
+    image: ghcr.io/romandesigns/stockwatcher-server:${STOCKWATCHER_IMAGE_TAG:?run via deploy.sh or pass --env-file image.env}
+    restart: unless-stopped
+    entrypoint: ["/app/swimport"]
+    command: ["maintain"]
+    # Same .env as the server: STOCKWATCHER_API_TOKEN (to ask the server which
+    # day it is replaying before deleting anything), ALPACA_API_KEY /
+    # ALPACA_API_SECRET (added by the owner; without them it imports and
+    # deletes nothing and says so in every cycle's log line), PRICE_BAND_*.
+    env_file: .env
+    environment:
+      # The server on the compose network, not the host's loopback port.
+      STOCKWATCHER_SERVER_URL: http://server:8790
+    volumes:
+      - stockwatcher_data:/app/data
+    # No ports: it only talks out (Alpaca) and to the server.
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # The image's HEALTHCHECK probes the server's port, which this container
+    # does not have; its health is its log line and status file.
+    healthcheck:
+      disable: true
+    # A whole month's plan plus 12 workers' pages in flight stays well under
+    # 1 GB; the limit only stops a runaway from taking the server's memory
+    # (a real replay day needs 8-13 GB of the box's 31).
+    mem_limit: 2g
+    # SIGTERM stops new symbol-days; running ones finish and commit. One busy
+    # symbol can take a minute of pages. Killed earlier it is still safe (only
+    # a .partial file is left, re-fetched next cycle), just wasted work.
+    stop_grace_period: 90s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
 volumes:
   stockwatcher_data:
     # Fixed name (not project-prefixed) so publish-updates.sh and backups
