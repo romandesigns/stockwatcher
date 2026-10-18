@@ -10,8 +10,10 @@
 //! sources and import provenance): parsing 22 of those on every request would cost far more
 //! than the request is worth. So each day's summary is cached and keyed by the manifest file's
 //! length and modification time: a day being recorded or re-imported is re-read once it changes,
-//! a pruned day drops out because the listing no longer has it, and an unchanged day costs one
-//! `stat`.
+//! a pruned day drops out because the listing no longer has it, a newly imported day appears
+//! because the listing is taken on every call (one `read_dir`), and an unchanged day costs one
+//! `stat`. A day still being imported (`market_archive::IMPORTING_MARKER`) is not offered until
+//! the importer clears its marker.
 
 use chrono::NaiveDate;
 use market_archive::Archive;
@@ -56,7 +58,9 @@ impl DayCatalog {
     /// whose manifest cannot be read is left out and logged rather than failing the whole list:
     /// one bad day must not hide the 21 good ones.
     pub fn list(&self) -> Vec<DayEntry> {
-        let days = match self.archive.days() {
+        // Ready days only: one the archive maintainer is still filling (its `.importing` marker)
+        // would replay a partial symbol set that never grows, since a replay opens a day once.
+        let days = match self.archive.ready_days() {
             Ok(d) => d,
             Err(e) => {
                 tracing::warn!(error = %e, "replay day list: archive unreadable");
@@ -150,6 +154,17 @@ mod tests {
         // A pruned day drops out.
         std::fs::remove_dir_all(archive.day_dir(d("2026-10-15"))).unwrap();
         assert_eq!(cat.list(), [entry("2026-10-14", 2)]);
+        // A day the maintainer is importing stays hidden until its marker is cleared, however
+        // many symbols it already has; then it is offered without a restart.
+        archive.mark_importing(d("2026-10-16")).unwrap();
+        write_fixture_day(&archive, d("2026-10-16"), &syms(&["SMPL"]), DEFAULT_SEED).unwrap();
+        assert_eq!(cat.list(), [entry("2026-10-14", 2)]);
+        assert!(!cat.contains(d("2026-10-16")));
+        archive.clear_importing(d("2026-10-16")).unwrap();
+        assert_eq!(cat.list(), [entry("2026-10-14", 2), entry("2026-10-16", 1)]);
+        // Removed the way the maintainer removes (rename, then delete): gone at once.
+        archive.remove_day(d("2026-10-14")).unwrap();
+        assert_eq!(cat.list(), [entry("2026-10-16", 1)]);
         assert_eq!(
             serde_json::to_value(entry("2026-10-14", 2)).unwrap(),
             serde_json::json!({"day": "2026-10-14", "fixture": true, "symbols": 2})

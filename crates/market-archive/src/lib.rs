@@ -57,7 +57,12 @@
 //! - Free-space floor: a writer refuses to open, and refuses further writes, when the volume's
 //!   available space is below [`ArchiveConfig::min_free_bytes`] (`ArchiveError::InsufficientSpace`).
 //! - Retention: [`Archive::prune`] deletes day directories older than
-//!   [`ArchiveConfig::retention_days`] (0 = keep forever, the default).
+//!   [`ArchiveConfig::retention_days`] (0 = keep forever, the default). The rolling one-month
+//!   window on the VPS is not this: `swimport maintain` (market-providers) owns it, because it
+//!   must ask the server which day is being replayed before deleting anything.
+//! - A day being filled by a background import carries an `.importing` marker and is left out of
+//!   [`Archive::ready_days`]; [`Archive::remove_day`] renames a day out of every listing before
+//!   deleting it (see `lifecycle`).
 //!
 //! Memory: the writer holds one zstd encoder; the reader one decoder and one record buffer
 //! (≤ 1 MiB). Neither ever holds a day in memory.
@@ -77,6 +82,7 @@ pub mod writer;
 
 mod archive;
 mod error;
+mod lifecycle;
 
 pub use archive::{Archive, VerifyReport, VerifySymbol};
 pub use assets::{ASSETS_FILE, AssetMap, AssetMeta};
@@ -84,6 +90,7 @@ pub use bars::{Bar, BarDataset, BarEntry};
 pub use closes::{DAILY_CLOSES_FILE, DailyCloses, PrevCloses, merge_daily_closes};
 pub use config::ArchiveConfig;
 pub use error::ArchiveError;
+pub use lifecycle::{IMPORTING_MARKER, REMOVING_PREFIX};
 pub use manifest::{DayManifest, ImportProvenance, SymbolEntry};
 pub use reader::SymbolReader;
 pub use writer::{FsyncPolicy, SymbolWriter};
