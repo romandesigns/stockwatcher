@@ -237,7 +237,7 @@ impl Sim {
                     };
                 }
                 FeedItem::Clock(_) => live.rebuilding = false,
-                FeedItem::Error(_) => {}
+                FeedItem::Error(_) | FeedItem::Link(_) => {}
                 // A day switch: REST and the asset list follow the new day from here; the `Reset`
                 // right behind it clears the bar book as for a seek.
                 FeedItem::Source(src) => {

@@ -7,22 +7,27 @@
 //! it except for labels and for refusing replay controls in live mode.
 //!
 //! - [`ReplayProvider`]: an archive day through `market-replay` (deterministic, controllable).
-//! - [`LiveProvider`]: the boundary for a live feed. It normalizes nothing itself yet: the Alpaca
-//!   SIP/BOATS WebSocket client is deliberately **not implemented** until the account's
-//!   entitlements are verified (spec 01, build step 2). Without a [`LiveFeed`] it fails with
-//!   [`ProviderError::NotConfigured`]. With one (tests use [`ChannelFeed`]) it applies the same
-//!   engine-clock rule as replay, which is what the parity test relies on. It never reads
-//!   credentials in this build.
+//! - [`LiveProvider`]: a [`LiveFeed`] on the same engine-clock rule as replay, which is what the
+//!   parity tests rely on. In production the feed is [`alpaca_stream::AlpacaStream`] (Alpaca's
+//!   market-data WebSocket: trades with their corrections and cancels, and trading statuses, for
+//!   `LIVE_SYMBOLS`, default the whole market); tests also use [`ChannelFeed`]. Without
+//!   credentials it fails with [`ProviderError::NotConfigured`] naming the missing variables.
+//!   Connection changes reach consumers as [`FeedItem::Link`].
+//!
+//! Live mode **does not archive** what it receives: there is no recorder yet, so a live session
+//! cannot be replayed later.
 
+pub mod alpaca_stream;
 mod config;
 pub mod import;
 mod live;
 mod replay;
 
-pub use config::{MarketDataMode, ProviderConfig};
+pub use config::{LiveConfig, MarketDataMode, ProviderConfig};
 pub use live::{ChannelFeed, LiveFeed, LiveOptions, LiveProvider};
 pub use market_replay::{
-    ClockMode, ClockState, Command, CommandError, FeedItem, ReplayHandle, SourceInfo, Speed,
+    ClockMode, ClockState, Command, CommandError, FeedItem, Link, LinkState, ReplayHandle,
+    SourceInfo, Speed,
 };
 pub use replay::ReplayProvider;
 

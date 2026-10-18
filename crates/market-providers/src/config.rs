@@ -1,3 +1,5 @@
+use crate::alpaca_stream::{AlpacaStreamConfig, LiveSymbols, StreamFeed};
+use crate::import::alpaca::AlpacaCredentials;
 use chrono::{NaiveDate, NaiveTime};
 use market_archive::ArchiveConfig;
 use market_replay::Speed;
@@ -18,7 +20,10 @@ pub enum MarketDataMode {
 /// | `REPLAY_START` | `10:40` | ET wall time the clock starts at, `HH:MM[:SS]` (same as the browser fixture) |
 /// | `REPLAY_SPEED` | `10` | `1`, `2`, `10`, `60`, … or `max` |
 /// | `REPLAY_AUTOPLAY` | `1` | start playing immediately |
-/// | `LIVE_PROVIDER_ENABLED` | `0` | live mode only; the Alpaca client does not exist yet, so this still fails as "not configured" |
+/// | `ALPACA_API_KEY` / `ALPACA_API_SECRET` | unset | live only; Alpaca's `APCA_API_KEY_ID` / `APCA_API_SECRET_KEY` also work (the importer reads the same names). Without them live mode is "not configured" |
+/// | `ALPACA_STREAM_BASE` | `wss://stream.data.alpaca.markets` | live only; provider-sim is `ws://127.0.0.1:8791` |
+/// | `ALPACA_STREAM_FEED` | `sip` | live only: `sip`, `iex`, `boats`, `overnight` or `test` (Alpaca's fake `FAKEPACA` stream) |
+/// | `LIVE_SYMBOLS` | `*` | live only: `*` (whole market) or a comma list |
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProviderConfig {
     pub mode: MarketDataMode,
@@ -27,7 +32,29 @@ pub struct ProviderConfig {
     pub start_et: Option<NaiveTime>,
     pub speed: Speed,
     pub autoplay: bool,
-    pub live_enabled: bool,
+    pub live: LiveConfig,
+}
+
+/// Live-mode settings. Read in every mode (so a typo fails at startup, not at the first switch
+/// to live), used only in live mode.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LiveConfig {
+    pub stream_base: String,
+    pub feed: StreamFeed,
+    pub symbols: LiveSymbols,
+    /// `None` until both halves are set; `Debug` redacts them.
+    pub credentials: Option<AlpacaCredentials>,
+}
+
+impl Default for LiveConfig {
+    fn default() -> Self {
+        LiveConfig {
+            stream_base: AlpacaStreamConfig::DEFAULT_BASE.to_string(),
+            feed: StreamFeed::Sip,
+            symbols: LiveSymbols::All,
+            credentials: None,
+        }
+    }
 }
 
 impl Default for ProviderConfig {
@@ -39,7 +66,7 @@ impl Default for ProviderConfig {
             start_et: NaiveTime::from_hms_opt(10, 40, 0),
             speed: Speed::Times(10),
             autoplay: true,
-            live_enabled: false,
+            live: LiveConfig::default(),
         }
     }
 }
@@ -92,9 +119,21 @@ impl ProviderConfig {
         if let Some(a) = var("REPLAY_AUTOPLAY") {
             c.autoplay = truthy(&a);
         }
-        if let Some(l) = var("LIVE_PROVIDER_ENABLED") {
-            c.live_enabled = truthy(&l);
+        if let Some(b) = var("ALPACA_STREAM_BASE") {
+            if !(b.starts_with("wss://") || b.starts_with("ws://")) {
+                return Err(format!(
+                    "ALPACA_STREAM_BASE must be a ws:// or wss:// URL, got {b:?}"
+                ));
+            }
+            c.live.stream_base = b;
         }
+        if let Some(f) = var("ALPACA_STREAM_FEED") {
+            c.live.feed = StreamFeed::parse(&f).map_err(|e| format!("ALPACA_STREAM_FEED: {e}"))?;
+        }
+        if let Some(s) = var("LIVE_SYMBOLS") {
+            c.live.symbols = LiveSymbols::parse(&s).map_err(|e| format!("LIVE_SYMBOLS: {e}"))?;
+        }
+        c.live.credentials = AlpacaCredentials::from_lookup(&get);
         Ok(c)
     }
 }
@@ -126,5 +165,44 @@ mod tests {
             ProviderConfig::from_lookup(|k| (k == "MARKET_DATA_MODE").then(|| "paper".into()))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn live_settings_default_to_the_whole_sip_market() {
+        let c = ProviderConfig::from_lookup(|_| None).unwrap();
+        assert_eq!(c.live, LiveConfig::default());
+        assert_eq!(c.live.stream_base, "wss://stream.data.alpaca.markets");
+        assert_eq!(c.live.symbols, LiveSymbols::All);
+        let get = |pairs: &'static [(&'static str, &'static str)]| {
+            move |k: &str| {
+                pairs
+                    .iter()
+                    .find(|(n, _)| *n == k)
+                    .map(|(_, v)| v.to_string())
+            }
+        };
+        let c = ProviderConfig::from_lookup(get(&[
+            ("ALPACA_STREAM_BASE", "ws://127.0.0.1:8791"),
+            ("ALPACA_STREAM_FEED", "test"),
+            ("LIVE_SYMBOLS", "fakepaca"),
+            ("APCA_API_KEY_ID", "id"),
+            ("APCA_API_SECRET_KEY", "secret"),
+        ]))
+        .unwrap();
+        assert_eq!(c.live.feed, StreamFeed::Test);
+        assert_eq!(c.live.symbols, LiveSymbols::List(vec!["FAKEPACA".into()]));
+        assert_eq!(
+            c.live.credentials,
+            Some(AlpacaCredentials {
+                key_id: "id".into(),
+                secret: "secret".into()
+            })
+        );
+        // Half a key pair is no key pair.
+        let c = ProviderConfig::from_lookup(get(&[("ALPACA_API_KEY", "id")])).unwrap();
+        assert_eq!(c.live.credentials, None);
+        assert!(ProviderConfig::from_lookup(get(&[("ALPACA_STREAM_BASE", "https://x")])).is_err());
+        assert!(ProviderConfig::from_lookup(get(&[("ALPACA_STREAM_FEED", "delayed")])).is_err());
+        assert!(ProviderConfig::from_lookup(get(&[("LIVE_SYMBOLS", "A B")])).is_err());
     }
 }

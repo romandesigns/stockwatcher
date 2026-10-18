@@ -37,10 +37,27 @@ pub const MAX_LIMIT: u32 = 10_000;
 const MAX_PAGES: u64 = 100_000;
 
 /// The keys, read from the environment by the caller. `Debug` never shows them.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct AlpacaCredentials {
     pub key_id: String,
     pub secret: String,
+}
+
+impl AlpacaCredentials {
+    /// The env names every Alpaca path here reads (importer and live stream alike):
+    /// `ALPACA_API_KEY` / `ALPACA_API_SECRET`, else Alpaca's own SDK names `APCA_API_KEY_ID` /
+    /// `APCA_API_SECRET_KEY`. `None` unless both halves are set and non-empty.
+    pub fn from_lookup(get: impl Fn(&str) -> Option<String>) -> Option<Self> {
+        let var = |k: &str| {
+            get(k)
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+        };
+        Some(AlpacaCredentials {
+            key_id: var("ALPACA_API_KEY").or_else(|| var("APCA_API_KEY_ID"))?,
+            secret: var("ALPACA_API_SECRET").or_else(|| var("APCA_API_SECRET_KEY"))?,
+        })
+    }
 }
 
 impl std::fmt::Debug for AlpacaCredentials {
@@ -162,12 +179,12 @@ struct TradesPage {
 }
 
 /// One provider print → the event contract. Fails on a malformed time or price, never guesses.
+///
+/// The live stream's `"T":"t"` message carries the same fields (plus `T`/`S`), so the stream
+/// client deserializes it into [`RawTrade`] and calls this too: one print yields the same
+/// [`Trade`] whether it came from history or from the socket.
 pub fn to_trade(raw: &RawTrade, symbol: &str, source: Source) -> Result<Trade, String> {
-    let ts = DateTime::parse_from_rfc3339(&raw.t)
-        .map_err(|e| format!("bad trade time {:?}: {e}", raw.t))?
-        .with_timezone(&Utc);
-    let event_ts =
-        UnixNanos::from_utc(ts).ok_or_else(|| format!("trade time out of range {:?}", raw.t))?;
+    let event_ts = parse_time(&raw.t).map_err(|e| format!("bad trade time: {e}"))?;
     let price = parse_price(&raw.p).ok_or_else(|| format!("bad price {}", raw.p))?;
     let mut t = Trade::new(symbol, event_ts, price, raw.s, raw.i)
         .with_exchange(raw.x.clone())
@@ -180,8 +197,16 @@ pub fn to_trade(raw: &RawTrade, symbol: &str, source: Source) -> Result<Trade, S
     Ok(t)
 }
 
+/// Alpaca's RFC 3339 time (nanosecond precision) → contract time.
+pub(crate) fn parse_time(t: &str) -> Result<UnixNanos, String> {
+    let ts = DateTime::parse_from_rfc3339(t)
+        .map_err(|e| format!("{t:?}: {e}"))?
+        .with_timezone(&Utc);
+    UnixNanos::from_utc(ts).ok_or_else(|| format!("{t:?} out of range"))
+}
+
 /// Exact decimal when the JSON number is plain (`3.18`), rounding to the micro-dollar otherwise.
-fn parse_price(n: &serde_json::Number) -> Option<Price> {
+pub(crate) fn parse_price(n: &serde_json::Number) -> Option<Price> {
     let s = n.to_string();
     s.parse::<Price>()
         .ok()
