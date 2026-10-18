@@ -60,7 +60,7 @@ export function ChartSettingsPanel({ settings, onChange }: { settings: ChartSett
                 onPress={() => set({ chartType: t })}
                 style={({ pressed }) => [s.tile, on && { backgroundColor: UI.raised }, pressed && !on && { backgroundColor: UI.row }]}
               >
-                <Icon name={CHART_TYPE_ICONS[t]} color={on ? UI.text : UI.textDim} size={18} />
+                <Icon name={CHART_TYPE_ICONS[t]} color={on ? UI.accent : UI.textDim} size={18} />
                 <Text style={[s.tileText, { color: on ? UI.text : UI.textDim }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>
                   {SHORT[t]}
                 </Text>

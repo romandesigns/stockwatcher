@@ -87,7 +87,7 @@ export function ChartSettingsPanel({ settings, onChange }: ChartSettingsPanelPro
               <ToggleGroupItem
                 value={t}
                 aria-label={CHART_TYPE_INFO[t].name}
-                className="h-auto min-w-0 flex-col gap-1 rounded-md px-0.5 py-1.5 text-[length:clamp(8px,2.4cqi,10px)] font-normal text-muted-foreground transition-colors hover:bg-bg-row aria-pressed:bg-bg-raised aria-pressed:text-foreground [&_svg]:size-4"
+                className="h-auto min-w-0 flex-col gap-1 rounded-md px-0.5 py-1.5 text-[length:clamp(8px,2.4cqi,10px)] font-normal text-muted-foreground transition-colors hover:bg-bg-row aria-pressed:bg-bg-raised aria-pressed:text-foreground aria-pressed:[&_svg]:text-primary [&_svg]:size-4"
               >
                 <Icon name={CHART_TYPE_ICONS[t]} />
                 <span className="max-w-full truncate">{SHORT[t]}</span>

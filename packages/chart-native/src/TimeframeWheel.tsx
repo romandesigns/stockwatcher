@@ -32,7 +32,8 @@ function Label({ text, index, pos }: { text: string; index: number; pos: SharedV
  * beside the current timeframe, which slides as it changes. Each step clicks
  * with a selection haptic; a release settles on the nearest timeframe; a
  * flick carries one more. Screen readers adjust it with swipe up/down. It is
- * a toolbar button in size and surface, so it sits with the other controls.
+ * a toolbar button in size, so it sits with the other controls, but has no
+ * surface: it blends into the app background (owner, 2026-10-18).
  */
 export function TimeframeWheel({ value, onChange, haptics = true, reducedMotion = false }: { value: Timeframe; onChange: (tf: Timeframe) => void; haptics?: boolean; reducedMotion?: boolean }) {
   const index = Math.max(0, TIMEFRAMES.indexOf(value));
@@ -132,8 +133,9 @@ export function TimeframeWheel({ value, onChange, haptics = true, reducedMotion 
 }
 
 const s = StyleSheet.create({
-  // A toolbar button's size and surface.
-  wheel: { height: HEIGHT, flexDirection: "row", alignItems: "center", gap: 8, paddingLeft: 12, paddingRight: 9, borderRadius: 9, backgroundColor: UI.row },
+  // A toolbar button's size, but no surface of its own (owner, 2026-10-18): it sits on the app
+  // background, and the drum alone says "wheel".
+  wheel: { height: HEIGHT, flexDirection: "row", alignItems: "center", gap: 8, paddingLeft: 12, paddingRight: 9, borderRadius: 9 },
   window: { width: 26, height: HEIGHT, overflow: "hidden" },
   // includeFontPadding off: Android pads text vertically, which pushes a centred label low.
   label: { height: LABEL, lineHeight: LABEL, includeFontPadding: false, textAlignVertical: "center", textAlign: "center", color: UI.text, fontSize: 12, fontWeight: "600", fontVariant: ["tabular-nums"] },
