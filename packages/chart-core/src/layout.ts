@@ -743,6 +743,17 @@ function textWidth(text: string, fs: number): number {
 }
 
 /**
+ * Approximate advance of a sans-serif label: capitals are wider than the
+ * 0.62 em average (an all-caps "VWAP" measured ~0.7 em a glyph and its value
+ * crowded it), the rest are near it. Still an estimate, so callers leave a gap.
+ */
+function sansWidth(text: string, fs: number): number {
+  let em = 0;
+  for (const ch of text) em += ch >= "A" && ch <= "Z" ? 0.7 : 0.6;
+  return Math.ceil(em * fs);
+}
+
+/**
  * The overlay legend, top-left of the plot: every overlay on ONE line, each
  * entry a swatch in the line's colour, then the name and the value at the
  * inspected candle in text tones (text never wears the series colour; the
@@ -762,7 +773,7 @@ function overlayLegend(model: ChartModel, results: readonly IndicatorResult[], t
   const right = plot.x + plot.w - 8;
   const SWATCH = 10;
   const SWATCH_GAP = 6; // swatch → name
-  const VALUE_GAP = 5; // name → value
+  const VALUE_GAP = 6; // name → value
   const ENTRY_GAP = 12; // value → next entry's swatch
   let x = left;
   let y = plot.y + 8 + model.options.legendTop;
@@ -774,7 +785,7 @@ function overlayLegend(model: ChartModel, results: readonly IndicatorResult[], t
     const digits = Number.isNaN(sample) ? 2 : sample < 1 ? 4 : 2;
     const name = indicatorLabel(r.spec);
     const value = valueAt(model, main, digits);
-    const nameW = textWidth(name, fs);
+    const nameW = sansWidth(name, fs);
     const w = SWATCH + SWATCH_GAP + nameW + VALUE_GAP + textWidth(value, fs);
     if (x > left && x + w > right) {
       x = left;
