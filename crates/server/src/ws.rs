@@ -16,10 +16,20 @@
 //! - server `replay.clock {clock}` to every client, on change and ~4 Hz while
 //!   playing.
 //! - client `replay.control {action, value}` (play, pause, step, stepInterval,
-//!   seek, speed): honoured in replay mode, `error not_replay` in live mode.
+//!   seek, speed, day): honoured in replay mode, `error not_replay` in live mode.
 //!   Success has no direct reply; the resulting `replay.clock` is the answer.
+//! - `day` (value `"YYYY-MM-DD"`, one of `GET /api/replay/state`'s `days`)
+//!   switches the replayed day: a rebuild exactly like a seek (paper account
+//!   reset, tape and quote board rebuilt), on the new day at the configured
+//!   `REPLAY_START` time of day, playing or paused as before. A day the
+//!   archive does not offer gets `error unknown_day`, one whose files cannot
+//!   be opened `error day_unavailable`; either way nothing changes.
 //! - A client that falls more than the broadcast capacity behind, and every
-//!   client after a seek, gets a fresh `chart.snapshot` (resync).
+//!   client after a seek or a day switch, gets a fresh `chart.snapshot`
+//!   (resync). After a day switch the subscribed symbol may not exist on the
+//!   new day: the resync then answers `error unknown_symbol` (or
+//!   `outside_price_band`), and the client picks a symbol from `/api/symbols`,
+//!   which already lists the new day's candidates.
 //!
 //! Simulated trading (docs/architecture/chart-trading-sim.md, after `welcome`):
 //! - server `paper.state` once right after `welcome`, then to every connection
@@ -432,6 +442,20 @@ async fn session(mut socket: WebSocket, state: AppState) {
                                 Some(ServerMessage::Error {
                                     code: "bad_request",
                                     message: "invalid replay.control",
+                                })
+                            }
+                            Err(ControlError::UnknownDay(d)) => {
+                                tracing::debug!(day = %d, "replay.control day: not in the archive");
+                                Some(ServerMessage::Error {
+                                    code: "unknown_day",
+                                    message: "that day is not in the replay archive",
+                                })
+                            }
+                            Err(ControlError::Rejected(m)) => {
+                                tracing::warn!(error = %m, "replay.control refused by the driver");
+                                Some(ServerMessage::Error {
+                                    code: "day_unavailable",
+                                    message: "that day could not be opened; the replay did not change",
                                 })
                             }
                             Err(ControlError::Failed(_)) => Some(ServerMessage::Error {

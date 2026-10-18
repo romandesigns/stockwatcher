@@ -29,7 +29,18 @@
 //! `daily-closes.json` (market_archive::closes). The same previous close goes into every
 //! `chart.snapshot` as `prevClose`, so the chart header and the "Prev close" level agree with the
 //! search rows without the chart having to subscribe to the quote board.
+//!
+//! Switching the replay day (`replay.control {action: "day"}`, [`Command::Day`]) goes through the
+//! same single provider session: the driver emits [`FeedItem::Source`] (the new day's label,
+//! symbols and fixture flag, which replace [`ProviderInfo`] here, so `/api/symbols` and
+//! `/api/replay/state` follow) and then the ordinary seek rebuild. Everything downstream (engine,
+//! tape rings, last prices, quote board, paper account, the simulator's bar book) is therefore
+//! reset by the `Reset` exactly as for a seek, and every subscriber gets fresh snapshots on the
+//! `Resync` at its end. The previous day is not retained: the `Reset` replaces the whole [`Core`]
+//! (the engine is where a day's candles live), the driver drops its old source and readers, and
+//! the old `ProviderInfo` is released with its `Arc`. The days offered come from [`DayCatalog`].
 
+use crate::days::{DayCatalog, DayEntry};
 use crate::quotes::{Counted, QuoteBoard, QuoteChanges, QuoteRow};
 use chart_engine::wire::{ChartSnapshot, ChartUpdate, ClockInfo};
 use chart_engine::{ChartEngine, DataQuality, Timeframe};
@@ -39,8 +50,8 @@ use market_archive::fixture::{DEFAULT_SEED, DEFAULT_SYMBOLS, write_fixture_day};
 use market_archive::{Archive, AssetMeta, PrevCloses};
 use market_events::{MarketEvent, Price, PriceBand, SessionId, UnixNanos};
 use market_providers::{
-    ClockMode, ClockState, Command, FeedItem, MarketDataMode, ProviderConfig, ProviderError,
-    ProviderInfo, ReplayHandle, Speed,
+    ClockMode, ClockState, Command, CommandError as ReplayCommandError, FeedItem, LinkState,
+    MarketDataMode, ProviderConfig, ProviderError, ProviderInfo, ReplayHandle, Speed,
 };
 use paper_broker::wire::{ModifyCommand, PaperFill, PlaceCommand};
 use paper_broker::{Broker, CommandError, Fill};
@@ -193,14 +204,21 @@ impl Core {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct ProviderStatus {
-    /// `starting`, `running`, `no_data`, `not_configured`, `error`, `stopped`, `idle`.
+    /// `starting`, `running`, `reconnecting` (live: link down, retrying), `no_data`,
+    /// `not_configured`, `error`, `stopped`, `idle`.
     pub state: &'static str,
     pub detail: Option<String>,
 }
 
 struct Inner {
     mode: ClockMode,
-    info: Option<ProviderInfo>,
+    /// What is being replayed. Behind a lock because a day switch replaces it (on
+    /// [`FeedItem::Source`]); readers clone the `Arc` out and never hold this lock while taking
+    /// another one.
+    info: Mutex<Option<Arc<ProviderInfo>>>,
+    /// The archive's selectable days (replay mode with an archive; `None` for test sessions and
+    /// live mode, which then offer no days).
+    days: Option<DayCatalog>,
     status: Mutex<ProviderStatus>,
     core: Mutex<Core>,
     clock: Mutex<Option<ClockState>>,
@@ -218,6 +236,16 @@ struct Inner {
     closes: Arc<PrevCloses>,
     /// Connections that sent `quotes.subscribe`. While 0, the quotes task builds nothing.
     quote_subs: AtomicUsize,
+}
+
+/// What the market reads from the archive besides the replayed day itself: the root's optional
+/// `assets.json` and `daily-closes.json`, and the catalog of days a replay can switch to. Grouped
+/// because they share a lifecycle (read at startup from one archive root; tests pass them empty).
+#[derive(Default)]
+struct ArchiveMeta {
+    assets: HashMap<String, AssetMeta>,
+    closes: Arc<PrevCloses>,
+    days: Option<DayCatalog>,
 }
 
 /// Shared market state; cheap to clone.
@@ -252,6 +280,10 @@ pub enum SnapshotError {
 pub enum ControlError {
     NotReplay,
     BadRequest(String),
+    /// `day`: not one of the archive's replayable days ([`DayCatalog`]). Nothing changed.
+    UnknownDay(String),
+    /// The driver refused the command (e.g. the day's files could not be opened). Nothing changed.
+    Rejected(String),
     Failed(String),
 }
 
@@ -275,12 +307,17 @@ impl Market {
         status: ProviderStatus,
         control: Option<ReplayHandle>,
         band: PriceBand,
-        assets: HashMap<String, AssetMeta>,
-        closes: Arc<PrevCloses>,
+        meta: ArchiveMeta,
     ) -> Self {
+        let ArchiveMeta {
+            assets,
+            closes,
+            days,
+        } = meta;
         Market(Arc::new(Inner {
             mode,
-            info,
+            info: Mutex::new(info.map(Arc::new)),
+            days,
             status: Mutex::new(status),
             core: Mutex::new(Core::new(closes.clone())),
             clock: Mutex::new(None),
@@ -303,8 +340,7 @@ impl Market {
             ProviderStatus { state, detail },
             None,
             PriceBand::DEFAULT,
-            HashMap::new(),
-            Arc::default(),
+            ArchiveMeta::default(),
         )
     }
 
@@ -368,6 +404,11 @@ impl Market {
                     session.clock.clone(),
                 )
             });
+        // Only a controllable replay can switch days, so only it gets the catalog.
+        let days = session
+            .control
+            .is_some()
+            .then(|| DayCatalog::new(archive.clone()));
         let market = Market::build(
             mode,
             Some(session.info.clone()),
@@ -377,8 +418,11 @@ impl Market {
             },
             session.control.clone(),
             cfg.band,
-            assets,
-            closes,
+            ArchiveMeta {
+                assets,
+                closes,
+                days,
+            },
         );
         tokio::spawn(ingest(session.items, market.clone(), sim.clone()));
         market.spawn_quotes_task();
@@ -415,8 +459,11 @@ impl Market {
             },
             session.control.clone(),
             PriceBand::DEFAULT,
-            assets,
-            Arc::new(closes),
+            ArchiveMeta {
+                assets,
+                closes: Arc::new(closes),
+                days: None,
+            },
         );
         tokio::spawn(ingest(session.items, market.clone(), sim));
         market.spawn_quotes_task();
@@ -462,22 +509,20 @@ impl Market {
         self.clock().map(|c| clock_frame(&c))
     }
 
+    /// The current provider description (a cheap `Arc` clone; the lock is released at once).
+    pub fn info(&self) -> Option<Arc<ProviderInfo>> {
+        self.0.info.lock().expect("info lock").clone()
+    }
+
     fn known(&self, core: &Core, symbol: &str) -> bool {
-        self.0
-            .info
-            .as_ref()
+        self.info()
             .is_some_and(|i| i.symbols.iter().any(|s| s == symbol))
             || core.engine.symbols().any(|s| s == symbol)
     }
 
     /// Every symbol the provider knows, sorted, whether or not it is a candidate.
     fn all_symbols(&self, core: &Core) -> Vec<String> {
-        let mut v: Vec<String> = self
-            .0
-            .info
-            .as_ref()
-            .map(|i| i.symbols.clone())
-            .unwrap_or_default();
+        let mut v: Vec<String> = self.info().map(|i| i.symbols.clone()).unwrap_or_default();
         v.extend(core.engine.symbols().map(String::from));
         v.sort();
         v.dedup();
@@ -613,11 +658,37 @@ impl Market {
                     }));
                 }
             }
+            FeedItem::Source(src) => {
+                // A day switch. Only the description changes here; the `Reset` right behind it
+                // drops the old day's derived state and the closing `Clock` resyncs every client.
+                tracing::info!(day = %src.day, source = %src.label, symbols = src.symbols.len(), "replay switched day");
+                *self.0.info.lock().expect("info lock") =
+                    Some(Arc::new(ProviderInfo::replay(&src)));
+            }
             FeedItem::Error(e) => {
                 tracing::error!(error = %e, "market data provider error");
                 *self.0.status.lock().expect("status lock") = ProviderStatus {
                     state: "error",
                     detail: Some(e),
+                };
+            }
+            FeedItem::Link(l) => {
+                // Live only. "reconnecting" is distinct from "error": the source is retrying on
+                // its own, and clients keep what they have rather than falling back to a fixture.
+                let state = match l.state {
+                    LinkState::Connecting => "starting",
+                    LinkState::Up => "running",
+                    LinkState::Down => "reconnecting",
+                };
+                match l.state {
+                    LinkState::Down => {
+                        tracing::warn!(detail = ?l.detail, "live market data disconnected")
+                    }
+                    _ => tracing::info!(state, detail = ?l.detail, "live market data link"),
+                }
+                *self.0.status.lock().expect("status lock") = ProviderStatus {
+                    state,
+                    detail: l.detail,
                 };
             }
         }
@@ -775,14 +846,16 @@ impl Market {
     /// current session date, the quote board's rule and input (its row's trading date is the date
     /// of the latest session the symbol traded in, which is the engine's current session), so the
     /// header and the search row show the same change. A symbol that has not traded yet has no
-    /// session; then the replay day stands in (live mode: none, the header falls back too).
+    /// session; then the replay day stands in (live mode: none, the header falls back too). That
+    /// is the CURRENT provider info, which a day switch replaces on `FeedItem::Source`: a day
+    /// remembered from startup would hand the new day's chart the old day's previous close.
     fn prev_close_for(&self, snap: &ChartSnapshot) -> Option<Price> {
         let day = snap
             .session
             .as_ref()
             .and_then(|s| s.id.parse::<SessionId>().ok())
             .map(|s| s.date)
-            .or_else(|| self.0.info.as_ref().and_then(|i| i.day))?;
+            .or_else(|| self.info().and_then(|i| i.day))?;
         self.0.closes.before(&snap.symbol, day).map(|(_, p)| p)
     }
 
@@ -852,7 +925,26 @@ impl Market {
             return Err(ControlError::NotReplay);
         };
         let cmd = parse_control(action, value).map_err(ControlError::BadRequest)?;
-        handle.command(cmd).await.map_err(ControlError::Failed)
+        // Only days the catalog offers: the driver could open any archive day with a manifest,
+        // but the app must not be able to reach one the menu would never show.
+        if let (Command::Day(day), Some(days)) = (&cmd, &self.0.days)
+            && !days.contains(*day)
+        {
+            return Err(ControlError::UnknownDay(day.to_string()));
+        }
+        handle.command(cmd).await.map_err(|e| match e {
+            ReplayCommandError::Rejected(m) => ControlError::Rejected(m),
+            ReplayCommandError::Stopped => ControlError::Failed(e.to_string()),
+        })
+    }
+
+    /// The replayable days (empty in live mode and for sessions without an archive).
+    pub fn days(&self) -> Vec<DayEntry> {
+        self.0
+            .days
+            .as_ref()
+            .map(DayCatalog::list)
+            .unwrap_or_default()
     }
 
     /// Registers a `quotes.subscribe`; the count drops again when the guard is dropped (on
@@ -956,9 +1048,16 @@ impl Market {
     }
 
     /// `GET /api/replay/state`.
+    ///
+    /// `days`: every day `replay.control {action: "day"}` accepts, ascending, as
+    /// `{day: "YYYY-MM-DD", fixture, symbols}` (empty when the day cannot be switched: live mode).
+    /// It is here rather than on the socket because it changes a few times a month and only the
+    /// day menu needs it; the clients fetch this route when the menu opens. `day` is the day
+    /// being replayed now.
     pub fn state_json(&self) -> Value {
         let clock = self.clock();
-        let info = self.0.info.as_ref();
+        let info = self.info();
+        let info = info.as_deref();
         let seq = self.0.core.lock().expect("core lock").seq;
         json!({
             "mode": self.0.mode.as_str(),
@@ -974,12 +1073,14 @@ impl Market {
             "finished": clock.as_ref().is_some_and(|c| c.finished),
             "events": clock.as_ref().map_or(0, |c| c.events),
             "seq": seq,
+            "days": self.days(),
         })
     }
 
     /// `GET /api/symbols`.
     pub fn symbols_json(&self) -> Value {
-        let info = self.0.info.as_ref();
+        let info = self.info();
+        let info = info.as_deref();
         json!({
             "mode": self.0.mode.as_str(),
             "status": self.0.status.lock().expect("status lock").state,
@@ -1119,7 +1220,9 @@ fn clock_frame(c: &ClockState) -> String {
 /// - `play`, `pause`, `step` (one event): no value;
 /// - `stepInterval`: value = timeframe label (`"15s"`, `"30s"`, `"1m"`, `"5m"`; default `"1m"`);
 /// - `seek`: value = epoch ms (number) or RFC 3339 string;
-/// - `speed`: value = multiplier number (`0` = max) or `"max"` / `"10x"`.
+/// - `speed`: value = multiplier number (`0` = max) or `"max"` / `"10x"`;
+/// - `day`: value = `"YYYY-MM-DD"`, one of `/api/replay/state`'s `days`. Rebuilds like a seek on
+///   that day, at the configured `REPLAY_START` time of day.
 pub fn parse_control(action: &str, value: Option<&Value>) -> Result<Command, String> {
     Ok(match action {
         "play" => Command::Play,
@@ -1158,6 +1261,13 @@ pub fn parse_control(action: &str, value: Option<&Value>) -> Result<Command, Str
             Some(Value::String(s)) => Speed::parse(s)?,
             _ => return Err("speed needs a value (multiplier, 0 = max)".into()),
         }),
+        "day" => match value {
+            Some(Value::String(s)) => Command::Day(
+                NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d")
+                    .map_err(|_| format!("day value must be YYYY-MM-DD, got {s:?}"))?,
+            ),
+            _ => return Err("day needs a value (\"YYYY-MM-DD\")".into()),
+        },
         other => return Err(format!("unknown replay action {other:?}")),
     })
 }
@@ -1203,6 +1313,13 @@ mod tests {
             Ok(Command::Seek(UnixNanos::from_millis(1_792_072_800_000)))
         );
         assert!(parse_control("speed", Some(&json!(1.5))).is_err());
+        assert_eq!(
+            parse_control("day", Some(&json!("2026-10-14"))),
+            Ok(Command::Day(NaiveDate::from_ymd_opt(2026, 10, 14).unwrap()))
+        );
+        assert!(parse_control("day", Some(&json!("10/14/2026"))).is_err());
+        assert!(parse_control("day", Some(&json!(20261014))).is_err());
+        assert!(parse_control("day", None).is_err());
         assert!(parse_control("rewind", None).is_err());
     }
 }

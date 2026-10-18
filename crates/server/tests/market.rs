@@ -36,12 +36,57 @@ async fn stack_with_assets(extra: &[(&str, &str)], assets: Option<Value>) -> Sta
 /// [`stack`] with files (`assets.json`, `daily-closes.json`) written to the archive root before
 /// the market starts.
 async fn stack_with_files(extra: &[(&str, &str)], files: &[(&str, Value)]) -> Stack {
+    stack_prepared(extra, |root| write_files(root, files)).await
+}
+
+fn write_files(root: &std::path::Path, files: &[(&str, Value)]) {
+    for (name, v) in files {
+        std::fs::create_dir_all(root).unwrap();
+        std::fs::write(root.join(name), v.to_string()).unwrap();
+    }
+}
+
+/// [`stack`] on an archive that already holds these fixture days (so SIM_AUTOFIXTURE, which only
+/// fills an empty archive, writes nothing), plus `files` at its root.
+async fn stack_with_days(
+    extra: &[(&str, &str)],
+    days: &[(&str, &[&str])],
+    files: &[(&str, Value)],
+) -> Stack {
+    let days: Vec<(chrono::NaiveDate, Vec<String>)> = days
+        .iter()
+        .map(|(d, syms)| {
+            (
+                d.parse().unwrap(),
+                syms.iter().map(|s| s.to_string()).collect(),
+            )
+        })
+        .collect();
+    stack_prepared(extra, move |root| {
+        write_files(root, files);
+        let archive = market_archive::Archive::new(market_archive::ArchiveConfig {
+            root: root.to_path_buf(),
+            retention_days: 0,
+            min_free_bytes: 0,
+        });
+        for (day, syms) in &days {
+            market_archive::fixture::write_fixture_day(
+                &archive,
+                *day,
+                syms,
+                market_archive::fixture::DEFAULT_SEED,
+            )
+            .unwrap();
+        }
+    })
+    .await
+}
+
+/// [`stack`] after `prepare` ran on the (not yet created) archive root.
+async fn stack_prepared(extra: &[(&str, &str)], prepare: impl FnOnce(&std::path::Path)) -> Stack {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("archive").to_string_lossy().into_owned();
-    for (name, v) in files {
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(std::path::Path::new(&root).join(name), v.to_string()).unwrap();
-    }
+    prepare(std::path::Path::new(&root));
     let mut vars: Vec<(String, String)> = vec![
         ("ARCHIVE_ROOT".into(), root),
         ("ARCHIVE_MIN_FREE_MB".into(), "0".into()),
@@ -1140,4 +1185,365 @@ async fn quotes_carry_names_and_exchanges_from_assets_json_and_the_rest_route_se
     send(&mut ws, json!({"type": "quotes.subscribe"})).await;
     let snap = next(&mut ws, is("quotes.snapshot")).await;
     assert_eq!(quote(&snap, "SMPL").unwrap()["name"], "Sample Labs Inc.");
+}
+
+/// 10:40 ET on 2026-10-14 (EDT) in epoch ms: the configured start time on the day switched to.
+const T1040_OCT14: i64 = T1040 - 86_400_000;
+/// 20:00 ET on 2026-10-13: where the 2026-10-14 trading day (its overnight session) begins.
+const OPEN_OCT14: i64 = T1040_OCT14 - (14 * 60 + 40) * 60_000;
+
+/// Fixture days for the day-switch tests: three weekdays, different symbol sets.
+const DAYS: &[(&str, &[&str])] = &[
+    ("2026-10-13", &["SMPL", "FXLO", "FXMD"]),
+    ("2026-10-14", &["SMPL", "FXHI"]),
+    ("2026-10-15", &["SMPL", "FXLO"]),
+];
+
+#[tokio::test]
+async fn replay_state_lists_the_archive_days() {
+    let s = stack_with_days(&[("REPLAY_AUTOPLAY", "0")], DAYS, &[]).await;
+    let (_, v) = get(&s.app, "/api/replay/state").await;
+    // The latest day plays by default; every day is offered, ascending, with its manifest facts.
+    assert_eq!(v["day"], "2026-10-15");
+    assert_eq!(
+        v["days"],
+        json!([
+            {"day": "2026-10-13", "fixture": true, "symbols": 3},
+            {"day": "2026-10-14", "fixture": true, "symbols": 2},
+            {"day": "2026-10-15", "fixture": true, "symbols": 2},
+        ])
+    );
+}
+
+#[tokio::test]
+async fn switching_the_day_rebuilds_everything_like_a_seek_and_resyncs_every_client() {
+    let s = stack_with_days(&[("REPLAY_AUTOPLAY", "0")], DAYS, &[]).await;
+    let mut ws = connect(&s.url).await;
+    let mut other = connect(&s.url).await;
+    wait_for_replay(&mut ws).await;
+    send(
+        &mut ws,
+        json!({"type":"chart.subscribe","symbol":"SMPL","timeframe":"1m","profileBin":0.01}),
+    )
+    .await;
+    let before = next(&mut ws, is("chart.snapshot")).await;
+    assert_eq!(before["clock"]["now"], T1040);
+    send(&mut ws, json!({"type": "quotes.subscribe"})).await;
+    next(&mut ws, is("quotes.snapshot")).await;
+    send(
+        &mut other,
+        json!({"type":"chart.subscribe","symbol":"SMPL","timeframe":"5m","profileBin":0.01}),
+    )
+    .await;
+    next(&mut other, is("chart.snapshot")).await;
+    // A resting order far below the market: it can only go away by a reset.
+    send(
+        &mut ws,
+        json!({"type":"order.place","clientOrderId":"rest","symbol":"SMPL","side":"buy",
+               "orderType":"limit","qty":10,"limitPrice":0.11}),
+    )
+    .await;
+    paper_state(&mut ws, |m| !m["orders"].as_array().unwrap().is_empty()).await;
+
+    send(
+        &mut ws,
+        json!({"type":"replay.control","action":"day","value":"2026-10-14"}),
+    )
+    .await;
+    // Time travel resets the account (docs/architecture/chart-trading-sim.md).
+    let flat = paper_state(&mut ws, |m| m["orders"].as_array().unwrap().is_empty()).await;
+    assert_eq!(flat["account"]["cash"], 100_000.0);
+    // The new day starts paused at the configured 10:40 ET, and both subscribers get a fresh
+    // snapshot of it (quotes first, then the chart: the Resync order).
+    let clock = next(&mut ws, |m| {
+        m["type"] == "replay.clock" && m["clock"]["now"] == T1040_OCT14
+    })
+    .await;
+    assert_eq!(clock["clock"]["playing"], false);
+    let quotes = next(&mut ws, is("quotes.snapshot")).await;
+    assert_eq!(quotes["t"], T1040_OCT14);
+    let snap = next(&mut ws, is("chart.snapshot")).await;
+    assert_eq!(snap["clock"]["now"], T1040_OCT14);
+    let candles = snap["candles"].as_array().unwrap();
+    assert!(!candles.is_empty());
+    // Nothing of the old day survived: every candle is inside Oct 14's trading day, before 10:40.
+    assert!(
+        candles.iter().all(|c| {
+            let t = c["t"].as_i64().unwrap();
+            (OPEN_OCT14..T1040_OCT14).contains(&t)
+        }),
+        "only Oct 14 candles"
+    );
+    assert_eq!(
+        quote(&quotes, "SMPL").unwrap()["v"].as_u64().unwrap(),
+        total_volume(&snap)
+    );
+    let snap5 = next(&mut other, |m| {
+        m["type"] == "chart.snapshot" && m["clock"]["now"] == T1040_OCT14
+    })
+    .await;
+    assert_eq!(snap5["timeframe"], "5m");
+
+    // The provider description follows the switch.
+    let (_, st) = get(&s.app, "/api/replay/state").await;
+    assert_eq!(st["day"], "2026-10-14");
+    assert!(
+        st["source"].as_str().unwrap().contains("2026-10-14"),
+        "{st}"
+    );
+    let (_, sy) = get(&s.app, "/api/symbols").await;
+    assert_eq!(sy["day"], "2026-10-14");
+    assert_eq!(
+        sy["screened"]["total"], 2,
+        "the new day's symbols: SMPL, FXHI"
+    );
+
+    // The rebuilt state is exactly what a server started on that day shows.
+    let fresh = stack_with_days(
+        &[("REPLAY_AUTOPLAY", "0"), ("REPLAY_DAY", "2026-10-14")],
+        DAYS,
+        &[],
+    )
+    .await;
+    let mut f = connect(&fresh.url).await;
+    send(
+        &mut f,
+        json!({"type":"chart.subscribe","symbol":"SMPL","timeframe":"1m","profileBin":0.01}),
+    )
+    .await;
+    let want = next(&mut f, |m| {
+        m["type"] == "chart.snapshot" && m["clock"]["now"] == T1040_OCT14
+    })
+    .await;
+    assert_eq!(snap["candles"], want["candles"]);
+    assert_eq!(snap["profile"], want["profile"]);
+
+    // Switching back works the same way.
+    send(
+        &mut ws,
+        json!({"type":"replay.control","action":"day","value":"2026-10-15"}),
+    )
+    .await;
+    let back = next(&mut ws, |m| {
+        m["type"] == "chart.snapshot" && m["clock"]["now"] == T1040
+    })
+    .await;
+    assert_eq!(back["candles"], before["candles"]);
+}
+
+#[tokio::test]
+async fn a_symbol_missing_on_the_new_day_is_reported_on_the_resync() {
+    let s = stack_with_days(&[("REPLAY_AUTOPLAY", "0")], DAYS, &[]).await;
+    let mut ws = connect(&s.url).await;
+    wait_for_replay(&mut ws).await;
+    send(
+        &mut ws,
+        json!({"type":"chart.subscribe","symbol":"FXLO","timeframe":"1m","profileBin":0.01}),
+    )
+    .await;
+    next(&mut ws, is("chart.snapshot")).await;
+    send(
+        &mut ws,
+        json!({"type":"replay.control","action":"day","value":"2026-10-14"}),
+    )
+    .await;
+    let e = next(&mut ws, is("error")).await;
+    assert_eq!(e["code"], "unknown_symbol");
+}
+
+#[tokio::test]
+async fn an_unknown_or_malformed_day_is_refused_and_nothing_changes() {
+    let s = stack_with_days(&[("REPLAY_AUTOPLAY", "0")], DAYS, &[]).await;
+    let mut ws = connect(&s.url).await;
+    wait_for_replay(&mut ws).await;
+    let (_, before) = get(&s.app, "/api/replay/state").await;
+    // Not in the archive, and a weekend (never replayable).
+    for day in ["2026-10-09", "2026-10-17"] {
+        send(
+            &mut ws,
+            json!({"type":"replay.control","action":"day","value":day}),
+        )
+        .await;
+        let e = next(&mut ws, is("error")).await;
+        assert_eq!(e["code"], "unknown_day", "{day}");
+    }
+    for bad in [json!("Oct 14"), json!(20261014), Value::Null] {
+        send(
+            &mut ws,
+            json!({"type":"replay.control","action":"day","value":bad}),
+        )
+        .await;
+        let e = next(&mut ws, is("error")).await;
+        assert_eq!(e["code"], "bad_request", "{bad}");
+    }
+    let (_, after) = get(&s.app, "/api/replay/state").await;
+    assert_eq!(after["day"], "2026-10-15");
+    assert_eq!(after["clock"], before["clock"]);
+    assert_eq!(after["events"], before["events"]);
+}
+
+#[tokio::test]
+async fn live_mode_offers_no_days_and_refuses_a_day_switch() {
+    let s = stack_with_days(&[("MARKET_DATA_MODE", "live")], DAYS, &[]).await;
+    let (_, v) = get(&s.app, "/api/replay/state").await;
+    assert_eq!(v["days"], json!([]));
+    let mut ws = connect(&s.url).await;
+    send(
+        &mut ws,
+        json!({"type":"replay.control","action":"day","value":"2026-10-14"}),
+    )
+    .await;
+    let e = next(&mut ws, is("error")).await;
+    assert_eq!(e["code"], "not_replay");
+}
+
+#[tokio::test]
+async fn after_a_day_switch_the_previous_close_is_the_new_days_previous_close() {
+    // A distinct close per date, so a reference taken from the wrong day cannot pass.
+    let closes = json!({
+        "2026-10-12": {"SMPL": 2.12},
+        "2026-10-13": {"SMPL": 2.13},
+        "2026-10-14": {"SMPL": 2.14},
+        "2026-10-15": {"SMPL": 2.15},
+    });
+    let s = stack_with_days(
+        &[("REPLAY_AUTOPLAY", "0")],
+        DAYS,
+        &[("daily-closes.json", closes)],
+    )
+    .await;
+    let mut ws = connect(&s.url).await;
+    wait_for_replay(&mut ws).await;
+    send(&mut ws, json!({"type": "quotes.subscribe"})).await;
+    let q = next(&mut ws, is("quotes.snapshot")).await;
+    assert_eq!(
+        quote(&q, "SMPL").unwrap()["pc"],
+        2.14,
+        "Oct 15 → Oct 14's close"
+    );
+    send(
+        &mut ws,
+        json!({"type":"chart.subscribe","symbol":"SMPL","timeframe":"1m","profileBin":0.01}),
+    )
+    .await;
+    let snap = next(&mut ws, is("chart.snapshot")).await;
+    assert_eq!(snap["prevClose"], 2.14);
+
+    for (day, now, want) in [
+        ("2026-10-13", T1040 - 2 * 86_400_000, 2.12),
+        ("2026-10-14", T1040_OCT14, 2.13),
+    ] {
+        send(
+            &mut ws,
+            json!({"type":"replay.control","action":"day","value":day}),
+        )
+        .await;
+        // The resync's snapshots, both taken on the rebuilt state of the new day.
+        let q = next(&mut ws, |m| m["type"] == "quotes.snapshot" && m["t"] == now).await;
+        assert_eq!(quote(&q, "SMPL").unwrap()["pc"], want, "{day}: quotes pc");
+        let snap = next(&mut ws, |m| {
+            m["type"] == "chart.snapshot" && m["clock"]["now"] == now
+        })
+        .await;
+        assert_eq!(snap["prevClose"], want, "{day}: chart prevClose");
+        // A fresh subscribe (not only the resync) agrees.
+        send(
+            &mut ws,
+            json!({"type":"chart.subscribe","symbol":"SMPL","timeframe":"5m","profileBin":0.01}),
+        )
+        .await;
+        let again = next(&mut ws, |m| {
+            m["type"] == "chart.snapshot" && m["timeframe"] == "5m"
+        })
+        .await;
+        assert_eq!(again["prevClose"], want, "{day}: resubscribe prevClose");
+        send(
+            &mut ws,
+            json!({"type":"chart.subscribe","symbol":"SMPL","timeframe":"1m","profileBin":0.01}),
+        )
+        .await;
+        next(&mut ws, |m| {
+            m["type"] == "chart.snapshot" && m["timeframe"] == "1m"
+        })
+        .await;
+    }
+}
+
+/// A running live provider (not the idle "not configured" one): its link state is the server's
+/// status, and there are no replay days to offer.
+#[tokio::test]
+async fn a_running_live_feed_reports_its_link_and_offers_no_days() {
+    use market_events::MarketEvent;
+    use market_providers::{
+        Link, LinkState, LiveFeed, LiveOptions, LiveProvider, MarketDataProvider, ProviderError,
+    };
+    use tokio::sync::{mpsc, watch};
+
+    struct Feed {
+        link: watch::Receiver<Link>,
+        rx: mpsc::Receiver<MarketEvent>,
+    }
+    impl LiveFeed for Feed {
+        fn label(&self) -> String {
+            "test link".into()
+        }
+        fn symbols(&self) -> Vec<String> {
+            Vec::new()
+        }
+        fn link(&mut self) -> Option<watch::Receiver<Link>> {
+            Some(self.link.clone())
+        }
+        fn connect(self: Box<Self>) -> Result<mpsc::Receiver<MarketEvent>, ProviderError> {
+            Ok(self.rx)
+        }
+    }
+
+    let (link_tx, link) = watch::channel(Link {
+        state: LinkState::Connecting,
+        detail: Some("connecting".into()),
+    });
+    let (_tx, rx) = mpsc::channel(16);
+    let session = Box::new(LiveProvider::with_feed(
+        Box::new(Feed { link, rx }),
+        LiveOptions {
+            idle_tick: None,
+            ..LiveOptions::default()
+        },
+    ))
+    .start()
+    .unwrap();
+    let market = Market::from_session(session, None);
+    let state = |want: &'static str| {
+        let market = market.clone();
+        async move {
+            for _ in 0..500 {
+                let v = market.state_json();
+                if v["status"]["state"] == want {
+                    return v;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            panic!("status never became {want}: {}", market.state_json())
+        }
+    };
+    let v = state("starting").await;
+    assert_eq!(v["mode"], "live");
+    assert_eq!(v["days"], json!([]));
+    assert_eq!(v["controllable"], false);
+
+    link_tx.send_replace(Link {
+        state: LinkState::Up,
+        detail: Some("subscribed".into()),
+    });
+    state("running").await;
+    link_tx.send_replace(Link {
+        state: LinkState::Down,
+        detail: Some("connection lost; reconnecting in 1.0 s".into()),
+    });
+    let v = state("reconnecting").await;
+    assert_eq!(
+        v["status"]["detail"],
+        "connection lost; reconnecting in 1.0 s"
+    );
+    assert_eq!(v["days"], json!([]));
 }

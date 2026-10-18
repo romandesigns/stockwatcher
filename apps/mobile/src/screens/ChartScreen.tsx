@@ -1,6 +1,9 @@
 import {
   buildSlots,
   changeReference,
+  currentReplayDay,
+  formatDayKey,
+  replayDayOptions,
   formatChange,
   formatEtTime,
   formatPrice,
@@ -21,7 +24,7 @@ import {
   type ToolboxPlacement,
   type Timeframe,
 } from "@stockwatcher/chart-core";
-import { CandleChart, SessionTimeline, TapeSheet, ToolButton, UI } from "@stockwatcher/chart-native";
+import { CandleChart, ReplayDaySheet, SessionTimeline, TapeSheet, ToolButton, UI } from "@stockwatcher/chart-native";
 import type { ConnectionStatus } from "@stockwatcher/shared";
 import { useEffect, useMemo, useState } from "react";
 import Animated, { FadeIn, FadeOut, ReduceMotion } from "react-native-reanimated";
@@ -29,7 +32,7 @@ import { Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { Circle, Path } from "react-native-svg";
 
-import { useCandidates, useChartFeed, usePaperTrading } from "../feed/hooks";
+import { useCandidates, useChartFeed, usePaperTrading, useReplayDays } from "../feed/hooks";
 import { createMobileFeed, type MobileFeed } from "../feed/serverFeed";
 import { useReducedMotion } from "../motion/useReducedMotion";
 import { TickerSearchSheet } from "../search/TickerSearchSheet";
@@ -88,7 +91,12 @@ export function ChartScreen() {
 
 function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | null; status: ConnectionStatus }) {
   const insets = useSafeAreaInsets();
-  const { symbols: candidates, fixture } = useCandidates(token);
+  // The trading day the replay clock is on; it changes on a day switch (and once a night while playing).
+  const [clockDay, setClockDay] = useState<string | null>(null);
+  const { symbols: candidates, fixture } = useCandidates(token, clockDay);
+  const replayDays = useReplayDays(token, clockDay);
+  const dayOptions = useMemo(() => replayDayOptions(replayDays.state?.days ?? []), [replayDays.state]);
+  const [daysOpen, setDaysOpen] = useState(false);
   const [symbol, setSymbol] = useState<string | null>(null);
   const [timeframe, setTimeframe] = useState<Timeframe>("1m");
   const [inspectT, setInspectT] = useState<number | null>(null);
@@ -153,6 +161,9 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
 
   // The day's session bands and a 20-minute volume minimap for the timeline (bands change only with the day).
   const dayKey = clock ? formatEtDateKey(tradingDayOf(clock.now)) : "";
+  // Derived during render (React's "adjusting state when a prop changes"), not in an effect: the hooks
+  // above that read it run before the clock is known, and an effect would cost an extra commit.
+  if ((dayKey || null) !== clockDay) setClockDay(dayKey || null);
   const bands = useMemo(() => {
     if (!dayKey) return [];
     const [year, month, day] = dayKey.split("-").map(Number) as [number, number, number];
@@ -179,6 +190,9 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
   const live = clock?.mode === "live";
   const speed = clock?.speed ?? 1;
   const offline = status !== "open";
+  const replayDay = currentReplayDay(replayDays.state, clock);
+  // The date is the day picker only when there is something to pick (replay mode, days offered).
+  const canPickDay = !live && !!clock && !!replayDay && dayOptions.length > 0;
 
   return (
     <View style={[styles.screen, { paddingTop: insets.top + 8, paddingBottom: insets.bottom + 8 }]}>
@@ -270,11 +284,36 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
         <ToolButton primary label={playing ? "Pause replay" : "Play replay"} disabled={!clock || live} onPress={() => feed.control({ action: playing ? "pause" : "play" })} style={styles.play}>
           {playing ? "❚❚" : "▶"}
         </ToolButton>
-        {/* One line: the replay clock (Eastern) and the session it is in. */}
-        <Text style={styles.clock} accessibilityLabel={clock ? `${formatEtTime(clock.now, true)} Eastern, ${SESSION_A11Y[sessionOf(clock.now)]}` : "Clock not started"}>
-          {clock ? formatEtTime(clock.now, true) : "--:--:--"}
-          <Text style={styles.session}>{clock ? `  ${SESSION[sessionOf(clock.now)]}` : ""}</Text>
-        </Text>
+        {/* The replay clock (Eastern) over its session and the replay date. The date is the day
+            picker: there is no room for another button in this row, and the date is what it changes. */}
+        <View style={styles.clockCol}>
+          <Text style={styles.clock} accessibilityLabel={clock ? `${formatEtTime(clock.now, true)} Eastern, ${SESSION_A11Y[sessionOf(clock.now)]}` : "Clock not started"}>
+            {clock ? formatEtTime(clock.now, true) : "--:--:--"}
+          </Text>
+          <View style={styles.subRow}>
+            <Text style={styles.session} numberOfLines={1}>
+              {clock ? SESSION[sessionOf(clock.now)] : ""}
+              {clock && replayDay && !canPickDay ? ` · ${formatDayKey(replayDay)}` : ""}
+            </Text>
+            {canPickDay && replayDay && (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Replay day ${formatDayKey(replayDay)}, change`}
+                hitSlop={{ top: 10, bottom: 10, left: 4, right: 8 }}
+                onPress={() => {
+                  replayDays.refresh();
+                  setDaysOpen(true);
+                }}
+                style={({ pressed }) => [styles.dayButton, pressed && { backgroundColor: UI.row }]}
+              >
+                <Text style={styles.session}>· {formatDayKey(replayDay)}</Text>
+                <Svg width={8} height={8} viewBox="0 0 10 10" fill="none" stroke={colors.textFaint} strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
+                  <Path d="M2 3.5 5 6.5 8 3.5" />
+                </Svg>
+              </Pressable>
+            )}
+          </View>
+        </View>
         {/* Step only does something while paused, so it only shows then. It sits beside the speed button,
             in space the clock does not use, so nothing shifts when it appears. */}
         {!playing && !live && clock && (
@@ -321,6 +360,16 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
         reducedMotion={reducedMotion}
       />
       <TapeSheet open={tapeOpen} onClose={() => setTapeOpen(false)} trades={tape} note={active ?? undefined} />
+      <ReplayDaySheet
+        open={daysOpen}
+        onClose={() => setDaysOpen(false)}
+        days={dayOptions}
+        day={replayDay}
+        // The server rebuilds on that day and resends every snapshot; the clock's new trading day
+        // then refetches the candidates and the day list.
+        onSelect={(day) => feed.control({ action: "day", value: day })}
+        reducedMotion={reducedMotion}
+      />
     </View>
   );
 }
@@ -343,7 +392,11 @@ const styles = StyleSheet.create({
   tapeButton: { backgroundColor: UI.row, height: 36, width: 36, paddingHorizontal: 0 },
   play: { width: 36, height: 36, paddingHorizontal: 0 },
   // The clock takes the free width, so step, speed and tape stay pinned right.
-  clock: { flex: 1, color: colors.text, fontSize: 14, fontVariant: ["tabular-nums"] },
-  session: { color: colors.textFaint, fontSize: 10 },
+  clockCol: { flex: 1, minWidth: 0 },
+  clock: { color: colors.text, fontSize: 14, lineHeight: 17, fontVariant: ["tabular-nums"] },
+  subRow: { flexDirection: "row", alignItems: "center" },
+  session: { color: colors.textFaint, fontSize: 10, lineHeight: 13 },
+  // Pressed shows the row colour (no border); the padding is the touch target, the hitSlop the rest.
+  dayButton: { flexDirection: "row", alignItems: "center", gap: 2, marginLeft: 3, paddingHorizontal: 3, borderRadius: 4 },
   speed: { backgroundColor: UI.row, height: 36, minWidth: 48 },
 });

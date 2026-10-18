@@ -4,6 +4,7 @@ use chrono::NaiveDate;
 use market_archive::Archive;
 use market_events::session::sessions_for;
 use market_events::{MarketEvent, UnixNanos};
+use std::sync::Arc;
 
 /// One symbol's events in arrival order.
 pub type EventStream = Box<dyn Iterator<Item = Result<MarketEvent, String>> + Send>;
@@ -17,6 +18,35 @@ pub trait EventSource: Send + Sync + 'static {
     /// True when every stream is fixture data (never market evidence).
     fn fixture(&self) -> bool;
     fn label(&self) -> String;
+    /// The same origin's source for another day (a day switch, [`crate::Command::Day`]). It must
+    /// validate eagerly (manifest present, trading day), because the driver swaps only after this
+    /// succeeds and a refusal must leave the running day untouched. Default: a source with one day.
+    fn for_day(&self, day: NaiveDate) -> Result<Arc<dyn EventSource>, String> {
+        Err(format!(
+            "{} cannot switch days (asked for {day})",
+            self.label()
+        ))
+    }
+    /// What a consumer needs to know about this source, as one value.
+    fn info(&self) -> SourceInfo {
+        SourceInfo {
+            day: self.day(),
+            label: self.label(),
+            symbols: self.symbols(),
+            fixture: self.fixture(),
+        }
+    }
+}
+
+/// A source's description, carried by [`crate::FeedItem::Source`] on a day switch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceInfo {
+    pub day: NaiveDate,
+    /// Human label, e.g. `"archive 2026-10-15 (fixture)"`.
+    pub label: String,
+    pub symbols: Vec<String>,
+    /// Every stream is fixture data (never market evidence).
+    pub fixture: bool,
 }
 
 /// `[first session start, last session end)` of a trading day (overnight 20:00 the evening before
@@ -83,6 +113,12 @@ impl EventSource for ArchiveDaySource {
 
     fn fixture(&self) -> bool {
         self.fixture
+    }
+
+    /// Another day of the same archive. The manifest is read here, so a missing day or a
+    /// non-trading day fails before the driver touches its running day.
+    fn for_day(&self, day: NaiveDate) -> Result<Arc<dyn EventSource>, String> {
+        Ok(Arc::new(ArchiveDaySource::new(self.archive.clone(), day)?))
     }
 
     fn label(&self) -> String {

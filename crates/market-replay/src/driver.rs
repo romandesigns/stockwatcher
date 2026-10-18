@@ -9,7 +9,10 @@ use crate::marks::DEFAULT_MARK_STEP_NS;
 use crate::pacing::{Speed, paced_target};
 use crate::source::EventSource;
 use crate::{ClockMode, ClockState, FeedItem};
+use chrono::{NaiveDate, NaiveTime};
 use market_events::UnixNanos;
+use market_events::session::et_instant;
+use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -19,6 +22,11 @@ use tokio::time::Instant;
 pub struct ReplayOptions {
     /// Where the clock starts (clamped to the day); `None` = the day's first session start.
     pub start: Option<UnixNanos>,
+    /// ET wall time a day switch ([`Command::Day`]) starts the new day at (`REPLAY_START`), so
+    /// every day opens at the same time of day the server was configured to start at. `None` = the
+    /// new day's first session start. A time that does not exist on the new day (a DST gap) falls
+    /// back to that too.
+    pub start_time: Option<NaiveTime>,
     pub speed: Speed,
     pub autoplay: bool,
     pub mark_step_ns: i64,
@@ -36,6 +44,7 @@ impl Default for ReplayOptions {
     fn default() -> Self {
         ReplayOptions {
             start: None,
+            start_time: None,
             speed: Speed::Times(10),
             autoplay: true,
             mark_step_ns: DEFAULT_MARK_STEP_NS,
@@ -58,24 +67,52 @@ pub enum Command {
     /// Rebuild from the start of the day up to this instant (clamped to the day).
     Seek(UnixNanos),
     Speed(Speed),
+    /// Replay another day of the same source ([`EventSource::for_day`]): `Source`, then a rebuild
+    /// exactly like a seek, to [`ReplayOptions::start_time`] on the new day. Playing/paused and
+    /// the speed carry over. Refused (nothing changes) when the day cannot be opened.
+    Day(NaiveDate),
 }
+
+/// Why [`ReplayHandle::command`] did not apply a command.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CommandError {
+    /// The replay task has ended (its consumer went away).
+    Stopped,
+    /// The command was refused and nothing changed (e.g. a day that is not in the archive).
+    Rejected(String),
+}
+
+impl fmt::Display for CommandError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CommandError::Stopped => f.write_str("replay stopped"),
+            CommandError::Rejected(m) => write!(f, "rejected: {m}"),
+        }
+    }
+}
+
+impl std::error::Error for CommandError {}
+
+type Reply = oneshot::Sender<Result<ClockState, String>>;
 
 /// Control and state handle; cheap to clone.
 #[derive(Clone)]
 pub struct ReplayHandle {
-    tx: mpsc::Sender<(Command, Option<oneshot::Sender<ClockState>>)>,
+    tx: mpsc::Sender<(Command, Option<Reply>)>,
     state: watch::Receiver<ClockState>,
 }
 
 impl ReplayHandle {
     /// Sends a command and waits until it has been applied; returns the resulting state.
-    pub async fn command(&self, cmd: Command) -> Result<ClockState, String> {
+    pub async fn command(&self, cmd: Command) -> Result<ClockState, CommandError> {
         let (tx, rx) = oneshot::channel();
         self.tx
             .send((cmd, Some(tx)))
             .await
-            .map_err(|_| "replay stopped".to_string())?;
-        rx.await.map_err(|_| "replay stopped".to_string())
+            .map_err(|_| CommandError::Stopped)?;
+        rx.await
+            .map_err(|_| CommandError::Stopped)?
+            .map_err(CommandError::Rejected)
     }
 
     pub fn state(&self) -> ClockState {
@@ -163,13 +200,19 @@ impl Driver {
     }
 
     async fn seek(&mut self, to: UnixNanos) -> Result<(), Closed> {
+        if let Err(e) = self.core.reset() {
+            return self.fail(e).await;
+        }
+        self.rebuild(to).await
+    }
+
+    /// The rebuild half of a seek, on a core already at the start of its day: `Reset`, the
+    /// catch-up to `to` (clamped to the day), then the closing `Clock`.
+    async fn rebuild(&mut self, to: UnixNanos) -> Result<(), Closed> {
         let to = UnixNanos(
             to.nanos()
                 .clamp(self.core.start().nanos(), self.core.end().nanos()),
         );
-        if let Err(e) = self.core.reset() {
-            return self.fail(e).await;
-        }
         let mut target = self.clock();
         target.now = to;
         self.out
@@ -181,7 +224,38 @@ impl Driver {
         self.emit_clock().await
     }
 
-    async fn apply(&mut self, cmd: Command) -> Result<(), Closed> {
+    /// Switches to `day`. Everything that can fail (manifest, trading day, opening every symbol
+    /// file) happens on the new core before the swap, so a refusal leaves the running day exactly
+    /// as it was. Assigning `self.core` drops the old core: its merger, its open readers and the
+    /// last `Arc` this task holds on the old source.
+    async fn switch_day(&mut self, day: NaiveDate) -> Result<Result<(), String>, Closed> {
+        let core = match self
+            .core
+            .source()
+            .for_day(day)
+            .and_then(|src| ReplayCore::new(src, self.opts.mark_step_ns))
+        {
+            Ok(c) => c,
+            Err(e) => return Ok(Err(e)),
+        };
+        self.core = core;
+        let to = self
+            .opts
+            .start_time
+            .and_then(|t| et_instant(day, t))
+            .unwrap_or(self.core.start());
+        self.out
+            .send(FeedItem::Source(Arc::new(self.core.source().info())))
+            .await
+            .map_err(|_| Closed)?;
+        // `playing` and `speed` are left alone: the new day plays if the old one was playing. A day
+        // that ran to its end had already paused itself, so switching from it lands paused.
+        self.rebuild(to).await.map(Ok)
+    }
+
+    /// Applies one command. The outer error means the consumer is gone (the task ends); the
+    /// inner one is a refusal that changed nothing and goes back to the caller.
+    async fn apply(&mut self, cmd: Command) -> Result<Result<(), String>, Closed> {
         match cmd {
             Command::Play => {
                 self.playing = !self.core.finished();
@@ -195,7 +269,7 @@ impl Driver {
             Command::Step => {
                 self.playing = false;
                 if let Err(e) = self.core.step(&mut self.buf) {
-                    return self.fail(e).await;
+                    return self.fail(e).await.map(Ok);
                 }
                 self.flush().await?;
                 self.reanchor();
@@ -207,9 +281,10 @@ impl Driver {
                 self.run_to(UnixNanos(next)).await?;
                 self.reanchor();
             }
-            Command::Seek(t) => return self.seek(t).await,
+            Command::Seek(t) => return self.seek(t).await.map(Ok),
+            Command::Day(day) => return self.switch_day(day).await,
         }
-        self.emit_clock().await
+        self.emit_clock().await.map(Ok)
     }
 
     async fn tick(&mut self) -> Result<(), Closed> {
@@ -250,7 +325,7 @@ pub fn spawn(
 ) -> Result<(ReplayHandle, mpsc::Receiver<FeedItem>), String> {
     let core = ReplayCore::new(source, opts.mark_step_ns)?;
     let (out, rx) = mpsc::channel(opts.channel.max(16));
-    let (cmd_tx, mut cmd_rx) = mpsc::channel::<(Command, Option<oneshot::Sender<ClockState>>)>(64);
+    let (cmd_tx, mut cmd_rx) = mpsc::channel::<(Command, Option<Reply>)>(64);
     let now = Instant::now();
     let mut d = Driver {
         speed: opts.speed,
@@ -290,13 +365,15 @@ pub fn spawn(
             let res = tokio::select! {
                 biased;
                 cmd = cmd_rx.recv(), if commands_open => match cmd {
-                    Some((cmd, reply)) => {
-                        let r = d.apply(cmd).await;
-                        if let Some(reply) = reply {
-                            let _ = reply.send(d.clock());
+                    Some((cmd, reply)) => match d.apply(cmd).await {
+                        Ok(applied) => {
+                            if let Some(reply) = reply {
+                                let _ = reply.send(applied.map(|()| d.clock()));
+                            }
+                            Ok(())
                         }
-                        r
-                    }
+                        Err(Closed) => Err(Closed),
+                    },
                     None => {
                         commands_open = false;
                         Ok(())

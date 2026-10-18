@@ -11,9 +11,16 @@ export interface Candidates {
   symbols: string[];
   band: ServerSymbols["priceBand"];
   screened: ServerSymbols["screened"];
+  /** The latest /api/symbols answer (day, source, fixture flag): see source.ts `followServer`. */
+  server?: ServerSymbols;
 }
 
-export function useCandidates(choice: SourceChoice): Candidates {
+/**
+ * `day` is the replay's trading day ("YYYY-MM-DD"): when it changes (a day switch, from this client
+ * or another) the list is fetched at once instead of on the next 10 s tick, so a symbol the new day
+ * lacks is replaced right away rather than leaving the old day's chart on screen.
+ */
+export function useCandidates(choice: SourceChoice, day: string | null = null): Candidates {
   const [state, setState] = useState<Candidates>({ symbols: choice.symbols, band: undefined, screened: undefined });
   useEffect(() => {
     if (choice.kind !== "server") return;
@@ -22,7 +29,7 @@ export function useCandidates(choice: SourceChoice): Candidates {
       const probe = await probeServer(fetch, 2500, getToken());
       if (!alive || !probe.ok) return;
       const d = probe.data;
-      setState({ symbols: Array.isArray(d.symbols) ? d.symbols : [], band: d.priceBand, screened: d.screened });
+      setState({ symbols: Array.isArray(d.symbols) ? d.symbols : [], band: d.priceBand, screened: d.screened, server: d });
     };
     void refresh();
     const id = setInterval(() => void refresh(), CANDIDATE_REFRESH_MS);
@@ -30,6 +37,6 @@ export function useCandidates(choice: SourceChoice): Candidates {
       alive = false;
       clearInterval(id);
     };
-  }, [choice.kind]);
+  }, [choice.kind, day]);
   return state;
 }

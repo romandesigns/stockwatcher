@@ -38,6 +38,8 @@ impl ReplayProvider {
             Arc::new(source),
             ReplayOptions {
                 start,
+                // A day switch from the app starts the new day at the same ET time of day.
+                start_time: cfg.start_et,
                 speed: cfg.speed,
                 autoplay: cfg.autoplay,
                 ..ReplayOptions::default()

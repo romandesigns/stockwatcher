@@ -1,7 +1,7 @@
-import { ChartStore, type ChartMessage, type Clock, type PaperState, type Series, type TapeTrade, type Timeframe } from "@stockwatcher/chart-core";
+import { ChartStore, parseReplayDayState, type ChartMessage, type Clock, type PaperState, type ReplayDayState, type Series, type TapeTrade, type Timeframe } from "@stockwatcher/chart-core";
 import type { ChartTrading } from "@stockwatcher/chart-native";
 import { authenticatedFetch, EMPTY_QUOTE_BOARD, type QuoteBoard, type QuoteChannel } from "@stockwatcher/shared";
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { SERVER_URL } from "./server";
 import type { MobileFeed } from "./serverFeed";
@@ -81,8 +81,12 @@ export interface Candidates {
   fixture: boolean;
 }
 
-/** The server's price-band candidates, refreshed every 10 s (they change as prices move). */
-export function useCandidates(token: string | null): Candidates {
+/**
+ * The server's price-band candidates, refreshed every 10 s (they change as prices move), and at
+ * once when the replay's trading day (`day`, "YYYY-MM-DD") changes: after a day switch a symbol the
+ * new day lacks is replaced right away instead of leaving the old day's chart up.
+ */
+export function useCandidates(token: string | null, day: string | null = null): Candidates {
   const [state, setState] = useState<Candidates>({ symbols: [], fixture: false });
   useEffect(() => {
     let alive = true;
@@ -102,6 +106,31 @@ export function useCandidates(token: string | null): Candidates {
       alive = false;
       clearInterval(id);
     };
-  }, [token]);
+  }, [token, day]);
   return state;
+}
+
+/**
+ * The replay day picker's data: GET /api/replay/state's `day` and `days` (the web's
+ * useReplayDays). Fetched, not pushed (the list changes a few times a month): on start, when the
+ * sheet opens (`refresh`), and when the clock's trading day changes, which is how a switch made
+ * on another device reaches this one's label.
+ */
+export function useReplayDays(token: string | null, clockDay: string | null): { state: ReplayDayState | null; refresh: () => void } {
+  const [state, setState] = useState<ReplayDayState | null>(null);
+  // Only the latest request may set the state: answers can arrive out of order.
+  const latest = useRef(0);
+  const refresh = useCallback(() => {
+    const id = ++latest.current;
+    void authenticatedFetch(`${SERVER_URL}/api/replay/state`, token)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((body: unknown) => {
+        if (id === latest.current && body) setState(parseReplayDayState(body));
+      })
+      .catch(() => {
+        // Offline: keep the last list; the socket status says so.
+      });
+  }, [token]);
+  useEffect(() => refresh(), [refresh, clockDay]);
+  return { state, refresh };
 }

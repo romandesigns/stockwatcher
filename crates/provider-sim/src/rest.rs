@@ -109,7 +109,7 @@ fn scan(sim: &Sim, symbol: &str, feed: Feed, bars: bool) -> Result<Scan, String>
     let reader = sim
         .0
         .archive
-        .reader(sim.0.day, symbol)
+        .reader(sim.day_info().day, symbol)
         .map_err(|e| e.to_string())?;
     let mut dc = DeliveryClock::default();
     let mut marks = MarkClock::default();
@@ -224,7 +224,7 @@ fn window(sim: &Sim, q: &ListQuery) -> Result<Window, String> {
     };
     let start = match q.start.as_deref() {
         Some(s) if !s.is_empty() => parse_time(s, false)?,
-        _ => et_midnight(sim.0.day),
+        _ => et_midnight(sim.day_info().day),
     };
     // The page token pins `end`, so later pages see the same set even as the clock moves.
     let (offset, pinned_end) = match q.page_token.as_deref() {
@@ -275,7 +275,7 @@ fn page<T>(mut items: Vec<T>, w: &Window) -> (Vec<T>, Option<String>) {
 }
 
 fn known(sim: &Sim, symbol: &str) -> bool {
-    sim.0.symbols.iter().any(|s| s == symbol)
+    sim.day_info().symbols.iter().any(|s| s == symbol)
 }
 
 pub async fn trades(
@@ -456,7 +456,7 @@ pub async fn snapshots(
                 "latestTrade": latest_trade,
                 "latestQuote": s.latest_quote.as_ref().map_or(Value::Null, alpaca::rest_quote),
                 "minuteBar": minute,
-                "dailyBar": daily_bar(sim.0.day, &sym, book, &candles),
+                "dailyBar": daily_bar(sim.day_info().day, &sym, book, &candles),
                 "prevDailyBar": Value::Null,
             }),
         );
@@ -509,8 +509,8 @@ pub async fn assets(
         .as_deref()
         .is_none_or(|e| e.is_empty() || e.eq_ignore_ascii_case("NASDAQ"));
     let list: Vec<Value> = if class_ok && status_ok && exch_ok {
-        sim.0
-            .symbols
+        let day = sim.day_info();
+        day.symbols
             .iter()
             .map(|s| {
                 json!({
@@ -518,7 +518,7 @@ pub async fn assets(
                     "class": "us_equity",
                     "exchange": "NASDAQ",
                     "symbol": s,
-                    "name": if sim.0.fixture {
+                    "name": if day.fixture {
                         format!("{s} Fixture Inc. (simulator fixture, not a real security)")
                     } else {
                         format!("{s} (archived; simulator)")
@@ -566,7 +566,8 @@ pub async fn universe(
         .and_then(Price::from_f64_rounded)
         .unwrap_or(UNIVERSE_MAX);
     let mut rows = Vec::new();
-    for sym in &sim.0.symbols {
+    let day = sim.day_info();
+    for sym in &day.symbols {
         let mut latest = None;
         for feed in [Feed::Sip, Feed::Boats] {
             if let Ok(s) = scan(&sim, sym, feed, false)

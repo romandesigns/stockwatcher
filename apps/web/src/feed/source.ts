@@ -8,7 +8,7 @@
 
 export interface ServerSymbols {
   mode: "replay" | "live" | (string & {});
-  /** Provider status: running, no_data, not_configured, error, stopped, idle. */
+  /** Provider status: starting, running, reconnecting (live link down, retrying), no_data, not_configured, error, stopped, idle. */
   status: string;
   /** e.g. "archive 2026-10-15 (fixture)" */
   source: string | null;
@@ -69,8 +69,23 @@ export function chooseSource(env: string | undefined, probe: Probe | null, fixtu
     symbols: d.symbols,
     fixtureData: !!d.fixture,
     mode: d.mode,
-    label: `Server ${d.mode}${d.day ? ` · ${d.day}` : ""}`,
+    label: serverLabel(d),
   };
+}
+
+/** The label for a server source: "Server replay · 2026-10-15". */
+const serverLabel = (d: ServerSymbols) => `Server ${d.mode}${d.day ? ` · ${d.day}` : ""}`;
+
+/**
+ * The startup choice brought up to date with a later GET /api/symbols. The replay day can change
+ * under a running page (replay.control `day`, from this client or another), and with it the
+ * source label, the day and whether the data is fixture data; the source chip and the tape note
+ * must say what is playing now, not what played when the page loaded. The in-browser fixture
+ * never changes, and a failed refresh (no `latest`) keeps the last known description.
+ */
+export function followServer(choice: SourceChoice, latest: ServerSymbols | undefined): SourceChoice {
+  if (choice.kind !== "server" || !latest) return choice;
+  return { ...choice, reason: latest.source ?? choice.reason, fixtureData: !!latest.fixture, mode: latest.mode, label: serverLabel(latest) };
 }
 
 /** The symbol to show first: the fixture's symbol if the server has it, else the first one. */

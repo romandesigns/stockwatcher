@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chooseSource, initialSymbol, probeServer, followCandidates, type ServerSymbols } from "./source.ts";
+import { chooseSource, initialSymbol, probeServer, followCandidates, followServer, type ServerSymbols } from "./source.ts";
 
 const data = (over: Partial<ServerSymbols> = {}): ServerSymbols => ({ mode: "replay", status: "running", source: "archive 2026-10-15 (fixture)", day: "2026-10-15", fixture: true, symbols: ["FXLO", "SMPL"], ...over });
 
@@ -44,5 +44,20 @@ describe("followCandidates", () => {
   });
   test("keeps the current symbol when no candidates are known yet", () => {
     expect(followCandidates("SMPL", [])).toBe("SMPL");
+  });
+});
+
+describe("followServer", () => {
+  test("the source description follows a replay day switch", () => {
+    const c = chooseSource(undefined, { ok: true, data: data() }, "SMPL");
+    const after = followServer(c, data({ day: "2026-10-14", source: "archive 2026-10-14", fixture: false }));
+    expect(after).toMatchObject({ kind: "server", label: "Server replay · 2026-10-14", reason: "archive 2026-10-14", fixtureData: false });
+    // No answer yet (or a failed refresh): the last known description stays.
+    expect(followServer(c, undefined)).toBe(c);
+  });
+
+  test("the in-browser fixture never follows the server", () => {
+    const f = chooseSource("fixture", { ok: true, data: data() }, "SMPL");
+    expect(followServer(f, data({ day: "2026-10-14" }))).toBe(f);
   });
 });

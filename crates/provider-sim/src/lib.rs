@@ -58,7 +58,7 @@ use market_replay::{ClockState, FeedItem};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use tokio::sync::{broadcast, watch};
 
 /// Simulator configuration. The defaults are **dummy local credentials**, not secrets; real
@@ -158,12 +158,21 @@ struct Live {
     rebuilding: bool,
 }
 
+/// The replay day the simulator serves. Replaced whole on a day switch, so a REST handler that
+/// took it once reads one consistent day (never the new day's symbols with the old day's date).
+#[derive(Debug)]
+pub struct SimDay {
+    pub day: NaiveDate,
+    pub symbols: Vec<String>,
+    pub fixture: bool,
+}
+
 struct Inner {
     cfg: SimConfig,
     archive: Archive,
-    day: NaiveDate,
-    symbols: Vec<String>,
-    fixture: bool,
+    /// Swapped on [`FeedItem::Source`] (a day switch in the app). Read-mostly: every REST
+    /// request clones the `Arc` out and drops the lock at once.
+    day: RwLock<Arc<SimDay>>,
     clock: watch::Receiver<ClockState>,
     tx: broadcast::Sender<Arc<Vec<StreamMsg>>>,
     live: Mutex<Live>,
@@ -185,9 +194,11 @@ impl Sim {
         Sim(Arc::new(Inner {
             cfg,
             archive,
-            day,
-            symbols,
-            fixture,
+            day: RwLock::new(Arc::new(SimDay {
+                day,
+                symbols,
+                fixture,
+            })),
             clock,
             tx: broadcast::channel(4096).0,
             live: Mutex::new(Live {
@@ -200,6 +211,11 @@ impl Sim {
 
     pub fn config(&self) -> &SimConfig {
         &self.0.cfg
+    }
+
+    /// The day currently served (it changes when the app switches the replay day).
+    pub fn day_info(&self) -> Arc<SimDay> {
+        self.0.day.read().expect("sim day poisoned").clone()
     }
 
     pub(crate) fn now(&self) -> market_events::UnixNanos {
@@ -221,7 +237,16 @@ impl Sim {
                     };
                 }
                 FeedItem::Clock(_) => live.rebuilding = false,
-                FeedItem::Error(_) => {}
+                FeedItem::Error(_) | FeedItem::Link(_) => {}
+                // A day switch: REST and the asset list follow the new day from here; the `Reset`
+                // right behind it clears the bar book as for a seek.
+                FeedItem::Source(src) => {
+                    *self.0.day.write().expect("sim day poisoned") = Arc::new(SimDay {
+                        day: src.day,
+                        symbols: src.symbols.clone(),
+                        fixture: src.fixture,
+                    });
+                }
                 FeedItem::Advance(t) => {
                     let ups = live.book.advance(*t);
                     bars_from(&mut live, &ups, &mut out);

@@ -1,6 +1,7 @@
 pub mod api;
 pub mod auth;
 pub mod config;
+pub mod days;
 pub mod market;
 pub mod quotes;
 pub mod ws;
