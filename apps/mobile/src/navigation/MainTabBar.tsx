@@ -63,6 +63,7 @@ const styles = StyleSheet.create({
   bar: { flexDirection: "row", gap: 4, paddingTop: 4, paddingHorizontal: 4, backgroundColor: colors.bgPanel },
   // 48 pt tall at least: a comfortable thumb target.
   item: { flex: 1, minWidth: 0, minHeight: 48, alignItems: "center", justifyContent: "center", gap: 2, paddingVertical: 4 },
-  pill: { width: 48, height: 28, borderRadius: 999, alignItems: "center", justifyContent: "center" },
+  // Half the height: Android drew a 999 radius on this small view as square corners.
+  pill: { width: 48, height: 28, borderRadius: 14, alignItems: "center", justifyContent: "center" },
   label: { fontSize: 11 },
 });
