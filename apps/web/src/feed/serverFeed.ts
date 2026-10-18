@@ -1,11 +1,13 @@
 import { parseChartMessage, parsePaperMessage, type ChartMessage, type ChartSubscribe, type PaperMessage, type PaperState, type ReplayControl } from "@stockwatcher/chart-core";
-import { createQuoteChannel, createWsClient, sameOriginWsUrl, type ConnectionStatus, type WebSocketLike } from "@stockwatcher/shared";
+import { createQuoteChannel, createWsClient, sameOriginWsUrl, type ConnectionStatus, type SettingsSync, type WebSocketLike } from "@stockwatcher/shared";
 import type { ChartFeed, ChartSubscription, PaperCommand, ReplayCommand } from "./types.ts";
 
 export interface ServerFeedOptions {
   url?: string;
   token?: string | null;
   onStatus?: (s: ConnectionStatus) => void;
+  /** The page's synced settings (settings/sync.ts): attached on every welcome by the shared client. */
+  settings?: SettingsSync;
 }
 
 /**
@@ -47,6 +49,7 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
       if (s === "open") resubscribe(); // subscriptions do not survive a reconnect
     },
     onQuotes: (m) => quotes.apply(m),
+    settings: opts.settings,
     createSocket: (url) => {
       const socket = new WebSocket(url);
       // Chart frames go to chart listeners; everything else to whatever
@@ -55,8 +58,9 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
       let inner: WebSocketLike["onmessage"] = null;
       socket.addEventListener("message", (ev) => {
         // A quotes.snapshot is hundreds of KB: hand it to shared's parser without first
-        // parsing it twice as a chart or paper frame. The server writes `type` first.
-        if (typeof ev.data === "string" && ev.data.startsWith('{"type":"quotes.')) {
+        // parsing it twice as a chart or paper frame. The server writes `type` first. The
+        // settings.* frames (shared's own too) take the same shortcut.
+        if (typeof ev.data === "string" && (ev.data.startsWith('{"type":"quotes.') || ev.data.startsWith('{"type":"settings.'))) {
           inner?.({ data: ev.data });
           return;
         }

@@ -1,5 +1,8 @@
+import { parseChartSettings } from "./chartSettings.ts";
+import { parseDrawingSettings } from "./drawingSettings.ts";
 import { DRAWING_KINDS, type Anchor, type Drawing, type DrawingKind } from "./drawings.ts";
 import { INDICATOR_PLACEMENT, type IndicatorKind, type IndicatorSpec } from "./indicators.ts";
+import { parseLayers } from "./levels.ts";
 
 // What the clients sync through the server (owner request 2026-10-18: "any setting change takes
 // place in all clients"; docs/architecture/settings-sync.md has the full synced vs device-local
@@ -151,4 +154,38 @@ export function diffDrawings(doc: unknown, next: readonly Drawing[]): { set: Rec
   }
   const remove = [...prev.keys()].filter((id) => !keep.has(id));
   return Object.keys(set).length || remove.length ? { set, remove } : null;
+}
+
+/** A client's settings from before sync, as read from its old storage keys (absent = never saved). */
+export interface LegacySettings {
+  indicators?: unknown;
+  layers?: unknown;
+  chartSettings?: unknown;
+  drawingSettings?: unknown;
+  /** `{ [symbol]: Drawing[] }`, the shape both apps kept. */
+  drawings?: unknown;
+}
+
+/**
+ * The one-time migration of a client's pre-sync settings, shared by the web app and the phone:
+ * each value that was ever saved is validated and handed to `seed` (settingsSync's `seed`,
+ * which queues an `ifAbsent` write). So the first client to connect makes its setup the shared
+ * one; on a later client the server's value wins and replaces the local one. Nothing saved,
+ * nothing seeded: a fresh install simply adopts the server's settings.
+ */
+export function migrateLegacySettings(legacy: LegacySettings, seed: (ns: string, value: unknown) => void): void {
+  const one = <T,>(ns: string, raw: unknown, parse: (raw: unknown) => T) => {
+    if (raw !== undefined && raw !== null) seed(ns, parse(raw));
+  };
+  one(SYNC_NS.indicators, legacy.indicators, parseIndicators);
+  one(SYNC_NS.layers, legacy.layers, parseLayers);
+  one(SYNC_NS.chartSettings, legacy.chartSettings, parseChartSettings);
+  one(SYNC_NS.drawingSettings, legacy.drawingSettings, parseDrawingSettings);
+  if (isObj(legacy.drawings)) {
+    for (const [symbol, list] of Object.entries(legacy.drawings)) {
+      if (!symbol.trim() || !Array.isArray(list)) continue;
+      const valid = list.map(parseDrawing).filter((d): d is Drawing => d !== null);
+      if (valid.length) seed(drawingsNs(symbol), drawingsToDoc(valid));
+    }
+  }
 }

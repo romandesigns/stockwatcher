@@ -11,7 +11,7 @@ import {
   type ReplayControl,
   type Timeframe,
 } from "@stockwatcher/chart-core";
-import { createQuoteChannel, createWsClient, type ConnectionStatus, type QuoteChannel, type WebSocketLike } from "@stockwatcher/shared";
+import { createQuoteChannel, createWsClient, type ConnectionStatus, type QuoteChannel, type SettingsSync, type WebSocketLike } from "@stockwatcher/shared";
 
 import { wsUrl } from "./server";
 
@@ -41,7 +41,7 @@ export interface MobileFeed {
  * raw socket because shared's parser only knows the handshake messages;
  * quotes.* frames are shared's own and pass straight through to it.
  */
-export function createMobileFeed(token: string | null, onStatus?: (s: ConnectionStatus) => void): MobileFeed {
+export function createMobileFeed(token: string | null, onStatus?: (s: ConnectionStatus) => void, settings?: SettingsSync): MobileFeed {
   const listeners = new Set<(m: ChartMessage) => void>();
   const paperListeners = new Set<(m: PaperMessage) => void>();
   const active = new Set<ChartSubscription>();
@@ -65,13 +65,16 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
       if (s === "open") for (const a of active) sendRaw({ type: "chart.subscribe", ...a });
     },
     onQuotes: (m) => quotes.apply(m),
+    // Synced settings (src/settings/sync.ts): attached on every welcome by the shared client.
+    settings,
     createSocket: (url) => {
       const socket = new WebSocket(url);
       let inner: WebSocketLike["onmessage"] = null;
       socket.addEventListener("message", (ev: { data: unknown }) => {
         // A quotes.snapshot is hundreds of KB: skip the chart/paper parsers (the server writes
-        // `type` first), which would each JSON.parse it again on the phone's JS thread.
-        if (typeof ev.data === "string" && ev.data.startsWith('{"type":"quotes.')) {
+        // `type` first), which would each JSON.parse it again on the phone's JS thread. The
+        // settings.* frames are shared's own too and take the same shortcut.
+        if (typeof ev.data === "string" && (ev.data.startsWith('{"type":"quotes.') || ev.data.startsWith('{"type":"settings.'))) {
           inner?.({ data: ev.data });
           return;
         }

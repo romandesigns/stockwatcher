@@ -10,11 +10,15 @@ import {
   sessionBands,
   tradingDayOf,
   volumeBuckets,
+  parseChartSettings,
   parseDrawingSettings,
+  parseIndicators,
+  parseLayers,
+  SYNC_NS,
   type ChartOptions,
-  type DrawingSettings,
   type Timeframe,
 } from "@stockwatcher/chart-core";
+import type { SettingsSync } from "@stockwatcher/shared";
 import { CandleChart, drawingSettingsSection, Icon, ReplayControls, SessionTimeline, SettingsDialog, Tape, VolumeProfile } from "@stockwatcher/chart-web";
 import { Tip, ToggleGroup, ToggleGroupItem, cn } from "@stockwatcher/chart-web/ui";
 import { useEffect, useMemo, useState } from "react";
@@ -29,6 +33,8 @@ import { useReplayDays } from "./feed/useReplayDays.ts";
 import { createFixtureFeed, FIXTURE_SYMBOL } from "./fixtures/fixtureFeed.ts";
 import { useMediaQuery } from "./lib/useMediaQuery.ts";
 import { TickerSearch } from "./search/TickerSearch.tsx";
+import { getSettingsSync } from "./settings/sync.ts";
+import { useSynced, useSyncedDrawings } from "./settings/useSynced.ts";
 
 /** The search icon for the quick-open pill and the phone header (chart-core's shared duotone set, like every icon). */
 const SearchIcon = <Icon name="search" />;
@@ -50,18 +56,12 @@ function sourceText(choice: SourceChoice): string {
   return choice.fixtureData ? `${choice.label} · fixture archive — not market data` : `${choice.label} · ${choice.reason}`;
 }
 
-/** The chart's saved state lives under this prefix (`sw-chart:settings`, `sw-chart:drawing`, …). */
+/**
+ * The chart's DEVICE-LOCAL saved state lives under this prefix (`sw-chart:toolbox`,
+ * `sw-chart:panes`, `sw-chart:toolsVisible`, `sw-chart:tradeQty`: CandleChart keeps them). The
+ * user's preferences and drawings are synced across devices instead (settings/sync.ts).
+ */
 const CHART_KEY = "sw-chart";
-const DRAWING_KEY = `${CHART_KEY}:drawing`;
-
-const loadDrawingSettings = (): DrawingSettings => {
-  try {
-    const raw = localStorage.getItem(DRAWING_KEY);
-    return parseDrawingSettings(raw ? JSON.parse(raw) : null);
-  } catch {
-    return parseDrawingSettings(null);
-  }
-};
 
 /**
  * The Settings gear (owner request 2026-10-18), at the header's right edge
@@ -128,6 +128,8 @@ export default function App() {
   // The server wants an access token (production): show the sign-in card instead of falling back to the fixture.
   const [signIn, setSignIn] = useState<{ rejected: boolean } | null>(null);
   const [attempt, setAttempt] = useState(0);
+  // One engine for the page, whatever the feed: the fixture never connects it (local only).
+  const sync = useMemo(() => getSettingsSync(), []);
   useEffect(() => {
     let alive = true;
     let feed: ChartFeed | null = null;
@@ -141,14 +143,14 @@ export default function App() {
       }
       setSignIn(null);
       const choice = chooseSource(ENV_SOURCE, probe, FIXTURE_SYMBOL);
-      feed = choice.kind === "server" ? createServerFeed({ token }) : createFixtureFeed();
+      feed = choice.kind === "server" ? createServerFeed({ token, settings: sync }) : createFixtureFeed();
       setReady({ choice, feed });
     });
     return () => {
       alive = false;
       feed?.close();
     };
-  }, [attempt]);
+  }, [attempt, sync]);
   if (signIn) {
     return (
       <SignIn
@@ -163,7 +165,7 @@ export default function App() {
   if (!ready) {
     return <div className="flex min-h-dvh items-center justify-center bg-background text-sm text-muted-foreground">Connecting to the server…</div>;
   }
-  return <ChartApp choice={ready.choice} feed={ready.feed} />;
+  return <ChartApp choice={ready.choice} feed={ready.feed} sync={sync} />;
 }
 
 /** The one-field sign-in for a server that requires its access token. */
@@ -205,7 +207,7 @@ function SignIn({ rejected, onSubmit }: { rejected: boolean; onSubmit: (token: s
   );
 }
 
-function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
+function ChartApp({ choice, feed, sync }: { choice: SourceChoice; feed: ChartFeed; sync: SettingsSync }) {
 
   const [symbol, setSymbol] = useState(() => initialSymbol(choice, FIXTURE_SYMBOL));
   const [timeframe, setTimeframe] = useState<Timeframe>("1m");
@@ -232,19 +234,29 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
   const dayOptions = useMemo(() => replayDayOptions(replayDays.state?.days ?? []), [replayDays.state]);
 
   const phone = useMediaQuery("(max-width: 600px)");
-  // The Settings dialog and what its Drawing tab edits: which buttons the chart's drawing toolbox shows.
-  // Owned here (the dialog is app chrome), handed to the chart, saved next to its other settings.
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [drawingSettings, setDrawingSettings] = useState<DrawingSettings>(loadDrawingSettings);
-  const changeDrawingSettings = (next: DrawingSettings) => {
-    setDrawingSettings(next);
-    try {
-      localStorage.setItem(DRAWING_KEY, JSON.stringify(next));
-    } catch {
-      // Private mode or blocked storage: the choice holds until the page closes.
-    }
+  // The user's preferences and this symbol's drawings, synced live with every other client
+  // (desktop, web, phone) and kept on the server; the chart is controlled with them. Each device
+  // keeps its own view: ticker, timeframe, zoom/pan, toolbox place, open dialogs.
+  const [indicators, setIndicators] = useSynced(sync, SYNC_NS.indicators, parseIndicators);
+  const [layers, setLayers] = useSynced(sync, SYNC_NS.layers, parseLayers);
+  const [chartSettings, setChartSettings, chartSettingsOrigin] = useSynced(sync, SYNC_NS.chartSettings, parseChartSettings);
+  // The Settings dialog's Drawing tab: which buttons the chart's drawing toolbox shows.
+  const [drawingSettings, setDrawingSettings] = useSynced(sync, SYNC_NS.drawingSettings, parseDrawingSettings);
+  const [drawings, setDrawings] = useSyncedDrawings(sync, symbol);
+  const synced = {
+    indicators,
+    onIndicatorsChange: setIndicators,
+    layers,
+    onLayersChange: setLayers,
+    settings: chartSettings,
+    onSettingsChange: setChartSettings,
+    settingsFromRemote: chartSettingsOrigin === "remote",
+    drawingSettings,
+    drawings,
+    onDrawingsChange: setDrawings,
   };
-  const settings = <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} persistKey="sw-settings" sections={[drawingSettingsSection(drawingSettings, changeDrawingSettings)]} />;
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const settings = <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} persistKey="sw-settings" sections={[drawingSettingsSection(drawingSettings, setDrawingSettings)]} />;
   const gear = <SettingsButton open={settingsOpen} onOpen={() => setSettingsOpen(true)} />;
   // Ticker quick-open, VS Code's Ctrl+P (Cmd+P on a Mac): the browser's print shortcut is taken
   // over on purpose while the app is focused.
@@ -345,7 +357,7 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
           {search}
           {settings}
         </header>
-        <CandleChart className="h-[360px]" toolbar inspector symbol={symbol} persistKey={CHART_KEY} drawingSettings={drawingSettings} trading={trading} now={clock?.now ?? null} onTimeframeChange={changeTf} series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={setInspectT} options={PHONE_CHART} barSpacing={10} label={chartLabel} />
+        <CandleChart className="h-[360px]" toolbar inspector symbol={symbol} persistKey={CHART_KEY} {...synced} trading={trading} now={clock?.now ?? null} onTimeframeChange={changeTf} series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={setInspectT} options={PHONE_CHART} barSpacing={10} label={chartLabel} />
         <section aria-label="Session timeline and replay" className="flex flex-col gap-1.5 rounded-xl bg-card px-3 py-2">
           <ReplayControls {...replay} variant="compact" />
           <SessionTimeline bands={bands} buckets={buckets} bucketMs={bucketMs} now={clock?.now ?? null} variant="minimal" onSeek={seek} />
@@ -400,7 +412,7 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
                     <span className={cn("pointer-events-auto font-mono text-[11px]", changeColor)}>{change}</span>
                   </Tip>
                 </div>
-              } symbol={symbol} persistKey={CHART_KEY} drawingSettings={drawingSettings} trading={trading} now={clock?.now ?? null} onTimeframeChange={changeTf} series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={setInspectT} options={DESKTOP_CHART} label={chartLabel} />
+              } symbol={symbol} persistKey={CHART_KEY} {...synced} trading={trading} now={clock?.now ?? null} onTimeframeChange={changeTf} series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={setInspectT} options={DESKTOP_CHART} label={chartLabel} />
           </div>
           <section aria-label="Session timeline and replay" className="flex flex-col gap-2 rounded-xl bg-card px-3 py-2.5">
             <ReplayControls {...replay} />
