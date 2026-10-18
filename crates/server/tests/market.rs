@@ -907,7 +907,11 @@ async fn quotes_subscribe_gets_a_snapshot_then_changed_rows_about_once_a_second(
     );
     for u in [&first, &second] {
         assert!(!u["quotes"].as_array().unwrap().is_empty());
-        assert!(u["t"].as_i64().unwrap() > snap["t"].as_i64().unwrap());
+        // `>=`, not `>`: `t` is the display clock, which the replay publishes ~4 times a second
+        // of wall time, while events keep arriving in between. The first update right after the
+        // snapshot can carry rows changed by events applied since, before the clock ticked again
+        // (seen as `t == snap.t` at 10:40:00, flaky under load).
+        assert!(u["t"].as_i64().unwrap() >= snap["t"].as_i64().unwrap());
         assert!(quote(u, "FXHI").is_none());
         for q in u["quotes"].as_array().unwrap() {
             assert!(
