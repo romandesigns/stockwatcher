@@ -370,7 +370,9 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
       {/* Three columns (logo | search | data source): equal side columns put the search pill at the
           page's exact centre, where the quick-open panel drops down, at the same width. */}
       <header className="grid grid-cols-[1fr_auto_1fr] items-center gap-4 px-4 py-2.5">
-        <div className="text-sm font-semibold tracking-tight">StockWatcher</div>
+        {/* The brand is in the main nav's rail now; the empty first column keeps the search pill centred. */}
+        <div aria-hidden />
+
         <button
           type="button"
           onClick={() => app.setSearchOpen(true)}

@@ -114,7 +114,10 @@ export type IconName =
   | "chartArea"
   | "chartBaseline"
   | "settings"
-  | "color";
+  | "color"
+  | "dashboard"
+  | "sidebarCollapse"
+  | "sidebarExpand";
 
 export const ICONS: Readonly<Record<IconName, IconDef>> = {
   // Drawing tools: the drawn object is primary, its handles and fills secondary.
@@ -204,6 +207,18 @@ export const ICONS: Readonly<Record<IconName, IconDef>> = {
   // A drawing's colour, for the Drawing settings row (the toolbox itself shows the live swatch):
   // a drop, its body soft, its outline crisp.
   color: icon([S(DROP, { paint: "fill" }), P(DROP)]),
+
+  // Main navigation (owner request 2026-10-18). Dashboard: four tiles, the tall one (the main view)
+  // and the wide one primary, the two small ones context.
+  dashboard: icon([
+    P("M3.5 2.5h3a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1h-3a1 1 0 0 1-1-1v-5a1 1 0 0 1 1-1z"),
+    S("M9.5 2.5h3a1 1 0 0 1 1 1v1a1 1 0 0 1-1 1h-3a1 1 0 0 1-1-1v-1a1 1 0 0 1 1-1z", { paint: "fill" }),
+    P("M9.5 7.5h3a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1h-3a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1z"),
+    S("M3.5 11.5h3a1 1 0 0 1 1 1v0a1 1 0 0 1-1 1h-3a1 1 0 0 1-1-1v0a1 1 0 0 1 1-1z", { paint: "fill" }),
+  ]),
+  // The nav rail's own toggle: a panel with its rail (secondary) and the way it will move (primary).
+  sidebarCollapse: icon([S("M2.5 3.5h11v9h-11z", { paint: "fill" }), P("M2.5 3.5h11v9h-11zM6 3.5v9"), P("M10.5 6.5 9 8l1.5 1.5")]),
+  sidebarExpand: icon([S("M2.5 3.5h11v9h-11z", { paint: "fill" }), P("M2.5 3.5h11v9h-11zM6 3.5v9"), P("M9 6.5 10.5 8 9 9.5")]),
 };
 
 export const ICON_NAMES = Object.keys(ICONS) as IconName[];

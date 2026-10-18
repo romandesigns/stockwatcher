@@ -153,7 +153,8 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
   const canPickDay = !live && !!clock && !!replayDay && dayOptions.length > 0;
 
   return (
-    <View style={[styles.screen, { paddingTop: insets.top + 8, paddingBottom: insets.bottom + 8 }]}>
+    // No bottom inset: the main nav's tab bar sits below this screen and takes the home-indicator inset.
+    <View style={[styles.screen, { paddingTop: insets.top + 8, paddingBottom: 8 }]}>
       <View style={styles.header}>
         <Pressable accessibilityRole="button" accessibilityLabel={`${active ?? "No ticker"}, search tickers`} onPress={() => app.setSearchOpen(true)} hitSlop={8} style={({ pressed }) => [styles.tickerButton, pressed && { opacity: 0.6 }]}>
           <Text style={styles.symbol}>{active ?? "—"}</Text>

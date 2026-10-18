@@ -9,12 +9,18 @@ import { RootStack, type RootStackParamList } from "./navigation/RootStack";
 import { colors } from "./theme";
 import { useForegroundUpdates } from "./updates/useForegroundUpdates";
 
-// Deep links: stockwatcher://  (scheme set in app.config.ts).
+// Deep links: stockwatcher:// opens the dashboard, stockwatcher://chart the chart (scheme set in
+// app.config.ts).
 const linking: LinkingOptions<RootStackParamList> = {
   prefixes: [Linking.createURL("/")],
   config: {
     screens: {
-      Home: "",
+      Home: {
+        screens: {
+          Dashboard: "",
+          Chart: "chart",
+        },
+      },
     },
   },
 };
