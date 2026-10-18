@@ -134,10 +134,68 @@ export interface QuotesUnsubscribeMessage {
   type: "quotes.unsubscribe";
 }
 
-export type ClientMessage = HelloMessage | PingMessage | PongMessage | QuotesSubscribeMessage | QuotesUnsubscribeMessage;
-export type ServerMessage = WelcomeMessage | PingMessage | PongMessage | ErrorMessage | QuotesMessage;
+// --- Synced settings (after `welcome`; crates/server/src/settings.rs, ws.rs) ---------------
+// The user's chart preferences and drawings, shared live by every client and kept on the
+// server (docs/architecture/settings-sync.md). Values are opaque to the server: each client
+// validates what it reads with chart-core's parse functions. settingsSync.ts is the client.
 
-const SERVER_TYPES = new Set(["welcome", "ping", "pong", "error", "quotes.snapshot", "quotes.update"]);
+/** One namespace (`layers`, `chartSettings`, `drawings:SMPL`, …) as the server holds it. */
+export interface SettingsDocWire {
+  ns: string;
+  /** 1, 2, 3, … per namespace, bumped by every applied write. */
+  rev: number;
+  /** Wall-clock epoch ms of the last write. */
+  updatedAt: number;
+  value: unknown;
+}
+
+/** Right after `welcome`, again to a lagged connection: every namespace, the whole truth. */
+export interface SettingsSnapshotMessage {
+  type: "settings.snapshot";
+  docs: SettingsDocWire[];
+}
+
+/** After every applied write, to every connection (the writer included: it matches `opId`). */
+export interface SettingsChangedMessage extends SettingsDocWire {
+  type: "settings.changed";
+  opId: string;
+}
+
+/** To the writer alone; nothing changed. `settings_unavailable` is worth retrying, the rest are not. */
+export interface SettingsRejectedMessage {
+  type: "settings.rejected";
+  ns: string;
+  opId: string;
+  code: "bad_request" | "too_large" | "store_full" | "not_a_map" | "settings_unavailable" | (string & {});
+  message: string;
+}
+
+export type SettingsServerMessage = SettingsSnapshotMessage | SettingsChangedMessage | SettingsRejectedMessage;
+
+/** Replaces a namespace's value; `ifAbsent` only seeds one that was never written (migration). */
+export interface SettingsSetMessage {
+  type: "settings.set";
+  ns: string;
+  value: unknown;
+  opId: string;
+  ifAbsent?: true;
+}
+
+/** Sets and removes entries of an object-valued namespace (a symbol's drawings by id). */
+export interface SettingsPatchMessage {
+  type: "settings.patch";
+  ns: string;
+  set?: Record<string, unknown>;
+  remove?: string[];
+  opId: string;
+}
+
+export type SettingsClientMessage = SettingsSetMessage | SettingsPatchMessage;
+
+export type ClientMessage = HelloMessage | PingMessage | PongMessage | QuotesSubscribeMessage | QuotesUnsubscribeMessage | SettingsClientMessage;
+export type ServerMessage = WelcomeMessage | PingMessage | PongMessage | ErrorMessage | QuotesMessage | SettingsServerMessage;
+
+const SERVER_TYPES = new Set(["welcome", "ping", "pong", "error", "quotes.snapshot", "quotes.update", "settings.snapshot", "settings.changed", "settings.rejected"]);
 
 /** Parses one server frame; returns null for anything malformed or unknown. */
 export function parseServerMessage(raw: unknown): ServerMessage | null {

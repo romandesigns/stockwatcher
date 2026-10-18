@@ -1,4 +1,5 @@
 import { parseServerMessage, type ClientMessage, type HelloMessage, type QuotesMessage, type ServerMessage, type WelcomeMessage } from "./protocol.ts";
+import type { SettingsSync } from "./settingsSync.ts";
 
 export type ConnectionStatus = "connecting" | "open" | "reconnecting" | "unauthorized" | "closed";
 
@@ -22,6 +23,12 @@ export interface WsClientOptions {
   onMessage?: (message: ServerMessage) => void;
   /** `quotes.snapshot` / `quotes.update` frames, while subscribed (see `subscribeQuotes`). */
   onQuotes?: (message: QuotesMessage) => void;
+  /**
+   * The synced settings (settingsSync.ts). Attached on every `welcome` (the server's
+   * `settings.snapshot` follows it), fed every `settings.*` frame, and detached when the
+   * connection drops, so a reconnect resyncs and resends unconfirmed edits by itself.
+   */
+  settings?: SettingsSync;
   createSocket?: (url: string) => WebSocketLike;
   baseDelayMs?: number;
   maxDelayMs?: number;
@@ -107,6 +114,7 @@ export function createWsClient(opts: WsClientOptions): WsClient {
         heartbeatMs = msg.heartbeatSecs * 1000;
         setStatus("open");
         opts.onWelcome?.(msg);
+        opts.settings?.attach(send);
         if (quotesWanted) send({ type: "quotes.subscribe" });
       } else if (msg.type === "ping") {
         send({ type: "pong", ts: msg.ts });
@@ -114,6 +122,8 @@ export function createWsClient(opts: WsClientOptions): WsClient {
         unauthorized = true;
       } else if ((msg.type === "quotes.snapshot" || msg.type === "quotes.update") && quotesWanted) {
         opts.onQuotes?.(msg);
+      } else if (msg.type === "settings.snapshot" || msg.type === "settings.changed" || msg.type === "settings.rejected") {
+        opts.settings?.handle(msg);
       }
       opts.onMessage?.(msg);
     };
@@ -121,7 +131,10 @@ export function createWsClient(opts: WsClientOptions): WsClient {
     ws.onerror = () => {};
     ws.onclose = () => {
       if (livenessTimer) clearTimeout(livenessTimer);
-      if (socket === ws) socket = null;
+      if (socket === ws) {
+        socket = null;
+        opts.settings?.detach();
+      }
       if (stopped) return setStatus("closed");
       if (unauthorized) {
         stopped = true;

@@ -145,6 +145,14 @@ export interface CandleChartProps {
   settings?: ChartSettings;
   onSettingsChange?: (s: ChartSettings) => void;
   /**
+   * True when the current `settings` came from another device (settings sync,
+   * docs/architecture/settings-sync.md). They still apply at once (chart type, grid, volume,
+   * sessions, …), but this device's view is not re-zoomed or re-fitted for a zoom-preset,
+   * auto-stretch or extended-hours change: each device keeps its own zoom and pan, and the
+   * next ticker or timeframe it opens uses the new settings.
+   */
+  settingsFromRemote?: boolean;
+  /**
    * Which buttons the floating drawing toolbox shows (the Settings dialog's
    * Drawing tab; chart-core drawingSettings.ts). The host owns it (the
    * dialog lives in the app header, not in the chart); without it the chart
@@ -261,6 +269,7 @@ export function CandleChart({
   onPriceScaleTypeChange,
   settings: settingsProp,
   onSettingsChange,
+  settingsFromRemote = false,
   drawingSettings: drawingSettingsProp,
   priceAxisMenu = true,
   options,
@@ -540,10 +549,12 @@ export function CandleChart({
   const sizeRef = useRef(size);
   sizeRef.current = size;
   const prevSettings = useRef(settings);
+  const remoteRef = useRef(settingsFromRemote);
+  remoteRef.current = settingsFromRemote;
   useEffect(() => {
     const p = prevSettings.current;
     prevSettings.current = settings;
-    if (p === settings) return;
+    if (p === settings || remoteRef.current) return;
     if (p.autoStretch !== settings.autoStretch) {
       if (settings.autoStretch) setVp(autoScalePrice);
       else setVp((v) => {
