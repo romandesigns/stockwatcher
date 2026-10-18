@@ -149,12 +149,9 @@ fn credentials() -> ExitCode {
 }
 
 fn alpaca_creds() -> Result<AlpacaCredentials, String> {
-    let key_id = env("ALPACA_API_KEY").or_else(|| env("APCA_API_KEY_ID"));
-    let secret = env("ALPACA_API_SECRET").or_else(|| env("APCA_API_SECRET_KEY"));
-    match (key_id, secret) {
-        (Some(key_id), Some(secret)) => Ok(AlpacaCredentials { key_id, secret }),
-        _ => Err("ALPACA_API_KEY and ALPACA_API_SECRET are not set in this environment".into()),
-    }
+    AlpacaCredentials::from_lookup(env).ok_or_else(|| {
+        "ALPACA_API_KEY and ALPACA_API_SECRET are not set in this environment".into()
+    })
 }
 
 fn price_band() -> Result<PriceBand, String> {

@@ -123,4 +123,26 @@ pub enum FeedItem {
     /// symbol list, fixture flag) here and drops its derived state on the `Reset` as for a seek.
     /// Not emitted at startup: the session's initial description is the provider's own.
     Source(std::sync::Arc<SourceInfo>),
+    /// A live source's connection changed (never emitted by replay). Never affects derived
+    /// state: it only tells consumers whether silence means "quiet market" or "no connection".
+    Link(Link),
+}
+
+/// Connection state of a live source, as reported by [`FeedItem::Link`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LinkState {
+    /// Connecting or authenticating (first connect, or a reconnect after a backoff wait).
+    Connecting,
+    /// Authenticated and subscribed: events flow (or the market is genuinely quiet).
+    Up,
+    /// Disconnected or refused; the source is waiting to reconnect. Events in the gap are lost.
+    Down,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Link {
+    pub state: LinkState,
+    /// Why, in words an operator can act on (never credentials).
+    pub detail: Option<String>,
 }

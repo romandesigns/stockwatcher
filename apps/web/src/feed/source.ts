@@ -8,7 +8,7 @@
 
 export interface ServerSymbols {
   mode: "replay" | "live" | (string & {});
-  /** Provider status: running, no_data, not_configured, error, stopped, idle. */
+  /** Provider status: starting, running, reconnecting (live link down, retrying), no_data, not_configured, error, stopped, idle. */
   status: string;
   /** e.g. "archive 2026-10-15 (fixture)" */
   source: string | null;

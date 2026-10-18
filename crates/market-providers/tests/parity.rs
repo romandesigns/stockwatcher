@@ -165,21 +165,19 @@ async fn replay_and_live_shaped_feed_produce_identical_engine_output() {
 }
 
 #[tokio::test]
-async fn live_mode_without_a_client_is_not_configured() {
-    let cfg = ProviderConfig::from_lookup(|k| {
-        (k == "MARKET_DATA_MODE" || k == "LIVE_PROVIDER_ENABLED").then(|| {
-            if k == "MARKET_DATA_MODE" {
-                "live".to_string()
-            } else {
-                "1".to_string()
-            }
-        })
-    })
-    .unwrap();
+async fn live_mode_without_credentials_is_not_configured() {
+    let cfg =
+        ProviderConfig::from_lookup(|k| (k == "MARKET_DATA_MODE").then(|| "live".into())).unwrap();
     let p = market_providers::from_config(&cfg).unwrap();
     assert_eq!(p.mode(), ClockMode::Live);
     match p.start() {
-        Err(ProviderError::NotConfigured(m)) => assert!(m.contains("not implemented"), "{m}"),
+        // The message names the variables an operator has to set.
+        Err(ProviderError::NotConfigured(m)) => {
+            assert!(
+                m.contains("ALPACA_API_KEY") && m.contains("ALPACA_API_SECRET"),
+                "{m}"
+            )
+        }
         Err(e) => panic!("unexpected {e}"),
         Ok(_) => panic!("live provider started without a client"),
     }

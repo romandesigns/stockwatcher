@@ -1468,3 +1468,82 @@ async fn after_a_day_switch_the_previous_close_is_the_new_days_previous_close() 
         .await;
     }
 }
+
+/// A running live provider (not the idle "not configured" one): its link state is the server's
+/// status, and there are no replay days to offer.
+#[tokio::test]
+async fn a_running_live_feed_reports_its_link_and_offers_no_days() {
+    use market_events::MarketEvent;
+    use market_providers::{
+        Link, LinkState, LiveFeed, LiveOptions, LiveProvider, MarketDataProvider, ProviderError,
+    };
+    use tokio::sync::{mpsc, watch};
+
+    struct Feed {
+        link: watch::Receiver<Link>,
+        rx: mpsc::Receiver<MarketEvent>,
+    }
+    impl LiveFeed for Feed {
+        fn label(&self) -> String {
+            "test link".into()
+        }
+        fn symbols(&self) -> Vec<String> {
+            Vec::new()
+        }
+        fn link(&mut self) -> Option<watch::Receiver<Link>> {
+            Some(self.link.clone())
+        }
+        fn connect(self: Box<Self>) -> Result<mpsc::Receiver<MarketEvent>, ProviderError> {
+            Ok(self.rx)
+        }
+    }
+
+    let (link_tx, link) = watch::channel(Link {
+        state: LinkState::Connecting,
+        detail: Some("connecting".into()),
+    });
+    let (_tx, rx) = mpsc::channel(16);
+    let session = Box::new(LiveProvider::with_feed(
+        Box::new(Feed { link, rx }),
+        LiveOptions {
+            idle_tick: None,
+            ..LiveOptions::default()
+        },
+    ))
+    .start()
+    .unwrap();
+    let market = Market::from_session(session, None);
+    let state = |want: &'static str| {
+        let market = market.clone();
+        async move {
+            for _ in 0..500 {
+                let v = market.state_json();
+                if v["status"]["state"] == want {
+                    return v;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            panic!("status never became {want}: {}", market.state_json())
+        }
+    };
+    let v = state("starting").await;
+    assert_eq!(v["mode"], "live");
+    assert_eq!(v["days"], json!([]));
+    assert_eq!(v["controllable"], false);
+
+    link_tx.send_replace(Link {
+        state: LinkState::Up,
+        detail: Some("subscribed".into()),
+    });
+    state("running").await;
+    link_tx.send_replace(Link {
+        state: LinkState::Down,
+        detail: Some("connection lost; reconnecting in 1.0 s".into()),
+    });
+    let v = state("reconnecting").await;
+    assert_eq!(
+        v["status"]["detail"],
+        "connection lost; reconnecting in 1.0 s"
+    );
+    assert_eq!(v["days"], json!([]));
+}

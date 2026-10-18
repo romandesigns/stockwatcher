@@ -1,0 +1,809 @@
+//! The stream socket: one long-lived task per [`AlpacaStream`].
+//!
+//! # Session
+//!
+//! connect (`{base}/{feed path}`, TLS via rustls + ring + the platform verifier, JSON frames) →
+//! `connected` → send `auth` → `authenticated` → send `subscribe` (`trades`, and `statuses` for
+//! the same symbols; `*` is the whole market) → `subscription` → stream. Every stage must finish
+//! within [`AlpacaStreamConfig::handshake_timeout`] of connecting. Once streaming, the client
+//! pings every [`AlpacaStreamConfig::ping_every`]; a connection that delivers no frame at all
+//! (not even the pong) for [`AlpacaStreamConfig::silence_timeout`] is presumed dead. A closed
+//! market is quiet but still answers pings, so silence alone never means "no data".
+//!
+//! # Reconnect
+//!
+//! Any end of a session (network loss, close, read error, an `error` message, a missed stage)
+//! closes the socket and reconnects after an exponential backoff with equal jitter: the wait is
+//! uniform in `[d/2, d]`, `d` doubling from [`Backoff::initial`] to [`Backoff::max`]. `d` resets
+//! only after a session that reached `subscription` and stayed up [`Backoff::stable_after`], so
+//! a server that accepts and immediately drops us still backs off. Errors that a retry cannot fix
+//! soon (402 auth failed, 405 symbol limit, 406 connection limit, 409 insufficient subscription,
+//! 410 invalid action) wait the full `max`: Alpaca allows one stream connection per account on
+//! most plans, and hammering a 406 would only keep the other holder's slot contested. Each
+//! reconnect re-authenticates and re-subscribes from the configuration. **Events published while
+//! disconnected are lost**: Alpaca does not replay, and this client does not backfill.
+//!
+//! # Backpressure (the consumer lags)
+//!
+//! Events go into a bounded channel ([`AlpacaStreamConfig::channel`], `LiveOptions.channel` in
+//! production). The reader never blocks on it for longer than
+//! [`AlpacaStreamConfig::lag_grace`]: while it waits it is not reading the socket, and Alpaca
+//! disconnects a client that falls behind (407 slow client), which would lose more than waiting
+//! saves. When the grace runs out the reader **sheds**: it drops events (counted in
+//! [`StreamStats::dropped`]) without waiting until the channel accepts one again, then reports
+//! how many were lost. Both edges are logged and published on the link (state stays `Up`, the
+//! detail names the gap), so a chart built during the gap is known to be incomplete rather than
+//! silently wrong. Dropping beats disconnecting: a reconnect loses the same events plus the
+//! handshake time, and risks the 406 race.
+//!
+//! # Credentials
+//!
+//! Only the auth message carries them. They are never logged, never part of a URL or an error
+//! string, and [`AlpacaCredentials`]' `Debug` redacts them.
+
+use super::protocol::{Inbound, StreamFeed, Subscription, parse_frame};
+use crate::ProviderError;
+use crate::import::alpaca::AlpacaCredentials;
+use crate::live::LiveFeed;
+use futures_util::{SinkExt, StreamExt};
+use market_events::{MarketEvent, UnixNanos};
+use market_replay::{Link, LinkState};
+use serde_json::json;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
+use tokio::sync::mpsc::error::TrySendError;
+use tokio::sync::{mpsc, watch};
+use tokio::time::Instant;
+use tokio_tungstenite::Connector;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::{self, Message};
+
+/// What to subscribe to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LiveSymbols {
+    /// `*`: every symbol on the feed.
+    All,
+    List(Vec<String>),
+}
+
+impl LiveSymbols {
+    /// `*` or a comma list (`SMPL, abc` → `["SMPL", "ABC"]`). A list containing `*` is `All`.
+    pub fn parse(s: &str) -> Result<LiveSymbols, String> {
+        let mut out: Vec<String> = Vec::new();
+        for part in s.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+            if part == "*" {
+                return Ok(LiveSymbols::All);
+            }
+            let sym = part.to_ascii_uppercase();
+            // Alpaca symbols: letters, digits and the class separators (BRK.B, BRK/B).
+            if !sym
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '/' | '-'))
+            {
+                return Err(format!("not a symbol: {part:?}"));
+            }
+            if !out.contains(&sym) {
+                out.push(sym);
+            }
+        }
+        if out.is_empty() {
+            return Err("no symbols (use * for the whole market)".into());
+        }
+        Ok(LiveSymbols::List(out))
+    }
+
+    fn wire(&self) -> Vec<String> {
+        match self {
+            LiveSymbols::All => vec!["*".into()],
+            LiveSymbols::List(l) => l.clone(),
+        }
+    }
+}
+
+/// How an event's `receive_ts` is set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReceiveTime {
+    /// Wall time when the frame was read (production).
+    Wall,
+    /// `receive_ts = event_ts`, as if delivery were instant: the engine clock then follows the
+    /// prints, not the machine, so a test's output does not depend on when it runs (parity).
+    EventTime,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Backoff {
+    pub initial: Duration,
+    pub max: Duration,
+    pub stable_after: Duration,
+}
+
+impl Default for Backoff {
+    fn default() -> Self {
+        Backoff {
+            initial: Duration::from_secs(1),
+            max: Duration::from_secs(60),
+            stable_after: Duration::from_secs(30),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct AlpacaStreamConfig {
+    /// e.g. `wss://stream.data.alpaca.markets`, or provider-sim's `ws://127.0.0.1:8791`.
+    pub base: String,
+    pub feed: StreamFeed,
+    pub symbols: LiveSymbols,
+    /// Also subscribe to trading statuses (halts) for the same symbols.
+    pub statuses: bool,
+    pub credentials: AlpacaCredentials,
+    pub backoff: Backoff,
+    pub handshake_timeout: Duration,
+    pub ping_every: Duration,
+    pub silence_timeout: Duration,
+    pub lag_grace: Duration,
+    pub channel: usize,
+    pub receive_time: ReceiveTime,
+}
+
+impl AlpacaStreamConfig {
+    pub const DEFAULT_BASE: &'static str = "wss://stream.data.alpaca.markets";
+
+    pub fn new(
+        base: impl Into<String>,
+        feed: StreamFeed,
+        symbols: LiveSymbols,
+        credentials: AlpacaCredentials,
+    ) -> Self {
+        AlpacaStreamConfig {
+            base: base.into(),
+            feed,
+            symbols,
+            statuses: true,
+            credentials,
+            backoff: Backoff::default(),
+            handshake_timeout: Duration::from_secs(15),
+            ping_every: Duration::from_secs(20),
+            silence_timeout: Duration::from_secs(60),
+            lag_grace: Duration::from_secs(2),
+            channel: 8192,
+            receive_time: ReceiveTime::Wall,
+        }
+    }
+
+    pub fn url(&self) -> String {
+        format!("{}/{}", self.base.trim_end_matches('/'), self.feed.path())
+    }
+}
+
+/// Counters since the feed started (all sessions). Cheap to read from another task.
+#[derive(Debug, Default)]
+pub struct StreamStats {
+    pub connects: AtomicU64,
+    /// Sessions that reached `subscription`.
+    pub subscribed: AtomicU64,
+    pub frames: AtomicU64,
+    pub events: AtomicU64,
+    /// Events dropped because the consumer lagged (see the module docs).
+    pub dropped: AtomicU64,
+    pub malformed: AtomicU64,
+    pub ignored: AtomicU64,
+    /// `error` messages received.
+    pub errors: AtomicU64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StatsSnapshot {
+    pub connects: u64,
+    pub subscribed: u64,
+    pub frames: u64,
+    pub events: u64,
+    pub dropped: u64,
+    pub malformed: u64,
+    pub ignored: u64,
+    pub errors: u64,
+}
+
+impl StreamStats {
+    pub fn snapshot(&self) -> StatsSnapshot {
+        let g = |a: &AtomicU64| a.load(Ordering::Relaxed);
+        StatsSnapshot {
+            connects: g(&self.connects),
+            subscribed: g(&self.subscribed),
+            frames: g(&self.frames),
+            events: g(&self.events),
+            dropped: g(&self.dropped),
+            malformed: g(&self.malformed),
+            ignored: g(&self.ignored),
+            errors: g(&self.errors),
+        }
+    }
+}
+
+fn bump(a: &AtomicU64) -> u64 {
+    a.fetch_add(1, Ordering::Relaxed) + 1
+}
+
+/// The Alpaca stream as a [`LiveFeed`].
+pub struct AlpacaStream {
+    cfg: AlpacaStreamConfig,
+    link: watch::Sender<Link>,
+    stats: Arc<StreamStats>,
+}
+
+impl AlpacaStream {
+    pub fn new(cfg: AlpacaStreamConfig) -> Self {
+        let link = watch::Sender::new(Link {
+            state: LinkState::Connecting,
+            detail: Some(format!("connecting to {}", cfg.url())),
+        });
+        AlpacaStream {
+            cfg,
+            link,
+            stats: Arc::default(),
+        }
+    }
+
+    pub fn stats(&self) -> Arc<StreamStats> {
+        self.stats.clone()
+    }
+}
+
+impl LiveFeed for AlpacaStream {
+    fn label(&self) -> String {
+        match self.cfg.feed {
+            StreamFeed::Test => "alpaca test stream (fake data, not market evidence)".into(),
+            f => format!("alpaca {} stream", f.as_str()),
+        }
+    }
+
+    /// Empty for `*`: the whole market is not a list, and the symbols the server knows then come
+    /// from the prints themselves.
+    fn symbols(&self) -> Vec<String> {
+        match &self.cfg.symbols {
+            LiveSymbols::All => Vec::new(),
+            LiveSymbols::List(l) => l.clone(),
+        }
+    }
+
+    fn link(&mut self) -> Option<watch::Receiver<Link>> {
+        Some(self.link.subscribe())
+    }
+
+    fn connect(self: Box<Self>) -> Result<mpsc::Receiver<MarketEvent>, ProviderError> {
+        let rt = tokio::runtime::Handle::try_current()
+            .map_err(|_| ProviderError::Failed("the live stream needs a tokio runtime".into()))?;
+        let connector = tls_connector().map_err(ProviderError::Failed)?;
+        let (tx, rx) = mpsc::channel(self.cfg.channel.max(16));
+        let AlpacaStream { cfg, link, stats } = *self;
+        rt.spawn(run(cfg, connector, tx, link, stats));
+        Ok(rx)
+    }
+}
+
+/// rustls with the ring provider (as the importer) and the OS trust store via the platform
+/// verifier, so no process-wide default provider has to be installed first.
+fn tls_connector() -> Result<Connector, String> {
+    use rustls_platform_verifier::BuilderVerifierExt;
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let cfg = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|e| format!("tls: {e}"))?
+        .with_platform_verifier()
+        .map_err(|e| format!("tls verifier: {e}"))?
+        .with_no_client_auth();
+    Ok(Connector::Rustls(Arc::new(cfg)))
+}
+
+fn wall_now() -> UnixNanos {
+    UnixNanos::from_utc(chrono::Utc::now()).unwrap_or_default()
+}
+
+/// Equal-jitter waits from a small xorshift generator (no crate needed for this).
+struct Jitter(u64);
+
+impl Jitter {
+    fn seeded() -> Self {
+        let t = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos() as u64);
+        Jitter(t | 1)
+    }
+
+    fn unit(&mut self) -> f64 {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.0 = x;
+        (x >> 11) as f64 / (1u64 << 53) as f64
+    }
+
+    /// Uniform in `[d/2, d]`.
+    fn wait(&mut self, d: Duration) -> Duration {
+        d.mul_f64(0.5 + 0.5 * self.unit())
+    }
+}
+
+enum SessionEnd {
+    /// The consumer dropped its receiver: stop for good.
+    ConsumerGone,
+    Ended {
+        reason: String,
+        subscribed: bool,
+        /// Wait the full backoff maximum before retrying.
+        wait_max: bool,
+    },
+}
+
+async fn run(
+    cfg: AlpacaStreamConfig,
+    connector: Connector,
+    tx: mpsc::Sender<MarketEvent>,
+    link: watch::Sender<Link>,
+    stats: Arc<StreamStats>,
+) {
+    let url = cfg.url();
+    let mut delay = cfg.backoff.initial;
+    let mut jitter = Jitter::seeded();
+    loop {
+        link.send_replace(Link {
+            state: LinkState::Connecting,
+            detail: Some(format!("connecting to {url}")),
+        });
+        let began = Instant::now();
+        let (reason, subscribed, wait_max) =
+            match session(&cfg, &url, &connector, &tx, &link, &stats).await {
+                SessionEnd::ConsumerGone => {
+                    tracing::info!(
+                        feed = cfg.feed.as_str(),
+                        "alpaca stream stopped (consumer gone)"
+                    );
+                    return;
+                }
+                SessionEnd::Ended {
+                    reason,
+                    subscribed,
+                    wait_max,
+                } => (reason, subscribed, wait_max),
+            };
+        if subscribed && began.elapsed() >= cfg.backoff.stable_after {
+            delay = cfg.backoff.initial;
+        }
+        let wait = jitter.wait(if wait_max { cfg.backoff.max } else { delay });
+        delay = (delay * 2).min(cfg.backoff.max);
+        tracing::warn!(
+            feed = cfg.feed.as_str(),
+            reason = %reason,
+            retry_in_ms = wait.as_millis() as u64,
+            "alpaca stream disconnected"
+        );
+        link.send_replace(Link {
+            state: LinkState::Down,
+            detail: Some(format!(
+                "{reason}; reconnecting in {:.1} s",
+                wait.as_secs_f64()
+            )),
+        });
+        tokio::select! {
+            _ = tokio::time::sleep(wait) => {}
+            _ = tx.closed() => return,
+        }
+    }
+}
+
+/// Operator-facing meaning of Alpaca's stream error codes ("Streaming Market Data" docs), and
+/// whether a quick retry is pointless.
+fn explain(code: u16, msg: &str, feed: StreamFeed) -> (String, bool) {
+    let (what, wait_max) = match code {
+        402 => (
+            "auth failed: check ALPACA_API_KEY / ALPACA_API_SECRET".to_string(),
+            true,
+        ),
+        405 => (
+            "symbol limit exceeded: subscribe to fewer symbols, or LIVE_SYMBOLS=*".into(),
+            true,
+        ),
+        406 => (
+            "connection limit exceeded: another client (a second server, a script) holds this \
+             account's stream connection"
+                .into(),
+            true,
+        ),
+        409 => (
+            format!(
+                "insufficient subscription: the account is not entitled to the {} feed",
+                feed.as_str()
+            ),
+            true,
+        ),
+        410 => ("invalid subscribe action for this feed".into(), true),
+        407 => (
+            "slow client: Alpaca dropped us for reading too slowly".into(),
+            false,
+        ),
+        404 => ("auth timeout".into(), false),
+        _ => (format!("error: {msg}"), false),
+    };
+    (format!("alpaca {code} {what} (\"{msg}\")"), wait_max)
+}
+
+fn describe_connect_error(e: &tungstenite::Error) -> String {
+    match e {
+        // The body is not shown: it is the provider's, and we only need the status.
+        tungstenite::Error::Http(resp) => format!("upgrade refused: HTTP {}", resp.status()),
+        other => format!("connect failed: {other}"),
+    }
+}
+
+fn summarize(list: &[String]) -> String {
+    if list.len() <= 5 {
+        format!("[{}]", list.join(","))
+    } else {
+        format!("[{} symbols]", list.len())
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    Connected,
+    Authenticated,
+    Subscribed,
+    Streaming,
+}
+
+impl Phase {
+    fn awaiting(self) -> &'static str {
+        match self {
+            Phase::Connected => "\"connected\"",
+            Phase::Authenticated => "\"authenticated\"",
+            Phase::Subscribed => "\"subscription\"",
+            Phase::Streaming => "frame",
+        }
+    }
+}
+
+/// Consumer-lag state for one session (see the module docs).
+#[derive(Default)]
+struct Shed {
+    active: bool,
+    dropped: u64,
+}
+
+enum Gone {
+    Consumer,
+}
+
+async fn deliver(
+    tx: &mpsc::Sender<MarketEvent>,
+    e: MarketEvent,
+    cfg: &AlpacaStreamConfig,
+    shed: &mut Shed,
+    stats: &StreamStats,
+    link: &watch::Sender<Link>,
+) -> Result<(), Gone> {
+    match tx.try_send(e) {
+        Ok(()) => {
+            if shed.active {
+                shed.active = false;
+                let n = std::mem::take(&mut shed.dropped);
+                tracing::warn!(
+                    dropped = n,
+                    "alpaca stream: consumer caught up; events were dropped while it lagged"
+                );
+                link.send_replace(Link {
+                    state: LinkState::Up,
+                    detail: Some(format!(
+                        "recovered: {n} events were dropped while the consumer lagged; charts \
+                         over that window are incomplete"
+                    )),
+                });
+            }
+            Ok(())
+        }
+        Err(TrySendError::Closed(_)) => Err(Gone::Consumer),
+        Err(TrySendError::Full(e)) => {
+            if shed.active {
+                shed.dropped += 1;
+                bump(&stats.dropped);
+                return Ok(());
+            }
+            match tokio::time::timeout(cfg.lag_grace, tx.send(e)).await {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(_)) => Err(Gone::Consumer),
+                Err(_) => {
+                    shed.active = true;
+                    shed.dropped = 1;
+                    bump(&stats.dropped);
+                    tracing::warn!(
+                        grace_ms = cfg.lag_grace.as_millis() as u64,
+                        "alpaca stream: consumer is lagging; dropping events until it catches up"
+                    );
+                    link.send_replace(Link {
+                        state: LinkState::Up,
+                        detail: Some(
+                            "consumer lagging: dropping live events (data gap)".to_string(),
+                        ),
+                    });
+                    Ok(())
+                }
+            }
+        }
+    }
+}
+
+fn stamp(e: &mut MarketEvent, mode: ReceiveTime, now: UnixNanos) {
+    let at = match mode {
+        ReceiveTime::Wall => now,
+        ReceiveTime::EventTime => e.event_ts(),
+    };
+    let r = match e {
+        MarketEvent::Trade(t) => &mut t.receive_ts,
+        MarketEvent::Quote(q) => &mut q.receive_ts,
+        MarketEvent::Correction(c) => &mut c.receive_ts,
+        MarketEvent::Cancel(c) => &mut c.receive_ts,
+        MarketEvent::Status(s) => &mut s.receive_ts,
+    };
+    *r = Some(at);
+}
+
+async fn session(
+    cfg: &AlpacaStreamConfig,
+    url: &str,
+    connector: &Connector,
+    tx: &mpsc::Sender<MarketEvent>,
+    link: &watch::Sender<Link>,
+    stats: &StreamStats,
+) -> SessionEnd {
+    let mut subscribed = false;
+    let end = |reason: String, subscribed: bool, wait_max: bool| SessionEnd::Ended {
+        reason,
+        subscribed,
+        wait_max,
+    };
+    bump(&stats.connects);
+    let mut req = match url.into_client_request() {
+        Ok(r) => r,
+        Err(e) => return end(format!("bad stream URL {url}: {e}"), false, true),
+    };
+    // Alpaca picks the frame encoding from this header; JSON means text frames.
+    req.headers_mut().insert(
+        "Content-Type",
+        tungstenite::http::HeaderValue::from_static("application/json"),
+    );
+    let connecting =
+        tokio_tungstenite::connect_async_tls_with_config(req, None, true, Some(connector.clone()));
+    let ws = match tokio::time::timeout(cfg.handshake_timeout, connecting).await {
+        Err(_) => return end("connect timed out".into(), false, false),
+        Ok(Err(e)) => return end(describe_connect_error(&e), false, false),
+        Ok(Ok((ws, _))) => ws,
+    };
+    let (mut sink, mut stream) = ws.split();
+    let source = cfg.feed.source();
+    let deadline = Instant::now() + cfg.handshake_timeout;
+    let mut phase = Phase::Connected;
+    let mut ping = tokio::time::interval_at(Instant::now() + cfg.ping_every, cfg.ping_every);
+    ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut last_frame = Instant::now();
+    let mut shed = Shed::default();
+    let symbols = cfg.symbols.wire();
+
+    macro_rules! send_text {
+        ($v:expr) => {
+            if let Err(e) = sink.send(Message::Text($v.to_string().into())).await {
+                return end(format!("send failed: {e}"), subscribed, false);
+            }
+        };
+    }
+
+    loop {
+        let silent_until = last_frame + cfg.silence_timeout;
+        let msg = tokio::select! {
+            biased;
+            _ = tx.closed() => {
+                let _ = sink.send(Message::Close(None)).await;
+                return SessionEnd::ConsumerGone;
+            }
+            _ = tokio::time::sleep_until(deadline), if phase != Phase::Streaming => {
+                let _ = sink.send(Message::Close(None)).await;
+                return end(
+                    format!("no {} within {:?} of connecting", phase.awaiting(), cfg.handshake_timeout),
+                    false,
+                    false,
+                );
+            }
+            _ = tokio::time::sleep_until(silent_until), if phase == Phase::Streaming => {
+                let _ = sink.send(Message::Close(None)).await;
+                return end(
+                    format!("no frame (not even a pong) for {:?}; connection presumed dead", cfg.silence_timeout),
+                    subscribed,
+                    false,
+                );
+            }
+            _ = ping.tick(), if phase == Phase::Streaming => {
+                if let Err(e) = sink.send(Message::Ping(Default::default())).await {
+                    return end(format!("ping failed: {e}"), subscribed, false);
+                }
+                continue;
+            }
+            m = stream.next() => m,
+        };
+        last_frame = Instant::now();
+        let text = match msg {
+            None => return end("connection lost".into(), subscribed, false),
+            Some(Err(e)) => return end(format!("read error: {e}"), subscribed, false),
+            Some(Ok(Message::Text(t))) => t,
+            Some(Ok(Message::Close(f))) => {
+                let why = f.map_or(String::new(), |f| format!(" ({} {})", f.code, f.reason));
+                return end(
+                    format!("server closed the connection{why}"),
+                    subscribed,
+                    false,
+                );
+            }
+            Some(Ok(Message::Binary(_))) => {
+                let _ = sink.send(Message::Close(None)).await;
+                return end(
+                    "binary frame (MessagePack?) although JSON was requested".into(),
+                    subscribed,
+                    false,
+                );
+            }
+            // Ping (answered by tungstenite), pong, raw frames: liveness only.
+            Some(Ok(_)) => continue,
+        };
+        bump(&stats.frames);
+        let now = wall_now();
+        let items = match parse_frame(text.as_str(), source) {
+            Ok(items) => items,
+            Err(e) => {
+                let n = bump(&stats.malformed);
+                if n <= 10 || n.is_multiple_of(1000) {
+                    tracing::warn!(error = %e, malformed = n, "alpaca stream: unreadable frame");
+                }
+                continue;
+            }
+        };
+        for item in items {
+            match item {
+                Inbound::Event(mut e) => {
+                    stamp(&mut e, cfg.receive_time, now);
+                    bump(&stats.events);
+                    if deliver(tx, e, cfg, &mut shed, stats, link).await.is_err() {
+                        let _ = sink.send(Message::Close(None)).await;
+                        return SessionEnd::ConsumerGone;
+                    }
+                }
+                Inbound::Connected if phase == Phase::Connected => {
+                    phase = Phase::Authenticated;
+                    send_text!(json!({
+                        "action": "auth",
+                        "key": cfg.credentials.key_id,
+                        "secret": cfg.credentials.secret,
+                    }));
+                }
+                Inbound::Authenticated if phase == Phase::Authenticated => {
+                    phase = Phase::Subscribed;
+                    // corrections and cancelErrors come with trades; naming them is an error.
+                    let mut sub = json!({"action": "subscribe", "trades": symbols});
+                    if cfg.statuses {
+                        sub["statuses"] = json!(symbols);
+                    }
+                    send_text!(sub);
+                }
+                Inbound::Subscription(s) => {
+                    let first = phase == Phase::Subscribed;
+                    phase = Phase::Streaming;
+                    if first {
+                        subscribed = true;
+                        bump(&stats.subscribed);
+                    }
+                    let detail = describe_subscription(cfg, &s);
+                    tracing::info!(detail = %detail, "alpaca stream subscribed");
+                    link.send_replace(Link {
+                        state: LinkState::Up,
+                        detail: Some(detail),
+                    });
+                }
+                Inbound::Error { code, msg } => {
+                    bump(&stats.errors);
+                    let (reason, wait_max) = explain(code, &msg, cfg.feed);
+                    let _ = sink.send(Message::Close(None)).await;
+                    return end(reason, subscribed, wait_max);
+                }
+                Inbound::Malformed(m) => {
+                    let n = bump(&stats.malformed);
+                    if n <= 10 || n.is_multiple_of(1000) {
+                        tracing::warn!(error = %m, malformed = n, "alpaca stream: message skipped");
+                    }
+                }
+                Inbound::Ignored(_) | Inbound::Connected | Inbound::Authenticated => {
+                    bump(&stats.ignored);
+                }
+            }
+        }
+    }
+}
+
+fn describe_subscription(cfg: &AlpacaStreamConfig, s: &Subscription) -> String {
+    let mut d = format!(
+        "alpaca {}: subscribed trades={}",
+        cfg.feed.as_str(),
+        summarize(&s.trades)
+    );
+    if cfg.statuses {
+        d.push_str(&format!(" statuses={}", summarize(&s.statuses)));
+    }
+    // The server echoes what it accepted; say so when it is less than we asked for.
+    let wanted = cfg.symbols.wire();
+    if !wanted.iter().all(|w| s.trades.contains(w)) {
+        d.push_str(" (fewer trade symbols than requested)");
+    }
+    d
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn symbols_parse() {
+        assert_eq!(LiveSymbols::parse("*").unwrap(), LiveSymbols::All);
+        assert_eq!(LiveSymbols::parse("smpl, *").unwrap(), LiveSymbols::All);
+        assert_eq!(
+            LiveSymbols::parse(" smpl,BRK.B,smpl ").unwrap(),
+            LiveSymbols::List(vec!["SMPL".into(), "BRK.B".into()])
+        );
+        assert!(LiveSymbols::parse(" , ").is_err());
+        assert!(LiveSymbols::parse("A B").is_err());
+    }
+
+    #[test]
+    fn jitter_stays_in_the_upper_half() {
+        let mut j = Jitter(12345);
+        let d = Duration::from_secs(8);
+        for _ in 0..1000 {
+            let w = j.wait(d);
+            assert!(w >= d / 2 && w <= d, "{w:?}");
+        }
+    }
+
+    #[test]
+    fn errors_that_a_retry_cannot_fix_wait_the_maximum() {
+        for code in [402, 405, 406, 409, 410] {
+            assert!(explain(code, "x", StreamFeed::Sip).1, "{code}");
+        }
+        for code in [400, 401, 403, 404, 407, 500] {
+            assert!(!explain(code, "x", StreamFeed::Sip).1, "{code}");
+        }
+        let (m, _) = explain(402, "auth failed", StreamFeed::Sip);
+        assert!(m.contains("ALPACA_API_KEY") && m.contains("402"), "{m}");
+        let (m, _) = explain(409, "insufficient subscription", StreamFeed::Sip);
+        assert!(m.contains("sip feed"), "{m}");
+    }
+
+    #[test]
+    fn url_and_label() {
+        let creds = AlpacaCredentials {
+            key_id: "key-id-7f3a".into(),
+            secret: "secret-9c1e".into(),
+        };
+        let c = AlpacaStreamConfig::new(
+            "ws://127.0.0.1:8791/",
+            StreamFeed::Sip,
+            LiveSymbols::All,
+            creds.clone(),
+        );
+        assert_eq!(c.url(), "ws://127.0.0.1:8791/v2/sip");
+        let s = AlpacaStream::new(c);
+        assert_eq!(s.label(), "alpaca sip stream");
+        assert!(s.symbols().is_empty(), "* is not a symbol list");
+        let dbg = format!("{:?}", s.cfg);
+        assert!(
+            !dbg.contains("key-id-7f3a")
+                && !dbg.contains("secret-9c1e")
+                && dbg.contains("REDACTED"),
+            "{dbg}"
+        );
+    }
+}

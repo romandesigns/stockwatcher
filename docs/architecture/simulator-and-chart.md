@@ -249,14 +249,38 @@ batches of 2048 events keep commands responsive. A seek over a whole fixture day
 - Replay settings: `REPLAY_DAY` (default: the latest archived day), `REPLAY_START` (ET `HH:MM[:SS]`,
   default 10:40, matching the browser fixture), `REPLAY_SPEED` (default 10), `REPLAY_AUTOPLAY`
   (default 1).
-- `LiveProvider` is the boundary only. Without a `LiveFeed` it fails with **not configured**: the
-  Alpaca SIP and BOATS WebSocket client waits for entitlement verification. It reads no
-  credentials in this build.
-- With a feed, `LiveProvider` stamps `receive_ts` and applies the same mark rule, plus a 1 s idle
-  tick.
-- Parity test: the fixture archive through `ReplayProvider`, and the same events through a
-  `ChannelFeed` into `LiveProvider`, give identical tape rows, snapshots (all timeframes), profiles
-  and quality counters. The late, cancel and correction paths are exercised.
+- `LiveProvider` runs a `LiveFeed`. In production that is `alpaca_stream::AlpacaStream`
+  (implemented 2026-10-18): Alpaca's market-data WebSocket, `trades` (corrections and
+  cancel/errors come with them) and `statuses` for `LIVE_SYMBOLS` (default `*`, the whole market).
+  Without credentials it fails with **not configured**, naming the variables.
+  - Settings: `ALPACA_API_KEY` / `ALPACA_API_SECRET` (or `APCA_API_KEY_ID` /
+    `APCA_API_SECRET_KEY`, the importer's names), `ALPACA_STREAM_BASE` (default
+    `wss://stream.data.alpaca.markets`; provider-sim is `ws://127.0.0.1:8791`),
+    `ALPACA_STREAM_FEED` (`sip` default, `iex`, `boats`, `overnight`, or `test` for Alpaca's fake
+    `FAKEPACA` stream, labelled fixture), `LIVE_SYMBOLS`.
+  - Normalization: a stream trade is the historical trade object plus `T`/`S`, so it goes through
+    the importer's `to_trade` and a print is the same contract event live and from history.
+    `c` → `Correction`, `x` → `Cancel`, `s` → `Status`: `sc` and `rc` (else `rm`) are kept verbatim;
+    `H`/`P` (UTP) and `2` (CTA) are `Halt`, `T` (UTP) and `3` (CTA) are `Resume`, everything else
+    (including UTP `Q`, quotation resumption) is `Other`.
+  - Reconnect: exponential backoff (1 s doubling to 60 s, equal jitter), reset only after a session
+    stayed subscribed 30 s; 402/405/406/409/410 wait the full 60 s. Each reconnect re-authenticates
+    and re-subscribes. Events published while disconnected are lost (no backfill yet).
+  - Backpressure: the socket reader waits at most 2 s on a full channel, then drops events
+    (counted) until the consumer catches up, and reports the gap. It never stops reading long
+    enough for Alpaca's 407 slow-client disconnect.
+  - Connection state reaches the server as `FeedItem::Link`: status `starting`, `running` or
+    `reconnecting`, with an operator-facing detail (never credentials).
+  - Live mode **does not archive** what it receives. There is no recorder yet.
+- With a feed, `LiveProvider` stamps `receive_ts` (the Alpaca client stamps it at frame receipt)
+  and applies the same mark rule, plus a 1 s idle tick.
+- Parity tests:
+  - the fixture archive through `ReplayProvider`, and the same events through a `ChannelFeed`
+    into `LiveProvider`, give identical tape rows, snapshots (all timeframes), profiles and quality
+    counters. The late, cancel and correction paths are exercised.
+  - `provider-sim/tests/live_client.rs`: replay drives provider-sim, and the real Alpaca client
+    reads its SIP stream. Every event matches the archive's, and engine output is identical. The
+    fixture's recorded receive times are stripped there, because Alpaca's wire carries none.
 
 ## Appendix C: provider-compatible simulator (`crates/provider-sim`)
 
@@ -376,8 +400,8 @@ cargo run -p market-archive --bin swarchive -- verify 2026-10-15
 curl -H 'APCA-API-KEY-ID: sim-key' -H 'APCA-API-SECRET-KEY: sim-secret' 'http://127.0.0.1:8791/v2/stocks/snapshots?symbols=SMPL'
 ```
 
-Live mode is `MARKET_DATA_MODE=live`. In this build it reports `not_configured` and the web app
-falls back to the labelled fixture. The production image sets `ARCHIVE_ROOT=/app/data/archive` and
+Live mode is `MARKET_DATA_MODE=live` plus the Alpaca keys in the server's environment. Without the
+keys it reports `not_configured` and the web app falls back to the labelled fixture. The production image sets `ARCHIVE_ROOT=/app/data/archive` and
 does not auto-generate fixtures.
 
 Known dev-only issue: in `vite dev`, React StrictMode leaves chart canvases blank. `useCanvas` in

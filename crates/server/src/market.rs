@@ -50,8 +50,8 @@ use market_archive::fixture::{DEFAULT_SEED, DEFAULT_SYMBOLS, write_fixture_day};
 use market_archive::{Archive, AssetMeta, PrevCloses};
 use market_events::{MarketEvent, Price, PriceBand, SessionId, UnixNanos};
 use market_providers::{
-    ClockMode, ClockState, Command, CommandError as ReplayCommandError, FeedItem, MarketDataMode,
-    ProviderConfig, ProviderError, ProviderInfo, ReplayHandle, Speed,
+    ClockMode, ClockState, Command, CommandError as ReplayCommandError, FeedItem, LinkState,
+    MarketDataMode, ProviderConfig, ProviderError, ProviderInfo, ReplayHandle, Speed,
 };
 use paper_broker::wire::{ModifyCommand, PaperFill, PlaceCommand};
 use paper_broker::{Broker, CommandError, Fill};
@@ -204,7 +204,8 @@ impl Core {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct ProviderStatus {
-    /// `starting`, `running`, `no_data`, `not_configured`, `error`, `stopped`, `idle`.
+    /// `starting`, `running`, `reconnecting` (live: link down, retrying), `no_data`,
+    /// `not_configured`, `error`, `stopped`, `idle`.
     pub state: &'static str,
     pub detail: Option<String>,
 }
@@ -669,6 +670,25 @@ impl Market {
                 *self.0.status.lock().expect("status lock") = ProviderStatus {
                     state: "error",
                     detail: Some(e),
+                };
+            }
+            FeedItem::Link(l) => {
+                // Live only. "reconnecting" is distinct from "error": the source is retrying on
+                // its own, and clients keep what they have rather than falling back to a fixture.
+                let state = match l.state {
+                    LinkState::Connecting => "starting",
+                    LinkState::Up => "running",
+                    LinkState::Down => "reconnecting",
+                };
+                match l.state {
+                    LinkState::Down => {
+                        tracing::warn!(detail = ?l.detail, "live market data disconnected")
+                    }
+                    _ => tracing::info!(state, detail = ?l.detail, "live market data link"),
+                }
+                *self.0.status.lock().expect("status lock") = ProviderStatus {
+                    state,
+                    detail: l.detail,
                 };
             }
         }

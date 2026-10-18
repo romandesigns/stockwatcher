@@ -1,6 +1,6 @@
 [package]
 name = "market-providers"
-description = "MarketDataProvider boundary: ReplayProvider (archive) and LiveProvider (skeleton)"
+description = "MarketDataProvider boundary: ReplayProvider (archive) and LiveProvider (Alpaca stream)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,8 +11,9 @@ authors.workspace = true
 
 [features]
 # The real HTTP client and the `swimport` command (provider history import). Off by default so
-# the server, which links this crate, does not compile an HTTP/TLS stack it never uses.
-import = ["dep:reqwest", "dep:rustls", "dep:flate2"]
+# the server, which links this crate, does not compile an HTTP stack it never uses. (TLS itself
+# is no longer optional: the live stream client needs it.)
+import = ["dep:reqwest", "dep:flate2"]
 
 [[bin]]
 name = "swimport"
@@ -26,13 +27,21 @@ market-replay = { path = "../market-replay" }
 chrono = { version = "0.4.45", default-features = false, features = ["std", "clock", "serde"] }
 chrono-tz = "0.10.4"
 serde = { version = "1.0.229", features = ["derive"] }
-tokio = { version = "1.53.3", features = ["rt", "macros", "sync", "time"] }
+tokio = { version = "1.53.3", features = ["rt", "macros", "net", "sync", "time"] }
 tracing = "0.1.44"
 serde_json = "1.0.154"
 # Same versions the workspace already locks (via the desktop updater); ring, not aws-lc, so it
 # builds on Windows and the Pi without CMake/NASM.
 reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "rustls-no-provider"], optional = true }
-rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"], optional = true }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+# Live stream (Alpaca market data WebSocket). Every crate below was already in Cargo.lock
+# (tokio-tungstenite 0.30 is provider-sim's and the server's test client; the TLS pieces come
+# with reqwest), so live mode adds features, not new third-party code. The rustls feature only
+# makes tokio-tungstenite accept our own rustls config (ring + platform verifier, as the
+# importer uses); no OpenSSL anywhere, so the distroless image needs nothing extra.
+tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-native-roots"] }
+rustls-platform-verifier = "0.7.1"
+futures-util = { version = "0.3.34", default-features = false, features = ["sink", "std"] }
 # Alpaca gzips trade pages ~7x; reqwest's own gzip feature would pull in new crates, flate2 is locked.
 flate2 = { version = "1.1.10", optional = true }
 
