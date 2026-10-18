@@ -64,6 +64,9 @@ export const DEFAULT_CHART_THEME: ChartTheme = {
   luldText: "#e0a63a",
   level: "rgba(152, 162, 174, 0.45)",
   levelStrong: "rgba(228, 232, 237, 0.55)",
+  // --text-dim at 8 %: on --bg (#0f1216) a lift of about 9 RGB steps, the same order as the
+  // overnight shading, so it reads as a region and never as a candle-coloured block.
+  openingRange: "rgba(152, 162, 174, 0.08)",
   // Barely there: enough to see where the session changes, never enough to compete with candles.
   shadePre: "rgba(139, 156, 255, 0.045)",
   shadeAfter: "rgba(139, 156, 255, 0.045)",

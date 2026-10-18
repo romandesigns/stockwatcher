@@ -181,6 +181,12 @@ export interface ChartTheme {
   level: string;
   levelStrong: string;
   /**
+   * The opening-range box: a dimmed neutral wash, never the accent and never
+   * a stroke (no borders), quiet enough that the candles it frames stay the
+   * brightest thing in it.
+   */
+  openingRange: string;
+  /**
    * Faint backgrounds behind candles outside the regular session, so the
    * session a candle belongs to is visible in the chart itself. Regular
    * hours stay the plain background: it is the normal state.

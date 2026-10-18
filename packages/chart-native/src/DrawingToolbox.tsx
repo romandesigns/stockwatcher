@@ -2,8 +2,7 @@ import { DRAWING_COLORS, DRAWING_KINDS, DRAWING_LABELS, toolboxPlacement, toolbo
 import { useRef, useState } from "react";
 import { Pressable, StyleSheet, View, type LayoutChangeEvent } from "react-native";
 import { GestureDetector, usePanGesture } from "react-native-gesture-handler";
-import Svg, { Circle, Path } from "react-native-svg";
-import { playHaptic, ToolIcon, UI } from "./ui.tsx";
+import { Icon, playHaptic, toolColor, ToolIcon, UI } from "./ui.tsx";
 
 export interface DrawingToolboxProps {
   placement: ToolboxPlacement;
@@ -94,9 +93,9 @@ export function DrawingToolbox({ placement, onPlacementChange, container, tool, 
       <GestureDetector gesture={pan}>
         {/* Stretches across both lines when split, so there is one grip for the whole palette. */}
         <View style={[s.grip, vertical ? { width: "100%", height: GRIP } : { width: GRIP, alignSelf: "stretch", minHeight: BTN }]} accessible accessibilityLabel="Move drawing tools" accessibilityHint="Drag to move the drawing tools">
-          <Svg width={14} height={14} viewBox="0 0 16 16" style={vertical ? undefined : { transform: [{ rotate: "90deg" }] }}>
-            {[4, 8, 12].flatMap((y) => [6, 10].map((x) => <Circle key={`${x}-${y}`} cx={x} cy={y} r={1.1} fill={UI.textFaint} />))}
-          </Svg>
+          <View style={vertical ? undefined : { transform: [{ rotate: "90deg" }] }}>
+            <Icon name="grip" color={UI.textFaint} size={14} />
+          </View>
         </View>
       </GestureDetector>
       {/* Lines stack across the orientation: the main line(s), then the colour swatches when open. The swatches
@@ -115,7 +114,7 @@ export function DrawingToolbox({ placement, onPlacementChange, container, tool, 
             onPress={() => onToolChange(k === "cursor" ? null : k)}
             style={[s.btn, on && { backgroundColor: UI.raised }]}
           >
-            <ToolIcon kind={k} color={on ? UI.text : UI.textDim} />
+            <ToolIcon kind={k} color={toolColor(k, on)} />
           </Pressable>
         );
       })}
@@ -145,9 +144,7 @@ export function DrawingToolbox({ placement, onPlacementChange, container, tool, 
         onPress={() => onPlacementChange({ ...placement, orientation: vertical ? "horizontal" : "vertical" }, true)}
         style={s.btn}
       >
-        <Svg width={15} height={15} viewBox="0 0 16 16" fill="none" stroke={UI.textDim} strokeWidth={1.5} strokeLinecap="round">
-          <Path d="M3 8a5 5 0 0 1 8.5-3.5L13 6M13 3v3h-3M13 8a5 5 0 0 1-8.5 3.5L3 10M3 13v-3h3" />
-        </Svg>
+        <Icon name="rotate" color={UI.textDim} size={15} />
       </Pressable>
       </View>
       </View>

@@ -1,41 +1,14 @@
 import { formatEtTime, formatPrice, formatSize, LAYER_IDS, LAYER_INFO, LAYER_SWATCHES, type ChartLayers, type FillMark, type LayerId } from "@stockwatcher/chart-core";
-import type { ReactNode } from "react";
+import { Icon } from "./Icon.tsx";
 import { Button } from "./ui/button.tsx";
 import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuGroup, DropdownMenuLabel, DropdownMenuTrigger } from "./ui/dropdown-menu.tsx";
 import { ScrollArea } from "./ui/scroll-area.tsx";
 import { Tip } from "./ui/tooltip.tsx";
 import { cn } from "./ui/utils.ts";
 
-const icon = (children: ReactNode) => (
-  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true">
-    {children}
-  </svg>
-);
-
-/** Levels: three stacked lines, the dashed one a level. */
-const LevelsIcon = icon(
-  <>
-    <path d="M1.5 4h13" strokeDasharray="2 2" />
-    <path d="M1.5 8h13" />
-    <path d="M1.5 12h13" strokeOpacity="0.5" />
-  </>,
-);
-
-const SWATCH_COLOR = { warning: "#e0a63a", dim: "#98a2ae", text: "#e4e8ed", good: "#3fb97a", critical: "#f0645c" } as const;
-
-/** The swatch each layer row shows: how that layer looks on the chart (shapes shared with the phone). */
+/** A layer's row icon: its duotone swatch (shapes shared with the phone), i.e. how the layer looks on the chart. */
 function LayerSwatch({ id }: { id: LayerId }) {
-  return (
-    <svg viewBox="0 0 24 16" width="24" height="16" aria-hidden="true">
-      {LAYER_SWATCHES[id].map((g, i) =>
-        g.paint === "fill" ? (
-          <path key={i} d={g.d} fill={SWATCH_COLOR[g.color]} fillOpacity={g.opacity} />
-        ) : (
-          <path key={i} d={g.d} fill="none" stroke={SWATCH_COLOR[g.color]} strokeOpacity={g.opacity} strokeWidth="1.5" strokeDasharray={g.dash?.join(" ")} />
-        ),
-      )}
-    </svg>
-  );
+  return <Icon def={LAYER_SWATCHES[id]} width={24} height={16} className="size-auto" />;
 }
 
 /**
@@ -49,7 +22,7 @@ export function LayersMenu({ layers, ids = LAYER_IDS, onChange }: { layers: Char
     <DropdownMenu>
       <Tip label="Levels">
         <DropdownMenuTrigger aria-label={`Levels, ${on} of ${ids.length} on`} render={<Button variant="ghost" size="sm" className="h-7 min-w-7 rounded-md px-1.5 text-muted-foreground [&_svg]:size-3.5" />}>
-          {LevelsIcon}
+          <Icon name="levels" />
         </DropdownMenuTrigger>
       </Tip>
       <DropdownMenuContent align="end" aria-label="Levels" className="w-80 p-1.5">

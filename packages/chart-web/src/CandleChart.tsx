@@ -15,6 +15,8 @@ import {
   hitTest,
   paneIdsOf,
   keyLevels,
+  openingRanges,
+  type SessionRef,
   parseLayers,
   type ChartLayers,
   type Halt,
@@ -84,6 +86,7 @@ import { CandleInspector } from "./CandleInspector.tsx";
 import { ChartToolbar } from "./ChartToolbar.tsx";
 import { drawDisplayList } from "./draw.ts";
 import { DrawingToolbox } from "./DrawingToolbox.tsx";
+import { Icon } from "./Icon.tsx";
 import { OrderTicket } from "./OrderTicket.tsx";
 import { PositionPlanCard } from "./PositionPlanCard.tsx";
 import { Tip, TooltipProvider } from "./ui/tooltip.tsx";
@@ -106,6 +109,8 @@ export interface ChartSeriesLike {
   luld?: readonly LuldPoint[];
   /** The server's official previous close (Series.prevClose), for the "Prev close" level. */
   prevClose?: number | null;
+  /** The symbol's current session (Series.session): its end is the opening range's right edge on an early close. */
+  session?: SessionRef | null;
 }
 
 export interface CandleChartProps {
@@ -382,16 +387,20 @@ export function CandleChart({
   // The server's official previous close wins over one read off the candles (levels.ts).
   const prevClose = series?.prevClose ?? null;
   const levels = useMemo(() => keyLevels(slots, prevClose), [slots, prevClose]);
+  // Computed only while the layer is on: one pass over the slots per update otherwise wasted.
+  const session = series?.session ?? null;
+  const ranges = useMemo(() => (layers.openingRange ? openingRanges(slots, session) : []), [layers.openingRange, slots, session]);
   const fills = useMemo(() => (trading?.state?.fills ?? []).filter((f) => f.symbol === symbol), [trading?.state, symbol]);
   const context = useMemo(
     () => ({
       levels: levels.filter((l) => layers[l.layer]),
+      openingRanges: ranges,
       halts: layers.halts ? (series?.halts ?? []) : [],
       luld: layers.luld ? (series?.luld ?? []) : [],
       fills: layers.fills ? fills : [],
       now,
     }),
-    [levels, layers, series, fills, now],
+    [levels, ranges, layers, series, fills, now],
   );
   const orders = useMemo(() => (trading?.state?.orders ?? []).filter((o) => o.symbol === symbol && isWorking(o)), [trading?.state, symbol]);
   const position = useMemo(() => trading?.state?.positions.find((p) => p.symbol === symbol) ?? null, [trading?.state, symbol]);
@@ -1000,9 +1009,7 @@ export function CandleChart({
           style={{ left: model.geometry.plot.x + model.geometry.plot.w - 40, top: model.geometry.plot.y + model.geometry.plot.h - 40 }}
           className="absolute z-10 grid size-8 place-items-center rounded-full bg-card text-foreground shadow-lg transition-[opacity,scale,background-color] duration-150 outline-none hover:bg-bg-row focus-visible:ring-2 focus-visible:ring-ring starting:scale-90 starting:opacity-0"
         >
-          <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M2.5 8h9M8 4.5 11.5 8 8 11.5M13.5 3.5v9" />
-          </svg>
+          <Icon name="toLatest" width={14} height={14} />
         </button>
         </Tip>
       )}

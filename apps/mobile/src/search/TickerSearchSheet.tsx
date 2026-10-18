@@ -1,5 +1,5 @@
 import { formatPrice, formatVolume } from "@stockwatcher/chart-core";
-import { playHaptic } from "@stockwatcher/chart-native";
+import { Icon, playHaptic } from "@stockwatcher/chart-native";
 import {
   activeTickerFilters,
   pushRecentTicker,
@@ -15,7 +15,6 @@ import {
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { FlatList, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import Svg, { Circle, Path } from "react-native-svg";
 
 import { useQuoteBoard } from "../feed/hooks";
 import { getPreference, setPreference } from "../storage/preferences";
@@ -172,10 +171,7 @@ export function TickerSearchSheet({ open, onClose, symbols, quotes, mock, curren
       <View style={[s.screen, { paddingTop: insets.top + 8 }]} accessibilityViewIsModal>
         <View style={s.inputRow}>
           <View style={s.field}>
-            <Svg width={16} height={16} viewBox="0 0 16 16" fill="none" stroke={colors.textDim} strokeWidth={1.5} strokeLinecap="round">
-              <Circle cx={7} cy={7} r={4.5} />
-              <Path d="M10.5 10.5 14 14" />
-            </Svg>
+            <Icon name="search" color={colors.textDim} />
             <TextInput
               value={query}
               onChangeText={setQuery}
@@ -195,9 +191,7 @@ export function TickerSearchSheet({ open, onClose, symbols, quotes, mock, curren
             />
             {query.length > 0 && (
               <Pressable accessibilityRole="button" accessibilityLabel="Clear search" hitSlop={10} onPress={() => setQuery("")} style={s.clearQuery}>
-                <Svg width={10} height={10} viewBox="0 0 10 10" stroke={colors.bg} strokeWidth={1.6} strokeLinecap="round">
-                  <Path d="M2 2l6 6M8 2 2 8" />
-                </Svg>
+                <Icon name="clear" color={colors.textDim} size={18} />
               </Pressable>
             )}
           </View>
@@ -261,7 +255,8 @@ const s = StyleSheet.create({
   inputRow: { height: 42, flexDirection: "row", alignItems: "center", gap: 10 },
   field: { flex: 1, height: 42, flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: colors.bgPanel, borderRadius: 12, paddingHorizontal: 12 },
   input: { flex: 1, height: 42, color: colors.text, fontSize: 15, fontFamily: fonts.regular, padding: 0 },
-  clearQuery: { width: 18, height: 18, borderRadius: 9, backgroundColor: colors.textFaint, alignItems: "center", justifyContent: "center" },
+  // The duotone "clear" icon is its own soft disc, so the button needs no surface of its own.
+  clearQuery: { width: 18, height: 18, alignItems: "center", justifyContent: "center" },
   cancel: { height: 42, justifyContent: "center" },
   cancelText: { color: colors.accent, fontSize: 15 },
   chipsScroll: { flexGrow: 0, height: 32, marginTop: 10, marginHorizontal: -12 },

@@ -23,6 +23,7 @@ import {
 } from "@stockwatcher/chart-core";
 import type { ReactNode } from "react";
 import { LayersMenu } from "./ContextMenus.tsx";
+import { glyphDef, Icon } from "./Icon.tsx";
 import { TimeframeSelector } from "./TimeframeSelector.tsx";
 import { Tip } from "./ui/tooltip.tsx";
 import { Button } from "./ui/button.tsx";
@@ -30,70 +31,20 @@ import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMe
 import { ToggleGroup, ToggleGroupItem } from "./ui/toggle-group.tsx";
 import { cn } from "./ui/utils.ts";
 
-const svg = (children: ReactNode) => (
-  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true">
-    {children}
-  </svg>
-);
-
-/** Inline icons (no icon dependency), drawn on a 16 px grid. */
-export const TOOL_ICONS: Readonly<Record<DrawingKind | "cursor", ReactNode>> = {
-  cursor: svg(<path d="M4 2.5v10l3-3 2 4.5 1.6-.7-2-4.4H13z" fill="currentColor" stroke="none" />),
-  trend: svg(
-    <>
-      <path d="M3 12.5 13 3.5" />
-      <circle cx="3" cy="12.5" r="1.3" fill="currentColor" />
-      <circle cx="13" cy="3.5" r="1.3" fill="currentColor" />
-    </>,
-  ),
-  ray: svg(
-    <>
-      <path d="M3 12.5 15 2" />
-      <circle cx="3" cy="12.5" r="1.3" fill="currentColor" />
-    </>,
-  ),
-  hline: svg(<path d="M1.5 8h13" />),
-  vline: svg(<path d="M8 1.5v13" />),
-  rect: svg(<rect x="3" y="4" width="10" height="8" rx="1" fill="currentColor" fillOpacity="0.35" stroke="none" />),
-  // The ruler: a measure is not stored, it reads between two points.
-  measure: svg(
-    <>
-      <path d="M2 11.5 11.5 2l2.5 2.5L4.5 14z" />
-      <path d="M5 9.5l1 1M7 7.5l1.5 1.5M9 5.5l1 1" />
-    </>,
-  ),
-  // Position tools: the green zone on the side the trade profits, the red one on the side it loses.
-  long: svg(
-    <>
-      <rect x="3" y="2" width="10" height="6" rx="1" fill="#3fb97a" fillOpacity="0.55" stroke="none" />
-      <rect x="3" y="8" width="10" height="5" rx="1" fill="#f0645c" fillOpacity="0.55" stroke="none" />
-      <path d="M2 8h12" />
-    </>,
-  ),
-  short: svg(
-    <>
-      <rect x="3" y="3" width="10" height="5" rx="1" fill="#f0645c" fillOpacity="0.55" stroke="none" />
-      <rect x="3" y="8" width="10" height="6" rx="1" fill="#3fb97a" fillOpacity="0.55" stroke="none" />
-      <path d="M2 8h12" />
-    </>,
-  ),
-};
-
-/** Indicators: a smooth line riding over price, the usual glyph for studies. */
-const IndicatorIcon = svg(
-  <>
-    <path d="M1.5 12.5 4.5 9l2.5 2 3.5-5 4 3" strokeOpacity="0.45" />
-    <path d="M1.5 9.5c2.5-4 4.5-5 6.5-3s4 1.5 6.5-3" />
-  </>,
-);
+/** The drawing tools' icons: chart-core's shared duotone definitions (icons.ts), the same marks the phone draws. */
+export const TOOL_ICONS: Readonly<Record<DrawingKind | "cursor", ReactNode>> = Object.fromEntries(
+  (["cursor", ...DRAWING_KINDS, "measure"] as const).map((k) => [k, <Icon key={k} name={k} />]),
+) as Record<DrawingKind | "cursor", ReactNode>;
 
 const DEFAULT_SERIES = [DEFAULT_CHART_THEME.series1, DEFAULT_CHART_THEME.series2, DEFAULT_CHART_THEME.series3] as const;
 
-/** Trade: an up arrow and a down arrow, buy and sell. The one accent button in the row. */
-const TradeIcon = svg(<path d="M5 13V3M2.5 5.5 5 3l2.5 2.5M11 3v10M8.5 10.5 11 13l2.5-2.5" />);
-
-/** The drawing tools switch: a pencil. */
-const PencilIcon = svg(<path d="M10.5 2.5 13.5 5.5 5.5 13.5H2.5v-3zM9 4l3 3" />);
+/**
+ * An armed drawing tool turns its icon accent (accent primary + accent-soft
+ * secondary, both from currentColor): drawing is a mode the next click acts
+ * on, so it earns the eye. The cursor is the resting state and stays
+ * neutral, which keeps the accent rare (60/30/10).
+ */
+export const ARMED = "aria-pressed:text-primary";
 
 /** A drawing tool's tooltip: its name, and its key where it has one. */
 export function toolTip(k: DrawingKind | "cursor"): string {
@@ -103,8 +54,6 @@ export function toolTip(k: DrawingKind | "cursor"): string {
   if (k === "measure") return "Measure (or Shift+drag)";
   return DRAWING_LABELS[k];
 }
-
-const TrashIcon = svg(<path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5" />);
 
 export interface ChartToolbarProps {
   /** Active drawing tool; null is the cursor (pan, inspect, select). */
@@ -154,7 +103,7 @@ export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChang
       <ToggleGroup aria-label="Drawing tool" size="sm" spacing={0.5} variant="segmented" value={[tool ?? "cursor"]} onValueChange={(v) => v[0] && onToolChange(v[0] === "cursor" ? null : (v[0] as DrawingKind))}>
         {(["cursor", ...DRAWING_KINDS] as const).map((k) => (
           <Tip key={k} label={toolTip(k)}>
-            <ToggleGroupItem value={k} aria-label={k === "cursor" ? "Cursor" : DRAWING_LABELS[k]} className="w-7 px-0 [&_svg]:size-3.5">
+            <ToggleGroupItem value={k} aria-label={k === "cursor" ? "Cursor" : DRAWING_LABELS[k]} className={cn("w-7 px-0 [&_svg]:size-3.5", k !== "cursor" && ARMED)}>
               {TOOL_ICONS[k]}
             </ToggleGroupItem>
           </Tip>
@@ -162,7 +111,7 @@ export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChang
       </ToggleGroup>
       <Tip label="Delete selected drawing (Del)">
         <Button variant="ghost" size="icon" className="size-7 rounded-md text-muted-foreground [&_svg]:size-3.5" aria-label="Delete selected drawing" disabled={!canDelete} onClick={onDelete}>
-          {TrashIcon}
+          <Icon name="trash" />
         </Button>
       </Tip>
       </>
@@ -196,7 +145,7 @@ export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChang
               onClick={() => onToolsVisibleChange(!toolsVisible)}
               className={cn("size-7 rounded-md [&_svg]:size-3.5", toolsVisible ? "bg-bg-raised text-foreground hover:bg-bg-raised" : "text-muted-foreground")}
             >
-              {PencilIcon}
+              <Icon name="pencil" />
             </Button>
           </Tip>
         )}
@@ -206,7 +155,7 @@ export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChang
           <>
             <Tip label="Simulated order (fills against the replay tape)">
               <Button size="icon" aria-label="Trade (simulated order)" className="ml-0.5 size-7 rounded-md [&_svg]:size-4" onClick={trading.onTrade}>
-                {TradeIcon}
+                <Icon name="trade" />
               </Button>
             </Tip>
           </>
@@ -216,15 +165,9 @@ export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChang
   );
 }
 
-/** An indicator's glyph (shared with the phone through chart-core), tinted with its line colour. */
+/** An indicator's glyph (shared with the phone through chart-core), both tones tinted with its line colour. */
 function Glyph({ kind, color }: { kind: IndicatorSpec["kind"]; color: string }) {
-  return (
-    <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      {INDICATOR_GLYPHS[kind].map((g, i) => (
-        <path key={i} d={g.d} fill={g.fill ? color : "none"} fillOpacity={g.fill ? 0.18 : undefined} stroke={g.fill ? "none" : color} strokeOpacity={g.faint ? 0.4 : 1} />
-      ))}
-    </svg>
-  );
+  return <Icon def={glyphDef(INDICATOR_GLYPHS[kind])} color={color} />;
 }
 
 /**
@@ -281,7 +224,7 @@ function IndicatorMenu({ indicators, onChange, seriesColors }: { indicators: rea
           aria-label={indicators.length ? `Indicators, ${indicators.length} on` : "Indicators"}
           render={<Button variant="ghost" size="sm" className="h-7 min-w-7 gap-1 rounded-md px-1.5 text-xs text-muted-foreground [&_svg]:size-3.5" />}
         >
-          {IndicatorIcon}
+          <Icon name="indicators" />
           {indicators.length ? <span className="font-mono text-[11px] text-foreground">{indicators.length}</span> : null}
         </DropdownMenuTrigger>
       </Tip>

@@ -1,12 +1,14 @@
 import type { ChartTheme, DisplayList } from "./displayList.ts";
 import { tToIndex } from "./drawings.ts";
 import { formatPrice } from "./format.ts";
+import type { IconDef, IconPath } from "./icons.ts";
 import type { ChartModel } from "./layout.ts";
 import { priceY, slotX, type Slot } from "./scale.ts";
 import { withAlpha } from "./theme.ts";
-import { formatEtDateKey, sessionOf, tradingDayOf } from "./time.ts";
+import { lowerBound } from "./store.ts";
+import { formatEtDateKey, sessionBands, sessionOf, tradingDayOf, type EtDate } from "./time.ts";
 import type { OrderRole, OrderSide } from "./trading.ts";
-import type { Halt, LuldPoint } from "./types.ts";
+import type { Halt, LuldPoint, SessionRef } from "./types.ts";
 
 // Context layers for small-cap day trading (owner, 2026-10-17): the levels
 // traders watch (premarket high/low, high/low of day, the open, yesterday's
@@ -16,9 +18,18 @@ import type { Halt, LuldPoint } from "./types.ts";
 // bands come from the server (docs/architecture/halts-luld-fills.md); fills
 // come from paper.state.
 
-export type LayerId = "profile" | "halts" | "luld" | "premarket" | "dayRange" | "open" | "prevClose" | "fills";
+//
+// The opening range (owner request 2026-10-18: "a dimmed rectangle enclosing
+// the first candle stick of the opening session ... span through the trading
+// session") is one of these layers rather than an indicator: like the other
+// levels it is a session overlay read straight off the candles, a switch with
+// no parameters, and it wants the same on/off persistence. The indicators list
+// is for computed series with periods, colour slots and caps (MAX_OVERLAYS),
+// none of which a box has.
 
-export const LAYER_IDS: readonly LayerId[] = ["profile", "halts", "luld", "premarket", "dayRange", "open", "prevClose", "fills"];
+export type LayerId = "profile" | "halts" | "luld" | "premarket" | "dayRange" | "open" | "openingRange" | "prevClose" | "fills";
+
+export const LAYER_IDS: readonly LayerId[] = ["profile", "halts", "luld", "premarket", "dayRange", "open", "openingRange", "prevClose", "fills"];
 
 /**
  * The layers a chart can show. "profile" is the session profile drawn inside
@@ -36,48 +47,61 @@ export const LAYER_INFO: Readonly<Record<LayerId, { name: string; description: s
   premarket: { name: "Premarket high / low", description: "Extremes of 04:00–09:30" },
   dayRange: { name: "High / low of day", description: "Regular-session extremes so far" },
   open: { name: "Open", description: "First regular-session price" },
+  openingRange: { name: "Opening range", description: "First candle's high–low, to the close" },
   prevClose: { name: "Previous close", description: "The prior trading day's close" },
   fills: { name: "My fills", description: "Your simulated buys and sells" },
 };
 
-/** A swatch shape in a 24×16 box; `color` names a theme role each renderer maps to its own palette. */
-export interface LayerSwatchShape {
-  d: string;
-  paint: "fill" | "stroke";
-  color: "warning" | "dim" | "text" | "good" | "critical";
-  opacity?: number;
-  dash?: readonly number[];
-}
+/** A layer's swatch: a duotone icon (icons.ts) in a 24 × 16 box. */
+export type LayerSwatchShape = IconPath;
+
+const swatch = (paths: readonly IconPath[]): IconDef => ({ w: 24, h: 16, strokeWidth: 1.5, paths });
+/** Price, drawn soft behind a level so the swatch says what the line is measured against. */
+const PRICE = (d: string): IconPath => ({ d, role: "secondary" });
 
 /**
  * How each layer looks on the chart, drawn small: the row icon in the web's
  * Levels menu and the phone's Levels sheet, so the menu is also the key.
  * Shared here (like INDICATOR_GLYPHS) so both platforms show the same marks.
+ * Duotone like every icon: the layer's own mark is primary (in its status
+ * hue where the hue is the meaning), the price it relates to secondary.
  */
-export const LAYER_SWATCHES: Readonly<Record<LayerId, readonly LayerSwatchShape[]>> = {
-  profile: [
-    { d: "M13 3.5h9M15 12.5h7", paint: "stroke", color: "dim", opacity: 0.8 },
-    { d: "M7 8h15", paint: "stroke", color: "text", opacity: 0.9 },
-  ],
-  halts: [
-    { d: "M6 1h12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V3a2 2 0 0 1 2-2z", paint: "fill", color: "warning", opacity: 0.18 },
-    { d: "M4 1h2v14H4z", paint: "fill", color: "warning", opacity: 0.6 },
-  ],
-  luld: [{ d: "M2 4h20M2 12h20", paint: "stroke", color: "warning", opacity: 0.7, dash: [3, 2] }],
-  premarket: [{ d: "M2 8h20", paint: "stroke", color: "dim", opacity: 0.7, dash: [2, 2.5] }],
-  dayRange: [{ d: "M2 4h20M2 12h20", paint: "stroke", color: "text", opacity: 0.6, dash: [5, 2.5] }],
-  open: [{ d: "M2 8h20", paint: "stroke", color: "dim", opacity: 0.7, dash: [2, 2.5] }],
-  prevClose: [{ d: "M2 8h20", paint: "stroke", color: "dim", opacity: 0.7, dash: [2, 2.5] }],
-  fills: [
-    { d: "M7 6 10 11H4z", paint: "fill", color: "good" },
-    { d: "M17 10 20 5h-6z", paint: "fill", color: "critical" },
-  ],
+export const LAYER_SWATCHES: Readonly<Record<LayerId, IconDef>> = {
+  profile: swatch([
+    { d: "M13 3.5h9M15 12.5h7", role: "secondary" },
+    { d: "M7 8h15", role: "primary" },
+  ]),
+  halts: swatch([
+    { d: "M6 1h12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V3a2 2 0 0 1 2-2z", paint: "fill", role: "secondary", hue: "warning" },
+    { d: "M4 1h2v14H4z", paint: "fill", role: "primary", hue: "warning" },
+  ]),
+  luld: swatch([PRICE("M3 10.5 7 7.5l4 2 4-4 6 2"), { d: "M2 3h20M2 13h20", role: "primary", hue: "warning", dash: [3, 2] }]),
+  premarket: swatch([PRICE("M2 13 6 10.5l3 1.5 4-3"), { d: "M2 6.5h20", role: "primary", dash: [2, 2.5] }]),
+  dayRange: swatch([PRICE("M3 11.5 8 5.5l4 3 4-2.5 5 5"), { d: "M2 4h20M2 12.5h20", role: "primary", dash: [5, 2.5] }]),
+  open: swatch([{ d: "M2 8h20", role: "primary", dash: [2, 2.5] }, PRICE("M8 8 12 4.5l3 2 6-4")]),
+  // The first regular candle (primary) and the dimmed box it spans to the close (secondary).
+  openingRange: swatch([
+    { d: "M3 4h18a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H3z", paint: "fill", role: "secondary" },
+    { d: "M5 2.5v11", role: "primary" },
+    { d: "M3.5 4h3v8h-3z", paint: "fill", role: "primary" },
+  ]),
+  prevClose: swatch([PRICE("M2 8 6 7l3-3 4 2 4-2.5 5 1"), { d: "M2 11h20", role: "primary", dash: [2, 2.5] }]),
+  fills: swatch([
+    PRICE("M2 12 8 9l5 2 9-6"),
+    { d: "M7 6 10 11H4z", paint: "fill", role: "primary", hue: "good" },
+    { d: "M17 10 20 5h-6z", paint: "fill", role: "primary", hue: "critical" },
+  ]),
 };
 
 export type ChartLayers = Readonly<Record<LayerId, boolean>>;
 
-/** Everything on except the open, which most small-cap traders read off the candles anyway. */
-export const DEFAULT_LAYERS: ChartLayers = { profile: true, halts: true, luld: true, premarket: true, dayRange: true, open: false, prevClose: true, fills: true };
+/**
+ * Everything on except the open, which most small-cap traders read off the
+ * candles anyway, and the opening range, which is opt-in (owner: "when
+ * active"): a box over the whole session is too much to impose on everyone.
+ * A stored set from before a layer existed falls back to these (parseLayers).
+ */
+export const DEFAULT_LAYERS: ChartLayers = { profile: true, halts: true, luld: true, premarket: true, dayRange: true, open: false, openingRange: false, prevClose: true, fills: true };
 
 export function parseLayers(raw: unknown): ChartLayers {
   const out: Record<LayerId, boolean> = { ...DEFAULT_LAYERS };
@@ -142,6 +166,67 @@ export function keyLevels(slots: readonly Slot[], knownPrevClose?: number | null
   return out;
 }
 
+/**
+ * The opening range of one trading day: the first regular-session candle of
+ * the chart's CURRENT timeframe (so 09:30–09:31 on 1m, 09:30–09:35 on 5m),
+ * its low to its high, held from that candle's start to the regular close.
+ */
+export interface OpeningRange {
+  /** Trading day, "YYYY-MM-DD" (ET). */
+  day: string;
+  /** Start of the first regular candle (epoch ms): the box's left edge. */
+  t: number;
+  /** The regular session's end (epoch ms): the box's right edge. 13:00 ET on an early close the server told us about. */
+  end: number;
+  high: number;
+  low: number;
+  /** The first candle is still forming (live, or replay at 09:30:xx): high/low will still move. */
+  forming: boolean;
+}
+
+/**
+ * The regular session's end for a trading day. The server's session ref is
+ * authoritative (its NYSE calendar knows the 13:00 early closes, which the
+ * client's standard schedule does not): "<day>/regular" carries the end, and
+ * "<day>/after" starts exactly where regular ended. Any other day falls back
+ * to the standard 16:00 ET, so an early-close day that is not the server's
+ * current session shows a box to 16:00 (the candles between 13:00 and 16:00
+ * are after-hours ones, which is the only visible cost).
+ */
+export function regularSessionEnd(day: EtDate, session?: SessionRef | null): number {
+  const key = formatEtDateKey(day);
+  if (session?.id === `${key}/regular`) return session.end;
+  if (session?.id === `${key}/after`) return session.start;
+  return sessionBands(day).find((b) => b.kind === "regular")!.end;
+}
+
+/**
+ * One opening range per trading day the slots hold a regular candle for,
+ * oldest first: a multi-day chart gets a box per session, because the rule is
+ * per day and nothing else would be right on the older days. The FIRST
+ * regular CANDLE defines it: on a thin stock whose 09:30 interval had no
+ * trades (a gap slot) the range starts at the first interval that did trade,
+ * since a gap has no high or low to enclose. A day with no regular candle
+ * (premarket only, or before 09:30 on the current day) has no range: nothing
+ * is drawn rather than guessed. Pure; the timeframe is implied by the slots.
+ */
+export function openingRanges(slots: readonly Slot[], session?: SessionRef | null): OpeningRange[] {
+  const out: OpeningRange[] = [];
+  let lastDay = "";
+  for (const s of slots) {
+    if (s.kind !== "candle") continue;
+    const c = s.candle;
+    // sessionOf is the display schedule (09:30–16:00); the first regular candle is all that matters here.
+    if (sessionOf(c.t) !== "regular") continue;
+    const d = tradingDayOf(c.t);
+    const key = formatEtDateKey(d);
+    if (key === lastDay) continue;
+    lastDay = key;
+    out.push({ day: key, t: c.t, end: regularSessionEnd(d, session), high: c.h, low: c.l, forming: !c.final });
+  }
+  return out;
+}
+
 /** A simulated fill for the chart's markers and trade list (paper.state fills). */
 export interface FillMark {
   orderId: string;
@@ -156,6 +241,8 @@ export interface FillMark {
 /** What the chart draws for the context layers; each list is already filtered by the layers that are on. */
 export interface ContextLayer {
   levels: readonly KeyLevel[];
+  /** Opening-range boxes (openingRanges); absent or empty when the layer is off. */
+  openingRanges?: readonly OpeningRange[];
   halts: readonly Halt[];
   luld: readonly LuldPoint[];
   fills: readonly FillMark[];
@@ -171,6 +258,42 @@ function duration(ms: number): string {
   const m = Math.floor(s / 60);
   const r = s % 60;
   return r ? `${m}m ${String(r).padStart(2, "0")}s` : `${m}m`;
+}
+
+/**
+ * Opening-range boxes: a dimmed, borderless fill behind everything but the
+ * session shading (layer "background", emitted after it), so candles, grid
+ * and levels read on top and the price axis is never covered (clipped to the
+ * plot). Left edge: the first candle's slot. Right edge: the regular close,
+ * which is the left edge of the first slot at or after it once the session
+ * is over (after-hours candles exist), or, while the session is still
+ * running, the close's extrapolated position on the index axis (tToIndex
+ * paces empty future slots at the timeframe), so the box already reaches as
+ * far as the session will. No label: the Levels menu swatch is its key, and
+ * a word inside the box would sit under the candles it frames.
+ */
+export function layoutOpeningRanges(model: ChartModel, ranges: readonly OpeningRange[], theme: ChartTheme): DisplayList {
+  const out: DisplayList = [];
+  const price = model.price;
+  if (!price || !ranges.length) return out;
+  const plot = model.geometry.plot;
+  const slots = model.slots;
+  const half = model.index.barSpacing / 2;
+  for (const r of ranges) {
+    const i0 = lowerBound(slots, r.t);
+    if (slots[i0]?.t !== r.t) continue;
+    const iEnd = lowerBound(slots, r.end);
+    const xEnd = iEnd < slots.length ? slotX(model.index, iEnd) - half : xOfT(model, r.end);
+    const x0 = Math.max(plot.x, slotX(model.index, i0) - half);
+    const x1 = Math.min(plot.x + plot.w, xEnd);
+    if (x1 <= x0) continue;
+    const yTop = Math.max(plot.y, priceY(price, r.high));
+    const yBottom = Math.min(plot.y + plot.h, priceY(price, r.low));
+    if (yBottom < plot.y || yTop > plot.y + plot.h) continue;
+    // A doji-flat first candle (high = low) still gets a visible 1 px band.
+    out.push({ kind: "rect", x: x0, y: yTop, w: x1 - x0, h: Math.max(1, yBottom - yTop), fill: theme.openingRange, layer: "background" });
+  }
+  return out;
 }
 
 /** Halts (under the candles) and the HALTED badge. */
@@ -317,7 +440,7 @@ export function layoutFills(model: ChartModel, fills: readonly FillMark[], theme
 }
 
 export function layoutContext(model: ChartModel, ctx: ContextLayer, theme: ChartTheme): DisplayList {
-  return [...layoutHalts(model, ctx.halts, ctx.now, theme), ...layoutKeyLevels(model, ctx.levels, theme), ...layoutLuld(model, ctx.luld, theme), ...layoutFills(model, ctx.fills, theme)];
+  return [...layoutOpeningRanges(model, ctx.openingRanges ?? [], theme), ...layoutHalts(model, ctx.halts, ctx.now, theme), ...layoutKeyLevels(model, ctx.levels, theme), ...layoutLuld(model, ctx.luld, theme), ...layoutFills(model, ctx.fills, theme)];
 }
 
 /** Today's trading-day key of a time, for grouping fills in a trade list. */

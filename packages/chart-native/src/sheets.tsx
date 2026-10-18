@@ -30,8 +30,7 @@ import {
 import { useEffect, useState, type ReactNode } from "react";
 import { Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import Svg, { Path } from "react-native-svg";
-import { Segmented, ToolButton, UI } from "./ui.tsx";
+import { Icon, Segmented, ToolButton, UI } from "./ui.tsx";
 
 /**
  * A bottom sheet on a dimmed backdrop. Tapping the backdrop or the system
@@ -59,33 +58,29 @@ export function Sheet({ open, onClose, title, badge, children, reducedMotion }: 
   );
 }
 
-const SWATCH_COLOR = { warning: UI.warning, dim: UI.textDim, text: UI.text, good: UI.good, critical: UI.critical } as const;
-
-/** A layer's swatch (shapes shared with chart-web through chart-core); faded while the layer is off, as an off indicator's glyph is. */
+/** A layer's swatch: its duotone icon (shared with chart-web through chart-core); faded while the layer is off, as an off indicator's glyph is. */
 function LayerSwatch({ id, on }: { id: LayerId; on: boolean }) {
   return (
-    <Svg width={24} height={16} viewBox="0 0 24 16" opacity={on ? 1 : 0.5}>
-      {LAYER_SWATCHES[id].map((g, i) =>
-        g.paint === "fill" ? (
-          <Path key={i} d={g.d} fill={SWATCH_COLOR[g.color]} fillOpacity={g.opacity ?? 1} />
-        ) : (
-          <Path key={i} d={g.d} fill="none" stroke={SWATCH_COLOR[g.color]} strokeOpacity={g.opacity ?? 1} strokeWidth={1.5} strokeDasharray={g.dash ? [...g.dash] : undefined} />
-        ),
-      )}
-    </Svg>
+    <View style={{ opacity: on ? 1 : 0.5 }}>
+      <Icon def={LAYER_SWATCHES[id]} color={UI.text} />
+    </View>
   );
 }
 
-/** An indicator's glyph (shared with chart-web through chart-core), tinted with its line colour. */
+/** An indicator's glyph (shared with chart-web through chart-core), both tones tinted with its line colour. */
 function Glyph({ kind, color }: { kind: IndicatorSpec["kind"]; color: string }) {
-  return (
-    <Svg width={18} height={18} viewBox="0 0 16 16" fill="none" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
-      {INDICATOR_GLYPHS[kind].map((g, i) => (
-        <Path key={i} d={g.d} fill={g.fill ? color : "none"} fillOpacity={g.fill ? 0.18 : undefined} stroke={g.fill ? "none" : color} strokeOpacity={g.faint ? 0.4 : 1} />
-      ))}
-    </Svg>
-  );
+  return <Icon def={{ w: 16, h: 16, strokeWidth: 1.5, paths: INDICATOR_GLYPHS[kind] }} color={color} size={18} />;
 }
+
+/** The selection check (accent, both tones): the sheets' one accent mark per checked row. */
+const Check = () => (
+  <View style={s.rowRight}>
+    <Icon name="check" color={UI.accent} size={14} />
+  </View>
+);
+
+/** A row's "opens more" affordance. */
+const Chevron = () => <Icon name="chevronRight" color={UI.textDim} size={14} />;
 
 /**
  * The indicator sheet, the phone's twin of chart-web's menu: per row the
@@ -143,7 +138,7 @@ export function IndicatorSheet({
             {allowed ? info.description : "Section full: turn one off first"}
           </Text>
         </View>
-        {checked && <Text style={[s.rowRight, { color: UI.accent }]}>✓</Text>}
+        {checked && <Check />}
       </Pressable>
     );
   };
@@ -218,7 +213,7 @@ export function AxisSheet({
         {onOrderAt && price !== null && (
           <Pressable accessibilityRole="button" onPress={close(onOrderAt)} style={({ pressed }) => [s.actionRow, pressed && { backgroundColor: UI.raised }]}>
             <Text style={s.actionText}>{`Order at ${formatPrice(price)}`}</Text>
-            <Text style={s.chevron}>›</Text>
+            <Chevron />
           </Pressable>
         )}
         {/* The three scales are one choice, so they are one control. */}
@@ -404,7 +399,6 @@ const s = StyleSheet.create({
   priceChip: { color: UI.text, fontSize: 12, fontVariant: ["tabular-nums"], backgroundColor: UI.bg, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 3, overflow: "hidden" },
   actionRow: { minHeight: 48, flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 12, backgroundColor: UI.row },
   actionText: { color: UI.text, fontSize: 14, fontWeight: "500", flex: 1 },
-  chevron: { color: UI.textDim, fontSize: 20, lineHeight: 22 },
   onChip: { color: UI.accent, fontSize: 12, fontWeight: "600", backgroundColor: "rgba(139,156,255,0.14)", borderRadius: 6, paddingHorizontal: 8, paddingVertical: 3, overflow: "hidden" },
   halfAction: { flex: 1, height: 44, borderRadius: 12, backgroundColor: UI.row, alignItems: "center", justifyContent: "center" },
   halfText: { fontSize: 14, fontWeight: "600" },
@@ -437,7 +431,7 @@ const s = StyleSheet.create({
   // Rows bleed into the card's padding so their text lines up with the header above.
   tradeRow: { flexDirection: "row", alignItems: "center", gap: 8, minHeight: 32, paddingHorizontal: 8, marginHorizontal: -8, borderRadius: 6 },
   tradeCell: { color: UI.text, fontSize: 12, fontVariant: ["tabular-nums"] },
-  rowRight: { color: UI.textDim, fontSize: 13, marginLeft: 8 },
+  rowRight: { marginLeft: 8 },
   input: { height: 42, backgroundColor: UI.row, borderRadius: 10, paddingHorizontal: 10, color: UI.text, fontSize: 15, fontVariant: ["tabular-nums"] },
   small: { color: UI.textDim, fontSize: 12 },
   note: { color: UI.textFaint, fontSize: 11, lineHeight: 15 },
@@ -529,7 +523,7 @@ export function LayersSheet({
                   {LAYER_INFO[id].description}
                 </Text>
               </View>
-              {checked && <Text style={[s.rowRight, { color: UI.accent }]}>{"\u2713"}</Text>}
+              {checked && <Check />}
             </Pressable>
           );
         })}
@@ -651,7 +645,7 @@ export function QuickTradeSheet({
         {/* More: the full ticket, or plan a position here; buttons, not loose text. */}
         <Pressable accessibilityRole="button" onPress={act(onTicket)} style={({ pressed }) => [s.actionRow, pressed && { backgroundColor: UI.raised }]}>
           <Text style={s.actionText}>{`Order ticket at ${p}`}</Text>
-          <Text style={s.chevron}>›</Text>
+          <Chevron />
         </Pressable>
         <View style={{ flexDirection: "row", gap: 8 }}>
           <Pressable accessibilityRole="button" accessibilityLabel="Plan a long position here" onPress={act(() => onPosition("long"))} style={({ pressed }) => [s.halfAction, pressed && { backgroundColor: UI.raised }]}>

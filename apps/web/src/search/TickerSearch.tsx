@@ -1,4 +1,5 @@
 import { formatPrice, formatVolume } from "@stockwatcher/chart-core";
+import { Icon } from "@stockwatcher/chart-web";
 import { cn, Dialog, DialogContent, DialogTitle, ScrollArea } from "@stockwatcher/chart-web/ui";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -247,10 +248,7 @@ export function TickerSearch({ open, onOpenChange, symbols, quotes, mock, curren
       <DialogContent initialFocus={inputRef} className={cn("left-1/2 -translate-x-1/2 overflow-hidden p-0", anchored ? "top-2.5 w-(--search-w)" : "top-16 w-[min(560px,calc(100vw-32px))]")}>
         <DialogTitle>Go to ticker</DialogTitle>
         <div className="flex items-center gap-2 px-3 pt-3 pb-2">
-          <svg viewBox="0 0 16 16" className="size-4 shrink-0 text-muted-foreground" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true">
-            <circle cx="7" cy="7" r="4.5" />
-            <path d="M10.5 10.5 14 14" />
-          </svg>
+          <Icon name="search" className="size-4 text-muted-foreground" />
           <input
             ref={inputRef}
             value={query}

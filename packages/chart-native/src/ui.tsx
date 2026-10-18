@@ -1,8 +1,8 @@
-import type { DrawingKind, HapticStyle } from "@stockwatcher/chart-core";
+import { ICONS, iconPaint, type DrawingKind, type HapticStyle, type IconDef, type IconName } from "@stockwatcher/chart-core";
 import * as Haptics from "expo-haptics";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Pressable, StyleSheet, Text, View, type StyleProp, type ViewStyle } from "react-native";
-import Svg, { Circle, Path, Rect } from "react-native-svg";
+import Svg, { Path } from "react-native-svg";
 
 // The chart's own native UI pieces (toolbar buttons, segmented controls,
 // icons) and its haptics. They live in the chart package so every screen
@@ -36,104 +36,54 @@ export function playHaptic(style: HapticStyle | "success"): void {
   p.catch(() => {});
 }
 
-const icon = (children: ReactNode, color: string) => (
-  <Svg width={16} height={16} viewBox="0 0 16 16" fill="none" stroke={color} strokeWidth={1.5} strokeLinecap="round">
-    {children}
-  </Svg>
-);
+const HUES = { good: UI.good, critical: UI.critical, warning: UI.warning } as const;
 
-/** The same 16 px icons as chart-web's toolbar. */
-export function ToolIcon({ kind, color }: { kind: DrawingKind | "cursor" | "trash" | "indicators" | "levels" | "trades" | "undo" | "redo" | "pencil" | "trade"; color: string }) {
-  switch (kind) {
-    case "cursor":
-      return icon(<Path d="M4 2.5v10l3-3 2 4.5 1.6-.7-2-4.4H13z" fill={color} stroke="none" />, color);
-    case "trend":
-      return icon(
-        <>
-          <Path d="M3 12.5 13 3.5" />
-          <Circle cx={3} cy={12.5} r={1.3} fill={color} />
-          <Circle cx={13} cy={3.5} r={1.3} fill={color} />
-        </>,
-        color,
-      );
-    case "ray":
-      return icon(
-        <>
-          <Path d="M3 12.5 15 2" />
-          <Circle cx={3} cy={12.5} r={1.3} fill={color} />
-        </>,
-        color,
-      );
-    case "hline":
-      return icon(<Path d="M1.5 8h13" />, color);
-    case "vline":
-      return icon(<Path d="M8 1.5v13" />, color);
-    case "rect":
-      return icon(<Rect x={3} y={4} width={10} height={8} rx={1} fill={color} fillOpacity={0.35} stroke="none" />, color);
-    case "long":
-      return icon(
-        <>
-          <Rect x={3} y={2} width={10} height={6} rx={1} fill={UI.good} fillOpacity={0.55} stroke="none" />
-          <Rect x={3} y={8} width={10} height={5} rx={1} fill={UI.critical} fillOpacity={0.55} stroke="none" />
-          <Path d="M2 8h12" />
-        </>,
-        color,
-      );
-    case "short":
-      return icon(
-        <>
-          <Rect x={3} y={3} width={10} height={5} rx={1} fill={UI.critical} fillOpacity={0.55} stroke="none" />
-          <Rect x={3} y={8} width={10} height={6} rx={1} fill={UI.good} fillOpacity={0.55} stroke="none" />
-          <Path d="M2 8h12" />
-        </>,
-        color,
-      );
-    case "indicators":
-      return icon(
-        <>
-          <Path d="M1.5 12.5 4.5 9l2.5 2 3.5-5 4 3" strokeOpacity={0.45} />
-          <Path d="M1.5 9.5c2.5-4 4.5-5 6.5-3s4 1.5 6.5-3" />
-        </>,
-        color,
-      );
-    case "levels":
-      return icon(
-        <>
-          <Path d="M1.5 4h13" strokeDasharray="2 2" />
-          <Path d="M1.5 8h13" />
-          <Path d="M1.5 12h13" strokeOpacity={0.5} />
-        </>,
-        color,
-      );
-    case "trades":
-      return icon(
-        <>
-          <Path d="M6.5 4h8M6.5 8h8M6.5 12h8" strokeOpacity={0.6} />
-          <Path d="M2 5.5 3.5 3 5 5.5z" fill={color} stroke="none" />
-          <Path d="M2 10.5 3.5 13 5 10.5z" fill={color} stroke="none" />
-        </>,
-        color,
-      );
-    case "trade":
-      return icon(<Path d="M5 13V3M2.5 5.5 5 3l2.5 2.5M11 3v10M8.5 10.5 11 13l2.5-2.5" />, color);
-    case "pencil":
-      return icon(<Path d="M10.5 2.5 13.5 5.5 5.5 13.5H2.5v-3zM9 4l3 3" />, color);
-    case "measure":
-      return icon(
-        <>
-          <Path d="M2 11.5 11.5 2l2.5 2.5L4.5 14z" />
-          <Path d="M5 9.5l1 1M7 7.5l1.5 1.5M9 5.5l1 1" />
-        </>,
-        color,
-      );
-    case "undo":
-      return icon(<Path d="M5.5 3 2.5 6l3 3M2.5 6h7a4 4 0 0 1 0 8h-2" />, color);
-    case "redo":
-      return icon(<Path d="M10.5 3l3 3-3 3M13.5 6h-7a4 4 0 0 0 0 8h2" />, color);
-    case "trash":
-      return icon(<Path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5" />, color);
-  }
+export interface IconProps {
+  /** A named icon, or any duotone definition (a layer swatch, an indicator glyph). */
+  name?: IconName;
+  def?: IconDef;
+  /** The primary tone: the state's text colour (UI.textDim idle, UI.text raised, UI.accent where a state spends it). */
+  color: string;
+  /** Rendered width in px (height follows the viewBox's aspect); default the viewBox size. */
+  size?: number;
 }
+
+/**
+ * chart-core's duotone icons (icons.ts) with react-native-svg: the same
+ * definitions chart-web draws, so the phone and the web show the same marks
+ * in the same two tones. A path's role picks the tone (iconPaint): primary
+ * is `color`, secondary the same colour at ICON_SECONDARY_OPACITY, which is
+ * what the web's --icon-secondary color-mix spells.
+ */
+export function Icon({ name, def, color, size }: IconProps) {
+  const d = def ?? (name ? ICONS[name] : undefined);
+  if (!d) return null;
+  const w = size ?? d.w;
+  return (
+    <Svg width={w} height={(w * d.h) / d.w} viewBox={`0 0 ${d.w} ${d.h}`} fill="none" strokeLinecap="round" strokeLinejoin="round">
+      {d.paths.map((p, i) => {
+        const paint = iconPaint(p, color, HUES);
+        return p.paint === "fill" ? (
+          <Path key={i} d={p.d} fill={paint.color} fillOpacity={paint.opacity} stroke="none" />
+        ) : (
+          <Path key={i} d={p.d} fill="none" stroke={paint.color} strokeOpacity={paint.opacity} strokeWidth={p.width ?? d.strokeWidth} strokeDasharray={p.dash ? [...p.dash] : undefined} />
+        );
+      })}
+    </Svg>
+  );
+}
+
+/** The toolbar icons by name (kept for callers of the old per-kind switch); the same 16 px marks as chart-web's toolbar. */
+export function ToolIcon({ kind, color }: { kind: DrawingKind | "cursor" | "trash" | "indicators" | "levels" | "trades" | "undo" | "redo" | "pencil" | "trade"; color: string }) {
+  return <Icon name={kind} color={color} />;
+}
+
+/**
+ * An armed drawing tool's icon colour: accent (both tones), because drawing is
+ * a mode the next tap acts on; the cursor is the resting state and stays
+ * neutral, so the accent stays rare. Same rule as chart-web's ARMED.
+ */
+export const toolColor = (kind: DrawingKind | "cursor", on: boolean) => (on ? (kind === "cursor" ? UI.text : UI.accent) : UI.textDim);
 
 export interface SegmentedProps<T extends string> {
   /** tint colours the selected label; activeBg replaces the selected segment's raised surface (Buy/Sell). */

@@ -1,3 +1,4 @@
+import { ICON_SECONDARY_OPACITY } from "@stockwatcher/chart-core";
 import { Platform } from "react-native";
 
 // Design tokens, mirroring apps/web/src/index.css `:root`. Change both
@@ -30,6 +31,14 @@ export const colors = {
   warningBg: "rgba(224, 166, 58, 0.14)",
   critical: "#f0645c",
   criticalBg: "rgba(240, 100, 92, 0.14)",
+} as const;
+
+// Duotone icons (web: --icon-primary / --icon-secondary). Every icon is
+// chart-native's <Icon>, drawn from chart-core's shared definitions: primary
+// is the colour passed in (the state's text colour; accent only where a state
+// spends it), secondary the same colour at this opacity.
+export const icon = {
+  secondaryOpacity: ICON_SECONDARY_OPACITY,
 } as const;
 
 // Compact spacing (owner preference): enough room to breathe, no more.
