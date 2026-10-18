@@ -5,6 +5,9 @@ import { defineConfig } from "vite";
 
 // Dev: Vite on 5173 proxies the API and WebSocket to the Rust server on
 // 8790, so the browser sees one origin exactly as in production.
+// STOCKWATCHER_DEV_SERVER=https://stockwatcher.wavystyle.io points it at production instead
+// (sign in with the production token); changeOrigin sends that host's name, without which
+// Caddy has no site to route the request to.
 const server = process.env.STOCKWATCHER_DEV_SERVER ?? "http://127.0.0.1:8790";
 
 export default defineConfig({
@@ -16,9 +19,9 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
     proxy: {
-      "/api": server,
-      "/updates": server,
-      "/ws": { target: server.replace(/^http/, "ws"), ws: true },
+      "/api": { target: server, changeOrigin: true },
+      "/updates": { target: server, changeOrigin: true },
+      "/ws": { target: server.replace(/^http/, "ws"), ws: true, changeOrigin: true },
     },
   },
 });
