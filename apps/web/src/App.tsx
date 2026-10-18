@@ -10,10 +10,12 @@ import {
   sessionBands,
   tradingDayOf,
   volumeBuckets,
+  parseDrawingSettings,
   type ChartOptions,
+  type DrawingSettings,
   type Timeframe,
 } from "@stockwatcher/chart-core";
-import { CandleChart, Icon, ReplayControls, SessionTimeline, Tape, VolumeProfile } from "@stockwatcher/chart-web";
+import { CandleChart, drawingSettingsSection, Icon, ReplayControls, SessionTimeline, SettingsDialog, Tape, VolumeProfile } from "@stockwatcher/chart-web";
 import { Tip, ToggleGroup, ToggleGroupItem, cn } from "@stockwatcher/chart-web/ui";
 import { useEffect, useMemo, useState } from "react";
 import { createServerFeed } from "./feed/serverFeed.ts";
@@ -46,6 +48,46 @@ const DESKTOP_CHART: Partial<ChartOptions> = {};
 function sourceText(choice: SourceChoice): string {
   if (choice.kind === "fixture") return `In-browser fixture — not market data (${choice.reason})`;
   return choice.fixtureData ? `${choice.label} · fixture archive — not market data` : `${choice.label} · ${choice.reason}`;
+}
+
+/** The chart's saved state lives under this prefix (`sw-chart:settings`, `sw-chart:drawing`, …). */
+const CHART_KEY = "sw-chart";
+const DRAWING_KEY = `${CHART_KEY}:drawing`;
+
+const loadDrawingSettings = (): DrawingSettings => {
+  try {
+    const raw = localStorage.getItem(DRAWING_KEY);
+    return parseDrawingSettings(raw ? JSON.parse(raw) : null);
+  } catch {
+    return parseDrawingSettings(null);
+  }
+};
+
+/**
+ * The Settings gear (owner request 2026-10-18), at the header's right edge
+ * beside the data-source icon on the desktop and the phone layout alike: the
+ * same quiet round 28 px chip as the source icon, raised while its dialog
+ * is open. Neutral, never accent: it opens something, it is not a primary
+ * action.
+ */
+function SettingsButton({ open, onOpen }: { open: boolean; onOpen: () => void }) {
+  return (
+    <Tip label="Settings">
+      <button
+        type="button"
+        aria-label="Settings"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        onClick={onOpen}
+        className={cn(
+          "inline-grid size-7 shrink-0 place-items-center rounded-full text-muted-foreground outline-none transition-colors hover:bg-bg-row hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-3.5",
+          open ? "bg-bg-raised text-foreground" : "bg-card",
+        )}
+      >
+        <Icon name="settings" />
+      </button>
+    </Tip>
+  );
 }
 
 /** Replay: a clock turned back. Live: a broadcast dot with its waves. */
@@ -190,6 +232,20 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
   const dayOptions = useMemo(() => replayDayOptions(replayDays.state?.days ?? []), [replayDays.state]);
 
   const phone = useMediaQuery("(max-width: 600px)");
+  // The Settings dialog and what its Drawing tab edits: which buttons the chart's drawing toolbox shows.
+  // Owned here (the dialog is app chrome), handed to the chart, saved next to its other settings.
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [drawingSettings, setDrawingSettings] = useState<DrawingSettings>(loadDrawingSettings);
+  const changeDrawingSettings = (next: DrawingSettings) => {
+    setDrawingSettings(next);
+    try {
+      localStorage.setItem(DRAWING_KEY, JSON.stringify(next));
+    } catch {
+      // Private mode or blocked storage: the choice holds until the page closes.
+    }
+  };
+  const settings = <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} persistKey="sw-settings" sections={[drawingSettingsSection(drawingSettings, changeDrawingSettings)]} />;
+  const gear = <SettingsButton open={settingsOpen} onOpen={() => setSettingsOpen(true)} />;
   // Ticker quick-open, VS Code's Ctrl+P (Cmd+P on a Mac): the browser's print shortcut is taken
   // over on purpose while the app is focused.
   const [searchOpen, setSearchOpen] = useState(false);
@@ -285,9 +341,11 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
             <span className={cn("font-mono text-[11px]", changeColor)}>{change}</span>
           </div>
           <SourceChip className="ml-auto" choice={current} mode={mode} />
+          {gear}
           {search}
+          {settings}
         </header>
-        <CandleChart className="h-[360px]" toolbar inspector symbol={symbol} persistKey="sw-chart" trading={trading} now={clock?.now ?? null} onTimeframeChange={changeTf} series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={setInspectT} options={PHONE_CHART} barSpacing={10} label={chartLabel} />
+        <CandleChart className="h-[360px]" toolbar inspector symbol={symbol} persistKey={CHART_KEY} drawingSettings={drawingSettings} trading={trading} now={clock?.now ?? null} onTimeframeChange={changeTf} series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={setInspectT} options={PHONE_CHART} barSpacing={10} label={chartLabel} />
         <section aria-label="Session timeline and replay" className="flex flex-col gap-1.5 rounded-xl bg-card px-3 py-2">
           <ReplayControls {...replay} variant="compact" />
           <SessionTimeline bands={bands} buckets={buckets} bucketMs={bucketMs} now={clock?.now ?? null} variant="minimal" onSeek={seek} />
@@ -318,8 +376,12 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
           <span>Search tickers</span>
           <kbd className="ml-auto rounded bg-bg-row px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">{isMac ? "⌘P" : "Ctrl P"}</kbd>
         </button>
-        <SourceChip className="justify-self-end" choice={current} mode={mode} />
+        <div className="flex items-center gap-2 justify-self-end">
+          <SourceChip choice={current} mode={mode} />
+          {gear}
+        </div>
         {search}
+        {settings}
       </header>
 
       <div className="flex min-h-0 flex-1 flex-col gap-2 px-4 pb-3 min-[901px]:flex-row">
@@ -338,7 +400,7 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
                     <span className={cn("pointer-events-auto font-mono text-[11px]", changeColor)}>{change}</span>
                   </Tip>
                 </div>
-              } symbol={symbol} persistKey="sw-chart" trading={trading} now={clock?.now ?? null} onTimeframeChange={changeTf} series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={setInspectT} options={DESKTOP_CHART} label={chartLabel} />
+              } symbol={symbol} persistKey={CHART_KEY} drawingSettings={drawingSettings} trading={trading} now={clock?.now ?? null} onTimeframeChange={changeTf} series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={setInspectT} options={DESKTOP_CHART} label={chartLabel} />
           </div>
           <section aria-label="Session timeline and replay" className="flex flex-col gap-2 rounded-xl bg-card px-3 py-2.5">
             <ReplayControls {...replay} />
