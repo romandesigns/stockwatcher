@@ -55,6 +55,29 @@
 //!   snapshot. Subscribing again after a reconnect is the client's job, as for charts.
 //! - After a seek (rebuild) and for a lagged connection, a subscribed client gets a fresh
 //!   `quotes.snapshot` (it replaces the client's board); no updates go out during a rebuild.
+//!
+//! Synced settings (crates/server/src/settings.rs, docs/architecture/settings-sync.md, after
+//! `welcome`): the user's chart preferences and drawings, shared by every client.
+//! - server `settings.snapshot {docs: [{ns, rev, updatedAt, value}]}` once right after `welcome`
+//!   (after `paper.state` and the clock), with EVERY namespace (drawings are small, so all symbols'
+//!   drawings come at once rather than per chart subscription). It is the whole truth: a client
+//!   replaces its copy of each namespace listed. Sent again to a lagged connection; a reconnect
+//!   gets one like any new connection.
+//! - client `settings.set {ns, value, opId, ifAbsent?}` replaces a namespace's value; with
+//!   `ifAbsent: true` only if it has never been written (a client's one-time migration of its
+//!   local settings: the first client to connect seeds the shared value).
+//! - client `settings.patch {ns, set?: {key: value}, remove?: [key], opId}` sets/removes entries
+//!   of an object-valued namespace (a symbol's drawings by id, `drawings:<SYMBOL>`), so edits of
+//!   different drawings from two devices never overwrite each other.
+//! - server `settings.changed {ns, rev, updatedAt, value, opId}` to EVERY connection, the writer
+//!   included, after each applied write (whole value, also after a patch). Last writer wins by
+//!   arrival; `rev` climbs by one per namespace; the writer recognises its `opId`. An `ifAbsent`
+//!   set that found a value answers only the writer, with the current document and its opId
+//!   (rev unchanged).
+//! - server `settings.rejected {ns, opId, code, message}` to the writer alone: `bad_request`,
+//!   `too_large`, `store_full`, `not_a_map` (drop the edit) or `settings_unavailable` (the disk
+//!   write failed: keep it and resend after the next reconnect). Nothing changed.
+//! - Values are opaque JSON: the clients own the schemas and validate what they read.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -65,7 +88,8 @@ use serde::{Deserialize, Serialize};
 use tokio::time::{Instant, interval_at, timeout};
 
 use crate::market::{ControlError, Market, OutKind, QuotesGuard, SnapshotError};
-use crate::{AppState, COMMIT, VERSION, api, auth};
+use crate::settings::{SettingsError, SettingsOp, rejected_frame as settings_rejected};
+use crate::{AppState, COMMIT, Settings, VERSION, api, auth};
 use chart_engine::Timeframe;
 use market_events::Price;
 use paper_broker::wire::{CancelCommand, ModifyCommand, PlaceCommand};
@@ -114,6 +138,58 @@ enum ClientMessage {
     QuotesSubscribe,
     #[serde(rename = "quotes.unsubscribe")]
     QuotesUnsubscribe,
+    #[serde(rename = "settings.set")]
+    SettingsSet {
+        ns: String,
+        value: serde_json::Value,
+        #[serde(rename = "opId")]
+        op_id: String,
+        #[serde(rename = "ifAbsent", default)]
+        if_absent: bool,
+    },
+    #[serde(rename = "settings.patch")]
+    SettingsPatch {
+        ns: String,
+        #[serde(default)]
+        set: serde_json::Map<String, serde_json::Value>,
+        #[serde(default)]
+        remove: Vec<String>,
+        #[serde(rename = "opId")]
+        op_id: String,
+    },
+}
+
+/// For a frame in the settings namespace that failed to parse: its `ns` and `opId` if readable,
+/// so the rejection names the edit. None for any other frame.
+fn settings_frame_ids(text: &str) -> Option<(String, String)> {
+    let v = serde_json::from_str::<serde_json::Value>(text).ok()?;
+    if !v.get("type")?.as_str()?.starts_with("settings.") {
+        return None;
+    }
+    let field = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_owned();
+    Some((field("ns"), field("opId")))
+}
+
+/// Applies one settings write for this connection. The success answer (`settings.changed`)
+/// reaches this connection through its own settings feed like everyone else's; only an
+/// `ifAbsent` reply or a rejection is sent directly. False when the socket is gone.
+async fn apply_setting(
+    socket: &mut WebSocket,
+    settings: &Settings,
+    ns: &str,
+    op_id: &str,
+    op: SettingsOp,
+) -> bool {
+    match settings.apply(ns, op_id, op).await {
+        Ok(None) => true,
+        Ok(Some(reply)) => send_text(socket, reply).await,
+        Err(e) => {
+            if e != SettingsError::Unavailable {
+                tracing::debug!(ns, code = e.code(), "settings write refused");
+            }
+            send_text(socket, settings_rejected(ns, op_id, e.code(), e.message())).await
+        }
+    }
 }
 
 /// The connection's quotes opt-in. Dropping it (unsubscribe, or the session ending) releases the
@@ -317,6 +393,12 @@ async fn session(mut socket: WebSocket, state: AppState) {
     {
         return;
     }
+    // Subscribed before the snapshot is taken, for the same reason as the market feed above.
+    let settings = state.settings().clone();
+    let mut settings_feed = settings.subscribe();
+    if !send_text(&mut socket, settings.snapshot_frame().await).await {
+        return;
+    }
     let mut sub: Option<Sub> = None;
     let mut quotes: Option<QuotesSub> = None;
 
@@ -390,6 +472,21 @@ async fn session(mut socket: WebSocket, state: AppState) {
                             }
                     }
                     Err(RecvError::Closed) => true,
+                };
+                if !ok {
+                    break;
+                }
+            }
+            changed = settings_feed.recv() => {
+                let ok = match changed {
+                    Ok(frame) => send_text(&mut socket, frame.to_string()).await,
+                    Err(RecvError::Lagged(n)) => {
+                        tracing::debug!(skipped = n, "ws client lagged on settings; resending the snapshot");
+                        send_text(&mut socket, settings.snapshot_frame().await).await
+                    }
+                    // The store (and its sender) lives as long as the AppState; if it ever went,
+                    // recv would return at once forever, so end the session rather than spin.
+                    Err(RecvError::Closed) => false,
                 };
                 if !ok {
                     break;
@@ -492,6 +589,27 @@ async fn session(mut socket: WebSocket, state: AppState) {
                     }
                     Ok(ClientMessage::QuotesUnsubscribe) => {
                         quotes = None;
+                        None
+                    }
+                    Ok(ClientMessage::SettingsSet { ns, value, op_id, if_absent }) => {
+                        let op = SettingsOp::Set { value, if_absent };
+                        if !apply_setting(&mut socket, &settings, &ns, &op_id, op).await {
+                            break;
+                        }
+                        None
+                    }
+                    Ok(ClientMessage::SettingsPatch { ns, set, remove, op_id }) => {
+                        let op = SettingsOp::Patch { set, remove };
+                        if !apply_setting(&mut socket, &settings, &ns, &op_id, op).await {
+                            break;
+                        }
+                        None
+                    }
+                    Err(_) if let Some((ns, op_id)) = settings_frame_ids(&text) => {
+                        let frame = settings_rejected(&ns, &op_id, "bad_request", "malformed settings message");
+                        if !send_text(&mut socket, frame).await {
+                            break;
+                        }
                         None
                     }
                     Err(_) if is_paper_command(&text) => Some(ServerMessage::Error {
