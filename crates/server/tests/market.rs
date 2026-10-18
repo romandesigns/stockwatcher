@@ -24,8 +24,21 @@ struct Stack {
 }
 
 async fn stack(extra: &[(&str, &str)]) -> Stack {
+    stack_with_assets(extra, None).await
+}
+
+/// [`stack`] with an `assets.json` written to the archive root before the market starts.
+async fn stack_with_assets(extra: &[(&str, &str)], assets: Option<Value>) -> Stack {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("archive").to_string_lossy().into_owned();
+    if let Some(a) = assets {
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            std::path::Path::new(&root).join("assets.json"),
+            a.to_string(),
+        )
+        .unwrap();
+    }
     let mut vars: Vec<(String, String)> = vec![
         ("ARCHIVE_ROOT".into(), root),
         ("ARCHIVE_MIN_FREE_MB".into(), "0".into()),
@@ -814,4 +827,179 @@ async fn fixture_halt_and_luld_bands_reach_subscribers_and_snapshots() {
             .iter()
             .any(|p| (T1005 + 1..T100630).contains(&p["t"].as_i64().unwrap()))
     );
+}
+
+// --- quote board (quotes.subscribe / quotes.snapshot / quotes.update) ------------------------
+
+fn quote<'a>(frame: &'a Value, symbol: &str) -> Option<&'a Value> {
+    frame["quotes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|q| q["s"] == symbol)
+}
+
+fn quote_symbols(frame: &Value) -> Vec<String> {
+    frame["quotes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|q| q["s"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// Reads frames for `wait` and returns the types seen.
+async fn types_for(ws: &mut Ws, wait: Duration) -> Vec<String> {
+    let mut seen = Vec::new();
+    let _ = tokio::time::timeout(wait, async {
+        while let Some(Ok(m)) = ws.next().await {
+            if let Message::Text(t) = m {
+                let v: Value = serde_json::from_str(&t).unwrap();
+                seen.push(v["type"].as_str().unwrap_or("").to_string());
+            }
+        }
+    })
+    .await;
+    seen
+}
+
+#[tokio::test]
+async fn quotes_subscribe_gets_a_snapshot_then_changed_rows_about_once_a_second() {
+    let s = stack(&[("SIM_FIXTURE_SYMBOLS", "SMPL,FXLO,FXHI")]).await;
+    let mut ws = connect(&s.url).await;
+    let mut bystander = connect(&s.url).await;
+    wait_for_replay(&mut ws).await;
+
+    send(&mut ws, json!({"type": "quotes.subscribe"})).await;
+    let snap = next(&mut ws, is("quotes.snapshot")).await;
+    assert_eq!(
+        quote_symbols(&snap),
+        ["FXLO", "SMPL"],
+        "candidates only (FXHI is above $25), sorted"
+    );
+    assert!(snap["t"].as_i64().unwrap() >= T1040);
+    let smpl = quote(&snap, "SMPL").unwrap().clone();
+    assert!(smpl["p"].as_f64().unwrap() > 0.0);
+    assert!(smpl["o"].as_f64().unwrap() > 0.0);
+    assert!(smpl["v"].as_u64().unwrap() > 0);
+    assert!(smpl["n"].as_u64().unwrap() > 0);
+    assert!(
+        smpl.get("pre").is_none(),
+        "past 09:30 the reference is the regular open"
+    );
+    assert!(
+        smpl.get("name").is_none(),
+        "no assets.json: no invented name"
+    );
+
+    // Updates: only changed rows, monotone volume, spaced by wall time, and the reference
+    // (the regular open) does not move once set.
+    let first = next(&mut ws, is("quotes.update")).await;
+    let t_first = std::time::Instant::now();
+    let second = next(&mut ws, is("quotes.update")).await;
+    let gap = t_first.elapsed();
+    assert!(
+        gap >= Duration::from_millis(800),
+        "updates at most ~1/s of wall time, got {gap:?}"
+    );
+    for u in [&first, &second] {
+        assert!(!u["quotes"].as_array().unwrap().is_empty());
+        assert!(u["t"].as_i64().unwrap() > snap["t"].as_i64().unwrap());
+        assert!(quote(u, "FXHI").is_none());
+        for q in u["quotes"].as_array().unwrap() {
+            assert!(
+                q.get("name").is_none() && q.get("x").is_none(),
+                "names only in snapshots"
+            );
+        }
+    }
+    if let Some(q) = quote(&second, "SMPL") {
+        assert!(q["v"].as_u64() >= smpl["v"].as_u64());
+        assert_eq!(q["o"], smpl["o"]);
+    }
+
+    // A connection that never subscribed never sees a quotes frame.
+    let seen = types_for(&mut bystander, Duration::from_millis(2500)).await;
+    assert!(seen.iter().any(|t| t == "replay.clock"));
+    assert!(!seen.iter().any(|t| t.starts_with("quotes.")), "{seen:?}");
+
+    // Unsubscribe: after the server has processed it (the pong proves it), nothing more.
+    send(&mut ws, json!({"type": "quotes.unsubscribe"})).await;
+    send(&mut ws, json!({"type": "ping", "ts": 42})).await;
+    next(&mut ws, |m| m["type"] == "pong" && m["ts"] == 42).await;
+    let seen = types_for(&mut ws, Duration::from_millis(2500)).await;
+    assert!(!seen.iter().any(|t| t.starts_with("quotes.")), "{seen:?}");
+}
+
+#[tokio::test]
+async fn quotes_volume_matches_the_candles_and_a_seek_resends_the_snapshot() {
+    let s = stack(&[("REPLAY_AUTOPLAY", "0")]).await;
+    let mut ws = connect(&s.url).await;
+    wait_for_replay(&mut ws).await;
+
+    send(&mut ws, json!({"type": "quotes.subscribe"})).await;
+    let snap = next(&mut ws, is("quotes.snapshot")).await;
+    assert_eq!(snap["t"], T1040);
+    // The same volume rule as the candles: the board's day volume is the chart's total.
+    send(
+        &mut ws,
+        json!({"type":"chart.subscribe","symbol":"SMPL","timeframe":"1m","profileBin":0.01}),
+    )
+    .await;
+    let chart = next(&mut ws, is("chart.snapshot")).await;
+    let v_1040 = quote(&snap, "SMPL").unwrap()["v"].as_u64().unwrap();
+    assert_eq!(v_1040, total_volume(&chart));
+
+    // Paused: nothing changes, so no update goes out.
+    let seen = types_for(&mut ws, Duration::from_millis(2200)).await;
+    assert!(!seen.iter().any(|t| t == "quotes.update"), "{seen:?}");
+
+    // Seek back: the board is rebuilt with the core and a fresh snapshot replaces the old one.
+    let target = T1040 - 30 * 60_000; // 10:10 ET
+    send(
+        &mut ws,
+        json!({"type":"replay.control","action":"seek","value":target}),
+    )
+    .await;
+    let again = next(&mut ws, is("quotes.snapshot")).await;
+    assert_eq!(again["t"], target);
+    let v_1010 = quote(&again, "SMPL").unwrap()["v"].as_u64().unwrap();
+    assert!(v_1010 < v_1040, "{v_1010} < {v_1040}");
+    let chart = next(&mut ws, is("chart.snapshot")).await;
+    assert_eq!(v_1010, total_volume(&chart));
+    // The rebuild's rows are in that snapshot, not replayed as a burst of updates.
+    let seen = types_for(&mut ws, Duration::from_millis(2200)).await;
+    assert!(!seen.iter().any(|t| t == "quotes.update"), "{seen:?}");
+}
+
+#[tokio::test]
+async fn quotes_carry_names_and_exchanges_from_assets_json_and_the_rest_route_serves_them() {
+    let s = stack_with_assets(
+        &[("REPLAY_AUTOPLAY", "0")],
+        Some(json!({
+            "SMPL": {"name": "Sample Labs Inc.", "exchange": "NASDAQ"},
+            "ZZZZ": {"name": "Not In The Archive", "exchange": "NYSE"}
+        })),
+    )
+    .await;
+    let mut ws = connect(&s.url).await;
+    wait_for_replay(&mut ws).await;
+
+    let (st, v) = get(&s.app, "/api/quotes").await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(v["type"], "quotes.snapshot");
+    assert_eq!(v["t"], T1040);
+    assert_eq!(quote_symbols(&v), ["FXLO", "SMPL"]);
+    let smpl = quote(&v, "SMPL").unwrap();
+    assert_eq!(smpl["name"], "Sample Labs Inc.");
+    assert_eq!(smpl["x"], "NASDAQ");
+    let fxlo = quote(&v, "FXLO").unwrap();
+    assert!(
+        fxlo.get("name").is_none() && fxlo.get("x").is_none(),
+        "a symbol missing from assets.json gets no invented name"
+    );
+
+    send(&mut ws, json!({"type": "quotes.subscribe"})).await;
+    let snap = next(&mut ws, is("quotes.snapshot")).await;
+    assert_eq!(quote(&snap, "SMPL").unwrap()["name"], "Sample Labs Inc.");
 }

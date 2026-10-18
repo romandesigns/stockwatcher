@@ -17,13 +17,22 @@
 //! a seek or the initial catch-up) resets it, and the rebuild's re-read of the day is not fed to it:
 //! orders cannot survive the tape being rewritten under them, nor fill against history replayed
 //! only to rebuild candles.
+//!
+//! The quote board ([`crate::quotes`]) rides on it too: every trade updates its symbol's row under
+//! the core lock, and one task per market ([`QUOTES_INTERVAL`], wall time) takes the rows that
+//! changed and broadcasts ONE pre-serialized `quotes.update` that every opted-in connection
+//! forwards (`Outbound::seq` = the engine seq at the take, so a connection skips frames already
+//! contained in its `quotes.snapshot`: the chart's rule). Nothing is built while nobody is
+//! subscribed or while a rebuild runs; after the rebuild every subscriber takes a fresh snapshot
+//! (the `Resync` path). Names and exchanges come from the archive's optional `assets.json`.
 
+use crate::quotes::{Counted, QuoteBoard, QuoteChanges, QuoteRow};
 use chart_engine::wire::{ChartSnapshot, ChartUpdate, ClockInfo};
 use chart_engine::{ChartEngine, DataQuality, Timeframe};
 use chrono::{NaiveDate, Utc};
 use chrono_tz::America::New_York;
-use market_archive::Archive;
 use market_archive::fixture::{DEFAULT_SEED, DEFAULT_SYMBOLS, write_fixture_day};
+use market_archive::{Archive, AssetMeta};
 use market_events::{MarketEvent, Price, PriceBand, SessionId, UnixNanos};
 use market_providers::{
     ClockMode, ClockState, Command, FeedItem, MarketDataMode, ProviderConfig, ProviderError,
@@ -35,13 +44,19 @@ use provider_sim::{Sim, SimConfig};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, Weak};
+use std::time::Duration;
 use tokio::sync::{broadcast, mpsc};
 
 /// Recent tape rows kept per symbol and sent after a snapshot (same as the browser fixture).
 pub const TAPE_HISTORY: usize = 40;
 /// Broadcast capacity: how far one client may fall behind before it is resynchronized.
 pub const BROADCAST_CAPACITY: usize = 16_384;
+/// How often (wall time) changed quote rows are broadcast as one `quotes.update`. Wall time, not
+/// replay time: at 10× a row may change many times a second, and a client wants a steady,
+/// bounded frame rate rather than one that scales with the replay speed.
+pub const QUOTES_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Market configuration (environment). Provider and simulator variables are documented on
 /// [`ProviderConfig`] and [`SimConfig`]; here:
@@ -143,6 +158,9 @@ pub enum OutKind {
     /// subscribes to. Not filtered by `seq` (the frame carries the broker's own `seq`); its
     /// `Outbound::seq` is 0.
     Paper(String),
+    /// A pre-serialized `quotes.update` for the connections that sent `quotes.subscribe`; every
+    /// other connection drops it unread. `Outbound::seq` is the engine seq when it was taken.
+    Quotes(String),
 }
 
 struct Core {
@@ -151,6 +169,8 @@ struct Core {
     tape: HashMap<String, VecDeque<String>>,
     /// Latest price-qualifying trade per symbol at the engine clock; drives the price band.
     last_price: HashMap<String, Price>,
+    /// Last / open / volume per symbol for the ticker search (`quotes.*`).
+    quotes: QuoteBoard,
     rebuilding: bool,
 }
 
@@ -161,6 +181,7 @@ impl Core {
             seq: 0,
             tape: HashMap::new(),
             last_price: HashMap::new(),
+            quotes: QuoteBoard::new(),
             rebuilding: false,
         }
     }
@@ -186,6 +207,10 @@ struct Inner {
     /// The one paper account (single-user app). Never locked while `core` is held, or the other
     /// way round, so the two locks cannot deadlock.
     paper: Mutex<Broker>,
+    /// `assets.json` (name, exchange), read once at startup; empty when the file is missing.
+    assets: HashMap<String, AssetMeta>,
+    /// Connections that sent `quotes.subscribe`. While 0, the quotes task builds nothing.
+    quote_subs: AtomicUsize,
 }
 
 /// Shared market state; cheap to clone.
@@ -243,6 +268,7 @@ impl Market {
         status: ProviderStatus,
         control: Option<ReplayHandle>,
         band: PriceBand,
+        assets: HashMap<String, AssetMeta>,
     ) -> Self {
         Market(Arc::new(Inner {
             mode,
@@ -255,6 +281,8 @@ impl Market {
             bin: ChartEngine::default().config().profile_bin,
             band,
             paper: Mutex::new(Broker::new()),
+            assets,
+            quote_subs: AtomicUsize::new(0),
         }))
     }
 
@@ -266,6 +294,7 @@ impl Market {
             ProviderStatus { state, detail },
             None,
             PriceBand::DEFAULT,
+            HashMap::new(),
         )
     }
 
@@ -300,6 +329,7 @@ impl Market {
                 }
             }
         }
+        let assets = load_assets(&archive);
         let started = market_providers::from_config(&cfg.provider).and_then(|p| p.start());
         let session = match started {
             Ok(s) => s,
@@ -336,13 +366,24 @@ impl Market {
             },
             session.control.clone(),
             cfg.band,
+            assets,
         );
         tokio::spawn(ingest(session.items, market.clone(), sim.clone()));
+        market.spawn_quotes_task();
         (market, sim)
     }
 
     /// Starts on an already-running provider session (tests).
     pub fn from_session(session: market_providers::ProviderSession, sim: Option<Sim>) -> Market {
+        Self::from_session_with_assets(session, sim, HashMap::new())
+    }
+
+    /// [`Market::from_session`] with asset metadata (tests of names and exchanges).
+    pub fn from_session_with_assets(
+        session: market_providers::ProviderSession,
+        sim: Option<Sim>,
+        assets: HashMap<String, AssetMeta>,
+    ) -> Market {
         let market = Market::build(
             session.info.mode,
             Some(session.info.clone()),
@@ -352,9 +393,26 @@ impl Market {
             },
             session.control.clone(),
             PriceBand::DEFAULT,
+            assets,
         );
         tokio::spawn(ingest(session.items, market.clone(), sim));
+        market.spawn_quotes_task();
         market
+    }
+
+    /// The once-per-[`QUOTES_INTERVAL`] broadcaster. Holds only a weak reference, so it ends with
+    /// the market instead of keeping it alive.
+    fn spawn_quotes_task(&self) {
+        let weak: Weak<Inner> = Arc::downgrade(&self.0);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(QUOTES_INTERVAL);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tick.tick().await;
+                let Some(inner) = weak.upgrade() else { break };
+                Market(inner).publish_quotes();
+            }
+        });
     }
 
     pub fn mode(&self) -> ClockMode {
@@ -445,6 +503,13 @@ impl Market {
                         core.last_price.insert(symbol.clone(), *price);
                     }
                     let ups = core.engine.apply(&e);
+                    // The quote board takes the engine's verdict on the print (its tape row comes
+                    // first in `ups`), so it excludes exactly what the candles exclude.
+                    if let MarketEvent::Trade(t) = &e
+                        && let Some(ChartUpdate::Tape(row)) = ups.first()
+                    {
+                        core.quotes.apply_trade(t, Counted::from_tape(&row.counted));
+                    }
                     core.seq += 1;
                     let seq = core.seq;
                     (seq, self.serialize(&mut core, ups), core.rebuilding)
@@ -496,6 +561,13 @@ impl Market {
                 let (seq, resync) = {
                     let mut core = self.0.core.lock().expect("core lock");
                     let resync = std::mem::take(&mut core.rebuilding);
+                    if resync {
+                        // Every subscriber takes a fresh quotes.snapshot on the Resync below, and
+                        // the rows the rebuild changed are in it: drop them rather than resend
+                        // them all in the next update.
+                        let band = self.0.band;
+                        core.quotes.mark_all_sent(band);
+                    }
                     (core.seq, resync)
                 };
                 let _ = self.0.tx.send(Arc::new(Outbound {
@@ -734,6 +806,100 @@ impl Market {
         handle.command(cmd).await.map_err(ControlError::Failed)
     }
 
+    /// Registers a `quotes.subscribe`; the count drops again when the guard is dropped (on
+    /// `quotes.unsubscribe`, or when the connection ends, however it ends).
+    pub fn quotes_subscribe(&self) -> QuotesGuard {
+        self.0.quote_subs.fetch_add(1, Ordering::Relaxed);
+        QuotesGuard(self.0.clone())
+    }
+
+    /// Connections currently subscribed to quotes.
+    pub fn quote_subscribers(&self) -> usize {
+        self.0.quote_subs.load(Ordering::Relaxed)
+    }
+
+    /// The board's rows inside the band as a `quotes.snapshot` frame, with the engine seq it is
+    /// consistent with (a connection then forwards only `quotes.update`s with a larger seq).
+    /// The rows are copied under the core lock; the JSON is built after it is released.
+    pub fn quotes_snapshot(&self) -> (u64, String) {
+        let t = self.clock().map(|c| c.now.millis());
+        let (seq, rows) = {
+            let core = self.0.core.lock().expect("core lock");
+            (core.seq, core.quotes.snapshot(self.0.band))
+        };
+        (seq, self.quotes_frame("quotes.snapshot", t, &rows, &[]))
+    }
+
+    /// One tick of the quotes task: takes the changed rows and, when anyone is subscribed and
+    /// something changed, broadcasts one `quotes.update`. Returns whether it broadcast. Public so
+    /// tests can tick deterministically instead of waiting on wall time.
+    ///
+    /// The take happens even with no subscriber (it then only clears the dirty set): the board's
+    /// record of which rows the clients hold must follow every take, or the first update a later
+    /// subscriber gets could miss a `gone`.
+    pub fn publish_quotes(&self) -> bool {
+        let t = self.clock().map(|c| c.now.millis());
+        let (seq, changes) = {
+            let mut core = self.0.core.lock().expect("core lock");
+            if core.rebuilding {
+                return false;
+            }
+            let band = self.0.band;
+            (core.seq, core.quotes.take_changes(band))
+        };
+        if changes.is_empty() || self.quote_subscribers() == 0 {
+            return false;
+        }
+        let QuoteChanges { rows, gone } = changes;
+        let frame = self.quotes_frame("quotes.update", t, &rows, &gone);
+        let _ = self.0.tx.send(Arc::new(Outbound {
+            seq,
+            kind: OutKind::Quotes(frame),
+        }));
+        true
+    }
+
+    /// `{"type", "t", "quotes": [row...], "gone"?: [symbol...]}`; the row shape is [`WireQuote`].
+    fn quotes_frame(
+        &self,
+        kind: &'static str,
+        t: Option<i64>,
+        rows: &[QuoteRow],
+        gone: &[Arc<str>],
+    ) -> String {
+        let quotes: Vec<WireQuote<'_>> = rows
+            .iter()
+            .map(|r| {
+                // Names only where the client cannot have them yet: every snapshot row, and an
+                // update row whose symbol just entered the band. Never invented: a symbol missing
+                // from assets.json has no name and the client shows the symbol.
+                let meta = if r.entering {
+                    self.0.assets.get(&*r.symbol)
+                } else {
+                    None
+                };
+                WireQuote {
+                    s: &r.symbol,
+                    p: r.last.to_f64(),
+                    o: r.reference.to_f64(),
+                    v: r.volume,
+                    n: r.trades,
+                    pre: (!r.regular_open).then_some(true),
+                    name: meta.map(|m| m.name.as_str()).filter(|n| !n.is_empty()),
+                    x: meta.map(|m| m.exchange.as_str()).filter(|x| !x.is_empty()),
+                }
+            })
+            .collect();
+        let gone: Vec<&str> = gone.iter().map(|s| &**s).collect();
+        serde_json::to_string(&QuotesMessage {
+            kind,
+            t,
+            quotes,
+            gone,
+        })
+        .expect("quotes serialize")
+    }
+
     /// `GET /api/replay/state`.
     pub fn state_json(&self) -> Value {
         let clock = self.clock();
@@ -780,6 +946,72 @@ impl Market {
             .filter(|s| Self::candidate_in(&core, self.0.band, s))
             .count();
         json!({"total": all.len(), "candidates": candidates})
+    }
+}
+
+/// Decrements the quotes subscriber count when dropped.
+pub struct QuotesGuard(Arc<Inner>);
+
+impl Drop for QuotesGuard {
+    fn drop(&mut self) {
+        self.0.quote_subs.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// `quotes.snapshot` / `quotes.update`.
+#[derive(Serialize)]
+struct QuotesMessage<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    /// The replay (or live) clock in epoch ms when the rows were taken; null before any clock.
+    t: Option<i64>,
+    quotes: Vec<WireQuote<'a>>,
+    /// Update only: symbols that left the price band (the client drops them).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    gone: Vec<&'a str>,
+}
+
+/// One quote row. Compact keys, because a snapshot carries every candidate (thousands):
+///
+/// - `s` symbol; `p` last price; `o` the change-% reference (the regular open, or the day's first
+///   price while `pre` is set). Prices are JSON numbers in dollars like every chart wire price
+///   (`Price::to_f64`, exact for whole cents and the sub-penny ticks below $1); `/api/symbols`'
+///   `priceBand` uses decimal strings because it is configuration, not data;
+/// - `v` day volume (shares) and `n` prints counted, by the candles' volume rule;
+/// - `pre: true` only while the symbol has no print at/after 09:30 yet (omitted otherwise);
+/// - `name` / `x` (listing exchange) only in snapshots and for update rows entering the band, and
+///   only when `assets.json` has them.
+#[derive(Serialize)]
+struct WireQuote<'a> {
+    s: &'a str,
+    p: f64,
+    o: f64,
+    v: u64,
+    n: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pre: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    x: Option<&'a str>,
+}
+
+/// `assets.json` from the archive root. Optional: a missing or unreadable file leaves names empty
+/// (logged), it never stops the server.
+fn load_assets(archive: &Archive) -> HashMap<String, AssetMeta> {
+    match archive.read_assets() {
+        Ok(Some(m)) => {
+            tracing::info!(assets = m.len(), path = %archive.assets_path().display(), "asset metadata loaded");
+            m.into_iter().collect()
+        }
+        Ok(None) => {
+            tracing::warn!(path = %archive.assets_path().display(), "no assets.json: ticker names fall back to symbols (`swimport alpaca-assets` writes it)");
+            HashMap::new()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "assets.json unreadable: ticker names fall back to symbols");
+            HashMap::new()
+        }
     }
 }
 

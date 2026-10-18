@@ -29,6 +29,22 @@
 //!   Success has no direct reply; the broadcast `paper.state` is the answer.
 //!   A malformed or unknown `order.*`/`paper.*` command gets `error bad_order`;
 //!   a refused modify/cancel gets `error` with the broker's code (`not_open`, ...).
+//!
+//! Quote board (the ticker search's live rows; crates/server/src/quotes.rs, after `welcome`):
+//! - client `quotes.subscribe` (no payload) -> server `quotes.snapshot {t, quotes: [row]}` at
+//!   once with every price-band candidate that has traded, then `quotes.update {t, quotes: [row],
+//!   gone?: [symbol]}` with only the rows that changed, at most once per second of wall time
+//!   (crate::market::QUOTES_INTERVAL; nothing is sent when nothing changed). `gone` lists symbols
+//!   that left the price band. `t` is the replay/live clock (epoch ms) at the take.
+//! - Row: `{s, p, o, v, n, pre?, name?, x?}`: symbol, last price, change-% reference (the
+//!   regular open, or the day's first price while `pre` is true), day volume, prints counted;
+//!   `name`/`x` (exchange) only in snapshots and for rows entering the band, and only when the
+//!   archive's assets.json has them. Prices are JSON numbers in dollars. Change % is
+//!   `(p - o) / o`, computed by the client.
+//! - client `quotes.unsubscribe` stops the updates. A subscribe while subscribed re-sends the
+//!   snapshot. Subscribing again after a reconnect is the client's job, as for charts.
+//! - After a seek (rebuild) and for a lagged connection, a subscribed client gets a fresh
+//!   `quotes.snapshot` (it replaces the client's board); no updates go out during a rebuild.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -38,7 +54,7 @@ use axum::response::Response;
 use serde::{Deserialize, Serialize};
 use tokio::time::{Instant, interval_at, timeout};
 
-use crate::market::{ControlError, Market, OutKind, SnapshotError};
+use crate::market::{ControlError, Market, OutKind, QuotesGuard, SnapshotError};
 use crate::{AppState, COMMIT, VERSION, api, auth};
 use chart_engine::Timeframe;
 use market_events::Price;
@@ -84,6 +100,25 @@ enum ClientMessage {
     OrderCancel(CancelCommand),
     #[serde(rename = "paper.reset")]
     PaperReset,
+    #[serde(rename = "quotes.subscribe")]
+    QuotesSubscribe,
+    #[serde(rename = "quotes.unsubscribe")]
+    QuotesUnsubscribe,
+}
+
+/// The connection's quotes opt-in. Dropping it (unsubscribe, or the session ending) releases the
+/// market's subscriber count.
+struct QuotesSub {
+    _guard: QuotesGuard,
+    /// `quotes.update`s with `seq` <= this are already in the snapshot.
+    seq: u64,
+}
+
+/// Sends a fresh `quotes.snapshot` and records its sequence.
+async fn send_quotes_snapshot(socket: &mut WebSocket, market: &Market, q: &mut QuotesSub) -> bool {
+    let (seq, json) = market.quotes_snapshot();
+    q.seq = seq;
+    send_text(socket, json).await
 }
 
 /// True for a frame whose `type` is in the paper-trading namespace. Such a frame that failed to
@@ -273,6 +308,7 @@ async fn session(mut socket: WebSocket, state: AppState) {
         return;
     }
     let mut sub: Option<Sub> = None;
+    let mut quotes: Option<QuotesSub> = None;
 
     let mut heartbeat = interval_at(Instant::now() + HEARTBEAT, HEARTBEAT);
     let mut last_seen = Instant::now();
@@ -293,10 +329,20 @@ async fn session(mut socket: WebSocket, state: AppState) {
                         OutKind::Clock(frame) | OutKind::Paper(frame) => {
                             send_text(&mut socket, frame.clone()).await
                         }
-                        OutKind::Resync => match sub.as_mut() {
-                            Some(s) => send_snapshot(&mut socket, &market, s).await,
-                            None => true,
+                        // Unsubscribed connections drop the frame here without touching it.
+                        OutKind::Quotes(frame) => match quotes.as_ref() {
+                            Some(q) if o.seq > q.seq => send_text(&mut socket, frame.clone()).await,
+                            _ => true,
                         },
+                        OutKind::Resync => {
+                            (match quotes.as_mut() {
+                                Some(q) => send_quotes_snapshot(&mut socket, &market, q).await,
+                                None => true,
+                            }) && match sub.as_mut() {
+                                Some(s) => send_snapshot(&mut socket, &market, s).await,
+                                None => true,
+                            }
+                        }
                         OutKind::Chart { symbol, timeframe, update, json } => match sub.as_ref() {
                             // The stock traded out of the price band: it is no longer a
                             // candidate, so its stream stops here and the client is told why.
@@ -324,6 +370,10 @@ async fn session(mut socket: WebSocket, state: AppState) {
                     Err(RecvError::Lagged(n)) => {
                         tracing::debug!(skipped = n, "ws client lagged; resyncing with a snapshot");
                         send_text(&mut socket, market.paper_state_frame()).await
+                            && match quotes.as_mut() {
+                                Some(q) => send_quotes_snapshot(&mut socket, &market, q).await,
+                                None => true,
+                            }
                             && match sub.as_mut() {
                                 Some(s) => send_snapshot(&mut socket, &market, s).await,
                                 None => true,
@@ -404,6 +454,20 @@ async fn session(mut socket: WebSocket, state: AppState) {
                     },
                     Ok(ClientMessage::PaperReset) => {
                         market.paper_reset();
+                        None
+                    }
+                    Ok(ClientMessage::QuotesSubscribe) => {
+                        let q = quotes.get_or_insert_with(|| QuotesSub {
+                            _guard: market.quotes_subscribe(),
+                            seq: 0,
+                        });
+                        if !send_quotes_snapshot(&mut socket, &market, q).await {
+                            break;
+                        }
+                        None
+                    }
+                    Ok(ClientMessage::QuotesUnsubscribe) => {
+                        quotes = None;
                         None
                     }
                     Err(_) if is_paper_command(&text) => Some(ServerMessage::Error {

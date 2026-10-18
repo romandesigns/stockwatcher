@@ -3,6 +3,8 @@
 //! - `GET /api/chart/{symbol}/snapshot?timeframe=1m&bin=0.01` → a `chart.snapshot` (with clock)
 //! - `GET /api/replay/state` → mode, provider status, day, symbols, clock
 //! - `GET /api/symbols` → the symbols the server can chart, and whether the data is fixture data
+//! - `GET /api/quotes` → the quote board as a `quotes.snapshot` (the body a `/ws`
+//!   `quotes.subscribe` starts with; for tests and debugging, clients use the socket)
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
@@ -79,4 +81,13 @@ pub async fn replay_state(State(state): State<AppState>) -> Json<serde_json::Val
 
 pub async fn symbols(State(state): State<AppState>) -> Json<serde_json::Value> {
     Json(state.market().symbols_json())
+}
+
+pub async fn quotes(State(state): State<AppState>) -> Response {
+    let (_, json) = state.market().quotes_snapshot();
+    (
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        json,
+    )
+        .into_response()
 }
