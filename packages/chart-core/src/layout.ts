@@ -6,12 +6,13 @@ import { layoutContext, type ContextLayer } from "./levels.ts";
 import { layoutTrading, type TradingLayer } from "./trading.ts";
 import { formatPrice } from "./format.ts";
 import { sessionOf } from "./time.ts";
+import { heikinAshi, hollowStyle, isCloseOnly, prevCloseAt, sessionSlots, startsTradingDay, type ChartType, type Ohlc } from "./chartTypes.ts";
 import {
   buildSlots,
+  padRange,
   formatAxisValue,
   indexScale,
   priceAxisTicks,
-  priceRange,
   priceY,
   slotAt,
   slotX,
@@ -104,6 +105,27 @@ export interface ChartState {
   now?: number | null;
   /** Oscillator pane heights in px by indicator id (dragged or expanded by the user); absent = options.indicatorPaneHeight. */
   paneHeights?: Readonly<Record<string, number>>;
+  /** How the price series is drawn (chartTypes.ts); default "candles". Changes only the marks, never the prices read elsewhere. */
+  chartType?: ChartType;
+  /** The chart settings' display switches (chartSettings.ts); each absent field keeps today's look. */
+  chartStyle?: ChartStyle;
+  /** The baseline chart's reference: the previous close when known; absent = the first visible close. */
+  baselinePrice?: number | null;
+  /**
+   * false drops pre-market, after-hours and overnight slots (sessionSlots).
+   * Applied here only when computeChartModel builds the slots itself: a
+   * renderer that passes `slots` passes them already filtered, because its
+   * indicators must be computed on the same list to line up by index.
+   */
+  extendedHours?: boolean;
+}
+
+/** Display switches from the chart settings panel. Absent = on for grid and session shading, off for the rest (today's look). */
+export interface ChartStyle {
+  grid?: boolean;
+  sessionShading?: boolean;
+  sessionBreaks?: boolean;
+  highLow?: boolean;
 }
 
 export interface ChartGeometry {
@@ -125,6 +147,7 @@ export interface ChartModel {
   volumeMax: number;
   timeframeMs: number;
   inspected: number | null;
+  chartType: ChartType;
 }
 
 /** The smallest an oscillator pane can be dragged to, and the share of the chart's height the panes may take together. */
@@ -247,10 +270,12 @@ export function computeChartModel(state: ChartState, viewport: Viewport, size: S
   const options = { ...DEFAULT_CHART_OPTIONS, ...state.options };
   const paneIds = state.indicators?.filter((r) => r.placement === "pane").map((r) => r.spec.id) ?? [];
   const geometry = chartGeometry(size, options, paneIds.map((id) => state.paneHeights?.[id] ?? options.indicatorPaneHeight));
-  const slots = state.slots ?? buildSlots(state.candles, state.gaps);
+  const slots = state.slots ?? sessionSlots(buildSlots(state.candles, state.gaps), state.extendedHours !== false);
   const index = indexScale(viewport, slots, geometry.plot.x, geometry.plot.x + geometry.plot.w);
   const type = state.priceScaleType ?? "linear";
-  const auto = priceRange(slots, index.from, index.to, 0.08, type);
+  const chartType = state.chartType ?? "candles";
+  const overlays = state.indicators?.filter((r) => r.placement === "overlay").flatMap((r) => r.lines.map((l) => l.values)) ?? [];
+  const auto = autoFitRange(slots, index.from, index.to, { chartType, overlays }, 0.08, type);
   // A manual range (from a price-axis drag) holds until auto-scale; it still
   // needs candles to exist, so an empty chart has no price scale either way.
   let range = auto && viewport.price?.mode === "manual" ? { lo: viewport.price.lo, hi: viewport.price.hi } : auto;
@@ -265,13 +290,62 @@ export function computeChartModel(state: ChartState, viewport: Viewport, size: S
     if (s?.kind === "candle" && s.candle.v > volumeMax) volumeMax = s.candle.v;
   }
   const inspected = state.inspectT === null ? (slots.length ? slots.length - 1 : null) : slotIndexOf(slots, state.inspectT);
-  const model = { options, geometry, slots, index, price, priceTicks, volumeMax, timeframeMs: TIMEFRAME_MS[state.timeframe], inspected };
+  const model = { options, geometry, slots, index, price, priceTicks, volumeMax, timeframeMs: TIMEFRAME_MS[state.timeframe], inspected, chartType };
   // Second pass with the price column fitted to its labels (narrower than the maximum when it can be).
   if (!fitted) {
     const need = priceAxisNeed(model);
     if (need < options.priceAxisWidth) return computeChartModel({ ...state, options: { ...state.options, priceAxisWidth: need } }, viewport, size, true);
   }
   return model;
+}
+
+/**
+ * Auto stretch: the price range that fits what is drawn in slots [from, to],
+ * plus `pad` of the span on each side (in log space on a log axis).
+ * - Candles, hollow candles and bars fit the real highs and lows; Heikin-Ashi
+ *   fits its own (averaged) highs and lows, which is what is on screen; the
+ *   line, area and baseline types fit closes only, so a long wick that is
+ *   not drawn does not shrink the line.
+ * - Overlay indicators on the price pane (VWAP, EMAs, SMA, Bollinger) are
+ *   included, as TradingView's auto scale does for its main pane: a band you
+ *   turned on is part of what you asked to see. Key levels, LULD bands,
+ *   orders and drawings are NOT: they are often far from price, and the
+ *   chart already pins an off-screen level to the edge with an arrow.
+ * - Only candles make a range: overlays alone (a gap-only window) never do.
+ * - A flat window (one print) still gets a small height (padRange).
+ */
+export function autoFitRange(
+  slots: readonly Slot[],
+  from: number,
+  to: number,
+  opts: { chartType?: ChartType; overlays?: readonly Float64Array[] } = {},
+  pad = 0.08,
+  type: PriceScaleType = "linear",
+): { lo: number; hi: number } | null {
+  const chartType = opts.chartType ?? "candles";
+  const ha = chartType === "heikinAshi" ? heikinAshi(slots) : null;
+  const closeOnly = isCloseOnly(chartType);
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (let i = Math.max(0, from); i <= to; i++) {
+    const s = slots[i];
+    if (s?.kind !== "candle") continue;
+    const v: Ohlc = ha?.[i] ?? s.candle;
+    const l = closeOnly ? v.c : v.l;
+    const h = closeOnly ? v.c : v.h;
+    if (l < lo) lo = l;
+    if (h > hi) hi = h;
+  }
+  if (!Number.isFinite(lo)) return null;
+  for (const values of opts.overlays ?? []) {
+    for (let i = Math.max(0, from); i <= to; i++) {
+      const v = values[i];
+      if (v === undefined || !Number.isFinite(v)) continue;
+      if (v < lo) lo = v;
+      if (v > hi) hi = v;
+    }
+  }
+  return padRange(lo, hi, pad, type);
 }
 
 /** Percent mode's base: the open of the first candle in [from, to]. */
@@ -350,10 +424,12 @@ export function layoutChart(model: ChartModel, state: ChartState, theme: ChartTh
   if (g.plot.w <= 0 || g.plot.h <= 0) return out;
   const mono = theme.fontMono;
   const fs = o.fontSize;
+  const style = state.chartStyle ?? {};
 
   // Session shading: one faint band per run of consecutive slots outside regular hours, over the
   // price and volume panes, behind everything (gaps take their session from their start).
-  {
+  // The settings' "Highlight extended hours" switch turns it off.
+  if (style.sessionShading !== false) {
     const bottom = (g.volume ?? g.plot).y + (g.volume ?? g.plot).h;
     const shade = { pre: theme.shadePre, after: theme.shadeAfter, overnight: theme.shadeOvernight } as const;
     let runStart = -1;
@@ -377,8 +453,21 @@ export function layoutChart(model: ChartModel, state: ChartState, theme: ChartTh
     flush(ix.to === slots.length - 1 ? ix.to + 2 : ix.to);
   }
 
+  // Session breaks: a dashed line in the grid tone on the left edge of each trading day's first
+  // slot, through the price and volume panes. Grid-quiet on purpose: it marks where the day turns
+  // over, it is not a boundary between areas of the UI (the no-dividers rule is about chrome).
+  if (style.sessionBreaks) {
+    const bottom = (g.volume ?? g.plot).y + (g.volume ?? g.plot).h;
+    for (let i = Math.max(1, ix.from); i <= ix.to; i++) {
+      if (!startsTradingDay(slots, i)) continue;
+      const x = crisp(slotX(ix, i) - ix.barSpacing / 2);
+      if (x <= g.plot.x || x >= g.plot.x + g.plot.w) continue;
+      out.push({ kind: "line", x1: x, y1: g.plot.y, x2: x, y2: bottom, stroke: theme.guide, lineWidth: 1, dash: [4, 4], layer: "grid" });
+    }
+  }
+
   // grid + price labels
-  if (price) {
+  if (price && style.grid !== false) {
     for (const v of model.priceTicks.values) {
       const y = crisp(priceY(price, v));
       if (y < g.plot.y || y > g.plot.y + g.plot.h) continue;
@@ -405,31 +494,20 @@ export function layoutChart(model: ChartModel, state: ChartState, theme: ChartTh
     out.push(...profileBars(state.profile, price, { x: g.plot.x + g.plot.w * (1 - o.profileWidth), y: g.plot.y, w: g.plot.w * o.profileWidth, h: g.plot.h }, "right", theme, true));
   }
 
-  // volume + candles
-  for (let i = ix.from; i <= ix.to; i++) {
-    const s = slots[i]!;
-    if (s.kind !== "candle") continue;
-    const c = s.candle;
-    const cx = Math.round(slotX(ix, i));
-    const up = c.c >= c.o;
-    const color = up ? theme.up : theme.down;
-    if (g.volume && model.volumeMax > 0 && c.v > 0) {
+  // volume: always the real candles' volume, coloured by their real close vs open, whatever the type
+  if (g.volume && model.volumeMax > 0) {
+    for (let i = ix.from; i <= ix.to; i++) {
+      const s = slots[i]!;
+      if (s.kind !== "candle" || s.candle.v <= 0) continue;
+      const c = s.candle;
+      const cx = Math.round(slotX(ix, i));
       const h = Math.max(1, (c.v / model.volumeMax) * g.volume.h);
-      out.push({ kind: "rect", x: cx - half, y: g.volume.y + g.volume.h - h, w: bw, h, fill: up ? theme.upVolume : theme.downVolume, layer: "volume" });
-    }
-    if (!price) continue;
-    const yh = priceY(price, c.h);
-    const yl = priceY(price, c.l);
-    out.push({ kind: "line", x1: cx + 0.5, y1: yh, x2: cx + 0.5, y2: Math.max(yl, yh + 1), stroke: color, lineWidth: 1, layer: "candles" });
-    const top = priceY(price, Math.max(c.o, c.c));
-    const h = Math.max(1, priceY(price, Math.min(c.o, c.c)) - top);
-    if (c.final) {
-      out.push({ kind: "rect", x: cx - half, y: top, w: bw, h, fill: color, layer: "candles" });
-    } else {
-      // Forming: dashed outline, hollow, so it never reads as final.
-      out.push({ kind: "rect", x: cx - half + 0.5, y: top + 0.5, w: Math.max(0, bw - 1), h: Math.max(0, h - 1), stroke: color, lineWidth: 1, dash: [3, 2], layer: "candles" });
+      out.push({ kind: "rect", x: cx - half, y: g.volume.y + g.volume.h - h, w: bw, h, fill: c.c >= c.o ? theme.upVolume : theme.downVolume, layer: "volume" });
     }
   }
+  // the price series, in the chosen chart type
+  if (price) out.push(...seriesMarks(model, state, theme));
+  if (price && style.highLow) out.push(...highLowLabels(model, theme));
 
   // indicators: overlays on the plot, oscillators in their panes
   const results = state.indicators ?? [];
@@ -793,4 +871,167 @@ export function formatCountdown(ms: number): string {
   const s = Math.ceil(ms / 1000);
   const m = Math.floor(s / 60);
   return `${m}:${String(s % 60).padStart(2, "0")}`;
+}
+
+/**
+ * The price series as marks, in the chart type the settings chose. Every type
+ * reads the slots the model holds; only Heikin-Ashi swaps in averaged values,
+ * and only for drawing. A forming (not yet final) candle keeps its dashed
+ * outline in every candle-like type, so it never reads as final.
+ */
+function seriesMarks(model: ChartModel, state: ChartState, theme: ChartTheme): DisplayList {
+  const type = model.chartType;
+  if (type === "line" || type === "area" || type === "baseline") return closeSeries(model, state, theme, type);
+  const out: DisplayList = [];
+  const { slots, index: ix } = model;
+  const price = model.price!;
+  const bw = bodyWidth(ix.barSpacing);
+  const half = Math.floor(bw / 2);
+  const ha = type === "heikinAshi" ? heikinAshi(slots) : null;
+  for (let i = ix.from; i <= ix.to; i++) {
+    const s = slots[i]!;
+    if (s.kind !== "candle") continue;
+    const real = s.candle;
+    const c: Ohlc = ha?.[i] ?? real;
+    const cx = Math.round(slotX(ix, i));
+    let up = c.c >= c.o;
+    let hollow = false;
+    if (type === "hollow") ({ up, hollow } = hollowStyle(real, prevCloseAt(slots, i)));
+    const color = up ? theme.up : theme.down;
+    const yh = priceY(price, c.h);
+    const yl = priceY(price, c.l);
+    const dash = real.final ? undefined : [3, 2];
+    if (type === "bars") {
+      // OHLC bar: the high-low line, the open as a tick to the left, the close as a tick to the right.
+      const tick = Math.max(1, half);
+      const yo = Math.round(priceY(price, c.o)) + 0.5;
+      const yc = Math.round(priceY(price, c.c)) + 0.5;
+      out.push({ kind: "line", x1: cx + 0.5, y1: yh, x2: cx + 0.5, y2: Math.max(yl, yh + 1), stroke: color, lineWidth: 1, ...(dash ? { dash } : {}), layer: "candles" });
+      out.push({ kind: "line", x1: cx + 0.5 - tick, y1: yo, x2: cx + 0.5, y2: yo, stroke: color, lineWidth: 1, layer: "candles" });
+      out.push({ kind: "line", x1: cx + 0.5, y1: yc, x2: cx + 0.5 + tick, y2: yc, stroke: color, lineWidth: 1, layer: "candles" });
+      continue;
+    }
+    const top = priceY(price, Math.max(c.o, c.c));
+    const h = Math.max(1, priceY(price, Math.min(c.o, c.c)) - top);
+    const outlined = hollow || !real.final;
+    if (hollow && h > 2) {
+      // A hollow body: the wick stops at the body instead of running through the empty inside (the
+      // forming candle keeps its wick through the dashed outline, as it always has).
+      if (top > yh) out.push({ kind: "line", x1: cx + 0.5, y1: yh, x2: cx + 0.5, y2: top, stroke: color, lineWidth: 1, layer: "candles" });
+      if (top + h < yl) out.push({ kind: "line", x1: cx + 0.5, y1: top + h, x2: cx + 0.5, y2: yl, stroke: color, lineWidth: 1, layer: "candles" });
+    } else {
+      out.push({ kind: "line", x1: cx + 0.5, y1: yh, x2: cx + 0.5, y2: Math.max(yl, yh + 1), stroke: color, lineWidth: 1, layer: "candles" });
+    }
+    if (!outlined) out.push({ kind: "rect", x: cx - half, y: top, w: bw, h, fill: color, layer: "candles" });
+    else out.push({ kind: "rect", x: cx - half + 0.5, y: top + 0.5, w: Math.max(0, bw - 1), h: Math.max(0, h - 1), stroke: color, lineWidth: 1, ...(dash ? { dash } : {}), layer: "candles" });
+  }
+  return out;
+}
+
+/**
+ * Line, area and baseline: one polyline through the closes, continuous across
+ * gap slots (a gap is a stretch with no trade, so the price held). One slot of
+ * margin each side so the line runs off the plot edge instead of stopping short.
+ * - line and area take ONE colour, Robinhood's rule: up when the last close on
+ *   screen is at or above the first one, down otherwise. The area fills from
+ *   the line to the plot's bottom with a gradient of that colour that fades
+ *   out downward (no stroke around it: no borders).
+ * - baseline splits at a reference price: the previous close when the chart
+ *   has it (what a day trader measures the day against), else the first
+ *   visible close. Above it is up-coloured, below down-coloured, each side
+ *   with a flat soft fill, and the reference is a dashed guide. Robinhood
+ *   lets you drag that line; here it is fixed (see the research note).
+ */
+function closeSeries(model: ChartModel, state: ChartState, theme: ChartTheme, type: "line" | "area" | "baseline"): DisplayList {
+  const out: DisplayList = [];
+  const price = model.price!;
+  const plot = model.geometry.plot;
+  const [from, to] = visibleRange(model);
+  const pts: number[] = [];
+  let first: number | null = null;
+  let last: number | null = null;
+  for (let i = from; i <= to; i++) {
+    const s = model.slots[i]!;
+    if (s.kind !== "candle") continue;
+    pts.push(slotX(model.index, i), priceY(price, s.candle.c));
+    if (i >= model.index.from && i <= model.index.to) {
+      first ??= s.candle.c;
+      last = s.candle.c;
+    }
+  }
+  if (pts.length < 4 || first === null || last === null) {
+    // One candle: a dot, so a single print is still visible.
+    if (pts.length === 2) out.push({ kind: "rect", x: pts[0]! - 1.5, y: pts[1]! - 1.5, w: 3, h: 3, radius: 1.5, fill: theme.up, layer: "candles" });
+    return out;
+  }
+  const x0 = pts[0]!;
+  const x1 = pts[pts.length - 2]!;
+  const bottom = plot.y + plot.h;
+  if (type === "baseline") {
+    const base = state.baselinePrice ?? first;
+    const by = clamp(priceY(price, base), plot.y, bottom);
+    const above: Rect = { x: plot.x, y: plot.y, w: plot.w, h: by - plot.y };
+    const below: Rect = { x: plot.x, y: by, w: plot.w, h: bottom - by };
+    const poly = [...pts, x1, by, x0, by];
+    if (above.h > 0) {
+      out.push({ kind: "path", points: poly, closed: true, fill: withAlpha(theme.up, 0.14), clip: above, layer: "candles" });
+      out.push({ kind: "path", points: pts, closed: false, stroke: theme.up, lineWidth: 1.5, clip: above, layer: "candles" });
+    }
+    if (below.h > 0) {
+      out.push({ kind: "path", points: poly, closed: true, fill: withAlpha(theme.down, 0.14), clip: below, layer: "candles" });
+      out.push({ kind: "path", points: pts, closed: false, stroke: theme.down, lineWidth: 1.5, clip: below, layer: "candles" });
+    }
+    const gy = Math.round(by) + 0.5;
+    out.push({ kind: "line", x1: plot.x, y1: gy, x2: plot.x + plot.w, y2: gy, stroke: theme.guide, lineWidth: 1, dash: [3, 3], layer: "candles" });
+    return out;
+  }
+  const color = last >= first ? theme.up : theme.down;
+  if (type === "area") {
+    let top = bottom;
+    for (let k = 1; k < pts.length; k += 2) top = Math.min(top, pts[k]!);
+    out.push({ kind: "path", points: [...pts, x1, bottom, x0, bottom], closed: true, gradient: { y0: top, y1: bottom, from: withAlpha(color, 0.28), to: withAlpha(color, 0.02) }, clip: plot, layer: "candles" });
+  }
+  out.push({ kind: "path", points: pts, closed: false, stroke: color, lineWidth: 1.5, clip: plot, layer: "candles" });
+  return out;
+}
+
+/**
+ * The highest high and lowest low on screen, labelled at their candles
+ * (Legend's "display the high and low price"; TradingView's high/low price
+ * labels): a short tick from the extreme and the price, in the dim text tone
+ * (data, not an action, so no accent). REAL prices for every candle type,
+ * Heikin-Ashi included; the close for the line types, because that is what
+ * is drawn. The label sits on the side with room, so it never leaves the plot.
+ */
+function highLowLabels(model: ChartModel, theme: ChartTheme): DisplayList {
+  const out: DisplayList = [];
+  const { slots, index: ix } = model;
+  const price = model.price!;
+  const plot = model.geometry.plot;
+  const closeOnly = isCloseOnly(model.chartType);
+  let hiI = -1;
+  let loI = -1;
+  let hi = -Infinity;
+  let lo = Infinity;
+  for (let i = ix.from; i <= ix.to; i++) {
+    const s = slots[i]!;
+    if (s.kind !== "candle") continue;
+    const h = closeOnly ? s.candle.c : s.candle.h;
+    const l = closeOnly ? s.candle.c : s.candle.l;
+    if (h > hi) [hi, hiI] = [h, i];
+    if (l < lo) [lo, loI] = [l, i];
+  }
+  if (hiI < 0 || hi === lo) return out;
+  const fs = model.options.fontSize;
+  const mark = (i: number, p: number, above: boolean) => {
+    const x = slotX(ix, i);
+    const y = clamp(priceY(price, p) + (above ? -3 : 3), plot.y + fs, plot.y + plot.h - fs);
+    const right = x < plot.x + plot.w * 0.7;
+    const x2 = right ? x + 10 : x - 10;
+    out.push({ kind: "line", x1: x, y1: y, x2, y2: y, stroke: theme.textDim, lineWidth: 1, layer: "overlay" });
+    out.push({ kind: "text", x: right ? x2 + 3 : x2 - 3, y, text: formatPrice(p), fill: theme.textDim, fontSize: fs, fontFamily: theme.fontMono, fontWeight: 500, align: right ? "left" : "right", baseline: "middle", layer: "overlay" });
+  };
+  mark(hiI, hi, true);
+  mark(loI, lo, false);
+  return out;
 }

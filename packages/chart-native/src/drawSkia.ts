@@ -1,4 +1,4 @@
-import { ClipOp, matchFont, PaintStyle, Skia, type SkCanvas, type SkFont, type SkPaint } from "@shopify/react-native-skia";
+import { ClipOp, matchFont, PaintStyle, Skia, TileMode, type SkCanvas, type SkFont, type SkPaint } from "@shopify/react-native-skia";
 import type { DisplayList, Rect } from "@stockwatcher/chart-core";
 import { Platform } from "react-native";
 
@@ -223,7 +223,14 @@ export function drawDisplayList(canvas: SkCanvas, list: DisplayList): void {
         for (let i = 2; i + 1 < pts.length; i += 2) b.lineTo(pts[i]!, pts[i + 1]!);
         if (p.closed) b.close();
         const path = b.build();
-        if (p.fill) {
+        if (p.gradient) {
+          // The area chart's soft fill, as on the web: a vertical linear gradient, clamped beyond its ends.
+          const gp = Skia.Paint();
+          gp.setAntiAlias(true);
+          gp.setStyle(PaintStyle.Fill);
+          gp.setShader(Skia.Shader.MakeLinearGradient(Skia.Point(0, p.gradient.y0), Skia.Point(0, Math.max(p.gradient.y0 + 1, p.gradient.y1)), [Skia.Color(p.gradient.from), Skia.Color(p.gradient.to)], null, TileMode.Clamp));
+          canvas.drawPath(path, gp);
+        } else if (p.fill) {
           fill.setColor(Skia.Color(p.fill));
           canvas.drawPath(path, fill);
         }

@@ -64,7 +64,14 @@ export type PriceRangeMode = { mode: "auto" } | { mode: "manual"; lo: number; hi
  */
 export type PriceScaleType = "linear" | "percent" | "log";
 
-export const MIN_BAR_SPACING = 2;
+/**
+ * Zoom limits in px per slot. The floor was 2 until the session zoom presets
+ * (chartSettings.ts, 2026-10-18): "100 %" must fit a whole 15 s day (1,560
+ * regular slots, 3,840 extended) into a laptop-wide plot, which needs well
+ * under 1 px a slot. Below ~2 px every body is the 1 px minimum (bodyWidth),
+ * so a candle reads as a wick-wide mark, as TradingView draws a zoomed-out day.
+ */
+export const MIN_BAR_SPACING = 0.25;
 export const MAX_BAR_SPACING = 48;
 
 export function defaultViewport(barSpacing = 9): Viewport {
@@ -224,6 +231,16 @@ export function priceRange(slots: readonly Slot[], from: number, to: number, pad
     if (s.candle.h > hi) hi = s.candle.h;
   }
   if (!Number.isFinite(lo)) return null;
+  return padRange(lo, hi, pad, type);
+}
+
+/**
+ * [lo, hi] grown by `pad` of its span on each side, in log space on a log
+ * axis (so the padding stays a fixed share of the height and lo never
+ * reaches zero). A flat range (one print) first gets ±0.5 % (at least
+ * $0.0005) so it still has a height.
+ */
+export function padRange(lo: number, hi: number, pad: number, type: PriceScaleType = "linear"): { lo: number; hi: number } {
   if (hi - lo < hi * 1e-4) {
     // A flat range (one print) still needs some height.
     const half = Math.max(hi * 0.005, 0.0005);

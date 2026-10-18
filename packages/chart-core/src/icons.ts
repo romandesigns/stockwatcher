@@ -102,7 +102,15 @@ export type IconName =
   | "chevronDown"
   | "chevronRight"
   | "check"
-  | "menu";
+  | "menu"
+  | "chart"
+  | "chartCandles"
+  | "chartHollow"
+  | "chartBars"
+  | "chartHeikinAshi"
+  | "chartLine"
+  | "chartArea"
+  | "chartBaseline";
 
 export const ICONS: Readonly<Record<IconName, IconDef>> = {
   // Drawing tools: the drawn object is primary, its handles and fills secondary.
@@ -165,6 +173,19 @@ export const ICONS: Readonly<Record<IconName, IconDef>> = {
   check: icon([S("M2.7 8.3 6 11.6"), P("M6 11.6 13.3 4.3")], 1.6),
   // The phone's tape button: the rows of prints, the newest two primary.
   menu: icon([P("M3 4h10M3 8h10"), S("M3 12h6")]),
+
+  // Chart settings (owner request 2026-10-18), the toolbar button left of Indicators: two candles,
+  // Robinhood's chart-icon idea. The near one is the object (primary outline), the far one context.
+  chart: icon([S("M9.5 6h3v5h-3z", { paint: "fill" }), S("M11 3.5v10"), P("M3.5 4.5h3v6h-3zM5 2v2.5M5 10.5V14")]),
+  // Chart types, one mark each, for the settings panel's type picker.
+  chartCandles: icon([P("M3.5 4.5h3v6h-3z", { paint: "fill" }), P("M5 2v12"), S("M9.5 6h3v5h-3z", { paint: "fill" }), S("M11 3.5v10")]),
+  chartHollow: icon([P("M3.5 4.5h3v6h-3zM5 2v2.5M5 10.5V14"), S("M9.5 6h3v5h-3z", { paint: "fill" }), S("M11 3.5v10")]),
+  chartBars: icon([P("M5 2v12M3 4.5h2M5 11h2"), S("M11 3.5v10M9 11.5h2M11 6h2")]),
+  // Heikin-Ashi: a smooth run of candles stepping up, the latest primary.
+  chartHeikinAshi: icon([S("M2 9h2.5v4H2zM6 7h2.5v4H6z", { paint: "fill" }), P("M10 3.5h2.5v5H10z", { paint: "fill" }), P("M11.25 2v8.5")]),
+  chartLine: icon([S("M2 13.5h12", { dash: [1.5, 2] }), P("M2 11 5.5 7l3 2.5L14 3.5")]),
+  chartArea: icon([S("M2 11 5.5 7l3 2.5L14 3.5V14H2z", { paint: "fill" }), P("M2 11 5.5 7l3 2.5L14 3.5")]),
+  chartBaseline: icon([S("M1.5 8.5h13", { dash: [1.5, 2] }), P("M2 12 5 9.5 8 11l3-6 3 1.5")]),
 };
 
 export const ICON_NAMES = Object.keys(ICONS) as IconName[];

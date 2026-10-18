@@ -63,6 +63,13 @@ export interface PathPrim extends Base {
   /** Clip to this rect (indicator lines, which may leave their pane on a manual price range). */
   clip?: Rect;
   fill?: string;
+  /**
+   * A vertical linear gradient in place of `fill` (the area chart's soft
+   * fill): `from` at y0, `to` at y1, clamped beyond. Both renderers support
+   * it natively (Canvas createLinearGradient, Skia MakeLinearGradient), so
+   * the phone and the web fade the same way.
+   */
+  gradient?: { y0: number; y1: number; from: string; to: string };
   stroke?: string;
   lineWidth?: number;
 }
