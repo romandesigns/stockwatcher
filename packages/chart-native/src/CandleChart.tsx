@@ -133,7 +133,7 @@ export interface CandleChartProps {
   /** Controlled when onPriceScaleTypeChange is set; otherwise it is the chart settings' scale. */
   priceScaleType?: PriceScaleType;
   onPriceScaleTypeChange?: (t: PriceScaleType) => void;
-  /** The chart settings (chart-core chartSettings.ts). Controlled when onSettingsChange is set (the host persists it, `chart.settings`); else kept for the session. */
+  /** The chart settings (chart-core chartSettings.ts). Controlled when onSettingsChange is set (the host syncs it across clients, namespace `chartSettings`); else kept for the session. */
   settings?: ChartSettings;
   onSettingsChange?: (s: ChartSettings) => void;
   /**
@@ -144,7 +144,7 @@ export interface CandleChartProps {
    * next ticker or timeframe it opens uses the new settings.
    */
   settingsFromRemote?: boolean;
-  /** Which buttons the floating drawing toolbox shows (the Settings sheet's Drawing tab, chart-core drawingSettings.ts; the host persists it, `chart.drawing`). A tool that becomes hidden while armed is disarmed. Default: all. */
+  /** Which buttons the floating drawing toolbox shows (the Settings sheet's Drawing tab, chart-core drawingSettings.ts; the host syncs it, namespace `drawingSettings`). A tool that becomes hidden while armed is disarmed. Default: all. */
   drawingSettings?: DrawingSettings;
   options?: Partial<ChartOptions>;
   theme?: ChartTheme;

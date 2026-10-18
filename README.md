@@ -58,7 +58,7 @@ docker run --rm -p 127.0.0.1:8790:8790 stockwatcher-server:dev
 | `PORT` | `8790` | |
 | `HOST` | `127.0.0.1` | the image sets `0.0.0.0` |
 | `STATIC_DIR` | `./apps/web/dist` | `/app/web` in the image |
-| `DATA_DIR` | `./data` | `/app/data` in the image (volume `stockwatcher_data`); `updates/` under it is served at `/updates/*` |
+| `DATA_DIR` | `./data` | `/app/data` in the image (volume `stockwatcher_data`); `updates/` under it is served at `/updates/*`; `settings/` holds the synced settings and drawings (docs/architecture/settings-sync.md) |
 | `RUST_LOG` | `info` | tracing filter |
 | `LOG_FORMAT` | pretty | `json` in the image |
 

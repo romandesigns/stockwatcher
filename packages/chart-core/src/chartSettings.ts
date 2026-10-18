@@ -24,9 +24,10 @@ import { TIMEFRAME_MS, type Timeframe } from "./types.ts";
 //   25 % its most recent quarter. Applied on a ticker switch, a timeframe
 //   switch and when chosen; wheel/pinch zoom and pan still work after it.
 //
-// Persisted beside the layers: the web under `${persistKey}:settings`
-// (`sw-chart:settings` next to `sw-chart:layers`), the phone under the
-// preference `chart.settings` next to `chart.layers`.
+// Synced across every client beside the layers (namespace `chartSettings`,
+// syncedSettings.ts; docs/architecture/settings-sync.md) and kept on the
+// server. Before sync it lived in `sw-chart:settings` (web) and the phone's
+// `chart.settings` preference, which are read once to migrate.
 
 export type ZoomPreset = 25 | 50 | 100;
 export const ZOOM_PRESETS: readonly ZoomPreset[] = [25, 50, 100];

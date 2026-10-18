@@ -359,7 +359,7 @@ export function CandleChart({
     const v = loadJson<unknown>(persistKey && `${persistKey}:panes`, null);
     return v && typeof v === "object" ? Object.fromEntries(Object.entries(v).filter(([, h]) => typeof h === "number")) : {};
   });
-  // Chart settings: controlled, or kept here and persisted next to the layers (`sw-chart:settings`).
+  // Chart settings: controlled (the app syncs them across clients), or kept here and persisted next to the layers (`${persistKey}:settings`).
   const [ownSettings, setOwnSettings] = useState<ChartSettings>(() => parseChartSettings(loadJson<unknown>(persistKey && `${persistKey}:settings`, null)));
   const settings = onSettingsChange ? (settingsProp ?? DEFAULT_CHART_SETTINGS) : ownSettings;
   const setSettings = (next: ChartSettings) => {
@@ -369,7 +369,7 @@ export function CandleChart({
       saveJson(persistKey && `${persistKey}:settings`, next);
     }
   };
-  // Drawing toolbox contents: the host's (the Settings dialog), else the saved choice (`sw-chart:drawing`).
+  // Drawing toolbox contents: the host's (the Settings dialog, synced), else the saved choice (`${persistKey}:drawing`).
   const [savedDrawingSettings] = useState<DrawingSettings>(() => parseDrawingSettings(loadJson<unknown>(persistKey && `${persistKey}:drawing`, null)));
   const drawingSettings = drawingSettingsProp ?? savedDrawingSettings;
   const [ownLayers, setOwnLayers] = useState<ChartLayers>(() => parseLayers(loadJson<unknown>(persistKey && `${persistKey}:layers`, null)));
