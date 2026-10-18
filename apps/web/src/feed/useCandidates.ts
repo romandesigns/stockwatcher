@@ -11,6 +11,8 @@ export interface Candidates {
   symbols: string[];
   band: ServerSymbols["priceBand"];
   screened: ServerSymbols["screened"];
+  /** The latest /api/symbols answer (day, source, fixture flag): see source.ts `followServer`. */
+  server?: ServerSymbols;
 }
 
 /**
@@ -27,7 +29,7 @@ export function useCandidates(choice: SourceChoice, day: string | null = null): 
       const probe = await probeServer(fetch, 2500, getToken());
       if (!alive || !probe.ok) return;
       const d = probe.data;
-      setState({ symbols: Array.isArray(d.symbols) ? d.symbols : [], band: d.priceBand, screened: d.screened });
+      setState({ symbols: Array.isArray(d.symbols) ? d.symbols : [], band: d.priceBand, screened: d.screened, server: d });
     };
     void refresh();
     const id = setInterval(() => void refresh(), CANDIDATE_REFRESH_MS);

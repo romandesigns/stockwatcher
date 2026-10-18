@@ -1396,3 +1396,75 @@ async fn live_mode_offers_no_days_and_refuses_a_day_switch() {
     let e = next(&mut ws, is("error")).await;
     assert_eq!(e["code"], "not_replay");
 }
+
+#[tokio::test]
+async fn after_a_day_switch_the_previous_close_is_the_new_days_previous_close() {
+    // A distinct close per date, so a reference taken from the wrong day cannot pass.
+    let closes = json!({
+        "2026-10-12": {"SMPL": 2.12},
+        "2026-10-13": {"SMPL": 2.13},
+        "2026-10-14": {"SMPL": 2.14},
+        "2026-10-15": {"SMPL": 2.15},
+    });
+    let s = stack_with_days(
+        &[("REPLAY_AUTOPLAY", "0")],
+        DAYS,
+        &[("daily-closes.json", closes)],
+    )
+    .await;
+    let mut ws = connect(&s.url).await;
+    wait_for_replay(&mut ws).await;
+    send(&mut ws, json!({"type": "quotes.subscribe"})).await;
+    let q = next(&mut ws, is("quotes.snapshot")).await;
+    assert_eq!(
+        quote(&q, "SMPL").unwrap()["pc"],
+        2.14,
+        "Oct 15 → Oct 14's close"
+    );
+    send(
+        &mut ws,
+        json!({"type":"chart.subscribe","symbol":"SMPL","timeframe":"1m","profileBin":0.01}),
+    )
+    .await;
+    let snap = next(&mut ws, is("chart.snapshot")).await;
+    assert_eq!(snap["prevClose"], 2.14);
+
+    for (day, now, want) in [
+        ("2026-10-13", T1040 - 2 * 86_400_000, 2.12),
+        ("2026-10-14", T1040_OCT14, 2.13),
+    ] {
+        send(
+            &mut ws,
+            json!({"type":"replay.control","action":"day","value":day}),
+        )
+        .await;
+        // The resync's snapshots, both taken on the rebuilt state of the new day.
+        let q = next(&mut ws, |m| m["type"] == "quotes.snapshot" && m["t"] == now).await;
+        assert_eq!(quote(&q, "SMPL").unwrap()["pc"], want, "{day}: quotes pc");
+        let snap = next(&mut ws, |m| {
+            m["type"] == "chart.snapshot" && m["clock"]["now"] == now
+        })
+        .await;
+        assert_eq!(snap["prevClose"], want, "{day}: chart prevClose");
+        // A fresh subscribe (not only the resync) agrees.
+        send(
+            &mut ws,
+            json!({"type":"chart.subscribe","symbol":"SMPL","timeframe":"5m","profileBin":0.01}),
+        )
+        .await;
+        let again = next(&mut ws, |m| {
+            m["type"] == "chart.snapshot" && m["timeframe"] == "5m"
+        })
+        .await;
+        assert_eq!(again["prevClose"], want, "{day}: resubscribe prevClose");
+        send(
+            &mut ws,
+            json!({"type":"chart.subscribe","symbol":"SMPL","timeframe":"1m","profileBin":0.01}),
+        )
+        .await;
+        next(&mut ws, |m| {
+            m["type"] == "chart.snapshot" && m["timeframe"] == "1m"
+        })
+        .await;
+    }
+}

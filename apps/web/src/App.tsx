@@ -19,7 +19,7 @@ import { Tip, ToggleGroup, ToggleGroupItem, cn } from "@stockwatcher/chart-web/u
 import { useEffect, useMemo, useState } from "react";
 import { createServerFeed } from "./feed/serverFeed.ts";
 import { clearToken, getToken, setToken } from "./feed/token.ts";
-import { chooseSource, followCandidates, initialSymbol, probeServer, type SourceChoice } from "./feed/source.ts";
+import { chooseSource, followCandidates, followServer, initialSymbol, probeServer, type SourceChoice } from "./feed/source.ts";
 import { useCandidates } from "./feed/useCandidates.ts";
 import type { ChartFeed } from "./feed/types.ts";
 import { useChartFeed } from "./feed/useChartFeed.ts";
@@ -191,6 +191,10 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
   // The trading day the replay clock is on; it changes on a day switch (and once a night while playing).
   const [clockDay, setClockDay] = useState<string | null>(null);
   const candidates = useCandidates(choice, clockDay);
+  // What is playing now (the day can be switched under a running page): drives the source chip,
+  // the tape note, the chart's label and the search's mock rows. `choice` stays the startup
+  // decision (server or fixture), which never changes.
+  const current = useMemo(() => followServer(choice, candidates.server), [choice, candidates.server]);
   const [inspectT, setInspectT] = useState<number | null>(null);
   // Held here, not in the chart, so it survives switching phone/desktop layouts.
   const [priceScale, setPriceScale] = useState<PriceScaleType>("linear");
@@ -226,7 +230,7 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
     setInspectT(null);
   };
   // On the desktop the panel drops down right under the header's search pill, at its width.
-  const search = <TickerSearch open={searchOpen} onOpenChange={setSearchOpen} symbols={candidates.symbols} quotes={feed.quotes} mock={choice.fixtureData} current={symbol} onSelect={openTicker} anchored={!phone} />;
+  const search = <TickerSearch open={searchOpen} onOpenChange={setSearchOpen} symbols={candidates.symbols} quotes={feed.quotes} mock={current.fixtureData} current={symbol} onSelect={openTicker} anchored={!phone} />;
   const tickerButton = (size: string) => (
     <Tip label={`Search tickers (${isMac ? "⌘" : "Ctrl+"}P)`}>
       <button type="button" onClick={() => setSearchOpen(true)} className={cn("pointer-events-auto cursor-pointer rounded-md font-semibold outline-none hover:text-primary focus-visible:ring-2 focus-visible:ring-ring", size)}>
@@ -276,8 +280,8 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
   const price = last ? formatPrice(last.c) : "—";
   const change = last && reference ? formatChange(reference.price, last.c) : "";
   const changeColor = change.startsWith("-") ? "text-critical" : "text-good";
-  const chartLabel = `${symbol} ${timeframe} candles, ${choice.fixtureData ? "fixture data" : "market data"} from ${choice.kind === "server" ? "the server" : "the in-browser fixture"}`;
-  const tapeNote = choice.fixtureData ? "Fixture data" : choice.label;
+  const chartLabel = `${symbol} ${timeframe} candles, ${current.fixtureData ? "fixture data" : "market data"} from ${current.kind === "server" ? "the server" : "the in-browser fixture"}`;
+  const tapeNote = current.fixtureData ? "Fixture data" : current.label;
   const mode = clock?.mode === "live" ? "live" : "replay";
 
   const binSelector = (
@@ -302,7 +306,7 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
             <span className="font-mono text-base tabular-nums">{price}</span>
             <span className={cn("font-mono text-[11px]", changeColor)}>{change}</span>
           </div>
-          <SourceChip className="ml-auto" choice={choice} mode={mode} />
+          <SourceChip className="ml-auto" choice={current} mode={mode} />
           {search}
         </header>
         <CandleChart className="h-[360px]" toolbar inspector symbol={symbol} persistKey="sw-chart" trading={trading} now={clock?.now ?? null} onTimeframeChange={changeTf} series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={setInspectT} priceScaleType={priceScale} onPriceScaleTypeChange={setPriceScale} options={PHONE_CHART} barSpacing={10} label={chartLabel} />
@@ -336,7 +340,7 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
           <span>Search tickers</span>
           <kbd className="ml-auto rounded bg-bg-row px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">{isMac ? "⌘P" : "Ctrl P"}</kbd>
         </button>
-        <SourceChip className="justify-self-end" choice={choice} mode={mode} />
+        <SourceChip className="justify-self-end" choice={current} mode={mode} />
         {search}
       </header>
 

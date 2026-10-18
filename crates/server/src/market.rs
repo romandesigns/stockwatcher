@@ -237,6 +237,16 @@ struct Inner {
     quote_subs: AtomicUsize,
 }
 
+/// What the market reads from the archive besides the replayed day itself: the root's optional
+/// `assets.json` and `daily-closes.json`, and the catalog of days a replay can switch to. Grouped
+/// because they share a lifecycle (read at startup from one archive root; tests pass them empty).
+#[derive(Default)]
+struct ArchiveMeta {
+    assets: HashMap<String, AssetMeta>,
+    closes: Arc<PrevCloses>,
+    days: Option<DayCatalog>,
+}
+
 /// Shared market state; cheap to clone.
 #[derive(Clone)]
 pub struct Market(Arc<Inner>);
@@ -293,13 +303,16 @@ impl Market {
     fn build(
         mode: ClockMode,
         info: Option<ProviderInfo>,
-        days: Option<DayCatalog>,
         status: ProviderStatus,
         control: Option<ReplayHandle>,
         band: PriceBand,
-        assets: HashMap<String, AssetMeta>,
-        closes: Arc<PrevCloses>,
+        meta: ArchiveMeta,
     ) -> Self {
+        let ArchiveMeta {
+            assets,
+            closes,
+            days,
+        } = meta;
         Market(Arc::new(Inner {
             mode,
             info: Mutex::new(info.map(Arc::new)),
@@ -323,12 +336,10 @@ impl Market {
         Market::build(
             mode,
             None,
-            None,
             ProviderStatus { state, detail },
             None,
             PriceBand::DEFAULT,
-            HashMap::new(),
-            Arc::default(),
+            ArchiveMeta::default(),
         )
     }
 
@@ -400,15 +411,17 @@ impl Market {
         let market = Market::build(
             mode,
             Some(session.info.clone()),
-            days,
             ProviderStatus {
                 state: "running",
                 detail: None,
             },
             session.control.clone(),
             cfg.band,
-            assets,
-            closes,
+            ArchiveMeta {
+                assets,
+                closes,
+                days,
+            },
         );
         tokio::spawn(ingest(session.items, market.clone(), sim.clone()));
         market.spawn_quotes_task();
@@ -439,15 +452,17 @@ impl Market {
         let market = Market::build(
             session.info.mode,
             Some(session.info.clone()),
-            None,
             ProviderStatus {
                 state: "running",
                 detail: None,
             },
             session.control.clone(),
             PriceBand::DEFAULT,
-            assets,
-            Arc::new(closes),
+            ArchiveMeta {
+                assets,
+                closes: Arc::new(closes),
+                days: None,
+            },
         );
         tokio::spawn(ingest(session.items, market.clone(), sim));
         market.spawn_quotes_task();
