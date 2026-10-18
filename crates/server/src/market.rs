@@ -429,7 +429,11 @@ impl Market {
         let weak: Weak<Inner> = Arc::downgrade(&self.0);
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(QUOTES_INTERVAL);
-            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            // Delay, not Skip: after a late tick (a busy runtime at the open) Skip fires the next
+            // one on the original schedule, which can be well under a second later and breaks the
+            // "at most once per wall second" promise in the ws protocol docs. Delay restarts the
+            // period from the late tick.
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 tick.tick().await;
                 let Some(inner) = weak.upgrade() else { break };
