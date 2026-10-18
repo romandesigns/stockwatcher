@@ -65,3 +65,25 @@ describe("theme", () => {
     }
   });
 });
+
+test("a gradient path fills with a vertical linear gradient between its two y's (the area chart)", () => {
+  const stops: [number, string][] = [];
+  let made: number[] = [];
+  let filledWith: unknown = null;
+  let fillStyle: unknown = null;
+  const gradient = { addColorStop: (o: number, c: string) => stops.push([o, c]) };
+  const ctx = new Proxy({} as Record<string, unknown>, {
+    get: (_, k: string) => (k === "createLinearGradient" ? (...a: number[]) => ((made = a), gradient) : k === "fill" ? () => (filledWith = fillStyle) : () => {}),
+    set: (_, k: string, v) => {
+      if (k === "fillStyle") fillStyle = v;
+      return true;
+    },
+  }) as unknown as Ctx2D;
+  drawDisplayList(ctx, [{ kind: "path", points: [0, 10, 50, 20, 50, 100, 0, 100], closed: true, gradient: { y0: 10, y1: 100, from: "rgba(1, 2, 3, 0.28)", to: "rgba(1, 2, 3, 0.02)" }, layer: "candles" }]);
+  expect(made).toEqual([0, 10, 0, 100]);
+  expect(stops).toEqual([
+    [0, "rgba(1, 2, 3, 0.28)"],
+    [1, "rgba(1, 2, 3, 0.02)"],
+  ]);
+  expect(filledWith).toBe(gradient);
+});

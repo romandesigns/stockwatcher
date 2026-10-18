@@ -78,6 +78,17 @@ import {
   type Size,
   type Timeframe,
   type Viewport,
+  DEFAULT_CHART_OPTIONS,
+  DEFAULT_CHART_SETTINGS,
+  manualPrice,
+  openView,
+  parseChartSettings,
+  presetViewport,
+  sessionSlots,
+  viewKey,
+  easeOut,
+  SETTINGS_MOTION_MS,
+  type ChartSettings,
 } from "@stockwatcher/chart-core";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type MouseEvent, type PointerEvent } from "react";
 import { createPortal } from "react-dom";
@@ -94,6 +105,7 @@ import { TradeMenu, TRADE_MENU_SIZES } from "./TradeMenu.tsx";
 import { PRICE_SCALE_LABELS, PriceAxisMenu } from "./PriceAxisMenu.tsx";
 import { cn } from "./ui/utils.ts";
 import { useCanvas, useChartTheme } from "./useCanvas.ts";
+import { prefersReducedMotion, useTween } from "./useTween.ts";
 
 /**
  * What the chart draws; chart-core's Series satisfies it. Pass a NEW object
@@ -119,11 +131,16 @@ export interface CandleChartProps {
   /** t of the inspected slot; null = latest. Controlled when onInspectChange is set. */
   inspectT?: number | null;
   onInspectChange?: (t: number | null) => void;
-  /** Price axis scale type. Controlled when onPriceScaleTypeChange is set. */
+  /** Price axis scale type. Controlled when onPriceScaleTypeChange is set; otherwise it is the chart settings' scale. */
   priceScaleType?: PriceScaleType;
   onPriceScaleTypeChange?: (type: PriceScaleType) => void;
-  /** Initial scale type when uncontrolled (default "linear"). */
-  defaultPriceScaleType?: PriceScaleType;
+  /**
+   * The chart settings (chart-core chartSettings.ts): type, scale, sessions,
+   * volume, grid, zoom. Controlled when onSettingsChange is set; else kept
+   * here and persisted with persistKey under `${persistKey}:settings`.
+   */
+  settings?: ChartSettings;
+  onSettingsChange?: (s: ChartSettings) => void;
   /** Offer the price axis menu on right-click / long press / Shift+F10 (default true). */
   priceAxisMenu?: boolean;
   options?: Partial<ChartOptions>;
@@ -231,7 +248,8 @@ export function CandleChart({
   onInspectChange,
   priceScaleType: scaleProp,
   onPriceScaleTypeChange,
-  defaultPriceScaleType = "linear",
+  settings: settingsProp,
+  onSettingsChange,
   priceAxisMenu = true,
   options,
   theme: themeProp,
@@ -320,6 +338,16 @@ export function CandleChart({
     const v = loadJson<unknown>(persistKey && `${persistKey}:panes`, null);
     return v && typeof v === "object" ? Object.fromEntries(Object.entries(v).filter(([, h]) => typeof h === "number")) : {};
   });
+  // Chart settings: controlled, or kept here and persisted next to the layers (`sw-chart:settings`).
+  const [ownSettings, setOwnSettings] = useState<ChartSettings>(() => parseChartSettings(loadJson<unknown>(persistKey && `${persistKey}:settings`, null)));
+  const settings = onSettingsChange ? (settingsProp ?? DEFAULT_CHART_SETTINGS) : ownSettings;
+  const setSettings = (next: ChartSettings) => {
+    if (onSettingsChange) onSettingsChange(next);
+    else {
+      setOwnSettings(next);
+      saveJson(persistKey && `${persistKey}:settings`, next);
+    }
+  };
   const [ownLayers, setOwnLayers] = useState<ChartLayers>(() => parseLayers(loadJson<unknown>(persistKey && `${persistKey}:layers`, null)));
   const layers = onLayersChange ? (layersProp ?? DEFAULT_LAYERS) : ownLayers;
   const setLayers = (next: ChartLayers) => {
@@ -364,32 +392,47 @@ export function CandleChart({
     [controlled, onInspectChange],
   );
 
-  const [ownScale, setOwnScale] = useState<PriceScaleType>(defaultPriceScaleType);
   const scaleControlled = onPriceScaleTypeChange !== undefined;
-  const scaleType = scaleControlled ? (scaleProp ?? "linear") : ownScale;
+  const scaleType = scaleControlled ? (scaleProp ?? "linear") : settings.priceScale;
 
-  // Each timeframe gets a fresh viewport: zoom/pan positions (and a manual
-  // price range) do not carry across timeframes whose slots mean different
-  // durations. The scale TYPE is a preference and does carry.
-  const [view, setView] = useState<{ tf: Timeframe; vp: Viewport }>(() => ({ tf: timeframe, vp: defaultViewport(barSpacing) }));
-  const vp = view.tf === timeframe ? view.vp : defaultViewport(barSpacing);
-  const setVp = useCallback((f: (vp: Viewport) => Viewport) => setView((v) => ({ tf: timeframe, vp: f(v.tf === timeframe ? v.vp : defaultViewport(barSpacing)) })), [timeframe, barSpacing]);
+  // Each symbol + timeframe gets a fresh view (chart-core viewKey): zoom/pan
+  // positions and a manual price range do not carry to another ticker or to
+  // a timeframe whose slots mean different durations. The fresh view is
+  // OPENED from the saved settings (openView: the zoom preset, auto stretch)
+  // as soon as its candles and the canvas size are known, so a new ticker
+  // never needs resizing by hand. Preferences (scale type, chart type) carry.
+  const key = viewKey(symbol, timeframe);
+  const [view, setView] = useState<{ key: string; vp: Viewport; opened: boolean }>(() => ({ key, vp: defaultViewport(barSpacing), opened: false }));
+  const fresh = useCallback(() => ({ key, vp: defaultViewport(barSpacing), opened: false }), [key, barSpacing]);
+  const current = view.key === key ? view : fresh();
+  const vp = current.vp;
+  const setVp = useCallback((f: (vp: Viewport) => Viewport) => setView((v) => {
+    const b = v.key === key ? v : fresh();
+    return { ...b, vp: f(b.vp) };
+  }), [key, fresh]);
 
   const [pointer, setPointer] = useState<Point | null>(null);
   const [announcement, setAnnouncement] = useState("");
   // The anchor outlives `open` so the menu can animate out where it opened.
   const [menu, setMenu] = useState<{ open: boolean; at: { x: number; y: number } | null }>({ open: false, at: null });
 
-  const slots = useMemo(() => (series ? buildSlots(series.candles, series.gaps) : []), [series]);
-  const indicatorResults = useMemo(() => computeIndicators(slots, indicatorSpecs), [slots, indicatorSpecs]);
+  // Every slot, and the ones shown: with extended hours off only the regular session (no gaps
+  // between days). Indicators are computed on the shown list so they line up by index; key levels
+  // and the opening range read every slot, so the premarket high/low survives hiding the premarket.
+  const allSlots = useMemo(() => (series ? buildSlots(series.candles, series.gaps) : []), [series]);
+  const slots = useMemo(() => sessionSlots(allSlots, settings.extendedHours), [allSlots, settings.extendedHours]);
+  const visibility = settings.visibility;
+  const indicatorResults = useMemo(() => (visibility.indicators ? computeIndicators(slots, indicatorSpecs) : []), [slots, indicatorSpecs, visibility.indicators]);
 
   const last = useMemo(() => lastCandle(slots)?.c ?? null, [slots]);
   // The server's official previous close wins over one read off the candles (levels.ts).
   const prevClose = series?.prevClose ?? null;
-  const levels = useMemo(() => keyLevels(slots, prevClose), [slots, prevClose]);
+  const levels = useMemo(() => keyLevels(allSlots, prevClose), [allSlots, prevClose]);
   // Computed only while the layer is on: one pass over the slots per update otherwise wasted.
   const session = series?.session ?? null;
-  const ranges = useMemo(() => (layers.openingRange ? openingRanges(slots, session) : []), [layers.openingRange, slots, session]);
+  const ranges = useMemo(() => (layers.openingRange ? openingRanges(allSlots, session) : []), [layers.openingRange, allSlots, session]);
+  // The baseline chart's reference: the previous close (the server's, else the one read off the candles).
+  const baselinePrice = useMemo(() => levels.find((l) => l.id === "prevClose")?.price ?? null, [levels]);
   const fills = useMemo(() => (trading?.state?.fills ?? []).filter((f) => f.symbol === symbol), [trading?.state, symbol]);
   const context = useMemo(
     () => ({
@@ -406,10 +449,13 @@ export function CandleChart({
   const position = useMemo(() => trading?.state?.positions.find((p) => p.symbol === symbol) ?? null, [trading?.state, symbol]);
   // The "+" place button follows a hovering mouse (touch opens the ticket from the price axis menu or Trade).
   const placeY = trading && !tool && !drag && pointer && gesturesRef.current?.lastPointerType === "mouse" ? pointer.y : null;
+  // Robinhood's visibility switches hide drawings or orders without deleting them; hidden ones are not hit-tested either.
   const shownDrawings = useMemo(() => {
-    const list = drag?.drawing ? drawings.map((d) => (d.id === drag.drawing!.id ? drag.drawing! : d)) : drawings;
+    const own = visibility.drawings ? drawings : [];
+    const list = drag?.drawing ? own.map((d) => (d.id === drag.drawing!.id ? drag.drawing! : d)) : own;
     return measurement ? [...list, measurement] : list;
-  }, [drawings, drag, measurement]);
+  }, [drawings, drag, measurement, visibility.drawings]);
+  const showTrading = !!trading && visibility.trading;
   const selectedDrawing = selected?.kind === "drawing" ? selected.id : null;
 
   // The top-left overlay (heading + readout) takes the corner; the indicator legend moves below it.
@@ -417,16 +463,21 @@ export function CandleChart({
   // The timeframe picker sits at the top-right inside the chart; top-edge tags start below it.
   const topRight = onTimeframeChange ? 34 : 0;
   const inChartProfile = !!options?.showProfile;
+  // The volume pane slides in or out when its setting flips (0 drops the pane, and the plot takes the room).
+  const volumeTarget = settings.volume ? (options?.volumeHeight ?? DEFAULT_CHART_OPTIONS.volumeHeight) : 0;
+  const volumeHeight = Math.round(useTween(volumeTarget));
   const chartOptions = useMemo(
     () => ({
       ...options,
+      volumeHeight,
       ...(overlayTop ? { legendTop: overlayTop + 6 } : {}),
       ...(topRight ? { topRightInset: topRight } : {}),
       // The Levels menu's "Volume profile" switch turns the in-chart profile off.
       ...(inChartProfile && !layers.profile ? { showProfile: false } : {}),
     }),
-    [options, overlayTop, topRight, inChartProfile, layers.profile],
+    [options, volumeHeight, overlayTop, topRight, inChartProfile, layers.profile],
   );
+  const chartStyle = useMemo(() => ({ grid: settings.grid, sessionShading: settings.sessionShading, sessionBreaks: settings.sessionBreaks, highLow: settings.highLow }), [settings.grid, settings.sessionShading, settings.sessionBreaks, settings.highLow]);
   const state: ChartState = useMemo(
     () => ({
       timeframe,
@@ -443,17 +494,51 @@ export function CandleChart({
       drawings: shownDrawings,
       selectedDrawing,
       draft,
-      trading: trading ? { orders, position, last, dragging: drag?.order ? { id: drag.order.id, price: drag.order.price } : null, placeY } : null,
+      trading: showTrading ? { orders, position, last, dragging: drag?.order ? { id: drag.order.id, price: drag.order.price } : null, placeY } : null,
       context,
       now,
       paneHeights,
+      chartType: settings.chartType,
+      chartStyle,
+      baselinePrice,
+      extendedHours: settings.extendedHours,
     }),
-    [timeframe, series, slots, inspectT, pointer, tradeMenuOpen, tradeMenuAt, chartOptions, scaleType, indicatorResults, shownDrawings, selectedDrawing, draft, trading, orders, position, last, drag, placeY, context, now, paneHeights],
+    [timeframe, series, slots, inspectT, pointer, tradeMenuOpen, tradeMenuAt, chartOptions, scaleType, indicatorResults, shownDrawings, selectedDrawing, draft, showTrading, orders, position, last, drag, placeY, context, now, paneHeights, settings.chartType, chartStyle, baselinePrice, settings.extendedHours],
   );
 
   const paint = useCallback((ctx: CanvasRenderingContext2D, size: Size) => drawDisplayList(ctx, layoutChart(computeChartModel(state, vp, size), state, theme)), [state, vp, theme]);
   const { containerRef, canvasRef, size } = useCanvas(paint);
   const model = useMemo(() => computeChartModel(state, vp, size), [state, vp, size]);
+
+  // Open a fresh view (new ticker or timeframe) from the saved settings once its candles and the
+  // canvas size exist. Before the snapshot arrives there is nothing to fit, so it waits.
+  useLayoutEffect(() => {
+    if (current.opened || !slots.length || size.width <= 0) return;
+    setView({ key, vp: openView(state, settings, size, defaultViewport(barSpacing)), opened: true });
+  });
+
+  // Choosing a zoom preset, or showing/hiding extended hours (which changes what "the day" is),
+  // slides the zoom to the preset's spacing, following the latest candle; toggling auto stretch
+  // switches the price range between auto and the current range held. Not on first render.
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const sizeRef = useRef(size);
+  sizeRef.current = size;
+  const prevSettings = useRef(settings);
+  useEffect(() => {
+    const p = prevSettings.current;
+    prevSettings.current = settings;
+    if (p === settings) return;
+    if (p.autoStretch !== settings.autoStretch) {
+      if (settings.autoStretch) setVp(autoScalePrice);
+      else setVp((v) => {
+        const m = computeChartModel(stateRef.current, v, sizeRef.current);
+        return m.price ? manualPrice(v, { lo: m.price.lo, hi: m.price.hi }) : v;
+      });
+    }
+    if (p.zoom !== settings.zoom || p.extendedHours !== settings.extendedHours) zoomToPreset(settings);
+    // zoomToPreset reads refs only; settings is the trigger.
+  }, [settings]);
 
   // If the inspected slot disappears (trimmed, or a new snapshot), fall back to latest.
   useEffect(() => {
@@ -468,7 +553,7 @@ export function CandleChart({
 
   const setScaleType = (t: PriceScaleType) => {
     if (scaleControlled) onPriceScaleTypeChange?.(t);
-    else setOwnScale(t);
+    else setSettings({ ...settings, priceScale: t });
   };
 
   // Announce scale changes (type and auto/manual), never on first render.
@@ -502,6 +587,7 @@ export function CandleChart({
       const t = hitTrading(m, tradingLayer, x, y, tol);
       if (t) return t;
     }
+    if (!visibility.drawings) return null;
     const d = hitDrawing(m, drawings, x, y, tol, selectedDrawing);
     return d ? { kind: "drawing", ...d } : null;
   };
@@ -747,6 +833,44 @@ export function CandleChart({
   };
   const pannedBack = isPannedBack(vp);
 
+  // The preset slide: barSpacing eases to the preset's (220 ms, instant with reduced motion) while
+  // following the latest candle; with auto stretch off the range is re-fitted once at the end and
+  // held. Shares `slide` with back-to-latest, so a press on the chart stops either.
+  const zoomToPreset = (s: ChartSettings) => {
+    stopSlide();
+    const st = stateRef.current;
+    const m = computeChartModel(st, vp, sizeRef.current);
+    const target = presetViewport(vp, m.slots, timeframe, s.extendedHours, s.zoom, m.geometry.plot.w);
+    const finish = () => {
+      setVp((v) => {
+        const done = { ...v, barSpacing: target.barSpacing, anchorT: null, anchorFrac: 0 };
+        if (s.autoStretch) return done;
+        const fit = computeChartModel(stateRef.current, autoScalePrice(done), sizeRef.current).price;
+        return fit ? manualPrice(done, { lo: fit.lo, hi: fit.hi }) : done;
+      });
+      slide.current = null;
+    };
+    const from = vp.barSpacing;
+    if (prefersReducedMotion() || Math.abs(from - target.barSpacing) < 1e-3) {
+      finish();
+      return;
+    }
+    const start = performance.now();
+    const run = { frame: 0 };
+    const frame = (now: number) => {
+      const elapsed = now - start;
+      if (elapsed >= SETTINGS_MOTION_MS) {
+        finish();
+        return;
+      }
+      const bs = easeOut(from, target.barSpacing, elapsed, SETTINGS_MOTION_MS);
+      setVp((v) => ({ ...v, barSpacing: bs, anchorT: null, anchorFrac: 0 }));
+      run.frame = requestAnimationFrame(frame);
+    };
+    run.frame = requestAnimationFrame(frame);
+    slide.current = run;
+  };
+
   const onPointer = (type: "down" | "move" | "up" | "cancel" | "leave") => (e: PointerEvent<HTMLCanvasElement>) => {
     const kind = pointerKind(e.pointerType) ?? "mouse";
     if (type === "down") {
@@ -943,6 +1067,11 @@ export function CandleChart({
         layers={layers}
         layerIds={layerIdsFor(inChartProfile)}
         onLayersChange={setLayers}
+        settings={scaleControlled ? { ...settings, priceScale: scaleType } : settings}
+        onSettingsChange={(s) => {
+          if (scaleControlled && s.priceScale !== scaleType) onPriceScaleTypeChange?.(s.priceScale);
+          setSettings(s);
+        }}
       />
   );
 
@@ -998,6 +1127,25 @@ export function CandleChart({
               : undefined
           }
         />
+      )}
+      {!auto && model.price && (
+        // Manual price range: a small "A" at the foot of the price column returns to auto stretch
+        // (TradingView's and Legend's auto button). Shown only while manual, so it costs nothing at rest.
+        <Tip label="Auto stretch (A, or double-click the price axis)" side="left">
+          <button
+            type="button"
+            aria-label="Auto stretch the price axis"
+            onClick={() => {
+              setAnnouncement("Price axis auto-scaled.");
+              setVp(autoScalePrice);
+            }}
+            // Beside the volume pane, where the price column is otherwise empty, so it never covers a price label.
+            style={{ left: model.geometry.priceAxis.x + model.geometry.priceAxis.w / 2 - 10, top: model.geometry.volume ? model.geometry.volume.y + model.geometry.volume.h / 2 - 10 : model.geometry.plot.y + model.geometry.plot.h - 24 }}
+            className="absolute z-10 grid size-5 place-items-center rounded-md bg-card font-mono text-[11px] font-semibold text-muted-foreground shadow-sm transition-[opacity,scale,color,background-color] duration-150 outline-none hover:bg-bg-row hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring starting:scale-90 starting:opacity-0"
+          >
+            A
+          </button>
+        </Tip>
       )}
       {pannedBack && (
         <Tip label="Back to latest (End)" side="left">
