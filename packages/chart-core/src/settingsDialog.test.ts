@@ -4,8 +4,8 @@ import { resolveSettingsSection, SETTINGS_RAIL_FRACTION, SETTINGS_RAIL_LABEL_MIN
 
 // The Settings dialog's shared logic (owner request 2026-10-18: a 15 / 85 two-column dialog).
 
-test("sections: unique ids, a label, a real icon, Drawing first", () => {
-  expect(SETTINGS_SECTIONS[0]!.id).toBe("drawing");
+test("sections: unique ids, a label, a real icon, Chart first then Drawing", () => {
+  expect(SETTINGS_SECTIONS.map((s) => s.id)).toEqual(["chart", "drawing"]);
   expect(new Set(SETTINGS_SECTIONS.map((s) => s.id)).size).toBe(SETTINGS_SECTIONS.length);
   for (const s of SETTINGS_SECTIONS) {
     expect(s.label.length).toBeGreaterThan(0);
@@ -29,4 +29,8 @@ test("a stored tab resolves to one that exists, else the first", () => {
   expect(resolveSettingsSection("gone", ids)).toBe("drawing");
   expect(resolveSettingsSection(42, ids)).toBe("drawing");
   expect(resolveSettingsSection("x", [])).toBeNull();
+  // The real list: a save from before Chart existed still opens Drawing; a first open lands on Chart.
+  const real = SETTINGS_SECTIONS.map((s) => s.id);
+  expect(resolveSettingsSection("drawing", real)).toBe("drawing");
+  expect(resolveSettingsSection(null, real)).toBe("chart");
 });

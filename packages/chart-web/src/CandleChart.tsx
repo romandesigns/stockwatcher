@@ -1101,11 +1101,6 @@ export function CandleChart({
         layers={layers}
         layerIds={layerIdsFor(inChartProfile)}
         onLayersChange={setLayers}
-        settings={scaleControlled ? { ...settings, priceScale: scaleType } : settings}
-        onSettingsChange={(s) => {
-          if (scaleControlled && s.priceScale !== scaleType) onPriceScaleTypeChange?.(s.priceScale);
-          setSettings(s);
-        }}
       />
   );
 

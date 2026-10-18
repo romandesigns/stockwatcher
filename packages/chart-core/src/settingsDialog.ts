@@ -11,7 +11,7 @@ import type { IconName } from "./icons.ts";
 // renderers share live here: which tab opens, and how the 15 % rail adapts
 // when 15 % of the dialog is too narrow for a label.
 
-export type SettingsSectionId = "drawing";
+export type SettingsSectionId = "chart" | "drawing";
 
 export interface SettingsSectionInfo {
   id: SettingsSectionId;
@@ -21,8 +21,16 @@ export interface SettingsSectionInfo {
   description: string;
 }
 
-/** Every section, in rail order. */
+/**
+ * Every section, in rail order. Chart is first (owner, 2026-10-18: the
+ * chart settings moved here from the toolbar's Chart popover, which was
+ * removed, so this tab is now their only home). Putting it first does not
+ * disturb the remembered tab: resolveSettingsSection keeps whatever id was
+ * stored ("drawing" still opens Drawing for someone who left it there), and
+ * only a first open, or a stored id that no longer exists, lands on Chart.
+ */
 export const SETTINGS_SECTIONS: readonly SettingsSectionInfo[] = [
+  { id: "chart", label: "Chart", icon: "chart", description: "Chart type, zoom, price scale and what the chart shows." },
   { id: "drawing", label: "Drawing", icon: "pencil", description: "Choose which tools and actions the drawing toolbox shows." },
 ];
 

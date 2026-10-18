@@ -20,10 +20,8 @@ import {
   type ChartLayers,
   type LayerId,
   type FillMark,
-  type ChartSettings,
 } from "@stockwatcher/chart-core";
 import type { ReactNode } from "react";
-import { ChartSettingsMenu } from "./ChartSettingsMenu.tsx";
 import { LayersMenu } from "./ContextMenus.tsx";
 import { glyphDef, Icon } from "./Icon.tsx";
 import { TimeframeSelector } from "./TimeframeSelector.tsx";
@@ -80,9 +78,6 @@ export interface ChartToolbarProps {
   /** The floating drawing tools: shown or hidden, and the switch (absent hides the switch). */
   toolsVisible?: boolean;
   onToolsVisibleChange?: (visible: boolean) => void;
-  /** The chart settings (type, scale, sessions, zoom); with onSettingsChange the Chart button shows, just left of Indicators. */
-  settings?: ChartSettings;
-  onSettingsChange?: (s: ChartSettings) => void;
   /** Shown at the left of the row (CandleChart puts the inspected candle's readout here). */
   start?: ReactNode;
   /** The candle timeframe, shown at the left of the row (absent hides it). */
@@ -98,7 +93,7 @@ export interface ChartToolbarProps {
  * One compact row; selection is a raised segment, and the accent is spent
  * only on the Trade button (the primary action).
  */
-export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChange, seriesColors, drawingTools = true, canDelete, onDelete, trading, layers, layerIds, onLayersChange, toolsVisible, onToolsVisibleChange, settings, onSettingsChange, timeframe, onTimeframeChange, start, className }: ChartToolbarProps) {
+export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChange, seriesColors, drawingTools = true, canDelete, onDelete, trading, layers, layerIds, onLayersChange, toolsVisible, onToolsVisibleChange, timeframe, onTimeframeChange, start, className }: ChartToolbarProps) {
   const pos = trading?.position && trading.position.qty !== 0 ? trading.position : null;
   const pnl = pos && trading?.last !== null && trading?.last !== undefined ? unrealizedPnl(pos, trading.last) : null;
   return (
@@ -154,8 +149,7 @@ export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChang
             </Button>
           </Tip>
         )}
-        {/* The Chart button sits immediately left of Indicators (owner request 2026-10-18). */}
-        {settings && onSettingsChange && <ChartSettingsMenu settings={settings} onChange={onSettingsChange} />}
+        {/* No Chart button here: the chart settings live in the Settings dialog's Chart tab (owner, 2026-10-18). */}
         <IndicatorMenu indicators={indicators} onChange={onIndicatorsChange} seriesColors={seriesColors ?? DEFAULT_SERIES} />
         {layers && onLayersChange && <LayersMenu layers={layers} ids={layerIds} onChange={onLayersChange} />}
         {trading && (
