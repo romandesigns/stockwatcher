@@ -184,9 +184,10 @@ Readers refuse another format or contract version, and any oversized length.
   every 8 MiB written).
 - `ARCHIVE_RETENTION_DAYS` (default 0, keep forever) prunes whole days older than the ET trading
   date. The server prunes at startup in replay mode.
-- The VPS keeps a **rolling one-month window** instead (retention stays 0 there): `swimport
+- The VPS keeps a **rolling window of the last 21 trading days** instead (retention stays 0 there): `swimport
   maintain`, run as the `archiver` compose service, imports each completed SIP day after 21:15 ET
-  and deletes days older than `L − 1 month` (L = latest completed trading day), never the day the
+  and deletes days that fall out of the 21 trading days ending at L (the latest completed trading
+  day; one in, one out), never the day the
   server is replaying and nothing at all when the server cannot be asked
   (`crates/market-providers/src/import/maintain.rs`). A day it is still importing carries an
   `.importing` marker and is not offered by `ready_days()` (replay's default day, the day menu);

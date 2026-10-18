@@ -8,7 +8,7 @@
 //! swimport check <SYMBOL> <YYYY-MM-DD>                   # verify, replay twice, compare with FMP
 //! swimport alpaca-assets                                 # names + exchanges -> $ARCHIVE_ROOT/assets.json
 //! swimport alpaca-daily-closes --from <YYYY-MM-DD> --to <YYYY-MM-DD>  # -> $ARCHIVE_ROOT/daily-closes.json
-//! swimport maintain [--once]                             # keep the rolling one-month window (runs forever)
+//! swimport maintain [--once]                             # keep the rolling 21-trading-day window (runs forever)
 //! ```
 //!
 //! `maintain` is what the VPS runs as its `archiver` service (import::maintain has the window,
@@ -701,10 +701,10 @@ fn maintain(args: &[String]) -> Result<ExitCode, String> {
     let stop = Arc::new(AtomicBool::new(false));
     watch_signals(stop.clone());
     println!(
-        "{} maintain: archive {}, window {} month(s), daily at {} ET, {} workers, <= {}/min, band {}..={}, server {} (token {}), Alpaca keys {}, free-space floor {} MB, status {}",
+        "{} maintain: archive {}, window {} trading days, daily at {} ET, {} workers, <= {}/min, band {}..={}, server {} (token {}), Alpaca keys {}, free-space floor {} MB, status {}",
         stamp(),
         archive.root().display(),
-        cfg.window_months,
+        cfg.window_days,
         cfg.run_at.format("%H:%M"),
         cfg.jobs,
         cfg.per_minute,
