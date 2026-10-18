@@ -24,3 +24,5 @@ export * from "./replayDays.ts";
 export * from "./icons.ts";
 export * from "./chartTypes.ts";
 export * from "./chartSettings.ts";
+export * from "./drawingSettings.ts";
+export * from "./settingsDialog.ts";

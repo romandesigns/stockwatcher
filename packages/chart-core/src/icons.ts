@@ -70,6 +70,7 @@ const TRASH_BODY = "M4.5 4.5l.6 8.5h5.8l.6-8.5";
 const PENCIL = "M10.5 2.5 13.5 5.5 5.5 13.5H2.5v-3z";
 const PLAY = "M4.8 3.4v9.2l7.6-4.6z";
 const STEP = "M4 3.5 9.5 8 4 12.5z";
+const DROP = "M8 2.2c2.6 3 4.2 5.2 4.2 7.2a4.2 4.2 0 0 1-8.4 0c0-2 1.6-4.2 4.2-7.2z";
 
 export type IconName =
   | "cursor"
@@ -110,7 +111,9 @@ export type IconName =
   | "chartHeikinAshi"
   | "chartLine"
   | "chartArea"
-  | "chartBaseline";
+  | "chartBaseline"
+  | "settings"
+  | "color";
 
 export const ICONS: Readonly<Record<IconName, IconDef>> = {
   // Drawing tools: the drawn object is primary, its handles and fills secondary.
@@ -186,6 +189,18 @@ export const ICONS: Readonly<Record<IconName, IconDef>> = {
   chartLine: icon([S("M2 13.5h12", { dash: [1.5, 2] }), P("M2 11 5.5 7l3 2.5L14 3.5")]),
   chartArea: icon([S("M2 11 5.5 7l3 2.5L14 3.5V14H2z", { paint: "fill" }), P("M2 11 5.5 7l3 2.5L14 3.5")]),
   chartBaseline: icon([S("M1.5 8.5h13", { dash: [1.5, 2] }), P("M2 12 5 9.5 8 11l3-6 3 1.5")]),
+
+  // Settings (owner request 2026-10-18), the header's gear: the toothed ring is the object, its body
+  // and the hub context. The teeth are short wide strokes so they still read at 14 px.
+  settings: icon([
+    S(circlePath(8, 8, 4.4), { paint: "fill" }),
+    P(circlePath(8, 8, 4.4)),
+    P("M8 1.6v1.6M8 12.8v1.6M1.6 8h1.6M12.8 8h1.6M3.5 3.5l1.1 1.1M11.4 11.4l1.1 1.1M3.5 12.5l1.1-1.1M11.4 4.6l1.1-1.1", { width: 2 }),
+    S(circlePath(8, 8, 1.5)),
+  ]),
+  // A drawing's colour, for the Drawing settings row (the toolbox itself shows the live swatch):
+  // a drop, its body soft, its outline crisp.
+  color: icon([S(DROP, { paint: "fill" }), P(DROP)]),
 };
 
 export const ICON_NAMES = Object.keys(ICONS) as IconName[];
