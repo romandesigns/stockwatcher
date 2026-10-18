@@ -10,18 +10,12 @@ import {
   sessionBands,
   tradingDayOf,
   volumeBuckets,
-  parseChartSettings,
-  parseDrawingSettings,
-  parseIndicators,
-  parseLayers,
-  SYNC_NS,
   type ChartOptions,
-  type Timeframe,
 } from "@stockwatcher/chart-core";
-import type { SettingsSync } from "@stockwatcher/shared";
+import { PROFILE_BINS } from "@stockwatcher/app-state";
 import { CandleChart, chartSettingsSection, drawingSettingsSection, Icon, ReplayControls, SessionTimeline, SettingsDialog, Tape, VolumeProfile } from "@stockwatcher/chart-web";
 import { Tip, ToggleGroup, ToggleGroupItem, cn } from "@stockwatcher/chart-web/ui";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { createServerFeed } from "./feed/serverFeed.ts";
 import { clearToken, getToken, setToken } from "./feed/token.ts";
 import { chooseSource, followCandidates, followServer, initialSymbol, probeServer, type SourceChoice } from "./feed/source.ts";
@@ -34,7 +28,7 @@ import { createFixtureFeed, FIXTURE_SYMBOL } from "./fixtures/fixtureFeed.ts";
 import { useMediaQuery } from "./lib/useMediaQuery.ts";
 import { TickerSearch } from "./search/TickerSearch.tsx";
 import { getSettingsSync } from "./settings/sync.ts";
-import { useSynced, useSyncedDrawings } from "./settings/useSynced.ts";
+import { getAppStore, useApp } from "./state/store.ts";
 
 /** The search icon for the quick-open pill and the phone header (chart-core's shared duotone set, like every icon). */
 const SearchIcon = <Icon name="search" />;
@@ -45,7 +39,6 @@ const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigat
 // server is unreachable or has no data (feed/source.ts), or when forced with
 // VITE_CHART_SOURCE=fixture. The active source is always labelled.
 const ENV_SOURCE = import.meta.env.VITE_CHART_SOURCE;
-const BINS = [0.01, 0.02, 0.05] as const;
 
 const PHONE_CHART: Partial<ChartOptions> = { priceAxisWidth: 42, volumeHeight: 36, timeAxisHeight: 18, paneGap: 4, fontSize: 9, showProfile: true, profileWidth: 0.2, timeLabelSpacing: 60 };
 const DESKTOP_CHART: Partial<ChartOptions> = {};
@@ -165,7 +158,7 @@ export default function App() {
   if (!ready) {
     return <div className="flex min-h-dvh items-center justify-center bg-background text-sm text-muted-foreground">Connecting to the server…</div>;
   }
-  return <ChartApp choice={ready.choice} feed={ready.feed} sync={sync} />;
+  return <ChartApp choice={ready.choice} feed={ready.feed} />;
 }
 
 /** The one-field sign-in for a server that requires its access token. */
@@ -207,11 +200,17 @@ function SignIn({ rejected, onSubmit }: { rejected: boolean; onSubmit: (token: s
   );
 }
 
-function ChartApp({ choice, feed, sync }: { choice: SourceChoice; feed: ChartFeed; sync: SettingsSync }) {
-
-  const [symbol, setSymbol] = useState(() => initialSymbol(choice, FIXTURE_SYMBOL));
-  const [timeframe, setTimeframe] = useState<Timeframe>("1m");
-  const [bin, setBin] = useState<number>(0.01);
+function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
+  // App state lives in the one store (state/store.ts, @stockwatcher/app-state). The ticker,
+  // timeframe, bin, trade size, search recents, indicators, levels, chart and drawing settings
+  // and drawings are synced live with every other client (desktop, web, phone) and kept on the
+  // server; dialogs and the inspected candle are this page's own.
+  // The store's actions (the same functions in every state, so read once; values come through useApp).
+  const [app] = useState(() => getAppStore().getState());
+  const syncedSymbol = useApp((s) => s.symbol);
+  const timeframe = useApp((s) => s.timeframe);
+  const bin = useApp((s) => s.bin);
+  const inspectT = useApp((s) => s.inspectT);
   // The trading day the replay clock is on; it changes on a day switch (and once a night while playing).
   const [clockDay, setClockDay] = useState<string | null>(null);
   const candidates = useCandidates(choice, clockDay);
@@ -219,67 +218,64 @@ function ChartApp({ choice, feed, sync }: { choice: SourceChoice; feed: ChartFee
   // the tape note, the chart's label and the search's mock rows. `choice` stays the startup
   // decision (server or fixture), which never changes.
   const current = useMemo(() => followServer(choice, candidates.server), [choice, candidates.server]);
-  const [inspectT, setInspectT] = useState<number | null>(null);
-  // A stock that traded out of the price band is no longer let through by the server.
-  useEffect(() => {
-    const next = followCandidates(symbol, candidates.symbols);
-    if (next !== symbol) {
-      setSymbol(next);
-      setInspectT(null);
-    }
-  }, [candidates.symbols, symbol]);
+  // What the chart shows: the ticker last opened on any device, or this source's first one. A
+  // stock that traded out of the price band is no longer let through by the server, so the chart
+  // moves to the first remaining candidate. That fallback is NOT written back: a device with a
+  // momentarily stale candidate list must not move every other device's chart.
+  const symbol = followCandidates(syncedSymbol ?? initialSymbol(choice, FIXTURE_SYMBOL), candidates.symbols);
+  // Drawings follow the shown symbol; before paint, so a ticker switch never flashes the old marks.
+  useLayoutEffect(() => app.showSymbol(symbol), [app, symbol]);
   const { series, tape, clock } = useChartFeed(feed, symbol, timeframe, bin);
   const trading = usePaperTrading(feed);
   const replayDays = useReplayDays(choice, clockDay);
   const dayOptions = useMemo(() => replayDayOptions(replayDays.state?.days ?? []), [replayDays.state]);
 
   const phone = useMediaQuery("(max-width: 600px)");
-  // The user's preferences and this symbol's drawings, synced live with every other client
-  // (desktop, web, phone) and kept on the server; the chart is controlled with them. Each device
-  // keeps its own view: ticker, timeframe, zoom/pan, toolbox place, open dialogs.
-  const [indicators, setIndicators] = useSynced(sync, SYNC_NS.indicators, parseIndicators);
-  const [layers, setLayers] = useSynced(sync, SYNC_NS.layers, parseLayers);
-  const [chartSettings, setChartSettings, chartSettingsOrigin] = useSynced(sync, SYNC_NS.chartSettings, parseChartSettings);
+  // The chart is controlled with the synced values (CandleChart keeps only this screen's layout).
+  const indicators = useApp((s) => s.indicators);
+  const layers = useApp((s) => s.layers);
+  const chartSettings = useApp((s) => s.chartSettings);
+  const chartSettingsFromRemote = useApp((s) => s.chartSettingsFromRemote);
   // The Settings dialog's Drawing tab: which buttons the chart's drawing toolbox shows.
-  const [drawingSettings, setDrawingSettings] = useSynced(sync, SYNC_NS.drawingSettings, parseDrawingSettings);
-  const [drawings, setDrawings] = useSyncedDrawings(sync, symbol);
+  const drawingSettings = useApp((s) => s.drawingSettings);
+  const drawings = useApp((s) => s.drawings);
+  const tradeQty = useApp((s) => s.tradeQty);
   const synced = {
     indicators,
-    onIndicatorsChange: setIndicators,
+    onIndicatorsChange: app.setIndicators,
     layers,
-    onLayersChange: setLayers,
+    onLayersChange: app.setLayers,
     settings: chartSettings,
-    onSettingsChange: setChartSettings,
-    settingsFromRemote: chartSettingsOrigin === "remote",
+    onSettingsChange: app.setChartSettings,
+    settingsFromRemote: chartSettingsFromRemote,
     drawingSettings,
     drawings,
-    onDrawingsChange: setDrawings,
+    onDrawingsChange: app.setDrawings,
+    tradeQty,
+    onTradeQtyChange: app.setTradeQty,
   };
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const settings = <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} persistKey="sw-settings" sections={[chartSettingsSection(chartSettings, setChartSettings), drawingSettingsSection(drawingSettings, setDrawingSettings)]} />;
-  const gear = <SettingsButton open={settingsOpen} onOpen={() => setSettingsOpen(true)} />;
+  const settingsOpen = useApp((s) => s.settingsOpen);
+  const settings = <SettingsDialog open={settingsOpen} onOpenChange={app.setSettingsOpen} persistKey="sw-settings" sections={[chartSettingsSection(chartSettings, app.setChartSettings), drawingSettingsSection(drawingSettings, app.setDrawingSettings)]} />;
+  const gear = <SettingsButton open={settingsOpen} onOpen={() => app.setSettingsOpen(true)} />;
   // Ticker quick-open, VS Code's Ctrl+P (Cmd+P on a Mac): the browser's print shortcut is taken
   // over on purpose while the app is focused.
-  const [searchOpen, setSearchOpen] = useState(false);
+  const searchOpen = useApp((s) => s.searchOpen);
+  const recents = useApp((s) => s.searchRecents);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === "p" || e.key === "P")) {
         e.preventDefault();
-        setSearchOpen(true);
+        app.setSearchOpen(true);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
-  const openTicker = (s: string) => {
-    setSymbol(s);
-    setInspectT(null);
-  };
+  }, [app]);
   // On the desktop the panel drops down right under the header's search pill, at its width.
-  const search = <TickerSearch open={searchOpen} onOpenChange={setSearchOpen} symbols={candidates.symbols} quotes={feed.quotes} mock={current.fixtureData} current={symbol} onSelect={openTicker} anchored={!phone} />;
+  const search = <TickerSearch open={searchOpen} onOpenChange={app.setSearchOpen} symbols={candidates.symbols} quotes={feed.quotes} mock={current.fixtureData} current={symbol} recents={recents} onSelect={app.openTicker} anchored={!phone} />;
   const tickerButton = (size: string) => (
     <Tip label={`Search tickers (${isMac ? "⌘" : "Ctrl+"}P)`}>
-      <button type="button" onClick={() => setSearchOpen(true)} className={cn("pointer-events-auto cursor-pointer rounded-md font-semibold outline-none hover:text-primary focus-visible:ring-2 focus-visible:ring-ring", size)}>
+      <button type="button" onClick={() => app.setSearchOpen(true)} className={cn("pointer-events-auto cursor-pointer rounded-md font-semibold outline-none hover:text-primary focus-visible:ring-2 focus-visible:ring-ring", size)}>
         {symbol}
       </button>
     </Tip>
@@ -305,10 +301,6 @@ function ChartApp({ choice, feed, sync }: { choice: SourceChoice; feed: ChartFee
   const bucketMs = phone ? 20 * 60_000 : 15 * 60_000;
   const buckets = useMemo(() => (series && bands.length ? volumeBuckets(series.candles, bands[0]!.start, bands[3]!.end, bucketMs) : []), [series, bands, bucketMs]);
 
-  const changeTf = (tf: Timeframe) => {
-    setTimeframe(tf);
-    setInspectT(null);
-  };
   const replay = {
     clock,
     onPlayPause: (play: boolean) => feed.control({ action: play ? "play" : "pause" }),
@@ -333,8 +325,8 @@ function ChartApp({ choice, feed, sync }: { choice: SourceChoice; feed: ChartFee
   const binSelector = (
     <>
       <span>Bin</span>
-      <ToggleGroup aria-label="Profile bin width" size="sm" spacing={0.5} variant="segmented" value={[String(bin)]} onValueChange={(v) => v[0] && setBin(Number(v[0]))}>
-        {BINS.map((b) => (
+      <ToggleGroup aria-label="Profile bin width" size="sm" spacing={0.5} variant="segmented" value={[String(bin)]} onValueChange={(v) => v[0] && app.setBin(Number(v[0]))}>
+        {PROFILE_BINS.map((b) => (
           <ToggleGroupItem key={b} value={String(b)} className="h-6 px-1.5 font-mono text-[11px]">
             {b.toFixed(2)}
           </ToggleGroupItem>
@@ -357,7 +349,7 @@ function ChartApp({ choice, feed, sync }: { choice: SourceChoice; feed: ChartFee
           {search}
           {settings}
         </header>
-        <CandleChart className="h-[360px]" toolbar inspector symbol={symbol} persistKey={CHART_KEY} {...synced} trading={trading} now={clock?.now ?? null} onTimeframeChange={changeTf} series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={setInspectT} options={PHONE_CHART} barSpacing={10} label={chartLabel} />
+        <CandleChart className="h-[360px]" toolbar inspector symbol={symbol} persistKey={CHART_KEY} {...synced} trading={trading} now={clock?.now ?? null} onTimeframeChange={app.setTimeframe} series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={app.setInspectT} options={PHONE_CHART} barSpacing={10} label={chartLabel} />
         <section aria-label="Session timeline and replay" className="flex flex-col gap-1.5 rounded-xl bg-card px-3 py-2">
           <ReplayControls {...replay} variant="compact" />
           <SessionTimeline bands={bands} buckets={buckets} bucketMs={bucketMs} now={clock?.now ?? null} variant="minimal" onSeek={seek} />
@@ -381,7 +373,7 @@ function ChartApp({ choice, feed, sync }: { choice: SourceChoice; feed: ChartFee
         <div className="text-sm font-semibold tracking-tight">StockWatcher</div>
         <button
           type="button"
-          onClick={() => setSearchOpen(true)}
+          onClick={() => app.setSearchOpen(true)}
           className="flex h-8 w-(--search-w) items-center gap-2 rounded-lg bg-card px-3 text-xs text-text-faint outline-none hover:bg-bg-row hover:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-3.5"
         >
           {SearchIcon}
@@ -412,7 +404,7 @@ function ChartApp({ choice, feed, sync }: { choice: SourceChoice; feed: ChartFee
                     <span className={cn("pointer-events-auto font-mono text-[11px]", changeColor)}>{change}</span>
                   </Tip>
                 </div>
-              } symbol={symbol} persistKey={CHART_KEY} {...synced} trading={trading} now={clock?.now ?? null} onTimeframeChange={changeTf} series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={setInspectT} options={DESKTOP_CHART} label={chartLabel} />
+              } symbol={symbol} persistKey={CHART_KEY} {...synced} trading={trading} now={clock?.now ?? null} onTimeframeChange={app.setTimeframe} series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={app.setInspectT} options={DESKTOP_CHART} label={chartLabel} />
           </div>
           <section aria-label="Session timeline and replay" className="flex flex-col gap-2 rounded-xl bg-card px-3 py-2.5">
             <ReplayControls {...replay} />

@@ -28,11 +28,15 @@ jobs:
           bun-version: 1.4.0
       - name: Install
         run: bun install --frozen-lockfile
-      - name: Shared package
+      # Every pure package the clients share: the protocol, the chart model and the app store
+      # (chart-core and chart-web had no CI step until app-state was added; 2026-10-18).
+      - name: Shared packages
         run: |
-          bun run --filter @stockwatcher/shared typecheck
-          bun run --filter @stockwatcher/shared lint
-          bun run --filter @stockwatcher/shared test
+          for p in shared app-state chart-core chart-web; do
+            bun run --filter @stockwatcher/$p typecheck
+            bun run --filter @stockwatcher/$p lint
+            bun run --filter @stockwatcher/$p test
+          done
       - name: Web app
         run: |
           bun run --filter @stockwatcher/web lint

@@ -46,11 +46,12 @@
 //!   gone?: [symbol]}` with only the rows that changed, at most once per second of wall time
 //!   (crate::market::QUOTES_INTERVAL; nothing is sent when nothing changed). `gone` lists symbols
 //!   that left the price band. `t` is the replay/live clock (epoch ms) at the take.
-//! - Row: `{s, p, o, v, n, pre?, name?, x?}`: symbol, last price, change-% reference (the
-//!   regular open, or the day's first price while `pre` is true), day volume, prints counted;
-//!   `name`/`x` (exchange) only in snapshots and for rows entering the band, and only when the
-//!   archive's assets.json has them. Prices are JSON numbers in dollars. Change % is
-//!   `(p - o) / o`, computed by the client.
+//! - Row: `{s, p, pc?, o, v, n, pre?, name?, x?}`: symbol, last price, previous close (the
+//!   change-% reference whenever present; from the archive's daily-closes.json), the fallback
+//!   reference (the regular open, or the day's first price while `pre` is true), day volume,
+//!   prints counted; `name`/`x` (exchange) only in snapshots and for rows entering the band, and
+//!   only when the archive's assets.json has them. Prices are JSON numbers in dollars. Change % is
+//!   `(p - pc) / pc`, else `(p - o) / o`, computed by the client.
 //! - client `quotes.unsubscribe` stops the updates. A subscribe while subscribed re-sends the
 //!   snapshot. Subscribing again after a reconnect is the client's job, as for charts.
 //! - After a seek (rebuild) and for a lagged connection, a subscribed client gets a fresh

@@ -4,7 +4,6 @@ import { cn, Dialog, DialogContent, DialogTitle, ScrollArea } from "@stockwatche
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   activeTickerFilters,
-  pushRecentTicker,
   refreshTickerRows,
   searchTickers,
   TICKER_SECTION_TITLES,
@@ -15,25 +14,6 @@ import {
   type TickerRow,
 } from "@stockwatcher/shared";
 import { useQuoteBoard } from "../feed/useQuoteBoard.ts";
-
-const RECENTS_KEY = "sw-search:recent";
-
-function loadRecents(): string[] {
-  try {
-    const v = JSON.parse(localStorage.getItem(RECENTS_KEY) ?? "[]");
-    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveRecent(symbol: string) {
-  try {
-    localStorage.setItem(RECENTS_KEY, JSON.stringify(pushRecentTicker(loadRecents(), symbol)));
-  } catch {
-    // Private mode: recents just are not remembered.
-  }
-}
 
 /** Text with the matched characters emphasised (accent), as VS Code's quick open does. */
 function Highlight({ text, indices, className }: { text: string; indices: readonly number[]; className?: string }) {
@@ -128,6 +108,8 @@ export interface TickerSearchProps {
   /** Append the mock universe (fixture data only: noise next to a real day). */
   mock: boolean;
   current: string;
+  /** Recently opened tickers, newest first: synced across devices by the app's store, which also records an opening (openTicker). */
+  recents: readonly string[];
   onSelect: (symbol: string) => void;
   /** Drop down right under the header's search pill, at its width (desktop); else a centred panel. */
   anchored?: boolean;
@@ -144,7 +126,7 @@ export interface TickerSearchProps {
  * mock universe, fixture sources only) are shown, labelled, and cannot be
  * opened.
  */
-export function TickerSearch({ open, onOpenChange, symbols, quotes, mock, current, onSelect, anchored = false }: TickerSearchProps) {
+export function TickerSearch({ open, onOpenChange, symbols, quotes, mock, current, recents, onSelect, anchored = false }: TickerSearchProps) {
   const [query, setQuery] = useState("");
   // The active row is a symbol, not an index: rows refresh every second and an index would
   // silently point at another stock once the list changes under it.
@@ -184,12 +166,12 @@ export function TickerSearch({ open, onOpenChange, symbols, quotes, mock, curren
   // refreshes the values in place. Re-ranking each second would reshuffle the list under the
   // pointer while the user reads it.
   // React's "adjust state while rendering" pattern: re-rank when the key changes, else keep.
-  // `open` is in the key so each opening re-reads the recents.
+  // `open` is in the key so each opening picks up the recents (another device may have changed them).
   const rankKey = [open, query, [...filters].sort().join(","), board.size > 0].join("|");
   const [rank, setRank] = useState<{ key: string; rows: TickerRow[] }>({ key: "", rows: [] });
   let ranked = rank.rows;
   if (rank.key !== rankKey) {
-    ranked = searchTickers(tickers, query, filters, loadRecents());
+    ranked = searchTickers(tickers, query, filters, recents);
     setRank({ key: rankKey, rows: ranked });
   }
   const grouped = !query.trim() && activeTickerFilters(tickers, filters).size === 0;
@@ -214,7 +196,6 @@ export function TickerSearch({ open, onOpenChange, symbols, quotes, mock, curren
   const choose = useCallback(
     (row: TickerRow | undefined) => {
       if (!row || !row.item.available) return;
-      saveRecent(row.item.symbol);
       onSelect(row.item.symbol);
       onOpenChange(false);
     },

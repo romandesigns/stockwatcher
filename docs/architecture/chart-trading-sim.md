@@ -87,9 +87,10 @@ fill or trigger anything.
 - Fills are applied in order of arrival. Within one trade, orders fill in creation order.
 - Modifying an open order keeps its id. Modifying a filled, cancelled or rejected order rejects the
   modification (`error` with `code: "not_open"`) and leaves the order alone.
-- **Time travel resets the broker.** A replay `seek` rebuilds the market from the session start, and the
-  account goes back to flat with no orders. Orders cannot survive the tape being rewritten under them.
-  `step`, `play`, `pause` and `speed` do not reset it.
+- **Time travel resets the broker.** A replay `seek`, or a `day` switch (which rebuilds exactly like a
+  seek), rebuilds the market from the session start, and the account goes back to flat with no orders.
+  Orders cannot survive the tape being rewritten under them. `step`, `play`, `pause` and `speed` do not
+  reset it.
 - State lives only in memory. A server restart is a reset.
 - The account starts with $100,000. Buying power is not enforced. Cash is debited on buys and credited on
   sells, so it can go negative.

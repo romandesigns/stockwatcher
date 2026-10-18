@@ -162,6 +162,9 @@ export interface CandleChartProps {
   /** Where the floating drawing tools sit. Controlled when onToolboxPlacementChange is set (the host persists it); else kept for the session. */
   toolboxPlacement?: ToolboxPlacement;
   onToolboxPlacementChange?: (p: ToolboxPlacement) => void;
+  /** The quick trade sheet's share size (one of TRADE_SIZES). Controlled when onTradeQtyChange is set (the app syncs it); else kept for the session. */
+  tradeQty?: number;
+  onTradeQtyChange?: (qty: number) => void;
   /** Whether the floating drawing tools show. Controlled when onToolsVisibleChange is set (the host persists it). */
   toolsVisible?: boolean;
   onToolsVisibleChange?: (visible: boolean) => void;
@@ -236,6 +239,8 @@ export function CandleChart({
   haptics = true,
   toolboxPlacement: toolboxProp,
   onToolboxPlacementChange,
+  tradeQty: tradeQtyProp,
+  onTradeQtyChange,
   layers: layersProp,
   onLayersChange,
   toolsVisible: toolsVisibleProp,
@@ -609,7 +614,10 @@ export function CandleChart({
   useEffect(() => () => {
     if (chipTimer.current) clearTimeout(chipTimer.current);
   }, []);
-  const [quickQty, setQuickQty] = useState<number>(QUICK_TRADE_SIZES[0]);
+  // The quick trade size: controlled (the app syncs it across devices), else kept for the session.
+  const [ownQuickQty, setOwnQuickQty] = useState<number>(QUICK_TRADE_SIZES[0]);
+  const quickQty = onTradeQtyChange ? (tradeQtyProp ?? QUICK_TRADE_SIZES[0]) : ownQuickQty;
+  const setQuickQty = (q: number) => (onTradeQtyChange ? onTradeQtyChange(q) : setOwnQuickQty(q));
 
   // Back to latest (see chart-web): an eased slide home, instant with reduced
   // motion; a touch on the chart stops it where it is.

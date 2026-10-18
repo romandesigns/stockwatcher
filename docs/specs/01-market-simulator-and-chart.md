@@ -1,7 +1,9 @@
 # Spec 01: Market simulator and chart
 
-Status: **accepted brief, design phase** (received 2026-10-16). The owner's brief is reproduced verbatim in
-section A; section B records the agreed reading of it and the decisions or open questions that follow from it.
+Status: **implemented and deployed** (brief received 2026-10-16, built 2026-10-17/18; the "no deployment in this
+phase" rule has been lifted and archives now live on the VPS, not the Pi). This file is the historical record:
+the owner's brief is reproduced verbatim in section A; section B records the agreed reading of it and the
+decisions or open questions that followed. The current design is `docs/architecture/simulator-and-chart.md`.
 
 ---
 

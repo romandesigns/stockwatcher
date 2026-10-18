@@ -186,6 +186,9 @@ export interface CandleChartProps {
   /** Where the floating drawing tools sit. Controlled when onToolboxPlacementChange is set; else kept (and persisted with persistKey). */
   toolboxPlacement?: ToolboxPlacement;
   onToolboxPlacementChange?: (p: ToolboxPlacement) => void;
+  /** The trade menu's share size (one of TRADE_SIZES). Controlled when onTradeQtyChange is set (the app syncs it); else kept and persisted with persistKey. */
+  tradeQty?: number;
+  onTradeQtyChange?: (qty: number) => void;
   /** Which context layers show (halts, LULD, key levels, fills). Controlled when onLayersChange is set; else kept and persisted with persistKey. */
   layers?: ChartLayers;
   onLayersChange?: (layers: ChartLayers) => void;
@@ -287,6 +290,8 @@ export function CandleChart({
   trading,
   toolboxPlacement: toolboxProp,
   onToolboxPlacementChange,
+  tradeQty: tradeQtyProp,
+  onTradeQtyChange,
   layers: layersProp,
   onLayersChange,
   now = null,
@@ -625,14 +630,19 @@ export function CandleChart({
     setTicket({ open: true, at: { x: clientX ?? r.right - 4, y: clientY ?? r.top + 40 }, price });
   };
 
-  // The menu's share size, remembered between uses (and across reloads with persistKey).
-  const [tradeQty, setTradeQty] = useState<number>(() => {
+  // The menu's share size: controlled (the app syncs it across devices), or remembered here
+  // between uses (and across reloads with persistKey).
+  const [ownTradeQty, setOwnTradeQty] = useState<number>(() => {
     const q = loadJson<unknown>(persistKey && `${persistKey}:tradeQty`, 100);
     return typeof q === "number" && (TRADE_MENU_SIZES as readonly number[]).includes(q) ? q : 100;
   });
+  const tradeQty = onTradeQtyChange ? (tradeQtyProp ?? TRADE_MENU_SIZES[0]) : ownTradeQty;
   const changeTradeQty = (q: number) => {
-    setTradeQty(q);
-    saveJson(persistKey && `${persistKey}:tradeQty`, q);
+    if (onTradeQtyChange) onTradeQtyChange(q);
+    else {
+      setOwnTradeQty(q);
+      saveJson(persistKey && `${persistKey}:tradeQty`, q);
+    }
   };
   const orderFromMenu = (side: "buy" | "sell", type: "limit" | "stop" | "market") => {
     if (!trading) return;

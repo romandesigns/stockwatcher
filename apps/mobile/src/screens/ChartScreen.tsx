@@ -13,19 +13,11 @@ import {
   sessionBands,
   tradingDayOf,
   volumeBuckets,
-  parseToolboxPlacement,
-  parseLayers,
-  DEFAULT_TOOLBOX_PHONE,
-  parseChartSettings,
-  parseDrawingSettings,
-  parseIndicators,
-  SYNC_NS,
-  type ToolboxPlacement,
-  type Timeframe,
 } from "@stockwatcher/chart-core";
+import { PROFILE_BINS } from "@stockwatcher/app-state";
 import { CandleChart, chartSettingsSection, drawingSettingsSection, Icon, ReplayDaySheet, SessionTimeline, SettingsSheet, TapeSheet, ToolButton, UI } from "@stockwatcher/chart-native";
-import type { ConnectionStatus, SettingsSync } from "@stockwatcher/shared";
-import { useEffect, useMemo, useState } from "react";
+import type { ConnectionStatus } from "@stockwatcher/shared";
+import { useEffect, useLayoutEffect, useMemo, useState } from "react";
 import Animated, { FadeIn, FadeOut, ReduceMotion } from "react-native-reanimated";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -34,10 +26,9 @@ import { useCandidates, useChartFeed, usePaperTrading, useReplayDays } from "../
 import { createMobileFeed, type MobileFeed } from "../feed/serverFeed";
 import { useReducedMotion } from "../motion/useReducedMotion";
 import { TickerSearchSheet } from "../search/TickerSearchSheet";
-import { getPreference, setPreference } from "../storage/preferences";
 import { getAccessToken, setAccessToken } from "../storage/secure";
 import { loadSettingsSync } from "../settings/sync";
-import { useSynced, useSyncedDrawings } from "../settings/useSynced";
+import { appActions, loadAppStore, useApp } from "../state/store";
 import { SignInScreen } from "./SignInScreen";
 import { colors, fonts } from "../theme";
 
@@ -45,26 +36,25 @@ const SPEEDS = [1, 2, 10, 60, 0] as const;
 /** Timeline minimap bucket: 20 minutes, as on the web's phone layout. */
 const bucketMs = 20 * 60_000;
 const speedLabel = (s: number) => (s === 0 ? "Max" : `${s}×`);
-/** Profile bin widths, as on the web's profile panel. */
-const BINS = [0.01, 0.02, 0.05] as const;
 const SESSION = { overnight: "Overnight", pre: "Premarket", regular: "Regular", after: "After hours" } as const;
 const SESSION_A11Y = { overnight: "overnight session", pre: "premarket", regular: "regular session", after: "after hours" } as const;
 
 /** The chart screen: connects once (token from the keystore), then renders the chart. */
 export function ChartScreen() {
-  const [ready, setReady] = useState<{ feed: MobileFeed; token: string | null; sync: SettingsSync } | null>(null);
+  const [ready, setReady] = useState<{ feed: MobileFeed; token: string | null } | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
   // Each sign-in restarts the connection with the new token.
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let feed: MobileFeed | null = null;
     let alive = true;
-    // The synced settings load with the token, so the chart opens with the last known settings
-    // (and the indicators, levels and drawings already on it) before the socket connects.
-    void Promise.all([getAccessToken().catch(() => null), loadSettingsSync()]).then(([token, sync]) => {
+    // The app store loads with the token (the synced cache and this phone's layout), so the chart
+    // opens with the last known ticker, settings, indicators, levels and drawings before the
+    // socket connects. The feed attaches the same settings engine to the socket.
+    void Promise.all([getAccessToken().catch(() => null), loadSettingsSync(), loadAppStore()]).then(([token, sync]) => {
       if (!alive) return;
       feed = createMobileFeed(token, setStatus, sync);
-      setReady({ feed, token, sync });
+      setReady({ feed, token });
     });
     return () => {
       alive = false;
@@ -86,68 +76,52 @@ export function ChartScreen() {
       />
     );
   }
-  return <ChartView feed={ready.feed} token={ready.token} status={status} sync={ready.sync} />;
+  return <ChartView feed={ready.feed} token={ready.token} status={status} />;
 }
 
-function ChartView({ feed, token, status, sync }: { feed: MobileFeed; token: string | null; status: ConnectionStatus; sync: SettingsSync }) {
+function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | null; status: ConnectionStatus }) {
   const insets = useSafeAreaInsets();
+  // App state lives in the one store (src/state/store.ts, @stockwatcher/app-state): the ticker,
+  // timeframe, bin, trade size, search recents, chart and drawing settings, indicators, levels and
+  // drawings sync live with every other client (desktop, web, other phones) and are kept on the
+  // server; the toolbox place, pane heights and tools shown are this phone's own layout; sheets
+  // and the inspected candle are this session's.
+  // The store's actions (the same functions in every state, so read once; values come through useApp).
+  const [app] = useState(appActions);
   // The trading day the replay clock is on; it changes on a day switch (and once a night while playing).
   const [clockDay, setClockDay] = useState<string | null>(null);
   const { symbols: candidates, fixture } = useCandidates(token, clockDay);
   const replayDays = useReplayDays(token, clockDay);
   const dayOptions = useMemo(() => replayDayOptions(replayDays.state?.days ?? []), [replayDays.state]);
-  const [daysOpen, setDaysOpen] = useState(false);
-  const [symbol, setSymbol] = useState<string | null>(null);
-  const [timeframe, setTimeframe] = useState<Timeframe>("1m");
-  const [inspectT, setInspectT] = useState<number | null>(null);
-  // The user's preferences, synced live with every other client (desktop, web, other phones) and
-  // kept on the server (src/settings/sync.ts): chart settings (type, scale, sessions, zoom),
-  // which buttons the drawing toolbox shows (the Settings sheet's Drawing tab), the indicators
-  // and the context layers. This symbol's drawings are synced below, once the symbol is known.
-  const [chartSettings, changeChartSettings, chartSettingsOrigin] = useSynced(sync, SYNC_NS.chartSettings, parseChartSettings);
-  const [drawingSettings, changeDrawingSettings] = useSynced(sync, SYNC_NS.drawingSettings, parseDrawingSettings);
-  const [indicators, changeIndicators] = useSynced(sync, SYNC_NS.indicators, parseIndicators);
-  const [layers, changeLayers] = useSynced(sync, SYNC_NS.layers, parseLayers);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const daysOpen = useApp((s) => s.daysOpen);
+  const symbol = useApp((s) => s.symbol);
+  const timeframe = useApp((s) => s.timeframe);
+  const inspectT = useApp((s) => s.inspectT);
+  const chartSettings = useApp((s) => s.chartSettings);
+  const chartSettingsFromRemote = useApp((s) => s.chartSettingsFromRemote);
+  const drawingSettings = useApp((s) => s.drawingSettings);
+  const indicators = useApp((s) => s.indicators);
+  const layers = useApp((s) => s.layers);
+  const settingsOpen = useApp((s) => s.settingsOpen);
+  // The store on the phone always has a device slice (loadAppStore); the fallbacks only satisfy the type.
+  const toolbox = useApp((s) => s.device?.toolbox);
+  const paneHeights = useApp((s) => s.device?.paneHeights);
+  const toolsVisible = useApp((s) => s.device?.toolsVisible ?? true);
 
-  // Device-local, kept across launches on this phone only (each screen's own layout):
-  // where the floating drawing tools were left.
-  const [toolbox, setToolbox] = useState<ToolboxPlacement>(DEFAULT_TOOLBOX_PHONE);
-  useEffect(() => {
-    void getPreference<unknown>("chart.toolbox").then((v) => v && setToolbox(parseToolboxPlacement(v, DEFAULT_TOOLBOX_PHONE)));
-  }, []);
-  // Oscillator pane heights (dragged or expanded), kept across launches.
-  const [paneHeights, setPaneHeights] = useState<Record<string, number>>({});
-  useEffect(() => {
-    void getPreference<Record<string, number>>("chart.paneHeights").then((v) => v && typeof v === "object" && setPaneHeights(v));
-  }, []);
-  const changePaneHeights = (h: Record<string, number>) => {
-    setPaneHeights(h);
-    void setPreference("chart.paneHeights", h);
-  };
-  // Drawing tools shown or hidden, kept across launches.
-  const [toolsVisible, setToolsVisible] = useState(true);
-  useEffect(() => {
-    void getPreference<boolean>("chart.toolsVisible").then((v) => v === false && setToolsVisible(false));
-  }, []);
-  const changeToolsVisible = (v: boolean) => {
-    setToolsVisible(v);
-    void setPreference("chart.toolsVisible", v);
-  };
-  const changeToolbox = (p: ToolboxPlacement) => {
-    setToolbox(p);
-    void setPreference("chart.toolbox", p);
-  };
-
-  // Follow the price band: a symbol that leaves it is no longer let through.
+  // Follow the price band: a symbol that leaves it is no longer let through. The fallback is not
+  // written back (a phone with a momentarily stale list must not move every other device's chart).
   const active = symbol && candidates.includes(symbol) ? symbol : (candidates[0] ?? null);
-  const [bin, setBin] = useState<number>(BINS[0]);
+  // Drawings follow the shown symbol; before paint, so a ticker switch never flashes the old marks.
+  useLayoutEffect(() => app.showSymbol(active ?? ""), [app, active]);
+  const bin = useApp((s) => s.bin);
+  const tradeQty = useApp((s) => s.tradeQty);
+  const recents = useApp((s) => s.searchRecents);
   const { series, clock, tape } = useChartFeed(feed, active ?? "", timeframe, bin);
   // This symbol's drawings, synced per drawing (another device's edit of a different drawing is never overwritten).
-  const [drawings, changeDrawings] = useSyncedDrawings(sync, active ?? "");
-  const [tapeOpen, setTapeOpen] = useState(false);
+  const drawings = useApp((s) => s.drawings);
+  const tapeOpen = useApp((s) => s.tapeOpen);
   // Ticker quick-open, the web's Ctrl+P: tap the ticker (or the search icon) in the header.
-  const [searchOpen, setSearchOpen] = useState(false);
+  const searchOpen = useApp((s) => s.searchOpen);
   const reducedMotion = useReducedMotion();
 
   // The day's session bands and a 20-minute volume minimap for the timeline (bands change only with the day).
@@ -181,13 +155,13 @@ function ChartView({ feed, token, status, sync }: { feed: MobileFeed; token: str
   return (
     <View style={[styles.screen, { paddingTop: insets.top + 8, paddingBottom: insets.bottom + 8 }]}>
       <View style={styles.header}>
-        <Pressable accessibilityRole="button" accessibilityLabel={`${active ?? "No ticker"}, search tickers`} onPress={() => setSearchOpen(true)} hitSlop={8} style={({ pressed }) => [styles.tickerButton, pressed && { opacity: 0.6 }]}>
+        <Pressable accessibilityRole="button" accessibilityLabel={`${active ?? "No ticker"}, search tickers`} onPress={() => app.setSearchOpen(true)} hitSlop={8} style={({ pressed }) => [styles.tickerButton, pressed && { opacity: 0.6 }]}>
           <Text style={styles.symbol}>{active ?? "—"}</Text>
           <Icon name="chevronDown" color={colors.textDim} size={10} />
         </Pressable>
         <Text style={styles.price}>{last ? formatPrice(last.c) : "—"}</Text>
         <Text style={[styles.change, { color: change.startsWith("-") ? colors.critical : colors.good }]}>{change}</Text>
-        <Pressable accessibilityRole="button" accessibilityLabel="Search tickers" onPress={() => setSearchOpen(true)} hitSlop={6} style={({ pressed }) => [styles.searchButton, pressed && { backgroundColor: colors.bgRow }]}>
+        <Pressable accessibilityRole="button" accessibilityLabel="Search tickers" onPress={() => app.setSearchOpen(true)} hitSlop={6} style={({ pressed }) => [styles.searchButton, pressed && { backgroundColor: colors.bgRow }]}>
           <Icon name="search" color={colors.textDim} size={15} />
         </Pressable>
         {/* An icon, not words (owner, 2026-10-17): replay clock or live broadcast; offline still says so in words. */}
@@ -209,7 +183,7 @@ function ChartView({ feed, token, status, sync }: { feed: MobileFeed; token: str
           accessibilityRole="button"
           accessibilityLabel="Settings"
           accessibilityState={{ expanded: settingsOpen }}
-          onPress={() => setSettingsOpen(true)}
+          onPress={() => app.setSettingsOpen(true)}
           hitSlop={6}
           style={({ pressed }) => [styles.roundButton, (pressed || settingsOpen) && { backgroundColor: colors.bgRow }]}
         >
@@ -225,32 +199,31 @@ function ChartView({ feed, token, status, sync }: { feed: MobileFeed; token: str
         series={series}
         timeframe={timeframe}
         inspectT={inspectT}
-        onInspectChange={setInspectT}
+        onInspectChange={app.setInspectT}
         settings={chartSettings}
-        onSettingsChange={changeChartSettings}
-        settingsFromRemote={chartSettingsOrigin === "remote"}
+        onSettingsChange={app.setChartSettings}
+        settingsFromRemote={chartSettingsFromRemote}
         drawingSettings={drawingSettings}
         indicators={indicators}
-        onIndicatorsChange={changeIndicators}
+        onIndicatorsChange={app.setIndicators}
         drawings={active ? drawings : []}
-        onDrawingsChange={changeDrawings}
+        onDrawingsChange={app.setDrawings}
         trading={trading}
+        tradeQty={tradeQty}
+        onTradeQtyChange={app.setTradeQty}
         toolboxPlacement={toolbox}
-        onTimeframeChange={(tf) => {
-          setTimeframe(tf);
-          setInspectT(null);
-        }}
+        onTimeframeChange={app.setTimeframe}
         toolsVisible={toolsVisible}
-        onToolsVisibleChange={changeToolsVisible}
+        onToolsVisibleChange={app.setToolsVisible}
         layers={layers}
-        onLayersChange={changeLayers}
+        onLayersChange={app.setLayers}
         now={clock?.now ?? null}
-        onToolboxPlacementChange={changeToolbox}
+        onToolboxPlacementChange={app.setToolbox}
         paneHeights={paneHeights}
-        onPaneHeightsChange={changePaneHeights}
-        profileBins={BINS}
+        onPaneHeightsChange={app.setPaneHeights}
+        profileBins={PROFILE_BINS}
         profileBin={bin}
-        onProfileBinChange={setBin}
+        onProfileBinChange={app.setBin}
         // The session volume profile sits inside the chart on a phone (no room for a side panel), as on the web's phone layout.
         options={{ priceAxisWidth: 46, volumeHeight: 40, timeAxisHeight: 18, paneGap: 4, fontSize: 9, timeLabelSpacing: 60, indicatorPaneHeight: 56, showProfile: true, profileWidth: 0.2 }}
         barSpacing={8}
@@ -281,7 +254,7 @@ function ChartView({ feed, token, status, sync }: { feed: MobileFeed; token: str
                 hitSlop={{ top: 10, bottom: 10, left: 4, right: 8 }}
                 onPress={() => {
                   replayDays.refresh();
-                  setDaysOpen(true);
+                  app.setDaysOpen(true);
                 }}
                 style={({ pressed }) => [styles.dayButton, pressed && { backgroundColor: UI.row }]}
               >
@@ -311,7 +284,7 @@ function ChartView({ feed, token, status, sync }: { feed: MobileFeed; token: str
         >
           {speedLabel(speed)}
         </ToolButton>
-        <ToolButton label="Time and sales" onPress={() => setTapeOpen(true)} style={styles.tapeButton}>
+        <ToolButton label="Time and sales" onPress={() => app.setTapeOpen(true)} style={styles.tapeButton}>
           <Icon name="menu" color={colors.textDim} />
         </ToolButton>
       </View>
@@ -320,22 +293,20 @@ function ChartView({ feed, token, status, sync }: { feed: MobileFeed; token: str
       </View>
       <TickerSearchSheet
         open={searchOpen}
-        onClose={() => setSearchOpen(false)}
+        onClose={() => app.setSearchOpen(false)}
         symbols={candidates}
         quotes={feed.quotes}
         mock={fixture}
         current={active ?? ""}
-        onSelect={(sym) => {
-          setSymbol(sym);
-          setInspectT(null);
-        }}
+        recents={recents}
+        onSelect={app.openTicker}
         reducedMotion={reducedMotion}
       />
-      <SettingsSheet open={settingsOpen} onClose={() => setSettingsOpen(false)} sections={[chartSettingsSection(chartSettings, changeChartSettings), drawingSettingsSection(drawingSettings, changeDrawingSettings, reducedMotion)]} reducedMotion={reducedMotion} />
-      <TapeSheet open={tapeOpen} onClose={() => setTapeOpen(false)} trades={tape} note={active ?? undefined} />
+      <SettingsSheet open={settingsOpen} onClose={() => app.setSettingsOpen(false)} sections={[chartSettingsSection(chartSettings, app.setChartSettings), drawingSettingsSection(drawingSettings, app.setDrawingSettings, reducedMotion)]} reducedMotion={reducedMotion} />
+      <TapeSheet open={tapeOpen} onClose={() => app.setTapeOpen(false)} trades={tape} note={active ?? undefined} />
       <ReplayDaySheet
         open={daysOpen}
-        onClose={() => setDaysOpen(false)}
+        onClose={() => app.setDaysOpen(false)}
         days={dayOptions}
         day={replayDay}
         // The server rebuilds on that day and resends every snapshot; the clock's new trading day

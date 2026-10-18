@@ -119,6 +119,13 @@ export function parsePaperMessage(raw: unknown): PaperMessage | null {
   return type === "paper.state" || type === "paper.fill" ? (v as PaperMessage) : null;
 }
 
+/**
+ * The share sizes of the quick trade menus (the web's right-click TradeMenu, the phone's trade
+ * sheet). One list, because the chosen size syncs across devices (app-state's `tradeQty`
+ * namespace) and every client must accept what another one picked.
+ */
+export const TRADE_SIZES = [100, 500, 1000] as const;
+
 /** The tick grid the broker accepts: $0.01 at or above $1.00, $0.0001 below (Reg NMS sub-penny rule). */
 export function tickSize(p: number): number {
   return p >= 1 ? 0.01 : 0.0001;

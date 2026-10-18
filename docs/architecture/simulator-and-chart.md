@@ -1,9 +1,12 @@
 # Architecture: simulator and chart (spec 01)
 
-Status: proposed 2026-10-17. It implements `docs/specs/01-market-simulator-and-chart.md`. The UI direction is
-**C · Session timeline** (design canvas https://claude.ai/artifact/ECxnETgKWmPAEBmPdkvnrY).
-Work happens on the branch `feat/simulator-chart` and merges to `main` after validation: the spec rules out
-deployment in this phase, and every push to `main` deploys.
+Status: **built and deployed** (proposed 2026-10-17, merged and live since 2026-10-18). It implements
+`docs/specs/01-market-simulator-and-chart.md`. The UI direction is **C · Session timeline** (design canvas
+https://claude.ai/artifact/ECxnETgKWmPAEBmPdkvnrY).
+
+The first sections (Principle to Order of work) are the original proposal and stay as written, apart from
+corrections marked *(now)*. The appendices are the current reference. For how to embed the chart in a new
+screen, read `chart-packages.md`.
 
 ## Principle
 
@@ -32,17 +35,18 @@ One pipeline, two sources:
 | `chart-engine` | Incremental per-symbol aggregation into 15s/30s/1m/5m candles (forming → final, exact half-open `[start, end)` boundaries); correction and cancel handling; late and out-of-order policy; gap marking (no fake candles); a session volume profile with configurable bin width, anchored per session; snapshot and increment output | `market-events` |
 | `market-archive` | On-disk archive: per day/symbol files of normalized events (zstd-compressed, length-prefixed records with a versioned header). Storage root, retention and free-space floor are configurable | `market-events` |
 | `market-replay` | A deterministic virtual clock (play, pause, step, seek, speed 1×…max), merging archived streams by `(event_ts, source_seq)` | `market-archive` |
-| `market-providers` | A `MarketDataProvider` trait with **`ReplayProvider`** and **`LiveProvider`** (the Alpaca SIP + BOATS WS client and its normalizer; FMP float lookup); `ArchiveRecorder`, which captures live sessions for parity tests | above |
+| `market-providers` | A `MarketDataProvider` trait with **`ReplayProvider`** and **`LiveProvider`** (the Alpaca SIP stream client and its normalizer), plus the history importer `swimport` and its rolling-window `maintain` cycle (Appendix F, Appendix B). *(now)* There is no `ArchiveRecorder` and no FMP float lookup in the live path: history comes from the archiver's daily SIP import | above |
+| `paper-broker` | *(now)* The simulated matching engine behind paper trading (`chart-trading-sim.md`) | `market-events` |
 | `provider-sim` | The local, provider-compatible surface: the Alpaca REST/WS subset and the FMP float route that Stockwatcher uses, served from replay. Dummy auth; no external calls | `market-providers` |
-| `server` (exists) | Wires provider, engine and client WS (`/ws` chart subscriptions and replay control) plus REST (`/api/chart/...`) | all |
+| `server` | Wires provider, engine and client WS plus REST. *(now)* Also the paper broker, the quote board, settings sync and `/updates/*`; routes and messages are listed in Appendix D | all |
 
 ## Client: a modular, reusable chart
 
 | Package | Responsibility |
 |---|---|
 | `packages/chart-core` (TS, framework-free) | Candle and profile store (applies the server's snapshot and increments), time and price scales, viewport (zoom/pan), hit testing (candle inspection), and a **display list**: rects, lines and text with no rendering API calls. Fully unit-tested |
-| `packages/chart-web` (React + Canvas 2D) | Draws the display list on `<canvas>` with DPR handling, plus React components: `<Chart>`, `<TimeframeSelector>`, `<SessionTimeline>`, `<Tape>`, `<VolumeProfile>`. Composable, so any future feature can embed just the chart |
-| RN later | The same `chart-core` with a Skia renderer (`@shopify/react-native-skia`) executing the same display list. One rendering logic for two platforms |
+| `packages/chart-web` (React + Canvas 2D) | Draws the display list on `<canvas>` with DPR handling, plus React components. *(now)* The chart is `CandleChart`; the full component list is in `chart-packages.md` |
+| `packages/chart-native` | *(now built)* The same `chart-core` with a Skia renderer (`@shopify/react-native-skia`) executing the same display list. One rendering logic for two platforms |
 
 The candle drawing is written once, as a display list, and each platform only executes it. A fixed contract
 makes the chart reusable: `ChartData` (from the server) + `ChartView` (timeframe, viewport, bin width) → display list.
@@ -66,17 +70,19 @@ displays it.
 
 ## Storage and resources
 
-- Archives go on the Pi (`/storage`, about 6.7 TB free) **only after** reachability, throughput and compute are
-  verified. Until then they stay local (configurable `ARCHIVE_ROOT`), behind a free-space floor and a retention
-  limit in days.
+- *(now)* Production archives live on the **VPS**, in the `stockwatcher_data` volume at `/app/data/archive`,
+  kept as a rolling 21-trading-day window by the `archiver` compose service (Appendix B). The Pi plan was
+  dropped. Locally they go to `ARCHIVE_ROOT` (default `./data/archive`), behind a free-space floor and an
+  optional retention limit in days.
 - No database, broker or microservices. One server process per mode. Bounded memory per symbol: candle ring
   buffers per timeframe; the profile is per session.
 
 ## Credentials
 
 - Simulation needs none (dummy auth).
-- Live mode reads `ALPACA_API_KEY` / `ALPACA_API_SECRET` / `FMP_API_KEY` from the environment (a local
-  gitignored `.env`, or a secret store). Credentials previously shared in chat are **never** used.
+- Live mode reads `ALPACA_API_KEY` / `ALPACA_API_SECRET` from the environment (a gitignored `.env` on each
+  host). *(now)* `FMP_API_KEY` is read only by `swimport`, for its comparison bars. Credentials previously
+  shared in chat are **never** used.
 
 ## Order of work
 
@@ -200,9 +206,10 @@ Readers refuse another format or contract version, and any oversized length.
   FXMD, FXHI, seed 7);
 - `inspect <day> [--symbol S] [--records N]`;
 - `verify <day>` recomputes checksums and decodes every record; it exits non-zero on mismatch;
-- `prune [--today D]`;
-- `import alpaca …` is a skeleton. It refuses to run unless `SWARCHIVE_IMPORT=alpaca`, and even
-  then reports "not implemented". It never reads credentials and never calls the network.
+- `prune [--today D]`.
+
+Importing real history is `swimport`'s job (Appendix F); `swarchive` never reads credentials and never
+calls the network.
 
 **Fixture day.** A port of the in-browser fixture: mulberry32, the same constants and draw order,
 and the first prints identical (tested), so the screens look alike. Real condition codes are used:
@@ -255,9 +262,11 @@ batches of 2048 events keep commands responsive. A seek over a whole fixture day
 
 **Providers.** `MarketDataProvider::start() → ProviderSession { info, items, clock, control }`.
 - `MARKET_DATA_MODE=replay|live` (default `replay`).
-- Replay settings: `REPLAY_DAY` (default: the latest archived day), `REPLAY_START` (ET `HH:MM[:SS]`,
-  default 10:40, matching the browser fixture), `REPLAY_SPEED` (default 10), `REPLAY_AUTOPLAY`
-  (default 1).
+- Replay settings: `REPLAY_DAY` (default: the latest **ready** archived day, so a day still being
+  imported is skipped), `REPLAY_START` (ET `HH:MM[:SS]`, default 10:40, matching the browser fixture;
+  production sets 09:30), `REPLAY_SPEED` (default 10), `REPLAY_AUTOPLAY` (default 1),
+  `REPLAY_FOLLOW_LATEST` (default 0: switch the running replay to a newly imported latest day). The
+  full list of settings is in `../reference/configuration.md`.
 - `LiveProvider` runs a `LiveFeed`. In production that is `alpaca_stream::AlpacaStream`
   (implemented 2026-10-18): Alpaca's market-data WebSocket, `trades` (corrections and
   cancel/errors come with them) and `statuses` for `LIVE_SYMBOLS` (default `*`, the whole market).
@@ -280,7 +289,9 @@ batches of 2048 events keep commands responsive. A seek over a whole fixture day
     enough for Alpaca's 407 slow-client disconnect.
   - Connection state reaches the server as `FeedItem::Link`: status `starting`, `running` or
     `reconnecting`, with an operator-facing detail (never credentials).
-  - Live mode **does not archive** what it receives. There is no recorder yet.
+  - Live mode **does not archive** what it receives. History comes from the archiver's nightly SIP
+    import of each completed day instead (Appendix B), so a replayable day exists the evening after
+    the session.
 - With a feed, `LiveProvider` stamps `receive_ts` (the Alpaca client stamps it at frame receipt)
   and applies the same mark rule, plus a 1 s idle tick.
 - Parity tests:
@@ -380,9 +391,25 @@ stamped on it. The increments are serialized to JSON once and broadcast on a bou
   live mode). Per-day facts come from the manifests, cached per manifest length and mtime, so the
   route stays cheap with real days of thousands of symbols. The clients' day menu fetches this
   when it opens; the list is not pushed on the socket because it changes a few times a month;
-- `GET /api/symbols` returns mode, status, source, day, `fixture` and symbols.
+- `GET /api/symbols` returns mode, status, source, day, `fixture` and symbols;
+- `GET /api/quotes` returns the quote board once (the same rows as `quotes.snapshot`, below);
+- `GET /api/settings` returns the synced-settings snapshot, for debugging (`settings-sync.md`).
 
 `/api/health` is unchanged and stays healthy when no provider runs.
+
+**Quote board** (the ticker search's live rows; `crates/server/src/quotes.rs`, wire in
+`packages/shared/src/protocol.ts` `QuoteRowWire`):
+- client `quotes.subscribe` (no payload) → server `quotes.snapshot {t, quotes: [row]}` with every
+  price-band candidate that has traded, then `quotes.update {t, quotes: [row], gone?: [symbol]}` with
+  only the changed rows, at most once per wall-clock second. `gone` lists symbols that left the band.
+  `quotes.unsubscribe` stops it; resubscribing after a reconnect is the client's job.
+- Row `{s, p, pc?, o, v, n, pre?, name?, x?}`: symbol, last price, **previous close** (the change-%
+  reference whenever present), the fallback reference (regular open, or the day's first price while
+  `pre`), day volume, prints counted, and `name`/`x` (exchange) only in snapshots and for rows entering
+  the band. Change % is `(p − ref) / ref`, computed by the client (`changeReference` in chart-core).
+- After a seek, a day switch or a lag, a subscribed client gets a fresh snapshot.
+
+**Synced settings** ride the same socket (`settings.*`); see `settings-sync.md`.
 
 **Web.**
 - `VITE_CHART_SOURCE` unset or `server` (the default): the app probes `GET /api/symbols` and uses
@@ -411,12 +438,8 @@ curl -H 'APCA-API-KEY-ID: sim-key' -H 'APCA-API-SECRET-KEY: sim-secret' 'http://
 
 Live mode is `MARKET_DATA_MODE=live` plus the Alpaca keys in the server's environment. Without the
 keys it reports `not_configured` and the web app falls back to the labelled fixture. The production image sets `ARCHIVE_ROOT=/app/data/archive` and
-does not auto-generate fixtures.
-
-Known dev-only issue: in `vite dev`, React StrictMode leaves chart canvases blank. `useCanvas` in
-`packages/chart-web` cancels its pending frame in cleanup without resetting `frame.current`, so it
-never schedules again. Production builds are unaffected. The fix is one line
-(`frame.current = 0` after `cancelAnimationFrame`).
+does not auto-generate fixtures. Alpaca allows one stream connection per account on most plans, so run
+live mode on one host only.
 
 ## Appendix E: the whole chart in the chart packages (2026-10-17)
 
@@ -428,6 +451,10 @@ pass data in and wire callbacks out, and nothing else.
 | `chart-core` (pure TS, no DOM, no RN) | Layout and display list, scales, `GestureController`, **indicators** (`indicators.ts`: SMA, EMA, session VWAP, Bollinger, Wilder RSI, MACD, aligned to slots, NaN on gaps), **drawings** (`drawings.ts`: time and price anchors, hit testing, drag maths, clipping), **trading** (`trading.ts`: paper-broker wire types, tick grid `snapPrice`, order and position lines, the place button, hit testing), and the shared `DEFAULT_CHART_THEME` |
 | `chart-web` (React + Canvas 2D, shadcn on Base UI) | `CandleChart` with `toolbar`, `indicators`, `drawings`, `persistKey` and `trading` props; `ChartToolbar`, `OrderTicket`, `PriceAxisMenu` |
 | `chart-native` (React Native + Skia + Gesture Handler + expo-haptics) | The same `CandleChart` API; Skia executes the display list (`drawSkia.ts`); touches go into the same `GestureController`; native toolbar and bottom sheets (indicators, price axis menu, order ticket) |
+
+*(now)* Both packages have grown well past this table: chart types, price scales, zoom presets, the
+Settings dialog/sheet, the drawing toolbox, levels, the trade menu, the timeframe wheel and more.
+`chart-packages.md` is the current inventory and the embedding guide.
 
 **Display list additions:**
 - Lines and paths take an optional `clip` rect, so an indicator line never bleeds into another pane on
