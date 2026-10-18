@@ -1,6 +1,6 @@
-import { parseChartMessage, parsePaperMessage, type ChartMessage, type ChartSubscribe, type PaperMessage, type PaperState, type ReplayControl } from "@stockwatcher/chart-core";
+import { createChartRouter, parseChartMessage, parsePaperMessage, type ChartSubscribe, type ChartUnsubscribe, type PaperMessage, type PaperState, type ReplayControl } from "@stockwatcher/chart-core";
 import { createQuoteChannel, createWsClient, sameOriginWsUrl, type ConnectionStatus, type SettingsSync, type WebSocketLike } from "@stockwatcher/shared";
-import type { ChartFeed, ChartSubscription, PaperCommand, ReplayCommand } from "./types.ts";
+import type { ChartFeed, PaperCommand, ReplayCommand } from "./types.ts";
 
 export interface ServerFeedOptions {
   url?: string;
@@ -24,8 +24,10 @@ export interface ServerFeedOptions {
  * search is open: see `quotes`).
  */
 export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
-  const listeners = new Set<(m: ChartMessage) => void>();
-  const active = new Set<ChartSubscription>();
+  // Chart frames go only to the slots they belong to (chart-core chartRouter.ts): one socket
+  // carries up to 4 charts on the dashboard, the chart page's single default slot otherwise.
+  const router = createChartRouter();
+  const current = new Map<string, (m: Parameters<Parameters<ChartFeed["subscribe"]>[1]>[0]) => void>();
   let raw: WebSocketLike | null = null;
   const paperListeners = new Set<(m: PaperMessage) => void>();
   let paperState: PaperState | null = null;
@@ -33,11 +35,13 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
   // Late-bound: the channel is built before the client it drives.
   const quotes = createQuoteChannel({ subscribe: () => client.subscribeQuotes(), unsubscribe: () => client.unsubscribeQuotes() });
 
-  const sendRaw = (msg: ChartSubscribe | ReplayControl | PaperCommand) => {
+  const sendRaw = (msg: ChartSubscribe | ChartUnsubscribe | ReplayControl | PaperCommand) => {
     if (raw && raw.readyState === 1) raw.send(JSON.stringify(msg));
   };
+  // The default slot ("") is sent without an id: exactly the single-chart protocol.
+  const subscribeFrame = (id: string, s: { symbol: string; timeframe: ChartSubscribe["timeframe"]; profileBin: number }): ChartSubscribe => ({ type: "chart.subscribe", symbol: s.symbol, timeframe: s.timeframe, profileBin: s.profileBin, ...(id ? { id } : {}) });
   const resubscribe = () => {
-    for (const s of active) sendRaw({ type: "chart.subscribe", symbol: s.symbol, timeframe: s.timeframe, profileBin: s.profileBin });
+    for (const [id, s] of router.entries()) sendRaw(subscribeFrame(id, s));
   };
 
   const client = createWsClient({
@@ -66,7 +70,7 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
         }
         const chart = parseChartMessage(ev.data);
         if (chart) {
-          for (const l of listeners) l(chart);
+          router.dispatch(chart);
           return;
         }
         const paper = parsePaperMessage(ev.data);
@@ -86,12 +90,18 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
   return {
     kind: "server",
     subscribe(sub, emit) {
-      listeners.add(emit);
-      active.add(sub);
-      sendRaw({ type: "chart.subscribe", symbol: sub.symbol, timeframe: sub.timeframe, profileBin: sub.profileBin });
+      const id = sub.id ?? "";
+      // A token per subscription, so a stale cleanup never removes the slot's newer subscription.
+      const token = (m: Parameters<typeof emit>[0]) => emit(m);
+      router.add(id, sub, token);
+      current.set(id, token);
+      sendRaw(subscribeFrame(id, sub));
       return () => {
-        listeners.delete(emit);
-        active.delete(sub);
+        if (current.get(id) !== token) return;
+        current.delete(id);
+        router.remove(id);
+        // A named slot is freed on the server; the default slot is simply replaced by the next subscribe.
+        if (id) sendRaw({ type: "chart.unsubscribe", id });
       };
     },
     control(cmd: ReplayCommand) {
@@ -108,8 +118,8 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
     quotes,
     close() {
       client.close();
-      listeners.clear();
-      active.clear();
+      router.clear();
+      current.clear();
       paperListeners.clear();
     },
   };

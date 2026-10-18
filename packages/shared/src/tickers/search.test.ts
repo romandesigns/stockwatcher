@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { tickerUniverse } from "./mockTickers.ts";
 import { applyQuotesMessage, EMPTY_QUOTE_BOARD } from "./quotes.ts";
-import { activeTickerFilters, pushRecentTicker, refreshTickerRows, searchTickers, visibleTickerFilterGroups, type TickerFilterId } from "./search.ts";
+import { activeTickerFilters, mostActiveTickers, pushRecentTicker, refreshTickerRows, searchTickers, visibleTickerFilterGroups, type TickerFilterId } from "./search.ts";
 
 // A fixture source: two openable symbols plus the mock universe.
 const universe = tickerUniverse(["SMPL", "FXLO"], EMPTY_QUOTE_BOARD, { mock: true });
@@ -139,4 +139,10 @@ test("Gainers / Losers and their order use the previous-close change when the bo
   const t = tickerUniverse([], b);
   expect(searchTickers(t, "", on("gainers"), []).map((r) => r.item.symbol)).toEqual(["GAPUP", "NOPC"]);
   expect(searchTickers(t, "", on("losers"), []).map((r) => r.item.symbol)).toEqual(["GAPDN"]);
+});
+
+test("most active: quoted real rows only, by volume, capped", () => {
+  const t = (symbol: string, volume?: number, extra: object = {}) => ({ symbol, name: symbol, exchange: "", available: true, mock: false, ...(volume === undefined ? {} : { price: 1, volume }), ...extra });
+  const rows = mostActiveTickers([t("AAA", 10), t("BBB", 500), t("CCC"), t("DDD", 500), t("MOCK", 9e9, { mock: true }), t("EEE", 1)], 3);
+  expect(rows.map((r) => r.symbol)).toEqual(["BBB", "DDD", "AAA"]);
 });

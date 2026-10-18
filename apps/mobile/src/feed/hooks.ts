@@ -9,7 +9,8 @@ import type { MobileFeed } from "./serverFeed";
 const TAPE_MAX = 50;
 
 /** Feed subscription → ChartStore + a short tape (the web's useChartFeed, trimmed for the phone). */
-export function useChartFeed(feed: MobileFeed, symbol: string, timeframe: Timeframe, profileBin = 0.01) {
+/** `slot`: the chart's slot on a connection carrying several (the dashboard); omitted = the default slot. */
+export function useChartFeed(feed: MobileFeed, symbol: string, timeframe: Timeframe, profileBin = 0.01, slot?: string) {
   const store = useMemo(() => new ChartStore({ maxCandles: 3000 }), []);
   const [tape, setTape] = useState<TapeTrade[]>([]);
   useEffect(() => {
@@ -35,12 +36,12 @@ export function useChartFeed(feed: MobileFeed, symbol: string, timeframe: Timefr
         if (!frame) frame = requestAnimationFrame(flush);
       }
     };
-    const off = feed.subscribe({ symbol, timeframe, profileBin }, onMessage);
+    const off = feed.subscribe({ symbol, timeframe, profileBin, ...(slot ? { id: slot } : {}) }, onMessage);
     return () => {
       off();
       cancelAnimationFrame(frame);
     };
-  }, [feed, store, symbol, timeframe, profileBin]);
+  }, [feed, store, symbol, timeframe, profileBin, slot]);
   const subscribe = useCallback((cb: () => void) => store.subscribe(cb), [store]);
   const series = useSyncExternalStore(subscribe, useCallback((): Series | undefined => store.getSeries(symbol, timeframe), [store, symbol, timeframe]));
   const clock = useSyncExternalStore(subscribe, useCallback((): Clock | null => store.getClock(), [store]));

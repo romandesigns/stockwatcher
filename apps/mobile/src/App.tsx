@@ -7,6 +7,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { RootStack, type RootStackParamList } from "./navigation/RootStack";
 import { colors } from "./theme";
+import { Toaster } from "./ui/Toaster";
 import { useForegroundUpdates } from "./updates/useForegroundUpdates";
 
 // Deep links: stockwatcher:// opens the dashboard, stockwatcher://chart the chart (scheme set in
@@ -55,6 +56,8 @@ export default function App() {
             <RootStack />
           </NavigationContainer>
         </ErrorBoundary>
+        {/* Over every screen and above the tab bar ("Copied AAL"). */}
+        <Toaster />
         <StatusBar style="light" />
       </SafeAreaProvider>
     </GestureHandlerRootView>

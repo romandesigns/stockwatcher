@@ -117,7 +117,8 @@ export type IconName =
   | "color"
   | "dashboard"
   | "sidebarCollapse"
-  | "sidebarExpand";
+  | "sidebarExpand"
+  | "screen";
 
 export const ICONS: Readonly<Record<IconName, IconDef>> = {
   // Drawing tools: the drawn object is primary, its handles and fills secondary.
@@ -219,6 +220,8 @@ export const ICONS: Readonly<Record<IconName, IconDef>> = {
   // The nav rail's own toggle: a panel with its rail (secondary) and the way it will move (primary).
   sidebarCollapse: icon([S("M2.5 3.5h11v9h-11z", { paint: "fill" }), P("M2.5 3.5h11v9h-11zM6 3.5v9"), P("M10.5 6.5 9 8l1.5 1.5")]),
   sidebarExpand: icon([S("M2.5 3.5h11v9h-11z", { paint: "fill" }), P("M2.5 3.5h11v9h-11zM6 3.5v9"), P("M9 6.5 10.5 8 9 9.5")]),
+  // The dashboard's multi-view control ("screen × n"): a monitor, its glass soft, frame and stand crisp.
+  screen: icon([S("M2.5 3h11v7.5h-11z", { paint: "fill" }), P("M3.5 2.5h9a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1zM8 11v2.5M5.5 13.5h5")]),
 };
 
 export const ICON_NAMES = Object.keys(ICONS) as IconName[];

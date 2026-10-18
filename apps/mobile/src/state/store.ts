@@ -56,6 +56,12 @@ export function useApp<T>(selector: (s: AppState) => T): T {
   return useStore(loaded, selector);
 }
 
+/** The loaded store itself (its `drawingsFor` handles); only below the screen that awaited loadAppStore. */
+export function getLoadedStore(): AppStore {
+  if (!loaded) throw new Error("getLoadedStore before loadAppStore resolved");
+  return loaded;
+}
+
 /** The store's actions (stable functions), for event handlers. */
 export function appActions(): AppState {
   if (!loaded) throw new Error("appActions before loadAppStore resolved");

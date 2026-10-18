@@ -17,7 +17,18 @@ import {
 } from "@stockwatcher/chart-core";
 import { pushRecentTicker, type SettingsSync } from "@stockwatcher/shared";
 import { createStore, type StoreApi } from "zustand/vanilla";
-import { APP_NS, parseSearchRecents, parseSymbol, parseTradeQty, parseView, type ViewState } from "./namespaces.ts";
+import {
+  APP_NS,
+  MAX_DASHBOARD_CHARTS,
+  parseDashboard,
+  parseSearchRecents,
+  parseSymbol,
+  parseTradeQty,
+  parseView,
+  type DashboardSlot,
+  type DashboardState,
+  type ViewState,
+} from "./namespaces.ts";
 
 // Every client's one store (owner, 2026-10-18: "global state in all clients"; Zustand chosen over
 // Redux Toolkit). The web app, the desktop shell (the same web app) and the phone each create
@@ -60,6 +71,8 @@ export interface AppState {
   searchRecents: string[];
   /** The shown symbol's drawings. */
   drawings: Drawing[];
+  /** The dashboard's multi-chart panel: chart count and each slot's ticker and timeframe. */
+  dashboard: DashboardState;
 
   // Device.
   device: DevicePrefs | null;
@@ -72,6 +85,8 @@ export interface AppState {
   searchOpen: boolean;
   tapeOpen: boolean;
   daysOpen: boolean;
+  /** The dashboard chart a picked ticker loads into (0-based; always below `dashboard.count`). Per device. */
+  dashboardSelected: number;
 
   // Synced setters.
   setIndicators(next: IndicatorSpec[]): void;
@@ -85,6 +100,13 @@ export interface AppState {
   setTradeQty(qty: number): void;
   /** Writes the shown symbol's drawings back as a per-drawing patch (never overwrites another device's edit of a different drawing). */
   setDrawings(next: Drawing[]): void;
+  /** How many charts the dashboard shows (clamped to 1–4); the selection moves inside the new count. */
+  setDashboardCount(count: number): void;
+  /** Loads a ticker into one dashboard chart (and the search recents). */
+  setDashboardSymbol(slot: number, symbol: string): void;
+  setDashboardTimeframe(slot: number, tf: Timeframe): void;
+  /** Loads a ticker into the selected dashboard chart. */
+  loadIntoSelected(symbol: string): void;
 
   // Device setters (a no-op on a store without a device slice).
   setToolbox(p: ToolboxPlacement): void;
@@ -98,6 +120,15 @@ export interface AppState {
   setSearchOpen(open: boolean): void;
   setTapeOpen(open: boolean): void;
   setDaysOpen(open: boolean): void;
+  selectDashboardChart(slot: number): void;
+}
+
+/** One symbol's drawings as an external store, for screens that show several symbols at once (the dashboard). */
+export interface DrawingsHandle {
+  subscribe(onChange: () => void): () => void;
+  get(): Drawing[];
+  /** Written back as a per-drawing patch, like `setDrawings`. */
+  set(next: Drawing[]): void;
 }
 
 export interface AppStoreOptions {
@@ -116,6 +147,8 @@ export interface AppStoreOptions {
 export type AppStore = StoreApi<AppState> & {
   /** Stops following the engine (tests, a hot reload). */
   dispose(): void;
+  /** Any symbol's drawings, synced (one handle per symbol, reused). */
+  drawingsFor(symbol: string): DrawingsHandle;
 };
 
 /** The synced slices, read from the engine. */
@@ -133,6 +166,7 @@ function syncedFrom(sync: SettingsSync, shownSymbol: string) {
     tradeQty: parseTradeQty(sync.get(APP_NS.tradeQty)),
     searchRecents: parseSearchRecents(sync.get(APP_NS.searchRecents)),
     drawings: shownSymbol ? drawingsFromDoc(sync.get(drawingsNs(shownSymbol))) : [],
+    dashboard: parseDashboard(sync.get(APP_NS.dashboard)),
   };
 }
 
@@ -149,6 +183,11 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
 
   const currentView = (): ViewState => parseView(sync.get(APP_NS.view));
   const writeView = (patch: Partial<ViewState>) => sync.set(APP_NS.view, { ...currentView(), ...patch });
+  const writeSlot = (slot: number, patch: Partial<DashboardSlot>) => {
+    if (!Number.isInteger(slot) || slot < 0 || slot >= MAX_DASHBOARD_CHARTS) return;
+    const d = parseDashboard(sync.get(APP_NS.dashboard));
+    sync.set(APP_NS.dashboard, { ...d, slots: d.slots.map((s, i) => (i === slot ? { ...s, ...patch } : s)) });
+  };
 
   const store = createStore<AppState>()((set, get) => ({
     ...syncedFrom(sync, ""),
@@ -159,6 +198,7 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
     searchOpen: false,
     tapeOpen: false,
     daysOpen: false,
+    dashboardSelected: 0,
 
     setIndicators: (next) => sync.set(SYNC_NS.indicators, next),
     setLayers: (next) => sync.set(SYNC_NS.layers, next),
@@ -183,6 +223,18 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
       const p = diffDrawings(sync.get(ns), next);
       if (p) sync.patch(ns, p.set, p.remove);
     },
+    setDashboardCount: (raw) => {
+      const count = Math.min(MAX_DASHBOARD_CHARTS, Math.max(1, Math.round(raw)));
+      sync.set(APP_NS.dashboard, { ...parseDashboard(sync.get(APP_NS.dashboard)), count });
+    },
+    setDashboardSymbol: (slot, raw) => {
+      const symbol = parseSymbol(raw);
+      if (!symbol) return;
+      sync.set(APP_NS.searchRecents, pushRecentTicker(get().searchRecents, symbol));
+      writeSlot(slot, { symbol });
+    },
+    setDashboardTimeframe: (slot, timeframe) => writeSlot(slot, { timeframe }),
+    loadIntoSelected: (symbol) => get().setDashboardSymbol(get().dashboardSelected, symbol),
 
     setToolbox: (toolbox) => updateDevice("toolbox", toolbox),
     setPaneHeights: (paneHeights) => updateDevice("paneHeights", paneHeights),
@@ -197,6 +249,9 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
     setSearchOpen: (searchOpen) => set({ searchOpen }),
     setTapeOpen: (tapeOpen) => set({ tapeOpen }),
     setDaysOpen: (daysOpen) => set({ daysOpen }),
+    selectDashboardChart: (slot) => {
+      if (Number.isInteger(slot) && slot >= 0 && slot < get().dashboard.count) set({ dashboardSelected: slot });
+    },
   }));
 
   function updateDevice<K extends keyof DevicePrefs>(key: K, value: DevicePrefs[K]) {
@@ -224,6 +279,11 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
         return store.setState({ tradeQty: parseTradeQty(sync.get(ns)) });
       case APP_NS.searchRecents:
         return store.setState({ searchRecents: parseSearchRecents(sync.get(ns)) });
+      case APP_NS.dashboard: {
+        const dashboard = parseDashboard(sync.get(ns));
+        // Fewer charts (from any device): the selection stays on a chart that is still shown.
+        return store.setState({ dashboard, dashboardSelected: Math.min(s.dashboardSelected, dashboard.count - 1) });
+      }
       case APP_NS.view: {
         const v = parseView(sync.get(ns));
         if (v.symbol === s.symbol && v.timeframe === s.timeframe && v.bin === s.bin) return;
@@ -236,5 +296,27 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
     }
   });
 
-  return Object.assign(store, { dispose: unsubscribe });
+  // Per-symbol drawing handles for the dashboard's charts, built on the engine's memoized views.
+  const handles = new Map<string, DrawingsHandle>();
+  const drawingsFor = (raw: string): DrawingsHandle => {
+    const symbol = raw.trim().toUpperCase();
+    let h = handles.get(symbol);
+    if (!h) {
+      const ns = drawingsNs(symbol);
+      const view = sync.view(ns, drawingsFromDoc);
+      h = {
+        subscribe: view.subscribe,
+        get: view.get,
+        set: (next) => {
+          if (!symbol) return;
+          const p = diffDrawings(sync.get(ns), next);
+          if (p) sync.patch(ns, p.set, p.remove);
+        },
+      };
+      handles.set(symbol, h);
+    }
+    return h;
+  };
+
+  return Object.assign(store, { dispose: unsubscribe, drawingsFor });
 }

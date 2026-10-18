@@ -1,8 +1,24 @@
 # The chart packages: what they hold and how to embed them
 
-Status: current as of 2026-10-18. This is the starting point for any new screen that shows market data
-(the live dashboard is next). The history of how the chart was built is in `simulator-and-chart.md`;
-this file is the map.
+Status: current as of 2026-10-18. This is the starting point for any new screen that shows market data.
+The history of how the chart was built is in `simulator-and-chart.md`; this file is the map.
+
+## The dashboard (the main page, 2026-10-18)
+
+The reference for a screen with several charts. Web `apps/web/src/dashboard/`, phone
+`apps/mobile/src/dashboard/` + `screens/DashboardScreen.tsx`.
+- **Panel of 1–4 charts**, each a full `CandleChart` in its own container on its own feed slot.
+  The "screen × n" control (`MultiViewMenu` / `CountSheet`) sets n. Web lays the panel out by
+  the panel's own width (container queries: stacked below 48rem, two columns from 48rem, three
+  across from 72rem for three charts); the phone fills the space between header and list (1–2
+  stacked, 3 as two over one, 4 as 2×2, so no scrolling fights the chart's pan gestures).
+- **Select a chart** by pressing it: an accent ring drawn as a box shadow (no border). A picked
+  ticker (the live "Most active" list from the quote board, or the ticker search) loads into the
+  selected chart. What each chart shows syncs (app-state `dashboard`); the selection is per device.
+- **Copy a ticker**: tap, then press and hold on any ticker label (chart headings, list rows) copies
+  it, with a "Copied …" toast that fades out. One recognizer, `@stockwatcher/shared` `tapHold.ts`;
+  a plain tap waits out the 300 ms double-tap window before acting. Web `lib/useTickerPress.ts` +
+  `lib/toast.tsx`; phone `ui/useTickerPress.ts` (expo-clipboard) + `ui/Toaster.tsx`.
 
 ## The rule
 
@@ -136,11 +152,13 @@ server /ws ──► ChartFeed.subscribe({symbol, timeframe, profileBin}, emit) 
 
 ## Before building the live dashboard: constraints to plan around
 
-1. **One chart subscription per connection.** The server keeps a single `chart.subscribe` per WebSocket
-   (`crates/server/src/ws.rs` header): a new subscribe replaces the previous one. A dashboard showing
-   several live charts at once needs multi-subscription support on the server (and a `ChartFeed` that
-   multiplexes), or one connection per chart, which repeats the paper, settings and clock traffic on
-   each. The quote board already covers "many symbols, one row each".
+1. **Up to 4 charts per connection (solved 2026-10-18).** `chart.subscribe` takes a slot `id`; the
+   server streams up to 4 slots on one socket and sends each frame once per distinct chart
+   (`crates/server/src/ws.rs` header). Clients route frames back to their slots with chart-core's
+   `createChartRouter` (by symbol, timeframe and bin), and `useChartFeed(feed, symbol, tf, bin, slot)`
+   takes the slot. The dashboard uses `d0`…`d3`; the chart page keeps the default slot. On the phone
+   each tab has its own socket (`useConnection`), because the chart tab's slot plus the dashboard's 4
+   would exceed the limit while both tabs stay mounted.
 2. **Live vs replay is server-wide today.** `MARKET_DATA_MODE` switches the whole server, and the replay
    clock (day, speed, play/pause) is shared by every client. The owner's direction (2026-10-18): the
    **main page consumes only live data**; **replay is a separate practice feature** (like TradingView's
@@ -150,7 +168,7 @@ server /ws ──► ChartFeed.subscribe({symbol, timeframe, profileBin}, emit) 
    dashboard has no intraday backfill after a server restart during a session.
 4. **Known client bug:** the replay bar's clock label stops updating while replay plays, although the
    server sends `replay.clock` about 4 times a second (seen on `main`, 2026-10-18; not yet fixed).
-5. **Dashboard state goes in the app store.** A watchlist, the dashboard layout or a selected symbol
+5. **Dashboard state goes in the app store** (done for the panel: the synced `dashboard` namespace). A watchlist, the dashboard layout or a selected symbol
    that should follow the person across devices is a new synced namespace in `@stockwatcher/app-state`
    (`app-state.md` "New synced value"); per-screen layout is device state.
 6. **New reusable UI goes into wavykit too** (workspace rule): a watchlist row, a mini chart card or a

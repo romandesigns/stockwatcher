@@ -9,7 +9,11 @@ const TAPE_MAX = 200;
  * Changing the timeframe or bin re-subscribes; each timeframe keeps its own
  * series in the store, so switching never mixes candle sets.
  */
-export function useChartFeed(feed: ChartFeed, symbol: string, timeframe: Timeframe, profileBin: number) {
+/**
+ * `slot` names the chart on a connection that carries several (the dashboard's panel: `d0`…`d3`);
+ * omitted, it is the single default slot (the chart page).
+ */
+export function useChartFeed(feed: ChartFeed, symbol: string, timeframe: Timeframe, profileBin: number, slot?: string) {
   const store = useMemo(() => new ChartStore({ maxCandles: 5000 }), []);
   const [tape, setTape] = useState<TapeTrade[]>([]);
 
@@ -40,12 +44,12 @@ export function useChartFeed(feed: ChartFeed, symbol: string, timeframe: Timefra
         if (!frame) frame = requestAnimationFrame(flush);
       }
     };
-    const off = feed.subscribe({ symbol, timeframe, profileBin }, onMessage);
+    const off = feed.subscribe({ symbol, timeframe, profileBin, ...(slot ? { id: slot } : {}) }, onMessage);
     return () => {
       off();
       cancelAnimationFrame(frame);
     };
-  }, [feed, store, symbol, timeframe, profileBin]);
+  }, [feed, store, symbol, timeframe, profileBin, slot]);
 
   const subscribe = useCallback((cb: () => void) => store.subscribe(cb), [store]);
   const getSeries = useCallback((): Series | undefined => store.getSeries(symbol, timeframe), [store, symbol, timeframe]);

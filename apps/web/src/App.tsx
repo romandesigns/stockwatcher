@@ -16,29 +16,23 @@ import { PROFILE_BINS } from "@stockwatcher/app-state";
 import { CandleChart, chartSettingsSection, drawingSettingsSection, Icon, ReplayControls, SessionTimeline, SettingsDialog, Tape, VolumeProfile } from "@stockwatcher/chart-web";
 import { Tip, ToggleGroup, ToggleGroupItem, cn } from "@stockwatcher/chart-web/ui";
 import { useEffect, useLayoutEffect, useMemo, useState } from "react";
-import { createServerFeed } from "./feed/serverFeed.ts";
-import { clearToken, getToken, setToken } from "./feed/token.ts";
-import { chooseSource, followCandidates, followServer, initialSymbol, probeServer, type SourceChoice } from "./feed/source.ts";
+import { ConnectionGate } from "./ConnectionGate.tsx";
+import { followCandidates, followServer, initialSymbol, type SourceChoice } from "./feed/source.ts";
 import { useCandidates } from "./feed/useCandidates.ts";
 import type { ChartFeed } from "./feed/types.ts";
 import { useChartFeed } from "./feed/useChartFeed.ts";
+import { TickerLabel } from "./lib/TickerLabel.tsx";
 import { usePaperTrading } from "./feed/usePaperTrading.ts";
 import { useReplayDays } from "./feed/useReplayDays.ts";
-import { createFixtureFeed, FIXTURE_SYMBOL } from "./fixtures/fixtureFeed.ts";
+import { FIXTURE_SYMBOL } from "./fixtures/fixtureFeed.ts";
 import { useMediaQuery } from "./lib/useMediaQuery.ts";
 import { TickerSearch } from "./search/TickerSearch.tsx";
-import { getSettingsSync } from "./settings/sync.ts";
 import { getAppStore, useApp } from "./state/store.ts";
 
 /** The search icon for the quick-open pill and the phone header (chart-core's shared duotone set, like every icon). */
 const SearchIcon = <Icon name="search" />;
 
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
-
-// Data source: the Rust server by default, the in-browser fixture only when the
-// server is unreachable or has no data (feed/source.ts), or when forced with
-// VITE_CHART_SOURCE=fixture. The active source is always labelled.
-const ENV_SOURCE = import.meta.env.VITE_CHART_SOURCE;
 
 const PHONE_CHART: Partial<ChartOptions> = { priceAxisWidth: 42, volumeHeight: 36, timeAxisHeight: 18, paneGap: 4, fontSize: 9, showProfile: true, profileWidth: 0.2, timeLabelSpacing: 60 };
 const DESKTOP_CHART: Partial<ChartOptions> = {};
@@ -114,90 +108,9 @@ function SourceChip({ choice, mode, className }: { choice: SourceChoice; mode: "
 }
 
 
+/** The chart page: the shared connection gate (ConnectionGate.tsx), then the chart app. */
 export default function App() {
-  // The feed is created and closed by the same effect, so React StrictMode's
-  // dev-only mount → unmount → mount gets a fresh feed, never a closed one.
-  const [ready, setReady] = useState<{ choice: SourceChoice; feed: ChartFeed } | null>(null);
-  // The server wants an access token (production): show the sign-in card instead of falling back to the fixture.
-  const [signIn, setSignIn] = useState<{ rejected: boolean } | null>(null);
-  const [attempt, setAttempt] = useState(0);
-  // One engine for the page, whatever the feed: the fixture never connects it (local only).
-  const sync = useMemo(() => getSettingsSync(), []);
-  useEffect(() => {
-    let alive = true;
-    let feed: ChartFeed | null = null;
-    const token = getToken();
-    void (ENV_SOURCE === "fixture" ? Promise.resolve(null) : probeServer(fetch, 2500, token)).then((probe) => {
-      if (!alive) return;
-      if (probe && !probe.ok && probe.unauthorized) {
-        if (token) clearToken();
-        setSignIn({ rejected: !!token });
-        return;
-      }
-      setSignIn(null);
-      const choice = chooseSource(ENV_SOURCE, probe, FIXTURE_SYMBOL);
-      feed = choice.kind === "server" ? createServerFeed({ token, settings: sync }) : createFixtureFeed();
-      setReady({ choice, feed });
-    });
-    return () => {
-      alive = false;
-      feed?.close();
-    };
-  }, [attempt, sync]);
-  if (signIn) {
-    return (
-      <SignIn
-        rejected={signIn.rejected}
-        onSubmit={(t) => {
-          setToken(t);
-          setAttempt((n) => n + 1);
-        }}
-      />
-    );
-  }
-  if (!ready) {
-    return <div className="flex min-h-dvh items-center justify-center bg-background text-sm text-muted-foreground">Connecting to the server…</div>;
-  }
-  return <ChartApp choice={ready.choice} feed={ready.feed} />;
-}
-
-/** The one-field sign-in for a server that requires its access token. */
-function SignIn({ rejected, onSubmit }: { rejected: boolean; onSubmit: (token: string) => void }) {
-  const [value, setValue] = useState("");
-  return (
-    <div className="flex min-h-dvh items-center justify-center bg-background p-4 text-foreground">
-      <form
-        className="flex w-full max-w-sm flex-col gap-3 rounded-2xl bg-card p-5"
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (value.trim()) onSubmit(value.trim());
-        }}
-      >
-        <div className="flex flex-col gap-1">
-          <h1 className="m-0 text-base font-semibold">StockWatcher</h1>
-          <p className="m-0 text-xs text-muted-foreground">Enter your access token to connect to the server.</p>
-        </div>
-        <label htmlFor="access-token" className="sr-only">
-          Access token
-        </label>
-        <input
-          id="access-token"
-          type="password"
-          autoComplete="current-password"
-          autoFocus
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          placeholder="Access token"
-          aria-invalid={rejected}
-          className="h-10 rounded-lg bg-bg-row px-3 font-mono text-sm outline-none placeholder:text-text-faint focus-visible:ring-2 focus-visible:ring-ring"
-        />
-        {rejected && <p className="m-0 text-xs text-critical">That token wasn't accepted. Check it and try again.</p>}
-        <button type="submit" disabled={!value.trim()} className="h-10 rounded-lg bg-primary text-sm font-semibold text-primary-foreground disabled:opacity-50">
-          Sign in
-        </button>
-      </form>
-    </div>
-  );
+  return <ConnectionGate>{(c) => <ChartApp choice={c.choice} feed={c.feed} />}</ConnectionGate>;
 }
 
 function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
@@ -274,10 +187,8 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
   // On the desktop the panel drops down right under the header's search pill, at its width.
   const search = <TickerSearch open={searchOpen} onOpenChange={app.setSearchOpen} symbols={candidates.symbols} quotes={feed.quotes} mock={current.fixtureData} current={symbol} recents={recents} onSelect={app.openTicker} anchored={!phone} />;
   const tickerButton = (size: string) => (
-    <Tip label={`Search tickers (${isMac ? "⌘" : "Ctrl+"}P)`}>
-      <button type="button" onClick={() => app.setSearchOpen(true)} className={cn("pointer-events-auto cursor-pointer rounded-md font-semibold outline-none hover:text-primary focus-visible:ring-2 focus-visible:ring-ring", size)}>
-        {symbol}
-      </button>
+    <Tip label={`Search tickers (${isMac ? "⌘" : "Ctrl+"}P) · tap, then hold to copy`}>
+      <TickerLabel symbol={symbol} onTap={() => app.setSearchOpen(true)} className={size} />
     </Tip>
   );
 

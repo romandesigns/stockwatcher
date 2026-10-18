@@ -1,5 +1,6 @@
 import { useState } from "react";
 import App from "./App.tsx";
+import { Toaster } from "./lib/toast.tsx";
 import { useMediaQuery } from "./lib/useMediaQuery.ts";
 import { NavRail, NavTabBar, TAB_BAR_HEIGHT } from "./nav/MainNav.tsx";
 import { usePage } from "./nav/routes.ts";
@@ -43,6 +44,8 @@ export function Shell() {
       <div className="min-h-dvh bg-background" style={{ paddingBottom: `calc(${TAB_BAR_HEIGHT} + env(safe-area-inset-bottom))` }}>
         {content}
         <NavTabBar page={page} />
+        {/* Above the tab bar. */}
+        <Toaster bottom={`calc(${TAB_BAR_HEIGHT} + env(safe-area-inset-bottom) + 0.75rem)`} />
       </div>
     );
   }
@@ -50,6 +53,7 @@ export function Shell() {
     <div className="flex h-dvh bg-background">
       <NavRail page={page} collapsed={collapsed} onToggle={toggle} />
       <div className="min-w-0 flex-1 overflow-y-auto">{content}</div>
+      <Toaster />
     </div>
   );
 }
