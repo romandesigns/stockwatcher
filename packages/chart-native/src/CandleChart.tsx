@@ -133,10 +133,18 @@ export interface CandleChartProps {
   /** Controlled when onPriceScaleTypeChange is set; otherwise it is the chart settings' scale. */
   priceScaleType?: PriceScaleType;
   onPriceScaleTypeChange?: (t: PriceScaleType) => void;
-  /** The chart settings (chart-core chartSettings.ts). Controlled when onSettingsChange is set (the host persists it, `chart.settings`); else kept for the session. */
+  /** The chart settings (chart-core chartSettings.ts). Controlled when onSettingsChange is set (the host syncs it across clients, namespace `chartSettings`); else kept for the session. */
   settings?: ChartSettings;
   onSettingsChange?: (s: ChartSettings) => void;
-  /** Which buttons the floating drawing toolbox shows (the Settings sheet's Drawing tab, chart-core drawingSettings.ts; the host persists it, `chart.drawing`). A tool that becomes hidden while armed is disarmed. Default: all. */
+  /**
+   * True when the current `settings` came from another device (settings sync,
+   * docs/architecture/settings-sync.md). They still apply at once (chart type, grid, volume,
+   * sessions, …), but this device's view is not re-zoomed or re-fitted for a zoom-preset,
+   * auto-stretch or extended-hours change: each device keeps its own zoom and pan, and the
+   * next ticker or timeframe it opens uses the new settings.
+   */
+  settingsFromRemote?: boolean;
+  /** Which buttons the floating drawing toolbox shows (the Settings sheet's Drawing tab, chart-core drawingSettings.ts; the host syncs it, namespace `drawingSettings`). A tool that becomes hidden while armed is disarmed. Default: all. */
   drawingSettings?: DrawingSettings;
   options?: Partial<ChartOptions>;
   theme?: ChartTheme;
@@ -213,6 +221,7 @@ export function CandleChart({
   onPriceScaleTypeChange,
   settings: settingsProp,
   onSettingsChange,
+  settingsFromRemote = false,
   drawingSettings = DEFAULT_DRAWING_SETTINGS,
   options,
   theme = DEFAULT_CHART_THEME,
@@ -677,10 +686,12 @@ export function CandleChart({
   const prevSettings = useRef(settings);
   const zoomRef = useRef(zoomToPreset);
   zoomRef.current = zoomToPreset;
+  const remoteRef = useRef(settingsFromRemote);
+  remoteRef.current = settingsFromRemote;
   useEffect(() => {
     const p = prevSettings.current;
     prevSettings.current = settings;
-    if (p === settings) return;
+    if (p === settings || remoteRef.current) return;
     if (p.autoStretch !== settings.autoStretch) {
       if (settings.autoStretch) setVp(autoScalePrice);
       else setVp((v) => {

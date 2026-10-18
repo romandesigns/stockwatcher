@@ -1748,3 +1748,50 @@ async fn follow_latest_switches_to_a_newly_imported_day_once() {
         "2026-10-14"
     );
 }
+
+#[tokio::test]
+async fn settings_sync_ignores_replay_seeks_and_works_the_same_in_live_mode() {
+    // Replay: a seek rebuilds the market (paper account, tape, quotes), never the settings.
+    let s = stack(&[]).await;
+    let mut a = connect(&s.url).await;
+    wait_for_replay(&mut a).await;
+    send(
+        &mut a,
+        json!({"type":"settings.set","ns":"layers","value":{"halts":false},"opId":"a-1"}),
+    )
+    .await;
+    next(&mut a, |m| {
+        m["type"] == "settings.changed" && m["opId"] == "a-1"
+    })
+    .await;
+    send(
+        &mut a,
+        json!({"type":"replay.control","action":"seek","value": T1040 - 600_000}),
+    )
+    .await;
+    next(&mut a, |m| {
+        m["type"] == "replay.clock" && m["clock"]["now"].as_i64().is_some_and(|n| n < T1040)
+    })
+    .await;
+    let mut b = connect(&s.url).await;
+    let snap = next(&mut b, is("settings.snapshot")).await;
+    assert_eq!(
+        snap["docs"],
+        json!([{"ns":"layers","rev":1,"updatedAt":snap["docs"][0]["updatedAt"],"value":{"halts":false}}])
+    );
+
+    // Live mode (no provider configured): the same protocol.
+    let s = stack(&[("MARKET_DATA_MODE", "live")]).await;
+    let mut ws = connect(&s.url).await;
+    next(&mut ws, is("settings.snapshot")).await;
+    send(
+        &mut ws,
+        json!({"type":"settings.set","ns":"indicators","value":[],"opId":"l-1"}),
+    )
+    .await;
+    let m = next(&mut ws, is("settings.changed")).await;
+    assert_eq!(
+        (m["rev"].clone(), m["opId"].clone()),
+        (json!(1), json!("l-1"))
+    );
+}

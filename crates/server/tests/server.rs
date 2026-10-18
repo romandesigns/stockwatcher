@@ -206,6 +206,9 @@ async fn ws_handshake_with_token_then_ping_pong() {
     assert_eq!(paper["type"], "paper.state");
     assert_eq!(paper["simulated"], true);
     assert_eq!(paper["orders"], json!([]));
+    // Then the synced settings (no clock on an idle market; tests/settings.rs covers the rest).
+    let settings = recv(&mut ws).await;
+    assert_eq!(settings, json!({ "type": "settings.snapshot", "docs": [] }));
 
     send(&mut ws, json!({ "type": "ping", "ts": 42 })).await;
     assert_eq!(recv(&mut ws).await, json!({ "type": "pong", "ts": 42 }));

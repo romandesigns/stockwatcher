@@ -13,24 +13,18 @@ import {
   sessionBands,
   tradingDayOf,
   volumeBuckets,
-  type Drawing,
-  type IndicatorSpec,
   parseToolboxPlacement,
   parseLayers,
-  DEFAULT_LAYERS,
-  type ChartLayers,
   DEFAULT_TOOLBOX_PHONE,
-  DEFAULT_CHART_SETTINGS,
   parseChartSettings,
-  DEFAULT_DRAWING_SETTINGS,
   parseDrawingSettings,
-  type DrawingSettings,
-  type ChartSettings,
+  parseIndicators,
+  SYNC_NS,
   type ToolboxPlacement,
   type Timeframe,
 } from "@stockwatcher/chart-core";
 import { CandleChart, drawingSettingsSection, Icon, ReplayDaySheet, SessionTimeline, SettingsSheet, TapeSheet, ToolButton, UI } from "@stockwatcher/chart-native";
-import type { ConnectionStatus } from "@stockwatcher/shared";
+import type { ConnectionStatus, SettingsSync } from "@stockwatcher/shared";
 import { useEffect, useMemo, useState } from "react";
 import Animated, { FadeIn, FadeOut, ReduceMotion } from "react-native-reanimated";
 import { Pressable, StyleSheet, Text, View } from "react-native";
@@ -42,6 +36,8 @@ import { useReducedMotion } from "../motion/useReducedMotion";
 import { TickerSearchSheet } from "../search/TickerSearchSheet";
 import { getPreference, setPreference } from "../storage/preferences";
 import { getAccessToken, setAccessToken } from "../storage/secure";
+import { loadSettingsSync } from "../settings/sync";
+import { useSynced, useSyncedDrawings } from "../settings/useSynced";
 import { SignInScreen } from "./SignInScreen";
 import { colors, fonts } from "../theme";
 
@@ -56,20 +52,20 @@ const SESSION_A11Y = { overnight: "overnight session", pre: "premarket", regular
 
 /** The chart screen: connects once (token from the keystore), then renders the chart. */
 export function ChartScreen() {
-  const [ready, setReady] = useState<{ feed: MobileFeed; token: string | null } | null>(null);
+  const [ready, setReady] = useState<{ feed: MobileFeed; token: string | null; sync: SettingsSync } | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
   // Each sign-in restarts the connection with the new token.
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let feed: MobileFeed | null = null;
     let alive = true;
-    void getAccessToken()
-      .catch(() => null)
-      .then((token) => {
-        if (!alive) return;
-        feed = createMobileFeed(token, setStatus);
-        setReady({ feed, token });
-      });
+    // The synced settings load with the token, so the chart opens with the last known settings
+    // (and the indicators, levels and drawings already on it) before the socket connects.
+    void Promise.all([getAccessToken().catch(() => null), loadSettingsSync()]).then(([token, sync]) => {
+      if (!alive) return;
+      feed = createMobileFeed(token, setStatus, sync);
+      setReady({ feed, token, sync });
+    });
     return () => {
       alive = false;
       feed?.close();
@@ -90,10 +86,10 @@ export function ChartScreen() {
       />
     );
   }
-  return <ChartView feed={ready.feed} token={ready.token} status={status} />;
+  return <ChartView feed={ready.feed} token={ready.token} status={status} sync={ready.sync} />;
 }
 
-function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | null; status: ConnectionStatus }) {
+function ChartView({ feed, token, status, sync }: { feed: MobileFeed; token: string | null; status: ConnectionStatus; sync: SettingsSync }) {
   const insets = useSafeAreaInsets();
   // The trading day the replay clock is on; it changes on a day switch (and once a night while playing).
   const [clockDay, setClockDay] = useState<string | null>(null);
@@ -104,44 +100,22 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
   const [symbol, setSymbol] = useState<string | null>(null);
   const [timeframe, setTimeframe] = useState<Timeframe>("1m");
   const [inspectT, setInspectT] = useState<number | null>(null);
-  // The chart settings (type, scale, sessions, zoom), kept across launches next to the layers.
-  const [chartSettings, setChartSettings] = useState<ChartSettings>(DEFAULT_CHART_SETTINGS);
-  useEffect(() => {
-    void getPreference<unknown>("chart.settings").then((v) => v && setChartSettings(parseChartSettings(v)));
-  }, []);
-  const changeChartSettings = (s: ChartSettings) => {
-    setChartSettings(s);
-    void setPreference("chart.settings", s);
-  };
-
-  // Which buttons the drawing toolbox shows (the Settings sheet's Drawing tab), kept across launches.
-  const [drawingSettings, setDrawingSettings] = useState<DrawingSettings>(DEFAULT_DRAWING_SETTINGS);
-  useEffect(() => {
-    void getPreference<unknown>("chart.drawing").then((v) => v && setDrawingSettings(parseDrawingSettings(v)));
-  }, []);
-  const changeDrawingSettings = (s: DrawingSettings) => {
-    setDrawingSettings(s);
-    void setPreference("chart.drawing", s);
-  };
+  // The user's preferences, synced live with every other client (desktop, web, other phones) and
+  // kept on the server (src/settings/sync.ts): chart settings (type, scale, sessions, zoom),
+  // which buttons the drawing toolbox shows (the Settings sheet's Drawing tab), the indicators
+  // and the context layers. This symbol's drawings are synced below, once the symbol is known.
+  const [chartSettings, changeChartSettings, chartSettingsOrigin] = useSynced(sync, SYNC_NS.chartSettings, parseChartSettings);
+  const [drawingSettings, changeDrawingSettings] = useSynced(sync, SYNC_NS.drawingSettings, parseDrawingSettings);
+  const [indicators, changeIndicators] = useSynced(sync, SYNC_NS.indicators, parseIndicators);
+  const [layers, changeLayers] = useSynced(sync, SYNC_NS.layers, parseLayers);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
-  // Indicators and drawings are the chart's; the screen only persists them.
-  const [indicators, setIndicators] = useState<IndicatorSpec[]>([]);
-  const [drawings, setDrawings] = useState<Record<string, Drawing[]>>({});
-  // Where the floating drawing tools were left, kept across launches.
+  // Device-local, kept across launches on this phone only (each screen's own layout):
+  // where the floating drawing tools were left.
   const [toolbox, setToolbox] = useState<ToolboxPlacement>(DEFAULT_TOOLBOX_PHONE);
   useEffect(() => {
     void getPreference<unknown>("chart.toolbox").then((v) => v && setToolbox(parseToolboxPlacement(v, DEFAULT_TOOLBOX_PHONE)));
   }, []);
-  // Which context layers show (halts, LULD, key levels, fills), kept across launches.
-  const [layers, setLayers] = useState<ChartLayers>(DEFAULT_LAYERS);
-  useEffect(() => {
-    void getPreference<unknown>("chart.layers").then((v) => v && setLayers(parseLayers(v)));
-  }, []);
-  const changeLayers = (l: ChartLayers) => {
-    setLayers(l);
-    void setPreference("chart.layers", l);
-  };
   // Oscillator pane heights (dragged or expanded), kept across launches.
   const [paneHeights, setPaneHeights] = useState<Record<string, number>>({});
   useEffect(() => {
@@ -164,19 +138,13 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
     setToolbox(p);
     void setPreference("chart.toolbox", p);
   };
-  useEffect(() => {
-    void getPreference<IndicatorSpec[]>("chart.indicators").then((v) => v && setIndicators(v));
-    void getPreference<Record<string, Drawing[]>>("chart.drawings").then((v) => v && setDrawings(v));
-  }, []);
-  const changeIndicators = (v: IndicatorSpec[]) => {
-    setIndicators(v);
-    void setPreference("chart.indicators", v);
-  };
 
   // Follow the price band: a symbol that leaves it is no longer let through.
   const active = symbol && candidates.includes(symbol) ? symbol : (candidates[0] ?? null);
   const [bin, setBin] = useState<number>(BINS[0]);
   const { series, clock, tape } = useChartFeed(feed, active ?? "", timeframe, bin);
+  // This symbol's drawings, synced per drawing (another device's edit of a different drawing is never overwritten).
+  const [drawings, changeDrawings] = useSyncedDrawings(sync, active ?? "");
   const [tapeOpen, setTapeOpen] = useState(false);
   // Ticker quick-open, the web's Ctrl+P: tap the ticker (or the search icon) in the header.
   const [searchOpen, setSearchOpen] = useState(false);
@@ -201,13 +169,6 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
   // header's and the search rows' rule (changeReference in chart-core).
   const reference = useMemo(() => changeReference(series), [series]);
   const change = last && reference ? formatChange(reference.price, last.c) : "";
-
-  const changeDrawings = (d: Drawing[]) => {
-    if (!active) return;
-    const next = { ...drawings, [active]: d };
-    setDrawings(next);
-    void setPreference("chart.drawings", next);
-  };
 
   const playing = !!clock?.playing;
   const live = clock?.mode === "live";
@@ -267,10 +228,11 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
         onInspectChange={setInspectT}
         settings={chartSettings}
         onSettingsChange={changeChartSettings}
+        settingsFromRemote={chartSettingsOrigin === "remote"}
         drawingSettings={drawingSettings}
         indicators={indicators}
         onIndicatorsChange={changeIndicators}
-        drawings={active ? (drawings[active] ?? []) : []}
+        drawings={active ? drawings : []}
         onDrawingsChange={changeDrawings}
         trading={trading}
         toolboxPlacement={toolbox}

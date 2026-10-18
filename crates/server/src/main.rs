@@ -3,7 +3,7 @@ use std::net::{SocketAddr, TcpStream};
 use std::process::ExitCode;
 use std::time::Duration;
 
-use stockwatcher_server::{AppState, COMMIT, Config, Market, VERSION, router};
+use stockwatcher_server::{AppState, COMMIT, Config, Market, Settings, VERSION, router};
 use tracing_subscriber::EnvFilter;
 
 fn main() -> ExitCode {
@@ -51,8 +51,12 @@ async fn serve(config: Config) -> std::io::Result<()> {
         tracing::warn!(static_dir = %config.static_dir.display(), "no index.html; web app will 404 (run the web build)");
     }
 
+    // Synced settings live on the persistent volume (DATA_DIR = /app/data, the stockwatcher_data
+    // volume, in the image), beside the archive but not in it. An unusable directory is fatal,
+    // like an unusable DATA_DIR: running on would accept writes it cannot keep.
+    let settings = Settings::open(config.data_dir.join("settings"))?;
     let (market, sim) = Market::start(&config.market);
-    let state = AppState::with_market(config.api_token.clone(), market);
+    let state = AppState::with_parts(config.api_token.clone(), market, settings);
     if let Some(sim) = sim {
         // The provider-compatible simulator on its own port (loopback by default), so Alpaca/FMP
         // base URLs can point at it by configuration. Dummy credentials only.

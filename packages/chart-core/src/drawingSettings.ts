@@ -29,9 +29,10 @@ import type { IconName } from "./icons.ts";
 //
 // Stored as the HIDDEN ids, not the visible ones: a button added to the
 // toolbox later then shows by default for everyone, instead of being
-// silently missing from every existing save. Persisted beside the chart
-// settings: the web under `${persistKey}:drawing` (`sw-chart:drawing`), the
-// phone under the preference `chart.drawing`.
+// silently missing from every existing save. Synced across every client
+// beside the chart settings (namespace `drawingSettings`, syncedSettings.ts);
+// before sync it lived in `sw-chart:drawing` (web) and the phone's
+// `chart.drawing` preference, read once to migrate.
 
 export type ToolboxToolId = "cursor" | DrawingKind;
 export type ToolboxActionId = "color" | "delete" | "undo" | "redo" | "rotate" | "grip";

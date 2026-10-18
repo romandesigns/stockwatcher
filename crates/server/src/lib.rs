@@ -4,6 +4,7 @@ pub mod config;
 pub mod days;
 pub mod market;
 pub mod quotes;
+pub mod settings;
 pub mod ws;
 
 use std::path::Path;
@@ -22,6 +23,7 @@ use tower_http::trace::TraceLayer;
 
 pub use config::Config;
 pub use market::{Market, MarketConfig};
+pub use settings::Settings;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Set by build.rs from the GIT_SHA build env ("unknown" for local builds).
@@ -33,6 +35,9 @@ pub struct AppState(Arc<Inner>);
 struct Inner {
     api_token: Option<String>,
     market: Market,
+    /// Synced settings and drawings (settings.rs). Independent of the market: a seek or a day
+    /// switch rebuilds the market, never this.
+    settings: Settings,
     /// Only WebSocket sessions subscribe, so `closed()` resolving means
     /// every session has finished.
     shutdown: watch::Sender<bool>,
@@ -47,16 +52,27 @@ impl AppState {
         )
     }
 
+    /// A memory-only settings store: nothing written survives the process (tests).
     pub fn with_market(api_token: Option<String>, market: Market) -> Self {
+        Self::with_parts(api_token, market, Settings::in_memory())
+    }
+
+    /// The production constructor: main.rs opens the store under `DATA_DIR/settings`.
+    pub fn with_parts(api_token: Option<String>, market: Market, settings: Settings) -> Self {
         Self(Arc::new(Inner {
             api_token,
             market,
+            settings,
             shutdown: watch::Sender::new(false),
         }))
     }
 
     pub fn market(&self) -> &Market {
         &self.0.market
+    }
+
+    pub fn settings(&self) -> &Settings {
+        &self.0.settings
     }
 
     pub fn api_token(&self) -> Option<&str> {
@@ -142,6 +158,7 @@ pub fn router(state: AppState, static_dir: &Path, data_dir: &Path) -> Router {
         .route("/replay/state", get(api::replay_state))
         .route("/symbols", get(api::symbols))
         .route("/quotes", get(api::quotes))
+        .route("/settings", get(api::settings))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_bearer,

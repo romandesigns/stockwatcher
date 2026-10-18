@@ -26,3 +26,4 @@ export * from "./chartTypes.ts";
 export * from "./chartSettings.ts";
 export * from "./drawingSettings.ts";
 export * from "./settingsDialog.ts";
+export * from "./syncedSettings.ts";

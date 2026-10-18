@@ -5,6 +5,8 @@
 //! - `GET /api/symbols` → the symbols the server can chart, and whether the data is fixture data
 //! - `GET /api/quotes` → the quote board as a `quotes.snapshot` (the body a `/ws`
 //!   `quotes.subscribe` starts with; for tests and debugging, clients use the socket)
+//! - `GET /api/settings` → every synced settings document as a `settings.snapshot` (the frame a
+//!   `/ws` connection gets after `welcome`; for debugging, clients use the socket)
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
@@ -88,6 +90,14 @@ pub async fn quotes(State(state): State<AppState>) -> Response {
     (
         [(axum::http::header::CONTENT_TYPE, "application/json")],
         json,
+    )
+        .into_response()
+}
+
+pub async fn settings(State(state): State<AppState>) -> Response {
+    (
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        state.settings().snapshot_frame().await,
     )
         .into_response()
 }

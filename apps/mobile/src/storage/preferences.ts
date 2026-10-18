@@ -20,3 +20,12 @@ export async function getPreference<T>(key: string): Promise<T | null> {
 export async function setPreference<T>(key: string, value: T): Promise<void> {
   await AsyncStorage.setItem(PREFIX + key, JSON.stringify(value));
 }
+
+/** The stored string itself, for a value that is already serialized (the settings-sync cache). */
+export async function getPreferenceRaw(key: string): Promise<string | null> {
+  return AsyncStorage.getItem(PREFIX + key);
+}
+
+export async function setPreferenceRaw(key: string, raw: string): Promise<void> {
+  await AsyncStorage.setItem(PREFIX + key, raw);
+}
