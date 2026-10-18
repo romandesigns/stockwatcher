@@ -6,13 +6,25 @@
 //!
 //! Chart protocol (after `welcome`; crates/chart-engine wire types, mirrored by
 //! packages/chart-core/src/types.ts):
-//! - client `chart.subscribe {symbol, timeframe, profileBin}` -> server
+//! - client `chart.subscribe {symbol, timeframe, profileBin, id?}` -> server
 //!   `chart.snapshot`, the recent `tape.trade` rows, then increments
 //!   (`chart.update` / `chart.remove` / `chart.gap`) for that symbol and
 //!   timeframe, and `tape.trade`, `chart.halt` and `chart.luld` for the symbol
-//!   whatever its timeframe (docs/architecture/halts-luld-fills.md). One subscription per
-//!   connection: a new subscribe (e.g. another timeframe) replaces it and
-//!   starts with a fresh snapshot of the same engine state.
+//!   whatever its timeframe (docs/architecture/halts-luld-fills.md).
+//! - **Up to MAX_CHARTS charts per connection** (2026-10-18, the dashboard's multi-chart
+//!   panel). `id` names a chart slot (≤ MAX_CHART_ID chars; absent = `""`, the single slot every
+//!   client used before): a subscribe with an id already held replaces that slot's chart (e.g.
+//!   another timeframe) and starts with a fresh snapshot of the same engine state; a new id when
+//!   MAX_CHARTS are held is refused with `error too_many_charts`. Client
+//!   `chart.unsubscribe {id?}` frees a slot. One socket for every chart, rather than one per
+//!   chart, so the market stream is filtered once and paper, settings and clock frames are not
+//!   repeated per chart.
+//! - **Each frame goes out once per connection**, whatever the number of slots: a candle frame
+//!   once per distinct (symbol, timeframe, bin) held, a tape, halt or LULD row once per symbol.
+//!   Two slots showing the same chart share one stream; the client routes frames by the symbol,
+//!   timeframe and `profileBin` they already carry, not by slot.
+//! - Chart errors (`unknown_symbol`, `outside_price_band`) carry the `symbol` and, for a named
+//!   slot, its `id`, so a client with several charts knows which one was refused.
 //! - server `replay.clock {clock}` to every client, on change and ~4 Hz while
 //!   playing.
 //! - client `replay.control {action, value}` (play, pause, step, stepInterval,
@@ -120,6 +132,14 @@ enum ClientMessage {
         timeframe: Timeframe,
         #[serde(rename = "profileBin", default)]
         profile_bin: Option<f64>,
+        /// The chart slot; absent = the single default slot.
+        #[serde(default)]
+        id: Option<String>,
+    },
+    #[serde(rename = "chart.unsubscribe")]
+    ChartUnsubscribe {
+        #[serde(default)]
+        id: Option<String>,
     },
     #[serde(rename = "replay.control")]
     ReplayControl {
@@ -218,8 +238,15 @@ fn is_paper_command(text: &str) -> bool {
         .is_some_and(|t| t.starts_with("order.") || t.starts_with("paper."))
 }
 
-/// The connection's chart subscription.
+/// How many charts one connection may stream at once (the dashboard's multi-chart panel holds 4).
+pub const MAX_CHARTS: usize = 4;
+/// Longest chart slot id a client may use.
+const MAX_CHART_ID: usize = 32;
+
+/// One of the connection's chart slots.
 struct Sub {
+    /// The slot's name (`""` for the single default slot).
+    id: String,
     symbol: String,
     timeframe: Timeframe,
     bin: Price,
@@ -227,8 +254,27 @@ struct Sub {
     seq: u64,
 }
 
+impl Sub {
+    /// Slots with the same key show the same chart, so they share one stream.
+    fn same_chart(&self, other: &Sub) -> bool {
+        self.symbol == other.symbol && self.timeframe == other.timeframe && self.bin == other.bin
+    }
+}
+
 async fn send_text(socket: &mut WebSocket, text: String) -> bool {
     socket.send(Message::Text(text.into())).await.is_ok()
+}
+
+/// A chart error naming its symbol and (for a named slot) the slot, so a client with several
+/// charts knows which one it concerns. Same `{type:"error", code, message}` shape as every
+/// other error, with two extra fields a single-chart client ignores.
+fn chart_error(code: &str, message: &str, symbol: &str, id: &str) -> String {
+    let mut v =
+        serde_json::json!({ "type": "error", "code": code, "message": message, "symbol": symbol });
+    if !id.is_empty() {
+        v["id"] = id.into();
+    }
+    v.to_string()
 }
 
 /// Sends a snapshot and the recent tape for `sub`, and records its sequence.
@@ -247,26 +293,39 @@ async fn send_snapshot(socket: &mut WebSocket, market: &Market, sub: &mut Sub) -
             true
         }
         Err(SnapshotError::UnknownSymbol) => {
-            send(
-                socket,
-                &ServerMessage::Error {
-                    code: "unknown_symbol",
-                    message: "no data for this symbol",
-                },
-            )
-            .await
+            let frame = chart_error(
+                "unknown_symbol",
+                "no data for this symbol",
+                &sub.symbol,
+                &sub.id,
+            );
+            send_text(socket, frame).await
         }
         Err(SnapshotError::OutsidePriceBand) => {
-            send(
-                socket,
-                &ServerMessage::Error {
-                    code: "outside_price_band",
-                    message: "not a candidate: price outside the configured band",
-                },
-            )
-            .await
+            let frame = chart_error(
+                "outside_price_band",
+                "not a candidate: price outside the configured band",
+                &sub.symbol,
+                &sub.id,
+            );
+            send_text(socket, frame).await
         }
     }
+}
+
+/// A fresh snapshot for every chart held (after a rebuild or a lag), once per distinct chart:
+/// slots sharing a chart take the first one's sequence.
+async fn send_snapshots(socket: &mut WebSocket, market: &Market, subs: &mut [Sub]) -> bool {
+    for i in 0..subs.len() {
+        if let Some(j) = (0..i).find(|&j| subs[j].same_chart(&subs[i])) {
+            subs[i].seq = subs[j].seq;
+            continue;
+        }
+        if !send_snapshot(socket, market, &mut subs[i]).await {
+            return false;
+        }
+    }
+    true
 }
 
 #[derive(Debug, Serialize)]
@@ -400,7 +459,7 @@ async fn session(mut socket: WebSocket, state: AppState) {
     if !send_text(&mut socket, settings.snapshot_frame().await).await {
         return;
     }
-    let mut sub: Option<Sub> = None;
+    let mut subs: Vec<Sub> = Vec::new();
     let mut quotes: Option<QuotesSub> = None;
 
     let mut heartbeat = interval_at(Instant::now() + HEARTBEAT, HEARTBEAT);
@@ -431,34 +490,56 @@ async fn session(mut socket: WebSocket, state: AppState) {
                             (match quotes.as_mut() {
                                 Some(q) => send_quotes_snapshot(&mut socket, &market, q).await,
                                 None => true,
-                            }) && match sub.as_mut() {
-                                Some(s) => send_snapshot(&mut socket, &market, s).await,
-                                None => true,
+                            }) && send_snapshots(&mut socket, &market, &mut subs).await
+                        }
+                        // Most frames are for symbols no slot shows: dropped here untouched.
+                        OutKind::Chart { symbol, .. } if !subs.iter().any(|s| s.symbol == *symbol) => true,
+                        // The stock traded out of the price band: it is no longer a candidate,
+                        // so every slot showing it stops here and each is told why.
+                        OutKind::Chart { symbol, .. } if !market.is_candidate(symbol) => {
+                            let gone: Vec<String> = subs.iter().filter(|s| s.symbol == *symbol).map(|s| s.id.clone()).collect();
+                            subs.retain(|s| s.symbol != *symbol);
+                            let mut ok = true;
+                            for id in gone {
+                                let frame = chart_error(
+                                    "outside_price_band",
+                                    "no longer a candidate: price left the configured band",
+                                    symbol,
+                                    &id,
+                                );
+                                if !send_text(&mut socket, frame).await {
+                                    ok = false;
+                                    break;
+                                }
+                            }
+                            ok
+                        }
+                        // A tape, halt or LULD row: once per symbol, whatever the slots' timeframes.
+                        OutKind::Chart { symbol, timeframe: None, json, .. } => {
+                            if subs.iter().any(|s| s.symbol == *symbol && o.seq > s.seq) {
+                                send_text(&mut socket, json.clone()).await
+                            } else {
+                                true
                             }
                         }
-                        OutKind::Chart { symbol, timeframe, update, json } => match sub.as_ref() {
-                            // The stock traded out of the price band: it is no longer a
-                            // candidate, so its stream stops here and the client is told why.
-                            Some(s) if *symbol == s.symbol && !market.is_candidate(symbol) => {
-                                sub = None;
-                                send(
-                                    &mut socket,
-                                    &ServerMessage::Error {
-                                        code: "outside_price_band",
-                                        message: "no longer a candidate: price left the configured band",
-                                    },
-                                )
-                                .await
+                        // A candle frame: once per distinct bin among the slots on this chart
+                        // that have not already got it in their snapshot.
+                        OutKind::Chart { symbol, timeframe: Some(tf), update, json } => {
+                            let mut bins: Vec<Price> = Vec::new();
+                            for s in subs.iter().filter(|s| s.symbol == *symbol && s.timeframe == *tf && o.seq > s.seq) {
+                                if !bins.contains(&s.bin) {
+                                    bins.push(s.bin);
+                                }
                             }
-                            Some(s)
-                                if *symbol == s.symbol
-                                    && o.seq > s.seq
-                                    && timeframe.is_none_or(|tf| tf == s.timeframe) =>
-                            {
-                                send_text(&mut socket, market.rebin(update, json, s.bin)).await
+                            let mut ok = true;
+                            for bin in bins {
+                                if !send_text(&mut socket, market.rebin(update, json, bin)).await {
+                                    ok = false;
+                                    break;
+                                }
                             }
-                            _ => true,
-                        },
+                            ok
+                        }
                     },
                     Err(RecvError::Lagged(n)) => {
                         tracing::debug!(skipped = n, "ws client lagged; resyncing with a snapshot");
@@ -467,10 +548,7 @@ async fn session(mut socket: WebSocket, state: AppState) {
                                 Some(q) => send_quotes_snapshot(&mut socket, &market, q).await,
                                 None => true,
                             }
-                            && match sub.as_mut() {
-                                Some(s) => send_snapshot(&mut socket, &market, s).await,
-                                None => true,
-                            }
+                            && send_snapshots(&mut socket, &market, &mut subs).await
                     }
                     Err(RecvError::Closed) => true,
                 };
@@ -507,26 +585,54 @@ async fn session(mut socket: WebSocket, state: AppState) {
                 let reply = match serde_json::from_str::<ClientMessage>(&text) {
                     Ok(ClientMessage::Ping { ts }) => Some(ServerMessage::Pong { ts }),
                     Ok(ClientMessage::Pong { .. }) => None,
-                    Ok(ClientMessage::ChartSubscribe { symbol, timeframe, profile_bin }) => {
-                        match api::parse_bin(profile_bin, market.default_bin()) {
-                            Ok(bin) => {
-                                let mut s = Sub {
-                                    symbol: symbol.trim().to_ascii_uppercase(),
-                                    timeframe,
-                                    bin,
-                                    seq: 0,
-                                };
-                                if !send_snapshot(&mut socket, &market, &mut s).await {
-                                    break;
-                                }
-                                sub = Some(s);
-                                None
-                            }
-                            Err(_) => Some(ServerMessage::Error {
+                    Ok(ClientMessage::ChartSubscribe { symbol, timeframe, profile_bin, id }) => {
+                        let id = id.unwrap_or_default();
+                        let held = subs.iter().position(|s| s.id == id);
+                        if id.chars().count() > MAX_CHART_ID {
+                            Some(ServerMessage::Error {
                                 code: "bad_request",
-                                message: "invalid profileBin",
-                            }),
+                                message: "chart id too long",
+                            })
+                        } else if held.is_none() && subs.len() >= MAX_CHARTS {
+                            Some(ServerMessage::Error {
+                                code: "too_many_charts",
+                                message: "at most 4 charts per connection; unsubscribe one first",
+                            })
+                        } else {
+                            match api::parse_bin(profile_bin, market.default_bin()) {
+                                Ok(bin) => {
+                                    let mut s = Sub {
+                                        id,
+                                        symbol: symbol.trim().to_ascii_uppercase(),
+                                        timeframe,
+                                        bin,
+                                        seq: 0,
+                                    };
+                                    if !send_snapshot(&mut socket, &market, &mut s).await {
+                                        break;
+                                    }
+                                    // The client replaced its copy of this chart with the new
+                                    // snapshot, so every slot sharing it is current to its seq.
+                                    for other in subs.iter_mut().filter(|o| o.same_chart(&s)) {
+                                        other.seq = s.seq;
+                                    }
+                                    match held {
+                                        Some(i) => subs[i] = s,
+                                        None => subs.push(s),
+                                    }
+                                    None
+                                }
+                                Err(_) => Some(ServerMessage::Error {
+                                    code: "bad_request",
+                                    message: "invalid profileBin",
+                                }),
+                            }
                         }
+                    }
+                    Ok(ClientMessage::ChartUnsubscribe { id }) => {
+                        let id = id.unwrap_or_default();
+                        subs.retain(|s| s.id != id);
+                        None
                     }
                     Ok(ClientMessage::ReplayControl { action, value }) => {
                         match market.control(&action, value.as_ref()).await {

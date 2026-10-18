@@ -52,7 +52,8 @@ export interface PongMessage {
  * `day` not in GET /api/replay/state's `days`) and `day_unavailable` (offered,
  * but the server could not open it); after either day error nothing changed.
  * The paper broker adds `bad_order` and its own refusal codes (`not_open`, …;
- * docs/architecture/chart-trading-sim.md).
+ * docs/architecture/chart-trading-sim.md). `too_many_charts`: a chart.subscribe
+ * for a new slot while the connection already holds MAX_CHARTS (4).
  */
 export type ErrorCode =
   | "unauthorized"
@@ -65,12 +66,17 @@ export type ErrorCode =
   | "outside_price_band"
   | "unknown_day"
   | "day_unavailable"
+  | "too_many_charts"
   | (string & {});
 
 export interface ErrorMessage {
   type: "error";
   code: ErrorCode;
   message: string;
+  /** Chart errors (`unknown_symbol`, `outside_price_band`): the symbol refused. */
+  symbol?: string;
+  /** Chart errors for a named slot: which chart (chart.subscribe `id`). */
+  id?: string;
 }
 
 // --- Quote board (after `welcome`; crates/server/src/ws.rs, crates/server/src/quotes.rs) -----
