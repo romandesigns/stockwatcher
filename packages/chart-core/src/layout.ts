@@ -737,15 +737,34 @@ export function formatSignificant(v: number, sig: number): string {
   return v.toFixed(decimals);
 }
 
+/** Approximate advance of `text` at `fs` px: the layout has no font metrics, so it uses the same 0.62 em per glyph as the pane legend. */
+function textWidth(text: string, fs: number): number {
+  return Math.ceil(text.length * fs * 0.62);
+}
+
 /**
- * One legend row per overlay, top-left of the plot: a swatch in the line's
- * colour, then the name and the value at the inspected candle in text tones
- * (text never wears the series colour; the swatch carries the identity).
+ * The overlay legend, top-left of the plot: every overlay on ONE line, each
+ * entry a swatch in the line's colour, then the name and the value at the
+ * inspected candle in text tones (text never wears the series colour; the
+ * swatch carries the identity). Entries flow left to right with a compact gap
+ * and wrap to a new line only when the next entry would cross the plot's right
+ * edge, so a phone-width chart still shows all of them (the owner asked for
+ * "EMA 9, EMA 20 and VWAP inline" rather than one row each, 2026-10-18).
+ * An entry never splits across lines; the first entry on a line always fits
+ * there even if it is wider than the plot, so the loop cannot stall.
+ * Both web and phone draw this display list, so the change lands on both.
  */
 function overlayLegend(model: ChartModel, results: readonly IndicatorResult[], theme: ChartTheme): DisplayList {
   const out: DisplayList = [];
   const plot = model.geometry.plot;
   const fs = model.options.fontSize;
+  const left = plot.x + 8;
+  const right = plot.x + plot.w - 8;
+  const SWATCH = 10;
+  const SWATCH_GAP = 6; // swatch → name
+  const VALUE_GAP = 5; // name → value
+  const ENTRY_GAP = 12; // value → next entry's swatch
+  let x = left;
   let y = plot.y + 8 + model.options.legendTop;
   for (const r of results) {
     if (r.placement !== "overlay") continue;
@@ -754,10 +773,18 @@ function overlayLegend(model: ChartModel, results: readonly IndicatorResult[], t
     const sample = model.inspected === null ? Number.NaN : main[model.inspected]!;
     const digits = Number.isNaN(sample) ? 2 : sample < 1 ? 4 : 2;
     const name = indicatorLabel(r.spec);
-    out.push({ kind: "rect", x: plot.x + 8, y: y - 1, w: 10, h: 2, fill: color, layer: "axes" });
-    out.push({ kind: "text", x: plot.x + 24, y, text: name, fill: theme.textDim, fontSize: fs, fontFamily: theme.fontSans, fontWeight: 500, align: "left", baseline: "middle", layer: "axes" });
-    out.push({ kind: "text", x: plot.x + 24 + Math.ceil(name.length * fs * 0.62) + 6, y, text: valueAt(model, main, digits), fill: theme.text, fontSize: fs, fontFamily: theme.fontMono, fontWeight: 400, align: "left", baseline: "middle", layer: "axes" });
-    y += fs + 5;
+    const value = valueAt(model, main, digits);
+    const nameW = textWidth(name, fs);
+    const w = SWATCH + SWATCH_GAP + nameW + VALUE_GAP + textWidth(value, fs);
+    if (x > left && x + w > right) {
+      x = left;
+      y += fs + 5;
+    }
+    out.push({ kind: "rect", x, y: y - 1, w: SWATCH, h: 2, fill: color, layer: "axes" });
+    const nx = x + SWATCH + SWATCH_GAP;
+    out.push({ kind: "text", x: nx, y, text: name, fill: theme.textDim, fontSize: fs, fontFamily: theme.fontSans, fontWeight: 500, align: "left", baseline: "middle", layer: "axes" });
+    out.push({ kind: "text", x: nx + nameW + VALUE_GAP, y, text: value, fill: theme.text, fontSize: fs, fontFamily: theme.fontMono, fontWeight: 400, align: "left", baseline: "middle", layer: "axes" });
+    x += w + ENTRY_GAP;
   }
   return out;
 }
@@ -836,7 +863,7 @@ function paneIndicator(model: ChartModel, r: IndicatorResult, rect: Rect, theme:
   const legend: DisplayList = [];
   let x = rect.x + 8;
   legend.push({ kind: "text", x, y: ly, text: name, fill: theme.textDim, fontSize: fs, fontFamily: theme.fontSans, fontWeight: 500, align: "left", baseline: "middle", layer: "axes" });
-  x += Math.ceil(name.length * fs * 0.62) + 8;
+  x += textWidth(name, fs) + 8;
   r.lines.forEach((l, k) => {
     const text = valueAt(model, l.values, digits);
     if (l.style === "histogram") {
@@ -845,7 +872,7 @@ function paneIndicator(model: ChartModel, r: IndicatorResult, rect: Rect, theme:
       legend.push({ kind: "rect", x: x + 4, y: ly - 3, w: 3, h: 6, fill: !Number.isNaN(v) && v < 0 ? theme.histDownFade : theme.histUpFade, layer: "axes" });
     } else legend.push({ kind: "rect", x, y: ly - 1, w: 8, h: 2, fill: indicatorColor(theme, r, k), layer: "axes" });
     legend.push({ kind: "text", x: x + 12, y: ly, text, fill: theme.text, fontSize: fs, fontFamily: theme.fontMono, fontWeight: 400, align: "left", baseline: "middle", layer: "axes" });
-    x += 12 + Math.ceil(text.length * fs * 0.62) + 10;
+    x += 12 + textWidth(text, fs) + 10;
   });
   const bgW = Math.min(rect.w - 8, x - 10 - (rect.x + 4) + 6);
   out.push({ kind: "rect", x: rect.x + 4, y: ly - fs / 2 - 3, w: bgW, h: fs + 6, fill: theme.paneLegendBg, radius: 4, layer: "axes" }, ...legend);

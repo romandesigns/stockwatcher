@@ -130,3 +130,37 @@ describe("formatSignificant", () => {
     expect(formatSignificant(0, 3)).toBe("0");
   });
 });
+
+describe("overlay legend", () => {
+  // EMA 9, EMA 20 and VWAP: the three overlays the owner runs together.
+  const overlays = computeIndicators(slots, [
+    { id: "ema-9", kind: "ema", period: 9 },
+    { id: "ema-20", kind: "ema", period: 20 },
+    { id: "vwap", kind: "vwap" },
+  ]);
+  const names = ["EMA 9", "EMA 20", "VWAP"];
+  const legendOf = (width: number) => {
+    const s: ChartState = { ...base, indicators: overlays };
+    const m = computeChartModel(s, vp, { width, height: 400 });
+    const list = layoutChart(m, s, DEFAULT_CHART_THEME);
+    return { m, texts: list.filter((p) => p.kind === "text" && names.includes(p.text)) as { x: number; y: number; text: string }[] };
+  };
+
+  test("all overlays share one line, left to right, when the plot is wide enough", () => {
+    const { texts } = legendOf(800);
+    expect(texts.map((t) => t.text)).toEqual(names);
+    expect(new Set(texts.map((t) => t.y)).size).toBe(1);
+    expect(texts[0]!.x).toBeLessThan(texts[1]!.x);
+    expect(texts[1]!.x).toBeLessThan(texts[2]!.x);
+  });
+
+  test("a narrow plot wraps whole entries onto a new line and never past the right edge", () => {
+    const { m, texts } = legendOf(200);
+    const ys = [...new Set(texts.map((t) => t.y))];
+    expect(ys.length).toBeGreaterThan(1);
+    // A wrapped entry starts back at the left margin.
+    const firstX = texts[0]!.x;
+    for (const y of ys.slice(1)) expect(texts.find((t) => t.y === y)!.x).toBe(firstX);
+    for (const t of texts) expect(t.x).toBeLessThan(m.geometry.plot.x + m.geometry.plot.w);
+  });
+});
