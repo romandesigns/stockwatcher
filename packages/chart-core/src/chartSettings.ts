@@ -1,7 +1,7 @@
 import { CHART_TYPES, type ChartType } from "./chartTypes.ts";
 import { computeChartModel, type ChartState, type Size } from "./layout.ts";
 import { MAX_BAR_SPACING, MIN_BAR_SPACING, manualPrice, type PriceScaleType, type Slot, type Viewport } from "./scale.ts";
-import { tradingDayOf } from "./time.ts";
+import { sessionOf, tradingDayOf } from "./time.ts";
 import { TIMEFRAME_MS, type Timeframe } from "./types.ts";
 
 // The chart settings panel (owner request 2026-10-18): a "Chart" button left
@@ -130,6 +130,11 @@ const EXTENDED_MINUTES = 960;
  * slot from the last one back to the first of its trading day, i.e. its
  * pre-market when extended hours show, its 09:30 open when they do not;
  * gaps count one slot each because they take one slot on the axis).
+ * The overnight session (20:00–04:00, which belongs to the next trading
+ * day) is NOT counted: it is thin, and counting it made "100 %" spend
+ * almost half the width on a quiet night (seen on the fixture day, 2026-10-18).
+ * The day for the owner is pre-market to after-hours, as on Robinhood's
+ * extended-hours chart; overnight candles still show left of it.
  *
  * Floored at a quarter of a full session in this timeframe (390 min regular,
  * 960 min extended), so at 09:31 "100 %" is not two giant candles: early in
@@ -142,9 +147,10 @@ export function daySlotCount(slots: readonly Slot[], timeframe: Timeframe, exten
   const last = tradingDayOf(slots[slots.length - 1]!.t);
   let n = 0;
   for (let i = slots.length - 1; i >= 0; i--) {
-    const d = tradingDayOf(slots[i]!.t);
+    const t = slots[i]!.t;
+    const d = tradingDayOf(t);
     if (d.year !== last.year || d.month !== last.month || d.day !== last.day) break;
-    n++;
+    if (sessionOf(t) !== "overnight") n++;
   }
   return Math.max(n, Math.ceil(full / 4));
 }

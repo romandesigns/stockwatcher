@@ -157,6 +157,12 @@ describe("horizontal presets", () => {
     expect(daySlotCount([], "5m", false)).toBe(78);
   });
 
+  test("the overnight session before the pre-market is not part of the day", () => {
+    const night = fixtureCandles(480, "1m", etToUtc(2026, 10, 14, 20, 0)).candles; // 20:00 → 04:00, trading day Oct 15
+    const today = fixtureCandles(400, "1m", PRE).candles;
+    expect(daySlotCount(buildSlots([...night, ...today], []), "1m", true)).toBe(400);
+  });
+
   test("with extended hours shown the day starts at its pre-market", () => {
     const d = day(400, "1m", PRE);
     expect(daySlotCount(d.slots, "1m", true)).toBe(400);
