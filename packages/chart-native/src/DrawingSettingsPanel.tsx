@@ -108,7 +108,7 @@ function ItemRow({ item, on, onToggle, reducedMotion }: { item: ToolboxItemInfo;
       style={({ pressed }) => [s.row, pressed && { backgroundColor: UI.row }]}
     >
       <View style={[s.tile, !on && { opacity: 0.5 }]}>
-        <Icon name={item.icon} color={on ? UI.text : UI.textDim} size={16} />
+        <Icon name={item.icon} color={on ? UI.accent : UI.textDim} size={16} />
       </View>
       <View style={{ flex: 1, gap: 2 }}>
         <Text style={[s.name, !on && { color: UI.textDim }]} numberOfLines={1}>

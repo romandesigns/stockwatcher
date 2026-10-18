@@ -243,7 +243,7 @@ export function DrawingToolbox({ placement, onPlacementChange, container, tool, 
         {TOOLBOX_TOOLS.map((k) => (
           <Slot key={k} shown={tools.has(k)} vertical={vertical}>
             <Tip label={toolTip(k)} side={side}>
-              <ToggleGroupItem value={k} disabled={!tools.has(k)} aria-label={k === "cursor" ? "Cursor" : DRAWING_LABELS[k]} className={cn("w-7 px-0 focus-visible:ring-2 focus-visible:ring-inset [&_svg]:size-3.5", k !== "cursor" && ARMED)}>
+              <ToggleGroupItem value={k} disabled={!tools.has(k)} aria-label={k === "cursor" ? "Cursor" : DRAWING_LABELS[k]} className={cn("w-7 px-0 focus-visible:ring-2 focus-visible:ring-inset [&_svg]:size-3.5", ARMED)}>
                 {TOOL_ICONS[k]}
               </ToggleGroupItem>
             </Tip>

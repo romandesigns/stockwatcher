@@ -32,7 +32,8 @@ function Label({ text, index, pos }: { text: string; index: number; pos: SharedV
  * beside the current timeframe, which slides as it changes. Each step clicks
  * with a selection haptic; a release settles on the nearest timeframe; a
  * flick carries one more. Screen readers adjust it with swipe up/down. It is
- * a toolbar button in size and surface, so it sits with the other controls.
+ * a toolbar button in size, so it sits with the other controls, but has no
+ * surface: it blends into the app background (owner, 2026-10-18).
  */
 export function TimeframeWheel({ value, onChange, haptics = true, reducedMotion = false }: { value: Timeframe; onChange: (tf: Timeframe) => void; haptics?: boolean; reducedMotion?: boolean }) {
   const index = Math.max(0, TIMEFRAMES.indexOf(value));
@@ -113,14 +114,14 @@ export function TimeframeWheel({ value, onChange, haptics = true, reducedMotion 
               <View key={i} style={s.ridge} />
             ))}
           </Animated.View>
-          {/* Curvature: the drum darkens towards its ends, as a wheel turning away from you does. */}
+          {/* Curvature: the drum fades into the page background towards its ends, as a wheel turning away from you does. */}
           <Svg style={StyleSheet.absoluteFill} width={DRUM_W} height={DRUM_H}>
             <Defs>
               <LinearGradient id="drum" x1="0" y1="0" x2="0" y2="1">
-                <Stop offset="0" stopColor={UI.row} stopOpacity={1} />
-                <Stop offset="0.32" stopColor={UI.row} stopOpacity={0} />
-                <Stop offset="0.68" stopColor={UI.row} stopOpacity={0} />
-                <Stop offset="1" stopColor={UI.row} stopOpacity={1} />
+                <Stop offset="0" stopColor={UI.bg} stopOpacity={1} />
+                <Stop offset="0.32" stopColor={UI.bg} stopOpacity={0} />
+                <Stop offset="0.68" stopColor={UI.bg} stopOpacity={0} />
+                <Stop offset="1" stopColor={UI.bg} stopOpacity={1} />
               </LinearGradient>
             </Defs>
             <Rect x={0} y={0} width={DRUM_W} height={DRUM_H} fill="url(#drum)" />
@@ -132,11 +133,14 @@ export function TimeframeWheel({ value, onChange, haptics = true, reducedMotion 
 }
 
 const s = StyleSheet.create({
-  // A toolbar button's size and surface.
-  wheel: { height: HEIGHT, flexDirection: "row", alignItems: "center", gap: 8, paddingLeft: 12, paddingRight: 9, borderRadius: 9, backgroundColor: UI.row },
+  // A toolbar button's height, but no surface and no inset (owner, 2026-10-18): it sits on the app
+  // background flush with the screen's left edge, and the drum alone says "wheel".
+  wheel: { height: HEIGHT, flexDirection: "row", alignItems: "center", gap: 6 },
+  // Fixed width so the drum does not shift as "1m" becomes "15m"; the label is left-aligned in it,
+  // so the timeframe lines up with the ticker above.
   window: { width: 26, height: HEIGHT, overflow: "hidden" },
   // includeFontPadding off: Android pads text vertically, which pushes a centred label low.
-  label: { height: LABEL, lineHeight: LABEL, includeFontPadding: false, textAlignVertical: "center", textAlign: "center", color: UI.text, fontSize: 12, fontWeight: "600", fontVariant: ["tabular-nums"] },
+  label: { height: LABEL, lineHeight: LABEL, includeFontPadding: false, textAlignVertical: "center", textAlign: "left", color: UI.text, fontSize: 12, fontWeight: "600", fontVariant: ["tabular-nums"] },
   drum: { width: DRUM_W, height: DRUM_H, borderRadius: DRUM_W / 2, backgroundColor: UI.raised, overflow: "hidden" },
   ridge: { height: RIDGE, borderBottomWidth: 1, borderBottomColor: "rgba(228,232,237,0.28)" },
 });

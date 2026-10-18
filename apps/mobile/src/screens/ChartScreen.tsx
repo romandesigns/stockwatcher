@@ -213,7 +213,7 @@ function ChartView({ feed, token, status, sync }: { feed: MobileFeed; token: str
           hitSlop={6}
           style={({ pressed }) => [styles.roundButton, (pressed || settingsOpen) && { backgroundColor: colors.bgRow }]}
         >
-          <Icon name="settings" color={colors.textDim} size={15} />
+          <Icon name="settings" color={settingsOpen ? colors.accent : colors.textDim} size={15} />
         </Pressable>
       </View>
 

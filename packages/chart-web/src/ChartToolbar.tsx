@@ -39,10 +39,11 @@ export const TOOL_ICONS: Readonly<Record<DrawingKind | "cursor", ReactNode>> = O
 const DEFAULT_SERIES = [DEFAULT_CHART_THEME.series1, DEFAULT_CHART_THEME.series2, DEFAULT_CHART_THEME.series3] as const;
 
 /**
- * An armed drawing tool turns its icon accent (accent primary + accent-soft
- * secondary, both from currentColor): drawing is a mode the next click acts
- * on, so it earns the eye. The cursor is the resting state and stays
- * neutral, which keeps the accent rare (60/30/10).
+ * The active drawing tool turns its icon accent (accent primary + accent-soft
+ * secondary, both from currentColor), the cursor included: the owner's rule
+ * that every active item's icon shows its accent duotone (2026-10-18; the
+ * cursor used to stay neutral). The segmented variant now does the same for
+ * every segmented control; this stays for the toolbars' explicit intent.
  */
 export const ARMED = "aria-pressed:text-primary";
 
@@ -103,7 +104,7 @@ export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChang
       <ToggleGroup aria-label="Drawing tool" size="sm" spacing={0.5} variant="segmented" value={[tool ?? "cursor"]} onValueChange={(v) => v[0] && onToolChange(v[0] === "cursor" ? null : (v[0] as DrawingKind))}>
         {(["cursor", ...DRAWING_KINDS] as const).map((k) => (
           <Tip key={k} label={toolTip(k)}>
-            <ToggleGroupItem value={k} aria-label={k === "cursor" ? "Cursor" : DRAWING_LABELS[k]} className={cn("w-7 px-0 [&_svg]:size-3.5", k !== "cursor" && ARMED)}>
+            <ToggleGroupItem value={k} aria-label={k === "cursor" ? "Cursor" : DRAWING_LABELS[k]} className={cn("w-7 px-0 [&_svg]:size-3.5", ARMED)}>
               {TOOL_ICONS[k]}
             </ToggleGroupItem>
           </Tip>
