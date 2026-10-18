@@ -12,9 +12,12 @@ import Transition, {
   type ScreenStyleInterpolator,
   type TransitionSpec,
 } from "react-native-screen-transitions";
+import type { BottomTabNavigationOptions } from "@react-navigation/bottom-tabs";
 import type { BlankStackNavigationOptions } from "react-native-screen-transitions/react-navigation";
 
 export type MotionSpec = BlankStackNavigationOptions;
+/** A tab switch is the bottom-tab navigator's own JS-driven scene animation (Animated, not the OS), so it is identical on iOS and Android too. */
+export type TabMotionSpec = Pick<BottomTabNavigationOptions, "animation">;
 
 // --- timing ----------------------------------------------------------------
 
@@ -88,14 +91,21 @@ export interface MotionVocabulary {
   screenPush: MotionSpec;
   /** A modal sheet over the current screen. */
   modalPresent: MotionSpec;
+  /**
+   * Switching main-nav tabs: a short cross-fade. Tabs are siblings, not a hierarchy, so nothing
+   * slides (a slide would read as push/back). A cross-fade is already the reduced-motion form, so
+   * it stays the same there.
+   */
+  tabSwitch: TabMotionSpec;
 }
 
 export function motion(reducedMotion: boolean): MotionVocabulary {
   if (reducedMotion) {
-    return { root: {}, screenPush: crossFade, modalPresent: crossFade };
+    return { root: {}, screenPush: crossFade, modalPresent: crossFade, tabSwitch: { animation: "fade" } };
   }
   return {
     root: {},
+    tabSwitch: { animation: "fade" },
     screenPush: {
       screenStyleInterpolator: slideFromRight,
       transitionSpec: navSpring,
