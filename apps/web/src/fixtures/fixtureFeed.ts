@@ -296,6 +296,10 @@ export function createFixtureFeed(opts: FixtureOptions = {}): ChartFeed & { now(
       // The browser fixture models no halts or LULD bands (the server's fixture day does).
       halts: [],
       luld: [],
+      // Nor a prior day: no previous close, so change % falls back to the open as it does on a
+      // server without daily-closes.json. The key is present (undefined, which JSON drops, as the
+      // server omits it) so the wire-shape test still covers the field.
+      prevClose: undefined,
     };
   };
 

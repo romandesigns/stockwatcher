@@ -284,3 +284,116 @@ fn asset_metadata_keeps_the_providers_names_and_exchanges_and_invents_none() {
     archive.write_assets(&m).unwrap();
     assert_eq!(archive.read_assets().unwrap(), Some(m));
 }
+
+/// Daily bars by URL with two pages for the first chunk, recording every request, so the closes
+/// fetch is checked for its query (raw, SIP, 1Day), chunking and paging.
+struct ClosesServer {
+    urls: Vec<String>,
+}
+
+impl Http for ClosesServer {
+    fn get(&mut self, url: &str, _h: &[(&str, &str)]) -> Result<HttpResponse, String> {
+        self.urls.push(url.to_string());
+        if url.contains("/v2/assets") {
+            // 201 assets: two chunks of at most 200 symbols. Untradable ones are included.
+            let mut a: Vec<serde_json::Value> = (0..199)
+                .map(|i| json!({"symbol": format!("S{i:03}"), "tradable": true}))
+                .collect();
+            a.push(json!({"symbol": "AAA", "tradable": true}));
+            a.push(json!({"symbol": "ZOLD", "tradable": false}));
+            return ok(json!(a));
+        }
+        if url.contains("/v2/stocks/bars") {
+            if url.contains("ZOLD") {
+                return ok(json!({"bars": {
+                    "ZOLD": [{"t": "2026-10-14T04:00:00Z", "c": 0.5, "n": 3}]
+                }, "next_page_token": null}));
+            }
+            if !url.contains("page_token=") {
+                return ok(json!({"bars": {
+                    "AAA": [{"t": "2026-10-14T04:00:00Z", "c": 1.25, "n": 10},
+                            // Outside the requested range: ignored.
+                            {"t": "2026-10-16T04:00:00Z", "c": 9.0, "n": 1}],
+                    "S000": [{"t": "2026-10-14T04:00:00Z", "c": 0.0, "n": 1}]
+                }, "next_page_token": "p2"}));
+            }
+            return ok(json!({"bars": {
+                "AAA": [{"t": "2026-10-15T04:00:00Z", "c": 1.5, "n": 10}]
+            }, "next_page_token": null}));
+        }
+        Err(format!("unexpected url {url}"))
+    }
+}
+
+#[test]
+fn daily_closes_fetch_raw_sip_closes_for_every_active_asset_and_merge_into_the_file() {
+    use market_archive::{DailyCloses, PrevCloses, merge_daily_closes};
+    use market_providers::import::batch::daily_closes;
+    let mut http = ClosesServer { urls: Vec::new() };
+    let m = daily_closes(
+        &mut http,
+        "https://trading.example",
+        "https://data.example",
+        &creds(),
+        d("2026-10-14"),
+        d("2026-10-15"),
+        &mut |_| {},
+    )
+    .unwrap();
+    let bars: Vec<&String> = http
+        .urls
+        .iter()
+        .filter(|u| u.contains("/v2/stocks/bars"))
+        .collect();
+    assert_eq!(
+        bars.len(),
+        3,
+        "two pages for the first chunk, one for the second"
+    );
+    for u in &bars {
+        assert!(
+            u.contains("timeframe=1Day") && u.contains("feed=sip") && u.contains("adjustment=raw"),
+            "{u}"
+        );
+        assert!(u.contains("start=2026-10-14&end=2026-10-15"), "{u}");
+    }
+    assert!(bars[1].contains("page_token=p2"));
+    assert!(bars[2].contains("ZOLD"), "untradable assets get closes too");
+
+    let mut want = DailyCloses::new();
+    want.entry(d("2026-10-14"))
+        .or_default()
+        .insert("AAA".into(), 1.25);
+    want.entry(d("2026-10-14"))
+        .or_default()
+        .insert("ZOLD".into(), 0.5);
+    want.entry(d("2026-10-15"))
+        .or_default()
+        .insert("AAA".into(), 1.5);
+    assert_eq!(m, want, "a zero close and an out-of-range bar are left out");
+
+    // Merged with what the file already has, written atomically, and read back as the server's
+    // reference: the latest close strictly before the replay day.
+    let (_dir, archive) = archive();
+    let mut existing = DailyCloses::new();
+    existing
+        .entry(d("2026-10-13"))
+        .or_default()
+        .insert("AAA".into(), 1.0);
+    existing
+        .entry(d("2026-10-14"))
+        .or_default()
+        .insert("AAA".into(), 1.2);
+    archive.write_daily_closes(&existing).unwrap();
+    let mut all = archive.read_daily_closes().unwrap().unwrap();
+    assert_eq!(merge_daily_closes(&mut all, m), 3);
+    archive.write_daily_closes(&all).unwrap();
+    let back = archive.read_daily_closes().unwrap().unwrap();
+    assert_eq!(back.len(), 3, "the 13th is kept");
+    let (idx, _) = PrevCloses::new(&back);
+    assert_eq!(
+        idx.before("AAA", d("2026-10-15")),
+        Some((d("2026-10-14"), Price::from_cents(125))),
+        "the re-fetched close replaced the old one"
+    );
+}

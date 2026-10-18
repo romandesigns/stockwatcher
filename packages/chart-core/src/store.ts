@@ -41,6 +41,11 @@ export interface Series {
   halts: Halt[];
   /** LULD band changes, ascending by t (shared by every timeframe of the symbol). */
   luld: LuldPoint[];
+  /**
+   * The previous trading day's official close, from the last snapshot (static
+   * for the day, so increments do not carry it); null when the server has none.
+   */
+  prevClose: number | null;
   version: number;
 }
 
@@ -128,6 +133,7 @@ export function applySnapshot(prev: Series | undefined, snap: ChartSnapshot, opt
     quality: snap.quality,
     halts: [...(snap.halts ?? [])].sort((a, b) => a.start - b.start),
     luld: [...(snap.luld ?? [])].sort((a, b) => a.t - b.t),
+    prevClose: snap.prevClose ?? null,
     version: (prev?.version ?? 0) + 1,
   };
   trim(series, opts.maxCandles ?? DEFAULT_MAX);

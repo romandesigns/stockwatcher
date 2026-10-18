@@ -1,5 +1,6 @@
-//! The quote board: one row per symbol (last price, open reference, day volume), kept current by
-//! every trade the ingest task applies, and diffed once per second for `quotes.update`.
+//! The quote board: one row per symbol (last price, previous close, open reference, day volume),
+//! kept current by every trade, correction and cancel the ingest task applies, and diffed once per
+//! second for `quotes.update`.
 //!
 //! It lives in the market's `Core`, under the same lock as the chart engine, so it is fed from the
 //! one `FeedItem` stream whatever the provider is (archive replay or live). A rebuild (seek, or the
@@ -28,22 +29,41 @@
 //!   accepted belongs to its own earlier interval and does not become the last price.
 //! - **Volume** and **trades** count `ohlc_and_volume` and `volume_only` prints (an odd lot
 //!   counts). `trades` is the number of those prints.
-//! - **Open** is the first OHLC-qualifying price at or after the regular open (09:30 ET), i.e. of
-//!   a print classified `regular` or `after` on the trading date. Until one exists, the reference
-//!   for change % is the day's **first** OHLC-qualifying price (premarket). This mirrors the web
-//!   chart header (`sessionOpen` in apps/web/src/App.tsx: change vs the first candle of the anchor
-//!   session), which before 09:30 anchors on the premarket.
+//! - **Previous close** (`pc` on the wire) is the official close of the latest trading date
+//!   before the row's own trading date that `daily-closes.json` has for the symbol
+//!   ([`market_archive::PrevCloses::before`]). It is what brokers quote "today's change" against,
+//!   so clients use it whenever it is present. It is looked up when the row's trading date is set
+//!   or moves on (once per symbol per day, never per print), so a replay of D and live mode on D
+//!   use the same rule, and a live session crossing midnight picks up the new day's reference.
+//! - **Open** is the fallback reference, for a symbol the closes file does not cover: the first
+//!   OHLC-qualifying price at or after the regular open (09:30 ET), i.e. of a print classified
+//!   `regular` or `after` on the trading date. Until one exists, it is the day's **first**
+//!   OHLC-qualifying price (premarket, flagged `pre`). This mirrors the chart header's own fallback
+//!   (`changeReference` in packages/chart-core: the first candle of the anchor session).
 //! - A print of a later trading date (live mode crossing midnight, or a BOATS overnight print,
 //!   which belongs to the next date) starts that symbol's day over. A print outside every session
 //!   keeps the current day.
 //!
-//! Live corrections and cancels (`MarketEvent::Correction` / `Cancel`) are not applied: the board
-//! is a running tally and keeps no per-print records to undo, so after one its volume can differ
-//! from the candles by the corrected size until the next seek or restart. Archived Alpaca history
-//! has none of them (it marks withdrawn prints on the print itself, which the engine's verdict
-//! already covers); the chart engine stays the authority for candles.
+//! # Corrections and cancels
+//!
+//! The board keeps no per-print records, so it cannot undo a print by itself. It does not need to:
+//! the engine keeps them for its retention window, and for every correction or cancel it applies it
+//! reports what it did ([`chart_engine::Revision`] from `ChartEngine::apply_revising`): the print
+//! it removed and what that had counted for, the replacement (a correction, re-run through the
+//! condition policy) and the trading date's newest price print afterwards. [`QuoteBoard::apply_revision`]
+//! subtracts and adds exactly that, so volume and trades stay equal to the candles' totals and
+//! **last** equals the latest candle's close (the server test asserts both, after a seek too). A
+//! correction or cancel the engine did not apply (target outside retention, or unknown) changes no
+//! candle and is not reported, so the board ignores it as well.
+//!
+//! Not revised: **open** / the premarket **first** price. A cancel of the very print that set
+//! them is rare, and following it exactly would need the day's earliest prints, which the engine
+//! no longer retains by then (10 minutes). With a previous close known, they are not the
+//! reference anyway.
 
+use chart_engine::Revision;
 use chrono::NaiveDate;
+use market_archive::PrevCloses;
 use market_events::{Price, PriceBand, SessionKind, Trade, UnixNanos};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -57,6 +77,11 @@ struct Entry {
     last_ts: UnixNanos,
     first: Option<Price>,
     open: Option<Price>,
+    /// The previous close for `day` (module docs); fixed until `day` moves on.
+    prev_close: Option<Price>,
+    /// `prev_close` was (re)looked up and the clients' row may not have it yet: the next update
+    /// that sends the row carries `pc` even though the row is not entering (see [`QuoteRow`]).
+    prev_close_changed: bool,
     volume: u64,
     trades: u64,
     /// Changed since the last [`QuoteBoard::take_changes`]; its index is in `dirty`.
@@ -74,6 +99,13 @@ pub struct QuoteRow {
     pub reference: Price,
     /// True for the regular-session open, false while `reference` is the premarket first price.
     pub regular_open: bool,
+    /// The previous trading day's official close, when the closes file has one (module docs).
+    pub prev_close: Option<Price>,
+    /// `prev_close` changed since the clients last got this row (its trading date moved on), so an
+    /// update must carry it or the client would keep measuring against the old day's close. It
+    /// never changes to `None`: a later date sees every close an earlier one did. Always false in
+    /// a snapshot and for an entering row (those carry `pc` anyway).
+    pub prev_close_changed: bool,
     pub volume: u64,
     pub trades: u64,
     /// The row was not in the clients' view before this take (it just entered the band), so it
@@ -129,11 +161,21 @@ pub struct QuoteBoard {
     index: HashMap<Arc<str>, usize>,
     entries: Vec<Entry>,
     dirty: Vec<usize>,
+    /// Shared with the market (read once at startup); a rebuild's new board gets the same index.
+    closes: Arc<PrevCloses>,
 }
 
 impl QuoteBoard {
+    /// A board with no previous closes: every row falls back to the open.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn with_closes(closes: Arc<PrevCloses>) -> Self {
+        QuoteBoard {
+            closes,
+            ..Self::default()
+        }
     }
 
     /// Number of symbols that have traded.
@@ -162,6 +204,8 @@ impl QuoteBoard {
                     last_ts: UnixNanos(i64::MIN),
                     first: None,
                     open: None,
+                    prev_close: None,
+                    prev_close_changed: false,
                     volume: 0,
                     trades: 0,
                     dirty: false,
@@ -183,6 +227,11 @@ impl QuoteBoard {
             }
             if e.day.is_none_or(|d| s.date > d) {
                 e.day = Some(s.date);
+                let pc = self.closes.before(&e.symbol, s.date).map(|(_, p)| p);
+                // Only a real change needs resending (a first day has no client row yet; the
+                // entering row carries it).
+                e.prev_close_changed |= pc != e.prev_close;
+                e.prev_close = pc;
             }
         }
         if counted.ohlc {
@@ -207,6 +256,46 @@ impl QuoteBoard {
         }
     }
 
+    /// Applies a correction or cancel the chart engine applied, with the engine's own account of
+    /// it (module docs). Ignored for a symbol without a row, or for a print of another trading
+    /// date than the row's (the row holds only its current day).
+    pub fn apply_revision(&mut self, rev: &Revision) {
+        let Some(&i) = self.index.get(rev.symbol.as_str()) else {
+            return;
+        };
+        let e = &mut self.entries[i];
+        if e.day != Some(rev.session.date) {
+            return;
+        }
+        let before = (e.last, e.last_ts, e.volume, e.trades);
+        if rev.removed.volume {
+            e.volume = e.volume.saturating_sub(rev.removed.size);
+            e.trades = e.trades.saturating_sub(1);
+        }
+        if let Some(a) = rev.added.filter(|a| a.volume) {
+            e.volume += a.size;
+            e.trades += 1;
+        }
+        if rev.removed.ohlc || rev.added.is_some_and(|a| a.ohlc) {
+            // The engine's newest price print of the day, i.e. the chart's last close. None: no
+            // candle of the day is left, so the row has no price and leaves the clients' view.
+            match rev.last {
+                Some((p, ts)) => {
+                    e.last = Some(p);
+                    e.last_ts = ts;
+                }
+                None => {
+                    e.last = None;
+                    e.last_ts = UnixNanos(i64::MIN);
+                }
+            }
+        }
+        if (e.last, e.last_ts, e.volume, e.trades) != before && !e.dirty {
+            e.dirty = true;
+            self.dirty.push(i);
+        }
+    }
+
     fn row(e: &Entry, entering: bool) -> Option<QuoteRow> {
         let last = e.last?;
         Some(QuoteRow {
@@ -214,6 +303,8 @@ impl QuoteBoard {
             last,
             reference: e.open.or(e.first).unwrap_or(last),
             regular_open: e.open.is_some(),
+            prev_close: e.prev_close,
+            prev_close_changed: e.prev_close_changed && !entering,
             volume: e.volume,
             trades: e.trades,
             entering,
@@ -247,6 +338,7 @@ impl QuoteBoard {
                 if let Some(r) = Self::row(e, !e.listed) {
                     out.rows.push(r);
                 }
+                e.prev_close_changed = false;
             } else if e.listed {
                 out.gone.push(e.symbol.clone());
             }
@@ -265,6 +357,7 @@ impl QuoteBoard {
         }
         for e in &mut self.entries {
             e.listed = e.last.is_some_and(|p| band.contains(p));
+            e.prev_close_changed = false;
         }
     }
 
@@ -476,6 +569,183 @@ mod tests {
         apply(&mut b, trade("AAA", at(10, 3), 2450, 100));
         let c = b.take_changes(band);
         assert!(c.rows[0].entering);
+    }
+
+    fn closes(rows: &[(&str, &str, f64)]) -> Arc<PrevCloses> {
+        let mut m = market_archive::DailyCloses::new();
+        for (d, sym, c) in rows {
+            m.entry(NaiveDate::parse_from_str(d, "%Y-%m-%d").unwrap())
+                .or_default()
+                .insert(sym.to_string(), *c);
+        }
+        Arc::new(PrevCloses::new(&m).0)
+    }
+
+    #[test]
+    fn rows_carry_the_previous_close_of_the_latest_earlier_day_or_none() {
+        let mut b = QuoteBoard::with_closes(closes(&[
+            ("2026-10-14", "AAA", 4.0),
+            ("2026-10-15", "AAA", 4.5),
+            // The day's own close is never its reference.
+            ("2026-10-16", "AAA", 9.0),
+        ]));
+        apply(&mut b, trade("AAA", at(8, 0), 400, 100));
+        apply(&mut b, trade("BBB", at(8, 0), 700, 100));
+        let a = b.get("AAA").unwrap();
+        assert_eq!(a.prev_close, Some(Price::from_cents(450)));
+        assert!(!a.regular_open, "the open fallback is still kept beside it");
+        assert_eq!(b.get("BBB").unwrap().prev_close, None, "not in the file");
+        let snap = b.snapshot(PriceBand::DEFAULT);
+        assert!(snap.iter().all(|r| r.entering && !r.prev_close_changed));
+    }
+
+    #[test]
+    fn a_new_trading_date_looks_the_previous_close_up_again_and_resends_it_once() {
+        let mut b = QuoteBoard::with_closes(closes(&[("2026-10-15", "AAA", 4.5)]));
+        let band = PriceBand::DEFAULT;
+        apply(&mut b, trade("AAA", at(15, 0), 500, 100));
+        let c = b.take_changes(band);
+        assert!(c.rows[0].entering && !c.rows[0].prev_close_changed);
+        apply(&mut b, trade("AAA", at(15, 1), 510, 100));
+        assert!(
+            !b.take_changes(band).rows[0].prev_close_changed,
+            "static for the day"
+        );
+        // Live mode crossing into Monday: Friday 10-16 has no close in the file, so the latest
+        // earlier one (Thursday's) stays the reference and nothing needs resending.
+        let mon = NaiveDate::from_ymd_opt(2026, 10, 19).unwrap();
+        apply(&mut b, trade("AAA", et(mon, 8, 0, 0, 0).unwrap(), 520, 100));
+        let r = &b.take_changes(band).rows[0];
+        assert_eq!(r.prev_close, Some(Price::from_cents(450)));
+        assert!(!r.prev_close_changed);
+
+        // A row whose new day gains a reference gets it in its next update, once.
+        let mut b = QuoteBoard::with_closes(closes(&[("2026-10-15", "AAA", 4.5)]));
+        let before = NaiveDate::from_ymd_opt(2026, 10, 15).unwrap();
+        apply(
+            &mut b,
+            trade("AAA", et(before, 10, 0, 0, 0).unwrap(), 500, 100),
+        );
+        assert_eq!(
+            b.get("AAA").unwrap().prev_close,
+            None,
+            "nothing before the 15th"
+        );
+        b.take_changes(band);
+        apply(&mut b, trade("AAA", at(10, 0), 510, 100));
+        let r = &b.take_changes(band).rows[0];
+        assert_eq!(
+            (r.prev_close, r.prev_close_changed),
+            (Some(Price::from_cents(450)), true)
+        );
+        apply(&mut b, trade("AAA", at(10, 1), 520, 100));
+        assert!(
+            !b.take_changes(band).rows[0].prev_close_changed,
+            "sent once"
+        );
+    }
+
+    fn rev(
+        sym: &str,
+        removed: (i64, u64, bool, bool),
+        added: Option<(i64, u64, bool, bool)>,
+        last: Option<(i64, UnixNanos)>,
+    ) -> Revision {
+        let print = |(c, size, ohlc, volume): (i64, u64, bool, bool)| chart_engine::RevisedPrint {
+            price: Price::from_cents(c),
+            size,
+            ohlc,
+            volume,
+        };
+        Revision {
+            symbol: sym.into(),
+            session: market_events::SessionId {
+                date: day(),
+                kind: SessionKind::Regular,
+            },
+            removed: print(removed),
+            added: added.map(print),
+            last: last.map(|(c, ts)| (Price::from_cents(c), ts)),
+        }
+    }
+
+    #[test]
+    fn a_cancel_takes_out_exactly_what_the_engine_had_counted() {
+        let mut b = QuoteBoard::new();
+        let band = PriceBand::DEFAULT;
+        apply(&mut b, trade("AAA", at(10, 0), 500, 100));
+        apply(&mut b, trade("AAA", at(10, 1), 520, 30));
+        b.take_changes(band);
+        // The newest price print is cancelled: last falls back to the engine's newest one.
+        b.apply_revision(&rev(
+            "AAA",
+            (520, 30, true, true),
+            None,
+            Some((500, at(10, 0))),
+        ));
+        let r = b.get("AAA").unwrap();
+        assert_eq!(
+            (r.last, r.volume, r.trades),
+            (Price::from_cents(500), 100, 1)
+        );
+        assert_eq!(b.take_changes(band).rows.len(), 1, "the change goes out");
+        // An out-of-order print older than the restored last is still not the last price.
+        apply(&mut b, trade("AAA", at(9, 59), 480, 10));
+        assert_eq!(b.get("AAA").unwrap().last, Price::from_cents(500));
+        // A cancel of a volume-only print moves volume, not last.
+        b.apply_revision(&rev(
+            "AAA",
+            (480, 10, false, true),
+            None,
+            Some((999, at(11, 0))),
+        ));
+        let r = b.get("AAA").unwrap();
+        assert_eq!((r.last, r.volume), (Price::from_cents(500), 100));
+        // Cancelling the day's only price print: no price left, so the row leaves the view.
+        b.take_changes(band);
+        b.apply_revision(&rev("AAA", (500, 100, true, true), None, None));
+        assert!(b.get("AAA").is_none());
+        assert_eq!(b.take_changes(band).gone.len(), 1);
+    }
+
+    #[test]
+    fn a_correction_swaps_the_print_and_other_days_or_symbols_are_ignored() {
+        let mut b = QuoteBoard::new();
+        let band = PriceBand::DEFAULT;
+        apply(&mut b, trade("AAA", at(10, 0), 500, 100));
+        apply(&mut b, trade("AAA", at(10, 1), 520, 30));
+        b.take_changes(band);
+        // Corrected to a bigger size and a new price, still the newest print.
+        b.apply_revision(&rev(
+            "AAA",
+            (520, 30, true, true),
+            Some((525, 50, true, true)),
+            Some((525, at(10, 1))),
+        ));
+        let r = b.get("AAA").unwrap();
+        assert_eq!(
+            (r.last, r.volume, r.trades),
+            (Price::from_cents(525), 150, 2)
+        );
+        // Corrected to an excluded condition: counts for nothing any more.
+        b.apply_revision(&rev(
+            "AAA",
+            (525, 50, true, true),
+            Some((525, 50, false, false)),
+            Some((500, at(10, 0))),
+        ));
+        let r = b.get("AAA").unwrap();
+        assert_eq!(
+            (r.last, r.volume, r.trades),
+            (Price::from_cents(500), 100, 1)
+        );
+        b.take_changes(band);
+        b.apply_revision(&rev("ZZZ", (500, 100, true, true), None, None));
+        let mut other_day = rev("AAA", (500, 100, true, true), None, None);
+        other_day.session.date = NaiveDate::from_ymd_opt(2026, 10, 15).unwrap();
+        b.apply_revision(&other_day);
+        assert!(b.take_changes(band).is_empty(), "nothing of today changed");
+        assert_eq!(b.get("AAA").unwrap().volume, 100);
     }
 
     #[test]

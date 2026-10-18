@@ -22,6 +22,21 @@ export function formatSize(s: number): string {
   return String(Math.round(s)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
+/**
+ * What the header's change % is measured against: the previous trading day's
+ * official close when the server sent one (brokers' "today's change"), else
+ * the first candle of the anchor session (e.g. the regular open; before 09:30
+ * the premarket's first candle). The ticker search rows use the same rule on
+ * the quote board (packages/shared tickers/quotes.ts), so both agree.
+ */
+export function changeReference(series: { prevClose: number | null; session: { start: number } | null; candles: readonly { t: number; o: number }[] } | null | undefined): { price: number; kind: "prevClose" | "sessionOpen" } | undefined {
+  if (!series) return undefined;
+  if (series.prevClose !== null && series.prevClose > 0) return { price: series.prevClose, kind: "prevClose" };
+  const start = series.session?.start;
+  const open = start === undefined ? undefined : series.candles.find((c) => c.t >= start)?.o;
+  return open === undefined ? undefined : { price: open, kind: "sessionOpen" };
+}
+
 /** Signed percent change, e.g. "+1.23%". */
 export function formatChange(from: number, to: number): string {
   if (!from) return "—";

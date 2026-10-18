@@ -122,3 +122,21 @@ test("recents: newest first, no duplicates, capped", () => {
   for (const s of ["A", "B", "C", "A", "D", "E", "F"]) r = pushRecentTicker(r, s);
   expect(r).toEqual(["F", "E", "D", "A", "C"]);
 });
+
+test("Gainers / Losers and their order use the previous-close change when the board has it", () => {
+  const b = applyQuotesMessage(EMPTY_QUOTE_BOARD, {
+    type: "quotes.snapshot",
+    t: 0,
+    quotes: [
+      // Up on its open, down on yesterday's close: a loser, as a broker lists it.
+      { s: "GAPDN", p: 4.4, o: 4.0, pc: 5.0, v: 10, n: 1 },
+      // Flat on its open, up 50% on yesterday's close: the biggest gainer.
+      { s: "GAPUP", p: 1.5, o: 1.5, pc: 1.0, v: 10, n: 1 },
+      // No close known: the open fallback (+10%).
+      { s: "NOPC", p: 2.2, o: 2.0, v: 10, n: 1 },
+    ],
+  });
+  const t = tickerUniverse([], b);
+  expect(searchTickers(t, "", on("gainers"), []).map((r) => r.item.symbol)).toEqual(["GAPUP", "NOPC"]);
+  expect(searchTickers(t, "", on("losers"), []).map((r) => r.item.symbol)).toEqual(["GAPDN"]);
+});

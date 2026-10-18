@@ -104,6 +104,8 @@ export interface ChartSeriesLike {
   /** Halts and LULD band changes (the store keeps them per symbol). */
   halts?: readonly Halt[];
   luld?: readonly LuldPoint[];
+  /** The server's official previous close (Series.prevClose), for the "Prev close" level. */
+  prevClose?: number | null;
 }
 
 export interface CandleChartProps {
@@ -377,7 +379,9 @@ export function CandleChart({
   const indicatorResults = useMemo(() => computeIndicators(slots, indicatorSpecs), [slots, indicatorSpecs]);
 
   const last = useMemo(() => lastCandle(slots)?.c ?? null, [slots]);
-  const levels = useMemo(() => keyLevels(slots), [slots]);
+  // The server's official previous close wins over one read off the candles (levels.ts).
+  const prevClose = series?.prevClose ?? null;
+  const levels = useMemo(() => keyLevels(slots, prevClose), [slots, prevClose]);
   const fills = useMemo(() => (trading?.state?.fills ?? []).filter((f) => f.symbol === symbol), [trading?.state, symbol]);
   const context = useMemo(
     () => ({

@@ -1,5 +1,6 @@
 import {
   buildSlots,
+  changeReference,
   formatChange,
   formatEtDateKey,
   formatPrice,
@@ -230,11 +231,9 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
   const slots = useMemo(() => (series ? buildSlots(series.candles, series.gaps) : []), [series]);
   const last = useMemo(() => lastCandle(slots), [slots]);
 
-  // Change vs the first candle of the anchor session (e.g. the regular open).
-  const sessionOpen = useMemo(() => {
-    const start = series?.session?.start;
-    return start === undefined ? undefined : series?.candles.find((c) => c.t >= start)?.o;
-  }, [series]);
+  // Change vs the previous close when the server knows it, else the anchor session's first
+  // candle (changeReference in chart-core; the search rows use the same rule).
+  const reference = useMemo(() => changeReference(series), [series]);
 
   // Bands change only when the trading day does, not on every clock tick.
   const dayKey = clock ? formatEtDateKey(tradingDayOf(clock.now)) : "";
@@ -259,7 +258,7 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
   // Jump the replay; the server rebuilds from the session start and resends snapshots.
   const seek = (t: number) => feed.control({ action: "seek", value: t });
   const price = last ? formatPrice(last.c) : "—";
-  const change = last && sessionOpen ? formatChange(sessionOpen, last.c) : "";
+  const change = last && reference ? formatChange(reference.price, last.c) : "";
   const changeColor = change.startsWith("-") ? "text-critical" : "text-good";
   const chartLabel = `${symbol} ${timeframe} candles, ${choice.fixtureData ? "fixture data" : "market data"} from ${choice.kind === "server" ? "the server" : "the in-browser fixture"}`;
   const tapeNote = choice.fixtureData ? "Fixture data" : choice.label;

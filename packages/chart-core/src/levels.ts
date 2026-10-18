@@ -36,7 +36,7 @@ export const LAYER_INFO: Readonly<Record<LayerId, { name: string; description: s
   premarket: { name: "Premarket high / low", description: "Extremes of 04:00–09:30" },
   dayRange: { name: "High / low of day", description: "Regular-session extremes so far" },
   open: { name: "Open", description: "First regular-session price" },
-  prevClose: { name: "Previous close", description: "Last regular price of the prior day" },
+  prevClose: { name: "Previous close", description: "The prior trading day's close" },
   fills: { name: "My fills", description: "Your simulated buys and sells" },
 };
 
@@ -97,11 +97,16 @@ export interface KeyLevel {
 /**
  * The key levels of the trading day of the latest candle: premarket high
  * and low (04:00–09:30), regular-session high and low so far, the regular
- * open, and the previous trading day's last regular close when the chart
- * still holds it. A level with no candles behind it is left out rather than
- * guessed.
+ * open, and the previous close. A level with no candles behind it is left
+ * out rather than guessed.
+ *
+ * The previous close is `knownPrevClose` when given (the server's official
+ * close, Series.prevClose), else the last regular candle of an earlier day
+ * when the chart still holds one. The official one wins: a single-day replay
+ * holds no prior day at all, and even with one the last regular candle's
+ * close is the last print before 16:00, not the closing auction.
  */
-export function keyLevels(slots: readonly Slot[]): KeyLevel[] {
+export function keyLevels(slots: readonly Slot[], knownPrevClose?: number | null): KeyLevel[] {
   let last: Slot | undefined;
   for (let i = slots.length - 1; i >= 0; i--) if (slots[i]!.kind === "candle") { last = slots[i]; break; }
   if (!last) return [];
@@ -132,6 +137,7 @@ export function keyLevels(slots: readonly Slot[]): KeyLevel[] {
   if (Number.isFinite(pmHi)) out.push({ id: "pmHigh", label: "PM H", price: pmHi, layer: "premarket" }, { id: "pmLow", label: "PM L", price: pmLo, layer: "premarket" });
   if (Number.isFinite(hi)) out.push({ id: "hod", label: "HOD", price: hi, layer: "dayRange" }, { id: "lod", label: "LOD", price: lo, layer: "dayRange" });
   if (open !== null) out.push({ id: "open", label: "Open", price: open, layer: "open" });
+  if (knownPrevClose != null && knownPrevClose > 0) prevClose = knownPrevClose;
   if (prevClose !== null) out.push({ id: "prevClose", label: "Prev close", price: prevClose, layer: "prevClose" });
   return out;
 }

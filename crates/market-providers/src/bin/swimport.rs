@@ -7,6 +7,7 @@
 //! swimport alpaca-batch --from <YYYY-MM-DD> --to <YYYY-MM-DD> [--jobs 12] [--per-minute 9000] [--plan-only]
 //! swimport check <SYMBOL> <YYYY-MM-DD>                   # verify, replay twice, compare with FMP
 //! swimport alpaca-assets                                 # names + exchanges -> $ARCHIVE_ROOT/assets.json
+//! swimport alpaca-daily-closes --from <YYYY-MM-DD> --to <YYYY-MM-DD>  # -> $ARCHIVE_ROOT/daily-closes.json
 //! ```
 //!
 //! Credentials come only from the environment (a local `.env` or the Pi's secret store, loaded by
@@ -69,6 +70,7 @@ fn main() -> ExitCode {
             Some("check") => check(&args[1..]),
             Some("alpaca-batch") => alpaca_batch(&args[1..]),
             Some("alpaca-assets") => alpaca_assets(),
+            Some("alpaca-daily-closes") => alpaca_daily_closes(&args[1..]),
             _ => Ok(usage()),
         }
     };
@@ -440,9 +442,9 @@ fn alpaca_assets() -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// Every symbol inside the configured price band on each completed trading day of a range.
-fn alpaca_batch(args: &[String]) -> Result<ExitCode, String> {
-    use market_providers::import::batch::{plan_universe, run_batch};
+/// `--from` / `--to` as completed trading dates (`--to` strictly before today in New York): a
+/// daily bar of a session still running is a partial bar, and its "close" is just the last print.
+fn completed_range(args: &[String]) -> Result<(NaiveDate, NaiveDate), String> {
     let day = |name: &str| -> Result<NaiveDate, String> {
         let v = flag(args, name).ok_or_else(|| format!("missing {name} <YYYY-MM-DD>"))?;
         NaiveDate::parse_from_str(&v, "%Y-%m-%d").map_err(|_| format!("invalid {name} {v:?}"))
@@ -457,6 +459,65 @@ fn alpaca_batch(args: &[String]) -> Result<ExitCode, String> {
             "--to {to} is not a completed session (today in New York is {today})"
         ));
     }
+    Ok((from, to))
+}
+
+/// Official daily closes of every active US equity over a range, merged into
+/// `$ARCHIVE_ROOT/daily-closes.json` (market_archive::closes), which the server reads at startup
+/// to quote change % against the previous close. To replay day D, the range must include the
+/// trading day before D; for live mode, re-run it after every session (a daily job). Re-running a
+/// range refetches and overwrites those dates; other dates in the file are kept.
+fn alpaca_daily_closes(args: &[String]) -> Result<ExitCode, String> {
+    use market_archive::merge_daily_closes;
+    use market_providers::import::batch::daily_closes;
+    let (from, to) = completed_range(args)?;
+    let creds = alpaca_creds()?;
+    let data_base = env("ALPACA_DATA_BASE").unwrap_or_else(|| "https://data.alpaca.markets".into());
+    let trading_base =
+        env("ALPACA_TRADING_BASE").unwrap_or_else(|| "https://paper-api.alpaca.markets".into());
+    let archive = archive()?;
+    // Read before fetching: an unreadable existing file stops the run instead of being replaced
+    // by just this range (which would silently drop every other date).
+    let mut all = archive
+        .read_daily_closes()
+        .map_err(|e| format!("{e} (fix or remove it; it is not overwritten)"))?
+        .unwrap_or_default();
+    println!("daily closes {from} .. {to} (SIP 1Day bars, raw)");
+    let mut http = ReqwestHttp::new()?;
+    let new = daily_closes(
+        &mut http,
+        &trading_base,
+        &data_base,
+        &creds,
+        from,
+        to,
+        &mut |l: &str| eprintln!("  {l}"),
+    )?;
+    if new.is_empty() {
+        // No trading date in range, or an endpoint answering nothing: keep the file as it is.
+        return Err(format!(
+            "no daily bars for {from} .. {to}; daily-closes.json left unchanged"
+        ));
+    }
+    let fetched_days = new.len();
+    let changed = merge_daily_closes(&mut all, new);
+    let path = archive
+        .write_daily_closes(&all)
+        .map_err(|e| e.to_string())?;
+    println!(
+        "{fetched_days} trading dates fetched, {changed} closes added or changed; {} dates in {} ({} .. {}). Restart the server to load them.",
+        all.len(),
+        path.display(),
+        all.keys().next().map_or("-".into(), |d| d.to_string()),
+        all.keys().next_back().map_or("-".into(), |d| d.to_string()),
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Every symbol inside the configured price band on each completed trading day of a range.
+fn alpaca_batch(args: &[String]) -> Result<ExitCode, String> {
+    use market_providers::import::batch::{plan_universe, run_batch};
+    let (from, to) = completed_range(args)?;
     let jobs: usize = flag(args, "--jobs").map_or(Ok(12), |v| {
         v.parse().map_err(|_| format!("invalid --jobs {v:?}"))
     })?;

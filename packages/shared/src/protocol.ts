@@ -69,12 +69,19 @@ export interface QuoteRowWire {
   s: string;
   /** Last price (OHLC-qualifying prints only, the candles' rule). */
   p: number;
-  /** Change reference: the regular open, or the day's first price while `pre` is set. */
+  /**
+   * The previous trading day's official close: the change-% reference
+   * whenever present. Static for the day, so it is sent in snapshots, for rows
+   * entering the band, and in an update only when it changes (the row's
+   * trading date moved on); a client keeps the last one it got for the row.
+   */
+  pc?: number;
+  /** Fallback change reference when there is no `pc`: the regular open, or the day's first price while `pre` is set. */
   o: number;
   /** Day volume (shares) and prints counted, by the candles' volume rule. */
   v: number;
   n: number;
-  /** Present (true) only while the symbol has no print at/after 09:30 yet. */
+  /** Present (true) only while the symbol has no print at/after 09:30 yet (it describes `o`). */
   pre?: true;
   /** Company name and listing exchange (e.g. "NASDAQ"): snapshots, and update rows entering the band; absent when the server has no metadata. */
   name?: string;

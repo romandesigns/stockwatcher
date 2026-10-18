@@ -29,15 +29,18 @@ async fn stack(extra: &[(&str, &str)]) -> Stack {
 
 /// [`stack`] with an `assets.json` written to the archive root before the market starts.
 async fn stack_with_assets(extra: &[(&str, &str)], assets: Option<Value>) -> Stack {
+    let files: Vec<(&str, Value)> = assets.into_iter().map(|a| ("assets.json", a)).collect();
+    stack_with_files(extra, &files).await
+}
+
+/// [`stack`] with files (`assets.json`, `daily-closes.json`) written to the archive root before
+/// the market starts.
+async fn stack_with_files(extra: &[(&str, &str)], files: &[(&str, Value)]) -> Stack {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("archive").to_string_lossy().into_owned();
-    if let Some(a) = assets {
+    for (name, v) in files {
         std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(
-            std::path::Path::new(&root).join("assets.json"),
-            a.to_string(),
-        )
-        .unwrap();
+        std::fs::write(std::path::Path::new(&root).join(name), v.to_string()).unwrap();
     }
     let mut vars: Vec<(String, String)> = vec![
         ("ARCHIVE_ROOT".into(), root),
@@ -904,7 +907,11 @@ async fn quotes_subscribe_gets_a_snapshot_then_changed_rows_about_once_a_second(
     );
     for u in [&first, &second] {
         assert!(!u["quotes"].as_array().unwrap().is_empty());
-        assert!(u["t"].as_i64().unwrap() > snap["t"].as_i64().unwrap());
+        // `>=`, not `>`: `t` is the display clock, which the replay publishes ~4 times a second
+        // of wall time, while events keep arriving in between. The first update right after the
+        // snapshot can carry rows changed by events applied since, before the clock ticked again
+        // (seen as `t == snap.t` at 10:40:00, flaky under load).
+        assert!(u["t"].as_i64().unwrap() >= snap["t"].as_i64().unwrap());
         assert!(quote(u, "FXHI").is_none());
         for q in u["quotes"].as_array().unwrap() {
             assert!(
@@ -932,7 +939,7 @@ async fn quotes_subscribe_gets_a_snapshot_then_changed_rows_about_once_a_second(
 }
 
 #[tokio::test]
-async fn quotes_volume_matches_the_candles_and_a_seek_resends_the_snapshot() {
+async fn quotes_volume_and_last_match_the_candles_through_seeks_corrections_and_cancels() {
     let s = stack(&[("REPLAY_AUTOPLAY", "0")]).await;
     let mut ws = connect(&s.url).await;
     wait_for_replay(&mut ws).await;
@@ -970,6 +977,137 @@ async fn quotes_volume_matches_the_candles_and_a_seek_resends_the_snapshot() {
     // The rebuild's rows are in that snapshot, not replayed as a burst of updates.
     let seen = types_for(&mut ws, Duration::from_millis(2200)).await;
     assert!(!seen.iter().any(|t| t == "quotes.update"), "{seen:?}");
+
+    // Corrections and cancels, applied live (playing through them, not rebuilt): the fixture
+    // corrects SMPL's first regular print at/after 11:00 (+30 s, price +$0.05) and cancels its
+    // first one at/after 12:00 (+20 s). The board follows the engine's own revision, so its volume
+    // and last still equal the chart's totals and latest close.
+    let chart = play_through(&mut ws, T1040 + 18 * 60_000, T1040 + 23 * 60_000).await; // 10:58 → 11:03
+    assert_eq!(
+        chart["quality"]["correctionsApplied"], 1,
+        "the correction happened"
+    );
+    assert_board_matches_chart(&s, &chart).await;
+    let chart = play_through(&mut ws, T1040 + 78 * 60_000, T1040 + 83 * 60_000).await; // 11:58 → 12:03
+    assert_eq!(chart["quality"]["cancelsApplied"], 1, "the cancel happened");
+    assert_board_matches_chart(&s, &chart).await;
+    // And after a seek past both: the rebuild applies them the same way.
+    let target = T1040 + 90 * 60_000; // 12:10 ET
+    send(
+        &mut ws,
+        json!({"type":"replay.control","action":"seek","value":target}),
+    )
+    .await;
+    let chart = next(&mut ws, |m| {
+        m["type"] == "chart.snapshot" && m["clock"]["now"] == target
+    })
+    .await;
+    assert_eq!(chart["quality"]["correctionsApplied"], 1);
+    assert_eq!(chart["quality"]["cancelsApplied"], 1);
+    assert_board_matches_chart(&s, &chart).await;
+}
+
+/// Seeks to `from`, plays until the clock passes `until`, pauses, and returns a fresh SMPL 1m
+/// `chart.snapshot` taken while paused (matched by its clock, so a snapshot the seek's resync
+/// sent earlier is never mistaken for it).
+async fn play_through(ws: &mut Ws, from: i64, until: i64) -> Value {
+    send(
+        ws,
+        json!({"type":"replay.control","action":"seek","value":from}),
+    )
+    .await;
+    next(ws, |m| m["type"] == "quotes.snapshot" && m["t"] == from).await;
+    send(ws, json!({"type":"replay.control","action":"play"})).await;
+    next(ws, |m| {
+        m["type"] == "replay.clock" && m["clock"]["now"].as_i64().unwrap_or(0) >= until
+    })
+    .await;
+    send(ws, json!({"type":"replay.control","action":"pause"})).await;
+    let paused = next(ws, |m| {
+        m["type"] == "replay.clock" && m["clock"]["playing"] == false
+    })
+    .await;
+    let now = paused["clock"]["now"].clone();
+    send(
+        ws,
+        json!({"type":"chart.subscribe","symbol":"SMPL","timeframe":"1m","profileBin":0.01}),
+    )
+    .await;
+    next(ws, |m| {
+        m["type"] == "chart.snapshot" && m["clock"]["now"] == now
+    })
+    .await
+}
+
+/// The board's SMPL row (`/api/quotes`, taken at the same paused clock as `chart`) has the chart's
+/// day volume and its latest close as the last price.
+async fn assert_board_matches_chart(s: &Stack, chart: &Value) {
+    let (_, q) = get(&s.app, "/api/quotes").await;
+    assert_eq!(
+        q["t"], chart["clock"]["now"],
+        "both taken at the same clock"
+    );
+    let row = quote(&q, "SMPL").unwrap();
+    assert_eq!(row["v"].as_u64().unwrap(), total_volume(chart), "volume");
+    let last = chart["candles"].as_array().unwrap().last().unwrap()["c"].clone();
+    assert_eq!(row["p"], last, "last price");
+}
+
+#[tokio::test]
+async fn quotes_and_the_chart_measure_change_against_the_previous_close_when_known() {
+    // The fixture day is Thursday 2026-10-15. SMPL has closes for the 13th and the 14th (the
+    // 14th is the reference; the 15th's own close is never used); FXLO has none and falls back.
+    let s = stack_with_files(
+        &[("REPLAY_AUTOPLAY", "0")],
+        &[(
+            "daily-closes.json",
+            json!({
+                "2026-10-13": {"SMPL": 3.5},
+                "2026-10-14": {"SMPL": 4.25},
+                "2026-10-15": {"SMPL": 99.0}
+            }),
+        )],
+    )
+    .await;
+    let mut ws = connect(&s.url).await;
+    wait_for_replay(&mut ws).await;
+    send(&mut ws, json!({"type": "quotes.subscribe"})).await;
+    let snap = next(&mut ws, is("quotes.snapshot")).await;
+    let smpl = quote(&snap, "SMPL").unwrap();
+    assert_eq!(smpl["pc"], 4.25);
+    assert!(
+        smpl["o"].as_f64().unwrap() > 0.0,
+        "the open fallback is still sent"
+    );
+    assert!(
+        quote(&snap, "FXLO").unwrap().get("pc").is_none(),
+        "no close known: no invented reference"
+    );
+    send(
+        &mut ws,
+        json!({"type":"chart.subscribe","symbol":"SMPL","timeframe":"1m","profileBin":0.01}),
+    )
+    .await;
+    assert_eq!(next(&mut ws, is("chart.snapshot")).await["prevClose"], 4.25);
+    send(
+        &mut ws,
+        json!({"type":"chart.subscribe","symbol":"FXLO","timeframe":"1m","profileBin":0.01}),
+    )
+    .await;
+    let fxlo = next(&mut ws, is("chart.snapshot")).await;
+    assert!(
+        fxlo.get("prevClose").is_none(),
+        "{:?}",
+        fxlo.get("prevClose")
+    );
+
+    // Static for the day: updates leave it out (the client keeps the snapshot's).
+    send(&mut ws, json!({"type":"replay.control","action":"play"})).await;
+    let u = next(&mut ws, |m| {
+        m["type"] == "quotes.update" && quote(m, "SMPL").is_some()
+    })
+    .await;
+    assert!(quote(&u, "SMPL").unwrap().get("pc").is_none());
 }
 
 #[tokio::test]

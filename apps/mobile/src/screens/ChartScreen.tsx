@@ -1,5 +1,6 @@
 import {
   buildSlots,
+  changeReference,
   formatChange,
   formatEtTime,
   formatPrice,
@@ -162,11 +163,10 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
 
   const slots = useMemo(() => (series ? buildSlots(series.candles, series.gaps) : []), [series]);
   const last = lastCandle(slots);
-  const sessionOpen = useMemo(() => {
-    const start = series?.session?.start;
-    return start === undefined ? undefined : series?.candles.find((c) => c.t >= start)?.o;
-  }, [series]);
-  const change = last && sessionOpen ? formatChange(sessionOpen, last.c) : "";
+  // Previous close when the server knows it, else the anchor session's first candle: the web
+  // header's and the search rows' rule (changeReference in chart-core).
+  const reference = useMemo(() => changeReference(series), [series]);
+  const change = last && reference ? formatChange(reference.price, last.c) : "";
 
   const changeDrawings = (d: Drawing[]) => {
     if (!active) return;
