@@ -61,7 +61,7 @@ export function ChartSettingsPanel({ settings, onChange }: { settings: ChartSett
                 style={({ pressed }) => [s.tile, on && { backgroundColor: UI.raised }, pressed && !on && { backgroundColor: UI.row }]}
               >
                 <Icon name={CHART_TYPE_ICONS[t]} color={on ? UI.text : UI.textDim} size={18} />
-                <Text style={[s.tileText, { color: on ? UI.text : UI.textDim }]} numberOfLines={1}>
+                <Text style={[s.tileText, { color: on ? UI.text : UI.textDim }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>
                   {SHORT[t]}
                 </Text>
               </Pressable>
@@ -164,9 +164,11 @@ function Row({ name, description, checked, onToggle }: { name: string; descripti
 
 const s = StyleSheet.create({
   label: { color: UI.textFaint, fontSize: 11, paddingHorizontal: 4 },
-  types: { flexDirection: "row", flexWrap: "wrap", gap: 4, backgroundColor: UI.bg, borderRadius: 12, padding: 4 },
-  // Four per row on a phone: (100% - 3 gaps) / 4.
-  tile: { width: "23.6%", flexGrow: 1, height: 52, borderRadius: 9, alignItems: "center", justifyContent: "center", gap: 4 },
+  types: { flexDirection: "row", gap: 2, backgroundColor: UI.bg, borderRadius: 12, padding: 4 },
+  // All seven on one row (owner, 2026-10-18; it was 4 + 3). Equal shares of a phone's
+  // width leave about 42–56 pt a tile, so a label that won't fit ("Heikin-Ashi") shrinks to fit
+  // rather than wrapping or truncating.
+  tile: { flex: 1, minWidth: 0, height: 52, paddingHorizontal: 2, borderRadius: 9, alignItems: "center", justifyContent: "center", gap: 4 },
   tileText: { fontSize: 10 },
   note: { color: UI.textFaint, fontSize: 11, paddingHorizontal: 8 },
   zoomRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8, paddingHorizontal: 8 },
