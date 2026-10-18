@@ -120,6 +120,8 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     ],
     "expo-localization",
     "expo-dev-client",
+    // Native builds one module at a time: Skia's C++ ran the EAS worker out of memory otherwise.
+    "./plugins/withLowMemoryNativeBuild",
   ],
 
   extra: {
