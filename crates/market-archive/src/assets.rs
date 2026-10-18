@@ -5,8 +5,9 @@
 //! ```
 //!
 //! Written by `swimport alpaca-assets` from Alpaca's assets endpoint (the provider's own names and
-//! listing exchanges, e.g. `NASDAQ`, `NYSE`, `ARCA`, `AMEX`, `BATS`, `OTC`), read once by the
-//! server at startup so the ticker search can show a real company name and filter by exchange.
+//! listing exchanges, e.g. `NASDAQ`, `NYSE`, `ARCA`, `AMEX`, `BATS`, `OTC`), read by the server at
+//! startup (and again when the file changes; `swimport maintain` refreshes it daily) so the ticker
+//! search can show a real company name and filter by exchange.
 //!
 //! It is **optional** and not market data: the server runs without it (names fall back to the
 //! symbol, exchange chips match nothing) and never invents a name for a symbol it lacks. It sits at

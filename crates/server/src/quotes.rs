@@ -161,7 +161,8 @@ pub struct QuoteBoard {
     index: HashMap<Arc<str>, usize>,
     entries: Vec<Entry>,
     dirty: Vec<usize>,
-    /// Shared with the market (read once at startup); a rebuild's new board gets the same index.
+    /// Shared with the market; a rebuild's new board gets the market's current index, and a
+    /// reload of the file reaches a running board through [`QuoteBoard::set_closes`].
     closes: Arc<PrevCloses>,
 }
 
@@ -359,6 +360,36 @@ impl QuoteBoard {
             e.listed = e.last.is_some_and(|p| band.contains(p));
             e.prev_close_changed = false;
         }
+    }
+
+    /// Swaps in a reloaded `daily-closes.json` index (the archive maintainer rewrites it after
+    /// every session; a long-running live session needs yesterday's closes without a restart).
+    ///
+    /// Every row's previous close is looked up again for its current trading date, and a row
+    /// whose reference actually changed is marked dirty with `prev_close_changed`, so the next
+    /// `quotes.update` carries the new `pc` exactly like a trading date moving on. In practice
+    /// that only happens when the file gained a close it lacked (a first fill, a date the import
+    /// had missed): the official close of a finished day does not change. The chart header looks
+    /// its `prevClose` up in this same index ([`QuoteBoard::closes`]), so the two never disagree.
+    pub fn set_closes(&mut self, closes: Arc<PrevCloses>) {
+        self.closes = closes;
+        for (i, e) in self.entries.iter_mut().enumerate() {
+            let Some(day) = e.day else { continue };
+            let pc = self.closes.before(&e.symbol, day).map(|(_, p)| p);
+            if pc != e.prev_close {
+                e.prev_close = pc;
+                e.prev_close_changed = true;
+                if !e.dirty {
+                    e.dirty = true;
+                    self.dirty.push(i);
+                }
+            }
+        }
+    }
+
+    /// The closes index this board looks previous closes up in.
+    pub fn closes(&self) -> &Arc<PrevCloses> {
+        &self.closes
     }
 
     /// One symbol's row, whatever the band (tests and diagnostics).
@@ -643,6 +674,29 @@ mod tests {
             !b.take_changes(band).rows[0].prev_close_changed,
             "sent once"
         );
+    }
+
+    #[test]
+    fn a_reloaded_closes_file_reaches_existing_rows_once_and_only_where_it_changed() {
+        let band = PriceBand::DEFAULT;
+        let mut b = QuoteBoard::with_closes(closes(&[("2026-10-15", "AAA", 4.5)]));
+        apply(&mut b, trade("AAA", at(10, 0), 500, 100));
+        apply(&mut b, trade("BBB", at(10, 0), 700, 100));
+        b.take_changes(band);
+        // The maintainer's rewrite: AAA unchanged, BBB gains its missing close.
+        b.set_closes(closes(&[
+            ("2026-10-15", "AAA", 4.5),
+            ("2026-10-15", "BBB", 6.5),
+        ]));
+        let c = b.take_changes(band);
+        assert_eq!(c.rows.len(), 1, "only the row whose reference moved");
+        assert_eq!(&*c.rows[0].symbol, "BBB");
+        assert_eq!(
+            (c.rows[0].prev_close, c.rows[0].prev_close_changed),
+            (Some(Price::from_cents(650)), true)
+        );
+        assert_eq!(b.closes().symbols(), 2);
+        assert!(b.take_changes(band).rows.is_empty(), "sent once");
     }
 
     fn rev(

@@ -13,15 +13,17 @@
 //! not against today's open. A replay of day D (or live mode, D = today) cannot derive that close
 //! from its own tape: the archive holds one day at a time, and the prior day's last regular print
 //! is not the official close anyway (the closing auction prints after 16:00 and late reports keep
-//! arriving). So the server reads this file once at startup and, for each symbol, takes the close
-//! of the latest date **before** D that the file has for it ([`PrevCloses::before`]).
+//! arriving). So the server reads this file at startup (and again whenever its length or mtime
+//! changes: the archive maintainer rewrites it after every session) and, for each symbol, takes
+//! the close of the latest date **before** D that the file has for it ([`PrevCloses::before`]).
 //!
 //! It is **optional**, like `assets.json`: a missing or unreadable file only means change % falls
 //! back to the open (logged by the server, never fatal). It sits at the archive root, not under a
 //! day, and [`crate::Archive::days`] only lists date-named directories, so replay and retention
-//! never mistake it for a day. For live mode it must be refreshed after every session (a daily
-//! job, not built yet): a file that stops at D-2 makes the server quote change against D-2's close,
-//! because "latest date before D present for the symbol" is all it can know.
+//! never mistake it for a day. For live mode it must be refreshed after every session, which
+//! `swimport maintain` does (market-providers `import::maintain`, the VPS `archiver` service): a
+//! file that stops at D-2 makes the server quote change against D-2's close, because "latest date
+//! before D present for the symbol" is all it can know.
 
 use crate::Archive;
 use crate::error::ArchiveError;
@@ -98,9 +100,9 @@ impl Archive {
     }
 }
 
-/// The closes indexed for the server's lookup: per symbol, `(date, close)` ascending. Built once
-/// at startup; a lookup is one hash probe and a binary search, done when a symbol's trading date
-/// is first seen, never per print.
+/// The closes indexed for the server's lookup: per symbol, `(date, close)` ascending. Built when
+/// the file is (re)read; a lookup is one hash probe and a binary search, done when a symbol's
+/// trading date is first seen, never per print.
 #[derive(Clone, Debug, Default)]
 pub struct PrevCloses {
     by_symbol: HashMap<String, Vec<(NaiveDate, Price)>>,
