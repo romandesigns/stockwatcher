@@ -17,12 +17,16 @@ impl ReplayProvider {
     }
 
     /// The configured day (or the latest archived one), starting at `REPLAY_START` ET.
+    ///
+    /// "Latest" is the latest **ready** day: one the archive maintainer is still importing
+    /// (`market_archive::IMPORTING_MARKER`) is skipped, or a restart mid-import would replay the
+    /// few hundred symbols committed so far and never see the rest.
     pub fn from_config(cfg: &ProviderConfig) -> Result<Self, ProviderError> {
         let archive = Archive::new(cfg.archive.clone());
         let day = match cfg.day {
             Some(d) => d,
             None => *archive
-                .days()
+                .ready_days()
                 .map_err(|e| ProviderError::Failed(e.to_string()))?
                 .last()
                 .ok_or_else(|| {

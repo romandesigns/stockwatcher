@@ -21,6 +21,8 @@ struct Stack {
     _tmp: tempfile::TempDir,
     app: axum::Router,
     url: String,
+    /// The archive root (for tests that change it under a running server).
+    root: std::path::PathBuf,
 }
 
 async fn stack(extra: &[(&str, &str)]) -> Stack {
@@ -86,6 +88,7 @@ async fn stack_with_days(
 async fn stack_prepared(extra: &[(&str, &str)], prepare: impl FnOnce(&std::path::Path)) -> Stack {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("archive").to_string_lossy().into_owned();
+    let root_path = root.clone();
     prepare(std::path::Path::new(&root));
     let mut vars: Vec<(String, String)> = vec![
         ("ARCHIVE_ROOT".into(), root),
@@ -120,6 +123,7 @@ async fn stack_prepared(extra: &[(&str, &str)], prepare: impl FnOnce(&std::path:
         _tmp: tmp,
         app,
         url: format!("ws://{addr}/ws"),
+        root: std::path::PathBuf::from(root_path),
     }
 }
 
@@ -1546,4 +1550,201 @@ async fn a_running_live_feed_reports_its_link_and_offers_no_days() {
         "connection lost; reconnecting in 1.0 s"
     );
     assert_eq!(v["days"], json!([]));
+}
+
+fn fixture_archive(root: &std::path::Path) -> market_archive::Archive {
+    market_archive::Archive::new(market_archive::ArchiveConfig {
+        root: root.to_path_buf(),
+        retention_days: 0,
+        min_free_bytes: 0,
+    })
+}
+
+/// Polls `GET uri` until `pred` holds (the meta task runs every second in these tests).
+async fn eventually(app: &axum::Router, uri: &str, pred: impl Fn(&Value) -> bool) -> Value {
+    for _ in 0..100 {
+        let (_, v) = get(app, uri).await;
+        if pred(&v) {
+            return v;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let (_, v) = get(app, uri).await;
+    panic!("{uri} never matched; last: {v}");
+}
+
+#[tokio::test]
+async fn assets_and_closes_rewritten_by_the_maintainer_are_picked_up_without_a_restart() {
+    let s = stack_with_files(
+        &[("REPLAY_AUTOPLAY", "0"), ("ARCHIVE_META_CHECK_SECS", "1")],
+        &[
+            (
+                "assets.json",
+                json!({"SMPL": {"name": "Old Name", "exchange": "NYSE"}}),
+            ),
+            ("daily-closes.json", json!({"2026-10-14": {"SMPL": 4.25}})),
+        ],
+    )
+    .await;
+    let mut ws = connect(&s.url).await;
+    wait_for_replay(&mut ws).await;
+    let (_, q) = get(&s.app, "/api/quotes").await;
+    assert_eq!(quote(&q, "SMPL").unwrap()["name"], "Old Name");
+    assert_eq!(quote(&q, "SMPL").unwrap()["pc"], 4.25);
+    assert!(quote(&q, "FXLO").unwrap().get("pc").is_none());
+    send(&mut ws, json!({"type": "quotes.subscribe"})).await;
+    next(&mut ws, is("quotes.snapshot")).await;
+
+    // The maintainer's atomic rewrites (temp file + rename), as market_archive writes them.
+    let archive = fixture_archive(&s.root);
+    let mut assets = market_archive::AssetMap::new();
+    assets.insert(
+        "SMPL".into(),
+        market_archive::AssetMeta {
+            name: "Sample Holdings Corp".into(),
+            exchange: "NASDAQ".into(),
+        },
+    );
+    archive.write_assets(&assets).unwrap();
+    let mut closes = market_archive::DailyCloses::new();
+    let d14: chrono::NaiveDate = "2026-10-14".parse().unwrap();
+    closes.entry(d14).or_default().insert("SMPL".into(), 4.25);
+    closes.entry(d14).or_default().insert("FXLO".into(), 0.55);
+    archive.write_daily_closes(&closes).unwrap();
+
+    let q = eventually(&s.app, "/api/quotes", |q| {
+        quote(q, "SMPL").is_some_and(|r| r["name"] == "Sample Holdings Corp")
+            && quote(q, "FXLO").is_some_and(|r| r["pc"] == 0.55)
+    })
+    .await;
+    assert_eq!(quote(&q, "SMPL").unwrap()["x"], "NASDAQ");
+    assert_eq!(quote(&q, "SMPL").unwrap()["pc"], 4.25, "unchanged close");
+    // The running board resends only the reference that changed, and the chart agrees.
+    let u = next(&mut ws, |m| {
+        m["type"] == "quotes.update" && quote(m, "FXLO").is_some()
+    })
+    .await;
+    assert_eq!(quote(&u, "FXLO").unwrap()["pc"], 0.55);
+    send(
+        &mut ws,
+        json!({"type":"chart.subscribe","symbol":"FXLO","timeframe":"1m","profileBin":0.01}),
+    )
+    .await;
+    assert_eq!(next(&mut ws, is("chart.snapshot")).await["prevClose"], 0.55);
+    // And a rebuild (seek) starts from the new file too.
+    send(
+        &mut ws,
+        json!({"type":"replay.control","action":"seek","value":T1040 + 60_000}),
+    )
+    .await;
+    let snap = next(&mut ws, |m| {
+        m["type"] == "quotes.snapshot" && m["t"] == T1040 + 60_000
+    })
+    .await;
+    assert_eq!(quote(&snap, "FXLO").unwrap()["pc"], 0.55);
+    assert_eq!(
+        quote(&snap, "SMPL").unwrap()["name"],
+        "Sample Holdings Corp"
+    );
+}
+
+fn day_list(v: &Value) -> Vec<String> {
+    v["days"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["day"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn the_day_list_follows_imports_and_removals_and_the_replay_stays_put_by_default() {
+    let s = stack_with_days(
+        &[("REPLAY_AUTOPLAY", "0"), ("ARCHIVE_META_CHECK_SECS", "1")],
+        DAYS,
+        &[],
+    )
+    .await;
+    let archive = fixture_archive(&s.root);
+    // A day being imported is not offered (nor can it be switched to) until its marker goes.
+    let d16: chrono::NaiveDate = "2026-10-16".parse().unwrap();
+    archive.mark_importing(d16).unwrap();
+    market_archive::fixture::write_fixture_day(
+        &archive,
+        d16,
+        &["SMPL".to_string()],
+        market_archive::fixture::DEFAULT_SEED,
+    )
+    .unwrap();
+    let (_, v) = get(&s.app, "/api/replay/state").await;
+    assert_eq!(day_list(&v), ["2026-10-13", "2026-10-14", "2026-10-15"]);
+    let mut ws = connect(&s.url).await;
+    wait_for_replay(&mut ws).await;
+    send(
+        &mut ws,
+        json!({"type":"replay.control","action":"day","value":"2026-10-16"}),
+    )
+    .await;
+    assert_eq!(next(&mut ws, is("error")).await["code"], "unknown_day");
+    archive.clear_importing(d16).unwrap();
+    archive.remove_day("2026-10-13".parse().unwrap()).unwrap();
+    let (_, v) = get(&s.app, "/api/replay/state").await;
+    assert_eq!(day_list(&v), ["2026-10-14", "2026-10-15", "2026-10-16"]);
+    // Without REPLAY_FOLLOW_LATEST the replay does not move on its own.
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    let (_, v) = get(&s.app, "/api/replay/state").await;
+    assert_eq!(v["day"], "2026-10-15");
+}
+
+#[tokio::test]
+async fn follow_latest_switches_to_a_newly_imported_day_once() {
+    let s = stack_with_days(
+        &[
+            ("REPLAY_AUTOPLAY", "0"),
+            ("ARCHIVE_META_CHECK_SECS", "1"),
+            ("REPLAY_FOLLOW_LATEST", "1"),
+        ],
+        DAYS,
+        &[],
+    )
+    .await;
+    let archive = fixture_archive(&s.root);
+    let mut ws = connect(&s.url).await;
+    wait_for_replay(&mut ws).await;
+    // Nothing new: it stays on the latest day it started on.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(
+        get(&s.app, "/api/replay/state").await.1["day"],
+        "2026-10-15"
+    );
+    // A day still importing is not followed...
+    let d16: chrono::NaiveDate = "2026-10-16".parse().unwrap();
+    archive.mark_importing(d16).unwrap();
+    market_archive::fixture::write_fixture_day(
+        &archive,
+        d16,
+        &["SMPL".to_string()],
+        market_archive::fixture::DEFAULT_SEED,
+    )
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(
+        get(&s.app, "/api/replay/state").await.1["day"],
+        "2026-10-15"
+    );
+    // ...until the maintainer releases it.
+    archive.clear_importing(d16).unwrap();
+    eventually(&s.app, "/api/replay/state", |v| v["day"] == "2026-10-16").await;
+    // Switching back by hand sticks: the day was followed once.
+    send(
+        &mut ws,
+        json!({"type":"replay.control","action":"day","value":"2026-10-14"}),
+    )
+    .await;
+    eventually(&s.app, "/api/replay/state", |v| v["day"] == "2026-10-14").await;
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert_eq!(
+        get(&s.app, "/api/replay/state").await.1["day"],
+        "2026-10-14"
+    );
 }

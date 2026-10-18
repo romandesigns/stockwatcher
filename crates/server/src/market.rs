@@ -82,6 +82,8 @@ pub const QUOTES_INTERVAL: Duration = Duration::from_secs(1);
 /// | `SIM_FIXTURE_DAY` | `2026-10-15` | that day |
 /// | `SIM_FIXTURE_SYMBOLS` | `SMPL,FXLO,FXMD,FXHI` | its symbols |
 /// | `PRICE_BAND_MIN` / `PRICE_BAND_MAX` | `0.10` / `25.00` | the candidate price band (inclusive) |
+/// | `ARCHIVE_META_CHECK_SECS` | `60` | how often `assets.json` / `daily-closes.json` are checked for changes (0 = only on a day switch) |
+/// | `REPLAY_FOLLOW_LATEST` | `0` | switch the running replay to a newly imported latest day (see [`Market::follow_latest`]) |
 #[derive(Clone, Debug)]
 pub struct MarketConfig {
     pub provider: ProviderConfig,
@@ -91,6 +93,11 @@ pub struct MarketConfig {
     pub fixture_symbols: Vec<String>,
     /// Only stocks whose latest price-qualifying trade is inside this band are let through.
     pub band: PriceBand,
+    /// Period of the archive metadata check ([`Market::refresh_archive_meta`]); zero = only on a
+    /// day switch.
+    pub meta_check: Duration,
+    /// `REPLAY_FOLLOW_LATEST` (off by default: a switch resets the paper account).
+    pub follow_latest: bool,
 }
 
 impl Default for MarketConfig {
@@ -102,6 +109,8 @@ impl Default for MarketConfig {
             fixture_day: NaiveDate::from_ymd_opt(2026, 10, 15).expect("valid"),
             fixture_symbols: DEFAULT_SYMBOLS.iter().map(|s| s.to_string()).collect(),
             band: PriceBand::DEFAULT,
+            meta_check: Duration::from_secs(60),
+            follow_latest: false,
         }
     }
 }
@@ -118,8 +127,17 @@ impl MarketConfig {
             sim: SimConfig::from_lookup(&get)?,
             ..MarketConfig::default()
         };
+        let on = |v: &str| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on");
         if let Some(v) = var("SIM_AUTOFIXTURE") {
-            c.autofixture = matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on");
+            c.autofixture = on(&v);
+        }
+        if let Some(v) = var("REPLAY_FOLLOW_LATEST") {
+            c.follow_latest = on(&v);
+        }
+        if let Some(v) = var("ARCHIVE_META_CHECK_SECS") {
+            c.meta_check = Duration::from_secs(v.parse().map_err(|_| {
+                format!("ARCHIVE_META_CHECK_SECS is not a whole number of seconds: {v:?}")
+            })?);
         }
         if let Some(d) = var("SIM_FIXTURE_DAY") {
             c.fixture_day = NaiveDate::parse_from_str(&d, "%Y-%m-%d")
@@ -229,23 +247,81 @@ struct Inner {
     /// The one paper account (single-user app). Never locked while `core` is held, or the other
     /// way round, so the two locks cannot deadlock.
     paper: Mutex<Broker>,
-    /// `assets.json` (name, exchange), read once at startup; empty when the file is missing.
-    assets: HashMap<String, AssetMeta>,
-    /// `daily-closes.json` indexed per symbol, read once at startup; empty when the file is
-    /// missing (change % then falls back to the open everywhere). Shared with every rebuild's board.
-    closes: Arc<PrevCloses>,
+    /// `assets.json` (name, exchange); empty when the file is missing. Replaced whole when the
+    /// file changes ([`Market::refresh_archive_meta`]); readers clone the `Arc` and let go.
+    assets: Mutex<Arc<HashMap<String, AssetMeta>>>,
+    /// `daily-closes.json` indexed per symbol; empty when the file is missing (change % then
+    /// falls back to the open everywhere). Every rebuild's board starts from the current one, and
+    /// a reload is handed to the running board too.
+    closes: Mutex<Arc<PrevCloses>>,
+    /// Where those two files are, and how they looked when last read (`None` in tests that pass
+    /// them in directly).
+    meta_files: Option<MetaFiles>,
+    /// `REPLAY_FOLLOW_LATEST`, and the latest ready day already seen (so a day is followed once,
+    /// and a user who switches back to an older day is not dragged forward again).
+    follow_latest: bool,
+    latest_seen: Mutex<Option<NaiveDate>>,
     /// Connections that sent `quotes.subscribe`. While 0, the quotes task builds nothing.
     quote_subs: AtomicUsize,
 }
 
 /// What the market reads from the archive besides the replayed day itself: the root's optional
 /// `assets.json` and `daily-closes.json`, and the catalog of days a replay can switch to. Grouped
-/// because they share a lifecycle (read at startup from one archive root; tests pass them empty).
+/// because they share a lifecycle (read at startup from one archive root, the two files re-read
+/// when they change; tests pass them empty).
 #[derive(Default)]
 struct ArchiveMeta {
     assets: HashMap<String, AssetMeta>,
     closes: Arc<PrevCloses>,
     days: Option<DayCatalog>,
+    files: Option<MetaFiles>,
+    follow_latest: bool,
+}
+
+/// A file's identity for change detection: a rewrite (the maintainer's temp file + rename)
+/// changes the length or the mtime. A missing file is `(0, None)`.
+type FileStamp = (u64, Option<std::time::SystemTime>);
+
+fn file_stamp(path: &std::path::Path) -> FileStamp {
+    std::fs::metadata(path)
+        .map(|m| (m.len(), m.modified().ok()))
+        .unwrap_or((0, None))
+}
+
+/// The archive root's `assets.json` and `daily-closes.json` as last read. The archive maintainer
+/// (`swimport maintain`, a separate process) rewrites them after every session; checking costs
+/// two `stat`s, and a file is re-read only when its stamp moved.
+struct MetaFiles {
+    archive: Archive,
+    /// `[assets, closes]`.
+    stamps: Mutex<[FileStamp; 2]>,
+}
+
+impl MetaFiles {
+    /// Stamps taken BEFORE the first read: a rewrite between the stamp and the read is then seen
+    /// as a change on the next check (one extra reload) rather than missed.
+    fn new(archive: Archive) -> Self {
+        let stamps = [
+            file_stamp(&archive.assets_path()),
+            file_stamp(&archive.daily_closes_path()),
+        ];
+        MetaFiles {
+            archive,
+            stamps: Mutex::new(stamps),
+        }
+    }
+
+    /// Which files changed since the last call: `[assets, closes]`.
+    fn changed(&self) -> [bool; 2] {
+        let now = [
+            file_stamp(&self.archive.assets_path()),
+            file_stamp(&self.archive.daily_closes_path()),
+        ];
+        let mut last = self.stamps.lock().expect("meta stamps lock");
+        let out = [now[0] != last[0], now[1] != last[1]];
+        *last = now;
+        out
+    }
 }
 
 /// Shared market state; cheap to clone.
@@ -313,7 +389,13 @@ impl Market {
             assets,
             closes,
             days,
+            files,
+            follow_latest,
         } = meta;
+        let latest_seen = days
+            .as_ref()
+            .filter(|_| follow_latest)
+            .and_then(|d| d.list().last().map(|e| e.day));
         Market(Arc::new(Inner {
             mode,
             info: Mutex::new(info.map(Arc::new)),
@@ -326,8 +408,11 @@ impl Market {
             bin: ChartEngine::default().config().profile_bin,
             band,
             paper: Mutex::new(Broker::new()),
-            assets,
-            closes,
+            assets: Mutex::new(Arc::new(assets)),
+            closes: Mutex::new(closes),
+            meta_files: files,
+            follow_latest,
+            latest_seen: Mutex::new(latest_seen),
             quote_subs: AtomicUsize::new(0),
         }))
     }
@@ -375,6 +460,7 @@ impl Market {
                 }
             }
         }
+        let files = MetaFiles::new(archive.clone());
         let assets = load_assets(&archive);
         let closes = Arc::new(load_closes(&archive));
         let started = market_providers::from_config(&cfg.provider).and_then(|p| p.start());
@@ -422,10 +508,15 @@ impl Market {
                 assets,
                 closes,
                 days,
+                files: Some(files),
+                follow_latest: cfg.follow_latest,
             },
         );
         tokio::spawn(ingest(session.items, market.clone(), sim.clone()));
         market.spawn_quotes_task();
+        if !cfg.meta_check.is_zero() {
+            market.spawn_meta_task(cfg.meta_check);
+        }
         (market, sim)
     }
 
@@ -462,7 +553,7 @@ impl Market {
             ArchiveMeta {
                 assets,
                 closes: Arc::new(closes),
-                days: None,
+                ..ArchiveMeta::default()
             },
         );
         tokio::spawn(ingest(session.items, market.clone(), sim));
@@ -487,6 +578,127 @@ impl Market {
                 Market(inner).publish_quotes();
             }
         });
+    }
+
+    /// Every `every` (wall time): re-read changed archive metadata, then, with
+    /// `REPLAY_FOLLOW_LATEST`, follow a new latest day. Weak like the quotes task.
+    fn spawn_meta_task(&self, every: Duration) {
+        let weak: Weak<Inner> = Arc::downgrade(&self.0);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(every);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            // The first tick is immediate; startup has just read everything.
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                let Some(inner) = weak.upgrade() else { break };
+                let market = Market(inner);
+                // Re-reading the closes file is ~10^5 entries of JSON: off the async workers.
+                let m = market.clone();
+                let _ = tokio::task::spawn_blocking(move || m.refresh_archive_meta()).await;
+                if market.0.follow_latest {
+                    market.follow_latest().await;
+                }
+            }
+        });
+    }
+
+    /// Re-reads `assets.json` and `daily-closes.json` if either changed on disk since it was last
+    /// read (two `stat`s otherwise). Called by the meta task (`ARCHIVE_META_CHECK_SECS`) and on
+    /// every day switch, so a day imported tonight is quoted against its real previous close
+    /// without a restart. Returns whether anything was reloaded.
+    ///
+    /// - Assets are swapped at once: they only name rows, and a row's name is sent when it enters
+    ///   a client's view.
+    /// - Closes become the index of the next rebuild's board (seek, day switch) and are handed
+    ///   to the running board too ([`QuoteBoard::set_closes`]: a row whose reference changed
+    ///   resends it, and the chart's `prevClose` reads the same index, so both follow at once).
+    /// - A file that fails to read keeps the previous contents (logged): the maintainer writes
+    ///   atomically, so an unreadable file is a real problem, and wiping every name or reference
+    ///   over it would make it worse. A deleted file is a deliberate state and empties them.
+    pub fn refresh_archive_meta(&self) -> bool {
+        let Some(files) = &self.0.meta_files else {
+            return false;
+        };
+        let [assets_changed, closes_changed] = files.changed();
+        let archive = &files.archive;
+        if assets_changed {
+            match archive.read_assets() {
+                Ok(m) => {
+                    let m: HashMap<String, AssetMeta> = m.unwrap_or_default().into_iter().collect();
+                    tracing::info!(assets = m.len(), "assets.json changed: reloaded");
+                    *self.0.assets.lock().expect("assets lock") = Arc::new(m);
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "assets.json changed but is unreadable: keeping the names already loaded")
+                }
+            }
+        }
+        if closes_changed {
+            match archive.read_daily_closes() {
+                Ok(m) => {
+                    let m = m.unwrap_or_default();
+                    let (idx, dropped) = PrevCloses::new(&m);
+                    tracing::info!(
+                        days = m.len(),
+                        first = ?m.keys().next(),
+                        last = ?m.keys().next_back(),
+                        symbols = idx.symbols(),
+                        dropped,
+                        "daily-closes.json changed: reloaded"
+                    );
+                    let idx = Arc::new(idx);
+                    *self.0.closes.lock().expect("closes lock") = idx.clone();
+                    let mut core = self.0.core.lock().expect("core lock");
+                    core.quotes.set_closes(idx);
+                    // A step of its own in the sequence: the rows it changed go out in the next
+                    // `quotes.update`, stamped with this seq, and a connection forwards only
+                    // updates newer than its snapshot. Without the bump a paused replay (seq
+                    // standing still) would hold the update back from every client whose
+                    // snapshot predates the reload, while one taken after it already has it.
+                    core.seq += 1;
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "daily-closes.json changed but is unreadable: keeping the closes already loaded")
+                }
+            }
+        }
+        assets_changed || closes_changed
+    }
+
+    /// `REPLAY_FOLLOW_LATEST=1`: when the catalog's latest ready day is newer than any latest day
+    /// seen before, switch the replay to it, exactly as the app's day menu would (so it resets
+    /// the paper account and every client resyncs). A day is followed once: switching back to an
+    /// older day by hand stays put until the next new day arrives. Returns whether it switched.
+    pub async fn follow_latest(&self) -> bool {
+        let Some(latest) = self.days().last().map(|e| e.day) else {
+            return false;
+        };
+        {
+            let mut seen = self.0.latest_seen.lock().expect("latest lock");
+            if seen.is_some_and(|s| latest <= s) {
+                return false;
+            }
+            *seen = Some(latest);
+        }
+        if self.info().and_then(|i| i.day) == Some(latest) {
+            return false;
+        }
+        tracing::info!(day = %latest, "REPLAY_FOLLOW_LATEST: switching the replay to the newly imported day");
+        match self
+            .control("day", Some(&Value::String(latest.to_string())))
+            .await
+        {
+            Ok(_) => true,
+            Err(e) => {
+                tracing::warn!(day = %latest, error = ?e, "REPLAY_FOLLOW_LATEST: the switch was refused");
+                false
+            }
+        }
+    }
+
+    fn current_closes(&self) -> Arc<PrevCloses> {
+        self.0.closes.lock().expect("closes lock").clone()
     }
 
     pub fn mode(&self) -> ClockMode {
@@ -621,7 +833,7 @@ impl Market {
                 {
                     let mut core = self.0.core.lock().expect("core lock");
                     let seq = core.seq + 1;
-                    *core = Core::new(self.0.closes.clone());
+                    *core = Core::new(self.current_closes());
                     core.seq = seq;
                     core.rebuilding = true;
                 }
@@ -662,6 +874,9 @@ impl Market {
                 // A day switch. Only the description changes here; the `Reset` right behind it
                 // drops the old day's derived state and the closing `Clock` resyncs every client.
                 tracing::info!(day = %src.day, source = %src.label, symbols = src.symbols.len(), "replay switched day");
+                // Before the `Reset` behind it builds the new day's board: a day imported since
+                // the last check gets the closes file that came with it.
+                self.refresh_archive_meta();
                 *self.0.info.lock().expect("info lock") =
                     Some(Arc::new(ProviderInfo::replay(&src)));
             }
@@ -830,7 +1045,7 @@ impl Market {
             None => return Err(SnapshotError::UnknownSymbol),
         };
         snap.clock = clock;
-        snap.prev_close = self.prev_close_for(&snap).map(Price::to_f64);
+        snap.prev_close = self.prev_close_for(&core, &snap).map(Price::to_f64);
         Ok(SnapshotOut {
             seq: core.seq,
             json: serde_json::to_string(&snap).expect("snapshot serializes"),
@@ -849,14 +1064,20 @@ impl Market {
     /// session; then the replay day stands in (live mode: none, the header falls back too). That
     /// is the CURRENT provider info, which a day switch replaces on `FeedItem::Source`: a day
     /// remembered from startup would hand the new day's chart the old day's previous close.
-    fn prev_close_for(&self, snap: &ChartSnapshot) -> Option<Price> {
+    ///
+    /// Looked up in the board's own closes index, so a reload of the file reaches the chart and
+    /// the board together.
+    fn prev_close_for(&self, core: &Core, snap: &ChartSnapshot) -> Option<Price> {
         let day = snap
             .session
             .as_ref()
             .and_then(|s| s.id.parse::<SessionId>().ok())
             .map(|s| s.date)
             .or_else(|| self.info().and_then(|i| i.day))?;
-        self.0.closes.before(&snap.symbol, day).map(|(_, p)| p)
+        core.quotes
+            .closes()
+            .before(&snap.symbol, day)
+            .map(|(_, p)| p)
     }
 
     /// The increment's JSON at another profile bin width: the touched bins re-binned, with
@@ -1008,6 +1229,7 @@ impl Market {
         rows: &[QuoteRow],
         gone: &[Arc<str>],
     ) -> String {
+        let assets = self.0.assets.lock().expect("assets lock").clone();
         let quotes: Vec<WireQuote<'_>> = rows
             .iter()
             .map(|r| {
@@ -1015,7 +1237,7 @@ impl Market {
                 // update row whose symbol just entered the band. Never invented: a symbol missing
                 // from assets.json has no name and the client shows the symbol.
                 let meta = if r.entering {
-                    self.0.assets.get(&*r.symbol)
+                    assets.get(&*r.symbol)
                 } else {
                     None
                 };

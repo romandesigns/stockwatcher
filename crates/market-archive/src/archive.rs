@@ -369,8 +369,7 @@ impl Archive {
         let mut deleted = Vec::new();
         for day in self.days()? {
             if day < cutoff {
-                let dir = self.day_dir(day);
-                std::fs::remove_dir_all(&dir).map_err(|e| ArchiveError::io(&dir, e))?;
+                self.remove_day(day)?;
                 deleted.push(day);
             }
         }

@@ -388,7 +388,7 @@ impl<H: Http> Http for Limited<H> {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Failure {
     pub day: NaiveDate,
     pub symbol: String,
@@ -404,6 +404,10 @@ pub struct BatchReport {
     pub events: u64,
     pub requests: u64,
     pub elapsed: Duration,
+    /// Ended by the stop flag before every task ran ([`run_batch_until`]).
+    pub stopped: bool,
+    /// Symbol-days newly imported (not skipped), per trading date.
+    pub imported_by_day: std::collections::BTreeMap<NaiveDate, u64>,
 }
 
 /// The SIP range for a trading date: premarket open through the end of after hours.
@@ -435,6 +439,30 @@ pub fn run_batch<H: Http + Send + 'static>(
     progress: &(dyn Fn(&str) + Sync),
     log: &(dyn Fn(&str) + Sync),
 ) -> BatchReport {
+    let never = std::sync::atomic::AtomicBool::new(false);
+    run_batch_until(
+        plan, make_http, data_base, creds, archive, jobs, per_minute, every, progress, log, &never,
+    )
+}
+
+/// [`run_batch`] that stops taking tasks once `stop` is set (a SIGTERM in `swimport maintain`).
+/// Tasks already running finish: a task is one symbol-day, its commit is atomic, and stopping one
+/// mid-download would only throw the pages fetched so far away. Tasks never started are simply
+/// not in the report (`tasks` still counts the whole plan; `stopped` says it ended early).
+#[allow(clippy::too_many_arguments)]
+pub fn run_batch_until<H: Http + Send + 'static>(
+    plan: &Plan,
+    make_http: &(dyn Fn() -> Result<H, String> + Sync),
+    data_base: &str,
+    creds: &AlpacaCredentials,
+    archive: &Archive,
+    jobs: usize,
+    per_minute: u32,
+    every: Duration,
+    progress: &(dyn Fn(&str) + Sync),
+    log: &(dyn Fn(&str) + Sync),
+    stop: &std::sync::atomic::AtomicBool,
+) -> BatchReport {
     let started = Instant::now();
     let total_trades = plan.trades().max(1);
     let next = AtomicU64::new(0);
@@ -445,6 +473,7 @@ pub fn run_batch<H: Http + Send + 'static>(
     let trades_done = AtomicU64::new(0);
     let requests = Arc::new(AtomicU64::new(0));
     let failed: Mutex<Vec<Failure>> = Mutex::new(Vec::new());
+    let by_day: Mutex<std::collections::BTreeMap<NaiveDate, u64>> = Mutex::default();
     let limiter = RateLimiter::per_minute(per_minute);
     let finished = std::sync::atomic::AtomicBool::new(false);
     let n_tasks = plan.tasks.len() as u64;
@@ -482,7 +511,7 @@ pub fn run_batch<H: Http + Send + 'static>(
             .map(|_| {
                 let limiter = limiter.clone();
                 let requests = requests.clone();
-                let (next, done, imported, skipped, events, trades_done, failed) = (
+                let (next, done, imported, skipped, events, trades_done, failed, by_day) = (
                     &next,
                     &done,
                     &imported,
@@ -490,6 +519,7 @@ pub fn run_batch<H: Http + Send + 'static>(
                     &events,
                     &trades_done,
                     &failed,
+                    &by_day,
                 );
                 scope.spawn(move || {
                     let inner = match make_http() {
@@ -505,6 +535,9 @@ pub fn run_batch<H: Http + Send + 'static>(
                         requests,
                     };
                     loop {
+                        if stop.load(Ordering::Relaxed) {
+                            break;
+                        }
                         let i = next.fetch_add(1, Ordering::Relaxed) as usize;
                         let Some(task) = plan.tasks.get(i) else { break };
                         let outcome = match sip_range(task.day) {
@@ -543,6 +576,11 @@ pub fn run_batch<H: Http + Send + 'static>(
                                     skipped.fetch_add(1, Ordering::Relaxed);
                                 } else {
                                     imported.fetch_add(1, Ordering::Relaxed);
+                                    *by_day
+                                        .lock()
+                                        .unwrap_or_else(|p| p.into_inner())
+                                        .entry(task.day)
+                                        .or_default() += 1;
                                 }
                             }
                             Err(error) => {
@@ -570,6 +608,7 @@ pub fn run_batch<H: Http + Send + 'static>(
     });
 
     BatchReport {
+        stopped: stop.load(Ordering::Relaxed) && done.load(Ordering::Relaxed) < n_tasks,
         tasks: n_tasks,
         imported: imported.into_inner(),
         skipped: skipped.into_inner(),
@@ -577,6 +616,7 @@ pub fn run_batch<H: Http + Send + 'static>(
         events: events.into_inner(),
         requests: requests.load(Ordering::Relaxed),
         elapsed: started.elapsed(),
+        imported_by_day: by_day.into_inner().unwrap_or_else(|p| p.into_inner()),
     }
 }
 

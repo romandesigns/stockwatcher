@@ -8,7 +8,14 @@
 //! swimport check <SYMBOL> <YYYY-MM-DD>                   # verify, replay twice, compare with FMP
 //! swimport alpaca-assets                                 # names + exchanges -> $ARCHIVE_ROOT/assets.json
 //! swimport alpaca-daily-closes --from <YYYY-MM-DD> --to <YYYY-MM-DD>  # -> $ARCHIVE_ROOT/daily-closes.json
+//! swimport maintain [--once]                             # keep the rolling one-month window (runs forever)
 //! ```
+//!
+//! `maintain` is what the VPS runs as its `archiver` service (import::maintain has the window,
+//! schedule and safety rules, and its environment variables). It is a subcommand of this binary
+//! rather than a binary of its own because it is the same importer, credentials and HTTP client
+//! on a timer: one more file in the image and one more code path to keep in step would buy
+//! nothing.
 //!
 //! Credentials come only from the environment (a local `.env` or the Pi's secret store, loaded by
 //! the shell): `ALPACA_API_KEY` / `ALPACA_API_SECRET` (or `APCA_API_KEY_ID` /
@@ -33,11 +40,15 @@ use market_providers::import::client::ReqwestHttp;
 use market_providers::import::fmp::{self, FmpKey, fetch_minute_bars};
 use market_providers::import::http::RetryPolicy;
 use std::process::ExitCode;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage:\n  swimport credentials\n  swimport alpaca-trades <SYMBOL> <YYYY-MM-DD> [--feed sip|iex|boats] [--limit N] [--force]\n  swimport fmp-bars <SYMBOL> <YYYY-MM-DD> [--force]\n  swimport check <SYMBOL> <YYYY-MM-DD>\n  swimport alpaca-batch --from <YYYY-MM-DD> --to <YYYY-MM-DD> [--jobs N] [--per-minute N] [--plan-only]\n  swimport alpaca-assets"
+        "usage:\n  swimport credentials\n  swimport alpaca-trades <SYMBOL> <YYYY-MM-DD> [--feed sip|iex|boats] [--limit N] [--force]\n  swimport fmp-bars <SYMBOL> <YYYY-MM-DD> [--force]\n  swimport check <SYMBOL> <YYYY-MM-DD>\n  swimport alpaca-batch --from <YYYY-MM-DD> --to <YYYY-MM-DD> [--jobs N] [--per-minute N] [--plan-only]\n  swimport alpaca-assets
+  swimport alpaca-daily-closes --from <YYYY-MM-DD> --to <YYYY-MM-DD>
+  swimport maintain [--once]"
     );
     ExitCode::from(2)
 }
@@ -71,6 +82,7 @@ fn main() -> ExitCode {
             Some("alpaca-batch") => alpaca_batch(&args[1..]),
             Some("alpaca-assets") => alpaca_assets(),
             Some("alpaca-daily-closes") => alpaca_daily_closes(&args[1..]),
+            Some("maintain") => maintain(&args[1..]),
             _ => Ok(usage()),
         }
     };
@@ -155,15 +167,7 @@ fn alpaca_creds() -> Result<AlpacaCredentials, String> {
 }
 
 fn price_band() -> Result<PriceBand, String> {
-    let p = |k: &str, d: Price| -> Result<Price, String> {
-        env(k).map_or(Ok(d), |v| {
-            v.parse().map_err(|_| format!("invalid {k} {v:?}"))
-        })
-    };
-    PriceBand::new(
-        p("PRICE_BAND_MIN", PriceBand::DEFAULT.min)?,
-        p("PRICE_BAND_MAX", PriceBand::DEFAULT.max)?,
-    )
+    market_providers::import::maintain::price_band_from_lookup(env)
 }
 
 fn alpaca_trades(args: &[String]) -> Result<ExitCode, String> {
@@ -410,7 +414,8 @@ fn check(args: &[String]) -> Result<ExitCode, String> {
 }
 
 /// Name and listing exchange of every active US equity into `$ARCHIVE_ROOT/assets.json`, which the
-/// server reads at startup for the ticker search. Replaces the file atomically; safe to re-run.
+/// server reads for the ticker search (and reloads when it changes). Replaces the file
+/// atomically; safe to re-run.
 fn alpaca_assets() -> Result<ExitCode, String> {
     use market_providers::import::batch::asset_metadata;
     let creds = alpaca_creds()?;
@@ -432,7 +437,7 @@ fn alpaca_assets() -> Result<ExitCode, String> {
         *by_exchange.entry(m.exchange.as_str()).or_default() += 1;
     }
     println!(
-        "{} assets written to {} (by exchange: {by_exchange:?}). Restart the server to load them.",
+        "{} assets written to {} (by exchange: {by_exchange:?}). A running server reloads it within ARCHIVE_META_CHECK_SECS (60 s).",
         assets.len(),
         path.display()
     );
@@ -460,10 +465,11 @@ fn completed_range(args: &[String]) -> Result<(NaiveDate, NaiveDate), String> {
 }
 
 /// Official daily closes of every active US equity over a range, merged into
-/// `$ARCHIVE_ROOT/daily-closes.json` (market_archive::closes), which the server reads at startup
+/// `$ARCHIVE_ROOT/daily-closes.json` (market_archive::closes), which the server reads (and reloads)
 /// to quote change % against the previous close. To replay day D, the range must include the
-/// trading day before D; for live mode, re-run it after every session (a daily job). Re-running a
-/// range refetches and overwrites those dates; other dates in the file are kept.
+/// trading day before D; for live mode it must be re-run after every session (`swimport maintain`
+/// does that daily). Re-running a range refetches and overwrites those dates; other dates in the
+/// file are kept.
 fn alpaca_daily_closes(args: &[String]) -> Result<ExitCode, String> {
     use market_archive::merge_daily_closes;
     use market_providers::import::batch::daily_closes;
@@ -502,7 +508,7 @@ fn alpaca_daily_closes(args: &[String]) -> Result<ExitCode, String> {
         .write_daily_closes(&all)
         .map_err(|e| e.to_string())?;
     println!(
-        "{fetched_days} trading dates fetched, {changed} closes added or changed; {} dates in {} ({} .. {}). Restart the server to load them.",
+        "{fetched_days} trading dates fetched, {changed} closes added or changed; {} dates in {} ({} .. {}). A running server reloads it within ARCHIVE_META_CHECK_SECS (60 s).",
         all.len(),
         path.display(),
         all.keys().next().map_or("-".into(), |d| d.to_string()),
@@ -618,4 +624,140 @@ fn alpaca_batch(args: &[String]) -> Result<ExitCode, String> {
     } else {
         ExitCode::FAILURE
     })
+}
+
+/// Sets `stop` on SIGTERM (compose stop) or Ctrl-C. A current-thread runtime on its own thread:
+/// the importer is blocking code, and this is the one place it needs async.
+fn watch_signals(stop: Arc<AtomicBool>) {
+    std::thread::spawn(move || {
+        let rt = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(rt) => rt,
+            Err(e) => {
+                eprintln!("{} signal handling unavailable: {e}", stamp());
+                return;
+            }
+        };
+        rt.block_on(async {
+            #[cfg(unix)]
+            {
+                use tokio::signal::unix::{SignalKind, signal};
+                match signal(SignalKind::terminate()) {
+                    Ok(mut term) => {
+                        tokio::select! {
+                            _ = tokio::signal::ctrl_c() => {}
+                            _ = term.recv() => {}
+                        }
+                    }
+                    Err(_) => {
+                        let _ = tokio::signal::ctrl_c().await;
+                    }
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        });
+        stop.store(true, Ordering::Relaxed);
+        println!(
+            "{} stop requested: running symbol-days finish and commit, no new ones start",
+            stamp()
+        );
+    });
+}
+
+fn stamp() -> String {
+    Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
+}
+
+/// Sleeps `d` in short slices; false as soon as `stop` is set.
+fn sleep_or_stop(stop: &AtomicBool, d: Duration) -> bool {
+    let until = std::time::Instant::now() + d;
+    while !stop.load(Ordering::Relaxed) {
+        let now = std::time::Instant::now();
+        if now >= until {
+            return true;
+        }
+        std::thread::sleep((until - now).min(Duration::from_millis(500)));
+    }
+    false
+}
+
+/// The archive maintainer (import::maintain): a cycle now, then one daily at `MAINTAIN_AT` ET,
+/// until SIGTERM. `--once` runs one cycle and exits (non-zero unless it was clean), for a manual
+/// catch-up. Missing Alpaca keys are not fatal: the process keeps running (so compose does not
+/// restart it in a loop), imports nothing, deletes nothing, and says so every cycle.
+fn maintain(args: &[String]) -> Result<ExitCode, String> {
+    use market_providers::import::maintain::{
+        MaintainConfig, Maintainer, next_run, status_path, write_status,
+    };
+    let cfg = MaintainConfig::from_lookup(env)?;
+    let creds = AlpacaCredentials::from_lookup(env);
+    let archive = archive()?;
+    let once = args.iter().any(|a| a == "--once");
+    let stop = Arc::new(AtomicBool::new(false));
+    watch_signals(stop.clone());
+    println!(
+        "{} maintain: archive {}, window {} month(s), daily at {} ET, {} workers, <= {}/min, band {}..={}, server {} (token {}), Alpaca keys {}, free-space floor {} MB, status {}",
+        stamp(),
+        archive.root().display(),
+        cfg.window_months,
+        cfg.run_at.format("%H:%M"),
+        cfg.jobs,
+        cfg.per_minute,
+        cfg.band.min,
+        cfg.band.max,
+        cfg.server_url,
+        if cfg.api_token.is_some() {
+            "set"
+        } else {
+            "not set"
+        },
+        if creds.is_some() { "set" } else { "NOT SET" },
+        archive.config().min_free_bytes / (1024 * 1024),
+        status_path(&archive).display(),
+    );
+    let make = ReqwestHttp::new;
+    let wait = |d: Duration| sleep_or_stop(&stop, d);
+    let log = |l: &str| println!("{} {l}", stamp());
+    loop {
+        let m = Maintainer {
+            cfg: &cfg,
+            creds: creds.as_ref(),
+            archive: &archive,
+            make_http: &make,
+            stop: &stop,
+            wait: &wait,
+            log: &log,
+        };
+        let mut report = m.run_cycle(Utc::now());
+        let next = next_run(Utc::now(), cfg.run_at);
+        report.next_run = Some(
+            next.with_timezone(&New_York)
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, false),
+        );
+        if let Err(e) = write_status(&archive, &report) {
+            report.errors.push(format!("status file: {e}"));
+        }
+        println!("{} {}", stamp(), report.summary());
+        if once {
+            return Ok(if report.outcome == "ok" {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            });
+        }
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
+        let ahead = (next - Utc::now()).to_std().unwrap_or(Duration::ZERO);
+        if !sleep_or_stop(&stop, ahead) {
+            break;
+        }
+    }
+    println!("{} maintain stopped", stamp());
+    Ok(ExitCode::SUCCESS)
 }

@@ -86,8 +86,23 @@ docker logout ghcr.io >/dev/null 2>&1 || true
 logged_in=0
 
 set_tag "$tag"
+# Both services (server, archiver) take their tag from image.env, so this one
+# `up` moves them together, and a rollback below moves them back together.
+# Only the server gates the deploy: the archiver is a background job with no
+# port, and a broken one is reported here and in its own log rather than
+# taking the app down with it.
 if compose up -d --remove-orphans && wait_healthy "$tag"; then
   log "OK $tag is live"
+  archiver_id="$(compose ps -q archiver 2>/dev/null || true)"
+  archiver_state=""
+  if [[ -n "$archiver_id" ]]; then
+    archiver_state="$(docker inspect -f '{{.State.Status}} {{.Config.Image}}' "$archiver_id" 2>/dev/null || true)"
+  fi
+  if [[ "$archiver_state" == "running $IMAGE:$tag" ]]; then
+    log "archiver running on $tag"
+  else
+    log "WARNING: archiver is not running on $tag (${archiver_state:-no container}); see: docker compose --env-file image.env logs archiver"
+  fi
 else
   compose logs --no-color --tail 50 server || true
   if [[ -n "$prev" && "$prev" != "$tag" ]]; then
