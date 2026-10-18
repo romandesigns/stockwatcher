@@ -1,4 +1,5 @@
 import { describeCounted, formatEtMillis, formatEtTime, formatPrice, formatSize, type CountedTone, type TapeTrade } from "@stockwatcher/chart-core";
+import { useEffect, useRef } from "react";
 import { Tip } from "./ui/tooltip.tsx";
 import { cn } from "./ui/utils.ts";
 
@@ -19,6 +20,13 @@ const ROW: Record<CountedTone, string> = {
   excluded: "text-text-faint",
   ignored: "text-text-faint line-through",
 };
+// At most this many new rows in one render may slide in. A busy stock prints hundreds of times a
+// second during the open (NWGL ~375/s at 10x), so every render replaces the whole visible list:
+// with an entry animation on each of those rows, every row was always mid-fade and the panel read
+// as empty while the chart beside it updated. A burst appears at once instead, as a trading
+// platform's tape does; a quiet stock's few new prints still slide in.
+const MAX_ANIMATED = 3;
+
 const NOTE: Record<CountedTone, string> = {
   counted: "text-muted-foreground",
   partial: "text-warning",
@@ -47,6 +55,13 @@ export function Tape({ trades, variant = "full", maxRows = 14, className }: Tape
     seen.set(id, n + 1);
     keys[i] = `${id}-${n}`;
   }
+  const shown = useRef<ReadonlySet<string>>(new Set());
+  const fresh = keys.filter((k) => !shown.current.has(k)).length;
+  // A burst, or the first fill after a subscription (a snapshot's history), appears at once.
+  const animate = shown.current.size > 0 && fresh <= MAX_ANIMATED;
+  useEffect(() => {
+    shown.current = new Set(keys);
+  });
   return (
     <div className={cn("flex min-h-0 flex-col gap-1", className)} role="table" aria-label="Time and sales">
       {full && (
@@ -70,7 +85,7 @@ export function Tape({ trades, variant = "full", maxRows = 14, className }: Tape
           <div
             role="row"
             key={keys[i]}
-            className={cn("grid animate-tape-in font-mono text-[11px] tabular-nums", cols, ROW[d.tone])}
+            className={cn("grid font-mono text-[11px] tabular-nums", animate && !shown.current.has(keys[i]!) && "animate-tape-in", cols, ROW[d.tone])}
           >
             <span role="cell" className={cn(d.tone === "counted" && "text-muted-foreground")}>
               {formatEtTime(tr.t, true)}

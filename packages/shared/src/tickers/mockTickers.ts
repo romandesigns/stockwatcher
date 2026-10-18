@@ -1,17 +1,23 @@
 // MOCK DATA, NOT MARKET DATA. Made-up small-cap tickers (none is meant to
 // be a real company) so the quick-open search has a realistic list to
-// filter before the real symbol universe exists (it arrives with the
-// Alpaca/FMP importer). Prices sit in the $0.10–$25 band the server
-// screens for. Every mock row is labelled "mock" in the UI and cannot be
-// opened: there is no data behind it.
+// filter when the data is a fixture (the in-browser fixture, or a server
+// replaying a fixture archive). Next to a real replayed or live day they
+// are noise, so tickerUniverse only appends them on request. Prices sit
+// in the $0.10–$25 band the server screens for. Every mock row is
+// labelled "mock" in the UI and cannot be opened: there is no data behind it.
+
+import type { QuoteBoard } from "./quotes.ts";
 
 export interface TickerInfo {
   symbol: string;
   name: string;
+  /** Listing exchange ("NASDAQ", "NYSE", ...); "" when the server has no metadata for it. */
   exchange: string;
-  /** Last price and change % (mock rows only; simulator rows show none until subscribed). */
+  /** Last price, change % since the open (see TickerQuote) and day volume: live from the
+   *  server's quote board for openable rows, made up for mock rows, absent until known. */
   price?: number;
   changePct?: number;
+  volume?: number;
   /** Has data in the running simulator, so it can be opened. */
   available: boolean;
   mock: boolean;
@@ -46,12 +52,29 @@ export const MOCK_TICKERS: readonly TickerInfo[] = [
   ["ZEPH", "Zephyr Drones", "NASDAQ", 3.64, 27.3],
 ].map(([symbol, name, exchange, price, changePct]) => ({ symbol, name, exchange, price, changePct, available: false, mock: true }) as TickerInfo);
 
-/** The simulator's names for its fixture symbols (the server only knows the tickers). */
-const SIM_NAMES: Record<string, string> = { SMPL: "Sample Labs (fixture)", FXLO: "Fixture Low (fixture)", FXMD: "Fixture Medium (fixture)", FXHI: "Fixture High (fixture)" };
+/** Names for the fixture symbols, which have no asset metadata (they are not companies). */
+const FIXTURE_NAMES: Record<string, string> = { SMPL: "Sample Labs (fixture)", FXLO: "Fixture Low (fixture)", FXMD: "Fixture Medium (fixture)", FXHI: "Fixture High (fixture)" };
 
-/** The quick-open list: the simulator's symbols first (openable), then the mock universe. */
-export function tickerUniverse(simSymbols: readonly string[]): TickerInfo[] {
-  const sim = simSymbols.map((symbol) => ({ symbol, name: SIM_NAMES[symbol] ?? symbol, exchange: "SIM", available: true, mock: false }));
-  const taken = new Set(simSymbols);
-  return [...sim, ...MOCK_TICKERS.filter((t) => !taken.has(t.symbol))];
+/**
+ * The quick-open list: every openable symbol (the server's candidates, plus
+ * any the quote board already has, since the two refresh independently),
+ * with its live quote and the server's name and exchange; then, only when
+ * `mock` is set, the mock universe. A symbol the server has no name for
+ * shows its ticker: names are never invented.
+ */
+export function tickerUniverse(symbols: readonly string[], quotes: QuoteBoard = new Map(), opts: { mock?: boolean } = {}): TickerInfo[] {
+  const all = [...symbols];
+  const taken = new Set(symbols);
+  for (const s of quotes.keys()) {
+    if (taken.has(s)) continue;
+    all.push(s);
+    taken.add(s);
+  }
+  const live = all.map((symbol): TickerInfo => {
+    const q = quotes.get(symbol);
+    const t: TickerInfo = { symbol, name: q?.name ?? FIXTURE_NAMES[symbol] ?? symbol, exchange: q?.exchange ?? "", available: true, mock: false };
+    if (q) Object.assign(t, { price: q.price, changePct: q.changePct, volume: q.volume });
+    return t;
+  });
+  return opts.mock ? [...live, ...MOCK_TICKERS.filter((t) => !taken.has(t.symbol))] : live;
 }

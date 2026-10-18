@@ -11,7 +11,7 @@ import {
   type ReplayControl,
   type Timeframe,
 } from "@stockwatcher/chart-core";
-import { createWsClient, type ConnectionStatus, type WebSocketLike } from "@stockwatcher/shared";
+import { createQuoteChannel, createWsClient, type ConnectionStatus, type QuoteChannel, type WebSocketLike } from "@stockwatcher/shared";
 
 import { wsUrl } from "./server";
 
@@ -29,6 +29,8 @@ export interface MobileFeed {
   paperLatest(): PaperState | null;
   onPaper(fn: (m: PaperMessage) => void): () => void;
   sendPaper(cmd: PaperCommand): void;
+  /** The server's live quote board for the ticker search; subscribing opts the connection in. */
+  quotes: QuoteChannel;
   close(): void;
 }
 
@@ -36,7 +38,8 @@ export interface MobileFeed {
  * The phone's connection to the server's /ws: the same protocol as the web
  * app's feed (apps/web/src/feed/serverFeed.ts). shared's client does hello +
  * token, heartbeat and backoff; chart.* and paper.* frames are teed off the
- * raw socket because shared's parser only knows the handshake messages.
+ * raw socket because shared's parser only knows the handshake messages;
+ * quotes.* frames are shared's own and pass straight through to it.
  */
 export function createMobileFeed(token: string | null, onStatus?: (s: ConnectionStatus) => void): MobileFeed {
   const listeners = new Set<(m: ChartMessage) => void>();
@@ -44,6 +47,9 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
   const active = new Set<ChartSubscription>();
   let raw: WebSocketLike | null = null;
   let paper: PaperState | null = null;
+
+  // Late-bound: the channel is built before the client it drives.
+  const quotes = createQuoteChannel({ subscribe: () => client.subscribeQuotes(), unsubscribe: () => client.unsubscribeQuotes() });
 
   const sendRaw = (msg: ChartSubscribe | ReplayControl | PaperCommand) => {
     if (raw && raw.readyState === 1) raw.send(JSON.stringify(msg));
@@ -58,10 +64,17 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
       // Subscriptions do not survive a reconnect.
       if (s === "open") for (const a of active) sendRaw({ type: "chart.subscribe", ...a });
     },
+    onQuotes: (m) => quotes.apply(m),
     createSocket: (url) => {
       const socket = new WebSocket(url);
       let inner: WebSocketLike["onmessage"] = null;
       socket.addEventListener("message", (ev: { data: unknown }) => {
+        // A quotes.snapshot is hundreds of KB: skip the chart/paper parsers (the server writes
+        // `type` first), which would each JSON.parse it again on the phone's JS thread.
+        if (typeof ev.data === "string" && ev.data.startsWith('{"type":"quotes.')) {
+          inner?.({ data: ev.data });
+          return;
+        }
         const chart = parseChartMessage(ev.data);
         if (chart) {
           for (const l of listeners) l(chart);
@@ -102,6 +115,7 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
       };
     },
     sendPaper: (cmd) => sendRaw(cmd),
+    quotes,
     close() {
       client.close();
       listeners.clear();

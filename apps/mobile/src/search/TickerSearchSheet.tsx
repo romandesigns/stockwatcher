@@ -1,19 +1,23 @@
-import { formatPrice } from "@stockwatcher/chart-core";
+import { formatPrice, formatVolume } from "@stockwatcher/chart-core";
 import { playHaptic } from "@stockwatcher/chart-native";
 import {
+  activeTickerFilters,
   pushRecentTicker,
+  refreshTickerRows,
   searchTickers,
-  TICKER_FILTER_GROUPS,
   TICKER_SECTION_TITLES,
+  tickerUniverse,
+  visibleTickerFilterGroups,
+  type QuoteChannel,
   type TickerFilterId,
-  type TickerInfo,
   type TickerRow,
 } from "@stockwatcher/shared";
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { FlatList, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { Circle, Path } from "react-native-svg";
 
+import { useQuoteBoard } from "../feed/hooks";
 import { getPreference, setPreference } from "../storage/preferences";
 import { colors, fonts } from "../theme";
 
@@ -30,10 +34,65 @@ function Highlight({ text, indices, style }: { text: string; indices: readonly n
   );
 }
 
+interface RowProps {
+  row: TickerRow;
+  current: boolean;
+  onChoose: (r: TickerRow) => void;
+}
+
+/**
+ * One row: ticker, name over "exchange · volume", and the live price over the change since the
+ * open (good/critical, the status colours). Memoized: refreshTickerRows keeps an unchanged row's
+ * identity, so a quote update re-renders only the rows whose values moved.
+ */
+const Row = memo(function Row({ row: r, current, onChoose }: RowProps) {
+  const t = r.item;
+  const up = (t.changePct ?? 0) >= 0;
+  const sub = [t.exchange, t.volume === undefined ? "" : `${formatVolume(t.volume)} vol`].filter(Boolean).join(" · ");
+  const quote = t.price === undefined ? "" : `, ${formatPrice(t.price)}, ${up ? "up" : "down"} ${Math.abs(t.changePct ?? 0).toFixed(1)} percent`;
+  return (
+    <View>
+      {r.section && <Text style={s.section}>{TICKER_SECTION_TITLES[r.section]}</Text>}
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ disabled: !t.available, selected: current }}
+        accessibilityLabel={`${t.symbol}, ${t.name}${t.exchange ? `, ${t.exchange}` : ""}${quote}${t.mock ? ", mock, not in the simulator" : ""}${current ? ", open" : ""}`}
+        disabled={!t.available}
+        onPress={() => onChoose(r)}
+        style={({ pressed }) => [s.row, pressed && { backgroundColor: colors.bgRow }, !t.available && { opacity: 0.55 }]}
+      >
+        <Highlight text={t.symbol} indices={r.symbolIdx} style={s.symbol} />
+        <View style={s.nameCol}>
+          <Highlight text={t.name} indices={r.nameIdx} style={s.name} />
+          {sub.length > 0 && <Text style={s.exchange}>{sub}</Text>}
+        </View>
+        <View style={s.right}>
+          {current && <Text style={s.openBadge}>Open</Text>}
+          {t.mock && <Text style={s.mock}>mock</Text>}
+          {t.price !== undefined && (
+            <View style={s.quote}>
+              <Text style={s.price}>{formatPrice(t.price)}</Text>
+              <Text style={[s.change, { color: up ? colors.good : colors.critical }]}>
+                {up ? "+" : "−"}
+                {Math.abs(t.changePct ?? 0).toFixed(1)}%
+              </Text>
+            </View>
+          )}
+        </View>
+      </Pressable>
+    </View>
+  );
+});
+
 export interface TickerSearchSheetProps {
   open: boolean;
   onClose: () => void;
-  tickers: readonly TickerInfo[];
+  /** The server's candidates (openable symbols). */
+  symbols: readonly string[];
+  /** The feed's live quote board; subscribed only while the sheet is open. */
+  quotes: QuoteChannel;
+  /** Append the mock universe (fixture data only: noise next to a real day). */
+  mock: boolean;
   current: string;
   onSelect: (symbol: string) => void;
   reducedMotion?: boolean;
@@ -44,10 +103,16 @@ export interface TickerSearchSheetProps {
  * ranking, filters, sections and recents (all from @stockwatcher/shared),
  * as a full-screen sheet. The field is focused on open so the keyboard is
  * up at once; filters scroll sideways in one row under it; dragging the
- * list drops the keyboard. Mock rows are shown, labelled, and not openable.
+ * list drops the keyboard. Every row shows the live price, change since
+ * the open and day volume, pushed by the server while the sheet is open.
+ * Mock rows (fixture sources only) are shown, labelled, and not openable.
+ * The FlatList virtualizes, so thousands of rows cost only what is on screen.
  */
-export function TickerSearchSheet({ open, onClose, tickers, current, onSelect, reducedMotion }: TickerSearchSheetProps) {
+export function TickerSearchSheet({ open, onClose, symbols, quotes, mock, current, onSelect, reducedMotion }: TickerSearchSheetProps) {
   const insets = useSafeAreaInsets();
+  const board = useQuoteBoard(quotes, open);
+  const tickers = useMemo(() => tickerUniverse(symbols, board, { mock }), [symbols, board, mock]);
+  const groups = useMemo(() => visibleTickerFilterGroups(tickers), [tickers]);
   const [query, setQuery] = useState("");
   // Filters persist between openings (unlike the query), as on the web.
   const [filters, setFilters] = useState<ReadonlySet<TickerFilterId>>(new Set());
@@ -62,7 +127,19 @@ export function TickerSearchSheet({ open, onClose, tickers, current, onSelect, r
     setQuery("");
     onClose();
   };
-  const rows = useMemo(() => searchTickers(tickers, query, filters, recents), [tickers, query, filters, recents]);
+  // Ranked only when the query, filters or recents change, and once more when the first quote
+  // snapshot lands (most-active order needs volumes); other updates refresh values in place, so
+  // the list does not reshuffle under the thumb once a second (the web panel does the same).
+  // React's "adjust state while rendering" pattern: re-rank when the key changes, else keep.
+  const rankKey = [query, [...filters].sort().join(","), recents.join(","), board.size > 0].join("|");
+  const [rank, setRank] = useState<{ key: string; rows: TickerRow[] }>({ key: "", rows: [] });
+  let ranked = rank.rows;
+  if (rank.key !== rankKey) {
+    ranked = searchTickers(tickers, query, filters, recents);
+    setRank({ key: rankKey, rows: ranked });
+  }
+  const grouped = !query.trim() && activeTickerFilters(tickers, filters).size === 0;
+  const rows = useMemo(() => refreshTickerRows(ranked, tickers, grouped), [ranked, tickers, grouped]);
 
   const toggle = (id: TickerFilterId) => {
     playHaptic("selection");
@@ -73,15 +150,21 @@ export function TickerSearchSheet({ open, onClose, tickers, current, onSelect, r
       return next;
     });
   };
-  const choose = (r: TickerRow) => {
-    if (!r.item.available) return;
-    playHaptic("light");
-    const next = pushRecentTicker(recents, r.item.symbol);
-    setRecents(next);
-    void setPreference(RECENTS_KEY, next);
-    onSelect(r.item.symbol);
-    close();
-  };
+  // Stable for the memoized rows; the latest recents and callbacks arrive through a ref that is
+  // updated after each render (never during it).
+  const chooseRef = useRef<(r: TickerRow) => void>(() => {});
+  useLayoutEffect(() => {
+    chooseRef.current = (r: TickerRow) => {
+      if (!r.item.available) return;
+      playHaptic("light");
+      const next = pushRecentTicker(recents, r.item.symbol);
+      setRecents(next);
+      void setPreference(RECENTS_KEY, next);
+      onSelect(r.item.symbol);
+      close();
+    };
+  });
+  const choose = useCallback((r: TickerRow) => chooseRef.current(r), []);
 
   return (
     <Modal visible={open} animationType={reducedMotion ? "fade" : "slide"} onRequestClose={close} statusBarTranslucent navigationBarTranslucent>
@@ -124,7 +207,7 @@ export function TickerSearchSheet({ open, onClose, tickers, current, onSelect, r
 
         {/* One sideways-scrolling row of chips; a soft bar between groups, as on the web. */}
         <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={s.chips} style={s.chipsScroll} accessibilityLabel="Filters">
-          {TICKER_FILTER_GROUPS.map((g, gi) => (
+          {groups.map((g, gi) => (
             <Fragment key={g.id}>
               {gi > 0 && <View style={s.groupBar} />}
               {g.chips.map((c) => {
@@ -162,43 +245,10 @@ export function TickerSearchSheet({ open, onClose, tickers, current, onSelect, r
           keyboardDismissMode="on-drag"
           contentContainerStyle={{ paddingBottom: insets.bottom + 16 }}
           ListEmptyComponent={<Text style={s.empty}>{query ? `No ticker matches “${query}”.` : "No ticker matches these filters."}</Text>}
-          renderItem={({ item: r }) => {
-            const t = r.item;
-            const up = (t.changePct ?? 0) >= 0;
-            return (
-              <View>
-                {r.section && <Text style={s.section}>{TICKER_SECTION_TITLES[r.section]}</Text>}
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityState={{ disabled: !t.available, selected: t.symbol === current }}
-                  accessibilityLabel={`${t.symbol}, ${t.name}, ${t.exchange}${t.mock ? ", mock, not in the simulator" : ""}${t.symbol === current ? ", open" : ""}`}
-                  disabled={!t.available}
-                  onPress={() => choose(r)}
-                  style={({ pressed }) => [s.row, pressed && { backgroundColor: colors.bgRow }, !t.available && { opacity: 0.55 }]}
-                >
-                  <Highlight text={t.symbol} indices={r.symbolIdx} style={s.symbol} />
-                  <View style={s.nameCol}>
-                    <Highlight text={t.name} indices={r.nameIdx} style={s.name} />
-                    <Text style={s.exchange}>{t.exchange}</Text>
-                  </View>
-                  <View style={s.right}>
-                    {t.symbol === current && <Text style={s.openBadge}>Open</Text>}
-                    {t.available && t.symbol !== current && <Text style={s.inSim}>In simulator</Text>}
-                    {t.mock && t.price !== undefined && (
-                      <>
-                        <Text style={s.price}>{formatPrice(t.price)}</Text>
-                        <Text style={[s.change, { color: up ? colors.good : colors.critical }]}>
-                          {up ? "+" : "−"}
-                          {Math.abs(t.changePct ?? 0).toFixed(1)}%
-                        </Text>
-                        <Text style={s.mock}>mock</Text>
-                      </>
-                    )}
-                  </View>
-                </Pressable>
-              </View>
-            );
-          }}
+          initialNumToRender={16}
+          maxToRenderPerBatch={24}
+          windowSize={7}
+          renderItem={({ item: r }) => <Row row={r} current={r.item.symbol === current} onChoose={choose} />}
         />
       </View>
     </Modal>
@@ -228,10 +278,10 @@ const s = StyleSheet.create({
   symbol: { width: 62, color: colors.text, fontSize: 14, fontWeight: "600", fontVariant: ["tabular-nums"] },
   nameCol: { flex: 1, minWidth: 0, gap: 1 },
   name: { color: colors.textDim, fontSize: 13 },
-  exchange: { color: colors.textFaint, fontSize: 10 },
+  exchange: { color: colors.textFaint, fontSize: 10, fontVariant: ["tabular-nums"] },
   right: { flexDirection: "row", alignItems: "center", gap: 6 },
+  quote: { minWidth: 58, alignItems: "flex-end", gap: 1 },
   openBadge: { color: colors.accent, fontSize: 10, fontWeight: "600", backgroundColor: "rgba(139,156,255,0.15)", borderRadius: 4, paddingHorizontal: 6, paddingVertical: 2, overflow: "hidden" },
-  inSim: { color: colors.good, fontSize: 10 },
   price: { color: colors.text, fontSize: 12, fontVariant: ["tabular-nums"] },
   change: { fontSize: 11, fontVariant: ["tabular-nums"] },
   mock: { color: colors.warning, fontSize: 9, fontWeight: "600", backgroundColor: colors.warningBg, borderRadius: 3, paddingHorizontal: 4, paddingVertical: 1, overflow: "hidden" },

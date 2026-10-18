@@ -2,6 +2,7 @@ pub mod api;
 pub mod auth;
 pub mod config;
 pub mod market;
+pub mod quotes;
 pub mod ws;
 
 use std::path::Path;
@@ -139,6 +140,7 @@ pub fn router(state: AppState, static_dir: &Path, data_dir: &Path) -> Router {
         .route("/chart/{symbol}/snapshot", get(api::chart_snapshot))
         .route("/replay/state", get(api::replay_state))
         .route("/symbols", get(api::symbols))
+        .route("/quotes", get(api::quotes))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_bearer,

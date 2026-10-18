@@ -1,4 +1,4 @@
-import { parseServerMessage, type ClientMessage, type HelloMessage, type ServerMessage, type WelcomeMessage } from "./protocol.ts";
+import { parseServerMessage, type ClientMessage, type HelloMessage, type QuotesMessage, type ServerMessage, type WelcomeMessage } from "./protocol.ts";
 
 export type ConnectionStatus = "connecting" | "open" | "reconnecting" | "unauthorized" | "closed";
 
@@ -20,6 +20,8 @@ export interface WsClientOptions {
   onStatus?: (status: ConnectionStatus) => void;
   onWelcome?: (welcome: WelcomeMessage) => void;
   onMessage?: (message: ServerMessage) => void;
+  /** `quotes.snapshot` / `quotes.update` frames, while subscribed (see `subscribeQuotes`). */
+  onQuotes?: (message: QuotesMessage) => void;
   createSocket?: (url: string) => WebSocketLike;
   baseDelayMs?: number;
   maxDelayMs?: number;
@@ -28,6 +30,13 @@ export interface WsClientOptions {
 
 export interface WsClient {
   send(message: ClientMessage): boolean;
+  /**
+   * Opts in to the quote board: the server answers with a `quotes.snapshot`
+   * and then sends `quotes.update`s. The opt-in is remembered and sent again
+   * after every reconnect (the server forgets it with the connection).
+   */
+  subscribeQuotes(): void;
+  unsubscribeQuotes(): void;
   close(): void;
 }
 
@@ -58,6 +67,7 @@ export function createWsClient(opts: WsClientOptions): WsClient {
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let livenessTimer: ReturnType<typeof setTimeout> | null = null;
   let heartbeatMs = 15_000;
+  let quotesWanted = false;
 
   const setStatus = (s: ConnectionStatus) => opts.onStatus?.(s);
 
@@ -97,10 +107,13 @@ export function createWsClient(opts: WsClientOptions): WsClient {
         heartbeatMs = msg.heartbeatSecs * 1000;
         setStatus("open");
         opts.onWelcome?.(msg);
+        if (quotesWanted) send({ type: "quotes.subscribe" });
       } else if (msg.type === "ping") {
         send({ type: "pong", ts: msg.ts });
       } else if (msg.type === "error" && msg.code === "unauthorized") {
         unauthorized = true;
+      } else if ((msg.type === "quotes.snapshot" || msg.type === "quotes.update") && quotesWanted) {
+        opts.onQuotes?.(msg);
       }
       opts.onMessage?.(msg);
     };
@@ -123,6 +136,15 @@ export function createWsClient(opts: WsClientOptions): WsClient {
 
   return {
     send,
+    subscribeQuotes() {
+      quotesWanted = true;
+      // Not open yet: the welcome handler sends it.
+      send({ type: "quotes.subscribe" });
+    },
+    unsubscribeQuotes() {
+      quotesWanted = false;
+      send({ type: "quotes.unsubscribe" });
+    },
     close() {
       stopped = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);

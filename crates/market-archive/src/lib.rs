@@ -8,6 +8,7 @@
 //!
 //! ```text
 //! $ARCHIVE_ROOT/
+//!   assets.json            # optional: symbol → {name, exchange} (crate::assets)
 //!   2026-10-15/
 //!     manifest.json        # symbols, counts, first/last ts, sources, bytes, sha256 per file
 //!     SMPL.swa             # one file per symbol (finalized)
@@ -62,6 +63,7 @@
 //!
 //! [`market-replay`]: ../market_replay/index.html
 
+pub mod assets;
 pub mod bars;
 pub mod config;
 pub mod fixture;
@@ -75,6 +77,7 @@ mod archive;
 mod error;
 
 pub use archive::{Archive, VerifyReport, VerifySymbol};
+pub use assets::{ASSETS_FILE, AssetMap, AssetMeta};
 pub use bars::{Bar, BarDataset, BarEntry};
 pub use config::ArchiveConfig;
 pub use error::ArchiveError;

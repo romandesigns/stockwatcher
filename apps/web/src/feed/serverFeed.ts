@@ -1,5 +1,5 @@
 import { parseChartMessage, parsePaperMessage, type ChartMessage, type ChartSubscribe, type PaperMessage, type PaperState, type ReplayControl } from "@stockwatcher/chart-core";
-import { createWsClient, sameOriginWsUrl, type ConnectionStatus, type WebSocketLike } from "@stockwatcher/shared";
+import { createQuoteChannel, createWsClient, sameOriginWsUrl, type ConnectionStatus, type WebSocketLike } from "@stockwatcher/shared";
 import type { ChartFeed, ChartSubscription, PaperCommand, ReplayCommand } from "./types.ts";
 
 export interface ServerFeedOptions {
@@ -17,7 +17,9 @@ export interface ServerFeedOptions {
  * shared's parseServerMessage only knows hello/welcome/ping/pong/error and
  * drops everything else, so this wraps the socket and tees raw frames to
  * chart-core's parser. When the protocol is frozen, chart.* types belong in
- * shared's ServerMessage union and this tee can go.
+ * shared's ServerMessage union and this tee can go. quotes.* frames are
+ * shared's own and go straight through to it (opted in only while a ticker
+ * search is open: see `quotes`).
  */
 export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
   const listeners = new Set<(m: ChartMessage) => void>();
@@ -25,6 +27,9 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
   let raw: WebSocketLike | null = null;
   const paperListeners = new Set<(m: PaperMessage) => void>();
   let paperState: PaperState | null = null;
+
+  // Late-bound: the channel is built before the client it drives.
+  const quotes = createQuoteChannel({ subscribe: () => client.subscribeQuotes(), unsubscribe: () => client.unsubscribeQuotes() });
 
   const sendRaw = (msg: ChartSubscribe | ReplayControl | PaperCommand) => {
     if (raw && raw.readyState === 1) raw.send(JSON.stringify(msg));
@@ -41,6 +46,7 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
       opts.onStatus?.(s);
       if (s === "open") resubscribe(); // subscriptions do not survive a reconnect
     },
+    onQuotes: (m) => quotes.apply(m),
     createSocket: (url) => {
       const socket = new WebSocket(url);
       // Chart frames go to chart listeners; everything else to whatever
@@ -48,6 +54,12 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
       // accessor shadows the native one, so the browser never calls it.
       let inner: WebSocketLike["onmessage"] = null;
       socket.addEventListener("message", (ev) => {
+        // A quotes.snapshot is hundreds of KB: hand it to shared's parser without first
+        // parsing it twice as a chart or paper frame. The server writes `type` first.
+        if (typeof ev.data === "string" && ev.data.startsWith('{"type":"quotes.')) {
+          inner?.({ data: ev.data });
+          return;
+        }
         const chart = parseChartMessage(ev.data);
         if (chart) {
           for (const l of listeners) l(chart);
@@ -89,6 +101,7 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
       },
       send: (cmd) => sendRaw(cmd),
     },
+    quotes,
     close() {
       client.close();
       listeners.clear();
