@@ -9,6 +9,7 @@
 //! ```text
 //! $ARCHIVE_ROOT/
 //!   assets.json            # optional: symbol → {name, exchange} (crate::assets)
+//!   daily-closes.json      # optional: date → symbol → official close (crate::closes)
 //!   2026-10-15/
 //!     manifest.json        # symbols, counts, first/last ts, sources, bytes, sha256 per file
 //!     SMPL.swa             # one file per symbol (finalized)
@@ -65,6 +66,7 @@
 
 pub mod assets;
 pub mod bars;
+pub mod closes;
 pub mod config;
 pub mod fixture;
 pub mod format;
@@ -79,6 +81,7 @@ mod error;
 pub use archive::{Archive, VerifyReport, VerifySymbol};
 pub use assets::{ASSETS_FILE, AssetMap, AssetMeta};
 pub use bars::{Bar, BarDataset, BarEntry};
+pub use closes::{DAILY_CLOSES_FILE, DailyCloses, PrevCloses, merge_daily_closes};
 pub use config::ArchiveConfig;
 pub use error::ArchiveError;
 pub use manifest::{DayManifest, ImportProvenance, SymbolEntry};

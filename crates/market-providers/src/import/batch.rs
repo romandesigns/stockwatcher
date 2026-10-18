@@ -13,7 +13,9 @@
 //!
 //! The same assets list also gives the archive's display metadata ([`asset_metadata`], written
 //! to `$ARCHIVE_ROOT/assets.json` by `swimport alpaca-assets`): each symbol's name and listing
-//! exchange as Alpaca reports them, for the ticker search.
+//! exchange as Alpaca reports them, for the ticker search. And the same daily bars give the
+//! official closes ([`daily_closes`], merged into `$ARCHIVE_ROOT/daily-closes.json` by
+//! `swimport alpaca-daily-closes`) that the server quotes change % against.
 
 use super::alpaca::{
     AlpacaCredentials, Feed, ImportError, ImportOptions, TradesQuery, import_trades,
@@ -21,7 +23,7 @@ use super::alpaca::{
 use super::http::{FetchError, Http, HttpResponse, RetryPolicy, get_with_retry};
 use chrono::{DateTime, NaiveDate, Utc};
 use chrono_tz::America::New_York;
-use market_archive::{Archive, AssetMap, AssetMeta};
+use market_archive::{Archive, AssetMap, AssetMeta, DailyCloses};
 use market_events::session::sessions_for;
 use market_events::{PriceBand, SessionKind};
 use serde::{Deserialize, Serialize};
@@ -111,10 +113,6 @@ pub fn plan_universe(
     band: PriceBand,
     log: &mut dyn FnMut(&str),
 ) -> Result<Plan, String> {
-    let headers = alpaca_headers(creds);
-    let secrets = [creds.key_id.as_str(), creds.secret.as_str()];
-    let retry = RetryPolicy::default();
-    let mut sleep = |d: Duration| std::thread::sleep(d);
     let assets = fetch_assets(http, trading_base, creds, log)?;
     let mut symbols: Vec<String> = assets
         .into_iter()
@@ -134,6 +132,66 @@ pub fn plan_universe(
         ..Plan::default()
     };
     let (lo, hi) = (band.min.to_f64(), band.max.to_f64());
+    for_each_daily_bar(
+        http,
+        data_base,
+        creds,
+        &symbols,
+        from,
+        to,
+        log,
+        &mut |symbol, day, b| {
+            if !(lo..=hi).contains(&b.c) {
+                return;
+            }
+            if !market_archive::valid_symbol(symbol) {
+                if !plan.skipped_symbols.iter().any(|s| s == symbol) {
+                    plan.skipped_symbols.push(symbol.to_string());
+                }
+                return;
+            }
+            plan.tasks.push(Task {
+                day,
+                symbol: symbol.to_string(),
+                close: b.c,
+                trades: b.n,
+            });
+        },
+    )?;
+    // Busiest first, so the long downloads start early and the tail is short tasks.
+    plan.tasks.sort_by(|a, b| {
+        b.trades
+            .cmp(&a.trades)
+            .then(a.day.cmp(&b.day))
+            .then(a.symbol.cmp(&b.symbol))
+    });
+    Ok(plan)
+}
+
+/// Every daily bar of `symbols` over `from..=to` (ET trading dates), in chunks of 200 symbols per
+/// request (keeps URLs short) and following `next_page_token`. `on_bar` gets each bar with its
+/// trading date; a bar stamped outside the range or with an unparseable `t` is skipped.
+///
+/// `adjustment=raw` on purpose, for both callers: the archive's prints are as traded that day, so
+/// a band test or a change-% reference must be in the same units. A split-adjusted close would
+/// also change retroactively every time a later split is announced, so two fetches of the same
+/// day would disagree and a merged `daily-closes.json` would mix bases. The cost is one false move
+/// on an ex-split date (yesterday's raw close in pre-split units), which is visible and rare.
+#[allow(clippy::too_many_arguments)]
+fn for_each_daily_bar(
+    http: &mut dyn Http,
+    data_base: &str,
+    creds: &AlpacaCredentials,
+    symbols: &[String],
+    from: NaiveDate,
+    to: NaiveDate,
+    log: &mut dyn FnMut(&str),
+    on_bar: &mut dyn FnMut(&str, NaiveDate, &DailyBar),
+) -> Result<(), String> {
+    let headers = alpaca_headers(creds);
+    let secrets = [creds.key_id.as_str(), creds.secret.as_str()];
+    let retry = RetryPolicy::default();
+    let mut sleep = |d: Duration| std::thread::sleep(d);
     for chunk in symbols.chunks(200) {
         let mut token: Option<String> = None;
         loop {
@@ -152,25 +210,11 @@ pub fn plan_universe(
                 serde_json::from_slice(&resp.body).map_err(|e| format!("daily bars: {e}"))?;
             for (symbol, bars) in page.bars.unwrap_or_default() {
                 for b in bars {
-                    if !(lo..=hi).contains(&b.c) {
-                        continue;
-                    }
                     let Some(day) = bar_day(&b.t) else { continue };
                     if day < from || day > to {
                         continue;
                     }
-                    if !market_archive::valid_symbol(&symbol) {
-                        if !plan.skipped_symbols.contains(&symbol) {
-                            plan.skipped_symbols.push(symbol.clone());
-                        }
-                        continue;
-                    }
-                    plan.tasks.push(Task {
-                        day,
-                        symbol: symbol.clone(),
-                        close: b.c,
-                        trades: b.n,
-                    });
+                    on_bar(&symbol, day, &b);
                 }
             }
             match page.next_page_token.filter(|t| !t.is_empty()) {
@@ -180,14 +224,60 @@ pub fn plan_universe(
             }
         }
     }
-    // Busiest first, so the long downloads start early and the tail is short tasks.
-    plan.tasks.sort_by(|a, b| {
-        b.trades
-            .cmp(&a.trades)
-            .then(a.day.cmp(&b.day))
-            .then(a.symbol.cmp(&b.symbol))
-    });
-    Ok(plan)
+    Ok(())
+}
+
+/// The official daily close of every active US equity on each trading date of `from..=to`, for
+/// `$ARCHIVE_ROOT/daily-closes.json` (`swimport alpaca-daily-closes`; format and use in
+/// market_archive::closes). The close is the `c` of Alpaca's SIP `1Day` bar, raw (see
+/// [`for_each_daily_bar`] for why raw): the consolidated regular-session close, which is the
+/// reference brokers quote "today's change" against.
+///
+/// Every active asset, tradable or not, like [`asset_metadata`]: a symbol that is not tradable
+/// today may still be in an archived day, and a missing close only costs that row its reference.
+/// The symbol is kept as Alpaca spells it (no file-name check: it is a JSON key, never a path).
+/// A close that is not a finite positive number is left out rather than stored as a reference.
+pub fn daily_closes(
+    http: &mut dyn Http,
+    trading_base: &str,
+    data_base: &str,
+    creds: &AlpacaCredentials,
+    from: NaiveDate,
+    to: NaiveDate,
+    log: &mut dyn FnMut(&str),
+) -> Result<DailyCloses, String> {
+    let mut symbols: Vec<String> = fetch_assets(http, trading_base, creds, log)?
+        .into_iter()
+        .map(|a| a.symbol.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    symbols.sort();
+    symbols.dedup();
+    log(&format!("{} active US equities", symbols.len()));
+    let mut out = DailyCloses::new();
+    let mut bad = 0usize;
+    for_each_daily_bar(
+        http,
+        data_base,
+        creds,
+        &symbols,
+        from,
+        to,
+        log,
+        &mut |symbol, day, b| {
+            if b.c.is_finite() && b.c > 0.0 {
+                out.entry(day).or_default().insert(symbol.to_string(), b.c);
+            } else {
+                bad += 1;
+            }
+        },
+    )?;
+    let n: usize = out.values().map(|m| m.len()).sum();
+    log(&format!(
+        "{n} closes over {} trading dates ({bad} non-positive closes left out)",
+        out.len()
+    ));
+    Ok(out)
 }
 
 /// Active US equities from Alpaca's trading API (`/v2/assets`), one request, with the shared
