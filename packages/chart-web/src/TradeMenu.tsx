@@ -1,4 +1,4 @@
-import { formatPrice, formatSize, orderTypeAt, priceDecimals, type OrderSide } from "@stockwatcher/chart-core";
+import { formatPrice, formatSize, orderTypeAt, priceDecimals, TRADE_SIZES, type OrderSide } from "@stockwatcher/chart-core";
 import { useMemo, type RefObject } from "react";
 import {
   DropdownMenu,
@@ -12,7 +12,8 @@ import {
 } from "./ui/dropdown-menu.tsx";
 import { cn } from "./ui/utils.ts";
 
-export const TRADE_MENU_SIZES = [100, 500, 1000] as const;
+/** chart-core's one list (the size syncs across devices, so the phone's sheet offers the same). */
+export const TRADE_MENU_SIZES = TRADE_SIZES;
 
 export interface TradeMenuProps {
   open: boolean;

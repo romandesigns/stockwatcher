@@ -12,8 +12,9 @@ export const SYNC_CACHE_KEY = "sw-sync:v1";
 /**
  * Where these settings lived before sync (CandleChart's `persistKey` "sw-chart" and the app's
  * Settings dialog). Read once, on the first run with sync, then left alone: the engine's
- * cache replaces them. The device-local ones (`:toolbox`, `:panes`, `:toolsVisible`,
- * `:tradeQty`) stay where they are, still owned by CandleChart.
+ * cache replaces them. The device-local ones (`:toolbox`, `:panes`, `:toolsVisible`) stay where
+ * they are, still owned by CandleChart; `:tradeQty` and the search recents now sync too, seeded
+ * by the app store (state/store.ts).
  */
 export const LEGACY_KEYS = {
   indicators: "sw-chart:indicators",

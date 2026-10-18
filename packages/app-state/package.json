@@ -1,0 +1,24 @@
+{
+  "name": "@stockwatcher/app-state",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "bun test",
+    "lint": "oxlint src",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@stockwatcher/chart-core": "workspace:*",
+    "@stockwatcher/shared": "workspace:*",
+    "zustand": "5.0.15"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.3",
+    "oxlint": "1.88.0",
+    "typescript": "7.0.2"
+  }
+}

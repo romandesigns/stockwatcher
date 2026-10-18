@@ -16,8 +16,10 @@ import { parseLayers } from "./levels.ts";
 // - `drawingSettings` DrawingSettings (drawingSettings.ts parseDrawingSettings)
 // - `drawings:<SYMBOL>` one symbol's drawings, as a MAP of drawing id → {z, d} (below), written
 //   with entry-level patches so two devices editing different drawings never overwrite each other.
-// Device-local (each screen's own view): ticker, timeframe, zoom/pan, the toolbox's place and
-// orientation, pane heights, tools shown, open dialogs and tabs, ticket size, search recents.
+// The app-level namespaces (ticker/timeframe/bin `view`, `tradeQty`, `searchRecents`) live in
+// @stockwatcher/app-state (namespaces.ts), next to the store that reads them.
+// Device-local (each screen's own layout): zoom/pan, the toolbox's place and orientation, pane
+// heights, tools shown, open dialogs and tabs.
 //
 // Remote JSON is never trusted: another device may run an older or newer build, so every value
 // goes through these parsers (unknown fields dropped, junk falling back to defaults).

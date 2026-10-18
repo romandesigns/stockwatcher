@@ -12,8 +12,9 @@ const CACHE_KEY = "sync.v1";
 
 /**
  * Where these settings lived before sync. Read once, on the first run with sync, then left alone.
- * The device-local ones (`chart.toolbox`, `chart.paneHeights`, `chart.toolsVisible`,
- * `search.recent`) stay where they are, owned by the chart screen and the search sheet.
+ * The device-local ones (`chart.toolbox`, `chart.paneHeights`, `chart.toolsVisible`) stay where
+ * they are, now as the app store's device slice; `search.recent` now syncs, seeded by the store
+ * (src/state/store.ts).
  */
 const LEGACY = {
   indicators: "chart.indicators",

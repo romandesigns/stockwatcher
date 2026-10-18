@@ -20,6 +20,7 @@ import {
   priceDecimals,
   snapPrice,
   toggleIndicator,
+  TRADE_SIZES,
   type IndicatorSpec,
   type OrderPlace,
   type OrderSide,
@@ -573,7 +574,8 @@ export function TradeHistory({ fills, realized }: { fills: readonly FillMark[]; 
   );
 }
 
-export const QUICK_TRADE_SIZES = [100, 500, 1000] as const;
+/** chart-core's one list (the size syncs across devices, so the web's menu offers the same). */
+export const QUICK_TRADE_SIZES = TRADE_SIZES;
 
 /**
  * Trade at a price, the phone's twin of chart-web's right-click TradeMenu:

@@ -2,7 +2,6 @@ import { formatPrice, formatVolume } from "@stockwatcher/chart-core";
 import { Icon, playHaptic } from "@stockwatcher/chart-native";
 import {
   activeTickerFilters,
-  pushRecentTicker,
   refreshTickerRows,
   searchTickers,
   TICKER_SECTION_TITLES,
@@ -12,15 +11,12 @@ import {
   type TickerFilterId,
   type TickerRow,
 } from "@stockwatcher/shared";
-import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { FlatList, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useQuoteBoard } from "../feed/hooks";
-import { getPreference, setPreference } from "../storage/preferences";
 import { colors, fonts } from "../theme";
-
-const RECENTS_KEY = "search.recent";
 
 /** Text with the matched letters in the accent, as on the web. */
 function Highlight({ text, indices, style }: { text: string; indices: readonly number[]; style: object }) {
@@ -93,6 +89,8 @@ export interface TickerSearchSheetProps {
   /** Append the mock universe (fixture data only: noise next to a real day). */
   mock: boolean;
   current: string;
+  /** Recently opened tickers, newest first: synced across devices by the app's store, which also records an opening (openTicker). */
+  recents: readonly string[];
   onSelect: (symbol: string) => void;
   reducedMotion?: boolean;
 }
@@ -108,7 +106,7 @@ export interface TickerSearchSheetProps {
  * Mock rows (fixture sources only) are shown, labelled, and not openable.
  * The FlatList virtualizes, so thousands of rows cost only what is on screen.
  */
-export function TickerSearchSheet({ open, onClose, symbols, quotes, mock, current, onSelect, reducedMotion }: TickerSearchSheetProps) {
+export function TickerSearchSheet({ open, onClose, symbols, quotes, mock, current, recents, onSelect, reducedMotion }: TickerSearchSheetProps) {
   const insets = useSafeAreaInsets();
   const board = useQuoteBoard(quotes, open);
   const tickers = useMemo(() => tickerUniverse(symbols, board, { mock }), [symbols, board, mock]);
@@ -116,11 +114,6 @@ export function TickerSearchSheet({ open, onClose, symbols, quotes, mock, curren
   const [query, setQuery] = useState("");
   // Filters persist between openings (unlike the query), as on the web.
   const [filters, setFilters] = useState<ReadonlySet<TickerFilterId>>(new Set());
-  const [recents, setRecents] = useState<string[]>([]);
-  useEffect(() => {
-    if (!open) return;
-    void getPreference<unknown>(RECENTS_KEY).then((v) => setRecents(Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []));
-  }, [open]);
 
   // Every opening starts with an empty field, like the web: clear it on the way out.
   const close = () => {
@@ -150,16 +143,13 @@ export function TickerSearchSheet({ open, onClose, symbols, quotes, mock, curren
       return next;
     });
   };
-  // Stable for the memoized rows; the latest recents and callbacks arrive through a ref that is
-  // updated after each render (never during it).
+  // Stable for the memoized rows; the latest callbacks arrive through a ref that is updated after
+  // each render (never during it).
   const chooseRef = useRef<(r: TickerRow) => void>(() => {});
   useLayoutEffect(() => {
     chooseRef.current = (r: TickerRow) => {
       if (!r.item.available) return;
       playHaptic("light");
-      const next = pushRecentTicker(recents, r.item.symbol);
-      setRecents(next);
-      void setPreference(RECENTS_KEY, next);
       onSelect(r.item.symbol);
       close();
     };

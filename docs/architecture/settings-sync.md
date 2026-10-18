@@ -8,6 +8,11 @@ Decided scope: the user's **settings and drawings** sync; each device keeps its 
 a single-user app (one API token), so every connected client (web, desktop = the web app in Tauri,
 phone) is the same person.
 
+**Widened 2026-10-18** with the app store (`app-state.md`): the owner asked to "sync everything
+possible", so the ticker, timeframe and profile bin (`view`), the trade size (`tradeQty`) and the
+search recents (`searchRecents`) sync too. Each client reads all of it through its Zustand store
+(`@stockwatcher/app-state`), which replaced the two `useSynced.ts` hooks.
+
 ## Where things live
 
 | Piece | Location |
@@ -16,8 +21,9 @@ phone) is the same person.
 | Wire protocol | top of `crates/server/src/ws.rs`, mirrored in `packages/shared/src/protocol.ts` |
 | Client engine (cache, queue, migration, throttle) | `packages/shared/src/settingsSync.ts`, attached by `createWsClient({settings})` in `ws.ts` |
 | Namespaces, validation, drawing map, migration rule | `packages/chart-core/src/syncedSettings.ts` |
-| Web / desktop | `apps/web/src/settings/` (`sync.ts`, `useSynced.ts`), used by `App.tsx` |
-| Phone | `apps/mobile/src/settings/` (same two files), used by `screens/ChartScreen.tsx` |
+| App-level namespaces (`view`, `tradeQty`, `searchRecents`) | `packages/app-state/src/namespaces.ts` |
+| Web / desktop | `apps/web/src/settings/sync.ts` (the engine), read through `apps/web/src/state/store.ts` |
+| Phone | `apps/mobile/src/settings/sync.ts` (the engine), read through `apps/mobile/src/state/store.ts` |
 | Two-client check against the real server | `scripts/settings-sync-e2e.ts` (by hand, not in CI) |
 
 ## Synced vs device-local
@@ -29,15 +35,14 @@ phone) is the same person.
 | Chart settings (type, price scale, sessions, volume, grid, shading, breaks, high/low, auto stretch, zoom preset, visibility) | `sw-chart:settings` / `chart.settings` | **synced** `chartSettings` | same; a remote change does not re-zoom this device's view (below) |
 | Drawing toolbox contents (Settings → Drawing) | `sw-chart:drawing` / `chart.drawing` | **synced** `drawingSettings` | same |
 | Drawings (incl. colour, position tools) | `sw-chart:drawings` / `chart.drawings` (all symbols in one value) | **synced** `drawings:<SYMBOL>`, per drawing | the user's marks on a chart, wanted everywhere |
-| Ticker, timeframe | session state | device-local | each device's own view (owner's decision) |
+| Ticker, timeframe, profile bin | session state | **synced** `view` (since 2026-10-18) | owner: "sync everything possible"; a ticker outside the price band falls back per device without writing back (`app-state.md`) |
 | Zoom / pan / manual price range / auto-stretch override | session state | device-local | same |
 | Toolbox position and orientation | `sw-chart:toolbox` / `chart.toolbox` | device-local | depends on the screen: a column on the left of a desktop is a row on a phone |
 | Oscillator pane heights | `sw-chart:panes` / `chart.paneHeights` | device-local | pixels, so they depend on the screen's height |
 | Drawing tools shown / hidden | `sw-chart:toolsVisible` / `chart.toolsVisible` | device-local | a screen-space choice (a phone may hide them, a desktop not) |
-| Trade menu share size | `sw-chart:tradeQty` (web only) | device-local | the last value typed into a ticket, not a setting |
+| Trade menu share size | `sw-chart:tradeQty` (web only) | **synced** `tradeQty` (since 2026-10-18) | owner: "sync everything possible"; one list of sizes (chart-core `TRADE_SIZES`) |
 | Settings dialog tab, open dialogs/menus, selected drawing | `sw-settings:tab`, session state | device-local | UI state |
-| Ticker search recents | `sw-search:recent` / `search.recent` | device-local | history of what this device opened; easy to move into a namespace later if wanted |
-| Profile bin | session state (never persisted) | unchanged | it is a chart subscription parameter, not saved anywhere today |
+| Ticker search recents | `sw-search:recent` / `search.recent` | **synced** `searchRecents` (since 2026-10-18) | owner: "sync everything possible"; seeded once from the old keys |
 | Access token | `sw-access-token` / keystore | device-local, never synced | a credential |
 
 When in doubt about a per-screen layout value it stays local: syncing a pixel height or a corner

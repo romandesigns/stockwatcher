@@ -124,5 +124,6 @@ does not run in Expo Go.
 - Layout: **no UI yet** (owner, 2026-10-16). The boilerplate ships tooling plus ONE "Hello world" page per client. When UI work starts, the stockspotter layout strategy (memory "stockspotter-layout-strategy") is the default proposal.
 - Mobile motion: one motion vocabulary for iOS and Android (CLAUDE.md "Screen transitions and motion").
 - Open source first; no paid runtime APIs without a reason recorded in the commit message.
+- App state: one Zustand store per client from `@stockwatcher/app-state` (owner, 2026-10-18; Zustand over Redux Toolkit). Components read it through `useApp(selector)`, never a new top-level `useState` for state another screen or device could need. See `docs/architecture/app-state.md`.
 - Commits explain why. Comments explain non-obvious constraints, concisely.
 - Secrets only in gitignored `.env` files or GitHub secrets; never committed, never printed.
