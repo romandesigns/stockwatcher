@@ -22,11 +22,14 @@ import {
   DEFAULT_TOOLBOX_PHONE,
   DEFAULT_CHART_SETTINGS,
   parseChartSettings,
+  DEFAULT_DRAWING_SETTINGS,
+  parseDrawingSettings,
+  type DrawingSettings,
   type ChartSettings,
   type ToolboxPlacement,
   type Timeframe,
 } from "@stockwatcher/chart-core";
-import { CandleChart, Icon, ReplayDaySheet, SessionTimeline, TapeSheet, ToolButton, UI } from "@stockwatcher/chart-native";
+import { CandleChart, drawingSettingsSection, Icon, ReplayDaySheet, SessionTimeline, SettingsSheet, TapeSheet, ToolButton, UI } from "@stockwatcher/chart-native";
 import type { ConnectionStatus } from "@stockwatcher/shared";
 import { useEffect, useMemo, useState } from "react";
 import Animated, { FadeIn, FadeOut, ReduceMotion } from "react-native-reanimated";
@@ -110,6 +113,17 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
     setChartSettings(s);
     void setPreference("chart.settings", s);
   };
+
+  // Which buttons the drawing toolbox shows (the Settings sheet's Drawing tab), kept across launches.
+  const [drawingSettings, setDrawingSettings] = useState<DrawingSettings>(DEFAULT_DRAWING_SETTINGS);
+  useEffect(() => {
+    void getPreference<unknown>("chart.drawing").then((v) => v && setDrawingSettings(parseDrawingSettings(v)));
+  }, []);
+  const changeDrawingSettings = (s: DrawingSettings) => {
+    setDrawingSettings(s);
+    void setPreference("chart.drawing", s);
+  };
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   // Indicators and drawings are the chart's; the screen only persists them.
   const [indicators, setIndicators] = useState<IndicatorSpec[]>([]);
@@ -228,6 +242,18 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
             <Icon name={live ? "live" : "replay"} color={live ? colors.good : colors.textDim} size={15} />
           )}
         </View>
+        {/* Settings (owner request 2026-10-18), at the header's right edge as on the web: the search button's
+            round 32 pt chip, neutral, raised while its sheet is open. */}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Settings"
+          accessibilityState={{ expanded: settingsOpen }}
+          onPress={() => setSettingsOpen(true)}
+          hitSlop={6}
+          style={({ pressed }) => [styles.roundButton, (pressed || settingsOpen) && { backgroundColor: colors.bgRow }]}
+        >
+          <Icon name="settings" color={colors.textDim} size={15} />
+        </Pressable>
       </View>
 
       <CandleChart
@@ -241,6 +267,7 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
         onInspectChange={setInspectT}
         settings={chartSettings}
         onSettingsChange={changeChartSettings}
+        drawingSettings={drawingSettings}
         indicators={indicators}
         onIndicatorsChange={changeIndicators}
         drawings={active ? (drawings[active] ?? []) : []}
@@ -342,6 +369,7 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
         }}
         reducedMotion={reducedMotion}
       />
+      <SettingsSheet open={settingsOpen} onClose={() => setSettingsOpen(false)} sections={[drawingSettingsSection(drawingSettings, changeDrawingSettings, reducedMotion)]} reducedMotion={reducedMotion} />
       <TapeSheet open={tapeOpen} onClose={() => setTapeOpen(false)} trades={tape} note={active ?? undefined} />
       <ReplayDaySheet
         open={daysOpen}
@@ -362,6 +390,7 @@ const styles = StyleSheet.create({
   header: { flexDirection: "row", alignItems: "center", gap: 8 },
   tickerButton: { flexDirection: "row", alignItems: "center", gap: 4 },
   searchButton: { marginLeft: "auto", width: 32, height: 32, borderRadius: 16, alignItems: "center", justifyContent: "center", backgroundColor: colors.bgPanel },
+  roundButton: { width: 32, height: 32, borderRadius: 16, alignItems: "center", justifyContent: "center", backgroundColor: colors.bgPanel },
   stepWrap: {},
   step: { width: 36, height: 36, paddingHorizontal: 0, backgroundColor: UI.row },
   symbol: { color: colors.text, fontFamily: fonts.semibold, fontSize: 16 },

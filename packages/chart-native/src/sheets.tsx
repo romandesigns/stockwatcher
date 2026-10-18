@@ -36,15 +36,18 @@ import { Icon, Segmented, ToolButton, UI } from "./ui.tsx";
  * A bottom sheet on a dimmed backdrop. Tapping the backdrop or the system
  * back closes it. RN's Modal "slide" is the same motion on both platforms;
  * with reduced motion the host passes reducedMotion and it only fades.
+ * `tall` makes it a full-height sheet (the Settings sheet): a fixed 92 %
+ * height, so the backdrop still shows above it and it still reads as a
+ * sheet you can dismiss, and its children get the room to fill (flex: 1).
  */
-export function Sheet({ open, onClose, title, badge, children, reducedMotion }: { open: boolean; onClose: () => void; title: string; badge?: ReactNode; children: ReactNode; reducedMotion?: boolean }) {
+export function Sheet({ open, onClose, title, badge, children, reducedMotion, tall }: { open: boolean; onClose: () => void; title: string; badge?: ReactNode; children: ReactNode; reducedMotion?: boolean; tall?: boolean }) {
   // The modal draws under Android's translucent navigation bar: pad by its real height, so the last row
   // is never under the gesture handle.
   const insets = useSafeAreaInsets();
   return (
     <Modal visible={open} transparent animationType={reducedMotion ? "fade" : "slide"} onRequestClose={onClose} statusBarTranslucent navigationBarTranslucent>
       <Pressable style={s.backdrop} onPress={onClose} accessibilityLabel="Close" accessibilityRole="button" />
-      <View style={[s.sheet, { paddingBottom: Math.max(20, insets.bottom + 14) }]} accessibilityViewIsModal>
+      <View style={[s.sheet, tall && s.tall, { paddingBottom: Math.max(20, insets.bottom + 14) }]} accessibilityViewIsModal>
         <View style={s.grabber} />
         <View style={s.titleRow}>
           <Text style={s.title} accessibilityRole="header">
@@ -394,6 +397,7 @@ export function OrderTicketSheet({
 const s = StyleSheet.create({
   backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.45)" },
   sheet: { backgroundColor: UI.panel, borderTopLeftRadius: 16, borderTopRightRadius: 16, paddingHorizontal: 16, paddingTop: 8, paddingBottom: 28, maxHeight: "75%" },
+  tall: { height: "92%", maxHeight: "92%" },
   grabber: { alignSelf: "center", width: 36, height: 4, borderRadius: 2, backgroundColor: UI.raised, marginBottom: 10 },
   titleRow: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 },
   priceChip: { color: UI.text, fontSize: 12, fontVariant: ["tabular-nums"], backgroundColor: UI.bg, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 3, overflow: "hidden" },

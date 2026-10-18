@@ -16,3 +16,5 @@ export { Tape, TapeSheet } from "./Tape.tsx";
 export { QuickTradeSheet, QUICK_TRADE_SIZES } from "./sheets.tsx";
 export { TimeframeWheel } from "./TimeframeWheel.tsx";
 export { ReplayDaySheet } from "./ReplayDaySheet.tsx";
+export { SettingsSheet, type SettingsSheetSection } from "./SettingsSheet.tsx";
+export { DrawingSettingsPanel, DrawingSettingsReset, drawingSettingsSection } from "./DrawingSettingsPanel.tsx";
