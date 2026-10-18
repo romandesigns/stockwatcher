@@ -10,6 +10,7 @@ pub mod batch;
 pub mod check;
 pub mod fmp;
 pub mod http;
+pub mod maintain;
 
 #[cfg(feature = "import")]
 pub mod client;

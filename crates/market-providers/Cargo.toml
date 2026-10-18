@@ -27,7 +27,9 @@ market-replay = { path = "../market-replay" }
 chrono = { version = "0.4.45", default-features = false, features = ["std", "clock", "serde"] }
 chrono-tz = "0.10.4"
 serde = { version = "1.0.229", features = ["derive"] }
-tokio = { version = "1.53.3", features = ["rt", "macros", "net", "sync", "time"] }
+# `signal`: `swimport maintain` stops cleanly on SIGTERM (compose stop). Already compiled for the
+# server, so no new crate.
+tokio = { version = "1.53.3", features = ["rt", "macros", "net", "signal", "sync", "time"] }
 tracing = "0.1.44"
 serde_json = "1.0.154"
 # Same versions the workspace already locks (via the desktop updater); ring, not aws-lc, so it
