@@ -24,7 +24,7 @@ nothing here.
   (same `start`, `end` now set) when it resumes. Clients upsert by `start`.
 - Times are `event_ts` in epoch ms. A second `Halt` while already halted is ignored. A `Resume`
   with no open halt is ignored. Both count in `quality` (new counters: `haltsUnmatched`).
-- Replay rebuilds (`seek`) rebuild halts like candles.
+- Replay rebuilds (`seek`, a `day` switch) rebuild halts like candles.
 
 ## 2. LULD bands (chart-engine → wire)
 
@@ -65,7 +65,7 @@ Verify against the official bands before any real use.
 - `paper.state` gains `fills`: the last 200 fills, oldest first. Each one is
   `{ "orderId", "symbol", "side", "qty", "price", "t", "role" }`, where `role` is the order's bracket
   role or null.
-- It is cleared with the account (`paper.reset`, a seek).
+- It is cleared with the account (`paper.reset`, a seek, a replay day switch).
 - The existing `paper.fill` events are unchanged. This list lets a client that connects later, or
   reloads, still draw fill markers and the trade list.
 

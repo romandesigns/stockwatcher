@@ -8,30 +8,53 @@ We’ll build around your trading approach:
 - Key context: the first meaningful expansion candle, volume, VWAP, moving averages, pullbacks, and nearby resistance.
 The application should explain why a stock deserves attention, how the setup is developing in one intuitive, web, desktop and mobile-friendly view.
 
+## Product direction (owner, 2026-10-18)
+
+- **The main page consumes only live data.** It is the next thing to build (the live dashboard), on top
+  of the chart packages (`docs/architecture/chart-packages.md`, which also lists what the server must
+  support first).
+- **Replay is a practice feature**, like TradingView's Bar Replay or Webull's paper trading: pick a
+  recorded day and trade it with the simulated broker. It is not a mode the whole product switches to.
+  Today `MARKET_DATA_MODE` is still one server-wide switch (production runs `replay`); the target is the
+  live feed always on with replay sessions beside it.
+
 ## Layout (monorepo, Bun workspaces + Cargo workspace)
 
 ```
 stockwatcher/
   Cargo.toml                 # Rust workspace (members: crates/*, apps/desktop/src-tauri)
-  package.json               # Bun workspaces: apps/web, apps/mobile, apps/desktop, packages/*
-  crates/server/             # Rust axum server: /api/*, /ws, serves apps/web/dist in production
-  apps/web/                  # React + Vite + TypeScript + Tailwind v4 + vendored shadcn/ui
+  package.json               # Bun workspaces: apps/*, packages/*
+  crates/
+    market-events/           # the normalized event contract, ET session calendar, trade-condition policy
+    chart-engine/            # server-side aggregation: 15s/30s/1m/5m candles, gaps, profile, halts, LULD
+    market-archive/          # on-disk day/symbol archive (+ swarchive CLI), assets.json, daily-closes.json
+    market-replay/           # deterministic virtual clock over the archive
+    market-providers/        # Replay and Live (Alpaca stream) providers; swimport + the rolling-window archiver
+    paper-broker/            # simulated order matching, positions, account
+    provider-sim/            # Alpaca/FMP-compatible local simulator (replay mode, :8791)
+    server/                  # axum: /api/*, /ws, /updates/*; serves apps/web/dist
+  apps/web/                  # React + Vite + TypeScript + Tailwind v4 + vendored shadcn/ui (Base UI)
   apps/desktop/              # Tauri v2 shell around apps/web (src-tauri/)
-  apps/mobile/               # Expo (latest SDK) React Native app
-  packages/shared/           # TS protocol types + pure helpers shared by web/desktop/mobile
-  infra/docker/Dockerfile    # one image: builds web + server, runs the server
-  infra/vps/                 # compose file, deploy script, Caddy snippet, setup notes
-  .github/workflows/         # ci.yml, deploy.yml, desktop-release.yml, mobile-*.yml
-  docs/
+  apps/mobile/               # Expo SDK 58 React Native app (development build)
+  packages/
+    shared/                  # protocol types, HTTP/WS clients, settings sync engine, ticker search
+    chart-core/              # framework-free chart logic and display list
+    chart-web/               # the chart for React DOM (Canvas 2D) + its components and UI primitives
+    chart-native/            # the chart for React Native (Skia) + its sheets and controls
+    app-state/               # the clients' Zustand store (synced + device + session state)
+  infra/docker/Dockerfile    # one image: builds web + server (+ swimport), runs the server
+  infra/vps/                 # compose file (server + archiver), deploy/publish scripts, Caddy snippet, SETUP.md
+  .github/workflows/         # ci.yml (checks; pull requests), release.yml (every push to main; reuses ci.yml)
+  docs/                      # CONVENTIONS, architecture/, reference/, specs/, research/
 ```
 
 ## Names, ports, URLs
 - Repo: `github.com/romandesigns/stockwatcher` (**private**). Default branch `main`.
 - Public URL: `https://stockwatcher.wavystyle.io` (Caddy on the VPS → `127.0.0.1:8790`).
 - Server port: **8790** (env `PORT`, default 8790; bind `0.0.0.0` in the container, published as `127.0.0.1:8790` on the host).
-- Routes: `GET /api/health` → `{"status":"ok","version","commit"}`; `GET /api/version`; WebSocket `/ws` (JSON messages, `hello`/`welcome`/`ping`/`pong`, server heartbeat every 15 s); everything else → the web app (SPA fallback to index.html).
+- Routes: `GET /api/health` → `{"status":"ok","version","commit"}`; `GET /api/version`; `GET /api/chart/{symbol}/snapshot`, `/api/replay/state`, `/api/symbols`, `/api/quotes`, `/api/settings`; `/updates/*` (desktop installers, no auth); WebSocket `/ws` (JSON: `hello`/`welcome`/`ping`/`pong` with a 15 s heartbeat, then `chart.*`, `tape.trade`, `replay.*`, `order.*`/`paper.*`, `quotes.*`, `settings.*`); everything else → the web app (SPA fallback to index.html). Message reference: `docs/architecture/simulator-and-chart.md` Appendix D and the header of `crates/server/src/ws.rs`. Environment variables: `docs/reference/configuration.md`.
 - Auth: env `STOCKWATCHER_API_TOKEN` (≥32 chars). When set, `/api/*` (except `/api/health`) and `/ws` require `Authorization: Bearer <token>` (WS: token in the hello message). When unset in dev, auth is off and the server logs a warning. Never put the token in a URL or a public build variable.
-- Web dev server: Vite on 5173, proxying `/api` and `/ws` to 8790. Production web build: `apps/web/dist`.
+- Web dev server: Vite on 5173, proxying `/api`, `/ws` and `/updates` to 8790 (or to `STOCKWATCHER_DEV_SERVER`). Production web build: `apps/web/dist`.
 - Image: `ghcr.io/romandesigns/stockwatcher-server:<git sha>` (+ `:main`). Container user non-root.
 - VPS: host alias `stockspotter-vps` (srv1170872), user `wavystack` (docker group, no passwordless sudo). App dir `~/apps/stockwatcher` (compose file + `.env` + deploy log). Data volume `stockwatcher_data` → `/app/data`.
 - Mobile: Expo app slug `stockwatcher`, EAS owner `creativecoder87`, **EAS project id `b43c471a-3d47-4904-bd31-a7f5797ee45a`** (created by the owner; link with `eas init --id`), Android package `io.wavystyle.stockwatcher`, iOS bundle id `io.wavystyle.stockwatcher`. Channels: `preview`, `production`. runtimeVersion policy `fingerprint`.
@@ -103,9 +126,9 @@ does not run in Expo Go.
 - **Storage:** `expo-secure-store` for the access token (never AsyncStorage); `@react-native-async-storage/async-storage` for non-secret preferences.
 - **System:** `expo-constants`, `expo-application`, `expo-linking` (deep links with scheme `stockwatcher`), `expo-splash-screen`, `expo-status-bar`, `expo-system-ui`, `expo-font` (an open font bundled locally, no runtime CDN), `expo-keep-awake` (opt-in keep screen on), `expo-localization`.
 - **Network:** `@react-native-community/netinfo` for the offline/online indicator and reconnecting the WebSocket.
-- **Graphics:** `react-native-svg` for gauges, sparklines and icons.
+- **Graphics:** `@shopify/react-native-skia` draws the chart (chart-core's display list, one picture per frame; why: `simulator-and-chart.md` Appendix E); `react-native-svg` for icons, gauges and sparklines.
 - **Styling:** React Native `StyleSheet` with a `src/theme.ts` token module mirroring the web tokens. No NativeWind and no web-only UI kits.
-- **No UI yet:** the app is ONE screen that says "Hello world". Modules and config plugins are installed and configured: navigation container, motion module, update check, notification channel and secure-store wrapper are wired but render nothing visible. No tabs, hub, sign-in or settings screens.
+- **Screens (2026-10-18):** a sign-in screen (the access token, kept in the keystore) and the chart screen (`src/screens/ChartScreen.tsx`: header, chart, replay bar, and the ticker search, settings, tape and replay-day sheets). The boilerplate's "one Hello world screen" stage is over; the motion module, update check, notification channel and secure-store wrapper from that stage are still the wiring new screens use.
 
 ## Desktop (Tauri v2) plugins
 
@@ -121,7 +144,8 @@ does not run in Expo Go.
 - Compact design approach. Use balanced padding and marging just enough to allow breathing room between UI components.
 - Latest stable versions when first added; Bun as package manager; Rust for the backend.
 - Web UI: vendored shadcn/ui **on Base UI primitives — never Radix** (no `@radix-ui/*` package anywhere; owner rule 2026-10-16), 60/30/10 color tokens on `:root` (dominant neutrals / structural / one accent), dark-first, responsive (works at 375 px), every visible layout change animates and respects reduced motion.
-- Layout: **no UI yet** (owner, 2026-10-16). The boilerplate ships tooling plus ONE "Hello world" page per client. When UI work starts, the stockspotter layout strategy (memory "stockspotter-layout-strategy") is the default proposal.
+- Layout: the boilerplate stage ("no UI yet", 2026-10-16) ended with the simulator and chart (2026-10-17/18). For new screens the stockspotter layout strategy (fixed-viewport resizable panel grid; rail + workspace; stacked below 1400 px; a Home hub with tabs on phones) is the default proposal. Owner UI rules that apply everywhere: no borders or dividers (surface contrast, fills and gaps instead), light layouts (regions sit on the page background, fills only for stages, samples, code and controls), minimal and compact, duotone icons (accent duotone when active).
+- Reusable UI: a new component a second screen could use also goes into `wavykit/` (workspace rule).
 - Mobile motion: one motion vocabulary for iOS and Android (CLAUDE.md "Screen transitions and motion").
 - Open source first; no paid runtime APIs without a reason recorded in the commit message.
 - App state: one Zustand store per client from `@stockwatcher/app-state` (owner, 2026-10-18; Zustand over Redux Toolkit). Components read it through `useApp(selector)`, never a new top-level `useState` for state another screen or device could need. See `docs/architecture/app-state.md`.

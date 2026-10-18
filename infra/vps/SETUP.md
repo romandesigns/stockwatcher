@@ -11,8 +11,9 @@ After this setup a push to `main` deploys with no manual step.
 
 ```sh
 mkdir -p ~/apps/stockwatcher && cd ~/apps/stockwatcher
-# From a checkout of this repo, copy the four infra/vps files:
-#   docker-compose.yml  deploy.sh  publish-updates.sh  (and keep SETUP.md for reference)
+# From a checkout of this repo, copy the infra/vps files:
+#   docker-compose.yml  deploy.sh  publish-updates.sh  (Caddyfile.snippet is for step 4;
+#   keep SETUP.md for reference)
 chmod 755 deploy.sh publish-updates.sh
 ```
 
@@ -27,8 +28,13 @@ umask 077
 {
   printf 'STOCKWATCHER_API_TOKEN=%s\n' "$(openssl rand -hex 32)"
   printf 'RUST_LOG=info\n'
+  printf 'MARKET_DATA_MODE=replay\n'     # or live: see "Market data mode" below
+  printf 'REPLAY_START=09:30\n'          # the server's default is 10:40
 } > .env
 ```
+
+Every variable the server and the archiver read is listed in
+`docs/reference/configuration.md`.
 
 Clients enter the token on their sign-in screen. Read it with
 `grep STOCKWATCHER_API_TOKEN .env` on the host when you need it. Don't
@@ -96,9 +102,9 @@ days older than the window, and refreshes `assets.json` and
 appear in the day menu, removed ones disappear, names and previous closes reload
 within a minute). The window is the 21 trading days ending at L, the latest
 completed trading day: each new session brings one day in and pushes exactly one
-out, so the archive stays ~13 GB. On 2026-10-18 that is 2026-09-18 ..= 2026-10-16;
-the 22 days seeded by hand start at 09-17, so the first cycle prunes 09-17.
-Full rules: `crates/market-providers/src/import/maintain.rs`.
+out, so the archive stays ~13 GB. (When this was set up on 2026-10-18 the window
+was 2026-09-18 ..= 2026-10-16; the 22 days seeded by hand started at 09-17, so the
+first cycle pruned 09-17.) Full rules: `crates/market-providers/src/import/maintain.rs`.
 
 Safety, in short: the day the server is replaying is never deleted; if the
 server cannot be asked (down, wrong token) nothing is deleted that cycle; while
@@ -157,6 +163,29 @@ archiver; for the server `ARCHIVE_META_CHECK_SECS` (60) and
 `REPLAY_FOLLOW_LATEST=1`, which switches the running replay to each newly
 imported day (off by default: like any day switch it resets the paper account
 and moves every client to the new day, typically late in the evening).
+`PRICE_BAND_MIN` / `PRICE_BAND_MAX` (`0.10` / `25.00`) set the candidate band for
+both: the server's search and chart candidates, and the archiver's import.
+
+## 8. Market data mode (replay or live)
+
+One switch for the whole server, read at start: `MARKET_DATA_MODE` in `.env`.
+`replay` plays the archive (the day menu, play/pause/speed work); `live` streams
+Alpaca SIP (the Alpaca keys from step 7 must be in `.env`; replay controls answer
+`not_replay`). Alpaca allows one stream per account on most plans, so only one
+host may run live. Switching recreates the server, so every client reconnects
+and the paper account resets:
+
+```sh
+cd ~/apps/stockwatcher
+cp .env .env.bak-$(date -u +%Y%m%dT%H%M%SZ)
+sed -i 's/^MARKET_DATA_MODE=.*/MARKET_DATA_MODE=live/' .env     # or =replay
+docker compose --env-file image.env up -d     # plain `up` fails: the image tag is in image.env
+docker logs --since 1m stockwatcher-server-1 2>&1 | grep 'market data provider started'
+```
+
+The log line names the mode and source (`alpaca sip stream`, or `archive <day>`).
+A client that stayed connected across the switch may keep the old mode's clock
+until it is reopened (seen 2026-10-18).
 
 ## Operating it
 
