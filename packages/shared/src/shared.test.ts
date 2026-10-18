@@ -155,3 +155,47 @@ describe("createWsClient", () => {
     expect(FakeSocket.instances.length).toBe(1);
   });
 });
+
+describe("quote board opt-in", () => {
+  test("parseServerMessage knows the quotes frames", () => {
+    const snap = { type: "quotes.snapshot", t: 1, quotes: [] };
+    expect(parseServerMessage(JSON.stringify(snap))).toEqual(snap as never);
+    expect(parseServerMessage('{"type":"quotes.update","t":2,"quotes":[]}')?.type).toBe("quotes.update");
+  });
+
+  test("subscribes after welcome, delivers frames, re-subscribes after a reconnect, stops on unsubscribe", async () => {
+    const got: string[] = [];
+    const client = createWsClient({
+      url: "ws://x/ws",
+      createSocket: (url) => new FakeSocket(url),
+      onQuotes: (m) => got.push(m.type),
+      baseDelayMs: 1,
+      maxDelayMs: 2,
+    });
+    // Asked for before the socket is open: sent once the server has welcomed us.
+    client.subscribeQuotes();
+    const first = FakeSocket.instances[0]!;
+    first.open();
+    expect(first.sent.map((s) => JSON.parse(s).type)).toEqual(["hello"]);
+    first.receive(welcome);
+    expect(JSON.parse(first.sent.at(-1)!)).toEqual({ type: "quotes.subscribe" });
+    first.receive({ type: "quotes.snapshot", t: 1, quotes: [] });
+    first.receive({ type: "quotes.update", t: 2, quotes: [] });
+    expect(got).toEqual(["quotes.snapshot", "quotes.update"]);
+
+    // The server forgets the opt-in with the connection; the client does not.
+    first.close();
+    await tick();
+    const second = FakeSocket.instances[1]!;
+    second.open();
+    second.receive(welcome);
+    expect(JSON.parse(second.sent.at(-1)!)).toEqual({ type: "quotes.subscribe" });
+
+    client.unsubscribeQuotes();
+    expect(JSON.parse(second.sent.at(-1)!)).toEqual({ type: "quotes.unsubscribe" });
+    // A frame already in flight after the unsubscribe is not delivered.
+    second.receive({ type: "quotes.update", t: 3, quotes: [] });
+    expect(got.length).toBe(2);
+    client.close();
+  });
+});
