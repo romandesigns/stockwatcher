@@ -203,7 +203,8 @@ export function DrawingToolbox({ placement, onPlacementChange, container, tool, 
       style={preview ? undefined : { left: at.left, top: at.top, ...(vertical ? { maxHeight: Math.max(120, container.height - 12) } : { maxWidth: Math.max(120, container.width - 12) }) }}
       className={cn(
         "z-10 flex flex-wrap items-center rounded-xl bg-card/95 p-[3px] shadow-lg backdrop-blur-sm",
-        preview ? "relative w-fit max-w-full" : "absolute",
+        // The preview sits on the Settings panel's own colour, so a muted 1 px border (owner-approved) separates it.
+        preview ? "relative w-fit max-w-full border border-border" : "absolute",
         vertical ? "flex-col" : "flex-row",
       )}
     >

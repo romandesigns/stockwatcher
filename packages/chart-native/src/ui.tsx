@@ -15,6 +15,8 @@ export const UI = {
   panel: "#151a20",
   row: "#1c222a",
   raised: "#272e38",
+  /** The web's --border: a muted line, used only where the owner approved one (the Drawing tab's toolbox preview). */
+  border: "#262d36",
   text: "#e4e8ed",
   textDim: "#98a2ae",
   textFaint: "#66707c",
