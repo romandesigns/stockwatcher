@@ -81,11 +81,12 @@ export function ToolIcon({ kind, color }: { kind: DrawingKind | "cursor" | "tras
 }
 
 /**
- * An armed drawing tool's icon colour: accent (both tones), because drawing is
- * a mode the next tap acts on; the cursor is the resting state and stays
- * neutral, so the accent stays rare. Same rule as chart-web's ARMED.
+ * A drawing tool's icon colour: accent (both tones) when it is the active
+ * tool, the cursor included, under the owner's rule that every active item's
+ * icon shows its accent duotone (2026-10-18; the cursor used to stay
+ * neutral). Same rule as chart-web's ARMED.
  */
-export const toolColor = (kind: DrawingKind | "cursor", on: boolean) => (on ? (kind === "cursor" ? UI.text : UI.accent) : UI.textDim);
+export const toolColor = (_kind: DrawingKind | "cursor", on: boolean) => (on ? UI.accent : UI.textDim);
 
 export interface SegmentedProps<T extends string> {
   /** tint colours the selected label; activeBg replaces the selected segment's raised surface (Buy/Sell). */

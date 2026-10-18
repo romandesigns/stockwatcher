@@ -803,7 +803,7 @@ export function CandleChart({
                 </Text>
               )}
               <ToolButton label={toolsVisible ? "Hide drawing tools" : "Show drawing tools"} onPress={() => changeToolsVisible(!toolsVisible)} style={toolsVisible ? { backgroundColor: UI.raised } : undefined}>
-                <ToolIcon kind="pencil" color={toolsVisible ? UI.text : UI.textDim} />
+                <ToolIcon kind="pencil" color={toolsVisible ? UI.accent : UI.textDim} />
               </ToolButton>
               {/* No Chart button: the chart settings live in the Settings sheet's Chart tab (owner, 2026-10-18), as on the web. */}
               <ToolButton label={indicatorSpecs.length ? `Indicators, ${indicatorSpecs.length} on` : "Indicators"} onPress={() => setSheet({ kind: "indicators" })} style={s.indicators}>

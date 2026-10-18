@@ -34,7 +34,7 @@ export function LayersMenu({ layers, ids = LAYER_IDS, onChange }: { layers: Char
         </DropdownMenuLabel>
         {ids.map((id) => (
           <DropdownMenuCheckboxItem key={id} checked={layers[id]} onCheckedChange={(v) => onChange({ ...layers, [id]: !!v })} closeOnClick={false} className="gap-2.5 py-1.5 pr-9">
-            <span className={cn("grid h-8 w-10 shrink-0 place-items-center rounded-lg", layers[id] ? "bg-bg-raised" : "bg-bg-row opacity-60")}>
+            <span className={cn("grid h-8 w-10 shrink-0 place-items-center rounded-lg", layers[id] ? "bg-bg-raised text-primary" : "bg-bg-row opacity-60")}>
               <LayerSwatch id={id} />
             </span>
             <span className="flex min-w-0 flex-col gap-0.5">

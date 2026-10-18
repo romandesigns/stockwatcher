@@ -131,7 +131,7 @@ function ItemRow({ item, on, onToggle }: { item: ToolboxItemInfo; on: boolean; o
   const locked = !!item.locked;
   return (
     <label className={cn("flex min-h-11 items-center gap-3 rounded-lg px-2 py-1.5 transition-colors", locked ? "cursor-default" : "cursor-pointer hover:bg-bg-row")}>
-      <span className={cn("grid size-8 shrink-0 place-items-center rounded-lg bg-bg-row transition-[opacity,color] duration-150 [&_svg]:size-4", on ? "text-foreground" : "text-muted-foreground opacity-50")}>
+      <span className={cn("grid size-8 shrink-0 place-items-center rounded-lg bg-bg-row transition-[opacity,color] duration-150 [&_svg]:size-4", on ? "text-primary" : "text-muted-foreground opacity-50")}>
         <Icon name={item.icon} />
       </span>
       <span className="flex min-w-0 flex-1 flex-col">

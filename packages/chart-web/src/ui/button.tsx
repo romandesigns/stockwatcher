@@ -13,8 +13,9 @@ const buttonVariants = cva(
         default: "bg-primary text-primary-foreground hover:bg-primary/80",
         secondary:
           "bg-secondary text-secondary-foreground hover:bg-[color-mix(in_oklch,var(--secondary),var(--foreground)_5%)] aria-expanded:bg-secondary aria-expanded:text-secondary-foreground",
-        // Toolbar buttons: no surface until hovered or open.
-        ghost: "bg-transparent hover:bg-bg-row hover:text-foreground aria-expanded:bg-bg-row aria-expanded:text-foreground",
+        // Toolbar buttons: no surface until hovered or open; open, the icon
+        // turns accent (an active item's icon shows its accent duotone).
+        ghost: "bg-transparent hover:bg-bg-row hover:text-foreground aria-expanded:bg-bg-row aria-expanded:text-foreground aria-expanded:[&_svg]:text-primary",
       },
       size: {
         default:

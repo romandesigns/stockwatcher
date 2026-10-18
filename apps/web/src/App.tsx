@@ -74,7 +74,7 @@ function SettingsButton({ open, onOpen }: { open: boolean; onOpen: () => void })
         onClick={onOpen}
         className={cn(
           "inline-grid size-7 shrink-0 place-items-center rounded-full text-muted-foreground outline-none transition-colors hover:bg-bg-row hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-3.5",
-          open ? "bg-bg-raised text-foreground" : "bg-card",
+          open ? "bg-bg-raised text-primary" : "bg-card",
         )}
       >
         <Icon name="settings" />

@@ -13,8 +13,11 @@ const toggleVariants = cva(
         outline: "bg-card hover:bg-bg-row",
         // One option of a segmented control: transparent on the group's
         // panel track, the selected one raised a surface step. Pair with
-        // size="sm" and spacing={0.5} on the ToggleGroup.
-        segmented: "bg-transparent text-muted-foreground hover:bg-transparent hover:text-foreground aria-pressed:bg-bg-raised aria-pressed:text-foreground",
+        // size="sm" and spacing={0.5} on the ToggleGroup. A selected
+        // option's icon turns accent (both tones): the owner's rule that an
+        // active item's icon shows its accent duotone (2026-10-18). The label
+        // stays foreground.
+        segmented: "bg-transparent text-muted-foreground hover:bg-transparent hover:text-foreground aria-pressed:bg-bg-raised aria-pressed:text-foreground aria-pressed:[&_svg]:text-primary",
       },
       size: {
         default:

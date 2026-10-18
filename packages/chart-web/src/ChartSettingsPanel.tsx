@@ -78,13 +78,16 @@ export function ChartSettingsPanel({ settings, onChange }: ChartSettingsPanelPro
   return (
     <div className="@container flex flex-col gap-4">
       <Section label="Type">
-        <ToggleGroup aria-label="Chart type" value={[settings.chartType]} onValueChange={(v) => v[0] && set({ chartType: v[0] as ChartType })} spacing={1} className="grid w-full grid-cols-4 gap-1 rounded-lg bg-background p-1 @md:grid-cols-7">
+        {/* All seven types on one row at every width (owner, 2026-10-18; a phone used to get 4 + 3).
+            The label shrinks with the panel (cqi of the @container above) from 10 px to 8 px,
+            which is what "Heikin-Ashi" needs in a phone-width sheet; truncation stays as a backstop. */}
+        <ToggleGroup aria-label="Chart type" value={[settings.chartType]} onValueChange={(v) => v[0] && set({ chartType: v[0] as ChartType })} spacing={1} className="grid w-full grid-cols-7 gap-0.5 rounded-lg bg-background p-1">
           {CHART_TYPES.map((t) => (
             <Tip key={t} label={CHART_TYPE_INFO[t].description}>
               <ToggleGroupItem
                 value={t}
                 aria-label={CHART_TYPE_INFO[t].name}
-                className="h-auto min-w-0 flex-col gap-1 rounded-md px-0.5 py-1.5 text-[10px] font-normal text-muted-foreground transition-colors hover:bg-bg-row aria-pressed:bg-bg-raised aria-pressed:text-foreground [&_svg]:size-4"
+                className="h-auto min-w-0 flex-col gap-1 rounded-md px-0.5 py-1.5 text-[length:clamp(8px,2.4cqi,10px)] font-normal text-muted-foreground transition-colors hover:bg-bg-row aria-pressed:bg-bg-raised aria-pressed:text-foreground aria-pressed:[&_svg]:text-primary [&_svg]:size-4"
               >
                 <Icon name={CHART_TYPE_ICONS[t]} />
                 <span className="max-w-full truncate">{SHORT[t]}</span>

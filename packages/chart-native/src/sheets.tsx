@@ -65,11 +65,15 @@ export function Sheet({ open, onClose, onBack, title, badge, children, reducedMo
   );
 }
 
-/** A layer's swatch: its duotone icon (shared with chart-web through chart-core); faded while the layer is off, as an off indicator's glyph is. */
+/**
+ * A layer's swatch: its duotone icon (shared with chart-web through chart-core); accent while the
+ * layer is on (owner: an active item's icon shows its accent duotone; status hues keep their own),
+ * faded while it is off, as an off indicator's glyph is.
+ */
 function LayerSwatch({ id, on }: { id: LayerId; on: boolean }) {
   return (
     <View style={{ opacity: on ? 1 : 0.5 }}>
-      <Icon def={LAYER_SWATCHES[id]} color={UI.text} />
+      <Icon def={LAYER_SWATCHES[id]} color={on ? UI.accent : UI.text} />
     </View>
   );
 }
