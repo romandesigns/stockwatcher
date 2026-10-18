@@ -41,8 +41,8 @@ interface RowProps {
 }
 
 /**
- * One row: ticker, name over "exchange · volume", and the live price over the change since the
- * open (good/critical, the status colours). Memoized: refreshTickerRows keeps an unchanged row's
+ * One row: ticker, name over "exchange · volume", and the live price over the change % (vs the
+ * previous close when known, else the open; good/critical, the status colours). Memoized: refreshTickerRows keeps an unchanged row's
  * identity, so a quote update re-renders only the rows whose values moved.
  */
 const Row = memo(function Row({ row: r, current, onChoose }: RowProps) {
@@ -103,8 +103,9 @@ export interface TickerSearchSheetProps {
  * ranking, filters, sections and recents (all from @stockwatcher/shared),
  * as a full-screen sheet. The field is focused on open so the keyboard is
  * up at once; filters scroll sideways in one row under it; dragging the
- * list drops the keyboard. Every row shows the live price, change since
- * the open and day volume, pushed by the server while the sheet is open.
+ * list drops the keyboard. Every row shows the live price, change % (vs
+ * the previous close when known, else the open) and day volume, pushed by
+ * the server while the sheet is open.
  * Mock rows (fixture sources only) are shown, labelled, and not openable.
  * The FlatList virtualizes, so thousands of rows cost only what is on screen.
  */

@@ -155,6 +155,12 @@ export interface ChartSnapshot {
   halts?: Halt[];
   /** LULD band changes of the current session, ascending (timeframe-independent). */
   luld?: LuldPoint[];
+  /**
+   * The official close of the trading day before the current session's date,
+   * when the server has one (its daily-closes.json); absent otherwise. The
+   * change-% reference brokers use, and the "Prev close" level.
+   */
+  prevClose?: number;
 }
 
 /**

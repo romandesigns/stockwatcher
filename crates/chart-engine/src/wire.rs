@@ -137,6 +137,12 @@ pub struct ChartSnapshot {
     /// The LULD band changes of the current trading date's regular session, ascending.
     #[serde(default)]
     pub luld: Vec<LuldWire>,
+    /// The official close of the trading day before the current session's date, in dollars, when
+    /// the server has one (`daily-closes.json`, market_archive::closes); omitted otherwise. The
+    /// engine never sets it: it sees only the tape, and a single-day replay holds no prior day.
+    /// Clients measure change % against it and draw it as the "Prev close" level.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prev_close: Option<f64>,
 }
 
 /// A trading halt. `end` is `None` while the halt is still on.

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { changeReference, formatChange } from "./format.ts";
 import { computeChartModel, type ChartState } from "./layout.ts";
 import { DEFAULT_LAYERS, keyLevels, layoutFills, layoutHalts, layoutKeyLevels, layoutLuld, parseLayers } from "./levels.ts";
 import { buildSlots, defaultViewport } from "./scale.ts";
@@ -24,6 +25,41 @@ describe("keyLevels", () => {
   test("a level with no candles behind it is left out, not guessed", () => {
     const ids = keyLevels(buildSlots(pre, [])).map((l) => l.id);
     expect(ids).toEqual(["pmHigh", "pmLow"]);
+  });
+
+  test("the server's official previous close draws the level a single-day chart cannot derive, and wins over the candles'", () => {
+    const one = keyLevels(buildSlots([...pre, ...reg], []), 3.07);
+    expect(one.find((l) => l.id === "prevClose")).toEqual({ id: "prevClose", label: "Prev close", price: 3.07, layer: "prevClose" });
+    const both = keyLevels(buildSlots([...prev, ...pre, ...reg], []), 3.07);
+    expect(both.find((l) => l.id === "prevClose")!.price).toBe(3.07);
+    // Unknown (null) falls back to the candles, and still nothing is guessed without them.
+    expect(keyLevels(buildSlots([...prev, ...reg], []), null).find((l) => l.id === "prevClose")!.price).toBe(3.01);
+    expect(keyLevels(buildSlots(reg, []), null).some((l) => l.id === "prevClose")).toBe(false);
+  });
+});
+
+describe("changeReference (the header's change %)", () => {
+  const session = { start: etToUtc(2026, 10, 15, 9, 30) };
+  const candles = [c(etToUtc(2026, 10, 15, 8, 0), 3.1, 3.3, 3.05, 3.2), c(etToUtc(2026, 10, 15, 9, 30), 3.32, 3.4, 3.28, 3.38)];
+  test("the previous close when known, else the anchor session's first candle", () => {
+    expect(changeReference({ prevClose: 3.01, session, candles })).toEqual({ price: 3.01, kind: "prevClose" });
+    expect(changeReference({ prevClose: null, session, candles })).toEqual({ price: 3.32, kind: "sessionOpen" });
+    expect(changeReference({ prevClose: 0, session, candles })!.kind).toBe("sessionOpen");
+    expect(changeReference({ prevClose: null, session: null, candles })).toBeUndefined();
+    expect(changeReference(null)).toBeUndefined();
+    // The store carries the snapshot's prevClose to the series the header reads.
+    const snap = fixtureSnapshot("1m", 3);
+    const store = new ChartStore();
+    store.applySnapshot({ ...snap, prevClose: 2.5 });
+    const s = store.getSeries(snap.symbol, "1m")!;
+    expect(s.prevClose).toBe(2.5);
+    expect(formatChange(changeReference(s)!.price, 2.75)).toBe("+10.00%");
+    // Static for the day: an increment keeps it, a snapshot without it clears it.
+    const last = snap.candles[snap.candles.length - 1]!;
+    store.applyIncrement({ type: "chart.update", symbol: snap.symbol, timeframe: "1m", session: snap.session!.id, candle: { ...last, c: last.c + 0.01 }, profileBin: 0.01, profile: [] });
+    expect(store.getSeries(snap.symbol, "1m")!.prevClose).toBe(2.5);
+    store.applySnapshot(snap);
+    expect(store.getSeries(snap.symbol, "1m")!.prevClose).toBeNull();
   });
 });
 

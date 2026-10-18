@@ -24,7 +24,11 @@
 //! forwards (`Outbound::seq` = the engine seq at the take, so a connection skips frames already
 //! contained in its `quotes.snapshot`: the chart's rule). Nothing is built while nobody is
 //! subscribed or while a rebuild runs; after the rebuild every subscriber takes a fresh snapshot
-//! (the `Resync` path). Names and exchanges come from the archive's optional `assets.json`.
+//! (the `Resync` path). Names and exchanges come from the archive's optional `assets.json`, and
+//! each row's previous close (the change-% reference brokers use) from its optional
+//! `daily-closes.json` (market_archive::closes). The same previous close goes into every
+//! `chart.snapshot` as `prevClose`, so the chart header and the "Prev close" level agree with the
+//! search rows without the chart having to subscribe to the quote board.
 
 use crate::quotes::{Counted, QuoteBoard, QuoteChanges, QuoteRow};
 use chart_engine::wire::{ChartSnapshot, ChartUpdate, ClockInfo};
@@ -32,7 +36,7 @@ use chart_engine::{ChartEngine, DataQuality, Timeframe};
 use chrono::{NaiveDate, Utc};
 use chrono_tz::America::New_York;
 use market_archive::fixture::{DEFAULT_SEED, DEFAULT_SYMBOLS, write_fixture_day};
-use market_archive::{Archive, AssetMeta};
+use market_archive::{Archive, AssetMeta, PrevCloses};
 use market_events::{MarketEvent, Price, PriceBand, SessionId, UnixNanos};
 use market_providers::{
     ClockMode, ClockState, Command, FeedItem, MarketDataMode, ProviderConfig, ProviderError,
@@ -175,13 +179,13 @@ struct Core {
 }
 
 impl Core {
-    fn new() -> Self {
+    fn new(closes: Arc<PrevCloses>) -> Self {
         Core {
             engine: ChartEngine::default(),
             seq: 0,
             tape: HashMap::new(),
             last_price: HashMap::new(),
-            quotes: QuoteBoard::new(),
+            quotes: QuoteBoard::with_closes(closes),
             rebuilding: false,
         }
     }
@@ -209,6 +213,9 @@ struct Inner {
     paper: Mutex<Broker>,
     /// `assets.json` (name, exchange), read once at startup; empty when the file is missing.
     assets: HashMap<String, AssetMeta>,
+    /// `daily-closes.json` indexed per symbol, read once at startup; empty when the file is
+    /// missing (change % then falls back to the open everywhere). Shared with every rebuild's board.
+    closes: Arc<PrevCloses>,
     /// Connections that sent `quotes.subscribe`. While 0, the quotes task builds nothing.
     quote_subs: AtomicUsize,
 }
@@ -269,12 +276,13 @@ impl Market {
         control: Option<ReplayHandle>,
         band: PriceBand,
         assets: HashMap<String, AssetMeta>,
+        closes: Arc<PrevCloses>,
     ) -> Self {
         Market(Arc::new(Inner {
             mode,
             info,
             status: Mutex::new(status),
-            core: Mutex::new(Core::new()),
+            core: Mutex::new(Core::new(closes.clone())),
             clock: Mutex::new(None),
             tx: broadcast::channel(BROADCAST_CAPACITY).0,
             control,
@@ -282,6 +290,7 @@ impl Market {
             band,
             paper: Mutex::new(Broker::new()),
             assets,
+            closes,
             quote_subs: AtomicUsize::new(0),
         }))
     }
@@ -295,6 +304,7 @@ impl Market {
             None,
             PriceBand::DEFAULT,
             HashMap::new(),
+            Arc::default(),
         )
     }
 
@@ -330,6 +340,7 @@ impl Market {
             }
         }
         let assets = load_assets(&archive);
+        let closes = Arc::new(load_closes(&archive));
         let started = market_providers::from_config(&cfg.provider).and_then(|p| p.start());
         let session = match started {
             Ok(s) => s,
@@ -367,6 +378,7 @@ impl Market {
             session.control.clone(),
             cfg.band,
             assets,
+            closes,
         );
         tokio::spawn(ingest(session.items, market.clone(), sim.clone()));
         market.spawn_quotes_task();
@@ -384,6 +396,16 @@ impl Market {
         sim: Option<Sim>,
         assets: HashMap<String, AssetMeta>,
     ) -> Market {
+        Self::from_session_with(session, sim, assets, PrevCloses::default())
+    }
+
+    /// [`Market::from_session`] with asset metadata and previous closes (tests).
+    pub fn from_session_with(
+        session: market_providers::ProviderSession,
+        sim: Option<Sim>,
+        assets: HashMap<String, AssetMeta>,
+        closes: PrevCloses,
+    ) -> Market {
         let market = Market::build(
             session.info.mode,
             Some(session.info.clone()),
@@ -394,6 +416,7 @@ impl Market {
             session.control.clone(),
             PriceBand::DEFAULT,
             assets,
+            Arc::new(closes),
         );
         tokio::spawn(ingest(session.items, market.clone(), sim));
         market.spawn_quotes_task();
@@ -502,13 +525,18 @@ impl Market {
                     if let Some((symbol, price, _)) = &qualifying {
                         core.last_price.insert(symbol.clone(), *price);
                     }
-                    let ups = core.engine.apply(&e);
+                    let (ups, revision) = core.engine.apply_revising(&e);
                     // The quote board takes the engine's verdict on the print (its tape row comes
-                    // first in `ups`), so it excludes exactly what the candles exclude.
+                    // first in `ups`), so it excludes exactly what the candles exclude; and for a
+                    // correction or cancel, the engine's account of what it removed or replaced,
+                    // so the board's volume and last follow the revised candles exactly.
                     if let MarketEvent::Trade(t) = &e
                         && let Some(ChartUpdate::Tape(row)) = ups.first()
                     {
                         core.quotes.apply_trade(t, Counted::from_tape(&row.counted));
+                    }
+                    if let Some(rev) = &revision {
+                        core.quotes.apply_revision(rev);
                     }
                     core.seq += 1;
                     let seq = core.seq;
@@ -544,7 +572,7 @@ impl Market {
                 {
                     let mut core = self.0.core.lock().expect("core lock");
                     let seq = core.seq + 1;
-                    *core = Core::new();
+                    *core = Core::new(self.0.closes.clone());
                     core.seq = seq;
                     core.rebuilding = true;
                 }
@@ -722,10 +750,12 @@ impl Market {
                 clock: None,
                 halts: Vec::new(),
                 luld: Vec::new(),
+                prev_close: None,
             },
             None => return Err(SnapshotError::UnknownSymbol),
         };
         snap.clock = clock;
+        snap.prev_close = self.prev_close_for(&snap).map(Price::to_f64);
         Ok(SnapshotOut {
             seq: core.seq,
             json: serde_json::to_string(&snap).expect("snapshot serializes"),
@@ -735,6 +765,21 @@ impl Market {
                 .map(|r| r.iter().cloned().collect())
                 .unwrap_or_default(),
         })
+    }
+
+    /// The previous close for a chart snapshot: the closes file's latest date before the symbol's
+    /// current session date, the quote board's rule and input (its row's trading date is the date
+    /// of the latest session the symbol traded in, which is the engine's current session), so the
+    /// header and the search row show the same change. A symbol that has not traded yet has no
+    /// session; then the replay day stands in (live mode: none, the header falls back too).
+    fn prev_close_for(&self, snap: &ChartSnapshot) -> Option<Price> {
+        let day = snap
+            .session
+            .as_ref()
+            .and_then(|s| s.id.parse::<SessionId>().ok())
+            .map(|s| s.date)
+            .or_else(|| self.0.info.as_ref().and_then(|i| i.day))?;
+        self.0.closes.before(&snap.symbol, day).map(|(_, p)| p)
     }
 
     /// The increment's JSON at another profile bin width: the touched bins re-binned, with
@@ -882,6 +927,12 @@ impl Market {
                     s: &r.symbol,
                     p: r.last.to_f64(),
                     o: r.reference.to_f64(),
+                    // Static for the day: every snapshot row and entering row, and an update row
+                    // only when its trading date moved on and the reference with it.
+                    pc: (r.entering || r.prev_close_changed)
+                        .then_some(r.prev_close)
+                        .flatten()
+                        .map(Price::to_f64),
                     v: r.volume,
                     n: r.trades,
                     pre: (!r.regular_open).then_some(true),
@@ -973,12 +1024,16 @@ struct QuotesMessage<'a> {
 
 /// One quote row. Compact keys, because a snapshot carries every candidate (thousands):
 ///
-/// - `s` symbol; `p` last price; `o` the change-% reference (the regular open, or the day's first
-///   price while `pre` is set). Prices are JSON numbers in dollars like every chart wire price
-///   (`Price::to_f64`, exact for whole cents and the sub-penny ticks below $1); `/api/symbols`'
-///   `priceBand` uses decimal strings because it is configuration, not data;
+/// - `s` symbol; `p` last price; `pc` the previous trading day's official close, the change-%
+///   reference whenever present (from `daily-closes.json`; sent in snapshots, for rows entering the
+///   band, and in an update only when it changes, i.e. the row's trading date moved on: clients
+///   keep the last one they got); `o` the fallback reference when there is no `pc` (the regular
+///   open, or the day's first price while `pre` is set). Prices are JSON numbers in dollars like
+///   every chart wire price (`Price::to_f64`, exact for whole cents and the sub-penny ticks below
+///   $1); `/api/symbols`' `priceBand` uses decimal strings because it is configuration, not data;
 /// - `v` day volume (shares) and `n` prints counted, by the candles' volume rule;
-/// - `pre: true` only while the symbol has no print at/after 09:30 yet (omitted otherwise);
+/// - `pre: true` only while the symbol has no print at/after 09:30 yet (omitted otherwise); it
+///   describes `o`, so it only matters to a client without `pc`;
 /// - `name` / `x` (listing exchange) only in snapshots and for update rows entering the band, and
 ///   only when `assets.json` has them.
 #[derive(Serialize)]
@@ -986,6 +1041,8 @@ struct WireQuote<'a> {
     s: &'a str,
     p: f64,
     o: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pc: Option<f64>,
     v: u64,
     n: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1011,6 +1068,36 @@ fn load_assets(archive: &Archive) -> HashMap<String, AssetMeta> {
         Err(e) => {
             tracing::warn!(error = %e, "assets.json unreadable: ticker names fall back to symbols");
             HashMap::new()
+        }
+    }
+}
+
+/// `daily-closes.json` from the archive root, indexed per symbol. Optional like `assets.json`: a
+/// missing or unreadable file leaves every row on the open fallback (logged), it never stops the
+/// server.
+fn load_closes(archive: &Archive) -> PrevCloses {
+    let path = archive.daily_closes_path();
+    match archive.read_daily_closes() {
+        Ok(Some(m)) => {
+            let (idx, dropped) = PrevCloses::new(&m);
+            tracing::info!(
+                days = m.len(),
+                first = ?m.keys().next(),
+                last = ?m.keys().next_back(),
+                symbols = idx.symbols(),
+                dropped,
+                path = %path.display(),
+                "daily closes loaded: change % is against the previous close"
+            );
+            idx
+        }
+        Ok(None) => {
+            tracing::warn!(path = %path.display(), "no daily-closes.json: change % falls back to the open (`swimport alpaca-daily-closes` writes it)");
+            PrevCloses::default()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "daily-closes.json unreadable: change % falls back to the open");
+            PrevCloses::default()
         }
     }
 }

@@ -95,6 +95,8 @@ export interface ChartSeriesLike {
   profile: ProfileWire | null;
   halts?: readonly Halt[];
   luld?: readonly LuldPoint[];
+  /** The server's official previous close (Series.prevClose), for the "Prev close" level. */
+  prevClose?: number | null;
 }
 
 /** What the host wires for simulated trading (the chart never talks to a server). */
@@ -313,7 +315,9 @@ export function CandleChart({
   const [ownLayers, setOwnLayers] = useState<ChartLayers>(DEFAULT_LAYERS);
   const layers = onLayersChange ? (layersProp ?? DEFAULT_LAYERS) : ownLayers;
   const setLayers = (l: ChartLayers) => (onLayersChange ? onLayersChange(l) : setOwnLayers(l));
-  const levels = useMemo(() => keyLevels(slots), [slots]);
+  // The server's official previous close wins over one read off the candles (levels.ts).
+  const prevClose = series?.prevClose ?? null;
+  const levels = useMemo(() => keyLevels(slots, prevClose), [slots, prevClose]);
   const fills = useMemo(() => (trading?.state?.fills ?? []).filter((f) => f.symbol === symbol), [trading?.state, symbol]);
   const context = useMemo(
     () => ({

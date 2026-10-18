@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { applyQuotesMessage, createQuoteChannel, EMPTY_QUOTE_BOARD } from "./quotes.ts";
+import { applyQuotesMessage, createQuoteChannel, EMPTY_QUOTE_BOARD, quoteChangePct } from "./quotes.ts";
 
 const snapshot = applyQuotesMessage(EMPTY_QUOTE_BOARD, {
   type: "quotes.snapshot",
@@ -63,4 +63,36 @@ test("the channel opts in with the first listener and out with the last", () => 
   off2();
   expect(calls).toEqual(["sub", "unsub"]);
   expect(ch.get().size).toBe(0); // stale values never outlive the subscription
+});
+
+test("change % is against the previous close when the server knows it, else the open", () => {
+  const b = applyQuotesMessage(EMPTY_QUOTE_BOARD, {
+    type: "quotes.snapshot",
+    t: 0,
+    quotes: [
+      // Up 10% on the open but down 8.3% on yesterday's close: a broker shows the latter.
+      { s: "AAA", p: 5.5, o: 5, pc: 6, v: 1, n: 1 },
+      { s: "BBB", p: 5.5, o: 5, v: 1, n: 1, pre: true },
+    ],
+  });
+  expect(b.get("AAA")!.prevClose).toBe(6);
+  expect(b.get("AAA")!.changePct).toBeCloseTo(-8.3333, 3);
+  expect(b.get("BBB")!.prevClose).toBeUndefined();
+  expect(b.get("BBB")!.changePct).toBeCloseTo(10, 9);
+  expect(quoteChangePct(1, 0, 2)).toBe(-50); // a 0 close is no reference
+  expect(quoteChangePct(1, undefined, 0)).toBe(0);
+});
+
+test("updates leave pc out unless it changed; a later snapshot is the whole truth", () => {
+  const b = applyQuotesMessage(EMPTY_QUOTE_BOARD, { type: "quotes.snapshot", t: 0, quotes: [{ s: "AAA", p: 5.5, o: 5, pc: 6, v: 1, n: 1 }] });
+  const u = applyQuotesMessage(b, { type: "quotes.update", t: 1, quotes: [{ s: "AAA", p: 6.6, o: 5, v: 2, n: 2 }] });
+  expect(u.get("AAA")!.prevClose).toBe(6);
+  expect(u.get("AAA")!.changePct).toBeCloseTo(10, 9);
+  // The row's trading date moved on: the update carries the new reference.
+  const next = applyQuotesMessage(u, { type: "quotes.update", t: 2, quotes: [{ s: "AAA", p: 6.6, o: 6.5, pc: 6.6, v: 3, n: 3 }] });
+  expect(next.get("AAA")!.changePct).toBe(0);
+  // A snapshot without pc (e.g. a server restarted without the closes file) does not keep the old one.
+  const fresh = applyQuotesMessage(next, { type: "quotes.snapshot", t: 3, quotes: [{ s: "AAA", p: 6.6, o: 6, v: 3, n: 3 }] });
+  expect(fresh.get("AAA")!.prevClose).toBeUndefined();
+  expect(fresh.get("AAA")!.changePct).toBeCloseTo(10, 9);
 });

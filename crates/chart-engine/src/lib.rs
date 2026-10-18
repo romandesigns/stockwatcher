@@ -67,7 +67,10 @@
 //! timeframe is recomputed exactly, and the profile subtracts/adds exact per-price volume. A
 //! corrected/cancelled print not in retention is counted (`correctionsUnapplied` /
 //! `cancelsUnapplied`) and changes nothing. Corrections and cancels are not subject to the settle
-//! window: they may revise final candles.
+//! window: they may revise final candles. [`ChartEngine::apply_revising`] also returns the engine's
+//! own account of an applied one ([`Revision`]: the print removed, its replacement, what each
+//! counted for), so a running tally outside the engine (the server's quote board) can follow the
+//! candles exactly instead of re-deriving the rules.
 //!
 //! **Volume profile.** One per symbol per session id (`"2026-10-15/pre"`, `…/regular`, …), so
 //! sessions never mix and the anchor does not depend on the timeframe. Volume is kept per exact
@@ -109,6 +112,6 @@ mod timeframe;
 pub mod wire;
 
 pub use config::EngineConfig;
-pub use engine::{ChartEngine, VALUE_AREA_PERCENT};
+pub use engine::{ChartEngine, RevisedPrint, Revision, VALUE_AREA_PERCENT};
 pub use quality::DataQuality;
 pub use timeframe::Timeframe;

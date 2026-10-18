@@ -1,19 +1,27 @@
 // The client side of the server's quote board (protocol.ts `quotes.*`):
-// one row per price-band candidate with last price, change since the open
-// and day volume, kept current by the frames the server pushes. Pure apart
-// from the channel, so web and phone fold frames identically.
+// one row per price-band candidate with last price, change % and day volume,
+// kept current by the frames the server pushes. Pure apart from the channel,
+// so web and phone fold frames identically.
+//
+// Change % is against the previous trading day's official close when the
+// server knows it (`pc`, what a broker calls "today's change"), else against
+// the open (`o`). The chart header uses the same rule (changeReference in
+// chart-core), and the Gainers/Losers chips and their sort read `changePct`,
+// so the list, the filters and the header never disagree.
 
 import type { QuoteRowWire, QuotesMessage } from "../protocol.ts";
 
 export interface TickerQuote {
   price: number;
-  /** The change reference: the regular open, or the day's first price while `preOpen`. */
+  /** The previous trading day's official close; absent when the server has none. */
+  prevClose?: number;
+  /** The fallback reference: the regular open, or the day's first price while `preOpen`. */
   open: number;
-  /** Percent, e.g. 4.2 for +4.2 %; 0 when the reference is 0. */
+  /** Percent, e.g. 4.2 for +4.2 %, against `prevClose` if known, else `open`; 0 when the reference is 0. */
   changePct: number;
   volume: number;
   trades: number;
-  /** No print at/after 09:30 yet: `changePct` is against the premarket's first price. */
+  /** No print at/after 09:30 yet. Describes `open`, so it only matters while there is no `prevClose`. */
   preOpen: boolean;
   /** From the server's asset metadata; absent when it has none (show the symbol). */
   name?: string;
@@ -24,11 +32,20 @@ export type QuoteBoard = ReadonlyMap<string, TickerQuote>;
 
 export const EMPTY_QUOTE_BOARD: QuoteBoard = new Map();
 
+/** Percent change of `price` against the previous close when known, else against the open; 0 for a 0 reference. */
+export function quoteChangePct(price: number, prevClose: number | undefined, open: number): number {
+  const ref = prevClose !== undefined && prevClose > 0 ? prevClose : open;
+  return ref ? ((price - ref) / ref) * 100 : 0;
+}
+
 function fromWire(r: QuoteRowWire, prev: TickerQuote | undefined): TickerQuote {
+  // Updates leave `pc` out unless it changed: keep the one the row already has.
+  const prevClose = r.pc ?? prev?.prevClose;
   return {
     price: r.p,
+    prevClose,
     open: r.o,
-    changePct: r.o ? ((r.p - r.o) / r.o) * 100 : 0,
+    changePct: quoteChangePct(r.p, prevClose, r.o),
     volume: r.v,
     trades: r.n,
     preOpen: r.pre === true,
@@ -44,7 +61,8 @@ function fromWire(r: QuoteRowWire, prev: TickerQuote | undefined): TickerQuote {
  * rows and drops `gone`. Returns a new Map so React sees the change.
  */
 export function applyQuotesMessage(board: QuoteBoard, m: QuotesMessage): Map<string, TickerQuote> {
-  if (m.type === "quotes.snapshot") return new Map(m.quotes.map((r) => [r.s, fromWire(r, board.get(r.s))]));
+  // A snapshot row carries everything it has (an absent `pc` means unknown), so nothing is kept from the old board.
+  if (m.type === "quotes.snapshot") return new Map(m.quotes.map((r) => [r.s, fromWire(r, undefined)]));
   const next = new Map(board);
   for (const r of m.quotes) next.set(r.s, fromWire(r, board.get(r.s)));
   for (const s of m.gone ?? []) next.delete(s);

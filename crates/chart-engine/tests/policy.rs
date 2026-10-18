@@ -391,3 +391,53 @@ fn late_correction_may_revise_a_final_candle() {
             .all(|u| u.candle.is_final)
     );
 }
+
+#[test]
+fn apply_revising_reports_what_the_engine_removed_and_the_days_new_last_print() {
+    use chart_engine::{RevisedPrint, Revision};
+    let mut e = ChartEngine::default();
+    apply_all(
+        &mut e,
+        &[
+            ev(trade(at(10, 0, 1, 0), "3.00", 100, 1)),
+            ev(trade(at(10, 0, 2, 0), "3.05", 40, 2).with_conditions(["@", "I"])),
+            ev(trade(at(10, 1, 1, 0), "3.10", 100, 3)),
+        ],
+    );
+    let print = |p: &str, size, ohlc, volume| RevisedPrint {
+        price: px(p),
+        size,
+        ohlc,
+        volume,
+    };
+    // A trade is not a revision, and `apply` is `apply_revising` without it.
+    let (_, none) = e.apply_revising(&ev(trade(at(10, 1, 2, 0), "3.20", 50, 4)));
+    assert_eq!(none, None);
+
+    // Cancel the newest price print: the day's last falls back to the one before.
+    let (ups, rev) = e.apply_revising(&cancel(at(10, 1, 3, 0), 4));
+    assert!(!ups.is_empty());
+    let rev: Revision = rev.expect("applied");
+    assert_eq!(rev.session, regular().unwrap());
+    assert_eq!(rev.removed, print("3.20", 50, true, true));
+    assert_eq!(rev.added, None);
+    assert_eq!(rev.last, Some((px("3.10"), at(10, 1, 1, 0))));
+    assert_eq!(
+        rev.last.unwrap().0.to_f64(),
+        candles(&e, Timeframe::M1)[1].c
+    );
+
+    // Correct the odd lot into a regular print: it now counts for price too, same time.
+    let (_, rev) = e.apply_revising(&correction(at(10, 1, 4, 0), 2, 9, "3.06", 40, &["@"]));
+    let rev = rev.unwrap();
+    assert_eq!(
+        rev.removed,
+        print("3.05", 40, false, true),
+        "as it had counted"
+    );
+    assert_eq!(rev.added, Some(print("3.06", 40, true, true)));
+    assert_eq!(rev.last, Some((px("3.10"), at(10, 1, 1, 0))));
+
+    // Unapplied (unknown target): no revision, as no candle changed.
+    assert_eq!(e.apply_revising(&cancel(at(10, 1, 5, 0), 777)).1, None);
+}

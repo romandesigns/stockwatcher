@@ -18,6 +18,51 @@ use std::collections::{BTreeMap, BinaryHeap, HashMap, VecDeque};
 /// Percent of session volume inside the value area.
 pub const VALUE_AREA_PERCENT: u32 = 70;
 
+/// What an applied correction or cancel did to the engine's own records, for a consumer that keeps
+/// running totals of the same prints (the server's quote board) and must stay equal to the candles
+/// without re-deriving the rules: which print left, which one (if any) took its place, what each
+/// counted for, and the newest price-qualifying print of that trading date afterwards.
+///
+/// Only for a revision the engine **applied** (its target was in retention). An unapplied one
+/// changes no candle, so there is nothing to follow and [`ChartEngine::apply_revising`] returns
+/// `None`, exactly as the candles ignore it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Revision {
+    pub symbol: String,
+    /// The session of the original print (a correction keeps it: same execution time).
+    pub session: SessionId,
+    /// The print as the engine had counted it.
+    pub removed: RevisedPrint,
+    /// The corrected print, run through the condition policy again; `None` for a cancel.
+    pub added: Option<RevisedPrint>,
+    /// The newest OHLC-qualifying print of `session.date` after the revision (the close of the
+    /// symbol's latest candle that day) with its execution time. From the retained trades; when
+    /// none of that date is retained, the latest base-timeframe candle of that date, its close
+    /// stamped with the candle's start (only the interval is known then). `None` when no candle
+    /// of that date is left.
+    pub last: Option<(Price, UnixNanos)>,
+}
+
+/// One side of a [`Revision`]: price, size and what the candles count it for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RevisedPrint {
+    pub price: Price,
+    pub size: u64,
+    pub ohlc: bool,
+    pub volume: bool,
+}
+
+impl From<&TradeRec> for RevisedPrint {
+    fn from(r: &TradeRec) -> Self {
+        RevisedPrint {
+            price: r.price,
+            size: r.size,
+            ohlc: r.ohlc,
+            volume: r.volume,
+        }
+    }
+}
+
 /// Total order of trades within a symbol: execution time, then provider sequence (so
 /// same-timestamp trades follow `source_seq`), then exchange and source as final tie-breakers.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -432,6 +477,28 @@ impl SymbolState {
         self.quality.entry(session).or_default()
     }
 
+    /// The newest OHLC-qualifying print of `session`'s trading date ([`Revision::last`]). Trades are
+    /// keyed by execution time, so the walk from the newest stops at the first older date; it
+    /// runs only for a correction or cancel, never per print.
+    fn last_print_of(&self, session: SessionId) -> Option<(Price, UnixNanos)> {
+        let date = session.date;
+        for (k, r) in self.trades.iter().rev() {
+            if r.session.date < date {
+                break;
+            }
+            if r.session.date == date && r.ohlc {
+                return Some((r.price, UnixNanos(k.ts)));
+            }
+        }
+        // None retained: the base timeframe's latest candle of that date still holds its close.
+        let base = self.series.iter().min_by_key(|s| s.tf.nanos())?;
+        base.buckets
+            .iter()
+            .rev()
+            .filter(|b| b.session.date == date)
+            .find_map(|b| b.ohlc.map(|x| (x.c, UnixNanos(b.start))))
+    }
+
     fn next_deadline(&self) -> Option<i64> {
         let candles = self
             .series
@@ -548,12 +615,21 @@ impl ChartEngine {
     /// status produces `chart.halt` (and a LULD null point at a halt); quotes and every other
     /// status produce nothing.
     pub fn apply(&mut self, event: &MarketEvent) -> Vec<ChartUpdate> {
+        self.apply_revising(event).0
+    }
+
+    /// [`ChartEngine::apply`], plus the [`Revision`] when the event is a correction or cancel the
+    /// engine applied. The updates are identical; the revision is the engine's own account of
+    /// which print it removed or replaced, so a running tally can follow it exactly (a correction
+    /// or cancel carries the original's price and size, but what the engine had counted the print
+    /// for, and whether it still held it, is only known here).
+    pub fn apply_revising(&mut self, event: &MarketEvent) -> (Vec<ChartUpdate>, Option<Revision>) {
         match event {
-            MarketEvent::Trade(t) => self.apply_trade(t),
+            MarketEvent::Trade(t) => (self.apply_trade(t), None),
             MarketEvent::Correction(c) => self.apply_correction(c),
             MarketEvent::Cancel(c) => self.apply_cancel(c),
-            MarketEvent::Status(s) => self.apply_status(s),
-            MarketEvent::Quote(_) => Vec::new(),
+            MarketEvent::Status(s) => (self.apply_status(s), None),
+            MarketEvent::Quote(_) => (Vec::new(), None),
         }
     }
 
@@ -806,7 +882,7 @@ impl ChartEngine {
         out
     }
 
-    fn apply_cancel(&mut self, c: &Cancel) -> Vec<ChartUpdate> {
+    fn apply_cancel(&mut self, c: &Cancel) -> (Vec<ChartUpdate>, Option<Revision>) {
         let (clock, cap, bin) = (
             self.clock,
             self.cfg.max_intervals_per_timeframe,
@@ -816,7 +892,7 @@ impl ChartEngine {
         let mut out = Vec::new();
         let Some(key) = st.index.remove(&c.target_trade_id()) else {
             st.q(classify(c.event_ts)).cancels_unapplied += 1;
-            return out;
+            return (out, None);
         };
         let rec = st.trades.remove(&key).expect("index and trades agree");
         st.q(Some(rec.session)).cancels_applied += 1;
@@ -841,10 +917,17 @@ impl ChartEngine {
             }
         }
         Self::reschedule(&mut self.pending, st);
-        out
+        let rev = Revision {
+            symbol: c.symbol.clone(),
+            session: rec.session,
+            removed: RevisedPrint::from(&rec),
+            added: None,
+            last: st.last_print_of(rec.session),
+        };
+        (out, Some(rev))
     }
 
-    fn apply_correction(&mut self, c: &Correction) -> Vec<ChartUpdate> {
+    fn apply_correction(&mut self, c: &Correction) -> (Vec<ChartUpdate>, Option<Revision>) {
         let (clock, cap, bin) = (
             self.clock,
             self.cfg.max_intervals_per_timeframe,
@@ -854,7 +937,7 @@ impl ChartEngine {
         let mut out = Vec::new();
         let Some(key) = st.index.remove(&c.original_trade_id()) else {
             st.q(classify(c.event_ts)).corrections_unapplied += 1;
-            return out;
+            return (out, None);
         };
         let old = st.trades.remove(&key).expect("index and trades agree");
         let effect = trade_effect(&c.corrected_conditions, c.tape);
@@ -888,6 +971,7 @@ impl ChartEngine {
             .collect();
         let rows = st.profile_rows(old.session, bin, &touched);
         let affects = old.affects_candles() || new.affects_candles();
+        let (removed, added) = (RevisedPrint::from(&old), RevisedPrint::from(&new));
         st.trades.insert(new_key.clone(), new);
         st.index.insert(new_id, new_key);
         if affects {
@@ -904,7 +988,14 @@ impl ChartEngine {
             }
         }
         Self::reschedule(&mut self.pending, st);
-        out
+        let rev = Revision {
+            symbol: c.symbol.clone(),
+            session: old.session,
+            removed,
+            added: Some(added),
+            last: st.last_print_of(old.session),
+        };
+        (out, Some(rev))
     }
 
     /// Drops trade records older than the retention window (aligned down to the largest
@@ -1012,6 +1103,7 @@ impl ChartEngine {
                 .filter(|l| session.is_some_and(|s| s.date == l.session.date))
                 .map(|l| l.points.iter().map(luld_wire).collect())
                 .unwrap_or_default(),
+            prev_close: None,
         })
     }
 

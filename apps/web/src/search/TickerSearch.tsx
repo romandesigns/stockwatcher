@@ -58,7 +58,7 @@ function Highlight({ text, indices, className }: { text: string; indices: readon
 // scrolls into view (or ↓ walks past it); typing narrows long before that matters.
 const PAGE = 200;
 
-/** Price, change % since the open (good/critical: the status colours) and day volume. */
+/** Price, change % (vs the previous close, else the open; good/critical: the status colours) and day volume. */
 function Quote({ price, changePct, volume }: { price?: number; changePct?: number; volume?: number }) {
   const up = (changePct ?? 0) >= 0;
   return (
@@ -138,7 +138,7 @@ export interface TickerSearchProps {
  * order (fuzzy), tickers rank above names, matched letters are
  * highlighted; ↑/↓ move, Enter opens, Esc closes. With an empty query the
  * recently opened tickers come first, then the most active. Every row shows
- * the live last price, change since the open and day volume, pushed by the
+ * the live last price, change % (vs the previous close when known, else the open) and day volume, pushed by the
  * server while the panel is open. Rows the simulator has no data for (the
  * mock universe, fixture sources only) are shown, labelled, and cannot be
  * opened.
