@@ -20,7 +20,9 @@ import {
   DEFAULT_LAYERS,
   type ChartLayers,
   DEFAULT_TOOLBOX_PHONE,
-  type PriceScaleType,
+  DEFAULT_CHART_SETTINGS,
+  parseChartSettings,
+  type ChartSettings,
   type ToolboxPlacement,
   type Timeframe,
 } from "@stockwatcher/chart-core";
@@ -99,7 +101,15 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
   const [symbol, setSymbol] = useState<string | null>(null);
   const [timeframe, setTimeframe] = useState<Timeframe>("1m");
   const [inspectT, setInspectT] = useState<number | null>(null);
-  const [scale, setScale] = useState<PriceScaleType>("linear");
+  // The chart settings (type, scale, sessions, zoom), kept across launches next to the layers.
+  const [chartSettings, setChartSettings] = useState<ChartSettings>(DEFAULT_CHART_SETTINGS);
+  useEffect(() => {
+    void getPreference<unknown>("chart.settings").then((v) => v && setChartSettings(parseChartSettings(v)));
+  }, []);
+  const changeChartSettings = (s: ChartSettings) => {
+    setChartSettings(s);
+    void setPreference("chart.settings", s);
+  };
 
   // Indicators and drawings are the chart's; the screen only persists them.
   const [indicators, setIndicators] = useState<IndicatorSpec[]>([]);
@@ -229,8 +239,8 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
         timeframe={timeframe}
         inspectT={inspectT}
         onInspectChange={setInspectT}
-        priceScaleType={scale}
-        onPriceScaleTypeChange={setScale}
+        settings={chartSettings}
+        onSettingsChange={changeChartSettings}
         indicators={indicators}
         onIndicatorsChange={changeIndicators}
         drawings={active ? (drawings[active] ?? []) : []}

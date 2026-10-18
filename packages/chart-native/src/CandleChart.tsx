@@ -77,6 +77,16 @@ import {
   type Size,
   type Timeframe,
   type Viewport,
+  DEFAULT_CHART_OPTIONS,
+  DEFAULT_CHART_SETTINGS,
+  easeOut,
+  manualPrice,
+  openView,
+  presetViewport,
+  sessionSlots,
+  SETTINGS_MOTION_MS,
+  viewKey,
+  type ChartSettings,
 } from "@stockwatcher/chart-core";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AccessibilityInfo, Pressable, StyleSheet, Text, View, type LayoutChangeEvent, type StyleProp, type ViewStyle } from "react-native";
@@ -87,6 +97,8 @@ import { CandleInspector } from "./CandleInspector.tsx";
 import { DrawingToolbox } from "./DrawingToolbox.tsx";
 import { PositionPlanPanel } from "./PositionPlanPanel.tsx";
 import { AxisSheet, IndicatorSheet, LayersSheet, OrderTicketSheet, QUICK_TRADE_SIZES, QuickTradeSheet, SCALE_LABELS } from "./sheets.tsx";
+import { ChartSettingsSheet } from "./ChartSettingsSheet.tsx";
+import { useTween } from "./useTween.ts";
 import { TimeframeWheel } from "./TimeframeWheel.tsx";
 import { Icon, playHaptic, ToolButton, ToolIcon, UI } from "./ui.tsx";
 
@@ -115,8 +127,12 @@ export interface CandleChartProps {
   timeframe: Timeframe;
   inspectT?: number | null;
   onInspectChange?: (t: number | null) => void;
+  /** Controlled when onPriceScaleTypeChange is set; otherwise it is the chart settings' scale. */
   priceScaleType?: PriceScaleType;
   onPriceScaleTypeChange?: (t: PriceScaleType) => void;
+  /** The chart settings (chart-core chartSettings.ts). Controlled when onSettingsChange is set (the host persists it, `chart.settings`); else kept for the session. */
+  settings?: ChartSettings;
+  onSettingsChange?: (s: ChartSettings) => void;
   options?: Partial<ChartOptions>;
   theme?: ChartTheme;
   barSpacing?: number;
@@ -190,6 +206,8 @@ export function CandleChart({
   onInspectChange,
   priceScaleType: scaleProp,
   onPriceScaleTypeChange,
+  settings: settingsProp,
+  onSettingsChange,
   options,
   theme = DEFAULT_CHART_THEME,
   barSpacing = 9,
@@ -228,9 +246,11 @@ export function CandleChart({
   const [ownInspect, setOwnInspect] = useState<number | null>(null);
   const inspectT = onInspectChange ? (inspectProp ?? null) : ownInspect;
   const setInspect = (t: number | null) => (onInspectChange ? onInspectChange(t) : setOwnInspect(t));
-  const [ownScale, setOwnScale] = useState<PriceScaleType>("linear");
-  const scaleType = onPriceScaleTypeChange ? (scaleProp ?? "linear") : ownScale;
-  const setScaleType = (t: PriceScaleType) => (onPriceScaleTypeChange ? onPriceScaleTypeChange(t) : setOwnScale(t));
+  const [ownSettings, setOwnSettings] = useState<ChartSettings>(DEFAULT_CHART_SETTINGS);
+  const settings = onSettingsChange ? (settingsProp ?? DEFAULT_CHART_SETTINGS) : ownSettings;
+  const setSettings = (s: ChartSettings) => (onSettingsChange ? onSettingsChange(s) : setOwnSettings(s));
+  const scaleType = onPriceScaleTypeChange ? (scaleProp ?? "linear") : settings.priceScale;
+  const setScaleType = (t: PriceScaleType) => (onPriceScaleTypeChange ? onPriceScaleTypeChange(t) : setSettings({ ...settings, priceScale: t }));
 
   const [ownIndicators, setOwnIndicators] = useState<IndicatorSpec[]>([]);
   const indicatorSpecs = onIndicatorsChange ? (indicatorsProp ?? []) : ownIndicators;
@@ -254,9 +274,17 @@ export function CandleChart({
     if (haptics) playHaptic("selection");
   };
 
-  const [view, setView] = useState<{ tf: Timeframe; vp: Viewport }>(() => ({ tf: timeframe, vp: defaultViewport(barSpacing) }));
-  const vp = view.tf === timeframe ? view.vp : defaultViewport(barSpacing);
-  const setVp = useCallback((f: (vp: Viewport) => Viewport) => setView((v) => ({ tf: timeframe, vp: f(v.tf === timeframe ? v.vp : defaultViewport(barSpacing)) })), [timeframe, barSpacing]);
+  // One view per symbol + timeframe, opened from the saved settings (zoom preset, auto stretch)
+  // once candles and a size exist: see chart-web's CandleChart for the rule, which this mirrors.
+  const key = viewKey(symbol, timeframe);
+  const [view, setView] = useState<{ key: string; vp: Viewport; opened: boolean }>(() => ({ key, vp: defaultViewport(barSpacing), opened: false }));
+  const fresh = useCallback(() => ({ key, vp: defaultViewport(barSpacing), opened: false }), [key, barSpacing]);
+  const current = view.key === key ? view : fresh();
+  const vp = current.vp;
+  const setVp = useCallback((f: (vp: Viewport) => Viewport) => setView((v) => {
+    const b = v.key === key ? v : fresh();
+    return { ...b, vp: f(b.vp) };
+  }), [key, fresh]);
 
   const [pointer, setPointer] = useState<Point | null>(null);
   const [ownToolsVisible, setOwnToolsVisible] = useState(true);
@@ -286,7 +314,7 @@ export function CandleChart({
   const [selected, setSelected] = useState<ObjectHit | null>(null);
   const [draft, setDraft] = useState<DrawingDraft | null>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
-  const [sheet, setSheet] = useState<{ kind: "none" } | { kind: "indicators" } | { kind: "layers" } | { kind: "quick"; price: number; x: number; y: number } | { kind: "axis"; price: number | null } | { kind: "ticket"; price: number | null }>({ kind: "none" });
+  const [sheet, setSheet] = useState<{ kind: "none" } | { kind: "settings" } | { kind: "indicators" } | { kind: "layers" } | { kind: "quick"; price: number; x: number; y: number } | { kind: "axis"; price: number | null } | { kind: "ticket"; price: number | null }>({ kind: "none" });
   const [reducedMotion, setReducedMotion] = useState(false);
   useEffect(() => {
     AccessibilityInfo.isReduceMotionEnabled().then(setReducedMotion, () => {});
@@ -294,8 +322,11 @@ export function CandleChart({
     return () => sub.remove();
   }, []);
 
-  const slots = useMemo(() => (series ? buildSlots(series.candles, series.gaps) : []), [series]);
-  const indicatorResults = useMemo(() => computeIndicators(slots, indicatorSpecs), [slots, indicatorSpecs]);
+  // All slots, and the shown ones (extended hours off: the regular session only); see chart-web.
+  const allSlots = useMemo(() => (series ? buildSlots(series.candles, series.gaps) : []), [series]);
+  const slots = useMemo(() => sessionSlots(allSlots, settings.extendedHours), [allSlots, settings.extendedHours]);
+  const visibility = settings.visibility;
+  const indicatorResults = useMemo(() => (visibility.indicators ? computeIndicators(slots, indicatorSpecs) : []), [slots, indicatorSpecs, visibility.indicators]);
   const last = useMemo(() => lastCandle(slots)?.c ?? null, [slots]);
   // Pane heights: drag a pane's top edge, double-tap a pane to expand it. A drag is shown live and
   // reported to the host once, when the finger lifts.
@@ -320,10 +351,11 @@ export function CandleChart({
   const setLayers = (l: ChartLayers) => (onLayersChange ? onLayersChange(l) : setOwnLayers(l));
   // The server's official previous close wins over one read off the candles (levels.ts).
   const prevClose = series?.prevClose ?? null;
-  const levels = useMemo(() => keyLevels(slots, prevClose), [slots, prevClose]);
+  const levels = useMemo(() => keyLevels(allSlots, prevClose), [allSlots, prevClose]);
   // Computed only while the layer is on: one pass over the slots per update otherwise wasted.
   const session = series?.session ?? null;
-  const ranges = useMemo(() => (layers.openingRange ? openingRanges(slots, session) : []), [layers.openingRange, slots, session]);
+  const ranges = useMemo(() => (layers.openingRange ? openingRanges(allSlots, session) : []), [layers.openingRange, allSlots, session]);
+  const baselinePrice = useMemo(() => levels.find((l) => l.id === "prevClose")?.price ?? null, [levels]);
   const fills = useMemo(() => (trading?.state?.fills ?? []).filter((f) => f.symbol === symbol), [trading?.state, symbol]);
   const context = useMemo(
     () => ({
@@ -339,10 +371,14 @@ export function CandleChart({
   const orders = useMemo(() => (trading?.state?.orders ?? []).filter((o) => o.symbol === symbol && isWorking(o)), [trading?.state, symbol]);
   const position = useMemo(() => trading?.state?.positions.find((p) => p.symbol === symbol) ?? null, [trading?.state, symbol]);
   const shownDrawings = useMemo(() => {
-    const list = drag?.drawing ? drawings.map((d) => (d.id === drag.drawing!.id ? drag.drawing! : d)) : drawings;
+    const own = visibility.drawings ? drawings : [];
+    const list = drag?.drawing ? own.map((d) => (d.id === drag.drawing!.id ? drag.drawing! : d)) : own;
     return measurement ? [...list, measurement] : list;
-  }, [drawings, drag, measurement]);
+  }, [drawings, drag, measurement, visibility.drawings]);
   const selectedDrawing = selected?.kind === "drawing" ? selected.id : null;
+  const showTrading = !!trading && visibility.trading;
+  const volumeHeight = Math.round(useTween(settings.volume ? (options?.volumeHeight ?? DEFAULT_CHART_OPTIONS.volumeHeight) : 0, reducedMotion));
+  const chartStyle = useMemo(() => ({ grid: settings.grid, sessionShading: settings.sessionShading, sessionBreaks: settings.sessionBreaks, highLow: settings.highLow }), [settings.grid, settings.sessionShading, settings.sessionBreaks, settings.highLow]);
 
   const state: ChartState = useMemo(
     () => ({
@@ -356,6 +392,7 @@ export function CandleChart({
       // The Levels sheet's "Volume profile" switch turns the in-chart profile off.
       options: {
         ...options,
+        volumeHeight,
         // The readout takes the top-left corner; overlay indicator legends start under it.
         ...(inspector ? { legendTop: READOUT_H } : {}),
         ...(options?.showProfile && !layers.profile ? { showProfile: false } : {}),
@@ -365,14 +402,28 @@ export function CandleChart({
       drawings: shownDrawings,
       selectedDrawing,
       draft,
-      trading: trading ? { orders, position, last, dragging: drag?.order ?? null, placeY: null } : null,
+      trading: showTrading ? { orders, position, last, dragging: drag?.order ?? null, placeY: null } : null,
       context,
       now: clockNow,
       paneHeights,
+      chartType: settings.chartType,
+      chartStyle,
+      baselinePrice,
+      extendedHours: settings.extendedHours,
     }),
-    [timeframe, series, slots, inspectT, pointer, options, layers.profile, scaleType, indicatorResults, shownDrawings, selectedDrawing, draft, trading, orders, position, last, drag, context, clockNow, paneHeights, inspector],
+    [timeframe, series, slots, inspectT, pointer, options, volumeHeight, layers.profile, scaleType, indicatorResults, shownDrawings, selectedDrawing, draft, showTrading, orders, position, last, drag, context, clockNow, paneHeights, inspector, settings.chartType, chartStyle, baselinePrice, settings.extendedHours],
   );
   const model = useMemo(() => computeChartModel(state, vp, size), [state, vp, size]);
+
+  // Open a fresh view from the saved settings once its candles and the size exist (chart-web does the same).
+  useLayoutEffect(() => {
+    if (current.opened || !slots.length || size.width <= 0) return;
+    setView({ key, vp: openView(state, settings, size, defaultViewport(barSpacing)), opened: true });
+  });
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const sizeRef = useRef(size);
+  sizeRef.current = size;
   const picture = useMemo(() => (size.width > 0 && size.height > 0 ? recordPicture(layoutChart(model, state, theme), size.width, size.height) : null), [model, state, theme, size]);
 
   // If the inspected slot disappears (trimmed, or a new snapshot), fall back to latest.
@@ -396,6 +447,7 @@ export function CandleChart({
         const t = hitTrading(m, state.trading, x, y, tol);
         if (t) return t;
       }
+      if (!visibility.drawings) return null;
       const d = hitDrawing(m, drawings, x, y, tol, selectedDrawing);
       return d ? { kind: "drawing", ...d } : null;
     };
@@ -582,6 +634,57 @@ export function CandleChart({
     slide.current = requestAnimationFrame(frame);
   };
 
+  // A zoom preset chosen, or extended hours shown/hidden: slide the spacing to the preset's while
+  // following the latest candle (chart-web's zoomToPreset, same timing and the same fit-once rule
+  // when auto stretch is off). Auto stretch toggled: auto, or the current range held.
+  const zoomToPreset = (st: ChartSettings) => {
+    stopSlide();
+    const m = computeChartModel(stateRef.current, vp, sizeRef.current);
+    const target = presetViewport(vp, m.slots, timeframe, st.extendedHours, st.zoom, m.geometry.plot.w);
+    const finish = () => {
+      setVp((v) => {
+        const done = { ...v, barSpacing: target.barSpacing, anchorT: null, anchorFrac: 0 };
+        if (st.autoStretch) return done;
+        const fit = computeChartModel(stateRef.current, autoScalePrice(done), sizeRef.current).price;
+        return fit ? manualPrice(done, { lo: fit.lo, hi: fit.hi }) : done;
+      });
+      slide.current = 0;
+    };
+    const from = vp.barSpacing;
+    if (reducedMotion || Math.abs(from - target.barSpacing) < 1e-3) {
+      finish();
+      return;
+    }
+    const start = now();
+    const frame = () => {
+      const elapsed = now() - start;
+      if (elapsed >= SETTINGS_MOTION_MS) {
+        finish();
+        return;
+      }
+      const bs = easeOut(from, target.barSpacing, elapsed, SETTINGS_MOTION_MS);
+      setVp((v) => ({ ...v, barSpacing: bs, anchorT: null, anchorFrac: 0 }));
+      slide.current = requestAnimationFrame(frame);
+    };
+    slide.current = requestAnimationFrame(frame);
+  };
+  const prevSettings = useRef(settings);
+  const zoomRef = useRef(zoomToPreset);
+  zoomRef.current = zoomToPreset;
+  useEffect(() => {
+    const p = prevSettings.current;
+    prevSettings.current = settings;
+    if (p === settings) return;
+    if (p.autoStretch !== settings.autoStretch) {
+      if (settings.autoStretch) setVp(autoScalePrice);
+      else setVp((v) => {
+        const m = computeChartModel(stateRef.current, v, sizeRef.current);
+        return m.price ? manualPrice(v, { lo: m.price.lo, hi: m.price.hi }) : v;
+      });
+    }
+    if (p.zoom !== settings.zoom || p.extendedHours !== settings.extendedHours) zoomRef.current(settings);
+  }, [settings, setVp]);
+
   const feed = (type: GestureInput["type"], touches: readonly { id: number; x: number; y: number }[]) => {
     const l = latest.current;
     if (!l) return;
@@ -672,6 +775,10 @@ export function CandleChart({
               )}
               <ToolButton label={toolsVisible ? "Hide drawing tools" : "Show drawing tools"} onPress={() => changeToolsVisible(!toolsVisible)} style={toolsVisible ? { backgroundColor: UI.raised } : undefined}>
                 <ToolIcon kind="pencil" color={toolsVisible ? UI.text : UI.textDim} />
+              </ToolButton>
+              {/* Chart settings, immediately left of Indicators (owner request 2026-10-18), as on the web. */}
+              <ToolButton label="Chart settings" onPress={() => setSheet({ kind: "settings" })}>
+                <ToolIcon kind="chart" color={UI.textDim} />
               </ToolButton>
               <ToolButton label={indicatorSpecs.length ? `Indicators, ${indicatorSpecs.length} on` : "Indicators"} onPress={() => setSheet({ kind: "indicators" })} style={s.indicators}>
                 <ToolIcon kind="indicators" color={UI.textDim} />
@@ -766,6 +873,29 @@ export function CandleChart({
             </Pressable>
           </Animated.View>
         )}
+        {!auto && model.price && (
+          // Manual price range: a small "A" at the foot of the price column returns to auto stretch
+          // (a double tap on the price axis does too). Shown only while manual.
+          <Animated.View
+            entering={FadeIn.duration(150).reduceMotion(ReduceMotion.System)}
+            exiting={FadeOut.duration(120).reduceMotion(ReduceMotion.System)}
+            // Beside the volume pane, where the price column is otherwise empty, so it never covers a price label.
+            style={[s.autoWrap, { left: model.geometry.priceAxis.x + model.geometry.priceAxis.w / 2 - 13, top: model.geometry.volume ? model.geometry.volume.y + model.geometry.volume.h / 2 - 11 : model.geometry.plot.y + model.geometry.plot.h - 30 }]}
+          >
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Auto stretch the price axis"
+              hitSlop={8}
+              onPress={() => {
+                setVp(autoScalePrice);
+                if (haptics) playHaptic("light");
+              }}
+              style={({ pressed }) => [s.autoButton, pressed && { backgroundColor: UI.row }]}
+            >
+              <Text style={s.autoText}>A</Text>
+            </Pressable>
+          </Animated.View>
+        )}
         {isPannedBack(vp) && (
           <Animated.View
             entering={FadeIn.duration(150).reduceMotion(ReduceMotion.System)}
@@ -797,6 +927,13 @@ export function CandleChart({
         profileBins={profileBins}
         profileBin={profileBin}
         onProfileBinChange={onProfileBinChange}
+      />
+      <ChartSettingsSheet open={sheet.kind === "settings"} onClose={() => setSheet({ kind: "none" })} settings={onPriceScaleTypeChange ? { ...settings, priceScale: scaleType } : settings}
+        onChange={(st) => {
+          if (onPriceScaleTypeChange && st.priceScale !== scaleType) onPriceScaleTypeChange(st.priceScale);
+          setSettings(st);
+        }}
+        reducedMotion={reducedMotion}
       />
       <IndicatorSheet open={sheet.kind === "indicators"} onClose={() => setSheet({ kind: "none" })} indicators={indicatorSpecs} onChange={setIndicators} seriesColors={[theme.series1, theme.series2, theme.series3]} reducedMotion={reducedMotion} />
       <AxisSheet
@@ -867,6 +1004,9 @@ const s = StyleSheet.create({
   chipText: { color: UI.accentFg, fontSize: 13, fontWeight: "700", fontVariant: ["tabular-nums"] },
   indicators: { flexDirection: "row", gap: 3 },
   count: { color: UI.text, fontSize: 11, fontVariant: ["tabular-nums"] },
+  autoWrap: { position: "absolute" },
+  autoButton: { width: 26, height: 22, borderRadius: 6, backgroundColor: UI.panel, alignItems: "center", justifyContent: "center", shadowColor: "#000", shadowOpacity: 0.3, shadowRadius: 4, shadowOffset: { width: 0, height: 1 }, elevation: 3 },
+  autoText: { color: UI.textDim, fontSize: 11, fontWeight: "700", fontVariant: ["tabular-nums"] },
   latestButton: { width: 40, height: 40, borderRadius: 20, backgroundColor: UI.panel, alignItems: "center", justifyContent: "center", shadowColor: "#000", shadowOpacity: 0.35, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 6 },
   plan: { position: "absolute", left: 0, right: 0, bottom: 0 },
 });

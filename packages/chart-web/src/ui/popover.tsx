@@ -6,9 +6,15 @@ import { cn } from "./utils.ts"
 // controlled open state and a virtual `anchor` (it opens at a price on the
 // chart, not under a trigger). Same surface treatment as the menus: bg-card
 // with a shadow, no border or ring (owner rule: boundaries by contrast).
+// PopoverTrigger was added back (2026-10-18) for the chart settings panel,
+// which opens under its toolbar button like the Indicators menu.
 
 function Popover({ ...props }: PopoverPrimitive.Root.Props) {
   return <PopoverPrimitive.Root data-slot="popover" {...props} />
+}
+
+function PopoverTrigger({ ...props }: PopoverPrimitive.Trigger.Props) {
+  return <PopoverPrimitive.Trigger data-slot="popover-trigger" {...props} />
 }
 
 function PopoverContent({
@@ -39,4 +45,4 @@ function PopoverContent({
   )
 }
 
-export { Popover, PopoverContent }
+export { Popover, PopoverContent, PopoverTrigger }

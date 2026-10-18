@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { backToLatestMs, backToLatestStep, buildSlots, defaultViewport, ensureVisible, indexScale, isPannedBack, niceTicks, pan, panSlots, rightEdge, slotAt, slotsBehindLatest, slotX, timeTicks, zoom } from "./scale.ts";
+import { backToLatestMs, backToLatestStep, buildSlots, defaultViewport, MIN_BAR_SPACING, ensureVisible, indexScale, isPannedBack, niceTicks, pan, panSlots, rightEdge, slotAt, slotsBehindLatest, slotX, timeTicks, zoom } from "./scale.ts";
 import { fixtureCandles, T0 } from "./testFixture.ts";
 
 describe("buildSlots", () => {
@@ -64,7 +64,7 @@ describe("viewport", () => {
     const s1 = indexScale(vp1, slots, 0, 600);
     expect(slotAt(s1, 250, slots.length)).toBe(under);
     expect(zoom(vp0, slots, 1000, 0, 600).barSpacing).toBe(48);
-    expect(zoom(vp0, slots, 0.0001, 0, 600).barSpacing).toBe(2);
+    expect(zoom(vp0, slots, 0.0001, 0, 600).barSpacing).toBe(MIN_BAR_SPACING);
   });
 
   test("ensureVisible pans just enough, and back to follow at the end", () => {

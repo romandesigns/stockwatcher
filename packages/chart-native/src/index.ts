@@ -6,6 +6,7 @@
 export { CandleChart, type CandleChartProps, type ChartSeriesLike, type ChartTrading } from "./CandleChart.tsx";
 export { drawDisplayList, recordPicture } from "./drawSkia.ts";
 export { AxisSheet, IndicatorSheet, OrderTicketSheet, Sheet } from "./sheets.tsx";
+export { ChartSettingsSheet } from "./ChartSettingsSheet.tsx";
 export { Icon, playHaptic, Segmented, toolColor, ToolButton, ToolIcon, UI, type IconProps } from "./ui.tsx";
 export { PositionPlanPanel } from "./PositionPlanPanel.tsx";
 export { CandleInspector } from "./CandleInspector.tsx";

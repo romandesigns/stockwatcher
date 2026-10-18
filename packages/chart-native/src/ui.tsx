@@ -74,7 +74,7 @@ export function Icon({ name, def, color, size }: IconProps) {
 }
 
 /** The toolbar icons by name (kept for callers of the old per-kind switch); the same 16 px marks as chart-web's toolbar. */
-export function ToolIcon({ kind, color }: { kind: DrawingKind | "cursor" | "trash" | "indicators" | "levels" | "trades" | "undo" | "redo" | "pencil" | "trade"; color: string }) {
+export function ToolIcon({ kind, color }: { kind: DrawingKind | "cursor" | "trash" | "indicators" | "levels" | "trades" | "undo" | "redo" | "pencil" | "trade" | "chart"; color: string }) {
   return <Icon name={kind} color={color} />;
 }
 

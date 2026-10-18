@@ -11,7 +11,6 @@ import {
   tradingDayOf,
   volumeBuckets,
   type ChartOptions,
-  type PriceScaleType,
   type Timeframe,
 } from "@stockwatcher/chart-core";
 import { CandleChart, Icon, ReplayControls, SessionTimeline, Tape, VolumeProfile } from "@stockwatcher/chart-web";
@@ -177,8 +176,6 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
   // decision (server or fixture), which never changes.
   const current = useMemo(() => followServer(choice, candidates.server), [choice, candidates.server]);
   const [inspectT, setInspectT] = useState<number | null>(null);
-  // Held here, not in the chart, so it survives switching phone/desktop layouts.
-  const [priceScale, setPriceScale] = useState<PriceScaleType>("linear");
   // A stock that traded out of the price band is no longer let through by the server.
   useEffect(() => {
     const next = followCandidates(symbol, candidates.symbols);
@@ -290,7 +287,7 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
           <SourceChip className="ml-auto" choice={current} mode={mode} />
           {search}
         </header>
-        <CandleChart className="h-[360px]" toolbar inspector symbol={symbol} persistKey="sw-chart" trading={trading} now={clock?.now ?? null} onTimeframeChange={changeTf} series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={setInspectT} priceScaleType={priceScale} onPriceScaleTypeChange={setPriceScale} options={PHONE_CHART} barSpacing={10} label={chartLabel} />
+        <CandleChart className="h-[360px]" toolbar inspector symbol={symbol} persistKey="sw-chart" trading={trading} now={clock?.now ?? null} onTimeframeChange={changeTf} series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={setInspectT} options={PHONE_CHART} barSpacing={10} label={chartLabel} />
         <section aria-label="Session timeline and replay" className="flex flex-col gap-1.5 rounded-xl bg-card px-3 py-2">
           <ReplayControls {...replay} variant="compact" />
           <SessionTimeline bands={bands} buckets={buckets} bucketMs={bucketMs} now={clock?.now ?? null} variant="minimal" onSeek={seek} />
@@ -341,7 +338,7 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
                     <span className={cn("pointer-events-auto font-mono text-[11px]", changeColor)}>{change}</span>
                   </Tip>
                 </div>
-              } symbol={symbol} persistKey="sw-chart" trading={trading} now={clock?.now ?? null} onTimeframeChange={changeTf} series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={setInspectT} priceScaleType={priceScale} onPriceScaleTypeChange={setPriceScale} options={DESKTOP_CHART} label={chartLabel} />
+              } symbol={symbol} persistKey="sw-chart" trading={trading} now={clock?.now ?? null} onTimeframeChange={changeTf} series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={setInspectT} options={DESKTOP_CHART} label={chartLabel} />
           </div>
           <section aria-label="Session timeline and replay" className="flex flex-col gap-2 rounded-xl bg-card px-3 py-2.5">
             <ReplayControls {...replay} />
