@@ -19,6 +19,13 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    # Replay opens every symbol file of the day at once (a k-way merge): a
+    # real SIP day is ~6,800 files, far past Docker's default soft limit of
+    # 1024, and the provider then fails with "Too many open files".
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     stop_grace_period: 15s
     logging:
       driver: json-file
