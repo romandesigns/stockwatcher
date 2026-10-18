@@ -32,4 +32,9 @@ function DialogTitle({ className, ...props }: DialogPrimitive.Title.Props) {
   return <DialogPrimitive.Title data-slot="dialog-title" className={cn("sr-only", className)} {...props} />
 }
 
-export { Dialog, DialogContent, DialogTitle }
+/** A button that closes the dialog (the Settings dialog's ✕). */
+function DialogClose({ ...props }: DialogPrimitive.Close.Props) {
+  return <DialogPrimitive.Close data-slot="dialog-close" {...props} />
+}
+
+export { Dialog, DialogClose, DialogContent, DialogTitle }
