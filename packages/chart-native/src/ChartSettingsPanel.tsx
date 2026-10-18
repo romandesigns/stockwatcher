@@ -142,7 +142,9 @@ function Row({ name, description, checked, onToggle }: { name: string; descripti
       accessibilityLabel={name}
       accessibilityHint={description}
       onPress={onToggle}
-      style={({ pressed }) => [s.row, checked && { backgroundColor: UI.row }, pressed && { backgroundColor: UI.raised }]}
+      // No fill when on (owner, 2026-10-18): the accent check carries the state, as on the web,
+      // so on and off rows share the panel's background; only a press lights one.
+      style={({ pressed }) => [s.row, pressed && { backgroundColor: UI.raised }]}
     >
       <View style={{ flex: 1, gap: 2 }}>
         <Text style={s.name}>{name}</Text>
