@@ -288,10 +288,15 @@ export interface ChartSubscribe {
  * - `stepInterval`: a timeframe label ("15s" | "30s" | "1m" | "5m"), default "1m";
  * - `seek`: epoch ms (or an RFC 3339 string); the server rebuilds from the
  *   session start and resends `chart.snapshot`;
- * - `speed`: multiplier (1, 2, 10, 60, …), 0 = max.
+ * - `speed`: multiplier (1, 2, 10, 60, …), 0 = max;
+ * - `day`: "YYYY-MM-DD", one of GET /api/replay/state's `days`
+ *   (replayDays.ts). Rebuilds like a seek on that day at the server's
+ *   REPLAY_START time of day: the paper account resets and every
+ *   subscription gets a fresh snapshot. `error unknown_day` /
+ *   `day_unavailable` mean nothing changed.
  */
 export interface ReplayControl {
   type: "replay.control";
-  action: "play" | "pause" | "step" | "stepInterval" | "seek" | "speed";
+  action: "play" | "pause" | "step" | "stepInterval" | "seek" | "speed" | "day";
   value?: number | string;
 }

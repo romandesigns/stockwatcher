@@ -1,10 +1,12 @@
 import {
   buildSlots,
   changeReference,
+  currentReplayDay,
   formatChange,
   formatEtDateKey,
   formatPrice,
   lastCandle,
+  replayDayOptions,
   sessionBands,
   tradingDayOf,
   volumeBuckets,
@@ -22,6 +24,7 @@ import { useCandidates } from "./feed/useCandidates.ts";
 import type { ChartFeed } from "./feed/types.ts";
 import { useChartFeed } from "./feed/useChartFeed.ts";
 import { usePaperTrading } from "./feed/usePaperTrading.ts";
+import { useReplayDays } from "./feed/useReplayDays.ts";
 import { createFixtureFeed, FIXTURE_SYMBOL } from "./fixtures/fixtureFeed.ts";
 import { useMediaQuery } from "./lib/useMediaQuery.ts";
 import { TickerSearch } from "./search/TickerSearch.tsx";
@@ -183,9 +186,11 @@ function SignIn({ rejected, onSubmit }: { rejected: boolean; onSubmit: (token: s
 function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
 
   const [symbol, setSymbol] = useState(() => initialSymbol(choice, FIXTURE_SYMBOL));
-  const candidates = useCandidates(choice);
   const [timeframe, setTimeframe] = useState<Timeframe>("1m");
   const [bin, setBin] = useState<number>(0.01);
+  // The trading day the replay clock is on; it changes on a day switch (and once a night while playing).
+  const [clockDay, setClockDay] = useState<string | null>(null);
+  const candidates = useCandidates(choice, clockDay);
   const [inspectT, setInspectT] = useState<number | null>(null);
   // Held here, not in the chart, so it survives switching phone/desktop layouts.
   const [priceScale, setPriceScale] = useState<PriceScaleType>("linear");
@@ -199,6 +204,8 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
   }, [candidates.symbols, symbol]);
   const { series, tape, clock } = useChartFeed(feed, symbol, timeframe, bin);
   const trading = usePaperTrading(feed);
+  const replayDays = useReplayDays(choice, clockDay);
+  const dayOptions = useMemo(() => replayDayOptions(replayDays.state?.days ?? []), [replayDays.state]);
 
   const phone = useMediaQuery("(max-width: 600px)");
   // Ticker quick-open, VS Code's Ctrl+P (Cmd+P on a Mac): the browser's print shortcut is taken
@@ -237,6 +244,9 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
 
   // Bands change only when the trading day does, not on every clock tick.
   const dayKey = clock ? formatEtDateKey(tradingDayOf(clock.now)) : "";
+  // Derived during render (React's "adjusting state when a prop changes"), not in an effect: the hooks
+  // above that read it run before the clock is known, and an effect would cost an extra commit.
+  if ((dayKey || null) !== clockDay) setClockDay(dayKey || null);
   const bands = useMemo(() => {
     if (!dayKey) return [];
     const [year, month, day] = dayKey.split("-").map(Number) as [number, number, number];
@@ -254,6 +264,12 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
     onPlayPause: (play: boolean) => feed.control({ action: play ? "play" : "pause" }),
     onStep: () => feed.control({ action: "step" }),
     onSpeedChange: (speed: number) => feed.control({ action: "speed", value: speed }),
+    days: dayOptions,
+    day: currentReplayDay(replayDays.state, clock),
+    // The server rebuilds on the new day and resends every snapshot; the clock's new trading day
+    // then refetches the candidates and this list.
+    onDayChange: (day: string) => feed.control({ action: "day", value: day }),
+    onDayMenuOpenChange: (open: boolean) => open && replayDays.refresh(),
   };
   // Jump the replay; the server rebuilds from the session start and resends snapshots.
   const seek = (t: number) => feed.control({ action: "seek", value: t });
