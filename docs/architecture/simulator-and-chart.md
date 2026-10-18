@@ -231,6 +231,12 @@ and quality counters.
 - `seek <t>` emits `Reset`, re-reads the day from its start up to `t` (consumers rebuild silently),
   then a `Clock`.
 - `speed` takes 1…3600× or max (wire value 0).
+- `day <date>` swaps the source for the same archive's other day (`EventSource::for_day`, which
+  reads the manifest first, so a missing or non-trading day is refused with nothing changed), then
+  emits `Source` (the new day's label, symbols and fixture flag) and runs the seek rebuild to
+  `REPLAY_START` on the new day (`ReplayOptions::start_time`). Playing/paused and speed carry over.
+  One provider session serves every day; the old day's source, readers and merger are dropped at
+  the swap.
 
 One tokio task drives everything, with no per-symbol tasks. A 50 ms pacing tick while playing,
 `virtual = anchor + wall_elapsed × speed`, re-anchored on every control. Output goes through a
@@ -324,15 +330,23 @@ stamped on it. The increments are serialized to JSON once and broadcast on a bou
 - server `replay.clock {clock:{mode,now,speed,playing}}` goes to every client after `welcome`, on
   every change, and about 4 Hz while playing;
 - client `replay.control {action, value}`: `play`, `pause`, `step`, `stepInterval` (`"15s"`…`"5m"`,
-  default `"1m"`), `seek` (epoch ms or RFC 3339), `speed` (multiplier, 0 = max). There is no
-  direct reply; the next `replay.clock` is the answer;
-- errors: `not_replay` (live mode), `bad_request`, `unknown_symbol`.
+  default `"1m"`), `seek` (epoch ms or RFC 3339), `speed` (multiplier, 0 = max), `day`
+  (`"YYYY-MM-DD"`, one of `/api/replay/state`'s `days`). There is no direct reply; the next
+  `replay.clock` is the answer;
+- a `day` switch resets exactly what a seek resets (engine, tape rings, quote board, paper
+  account, the simulator's bar book) and every subscriber gets fresh snapshots; a subscribed
+  symbol the new day lacks answers that resync with `unknown_symbol` (or `outside_price_band`);
+- errors: `not_replay` (live mode), `bad_request`, `unknown_symbol`, `unknown_day` (not an
+  offered day), `day_unavailable` (offered, but its files could not be opened).
 
 **REST** (behind the bearer token when one is set):
 - `GET /api/chart/{symbol}/snapshot?timeframe=1m&bin=0.01`;
 - `GET /api/replay/state` returns mode, provider status (`running`, `no_data`, `not_configured`,
-  `error`, `stopped`), source, day, `fixture`, symbols, `controllable`, clock, start/end, events
-  and seq;
+  `error`, `stopped`), source, day, `fixture`, symbols, `controllable`, clock, start/end, events,
+  seq and `days`: every replayable archive day, ascending, as `{day, fixture, symbols}` (empty in
+  live mode). Per-day facts come from the manifests, cached per manifest length and mtime, so the
+  route stays cheap with real days of thousands of symbols. The clients' day menu fetches this
+  when it opens; the list is not pushed on the socket because it changes a few times a month;
 - `GET /api/symbols` returns mode, status, source, day, `fixture` and symbols.
 
 `/api/health` is unchanged and stays healthy when no provider runs.

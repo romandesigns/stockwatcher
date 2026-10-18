@@ -1,7 +1,7 @@
 //! Market REST routes under `/api` (behind the bearer token when one is configured):
 //!
 //! - `GET /api/chart/{symbol}/snapshot?timeframe=1m&bin=0.01` → a `chart.snapshot` (with clock)
-//! - `GET /api/replay/state` → mode, provider status, day, symbols, clock
+//! - `GET /api/replay/state` → mode, provider status, day, symbols, clock, and the switchable `days`
 //! - `GET /api/symbols` → the symbols the server can chart, and whether the data is fixture data
 //! - `GET /api/quotes` → the quote board as a `quotes.snapshot` (the body a `/ws`
 //!   `quotes.subscribe` starts with; for tests and debugging, clients use the socket)
