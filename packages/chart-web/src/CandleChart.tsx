@@ -89,6 +89,9 @@ import {
   easeOut,
   SETTINGS_MOTION_MS,
   type ChartSettings,
+  parseDrawingSettings,
+  toolAllowed,
+  type DrawingSettings,
 } from "@stockwatcher/chart-core";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type MouseEvent, type PointerEvent } from "react";
 import { createPortal } from "react-dom";
@@ -141,6 +144,14 @@ export interface CandleChartProps {
    */
   settings?: ChartSettings;
   onSettingsChange?: (s: ChartSettings) => void;
+  /**
+   * Which buttons the floating drawing toolbox shows (the Settings dialog's
+   * Drawing tab; chart-core drawingSettings.ts). The host owns it (the
+   * dialog lives in the app header, not in the chart); without it the chart
+   * reads `${persistKey}:drawing` once, so a saved choice still applies.
+   * A tool that becomes hidden while armed is disarmed.
+   */
+  drawingSettings?: DrawingSettings;
   /** Offer the price axis menu on right-click / long press / Shift+F10 (default true). */
   priceAxisMenu?: boolean;
   options?: Partial<ChartOptions>;
@@ -250,6 +261,7 @@ export function CandleChart({
   onPriceScaleTypeChange,
   settings: settingsProp,
   onSettingsChange,
+  drawingSettings: drawingSettingsProp,
   priceAxisMenu = true,
   options,
   theme: themeProp,
@@ -348,6 +360,9 @@ export function CandleChart({
       saveJson(persistKey && `${persistKey}:settings`, next);
     }
   };
+  // Drawing toolbox contents: the host's (the Settings dialog), else the saved choice (`sw-chart:drawing`).
+  const [savedDrawingSettings] = useState<DrawingSettings>(() => parseDrawingSettings(loadJson<unknown>(persistKey && `${persistKey}:drawing`, null)));
+  const drawingSettings = drawingSettingsProp ?? savedDrawingSettings;
   const [ownLayers, setOwnLayers] = useState<ChartLayers>(() => parseLayers(loadJson<unknown>(persistKey && `${persistKey}:layers`, null)));
   const layers = onLayersChange ? (layersProp ?? DEFAULT_LAYERS) : ownLayers;
   const setLayers = (next: ChartLayers) => {
@@ -942,6 +957,12 @@ export function CandleChart({
     setTool(t);
   };
 
+  // Hiding the armed tool in Settings disarms it: no invisible tool waits for the next click (chart-core armedAfter).
+  useEffect(() => {
+    if (!toolAllowed(drawingSettings, tool)) changeTool(null);
+    // changeTool is recreated every render; the check only needs to run when the settings or the tool change.
+  }, [drawingSettings, tool]);
+
   const deleteSelected = () => {
     if (selected?.kind !== "drawing") return;
     setDrawings(drawings.filter((d) => d.id !== selected.id));
@@ -992,7 +1013,9 @@ export function CandleChart({
     // L / S pick the long / short position tool (TradingView's habit of one-key tools).
     if ((e.key === "l" || e.key === "L" || e.key === "s" || e.key === "S") && !e.ctrlKey && !e.metaKey && !e.altKey) {
       e.preventDefault();
-      changeTool(e.key.toLowerCase() === "l" ? "long" : "short");
+      // A tool hidden in Settings cannot be armed from the keyboard either (it would be armed invisibly).
+      const k = e.key.toLowerCase() === "l" ? "long" : "short";
+      if (toolAllowed(drawingSettings, k)) changeTool(k);
       return;
     }
     if ((e.key === "Delete" || e.key === "Backspace") && selected?.kind === "drawing") {
@@ -1195,6 +1218,7 @@ export function CandleChart({
           canRedo={history.future.length > 0}
           onUndo={() => stepHistory("undo")}
           onRedo={() => stepHistory("redo")}
+          settings={drawingSettings}
         />
       )}
       {trading && (

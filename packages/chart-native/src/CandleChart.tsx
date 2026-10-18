@@ -87,6 +87,9 @@ import {
   SETTINGS_MOTION_MS,
   viewKey,
   type ChartSettings,
+  DEFAULT_DRAWING_SETTINGS,
+  toolAllowed,
+  type DrawingSettings,
 } from "@stockwatcher/chart-core";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AccessibilityInfo, Pressable, StyleSheet, Text, View, type LayoutChangeEvent, type StyleProp, type ViewStyle } from "react-native";
@@ -133,6 +136,8 @@ export interface CandleChartProps {
   /** The chart settings (chart-core chartSettings.ts). Controlled when onSettingsChange is set (the host persists it, `chart.settings`); else kept for the session. */
   settings?: ChartSettings;
   onSettingsChange?: (s: ChartSettings) => void;
+  /** Which buttons the floating drawing toolbox shows (the Settings sheet's Drawing tab, chart-core drawingSettings.ts; the host persists it, `chart.drawing`). A tool that becomes hidden while armed is disarmed. Default: all. */
+  drawingSettings?: DrawingSettings;
   options?: Partial<ChartOptions>;
   theme?: ChartTheme;
   barSpacing?: number;
@@ -208,6 +213,7 @@ export function CandleChart({
   onPriceScaleTypeChange,
   settings: settingsProp,
   onSettingsChange,
+  drawingSettings = DEFAULT_DRAWING_SETTINGS,
   options,
   theme = DEFAULT_CHART_THEME,
   barSpacing = 9,
@@ -730,6 +736,11 @@ export function CandleChart({
     setMeasurement(null);
     setTool(t);
   };
+  // Hiding the armed tool in Settings disarms it: no invisible tool waits for the next tap (chart-core armedAfter).
+  // changeTool is recreated every render; the check only needs to run when the settings or the tool change.
+  useEffect(() => {
+    if (!toolAllowed(drawingSettings, tool)) changeTool(null);
+  }, [drawingSettings, tool]);
   const deleteSelected = () => {
     if (selected?.kind !== "drawing") return;
     setDrawings(drawings.filter((d) => d.id !== selected.id));
@@ -849,6 +860,7 @@ export function CandleChart({
             onUndo={() => stepHistory("undo")}
             onRedo={() => stepHistory("redo")}
             haptics={haptics}
+            settings={drawingSettings}
           />
         )}
         {tradeChip && (

@@ -1,5 +1,5 @@
-import { DRAWING_COLORS, DRAWING_KINDS, DRAWING_LABELS, toolboxPlacement, toolboxPosition, type DrawingKind, type Size, type ToolboxPlacement } from "@stockwatcher/chart-core";
-import { useRef, useState } from "react";
+import { DEFAULT_DRAWING_SETTINGS, DRAWING_COLORS, DRAWING_LABELS, toolboxLayout, toolboxPlacement, toolboxPosition, type DrawingKind, type DrawingSettings, type Size, type ToolboxPlacement } from "@stockwatcher/chart-core";
+import { useRef, useState, type ReactNode } from "react";
 import { Pressable, StyleSheet, View, type LayoutChangeEvent } from "react-native";
 import { GestureDetector, usePanGesture } from "react-native-gesture-handler";
 import { Icon, playHaptic, toolColor, ToolIcon, UI } from "./ui.tsx";
@@ -21,18 +21,22 @@ export interface DrawingToolboxProps {
   onUndo: () => void;
   onRedo: () => void;
   haptics?: boolean;
+  /** Which buttons show (the Settings sheet's Drawing tab; chart-core drawingSettings.ts). Default: all. */
+  settings?: DrawingSettings;
+  /**
+   * Laid out in the flow, not floating, and not interactive: the Drawing
+   * tab's live preview, so it is the real toolbox (including the two-line
+   * split when its line does not fit `container`).
+   */
+  preview?: boolean;
 }
 
 const BTN = 30;
 const GAP = 2;
 const PAD = 3;
 const GRIP = 18;
-/** Tools: cursor, the drawing kinds and measure. Actions: colour, delete, undo, redo, flip. */
-const TOOL_KEYS = ["cursor", ...DRAWING_KINDS, "measure"] as const;
-const ACTIONS = 5;
-
-/** Length of one line holding `n` buttons plus the grip and a separator. */
-const lineLength = (n: number) => PAD * 2 + GRIP + GAP + n * BTN + (n - 1) * GAP + 5 + GAP;
+/** Length of one line holding `n` buttons, plus the grip and the separator when they show. */
+const lineLength = (n: number, grip: boolean, separator: boolean) => PAD * 2 + (grip ? GRIP + GAP : 0) + n * BTN + (n - 1) * GAP + (separator ? 5 + GAP : 0);
 
 /**
  * The drawing tools as a floating palette over the native chart, the twin of
@@ -48,8 +52,20 @@ const lineLength = (n: number) => PAD * 2 + GRIP + GAP + n * BTN + (n - 1) * GAP
  * the first line, the actions (colour, then delete, undo, redo and flip in
  * one pill) on the second, and the grip spans both. A column
  * splits the same way into two columns.
+ *
+ * Which buttons show comes from `settings` through chart-core's
+ * toolboxLayout (owner request 2026-10-18), the derivation chart-web uses:
+ * hidden tools drop out, the edit pill holds only what is left of delete /
+ * undo / redo / flip and is not drawn when that is nothing, the separator
+ * only shows when an action follows it, and the split rule measures the
+ * line that is actually left (fewer buttons often fit on one line again).
+ * Buttons are added and removed without a layout animation: the Settings
+ * sheet that changes them covers the chart while it is open, so the change
+ * is never seen happening, and Reanimated layout transitions on button
+ * rows left stale touch targets on Android before (see the workspace's
+ * motion notes).
  */
-export function DrawingToolbox({ placement, onPlacementChange, container, tool, onToolChange, color, canColor, onColorChange, canDelete, onDelete, canUndo, canRedo, onUndo, onRedo, haptics = true }: DrawingToolboxProps) {
+export function DrawingToolbox({ placement, onPlacementChange, container, tool, onToolChange, color, canColor, onColorChange, canDelete, onDelete, canUndo, canRedo, onUndo, onRedo, haptics = true, settings = DEFAULT_DRAWING_SETTINGS, preview = false }: DrawingToolboxProps) {
   const [box, setBox] = useState<Size>({ width: 300, height: 40 });
   const [colorsOpen, setColorsOpen] = useState(false);
   const start = useRef<{ left: number; top: number } | null>(null);
@@ -82,28 +98,70 @@ export function DrawingToolbox({ placement, onPlacementChange, container, tool, 
 
   const swatch = (c: string, size: number) => <View style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: c }} />;
   const current = color ?? DRAWING_COLORS[0]!.value;
-  const room = (vertical ? container.height : container.width) - 12;
-  const split = room > 0 && lineLength(TOOL_KEYS.length + ACTIONS) > room;
+  const layout = toolboxLayout(settings);
+  const actions = layout.color || layout.edit.length > 0;
+  const room = (vertical ? container.height : container.width) - (preview ? 0 : 12);
+  // Split only when there are actions to move to a second line; a tools-only strip just wraps nowhere.
+  const split = actions && room > 0 && lineLength(layout.buttons, layout.grip, layout.separator) > room;
   // Lines run along the orientation; the box stacks them across it.
   const line = vertical ? "column" : "row";
   const across = vertical ? "row" : "column";
 
+  const gripEl = (
+    // Stretches across both lines when split, so there is one grip for the whole palette.
+    <View style={[s.grip, vertical ? { width: "100%", height: GRIP } : { width: GRIP, alignSelf: "stretch", minHeight: BTN }]} accessible accessibilityLabel="Move drawing tools" accessibilityHint="Drag to move the drawing tools">
+      <View style={vertical ? undefined : { transform: [{ rotate: "90deg" }] }}>
+        <Icon name="grip" color={UI.textFaint} size={14} />
+      </View>
+    </View>
+  );
+  const editButtons: Record<(typeof layout.edit)[number], ReactNode> = {
+    delete: (
+      <Pressable key="delete" accessibilityRole="button" accessibilityLabel="Delete selected drawing" disabled={!canDelete} onPress={onDelete} style={[s.btn, !canDelete && { opacity: 0.4 }]}>
+        <ToolIcon kind="trash" color={UI.textDim} />
+      </Pressable>
+    ),
+    undo: (
+      <Pressable key="undo" accessibilityRole="button" accessibilityLabel="Undo" disabled={!canUndo} onPress={onUndo} style={[s.btn, !canUndo && { opacity: 0.4 }]}>
+        <ToolIcon kind="undo" color={UI.textDim} />
+      </Pressable>
+    ),
+    redo: (
+      <Pressable key="redo" accessibilityRole="button" accessibilityLabel="Redo" disabled={!canRedo} onPress={onRedo} style={[s.btn, !canRedo && { opacity: 0.4 }]}>
+        <ToolIcon kind="redo" color={UI.textDim} />
+      </Pressable>
+    ),
+    rotate: (
+      <Pressable
+        key="rotate"
+        accessibilityRole="button"
+        accessibilityLabel={vertical ? "Lay the tools out in a row" : "Lay the tools out in a column"}
+        onPress={() => onPlacementChange({ ...placement, orientation: vertical ? "horizontal" : "vertical" }, true)}
+        style={s.btn}
+      >
+        <Icon name="rotate" color={UI.textDim} size={15} />
+      </Pressable>
+    ),
+  };
+
   return (
-    <View style={[s.box, { left: at.left, top: at.top, flexDirection: line }]} onLayout={onLayout} accessibilityRole="toolbar" accessibilityLabel="Drawing tools">
-      <GestureDetector gesture={pan}>
-        {/* Stretches across both lines when split, so there is one grip for the whole palette. */}
-        <View style={[s.grip, vertical ? { width: "100%", height: GRIP } : { width: GRIP, alignSelf: "stretch", minHeight: BTN }]} accessible accessibilityLabel="Move drawing tools" accessibilityHint="Drag to move the drawing tools">
-          <View style={vertical ? undefined : { transform: [{ rotate: "90deg" }] }}>
-            <Icon name="grip" color={UI.textFaint} size={14} />
-          </View>
-        </View>
-      </GestureDetector>
+    <View
+      style={[s.box, preview ? s.previewBox : { left: at.left, top: at.top }, { flexDirection: line }]}
+      onLayout={preview ? undefined : onLayout}
+      pointerEvents={preview ? "none" : "auto"}
+      accessibilityRole="toolbar"
+      accessibilityLabel={preview ? "Drawing tools preview" : "Drawing tools"}
+      accessibilityElementsHidden={preview}
+      importantForAccessibility={preview ? "no-hide-descendants" : "auto"}
+    >
+      {/* The preview never drags (and a GestureDetector inside a Modal would need its own gesture root). */}
+      {layout.grip && (preview ? gripEl : <GestureDetector gesture={pan}>{gripEl}</GestureDetector>)}
       {/* Lines stack across the orientation: the main line(s), then the colour swatches when open. The swatches
           get a line of their own so opening them never widens a row past the chart (it pushed flip off-screen). */}
       <View style={{ flexDirection: across, gap: GAP }}>
       <View style={{ flexDirection: split ? across : line, gap: GAP }}>
       <View style={{ flexDirection: line, alignItems: "center", gap: GAP }} accessibilityRole="radiogroup" accessibilityLabel="Tool">
-      {TOOL_KEYS.map((k) => {
+      {layout.tools.map((k) => {
         const on = (tool ?? "cursor") === k;
         return (
           <Pressable
@@ -119,37 +177,22 @@ export function DrawingToolbox({ placement, onPlacementChange, container, tool, 
         );
       })}
       </View>
-      {!split && <View style={vertical ? s.sepV : s.sepH} />}
+      {!split && layout.separator && <View style={vertical ? s.sepV : s.sepH} />}
       {/* Actions: colour (the selection), then the editing pill right beside it (owner: no space between). */}
+      {actions && (
       <View style={{ flexDirection: line, alignItems: "center", gap: GAP }}>
-      <View style={{ flexDirection: line, alignItems: "center", gap: GAP }}>
+      {layout.color && (
       <Pressable accessibilityRole="button" accessibilityLabel="Drawing colour" accessibilityState={{ disabled: !canColor, expanded: colorsOpen }} disabled={!canColor} onPress={() => setColorsOpen((o) => !o)} style={[s.btn, !canColor && { opacity: 0.4 }]}>
         {swatch(canColor ? current : UI.textDim, 14)}
       </Pressable>
+      )}
+      {/* Delete, undo, redo and flip: one pill on a dimmed white surface, buttons touching. Only what shows is in it;
+          with none there is no pill (an empty dimmed surface would read as a broken button). */}
+      {layout.edit.length > 0 && <View style={[s.group, { flexDirection: line }]}>{layout.edit.map((id) => editButtons[id])}</View>}
       </View>
-      {/* Delete, undo, redo and flip: one pill on a dimmed white surface, buttons touching. */}
-      <View style={[s.group, { flexDirection: line }]}>
-      <Pressable accessibilityRole="button" accessibilityLabel="Delete selected drawing" disabled={!canDelete} onPress={onDelete} style={[s.btn, !canDelete && { opacity: 0.4 }]}>
-        <ToolIcon kind="trash" color={UI.textDim} />
-      </Pressable>
-      <Pressable accessibilityRole="button" accessibilityLabel="Undo" disabled={!canUndo} onPress={onUndo} style={[s.btn, !canUndo && { opacity: 0.4 }]}>
-        <ToolIcon kind="undo" color={UI.textDim} />
-      </Pressable>
-      <Pressable accessibilityRole="button" accessibilityLabel="Redo" disabled={!canRedo} onPress={onRedo} style={[s.btn, !canRedo && { opacity: 0.4 }]}>
-        <ToolIcon kind="redo" color={UI.textDim} />
-      </Pressable>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={vertical ? "Lay the tools out in a row" : "Lay the tools out in a column"}
-        onPress={() => onPlacementChange({ ...placement, orientation: vertical ? "horizontal" : "vertical" }, true)}
-        style={s.btn}
-      >
-        <Icon name="rotate" color={UI.textDim} size={15} />
-      </Pressable>
+      )}
       </View>
-      </View>
-      </View>
-        {colorsOpen && canColor && (
+        {colorsOpen && canColor && layout.color && !preview && (
           <View style={[s.colors, { flexDirection: line, alignSelf: "flex-start" }]} accessibilityRole="radiogroup" accessibilityLabel="Drawing colour">
             {DRAWING_COLORS.map((c) => (
               <Pressable
@@ -175,6 +218,8 @@ export function DrawingToolbox({ placement, onPlacementChange, container, tool, 
 }
 
 const s = StyleSheet.create({
+  // The preview sits in the flow (the Drawing tab); the floating palette is absolute.
+  previewBox: { position: "relative", alignSelf: "flex-start" },
   box: { position: "absolute", alignItems: "center", gap: GAP, padding: PAD, borderRadius: 12, backgroundColor: "rgba(21,26,32,0.95)", shadowColor: "#000", shadowOpacity: 0.35, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 6 },
   grip: { alignItems: "center", justifyContent: "center" },
   btn: { width: BTN, height: BTN, borderRadius: 7, alignItems: "center", justifyContent: "center" },
