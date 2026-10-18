@@ -7,8 +7,9 @@ import { cn } from "./utils.ts"
 // tabpanel, aria-selected, aria-controls), roving focus with the arrow
 // keys for the orientation (↑/↓ in a vertical list), Home / End, and the
 // panel's data-starting-style / data-ending-style for its transition.
-// No borders (owner rule): the active tab is a raised surface, drawn by the
-// indicator so it SLIDES between tabs rather than jumping.
+// No borders (owner rule): the active tab is a surface drawn by the
+// indicator so it SLIDES between tabs rather than jumping. Raised by default;
+// the Settings dialog restyles it as a tab connected to its panel.
 
 function Tabs({ className, orientation = "horizontal", ...props }: TabsPrimitive.Root.Props) {
   return (

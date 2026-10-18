@@ -100,7 +100,6 @@ import { CandleInspector } from "./CandleInspector.tsx";
 import { DrawingToolbox } from "./DrawingToolbox.tsx";
 import { PositionPlanPanel } from "./PositionPlanPanel.tsx";
 import { AxisSheet, IndicatorSheet, LayersSheet, OrderTicketSheet, QUICK_TRADE_SIZES, QuickTradeSheet, SCALE_LABELS } from "./sheets.tsx";
-import { ChartSettingsSheet } from "./ChartSettingsSheet.tsx";
 import { useTween } from "./useTween.ts";
 import { TimeframeWheel } from "./TimeframeWheel.tsx";
 import { Icon, playHaptic, ToolButton, ToolIcon, UI } from "./ui.tsx";
@@ -329,7 +328,7 @@ export function CandleChart({
   const [selected, setSelected] = useState<ObjectHit | null>(null);
   const [draft, setDraft] = useState<DrawingDraft | null>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
-  const [sheet, setSheet] = useState<{ kind: "none" } | { kind: "settings" } | { kind: "indicators" } | { kind: "layers" } | { kind: "quick"; price: number; x: number; y: number } | { kind: "axis"; price: number | null } | { kind: "ticket"; price: number | null }>({ kind: "none" });
+  const [sheet, setSheet] = useState<{ kind: "none" } | { kind: "indicators" } | { kind: "layers" } | { kind: "quick"; price: number; x: number; y: number } | { kind: "axis"; price: number | null } | { kind: "ticket"; price: number | null }>({ kind: "none" });
   const [reducedMotion, setReducedMotion] = useState(false);
   useEffect(() => {
     AccessibilityInfo.isReduceMotionEnabled().then(setReducedMotion, () => {});
@@ -798,10 +797,7 @@ export function CandleChart({
               <ToolButton label={toolsVisible ? "Hide drawing tools" : "Show drawing tools"} onPress={() => changeToolsVisible(!toolsVisible)} style={toolsVisible ? { backgroundColor: UI.raised } : undefined}>
                 <ToolIcon kind="pencil" color={toolsVisible ? UI.text : UI.textDim} />
               </ToolButton>
-              {/* Chart settings, immediately left of Indicators (owner request 2026-10-18), as on the web. */}
-              <ToolButton label="Chart settings" onPress={() => setSheet({ kind: "settings" })}>
-                <ToolIcon kind="chart" color={UI.textDim} />
-              </ToolButton>
+              {/* No Chart button: the chart settings live in the Settings sheet's Chart tab (owner, 2026-10-18), as on the web. */}
               <ToolButton label={indicatorSpecs.length ? `Indicators, ${indicatorSpecs.length} on` : "Indicators"} onPress={() => setSheet({ kind: "indicators" })} style={s.indicators}>
                 <ToolIcon kind="indicators" color={UI.textDim} />
                 {indicatorSpecs.length ? <Text style={s.count}>{indicatorSpecs.length}</Text> : null}
@@ -950,13 +946,6 @@ export function CandleChart({
         profileBins={profileBins}
         profileBin={profileBin}
         onProfileBinChange={onProfileBinChange}
-      />
-      <ChartSettingsSheet open={sheet.kind === "settings"} onClose={() => setSheet({ kind: "none" })} settings={onPriceScaleTypeChange ? { ...settings, priceScale: scaleType } : settings}
-        onChange={(st) => {
-          if (onPriceScaleTypeChange && st.priceScale !== scaleType) onPriceScaleTypeChange(st.priceScale);
-          setSettings(st);
-        }}
-        reducedMotion={reducedMotion}
       />
       <IndicatorSheet open={sheet.kind === "indicators"} onClose={() => setSheet({ kind: "none" })} indicators={indicatorSpecs} onChange={setIndicators} seriesColors={[theme.series1, theme.series2, theme.series3]} reducedMotion={reducedMotion} />
       <AxisSheet

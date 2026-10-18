@@ -42,7 +42,10 @@ export interface Viewport {
   barSpacing: number;
   anchorT: number | null;
   anchorFrac: number;
-  /** Empty slots kept right of the latest candle while following. */
+  /**
+   * The least empty space right of the latest candle, in slots. The actual
+   * margin is rightMarginSlots(): this or RIGHT_MARGIN_PX, whichever is wider.
+   */
   rightMargin: number;
   /**
    * Price axis range. Absent or "auto" fits the visible candles (the default,
@@ -78,15 +81,40 @@ export function defaultViewport(barSpacing = 9): Viewport {
   return { barSpacing, anchorT: null, anchorFrac: 0, rightMargin: 1.5 };
 }
 
+/**
+ * The chart's right margin (TradingView's "right margin"): empty space kept
+ * between the latest candle and the price column while the view follows the
+ * latest, so the forming candle, the indicator lines and the position-plan
+ * box are not pressed against the axis (owner, 2026-10-18: "add a little bit
+ * of separation between the start of the candles formation and the price
+ * column").
+ *
+ * Pixels, not slots, because the zoom presets made slot widths range from
+ * 48 px down to under 1 px: TradingView's default of 10 bars is 5 px at
+ * "100 %" of a 15 s day and 480 px fully zoomed in, while a fixed 48 px
+ * reads the same at every timeframe and zoom. The viewport's `rightMargin`
+ * (1.5 slots) stays as the floor, so a zoomed-in chart still leaves room
+ * for one and a half candles.
+ *
+ * It is also the limit for looking into the future: panning stops with the
+ * margin on screen (withEdge), so no drag reveals more empty space than this.
+ */
+export const RIGHT_MARGIN_PX = 48;
+
+/** Empty slots right of the latest candle while following: RIGHT_MARGIN_PX at this zoom, or the viewport's floor. */
+export function rightMarginSlots(vp: Viewport): number {
+  return Math.max(vp.rightMargin, RIGHT_MARGIN_PX / vp.barSpacing);
+}
+
 /** Float slot index at the plot's right edge (slot i spans [i, i+1)). */
 export function rightEdge(vp: Viewport, slots: readonly Slot[]): number {
-  if (vp.anchorT === null || slots.length === 0) return slots.length + vp.rightMargin;
+  if (vp.anchorT === null || slots.length === 0) return slots.length + rightMarginSlots(vp);
   const i = Math.min(lowerBound(slots, vp.anchorT), slots.length - 1);
   return i + vp.anchorFrac;
 }
 
 function withEdge(vp: Viewport, slots: readonly Slot[], edge: number): Viewport {
-  const follow = slots.length + vp.rightMargin;
+  const follow = slots.length + rightMarginSlots(vp);
   // Keep at least a few slots on screen at the left limit.
   const minEdge = Math.min(follow, Math.max(1, Math.min(slots.length, 3)));
   const e = Math.max(minEdge, edge);
@@ -142,7 +170,7 @@ export function isPannedBack(vp: Viewport): boolean {
 /** Slots between the view's right edge and where following the latest would put it (0 when following). */
 export function slotsBehindLatest(vp: Viewport, slots: readonly Slot[]): number {
   if (vp.anchorT === null) return 0;
-  return Math.max(0, slots.length + vp.rightMargin - rightEdge(vp, slots));
+  return Math.max(0, slots.length + rightMarginSlots(vp) - rightEdge(vp, slots));
 }
 
 /** Duration of the slide back to the latest candle: quick from nearby, capped from far back. */

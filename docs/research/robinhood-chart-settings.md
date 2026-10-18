@@ -1,6 +1,6 @@
 # Robinhood chart settings (research, 2026-10-18)
 
-What Robinhood offers as chart settings, and what Stockwatcher's Chart button (left of Indicators) builds
+What Robinhood offers as chart settings, and what Stockwatcher's chart settings (first a Chart button left of Indicators, since 2026-10-18 the Settings dialog's Chart tab) build
 from it. It continues `robinhood-chart-gestures.md`; sources are listed at the end. Items marked
 **unverified** come from a source that could not be read in full.
 

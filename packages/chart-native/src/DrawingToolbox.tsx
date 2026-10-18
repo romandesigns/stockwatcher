@@ -218,8 +218,9 @@ export function DrawingToolbox({ placement, onPlacementChange, container, tool, 
 }
 
 const s = StyleSheet.create({
-  // The preview sits in the flow (the Drawing tab); the floating palette is absolute.
-  previewBox: { position: "relative", alignSelf: "flex-start" },
+  // The preview sits in the flow (the Drawing tab), centred, with a muted 1 px border (owner-approved) because
+  // it sits on the sheet's own colour; the floating palette is absolute.
+  previewBox: { position: "relative", alignSelf: "center", borderWidth: 1, borderColor: UI.border },
   box: { position: "absolute", alignItems: "center", gap: GAP, padding: PAD, borderRadius: 12, backgroundColor: "rgba(21,26,32,0.95)", shadowColor: "#000", shadowOpacity: 0.35, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 6 },
   grip: { alignItems: "center", justifyContent: "center" },
   btn: { width: BTN, height: BTN, borderRadius: 7, alignItems: "center", justifyContent: "center" },

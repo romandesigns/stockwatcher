@@ -36,6 +36,27 @@ const subscribeResize = (cb: () => void) => {
 };
 const useViewportWidth = () => useSyncExternalStore(subscribeResize, () => innerWidth, () => 1024);
 
+/**
+ * The connected active tab (owner, 2026-10-18: "connect the active tab with
+ * the associated section, have them both have the same background"). The
+ * indicator wears the panel's colour (bg-card, the dialog's own surface,
+ * which the panel shows through), is rounded only on the side away from the
+ * panel, and reaches the rail's inner edge: the rail has no padding on that
+ * side, so the tab's edge IS the panel's edge and the two read as one shape.
+ *
+ * The folder-tab "notches": two r × r squares (r = 8 px, the tab's corner
+ * radius) at the tab's panel-side corners, outside the tab, painted with the
+ * panel colour except a quarter circle of the rail showing through
+ * (radial-gradient, transparent inside r). That turns the rail's straight
+ * edge into a concave curve where it meets the tab, above and below it in
+ * the side rail, left and right of it in the top row. They are pseudo
+ * elements of the indicator, so they slide with it for free.
+ */
+const CONNECTED_SIDE =
+  "rounded-l-lg rounded-r-none bg-card before:pointer-events-none before:absolute before:right-0 before:bottom-full before:size-2 before:bg-[radial-gradient(circle_at_0_0,transparent_7.5px,var(--color-card)_8px)] after:pointer-events-none after:absolute after:top-full after:right-0 after:size-2 after:bg-[radial-gradient(circle_at_0_100%,transparent_7.5px,var(--color-card)_8px)]";
+const CONNECTED_TOP =
+  "rounded-t-lg rounded-b-none bg-card before:pointer-events-none before:absolute before:right-full before:bottom-0 before:size-2 before:bg-[radial-gradient(circle_at_0_0,transparent_7.5px,var(--color-card)_8px)] after:pointer-events-none after:absolute after:bottom-0 after:left-full after:size-2 after:bg-[radial-gradient(circle_at_100%_0,transparent_7.5px,var(--color-card)_8px)]";
+
 const loadTab = (key: string | undefined): unknown => {
   if (!key) return null;
   try {
@@ -63,9 +84,12 @@ const saveTab = (key: string | undefined, id: string) => {
  *   translate, because the shared DialogContent animates `translate` on
  *   open and close, and a centring translate would fight it.
  * - Rail: a recessed strip (the page tone on the dialog's card, so it
- *   separates by contrast, no border). The active tab is a raised surface
- *   (Base UI's indicator, sliding between tabs) with accent text and icon:
- *   the dialog's one accent. Idle tabs are muted.
+ *   separates by contrast, no border). The active tab is CONNECTED to the
+ *   panel (CONNECTED_SIDE above): the panel's colour, flush with its edge,
+ *   with folder-tab notches, sliding between tabs as Base UI's indicator.
+ *   Its text and duotone icon are accent (primary tone accent, secondary
+ *   accent at ICON_SECONDARY_OPACITY): the dialog's one accent. Idle tabs
+ *   stay on the rail, muted.
  * - Responsive (chart-core settingsRailMode): the 15 / 85 split is KEPT at
  *   every width that leaves the rail a 44 px target. When 15 % is too
  *   narrow for "Drawing" beside its icon (dialog under ~747 px, so any
@@ -79,7 +103,8 @@ const saveTab = (key: string | undefined, id: string) => {
  *   between tabs and activate them; Tab moves into the panel; Escape or the
  *   ✕ closes and focus returns to the gear. Focus opens on the active tab.
  * - Motion: the panel cross-fades with a short rise on a tab switch, the
- *   indicator slides; both are instant under reduced motion (index.css).
+ *   connected tab slides (notches with it); both are instant under reduced
+ *   motion (index.css).
  * - The panel scrolls on its own; the heading stays put above it.
  * - The selected tab survives closing and reopening while the app runs,
  *   and with `persistKey` a reload as well.
@@ -117,7 +142,8 @@ export function SettingsDialog({ open, onOpenChange, sections, persistKey }: Set
           onValueChange={(v) => typeof v === "string" && choose(v)}
           className={cn("size-full gap-0", top ? "flex-col" : "flex-row")}
         >
-          <div className={cn("flex shrink-0 flex-col gap-3 bg-background/60", top ? "w-full px-3 pt-3 pb-2" : "w-[15%] p-2 pt-4")}>
+          {/* No padding on the panel side (right, or bottom for the top row), so the active tab meets the panel. */}
+          <div className={cn("flex shrink-0 flex-col gap-3 bg-background/60", top ? "w-full px-3 pt-3" : "w-[15%] py-2 pt-4 pl-2")}>
             {!top && (
               <div aria-hidden="true" className={cn("flex items-center gap-2 text-text-faint [&_svg]:size-3.5", labels ? "px-2.5 text-[11px] font-medium" : "justify-center")}>
                 <Icon name="settings" />
@@ -125,7 +151,7 @@ export function SettingsDialog({ open, onOpenChange, sections, persistKey }: Set
               </div>
             )}
             <TabsList aria-label="Settings sections" activateOnFocus className={cn(top && "flex-row")}>
-              <TabsIndicator />
+              <TabsIndicator className={top ? CONNECTED_TOP : CONNECTED_SIDE} />
               {sections.map((s) => {
                 const trigger = (
                   <TabsTrigger
@@ -133,7 +159,7 @@ export function SettingsDialog({ open, onOpenChange, sections, persistKey }: Set
                     ref={refFor(s.id)}
                     value={s.id}
                     aria-label={s.label}
-                    className={cn("[&_svg]:size-4", labels || top ? "h-9 justify-start px-2.5" : "h-11 w-full justify-center px-0")}
+                    className={cn("[&_svg]:size-4", top ? "rounded-t-lg rounded-b-none" : "rounded-l-lg rounded-r-none", labels || top ? "h-9 justify-start px-2.5" : "h-11 w-full justify-center px-0")}
                   >
                     <Icon name={s.icon} />
                     {(labels || top) && <span className="truncate">{s.label}</span>}

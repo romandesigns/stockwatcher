@@ -41,7 +41,12 @@ const noop = () => {};
  * The cursor's row is locked on, with the reason in place of the
  * description. Above the rows, a live preview: the real DrawingToolbox,
  * inert, laid out as a row (the orientation whose wrapping broke before),
- * so what you see is exactly what the chart will show.
+ * so what you see is exactly what the chart will show. It sits centred on
+ * the panel itself, with no recessed box behind it; the toolbox carries a
+ * 1 px muted border instead (owner, 2026-10-18: "remove the darker
+ * background of the preview section, you can add a border to the actual
+ * widget"), an approved exception to the no-borders rule because a
+ * bg-card toolbox on the bg-card panel has no contrast of its own.
  *
  * Rows have no dividers (owner rule): space, and a soft hover fill. The
  * switches are neutral (ui/switch.tsx explains why the accent is not spent
@@ -52,7 +57,7 @@ export function DrawingSettingsPanel({ settings, onChange }: DrawingSettingsPane
     <div className="flex flex-col gap-5">
       <section aria-label="Preview" className="flex flex-col gap-1.5">
         <h3 className="m-0 px-2 text-[11px] font-medium text-muted-foreground">Preview</h3>
-        <div className="rounded-lg bg-background px-3 py-3">
+        <div className="flex justify-center">
           <DrawingToolbox
             preview
             settings={settings}

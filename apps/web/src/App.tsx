@@ -19,7 +19,7 @@ import {
   type Timeframe,
 } from "@stockwatcher/chart-core";
 import type { SettingsSync } from "@stockwatcher/shared";
-import { CandleChart, drawingSettingsSection, Icon, ReplayControls, SessionTimeline, SettingsDialog, Tape, VolumeProfile } from "@stockwatcher/chart-web";
+import { CandleChart, chartSettingsSection, drawingSettingsSection, Icon, ReplayControls, SessionTimeline, SettingsDialog, Tape, VolumeProfile } from "@stockwatcher/chart-web";
 import { Tip, ToggleGroup, ToggleGroupItem, cn } from "@stockwatcher/chart-web/ui";
 import { useEffect, useMemo, useState } from "react";
 import { createServerFeed } from "./feed/serverFeed.ts";
@@ -256,7 +256,7 @@ function ChartApp({ choice, feed, sync }: { choice: SourceChoice; feed: ChartFee
     onDrawingsChange: setDrawings,
   };
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const settings = <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} persistKey="sw-settings" sections={[drawingSettingsSection(drawingSettings, setDrawingSettings)]} />;
+  const settings = <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} persistKey="sw-settings" sections={[chartSettingsSection(chartSettings, setChartSettings), drawingSettingsSection(drawingSettings, setDrawingSettings)]} />;
   const gear = <SettingsButton open={settingsOpen} onOpen={() => setSettingsOpen(true)} />;
   // Ticker quick-open, VS Code's Ctrl+P (Cmd+P on a Mac): the browser's print shortcut is taken
   // over on purpose while the app is focused.

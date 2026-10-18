@@ -1,6 +1,6 @@
 import { CHART_TYPES, type ChartType } from "./chartTypes.ts";
 import { computeChartModel, type ChartState, type Size } from "./layout.ts";
-import { MAX_BAR_SPACING, MIN_BAR_SPACING, manualPrice, type PriceScaleType, type Slot, type Viewport } from "./scale.ts";
+import { MAX_BAR_SPACING, MIN_BAR_SPACING, manualPrice, RIGHT_MARGIN_PX, type PriceScaleType, type Slot, type Viewport } from "./scale.ts";
 import { sessionOf, tradingDayOf } from "./time.ts";
 import { TIMEFRAME_MS, type Timeframe } from "./types.ts";
 
@@ -164,12 +164,19 @@ export function presetSlots(slots: readonly Slot[], timeframe: Timeframe, extend
 /**
  * Pixels per slot that fit `presetSlots` plus the right margin into the
  * plot, clamped to the zoom limits. A full 15 s session (1,560 slots) in a
- * 900 px plot is 0.58 px a slot: MIN_BAR_SPACING is low enough for that, so
+ * 900 px plot is 0.55 px a slot: MIN_BAR_SPACING is low enough for that, so
  * 100 % really is the whole day; candles then draw as 1 px marks.
+ *
+ * The margin is rightMarginSlots (scale.ts): RIGHT_MARGIN_PX, or the
+ * `rightMargin` floor in slots when that is wider. Both candidates are
+ * solved and the smaller kept: the width the plot needs grows with the
+ * spacing, so the smaller spacing is the one where the day plus whichever
+ * margin applies fits exactly. "100 %" is therefore the whole day AND the
+ * margin, not a day whose newest candle is pushed under the price column.
  */
 export function presetBarSpacing(slots: readonly Slot[], timeframe: Timeframe, extendedHours: boolean, preset: ZoomPreset, plotWidth: number, rightMargin: number): number {
   const n = presetSlots(slots, timeframe, extendedHours, preset);
-  const bs = plotWidth / (n + rightMargin);
+  const bs = Math.min(plotWidth / (n + rightMargin), (plotWidth - RIGHT_MARGIN_PX) / n);
   return Math.min(MAX_BAR_SPACING, Math.max(MIN_BAR_SPACING, Number.isFinite(bs) && bs > 0 ? bs : MIN_BAR_SPACING));
 }
 

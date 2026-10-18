@@ -23,6 +23,9 @@ import { Icon, UI } from "./ui.tsx";
 // words, the same rules (the cursor locked on, with its reason). The
 // preview is the real native DrawingToolbox, inert, sized to the panel, so
 // it also shows the two-line split a phone row needs when everything is on.
+// As on the web it sits centred on the panel itself, with no recessed box
+// behind it, and the toolbox carries a 1 px muted border instead (owner,
+// 2026-10-18; an approved exception to the no-borders rule).
 
 const GROUPS: readonly { id: ToolboxGroup; label: string }[] = [
   { id: "tools", label: "Tools" },
@@ -30,6 +33,8 @@ const GROUPS: readonly { id: ToolboxGroup; label: string }[] = [
 ];
 
 const noop = () => {};
+/** The toolbox preview's border width (DrawingToolbox previewBox), taken off the room it lays out in. */
+const PREVIEW_BORDER = 1;
 
 export function DrawingSettingsPanel({ settings, onChange, reducedMotion }: { settings: DrawingSettings; onChange: (s: DrawingSettings) => void; reducedMotion?: boolean }) {
   const [previewWidth, setPreviewWidth] = useState(0);
@@ -39,7 +44,7 @@ export function DrawingSettingsPanel({ settings, onChange, reducedMotion }: { se
         <Text style={s.label} accessibilityRole="header">
           Preview
         </Text>
-        <View style={s.preview} onLayout={(e) => setPreviewWidth(e.nativeEvent.layout.width - 2 * 10)}>
+        <View style={s.preview} onLayout={(e) => setPreviewWidth(e.nativeEvent.layout.width - 2 * PREVIEW_BORDER)}>
           {previewWidth > 0 && (
             <DrawingToolbox
               preview
@@ -160,7 +165,7 @@ export function drawingSettingsSection(settings: DrawingSettings, onChange: (s: 
 
 const s = StyleSheet.create({
   label: { color: UI.textFaint, fontSize: 11, paddingHorizontal: 4 },
-  preview: { backgroundColor: UI.bg, borderRadius: 12, padding: 10, minHeight: 56, justifyContent: "center" },
+  preview: { minHeight: 56, alignItems: "center", justifyContent: "center" },
   groupHead: { flexDirection: "row", alignItems: "center", gap: 6, paddingBottom: 2 },
   count: { color: UI.textFaint, fontSize: 11, fontVariant: ["tabular-nums"] },
   textButton: { marginLeft: "auto", paddingHorizontal: 4, paddingVertical: 2 },

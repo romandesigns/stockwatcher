@@ -23,7 +23,7 @@ import {
   type ToolboxPlacement,
   type Timeframe,
 } from "@stockwatcher/chart-core";
-import { CandleChart, drawingSettingsSection, Icon, ReplayDaySheet, SessionTimeline, SettingsSheet, TapeSheet, ToolButton, UI } from "@stockwatcher/chart-native";
+import { CandleChart, chartSettingsSection, drawingSettingsSection, Icon, ReplayDaySheet, SessionTimeline, SettingsSheet, TapeSheet, ToolButton, UI } from "@stockwatcher/chart-native";
 import type { ConnectionStatus, SettingsSync } from "@stockwatcher/shared";
 import { useEffect, useMemo, useState } from "react";
 import Animated, { FadeIn, FadeOut, ReduceMotion } from "react-native-reanimated";
@@ -331,7 +331,7 @@ function ChartView({ feed, token, status, sync }: { feed: MobileFeed; token: str
         }}
         reducedMotion={reducedMotion}
       />
-      <SettingsSheet open={settingsOpen} onClose={() => setSettingsOpen(false)} sections={[drawingSettingsSection(drawingSettings, changeDrawingSettings, reducedMotion)]} reducedMotion={reducedMotion} />
+      <SettingsSheet open={settingsOpen} onClose={() => setSettingsOpen(false)} sections={[chartSettingsSection(chartSettings, changeChartSettings), drawingSettingsSection(drawingSettings, changeDrawingSettings, reducedMotion)]} reducedMotion={reducedMotion} />
       <TapeSheet open={tapeOpen} onClose={() => setTapeOpen(false)} trades={tape} note={active ?? undefined} />
       <ReplayDaySheet
         open={daysOpen}

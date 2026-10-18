@@ -26,6 +26,6 @@ export { PositionPlanCard, type PositionPlanCardProps } from "./PositionPlanCard
 export { DrawingToolbox, type DrawingToolboxProps } from "./DrawingToolbox.tsx";
 export { LayersMenu, TradeHistory } from "./ContextMenus.tsx";
 export { TradeMenu, TRADE_MENU_SIZES, type TradeMenuProps } from "./TradeMenu.tsx";
-export { ChartSettingsMenu, type ChartSettingsMenuProps } from "./ChartSettingsMenu.tsx";
+export { ChartSettingsPanel, ChartSettingsReset, chartSettingsSection, type ChartSettingsPanelProps } from "./ChartSettingsPanel.tsx";
 export { SettingsDialog, type SettingsDialogProps, type SettingsDialogSection } from "./SettingsDialog.tsx";
 export { DrawingSettingsPanel, DrawingSettingsReset, drawingSettingsSection, type DrawingSettingsPanelProps } from "./DrawingSettingsPanel.tsx";

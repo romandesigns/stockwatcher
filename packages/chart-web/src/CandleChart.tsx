@@ -494,7 +494,9 @@ export function CandleChart({
     () => ({
       ...options,
       volumeHeight,
-      ...(overlayTop ? { legendTop: overlayTop + 6 } : {}),
+      // The legend also clears the in-chart timeframe picker's band: on a narrow chart the inline legend
+      // reaches the right side, and without a heading it would start inside that band, under the picker.
+      ...(overlayTop || topRight ? { legendTop: Math.max(overlayTop ? overlayTop + 6 : 0, topRight ? topRight + 4 : 0) } : {}),
       ...(topRight ? { topRightInset: topRight } : {}),
       // The Levels menu's "Volume profile" switch turns the in-chart profile off.
       ...(inChartProfile && !layers.profile ? { showProfile: false } : {}),
@@ -1101,11 +1103,6 @@ export function CandleChart({
         layers={layers}
         layerIds={layerIdsFor(inChartProfile)}
         onLayersChange={setLayers}
-        settings={scaleControlled ? { ...settings, priceScale: scaleType } : settings}
-        onSettingsChange={(s) => {
-          if (scaleControlled && s.priceScale !== scaleType) onPriceScaleTypeChange?.(s.priceScale);
-          setSettings(s);
-        }}
       />
   );
 
@@ -1201,8 +1198,9 @@ export function CandleChart({
         // Transparent (owner, 2026-10-17): the text sits straight on the chart.
         <div className="pointer-events-none absolute top-1 left-1.5 z-[5] flex max-w-[calc(100%-120px)] flex-col gap-0.5 px-1.5 py-1">
           {heading}
+          {/* One line at any width: items never shrink or wrap inside (a phone-width chart wrapped "O" above its value, onto the legend under it); the row clips instead. */}
           {inspector && (
-            <CandleInspector className="pointer-events-auto flex-nowrap overflow-hidden" slot={inspectT === null ? (slots.at(-1) ?? null) : (slots[slotIndexOf(slots, inspectT) ?? -1] ?? null)} timeframe={timeframe} />
+            <CandleInspector className="pointer-events-auto flex-nowrap overflow-hidden whitespace-nowrap [&>*]:shrink-0" slot={inspectT === null ? (slots.at(-1) ?? null) : (slots[slotIndexOf(slots, inspectT) ?? -1] ?? null)} timeframe={timeframe} />
           )}
         </div>
       )}

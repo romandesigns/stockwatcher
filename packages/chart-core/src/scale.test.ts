@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { backToLatestMs, backToLatestStep, buildSlots, defaultViewport, MIN_BAR_SPACING, ensureVisible, indexScale, isPannedBack, niceTicks, pan, panSlots, rightEdge, slotAt, slotsBehindLatest, slotX, timeTicks, zoom } from "./scale.ts";
+import { backToLatestMs, backToLatestStep, buildSlots, defaultViewport, followLatest, MAX_BAR_SPACING, MIN_BAR_SPACING, ensureVisible, indexScale, isPannedBack, niceTicks, pan, panSlots, RIGHT_MARGIN_PX, rightEdge, rightMarginSlots, slotAt, slotsBehindLatest, slotX, timeTicks, zoom } from "./scale.ts";
 import { fixtureCandles, T0 } from "./testFixture.ts";
 
 describe("buildSlots", () => {
@@ -39,17 +39,17 @@ describe("viewport", () => {
 
   test("follows the latest slot by default", () => {
     const vp = defaultViewport(10);
-    expect(rightEdge(vp, slots)).toBe(100 + vp.rightMargin);
+    expect(rightEdge(vp, slots)).toBe(100 + rightMarginSlots(vp));
     const s = indexScale(vp, slots, 0, 500);
     expect(s.to).toBe(99);
-    expect(slotX(s, 99)).toBeCloseTo(500 - (vp.rightMargin + 0.5) * 10);
+    expect(slotX(s, 99)).toBeCloseTo(500 - (rightMarginSlots(vp) + 0.5) * 10);
   });
 
   test("panning back pins the view; new slots do not move it; panning forward resumes follow", () => {
     let vp = pan(defaultViewport(10), slots, 200);
     expect(vp.anchorT).not.toBeNull();
     const edge = rightEdge(vp, slots);
-    expect(edge).toBeCloseTo(100 + 1.5 - 20);
+    expect(edge).toBeCloseTo(100 + rightMarginSlots(vp) - 20);
     const more = buildSlots(fixtureCandles(110, "1m", T0, [10]).candles, gaps);
     expect(rightEdge(vp, more)).toBeCloseTo(edge);
     vp = pan(vp, slots, -10_000);
@@ -123,5 +123,55 @@ describe("back to latest", () => {
     }
     expect(panned).toBeCloseTo(total, 6);
     expect(isPannedBack(v)).toBe(false);
+  });
+});
+
+describe("right margin (owner, 2026-10-18: separation between the candles and the price column)", () => {
+  const { candles, gaps } = fixtureCandles(100, "1m", T0, []);
+  const slots = buildSlots(candles, gaps);
+  const W = 600;
+  /** px between the latest candle's right side and the plot's right edge. */
+  const gapPx = (vp: ReturnType<typeof defaultViewport>) => {
+    const s = indexScale(vp, slots, 0, W);
+    return W - (slotX(s, slots.length - 1) + vp.barSpacing / 2);
+  };
+
+  test("following the latest keeps RIGHT_MARGIN_PX at every zoom, and the 1.5-slot floor when zoomed far in", () => {
+    for (const bs of [MIN_BAR_SPACING, 0.6, 2, 9, 20]) expect(gapPx(defaultViewport(bs))).toBeCloseTo(Math.max(RIGHT_MARGIN_PX, 1.5 * bs), 6);
+    expect(gapPx(defaultViewport(MAX_BAR_SPACING))).toBeCloseTo(1.5 * MAX_BAR_SPACING, 6);
+  });
+
+  test("zooming while following keeps the margin in pixels", () => {
+    let vp = defaultViewport(9);
+    for (const f of [0.5, 0.25, 3, 1.7]) {
+      vp = zoom(vp, slots, f, W / 2, W);
+      expect(vp.anchorT).toBeNull();
+      expect(gapPx(vp)).toBeCloseTo(Math.max(RIGHT_MARGIN_PX, 1.5 * vp.barSpacing), 6);
+    }
+  });
+
+  test("dragging toward the future stops at the margin: no more empty space than that", () => {
+    const vp = pan(pan(defaultViewport(4), slots, 300), slots, -100_000);
+    expect(vp.anchorT).toBeNull();
+    expect(rightEdge(vp, slots)).toBeCloseTo(slots.length + RIGHT_MARGIN_PX / 4, 9);
+    expect(panSlots(defaultViewport(4), slots, -50)).toEqual(defaultViewport(4));
+  });
+
+  test("back to latest lands on the margin: the slide's distance includes it and ends following", () => {
+    const back = pan(defaultViewport(6), slots, 240); // 40 slots back
+    const behind = slotsBehindLatest(back, slots);
+    expect(behind).toBeCloseTo(40, 6);
+    // Run the slide to the end, as the renderers do, then followLatest.
+    let vp = back;
+    let panned = 0;
+    const d = backToLatestMs(behind, back.barSpacing);
+    for (let t = 16; t <= d; t += 16) {
+      const step = backToLatestStep(behind, panned, t, d);
+      vp = panSlots(vp, slots, step);
+      panned -= step;
+    }
+    vp = followLatest(vp);
+    expect(rightEdge(vp, slots)).toBeCloseTo(slots.length + RIGHT_MARGIN_PX / 6, 9);
+    expect(gapPx(vp)).toBeCloseTo(RIGHT_MARGIN_PX, 6);
   });
 });
