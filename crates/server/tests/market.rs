@@ -503,6 +503,125 @@ async fn only_price_band_candidates_are_let_through() {
     .await;
     let err = next(&mut ws, is("error")).await;
     assert_eq!(err["code"], "outside_price_band");
+    assert_eq!(err["symbol"], "FXHI", "a chart error names its symbol");
+    assert!(err.get("id").is_none(), "the default slot has no id");
+}
+
+// --- Several charts on one connection (the dashboard's multi-chart panel) -------------------------
+
+fn sub(id: &str, symbol: &str, tf: &str) -> Value {
+    json!({"type":"chart.subscribe","id":id,"symbol":symbol,"timeframe":tf,"profileBin":0.01})
+}
+
+#[tokio::test]
+async fn one_connection_streams_several_charts() {
+    let s = stack(&[]).await;
+    let mut ws = connect(&s.url).await;
+    wait_for_replay(&mut ws).await;
+    send(&mut ws, sub("a", "SMPL", "1m")).await;
+    let first = next(&mut ws, is("chart.snapshot")).await;
+    send(&mut ws, sub("b", "FXLO", "5m")).await;
+    let second = next(&mut ws, |m| {
+        m["type"] == "chart.snapshot" && m["symbol"] == "FXLO"
+    })
+    .await;
+    assert_eq!(
+        (first["symbol"].as_str(), first["timeframe"].as_str()),
+        (Some("SMPL"), Some("1m"))
+    );
+    assert_eq!(second["timeframe"], "5m");
+
+    // Both charts' increments arrive on the same socket, each for its own timeframe, and nothing
+    // for a symbol no slot shows.
+    let (mut smpl, mut fxlo) = (0, 0);
+    for _ in 0..400 {
+        let m = next(&mut ws, |m| m["type"] == "chart.update").await;
+        match (m["symbol"].as_str(), m["timeframe"].as_str()) {
+            (Some("SMPL"), Some("1m")) => smpl += 1,
+            (Some("FXLO"), Some("5m")) => fxlo += 1,
+            other => panic!("unexpected chart frame {other:?}"),
+        }
+        if smpl > 0 && fxlo > 0 {
+            break;
+        }
+    }
+    assert!(smpl > 0 && fxlo > 0, "SMPL {smpl}, FXLO {fxlo}");
+
+    // Unsubscribing one slot stops its stream and leaves the other.
+    send(&mut ws, json!({"type":"chart.unsubscribe","id":"b"})).await;
+    // Frames sent before the server handled the unsubscribe may still be in flight. The session
+    // handles messages in order, so everything after the pong to this ping postdates it.
+    send(&mut ws, json!({"type":"ping","ts":7})).await;
+    next(&mut ws, |m| m["type"] == "pong" && m["ts"] == 7).await;
+    for _ in 0..150 {
+        let m = next(&mut ws, |m| m["type"] == "chart.update").await;
+        assert_eq!(m["symbol"], "SMPL", "FXLO stopped after its slot was freed");
+    }
+}
+
+#[tokio::test]
+async fn two_slots_on_the_same_chart_share_one_stream() {
+    let s = stack(&[]).await;
+    let mut ws = connect(&s.url).await;
+    wait_for_replay(&mut ws).await;
+    send(&mut ws, sub("a", "SMPL", "1m")).await;
+    next(&mut ws, is("chart.snapshot")).await;
+    send(&mut ws, sub("b", "SMPL", "1m")).await;
+    next(&mut ws, is("chart.snapshot")).await;
+    // Every candle and tape frame goes out once: a duplicated stream would show each frame twice
+    // in a row (the engine never emits the same frame twice in a row on its own).
+    let mut last = String::new();
+    let mut seen = 0;
+    while seen < 300 {
+        let m = next(&mut ws, |m| {
+            m["type"] == "chart.update" || m["type"] == "tape.trade"
+        })
+        .await;
+        let text = m.to_string();
+        assert_ne!(text, last, "a frame was sent twice");
+        last = text;
+        seen += 1;
+    }
+}
+
+#[tokio::test]
+async fn at_most_four_charts_per_connection() {
+    let s = stack(&[("REPLAY_AUTOPLAY", "0")]).await;
+    let mut ws = connect(&s.url).await;
+    wait_for_replay(&mut ws).await;
+    for id in ["1", "2", "3", "4"] {
+        send(&mut ws, sub(id, "SMPL", "1m")).await;
+        next(&mut ws, is("chart.snapshot")).await;
+    }
+    send(&mut ws, sub("5", "FXLO", "1m")).await;
+    assert_eq!(next(&mut ws, is("error")).await["code"], "too_many_charts");
+    // Replacing a held slot is not a new chart.
+    send(&mut ws, sub("4", "FXLO", "1m")).await;
+    assert_eq!(next(&mut ws, is("chart.snapshot")).await["symbol"], "FXLO");
+    // Freeing one makes room.
+    send(&mut ws, json!({"type":"chart.unsubscribe","id":"1"})).await;
+    send(&mut ws, sub("5", "FXLO", "5m")).await;
+    assert_eq!(next(&mut ws, is("chart.snapshot")).await["timeframe"], "5m");
+}
+
+#[tokio::test]
+async fn a_refused_chart_names_its_slot() {
+    let s = stack(&[("REPLAY_AUTOPLAY", "0")]).await;
+    let mut ws = connect(&s.url).await;
+    wait_for_replay(&mut ws).await;
+    send(&mut ws, sub("left", "NOPE", "1m")).await;
+    let err = next(&mut ws, is("error")).await;
+    assert_eq!(
+        (
+            err["code"].as_str(),
+            err["symbol"].as_str(),
+            err["id"].as_str()
+        ),
+        (Some("unknown_symbol"), Some("NOPE"), Some("left"))
+    );
+    let long = "x".repeat(33);
+    send(&mut ws, sub(&long, "SMPL", "1m")).await;
+    assert_eq!(next(&mut ws, is("error")).await["code"], "bad_request");
 }
 
 #[tokio::test]

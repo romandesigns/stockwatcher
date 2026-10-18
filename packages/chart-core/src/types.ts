@@ -270,13 +270,29 @@ export function parseChartMessage(raw: unknown): ChartMessage | null {
   return typeof type === "string" && CHART_TYPES.has(type) ? (value as ChartMessage) : null;
 }
 
-/** Client → server subscription (architecture doc: `chart.subscribe`). */
+/**
+ * Client → server subscription (architecture doc: `chart.subscribe`). A connection holds up to
+ * MAX_CHARTS_PER_CONNECTION charts, one per `id` (absent = the single default slot); frames come
+ * once per distinct chart and are routed by their symbol, timeframe and profileBin, not by slot
+ * (crates/server/src/ws.rs).
+ */
 export interface ChartSubscribe {
   type: "chart.subscribe";
   symbol: string;
   timeframe: Timeframe;
   profileBin: number;
+  /** The chart slot (≤ 32 chars). */
+  id?: string;
 }
+
+/** Client → server: free a chart slot (`id` absent = the default slot). */
+export interface ChartUnsubscribe {
+  type: "chart.unsubscribe";
+  id?: string;
+}
+
+/** The server's limit on charts per connection (crates/server/src/ws.rs MAX_CHARTS). */
+export const MAX_CHARTS_PER_CONNECTION = 4;
 
 /**
  * Client → server replay control (crates/server/src/market.rs `parse_control`).

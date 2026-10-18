@@ -357,8 +357,13 @@ stamped on it. The increments are serialized to JSON once and broadcast on a bou
 - client `chart.subscribe {symbol, timeframe, profileBin}` → `chart.snapshot` (with `clock`), the
   last 40 `tape.trade` rows, then `chart.update` / `chart.remove` / `chart.gap` for that symbol and
   timeframe and `tape.trade` for the symbol;
-- there is one subscription per connection. Switching timeframe or bin is a new subscribe on the
-  same engine state;
+- a connection holds **up to 4 charts** (2026-10-18), one per slot `id` in `chart.subscribe`
+  (absent = the single default slot every client used before; `chart.unsubscribe {id}` frees one;
+  a 5th new slot gets `too_many_charts`). Switching timeframe or bin is a new subscribe on the
+  same slot and engine state. Each frame goes out once per connection: a candle frame once per
+  distinct (symbol, timeframe, bin) held, a tape/halt/LULD row once per symbol, so two slots on
+  the same chart share one stream and the client routes by the frame's own symbol, timeframe
+  and `profileBin`. Chart errors carry `symbol` and the slot's `id`;
 - other bin widths are re-binned from the engine's exact per-price volume, with absolute totals;
 - server `replay.clock {clock:{mode,now,speed,playing}}` goes to every client after `welcome`, on
   every change, and about 4 Hz while playing;
