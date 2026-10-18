@@ -11,6 +11,8 @@ import {
   applyPaneGesture,
   paneIdsOf,
   keyLevels,
+  openingRanges,
+  type SessionRef,
   type ChartLayers,
   type Halt,
   type LuldPoint,
@@ -97,6 +99,8 @@ export interface ChartSeriesLike {
   luld?: readonly LuldPoint[];
   /** The server's official previous close (Series.prevClose), for the "Prev close" level. */
   prevClose?: number | null;
+  /** The symbol's current session (Series.session): its end is the opening range's right edge on an early close. */
+  session?: SessionRef | null;
 }
 
 /** What the host wires for simulated trading (the chart never talks to a server). */
@@ -318,16 +322,20 @@ export function CandleChart({
   // The server's official previous close wins over one read off the candles (levels.ts).
   const prevClose = series?.prevClose ?? null;
   const levels = useMemo(() => keyLevels(slots, prevClose), [slots, prevClose]);
+  // Computed only while the layer is on: one pass over the slots per update otherwise wasted.
+  const session = series?.session ?? null;
+  const ranges = useMemo(() => (layers.openingRange ? openingRanges(slots, session) : []), [layers.openingRange, slots, session]);
   const fills = useMemo(() => (trading?.state?.fills ?? []).filter((f) => f.symbol === symbol), [trading?.state, symbol]);
   const context = useMemo(
     () => ({
       levels: levels.filter((l) => layers[l.layer]),
+      openingRanges: ranges,
       halts: layers.halts ? (series?.halts ?? []) : [],
       luld: layers.luld ? (series?.luld ?? []) : [],
       fills: layers.fills ? fills : [],
       now: clockNow,
     }),
-    [levels, layers, series, fills, clockNow],
+    [levels, ranges, layers, series, fills, clockNow],
   );
   const orders = useMemo(() => (trading?.state?.orders ?? []).filter((o) => o.symbol === symbol && isWorking(o)), [trading?.state, symbol]);
   const position = useMemo(() => trading?.state?.positions.find((p) => p.symbol === symbol) ?? null, [trading?.state, symbol]);
