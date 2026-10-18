@@ -211,3 +211,76 @@ fn a_task_on_a_non_trading_day_fails_cleanly() {
     assert_eq!(r.failed.len(), 1);
     assert!(r.failed[0].error.contains("no SIP sessions"));
 }
+
+/// Records the request and answers with an assets list carrying names and exchanges.
+struct AssetsServer {
+    urls: Vec<String>,
+    headers: Vec<(String, String)>,
+}
+
+impl Http for AssetsServer {
+    fn get(&mut self, url: &str, h: &[(&str, &str)]) -> Result<HttpResponse, String> {
+        self.urls.push(url.to_string());
+        self.headers = h
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        ok(json!([
+            {"symbol": "AAL", "tradable": true, "name": "American Airlines Group Inc.", "exchange": "NASDAQ"},
+            {"symbol": "F", "tradable": true, "name": " Ford Motor Company ", "exchange": "NYSE"},
+            {"symbol": "OLDCO", "tradable": false, "name": "Old Co", "exchange": "OTC"},
+            {"symbol": "BLANK", "tradable": true, "name": "", "exchange": ""},
+            {"symbol": "NONAME", "tradable": true, "exchange": "ARCA"}
+        ]))
+    }
+}
+
+#[test]
+fn asset_metadata_keeps_the_providers_names_and_exchanges_and_invents_none() {
+    use market_archive::AssetMeta;
+    use market_providers::import::batch::asset_metadata;
+    let mut http = AssetsServer {
+        urls: Vec::new(),
+        headers: Vec::new(),
+    };
+    let m = asset_metadata(&mut http, "https://trading.example/", &creds(), &mut |_| {}).unwrap();
+    assert_eq!(
+        http.urls,
+        ["https://trading.example/v2/assets?status=active&asset_class=us_equity"],
+        "one request, credentials never in the URL"
+    );
+    assert!(
+        http.headers
+            .contains(&("APCA-API-KEY-ID".into(), "K".into()))
+    );
+    let meta = |name: &str, exchange: &str| AssetMeta {
+        name: name.into(),
+        exchange: exchange.into(),
+    };
+    assert_eq!(
+        m.get("AAL"),
+        Some(&meta("American Airlines Group Inc.", "NASDAQ"))
+    );
+    assert_eq!(
+        m.get("F"),
+        Some(&meta("Ford Motor Company", "NYSE")),
+        "trimmed"
+    );
+    assert_eq!(
+        m.get("OLDCO"),
+        Some(&meta("Old Co", "OTC")),
+        "untradable today may still be in an archived day"
+    );
+    assert_eq!(
+        m.get("NONAME"),
+        Some(&meta("", "ARCA")),
+        "no name is not made up"
+    );
+    assert!(!m.contains_key("BLANK"), "nothing to show: left out");
+    assert_eq!(m.len(), 4);
+
+    // Written atomically to the archive root, where the server reads it.
+    let (_dir, archive) = archive();
+    archive.write_assets(&m).unwrap();
+    assert_eq!(archive.read_assets().unwrap(), Some(m));
+}

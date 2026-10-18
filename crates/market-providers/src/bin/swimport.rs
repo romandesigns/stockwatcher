@@ -6,13 +6,15 @@
 //! swimport fmp-bars <SYMBOL> <YYYY-MM-DD> [--force]
 //! swimport alpaca-batch --from <YYYY-MM-DD> --to <YYYY-MM-DD> [--jobs 12] [--per-minute 9000] [--plan-only]
 //! swimport check <SYMBOL> <YYYY-MM-DD>                   # verify, replay twice, compare with FMP
+//! swimport alpaca-assets                                 # names + exchanges -> $ARCHIVE_ROOT/assets.json
 //! ```
 //!
 //! Credentials come only from the environment (a local `.env` or the Pi's secret store, loaded by
 //! the shell): `ALPACA_API_KEY` / `ALPACA_API_SECRET` (or `APCA_API_KEY_ID` /
 //! `APCA_API_SECRET_KEY`) and `FMP_API_KEY`. Values are never printed. Base URLs:
 //! `ALPACA_DATA_BASE` (default `https://data.alpaca.markets`), `FMP_BASE` (default
-//! `https://financialmodelingprep.com`). The archive is `ARCHIVE_ROOT` (see swarchive).
+//! `https://financialmodelingprep.com`), `ALPACA_TRADING_BASE` for the assets list (default
+//! `https://paper-api.alpaca.markets`). The archive is `ARCHIVE_ROOT` (see swarchive).
 //!
 //! The SIP range defaults to the trading date's premarket open through the end of after hours,
 //! from the session calendar (early closes included). Only completed trading dates are accepted.
@@ -34,7 +36,7 @@ use std::time::Duration;
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage:\n  swimport credentials\n  swimport alpaca-trades <SYMBOL> <YYYY-MM-DD> [--feed sip|iex|boats] [--limit N] [--force]\n  swimport fmp-bars <SYMBOL> <YYYY-MM-DD> [--force]\n  swimport check <SYMBOL> <YYYY-MM-DD>\n  swimport alpaca-batch --from <YYYY-MM-DD> --to <YYYY-MM-DD> [--jobs N] [--per-minute N] [--plan-only]"
+        "usage:\n  swimport credentials\n  swimport alpaca-trades <SYMBOL> <YYYY-MM-DD> [--feed sip|iex|boats] [--limit N] [--force]\n  swimport fmp-bars <SYMBOL> <YYYY-MM-DD> [--force]\n  swimport check <SYMBOL> <YYYY-MM-DD>\n  swimport alpaca-batch --from <YYYY-MM-DD> --to <YYYY-MM-DD> [--jobs N] [--per-minute N] [--plan-only]\n  swimport alpaca-assets"
     );
     ExitCode::from(2)
 }
@@ -66,6 +68,7 @@ fn main() -> ExitCode {
             Some("fmp-bars") => fmp_bars(&args[1..]),
             Some("check") => check(&args[1..]),
             Some("alpaca-batch") => alpaca_batch(&args[1..]),
+            Some("alpaca-assets") => alpaca_assets(),
             _ => Ok(usage()),
         }
     };
@@ -130,6 +133,7 @@ fn credentials() -> ExitCode {
         "APCA_API_KEY_ID",
         "APCA_API_SECRET_KEY",
         "ALPACA_DATA_BASE",
+        "ALPACA_TRADING_BASE",
         "FMP_API_KEY",
         "FMP_BASE",
         "ARCHIVE_ROOT",
@@ -404,6 +408,36 @@ fn check(args: &[String]) -> Result<ExitCode, String> {
     } else {
         ExitCode::FAILURE
     })
+}
+
+/// Name and listing exchange of every active US equity into `$ARCHIVE_ROOT/assets.json`, which the
+/// server reads at startup for the ticker search. Replaces the file atomically; safe to re-run.
+fn alpaca_assets() -> Result<ExitCode, String> {
+    use market_providers::import::batch::asset_metadata;
+    let creds = alpaca_creds()?;
+    let trading_base =
+        env("ALPACA_TRADING_BASE").unwrap_or_else(|| "https://paper-api.alpaca.markets".into());
+    let archive = archive()?;
+    let mut http = ReqwestHttp::new()?;
+    let assets = asset_metadata(&mut http, &trading_base, &creds, &mut |l: &str| {
+        eprintln!("  {l}")
+    })?;
+    if assets.is_empty() {
+        // An empty answer is far more likely a wrong endpoint than a market with no stocks; keep
+        // whatever file is there rather than wipe every name.
+        return Err("the assets endpoint returned no assets; assets.json left unchanged".into());
+    }
+    let path = archive.write_assets(&assets).map_err(|e| e.to_string())?;
+    let mut by_exchange: std::collections::BTreeMap<&str, usize> = Default::default();
+    for m in assets.values() {
+        *by_exchange.entry(m.exchange.as_str()).or_default() += 1;
+    }
+    println!(
+        "{} assets written to {} (by exchange: {by_exchange:?}). Restart the server to load them.",
+        assets.len(),
+        path.display()
+    );
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Every symbol inside the configured price band on each completed trading day of a range.

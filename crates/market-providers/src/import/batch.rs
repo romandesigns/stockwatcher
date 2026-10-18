@@ -10,6 +10,10 @@
 //!    of the single-day import holds per task: a complete identical import is skipped, a failure
 //!    leaves no manifest entry. The run collects failures instead of stopping, so re-running the
 //!    same command retries exactly what is missing.
+//!
+//! The same assets list also gives the archive's display metadata ([`asset_metadata`], written
+//! to `$ARCHIVE_ROOT/assets.json` by `swimport alpaca-assets`): each symbol's name and listing
+//! exchange as Alpaca reports them, for the ticker search.
 
 use super::alpaca::{
     AlpacaCredentials, Feed, ImportError, ImportOptions, TradesQuery, import_trades,
@@ -17,7 +21,7 @@ use super::alpaca::{
 use super::http::{FetchError, Http, HttpResponse, RetryPolicy, get_with_retry};
 use chrono::{DateTime, NaiveDate, Utc};
 use chrono_tz::America::New_York;
-use market_archive::Archive;
+use market_archive::{Archive, AssetMap, AssetMeta};
 use market_events::session::sessions_for;
 use market_events::{PriceBand, SessionKind};
 use serde::{Deserialize, Serialize};
@@ -59,11 +63,16 @@ impl Plan {
     }
 }
 
+/// One entry of Alpaca's `/v2/assets` (only the fields used here).
 #[derive(Deserialize)]
 struct Asset {
     symbol: String,
     #[serde(default)]
     tradable: bool,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    exchange: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -106,14 +115,7 @@ pub fn plan_universe(
     let secrets = [creds.key_id.as_str(), creds.secret.as_str()];
     let retry = RetryPolicy::default();
     let mut sleep = |d: Duration| std::thread::sleep(d);
-    let url = format!(
-        "{}/v2/assets?status=active&asset_class=us_equity",
-        trading_base.trim_end_matches('/')
-    );
-    let resp = get_with_retry(http, &url, &headers, retry, &secrets, &mut sleep, log)
-        .map_err(|e| format!("assets: {e}"))?;
-    let assets: Vec<Asset> =
-        serde_json::from_slice(&resp.body).map_err(|e| format!("assets: {e}"))?;
+    let assets = fetch_assets(http, trading_base, creds, log)?;
     let mut symbols: Vec<String> = assets
         .into_iter()
         .filter(|a| a.tradable)
@@ -186,6 +188,63 @@ pub fn plan_universe(
             .then(a.symbol.cmp(&b.symbol))
     });
     Ok(plan)
+}
+
+/// Active US equities from Alpaca's trading API (`/v2/assets`), one request, with the shared
+/// retry policy. Credentials go only into headers and are scrubbed from any logged error.
+fn fetch_assets(
+    http: &mut dyn Http,
+    trading_base: &str,
+    creds: &AlpacaCredentials,
+    log: &mut dyn FnMut(&str),
+) -> Result<Vec<Asset>, String> {
+    let headers = alpaca_headers(creds);
+    let secrets = [creds.key_id.as_str(), creds.secret.as_str()];
+    let mut sleep = |d: Duration| std::thread::sleep(d);
+    let url = format!(
+        "{}/v2/assets?status=active&asset_class=us_equity",
+        trading_base.trim_end_matches('/')
+    );
+    let resp = get_with_retry(
+        http,
+        &url,
+        &headers,
+        RetryPolicy::default(),
+        &secrets,
+        &mut sleep,
+        log,
+    )
+    .map_err(|e| format!("assets: {e}"))?;
+    serde_json::from_slice(&resp.body).map_err(|e| format!("assets: {e}"))
+}
+
+/// Name and listing exchange for every active US equity, tradable or not (a symbol that is not
+/// tradable today may still be in an archived day). Trimmed as delivered and never made up: an
+/// asset whose name and exchange are both empty is left out, so the server falls back to the
+/// symbol instead of showing a blank. A symbol listed twice keeps its first entry.
+pub fn asset_metadata(
+    http: &mut dyn Http,
+    trading_base: &str,
+    creds: &AlpacaCredentials,
+    log: &mut dyn FnMut(&str),
+) -> Result<AssetMap, String> {
+    let mut out = AssetMap::new();
+    let mut blank = 0usize;
+    for a in fetch_assets(http, trading_base, creds, log)? {
+        let name = a.name.as_deref().unwrap_or("").trim().to_string();
+        let exchange = a.exchange.as_deref().unwrap_or("").trim().to_string();
+        if name.is_empty() && exchange.is_empty() {
+            blank += 1;
+            continue;
+        }
+        out.entry(a.symbol.trim().to_string())
+            .or_insert(AssetMeta { name, exchange });
+    }
+    log(&format!(
+        "{} active US equities with metadata ({blank} without name or exchange, left out)",
+        out.len()
+    ));
+    Ok(out)
 }
 
 /// A daily bar's `t` (midnight ET as UTC) → its ET trading date.
