@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { DEFAULT_CHART_SETTINGS, daySlotCount, easeOut, openView, parseChartSettings, presetBarSpacing, presetSlots, presetViewport, viewKey } from "./chartSettings.ts";
 import { GestureController, applyGesture } from "./gestures.ts";
 import { autoFitRange, computeChartModel, type ChartState } from "./layout.ts";
-import { buildSlots, defaultViewport, isAutoPrice, MIN_BAR_SPACING, MAX_BAR_SPACING, panSlots } from "./scale.ts";
+import { buildSlots, defaultViewport, isAutoPrice, MIN_BAR_SPACING, MAX_BAR_SPACING, panSlots, RIGHT_MARGIN_PX, slotX } from "./scale.ts";
 import { sessionSlots } from "./chartTypes.ts";
 import { etToUtc } from "./time.ts";
 import { fixtureCandles } from "./testFixture.ts";
@@ -171,8 +171,11 @@ describe("horizontal presets", () => {
 
   test("bar spacing fits the window plus the right margin, clamped to the zoom limits", () => {
     const d = day(390);
-    expect(presetBarSpacing(d.slots, "1m", false, 100, 783, 1.5)).toBeCloseTo(783 / 391.5, 9);
-    expect(presetBarSpacing(d.slots, "1m", false, 25, 783, 1.5)).toBeCloseTo(783 / 99.5, 9);
+    // The day (390 slots at 100 %, 98 at 25 %) plus RIGHT_MARGIN_PX fills the plot exactly.
+    expect(presetBarSpacing(d.slots, "1m", false, 100, 783, 1.5)).toBeCloseTo((783 - RIGHT_MARGIN_PX) / 390, 9);
+    expect(presetBarSpacing(d.slots, "1m", false, 25, 783, 1.5)).toBeCloseTo((783 - RIGHT_MARGIN_PX) / 98, 9);
+    // Zoomed far in, the 1.5-slot floor is the wider margin and decides instead.
+    expect(presetBarSpacing(day(20, "5m").slots, "5m", false, 25, 300, 1.5)).toBeCloseTo(300 / (5 + 1.5), 9); // 5 slots: 46 px each
     expect(presetBarSpacing(day(1560, "15s").slots, "15s", false, 100, 300, 1.5)).toBe(MIN_BAR_SPACING);
     expect(presetBarSpacing(day(10, "5m").slots, "5m", false, 25, 2000, 1.5)).toBe(MAX_BAR_SPACING);
   });
@@ -245,4 +248,47 @@ test("easeOut: starts at from, ends exactly at to, decelerates", () => {
   expect(easeOut(10, 20, 999, 200)).toBe(20);
   expect(easeOut(10, 20, 100, 200)).toBeGreaterThan(15);
   expect(easeOut(10, 20, 5, 0)).toBe(20);
+});
+
+describe("right margin in opened views (owner, 2026-10-18)", () => {
+  /** px between the latest candle's right side and the plot's right edge, in the model the renderers draw. */
+  const gapOf = (st: ChartState, vp: ReturnType<typeof defaultViewport>) => {
+    const m = computeChartModel(st, vp, size);
+    const last = m.slots.length - 1;
+    return { m, gap: m.geometry.plot.x + m.geometry.plot.w - (slotX(m.index, last) + vp.barSpacing / 2) };
+  };
+
+  test("every preset on every timeframe opens on the whole window AND the margin", () => {
+    const tfs: [Timeframe, number][] = [["15s", 1560], ["30s", 780], ["1m", 390], ["5m", 78]];
+    for (const [tf, n] of tfs)
+      for (const zoom of [25, 50, 100] as const) {
+        const d = day(n, tf);
+        const st = stateOf(d, tf);
+        const vp = openView(st, { autoStretch: true, zoom, extendedHours: false }, size, defaultViewport(9));
+        expect(vp.anchorT).toBeNull();
+        const { m, gap } = gapOf(st, vp);
+        expect(m.index.to).toBe(n - 1);
+        if (zoom === 100 && vp.barSpacing > MIN_BAR_SPACING) expect(m.index.from).toBe(0);
+        expect(gap).toBeGreaterThanOrEqual(RIGHT_MARGIN_PX - 1e-6);
+      }
+  });
+
+  test("a timeframe switch opens a fresh view that follows with the margin", () => {
+    const one = stateOf(day(390, "1m"), "1m");
+    const five = stateOf(day(78, "5m"), "5m");
+    const a = openView(one, { autoStretch: true, zoom: 50, extendedHours: false }, size, defaultViewport(9));
+    const b = openView(five, { autoStretch: true, zoom: 50, extendedHours: false }, size, defaultViewport(9));
+    expect(b.anchorT).toBeNull();
+    expect(b.barSpacing).not.toBe(a.barSpacing);
+    expect(gapOf(five, b).gap).toBeGreaterThanOrEqual(RIGHT_MARGIN_PX - 1e-6);
+  });
+
+  test("applying a preset to a panned-back view returns to the latest, margin included", () => {
+    const d = day(390);
+    const st = stateOf(d);
+    const plotW = computeChartModel(st, defaultViewport(9), size).geometry.plot.w;
+    const vp = presetViewport(panSlots(defaultViewport(), d.slots, 80), d.slots, "1m", false, 100, plotW);
+    expect(vp.anchorT).toBeNull();
+    expect(gapOf(st, vp).gap).toBeCloseTo(RIGHT_MARGIN_PX, 0);
+  });
 });
