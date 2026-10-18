@@ -78,9 +78,13 @@ function Glyph({ kind, color }: { kind: IndicatorSpec["kind"]; color: string }) 
   return <Icon def={{ w: 16, h: 16, strokeWidth: 1.5, paths: INDICATOR_GLYPHS[kind] }} color={color} size={18} />;
 }
 
-/** The selection check (accent, both tones): the sheets' one accent mark per checked row. */
-const Check = () => (
-  <View style={s.rowRight}>
+/**
+ * The selection check (accent, both tones): the sheets' one accent mark per
+ * checked row. It always takes its room and only its opacity changes, so the
+ * name and description do not reflow (or re-truncate) when a row toggles.
+ */
+const Check = ({ on }: { on: boolean }) => (
+  <View style={[s.rowRight, { opacity: on ? 1 : 0 }]}>
     <Icon name="check" color={UI.accent} size={14} />
   </View>
 );
@@ -130,7 +134,9 @@ export function IndicatorSheet({
         accessibilityHint={info.description}
         disabled={!allowed}
         onPress={() => onChange(toggleIndicator(indicators, p))}
-        style={({ pressed }) => [s.indRow, checked && { backgroundColor: UI.row }, pressed && { backgroundColor: UI.raised }, !allowed && { opacity: 0.45 }]}
+        // No fill for a checked row (owner, 2026-10-18): the check, the tinted glyph and its raised
+        // tile already say "on", so every row shares the sheet's background; only a press lights one.
+        style={({ pressed }) => [s.indRow, pressed && { backgroundColor: UI.raised }, !allowed && { opacity: 0.45 }]}
       >
         <View style={[s.tile, { backgroundColor: checked ? UI.raised : UI.row }]}>
           <Glyph kind={p.kind} color={checked ? colorOf(p) : UI.textDim} />
@@ -144,7 +150,7 @@ export function IndicatorSheet({
             {allowed ? info.description : "Section full: turn one off first"}
           </Text>
         </View>
-        {checked && <Check />}
+        <Check on={checked} />
       </Pressable>
     );
   };
@@ -429,7 +435,7 @@ const s = StyleSheet.create({
   indRow: { minHeight: 56, flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 8, borderRadius: 10 },
   tile: { width: 36, height: 36, borderRadius: 9, alignItems: "center", justifyContent: "center" },
   indName: { color: UI.text, fontSize: 14, fontWeight: "500" },
-  // A translucent chip reads on both an unselected row (panel) and a selected one (row colour).
+  // A translucent chip reads on a row at rest (panel) and while it is pressed (raised colour).
   chip: { color: UI.textDim, fontSize: 10, backgroundColor: "rgba(228,232,237,0.08)", borderRadius: 4, paddingHorizontal: 4, paddingVertical: 1, overflow: "hidden", fontVariant: ["tabular-nums"] },
   indDesc: { color: UI.textFaint, fontSize: 11 },
   profile: { gap: 6, paddingBottom: 6 },
@@ -519,7 +525,8 @@ export function LayersSheet({
               accessibilityLabel={LAYER_INFO[id].name}
               accessibilityHint={LAYER_INFO[id].description}
               onPress={() => onChange({ ...layers, [id]: !checked })}
-              style={({ pressed }) => [s.indRow, checked && { backgroundColor: UI.row }, pressed && { backgroundColor: UI.raised }]}
+              // As in the Indicators sheet: no fill when checked, only while pressed.
+              style={({ pressed }) => [s.indRow, pressed && { backgroundColor: UI.raised }]}
             >
               <View style={[s.tile, { backgroundColor: checked ? UI.raised : UI.row }]}>
                 <LayerSwatch id={id} on={checked} />
@@ -530,7 +537,7 @@ export function LayersSheet({
                   {LAYER_INFO[id].description}
                 </Text>
               </View>
-              {checked && <Check />}
+              <Check on={checked} />
             </Pressable>
           );
         })}

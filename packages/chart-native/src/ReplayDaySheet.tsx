@@ -47,7 +47,9 @@ export function ReplayDaySheet({
                   onClose();
                   if (!current) onSelect(d.value);
                 }}
-                style={({ pressed }) => [s.row, current && { backgroundColor: UI.row }, pressed && { backgroundColor: UI.raised }]}
+                // The current day is marked by its accent check alone, not a filled row (the
+                // same rule as the Indicators and Chart settings lists); a press still lights it.
+                style={({ pressed }) => [s.row, pressed && { backgroundColor: UI.raised }]}
               >
                 <Text style={s.label}>{d.label}</Text>
                 {d.fixture && <Text style={s.fixture}>FIXTURE</Text>}
