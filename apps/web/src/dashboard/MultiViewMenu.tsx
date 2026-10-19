@@ -1,13 +1,13 @@
 import { MAX_DASHBOARD_CHARTS } from "@stockwatcher/app-state";
 import { Icon } from "@stockwatcher/chart-web";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger, Tip } from "@stockwatcher/chart-web/ui";
+import { cn, DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger, Tip, TOUCH_HIT } from "@stockwatcher/chart-web/ui";
 
 const COUNTS = Array.from({ length: MAX_DASHBOARD_CHARTS }, (_, i) => i + 1);
 
 /**
  * The panel's multi-view control (owner, 2026-10-18): a screen icon × n, n being the charts shown.
  * It opens a menu of 1–4. Neutral at rest; while open its icon takes the accent duotone, like
- * every open menu button.
+ * every open menu button. 40 px tall with a 44 px touch area on a coarse pointer.
  */
 export function MultiViewMenu({ count, onChange }: { count: number; onChange: (n: number) => void }) {
   return (
@@ -15,7 +15,7 @@ export function MultiViewMenu({ count, onChange }: { count: number; onChange: (n
       <Tip label="Charts in the panel">
         <DropdownMenuTrigger
           aria-label={`${count} ${count === 1 ? "chart" : "charts"} shown, change`}
-          className="flex h-8 shrink-0 items-center gap-1 rounded-lg bg-card px-2.5 text-xs text-muted-foreground outline-none transition-colors hover:bg-bg-row hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-bg-row aria-expanded:text-foreground aria-expanded:[&_svg]:text-primary [&_svg]:size-4"
+          className={cn("relative flex h-8 shrink-0 items-center gap-1 rounded-lg bg-card px-2.5 text-xs text-muted-foreground outline-none transition-colors hover:bg-bg-row hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-bg-row aria-expanded:text-foreground aria-expanded:[&_svg]:text-primary pointer-coarse:h-10 [&_svg]:size-4", TOUCH_HIT)}
         >
           <Icon name="screen" />
           <span className="font-mono tabular-nums">×{count}</span>

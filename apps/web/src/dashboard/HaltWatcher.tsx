@@ -20,8 +20,10 @@ function changeText(pct: number): string {
  * loads its ticker into the selected chart, like a pick from the search (tap, then hold copies
  * it). It reads the dashboard's own market (live by default, Settings → Data).
  *
- * Laid out by the panel's own width (container queries): three columns wide, two narrower, one
- * on a phone. A halted card keeps its frozen pressure on a grey arc and says "Halted" in amber
+ * Laid out by the panel's own width (container queries): three columns wide, two narrower. On a
+ * phone it is one row of cards that scrolls sideways, snapping card by card with the next one
+ * peeking in (owner, 2026-10-19): six stacked cards were ~600 px, pushing the chart below the
+ * fold. A halted card keeps its frozen pressure on a grey arc and says "Halted" in amber
  * where the change % was.
  */
 export function HaltWatcher({ channel, onPick }: { channel: PressureChannel; onPick: (symbol: string) => void }) {
@@ -38,9 +40,9 @@ export function HaltWatcher({ channel, onPick }: { channel: PressureChannel; onP
       {board.length === 0 ? (
         <p className="m-0 text-xs text-text-faint">No stock in the price band has traded enough in the last minute to measure.</p>
       ) : (
-        <ul className="m-0 grid list-none grid-cols-1 gap-2 p-0 @xl/hw:grid-cols-2 @4xl/hw:grid-cols-3">
+        <ul className="m-0 grid list-none auto-cols-[minmax(15rem,86%)] grid-flow-col gap-2 overflow-x-auto overscroll-x-contain p-0 [scrollbar-width:none] snap-x snap-mandatory @xl/hw:grid-flow-row @xl/hw:grid-cols-2 @xl/hw:overflow-visible @4xl/hw:grid-cols-3">
           {board.map((c) => (
-            <li key={c.symbol} className="min-w-0">
+            <li key={c.symbol} className="min-w-0 snap-start">
               <GaugeCard card={c} onPick={onPick} />
             </li>
           ))}

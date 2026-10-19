@@ -2,7 +2,9 @@
 <html lang="en" class="dark">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- viewport-fit=cover: without it iOS reports every env(safe-area-inset-*) as 0, so the phone
+         tab bar's home-indicator padding never applied. #root pads the side insets (index.css). -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="color-scheme" content="dark" />
     <meta name="theme-color" content="#0f1216" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />

@@ -1,5 +1,5 @@
 import { Icon } from "@stockwatcher/chart-web";
-import { cn } from "@stockwatcher/chart-web/ui";
+import { cn, TOUCH_HIT } from "@stockwatcher/chart-web/ui";
 import { lastSessionLabel, parseLiveSession } from "@stockwatcher/shared";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Connection } from "../ConnectionGate.tsx";
@@ -145,7 +145,7 @@ export function Dashboard({ choice, feed }: Connection) {
               type="button"
               aria-label="Search tickers"
               onClick={() => app.setSearchOpen(true)}
-              className="inline-grid size-8 place-items-center rounded-lg bg-card text-muted-foreground outline-none hover:bg-bg-row hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-3.5"
+              className={cn("relative inline-grid size-8 place-items-center rounded-lg bg-card text-muted-foreground outline-none hover:bg-bg-row hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:size-10 [&_svg]:size-3.5", TOUCH_HIT)}
             >
               <Icon name="search" />
             </button>
@@ -169,8 +169,9 @@ export function Dashboard({ choice, feed }: Connection) {
       ) : (
       <div className="@container/panel flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-y-auto">
         {/* The Halt watcher strip above the charts (owner, 2026-10-19); server feed only (the
-            fixture has no pressure board). It scrolls with the panel, so a narrow screen's
-            one-column cards never squeeze the charts below their minimum height. */}
+            fixture has no pressure board). It scrolls with the panel, so its cards never squeeze
+            the charts below their minimum height; on a phone it is one sideways-scrolling row,
+            so a single chart fills the rest of the screen above the tab bar. */}
         {feed.pressure && <HaltWatcher channel={feed.pressure} onPick={app.loadIntoSelected} />}
         <div role="group" aria-label="Charts" className={cn("grid flex-1 auto-rows-[minmax(18rem,1fr)] gap-2", GRID[dashboard.count])}>
           {shown.map((symbol, i) => (

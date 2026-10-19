@@ -119,6 +119,11 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
   const dayOptions = useMemo(() => replayDayOptions(replayDays.state?.days ?? []), [replayDays.state]);
 
   const phone = useMediaQuery("(max-width: 600px)");
+  // A finger (phones, tablets; owner 2026-10-19). The floating drawing tools start hidden there
+  // (they covered a third of a phone's plot; the toolbar's pencil shows them, and that choice is
+  // kept), and a tablet's toolbar moves out of the chart into its own row with the ticker: at
+  // touch size it no longer fits beside the candle readout in the chart's top corners.
+  const coarse = useMediaQuery("(pointer: coarse)");
   // The chart is controlled with the synced values (CandleChart keeps only this screen's layout).
   const indicators = useApp((s) => s.indicators);
   const layers = useApp((s) => s.layers);
@@ -224,7 +229,8 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
 
   if (phone) {
     return (
-      <div className="flex min-h-dvh flex-col gap-2.5 bg-background p-3 text-foreground">
+      // min-h-full: the Shell's page area already stops above the tab bar (a dvh here overshot it).
+      <div className="flex min-h-full flex-col gap-2.5 bg-background p-3 text-foreground">
         <header className="flex items-center gap-2">
           <div className="flex min-w-0 items-baseline gap-2">
             {tickerButton("text-base")}
@@ -235,7 +241,9 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
           <SettingsButton />
           {search}
         </header>
-        <CandleChart className="h-[360px]" toolbar inspector symbol={symbol} persistKey={CHART_KEY} {...synced} trading={trading} now={clock?.now ?? null} onTimeframeChange={app.setTimeframe} series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={app.setInspectT} options={PHONE_CHART} barSpacing={10} label={chartLabel} />
+        {/* The timeframe in the toolbar row as the wheel (as on the native phone app), not four
+            segments floating over the chart's top-right, where they ran into the candle readout. */}
+        <CandleChart className="h-[360px]" toolbar inspector headingInToolbar timeframeControl="wheel" defaultToolsVisible={false} symbol={symbol} persistKey={CHART_KEY} {...synced} trading={trading} now={clock?.now ?? null} onTimeframeChange={app.setTimeframe} series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={app.setInspectT} options={PHONE_CHART} barSpacing={10} label={chartLabel} />
         <section aria-label="Session timeline and replay" className="flex flex-col gap-1.5 rounded-xl bg-card px-3 py-2">
           <ReplayControls {...replay} variant="compact" />
           <SessionTimeline bands={bands} buckets={buckets} bucketMs={bucketMs} now={clock?.now ?? null} variant="minimal" onSeek={seek} />
@@ -276,7 +284,9 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
               className="min-h-[360px] flex-1"
               toolbar
               inspector
-              toolbarInChart
+              toolbarInChart={!coarse}
+              headingInToolbar={coarse}
+              defaultToolsVisible={!coarse}
               heading={
                 <div className="flex items-baseline gap-2">
                   {tickerButton("text-[15px]")}

@@ -7,6 +7,7 @@ import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import type { ChartFeed } from "../feed/types.ts";
 import { useChartFeed } from "../feed/useChartFeed.ts";
 import { useChartAlerts } from "../alerts/useChartAlerts.ts";
+import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { getAppStore, useApp } from "../state/store.ts";
 
 /** A compact chart for a panel of up to four. */
@@ -42,6 +43,8 @@ export interface ChartCellProps {
 export function ChartCell({ index, slot, symbol, feed, trading, selected, showSelection, multi, fixture, onSelect, onPickTicker, onDay }: ChartCellProps) {
   const [app] = useState(() => getAppStore().getState());
   const bin = useApp((s) => s.bin);
+  // A phone-width cell has no room for four touch-size segments beside the ticker either.
+  const phone = useMediaQuery("(max-width: 600px)");
   const { series, clock } = useChartFeed(feed, symbol, slot.timeframe, bin, `d${index}`);
 
   const indicators = useApp((s) => s.indicators);
@@ -109,9 +112,9 @@ export function ChartCell({ index, slot, symbol, feed, trading, selected, showSe
         toolbarInChart={false}
         // One row (owner, 2026-10-18): the ticker, price and change on the toolbar's left, the
         // timeframe and tools on its right; with several charts the timeframe is the compact wheel
-        // (the phone's), since four segments would crowd a half-width cell.
+        // (the phone's), since four segments would crowd a half-width cell; so on a phone too.
         headingInToolbar
-        timeframeControl={multi ? "wheel" : "segments"}
+        timeframeControl={multi || phone ? "wheel" : "segments"}
         heading={
           <div className="flex items-baseline gap-2">
             <Tip label="Change ticker · tap, then hold to copy">

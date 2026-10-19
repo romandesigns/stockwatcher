@@ -101,7 +101,8 @@ function SignIn({ rejected, onSubmit }: { rejected: boolean; onSubmit: (token: s
           onChange={(e) => setValue(e.target.value)}
           placeholder="Access token"
           aria-invalid={rejected}
-          className="h-10 rounded-lg bg-bg-row px-3 font-mono text-sm outline-none placeholder:text-text-faint focus-visible:ring-2 focus-visible:ring-ring"
+          // 16 px on touch: iOS zooms the page into any focused field set smaller.
+          className="h-10 rounded-lg bg-bg-row px-3 font-mono text-sm outline-none placeholder:text-text-faint focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:h-11 pointer-coarse:text-base"
         />
         {rejected && <p className="m-0 text-xs text-critical">That token wasn't accepted. Check it and try again.</p>}
         <button type="submit" disabled={!value.trim()} className="h-10 rounded-lg bg-primary text-sm font-semibold text-primary-foreground disabled:opacity-50">

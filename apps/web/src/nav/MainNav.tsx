@@ -1,6 +1,6 @@
 import type { IconName } from "@stockwatcher/chart-core";
 import { Icon } from "@stockwatcher/chart-web";
-import { Tip, cn } from "@stockwatcher/chart-web/ui";
+import { Tip, TOUCH_HIT, cn } from "@stockwatcher/chart-web/ui";
 import { NAV_ITEMS, type PageId } from "./routes.ts";
 import { useUnseenAlerts } from "../alerts/seen.ts";
 
@@ -60,7 +60,10 @@ function Badge({ n, className }: { n: number; className?: string }) {
 
 function RailLink({ icon, label, href, onClick, active, dialog, collapsed, badge = 0 }: { icon: IconName; label: string; href?: string; onClick?: () => void; active?: boolean; /** Opens a dialog (aria-haspopup, aria-expanded = active). */ dialog?: boolean; collapsed: boolean; badge?: number }) {
   const cls = cn(
-    "relative flex h-10 w-full min-w-0 items-center gap-2.5 rounded-lg px-3 text-sm no-underline outline-none select-none transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-4 [&_svg]:shrink-0",
+    // 44 px rows to a finger (tablets; owner 2026-10-19); TOUCH_HIT widens the collapsed rail's 40 px
+    // items into the rail's own padding.
+    TOUCH_HIT,
+    "relative flex h-10 w-full min-w-0 items-center gap-2.5 rounded-lg px-3 text-sm no-underline outline-none select-none transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:h-11 [&_svg]:size-4 [&_svg]:shrink-0",
     active ? "bg-bg-raised font-medium text-foreground [&_svg]:text-primary" : "text-muted-foreground hover:bg-bg-row hover:text-foreground",
   );
   const inner = (

@@ -15,13 +15,22 @@ import { getAppStore, useApp } from "./state/store.ts";
 /** Whether the rail is collapsed, remembered on this device (screen layout is never synced). */
 const RAIL_KEY = "sw-nav:collapsed";
 
-const readCollapsed = () => {
+/** The person's own choice (true = collapsed), or null when they never toggled the rail here. */
+const readCollapsed = (): boolean | null => {
   try {
-    return localStorage.getItem(RAIL_KEY) === "1";
+    const v = localStorage.getItem(RAIL_KEY);
+    return v === null ? null : v === "1";
   } catch {
-    return false;
+    return null;
   }
 };
+
+/**
+ * Below this width the rail starts collapsed to its icons (owner, 2026-10-19: on a tablet in
+ * portrait, 820 px, or an unfolded Fold, the labelled rail took ~200 px from the charts). It is
+ * only the default: a choice made with the toggle is stored and wins at every width.
+ */
+const RAIL_NARROW = "(max-width: 1099px)";
 
 /**
  * The app frame: the main navigation around the open page. From 601 px a rail on the left (the
@@ -32,16 +41,19 @@ const readCollapsed = () => {
 export function Shell() {
   const page = usePage();
   const phone = useMediaQuery("(max-width: 600px)");
-  const [collapsed, setCollapsed] = useState(readCollapsed);
-  const toggle = () =>
-    setCollapsed((c) => {
-      try {
-        localStorage.setItem(RAIL_KEY, c ? "0" : "1");
-      } catch {
-        // Private mode: the choice lasts for this visit only.
-      }
-      return !c;
-    });
+  const narrow = useMediaQuery(RAIL_NARROW);
+  const [choice, setChoice] = useState(readCollapsed);
+  // Without a stored choice the rail follows the width, live (rotating a tablet re-decides it).
+  const collapsed = choice ?? narrow;
+  const toggle = () => {
+    const next = !collapsed;
+    try {
+      localStorage.setItem(RAIL_KEY, next ? "1" : "0");
+    } catch {
+      // Private mode: the choice lasts for this visit only.
+    }
+    setChoice(next);
+  };
 
   const settingsOpen = useApp((s) => s.settingsOpen);
   // The page headers' NavToggle reads these (far left of each header); stable while unchanged.
@@ -52,9 +64,12 @@ export function Shell() {
 
   if (phone) {
     // No rail: no NavToggle, and each page header carries its own Settings gear.
+    // A screen-tall frame whose page area scrolls by itself, as beside the rail: the page gets a
+    // definite height, so the dashboard's charts can fill what is left above the tab bar instead
+    // of sitting at their 18rem minimum over empty space (owner, 2026-10-19).
     return (
-      <div className="min-h-dvh bg-background" style={{ paddingBottom: `calc(${TAB_BAR_HEIGHT} + env(safe-area-inset-bottom))` }}>
-        {content}
+      <div className="flex h-dvh flex-col bg-background" style={{ paddingBottom: `calc(${TAB_BAR_HEIGHT} + env(safe-area-inset-bottom))` }}>
+        <div className="min-h-0 flex-1 overflow-y-auto">{content}</div>
         <NavTabBar page={page} />
         <AppSettingsDialog />
         <AlertForm />
