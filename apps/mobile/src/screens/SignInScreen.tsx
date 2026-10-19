@@ -44,7 +44,7 @@ export function SignInScreen({ rejected, onSubmit }: { rejected: boolean; onSubm
 }
 
 const s = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: colors.bg, justifyContent: "center", paddingHorizontal: 16 },
+  screen: { flex: 1, backgroundColor: colors.bg, justifyContent: "center", paddingHorizontal: 8 },
   card: { backgroundColor: colors.bgPanel, borderRadius: 16, padding: 20, gap: 12 },
   title: { color: colors.text, fontFamily: fonts.semibold, fontSize: 18 },
   body: { color: colors.textDim, fontSize: 13 },
