@@ -1,11 +1,12 @@
 import { Icon } from "@stockwatcher/chart-web";
 import { cn } from "@stockwatcher/chart-web/ui";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Connection } from "../ConnectionGate.tsx";
 import { followCandidates, followServer } from "../feed/source.ts";
 import { useCandidates } from "../feed/useCandidates.ts";
 import { usePaperTrading } from "../feed/usePaperTrading.ts";
 import { FIXTURE_SYMBOL } from "../fixtures/fixtureFeed.ts";
+import { SearchPill } from "../search/SearchPill.tsx";
 import { TickerSearch } from "../search/TickerSearch.tsx";
 import { NavToggle } from "../nav/NavToggle.tsx";
 import { useHasRail } from "../nav/navRail.ts";
@@ -13,13 +14,10 @@ import { SettingsButton } from "../nav/settings.tsx";
 import { getAppStore, useApp } from "../state/store.ts";
 import { ChartCell } from "./ChartCell.tsx";
 import { MultiViewMenu } from "./MultiViewMenu.tsx";
-import { TickerList } from "./TickerList.tsx";
-
-const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 
 /**
  * The panel's grid by chart count, laid out by the PANEL's own width (container queries, so the
- * nav rail, the ticker list and the window all count): below 48rem every count stacks, one chart
+ * nav rail and the window both count): below 48rem every count stacks, one chart
  * per row; from 48rem two columns (three charts: two over one wide); from 72rem three charts sit
  * side by side. Rows share the height on a wide screen and never shrink below 18rem; past that
  * the panel scrolls.
@@ -35,14 +33,16 @@ const SPAN_THIRD = "@3xl/panel:col-span-2 @6xl/panel:col-span-1";
 
 /**
  * The main page (owner, 2026-10-18): a panel of 1–4 charts in their own containers, a multi-view
- * control for how many, and a live ticker list beside them (below when narrow). Select a chart by
- * pressing it, then click a ticker (in the list, or from the search) to load it there. What each
+ * control for how many, and the ticker quick-open centred in the header. Select a chart by
+ * pressing it, then pick a ticker from the search to load it there. What each
  * chart shows syncs across devices (app-state `dashboard`); the selection is this device's.
  * One socket carries every chart (up to 4 slots per connection).
  */
 export function Dashboard({ choice, feed }: Connection) {
   const [app] = useState(() => getAppStore().getState());
   const hasRail = useHasRail();
+  // The header pill the quick-open panel drops into.
+  const pillRef = useRef<HTMLButtonElement>(null);
   const dashboard = useApp((s) => s.dashboard);
   const selected = useApp((s) => s.dashboardSelected);
   const searchOpen = useApp((s) => s.searchOpen);
@@ -85,57 +85,66 @@ export function Dashboard({ choice, feed }: Connection) {
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-2 p-3 text-foreground">
-      <header className="flex flex-wrap items-center gap-2">
-        {/* The rail's collapse toggle at the far left (renders nothing on a phone layout). */}
-        <NavToggle />
-        <h1 className="m-0 text-base font-semibold tracking-tight">Dashboard</h1>
-        {dashboard.count > 1 && <span className="text-xs text-text-faint">Chart {selected + 1} selected</span>}
-        <div className="ml-auto flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => app.setSearchOpen(true)}
-            className="flex h-8 items-center gap-2 rounded-lg bg-card px-3 text-xs text-text-faint outline-none hover:bg-bg-row hover:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-3.5"
-          >
-            <Icon name="search" />
-            <span>Search tickers</span>
-            <kbd className="hidden rounded bg-bg-row px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground sm:inline">{isMac ? "⌘P" : "Ctrl P"}</kbd>
-          </button>
-          <MultiViewMenu count={dashboard.count} onChange={app.setDashboardCount} />
-          {/* Settings live in the rail; without one (phone layout) the header carries the gear. */}
-          {!hasRail && <SettingsButton />}
-        </div>
-      </header>
+      {hasRail ? (
+        // Three columns, as on the chart page: equal side columns put the VS Code-style search pill
+        // at the content's exact centre, and the quick-open panel drops down into it (anchor).
+        <header className="grid grid-cols-[1fr_auto_1fr] items-center gap-4">
+          <div className="flex min-w-0 items-center gap-2">
+            {/* The rail's collapse toggle at the far left. */}
+            <NavToggle />
+            <h1 className="m-0 text-base font-semibold tracking-tight">Dashboard</h1>
+            {dashboard.count > 1 && <span className="truncate text-xs text-text-faint">Chart {selected + 1} selected</span>}
+          </div>
+          <SearchPill ref={pillRef} onOpen={() => app.setSearchOpen(true)} />
+          <div className="flex items-center gap-2 justify-self-end">
+            <MultiViewMenu count={dashboard.count} onChange={app.setDashboardCount} />
+          </div>
+        </header>
+      ) : (
+        // Phone layout (no rail): no room for the pill; a search button and the Settings gear instead.
+        <header className="flex items-center gap-2">
+          <h1 className="m-0 text-base font-semibold tracking-tight">Dashboard</h1>
+          {dashboard.count > 1 && <span className="truncate text-xs text-text-faint">Chart {selected + 1} selected</span>}
+          <div className="ml-auto flex items-center gap-2">
+            <button
+              type="button"
+              aria-label="Search tickers"
+              onClick={() => app.setSearchOpen(true)}
+              className="inline-grid size-8 place-items-center rounded-lg bg-card text-muted-foreground outline-none hover:bg-bg-row hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-3.5"
+            >
+              <Icon name="search" />
+            </button>
+            <MultiViewMenu count={dashboard.count} onChange={app.setDashboardCount} />
+            <SettingsButton />
+          </div>
+        </header>
+      )}
 
-      <div className="@container/dash min-h-0 flex-1">
-        <div className="flex h-full min-h-0 flex-col gap-2 @5xl/dash:flex-row">
-          <div className="@container/panel min-h-0 min-w-0 flex-1 overflow-y-auto">
-            <div role="group" aria-label="Charts" className={cn("grid h-full auto-rows-[minmax(18rem,1fr)] gap-2", GRID[dashboard.count])}>
-              {shown.map((symbol, i) => (
-                <div key={i} className={cn("flex min-h-0 min-w-0 flex-col", dashboard.count === 3 && i === 2 && SPAN_THIRD)}>
-                  <ChartCell
-                    index={i}
-                    slot={dashboard.slots[i]!}
-                    symbol={symbol}
-                    feed={feed}
-                    trading={trading}
-                    selected={selected === i}
-                    showSelection={dashboard.count > 1}
-                    fixture={current.fixtureData}
-                    onSelect={app.selectDashboardChart}
-                    onPickTicker={pickFor}
-                    onDay={onDay}
-                  />
-                </div>
-              ))}
+      {/* The panel takes the full width (the "Most active" side list was removed, owner 2026-10-18):
+          tickers come from the search above. */}
+      <div className="@container/panel min-h-0 min-w-0 flex-1 overflow-y-auto">
+        <div role="group" aria-label="Charts" className={cn("grid h-full auto-rows-[minmax(18rem,1fr)] gap-2", GRID[dashboard.count])}>
+          {shown.map((symbol, i) => (
+            <div key={i} className={cn("flex min-h-0 min-w-0 flex-col", dashboard.count === 3 && i === 2 && SPAN_THIRD)}>
+              <ChartCell
+                index={i}
+                slot={dashboard.slots[i]!}
+                symbol={symbol}
+                feed={feed}
+                trading={trading}
+                selected={selected === i}
+                showSelection={dashboard.count > 1}
+                fixture={current.fixtureData}
+                onSelect={app.selectDashboardChart}
+                onPickTicker={pickFor}
+                onDay={onDay}
+              />
             </div>
-          </div>
-          <div className="flex h-72 min-h-0 shrink-0 flex-col @5xl/dash:h-auto @5xl/dash:w-72">
-            <TickerList quotes={feed.quotes} symbols={candidates.symbols} selectedSymbol={shown[selected] ?? ""} selectedIndex={selected} onPick={app.loadIntoSelected} />
-          </div>
+          ))}
         </div>
       </div>
 
-      <TickerSearch open={searchOpen} onOpenChange={app.setSearchOpen} symbols={candidates.symbols} quotes={feed.quotes} mock={current.fixtureData} current={shown[selected] ?? ""} recents={recents} onSelect={app.loadIntoSelected} />
+      <TickerSearch open={searchOpen} onOpenChange={app.setSearchOpen} symbols={candidates.symbols} quotes={feed.quotes} mock={current.fixtureData} current={shown[selected] ?? ""} recents={recents} onSelect={app.loadIntoSelected} anchor={hasRail ? pillRef : undefined} />
     </div>
   );
 }

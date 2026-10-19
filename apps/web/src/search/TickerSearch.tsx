@@ -1,7 +1,7 @@
 import { formatPrice, formatVolume } from "@stockwatcher/chart-core";
 import { Icon } from "@stockwatcher/chart-web";
 import { cn, Dialog, DialogContent, DialogTitle, ScrollArea } from "@stockwatcher/chart-web/ui";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import {
   activeTickerFilters,
   refreshTickerRows,
@@ -111,8 +111,12 @@ export interface TickerSearchProps {
   /** Recently opened tickers, newest first: synced across devices by the app's store, which also records an opening (openTicker). */
   recents: readonly string[];
   onSelect: (symbol: string) => void;
-  /** Drop down right under the header's search pill, at its width (desktop); else a centred panel. */
-  anchored?: boolean;
+  /**
+   * The header's search pill (SearchPill): the panel opens over its exact position and width, like
+   * VS Code's quick open. Measured at each opening, so the nav rail's width and the window size
+   * are always right. Absent (phone layout): a centred panel lower down.
+   */
+  anchor?: RefObject<HTMLElement | null>;
 }
 
 /**
@@ -126,7 +130,14 @@ export interface TickerSearchProps {
  * mock universe, fixture sources only) are shown, labelled, and cannot be
  * opened.
  */
-export function TickerSearch({ open, onOpenChange, symbols, quotes, mock, current, recents, onSelect, anchored = false }: TickerSearchProps) {
+export function TickerSearch({ open, onOpenChange, symbols, quotes, mock, current, recents, onSelect, anchor }: TickerSearchProps) {
+  // Where the pill is on screen when the panel opens (null: not anchored, or not measured yet).
+  const [box, setBox] = useState<{ left: number; top: number; width: number } | null>(null);
+  useLayoutEffect(() => {
+    if (!open) return;
+    const r = anchor?.current?.getBoundingClientRect();
+    setBox(r ? { left: r.left, top: r.top, width: r.width } : null);
+  }, [open, anchor]);
   const [query, setQuery] = useState("");
   // The active row is a symbol, not an index: rows refresh every second and an index would
   // silently point at another stock once the list changes under it.
@@ -226,7 +237,11 @@ export function TickerSearch({ open, onOpenChange, symbols, quotes, mock, curren
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent initialFocus={inputRef} className={cn("left-1/2 -translate-x-1/2 overflow-hidden p-0", anchored ? "top-2.5 w-(--search-w)" : "top-16 w-[min(560px,calc(100vw-32px))]")}>
+      <DialogContent
+        initialFocus={inputRef}
+        className={cn("overflow-hidden p-0", !box && "top-16 left-1/2 w-[min(560px,calc(100vw-32px))] -translate-x-1/2")}
+        style={box ? { left: box.left, top: box.top, width: box.width, transform: "none" } : undefined}
+      >
         <DialogTitle>Go to ticker</DialogTitle>
         <div className="flex items-center gap-2 px-3 pt-3 pb-2">
           <Icon name="search" className="size-4 text-muted-foreground" />

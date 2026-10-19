@@ -15,7 +15,7 @@ import {
 import { PROFILE_BINS } from "@stockwatcher/app-state";
 import { CandleChart, Icon, ReplayControls, SessionTimeline, Tape, VolumeProfile } from "@stockwatcher/chart-web";
 import { Tip, ToggleGroup, ToggleGroupItem, cn } from "@stockwatcher/chart-web/ui";
-import { useEffect, useLayoutEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ConnectionGate } from "./ConnectionGate.tsx";
 import { followCandidates, followServer, initialSymbol, type SourceChoice } from "./feed/source.ts";
 import { useCandidates } from "./feed/useCandidates.ts";
@@ -28,11 +28,10 @@ import { usePaperTrading } from "./feed/usePaperTrading.ts";
 import { useReplayDays } from "./feed/useReplayDays.ts";
 import { FIXTURE_SYMBOL } from "./fixtures/fixtureFeed.ts";
 import { useMediaQuery } from "./lib/useMediaQuery.ts";
+import { SearchPill } from "./search/SearchPill.tsx";
 import { TickerSearch } from "./search/TickerSearch.tsx";
 import { getAppStore, useApp } from "./state/store.ts";
 
-/** The search icon for the quick-open pill and the phone header (chart-core's shared duotone set, like every icon). */
-const SearchIcon = <Icon name="search" />;
 
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 
@@ -160,7 +159,9 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [app]);
   // On the desktop the panel drops down right under the header's search pill, at its width.
-  const search = <TickerSearch open={searchOpen} onOpenChange={app.setSearchOpen} symbols={candidates.symbols} quotes={feed.quotes} mock={current.fixtureData} current={symbol} recents={recents} onSelect={app.openTicker} anchored={!phone} />;
+  // The header pill the quick-open panel drops into (wider layouts).
+  const pillRef = useRef<HTMLButtonElement>(null);
+  const search = <TickerSearch open={searchOpen} onOpenChange={app.setSearchOpen} symbols={candidates.symbols} quotes={feed.quotes} mock={current.fixtureData} current={symbol} recents={recents} onSelect={app.openTicker} anchor={phone ? undefined : pillRef} />;
   const tickerButton = (size: string) => (
     <Tip label={`Search tickers (${isMac ? "⌘" : "Ctrl+"}P) · tap, then hold to copy`}>
       <TickerLabel symbol={symbol} onTap={() => app.setSearchOpen(true)} className={size} />
@@ -261,15 +262,7 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
           <NavToggle />
         </div>
 
-        <button
-          type="button"
-          onClick={() => app.setSearchOpen(true)}
-          className="flex h-8 w-(--search-w) items-center gap-2 rounded-lg bg-card px-3 text-xs text-text-faint outline-none hover:bg-bg-row hover:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-3.5"
-        >
-          {SearchIcon}
-          <span>Search tickers</span>
-          <kbd className="ml-auto rounded bg-bg-row px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">{isMac ? "⌘P" : "Ctrl P"}</kbd>
-        </button>
+        <SearchPill ref={pillRef} onOpen={() => app.setSearchOpen(true)} />
         <div className="flex items-center gap-2 justify-self-end">
           <SourceChip choice={current} mode={mode} />
         </div>
