@@ -18,9 +18,16 @@ services) sets `STOCKWATCHER_API_TOKEN`, `RUST_LOG`, `MARKET_DATA_MODE`, `REPLAY
 | `PORT` | `8790` | HTTP port |
 | `HOST` | `127.0.0.1` | bind address; the image sets `0.0.0.0` |
 | `STATIC_DIR` | `./apps/web/dist` | the built web app the server serves |
-| `DATA_DIR` | `./data` | `updates/` (desktop installers, served at `/updates/*`) and `settings/` (synced settings) live here |
+| `DATA_DIR` | `./data` | `updates/` (desktop installers, served at `/updates/*`), `settings/` (synced settings) and `alerts/` (price alerts' Activity `history.jsonl` and the phones registered for push, `push-devices.json`) live here |
 | `RUST_LOG` | `info` | tracing filter |
 | `LOG_FORMAT` | pretty | `json` in the image |
+
+## Price alerts: phone push (`crates/server/src/alerts/push.rs`)
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `EXPO_ACCESS_TOKEN` | unset | **Secret.** Sent as a bearer token to Expo's push service; needed only when the EAS project has "enhanced push security" on. Never logged. Unset works for a project without it |
+| `EXPO_PUSH_BASE` | `https://exp.host/--/api/v2` | Expo's push API (`/push/send`, `/push/getReceipts`). Point it at a stub to test locally; an unreachable one only costs the phone notification (the alert still reaches the app, and Activity says `push_failed`) |
 
 ## Market data (`crates/market-providers/src/config.rs`, `crates/server/src/market.rs`)
 
