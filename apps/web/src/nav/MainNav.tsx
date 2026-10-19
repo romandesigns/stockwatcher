@@ -18,7 +18,7 @@ import { NAV_ITEMS, type PageId } from "./routes.ts";
  * labels. The labels stay in the DOM either way (they fade and narrow), so every link keeps its
  * accessible name, and the icons keep the same x so nothing jumps when it toggles.
  */
-export function NavRail({ page, collapsed, onToggle }: { page: PageId; collapsed: boolean; onToggle: () => void }) {
+export function NavRail({ page, collapsed, settingsOpen, onSettings }: { page: PageId; collapsed: boolean; settingsOpen: boolean; onSettings: () => void }) {
   return (
     <nav
       aria-label="Main"
@@ -39,16 +39,18 @@ export function NavRail({ page, collapsed, onToggle }: { page: PageId; collapsed
           </li>
         ))}
       </ul>
+      {/* Settings for every page, pinned to the bottom (owner, 2026-10-18; the collapse toggle moved
+          to the far left of the page header, NavToggle). Raised with an accent icon while open. */}
       <ul className="m-0 mt-auto flex list-none flex-col gap-0.5 p-0">
         <li className="flex min-w-0">
-          <RailLink icon={collapsed ? "sidebarExpand" : "sidebarCollapse"} label={collapsed ? "Expand menu" : "Collapse menu"} onClick={onToggle} collapsed={collapsed} />
+          <RailLink icon="settings" label="Settings" onClick={onSettings} active={settingsOpen} dialog collapsed={collapsed} />
         </li>
       </ul>
     </nav>
   );
 }
 
-function RailLink({ icon, label, href, onClick, active, collapsed }: { icon: IconName; label: string; href?: string; onClick?: () => void; active?: boolean; collapsed: boolean }) {
+function RailLink({ icon, label, href, onClick, active, dialog, collapsed }: { icon: IconName; label: string; href?: string; onClick?: () => void; active?: boolean; /** Opens a dialog (aria-haspopup, aria-expanded = active). */ dialog?: boolean; collapsed: boolean }) {
   const cls = cn(
     "flex h-10 w-full min-w-0 items-center gap-2.5 rounded-lg px-3 text-sm no-underline outline-none select-none transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-4 [&_svg]:shrink-0",
     active ? "bg-bg-raised font-medium text-foreground [&_svg]:text-primary" : "text-muted-foreground hover:bg-bg-row hover:text-foreground",
@@ -65,7 +67,7 @@ function RailLink({ icon, label, href, onClick, active, collapsed }: { icon: Ico
         {inner}
       </a>
     ) : (
-      <button type="button" onClick={onClick} className={cls}>
+      <button type="button" onClick={onClick} aria-haspopup={dialog ? "dialog" : undefined} aria-expanded={dialog ? !!active : undefined} className={cls}>
         {inner}
       </button>
     );

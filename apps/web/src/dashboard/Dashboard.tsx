@@ -7,6 +7,9 @@ import { useCandidates } from "../feed/useCandidates.ts";
 import { usePaperTrading } from "../feed/usePaperTrading.ts";
 import { FIXTURE_SYMBOL } from "../fixtures/fixtureFeed.ts";
 import { TickerSearch } from "../search/TickerSearch.tsx";
+import { NavToggle } from "../nav/NavToggle.tsx";
+import { useHasRail } from "../nav/navRail.ts";
+import { SettingsButton } from "../nav/settings.tsx";
 import { getAppStore, useApp } from "../state/store.ts";
 import { ChartCell } from "./ChartCell.tsx";
 import { MultiViewMenu } from "./MultiViewMenu.tsx";
@@ -39,6 +42,7 @@ const SPAN_THIRD = "@3xl/panel:col-span-2 @6xl/panel:col-span-1";
  */
 export function Dashboard({ choice, feed }: Connection) {
   const [app] = useState(() => getAppStore().getState());
+  const hasRail = useHasRail();
   const dashboard = useApp((s) => s.dashboard);
   const selected = useApp((s) => s.dashboardSelected);
   const searchOpen = useApp((s) => s.searchOpen);
@@ -82,6 +86,8 @@ export function Dashboard({ choice, feed }: Connection) {
   return (
     <div className="flex h-full min-h-0 flex-col gap-2 p-3 text-foreground">
       <header className="flex flex-wrap items-center gap-2">
+        {/* The rail's collapse toggle at the far left (renders nothing on a phone layout). */}
+        <NavToggle />
         <h1 className="m-0 text-base font-semibold tracking-tight">Dashboard</h1>
         {dashboard.count > 1 && <span className="text-xs text-text-faint">Chart {selected + 1} selected</span>}
         <div className="ml-auto flex items-center gap-2">
@@ -95,6 +101,8 @@ export function Dashboard({ choice, feed }: Connection) {
             <kbd className="hidden rounded bg-bg-row px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground sm:inline">{isMac ? "⌘P" : "Ctrl P"}</kbd>
           </button>
           <MultiViewMenu count={dashboard.count} onChange={app.setDashboardCount} />
+          {/* Settings live in the rail; without one (phone layout) the header carries the gear. */}
+          {!hasRail && <SettingsButton />}
         </div>
       </header>
 

@@ -13,7 +13,7 @@ import {
   type ChartOptions,
 } from "@stockwatcher/chart-core";
 import { PROFILE_BINS } from "@stockwatcher/app-state";
-import { CandleChart, chartSettingsSection, drawingSettingsSection, Icon, ReplayControls, SessionTimeline, SettingsDialog, Tape, VolumeProfile } from "@stockwatcher/chart-web";
+import { CandleChart, Icon, ReplayControls, SessionTimeline, Tape, VolumeProfile } from "@stockwatcher/chart-web";
 import { Tip, ToggleGroup, ToggleGroupItem, cn } from "@stockwatcher/chart-web/ui";
 import { useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { ConnectionGate } from "./ConnectionGate.tsx";
@@ -22,6 +22,8 @@ import { useCandidates } from "./feed/useCandidates.ts";
 import type { ChartFeed } from "./feed/types.ts";
 import { useChartFeed } from "./feed/useChartFeed.ts";
 import { TickerLabel } from "./lib/TickerLabel.tsx";
+import { NavToggle } from "./nav/NavToggle.tsx";
+import { SettingsButton } from "./nav/settings.tsx";
 import { usePaperTrading } from "./feed/usePaperTrading.ts";
 import { useReplayDays } from "./feed/useReplayDays.ts";
 import { FIXTURE_SYMBOL } from "./fixtures/fixtureFeed.ts";
@@ -50,32 +52,6 @@ function sourceText(choice: SourceChoice): string {
  */
 const CHART_KEY = "sw-chart";
 
-/**
- * The Settings gear (owner request 2026-10-18), at the header's right edge
- * beside the data-source icon on the desktop and the phone layout alike: the
- * same quiet round 28 px chip as the source icon, raised while its dialog
- * is open. Neutral, never accent: it opens something, it is not a primary
- * action.
- */
-function SettingsButton({ open, onOpen }: { open: boolean; onOpen: () => void }) {
-  return (
-    <Tip label="Settings">
-      <button
-        type="button"
-        aria-label="Settings"
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        onClick={onOpen}
-        className={cn(
-          "inline-grid size-7 shrink-0 place-items-center rounded-full text-muted-foreground outline-none transition-colors hover:bg-bg-row hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-3.5",
-          open ? "bg-bg-raised text-primary" : "bg-card",
-        )}
-      >
-        <Icon name="settings" />
-      </button>
-    </Tip>
-  );
-}
 
 /** Replay: a clock turned back. Live: a broadcast dot with its waves. */
 const ReplayIcon = <Icon name="replay" />;
@@ -167,9 +143,8 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
     tradeQty,
     onTradeQtyChange: app.setTradeQty,
   };
-  const settingsOpen = useApp((s) => s.settingsOpen);
-  const settings = <SettingsDialog open={settingsOpen} onOpenChange={app.setSettingsOpen} persistKey="sw-settings" sections={[chartSettingsSection(chartSettings, app.setChartSettings), drawingSettingsSection(drawingSettings, app.setDrawingSettings)]} />;
-  const gear = <SettingsButton open={settingsOpen} onOpen={() => app.setSettingsOpen(true)} />;
+  // Settings: one dialog for every page, rendered by the Shell (nav/settings.tsx). Wider screens
+  // open it from the rail's footer; the phone layout (no rail) keeps a gear in this header.
   // Ticker quick-open, VS Code's Ctrl+P (Cmd+P on a Mac): the browser's print shortcut is taken
   // over on purpose while the app is focused.
   const searchOpen = useApp((s) => s.searchOpen);
@@ -256,9 +231,8 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
             <span className={cn("font-mono text-[11px]", changeColor)}>{change}</span>
           </div>
           <SourceChip className="ml-auto" choice={current} mode={mode} />
-          {gear}
+          <SettingsButton />
           {search}
-          {settings}
         </header>
         <CandleChart className="h-[360px]" toolbar inspector symbol={symbol} persistKey={CHART_KEY} {...synced} trading={trading} now={clock?.now ?? null} onTimeframeChange={app.setTimeframe} series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={app.setInspectT} options={PHONE_CHART} barSpacing={10} label={chartLabel} />
         <section aria-label="Session timeline and replay" className="flex flex-col gap-1.5 rounded-xl bg-card px-3 py-2">
@@ -281,8 +255,11 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
       {/* Three columns (logo | search | data source): equal side columns put the search pill at the
           page's exact centre, where the quick-open panel drops down, at the same width. */}
       <header className="grid grid-cols-[1fr_auto_1fr] items-center gap-4 px-4 py-2.5">
-        {/* The brand is in the main nav's rail now; the empty first column keeps the search pill centred. */}
-        <div aria-hidden />
+        {/* The rail's collapse toggle, far left (the brand is in the rail); the first column still
+            balances the third, so the search pill stays centred. */}
+        <div className="flex items-center">
+          <NavToggle />
+        </div>
 
         <button
           type="button"
@@ -295,10 +272,8 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
         </button>
         <div className="flex items-center gap-2 justify-self-end">
           <SourceChip choice={current} mode={mode} />
-          {gear}
         </div>
         {search}
-        {settings}
       </header>
 
       <div className="flex min-h-0 flex-1 flex-col gap-2 px-4 pb-3 min-[901px]:flex-row">
