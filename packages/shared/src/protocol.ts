@@ -155,6 +155,66 @@ export interface QuotesUnsubscribeMessage {
   type: "quotes.unsubscribe";
 }
 
+// --- Halt watcher (after `welcome`; crates/server/src/pressure.rs, ws.rs) -----------------
+// The dashboard's top 6 symbols by buying or selling pressure in the last minute, ranked on the
+// server once per second with hysteresis. Opt in with `pressure.subscribe`: a
+// `pressure.snapshot` at once, then a `pressure.update` whenever the board changed. Both carry
+// the WHOLE board in display order and replace the client's (six cards: no patching). A seek or
+// a lag gets a fresh snapshot; resubscribing after a reconnect is the client's job
+// (createWsClient does it).
+
+/** A halt in progress. */
+export interface PressureHaltWire {
+  /** Epoch ms of the halt. */
+  start: number;
+  /** Provider reason, e.g. "LUDP" (a LULD trading pause, normally 5 minutes). */
+  reason: string;
+}
+
+/** One card. Prices and the change-% rule are the quote row's (`p`, `pc`, `o`). */
+export interface PressureCardWire {
+  s: string;
+  p: number;
+  pc?: number;
+  o: number;
+  /**
+   * 0–100 (crates/server/src/pressure.rs): over the last minute of OHLC-counted prints, sides by
+   * the tick rule, `round(100 · min(1, |2·buyShare − 1| / 0.6) · (0.4 + 0.6 · min(1, ln(1 + pace) / ln 11)))`.
+   * Frozen at the halt while `halt` is set.
+   */
+  pressure: number;
+  /** `bull` when buyShare ≥ 0.5. */
+  side: "bull" | "bear";
+  /** Buy volume / volume with a side in the window, 0–1 (two decimals). */
+  buyShare: number;
+  /** Window volume as a multiple of the symbol's average volume per minute so far this session (premarket, regular, after hours each on its own; one decimal). */
+  pace: number;
+  halt?: PressureHaltWire;
+}
+
+export interface PressureSnapshotMessage {
+  type: "pressure.snapshot";
+  /** Market clock (epoch ms) at the ranking; null before any clock. */
+  t: number | null;
+  board: PressureCardWire[];
+}
+
+export interface PressureUpdateMessage {
+  type: "pressure.update";
+  t: number | null;
+  board: PressureCardWire[];
+}
+
+export type PressureMessage = PressureSnapshotMessage | PressureUpdateMessage;
+
+export interface PressureSubscribeMessage {
+  type: "pressure.subscribe";
+}
+
+export interface PressureUnsubscribeMessage {
+  type: "pressure.unsubscribe";
+}
+
 // --- Synced settings (after `welcome`; crates/server/src/settings.rs, ws.rs) ---------------
 // The user's chart preferences and drawings, shared live by every client and kept on the
 // server (docs/architecture/settings-sync.md). Values are opaque to the server: each client
@@ -213,10 +273,10 @@ export interface SettingsPatchMessage {
 
 export type SettingsClientMessage = SettingsSetMessage | SettingsPatchMessage;
 
-export type ClientMessage = HelloMessage | PingMessage | PongMessage | QuotesSubscribeMessage | QuotesUnsubscribeMessage | SettingsClientMessage;
-export type ServerMessage = WelcomeMessage | PingMessage | PongMessage | ErrorMessage | QuotesMessage | SettingsServerMessage;
+export type ClientMessage = HelloMessage | PingMessage | PongMessage | QuotesSubscribeMessage | QuotesUnsubscribeMessage | PressureSubscribeMessage | PressureUnsubscribeMessage | SettingsClientMessage;
+export type ServerMessage = WelcomeMessage | PingMessage | PongMessage | ErrorMessage | QuotesMessage | PressureMessage | SettingsServerMessage;
 
-const SERVER_TYPES = new Set(["welcome", "ping", "pong", "error", "quotes.snapshot", "quotes.update", "settings.snapshot", "settings.changed", "settings.rejected"]);
+const SERVER_TYPES = new Set(["welcome", "ping", "pong", "error", "quotes.snapshot", "quotes.update", "pressure.snapshot", "pressure.update", "settings.snapshot", "settings.changed", "settings.rejected"]);
 
 /** Parses one server frame; returns null for anything malformed or unknown. */
 export function parseServerMessage(raw: unknown): ServerMessage | null {
