@@ -9,7 +9,6 @@ import { ChartTile } from "../dashboard/ChartTile";
 import { CountSheet } from "../dashboard/CountSheet";
 import { HaltWatcher } from "../dashboard/HaltWatcher";
 import { maxChartsFor } from "../dashboard/layout";
-import { TickerList } from "../dashboard/TickerList";
 import { useCandidates, usePaperTrading } from "../feed/hooks";
 import type { MobileFeed } from "../feed/serverFeed";
 import { useConnection } from "../feed/useConnection";
@@ -20,17 +19,12 @@ import { colors, fonts } from "../theme";
 import { SignInScreen } from "./SignInScreen";
 
 /**
- * The Most active list under the panel. The Halt watcher is one row of six mini gauges above the
- * charts (owner, 2026-10-19), so the region under them no longer switches between the two.
- */
-const LOWER_HEIGHT = { phone: 200, tablet: 260 } as const;
-
-/**
  * The main page, the first tab (owner, 2026-10-18): the LIVE market's charts, a "screen × n"
- * control for how many, and the live ticker list below. Touch a chart to select it, then tap a
- * ticker (in the list, or from the search) to load it there. The panel fills the space between
- * the header and the list (charts inside a scrolling page would fight the chart's own pan
- * gestures).
+ * control for how many, and the Halt watcher's gauges above them. Touch a chart to select it,
+ * then pick a ticker (a gauge, or the search) to load it there. The panel fills everything under
+ * the gauges (charts inside a scrolling page would fight the chart's own pan gestures). No Most
+ * active list for now (owner, 2026-10-19: "we don't want to show the most actives here just
+ * yet"): it took 200–260 pt the chart needs to be readable.
  *
  * The count is the synced one (the web's, up to 4) capped by the screen (`maxChartsFor`): one
  * chart on a phone-size screen, where the count control is hidden (it would offer one choice),
@@ -149,10 +143,6 @@ function DashboardView({ feed, token, source }: { feed: MobileFeed; token: strin
             </View>
           ))
         )}
-      </View>
-
-      <View style={{ height: maxCharts > 1 ? LOWER_HEIGHT.tablet : LOWER_HEIGHT.phone }}>
-        <TickerList quotes={feed.quotes} symbols={candidates} selectedSymbol={shown[selected] ?? ""} selectedIndex={selected} onPick={app.loadIntoSelected} />
       </View>
 
       <TickerSearchSheet open={searchOpen} onClose={() => setSearchOpen(false)} symbols={candidates} quotes={feed.quotes} mock={fixture} current={shown[selected] ?? ""} recents={recents} onSelect={app.loadIntoSelected} reducedMotion={reducedMotion} />
