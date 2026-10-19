@@ -34,7 +34,8 @@ const SPAN_THIRD = "@3xl/panel:col-span-2 @6xl/panel:col-span-1";
 /**
  * The main page (owner, 2026-10-18): a panel of 1–4 charts in their own containers, a multi-view
  * control for how many, and the ticker quick-open centred in the header. Select a chart by
- * pressing it, then pick a ticker from the search to load it there. What each
+ * pressing it, then pick a ticker from the search to load it there. It reads the server's LIVE
+ * market (ConnectionGate source="live"); replay is the chart page's practice feature. What each
  * chart shows syncs across devices (app-state `dashboard`); the selection is this device's.
  * One socket carries every chart (up to 4 slots per connection).
  */
@@ -47,6 +48,8 @@ export function Dashboard({ choice, feed }: Connection) {
   const selected = useApp((s) => s.dashboardSelected);
   const searchOpen = useApp((s) => s.searchOpen);
   const recents = useApp((s) => s.searchRecents);
+  // Whether a chart has focus (its ring shows): see the click-away effect below.
+  const [focused, setFocused] = useState(false);
   // The trading day the charts' clock is on: the candidates follow it (a day switch, a new session).
   const [clockDay, setClockDay] = useState<string | null>(null);
   const candidates = useCandidates(choice, clockDay);
@@ -75,6 +78,7 @@ export function Dashboard({ choice, feed }: Connection) {
   const pickFor = useCallback(
     (index: number) => {
       app.selectDashboardChart(index);
+      setFocused(true);
       app.setSearchOpen(true);
     },
     [app],
@@ -82,6 +86,31 @@ export function Dashboard({ choice, feed }: Connection) {
   const onDay = useCallback((day: string | null) => {
     if (day) setClockDay(day);
   }, []);
+
+  // The ring shows only while a chart has focus (owner, 2026-10-18: clicking away drops the
+  // border). The selection itself stays, so a ticker picked later still loads where it did. A
+  // press in a popup (the search panel, a menu) is not "away": it is how a ticker gets picked.
+  const select = useCallback(
+    (index: number) => {
+      app.selectDashboardChart(index);
+      setFocused(true);
+    },
+    [app],
+  );
+  useEffect(() => {
+    const onDown = (e: PointerEvent) => {
+      const t = e.target as Element | null;
+      if (t?.closest?.('[data-chart-cell], [role="dialog"], [role="menu"], [role="listbox"]')) return;
+      setFocused(false);
+    };
+    document.addEventListener("pointerdown", onDown, true);
+    return () => document.removeEventListener("pointerdown", onDown, true);
+  }, []);
+
+  // The live market lists nothing before a session's first trade, and all weekend: say so instead
+  // of four charts waiting on symbols that cannot load.
+  const liveEmpty = choice.kind === "server" && choice.market === "live" && candidates.symbols.length === 0;
+  const liveStatus = candidates.server?.status;
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-2 p-3 text-foreground">
@@ -122,6 +151,16 @@ export function Dashboard({ choice, feed }: Connection) {
 
       {/* The panel takes the full width (the "Most active" side list was removed, owner 2026-10-18):
           tickers come from the search above. */}
+      {liveEmpty ? (
+        <div className="flex flex-1 flex-col items-center justify-center gap-1 text-center">
+          <p className="m-0 text-sm font-medium">{liveStatus === "not_configured" ? "Live market data is not configured" : "No live trades yet"}</p>
+          <p className="m-0 max-w-sm text-xs text-text-faint">
+            {liveStatus === "not_configured"
+              ? "The server has no Alpaca credentials, so it cannot stream the live market."
+              : "The dashboard shows the live market only. Charts appear with the session's first trades (US extended hours start 4:00 ET on weekdays)."}
+          </p>
+        </div>
+      ) : (
       <div className="@container/panel min-h-0 min-w-0 flex-1 overflow-y-auto">
         <div role="group" aria-label="Charts" className={cn("grid h-full auto-rows-[minmax(18rem,1fr)] gap-2", GRID[dashboard.count])}>
           {shown.map((symbol, i) => (
@@ -133,9 +172,9 @@ export function Dashboard({ choice, feed }: Connection) {
                 feed={feed}
                 trading={trading}
                 selected={selected === i}
-                showSelection={dashboard.count > 1}
+                showSelection={dashboard.count > 1 && focused}
                 fixture={current.fixtureData}
-                onSelect={app.selectDashboardChart}
+                onSelect={select}
                 onPickTicker={pickFor}
                 onDay={onDay}
               />
@@ -143,6 +182,7 @@ export function Dashboard({ choice, feed }: Connection) {
           ))}
         </div>
       </div>
+      )}
 
       <TickerSearch open={searchOpen} onOpenChange={app.setSearchOpen} symbols={candidates.symbols} quotes={feed.quotes} mock={current.fixtureData} current={shown[selected] ?? ""} recents={recents} onSelect={app.loadIntoSelected} anchor={hasRail ? pillRef : undefined} />
     </div>

@@ -24,7 +24,8 @@ export function useReplayDays(choice: SourceChoice, clockDay: string | null): Re
     if (choice.kind !== "server") return;
     const id = ++latest.current;
     const token = getToken();
-    void fetch("/api/replay/state", { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+    // The replay market's days: only the practice page (replay) has a day menu.
+    void fetch("/api/replay/state?source=replay", { headers: token ? { Authorization: `Bearer ${token}` } : {} })
       .then((res) => (res.ok ? res.json() : null))
       .then((body: unknown) => {
         if (id === latest.current && body) setState(parseReplayDayState(body));

@@ -26,7 +26,7 @@ services) sets `STOCKWATCHER_API_TOKEN`, `RUST_LOG`, `MARKET_DATA_MODE`, `REPLAY
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `MARKET_DATA_MODE` | `replay` | `replay` (archive) or `live` (Alpaca stream). Server-wide; read at start (`infra/vps/SETUP.md` §8) |
+| `MARKET_DATA_MODE` | `replay` | The market a client gets when it names none (`hello.source`, `?source=`). Both markets always run: replay on the archive, live whenever the Alpaca keys are set (`infra/vps/SETUP.md` §8) |
 | `PRICE_BAND_MIN` / `PRICE_BAND_MAX` | `0.10` / `25.00` | the candidate price band (inclusive); the archiver uses the same pair for its import |
 | `ARCHIVE_META_CHECK_SECS` | `60` | how often `assets.json` / `daily-closes.json` are re-checked (0 = only on a day switch) |
 

@@ -13,7 +13,7 @@ import {
   type ReplayControl,
   type Timeframe,
 } from "@stockwatcher/chart-core";
-import { createQuoteChannel, createWsClient, type ConnectionStatus, type QuoteChannel, type SettingsSync, type WebSocketLike } from "@stockwatcher/shared";
+import { createQuoteChannel, createWsClient, type ConnectionStatus, type MarketSource, type QuoteChannel, type SettingsSync, type WebSocketLike } from "@stockwatcher/shared";
 
 import { wsUrl } from "./server";
 
@@ -45,7 +45,7 @@ export interface MobileFeed {
  * raw socket because shared's parser only knows the handshake messages;
  * quotes.* frames are shared's own and pass straight through to it.
  */
-export function createMobileFeed(token: string | null, onStatus?: (s: ConnectionStatus) => void, settings?: SettingsSync, clientName = "mobile"): MobileFeed {
+export function createMobileFeed(token: string | null, onStatus?: (s: ConnectionStatus) => void, settings?: SettingsSync, clientName = "mobile", source?: MarketSource): MobileFeed {
   // Chart frames go only to the slots they belong to (chart-core chartRouter.ts), as on the web.
   const router = createChartRouter();
   const current = new Map<string, (m: ChartMessage) => void>();
@@ -67,6 +67,8 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
     token,
     // Which screen's socket this is, in the server's connect log ("mobile", "mobile-dashboard").
     client: clientName,
+    // Which server market: the dashboard tab reads live, the chart tab replay.
+    source,
     onStatus: (s) => {
       onStatus?.(s);
       // Subscriptions do not survive a reconnect.

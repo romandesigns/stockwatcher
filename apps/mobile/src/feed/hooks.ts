@@ -1,6 +1,6 @@
 import { ChartStore, parseReplayDayState, type ChartMessage, type Clock, type PaperState, type ReplayDayState, type Series, type TapeTrade, type Timeframe } from "@stockwatcher/chart-core";
 import type { ChartTrading } from "@stockwatcher/chart-native";
-import { authenticatedFetch, EMPTY_QUOTE_BOARD, type QuoteBoard, type QuoteChannel } from "@stockwatcher/shared";
+import { authenticatedFetch, EMPTY_QUOTE_BOARD, withMarketSource, type MarketSource, type QuoteBoard, type QuoteChannel } from "@stockwatcher/shared";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { SERVER_URL } from "./server";
@@ -87,13 +87,13 @@ export interface Candidates {
  * once when the replay's trading day (`day`, "YYYY-MM-DD") changes: after a day switch a symbol the
  * new day lacks is replaced right away instead of leaving the old day's chart up.
  */
-export function useCandidates(token: string | null, day: string | null = null): Candidates {
+export function useCandidates(token: string | null, day: string | null = null, source?: MarketSource): Candidates {
   const [state, setState] = useState<Candidates>({ symbols: [], fixture: false });
   useEffect(() => {
     let alive = true;
     const refresh = async () => {
       try {
-        const res = await authenticatedFetch(`${SERVER_URL}/api/symbols`, token);
+        const res = await authenticatedFetch(`${SERVER_URL}${withMarketSource("/api/symbols", source)}`, token);
         if (!res.ok) return;
         const d = (await res.json()) as { symbols?: unknown; fixture?: unknown };
         if (alive && Array.isArray(d.symbols)) setState({ symbols: d.symbols.filter((x): x is string => typeof x === "string"), fixture: d.fixture === true });
@@ -107,7 +107,7 @@ export function useCandidates(token: string | null, day: string | null = null): 
       alive = false;
       clearInterval(id);
     };
-  }, [token, day]);
+  }, [token, day, source]);
   return state;
 }
 
@@ -123,7 +123,8 @@ export function useReplayDays(token: string | null, clockDay: string | null): { 
   const latest = useRef(0);
   const refresh = useCallback(() => {
     const id = ++latest.current;
-    void authenticatedFetch(`${SERVER_URL}/api/replay/state`, token)
+    // The replay market's days: only the chart tab (the practice feature) has a day picker.
+    void authenticatedFetch(`${SERVER_URL}/api/replay/state?source=replay`, token)
       .then((res) => (res.ok ? res.json() : null))
       .then((body: unknown) => {
         if (id === latest.current && body) setState(parseReplayDayState(body));

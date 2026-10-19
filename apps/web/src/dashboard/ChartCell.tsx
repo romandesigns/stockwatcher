@@ -76,6 +76,7 @@ export function ChartCell({ index, slot, symbol, feed, trading, selected, showSe
     <section
       aria-label={`Chart ${index + 1}: ${symbol}${showRing ? ", selected" : ""}`}
       data-selected={selected || undefined}
+      data-chart-cell=""
       onPointerDownCapture={() => onSelect(index)}
       onFocusCapture={() => onSelect(index)}
       className={cn(

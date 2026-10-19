@@ -1,3 +1,4 @@
+import type { MarketSource } from "@stockwatcher/shared";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { createServerFeed } from "./feed/serverFeed.ts";
 import { chooseSource, probeServer, type SourceChoice } from "./feed/source.ts";
@@ -20,10 +21,12 @@ export interface Connection {
  * Connects a page to its data: probes the server, asks for the access token when the server wants
  * one (production), and opens the feed. Every page that shows market data renders inside one
  * (the chart page and the dashboard); only one page is open at a time, so there is one socket.
+ * `source` picks the server's market for the page: `live` for the dashboard, `replay` for the
+ * chart page (the practice feature).
  * The feed is created and closed by the same effect, so React StrictMode's dev-only
  * mount → unmount → mount gets a fresh feed, never a closed one.
  */
-export function ConnectionGate({ children }: { children: (c: Connection) => ReactNode }) {
+export function ConnectionGate({ source, children }: { source: MarketSource; children: (c: Connection) => ReactNode }) {
   const [ready, setReady] = useState<Connection | null>(null);
   // The server wants an access token (production): show the sign-in card instead of falling back to the fixture.
   const [signIn, setSignIn] = useState<{ rejected: boolean } | null>(null);
@@ -34,7 +37,7 @@ export function ConnectionGate({ children }: { children: (c: Connection) => Reac
     let alive = true;
     let feed: ChartFeed | null = null;
     const token = getToken();
-    void (ENV_SOURCE === "fixture" ? Promise.resolve(null) : probeServer(fetch, 2500, token)).then((probe) => {
+    void (ENV_SOURCE === "fixture" ? Promise.resolve(null) : probeServer(fetch, 2500, token, source)).then((probe) => {
       if (!alive) return;
       if (probe && !probe.ok && probe.unauthorized) {
         if (token) clearToken();
@@ -42,15 +45,15 @@ export function ConnectionGate({ children }: { children: (c: Connection) => Reac
         return;
       }
       setSignIn(null);
-      const choice = chooseSource(ENV_SOURCE, probe, FIXTURE_SYMBOL);
-      feed = choice.kind === "server" ? createServerFeed({ token, settings: sync }) : createFixtureFeed();
+      const choice = chooseSource(ENV_SOURCE, probe, FIXTURE_SYMBOL, source);
+      feed = choice.kind === "server" ? createServerFeed({ token, settings: sync, source }) : createFixtureFeed();
       setReady({ choice, feed });
     });
     return () => {
       alive = false;
       feed?.close();
     };
-  }, [attempt, sync]);
+  }, [attempt, sync, source]);
   if (signIn) {
     return (
       <SignIn

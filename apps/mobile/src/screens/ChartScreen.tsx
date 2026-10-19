@@ -41,7 +41,7 @@ const SESSION_A11Y = { overnight: "overnight session", pre: "premarket", regular
 
 /** The chart screen: connects once (useConnection: token, app store, its own socket), then renders the chart. */
 export function ChartScreen() {
-  const { ready, status, signIn } = useConnection("mobile");
+  const { ready, status, signIn } = useConnection("mobile", "replay");
   if (!ready) return <View style={styles.screen} />;
   // The server refused the hello: no token yet, or not this one (production requires one).
   if (status === "unauthorized") return <SignInScreen rejected={ready.token !== null} onSubmit={signIn} />;
@@ -59,7 +59,7 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
   const [app] = useState(appActions);
   // The trading day the replay clock is on; it changes on a day switch (and once a night while playing).
   const [clockDay, setClockDay] = useState<string | null>(null);
-  const { symbols: candidates, fixture } = useCandidates(token, clockDay);
+  const { symbols: candidates, fixture } = useCandidates(token, clockDay, "replay");
   const replayDays = useReplayDays(token, clockDay);
   const dayOptions = useMemo(() => replayDayOptions(replayDays.state?.days ?? []), [replayDays.state]);
   const daysOpen = useApp((s) => s.daysOpen);
