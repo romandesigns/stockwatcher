@@ -3444,6 +3444,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "research-features"
+version = "0.1.0"
+dependencies = [
+ "chart-engine",
+ "chrono",
+ "chrono-tz",
+ "market-archive",
+ "market-events",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "ring"
 version = "0.17.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
