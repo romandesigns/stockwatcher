@@ -15,6 +15,7 @@ import {
   volumeBuckets,
 } from "@stockwatcher/chart-core";
 import { PROFILE_BINS } from "@stockwatcher/app-state";
+import { dataSourceSection } from "../settings/dataSource";
 import { CandleChart, chartSettingsSection, drawingSettingsSection, Icon, ReplayDaySheet, SessionTimeline, SettingsSheet, TapeSheet, ToolButton, UI } from "@stockwatcher/chart-native";
 import type { ConnectionStatus } from "@stockwatcher/shared";
 import { useLayoutEffect, useMemo, useState } from "react";
@@ -72,6 +73,7 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
   const indicators = useApp((s) => s.indicators);
   const layers = useApp((s) => s.layers);
   const settingsOpen = useApp((s) => s.settingsOpen);
+  const dashboardSource = useApp((s) => s.dashboard.source);
   // The store on the phone always has a device slice (loadAppStore); the fallbacks only satisfy the type.
   const toolbox = useApp((s) => s.device?.toolbox);
   const paneHeights = useApp((s) => s.device?.paneHeights);
@@ -274,7 +276,7 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
         onSelect={app.openTicker}
         reducedMotion={reducedMotion}
       />
-      <SettingsSheet open={settingsOpen} onClose={() => app.setSettingsOpen(false)} sections={[chartSettingsSection(chartSettings, app.setChartSettings), drawingSettingsSection(drawingSettings, app.setDrawingSettings, reducedMotion)]} reducedMotion={reducedMotion} />
+      <SettingsSheet open={settingsOpen} onClose={() => app.setSettingsOpen(false)} sections={[dataSourceSection(dashboardSource, app.setDashboardSource), chartSettingsSection(chartSettings, app.setChartSettings), drawingSettingsSection(drawingSettings, app.setDrawingSettings, reducedMotion)]} reducedMotion={reducedMotion} />
       <TapeSheet open={tapeOpen} onClose={() => app.setTapeOpen(false)} trades={tape} note={active ?? undefined} />
       <ReplayDaySheet
         open={daysOpen}

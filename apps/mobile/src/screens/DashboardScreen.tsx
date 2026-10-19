@@ -1,3 +1,4 @@
+import type { DashboardSource } from "@stockwatcher/app-state";
 import { Icon } from "@stockwatcher/chart-native";
 import { useCallback, useEffect, useState } from "react";
 import { Pressable, StyleSheet, Text, useWindowDimensions, View } from "react-native";
@@ -35,13 +36,15 @@ const LIST_HEIGHT = 200;
  * Its own socket (useConnection), so the chart tab's slot never counts against the server's 4.
  */
 export function DashboardScreen() {
-  const { ready, status, signIn } = useConnection("mobile-dashboard", "live");
+  // Settings → Data (synced): the live market unless replay was chosen; a change reconnects.
+  const source = useApp((s) => s.dashboard.source);
+  const { ready, status, signIn } = useConnection("mobile-dashboard", source);
   if (!ready) return <View style={styles.screen} />;
   if (status === "unauthorized") return <SignInScreen rejected={ready.token !== null} onSubmit={signIn} />;
-  return <DashboardView feed={ready.feed} token={ready.token} />;
+  return <DashboardView feed={ready.feed} token={ready.token} source={source} />;
 }
 
-function DashboardView({ feed, token }: { feed: MobileFeed; token: string | null }) {
+function DashboardView({ feed, token, source }: { feed: MobileFeed; token: string | null; source: DashboardSource }) {
   const insets = useSafeAreaInsets();
   const reducedMotion = useReducedMotion();
   const [app] = useState(appActions);
@@ -49,7 +52,7 @@ function DashboardView({ feed, token }: { feed: MobileFeed; token: string | null
   const selected = useApp((s) => s.dashboardSelected);
   const recents = useApp((s) => s.searchRecents);
   const [clockDay, setClockDay] = useState<string | null>(null);
-  const { symbols: candidates, fixture } = useCandidates(token, clockDay, "live");
+  const { symbols: candidates, fixture } = useCandidates(token, clockDay, source);
   const trading = usePaperTrading(feed);
   const [searchOpen, setSearchOpen] = useState(false);
   const [countOpen, setCountOpen] = useState(false);
@@ -127,7 +130,7 @@ function DashboardView({ feed, token }: { feed: MobileFeed; token: string | null
         {candidates.length === 0 && !fixture ? (
           // The dashboard reads the LIVE market: an empty list means nothing has traded yet this
           // session (or it is the weekend), not a slow server.
-          <Text style={styles.sub}>No live trades yet. Charts appear with the session's first trades (from 4:00 ET on weekdays).</Text>
+          <Text style={styles.sub}>{source === "live" ? "No live trades yet. Charts appear with the session's first trades (overnight from 20:00 ET Sunday to Thursday, then 4:00 to 20:00 ET)." : "Waiting for the replay's symbols…"}</Text>
         ) : (
           rows.map((r, ri) => (
             <View key={ri} style={styles.row}>
