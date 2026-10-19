@@ -1,5 +1,5 @@
 import type { DashboardSource } from "@stockwatcher/app-state";
-import { Icon } from "@stockwatcher/chart-native";
+import { Icon, Segmented } from "@stockwatcher/chart-native";
 import { lastSessionLabel } from "@stockwatcher/shared";
 import { useCallback, useEffect, useState } from "react";
 import { Pressable, StyleSheet, Text, useWindowDimensions, View } from "react-native";
@@ -7,6 +7,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { ChartTile } from "../dashboard/ChartTile";
 import { CountSheet } from "../dashboard/CountSheet";
+import { HaltWatcher } from "../dashboard/HaltWatcher";
 import { maxChartsFor } from "../dashboard/layout";
 import { TickerList } from "../dashboard/TickerList";
 import { useCandidates, usePaperTrading } from "../feed/hooks";
@@ -18,8 +19,17 @@ import { appActions, useApp } from "../state/store";
 import { colors, fonts } from "../theme";
 import { SignInScreen } from "./SignInScreen";
 
-/** The ticker list's share of the screen under the panel. */
-const LIST_HEIGHT = 200;
+/**
+ * The region under the panel (Halt watcher or Most active): about two compact gauge cards on a
+ * phone, two rows of two on a tablet-size screen (the Fold unfolded, the design's Fold board).
+ */
+const LOWER_HEIGHT = { phone: 236, tablet: 300 } as const;
+
+type Lower = "halt" | "active";
+const LOWER_OPTIONS = [
+  { value: "halt", label: "Halt watcher", a11y: "Halt watcher: top 6 by pressure" },
+  { value: "active", label: "Most active", a11y: "Most active tickers" },
+] as const;
 
 /**
  * The main page, the first tab (owner, 2026-10-18): the LIVE market's charts, a "screen × n"
@@ -59,6 +69,8 @@ function DashboardView({ feed, token, source }: { feed: MobileFeed; token: strin
   const trading = usePaperTrading(feed);
   const [searchOpen, setSearchOpen] = useState(false);
   const [countOpen, setCountOpen] = useState(false);
+  // Which list fills the region under the charts: this screen's view, not synced.
+  const [lower, setLower] = useState<Lower>("halt");
   const [panel, setPanel] = useState({ width: 0, height: 0 });
   const screen = useWindowDimensions();
   const maxCharts = maxChartsFor(screen.width, screen.height);
@@ -144,8 +156,17 @@ function DashboardView({ feed, token, source }: { feed: MobileFeed; token: strin
         )}
       </View>
 
-      <View style={{ height: LIST_HEIGHT }}>
-        <TickerList quotes={feed.quotes} symbols={candidates} selectedSymbol={shown[selected] ?? ""} selectedIndex={selected} onPick={app.loadIntoSelected} />
+      {/* Under the charts (owner, 2026-10-19): the Halt watcher by default, one column of gauge
+          cards on a phone and two on a tablet-size screen, or the Most active list. */}
+      <View style={{ height: maxCharts > 1 ? LOWER_HEIGHT.tablet : LOWER_HEIGHT.phone, gap: 6 }}>
+        <Segmented options={LOWER_OPTIONS} value={lower} onChange={setLower} fill />
+        <View style={{ flex: 1, minHeight: 0 }}>
+          {lower === "halt" ? (
+            <HaltWatcher channel={feed.pressure} columns={maxCharts > 1 ? 2 : 1} onPick={app.loadIntoSelected} reducedMotion={reducedMotion} />
+          ) : (
+            <TickerList quotes={feed.quotes} symbols={candidates} selectedSymbol={shown[selected] ?? ""} selectedIndex={selected} onPick={app.loadIntoSelected} />
+          )}
+        </View>
       </View>
 
       <TickerSearchSheet open={searchOpen} onClose={() => setSearchOpen(false)} symbols={candidates} quotes={feed.quotes} mock={fixture} current={shown[selected] ?? ""} recents={recents} onSelect={app.loadIntoSelected} reducedMotion={reducedMotion} />

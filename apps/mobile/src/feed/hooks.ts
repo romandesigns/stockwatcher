@@ -1,6 +1,6 @@
 import { ChartStore, parseReplayDayState, type ChartMessage, type Clock, type PaperState, type ReplayDayState, type Series, type TapeTrade, type Timeframe } from "@stockwatcher/chart-core";
 import type { ChartTrading } from "@stockwatcher/chart-native";
-import { authenticatedFetch, EMPTY_QUOTE_BOARD, parseLiveSession, withMarketSource, type LiveSession, type MarketSource, type QuoteBoard, type QuoteChannel } from "@stockwatcher/shared";
+import { authenticatedFetch, EMPTY_QUOTE_BOARD, parseLiveSession, withMarketSource, type LiveSession, type MarketSource, type PressureBoard, type PressureChannel, type QuoteBoard, type QuoteChannel } from "@stockwatcher/shared";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { SERVER_URL } from "./server";
@@ -73,6 +73,13 @@ const NOOP = () => {};
 export function useQuoteBoard(channel: QuoteChannel, enabled: boolean): QuoteBoard {
   const subscribe = useCallback((cb: () => void) => (enabled ? channel.subscribe(cb) : NOOP), [channel, enabled]);
   const get = useCallback(() => (enabled ? channel.get() : EMPTY_QUOTE_BOARD), [channel, enabled]);
+  return useSyncExternalStore(subscribe, get);
+}
+
+/** The server's Halt watcher board while mounted (the web's usePressureBoard). */
+export function usePressureBoard(channel: PressureChannel): PressureBoard {
+  const subscribe = useCallback((cb: () => void) => channel.subscribe(cb), [channel]);
+  const get = useCallback(() => channel.get(), [channel]);
   return useSyncExternalStore(subscribe, get);
 }
 

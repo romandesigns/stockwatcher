@@ -1983,3 +1983,102 @@ async fn settings_sync_ignores_replay_seeks_and_works_the_same_in_live_mode() {
         (json!(1), json!("l-1"))
     );
 }
+
+// --- Halt watcher (pressure.subscribe / pressure.snapshot / pressure.update) -----------------
+
+fn assert_card_shape(card: &Value) {
+    let s = card["s"].as_str().unwrap();
+    assert!(
+        ["SMPL", "FXLO"].contains(&s),
+        "in-band symbols only: {card}"
+    );
+    let p = card["pressure"].as_u64().unwrap();
+    assert!(p <= 100, "{card}");
+    assert!(["bull", "bear"].contains(&card["side"].as_str().unwrap()));
+    let bs = card["buyShare"].as_f64().unwrap();
+    assert!((0.0..=1.0).contains(&bs));
+    assert_eq!(
+        card["side"] == "bull",
+        bs >= 0.5,
+        "the side is the buy share's: {card}"
+    );
+    assert!(card["pace"].as_f64().unwrap() >= 0.0);
+    assert!(card["p"].as_f64().unwrap() > 0.0 && card["o"].as_f64().unwrap() > 0.0);
+}
+
+/// The fixture day halts every symbol 10:05–10:06:30 (halts-luld-fills.md). Replayed from 10:04,
+/// a subscriber gets a snapshot, then whole-board updates; the halted cards carry the halt and a
+/// pressure frozen at it, and lose the halt at the resume. A connection that did not subscribe
+/// never sees a pressure frame.
+#[tokio::test]
+async fn pressure_board_ranks_in_band_symbols_and_holds_halted_cards() {
+    const T1005: i64 = T1040 - 35 * 60_000;
+    const T1004: i64 = T1040 - 36 * 60_000;
+    let s = stack(&[
+        ("SIM_FIXTURE_SYMBOLS", "SMPL,FXLO,FXHI"),
+        ("REPLAY_START", "10:04"),
+        ("REPLAY_SPEED", "30"),
+    ])
+    .await;
+    let mut ws = connect(&s.url).await;
+    let mut bystander = connect(&s.url).await;
+    next(&mut ws, |m| {
+        m["type"] == "replay.clock" && m["clock"]["now"].as_i64().unwrap_or(0) >= T1004
+    })
+    .await;
+    send(&mut ws, json!({"type": "pressure.subscribe"})).await;
+    let snap = next(&mut ws, is("pressure.snapshot")).await;
+    assert!(snap["board"].is_array());
+
+    // Until a card has been seen halted and then resumed.
+    let mut frozen: std::collections::HashMap<String, u64> = Default::default();
+    let mut halted_seen = false;
+    let mut resumed = false;
+    let mut updates = 0;
+    let mut last_at: Option<std::time::Instant> = None;
+    while !resumed {
+        let u = next(&mut ws, is("pressure.update")).await;
+        updates += 1;
+        if let Some(t) = last_at {
+            assert!(
+                t.elapsed() >= Duration::from_millis(700),
+                "about once a second at most"
+            );
+        }
+        last_at = Some(std::time::Instant::now());
+        let board = u["board"].as_array().unwrap();
+        assert!(board.len() <= 6);
+        for card in board {
+            assert_card_shape(card);
+            let sym = card["s"].as_str().unwrap().to_string();
+            match card.get("halt") {
+                Some(h) => {
+                    assert_eq!(h["start"], T1005, "{card}");
+                    assert_eq!(h["reason"], "LUDP");
+                    halted_seen = true;
+                    let p = card["pressure"].as_u64().unwrap();
+                    // Frozen at the halt: the same number in every frame while it lasts.
+                    assert_eq!(*frozen.entry(sym).or_insert(p), p, "{card}");
+                }
+                None if frozen.contains_key(&sym) => resumed = true,
+                None => {}
+            }
+        }
+        // A halted card leaves only by its resume; a board without halted cards after one was
+        // seen has resumed too.
+        if halted_seen && board.iter().all(|c| c.get("halt").is_none()) {
+            resumed = true;
+        }
+        assert!(updates < 60, "no halt and resume seen in 60 updates");
+    }
+    assert!(halted_seen);
+
+    let seen = types_for(&mut bystander, Duration::from_millis(1500)).await;
+    assert!(!seen.iter().any(|t| t.starts_with("pressure.")), "{seen:?}");
+
+    send(&mut ws, json!({"type": "pressure.unsubscribe"})).await;
+    send(&mut ws, json!({"type": "ping", "ts": 7})).await;
+    next(&mut ws, |m| m["type"] == "pong" && m["ts"] == 7).await;
+    let seen = types_for(&mut ws, Duration::from_millis(2500)).await;
+    assert!(!seen.iter().any(|t| t.starts_with("pressure.")), "{seen:?}");
+}

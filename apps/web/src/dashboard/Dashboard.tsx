@@ -14,6 +14,7 @@ import { useHasRail } from "../nav/navRail.ts";
 import { SettingsButton } from "../nav/settings.tsx";
 import { getAppStore, useApp } from "../state/store.ts";
 import { ChartCell } from "./ChartCell.tsx";
+import { HaltWatcher } from "./HaltWatcher.tsx";
 import { MultiViewMenu } from "./MultiViewMenu.tsx";
 
 /**
@@ -166,8 +167,12 @@ export function Dashboard({ choice, feed }: Connection) {
           </p>
         </div>
       ) : (
-      <div className="@container/panel min-h-0 min-w-0 flex-1 overflow-y-auto">
-        <div role="group" aria-label="Charts" className={cn("grid h-full auto-rows-[minmax(18rem,1fr)] gap-2", GRID[dashboard.count])}>
+      <div className="@container/panel flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-y-auto">
+        {/* The Halt watcher strip above the charts (owner, 2026-10-19); server feed only (the
+            fixture has no pressure board). It scrolls with the panel, so a narrow screen's
+            one-column cards never squeeze the charts below their minimum height. */}
+        {feed.pressure && <HaltWatcher channel={feed.pressure} onPick={app.loadIntoSelected} />}
+        <div role="group" aria-label="Charts" className={cn("grid flex-1 auto-rows-[minmax(18rem,1fr)] gap-2", GRID[dashboard.count])}>
           {shown.map((symbol, i) => (
             <div key={i} className={cn("flex min-h-0 min-w-0 flex-col", dashboard.count === 3 && i === 2 && SPAN_THIRD)}>
               <ChartCell

@@ -70,6 +70,19 @@
 //! - After a seek (rebuild) and for a lagged connection, a subscribed client gets a fresh
 //!   `quotes.snapshot` (it replaces the client's board); no updates go out during a rebuild.
 //!
+//! Halt watcher (the dashboard's pressure board; crates/server/src/pressure.rs, after `welcome`):
+//! - client `pressure.subscribe` (no payload) -> server `pressure.snapshot {t, board: [card]}` at
+//!   once with the last ranked board (empty for up to a second after start or a rebuild), then
+//!   `pressure.update {t, board: [card]}` with the WHOLE board (at most 6 cards, in display order)
+//!   whenever it changed, at most once per second of wall time. Either frame replaces the client's
+//!   board. `t` is the market clock (epoch ms) at the ranking.
+//! - Card: `{s, p, pc?, o, pressure, side, buyShare, pace, halt?}`: symbol; last price, previous
+//!   close and fallback reference as in a quote row (change % by the same rule); pressure 0–100;
+//!   `bull` | `bear`; the buy share (0–1) and pace (× the symbol's average volume per minute this session)
+//!   behind it; `halt {start, reason}` while halted (pressure frozen at the halt).
+//! - client `pressure.unsubscribe` stops the updates. Resubscribing after a reconnect is the
+//!   client's job; a seek or a lag sends a fresh snapshot, as for quotes.
+//!
 //! Synced settings (crates/server/src/settings.rs, docs/architecture/settings-sync.md, after
 //! `welcome`): the user's chart preferences and drawings, shared by every client.
 //! - server `settings.snapshot {docs: [{ns, rev, updatedAt, value}]}` once right after `welcome`
@@ -101,7 +114,7 @@ use axum::response::Response;
 use serde::{Deserialize, Serialize};
 use tokio::time::{Instant, interval_at, timeout};
 
-use crate::market::{ControlError, Market, OutKind, QuotesGuard, SnapshotError};
+use crate::market::{ControlError, Market, OutKind, PressureGuard, QuotesGuard, SnapshotError};
 use crate::settings::{SettingsError, SettingsOp, rejected_frame as settings_rejected};
 use crate::{AppState, COMMIT, Settings, VERSION, api, auth};
 use chart_engine::Timeframe;
@@ -164,6 +177,10 @@ enum ClientMessage {
     QuotesSubscribe,
     #[serde(rename = "quotes.unsubscribe")]
     QuotesUnsubscribe,
+    #[serde(rename = "pressure.subscribe")]
+    PressureSubscribe,
+    #[serde(rename = "pressure.unsubscribe")]
+    PressureUnsubscribe,
     #[serde(rename = "settings.set")]
     SettingsSet {
         ns: String,
@@ -229,6 +246,24 @@ struct QuotesSub {
 /// Sends a fresh `quotes.snapshot` and records its sequence.
 async fn send_quotes_snapshot(socket: &mut WebSocket, market: &Market, q: &mut QuotesSub) -> bool {
     let (seq, json) = market.quotes_snapshot();
+    q.seq = seq;
+    send_text(socket, json).await
+}
+
+/// The connection's Halt watcher opt-in (the quotes opt-in's twin).
+struct PressureSub {
+    _guard: PressureGuard,
+    /// `pressure.update`s with `seq` <= this are not newer than the snapshot.
+    seq: u64,
+}
+
+/// Sends a fresh `pressure.snapshot` and records its sequence.
+async fn send_pressure_snapshot(
+    socket: &mut WebSocket,
+    market: &Market,
+    q: &mut PressureSub,
+) -> bool {
+    let (seq, json) = market.pressure_snapshot();
     q.seq = seq;
     send_text(socket, json).await
 }
@@ -493,6 +528,7 @@ async fn session(mut socket: WebSocket, state: AppState) {
     }
     let mut subs: Vec<Sub> = Vec::new();
     let mut quotes: Option<QuotesSub> = None;
+    let mut pressure: Option<PressureSub> = None;
 
     let mut heartbeat = interval_at(Instant::now() + HEARTBEAT, HEARTBEAT);
     let mut last_seen = Instant::now();
@@ -518,9 +554,16 @@ async fn session(mut socket: WebSocket, state: AppState) {
                             Some(q) if o.seq > q.seq => send_text(&mut socket, frame.clone()).await,
                             _ => true,
                         },
+                        OutKind::Pressure(frame) => match pressure.as_ref() {
+                            Some(q) if o.seq > q.seq => send_text(&mut socket, frame.clone()).await,
+                            _ => true,
+                        },
                         OutKind::Resync => {
                             (match quotes.as_mut() {
                                 Some(q) => send_quotes_snapshot(&mut socket, &market, q).await,
+                                None => true,
+                            }) && (match pressure.as_mut() {
+                                Some(q) => send_pressure_snapshot(&mut socket, &market, q).await,
                                 None => true,
                             }) && send_snapshots(&mut socket, &market, &mut subs).await
                         }
@@ -583,6 +626,10 @@ async fn session(mut socket: WebSocket, state: AppState) {
                         send_text(&mut socket, market.paper_state_frame()).await
                             && match quotes.as_mut() {
                                 Some(q) => send_quotes_snapshot(&mut socket, &market, q).await,
+                                None => true,
+                            }
+                            && match pressure.as_mut() {
+                                Some(q) => send_pressure_snapshot(&mut socket, &market, q).await,
                                 None => true,
                             }
                             && send_snapshots(&mut socket, &market, &mut subs).await
@@ -733,6 +780,20 @@ async fn session(mut socket: WebSocket, state: AppState) {
                     }
                     Ok(ClientMessage::QuotesUnsubscribe) => {
                         quotes = None;
+                        None
+                    }
+                    Ok(ClientMessage::PressureSubscribe) => {
+                        let q = pressure.get_or_insert_with(|| PressureSub {
+                            _guard: market.pressure_subscribe(),
+                            seq: 0,
+                        });
+                        if !send_pressure_snapshot(&mut socket, &market, q).await {
+                            break;
+                        }
+                        None
+                    }
+                    Ok(ClientMessage::PressureUnsubscribe) => {
+                        pressure = None;
                         None
                     }
                     Ok(ClientMessage::SettingsSet { ns, value, op_id, if_absent }) => {

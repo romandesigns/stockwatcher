@@ -1,4 +1,4 @@
-import { parseServerMessage, type ClientMessage, type HelloMessage, type MarketSource, type QuotesMessage, type ServerMessage, type WelcomeMessage } from "./protocol.ts";
+import { parseServerMessage, type ClientMessage, type HelloMessage, type MarketSource, type PressureMessage, type QuotesMessage, type ServerMessage, type WelcomeMessage } from "./protocol.ts";
 import type { SettingsSync } from "./settingsSync.ts";
 
 export type ConnectionStatus = "connecting" | "open" | "reconnecting" | "unauthorized" | "closed";
@@ -25,6 +25,8 @@ export interface WsClientOptions {
   onMessage?: (message: ServerMessage) => void;
   /** `quotes.snapshot` / `quotes.update` frames, while subscribed (see `subscribeQuotes`). */
   onQuotes?: (message: QuotesMessage) => void;
+  /** `pressure.snapshot` / `pressure.update` frames, while subscribed (see `subscribePressure`). */
+  onPressure?: (message: PressureMessage) => void;
   /**
    * The synced settings (settingsSync.ts). Attached on every `welcome` (the server's
    * `settings.snapshot` follows it), fed every `settings.*` frame, and detached when the
@@ -46,6 +48,9 @@ export interface WsClient {
    */
   subscribeQuotes(): void;
   unsubscribeQuotes(): void;
+  /** The Halt watcher's board (`pressure.*`), remembered across reconnects like the quotes opt-in. */
+  subscribePressure(): void;
+  unsubscribePressure(): void;
   close(): void;
 }
 
@@ -77,6 +82,7 @@ export function createWsClient(opts: WsClientOptions): WsClient {
   let livenessTimer: ReturnType<typeof setTimeout> | null = null;
   let heartbeatMs = 15_000;
   let quotesWanted = false;
+  let pressureWanted = false;
 
   const setStatus = (s: ConnectionStatus) => opts.onStatus?.(s);
 
@@ -119,12 +125,15 @@ export function createWsClient(opts: WsClientOptions): WsClient {
         opts.onWelcome?.(msg);
         opts.settings?.attach(send);
         if (quotesWanted) send({ type: "quotes.subscribe" });
+        if (pressureWanted) send({ type: "pressure.subscribe" });
       } else if (msg.type === "ping") {
         send({ type: "pong", ts: msg.ts });
       } else if (msg.type === "error" && msg.code === "unauthorized") {
         unauthorized = true;
       } else if ((msg.type === "quotes.snapshot" || msg.type === "quotes.update") && quotesWanted) {
         opts.onQuotes?.(msg);
+      } else if ((msg.type === "pressure.snapshot" || msg.type === "pressure.update") && pressureWanted) {
+        opts.onPressure?.(msg);
       } else if (msg.type === "settings.snapshot" || msg.type === "settings.changed" || msg.type === "settings.rejected") {
         opts.settings?.handle(msg);
       }
@@ -160,6 +169,14 @@ export function createWsClient(opts: WsClientOptions): WsClient {
     unsubscribeQuotes() {
       quotesWanted = false;
       send({ type: "quotes.unsubscribe" });
+    },
+    subscribePressure() {
+      pressureWanted = true;
+      send({ type: "pressure.subscribe" });
+    },
+    unsubscribePressure() {
+      pressureWanted = false;
+      send({ type: "pressure.unsubscribe" });
     },
     close() {
       stopped = true;

@@ -34,6 +34,32 @@ The reference for a screen with several charts. Web `apps/web/src/dashboard/`, p
   it, with a "Copied …" toast that fades out. One recognizer, `@stockwatcher/shared` `tapHold.ts`;
   a plain tap waits out the 300 ms double-tap window before acting. Web `lib/useTickerPress.ts` +
   `lib/toast.tsx`; phone `ui/useTickerPress.ts` (expo-clipboard) + `ui/Toaster.tsx`.
+- **Halt watcher** (owner, 2026-10-19; design canvas "Halt Watcher",
+  https://claude.ai/artifact/R5VpkCELmhv4srLeuEuv7b): the server's top 6 symbols by one-sided
+  buying or selling pressure in the last minute, as gauge cards (a 240° speedometer left; ticker,
+  price and change right). Direction is the hue (green bull, red bear) and strength the lightness;
+  a halted card keeps its last pressure on a grey arc and shows "Halted ~HH:MM" in amber (a LULD
+  pause's expected reopening; another halt shows when it began). Pressing a card loads its ticker
+  into the selected chart. Web: a strip above the charts inside the panel's scroll (`HaltWatcher`,
+  three columns wide, two narrower, one on a phone, by container queries). Phone: the region under
+  the charts, a `Segmented` "Halt watcher | Most active" (one column folded, two unfolded by
+  `maxChartsFor`'s sw600dp rule). Data: `pressure.subscribe` on the dashboard's own socket, so it
+  follows Settings → Data like the charts. The gauge is the shared `GAUGE` geometry and colours in
+  `@stockwatcher/shared` `pressure.ts`, drawn by `PressureGauge` on each platform, and is wavykit's
+  `pressure-gauge`.
+  - **Pressure** (server, `crates/server/src/pressure.rs`, trades only: the feed has no quotes):
+    over the last 60 s of OHLC-counted prints (the engine's verdict, so the candles' condition
+    policy), sides by the tick rule (uptick buy, downtick sell, zero tick inherits).
+    `buyShare = B / (B + S)`; side bull when ≥ 0.5. `I = min(1, |2·buyShare − 1| / 0.6)` (80/20 is
+    fully one-sided). `pace = V / A`, `A` the symbol's average volume per minute so far in the
+    session (premarket, regular, after hours each on its own; at least one minute).
+    `P = min(1, ln(1 + pace) / ln 11)`. **`pressure = round(100 · I · (0.4 + 0.6 · P))`**. No score
+    below 10 prints or 2,000 shares in the window. Frozen at a halt until the resume.
+  - **Ranking**: in the server's price band; members stay down to half those minimums; an outsider
+    replaces the weakest unhalted member only by 10 points, and a card moves above its neighbour
+    only by 10 points; halted members stay. Ranked once per second (the quotes task, off the
+    ingest path); one pre-serialized `pressure.update` with the whole board goes to subscribers
+    when it changed.
 
 ## The rule
 

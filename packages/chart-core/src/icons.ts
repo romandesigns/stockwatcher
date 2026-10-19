@@ -118,7 +118,8 @@ export type IconName =
   | "dashboard"
   | "sidebarCollapse"
   | "sidebarExpand"
-  | "screen";
+  | "screen"
+  | "gauge";
 
 export const ICONS: Readonly<Record<IconName, IconDef>> = {
   // Drawing tools: the drawn object is primary, its handles and fills secondary.
@@ -222,6 +223,8 @@ export const ICONS: Readonly<Record<IconName, IconDef>> = {
   sidebarExpand: icon([S("M2.5 3.5h11v9h-11z", { paint: "fill" }), P("M2.5 3.5h11v9h-11zM6 3.5v9"), P("M9 6.5 10.5 8 9 9.5")]),
   // The dashboard's multi-view control ("screen × n"): a monitor, its glass soft, frame and stand crisp.
   screen: icon([S("M2.5 3h11v7.5h-11z", { paint: "fill" }), P("M3.5 2.5h9a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1zM8 11v2.5M5.5 13.5h5")]),
+  // The Halt watcher (dashboard pressure gauges): the dial soft, the needle and its hub crisp.
+  gauge: icon([S("M2.5 11.5a5.5 5.5 0 0 1 11 0"), P("M8 11.5 11 6.5", { width: 1.6 }), P(circlePath(8, 11.5, 1.3), { paint: "fill" })]),
 };
 
 export const ICON_NAMES = Object.keys(ICONS) as IconName[];

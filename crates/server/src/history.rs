@@ -51,6 +51,7 @@
 //! fills it at night).
 
 use crate::market::{Core, Market, OutKind, Outbound, TAPE_HISTORY};
+use crate::pressure::PressureBoard;
 use crate::quotes::{Counted, QuoteBoard};
 use chart_engine::ChartEngine;
 use chart_engine::wire::ChartUpdate;
@@ -303,12 +304,14 @@ impl Market {
             let Builder {
                 mut engine,
                 board,
+                pressure,
                 tape,
                 last_price,
                 ..
             } = b;
             core.engine.adopt_symbol(&mut engine, symbol);
             core.quotes.replace_from(symbol, &board);
+            core.pressure.replace_from(symbol, &pressure);
             if !tape.is_empty() {
                 core.tape.insert(symbol.to_string(), tape);
             }
@@ -410,6 +413,7 @@ fn read_day(h: &History, day: NaiveDate, symbol: &str, seen: u64) -> Vec<MarketE
 struct Builder {
     engine: ChartEngine,
     board: QuoteBoard,
+    pressure: PressureBoard,
     tape: VecDeque<String>,
     last_price: Option<Price>,
     mark: Option<i64>,
@@ -420,6 +424,7 @@ impl Builder {
         Builder {
             engine: ChartEngine::default(),
             board: QuoteBoard::with_closes(closes),
+            pressure: PressureBoard::new(),
             tape: VecDeque::new(),
             last_price: None,
             mark: None,
@@ -441,12 +446,17 @@ impl Builder {
         if let MarketEvent::Trade(t) = e
             && let Some(ChartUpdate::Tape(row)) = ups.first()
         {
-            self.board.apply_trade(t, Counted::from_tape(&row.counted));
+            let counted = Counted::from_tape(&row.counted);
+            self.board.apply_trade(t, counted);
+            self.pressure.apply_trade(t, counted);
         }
         if let Some(rev) = &rev {
             self.board.apply_revision(rev);
         }
         for u in &ups {
+            if let ChartUpdate::Halt(h) = u {
+                self.pressure.apply_halt(&h.symbol, &h.halt);
+            }
             if let ChartUpdate::Tape(_) = u {
                 if self.tape.len() == TAPE_HISTORY {
                     self.tape.pop_front();
@@ -465,7 +475,10 @@ pub(crate) fn hold_unloaded(core: &mut Core, e: &MarketEvent) -> bool {
         return false;
     };
     let Core {
-        unloaded, quotes, ..
+        unloaded,
+        quotes,
+        pressure,
+        ..
     } = core;
     let Some(u) = unloaded.get_mut(symbol) else {
         return false;
@@ -476,7 +489,9 @@ pub(crate) fn hold_unloaded(core: &mut Core, e: &MarketEvent) -> bool {
         *u.seen.entry(trading_date(receive_time(e))).or_default() += 1;
     }
     if let MarketEvent::Trade(t) = e {
+        // Provisional, like the quote row: the load replaces both with what the history built.
         quotes.apply_trade(t, Counted::from_effect(t));
+        pressure.apply_trade(t, Counted::from_effect(t));
     }
     true
 }
