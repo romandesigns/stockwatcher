@@ -680,6 +680,36 @@ impl ChartEngine {
         out
     }
 
+    /// Moves `symbol`'s whole state out of `other` into this engine (replacing any it had), then
+    /// finalizes whatever this engine's clock has already passed. `other` must have this
+    /// engine's configuration and should have been fed only that symbol's events, with the same
+    /// marks the live ingest emitted before each (`floor_1s` of its delivery time): the engine
+    /// keeps no state across symbols but the clock, and a symbol's late/out-of-order decisions
+    /// depend only on the clock at its own events, so the adopted state is the one this engine
+    /// would have built from the same events in the market-wide order (tested). This is how the
+    /// live market loads one symbol's day from the archive while the rest of the market streams.
+    /// Returns the finalization's updates; callers that re-snapshot the symbol can drop them.
+    pub fn adopt_symbol(&mut self, other: &mut ChartEngine, symbol: &str) -> Vec<ChartUpdate> {
+        let Some(mut st) = other.symbols.remove(symbol) else {
+            return Vec::new();
+        };
+        st.scheduled = None;
+        Self::reschedule(&mut self.pending, &mut st);
+        self.symbols.insert(symbol.to_string(), st);
+        match self.clock {
+            Some(c) => self.advance_clock(UnixNanos(c)),
+            None => {
+                self.clock = other.clock;
+                Vec::new()
+            }
+        }
+    }
+
+    /// Drops a symbol's state (the live market reloading it from the archive).
+    pub fn remove_symbol(&mut self, symbol: &str) -> bool {
+        self.symbols.remove(symbol).is_some()
+    }
+
     /// Moves the clock forward (never back) and finalizes every interval that has ended, so a
     /// symbol that stops trading still gets its last candle marked final. Cost is proportional to
     /// the number of symbols with an interval ending before `now`.

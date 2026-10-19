@@ -84,26 +84,7 @@ impl Archive {
     }
 
     pub fn manifest(&self, day: NaiveDate) -> Result<Option<DayManifest>, ArchiveError> {
-        let path = self.manifest_path(day);
-        let bytes = match std::fs::read(&path) {
-            Ok(b) => b,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(ArchiveError::io(&path, e)),
-        };
-        let m: DayManifest =
-            serde_json::from_slice(&bytes).map_err(|e| ArchiveError::Manifest {
-                path: path.clone(),
-                message: e.to_string(),
-            })?;
-        if m.format != crate::manifest::MANIFEST_FORMAT
-            || m.format_version != crate::format::FORMAT_VERSION
-        {
-            return Err(ArchiveError::Manifest {
-                path,
-                message: format!("unsupported {} v{}", m.format, m.format_version),
-            });
-        }
-        Ok(Some(m))
+        read_manifest_file(&self.manifest_path(day))
     }
 
     /// Opens a writer for `(day, symbol)`. Refuses below the free-space floor.
@@ -221,14 +202,7 @@ impl Archive {
             .manifest(day)?
             .unwrap_or_else(|| DayManifest::new(&key));
         f(&mut m);
-        let path = self.manifest_path(day);
-        let tmp = path.with_extension("json.tmp");
-        let json = serde_json::to_vec_pretty(&m).expect("manifest serializes");
-        std::fs::write(&tmp, json).map_err(|e| ArchiveError::io(&tmp, e))?;
-        if let Ok(f) = std::fs::File::open(&tmp) {
-            let _ = f.sync_all();
-        }
-        std::fs::rename(&tmp, &path).map_err(|e| ArchiveError::io(&path, e))?;
+        write_manifest_file(&self.manifest_path(day), &m)?;
         Ok(m)
     }
 
@@ -348,7 +322,12 @@ impl Archive {
         let mut unlisted: Vec<String> = std::fs::read_dir(&dir)
             .map_err(|e| ArchiveError::io(&dir, e))?
             .filter_map(|e| e.ok()?.file_name().into_string().ok())
-            .filter(|n| n != MANIFEST && n != BARS_DIR && !m.symbols.values().any(|e| &e.file == n))
+            .filter(|n| {
+                n != MANIFEST
+                    && n != BARS_DIR
+                    && n != crate::live::LIVE_DIR
+                    && !m.symbols.values().any(|e| &e.file == n)
+            })
             .collect();
         unlisted.sort();
         Ok(VerifyReport {
@@ -380,6 +359,46 @@ impl Archive {
     pub fn free_bytes(&self) -> Result<u64, ArchiveError> {
         space::available_bytes(&self.cfg.root)
     }
+}
+
+/// Reads and checks a manifest file (a day's, or a live recording's); `None` when missing.
+pub(crate) fn read_manifest_file(path: &Path) -> Result<Option<DayManifest>, ArchiveError> {
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(ArchiveError::io(path, e)),
+    };
+    let m: DayManifest = serde_json::from_slice(&bytes).map_err(|e| ArchiveError::Manifest {
+        path: path.to_path_buf(),
+        message: e.to_string(),
+    })?;
+    if m.format != crate::manifest::MANIFEST_FORMAT
+        || m.format_version != crate::format::FORMAT_VERSION
+    {
+        return Err(ArchiveError::Manifest {
+            path: path.to_path_buf(),
+            message: format!("unsupported {} v{}", m.format, m.format_version),
+        });
+    }
+    Ok(Some(m))
+}
+
+/// Writes a manifest atomically (temp file, fsync, rename).
+pub(crate) fn write_manifest_file(path: &Path, m: &DayManifest) -> Result<(), ArchiveError> {
+    write_atomic(
+        path,
+        &serde_json::to_vec_pretty(m).expect("manifest serializes"),
+    )
+}
+
+/// Temp file, fsync, rename: a reader sees the old file or the new one, never half of one.
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), ArchiveError> {
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, bytes).map_err(|e| ArchiveError::io(&tmp, e))?;
+    if let Ok(f) = std::fs::File::open(&tmp) {
+        let _ = f.sync_all();
+    }
+    std::fs::rename(&tmp, path).map_err(|e| ArchiveError::io(path, e))
 }
 
 /// `(lowercase hex sha256, size)` of a file, streamed.

@@ -227,6 +227,36 @@ pub fn is_trading_day(date: NaiveDate) -> bool {
     matches!(day_kind(date), DayKind::Full | DayKind::EarlyClose(_))
 }
 
+/// The latest trading day on or before `date` (bounded walk: no market closes for more than
+/// four days in a row).
+pub fn trading_day_on_or_before(date: NaiveDate) -> NaiveDate {
+    let mut d = date;
+    for _ in 0..10 {
+        if is_trading_day(d) {
+            break;
+        }
+        d -= Duration::days(1);
+    }
+    d
+}
+
+/// The trading day before `date`.
+pub fn previous_trading_day(date: NaiveDate) -> NaiveDate {
+    trading_day_on_or_before(date - Duration::days(1))
+}
+
+/// The trading date an instant belongs to, for filing what arrives then (the archive's live
+/// recording) and for asking "which day is today" (the live market's history): its session's
+/// date, so 20:00 ET onwards is the next trading day's overnight, or, outside every session
+/// (weekends, holidays, Friday evening, after an early close), the latest trading day on or
+/// before its ET calendar date. Monotone in `t`.
+pub fn trading_date(t: UnixNanos) -> NaiveDate {
+    if let Some(s) = classify(t) {
+        return s.date;
+    }
+    trading_day_on_or_before(t.to_utc().with_timezone(&New_York).date_naive())
+}
+
 fn hm(h: u32, m: u32) -> NaiveTime {
     NaiveTime::from_hms_opt(h, m, 0).expect("valid time")
 }
@@ -324,6 +354,20 @@ mod tests {
 
     fn sid(s: &str) -> Option<SessionId> {
         Some(s.parse().unwrap())
+    }
+
+    #[test]
+    fn trading_dates_follow_the_session_calendar() {
+        let at = |day: u32, h: u32, m: u32| et(d(2026, 10, day), h, m, 0, 0).unwrap();
+        // Thu 10-15 regular and early overnight; Thu 20:00 → Friday's overnight; Friday evening
+        // and the weekend → Friday (no session); Sunday 20:00 → Monday's overnight.
+        assert_eq!(trading_date(at(15, 10, 0)), d(2026, 10, 15));
+        assert_eq!(trading_date(at(15, 3, 0)), d(2026, 10, 15));
+        assert_eq!(trading_date(at(15, 21, 0)), d(2026, 10, 16));
+        assert_eq!(trading_date(at(16, 21, 0)), d(2026, 10, 16));
+        assert_eq!(trading_date(at(17, 12, 0)), d(2026, 10, 16));
+        assert_eq!(trading_date(at(18, 20, 30)), d(2026, 10, 19));
+        assert_eq!(previous_trading_day(d(2026, 10, 19)), d(2026, 10, 16));
     }
 
     #[test]

@@ -1,10 +1,10 @@
 //! Appending writer for one (day, symbol) file.
 
 use crate::error::ArchiveError;
-use crate::format::{FileHeader, MAX_RECORD_BYTES, encode_header};
+use crate::format::{FileHeader, encode_header, encode_record};
 use crate::manifest::SymbolEntry;
 use crate::space::ensure_floor;
-use market_events::{MarketEvent, Source, VersionedEvent};
+use market_events::{MarketEvent, Source};
 use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
@@ -102,17 +102,7 @@ impl SymbolWriter {
 
     /// Appends one event (as a `{"v":1,...}` record) in arrival order.
     pub fn append(&mut self, event: &MarketEvent) -> Result<(), ArchiveError> {
-        let json = serde_json::to_vec(&VersionedEvent {
-            v: market_events::CONTRACT_VERSION,
-            event: event.clone(),
-        })
-        .map_err(|e| ArchiveError::format(&self.partial, e.to_string()))?;
-        if json.is_empty() || json.len() as u64 > MAX_RECORD_BYTES as u64 {
-            return Err(ArchiveError::format(
-                &self.partial,
-                format!("record of {} bytes exceeds the 1 MiB limit", json.len()),
-            ));
-        }
+        let json = encode_record(event).map_err(|m| ArchiveError::format(&self.partial, m))?;
         let enc = self.encoder.as_mut().expect("not finalized");
         let path = &self.partial;
         enc.write_all(&(json.len() as u32).to_le_bytes())
@@ -135,37 +125,7 @@ impl SymbolWriter {
     }
 
     fn count(&mut self, event: &MarketEvent) {
-        let e = &mut self.entry;
-        e.events += 1;
-        let source: Source = match event {
-            MarketEvent::Trade(t) => {
-                e.trades += 1;
-                t.source
-            }
-            MarketEvent::Quote(q) => {
-                e.quotes += 1;
-                q.source
-            }
-            MarketEvent::Correction(c) => {
-                e.corrections += 1;
-                c.source
-            }
-            MarketEvent::Cancel(c) => {
-                e.cancels += 1;
-                c.source
-            }
-            MarketEvent::Status(s) => {
-                e.statuses += 1;
-                s.source
-            }
-        };
-        if !e.sources.contains(&source) {
-            e.sources.push(source);
-            e.sources.sort();
-        }
-        let ts = event.event_ts().nanos();
-        e.first_ts = Some(e.first_ts.map_or(ts, |f| f.min(ts)));
-        e.last_ts = Some(e.last_ts.map_or(ts, |l| l.max(ts)));
+        count_event(&mut self.entry, event);
     }
 
     fn sync(&mut self) -> Result<(), ArchiveError> {
@@ -215,4 +175,38 @@ impl Drop for SymbolWriter {
             let _ = enc.flush();
         }
     }
+}
+
+/// Adds one event to a manifest entry's counts, sources and time range.
+pub(crate) fn count_event(e: &mut SymbolEntry, event: &MarketEvent) {
+    e.events += 1;
+    let origin: Source = match event {
+        MarketEvent::Trade(t) => {
+            e.trades += 1;
+            t.source
+        }
+        MarketEvent::Quote(q) => {
+            e.quotes += 1;
+            q.source
+        }
+        MarketEvent::Correction(c) => {
+            e.corrections += 1;
+            c.source
+        }
+        MarketEvent::Cancel(c) => {
+            e.cancels += 1;
+            c.source
+        }
+        MarketEvent::Status(s) => {
+            e.statuses += 1;
+            s.source
+        }
+    };
+    if !e.sources.contains(&origin) {
+        e.sources.push(origin);
+        e.sources.sort();
+    }
+    let ts = event.event_ts().nanos();
+    e.first_ts = Some(e.first_ts.map_or(ts, |f| f.min(ts)));
+    e.last_ts = Some(e.last_ts.map_or(ts, |l| l.max(ts)));
 }

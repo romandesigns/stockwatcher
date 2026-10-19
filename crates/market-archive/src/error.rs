@@ -24,6 +24,8 @@ pub enum ArchiveError {
         message: String,
     },
     NotFound(PathBuf),
+    /// The day has (or is getting) imported data: a live recording never writes into it.
+    DayIsFinal(chrono::NaiveDate),
 }
 
 impl ArchiveError {
@@ -61,6 +63,10 @@ impl fmt::Display for ArchiveError {
                 write!(f, "{}: invalid manifest: {message}", path.display())
             }
             ArchiveError::NotFound(p) => write!(f, "{}: not found", p.display()),
+            ArchiveError::DayIsFinal(d) => write!(
+                f,
+                "{d} is imported (or being imported): the live recording does not write into it"
+            ),
         }
     }
 }

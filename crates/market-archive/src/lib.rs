@@ -2,7 +2,10 @@
 //!
 //! The on-disk archive of normalized [`market_events::VersionedEvent`]s, one file per
 //! (trading day, symbol), plus one manifest per day. Replay ([`market-replay`]) streams these files;
-//! the recorder (later) and the fixture tool write them.
+//! the importer, the fixture tool and the live market's recorder ([`live`]) write them. A day has
+//! up to two versions, and every reader picks one the same way ([`Archive::day_data`]): the
+//! nightly import (final) when it has completed the day, else the live recording (provisional,
+//! in the day's `live/` directory).
 //!
 //! # Layout
 //!
@@ -14,6 +17,8 @@
 //!     manifest.json        # symbols, counts, first/last ts, sources, bytes, sha256 per file
 //!     SMPL.swa             # one file per symbol (finalized)
 //!     FXLO.swa.partial     # a writer that has not finalized (never read by replay)
+//!     live/                # the live recording of the day (crate::live): manifest.json with
+//!                          #   "live": {"sealed"}, quotes.json, SMPL.swa (a frame per flush)
 //! ```
 //!
 //! The day is the **trading date** of the events' sessions (`market_events::session`), so the
@@ -75,6 +80,7 @@ pub mod closes;
 pub mod config;
 pub mod fixture;
 pub mod format;
+pub mod live;
 pub mod manifest;
 pub mod reader;
 pub mod space;
@@ -91,7 +97,8 @@ pub use closes::{DAILY_CLOSES_FILE, DailyCloses, PrevCloses, merge_daily_closes}
 pub use config::ArchiveConfig;
 pub use error::ArchiveError;
 pub use lifecycle::{IMPORTING_MARKER, REMOVING_PREFIX};
-pub use manifest::{DayManifest, ImportProvenance, SymbolEntry};
+pub use live::{DayData, LIVE_DIR, LiveQuote, LiveWriter};
+pub use manifest::{DayManifest, ImportProvenance, LiveDay, SymbolEntry};
 pub use reader::SymbolReader;
 pub use writer::{FsyncPolicy, SymbolWriter};
 
