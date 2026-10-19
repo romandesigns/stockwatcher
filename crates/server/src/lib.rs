@@ -4,6 +4,7 @@ pub mod config;
 pub mod days;
 pub mod history;
 pub mod market;
+pub mod pressure;
 pub mod quotes;
 pub mod settings;
 pub mod ws;

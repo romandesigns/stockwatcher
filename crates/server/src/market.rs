@@ -50,9 +50,18 @@
 //!
 //! A rebuild (seek, day switch) does not serialize candle increments it will not send, only the
 //! tape rows the history ring keeps: same state, about a third less time per rebuilt event.
+//!
+//! The Halt watcher's pressure board ([`crate::pressure`]) rides beside the quote board: every
+//! trade (with the engine's verdict) and every `chart.halt` update it under the core lock, and the
+//! quotes task ranks it once per second and broadcasts ONE pre-serialized `pressure.update`
+//! (the whole board, at most [`crate::pressure::BOARD_SIZE`] cards) when it changed, to the
+//! connections that sent `pressure.subscribe` (the quote board's opt-in pattern and `seq` rule).
+//! The ranking runs whether or not anyone listens, so its hysteresis does not restart with the
+//! first subscriber; only the frame is skipped.
 
 use crate::days::{DayCatalog, DayEntry};
 use crate::history::{History, Unloaded};
+use crate::pressure::{Card, HaltInfo, PressureBoard};
 use crate::quotes::{Counted, QuoteBoard, QuoteChanges, QuoteRow};
 use chart_engine::wire::{ChartSnapshot, ChartUpdate, ClockInfo};
 use chart_engine::{ChartEngine, DataQuality, Timeframe};
@@ -289,6 +298,9 @@ pub enum OutKind {
     /// Live: a symbol's history was just loaded into the engine (`crate::history`): every
     /// connection showing it takes a fresh snapshot (it had an empty or partial chart).
     Loaded(String),
+    /// A pre-serialized `pressure.update` (the Halt watcher's whole board) for the connections
+    /// that sent `pressure.subscribe`. `Outbound::seq` is the engine seq when it was ranked.
+    Pressure(String),
 }
 
 pub(crate) struct Core {
@@ -299,6 +311,11 @@ pub(crate) struct Core {
     pub(crate) last_price: HashMap<String, Price>,
     /// Last / open / volume per symbol for the ticker search (`quotes.*`).
     pub(crate) quotes: QuoteBoard,
+    /// The Halt watcher's per-symbol pressure and its ranked board (`pressure.*`).
+    pub(crate) pressure: PressureBoard,
+    /// The cards of the last ranking: what `pressure.snapshot` sends, and what the next ranking
+    /// is compared with (an unchanged board sends nothing).
+    pressure_cards: Vec<PressureCardWire>,
     rebuilding: bool,
     /// Live: symbols whose recorded history is in the archive but not in the engine yet
     /// (`crate::history`). Their live events are counted or held here instead of applied.
@@ -315,6 +332,8 @@ impl Core {
             tape: HashMap::new(),
             last_price: HashMap::new(),
             quotes: QuoteBoard::with_closes(closes),
+            pressure: PressureBoard::new(),
+            pressure_cards: Vec::new(),
             rebuilding: false,
             unloaded: HashMap::new(),
             latest_trade_day: None,
@@ -377,6 +396,8 @@ pub(crate) struct Inner {
     latest_seen: Mutex<Option<NaiveDate>>,
     /// Connections that sent `quotes.subscribe`. While 0, the quotes task builds nothing.
     quote_subs: AtomicUsize,
+    /// Connections that sent `pressure.subscribe`. While 0, no `pressure.update` is serialized.
+    pressure_subs: AtomicUsize,
     /// Live: the archive history this market loads from (`crate::history`); set once at start.
     pub(crate) history: std::sync::OnceLock<History>,
 }
@@ -530,6 +551,7 @@ impl Market {
             follow_latest,
             latest_seen: Mutex::new(latest_seen),
             quote_subs: AtomicUsize::new(0),
+            pressure_subs: AtomicUsize::new(0),
             history: std::sync::OnceLock::new(),
         }))
     }
@@ -729,6 +751,7 @@ impl Market {
                 let Some(inner) = weak.upgrade() else { break };
                 let market = Market(inner);
                 market.publish_quotes();
+                market.publish_pressure();
                 n += 1;
                 // Live: the quote rows go into the archive's recording now and then, the
                 // startup summary of the next restart (`crate::history`).
@@ -968,7 +991,14 @@ impl Market {
                         if let MarketEvent::Trade(t) = &e
                             && let Some(ChartUpdate::Tape(row)) = ups.first()
                         {
-                            core.quotes.apply_trade(t, Counted::from_tape(&row.counted));
+                            let counted = Counted::from_tape(&row.counted);
+                            core.quotes.apply_trade(t, counted);
+                            core.pressure.apply_trade(t, counted);
+                        }
+                        for u in &ups {
+                            if let ChartUpdate::Halt(h) = u {
+                                core.pressure.apply_halt(&h.symbol, &h.halt);
+                            }
                         }
                         if let Some(rev) = &revision {
                             core.quotes.apply_revision(rev);
@@ -1423,6 +1453,72 @@ impl Market {
         true
     }
 
+    /// Registers a `pressure.subscribe` (the quotes guard's twin).
+    pub fn pressure_subscribe(&self) -> PressureGuard {
+        self.0.pressure_subs.fetch_add(1, Ordering::Relaxed);
+        PressureGuard(self.0.clone())
+    }
+
+    /// Connections currently subscribed to the pressure board.
+    pub fn pressure_subscribers(&self) -> usize {
+        self.0.pressure_subs.load(Ordering::Relaxed)
+    }
+
+    /// The last ranked board as a `pressure.snapshot` frame, with the engine seq it is consistent
+    /// with. Empty until the first ranking (at most a second after start or a rebuild).
+    pub fn pressure_snapshot(&self) -> (u64, String) {
+        let t = self.clock().map(|c| c.now.millis());
+        let (seq, cards) = {
+            let core = self.0.core.lock().expect("core lock");
+            (core.seq, core.pressure_cards.clone())
+        };
+        (seq, pressure_frame("pressure.snapshot", t, &cards))
+    }
+
+    /// One ranking of the pressure board ([`PressureBoard::tick`] at the market clock), and, when
+    /// the cards changed and anyone is subscribed, one `pressure.update`. Ranks even with no
+    /// subscriber (module docs). Returns whether it broadcast. Public so tests can tick
+    /// deterministically.
+    pub fn publish_pressure(&self) -> bool {
+        let Some(clock) = self.clock() else {
+            return false;
+        };
+        let band = self.0.band;
+        let (seq, cards) = {
+            let mut core = self.0.core.lock().expect("core lock");
+            if core.rebuilding {
+                return false;
+            }
+            let Core {
+                pressure,
+                last_price,
+                quotes,
+                ..
+            } = &mut *core;
+            let cards: Vec<PressureCardWire> = pressure
+                .tick(clock.now.0, |s| {
+                    last_price.get(s).is_some_and(|p| band.contains(*p))
+                })
+                .iter()
+                .map(|c| PressureCardWire::new(c, quotes, last_price))
+                .collect();
+            if cards == core.pressure_cards {
+                return false;
+            }
+            core.pressure_cards = cards.clone();
+            (core.seq, cards)
+        };
+        if self.pressure_subscribers() == 0 {
+            return false;
+        }
+        let frame = pressure_frame("pressure.update", Some(clock.now.millis()), &cards);
+        let _ = self.0.tx.send(Arc::new(Outbound {
+            seq,
+            kind: OutKind::Pressure(frame),
+        }));
+        true
+    }
+
     /// `{"type", "t", "quotes": [row...], "gone"?: [symbol...]}`; the row shape is [`WireQuote`].
     fn quotes_frame(
         &self,
@@ -1541,6 +1637,83 @@ impl Drop for QuotesGuard {
     fn drop(&mut self) {
         self.0.quote_subs.fetch_sub(1, Ordering::Relaxed);
     }
+}
+
+/// Decrements the pressure subscriber count when dropped.
+pub struct PressureGuard(Arc<Inner>);
+
+impl Drop for PressureGuard {
+    fn drop(&mut self) {
+        self.0.pressure_subs.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// One Halt watcher card on the wire (`pressure.snapshot` / `pressure.update`):
+///
+/// - `s` symbol; `p` last price, `pc` previous close and `o` the fallback reference, exactly the
+///   quote row's (`WireQuote`), so the card's change % is the search's and the chart header's;
+/// - `pressure` 0-100 and `side` (`bull` | `bear`) per `crate::pressure`; `buyShare` (0-1, two
+///   decimals) and `pace` (multiple of the symbol's average volume per minute so far this session, one
+///   decimal), the two inputs, for a tooltip;
+/// - `halt` `{start, reason}` while halted (`start` epoch ms, `reason` the provider's, e.g.
+///   `LUDP`); the pressure is then the one frozen at the halt.
+///
+/// Rounded so a board that did not visibly change compares equal and sends nothing.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct PressureCardWire {
+    s: String,
+    p: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pc: Option<f64>,
+    o: f64,
+    pressure: u8,
+    side: &'static str,
+    #[serde(rename = "buyShare")]
+    buy_share: f64,
+    pace: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    halt: Option<HaltInfo>,
+}
+
+impl PressureCardWire {
+    fn new(c: &Card, quotes: &QuoteBoard, last_price: &HashMap<String, Price>) -> Self {
+        let row = quotes.get(&c.symbol);
+        // A ranked symbol is in the band, so it has a price; the quote row normally has it too.
+        let p = row
+            .as_ref()
+            .map(|r| r.last)
+            .or_else(|| last_price.get(&*c.symbol).copied())
+            .unwrap_or(Price::ZERO);
+        PressureCardWire {
+            s: c.symbol.to_string(),
+            p: p.to_f64(),
+            pc: row.as_ref().and_then(|r| r.prev_close).map(Price::to_f64),
+            o: row.as_ref().map_or(p, |r| r.reference).to_f64(),
+            pressure: c.score.pressure,
+            side: if c.score.bull() { "bull" } else { "bear" },
+            buy_share: (c.score.buy_share * 100.0).round() / 100.0,
+            pace: (c.score.pace * 10.0).round() / 10.0,
+            halt: c.halt.clone(),
+        }
+    }
+}
+
+/// `pressure.snapshot` / `pressure.update`: `{"type", "t", "board": [card...]}`, the whole board
+/// in display order either way (six cards at most, so an update replaces rather than patches).
+fn pressure_frame(kind: &'static str, t: Option<i64>, cards: &[PressureCardWire]) -> String {
+    #[derive(Serialize)]
+    struct PressureMessage<'a> {
+        #[serde(rename = "type")]
+        kind: &'static str,
+        t: Option<i64>,
+        board: &'a [PressureCardWire],
+    }
+    serde_json::to_string(&PressureMessage {
+        kind,
+        t,
+        board: cards,
+    })
+    .expect("pressure serializes")
 }
 
 /// `quotes.snapshot` / `quotes.update`.
