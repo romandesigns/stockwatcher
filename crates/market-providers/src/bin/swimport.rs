@@ -9,7 +9,16 @@
 //! swimport alpaca-assets                                 # names + exchanges -> $ARCHIVE_ROOT/assets.json
 //! swimport alpaca-daily-closes --from <YYYY-MM-DD> --to <YYYY-MM-DD>  # -> $ARCHIVE_ROOT/daily-closes.json
 //! swimport maintain [--once]                             # keep the rolling 21-trading-day window (runs forever)
+//! swimport research-universe --out <DIR> --from <YYYY-MM-DD> --to <YYYY-MM-DD> [--per-minute 100]
+//! swimport research-pilot --out <DIR> --selection <FILE> [--per-minute 100] [--budget-minutes 30] [--budget-gb 5] [--warmup 30]
+//! swimport research-manifest --out <DIR> [--meta <FILE>]
 //! ```
+//!
+//! The `research-*` commands are a bounded research acquisition (import::pilot), never used by
+//! production: they write raw reference data, SIP and BOATS trades and SIP quotes under `<DIR>`,
+//! one process and one paced client at a time (import::pacing; default 100 requests/minute,
+//! lowered further when the provider's `X-RateLimit-*` headers ask for it). Every run appends
+//! its measurements to `<DIR>/runs.jsonl` and the time budget is cumulative over runs.
 //!
 //! `maintain` is what the VPS runs as its `archiver` service (import::maintain has the window,
 //! schedule and safety rules, and its environment variables). It is a subcommand of this binary
@@ -48,7 +57,10 @@ fn usage() -> ExitCode {
     eprintln!(
         "usage:\n  swimport credentials\n  swimport alpaca-trades <SYMBOL> <YYYY-MM-DD> [--feed sip|iex|boats] [--limit N] [--force]\n  swimport fmp-bars <SYMBOL> <YYYY-MM-DD> [--force]\n  swimport check <SYMBOL> <YYYY-MM-DD>\n  swimport alpaca-batch --from <YYYY-MM-DD> --to <YYYY-MM-DD> [--jobs N] [--per-minute N] [--plan-only]\n  swimport alpaca-assets
   swimport alpaca-daily-closes --from <YYYY-MM-DD> --to <YYYY-MM-DD>
-  swimport maintain [--once]"
+  swimport maintain [--once]
+  swimport research-universe --out <DIR> --from <YYYY-MM-DD> --to <YYYY-MM-DD> [--per-minute N]
+  swimport research-pilot --out <DIR> --selection <FILE> [--per-minute N] [--budget-minutes N] [--budget-gb N] [--warmup N]
+  swimport research-manifest --out <DIR> [--meta <FILE>]"
     );
     ExitCode::from(2)
 }
@@ -83,6 +95,9 @@ fn main() -> ExitCode {
             Some("alpaca-assets") => alpaca_assets(),
             Some("alpaca-daily-closes") => alpaca_daily_closes(&args[1..]),
             Some("maintain") => maintain(&args[1..]),
+            Some("research-universe") => research::universe(&args[1..]),
+            Some("research-pilot") => research::pilot(&args[1..]),
+            Some("research-manifest") => research::manifest(&args[1..]),
             _ => Ok(usage()),
         }
     };
@@ -760,4 +775,292 @@ fn maintain(args: &[String]) -> Result<ExitCode, String> {
     }
     println!("{} maintain stopped", stamp());
     Ok(ExitCode::SUCCESS)
+}
+
+/// The research acquisition commands (see the module docs and `import::pilot`).
+mod research {
+    use super::{alpaca_creds, env, flag};
+    use chrono::{NaiveDate, Utc};
+    use market_providers::import::alpaca::rfc3339;
+    use market_providers::import::http::{Http, RetryPolicy};
+    use market_providers::import::paced_client::PacedHttp;
+    use market_providers::import::pilot::{
+        Budget, Kind, Metered, PilotConfig, SymbolDay, append_run, read_runs, run_pilot,
+        write_atomic, write_manifest,
+    };
+    use market_providers::import::reference::{
+        STRUCTURAL_ACTION_TYPES, assets_url, bar_rows, corporate_actions_url, daily_bars_url,
+        et_date_range, fetch_pages, summarize_corporate_actions,
+    };
+    use serde_json::{Value, json};
+    use std::collections::{BTreeMap, HashSet};
+    use std::io::Write;
+    use std::path::{Path, PathBuf};
+    use std::process::ExitCode;
+    use std::time::{Duration, Instant};
+
+    fn out_dir(args: &[String]) -> Result<PathBuf, String> {
+        let out = PathBuf::from(flag(args, "--out").ok_or("missing --out <DIR>")?);
+        std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
+        Ok(out)
+    }
+
+    fn num<T: std::str::FromStr>(args: &[String], name: &str, default: T) -> Result<T, String> {
+        flag(args, name)
+            .map(|s| s.parse().map_err(|_| format!("invalid {name} {s:?}")))
+            .transpose()
+            .map(|v| v.unwrap_or(default))
+    }
+
+    fn date(args: &[String], name: &str) -> Result<NaiveDate, String> {
+        let s = flag(args, name).ok_or_else(|| format!("missing {name} <YYYY-MM-DD>"))?;
+        NaiveDate::parse_from_str(&s, "%Y-%m-%d").map_err(|_| format!("invalid {name} {s:?}"))
+    }
+
+    fn data_base() -> String {
+        env("ALPACA_DATA_BASE").unwrap_or_else(|| "https://data.alpaca.markets".into())
+    }
+
+    fn trading_base() -> String {
+        env("ALPACA_TRADING_BASE").unwrap_or_else(|| "https://paper-api.alpaca.markets".into())
+    }
+
+    /// Active download time already spent by earlier runs (the budget is cumulative).
+    fn used_active_ms(out: &Path) -> u64 {
+        read_runs(out)
+            .iter()
+            .filter_map(|r| r.get("active_ms").and_then(Value::as_u64))
+            .sum()
+    }
+
+    fn log(line: &str) {
+        eprintln!("  {line}");
+    }
+
+    fn to_json_bytes(v: &Value) -> Result<Vec<u8>, String> {
+        serde_json::to_vec(v).map_err(|e| e.to_string())
+    }
+
+    /// Active and inactive asset snapshots, raw daily bars of every one of them over the range
+    /// (for the in-band universe estimate and the prior-day selection), and the structural
+    /// corporate actions of the whole market over the range.
+    pub fn universe(args: &[String]) -> Result<ExitCode, String> {
+        let out = out_dir(args)?;
+        let (from, to) = (date(args, "--from")?, date(args, "--to")?);
+        let per_minute: u32 = num(args, "--per-minute", 100)?;
+        let creds = alpaca_creds()?;
+        let (dbase, tbase) = (data_base(), trading_base());
+        let today = Utc::now().date_naive();
+        let started = Instant::now();
+        let started_at = rfc3339(Utc::now());
+        let mut paced = PacedHttp::new(per_minute)?;
+        let mut sleep = |d: Duration| std::thread::sleep(d);
+        let mut lg = |l: &str| log(l);
+        let mut m = Metered::new(&mut paced, None);
+
+        let mut lists: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+        for status in ["active", "inactive"] {
+            m.set_kind(&format!("assets-{status}"));
+            let url = assets_url(&tbase, status);
+            let pages = fetch_pages(&mut m, &creds, &|_| url.clone(), &mut sleep, &mut lg)?;
+            let mut syms: Vec<String> = pages
+                .iter()
+                .flat_map(|p| p.as_array().cloned().unwrap_or_default())
+                .filter_map(|a| a.get("symbol").and_then(Value::as_str).map(str::to_string))
+                .collect();
+            syms.sort();
+            syms.dedup();
+            println!("{status} assets: {}", syms.len());
+            let path = out
+                .join("raw")
+                .join("assets")
+                .join(format!("{status}-{today}.json"));
+            let doc = json!({
+                "request": { "endpoint": "/v2/assets", "status": status, "asset_class": "us_equity" },
+                "fetched_at": rfc3339(Utc::now()),
+                "note": "current snapshot of the asset list; Alpaca keeps no asset-list history",
+                "pages": pages,
+            });
+            write_atomic(&path, &to_json_bytes(&doc)?)?;
+            lists.insert(status, syms);
+        }
+        let active: HashSet<&String> = lists["active"].iter().collect();
+        let mut all: Vec<String> = lists.values().flatten().cloned().collect();
+        all.sort();
+        all.dedup();
+
+        let (start, end) = et_date_range(from, to).ok_or("calendar does not cover the range")?;
+        let bars_path = out
+            .join("universe")
+            .join(format!("daily-bars_{from}_{to}.jsonl"));
+        std::fs::create_dir_all(out.join("universe")).map_err(|e| e.to_string())?;
+        let mut f =
+            std::io::BufWriter::new(std::fs::File::create(&bars_path).map_err(|e| e.to_string())?);
+        m.set_kind("universe-daily-bars");
+        let mut n_bars = 0u64;
+        for (i, chunk) in all.chunks(200).enumerate() {
+            let pages = fetch_pages(
+                &mut m,
+                &creds,
+                &|t| daily_bars_url(&dbase, chunk, start, end, t),
+                &mut sleep,
+                &mut lg,
+            )?;
+            for (sym, bar) in bar_rows(&pages) {
+                let mut row = json!({
+                    "symbol": sym,
+                    "listed": if active.contains(&sym) { "active" } else { "inactive" },
+                });
+                if let (Some(r), Some(b)) = (row.as_object_mut(), bar.as_object()) {
+                    for (k, v) in b {
+                        r.insert(k.clone(), v.clone());
+                    }
+                }
+                writeln!(f, "{row}").map_err(|e| e.to_string())?;
+                n_bars += 1;
+            }
+            if i % 10 == 0 {
+                log(&format!(
+                    "bars: {} / {} symbols, {n_bars} bars",
+                    ((i + 1) * 200).min(all.len()),
+                    all.len()
+                ));
+            }
+        }
+        f.flush().map_err(|e| e.to_string())?;
+        drop(f);
+
+        m.set_kind("universe-corporate-actions");
+        let pages = fetch_pages(
+            &mut m,
+            &creds,
+            &|t| corporate_actions_url(&dbase, None, STRUCTURAL_ACTION_TYPES, from, to, t),
+            &mut sleep,
+            &mut lg,
+        )?;
+        let ca = summarize_corporate_actions(&pages);
+        let doc = json!({
+            "request": { "endpoint": "/v1/corporate-actions", "types": STRUCTURAL_ACTION_TYPES, "start": from, "end": to },
+            "fetched_at": rfc3339(Utc::now()),
+            "pages": pages,
+        });
+        write_atomic(
+            &out.join("raw")
+                .join("corporate-actions")
+                .join(format!("universe_{from}_{to}.json")),
+            &to_json_bytes(&doc)?,
+        )?;
+        println!("corporate actions {from}..{to}: {:?}", ca.counts);
+        let stats = m.stats.clone();
+        drop(m);
+
+        let run = json!({
+            "command": "research-universe",
+            "started_at": started_at,
+            "finished_at": rfc3339(Utc::now()),
+            "active_ms": started.elapsed().as_millis() as u64,
+            "per_minute_cap": per_minute,
+            "concurrency": 1,
+            "stats": stats,
+            "pacer": paced.pacer_report(),
+            "wire_bytes": paced.wire_bytes,
+            "summary": {
+                "from": from, "to": to,
+                "assets_active": lists["active"].len(),
+                "assets_inactive": lists["inactive"].len(),
+                "symbols_queried": all.len(),
+                "daily_bars": n_bars,
+                "corporate_actions": ca.counts,
+            },
+        });
+        write_atomic(
+            &out.join("universe").join("universe.json"),
+            &serde_json::to_vec_pretty(&run).map_err(|e| e.to_string())?,
+        )?;
+        append_run(&out, &run)?;
+        println!("{}", serde_json::to_string_pretty(&run).unwrap_or_default());
+        Ok(ExitCode::SUCCESS)
+    }
+
+    /// Runs the pilot over the selection file's `symbol_days` (at most 12).
+    pub fn pilot(args: &[String]) -> Result<ExitCode, String> {
+        let out = out_dir(args)?;
+        let sel_path = flag(args, "--selection").ok_or("missing --selection <FILE>")?;
+        let sel: Value = serde_json::from_slice(
+            &std::fs::read(&sel_path).map_err(|e| format!("{sel_path}: {e}"))?,
+        )
+        .map_err(|e| format!("{sel_path}: {e}"))?;
+        let tasks: Vec<SymbolDay> = serde_json::from_value(
+            sel.get("symbol_days")
+                .cloned()
+                .ok_or("selection has no symbol_days")?,
+        )
+        .map_err(|e| format!("symbol_days: {e}"))?;
+        if tasks.len() > 12 {
+            return Err(format!(
+                "{} symbol-days: the pilot is capped at 12",
+                tasks.len()
+            ));
+        }
+        let per_minute: u32 = num(args, "--per-minute", 100)?;
+        let budget_minutes: u64 = num(args, "--budget-minutes", 30)?;
+        let budget_gb: f64 = num(args, "--budget-gb", 5.0)?;
+        let warmup: usize = num(args, "--warmup", 30)?;
+        let creds = alpaca_creds()?;
+        let dbase = data_base();
+        let used = Duration::from_millis(used_active_ms(&out));
+        let cfg = PilotConfig {
+            out: &out,
+            data_base: &dbase,
+            creds: &creds,
+            budget: Budget {
+                active: Duration::from_secs(budget_minutes * 60),
+                bytes: (budget_gb * 1e9) as u64,
+            },
+            used_active: used,
+            baseline_bytes: 0,
+            warmup_sessions: warmup,
+            kinds: Kind::ALL.to_vec(),
+            retry: RetryPolicy::default(),
+        };
+        println!(
+            "pilot: {} symbol-days, cap {per_minute}/min, concurrency 1, budget {budget_minutes} min ({:.1} used) / {budget_gb} GB",
+            tasks.len(),
+            used.as_secs_f64() / 60.0
+        );
+        let mut paced = PacedHttp::new(per_minute)?;
+        let run = run_pilot(
+            &mut paced as &mut dyn Http,
+            &cfg,
+            &tasks,
+            &mut |d| std::thread::sleep(d),
+            &mut |l| log(l),
+        )?;
+        let mut v = serde_json::to_value(&run).map_err(|e| e.to_string())?;
+        v["command"] = json!("research-pilot");
+        v["per_minute_cap"] = json!(per_minute);
+        v["concurrency"] = json!(1);
+        v["pacer"] = serde_json::to_value(paced.pacer_report()).unwrap_or_default();
+        v["wire_bytes"] = json!(paced.wire_bytes);
+        append_run(&out, &v)?;
+        println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
+        Ok(ExitCode::SUCCESS)
+    }
+
+    /// (Re)writes `<DIR>/MANIFEST.json`, merging the JSON object in `--meta` if given.
+    pub fn manifest(args: &[String]) -> Result<ExitCode, String> {
+        let out = out_dir(args)?;
+        let meta: Value = match flag(args, "--meta") {
+            Some(p) => serde_json::from_slice(&std::fs::read(&p).map_err(|e| format!("{p}: {e}"))?)
+                .map_err(|e| format!("{p}: {e}"))?,
+            None => json!({}),
+        };
+        let m = write_manifest(&out, meta)?;
+        println!(
+            "MANIFEST.json revision {} ({} files)",
+            m["revision"],
+            m["files"].as_array().map_or(0, |a| a.len())
+        );
+        Ok(ExitCode::SUCCESS)
+    }
 }
