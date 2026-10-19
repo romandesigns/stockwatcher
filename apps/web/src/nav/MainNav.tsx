@@ -2,6 +2,7 @@ import type { IconName } from "@stockwatcher/chart-core";
 import { Icon } from "@stockwatcher/chart-web";
 import { Tip, cn } from "@stockwatcher/chart-web/ui";
 import { NAV_ITEMS, type PageId } from "./routes.ts";
+import { useUnseenAlerts } from "../alerts/seen.ts";
 
 // The main navigation, in the two shapes wavykit defines for it (H:\wavystack\wavykit
 // registry/components/sidebar and tab-bar): a rail on the left on wider screens, a bottom bar on
@@ -19,6 +20,7 @@ import { NAV_ITEMS, type PageId } from "./routes.ts";
  * accessible name, and the icons keep the same x so nothing jumps when it toggles.
  */
 export function NavRail({ page, collapsed, settingsOpen, onSettings }: { page: PageId; collapsed: boolean; settingsOpen: boolean; onSettings: () => void }) {
+  const unseen = useUnseenAlerts();
   return (
     <nav
       aria-label="Main"
@@ -35,7 +37,7 @@ export function NavRail({ page, collapsed, settingsOpen, onSettings }: { page: P
       <ul className="m-0 flex list-none flex-col gap-0.5 p-0">
         {NAV_ITEMS.map((item) => (
           <li key={item.id} className="flex min-w-0">
-            <RailLink icon={item.icon} label={item.label} href={item.href} active={item.id === page} collapsed={collapsed} />
+            <RailLink icon={item.icon} label={item.label} href={item.href} active={item.id === page} collapsed={collapsed} badge={item.id === "alerts" ? unseen : 0} />
           </li>
         ))}
       </ul>
@@ -50,15 +52,23 @@ export function NavRail({ page, collapsed, settingsOpen, onSettings }: { page: P
   );
 }
 
-function RailLink({ icon, label, href, onClick, active, dialog, collapsed }: { icon: IconName; label: string; href?: string; onClick?: () => void; active?: boolean; /** Opens a dialog (aria-haspopup, aria-expanded = active). */ dialog?: boolean; collapsed: boolean }) {
+/** A count on a nav icon (the Alerts item's unseen fires): the accent, because it is news. */
+function Badge({ n, className }: { n: number; className?: string }) {
+  if (n <= 0) return null;
+  return <span className={cn("absolute grid h-3.5 min-w-3.5 place-items-center rounded-full bg-primary px-0.75 font-mono text-[9px] leading-none font-semibold text-primary-foreground", className)}>{n > 99 ? "99+" : n}</span>;
+}
+
+function RailLink({ icon, label, href, onClick, active, dialog, collapsed, badge = 0 }: { icon: IconName; label: string; href?: string; onClick?: () => void; active?: boolean; /** Opens a dialog (aria-haspopup, aria-expanded = active). */ dialog?: boolean; collapsed: boolean; badge?: number }) {
   const cls = cn(
-    "flex h-10 w-full min-w-0 items-center gap-2.5 rounded-lg px-3 text-sm no-underline outline-none select-none transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-4 [&_svg]:shrink-0",
+    "relative flex h-10 w-full min-w-0 items-center gap-2.5 rounded-lg px-3 text-sm no-underline outline-none select-none transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-4 [&_svg]:shrink-0",
     active ? "bg-bg-raised font-medium text-foreground [&_svg]:text-primary" : "text-muted-foreground hover:bg-bg-row hover:text-foreground",
   );
   const inner = (
     <>
       <Icon name={icon} />
       <span className={cn("truncate transition-opacity duration-150", collapsed ? "opacity-0" : "opacity-100")}>{label}</span>
+      {badge > 0 && <span className="sr-only">, {badge} new</span>}
+      <Badge n={badge} className="top-1.5 left-6" />
     </>
   );
   const el =
@@ -86,6 +96,7 @@ function RailLink({ icon, label, href, onClick, active, dialog, collapsed }: { i
  * pill. Padded by the home-indicator inset; fixed, so the page scrolls under nothing.
  */
 export function NavTabBar({ page }: { page: PageId }) {
+  const unseen = useUnseenAlerts();
   return (
     <nav aria-label="Main" className="fixed inset-x-0 bottom-0 z-30 bg-card pb-[env(safe-area-inset-bottom)]">
       <ul className="m-0 flex list-none gap-1 p-1">
@@ -101,10 +112,12 @@ export function NavTabBar({ page }: { page: PageId }) {
                   active ? "text-foreground" : "text-muted-foreground hover:text-foreground",
                 )}
               >
-                <span className={cn("flex h-7 w-12 items-center justify-center rounded-full transition-colors duration-150 [&_svg]:size-5", active && "bg-bg-row text-primary")}>
+                <span className={cn("relative flex h-7 w-12 items-center justify-center rounded-full transition-colors duration-150 [&_svg]:size-5", active && "bg-bg-row text-primary")}>
                   <Icon name={item.icon} />
+                  <Badge n={item.id === "alerts" ? unseen : 0} className="top-0 right-2" />
                 </span>
                 <span className="max-w-full truncate">{item.label}</span>
+                {item.id === "alerts" && unseen > 0 && <span className="sr-only">, {unseen} new</span>}
               </a>
             </li>
           );

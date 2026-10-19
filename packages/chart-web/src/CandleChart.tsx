@@ -1,5 +1,14 @@
 import {
   applyGesture,
+  alertDragDeletes,
+  alertDragPrice,
+  alertPriceAt,
+  alertTagPositions,
+  formatPrice,
+  hitAlert,
+  stepTick,
+  type AlertLayer,
+  type ChartAlert,
   autoScalePrice,
   buildSlots,
   computeChartModel,
@@ -102,6 +111,8 @@ import { drawDisplayList } from "./draw.ts";
 import { DrawingToolbox } from "./DrawingToolbox.tsx";
 import { Icon } from "./Icon.tsx";
 import { OrderTicket } from "./OrderTicket.tsx";
+import { HoldRing } from "./HoldRing.tsx";
+import { QuickAlertCard, type QuickAlertDraft } from "./QuickAlertCard.tsx";
 import { PositionPlanCard } from "./PositionPlanCard.tsx";
 import { Tip, TooltipProvider } from "./ui/tooltip.tsx";
 import { TradeMenu, TRADE_MENU_SIZES } from "./TradeMenu.tsx";
@@ -215,6 +226,29 @@ export interface CandleChartProps {
   headingInToolbar?: boolean;
   /** The timeframe picker's form in the toolbar: four segments (default) or the compact scroll wheel. */
   timeframeControl?: "segments" | "wheel";
+  /** Price alerts on this symbol: lines, the bell, hold to create, drag to move. Absent = off. */
+  alerts?: ChartAlerts | null;
+}
+
+/**
+ * What the host wires for price alerts (the chart never talks to a server; the app stores the
+ * alerts in its synced settings and the server evaluates them). Docs: chart-core alerts.ts.
+ */
+export interface ChartAlerts {
+  /** This symbol's price alerts still watching (armed, cooling, snoozed), as lines. */
+  lines: readonly ChartAlert[];
+  /** The quick card's Create. */
+  onCreate: (draft: QuickAlertDraft) => void;
+  /** The quick card's "More…": the host's full form, prefilled. */
+  onMore?: (draft: QuickAlertDraft) => void;
+  /** A line dragged (or nudged with ↑/↓ and Enter) from `from` to `price`. */
+  onMove: (id: string, price: number, from: number) => void;
+  /** Dragged off the right edge, or Delete on a focused tag. */
+  onDelete: (id: string) => void;
+  /** Ctrl+Z in the chart when its last change was an alert's: the host undoes it (its toast's Undo). */
+  onUndo?: () => void;
+  /** The defaults a new alert gets, for the quick card ("Once · this week · in app + phone"). */
+  defaultsText?: string;
 }
 
 /** What the host wires for simulated trading (the chart never talks to a server). */
@@ -314,8 +348,16 @@ export function CandleChart({
   toolbarInChart = false,
   headingInToolbar = false,
   timeframeControl = "segments",
+  alerts = null,
 }: CandleChartProps) {
   const theme = useChartTheme(themeProp);
+  // Price alerts (chart-core alerts.ts): a line being dragged or nudged from the keyboard (drawn at
+  // its new price until the release commits it), the hold ring, the quick card, and which kind of
+  // change Ctrl+Z should undo (the chart's drawings, or the host's last alert change).
+  const [alertDrag, setAlertDrag] = useState<{ id: string; price: number; from: number; deleting: boolean } | null>(null);
+  const [holdRing, setHoldRing] = useState<{ x: number; y: number } | null>(null);
+  const [quick, setQuick] = useState<{ open: boolean; at: { x: number; y: number } | null; draft: QuickAlertDraft | null }>({ open: false, at: null, draft: null });
+  const lastChange = useRef<"drawing" | "alert">("drawing");
 
   // Indicators: controlled, or kept here (and persisted with persistKey).
   const [ownIndicators, setOwnIndicators] = useState<IndicatorSpec[]>(() => loadJson(persistKey && `${persistKey}:indicators`, []));
@@ -336,6 +378,7 @@ export function CandleChart({
   const [histories, setHistories] = useState<Record<string, History<Drawing[]>>>({});
   const history = histories[symbol] ?? emptyHistory<Drawing[]>();
   const setDrawings = (next: Drawing[]) => {
+    lastChange.current = "drawing";
     setHistories((all) => ({ ...all, [symbol]: record(all[symbol] ?? emptyHistory<Drawing[]>(), drawings) }));
     writeDrawings(next);
   };
@@ -492,6 +535,8 @@ export function CandleChart({
   const position = useMemo(() => trading?.state?.positions.find((p) => p.symbol === symbol) ?? null, [trading?.state, symbol]);
   // The "+" place button follows a hovering mouse (touch opens the ticket from the price axis menu or Trade).
   const placeY = trading && !tool && !drag && pointer && gesturesRef.current?.lastPointerType === "mouse" ? pointer.y : null;
+  // The bell beside it, at the same y (approved design: "+" opens a trade, the bell an alert).
+  const bellY = alerts && !tool && !drag && !alertDrag && pointer && gesturesRef.current?.lastPointerType === "mouse" ? pointer.y : null;
   // Robinhood's visibility switches hide drawings or orders without deleting them; hidden ones are not hit-tested either.
   const shownDrawings = useMemo(() => {
     const own = visibility.drawings ? drawings : [];
@@ -500,6 +545,14 @@ export function CandleChart({
   }, [drawings, drag, measurement, visibility.drawings]);
   const showTrading = !!trading && visibility.trading;
   const selectedDrawing = selected?.kind === "drawing" ? selected.id : null;
+  const alertLines = alerts?.lines;
+  const alertLayer: AlertLayer | null = useMemo(
+    () =>
+      alertLines
+        ? { alerts: alertLines, dragging: alertDrag ? { id: alertDrag.id, price: alertDrag.price, deleting: alertDrag.deleting } : null, bellY, besidePlace: showTrading && placeY !== null, last }
+        : null,
+    [alertLines, alertDrag, bellY, showTrading, placeY, last],
+  );
 
   // The heading and timeframes live in the toolbar row instead of the chart's corners.
   const headerRow = headingInToolbar && toolbar && !toolbarInChart && !toolbarContainer;
@@ -543,6 +596,7 @@ export function CandleChart({
       selectedDrawing,
       draft,
       trading: showTrading ? { orders, position, last, dragging: drag?.order ? { id: drag.order.id, price: drag.order.price } : null, placeY } : null,
+      alerts: alertLayer,
       context,
       now,
       paneHeights,
@@ -551,7 +605,7 @@ export function CandleChart({
       baselinePrice,
       extendedHours: settings.extendedHours,
     }),
-    [timeframe, series, slots, inspectT, pointer, tradeMenuOpen, tradeMenuAt, chartOptions, scaleType, indicatorResults, shownDrawings, selectedDrawing, draft, showTrading, orders, position, last, drag, placeY, context, now, paneHeights, settings.chartType, chartStyle, baselinePrice, settings.extendedHours],
+    [timeframe, series, slots, inspectT, pointer, tradeMenuOpen, tradeMenuAt, chartOptions, scaleType, indicatorResults, shownDrawings, selectedDrawing, draft, showTrading, orders, position, last, drag, placeY, alertLayer, context, now, paneHeights, settings.chartType, chartStyle, baselinePrice, settings.extendedHours],
   );
 
   const paint = useCallback((ctx: CanvasRenderingContext2D, size: Size) => drawDisplayList(ctx, layoutChart(computeChartModel(state, vp, size), state, theme)), [state, vp, theme]);
@@ -633,9 +687,14 @@ export function CandleChart({
   const tradingLayer = state.trading ?? null;
   const hitObject = (m: ChartModel) => (x: number, y: number, touch: boolean): ObjectHit | null => {
     const tol = touch ? DRAWING_HIT_PX.touch : DRAWING_HIT_PX.mouse;
+    // Grab priority (approved design): orders and positions, then alerts, then drawings.
     if (tradingLayer) {
       const t = hitTrading(m, tradingLayer, x, y, tol);
       if (t) return t;
+    }
+    if (alertLayer) {
+      const a = hitAlert(m, alertLayer, x, y, tol, touch);
+      if (a) return a;
     }
     if (!visibility.drawings) return null;
     const d = hitDrawing(m, drawings, x, y, tol, selectedDrawing);
@@ -674,8 +733,33 @@ export function CandleChart({
     });
   };
 
+  // Opens the quick alert card at a height (chart px), with the direction the price means.
+  const openQuickAlert = (y: number, x?: number) => {
+    if (!alerts) return;
+    const price = alertPriceAt(model, y);
+    if (price === null) return;
+    const r = canvasRef.current!.getBoundingClientRect();
+    setQuick({ open: true, at: { x: r.left + (x ?? model.geometry.plot.x + model.geometry.plot.w - 40), y: r.top + y }, draft: { price, dir: last === null || price >= last ? "above" : "below" } });
+  };
+
   const onObjectDrag = (a: Extract<GestureAction, { kind: "objectDrag" }>, m: ChartModel) => {
     const t = a.target;
+    if (t.kind === "alert") {
+      const line = alerts?.lines.find((l) => l.id === t.id);
+      if (!line || !alerts) return;
+      const price = alertDragPrice(m, line.price, a.to.y - a.from.y, a.fine) ?? line.price;
+      const deleting = !a.cancelled && alertDragDeletes(m, a.from, a.to);
+      if (!a.done) {
+        setAlertDrag({ id: t.id, price, from: line.price, deleting });
+        return;
+      }
+      setAlertDrag(null);
+      if (a.cancelled) return;
+      lastChange.current = "alert";
+      if (deleting) alerts.onDelete(t.id);
+      else if (price !== line.price) alerts.onMove(t.id, price, line.price);
+      return;
+    }
     if (t.kind === "drawing") {
       const original = drawings.find((d) => d.id === t.id);
       if (!original) return;
@@ -739,6 +823,19 @@ export function CandleChart({
         case "haptic":
           // No haptic engine worth using on the web.
           break;
+        case "holdRing":
+          setHoldRing(a.point);
+          break;
+        case "holdAlert":
+          setPointer({ x: a.x, y: a.y });
+          openQuickAlert(a.y, a.x);
+          break;
+        case "placeAlert":
+          openQuickAlert(a.y);
+          break;
+        case "liftChip":
+          // The web keeps a touch scrub as it was (the phone offers the chip; chart-native).
+          break;
         case "inspect":
           setInspect(a.t);
           if (a.announce) announce(a.t);
@@ -789,7 +886,7 @@ export function CandleChart({
   const suppressCompatMouse = useRef(false);
   const latest = useRef<{ ctx: GestureContext; apply: typeof apply } | null>(null);
   const auto0 = isAutoPrice(vp);
-  const gestureCtx = (m: ChartModel): GestureContext => ({ model: m, inspectT, priceManual: !auto0, tool, hitObject: hitObject(m), tradeMenu: !!trading });
+  const gestureCtx = (m: ChartModel): GestureContext => ({ model: m, inspectT, priceManual: !auto0, tool, hitObject: hitObject(m), tradeMenu: !!trading, holdAlert: !!alerts });
   useLayoutEffect(() => {
     latest.current = { ctx: gestureCtx(model), apply };
   });
@@ -831,11 +928,11 @@ export function CandleChart({
           ? "grabbing"
           : tool
             ? "crosshair"
-            : hit?.kind === "order"
-              ? hit.part === "cancel"
+            : hit?.kind === "order" || hit?.kind === "alert"
+              ? hit.kind === "order" && hit.part === "cancel"
                 ? "pointer"
                 : "ns-resize"
-              : hit?.kind === "place"
+              : hit?.kind === "place" || hit?.kind === "placeAlert"
                 ? "pointer"
                 : hit?.kind === "drawing"
                   ? hit.part === "body"
@@ -1032,10 +1129,31 @@ export function CandleChart({
   const onKeyDown = (e: KeyboardEvent<HTMLCanvasElement>) => {
     const plotW = model.geometry.plot.w;
     let next: number | null | undefined;
+    // Escape while dragging an object puts it back (an alert line, an order, a drawing).
+    if (e.key === "Escape" && gestures.state === "drag") {
+      e.preventDefault();
+      apply(gestures.cancelDrag(), model);
+      return;
+    }
+    // Alt+A: a new alert at the crosshair's price (the last price without one).
+    if (alerts && e.altKey && !e.ctrlKey && !e.metaKey && (e.code === "KeyA" || e.key === "a" || e.key === "A")) {
+      e.preventDefault();
+      const lastY = last !== null && model.price ? Math.min(model.geometry.plot.y + model.geometry.plot.h - 1, Math.max(model.geometry.plot.y + 1, priceY(model.price, last))) : null;
+      const y = pointer && pointer.y >= model.geometry.plot.y && pointer.y <= model.geometry.plot.y + model.geometry.plot.h ? pointer.y : lastY;
+      if (y !== null) openQuickAlert(y, pointer?.x);
+      return;
+    }
     // Escape unwinds one layer at a time: a drawing being placed, the tool, the selection, then inspection.
     if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === "z" || e.key === "Z" || e.key === "y" || e.key === "Y")) {
       e.preventDefault();
-      stepHistory(e.key.toLowerCase() === "y" || e.shiftKey ? "redo" : "undo");
+      const redoKey = e.key.toLowerCase() === "y" || e.shiftKey;
+      // The chart's last change was an alert's (a drag, a delete): the host's Undo takes it back.
+      if (!redoKey && lastChange.current === "alert" && alerts?.onUndo) {
+        lastChange.current = "drawing";
+        alerts.onUndo();
+        return;
+      }
+      stepHistory(redoKey ? "redo" : "undo");
       return;
     }
     if (e.key === "Escape" && measurement) {
@@ -1187,6 +1305,77 @@ export function CandleChart({
                 }
               : undefined
           }
+          alert={
+            alerts && model.price && menu.at
+              ? {
+                  price: formatPrice(snapPrice(yPrice(model.price, menu.at.y - canvasRef.current!.getBoundingClientRect().top))),
+                  onAlertAt: () => openQuickAlert(menu.at!.y - canvasRef.current!.getBoundingClientRect().top),
+                }
+              : undefined
+          }
+        />
+      )}
+      {holdRing && <HoldRing x={holdRing.x} y={holdRing.y} />}
+      {alerts && alertLayer && model.price && (
+        // Each alert's axis tag as a focusable control (the canvas draws it; this is its keyboard
+        // and screen reader twin): ↑/↓ move it one tick, Enter saves, Esc puts it back, Delete
+        // removes. Pointer events pass through to the canvas, which owns the drag.
+        <div className="pointer-events-none absolute inset-0 z-[4]">
+          {alertTagPositions(model, alertLayer).map((t) => {
+            const line = alerts.lines.find((l) => l.id === t.id);
+            if (!line) return null;
+            const g = model.geometry;
+            return (
+              <button
+                key={t.id}
+                type="button"
+                aria-label={`Alert ${line.label}. Up and down arrows move it one tick, Enter saves, Delete removes.`}
+                className="absolute rounded opacity-0 outline-none focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring"
+                style={{ left: g.priceAxis.x + 2, top: t.y - 9, width: g.priceAxis.w - 4, height: 18 }}
+                onBlur={() => setAlertDrag((d) => (d?.id === t.id ? null : d))}
+                onKeyDown={(e) => {
+                  const cur = alertDrag?.id === t.id ? alertDrag.price : line.price;
+                  if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+                    e.preventDefault();
+                    setAlertDrag({ id: t.id, price: stepTick(cur, e.key === "ArrowUp" ? 1 : -1), from: line.price, deleting: false });
+                  } else if (e.key === "Enter") {
+                    e.preventDefault();
+                    setAlertDrag(null);
+                    if (cur !== line.price) {
+                      lastChange.current = "alert";
+                      alerts.onMove(t.id, cur, line.price);
+                    }
+                  } else if (e.key === "Escape" && alertDrag?.id === t.id) {
+                    e.preventDefault();
+                    setAlertDrag(null);
+                  } else if (e.key === "Delete" || e.key === "Backspace") {
+                    e.preventDefault();
+                    setAlertDrag(null);
+                    lastChange.current = "alert";
+                    alerts.onDelete(t.id);
+                    canvasRef.current?.focus();
+                  }
+                }}
+              />
+            );
+          })}
+        </div>
+      )}
+      {alerts && (
+        <QuickAlertCard
+          open={quick.open}
+          onOpenChange={(open) => {
+            setQuick((q) => ({ ...q, open }));
+            if (!open) setPointer(null);
+          }}
+          anchor={quick.at}
+          symbol={symbol}
+          draft={quick.draft}
+          last={last}
+          defaultsText={alerts.defaultsText}
+          onCreate={alerts.onCreate}
+          onMore={alerts.onMore}
+          finalFocus={canvasRef}
         />
       )}
       {!auto && model.price && (

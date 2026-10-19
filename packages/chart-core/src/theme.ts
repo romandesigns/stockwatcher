@@ -57,6 +57,11 @@ export const DEFAULT_CHART_THEME: ChartTheme = {
   orderSell: "#f0645c",
   onOrder: "#0f1216",
   position: "#98a2ae",
+  alert: "#8b9cff",
+  alertMuted: "rgba(139, 156, 255, 0.5)",
+  onAlert: "#0f1216",
+  alertLabelBg: "#20263a",
+  alertLabelText: "#c4ccff",
   // Halts and LULD are trading restrictions: the warning (amber) status colour, always with a word.
   halt: "rgba(224, 166, 58, 0.10)",
   haltText: "#e0a63a",

@@ -2,7 +2,7 @@ import type { ConnectionStatus, MarketSource } from "@stockwatcher/shared";
 import { useEffect, useState } from "react";
 
 import { loadSettingsSync } from "../settings/sync";
-import { loadAppStore } from "../state/store";
+import { appActions, loadAppStore } from "../state/store";
 import { getAccessToken, setAccessToken } from "../storage/secure";
 import { createMobileFeed, type MobileFeed } from "./serverFeed";
 
@@ -32,7 +32,7 @@ export function useConnection(client: string, source: MarketSource): MobileConne
     let alive = true;
     void Promise.all([getAccessToken().catch(() => null), loadSettingsSync(), loadAppStore()]).then(([token, sync]) => {
       if (!alive) return;
-      feed = createMobileFeed(token, setStatus, sync, client, source);
+      feed = createMobileFeed(token, setStatus, sync, client, source, (m) => appActions().applyAlertsMessage(m));
       setReady({ feed, token });
     });
     return () => {

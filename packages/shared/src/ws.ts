@@ -1,4 +1,4 @@
-import { parseServerMessage, type ClientMessage, type HelloMessage, type MarketSource, type PressureMessage, type QuotesMessage, type ServerMessage, type WelcomeMessage } from "./protocol.ts";
+import { isAlertsMessage, parseServerMessage, type AlertsServerMessage, type ClientMessage, type HelloMessage, type MarketSource, type PressureMessage, type QuotesMessage, type ServerMessage, type WelcomeMessage } from "./protocol.ts";
 import type { SettingsSync } from "./settingsSync.ts";
 
 export type ConnectionStatus = "connecting" | "open" | "reconnecting" | "unauthorized" | "closed";
@@ -27,6 +27,8 @@ export interface WsClientOptions {
   onQuotes?: (message: QuotesMessage) => void;
   /** `pressure.snapshot` / `pressure.update` frames, while subscribed (see `subscribePressure`). */
   onPressure?: (message: PressureMessage) => void;
+  /** The price alerts' frames (`alerts.history`, `alert.fired`, …): every connection gets them. */
+  onAlerts?: (message: AlertsServerMessage) => void;
   /**
    * The synced settings (settingsSync.ts). Attached on every `welcome` (the server's
    * `settings.snapshot` follows it), fed every `settings.*` frame, and detached when the
@@ -136,6 +138,8 @@ export function createWsClient(opts: WsClientOptions): WsClient {
         opts.onPressure?.(msg);
       } else if (msg.type === "settings.snapshot" || msg.type === "settings.changed" || msg.type === "settings.rejected") {
         opts.settings?.handle(msg);
+      } else if (isAlertsMessage(msg)) {
+        opts.onAlerts?.(msg);
       }
       opts.onMessage?.(msg);
     };

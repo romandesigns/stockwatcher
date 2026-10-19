@@ -61,6 +61,63 @@ The reference for a screen with several charts. Web `apps/web/src/dashboard/`, p
     ingest path); one pre-serialized `pressure.update` with the whole board goes to subscribers
     when it changed.
 
+## Alerts (2026-10-19)
+
+Price alerts, built to the owner-approved design ("StockWatcher alerts", Strategy board = the
+spec). Rules and storage: `app-state.md` "Alerts"; evaluation: `crates/server/src/alerts`.
+
+**What you can watch.** Price crosses above/below a level; a % move up/down/either within 1, 5 or
+15 min, since today's open or since yesterday's close; signals: halted or resumed, within N% of
+the limit-up/down band (**modelled**, chart-engine `luld.rs`; every text says so), new high of
+day, Halt watcher pressure reaching N (`crate::pressure`, scored once a second only for the
+symbols such an alert watches). Fires once (→ done) or every time with a 5–60 min gap (default
+15); sessions pre / regular / after / overnight; expires end of day (20:00 ET) / end of week
+(Friday 20:00 ET) / never; notify in app and/or phone.
+
+**Evaluation (server, live market only, off the ingest path).** `Market::apply` offers each
+eligible print (`Trade::effect().updates_ohlc`, the candles' own rule), halt, resume, corrected
+print and modelled LULD change to the alerts task with `try_send` on a bounded channel (8192);
+a full channel drops and counts (`alerts.status.dropped`). The rules (`eval.rs`, each pinned by a
+test): a cross needs the previous eligible trade on the other side (a touch is not a cross); a
+comparison against a previous trade older than 10 min (regular) / 30 min (outside), or a print
+that much older than the wall clock, is held back as **stale**; sessions filter silently; while
+halted only halt alerts fire (others are held, `halted`); "every time" re-arms only when the gap
+has passed AND the price moved back 0.5% from the fire price (halt and pressure alerts: the gap
+alone); a met condition while cooling is held once (`gap`); a late print (> 2 s older than the
+newest) or a correction's replacement fires a price alert once, marked late, without moving the
+reference; % moves, the LULD distance and pressure are edges (false → true); rules loaded at
+startup learn before they fire, so a restart never re-fires what is currently true.
+
+**Delivery.** In app always: `alert.fired` to every socket, a toast, an Activity row. Phone through
+Expo's push service, in order: the alert's Phone chip, a registered phone, quiet hours (ET),
+one per stock per 5 min (extra fires grouped into the next: "+2 more"), the daily budget (5/10/20/50,
+default 20, restored from Activity after a restart). Every hold-back is in Activity with its reason;
+Activity is kept 30 days (`DATA_DIR/alerts/history.jsonl`). Expo is a hosted dependency on
+purpose (a locked phone is reachable only through FCM/APNs): optional at runtime, batched (100 per
+request), retried on 429/5xx, receipts checked after 15 min, `DeviceNotRegistered` drops the
+token.
+
+**On the chart (chart-core `alerts.ts`, both renderers; the chart never talks to the server, the
+app passes `alerts={lines, onCreate, onMore, onMove, onDelete, onUndo}`).**
+
+| To… | Web (mouse) | Phone (touch) | Keyboard |
+|---|---|---|---|
+| New alert at a price | the bell beside the hover "+" (same y); press and hold 0.5 s anywhere in the plot (a ring appears after 150 ms; moving > 4 px first is a pan; never with a drawing tool armed) → the quick card at the exact price (the chart's own scale, linear/log/percent, snapped to $0.0001 under $1, $0.01 above; above the last price = crosses above) | a long press still scrubs; on lift a 4 s chip "Alert / + Trade"; long-press the price axis → "Alert at X"; the quick sheet with −/+ one tick | Alt+A at the crosshair (the last price without one) |
+| Move | drag its line or tag (Shift = a tenth as fast), "old → new · %" live; Esc puts it back; release saves with an Undo toast | drag its 44 pt axis handle (no long press), a haptic tick per price step; lift saves with Undo | Tab to the tag, ↑/↓ one tick, Enter saves, Esc cancels |
+| Delete | drag the tag off the right edge ("Release to delete") | drag the handle off the right edge | Delete on a focused tag |
+| Undo | the toast's Undo, or Ctrl+Z (the chart's Ctrl+Z when its last change was an alert's) | the toast's Undo (5 s) | |
+
+Grab priority: orders and positions, then alerts, then drawings (`hitObject`). A moved line's
+direction follows the last price; the edit re-arms it (a moved finished alert fires again).
+GestureController: `holdAlert` / `liftChip` context flags, `holdRing` / `holdAlert` / `placeAlert` /
+`liftChip` actions, `objectDrag.fine` / `.cancelled`, `cancelDrag()`.
+
+**Pages.** Web: the Alerts rail item (bell, badge = fires since the page was last open on this
+device) → the manager (state chips: Armed / Cooling · 9 min / Snoozed / Fired 10:42 / Expired;
+row menu: Edit, Snooze, Re-arm, Delete) and Activity by day, the phone budget and quiet hours.
+Phone: the third tab (bell, the same tab-switch spec), the list, Activity, "Turn on phone alerts",
+a banner on each fire.
+
 ## The rule
 
 **Everything chart-related lives in the chart packages; an app passes data in and wires callbacks

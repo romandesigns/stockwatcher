@@ -1,4 +1,7 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { AlertForm } from "./alerts/AlertForm.tsx";
+import { AlertsPage } from "./alerts/AlertsPage.tsx";
+import { showToast } from "./lib/toastStore.ts";
 import App from "./App.tsx";
 import { Toaster } from "./lib/toast.tsx";
 import { useMediaQuery } from "./lib/useMediaQuery.ts";
@@ -44,7 +47,8 @@ export function Shell() {
   // The page headers' NavToggle reads these (far left of each header); stable while unchanged.
   const rail = useMemo(() => ({ collapsed, toggle }), [collapsed]);
 
-  const content = page === "chart" ? <App /> : <DashboardPage />;
+  const content = page === "chart" ? <App /> : page === "alerts" ? <AlertsPage /> : <DashboardPage />;
+  useFiredToasts();
 
   if (phone) {
     // No rail: no NavToggle, and each page header carries its own Settings gear.
@@ -53,6 +57,7 @@ export function Shell() {
         {content}
         <NavTabBar page={page} />
         <AppSettingsDialog />
+        <AlertForm />
         {/* Above the tab bar. */}
         <Toaster bottom={`calc(${TAB_BAR_HEIGHT} + env(safe-area-inset-bottom) + 0.75rem)`} />
       </div>
@@ -64,8 +69,27 @@ export function Shell() {
         <NavRail page={page} collapsed={collapsed} settingsOpen={settingsOpen} onSettings={() => getAppStore().getState().setSettingsOpen(true)} />
         <div className="min-w-0 flex-1 overflow-y-auto">{content}</div>
         <AppSettingsDialog />
+        <AlertForm />
         <Toaster />
       </div>
     </NavRailContext.Provider>
+  );
+}
+
+/**
+ * The in-app delivery of a fired alert (approved design: "an alert.fired frame on every open
+ * socket; a toast and an Activity row"): a bell toast with View, whatever page is open. Only for
+ * fires heard live (a reconnect's Activity snapshot is history, not news) and only when the
+ * alert's "In app" chip is on.
+ */
+function useFiredToasts() {
+  useEffect(
+    () =>
+      getAppStore().subscribe((s, prev) => {
+        const e = s.lastFired;
+        if (!e || e === prev.lastFired || !e.app) return;
+        showToast(`${e.symbol} · ${e.text}`, { icon: "bell", ms: 6000, action: { label: "View", run: () => void (window.location.hash = "#/alerts") } });
+      }),
+    [],
   );
 }

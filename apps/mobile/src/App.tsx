@@ -4,7 +4,10 @@ import { StatusBar } from "expo-status-bar";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
+import { AlertSheet } from "./alerts/AlertSheet";
+import { useFiredBanner } from "./alerts/useFiredBanner";
 import { ErrorBoundary } from "./ErrorBoundary";
+import { navigationRef } from "./navigation/ref";
 import { RootStack, type RootStackParamList } from "./navigation/RootStack";
 import { colors } from "./theme";
 import { Toaster } from "./ui/Toaster";
@@ -20,6 +23,7 @@ const linking: LinkingOptions<RootStackParamList> = {
         screens: {
           Dashboard: "",
           Chart: "chart",
+          Alerts: "alerts",
         },
       },
     },
@@ -47,16 +51,20 @@ export default function App() {
   // Checks for OTA updates whenever the app returns to the foreground.
   // Renders nothing; the downloaded update applies on the next cold start.
   useForegroundUpdates();
+  // Price alerts: the phone's push token (no prompt at launch) and the in-app banner on a fire.
+  useFiredBanner();
 
   return (
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: colors.bg }}>
       <SafeAreaProvider>
         <ErrorBoundary>
-          <NavigationContainer linking={linking} theme={navigationTheme}>
+          <NavigationContainer ref={navigationRef} linking={linking} theme={navigationTheme}>
             <RootStack />
           </NavigationContainer>
         </ErrorBoundary>
-        {/* Over every screen and above the tab bar ("Copied AAL"). */}
+        {/* The full alert sheet (chart "More options", the Alerts tab), once for every screen. */}
+        <AlertSheet />
+        {/* Over every screen and above the tab bar ("Copied AAL", an alert's Undo, a fired alert). */}
         <Toaster />
         <StatusBar style="light" />
       </SafeAreaProvider>

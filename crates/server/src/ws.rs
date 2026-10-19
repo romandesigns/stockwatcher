@@ -105,6 +105,21 @@
 //!   `too_large`, `store_full`, `not_a_map` (drop the edit) or `settings_unavailable` (the disk
 //!   write failed: keep it and resend after the next reconnect). Nothing changed.
 //! - Values are opaque JSON: the clients own the schemas and validate what they read.
+//! - `alerts.state` is the one namespace only the server writes (crate::alerts::model::STATE_NS):
+//!   a client `settings.set`/`settings.patch` on it is refused with `bad_request`.
+//!
+//! Price alerts (crate::alerts, after `welcome`, on every connection whatever its market):
+//! - server `alerts.history {events, phoneToday, phoneBudget, devices, dropped}` once right after
+//!   `settings.snapshot` (Activity: the newest 500 fires and hold-backs, oldest first), and again
+//!   to a connection that lagged on the alert frames.
+//! - server `alert.fired {event, phoneToday}` and `alert.held {event}` as they happen, to EVERY
+//!   connection; `alert.updated {event}` when a recorded event changes (a phone push that failed
+//!   after it was recorded); `alerts.status {phoneToday, phoneBudget, devices, dropped}`.
+//! - client `push.register {token, platform?, name?}`: this phone's Expo push token, kept by the
+//!   server for phone notifications and never sent to other clients; a malformed token gets
+//!   `error bad_request`. `push.unregister {token}` removes it. No direct reply on success (the
+//!   `alerts.status` frame's `devices` count moves).
+//! - The rules themselves are the synced `alerts` namespace (settings.* above).
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -200,6 +215,18 @@ enum ClientMessage {
         #[serde(rename = "opId")]
         op_id: String,
     },
+    #[serde(rename = "push.register")]
+    PushRegister {
+        token: String,
+        #[serde(default)]
+        platform: String,
+        #[serde(default)]
+        name: String,
+    },
+    #[serde(rename = "push.unregister")]
+    PushUnregister {
+        token: String,
+    },
 }
 
 /// For a frame in the settings namespace that failed to parse: its `ns` and `opId` if readable,
@@ -223,6 +250,20 @@ async fn apply_setting(
     op_id: &str,
     op: SettingsOp,
 ) -> bool {
+    // The alerts' runtime state is the evaluator's alone (crate::alerts::model): a client that
+    // could write it could re-arm or silence an alert behind the evaluator's back.
+    if crate::alerts::server_owned(ns) {
+        return send_text(
+            socket,
+            settings_rejected(
+                ns,
+                op_id,
+                "bad_request",
+                "this namespace is written by the server only",
+            ),
+        )
+        .await;
+    }
     match settings.apply(ns, op_id, op).await {
         Ok(None) => true,
         Ok(Some(reply)) => send_text(socket, reply).await,
@@ -526,6 +567,12 @@ async fn session(mut socket: WebSocket, state: AppState) {
     if !send_text(&mut socket, settings.snapshot_frame().await).await {
         return;
     }
+    // Activity and the phone budget (crate::alerts); subscribed before the snapshot, as above.
+    let alerts = state.alerts().clone();
+    let mut alerts_feed = alerts.subscribe();
+    if !send_text(&mut socket, alerts.snapshot_frame().to_string()).await {
+        return;
+    }
     let mut subs: Vec<Sub> = Vec::new();
     let mut quotes: Option<QuotesSub> = None;
     let mut pressure: Option<PressureSub> = None;
@@ -649,6 +696,20 @@ async fn session(mut socket: WebSocket, state: AppState) {
                     }
                     // The store (and its sender) lives as long as the AppState; if it ever went,
                     // recv would return at once forever, so end the session rather than spin.
+                    Err(RecvError::Closed) => false,
+                };
+                if !ok {
+                    break;
+                }
+            }
+            frame = alerts_feed.recv() => {
+                let ok = match frame {
+                    Ok(f) => send_text(&mut socket, f.to_string()).await,
+                    Err(RecvError::Lagged(n)) => {
+                        tracing::debug!(skipped = n, "ws client lagged on alerts; resending Activity");
+                        send_text(&mut socket, alerts.snapshot_frame().to_string()).await
+                    }
+                    // An idle service (tests) never sends; its sender lives as long as the state.
                     Err(RecvError::Closed) => false,
                 };
                 if !ok {
@@ -808,6 +869,17 @@ async fn session(mut socket: WebSocket, state: AppState) {
                         if !apply_setting(&mut socket, &settings, &ns, &op_id, op).await {
                             break;
                         }
+                        None
+                    }
+                    Ok(ClientMessage::PushRegister { token, platform, name }) => {
+                        if alerts.register_device(token.trim(), &platform, &name) {
+                            None
+                        } else {
+                            Some(ServerMessage::Error { code: "bad_request", message: "not an Expo push token" })
+                        }
+                    }
+                    Ok(ClientMessage::PushUnregister { token }) => {
+                        alerts.unregister_device(token.trim());
                         None
                     }
                     Err(_) if let Some((ns, op_id)) = settings_frame_ids(&text) => {

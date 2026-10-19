@@ -23,7 +23,7 @@ between `App.tsx` and `ChartScreen.tsx` before).
 
 | Kind | What | Owner | Persisted |
 |---|---|---|---|
-| **Synced** | indicators, levels, chart settings, drawing settings, drawings (per symbol), **ticker, timeframe, profile bin** (`view`), **trade size** (`tradeQty`), **search recents** (`searchRecents`), **the dashboard panel** (`dashboard`: chart count 1–4 and each slot's ticker and timeframe) | the settings sync engine (`settings-sync.md`); the store mirrors it | server + the engine's local cache |
+| **Synced** | indicators, levels, chart settings, drawing settings, drawings (per symbol), **ticker, timeframe, profile bin** (`view`), **trade size** (`tradeQty`), **search recents** (`searchRecents`), **the dashboard panel** (`dashboard`: chart count 1–4 and each slot's ticker and timeframe), **price alerts** (`alerts`, `alerts.prefs`; `alerts.state` read-only, written by the server) | the settings sync engine (`settings-sync.md`); the store mirrors it | server + the engine's local cache |
 | **Device** | toolbox place, pane heights, drawing tools shown | phone: the store's `device` slice, saved to AsyncStorage under the old `chart.*` keys. Web: `CandleChart` under its `persistKey` (`sw-chart:*`) | this device |
 | **Session** | open sheets and dialogs, the inspected candle, the symbol actually shown, **the selected dashboard chart** (`dashboardSelected`) | the store | no |
 
@@ -52,6 +52,15 @@ speed, play/pause) is the server's, so every client already shares it.
 - **New synced value:** add the namespace and a parser in `namespaces.ts` (or `syncedSettings.ts`
   for chart models), mirror it in `createAppStore` (initial read, setter, the subscribe switch),
   and add a test. The server needs no change: it stores any namespace opaquely.
+
+## Alerts (2026-10-19)
+
+`packages/app-state/src/alerts.ts` (Rust twin: `crates/server/src/alerts/model.rs`; change both together).
+
+- **`alerts`**: a map `alertId → rule` written per entry with `settings.patch` (`saveAlert`, `updateAlert`, `removeAlert`, `snoozeAlert`), so two devices editing different alerts never overwrite each other. A rule: `{id, symbol, rule: {kind: price|move|halt|luld|hod|pressure, …}, fire: once|every, gapMin, sessions, expiry, expiresAt, notify: {app, phone}, snoozeUntil, createdAt, editedAt}`. `expiresAt` is computed by the client (`expiresAtFor`: 20:00 ET today / Friday) so every device and the server agree. Every edit bumps `editedAt`, which the server takes as "start over armed".
+- **`alerts.state`**: written by the server only (`{status: armed|cooling|done|expired, until?, movedBack?, basis, firedAt?, firedPrice?, count}`); a state whose `basis` is older than the rule's `editedAt` does not apply (`alertDisplay`).
+- **`alerts.prefs`**: the daily phone budget (5/10/20/50), quiet hours (ET), the sessions picked last (a new alert's default; `saveAlert` updates it).
+- **Server-pushed, session state** (not synced, not persisted): `alertActivity` (newest first), `alertStatus` (phone count, budget, phones, dropped inputs), `lastFired` (a fire heard live; hosts toast it). The feeds route `alert*` frames to `applyAlertsMessage` whatever page is open.
 
 ## Migration
 

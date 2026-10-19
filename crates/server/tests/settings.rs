@@ -322,3 +322,41 @@ async fn the_rest_view_and_the_socket_need_the_token() {
         json!(["rect"])
     );
 }
+
+/// The alerts' runtime state is the server's (crate::alerts::model::STATE_NS): a client write
+/// is refused and nothing changes; a malformed push token is refused too.
+#[tokio::test]
+async fn clients_cannot_write_the_alert_state_or_register_junk_tokens() {
+    let s = serve(None, None).await;
+    let (mut ws, _) = connect(&s.url, None).await;
+    next(&mut ws, is("alerts.history")).await;
+    send(
+        &mut ws,
+        json!({ "type": "settings.patch", "ns": "alerts.state", "set": { "a1": { "status": "armed", "basis": 1 } }, "opId": "x-1" }),
+    )
+    .await;
+    let r = next(&mut ws, is("settings.rejected")).await;
+    assert_eq!(r["ns"], "alerts.state");
+    assert_eq!(r["code"], "bad_request");
+    send(
+        &mut ws,
+        json!({ "type": "settings.set", "ns": "alerts.state", "value": {}, "opId": "x-2" }),
+    )
+    .await;
+    assert_eq!(next(&mut ws, is("settings.rejected")).await["opId"], "x-2");
+    // The rules namespace itself is an ordinary synced namespace.
+    send(&mut ws, json!({ "type": "settings.patch", "ns": "alerts", "set": { "a1": { "symbol": "XLAB" } }, "opId": "x-3" })).await;
+    assert_eq!(next(&mut ws, is("settings.changed")).await["ns"], "alerts");
+    send(
+        &mut ws,
+        json!({ "type": "push.register", "token": "not-a-token" }),
+    )
+    .await;
+    assert_eq!(next(&mut ws, is("error")).await["code"], "bad_request");
+    send(&mut ws, json!({ "type": "push.register", "token": "ExponentPushToken[abc]", "platform": "android" })).await;
+    send(&mut ws, json!({ "type": "ping", "ts": 7 })).await;
+    // A valid token has no direct reply: the next frame is the pong.
+    let v = next(&mut ws, |v| v["type"] == "pong" || v["type"] == "error").await;
+    assert_eq!(v["type"], "pong");
+    s.task.abort();
+}

@@ -1,5 +1,5 @@
 import { createChartRouter, parseChartMessage, parsePaperMessage, type ChartSubscribe, type ChartUnsubscribe, type PaperMessage, type PaperState, type ReplayControl } from "@stockwatcher/chart-core";
-import { createPressureChannel, createQuoteChannel, createWsClient, sameOriginWsUrl, type ConnectionStatus, type MarketSource, type SettingsSync, type WebSocketLike } from "@stockwatcher/shared";
+import { createPressureChannel, createQuoteChannel, createWsClient, sameOriginWsUrl, type AlertsServerMessage, type ConnectionStatus, type MarketSource, type SettingsSync, type WebSocketLike } from "@stockwatcher/shared";
 import type { ChartFeed, PaperCommand, ReplayCommand } from "./types.ts";
 
 export interface ServerFeedOptions {
@@ -8,6 +8,8 @@ export interface ServerFeedOptions {
   onStatus?: (s: ConnectionStatus) => void;
   /** The page's synced settings (settings/sync.ts): attached on every welcome by the shared client. */
   settings?: SettingsSync;
+  /** The price alerts' frames (Activity, fires), whatever this page shows: the app store takes them. */
+  onAlerts?: (m: AlertsServerMessage) => void;
   /** The market this page reads: `live` (dashboard) or `replay` (chart page). */
   source?: MarketSource;
 }
@@ -59,6 +61,7 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
     },
     onQuotes: (m) => quotes.apply(m),
     onPressure: (m) => pressure.apply(m),
+    onAlerts: opts.onAlerts,
     settings: opts.settings,
     createSocket: (url) => {
       const socket = new WebSocket(url);
@@ -69,8 +72,8 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
       socket.addEventListener("message", (ev) => {
         // A quotes.snapshot is hundreds of KB: hand it to shared's parser without first
         // parsing it twice as a chart or paper frame. The server writes `type` first. The
-        // settings.* and pressure.* frames (shared's own too) take the same shortcut.
-        if (typeof ev.data === "string" && (ev.data.startsWith('{"type":"quotes.') || ev.data.startsWith('{"type":"settings.') || ev.data.startsWith('{"type":"pressure.'))) {
+        // settings.*, pressure.* and alert frames (shared's own too) take the same shortcut.
+        if (typeof ev.data === "string" && (ev.data.startsWith('{"type":"quotes.') || ev.data.startsWith('{"type":"settings.') || ev.data.startsWith('{"type":"pressure.') || ev.data.startsWith('{"type":"alert'))) {
           inner?.({ data: ev.data });
           return;
         }
