@@ -14,8 +14,8 @@ import { colors, fonts } from "../theme";
 // dim. Roles are tablist / tab, which is how iOS and Android announce a bottom bar. The panel
 // surface is the bar's boundary: no top border (owner rule).
 
-/** Each tab's icon, by route name (MainTabs registers the routes). */
-const ICONS: Readonly<Record<string, IconName>> = { Dashboard: "dashboard", Chart: "chart" };
+/** Each tab's icon, by route name (MainTabs registers the routes). The chart tab is the replay practice feature, hence the replay icon (owner, 2026-10-18). */
+const ICONS: Readonly<Record<string, IconName>> = { Dashboard: "dashboard", Chart: "replay" };
 
 export function MainTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
   const insets = useSafeAreaInsets();

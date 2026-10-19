@@ -18,7 +18,8 @@ export interface NavItem {
 /** In nav order. The dashboard is the main page, so it owns the empty hash. */
 export const NAV_ITEMS: readonly NavItem[] = [
   { id: "dashboard", label: "Dashboard", icon: "dashboard", href: "#/" },
-  { id: "chart", label: "Chart", icon: "chart", href: "#/chart" },
+  // The replay icon (owner, 2026-10-18): this page is the replay practice feature, the dashboard is live.
+  { id: "chart", label: "Chart", icon: "replay", href: "#/chart" },
 ];
 
 /** The page a hash names; anything unknown is the dashboard. */
