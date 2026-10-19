@@ -23,6 +23,7 @@ pub enum MarketDataMode {
 /// | `ALPACA_API_KEY` / `ALPACA_API_SECRET` | unset | live only; Alpaca's `APCA_API_KEY_ID` / `APCA_API_SECRET_KEY` also work (the importer reads the same names). Without them live mode is "not configured" |
 /// | `ALPACA_STREAM_BASE` | `wss://stream.data.alpaca.markets` | live only; provider-sim is `ws://127.0.0.1:8791` |
 /// | `ALPACA_STREAM_FEED` | `sip` | live only: `sip`, `iex`, `boats`, `overnight` or `test` (Alpaca's fake `FAKEPACA` stream) |
+/// | `ALPACA_STREAM_NIGHT_FEED` | `boats` | live only, with the `sip` day feed: the feed during the overnight session (20:00–04:00 ET before a trading day; SIP carries nothing then), `boats` or `overnight`; `none` streams the day feed around the clock |
 /// | `LIVE_SYMBOLS` | `*` | live only: `*` (whole market) or a comma list |
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProviderConfig {
@@ -41,6 +42,8 @@ pub struct ProviderConfig {
 pub struct LiveConfig {
     pub stream_base: String,
     pub feed: StreamFeed,
+    /// The overnight session's feed (`ALPACA_STREAM_NIGHT_FEED`); used only with the `sip` day feed.
+    pub night_feed: Option<StreamFeed>,
     pub symbols: LiveSymbols,
     /// `None` until both halves are set; `Debug` redacts them.
     pub credentials: Option<AlpacaCredentials>,
@@ -51,6 +54,7 @@ impl Default for LiveConfig {
         LiveConfig {
             stream_base: AlpacaStreamConfig::DEFAULT_BASE.to_string(),
             feed: StreamFeed::Sip,
+            night_feed: Some(StreamFeed::Boats),
             symbols: LiveSymbols::All,
             credentials: None,
         }
@@ -130,6 +134,21 @@ impl ProviderConfig {
         if let Some(f) = var("ALPACA_STREAM_FEED") {
             c.live.feed = StreamFeed::parse(&f).map_err(|e| format!("ALPACA_STREAM_FEED: {e}"))?;
         }
+        if let Some(f) = var("ALPACA_STREAM_NIGHT_FEED") {
+            c.live.night_feed = match f.to_ascii_lowercase().as_str() {
+                "none" | "off" | "0" => None,
+                _ => match StreamFeed::parse(&f) {
+                    Ok(n @ (StreamFeed::Boats | StreamFeed::Overnight)) => Some(n),
+                    Ok(other) => {
+                        return Err(format!(
+                            "ALPACA_STREAM_NIGHT_FEED must be boats, overnight or none, got {:?}",
+                            other.as_str()
+                        ));
+                    }
+                    Err(e) => return Err(format!("ALPACA_STREAM_NIGHT_FEED: {e}")),
+                },
+            };
+        }
         if let Some(s) = var("LIVE_SYMBOLS") {
             c.live.symbols = LiveSymbols::parse(&s).map_err(|e| format!("LIVE_SYMBOLS: {e}"))?;
         }
@@ -190,6 +209,21 @@ mod tests {
         ]))
         .unwrap();
         assert_eq!(c.live.feed, StreamFeed::Test);
+        assert_eq!(LiveConfig::default().night_feed, Some(StreamFeed::Boats));
+        let night = |v: &'static str| {
+            ProviderConfig::from_lookup(move |k| {
+                (k == "ALPACA_STREAM_NIGHT_FEED").then(|| v.to_string())
+            })
+        };
+        assert_eq!(
+            night("overnight").unwrap().live.night_feed,
+            Some(StreamFeed::Overnight)
+        );
+        assert_eq!(night("none").unwrap().live.night_feed, None);
+        assert!(
+            night("iex").is_err(),
+            "only an overnight feed can be the night feed"
+        );
         assert_eq!(c.live.symbols, LiveSymbols::List(vec!["FAKEPACA".into()]));
         assert_eq!(
             c.live.credentials,

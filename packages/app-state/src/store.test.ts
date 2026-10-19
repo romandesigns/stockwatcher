@@ -198,6 +198,22 @@ describe("app store: the dashboard panel", () => {
     expect(other.s().dashboardSelected).toBe(1);
   });
 
+  test("the dashboard reads live by default; the Data setting switches it to replay and syncs", () => {
+    const r = rig();
+    expect(r.s().dashboard.source).toBe("live");
+    r.s().setDashboardSource("replay");
+    expect(r.s().dashboard.source).toBe("replay");
+    expect(r.sync.get(APP_NS.dashboard)).toMatchObject({ source: "replay" });
+    // Other dashboard writes keep it.
+    r.s().setDashboardCount(2);
+    r.s().setDashboardSymbol(0, "aal");
+    expect(r.s().dashboard.source).toBe("replay");
+    // Anything unknown from another device reads as live.
+    const other = rig();
+    other.remote(APP_NS.dashboard, { count: 1, slots: [], source: "paper" });
+    expect(other.s().dashboard.source).toBe("live");
+  });
+
   test("a hidden slot keeps its ticker for when the panel grows again", () => {
     const r = rig();
     r.s().setDashboardCount(2);

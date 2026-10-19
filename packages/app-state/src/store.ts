@@ -26,6 +26,7 @@ import {
   parseTradeQty,
   parseView,
   type DashboardSlot,
+  type DashboardSource,
   type DashboardState,
   type ViewState,
 } from "./namespaces.ts";
@@ -102,6 +103,8 @@ export interface AppState {
   setDrawings(next: Drawing[]): void;
   /** How many charts the dashboard shows (clamped to 1–4); the selection moves inside the new count. */
   setDashboardCount(count: number): void;
+  /** Which market the dashboard reads (Settings → Data). */
+  setDashboardSource(source: DashboardSource): void;
   /** Loads a ticker into one dashboard chart (and the search recents). */
   setDashboardSymbol(slot: number, symbol: string): void;
   setDashboardTimeframe(slot: number, tf: Timeframe): void;
@@ -226,6 +229,9 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
     setDashboardCount: (raw) => {
       const count = Math.min(MAX_DASHBOARD_CHARTS, Math.max(1, Math.round(raw)));
       sync.set(APP_NS.dashboard, { ...parseDashboard(sync.get(APP_NS.dashboard)), count });
+    },
+    setDashboardSource: (source) => {
+      sync.set(APP_NS.dashboard, { ...parseDashboard(sync.get(APP_NS.dashboard)), source: source === "replay" ? "replay" : "live" });
     },
     setDashboardSymbol: (slot, raw) => {
       const symbol = parseSymbol(raw);

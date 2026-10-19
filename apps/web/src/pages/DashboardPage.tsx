@@ -1,11 +1,13 @@
 import { ConnectionGate } from "../ConnectionGate.tsx";
+import { useApp } from "../state/store.ts";
 import { Dashboard } from "../dashboard/Dashboard.tsx";
 
 /**
- * The main page (owner request 2026-10-18): the multi-chart panel and the live ticker list. It
- * will consume only live data (docs/CONVENTIONS.md "Product direction"); it shows whatever the
- * server streams, which is still replay while production runs replay.
+ * The main page (owner request 2026-10-18): the multi-chart panel. It reads the server's live
+ * market unless Settings → Data says replay (app-state `dashboard.source`, synced); changing it
+ * reconnects the gate on the other market.
  */
 export function DashboardPage() {
-  return <ConnectionGate source="live">{(c) => <Dashboard choice={c.choice} feed={c.feed} />}</ConnectionGate>;
+  const source = useApp((s) => s.dashboard.source);
+  return <ConnectionGate source={source}>{(c) => <Dashboard choice={c.choice} feed={c.feed} />}</ConnectionGate>;
 }

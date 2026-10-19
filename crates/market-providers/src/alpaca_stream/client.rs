@@ -10,6 +10,17 @@
 //! (not even the pong) for [`AlpacaStreamConfig::silence_timeout`] is presumed dead. A closed
 //! market is quiet but still answers pings, so silence alone never means "no data".
 //!
+//! # Feed by session (owner, 2026-10-18)
+//!
+//! With [`AlpacaStreamConfig::night_feed`] set, the client streams `night_feed` (Blue Ocean,
+//! `boats`) during the overnight session (20:00–04:00 ET before a trading day,
+//! `market_events::session`) and `feed` (`sip`) the rest of the time. SIP carries nothing
+//! overnight, so a SIP-only stream showed an empty market from Sunday 20:00 although stocks were
+//! trading. The session is checked every [`FEED_CHECK`] while streaming; when it calls for the
+//! other feed the socket closes and the next connects at once (no backoff: nothing failed). Alpaca
+//! allows one stream connection per account on most plans, so the two feeds take turns on one
+//! connection rather than running side by side. Prints are labelled with the feed they came from.
+//!
 //! # Reconnect
 //!
 //! Any end of a session (network loss, close, read error, an `error` message, a missed stage)
@@ -46,6 +57,7 @@ use crate::ProviderError;
 use crate::import::alpaca::AlpacaCredentials;
 use crate::live::LiveFeed;
 use futures_util::{SinkExt, StreamExt};
+use market_events::session::{SessionKind, classify};
 use market_events::{MarketEvent, UnixNanos};
 use market_replay::{Link, LinkState};
 use serde_json::json;
@@ -132,7 +144,11 @@ impl Default for Backoff {
 pub struct AlpacaStreamConfig {
     /// e.g. `wss://stream.data.alpaca.markets`, or provider-sim's `ws://127.0.0.1:8791`.
     pub base: String,
+    /// The feed outside the overnight session (and always, without `night_feed`).
     pub feed: StreamFeed,
+    /// The feed during the overnight session (see the module docs), e.g. `boats`. `None` streams
+    /// `feed` around the clock.
+    pub night_feed: Option<StreamFeed>,
     pub symbols: LiveSymbols,
     /// Also subscribe to trading statuses (halts) for the same symbols.
     pub statuses: bool,
@@ -158,6 +174,7 @@ impl AlpacaStreamConfig {
         AlpacaStreamConfig {
             base: base.into(),
             feed,
+            night_feed: None,
             symbols,
             statuses: true,
             credentials,
@@ -172,9 +189,24 @@ impl AlpacaStreamConfig {
     }
 
     pub fn url(&self) -> String {
-        format!("{}/{}", self.base.trim_end_matches('/'), self.feed.path())
+        self.url_for(self.feed)
+    }
+
+    pub fn url_for(&self, feed: StreamFeed) -> String {
+        format!("{}/{}", self.base.trim_end_matches('/'), feed.path())
+    }
+
+    /// The feed to stream at `now`: `night_feed` inside an overnight session, else `feed`.
+    pub fn feed_at(&self, now: UnixNanos) -> StreamFeed {
+        match self.night_feed {
+            Some(night) if classify(now).is_some_and(|s| s.kind == SessionKind::Overnight) => night,
+            _ => self.feed,
+        }
     }
 }
+
+/// How often a streaming session checks whether the session calls for the other feed.
+pub const FEED_CHECK: Duration = Duration::from_secs(15);
 
 /// Counters since the feed started (all sessions). Cheap to read from another task.
 #[derive(Debug, Default)]
@@ -235,7 +267,10 @@ impl AlpacaStream {
     pub fn new(cfg: AlpacaStreamConfig) -> Self {
         let link = watch::Sender::new(Link {
             state: LinkState::Connecting,
-            detail: Some(format!("connecting to {}", cfg.url())),
+            detail: Some(format!(
+                "connecting to {}",
+                cfg.url_for(cfg.feed_at(wall_now()))
+            )),
         });
         AlpacaStream {
             cfg,
@@ -251,9 +286,10 @@ impl AlpacaStream {
 
 impl LiveFeed for AlpacaStream {
     fn label(&self) -> String {
-        match self.cfg.feed {
-            StreamFeed::Test => "alpaca test stream (fake data, not market evidence)".into(),
-            f => format!("alpaca {} stream", f.as_str()),
+        match (self.cfg.feed, self.cfg.night_feed) {
+            (StreamFeed::Test, _) => "alpaca test stream (fake data, not market evidence)".into(),
+            (f, Some(n)) => format!("alpaca {} stream ({} overnight)", f.as_str(), n.as_str()),
+            (f, None) => format!("alpaca {} stream", f.as_str()),
         }
     }
 
@@ -328,6 +364,8 @@ impl Jitter {
 enum SessionEnd {
     /// The consumer dropped its receiver: stop for good.
     ConsumerGone,
+    /// The session calls for the other feed: reconnect at once.
+    Switch { from: StreamFeed, to: StreamFeed },
     Ended {
         reason: String,
         subscribed: bool,
@@ -343,23 +381,33 @@ async fn run(
     link: watch::Sender<Link>,
     stats: Arc<StreamStats>,
 ) {
-    let url = cfg.url();
     let mut delay = cfg.backoff.initial;
     let mut jitter = Jitter::seeded();
     loop {
+        let feed = cfg.feed_at(wall_now());
+        let url = cfg.url_for(feed);
         link.send_replace(Link {
             state: LinkState::Connecting,
             detail: Some(format!("connecting to {url}")),
         });
         let began = Instant::now();
         let (reason, subscribed, wait_max) =
-            match session(&cfg, &url, &connector, &tx, &link, &stats).await {
+            match session(&cfg, feed, &url, &connector, &tx, &link, &stats).await {
                 SessionEnd::ConsumerGone => {
                     tracing::info!(
-                        feed = cfg.feed.as_str(),
+                        feed = feed.as_str(),
                         "alpaca stream stopped (consumer gone)"
                     );
                     return;
+                }
+                SessionEnd::Switch { from, to } => {
+                    tracing::info!(
+                        from = from.as_str(),
+                        to = to.as_str(),
+                        "alpaca stream: session changed, switching feed"
+                    );
+                    delay = cfg.backoff.initial;
+                    continue;
                 }
                 SessionEnd::Ended {
                     reason,
@@ -373,7 +421,7 @@ async fn run(
         let wait = jitter.wait(if wait_max { cfg.backoff.max } else { delay });
         delay = (delay * 2).min(cfg.backoff.max);
         tracing::warn!(
-            feed = cfg.feed.as_str(),
+            feed = feed.as_str(),
             reason = %reason,
             retry_in_ms = wait.as_millis() as u64,
             "alpaca stream disconnected"
@@ -549,6 +597,7 @@ fn stamp(e: &mut MarketEvent, mode: ReceiveTime, now: UnixNanos) {
 
 async fn session(
     cfg: &AlpacaStreamConfig,
+    feed: StreamFeed,
     url: &str,
     connector: &Connector,
     tx: &mpsc::Sender<MarketEvent>,
@@ -579,7 +628,8 @@ async fn session(
         Ok(Ok((ws, _))) => ws,
     };
     let (mut sink, mut stream) = ws.split();
-    let source = cfg.feed.source();
+    let source = feed.source();
+    let mut feed_check = tokio::time::interval_at(Instant::now() + FEED_CHECK, FEED_CHECK);
     let deadline = Instant::now() + cfg.handshake_timeout;
     let mut phase = Phase::Connected;
     let mut ping = tokio::time::interval_at(Instant::now() + cfg.ping_every, cfg.ping_every);
@@ -619,6 +669,14 @@ async fn session(
                     subscribed,
                     false,
                 );
+            }
+            _ = feed_check.tick(), if cfg.night_feed.is_some() => {
+                let to = cfg.feed_at(wall_now());
+                if to != feed {
+                    let _ = sink.send(Message::Close(None)).await;
+                    return SessionEnd::Switch { from: feed, to };
+                }
+                continue;
             }
             _ = ping.tick(), if phase == Phase::Streaming => {
                 if let Err(e) = sink.send(Message::Ping(Default::default())).await {
@@ -698,7 +756,7 @@ async fn session(
                         subscribed = true;
                         bump(&stats.subscribed);
                     }
-                    let detail = describe_subscription(cfg, &s);
+                    let detail = describe_subscription(cfg, feed, &s);
                     tracing::info!(detail = %detail, "alpaca stream subscribed");
                     link.send_replace(Link {
                         state: LinkState::Up,
@@ -707,7 +765,7 @@ async fn session(
                 }
                 Inbound::Error { code, msg } => {
                     bump(&stats.errors);
-                    let (reason, wait_max) = explain(code, &msg, cfg.feed);
+                    let (reason, wait_max) = explain(code, &msg, feed);
                     let _ = sink.send(Message::Close(None)).await;
                     return end(reason, subscribed, wait_max);
                 }
@@ -725,10 +783,10 @@ async fn session(
     }
 }
 
-fn describe_subscription(cfg: &AlpacaStreamConfig, s: &Subscription) -> String {
+fn describe_subscription(cfg: &AlpacaStreamConfig, feed: StreamFeed, s: &Subscription) -> String {
     let mut d = format!(
         "alpaca {}: subscribed trades={}",
-        cfg.feed.as_str(),
+        feed.as_str(),
         summarize(&s.trades)
     );
     if cfg.statuses {
@@ -780,6 +838,54 @@ mod tests {
         assert!(m.contains("ALPACA_API_KEY") && m.contains("402"), "{m}");
         let (m, _) = explain(409, "insufficient subscription", StreamFeed::Sip);
         assert!(m.contains("sip feed"), "{m}");
+    }
+
+    #[test]
+    fn the_night_feed_follows_the_overnight_session() {
+        use market_events::session::et;
+        let creds = AlpacaCredentials {
+            key_id: "k".into(),
+            secret: "s".into(),
+        };
+        let mut c = AlpacaStreamConfig::new("wss://x", StreamFeed::Sip, LiveSymbols::All, creds);
+        let d = |y, m, day| chrono::NaiveDate::from_ymd_opt(y, m, day).unwrap();
+        // Sunday 2026-10-18 22:06 ET: Monday's overnight session (Blue Ocean trades, SIP is quiet).
+        let sunday_night = et(d(2026, 10, 18), 22, 6, 0, 0).unwrap();
+        assert_eq!(
+            c.feed_at(sunday_night),
+            StreamFeed::Sip,
+            "no night feed: SIP around the clock"
+        );
+        c.night_feed = Some(StreamFeed::Boats);
+        assert_eq!(c.feed_at(sunday_night), StreamFeed::Boats);
+        assert_eq!(c.url_for(c.feed_at(sunday_night)), "wss://x/v1beta1/boats");
+        // 19:59:59 Sunday is no session at all: the day feed.
+        assert_eq!(
+            c.feed_at(et(d(2026, 10, 18), 19, 59, 59, 0).unwrap()),
+            StreamFeed::Sip
+        );
+        // Monday 03:59 is still overnight; 04:00 opens pre-market on SIP.
+        assert_eq!(
+            c.feed_at(et(d(2026, 10, 19), 3, 59, 0, 0).unwrap()),
+            StreamFeed::Boats
+        );
+        assert_eq!(
+            c.feed_at(et(d(2026, 10, 19), 4, 0, 0, 0).unwrap()),
+            StreamFeed::Sip
+        );
+        assert_eq!(
+            c.feed_at(et(d(2026, 10, 19), 10, 0, 0, 0).unwrap()),
+            StreamFeed::Sip
+        );
+        // Friday 21:00: Saturday is not a trading day, so no overnight session.
+        assert_eq!(
+            c.feed_at(et(d(2026, 10, 16), 21, 0, 0, 0).unwrap()),
+            StreamFeed::Sip
+        );
+        assert_eq!(
+            AlpacaStream::new(c).label(),
+            "alpaca sip stream (boats overnight)"
+        );
     }
 
     #[test]
