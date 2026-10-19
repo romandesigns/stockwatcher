@@ -1,5 +1,6 @@
 import type { DashboardSource } from "@stockwatcher/app-state";
 import { Icon } from "@stockwatcher/chart-native";
+import { lastSessionLabel } from "@stockwatcher/shared";
 import { useCallback, useEffect, useState } from "react";
 import { Pressable, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -52,7 +53,9 @@ function DashboardView({ feed, token, source }: { feed: MobileFeed; token: strin
   const selected = useApp((s) => s.dashboardSelected);
   const recents = useApp((s) => s.searchRecents);
   const [clockDay, setClockDay] = useState<string | null>(null);
-  const { symbols: candidates, fixture } = useCandidates(token, clockDay, source);
+  const { symbols: candidates, fixture, session } = useCandidates(token, clockDay, source);
+  // A closed market shows its last session from the archive (owner, 2026-10-18): say which day.
+  const sessionLabel = source === "live" ? lastSessionLabel(session) : null;
   const trading = usePaperTrading(feed);
   const [searchOpen, setSearchOpen] = useState(false);
   const [countOpen, setCountOpen] = useState(false);
@@ -108,6 +111,7 @@ function DashboardView({ feed, token, source }: { feed: MobileFeed; token: strin
           Dashboard
         </Text>
         {n > 1 && <Text style={styles.sub}>Chart {selected + 1} selected</Text>}
+        {sessionLabel && <Text style={styles.sub} numberOfLines={1}>{sessionLabel}</Text>}
         <Pressable accessibilityRole="button" accessibilityLabel="Search tickers" onPress={() => setSearchOpen(true)} hitSlop={6} style={({ pressed }) => [styles.round, { marginLeft: "auto" }, pressed && { backgroundColor: colors.bgRow }]}>
           <Icon name="search" color={colors.textDim} size={15} />
         </Pressable>

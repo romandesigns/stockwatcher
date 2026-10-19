@@ -333,6 +333,28 @@ async fn send_snapshots(socket: &mut WebSocket, market: &Market, subs: &mut [Sub
     true
 }
 
+/// [`send_snapshots`] for the slots showing `symbol` only.
+async fn send_snapshots_of(
+    socket: &mut WebSocket,
+    market: &Market,
+    subs: &mut [Sub],
+    symbol: &str,
+) -> bool {
+    for i in 0..subs.len() {
+        if subs[i].symbol != symbol {
+            continue;
+        }
+        if let Some(j) = (0..i).find(|&j| subs[j].same_chart(&subs[i])) {
+            subs[i].seq = subs[j].seq;
+            continue;
+        }
+        if !send_snapshot(socket, market, &mut subs[i]).await {
+            return false;
+        }
+    }
+    true
+}
+
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 enum ServerMessage<'a> {
@@ -501,6 +523,11 @@ async fn session(mut socket: WebSocket, state: AppState) {
                                 Some(q) => send_quotes_snapshot(&mut socket, &market, q).await,
                                 None => true,
                             }) && send_snapshots(&mut socket, &market, &mut subs).await
+                        }
+                        // Live: a symbol's archived history just went into the engine; a slot
+                        // showing it had an empty chart (crate::history).
+                        OutKind::Loaded(symbol) => {
+                            send_snapshots_of(&mut socket, &market, &mut subs, symbol).await
                         }
                         // Most frames are for symbols no slot shows: dropped here untouched.
                         OutKind::Chart { symbol, .. } if !subs.iter().any(|s| s.symbol == *symbol) => true,

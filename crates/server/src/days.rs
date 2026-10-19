@@ -14,6 +14,10 @@
 //! because the listing is taken on every call (one `read_dir`), and an unchanged day costs one
 //! `stat`. A day still being imported (`market_archive::IMPORTING_MARKER`) is not offered until
 //! the importer clears its marker.
+//!
+//! The live market's recordings (`market_archive::live`) are offered too, marked `provisional`,
+//! once sealed (their session is over): replay can practise on a day the evening it happened,
+//! before the import, and the import replaces the entry in place when it finishes.
 
 use chrono::NaiveDate;
 use market_archive::Archive;
@@ -32,6 +36,12 @@ pub struct DayEntry {
     pub fixture: bool,
     /// Symbols in the day's manifest.
     pub symbols: usize,
+    /// The live market's recording of the day, not (yet) the nightly import: what this server
+    /// received, as it arrived, without the provider's later corrections. Offered once the
+    /// recording is sealed (the session is over and nothing is appended); replaced by the import
+    /// the evening after. Omitted when false.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub provisional: bool,
 }
 
 fn ymd<S: serde::Serializer>(d: &NaiveDate, s: S) -> Result<S::Ok, S::Error> {
@@ -60,13 +70,28 @@ impl DayCatalog {
     pub fn list(&self) -> Vec<DayEntry> {
         // Ready days only: one the archive maintainer is still filling (its `.importing` marker)
         // would replay a partial symbol set that never grows, since a replay opens a day once.
-        let days = match self.archive.ready_days() {
+        let mut days = match self.archive.ready_days() {
             Ok(d) => d,
             Err(e) => {
                 tracing::warn!(error = %e, "replay day list: archive unreadable");
                 return Vec::new();
             }
         };
+        // Plus the live recordings no import has replaced yet, once sealed (one more listing).
+        // A recording still being written is not offered: replay reopens a day's files on every
+        // seek, and a day growing under it would not replay the same twice.
+        days.extend(
+            self.archive
+                .live_days()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|d| {
+                    self.archive.day_data(*d)
+                        == Some(market_archive::DayData::Provisional { sealed: true })
+                }),
+        );
+        days.sort();
+        days.dedup();
         let mut cache = self.cache.lock().expect("day cache lock");
         cache.retain(|d, _| days.contains(d));
         let mut out = Vec::with_capacity(days.len());
@@ -76,21 +101,34 @@ impl DayCatalog {
             if sessions_for(day).is_empty() {
                 continue;
             }
-            let stamp = std::fs::metadata(self.archive.manifest_path(day))
+            let provisional = !self.archive.is_final(day);
+            let path = if provisional {
+                self.archive.live_manifest_path(day)
+            } else {
+                self.archive.manifest_path(day)
+            };
+            let stamp = std::fs::metadata(&path)
                 .map(|m| (m.len(), m.modified().ok()))
                 .unwrap_or((0, None));
             if let Some((s, e)) = cache.get(&day)
                 && *s == stamp
+                && e.provisional == provisional
             {
                 out.push(e.clone());
                 continue;
             }
-            match self.archive.manifest(day) {
+            let m = if provisional {
+                self.archive.live_manifest(day)
+            } else {
+                self.archive.manifest(day)
+            };
+            match m {
                 Ok(Some(m)) => {
                     let e = DayEntry {
                         day,
                         fixture: m.fixture,
                         symbols: m.symbols.len(),
+                        provisional,
                     };
                     cache.insert(day, (stamp, e.clone()));
                     out.push(e);
@@ -144,6 +182,7 @@ mod tests {
             day: d(day),
             fixture: true,
             symbols,
+            provisional: false,
         };
         assert_eq!(cat.list(), [entry("2026-10-14", 1), entry("2026-10-15", 2)]);
         assert!(cat.contains(d("2026-10-15")));
@@ -168,6 +207,67 @@ mod tests {
         assert_eq!(
             serde_json::to_value(entry("2026-10-14", 2)).unwrap(),
             serde_json::json!({"day": "2026-10-14", "fixture": true, "symbols": 2})
+        );
+    }
+
+    /// The live recording of a day is offered, marked provisional, once it is sealed; the
+    /// import then takes its place under the same date.
+    #[test]
+    fn a_sealed_recording_is_offered_as_provisional_until_the_import_replaces_it() {
+        use market_events::{MarketEvent, Price, Trade, UnixNanos};
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = Archive::new(ArchiveConfig {
+            root: tmp.path().join("archive"),
+            retention_days: 0,
+            min_free_bytes: 0,
+        });
+        let day = d("2026-10-16");
+        let mut w = market_archive::LiveWriter::open(&archive, day, 0, "test").unwrap();
+        let t = market_events::session::et(day, 10, 0, 0, 0).unwrap();
+        for i in 0..3 {
+            let mut tr = Trade::new(
+                "SMPL",
+                UnixNanos(t.0 + i),
+                Price::from_cents(500),
+                100,
+                1 + i as u64,
+            );
+            tr.source = market_events::Source::AlpacaSip;
+            w.append(&MarketEvent::Trade(tr)).unwrap();
+        }
+        w.finish().unwrap();
+        let cat = DayCatalog::new(archive.clone());
+        assert!(cat.list().is_empty(), "still being recorded: not offered");
+        archive.seal_live(day).unwrap();
+        let offered = DayEntry {
+            day,
+            fixture: false,
+            symbols: 1,
+            provisional: true,
+        };
+        assert_eq!(cat.list(), std::slice::from_ref(&offered));
+        assert_eq!(
+            serde_json::to_value(&offered).unwrap(),
+            serde_json::json!({"day": "2026-10-16", "fixture": false, "symbols": 1, "provisional": true})
+        );
+        // The import arrives: same date, now final, the recording gone.
+        archive.mark_importing(day).unwrap();
+        write_fixture_day(
+            &archive,
+            day,
+            &["SMPL".to_string(), "FXLO".to_string()],
+            DEFAULT_SEED,
+        )
+        .unwrap();
+        assert!(
+            cat.list()[0].provisional,
+            "half imported: still the recording"
+        );
+        archive.finish_import(day).unwrap();
+        let l = cat.list();
+        assert_eq!(
+            (l[0].provisional, l[0].symbols, l[0].fixture),
+            (false, 2, true)
         );
     }
 }

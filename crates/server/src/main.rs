@@ -92,6 +92,9 @@ async fn serve(config: Config) -> std::io::Result<()> {
             shutdown_requested().await;
             tracing::info!("shutdown requested; draining connections");
             state.close_sessions(Duration::from_secs(5)).await;
+            // Inside compose's 15 s stop grace: sessions (≤5 s), then the recording (≤5 s), so
+            // a deploy loses none of the day's recorded events.
+            state.close_recording(Duration::from_secs(5)).await;
         })
         .await?;
     tracing::info!("stopped");
