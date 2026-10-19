@@ -1,5 +1,19 @@
+//! [`LiveProvider`]: a [`LiveFeed`] on replay's engine-clock rule, recorded into the archive.
+//!
+//! Each event is stamped with its receive time, which is then raised to its **delivery time**
+//! (the running maximum over the stream, replay's rule), so the recorded event carries exactly
+//! the instant the engine clock was moved to before it. That makes a symbol's recorded day
+//! replayable on its own with the same marks (`floor_1s` of each event's `receive_ts`), which is
+//! what the server's per-symbol history load relies on (`chart_engine::ChartEngine::adopt_symbol`).
+//! The only change to an event is in the rare case the wall clock stepped back.
+//!
+//! With [`LiveOptions::record`] the event then goes to the [`Recorder`] (a non-blocking queue;
+//! `crate::recorder`) before it is handed to the consumer; the session carries the recorder so
+//! the server can ask it for barriers.
+
 use crate::alpaca_stream::{AlpacaStream, AlpacaStreamConfig, StreamFeed};
 use crate::config::{MarketDataMode, ProviderConfig};
+use crate::recorder::{Recorder, RecorderConfig};
 use crate::{
     ClockMode, ClockState, FeedItem, MarketDataProvider, ProviderError, ProviderInfo,
     ProviderSession, Speed,
@@ -51,6 +65,9 @@ pub struct LiveOptions {
     pub idle_tick: Option<Duration>,
     pub mark_step_ns: i64,
     pub channel: usize,
+    /// Record every event into the archive (`crate::recorder`). `None`: not recorded (tests,
+    /// `LIVE_RECORD=0`).
+    pub record: Option<RecorderConfig>,
 }
 
 impl Default for LiveOptions {
@@ -59,6 +76,7 @@ impl Default for LiveOptions {
             idle_tick: Some(Duration::from_secs(1)),
             mark_step_ns: market_replay::marks::DEFAULT_MARK_STEP_NS,
             channel: 8192,
+            record: None,
         }
     }
 }
@@ -74,10 +92,14 @@ const NO_CREDENTIALS: &str = "live mode needs Alpaca credentials: set ALPACA_API
 
 impl LiveProvider {
     /// The Alpaca stream from the configuration (`ALPACA_STREAM_BASE`, `ALPACA_STREAM_FEED`,
-    /// `ALPACA_STREAM_NIGHT_FEED`, `LIVE_SYMBOLS`, credentials), or "not configured" naming what is missing. Nothing is
-    /// connected until [`MarketDataProvider::start`].
+    /// `ALPACA_STREAM_NIGHT_FEED`, `LIVE_SYMBOLS`, credentials, `LIVE_RECORD*`), or "not
+    /// configured" naming what is missing. Nothing is connected until
+    /// [`MarketDataProvider::start`].
     pub fn from_config(cfg: &ProviderConfig) -> Self {
-        let opts = LiveOptions::default();
+        let opts = LiveOptions {
+            record: cfg.live.record.clone(),
+            ..LiveOptions::default()
+        };
         let feed = match (&cfg.mode, &cfg.live.credentials) {
             (MarketDataMode::Live, Some(creds)) => {
                 let mut c = AlpacaStreamConfig::new(
@@ -113,9 +135,9 @@ fn wall_now() -> UnixNanos {
     UnixNanos::from_utc(chrono::Utc::now()).unwrap_or_default()
 }
 
-/// Stamps the receive time when the feed did not, and returns the instant the event counts as
-/// delivered (same rule as replay: receive time, else event time).
-fn stamp(e: &mut MarketEvent, now: UnixNanos) -> i64 {
+/// Stamps the event's delivery time as its receive time: the stamp the feed gave it (or `now`),
+/// raised to `last` so delivery is monotone like replay's running maximum. Returns it.
+fn stamp(e: &mut MarketEvent, now: UnixNanos, last: i64) -> i64 {
     let r = match e {
         MarketEvent::Trade(t) => &mut t.receive_ts,
         MarketEvent::Quote(q) => &mut q.receive_ts,
@@ -123,7 +145,9 @@ fn stamp(e: &mut MarketEvent, now: UnixNanos) -> i64 {
         MarketEvent::Cancel(c) => &mut c.receive_ts,
         MarketEvent::Status(s) => &mut s.receive_ts,
     };
-    r.get_or_insert(now).nanos()
+    let d = r.get_or_insert(now).nanos().max(last);
+    *r = Some(UnixNanos(d));
+    d
 }
 
 fn live_clock(now: UnixNanos, events: u64) -> ClockState {
@@ -154,12 +178,14 @@ impl MarketDataProvider for LiveProvider {
             symbols: feed.symbols(),
             fixture: false,
         };
+        let recorder = self.opts.record.as_ref().map(Recorder::start);
         let mut link = feed.link();
         let mut rx = feed.connect()?;
         let (out, items) = mpsc::channel(self.opts.channel.max(16));
         let state = watch::Sender::new(live_clock(wall_now(), 0));
         let clock = state.subscribe();
         let opts = self.opts;
+        let rec = recorder.clone();
         tokio::spawn(async move {
             let mut marks = MarkClock::new(opts.mark_step_ns);
             let mut events = 0u64;
@@ -176,9 +202,13 @@ impl MarketDataProvider for LiveProvider {
                 tokio::select! {
                     ev = rx.recv() => {
                         let Some(mut e) = ev else { break };
-                        // Delivery is monotone, like replay's running maximum.
-                        let d = stamp(&mut e, wall_now()).max(last_d);
+                        let d = stamp(&mut e, wall_now(), last_d);
                         last_d = d;
+                        // Before the consumer sees it: a barrier the server asks for later then
+                        // covers every event it has applied.
+                        if let Some(r) = &rec {
+                            r.append(&e);
+                        }
                         if let Some(m) = marks.mark(d)
                             && out.send(FeedItem::Advance(m)).await.is_err()
                         {
@@ -221,6 +251,7 @@ impl MarketDataProvider for LiveProvider {
             items,
             clock,
             control: None,
+            recorder,
         })
     }
 }

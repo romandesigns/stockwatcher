@@ -1,5 +1,6 @@
 use crate::alpaca_stream::{AlpacaStreamConfig, LiveSymbols, StreamFeed};
 use crate::import::alpaca::AlpacaCredentials;
+use crate::recorder::RecorderConfig;
 use chrono::{NaiveDate, NaiveTime};
 use market_archive::ArchiveConfig;
 use market_replay::Speed;
@@ -25,6 +26,8 @@ pub enum MarketDataMode {
 /// | `ALPACA_STREAM_FEED` | `sip` | live only: `sip`, `iex`, `boats`, `overnight` or `test` (Alpaca's fake `FAKEPACA` stream) |
 /// | `ALPACA_STREAM_NIGHT_FEED` | `boats` | live only, with the `sip` day feed: the feed during the overnight session (20:00–04:00 ET before a trading day; SIP carries nothing then), `boats` or `overnight`; `none` streams the day feed around the clock |
 /// | `LIVE_SYMBOLS` | `*` | live only: `*` (whole market) or a comma list |
+/// | `LIVE_RECORD` | `1` | live only: record what the stream delivers into the archive (`ARCHIVE_ROOT/<day>/live/`, `crate::recorder`); `0` turns recording off |
+/// | `LIVE_RECORD_DAYS` | `5` | live recordings kept when no nightly import replaced them (at least 2; never the day being recorded) |
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProviderConfig {
     pub mode: MarketDataMode,
@@ -47,6 +50,8 @@ pub struct LiveConfig {
     pub symbols: LiveSymbols,
     /// `None` until both halves are set; `Debug` redacts them.
     pub credentials: Option<AlpacaCredentials>,
+    /// Recording into the archive (`crate::recorder`); `None` with `LIVE_RECORD=0`.
+    pub record: Option<RecorderConfig>,
 }
 
 impl Default for LiveConfig {
@@ -57,6 +62,7 @@ impl Default for LiveConfig {
             night_feed: Some(StreamFeed::Boats),
             symbols: LiveSymbols::All,
             credentials: None,
+            record: Some(RecorderConfig::new(ArchiveConfig::default())),
         }
     }
 }
@@ -153,6 +159,20 @@ impl ProviderConfig {
             c.live.symbols = LiveSymbols::parse(&s).map_err(|e| format!("LIVE_SYMBOLS: {e}"))?;
         }
         c.live.credentials = AlpacaCredentials::from_lookup(&get);
+        c.live.record = if var("LIVE_RECORD").is_some_and(|v| !truthy(&v)) {
+            None
+        } else {
+            // Into the same archive replay and the importer use: one store.
+            let mut r = RecorderConfig::new(c.archive.clone());
+            if let Some(n) = var("LIVE_RECORD_DAYS") {
+                r.keep_days = n
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|n| *n >= 2)
+                    .ok_or_else(|| format!("LIVE_RECORD_DAYS must be a whole number of at least 2 (today and the day before), got {n:?}"))?;
+            }
+            Some(r)
+        };
         Ok(c)
     }
 }
@@ -238,5 +258,23 @@ mod tests {
         assert!(ProviderConfig::from_lookup(get(&[("ALPACA_STREAM_BASE", "https://x")])).is_err());
         assert!(ProviderConfig::from_lookup(get(&[("ALPACA_STREAM_FEED", "delayed")])).is_err());
         assert!(ProviderConfig::from_lookup(get(&[("LIVE_SYMBOLS", "A B")])).is_err());
+    }
+
+    #[test]
+    fn live_recording_goes_into_the_archive_and_can_be_turned_off() {
+        let c = ProviderConfig::from_lookup(|k| match k {
+            "ARCHIVE_ROOT" => Some("/app/data/archive".into()),
+            "LIVE_RECORD_DAYS" => Some("7".into()),
+            _ => None,
+        })
+        .unwrap();
+        let r = c.live.record.unwrap();
+        assert_eq!(r.archive, c.archive, "one store: the archive replay reads");
+        assert_eq!(r.keep_days, 7);
+        let off = ProviderConfig::from_lookup(|k| (k == "LIVE_RECORD").then(|| "0".into()));
+        assert_eq!(off.unwrap().live.record, None);
+        assert!(
+            ProviderConfig::from_lookup(|k| (k == "LIVE_RECORD_DAYS").then(|| "1".into())).is_err()
+        );
     }
 }

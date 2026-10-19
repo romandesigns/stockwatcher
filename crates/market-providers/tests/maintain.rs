@@ -196,6 +196,23 @@ fn a_cycle_fills_the_window_holds_a_failing_day_back_and_only_then_prunes() {
     let w = window(d("2026-10-20"), 22);
     assert_eq!((w.first, w.days.len()), (d("2026-09-21"), 22));
     assert_eq!(missing_days(&w, &a).len(), 22, "nothing of the window yet");
+    // The live market recorded 10-20 during the session (provisional).
+    let mut rec = market_archive::LiveWriter::open(&a, d("2026-10-20"), 0, "test").unwrap();
+    rec.append(&market_events::MarketEvent::Trade(
+        market_events::Trade::new(
+            "AAA",
+            market_events::session::et(d("2026-10-20"), 10, 0, 0, 0).unwrap(),
+            market_events::Price::from_cents(500),
+            100,
+            1,
+        ),
+    ))
+    .unwrap();
+    rec.finish().unwrap();
+    assert_eq!(
+        a.day_data(d("2026-10-20")),
+        Some(market_archive::DayData::Provisional { sealed: false })
+    );
 
     // 1. FAIL is refused: one of 10-20's three symbol-days fails on every pass.
     let r = cycle(&world, &a, Some(&creds()), false);
@@ -229,6 +246,12 @@ fn a_cycle_fills_the_window_holds_a_failing_day_back_and_only_then_prunes() {
     // 10-19 is complete and visible; 10-20 (a third failed, far above 1%) stays hidden.
     assert_eq!(rep.still_importing, [d("2026-10-20")]);
     assert!(a.is_importing(d("2026-10-20")));
+    // Half imported: readers still take the recording, and the recorder may not add to it.
+    assert_eq!(
+        a.day_data(d("2026-10-20")),
+        Some(market_archive::DayData::Provisional { sealed: false })
+    );
+    assert!(!a.accepts_live(d("2026-10-20")));
     assert_eq!(
         a.ready_days().unwrap(),
         [d("2026-09-17"), d("2026-09-18"), d("2026-10-19")]
@@ -281,6 +304,12 @@ fn a_cycle_fills_the_window_holds_a_failing_day_back_and_only_then_prunes() {
     );
     assert_eq!((rep.imported_symbol_days, rep.already_complete), (1, 3));
     assert!(rep.still_importing.is_empty());
+    // Released: the import replaced the recording in one step.
+    assert_eq!(
+        a.day_data(d("2026-10-20")),
+        Some(market_archive::DayData::Final)
+    );
+    assert!(!a.live_dir(d("2026-10-20")).exists());
     assert!(r.waits.is_empty());
     assert_eq!(rep.pruned, [d("2026-09-17")]);
     assert_eq!(rep.protected_day, Some(d("2026-09-18")));
