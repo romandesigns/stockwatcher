@@ -19,8 +19,9 @@ The application should explain why a stock deserves attention, how the setup is 
   alike.
 - **Replay is a practice feature**, like TradingView's Bar Replay or Webull's paper trading: pick a
   recorded day and trade it with the simulated broker. It is not a mode the whole product switches to.
-  Today `MARKET_DATA_MODE` is still one server-wide switch (production runs `replay`); the target is the
-  live feed always on with replay sessions beside it.
+  The server runs **both markets side by side** (2026-10-18): the dashboard reads `live`, the chart
+  page `replay` (`hello.source` / `?source=`). A new page that shows market data names its source;
+  it never relies on the server default.
 
 ## Layout (monorepo, Bun workspaces + Cargo workspace)
 

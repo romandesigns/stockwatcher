@@ -26,7 +26,7 @@ export function useCandidates(choice: SourceChoice, day: string | null = null): 
     if (choice.kind !== "server") return;
     let alive = true;
     const refresh = async () => {
-      const probe = await probeServer(fetch, 2500, getToken());
+      const probe = await probeServer(fetch, 2500, getToken(), choice.market);
       if (!alive || !probe.ok) return;
       const d = probe.data;
       setState({ symbols: Array.isArray(d.symbols) ? d.symbols : [], band: d.priceBand, screened: d.screened, server: d });
@@ -37,6 +37,6 @@ export function useCandidates(choice: SourceChoice, day: string | null = null): 
       alive = false;
       clearInterval(id);
     };
-  }, [choice.kind, day]);
+  }, [choice.kind, choice.market, day]);
   return state;
 }

@@ -1,18 +1,17 @@
-import { MAX_DASHBOARD_CHARTS } from "@stockwatcher/app-state";
 import { Icon, playHaptic, Sheet, UI } from "@stockwatcher/chart-native";
 import { Pressable, StyleSheet, Text, View } from "react-native";
-
-const COUNTS = Array.from({ length: MAX_DASHBOARD_CHARTS }, (_, i) => i + 1);
 
 /**
  * How many charts the dashboard panel shows, opened by the "screen × n" button: the web's
  * MultiViewMenu as a bottom sheet. The current count is marked by the accent check alone, as in
- * the other sheets (no filled row).
+ * the other sheets (no filled row). Offers 1 to `max`, what this screen can show
+ * (DashboardScreen `maxChartsFor`), not the web's 4.
  */
-export function CountSheet({ open, onClose, count, onChange, reducedMotion }: { open: boolean; onClose: () => void; count: number; onChange: (n: number) => void; reducedMotion?: boolean }) {
+export function CountSheet({ open, onClose, count, max, onChange, reducedMotion }: { open: boolean; onClose: () => void; count: number; max: number; onChange: (n: number) => void; reducedMotion?: boolean }) {
+  const counts = Array.from({ length: max }, (_, i) => i + 1);
   return (
     <Sheet open={open} onClose={onClose} title="Charts in the panel" reducedMotion={reducedMotion}>
-      {COUNTS.map((n) => {
+      {counts.map((n) => {
         const on = n === count;
         return (
           <Pressable

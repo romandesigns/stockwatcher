@@ -22,7 +22,7 @@ use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
 pub use config::Config;
-pub use market::{Market, MarketConfig};
+pub use market::{Market, MarketConfig, Markets, Source};
 pub use settings::Settings;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -34,7 +34,7 @@ pub struct AppState(Arc<Inner>);
 
 struct Inner {
     api_token: Option<String>,
-    market: Market,
+    markets: Markets,
     /// Synced settings and drawings (settings.rs). Independent of the market: a seek or a day
     /// switch rebuilds the market, never this.
     settings: Settings,
@@ -57,18 +57,34 @@ impl AppState {
         Self::with_parts(api_token, market, Settings::in_memory())
     }
 
-    /// The production constructor: main.rs opens the store under `DATA_DIR/settings`.
+    /// One market, in the slot its mode says ([`Markets::single`]); tests.
     pub fn with_parts(api_token: Option<String>, market: Market, settings: Settings) -> Self {
+        Self::with_markets(api_token, Markets::single(market), settings)
+    }
+
+    /// The production constructor: main.rs starts both markets and opens the store under
+    /// `DATA_DIR/settings`.
+    pub fn with_markets(api_token: Option<String>, markets: Markets, settings: Settings) -> Self {
         Self(Arc::new(Inner {
             api_token,
-            market,
+            markets,
             settings,
             shutdown: watch::Sender::new(false),
         }))
     }
 
+    /// The default market (`MARKET_DATA_MODE`).
     pub fn market(&self) -> &Market {
-        &self.0.market
+        self.0.markets.get(None)
+    }
+
+    /// The market a client asked for (`hello.source`, `?source=`), else the default.
+    pub fn market_for(&self, source: Option<Source>) -> &Market {
+        self.0.markets.get(source)
+    }
+
+    pub fn markets(&self) -> &Markets {
+        &self.0.markets
     }
 
     pub fn settings(&self) -> &Settings {

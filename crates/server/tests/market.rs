@@ -7,7 +7,7 @@ use axum::http::{Request, StatusCode};
 use futures_util::{SinkExt, StreamExt};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
-use stockwatcher_server::{AppState, Market, MarketConfig, router};
+use stockwatcher_server::{AppState, Market, MarketConfig, Markets, Settings, router};
 use tokio_tungstenite::tungstenite::Message;
 use tower::ServiceExt;
 
@@ -106,12 +106,13 @@ async fn stack_prepared(extra: &[(&str, &str)], prepare: impl FnOnce(&std::path:
             .map(|(_, v)| v.clone())
     })
     .unwrap();
-    let (market, _sim) = Market::start(&cfg);
+    // Both markets, as in production (main.rs): replay on the archive, live not configured.
+    let (markets, _sim) = Markets::start(&cfg);
     let dir = tmp.path().join("static");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("index.html"), "<!doctype html>").unwrap();
     let app = router(
-        AppState::with_market(None, market),
+        AppState::with_markets(None, markets, Settings::in_memory()),
         &dir,
         &tmp.path().join("data"),
     );
@@ -462,6 +463,74 @@ async fn live_mode_is_not_configured_and_refuses_replay_controls() {
     .await;
     let e = next(&mut ws, is("error")).await;
     assert_eq!(e["code"], "unknown_symbol");
+}
+
+#[tokio::test]
+async fn each_connection_and_route_picks_its_market() {
+    // Default replay; the live market runs beside it (not configured here: no credentials).
+    let s = stack(&[]).await;
+    assert_eq!(get(&s.app, "/api/replay/state").await.1["mode"], "replay");
+    assert_eq!(
+        get(&s.app, "/api/replay/state?source=replay").await.1["mode"],
+        "replay"
+    );
+    let (_, v) = get(&s.app, "/api/replay/state?source=live").await;
+    assert_eq!(v["mode"], "live");
+    assert_eq!(v["status"]["state"], "not_configured");
+    assert_eq!(
+        get(&s.app, "/api/symbols?source=live").await.1["symbols"],
+        json!([])
+    );
+    assert_eq!(
+        get(&s.app, "/api/chart/SMPL/snapshot?source=live").await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        get(&s.app, "/api/symbols?source=paper").await.0,
+        StatusCode::BAD_REQUEST
+    );
+
+    // A live socket: no replay controls, no archive symbols.
+    let (mut live, _) = tokio_tungstenite::connect_async(&s.url).await.unwrap();
+    send(
+        &mut live,
+        json!({"type": "hello", "client": "test", "source": "live"}),
+    )
+    .await;
+    next(&mut live, is("welcome")).await;
+    send(&mut live, json!({"type":"replay.control","action":"pause"})).await;
+    assert_eq!(next(&mut live, is("error")).await["code"], "not_replay");
+    send(
+        &mut live,
+        json!({"type":"chart.subscribe","symbol":"SMPL","timeframe":"1m","profileBin":0.01}),
+    )
+    .await;
+    assert_eq!(next(&mut live, is("error")).await["code"], "unknown_symbol");
+
+    // A replay socket on the same server charts the archive day.
+    let (mut replay, _) = tokio_tungstenite::connect_async(&s.url).await.unwrap();
+    send(
+        &mut replay,
+        json!({"type": "hello", "client": "test", "source": "replay"}),
+    )
+    .await;
+    next(&mut replay, is("welcome")).await;
+    wait_for_replay(&mut replay).await;
+    send(
+        &mut replay,
+        json!({"type":"chart.subscribe","symbol":"SMPL","timeframe":"1m","profileBin":0.01}),
+    )
+    .await;
+    assert_eq!(
+        next(&mut replay, is("chart.snapshot")).await["symbol"],
+        "SMPL"
+    );
+    assert_eq!(
+        get(&s.app, "/api/chart/SMPL/snapshot?source=replay")
+            .await
+            .0,
+        StatusCode::OK
+    );
 }
 
 #[tokio::test]

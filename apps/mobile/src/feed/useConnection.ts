@@ -1,4 +1,4 @@
-import type { ConnectionStatus } from "@stockwatcher/shared";
+import type { ConnectionStatus, MarketSource } from "@stockwatcher/shared";
 import { useEffect, useState } from "react";
 
 import { loadSettingsSync } from "../settings/sync";
@@ -19,9 +19,10 @@ export interface MobileConnection {
  * cache and this phone's layout, so the screen opens with the last known state before the socket
  * connects) and a feed on its own socket. Each tab that shows market data owns one: the chart
  * tab's default slot plus the dashboard's 4 slots would exceed the server's 4 per connection,
- * and both tabs stay mounted.
+ * and both tabs stay mounted. `source` is the server market the tab reads: `live` for the
+ * dashboard, `replay` for the chart tab (the practice feature).
  */
-export function useConnection(client: string): MobileConnection {
+export function useConnection(client: string, source: MarketSource): MobileConnection {
   const [ready, setReady] = useState<MobileConnection["ready"]>(null);
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
   // Each sign-in restarts the connection with the new token.
@@ -31,14 +32,14 @@ export function useConnection(client: string): MobileConnection {
     let alive = true;
     void Promise.all([getAccessToken().catch(() => null), loadSettingsSync(), loadAppStore()]).then(([token, sync]) => {
       if (!alive) return;
-      feed = createMobileFeed(token, setStatus, sync, client);
+      feed = createMobileFeed(token, setStatus, sync, client, source);
       setReady({ feed, token });
     });
     return () => {
       alive = false;
       feed?.close();
     };
-  }, [attempt, client]);
+  }, [attempt, client, source]);
   return {
     ready,
     status,

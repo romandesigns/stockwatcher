@@ -206,6 +206,15 @@ export interface CandleChartProps {
   toolbarContainer?: HTMLElement | null;
   /** Put the whole toolbar (timeframes, divider, drawing tools, indicators, levels, trade) inside the chart, at its top-right. */
   toolbarInChart?: boolean;
+  /**
+   * One header row above the chart (owner, 2026-10-18, the dashboard cells): `heading` at the
+   * toolbar's left and the timeframe picker with the tools on its right, instead of the heading
+   * and the timeframes floating in the chart's top corners. Needs the toolbar row (`toolbar`, not
+   * `toolbarInChart` nor `toolbarContainer`). The chart gets the corners back.
+   */
+  headingInToolbar?: boolean;
+  /** The timeframe picker's form in the toolbar: four segments (default) or the compact scroll wheel. */
+  timeframeControl?: "segments" | "wheel";
 }
 
 /** What the host wires for simulated trading (the chart never talks to a server). */
@@ -303,6 +312,8 @@ export function CandleChart({
   heading,
   toolbarContainer,
   toolbarInChart = false,
+  headingInToolbar = false,
+  timeframeControl = "segments",
 }: CandleChartProps) {
   const theme = useChartTheme(themeProp);
 
@@ -490,10 +501,13 @@ export function CandleChart({
   const showTrading = !!trading && visibility.trading;
   const selectedDrawing = selected?.kind === "drawing" ? selected.id : null;
 
+  // The heading and timeframes live in the toolbar row instead of the chart's corners.
+  const headerRow = headingInToolbar && toolbar && !toolbarInChart && !toolbarContainer;
+  const cornerHeading = headerRow ? null : heading;
   // The top-left overlay (heading + readout) takes the corner; the indicator legend moves below it.
-  const overlayTop = (heading ? 22 : 0) + (inspector ? 20 : 0);
+  const overlayTop = (cornerHeading ? 22 : 0) + (inspector ? 20 : 0);
   // The timeframe picker sits at the top-right inside the chart; top-edge tags start below it.
-  const topRight = onTimeframeChange ? 34 : 0;
+  const topRight = onTimeframeChange && !headerRow ? 34 : 0;
   const inChartProfile = !!options?.showProfile;
   // The volume pane slides in or out when its setting flips (0 drops the pane, and the plot takes the room).
   const volumeTarget = settings.volume ? (options?.volumeHeight ?? DEFAULT_CHART_OPTIONS.volumeHeight) : 0;
@@ -1101,8 +1115,10 @@ export function CandleChart({
       <ChartToolbar
         toolsVisible={toolsVisible}
         onToolsVisibleChange={changeToolsVisible}
-        timeframe={toolbarInChart ? timeframe : undefined}
-        onTimeframeChange={toolbarInChart ? onTimeframeChange : undefined}
+        timeframe={toolbarInChart || headerRow ? timeframe : undefined}
+        onTimeframeChange={toolbarInChart || headerRow ? onTimeframeChange : undefined}
+        timeframeControl={timeframeControl}
+        start={headerRow ? heading : undefined}
 
         tool={tool}
         onToolChange={changeTool}
@@ -1205,19 +1221,19 @@ export function CandleChart({
         </button>
         </Tip>
       )}
-      {(heading || inspector) && (
+      {(cornerHeading || inspector) && (
         // Top-left corner of the chart: the ticker line, then the readout, left-aligned. It does not
         // take pointer events, so the chart under it still pans, scrubs and inspects.
         // Transparent (owner, 2026-10-17): the text sits straight on the chart.
         <div className="pointer-events-none absolute top-1 left-1.5 z-[5] flex max-w-[calc(100%-120px)] flex-col gap-0.5 px-1.5 py-1">
-          {heading}
+          {cornerHeading}
           {/* One line at any width: items never shrink or wrap inside (a phone-width chart wrapped "O" above its value, onto the legend under it); the row clips instead. */}
           {inspector && (
             <CandleInspector className="pointer-events-auto flex-nowrap overflow-hidden whitespace-nowrap [&>*]:shrink-0" slot={inspectT === null ? (slots.at(-1) ?? null) : (slots[slotIndexOf(slots, inspectT) ?? -1] ?? null)} timeframe={timeframe} />
           )}
         </div>
       )}
-      {(toolbarInChart && toolbar) || onTimeframeChange ? (
+      {(toolbarInChart && toolbar) || (onTimeframeChange && !headerRow) ? (
         // Top-right corner of the chart, just inside the price axis: the whole toolbar when it lives
         // in the chart (timeframes, divider, icons on one line), else the timeframes alone.
         <div className="absolute top-1.5 z-[5]" style={{ right: model.options.priceAxisWidth + 6 }}>

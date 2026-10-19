@@ -23,6 +23,11 @@ describe("chart source", () => {
     expect(chooseSource(undefined, { ok: true, data: data({ symbols: [], status: "no_data" }) }, "SMPL")).toMatchObject({ kind: "fixture", reason: "server has no data (no_data, replay mode)" });
     expect(chooseSource(undefined, { ok: true, data: data({ symbols: [], status: "not_configured", mode: "live" }) }, "SMPL").reason).toBe("server has no data (not_configured, live mode)");
     expect(chooseSource("fixture", { ok: true, data: data() }, "SMPL")).toMatchObject({ kind: "fixture", reason: "VITE_CHART_SOURCE=fixture" });
+    // A live page never falls back for an empty list: an empty live market (closed, or before the
+    // first trade) is real, and fixture prices would pass for it.
+    expect(chooseSource(undefined, { ok: true, data: data({ symbols: [], status: "running", mode: "live" }) }, "SMPL", "live")).toMatchObject({ kind: "server", symbols: [], market: "live" });
+    // An unreachable server still falls back, labelled, whatever the page.
+    expect(chooseSource(undefined, { ok: false, reason: "server unreachable (x)" }, "SMPL", "live")).toMatchObject({ kind: "fixture", market: "live" });
   });
 
   test("probe maps HTTP, non-JSON and network failures to reasons", async () => {

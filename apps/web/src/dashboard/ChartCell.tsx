@@ -21,6 +21,8 @@ export interface ChartCellProps {
   selected: boolean;
   /** Mark the selection (only meaningful with more than one chart). */
   showSelection: boolean;
+  /** The panel shows more than one chart (the timeframe becomes the compact wheel). */
+  multi: boolean;
   fixture: boolean;
   onSelect: (index: number) => void;
   /** Opens the ticker search for this chart. */
@@ -36,7 +38,7 @@ export interface ChartCellProps {
  * symbol's drawings. Pressing anywhere in it selects it: the selected chart is ringed with the
  * accent (a 1px inset box shadow on an overlay, never a border: the no-borders rule) and is where a picked ticker loads.
  */
-export function ChartCell({ index, slot, symbol, feed, trading, selected, showSelection, fixture, onSelect, onPickTicker, onDay }: ChartCellProps) {
+export function ChartCell({ index, slot, symbol, feed, trading, selected, showSelection, multi, fixture, onSelect, onPickTicker, onDay }: ChartCellProps) {
   const [app] = useState(() => getAppStore().getState());
   const bin = useApp((s) => s.bin);
   const { series, clock } = useChartFeed(feed, symbol, slot.timeframe, bin, `d${index}`);
@@ -76,6 +78,7 @@ export function ChartCell({ index, slot, symbol, feed, trading, selected, showSe
     <section
       aria-label={`Chart ${index + 1}: ${symbol}${showRing ? ", selected" : ""}`}
       data-selected={selected || undefined}
+      data-chart-cell=""
       onPointerDownCapture={() => onSelect(index)}
       onFocusCapture={() => onSelect(index)}
       className={cn(
@@ -93,6 +96,11 @@ export function ChartCell({ index, slot, symbol, feed, trading, selected, showSe
         inspector
         // The toolbar in its own row above the chart: inside a cell half a screen wide it would sit on the heading.
         toolbarInChart={false}
+        // One row (owner, 2026-10-18): the ticker, price and change on the toolbar's left, the
+        // timeframe and tools on its right; with several charts the timeframe is the compact wheel
+        // (the phone's), since four segments would crowd a half-width cell.
+        headingInToolbar
+        timeframeControl={multi ? "wheel" : "segments"}
         heading={
           <div className="flex items-baseline gap-2">
             <Tip label="Change ticker · tap, then hold to copy">

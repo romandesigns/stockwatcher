@@ -1,7 +1,8 @@
 //! `/ws`: JSON text frames. Mirrors packages/shared/src/protocol.ts.
 //!
 //! The client must send `hello` (with the token when auth is on) within
-//! HELLO_TIMEOUT; the server answers `welcome`, then pings every HEARTBEAT
+//! HELLO_TIMEOUT; `hello.source` (`live` | `replay`, absent = `MARKET_DATA_MODE`) picks which
+//! of the two markets the connection reads for its whole life (crate::market::Markets); the server answers `welcome`, then pings every HEARTBEAT
 //! and drops a client that has been silent for 3 heartbeats.
 //!
 //! Chart protocol (after `welcome`; crates/chart-engine wire types, mirrored by
@@ -118,6 +119,10 @@ enum ClientMessage {
     Hello {
         token: Option<String>,
         client: Option<String>,
+        /// `live` or `replay`: which market this connection reads (crate::market::Markets).
+        /// Absent = the server's default (`MARKET_DATA_MODE`).
+        #[serde(default)]
+        source: Option<crate::market::Source>,
     },
     Ping {
         ts: u64,
@@ -413,7 +418,12 @@ async fn session(mut socket: WebSocket, state: AppState) {
             .await;
         }
     };
-    let Some(ClientMessage::Hello { token, client }) = hello else {
+    let Some(ClientMessage::Hello {
+        token,
+        client,
+        source,
+    }) = hello
+    else {
         return fail(
             socket,
             "bad_request",
@@ -440,7 +450,7 @@ async fn session(mut socket: WebSocket, state: AppState) {
     };
     // Subscribed before the paper snapshot below, so no change can fall between the two (at
     // worst the client gets the same state twice, which is harmless: it replaces, never merges).
-    let market = state.market().clone();
+    let market = state.market_for(source).clone();
     let mut feed = market.subscribe();
     if !send(&mut socket, &welcome).await {
         return;

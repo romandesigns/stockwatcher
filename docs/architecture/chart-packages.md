@@ -10,11 +10,20 @@ The reference for a screen with several charts. Web `apps/web/src/dashboard/`, p
 - **Panel of 1–4 charts**, each a full `CandleChart` in its own container on its own feed slot.
   The "screen × n" control (`MultiViewMenu` / `CountSheet`) sets n. Web lays the panel out by
   the panel's own width (container queries: stacked below 48rem, two columns from 48rem, three
-  across from 72rem for three charts); the phone fills the space between header and list (1–2
-  stacked, 3 as two over one, 4 as 2×2, so no scrolling fights the chart's pan gestures).
+  across from 72rem for three charts). The phone caps the synced count by its screen
+  (`dashboard/layout.ts` `maxChartsFor`, Android's sw600dp rule): 1 chart on a phone-size screen
+  (the owner's Galaxy Z Fold folded), up to 2 unfolded, stacked while the panel is taller than
+  wide; the cap is never written back. It fills the space between header and list, so no
+  scrolling fights the chart's pan gestures.
+- **One header row per web cell** (owner, 2026-10-18): `CandleChart` `headingInToolbar` puts the
+  ticker, price and change at the toolbar's left and the timeframe with the tools on its right,
+  instead of floating in the chart's corners. With more than one chart, `timeframeControl="wheel"`
+  swaps the four segments for `TimeframeWheel`, the phone's scroll wheel on the web (mouse wheel or
+  trackpad over it, drag, arrow keys; up is the longer timeframe).
 - **Select a chart** by pressing it: an accent ring drawn as a box shadow (no border). A picked
-  ticker (the live "Most active" list from the quote board, or the ticker search) loads into the
-  selected chart. What each chart shows syncs (app-state `dashboard`); the selection is per device.
+  ticker (the header's ticker search on the web; the search or the live "Most active" list on the
+  phone) loads into the selected chart. Clicking outside every chart hides the ring (web); the
+  selection stays. What each chart shows syncs (app-state `dashboard`); the selection is per device.
 - **Copy a ticker**: tap, then press and hold on any ticker label (chart headings, list rows) copies
   it, with a "Copied …" toast that fades out. One recognizer, `@stockwatcher/shared` `tapHold.ts`;
   a plain tap waits out the 300 ms double-tap window before acting. Web `lib/useTickerPress.ts` +
@@ -106,7 +115,7 @@ import { CandleChart } from "@stockwatcher/chart-web";
   itself, persisted under `persistKey`. Screen layout (toolbox position, pane heights, tools shown)
   is left to the chart on the web.
 - **Composable pieces** for screens around the chart: `ReplayControls`, `SessionTimeline`, `Tape`,
-  `VolumeProfile`, `TimeframeSelector`, `CandleInspector`, `ChartToolbar`, `OrderTicket`,
+  `VolumeProfile`, `TimeframeSelector`, `TimeframeWheel`, `CandleInspector`, `ChartToolbar`, `OrderTicket`,
   `PositionPlanCard`, `TradeMenu`, `LayersMenu`, `TradeHistory`, `SettingsDialog` with
   `chartSettingsSection` / `drawingSettingsSection`, `Icon`. UI primitives (shadcn on Base UI) are at
   `@stockwatcher/chart-web/ui`.
@@ -159,11 +168,16 @@ server /ws ──► ChartFeed.subscribe({symbol, timeframe, profileBin}, emit) 
    takes the slot. The dashboard uses `d0`…`d3`; the chart page keeps the default slot. On the phone
    each tab has its own socket (`useConnection`), because the chart tab's slot plus the dashboard's 4
    would exceed the limit while both tabs stay mounted.
-2. **Live vs replay is server-wide today.** `MARKET_DATA_MODE` switches the whole server, and the replay
-   clock (day, speed, play/pause) is shared by every client. The owner's direction (2026-10-18): the
-   **main page consumes only live data**; **replay is a separate practice feature** (like TradingView's
-   Bar Replay or Webull paper trading). That means the live feed always on, and replay as practice
-   sessions running beside it, which the server does not support yet.
+2. **Live and replay run side by side (solved 2026-10-18).** The owner's direction: the **main page
+   consumes only live data**; **replay is a separate practice feature** (like TradingView's Bar Replay
+   or Webull paper trading). The server starts two markets (`Markets` in `crates/server/src/market.rs`):
+   live whenever the Alpaca keys are set, replay on the archive. Each socket picks one for its life in
+   `hello.source` (`live` | `replay`) and each market REST route takes `?source=`; clients that name
+   neither get `MARKET_DATA_MODE`, so apps built before the split are unchanged. The web
+   `ConnectionGate` and the phone's `useConnection` take the source: the dashboard asks for `live`, the
+   chart page for `replay`. Each market has its own paper account. The replay clock (day, speed,
+   play/pause) is still one shared practice session, not one per person. An empty live list is real
+   (closed, or before the first trade): the live page shows "No live trades yet", never the fixture.
 3. **Live mode does not archive.** History comes from the archiver's nightly SIP import, so the
    dashboard has no intraday backfill after a server restart during a session.
 4. **Known client bug:** the replay bar's clock label stops updating while replay plays, although the

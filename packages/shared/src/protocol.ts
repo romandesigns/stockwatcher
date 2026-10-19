@@ -18,11 +18,26 @@ export interface VersionInfo {
 // Browsers cannot set headers on a WebSocket, so the token travels in the
 // first message (`hello`), never in the URL.
 
+/**
+ * Which of the server's two markets a connection reads (owner, 2026-10-18): `live` is the main
+ * page's (the dashboard), `replay` the practice feature's (the chart page). The server runs both
+ * side by side; a client that names neither gets the server's `MARKET_DATA_MODE`. The REST market
+ * routes take the same value as `?source=`.
+ */
+export type MarketSource = "live" | "replay";
+
+/** `path` with `?source=` (or `&source=`) appended, for the REST market routes. */
+export function withMarketSource(path: string, source: MarketSource | undefined): string {
+  return source ? `${path}${path.includes("?") ? "&" : "?"}source=${source}` : path;
+}
+
 export interface HelloMessage {
   type: "hello";
   token?: string;
   /** Free-form client identifier for server logs, e.g. "web". */
   client?: string;
+  /** The market this connection reads for its whole life; absent = the server's default. */
+  source?: MarketSource;
 }
 
 export interface WelcomeMessage {

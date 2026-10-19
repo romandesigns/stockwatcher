@@ -25,6 +25,7 @@ import type { ReactNode } from "react";
 import { LayersMenu } from "./ContextMenus.tsx";
 import { glyphDef, Icon } from "./Icon.tsx";
 import { TimeframeSelector } from "./TimeframeSelector.tsx";
+import { TimeframeWheel } from "./TimeframeWheel.tsx";
 import { Tip } from "./ui/tooltip.tsx";
 import { Button } from "./ui/button.tsx";
 import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "./ui/dropdown-menu.tsx";
@@ -84,6 +85,8 @@ export interface ChartToolbarProps {
   /** The candle timeframe, shown at the left of the row (absent hides it). */
   timeframe?: Timeframe;
   onTimeframeChange?: (tf: Timeframe) => void;
+  /** How the timeframe is picked: four segments (default), or the compact scroll wheel where a row has no room (multi-chart cells). */
+  timeframeControl?: "segments" | "wheel";
   className?: string;
 }
 
@@ -94,7 +97,7 @@ export interface ChartToolbarProps {
  * One compact row; selection is a raised segment, and the accent is spent
  * only on the Trade button (the primary action).
  */
-export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChange, seriesColors, drawingTools = true, canDelete, onDelete, trading, layers, layerIds, onLayersChange, toolsVisible, onToolsVisibleChange, timeframe, onTimeframeChange, start, className }: ChartToolbarProps) {
+export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChange, seriesColors, drawingTools = true, canDelete, onDelete, trading, layers, layerIds, onLayersChange, toolsVisible, onToolsVisibleChange, timeframe, onTimeframeChange, timeframeControl = "segments", start, className }: ChartToolbarProps) {
   const pos = trading?.position && trading.position.qty !== 0 ? trading.position : null;
   const pnl = pos && trading?.last !== null && trading?.last !== undefined ? unrealizedPnl(pos, trading.last) : null;
   return (
@@ -131,7 +134,7 @@ export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChang
         )}
         {timeframe && onTimeframeChange && (
           <>
-            <TimeframeSelector value={timeframe} onValueChange={onTimeframeChange} />
+            {timeframeControl === "wheel" ? <TimeframeWheel value={timeframe} onChange={onTimeframeChange} /> : <TimeframeSelector value={timeframe} onValueChange={onTimeframeChange} />}
             {/* Owner-requested divider between the timeframes and the chart icons: a soft bar in a surface tone, not a hard line. */}
             <span aria-hidden="true" className="mx-1.5 h-5 w-px shrink-0 rounded-full bg-bg-raised" />
           </>

@@ -7,5 +7,5 @@ import { Dashboard } from "../dashboard/Dashboard.tsx";
  * server streams, which is still replay while production runs replay.
  */
 export function DashboardPage() {
-  return <ConnectionGate>{(c) => <Dashboard choice={c.choice} feed={c.feed} />}</ConnectionGate>;
+  return <ConnectionGate source="live">{(c) => <Dashboard choice={c.choice} feed={c.feed} />}</ConnectionGate>;
 }

@@ -1,5 +1,5 @@
 import { createChartRouter, parseChartMessage, parsePaperMessage, type ChartSubscribe, type ChartUnsubscribe, type PaperMessage, type PaperState, type ReplayControl } from "@stockwatcher/chart-core";
-import { createQuoteChannel, createWsClient, sameOriginWsUrl, type ConnectionStatus, type SettingsSync, type WebSocketLike } from "@stockwatcher/shared";
+import { createQuoteChannel, createWsClient, sameOriginWsUrl, type ConnectionStatus, type MarketSource, type SettingsSync, type WebSocketLike } from "@stockwatcher/shared";
 import type { ChartFeed, PaperCommand, ReplayCommand } from "./types.ts";
 
 export interface ServerFeedOptions {
@@ -8,6 +8,8 @@ export interface ServerFeedOptions {
   onStatus?: (s: ConnectionStatus) => void;
   /** The page's synced settings (settings/sync.ts): attached on every welcome by the shared client. */
   settings?: SettingsSync;
+  /** The market this page reads: `live` (dashboard) or `replay` (chart page). */
+  source?: MarketSource;
 }
 
 /**
@@ -48,6 +50,7 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
     url: opts.url ?? sameOriginWsUrl(window.location),
     token: opts.token ?? null,
     client: "web",
+    source: opts.source,
     onStatus: (s) => {
       opts.onStatus?.(s);
       if (s === "open") resubscribe(); // subscriptions do not survive a reconnect

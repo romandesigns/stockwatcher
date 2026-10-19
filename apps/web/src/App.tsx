@@ -85,7 +85,7 @@ function SourceChip({ choice, mode, className }: { choice: SourceChoice; mode: "
 
 /** The chart page: the shared connection gate (ConnectionGate.tsx), then the chart app. */
 export default function App() {
-  return <ConnectionGate>{(c) => <ChartApp choice={c.choice} feed={c.feed} />}</ConnectionGate>;
+  return <ConnectionGate source="replay">{(c) => <ChartApp choice={c.choice} feed={c.feed} />}</ConnectionGate>;
 }
 
 function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {

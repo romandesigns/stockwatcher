@@ -168,12 +168,15 @@ both: the server's search and chart candidates, and the archiver's import.
 
 ## 8. Market data mode (replay or live)
 
-One switch for the whole server, read at start: `MARKET_DATA_MODE` in `.env`.
-`replay` plays the archive (the day menu, play/pause/speed work); `live` streams
-Alpaca SIP (the Alpaca keys from step 7 must be in `.env`; replay controls answer
-`not_replay`). Alpaca allows one stream per account on most plans, so only one
-host may run live. Switching recreates the server, so every client reconnects
-and the paper account resets:
+Since 2026-10-18 the server runs **both**: replay on the archive, and live
+(Alpaca SIP) whenever the Alpaca keys from step 7 are in `.env`. The dashboard
+reads live and the chart page replay, each by asking for it. **Alpaca allows one
+stream per account on most plans, so put the keys on one host only**: any server
+that has them now streams live.
+
+`MARKET_DATA_MODE` is only the default for a client that names no source (apps
+built before the split). Changing it recreates the server, so every client
+reconnects and both paper accounts reset:
 
 ```sh
 cd ~/apps/stockwatcher
@@ -183,7 +186,8 @@ docker compose --env-file image.env up -d     # plain `up` fails: the image tag 
 docker logs --since 1m stockwatcher-server-1 2>&1 | grep 'market data provider started'
 ```
 
-The log line names the mode and source (`alpaca sip stream`, or `archive <day>`).
+Two log lines, one per market, name the mode and source (`alpaca sip stream`,
+`archive <day>`); without keys the live one says `not_configured`.
 A client that stayed connected across the switch may keep the old mode's clock
 until it is reopened (seen 2026-10-18).
 

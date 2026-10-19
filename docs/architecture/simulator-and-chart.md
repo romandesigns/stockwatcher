@@ -441,8 +441,9 @@ cargo run -p market-archive --bin swarchive -- verify 2026-10-15
 curl -H 'APCA-API-KEY-ID: sim-key' -H 'APCA-API-SECRET-KEY: sim-secret' 'http://127.0.0.1:8791/v2/stocks/snapshots?symbols=SMPL'
 ```
 
-Live mode is `MARKET_DATA_MODE=live` plus the Alpaca keys in the server's environment. Without the
-keys it reports `not_configured` and the web app falls back to the labelled fixture. The production image sets `ARCHIVE_ROOT=/app/data/archive` and
+The live market runs whenever the Alpaca keys are in the server's environment, beside the replay
+market (2026-10-18; `MARKET_DATA_MODE` only picks the default for clients that name no source).
+Without the keys it reports `not_configured`, and the dashboard says so. The production image sets `ARCHIVE_ROOT=/app/data/archive` and
 does not auto-generate fixtures. Alpaca allows one stream connection per account on most plans, so run
 live mode on one host only.
 
