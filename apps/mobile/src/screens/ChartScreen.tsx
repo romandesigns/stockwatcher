@@ -127,7 +127,7 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
 
   return (
     // No bottom inset: the main nav's tab bar sits below this screen and takes the home-indicator inset.
-    <View style={[styles.screen, { paddingTop: insets.top + 8, paddingBottom: 8 }]}>
+    <View style={[styles.screen, { paddingTop: insets.top + 4, paddingBottom: 4 }]}>
       <View style={styles.header}>
         <Pressable accessibilityRole="button" accessibilityLabel={`${active ?? "No ticker"}, search tickers`} accessibilityHint="Tap, then press and hold to copy" {...tickerPress} hitSlop={8} style={({ pressed }) => [styles.tickerButton, pressed && { opacity: 0.6 }]}>
           <Text style={styles.symbol}>{active ?? "—"}</Text>
@@ -293,7 +293,7 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: colors.bg, paddingHorizontal: 12, gap: 8 },
+  screen: { flex: 1, backgroundColor: colors.bg, paddingHorizontal: 6, gap: 8 },
   header: { flexDirection: "row", alignItems: "center", gap: 8 },
   tickerButton: { flexDirection: "row", alignItems: "center", gap: 4 },
   searchButton: { marginLeft: "auto", width: 32, height: 32, borderRadius: 16, alignItems: "center", justifyContent: "center", backgroundColor: colors.bgPanel },

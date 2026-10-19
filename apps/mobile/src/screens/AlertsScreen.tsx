@@ -75,7 +75,7 @@ function Alerts() {
   const app = appActions();
 
   return (
-    <View style={[styles.screen, { paddingTop: insets.top + 8 }]}>
+    <View style={[styles.screen, { paddingTop: insets.top + 4 }]}>
       <View style={styles.header}>
         <Text style={styles.title} accessibilityRole="header">
           Alerts
@@ -218,7 +218,7 @@ function ActivityList({ events, now }: { events: readonly AlertEventWire[]; now:
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: colors.bg, paddingHorizontal: 12, gap: 10 },
+  screen: { flex: 1, backgroundColor: colors.bg, paddingHorizontal: 6, gap: 10 },
   header: { flexDirection: "row", alignItems: "center", gap: 10 },
   title: { color: colors.text, fontFamily: fonts.semibold, fontSize: 20, flexShrink: 0 },
   budget: { color: colors.textDim, fontSize: 12, fontVariant: ["tabular-nums"] },

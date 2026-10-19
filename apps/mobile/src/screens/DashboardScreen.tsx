@@ -58,7 +58,7 @@ function DashboardView({ feed, token, source }: { feed: MobileFeed; token: strin
   );
 
   return (
-    <View style={[styles.screen, { paddingTop: insets.top + 8 }]}>
+    <View style={[styles.screen, { paddingTop: insets.top + 4 }]}>
       <View style={styles.header}>
         <Text accessibilityRole="header" style={styles.title}>
           Dashboard
@@ -96,7 +96,7 @@ function DashboardView({ feed, token, source }: { feed: MobileFeed; token: strin
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: colors.bg, paddingHorizontal: 12, paddingBottom: 8, gap: 8 },
+  screen: { flex: 1, backgroundColor: colors.bg, paddingHorizontal: 6, paddingBottom: 4, gap: 8 },
   header: { flexDirection: "row", alignItems: "center", gap: 8 },
   title: { color: colors.text, fontFamily: fonts.semibold, fontSize: 18 },
   sub: { color: colors.textFaint, fontFamily: fonts.regular, fontSize: 12 },
