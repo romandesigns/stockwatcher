@@ -33,6 +33,8 @@ interface RowProps {
   row: TickerRow;
   current: boolean;
   onChoose: (r: TickerRow) => void;
+  /** "See more" under the last shown recent (it carries `moreRecents`). */
+  onMore: () => void;
 }
 
 /**
@@ -40,7 +42,7 @@ interface RowProps {
  * previous close when known, else the open; good/critical, the status colours). Memoized: refreshTickerRows keeps an unchanged row's
  * identity, so a quote update re-renders only the rows whose values moved.
  */
-const Row = memo(function Row({ row: r, current, onChoose }: RowProps) {
+const Row = memo(function Row({ row: r, current, onChoose, onMore }: RowProps) {
   const t = r.item;
   const up = (t.changePct ?? 0) >= 0;
   const sub = [t.exchange, t.volume === undefined ? "" : `${formatVolume(t.volume)} vol`].filter(Boolean).join(" · ");
@@ -75,6 +77,11 @@ const Row = memo(function Row({ row: r, current, onChoose }: RowProps) {
           )}
         </View>
       </Pressable>
+      {r.moreRecents ? (
+        <Pressable accessibilityRole="button" accessibilityLabel={`See ${r.moreRecents} more recently opened`} onPress={onMore} style={({ pressed }) => [s.more, pressed && { backgroundColor: colors.bgRow }]}>
+          <Text style={s.moreText}>See more ({r.moreRecents})</Text>
+        </Pressable>
+      ) : null}
     </View>
   );
 });
@@ -112,27 +119,33 @@ export function TickerSearchSheet({ open, onClose, symbols, quotes, mock, curren
   const tickers = useMemo(() => tickerUniverse(symbols, board, { mock }), [symbols, board, mock]);
   const groups = useMemo(() => visibleTickerFilterGroups(tickers), [tickers]);
   const [query, setQuery] = useState("");
+  // Recently opened shows RECENTS_COLLAPSED tickers until "See more" (owner, 2026-10-19).
+  const [recentsExpanded, setRecentsExpanded] = useState(false);
+  const more = useCallback(() => setRecentsExpanded(true), []);
   // Filters persist between openings (unlike the query), as on the web.
   const [filters, setFilters] = useState<ReadonlySet<TickerFilterId>>(new Set());
 
   // Every opening starts with an empty field, like the web: clear it on the way out.
   const close = () => {
     setQuery("");
+    setRecentsExpanded(false);
     onClose();
   };
   // Ranked only when the query, filters or recents change, and once more when the first quote
   // snapshot lands (most-active order needs volumes); other updates refresh values in place, so
   // the list does not reshuffle under the thumb once a second (the web panel does the same).
   // React's "adjust state while rendering" pattern: re-rank when the key changes, else keep.
-  const rankKey = [query, [...filters].sort().join(","), recents.join(","), board.size > 0].join("|");
+  const rankKey = [query, [...filters].sort().join(","), recents.join(","), board.size > 0, recentsExpanded].join("|");
   const [rank, setRank] = useState<{ key: string; rows: TickerRow[] }>({ key: "", rows: [] });
   let ranked = rank.rows;
   if (rank.key !== rankKey) {
-    ranked = searchTickers(tickers, query, filters, recents);
+    ranked = searchTickers(tickers, query, filters, recents, { recentsExpanded });
     setRank({ key: rankKey, rows: ranked });
   }
-  const grouped = !query.trim() && activeTickerFilters(tickers, filters).size === 0;
-  const rows = useMemo(() => refreshTickerRows(ranked, tickers, grouped), [ranked, tickers, grouped]);
+  // Titles whenever there is no query: Recently opened stays on top with filters on.
+  const grouped = !query.trim();
+  const filtered = activeTickerFilters(tickers, filters).size > 0;
+  const rows = useMemo(() => refreshTickerRows(ranked, tickers, grouped, filtered), [ranked, tickers, grouped, filtered]);
 
   const toggle = (id: TickerFilterId) => {
     playHaptic("selection");
@@ -233,7 +246,7 @@ export function TickerSearchSheet({ open, onClose, symbols, quotes, mock, curren
           initialNumToRender={16}
           maxToRenderPerBatch={24}
           windowSize={7}
-          renderItem={({ item: r }) => <Row row={r} current={r.item.symbol === current} onChoose={choose} />}
+          renderItem={({ item: r }) => <Row row={r} current={r.item.symbol === current} onChoose={choose} onMore={more} />}
         />
       </View>
     </Modal>
@@ -259,6 +272,8 @@ const s = StyleSheet.create({
   countRow: { height: 34, flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 4 },
   count: { color: colors.textFaint, fontSize: 11, fontVariant: ["tabular-nums"] },
   clearText: { color: colors.textDim, fontSize: 12 },
+  more: { minHeight: 44, justifyContent: "center", paddingHorizontal: 8, borderRadius: 10 },
+  moreText: { color: colors.textDim, fontSize: 13 },
   section: { color: colors.textFaint, fontSize: 10, fontWeight: "600", letterSpacing: 0.6, textTransform: "uppercase", paddingHorizontal: 8, paddingTop: 12, paddingBottom: 4 },
   row: { minHeight: 52, flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 8, borderRadius: 10 },
   symbol: { width: 62, color: colors.text, fontSize: 14, fontWeight: "600", fontVariant: ["tabular-nums"] },

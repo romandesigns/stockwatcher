@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { tickerUniverse } from "./mockTickers.ts";
 import { applyQuotesMessage, EMPTY_QUOTE_BOARD } from "./quotes.ts";
-import { activeTickerFilters, mostActiveTickers, pushRecentTicker, refreshTickerRows, searchTickers, visibleTickerFilterGroups, type TickerFilterId } from "./search.ts";
+import { activeTickerFilters, MAX_TICKER_RECENTS, mostActiveTickers, pushRecentTicker, RECENTS_COLLAPSED, refreshTickerRows, searchTickers, visibleTickerFilterGroups, type TickerFilterId } from "./search.ts";
 
 // A fixture source: two openable symbols plus the mock universe.
 const universe = tickerUniverse(["SMPL", "FXLO"], EMPTY_QUOTE_BOARD, { mock: true });
@@ -119,8 +119,8 @@ test("refresh moves a section title off a row that left", () => {
 
 test("recents: newest first, no duplicates, capped", () => {
   let r: string[] = [];
-  for (const s of ["A", "B", "C", "A", "D", "E", "F"]) r = pushRecentTicker(r, s);
-  expect(r).toEqual(["F", "E", "D", "A", "C"]);
+  for (const s of ["A", "B", "C", "A", "D", "E", "F", "G", "H", "I", "J", "K", "L"]) r = pushRecentTicker(r, s);
+  expect(r).toEqual(["L", "K", "J", "I", "H", "G", "F", "E", "D", "A"]);
 });
 
 test("Gainers / Losers and their order use the previous-close change when the board has it", () => {
@@ -145,4 +145,42 @@ test("most active: quoted real rows only, by volume, capped", () => {
   const t = (symbol: string, volume?: number, extra: object = {}) => ({ symbol, name: symbol, exchange: "", available: true, mock: false, ...(volume === undefined ? {} : { price: 1, volume }), ...extra });
   const rows = mostActiveTickers([t("AAA", 10), t("BBB", 500), t("CCC"), t("DDD", 500), t("MOCK", 9e9, { mock: true }), t("EEE", 1)], 3);
   expect(rows.map((r) => r.symbol)).toEqual(["BBB", "DDD", "AAA"]);
+});
+
+test("recently opened: 6 shown with a See more count, all 10 when expanded, never repeated below", () => {
+  const ten = universe.slice(0, 12).map((t) => t.symbol).slice(0, MAX_TICKER_RECENTS);
+  const collapsed = searchTickers(universe, "", on(), ten);
+  const recentRows = collapsed.filter((r) => r.recent);
+  expect(recentRows.map((r) => r.item.symbol)).toEqual(ten.slice(0, RECENTS_COLLAPSED));
+  expect(recentRows.at(-1)!.moreRecents).toBe(ten.length - RECENTS_COLLAPSED);
+  expect(recentRows.slice(0, -1).every((r) => r.moreRecents === undefined)).toBe(true);
+  // The hidden four are still reachable in the list below.
+  expect(collapsed.filter((r) => ten.slice(RECENTS_COLLAPSED).includes(r.item.symbol) && !r.recent).length).toBe(4);
+
+  const expanded = searchTickers(universe, "", on(), ten, { recentsExpanded: true });
+  expect(expanded.filter((r) => r.recent).map((r) => r.item.symbol)).toEqual(ten);
+  expect(expanded.some((r) => r.moreRecents !== undefined)).toBe(false);
+  const shownOnce = new Set<string>();
+  for (const r of expanded) {
+    expect(shownOnce.has(r.item.symbol)).toBe(false);
+    shownOnce.add(r.item.symbol);
+  }
+  // Fewer than 6 recents: nothing to expand.
+  expect(searchTickers(universe, "", on(), ten.slice(0, 3)).some((r) => r.moreRecents !== undefined)).toBe(false);
+});
+
+test("recently opened stays on top with filters on; the filtered rest gets its own title", () => {
+  const rows = searchTickers(real, "", on("under1"), ["AAL", "F"]);
+  expect(rows.map((r) => r.item.symbol)).toEqual(["AAL", "F", "SNDL"]);
+  expect(rows[0]!.section).toBe("recent");
+  expect(rows[2]!.section).toBe("matches");
+  // A query ranks everything and has no recents section.
+  expect(searchTickers(real, "a", on(), ["AAL"]).some((r) => r.recent)).toBe(false);
+});
+
+test("recents keep up to 10", () => {
+  let r: string[] = [];
+  for (let i = 0; i < 14; i++) r = pushRecentTicker(r, `T${i}`);
+  expect(r.length).toBe(MAX_TICKER_RECENTS);
+  expect(r[0]).toBe("T13");
 });
