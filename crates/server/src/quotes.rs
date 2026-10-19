@@ -154,6 +154,19 @@ impl Counted {
             },
         }
     }
+
+    /// The print's own verdict without the engine: its conditions ([`Trade::effect`]) and a
+    /// session. Used only for a symbol whose history the live market has not loaded into the
+    /// engine yet (`crate::history`): it misses the engine-only exclusions (late, duplicate),
+    /// and the row is replaced by the engine's exact one when the symbol loads.
+    pub fn from_effect(t: &Trade) -> Self {
+        let e = t.effect();
+        let in_session = t.session.is_some();
+        Counted {
+            ohlc: e.updates_ohlc && in_session,
+            volume: e.updates_volume && in_session,
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -397,6 +410,107 @@ impl QuoteBoard {
         self.index
             .get(symbol)
             .and_then(|&i| Self::row(&self.entries[i], false))
+    }
+
+    /// The index of `symbol`'s entry, created empty when missing.
+    fn entry_index(&mut self, symbol: &str) -> usize {
+        if let Some(&i) = self.index.get(symbol) {
+            return i;
+        }
+        let symbol: Arc<str> = Arc::from(symbol);
+        let i = self.entries.len();
+        self.entries.push(Entry {
+            symbol: symbol.clone(),
+            day: None,
+            last: None,
+            last_ts: UnixNanos(i64::MIN),
+            first: None,
+            open: None,
+            prev_close: None,
+            prev_close_changed: false,
+            volume: 0,
+            trades: 0,
+            dirty: false,
+            listed: false,
+        });
+        self.index.insert(symbol, i);
+        i
+    }
+
+    fn mark_dirty(&mut self, i: usize) {
+        if !self.entries[i].dirty {
+            self.entries[i].dirty = true;
+            self.dirty.push(i);
+        }
+    }
+
+    /// Every row with a trading date, as the live market saves them in the archive
+    /// (`market_archive::LiveQuote`, the startup summary of a recorded day).
+    pub fn export(&self) -> Vec<market_archive::LiveQuote> {
+        self.entries
+            .iter()
+            .filter_map(|e| {
+                Some(market_archive::LiveQuote {
+                    symbol: e.symbol.to_string(),
+                    day: e.day?,
+                    last: e.last,
+                    last_ts: e.last_ts.0,
+                    first: e.first,
+                    open: e.open,
+                    volume: e.volume,
+                    trades: e.trades,
+                })
+            })
+            .collect()
+    }
+
+    /// Restores saved rows (a restart: the live market's history summary), each replacing the
+    /// symbol's row unless the board already has a later trading date for it. The previous close
+    /// is looked up for the row's date as when it traded; every restored row is dirty, so it goes
+    /// out like any change.
+    pub fn restore(&mut self, rows: &[market_archive::LiveQuote]) {
+        for r in rows {
+            let i = self.entry_index(&r.symbol);
+            let e = &mut self.entries[i];
+            if e.day.is_some_and(|d| d > r.day) {
+                continue;
+            }
+            let pc = self.closes.before(&e.symbol, r.day).map(|(_, p)| p);
+            e.prev_close_changed |= pc != e.prev_close;
+            e.prev_close = pc;
+            e.day = Some(r.day);
+            e.last = r.last;
+            e.last_ts = UnixNanos(r.last_ts);
+            e.first = r.first;
+            e.open = r.open;
+            e.volume = r.volume;
+            e.trades = r.trades;
+            self.mark_dirty(i);
+        }
+    }
+
+    /// Replaces `symbol`'s row with `other`'s (a symbol whose history was just loaded into the
+    /// engine: `other` is the board that history built, by the engine's own verdicts, replacing
+    /// the provisional row kept while it was not loaded). Nothing happens when `other` has none.
+    pub fn replace_from(&mut self, symbol: &str, other: &QuoteBoard) {
+        let Some(src) = other.index.get(symbol).map(|&j| other.entries[j].clone()) else {
+            return;
+        };
+        let i = self.entry_index(symbol);
+        let e = &mut self.entries[i];
+        let pc = src
+            .day
+            .and_then(|d| self.closes.before(&e.symbol, d).map(|(_, p)| p));
+        e.prev_close_changed |= pc != e.prev_close;
+        e.prev_close = pc;
+        e.day = src.day;
+        e.last = src.last;
+        e.last_ts = src.last_ts;
+        e.first = src.first;
+        e.open = src.open;
+        e.volume = src.volume;
+        e.trades = src.trades;
+        self.mark_dirty(i);
     }
 }
 

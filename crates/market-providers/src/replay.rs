@@ -76,6 +76,7 @@ impl MarketDataProvider for ReplayProvider {
             items,
             clock: handle.watch(),
             control: Some(handle),
+            recorder: None,
         })
     }
 }

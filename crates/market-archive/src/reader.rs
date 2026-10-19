@@ -4,10 +4,10 @@ use crate::error::ArchiveError;
 use crate::format::{FORMAT_VERSION, FileHeader, MAGIC, MAX_HEADER_BYTES, MAX_RECORD_BYTES};
 use market_events::{CONTRACT_VERSION, VersionedEvent};
 use std::fs::File;
-use std::io::{BufReader, ErrorKind, Read};
+use std::io::{BufReader, ErrorKind, Read, Take};
 use std::path::{Path, PathBuf};
 
-type Decoder = zstd::stream::read::Decoder<'static, BufReader<BufReader<File>>>;
+type Decoder = zstd::stream::read::Decoder<'static, BufReader<BufReader<Take<File>>>>;
 
 pub struct SymbolReader {
     path: PathBuf,
@@ -20,6 +20,15 @@ pub struct SymbolReader {
 
 impl SymbolReader {
     pub fn open(path: &Path) -> Result<Self, ArchiveError> {
+        Self::open_limited(path, None)
+    }
+
+    /// [`SymbolReader::open`], reading at most the first `limit` bytes of the file. A file still
+    /// being appended to (the archive's live recording, `crate::live`) is read up to a length the
+    /// writer reported as a frame boundary, so a reader never runs into a frame being written,
+    /// nor past the point it asked about. The zstd decoder reads every frame of a file, so a
+    /// recording made of one frame per flush reads like one made of a single frame.
+    pub fn open_limited(path: &Path, limit: Option<u64>) -> Result<Self, ArchiveError> {
         let file = File::open(path).map_err(|e| {
             if e.kind() == ErrorKind::NotFound {
                 ArchiveError::NotFound(path.to_path_buf())
@@ -27,7 +36,7 @@ impl SymbolReader {
                 ArchiveError::io(path, e)
             }
         })?;
-        let mut r = BufReader::with_capacity(256 * 1024, file);
+        let mut r = BufReader::with_capacity(256 * 1024, file.take(limit.unwrap_or(u64::MAX)));
         let mut prefix = [0u8; 16];
         r.read_exact(&mut prefix)
             .map_err(|_| ArchiveError::format(path, "file shorter than the 16-byte header"))?;

@@ -184,8 +184,20 @@ server /ws ──► ChartFeed.subscribe({symbol, timeframe, profileBin}, emit) 
    chart page for `replay`. Each market has its own paper account. The replay clock (day, speed,
    play/pause) is still one shared practice session, not one per person. An empty live list is real
    (closed, or before the first trade): the live page shows "No live trades yet", never the fixture.
-3. **Live mode does not archive.** History comes from the archiver's nightly SIP import, so the
-   dashboard has no intraday backfill after a server restart during a session.
+3. **Live mode records into the archive (solved 2026-10-18): one store, read two ways.** The live
+   market writes what it receives into the archive itself, `ARCHIVE_ROOT/<trading date>/live/`, a
+   **provisional** day the nightly SIP import replaces with the complete, corrected one (the import
+   wins; live never writes into an imported day). The dashboard is that history plus the live tail:
+   after a restart (every push to `main` redeploys) the market is `running` at once with the quote
+   board restored from the recording's saved rows, each symbol's day is loaded into the engine when
+   a chart asks for it (an empty chart first, then the real one) and every other symbol in the
+   background, and the paper account never sees history. When nothing trades (a weekend, before
+   the overnight session) it shows the **last session** the archive has, labelled with its date
+   ("Last session · Fri Oct 16", from `session` in `/api/symbols`), and rolls into the new session
+   with its first trades. Replay offers a recorded day, marked provisional, once its session is
+   over. Still lost: the **restart gap** (the old process's last flushed second to the new
+   stream's first event), not backfilled until the import. Design and numbers:
+   `simulator-and-chart.md`, "Live recording".
 4. **Known client bug:** the replay bar's clock label stops updating while replay plays, although the
    server sends `replay.clock` about 4 times a second (seen on `main`, 2026-10-18; not yet fixed).
 5. **Dashboard state goes in the app store** (done for the panel: the synced `dashboard` namespace). A watchlist, the dashboard layout or a selected symbol

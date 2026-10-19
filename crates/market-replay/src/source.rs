@@ -1,7 +1,7 @@
 //! Where replay reads events from: an archive day, or in-memory streams (tests).
 
 use chrono::NaiveDate;
-use market_archive::Archive;
+use market_archive::{Archive, DayData};
 use market_events::session::sessions_for;
 use market_events::{MarketEvent, UnixNanos};
 use std::sync::Arc;
@@ -56,20 +56,34 @@ pub fn day_bounds(day: NaiveDate) -> Option<(UnixNanos, UnixNanos)> {
     Some((s.first()?.1, s.last()?.2))
 }
 
-/// Every finalized symbol file of one archive day.
+/// Every symbol file of one archive day: the import's (final) when it has completed the day,
+/// else the live market's sealed recording of it (provisional, `market_archive::live`), which the
+/// nightly import later replaces. A recording still being appended to is refused: replay opens a
+/// day's files on every seek, and a day that grows under it would not replay the same twice.
 pub struct ArchiveDaySource {
     archive: Archive,
     day: NaiveDate,
     symbols: Vec<String>,
     fixture: bool,
+    provisional: bool,
 }
 
 impl ArchiveDaySource {
     pub fn new(archive: Archive, day: NaiveDate) -> Result<Self, String> {
-        let m = archive
-            .manifest(day)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("no archive manifest for {day}"))?;
+        let data = archive.day_data(day);
+        if data == Some(DayData::Provisional { sealed: false }) {
+            return Err(format!(
+                "{day} is still being recorded live; it can be replayed once its session ends"
+            ));
+        }
+        let provisional = data == Some(DayData::Provisional { sealed: true });
+        let m = if provisional {
+            archive.live_manifest(day)
+        } else {
+            archive.manifest(day)
+        }
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("no archive manifest for {day}"))?;
         if day_bounds(day).is_none() {
             return Err(format!("{day} is not a trading day"));
         }
@@ -78,7 +92,13 @@ impl ArchiveDaySource {
             day,
             symbols: m.symbols.keys().cloned().collect(),
             fixture: m.fixture,
+            provisional,
         })
+    }
+
+    /// True when this is the live recording, not the import.
+    pub fn provisional(&self) -> bool {
+        self.provisional
     }
 
     pub fn archive(&self) -> &Archive {
@@ -88,13 +108,20 @@ impl ArchiveDaySource {
 
 impl EventSource for ArchiveDaySource {
     fn open(&self) -> Result<Vec<EventStream>, String> {
+        // The import may have replaced the recording since this source was made: a seek then
+        // opens the import (same day, complete and corrected), never the deleted recording.
+        if self.provisional && self.archive.is_final(self.day) {
+            return ArchiveDaySource::new(self.archive.clone(), self.day)?.open();
+        }
         self.symbols
             .iter()
             .map(|s| {
-                let r = self
-                    .archive
-                    .reader(self.day, s)
-                    .map_err(|e| e.to_string())?;
+                let r = if self.provisional {
+                    self.archive.live_reader(self.day, s, None)
+                } else {
+                    self.archive.reader(self.day, s)
+                }
+                .map_err(|e| e.to_string())?;
                 Ok(
                     Box::new(r.map(|x| x.map(|v| v.event).map_err(|e| e.to_string())))
                         as EventStream,
@@ -123,9 +150,14 @@ impl EventSource for ArchiveDaySource {
 
     fn label(&self) -> String {
         format!(
-            "archive {}{}",
+            "archive {}{}{}",
             self.day,
-            if self.fixture { " (fixture)" } else { "" }
+            if self.fixture { " (fixture)" } else { "" },
+            if self.provisional {
+                " (provisional: recorded live)"
+            } else {
+                ""
+            }
         )
     }
 }

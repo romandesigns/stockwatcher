@@ -35,7 +35,7 @@ One pipeline, two sources:
 | `chart-engine` | Incremental per-symbol aggregation into 15s/30s/1m/5m candles (forming → final, exact half-open `[start, end)` boundaries); correction and cancel handling; late and out-of-order policy; gap marking (no fake candles); a session volume profile with configurable bin width, anchored per session; snapshot and increment output | `market-events` |
 | `market-archive` | On-disk archive: per day/symbol files of normalized events (zstd-compressed, length-prefixed records with a versioned header). Storage root, retention and free-space floor are configurable | `market-events` |
 | `market-replay` | A deterministic virtual clock (play, pause, step, seek, speed 1×…max), merging archived streams by `(event_ts, source_seq)` | `market-archive` |
-| `market-providers` | A `MarketDataProvider` trait with **`ReplayProvider`** and **`LiveProvider`** (the Alpaca SIP stream client and its normalizer), plus the history importer `swimport` and its rolling-window `maintain` cycle (Appendix F, Appendix B). *(now)* There is no `ArchiveRecorder` and no FMP float lookup in the live path: history comes from the archiver's daily SIP import | above |
+| `market-providers` | A `MarketDataProvider` trait with **`ReplayProvider`** and **`LiveProvider`** (the Alpaca SIP stream client and its normalizer), plus the history importer `swimport` and its rolling-window `maintain` cycle (Appendix F, Appendix B). *(now)* The live provider records what it receives into the archive (`recorder`, a provisional day the archiver's nightly SIP import replaces: "Live recording" below); no FMP float lookup in the live path | above |
 | `paper-broker` | *(now)* The simulated matching engine behind paper trading (`chart-trading-sim.md`) | `market-events` |
 | `provider-sim` | The local, provider-compatible surface: the Alpaca REST/WS subset and the FMP float route that Stockwatcher uses, served from replay. Dummy auth; no external calls | `market-providers` |
 | `server` | Wires provider, engine and client WS plus REST. *(now)* Also the paper broker, the quote board, settings sync and `/updates/*`; routes and messages are listed in Appendix D | all |
@@ -165,7 +165,9 @@ full reference.
 
 **Archive layout.** `$ARCHIVE_ROOT/<trading date>/<SYMBOL>.swa` plus `manifest.json` per day. The
 day is the trading date of the sessions, so the overnight session that starts at 20:00 ET the
-evening before is in the next day's directory.
+evening before is in the next day's directory. A day the live market recorded also has a
+`live/` directory (a provisional version of the day, replaced by the import: "Live recording"
+in the providers section).
 
 **File format v1 (`.swa`).** A 16-byte prefix: magic `SWARCHV\0`, format version (u16 LE, 1), event
 contract version (u16 LE, 1), and the header length (u32 LE). Then a JSON header
@@ -289,9 +291,72 @@ batches of 2048 events keep commands responsive. A seek over a whole fixture day
     enough for Alpaca's 407 slow-client disconnect.
   - Connection state reaches the server as `FeedItem::Link`: status `starting`, `running` or
     `reconnecting`, with an operator-facing detail (never credentials).
-  - Live mode **does not archive** what it receives. History comes from the archiver's nightly SIP
-    import of each completed day instead (Appendix B), so a replayable day exists the evening after
-    the session.
+  - **Live recording: one store, read two ways** (owner, 2026-10-18; `crates/market-archive/src/live.rs`,
+    `crates/market-providers/src/recorder.rs`, `crates/server/src/history.rs`). The live market
+    writes what it receives into the archive itself; the nightly SIP import (Appendix B) replaces it
+    with the complete, corrected day; the dashboard is that history plus the live tail.
+    - **Layout.** `ARCHIVE_ROOT/<trading date>/live/`: one `.swa` per symbol (the archive's v1
+      format, arrival order, `receive_ts` = delivery time), a `manifest.json` marked
+      `"live": {"sealed": …}` and `quotes.json` (the quote board's rows, the next start's
+      summary). The day is the trading date of the delivery time (overnight = next day). In a
+      subdirectory, not beside the import's files, because the import fills a day symbol by symbol
+      for up to an hour and must replace the recording in one step.
+    - **Final vs provisional.** Every reader picks a day's version the same way
+      (`Archive::day_data`): the import once complete (manifest, no `.importing` marker), else the
+      recording. The importer's existing lifecycle is the switch: its marker also stops the
+      recorder writing to the day (live never writes into imported data), and clearing it
+      (`Archive::finish_import`) makes every reader take the import, then deletes `live/`.
+    - **Writing.** Write-behind as before (a `try_send` into a 65,536-event queue, one OS thread;
+      overflow is dropped from the recording and counted, never from the market). Each symbol's
+      records are buffered and appended as one complete zstd frame once they reach 64 KiB or are
+      10 s old, and at every barrier, day change and clean stop (the server closes the recorder on
+      shutdown, so a deploy loses nothing; a killed process loses at most 10 s of a quiet symbol).
+      Readers read every whole frame while the file grows and stop cleanly at a torn one; the next
+      run truncates a torn tail before appending. The manifest is checkpointed every 15 s; the
+      ~7,000 files are not fsynced (a process crash loses nothing written; only a power loss can
+      lose what the kernel had not written back). When the recorder moves to the next day it
+      **seals** the old one in the background: every file repaired, recounted, rewritten as one
+      frame and hashed. Recordings no import replaced are kept `LIVE_RECORD_DAYS` (5), never the
+      day being written.
+    - **Loading (the dashboard).** At start the market reads the plan (today; plus the previous
+      trading day before 09:30 ET; when today has nothing, the last day with market data: a
+      closed market shows its last session, labelled `session: {day, current: false}` in
+      `/api/symbols`, "Last session · Fri Oct 16" in the clients; fixture days never count), lists
+      the symbols and restores the quote board from `quotes.json`: it is `running` with every
+      candidate at once. A symbol's day is loaded into the engine when a chart asks for it (an
+      empty snapshot first, then the real one on `OutKind::Loaded`) and, with
+      `LIVE_HISTORY_PRELOAD` (default on), every other one in the background, busiest first. Until
+      then its live events are counted (or, during its load, held) instead of applied; the load
+      asks the recorder for a barrier and keeps exactly this run's records the market saw before
+      the load, replays them in an engine of its own with the live marks, applies the held events
+      and moves the state over (`ChartEngine::adopt_symbol`, tested equal to an unbroken run). The
+      paper broker never sees history.
+    - **Replay** offers a sealed recording in the day menu as `provisional` until the import
+      replaces it; a recording still being written is not offered (replay reopens a day's files on
+      every seek). `REPLAY_FOLLOW_LATEST` follows imported days only.
+    - **Measured** (release build, Windows dev machine, synthetic whole-market morning: 5M prints,
+      6,700 symbols, skewed like the real market, a third odd lots, 1,700 prints a simulated
+      second): startup to `running` with 6,693 candidates **30 ms**; first chart of the busiest
+      symbol (552k prints, 11% of the day, heavier than any real symbol) **2.5 s**; every symbol
+      loaded in the background **31 s** (~160k prints/s); the recorder wrote the 5M at **~118k
+      prints/s** on one thread (writing frames once per second instead measured ~20k/s and
+      134 B/print: why frames are cut by size and age); **74 B/print** while open,
+      **20 B/print** once sealed (sealing the 5M took 80–110 s in the background). Not known: a
+      real whole-market day's print count. If it is ~40M, the background load takes ~4 min, an open
+      day ~3 GB on disk (~0.8 GB sealed, then replaced by the ~0.6 GB import).
+    - Not filled: the **restart gap** (the old process's last written event to the new stream's
+      first); Alpaca's historical REST could, but for the whole market that is a fan-out over
+      ~7,000 symbols on every deploy, ordered ahead of what the stream already delivers.
+    - Tests: `market-archive` `live.rs` (read while written, barrier bounds, crash mid-write and
+      repair, the import replaces a recording and live never writes into it, retention never
+      removes the day being recorded); `market-providers` `recorder.rs` (day rollover and sealing,
+      drops counted without blocking, a started import refuses recording, a clean close writes
+      everything) and `tests/maintain.rs` (a nightly cycle replaces a recorded day);
+      `market-replay` `tests/provisional.rs`; `chart-engine` `tests/adopt.rs`; server `days.rs`
+      (provisional days in the menu) and `tests/live_history.rs` (a restart: a chart loads its day
+      and equals an unbroken run, the afternoon tail included; the background preload equals it at
+      every timeframe; a closed market shows the last session, labelled, never a fixture;
+      `measure_history_load`, ignored, is the benchmark).
 - With a feed, `LiveProvider` stamps `receive_ts` (the Alpaca client stamps it at frame receipt)
   and applies the same mark rule, plus a 1 s idle tick.
 - Parity tests:

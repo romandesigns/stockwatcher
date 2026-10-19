@@ -96,6 +96,20 @@ pub struct DayManifest {
     /// Provider bar datasets (never events), keyed `provider/granularity/SYMBOL`; see `bars`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub bars: BTreeMap<String, BarEntry>,
+    /// Present only on a live recording's manifest (`<day>/live/manifest.json`, `crate::live`):
+    /// the day is **provisional**, recorded from the live stream as it arrived, and is replaced
+    /// by the nightly import. Absent on an imported (final) or fixture day.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live: Option<LiveDay>,
+}
+
+/// What a live recording's manifest says about itself.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveDay {
+    /// The recorder has moved on to a later day and every file was checked to end on a whole
+    /// frame and recounted: nothing is appended any more, so replay may open it. Until then the
+    /// per-symbol counts and `bytes` are checkpoints (at most a few seconds behind the files).
+    pub sealed: bool,
 }
 
 impl DayManifest {
@@ -109,12 +123,18 @@ impl DayManifest {
             fixture: false,
             symbols: BTreeMap::new(),
             bars: BTreeMap::new(),
+            live: None,
         }
     }
 
     /// Inserts or replaces a symbol and recomputes the day-level fields.
     pub fn upsert(&mut self, entry: SymbolEntry) {
         self.symbols.insert(entry.symbol.clone(), entry);
+        self.recompute();
+    }
+
+    /// Recomputes the day-level fields from the symbols (after inserting many at once).
+    pub fn recompute(&mut self) {
         let mut sources: Vec<Source> = self
             .symbols
             .values()

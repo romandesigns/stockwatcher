@@ -24,6 +24,8 @@ export interface ServerSymbols {
   priceBand?: { min: string; max: string };
   /** How many known symbols were screened and how many passed. */
   screened?: { total: number; candidates: number };
+  /** Live: the trading day shown (`LiveSession` in @stockwatcher/shared; read with parseLiveSession). */
+  session?: unknown;
 }
 
 /** unauthorized: the server wants an access token and has none, or not this one (HTTP 401). */

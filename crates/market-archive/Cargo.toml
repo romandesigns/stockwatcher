@@ -11,7 +11,7 @@ authors.workspace = true
 
 [dependencies]
 market-events = { path = "../market-events" }
-chrono = { version = "0.4.45", default-features = false, features = ["std", "clock"] }
+chrono = { version = "0.4.45", default-features = false, features = ["std", "clock", "serde"] }
 chrono-tz = "0.10.4"
 fs4 = "1.1.0"
 hex = "0.4.3"

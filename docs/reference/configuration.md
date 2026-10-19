@@ -52,6 +52,9 @@ services) sets `STOCKWATCHER_API_TOKEN`, `RUST_LOG`, `MARKET_DATA_MODE`, `REPLAY
 | `ALPACA_STREAM_FEED` | `sip` | `sip`, `iex`, `boats`, `overnight`, or `test` (Alpaca's fake stream, labelled fixture) |
 | `ALPACA_STREAM_NIGHT_FEED` | `boats` | With the `sip` day feed: the feed during the overnight session (20:00–04:00 ET before a trading day), when SIP carries nothing. The stream reconnects on the other feed when the session changes (one connection, taking turns). `overnight`, or `none` for SIP around the clock. Needs the account's BOATS entitlement; without it the night connection is refused and the link shows down until 04:00 |
 | `LIVE_SYMBOLS` | `*` | `*` (whole market) or a comma list |
+| `LIVE_RECORD` | `1` | record every event the live stream delivers into the archive itself, `ARCHIVE_ROOT/<trading date>/live/` (a provisional day: `crates/market-archive/src/live.rs`, `crates/market-providers/src/recorder.rs`). The nightly import replaces it with the complete day. `0` turns recording off; history already in the archive is still loaded |
+| `LIVE_RECORD_DAYS` | `5` | live recordings kept when no import replaced them (at least 2; never the day being recorded). Shares `ARCHIVE_MIN_FREE_MB` with the archive |
+| `LIVE_HISTORY_PRELOAD` | `1` | after a start, load every symbol's day from the archive in the background, busiest first; `0` loads a symbol only when a chart asks for it (`crates/server/src/history.rs`) |
 
 Alpaca allows one stream connection per account on most plans: run live on one host only.
 

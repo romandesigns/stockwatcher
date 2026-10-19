@@ -32,3 +32,20 @@ pub fn encode_header(header: &FileHeader) -> Vec<u8> {
     out.extend_from_slice(&json);
     out
 }
+
+/// One event as a record body: its `{"v":1,...}` JSON, checked against the 1 MiB record limit.
+/// The caller writes the u32 LE length in front of it.
+pub fn encode_record(event: &market_events::MarketEvent) -> Result<Vec<u8>, String> {
+    let json = serde_json::to_vec(&market_events::VersionedEvent {
+        v: market_events::CONTRACT_VERSION,
+        event: event.clone(),
+    })
+    .map_err(|e| e.to_string())?;
+    if json.is_empty() || json.len() as u64 > MAX_RECORD_BYTES as u64 {
+        return Err(format!(
+            "record of {} bytes exceeds the 1 MiB limit",
+            json.len()
+        ));
+    }
+    Ok(json)
+}

@@ -39,8 +39,20 @@
 //! `Resync` at its end. The previous day is not retained: the `Reset` replaces the whole [`Core`]
 //! (the engine is where a day's candles live), the driver drops its old source and readers, and
 //! the old `ProviderInfo` is released with its `Arc`. The days offered come from [`DayCatalog`].
+//!
+//! The live market is the archive's history plus the live tail ([`crate::history`]): the day's
+//! recorded (or imported) events are loaded per symbol, on a chart's request or in the
+//! background, into an engine of their own and moved into this one
+//! (`ChartEngine::adopt_symbol`); until then the symbol's live events are held in `Core::unloaded`
+//! rather than applied, a chart asking for it gets an empty snapshot, and `OutKind::Loaded` sends
+//! the real one. History never goes through [`Market::apply`], so it never reaches the paper
+//! broker.
+//!
+//! A rebuild (seek, day switch) does not serialize candle increments it will not send, only the
+//! tape rows the history ring keeps: same state, about a third less time per rebuilt event.
 
 use crate::days::{DayCatalog, DayEntry};
+use crate::history::{History, Unloaded};
 use crate::quotes::{Counted, QuoteBoard, QuoteChanges, QuoteRow};
 use chart_engine::wire::{ChartSnapshot, ChartUpdate, ClockInfo};
 use chart_engine::{ChartEngine, DataQuality, Timeframe};
@@ -156,6 +168,7 @@ pub const QUOTES_INTERVAL: Duration = Duration::from_secs(1);
 /// | `PRICE_BAND_MIN` / `PRICE_BAND_MAX` | `0.10` / `25.00` | the candidate price band (inclusive) |
 /// | `ARCHIVE_META_CHECK_SECS` | `60` | how often `assets.json` / `daily-closes.json` are checked for changes (0 = only on a day switch) |
 /// | `REPLAY_FOLLOW_LATEST` | `0` | switch the running replay to a newly imported latest day (see [`Market::follow_latest`]) |
+/// | `LIVE_HISTORY_PRELOAD` | `1` | live: load every symbol's history from the archive in the background, not only on a chart's request (`crate::history`) |
 #[derive(Clone, Debug)]
 pub struct MarketConfig {
     pub provider: ProviderConfig,
@@ -170,6 +183,9 @@ pub struct MarketConfig {
     pub meta_check: Duration,
     /// `REPLAY_FOLLOW_LATEST` (off by default: a switch resets the paper account).
     pub follow_latest: bool,
+    /// `LIVE_HISTORY_PRELOAD` (default on): the live market loads every symbol's recorded history
+    /// in the background, busiest first, not only the ones a chart asks for (`crate::history`).
+    pub history_preload: bool,
 }
 
 impl Default for MarketConfig {
@@ -183,6 +199,7 @@ impl Default for MarketConfig {
             band: PriceBand::DEFAULT,
             meta_check: Duration::from_secs(60),
             follow_latest: false,
+            history_preload: true,
         }
     }
 }
@@ -205,6 +222,9 @@ impl MarketConfig {
         }
         if let Some(v) = var("REPLAY_FOLLOW_LATEST") {
             c.follow_latest = on(&v);
+        }
+        if let Some(v) = var("LIVE_HISTORY_PRELOAD") {
+            c.history_preload = on(&v);
         }
         if let Some(v) = var("ARCHIVE_META_CHECK_SECS") {
             c.meta_check = Duration::from_secs(v.parse().map_err(|_| {
@@ -266,17 +286,25 @@ pub enum OutKind {
     /// A pre-serialized `quotes.update` for the connections that sent `quotes.subscribe`; every
     /// other connection drops it unread. `Outbound::seq` is the engine seq when it was taken.
     Quotes(String),
+    /// Live: a symbol's history was just loaded into the engine (`crate::history`): every
+    /// connection showing it takes a fresh snapshot (it had an empty or partial chart).
+    Loaded(String),
 }
 
-struct Core {
-    engine: ChartEngine,
-    seq: u64,
-    tape: HashMap<String, VecDeque<String>>,
+pub(crate) struct Core {
+    pub(crate) engine: ChartEngine,
+    pub(crate) seq: u64,
+    pub(crate) tape: HashMap<String, VecDeque<String>>,
     /// Latest price-qualifying trade per symbol at the engine clock; drives the price band.
-    last_price: HashMap<String, Price>,
+    pub(crate) last_price: HashMap<String, Price>,
     /// Last / open / volume per symbol for the ticker search (`quotes.*`).
-    quotes: QuoteBoard,
+    pub(crate) quotes: QuoteBoard,
     rebuilding: bool,
+    /// Live: symbols whose recorded history is in the archive but not in the engine yet
+    /// (`crate::history`). Their live events are counted or held here instead of applied.
+    pub(crate) unloaded: HashMap<String, Unloaded>,
+    /// The latest trading date of a price-qualifying print (labels the last session shown).
+    pub(crate) latest_trade_day: Option<NaiveDate>,
 }
 
 impl Core {
@@ -288,7 +316,21 @@ impl Core {
             last_price: HashMap::new(),
             quotes: QuoteBoard::with_closes(closes),
             rebuilding: false,
+            unloaded: HashMap::new(),
+            latest_trade_day: None,
         }
+    }
+
+    /// Keeps the last [`TAPE_HISTORY`] tape rows of a symbol.
+    pub(crate) fn record_tape(&mut self, symbol: &str, json: String) {
+        let ring = match self.tape.get_mut(symbol) {
+            Some(r) => r,
+            None => self.tape.entry(symbol.to_string()).or_default(),
+        };
+        if ring.len() == TAPE_HISTORY {
+            ring.pop_front();
+        }
+        ring.push_back(json);
     }
 }
 
@@ -300,7 +342,7 @@ pub struct ProviderStatus {
     pub detail: Option<String>,
 }
 
-struct Inner {
+pub(crate) struct Inner {
     mode: ClockMode,
     /// What is being replayed. Behind a lock because a day switch replaces it (on
     /// [`FeedItem::Source`]); readers clone the `Arc` out and never hold this lock while taking
@@ -310,9 +352,9 @@ struct Inner {
     /// live mode, which then offer no days).
     days: Option<DayCatalog>,
     status: Mutex<ProviderStatus>,
-    core: Mutex<Core>,
+    pub(crate) core: Mutex<Core>,
     clock: Mutex<Option<ClockState>>,
-    tx: broadcast::Sender<Arc<Outbound>>,
+    pub(crate) tx: broadcast::Sender<Arc<Outbound>>,
     control: Option<ReplayHandle>,
     bin: Price,
     band: PriceBand,
@@ -335,6 +377,8 @@ struct Inner {
     latest_seen: Mutex<Option<NaiveDate>>,
     /// Connections that sent `quotes.subscribe`. While 0, the quotes task builds nothing.
     quote_subs: AtomicUsize,
+    /// Live: the archive history this market loads from (`crate::history`); set once at start.
+    pub(crate) history: std::sync::OnceLock<History>,
 }
 
 /// What the market reads from the archive besides the replayed day itself: the root's optional
@@ -398,7 +442,7 @@ impl MetaFiles {
 
 /// Shared market state; cheap to clone.
 #[derive(Clone)]
-pub struct Market(Arc<Inner>);
+pub struct Market(pub(crate) Arc<Inner>);
 
 /// The `replay.clock` message.
 #[derive(Serialize)]
@@ -486,6 +530,7 @@ impl Market {
             follow_latest,
             latest_seen: Mutex::new(latest_seen),
             quote_subs: AtomicUsize::new(0),
+            history: std::sync::OnceLock::new(),
         }))
     }
 
@@ -584,12 +629,46 @@ impl Market {
                 follow_latest: cfg.follow_latest,
             },
         );
+        if mode == ClockMode::Live {
+            // Before the first event: the history decides which symbols the ingest holds back.
+            market.init_history(
+                archive.clone(),
+                session.recorder.clone(),
+                crate::history::wall_now(),
+                cfg.history_preload,
+            );
+        }
         tokio::spawn(ingest(session.items, market.clone(), sim.clone()));
         market.spawn_quotes_task();
         if !cfg.meta_check.is_zero() {
             market.spawn_meta_task(cfg.meta_check);
         }
         (market, sim)
+    }
+
+    /// A live market on a running session that loads its history from `archive` as if started
+    /// at `now` (tests; [`Market::start`] does the same with the wall clock).
+    pub fn from_live_session(
+        session: market_providers::ProviderSession,
+        archive: Archive,
+        now: UnixNanos,
+        preload: bool,
+    ) -> Market {
+        let market = Market::build(
+            ClockMode::Live,
+            Some(session.info.clone()),
+            ProviderStatus {
+                state: "running",
+                detail: None,
+            },
+            None,
+            PriceBand::DEFAULT,
+            ArchiveMeta::default(),
+        );
+        market.init_history(archive, session.recorder.clone(), now, preload);
+        tokio::spawn(ingest(session.items, market.clone(), None));
+        market.spawn_quotes_task();
+        market
     }
 
     /// Starts on an already-running provider session (tests).
@@ -644,10 +723,18 @@ impl Market {
             // "at most once per wall second" promise in the ws protocol docs. Delay restarts the
             // period from the late tick.
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let mut n = 0u64;
             loop {
                 tick.tick().await;
                 let Some(inner) = weak.upgrade() else { break };
-                Market(inner).publish_quotes();
+                let market = Market(inner);
+                market.publish_quotes();
+                n += 1;
+                // Live: the quote rows go into the archive's recording now and then, the
+                // startup summary of the next restart (`crate::history`).
+                if n.is_multiple_of(crate::history::QUOTES_CHECKPOINT_TICKS) {
+                    market.checkpoint_quotes();
+                }
             }
         });
     }
@@ -743,7 +830,9 @@ impl Market {
     /// the paper account and every client resyncs). A day is followed once: switching back to an
     /// older day by hand stays put until the next new day arrives. Returns whether it switched.
     pub async fn follow_latest(&self) -> bool {
-        let Some(latest) = self.days().last().map(|e| e.day) else {
+        // Imported days only: a live recording offered as provisional is not "newly imported",
+        // and following it would switch again (and reset the paper account) when its import lands.
+        let Some(latest) = self.days().iter().rfind(|e| !e.provisional).map(|e| e.day) else {
             return false;
         };
         {
@@ -769,7 +858,7 @@ impl Market {
         }
     }
 
-    fn current_closes(&self) -> Arc<PrevCloses> {
+    pub(crate) fn current_closes(&self) -> Arc<PrevCloses> {
         self.0.closes.lock().expect("closes lock").clone()
     }
 
@@ -802,12 +891,14 @@ impl Market {
         self.info()
             .is_some_and(|i| i.symbols.iter().any(|s| s == symbol))
             || core.engine.symbols().any(|s| s == symbol)
+            || core.unloaded.contains_key(symbol)
     }
 
     /// Every symbol the provider knows, sorted, whether or not it is a candidate.
     fn all_symbols(&self, core: &Core) -> Vec<String> {
         let mut v: Vec<String> = self.info().map(|i| i.symbols.clone()).unwrap_or_default();
         v.extend(core.engine.symbols().map(String::from));
+        v.extend(core.unloaded.keys().cloned());
         v.sort();
         v.dedup();
         v
@@ -857,23 +948,39 @@ impl Market {
                     let mut core = self.0.core.lock().expect("core lock");
                     if let Some((symbol, price, _)) = &qualifying {
                         core.last_price.insert(symbol.clone(), *price);
+                        if let MarketEvent::Trade(t) = &e
+                            && let Some(s) = t.session
+                        {
+                            core.latest_trade_day = core.latest_trade_day.max(Some(s.date));
+                        }
                     }
-                    let (ups, revision) = core.engine.apply_revising(&e);
-                    // The quote board takes the engine's verdict on the print (its tape row comes
-                    // first in `ups`), so it excludes exactly what the candles exclude; and for a
-                    // correction or cancel, the engine's account of what it removed or replaced,
-                    // so the board's volume and last follow the revised candles exactly.
-                    if let MarketEvent::Trade(t) = &e
-                        && let Some(ChartUpdate::Tape(row)) = ups.first()
-                    {
-                        core.quotes.apply_trade(t, Counted::from_tape(&row.counted));
+                    // Live: a symbol whose archived history is not in the engine yet is held
+                    // back (crate::history), and the paper broker still gets the print below.
+                    if crate::history::hold_unloaded(&mut core, &e) {
+                        core.seq += 1;
+                        (core.seq, Vec::new(), core.rebuilding)
+                    } else {
+                        let (ups, revision) = core.engine.apply_revising(&e);
+                        // The quote board takes the engine's verdict on the print (its tape row comes
+                        // first in `ups`), so it excludes exactly what the candles exclude; and for a
+                        // correction or cancel, the engine's account of what it removed or replaced,
+                        // so the board's volume and last follow the revised candles exactly.
+                        if let MarketEvent::Trade(t) = &e
+                            && let Some(ChartUpdate::Tape(row)) = ups.first()
+                        {
+                            core.quotes.apply_trade(t, Counted::from_tape(&row.counted));
+                        }
+                        if let Some(rev) = &revision {
+                            core.quotes.apply_revision(rev);
+                        }
+                        core.seq += 1;
+                        let seq = core.seq;
+                        (
+                            seq,
+                            Self::serialize_unless_rebuilding(&mut core, ups),
+                            core.rebuilding,
+                        )
                     }
-                    if let Some(rev) = &revision {
-                        core.quotes.apply_revision(rev);
-                    }
-                    core.seq += 1;
-                    let seq = core.seq;
-                    (seq, self.serialize(&mut core, ups), core.rebuilding)
                 };
                 if !rebuilding {
                     self.send_all(seq, ups);
@@ -893,7 +1000,11 @@ impl Market {
                     let ups = core.engine.advance_clock(t);
                     core.seq += 1;
                     let seq = core.seq;
-                    (seq, self.serialize(&mut core, ups), core.rebuilding)
+                    (
+                        seq,
+                        Self::serialize_unless_rebuilding(&mut core, ups),
+                        core.rebuilding,
+                    )
                 };
                 if !rebuilding {
                     self.send_all(seq, ups);
@@ -981,17 +1092,31 @@ impl Market {
         }
     }
 
+    /// [`Market::serialize`], except during a rebuild, where nothing is broadcast: then only the
+    /// tape rows are serialized (for the per-symbol history the next snapshot sends) and the
+    /// candle increments are dropped unserialized. Same state either way; it only makes a rebuild
+    /// cheaper (a seek, a day switch, and above all the live journal's restore of a whole-market
+    /// day, where serializing every increment was about a third of the time).
+    fn serialize_unless_rebuilding(core: &mut Core, ups: Vec<ChartUpdate>) -> Vec<OutKind> {
+        if !core.rebuilding {
+            return Self::serialize(core, ups);
+        }
+        for u in &ups {
+            if let ChartUpdate::Tape(t) = u {
+                let json = serde_json::to_string(u).expect("wire types serialize");
+                core.record_tape(&t.symbol, json);
+            }
+        }
+        Vec::new()
+    }
+
     /// Serializes increments once and records tape rows in the per-symbol history.
-    fn serialize(&self, core: &mut Core, ups: Vec<ChartUpdate>) -> Vec<OutKind> {
+    fn serialize(core: &mut Core, ups: Vec<ChartUpdate>) -> Vec<OutKind> {
         ups.into_iter()
             .map(|u| {
                 let json = serde_json::to_string(&u).expect("wire types serialize");
                 if let ChartUpdate::Tape(t) = &u {
-                    let ring = core.tape.entry(t.symbol.clone()).or_default();
-                    if ring.len() == TAPE_HISTORY {
-                        ring.pop_front();
-                    }
-                    ring.push_back(json.clone());
+                    core.record_tape(&t.symbol, json.clone());
                 }
                 // Tape rows, `chart.halt` and `chart.luld` have no timeframe, so every
                 // subscriber of the symbol gets them whatever timeframe it watches.
@@ -1094,13 +1219,19 @@ impl Market {
         bin: Price,
     ) -> Result<SnapshotOut, SnapshotError> {
         let clock = self.clock().map(|c| clock_info(&c));
-        let core = self.0.core.lock().expect("core lock");
+        let mut core = self.0.core.lock().expect("core lock");
         if self.known(&core, symbol) && !Self::candidate_in(&core, self.0.band, symbol) {
             return Err(SnapshotError::OutsidePriceBand);
         }
+        // Live: a symbol whose history is still in the archive gets an empty chart now and its
+        // load jumps the queue; the `Loaded` broadcast then sends this connection the real one.
+        crate::history::request_load(self, &mut core, symbol);
         let mut snap = match core.engine.snapshot(symbol, tf, Some(bin)) {
             Some(s) => s,
-            None if self.known(&core, symbol) => ChartSnapshot {
+            None if !self.known(&core, symbol) => {
+                return Err(SnapshotError::UnknownSymbol);
+            }
+            None => ChartSnapshot {
                 kind: "chart.snapshot".into(),
                 symbol: symbol.to_string(),
                 timeframe: tf,
@@ -1114,7 +1245,6 @@ impl Market {
                 luld: Vec::new(),
                 prev_close: None,
             },
-            None => return Err(SnapshotError::UnknownSymbol),
         };
         snap.clock = clock;
         snap.prev_close = self.prev_close_for(&core, &snap).map(Price::to_f64);
@@ -1368,10 +1498,14 @@ impl Market {
             "events": clock.as_ref().map_or(0, |c| c.events),
             "seq": seq,
             "days": self.days(),
+            "session": crate::history::session_json(self),
+            "history": crate::history::history_json(self),
         })
     }
 
-    /// `GET /api/symbols`.
+    /// `GET /api/symbols`. Live: `session` names the trading day the board and charts show
+    /// (`{day, current, provisional}`; `current: false` is the last session, shown while the
+    /// market is closed), or null before any.
     pub fn symbols_json(&self) -> Value {
         let info = self.info();
         let info = info.as_deref();
@@ -1384,6 +1518,7 @@ impl Market {
             "symbols": self.symbols(),
             "priceBand": {"min": self.0.band.min.to_string(), "max": self.0.band.max.to_string()},
             "screened": self.screened(),
+            "session": crate::history::session_json(self),
         })
     }
 

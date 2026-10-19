@@ -1,6 +1,6 @@
 import { ChartStore, parseReplayDayState, type ChartMessage, type Clock, type PaperState, type ReplayDayState, type Series, type TapeTrade, type Timeframe } from "@stockwatcher/chart-core";
 import type { ChartTrading } from "@stockwatcher/chart-native";
-import { authenticatedFetch, EMPTY_QUOTE_BOARD, withMarketSource, type MarketSource, type QuoteBoard, type QuoteChannel } from "@stockwatcher/shared";
+import { authenticatedFetch, EMPTY_QUOTE_BOARD, parseLiveSession, withMarketSource, type LiveSession, type MarketSource, type QuoteBoard, type QuoteChannel } from "@stockwatcher/shared";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { SERVER_URL } from "./server";
@@ -80,6 +80,8 @@ export interface Candidates {
   symbols: string[];
   /** The server replays a fixture archive (not market data): the search may list mock rows. */
   fixture: boolean;
+  /** Live: the trading day shown (the last session while the market is closed). */
+  session: LiveSession | null;
 }
 
 /**
@@ -88,15 +90,15 @@ export interface Candidates {
  * new day lacks is replaced right away instead of leaving the old day's chart up.
  */
 export function useCandidates(token: string | null, day: string | null = null, source?: MarketSource): Candidates {
-  const [state, setState] = useState<Candidates>({ symbols: [], fixture: false });
+  const [state, setState] = useState<Candidates>({ symbols: [], fixture: false, session: null });
   useEffect(() => {
     let alive = true;
     const refresh = async () => {
       try {
         const res = await authenticatedFetch(`${SERVER_URL}${withMarketSource("/api/symbols", source)}`, token);
         if (!res.ok) return;
-        const d = (await res.json()) as { symbols?: unknown; fixture?: unknown };
-        if (alive && Array.isArray(d.symbols)) setState({ symbols: d.symbols.filter((x): x is string => typeof x === "string"), fixture: d.fixture === true });
+        const d = (await res.json()) as { symbols?: unknown; fixture?: unknown; session?: unknown };
+        if (alive && Array.isArray(d.symbols)) setState({ symbols: d.symbols.filter((x): x is string => typeof x === "string"), fixture: d.fixture === true, session: parseLiveSession(d.session) });
       } catch {
         // Offline or server down: keep the last list; the socket status says so.
       }

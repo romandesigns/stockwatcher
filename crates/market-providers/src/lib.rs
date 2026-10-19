@@ -14,13 +14,16 @@
 //!   credentials it fails with [`ProviderError::NotConfigured`] naming the missing variables.
 //!   Connection changes reach consumers as [`FeedItem::Link`].
 //!
-//! Live mode **does not archive** what it receives: there is no recorder yet, so a live session
-//! cannot be replayed later.
+//! Live mode **records** what it receives into the archive itself ([`recorder`],
+//! `market_archive::live`): a provisional day per trading date that the server loads back after
+//! a restart and replay can open, until the archiver's nightly SIP import replaces it with the
+//! complete, corrected day.
 
 pub mod alpaca_stream;
 mod config;
 pub mod import;
 mod live;
+pub mod recorder;
 mod replay;
 
 pub use config::{LiveConfig, MarketDataMode, ProviderConfig};
@@ -29,6 +32,7 @@ pub use market_replay::{
     ClockMode, ClockState, Command, CommandError, FeedItem, Link, LinkState, ReplayHandle,
     SourceInfo, Speed,
 };
+pub use recorder::{Recorder, RecorderConfig};
 pub use replay::ReplayProvider;
 
 use chrono::NaiveDate;
@@ -89,6 +93,8 @@ pub struct ProviderSession {
     pub clock: watch::Receiver<ClockState>,
     /// `Some` only in replay mode.
     pub control: Option<ReplayHandle>,
+    /// `Some` only in live mode with recording on: where the events go, for barriers.
+    pub recorder: Option<Recorder>,
 }
 
 /// A market-data provider: starts and hands over its session. Object-safe so the server can pick

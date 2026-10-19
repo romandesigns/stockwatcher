@@ -1,5 +1,6 @@
 import { Icon } from "@stockwatcher/chart-web";
 import { cn } from "@stockwatcher/chart-web/ui";
+import { lastSessionLabel, parseLiveSession } from "@stockwatcher/shared";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Connection } from "../ConnectionGate.tsx";
 import { followCandidates, followServer } from "../feed/source.ts";
@@ -111,6 +112,8 @@ export function Dashboard({ choice, feed }: Connection) {
   // of four charts waiting on symbols that cannot load.
   const liveEmpty = choice.kind === "server" && choice.market === "live" && candidates.symbols.length === 0;
   const liveStatus = candidates.server?.status;
+  // A closed market shows its last session from the archive (owner, 2026-10-18): say which day.
+  const sessionLabel = choice.market === "live" ? lastSessionLabel(parseLiveSession(candidates.server?.session)) : null;
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-2 p-3 text-foreground">
@@ -122,6 +125,7 @@ export function Dashboard({ choice, feed }: Connection) {
             {/* The rail's collapse toggle at the far left. */}
             <NavToggle />
             <h1 className="m-0 text-base font-semibold tracking-tight">Dashboard</h1>
+            {sessionLabel && <span className="truncate text-xs text-text-faint">{sessionLabel}</span>}
             {dashboard.count > 1 && <span className="truncate text-xs text-text-faint">Chart {selected + 1} selected</span>}
           </div>
           <SearchPill ref={pillRef} onOpen={() => app.setSearchOpen(true)} />
@@ -133,6 +137,7 @@ export function Dashboard({ choice, feed }: Connection) {
         // Phone layout (no rail): no room for the pill; a search button and the Settings gear instead.
         <header className="flex items-center gap-2">
           <h1 className="m-0 text-base font-semibold tracking-tight">Dashboard</h1>
+          {sessionLabel && <span className="truncate text-xs text-text-faint">{sessionLabel}</span>}
           {dashboard.count > 1 && <span className="truncate text-xs text-text-faint">Chart {selected + 1} selected</span>}
           <div className="ml-auto flex items-center gap-2">
             <button

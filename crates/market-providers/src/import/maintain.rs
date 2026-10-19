@@ -38,7 +38,10 @@
 //!    and rate limiter. Failed symbol-days are retried `MAINTAIN_RETRIES` times with doubling
 //!    delays inside the cycle and then on the next cycle; complete ones are never re-fetched.
 //!    A day that had no manifest yet is marked `.importing` first (market_archive::lifecycle), so
-//!    the server neither offers it nor starts on it until its first pass is over.
+//!    the server neither offers it nor starts on it until its first pass is over. A day the live
+//!    market recorded (`<day>/live/`, market_archive::live) is such a day: the marker also stops
+//!    the recorder from writing to it, and clearing it ([`Archive::finish_import`]) is the atomic
+//!    switch from the provisional recording to the import, which then deletes the recording.
 //! 5. Prune day directories older than the window, but only when all of these hold:
 //!    - the archive is caught up (its newest ready day is L), or the disk is below the floor. An
 //!      import that is failing (no keys yet, Alpaca down) must not turn into a window that shrinks
@@ -910,7 +913,9 @@ impl<H: Http + Send + 'static> Maintainer<'_, H> {
                 && bad * 1000 <= total * MAX_FAILED_PER_MILLE
                 && self.archive.manifest_path(d).exists()
             {
-                if let Err(e) = self.archive.clear_importing(d) {
+                // Clears the marker and retires the day's live recording: from here every
+                // reader takes the complete, corrected import (market_archive::live).
+                if let Err(e) = self.archive.finish_import(d) {
                     r.errors.push(format!("{d}: {e}"));
                     r.still_importing.push(d);
                 }

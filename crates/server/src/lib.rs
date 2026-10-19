@@ -2,6 +2,7 @@ pub mod api;
 pub mod auth;
 pub mod config;
 pub mod days;
+pub mod history;
 pub mod market;
 pub mod quotes;
 pub mod settings;
@@ -105,6 +106,12 @@ impl AppState {
     pub async fn close_sessions(&self, grace: std::time::Duration) {
         self.0.shutdown.send_replace(true);
         let _ = tokio::time::timeout(grace, self.0.shutdown.closed()).await;
+    }
+
+    /// Writes out the live market's recording (crate::history): the last step of a clean
+    /// shutdown, so a deploy loses none of the day's recorded events.
+    pub async fn close_recording(&self, grace: std::time::Duration) {
+        self.0.markets.live.close_recording(grace).await;
     }
 }
 
