@@ -1,9 +1,13 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import App from "./App.tsx";
+import { Toaster } from "./lib/toast.tsx";
 import { useMediaQuery } from "./lib/useMediaQuery.ts";
 import { NavRail, NavTabBar, TAB_BAR_HEIGHT } from "./nav/MainNav.tsx";
+import { NavRailContext } from "./nav/navRail.ts";
 import { usePage } from "./nav/routes.ts";
+import { AppSettingsDialog } from "./nav/settings.tsx";
 import { DashboardPage } from "./pages/DashboardPage.tsx";
+import { getAppStore, useApp } from "./state/store.ts";
 
 /** Whether the rail is collapsed, remembered on this device (screen layout is never synced). */
 const RAIL_KEY = "sw-nav:collapsed";
@@ -36,20 +40,32 @@ export function Shell() {
       return !c;
     });
 
+  const settingsOpen = useApp((s) => s.settingsOpen);
+  // The page headers' NavToggle reads these (far left of each header); stable while unchanged.
+  const rail = useMemo(() => ({ collapsed, toggle }), [collapsed]);
+
   const content = page === "chart" ? <App /> : <DashboardPage />;
 
   if (phone) {
+    // No rail: no NavToggle, and each page header carries its own Settings gear.
     return (
       <div className="min-h-dvh bg-background" style={{ paddingBottom: `calc(${TAB_BAR_HEIGHT} + env(safe-area-inset-bottom))` }}>
         {content}
         <NavTabBar page={page} />
+        <AppSettingsDialog />
+        {/* Above the tab bar. */}
+        <Toaster bottom={`calc(${TAB_BAR_HEIGHT} + env(safe-area-inset-bottom) + 0.75rem)`} />
       </div>
     );
   }
   return (
-    <div className="flex h-dvh bg-background">
-      <NavRail page={page} collapsed={collapsed} onToggle={toggle} />
-      <div className="min-w-0 flex-1 overflow-y-auto">{content}</div>
-    </div>
+    <NavRailContext.Provider value={rail}>
+      <div className="flex h-dvh bg-background">
+        <NavRail page={page} collapsed={collapsed} settingsOpen={settingsOpen} onSettings={() => getAppStore().getState().setSettingsOpen(true)} />
+        <div className="min-w-0 flex-1 overflow-y-auto">{content}</div>
+        <AppSettingsDialog />
+        <Toaster />
+      </div>
+    </NavRailContext.Provider>
   );
 }

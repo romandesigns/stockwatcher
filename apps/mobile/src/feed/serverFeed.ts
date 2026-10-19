@@ -1,8 +1,10 @@
 import {
+  createChartRouter,
   parseChartMessage,
   parsePaperMessage,
   type ChartMessage,
   type ChartSubscribe,
+  type ChartUnsubscribe,
   type OrderCancel,
   type OrderModify,
   type OrderPlace,
@@ -19,6 +21,8 @@ export interface ChartSubscription {
   symbol: string;
   timeframe: Timeframe;
   profileBin: number;
+  /** The chart slot (the dashboard's panel, up to 4 per connection); absent = the default slot. */
+  id?: string;
 }
 
 export type PaperCommand = OrderPlace | OrderModify | OrderCancel | { type: "paper.reset" };
@@ -41,28 +45,32 @@ export interface MobileFeed {
  * raw socket because shared's parser only knows the handshake messages;
  * quotes.* frames are shared's own and pass straight through to it.
  */
-export function createMobileFeed(token: string | null, onStatus?: (s: ConnectionStatus) => void, settings?: SettingsSync): MobileFeed {
-  const listeners = new Set<(m: ChartMessage) => void>();
+export function createMobileFeed(token: string | null, onStatus?: (s: ConnectionStatus) => void, settings?: SettingsSync, clientName = "mobile"): MobileFeed {
+  // Chart frames go only to the slots they belong to (chart-core chartRouter.ts), as on the web.
+  const router = createChartRouter();
+  const current = new Map<string, (m: ChartMessage) => void>();
   const paperListeners = new Set<(m: PaperMessage) => void>();
-  const active = new Set<ChartSubscription>();
   let raw: WebSocketLike | null = null;
   let paper: PaperState | null = null;
 
   // Late-bound: the channel is built before the client it drives.
   const quotes = createQuoteChannel({ subscribe: () => client.subscribeQuotes(), unsubscribe: () => client.unsubscribeQuotes() });
 
-  const sendRaw = (msg: ChartSubscribe | ReplayControl | PaperCommand) => {
+  const sendRaw = (msg: ChartSubscribe | ChartUnsubscribe | ReplayControl | PaperCommand) => {
     if (raw && raw.readyState === 1) raw.send(JSON.stringify(msg));
   };
+  // The default slot ("") goes without an id: exactly the single-chart protocol.
+  const subscribeFrame = (id: string, s: Omit<ChartSubscription, "id">): ChartSubscribe => ({ type: "chart.subscribe", symbol: s.symbol, timeframe: s.timeframe, profileBin: s.profileBin, ...(id ? { id } : {}) });
 
   const client = createWsClient({
     url: wsUrl(),
     token,
-    client: "mobile",
+    // Which screen's socket this is, in the server's connect log ("mobile", "mobile-dashboard").
+    client: clientName,
     onStatus: (s) => {
       onStatus?.(s);
       // Subscriptions do not survive a reconnect.
-      if (s === "open") for (const a of active) sendRaw({ type: "chart.subscribe", ...a });
+      if (s === "open") for (const [id, a] of router.entries()) sendRaw(subscribeFrame(id, a));
     },
     onQuotes: (m) => quotes.apply(m),
     // Synced settings (src/settings/sync.ts): attached on every welcome by the shared client.
@@ -80,7 +88,7 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
         }
         const chart = parseChartMessage(ev.data);
         if (chart) {
-          for (const l of listeners) l(chart);
+          router.dispatch(chart);
           return;
         }
         const pm = parsePaperMessage(ev.data);
@@ -101,12 +109,17 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
 
   return {
     subscribe(sub, emit) {
-      listeners.add(emit);
-      active.add(sub);
-      sendRaw({ type: "chart.subscribe", ...sub });
+      const id = sub.id ?? "";
+      // A token per subscription, so a stale cleanup never removes the slot's newer subscription.
+      const token = (m: ChartMessage) => emit(m);
+      router.add(id, sub, token);
+      current.set(id, token);
+      sendRaw(subscribeFrame(id, sub));
       return () => {
-        listeners.delete(emit);
-        active.delete(sub);
+        if (current.get(id) !== token) return;
+        current.delete(id);
+        router.remove(id);
+        if (id) sendRaw({ type: "chart.unsubscribe", id });
       };
     },
     control: (cmd) => sendRaw({ type: "replay.control", ...cmd }),
@@ -121,9 +134,9 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
     quotes,
     close() {
       client.close();
-      listeners.clear();
+      router.clear();
+      current.clear();
       paperListeners.clear();
-      active.clear();
     },
   };
 }

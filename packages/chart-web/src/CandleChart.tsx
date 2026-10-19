@@ -186,6 +186,8 @@ export interface CandleChartProps {
   /** Where the floating drawing tools sit. Controlled when onToolboxPlacementChange is set; else kept (and persisted with persistKey). */
   toolboxPlacement?: ToolboxPlacement;
   onToolboxPlacementChange?: (p: ToolboxPlacement) => void;
+  /** Whether the floating drawing tools show before this chart's persisted choice exists (default true). Small charts (the dashboard's panel) start with them hidden; the pencil shows them. */
+  defaultToolsVisible?: boolean;
   /** The trade menu's share size (one of TRADE_SIZES). Controlled when onTradeQtyChange is set (the app syncs it); else kept and persisted with persistKey. */
   tradeQty?: number;
   onTradeQtyChange?: (qty: number) => void;
@@ -292,6 +294,7 @@ export function CandleChart({
   onToolboxPlacementChange,
   tradeQty: tradeQtyProp,
   onTradeQtyChange,
+  defaultToolsVisible = true,
   layers: layersProp,
   onLayersChange,
   now = null,
@@ -393,7 +396,7 @@ export function CandleChart({
   const tradeMenuOpen = tradeMenu.open;
   const tradeMenuAt = tradeMenu.local;
   // The floating drawing tools can be hidden from the toolbar's pencil; the choice persists.
-  const [toolsVisible, setToolsVisible] = useState<boolean>(() => loadJson<unknown>(persistKey && `${persistKey}:toolsVisible`, true) !== false);
+  const [toolsVisible, setToolsVisible] = useState<boolean>(() => loadJson<unknown>(persistKey && `${persistKey}:toolsVisible`, defaultToolsVisible) !== false);
   const changeToolsVisible = (v: boolean) => {
     setToolsVisible(v);
     saveJson(persistKey && `${persistKey}:toolsVisible`, v);

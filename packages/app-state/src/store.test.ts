@@ -157,6 +157,81 @@ describe("app store: drawings follow the shown symbol", () => {
   });
 });
 
+describe("app store: the dashboard panel", () => {
+  test("starts with one empty chart; the count clamps to 1–4", () => {
+    const r = rig();
+    expect(r.s().dashboard.count).toBe(1);
+    expect(r.s().dashboard.slots).toHaveLength(4);
+    r.s().setDashboardCount(9);
+    expect(r.s().dashboard.count).toBe(4);
+    r.s().setDashboardCount(0);
+    expect(r.s().dashboard.count).toBe(1);
+  });
+
+  test("a ticker loads into the selected chart and joins the recents; others keep theirs", () => {
+    const r = rig();
+    r.s().setDashboardCount(3);
+    r.s().setDashboardSymbol(0, "aal");
+    r.s().selectDashboardChart(2);
+    r.s().loadIntoSelected("tsla");
+    r.s().setDashboardTimeframe(2, "5m");
+    expect(r.s().dashboard.slots.slice(0, 3)).toEqual([
+      { symbol: "AAL", timeframe: "1m" },
+      { symbol: null, timeframe: "1m" },
+      { symbol: "TSLA", timeframe: "5m" },
+    ]);
+    expect(r.s().searchRecents).toEqual(["TSLA", "AAL"]);
+    expect(r.sync.get(APP_NS.dashboard)).toMatchObject({ count: 3 });
+  });
+
+  test("selection is per device, never synced, and stays inside the count when another device shrinks it", () => {
+    const r = rig();
+    r.s().setDashboardCount(4);
+    r.s().selectDashboardChart(3);
+    expect(r.sync.get(APP_NS.dashboard)).not.toHaveProperty("selected");
+    r.s().selectDashboardChart(7);
+    expect(r.s().dashboardSelected).toBe(3);
+    const other = rig();
+    other.remote(APP_NS.dashboard, { count: 4, slots: [] });
+    other.s().selectDashboardChart(3);
+    other.remote(APP_NS.dashboard, { count: 2, slots: [] });
+    expect(other.s().dashboardSelected).toBe(1);
+  });
+
+  test("a hidden slot keeps its ticker for when the panel grows again", () => {
+    const r = rig();
+    r.s().setDashboardCount(2);
+    r.s().setDashboardSymbol(1, "TSLA");
+    r.s().setDashboardCount(1);
+    r.s().setDashboardCount(2);
+    expect(r.s().dashboard.slots[1]!.symbol).toBe("TSLA");
+  });
+
+  test("any symbol's drawings through a handle: read, patched back, remote edits seen", () => {
+    const r = rig();
+    const h = r.store.drawingsFor("aal");
+    expect(r.store.drawingsFor("AAL")).toBe(h);
+    let changes = 0;
+    h.subscribe(() => changes++);
+    h.set([trend("a")]);
+    expect(h.get().map((d) => d.id)).toEqual(["a"]);
+    r.remote(drawingsNs("AAL"), drawingsToDoc([trend("a"), trend("b")]));
+    expect(h.get().map((d) => d.id)).toEqual(["a", "b"]);
+    expect(changes).toBeGreaterThanOrEqual(2);
+  });
+
+  test("junk in the dashboard namespace falls back field by field", () => {
+    const r = rig();
+    r.remote(APP_NS.dashboard, { count: "x", slots: [{ symbol: "!!", timeframe: "2h" }, null, { symbol: "aal", timeframe: "30s" }] });
+    expect(r.s().dashboard.count).toBe(1);
+    expect(r.s().dashboard.slots.slice(0, 3)).toEqual([
+      { symbol: null, timeframe: "1m" },
+      { symbol: null, timeframe: "1m" },
+      { symbol: "AAL", timeframe: "30s" },
+    ]);
+  });
+});
+
 describe("app store: migration and device state", () => {
   test("legacy recents and trade size are seeded once, only into an empty namespace", () => {
     const r = rig({ legacy: { searchRecents: ["aal", "smpl"], tradeQty: 500 } });

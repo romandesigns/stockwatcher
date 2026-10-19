@@ -1,13 +1,11 @@
+import { ConnectionGate } from "../ConnectionGate.tsx";
+import { Dashboard } from "../dashboard/Dashboard.tsx";
+
 /**
- * The main page (owner request 2026-10-18). A placeholder until the live dashboard is built: it
- * will consume only live data (docs/CONVENTIONS.md "Product direction"; the constraints to plan
- * around are in docs/architecture/chart-packages.md).
+ * The main page (owner request 2026-10-18): the multi-chart panel and the live ticker list. It
+ * will consume only live data (docs/CONVENTIONS.md "Product direction"); it shows whatever the
+ * server streams, which is still replay while production runs replay.
  */
 export function DashboardPage() {
-  return (
-    <main className="flex min-h-full flex-col gap-1 p-4 text-foreground">
-      <h1 className="m-0 text-xl font-semibold tracking-tight">Dashboard</h1>
-      <p className="m-0 text-sm text-muted-foreground">Main page. The live market dashboard will be built here.</p>
-    </main>
-  );
+  return <ConnectionGate>{(c) => <Dashboard choice={c.choice} feed={c.feed} />}</ConnectionGate>;
 }

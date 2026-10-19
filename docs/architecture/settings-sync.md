@@ -43,6 +43,8 @@ search recents (`searchRecents`) sync too. Each client reads all of it through i
 | Trade menu share size | `sw-chart:tradeQty` (web only) | **synced** `tradeQty` (since 2026-10-18) | owner: "sync everything possible"; one list of sizes (chart-core `TRADE_SIZES`) |
 | Settings dialog tab, open dialogs/menus, selected drawing | `sw-settings:tab`, session state | device-local | UI state |
 | Ticker search recents | `sw-search:recent` / `search.recent` | **synced** `searchRecents` (since 2026-10-18) | owner: "sync everything possible"; seeded once from the old keys |
+| Dashboard panel: chart count, each chart's ticker and timeframe | (new) | **synced** `dashboard` (since 2026-10-18) | the main page follows the person; an empty or out-of-band slot shows a candidate per device without writing back |
+| Selected dashboard chart | (new) | device-local (session) | a pointer on this screen, like a selected drawing |
 | Access token | `sw-access-token` / keystore | device-local, never synced | a credential |
 
 When in doubt about a per-screen layout value it stays local: syncing a pixel height or a corner

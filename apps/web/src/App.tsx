@@ -13,32 +13,28 @@ import {
   type ChartOptions,
 } from "@stockwatcher/chart-core";
 import { PROFILE_BINS } from "@stockwatcher/app-state";
-import { CandleChart, chartSettingsSection, drawingSettingsSection, Icon, ReplayControls, SessionTimeline, SettingsDialog, Tape, VolumeProfile } from "@stockwatcher/chart-web";
+import { CandleChart, Icon, ReplayControls, SessionTimeline, Tape, VolumeProfile } from "@stockwatcher/chart-web";
 import { Tip, ToggleGroup, ToggleGroupItem, cn } from "@stockwatcher/chart-web/ui";
 import { useEffect, useLayoutEffect, useMemo, useState } from "react";
-import { createServerFeed } from "./feed/serverFeed.ts";
-import { clearToken, getToken, setToken } from "./feed/token.ts";
-import { chooseSource, followCandidates, followServer, initialSymbol, probeServer, type SourceChoice } from "./feed/source.ts";
+import { ConnectionGate } from "./ConnectionGate.tsx";
+import { followCandidates, followServer, initialSymbol, type SourceChoice } from "./feed/source.ts";
 import { useCandidates } from "./feed/useCandidates.ts";
 import type { ChartFeed } from "./feed/types.ts";
 import { useChartFeed } from "./feed/useChartFeed.ts";
+import { TickerLabel } from "./lib/TickerLabel.tsx";
+import { NavToggle } from "./nav/NavToggle.tsx";
+import { SettingsButton } from "./nav/settings.tsx";
 import { usePaperTrading } from "./feed/usePaperTrading.ts";
 import { useReplayDays } from "./feed/useReplayDays.ts";
-import { createFixtureFeed, FIXTURE_SYMBOL } from "./fixtures/fixtureFeed.ts";
+import { FIXTURE_SYMBOL } from "./fixtures/fixtureFeed.ts";
 import { useMediaQuery } from "./lib/useMediaQuery.ts";
 import { TickerSearch } from "./search/TickerSearch.tsx";
-import { getSettingsSync } from "./settings/sync.ts";
 import { getAppStore, useApp } from "./state/store.ts";
 
 /** The search icon for the quick-open pill and the phone header (chart-core's shared duotone set, like every icon). */
 const SearchIcon = <Icon name="search" />;
 
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
-
-// Data source: the Rust server by default, the in-browser fixture only when the
-// server is unreachable or has no data (feed/source.ts), or when forced with
-// VITE_CHART_SOURCE=fixture. The active source is always labelled.
-const ENV_SOURCE = import.meta.env.VITE_CHART_SOURCE;
 
 const PHONE_CHART: Partial<ChartOptions> = { priceAxisWidth: 42, volumeHeight: 36, timeAxisHeight: 18, paneGap: 4, fontSize: 9, showProfile: true, profileWidth: 0.2, timeLabelSpacing: 60 };
 const DESKTOP_CHART: Partial<ChartOptions> = {};
@@ -56,32 +52,6 @@ function sourceText(choice: SourceChoice): string {
  */
 const CHART_KEY = "sw-chart";
 
-/**
- * The Settings gear (owner request 2026-10-18), at the header's right edge
- * beside the data-source icon on the desktop and the phone layout alike: the
- * same quiet round 28 px chip as the source icon, raised while its dialog
- * is open. Neutral, never accent: it opens something, it is not a primary
- * action.
- */
-function SettingsButton({ open, onOpen }: { open: boolean; onOpen: () => void }) {
-  return (
-    <Tip label="Settings">
-      <button
-        type="button"
-        aria-label="Settings"
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        onClick={onOpen}
-        className={cn(
-          "inline-grid size-7 shrink-0 place-items-center rounded-full text-muted-foreground outline-none transition-colors hover:bg-bg-row hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-3.5",
-          open ? "bg-bg-raised text-primary" : "bg-card",
-        )}
-      >
-        <Icon name="settings" />
-      </button>
-    </Tip>
-  );
-}
 
 /** Replay: a clock turned back. Live: a broadcast dot with its waves. */
 const ReplayIcon = <Icon name="replay" />;
@@ -114,90 +84,9 @@ function SourceChip({ choice, mode, className }: { choice: SourceChoice; mode: "
 }
 
 
+/** The chart page: the shared connection gate (ConnectionGate.tsx), then the chart app. */
 export default function App() {
-  // The feed is created and closed by the same effect, so React StrictMode's
-  // dev-only mount → unmount → mount gets a fresh feed, never a closed one.
-  const [ready, setReady] = useState<{ choice: SourceChoice; feed: ChartFeed } | null>(null);
-  // The server wants an access token (production): show the sign-in card instead of falling back to the fixture.
-  const [signIn, setSignIn] = useState<{ rejected: boolean } | null>(null);
-  const [attempt, setAttempt] = useState(0);
-  // One engine for the page, whatever the feed: the fixture never connects it (local only).
-  const sync = useMemo(() => getSettingsSync(), []);
-  useEffect(() => {
-    let alive = true;
-    let feed: ChartFeed | null = null;
-    const token = getToken();
-    void (ENV_SOURCE === "fixture" ? Promise.resolve(null) : probeServer(fetch, 2500, token)).then((probe) => {
-      if (!alive) return;
-      if (probe && !probe.ok && probe.unauthorized) {
-        if (token) clearToken();
-        setSignIn({ rejected: !!token });
-        return;
-      }
-      setSignIn(null);
-      const choice = chooseSource(ENV_SOURCE, probe, FIXTURE_SYMBOL);
-      feed = choice.kind === "server" ? createServerFeed({ token, settings: sync }) : createFixtureFeed();
-      setReady({ choice, feed });
-    });
-    return () => {
-      alive = false;
-      feed?.close();
-    };
-  }, [attempt, sync]);
-  if (signIn) {
-    return (
-      <SignIn
-        rejected={signIn.rejected}
-        onSubmit={(t) => {
-          setToken(t);
-          setAttempt((n) => n + 1);
-        }}
-      />
-    );
-  }
-  if (!ready) {
-    return <div className="flex min-h-dvh items-center justify-center bg-background text-sm text-muted-foreground">Connecting to the server…</div>;
-  }
-  return <ChartApp choice={ready.choice} feed={ready.feed} />;
-}
-
-/** The one-field sign-in for a server that requires its access token. */
-function SignIn({ rejected, onSubmit }: { rejected: boolean; onSubmit: (token: string) => void }) {
-  const [value, setValue] = useState("");
-  return (
-    <div className="flex min-h-dvh items-center justify-center bg-background p-4 text-foreground">
-      <form
-        className="flex w-full max-w-sm flex-col gap-3 rounded-2xl bg-card p-5"
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (value.trim()) onSubmit(value.trim());
-        }}
-      >
-        <div className="flex flex-col gap-1">
-          <h1 className="m-0 text-base font-semibold">StockWatcher</h1>
-          <p className="m-0 text-xs text-muted-foreground">Enter your access token to connect to the server.</p>
-        </div>
-        <label htmlFor="access-token" className="sr-only">
-          Access token
-        </label>
-        <input
-          id="access-token"
-          type="password"
-          autoComplete="current-password"
-          autoFocus
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          placeholder="Access token"
-          aria-invalid={rejected}
-          className="h-10 rounded-lg bg-bg-row px-3 font-mono text-sm outline-none placeholder:text-text-faint focus-visible:ring-2 focus-visible:ring-ring"
-        />
-        {rejected && <p className="m-0 text-xs text-critical">That token wasn't accepted. Check it and try again.</p>}
-        <button type="submit" disabled={!value.trim()} className="h-10 rounded-lg bg-primary text-sm font-semibold text-primary-foreground disabled:opacity-50">
-          Sign in
-        </button>
-      </form>
-    </div>
-  );
+  return <ConnectionGate>{(c) => <ChartApp choice={c.choice} feed={c.feed} />}</ConnectionGate>;
 }
 
 function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
@@ -254,9 +143,8 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
     tradeQty,
     onTradeQtyChange: app.setTradeQty,
   };
-  const settingsOpen = useApp((s) => s.settingsOpen);
-  const settings = <SettingsDialog open={settingsOpen} onOpenChange={app.setSettingsOpen} persistKey="sw-settings" sections={[chartSettingsSection(chartSettings, app.setChartSettings), drawingSettingsSection(drawingSettings, app.setDrawingSettings)]} />;
-  const gear = <SettingsButton open={settingsOpen} onOpen={() => app.setSettingsOpen(true)} />;
+  // Settings: one dialog for every page, rendered by the Shell (nav/settings.tsx). Wider screens
+  // open it from the rail's footer; the phone layout (no rail) keeps a gear in this header.
   // Ticker quick-open, VS Code's Ctrl+P (Cmd+P on a Mac): the browser's print shortcut is taken
   // over on purpose while the app is focused.
   const searchOpen = useApp((s) => s.searchOpen);
@@ -274,10 +162,8 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
   // On the desktop the panel drops down right under the header's search pill, at its width.
   const search = <TickerSearch open={searchOpen} onOpenChange={app.setSearchOpen} symbols={candidates.symbols} quotes={feed.quotes} mock={current.fixtureData} current={symbol} recents={recents} onSelect={app.openTicker} anchored={!phone} />;
   const tickerButton = (size: string) => (
-    <Tip label={`Search tickers (${isMac ? "⌘" : "Ctrl+"}P)`}>
-      <button type="button" onClick={() => app.setSearchOpen(true)} className={cn("pointer-events-auto cursor-pointer rounded-md font-semibold outline-none hover:text-primary focus-visible:ring-2 focus-visible:ring-ring", size)}>
-        {symbol}
-      </button>
+    <Tip label={`Search tickers (${isMac ? "⌘" : "Ctrl+"}P) · tap, then hold to copy`}>
+      <TickerLabel symbol={symbol} onTap={() => app.setSearchOpen(true)} className={size} />
     </Tip>
   );
 
@@ -345,9 +231,8 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
             <span className={cn("font-mono text-[11px]", changeColor)}>{change}</span>
           </div>
           <SourceChip className="ml-auto" choice={current} mode={mode} />
-          {gear}
+          <SettingsButton />
           {search}
-          {settings}
         </header>
         <CandleChart className="h-[360px]" toolbar inspector symbol={symbol} persistKey={CHART_KEY} {...synced} trading={trading} now={clock?.now ?? null} onTimeframeChange={app.setTimeframe} series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={app.setInspectT} options={PHONE_CHART} barSpacing={10} label={chartLabel} />
         <section aria-label="Session timeline and replay" className="flex flex-col gap-1.5 rounded-xl bg-card px-3 py-2">
@@ -370,8 +255,11 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
       {/* Three columns (logo | search | data source): equal side columns put the search pill at the
           page's exact centre, where the quick-open panel drops down, at the same width. */}
       <header className="grid grid-cols-[1fr_auto_1fr] items-center gap-4 px-4 py-2.5">
-        {/* The brand is in the main nav's rail now; the empty first column keeps the search pill centred. */}
-        <div aria-hidden />
+        {/* The rail's collapse toggle, far left (the brand is in the rail); the first column still
+            balances the third, so the search pill stays centred. */}
+        <div className="flex items-center">
+          <NavToggle />
+        </div>
 
         <button
           type="button"
@@ -384,10 +272,8 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
         </button>
         <div className="flex items-center gap-2 justify-self-end">
           <SourceChip choice={current} mode={mode} />
-          {gear}
         </div>
         {search}
-        {settings}
       </header>
 
       <div className="flex min-h-0 flex-1 flex-col gap-2 px-4 pb-3 min-[901px]:flex-row">

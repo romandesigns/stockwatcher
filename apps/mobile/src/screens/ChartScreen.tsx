@@ -17,18 +17,18 @@ import {
 import { PROFILE_BINS } from "@stockwatcher/app-state";
 import { CandleChart, chartSettingsSection, drawingSettingsSection, Icon, ReplayDaySheet, SessionTimeline, SettingsSheet, TapeSheet, ToolButton, UI } from "@stockwatcher/chart-native";
 import type { ConnectionStatus } from "@stockwatcher/shared";
-import { useEffect, useLayoutEffect, useMemo, useState } from "react";
+import { useLayoutEffect, useMemo, useState } from "react";
 import Animated, { FadeIn, FadeOut, ReduceMotion } from "react-native-reanimated";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useCandidates, useChartFeed, usePaperTrading, useReplayDays } from "../feed/hooks";
-import { createMobileFeed, type MobileFeed } from "../feed/serverFeed";
+import type { MobileFeed } from "../feed/serverFeed";
+import { useConnection } from "../feed/useConnection";
 import { useReducedMotion } from "../motion/useReducedMotion";
 import { TickerSearchSheet } from "../search/TickerSearchSheet";
-import { getAccessToken, setAccessToken } from "../storage/secure";
-import { loadSettingsSync } from "../settings/sync";
-import { appActions, loadAppStore, useApp } from "../state/store";
+import { appActions, useApp } from "../state/store";
+import { useTickerPress } from "../ui/useTickerPress";
 import { SignInScreen } from "./SignInScreen";
 import { colors, fonts } from "../theme";
 
@@ -39,43 +39,12 @@ const speedLabel = (s: number) => (s === 0 ? "Max" : `${s}×`);
 const SESSION = { overnight: "Overnight", pre: "Premarket", regular: "Regular", after: "After hours" } as const;
 const SESSION_A11Y = { overnight: "overnight session", pre: "premarket", regular: "regular session", after: "after hours" } as const;
 
-/** The chart screen: connects once (token from the keystore), then renders the chart. */
+/** The chart screen: connects once (useConnection: token, app store, its own socket), then renders the chart. */
 export function ChartScreen() {
-  const [ready, setReady] = useState<{ feed: MobileFeed; token: string | null } | null>(null);
-  const [status, setStatus] = useState<ConnectionStatus>("connecting");
-  // Each sign-in restarts the connection with the new token.
-  const [attempt, setAttempt] = useState(0);
-  useEffect(() => {
-    let feed: MobileFeed | null = null;
-    let alive = true;
-    // The app store loads with the token (the synced cache and this phone's layout), so the chart
-    // opens with the last known ticker, settings, indicators, levels and drawings before the
-    // socket connects. The feed attaches the same settings engine to the socket.
-    void Promise.all([getAccessToken().catch(() => null), loadSettingsSync(), loadAppStore()]).then(([token, sync]) => {
-      if (!alive) return;
-      feed = createMobileFeed(token, setStatus, sync);
-      setReady({ feed, token });
-    });
-    return () => {
-      alive = false;
-      feed?.close();
-    };
-  }, [attempt]);
+  const { ready, status, signIn } = useConnection("mobile");
   if (!ready) return <View style={styles.screen} />;
   // The server refused the hello: no token yet, or not this one (production requires one).
-  if (status === "unauthorized") {
-    return (
-      <SignInScreen
-        rejected={ready.token !== null}
-        onSubmit={(t) => {
-          void setAccessToken(t).then(() => {
-            setStatus("connecting");
-            setAttempt((n) => n + 1);
-          });
-        }}
-      />
-    );
-  }
+  if (status === "unauthorized") return <SignInScreen rejected={ready.token !== null} onSubmit={signIn} />;
   return <ChartView feed={ready.feed} token={ready.token} status={status} />;
 }
 
@@ -123,6 +92,8 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
   // Ticker quick-open, the web's Ctrl+P: tap the ticker (or the search icon) in the header.
   const searchOpen = useApp((s) => s.searchOpen);
   const reducedMotion = useReducedMotion();
+  // The header ticker: tap opens the search; tap, then hold copies it.
+  const tickerPress = useTickerPress(active ?? "", () => app.setSearchOpen(true));
 
   // The day's session bands and a 20-minute volume minimap for the timeline (bands change only with the day).
   const dayKey = clock ? formatEtDateKey(tradingDayOf(clock.now)) : "";
@@ -156,7 +127,7 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
     // No bottom inset: the main nav's tab bar sits below this screen and takes the home-indicator inset.
     <View style={[styles.screen, { paddingTop: insets.top + 8, paddingBottom: 8 }]}>
       <View style={styles.header}>
-        <Pressable accessibilityRole="button" accessibilityLabel={`${active ?? "No ticker"}, search tickers`} onPress={() => app.setSearchOpen(true)} hitSlop={8} style={({ pressed }) => [styles.tickerButton, pressed && { opacity: 0.6 }]}>
+        <Pressable accessibilityRole="button" accessibilityLabel={`${active ?? "No ticker"}, search tickers`} accessibilityHint="Tap, then press and hold to copy" {...tickerPress} hitSlop={8} style={({ pressed }) => [styles.tickerButton, pressed && { opacity: 0.6 }]}>
           <Text style={styles.symbol}>{active ?? "—"}</Text>
           <Icon name="chevronDown" color={colors.textDim} size={10} />
         </Pressable>

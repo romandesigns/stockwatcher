@@ -6,6 +6,11 @@ export interface ChartSubscription {
   timeframe: Timeframe;
   /** Profile bin width in dollars; changing it re-subscribes (the server re-bins). */
   profileBin: number;
+  /**
+   * The chart slot, for several charts on one connection (the dashboard's panel; at most
+   * MAX_CHARTS_PER_CONNECTION). Absent = the single default slot (the chart page).
+   */
+  id?: string;
 }
 
 export type ReplayCommand = Omit<ReplayControl, "type">;

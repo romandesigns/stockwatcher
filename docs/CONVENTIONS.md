@@ -10,9 +10,13 @@ The application should explain why a stock deserves attention, how the setup is 
 
 ## Product direction (owner, 2026-10-18)
 
-- **The main page consumes only live data.** It is the next thing to build (the live dashboard), on top
-  of the chart packages (`docs/architecture/chart-packages.md`, which also lists what the server must
-  support first).
+- **The main page consumes only live data.** It is the Dashboard (2026-10-18): a panel of 1–4 charts
+  with a live "Most active" list; select a chart, pick a ticker to load it there
+  (`docs/architecture/chart-packages.md` "The dashboard"). It shows whatever the server streams, so
+  it is still replay while production runs replay.
+- **Tap, then press and hold a ticker to copy it** (owner, 2026-10-18), on every client, with a
+  fading "Copied …" toast. New ticker labels use `useTickerPress` / `TickerLabel` so they all behave
+  alike.
 - **Replay is a practice feature**, like TradingView's Bar Replay or Webull's paper trading: pick a
   recorded day and trade it with the simulated broker. It is not a mode the whole product switches to.
   Today `MARKET_DATA_MODE` is still one server-wide switch (production runs `replay`); the target is the

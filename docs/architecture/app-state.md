@@ -23,9 +23,13 @@ between `App.tsx` and `ChartScreen.tsx` before).
 
 | Kind | What | Owner | Persisted |
 |---|---|---|---|
-| **Synced** | indicators, levels, chart settings, drawing settings, drawings (per symbol), **ticker, timeframe, profile bin** (`view`), **trade size** (`tradeQty`), **search recents** (`searchRecents`) | the settings sync engine (`settings-sync.md`); the store mirrors it | server + the engine's local cache |
+| **Synced** | indicators, levels, chart settings, drawing settings, drawings (per symbol), **ticker, timeframe, profile bin** (`view`), **trade size** (`tradeQty`), **search recents** (`searchRecents`), **the dashboard panel** (`dashboard`: chart count 1–4 and each slot's ticker and timeframe) | the settings sync engine (`settings-sync.md`); the store mirrors it | server + the engine's local cache |
 | **Device** | toolbox place, pane heights, drawing tools shown | phone: the store's `device` slice, saved to AsyncStorage under the old `chart.*` keys. Web: `CandleChart` under its `persistKey` (`sw-chart:*`) | this device |
-| **Session** | open sheets and dialogs, the inspected candle, the symbol actually shown | the store | no |
+| **Session** | open sheets and dialogs, the inspected candle, the symbol actually shown, **the selected dashboard chart** (`dashboardSelected`) | the store | no |
+
+Screens that show several symbols at once (the dashboard) read each one's drawings through
+`store.drawingsFor(symbol)`: a subscribe/get/set handle on the engine's memoized view, written back
+as a per-drawing patch like `setDrawings`.
 
 Not in the store: market data (series, tape, clock, quotes, paper state). chart-core's
 `ChartStore` and the feed hooks already hold it as external stores, and the replay clock (day,

@@ -146,6 +146,18 @@ function sameTicker(a: TickerInfo, b: TickerInfo): boolean {
 
 export const MAX_TICKER_RECENTS = 5;
 
+/**
+ * The dashboard's live ticker list: the quoted rows, most active first (day volume, then the
+ * symbol so equal volumes keep a stable order), capped at `limit`. Rows without a quote yet
+ * (no print) are left out: the list is for what is trading.
+ */
+export function mostActiveTickers(tickers: readonly TickerInfo[], limit: number): TickerInfo[] {
+  return tickers
+    .filter((t) => !t.mock && t.price !== undefined)
+    .sort((a, b) => (b.volume ?? 0) - (a.volume ?? 0) || (a.symbol < b.symbol ? -1 : a.symbol > b.symbol ? 1 : 0))
+    .slice(0, limit);
+}
+
 /** The recents after opening `symbol`: it moves to the front, the list stays short. */
 export function pushRecentTicker(recents: readonly string[], symbol: string): string[] {
   return [symbol, ...recents.filter((s) => s !== symbol)].slice(0, MAX_TICKER_RECENTS);

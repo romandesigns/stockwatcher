@@ -17,9 +17,10 @@ Android (Expo). Live at <https://stockwatcher.wavystyle.io> (access token requir
 - **Clients:** the web app (also the desktop app's content), the Android app, a ticker search with
   live quotes, and settings. A single **Zustand app store** per client syncs the person's ticker,
   timeframe, preferences and drawings across every device live.
-- **Next:** the live dashboard (main page, live data only); replay becomes a practice feature beside it.
-  See "Product direction" in `docs/CONVENTIONS.md` and the constraints in
-  `docs/architecture/chart-packages.md`.
+- **The Dashboard** is the main page: up to 4 charts on one connection, a live "Most active" list,
+  select a chart and pick a ticker to load it there; tap, then hold any ticker to copy it. Next,
+  replay becomes a practice feature beside the live feed ("Product direction" in
+  `docs/CONVENTIONS.md`).
 
 ## Structure
 
