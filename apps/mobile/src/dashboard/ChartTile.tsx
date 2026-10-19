@@ -14,6 +14,16 @@ import { useTickerPress } from "../ui/useTickerPress";
 /** Below this width a tile drops the chart's toolbar (a 2×2 grid on a phone is ~180 pt wide). */
 const TOOLBAR_MIN_WIDTH = 320;
 
+/**
+ * The chart's metrics by the tile's size. A tile with room (the phone's one chart, a tablet's
+ * one or two) gets the Chart tab's legible text and panes; only a small tile (a 2×2 grid) keeps
+ * the dense ones. The dense set on the phone's single chart was too small to read (owner,
+ * 2026-10-19).
+ */
+const ROOMY = { width: 300, height: 260 } as const;
+const READABLE_OPTIONS = { priceAxisWidth: 52, volumeHeight: 40, timeAxisHeight: 18, paneGap: 4, fontSize: 10, timeLabelSpacing: 64, indicatorPaneHeight: 52 } as const;
+const DENSE_OPTIONS = { priceAxisWidth: 40, volumeHeight: 28, timeAxisHeight: 16, paneGap: 4, fontSize: 8, timeLabelSpacing: 56, indicatorPaneHeight: 44 } as const;
+
 export interface ChartTileProps {
   index: number;
   slot: DashboardSlot;
@@ -69,7 +79,9 @@ export function ChartTile({ index, slot, symbol, feed, trading, selected, showSe
     onDay(dayKey || null);
   }, [dayKey, onDay]);
 
-  const [width, setWidth] = useState(0);
+  const [size, setSize] = useState({ width: 0, height: 0 });
+  const width = size.width;
+  const roomy = size.width >= ROOMY.width && size.height >= ROOMY.height;
   // Tap: change this chart's ticker; tap, then hold: copy it.
   const tickerPress = useTickerPress(symbol, () => onPickTicker(index));
   const slots = useMemo(() => (series ? buildSlots(series.candles, series.gaps) : []), [series]);
@@ -83,7 +95,7 @@ export function ChartTile({ index, slot, symbol, feed, trading, selected, showSe
   return (
     <View
       onTouchStart={() => app.selectDashboardChart(index)}
-      onLayout={(e) => setWidth(e.nativeEvent.layout.width)}
+      onLayout={(e) => setSize({ width: e.nativeEvent.layout.width, height: e.nativeEvent.layout.height })}
       accessible={false}
       accessibilityLabel={`Chart ${index + 1}: ${symbol}${ring ? ", selected" : ""}`}
       style={[styles.tile, ring && styles.ring]}
@@ -128,8 +140,8 @@ export function ChartTile({ index, slot, symbol, feed, trading, selected, showSe
         onLayersChange={onLayersChange}
         now={clock?.now ?? null}
         onTimeframeChange={(tf) => app.setDashboardTimeframe(index, tf)}
-        options={{ priceAxisWidth: 40, volumeHeight: 28, timeAxisHeight: 16, paneGap: 4, fontSize: 8, timeLabelSpacing: 56, indicatorPaneHeight: 44 }}
-        barSpacing={6}
+        options={roomy ? READABLE_OPTIONS : DENSE_OPTIONS}
+        barSpacing={roomy ? 8 : 6}
         alerts={alerts}
         label={`Chart ${index + 1}: ${symbol} ${slot.timeframe} candles`}
       />
@@ -142,8 +154,8 @@ const styles = StyleSheet.create({
   // The selection: a 2 pt accent ring drawn as a spread shadow, so it adds no layout and no border.
   ring: { boxShadow: `0 0 0 2px ${colors.accent}` },
   head: { flexDirection: "row", alignItems: "baseline", gap: 6, paddingHorizontal: 2 },
-  symbol: { color: colors.text, fontFamily: fonts.semibold, fontSize: 13 },
-  price: { color: colors.text, fontSize: 12, fontVariant: ["tabular-nums"] },
-  change: { fontSize: 10, fontVariant: ["tabular-nums"] },
+  symbol: { color: colors.text, fontFamily: fonts.semibold, fontSize: 15 },
+  price: { color: colors.text, fontSize: 14, fontVariant: ["tabular-nums"] },
+  change: { fontSize: 12, fontVariant: ["tabular-nums"] },
   chart: { flex: 1 },
 });

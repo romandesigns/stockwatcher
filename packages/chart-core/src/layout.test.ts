@@ -3,6 +3,7 @@ import { type ChartTheme, type DisplayList, type LinePrim, LAYER_ORDER, sortByLa
 import { describeCounted, describeSlot } from "./inspect.ts";
 import { candleCountdown, computeChartModel, formatCountdown, hitTest, layout, layoutProfile, stepInspection, type ChartState } from "./layout.ts";
 import { buildSlots, defaultViewport, slotX } from "./scale.ts";
+import { computeIndicators } from "./indicators.ts";
 import { DEFAULT_CHART_THEME } from "./theme.ts";
 import { etToUtc } from "./time.ts";
 import { fixtureSnapshot, T0 } from "./testFixture.ts";
@@ -171,4 +172,31 @@ test("timelineTimeAt maps x back to the day, clamped", () => {
   expect(timelineTimeAt(bands, 1000, 500)).toBe(Math.round(start + (end - start) / 2));
   expect(timelineTimeAt(bands, 1000, 5000)).toBe(end);
   expect(timelineTimeAt([], 1000, 10)).toBeNull();
+});
+
+describe("auto scale leaves the overlay legend room", () => {
+  const size = { width: 360, height: 300 };
+  const vp = defaultViewport();
+  const slots = buildSlots(snap.candles, snap.gaps);
+  const highY = (s: ChartState) => {
+    const m = computeChartModel(s, vp, size);
+    let hi = -Infinity;
+    for (let i = m.index.from; i <= m.index.to; i++) {
+      const x = m.slots[i];
+      if (x?.kind === "candle" && x.candle.h > hi) hi = x.candle.h;
+    }
+    const p = m.price!;
+    return p.top + ((p.hi - hi) / (p.hi - p.lo)) * (p.bottom - p.top);
+  };
+  test("without overlays the high sits at the usual 8 % pad; with them it clears the legend's rows", () => {
+    const plain = highY({ ...state, slots });
+    const ind = computeIndicators(slots, [{ id: "ema-9", kind: "ema", period: 9 }, { id: "ema-20", kind: "ema", period: 20 }, { id: "vwap", kind: "vwap" }]);
+    const withLegend = highY({ ...state, slots, indicators: ind });
+    expect(plain).toBeLessThan(25);
+    // One legend row at fontSize 10: 8 + 5 + 3 + 4 = 20 px above the old fit.
+    expect(withLegend).toBeGreaterThan(plain + 15);
+    // A manual range is left alone.
+    const m = computeChartModel({ ...state, slots, indicators: ind }, { ...vp, price: { mode: "manual", lo: 1, hi: 2 } }, size);
+    expect(m.price!.hi).toBe(2);
+  });
 });

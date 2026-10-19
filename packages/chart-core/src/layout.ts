@@ -14,10 +14,12 @@ import {
   formatAxisValue,
   indexScale,
   priceAxisTicks,
+  priceToUnit,
   priceY,
   slotAt,
   slotX,
   timeTicks,
+  unitToPrice,
   yPrice,
   type IndexScale,
   type PriceScale,
@@ -266,6 +268,35 @@ function priceAxisNeed(model: ChartModel): number {
   return Math.min(o.priceAxisWidth, Math.max(MIN_PRICE_AXIS, Math.ceil(need)));
 }
 
+/**
+ * Height the overlay legend takes at the top of the plot (its offset, then one row per wrapped
+ * line, as overlayLegend flows them), or 0 without overlays. Capped at a quarter of the plot, so a
+ * short chart still gives the candles most of its height.
+ */
+function legendHeadroom(results: readonly IndicatorResult[], plot: Rect, o: ChartOptions, inspected: number | null): number {
+  const fs = o.fontSize;
+  const widths: number[] = [];
+  for (const r of results) {
+    if (r.placement !== "overlay") continue;
+    const main = r.lines[0]!.values;
+    const v = inspected === null ? Number.NaN : main[inspected]!;
+    const value = Number.isNaN(v) ? "—" : v.toFixed(v < 1 ? 4 : 2);
+    widths.push(LEGEND_SWATCH + LEGEND_GAP + sansWidth(indicatorLabel(r.spec), fs) + LEGEND_GAP + textWidth(value, fs));
+  }
+  if (widths.length === 0) return 0;
+  const lines = legendLines(widths, plot.w);
+  const h = o.legendTop + 8 + (lines - 1) * (fs + 6) + fs / 2 + 3 + 4;
+  return Math.min(Math.round(h), Math.round(plot.h / 4));
+}
+
+/** The range with its top raised so the price `headroom` px below the plot's top is the old high. */
+function liftTop(r: { lo: number; hi: number }, headroom: number, plotH: number, type: PriceScaleType): { lo: number; hi: number } {
+  if (headroom <= 0 || plotH <= headroom) return r;
+  const lo = priceToUnit(type, r.lo);
+  const hi = priceToUnit(type, r.hi);
+  return { lo: r.lo, hi: unitToPrice(type, hi + ((hi - lo) * headroom) / (plotH - headroom)) };
+}
+
 /** Gap between the plot's edge and a price label. */
 const AXIS_LABEL_PAD = 5;
 
@@ -278,7 +309,11 @@ export function computeChartModel(state: ChartState, viewport: Viewport, size: S
   const type = state.priceScaleType ?? "linear";
   const chartType = state.chartType ?? "candles";
   const overlays = state.indicators?.filter((r) => r.placement === "overlay").flatMap((r) => r.lines.map((l) => l.values)) ?? [];
-  const auto = autoFitRange(slots, index.from, index.to, { chartType, overlays }, 0.08, type);
+  const inspected = state.inspectT === null ? (slots.length ? slots.length - 1 : null) : slotIndexOf(slots, state.inspectT);
+  const fit = autoFitRange(slots, index.from, index.to, { chartType, overlays }, 0.08, type);
+  // Auto scale keeps the overlay legend's rows clear: without it the visible high sits right under
+  // the legend (and the HOD tag beside it), unreadable on a phone (owner, 2026-10-19).
+  const auto = fit ? liftTop(fit, legendHeadroom(state.indicators ?? [], geometry.plot, options, inspected), geometry.plot.h, type) : null;
   // A manual range (from a price-axis drag) holds until auto-scale; it still
   // needs candles to exist, so an empty chart has no price scale either way.
   let range = auto && viewport.price?.mode === "manual" ? { lo: viewport.price.lo, hi: viewport.price.hi } : auto;
@@ -292,7 +327,6 @@ export function computeChartModel(state: ChartState, viewport: Viewport, size: S
     const s = slots[i];
     if (s?.kind === "candle" && s.candle.v > volumeMax) volumeMax = s.candle.v;
   }
-  const inspected = state.inspectT === null ? (slots.length ? slots.length - 1 : null) : slotIndexOf(slots, state.inspectT);
   const model = { options, geometry, slots, index, price, priceTicks, volumeMax, timeframeMs: TIMEFRAME_MS[state.timeframe], inspected, chartType };
   // Second pass with the price column fitted to its labels (narrower than the maximum when it can be).
   if (!fitted) {
@@ -771,16 +805,38 @@ function sansWidth(text: string, fs: number): number {
  * line sits on the pane legends' translucent backing (paneLegendBg).
  * Both web and phone draw this display list, so the change lands on both.
  */
+const LEGEND_SWATCH = 10;
+/** swatch → name and name → value. */
+const LEGEND_GAP = 6;
+/** value → the next entry's swatch. */
+const LEGEND_ENTRY_GAP = 12;
+
+/** How many lines entries of these widths take, flowed as overlayLegend flows them across a plot `plotW` wide. */
+function legendLines(widths: readonly number[], plotW: number): number {
+  const left = 8;
+  const right = plotW - 8;
+  let x = left;
+  let lines = 1;
+  for (const w of widths) {
+    if (x > left && x + w > right) {
+      x = left;
+      lines++;
+    }
+    x += w + LEGEND_ENTRY_GAP;
+  }
+  return lines;
+}
+
 function overlayLegend(model: ChartModel, results: readonly IndicatorResult[], theme: ChartTheme): DisplayList {
   const out: DisplayList = [];
   const plot = model.geometry.plot;
   const fs = model.options.fontSize;
   const left = plot.x + 8;
   const right = plot.x + plot.w - 8;
-  const SWATCH = 10;
-  const SWATCH_GAP = 6; // swatch → name
-  const VALUE_GAP = 6; // name → value
-  const ENTRY_GAP = 12; // value → next entry's swatch
+  const SWATCH = LEGEND_SWATCH;
+  const SWATCH_GAP = LEGEND_GAP; // swatch → name
+  const VALUE_GAP = LEGEND_GAP; // name → value
+  const ENTRY_GAP = LEGEND_ENTRY_GAP; // value → next entry's swatch
   let x = left;
   let y = plot.y + 8 + model.options.legendTop;
   // Each line's right end, for its backing (one per line, so a wrapped legend's short last line gets a short one).

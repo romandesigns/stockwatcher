@@ -199,7 +199,7 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
         profileBin={bin}
         onProfileBinChange={app.setBin}
         // The session volume profile sits inside the chart on a phone (no room for a side panel), as on the web's phone layout.
-        options={{ priceAxisWidth: 46, volumeHeight: 40, timeAxisHeight: 18, paneGap: 4, fontSize: 9, timeLabelSpacing: 60, indicatorPaneHeight: 56, showProfile: true, profileWidth: 0.2 }}
+        options={{ priceAxisWidth: 52, volumeHeight: 40, timeAxisHeight: 18, paneGap: 4, fontSize: 10, timeLabelSpacing: 60, indicatorPaneHeight: 56, showProfile: true, profileWidth: 0.2 }}
         barSpacing={8}
         label={`${active ?? ""} ${timeframe} candles`}
       />
