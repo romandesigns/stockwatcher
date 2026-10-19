@@ -6,6 +6,7 @@ import { TickerLabel } from "../lib/TickerLabel.tsx";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import type { ChartFeed } from "../feed/types.ts";
 import { useChartFeed } from "../feed/useChartFeed.ts";
+import { useChartAlerts } from "../alerts/useChartAlerts.ts";
 import { getAppStore, useApp } from "../state/store.ts";
 
 /** A compact chart for a panel of up to four. */
@@ -80,6 +81,8 @@ export function ChartCell({ index, slot, symbol, feed, trading, selected, showSe
   const last = useMemo(() => lastCandle(slots), [slots]);
   const reference = useMemo(() => changeReference(series), [series]);
   const change = last && reference ? formatChange(reference.price, last.c) : "";
+  // This symbol's price alerts: lines, the bell, hold to create, drag to move (alerts/useChartAlerts.ts).
+  const chartAlerts = useChartAlerts(symbol, last?.c ?? null);
   const showRing = showSelection && selected;
 
   return (
@@ -143,6 +146,7 @@ export function ChartCell({ index, slot, symbol, feed, trading, selected, showSe
         inspectT={inspectT}
         onInspectChange={setInspectT}
         options={CELL_CHART}
+        alerts={chartAlerts}
         label={`Chart ${index + 1}: ${symbol} ${slot.timeframe} candles${fixture ? ", fixture data" : ""}`}
       />
     </section>
