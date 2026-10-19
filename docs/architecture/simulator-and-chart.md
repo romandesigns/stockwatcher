@@ -479,6 +479,17 @@ stamped on it. The increments are serialized to JSON once and broadcast on a bou
   the band. Change % is `(p − ref) / ref`, computed by the client (`changeReference` in chart-core).
 - After a seek, a day switch or a lag, a subscribed client gets a fresh snapshot.
 
+**Halt watcher** (the dashboard's pressure board; `crates/server/src/pressure.rs`, wire in
+`packages/shared/src/protocol.ts` `PressureCardWire`, formula in `chart-packages.md` "The dashboard"):
+- client `pressure.subscribe` → server `pressure.snapshot {t, board: [card]}` (the last ranking),
+  then `pressure.update {t, board: [card]}` whenever the board changed, at most once per wall-clock
+  second. Both carry the whole board (≤ 6 cards, display order) and replace the client's.
+  `pressure.unsubscribe` stops it; resubscribing after a reconnect is the client's job.
+- Card `{s, p, pc?, o, pressure, side, buyShare, pace, halt?}`: symbol, the quote row's prices
+  (change % by its rule), pressure 0–100, `bull` | `bear`, the buy share and pace behind it, and
+  `halt {start, reason}` while halted (pressure frozen at the halt).
+- After a seek, a day switch or a lag, a subscribed client gets a fresh snapshot.
+
 **Synced settings** ride the same socket (`settings.*`); see `settings-sync.md`.
 
 **Web.**
