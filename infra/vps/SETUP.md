@@ -191,6 +191,29 @@ Two log lines, one per market, name the mode and source (`alpaca sip stream`,
 A client that stayed connected across the switch may keep the old mode's clock
 until it is reopened (seen 2026-10-18).
 
+**Live recording (restarts keep the day's live charts).** The live market
+records what it receives into the archive itself, as a provisional day:
+`/app/data/archive/<trading date>/live/` (a directory per day, one file per
+symbol). After a restart the dashboard is up at once and loads each symbol's
+day back from there (charts on request, the rest in the background); on a
+weekend it shows the last session, labelled with its date. The archiver's
+nightly import of the same day **replaces** the recording: while it imports,
+the day's `.importing` marker also stops the recorder from writing to it, and
+when it clears the marker it deletes `live/`. Recordings no import replaced
+are kept for 5 days (`LIVE_RECORD_DAYS`); a whole-market day is roughly
+1 GB (see `docs/architecture/simulator-and-chart.md` "Live recording"). To
+check it:
+
+```sh
+docker run --rm -v stockwatcher_data:/data:ro --user 65532:65532 debian:trixie-slim \
+  sh -c 'du -sh /data/archive/*/live'
+docker logs --since 10m stockwatcher-server-1 2>&1 | grep -E 'live (recorder|history)'
+```
+
+`LIVE_RECORD=0` in `.env` stops recording (what is already in the archive is
+still loaded). The day being written must not be deleted by hand while the
+server runs; any other `live/` directory may be.
+
 ## Operating it
 
 ```sh
