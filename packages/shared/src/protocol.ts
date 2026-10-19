@@ -273,10 +273,99 @@ export interface SettingsPatchMessage {
 
 export type SettingsClientMessage = SettingsSetMessage | SettingsPatchMessage;
 
-export type ClientMessage = HelloMessage | PingMessage | PongMessage | QuotesSubscribeMessage | QuotesUnsubscribeMessage | PressureSubscribeMessage | PressureUnsubscribeMessage | SettingsClientMessage;
-export type ServerMessage = WelcomeMessage | PingMessage | PongMessage | ErrorMessage | QuotesMessage | PressureMessage | SettingsServerMessage;
+// --- Price alerts (after `welcome`; crates/server/src/alerts, ws.rs) ------------------------
+// The rules are the synced `alerts` namespace (app-state alerts.ts); the server evaluates them
+// on the live market and reports here. Activity (fires and hold-backs) is server-side, kept 30
+// days; a connection gets the newest 500 events on connect.
 
-const SERVER_TYPES = new Set(["welcome", "ping", "pong", "error", "quotes.snapshot", "quotes.update", "pressure.snapshot", "pressure.update", "settings.snapshot", "settings.changed", "settings.rejected"]);
+/** One Activity row (crates/server/src/alerts/history.rs Event). */
+export interface AlertEventWire {
+  id: string;
+  alertId: string;
+  symbol: string;
+  kind: "fired" | "held";
+  /** The print's (or status's) own time, epoch ms. */
+  t: number;
+  /** When the server decided, epoch ms. */
+  at: number;
+  /** "Crossed above 2.50 at 2.51", "Halted · LUDP", … */
+  text: string;
+  price?: number;
+  /** A late or corrected print. */
+  late?: true;
+  /** A toast was shown in the app (the alert's "In app" chip). */
+  app: boolean;
+  /** `sent` | `held` | `off` | `failed` | `none` (a held event). */
+  phone: "sent" | "held" | "off" | "failed" | "none" | (string & {});
+  /** `stale`, `halted`, `gap` (not fired) or, for the phone, `no_device`, `quiet_hours`, `symbol_limit`, `budget`, `push_failed`. */
+  reason?: string;
+  /** The row's second line ("Phone + in app · cooling until 10:46"). */
+  note: string;
+}
+
+export interface AlertsStatusWire {
+  /** Phone notifications sent today (ET day) and the budget. */
+  phoneToday: number;
+  phoneBudget: number;
+  /** Phones registered for push. */
+  devices: number;
+  /** Market inputs the evaluator had to drop because it fell behind (should stay 0). */
+  dropped: number;
+}
+
+/** Right after `settings.snapshot`, and to a lagged connection: Activity (oldest first) and the status. */
+export interface AlertsHistoryMessage extends AlertsStatusWire {
+  type: "alerts.history";
+  events: AlertEventWire[];
+}
+
+export interface AlertFiredMessage {
+  type: "alert.fired";
+  event: AlertEventWire;
+  phoneToday?: number;
+}
+
+export interface AlertHeldMessage {
+  type: "alert.held";
+  event: AlertEventWire;
+}
+
+/** A recorded event changed (a phone push that failed after it was recorded as sent). */
+export interface AlertUpdatedMessage {
+  type: "alert.updated";
+  event: AlertEventWire;
+}
+
+export interface AlertsStatusMessage extends AlertsStatusWire {
+  type: "alerts.status";
+}
+
+export type AlertsServerMessage = AlertsHistoryMessage | AlertFiredMessage | AlertHeldMessage | AlertUpdatedMessage | AlertsStatusMessage;
+
+/** This phone's Expo push token (per device; the server never sends it to other clients). */
+export interface PushRegisterMessage {
+  type: "push.register";
+  token: string;
+  platform?: string;
+  name?: string;
+}
+
+export interface PushUnregisterMessage {
+  type: "push.unregister";
+  token: string;
+}
+
+export type ClientMessage = HelloMessage | PingMessage | PongMessage | QuotesSubscribeMessage | QuotesUnsubscribeMessage | PressureSubscribeMessage | PressureUnsubscribeMessage | SettingsClientMessage | PushRegisterMessage | PushUnregisterMessage;
+export type ServerMessage = WelcomeMessage | PingMessage | PongMessage | ErrorMessage | QuotesMessage | PressureMessage | SettingsServerMessage | AlertsServerMessage;
+
+const ALERT_TYPES = new Set(["alerts.history", "alert.fired", "alert.held", "alert.updated", "alerts.status"]);
+
+/** True for the alert frames (routed to the app's store, whatever page is open). */
+export function isAlertsMessage(m: ServerMessage): m is AlertsServerMessage {
+  return ALERT_TYPES.has(m.type);
+}
+
+const SERVER_TYPES = new Set(["welcome", "ping", "pong", "error", "quotes.snapshot", "quotes.update", "pressure.snapshot", "pressure.update", "settings.snapshot", "settings.changed", "settings.rejected", ...ALERT_TYPES]);
 
 /** Parses one server frame; returns null for anything malformed or unknown. */
 export function parseServerMessage(raw: unknown): ServerMessage | null {

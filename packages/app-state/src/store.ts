@@ -15,8 +15,9 @@ import {
   type Timeframe,
   type ToolboxPlacement,
 } from "@stockwatcher/chart-core";
-import { pushRecentTicker, type SettingsSync } from "@stockwatcher/shared";
+import { pushRecentTicker, type AlertEventWire, type AlertsServerMessage, type AlertsStatusWire, type SettingsSync } from "@stockwatcher/shared";
 import { createStore, type StoreApi } from "zustand/vanilla";
+import { ALERTS_NS, editedAlert, mergeActivity, parseAlertPrefs, parseAlertRules, parseAlertStates, type AlertPrefs, type AlertRule, type AlertStateWire } from "./alerts.ts";
 import {
   APP_NS,
   MAX_DASHBOARD_CHARTS,
@@ -74,6 +75,18 @@ export interface AppState {
   drawings: Drawing[];
   /** The dashboard's multi-chart panel: chart count and each slot's ticker and timeframe. */
   dashboard: DashboardState;
+  /** Price alerts (alerts.ts), oldest first; their server-written states by id; the phone preferences. */
+  alerts: AlertRule[];
+  alertStates: Record<string, AlertStateWire>;
+  alertPrefs: AlertPrefs;
+
+  // Server-pushed (the alerts service; not synced, not persisted: every connection gets it again).
+  /** Activity, newest first (fires and hold-backs). */
+  alertActivity: AlertEventWire[];
+  /** Phone notifications today, the budget, registered phones; null before the first frame. */
+  alertStatus: AlertsStatusWire | null;
+  /** The last fire this client heard about live (not from a snapshot): hosts toast it. */
+  lastFired: AlertEventWire | null;
 
   // Device.
   device: DevicePrefs | null;
@@ -113,6 +126,16 @@ export interface AppState {
   setDashboardLayers(slot: number, next: ChartLayers): void;
   /** Loads a ticker into the selected dashboard chart. */
   loadIntoSelected(symbol: string): void;
+  /** Adds an alert (or puts a deleted one back: Undo), written as one entry of `alerts`. The sessions picked become the next alert's default. */
+  saveAlert(rule: AlertRule): void;
+  /** Edits an alert: `editedAt` moves on, so the server re-arms it (a dragged line, the form). */
+  updateAlert(id: string, patch: Partial<Omit<AlertRule, "id" | "createdAt" | "editedAt">>): void;
+  removeAlert(id: string): void;
+  /** Snoozes (until epoch ms) or un-snoozes (null) without re-arming. */
+  snoozeAlert(id: string, until: number | null): void;
+  setAlertPrefs(next: AlertPrefs): void;
+  /** A frame from the alerts service (the feed routes them here, whatever page is open). */
+  applyAlertsMessage(m: AlertsServerMessage): void;
 
   // Device setters (a no-op on a store without a device slice).
   setToolbox(p: ToolboxPlacement): void;
@@ -173,6 +196,9 @@ function syncedFrom(sync: SettingsSync, shownSymbol: string) {
     searchRecents: parseSearchRecents(sync.get(APP_NS.searchRecents)),
     drawings: shownSymbol ? drawingsFromDoc(sync.get(drawingsNs(shownSymbol))) : [],
     dashboard: parseDashboard(sync.get(APP_NS.dashboard)),
+    alerts: parseAlertRules(sync.get(ALERTS_NS.rules)),
+    alertStates: parseAlertStates(sync.get(ALERTS_NS.state)),
+    alertPrefs: parseAlertPrefs(sync.get(ALERTS_NS.prefs)),
   };
 }
 
@@ -205,6 +231,9 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
     tapeOpen: false,
     daysOpen: false,
     dashboardSelected: 0,
+    alertActivity: [],
+    alertStatus: null,
+    lastFired: null,
 
     setIndicators: (next) => sync.set(SYNC_NS.indicators, next),
     setLayers: (next) => sync.set(SYNC_NS.layers, next),
@@ -246,6 +275,49 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
     setDashboardIndicators: (slot, next) => writeSlot(slot, { indicators: parseIndicators(next) }),
     setDashboardLayers: (slot, next) => writeSlot(slot, { layers: parseLayers(next) }),
     loadIntoSelected: (symbol) => get().setDashboardSymbol(get().dashboardSelected, symbol),
+    saveAlert: (rule) => {
+      sync.patch(ALERTS_NS.rules, { [rule.id]: rule });
+      const prefs = get().alertPrefs;
+      if (rule.sessions.length && rule.sessions.join() !== prefs.sessions.join()) sync.set(ALERTS_NS.prefs, { ...prefs, sessions: rule.sessions });
+    },
+    updateAlert: (id, patch) => {
+      const cur = get().alerts.find((a) => a.id === id);
+      if (cur) sync.patch(ALERTS_NS.rules, { [id]: editedAlert(cur, patch) });
+    },
+    removeAlert: (id) => sync.patch(ALERTS_NS.rules, {}, [id]),
+    snoozeAlert: (id, until) => {
+      const cur = get().alerts.find((a) => a.id === id);
+      // Not an edit: snoozing keeps the state (a cooling alert stays cooling under the snooze).
+      if (cur) sync.patch(ALERTS_NS.rules, { [id]: { ...cur, snoozeUntil: until } });
+    },
+    setAlertPrefs: (next) => sync.set(ALERTS_NS.prefs, next),
+    applyAlertsMessage: (m) => {
+      switch (m.type) {
+        case "alerts.history": {
+          const { type: _t, events, ...status } = m;
+          set({ alertActivity: mergeActivity([], Array.isArray(events) ? events : [], true), alertStatus: status });
+          return;
+        }
+        case "alerts.status": {
+          const { type: _t, ...status } = m;
+          set({ alertStatus: status });
+          return;
+        }
+        case "alert.fired": {
+          const s = get().alertStatus;
+          set({
+            alertActivity: mergeActivity(get().alertActivity, [m.event], false),
+            lastFired: m.event,
+            ...(s && typeof m.phoneToday === "number" ? { alertStatus: { ...s, phoneToday: m.phoneToday } } : {}),
+          });
+          return;
+        }
+        case "alert.held":
+        case "alert.updated":
+          set({ alertActivity: mergeActivity(get().alertActivity, [m.event], false) });
+          return;
+      }
+    },
 
     setToolbox: (toolbox) => updateDevice("toolbox", toolbox),
     setPaneHeights: (paneHeights) => updateDevice("paneHeights", paneHeights),
@@ -290,6 +362,12 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
         return store.setState({ tradeQty: parseTradeQty(sync.get(ns)) });
       case APP_NS.searchRecents:
         return store.setState({ searchRecents: parseSearchRecents(sync.get(ns)) });
+      case ALERTS_NS.rules:
+        return store.setState({ alerts: parseAlertRules(sync.get(ns)) });
+      case ALERTS_NS.state:
+        return store.setState({ alertStates: parseAlertStates(sync.get(ns)) });
+      case ALERTS_NS.prefs:
+        return store.setState({ alertPrefs: parseAlertPrefs(sync.get(ns)) });
       case APP_NS.dashboard: {
         const dashboard = parseDashboard(sync.get(ns));
         // Fewer charts (from any device): the selection stays on a chart that is still shown.
