@@ -2,37 +2,30 @@ import type { DashboardSource } from "@stockwatcher/app-state";
 import { Icon } from "@stockwatcher/chart-native";
 import { lastSessionLabel } from "@stockwatcher/shared";
 import { useCallback, useEffect, useState } from "react";
-import { Pressable, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { ChartTile } from "../dashboard/ChartTile";
-import { CountSheet } from "../dashboard/CountSheet";
 import { HaltWatcher } from "../dashboard/HaltWatcher";
-import { maxChartsFor } from "../dashboard/layout";
-import { useCandidates, usePaperTrading } from "../feed/hooks";
+import { setDashboardFeed } from "../feed/dashboardFeed";
+import { useCandidates } from "../feed/hooks";
 import type { MobileFeed } from "../feed/serverFeed";
 import { useConnection } from "../feed/useConnection";
 import { useReducedMotion } from "../motion/useReducedMotion";
+import { openTickerChart } from "../navigation/ref";
 import { TickerSearchSheet } from "../search/TickerSearchSheet";
 import { appActions, useApp } from "../state/store";
 import { colors, fonts } from "../theme";
 import { SignInScreen } from "./SignInScreen";
 
 /**
- * The main page, the first tab (owner, 2026-10-18): the LIVE market's charts, a "screen × n"
- * control for how many, and the Halt watcher's gauges above them. Touch a chart to select it,
- * then pick a ticker (a gauge, or the search) to load it there. The panel fills everything under
- * the gauges (charts inside a scrolling page would fight the chart's own pan gestures). No Most
- * active list for now (owner, 2026-10-19: "we don't want to show the most actives here just
- * yet"): it took 200–260 pt the chart needs to be readable.
+ * The main page, the first tab: the Halt watcher's gauges for the dashboard's market (live
+ * unless Settings → Data says replay). Tapping a ticker, a gauge or a search result, opens its
+ * chart in a modal (owner, 2026-10-19: "the chart should always be displayed on a modal"), so the
+ * phone shows no chart of its own here and no "screen × n" count. The web keeps its panel: a
+ * click there loads the ticker into the one chart, or the focused one of several.
  *
- * The count is the synced one (the web's, up to 4) capped by the screen (`maxChartsFor`): one
- * chart on a phone-size screen, where the count control is hidden (it would offer one choice),
- * two on a tablet-size one, stacked while the panel is taller than wide (a Fold unfolded in
- * portrait: two wide charts read better than two narrow ones) and side by side otherwise. The cap
- * is never written back, so the phone does not shrink the web's panel; picking a count here does
- * set the synced one. What each chart shows syncs across devices; the selection is this phone's.
- * Its own socket (useConnection), so the chart tab's slot never counts against the server's 4.
+ * Its own socket (useConnection), shared with the modal (dashboardFeed), so the chart tab's slot
+ * never counts against the server's 4.
  */
 export function DashboardScreen() {
   // Settings → Data (synced): the live market unless replay was chosen; a change reconnects.
@@ -47,59 +40,21 @@ function DashboardView({ feed, token, source }: { feed: MobileFeed; token: strin
   const insets = useSafeAreaInsets();
   const reducedMotion = useReducedMotion();
   const [app] = useState(appActions);
-  const dashboard = useApp((s) => s.dashboard);
-  const selected = useApp((s) => s.dashboardSelected);
   const recents = useApp((s) => s.searchRecents);
-  const [clockDay, setClockDay] = useState<string | null>(null);
-  const { symbols: candidates, fixture, session } = useCandidates(token, clockDay, source);
+  const { symbols: candidates, fixture, session } = useCandidates(token, null, source);
   // A closed market shows its last session from the archive (owner, 2026-10-18): say which day.
   const sessionLabel = source === "live" ? lastSessionLabel(session) : null;
-  const trading = usePaperTrading(feed);
   const [searchOpen, setSearchOpen] = useState(false);
-  const [countOpen, setCountOpen] = useState(false);
-  const [panel, setPanel] = useState({ width: 0, height: 0 });
-  const screen = useWindowDimensions();
-  const maxCharts = maxChartsFor(screen.width, screen.height);
-  const n = Math.min(dashboard.count, maxCharts);
-  // A chart selected on a bigger screen (or before folding) may not be shown here: select the
-  // first, so a picked ticker never loads into a hidden chart. The selection is device state.
   useEffect(() => {
-    if (selected >= n) app.selectDashboardChart(0);
-  }, [app, selected, n]);
-
-  // Each chart's ticker, or (empty slot / left the band) a different candidate per chart, shown but never written back.
-  const shown = dashboard.slots.slice(0, n).map((slot, i) => {
-    const fallback = candidates[i] ?? candidates[0] ?? "";
-    const s = slot.symbol ?? fallback;
-    return candidates.length === 0 || candidates.includes(s) ? s : fallback;
-  });
-  const onDay = useCallback((day: string | null) => {
-    if (day) setClockDay(day);
-  }, []);
-  const pickFor = useCallback(
-    (i: number) => {
-      app.selectDashboardChart(i);
-      setSearchOpen(true);
+    setDashboardFeed(feed);
+    return () => setDashboardFeed(null);
+  }, [feed]);
+  const open = useCallback(
+    (symbol: string) => {
+      app.rememberTicker(symbol);
+      openTickerChart(symbol);
     },
     [app],
-  );
-
-  // Two charts side by side only when the panel (measured, a container query) is wider than tall.
-  const rows: number[][] = n === 2 && panel.width > panel.height ? [[0, 1]] : shown.map((_, i) => [i]);
-
-  const tile = (i: number) => (
-    <ChartTile
-      key={i}
-      index={i}
-      slot={dashboard.slots[i]!}
-      symbol={shown[i]!}
-      feed={feed}
-      trading={trading}
-      selected={selected === i}
-      showSelection={n > 1}
-      onPickTicker={pickFor}
-      onDay={onDay}
-    />
   );
 
   return (
@@ -108,45 +63,34 @@ function DashboardView({ feed, token, source }: { feed: MobileFeed; token: strin
         <Text accessibilityRole="header" style={styles.title}>
           Dashboard
         </Text>
-        {n > 1 && <Text style={styles.sub}>Chart {selected + 1} selected</Text>}
         {sessionLabel && <Text style={styles.sub} numberOfLines={1}>{sessionLabel}</Text>}
         <Pressable accessibilityRole="button" accessibilityLabel="Search tickers" onPress={() => setSearchOpen(true)} hitSlop={6} style={({ pressed }) => [styles.round, { marginLeft: "auto" }, pressed && { backgroundColor: colors.bgRow }]}>
           <Icon name="search" color={colors.textDim} size={15} />
         </Pressable>
-        {maxCharts > 1 && (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={`${n} ${n === 1 ? "chart" : "charts"} shown, change`}
-          accessibilityState={{ expanded: countOpen }}
-          onPress={() => setCountOpen(true)}
-          hitSlop={6}
-          style={({ pressed }) => [styles.multi, (pressed || countOpen) && { backgroundColor: colors.bgRow }]}
-        >
-          <Icon name="screen" color={countOpen ? colors.accent : colors.textDim} size={16} />
-          <Text style={styles.multiText}>×{n}</Text>
-        </Pressable>
-        )}
       </View>
 
-      {/* One row of six mini gauges, all in view (owner, 2026-10-19). */}
-      <HaltWatcher channel={feed.pressure} onPick={app.loadIntoSelected} reducedMotion={reducedMotion} />
+      {/* One row of six mini gauges, all in view (owner, 2026-10-19); a tap opens the ticker's chart. */}
+      <HaltWatcher channel={feed.pressure} onPick={open} reducedMotion={reducedMotion} />
+      {candidates.length === 0 && !fixture && (
+        // The dashboard reads the LIVE market: an empty list means nothing has traded yet this
+        // session (or it is the weekend), not a slow server.
+        <Text style={styles.sub}>{source === "live" ? "No live trades yet. Tickers appear with the session's first trades (overnight from 20:00 ET Sunday to Thursday, then 4:00 to 20:00 ET)." : "Waiting for the replay's symbols…"}</Text>
+      )}
 
-      <View style={styles.panel} onLayout={(e) => setPanel({ width: e.nativeEvent.layout.width, height: e.nativeEvent.layout.height })}>
-        {candidates.length === 0 && !fixture ? (
-          // The dashboard reads the LIVE market: an empty list means nothing has traded yet this
-          // session (or it is the weekend), not a slow server.
-          <Text style={styles.sub}>{source === "live" ? "No live trades yet. Charts appear with the session's first trades (overnight from 20:00 ET Sunday to Thursday, then 4:00 to 20:00 ET)." : "Waiting for the replay's symbols…"}</Text>
-        ) : (
-          rows.map((r, ri) => (
-            <View key={ri} style={styles.row}>
-              {r.map(tile)}
-            </View>
-          ))
-        )}
-      </View>
-
-      <TickerSearchSheet open={searchOpen} onClose={() => setSearchOpen(false)} symbols={candidates} quotes={feed.quotes} mock={fixture} current={shown[selected] ?? ""} recents={recents} onSelect={app.loadIntoSelected} reducedMotion={reducedMotion} />
-      <CountSheet open={countOpen} onClose={() => setCountOpen(false)} count={n} max={maxCharts} onChange={app.setDashboardCount} reducedMotion={reducedMotion} />
+      <TickerSearchSheet
+        open={searchOpen}
+        onClose={() => setSearchOpen(false)}
+        symbols={candidates}
+        quotes={feed.quotes}
+        mock={fixture}
+        current=""
+        recents={recents}
+        onSelect={(symbol) => {
+          setSearchOpen(false);
+          open(symbol);
+        }}
+        reducedMotion={reducedMotion}
+      />
     </View>
   );
 }
@@ -157,8 +101,4 @@ const styles = StyleSheet.create({
   title: { color: colors.text, fontFamily: fonts.semibold, fontSize: 18 },
   sub: { color: colors.textFaint, fontFamily: fonts.regular, fontSize: 12 },
   round: { width: 32, height: 32, borderRadius: 16, alignItems: "center", justifyContent: "center", backgroundColor: colors.bgPanel },
-  multi: { height: 32, flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 10, borderRadius: 16, backgroundColor: colors.bgPanel },
-  multiText: { color: colors.textDim, fontSize: 12, fontVariant: ["tabular-nums"] },
-  panel: { flex: 1, minHeight: 0, gap: 8 },
-  row: { flex: 1, minHeight: 0, flexDirection: "row", gap: 8 },
 });

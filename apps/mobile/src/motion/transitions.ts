@@ -16,6 +16,9 @@ import type { BottomTabNavigationOptions } from "@react-navigation/bottom-tabs";
 import type { BlankStackNavigationOptions } from "react-native-screen-transitions/react-navigation";
 
 export type MotionSpec = BlankStackNavigationOptions;
+
+/** Height of the chart modal's header strip, the only place a swipe down dismisses it (pt from the top). */
+export const CHART_MODAL_GRAB = 96;
 /** A tab switch is the bottom-tab navigator's own JS-driven scene animation (Animated, not the OS), so it is identical on iOS and Android too. */
 export type TabMotionSpec = Pick<BottomTabNavigationOptions, "animation">;
 
@@ -92,6 +95,12 @@ export interface MotionVocabulary {
   /** A modal sheet over the current screen. */
   modalPresent: MotionSpec;
   /**
+   * A ticker's chart modal: the modal's slide up, but swipe-down dismissal only from its header
+   * strip ({@link CHART_MODAL_GRAB} pt): anywhere lower, a vertical drag belongs to the chart
+   * (price-axis scaling, drawing, pane resizing).
+   */
+  chartModal: MotionSpec;
+  /**
    * Switching main-nav tabs: a short cross-fade. Tabs are siblings, not a hierarchy, so nothing
    * slides (a slide would read as push/back). A cross-fade is already the reduced-motion form, so
    * it stays the same there.
@@ -101,7 +110,7 @@ export interface MotionVocabulary {
 
 export function motion(reducedMotion: boolean): MotionVocabulary {
   if (reducedMotion) {
-    return { root: {}, screenPush: crossFade, modalPresent: crossFade, tabSwitch: { animation: "fade" } };
+    return { root: {}, screenPush: crossFade, modalPresent: crossFade, chartModal: crossFade, tabSwitch: { animation: "fade" } };
   }
   return {
     root: {},
@@ -120,6 +129,12 @@ export function motion(reducedMotion: boolean): MotionVocabulary {
       transitionSpec: navSpring,
       gestureEnabled: true,
       gestureDirection: "vertical",
+    },
+    chartModal: {
+      screenStyleInterpolator: slideFromBottom,
+      transitionSpec: navSpring,
+      gestureEnabled: true,
+      gestureDirection: { gesture: "vertical", area: CHART_MODAL_GRAB },
     },
   };
 }

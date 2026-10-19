@@ -63,6 +63,15 @@ describe("app store: synced state", () => {
     expect(r.sync.get(APP_NS.view)).toEqual({ symbol: "AAL", timeframe: "1m", bin: 0.01 });
   });
 
+  test("remembering a ticker only touches the recents, never the view", () => {
+    const r = rig();
+    r.s().rememberTicker("smpl");
+    r.s().rememberTicker("aal");
+    r.s().rememberTicker("not a ticker!");
+    expect(r.s().searchRecents).toEqual(["AAL", "SMPL"]);
+    expect(r.sync.get(APP_NS.view)).toBeUndefined();
+  });
+
   test("a ticker, timeframe or bin change keeps the other view fields", () => {
     const r = rig();
     r.s().openTicker("AAL");
