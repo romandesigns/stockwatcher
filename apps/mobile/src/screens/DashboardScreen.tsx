@@ -28,7 +28,7 @@ const LIST_HEIGHT = 200;
  * phone's. Its own socket (useConnection), so the chart tab's slot never counts against the 4.
  */
 export function DashboardScreen() {
-  const { ready, status, signIn } = useConnection("mobile-dashboard");
+  const { ready, status, signIn } = useConnection("mobile-dashboard", "live");
   if (!ready) return <View style={styles.screen} />;
   if (status === "unauthorized") return <SignInScreen rejected={ready.token !== null} onSubmit={signIn} />;
   return <DashboardView feed={ready.feed} token={ready.token} />;
@@ -42,7 +42,7 @@ function DashboardView({ feed, token }: { feed: MobileFeed; token: string | null
   const selected = useApp((s) => s.dashboardSelected);
   const recents = useApp((s) => s.searchRecents);
   const [clockDay, setClockDay] = useState<string | null>(null);
-  const { symbols: candidates, fixture } = useCandidates(token, clockDay);
+  const { symbols: candidates, fixture } = useCandidates(token, clockDay, "live");
   const trading = usePaperTrading(feed);
   const [searchOpen, setSearchOpen] = useState(false);
   const [countOpen, setCountOpen] = useState(false);
@@ -110,7 +110,9 @@ function DashboardView({ feed, token }: { feed: MobileFeed; token: string | null
 
       <View style={styles.panel} onLayout={(e) => setPanelWidth(e.nativeEvent.layout.width)}>
         {candidates.length === 0 && !fixture ? (
-          <Text style={styles.sub}>Waiting for the server's symbols…</Text>
+          // The dashboard reads the LIVE market: an empty list means nothing has traded yet this
+          // session (or it is the weekend), not a slow server.
+          <Text style={styles.sub}>No live trades yet. Charts appear with the session's first trades (from 4:00 ET on weekdays).</Text>
         ) : (
           rows.map((r, ri) => (
             <View key={ri} style={styles.row}>

@@ -1,4 +1,5 @@
-//! Market REST routes under `/api` (behind the bearer token when one is configured):
+//! Market REST routes under `/api` (behind the bearer token when one is configured). Each takes
+//! `?source=live|replay` (absent = `MARKET_DATA_MODE`): the server runs both markets side by side.
 //!
 //! - `GET /api/chart/{symbol}/snapshot?timeframe=1m&bin=0.01` → a `chart.snapshot` (with clock)
 //! - `GET /api/replay/state` → mode, provider status, day, symbols, clock, and the switchable `days`
@@ -18,12 +19,19 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::AppState;
-use crate::market::SnapshotError;
+use crate::market::{SnapshotError, Source};
 
 #[derive(Deserialize)]
 pub struct SnapshotQuery {
     timeframe: Option<String>,
     bin: Option<f64>,
+    source: Option<Source>,
+}
+
+/// `?source=live|replay` on every market route; absent = the default (`MARKET_DATA_MODE`).
+#[derive(Deserialize)]
+pub struct SourceQuery {
+    source: Option<Source>,
 }
 
 fn bad(msg: String) -> Response {
@@ -53,7 +61,7 @@ pub async fn chart_snapshot(
         Ok(tf) => tf,
         Err(e) => return bad(e),
     };
-    let market = state.market();
+    let market = state.market_for(q.source);
     let bin = match parse_bin(q.bin, market.default_bin()) {
         Ok(b) => b,
         Err(e) => return bad(e),
@@ -77,16 +85,22 @@ pub async fn chart_snapshot(
     }
 }
 
-pub async fn replay_state(State(state): State<AppState>) -> Json<serde_json::Value> {
-    Json(state.market().state_json())
+pub async fn replay_state(
+    State(state): State<AppState>,
+    Query(q): Query<SourceQuery>,
+) -> Json<serde_json::Value> {
+    Json(state.market_for(q.source).state_json())
 }
 
-pub async fn symbols(State(state): State<AppState>) -> Json<serde_json::Value> {
-    Json(state.market().symbols_json())
+pub async fn symbols(
+    State(state): State<AppState>,
+    Query(q): Query<SourceQuery>,
+) -> Json<serde_json::Value> {
+    Json(state.market_for(q.source).symbols_json())
 }
 
-pub async fn quotes(State(state): State<AppState>) -> Response {
-    let (_, json) = state.market().quotes_snapshot();
+pub async fn quotes(State(state): State<AppState>, Query(q): Query<SourceQuery>) -> Response {
+    let (_, json) = state.market_for(q.source).quotes_snapshot();
     (
         [(axum::http::header::CONTENT_TYPE, "application/json")],
         json,

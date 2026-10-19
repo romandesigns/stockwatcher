@@ -1,4 +1,4 @@
-import { parseServerMessage, type ClientMessage, type HelloMessage, type QuotesMessage, type ServerMessage, type WelcomeMessage } from "./protocol.ts";
+import { parseServerMessage, type ClientMessage, type HelloMessage, type MarketSource, type QuotesMessage, type ServerMessage, type WelcomeMessage } from "./protocol.ts";
 import type { SettingsSync } from "./settingsSync.ts";
 
 export type ConnectionStatus = "connecting" | "open" | "reconnecting" | "unauthorized" | "closed";
@@ -18,6 +18,8 @@ export interface WsClientOptions {
   url: string;
   token?: string | null;
   client?: string;
+  /** Which market the connection reads (`hello.source`); absent = the server's default. */
+  source?: MarketSource;
   onStatus?: (status: ConnectionStatus) => void;
   onWelcome?: (welcome: WelcomeMessage) => void;
   onMessage?: (message: ServerMessage) => void;
@@ -102,6 +104,7 @@ export function createWsClient(opts: WsClientOptions): WsClient {
       const hello: HelloMessage = { type: "hello" };
       if (opts.client) hello.client = opts.client;
       if (opts.token) hello.token = opts.token;
+      if (opts.source) hello.source = opts.source;
       send(hello);
       armLiveness();
     };

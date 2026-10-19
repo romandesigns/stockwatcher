@@ -159,11 +159,16 @@ server /ws ──► ChartFeed.subscribe({symbol, timeframe, profileBin}, emit) 
    takes the slot. The dashboard uses `d0`…`d3`; the chart page keeps the default slot. On the phone
    each tab has its own socket (`useConnection`), because the chart tab's slot plus the dashboard's 4
    would exceed the limit while both tabs stay mounted.
-2. **Live vs replay is server-wide today.** `MARKET_DATA_MODE` switches the whole server, and the replay
-   clock (day, speed, play/pause) is shared by every client. The owner's direction (2026-10-18): the
-   **main page consumes only live data**; **replay is a separate practice feature** (like TradingView's
-   Bar Replay or Webull paper trading). That means the live feed always on, and replay as practice
-   sessions running beside it, which the server does not support yet.
+2. **Live and replay run side by side (solved 2026-10-18).** The owner's direction: the **main page
+   consumes only live data**; **replay is a separate practice feature** (like TradingView's Bar Replay
+   or Webull paper trading). The server starts two markets (`Markets` in `crates/server/src/market.rs`):
+   live whenever the Alpaca keys are set, replay on the archive. Each socket picks one for its life in
+   `hello.source` (`live` | `replay`) and each market REST route takes `?source=`; clients that name
+   neither get `MARKET_DATA_MODE`, so apps built before the split are unchanged. The web
+   `ConnectionGate` and the phone's `useConnection` take the source: the dashboard asks for `live`, the
+   chart page for `replay`. Each market has its own paper account. The replay clock (day, speed,
+   play/pause) is still one shared practice session, not one per person. An empty live list is real
+   (closed, or before the first trade): the live page shows "No live trades yet", never the fixture.
 3. **Live mode does not archive.** History comes from the archiver's nightly SIP import, so the
    dashboard has no intraday backfill after a server restart during a session.
 4. **Known client bug:** the replay bar's clock label stops updating while replay plays, although the

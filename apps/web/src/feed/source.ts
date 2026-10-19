@@ -4,7 +4,10 @@
 // asks GET /api/symbols first; it falls back to the in-browser fixture ONLY if
 // the server is unreachable, refuses, or reports no symbols, and it always
 // says which source is active and why. VITE_CHART_SOURCE=fixture forces the
-// in-browser fixture.
+// in-browser fixture. A live page (the dashboard) never falls back for an empty list: an empty
+// live market is real (see chooseSource).
+
+import { withMarketSource, type MarketSource } from "@stockwatcher/shared";
 
 export interface ServerSymbols {
   mode: "replay" | "live" | (string & {});
@@ -35,14 +38,16 @@ export interface SourceChoice {
   fixtureData: boolean;
   mode: string;
   label: string;
+  /** The market the page asked for (ConnectionGate `source`): its REST calls and socket name it. */
+  market: MarketSource;
 }
 
 /** GET /api/symbols with a timeout. Never throws. */
-export async function probeServer(fetchImpl: typeof fetch = fetch, timeoutMs = 2500, token?: string | null): Promise<Probe> {
+export async function probeServer(fetchImpl: typeof fetch = fetch, timeoutMs = 2500, token?: string | null, market?: MarketSource): Promise<Probe> {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), timeoutMs);
   try {
-    const res = await fetchImpl("/api/symbols", { signal: ctl.signal, headers: token ? { Authorization: `Bearer ${token}` } : {} });
+    const res = await fetchImpl(withMarketSource("/api/symbols", market), { signal: ctl.signal, headers: token ? { Authorization: `Bearer ${token}` } : {} });
     if (res.status === 401) return { ok: false, reason: "the server needs an access token", unauthorized: true };
     if (!res.ok) return { ok: false, reason: `server answered HTTP ${res.status}` };
     const type = res.headers.get("content-type") ?? "";
@@ -56,20 +61,24 @@ export async function probeServer(fetchImpl: typeof fetch = fetch, timeoutMs = 2
 }
 
 /** Pure decision, so it is unit-tested without a network. */
-export function chooseSource(env: string | undefined, probe: Probe | null, fixtureSymbol: string): SourceChoice {
-  const fixture = (reason: string): SourceChoice => ({ kind: "fixture", reason, symbols: [fixtureSymbol], fixtureData: true, mode: "replay", label: "In-browser fixture" });
+export function chooseSource(env: string | undefined, probe: Probe | null, fixtureSymbol: string, market: MarketSource = "replay"): SourceChoice {
+  const fixture = (reason: string): SourceChoice => ({ kind: "fixture", reason, symbols: [fixtureSymbol], fixtureData: true, mode: "replay", label: "In-browser fixture", market });
   if (env === "fixture") return fixture("VITE_CHART_SOURCE=fixture");
   if (!probe) return fixture("server not checked");
   if (!probe.ok) return fixture(probe.reason);
   const d = probe.data;
-  if (!Array.isArray(d.symbols) || d.symbols.length === 0) return fixture(`server has no data (${d.status}${d.mode ? `, ${d.mode} mode` : ""})`);
+  const symbols = Array.isArray(d.symbols) ? d.symbols : [];
+  // An empty live market is the market, not a missing server: before a session's first trade (and
+  // all weekend) nothing has traded. The live page shows that, never made-up fixture prices.
+  if (symbols.length === 0 && market !== "live") return fixture(`server has no data (${d.status}${d.mode ? `, ${d.mode} mode` : ""})`);
   return {
     kind: "server",
     reason: d.source ?? "server",
-    symbols: d.symbols,
+    symbols,
     fixtureData: !!d.fixture,
     mode: d.mode,
     label: serverLabel(d),
+    market,
   };
 }
 

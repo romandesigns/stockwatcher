@@ -65,6 +65,78 @@ use std::time::Duration;
 use tokio::sync::{broadcast, mpsc};
 
 /// Recent tape rows kept per symbol and sent after a snapshot (same as the browser fixture).
+/// Which market a client reads (owner, 2026-10-18: the dashboard consumes live market data). The
+/// server runs both side by side, see [`Markets`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Source {
+    Replay,
+    Live,
+}
+
+/// The live market and the replay market, running side by side. The main page (the dashboard)
+/// reads live; replay is the practice feature (the chart page), with its own clock, day and paper
+/// account. Each `/ws` connection picks one in its `hello` and each `/api` market route with
+/// `?source=`; a client that names neither gets `default`, which is `MARKET_DATA_MODE`, so apps
+/// built before the split keep seeing what they saw.
+#[derive(Clone)]
+pub struct Markets {
+    pub replay: Market,
+    pub live: Market,
+    pub default: Source,
+}
+
+impl Markets {
+    /// One market in the slot its mode says and an idle market in the other, defaulting to it
+    /// (tests, and every caller from before the split).
+    pub fn single(market: Market) -> Self {
+        match market.mode() {
+            ClockMode::Live => Markets {
+                replay: Market::idle(ClockMode::Replay, "idle", None),
+                live: market,
+                default: Source::Live,
+            },
+            _ => Markets {
+                live: Market::idle(ClockMode::Live, "idle", None),
+                replay: market,
+                default: Source::Replay,
+            },
+        }
+    }
+
+    pub fn get(&self, source: Option<Source>) -> &Market {
+        match source.unwrap_or(self.default) {
+            Source::Replay => &self.replay,
+            Source::Live => &self.live,
+        }
+    }
+
+    /// Starts both. The live market needs the Alpaca credentials (without them it is an idle
+    /// "not_configured" market, as before); the replay market needs an archived day. Returns the
+    /// replay's simulator when one is enabled.
+    pub fn start(cfg: &MarketConfig) -> (Markets, Option<Sim>) {
+        let with_mode = |mode| {
+            let mut c = cfg.clone();
+            c.provider.mode = mode;
+            c
+        };
+        let (replay, sim) = Market::start(&with_mode(MarketDataMode::Replay));
+        let (live, _) = Market::start(&with_mode(MarketDataMode::Live));
+        let default = match cfg.provider.mode {
+            MarketDataMode::Replay => Source::Replay,
+            MarketDataMode::Live => Source::Live,
+        };
+        (
+            Markets {
+                replay,
+                live,
+                default,
+            },
+            sim,
+        )
+    }
+}
+
 pub const TAPE_HISTORY: usize = 40;
 /// Broadcast capacity: how far one client may fall behind before it is resynchronized.
 pub const BROADCAST_CAPACITY: usize = 16_384;
