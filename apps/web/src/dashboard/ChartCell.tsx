@@ -34,7 +34,7 @@ export interface ChartCellProps {
  * page's one socket (`d0`…`d3`; up to 4 per connection, crates/server/src/ws.rs) and is the same
  * CandleChart as the chart page, with the person's synced indicators, levels, settings and this
  * symbol's drawings. Pressing anywhere in it selects it: the selected chart is ringed with the
- * accent (a box shadow, never a border: the no-borders rule) and is where a picked ticker loads.
+ * accent (a 1px inset box shadow on an overlay, never a border: the no-borders rule) and is where a picked ticker loads.
  */
 export function ChartCell({ index, slot, symbol, feed, trading, selected, showSelection, fixture, onSelect, onPickTicker, onDay }: ChartCellProps) {
   const [app] = useState(() => getAppStore().getState());
@@ -79,8 +79,12 @@ export function ChartCell({ index, slot, symbol, feed, trading, selected, showSe
       onPointerDownCapture={() => onSelect(index)}
       onFocusCapture={() => onSelect(index)}
       className={cn(
-        "relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl bg-card p-1.5 transition-shadow duration-150 ease-out motion-reduce:transition-none",
-        showRing && "shadow-[0_0_0_2px_var(--color-primary)]",
+        // The ring is an inset 1px shadow on an overlay above the canvas: an outer shadow was clipped
+        // by the scrolling panel to just the corners (owner, 2026-10-18), and an inset one on the
+        // cell itself is painted over by the chart.
+        "relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl bg-card p-1.5",
+        "after:pointer-events-none after:absolute after:inset-0 after:z-10 after:rounded-xl after:transition-shadow after:duration-150 after:ease-out motion-reduce:after:transition-none",
+        showRing && "after:shadow-[inset_0_0_0_1px_var(--color-primary)]",
       )}
     >
       <CandleChart
