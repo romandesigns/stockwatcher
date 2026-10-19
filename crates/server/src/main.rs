@@ -57,7 +57,15 @@ async fn serve(config: Config) -> std::io::Result<()> {
     let settings = Settings::open(config.data_dir.join("settings"))?;
     // Live and replay side by side (the dashboard reads live, the chart page practises on replay).
     let (markets, sim) = Markets::start(&config.market);
-    let state = AppState::with_markets(config.api_token.clone(), markets, settings);
+    // Price alerts watch the live market (never replay), with their rules in the same store and
+    // Activity + the registered phones under DATA_DIR/alerts.
+    let alerts = stockwatcher_server::alerts::Alerts::start(
+        settings.clone(),
+        markets.live.clone(),
+        Some(config.data_dir.join("alerts")),
+        stockwatcher_server::alerts::push::PushConfig::from_lookup(|k| std::env::var(k).ok()),
+    );
+    let state = AppState::with_alerts(config.api_token.clone(), markets, settings, alerts);
     if let Some(sim) = sim {
         // The provider-compatible simulator on its own port (loopback by default), so Alpaca/FMP
         // base URLs can point at it by configuration. Dummy credentials only.

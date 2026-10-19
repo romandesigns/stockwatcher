@@ -1,3 +1,4 @@
+pub mod alerts;
 pub mod api;
 pub mod auth;
 pub mod config;
@@ -40,6 +41,8 @@ struct Inner {
     /// Synced settings and drawings (settings.rs). Independent of the market: a seek or a day
     /// switch rebuilds the market, never this.
     settings: Settings,
+    /// Price alerts on the live market (crate::alerts); idle in tests that do not start them.
+    alerts: alerts::Alerts,
     /// Only WebSocket sessions subscribe, so `closed()` resolving means
     /// every session has finished.
     shutdown: watch::Sender<bool>,
@@ -67,12 +70,27 @@ impl AppState {
     /// The production constructor: main.rs starts both markets and opens the store under
     /// `DATA_DIR/settings`.
     pub fn with_markets(api_token: Option<String>, markets: Markets, settings: Settings) -> Self {
+        Self::with_alerts(api_token, markets, settings, alerts::Alerts::idle())
+    }
+
+    /// With the alerts service (main.rs starts it on the live market and the same store).
+    pub fn with_alerts(
+        api_token: Option<String>,
+        markets: Markets,
+        settings: Settings,
+        alerts: alerts::Alerts,
+    ) -> Self {
         Self(Arc::new(Inner {
             api_token,
             markets,
             settings,
+            alerts,
             shutdown: watch::Sender::new(false),
         }))
+    }
+
+    pub fn alerts(&self) -> &alerts::Alerts {
+        &self.0.alerts
     }
 
     /// The default market (`MARKET_DATA_MODE`).

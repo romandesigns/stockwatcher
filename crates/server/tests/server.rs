@@ -209,6 +209,11 @@ async fn ws_handshake_with_token_then_ping_pong() {
     // Then the synced settings (no clock on an idle market; tests/settings.rs covers the rest).
     let settings = recv(&mut ws).await;
     assert_eq!(settings, json!({ "type": "settings.snapshot", "docs": [] }));
+    // Then the alerts' Activity (crate::alerts; empty, with the default phone budget).
+    let alerts = recv(&mut ws).await;
+    assert_eq!(alerts["type"], "alerts.history");
+    assert_eq!(alerts["events"], json!([]));
+    assert_eq!(alerts["phoneBudget"], 20);
 
     send(&mut ws, json!({ "type": "ping", "ts": 42 })).await;
     assert_eq!(recv(&mut ws).await, json!({ "type": "pong", "ts": 42 }));

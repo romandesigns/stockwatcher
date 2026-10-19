@@ -400,6 +400,9 @@ pub(crate) struct Inner {
     pressure_subs: AtomicUsize,
     /// Live: the archive history this market loads from (`crate::history`); set once at start.
     pub(crate) history: std::sync::OnceLock<History>,
+    /// Live: the price alerts' input channel (`crate::alerts`), set once at start. Offered every
+    /// eligible print, halt, resume and LULD change with `try_send`, never awaited.
+    alerts: std::sync::OnceLock<Arc<crate::alerts::AlertSink>>,
 }
 
 /// What the market reads from the archive besides the replayed day itself: the root's optional
@@ -553,7 +556,128 @@ impl Market {
             quote_subs: AtomicUsize::new(0),
             pressure_subs: AtomicUsize::new(0),
             history: std::sync::OnceLock::new(),
+            alerts: std::sync::OnceLock::new(),
         }))
+    }
+
+    /// Connects the price alerts (crate::alerts) to this market. Only the live market gets one:
+    /// alerts watch the live market only. A second call is ignored.
+    pub fn attach_alerts(&self, sink: Arc<crate::alerts::AlertSink>) {
+        let _ = self.0.alerts.set(sink);
+    }
+
+    pub fn alert_sink(&self) -> Option<&Arc<crate::alerts::AlertSink>> {
+        self.0.alerts.get()
+    }
+
+    /// What the engine already holds for `symbol`, for an alert that starts watching it mid-day
+    /// (crate::alerts::eval::Seed): the latest trading date's 15 s candles give the last price,
+    /// the regular open, the high since 04:00 and the last 15 minutes' buckets; the snapshot's
+    /// halts and modelled LULD bands give the rest. None while the symbol's history is not in the
+    /// engine (live: not loaded yet). Called rarely (a newly watched symbol), off the ingest task.
+    pub(crate) fn alert_seed(&self, symbol: &str) -> Option<crate::alerts::eval::Seed> {
+        use market_events::SessionKind;
+        let snap = {
+            let core = self.0.core.lock().expect("core lock");
+            core.engine
+                .snapshot(symbol, Timeframe::S15, Some(self.0.bin))?
+        };
+        let last = snap.candles.last()?;
+        let session = |t: i64| market_events::classify(UnixNanos::from_millis(t));
+        let date = session(last.t).map(|s| s.date)?;
+        let mut seed = crate::alerts::eval::Seed {
+            date: Some(date),
+            last: Some((last.t, last.c)),
+            halted: snap.halts.last().is_some_and(|h| h.end.is_none()),
+            luld: snap.luld.last().and_then(|p| p.up.zip(p.down)),
+            ..Default::default()
+        };
+        for c in &snap.candles {
+            let Some(s) = session(c.t).filter(|s| s.date == date) else {
+                continue;
+            };
+            if matches!(
+                s.kind,
+                SessionKind::Pre | SessionKind::Regular | SessionKind::After
+            ) {
+                seed.high = Some(seed.high.map_or(c.h, |h: f64| h.max(c.h)));
+            }
+            if s.kind == SessionKind::Regular && seed.open.is_none() {
+                seed.open = Some(c.o);
+            }
+            if c.t >= last.t - 15 * 60_000 {
+                seed.buckets.push((c.t, c.l, c.h));
+            }
+        }
+        Some(seed)
+    }
+
+    /// Hands this event to the price alerts, if attached (the live market). Eligible prints only,
+    /// by the same rule as the candles and the last price (`Trade::effect().updates_ohlc`), so an
+    /// alert can only fire on a price the chart shows. `ups` are the engine's increments for it
+    /// (the modelled LULD band changes come from there), `revision` the engine's account of a
+    /// correction (its replacement print, if eligible, is a late print).
+    fn offer_alerts(
+        &self,
+        e: &MarketEvent,
+        ups: &[ChartUpdate],
+        revision: Option<&chart_engine::Revision>,
+    ) {
+        use crate::alerts::eval::Input;
+        let Some(sink) = self.0.alerts.get() else {
+            return;
+        };
+        let session = |ts: UnixNanos| market_events::classify(ts).map(|s| (s.date, s.kind));
+        match e {
+            MarketEvent::Trade(t) if t.effect().updates_ohlc => sink.offer(Input::Trade {
+                symbol: t.symbol.clone(),
+                price: t.price.to_f64(),
+                ts: t.event_ts.millis(),
+                session: t.session.map(|s| (s.date, s.kind)),
+            }),
+            MarketEvent::Status(s)
+                if matches!(
+                    s.kind,
+                    market_events::StatusKind::Halt | market_events::StatusKind::Resume
+                ) =>
+            {
+                if let Some(symbol) = &s.symbol {
+                    let reason = if s.reason.trim().is_empty() {
+                        s.code.clone()
+                    } else {
+                        s.reason.clone()
+                    };
+                    sink.offer(Input::Status {
+                        symbol: symbol.clone(),
+                        halted: s.kind == market_events::StatusKind::Halt,
+                        ts: s.event_ts.millis(),
+                        session: session(s.event_ts),
+                        reason,
+                    });
+                }
+            }
+            MarketEvent::Correction(c) => {
+                if let Some(added) = revision.and_then(|r| r.added.as_ref()).filter(|a| a.ohlc) {
+                    sink.offer(Input::Corrected {
+                        symbol: c.symbol.clone(),
+                        price: added.price.to_f64(),
+                        ts: c.event_ts.millis(),
+                        session: revision.map(|r| (r.session.date, r.session.kind)),
+                    });
+                }
+            }
+            _ => {}
+        }
+        for u in ups {
+            if let ChartUpdate::Luld(l) = u {
+                sink.offer(Input::Luld {
+                    symbol: l.symbol.clone(),
+                    ts: l.point.t,
+                    up: l.point.up,
+                    down: l.point.down,
+                });
+            }
+        }
     }
 
     /// No provider (tests, or a provider that could not start).
@@ -980,10 +1104,19 @@ impl Market {
                     // Live: a symbol whose archived history is not in the engine yet is held
                     // back (crate::history), and the paper broker still gets the print below.
                     if crate::history::hold_unloaded(&mut core, &e) {
+                        // Alerts watch every live symbol, loaded into the engine or not.
+                        if !core.rebuilding {
+                            self.offer_alerts(&e, &[], None);
+                        }
                         core.seq += 1;
                         (core.seq, Vec::new(), core.rebuilding)
                     } else {
                         let (ups, revision) = core.engine.apply_revising(&e);
+                        // A rebuild re-reads history: nothing in it is news, so alerts skip it.
+                        // try_send under the lock is a few atomics, never a wait.
+                        if !core.rebuilding {
+                            self.offer_alerts(&e, &ups, revision.as_ref());
+                        }
                         // The quote board takes the engine's verdict on the print (its tape row comes
                         // first in `ups`), so it excludes exactly what the candles exclude; and for a
                         // correction or cancel, the engine's account of what it removed or replaced,
