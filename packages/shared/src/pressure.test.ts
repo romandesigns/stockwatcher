@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createPressureChannel, gaugeAngle, gaugeColors, gaugeGeometry, GAUGE, GAUGE_COLORS, GAUGE_GRADIENT, haltLine, haltSentence, LULD_PAUSE_MS, pressureBoardFrom, pressurePhrase } from "./pressure.ts";
+import { createPressureChannel, gaugeCaption, gaugeGeometry, gaugeTone, GAUGE, haltLine, haltSentence, LULD_PAUSE_MS, pressureBoardFrom, pressurePhrase } from "./pressure.ts";
 import { parseServerMessage, type PressureMessage } from "./protocol.ts";
 import { createWsClient, type WebSocketLike } from "./ws.ts";
 
@@ -61,36 +61,25 @@ describe("halt lines", () => {
 });
 
 describe("gauge", () => {
-  test("zero draws no value arc and points the needle at the start", () => {
+  test("zero draws no fill; the track is the top half ring", () => {
     const g = gaugeGeometry(0);
     expect(g.value).toBeNull();
     expect(g.label).toBe(0);
-    expect(g.needle.x).toBeLessThan(GAUGE.cx);
-    expect(g.needle.y).toBeGreaterThan(GAUGE.cy); // 150°: lower left
+    expect(g.track).toBe("M 26.00 100.00 A 74 74 0 0 1 174.00 100.00");
   });
-  test("half points straight up, full ends at the lower right, out of range clamps", () => {
-    const half = gaugeGeometry(50);
-    expect(half.needle.x).toBeCloseTo(GAUGE.cx, 6);
-    expect(half.needle.y).toBeCloseTo(GAUGE.cy - GAUGE.needle, 6);
+  test("half ends at the top, full is the whole track, out of range clamps", () => {
+    expect(gaugeGeometry(50).value).toMatch(/ 100\.00 26\.00$/);
     const full = gaugeGeometry(140);
     expect(full.label).toBe(100);
-    expect(full.needle.x).toBeGreaterThan(GAUGE.cx);
-    expect(full.needle.y).toBeGreaterThan(GAUGE.cy);
     expect(full.value).toBe(full.track);
     expect(gaugeGeometry(Number.NaN).label).toBe(0);
   });
-  test("a large arc is flagged past 180° only", () => {
-    expect(gaugeGeometry(80).value).toContain(" 0 1 1 "); // 192°
-    expect(gaugeGeometry(70).value).toContain(" 0 0 1 "); // 168°
-  });
-  test("direction is the hue, strength the lightness; halted is neutral", () => {
-    expect(gaugeColors("bull", false)).toEqual(GAUGE_COLORS.bull);
-    expect(gaugeColors("bear", false)).toEqual(GAUGE_COLORS.bear);
-    expect(gaugeColors("bull", true)).toBeNull();
-    // The gradient spans the dial, so a reading's end lightens with the pressure.
-    expect(GAUGE_GRADIENT).toEqual({ x1: GAUGE.cx - GAUGE.r, x2: GAUGE.cx + GAUGE.r });
-    expect(gaugeAngle(0)).toBe(150);
-    expect(gaugeAngle(100)).toBe(390);
+  test("the leading side takes the colour; halted is neutral", () => {
+    expect(gaugeTone("bull", false)).toBe("good");
+    expect(gaugeTone("bear", false)).toBe("critical");
+    expect(gaugeTone("bear", true)).toBe("halted");
+    expect(gaugeCaption("bear", false)).toBe("sell pressure");
+    expect(gaugeCaption("bull", false)).toBe("buy pressure");
     expect(pressurePhrase({ side: "bear", pressure: 74.4 })).toBe("selling pressure 74 of 100");
   });
 });

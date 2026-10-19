@@ -97,75 +97,56 @@ export function haltSentence(h: PressureHaltWire, formatTime: (ms: number) => st
 // --- The gauge ------------------------------------------------------------------------------
 
 /**
- * A 240° speedometer in a 200 × 136 box (the design canvas's Gauge): the arc opens downward,
- * from 150° (lower left) clockwise over the top to 30° (lower right); the value sits under the
- * hub.
+ * A shadcn-style radial half ring in a 200 × 116 box (owner, 2026-10-19, design canvas "Halt
+ * Watcher", option A "fill"; it replaced a 240° speedometer with a needle): a thick round-capped
+ * track from 180° (left) clockwise over the top to 360° (right), filled in proportion to the
+ * pressure, with the reading inside the ring.
  */
-export const GAUGE = { width: 200, height: 136, cx: 100, cy: 100, r: 78, start: 150, sweep: 240, needle: 58, stroke: 12 } as const;
+export const GAUGE = { width: 200, height: 116, cx: 100, cy: 100, r: 74, start: 180, sweep: 180, stroke: 24 } as const;
 
-function point(deg: number, radius: number): [number, number] {
+function point(deg: number): [number, number] {
   const a = (deg * Math.PI) / 180;
-  return [GAUGE.cx + radius * Math.cos(a), GAUGE.cy + radius * Math.sin(a)];
+  return [GAUGE.cx + GAUGE.r * Math.cos(a), GAUGE.cy + GAUGE.r * Math.sin(a)];
 }
 
-/** An SVG arc path on the gauge's radius from `a0` to `a1` degrees, clockwise. */
+/** An SVG arc path on the gauge's radius from `a0` to `a1` degrees, clockwise (≤ 180°). */
 export function gaugeArc(a0: number, a1: number): string {
-  const [x0, y0] = point(a0, GAUGE.r);
-  const [x1, y1] = point(a1, GAUGE.r);
+  const [x0, y0] = point(a0);
+  const [x1, y1] = point(a1);
   const f = (n: number) => n.toFixed(2);
-  return `M ${f(x0)} ${f(y0)} A ${GAUGE.r} ${GAUGE.r} 0 ${a1 - a0 > 180 ? 1 : 0} 1 ${f(x1)} ${f(y1)}`;
+  return `M ${f(x0)} ${f(y0)} A ${GAUGE.r} ${GAUGE.r} 0 0 1 ${f(x1)} ${f(y1)}`;
 }
 
 export interface GaugeGeometry {
   track: string;
-  /** The value arc; null at (near) zero, where a round cap would draw a dot. */
+  /** The filled arc; null at (near) zero, where a round cap would draw a dot. */
   value: string | null;
-  /** The needle's tip. */
-  needle: { x: number; y: number };
   /** The rounded 0–100 value shown. */
   label: number;
 }
 
 export function gaugeGeometry(pressure: number): GaugeGeometry {
   const v = Math.max(0, Math.min(100, Number.isFinite(pressure) ? pressure : 0)) / 100;
-  const end = gaugeAngle(pressure);
-  const [x, y] = point(end, GAUGE.needle);
   return {
     track: gaugeArc(GAUGE.start, GAUGE.start + GAUGE.sweep),
-    value: v > 0.005 ? gaugeArc(GAUGE.start, end) : null,
-    needle: { x, y },
+    value: v > 0.005 ? gaugeArc(GAUGE.start, GAUGE.start + GAUGE.sweep * v) : null,
     label: Math.round(v * 100),
   };
 }
 
 /**
- * Direction is the hue, strength the lightness (owner, 2026-10-19): bullish green, bearish red,
- * each starting dark and getting lighter as the pressure builds. These are data colours (like the
- * chart's candles), not the UI palette: the accent is not spent on them.
+ * Which colour fills the ring: the side whose volume leads the minute takes it (the server's
+ * `side`, bull when buy volume ≥ sell volume), green for buyers, red for sellers, the platform's
+ * status good/critical (the candles' colours); `halted` is the neutral grey. Each app maps the
+ * tone to its own tokens.
  */
-export const GAUGE_COLORS = {
-  bull: { from: "#1f9d5c", to: "#a8f0c6" },
-  bear: { from: "#d9433b", to: "#ffbcb6" },
-} as const;
-
-/**
- * The value arc's gradient, dark to light, laid across the WHOLE dial left to right (user space
- * `GAUGE_GRADIENT`, not the arc's own box): the arc reveals as much of it as the pressure
- * reaches, so a weak reading stays dark and only a strong one ends light. (A gradient over the
- * arc's own box would end every reading light.) Null while halted: the arc is then the neutral
- * grey of the platform's theme.
- */
-export function gaugeColors(side: "bull" | "bear", halted: boolean): { from: string; to: string } | null {
-  return halted ? null : GAUGE_COLORS[side];
+export function gaugeTone(side: "bull" | "bear", halted: boolean): "good" | "critical" | "halted" {
+  return halted ? "halted" : side === "bear" ? "critical" : "good";
 }
 
-/** The gradient's span in the gauge's coordinates: the dial's left and right edges. */
-export const GAUGE_GRADIENT = { x1: GAUGE.cx - GAUGE.r, x2: GAUGE.cx + GAUGE.r } as const;
-
-/** The needle's angle (degrees, SVG's clockwise from +x) for a pressure. */
-export function gaugeAngle(pressure: number): number {
-  const v = Math.max(0, Math.min(100, Number.isFinite(pressure) ? pressure : 0)) / 100;
-  return GAUGE.start + GAUGE.sweep * v;
+/** "buy pressure" / "sell pressure", the caption under the reading on a full-size card. */
+export function gaugeCaption(side: "bull" | "bear", halted: boolean): string {
+  return halted ? "halted" : side === "bear" ? "sell pressure" : "buy pressure";
 }
 
 /** "buying pressure 91 of 100", for the gauge's accessible name. */

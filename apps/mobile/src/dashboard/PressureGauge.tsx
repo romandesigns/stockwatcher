@@ -1,8 +1,8 @@
 import { easeOut } from "@stockwatcher/chart-core";
 import { UI } from "@stockwatcher/chart-native";
-import { GAUGE, GAUGE_GRADIENT, gaugeColors, gaugeGeometry } from "@stockwatcher/shared";
-import { useEffect, useId, useRef, useState } from "react";
-import Svg, { Circle, Defs, Line, LinearGradient, Path, Stop, Text as SvgText } from "react-native-svg";
+import { GAUGE, gaugeCaption, gaugeGeometry, gaugeTone } from "@stockwatcher/shared";
+import { useEffect, useRef, useState } from "react";
+import Svg, { Path, Text as SvgText } from "react-native-svg";
 
 import { fonts } from "../theme";
 
@@ -34,41 +34,34 @@ function useSweep(target: number, reducedMotion: boolean): number {
   return reducedMotion ? target : value;
 }
 
+const FILL = { good: UI.good, critical: UI.critical, halted: UI.textFaint } as const;
+
 /**
- * The Halt watcher's 240° speedometer for React Native (react-native-svg; the web's
- * PressureGauge, wavykit `pressure-gauge`): track, value arc, needle, 0–100 under the hub. The
- * side's gradient spans the whole dial (shared GAUGE_GRADIENT), so the arc lightens as the
- * pressure builds; halted, the arc is grey and the needle dim.
+ * The Halt watcher's gauge for React Native (react-native-svg; the web's PressureGauge, design
+ * canvas "Halt Watcher" option A "fill"): a radial half ring filled in proportion to the 0–100
+ * pressure, in the colour of the side whose volume leads (green buyers, red sellers), the reading
+ * inside the ring and "buy/sell pressure" under it. Halted: a grey fill, the frozen value shown.
  */
-export function PressureGauge({ pressure, side, halted, label, width, reducedMotion, compact = false }: { pressure: number; side: "bull" | "bear"; halted: boolean; label: string; width: number; reducedMotion: boolean; /** The one-row strip's mini dial: no needle, the value large inside the arc (unreadable under a needle at ~56 px). */ compact?: boolean }) {
-  // react-native-svg resolves url(#id) per document, but ids must still be unique per gauge.
-  const id = `hw${useId().replace(/[^a-zA-Z0-9]/g, "")}`;
+export function PressureGauge({ pressure, side, halted, label, width, reducedMotion, compact = false }: { pressure: number; side: "bull" | "bear"; halted: boolean; label: string; width: number; reducedMotion: boolean; /** The one-row strip's mini ring: no caption, the reading larger (a caption is unreadable at ~56 px). */ compact?: boolean }) {
   const shown = useSweep(Math.max(0, Math.min(100, Math.round(pressure))), reducedMotion);
   const g = gaugeGeometry(shown);
-  const colors = gaugeColors(side, halted);
+  const tone = gaugeTone(side, halted);
   const ink = halted ? UI.textFaint : UI.text;
   return (
     <Svg width={width} height={(width * GAUGE.height) / GAUGE.width} viewBox={`0 0 ${GAUGE.width} ${GAUGE.height}`} accessible accessibilityRole="image" accessibilityLabel={label}>
-      {colors && (
-        <Defs>
-          <LinearGradient id={id} gradientUnits="userSpaceOnUse" x1={GAUGE_GRADIENT.x1} y1={0} x2={GAUGE_GRADIENT.x2} y2={0}>
-            <Stop offset="0" stopColor={colors.from} />
-            <Stop offset="1" stopColor={colors.to} />
-          </LinearGradient>
-        </Defs>
-      )}
       <Path d={g.track} fill="none" stroke={UI.raised} strokeWidth={GAUGE.stroke} strokeLinecap="round" />
-      {g.value && <Path d={g.value} fill="none" stroke={colors ? `url(#${id})` : UI.textFaint} strokeOpacity={colors ? 1 : 0.55} strokeWidth={GAUGE.stroke} strokeLinecap="round" />}
+      {g.value && <Path d={g.value} fill="none" stroke={FILL[tone]} strokeOpacity={halted ? 0.55 : 1} strokeWidth={GAUGE.stroke} strokeLinecap="round" />}
       {compact ? (
-        <SvgText x={GAUGE.cx} y={118} textAnchor="middle" fill={ink} fontSize={58} fontFamily={fonts.semibold}>
+        <SvgText x={GAUGE.cx} y={101} textAnchor="middle" fill={ink} fontSize={52} fontFamily={fonts.semibold}>
           {String(g.label)}
         </SvgText>
       ) : (
         <>
-          <Line x1={GAUGE.cx} y1={GAUGE.cy} x2={g.needle.x} y2={g.needle.y} stroke={ink} strokeWidth={3} strokeLinecap="round" />
-          <Circle cx={GAUGE.cx} cy={GAUGE.cy} r={6} fill={ink} />
-          <SvgText x={GAUGE.cx} y={132} textAnchor="middle" fill={UI.text} fontSize={26} fontFamily={fonts.semibold}>
+          <SvgText x={GAUGE.cx} y={90} textAnchor="middle" fill={ink} fontSize={36} fontFamily={fonts.semibold}>
             {String(g.label)}
+          </SvgText>
+          <SvgText x={GAUGE.cx} y={110} textAnchor="middle" fill={UI.textDim} fontSize={12} fontFamily={fonts.regular}>
+            {gaugeCaption(side, halted)}
           </SvgText>
         </>
       )}
