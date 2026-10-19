@@ -50,6 +50,7 @@ services) sets `STOCKWATCHER_API_TOKEN`, `RUST_LOG`, `MARKET_DATA_MODE`, `REPLAY
 | `ALPACA_API_KEY` / `ALPACA_API_SECRET` | unset | also accepted as `APCA_API_KEY_ID` / `APCA_API_SECRET_KEY`. Without them live mode reports `not_configured` |
 | `ALPACA_STREAM_BASE` | `wss://stream.data.alpaca.markets` | provider-sim is `ws://127.0.0.1:8791` |
 | `ALPACA_STREAM_FEED` | `sip` | `sip`, `iex`, `boats`, `overnight`, or `test` (Alpaca's fake stream, labelled fixture) |
+| `ALPACA_STREAM_NIGHT_FEED` | `boats` | With the `sip` day feed: the feed during the overnight session (20:00–04:00 ET before a trading day), when SIP carries nothing. The stream reconnects on the other feed when the session changes (one connection, taking turns). `overnight`, or `none` for SIP around the clock. Needs the account's BOATS entitlement; without it the night connection is refused and the link shows down until 04:00 |
 | `LIVE_SYMBOLS` | `*` | `*` (whole market) or a comma list |
 
 Alpaca allows one stream connection per account on most plans: run live on one host only.

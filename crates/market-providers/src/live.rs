@@ -1,4 +1,4 @@
-use crate::alpaca_stream::{AlpacaStream, AlpacaStreamConfig};
+use crate::alpaca_stream::{AlpacaStream, AlpacaStreamConfig, StreamFeed};
 use crate::config::{MarketDataMode, ProviderConfig};
 use crate::{
     ClockMode, ClockState, FeedItem, MarketDataProvider, ProviderError, ProviderInfo,
@@ -74,7 +74,7 @@ const NO_CREDENTIALS: &str = "live mode needs Alpaca credentials: set ALPACA_API
 
 impl LiveProvider {
     /// The Alpaca stream from the configuration (`ALPACA_STREAM_BASE`, `ALPACA_STREAM_FEED`,
-    /// `LIVE_SYMBOLS`, credentials), or "not configured" naming what is missing. Nothing is
+    /// `ALPACA_STREAM_NIGHT_FEED`, `LIVE_SYMBOLS`, credentials), or "not configured" naming what is missing. Nothing is
     /// connected until [`MarketDataProvider::start`].
     pub fn from_config(cfg: &ProviderConfig) -> Self {
         let opts = LiveOptions::default();
@@ -87,6 +87,11 @@ impl LiveProvider {
                     creds.clone(),
                 );
                 c.channel = opts.channel;
+                // Blue Ocean overnight only pairs with SIP by day: an IEX or test day feed is a
+                // deliberate choice, and switching it to BOATS at night would change what it is.
+                if cfg.live.feed == StreamFeed::Sip {
+                    c.night_feed = cfg.live.night_feed;
+                }
                 Ok(Box::new(AlpacaStream::new(c)) as Box<dyn LiveFeed>)
             }
             (MarketDataMode::Live, None) => Err(NO_CREDENTIALS.to_string()),
