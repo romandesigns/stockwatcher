@@ -202,6 +202,7 @@ export function AxisSheet({
   scaleType,
   onScaleType,
   onOrderAt,
+  onAlertAt,
   reducedMotion,
 }: {
   open: boolean;
@@ -212,6 +213,8 @@ export function AxisSheet({
   scaleType: PriceScaleType;
   onScaleType: (t: PriceScaleType) => void;
   onOrderAt?: () => void;
+  /** Price alerts: "Alert at 2.47" (the approved design's long-press axis item). */
+  onAlertAt?: () => void;
   reducedMotion?: boolean;
 }) {
   const close = (f: () => void) => () => {
@@ -227,6 +230,17 @@ export function AxisSheet({
       reducedMotion={reducedMotion}
     >
       <View style={{ gap: 12 }}>
+        {onAlertAt && price !== null && (
+          <Pressable accessibilityRole="button" onPress={() => {
+            onClose();
+            // After this sheet closes, so two modals never animate at once.
+            setTimeout(onAlertAt, 0);
+          }} style={({ pressed }) => [s.actionRow, pressed && { backgroundColor: UI.raised }]}>
+            <Icon name="bell" color={UI.accent} size={16} />
+            <Text style={s.actionText}>{`Alert at ${formatPrice(price)}`}</Text>
+            <Chevron />
+          </Pressable>
+        )}
         {onOrderAt && price !== null && (
           <Pressable accessibilityRole="button" onPress={close(onOrderAt)} style={({ pressed }) => [s.actionRow, pressed && { backgroundColor: UI.raised }]}>
             <Text style={s.actionText}>{`Order at ${formatPrice(price)}`}</Text>

@@ -1,3 +1,4 @@
+import type { AlertPart } from "./alerts.ts";
 import { isOnePoint, type DrawingDraft, type DrawingKind, type DrawingPart } from "./drawings.ts";
 import { hitTest, type ChartModel, type HitRegion, type Point } from "./layout.ts";
 import { autoScalePrice, followLatest, isAutoPrice, manualPrice, panSlots, scalePriceRange, shiftPriceRange, slotAt, zoom, type PriceScale, type Viewport } from "./scale.ts";
@@ -67,6 +68,23 @@ import { autoScalePrice, followLatest, isAutoPrice, manualPrice, panSlots, scale
 //   point and a second tap the other (the draft follows the mouse between);
 //   a one-point drawing (level, marker) goes where the tap or drag ends.
 //
+// Price alerts (2026-10-19, the owner-approved design; alerts.ts draws and hit-tests them)
+// - Alert lines and their tags are objects like orders (ctx.hitObject reports them; the
+//   renderer asks orders first, then alerts, then drawings: the grab priority). An alert's axis
+//   tag is grabbed even on the price axis (it is the touch handle), where any other press scales
+//   price. objectDrag carries `fine` (Shift held: the renderer moves a tenth as fast);
+//   cancelDrag() (Escape) puts the dragged object back (`cancelled`).
+// - The bell beside the hover "+" is an object too ({kind: "placeAlert", y}); a tap on it
+//   emits placeAlert at that y.
+// - Mouse press and hold in the plot (ctx.holdAlert): after HOLD_RING_DELAY_MS still within the
+//   slop, holdRing shows a filling ring at the press (`start` = the press time, so the renderer
+//   animates it to full at HOLD_ALERT_MS); at HOLD_ALERT_MS, holdAlert at the press point and
+//   the press is spent (no click, no pan). Moving past the slop first is an ordinary pan, and a
+//   quick click never shows the ring. Never with a drawing tool armed or on an object.
+// - Touch keeps Robinhood's habits: a long press still scrubs. With ctx.liftChip, lifting the
+//   scrub emits liftChip at the finger (clamped to the plot): the renderer offers "Alert /
+//   + Trade" at that price for a few seconds.
+//
 // Options (constructor; all off by default, so the plain recognizer above is
 // what the unit tests pin):
 // - momentum: a touch pan released at speed keeps going and decays (iOS
@@ -116,6 +134,10 @@ export interface GestureContext {
   tradeMenu?: boolean;
   /** The object under a point (touch: true gives fingers a wider tolerance), or null. */
   hitObject?: (x: number, y: number, touch: boolean) => ObjectHit | null;
+  /** The chart takes alerts: a mouse press and hold in the plot opens one (holdRing / holdAlert). */
+  holdAlert?: boolean;
+  /** Lifting a touch scrub offers an alert or a trade at that price (liftChip). */
+  liftChip?: boolean;
 }
 
 export type GestureAction =
@@ -151,8 +173,20 @@ export type GestureAction =
   | { kind: "createDrawing"; tool: DrawingKind; a: Point; b: Point }
   /** Select an object (a drawing; an order pill), or clear the selection. */
   | { kind: "select"; target: ObjectHit | null }
-  /** Drag of an object from `from` to `to` (px). done: the pointer lifted; commit now. */
-  | { kind: "objectDrag"; target: ObjectHit; from: Point; to: Point; done: boolean }
+  /**
+   * Drag of an object from `from` to `to` (px). done: the pointer lifted; commit now. fine: Shift
+   * was held on this move (alerts move a tenth as fast). cancelled: Escape or a pointercancel put
+   * it back (`to` = `from`); nothing should be committed.
+   */
+  | { kind: "objectDrag"; target: ObjectHit; from: Point; to: Point; done: boolean; fine?: boolean; cancelled?: boolean }
+  /** The press-and-hold ring at `point`, filling from `start` (input clock) to start + HOLD_ALERT_MS; null hides it. */
+  | { kind: "holdRing"; point: Point | null; start: number }
+  /** A press held HOLD_ALERT_MS: open a new alert at this point's price. */
+  | { kind: "holdAlert"; x: number; y: number }
+  /** The bell was tapped at y: open a new alert at that price. */
+  | { kind: "placeAlert"; y: number }
+  /** A touch scrub lifted here (clamped to the plot): offer "Alert / + Trade" at this price. */
+  | { kind: "liftChip"; x: number; y: number }
   | { kind: "cancelOrder"; id: string }
   /** The place button was tapped at y: open the order ticket at that price. */
   | { kind: "placeOrder"; x: number; y: number }
@@ -165,7 +199,10 @@ export type GestureAction =
 export type HapticStyle = "selection" | "light" | "medium";
 
 /** What ctx.hitObject reports under a point. */
-export type ObjectHit = { kind: "drawing"; id: string; part: DrawingPart } | { kind: "order"; id: string; part: "drag" | "cancel" } | { kind: "place"; y: number };
+export type ObjectHit = { kind: "drawing"; id: string; part: DrawingPart } | { kind: "order"; id: string; part: "drag" | "cancel" } | { kind: "place"; y: number } | AlertPart;
+
+/** Objects a press may drag (not the buttons). */
+const draggable = (o: ObjectHit) => o.kind !== "place" && o.kind !== "placeAlert" && !(o.kind === "order" && o.part === "cancel");
 
 export interface GestureOptions {
   momentum?: boolean;
@@ -193,6 +230,10 @@ export const MOMENTUM_MIN_PX_MS = 0.25;
 export const MOMENTUM_STOP_PX_MS = 0.02;
 /** Velocity is measured over the last this-many ms of the pan, so a pause before lifting means no fling. */
 export const VELOCITY_WINDOW_MS = 80;
+/** Press and hold for an alert (mouse): the ring appears after this (so a quick click never flashes it)… */
+export const HOLD_RING_DELAY_MS = 150;
+/** …and the alert opens when it is full. */
+export const HOLD_ALERT_MS = 500;
 
 type Region = Exclude<HitRegion, "none">;
 
@@ -203,7 +244,24 @@ type Phase =
    * a double tap. obj: pressed on an object. draw: pressed with a drawing
    * tool in the plot. quiet: this press stopped a fling, so it is not a tap.
    */
-  | { k: "pending"; id: number; type: PointerKind; region: Region; pane: number | null; x0: number; y0: number; t0: number; second: boolean; obj: ObjectHit | null; draw: DrawingKind | null; quiet: boolean }
+  | {
+      k: "pending";
+      id: number;
+      type: PointerKind;
+      region: Region;
+      pane: number | null;
+      x0: number;
+      y0: number;
+      t0: number;
+      second: boolean;
+      obj: ObjectHit | null;
+      draw: DrawingKind | null;
+      quiet: boolean;
+      /** A mouse press in the plot of a chart that takes alerts: holding it opens one. */
+      hold: boolean;
+      /** The hold ring is showing. */
+      ring: boolean;
+    }
   /** free: vertical movement pans price too (see touchPricePan). */
   | { k: "pan"; id: number; type: PointerKind; lastX: number; lastY: number; free: boolean; samples: { x: number; y: number; t: number }[] }
   | { k: "drag"; id: number; target: ObjectHit; from: Point; to: Point }
@@ -254,6 +312,17 @@ export class GestureController {
     return [{ kind: "draft", draft: null }];
   }
 
+  /**
+   * Escape during an object drag: the object goes back where it was (`cancelled`), and the rest
+   * of the press does nothing until the pointer lifts. [] when nothing is being dragged.
+   */
+  cancelDrag(): GestureAction[] {
+    const p = this.phase;
+    if (p.k !== "drag") return [];
+    this.phase = { k: "ignore" };
+    return [{ kind: "objectDrag", target: p.target, from: p.from, to: p.from, done: true, cancelled: true }];
+  }
+
   /** True while a tap-placed drawing waits for its second point. */
   get isPlacing(): boolean {
     return this.placing !== null;
@@ -290,6 +359,9 @@ export class GestureController {
     if (p.k === "fling") return p.lastT;
     // Objects and drawing tools have no long press (no scrub on top of a drag).
     if (p.k === "pending" && touchLike(p.type) && !p.obj && !p.draw) d = p.t0 + LONG_PRESS_MS;
+    // A mouse hold for an alert: the ring's appearance, then the alert. The renderer pumps
+    // tick() every frame meanwhile anyway, so the ring's fill can follow its own clock.
+    if (p.k === "pending" && p.hold) d = p.ring ? p.t0 + HOLD_ALERT_MS : p.t0 + HOLD_RING_DELAY_MS;
     // While a possible second tap is down, the first one waits for its outcome.
     if (this.pendingTap && !(p.k === "pending" && p.second)) {
       const tapDue = this.pendingTap.t + DOUBLE_TAP_MS;
@@ -326,6 +398,18 @@ export class GestureController {
       p.lastT = t;
       if (dx || dy) out.push({ kind: "pan", dxSlots: dx / ctx.model.index.barSpacing, dy, ...(p.free ? { pricePan: true } : {}) });
       if (Math.hypot(p.vx, p.free ? p.vy : 0) < MOMENTUM_STOP_PX_MS) this.phase = { k: "idle" };
+      return out;
+    }
+    if (p.k === "pending" && p.hold) {
+      if (!p.ring && t - p.t0 >= HOLD_RING_DELAY_MS) {
+        p.ring = true;
+        out.push({ kind: "holdRing", point: { x: p.x0, y: p.y0 }, start: p.t0 });
+      }
+      if (t - p.t0 >= HOLD_ALERT_MS) {
+        // Spent: the release that follows is neither a click nor the end of a pan.
+        this.phase = { k: "ignore" };
+        out.push({ kind: "holdRing", point: null, start: p.t0 }, { kind: "holdAlert", x: p.x0, y: p.y0 });
+      }
       return out;
     }
     if (p.k === "pending" && touchLike(p.type) && !p.obj && !p.draw && t - p.t0 >= LONG_PRESS_MS) {
@@ -430,12 +514,16 @@ export class GestureController {
     // sit inside the plot) takes it.
     // Shift+drag with a mouse measures, whatever the tool.
     const draw: DrawingKind | null = region !== "plot" ? null : e.pointerType === "mouse" && e.shiftKey ? "measure" : (ctx.tool ?? null);
-    const obj = draw || region === "priceAxis" || region === "timeAxis" || region === "paneBorder" ? null : (ctx.hitObject?.(e.x, e.y, touchLike(e.pointerType)) ?? null);
+    const hit = draw || region === "timeAxis" || region === "paneBorder" ? null : (ctx.hitObject?.(e.x, e.y, touchLike(e.pointerType)) ?? null);
+    // On the price axis only an alert's tag (its touch handle) is an object; any other press
+    // there scales price, as before.
+    const obj = region === "priceAxis" && hit?.kind !== "alert" ? null : hit;
     if (obj || draw) {
       second = false;
       this.pendingTap = null;
     }
-    this.phase = { k: "pending", id: e.pointerId, type: e.pointerType, region, pane: downHit.pane, x0: e.x, y0: e.y, t0: e.t, second, obj, draw, quiet };
+    const hold = !!ctx.holdAlert && e.pointerType === "mouse" && region === "plot" && !obj && !draw && !quiet;
+    this.phase = { k: "pending", id: e.pointerId, type: e.pointerType, region, pane: downHit.pane, x0: e.x, y0: e.y, t0: e.t, second, obj, draw, quiet, hold, ring: false };
     return out;
   }
 
@@ -457,15 +545,21 @@ export class GestureController {
         const dy = e.y - p.y0;
         const slop = p.type === "mouse" ? MOUSE_SLOP_PX : TOUCH_SLOP_PX;
         if (Math.hypot(dx, dy) < slop) return p.type === "mouse" ? hover(ctx, e.x, e.y) : [];
-        // Past the slop: whatever this becomes, it is not a tap.
+        // Past the slop: whatever this becomes, it is not a tap, nor a hold for an alert.
         if (p.second) this.pendingTap = null;
+        if (p.ring) {
+          p.hold = false;
+          p.ring = false;
+          return [{ kind: "holdRing", point: null, start: p.t0 }, ...this.move(e, ctx)];
+        }
+        p.hold = false;
         if (p.draw) {
           const a = this.placing?.a ?? { x: p.x0, y: p.y0 };
           this.placing = null;
           this.phase = { k: "draw", id: p.id, tool: p.draw, a, b: { x: e.x, y: e.y } };
           return [{ kind: "draft", draft: draftOf(p.draw, a, { x: e.x, y: e.y }) }];
         }
-        if (p.obj && p.obj.kind !== "place" && !(p.obj.kind === "order" && p.obj.part === "cancel")) {
+        if (p.obj && draggable(p.obj)) {
           const from = { x: p.x0, y: p.y0 };
           const to = { x: e.x, y: e.y };
           this.phase = { k: "drag", id: p.id, target: p.obj, from, to };
@@ -509,7 +603,7 @@ export class GestureController {
       case "drag": {
         if (e.pointerId !== p.id) return [];
         p.to = { x: e.x, y: e.y };
-        return [{ kind: "objectDrag", target: p.target, from: p.from, to: p.to, done: false }];
+        return [{ kind: "objectDrag", target: p.target, from: p.from, to: p.to, done: false, ...(e.shiftKey ? { fine: true } : {}) }];
       }
       case "draw": {
         if (e.pointerId !== p.id) return [];
@@ -566,6 +660,9 @@ export class GestureController {
       case "pending": {
         if (e.pointerId !== p.id) return [];
         this.phase = { k: "idle" };
+        // Let go before the ring filled: an ordinary mouse click on empty chart (a hold is only
+        // ever armed for one: no object, no tool), so the selection clears as below.
+        if (p.ring) return [{ kind: "holdRing", point: null, start: p.t0 }, ...(ctx.hitObject ? [{ kind: "select" as const, target: null }] : [])];
         if (p.quiet) return [];
         if (p.draw) return this.tapDraw(p.draw, { x: p.x0, y: p.y0 });
         if (p.obj) return this.tapObject(p.obj);
@@ -616,10 +713,16 @@ export class GestureController {
       }
       case "fling":
         return [];
-      case "scrub":
+      case "scrub": {
         if (e.pointerId !== p.id) return [];
         this.phase = { k: "idle" };
-        return endScrub();
+        if (!ctx.liftChip) return endScrub();
+        // Where the finger left the chart, clamped into the plot like the scrub itself.
+        const plot = ctx.model.geometry.plot;
+        const x = Math.min(plot.x + plot.w, Math.max(plot.x, e.x));
+        const y = Math.min(plot.y + plot.h - 1, Math.max(plot.y + 1, e.y));
+        return [...endScrub(), { kind: "liftChip", x, y }];
+      }
       case "pinch":
         if (e.pointerId === p.a || e.pointerId === p.b) this.phase = this.pointers.size ? { k: "ignore" } : { k: "idle" };
         return [];
@@ -638,11 +741,12 @@ export class GestureController {
     const wasScrub = p.k === "scrub" && p.id === e.pointerId;
     const wasDraw = p.k === "draw" && p.id === e.pointerId;
     // A cancelled object drag snaps back: done with the original point.
-    const dragBack: GestureAction[] = p.k === "drag" && p.id === e.pointerId ? [{ kind: "objectDrag", target: p.target, from: p.from, to: p.from, done: true }] : [];
+    const dragBack: GestureAction[] = p.k === "drag" && p.id === e.pointerId ? [{ kind: "objectDrag", target: p.target, from: p.from, to: p.from, done: true, cancelled: true }] : [];
+    const ringOff: GestureAction[] = p.k === "pending" && p.ring && p.id === e.pointerId ? [{ kind: "holdRing", point: null, start: p.t0 }] : [];
     // A cancelled pane resize keeps the height it reached, and is finished so the host persists it.
     const resized: GestureAction[] = p.k === "paneResize" && p.id === e.pointerId ? [{ kind: "resizePane", pane: p.pane, dy: 0, done: true }] : [];
     if (p.k !== "idle" && p.k !== "fling") this.phase = this.pointers.size ? { k: "ignore" } : { k: "idle" };
-    return [...(wasScrub ? endScrub() : []), ...(wasDraw ? [{ kind: "draft" as const, draft: null }] : []), ...dragBack, ...resized];
+    return [...(wasScrub ? endScrub() : []), ...(wasDraw ? [{ kind: "draft" as const, draft: null }] : []), ...dragBack, ...resized, ...ringOff];
   }
 
   /** A tap with a drawing tool: one-point tools place at once; two-point tools take two taps. */
@@ -659,6 +763,7 @@ export class GestureController {
 
   private tapObject(obj: ObjectHit): GestureAction[] {
     if (obj.kind === "place") return [{ kind: "placeOrder", x: 0, y: obj.y }];
+    if (obj.kind === "placeAlert") return [...this.haptic("selection"), { kind: "placeAlert", y: obj.y }];
     if (obj.kind === "order" && obj.part === "cancel") return [...this.haptic("medium"), { kind: "cancelOrder", id: obj.id }];
     return [...this.haptic("selection"), { kind: "select", target: obj }];
   }

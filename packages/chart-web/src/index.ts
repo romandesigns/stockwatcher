@@ -8,7 +8,9 @@
 // foreground, text-text-faint, text-warning, text-critical, bg-bg-row,
 // bg-bg-raised),
 // and optionally `--chart-*` CSS variables to theme the canvas (theme.ts).
-export { CandleChart, type CandleChartProps, type ChartSeriesLike, type ChartTrading } from "./CandleChart.tsx";
+export { CandleChart, type CandleChartProps, type ChartAlerts, type ChartSeriesLike, type ChartTrading } from "./CandleChart.tsx";
+export { QuickAlertCard, type QuickAlertCardProps, type QuickAlertDraft } from "./QuickAlertCard.tsx";
+export { HoldRing, type HoldRingProps } from "./HoldRing.tsx";
 export { PriceAxisMenu, PRICE_SCALE_LABELS, type PriceAxisMenuProps } from "./PriceAxisMenu.tsx";
 export { CandleInspector, type CandleInspectorProps } from "./CandleInspector.tsx";
 export { ReplayControls, DEFAULT_SPEEDS, speedLabel, type ReplayControlsProps } from "./ReplayControls.tsx";

@@ -3,7 +3,8 @@
 // Gesture Handler touches, and the chart's own toolbar and sheets
 // (indicators, price axis menu, simulated order ticket), so a native screen
 // gets the whole chart from one component, like chart-web's CandleChart.
-export { CandleChart, type CandleChartProps, type ChartSeriesLike, type ChartTrading } from "./CandleChart.tsx";
+export { CandleChart, type CandleChartProps, type ChartAlerts, type ChartSeriesLike, type ChartTrading } from "./CandleChart.tsx";
+export { QuickAlertSheet, type QuickAlertDraft } from "./QuickAlertSheet.tsx";
 export { drawDisplayList, recordPicture } from "./drawSkia.ts";
 export { AxisSheet, IndicatorSheet, OrderTicketSheet, Sheet } from "./sheets.tsx";
 export { ChartSettingsPanel, ChartSettingsReset, chartSettingsSection } from "./ChartSettingsPanel.tsx";

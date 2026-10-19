@@ -178,6 +178,16 @@ export interface ChartTheme {
   onOrder: string;
   /** The position line (average price). */
   position: string;
+  /**
+   * Price alerts (alerts.ts): the dashed line and the price tag on the axis in the accent (an
+   * alert is a thing you set to draw your eye later), the tag's text on it; the line's label
+   * on a raised neutral tag; muted (snoozed, cooling) at half strength.
+   */
+  alert: string;
+  alertMuted: string;
+  onAlert: string;
+  alertLabelBg: string;
+  alertLabelText: string;
   /** A trading halt's shading, and its label and badge. */
   halt: string;
   haltText: string;

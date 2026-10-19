@@ -1,6 +1,11 @@
 import { Canvas, Picture } from "@shopify/react-native-skia";
 import {
   applyGesture,
+  alertDragDeletes,
+  alertDragPrice,
+  hitAlert,
+  type AlertLayer,
+  type ChartAlert,
   emptyHistory,
   record,
   redo,
@@ -101,6 +106,7 @@ import { DrawingToolbox } from "./DrawingToolbox.tsx";
 import { PositionPlanPanel } from "./PositionPlanPanel.tsx";
 import { AxisSheet, IndicatorSheet, LayersSheet, OrderTicketSheet, QUICK_TRADE_SIZES, QuickTradeSheet, SCALE_LABELS } from "./sheets.tsx";
 import { useTween } from "./useTween.ts";
+import { QuickAlertSheet, type QuickAlertDraft } from "./QuickAlertSheet.tsx";
 import { TimeframeWheel } from "./TimeframeWheel.tsx";
 import { Icon, playHaptic, ToolButton, ToolIcon, UI } from "./ui.tsx";
 
@@ -186,6 +192,20 @@ export interface CandleChartProps {
   haptics?: boolean;
   label?: string;
   style?: StyleProp<ViewStyle>;
+  /** Price alerts on this symbol (lines with 44 pt handles, the lift chip, the axis sheet's "Alert at"). Absent = off. */
+  alerts?: ChartAlerts | null;
+}
+
+/** What the host wires for price alerts (chart-web's ChartAlerts; the chart never talks to a server). */
+export interface ChartAlerts {
+  /** This symbol's price alerts still watching, as lines. */
+  lines: readonly ChartAlert[];
+  onCreate: (draft: QuickAlertDraft) => void;
+  /** The quick sheet's "More options": the host's full sheet, prefilled. */
+  onMore?: (draft: QuickAlertDraft) => void;
+  onMove: (id: string, price: number, from: number) => void;
+  /** The handle dragged off the right edge. */
+  onDelete: (id: string) => void;
 }
 
 /** Height the top-left readout takes, which overlay legends start below. */
@@ -255,7 +275,14 @@ export function CandleChart({
   onPaneHeightsChange,
   label,
   style,
+  alerts = null,
 }: CandleChartProps) {
+  // Price alerts: a line being dragged by its handle (drawn at its new price until the lift), and
+  // the quick sheet's draft (keyed per opening).
+  const [alertDrag, setAlertDrag] = useState<{ id: string; price: number; deleting: boolean } | null>(null);
+  const [quickAlert, setQuickAlert] = useState<{ key: number; draft: QuickAlertDraft } | null>(null);
+  const alertDragRef = useRef<{ id: string; price: number; deleting: boolean } | null>(null);
+  const openQuickAlert = (price: number) => setQuickAlert((q) => ({ key: (q?.key ?? 0) + 1, draft: { price, dir: last === null || price >= last ? "above" : "below" } }));
   const [size, setSize] = useState<Size>({ width: 0, height: 0 });
   const onLayout = (e: LayoutChangeEvent) => {
     const { width, height } = e.nativeEvent.layout;
@@ -396,6 +423,8 @@ export function CandleChart({
   }, [drawings, drag, measurement, visibility.drawings]);
   const selectedDrawing = selected?.kind === "drawing" ? selected.id : null;
   const showTrading = !!trading && visibility.trading;
+  const alertLines = alerts?.lines;
+  const alertLayer: AlertLayer | null = useMemo(() => (alertLines ? { alerts: alertLines, dragging: alertDrag, bellY: null, last } : null), [alertLines, alertDrag, last]);
   const volumeHeight = Math.round(useTween(settings.volume ? (options?.volumeHeight ?? DEFAULT_CHART_OPTIONS.volumeHeight) : 0, reducedMotion));
   const chartStyle = useMemo(() => ({ grid: settings.grid, sessionShading: settings.sessionShading, sessionBreaks: settings.sessionBreaks, highLow: settings.highLow }), [settings.grid, settings.sessionShading, settings.sessionBreaks, settings.highLow]);
 
@@ -422,6 +451,7 @@ export function CandleChart({
       selectedDrawing,
       draft,
       trading: showTrading ? { orders, position, last, dragging: drag?.order ?? null, placeY: null } : null,
+      alerts: alertLayer,
       context,
       now: clockNow,
       paneHeights,
@@ -430,7 +460,7 @@ export function CandleChart({
       baselinePrice,
       extendedHours: settings.extendedHours,
     }),
-    [timeframe, series, slots, inspectT, pointer, options, volumeHeight, layers.profile, scaleType, indicatorResults, shownDrawings, selectedDrawing, draft, showTrading, orders, position, last, drag, context, clockNow, paneHeights, inspector, settings.chartType, chartStyle, baselinePrice, settings.extendedHours],
+    [timeframe, series, slots, inspectT, pointer, options, volumeHeight, layers.profile, scaleType, indicatorResults, shownDrawings, selectedDrawing, draft, showTrading, orders, position, last, drag, alertLayer, context, clockNow, paneHeights, inspector, settings.chartType, chartStyle, baselinePrice, settings.extendedHours],
   );
   const model = useMemo(() => computeChartModel(state, vp, size), [state, vp, size]);
 
@@ -462,9 +492,14 @@ export function CandleChart({
     (m: ChartModel) =>
     (x: number, y: number, touch: boolean): ObjectHit | null => {
       const tol = touch ? DRAWING_HIT_PX.touch : DRAWING_HIT_PX.mouse;
+      // Grab priority (approved design): orders and positions, then alerts (their 44 pt handle), then drawings.
       if (state.trading) {
         const t = hitTrading(m, state.trading, x, y, tol);
         if (t) return t;
+      }
+      if (alertLayer) {
+        const a = hitAlert(m, alertLayer, x, y, tol, touch);
+        if (a) return a;
       }
       if (!visibility.drawings) return null;
       const d = hitDrawing(m, drawings, x, y, tol, selectedDrawing);
@@ -473,6 +508,27 @@ export function CandleChart({
 
   const onObjectDrag = (a: Extract<GestureAction, { kind: "objectDrag" }>, m: ChartModel) => {
     const t = a.target;
+    if (t.kind === "alert") {
+      const line = alerts?.lines.find((l) => l.id === t.id);
+      if (!line || !alerts) return;
+      const price = alertDragPrice(m, line.price, a.to.y - a.from.y) ?? line.price;
+      const deleting = !a.cancelled && alertDragDeletes(m, a.from, a.to);
+      if (!a.done) {
+        // A light tick at each price step (and one on entering the delete zone), the design's haptics.
+        const prev = alertDragRef.current;
+        if (haptics && prev && (prev.price !== price || prev.deleting !== deleting)) playHaptic(deleting !== prev.deleting ? "medium" : "selection");
+        alertDragRef.current = { id: t.id, price, deleting };
+        setAlertDrag({ id: t.id, price, deleting });
+        return;
+      }
+      alertDragRef.current = null;
+      setAlertDrag(null);
+      if (a.cancelled) return;
+      if (deleting) alerts.onDelete(t.id);
+      else if (price !== line.price) alerts.onMove(t.id, price, line.price);
+      if (haptics) playHaptic("light");
+      return;
+    }
     if (t.kind === "drawing") {
       const original = drawings.find((d) => d.id === t.id);
       if (!original) return;
@@ -609,7 +665,8 @@ export function CandleChart({
   const showTradeChip = (c: { x: number; y: number; price: number }) => {
     if (chipTimer.current) clearTimeout(chipTimer.current);
     setTradeChip(c);
-    chipTimer.current = setTimeout(() => setTradeChip(null), 5000);
+    // 4 s (the approved design): long enough to reach, short enough not to linger over the chart.
+    chipTimer.current = setTimeout(() => setTradeChip(null), 4000);
   };
   useEffect(() => () => {
     if (chipTimer.current) clearTimeout(chipTimer.current);
@@ -724,7 +781,7 @@ export function CandleChart({
       if (gestures.state === "scrub") for (const a of acts) if (a.kind === "crosshair" && a.point) lastScrub.current = a.point;
       l.apply(acts, l.ctx.model);
     }
-    if (wasScrub && gestures.state !== "scrub" && lastScrub.current && trading && l.ctx.model.price) {
+    if (wasScrub && gestures.state !== "scrub" && lastScrub.current && (trading || alerts) && l.ctx.model.price) {
       const pt = lastScrub.current;
       showTradeChip({ x: pt.x, y: pt.y, price: snapPrice(yPrice(l.ctx.model.price, pt.y)) });
     }
@@ -884,20 +941,43 @@ export function CandleChart({
             exiting={FadeOut.duration(120).reduceMotion(ReduceMotion.System)}
             style={[s.chipWrap, { top: Math.max(model.geometry.plot.y, tradeChip.y - 15), right: model.options.priceAxisWidth + 6 }]}
           >
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={`Trade at ${formatPrice(tradeChip.price)}`}
-              hitSlop={8}
-              onPress={() => {
-                const c = tradeChip;
-                clearTradeChip();
-                if (haptics) playHaptic("light");
-                setSheet({ kind: "quick", price: c.price, x: c.x, y: c.y });
-              }}
-              style={({ pressed }) => [s.chip, pressed && { opacity: 0.85 }]}
-            >
-              <Text style={s.chipText}>{`+ ${formatPrice(tradeChip.price)}`}</Text>
-            </Pressable>
+            {/* "Alert / + Trade" at the lifted price (approved design, "1 · Long press, lift, tap"). */}
+            <View style={s.chipRow}>
+              <Text style={s.chipPrice}>{formatPrice(tradeChip.price)}</Text>
+              {alerts && (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`Alert at ${formatPrice(tradeChip.price)}`}
+                  hitSlop={8}
+                  onPress={() => {
+                    const c = tradeChip;
+                    clearTradeChip();
+                    if (haptics) playHaptic("light");
+                    openQuickAlert(c.price);
+                  }}
+                  style={({ pressed }) => [s.chip, pressed && { opacity: 0.85 }]}
+                >
+                  <Icon name="bell" color={UI.accentFg} size={14} />
+                  <Text style={s.chipText}>Alert</Text>
+                </Pressable>
+              )}
+              {trading && (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`Trade at ${formatPrice(tradeChip.price)}`}
+                  hitSlop={8}
+                  onPress={() => {
+                    const c = tradeChip;
+                    clearTradeChip();
+                    if (haptics) playHaptic("light");
+                    setSheet({ kind: "quick", price: c.price, x: c.x, y: c.y });
+                  }}
+                  style={({ pressed }) => [s.chip, s.chipQuiet, pressed && { opacity: 0.85 }]}
+                >
+                  <Text style={[s.chipText, { color: UI.text }]}>+ Trade</Text>
+                </Pressable>
+              )}
+            </View>
           </Animated.View>
         )}
         {!auto && model.price && (
@@ -956,6 +1036,20 @@ export function CandleChart({
         onProfileBinChange={onProfileBinChange}
       />
       <IndicatorSheet open={sheet.kind === "indicators"} onClose={() => setSheet({ kind: "none" })} indicators={indicatorSpecs} onChange={setIndicators} seriesColors={[theme.series1, theme.series2, theme.series3]} reducedMotion={reducedMotion} />
+      {alerts && quickAlert && (
+        <QuickAlertSheet
+          key={quickAlert.key}
+          open
+          onClose={() => setQuickAlert(null)}
+          symbol={symbol}
+          draft={quickAlert.draft}
+          last={last}
+          onCreate={alerts.onCreate}
+          onMore={alerts.onMore}
+          haptics={haptics}
+          reducedMotion={reducedMotion}
+        />
+      )}
       <AxisSheet
         open={sheet.kind === "axis"}
         onClose={() => setSheet({ kind: "none" })}
@@ -965,6 +1059,7 @@ export function CandleChart({
         scaleType={scaleType}
         onScaleType={setScaleType}
         onOrderAt={trading && sheet.kind === "axis" && sheet.price !== null ? () => setSheet({ kind: "ticket", price: sheet.price }) : undefined}
+        onAlertAt={alerts && sheet.kind === "axis" && sheet.price !== null ? () => openQuickAlert(sheet.price!) : undefined}
         reducedMotion={reducedMotion}
       />
       {trading && (
@@ -1020,7 +1115,10 @@ const s = StyleSheet.create({
   latest: { position: "absolute" },
   readout: { position: "absolute", top: 4 },
   chipWrap: { position: "absolute" },
-  chip: { height: 30, paddingHorizontal: 12, borderRadius: 15, backgroundColor: UI.accent, alignItems: "center", justifyContent: "center", shadowColor: "#000", shadowOpacity: 0.35, shadowRadius: 6, shadowOffset: { width: 0, height: 2 }, elevation: 5 },
+  chipRow: { flexDirection: "row", alignItems: "center", gap: 6, padding: 4, paddingLeft: 10, borderRadius: 20, backgroundColor: UI.panel, shadowColor: "#000", shadowOpacity: 0.35, shadowRadius: 6, shadowOffset: { width: 0, height: 2 }, elevation: 5 },
+  chipPrice: { color: UI.text, fontSize: 13, fontWeight: "600", fontVariant: ["tabular-nums"] },
+  chipQuiet: { backgroundColor: UI.raised },
+  chip: { height: 32, flexDirection: "row", gap: 5, paddingHorizontal: 12, borderRadius: 16, backgroundColor: UI.accent, alignItems: "center", justifyContent: "center", shadowColor: "#000", shadowOpacity: 0.35, shadowRadius: 6, shadowOffset: { width: 0, height: 2 }, elevation: 5 },
   chipText: { color: UI.accentFg, fontSize: 13, fontWeight: "700", fontVariant: ["tabular-nums"] },
   indicators: { flexDirection: "row", gap: 3 },
   count: { color: UI.text, fontSize: 11, fontVariant: ["tabular-nums"] },

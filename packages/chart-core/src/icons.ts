@@ -119,7 +119,10 @@ export type IconName =
   | "sidebarCollapse"
   | "sidebarExpand"
   | "screen"
-  | "gauge";
+  | "gauge"
+  | "bell"
+  | "plus"
+  | "more";
 
 export const ICONS: Readonly<Record<IconName, IconDef>> = {
   // Drawing tools: the drawn object is primary, its handles and fills secondary.
@@ -225,6 +228,12 @@ export const ICONS: Readonly<Record<IconName, IconDef>> = {
   screen: icon([S("M2.5 3h11v7.5h-11z", { paint: "fill" }), P("M3.5 2.5h9a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1zM8 11v2.5M5.5 13.5h5")]),
   // The Halt watcher (dashboard pressure gauges): the dial soft, the needle and its hub crisp.
   gauge: icon([S("M2.5 11.5a5.5 5.5 0 0 1 11 0"), P("M8 11.5 11 6.5", { width: 1.6 }), P(circlePath(8, 11.5, 1.3), { paint: "fill" })]),
+  // Price alerts (2026-10-19, the approved design's bell): its body soft, outline and clapper crisp.
+  bell: icon([S("M4 11.5V7.5a4 4 0 0 1 8 0v4l1 1.5H3z", { paint: "fill" }), P("M4 11.5V7.5a4 4 0 0 1 8 0v4l1 1.5H3z"), P("M6.5 14.5h3")], 1.4),
+  // "New": the cross crisp on a soft disc (the alerts header's add button).
+  plus: icon([S(circlePath(8, 8, 6.5), { paint: "fill" }), P("M8 4.5v7M4.5 8h7")], 1.6),
+  // Row menus (an alert's options): three dots, the middle one primary.
+  more: icon([S(circlePath(3, 8, 1.4), { paint: "fill" }), P(circlePath(8, 8, 1.4), { paint: "fill" }), S(circlePath(13, 8, 1.4), { paint: "fill" })]),
 };
 
 export const ICON_NAMES = Object.keys(ICONS) as IconName[];

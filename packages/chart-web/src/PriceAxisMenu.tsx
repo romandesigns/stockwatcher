@@ -31,6 +31,8 @@ export interface PriceAxisMenuProps {
   finalFocus?: RefObject<HTMLElement | null>;
   /** With simulated trading: an item opening the order ticket at the menu's price (touch reaches the ticket here). */
   trade?: { onBuyAt: () => void };
+  /** With price alerts: "Alert at 2.47…" (the menu's price). */
+  alert?: { price: string; onAlertAt: () => void };
 }
 
 /**
@@ -40,7 +42,7 @@ export interface PriceAxisMenuProps {
  * anchor), and it is a Base UI menu, so arrow keys, Enter, Escape and
  * type-ahead work and focus returns to the chart.
  */
-export function PriceAxisMenu({ open, onOpenChange, anchor, scaleType, onScaleTypeChange, autoScaled, onAutoScale, finalFocus, trade }: PriceAxisMenuProps) {
+export function PriceAxisMenu({ open, onOpenChange, anchor, scaleType, onScaleTypeChange, autoScaled, onAutoScale, finalFocus, trade, alert }: PriceAxisMenuProps) {
   const virtual = useMemo(() => {
     if (!anchor) return null;
     const { x, y } = anchor;
@@ -50,9 +52,14 @@ export function PriceAxisMenu({ open, onOpenChange, anchor, scaleType, onScaleTy
   return (
     <DropdownMenu open={open && virtual !== null} onOpenChange={(next) => onOpenChange(next)}>
       <DropdownMenuContent anchor={virtual} side="bottom" align="end" sideOffset={2} finalFocus={finalFocus} aria-label="Price axis">
-        {trade && (
+        {(trade || alert) && (
           <>
-            <DropdownMenuItem onClick={trade.onBuyAt}>Order at this price…</DropdownMenuItem>
+            {alert && (
+              <DropdownMenuItem onClick={alert.onAlertAt}>
+                Alert at <span className="font-mono">{alert.price}</span>…
+              </DropdownMenuItem>
+            )}
+            {trade && <DropdownMenuItem onClick={trade.onBuyAt}>Order at this price…</DropdownMenuItem>}
             <DropdownMenuSeparator />
           </>
         )}
