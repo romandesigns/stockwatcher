@@ -111,11 +111,20 @@ pub enum Condition {
     Luld { side: MoveDir, pct: f64 },
     /// A new high of the trading day (an eligible trade above every earlier one since 04:00).
     HighOfDay,
+    /// The Halt watcher's pressure (crate::pressure, 0–100) reaches `min` on the buy side, the
+    /// sell side, or either. Scored once a second for the symbols such an alert watches.
+    Pressure { side: MoveDir, min: u8 },
 }
 
 impl Condition {
     pub fn is_halt(&self) -> bool {
         matches!(self, Condition::Halt)
+    }
+
+    /// Re-arms on the gap alone: there is no fire price for "moved back 0.5%" (a halt, a
+    /// pressure reading).
+    pub fn rearms_on_gap(&self) -> bool {
+        matches!(self, Condition::Halt | Condition::Pressure { .. })
     }
 }
 
@@ -221,7 +230,15 @@ fn parse_condition(v: &Value) -> Option<Condition> {
             })
         }
         "hod" => Some(Condition::HighOfDay),
-        // "pressure" (Halt watcher) is not evaluated yet: that panel does not exist on main.
+        "pressure" => {
+            let min = int(o.get("min")).filter(|m| (1..=100).contains(m))? as u8;
+            let side = match o.get("side").and_then(Value::as_str) {
+                Some("sell") => MoveDir::Down,
+                Some("either") => MoveDir::Either,
+                _ => MoveDir::Up,
+            };
+            Some(Condition::Pressure { side, min })
+        }
         _ => None,
     }
 }
@@ -445,7 +462,7 @@ mod tests {
             "a2": {"symbol": "SAFX", "rule": {"kind": "move", "dir": "either", "pct": 5, "window": "15m"}},
             "bad1": {"symbol": "1BAD", "rule": {"kind": "price", "price": 2}},
             "bad2": {"symbol": "OK", "rule": {"kind": "price", "price": -1}},
-            "bad3": {"symbol": "OK", "rule": {"kind": "pressure", "min": 80}},
+            "bad3": {"symbol": "OK", "rule": {"kind": "pressure", "min": 0}},
             "bad4": "junk",
         });
         let rules = parse_rules(Some(&v));

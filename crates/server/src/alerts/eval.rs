@@ -96,6 +96,15 @@ pub enum Input {
         up: Option<f64>,
         down: Option<f64>,
     },
+    /// The Halt watcher's pressure for a symbol a pressure alert watches (crate::pressure),
+    /// scored once a second at the market clock `ts`; `bull` = buy side.
+    Pressure {
+        symbol: String,
+        pressure: u8,
+        bull: bool,
+        ts: i64,
+        session: Option<(NaiveDate, SessionKind)>,
+    },
 }
 
 impl Input {
@@ -104,7 +113,8 @@ impl Input {
             Input::Trade { symbol, .. }
             | Input::Corrected { symbol, .. }
             | Input::Status { symbol, .. }
-            | Input::Luld { symbol, .. } => symbol,
+            | Input::Luld { symbol, .. }
+            | Input::Pressure { symbol, .. } => symbol,
         }
     }
 }
@@ -445,7 +455,7 @@ impl Evaluator {
             }
             if st.status == Status::Cooling
                 && st.until.is_some_and(|u| now >= u)
-                && (st.moved_back || rule.condition.is_halt())
+                && (st.moved_back || rule.condition.rearms_on_gap())
             {
                 self.rearm(&id, st);
             }
@@ -513,8 +523,74 @@ impl Evaluator {
                 }
                 sym.luld = up.zip(down);
             }
+            Input::Pressure {
+                symbol,
+                pressure,
+                bull,
+                ts,
+                session,
+            } => self.on_pressure(&symbol, pressure, bull, ts, session, now, &mut out),
         }
         out
+    }
+
+    /// A Halt watcher reading (once a second for a watched symbol): an edge at the alert's
+    /// minimum on its side. Not stale-checked (the reading is the market's own, at its clock);
+    /// held while halted like every other non-halt alert.
+    #[allow(clippy::too_many_arguments)]
+    fn on_pressure(
+        &mut self,
+        symbol: &str,
+        pressure: u8,
+        bull: bool,
+        ts: i64,
+        session: Option<(NaiveDate, SessionKind)>,
+        now: i64,
+        out: &mut Vec<Outcome>,
+    ) {
+        let halted = self.syms[symbol].halted;
+        for id in self.ids_of(symbol) {
+            let rule = self.rules[&id].clone();
+            let Condition::Pressure { side, min } = rule.condition else {
+                continue;
+            };
+            let Some(mut st) = self.states.get(&id).cloned() else {
+                continue;
+            };
+            if st.status == Status::Cooling && st.until.is_some_and(|u| now >= u) {
+                self.rearm(&id, st);
+                st = self.states[&id].clone();
+            }
+            let side_ok = match side {
+                MoveDir::Up => bull,
+                MoveDir::Down => !bull,
+                MoveDir::Either => true,
+            };
+            let met = self.edge(&id, side_ok && pressure >= min);
+            if !met || !self.live(&id, now) || !session_ok(&rule, session) {
+                continue;
+            }
+            let text = format!(
+                "{} pressure reached {pressure} (Halt watcher)",
+                if bull { "Buy" } else { "Sell" }
+            );
+            self.decide(
+                &id, &rule, st, ts, None, bull, text, false, halted, false, now, out,
+            );
+        }
+    }
+
+    /// Symbols with a pressure alert: the market scores only these for the evaluator.
+    pub fn pressure_symbols(&self) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .rules
+            .values()
+            .filter(|r| matches!(r.condition, Condition::Pressure { .. }))
+            .map(|r| r.symbol.clone())
+            .collect();
+        v.sort();
+        v.dedup();
+        v
     }
 
     fn ids_of(&self, symbol: &str) -> Vec<String> {
@@ -578,7 +654,7 @@ impl Evaluator {
             let Some(mut st) = self.states.get(&id).cloned() else {
                 continue;
             };
-            if rule.condition.is_halt() {
+            if rule.condition.rearms_on_gap() {
                 continue;
             }
             // Cooling: watch for the move back, and re-arm once the gap has passed too.
@@ -743,7 +819,7 @@ impl Evaluator {
                 };
                 Some((edge, up_met, text))
             }
-            Condition::Halt => None,
+            Condition::Halt | Condition::Pressure { .. } => None,
         }
     }
 
@@ -1508,6 +1584,45 @@ mod tests {
             2,
             "the seeded last price makes this a cross, the seeded high a new high"
         );
+    }
+
+    #[test]
+    fn pressure_fires_on_the_edge_and_rearms_on_the_gap() {
+        let t0 = et(10, 0, 0);
+        let r = rule(
+            "p",
+            Condition::Pressure {
+                side: MoveDir::Up,
+                min: 80,
+            },
+            Fire::Every { gap_min: 5 },
+        );
+        let mut e = ev(vec![r]);
+        assert_eq!(e.pressure_symbols(), vec!["XLAB".to_string()]);
+        let p = |v: u8, bull: bool, t: i64| Input::Pressure {
+            symbol: "XLAB".into(),
+            pressure: v,
+            bull,
+            ts: t,
+            session: sess(t),
+        };
+        assert!(e.on_input(p(70, true, t0), t0, &NO_VIEW).is_empty());
+        let o = e.on_input(p(82, true, t0 + 1000), t0 + 1000, &NO_VIEW);
+        assert!(
+            matches!(&o[..], [Outcome::Fired { text, .. }] if text == "Buy pressure reached 82 (Halt watcher)")
+        );
+        // Still high: no new edge. Sell-side pressure never counts for a buy alert.
+        assert!(
+            e.on_input(p(90, true, t0 + 2000), t0 + 2000, &NO_VIEW)
+                .is_empty()
+        );
+        assert!(
+            e.on_input(p(95, false, t0 + 3000), t0 + 3000, &NO_VIEW)
+                .is_empty()
+        );
+        // After the gap, a new edge fires again (no price to move back).
+        let t1 = t0 + 7 * MIN_MS;
+        assert!(e.on_input(p(85, true, t1), t1, &NO_VIEW).len() == 1);
     }
 
     #[test]

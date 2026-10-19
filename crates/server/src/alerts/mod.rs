@@ -58,9 +58,19 @@ const TICK: Duration = Duration::from_secs(5);
 pub struct AlertSink {
     tx: mpsc::Sender<Input>,
     dropped: AtomicU64,
+    /// The symbols a pressure alert watches: the market scores only these, once a second
+    /// (Market::publish_pressure), so alerts do not make the Halt watcher score every symbol.
+    pressure_watch: Mutex<Arc<[String]>>,
 }
 
 impl AlertSink {
+    pub fn pressure_watch(&self) -> Arc<[String]> {
+        self.pressure_watch
+            .lock()
+            .expect("pressure watch lock")
+            .clone()
+    }
+
     /// Never blocks: a full or closed channel drops the input and counts it.
     pub fn offer(&self, input: Input) {
         if self.tx.try_send(input).is_err() {
@@ -243,6 +253,7 @@ impl Alerts {
         let sink = Arc::new(AlertSink {
             tx: in_tx,
             dropped: AtomicU64::new(0),
+            pressure_watch: Mutex::new(Arc::from(Vec::new())),
         });
         live.attach_alerts(sink.clone());
         let (cmd_tx, cmd_rx) = mpsc::channel(32);
@@ -335,6 +346,11 @@ impl Task {
         self.prefs = model::parse_prefs(self.settings.get(PREFS_NS).await.map(|(_, v)| v).as_ref());
         let market = self.market.clone();
         self.eval.set_rules(rules, initial, &market);
+        *self
+            .sink
+            .pressure_watch
+            .lock()
+            .expect("pressure watch lock") = Arc::from(self.eval.pressure_symbols());
     }
 
     /// Writes changed states to `alerts.state` (one patch), so every device shows them.

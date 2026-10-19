@@ -1635,6 +1635,22 @@ impl Market {
                 .iter()
                 .map(|c| PressureCardWire::new(c, quotes, last_price))
                 .collect();
+            // Price alerts on pressure (crate::alerts): the watched symbols' scores, on or off
+            // the board, at the same clock. try_send, as on the ingest path.
+            if let Some(sink) = self.0.alerts.get() {
+                let session = market_events::classify(clock.now).map(|s| (s.date, s.kind));
+                for symbol in sink.pressure_watch().iter() {
+                    if let Some(sc) = pressure.score_of(symbol, clock.now.0) {
+                        sink.offer(crate::alerts::eval::Input::Pressure {
+                            symbol: symbol.clone(),
+                            pressure: sc.pressure,
+                            bull: sc.bull(),
+                            ts: clock.now.millis(),
+                            session,
+                        });
+                    }
+                }
+            }
             if cards == core.pressure_cards {
                 return false;
             }
