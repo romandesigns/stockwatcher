@@ -52,12 +52,19 @@ export function passesTickerFilters(t: TickerInfo, on: ReadonlySet<TickerFilterI
   return true;
 }
 
-export type TickerSection = "recent" | "sim" | "mock" | null;
-export type TickerRow = Ranked<TickerInfo> & { recent?: boolean; /** Set on the first row of a titled section. */ section?: TickerSection };
+export type TickerSection = "recent" | "sim" | "matches" | "mock" | null;
+export type TickerRow = Ranked<TickerInfo> & {
+  recent?: boolean;
+  /** Set on the first row of a titled section. */
+  section?: TickerSection;
+  /** On the last shown recent row while the list is collapsed: how many more recents "See more" reveals. */
+  moreRecents?: number;
+};
 
 export const TICKER_SECTION_TITLES: Readonly<Record<Exclude<TickerSection, null>, string>> = {
   recent: "Recently opened",
   sim: "Most active",
+  matches: "Matching the filters",
   mock: "Mock universe · not in the simulator",
 };
 
@@ -78,17 +85,17 @@ function byMove(a: TickerInfo, b: TickerInfo): number {
 
 /**
  * Tags the rows that start a section, so both UIs title them identically.
- * Titles only in the unqueried, unfiltered list, where the grouping is real;
- * a ranked list keeps one title, over the first mock row, so a not-openable
- * row is never unannounced.
+ * Titles only without a query (`titled`), where the grouping is real: "Recently opened", then
+ * "Most active" (or, with filters on, "Matching the filters"); a ranked list keeps one title,
+ * over the first mock row, so a not-openable row is never unannounced.
  */
-function withSections(rows: readonly TickerRow[], grouped: boolean): TickerRow[] {
+function withSections(rows: readonly TickerRow[], titled: boolean, filtered = false): TickerRow[] {
   let firstMock = true;
   return rows.map((r, i) => {
     const prev = rows[i - 1];
     let section: TickerSection = null;
-    if (grouped && r.recent && i === 0) section = "recent";
-    else if (grouped && !r.recent && !r.item.mock && prev?.recent) section = "sim";
+    if (titled && r.recent && i === 0) section = "recent";
+    else if (titled && !r.recent && !r.item.mock && prev?.recent) section = filtered ? "matches" : "sim";
     if (r.item.mock && firstMock) {
       firstMock = false;
       if (i > 0) section = "mock";
@@ -98,27 +105,39 @@ function withSections(rows: readonly TickerRow[], grouped: boolean): TickerRow[]
   });
 }
 
+/** Recently opened tickers shown before "See more" (owner, 2026-10-19); expanded shows all MAX_TICKER_RECENTS. */
+export const RECENTS_COLLAPSED = 6;
+
 /**
- * The rows for a query, filters and the recents. A query ranks fuzzily; no
- * query lists the recents first, then the rest most active first (a mover
- * filter orders by the size of the move instead); filters narrow either.
+ * The rows for a query, filters and the recents. A query ranks fuzzily. No query lists the
+ * recently opened tickers first (RECENTS_COLLAPSED of them, or all when `recentsExpanded`; the
+ * last shown one carries `moreRecents`, the count "See more" reveals), whatever the filters:
+ * they are a shortcut back, not a result. Then the rest, filters narrowing it: most active first,
+ * or by the size of the move under a mover filter. A recent that is shown is not repeated below.
  */
-export function searchTickers(tickers: readonly TickerInfo[], query: string, filters: ReadonlySet<TickerFilterId>, recents: readonly string[]): TickerRow[] {
+export function searchTickers(
+  tickers: readonly TickerInfo[],
+  query: string,
+  filters: ReadonlySet<TickerFilterId>,
+  recents: readonly string[],
+  opts: { recentsExpanded?: boolean } = {},
+): TickerRow[] {
   const on = activeTickerFilters(tickers, filters);
   const pool = on.size ? tickers.filter((t) => passesTickerFilters(t, on)) : tickers;
   const plain = (item: TickerInfo): TickerRow => ({ item, score: 0, symbolIdx: [], nameIdx: [] });
-  let rows: TickerRow[];
-  if (query.trim()) rows = rankTickers(pool, query);
-  else if (on.size) {
-    const mover = on.has("gainers") || on.has("losers");
-    rows = [...pool].sort(mover ? byMove : byActivity).map(plain);
-  } else {
-    const bySym = new Map(pool.map((t) => [t.symbol, t]));
-    const recent = recents.map((s) => bySym.get(s)).filter((t): t is TickerInfo => !!t);
-    const taken = new Set(recent.map((t) => t.symbol));
-    rows = [...recent.map((item) => ({ ...plain(item), recent: true })), ...pool.filter((t) => !taken.has(t.symbol)).sort(byActivity).map(plain)];
-  }
-  return withSections(rows, !query.trim() && !on.size);
+  if (query.trim()) return withSections(rankTickers(pool, query), false);
+  const bySym = new Map(tickers.map((t) => [t.symbol, t]));
+  const recent = recents
+    .map((s) => bySym.get(s))
+    .filter((t): t is TickerInfo => !!t)
+    .slice(0, MAX_TICKER_RECENTS);
+  const shownRecent = opts.recentsExpanded ? recent : recent.slice(0, RECENTS_COLLAPSED);
+  const hidden = recent.length - shownRecent.length;
+  const taken = new Set(shownRecent.map((t) => t.symbol));
+  const mover = on.has("gainers") || on.has("losers");
+  const rest = pool.filter((t) => !taken.has(t.symbol)).sort(mover ? byMove : byActivity).map(plain);
+  const recentRows: TickerRow[] = shownRecent.map((item, i) => ({ ...plain(item), recent: true, ...(hidden > 0 && i === shownRecent.length - 1 ? { moreRecents: hidden } : {}) }));
+  return withSections([...recentRows, ...rest], true, on.size > 0);
 }
 
 /**
@@ -128,7 +147,7 @@ export function searchTickers(tickers: readonly TickerInfo[], query: string, fil
  * under the pointer once a second while the values in it stay live. A row
  * whose symbol is gone (it left the price band) is dropped.
  */
-export function refreshTickerRows(rows: readonly TickerRow[], tickers: readonly TickerInfo[], grouped: boolean): TickerRow[] {
+export function refreshTickerRows(rows: readonly TickerRow[], tickers: readonly TickerInfo[], grouped: boolean, filtered = false): TickerRow[] {
   const bySym = new Map(tickers.map((t) => [t.symbol, t]));
   const out: TickerRow[] = [];
   for (const r of rows) {
@@ -137,14 +156,15 @@ export function refreshTickerRows(rows: readonly TickerRow[], tickers: readonly 
     // touches a few hundred of thousands of rows.
     if (item) out.push(sameTicker(item, r.item) ? r : { ...r, item });
   }
-  return out.length === rows.length ? out : withSections(out, grouped);
+  return out.length === rows.length ? out : withSections(out, grouped, filtered);
 }
 
 function sameTicker(a: TickerInfo, b: TickerInfo): boolean {
   return a === b || (a.price === b.price && a.changePct === b.changePct && a.volume === b.volume && a.name === b.name && a.exchange === b.exchange && a.available === b.available);
 }
 
-export const MAX_TICKER_RECENTS = 5;
+/** Recently opened tickers kept (and synced): RECENTS_COLLAPSED show, "See more" shows them all. */
+export const MAX_TICKER_RECENTS = 10;
 
 /**
  * The dashboard's live ticker list: the quoted rows, most active first (day volume, then the

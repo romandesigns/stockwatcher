@@ -1,7 +1,7 @@
 import { formatPrice, formatVolume } from "@stockwatcher/chart-core";
 import { Icon } from "@stockwatcher/chart-web";
 import { cn, Dialog, DialogContent, DialogTitle, ScrollArea } from "@stockwatcher/chart-web/ui";
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import {
   activeTickerFilters,
   refreshTickerRows,
@@ -143,6 +143,8 @@ export function TickerSearch({ open, onOpenChange, symbols, quotes, mock, curren
   // silently point at another stock once the list changes under it.
   const [activeSym, setActiveSym] = useState<string | null>(null);
   const [limit, setLimit] = useState(PAGE);
+  // Recently opened shows RECENTS_COLLAPSED tickers until "See more" (owner, 2026-10-19).
+  const [recentsExpanded, setRecentsExpanded] = useState(false);
   const board = useQuoteBoard(quotes, open);
   const tickers = useMemo(() => tickerUniverse(symbols, board, { mock }), [symbols, board, mock]);
   const groups = useMemo(() => visibleTickerFilterGroups(tickers), [tickers]);
@@ -168,6 +170,7 @@ export function TickerSearch({ open, onOpenChange, symbols, quotes, mock, curren
     if (open) {
       setQuery("");
       setActiveSym(null);
+      setRecentsExpanded(false);
       setLimit(PAGE);
     }
   }
@@ -178,15 +181,17 @@ export function TickerSearch({ open, onOpenChange, symbols, quotes, mock, curren
   // pointer while the user reads it.
   // React's "adjust state while rendering" pattern: re-rank when the key changes, else keep.
   // `open` is in the key so each opening picks up the recents (another device may have changed them).
-  const rankKey = [open, query, [...filters].sort().join(","), board.size > 0].join("|");
+  const rankKey = [open, query, [...filters].sort().join(","), board.size > 0, recentsExpanded].join("|");
   const [rank, setRank] = useState<{ key: string; rows: TickerRow[] }>({ key: "", rows: [] });
   let ranked = rank.rows;
   if (rank.key !== rankKey) {
-    ranked = searchTickers(tickers, query, filters, recents);
+    ranked = searchTickers(tickers, query, filters, recents, { recentsExpanded });
     setRank({ key: rankKey, rows: ranked });
   }
-  const grouped = !query.trim() && activeTickerFilters(tickers, filters).size === 0;
-  const rows = useMemo(() => refreshTickerRows(ranked, tickers, grouped), [ranked, tickers, grouped]);
+  // Titles whenever there is no query: Recently opened stays on top with filters on.
+  const grouped = !query.trim();
+  const filtered = activeTickerFilters(tickers, filters).size > 0;
+  const rows = useMemo(() => refreshTickerRows(ranked, tickers, grouped, filtered), [ranked, tickers, grouped, filtered]);
   const shown = rows.length > limit ? rows.slice(0, limit) : rows;
   const found = activeSym ? rows.findIndex((r) => r.item.symbol === activeSym) : 0;
   const active = Math.max(0, found);
@@ -296,7 +301,22 @@ export function TickerSearch({ open, onOpenChange, symbols, quotes, mock, curren
         <ul id="ticker-search-list" role="listbox" aria-label="Tickers" className="m-0 list-none p-1.5 pt-0 pr-2.5">
           {rows.length === 0 && <li className="px-3 py-6 text-center text-xs text-text-faint">{query ? `No ticker matches “${query}”` : "No ticker matches these filters"}.</li>}
           {shown.map((r, i) => (
-            <Row key={r.item.symbol} row={r} index={i} active={i === active} current={r.item.symbol === current} onHover={setActiveSym} onChoose={choose} />
+            <Fragment key={r.item.symbol}>
+              <Row row={r} index={i} active={i === active} current={r.item.symbol === current} onHover={setActiveSym} onChoose={choose} />
+              {r.moreRecents ? (
+                <li role="presentation">
+                  <button
+                    type="button"
+                    // Keep focus in the field, like every other control in the panel.
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => setRecentsExpanded(true)}
+                    className="w-full rounded-lg px-2.5 py-1.5 text-left text-xs text-muted-foreground outline-none hover:bg-bg-row hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    See more ({r.moreRecents})
+                  </button>
+                </li>
+              ) : null}
+            </Fragment>
           ))}
           {shown.length < rows.length && (
             <li ref={sentinel} role="presentation" className="px-3 py-2 text-center text-[10px] text-text-faint">

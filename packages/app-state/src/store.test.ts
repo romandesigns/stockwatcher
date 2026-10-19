@@ -38,7 +38,7 @@ describe("namespaces", () => {
     expect(parseSymbol(42)).toBeNull();
     expect(parseTradeQty(500)).toBe(500);
     expect(parseTradeQty(123)).toBe(100);
-    expect(parseSearchRecents(["a", "A", 3, "bb", "cc", "dd", "ee", "ff"])).toEqual(["A", "BB", "CC", "DD", "EE"]);
+    expect(parseSearchRecents(["a", "A", 3, "bb", "cc", "dd", "ee", "ff", "gg", "hh", "ii", "jj", "kk", "ll"])).toEqual(["A", "BB", "CC", "DD", "EE", "FF", "GG", "HH", "II", "JJ"]);
   });
 });
 
