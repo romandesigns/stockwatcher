@@ -12,6 +12,7 @@
 //! swimport research-universe --out <DIR> --from <YYYY-MM-DD> --to <YYYY-MM-DD> [--per-minute 100]
 //! swimport research-pilot --out <DIR> --selection <FILE> [--per-minute 100] [--budget-minutes 30] [--budget-gb 5] [--warmup 30]
 //! swimport research-manifest --out <DIR> [--meta <FILE>]
+//! swimport research-verify --out <DIR>                   # re-run the trades checks from disk
 //! ```
 //!
 //! The `research-*` commands are a bounded research acquisition (import::pilot), never used by
@@ -60,7 +61,8 @@ fn usage() -> ExitCode {
   swimport maintain [--once]
   swimport research-universe --out <DIR> --from <YYYY-MM-DD> --to <YYYY-MM-DD> [--per-minute N]
   swimport research-pilot --out <DIR> --selection <FILE> [--per-minute N] [--budget-minutes N] [--budget-gb N] [--warmup N]
-  swimport research-manifest --out <DIR> [--meta <FILE>]"
+  swimport research-manifest --out <DIR> [--meta <FILE>]
+  swimport research-verify --out <DIR>"
     );
     ExitCode::from(2)
 }
@@ -98,6 +100,7 @@ fn main() -> ExitCode {
             Some("research-universe") => research::universe(&args[1..]),
             Some("research-pilot") => research::pilot(&args[1..]),
             Some("research-manifest") => research::manifest(&args[1..]),
+            Some("research-verify") => research::verify(&args[1..]),
             _ => Ok(usage()),
         }
     };
@@ -785,8 +788,8 @@ mod research {
     use market_providers::import::http::{Http, RetryPolicy};
     use market_providers::import::paced_client::PacedHttp;
     use market_providers::import::pilot::{
-        Budget, Kind, Metered, PilotConfig, SymbolDay, append_run, read_runs, run_pilot,
-        write_atomic, write_manifest,
+        Budget, Kind, Metered, PilotConfig, SymbolDay, append_run, read_runs, reverify_trades,
+        run_pilot, write_atomic, write_manifest,
     };
     use market_providers::import::reference::{
         STRUCTURAL_ACTION_TYPES, assets_url, bar_rows, corporate_actions_url, daily_bars_url,
@@ -1086,6 +1089,13 @@ mod research {
             m["revision"],
             m["files"].as_array().map_or(0, |a| a.len())
         );
+        Ok(ExitCode::SUCCESS)
+    }
+
+    /// Re-runs the trades checks (duplicates, update flags, sessions) over the stored files.
+    pub fn verify(args: &[String]) -> Result<ExitCode, String> {
+        let out = out_dir(args)?;
+        println!("re-verified {} trades checkpoints", reverify_trades(&out)?);
         Ok(ExitCode::SUCCESS)
     }
 }

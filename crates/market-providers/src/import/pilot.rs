@@ -46,12 +46,11 @@ use chrono::{DateTime, NaiveDate, Utc};
 use chrono_tz::America::New_York;
 use market_archive::{Archive, ArchiveConfig, SymbolReader};
 use market_events::session::sessions_for;
-use market_events::{MarketEvent, SessionKind};
+use market_events::{MarketEvent, SessionKind, UnixNanos};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashSet};
-use std::hash::{Hash, Hasher};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -726,8 +725,18 @@ pub fn verify_trades(path: &Path) -> Value {
         Ok(r) => r,
         Err(e) => return json!({ "error": e.to_string() }),
     };
-    let mut ids: HashSet<u64> = HashSet::new();
+    // (exchange, id) -> (event_ts, price, size, tape) of the first print seen with that identity.
+    let mut ids: HashMap<(String, u64), (i64, i64, u64, String)> = HashMap::new();
     let mut dup_ids = 0u64;
+    let mut dup_identical = 0u64;
+    // Collisions the chart engine would treat as a repeat: within its default 10-minute
+    // trade-retention window of the first print with that identity (chart-engine `retention_ns`).
+    let mut dup_within_10min = 0u64;
+    let mut dup_within_10min_shares = 0u64;
+    let mut total_shares = 0u64;
+    let mut dup_by_exchange: BTreeMap<String, u64> = BTreeMap::new();
+    let mut dup_by_tape_pair: BTreeMap<String, u64> = BTreeMap::new();
+    let mut dup_examples: Vec<Value> = Vec::new();
     let mut events = 0u64;
     let mut json_bytes = 0u64;
     let mut updates: BTreeMap<String, u64> = BTreeMap::new();
@@ -744,10 +753,34 @@ pub fn verify_trades(path: &Path) -> Value {
             .map(|v| v.len() as u64 + 4)
             .unwrap_or(0);
         if let MarketEvent::Trade(t) = &ev.event {
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            (&t.exchange, t.source_seq).hash(&mut h);
-            if !ids.insert(h.finish()) {
-                dup_ids += 1;
+            total_shares += t.size;
+            let tape = format!("{:?}", t.tape);
+            let this = (t.event_ts.0, t.price.micros(), t.size, tape.clone());
+            match ids.get(&(t.exchange.clone(), t.source_seq)) {
+                None => {
+                    ids.insert((t.exchange.clone(), t.source_seq), this);
+                }
+                Some(first) => {
+                    dup_ids += 1;
+                    if (this.0 - first.0).abs() <= 600_000_000_000 {
+                        dup_within_10min += 1;
+                        dup_within_10min_shares += this.2;
+                    }
+                    if first.0 == this.0 && first.1 == this.1 && first.2 == this.2 {
+                        dup_identical += 1;
+                    }
+                    *dup_by_exchange.entry(t.exchange.clone()).or_default() += 1;
+                    *dup_by_tape_pair
+                        .entry(format!("{}/{}", first.3, tape))
+                        .or_default() += 1;
+                    if dup_examples.len() < 5 {
+                        dup_examples.push(json!({
+                            "exchange": t.exchange, "id": t.source_seq,
+                            "first": { "event_ts": rfc3339(UnixNanos(first.0).to_utc()), "price_micros": first.1, "size": first.2, "tape": first.3 },
+                            "again": { "event_ts": rfc3339(t.event_ts.to_utc()), "price_micros": this.1, "size": this.2, "tape": this.3 },
+                        }));
+                    }
+                }
             }
             if let Some(u) = &t.update {
                 *updates.entry(u.clone()).or_default() += 1;
@@ -773,6 +806,13 @@ pub fn verify_trades(path: &Path) -> Value {
         "events_read": events,
         "decoded_record_bytes": json_bytes,
         "duplicate_ids": dup_ids,
+        "duplicate_ids_identical_print": dup_identical,
+        "duplicate_ids_within_10min": dup_within_10min,
+        "duplicate_ids_within_10min_shares": dup_within_10min_shares,
+        "total_shares": total_shares,
+        "duplicate_ids_by_exchange": dup_by_exchange,
+        "duplicate_ids_by_tape_pair": dup_by_tape_pair,
+        "duplicate_id_examples": dup_examples,
         "update_flags_u": updates,
         "update_examples": update_examples,
         "conditions": conditions,
@@ -1056,4 +1096,29 @@ pub fn write_manifest(out: &Path, meta: Value) -> Result<Value, String> {
     let bytes = serde_json::to_vec_pretty(&m).map_err(|e| e.to_string())?;
     write_atomic(&path, &bytes)?;
     Ok(m)
+}
+
+/// Recomputes [`verify_trades`] for every complete trades checkpoint from the files on disk (no
+/// network) and rewrites the checkpoints. Returns how many were updated.
+pub fn reverify_trades(out: &Path) -> Result<usize, String> {
+    let mut n = 0;
+    for mut c in all_checkpoints(out) {
+        if c.status != Status::Complete || !matches!(c.kind, Kind::TradesSip | Kind::TradesBoats) {
+            continue;
+        }
+        let Some(file) = c.files.first() else {
+            continue;
+        };
+        c.details["verify"] = verify_trades(&out.join(file));
+        let sd = SymbolDay {
+            day: c.day,
+            symbol: c.symbol.clone(),
+        };
+        write_atomic(
+            &checkpoint_path(out, &sd, c.kind),
+            &serde_json::to_vec_pretty(&c).map_err(|e| e.to_string())?,
+        )?;
+        n += 1;
+    }
+    Ok(n)
 }

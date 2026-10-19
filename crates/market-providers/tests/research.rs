@@ -395,6 +395,9 @@ fn pilot_runs_every_kind_checkpoints_and_resumes() {
             json!({"symbol": "ABC", "next_page_token": null, "trades": [
                 {"t": "2026-10-14T13:30:00Z", "x": "V", "p": 3.18, "s": 100, "c": ["@"], "i": 1, "z": "C"},
                 {"t": "2026-10-14T13:30:01Z", "x": "V", "p": 3.19, "s": 50, "c": ["@"], "i": 2, "z": "C", "u": "canceled"},
+                // Two different prints sharing (exchange, id): the FINRA "D" venue is several TRFs.
+                {"t": "2026-10-14T13:30:02Z", "x": "D", "p": 3.20, "s": 10, "c": ["@"], "i": 7, "z": "C"},
+                {"t": "2026-10-14T13:30:03Z", "x": "D", "p": 3.21, "s": 20, "c": ["@"], "i": 7, "z": "A"},
             ]}),
         )
         // BOATS: not entitled
@@ -432,9 +435,13 @@ fn pilot_runs_every_kind_checkpoints_and_resumes() {
 
     let t = read_checkpoint(out, &sd, Kind::TradesSip).unwrap();
     assert_eq!(t.status, Status::Complete);
-    assert_eq!(t.records, 2);
-    assert_eq!(t.details["verify"]["update_flags_u"]["canceled"], 1);
-    assert_eq!(t.details["verify"]["duplicate_ids"], 0);
+    assert_eq!(t.records, 4);
+    let v = &t.details["verify"];
+    assert_eq!(v["update_flags_u"]["canceled"], 1);
+    assert_eq!(v["duplicate_ids"], 1);
+    assert_eq!(v["duplicate_ids_identical_print"], 0);
+    assert_eq!(v["duplicate_ids_by_exchange"]["D"], 1);
+    assert_eq!(v["duplicate_id_examples"][0]["again"]["size"], 20);
     assert_eq!(t.files, vec!["archive/2026-10-14/ABC.swa"]);
     assert_eq!(t.stats.requests, 1);
 
@@ -485,6 +492,12 @@ fn pilot_runs_every_kind_checkpoints_and_resumes() {
         5
     );
     assert_eq!(m["runs"].as_array().unwrap().len(), 1);
+    assert_eq!(m["totals"]["duplicates"], 1);
+    assert_eq!(
+        market_providers::import::pilot::reverify_trades(out).unwrap(),
+        1,
+        "only the complete SIP trades checkpoint"
+    );
     let m2 = write_manifest(out, json!({})).unwrap();
     assert_eq!(m2["revision"], 2);
     assert_eq!(all_checkpoints(out).len(), 5);
