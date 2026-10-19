@@ -13,6 +13,10 @@ const TRACK = gaugeArc(GAUGE.start, GAUGE.start + GAUGE.sweep);
  * The value arc is the track itself, dashed to the pressure (`pathLength` 100), and the needle a
  * fixed line rotated to its angle: both are CSS-transitionable, so a new reading sweeps rather
  * than jumps (and holds still with reduced motion).
+ *
+ * In the phone's one-row strip (the Halt watcher container below @xl, ~56 px a dial) the needle,
+ * hub and small value are hidden and the value is drawn large inside the arc instead: at that size
+ * a needle covers the number and the number is unreadable (owner, 2026-10-19).
  */
 export function PressureGauge({ pressure, side, halted, label }: { pressure: number; side: "bull" | "bear"; halted: boolean; label: string }) {
   // useId has colons, which a url(#…) reference does not survive.
@@ -45,12 +49,15 @@ export function PressureGauge({ pressure, side, halted, label }: { pressure: num
       />
       <g
         style={{ transform: `rotate(${gaugeAngle(v)}deg)`, transformOrigin: `${GAUGE.cx}px ${GAUGE.cy}px`, transformBox: "view-box" }}
-        className="transition-transform duration-300 ease-out motion-reduce:transition-none"
+        className="transition-transform duration-300 ease-out motion-reduce:transition-none @max-xl/hw:hidden"
       >
         <line x1={GAUGE.cx} y1={GAUGE.cy} x2={GAUGE.cx + GAUGE.needle} y2={GAUGE.cy} style={{ stroke: halted ? "var(--text-faint)" : "var(--text)" }} strokeWidth={3} strokeLinecap="round" />
       </g>
-      <circle cx={GAUGE.cx} cy={GAUGE.cy} r={6} style={{ fill: halted ? "var(--text-faint)" : "var(--text)" }} />
-      <text x={GAUGE.cx} y={132} textAnchor="middle" style={{ fill: "var(--text)" }} className="font-mono" fontSize={26} fontWeight={600}>
+      <circle cx={GAUGE.cx} cy={GAUGE.cy} r={6} style={{ fill: halted ? "var(--text-faint)" : "var(--text)" }} className="@max-xl/hw:hidden" />
+      <text x={GAUGE.cx} y={132} textAnchor="middle" style={{ fill: "var(--text)" }} className="font-mono @max-xl/hw:hidden" fontSize={26} fontWeight={600}>
+        {v}
+      </text>
+      <text x={GAUGE.cx} y={118} textAnchor="middle" style={{ fill: halted ? "var(--text-faint)" : "var(--text)" }} className="hidden font-mono @max-xl/hw:inline" fontSize={58} fontWeight={600}>
         {v}
       </text>
     </svg>

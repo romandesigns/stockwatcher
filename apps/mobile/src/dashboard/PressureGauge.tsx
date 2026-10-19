@@ -40,7 +40,7 @@ function useSweep(target: number, reducedMotion: boolean): number {
  * side's gradient spans the whole dial (shared GAUGE_GRADIENT), so the arc lightens as the
  * pressure builds; halted, the arc is grey and the needle dim.
  */
-export function PressureGauge({ pressure, side, halted, label, width, reducedMotion }: { pressure: number; side: "bull" | "bear"; halted: boolean; label: string; width: number; reducedMotion: boolean }) {
+export function PressureGauge({ pressure, side, halted, label, width, reducedMotion, compact = false }: { pressure: number; side: "bull" | "bear"; halted: boolean; label: string; width: number; reducedMotion: boolean; /** The one-row strip's mini dial: no needle, the value large inside the arc (unreadable under a needle at ~56 px). */ compact?: boolean }) {
   // react-native-svg resolves url(#id) per document, but ids must still be unique per gauge.
   const id = `hw${useId().replace(/[^a-zA-Z0-9]/g, "")}`;
   const shown = useSweep(Math.max(0, Math.min(100, Math.round(pressure))), reducedMotion);
@@ -59,11 +59,19 @@ export function PressureGauge({ pressure, side, halted, label, width, reducedMot
       )}
       <Path d={g.track} fill="none" stroke={UI.raised} strokeWidth={GAUGE.stroke} strokeLinecap="round" />
       {g.value && <Path d={g.value} fill="none" stroke={colors ? `url(#${id})` : UI.textFaint} strokeOpacity={colors ? 1 : 0.55} strokeWidth={GAUGE.stroke} strokeLinecap="round" />}
-      <Line x1={GAUGE.cx} y1={GAUGE.cy} x2={g.needle.x} y2={g.needle.y} stroke={ink} strokeWidth={3} strokeLinecap="round" />
-      <Circle cx={GAUGE.cx} cy={GAUGE.cy} r={6} fill={ink} />
-      <SvgText x={GAUGE.cx} y={132} textAnchor="middle" fill={UI.text} fontSize={26} fontFamily={fonts.semibold}>
-        {String(g.label)}
-      </SvgText>
+      {compact ? (
+        <SvgText x={GAUGE.cx} y={118} textAnchor="middle" fill={ink} fontSize={58} fontFamily={fonts.semibold}>
+          {String(g.label)}
+        </SvgText>
+      ) : (
+        <>
+          <Line x1={GAUGE.cx} y1={GAUGE.cy} x2={g.needle.x} y2={g.needle.y} stroke={ink} strokeWidth={3} strokeLinecap="round" />
+          <Circle cx={GAUGE.cx} cy={GAUGE.cy} r={6} fill={ink} />
+          <SvgText x={GAUGE.cx} y={132} textAnchor="middle" fill={UI.text} fontSize={26} fontFamily={fonts.semibold}>
+            {String(g.label)}
+          </SvgText>
+        </>
+      )}
     </Svg>
   );
 }
