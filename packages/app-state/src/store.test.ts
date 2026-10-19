@@ -176,9 +176,9 @@ describe("app store: the dashboard panel", () => {
     r.s().loadIntoSelected("tsla");
     r.s().setDashboardTimeframe(2, "5m");
     expect(r.s().dashboard.slots.slice(0, 3)).toEqual([
-      { symbol: "AAL", timeframe: "1m" },
-      { symbol: null, timeframe: "1m" },
-      { symbol: "TSLA", timeframe: "5m" },
+      { symbol: "AAL", timeframe: "1m", indicators: null, layers: null },
+      { symbol: null, timeframe: "1m", indicators: null, layers: null },
+      { symbol: "TSLA", timeframe: "5m", indicators: null, layers: null },
     ]);
     expect(r.s().searchRecents).toEqual(["TSLA", "AAL"]);
     expect(r.sync.get(APP_NS.dashboard)).toMatchObject({ count: 3 });
@@ -241,10 +241,30 @@ describe("app store: the dashboard panel", () => {
     r.remote(APP_NS.dashboard, { count: "x", slots: [{ symbol: "!!", timeframe: "2h" }, null, { symbol: "aal", timeframe: "30s" }] });
     expect(r.s().dashboard.count).toBe(1);
     expect(r.s().dashboard.slots.slice(0, 3)).toEqual([
-      { symbol: null, timeframe: "1m" },
-      { symbol: null, timeframe: "1m" },
-      { symbol: "AAL", timeframe: "30s" },
+      { symbol: null, timeframe: "1m", indicators: null, layers: null },
+      { symbol: null, timeframe: "1m", indicators: null, layers: null },
+      { symbol: "AAL", timeframe: "30s", indicators: null, layers: null },
     ]);
+  });
+
+  test("a chart's own indicators and levels stay on its slot, survive other writes, and parse junk away", () => {
+    const r = rig();
+    r.s().setDashboardIndicators(1, r.s().indicators.slice(0, 1));
+    r.s().setDashboardLayers(1, { ...r.s().layers, fills: false });
+    r.s().setDashboardSymbol(1, "aal");
+    r.s().setDashboardCount(2);
+    const slot = r.s().dashboard.slots[1]!;
+    expect(slot.indicators).toEqual(r.s().indicators.slice(0, 1));
+    expect(slot.layers).toMatchObject({ fills: false });
+    // Other charts follow the shared set (null), and the shared set is untouched.
+    expect(r.s().dashboard.slots[0]!.indicators).toBeNull();
+    const synced = r.sync.get(APP_NS.dashboard) as { slots: { symbol: string | null; indicators: unknown }[] };
+    expect(synced.slots[0]).toMatchObject({ indicators: null });
+    expect(synced.slots[1]).toMatchObject({ symbol: "AAL", indicators: [] });
+    // Junk from another build: a non-array set reads as "follows the shared one".
+    const other = rig();
+    other.remote(APP_NS.dashboard, { count: 1, slots: [{ symbol: "aal", timeframe: "1m", indicators: "x", layers: 3 }] });
+    expect(other.s().dashboard.slots[0]).toMatchObject({ indicators: null, layers: null });
   });
 });
 

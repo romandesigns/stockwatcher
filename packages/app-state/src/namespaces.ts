@@ -1,4 +1,4 @@
-import { TIMEFRAMES, TRADE_SIZES, type Timeframe } from "@stockwatcher/chart-core";
+import { parseIndicators, parseLayers, TIMEFRAMES, TRADE_SIZES, type ChartLayers, type IndicatorSpec, type Timeframe } from "@stockwatcher/chart-core";
 import { MAX_TICKER_RECENTS } from "@stockwatcher/shared";
 
 // The app-level state that syncs across devices on top of chart-core's SYNC_NS (owner,
@@ -61,6 +61,13 @@ export interface DashboardSlot {
   /** The ticker loaded into this chart; null until one is (the device then shows a candidate). */
   symbol: string | null;
   timeframe: Timeframe;
+  /**
+   * This chart's own indicators and levels, used only while Settings → Chart → "Same indicators
+   * and levels on every chart" is off; null = it follows the shared set (and starts from it when
+   * first changed). Kept while linked, so unlinking again brings each chart's own set back.
+   */
+  indicators: IndicatorSpec[] | null;
+  layers: ChartLayers | null;
 }
 
 /**
@@ -78,7 +85,7 @@ export interface DashboardState {
   source: DashboardSource;
 }
 
-const EMPTY_SLOT: DashboardSlot = { symbol: null, timeframe: "1m" };
+const EMPTY_SLOT: DashboardSlot = { symbol: null, timeframe: "1m", indicators: null, layers: null };
 
 export const DEFAULT_DASHBOARD: DashboardState = { count: 1, slots: Array.from({ length: MAX_DASHBOARD_CHARTS }, () => EMPTY_SLOT), source: "live" };
 
@@ -92,6 +99,8 @@ export function parseDashboard(raw: unknown): DashboardState {
     return {
       symbol: parseSymbol(s.symbol),
       timeframe: (TIMEFRAMES as readonly unknown[]).includes(s.timeframe) ? (s.timeframe as Timeframe) : EMPTY_SLOT.timeframe,
+      indicators: Array.isArray(s.indicators) ? parseIndicators(s.indicators) : null,
+      layers: isObj(s.layers) ? parseLayers(s.layers) : null,
     };
   });
   // Anything but "replay" is live: the dashboard is the live page unless asked otherwise.

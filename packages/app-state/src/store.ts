@@ -108,6 +108,9 @@ export interface AppState {
   /** Loads a ticker into one dashboard chart (and the search recents). */
   setDashboardSymbol(slot: number, symbol: string): void;
   setDashboardTimeframe(slot: number, tf: Timeframe): void;
+  /** One dashboard chart's own indicators / levels (used while studies are not linked). */
+  setDashboardIndicators(slot: number, next: IndicatorSpec[]): void;
+  setDashboardLayers(slot: number, next: ChartLayers): void;
   /** Loads a ticker into the selected dashboard chart. */
   loadIntoSelected(symbol: string): void;
 
@@ -240,6 +243,8 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
       writeSlot(slot, { symbol });
     },
     setDashboardTimeframe: (slot, timeframe) => writeSlot(slot, { timeframe }),
+    setDashboardIndicators: (slot, next) => writeSlot(slot, { indicators: parseIndicators(next) }),
+    setDashboardLayers: (slot, next) => writeSlot(slot, { layers: parseLayers(next) }),
     loadIntoSelected: (symbol) => get().setDashboardSymbol(get().dashboardSelected, symbol),
 
     setToolbox: (toolbox) => updateDevice("toolbox", toolbox),

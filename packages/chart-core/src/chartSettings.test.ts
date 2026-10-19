@@ -22,7 +22,7 @@ const size = { width: 800, height: 400 };
 describe("settings: defaults, validation, migration", () => {
   test("defaults keep today's look and turn the new zoom on", () => {
     expect(DEFAULT_CHART_SETTINGS).toMatchObject({ chartType: "candles", priceScale: "linear", extendedHours: true, volume: true, grid: true, sessionShading: true, sessionBreaks: false, highLow: false, autoStretch: true, zoom: 100 });
-    expect(DEFAULT_CHART_SETTINGS.visibility).toEqual({ indicators: true, drawings: true, trading: true });
+    expect(DEFAULT_CHART_SETTINGS.visibility).toEqual({ indicators: true, drawings: true, trading: true, linkStudies: true });
   });
 
   test("junk and nothing fall back to the defaults, and never share the default object", () => {
@@ -38,7 +38,9 @@ describe("settings: defaults, validation, migration", () => {
     const s = parseChartSettings({ chartType: "heikinAshi", volume: false, visibility: { drawings: false } });
     expect(s.chartType).toBe("heikinAshi");
     expect(s.volume).toBe(false);
-    expect(s.visibility).toEqual({ indicators: true, drawings: false, trading: true });
+    expect(s.visibility).toEqual({ indicators: true, drawings: false, trading: true, linkStudies: true });
+    // A save from before the link switch existed keeps today's behaviour: linked.
+    expect(parseChartSettings({ visibility: { linkStudies: false } }).visibility.linkStudies).toBe(false);
     expect(s.grid).toBe(true);
     expect(s.version).toBe(1);
   });

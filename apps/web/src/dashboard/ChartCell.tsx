@@ -1,5 +1,5 @@
 import type { DashboardSlot } from "@stockwatcher/app-state";
-import { buildSlots, changeReference, formatChange, formatEtDateKey, formatPrice, lastCandle, tradingDayOf, type ChartOptions } from "@stockwatcher/chart-core";
+import { buildSlots, changeReference, formatChange, formatEtDateKey, formatPrice, lastCandle, tradingDayOf, type ChartLayers, type ChartOptions, type IndicatorSpec } from "@stockwatcher/chart-core";
 import { CandleChart, type ChartTrading } from "@stockwatcher/chart-web";
 import { cn, Tip } from "@stockwatcher/chart-web/ui";
 import { TickerLabel } from "../lib/TickerLabel.tsx";
@@ -47,6 +47,14 @@ export function ChartCell({ index, slot, symbol, feed, trading, selected, showSe
   const layers = useApp((s) => s.layers);
   const chartSettings = useApp((s) => s.chartSettings);
   const fromRemote = useApp((s) => s.chartSettingsFromRemote);
+  // Settings → Chart → "Same indicators and levels on every chart" (owner, 2026-10-18): linked, every
+  // chart shows and edits the shared set; unlinked, this chart has its own (app-state slot), which
+  // starts as the shared one and is written back to the slot only.
+  const linked = chartSettings.visibility.linkStudies;
+  const ownIndicators = linked ? indicators : (slot.indicators ?? indicators);
+  const ownLayers = linked ? layers : (slot.layers ?? layers);
+  const onIndicatorsChange = linked ? app.setIndicators : (next: IndicatorSpec[]) => app.setDashboardIndicators(index, next);
+  const onLayersChange = linked ? app.setLayers : (next: ChartLayers) => app.setDashboardLayers(index, next);
   const drawingSettings = useApp((s) => s.drawingSettings);
   const tradeQty = useApp((s) => s.tradeQty);
   // This symbol's drawings, synced per drawing like the chart page's.
@@ -115,10 +123,10 @@ export function ChartCell({ index, slot, symbol, feed, trading, selected, showSe
         persistKey={`sw-dash:${index}`}
         // A cell is small: the floating drawing tools would cover the ticker, so they start hidden (the pencil shows them).
         defaultToolsVisible={false}
-        indicators={indicators}
-        onIndicatorsChange={app.setIndicators}
-        layers={layers}
-        onLayersChange={app.setLayers}
+        indicators={ownIndicators}
+        onIndicatorsChange={onIndicatorsChange}
+        layers={ownLayers}
+        onLayersChange={onLayersChange}
         settings={chartSettings}
         onSettingsChange={app.setChartSettings}
         settingsFromRemote={fromRemote}
