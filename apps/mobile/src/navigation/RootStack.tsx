@@ -4,6 +4,7 @@ import type { NavigatorScreenParams } from "@react-navigation/native";
 
 import { motion } from "../motion/transitions";
 import { useReducedMotion } from "../motion/useReducedMotion";
+import { TickerChartScreen } from "../screens/TickerChartScreen";
 import { MainTabs, type MainTabParamList } from "./MainTabs";
 
 // Blank stack, not native-stack: motion runs in our Reanimated worklets so
@@ -13,6 +14,8 @@ import { MainTabs, type MainTabParamList } from "./MainTabs";
 export type RootStackParamList = {
   /** The main navigation's tabs (dashboard, chart). Pushed screens go beside it in this stack. */
   Home: NavigatorScreenParams<MainTabParamList> | undefined;
+  /** A ticker's chart, presented as a modal over everything (owner, 2026-10-19). */
+  TickerChart: { symbol: string };
 };
 
 const Stack = createBlankStackNavigator<RootStackParamList>();
@@ -23,6 +26,7 @@ export function RootStack() {
   return (
     <Stack.Navigator initialRouteName="Home" screenOptions={m.screenPush}>
       <Stack.Screen name="Home" component={MainTabs} options={m.root} />
+      <Stack.Screen name="TickerChart" component={TickerChartScreen} options={m.chartModal} />
     </Stack.Navigator>
   );
 }

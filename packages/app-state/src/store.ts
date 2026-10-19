@@ -126,6 +126,8 @@ export interface AppState {
   setDashboardLayers(slot: number, next: ChartLayers): void;
   /** Loads a ticker into the selected dashboard chart. */
   loadIntoSelected(symbol: string): void;
+  /** Puts a ticker at the top of the search recents only (the phone's chart modal: it opens a ticker without loading it into any chart). */
+  rememberTicker(symbol: string): void;
   /** Adds an alert (or puts a deleted one back: Undo), written as one entry of `alerts`. The sessions picked become the next alert's default. */
   saveAlert(rule: AlertRule): void;
   /** Edits an alert: `editedAt` moves on, so the server re-arms it (a dragged line, the form). */
@@ -245,6 +247,10 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
       sync.set(APP_NS.searchRecents, pushRecentTicker(get().searchRecents, symbol));
       writeView({ symbol });
       set({ inspectT: null });
+    },
+    rememberTicker: (raw) => {
+      const symbol = parseSymbol(raw);
+      if (symbol) sync.set(APP_NS.searchRecents, pushRecentTicker(get().searchRecents, symbol));
     },
     setTimeframe: (timeframe) => {
       writeView({ timeframe });

@@ -22,7 +22,7 @@ function changeText(pct: number): string {
  * (owner, 2026-10-19: "the gauge UI should be smaller, fit them all on a single row"), so all six
  * are in view without scrolling, above the charts. Each cell: the dial with its 0–100 reading,
  * the ticker and the change (the price too when the cell is wide enough, on the unfolded Fold).
- * Tap a cell to load its ticker into the selected chart; tap, then hold copies it.
+ * Tap a cell to open its ticker's chart (the chart modal); tap, then hold copies it.
  */
 export function HaltWatcher({ channel, onPick, reducedMotion }: { channel: PressureChannel; onPick: (symbol: string) => void; reducedMotion: boolean }) {
   const board = usePressureBoard(channel);
@@ -53,7 +53,7 @@ const MiniCard = memo(function MiniCard({ card, width, onPick, reducedMotion }: 
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={`${card.symbol} ${formatPrice(card.price)}, ${status}, ${phrase}`}
-      accessibilityHint="Loads it into the selected chart. Tap, then press and hold to copy"
+      accessibilityHint="Opens its chart. Tap, then press and hold to copy"
       {...press}
       style={({ pressed }) => [styles.cell, { width }, pressed && { backgroundColor: UI.row }]}
     >
