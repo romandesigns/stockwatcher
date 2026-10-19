@@ -117,7 +117,7 @@ import { PositionPlanCard } from "./PositionPlanCard.tsx";
 import { Tip, TooltipProvider } from "./ui/tooltip.tsx";
 import { TradeMenu, TRADE_MENU_SIZES } from "./TradeMenu.tsx";
 import { PRICE_SCALE_LABELS, PriceAxisMenu } from "./PriceAxisMenu.tsx";
-import { cn } from "./ui/utils.ts";
+import { cn, TOUCH_HIT } from "./ui/utils.ts";
 import { useCanvas, useChartTheme } from "./useCanvas.ts";
 import { prefersReducedMotion, useTween } from "./useTween.ts";
 
@@ -1237,7 +1237,8 @@ export function CandleChart({
         onTimeframeChange={toolbarInChart || headerRow ? onTimeframeChange : undefined}
         timeframeControl={timeframeControl}
         // The same 8 px inset as the readout and the legends under it, so the header's ticker lines up with them.
-        start={headerRow ? <div className="pl-2">{heading}</div> : undefined}
+        // No heading (the phone chart page keeps its ticker in the page header): no empty start to take room.
+        start={headerRow && heading ? <div className="pl-2">{heading}</div> : undefined}
 
         tool={tool}
         onToolChange={changeTool}
@@ -1391,7 +1392,7 @@ export function CandleChart({
             }}
             // Beside the volume pane, where the price column is otherwise empty, so it never covers a price label.
             style={{ left: model.geometry.priceAxis.x + model.geometry.priceAxis.w / 2 - 10, top: model.geometry.volume ? model.geometry.volume.y + model.geometry.volume.h / 2 - 10 : model.geometry.plot.y + model.geometry.plot.h - 24 }}
-            className="absolute z-10 grid size-5 place-items-center rounded-md bg-card font-mono text-[11px] font-semibold text-muted-foreground shadow-sm transition-[opacity,scale,color,background-color] duration-150 outline-none hover:bg-bg-row hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring starting:scale-90 starting:opacity-0"
+            className={cn(TOUCH_HIT, "absolute z-10 grid size-5 place-items-center rounded-md bg-card font-mono text-[11px] font-semibold text-muted-foreground shadow-sm transition-[opacity,scale,color,background-color] duration-150 outline-none hover:bg-bg-row hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring starting:scale-90 starting:opacity-0")}
           >
             A
           </button>
@@ -1405,7 +1406,7 @@ export function CandleChart({
           onClick={backToLatest}
           // Bottom-right of the price pane, clear of the price axis and the volume bars.
           style={{ left: model.geometry.plot.x + model.geometry.plot.w - 40, top: model.geometry.plot.y + model.geometry.plot.h - 40 }}
-          className="absolute z-10 grid size-8 place-items-center rounded-full bg-card text-foreground shadow-lg transition-[opacity,scale,background-color] duration-150 outline-none hover:bg-bg-row focus-visible:ring-2 focus-visible:ring-ring starting:scale-90 starting:opacity-0"
+          className={cn(TOUCH_HIT, "absolute z-10 grid size-8 place-items-center rounded-full bg-card text-foreground shadow-lg transition-[opacity,scale,background-color] duration-150 outline-none hover:bg-bg-row focus-visible:ring-2 focus-visible:ring-ring starting:scale-90 starting:opacity-0")}
         >
           <Icon name="toLatest" width={14} height={14} />
         </button>
@@ -1419,9 +1420,9 @@ export function CandleChart({
         // the ticker, the readout and the legends share one left edge (owner, 2026-10-18).
         <div className="pointer-events-none absolute top-1 left-0.5 z-[5] flex max-w-[calc(100%-120px)] flex-col gap-0.5 px-1.5 py-1">
           {cornerHeading}
-          {/* One line at any width: items never shrink or wrap inside (a phone-width chart wrapped "O" above its value, onto the legend under it); the row clips instead. */}
+          {/* One line at any width: items never shrink or wrap inside (a phone-width chart wrapped "O" above its value, onto the legend under it). Items that do not fit wrap onto a second line that the one-line height hides, so the row drops whole items from its end (volume, "Live") instead of cutting one in half past the chart's edge (2026-10-19, phones). */}
           {inspector && (
-            <CandleInspector className="pointer-events-auto flex-nowrap overflow-hidden whitespace-nowrap [&>*]:shrink-0" slot={inspectT === null ? (slots.at(-1) ?? null) : (slots[slotIndexOf(slots, inspectT) ?? -1] ?? null)} timeframe={timeframe} />
+            <CandleInspector className="pointer-events-auto max-h-[1lh] flex-wrap overflow-hidden whitespace-nowrap [&>*]:shrink-0" slot={inspectT === null ? (slots.at(-1) ?? null) : (slots[slotIndexOf(slots, inspectT) ?? -1] ?? null)} timeframe={timeframe} />
           )}
         </div>
       )}

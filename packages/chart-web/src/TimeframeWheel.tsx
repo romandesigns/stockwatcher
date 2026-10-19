@@ -110,7 +110,8 @@ export function TimeframeWheel({ value, onChange, className }: { value: Timefram
         onPointerCancel={endDrag}
         onKeyDown={onKeyDown}
         style={{ height: HEIGHT }}
-        className={cn("flex shrink-0 cursor-ns-resize touch-none items-center gap-1.5 rounded-md px-1 outline-none select-none focus-visible:ring-2 focus-visible:ring-ring", className)}
+        // 44 px tall to a finger (coarse pointers); the drum itself stays 28 and centred.
+        className={cn("flex shrink-0 cursor-ns-resize touch-none items-center pointer-coarse:min-h-11 gap-1.5 rounded-md px-1 outline-none select-none focus-visible:ring-2 focus-visible:ring-ring", className)}
       >
         {/* Fixed width, so the drum does not shift as "1m" becomes "15s". Only the current label shows; a neighbour fades in as the wheel turns towards it. */}
         <div className="relative w-6 overflow-hidden" style={{ height: HEIGHT }}>

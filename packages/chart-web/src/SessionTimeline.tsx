@@ -41,8 +41,9 @@ export function SessionTimeline({ bands, buckets, bucketMs, now, variant = "full
   const end = bands[bands.length - 1]?.end ?? start;
   // Seeking (owner, 2026-10-17; the spec's pending "UI seek"): a click jumps there; with focus,
   // arrows step 5 minutes (Shift: 30). It is a slider over the trading day for assistive tech.
+  // A finger needs 44 px of height to land on it (coarse pointers only; the minimal strip is 32).
   return (
-    <div ref={containerRef} className={cn("relative", variant === "full" ? "h-[76px]" : variant === "minimal" ? "h-8" : "h-14", className)}>
+    <div ref={containerRef} className={cn("relative", variant === "full" ? "h-[76px]" : variant === "minimal" ? "h-8 pointer-coarse:h-11" : "h-14", className)}>
       <canvas
         ref={canvasRef}
         role="slider"

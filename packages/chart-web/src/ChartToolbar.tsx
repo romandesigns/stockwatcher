@@ -120,7 +120,10 @@ export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChang
       </Tip>
       </>
       )}
-      {start && <div className="min-w-0 flex-1 overflow-hidden">{start}</div>}
+      {/* On touch the heading keeps room for itself (basis 10rem): a phone-width row then wraps the
+          tools onto a second line instead of clipping the ticker to "FXL". 44 px tall so the
+          ticker's touch area is not cut by this clip. A mouse layout is unchanged. */}
+      {start && <div className="min-w-0 flex-1 overflow-hidden pointer-coarse:flex pointer-coarse:min-h-11 pointer-coarse:basis-40 pointer-coarse:items-center">{start}</div>}
       {/* One group on the right, kept on one line: position, timeframes, drawing tools, indicators, levels, Trade. */}
       <div className="ml-auto flex flex-nowrap items-center gap-1.5">
         {pos && (

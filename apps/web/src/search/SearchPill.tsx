@@ -1,5 +1,5 @@
 import { Icon } from "@stockwatcher/chart-web";
-import { cn } from "@stockwatcher/chart-web/ui";
+import { cn, TOUCH_HIT } from "@stockwatcher/chart-web/ui";
 import { forwardRef } from "react";
 
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
@@ -7,7 +7,8 @@ const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigat
 /**
  * The header's ticker quick-open pill (VS Code's Ctrl+P look): centred in a page header, it opens
  * TickerSearch, which drops down into this pill's exact footprint (pass its ref as `anchor`).
- * Shared by the chart page and the dashboard so both headers look and behave the same.
+ * Shared by the chart page and the dashboard so both headers look and behave the same. 40 px tall
+ * with a 44 px touch area on a coarse pointer (tablets).
  */
 export const SearchPill = forwardRef<HTMLButtonElement, { onOpen: () => void; className?: string }>(function SearchPill({ onOpen, className }, ref) {
   return (
@@ -16,7 +17,8 @@ export const SearchPill = forwardRef<HTMLButtonElement, { onOpen: () => void; cl
       type="button"
       onClick={onOpen}
       className={cn(
-        "flex h-8 w-(--search-w) items-center gap-2 rounded-lg bg-card px-3 text-xs text-text-faint outline-none hover:bg-bg-row hover:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-3.5",
+        "relative flex h-8 w-(--search-w) items-center gap-2 rounded-lg bg-card px-3 text-xs text-text-faint outline-none hover:bg-bg-row hover:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:h-10 [&_svg]:size-3.5",
+        TOUCH_HIT,
         className,
       )}
     >

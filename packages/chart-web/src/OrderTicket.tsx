@@ -33,7 +33,8 @@ const TYPES: readonly { v: Exclude<OrderType, "stop_limit">; label: string }[] =
 
 const QUICK_QTY = [100, 500, 1000] as const;
 
-const inputClass = "h-8 w-full rounded-md bg-bg-row px-2 font-mono text-sm tabular-nums text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring/50";
+// 44 px and 16 px text on touch: a finger-size field, and iOS does not zoom into a field of 16 px or more.
+const inputClass = "h-8 w-full rounded-md bg-bg-row px-2 font-mono text-sm tabular-nums text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring/50 pointer-coarse:h-11 pointer-coarse:text-base";
 
 /**
  * The simulated order ticket. Opened at a price (the "+" button), it starts

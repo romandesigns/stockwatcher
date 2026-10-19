@@ -78,13 +78,15 @@ const Row = memo(function Row({ row: r, index: i, active, current, onHover, onCh
         onMouseMove={() => onHover(t.symbol)}
         onClick={() => onChoose(r)}
         className={cn(
-          "grid cursor-pointer grid-cols-[64px_minmax(0,1fr)_auto] items-center gap-3 rounded-lg px-2.5 py-1.5",
+          // 44 px rows to a finger (coarse pointers; owner 2026-10-19).
+          "grid cursor-pointer grid-cols-[64px_minmax(0,1fr)_auto] items-center gap-3 rounded-lg px-2.5 py-1.5 pointer-coarse:min-h-11",
           active && "bg-bg-raised",
           !t.available && "cursor-default opacity-55",
         )}
       >
         <Highlight text={t.symbol} indices={r.symbolIdx} className="font-mono text-[13px] font-medium text-foreground" />
-        <span className="flex min-w-0 items-baseline gap-2">
+        {/* Clipped: at phone width the exchange (which never shrinks) ran out of this column over the price's badges. */}
+        <span className="flex min-w-0 items-baseline gap-2 overflow-hidden">
           <Highlight text={t.name} indices={r.nameIdx} className="truncate text-[13px] text-muted-foreground" />
           {t.exchange && <span className="shrink-0 text-[10px] text-text-faint">{t.exchange}</span>}
         </span>
@@ -267,7 +269,8 @@ export function TickerSearch({ open, onOpenChange, symbols, quotes, mock, curren
             aria-autocomplete="list"
             spellCheck={false}
             autoComplete="off"
-            className="h-9 w-full bg-transparent text-sm text-foreground outline-none placeholder:text-text-faint"
+            // 16 px on touch: iOS zooms the page into any focused field set smaller.
+            className="h-9 w-full bg-transparent text-sm text-foreground outline-none placeholder:text-text-faint pointer-coarse:h-11 pointer-coarse:text-base"
           />
           <kbd className="shrink-0 rounded bg-bg-row px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">Esc</kbd>
         </div>
@@ -286,7 +289,8 @@ export function TickerSearch({ open, onOpenChange, symbols, quotes, mock, curren
                     onMouseDown={(e) => e.preventDefault()}
                     onClick={() => toggleFilter(c.id)}
                     className={cn(
-                      "h-6 rounded-md px-1.5 text-[11px] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring",
+                      // Finger-size chips on a coarse pointer; the row wraps, so they never overflow the panel.
+                      "h-6 rounded-md px-1.5 text-[11px] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:h-11 pointer-coarse:px-2.5 pointer-coarse:text-xs",
                       on ? "bg-bg-raised text-foreground" : "bg-bg-row/60 text-muted-foreground hover:text-foreground",
                     )}
                   >

@@ -1,9 +1,14 @@
 import { Button as ButtonPrimitive } from "@base-ui/react/button"
 import { cva, type VariantProps } from "class-variance-authority"
-import { cn } from "./utils.ts"
+import { cn, TOUCH_HIT } from "./utils.ts"
 
+// Touch (owner, 2026-10-19: the web app on phones and tablets): on a coarse pointer every size
+// grows to 40 px and TOUCH_HIT pads the tap area to 44, so a toolbar of 28 px icon chips stays
+// usable by finger. Consumers that set their own size (size-7, h-7) keep it on a mouse, since
+// their classes carry no pointer-coarse: variant and the coarse rules sit later in the CSS.
+// `relative` hosts the hit area; a consumer's `absolute` still wins (tailwind-merge keeps the last).
 const buttonVariants = cva(
-  "group/button inline-flex shrink-0 items-center justify-center rounded-lg bg-clip-padding text-sm font-medium whitespace-nowrap transition-all outline-none select-none focus-visible:ring-3 focus-visible:ring-ring/50 active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-none disabled:opacity-50 aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+  ["relative group/button inline-flex shrink-0 items-center justify-center rounded-lg bg-clip-padding text-sm font-medium whitespace-nowrap transition-all outline-none select-none focus-visible:ring-3 focus-visible:ring-ring/50 active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-none disabled:opacity-50 aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4", TOUCH_HIT],
   {
     variants: {
       // Cut down to what the chart controls use. default spends the accent
@@ -19,9 +24,9 @@ const buttonVariants = cva(
       },
       size: {
         default:
-          "h-8 gap-1.5 px-2.5 has-data-[icon=inline-end]:pr-2 has-data-[icon=inline-start]:pl-2",
-        sm: "h-7 gap-1 px-2 text-xs",
-        icon: "size-8",
+          "h-8 gap-1.5 px-2.5 has-data-[icon=inline-end]:pr-2 has-data-[icon=inline-start]:pl-2 pointer-coarse:h-10",
+        sm: "h-7 gap-1 px-2 text-xs pointer-coarse:h-10 pointer-coarse:min-w-10",
+        icon: "size-8 pointer-coarse:size-10",
       },
     },
     defaultVariants: {

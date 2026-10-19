@@ -60,7 +60,7 @@ export function QuickAlertCard({ open, onOpenChange, anchor, symbol, draft, last
             <span className="text-[11.5px] text-muted-foreground">{defaultsText}</span>
             <div className="flex gap-1.5">
               {/* The one accent on the card: the primary action. */}
-              <button type="submit" autoFocus className="h-[30px] flex-1 rounded-lg bg-primary text-xs font-semibold text-primary-foreground outline-none hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-ring">
+              <button type="submit" autoFocus className="h-[30px] flex-1 rounded-lg bg-primary pointer-coarse:h-11 text-xs font-semibold text-primary-foreground outline-none hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-ring">
                 Create
               </button>
               {onMore && (
@@ -70,7 +70,7 @@ export function QuickAlertCard({ open, onOpenChange, anchor, symbol, draft, last
                     onOpenChange(false);
                     onMore(draft);
                   }}
-                  className="h-[30px] rounded-lg bg-bg-raised px-2.5 text-xs font-medium text-foreground outline-none hover:bg-bg-row focus-visible:ring-2 focus-visible:ring-ring"
+                  className="h-[30px] rounded-lg bg-bg-raised px-2.5 pointer-coarse:h-11 pointer-coarse:px-4 text-xs font-medium text-foreground outline-none hover:bg-bg-row focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   More…
                 </button>

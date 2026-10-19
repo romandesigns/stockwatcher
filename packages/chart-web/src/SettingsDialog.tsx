@@ -5,7 +5,7 @@ import { Dialog, DialogClose, DialogContent, DialogTitle } from "./ui/dialog.tsx
 import { ScrollArea } from "./ui/scroll-area.tsx";
 import { Tabs, TabsContent, TabsIndicator, TabsList, TabsTrigger } from "./ui/tabs.tsx";
 import { Tip } from "./ui/tooltip.tsx";
-import { cn } from "./ui/utils.ts";
+import { cn, TOUCH_HIT } from "./ui/utils.ts";
 
 /** One section of the dialog: a future section is one more entry in the list the host passes. */
 export interface SettingsDialogSection {
@@ -55,8 +55,11 @@ const CONNECTED_SIDE =
   "rounded-l-lg rounded-r-none bg-card before:pointer-events-none before:absolute before:right-0 before:bottom-full before:size-2 before:bg-[radial-gradient(circle_at_0_0,transparent_7.5px,var(--color-card)_8px)] after:pointer-events-none after:absolute after:top-full after:right-0 after:size-2 after:bg-[radial-gradient(circle_at_0_100%,transparent_7.5px,var(--color-card)_8px)]";
 
 /** The ✕, the same control in both layouts: top-right of the dialog, outside anything that slides. */
-const CLOSE_CLASS =
-  "absolute top-3 right-3 z-10 grid size-8 place-items-center rounded-md text-muted-foreground outline-none transition-colors hover:bg-bg-row hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-4";
+// 40 px with a 44 px touch area on a coarse pointer (TOUCH_HIT; the button is already absolute).
+const CLOSE_CLASS = cn(
+  "absolute top-3 right-3 z-10 grid size-8 place-items-center rounded-md text-muted-foreground outline-none transition-colors hover:bg-bg-row hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:top-2 pointer-coarse:right-2 pointer-coarse:size-10 [&_svg]:size-4",
+  TOUCH_HIT,
+);
 
 const loadTab = (key: string | undefined): unknown => {
   if (!key) return null;

@@ -1,5 +1,5 @@
 import { chartSettingsSection, drawingSettingsSection, Icon, SettingsDialog } from "@stockwatcher/chart-web";
-import { Tip, cn } from "@stockwatcher/chart-web/ui";
+import { Tip, TOUCH_HIT, cn } from "@stockwatcher/chart-web/ui";
 import { useState } from "react";
 import { getAppStore, useApp } from "../state/store.ts";
 import { dataSourceSection } from "./dataSource.tsx";
@@ -20,7 +20,8 @@ export function AppSettingsDialog() {
 
 /**
  * The Settings gear for a page header, used only where there is no rail (the phone layout): a quiet
- * round 28 px chip, raised and accent duotone while its dialog is open.
+ * round 28 px chip, raised and accent duotone while its dialog is open; 40 px with a 44 px touch
+ * area on a coarse pointer.
  */
 export function SettingsButton() {
   const [app] = useState(() => getAppStore().getState());
@@ -34,7 +35,8 @@ export function SettingsButton() {
         aria-expanded={open}
         onClick={() => app.setSettingsOpen(true)}
         className={cn(
-          "inline-grid size-7 shrink-0 place-items-center rounded-full text-muted-foreground outline-none transition-colors hover:bg-bg-row hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-3.5",
+          "relative inline-grid size-7 shrink-0 place-items-center rounded-full text-muted-foreground outline-none transition-colors hover:bg-bg-row hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:size-10 [&_svg]:size-3.5",
+          TOUCH_HIT,
           open ? "bg-bg-raised text-primary" : "bg-card",
         )}
       >

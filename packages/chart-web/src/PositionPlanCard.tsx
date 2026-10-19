@@ -13,7 +13,8 @@ export interface PositionPlanCardProps {
   className?: string;
 }
 
-const inputClass = "h-8 w-full rounded-md bg-bg-row px-2 font-mono text-[13px] tabular-nums text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring/50";
+// 44 px and 16 px text on touch: a finger-size field, and iOS does not zoom into a field of 16 px or more.
+const inputClass = "h-8 w-full rounded-md bg-bg-row px-2 font-mono text-[13px] tabular-nums text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring/50 pointer-coarse:h-11 pointer-coarse:text-base";
 const money = (v: number) => `$${Math.abs(v).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 // Stats are glanceable: whole dollars from $100 up, so "−$100" fits its tile.
 const short = (v: number) => `$${Math.abs(v) >= 100 ? Math.round(Math.abs(v)).toLocaleString("en-US") : Math.abs(v).toFixed(2)}`;
