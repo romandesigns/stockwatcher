@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createPressureChannel, gaugeCaption, gaugeGeometry, gaugeTone, GAUGE, haltLine, haltSentence, LULD_PAUSE_MS, pressureBoardFrom, pressurePhrase } from "./pressure.ts";
+import { createPressureChannel, gaugeCaption, gaugeGeometry, gaugeTone, haltLine, haltSentence, LULD_PAUSE_MS, pressureBoardFrom, pressurePhrase } from "./pressure.ts";
 import { parseServerMessage, type PressureMessage } from "./protocol.ts";
 import { createWsClient, type WebSocketLike } from "./ws.ts";
 
