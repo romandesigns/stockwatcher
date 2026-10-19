@@ -173,6 +173,7 @@ export function Dashboard({ choice, feed }: Connection) {
                 trading={trading}
                 selected={selected === i}
                 showSelection={dashboard.count > 1 && focused}
+                multi={dashboard.count > 1}
                 fixture={current.fixtureData}
                 onSelect={select}
                 onPickTicker={pickFor}

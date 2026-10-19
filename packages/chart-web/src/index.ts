@@ -15,6 +15,7 @@ export { ReplayControls, DEFAULT_SPEEDS, speedLabel, type ReplayControlsProps } 
 export { SessionTimeline, type SessionTimelineProps } from "./SessionTimeline.tsx";
 export { Tape, type TapeProps } from "./Tape.tsx";
 export { TimeframeSelector, type TimeframeSelectorProps } from "./TimeframeSelector.tsx";
+export { TimeframeWheel } from "./TimeframeWheel.tsx";
 export { VolumeProfile, type VolumeProfileProps } from "./VolumeProfile.tsx";
 export { drawDisplayList, type Ctx2D } from "./draw.ts";
 export { CSS_VARS, DEFAULT_CHART_THEME, readChartTheme } from "./theme.ts";
