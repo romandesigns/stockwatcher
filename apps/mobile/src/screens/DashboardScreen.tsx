@@ -1,5 +1,5 @@
 import type { DashboardSource } from "@stockwatcher/app-state";
-import { Icon, Segmented } from "@stockwatcher/chart-native";
+import { Icon } from "@stockwatcher/chart-native";
 import { lastSessionLabel } from "@stockwatcher/shared";
 import { useCallback, useEffect, useState } from "react";
 import { Pressable, StyleSheet, Text, useWindowDimensions, View } from "react-native";
@@ -20,16 +20,10 @@ import { colors, fonts } from "../theme";
 import { SignInScreen } from "./SignInScreen";
 
 /**
- * The region under the panel (Halt watcher or Most active): about two compact gauge cards on a
- * phone, two rows of two on a tablet-size screen (the Fold unfolded, the design's Fold board).
+ * The Most active list under the panel. The Halt watcher is one row of six mini gauges above the
+ * charts (owner, 2026-10-19), so the region under them no longer switches between the two.
  */
-const LOWER_HEIGHT = { phone: 236, tablet: 300 } as const;
-
-type Lower = "halt" | "active";
-const LOWER_OPTIONS = [
-  { value: "halt", label: "Halt watcher", a11y: "Halt watcher: top 6 by pressure" },
-  { value: "active", label: "Most active", a11y: "Most active tickers" },
-] as const;
+const LOWER_HEIGHT = { phone: 200, tablet: 260 } as const;
 
 /**
  * The main page, the first tab (owner, 2026-10-18): the LIVE market's charts, a "screen × n"
@@ -69,8 +63,6 @@ function DashboardView({ feed, token, source }: { feed: MobileFeed; token: strin
   const trading = usePaperTrading(feed);
   const [searchOpen, setSearchOpen] = useState(false);
   const [countOpen, setCountOpen] = useState(false);
-  // Which list fills the region under the charts: this screen's view, not synced.
-  const [lower, setLower] = useState<Lower>("halt");
   const [panel, setPanel] = useState({ width: 0, height: 0 });
   const screen = useWindowDimensions();
   const maxCharts = maxChartsFor(screen.width, screen.height);
@@ -142,6 +134,9 @@ function DashboardView({ feed, token, source }: { feed: MobileFeed; token: strin
         )}
       </View>
 
+      {/* One row of six mini gauges, all in view (owner, 2026-10-19). */}
+      <HaltWatcher channel={feed.pressure} onPick={app.loadIntoSelected} reducedMotion={reducedMotion} />
+
       <View style={styles.panel} onLayout={(e) => setPanel({ width: e.nativeEvent.layout.width, height: e.nativeEvent.layout.height })}>
         {candidates.length === 0 && !fixture ? (
           // The dashboard reads the LIVE market: an empty list means nothing has traded yet this
@@ -156,17 +151,8 @@ function DashboardView({ feed, token, source }: { feed: MobileFeed; token: strin
         )}
       </View>
 
-      {/* Under the charts (owner, 2026-10-19): the Halt watcher by default, one column of gauge
-          cards on a phone and two on a tablet-size screen, or the Most active list. */}
-      <View style={{ height: maxCharts > 1 ? LOWER_HEIGHT.tablet : LOWER_HEIGHT.phone, gap: 6 }}>
-        <Segmented options={LOWER_OPTIONS} value={lower} onChange={setLower} fill />
-        <View style={{ flex: 1, minHeight: 0 }}>
-          {lower === "halt" ? (
-            <HaltWatcher channel={feed.pressure} columns={maxCharts > 1 ? 2 : 1} onPick={app.loadIntoSelected} reducedMotion={reducedMotion} />
-          ) : (
-            <TickerList quotes={feed.quotes} symbols={candidates} selectedSymbol={shown[selected] ?? ""} selectedIndex={selected} onPick={app.loadIntoSelected} />
-          )}
-        </View>
+      <View style={{ height: maxCharts > 1 ? LOWER_HEIGHT.tablet : LOWER_HEIGHT.phone }}>
+        <TickerList quotes={feed.quotes} symbols={candidates} selectedSymbol={shown[selected] ?? ""} selectedIndex={selected} onPick={app.loadIntoSelected} />
       </View>
 
       <TickerSearchSheet open={searchOpen} onClose={() => setSearchOpen(false)} symbols={candidates} quotes={feed.quotes} mock={fixture} current={shown[selected] ?? ""} recents={recents} onSelect={app.loadIntoSelected} reducedMotion={reducedMotion} />

@@ -23,9 +23,7 @@
 //!   nothing about pressure, and ranking them would fill the board with noise. (A card already on
 //!   the board keeps its place down to half of each, see "Ranking".)
 //! - `buy_share = B / V`; the side is **bull** when `buy_share >= 0.5`, else **bear**.
-//! - **Imbalance** `I = min(1, |2·buy_share − 1| / FULL_IMBALANCE)`: an 80/20 split already counts
-//!   as fully one-sided, because the tick rule misclassifies a good share of prints and a pure
-//!   100/0 minute practically never happens.
+//! - **Imbalance** `I = min(1, |2·buy_share − 1| / FULL_IMBALANCE)`: linear up to a 100/0 minute.
 //! - **Pace** `R = V / A`, where `A` is the symbol's own average volume per minute so far in the
 //!   session (its OHLC-counted volume since the session's first such print, divided by the minutes
 //!   since that print, at least one). A symbol's own average, not a market-wide one: 50k shares a
@@ -38,7 +36,16 @@
 //!   explode the scale (its first minute has `R = 1`, since the window is the whole session).
 //! - **Pressure** `= round(100 · I · (0.4 + 0.6 · P))`, 0–100. Imbalance gates it: two-sided
 //!   flow is not pressure however heavy; heavy one-sided flow scores up to 100, one-sided flow at
-//!   the symbol's ordinary pace about 57.
+//!   the symbol's ordinary pace about 49.
+//!
+//! **Calibration** (owner, 2026-10-19: the gauge's ring fills with the score, so the score has to
+//! tell the board's cards apart). The first constants, full imbalance at 80/20 and full pace at
+//! 10×, put every card at 97–100 on live data, because reaching the top six takes exactly that:
+//! over 12.5 minutes of the live board (2,970 card readings, 117 symbols, 2026-10-19 ~14:25 ET)
+//! the cards' `|2·buy_share − 1|` ran 0.60 / 0.70 / 0.84 / 0.96 / 1.00 and their pace 9 / 12 / 15
+//! / 29 / 70× (5th / 25th / 50th / 75th / 95th percentiles). Full imbalance at 100/0 and full
+//! pace at 100× spread the same readings over 46 / 54 / 66 / 74 / 87, 0.6 % of them at 100.
+//! The shape is unchanged, so the ranking and [`SWAP_MARGIN`] behave as before.
 //!
 //! Deterministic (a pure function of the prints applied and the clock, [`score`]) and causal (it
 //! reads only prints already applied, at or before the clock that ranks them).
@@ -76,10 +83,12 @@ pub const WINDOW: i64 = 60 * 1_000_000_000;
 pub const MIN_TRADES: usize = 10;
 /// Minimum volume (shares) with a side in the window for a score.
 pub const MIN_VOLUME: u64 = 2_000;
-/// `|2·buy_share − 1|` at which the imbalance counts as complete (0.6 = an 80/20 split).
-pub const FULL_IMBALANCE: f64 = 0.6;
-/// Pace (multiple of the symbol's own average volume per minute) at which participation is full.
-pub const PACE_CAP: f64 = 10.0;
+/// `|2·buy_share − 1|` at which the imbalance counts as complete (1.0 = a 100/0 minute;
+/// calibration in the module docs).
+pub const FULL_IMBALANCE: f64 = 1.0;
+/// Pace (multiple of the symbol's own average volume per minute) at which participation is full
+/// (calibration in the module docs).
+pub const PACE_CAP: f64 = 100.0;
 /// Cards on the board.
 pub const BOARD_SIZE: usize = 6;
 /// Points an outsider must lead a member by to replace it, and a card its upper neighbour by to
@@ -532,26 +541,29 @@ mod tests {
         assert_eq!(s.pressure, 0);
         assert!(s.bull(), "a tie counts as bullish");
         // One-sided at the symbol's ordinary pace (the window is one minute of an even day):
-        // I = 1, R = 1, P = ln 2 / ln 11.
+        // I = 1, R = 1, P = ln 2 / ln 101.
         let s = score(10_000, 0, 50, 300_000, 30 * MINUTE).unwrap();
         assert!((s.pace - 1.0).abs() < 1e-9);
-        let expect = (100.0 * (0.4 + 0.6 * (2f64.ln() / 11f64.ln()))).round() as u8;
+        let expect = (100.0 * (0.4 + 0.6 * (2f64.ln() / 101f64.ln()))).round() as u8;
         assert_eq!(s.pressure, expect);
-        assert_eq!(expect, 57);
-        // 80/20 is already complete imbalance; at 10× pace and beyond, 100.
+        assert_eq!(expect, 49);
+        // 80/20 at 10× pace, the weakest card a live board held (it used to score 100):
+        // I = 0.6, P = ln 11 / ln 101.
         let s = score(80_000, 20_000, 200, 300_000, 30 * MINUTE).unwrap();
         assert!((s.pace - 10.0).abs() < 1e-9);
-        assert_eq!(s.pressure, 100);
-        let s = score(80_000, 20_000, 200, 100_000, 30 * MINUTE).unwrap();
+        assert_eq!(s.pressure, 43);
+        // Only a 100/0 minute at 100× pace or beyond fills the gauge, never above 100.
+        let s = score(100_000, 0, 200, 100_000, 200 * MINUTE).unwrap();
+        assert!((s.pace - 200.0).abs() < 1e-9);
         assert_eq!(s.pressure, 100, "capped, never above 100");
         // Bearish mirrors bullish.
         let bear = score(20_000, 80_000, 200, 300_000, 30 * MINUTE).unwrap();
         assert!(!bear.bull());
-        assert_eq!(bear.pressure, 100);
-        // 65/35 (I = 0.5) at 3× pace.
+        assert_eq!(bear.pressure, 43);
+        // 65/35 (I = 0.3) at 3× pace.
         let s = score(19_500, 10_500, 60, 300_000, 30 * MINUTE).unwrap();
-        let p = (4f64.ln() / 11f64.ln()).min(1.0);
-        assert_eq!(s.pressure, (100.0 * 0.5 * (0.4 + 0.6 * p)).round() as u8);
+        let p = (4f64.ln() / 101f64.ln()).min(1.0);
+        assert_eq!(s.pressure, (100.0 * 0.3 * (0.4 + 0.6 * p)).round() as u8);
     }
 
     #[test]
@@ -559,7 +571,7 @@ mod tests {
         // The window is the whole session: R = 1, not V / tiny.
         let s = score(30_000, 0, 30, 30_000, 5 * 1_000_000_000).unwrap();
         assert!((s.pace - 1.0).abs() < 1e-9);
-        assert_eq!(s.pressure, 57);
+        assert_eq!(s.pressure, 49);
     }
 
     #[test]
