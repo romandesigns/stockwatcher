@@ -1118,7 +1118,8 @@ export function CandleChart({
         timeframe={toolbarInChart || headerRow ? timeframe : undefined}
         onTimeframeChange={toolbarInChart || headerRow ? onTimeframeChange : undefined}
         timeframeControl={timeframeControl}
-        start={headerRow ? heading : undefined}
+        // The same 8 px inset as the readout and the legends under it, so the header's ticker lines up with them.
+        start={headerRow ? <div className="pl-2">{heading}</div> : undefined}
 
         tool={tool}
         onToolChange={changeTool}
@@ -1224,8 +1225,10 @@ export function CandleChart({
       {(cornerHeading || inspector) && (
         // Top-left corner of the chart: the ticker line, then the readout, left-aligned. It does not
         // take pointer events, so the chart under it still pans, scrubs and inspects.
-        // Transparent (owner, 2026-10-17): the text sits straight on the chart.
-        <div className="pointer-events-none absolute top-1 left-1.5 z-[5] flex max-w-[calc(100%-120px)] flex-col gap-0.5 px-1.5 py-1">
+        // Transparent (owner, 2026-10-17): the text sits straight on the chart. Its text starts 8 px
+        // in (left-0.5 + px-1.5), the indicator legends' inset (chart-core layout.ts `plot.x + 8`), so
+        // the ticker, the readout and the legends share one left edge (owner, 2026-10-18).
+        <div className="pointer-events-none absolute top-1 left-0.5 z-[5] flex max-w-[calc(100%-120px)] flex-col gap-0.5 px-1.5 py-1">
           {cornerHeading}
           {/* One line at any width: items never shrink or wrap inside (a phone-width chart wrapped "O" above its value, onto the legend under it); the row clips instead. */}
           {inspector && (
