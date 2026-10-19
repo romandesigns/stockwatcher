@@ -117,7 +117,7 @@ import { PositionPlanCard } from "./PositionPlanCard.tsx";
 import { Tip, TooltipProvider } from "./ui/tooltip.tsx";
 import { TradeMenu, TRADE_MENU_SIZES } from "./TradeMenu.tsx";
 import { PRICE_SCALE_LABELS, PriceAxisMenu } from "./PriceAxisMenu.tsx";
-import { cn } from "./ui/utils.ts";
+import { cn, TOUCH_HIT } from "./ui/utils.ts";
 import { useCanvas, useChartTheme } from "./useCanvas.ts";
 import { prefersReducedMotion, useTween } from "./useTween.ts";
 
@@ -1392,7 +1392,7 @@ export function CandleChart({
             }}
             // Beside the volume pane, where the price column is otherwise empty, so it never covers a price label.
             style={{ left: model.geometry.priceAxis.x + model.geometry.priceAxis.w / 2 - 10, top: model.geometry.volume ? model.geometry.volume.y + model.geometry.volume.h / 2 - 10 : model.geometry.plot.y + model.geometry.plot.h - 24 }}
-            className="absolute z-10 grid size-5 place-items-center rounded-md bg-card font-mono text-[11px] font-semibold text-muted-foreground shadow-sm transition-[opacity,scale,color,background-color] duration-150 outline-none hover:bg-bg-row hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring starting:scale-90 starting:opacity-0"
+            className={cn(TOUCH_HIT, "absolute z-10 grid size-5 place-items-center rounded-md bg-card font-mono text-[11px] font-semibold text-muted-foreground shadow-sm transition-[opacity,scale,color,background-color] duration-150 outline-none hover:bg-bg-row hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring starting:scale-90 starting:opacity-0")}
           >
             A
           </button>
@@ -1406,7 +1406,7 @@ export function CandleChart({
           onClick={backToLatest}
           // Bottom-right of the price pane, clear of the price axis and the volume bars.
           style={{ left: model.geometry.plot.x + model.geometry.plot.w - 40, top: model.geometry.plot.y + model.geometry.plot.h - 40 }}
-          className="absolute z-10 grid size-8 place-items-center rounded-full bg-card text-foreground shadow-lg transition-[opacity,scale,background-color] duration-150 outline-none hover:bg-bg-row focus-visible:ring-2 focus-visible:ring-ring starting:scale-90 starting:opacity-0"
+          className={cn(TOUCH_HIT, "absolute z-10 grid size-8 place-items-center rounded-full bg-card text-foreground shadow-lg transition-[opacity,scale,background-color] duration-150 outline-none hover:bg-bg-row focus-visible:ring-2 focus-visible:ring-ring starting:scale-90 starting:opacity-0")}
         >
           <Icon name="toLatest" width={14} height={14} />
         </button>

@@ -102,7 +102,7 @@ function Alerts() {
         <span className="text-xs text-text-faint">{active} active · synced on every device</span>
         <div className="ml-auto flex items-center gap-2.5">
           <PhoneBudget today={phoneToday} budget={budget} devices={status?.devices ?? 0} prefs={prefs} onPrefs={app.setAlertPrefs} />
-          <button type="button" onClick={newOne} className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-primary px-3 text-[12.5px] font-semibold text-primary-foreground outline-none hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-3.5">
+          <button type="button" onClick={newOne} className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-primary pointer-coarse:h-11 px-3 text-[12.5px] font-semibold text-primary-foreground outline-none hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-3.5">
             <Icon name="plus" />
             New alert
           </button>
@@ -147,7 +147,7 @@ function PhoneBudget({ today, budget, devices, prefs, onPrefs }: { today: number
   const share = Math.min(1, budget ? today / budget : 0);
   return (
     <Popover>
-      <PopoverTrigger className="flex items-center gap-2 rounded-lg px-1.5 py-1 text-xs text-muted-foreground outline-none hover:bg-bg-row focus-visible:ring-2 focus-visible:ring-ring">
+      <PopoverTrigger className="flex items-center gap-2 rounded-lg px-1.5 py-1 text-xs pointer-coarse:min-h-11 pointer-coarse:px-3 text-muted-foreground outline-none hover:bg-bg-row focus-visible:ring-2 focus-visible:ring-ring">
         <span className="hidden @2xl/alerts:inline">Phone today</span>
         <span role="meter" aria-label="Phone notifications used today" aria-valuemin={0} aria-valuemax={budget} aria-valuenow={today} className="block h-1.5 w-20 overflow-hidden rounded-full bg-bg-row">
           <span className="block h-full rounded-full bg-primary transition-[width] duration-300 motion-reduce:transition-none" style={{ width: `${share * 100}%` }} />
@@ -160,7 +160,7 @@ function PhoneBudget({ today, budget, devices, prefs, onPrefs }: { today: number
             <span className="text-muted-foreground">Phone notifications a day</span>
             <div role="radiogroup" aria-label="Daily phone budget" className="inline-flex gap-0.5 self-start rounded-lg bg-background p-0.5">
               {PHONE_BUDGETS.map((b) => (
-                <button key={b} type="button" role="radio" aria-checked={prefs.phoneBudget === b} onClick={() => onPrefs({ ...prefs, phoneBudget: b })} className={cn("h-7 rounded-md px-3 font-mono text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring", prefs.phoneBudget === b ? "bg-bg-raised text-foreground" : "text-muted-foreground hover:text-foreground")}>
+                <button key={b} type="button" role="radio" aria-checked={prefs.phoneBudget === b} onClick={() => onPrefs({ ...prefs, phoneBudget: b })} className={cn("h-7 rounded-md px-3 font-mono text-xs outline-none pointer-coarse:h-11 focus-visible:ring-2 focus-visible:ring-ring", prefs.phoneBudget === b ? "bg-bg-raised text-foreground" : "text-muted-foreground hover:text-foreground")}>
                   {b}
                 </button>
               ))}

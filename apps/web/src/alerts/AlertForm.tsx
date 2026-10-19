@@ -26,7 +26,8 @@ type Signal = "halt" | "luld" | "hod" | "pressure";
 
 const tabOf = (c: AlertCondition): Tab => (c.kind === "price" ? "price" : c.kind === "move" ? "move" : "signal");
 
-const fieldClass = "h-[34px] w-full rounded-lg bg-background px-2.5 text-[13px] text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring";
+// 44 px fields and 16 px text on touch: a finger target, and no zoom-on-focus on phones.
+const fieldClass = "h-[34px] w-full rounded-lg bg-background px-2.5 text-[13px] text-foreground outline-none pointer-coarse:h-11 pointer-coarse:text-base focus-visible:ring-2 focus-visible:ring-ring";
 const labelClass = "flex min-w-0 flex-col gap-1.5 text-[11.5px] text-muted-foreground";
 
 /** A segmented control: one choice, the active segment raised (no accent: the design's segmented rule). */
@@ -40,7 +41,7 @@ function Segmented<T extends string>({ label, value, options, onChange }: { labe
           role="radio"
           aria-checked={value === o.v}
           onClick={() => onChange(o.v)}
-          className={cn("h-7 rounded-md px-3 text-xs font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring", value === o.v ? "bg-bg-raised text-foreground" : "text-muted-foreground hover:text-foreground")}
+          className={cn("h-7 rounded-md px-3 text-xs font-medium outline-none transition-colors pointer-coarse:h-11 focus-visible:ring-2 focus-visible:ring-ring", value === o.v ? "bg-bg-raised text-foreground" : "text-muted-foreground hover:text-foreground")}
         >
           {o.label}
         </button>
@@ -56,7 +57,7 @@ function Chip({ pressed, onClick, children }: { pressed: boolean; onClick: () =>
       type="button"
       aria-pressed={pressed}
       onClick={onClick}
-      className={cn("h-[26px] rounded-full px-2.5 text-[11.5px] font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring", pressed ? "bg-bg-raised text-foreground" : "bg-bg-row text-muted-foreground hover:text-foreground")}
+      className={cn("h-[26px] rounded-full px-2.5 text-[11.5px] font-medium pointer-coarse:h-11 pointer-coarse:px-4 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring", pressed ? "bg-bg-raised text-foreground" : "bg-bg-row text-muted-foreground hover:text-foreground")}
     >
       {children}
     </button>
@@ -158,7 +159,7 @@ function FormBody({ state, d, close }: { state: AlertFormState; d: AlertRule; cl
           {state.editId ? "Edit alert" : "New alert"}
           {sym && !state.editId ? <> · <span className="font-mono">{sym}</span></> : null}
         </DialogTitle>
-        <button type="button" aria-label="Close" onClick={close} className="ml-auto inline-grid size-7 place-items-center rounded-md text-muted-foreground outline-none hover:bg-bg-raised hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-3.5">
+        <button type="button" aria-label="Close" onClick={close} className="ml-auto inline-grid size-7 place-items-center rounded-md pointer-coarse:size-11 text-muted-foreground outline-none hover:bg-bg-raised hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-3.5">
           <Icon name="clear" />
         </button>
       </div>
@@ -316,10 +317,10 @@ function FormBody({ state, d, close }: { state: AlertFormState; d: AlertRule; cl
         </Fieldset>
       </div>
       <div className="flex gap-2 pt-0.5">
-        <button type="submit" disabled={!valid} className="h-9 flex-1 rounded-lg bg-primary text-[13px] font-semibold text-primary-foreground outline-none hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50">
+        <button type="submit" disabled={!valid} className="h-9 flex-1 rounded-lg bg-primary pointer-coarse:h-11 text-[13px] font-semibold text-primary-foreground outline-none hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50">
           {state.editId ? "Save alert" : "Create alert"}
         </button>
-        <button type="button" onClick={close} className="h-9 rounded-lg bg-bg-raised px-3.5 text-[13px] font-medium outline-none hover:bg-background focus-visible:ring-2 focus-visible:ring-ring">
+        <button type="button" onClick={close} className="h-9 rounded-lg bg-bg-raised px-3.5 pointer-coarse:h-11 text-[13px] font-medium outline-none hover:bg-background focus-visible:ring-2 focus-visible:ring-ring">
           Cancel
         </button>
       </div>
