@@ -36,10 +36,12 @@ const SHOW: readonly { key: Switch; name: string; description: string }[] = [
   { key: "sessionBreaks", name: "Session breaks", description: "A dashed line where each day starts" },
   { key: "highLow", name: "High / low labels", description: "Mark the highest and lowest price on screen" },
 ];
-const VISIBILITY: readonly { key: keyof ChartVisibility; name: string }[] = [
+const VISIBILITY: readonly { key: keyof ChartVisibility; name: string; description?: string }[] = [
   { key: "indicators", name: "Indicators" },
   { key: "drawings", name: "Drawings" },
   { key: "trading", name: "Orders and positions" },
+  // Not a layer like the rows above: which indicators and levels each chart gets (owner, 2026-10-18).
+  { key: "linkStudies", name: "Same indicators and levels on every chart", description: "Off: each dashboard chart keeps its own" },
 ];
 
 export function ChartSettingsPanel({ settings, onChange }: { settings: ChartSettings; onChange: (s: ChartSettings) => void }) {
@@ -100,7 +102,7 @@ export function ChartSettingsPanel({ settings, onChange }: { settings: ChartSett
 
       <Section label="Visibility">
         {VISIBILITY.map((r) => (
-          <Row key={r.key} name={r.name} checked={settings.visibility[r.key]} onToggle={() => set({ visibility: { ...settings.visibility, [r.key]: !settings.visibility[r.key] } })} />
+          <Row key={r.key} name={r.name} description={r.description} checked={settings.visibility[r.key]} onToggle={() => set({ visibility: { ...settings.visibility, [r.key]: !settings.visibility[r.key] } })} />
         ))}
       </Section>
     </ScrollView>

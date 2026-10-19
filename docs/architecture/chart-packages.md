@@ -24,6 +24,12 @@ The reference for a screen with several charts. Web `apps/web/src/dashboard/`, p
   ticker (the header's ticker search on the web; the search or the live "Most active" list on the
   phone) loads into the selected chart. Clicking outside every chart hides the ring (web); the
   selection stays. What each chart shows syncs (app-state `dashboard`); the selection is per device.
+- **Indicators and levels, linked or per chart** (owner, 2026-10-18): Settings → Chart → Visibility
+  → "Same indicators and levels on every chart" (`ChartVisibility.linkStudies`, default on, synced).
+  On, every chart reads and edits the shared `indicators` / `layers`; off, each dashboard chart has
+  its own on its slot (app-state `DashboardSlot.indicators` / `layers`, null = follows the shared
+  set), kept while linked so unlinking brings it back. The chart page always uses the shared set.
+  The chart packages never read the flag: the app picks the set per chart (`ChartCell` / `ChartTile`).
 - **Copy a ticker**: tap, then press and hold on any ticker label (chart headings, list rows) copies
   it, with a "Copied …" toast that fades out. One recognizer, `@stockwatcher/shared` `tapHold.ts`;
   a plain tap waits out the 300 ms double-tap window before acting. Web `lib/useTickerPress.ts` +

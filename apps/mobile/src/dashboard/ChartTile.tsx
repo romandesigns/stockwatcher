@@ -1,5 +1,5 @@
 import type { DashboardSlot } from "@stockwatcher/app-state";
-import { buildSlots, changeReference, formatChange, formatEtDateKey, formatPrice, lastCandle, tradingDayOf } from "@stockwatcher/chart-core";
+import { buildSlots, changeReference, formatChange, formatEtDateKey, formatPrice, lastCandle, tradingDayOf, type ChartLayers, type IndicatorSpec } from "@stockwatcher/chart-core";
 import { CandleChart, type ChartTrading } from "@stockwatcher/chart-native";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
@@ -40,6 +40,14 @@ export function ChartTile({ index, slot, symbol, feed, trading, selected, showSe
   const layers = useApp((s) => s.layers);
   const chartSettings = useApp((s) => s.chartSettings);
   const fromRemote = useApp((s) => s.chartSettingsFromRemote);
+  // Settings → Chart → "Same indicators and levels on every chart" (owner, 2026-10-18): linked, every
+  // chart shows and edits the shared set; unlinked, this chart has its own (app-state slot), which
+  // starts as the shared one and is written back to the slot only.
+  const linked = chartSettings.visibility.linkStudies;
+  const ownIndicators = linked ? indicators : (slot.indicators ?? indicators);
+  const ownLayers = linked ? layers : (slot.layers ?? layers);
+  const onIndicatorsChange = linked ? app.setIndicators : (next: IndicatorSpec[]) => app.setDashboardIndicators(index, next);
+  const onLayersChange = linked ? app.setLayers : (next: ChartLayers) => app.setDashboardLayers(index, next);
   const drawingSettings = useApp((s) => s.drawingSettings);
   const tradeQty = useApp((s) => s.tradeQty);
   const toolbox = useApp((s) => s.device?.toolbox);
@@ -102,8 +110,8 @@ export function ChartTile({ index, slot, symbol, feed, trading, selected, showSe
         onSettingsChange={app.setChartSettings}
         settingsFromRemote={fromRemote}
         drawingSettings={drawingSettings}
-        indicators={indicators}
-        onIndicatorsChange={app.setIndicators}
+        indicators={ownIndicators}
+        onIndicatorsChange={onIndicatorsChange}
         drawings={drawings}
         onDrawingsChange={drawingsHandle.set}
         trading={trading}
@@ -113,8 +121,8 @@ export function ChartTile({ index, slot, symbol, feed, trading, selected, showSe
         onToolboxPlacementChange={app.setToolbox}
         toolsVisible={toolsVisible}
         onToolsVisibleChange={app.setToolsVisible}
-        layers={layers}
-        onLayersChange={app.setLayers}
+        layers={ownLayers}
+        onLayersChange={onLayersChange}
         now={clock?.now ?? null}
         onTimeframeChange={(tf) => app.setDashboardTimeframe(index, tf)}
         options={{ priceAxisWidth: 40, volumeHeight: 28, timeAxisHeight: 16, paneGap: 4, fontSize: 8, timeLabelSpacing: 56, indicatorPaneHeight: 44 }}

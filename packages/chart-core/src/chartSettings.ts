@@ -38,6 +38,12 @@ export interface ChartVisibility {
   drawings: boolean;
   /** Simulated order lines, the position line and the "+" place button. */
   trading: boolean;
+  /**
+   * Every chart shows the same indicators and levels (owner, 2026-10-18): a change on one chart
+   * applies to all. Off, each dashboard chart keeps its own set, starting from the shared one. The
+   * chart itself never reads this; the app picks which set to hand each chart (app-state).
+   */
+  linkStudies: boolean;
 }
 
 export interface ChartSettings {
@@ -79,7 +85,7 @@ export const DEFAULT_CHART_SETTINGS: ChartSettings = {
   highLow: false,
   autoStretch: true,
   zoom: 100,
-  visibility: { indicators: true, drawings: true, trading: true },
+  visibility: { indicators: true, drawings: true, trading: true, linkStudies: true },
 };
 
 const SCALES: readonly PriceScaleType[] = ["linear", "percent", "log"];
@@ -111,7 +117,7 @@ export function parseChartSettings(raw: unknown): ChartSettings {
   if (z !== null) out.zoom = z;
   if (typeof r.visibility === "object" && r.visibility !== null) {
     const v = r.visibility as Record<string, unknown>;
-    for (const k of ["indicators", "drawings", "trading"] as const) if (typeof v[k] === "boolean") out.visibility[k] = v[k] as boolean;
+    for (const k of ["indicators", "drawings", "trading", "linkStudies"] as const) if (typeof v[k] === "boolean") out.visibility[k] = v[k] as boolean;
   }
   return out;
 }
