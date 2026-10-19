@@ -790,7 +790,8 @@ mod research {
     };
     use market_providers::import::reference::{
         STRUCTURAL_ACTION_TYPES, assets_url, bar_rows, corporate_actions_url, daily_bars_url,
-        et_date_range, fetch_pages, summarize_corporate_actions,
+        et_date_range, fetch_pages, invalid_symbol_in, plausible_ticker,
+        summarize_corporate_actions,
     };
     use serde_json::{Value, json};
     use std::collections::{BTreeMap, HashSet};
@@ -850,7 +851,10 @@ mod research {
         let per_minute: u32 = num(args, "--per-minute", 100)?;
         let creds = alpaca_creds()?;
         let (dbase, tbase) = (data_base(), trading_base());
-        let today = Utc::now().date_naive();
+        // Snapshot files are named by the ET date they were taken on.
+        let today = Utc::now()
+            .with_timezone(&chrono_tz::America::New_York)
+            .date_naive();
         let started = Instant::now();
         let started_at = rfc3339(Utc::now());
         let mut paced = PacedHttp::new(per_minute)?;
@@ -888,6 +892,9 @@ mod research {
         let mut all: Vec<String> = lists.values().flatten().cloned().collect();
         all.sort();
         all.dedup();
+        let (all, not_tickers): (Vec<String>, Vec<String>) =
+            all.into_iter().partition(|s| plausible_ticker(s));
+        let mut refused: Vec<String> = Vec::new();
 
         let (start, end) = et_date_range(from, to).ok_or("calendar does not cover the range")?;
         let bars_path = out
@@ -899,13 +906,29 @@ mod research {
         m.set_kind("universe-daily-bars");
         let mut n_bars = 0u64;
         for (i, chunk) in all.chunks(200).enumerate() {
-            let pages = fetch_pages(
-                &mut m,
-                &creds,
-                &|t| daily_bars_url(&dbase, chunk, start, end, t),
-                &mut sleep,
-                &mut lg,
-            )?;
+            // A whole request fails on one symbol the API refuses: drop it, record it, retry.
+            let mut chunk = chunk.to_vec();
+            let pages = loop {
+                match fetch_pages(
+                    &mut m,
+                    &creds,
+                    &|t| daily_bars_url(&dbase, &chunk, start, end, t),
+                    &mut sleep,
+                    &mut lg,
+                ) {
+                    Ok(p) => break p,
+                    Err(e) => match invalid_symbol_in(&e) {
+                        Some(bad) if chunk.contains(&bad) && refused.len() < 500 => {
+                            chunk.retain(|s| *s != bad);
+                            refused.push(bad);
+                            if chunk.is_empty() {
+                                break Vec::new();
+                            }
+                        }
+                        _ => return Err(e),
+                    },
+                }
+            };
             for (sym, bar) in bar_rows(&pages) {
                 let mut row = json!({
                     "symbol": sym,
@@ -968,7 +991,9 @@ mod research {
                 "from": from, "to": to,
                 "assets_active": lists["active"].len(),
                 "assets_inactive": lists["inactive"].len(),
-                "symbols_queried": all.len(),
+                "symbols_queried": all.len() - refused.len(),
+                "symbols_not_tickers_skipped": not_tickers,
+                "symbols_refused_by_api": refused,
                 "daily_bars": n_bars,
                 "corporate_actions": ca.counts,
             },

@@ -190,6 +190,27 @@ pub fn assets_url(trading_base: &str, status: &str) -> String {
     )
 }
 
+/// Whether a symbol from the asset list is worth asking the data API about. The inactive list
+/// carries placeholders that are not tickers (CUSIP-like `23248B208`, `F017956`, `ABC_DELISTED`)
+/// and a multi-symbol request fails as a whole (HTTP 400 "invalid symbol") on the first one.
+/// Active US equities never contain a digit or an underscore (checked 2026-10-18: 0 of 14,409).
+pub fn plausible_ticker(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 16
+        && s.bytes()
+            .all(|b| b.is_ascii_uppercase() || matches!(b, b'.' | b'-' | b'/'))
+}
+
+/// The symbol named by a data-API `invalid symbol: X` refusal, if that is what `err` is.
+pub fn invalid_symbol_in(err: &str) -> Option<String> {
+    let i = err.find("invalid symbol: ")? + "invalid symbol: ".len();
+    let s: String = err[i..]
+        .chars()
+        .take_while(|c| !c.is_whitespace() && *c != '"' && *c != '}')
+        .collect();
+    (!s.is_empty()).then_some(s)
+}
+
 /// One daily bar, flattened from the bars pages: `(symbol, bar object)`.
 pub fn bar_rows(pages: &[Value]) -> Vec<(String, Value)> {
     let mut out = Vec::new();

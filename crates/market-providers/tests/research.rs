@@ -301,6 +301,22 @@ fn reference_urls_and_calendar() {
 }
 
 #[test]
+fn ticker_filter_and_refusal_parsing() {
+    use market_providers::import::reference::{invalid_symbol_in, plausible_ticker};
+    for ok in ["A", "BRK.B", "BF-B", "ABCDW"] {
+        assert!(plausible_ticker(ok), "{ok}");
+    }
+    for bad in ["", "23248B208", "F017956", "CIC_DELISTED", "abc"] {
+        assert!(!plausible_ticker(bad), "{bad}");
+    }
+    assert_eq!(
+        invalid_symbol_in(r#"HTTP 400: {"message":"invalid symbol: 0029900E0"}"#).as_deref(),
+        Some("0029900E0")
+    );
+    assert_eq!(invalid_symbol_in("HTTP 500: oops"), None);
+}
+
+#[test]
 fn corporate_actions_summary() {
     let pages = vec![
         json!({"corporate_actions": {
