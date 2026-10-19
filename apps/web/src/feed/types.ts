@@ -1,5 +1,5 @@
 import type { ChartMessage, OrderCancel, OrderModify, OrderPlace, PaperMessage, PaperState, ReplayControl, Timeframe } from "@stockwatcher/chart-core";
-import type { QuoteChannel } from "@stockwatcher/shared";
+import type { PressureChannel, QuoteChannel } from "@stockwatcher/shared";
 
 export interface ChartSubscription {
   symbol: string;
@@ -29,6 +29,8 @@ export interface ChartFeed {
   /** The server's live quote board for the ticker search (server feed only; the fixture has
    *  none, so its rows show no quote). Subscribing opts the connection in. */
   readonly quotes?: QuoteChannel;
+  /** The server's Halt watcher board (server feed only); subscribing opts the connection in. */
+  readonly pressure?: PressureChannel;
   close(): void;
 }
 

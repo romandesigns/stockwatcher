@@ -1,5 +1,5 @@
 import { createChartRouter, parseChartMessage, parsePaperMessage, type ChartSubscribe, type ChartUnsubscribe, type PaperMessage, type PaperState, type ReplayControl } from "@stockwatcher/chart-core";
-import { createQuoteChannel, createWsClient, sameOriginWsUrl, type ConnectionStatus, type MarketSource, type SettingsSync, type WebSocketLike } from "@stockwatcher/shared";
+import { createPressureChannel, createQuoteChannel, createWsClient, sameOriginWsUrl, type ConnectionStatus, type MarketSource, type SettingsSync, type WebSocketLike } from "@stockwatcher/shared";
 import type { ChartFeed, PaperCommand, ReplayCommand } from "./types.ts";
 
 export interface ServerFeedOptions {
@@ -36,6 +36,8 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
 
   // Late-bound: the channel is built before the client it drives.
   const quotes = createQuoteChannel({ subscribe: () => client.subscribeQuotes(), unsubscribe: () => client.unsubscribeQuotes() });
+  // The dashboard's Halt watcher, opted in while its panel is mounted.
+  const pressure = createPressureChannel({ subscribe: () => client.subscribePressure(), unsubscribe: () => client.unsubscribePressure() });
 
   const sendRaw = (msg: ChartSubscribe | ChartUnsubscribe | ReplayControl | PaperCommand) => {
     if (raw && raw.readyState === 1) raw.send(JSON.stringify(msg));
@@ -56,6 +58,7 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
       if (s === "open") resubscribe(); // subscriptions do not survive a reconnect
     },
     onQuotes: (m) => quotes.apply(m),
+    onPressure: (m) => pressure.apply(m),
     settings: opts.settings,
     createSocket: (url) => {
       const socket = new WebSocket(url);
@@ -66,8 +69,8 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
       socket.addEventListener("message", (ev) => {
         // A quotes.snapshot is hundreds of KB: hand it to shared's parser without first
         // parsing it twice as a chart or paper frame. The server writes `type` first. The
-        // settings.* frames (shared's own too) take the same shortcut.
-        if (typeof ev.data === "string" && (ev.data.startsWith('{"type":"quotes.') || ev.data.startsWith('{"type":"settings.'))) {
+        // settings.* and pressure.* frames (shared's own too) take the same shortcut.
+        if (typeof ev.data === "string" && (ev.data.startsWith('{"type":"quotes.') || ev.data.startsWith('{"type":"settings.') || ev.data.startsWith('{"type":"pressure.'))) {
           inner?.({ data: ev.data });
           return;
         }
@@ -119,6 +122,7 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
       send: (cmd) => sendRaw(cmd),
     },
     quotes,
+    pressure,
     close() {
       client.close();
       router.clear();
