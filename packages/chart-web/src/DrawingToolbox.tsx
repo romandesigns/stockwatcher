@@ -146,8 +146,9 @@ export function DrawingToolbox({ placement, onPlacementChange, container, tool, 
     onPlacementChange(nudgeToolbox(placement, move[0]!, move[1]!, container, box), true);
   };
 
-  // Inset focus rings: the slots clip (see Slot).
-  const iconButton = "size-7 rounded-md text-muted-foreground focus-visible:ring-2 focus-visible:ring-inset [&_svg]:size-3.5";
+  // Inset focus rings: the slots clip (see Slot). The clip would also cut a touch hit area, so on
+  // a coarse pointer every button is a real 44 px square instead (owner, 2026-10-19).
+  const iconButton = "size-7 pointer-coarse:size-11 rounded-md text-muted-foreground focus-visible:ring-2 focus-visible:ring-inset [&_svg]:size-3.5";
   const side = vertical ? "right" : "bottom";
   const editButton = (id: (typeof TOOLBOX_EDIT)[number]): ReactNode => {
     switch (id) {
@@ -218,7 +219,7 @@ export function DrawingToolbox({ placement, onPlacementChange, container, tool, 
             onPointerUp={onGripUp}
             onPointerCancel={onGripUp}
             onKeyDown={onGripKey}
-            className={cn("grid touch-none place-items-center rounded-md text-text-faint outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset [&_svg]:size-3.5", vertical ? "h-4 w-7 cursor-grab active:cursor-grabbing" : "h-7 w-4 cursor-grab active:cursor-grabbing")}
+            className={cn("grid touch-none place-items-center rounded-md text-text-faint outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset [&_svg]:size-3.5", vertical ? "h-4 w-7 cursor-grab active:cursor-grabbing" : "h-7 w-4 cursor-grab active:cursor-grabbing", "pointer-coarse:size-11")}
           >
             <span className={cn(!vertical && "rotate-90")}><Icon name="grip" /></span>
           </button>
@@ -243,7 +244,7 @@ export function DrawingToolbox({ placement, onPlacementChange, container, tool, 
         {TOOLBOX_TOOLS.map((k) => (
           <Slot key={k} shown={tools.has(k)} vertical={vertical}>
             <Tip label={toolTip(k)} side={side}>
-              <ToggleGroupItem value={k} disabled={!tools.has(k)} aria-label={k === "cursor" ? "Cursor" : DRAWING_LABELS[k]} className={cn("w-7 px-0 focus-visible:ring-2 focus-visible:ring-inset [&_svg]:size-3.5", ARMED)}>
+              <ToggleGroupItem value={k} disabled={!tools.has(k)} aria-label={k === "cursor" ? "Cursor" : DRAWING_LABELS[k]} className={cn("w-7 px-0 focus-visible:ring-2 focus-visible:ring-inset pointer-coarse:size-11 [&_svg]:size-3.5", ARMED)}>
                 {TOOL_ICONS[k]}
               </ToggleGroupItem>
             </Tip>
@@ -288,7 +289,7 @@ export function DrawingToolbox({ placement, onPlacementChange, container, tool, 
                     onColorChange(c.value);
                     setColorsOpen(false);
                   }}
-                  className={cn("grid size-7 place-items-center rounded-md outline-none hover:bg-bg-row focus-visible:ring-2 focus-visible:ring-ring", on && "bg-bg-raised")}
+                  className={cn("grid size-7 place-items-center rounded-md outline-none pointer-coarse:size-11 hover:bg-bg-row focus-visible:ring-2 focus-visible:ring-ring", on && "bg-bg-raised")}
                 >
                   <span className="block size-4 rounded-full" style={{ background: c.value }} />
                 </button>

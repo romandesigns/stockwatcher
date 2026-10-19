@@ -1237,7 +1237,8 @@ export function CandleChart({
         onTimeframeChange={toolbarInChart || headerRow ? onTimeframeChange : undefined}
         timeframeControl={timeframeControl}
         // The same 8 px inset as the readout and the legends under it, so the header's ticker lines up with them.
-        start={headerRow ? <div className="pl-2">{heading}</div> : undefined}
+        // No heading (the phone chart page keeps its ticker in the page header): no empty start to take room.
+        start={headerRow && heading ? <div className="pl-2">{heading}</div> : undefined}
 
         tool={tool}
         onToolChange={changeTool}
@@ -1419,9 +1420,9 @@ export function CandleChart({
         // the ticker, the readout and the legends share one left edge (owner, 2026-10-18).
         <div className="pointer-events-none absolute top-1 left-0.5 z-[5] flex max-w-[calc(100%-120px)] flex-col gap-0.5 px-1.5 py-1">
           {cornerHeading}
-          {/* One line at any width: items never shrink or wrap inside (a phone-width chart wrapped "O" above its value, onto the legend under it); the row clips instead. */}
+          {/* One line at any width: items never shrink or wrap inside (a phone-width chart wrapped "O" above its value, onto the legend under it). Items that do not fit wrap onto a second line that the one-line height hides, so the row drops whole items from its end (volume, "Live") instead of cutting one in half past the chart's edge (2026-10-19, phones). */}
           {inspector && (
-            <CandleInspector className="pointer-events-auto flex-nowrap overflow-hidden whitespace-nowrap [&>*]:shrink-0" slot={inspectT === null ? (slots.at(-1) ?? null) : (slots[slotIndexOf(slots, inspectT) ?? -1] ?? null)} timeframe={timeframe} />
+            <CandleInspector className="pointer-events-auto max-h-[1lh] flex-wrap overflow-hidden whitespace-nowrap [&>*]:shrink-0" slot={inspectT === null ? (slots.at(-1) ?? null) : (slots[slotIndexOf(slots, inspectT) ?? -1] ?? null)} timeframe={timeframe} />
           )}
         </div>
       )}

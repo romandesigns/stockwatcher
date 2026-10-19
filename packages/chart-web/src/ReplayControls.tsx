@@ -1,7 +1,7 @@
 import { formatDayKey, formatEtDate, formatEtTime, formatSymbolCount, sessionOf, type Clock, type ReplayDayOption } from "@stockwatcher/chart-core";
 import { Button } from "./ui/button.tsx";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger } from "./ui/dropdown-menu.tsx";
-import { cn } from "./ui/utils.ts";
+import { cn, TOUCH_HIT } from "./ui/utils.ts";
 import { Icon } from "./Icon.tsx";
 
 export interface ReplayControlsProps {
@@ -51,7 +51,8 @@ function ReplayDayMenu({ day, days, onDayChange, onOpenChange }: { day: string; 
     <DropdownMenu onOpenChange={(open) => onOpenChange?.(open)}>
       <DropdownMenuTrigger
         aria-label={`Replay day ${current?.longLabel ?? formatDayKey(day)}, change`}
-        className="-mx-1 inline-flex shrink-0 cursor-pointer items-center gap-0.5 rounded px-1 text-[11px] text-muted-foreground outline-none transition-colors duration-150 hover:bg-bg-row hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring data-popup-open:bg-bg-row data-popup-open:text-foreground"
+        // Small dim text by design; a finger gets the 44 px TOUCH_HIT area around it.
+        className={cn("relative -mx-1 inline-flex shrink-0 cursor-pointer items-center gap-0.5 rounded px-1 text-[11px] text-muted-foreground outline-none transition-colors duration-150 hover:bg-bg-row hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring data-popup-open:bg-bg-row data-popup-open:text-foreground", TOUCH_HIT)}
       >
         {formatDayKey(day)}
         <Icon name="chevronDown" width={10} height={10} />
