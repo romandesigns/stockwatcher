@@ -13,8 +13,9 @@ import {
   type ReplayControl,
   type Timeframe,
 } from "@stockwatcher/chart-core";
-import { createPressureChannel, createQuoteChannel, createWsClient, type ConnectionStatus, type MarketSource, type PressureChannel, type QuoteChannel, type SettingsSync, type WebSocketLike } from "@stockwatcher/shared";
+import { createPressureChannel, createQuoteChannel, createWsClient, type AlertsServerMessage, type ConnectionStatus, type MarketSource, type PressureChannel, type QuoteChannel, type SettingsSync, type WebSocketLike } from "@stockwatcher/shared";
 
+import { deviceInfo, pushToken } from "../notifications/push";
 import { wsUrl } from "./server";
 
 export interface ChartSubscription {
@@ -47,7 +48,7 @@ export interface MobileFeed {
  * raw socket because shared's parser only knows the handshake messages;
  * quotes.* frames are shared's own and pass straight through to it.
  */
-export function createMobileFeed(token: string | null, onStatus?: (s: ConnectionStatus) => void, settings?: SettingsSync, clientName = "mobile", source?: MarketSource): MobileFeed {
+export function createMobileFeed(token: string | null, onStatus?: (s: ConnectionStatus) => void, settings?: SettingsSync, clientName = "mobile", source?: MarketSource, onAlerts?: (m: AlertsServerMessage) => void): MobileFeed {
   // Chart frames go only to the slots they belong to (chart-core chartRouter.ts), as on the web.
   const router = createChartRouter();
   const current = new Map<string, (m: ChartMessage) => void>();
@@ -75,10 +76,17 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
     onStatus: (s) => {
       onStatus?.(s);
       // Subscriptions do not survive a reconnect.
-      if (s === "open") for (const [id, a] of router.entries()) sendRaw(subscribeFrame(id, a));
+      if (s === "open") {
+        for (const [id, a] of router.entries()) sendRaw(subscribeFrame(id, a));
+        // This phone's push token, on every connection (idempotent; heals a lost or rotated one).
+        const t = pushToken();
+        if (t) client.send({ type: "push.register", token: t, ...deviceInfo() });
+      }
     },
     onQuotes: (m) => quotes.apply(m),
     onPressure: (m) => pressure.apply(m),
+    // Price alerts (Activity, fires): the app store takes them whatever tab is open.
+    onAlerts,
     // Synced settings (src/settings/sync.ts): attached on every welcome by the shared client.
     settings,
     createSocket: (url) => {
@@ -88,7 +96,7 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
         // A quotes.snapshot is hundreds of KB: skip the chart/paper parsers (the server writes
         // `type` first), which would each JSON.parse it again on the phone's JS thread. The
         // settings.* and pressure.* frames are shared's own too and take the same shortcut.
-        if (typeof ev.data === "string" && (ev.data.startsWith('{"type":"quotes.') || ev.data.startsWith('{"type":"settings.') || ev.data.startsWith('{"type":"pressure.'))) {
+        if (typeof ev.data === "string" && (ev.data.startsWith('{"type":"quotes.') || ev.data.startsWith('{"type":"settings.') || ev.data.startsWith('{"type":"pressure.') || ev.data.startsWith('{"type":"alert'))) {
           inner?.({ data: ev.data });
           return;
         }

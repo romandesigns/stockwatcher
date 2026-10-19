@@ -15,7 +15,7 @@ import { colors, fonts } from "../theme";
 // surface is the bar's boundary: no top border (owner rule).
 
 /** Each tab's icon, by route name (MainTabs registers the routes). The chart tab is the replay practice feature, hence the replay icon (owner, 2026-10-18). */
-const ICONS: Readonly<Record<string, IconName>> = { Dashboard: "dashboard", Chart: "replay" };
+const ICONS: Readonly<Record<string, IconName>> = { Dashboard: "dashboard", Chart: "replay", Alerts: "bell" };
 
 export function MainTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
   const insets = useSafeAreaInsets();

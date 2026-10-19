@@ -4,6 +4,7 @@ import { CandleChart, type ChartTrading } from "@stockwatcher/chart-native";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
+import { useChartAlerts } from "../alerts/useChartAlerts";
 import { useChartFeed } from "../feed/hooks";
 import type { MobileFeed } from "../feed/serverFeed";
 import { appActions, getLoadedStore, useApp } from "../state/store";
@@ -76,6 +77,8 @@ export function ChartTile({ index, slot, symbol, feed, trading, selected, showSe
   const reference = useMemo(() => changeReference(series), [series]);
   const change = last && reference ? formatChange(reference.price, last.c) : "";
   const ring = showSelection && selected;
+  // This symbol's price alerts: lines with 44 pt handles, the lift chip, "Alert at" on the axis.
+  const alerts = useChartAlerts(symbol, last?.c ?? null);
 
   return (
     <View
@@ -127,6 +130,7 @@ export function ChartTile({ index, slot, symbol, feed, trading, selected, showSe
         onTimeframeChange={(tf) => app.setDashboardTimeframe(index, tf)}
         options={{ priceAxisWidth: 40, volumeHeight: 28, timeAxisHeight: 16, paneGap: 4, fontSize: 8, timeLabelSpacing: 56, indicatorPaneHeight: 44 }}
         barSpacing={6}
+        alerts={alerts}
         label={`Chart ${index + 1}: ${symbol} ${slot.timeframe} candles`}
       />
     </View>
