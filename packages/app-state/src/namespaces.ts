@@ -63,16 +63,24 @@ export interface DashboardSlot {
   timeframe: Timeframe;
 }
 
+/**
+ * Which of the server's two markets the dashboard reads (owner, 2026-10-18, Settings → Data): the
+ * real live market (Alpaca: SIP by day, Blue Ocean overnight) or the replay market (recorded days,
+ * the practice feature the chart page always uses). Synced: every device's dashboard follows it.
+ */
+export type DashboardSource = "live" | "replay";
+
 export interface DashboardState {
   /** Charts shown, 1–MAX_DASHBOARD_CHARTS. Slots past it keep their ticker for when it grows again. */
   count: number;
   /** Always MAX_DASHBOARD_CHARTS slots. */
   slots: DashboardSlot[];
+  source: DashboardSource;
 }
 
 const EMPTY_SLOT: DashboardSlot = { symbol: null, timeframe: "1m" };
 
-export const DEFAULT_DASHBOARD: DashboardState = { count: 1, slots: Array.from({ length: MAX_DASHBOARD_CHARTS }, () => EMPTY_SLOT) };
+export const DEFAULT_DASHBOARD: DashboardState = { count: 1, slots: Array.from({ length: MAX_DASHBOARD_CHARTS }, () => EMPTY_SLOT), source: "live" };
 
 export function parseDashboard(raw: unknown): DashboardState {
   if (!isObj(raw)) return DEFAULT_DASHBOARD;
@@ -86,7 +94,9 @@ export function parseDashboard(raw: unknown): DashboardState {
       timeframe: (TIMEFRAMES as readonly unknown[]).includes(s.timeframe) ? (s.timeframe as Timeframe) : EMPTY_SLOT.timeframe,
     };
   });
-  return { count, slots };
+  // Anything but "replay" is live: the dashboard is the live page unless asked otherwise.
+  const source: DashboardSource = raw.source === "replay" ? "replay" : "live";
+  return { count, slots, source };
 }
 
 /** Valid, de-duplicated tickers, newest first, capped like pushRecentTicker. */

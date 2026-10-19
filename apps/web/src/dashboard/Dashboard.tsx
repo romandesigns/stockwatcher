@@ -157,7 +157,7 @@ export function Dashboard({ choice, feed }: Connection) {
           <p className="m-0 max-w-sm text-xs text-text-faint">
             {liveStatus === "not_configured"
               ? "The server has no Alpaca credentials, so it cannot stream the live market."
-              : "The dashboard shows the live market only. Charts appear with the session's first trades (US extended hours start 4:00 ET on weekdays)."}
+              : "The dashboard shows the live market (Settings → Data). Charts appear with the session's first trades: overnight from 20:00 ET Sunday to Thursday, then 4:00 to 20:00 ET."}
           </p>
         </div>
       ) : (
