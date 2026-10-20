@@ -12,6 +12,7 @@
 //!     SMPL.swa               # one file per symbol, arrival order, one zstd frame per flush
 //!   manifest.json, *.swa     # the nightly import (final), once it runs
 //!   .importing               # while that import fills the day
+//! $ARCHIVE_ROOT/live-original/2026-10-19/   # live/ moved here unchanged once the import is done
 //! ```
 //!
 //! The day is the trading date of the receive time ([`market_events::session::trading_date`]):
@@ -25,7 +26,9 @@
 //! the recorder may still hold. In a subdirectory both coexist untouched, and the switch is the
 //! import's existing one: the day stays hidden behind `.importing` while it fills, and
 //! [`Archive::finish_import`] clears the marker (every reader now takes the final data:
-//! [`Archive::day_data`]) and then retires `live/`. The recorder refuses a day that has an
+//! [`Archive::day_data`]) and then moves `live/` out of the day to its preserved original
+//! (`crate::original`: the receipt-order history forward research needs, which the import cannot
+//! reproduce). The recorder refuses a day that has an
 //! import's manifest or marker ([`Archive::accepts_live`]), checked at every flush, so live
 //! never writes over or beside imported data.
 //!
@@ -57,10 +60,14 @@
 //!   moved on to a later day, truncates any torn tail, recounts every file exactly, rewrites it
 //!   as one frame (per-second frames compress about 3× worse than one frame over the day;
 //!   measured), records its SHA-256 and marks the day `sealed`: only then does replay offer it.
+//! - **Torn tails are recorded.** Every truncation (on reopening a file, or when sealing) appends
+//!   a `torn_tail` record to the day's coverage file (`crate::coverage`): the cut frame held
+//!   events that are now missing from the recording.
 //!
 //! Symbol-less events (market-wide statuses) are not recorded: nothing downstream uses them.
 
 use crate::archive::{read_manifest_file, write_atomic, write_manifest_file};
+use crate::coverage::{CoverageEvent, CoverageRecord};
 use crate::error::ArchiveError;
 use crate::format::{EXT, FORMAT_VERSION, FileHeader, MAGIC, encode_header, encode_record};
 use crate::lifecycle::REMOVING_PREFIX;
@@ -194,11 +201,17 @@ impl Archive {
     }
 
     /// Ends an import of `day`: clears its marker (from here every reader takes the imported
-    /// data, [`Archive::day_data`]), then retires the live recording, which it replaces. The
-    /// importer calls this instead of [`Archive::clear_importing`].
+    /// data, [`Archive::day_data`]), then moves the live recording, which the import replaces for
+    /// every reader, to its preserved original unchanged ([`Archive::preserve_live`]; how long it
+    /// is kept is `crate::retention`). The importer calls this instead of
+    /// [`Archive::clear_importing`].
+    ///
+    /// It does not seal: the import runs in another process, and sealing rewrites the files the
+    /// recorder's own sealing thread may be working on. A recording moved unsealed is sealed by
+    /// the recorder's housekeeping ([`Archive::seal_original`]).
     pub fn finish_import(&self, day: NaiveDate) -> Result<(), ArchiveError> {
         self.clear_importing(day)?;
-        self.retire_live(day).map(|_| ())
+        self.preserve_live(day).map(|_| ())
     }
 
     /// Removes a day's live recording (renamed out of every listing first, like
@@ -220,9 +233,13 @@ impl Archive {
         Ok(true)
     }
 
-    /// Keeps the newest `keep` live recordings and retires the rest, **never** `recording` (the
-    /// day the recorder is writing). A recording is normally retired by the import that replaces
-    /// it; this only catches days no import ever finished.
+    /// Keeps the newest `keep` live recordings in `live/` and moves the rest to their preserved
+    /// originals ([`Archive::preserve_live`]), **never** `recording` (the day the recorder is
+    /// writing). A recording normally leaves `live/` when the import that replaces it finishes;
+    /// this catches days no import ever finished. It is moved, not deleted: a day no import
+    /// replaced has no other copy at all, so it is the receipt-order original like any other,
+    /// under the originals' retention (`crate::retention`). A day that already has an original
+    /// keeps its recording in `live/` (an original is never overwritten). Returns the days moved.
     pub fn prune_live(
         &self,
         keep: usize,
@@ -236,8 +253,12 @@ impl Archive {
             .copied()
             .filter(|d| Some(*d) != recording)
         {
-            if self.retire_live(d)? {
-                out.push(d);
+            match self.preserve_live(d) {
+                Ok(true) => out.push(d),
+                Ok(false) => {}
+                // Already preserved: leave both as they are.
+                Err(ArchiveError::Format { .. }) => {}
+                Err(e) => return Err(e),
             }
         }
         Ok(out)
@@ -274,22 +295,35 @@ impl Archive {
     /// frame, recounted by decoding it, hashed; the manifest rewritten with `sealed: true`.
     /// Decodes the whole day once, so callers run it off any hot path.
     pub fn seal_live(&self, day: NaiveDate) -> Result<DayManifest, ArchiveError> {
-        let dir = self.live_dir(day);
-        let mut m = self
-            .live_manifest(day)?
-            .unwrap_or_else(|| new_live_manifest(day));
-        let rd = std::fs::read_dir(&dir).map_err(|e| ArchiveError::io(&dir, e))?;
-        let mut files: Vec<PathBuf> = rd
-            .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| p.extension().is_some_and(|x| x == EXT))
-            .collect();
+        self.seal_dir(day, &self.live_dir(day))
+    }
+
+    /// [`Archive::seal_live`] of the recording in `dir` (`live/`, or a preserved original moved
+    /// before it was sealed).
+    pub(crate) fn seal_dir(&self, day: NaiveDate, dir: &Path) -> Result<DayManifest, ArchiveError> {
+        let manifest_path = dir.join(crate::format::MANIFEST);
+        let mut m = read_manifest_file(&manifest_path)?.unwrap_or_else(|| new_live_manifest(day));
+        let rd = std::fs::read_dir(dir).map_err(|e| ArchiveError::io(dir, e))?;
+        let mut files: Vec<PathBuf> = Vec::new();
+        for p in rd.filter_map(|e| e.ok().map(|e| e.path())) {
+            if p.extension().is_some_and(|x| x == EXT) {
+                files.push(p);
+            } else if p.to_string_lossy().ends_with(&format!(".{EXT}.tmp")) {
+                // A compaction interrupted (a crash, or the directory moved under it).
+                let _ = std::fs::remove_file(&p);
+            }
+        }
         files.sort();
         m.symbols.clear();
         for path in files {
-            repair_tail(&path, 0)?;
+            let before = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            let kept = repair_tail(&path, 0)?;
             let reader = SymbolReader::open(&path)?;
             let header = reader.header().clone();
             let symbol = header.symbol.clone();
+            if kept < before {
+                self.note_torn_tail(day, &symbol, kept, before - kept);
+            }
             let mut entry = SymbolEntry {
                 symbol: symbol.clone(),
                 file: path
@@ -312,8 +346,21 @@ impl Archive {
         }
         m.recompute();
         m.live = Some(LiveDay { sealed: true });
-        write_manifest_file(&self.live_manifest_path(day), &m)?;
+        write_manifest_file(&manifest_path, &m)?;
         Ok(m)
+    }
+
+    /// Records a truncated torn tail in the day's coverage (best effort: the repair itself must
+    /// not fail because the audit line could not be written).
+    fn note_torn_tail(&self, day: NaiveDate, symbol: &str, kept: u64, cut: u64) {
+        let _ = self.append_coverage(
+            day,
+            &[CoverageRecord::now(CoverageEvent::TornTail {
+                symbol: symbol.to_string(),
+                kept_bytes: kept,
+                cut_bytes: cut,
+            })],
+        );
     }
 }
 
@@ -637,7 +684,13 @@ impl LiveWriter {
         let s = self.syms.get_mut(symbol).expect("present");
         if s.len.is_none() {
             let len = if path.exists() {
-                repair_tail(&path, s.entry.bytes)?
+                let before = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                let kept = repair_tail(&path, s.entry.bytes)?;
+                if kept < before {
+                    self.archive
+                        .note_torn_tail(self.day, symbol, kept, before - kept);
+                }
+                kept
             } else {
                 let header = encode_header(&FileHeader {
                     symbol: symbol.to_string(),
@@ -955,6 +1008,8 @@ mod tests {
         let pruned = a.prune_live(1, Some(days[0])).unwrap();
         assert_eq!(pruned, days[1..3]);
         assert_eq!(a.live_days().unwrap(), [days[0], days[3]]);
+        // Moved to their originals, not deleted: no import ever replaced them.
+        assert_eq!(a.original_days().unwrap(), days[1..3]);
         // The archive's own retention lists imported days only: a recording is not one.
         assert!(
             a.prune(days[3] + chrono::Duration::days(30))

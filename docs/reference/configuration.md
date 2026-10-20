@@ -60,7 +60,10 @@ services) sets `STOCKWATCHER_API_TOKEN`, `RUST_LOG`, `MARKET_DATA_MODE`, `REPLAY
 | `ALPACA_STREAM_NIGHT_FEED` | `boats` | With the `sip` day feed: the feed during the overnight session (20:00–04:00 ET before a trading day), when SIP carries nothing. The stream reconnects on the other feed when the session changes (one connection, taking turns). `overnight`, or `none` for SIP around the clock. Needs the account's BOATS entitlement; without it the night connection is refused and the link shows down until 04:00 |
 | `LIVE_SYMBOLS` | `*` | `*` (whole market) or a comma list |
 | `LIVE_RECORD` | `1` | record every event the live stream delivers into the archive itself, `ARCHIVE_ROOT/<trading date>/live/` (a provisional day: `crates/market-archive/src/live.rs`, `crates/market-providers/src/recorder.rs`). The nightly import replaces it with the complete day. `0` turns recording off; history already in the archive is still loaded |
-| `LIVE_RECORD_DAYS` | `5` | live recordings kept when no import replaced them (at least 2; never the day being recorded). Shares `ARCHIVE_MIN_FREE_MB` with the archive |
+| `LIVE_RECORD_DAYS` | `5` | days **with a recording** kept in `live/` when no import replaced them (newest N such directories, at least 2; never the day being recorded). Older ones are moved to `live-original/` (not deleted) and fall under `LIVE_ORIGINAL_*`. Shares `ARCHIVE_MIN_FREE_MB` with the archive |
+| `LIVE_ORIGINAL_DAYS` | `5` | **completed trading dates** of preserved originals (`ARCHIVE_ROOT/live-original/<day>/`, receipt-order recordings the import replaced) always kept locally: the last N trading dates before the day being recorded, plus the newest N originals. At least 5 (fewer is refused at startup). Past the window an original is deleted only when unpinned **and** durably copied (`crates/market-archive/src/retention.rs`); otherwise it stays. ~0.8 GB a sealed whole-market day (estimate), ~4 GB for five. Not touched by the rolling window or `ARCHIVE_RETENTION_DAYS`. Changed 2026-10-19 within PR #52: it first counted original directories and allowed `0` |
+| `LIVE_ORIGINAL_DURABLE_DIR` | unset (off) | durable research store. Each sealed original is copied to `<dir>/<day>/` with its coverage records and a verified `durable-copy.json`. The directory must already exist; a missing one is "unavailable" (originals kept, `retention_at_risk`). Unset: nothing past the window is ever deleted. Production: `/durable/originals`, the Pi's NFS share (set in `infra/vps/docker-compose.yml`; setup in `infra/vps/SETUP.md` section 9). Point it at a subdirectory that exists only on the mounted share: an unmounted mount point is an empty directory, which would otherwise count as available |
+| `LIVE_ORIGINAL_MIN_HEADROOM_MB` | `10240` | free space under this marks `plans/retention-status.json` `retention_at_risk` (with a warning log). Reports only: protected originals are never deleted to make room |
 | `LIVE_HISTORY_PRELOAD` | `1` | after a start, load every symbol's day from the archive in the background, busiest first; `0` loads a symbol only when a chart asks for it (`crates/server/src/history.rs`) |
 
 Alpaca allows one stream connection per account on most plans: run live on one host only.
@@ -70,7 +73,7 @@ Alpaca allows one stream connection per account on most plans: run live on one h
 | Variable | Default | Meaning |
 |---|---|---|
 | `ARCHIVE_ROOT` | `./data/archive` | `/app/data/archive` in the image |
-| `ARCHIVE_RETENTION_DAYS` | `0` (keep forever) | the server prunes older days at startup in replay mode. Keep `0` in production: the archiver owns the window |
+| `ARCHIVE_RETENTION_DAYS` | `0` (keep forever) | the server prunes older days at startup in replay mode. Counts **calendar** days (unlike `ARCHIVE_WINDOW_DAYS` and `LIVE_ORIGINAL_DAYS`, which count trading days). Never touches `live-original/` or `coverage/`. Keep `0` in production: the archiver owns the window |
 | `ARCHIVE_MIN_FREE_MB` | `1024` | writers refuse to write below this much free space |
 
 ## Provider simulator (`crates/provider-sim/src/lib.rs`; replay mode only)

@@ -44,7 +44,8 @@
 //!    the server neither offers it nor starts on it until its first pass is over. A day the live
 //!    market recorded (`<day>/live/`, market_archive::live) is such a day: the marker also stops
 //!    the recorder from writing to it, and clearing it ([`Archive::finish_import`]) is the atomic
-//!    switch from the provisional recording to the import, which then deletes the recording.
+//!    switch from the provisional recording to the import, which then moves the recording to
+//!    its preserved original (`market_archive::original`; retention in `market_archive::retention`).
 //! 5. Prune day directories older than the window, but only when all of these hold:
 //!    - the archive is caught up (its newest ready day is L), or the disk is below the floor. An
 //!      import that is failing (no keys yet, Alpaca down) must not turn into a window that shrinks
