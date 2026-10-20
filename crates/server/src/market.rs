@@ -59,6 +59,7 @@
 //! The ranking runs whether or not anyone listens, so its hysteresis does not restart with the
 //! first subscriber; only the frame is skipped.
 
+use crate::context::ContextBoard;
 use crate::days::{DayCatalog, DayEntry};
 use crate::history::{History, Unloaded};
 use crate::pressure::{Card, HaltInfo, PressureBoard};
@@ -80,7 +81,7 @@ use provider_sim::{Sim, SimConfig};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 use tokio::sync::{broadcast, mpsc};
@@ -178,6 +179,7 @@ pub const QUOTES_INTERVAL: Duration = Duration::from_secs(1);
 /// | `ARCHIVE_META_CHECK_SECS` | `60` | how often `assets.json` / `daily-closes.json` are checked for changes (0 = only on a day switch) |
 /// | `REPLAY_FOLLOW_LATEST` | `0` | switch the running replay to a newly imported latest day (see [`Market::follow_latest`]) |
 /// | `LIVE_HISTORY_PRELOAD` | `1` | live: load every symbol's history from the archive in the background, not only on a chart's request (`crate::history`) |
+/// | `STOCK_CONTEXT` | `0` | five-pillar stock context and the Ross Panel (`crate::context`, `ross.*` / `context.get`) |
 #[derive(Clone, Debug)]
 pub struct MarketConfig {
     pub provider: ProviderConfig,
@@ -195,6 +197,8 @@ pub struct MarketConfig {
     /// `LIVE_HISTORY_PRELOAD` (default on): the live market loads every symbol's recorded history
     /// in the background, busiest first, not only the ones a chart asks for (`crate::history`).
     pub history_preload: bool,
+    /// `STOCK_CONTEXT` (off by default): stock context and the Ross Panel (`crate::context`).
+    pub stock_context: bool,
 }
 
 impl Default for MarketConfig {
@@ -209,6 +213,7 @@ impl Default for MarketConfig {
             meta_check: Duration::from_secs(60),
             follow_latest: false,
             history_preload: true,
+            stock_context: false,
         }
     }
 }
@@ -234,6 +239,9 @@ impl MarketConfig {
         }
         if let Some(v) = var("LIVE_HISTORY_PRELOAD") {
             c.history_preload = on(&v);
+        }
+        if let Some(v) = var("STOCK_CONTEXT") {
+            c.stock_context = on(&v);
         }
         if let Some(v) = var("ARCHIVE_META_CHECK_SECS") {
             c.meta_check = Duration::from_secs(v.parse().map_err(|_| {
@@ -301,6 +309,9 @@ pub enum OutKind {
     /// A pre-serialized `pressure.update` (the Halt watcher's whole board) for the connections
     /// that sent `pressure.subscribe`. `Outbound::seq` is the engine seq when it was ranked.
     Pressure(String),
+    /// A pre-serialized `ross.update` (the Ross Panel, `crate::context`) for the connections that
+    /// sent `ross.subscribe`. `Outbound::seq` is the engine seq when it was taken.
+    Ross(String),
 }
 
 pub(crate) struct Core {
@@ -322,6 +333,8 @@ pub(crate) struct Core {
     pub(crate) unloaded: HashMap<String, Unloaded>,
     /// The latest trading date of a price-qualifying print (labels the last session shown).
     pub(crate) latest_trade_day: Option<NaiveDate>,
+    /// Stock context and the Ross Panel (`STOCK_CONTEXT=1`, `crate::context`); `None` when off.
+    pub(crate) context: Option<ContextBoard>,
 }
 
 impl Core {
@@ -337,6 +350,7 @@ impl Core {
             rebuilding: false,
             unloaded: HashMap::new(),
             latest_trade_day: None,
+            context: None,
         }
     }
 
@@ -398,6 +412,11 @@ pub(crate) struct Inner {
     quote_subs: AtomicUsize,
     /// Connections that sent `pressure.subscribe`. While 0, no `pressure.update` is serialized.
     pressure_subs: AtomicUsize,
+    /// `STOCK_CONTEXT` (`MarketConfig::stock_context`): every `Core` this market makes gets a
+    /// context board.
+    context_on: AtomicBool,
+    /// Connections that sent `ross.subscribe`. While 0, no `ross.update` is serialized.
+    ross_subs: AtomicUsize,
     /// Live: the archive history this market loads from (`crate::history`); set once at start.
     pub(crate) history: std::sync::OnceLock<History>,
     /// Live: the price alerts' input channel (`crate::alerts`), set once at start. Offered every
@@ -536,7 +555,7 @@ impl Market {
             .as_ref()
             .filter(|_| follow_latest)
             .and_then(|d| d.list().last().map(|e| e.day));
-        Market(Arc::new(Inner {
+        let market = Market(Arc::new(Inner {
             mode,
             info: Mutex::new(info.map(Arc::new)),
             days,
@@ -555,9 +574,43 @@ impl Market {
             latest_seen: Mutex::new(latest_seen),
             quote_subs: AtomicUsize::new(0),
             pressure_subs: AtomicUsize::new(0),
+            context_on: AtomicBool::new(false),
+            ross_subs: AtomicUsize::new(0),
             history: std::sync::OnceLock::new(),
             alerts: std::sync::OnceLock::new(),
-        }))
+        }));
+        let board = market.new_context_board();
+        market.0.core.lock().expect("core lock").context = board;
+        market
+    }
+
+    /// A fresh context board for this market's current day, or `None` with `STOCK_CONTEXT` off.
+    /// Takes the `info` lock (nobody holding it takes another), so call it before locking `core`.
+    fn new_context_board(&self) -> Option<ContextBoard> {
+        if !self.0.context_on.load(Ordering::Relaxed) {
+            return None;
+        }
+        let day = self
+            .0
+            .info
+            .lock()
+            .expect("info lock")
+            .as_ref()
+            .and_then(|i| i.day);
+        ContextBoard::new(
+            self.0.mode == ClockMode::Live,
+            day,
+            self.0.band.min,
+            self.0.band.max,
+        )
+    }
+
+    /// Turns stock context on or off for this market from now (tests; production reads
+    /// `STOCK_CONTEXT` once at start). Rebuilds the board for the current day.
+    pub fn set_stock_context(&self, on: bool) {
+        self.0.context_on.store(on, Ordering::Relaxed);
+        let board = self.new_context_board();
+        self.0.core.lock().expect("core lock").context = board;
     }
 
     /// Connects the price alerts (crate::alerts) to this market. Only the live market gets one:
@@ -775,6 +828,9 @@ impl Market {
                 follow_latest: cfg.follow_latest,
             },
         );
+        if cfg.stock_context {
+            market.set_stock_context(true);
+        }
         if mode == ClockMode::Live {
             // Before the first event: the history decides which symbols the ingest holds back.
             market.init_history(
@@ -876,6 +932,7 @@ impl Market {
                 let market = Market(inner);
                 market.publish_quotes();
                 market.publish_pressure();
+                market.publish_context();
                 n += 1;
                 // Live: the quote rows go into the archive's recording now and then, the
                 // startup summary of the next restart (`crate::history`).
@@ -1091,6 +1148,10 @@ impl Market {
                     }
                     _ => None,
                 };
+                // The context board's previous closes, taken before `core` (lock order).
+                let context_closes = (self.0.context_on.load(Ordering::Relaxed)
+                    && matches!(e, MarketEvent::Trade(_)))
+                .then(|| self.current_closes());
                 let (seq, ups, rebuilding) = {
                     let mut core = self.0.core.lock().expect("core lock");
                     if let Some((symbol, price, _)) = &qualifying {
@@ -1103,7 +1164,16 @@ impl Market {
                     }
                     // Live: a symbol whose archived history is not in the engine yet is held
                     // back (crate::history), and the paper broker still gets the print below.
-                    if crate::history::hold_unloaded(&mut core, &e) {
+                    let held = crate::history::hold_unloaded(&mut core, &e);
+                    // Stock context sees every print once, on arrival: a held one with its own
+                    // verdict (it reaches the chart engine later, never the context again).
+                    if held
+                        && let (MarketEvent::Trade(t), Some(closes)) = (&e, context_closes.as_ref())
+                        && let Some(cx) = core.context.as_mut()
+                    {
+                        cx.apply_trade(t, Counted::from_effect(t), closes);
+                    }
+                    if held {
                         // Alerts watch every live symbol, loaded into the engine or not.
                         if !core.rebuilding {
                             self.offer_alerts(&e, &[], None);
@@ -1127,10 +1197,18 @@ impl Market {
                             let counted = Counted::from_tape(&row.counted);
                             core.quotes.apply_trade(t, counted);
                             core.pressure.apply_trade(t, counted);
+                            if let (Some(closes), Some(cx)) =
+                                (context_closes.as_ref(), core.context.as_mut())
+                            {
+                                cx.apply_trade(t, counted, closes);
+                            }
                         }
                         for u in &ups {
                             if let ChartUpdate::Halt(h) = u {
                                 core.pressure.apply_halt(&h.symbol, &h.halt);
+                                if let Some(cx) = core.context.as_mut() {
+                                    cx.set_halted(&h.symbol, h.halt.end.is_none());
+                                }
                             }
                         }
                         if let Some(rev) = &revision {
@@ -1161,6 +1239,9 @@ impl Market {
                 let (seq, ups, rebuilding) = {
                     let mut core = self.0.core.lock().expect("core lock");
                     let ups = core.engine.advance_clock(t);
+                    if let Some(cx) = core.context.as_mut() {
+                        cx.advance(t);
+                    }
                     core.seq += 1;
                     let seq = core.seq;
                     (
@@ -1177,9 +1258,13 @@ impl Market {
                 // The visible clock stays where it was until the rebuild's closing `Clock`, so a
                 // client never sees the target time over a half-rebuilt engine.
                 {
+                    let closes = self.current_closes();
+                    // A seek rebuilds stock context from the re-read day, like the candles.
+                    let board = self.new_context_board();
                     let mut core = self.0.core.lock().expect("core lock");
                     let seq = core.seq + 1;
-                    *core = Core::new(self.current_closes());
+                    *core = Core::new(closes);
+                    core.context = board;
                     core.seq = seq;
                     core.rebuilding = true;
                 }
@@ -1192,9 +1277,13 @@ impl Market {
             }
             FeedItem::Clock(c) => {
                 let frame = clock_frame(&c);
+                let now = c.now;
                 *self.0.clock.lock().expect("clock lock") = Some(c);
                 let (seq, resync) = {
                     let mut core = self.0.core.lock().expect("core lock");
+                    if let Some(cx) = core.context.as_mut() {
+                        cx.advance(now);
+                    }
                     let resync = std::mem::take(&mut core.rebuilding);
                     if resync {
                         // Every subscriber takes a fresh quotes.snapshot on the Resync below, and
@@ -1597,6 +1686,53 @@ impl Market {
         self.0.pressure_subs.load(Ordering::Relaxed)
     }
 
+    /// Registers a `ross.subscribe` (the pressure guard's twin).
+    pub fn ross_subscribe(&self) -> RossGuard {
+        self.0.ross_subs.fetch_add(1, Ordering::Relaxed);
+        RossGuard(self.0.clone())
+    }
+
+    /// The Ross Panel as a `ross.snapshot` frame (`enabled: false` with `STOCK_CONTEXT` off), with
+    /// the engine seq it is consistent with.
+    pub fn ross_snapshot(&self) -> (u64, String) {
+        let core = self.0.core.lock().expect("core lock");
+        let frame = match core.context.as_ref() {
+            Some(cx) => cx.panel_frame("ross.snapshot"),
+            None => crate::context::disabled_frame(),
+        };
+        (core.seq, frame)
+    }
+
+    /// A symbol's latest stock-context decision as a `context.decision` frame.
+    pub fn context_decision(&self, symbol: &str) -> String {
+        let core = self.0.core.lock().expect("core lock");
+        let cx = core.context.as_ref();
+        crate::context::decision_frame(symbol, cx.and_then(|c| c.decision(symbol)), cx.is_some())
+    }
+
+    /// One `ross.update` when the panel changed and anyone is subscribed (from the quotes task,
+    /// at most once per wall second). Skipped during a rebuild, like the other boards.
+    pub fn publish_context(&self) {
+        if self.0.ross_subs.load(Ordering::Relaxed) == 0 {
+            return;
+        }
+        let (seq, frame) = {
+            let mut core = self.0.core.lock().expect("core lock");
+            if core.rebuilding {
+                return;
+            }
+            let seq = core.seq;
+            match core.context.as_mut().and_then(|c| c.take_update()) {
+                Some(f) => (seq, f),
+                None => return,
+            }
+        };
+        let _ = self.0.tx.send(Arc::new(Outbound {
+            seq,
+            kind: OutKind::Ross(frame),
+        }));
+    }
+
     /// The last ranked board as a `pressure.snapshot` frame, with the engine seq it is consistent
     /// with. Empty until the first ranking (at most a second after start or a rebuild).
     pub fn pressure_snapshot(&self) -> (u64, String) {
@@ -1785,6 +1921,15 @@ pub struct QuotesGuard(Arc<Inner>);
 impl Drop for QuotesGuard {
     fn drop(&mut self) {
         self.0.quote_subs.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// Decrements the Ross Panel subscriber count when dropped.
+pub struct RossGuard(Arc<Inner>);
+
+impl Drop for RossGuard {
+    fn drop(&mut self) {
+        self.0.ross_subs.fetch_sub(1, Ordering::Relaxed);
     }
 }
 

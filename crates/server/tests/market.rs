@@ -2082,3 +2082,90 @@ async fn pressure_board_ranks_in_band_symbols_and_holds_halted_cards() {
     let seen = types_for(&mut ws, Duration::from_millis(2500)).await;
     assert!(!seen.iter().any(|t| t.starts_with("pressure.")), "{seen:?}");
 }
+
+/// Stock context off (the default): `ross.subscribe` answers `enabled: false` (the client shows
+/// "not enabled", never an empty panel that would read as "nothing qualifies"), and
+/// `context.get` the same; no `ross.update` ever comes.
+#[tokio::test]
+async fn ross_panel_says_disabled_when_stock_context_is_off() {
+    let s = stack(&[
+        ("SIM_FIXTURE_SYMBOLS", "SMPL,FXLO"),
+        ("REPLAY_START", "10:04"),
+    ])
+    .await;
+    let mut ws = connect(&s.url).await;
+    send(&mut ws, json!({"type": "ross.subscribe"})).await;
+    let snap = next(&mut ws, is("ross.snapshot")).await;
+    assert_eq!(snap["enabled"], false);
+    assert!(snap["panel"].is_null());
+    send(&mut ws, json!({"type": "context.get", "symbol": "smpl"})).await;
+    let d = next(&mut ws, is("context.decision")).await;
+    assert_eq!(
+        (d["symbol"].as_str(), d["enabled"].as_bool()),
+        (Some("SMPL"), Some(false))
+    );
+    assert!(d["decision"].is_null());
+}
+
+/// Stock context on, replaying the fixture day: every traded symbol gets decisions with the five
+/// pillars, the gain pillar UNKNOWN on the raw, unchecked previous close (by design), and the
+/// Ross Panel enabled but empty (nothing can pass five pillars without RVOL, float and news
+/// evidence). A bystander that did not subscribe sees no `ross.*` frame.
+#[tokio::test]
+async fn stock_context_decides_every_traded_symbol_and_the_panel_stays_honestly_empty() {
+    let s = stack(&[
+        ("SIM_FIXTURE_SYMBOLS", "SMPL,FXLO"),
+        ("REPLAY_START", "10:04"),
+        ("REPLAY_SPEED", "30"),
+        ("STOCK_CONTEXT", "1"),
+    ])
+    .await;
+    let mut ws = connect(&s.url).await;
+    let mut bystander = connect(&s.url).await;
+    send(&mut ws, json!({"type": "ross.subscribe"})).await;
+    let snap = next(&mut ws, is("ross.snapshot")).await;
+    assert_eq!(snap["enabled"], true, "{snap}");
+    assert!(
+        snap["panelPolicy"]
+            .as_str()
+            .unwrap()
+            .starts_with("ross-panel-v1@")
+    );
+    assert!(
+        snap["pillarPolicy"]
+            .as_str()
+            .unwrap()
+            .starts_with("pillars-v1@")
+    );
+    // Let the replay run a few decision barriers.
+    next(&mut ws, |m| {
+        m["type"] == "replay.clock"
+            && m["clock"]["now"].as_i64().unwrap_or(0) >= T1040 - 34 * 60_000
+    })
+    .await;
+    send(&mut ws, json!({"type": "context.get", "symbol": "SMPL"})).await;
+    let d = next(&mut ws, is("context.decision")).await;
+    assert_eq!(d["enabled"], true);
+    let dec = &d["decision"];
+    assert_eq!(dec["symbol"], "SMPL", "{d}");
+    assert_eq!(dec["source"], "replay");
+    assert_eq!(dec["fidelity"], "reconstructed_history");
+    let pillars = dec["pillars"].as_array().unwrap();
+    assert_eq!(pillars.len(), 5);
+    let gain = pillars.iter().find(|p| p["pillar"] == "gain").unwrap();
+    assert_eq!(gain["state"], "UNKNOWN", "{gain}");
+    let rvol = pillars.iter().find(|p| p["pillar"] == "rvol").unwrap();
+    assert_eq!(
+        (rvol["state"].as_str(), rvol["reason"].as_str()),
+        (Some("UNKNOWN"), Some("no_daily_baseline"))
+    );
+    assert_ne!(dec["qualification"], "QUALIFIED");
+    // No member: the panel's rows stay empty however long it runs.
+    let seen = types_for(&mut ws, Duration::from_millis(2500)).await;
+    assert!(
+        !seen.iter().any(|t| t == "ross.update"),
+        "an empty panel never changes: {seen:?}"
+    );
+    let seen = types_for(&mut bystander, Duration::from_millis(500)).await;
+    assert!(!seen.iter().any(|t| t.starts_with("ross.")), "{seen:?}");
+}

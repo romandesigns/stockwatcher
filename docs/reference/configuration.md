@@ -62,6 +62,7 @@ services) sets `STOCKWATCHER_API_TOKEN`, `RUST_LOG`, `MARKET_DATA_MODE`, `REPLAY
 | `LIVE_RECORD` | `1` | record every event the live stream delivers into the archive itself, `ARCHIVE_ROOT/<trading date>/live/` (a provisional day: `crates/market-archive/src/live.rs`, `crates/market-providers/src/recorder.rs`). The nightly import replaces it with the complete day. `0` turns recording off; history already in the archive is still loaded |
 | `LIVE_RECORD_DAYS` | `5` | live recordings kept when no import replaced them (at least 2; never the day being recorded). Shares `ARCHIVE_MIN_FREE_MB` with the archive |
 | `LIVE_HISTORY_PRELOAD` | `1` | after a start, load every symbol's day from the archive in the background, busiest first; `0` loads a symbol only when a chart asks for it (`crates/server/src/history.rs`) |
+| `STOCK_CONTEXT` | `0` | five-pillar stock context and the Ross Panel (`crates/server/src/context.rs`, docs/stock-context/); off: `ross.snapshot` says `enabled: false`. Needs `PRICE_BAND_*` to match the panel policy's platform band ($0.10–$25), else it stays off with an error in the log |
 
 Alpaca allows one stream connection per account on most plans: run live on one host only.
 
