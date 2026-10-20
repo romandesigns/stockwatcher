@@ -108,9 +108,10 @@ export function rossRowView(r: RossRowWire, cutoff: number, formatTime: (epochNs
   const state: RossSetupState = setupWire?.state ?? "watching";
   const look = SETUP[state];
   const m = r.momentum;
-  const m1 = m.status === "ready" && m.r_primary_bp !== null ? m.r_primary_bp : null;
+  const m1 = r.move_1m_bp ?? (m.status === "ready" ? m.r_primary_bp : null);
   const fromHighBp = r.from_high_bp ?? m.below_high_bp;
-  const missing = r.membership.nonpassing[0];
+  const first = r.missing?.[0];
+  const missing = first ? ([first.pillar, first.state] as const) : r.membership.nonpassing[0];
   let tag = "";
   let tagTone: RossTone = "muted";
   if (missing) {
@@ -152,7 +153,7 @@ export function rossRowView(r: RossRowWire, cutoff: number, formatTime: (epochNs
     rvol: r.rvol_milli ? `${(r.rvol_milli / 1000).toFixed(1)}×` : "—",
     tag,
     tagTone,
-    setup: { state, label: look.label, note, tone: look.tone, pulse: look.pulse, attention: look.attention, meter: state === "watching" || state === "halted" || state === "invalidated" ? null : (setupWire?.meter ?? null) },
+    setup: { state, label: look.label, note, tone: look.tone, pulse: look.pulse, attention: look.attention, meter: state === "watching" || state === "halted" || state === "invalidated" || setupWire?.meter_milli == null ? null : setupWire.meter_milli / 1000 },
     dimmed: state === "invalidated",
     spark: r.spark ?? [],
     aria: "",
@@ -188,10 +189,10 @@ export function rossDemoPanel(cutoff: number): RossPanelWire {
     cutoff,
     attention: 2,
     rows: [
-      row({ symbol: "BBBB", price: 6_080_000, gain_bp: 2150, momentum: mom(300, 40), rank: 1, prev_rank: 3, rvol_milli: 7400, float_shares: 30_100_000, membership: { status: "retained", episodes: ep(11), nonpassing: [["float", "FAIL", "at_or_above_max"]] }, counts: { pass: 4, fail: 1, unknown: 0 }, setup: { state: "crossing", trigger: { price: 6_050_000, version: "demo" }, invalidation: { price: 5_860_000, version: "demo" }, meter: 1, risk_to_stop_bp: 362 }, spark: spark(5_700_000, 6_080_000, 20_000) }),
-      row({ symbol: "EEEE", price: 2_470_000, gain_bp: 3100, momentum: mom(140, 80), rank: 2, prev_rank: 2, rvol_milli: 11_200, float_shares: 3_100_000, membership: { status: "qualified", episodes: ep(2), nonpassing: [] }, setup: { state: "near", trigger: { price: 2_490_000, version: "demo" }, invalidation: { price: 2_360_000, version: "demo" }, distance_to_trigger_bp: 80, meter: 0.82, risk_to_stop_bp: 530 }, spark: spark(2_380_000, 2_470_000, 8_000) }),
-      row({ symbol: "FFFF", price: 421_000, gain_bp: 6400, momentum: mom(90, 120), rank: 3, prev_rank: 3, rvol_milli: 22_000, float_shares: 1_800_000, setup: { state: "forming", trigger: { price: 429_000, version: "demo" }, invalidation: { price: 398_000, version: "demo" }, meter: 0.55 }, spark: spark(405_000, 421_000, 2_000) }),
-      row({ symbol: "AAAA", price: 5_680_000, gain_bp: 4200, momentum: mom(-200, 630), rank: 4, prev_rank: 2, rvol_milli: 9100, float_shares: 5_000_000, setup: { state: "forming", trigger: { price: 5_900_000, version: "demo" }, invalidation: { price: 5_500_000, version: "demo" }, meter: 0.35 }, spark: spark(5_900_000, 5_680_000, 30_000) }),
+      row({ symbol: "BBBB", price: 6_080_000, gain_bp: 2150, momentum: mom(300, 40), rank: 1, prev_rank: 3, rvol_milli: 7400, float_shares: 30_100_000, membership: { status: "retained", episodes: ep(11), nonpassing: [["float", "FAIL", "at_or_above_max"]] }, counts: { pass: 4, fail: 1, unknown: 0 }, setup: { state: "crossing", trigger: { price: 6_050_000, version: "demo" }, invalidation: { price: 5_860_000, version: "demo" }, meter_milli: 1000, risk_to_stop_bp: 362 }, spark: spark(5_700_000, 6_080_000, 20_000) }),
+      row({ symbol: "EEEE", price: 2_470_000, gain_bp: 3100, momentum: mom(140, 80), rank: 2, prev_rank: 2, rvol_milli: 11_200, float_shares: 3_100_000, membership: { status: "qualified", episodes: ep(2), nonpassing: [] }, setup: { state: "near", trigger: { price: 2_490_000, version: "demo" }, invalidation: { price: 2_360_000, version: "demo" }, distance_to_trigger_bp: 80, meter_milli: 820, risk_to_stop_bp: 530 }, spark: spark(2_380_000, 2_470_000, 8_000) }),
+      row({ symbol: "FFFF", price: 421_000, gain_bp: 6400, momentum: mom(90, 120), rank: 3, prev_rank: 3, rvol_milli: 22_000, float_shares: 1_800_000, setup: { state: "forming", trigger: { price: 429_000, version: "demo" }, invalidation: { price: 398_000, version: "demo" }, meter_milli: 550 }, spark: spark(405_000, 421_000, 2_000) }),
+      row({ symbol: "AAAA", price: 5_680_000, gain_bp: 4200, momentum: mom(-200, 630), rank: 4, prev_rank: 2, rvol_milli: 9100, float_shares: 5_000_000, setup: { state: "forming", trigger: { price: 5_900_000, version: "demo" }, invalidation: { price: 5_500_000, version: "demo" }, meter_milli: 350 }, spark: spark(5_900_000, 5_680_000, 30_000) }),
       row({ symbol: "CCCC", price: 3_410_000, gain_bp: 1280, momentum: mom(-260, 980), rank: 5, prev_rank: 4, rvol_milli: 5600, membership: { status: "retained", episodes: ep(30), nonpassing: [["news", "UNKNOWN", "news_coverage_unknown"]] }, counts: { pass: 4, fail: 0, unknown: 1 }, setup: { state: "invalidated", invalidation: { price: 3_440_000, version: "demo" } }, spark: spark(3_550_000, 3_410_000) }),
       row({ symbol: "DDDD", price: 8_120_000, gain_bp: 1520, momentum: mom(null, 210), rvol_milli: 6000, float_shares: 14_000_000, setup: { state: "halted" }, spark: spark(8_050_000, 8_120_000) }),
     ],

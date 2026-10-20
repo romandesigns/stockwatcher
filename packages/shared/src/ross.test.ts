@@ -16,7 +16,7 @@ function row(over: Partial<RossRowWire> = {}): RossRowWire {
     momentum: { status: "ready", reason: "ready", r_short_bp: 110, r_primary_bp: 300, r_context_bp: 510, accel_bp: 20, below_high_bp: 40 },
     rank: 1,
     prev_rank: 3,
-    setup: { state: "crossing", trigger: { price: 6_050_000, version: "t1" }, invalidation: { price: 5_860_000, version: "i1" }, meter: 1, risk_to_stop_bp: 362 },
+    setup: { state: "crossing", trigger: { price: 6_050_000, version: "t1" }, invalidation: { price: 5_860_000, version: "i1" }, meter_milli: 1000, risk_to_stop_bp: 362 },
     rvol_milli: 7400,
     float_shares: 30_100_000,
     spark: [5_700_000, 6_080_000],
@@ -34,7 +34,7 @@ describe("ross row view", () => {
     expect(v.badge).toBeNull();
   });
   test("near, NEW, unknown pillar, float when nothing is missing, unranked", () => {
-    const near = rossRowView(row({ setup: { state: "near", trigger: { price: 2_490_000, version: "t" }, distance_to_trigger_bp: 80, meter: 0.82 }, membership: { status: "qualified", episodes: [{ id: "e", admitted_at: cutoff - MIN, retained_since: null, exited_at: null }], nonpassing: [] }, float_shares: 3_100_000, price: 2_470_000 }), cutoff, hhmm);
+    const near = rossRowView(row({ setup: { state: "near", trigger: { price: 2_490_000, version: "t" }, distance_to_trigger_bp: 80, meter_milli: 820 }, membership: { status: "qualified", episodes: [{ id: "e", admitted_at: cutoff - MIN, retained_since: null, exited_at: null }], nonpassing: [] }, float_shares: 3_100_000, price: 2_470_000 }), cutoff, hhmm);
     expect(near.setup.note).toBe("2.49 · 0.8% away");
     expect(near.badge?.label).toBe("NEW");
     expect(near.tag).toBe("Float 3.1M");
@@ -44,7 +44,7 @@ describe("ross row view", () => {
     expect([warm.m1, warm.m1Tone, warm.move]).toEqual(["—", "dim", ""]);
   });
   test("invalidated is dimmed with no meter; halted shows the badge; sub-$1 prints four decimals", () => {
-    const inv = rossRowView(row({ setup: { state: "invalidated", invalidation: { price: 3_440_000, version: "i" }, meter: 0.1 } }), cutoff, hhmm);
+    const inv = rossRowView(row({ setup: { state: "invalidated", invalidation: { price: 3_440_000, version: "i" }, meter_milli: 100 } }), cutoff, hhmm);
     expect([inv.dimmed, inv.setup.meter, inv.setup.note]).toEqual([true, null, "below 3.44"]);
     expect(rossRowView(row({ setup: { state: "halted" } }), cutoff, hhmm).badge?.label).toBe("HALTED");
     expect(rossPrice(421_000)).toBe("0.4210");
@@ -66,4 +66,9 @@ test("the channel opts in with the first listener and out (emptied) with the las
   off();
   expect(calls).toEqual(["sub", "unsub"]);
   expect(ch.get().enabled).toBeNull();
+});
+
+test("the engine's own row fields win: move_1m_bp, missing[], meter_milli in thousandths", () => {
+  const v = rossRowView(row({ move_1m_bp: -150, missing: [{ pillar: "news", state: "UNKNOWN", reason: "news_coverage_unknown" }], setup: { state: "forming", meter_milli: 375 } }), cutoff, hhmm);
+  expect([v.m1, v.tag, v.setup.meter]).toEqual(["−1.5%", "News ?", 0.375]);
 });

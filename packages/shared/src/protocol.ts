@@ -228,21 +228,34 @@ export type RossSetupState = "watching" | "forming" | "near" | "crossing" | "tri
 
 export interface RossLevelWire {
   price: number;
+  /** `<setup id>:trigger:<n>`; a moved level gets a new version. */
   version: string;
+  set_at?: number;
+  reason?: string;
 }
 
+/** stock_context::SetupView (`bull_flag_v0`, policy `setups-v0`, EXPERIMENTAL). */
 export interface RossSetupWire {
+  family?: string;
+  policy?: string;
+  experimental?: boolean;
   state: RossSetupState;
   state_since?: number | null;
   trigger?: RossLevelWire | null;
   invalidation?: RossLevelWire | null;
   distance_to_trigger_bp?: number | null;
-  /** 0..1 from invalidation to trigger. */
-  meter?: number | null;
+  /** Integer thousandths (0..1000) from invalidation to trigger, never a 0..1 float. */
+  meter_milli?: number | null;
   risk_to_stop_bp?: number | null;
-  pending?: { condition: string; state: "PASS" | "FAIL" | "UNKNOWN" }[];
+  /** Only while crossing: what the bar still has to prove (close above the trigger, volume). */
+  pending?: { condition: "close_above_trigger" | "volume"; state: "PASS" | "FAIL" | "UNKNOWN" }[];
   extended?: boolean;
   reason?: string | null;
+  transition_id?: string | null;
+  setup_id?: string | null;
+  flag_bars?: number;
+  price?: number | null;
+  crossed_version?: string | null;
 }
 
 export interface RossMomentumWire {
@@ -279,11 +292,15 @@ export interface RossRowWire {
   rank: number | null;
   prev_rank: number | null;
   setup?: RossSetupWire | null;
+  /** The one-minute move (= momentum.r_primary_bp). */
+  move_1m_bp?: number | null;
+  /** The pillars not passing, as objects (the same facts as membership.nonpassing). */
+  missing?: { pillar: string; state: "FAIL" | "UNKNOWN"; reason: string }[];
   from_high_bp?: number | null;
   rvol_milli?: number | null;
   float_shares?: number | null;
   news_first_seen?: number | null;
-  /** Closes (micros) of the last completed 15 s bars, oldest first. */
+  /** Closes (micros) of the last ≤20 completed 15 s bars that traded, oldest first; no timestamps. */
   spark?: number[];
 }
 
@@ -291,6 +308,9 @@ export interface RossPanelWire {
   revision: number;
   bar_end: number;
   cutoff: number;
+  /** `setups-v0@<hash>`. */
+  setup_policy?: string;
+  /** Members whose setup is near, crossing or triggered. */
   attention?: number;
   rows: RossRowWire[];
 }
