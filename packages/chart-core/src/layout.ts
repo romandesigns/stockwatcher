@@ -131,6 +131,8 @@ export interface ChartStyle {
   sessionShading?: boolean;
   sessionBreaks?: boolean;
   highLow?: boolean;
+  /** The overlay indicators' value legend at the top left of the price pane; absent = shown. */
+  indicatorLegend?: boolean;
 }
 
 export interface ChartGeometry {
@@ -313,7 +315,8 @@ export function computeChartModel(state: ChartState, viewport: Viewport, size: S
   const fit = autoFitRange(slots, index.from, index.to, { chartType, overlays }, 0.08, type);
   // Auto scale keeps the overlay legend's rows clear: without it the visible high sits right under
   // the legend (and the HOD tag beside it), unreadable on a phone (owner, 2026-10-19).
-  const auto = fit ? liftTop(fit, legendHeadroom(state.indicators ?? [], geometry.plot, options, inspected), geometry.plot.h, type) : null;
+  const headroom = state.chartStyle?.indicatorLegend === false ? 0 : legendHeadroom(state.indicators ?? [], geometry.plot, options, inspected);
+  const auto = fit ? liftTop(fit, headroom, geometry.plot.h, type) : null;
   // A manual range (from a price-axis drag) holds until auto-scale; it still
   // needs candles to exist, so an empty chart has no price scale either way.
   let range = auto && viewport.price?.mode === "manual" ? { lo: viewport.price.lo, hi: viewport.price.hi } : auto;
@@ -562,7 +565,7 @@ export function layoutChart(model: ChartModel, state: ChartState, theme: ChartTh
   // Alerts under the orders: an order's pill (what the grab priority favours) is never covered.
   if (state.alerts) out.push(...layoutAlerts(model, state.alerts, theme));
   if (state.trading) out.push(...layoutTrading(model, state.trading, theme));
-  if (price && results.some((r) => r.placement === "overlay")) out.push(...overlayLegend(model, results, theme));
+  if (price && style.indicatorLegend !== false && results.some((r) => r.placement === "overlay")) out.push(...overlayLegend(model, results, theme));
 
   // inspection line at the inspected (or latest) slot, through every time-aligned pane
   if (model.inspected !== null && model.inspected >= ix.from && model.inspected <= ix.to) {

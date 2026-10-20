@@ -200,3 +200,15 @@ describe("auto scale leaves the overlay legend room", () => {
     expect(m.price!.hi).toBe(2);
   });
 });
+
+test("hiding the indicator legend drops its text and gives the candles its room back", () => {
+  const size = { width: 360, height: 300 };
+  const slots = buildSlots(snap.candles, snap.gaps);
+  const ind = computeIndicators(slots, [{ id: "ema-9", kind: "ema", period: 9 }, { id: "vwap", kind: "vwap" }]);
+  const texts = (s: ChartState) => layout(s, defaultViewport(), DEFAULT_CHART_THEME, size).filter((p) => p.kind === "text").map((p) => (p as { text: string }).text);
+  const shown = { ...state, slots, indicators: ind };
+  const hidden = { ...shown, chartStyle: { indicatorLegend: false } };
+  expect(texts(shown).some((t) => t.startsWith("EMA"))).toBe(true);
+  expect(texts(hidden).some((t) => t.startsWith("EMA") || t === "VWAP")).toBe(false);
+  expect(computeChartModel(hidden, defaultViewport(), size).price!.hi).toBeLessThan(computeChartModel(shown, defaultViewport(), size).price!.hi);
+});
