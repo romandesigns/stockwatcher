@@ -74,7 +74,7 @@ function DashboardView({ feed, token, source }: { feed: MobileFeed; token: strin
       {/* One row of six mini gauges, all in view (owner, 2026-10-19); a tap opens the ticker's chart. */}
       <HaltWatcher channel={feed.pressure} onPick={open} reducedMotion={reducedMotion} />
       {/* The Ross Panel card (owner, 2026-10-20): a tapped row opens the chart modal like a gauge. */}
-      <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 8 }}>
+      <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 8 }}>
         <RossPanel channel={feed.ross} onPick={open} reducedMotion={reducedMotion} />
       </ScrollView>
       {candidates.length === 0 && !fixture && (
