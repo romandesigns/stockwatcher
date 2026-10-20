@@ -44,9 +44,11 @@ const SEC: i64 = 1_000_000_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FloatMode {
-    /// One `shares-float?symbol=` per symbol (probed and working).
+    /// One `shares-float?symbol=` per symbol (probed and working): ~7,500 requests a day.
     PerSymbol,
-    /// `shares-float-all` pages, falling back to per-symbol on the first refusal (unprobed).
+    /// `shares-float-all` pages (~10 requests for the whole market), falling back to per-symbol
+    /// on the first refusal. Default: pages 0 and 1 probed on this account (2026-10-20), and FMP
+    /// exposes no plan limit to check a 7,500-a-day per-symbol refresh against.
     Bulk,
 }
 
@@ -55,7 +57,7 @@ pub enum FloatMode {
 /// | Variable | Default | Meaning |
 /// |---|---|---|
 /// | `EVIDENCE_FLOAT_AT` | `07:00` | ET time of the daily float refresh (`HH:MM`) |
-/// | `EVIDENCE_FLOAT_MODE` | `per-symbol` | or `bulk` (`shares-float-all`, unprobed) |
+/// | `EVIDENCE_FLOAT_MODE` | `bulk` | `shares-float-all` pages, per-symbol on refusal; or `per-symbol` |
 /// | `EVIDENCE_FMP_PER_MINUTE` | `120` | FMP request ceiling for this process |
 /// | `EVIDENCE_FLOAT_WARMUP_MAX` | `500` | intraday entrants fetched per ET date, at most |
 /// | `EVIDENCE_UNIVERSE_DAYS` | `5` | trading dates of closes that define the watch universe |
@@ -92,7 +94,7 @@ impl Default for EvidenceConfig {
     fn default() -> Self {
         EvidenceConfig {
             float_at: NaiveTime::from_hms_opt(7, 0, 0).expect("valid"),
-            float_mode: FloatMode::PerSymbol,
+            float_mode: FloatMode::Bulk,
             fmp_per_minute: 120,
             float_warmup_max: 500,
             universe_days: 5,
@@ -135,8 +137,8 @@ impl EvidenceConfig {
                 .map_err(|_| format!("EVIDENCE_FLOAT_AT must be HH:MM, got {v:?}"))?,
         };
         let float_mode = match var("EVIDENCE_FLOAT_MODE").as_deref() {
-            None | Some("per-symbol") => FloatMode::PerSymbol,
-            Some("bulk") => FloatMode::Bulk,
+            Some("per-symbol") => FloatMode::PerSymbol,
+            None | Some("bulk") => FloatMode::Bulk,
             Some(v) => {
                 return Err(format!(
                     "EVIDENCE_FLOAT_MODE must be per-symbol or bulk, got {v:?}"

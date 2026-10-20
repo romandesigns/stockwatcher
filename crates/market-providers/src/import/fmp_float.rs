@@ -13,8 +13,9 @@
 //! as float evidence, `market_archive::evidence_load`).
 //!
 //! `shares-float-all` (paged, every symbol) answered page 0 on this account; whether later pages
-//! are allowed was not probed (FMP refused `page=1` on `delisted-companies`). [`fetch_float_all`]
-//! is therefore opt-in, stops on the first refusal and the caller falls back to per-symbol.
+//! were allowed was unknown (FMP refused `page=1` on `delisted-companies`); `page=1` was probed on
+//! 2026-10-20 and returned 1,000 rows. [`fetch_float_all`] is the collector's default, stops on
+//! the first refusal, and the caller falls back to per-symbol.
 //!
 //! The key travels as the `apikey` query parameter: URLs reach logs only through `redact_url`,
 //! the stored `endpoint` never contains it, and error bodies are scrubbed.

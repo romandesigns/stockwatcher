@@ -14,7 +14,7 @@ use market_providers::import::alpaca_news::{
     NewsQuery, NewsVersions, RawStory, coverage_record, fetch_news,
 };
 use market_providers::import::evidence_collect::{
-    Collector, EvidenceConfig, news_window, watch_universe,
+    Collector, EvidenceConfig, FloatMode, news_window, watch_universe,
 };
 use market_providers::import::fmp::{FmpError, FmpKey};
 use market_providers::import::fmp_float::{fetch_float, fetch_float_all};
@@ -682,6 +682,9 @@ fn test_cfg() -> EvidenceConfig {
     EvidenceConfig {
         data_base: DATA.into(),
         fmp_base: FMP.into(),
+        // The scripted replies are per-symbol `shares-float` answers; bulk (the default) has its
+        // own fixtures above.
+        float_mode: FloatMode::PerSymbol,
         ..EvidenceConfig::default()
     }
 }

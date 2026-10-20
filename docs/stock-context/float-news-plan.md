@@ -22,12 +22,12 @@ The response bodies used by the tests are copied into
 
 | Use | Endpoint | Probe | Result | What it establishes |
 |---|---|---|---|---|
-| Float, per symbol (**used**) | FMP `/stable/shares-float?symbol=` | #2, AAPL and SGRX | 200, one row | `floatShares`, `outstandingShares`, `freeFloat`, `source` (a SEC document URL), `date` = FMP's **refresh time in UTC** (SGRX refreshed 8 min before the probe) |
-| Float, bulk (**opt-in**, `EVIDENCE_FLOAT_MODE=bulk`) | FMP `/stable/shares-float-all?page=&limit=` | #3, page 0, limit 5 | 200 | Same row shape. **Pages > 0 not probed**: FMP refused `page=1` on `delisted-companies` (#26), so bulk mode falls back to per-symbol on the first refusal |
+| Float, per symbol (fallback, `EVIDENCE_FLOAT_MODE=per-symbol`) | FMP `/stable/shares-float?symbol=` | #2, AAPL and SGRX | 200, one row | `floatShares`, `outstandingShares`, `freeFloat`, `source` (a SEC document URL), `date` = FMP's **refresh time in UTC** (SGRX refreshed 8 min before the probe) |
+| Float, bulk (**used**, default) | FMP `/stable/shares-float-all?page=&limit=` | #3, page 0, limit 5; 2026-10-20, page 1, limit 1000 | 200; 1,000 rows | Same row shape; later pages are allowed on this account. Falls back to per-symbol on the first refusal |
 | Float history | FMP `/api/v4/historical/shares_float` | #4 | **403** "legacy users only" | No point-in-time float. Stable guess `/stable/historical-shares-float`: 404 (#5). Finding F1 |
 | News (**used**) | Alpaca `GET data.alpaca.markets/v1beta1/news` | #29 (2023), #30 (2025) | 200 | `created_at`/`updated_at` RFC 3339 UTC; 3+ years back; edits visible (`updated_at` later; body is the final state, F9); `next_page_token` pagination; data API limit header `X-Ratelimit-Limit: 10000`/min |
 | News, FMP | FMP `/stable/news/stock` | #15–18 | 402 older than ~11 months | Not used. `publishedDate` is US/Eastern with no offset (F5), and there is no retrieval or edit time |
-| News stream | Alpaca news WebSocket | **not probed** ("no streams" in report 02) | — | Not used until an entitlement check exists (section 3) |
+| News stream | Alpaca news WebSocket | 2026-10-20: connect, auth, subscribe `["*"]` | connected, authenticated, subscribed | Entitled on this account. Still not used: polling is what is built and tested (section 3) |
 
 The probes did not establish:
 
@@ -263,6 +263,15 @@ before UNKNOWN), or keep v1 and accept that "no news" stays UNKNOWN in forward r
   `DailyCloses` are only read.
 
 ## 9. Before deploying
+
+Done 2026-10-20 (owner-approved, one request each, keys never printed):
+page 1 of `shares-float-all` returned 1,000 rows, so `bulk` is now the default; FMP exposes no
+rate-limit headers, so its plan limits stay unknown, which bulk mode (~10 requests a day for the
+whole market) makes moot; a news request without `symbols` returned 50 Benzinga stories for 62
+symbols with a next page; the news stream connected, authenticated and subscribed to `*`. The
+coverage lag is pillars-v2's 120 s (PR #58).
+
+Original checklist:
 
 1. One FMP request to `shares-float-all?page=1&limit=1000`. If it answers 200, set
    `EVIDENCE_FLOAT_MODE=bulk`.
