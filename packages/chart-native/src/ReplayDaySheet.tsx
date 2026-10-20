@@ -31,7 +31,7 @@ export function ReplayDaySheet({
   return (
     <Sheet open={open} onClose={onClose} title="Replay day" reducedMotion={reducedMotion}>
       <Text style={s.caption}>Switching days restarts the replay and resets the simulated account.</Text>
-      <ScrollView>
+      <ScrollView showsVerticalScrollIndicator={false} showsHorizontalScrollIndicator={false}>
         {days.length === 0 ? (
           <Text style={s.empty}>No archived days.</Text>
         ) : (

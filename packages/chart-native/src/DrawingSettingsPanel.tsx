@@ -39,7 +39,7 @@ const PREVIEW_BORDER = 1;
 export function DrawingSettingsPanel({ settings, onChange, reducedMotion }: { settings: DrawingSettings; onChange: (s: DrawingSettings) => void; reducedMotion?: boolean }) {
   const [previewWidth, setPreviewWidth] = useState(0);
   return (
-    <ScrollView contentContainerStyle={{ gap: 14, paddingBottom: 8 }}>
+    <ScrollView showsVerticalScrollIndicator={false} showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 14, paddingBottom: 8 }}>
       <View style={{ gap: 4 }}>
         <Text style={s.label} accessibilityRole="header">
           Preview

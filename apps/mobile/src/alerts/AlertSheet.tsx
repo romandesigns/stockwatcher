@@ -111,7 +111,7 @@ function Body({ s, d, close }: { s: AlertSheetState; d: AlertRule; close: () => 
   };
 
   return (
-    <ScrollView style={{ flex: 1 }} contentContainerStyle={{ gap: 14, paddingBottom: 12 }} keyboardShouldPersistTaps="handled">
+    <ScrollView showsVerticalScrollIndicator={false} showsHorizontalScrollIndicator={false} style={{ flex: 1 }} contentContainerStyle={{ gap: 14, paddingBottom: 12 }} keyboardShouldPersistTaps="handled">
       {(!d.symbol || s.editId) && (
         <Field label="Ticker">
           <TextInput value={symbol} onChangeText={(t) => setSymbol(t.toUpperCase())} autoCapitalize="characters" autoCorrect={false} placeholder="XLAB" placeholderTextColor={UI.textFaint} style={st.input} accessibilityLabel="Ticker" />

@@ -52,7 +52,7 @@ export function ChartSettingsPanel({ settings, onChange, indicators = [] }: { se
   const set = (patch: Partial<ChartSettings>) => onChange({ ...settings, ...patch });
   const overlays = indicators.filter((spec) => INDICATOR_PLACEMENT[spec.kind] === "overlay");
   return (
-    <ScrollView contentContainerStyle={{ gap: 14, paddingBottom: 8 }}>
+    <ScrollView showsVerticalScrollIndicator={false} showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 14, paddingBottom: 8 }}>
       <Section label="Type">
         <View style={s.types} accessibilityRole="radiogroup">
           {CHART_TYPES.map((t) => {
