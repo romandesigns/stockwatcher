@@ -8,7 +8,13 @@ import { playHaptic, UI } from "./ui.tsx";
 
 /** Finger travel for one step: a short swipe turns one notch. */
 const STEP_PX = 18;
-const HEIGHT = 36;
+/**
+ * The toolbar buttons' height (ui.tsx ToolButton, 30): a taller wheel made the whole toolbar row
+ * taller, so the row sat 9 pt from the chart card's top while the card's sides are 6 (owner,
+ * 2026-10-19: top and bottom padding consistent with the horizontal). The gesture keeps the old
+ * 36 pt reach through hitSlop.
+ */
+const HEIGHT = 30;
 /** Label row pitch inside the window; only the current one shows, the others slide past out of sight. */
 const LABEL = 18;
 /** Past either end the wheel gives a little, then stops: rubber band, not a wall. */
@@ -61,6 +67,7 @@ export function TimeframeWheel({ value, onChange, haptics = true, reducedMotion 
     disableReanimated: true,
     activeOffsetY: [-4, 4],
     failOffsetX: [-14, 14],
+    hitSlop: { top: 3, bottom: 3 },
     onActivate: () => {
       start.current = index;
     },
