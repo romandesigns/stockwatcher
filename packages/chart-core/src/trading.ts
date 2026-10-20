@@ -1,7 +1,7 @@
 import type { ChartTheme, DisplayList } from "./displayList.ts";
 import { formatPrice, formatSize } from "./format.ts";
 import type { ChartModel } from "./layout.ts";
-import { priceY } from "./scale.ts";
+import { formatAxisTag, priceY } from "./scale.ts";
 import { withAlpha } from "./theme.ts";
 import type { FillMark } from "./levels.ts";
 
@@ -266,7 +266,7 @@ export function layoutTrading(model: ChartModel, layer: TradingLayer, theme: Cha
     // The price tag on the axis while it is being dragged, so the new price is readable.
     if (layer.dragging?.id === o.id && inPlot(y)) {
       out.push({ kind: "rect", x: g.priceAxis.x + 2, y: y - 9, w: g.priceAxis.w - 4, h: 18, fill: color, radius: 3, layer: "crosshair" });
-      out.push({ kind: "text", x: g.priceAxis.x + g.priceAxis.w / 2, y, text: formatPrice(p), fill: theme.onOrder, fontSize: fs, fontFamily: mono, fontWeight: 600, align: "center", baseline: "middle", layer: "crosshair" });
+      out.push({ kind: "text", x: g.priceAxis.x + g.priceAxis.w / 2, y, text: formatAxisTag(model, p), fill: theme.onOrder, fontSize: fs, fontFamily: mono, fontWeight: 600, align: "center", baseline: "middle", layer: "crosshair" });
     }
   }
 

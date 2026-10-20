@@ -315,6 +315,19 @@ export function formatAxisValue(s: PriceScale, p: number, decimals?: number): st
   return formatPrice(p, decimals);
 }
 
+/** Decimals on the price column: its labels and every tag on it. */
+export const AXIS_DECIMALS = 2;
+
+/**
+ * A tag on the price column (last price, crosshair, alert, order, drawing): cents, like the axis
+ * labels beside it (owner, 2026-10-19, against Robinhood's column: "0.2810" beside "0.28 / 0.30"
+ * read as two number formats). The readout, the legend and the quotes keep the quote precision
+ * (four decimals below $1).
+ */
+export function formatAxisTag(m: { price: PriceScale | null }, p: number): string {
+  return m.price ? formatAxisValue(m.price, p, AXIS_DECIMALS) : formatPrice(p, AXIS_DECIMALS);
+}
+
 // Price zoom limits: span / |mid| for linear and percent, the ln-span for log.
 const MIN_REL_SPAN = 1e-5;
 const MAX_REL_SPAN = 50;
@@ -430,8 +443,22 @@ export function priceAxisTicks(s: PriceScale, maxCount: number): PriceTicks {
       }
     }
   }
-  const t = niceTicks(s.lo, s.hi, maxCount);
+  const t = inCents(niceTicks(s.lo, s.hi, maxCount), s.lo, s.hi);
   return { ...t, labels: t.values.map((v) => formatPrice(v, t.decimals)) };
+}
+
+/**
+ * The price column reads in cents, like Robinhood's (owner, 2026-10-19: "two digits after the dot
+ * just like Robinhood"): a step finer than 0.01 (0.005, 0.0025, 0.001) becomes 0.01, so no label
+ * needs a third decimal. Zoomed into less than a cent the axis shows fewer labels (or none); the
+ * readout and the legend still give the exact price.
+ */
+function inCents(t: NiceTicks, lo: number, hi: number): NiceTicks {
+  if (t.decimals <= AXIS_DECIMALS || t.step === 0) return t;
+  const step = 10 ** -AXIS_DECIMALS;
+  const values: number[] = [];
+  for (let k = Math.ceil(lo / step - 1e-9); k * step <= hi + step * 1e-9; k++) values.push(Number((k * step).toFixed(AXIS_DECIMALS + 2)));
+  return { step, decimals: AXIS_DECIMALS, values };
 }
 
 function logCandidates(lo: number, hi: number, mantissas: readonly number[]): number[] {

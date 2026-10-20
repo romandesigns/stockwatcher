@@ -2,7 +2,7 @@ import type { DisplayList } from "./displayList.ts";
 import type { ChartTheme } from "./displayList.ts";
 import { formatPrice } from "./format.ts";
 import type { ChartModel, Point } from "./layout.ts";
-import { priceY, yPrice } from "./scale.ts";
+import { formatAxisTag, priceY, yPrice } from "./scale.ts";
 import { snapPrice, tickSize } from "./trading.ts";
 
 // Price alerts on the chart (owner-approved design 2026-10-19, docs/architecture/chart-packages.md
@@ -152,7 +152,7 @@ export function layoutAlerts(model: ChartModel, layer: AlertLayer, theme: ChartT
     out.push({ kind: "text", x: q.label.x + 6, y: q.y, text: q.label.text, fill: q.dragging && layer.dragging?.deleting ? theme.onAlert : q.a.muted ? theme.textDim : theme.alertLabelText, fontSize: fs, fontFamily: mono, fontWeight: 500, align: "left", baseline: "middle", layer: "overlay" });
     // The axis tag (the touch handle), over the axis labels; the crosshair layer keeps it above them.
     out.push({ kind: "rect", x: g.priceAxis.x + 2, y: q.y - TAG_H / 2, w: g.priceAxis.w - 4, h: TAG_H, radius: 4, fill: color, layer: "crosshair" });
-    out.push({ kind: "text", x: g.priceAxis.x + g.priceAxis.w / 2, y: q.y, text: formatPrice(q.price), fill: theme.onAlert, fontSize: fs, fontFamily: mono, fontWeight: 600, align: "center", baseline: "middle", layer: "crosshair" });
+    out.push({ kind: "text", x: g.priceAxis.x + g.priceAxis.w / 2, y: q.y, text: formatAxisTag(model, q.price), fill: theme.onAlert, fontSize: fs, fontFamily: mono, fontWeight: 600, align: "center", baseline: "middle", layer: "crosshair" });
   }
   const by = layer.bellY;
   if (by !== null && by !== undefined && by >= plot.y && by <= plot.y + plot.h) {
