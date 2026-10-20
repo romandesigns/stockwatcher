@@ -45,6 +45,7 @@ fn main() {
             close_micros: 3_000_000 + i as i64 * 1_000,
             basis: CloseBasis::SplitAdjusted,
             actions_checked_through: Some(day),
+            actions: Default::default(),
             observed_at: pre,
         });
         let mut sessions = Vec::new();
@@ -69,6 +70,7 @@ fn main() {
             version: 1,
             instrument: inst.clone(),
             sessions,
+            basis: Default::default(),
             observed_at: pre,
         });
         if i % 10 == 0 {

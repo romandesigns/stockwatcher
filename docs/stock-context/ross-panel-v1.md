@@ -74,12 +74,26 @@ is spent in 1,561 barrier evaluations (~2.6 ms each, ~4 µs per symbol decision)
 `apply` p50 200 ns, p99 600 ns. The per-print percentiles hide the barriers: the integration
 benchmark must measure barrier time, transport and fan-out on the real host.
 
+## On the server (`STOCK_CONTEXT=1`, off by default)
+
+`crates/server/src/context.rs`: one engine per market `Core` (live and replay never share
+state; a replay seek rebuilds it with the candles). Every print is applied once, on arrival:
+with the chart engine's verdict when the symbol is loaded, with its own conditions when its
+history is still being loaded (the chart engine applies it later; the context engine never sees
+it twice). Admission time is the print's receive time when known. Evidence today: the raw,
+unchecked previous close from `daily-closes.json`, so the gain stays UNKNOWN and nothing is
+admitted until the evidence sources land (daily-bar baseline, corporate actions, float, news).
+Wire: `ross.subscribe` / `ross.snapshot` / `ross.update` and `context.get` / `context.decision`
+(see the `ws.rs` header). The run's numerator coverage is reported `unverified` until the
+recorder's coverage records are consulted.
+
 ## Not here yet
 
-Server channel and decision log, Ross Panel and Signals UI, ignition. Per-member setup
+Append-only decision log on disk, Ross Panel and Signals UI, ignition. Per-member setup
 monitoring now exists as the EXPERIMENTAL `bull_flag_v0` family ([setups-v0.md](setups-v0.md)):
 each row carries `setup`, plus `move_1m_bp`, `from_high_bp`, `rvol_milli`, `float_shares`,
 `news_first_seen`, `missing` (non-passing pillars) and `spark` (the last 20 completed 15 s bar
 closes); the snapshot carries `attention`. With `pillars-v2` the price pillar uses the app's own
-$0.10–$25 band, so the reference $2–$20 price failure described above applies to v1 only. Membership is only as reliable as the pillars beneath it: RVOL and gain
+$0.10–$25 band, so the reference $2–$20 price failure described above applies to v1 only.
+Membership is only as reliable as the pillars beneath it: RVOL and gain
 stay UNKNOWN until their evidence sources land, so in production today no stock can be admitted.

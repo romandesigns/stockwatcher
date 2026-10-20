@@ -9,17 +9,21 @@
 //!
 //! With [`LiveOptions::record`] the event then goes to the [`Recorder`] (a non-blocking queue;
 //! `crate::recorder`) before it is handed to the consumer; the session carries the recorder so
-//! the server can ask it for barriers.
+//! the server can ask it for barriers. The recorder also gets the facts its coverage records are
+//! made of (`market_archive::coverage`): the subscription at start, every link change, and the
+//! feed's drop counter. A feed without a link (a channel) is up from the start and down when it
+//! ends.
 
 use crate::alpaca_stream::{AlpacaStream, AlpacaStreamConfig, StreamFeed};
 use crate::config::{MarketDataMode, ProviderConfig};
-use crate::recorder::{Recorder, RecorderConfig};
+use crate::recorder::{DropCounter, Recorder, RecorderConfig};
 use crate::{
     ClockMode, ClockState, FeedItem, MarketDataProvider, ProviderError, ProviderInfo,
     ProviderSession, Speed,
 };
+use market_archive::{LinkStatus, Subscription};
 use market_events::{MarketEvent, UnixNanos};
-use market_replay::{Link, MarkClock};
+use market_replay::{Link, LinkState, MarkClock};
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 
@@ -32,6 +36,11 @@ pub trait LiveFeed: Send {
     /// [`LiveProvider`] forwards every change as [`FeedItem::Link`]. A watch, not a queue: only
     /// the latest state matters, and publishing it can never block the socket reader.
     fn link(&mut self) -> Option<watch::Receiver<Link>> {
+        None
+    }
+    /// The feed's cumulative count of events it dropped before delivering them (a lagging
+    /// consumer), for the coverage records. Taken once, before [`LiveFeed::connect`].
+    fn drop_counter(&self) -> Option<DropCounter> {
         None
     }
     fn connect(self: Box<Self>) -> Result<mpsc::Receiver<MarketEvent>, ProviderError>;
@@ -150,6 +159,18 @@ fn stamp(e: &mut MarketEvent, now: UnixNanos, last: i64) -> i64 {
     d
 }
 
+/// A link change, as a coverage fact for the recorder.
+fn note_link(rec: &Option<Recorder>, l: &Link) {
+    if let Some(r) = rec {
+        let state = match l.state {
+            LinkState::Up => LinkStatus::Up,
+            LinkState::Connecting => LinkStatus::Connecting,
+            LinkState::Down => LinkStatus::Down,
+        };
+        r.note_link(state, l.detail.clone());
+    }
+}
+
 fn live_clock(now: UnixNanos, events: u64) -> ClockState {
     ClockState {
         mode: ClockMode::Live,
@@ -180,6 +201,19 @@ impl MarketDataProvider for LiveProvider {
         };
         let recorder = self.opts.record.as_ref().map(Recorder::start);
         let mut link = feed.link();
+        if let Some(r) = &recorder {
+            r.note_subscription(if info.symbols.is_empty() {
+                Subscription::All
+            } else {
+                Subscription::Symbols(info.symbols.clone())
+            });
+            if let Some(c) = feed.drop_counter() {
+                r.watch_stream_drops(c);
+            }
+            if link.is_none() {
+                r.note_link(LinkStatus::Up, Some("channel feed".into()));
+            }
+        }
         let mut rx = feed.connect()?;
         let (out, items) = mpsc::channel(self.opts.channel.max(16));
         let state = watch::Sender::new(live_clock(wall_now(), 0));
@@ -194,6 +228,7 @@ impl MarketDataProvider for LiveProvider {
             // The state at start (usually "connecting") is news to the consumer too.
             if let Some(l) = link.as_mut() {
                 let first = l.borrow_and_update().clone();
+                note_link(&rec, &first);
                 if out.send(FeedItem::Link(first)).await.is_err() {
                     return;
                 }
@@ -201,7 +236,12 @@ impl MarketDataProvider for LiveProvider {
             loop {
                 tokio::select! {
                     ev = rx.recv() => {
-                        let Some(mut e) = ev else { break };
+                        let Some(mut e) = ev else {
+                            if let Some(r) = &rec {
+                                r.note_link(LinkStatus::Down, Some("the feed ended".into()));
+                            }
+                            break;
+                        };
                         let d = stamp(&mut e, wall_now(), last_d);
                         last_d = d;
                         // Before the consumer sees it: a barrier the server asks for later then
@@ -226,6 +266,7 @@ impl MarketDataProvider for LiveProvider {
                             continue;
                         }
                         let l = link.as_mut().expect("guarded").borrow_and_update().clone();
+                        note_link(&rec, &l);
                         if out.send(FeedItem::Link(l)).await.is_err() {
                             break;
                         }
@@ -253,5 +294,131 @@ impl MarketDataProvider for LiveProvider {
             control: None,
             recorder,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use market_archive::{
+        Archive, ArchiveConfig, Collection, CoverageBasis, CoverageEvent, GapReason,
+    };
+
+    /// A feed with a connection state the test drives, and no events at all.
+    struct LinkFeed {
+        link: watch::Sender<Link>,
+        rx: mpsc::Receiver<MarketEvent>,
+    }
+
+    impl LiveFeed for LinkFeed {
+        fn label(&self) -> String {
+            "test link feed".into()
+        }
+        fn symbols(&self) -> Vec<String> {
+            Vec::new()
+        }
+        fn link(&mut self) -> Option<watch::Receiver<Link>> {
+            Some(self.link.subscribe())
+        }
+        fn connect(self: Box<Self>) -> Result<mpsc::Receiver<MarketEvent>, ProviderError> {
+            Ok(self.rx)
+        }
+    }
+
+    async fn next_link(items: &mut mpsc::Receiver<FeedItem>) -> Link {
+        loop {
+            match tokio::time::timeout(Duration::from_secs(10), items.recv()).await {
+                Ok(Some(FeedItem::Link(l))) => return l,
+                Ok(Some(_)) => {}
+                other => panic!("no link item: {other:?}"),
+            }
+        }
+    }
+
+    /// A disconnect becomes a durable gap record, and the quiet stretches around it, with no
+    /// event at all for any symbol, read as complete: silence is not an outage.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_disconnect_is_recorded_as_a_gap_and_a_quiet_market_is_not() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = ArchiveConfig {
+            root: tmp.path().join("archive"),
+            retention_days: 0,
+            min_free_bytes: 0,
+        };
+        let link = watch::Sender::new(Link {
+            state: LinkState::Connecting,
+            detail: None,
+        });
+        let (_events, rx) = mpsc::channel(16);
+        let feed = LinkFeed {
+            link: link.clone(),
+            rx,
+        };
+        let opts = LiveOptions {
+            idle_tick: None,
+            record: Some(RecorderConfig::new(cfg.clone())),
+            ..LiveOptions::default()
+        };
+        let mut session = Box::new(LiveProvider::with_feed(Box::new(feed), opts))
+            .start()
+            .unwrap();
+        assert_eq!(
+            next_link(&mut session.items).await.state,
+            LinkState::Connecting
+        );
+        for (state, detail) in [
+            (LinkState::Up, "subscribed"),
+            (LinkState::Down, "network lost; reconnecting in 1.0 s"),
+            (LinkState::Up, "subscribed"),
+        ] {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            link.send_replace(Link {
+                state,
+                detail: Some(detail.into()),
+            });
+            assert_eq!(next_link(&mut session.items).await.state, state);
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let rec = session.recorder.take().unwrap();
+        assert!(rec.close(Duration::from_secs(10)));
+
+        let a = Archive::new(cfg);
+        let days = a.coverage_days().unwrap();
+        assert_eq!(days.len(), 1, "one trading date of wall time");
+        let log = a.read_coverage(days[0]).unwrap().unwrap();
+        assert_eq!(log.unreadable, 0);
+        let kinds: Vec<&CoverageEvent> = log.records.iter().map(|r| &r.event).collect();
+        assert!(matches!(kinds[0], CoverageEvent::ProcessStart { .. }));
+        assert!(matches!(kinds.last().unwrap(), CoverageEvent::ProcessStop));
+        let link_ts: Vec<(market_archive::LinkStatus, i64)> = log
+            .records
+            .iter()
+            .filter_map(|r| match &r.event {
+                CoverageEvent::Link { state, .. } => Some((*state, r.ts)),
+                _ => None,
+            })
+            .collect();
+        use market_archive::LinkStatus as L;
+        assert_eq!(
+            link_ts.iter().map(|(s, _)| *s).collect::<Vec<_>>(),
+            [L::Connecting, L::Up, L::Down, L::Up]
+        );
+        let (up1, down, up2) = (link_ts[1].1, link_ts[2].1, link_ts[3].1);
+        let ask = |from, to| {
+            a.coverage(days[0], "QUIET", from, to, CoverageBasis::Stream)
+                .unwrap()
+        };
+        assert_eq!(ask(up1, down).collection, Collection::Complete);
+        let gap = ask(up1, up2);
+        assert_eq!(gap.collection, Collection::Partial);
+        assert_eq!(gap.gaps.len(), 1);
+        assert_eq!(gap.gaps[0].reason, GapReason::LinkDown);
+        assert_eq!((gap.gaps[0].from, gap.gaps[0].to), (down, up2));
+        // After the clean stop: known not collected.
+        let stop = log.records.last().unwrap().ts;
+        assert_eq!(
+            ask(stop, stop + 1_000).gaps[0].reason,
+            GapReason::ProcessStopped
+        );
     }
 }

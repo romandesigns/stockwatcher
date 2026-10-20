@@ -214,6 +214,46 @@ docker logs --since 10m stockwatcher-server-1 2>&1 | grep -E 'live (recorder|his
 still loaded). The day being written must not be deleted by hand while the
 server runs; any other `live/` directory may be.
 
+## 9. Durable copy of preserved originals (the Pi)
+
+The live recorder keeps each day's untouched original recording (PR #52) in
+`archive/live-original/`, ~0.8 GB per whole-market day. It keeps the last 5
+trading days (`LIVE_ORIGINAL_DAYS`) and deletes an older one only once a
+verified copy exists on the Pi: copied, flushed, read back and hash-checked
+there, then re-checked at release. With no copy nothing is deleted, so without
+this step the VPS disk grows by that much every trading day.
+
+The Pi (`stockspotter-pi`) exports `/storage/stockwatcher/durable` over NFSv4,
+to this host's tailnet address only. The host mounts it at
+`/mnt/stockwatcher-durable`, the server sees it as `/durable`, and
+`LIVE_ORIGINAL_DURABLE_DIR=/durable/originals` (set in `docker-compose.yml`).
+`originals/` exists only on the Pi, so when the share is not mounted the path
+is missing: the recorder reports `retention_at_risk` and keeps its originals,
+rather than "copying" them onto this disk.
+
+1. On the Pi, from a checkout of `main`: `bash infra/pi/durable-share.sh`
+   (uses the Pi's sudo).
+2. Here, from a checkout of `main`: `bash infra/vps/durable-mount.sh` (**sudo**).
+   It ends with `ok: ... mounted`.
+3. Copy the new `infra/vps/docker-compose.yml` into `~/apps/stockwatcher/` and
+   recreate the server (this restarts it, like any `.env` change):
+   ```sh
+   docker compose --env-file image.env up -d
+   ```
+
+Checking on it (status is rewritten at startup and at every day change):
+
+```sh
+docker run --rm -v stockwatcher_data:/data:ro --user 65532:65532 debian:trixie-slim \
+  cat /data/archive/plans/retention-status.json      # "status": "ok" or "retention_at_risk"
+ls /mnt/stockwatcher-durable/originals                # one directory per copied day
+```
+
+The Pi's `/storage` is two NVMe drives in RAID 0: one drive failing loses the
+copies there, but the VPS still holds the newest 5 days, and the copies are a
+second machine rather than the only one. Never delete under `originals/` on
+the Pi: past the window it is the only copy.
+
 ## Operating it
 
 ```sh

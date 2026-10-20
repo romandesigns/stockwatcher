@@ -397,3 +397,191 @@ fn daily_closes_fetch_raw_sip_closes_for_every_active_asset_and_merge_into_the_f
         "the re-fetched close replaced the old one"
     );
 }
+
+/// A hand-written page in Alpaca's daily-bars shape (all fields, as the API returns them).
+const RAW_PAGE: &str = r#"{
+  "bars": {
+    "AAA": [
+      {"t":"2026-10-14T04:00:00Z","o":1.20,"h":1.31,"l":1.18,"c":1.25,"v":120500,"n":812,"vw":1.2471},
+      {"t":"2026-10-15T04:00:00Z","o":1.26,"h":1.55,"l":1.25,"c":1.50,"v":980100,"n":4410,"vw":1.4012}
+    ],
+    "BBB": [
+      {"t":"2026-10-15T04:00:00Z","o":7.00,"h":7.10,"l":6.90,"c":7.05,"v":5500,"n":61,"vw":7.01}
+    ]
+  },
+  "next_page_token": null
+}"#;
+
+/// Serves [`RAW_PAGE`] for raw requests and a split-adjusted page for split ones, recording URLs.
+struct BarsFixture {
+    urls: Vec<String>,
+}
+
+impl Http for BarsFixture {
+    fn get(&mut self, url: &str, _h: &[(&str, &str)]) -> Result<HttpResponse, String> {
+        self.urls.push(url.to_string());
+        if url.contains("/v2/assets") {
+            return ok(json!([
+                {"symbol": "AAA", "tradable": true},
+                {"symbol": "BBB", "tradable": true},
+                {"symbol": "CCC", "tradable": false}
+            ]));
+        }
+        if url.contains("adjustment=split") {
+            // AAA after a 1:10 reverse split: prices x10, volumes /10. ZZZ was not asked for.
+            return ok(json!({"bars": {
+                "AAA": [{"t":"2026-10-14T04:00:00Z","o":12.0,"h":13.1,"l":11.8,"c":12.5,"v":12050,"n":812,"vw":12.471}],
+                "ZZZ": [{"t":"2026-10-14T04:00:00Z","c":1.0,"v":1,"n":1}]
+            }, "next_page_token": null}));
+        }
+        if url.contains("/v2/stocks/bars") {
+            return Ok(HttpResponse {
+                status: 200,
+                body: RAW_PAGE.as_bytes().to_vec(),
+                retry_after: None,
+            });
+        }
+        Err(format!("unexpected url {url}"))
+    }
+}
+
+#[test]
+fn raw_daily_bars_are_kept_from_the_same_responses_as_the_closes() {
+    use market_archive::{Adjustment, DailyBar};
+    use market_providers::import::batch::daily_closes_and_bars;
+    let mut http = BarsFixture { urls: Vec::new() };
+    let (closes, raw) = daily_closes_and_bars(
+        &mut http,
+        "https://trading.example",
+        "https://data.example",
+        &creds(),
+        d("2026-10-14"),
+        d("2026-10-15"),
+        "test",
+        &mut |_| {},
+    )
+    .unwrap();
+    let bar_requests = http
+        .urls
+        .iter()
+        .filter(|u| u.contains("/v2/stocks/bars"))
+        .count();
+    assert_eq!(bar_requests, 1, "no extra request for the raw bars");
+    assert_eq!(closes[&d("2026-10-15")]["AAA"], 1.5, "closes unchanged");
+
+    assert_eq!(raw.len(), 2);
+    let d14 = &raw[0];
+    assert_eq!(d14.date, d("2026-10-14"));
+    assert_eq!(d14.adjustment, Adjustment::Raw);
+    assert_eq!(
+        d14.bars["AAA"],
+        DailyBar {
+            o: Some(1.20),
+            h: Some(1.31),
+            l: Some(1.18),
+            c: 1.25,
+            v: Some(120_500),
+            n: Some(812),
+            vw: Some(1.2471),
+        }
+    );
+    // Requested but absent is listed as covered-without-a-bar, never a zero-volume bar.
+    assert_eq!(
+        d14.no_bar.iter().map(String::as_str).collect::<Vec<_>>(),
+        ["BBB", "CCC"]
+    );
+    let f = &d14.fetches[0];
+    assert_eq!(
+        (f.feed.as_str(), f.timeframe.as_str(), f.adjustment, f.asof),
+        ("sip", "1Day", Adjustment::Raw, None)
+    );
+    assert_eq!((f.symbols, f.requests), (3, 1));
+    assert_eq!(raw[1].bars["BBB"].v, Some(5500));
+
+    // Kept beside the closes, merged per date; the identical refetch writes nothing.
+    let (_dir, archive) = archive();
+    let rep = archive.merge_raw_bars(raw.clone()).unwrap();
+    assert_eq!(rep.dates_written, [d("2026-10-14"), d("2026-10-15")]);
+    assert_eq!(
+        archive.read_raw_bars(d("2026-10-14")).unwrap().as_ref(),
+        Some(d14)
+    );
+    assert!(
+        archive
+            .merge_raw_bars(raw)
+            .unwrap()
+            .dates_written
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_split_snapshot_is_opt_in_bounded_and_keeps_only_what_was_asked() {
+    use market_archive::Adjustment;
+    use market_providers::import::batch::{MAX_SPLIT_SYMBOLS, split_snapshot};
+    let mut http = BarsFixture { urls: Vec::new() };
+    let snap = split_snapshot(
+        &mut http,
+        "https://data.example",
+        &creds(),
+        &["aaa".to_string(), "BBB".to_string(), "AAA".to_string()],
+        d("2026-10-14"),
+        d("2026-10-15"),
+        60_000,
+        None,
+        "test",
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(http.urls.len(), 1);
+    assert!(
+        http.urls[0].contains("adjustment=split") && http.urls[0].contains("feed=sip"),
+        "{}",
+        http.urls[0]
+    );
+    assert!(!http.urls[0].contains("asof"), "asof is never sent");
+    assert_eq!(snap.symbols, ["AAA", "BBB"]);
+    assert_eq!(snap.fetch.adjustment, Adjustment::Split);
+    assert!(!snap.bars.contains_key("ZZZ"), "not requested, not kept");
+    assert_eq!(snap.bars["AAA"][&d("2026-10-14")].v, Some(12_050));
+    assert_eq!(snap.coverage("BBB", d("2026-10-14")), Some(None));
+
+    let (_dir, archive) = archive();
+    archive.write_split_snapshot(&snap).unwrap();
+    assert_eq!(archive.read_split_snapshots().unwrap(), [snap]);
+
+    // Bounds: refused before any request.
+    let mut http = BarsFixture { urls: Vec::new() };
+    let many: Vec<String> = (0..=MAX_SPLIT_SYMBOLS).map(|i| format!("S{i}")).collect();
+    assert!(
+        split_snapshot(
+            &mut http,
+            "https://data.example",
+            &creds(),
+            &many,
+            d("2026-10-14"),
+            d("2026-10-15"),
+            60_000,
+            None,
+            "test",
+            &mut |_| {},
+        )
+        .is_err()
+    );
+    assert!(
+        split_snapshot(
+            &mut http,
+            "https://data.example",
+            &creds(),
+            &["AAA".to_string()],
+            d("2026-01-02"),
+            d("2026-10-15"),
+            60_000,
+            None,
+            "test",
+            &mut |_| {},
+        )
+        .is_err()
+    );
+    assert!(http.urls.is_empty());
+}

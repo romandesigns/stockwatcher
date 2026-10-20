@@ -71,6 +71,7 @@ fn close(
         close_micros: micros,
         basis,
         actions_checked_through: checked,
+        actions: Default::default(),
         observed_at: observed,
     }
 }
@@ -94,6 +95,7 @@ fn daily(sym: &str, per_session: u64, n: usize, observed: i64) -> DailyBaseline 
         version: 1,
         instrument: inst(sym),
         sessions,
+        basis: Default::default(),
         observed_at: observed,
     }
 }

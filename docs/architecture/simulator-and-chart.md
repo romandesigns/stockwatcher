@@ -308,7 +308,8 @@ batches of 2048 events keep commands responsive. A seek over a whole fixture day
       (`Archive::day_data`): the import once complete (manifest, no `.importing` marker), else the
       recording. The importer's existing lifecycle is the switch: its marker also stops the
       recorder writing to the day (live never writes into imported data), and clearing it
-      (`Archive::finish_import`) makes every reader take the import, then deletes `live/`.
+      (`Archive::finish_import`) makes every reader take the import, then **moves** `live/` to
+      its preserved original (below) instead of deleting it.
     - **Writing.** Write-behind as before (a `try_send` into a 65,536-event queue, one OS thread;
       overflow is dropped from the recording and counted, never from the market). Each symbol's
       records are buffered and appended as one complete zstd frame once they reach 64 KiB or are
@@ -319,8 +320,98 @@ batches of 2048 events keep commands responsive. A seek over a whole fixture day
       ~7,000 files are not fsynced (a process crash loses nothing written; only a power loss can
       lose what the kernel had not written back). When the recorder moves to the next day it
       **seals** the old one in the background: every file repaired, recounted, rewritten as one
-      frame and hashed. Recordings no import replaced are kept `LIVE_RECORD_DAYS` (5), never the
-      day being written.
+      frame and hashed. Recordings no import replaced stay in `live/` for `LIVE_RECORD_DAYS` (5,
+      the newest five days *with a recording*), never the day being written; older ones are then
+      moved to their preserved original (below), not deleted: no other copy of them exists.
+    - **Preserved original** (2026-10-19; `crates/market-archive/src/original.rs`). The import is
+      the corrected day in time order; forward research needs what the live market actually
+      received, in receipt order with its delivery times and its gaps, which only the recording
+      has. So `finish_import` renames `<day>/live/` to `ARCHIVE_ROOT/live-original/<day>/` (one
+      rename on the same volume: not a byte changes, its manifest keeps every file's SHA-256;
+      `Archive::verify_original` rechecks them, `Archive::original_reader` reads a symbol). It sits
+      beside the day directories, not inside them, so the rolling 21-day window and
+      `ARCHIVE_RETENTION_DAYS`, which delete whole day directories, never touch it, and it has
+      its own retention (`crates/market-archive/src/retention.rs`), applied by the recorder's
+      housekeeping at start and at every day change, off the market path:
+      - **Window** (`LIVE_ORIGINAL_DAYS`, default and minimum **5**): the last N *completed
+        trading dates* before the day being written (Monday's five reach back to the previous
+        Monday; weekends and holidays do not count), plus the newest N originals so a day the
+        recorder missed does not shorten it. Five is the hot cache, not the research archive.
+        Before 2026-10-19 (this PR's first version) the setting counted original *directories*
+        (newest N, `0` = none); it now counts trading dates and refuses fewer than 5.
+      - **Pins** (`live-original/pins.json`, `{"v":1,"pins":[{"day","symbols","reason"}]}`,
+        `Archive::add_pin`): a pinned day is never released locally. A symbol pin keeps the whole
+        session (originals are complete sessions and are never split). An unreadable pins file
+        releases nothing.
+      - **Durable copy before release** (`LIVE_ORIGINAL_DURABLE_DIR`, off by default; Roman's Pi
+        is a candidate destination, the transfer path is not set up): every sealed original is
+        copied to `<dest>/<day>/` with the day's coverage records (`coverage.jsonl`), verified
+        (each file's SHA-256 against the original's manifest, every record decoded), described in
+        `durable-copy.json` (files, sizes, hashes, record count, the day's pins, and references:
+        event contract, archive format and coverage schema versions, SHA-256 of `assets.json`,
+        `daily-closes.json`, the day's corrected-import manifest and the retention policy, the
+        recorder version), then renamed into place; a local record goes to
+        `live-original/.durable/<day>.json`. An existing copy is never overwritten; a damaged one
+        blocks release. The destination root must already exist (an unmounted mount point is
+        "unavailable", never filled on the local disk). Only an original that is outside the
+        window, unpinned, sealed **and** has a copy still present at the destination is deleted
+        locally. With no destination, or one unavailable, nothing past the window is ever
+        deleted.
+      - **Status** (`ARCHIVE_ROOT/plans/retention-status.json`, plus one log line per run):
+        free space, the headroom threshold (`LIVE_ORIGINAL_MIN_HEADROOM_MB`, default 10240),
+        per-day bytes of `live-original/`, `coverage/` and `live/`, why each original is kept
+        (`window`, `pinned`, `unsealed`, `pins_unreadable`, `awaiting_durable_copy`), what was
+        copied and released, and `"status": "ok"` or `"retention_at_risk"` with reasons (free
+        space under the headroom, originals waiting for a durable copy, a failed copy, unreadable
+        pins). At risk is a report: protected data is never deleted to make room. The market path
+        never waits on any of it; the live writer's own `ARCHIVE_MIN_FREE_MB` floor stops
+        recording (logged and in the coverage records), never the market.
+      Retention units differ by setting, on purpose: `LIVE_ORIGINAL_DAYS` counts completed
+      trading dates; `LIVE_RECORD_DAYS` counts days that have a `live/` recording;
+      `ARCHIVE_WINDOW_DAYS` (the archiver) counts trading days; `ARCHIVE_RETENTION_DAYS` counts
+      calendar days.
+      **Immutable after sealing**: sealing is the last write a recording gets. One that was moved
+      unsealed (the recorder was down when the import finished) is sealed once by that
+      housekeeping (`Archive::seal_original`); the import itself never seals, because it runs in
+      another process and sealing rewrites files the recorder's sealing thread may be working on.
+      A day that already has an original is never overwritten (`preserve_live` refuses, and the
+      recording then stays in `live/`). A corrected re-import writes only the day directory, so
+      the import and the original stay distinct versions of the day. **Size**: a sealed
+      whole-market recording measured 20 B/print on the synthetic day above; at the guessed ~40M
+      prints a real day that is **~0.8 GB**, so the five-date window costs **~4 GB**, and
+      without a durable store originals accumulate at that rate (estimate from the
+      measurement, not a real day; the recording is the whole market, `LIVE_SYMBOLS=*`, so it is
+      larger than the band-filtered ~0.6 GB import). An original moved unsealed is ~3 GB until
+      sealed.
+    - **Coverage records** (2026-10-19; `crates/market-archive/src/coverage.rs`, written by the
+      recorder). There used to be no record of whether the live market was collecting: a
+      disconnect, a restart, a queue overflow or a torn tail left nothing durable, so a quiet
+      stretch and an outage looked the same. Now `ARCHIVE_ROOT/coverage/<trading date>.jsonl`
+      (JSON lines, append-only, schema `"v":1`, each tick's lines in one `fdatasync`ed append)
+      holds the facts: `process_start`, `process_stop` (clean stop only), `heartbeat` (every
+      60 s), `link` (`up`/`connecting`/`down` with the operator detail), `subscription`
+      (`all` or a list), `drop` (count and `[from, to]` window; stage `stream` = the socket
+      reader shed them, `recorder` = only the recording lost them), `recording_stopped`,
+      `torn_tail` (symbol and bytes cut) and `day_close`/`day_open` at the 20:00 ET boundary,
+      carrying the state into the next file. Nothing is inferred from the events: a no-trade
+      interval is never an outage. About 75 KB a day (the Monday file, which covers the weekend,
+      ~3×). Kept at the archive root so it survives the import and exists for days nothing was
+      recorded on; deleted once no data of its day is left (`Archive::prune_coverage`).
+    - **The coverage question** (`Archive::coverage(day, symbol, from, to, basis)` →
+      `CoverageReport { collection, gaps, unverified }`; `collection` is `complete`, `partial` or
+      `unverified`, one to one with stock-context's `Coverage`; not wired into stock-context or
+      the server yet). A process is vouched for from its `process_start` (or `day_open`) up to
+      its stop, its day close, or its last record when it went silent for over 150 s (a killed
+      process writes no stop); up to now while it is still heard from. Within that, `partial`
+      marks what is *known* missed: link not up, a clean stop until the next start, a drop
+      window, a symbol outside the subscription. `unverified` is everything nothing vouches for:
+      a day with **no coverage file (every day recorded before 2026-10-19, so old days can never
+      read as complete)**, a silence, the future, an unreadable or newer-schema line. Partial
+      wins over unverified; `complete` needs every instant vouched for. `basis: Stream` asks what
+      the live market saw (stock-context's numerator); `basis: Recording` asks what the
+      receipt-order recording holds, and also counts recorder drops, a stopped recording, torn
+      tails and, before an unclean end, the last 12 s a killed process may not have flushed; a
+      day whose recording is gone (neither `live/` nor an original) is `unverified` on this basis.
     - **Loading (the dashboard).** At start the market reads the plan (today; plus the previous
       trading day before 09:30 ET; when today has nothing, the last day with market data: a
       closed market shows its last session, labelled `session: {day, current: false}` in

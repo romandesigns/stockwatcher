@@ -83,6 +83,19 @@
 //! - client `pressure.unsubscribe` stops the updates. Resubscribing after a reconnect is the
 //!   client's job; a seek or a lag sends a fresh snapshot, as for quotes.
 //!
+//! Ross Panel and stock context (`STOCK_CONTEXT=1`; crates/server/src/context.rs,
+//! docs/stock-context/*.md, after `welcome`):
+//! - client `ross.subscribe` -> server `ross.snapshot {enabled, panelPolicy, pillarPolicy, panel}`
+//!   at once, then `ross.update` (same shape, the WHOLE panel) when the panel changed, at most once
+//!   per second of wall time. `enabled: false` (feature off) carries `panel: null`: "not enabled",
+//!   never "nothing qualifies". `panel` is null until the first barrier with members, then
+//!   `{revision, runId, source, barEnd, cutoff, rows: [row]}` (snake_case fields, see
+//!   `stock_context::PanelSnapshot`): rows ranked by momentum first, unranked rows after.
+//! - client `ross.unsubscribe` stops the updates; a seek or a lag sends a fresh snapshot.
+//! - client `context.get {symbol}` -> server `context.decision {symbol, enabled, decision}`: the
+//!   symbol's latest stock-context decision (five pillars with values, rules, reasons, evidence),
+//!   or `null` before its first trade.
+//!
 //! Synced settings (crates/server/src/settings.rs, docs/architecture/settings-sync.md, after
 //! `welcome`): the user's chart preferences and drawings, shared by every client.
 //! - server `settings.snapshot {docs: [{ns, rev, updatedAt, value}]}` once right after `welcome`
@@ -129,7 +142,9 @@ use axum::response::Response;
 use serde::{Deserialize, Serialize};
 use tokio::time::{Instant, interval_at, timeout};
 
-use crate::market::{ControlError, Market, OutKind, PressureGuard, QuotesGuard, SnapshotError};
+use crate::market::{
+    ControlError, Market, OutKind, PressureGuard, QuotesGuard, RossGuard, SnapshotError,
+};
 use crate::settings::{SettingsError, SettingsOp, rejected_frame as settings_rejected};
 use crate::{AppState, COMMIT, Settings, VERSION, api, auth};
 use chart_engine::Timeframe;
@@ -196,6 +211,14 @@ enum ClientMessage {
     PressureSubscribe,
     #[serde(rename = "pressure.unsubscribe")]
     PressureUnsubscribe,
+    #[serde(rename = "ross.subscribe")]
+    RossSubscribe,
+    #[serde(rename = "ross.unsubscribe")]
+    RossUnsubscribe,
+    #[serde(rename = "context.get")]
+    ContextGet {
+        symbol: String,
+    },
     #[serde(rename = "settings.set")]
     SettingsSet {
         ns: String,
@@ -305,6 +328,20 @@ async fn send_pressure_snapshot(
     q: &mut PressureSub,
 ) -> bool {
     let (seq, json) = market.pressure_snapshot();
+    q.seq = seq;
+    send_text(socket, json).await
+}
+
+/// The connection's Ross Panel opt-in (the pressure opt-in's twin).
+struct RossSub {
+    _guard: RossGuard,
+    /// `ross.update`s with `seq` <= this are not newer than the snapshot.
+    seq: u64,
+}
+
+/// Sends a fresh `ross.snapshot` and records its sequence.
+async fn send_ross_snapshot(socket: &mut WebSocket, market: &Market, q: &mut RossSub) -> bool {
+    let (seq, json) = market.ross_snapshot();
     q.seq = seq;
     send_text(socket, json).await
 }
@@ -576,6 +613,7 @@ async fn session(mut socket: WebSocket, state: AppState) {
     let mut subs: Vec<Sub> = Vec::new();
     let mut quotes: Option<QuotesSub> = None;
     let mut pressure: Option<PressureSub> = None;
+    let mut ross: Option<RossSub> = None;
 
     let mut heartbeat = interval_at(Instant::now() + HEARTBEAT, HEARTBEAT);
     let mut last_seen = Instant::now();
@@ -605,12 +643,19 @@ async fn session(mut socket: WebSocket, state: AppState) {
                             Some(q) if o.seq > q.seq => send_text(&mut socket, frame.clone()).await,
                             _ => true,
                         },
+                        OutKind::Ross(frame) => match ross.as_ref() {
+                            Some(q) if o.seq > q.seq => send_text(&mut socket, frame.clone()).await,
+                            _ => true,
+                        },
                         OutKind::Resync => {
                             (match quotes.as_mut() {
                                 Some(q) => send_quotes_snapshot(&mut socket, &market, q).await,
                                 None => true,
                             }) && (match pressure.as_mut() {
                                 Some(q) => send_pressure_snapshot(&mut socket, &market, q).await,
+                                None => true,
+                            }) && (match ross.as_mut() {
+                                Some(q) => send_ross_snapshot(&mut socket, &market, q).await,
                                 None => true,
                             }) && send_snapshots(&mut socket, &market, &mut subs).await
                         }
@@ -677,6 +722,10 @@ async fn session(mut socket: WebSocket, state: AppState) {
                             }
                             && match pressure.as_mut() {
                                 Some(q) => send_pressure_snapshot(&mut socket, &market, q).await,
+                                None => true,
+                            }
+                            && match ross.as_mut() {
+                                Some(q) => send_ross_snapshot(&mut socket, &market, q).await,
                                 None => true,
                             }
                             && send_snapshots(&mut socket, &market, &mut subs).await
@@ -855,6 +904,27 @@ async fn session(mut socket: WebSocket, state: AppState) {
                     }
                     Ok(ClientMessage::PressureUnsubscribe) => {
                         pressure = None;
+                        None
+                    }
+                    Ok(ClientMessage::RossSubscribe) => {
+                        let q = ross.get_or_insert_with(|| RossSub {
+                            _guard: market.ross_subscribe(),
+                            seq: 0,
+                        });
+                        if !send_ross_snapshot(&mut socket, &market, q).await {
+                            break;
+                        }
+                        None
+                    }
+                    Ok(ClientMessage::RossUnsubscribe) => {
+                        ross = None;
+                        None
+                    }
+                    Ok(ClientMessage::ContextGet { symbol }) => {
+                        let frame = market.context_decision(&symbol.trim().to_ascii_uppercase());
+                        if !send_text(&mut socket, frame).await {
+                            break;
+                        }
                         None
                     }
                     Ok(ClientMessage::SettingsSet { ns, value, op_id, if_absent }) => {
