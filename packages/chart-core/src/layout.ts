@@ -265,10 +265,14 @@ function priceAxisNeed(model: ChartModel): number {
   if (!price) return o.priceAxisWidth;
   const w = (text: string, fs: number) => text.length * fs * MONO_ADVANCE;
   let need = 0;
-  for (const label of model.priceTicks.labels) need = Math.max(need, AXIS_LABEL_PAD + w(label, o.fontSize) + 4);
+  // No padding on the right (owner, 2026-10-20: the column gives its width to the chart): labels
+  // and tags run to the column's right edge, 1 px kept for the glyph-width estimate.
+  for (const label of model.priceTicks.labels) need = Math.max(need, AXIS_LABEL_PAD + w(label, o.fontSize) + 1);
   const last = lastCandle(model.slots);
-  if (last) need = Math.max(need, 2 + 5 + w(formatAxisTag(model, last.c), o.fontSize) * 1.04 + 6);
-  need = Math.max(need, 4 + w(formatAxisTag(model, price.hi), o.fontSize) + 6);
+  // Last-price tag: 2 left gap + 5 notch + 2 inner + text + 2 inner, flush right.
+  if (last) need = Math.max(need, 2 + 5 + 2 + w(formatAxisTag(model, last.c), o.fontSize) * 1.04 + 2);
+  // Crosshair, alert, order and drawing tags: 2 left gap + 2 inner + text + 2 inner, flush right.
+  need = Math.max(need, 2 + 2 + w(formatAxisTag(model, price.hi), o.fontSize) + 2);
   return Math.min(o.priceAxisWidth, Math.max(MIN_PRICE_AXIS, Math.ceil(need)));
 }
 
@@ -596,7 +600,7 @@ export function layoutChart(model: ChartModel, state: ChartState, theme: ChartTh
     });
     if (last && lastY !== null) {
       const ax = g.priceAxis.x + 2;
-      const right = g.priceAxis.x + g.priceAxis.w - 2;
+      const right = g.priceAxis.x + g.priceAxis.w;
       const fill = last.c >= last.o ? theme.up : theme.down;
       out.push({ kind: "path", points: [ax, lastY, ax + 5, lastY - 9, right, lastY - 9, right, lastY + 9, ax + 5, lastY + 9], closed: true, fill, layer: "axes" });
       out.push({ kind: "text", x: (ax + 5 + right) / 2, y: lastY, text: formatAxisTag(model, last.c), fill: theme.onTag, fontSize: fs, fontFamily: mono, fontWeight: 600, align: "center", baseline: "middle", layer: "axes" });
@@ -613,8 +617,8 @@ export function layoutChart(model: ChartModel, state: ChartState, theme: ChartTh
     if (p && inside(g.plot, p.x, p.y)) {
       const y = Math.round(p.y) + 0.5;
       out.push({ kind: "line", x1: g.plot.x, y1: y, x2: g.plot.x + g.plot.w, y2: y, stroke: theme.crosshair, lineWidth: 1, dash: [3, 3], layer: "crosshair" });
-      out.push({ kind: "rect", x: g.priceAxis.x + 2, y: y - 9, w: g.priceAxis.w - 4, h: 18, fill: theme.crosshairLabelBg, radius: 3, layer: "crosshair" });
-      out.push({ kind: "text", x: g.priceAxis.x + g.priceAxis.w / 2, y, text: formatAxisTag(model, yPrice(price, p.y)), fill: theme.crosshairLabelText, fontSize: fs, fontFamily: mono, fontWeight: 500, align: "center", baseline: "middle", layer: "crosshair" });
+      out.push({ kind: "rect", x: g.priceAxis.x + 2, y: y - 9, w: g.priceAxis.w - 2, h: 18, fill: theme.crosshairLabelBg, radius: 3, layer: "crosshair" });
+      out.push({ kind: "text", x: g.priceAxis.x + 1 + g.priceAxis.w / 2, y, text: formatAxisTag(model, yPrice(price, p.y)), fill: theme.crosshairLabelText, fontSize: fs, fontFamily: mono, fontWeight: 500, align: "center", baseline: "middle", layer: "crosshair" });
     }
   }
 

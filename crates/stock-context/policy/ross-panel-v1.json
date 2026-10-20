@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "id": "ross-panel-v1",
+  "note": "Owner product policy for the Ross Panel (2026-10-19): enter at 5/5, stay while at least 4/5 pass, ordered by current bullish price action. Not a sourced Ross rule, not a validated ranking. See docs/stock-context/ross-panel-v1.md.",
+  "membership": {
+    "id": "five_pillars_membership_v1",
+    "admit_passes": 5,
+    "retain_passes": 4,
+    "platform_band": {
+      "min_micros": 100000,
+      "max_micros": 25000000,
+      "source": "production quote band ($0.10-$25, server config); the server checks it matches at start"
+    }
+  },
+  "momentum": {
+    "id": "bullish_momentum_order_v1",
+    "short_secs": 30,
+    "primary_secs": 60,
+    "context_secs": 300,
+    "endpoint_max_age_secs": 15
+  }
+}

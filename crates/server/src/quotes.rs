@@ -827,6 +827,7 @@ mod tests {
         };
         Revision {
             symbol: sym.into(),
+            ts: UnixNanos(0),
             session: market_events::SessionId {
                 date: day(),
                 kind: SessionKind::Regular,

@@ -7,7 +7,7 @@
 
 use chart_engine::wire::{CandleWire, ChartUpdate};
 use chart_engine::{ChartEngine, Timeframe};
-use market_events::{MarketEvent, TradeId, UnixNanos, trade_effect};
+use market_events::{MarketEvent, UnixNanos};
 use std::collections::{BTreeMap, HashMap};
 
 const MINUTE_MS: i64 = 60_000;
@@ -17,8 +17,10 @@ pub struct BarBook {
     engine: ChartEngine,
     /// symbol → minute start (ms) → (Σ price_micros × size, Σ size)
     vw: HashMap<String, BTreeMap<i64, (i128, u64)>>,
-    /// Counted prints, for cancel/correction adjustments: id → (symbol, minute, price µ$, size)
-    counted: HashMap<TradeId, (String, i64, i64, u64)>,
+}
+
+fn minute_of(t: UnixNanos) -> i64 {
+    t.millis().div_euclid(MINUTE_MS) * MINUTE_MS
 }
 
 impl BarBook {
@@ -41,40 +43,32 @@ impl BarBook {
         }
     }
 
+    /// Cancels and corrections follow the engine's own [`chart_engine::Revision`] rather than a
+    /// second id lookup: provider ids are not unique on venue `D`
+    /// (docs/architecture/trade-identity.md), so only the engine knows which print, if any, a
+    /// revision hit.
     pub fn apply(&mut self, e: &MarketEvent) -> Vec<ChartUpdate> {
-        let updates = self.engine.apply(e);
-        match e {
-            MarketEvent::Trade(t) => {
-                let counted = updates.iter().any(|u| {
-                    u.as_tape().is_some_and(|row| {
-                        row.counted == "ohlc_and_volume" || row.counted == "volume_only"
-                    })
-                });
-                if counted {
-                    let minute = t.event_ts.millis().div_euclid(MINUTE_MS) * MINUTE_MS;
-                    self.add(&t.symbol, minute, t.price.micros(), t.size, 1);
-                    self.counted
-                        .insert(t.id(), (t.symbol.clone(), minute, t.price.micros(), t.size));
-                }
+        let (updates, rev) = self.engine.apply_revising(e);
+        if let MarketEvent::Trade(t) = e {
+            let counted = updates.iter().any(|u| {
+                u.as_tape().is_some_and(|row| {
+                    row.counted == "ohlc_and_volume" || row.counted == "volume_only"
+                })
+            });
+            if counted {
+                let m = minute_of(t.event_ts);
+                self.add(&t.symbol, m, t.price.micros(), t.size, 1);
             }
-            MarketEvent::Cancel(c) => {
-                if let Some((sym, m, p, s)) = self.counted.remove(&c.target_trade_id()) {
-                    self.add(&sym, m, p, s, -1);
-                }
+        }
+        if let Some(rev) = rev {
+            let m = minute_of(rev.ts);
+            if rev.removed.volume {
+                let r = rev.removed;
+                self.add(&rev.symbol, m, r.price.micros(), r.size, -1);
             }
-            MarketEvent::Correction(c) => {
-                if let Some((sym, m, p, s)) = self.counted.remove(&c.original_trade_id()) {
-                    self.add(&sym, m, p, s, -1);
-                    if trade_effect(&c.corrected_conditions, c.tape).updates_volume {
-                        let p2 = c.corrected_price.micros();
-                        self.add(&sym, m, p2, c.corrected_size, 1);
-                        let mut id = c.original_trade_id();
-                        id.seq = c.corrected_id;
-                        self.counted.insert(id, (sym, m, p2, c.corrected_size));
-                    }
-                }
+            if let Some(a) = rev.added.filter(|a| a.volume) {
+                self.add(&rev.symbol, m, a.price.micros(), a.size, 1);
             }
-            _ => {}
         }
         updates
     }
@@ -97,7 +91,6 @@ impl BarBook {
         for m in self.vw.values_mut() {
             *m = m.split_off(&before_ms);
         }
-        self.counted.retain(|_, (_, m, _, _)| *m >= before_ms);
     }
 
     /// Every retained 1m candle of a symbol.
@@ -106,5 +99,51 @@ impl BarBook {
             .snapshot(sym, Timeframe::M1, None)
             .map(|s| s.candles)
             .unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::NaiveDate;
+    use market_events::session::et;
+    use market_events::{Cancel, CancelAction, Price, Source, Tape, Trade};
+
+    fn at(m: u32, s: u32) -> UnixNanos {
+        et(NaiveDate::from_ymd_opt(2026, 10, 15).unwrap(), 10, m, s, 0).unwrap()
+    }
+
+    fn d(ts: UnixNanos, cents: i64, size: u64) -> MarketEvent {
+        MarketEvent::Trade(
+            Trade::new("SMPL", ts, Price::from_cents(cents), size, 1)
+                .with_exchange("D")
+                .with_tape(Tape::C)
+                .with_source(Source::AlpacaSip),
+        )
+    }
+
+    /// Two TRF prints share id 1 on venue D; the cancel names the 10:01 one by price and size.
+    /// The 10:00 minute's VWAP must keep its print (an id-keyed book used to forget it).
+    #[test]
+    fn vwap_follows_the_print_the_engine_cancelled_not_the_last_with_that_id() {
+        let mut b = BarBook::default();
+        b.apply(&d(at(0, 5), 500, 100));
+        b.apply(&d(at(1, 5), 520, 100));
+        b.apply(&d(at(1, 6), 530, 100));
+        b.apply(&MarketEvent::Cancel(Cancel {
+            symbol: "SMPL".into(),
+            event_ts: at(1, 30),
+            receive_ts: None,
+            source: Source::AlpacaSip,
+            exchange: "D".into(),
+            tape: Tape::C,
+            trade_id: 1,
+            price: Price::from_cents(520),
+            size: 100,
+            action: CancelAction::Cancel,
+        }));
+        let cs = b.candles("SMPL");
+        assert_eq!((cs[0].v, b.vw("SMPL", &cs[0])), (100, 5.0));
+        assert_eq!((cs[1].v, b.vw("SMPL", &cs[1])), (100, 5.3));
     }
 }

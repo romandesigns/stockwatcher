@@ -15,15 +15,22 @@
 pub mod engine;
 pub mod evaluate;
 pub mod evidence;
+pub mod panel;
 pub mod pillar;
 pub mod policy;
 
-pub use engine::{Decision, Engine, Fidelity, RunInfo, Timeline, Verdict, VolumeFacts};
+pub use engine::{
+    Decision, Engine, Fidelity, PanelRow, PanelSnapshot, RunInfo, Timeline, Verdict, VolumeFacts,
+};
 pub use evaluate::{Coverage, NewsSummary, RvolDiagnostics};
 pub use evidence::{
     ActionsEvidence, ActionsSource, Authenticity, CloseBasis, DailyBaseline, EvidenceStore,
     Favorability, FloatObservation, InstrumentId, IntradayBaseline, IntradayCurve, NewsCoverage,
     NewsItem, PrevClose, SessionVolume, SplitRatio,
+};
+pub use panel::{
+    Episode, ExitReason, MemberStatus, Membership, Momentum, MomentumStatus, PanelPolicy,
+    ROSS_PANEL_V1,
 };
 pub use pillar::{Counts, PillarId, PillarResult, Qualification, Tri, aggregate};
 pub use policy::{PILLARS_V1, Policy};

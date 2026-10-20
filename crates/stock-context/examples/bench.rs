@@ -54,7 +54,11 @@ fn main() {
             if market_events::is_trading_day(d) {
                 sessions.push(SessionVolume {
                     date: d,
-                    volume: 200_000 + i as u64,
+                    volume: if i % 10 == 0 {
+                        2_000
+                    } else {
+                        200_000 + i as u64
+                    },
                     complete: true,
                     comparable: true,
                 });
@@ -121,9 +125,23 @@ fn main() {
     }
     decisions += e.advance_to(UnixNanos(close + 60_000_000_000)).len();
     let total = started.elapsed();
+    let panels = e.take_panels();
+    let members = e.panel().map_or(0, |p| p.rows.len());
+    let inside: u64 = lat.iter().sum();
+    let spikes: Vec<u64> = lat.iter().copied().filter(|&x| x > 100_000).collect();
     lat.sort_unstable();
     let q = |p: f64| lat[((lat.len() - 1) as f64 * p) as usize];
-    println!("symbols {symbols}, prints {prints}, decisions {decisions}");
+    println!(
+        "symbols {symbols}, prints {prints}, decisions {decisions}, panel snapshots {}, members at close {members}",
+        panels.len()
+    );
+    println!(
+        "time inside apply {:.2?} of {:.2?} wall; {} calls over 100 us (barriers) took {:.2?}",
+        std::time::Duration::from_nanos(inside),
+        total,
+        spikes.len(),
+        std::time::Duration::from_nanos(spikes.iter().sum())
+    );
     println!(
         "total {:.2?} ({:.0} prints/s)",
         total,
