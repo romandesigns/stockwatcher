@@ -3,9 +3,12 @@ import {
   CHART_TYPE_INFO,
   CHART_TYPES,
   DEFAULT_CHART_SETTINGS,
+  indicatorLabel,
+  INDICATOR_PLACEMENT,
   SETTINGS_SECTIONS,
   ZOOM_PRESETS,
   type ChartSettings,
+  type IndicatorSpec,
   type ChartVisibility,
   type PriceScaleType,
   type ZoomPreset,
@@ -45,8 +48,9 @@ const VISIBILITY: readonly { key: keyof ChartVisibility; name: string; descripti
   { key: "linkStudies", name: "Same indicators and levels on every chart", description: "Off: each dashboard chart keeps its own" },
 ];
 
-export function ChartSettingsPanel({ settings, onChange }: { settings: ChartSettings; onChange: (s: ChartSettings) => void }) {
+export function ChartSettingsPanel({ settings, onChange, indicators = [] }: { settings: ChartSettings; onChange: (s: ChartSettings) => void; /** The indicators on, for the per-indicator legend switches. */ indicators?: readonly IndicatorSpec[] }) {
   const set = (patch: Partial<ChartSettings>) => onChange({ ...settings, ...patch });
+  const overlays = indicators.filter((spec) => INDICATOR_PLACEMENT[spec.kind] === "overlay");
   return (
     <ScrollView contentContainerStyle={{ gap: 14, paddingBottom: 8 }}>
       <Section label="Type">
@@ -101,6 +105,16 @@ export function ChartSettingsPanel({ settings, onChange }: { settings: ChartSett
         ))}
       </Section>
 
+      {settings.indicatorLegend && overlays.length > 0 && (
+        // One switch per line indicator that is on (owner, 2026-10-19), named as the legend names it.
+        <Section label="Indicator values">
+          {overlays.map((spec) => {
+            const shown = !settings.legendHidden.includes(spec.id);
+            return <Row key={spec.id} name={indicatorLabel(spec)} checked={shown} onToggle={() => set({ legendHidden: shown ? [...settings.legendHidden, spec.id] : settings.legendHidden.filter((x) => x !== spec.id) })} />;
+          })}
+        </Section>
+      )}
+
       <Section label="Visibility">
         {VISIBILITY.map((r) => (
           <Row key={r.key} name={r.name} description={r.description} checked={settings.visibility[r.key]} onToggle={() => set({ visibility: { ...settings.visibility, [r.key]: !settings.visibility[r.key] } })} />
@@ -114,16 +128,16 @@ export function ChartSettingsPanel({ settings, onChange }: { settings: ChartSett
 export function ChartSettingsReset({ settings, onChange }: { settings: ChartSettings; onChange: (s: ChartSettings) => void }) {
   const isDefault = JSON.stringify(settings) === JSON.stringify(DEFAULT_CHART_SETTINGS);
   return (
-    <Pressable accessibilityRole="button" accessibilityLabel="Reset chart settings to defaults" accessibilityState={{ disabled: isDefault }} disabled={isDefault} onPress={() => onChange({ ...DEFAULT_CHART_SETTINGS, visibility: { ...DEFAULT_CHART_SETTINGS.visibility } })} hitSlop={8} style={({ pressed }) => [s.reset, isDefault && { opacity: 0.4 }, pressed && { backgroundColor: UI.raised }]}>
+    <Pressable accessibilityRole="button" accessibilityLabel="Reset chart settings to defaults" accessibilityState={{ disabled: isDefault }} disabled={isDefault} onPress={() => onChange({ ...DEFAULT_CHART_SETTINGS, legendHidden: [], visibility: { ...DEFAULT_CHART_SETTINGS.visibility } })} hitSlop={8} style={({ pressed }) => [s.reset, isDefault && { opacity: 0.4 }, pressed && { backgroundColor: UI.raised }]}>
       <Text style={s.resetText}>Reset</Text>
     </Pressable>
   );
 }
 
 /** The Chart tab as a SettingsSheet section: chart-core's label, icon and description, this panel and its reset. */
-export function chartSettingsSection(settings: ChartSettings, onChange: (s: ChartSettings) => void): SettingsSheetSection {
+export function chartSettingsSection(settings: ChartSettings, onChange: (s: ChartSettings) => void, indicators: readonly IndicatorSpec[] = []): SettingsSheetSection {
   const info = SETTINGS_SECTIONS.find((x) => x.id === "chart")!;
-  return { ...info, action: <ChartSettingsReset settings={settings} onChange={onChange} />, render: () => <ChartSettingsPanel settings={settings} onChange={onChange} /> };
+  return { ...info, action: <ChartSettingsReset settings={settings} onChange={onChange} />, render: () => <ChartSettingsPanel settings={settings} onChange={onChange} indicators={indicators} /> };
 }
 
 function Section({ label, children }: { label: string; children: ReactNode }) {

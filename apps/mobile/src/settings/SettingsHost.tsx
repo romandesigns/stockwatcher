@@ -17,12 +17,14 @@ export function SettingsHost() {
   const dashboardSource = useApp((s) => s.dashboard.source);
   const chartSettings = useApp((s) => s.chartSettings);
   const drawingSettings = useApp((s) => s.drawingSettings);
+  // The shared indicator set, for the per-indicator legend switches (ids are the same on every chart).
+  const indicators = useApp((s) => s.indicators);
   const reducedMotion = useReducedMotion();
   return (
     <SettingsSheet
       open={open}
       onClose={() => app.setSettingsOpen(false)}
-      sections={[dataSourceSection(dashboardSource, app.setDashboardSource), chartSettingsSection(chartSettings, app.setChartSettings), drawingSettingsSection(drawingSettings, app.setDrawingSettings, reducedMotion)]}
+      sections={[dataSourceSection(dashboardSource, app.setDashboardSource), chartSettingsSection(chartSettings, app.setChartSettings, indicators), drawingSettingsSection(drawingSettings, app.setDrawingSettings, reducedMotion)]}
       reducedMotion={reducedMotion}
     />
   );

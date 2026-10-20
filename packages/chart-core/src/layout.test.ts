@@ -212,3 +212,17 @@ test("hiding the indicator legend drops its text and gives the candles its room 
   expect(texts(hidden).some((t) => t.startsWith("EMA") || t === "VWAP")).toBe(false);
   expect(computeChartModel(hidden, defaultViewport(), size).price!.hi).toBeLessThan(computeChartModel(shown, defaultViewport(), size).price!.hi);
 });
+
+test("an indicator hidden from the legend keeps its line but loses its legend entry", () => {
+  const size = { width: 360, height: 300 };
+  const slots = buildSlots(snap.candles, snap.gaps);
+  const ind = computeIndicators(slots, [{ id: "ema-9", kind: "ema", period: 9 }, { id: "vwap", kind: "vwap" }]);
+  const texts = (s: ChartState) => layout(s, defaultViewport(), DEFAULT_CHART_THEME, size).filter((p) => p.kind === "text").map((p) => (p as { text: string }).text);
+  const t = texts({ ...state, slots, indicators: ind, chartStyle: { legendHidden: ["ema-9"] } });
+  expect(t).toContain("VWAP");
+  expect(t.some((x) => x.startsWith("EMA"))).toBe(false);
+  // Everything hidden: no legend at all, so no headroom either.
+  const all = { ...state, slots, indicators: ind, chartStyle: { legendHidden: ["ema-9", "vwap"] } };
+  const off = { ...state, slots, indicators: ind, chartStyle: { indicatorLegend: false } };
+  expect(computeChartModel(all, defaultViewport(), size).price!.hi).toBe(computeChartModel(off, defaultViewport(), size).price!.hi);
+});

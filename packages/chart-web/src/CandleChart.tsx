@@ -578,7 +578,7 @@ export function CandleChart({
     }),
     [options, volumeHeight, overlayTop, topRight, inChartProfile, layers.profile],
   );
-  const chartStyle = useMemo(() => ({ grid: settings.grid, sessionShading: settings.sessionShading, sessionBreaks: settings.sessionBreaks, highLow: settings.highLow, indicatorLegend: settings.indicatorLegend }), [settings.grid, settings.sessionShading, settings.sessionBreaks, settings.highLow, settings.indicatorLegend]);
+  const chartStyle = useMemo(() => ({ grid: settings.grid, sessionShading: settings.sessionShading, sessionBreaks: settings.sessionBreaks, highLow: settings.highLow, indicatorLegend: settings.indicatorLegend, legendHidden: settings.legendHidden }), [settings.grid, settings.sessionShading, settings.sessionBreaks, settings.highLow, settings.indicatorLegend, settings.legendHidden]);
   const state: ChartState = useMemo(
     () => ({
       timeframe,

@@ -68,6 +68,11 @@ export interface ChartSettings {
    * the lines stay and the candles take the room the legend kept free.
    */
   indicatorLegend: boolean;
+  /**
+   * Indicators (by spec id, e.g. "ema-20") whose value is left out of that legend while the legend
+   * is on (owner, 2026-10-19: a switch per indicator). The indicator itself still draws.
+   */
+  legendHidden: string[];
   autoStretch: boolean;
   zoom: ZoomPreset;
   visibility: ChartVisibility;
@@ -90,6 +95,7 @@ export const DEFAULT_CHART_SETTINGS: ChartSettings = {
   sessionBreaks: false,
   highLow: false,
   indicatorLegend: true,
+  legendHidden: [],
   autoStretch: true,
   zoom: 100,
   visibility: { indicators: true, drawings: true, trading: true, linkStudies: true },
@@ -112,9 +118,9 @@ const BOOLS = ["extendedHours", "volume", "grid", "sessionShading", "sessionBrea
  */
 export function parseChartSettings(raw: unknown): ChartSettings {
   const d = DEFAULT_CHART_SETTINGS;
-  if (typeof raw !== "object" || raw === null) return { ...d, visibility: { ...d.visibility } };
+  if (typeof raw !== "object" || raw === null) return { ...d, legendHidden: [], visibility: { ...d.visibility } };
   const r = raw as Record<string, unknown>;
-  const out: ChartSettings = { ...d, visibility: { ...d.visibility } };
+  const out: ChartSettings = { ...d, legendHidden: [], visibility: { ...d.visibility } };
   const type = typeof r.chartType === "string" ? ({ candle: "candles", candlestick: "candles", ha: "heikinAshi" } as Record<string, string>)[r.chartType] ?? r.chartType : null;
   if (type && (CHART_TYPES as readonly string[]).includes(type)) out.chartType = type as ChartType;
   const scale = typeof r.priceScale === "string" ? ({ logarithmic: "log", percentage: "percent" } as Record<string, string>)[r.priceScale] ?? r.priceScale : null;
@@ -122,6 +128,7 @@ export function parseChartSettings(raw: unknown): ChartSettings {
   for (const k of BOOLS) if (typeof r[k] === "boolean") out[k] = r[k] as boolean;
   const z = parseZoom(r.zoom);
   if (z !== null) out.zoom = z;
+  if (Array.isArray(r.legendHidden)) out.legendHidden = [...new Set(r.legendHidden.filter((x): x is string => typeof x === "string" && x.length > 0 && x.length <= 64))].slice(0, 64);
   if (typeof r.visibility === "object" && r.visibility !== null) {
     const v = r.visibility as Record<string, unknown>;
     for (const k of ["indicators", "drawings", "trading", "linkStudies"] as const) if (typeof v[k] === "boolean") out.visibility[k] = v[k] as boolean;

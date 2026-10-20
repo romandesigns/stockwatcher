@@ -301,3 +301,9 @@ test("the indicator legend is shown by default and its switch survives a save", 
   expect(parseChartSettings({ indicatorLegend: false }).indicatorLegend).toBe(false);
   expect(parseChartSettings({ indicatorLegend: "no" }).indicatorLegend).toBe(true);
 });
+
+test("the legend's hidden indicators are kept as ids, cleaned of junk", () => {
+  expect(DEFAULT_CHART_SETTINGS.legendHidden).toEqual([]);
+  expect(parseChartSettings({ legendHidden: ["ema-20", "ema-20", 3, "", "vwap"] }).legendHidden).toEqual(["ema-20", "vwap"]);
+  expect(parseChartSettings({ legendHidden: "ema-20" }).legendHidden).toEqual([]);
+});
