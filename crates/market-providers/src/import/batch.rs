@@ -23,10 +23,15 @@ use super::alpaca::{
 use super::http::{FetchError, Http, HttpResponse, RetryPolicy, get_with_retry};
 use chrono::{DateTime, NaiveDate, Utc};
 use chrono_tz::America::New_York;
-use market_archive::{Archive, AssetMap, AssetMeta, DailyCloses};
+use market_archive::{
+    Adjustment, Archive, AssetMap, AssetMeta, BarFetch, DailyBar as ArchivedBar, DailyCloses,
+    RawDayBars, SplitSnapshot,
+};
+use market_events::is_trading_day;
 use market_events::session::sessions_for;
 use market_events::{PriceBand, SessionKind};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -77,12 +82,39 @@ struct Asset {
     exchange: Option<String>,
 }
 
+/// One Alpaca daily bar. Only `t` and `c` are required (as before); the rest is kept whole in
+/// `$ARCHIVE_ROOT/daily-bars/` ([`daily_closes_and_bars`]) when present.
 #[derive(Deserialize)]
 struct DailyBar {
     t: String,
     c: f64,
+    /// Trade count. Absent is not zero: the archive keeps `None`.
     #[serde(default)]
-    n: u64,
+    n: Option<u64>,
+    #[serde(default)]
+    o: Option<f64>,
+    #[serde(default)]
+    h: Option<f64>,
+    #[serde(default)]
+    l: Option<f64>,
+    #[serde(default)]
+    v: Option<u64>,
+    #[serde(default)]
+    vw: Option<f64>,
+}
+
+impl DailyBar {
+    fn archived(&self) -> ArchivedBar {
+        ArchivedBar {
+            o: self.o,
+            h: self.h,
+            l: self.l,
+            c: self.c,
+            v: self.v,
+            n: self.n,
+            vw: self.vw,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -139,6 +171,7 @@ pub fn plan_universe(
         &symbols,
         from,
         to,
+        Adjustment::Raw,
         log,
         &mut |symbol, day, b| {
             if !(lo..=hi).contains(&b.c) {
@@ -154,7 +187,7 @@ pub fn plan_universe(
                 day,
                 symbol: symbol.to_string(),
                 close: b.c,
-                trades: b.n,
+                trades: b.n.unwrap_or(0),
             });
         },
     )?;
@@ -172,11 +205,15 @@ pub fn plan_universe(
 /// request (keeps URLs short) and following `next_page_token`. `on_bar` gets each bar with its
 /// trading date; a bar stamped outside the range or with an unparseable `t` is skipped.
 ///
-/// `adjustment=raw` on purpose, for both callers: the archive's prints are as traded that day, so
-/// a band test or a change-% reference must be in the same units. A split-adjusted close would
-/// also change retroactively every time a later split is announced, so two fetches of the same
-/// day would disagree and a merged `daily-closes.json` would mix bases. The cost is one false move
-/// on an ex-split date (yesterday's raw close in pre-split units), which is visible and rare.
+/// Returns the number of requests made (pages included, retries not).
+///
+/// `adjustment=raw` for the closes, the plan and the retained raw bars: the archive's prints are
+/// as traded that day, so a band test or a change-% reference must be in the same units. A
+/// split-adjusted close would also change retroactively every time a later split is announced, so
+/// two fetches of the same day would disagree and a merged `daily-closes.json` would mix bases.
+/// The cost is one false move on an ex-split date (yesterday's raw close in pre-split units),
+/// which is visible and rare. `adjustment=split` only for [`split_snapshot`], whose result is
+/// stored as one immutable snapshot for exactly that reason (market_archive::daily_bars).
 #[allow(clippy::too_many_arguments)]
 fn for_each_daily_bar(
     http: &mut dyn Http,
@@ -185,20 +222,23 @@ fn for_each_daily_bar(
     symbols: &[String],
     from: NaiveDate,
     to: NaiveDate,
+    adjustment: Adjustment,
     log: &mut dyn FnMut(&str),
     on_bar: &mut dyn FnMut(&str, NaiveDate, &DailyBar),
-) -> Result<(), String> {
+) -> Result<u64, String> {
     let headers = alpaca_headers(creds);
     let secrets = [creds.key_id.as_str(), creds.secret.as_str()];
     let retry = RetryPolicy::default();
     let mut sleep = |d: Duration| std::thread::sleep(d);
-    for chunk in symbols.chunks(200) {
+    let mut requests = 0u64;
+    for chunk in symbols.chunks(SYMBOLS_PER_REQUEST) {
         let mut token: Option<String> = None;
         loop {
             let mut u = format!(
-                "{}/v2/stocks/bars?symbols={}&timeframe=1Day&start={from}&end={to}&feed=sip&adjustment=raw&limit=10000",
+                "{}/v2/stocks/bars?symbols={}&timeframe=1Day&start={from}&end={to}&feed=sip&adjustment={}&limit=10000",
                 data_base.trim_end_matches('/'),
-                chunk.join("%2C")
+                chunk.join("%2C"),
+                adjustment.as_str(),
             );
             if let Some(t) = &token {
                 u.push_str("&page_token=");
@@ -206,6 +246,7 @@ fn for_each_daily_bar(
             }
             let resp = get_with_retry(http, &u, &headers, retry, &secrets, &mut sleep, log)
                 .map_err(|e| format!("daily bars: {e}"))?;
+            requests += 1;
             let page: BarsPage =
                 serde_json::from_slice(&resp.body).map_err(|e| format!("daily bars: {e}"))?;
             for (symbol, bars) in page.bars.unwrap_or_default() {
@@ -224,7 +265,35 @@ fn for_each_daily_bar(
             }
         }
     }
-    Ok(())
+    Ok(requests)
+}
+
+/// Symbols per daily-bars request (keeps URLs short). Alpaca's `limit` caps bars per page across
+/// all symbols of a request, so 200 symbols × ~45 trading dates (9,000 bars) is one page.
+pub const SYMBOLS_PER_REQUEST: usize = 200;
+
+fn bar_fetch(
+    adjustment: Adjustment,
+    from: NaiveDate,
+    to: NaiveDate,
+    symbols: usize,
+    requests: u64,
+    command: &str,
+) -> BarFetch {
+    BarFetch {
+        retrieved_at: Utc::now(),
+        provider: "alpaca".into(),
+        feed: "sip".into(),
+        adjustment,
+        timeframe: "1Day".into(),
+        from,
+        to,
+        symbols,
+        symbols_per_request: SYMBOLS_PER_REQUEST,
+        requests,
+        asof: None,
+        command: command.into(),
+    }
 }
 
 /// The official daily close of every active US equity on each trading date of `from..=to`, for
@@ -246,6 +315,29 @@ pub fn daily_closes(
     to: NaiveDate,
     log: &mut dyn FnMut(&str),
 ) -> Result<DailyCloses, String> {
+    daily_closes_and_bars(http, trading_base, data_base, creds, from, to, "", log)
+        .map(|(closes, _)| closes)
+}
+
+/// [`daily_closes`] plus the same responses' whole bars: one [`RawDayBars`] per trading date that
+/// returned any bar, for `$ARCHIVE_ROOT/daily-bars/raw/` (market_archive::daily_bars). No extra
+/// request: the closes were always cut out of these bars. A requested symbol without a bar on a
+/// date is listed under `no_bar` (covered, nothing reported), never stored as a zero. A trading
+/// date where no symbol at all came back gets no file: that is far more likely an endpoint or
+/// calendar problem than a market where nothing traded. A bar with a non-positive close is still
+/// kept here (it is what the provider said); only the closes file leaves it out. `command` goes
+/// into the provenance.
+#[allow(clippy::too_many_arguments)]
+pub fn daily_closes_and_bars(
+    http: &mut dyn Http,
+    trading_base: &str,
+    data_base: &str,
+    creds: &AlpacaCredentials,
+    from: NaiveDate,
+    to: NaiveDate,
+    command: &str,
+    log: &mut dyn FnMut(&str),
+) -> Result<(DailyCloses, Vec<RawDayBars>), String> {
     let mut symbols: Vec<String> = fetch_assets(http, trading_base, creds, log)?
         .into_iter()
         .map(|a| a.symbol.trim().to_string())
@@ -255,16 +347,21 @@ pub fn daily_closes(
     symbols.dedup();
     log(&format!("{} active US equities", symbols.len()));
     let mut out = DailyCloses::new();
+    let mut bars: BTreeMap<NaiveDate, BTreeMap<String, ArchivedBar>> = BTreeMap::new();
     let mut bad = 0usize;
-    for_each_daily_bar(
+    let requests = for_each_daily_bar(
         http,
         data_base,
         creds,
         &symbols,
         from,
         to,
+        Adjustment::Raw,
         log,
         &mut |symbol, day, b| {
+            bars.entry(day)
+                .or_default()
+                .insert(symbol.to_string(), b.archived());
             if b.c.is_finite() && b.c > 0.0 {
                 out.entry(day).or_default().insert(symbol.to_string(), b.c);
             } else {
@@ -277,7 +374,138 @@ pub fn daily_closes(
         "{n} closes over {} trading dates ({bad} non-positive closes left out)",
         out.len()
     ));
-    Ok(out)
+    let fetch = bar_fetch(Adjustment::Raw, from, to, symbols.len(), requests, command);
+    let mut days = Vec::new();
+    for day in from.iter_days().take_while(|d| *d <= to) {
+        if !is_trading_day(day) {
+            continue;
+        }
+        let Some(got) = bars.remove(&day) else {
+            log(&format!(
+                "daily bars: none at all for {day}; no raw file written"
+            ));
+            continue;
+        };
+        let mut raw = RawDayBars::new(day, fetch.clone());
+        raw.no_bar = symbols
+            .iter()
+            .filter(|s| !got.contains_key(*s))
+            .cloned()
+            .collect();
+        raw.bars = got;
+        days.push(raw);
+    }
+    for day in bars.keys() {
+        log(&format!(
+            "daily bars: {day} is not a trading day in the calendar; its bars are not kept"
+        ));
+    }
+    Ok((out, days))
+}
+
+/// Most symbols one [`split_snapshot`] may ask for: the in-band watch universe of a day in a few
+/// runs, small enough that a mistaken invocation is ~10 requests, not a market-wide sweep.
+pub const MAX_SPLIT_SYMBOLS: usize = 2_000;
+/// Longest calendar range one snapshot may cover (~80 trading dates, past the 45-date lookback).
+pub const MAX_SPLIT_RANGE_DAYS: i64 = 120;
+
+/// One split-adjusted fetch (`adjustment=split`) of `symbols` over `from..=to`, for the stock
+/// context's basis check (market_archive::baseline). Opt-in and bounded ([`MAX_SPLIT_SYMBOLS`],
+/// [`MAX_SPLIT_RANGE_DAYS`]); every request waits on its own [`RateLimiter`] at `per_minute`. The
+/// nightly import paces itself separately (`MAINTAIN_PER_MINUTE`, default 9,000 of the plan's
+/// 10,000/min); the two processes share no limiter, so the operator keeps the sum under the plan
+/// (the default 200/min here leaves the margin, and the command belongs outside 21:15–~23:00 ET).
+///
+/// Alpaca's split adjustment restates prices **and volumes** of every bar before a split onto the
+/// share basis at the moment of the request, so the result is an immutable snapshot, never merged
+/// into the raw files. `asof` is not sent: it maps renamed symbols and is not a corporate-action
+/// knowledge cutoff.
+#[allow(clippy::too_many_arguments)]
+pub fn split_snapshot(
+    http: &mut dyn Http,
+    data_base: &str,
+    creds: &AlpacaCredentials,
+    symbols: &[String],
+    from: NaiveDate,
+    to: NaiveDate,
+    per_minute: u32,
+    log: &mut dyn FnMut(&str),
+) -> Result<SplitSnapshot, String> {
+    let mut symbols: Vec<String> = symbols
+        .iter()
+        .map(|s| s.trim().to_ascii_uppercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+    symbols.sort();
+    symbols.dedup();
+    if symbols.is_empty() {
+        return Err("no symbols".into());
+    }
+    if symbols.len() > MAX_SPLIT_SYMBOLS {
+        return Err(format!(
+            "{} symbols is more than {MAX_SPLIT_SYMBOLS} per snapshot; split the list",
+            symbols.len()
+        ));
+    }
+    if from > to || (to - from).num_days() > MAX_SPLIT_RANGE_DAYS {
+        return Err(format!(
+            "range {from}..{to} must be ascending and at most {MAX_SPLIT_RANGE_DAYS} days"
+        ));
+    }
+    let mut paced = Paced {
+        inner: http,
+        limiter: RateLimiter::per_minute(per_minute),
+    };
+    let mut bars: BTreeMap<String, BTreeMap<NaiveDate, ArchivedBar>> = BTreeMap::new();
+    let requests = for_each_daily_bar(
+        &mut paced,
+        data_base,
+        creds,
+        &symbols,
+        from,
+        to,
+        Adjustment::Split,
+        log,
+        &mut |symbol, day, b| {
+            bars.entry(symbol.to_string())
+                .or_default()
+                .insert(day, b.archived());
+        },
+    )?;
+    // Only what was asked for: a symbol the provider added on its own is outside the request
+    // record's coverage, so it is dropped rather than half-trusted.
+    bars.retain(|s, _| symbols.binary_search(s).is_ok());
+    log(&format!(
+        "split-adjusted bars: {} of {} symbols returned bars, {requests} requests",
+        bars.len(),
+        symbols.len()
+    ));
+    Ok(SplitSnapshot {
+        schema: market_archive::daily_bars::DAILY_BARS_SCHEMA,
+        fetch: bar_fetch(
+            Adjustment::Split,
+            from,
+            to,
+            symbols.len(),
+            requests,
+            "alpaca-split-bars",
+        ),
+        symbols,
+        bars,
+    })
+}
+
+/// A borrowed client behind a limiter (the batch workers' [`Limited`] owns its client).
+struct Paced<'a> {
+    inner: &'a mut dyn Http,
+    limiter: RateLimiter,
+}
+
+impl Http for Paced<'_> {
+    fn get(&mut self, url: &str, headers: &[(&str, &str)]) -> Result<HttpResponse, String> {
+        self.limiter.wait();
+        self.inner.get(url, headers)
+    }
 }
 
 /// Active US equities from Alpaca's trading API (`/v2/assets`), one request, with the shared

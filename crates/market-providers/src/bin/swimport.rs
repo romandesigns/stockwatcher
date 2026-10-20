@@ -7,7 +7,9 @@
 //! swimport alpaca-batch --from <YYYY-MM-DD> --to <YYYY-MM-DD> [--jobs 12] [--per-minute 9000] [--plan-only]
 //! swimport check <SYMBOL> <YYYY-MM-DD>                   # verify, replay twice, compare with FMP
 //! swimport alpaca-assets                                 # names + exchanges -> $ARCHIVE_ROOT/assets.json
-//! swimport alpaca-daily-closes --from <YYYY-MM-DD> --to <YYYY-MM-DD>  # -> $ARCHIVE_ROOT/daily-closes.json
+//! swimport alpaca-daily-closes --from <YYYY-MM-DD> --to <YYYY-MM-DD>  # -> daily-closes.json + daily-bars/raw/
+//! swimport alpaca-split-bars --from <YYYY-MM-DD> --to <YYYY-MM-DD> (--symbols A,B | --symbols-file F) [--per-minute 200]
+//!                                                        # opt-in: one split-adjusted snapshot -> daily-bars/split/
 //! swimport maintain [--once]                             # keep the rolling 21-trading-day window (runs forever)
 //! ```
 //!
@@ -48,6 +50,7 @@ fn usage() -> ExitCode {
     eprintln!(
         "usage:\n  swimport credentials\n  swimport alpaca-trades <SYMBOL> <YYYY-MM-DD> [--feed sip|iex|boats] [--limit N] [--force]\n  swimport fmp-bars <SYMBOL> <YYYY-MM-DD> [--force]\n  swimport check <SYMBOL> <YYYY-MM-DD>\n  swimport alpaca-batch --from <YYYY-MM-DD> --to <YYYY-MM-DD> [--jobs N] [--per-minute N] [--plan-only]\n  swimport alpaca-assets
   swimport alpaca-daily-closes --from <YYYY-MM-DD> --to <YYYY-MM-DD>
+  swimport alpaca-split-bars --from <YYYY-MM-DD> --to <YYYY-MM-DD> (--symbols A,B | --symbols-file FILE) [--per-minute N]
   swimport maintain [--once]"
     );
     ExitCode::from(2)
@@ -82,6 +85,7 @@ fn main() -> ExitCode {
             Some("alpaca-batch") => alpaca_batch(&args[1..]),
             Some("alpaca-assets") => alpaca_assets(),
             Some("alpaca-daily-closes") => alpaca_daily_closes(&args[1..]),
+            Some("alpaca-split-bars") => alpaca_split_bars(&args[1..]),
             Some("maintain") => maintain(&args[1..]),
             _ => Ok(usage()),
         }
@@ -472,7 +476,7 @@ fn completed_range(args: &[String]) -> Result<(NaiveDate, NaiveDate), String> {
 /// file are kept.
 fn alpaca_daily_closes(args: &[String]) -> Result<ExitCode, String> {
     use market_archive::merge_daily_closes;
-    use market_providers::import::batch::daily_closes;
+    use market_providers::import::batch::daily_closes_and_bars;
     let (from, to) = completed_range(args)?;
     let creds = alpaca_creds()?;
     let data_base = env("ALPACA_DATA_BASE").unwrap_or_else(|| "https://data.alpaca.markets".into());
@@ -487,15 +491,27 @@ fn alpaca_daily_closes(args: &[String]) -> Result<ExitCode, String> {
         .unwrap_or_default();
     println!("daily closes {from} .. {to} (SIP 1Day bars, raw)");
     let mut http = ReqwestHttp::new()?;
-    let new = daily_closes(
+    let (new, bars) = daily_closes_and_bars(
         &mut http,
         &trading_base,
         &data_base,
         &creds,
         from,
         to,
+        "alpaca-daily-closes",
         &mut |l: &str| eprintln!("  {l}"),
     )?;
+    // The same responses kept whole (market_archive::daily_bars): this is also the one-off
+    // backfill of the stock context's daily baseline. Not pruned here; `maintain` prunes.
+    match archive.merge_raw_bars(bars) {
+        Ok(rep) => println!(
+            "daily bars: {} date files written ({} symbol entries added or changed) under {}",
+            rep.dates_written.len(),
+            rep.changed,
+            archive.daily_bars_dir().join("raw").display()
+        ),
+        Err(e) => eprintln!("daily bars not kept: {e}"),
+    }
     if new.is_empty() {
         // No trading date in range, or an endpoint answering nothing: keep the file as it is.
         return Err(format!(
@@ -513,6 +529,57 @@ fn alpaca_daily_closes(args: &[String]) -> Result<ExitCode, String> {
         path.display(),
         all.keys().next().map_or("-".into(), |d| d.to_string()),
         all.keys().next_back().map_or("-".into(), |d| d.to_string()),
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Opt-in: one split-adjusted (`adjustment=split`) snapshot of a bounded symbol list over a
+/// completed range, written as its own file under `$ARCHIVE_ROOT/daily-bars/split/` for the stock
+/// context's share-basis check (market_archive::baseline). Never run by `maintain`. Bounded by
+/// `MAX_SPLIT_SYMBOLS` and `MAX_SPLIT_RANGE_DAYS` and paced at `--per-minute` (default 200), so a
+/// run beside the nightly import stays well under the plan's request ceiling. Plan and sizing:
+/// `docs/stock-context/daily-baseline-plan.md`.
+fn alpaca_split_bars(args: &[String]) -> Result<ExitCode, String> {
+    use market_providers::import::batch::split_snapshot;
+    let (from, to) = completed_range(args)?;
+    let symbols: Vec<String> = match (flag(args, "--symbols"), flag(args, "--symbols-file")) {
+        (Some(list), None) => list.split(',').map(str::to_string).collect(),
+        (None, Some(path)) => std::fs::read_to_string(&path)
+            .map_err(|e| format!("{path}: {e}"))?
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .map(str::to_string)
+            .collect(),
+        _ => return Err("give exactly one of --symbols A,B,C or --symbols-file FILE".into()),
+    };
+    let per_minute: u32 = flag(args, "--per-minute").map_or(Ok(200), |v| {
+        v.parse()
+            .ok()
+            .filter(|n| *n > 0)
+            .ok_or_else(|| format!("invalid --per-minute {v:?}"))
+    })?;
+    let creds = alpaca_creds()?;
+    let data_base = env("ALPACA_DATA_BASE").unwrap_or_else(|| "https://data.alpaca.markets".into());
+    let archive = archive()?;
+    let mut http = ReqwestHttp::new()?;
+    let snap = split_snapshot(
+        &mut http,
+        &data_base,
+        &creds,
+        &symbols,
+        from,
+        to,
+        per_minute,
+        &mut |l: &str| eprintln!("  {l}"),
+    )?;
+    let path = archive
+        .write_split_snapshot(&snap)
+        .map_err(|e| e.to_string())?;
+    println!(
+        "split-adjusted snapshot {from} .. {to}: {} symbols requested, {} with bars, {} requests; written to {}",
+        snap.symbols.len(),
+        snap.bars.len(),
+        snap.fetch.requests,
+        path.display()
     );
     Ok(ExitCode::SUCCESS)
 }

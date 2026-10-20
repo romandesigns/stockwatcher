@@ -28,7 +28,10 @@
 //! 2. Refresh `assets.json` and `daily-closes.json` (the window plus the trading day before its
 //!    first day; dates older than the earliest day still archived, minus one, are trimmed). Each
 //!    is written atomically and only when it changed, so the server's mtime check reloads it only
-//!    when there is something new.
+//!    when there is something new. The same daily-bar responses are also kept whole in
+//!    `daily-bars/raw/<date>.json` (market_archive::daily_bars; no extra request), pruned to the
+//!    last `DAILY_BARS_KEEP_DAYS` trading dates: the stock context's RVOL baseline needs more
+//!    history than the 21-day window (`docs/stock-context/daily-baseline-plan.md`).
 //! 3. Disk guard: below the archive's free-space floor (`ARCHIVE_MIN_FREE_MB`) nothing is
 //!    imported; old days are pruned first (if allowed, step 5) and the floor checked again.
 //! 4. Import: plan the window's universe from Alpaca's daily bars (same band and rules as
@@ -57,7 +60,8 @@
 
 use super::alpaca::{AlpacaCredentials, Feed, TradesQuery};
 use super::batch::{
-    Failure, Plan, Task, asset_metadata, daily_closes, plan_universe, run_batch_until, sip_range,
+    Failure, Plan, Task, asset_metadata, daily_closes_and_bars, plan_universe, run_batch_until,
+    sip_range,
 };
 use super::http::{Http, HttpResponse};
 use chrono::{DateTime, NaiveDate, NaiveTime, SecondsFormat, TimeZone, Utc};
@@ -84,6 +88,7 @@ pub const MAX_FAILED_PER_MILLE: usize = 10;
 /// | Variable | Default | Meaning |
 /// |---|---|---|
 /// | `ARCHIVE_WINDOW_DAYS` | `21` | window length in trading days (module docs), 1–504 |
+/// | `DAILY_BARS_KEEP_DAYS` | `63` | trading dates of raw daily bars kept (0 = all, else 46–504) |
 /// | `MAINTAIN_AT` | `21:15` | ET wall time of the daily cycle (`HH:MM`) |
 /// | `MAINTAIN_JOBS` | `12` | parallel import workers |
 /// | `MAINTAIN_PER_MINUTE` | `9000` | request ceiling across all workers (plan limit is 10,000) |
@@ -96,6 +101,8 @@ pub const MAX_FAILED_PER_MILLE: usize = 10;
 #[derive(Clone, Debug)]
 pub struct MaintainConfig {
     pub window_days: u32,
+    /// Trading dates of raw daily bars kept in `daily-bars/raw/` (0 = all).
+    pub daily_bars_keep_days: u32,
     pub run_at: NaiveTime,
     pub jobs: usize,
     pub per_minute: u32,
@@ -112,6 +119,7 @@ impl Default for MaintainConfig {
     fn default() -> Self {
         MaintainConfig {
             window_days: 21,
+            daily_bars_keep_days: 63,
             run_at: NaiveTime::from_hms_opt(21, 15, 0).expect("valid"),
             jobs: 12,
             per_minute: 9000,
@@ -177,8 +185,20 @@ impl MaintainConfig {
         if per_minute == 0 {
             return Err("MAINTAIN_PER_MINUTE must be at least 1".into());
         }
+        let daily_bars_keep_days = num(
+            "DAILY_BARS_KEEP_DAYS",
+            var("DAILY_BARS_KEEP_DAYS"),
+            d.daily_bars_keep_days,
+        )?;
+        if daily_bars_keep_days != 0 && !(46..=504).contains(&daily_bars_keep_days) {
+            return Err(format!(
+                "DAILY_BARS_KEEP_DAYS must be 0 (keep all) or 46..=504 trading days (the RVOL \
+                 baseline looks 45 back), got {daily_bars_keep_days}"
+            ));
+        }
         Ok(MaintainConfig {
             window_days,
+            daily_bars_keep_days,
             run_at,
             jobs,
             per_minute,
@@ -462,6 +482,11 @@ pub struct CycleReport {
     pub closes_dates: Option<usize>,
     pub closes_changed: u64,
     pub closes_trimmed: usize,
+    /// Raw daily-bar date files rewritten (something in them changed) and pruned.
+    #[serde(default)]
+    pub bars_dates_written: usize,
+    #[serde(default)]
+    pub bars_pruned: usize,
     pub assets: Option<usize>,
     pub free_bytes: Option<u64>,
     pub requests: u64,
@@ -486,7 +511,7 @@ impl CycleReport {
             .map(|(d, n)| format!("{d}:{n}"))
             .collect();
         format!(
-            "maintain {}: window {window}, missing at start {}, imported {} symbol-days [{}], {} already complete, {} failed, still importing {:?}, pruned {:?}{}{}, closes {} (+{} -{} dates), assets {}, free {}, {} requests, {} errors{}, next run {}",
+            "maintain {}: window {window}, missing at start {}, imported {} symbol-days [{}], {} already complete, {} failed, still importing {:?}, pruned {:?}{}{}, closes {} (+{} -{} dates), daily bars +{} -{} dates, assets {}, free {}, {} requests, {} errors{}, next run {}",
             self.outcome,
             match self.missing_days.as_slice() {
                 [] => "none".to_string(),
@@ -513,6 +538,8 @@ impl CycleReport {
             self.closes_dates.map_or("-".into(), |n| n.to_string()),
             self.closes_changed,
             self.closes_trimmed,
+            self.bars_dates_written,
+            self.bars_pruned,
             self.assets.map_or("-".into(), |n| n.to_string()),
             self.free_bytes
                 .map_or("-".into(), |b| format!("{:.1} GB", b as f64 / 1e9)),
@@ -730,28 +757,35 @@ impl<H: Http + Send + 'static> Maintainer<'_, H> {
         };
         let log = self.log;
         let from = prev_trading_day(w.first);
-        let new = match daily_closes(
+        let new = match daily_closes_and_bars(
             &mut http,
             &self.cfg.trading_base,
             &self.cfg.data_base,
             creds,
             from,
             w.last,
+            "maintain",
             &mut |l: &str| log(l),
         ) {
-            Ok(n) if n.is_empty() => {
-                r.errors.push(format!(
-                    "daily closes: none for {from}..{}; file unchanged",
-                    w.last
-                ));
-                return;
+            Ok((n, bars)) => {
+                // The same responses' whole bars, kept for the stock context's daily baseline
+                // (market_archive::daily_bars). Independent of the closes: a failure here is
+                // recorded and never blocks the closes file.
+                self.keep_bars(bars, w, r);
+                n
             }
-            Ok(n) => n,
             Err(e) => {
                 r.errors.push(format!("daily closes: {e}"));
                 return;
             }
         };
+        if new.is_empty() {
+            r.errors.push(format!(
+                "daily closes: none for {from}..{}; file unchanged",
+                w.last
+            ));
+            return;
+        }
         r.closes_changed = merge_daily_closes(&mut all, new) as u64;
         // One day before the earliest day still archived (the window's first, or an older day
         // kept because it is being replayed or because pruning is held back).
@@ -768,6 +802,23 @@ impl<H: Http + Send + 'static> Maintainer<'_, H> {
         }
         if let Err(e) = self.archive.write_daily_closes(&all) {
             r.errors.push(format!("daily closes: {e}"));
+        }
+    }
+
+    /// Merges a fetch's raw daily bars into `daily-bars/raw/` and drops dates older than
+    /// `DAILY_BARS_KEEP_DAYS` trading days before the window's last day. Only changed date files
+    /// are rewritten, so an identical nightly refetch writes nothing.
+    fn keep_bars(&self, bars: Vec<market_archive::RawDayBars>, w: &Window, r: &mut CycleReport) {
+        match self.archive.merge_raw_bars(bars) {
+            Ok(rep) => r.bars_dates_written = rep.dates_written.len(),
+            Err(e) => r.errors.push(format!("daily bars: {e}")),
+        }
+        if self.cfg.daily_bars_keep_days > 0 {
+            let keep_from = window(w.last, self.cfg.daily_bars_keep_days).first;
+            match self.archive.prune_raw_bars(keep_from) {
+                Ok(gone) => r.bars_pruned = gone.len(),
+                Err(e) => r.errors.push(format!("daily bars prune: {e}")),
+            }
         }
     }
 

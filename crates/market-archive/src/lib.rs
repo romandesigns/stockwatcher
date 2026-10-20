@@ -13,6 +13,8 @@
 //! $ARCHIVE_ROOT/
 //!   assets.json            # optional: symbol → {name, exchange} (crate::assets)
 //!   daily-closes.json      # optional: date → symbol → official close (crate::closes)
+//!   daily-bars/            # optional: provider daily bars, raw per date + split snapshots
+//!                          #   (crate::daily_bars; evidence for stock-context: crate::baseline)
 //!   2026-10-15/
 //!     manifest.json        # symbols, counts, first/last ts, sources, bytes, sha256 per file
 //!     SMPL.swa             # one file per symbol (finalized)
@@ -76,8 +78,10 @@
 
 pub mod assets;
 pub mod bars;
+pub mod baseline;
 pub mod closes;
 pub mod config;
+pub mod daily_bars;
 pub mod fixture;
 pub mod format;
 pub mod live;
@@ -95,6 +99,10 @@ pub use assets::{ASSETS_FILE, AssetMap, AssetMeta};
 pub use bars::{Bar, BarDataset, BarEntry};
 pub use closes::{DAILY_CLOSES_FILE, DailyCloses, PrevCloses, merge_daily_closes};
 pub use config::ArchiveConfig;
+pub use daily_bars::{
+    Adjustment, BarFetch, DAILY_BARS_DIR, DailyBar, RawDayBars, RawMergeReport, SplitSnapshot,
+    merge_raw_day,
+};
 pub use error::ArchiveError;
 pub use lifecycle::{IMPORTING_MARKER, REMOVING_PREFIX};
 pub use live::{DayData, LIVE_DIR, LiveQuote, LiveWriter};

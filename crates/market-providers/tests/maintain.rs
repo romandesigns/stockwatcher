@@ -276,6 +276,20 @@ fn a_cycle_fills_the_window_holds_a_failing_day_back_and_only_then_prunes() {
         [d("2026-10-19"), d("2026-10-20")]
     );
     assert_eq!(closes[&d("2026-10-20")]["BBB"], 2.0);
+    // The same responses' whole bars are kept per date, with who was covered but had no bar.
+    assert_eq!(rep.bars_dates_written, 2);
+    assert_eq!(
+        a.raw_bar_dates().unwrap(),
+        [d("2026-10-19"), d("2026-10-20")]
+    );
+    let raw19 = a.read_raw_bars(d("2026-10-19")).unwrap().unwrap();
+    assert_eq!(raw19.bars["AAA"].c, 1.0);
+    assert_eq!(raw19.bars["AAA"].n, Some(2));
+    assert_eq!(
+        raw19.no_bar.iter().map(String::as_str).collect::<Vec<_>>(),
+        ["BBB", "FAIL"]
+    );
+    assert_eq!(raw19.fetches[0].command, "maintain");
     let failures: serde_json::Value = serde_json::from_slice(
         &std::fs::read(a.root().join("plans/maintainer-failures.json")).unwrap(),
     )
@@ -320,6 +334,11 @@ fn a_cycle_fills_the_window_holds_a_failing_day_back_and_only_then_prunes() {
     assert!(!a.root().join(".removing-2026-09-17").exists());
     // Nothing new in either file: neither is rewritten, so the server does not reload them.
     assert_eq!((rep.closes_changed, rep.closes_trimmed), (0, 0));
+    assert_eq!(
+        (rep.bars_dates_written, rep.bars_pruned),
+        (0, 0),
+        "an identical refetch rewrites no daily-bar file"
+    );
     assert_eq!(
         std::fs::metadata(a.assets_path())
             .unwrap()
