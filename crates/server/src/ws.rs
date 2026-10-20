@@ -70,16 +70,21 @@
 //! - After a seek (rebuild) and for a lagged connection, a subscribed client gets a fresh
 //!   `quotes.snapshot` (it replaces the client's board); no updates go out during a rebuild.
 //!
-//! Halt watcher (the dashboard's pressure board; crates/server/src/pressure.rs, after `welcome`):
+//! Halt watcher (the dashboard's build-up board; crates/server/src/pressure.rs, after `welcome`):
 //! - client `pressure.subscribe` (no payload) -> server `pressure.snapshot {t, board: [card]}` at
 //!   once with the last ranked board (empty for up to a second after start or a rebuild), then
-//!   `pressure.update {t, board: [card]}` with the WHOLE board (at most 6 cards, in display order)
-//!   whenever it changed, at most once per second of wall time. Either frame replaces the client's
-//!   board. `t` is the market clock (epoch ms) at the ranking.
-//! - Card: `{s, p, pc?, o, pressure, side, buyShare, pace, halt?}`: symbol; last price, previous
-//!   close and fallback reference as in a quote row (change % by the same rule); pressure 0–100;
-//!   `bull` | `bear`; the buy share (0–1) and pace (× the symbol's average volume per minute this session)
-//!   behind it; `halt {start, reason}` while halted (pressure frozen at the halt).
+//!   `pressure.update {t, board: [card]}` with the WHOLE board (at most 6 cards, usually fewer,
+//!   often none, in display order) whenever it changed, at most once per second of wall time.
+//!   Either frame replaces the client's board. `t` is the market clock (epoch ms) at the ranking.
+//!   A card exists only while a symbol's flow pressure is building up toward its LULD band.
+//! - Card: `{s, p, pc?, o, risk, side, rise, riseSecs, band, toBand, pressure, buyShare, pace,
+//!   halt?}`: symbol; last price, previous close and fallback reference as in a quote row (change
+//!   % by the same rule); halt risk 0–100 (the gauge); `bull` | `bear`, the side the build-up
+//!   pushes (toward the upper or the lower band); the rise of that side's pressure over the last
+//!   `riseSecs` seconds; the modelled LULD band on that side and the distance to it (% of the
+//!   price); the flow pressure 0–100 with its buy share (0–1) and pace (× the symbol's average
+//!   volume per minute this session); `halt {start, reason}` while halted (everything frozen at
+//!   the halt).
 //! - client `pressure.unsubscribe` stops the updates. Resubscribing after a reconnect is the
 //!   client's job; a seek or a lag sends a fresh snapshot, as for quotes.
 //!

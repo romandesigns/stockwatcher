@@ -6,18 +6,19 @@ const FILL = { good: "var(--good)", critical: "var(--critical)", halted: "color-
 
 /**
  * The Halt watcher's gauge (owner, 2026-10-19, design canvas "Halt Watcher", option A "fill"): a
- * shadcn-style radial half ring, filled in proportion to the 0–100 pressure, in the colour of the
- * side whose volume leads the minute (green buyers, red sellers), the reading inside the ring and
- * "buy/sell pressure" under it. Halted: a grey fill, the frozen value still shown.
+ * shadcn-style radial half ring, filled in proportion to a 0–100 `value` (the halt risk since
+ * 2026-10-20; the prop was `pressure` before), in the colour of the side the build-up pushes
+ * (green toward limit up, red toward limit down), the reading inside the ring and
+ * "limit-up/limit-down risk" under it. Halted: a grey fill, the frozen value still shown.
  *
- * The fill is the track itself, dashed to the pressure (`pathLength` 100), so a new reading sweeps
+ * The fill is the track itself, dashed to the value (`pathLength` 100), so a new reading sweeps
  * rather than jumps (CSS-transitioned; still with reduced motion).
  *
  * In the phone's one-row strip (the Halt watcher container below @xl, ~56 px a ring) the caption
  * is hidden and the reading drawn larger: at that size the caption is unreadable.
  */
-export function PressureGauge({ pressure, side, halted, label }: { pressure: number; side: "bull" | "bear"; halted: boolean; label: string }) {
-  const v = Math.max(0, Math.min(100, Math.round(pressure)));
+export function PressureGauge({ value, side, halted, label }: { value: number; side: "bull" | "bear"; halted: boolean; label: string }) {
+  const v = Math.max(0, Math.min(100, Math.round(value)));
   const ink = halted ? "var(--text-faint)" : "var(--text)";
   return (
     <svg viewBox={`0 0 ${GAUGE.width} ${GAUGE.height}`} role="img" aria-label={label} className="block h-auto w-full">

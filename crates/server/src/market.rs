@@ -51,10 +51,11 @@
 //! A rebuild (seek, day switch) does not serialize candle increments it will not send, only the
 //! tape rows the history ring keeps: same state, about a third less time per rebuilt event.
 //!
-//! The Halt watcher's pressure board ([`crate::pressure`]) rides beside the quote board: every
-//! trade (with the engine's verdict) and every `chart.halt` update it under the core lock, and the
-//! quotes task ranks it once per second and broadcasts ONE pre-serialized `pressure.update`
-//! (the whole board, at most [`crate::pressure::BOARD_SIZE`] cards) when it changed, to the
+//! The Halt watcher's build-up board ([`crate::pressure`]) rides beside the quote board: every
+//! trade (with the engine's verdict), every `chart.halt` and every `chart.luld` (from events and
+//! from clock advances) update it under the core lock, and the quotes task ranks it once per
+//! second and broadcasts ONE pre-serialized `pressure.update` (the whole board, at most
+//! [`crate::pressure::BOARD_SIZE`] cards, often none) when it changed, to the
 //! connections that sent `pressure.subscribe` (the quote board's opt-in pattern and `seq` rule).
 //! The ranking runs whether or not anyone listens, so its hysteresis does not restart with the
 //! first subscriber; only the frame is skipped.
@@ -332,7 +333,7 @@ pub(crate) struct Core {
     pub(crate) last_price: HashMap<String, Price>,
     /// Last / open / volume per symbol for the ticker search (`quotes.*`).
     pub(crate) quotes: QuoteBoard,
-    /// The Halt watcher's per-symbol pressure and its ranked board (`pressure.*`).
+    /// The Halt watcher's per-symbol pressure and halt risk and its board (`pressure.*`).
     pub(crate) pressure: PressureBoard,
     /// The cards of the last ranking: what `pressure.snapshot` sends, and what the next ranking
     /// is compared with (an unchanged board sends nothing).
@@ -1236,6 +1237,11 @@ impl Market {
                                     cx.set_halted(&h.symbol, h.halt.end.is_none());
                                 }
                             }
+                            // In order: a halt freezes the readings before the null band point
+                            // that follows it clears the band (crate::pressure, "Halts").
+                            if let ChartUpdate::Luld(l) = u {
+                                core.pressure.apply_luld(&l.symbol, &l.point);
+                            }
                         }
                         if let Some(rev) = &revision {
                             core.quotes.apply_revision(rev);
@@ -1265,6 +1271,12 @@ impl Market {
                 let (seq, ups, rebuilding) = {
                     let mut core = self.0.core.lock().expect("core lock");
                     let ups = core.engine.advance_clock(t);
+                    // The clock moves the bands too (the doubling windows, the close).
+                    for u in &ups {
+                        if let ChartUpdate::Luld(l) = u {
+                            core.pressure.apply_luld(&l.symbol, &l.point);
+                        }
+                    }
                     if let Some(cx) = core.context.as_mut() {
                         cx.advance(t);
                     }
@@ -1975,11 +1987,18 @@ impl Drop for PressureGuard {
 ///
 /// - `s` symbol; `p` last price, `pc` previous close and `o` the fallback reference, exactly the
 ///   quote row's (`WireQuote`), so the card's change % is the search's and the chart header's;
-/// - `pressure` 0-100 and `side` (`bull` | `bear`) per `crate::pressure`; `buyShare` (0-1, two
-///   decimals) and `pace` (multiple of the symbol's average volume per minute so far this session, one
-///   decimal), the two inputs, for a tooltip;
+/// - `risk` 0-100, the halt-risk score the gauge fills with (`crate::pressure`, "Halt risk");
+///   `side` (`bull` | `bear`) the side the build-up pushes: buying toward the upper LULD band,
+///   selling toward the lower;
+/// - `rise` the build-up: that side's pressure now minus a horizon earlier (points, −100…100),
+///   and `riseSecs` the horizon (`crate::pressure::HORIZON`, 30);
+/// - `band` the modelled LULD band on that side (dollars) and `toBand` the distance to it in
+///   percent of the price (two decimals; 0 at or past the band);
+/// - `pressure` 0-100, the flow pressure itself, with `buyShare` (0-1, two decimals) and `pace`
+///   (multiple of the symbol's average volume per minute so far this session, one decimal), its
+///   inputs, for a tooltip;
 /// - `halt` `{start, reason}` while halted (`start` epoch ms, `reason` the provider's, e.g.
-///   `LUDP`); the pressure is then the one frozen at the halt.
+///   `LUDP`); every reading above is then the one frozen at the halt.
 ///
 /// Rounded so a board that did not visibly change compares equal and sends nothing.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -1989,8 +2008,15 @@ pub struct PressureCardWire {
     #[serde(skip_serializing_if = "Option::is_none")]
     pc: Option<f64>,
     o: f64,
-    pressure: u8,
+    risk: u8,
     side: &'static str,
+    rise: i16,
+    #[serde(rename = "riseSecs")]
+    rise_secs: u8,
+    band: f64,
+    #[serde(rename = "toBand")]
+    to_band: f64,
+    pressure: u8,
     #[serde(rename = "buyShare")]
     buy_share: f64,
     pace: f64,
@@ -2012,8 +2038,13 @@ impl PressureCardWire {
             p: p.to_f64(),
             pc: row.as_ref().and_then(|r| r.prev_close).map(Price::to_f64),
             o: row.as_ref().map_or(p, |r| r.reference).to_f64(),
+            risk: c.risk.risk,
+            side: if c.risk.up { "bull" } else { "bear" },
+            rise: c.risk.rise,
+            rise_secs: (crate::pressure::HORIZON / 1_000_000_000) as u8,
+            band: c.risk.band.to_f64(),
+            to_band: (c.risk.to_band * 10_000.0).round() / 100.0,
             pressure: c.score.pressure,
-            side: if c.score.bull() { "bull" } else { "bear" },
             buy_share: (c.score.buy_share * 100.0).round() / 100.0,
             pace: (c.score.pace * 10.0).round() / 10.0,
             halt: c.halt.clone(),
@@ -2217,6 +2248,42 @@ async fn ingest(mut items: mpsc::Receiver<FeedItem>, market: Market, sim: Option
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_halt_watcher_card_on_the_wire() {
+        use crate::pressure::{Risk, Score};
+        let card = Card {
+            symbol: Arc::from("AAA"),
+            score: Score {
+                pressure: 72,
+                buy_share: 0.876,
+                pace: 4.26,
+            },
+            risk: Risk {
+                risk: 81,
+                rise: 45,
+                up: true,
+                band: Price::from_cents(550),
+                to_band: 0.012_345,
+                moved: 0.02,
+                secs_to_band: Some(18.5),
+                half_width: 0.1,
+            },
+            halt: None,
+        };
+        let mut last = HashMap::new();
+        last.insert("AAA".to_string(), Price::from_cents(543));
+        let w = PressureCardWire::new(&card, &QuoteBoard::new(), &last);
+        assert_eq!(
+            serde_json::to_value(&w).unwrap(),
+            json!({
+                "s": "AAA", "p": 5.43, "o": 5.43,
+                "risk": 81, "side": "bull", "rise": 45, "riseSecs": 30,
+                "band": 5.5, "toBand": 1.23,
+                "pressure": 72, "buyShare": 0.88, "pace": 4.3
+            })
+        );
+    }
 
     #[test]
     fn control_parsing() {

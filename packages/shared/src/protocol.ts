@@ -156,12 +156,13 @@ export interface QuotesUnsubscribeMessage {
 }
 
 // --- Halt watcher (after `welcome`; crates/server/src/pressure.rs, ws.rs) -----------------
-// The dashboard's top 6 symbols by buying or selling pressure in the last minute, ranked on the
-// server once per second with hysteresis. Opt in with `pressure.subscribe`: a
-// `pressure.snapshot` at once, then a `pressure.update` whenever the board changed. Both carry
-// the WHOLE board in display order and replace the client's (six cards: no patching). A seek or
-// a lag gets a fresh snapshot; resubscribing after a reconnect is the client's job
-// (createWsClient does it).
+// The dashboard's build-ups (owner, 2026-10-20): the symbols whose one-sided pressure is rising
+// fast while the price runs at its LULD band, ranked on the server once per second with
+// hysteresis. At most 6, usually fewer, often none (an empty board is the normal state). Opt in
+// with `pressure.subscribe`: a `pressure.snapshot` at once, then a `pressure.update` whenever the
+// board changed. Both carry the WHOLE board in display order and replace the client's (six cards
+// at most: no patching). A seek or a lag gets a fresh snapshot; resubscribing after a reconnect is
+// the client's job (createWsClient does it).
 
 /** A halt in progress. */
 export interface PressureHaltWire {
@@ -178,13 +179,27 @@ export interface PressureCardWire {
   pc?: number;
   o: number;
   /**
-   * 0–100 (crates/server/src/pressure.rs): over the last minute of OHLC-counted prints, sides by
-   * the tick rule, `round(100 · min(1, |2·buyShare − 1| / 0.6) · (0.4 + 0.6 · min(1, ln(1 + pace) / ln 11)))`.
-   * Frozen at the halt while `halt` is set.
+   * The halt risk, 0–100, what the gauge fills with (crates/server/src/pressure.rs "Halt risk"):
+   * `round(100 · (0.4 · build-up + 0.35 · urgency + 0.25 · closeness))` from the rise below, the
+   * time to the band at the current pace and how much of the way to it is covered. Frozen at the
+   * halt while `halt` is set.
+   */
+  risk: number;
+  /** The side the build-up pushes: `bull` toward the upper LULD band (limit up), `bear` the lower. */
+  side: "bull" | "bear";
+  /** That side's pressure now minus `riseSecs` seconds earlier, in points (−100…100). */
+  rise: number;
+  /** The horizon of `rise`, seconds (30). */
+  riseSecs: number;
+  /** The modelled LULD band on that side, dollars. */
+  band: number;
+  /** Distance from the last price to `band`, percent of the price (two decimals; 0 at the band). */
+  toBand: number;
+  /**
+   * The one-sided flow pressure itself, 0–100: over the last minute of OHLC-counted prints, sides
+   * by the tick rule, `round(100 · |2·buyShare − 1| · (0.4 + 0.6 · min(1, ln(1 + pace) / ln 101)))`.
    */
   pressure: number;
-  /** `bull` when buyShare ≥ 0.5. */
-  side: "bull" | "bear";
   /** Buy volume / volume with a side in the window, 0–1 (two decimals). */
   buyShare: number;
   /** Window volume as a multiple of the symbol's average volume per minute so far this session (premarket, regular, after hours each on its own; one decimal). */
