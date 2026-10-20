@@ -13,7 +13,9 @@ use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use chart_engine::wire::CandleWire;
 use chrono::{DateTime, Duration, NaiveDate, NaiveTime};
 use market_events::session::{SessionKind, et_instant, session_bounds};
-use market_events::{MarketEvent, Price, Quote, SessionId, Trade, TradeId, UnixNanos, classify};
+use market_events::{
+    MarketEvent, Price, Quote, Resolution, SessionId, Trade, TradeId, TradeRef, UnixNanos, classify,
+};
 use market_replay::MarkClock;
 use market_replay::merge::DeliveryClock;
 use serde::Deserialize;
@@ -117,7 +119,22 @@ fn scan(sim: &Sim, symbol: &str, feed: Feed, bars: bool) -> Result<Scan, String>
         book: bars.then(BarBook::default),
         ..Scan::default()
     };
-    let mut index: HashMap<TradeId, usize> = HashMap::new();
+    // Provider id → positions of the prints carrying it: several on venue `D`, where FINRA's TRFs
+    // reuse ids, so a revision resolves among the still-standing ones as the chart engine does
+    // (docs/architecture/trade-identity.md), and an ambiguous one marks nothing.
+    let mut index: HashMap<TradeId, Vec<usize>> = HashMap::new();
+    let standing = |trades: &[(Trade, Option<&'static str>)],
+                    index: &HashMap<TradeId, Vec<usize>>,
+                    r: &TradeRef| {
+        let held = index.get(&r.id).into_iter().flatten().filter_map(|&i| {
+            let (t, mark) = &trades[i];
+            matches!(mark, None | Some("corrected")).then_some((i, t.price, t.size))
+        });
+        match r.resolve(held) {
+            Resolution::Found(i) => Some(i),
+            Resolution::NotFound | Resolution::Ambiguous => None,
+        }
+    };
     for ev in reader {
         let e = ev.map_err(|e| e.to_string())?.event;
         let d = dc.next(&e);
@@ -135,25 +152,25 @@ fn scan(sim: &Sim, symbol: &str, feed: Feed, bars: bool) -> Result<Scan, String>
         }
         match e {
             MarketEvent::Trade(t) => {
-                index.insert(t.id(), out.trades.len());
+                index.entry(t.id()).or_default().push(out.trades.len());
                 out.latest_trade = Some(t.clone());
                 out.trades.push((t, None));
             }
             MarketEvent::Quote(q) => out.latest_quote = Some(q),
             MarketEvent::Cancel(c) => {
-                if let Some(&i) = index.get(&c.target_trade_id()) {
+                if let Some(i) = standing(&out.trades, &index, &c.target()) {
                     out.trades[i].1 = Some("canceled");
                 }
             }
             MarketEvent::Correction(c) => {
-                if let Some(&i) = index.get(&c.original_trade_id()) {
+                if let Some(i) = standing(&out.trades, &index, &c.target()) {
                     out.trades[i].1 = Some("incorrect");
                     let mut t = out.trades[i].0.clone();
                     t.source_seq = c.corrected_id;
                     t.price = c.corrected_price;
                     t.size = c.corrected_size;
                     t.conditions = c.corrected_conditions.clone();
-                    index.insert(t.id(), out.trades.len());
+                    index.entry(t.id()).or_default().push(out.trades.len());
                     out.trades.push((t, Some("corrected")));
                 }
             }

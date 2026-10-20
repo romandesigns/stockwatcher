@@ -21,8 +21,8 @@ pub mod universe;
 
 pub use conditions::{Effect, EffectReason, Rule, Tape, condition_rule, trade_effect};
 pub use event::{
-    CONTRACT_VERSION, Cancel, CancelAction, Correction, MarketEvent, Quote, Source, Status,
-    StatusKind, Trade, TradeId, VersionedEvent,
+    CONTRACT_VERSION, Cancel, CancelAction, Correction, MarketEvent, PrintId, Quote, Resolution,
+    Source, Status, StatusKind, Trade, TradeId, TradeRef, VersionedEvent,
 };
 pub use price::{PRICE_SCALE, Price};
 pub use session::{

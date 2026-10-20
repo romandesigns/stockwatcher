@@ -55,9 +55,11 @@
 //! new one. A trade past the window is excluded from candles and profile, counted
 //! (`lateExcluded`) and shown on the tape as `excluded:late`.
 //!
-//! **Duplicates.** Identity is `(source, exchange, source_seq)`. A repeat within the retention
-//! window is ignored and counted (`duplicates`); beyond retention a repeat would be older than the
-//! settle window and is excluded as late anyway.
+//! **Duplicates.** A print's identity is `(source, exchange, source_seq, event_ts)`
+//! (`market_events::PrintId`): the provider id alone is not unique on venue `D`, where FINRA's
+//! TRFs reuse ids (docs/architecture/trade-identity.md). A repeat within the retention window is
+//! ignored and counted (`duplicates`); beyond retention a repeat would be older than the settle
+//! window and is excluded as late anyway.
 //!
 //! **Corrections and cancels.** Each symbol keeps trade-level records for the retention window
 //! (default 10 min, at least the largest timeframe plus the settle window; pruning is aligned down
@@ -65,8 +67,12 @@
 //! correction replaces it in place (original execution time, `corrected_id`, corrected
 //! price/size/conditions re-run through the condition policy). The affected interval of every
 //! timeframe is recomputed exactly, and the profile subtracts/adds exact per-price volume. A
-//! corrected/cancelled print not in retention is counted (`correctionsUnapplied` /
-//! `cancelsUnapplied`) and changes nothing. Corrections and cancels are not subject to the settle
+//! correction or cancel names its target by provider id plus the original's price and size
+//! (`market_events::TradeRef`); it is applied only to the one retained print with that id whose
+//! price and size match. A target not in retention is counted (`correctionsUnapplied` /
+//! `cancelsUnapplied`); one that fits several retained prints, or none of those holding its id
+//! (venue `D`), is counted (`correctionsAmbiguous` / `cancelsAmbiguous`). Either way it changes
+//! nothing. Corrections and cancels are not subject to the settle
 //! window: they may revise final candles. [`ChartEngine::apply_revising`] also returns the engine's
 //! own account of an applied one ([`Revision`]: the print removed, its replacement, what each
 //! counted for), so a running tally outside the engine (the server's quote board) can follow the
