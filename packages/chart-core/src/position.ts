@@ -3,7 +3,7 @@ import type { Anchor, Drawing, DrawingPart } from "./drawings.ts";
 import { indexToT, tToIndex } from "./drawings.ts";
 import { formatPrice, formatSize } from "./format.ts";
 import type { ChartModel, Point } from "./layout.ts";
-import { priceY, slotX, yPrice } from "./scale.ts";
+import { formatAxisTag, priceY, slotX, yPrice } from "./scale.ts";
 import { withAlpha } from "./theme.ts";
 import { snapPrice, tickSize } from "./trading.ts";
 
@@ -262,7 +262,7 @@ export function layoutPosition(model: ChartModel, d: Drawing, selected: boolean,
     if (y < plot.y || y > plot.y + plot.h) return;
     // On the crosshair layer, above the axis tick labels, which would otherwise print through the tag.
     out.push({ kind: "rect", x: ax.x + 2, y: y - 9, w: ax.w - 4, h: 18, fill, radius: 3, layer: "crosshair" });
-    out.push({ kind: "text", x: ax.x + ax.w / 2, y, text: formatPrice(p), fill: theme.onTag, fontSize: fs, fontFamily: mono, fontWeight: 600, align: "center", baseline: "middle", layer: "crosshair" });
+    out.push({ kind: "text", x: ax.x + ax.w / 2, y, text: formatAxisTag(model, p), fill: theme.onTag, fontSize: fs, fontFamily: mono, fontWeight: 600, align: "center", baseline: "middle", layer: "crosshair" });
   };
   tag(g.yT, theme.up, plan.target);
   tag(g.yE, theme.text, plan.entry);

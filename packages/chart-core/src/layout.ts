@@ -11,7 +11,7 @@ import { heikinAshi, hollowStyle, isCloseOnly, prevCloseAt, sessionSlots, starts
 import {
   buildSlots,
   padRange,
-  formatAxisValue,
+  formatAxisTag,
   indexScale,
   priceAxisTicks,
   priceToUnit,
@@ -263,8 +263,8 @@ function priceAxisNeed(model: ChartModel): number {
   let need = 0;
   for (const label of model.priceTicks.labels) need = Math.max(need, AXIS_LABEL_PAD + w(label, o.fontSize) + 4);
   const last = lastCandle(model.slots);
-  if (last) need = Math.max(need, 2 + 5 + w(formatAxisValue(price, last.c), o.fontSize + 1) * 1.04 + 6);
-  need = Math.max(need, 4 + w(formatAxisValue(price, price.hi), o.fontSize) + 6);
+  if (last) need = Math.max(need, 2 + 5 + w(formatAxisTag(model, last.c), o.fontSize + 1) * 1.04 + 6);
+  need = Math.max(need, 4 + w(formatAxisTag(model, price.hi), o.fontSize) + 6);
   return Math.min(o.priceAxisWidth, Math.max(MIN_PRICE_AXIS, Math.ceil(need)));
 }
 
@@ -587,7 +587,7 @@ export function layoutChart(model: ChartModel, state: ChartState, theme: ChartTh
       const right = g.priceAxis.x + g.priceAxis.w - 2;
       const fill = last.c >= last.o ? theme.up : theme.down;
       out.push({ kind: "path", points: [ax, lastY, ax + 5, lastY - 9, right, lastY - 9, right, lastY + 9, ax + 5, lastY + 9], closed: true, fill, layer: "axes" });
-      out.push({ kind: "text", x: (ax + 5 + right) / 2, y: lastY, text: formatAxisValue(price, last.c), fill: theme.onTag, fontSize: fs + 1, fontFamily: mono, fontWeight: 600, align: "center", baseline: "middle", layer: "axes" });
+      out.push({ kind: "text", x: (ax + 5 + right) / 2, y: lastY, text: formatAxisTag(model, last.c), fill: theme.onTag, fontSize: fs + 1, fontFamily: mono, fontWeight: 600, align: "center", baseline: "middle", layer: "axes" });
       // Countdown to the forming candle's close, tucked under the tag (above it near the bottom edge).
       const left = candleCountdown(last, model.timeframeMs, state.now ?? null);
       if (left !== null) {
@@ -602,7 +602,7 @@ export function layoutChart(model: ChartModel, state: ChartState, theme: ChartTh
       const y = Math.round(p.y) + 0.5;
       out.push({ kind: "line", x1: g.plot.x, y1: y, x2: g.plot.x + g.plot.w, y2: y, stroke: theme.crosshair, lineWidth: 1, dash: [3, 3], layer: "crosshair" });
       out.push({ kind: "rect", x: g.priceAxis.x + 2, y: y - 9, w: g.priceAxis.w - 4, h: 18, fill: theme.crosshairLabelBg, radius: 3, layer: "crosshair" });
-      out.push({ kind: "text", x: g.priceAxis.x + g.priceAxis.w / 2, y, text: formatAxisValue(price, yPrice(price, p.y)), fill: theme.crosshairLabelText, fontSize: fs, fontFamily: mono, fontWeight: 500, align: "center", baseline: "middle", layer: "crosshair" });
+      out.push({ kind: "text", x: g.priceAxis.x + g.priceAxis.w / 2, y, text: formatAxisTag(model, yPrice(price, p.y)), fill: theme.crosshairLabelText, fontSize: fs, fontFamily: mono, fontWeight: 500, align: "center", baseline: "middle", layer: "crosshair" });
     }
   }
 

@@ -315,6 +315,18 @@ export function formatAxisValue(s: PriceScale, p: number, decimals?: number): st
   return formatPrice(p, decimals);
 }
 
+/**
+ * A tag on the price column (last price, crosshair, alert, order, drawing): the axis labels'
+ * precision, not the quote's (owner, 2026-10-19, against Robinhood's column: "0.2810" beside
+ * "0.28 / 0.30" read as a different number format). Zooming in until the axis steps by 0.001
+ * gives the tags three decimals too, so a cheap stock's real moves still show; the readout and
+ * the quotes keep the full quote precision.
+ */
+export function formatAxisTag(m: { price: PriceScale | null; priceTicks: { decimals: number } }, p: number): string {
+  const d = Math.max(2, m.priceTicks.decimals);
+  return m.price ? formatAxisValue(m.price, p, d) : formatPrice(p, d);
+}
+
 // Price zoom limits: span / |mid| for linear and percent, the ln-span for log.
 const MIN_REL_SPAN = 1e-5;
 const MAX_REL_SPAN = 50;
