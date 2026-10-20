@@ -1,18 +1,19 @@
 import type { BottomTabBarProps } from "@react-navigation/bottom-tabs";
 import type { IconName } from "@stockwatcher/chart-core";
 import { Icon, playHaptic } from "@stockwatcher/chart-native";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { colors, fonts } from "../theme";
+import { colors } from "../theme";
 
 // The main navigation's bottom bar: wavykit's tab-bar (H:\wavystack\wavykit
 // registry/components/tab-bar/native.tsx), ported onto this app's theme instead of
 // `kit add`ed (stockwatcher predates wavykit's tokens). Same rules as the kit and the web's
-// NavTabBar: items share the width, icon over label; the active item is a row-surface pill
-// behind an accent duotone icon with a foreground label, the only accent the bar spends; idle is
-// dim. Roles are tablist / tab, which is how iOS and Android announce a bottom bar. The panel
-// surface is the bar's boundary: no top border (owner rule).
+// NavTabBar: items share the width. Icons only (owner, 2026-10-19: no labels, no button
+// background): the active tab's duotone icon wears the accent, the only accent the bar spends;
+// idle is dim; a press dims the icon briefly. The tab names stay as each tab's accessible name.
+// Roles are tablist / tab, which is how iOS and Android announce a bottom bar. The panel surface
+// is the bar's boundary: no top border (owner rule).
 
 /** Each tab's icon, by route name (MainTabs registers the routes). The chart tab is the replay practice feature, hence the replay icon (owner, 2026-10-18). */
 const ICONS: Readonly<Record<string, IconName>> = { Dashboard: "dashboard", Chart: "replay", Alerts: "bell" };
@@ -42,15 +43,9 @@ export function MainTabBar({ state, descriptors, navigation }: BottomTabBarProps
             style={styles.item}
           >
             {({ pressed }) => (
-              <>
-                <View style={[styles.pill, (active || pressed) && { backgroundColor: colors.bgRow }]}>
-                  <Icon name={ICONS[route.name] ?? "chart"} color={active ? colors.accent : colors.textDim} size={20} />
-                </View>
-                {/* The app bundles Geist regular and semibold only: the active label takes the heavier one. */}
-                <Text numberOfLines={1} style={[styles.label, { color: active ? colors.text : colors.textDim, fontFamily: active ? fonts.semibold : fonts.regular }]}>
-                  {label}
-                </Text>
-              </>
+              <View style={{ opacity: pressed ? 0.6 : 1 }}>
+                <Icon name={ICONS[route.name] ?? "chart"} color={active ? colors.accent : colors.textDim} size={22} />
+              </View>
             )}
           </Pressable>
         );
@@ -62,8 +57,5 @@ export function MainTabBar({ state, descriptors, navigation }: BottomTabBarProps
 const styles = StyleSheet.create({
   bar: { flexDirection: "row", gap: 4, paddingTop: 4, paddingHorizontal: 4, backgroundColor: colors.bgPanel },
   // 48 pt tall at least: a comfortable thumb target.
-  item: { flex: 1, minWidth: 0, minHeight: 48, alignItems: "center", justifyContent: "center", gap: 2, paddingVertical: 4 },
-  // Half the height: Android drew a 999 radius on this small view as square corners.
-  pill: { width: 48, height: 28, borderRadius: 14, alignItems: "center", justifyContent: "center" },
-  label: { fontSize: 11 },
+  item: { flex: 1, minWidth: 0, minHeight: 48, alignItems: "center", justifyContent: "center" },
 });
