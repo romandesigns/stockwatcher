@@ -158,7 +158,7 @@ export interface CandleChartProps {
   symbol?: string;
   /** Show the inspected candle's readout (time, O/H/L/C, change, Live) at the chart's top-left, as chart-web's `inspector` does. */
   inspector?: boolean;
-  /** Show the toolbar: drawing tools, delete, indicators, and Trade when trading is on. */
+  /** Show the toolbar: the timeframe, drawing tools, indicators and levels. */
   toolbar?: boolean;
   indicators?: IndicatorSpec[];
   onIndicatorsChange?: (specs: IndicatorSpec[]) => void;
@@ -870,13 +870,8 @@ export function CandleChart({
               <ToolButton label="Levels" onPress={() => setSheet({ kind: "layers" })}>
                 <ToolIcon kind="levels" color={UI.textDim} />
               </ToolButton>
-              {trading && (
-                <>
-                  <ToolButton primary label="Trade (simulated order)" onPress={() => setSheet({ kind: "ticket", price: null })} style={{ width: 34, paddingHorizontal: 0 }}>
-                    <ToolIcon kind="trade" color={UI.accentFg} />
-                  </ToolButton>
-                </>
-              )}
+              {/* No Trade button (owner, 2026-10-19: there are other ways in): the order ticket opens from the
+                  lift chip's "+ Trade" after a long press, the price axis's menu and the quick-trade sheet. */}
           </View>
         </View>
       )}
