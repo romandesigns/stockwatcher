@@ -1,6 +1,6 @@
-// The Halt watcher (owner, 2026-10-19): the client side of the server's pressure board
-// (protocol.ts `pressure.*`, crates/server/src/pressure.rs), and the gauge's geometry and colours,
-// so the web and the phone draw the same gauge from the same numbers.
+// The Halt watcher (owner, 2026-10-19; build-ups since 2026-10-20): the client side of the server's
+// build-up board (protocol.ts `pressure.*`, crates/server/src/pressure.rs), its cue lines, and the gauge's
+// geometry and colours, so the web and the phone draw the same card from the same numbers.
 
 import type { PressureCardWire, PressureHaltWire, PressureMessage } from "./protocol.ts";
 import { quoteChangePct } from "./tickers/quotes.ts";
@@ -10,9 +10,18 @@ export interface PressureCard {
   price: number;
   /** Percent, against the previous close when known, else the open (the quote board's rule). */
   changePct: number;
-  /** 0–100; frozen at the halt while `halt` is set. */
-  pressure: number;
+  /** The halt risk 0–100, what the gauge fills with; frozen at the halt while `halt` is set. */
+  risk: number;
+  /** The side the build-up pushes: `bull` toward limit up, `bear` toward limit down. */
   side: "bull" | "bear";
+  /** That side's pressure now minus `riseSecs` earlier, points. */
+  rise: number;
+  riseSecs: number;
+  /** The modelled LULD band on that side, dollars, and the distance to it in % of the price. */
+  band: number;
+  toBand: number;
+  /** The flow pressure 0–100 and its inputs (tooltip). */
+  pressure: number;
   buyShare: number;
   pace: number;
   halt?: PressureHaltWire;
@@ -22,13 +31,23 @@ export type PressureBoard = readonly PressureCard[];
 
 export const EMPTY_PRESSURE_BOARD: PressureBoard = [];
 
+/** The empty board's line: no card is the normal state (owner, 2026-10-20). */
+export const NO_BUILDUPS = "No build-ups right now";
+
+const clamp100 = (v: number) => Math.max(0, Math.min(100, Number.isFinite(v) ? v : 0));
+
 function fromWire(c: PressureCardWire): PressureCard {
   return {
     symbol: c.s,
     price: c.p,
     changePct: quoteChangePct(c.p, c.pc, c.o),
-    pressure: Math.max(0, Math.min(100, c.pressure)),
+    risk: clamp100(c.risk),
     side: c.side === "bear" ? "bear" : "bull",
+    rise: c.rise,
+    riseSecs: c.riseSecs,
+    band: c.band,
+    toBand: Math.max(0, c.toBand),
+    pressure: clamp100(c.pressure),
     buyShare: c.buyShare,
     pace: c.pace,
     ...(c.halt ? { halt: c.halt } : {}),
@@ -73,6 +92,44 @@ export function createPressureChannel(io: { subscribe(): void; unsubscribe(): vo
   };
 }
 
+// --- The build-up cue -----------------------------------------------------------------------
+
+type Cue = Pick<PressureCard, "side" | "rise" | "riseSecs" | "toBand">;
+
+function riseText(c: Cue): string {
+  return `${c.rise >= 0 ? "+" : "−"}${Math.abs(Math.round(c.rise))}`;
+}
+
+function bandName(side: "bull" | "bear"): string {
+  return side === "bear" ? "LULD down" : "LULD up";
+}
+
+function distance(c: Cue): string {
+  return c.toBand < 0.005 ? `at ${bandName(c.side)}` : `${c.toBand.toFixed(1)}% to ${bandName(c.side)}`;
+}
+
+/**
+ * The line under the ticker (owner's "minimal, compact UI"): how fast the pressure built and how
+ * far the band is, "+45 in 30s · 1.2% to LULD up" ("… · at LULD up" once there).
+ */
+export function buildupCue(c: Cue): string {
+  return `${riseText(c)} in ${c.riseSecs}s · ${distance(c)}`;
+}
+
+/** The same for the phone's mini cell, ~56 px wide: "+45 · 1.2%↑" ("+45 · at↑" at the band). */
+export function buildupCueShort(c: Cue): string {
+  const arrow = c.side === "bear" ? "↓" : "↑";
+  return `${riseText(c)} · ${c.toBand < 0.005 ? "at" : `${c.toBand.toFixed(1)}%`}${arrow}`;
+}
+
+/** For a screen reader or a tooltip, spelled out. */
+export function buildupSentence(c: Cue & Pick<PressureCard, "band">, formatPrice: (p: number) => string): string {
+  const who = c.side === "bear" ? "selling" : "buying";
+  const band = `the ${c.side === "bear" ? "lower" : "upper"} LULD band at ${formatPrice(c.band)}`;
+  const where = c.toBand < 0.005 ? `at ${band}` : `${c.toBand.toFixed(1)}% from ${band}`;
+  return `${who} pressure ${c.rise >= 0 ? "up" : "down"} ${Math.abs(Math.round(c.rise))} points in ${c.riseSecs} seconds, ${where}`;
+}
+
 // --- Halts --------------------------------------------------------------------------------
 
 /** A LULD trading pause lasts 5 minutes (it can be extended), so its reopening is an estimate. */
@@ -99,8 +156,8 @@ export function haltSentence(h: PressureHaltWire, formatTime: (ms: number) => st
 /**
  * A shadcn-style radial half ring in a 200 × 116 box (owner, 2026-10-19, design canvas "Halt
  * Watcher", option A "fill"; it replaced a 240° speedometer with a needle): a thick round-capped
- * track from 180° (left) clockwise over the top to 360° (right), filled in proportion to the
- * pressure, with the reading inside the ring.
+ * track from 180° (left) clockwise over the top to 360° (right), filled in proportion to the 0–100
+ * reading (the halt risk since 2026-10-20), with the reading inside the ring.
  */
 export const GAUGE = { width: 200, height: 116, cx: 100, cy: 100, r: 74, start: 180, sweep: 180, stroke: 24 } as const;
 
@@ -125,8 +182,8 @@ export interface GaugeGeometry {
   label: number;
 }
 
-export function gaugeGeometry(pressure: number): GaugeGeometry {
-  const v = Math.max(0, Math.min(100, Number.isFinite(pressure) ? pressure : 0)) / 100;
+export function gaugeGeometry(reading: number): GaugeGeometry {
+  const v = Math.max(0, Math.min(100, Number.isFinite(reading) ? reading : 0)) / 100;
   return {
     track: gaugeArc(GAUGE.start, GAUGE.start + GAUGE.sweep),
     value: v > 0.005 ? gaugeArc(GAUGE.start, GAUGE.start + GAUGE.sweep * v) : null,
@@ -135,21 +192,20 @@ export function gaugeGeometry(pressure: number): GaugeGeometry {
 }
 
 /**
- * Which colour fills the ring: the side whose volume leads the minute takes it (the server's
- * `side`, bull when buy volume ≥ sell volume), green for buyers, red for sellers, the platform's
- * status good/critical (the candles' colours); `halted` is the neutral grey. Each app maps the
- * tone to its own tokens.
+ * Which colour fills the ring: the side the build-up pushes (the server's `side`), green toward
+ * limit up, red toward limit down, the platform's status good/critical (the candles' colours);
+ * `halted` is the neutral grey. Each app maps the tone to its own tokens.
  */
 export function gaugeTone(side: "bull" | "bear", halted: boolean): "good" | "critical" | "halted" {
   return halted ? "halted" : side === "bear" ? "critical" : "good";
 }
 
-/** "buy pressure" / "sell pressure", the caption under the reading on a full-size card. */
+/** "limit-up risk" / "limit-down risk", the caption under the reading on a full-size card. */
 export function gaugeCaption(side: "bull" | "bear", halted: boolean): string {
-  return halted ? "halted" : side === "bear" ? "sell pressure" : "buy pressure";
+  return halted ? "halted" : side === "bear" ? "limit-down risk" : "limit-up risk";
 }
 
-/** "buying pressure 91 of 100", for the gauge's accessible name. */
-export function pressurePhrase(card: Pick<PressureCard, "side" | "pressure">): string {
-  return `${card.side === "bear" ? "selling" : "buying"} pressure ${Math.round(card.pressure)} of 100`;
+/** "limit-up halt risk 81 of 100", for the gauge's accessible name. */
+export function riskPhrase(card: Pick<PressureCard, "side" | "risk">): string {
+  return `${card.side === "bear" ? "limit-down" : "limit-up"} halt risk ${Math.round(card.risk)} of 100`;
 }

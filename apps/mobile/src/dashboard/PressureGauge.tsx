@@ -8,7 +8,7 @@ import { fonts } from "../theme";
 
 const SWEEP_MS = 300;
 
-/** The pressure sliding to a new reading (ease-out), or jumping with reduced motion. */
+/** The value sliding to a new reading (ease-out), or jumping with reduced motion. */
 function useSweep(target: number, reducedMotion: boolean): number {
   const [value, setValue] = useState(target);
   const current = useRef(target);
@@ -38,12 +38,13 @@ const FILL = { good: UI.good, critical: UI.critical, halted: UI.textFaint } as c
 
 /**
  * The Halt watcher's gauge for React Native (react-native-svg; the web's PressureGauge, design
- * canvas "Halt Watcher" option A "fill"): a radial half ring filled in proportion to the 0–100
- * pressure, in the colour of the side whose volume leads (green buyers, red sellers), the reading
- * inside the ring and "buy/sell pressure" under it. Halted: a grey fill, the frozen value shown.
+ * canvas "Halt Watcher" option A "fill"): a radial half ring filled in proportion to a 0–100
+ * `value` (the halt risk since 2026-10-20; the prop was `pressure` before), in the colour of the
+ * side the build-up pushes (green toward limit up, red toward limit down), the reading inside the
+ * ring and "limit-up/limit-down risk" under it. Halted: a grey fill, the frozen value shown.
  */
-export function PressureGauge({ pressure, side, halted, label, width, reducedMotion, compact = false }: { pressure: number; side: "bull" | "bear"; halted: boolean; label: string; width: number; reducedMotion: boolean; /** The one-row strip's mini ring: no caption, the reading larger (a caption is unreadable at ~56 px). */ compact?: boolean }) {
-  const shown = useSweep(Math.max(0, Math.min(100, Math.round(pressure))), reducedMotion);
+export function PressureGauge({ value, side, halted, label, width, reducedMotion, compact = false }: { value: number; side: "bull" | "bear"; halted: boolean; label: string; width: number; reducedMotion: boolean; /** The one-row strip's mini ring: no caption, the reading larger (a caption is unreadable at ~56 px). */ compact?: boolean }) {
+  const shown = useSweep(Math.max(0, Math.min(100, Math.round(value))), reducedMotion);
   const g = gaugeGeometry(shown);
   const tone = gaugeTone(side, halted);
   const ink = halted ? UI.textFaint : UI.text;

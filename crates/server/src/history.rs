@@ -435,7 +435,13 @@ impl Builder {
         let m = receive_time(e).0.div_euclid(1_000_000_000) * 1_000_000_000;
         if self.mark.is_none_or(|l| m > l) {
             self.mark = Some(m);
-            self.engine.advance_clock(UnixNanos(m));
+            // The clock moves the LULD bands too (doubling windows, the close): the Halt
+            // watcher needs them, the rest of the increments are re-snapshotted.
+            for u in self.engine.advance_clock(UnixNanos(m)) {
+                if let ChartUpdate::Luld(l) = &u {
+                    self.pressure.apply_luld(&l.symbol, &l.point);
+                }
+            }
         }
         if let MarketEvent::Trade(t) = e
             && t.effect().updates_ohlc
@@ -456,6 +462,9 @@ impl Builder {
         for u in &ups {
             if let ChartUpdate::Halt(h) = u {
                 self.pressure.apply_halt(&h.symbol, &h.halt);
+            }
+            if let ChartUpdate::Luld(l) = u {
+                self.pressure.apply_luld(&l.symbol, &l.point);
             }
             if let ChartUpdate::Tape(_) = u {
                 if self.tape.len() == TAPE_HISTORY {

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createPressureChannel, gaugeCaption, gaugeGeometry, gaugeTone, haltLine, haltSentence, LULD_PAUSE_MS, pressureBoardFrom, pressurePhrase } from "./pressure.ts";
+import { buildupCue, buildupCueShort, buildupSentence, createPressureChannel, gaugeCaption, gaugeGeometry, gaugeTone, haltLine, haltSentence, LULD_PAUSE_MS, NO_BUILDUPS, pressureBoardFrom, riskPhrase } from "./pressure.ts";
 import { parseServerMessage, type PressureMessage } from "./protocol.ts";
 import { createWsClient, type WebSocketLike } from "./ws.ts";
 
@@ -7,9 +7,9 @@ const update: PressureMessage = {
   type: "pressure.update",
   t: 1_792_075_200_000,
   board: [
-    { s: "SAFX", p: 0.2881, pc: 0.1403, o: 0.15, pressure: 91, side: "bull", buyShare: 0.84, pace: 9.2 },
-    { s: "ZTG", p: 0.7639, o: 0.623, pressure: 88, side: "bull", buyShare: 0.81, pace: 7.7, halt: { start: 1_792_075_200_000, reason: "LUDP" } },
-    { s: "OPENW", p: 0.1196, pc: 0.1364, o: 0.13, pressure: 74, side: "bear", buyShare: 0.21, pace: 4.9 },
+    { s: "SAFX", p: 0.2881, pc: 0.1403, o: 0.15, risk: 83, side: "bull", rise: 52, riseSecs: 30, band: 0.31, toBand: 7.6, pressure: 91, buyShare: 0.84, pace: 9.2 },
+    { s: "ZTG", p: 0.7639, o: 0.623, risk: 100, side: "bull", rise: 40, riseSecs: 30, band: 0.7639, toBand: 0, pressure: 88, buyShare: 0.81, pace: 7.7, halt: { start: 1_792_075_200_000, reason: "LUDP" } },
+    { s: "OPENW", p: 0.1196, pc: 0.1364, o: 0.13, risk: 61, side: "bear", rise: 33, riseSecs: 30, band: 0.1101, toBand: 7.94, pressure: 74, buyShare: 0.21, pace: 4.9 },
   ],
 };
 
@@ -22,6 +22,8 @@ describe("pressure board", () => {
     expect(b[1]!.halt?.reason).toBe("LUDP");
     expect(b[2]!.side).toBe("bear");
     expect("halt" in b[0]!).toBe(false);
+    // The gauge reads the risk; the pressure and its inputs ride along for the tooltip.
+    expect([b[0]!.risk, b[0]!.pressure, b[0]!.rise, b[0]!.riseSecs, b[0]!.band, b[0]!.toBand]).toEqual([83, 91, 52, 30, 0.31, 7.6]);
   });
 
   test("parseServerMessage knows the pressure frames", () => {
@@ -74,13 +76,35 @@ describe("gauge", () => {
     expect(full.value).toBe(full.track);
     expect(gaugeGeometry(Number.NaN).label).toBe(0);
   });
-  test("the leading side takes the colour; halted is neutral", () => {
+  test("the build-up's side takes the colour; halted is neutral", () => {
     expect(gaugeTone("bull", false)).toBe("good");
     expect(gaugeTone("bear", false)).toBe("critical");
     expect(gaugeTone("bear", true)).toBe("halted");
-    expect(gaugeCaption("bear", false)).toBe("sell pressure");
-    expect(gaugeCaption("bull", false)).toBe("buy pressure");
-    expect(pressurePhrase({ side: "bear", pressure: 74.4 })).toBe("selling pressure 74 of 100");
+    expect(gaugeCaption("bear", false)).toBe("limit-down risk");
+    expect(gaugeCaption("bull", false)).toBe("limit-up risk");
+    expect(riskPhrase({ side: "bear", risk: 74.4 })).toBe("limit-down halt risk 74 of 100");
+  });
+});
+
+describe("build-up cue", () => {
+  const up = { side: "bull" as const, rise: 45, riseSecs: 30, toBand: 1.23, band: 5.5 };
+  test("the line under the ticker: the rise over the horizon and the distance to the band", () => {
+    expect(buildupCue(up)).toBe("+45 in 30s · 1.2% to LULD up");
+    expect(buildupCue({ ...up, side: "bear", toBand: 0.4 })).toBe("+45 in 30s · 0.4% to LULD down");
+    expect(buildupCue({ ...up, toBand: 0 })).toBe("+45 in 30s · at LULD up");
+    // A member whose build-up stopped (inside the exit hold, or after a halt) can read negative.
+    expect(buildupCue({ ...up, rise: -3 })).toBe("−3 in 30s · 1.2% to LULD up");
+  });
+  test("the phone's mini cell", () => {
+    expect(buildupCueShort(up)).toBe("+45 · 1.2%↑");
+    expect(buildupCueShort({ ...up, side: "bear", toBand: 0 })).toBe("+45 · at↓");
+  });
+  test("spelled out", () => {
+    expect(buildupSentence(up, (p) => `$${p.toFixed(2)}`)).toBe("buying pressure up 45 points in 30 seconds, 1.2% from the upper LULD band at $5.50");
+    expect(buildupSentence({ ...up, side: "bear", toBand: 0, band: 4.5 }, (p) => `$${p.toFixed(2)}`)).toBe("selling pressure up 45 points in 30 seconds, at the lower LULD band at $4.50");
+  });
+  test("an empty board says so", () => {
+    expect(NO_BUILDUPS).toBe("No build-ups right now");
   });
 });
 

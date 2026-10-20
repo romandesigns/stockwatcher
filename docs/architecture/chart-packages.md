@@ -35,10 +35,14 @@ The reference for a screen with several charts. Web `apps/web/src/dashboard/`, p
   a plain tap waits out the 300 ms double-tap window before acting. Web `lib/useTickerPress.ts` +
   `lib/toast.tsx`; phone `ui/useTickerPress.ts` (expo-clipboard) + `ui/Toaster.tsx`.
 - **Halt watcher** (owner, 2026-10-19; design canvas "Halt Watcher",
-  https://claude.ai/artifact/R5VpkCELmhv4srLeuEuv7b): the server's top 6 symbols by one-sided
-  buying or selling pressure in the last minute, as gauge cards (a 240° speedometer left; ticker,
-  price and change right). Direction is the hue (green bull, red bear) and strength the lightness;
-  a halted card keeps its last pressure on a grey arc and shows "Halted ~HH:MM" in amber (a LULD
+  https://claude.ai/artifact/R5VpkCELmhv4srLeuEuv7b; reworked 2026-10-20, owner: "observe for a
+  rapid increasing amounting pressure that could potentially lead to a halt", and no card when
+  none is happening): the symbols whose one-sided pressure is building up fast while the price
+  runs at its LULD band, at most 6, usually none ("No build-ups right now"), as gauge cards (a
+  radial half ring filled with the halt risk; ticker, price and change right; a cue under the
+  ticker such as "+45 in 30s · 1.2% to LULD up"). Direction is the hue (green toward limit up,
+  red toward limit down);
+  a halted card keeps its last risk on a grey arc and shows "Halted ~HH:MM" in amber (a LULD
   pause's expected reopening; another halt shows when it began). Pressing a card loads its ticker
   into the selected chart. Web: a strip above the charts inside the panel's scroll (`HaltWatcher`,
   three columns wide, two narrower, one on a phone, by container queries). Phone: the region under
@@ -50,16 +54,25 @@ The reference for a screen with several charts. Web `apps/web/src/dashboard/`, p
   - **Pressure** (server, `crates/server/src/pressure.rs`, trades only: the feed has no quotes):
     over the last 60 s of OHLC-counted prints (the engine's verdict, so the candles' condition
     policy), sides by the tick rule (uptick buy, downtick sell, zero tick inherits).
-    `buyShare = B / (B + S)`; side bull when ≥ 0.5. `I = min(1, |2·buyShare − 1| / 0.6)` (80/20 is
+    `buyShare = B / (B + S)`; side bull when ≥ 0.5. `I = min(1, |2·buyShare − 1|)` (100/0 is
     fully one-sided). `pace = V / A`, `A` the symbol's average volume per minute so far in the
     session (premarket, regular, after hours each on its own; at least one minute).
-    `P = min(1, ln(1 + pace) / ln 11)`. **`pressure = round(100 · I · (0.4 + 0.6 · P))`**. No score
-    below 10 prints or 2,000 shares in the window. Frozen at a halt until the resume.
-  - **Ranking**: in the server's price band; members stay down to half those minimums; an outsider
-    replaces the weakest unhalted member only by 10 points, and a card moves above its neighbour
-    only by 10 points; halted members stay. Ranked once per second (the quotes task, off the
-    ingest path); one pre-serialized `pressure.update` with the whole board goes to subscribers
-    when it changed.
+    `P = min(1, ln(1 + pace) / ln 101)`. **`pressure = round(100 · I · (0.4 + 0.6 · P))`**. No
+    score below 10 prints or 2,000 shares in the window. Frozen at a halt until the resume.
+  - **Halt risk** (what the gauge shows; formula, constants and their reasons in the module docs):
+    rise `Δ` = the side's pressure now minus 30 s earlier; distance `d` to the modelled LULD band
+    on that side and the band's half-width `h`; move `m` toward it over 30 s; time to band
+    `T = d · 30 / m`. `risk = round(100 · (0.4 · min(1, Δ/50) + 0.35 · U(T) + 0.25 · (1 − d/h)))`,
+    `U` logarithmic from 1 at 15 s to 0 at 10 min. Regular session only (no band otherwise).
+  - **Entry / exit**: in the server's price band, with a band; enters on `Δ ≥ 30`, a move toward
+    the band of 5 % of its half-width, past half-way to it, `T ≤ 180 s` and risk ≥ 50; stays while
+    building (`Δ > 0` and not moving away, or pinned within 10 % of the half-width of the band),
+    leaves 5 s after it stops; a halted card that was on the board or building at the halt stays
+    through it, frozen. At most 6, strongest first; an outsider replaces the weakest unhalted
+    member only by 10 points, and a card moves above its neighbour only by 10 points. Ranked once
+    per second (the quotes task, off the ingest path); one pre-serialized `pressure.update` with
+    the whole board goes to subscribers when it changed. Calibration bench:
+    `crates/server/tests/halt_bench.rs` (ignored; `HALT_BENCH_ARCHIVE=<archive root>`).
 
 ## Alerts (2026-10-19)
 

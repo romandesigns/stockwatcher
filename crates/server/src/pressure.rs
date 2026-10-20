@@ -1,10 +1,17 @@
-//! The Halt watcher's pressure board (owner, 2026-10-19): per symbol, how one-sided and how heavy
-//! the last minute of trading was, and the top [`BOARD_SIZE`] symbols by it, with hysteresis.
+//! The Halt watcher's board: the symbols whose one-sided trade-flow pressure is **building up fast
+//! while the price runs at its LULD band**, at most [`BOARD_SIZE`], usually fewer, often none.
+//!
+//! Owner, 2026-10-20: "the idea of the halt watcher is to observe for a rapid increasing amounting
+//! pressure that could potentially lead to a halt", and "if such event isn't happening then such
+//! stock gauge should not be displayed in the panel". So the board is no longer the top six by
+//! pressure (PR #38): a card exists only while a build-up is under way, and the gauge shows the
+//! halt-risk score below, not the pressure level. Zero cards is the normal, honest state.
 //!
 //! It lives in the market's `Core` beside the quote board, under the same lock, and is fed the
 //! same way: every trade with the chart engine's verdict on it ([`Counted`], so it excludes
-//! exactly what the candles exclude), and every `chart.halt` the engine produces. The ranking and
-//! the one `pressure.update` frame are built once per second by the quotes task
+//! exactly what the candles exclude), every `chart.halt` and every `chart.luld` (the modelled
+//! band, `chart_engine::luld`) the engine produces, from events and from clock advances. The
+//! ranking and the one `pressure.update` frame are built once per second by the quotes task
 //! ([`crate::market::QUOTES_INTERVAL`]), never on the ingest path.
 //!
 //! # Pressure (trades only)
@@ -16,12 +23,11 @@
 //! are the ones with a meaningful price (an odd lot or an average-price report does not move the
 //! candles either).
 //!
-//! Over the prints of the last [`WINDOW`] (by execution time, ending at the market clock):
+//! Over the prints of a [`WINDOW`] (one minute, by execution time) ending at time `t`:
 //!
 //! - `B`, `S`: buy and sell volume; `V = B + S`; `N` = prints with a side.
 //! - **No score** unless `N >= MIN_TRADES` and `V >= MIN_VOLUME`: a thin symbol's few prints say
-//!   nothing about pressure, and ranking them would fill the board with noise. (A card already on
-//!   the board keeps its place down to half of each, see "Ranking".)
+//!   nothing about pressure. (A card already on the board is scored down to half of each.)
 //! - `buy_share = B / V`; the side is **bull** when `buy_share >= 0.5`, else **bear**.
 //! - **Imbalance** `I = min(1, |2·buy_share − 1| / FULL_IMBALANCE)`: linear up to a 100/0 minute.
 //! - **Pace** `R = V / A`, where `A` is the symbol's own average volume per minute so far in the
@@ -38,40 +44,134 @@
 //!   flow is not pressure however heavy; heavy one-sided flow scores up to 100, one-sided flow at
 //!   the symbol's ordinary pace about 49.
 //!
-//! **Calibration** (owner, 2026-10-19: the gauge's ring fills with the score, so the score has to
-//! tell the board's cards apart). The first constants, full imbalance at 80/20 and full pace at
-//! 10×, put every card at 97–100 on live data, because reaching the top six takes exactly that:
-//! over 12.5 minutes of the live board (2,970 card readings, 117 symbols, 2026-10-19 ~14:25 ET)
-//! the cards' `|2·buy_share − 1|` ran 0.60 / 0.70 / 0.84 / 0.96 / 1.00 and their pace 9 / 12 / 15
-//! / 29 / 70× (5th / 25th / 50th / 75th / 95th percentiles). Full imbalance at 100/0 and full
-//! pace at 100× spread the same readings over 46 / 54 / 66 / 74 / 87, 0.6 % of them at 100.
-//! The shape is unchanged, so the ranking and [`SWAP_MARGIN`] behave as before.
-//!
-//! Deterministic (a pure function of the prints applied and the clock, [`score`]) and causal (it
-//! reads only prints already applied, at or before the clock that ranks them).
+//! The pressure constants were calibrated on 12.5 minutes of the live board (PR #38, 2026-10-19
+//! ~14:25 ET, 2,970 card readings, 117 symbols): full imbalance at 100/0 and full pace at 100×
+//! spread the then top-six cards over 46 / 54 / 66 / 74 / 87 (5th–95th percentiles), where 80/20
+//! and 10× had put every card at 97–100. The level still feeds price alerts on pressure
+//! (`crate::alerts`, [`PressureBoard::score_of`]) and the card's tooltip; the board itself ranks by
+//! the halt risk below.
 //!
 //! Not followed: corrections and cancels (rare, and a one-minute window forgets them within the
 //! minute), and quotes (not in the feed).
 //!
-//! # Halts
+//! # Halt risk (the build-up)
 //!
-//! A halted symbol has no prints, so its window would empty and it would drop off. Instead its
-//! score is frozen at the halt (the last minute before it) until the resume, and a symbol that
-//! was on the board stays there while halted: a halt is exactly when the watcher matters.
+//! A LULD pause is what the watcher anticipates: the price reaches its band (the 5-minute mean
+//! ± 10 % from $3, 20 % from $0.75, the lesser of $0.15 or 75 % below, doubled in the first 15
+//! minutes; `chart_engine::luld`) and stays there for 15 seconds. The level of the pressure does not anticipate it: a stock can sell 90/10 all
+//! afternoon and drift. What comes before a pause is the pressure **rising** while the price runs
+//! **at** the band on the same side. Per symbol, at the clock `t`, with `H` = [`HORIZON`]:
 //!
-//! # Ranking ([`PressureBoard::tick`])
+//! - `P(t)`: the pressure over `(t − 1 min, t]` and its side (bull = toward the upper band,
+//!   bear = the lower); `P(t − H)` over `(t − H − 1 min, t − H]`, counted as 0 when it was on the
+//!   other side or below the minimums (a quiet minute before is no pressure on this side).
+//! - **Rise** `Δ = P(t) − P(t − H)`, −100…100: the build-up. A steady 90 has `Δ ≈ 0`; 30 → 80 in
+//!   the horizon has `Δ = 50`.
+//! - **Band** on that side, `L` (the modelled upper band for bull, lower for bear), its
+//!   **half-width** `h = |L − ref| / ref` (the band's own percentage: 10 % above $3, 20 % from
+//!   $0.75, up to 75 % below, doubled at the open), and the **distance** `d = max(0, ±(L − p) / p)`
+//!   from the last price `p`. Distances are compared with `h`, not in absolute percent, so one set
+//!   of constants serves a $0.40 stock with a 37 % band and a $12 one with 10 %.
+//! - **Move** `m = ±(p − p(t − H)) / p(t − H)` toward the band, `p(t − H)` the last print at or
+//!   before `t − H`; the **time to band** at that pace `T = d · H / m` (`m > 0`; `T = 0` at the
+//!   band).
+//! - Components, each 0–1: build-up `Bu = clamp(Δ / RISE_FULL)`, urgency
+//!   `U = clamp(ln(T_FAR / T) / ln(T_FAR / T_NEAR))` (logarithmic: 15 s and 30 s differ as much
+//!   as 5 and 10 minutes; 0 when not moving toward the band), closeness `C = clamp(1 − d / h)`
+//!   (the share of the reference→band distance already covered).
+//! - **Risk** `= round(100 · (W_RISE · Bu + W_URGENCY · U + W_CLOSE · C))`, 0–100: what the gauge
+//!   shows. Weights in [`W_RISE`], [`W_URGENCY`], [`W_CLOSE`].
 //!
-//! Among the symbols with a score inside the server's price band (the caller's `eligible`, the
-//! same band as every other surface): members that left the band, or fell below HALF the
-//! minimums, leave; free places are filled best first; then an outsider replaces the weakest
-//! member only when it beats it by [`SWAP_MARGIN`] points. Display order follows the same rule: a
-//! card moves above its neighbour only when it leads it by the margin. So cards neither swap in
-//! and out nor reorder every second while two symbols trade places by a point or two, and a
-//! symbol hovering at the minimum trade count does not blink on and off (seen on the fixture day
-//! before the relaxed bar for members).
+//! [`HORIZON`] = 30 s: a LULD pause needs 15 s at the band, and the runs that end in one take tens
+//! of seconds to a few minutes, so the change has to be read over well under a minute to lead the
+//! pause at all; under ~20 s the two one-minute windows share two thirds or more of their prints,
+//! so `Δ` barely moves and a single block print swings it. 30 s is half the window: `Δ` weighs
+//! the newest half-minute against the half-minute a minute earlier.
+//!
+//! Deterministic (a pure function of the prints, bands and halts applied and the clock,
+//! [`halt_risk`]) and causal (it reads only what was applied at or before the clock that ranks).
+//!
+//! # Entry and exit ([`PressureBoard::tick`])
+//!
+//! Eligible: inside the server's price band (the caller's `eligible`, the same band as every other
+//! surface) **and** with a modelled LULD band, i.e. the regular session and not halted. Outside it
+//! (premarket, after hours, the minutes after a resume before the reopening print, a symbol whose
+//! history the live market has not loaded yet) there is no band to run at, and the pauses that
+//! happen there are news halts the tape cannot anticipate: no card. A symbol enters only when ALL
+//! hold:
+//!
+//! - `Δ >= ENTER_RISE` (a real build-up, not drift);
+//! - it moved toward the band by at least `MIN_MOVE` of the half-width over the horizon, so a
+//!   bid/ask bounce is not a run; scaled by the band, that is 0.5 % of the price on a 10 % band
+//!   and 1.9 % on a $0.40 stock's 37 % one;
+//! - it has covered at least `ENTER_CLOSE` of the way from the reference to the band (a fast stock
+//!   in the middle of its band is not about to halt: see "Calibration");
+//! - at that pace it reaches the band within `T_ENTER`;
+//! - risk `>= ENTER_RISK`.
+//!
+//! A card stays while it is **building**: `Δ > 0` and the price not moving away (`m >= 0`), or it
+//! is **pinned** within `PIN` of the half-width from the band, the 15-second limit state before a
+//! pause, when the price stops and the flow often flattens. When it stops building it leaves after
+//! [`HOLD`] seconds of not building (a single flat second does not blink it off). It leaves at once
+//! when it leaves the price band, and after the hold when it loses its LULD band (the close).
+//!
+//! **Halts.** A halted symbol has no prints: its pressure and risk are frozen at the halt (the band
+//! too: the engine clears it right after the halt) and it stays through the halt if it was on the
+//! board, or was building with `Δ >= ENTER_RISE / 2` at the halt (a fast run can halt before the
+//! once-a-second ranking saw it). After the resume it follows the normal exit rule. A halt takes
+//! the weakest unhalted card's place when the board is full.
+//!
+//! **Ranking.** At most [`BOARD_SIZE`] cards, strongest risk first. An outsider replaces the
+//! weakest unhalted member only when it beats it by [`SWAP_MARGIN`], and a card moves above its
+//! neighbour only when it leads it by the margin, so cards neither swap nor reorder every second.
+//!
+//! # Calibration (2026-10-20)
+//!
+//! The bench `crates/server/tests/halt_bench.rs` replays archive days through the engine and this
+//! board as the ingest feeds them, ranks every second of the regular session, and reports the
+//! cards shown and, for every LULD pause, the lead time and the entries no pause followed. It
+//! takes the pauses from halt statuses when the day is a live recording, and infers them on a
+//! trades-only import (a regular-session silence of 4.5+ minutes right after a print at the band).
+//!
+//! **What it could run on here.** Locally there is one real day of one symbol (MDXH, 2026-10-16,
+//! SIP, 15,287 OHLC-counted prints, $0.19–$0.55) and the synthetic fixture day (four symbols;
+//! FIXTURE DATA, not market evidence). The 22 SIP days (146,429 symbol-days) live only in the
+//! VPS volume. **Neither local day has a LULD pause**: MDXH traded without a two-minute silence
+//! all session and never covered more than 10 % of its band (a sub-$0.75 stock's band is
+//! $0.15, 47–144 % of its price); the fixture's 10:05 halts are a scheduled silence, not a run
+//! at a band (the board rightly ignores them). So the lead time and the false alarms on real
+//! pauses are **not measured yet**: run the bench on the VPS archive before trusting the entry
+//! constants beyond what follows.
+//!
+//! **What was measured.**
+//!
+//! - The rise is noisy on its own. On MDXH, sampled every 10 s through the regular session, the
+//!   rise reached 25 in 9.6 % of samples, 30 in 6.5 %, 40 in 2.0 % and 50 in 0.13 %: a one-minute
+//!   pressure swings by tens of points all day. Hence [`ENTER_RISE`] = 30 (the top ~6 %) and
+//!   [`RISE_FULL`] = 50 (where it becomes rare), and the band gates do the rest.
+//! - A first cut without the closeness gate (time to band within 300 s, risk 40) showed MDXH
+//!   twice at 09:31–09:33 (28 s and 23 s), its doubled opening band 75 % away: a 7.5 % move in
+//!   30 s projected that band within 300 s. A fast stock is not a halt candidate on its own,
+//!   hence [`ENTER_CLOSE`] (past half-way to the band), [`T_ENTER`] = 180 s and
+//!   [`ENTER_RISK`] = 50. The fixture showed SMPL twice the same way (12:17, 12:19), 8 % of the
+//!   price from a band it had covered less than half of; both are gone too.
+//! - With the constants below: **zero cards** in 23,401 ranked seconds on each day, the honest
+//!   state for days without a run at a band. Closest approach: MDXH 10 % of its half-width, the
+//!   fixture's in-band symbols 44 %.
+//!
+//! **Set from the LULD rule, not from data** (to re-check with the bench): [`HORIZON`] (above),
+//! [`T_NEAR`] = 15 s (the limit state), [`T_FAR`] = 10 min, [`PIN`] = 10 % of the half-width
+//! (1 % of the price on a 10 % band: inside the bid/ask of most small caps at the band),
+//! [`MIN_MOVE`] = 5 % of the half-width (above a one-cent bounce on a $10 stock, the size of one
+//! on a $0.40 one), [`HOLD`] = 5 s, and the weights: the build-up leads (it is what the owner
+//! asked to watch), urgency next (closer and faster = higher), closeness last (being near the
+//! band without a run is the steady case the board exists to ignore). The other entry gates at
+//! their minimums (rise 30, half-way, 180 s) give 48, so [`ENTER_RISK`] = 50 asks a little more
+//! of at least one; the worked example in the tests, 30 → 80 with the price 3.8 % from a 10 %
+//! band and 59 s from it at its pace, scores 78; at the band with a full rise it is 100.
 
 use crate::quotes::Counted;
-use chart_engine::wire::HaltWire;
+use chart_engine::wire::{HaltWire, LuldWire};
 use chrono::NaiveDate;
 use market_events::{Price, SessionKind, Trade, UnixNanos};
 use std::collections::{HashMap, VecDeque};
@@ -83,19 +183,46 @@ pub const WINDOW: i64 = 60 * 1_000_000_000;
 pub const MIN_TRADES: usize = 10;
 /// Minimum volume (shares) with a side in the window for a score.
 pub const MIN_VOLUME: u64 = 2_000;
-/// `|2·buy_share − 1|` at which the imbalance counts as complete (1.0 = a 100/0 minute;
-/// calibration in the module docs).
+/// `|2·buy_share − 1|` at which the imbalance counts as complete (1.0 = a 100/0 minute).
 pub const FULL_IMBALANCE: f64 = 1.0;
-/// Pace (multiple of the symbol's own average volume per minute) at which participation is full
-/// (calibration in the module docs).
+/// Pace (multiple of the symbol's own average volume per minute) at which participation is full.
 pub const PACE_CAP: f64 = 100.0;
-/// Cards on the board.
+/// Cards on the board, at most.
 pub const BOARD_SIZE: usize = 6;
-/// Points an outsider must lead a member by to replace it, and a card its upper neighbour by to
-/// move above it.
+/// Risk points an outsider must lead a member by to replace it, and a card its upper neighbour by
+/// to move above it.
 pub const SWAP_MARGIN: u8 = 10;
 
+/// The build-up horizon: the rise and the move are measured over it (module docs).
+pub const HORIZON: i64 = 30 * 1_000_000_000;
+/// Rise (pressure points over the horizon) that fills the build-up component.
+pub const RISE_FULL: f64 = 50.0;
+/// Time to band (seconds) at or under which urgency is full: the 15 s a LULD limit state lasts.
+pub const T_NEAR: f64 = 15.0;
+/// Time to band (seconds) at or beyond which urgency is zero: past 10 minutes the 5-minute
+/// reference has moved on and the projection says nothing.
+pub const T_FAR: f64 = 600.0;
+/// Weights of the build-up, urgency and closeness components (they sum to 1).
+pub const W_RISE: f64 = 0.4;
+pub const W_URGENCY: f64 = 0.35;
+pub const W_CLOSE: f64 = 0.25;
+/// Entry: minimum rise over the horizon.
+pub const ENTER_RISE: i16 = 30;
+/// Entry: minimum move toward the band over the horizon, as a share of the band's half-width.
+pub const MIN_MOVE: f64 = 0.05;
+/// Entry: the band must be reachable at the current pace within this many seconds.
+pub const T_ENTER: f64 = 180.0;
+/// Entry: minimum share of the reference→band distance already covered (closeness).
+pub const ENTER_CLOSE: f64 = 0.5;
+/// Entry: minimum risk.
+pub const ENTER_RISK: u8 = 50;
+/// Within this share of the half-width from the band a card is pinned (the limit state).
+pub const PIN: f64 = 0.1;
+/// Seconds of not building before a card leaves.
+pub const HOLD: i64 = 5 * 1_000_000_000;
+
 const MINUTE: i64 = 60 * 1_000_000_000;
+const SECOND: f64 = 1_000_000_000.0;
 
 /// One symbol's pressure at a moment.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -164,6 +291,133 @@ fn score_with(
     })
 }
 
+/// The modelled LULD band in effect (`chart.luld`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Band {
+    pub up: Price,
+    pub down: Price,
+    /// The reference price (5-minute mean) the band was drawn around.
+    pub reference: Price,
+}
+
+impl Band {
+    /// From a `chart.luld` point; `None` for a null point (no bands from then).
+    pub fn from_wire(l: &LuldWire) -> Option<Band> {
+        let px = |v: Option<f64>| v.and_then(Price::from_f64_rounded);
+        Some(Band {
+            up: px(l.up)?,
+            down: px(l.down)?,
+            reference: px(l.reference)?,
+        })
+    }
+}
+
+/// One symbol's halt risk at a moment (module docs, "Halt risk").
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Risk {
+    /// 0–100, what the gauge shows.
+    pub risk: u8,
+    /// `Δ`: the side's pressure now minus over the minute a horizon earlier, −100…100.
+    pub rise: i16,
+    /// The side the flow pushes: buying toward the upper band (true), selling the lower.
+    pub up: bool,
+    /// The band on that side.
+    pub band: Price,
+    /// Distance from the last price to that band, a fraction of the price (0.012 = 1.2 %).
+    pub to_band: f64,
+    /// Move toward the band over the horizon, a fraction of the earlier price (negative: away).
+    pub moved: f64,
+    /// Seconds to the band at the current pace; `None` when not moving toward it.
+    pub secs_to_band: Option<f64>,
+    /// The band's half-width, a fraction of its reference (0.10 for a 10 % band).
+    pub half_width: f64,
+}
+
+impl Risk {
+    /// The entry conditions (module docs, "Entry and exit"), all at once.
+    pub fn enters(&self) -> bool {
+        self.rise >= ENTER_RISE
+            && self.moved >= MIN_MOVE * self.half_width
+            && self.secs_to_band.is_some_and(|s| s <= T_ENTER)
+            && self.to_band <= (1.0 - ENTER_CLOSE) * self.half_width
+            && self.risk >= ENTER_RISK
+    }
+
+    /// Within [`PIN`] of the half-width from the band: the limit state before a pause.
+    pub fn pinned(&self) -> bool {
+        self.to_band <= PIN * self.half_width
+    }
+
+    /// Still building up: the rise positive and the price not moving away, or pinned.
+    pub fn building(&self) -> bool {
+        (self.rise > 0 && self.moved >= 0.0) || self.pinned()
+    }
+
+    /// Building with at least half the entry rise: what keeps a non-member through a halt.
+    fn building_at_halt(&self) -> bool {
+        self.building() && self.rise >= ENTER_RISE / 2
+    }
+}
+
+/// The halt risk from the pressure now and a horizon earlier, the last price, the last price at
+/// or before a horizon earlier and the band in effect (module docs, "Halt risk"). Pure.
+pub fn halt_risk(
+    now: Score,
+    before: Option<Score>,
+    price: Price,
+    anchor: Option<Price>,
+    band: &Band,
+) -> Risk {
+    let bull = now.bull();
+    let dir = if bull { 1.0 } else { -1.0 };
+    let earlier = before
+        .filter(|b| b.bull() == bull)
+        .map_or(0, |b| b.pressure);
+    let rise = now.pressure as i16 - earlier as i16;
+    let target = if bull { band.up } else { band.down };
+    let (p, l, r) = (
+        price.micros() as f64,
+        target.micros() as f64,
+        band.reference.micros() as f64,
+    );
+    // A band never sits on its reference; a degenerate one counts as 1 % wide.
+    let half_width = ((l - r).abs() / r.max(1.0)).max(0.01);
+    let to_band = if p > 0.0 {
+        (dir * (l - p) / p).max(0.0)
+    } else {
+        0.0
+    };
+    let moved = match anchor {
+        Some(a) if a.micros() > 0 => dir * (p - a.micros() as f64) / a.micros() as f64,
+        _ => 0.0,
+    };
+    let horizon = HORIZON as f64 / SECOND;
+    let secs_to_band = if to_band == 0.0 {
+        Some(0.0)
+    } else if moved > 0.0 {
+        Some(to_band * horizon / moved)
+    } else {
+        None
+    };
+    let unit = |x: f64| x.clamp(0.0, 1.0);
+    let build = unit(rise as f64 / RISE_FULL);
+    let urgency = secs_to_band.map_or(0.0, |t| {
+        unit((T_FAR / t.max(1e-9)).ln() / (T_FAR / T_NEAR).ln())
+    });
+    let close = unit(1.0 - to_band / half_width);
+    let risk = (100.0 * (W_RISE * build + W_URGENCY * urgency + W_CLOSE * close)).round();
+    Risk {
+        risk: risk.clamp(0.0, 100.0) as u8,
+        rise,
+        up: bull,
+        band: target,
+        to_band,
+        moved,
+        secs_to_band,
+        half_width,
+    }
+}
+
 /// A halt in progress, as the engine reported it.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct HaltInfo {
@@ -173,16 +427,96 @@ pub struct HaltInfo {
     pub reason: String,
 }
 
+/// One print with a side: (execution time ns, size, buy, price).
+type Print = (i64, u64, bool, Price);
+
+/// The prints of the last `WINDOW + HORIZON`, in three segments by execution time, so both the
+/// window ending now and the one ending a horizon earlier are running sums (no rescan per tick):
+/// `[0]` = `(t − H − W, t − W]`, `[1]` = `(t − W, t − H]`, `[2]` = `(t − H, t]`. The window now
+/// is `[1] + [2]`, a horizon earlier `[0] + [1]`. Prints move between segments at the front, in
+/// arrival order (a print that arrived late moves when it reaches the front, as the one-minute
+/// window always pruned).
+#[derive(Clone, Debug, Default)]
+struct Segments {
+    seg: [VecDeque<Print>; 3],
+    /// (buy, sell) volume per segment.
+    sums: [(u64, u64); 3],
+    /// The price of the newest print that left segment 2: the last price at or before `t − H`.
+    anchor: Option<Price>,
+}
+
+impl Segments {
+    fn push(&mut self, p: Print) {
+        Self::add(&mut self.sums[2], &p, true);
+        self.seg[2].push_back(p);
+    }
+
+    fn add(sum: &mut (u64, u64), p: &Print, plus: bool) {
+        let v = if p.2 { &mut sum.0 } else { &mut sum.1 };
+        if plus {
+            *v += p.1;
+        } else {
+            *v -= p.1;
+        }
+    }
+
+    /// Moves prints forward to the segments of clock `now`.
+    fn roll(&mut self, now: i64) {
+        let cuts = [
+            now.saturating_sub(HORIZON + WINDOW),
+            now.saturating_sub(WINDOW),
+            now.saturating_sub(HORIZON),
+        ];
+        // Newest segment first, so a print that moves down is checked against the next cut in
+        // the same pass (a quiet symbol rolled after minutes moves straight through).
+        for k in (0..3).rev() {
+            while let Some(&p) = self.seg[k].front() {
+                if p.0 > cuts[k] {
+                    break;
+                }
+                self.seg[k].pop_front();
+                Self::add(&mut self.sums[k], &p, false);
+                if k == 2 {
+                    self.anchor = Some(p.3);
+                }
+                if k > 0 {
+                    Self::add(&mut self.sums[k - 1], &p, true);
+                    self.seg[k - 1].push_back(p);
+                }
+            }
+        }
+    }
+
+    /// (buy, sell, prints) of the window now (`lag = false`) or a horizon earlier.
+    fn window(&self, lag: bool) -> (u64, u64, usize) {
+        let (a, b) = if lag { (0, 1) } else { (1, 2) };
+        (
+            self.sums[a].0 + self.sums[b].0,
+            self.sums[a].1 + self.sums[b].1,
+            self.seg[a].len() + self.seg[b].len(),
+        )
+    }
+
+    /// Volume of the prints after `t − H` (segment 2).
+    fn recent_volume(&self) -> u64 {
+        self.sums[2].0 + self.sums[2].1
+    }
+}
+
+/// What a halted symbol shows until the resume.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Frozen {
+    score: Option<Score>,
+    risk: Option<Risk>,
+}
+
 #[derive(Clone, Debug)]
 struct Entry {
     symbol: Arc<str>,
     day: Option<NaiveDate>,
-    /// Prints with a side, in arrival order: (execution time ns, size, buy).
-    window: VecDeque<(i64, u64, bool)>,
-    buy: u64,
-    sell: u64,
-    /// Newest execution time in the window (prunes on apply, so a busy symbol's window stays
-    /// one minute long between ticks).
+    prints: Segments,
+    /// Newest execution time applied (rolls on apply, so a busy symbol's segments stay short
+    /// between ticks).
     newest: i64,
     /// The previous OHLC-counted print's price and side (tick rule), in arrival order.
     last_price: Option<Price>,
@@ -191,11 +525,21 @@ struct Entry {
     session: Option<SessionKind>,
     session_volume: u64,
     session_start: i64,
+    /// The modelled LULD band in effect; `None` outside the regular session and while halted.
+    band: Option<Band>,
     halt: Option<HaltInfo>,
-    /// The score at the halt, shown until the resume.
-    frozen: Option<Score>,
-    /// The score at the last tick.
+    /// The readings at the halt, shown until the resume.
+    frozen: Option<Frozen>,
+    /// The readings at the last tick.
     last: Option<Score>,
+    last_risk: Option<Risk>,
+    /// The risk the card shows: the last one it had on the board (a member that loses its
+    /// reading, no band or too few prints, keeps showing it until it leaves).
+    shown: Option<Risk>,
+    /// Board state: since when (clock ns) a member has not been building; kept through a halt
+    /// when it was building at the halt.
+    idle_since: Option<i64>,
+    halt_watch: bool,
 }
 
 impl Entry {
@@ -203,55 +547,60 @@ impl Entry {
         Entry {
             symbol,
             day: None,
-            window: VecDeque::new(),
-            buy: 0,
-            sell: 0,
+            prints: Segments::default(),
             newest: i64::MIN,
             last_price: None,
             last_side: None,
             session: None,
             session_volume: 0,
             session_start: 0,
+            band: None,
             halt: None,
             frozen: None,
             last: None,
+            last_risk: None,
+            shown: None,
+            idle_since: None,
+            halt_watch: false,
         }
     }
 
-    /// Drops prints at or before `now − WINDOW`.
-    fn prune(&mut self, now: i64) {
-        let cut = now.saturating_sub(WINDOW);
-        while let Some(&(ts, size, buy)) = self.window.front() {
-            if ts > cut {
-                break;
-            }
-            self.window.pop_front();
-            if buy {
-                self.buy -= size;
-            } else {
-                self.sell -= size;
-            }
-        }
-    }
-
-    /// The score at `now` (the frozen one while halted).
-    fn evaluate(&mut self, now: i64) -> Option<Score> {
-        self.evaluate_with(now, (MIN_TRADES, MIN_VOLUME))
-    }
-
-    fn evaluate_with(&mut self, now: i64, minimums: (usize, u64)) -> Option<Score> {
-        if self.halt.is_some() {
-            return self.frozen;
-        }
-        self.prune(now);
-        score_with(
-            self.buy,
-            self.sell,
-            self.window.len(),
+    /// The pressure now and a horizon earlier, at `now` (not frozen; rolls the segments).
+    fn scores(&mut self, now: i64, minimums: (usize, u64)) -> (Option<Score>, Option<Score>) {
+        self.prints.roll(now);
+        let (b, s, n) = self.prints.window(false);
+        let cur = score_with(
+            b,
+            s,
+            n,
             self.session_volume,
             now - self.session_start,
             minimums,
-        )
+        );
+        let (b, s, n) = self.prints.window(true);
+        let before = score_with(
+            b,
+            s,
+            n,
+            self.session_volume
+                .saturating_sub(self.prints.recent_volume()),
+            now - HORIZON - self.session_start,
+            (MIN_TRADES, MIN_VOLUME),
+        );
+        (cur, before)
+    }
+
+    /// The pressure and the halt risk at `now` (the frozen ones while halted).
+    fn evaluate(&mut self, now: i64, minimums: (usize, u64)) -> (Option<Score>, Option<Risk>) {
+        if let Some(f) = self.frozen.filter(|_| self.halt.is_some()) {
+            return (f.score, f.risk);
+        }
+        let (cur, before) = self.scores(now, minimums);
+        let risk = match (cur, self.band, self.last_price) {
+            (Some(c), Some(b), Some(p)) => Some(halt_risk(c, before, p, self.prints.anchor, &b)),
+            _ => None,
+        };
+        (cur, risk)
     }
 }
 
@@ -260,6 +609,7 @@ impl Entry {
 pub struct Card {
     pub symbol: Arc<str>,
     pub score: Score,
+    pub risk: Risk,
     pub halt: Option<HaltInfo>,
 }
 
@@ -299,17 +649,21 @@ impl PressureBoard {
         match e.day {
             Some(d) if session.date < d => return,
             Some(d) if session.date == d => {}
-            // A new trading date starts the symbol over (the tick rule, the window and the day's
-            // average), like the quote board's row. A halt is kept: it ends with its resume.
+            // A new trading date starts the symbol over (the tick rule, the windows and the day's
+            // average), like the quote board's row. A halt is kept: it ends with its resume. So
+            // is the band: the engine's own points set and clear it (the close publishes a null
+            // point), and a band point applied before the day's first print belongs to that day.
             _ => {
-                let (halt, frozen) = (e.halt.take(), e.frozen.take());
-                *e = Entry::new(e.symbol.clone());
-                e.day = Some(session.date);
-                e.halt = halt;
-                e.frozen = frozen;
+                let mut fresh = Entry::new(e.symbol.clone());
+                fresh.day = Some(session.date);
+                fresh.halt = e.halt.take();
+                fresh.frozen = e.frozen.take();
+                fresh.halt_watch = e.halt_watch;
+                fresh.band = e.band;
+                *e = fresh;
             }
         }
-        // A new session restarts the pace baseline only: the tick rule and the window carry on
+        // A new session restarts the pace baseline only: the tick rule and the windows carry on
         // (the price is continuous across the bell).
         if e.session != Some(session.kind) {
             e.session = Some(session.kind);
@@ -327,28 +681,40 @@ impl PressureBoard {
         let Some(buy) = side else { return };
         e.last_side = Some(buy);
         let ts = t.event_ts.0;
-        e.window.push_back((ts, t.size, buy));
-        if buy {
-            e.buy += t.size;
-        } else {
-            e.sell += t.size;
-        }
+        e.prints.push((ts, t.size, buy, t.price));
         if ts > e.newest {
             e.newest = ts;
-            e.prune(ts);
+            e.prints.roll(ts);
         }
     }
 
-    /// A `chart.halt` from the engine: a halt starting freezes the symbol's score as of the halt,
-    /// the resume (the same `start`, `end` set) releases it.
+    /// A `chart.luld` point from the engine: the band in effect from then (`None` for a null
+    /// point: the close, a halt).
+    pub fn apply_luld(&mut self, symbol: &str, l: &LuldWire) {
+        let i = self.entry_index(symbol);
+        self.entries[i].band = Band::from_wire(l);
+    }
+
+    /// A `chart.halt` from the engine: a halt starting freezes the symbol's readings as of the
+    /// halt (before the engine's null band point that follows it), the resume (the same `start`,
+    /// `end` set) releases them.
     pub fn apply_halt(&mut self, symbol: &str, h: &HaltWire) {
         let i = self.entry_index(symbol);
+        let member = self.board.contains(&i);
         let e = &mut self.entries[i];
         match h.end {
             None => {
+                if e.halt.is_some() {
+                    return;
+                }
                 let at = UnixNanos::from_millis(h.start).0;
-                let s = e.evaluate(at).or(e.last);
-                e.frozen = s;
+                let (score, risk) = e.evaluate(at, (MIN_TRADES / 2, MIN_VOLUME / 2));
+                let frozen = Frozen {
+                    score: score.or(e.last),
+                    risk: risk.or(e.last_risk),
+                };
+                e.halt_watch = member || frozen.risk.is_some_and(|r| r.building_at_halt());
+                e.frozen = Some(frozen);
                 e.halt = Some(HaltInfo {
                     start: h.start,
                     reason: h.reason.clone(),
@@ -358,51 +724,109 @@ impl PressureBoard {
                 if e.halt.as_ref().is_some_and(|x| x.start == h.start) {
                     e.halt = None;
                     e.frozen = None;
+                    e.halt_watch = false;
+                    // The exit rule starts afresh at the resume (module docs, "Halts").
+                    e.idle_since = None;
                 }
             }
         }
     }
 
-    /// Scores every symbol at `now` (epoch ns) and updates the board (module docs, "Ranking").
-    /// `eligible` says whether a symbol is inside the price band. Returns the cards in display
-    /// order.
+    /// Scores every symbol at `now` (epoch ns) and updates the board (module docs, "Entry and
+    /// exit"). `eligible` says whether a symbol is inside the price band. Returns the cards in
+    /// display order.
     pub fn tick(&mut self, now: i64, eligible: impl Fn(&str) -> bool) -> Vec<Card> {
-        // Members are scored against the relaxed bar, everyone else against the full one (module
-        // docs, "Ranking"); the score itself does not depend on the bar.
+        // Members are scored against the relaxed bar, everyone else against the full one; the
+        // score itself does not depend on the bar.
         let relaxed = (MIN_TRADES / 2, MIN_VOLUME / 2);
         let mut member = vec![false; self.entries.len()];
         for &i in &self.board {
             member[i] = true;
         }
-        let scores: Vec<Option<Score>> = self
+        let readings: Vec<(Option<Score>, Option<Risk>)> = self
             .entries
             .iter_mut()
             .enumerate()
             .map(|(i, e)| {
-                let s = if member[i] {
-                    e.evaluate_with(now, relaxed)
-                } else {
-                    e.evaluate(now)
-                };
-                e.last = s;
-                s
+                let r = e.evaluate(
+                    now,
+                    if member[i] {
+                        relaxed
+                    } else {
+                        (MIN_TRADES, MIN_VOLUME)
+                    },
+                );
+                e.last = r.0;
+                e.last_risk = r.1;
+                r
             })
             .collect();
-        let entries = &self.entries;
-        let ok = |i: usize| eligible(&entries[i].symbol);
-        let pressure = |i: usize| scores[i].map_or(0, |s| s.pressure);
-        let halted = |i: usize| entries[i].halt.is_some();
+        let elig: Vec<bool> = self.entries.iter().map(|e| eligible(&e.symbol)).collect();
+        let ok = |i: usize| elig[i];
+        let halted = |e: &Entry| e.halt.is_some();
 
-        // Members stay while scored and in the band; a halted member stays regardless.
-        self.board
-            .retain(|&i| ok(i) && (halted(i) || scores[i].is_some()));
-        let mut outside: Vec<usize> = (0..entries.len())
-            .filter(|&i| scores[i].is_some() && ok(i) && !member[i])
+        // Members: out of the price band leaves at once; halted stays; otherwise the exit rule.
+        let mut kept = Vec::with_capacity(BOARD_SIZE);
+        for &i in &self.board {
+            if !ok(i) {
+                continue;
+            }
+            let e = &mut self.entries[i];
+            if halted(e) {
+                kept.push(i);
+                continue;
+            }
+            if readings[i].1.is_some_and(|r| r.building()) {
+                e.idle_since = None;
+                kept.push(i);
+                continue;
+            }
+            let since = *e.idle_since.get_or_insert(now);
+            if now - since < HOLD {
+                kept.push(i);
+            } else {
+                e.idle_since = None;
+            }
+        }
+        self.board = kept;
+        let rk = |i: usize| readings[i].1.map_or(0, |r| r.risk);
+        let entries = &self.entries;
+        // Halted symbols that were building at the halt: they stay through it.
+        let mut watch: Vec<usize> = (0..entries.len())
+            .filter(|&i| !member[i] && halted(&entries[i]) && entries[i].halt_watch && ok(i))
             .collect();
-        // Best first; ties by symbol, so the board is the same on every run.
+        watch.sort_by(|&a, &b| {
+            rk(b)
+                .cmp(&rk(a))
+                .then_with(|| entries[a].symbol.cmp(&entries[b].symbol))
+        });
+        for i in watch {
+            if self.board.len() < BOARD_SIZE {
+                self.board.push(i);
+            } else if let Some(pos) = self
+                .board
+                .iter()
+                .enumerate()
+                .filter(|&(_, &j)| !halted(&entries[j]))
+                .min_by_key(|&(pos, &j)| (rk(j), std::cmp::Reverse(pos)))
+                .map(|(pos, _)| pos)
+            {
+                self.board[pos] = i;
+            }
+        }
+        // Outsiders that pass the entry, best first; ties by symbol, so the board is the same on
+        // every run.
+        let mut outside: Vec<usize> = (0..entries.len())
+            .filter(|&i| {
+                !self.board.contains(&i)
+                    && !halted(&entries[i])
+                    && ok(i)
+                    && readings[i].1.is_some_and(|r| r.enters())
+            })
+            .collect();
         outside.sort_by(|&a, &b| {
-            pressure(b)
-                .cmp(&pressure(a))
+            rk(b)
+                .cmp(&rk(a))
                 .then_with(|| entries[a].symbol.cmp(&entries[b].symbol))
         });
         let mut outside = outside.into_iter().peekable();
@@ -418,11 +842,11 @@ impl PressureBoard {
                 .board
                 .iter()
                 .enumerate()
-                .filter(|&(_, &i)| !halted(i))
-                .min_by_key(|&(pos, &i)| (pressure(i), std::cmp::Reverse(pos)))
+                .filter(|&(_, &i)| !halted(&entries[i]))
+                .min_by_key(|&(pos, &i)| (rk(i), std::cmp::Reverse(pos)))
                 .map(|(pos, &i)| (pos, i));
             match weakest {
-                Some((pos, w)) if pressure(best) >= pressure(w) + SWAP_MARGIN => {
+                Some((pos, w)) if rk(best) >= rk(w).saturating_add(SWAP_MARGIN) => {
                     self.board[pos] = best;
                     outside.next();
                 }
@@ -431,21 +855,10 @@ impl PressureBoard {
         }
         // Order: a card moves above its neighbour only when it leads it by the margin (a stable
         // bubble pass until nothing moves; at most BOARD_SIZE² steps).
-        let card_pressure = |i: usize| -> u8 {
-            match &entries[i].halt {
-                Some(_) => entries[i]
-                    .frozen
-                    .or(entries[i].last)
-                    .map_or(0, |s| s.pressure),
-                None => pressure(i),
-            }
-        };
         loop {
             let mut moved = false;
             for k in 1..self.board.len() {
-                if card_pressure(self.board[k])
-                    >= card_pressure(self.board[k - 1]).saturating_add(SWAP_MARGIN)
-                {
+                if rk(self.board[k]) >= rk(self.board[k - 1]).saturating_add(SWAP_MARGIN) {
                     self.board.swap(k, k - 1);
                     moved = true;
                 }
@@ -454,22 +867,32 @@ impl PressureBoard {
                 break;
             }
         }
+        for &i in &self.board {
+            let e = &mut self.entries[i];
+            // A newcomer starts with a clean exit clock.
+            if !member[i] {
+                e.idle_since = None;
+            }
+            if let Some(r) = readings[i].1 {
+                e.shown = Some(r);
+            }
+        }
+        // Every card has a risk (entering needs one; a halt freezes one), so this drops nothing;
+        // it only keeps the board and the cards the same list if that ever failed.
+        let entries = &self.entries;
+        self.board.retain(|&i| entries[i].shown.is_some());
         self.board
             .iter()
             .map(|&i| {
                 let e = &entries[i];
                 Card {
                     symbol: e.symbol.clone(),
-                    score: if e.halt.is_some() {
-                        e.frozen.or(e.last)
-                    } else {
-                        scores[i]
-                    }
-                    .unwrap_or(Score {
+                    score: readings[i].0.unwrap_or(Score {
                         pressure: 0,
                         buy_share: 0.5,
                         pace: 0.0,
                     }),
+                    risk: e.shown.expect("retained above"),
                     halt: e.halt.clone(),
                 }
             })
@@ -478,21 +901,34 @@ impl PressureBoard {
 
     /// Replaces `symbol`'s state with `other`'s (the live market loaded its history: `other` was
     /// built from that history and the events held meanwhile, the quote board's
-    /// [`crate::quotes::QuoteBoard::replace_from`]). Board membership is untouched.
+    /// [`crate::quotes::QuoteBoard::replace_from`]). Board membership and its exit clock are
+    /// untouched.
     pub fn replace_from(&mut self, symbol: &str, other: &PressureBoard) {
         let Some(src) = other.index.get(symbol).map(|&j| other.entries[j].clone()) else {
             return;
         };
         let i = self.entry_index(symbol);
-        let last = self.entries[i].last;
+        let old = &self.entries[i];
+        let (last, last_risk, shown, idle_since) =
+            (old.last, old.last_risk, old.shown, old.idle_since);
         self.entries[i] = src;
-        self.entries[i].last = last;
+        let e = &mut self.entries[i];
+        e.last = last;
+        e.last_risk = last_risk;
+        e.shown = shown;
+        e.idle_since = idle_since;
     }
 
-    /// One symbol's score at `now`, whatever the band (tests and diagnostics).
+    /// One symbol's pressure at `now`, whatever the band (price alerts, tests and diagnostics).
     pub fn score_of(&mut self, symbol: &str, now: i64) -> Option<Score> {
         let &i = self.index.get(symbol)?;
-        self.entries[i].evaluate(now)
+        self.entries[i].evaluate(now, (MIN_TRADES, MIN_VOLUME)).0
+    }
+
+    /// One symbol's halt risk at `now`, on the board or not (tests, the calibration bench).
+    pub fn risk_of(&mut self, symbol: &str, now: i64) -> Option<Risk> {
+        let &i = self.index.get(symbol)?;
+        self.entries[i].evaluate(now, (MIN_TRADES, MIN_VOLUME)).1
     }
 }
 
@@ -505,6 +941,7 @@ mod tests {
         ohlc: true,
         volume: true,
     };
+    const S: i64 = 1_000_000_000;
 
     fn day() -> NaiveDate {
         NaiveDate::from_ymd_opt(2026, 10, 16).unwrap()
@@ -527,9 +964,38 @@ mod tests {
             } else {
                 start - k as i64
             };
-            b.apply_trade(&trade(sym, from + k as i64 * 1_000_000_000, c, size), BOTH);
+            b.apply_trade(&trade(sym, from + k as i64 * S, c, size), BOTH);
         }
     }
+
+    fn luld(t: i64, reference: f64, up: f64, down: f64) -> LuldWire {
+        LuldWire {
+            t: t / 1_000_000,
+            reference: Some(reference),
+            up: Some(up),
+            down: Some(down),
+        }
+    }
+
+    fn null_luld(t: i64) -> LuldWire {
+        LuldWire {
+            t: t / 1_000_000,
+            reference: None,
+            up: None,
+            down: None,
+        }
+    }
+
+    fn halt(start: i64, end: Option<i64>) -> HaltWire {
+        HaltWire {
+            start: start / 1_000_000,
+            end: end.map(|e| e / 1_000_000),
+            reason: "LUDP".into(),
+            code: "H".into(),
+        }
+    }
+
+    // --- Pressure (unchanged since PR #38) ---------------------------------------------------
 
     #[test]
     fn the_formula() {
@@ -540,36 +1006,27 @@ mod tests {
         let s = score(50_000, 50_000, 100, 100_000, 30 * MINUTE).unwrap();
         assert_eq!(s.pressure, 0);
         assert!(s.bull(), "a tie counts as bullish");
-        // One-sided at the symbol's ordinary pace (the window is one minute of an even day):
-        // I = 1, R = 1, P = ln 2 / ln 101.
+        // One-sided at the symbol's ordinary pace: I = 1, R = 1, P = ln 2 / ln 101.
         let s = score(10_000, 0, 50, 300_000, 30 * MINUTE).unwrap();
         assert!((s.pace - 1.0).abs() < 1e-9);
-        let expect = (100.0 * (0.4 + 0.6 * (2f64.ln() / 101f64.ln()))).round() as u8;
-        assert_eq!(s.pressure, expect);
-        assert_eq!(expect, 49);
-        // 80/20 at 10× pace, the weakest card a live board held (it used to score 100):
-        // I = 0.6, P = ln 11 / ln 101.
+        assert_eq!(s.pressure, 49);
+        // 80/20 at 10× pace: I = 0.6, P = ln 11 / ln 101.
         let s = score(80_000, 20_000, 200, 300_000, 30 * MINUTE).unwrap();
         assert!((s.pace - 10.0).abs() < 1e-9);
         assert_eq!(s.pressure, 43);
         // Only a 100/0 minute at 100× pace or beyond fills the gauge, never above 100.
         let s = score(100_000, 0, 200, 100_000, 200 * MINUTE).unwrap();
-        assert!((s.pace - 200.0).abs() < 1e-9);
         assert_eq!(s.pressure, 100, "capped, never above 100");
         // Bearish mirrors bullish.
         let bear = score(20_000, 80_000, 200, 300_000, 30 * MINUTE).unwrap();
         assert!(!bear.bull());
         assert_eq!(bear.pressure, 43);
-        // 65/35 (I = 0.3) at 3× pace.
-        let s = score(19_500, 10_500, 60, 300_000, 30 * MINUTE).unwrap();
-        let p = (4f64.ln() / 101f64.ln()).min(1.0);
-        assert_eq!(s.pressure, (100.0 * 0.3 * (0.4 + 0.6 * p)).round() as u8);
     }
 
     #[test]
     fn a_sparse_symbols_first_minute_does_not_explode() {
         // The window is the whole session: R = 1, not V / tiny.
-        let s = score(30_000, 0, 30, 30_000, 5 * 1_000_000_000).unwrap();
+        let s = score(30_000, 0, 30, 30_000, 5 * S).unwrap();
         assert!((s.pace - 1.0).abs() < 1e-9);
         assert_eq!(s.pressure, 49);
     }
@@ -581,12 +1038,9 @@ mod tests {
         // 500 (no side), 501 buy, 501 buy (zero tick), 500 sell, 500 sell, 502 buy …
         let prices = [500, 501, 501, 500, 500, 502, 502, 502, 503, 503, 503, 503];
         for (k, c) in prices.iter().enumerate() {
-            b.apply_trade(
-                &trade("AAA", t0 + k as i64 * 1_000_000_000, *c, 1_000),
-                BOTH,
-            );
+            b.apply_trade(&trade("AAA", t0 + k as i64 * S, *c, 1_000), BOTH);
         }
-        let s = b.score_of("AAA", t0 + 12 * 1_000_000_000).unwrap();
+        let s = b.score_of("AAA", t0 + 12 * S).unwrap();
         // 11 prints with a side: buys 501, 501, 502, 502, 502, 503 ×4 = 9; sells 2.
         assert!((s.buy_share - 9.0 / 11.0).abs() < 1e-9, "{s:?}");
     }
@@ -596,19 +1050,19 @@ mod tests {
         let mut b = PressureBoard::new();
         let t0 = at(10, 0, 0);
         run(&mut b, "AAA", t0, 12, 500, 500, true);
-        let before = b.score_of("AAA", t0 + 12_000_000_000);
+        let before = b.score_of("AAA", t0 + 12 * S);
         let odd_lot = Counted {
             ohlc: false,
             volume: true,
         };
         // An odd lot far below would be a sell and reset the tick rule: it must not.
-        b.apply_trade(&trade("AAA", t0 + 12_000_000_000, 100, 99), odd_lot);
+        b.apply_trade(&trade("AAA", t0 + 12 * S, 100, 99), odd_lot);
         let none = Counted {
             ohlc: false,
             volume: false,
         };
-        b.apply_trade(&trade("AAA", t0 + 12_000_000_000, 100, 9_999), none);
-        assert_eq!(b.score_of("AAA", t0 + 12_000_000_000), before);
+        b.apply_trade(&trade("AAA", t0 + 12 * S, 100, 9_999), none);
+        assert_eq!(b.score_of("AAA", t0 + 12 * S), before);
     }
 
     #[test]
@@ -616,24 +1070,9 @@ mod tests {
         let mut b = PressureBoard::new();
         let t0 = at(10, 0, 0);
         run(&mut b, "AAA", t0, 30, 500, 500, true);
-        assert!(b.score_of("AAA", t0 + 30_000_000_000).is_some());
+        assert!(b.score_of("AAA", t0 + 30 * S).is_some());
         // A minute after the last print nothing is left in the window.
-        assert_eq!(b.score_of("AAA", t0 + 90_000_000_000), None);
-    }
-
-    #[test]
-    fn deterministic_the_same_prints_and_clock_give_the_same_board() {
-        let mk = || {
-            let mut b = PressureBoard::new();
-            let t0 = at(10, 0, 0);
-            with_pressures(&mut b, t0, &[("A", 3), ("B", 9), ("C", 5), ("D", 5)]);
-            b.tick(t0 + 31_000_000_000, |_| true)
-        };
-        let (x, y) = (mk(), mk());
-        assert_eq!(x, y);
-        // C and D tie: the symbol breaks it.
-        let syms: Vec<&str> = x.iter().map(|c| &*c.symbol).collect();
-        assert_eq!(syms, ["A", "C", "D", "B"]);
+        assert_eq!(b.score_of("AAA", t0 + 90 * S), None);
     }
 
     #[test]
@@ -650,33 +1089,14 @@ mod tests {
         // The regular session trades 10,000 a minute, evenly, for 20 minutes.
         let open = at(9, 30, 0);
         for k in 0..(20 * 20) {
-            let ts = open + k as i64 * 3_000_000_000;
+            let ts = open + k as i64 * 3 * S;
             let c = 600 + (k % 2) as i64;
             b.apply_trade(&trade("AAA", ts, c, 500), BOTH);
         }
-        let now = open + 20 * MINUTE;
-        let s = b.score_of("AAA", now).unwrap();
-        // Against the regular session's own average the minute is ordinary; against the day's
-        // (diluted by the premarket) it would read ~1.4× and climb toward the cap the earlier in
-        // the session it was measured.
-        // (0.95: the last print is 3 s before `now`, so 19 of a minute's 20 are in the window.)
+        let s = b.score_of("AAA", open + 20 * MINUTE).unwrap();
+        // Against the regular session's own average the minute is ordinary (0.95: the last print
+        // is 3 s before the clock, so 19 of a minute's 20 are in the window).
         assert!((s.pace - 0.95).abs() < 1e-9, "{s:?}");
-    }
-
-    #[test]
-    fn a_member_keeps_its_place_down_to_half_the_minimums() {
-        let mut b = PressureBoard::new();
-        let t0 = at(10, 0, 0);
-        run(&mut b, "AAA", t0, 12, 500, 500, true);
-        let now = t0 + 12_000_000_000;
-        assert_eq!(b.tick(now, |_| true).len(), 1);
-        // Half a minute later only 6 of its prints are inside the window: below the full bar
-        // (a newcomer with 6 would not get on), above the relaxed one.
-        let later = t0 + 66_000_000_000;
-        assert_eq!(b.score_of("AAA", later), None);
-        assert_eq!(b.tick(later, |_| true).len(), 1, "still on the board");
-        // Below half the bar it leaves.
-        assert!(b.tick(t0 + 68_000_000_000, |_| true).is_empty());
     }
 
     #[test]
@@ -689,131 +1109,370 @@ mod tests {
         assert_eq!(b.score_of("AAA", t), None);
     }
 
-    fn halt(start: i64, end: Option<i64>) -> HaltWire {
-        HaltWire {
-            start: start / 1_000_000,
-            end: end.map(|e| e / 1_000_000),
-            reason: "LUDP".into(),
-            code: "H".into(),
-        }
-    }
-
-    #[test]
-    fn a_halt_freezes_the_score_and_keeps_the_card_until_the_resume() {
-        let mut b = PressureBoard::new();
-        let t0 = at(10, 0, 0);
-        run(&mut b, "AAA", t0, 40, 1_000, 500, true);
-        let all = |_: &str| true;
-        let now = t0 + 40_000_000_000;
-        let cards = b.tick(now, all);
-        assert_eq!(cards.len(), 1);
-        let before = cards[0].score;
-        b.apply_halt("AAA", &halt(now, None));
-        // Minutes later, no prints: still on the board, same score, marked halted.
-        let later = now + 5 * MINUTE;
-        let cards = b.tick(later, all);
-        assert_eq!(cards.len(), 1);
-        assert_eq!(cards[0].score, before);
-        assert_eq!(cards[0].halt.as_ref().unwrap().reason, "LUDP");
-        // The resume releases it; with an empty window it leaves.
-        b.apply_halt("AAA", &halt(now, Some(later)));
-        assert!(b.tick(later + 1, all).is_empty());
-    }
-
-    #[test]
-    fn ranking_fills_best_first_and_respects_the_band() {
-        let mut b = PressureBoard::new();
-        let t0 = at(10, 0, 0);
-        // Eight symbols, rising pressure with the index (more one-sided prints).
-        for (k, s) in ["A", "B", "C", "D", "E", "F", "G", "H"].iter().enumerate() {
-            let sells = 8 - k as u32;
-            run(&mut b, s, t0, 20, 1_000, 500, true);
-            run(&mut b, s, t0 + 20_000_000_000, sells, 1_000, 450, false);
-        }
-        let now = t0 + 40_000_000_000;
-        let cards = b.tick(now, |s| s != "H");
-        let syms: Vec<&str> = cards.iter().map(|c| &*c.symbol).collect();
-        assert_eq!(syms.len(), BOARD_SIZE);
-        assert!(!syms.contains(&"H"), "outside the band");
-        assert!(
-            !syms.contains(&"A"),
-            "the weakest of the seven left out: {syms:?}"
-        );
-        assert!(
-            cards
-                .windows(2)
-                .all(|w| w[0].score.pressure + SWAP_MARGIN > w[1].score.pressure),
-            "no card leads its upper neighbour by the margin"
-        );
-    }
-
-    /// Symbols with 30 prints each, `sells` of them downticks (fewer sells = more pressure).
-    fn with_pressures(b: &mut PressureBoard, t0: i64, syms: &[(&str, u32)]) {
-        for (s, sells) in syms {
-            run(b, s, t0, 30 - sells, 1_000, 500, true);
-            run(
-                b,
-                s,
-                t0 + (30 - sells) as i64 * 1_000_000_000,
-                *sells,
-                1_000,
-                400,
-                false,
-            );
-        }
-    }
-
-    #[test]
-    fn hysteresis_an_outsider_needs_the_margin_to_take_a_place() {
-        let mut b = PressureBoard::new();
-        let t0 = at(10, 0, 0);
-        with_pressures(
-            &mut b,
-            t0,
-            &[("A", 8), ("B", 8), ("C", 8), ("D", 8), ("E", 8), ("F", 8)],
-        );
-        let now = t0 + 31_000_000_000;
-        let first: Vec<Arc<str>> = b
-            .tick(now, |_| true)
-            .into_iter()
-            .map(|c| c.symbol)
-            .collect();
-        assert_eq!(first.len(), 6);
-        let weakest = b.score_of("A", now).unwrap().pressure;
-        // G a little better than the members: not enough.
-        with_pressures(&mut b, t0, &[("G", 7)]);
-        let g = b.score_of("G", now).unwrap().pressure;
-        assert!(g > weakest && g < weakest + SWAP_MARGIN, "{g} vs {weakest}");
-        let second: Vec<Arc<str>> = b
-            .tick(now, |_| true)
-            .into_iter()
-            .map(|c| c.symbol)
-            .collect();
-        assert_eq!(second, first, "no reshuffle for a few points");
-        // Z far better: it takes a place.
-        with_pressures(&mut b, t0, &[("Z", 0)]);
-        let third: Vec<Arc<str>> = b
-            .tick(now, |_| true)
-            .into_iter()
-            .map(|c| c.symbol)
-            .collect();
-        assert!(third.iter().any(|s| &**s == "Z"));
-        assert_eq!(&*third[0], "Z", "and leads, by more than the margin");
-        assert!(!third.iter().any(|s| &**s == "G"));
-    }
-
     #[test]
     fn replace_from_takes_the_loaded_history() {
         let t0 = at(10, 0, 0);
         let mut live = PressureBoard::new();
-        run(&mut live, "AAA", t0 + 50_000_000_000, 3, 100, 500, true);
-        assert_eq!(live.score_of("AAA", t0 + 53_000_000_000), None);
+        run(&mut live, "AAA", t0 + 50 * S, 3, 100, 500, true);
+        assert_eq!(live.score_of("AAA", t0 + 53 * S), None);
         let mut hist = PressureBoard::new();
         run(&mut hist, "AAA", t0, 53, 1_000, 500, true);
+        hist.apply_luld("AAA", &luld(t0, 5.0, 5.5, 4.5));
         live.replace_from("AAA", &hist);
         assert_eq!(
-            live.score_of("AAA", t0 + 53_000_000_000),
-            hist.score_of("AAA", t0 + 53_000_000_000)
+            live.score_of("AAA", t0 + 53 * S),
+            hist.score_of("AAA", t0 + 53 * S)
         );
+        assert_eq!(
+            live.risk_of("AAA", t0 + 53 * S),
+            hist.risk_of("AAA", t0 + 53 * S),
+            "the band comes with the history"
+        );
+    }
+
+    // --- Halt risk ---------------------------------------------------------------------------
+
+    fn sc(pressure: u8, bull: bool) -> Score {
+        Score {
+            pressure,
+            buy_share: if bull { 0.9 } else { 0.1 },
+            pace: 3.0,
+        }
+    }
+
+    fn px(c: i64) -> Price {
+        Price::from_cents(c)
+    }
+
+    /// A $5.00 reference with a 10 % band: $4.50–$5.50.
+    const BAND: Band = Band {
+        up: Price::from_cents(550),
+        down: Price::from_cents(450),
+        reference: Price::from_cents(500),
+    };
+
+    #[test]
+    fn the_risk_formula() {
+        // 30 → 80 in the horizon, $5.20 → $5.30 (1.9 %), 3.8 % (0.2 / 5.3) from the $5.50 band.
+        let r = halt_risk(
+            sc(80, true),
+            Some(sc(30, true)),
+            px(530),
+            Some(px(520)),
+            &BAND,
+        );
+        assert_eq!(r.rise, 50);
+        assert_eq!(r.band, px(550));
+        assert!((r.half_width - 0.10).abs() < 1e-12);
+        assert!((r.to_band - 0.2 / 5.3).abs() < 1e-12);
+        assert!((r.moved - 0.1 / 5.2).abs() < 1e-12);
+        let secs = (0.2 / 5.3) * 30.0 / (0.1 / 5.2);
+        assert!((r.secs_to_band.unwrap() - secs).abs() < 1e-9);
+        let urgency = ((T_FAR / secs).ln() / (T_FAR / T_NEAR).ln()).clamp(0.0, 1.0);
+        let close = 1.0 - (0.2 / 5.3) / 0.10;
+        let expect = (100.0 * (W_RISE + W_URGENCY * urgency + W_CLOSE * close)).round() as u8;
+        assert_eq!(r.risk, expect);
+        assert_eq!(r.risk, 78, "the worked example in the module docs");
+        assert!(r.enters(), "{r:?}");
+        // A steady 90 is not a build-up: no rise, and without movement no urgency.
+        let r = halt_risk(
+            sc(90, true),
+            Some(sc(90, true)),
+            px(530),
+            Some(px(530)),
+            &BAND,
+        );
+        assert_eq!(r.rise, 0);
+        assert_eq!(r.secs_to_band, None);
+        assert!(!r.enters() && !r.building(), "{r:?}");
+        // The earlier minute on the other side counts as no pressure on this one.
+        let r = halt_risk(
+            sc(60, true),
+            Some(sc(70, false)),
+            px(530),
+            Some(px(520)),
+            &BAND,
+        );
+        assert_eq!(r.rise, 60);
+        // Selling runs at the lower band, mirrored.
+        let r = halt_risk(
+            sc(80, false),
+            Some(sc(30, false)),
+            px(470),
+            Some(px(480)),
+            &BAND,
+        );
+        assert_eq!(r.band, px(450));
+        assert!((r.to_band - 0.2 / 4.7).abs() < 1e-12);
+        assert!(r.moved > 0.0 && r.enters(), "{r:?}");
+        // At (or past) the band: no distance, full urgency and closeness, pinned.
+        let r = halt_risk(
+            sc(80, true),
+            Some(sc(30, true)),
+            px(551),
+            Some(px(540)),
+            &BAND,
+        );
+        assert_eq!((r.to_band, r.secs_to_band), (0.0, Some(0.0)));
+        assert_eq!(r.risk, 100);
+        assert!(r.pinned());
+    }
+
+    #[test]
+    fn rising_pressure_moving_away_from_the_band_or_far_from_it_does_not_enter() {
+        // Buying rises, but the price fell: away from the upper band.
+        let r = halt_risk(
+            sc(80, true),
+            Some(sc(30, true)),
+            px(520),
+            Some(px(530)),
+            &BAND,
+        );
+        assert!(r.moved < 0.0 && r.secs_to_band.is_none());
+        assert!(!r.enters() && !r.building(), "{r:?}");
+        // Toward the band, fast, but still most of the band away (closeness < 0.5).
+        let r = halt_risk(
+            sc(80, true),
+            Some(sc(30, true)),
+            px(502),
+            Some(px(490)),
+            &BAND,
+        );
+        assert!(r.secs_to_band.unwrap() < T_ENTER);
+        assert!(!r.enters(), "{r:?}");
+        // Close, but the move is bid/ask noise (< 5 % of the half-width).
+        let r = halt_risk(
+            sc(80, true),
+            Some(sc(30, true)),
+            px(530),
+            Some(px(529)),
+            &BAND,
+        );
+        assert!(!r.enters(), "{r:?}");
+        // Close and moving, but the pressure only rose a little: building, not entering.
+        let r = halt_risk(
+            sc(80, true),
+            Some(sc(60, true)),
+            px(530),
+            Some(px(520)),
+            &BAND,
+        );
+        assert!(!r.enters() && r.building(), "{r:?}");
+    }
+
+    // --- The board -----------------------------------------------------------------------------
+
+    /// AAA, $5.00 reference and a 10 % band ($4.50–$5.50) from 10:00. A balanced minute around
+    /// $5.00 (alternating ticks, 1,000 a print), then 30 seconds of heavy buying (5,000 a print,
+    /// a cent up each, $5.00 → $5.29). Returns the time of the last print.
+    fn build_up(b: &mut PressureBoard, t0: i64) -> i64 {
+        b.apply_luld("AAA", &luld(t0, 5.0, 5.5, 4.5));
+        for k in 0..60 {
+            let c = 500 + (k % 2);
+            b.apply_trade(&trade("AAA", t0 + k * S, c, 1_000), BOTH);
+        }
+        run(b, "AAA", t0 + 60 * S, 30, 5_000, 500, true);
+        t0 + 89 * S
+    }
+
+    #[test]
+    fn rising_pressure_toward_a_near_band_makes_a_card() {
+        let mut b = PressureBoard::new();
+        let t0 = at(10, 0, 0);
+        let last = build_up(&mut b, t0);
+        let cards = b.tick(last + S, |_| true);
+        assert_eq!(cards.len(), 1, "{cards:?}");
+        let c = &cards[0];
+        assert_eq!(&*c.symbol, "AAA");
+        assert!(c.score.bull());
+        assert!(c.risk.rise >= ENTER_RISE, "{c:?}");
+        assert_eq!(c.risk.band, px(550));
+        assert!(c.risk.risk >= ENTER_RISK, "{c:?}");
+        // Outside the price band: no card.
+        let mut b = PressureBoard::new();
+        build_up(&mut b, t0);
+        assert!(b.tick(last + S, |_| false).is_empty());
+    }
+
+    #[test]
+    fn steady_high_pressure_near_the_band_makes_no_card() {
+        let mut b = PressureBoard::new();
+        let t0 = at(10, 0, 0);
+        b.apply_luld("AAA", &luld(t0, 5.0, 5.5, 4.5));
+        // One uptick to $5.40, then three minutes of prints at $5.40: every one a buy (zero
+        // ticks inherit the side), pressure high and flat, the price still.
+        b.apply_trade(&trade("AAA", t0, 539, 1_000), BOTH);
+        for k in 1..180 {
+            b.apply_trade(&trade("AAA", t0 + k * S, 540, 2_000), BOTH);
+        }
+        let now = t0 + 180 * S;
+        let p = b.score_of("AAA", now).unwrap();
+        assert!(p.pressure >= 45 && p.bull(), "{p:?}");
+        let r = b.risk_of("AAA", now).unwrap();
+        assert!(r.rise.abs() <= 2, "{r:?}");
+        assert!(b.tick(now, |_| true).is_empty());
+    }
+
+    #[test]
+    fn no_modelled_band_no_card() {
+        // The same build-up without a LULD band (premarket, after a halt): nothing to run at.
+        let mut b = PressureBoard::new();
+        let t0 = at(10, 0, 0);
+        let last = build_up(&mut b, t0);
+        b.apply_luld("AAA", &null_luld(last));
+        assert_eq!(b.risk_of("AAA", last + S), None);
+        assert!(b.tick(last + S, |_| true).is_empty());
+    }
+
+    #[test]
+    fn a_card_leaves_after_the_hold_once_the_build_up_stops() {
+        let mut b = PressureBoard::new();
+        let t0 = at(10, 0, 0);
+        let last = build_up(&mut b, t0);
+        assert_eq!(b.tick(last + S, |_| true).len(), 1);
+        // No more prints. The rise stays positive while the run's prints weigh more in the
+        // window now than in the one a horizon earlier; at t0 + 140 s both read 45 (the run's
+        // last ten prints now, the whole run a horizon ago at a heavier pace), the price has not
+        // moved for the horizon and is 4 % from the band (not pinned), so it is not building, and
+        // HOLD later it leaves (not before: a flat second does not blink it off).
+        assert!(b.risk_of("AAA", t0 + 139 * S).unwrap().building());
+        // (A member is read against half the minimums: nine prints are left at 140 s.)
+        let i = b.index["AAA"];
+        let relaxed = (MIN_TRADES / 2, MIN_VOLUME / 2);
+        let r = b.entries[i].evaluate(t0 + 140 * S, relaxed).1.unwrap();
+        assert!(!r.building(), "{r:?}");
+        let mut b = PressureBoard::new();
+        build_up(&mut b, t0);
+        assert_eq!(b.tick(last + S, |_| true).len(), 1);
+        let mut gone = None;
+        for t in (last + 2 * S..last + 120 * S).step_by(S as usize) {
+            if b.tick(t, |_| true).is_empty() {
+                gone = Some(t);
+                break;
+            }
+        }
+        assert_eq!(gone, Some(t0 + 140 * S + HOLD));
+    }
+
+    #[test]
+    fn a_halt_keeps_the_card_frozen_until_the_resume_then_the_exit_rule() {
+        let mut b = PressureBoard::new();
+        let t0 = at(10, 0, 0);
+        let last = build_up(&mut b, t0);
+        assert_eq!(b.tick(last + S, |_| true).len(), 1);
+        let h = last + 2 * S;
+        b.apply_halt("AAA", &halt(h, None));
+        // The engine clears the band right after the halt.
+        b.apply_luld("AAA", &null_luld(h));
+        let frozen = b.tick(h + S, |_| true);
+        assert_eq!(frozen.len(), 1);
+        for t in [h + 60 * S, h + 299 * S] {
+            let cards = b.tick(t, |_| true);
+            assert_eq!(cards.len(), 1);
+            assert_eq!(cards[0].risk, frozen[0].risk, "frozen through the halt");
+            assert_eq!(cards[0].score, frozen[0].score);
+            assert_eq!(cards[0].halt.as_ref().unwrap().reason, "LUDP");
+            assert_eq!(cards[0].risk.band, px(550), "the band as of the halt");
+        }
+        // The resume: no prints, no band yet, so it is not building and leaves after the hold.
+        let r = h + 300 * S;
+        b.apply_halt("AAA", &halt(h, Some(r)));
+        assert_eq!(b.tick(r + S, |_| true).len(), 1);
+        assert!(b.tick(r + S + HOLD, |_| true).is_empty());
+    }
+
+    #[test]
+    fn a_run_that_halts_before_any_ranking_still_gets_its_card() {
+        let mut b = PressureBoard::new();
+        let t0 = at(10, 0, 0);
+        let last = build_up(&mut b, t0);
+        // Halted before the once-a-second ranking saw it on the board.
+        b.apply_halt("AAA", &halt(last + S, None));
+        b.apply_luld("AAA", &null_luld(last + S));
+        let cards = b.tick(last + 2 * S, |_| true);
+        assert_eq!(cards.len(), 1);
+        assert!(cards[0].halt.is_some());
+        // A halted symbol that was not building is not shown.
+        let mut b = PressureBoard::new();
+        b.apply_luld("BBB", &luld(t0, 5.0, 5.5, 4.5));
+        for k in 0..60 {
+            b.apply_trade(&trade("BBB", t0 + k * S, 500 + (k % 2), 1_000), BOTH);
+        }
+        b.apply_halt("BBB", &halt(t0 + 61 * S, None));
+        assert!(b.tick(t0 + 62 * S, |_| true).is_empty());
+    }
+
+    #[test]
+    fn deterministic_under_replay() {
+        let t0 = at(10, 0, 0);
+        // The same prints and the same ranking clock give the same board, every second.
+        let mk = || {
+            let mut b = PressureBoard::new();
+            let last = build_up(&mut b, t0);
+            (last..last + 90 * S)
+                .step_by(S as usize)
+                .map(|t| b.tick(t, |_| true))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(mk(), mk());
+        // The risk is a pure function of the prints and the clock: ranking every second on the
+        // way, or not at all, reads the same at the end.
+        let mut ticked = PressureBoard::new();
+        let mut once = PressureBoard::new();
+        let last = build_up(&mut ticked, t0);
+        build_up(&mut once, t0);
+        for t in (t0..last).step_by(S as usize) {
+            ticked.tick(t, |_| true);
+        }
+        let now = last + 3 * S;
+        assert_eq!(ticked.risk_of("AAA", now), once.risk_of("AAA", now));
+        assert_eq!(ticked.score_of("AAA", now), once.score_of("AAA", now));
+    }
+
+    #[test]
+    fn at_most_six_strongest_first_with_the_margin() {
+        let mut b = PressureBoard::new();
+        let t0 = at(10, 0, 0);
+        // Eight symbols with the same build-up, their upper bands further away one by one: the
+        // closer, the riskier.
+        let syms = ["A", "B", "C", "D", "E", "F", "G", "H"];
+        for (k, s) in syms.iter().enumerate() {
+            let up = 5.32 + 0.02 * k as f64;
+            b.apply_luld(s, &luld(t0, 5.0, up, 4.5));
+            for j in 0..60 {
+                b.apply_trade(&trade(s, t0 + j * S, 500 + (j % 2), 1_000), BOTH);
+            }
+            run(&mut b, s, t0 + 60 * S, 30, 5_000, 500, true);
+        }
+        let cards = b.tick(t0 + 90 * S, |_| true);
+        assert_eq!(cards.len(), BOARD_SIZE);
+        let on: Vec<&str> = cards.iter().map(|c| &*c.symbol).collect();
+        assert!(!on.contains(&"G") && !on.contains(&"H"), "{on:?}");
+        assert!(
+            cards
+                .windows(2)
+                .all(|w| w[0].risk.risk + SWAP_MARGIN > w[1].risk.risk),
+            "no card leads its upper neighbour by the margin"
+        );
+    }
+
+    #[test]
+    fn the_lagged_window_is_the_minute_a_horizon_ago() {
+        let mut s = Segments::default();
+        let t0 = at(10, 0, 0);
+        for k in 0..120 {
+            s.push((t0 + k * S, 100, k < 60, px(500 + k)));
+        }
+        s.roll(t0 + 119 * S);
+        // Now: (59, 119] = 60 prints, all sells; a horizon ago: (29, 89] = 30 buys, 30 sells.
+        assert_eq!(s.window(false), (0, 6_000, 60));
+        assert_eq!(s.window(true), (3_000, 3_000, 60));
+        // The last price at or before now − H (89 s).
+        assert_eq!(s.anchor, Some(px(589)));
+        // Minutes later every print has moved through.
+        s.roll(t0 + 119 * S + 10 * MINUTE);
+        assert_eq!(s.window(false), (0, 0, 0));
+        assert_eq!(s.window(true), (0, 0, 0));
+        assert_eq!(s.anchor, Some(px(619)));
     }
 }
