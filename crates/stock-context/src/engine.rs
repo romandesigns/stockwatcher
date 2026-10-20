@@ -664,6 +664,16 @@ impl Engine {
                 recheck = recheck.min(p + fresh + 1);
             }
         }
+        // A coverage record turns a missing story into FAIL once its start is a full freshness
+        // window back, and stops doing so once the cutoff passes its end (plus the policy's lag).
+        if let Some(c) = ev.coverage(&s.inst, tau) {
+            let lag = policy.body.news.coverage_max_lag_secs * SEC;
+            for t in [c.covered_from + fresh, c.covered_through + lag + 1] {
+                if t > tau {
+                    recheck = recheck.min(t);
+                }
+            }
+        }
         if let Some(t) = ev.next_after(&s.inst, tau) {
             recheck = recheck.min(t);
         }

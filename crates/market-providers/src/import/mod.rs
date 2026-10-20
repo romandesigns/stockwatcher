@@ -6,10 +6,13 @@
 //! and the `swimport` command live behind the `import` cargo feature.
 
 pub mod alpaca;
+pub mod alpaca_news;
 pub mod batch;
 pub mod check;
 pub mod corporate;
+pub mod evidence_collect;
 pub mod fmp;
+pub mod fmp_float;
 pub mod http;
 pub mod maintain;
 

@@ -15,6 +15,7 @@
 //!   daily-closes.json      # optional: date → symbol → official close (crate::closes)
 //!   daily-bars/            # optional: provider daily bars, raw per date + split snapshots
 //!                          #   (crate::daily_bars; evidence for stock-context: crate::baseline)
+//!   evidence/              # append-only float/news records (crate::evidence), never pruned
 //!   2026-10-15/
 //!     manifest.json        # symbols, counts, first/last ts, sources, bytes, sha256 per file
 //!     SMPL.swa             # one file per symbol (finalized)
@@ -88,6 +89,8 @@ pub mod config;
 pub mod corporate_actions;
 pub mod coverage;
 pub mod daily_bars;
+pub mod evidence;
+pub mod evidence_load;
 pub mod fixture;
 pub mod format;
 pub mod live;
@@ -121,6 +124,10 @@ pub use daily_bars::{
     merge_raw_day,
 };
 pub use error::ArchiveError;
+pub use evidence::{
+    CoverageScope, EVIDENCE_DIR, FloatRecord, NewsCoverageRecord, NewsVersionRecord, sha256_hex,
+};
+pub use evidence_load::LoadedEvidence;
 pub use lifecycle::{IMPORTING_MARKER, REMOVING_PREFIX};
 pub use live::{DayData, LIVE_DIR, LiveQuote, LiveWriter};
 pub use manifest::{DayManifest, ImportProvenance, LiveDay, SymbolEntry};

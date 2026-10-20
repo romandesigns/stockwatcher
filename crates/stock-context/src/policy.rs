@@ -65,6 +65,21 @@ pub struct FloatRules {
     pub stale_after_secs: i64,
 }
 
+/// How a news-coverage record may be read. Absent from `pillars-v1.json`, so v1 keeps its exact
+/// bytes, hash and behaviour (a lag of 0).
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+pub struct NewsRules {
+    /// How far a cutoff may run past a coverage record's `covered_through` and still count as
+    /// searched. Every real source is behind the clock: a poll covers through its request time and
+    /// is observed after it, so with 0 (v1) a forward run never sees `covered_through >= cutoff`
+    /// from an honest record, and the news pillar can only PASS or be UNKNOWN. A policy that lets
+    /// polled coverage FAIL the pillar states its tolerance here
+    /// (`docs/stock-context/float-news-plan.md` section 7). That is a new policy id, not an edit
+    /// of v1.
+    #[serde(default)]
+    pub coverage_max_lag_secs: i64,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct PolicyBody {
     pub schema: u32,
@@ -77,6 +92,8 @@ pub struct PolicyBody {
     pub volume: VolumeRules,
     pub diagnostics: Diagnostics,
     pub float: FloatRules,
+    #[serde(default)]
+    pub news: NewsRules,
 }
 
 /// A parsed policy and its identity.
@@ -96,6 +113,9 @@ impl Policy {
         }
         if body.grid.bar_secs <= 0 || body.grid.settle_ms < 0 {
             return Err("pillar policy: grid must be positive".into());
+        }
+        if body.news.coverage_max_lag_secs < 0 {
+            return Err("pillar policy: news.coverage_max_lag_secs must not be negative".into());
         }
         let p = &body.reference_profile;
         if p.price_min_micros <= 0
