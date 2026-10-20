@@ -320,8 +320,9 @@ batches of 2048 events keep commands responsive. A seek over a whole fixture day
       ~7,000 files are not fsynced (a process crash loses nothing written; only a power loss can
       lose what the kernel had not written back). When the recorder moves to the next day it
       **seals** the old one in the background: every file repaired, recounted, rewritten as one
-      frame and hashed. Recordings no import replaced are kept `LIVE_RECORD_DAYS` (5), never the
-      day being written.
+      frame and hashed. Recordings no import replaced stay in `live/` for `LIVE_RECORD_DAYS` (5,
+      the newest five days *with a recording*), never the day being written; older ones are then
+      moved to their preserved original (below), not deleted: no other copy of them exists.
     - **Preserved original** (2026-10-19; `crates/market-archive/src/original.rs`). The import is
       the corrected day in time order; forward research needs what the live market actually
       received, in receipt order with its delivery times and its gaps, which only the recording
@@ -329,17 +330,56 @@ batches of 2048 events keep commands responsive. A seek over a whole fixture day
       rename on the same volume: not a byte changes, its manifest keeps every file's SHA-256;
       `Archive::verify_original` rechecks them, `Archive::original_reader` reads a symbol). It sits
       beside the day directories, not inside them, so the rolling 21-day window and
-      `ARCHIVE_RETENTION_DAYS`, which delete whole day directories, never touch it: it is pinned
-      and has its own retention, `LIVE_ORIGINAL_DAYS` (default **5**, newest kept; `0` keeps
-      none), applied by the recorder's housekeeping at start and at every day change.
+      `ARCHIVE_RETENTION_DAYS`, which delete whole day directories, never touch it, and it has
+      its own retention (`crates/market-archive/src/retention.rs`), applied by the recorder's
+      housekeeping at start and at every day change, off the market path:
+      - **Window** (`LIVE_ORIGINAL_DAYS`, default and minimum **5**): the last N *completed
+        trading dates* before the day being written (Monday's five reach back to the previous
+        Monday; weekends and holidays do not count), plus the newest N originals so a day the
+        recorder missed does not shorten it. Five is the hot cache, not the research archive.
+        Before 2026-10-19 (this PR's first version) the setting counted original *directories*
+        (newest N, `0` = none); it now counts trading dates and refuses fewer than 5.
+      - **Pins** (`live-original/pins.json`, `{"v":1,"pins":[{"day","symbols","reason"}]}`,
+        `Archive::add_pin`): a pinned day is never released locally. A symbol pin keeps the whole
+        session (originals are complete sessions and are never split). An unreadable pins file
+        releases nothing.
+      - **Durable copy before release** (`LIVE_ORIGINAL_DURABLE_DIR`, off by default; Roman's Pi
+        is a candidate destination, the transfer path is not set up): every sealed original is
+        copied to `<dest>/<day>/` with the day's coverage records (`coverage.jsonl`), verified
+        (each file's SHA-256 against the original's manifest, every record decoded), described in
+        `durable-copy.json` (files, sizes, hashes, record count, the day's pins, and references:
+        event contract, archive format and coverage schema versions, SHA-256 of `assets.json`,
+        `daily-closes.json`, the day's corrected-import manifest and the retention policy, the
+        recorder version), then renamed into place; a local record goes to
+        `live-original/.durable/<day>.json`. An existing copy is never overwritten; a damaged one
+        blocks release. The destination root must already exist (an unmounted mount point is
+        "unavailable", never filled on the local disk). Only an original that is outside the
+        window, unpinned, sealed **and** has a copy still present at the destination is deleted
+        locally. With no destination, or one unavailable, nothing past the window is ever
+        deleted.
+      - **Status** (`ARCHIVE_ROOT/plans/retention-status.json`, plus one log line per run):
+        free space, the headroom threshold (`LIVE_ORIGINAL_MIN_HEADROOM_MB`, default 10240),
+        per-day bytes of `live-original/`, `coverage/` and `live/`, why each original is kept
+        (`window`, `pinned`, `unsealed`, `pins_unreadable`, `awaiting_durable_copy`), what was
+        copied and released, and `"status": "ok"` or `"retention_at_risk"` with reasons (free
+        space under the headroom, originals waiting for a durable copy, a failed copy, unreadable
+        pins). At risk is a report: protected data is never deleted to make room. The market path
+        never waits on any of it; the live writer's own `ARCHIVE_MIN_FREE_MB` floor stops
+        recording (logged and in the coverage records), never the market.
+      Retention units differ by setting, on purpose: `LIVE_ORIGINAL_DAYS` counts completed
+      trading dates; `LIVE_RECORD_DAYS` counts days that have a `live/` recording;
+      `ARCHIVE_WINDOW_DAYS` (the archiver) counts trading days; `ARCHIVE_RETENTION_DAYS` counts
+      calendar days.
       **Immutable after sealing**: sealing is the last write a recording gets. One that was moved
       unsealed (the recorder was down when the import finished) is sealed once by that
       housekeeping (`Archive::seal_original`); the import itself never seals, because it runs in
       another process and sealing rewrites files the recorder's sealing thread may be working on.
-      A day that already has an original is never overwritten (`preserve_live` refuses; the
-      recording then stays in `live/` until `LIVE_RECORD_DAYS` retires it). **Size**: a sealed
+      A day that already has an original is never overwritten (`preserve_live` refuses, and the
+      recording then stays in `live/`). A corrected re-import writes only the day directory, so
+      the import and the original stay distinct versions of the day. **Size**: a sealed
       whole-market recording measured 20 B/print on the synthetic day above; at the guessed ~40M
-      prints a real day that is **~0.8 GB**, so the default costs **~4 GB** (estimate from the
+      prints a real day that is **~0.8 GB**, so the five-date window costs **~4 GB**, and
+      without a durable store originals accumulate at that rate (estimate from the
       measurement, not a real day; the recording is the whole market, `LIVE_SYMBOLS=*`, so it is
       larger than the band-filtered ~0.6 GB import). An original moved unsealed is ~3 GB until
       sealed.

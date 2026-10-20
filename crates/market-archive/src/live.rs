@@ -203,7 +203,7 @@ impl Archive {
     /// Ends an import of `day`: clears its marker (from here every reader takes the imported
     /// data, [`Archive::day_data`]), then moves the live recording, which the import replaces for
     /// every reader, to its preserved original unchanged ([`Archive::preserve_live`]; how long it
-    /// is kept is the recorder's `LIVE_ORIGINAL_DAYS`). The importer calls this instead of
+    /// is kept is `crate::retention`). The importer calls this instead of
     /// [`Archive::clear_importing`].
     ///
     /// It does not seal: the import runs in another process, and sealing rewrites the files the
@@ -233,9 +233,13 @@ impl Archive {
         Ok(true)
     }
 
-    /// Keeps the newest `keep` live recordings and retires the rest, **never** `recording` (the
-    /// day the recorder is writing). A recording is normally retired by the import that replaces
-    /// it; this only catches days no import ever finished.
+    /// Keeps the newest `keep` live recordings in `live/` and moves the rest to their preserved
+    /// originals ([`Archive::preserve_live`]), **never** `recording` (the day the recorder is
+    /// writing). A recording normally leaves `live/` when the import that replaces it finishes;
+    /// this catches days no import ever finished. It is moved, not deleted: a day no import
+    /// replaced has no other copy at all, so it is the receipt-order original like any other,
+    /// under the originals' retention (`crate::retention`). A day that already has an original
+    /// keeps its recording in `live/` (an original is never overwritten). Returns the days moved.
     pub fn prune_live(
         &self,
         keep: usize,
@@ -249,8 +253,12 @@ impl Archive {
             .copied()
             .filter(|d| Some(*d) != recording)
         {
-            if self.retire_live(d)? {
-                out.push(d);
+            match self.preserve_live(d) {
+                Ok(true) => out.push(d),
+                Ok(false) => {}
+                // Already preserved: leave both as they are.
+                Err(ArchiveError::Format { .. }) => {}
+                Err(e) => return Err(e),
             }
         }
         Ok(out)
@@ -1000,6 +1008,8 @@ mod tests {
         let pruned = a.prune_live(1, Some(days[0])).unwrap();
         assert_eq!(pruned, days[1..3]);
         assert_eq!(a.live_days().unwrap(), [days[0], days[3]]);
+        // Moved to their originals, not deleted: no import ever replaced them.
+        assert_eq!(a.original_days().unwrap(), days[1..3]);
         // The archive's own retention lists imported days only: a recording is not one.
         assert!(
             a.prune(days[3] + chrono::Duration::days(30))

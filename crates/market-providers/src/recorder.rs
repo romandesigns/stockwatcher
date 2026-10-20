@@ -51,10 +51,14 @@
 //! # Preserved originals
 //!
 //! The import moves a recording it replaces to `ARCHIVE_ROOT/live-original/<day>/`
-//! (`market_archive::original`). The recorder's housekeeping (at start and at every day change,
-//! one run at a time, off the writer thread) seals any original that was moved unsealed, keeps
-//! the newest [`RecorderConfig::original_days`] and deletes the rest, and drops coverage files
-//! older than every day that still has data.
+//! (`market_archive::original`), and so does retention for a recording no import replaced. The
+//! recorder's housekeeping (at start and at every day change, one run at a time, off the writer
+//! thread, so disk work and disk pressure never reach the market path) seals any original that
+//! was moved unsealed, applies the originals' policy ([`RecorderConfig::original`],
+//! `market_archive::retention`: a window of completed trading dates, research pins, a verified
+//! durable copy before anything is released), writes `plans/retention-status.json`, logs one
+//! line (a warning when retention is at risk), and drops coverage files older than every day
+//! that still has data.
 //!
 //! # Barrier
 //!
@@ -66,7 +70,7 @@ use chrono::NaiveDate;
 use market_archive::coverage::{HEARTBEAT_EVERY, HEARTBEAT_GRACE, wall_now};
 use market_archive::{
     Archive, ArchiveConfig, ArchiveError, CoverageEvent, CoverageRecord, DropStage, LinkStatus,
-    LiveWriter, Subscription,
+    LiveWriter, OriginalPolicy, RetentionState, Subscription,
 };
 use market_events::session::trading_date;
 use market_events::{MarketEvent, UnixNanos};
@@ -88,10 +92,10 @@ pub struct RecorderConfig {
     pub archive: ArchiveConfig,
     /// `LIVE_RECORD_DAYS`, default 5: live recordings kept when no import replaced them.
     pub keep_days: usize,
-    /// `LIVE_ORIGINAL_DAYS`, default 5: preserved originals (recordings an import replaced) kept,
-    /// newest first. 0 deletes them at the next housekeeping. A sealed whole-market day is
-    /// expected around 0.8 GB (docs/architecture/simulator-and-chart.md, "Live recording").
-    pub original_days: usize,
+    /// `LIVE_ORIGINAL_DAYS` (completed trading dates, at least 5), `LIVE_ORIGINAL_DURABLE_DIR`,
+    /// `LIVE_ORIGINAL_MIN_HEADROOM_MB`: the preserved originals' retention. A sealed
+    /// whole-market day is expected around 0.8 GB (docs/architecture/simulator-and-chart.md).
+    pub original: OriginalPolicy,
     /// Events the queue holds before it drops. 65,536 is a few seconds of the whole market at
     /// the open, ~20 MB.
     pub queue: usize,
@@ -105,7 +109,7 @@ impl RecorderConfig {
         RecorderConfig {
             archive,
             keep_days: 5,
-            original_days: 5,
+            original: OriginalPolicy::default(),
             queue: 65_536,
             today: None,
         }
@@ -198,9 +202,14 @@ impl Recorder {
         });
         let keep = Keep {
             live: cfg.keep_days.max(2),
-            originals: cfg.original_days,
+            originals: {
+                let mut p = cfg.original.clone();
+                p.references
+                    .insert("recorder_version".into(), env!("CARGO_PKG_VERSION").into());
+                p
+            },
         };
-        spawn_housekeeping(&archive, today, keep, None);
+        spawn_housekeeping(&archive, today, keep.clone(), None);
         let thread = Thread {
             archive,
             keep,
@@ -289,11 +298,11 @@ impl Recorder {
     }
 }
 
-/// Retention counts.
-#[derive(Clone, Copy, Debug)]
+/// Retention settings.
+#[derive(Clone, Debug)]
 struct Keep {
     live: usize,
-    originals: usize,
+    originals: OriginalPolicy,
 }
 
 /// One housekeeping run at a time: the start-up run may still be sealing when the first day
@@ -309,8 +318,8 @@ fn spawn_housekeeping(archive: &Archive, today: NaiveDate, keep: Keep, sealing: 
 
 /// Housekeeping, off the writer thread. `sealing`: the day the recorder just left (a day
 /// change); `None` seals every recording before `today` that a stopped process left unsealed.
-/// Then: seal originals moved unsealed, retire recordings beyond `keep.live` (never today's),
-/// keep `keep.originals` originals, drop coverage nothing is left to describe.
+/// Then: seal originals moved unsealed, move recordings beyond `keep.live` (never today's) to
+/// their originals, apply the originals' policy, drop coverage nothing is left to describe.
 fn housekeeping(archive: &Archive, today: NaiveDate, keep: Keep, sealing: Option<NaiveDate>) {
     let _one = HOUSEKEEPING.lock().unwrap_or_else(|p| p.into_inner());
     match sealing {
@@ -348,14 +357,27 @@ fn housekeeping(archive: &Archive, today: NaiveDate, keep: Keep, sealing: Option
         Ok(_) => {}
         Err(e) => tracing::warn!(error = %e, "live recorder: prune failed"),
     }
-    match archive.prune_originals(keep.originals) {
-        Ok(p) if !p.is_empty() => tracing::info!(
-            days = ?p,
-            keep = keep.originals,
-            "live recorder: removed preserved originals beyond LIVE_ORIGINAL_DAYS"
+    match archive.apply_original_retention(today, &keep.originals) {
+        Ok(st) if st.status == RetentionState::Ok => tracing::info!(
+            originals = st.originals.len(),
+            originals_mb = st.originals_bytes / (1024 * 1024),
+            coverage_kb = st.coverage_bytes / 1024,
+            free_mb = st.free_bytes / (1024 * 1024),
+            copied = ?st.copied,
+            released = ?st.released,
+            "live recorder: originals retention ok"
         ),
-        Ok(_) => {}
-        Err(e) => tracing::warn!(error = %e, "live recorder: pruning originals failed"),
+        Ok(st) => tracing::warn!(
+            originals = st.originals.len(),
+            originals_mb = st.originals_bytes / (1024 * 1024),
+            free_mb = st.free_bytes / (1024 * 1024),
+            headroom_mb = st.min_headroom_bytes / (1024 * 1024),
+            reasons = ?st.reasons,
+            "live recorder: retention_at_risk (nothing protected was deleted; see plans/retention-status.json)"
+        ),
+        Err(e) => {
+            tracing::warn!(error = %e, "live recorder: originals retention failed (nothing released)")
+        }
     }
     if let Err(e) = archive.prune_coverage(Some(today)) {
         tracing::warn!(error = %e, "live recorder: pruning coverage failed");
@@ -625,7 +647,7 @@ impl Thread {
                 }
             }
         }
-        spawn_housekeeping(&self.archive, day, self.keep, sealing);
+        spawn_housekeeping(&self.archive, day, self.keep.clone(), sealing);
         let created_by = concat!("stockwatcher live recorder ", env!("CARGO_PKG_VERSION"));
         match LiveWriter::open(&self.archive, day, self.floor, created_by) {
             Ok(w) => {
@@ -897,6 +919,35 @@ mod tests {
         );
         r.append(&trade(et(15, 10, 1), 99));
         assert_eq!(r.dropped(), 1, "nothing is recorded after the close");
+    }
+
+    /// Start-up housekeeping writes the retention status ops and the server read; low headroom
+    /// is reported as at risk and deletes nothing (the window and pins are in
+    /// market_archive::retention's tests).
+    #[test]
+    fn housekeeping_reports_retention_at_risk_instead_of_deleting() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a = Archive::new(cfg(tmp.path()).archive);
+        let old = date(1);
+        let mut w = LiveWriter::open(&a, old, 0, "test").unwrap();
+        w.append(&trade(et(1, 10, 0), 1)).unwrap();
+        w.finish().unwrap();
+        a.seal_live(old).unwrap();
+        a.mark_importing(old).unwrap();
+        a.finish_import(old).unwrap();
+        let mut c = cfg(tmp.path());
+        c.original.min_headroom_bytes = u64::MAX;
+        let r = Recorder::start_gated(&c, None, Some(date(19)));
+        eventually(|| a.read_retention_status().is_some());
+        let s = a.read_retention_status().unwrap();
+        assert_eq!(s["status"], "retention_at_risk");
+        assert_eq!(
+            s["originals"][0]["kept"], "window",
+            "the newest five are kept"
+        );
+        assert!(s["free_bytes"].as_u64().unwrap() > 0);
+        assert_eq!(a.original_days().unwrap(), [old]);
+        drop(r);
     }
 
     #[test]

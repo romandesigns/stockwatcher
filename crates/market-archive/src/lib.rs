@@ -89,6 +89,7 @@ pub mod live;
 pub mod manifest;
 pub mod original;
 pub mod reader;
+pub mod retention;
 pub mod space;
 pub mod writer;
 
@@ -111,6 +112,7 @@ pub use live::{DayData, LIVE_DIR, LiveQuote, LiveWriter};
 pub use manifest::{DayManifest, ImportProvenance, LiveDay, SymbolEntry};
 pub use original::ORIGINALS_DIR;
 pub use reader::SymbolReader;
+pub use retention::{OriginalPolicy, Pin, RetentionState, RetentionStatus};
 pub use writer::{FsyncPolicy, SymbolWriter};
 
 /// Symbols allowed in file names: `A-Z`, `0-9`, `.` and `-`, 1–16 characters (e.g. `BRK.B`).

@@ -20,8 +20,10 @@
 //!
 //! At the archive root, not inside the day: the rolling window (`swimport maintain`) and
 //! `ARCHIVE_RETENTION_DAYS` remove whole day directories, and the original has its own retention
-//! (`LIVE_ORIGINAL_DAYS`, applied by the recorder with [`Archive::prune_originals`]). A sibling
-//! directory is what makes it *pinned*: nothing that manages imported days can delete it.
+//! (`crate::retention`: a window of completed trading dates, research pins, and a durable copy
+//! before any local release). A sibling directory is what keeps it out of reach of everything
+//! that manages imported days. A corrected import and an original are distinct versions of a
+//! day: the import never writes here, and an original is never overwritten.
 //!
 //! # Immutable after sealing
 //!
@@ -34,7 +36,6 @@
 
 use crate::archive::read_manifest_file;
 use crate::error::ArchiveError;
-use crate::lifecycle::REMOVING_PREFIX;
 use crate::manifest::DayManifest;
 use crate::reader::SymbolReader;
 use crate::{Archive, VerifyReport, valid_symbol};
@@ -117,6 +118,9 @@ impl Archive {
         let parent = self.originals_dir();
         std::fs::create_dir_all(&parent).map_err(|e| ArchiveError::io(&parent, e))?;
         std::fs::rename(&from, &to).map_err(|e| ArchiveError::io(&from, e))?;
+        // A day that was only a recording is now an empty directory (`remove_dir` refuses
+        // anything else).
+        let _ = std::fs::remove_dir(self.day_dir(day));
         Ok(true)
     }
 
@@ -140,29 +144,6 @@ impl Archive {
             .original_manifest(day)?
             .ok_or_else(|| ArchiveError::NotFound(self.original_manifest_path(day)))?;
         self.verify_in(day, &self.original_dir(day), &m)
-    }
-
-    /// Keeps the newest `keep` originals and removes the rest (renamed out of the listing first,
-    /// like [`Archive::remove_day`]). `keep` 0 removes all. Returns the days removed.
-    pub fn prune_originals(&self, keep: usize) -> Result<Vec<NaiveDate>, ArchiveError> {
-        let days = self.original_days()?;
-        let cut = days.len().saturating_sub(keep);
-        let mut out = Vec::new();
-        for d in &days[..cut] {
-            let dir = self.original_dir(*d);
-            let doomed = self.root().join(format!(
-                "{REMOVING_PREFIX}{}-{ORIGINALS_DIR}",
-                d.format("%Y-%m-%d")
-            ));
-            match std::fs::rename(&dir, &doomed) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(e) => return Err(ArchiveError::io(&dir, e)),
-            }
-            std::fs::remove_dir_all(&doomed).map_err(|e| ArchiveError::io(&doomed, e))?;
-            out.push(*d);
-        }
-        Ok(out)
     }
 }
 
@@ -313,22 +294,21 @@ mod tests {
             import(&a, *day);
         }
         assert_eq!(a.original_days().unwrap(), days[..3]);
-        // Keep the newest two originals: only the oldest goes; imports and live untouched.
-        assert_eq!(a.prune_originals(2).unwrap(), [days[0]]);
-        assert_eq!(a.original_days().unwrap(), days[1..3]);
         assert_eq!(a.days().unwrap(), days[..3]);
         assert_eq!(a.live_days().unwrap(), [days[3]]);
-        assert!(a.prune_originals(2).unwrap().is_empty());
-        // Coverage goes only once nothing of its day is left.
+        // The rolling window removes the imported day: its original and coverage stay.
+        a.remove_day(days[0]).unwrap();
+        assert_eq!(a.original_days().unwrap(), days[..3]);
         assert!(
             a.prune_coverage(None).unwrap().is_empty(),
-            "10-12 is imported"
+            "the original still needs it"
         );
-        a.remove_day(days[0]).unwrap();
+        // Once the original is gone too (released under the retention policy), its coverage
+        // goes; nothing else does.
+        std::fs::remove_dir_all(a.original_dir(days[0])).unwrap();
         assert_eq!(a.prune_coverage(None).unwrap(), [days[0]]);
         assert_eq!(a.coverage_days().unwrap(), days[1..]);
-        // 0 keeps none.
-        assert_eq!(a.prune_originals(0).unwrap(), days[1..3]);
+        assert_eq!(a.original_days().unwrap(), days[1..3]);
         assert_eq!(a.sweep_removed().unwrap(), 0, "nothing left half-removed");
     }
 

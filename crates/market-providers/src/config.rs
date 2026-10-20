@@ -28,7 +28,9 @@ pub enum MarketDataMode {
 /// | `LIVE_SYMBOLS` | `*` | live only: `*` (whole market) or a comma list |
 /// | `LIVE_RECORD` | `1` | live only: record what the stream delivers into the archive (`ARCHIVE_ROOT/<day>/live/`, `crate::recorder`); `0` turns recording off |
 /// | `LIVE_RECORD_DAYS` | `5` | live recordings kept when no nightly import replaced them (at least 2; never the day being recorded) |
-/// | `LIVE_ORIGINAL_DAYS` | `5` | preserved originals kept (recordings the import replaced, `ARCHIVE_ROOT/live-original/<day>/`, ~0.8 GB a sealed whole-market day); `0` keeps none |
+/// | `LIVE_ORIGINAL_DAYS` | `5` | completed **trading dates** of preserved originals kept locally (`ARCHIVE_ROOT/live-original/<day>/`, ~0.8 GB a sealed whole-market day), at least 5; older ones go only once pinned-free and durably copied (`market_archive::retention`) |
+/// | `LIVE_ORIGINAL_DURABLE_DIR` | unset | durable research store: sealed originals are copied and verified there; unset, nothing past the window is ever released |
+/// | `LIVE_ORIGINAL_MIN_HEADROOM_MB` | `10240` | free space under this reports `retention_at_risk` (never deletes) |
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProviderConfig {
     pub mode: MarketDataMode,
@@ -173,9 +175,25 @@ impl ProviderConfig {
                     .ok_or_else(|| format!("LIVE_RECORD_DAYS must be a whole number of at least 2 (today and the day before), got {n:?}"))?;
             }
             if let Some(n) = var("LIVE_ORIGINAL_DAYS") {
-                r.original_days = n.parse::<usize>().map_err(|_| {
-                    format!("LIVE_ORIGINAL_DAYS must be a whole number (0 keeps none), got {n:?}")
+                r.original.keep_trading_dates = n
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|n| *n >= market_archive::retention::MIN_KEEP_TRADING_DATES)
+                    .ok_or_else(|| {
+                        format!(
+                            "LIVE_ORIGINAL_DAYS must be a whole number of completed trading dates, at least {}, got {n:?}",
+                            market_archive::retention::MIN_KEEP_TRADING_DATES
+                        )
+                    })?;
+            }
+            if let Some(dir) = var("LIVE_ORIGINAL_DURABLE_DIR") {
+                r.original.durable_dir = Some(std::path::PathBuf::from(dir));
+            }
+            if let Some(m) = var("LIVE_ORIGINAL_MIN_HEADROOM_MB") {
+                let mb: u64 = m.parse().map_err(|_| {
+                    format!("LIVE_ORIGINAL_MIN_HEADROOM_MB is not a whole number: {m}")
                 })?;
+                r.original.min_headroom_bytes = mb.saturating_mul(1024 * 1024);
             }
             Some(r)
         };
@@ -271,20 +289,36 @@ mod tests {
         let c = ProviderConfig::from_lookup(|k| match k {
             "ARCHIVE_ROOT" => Some("/app/data/archive".into()),
             "LIVE_RECORD_DAYS" => Some("7".into()),
-            "LIVE_ORIGINAL_DAYS" => Some("0".into()),
+            "LIVE_ORIGINAL_DAYS" => Some("10".into()),
+            "LIVE_ORIGINAL_DURABLE_DIR" => Some("/mnt/research".into()),
+            "LIVE_ORIGINAL_MIN_HEADROOM_MB" => Some("2048".into()),
             _ => None,
         })
         .unwrap();
         let r = c.live.record.unwrap();
         assert_eq!(r.archive, c.archive, "one store: the archive replay reads");
         assert_eq!(r.keep_days, 7);
-        assert_eq!(r.original_days, 0);
-        let d = ProviderConfig::from_lookup(|_| None).unwrap();
-        assert_eq!(d.live.record.unwrap().original_days, 5);
-        assert!(
-            ProviderConfig::from_lookup(|k| (k == "LIVE_ORIGINAL_DAYS").then(|| "-1".into()))
-                .is_err()
+        assert_eq!(r.original.keep_trading_dates, 10);
+        assert_eq!(
+            r.original.durable_dir,
+            Some(std::path::PathBuf::from("/mnt/research"))
         );
+        assert_eq!(r.original.min_headroom_bytes, 2048 * 1024 * 1024);
+        // Defaults: five trading dates, no durable store (nothing past the window released).
+        let d = ProviderConfig::from_lookup(|_| None)
+            .unwrap()
+            .live
+            .record
+            .unwrap();
+        assert_eq!(d.original.keep_trading_dates, 5);
+        assert_eq!(d.original.durable_dir, None);
+        // Fewer than five completed trading dates is refused, not silently raised.
+        for bad in ["0", "4", "-1"] {
+            assert!(
+                ProviderConfig::from_lookup(|k| (k == "LIVE_ORIGINAL_DAYS").then(|| bad.into()))
+                    .is_err()
+            );
+        }
         let off = ProviderConfig::from_lookup(|k| (k == "LIVE_RECORD").then(|| "0".into()));
         assert_eq!(off.unwrap().live.record, None);
         assert!(
