@@ -125,7 +125,8 @@ pub use daily_bars::{
 };
 pub use error::ArchiveError;
 pub use evidence::{
-    CoverageScope, EVIDENCE_DIR, FloatRecord, NewsCoverageRecord, NewsVersionRecord, sha256_hex,
+    CoverageScope, EVIDENCE_DIR, EvidenceTail, FloatRecord, NewsCoverageRecord, NewsVersionRecord,
+    TailRead, sha256_hex,
 };
 pub use evidence_load::LoadedEvidence;
 pub use lifecycle::{IMPORTING_MARKER, REMOVING_PREFIX};

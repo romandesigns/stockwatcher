@@ -22,7 +22,21 @@ impl InstrumentId {
     pub fn symbol(sym: &str) -> Self {
         InstrumentId(format!("sym:{sym}"))
     }
+
+    /// Every instrument at once, for records that speak for the whole market: a news search
+    /// without a symbol filter covered every symbol its source tags. Stored once instead of once
+    /// per symbol, that is ~1,000 coverage records a trading day instead of millions
+    /// ([`NewsCoverage`], [`EvidenceStore::coverage`]).
+    pub fn market() -> Self {
+        InstrumentId(MARKET_ID.to_string())
+    }
+
+    pub fn is_market(&self) -> bool {
+        self.0 == MARKET_ID
+    }
 }
+
+const MARKET_ID: &str = "market:*";
 
 /// What a previous close is expressed in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -225,7 +239,10 @@ pub struct NewsItem {
     pub observed_at: i64,
 }
 
-/// Which news sources were searched successfully, over what window, for one instrument.
+/// Which news sources were searched successfully, over what window, for one instrument, or for
+/// every instrument when `instrument` is [`InstrumentId::market`] (a search without a symbol
+/// filter). A lookup for one instrument takes the latest of its own and the market's records
+/// ([`EvidenceStore::coverage`]).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct NewsCoverage {
     pub id: String,
@@ -255,33 +272,39 @@ fn latest<T>(rows: Option<&Vec<T>>, cutoff: i64, at: impl Fn(&T) -> (i64, u32)) 
         .max_by_key(|r| at(r))
 }
 
+/// Appends `r` unless an identical record is already there: a record delivered twice (a server
+/// re-reading the same files for a new session date) is one record, not two news items.
+fn push_new<T: PartialEq>(map: &mut HashMap<InstrumentId, Vec<T>>, i: &InstrumentId, r: T) {
+    let rows = map.entry(i.clone()).or_default();
+    if !rows.contains(&r) {
+        rows.push(r);
+    }
+}
+
 impl EvidenceStore {
     pub fn add_prev_close(&mut self, r: PrevClose) {
-        self.prev_close
-            .entry(r.instrument.clone())
-            .or_default()
-            .push(r);
+        let i = r.instrument.clone();
+        push_new(&mut self.prev_close, &i, r);
     }
     pub fn add_daily(&mut self, r: DailyBaseline) {
-        self.daily.entry(r.instrument.clone()).or_default().push(r);
+        let i = r.instrument.clone();
+        push_new(&mut self.daily, &i, r);
     }
     pub fn add_intraday(&mut self, r: IntradayBaseline) {
-        self.intraday
-            .entry(r.instrument.clone())
-            .or_default()
-            .push(r);
+        let i = r.instrument.clone();
+        push_new(&mut self.intraday, &i, r);
     }
     pub fn add_float(&mut self, r: FloatObservation) {
-        self.float.entry(r.instrument.clone()).or_default().push(r);
+        let i = r.instrument.clone();
+        push_new(&mut self.float, &i, r);
     }
     pub fn add_news(&mut self, r: NewsItem) {
-        self.news.entry(r.instrument.clone()).or_default().push(r);
+        let i = r.instrument.clone();
+        push_new(&mut self.news, &i, r);
     }
     pub fn add_coverage(&mut self, r: NewsCoverage) {
-        self.coverage
-            .entry(r.instrument.clone())
-            .or_default()
-            .push(r);
+        let i = r.instrument.clone();
+        push_new(&mut self.coverage, &i, r);
     }
 
     pub fn prev_close(&self, i: &InstrumentId, cutoff: i64) -> Option<&PrevClose> {
@@ -348,13 +371,198 @@ impl EvidenceStore {
             self.coverage
                 .get(i)
                 .into_iter()
+                .chain(self.coverage.get(&InstrumentId::market()))
                 .flatten()
                 .map(|r| r.observed_at),
         );
         times.into_iter().filter(|&x| x > t).min()
     }
 
+    /// The latest coverage record observed by `cutoff`, of the instrument's own and the
+    /// market-wide ones. The two are separate runs (a market run is never merged with a
+    /// per-symbol one), so taking the latest can only see a shorter run than a merge would:
+    /// UNKNOWN where a merge might say FAIL, never the other way round.
     pub fn coverage(&self, i: &InstrumentId, cutoff: i64) -> Option<&NewsCoverage> {
-        latest(self.coverage.get(i), cutoff, |r| (r.observed_at, 0))
+        let own = latest(self.coverage.get(i), cutoff, |r| (r.observed_at, 0));
+        let market = latest(self.coverage.get(&InstrumentId::market()), cutoff, |r| {
+            (r.observed_at, 0)
+        });
+        match (own, market) {
+            (Some(a), Some(m)) => Some(if m.observed_at > a.observed_at { m } else { a }),
+            (a, m) => a.or(m),
+        }
+    }
+
+    /// Drops every record no decision at a cutoff `>= before` can read; returns how many.
+    ///
+    /// Exact, not approximate: a join takes the latest record observed by the cutoff, so per
+    /// instrument and kind the latest one observed at or before `before` and everything observed
+    /// after it are kept. A news item only qualifies while `cutoff - published_at <= fresh`, so
+    /// one published before `before - fresh` (or never dated) can never qualify again.
+    ///
+    /// This is what keeps a long-running live engine bounded: the server re-issues daily
+    /// baselines with every announcement check and market news coverage with every news poll.
+    pub fn prune(&mut self, before: i64, news_fresh: i64) -> usize {
+        fn keep_latest<T>(
+            map: &mut HashMap<InstrumentId, Vec<T>>,
+            before: i64,
+            at: impl Fn(&T) -> (i64, u32),
+        ) -> usize {
+            let mut dropped = 0;
+            for rows in map.values_mut() {
+                let keep = rows.iter().map(&at).filter(|k| k.0 <= before).max();
+                let n = rows.len();
+                let mut kept = false;
+                rows.retain(|r| {
+                    let k = at(r);
+                    if k.0 > before {
+                        true
+                    } else if Some(k) == keep && !kept {
+                        kept = true;
+                        true
+                    } else {
+                        false
+                    }
+                });
+                dropped += n - rows.len();
+            }
+            map.retain(|_, v| !v.is_empty());
+            dropped
+        }
+        let mut n = 0;
+        n += keep_latest(&mut self.prev_close, before, |r| (r.observed_at, r.version));
+        n += keep_latest(&mut self.daily, before, |r| (r.observed_at, r.version));
+        n += keep_latest(&mut self.intraday, before, |r| (r.observed_at, r.version));
+        n += keep_latest(&mut self.float, before, |r| (r.observed_at, r.version));
+        n += keep_latest(&mut self.coverage, before, |r| (r.observed_at, 0));
+        for rows in self.news.values_mut() {
+            let len = rows.len();
+            rows.retain(|r| {
+                r.observed_at > before || r.published_at.is_some_and(|p| p >= before - news_fresh)
+            });
+            n += len - rows.len();
+        }
+        self.news.retain(|_, v| !v.is_empty());
+        n
+    }
+
+    /// Records held, all kinds (tests and logs).
+    pub fn len(&self) -> usize {
+        fn count<T>(m: &HashMap<InstrumentId, Vec<T>>) -> usize {
+            m.values().map(Vec::len).sum()
+        }
+        count(&self.prev_close)
+            + count(&self.daily)
+            + count(&self.intraday)
+            + count(&self.float)
+            + count(&self.news)
+            + count(&self.coverage)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn float(sym: &str, version: u32, observed_at: i64) -> FloatObservation {
+        FloatObservation {
+            id: format!("float:{sym}"),
+            version,
+            instrument: InstrumentId::symbol(sym),
+            shares: 1_000_000 * u64::from(version),
+            provider: "fixture".into(),
+            effective_as_of: None,
+            observed_at,
+            quality: vec![],
+        }
+    }
+
+    fn cov(id: &str, instrument: InstrumentId, through: i64, observed_at: i64) -> NewsCoverage {
+        NewsCoverage {
+            id: id.into(),
+            instrument,
+            sources: vec!["alpaca/benzinga".into()],
+            covered_from: 0,
+            covered_through: through,
+            observed_at,
+        }
+    }
+
+    fn news(published_at: Option<i64>, observed_at: i64) -> NewsItem {
+        NewsItem {
+            id: format!("news:{observed_at}"),
+            version: 1,
+            instrument: InstrumentId::symbol("AAA"),
+            event_type: "earnings".into(),
+            source: "alpaca/benzinga".into(),
+            credible_source: true,
+            relevant: true,
+            substantive: true,
+            authenticity: Authenticity::ReportedUnverified,
+            favorability: Favorability::Undetermined,
+            published_at,
+            observed_at,
+        }
+    }
+
+    #[test]
+    fn market_coverage_serves_every_instrument_and_the_latest_of_the_two_wins() {
+        let mut s = EvidenceStore::default();
+        let a = InstrumentId::symbol("AAA");
+        s.add_coverage(cov("m1", InstrumentId::market(), 100, 110));
+        assert_eq!(s.coverage(&a, 109), None, "not observed yet");
+        assert_eq!(s.coverage(&a, 110).unwrap().id, "m1");
+        assert_eq!(
+            s.coverage(&InstrumentId::symbol("ZZZ"), 200).unwrap().id,
+            "m1"
+        );
+        s.add_coverage(cov("own", a.clone(), 150, 160));
+        assert_eq!(s.coverage(&a, 200).unwrap().id, "own");
+        s.add_coverage(cov("m2", InstrumentId::market(), 190, 200));
+        assert_eq!(s.coverage(&a, 200).unwrap().id, "m2");
+        assert_eq!(
+            s.next_after(&a, 160),
+            Some(200),
+            "a market record is AAA's too"
+        );
+    }
+
+    #[test]
+    fn prune_keeps_exactly_what_a_later_cutoff_can_read() {
+        let mut s = EvidenceStore::default();
+        let a = InstrumentId::symbol("AAA");
+        for (v, t) in [(1, 10), (2, 20), (3, 30), (4, 50)] {
+            s.add_float(float("AAA", v, t));
+        }
+        s.add_coverage(cov("m1", InstrumentId::market(), 5, 10));
+        s.add_coverage(cov("m2", InstrumentId::market(), 15, 20));
+        let fresh = 100;
+        // Published at 0: still fresh for cutoffs up to 100.
+        s.add_news(news(Some(0), 5));
+        // Published at -70: too old for any cutoff after 30.
+        s.add_news(news(Some(-70), 6));
+        // Never dated: never qualifies.
+        s.add_news(news(None, 7));
+        let joins = |s: &EvidenceStore| -> Vec<_> {
+            (41..60)
+                .map(|c| (s.float(&a, c).cloned(), s.coverage(&a, c).cloned()))
+                .collect()
+        };
+        let before = joins(&s);
+        let dropped = s.prune(40, fresh);
+        assert_eq!(dropped, 2 + 1 + 2, "floats v1, v2; coverage m1; two news");
+        assert_eq!(
+            joins(&s),
+            before,
+            "every join at a cutoff > 40 is unchanged"
+        );
+        assert_eq!(s.news(&a, 41).len(), 1);
+        assert_eq!(s.float(&a, 49).unwrap().version, 3);
+        assert_eq!(s.float(&a, 50).unwrap().version, 4);
+        assert_eq!(s.len(), 2 + 1 + 1);
     }
 }

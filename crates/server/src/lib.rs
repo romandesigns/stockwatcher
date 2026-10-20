@@ -4,6 +4,7 @@ pub mod auth;
 pub mod config;
 pub mod context;
 pub mod days;
+pub mod evidence;
 pub mod history;
 pub mod market;
 pub mod pressure;

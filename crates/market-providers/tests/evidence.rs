@@ -603,6 +603,26 @@ fn coverage_runs_join_overlapping_polls_and_thinning_only_shortens_them() {
     // A gap longer than the catch-up limit starts a new run instead of bridging it.
     let (s, _) = news_window(&cfg, last, base + 4 * 86_400 * SEC);
     assert!(s > last.unwrap());
+    // Market-wide: the same runs once, for every instrument; a named-symbol search is not in them.
+    let mut with_scoped = recs.clone();
+    with_scoped.push(market_archive::NewsCoverageRecord {
+        id: "named".into(),
+        scope: CoverageScope::Symbols(vec!["AAPL".into()]),
+        ..recs[4].clone()
+    });
+    let market = market_archive::evidence_load::market_news_coverage(&with_scoped, 0);
+    assert_eq!(market.len(), 5);
+    for (m, x) in market.iter().zip(&all) {
+        assert_eq!(m.instrument, stock_context::InstrumentId::market());
+        assert_eq!(
+            (&m.id, m.covered_from, m.covered_through, m.observed_at),
+            (&x.id, x.covered_from, x.covered_through, x.observed_at)
+        );
+    }
+    assert_eq!(
+        market_archive::evidence_load::scoped_symbols(&with_scoped),
+        BTreeSet::from(["AAPL".to_string()])
+    );
 }
 
 #[test]

@@ -375,36 +375,87 @@ pub fn news_coverage(
 ) -> Vec<NewsCoverage> {
     let mut rows: Vec<&NewsCoverageRecord> = records.iter().collect();
     rows.sort_by_key(|r| r.observed_at);
-    let min_gap = min_interval_secs.max(0) * 1_000_000_000;
     let mut out = Vec::new();
     for sym in symbols {
-        let mut run: Option<(i64, i64)> = None;
-        let mut last_kept: Option<i64> = None;
-        for r in rows.iter().filter(|r| r.scope.covers(sym)) {
-            let (start, through, fresh_run) = match run {
-                Some((s, t)) if r.covered_from <= t => (s, t.max(r.covered_through), false),
-                _ => (r.covered_from, r.covered_through, true),
-            };
-            run = Some((start, through));
-            if !fresh_run && last_kept.is_some_and(|k| r.observed_at - k < min_gap) {
-                continue;
-            }
-            last_kept = Some(r.observed_at);
-            out.push(NewsCoverage {
-                id: r.id.clone(),
-                instrument: InstrumentId::symbol(sym),
-                sources: r
-                    .sources
-                    .iter()
-                    .map(|s| format!("{}/{s}", r.provider))
-                    .collect(),
-                covered_from: start,
-                covered_through: through,
-                observed_at: r.observed_at,
-            });
-        }
+        let mine: Vec<&NewsCoverageRecord> = rows
+            .iter()
+            .copied()
+            .filter(|r| r.scope.covers(sym))
+            .collect();
+        runs(
+            &mine,
+            InstrumentId::symbol(sym),
+            min_interval_secs,
+            &mut out,
+        );
     }
     out
+}
+
+/// Market-wide coverage ([`InstrumentId::market`]): the runs of the searches made without a
+/// symbol filter (`CoverageScope::All`, which is every search the collector makes), by the rules
+/// of [`news_coverage`]. One record per kept search instead of one per search and symbol: the
+/// engine serves a market record to every instrument (`EvidenceStore::coverage`). A search for
+/// named symbols is not part of these runs; give those symbols [`news_coverage`] too.
+pub fn market_news_coverage(
+    records: &[NewsCoverageRecord],
+    min_interval_secs: i64,
+) -> Vec<NewsCoverage> {
+    let mut rows: Vec<&NewsCoverageRecord> = records
+        .iter()
+        .filter(|r| r.scope == crate::CoverageScope::All)
+        .collect();
+    rows.sort_by_key(|r| r.observed_at);
+    let mut out = Vec::new();
+    runs(&rows, InstrumentId::market(), min_interval_secs, &mut out);
+    out
+}
+
+/// The symbols a search for named symbols covered (`CoverageScope::Symbols`), across `records`.
+pub fn scoped_symbols(records: &[NewsCoverageRecord]) -> BTreeSet<String> {
+    records
+        .iter()
+        .filter_map(|r| match &r.scope {
+            crate::CoverageScope::Symbols(s) => Some(s.iter().cloned()),
+            crate::CoverageScope::All => None,
+        })
+        .flatten()
+        .collect()
+}
+
+/// [`news_coverage`]'s run rule over `rows` (already in completion order) for one instrument.
+fn runs(
+    rows: &[&NewsCoverageRecord],
+    instrument: InstrumentId,
+    min_interval_secs: i64,
+    out: &mut Vec<NewsCoverage>,
+) {
+    let min_gap = min_interval_secs.max(0) * 1_000_000_000;
+    let mut run: Option<(i64, i64)> = None;
+    let mut last_kept: Option<i64> = None;
+    for r in rows {
+        let (start, through, fresh_run) = match run {
+            Some((s, t)) if r.covered_from <= t => (s, t.max(r.covered_through), false),
+            _ => (r.covered_from, r.covered_through, true),
+        };
+        run = Some((start, through));
+        if !fresh_run && last_kept.is_some_and(|k| r.observed_at - k < min_gap) {
+            continue;
+        }
+        last_kept = Some(r.observed_at);
+        out.push(NewsCoverage {
+            id: r.id.clone(),
+            instrument: instrument.clone(),
+            sources: r
+                .sources
+                .iter()
+                .map(|s| format!("{}/{s}", r.provider))
+                .collect(),
+            covered_from: start,
+            covered_through: through,
+            observed_at: r.observed_at,
+        });
+    }
 }
 
 /// Everything one run needs, ready for `Engine::add_*`.

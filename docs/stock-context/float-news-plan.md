@@ -1,10 +1,12 @@
 # Float and news evidence: forward collection plan (float-news v1)
 
-Status: **built and tested on recorded probe responses (2026-10-19), not deployed.** The
-collector is `swimport evidence` (`crates/market-providers/src/import/evidence_collect.rs`).
-The records live under `$ARCHIVE_ROOT/evidence/` (`crates/market-archive/src/evidence.rs`).
-The loader into the context engine is `crates/market-archive/src/evidence_load.rs`. Nothing
-calls a provider from the server.
+Status: **built and tested on recorded probe responses (2026-10-19); wired into the server and
+the VPS compose file on 2026-10-20 (section 8), deployed when the owner follows
+`infra/vps/SETUP.md` section 10.** The collector is `swimport evidence`
+(`crates/market-providers/src/import/evidence_collect.rs`). The records live under
+`$ARCHIVE_ROOT/evidence/` (`crates/market-archive/src/evidence.rs`). The loader into the context
+engine is `crates/market-archive/src/evidence_load.rs`, driven by `crates/server/src/evidence.rs`.
+Nothing calls a provider from the server.
 
 Owner direction (Five Pillars brief §1.1 B):
 
@@ -245,19 +247,28 @@ With a lag of 120 s and a 60 s poll, a symbol with no story is:
 **Decision for Roman:** adopt a `pillars-v2` with a lag (120 s is the proposal: two missed polls
 before UNKNOWN), or keep v1 and accept that "no news" stays UNKNOWN in forward runs.
 
-## 8. Integration points (not done here)
+## 8. Integration points
 
-- **Deployment.** A compose service `evidence` (same image, same volume, same `.env`) running
-  `swimport evidence`. `infra/vps/` is not edited on this branch.
-- **Server (increment 2b).** Load `LoadedEvidence::load(archive, symbols, since, 300)` into each
-  market's `Engine`. Reload by mtime like `daily-closes.json`, appending only records newer than
-  the last load. Use separate engines for live and replay.
-  - Memory: per-symbol coverage for 3,000 symbols at a 300 s thinning is about 600k small
-    records a day.
-  - A market-wide coverage list in `EvidenceStore` would make this one list. That is a
-    stock-context change for later.
-- **Configuration reference.** The `EVIDENCE_*` variables are documented on `EvidenceConfig`.
-  Copy them to `docs/reference/configuration.md` when the service is deployed.
+Done on `feat/ross-panel-live` (2026-10-20):
+
+- **Deployment.** The compose service `evidence` (same image, volume and `.env` as the
+  archiver) runs `swimport evidence`; owner steps in `infra/vps/SETUP.md` section 10.
+- **Server.** `crates/server/src/evidence.rs` follows the evidence files with
+  `market_archive::EvidenceTail` (only appended bytes are parsed) every
+  `CONTEXT_EVIDENCE_CHECK_SECS` (15 s) on a blocking thread, derives float observations, news
+  items and coverage with the loaders above over the session date's window, and hands each
+  context board only the records it has not got. Live and replay keep separate engines; a replay
+  seek seeds its new board from memory.
+  - Coverage is **market-wide**: `evidence_load::market_news_coverage` emits one record per
+    search for `InstrumentId::market()`, and `EvidenceStore::coverage` serves it to every
+    instrument (the latest of the instrument's own and the market's). Per-symbol coverage would
+    have been ~7,000 symbols × ~1,000 searches a day; this is ~1,000 records. The two kinds are
+    separate runs, so a lookup can only see a shorter run than a merge (UNKNOWN, never a false
+    FAIL). A search for named symbols still yields per-symbol records for those symbols.
+  - The engine drops what no later decision can read (`EvidenceStore::prune`), so a live
+    server running for weeks stays bounded.
+- **Configuration reference.** The `EVIDENCE_*` variables are in
+  `docs/reference/configuration.md`.
 - **Concurrent work.** No edits to `import/maintain.rs`, `batch.rs` or `corporate.rs` (PR #53),
   or to the recorder and archive coverage code (PR #52). `price_band_from_lookup` and
   `DailyCloses` are only read.

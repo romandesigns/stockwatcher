@@ -5,9 +5,10 @@ source of truth is the doc table next to each reader (linked per section); updat
 variable changes. Secrets go in the gitignored `.env` on each host, never in the repo, a URL or a
 public build variable (`docs/CONVENTIONS.md`).
 
-Production (`~/apps/stockwatcher/.env` on the VPS, shared by the `server` and `archiver` compose
-services) sets `STOCKWATCHER_API_TOKEN`, `RUST_LOG`, `MARKET_DATA_MODE`, `REPLAY_START=09:30`,
-`SIM_AUTOFIXTURE=0` and the Alpaca keys. The image adds `HOST=0.0.0.0`, `STATIC_DIR=/app/web`,
+Production (`~/apps/stockwatcher/.env` on the VPS, shared by the `server`, `archiver` and
+`evidence` compose services) sets `STOCKWATCHER_API_TOKEN`, `RUST_LOG`, `MARKET_DATA_MODE`,
+`REPLAY_START=09:30`, `SIM_AUTOFIXTURE=0` and the Alpaca keys, and for the Ross Panel
+`FMP_API_KEY` and `STOCK_CONTEXT=1`. The image adds `HOST=0.0.0.0`, `STATIC_DIR=/app/web`,
 `DATA_DIR=/app/data`, `ARCHIVE_ROOT=/app/data/archive` and `LOG_FORMAT=json`.
 
 ## Server basics (`crates/server/src/config.rs`, `main.rs`)
@@ -65,7 +66,8 @@ services) sets `STOCKWATCHER_API_TOKEN`, `RUST_LOG`, `MARKET_DATA_MODE`, `REPLAY
 | `LIVE_ORIGINAL_DURABLE_DIR` | unset (off) | durable research store. Each sealed original is copied to `<dir>/<day>/` with its coverage records and a verified `durable-copy.json`. The directory must already exist; a missing one is "unavailable" (originals kept, `retention_at_risk`). Unset: nothing past the window is ever deleted. Production: `/durable/originals`, the Pi's NFS share (set in `infra/vps/docker-compose.yml`; setup in `infra/vps/SETUP.md` section 9). Point it at a subdirectory that exists only on the mounted share: an unmounted mount point is an empty directory, which would otherwise count as available |
 | `LIVE_ORIGINAL_MIN_HEADROOM_MB` | `10240` | free space under this marks `plans/retention-status.json` `retention_at_risk` (with a warning log). Reports only: protected originals are never deleted to make room |
 | `LIVE_HISTORY_PRELOAD` | `1` | after a start, load every symbol's day from the archive in the background, busiest first; `0` loads a symbol only when a chart asks for it (`crates/server/src/history.rs`) |
-| `STOCK_CONTEXT` | `0` | five-pillar stock context and the Ross Panel (`crates/server/src/context.rs`, docs/stock-context/); off: `ross.snapshot` says `enabled: false`. Needs `PRICE_BAND_*` to match the panel policy's platform band ($0.10–$25), else it stays off with an error in the log |
+| `STOCK_CONTEXT` | `0` | five-pillar stock context and the Ross Panel (`crates/server/src/context.rs`, docs/stock-context/), under `pillars-v2`, `ross-panel-v1` and `setups-v0`; off: `ross.snapshot` says `enabled: false`. Needs `PRICE_BAND_*` to match pillars-v2's price band and the panel policy's platform band (both $0.10–$25), else it stays off with an error in the log. Its float, news, baseline and checked-close evidence comes from the archive (the `evidence` and `archiver` services); without them the panel stays empty (`infra/vps/SETUP.md` section 10) |
+| `CONTEXT_EVIDENCE_CHECK_SECS` | `15` | with `STOCK_CONTEXT=1`: how often the server reads newly stored evidence from `ARCHIVE_ROOT` (`crates/server/src/evidence.rs`, which explains the 15 s against the news pillar's 120 s coverage lag). `0` = only at startup and on a replay day switch |
 
 Alpaca allows one stream connection per account on most plans: run live on one host only.
 
@@ -107,6 +109,30 @@ Runs as the `archiver` compose service on the same `.env`; also reads the Alpaca
 | `MAINTAIN_RETRY_DELAY_SECS` | `120` | delay before the first extra pass; doubles each pass |
 | `STOCKWATCHER_SERVER_URL` | `http://127.0.0.1:8790` | the server it asks which day is being replayed (never deleted) |
 | `ALPACA_DATA_BASE` / `ALPACA_TRADING_BASE` | `https://data.alpaca.markets` / `https://paper-api.alpaca.markets` | API bases |
+
+## Evidence collector: `swimport evidence` (`crates/market-providers/src/import/evidence_collect.rs`)
+
+Runs as the `evidence` compose service on the same `.env` (`infra/vps/SETUP.md` section 10). It
+writes float and news records under `ARCHIVE_ROOT/evidence/`, which the server reads with
+`STOCK_CONTEXT=1`; plan and reasons: `docs/stock-context/float-news-plan.md`. Needs
+`FMP_API_KEY` (float) and the Alpaca keys above (news); a missing key only switches that half
+off, and the start line says `NOT SET`. Also reads `PRICE_BAND_*` (its watch universe) and
+`ARCHIVE_*`.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `FMP_API_KEY` | unset | FMP key for the float refresh; unset: no float is collected |
+| `EVIDENCE_FLOAT_AT` | `07:00` | ET time of the daily float refresh (`HH:MM`), trading days |
+| `EVIDENCE_FLOAT_MODE` | `bulk` | `bulk`: `shares-float-all` pages (~10 requests for the whole market; page 1 probed 2026-10-20), falling back to per-symbol on the first refusal. `per-symbol`: one request per universe symbol (~7,000 a day) |
+| `EVIDENCE_FMP_PER_MINUTE` | `120` | FMP request ceiling for this process |
+| `EVIDENCE_FLOAT_WARMUP_MAX` | `500` | intraday band entrants given a float per ET date, at most |
+| `EVIDENCE_UNIVERSE_DAYS` | `5` | trading dates of `daily-closes.json` whose in-band symbols form the float universe |
+| `EVIDENCE_NEWS_POLL_SECS` | `60` | news poll interval 04:00–20:00 ET on trading days (min 10) |
+| `EVIDENCE_NEWS_IDLE_POLL_SECS` | `300` | news poll interval otherwise (min 10) |
+| `EVIDENCE_NEWS_EDIT_EVERY_SECS` | `900` | how often the trailing window is searched again for edited stories (min 60) |
+| `EVIDENCE_NEWS_EDIT_WINDOW_MINS` | `180` | that trailing window |
+| `EVIDENCE_ALPACA_PER_MINUTE` | `60` | Alpaca news request ceiling for this process |
+| `ALPACA_DATA_BASE` / `FMP_BASE` | `https://data.alpaca.markets` / `https://financialmodelingprep.com` | API bases |
 
 `swimport`'s one-off commands (`crates/market-providers/src/bin/swimport.rs`) also read
 `FMP_API_KEY` and `FMP_BASE` (default `https://financialmodelingprep.com`) for FMP comparison bars.

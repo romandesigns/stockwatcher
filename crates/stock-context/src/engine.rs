@@ -372,10 +372,36 @@ impl Engine {
         self.evidence.add_news(r);
         self.mark(&i);
     }
+    /// A market-wide record ([`InstrumentId::market`]) may change any symbol's news pillar, so
+    /// every symbol is re-evaluated at the next barrier.
     pub fn add_coverage(&mut self, r: NewsCoverage) {
         let i = r.instrument.clone();
         self.evidence.add_coverage(r);
-        self.mark(&i);
+        if i.is_market() {
+            for s in self.syms.values_mut() {
+                s.dirty = true;
+            }
+        } else {
+            self.mark(&i);
+        }
+    }
+
+    /// Drops the evidence no future decision can read ([`EvidenceStore::prune`]): every barrier
+    /// still to be decided has a cutoff at or after the next one's. Returns how many records went.
+    /// Nothing before the engine has a clock.
+    pub fn prune_evidence(&mut self) -> usize {
+        let Some(b) = self.next_bar else {
+            return 0;
+        };
+        let fresh = self.policy.body.reference_profile.news_freshness_secs * SEC;
+        // Strictly before the next cutoff: a record observed exactly at it is still "at or
+        // before" for that decision, and pruning keeps the latest at or before `before` anyway.
+        self.evidence.prune(b + self.settle() - 1, fresh)
+    }
+
+    /// Evidence records held (logs and tests).
+    pub fn evidence_len(&self) -> usize {
+        self.evidence.len()
     }
 
     /// Applies one print admitted at `admit` (the run clock when it applied). Decides every

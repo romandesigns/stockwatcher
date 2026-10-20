@@ -241,10 +241,8 @@ struct Versioned {
     v: u32,
 }
 
-fn read_all<T: for<'de> Deserialize<'de>>(
-    dir: &Path,
-    since: Option<i64>,
-) -> Result<Vec<T>, ArchiveError> {
+/// The month files of `dir` from `since`'s month on, oldest first. Missing directory: none.
+fn month_files(dir: &Path, since: Option<i64>) -> Result<Vec<PathBuf>, ArchiveError> {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -264,8 +262,147 @@ fn read_all<T: for<'de> Deserialize<'de>>(
         files.push((month.to_string(), e.path()));
     }
     files.sort();
+    Ok(files.into_iter().map(|(_, p)| p).collect())
+}
+
+fn parse_line<T: for<'de> Deserialize<'de>>(line: &str) -> Result<T, String> {
+    serde_json::from_str::<Versioned>(line)
+        .map_err(|e| e.to_string())
+        .and_then(|v| {
+            if v.v != EVIDENCE_SCHEMA {
+                Err(format!("unsupported evidence schema {}", v.v))
+            } else {
+                serde_json::from_str::<T>(line).map_err(|e| e.to_string())
+            }
+        })
+}
+
+/// What one [`EvidenceTail`] call found: the new records, and the files it could not read this
+/// time (their offsets did not move, so the next call tries them again).
+#[derive(Debug)]
+pub struct TailRead<T> {
+    pub records: Vec<T>,
+    pub errors: Vec<ArchiveError>,
+}
+
+/// Reads only what was appended to the evidence files since the previous call: the reader for a
+/// process that follows them while the collector (`swimport evidence`) writes, without re-parsing
+/// a month of floats (~165k lines) every few seconds.
+///
+/// Per file it remembers the byte offset just past the last newline it consumed. A line is only
+/// consumed once its newline is on disk (the collector writes whole lines then syncs, so a
+/// half-written append is simply not there yet). The torn-line rules are [`Archive::read_float`]'s:
+/// a line that does not end in `}` with a newline after it is a crash's leftover and is skipped
+/// (counted); any other bad line stops that file with an error and is retried next call. A file
+/// shorter than its offset was replaced, never appended (the collector never does that): it is
+/// read again from the start, so the caller must tolerate seeing a record twice.
+#[derive(Debug, Default)]
+pub struct EvidenceTail {
+    offsets: std::collections::HashMap<PathBuf, u64>,
+    /// Torn lines skipped so far.
+    pub skipped: usize,
+}
+
+impl EvidenceTail {
+    pub fn float(&mut self, a: &Archive, since: Option<i64>) -> TailRead<FloatRecord> {
+        self.read(&a.evidence_dir().join(FLOAT_DIR), since)
+    }
+
+    pub fn news(&mut self, a: &Archive, since: Option<i64>) -> TailRead<NewsVersionRecord> {
+        self.read(&a.evidence_dir().join(NEWS_DIR), since)
+    }
+
+    pub fn news_coverage(
+        &mut self,
+        a: &Archive,
+        since: Option<i64>,
+    ) -> TailRead<NewsCoverageRecord> {
+        self.read(&a.evidence_dir().join(NEWS_COVERAGE_DIR), since)
+    }
+
+    fn read<T: for<'de> Deserialize<'de>>(
+        &mut self,
+        dir: &Path,
+        since: Option<i64>,
+    ) -> TailRead<T> {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut out = TailRead {
+            records: Vec::new(),
+            errors: Vec::new(),
+        };
+        let files = match month_files(dir, since) {
+            Ok(f) => f,
+            Err(e) => {
+                out.errors.push(e);
+                return out;
+            }
+        };
+        for path in files {
+            let len = match std::fs::metadata(&path) {
+                Ok(m) => m.len(),
+                Err(e) => {
+                    out.errors.push(ArchiveError::io(&path, e));
+                    continue;
+                }
+            };
+            let mut off = self.offsets.get(&path).copied().unwrap_or(0);
+            if len < off {
+                off = 0;
+            }
+            if len == off {
+                continue;
+            }
+            let mut buf = Vec::with_capacity((len - off) as usize);
+            let read = std::fs::File::open(&path).and_then(|mut f| {
+                f.seek(SeekFrom::Start(off))?;
+                f.read_to_end(&mut buf)
+            });
+            if let Err(e) = read {
+                out.errors.push(ArchiveError::io(&path, e));
+                continue;
+            }
+            // Only whole lines; the rest waits for its newline.
+            let Some(end) = buf.iter().rposition(|b| *b == b'\n') else {
+                continue;
+            };
+            let text = String::from_utf8_lossy(&buf[..end]);
+            let mut rows = Vec::new();
+            let mut failed = None;
+            for (i, line) in text.split('\n').enumerate() {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                match parse_line::<T>(line) {
+                    Ok(r) => rows.push(r),
+                    // A torn line that a later append already moved past.
+                    Err(_) if !line.trim_end().ends_with('}') => self.skipped += 1,
+                    Err(e) => {
+                        failed = Some(ArchiveError::format(
+                            &path,
+                            format!("line {} after byte {off}: {e}", i + 1),
+                        ));
+                        break;
+                    }
+                }
+            }
+            match failed {
+                Some(e) => out.errors.push(e),
+                None => {
+                    out.records.extend(rows);
+                    self.offsets.insert(path, off + end as u64 + 1);
+                }
+            }
+        }
+        out
+    }
+}
+
+fn read_all<T: for<'de> Deserialize<'de>>(
+    dir: &Path,
+    since: Option<i64>,
+) -> Result<Vec<T>, ArchiveError> {
     let mut out = Vec::new();
-    for (_, path) in files {
+    for path in month_files(dir, since)? {
         let text = std::fs::read_to_string(&path).map_err(|e| ArchiveError::io(&path, e))?;
         let lines: Vec<&str> = text.split('\n').collect();
         let last = lines.len().saturating_sub(1);
@@ -273,15 +410,7 @@ fn read_all<T: for<'de> Deserialize<'de>>(
             if line.trim().is_empty() {
                 continue;
             }
-            let parsed = serde_json::from_str::<Versioned>(line)
-                .map_err(|e| e.to_string())
-                .and_then(|v| {
-                    if v.v != EVIDENCE_SCHEMA {
-                        Err(format!("unsupported evidence schema {}", v.v))
-                    } else {
-                        serde_json::from_str::<T>(line).map_err(|e| e.to_string())
-                    }
-                });
+            let parsed = parse_line::<T>(line);
             match parsed {
                 Ok(r) => out.push(r),
                 // A torn final line (no newline after it) from a crash mid-append.
@@ -376,6 +505,52 @@ mod tests {
             .map(|c| c.id)
             .collect();
         assert_eq!(ids, ["a", "b"]);
+    }
+
+    #[test]
+    fn the_tail_reads_each_whole_line_once_and_waits_for_a_newline() {
+        let (_d, a) = archive();
+        let t = 1_792_000_000_000_000_000;
+        let mut tail = EvidenceTail::default();
+        assert!(
+            tail.news_coverage(&a, None).records.is_empty(),
+            "no dir yet"
+        );
+        a.append_news_coverage(&[cov("a", t), cov("b", t)]).unwrap();
+        let ids = |r: TailRead<NewsCoverageRecord>| -> Vec<String> {
+            assert!(r.errors.is_empty(), "{:?}", r.errors);
+            r.records.into_iter().map(|c| c.id).collect()
+        };
+        assert_eq!(ids(tail.news_coverage(&a, None)), ["a", "b"]);
+        assert!(ids(tail.news_coverage(&a, None)).is_empty(), "nothing new");
+        // Half an append (no newline yet): not consumed.
+        let path = a
+            .evidence_dir()
+            .join(NEWS_COVERAGE_DIR)
+            .join(format!("{}.jsonl", month_of(t)));
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        f.write_all(b"{\"v\":1,\"id\":\"tor").unwrap();
+        drop(f);
+        assert!(ids(tail.news_coverage(&a, None)).is_empty());
+        // The next append starts a fresh line: the torn one is skipped, the new one read.
+        a.append_news_coverage(&[cov("c", t)]).unwrap();
+        assert_eq!(ids(tail.news_coverage(&a, None)), ["c"]);
+        assert_eq!(tail.skipped, 1);
+        // A later month is a new file, picked up on its own.
+        let nov = t + 40 * 86_400 * 1_000_000_000;
+        a.append_news_coverage(&[cov("d", nov)]).unwrap();
+        assert_eq!(ids(tail.news_coverage(&a, None)), ["d"]);
+        // A full read agrees with everything the tail handed out.
+        let all: Vec<_> = a
+            .read_news_coverage(None)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(all, ["a", "b", "c", "d"]);
     }
 
     #[test]

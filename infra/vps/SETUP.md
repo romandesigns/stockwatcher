@@ -254,6 +254,81 @@ copies there, but the VPS still holds the newest 5 days, and the copies are a
 second machine rather than the only one. Never delete under `originals/` on
 the Pi: past the window it is the only copy.
 
+## 10. Ross Panel (stock context)
+
+The Ross Panel lists stocks passing all five pillars (price, day gain, relative volume, float,
+news; `docs/stock-context/`). The server only **reads** evidence from the archive volume; it never
+calls a provider. Three things feed it:
+
+- the `archiver` (step 7) already stores the daily bars, the nightly split-adjusted set and the
+  corporate-action checks (03:30 ET, then every 30 min) that give the gain and RVOL pillars a
+  checked previous close and a 30-session baseline;
+- the new `evidence` service (`swimport evidence`, same image) stores float (FMP, once per
+  trading day at 07:00 ET, the whole market in ~10 bulk requests: bulk is the default, nothing to
+  set) and news (Alpaca/Benzinga, every 60 s from 04:00 to 20:00 ET);
+- `STOCK_CONTEXT=1` turns the panel on in the server, which then picks up new evidence every
+  15 s (`CONTEXT_EVIDENCE_CHECK_SECS`).
+
+Do this **after** the release that adds the `evidence` service to the compose file has deployed.
+
+1. Add the FMP key to `.env` on the VPS, typed there and never pasted into a chat, a URL or a
+   file in the repo. The Alpaca keys from step 7 are reused for news; check they are there
+   without printing them:
+   ```sh
+   cd ~/apps/stockwatcher
+   umask 077
+   read -rsp 'FMP_API_KEY: ' f; echo
+   printf 'FMP_API_KEY=%s\n' "$f" >> .env
+   unset f
+   grep -cE '^(FMP_API_KEY|ALPACA_API_KEY|ALPACA_API_SECRET)=' .env   # expect 3
+   ```
+2. Copy the new `infra/vps/docker-compose.yml` from a checkout of `main` into
+   `~/apps/stockwatcher/` (scp from your machine) and start the collector. The `.env` change also
+   recreates the server and the archiver (same `.env`), which restarts the replay and resets the
+   paper accounts:
+   ```sh
+   docker compose --env-file image.env up -d
+   docker compose --env-file image.env ps                    # evidence running
+   docker compose --env-file image.env logs --tail 20 evidence
+   ```
+   The first line must say `Alpaca keys set, FMP key set`. The first news search covers the last
+   25 h at once; on a trading day after 07:00 ET the float refresh runs right away, otherwise at
+   the next 07:00 ET.
+3. Turn the panel on and recreate:
+   ```sh
+   cp .env .env.bak-$(date -u +%Y%m%dT%H%M%SZ)
+   printf 'STOCK_CONTEXT=1\n' >> .env
+   docker compose --env-file image.env up -d
+   docker logs --since 2m stockwatcher-server-1 2>&1 | grep -E 'stock context evidence|STOCK_CONTEXT'
+   ```
+   Expect one `stock context evidence loaded` line per market (live and replay), with record
+   counts and, for the baseline rebuild, the number of symbols it looked at (`universe`). A line
+   containing `STOCK_CONTEXT:` and `context disabled` means `PRICE_BAND_*` is not $0.10–$25:
+   remove the override or the panel stays off.
+
+Checking on it later:
+
+```sh
+docker compose --env-file image.env logs --since 30m evidence     # one line per tick with requests
+docker logs --since 30m stockwatcher-server-1 2>&1 | grep 'stock context evidence'
+docker run --rm -v stockwatcher_data:/data:ro --user 65532:65532 debian:trixie-slim \
+  sh -c 'ls -l /data/archive/evidence/*/; tail -n 1 /data/archive/evidence/news-coverage/*.jsonl'
+docker run --rm -v stockwatcher_data:/data:ro --user 65532:65532 debian:trixie-slim \
+  sh -c 'ls /data/archive/corporate-actions/$(TZ=America/New_York date +%F) | tail -n 3'
+```
+
+The last news-coverage line's `observed_at` (UTC ns) should be under two minutes old during
+04:00–20:00 ET; older than that and every "no news" pillar turns UNKNOWN instead of FAIL. A
+trading day without a `corporate-actions/<today>` directory (the archiver's 03:30 ET check)
+leaves every gain UNKNOWN, so nothing reaches 5/5: check the archiver's log and
+`plans/maintainer-status.json` (step 7). Before 07:00 ET floats are the previous day's and turn
+stale after 24 h, so an early premarket mover can lack its float until the refresh.
+
+To turn the panel off: remove the `STOCK_CONTEXT=1` line and `up -d` again. The collector can
+keep running (it only appends to the volume) or be stopped with
+`docker compose --env-file image.env stop evidence`; with `restart: unless-stopped` a stopped
+service stays stopped until the next `up -d`.
+
 ## Operating it
 
 ```sh
@@ -262,6 +337,7 @@ tail -n 50 deploy.log publish.log
 docker compose --env-file image.env ps          # image.env holds the live tag
 docker compose --env-file image.env logs -f server
 docker compose --env-file image.env logs --tail 5 archiver
+docker compose --env-file image.env logs --tail 5 evidence
 curl -s http://127.0.0.1:8790/api/health
 ```
 
