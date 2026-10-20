@@ -306,6 +306,13 @@ impl LiveFeed for AlpacaStream {
         Some(self.link.subscribe())
     }
 
+    fn drop_counter(&self) -> Option<crate::recorder::DropCounter> {
+        let stats = self.stats.clone();
+        Some(std::sync::Arc::new(move || {
+            stats.dropped.load(Ordering::Relaxed)
+        }))
+    }
+
     fn connect(self: Box<Self>) -> Result<mpsc::Receiver<MarketEvent>, ProviderError> {
         let rt = tokio::runtime::Handle::try_current()
             .map_err(|_| ProviderError::Failed("the live stream needs a tokio runtime".into()))?;

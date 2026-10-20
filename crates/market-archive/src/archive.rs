@@ -224,7 +224,18 @@ impl Archive {
         let m = self
             .manifest(day)?
             .ok_or_else(|| ArchiveError::NotFound(self.manifest_path(day)))?;
-        let dir = self.day_dir(day);
+        self.verify_in(day, &self.day_dir(day), &m)
+    }
+
+    /// [`Archive::verify`] of the files in `dir` against the manifest `m` (a day's, or a
+    /// preserved original's: `crate::original`).
+    pub(crate) fn verify_in(
+        &self,
+        day: NaiveDate,
+        dir: &Path,
+        m: &DayManifest,
+    ) -> Result<VerifyReport, ArchiveError> {
+        let dir = dir.to_path_buf();
         let mut symbols = Vec::new();
         for entry in m.symbols.values() {
             let path = dir.join(&entry.file);
@@ -326,6 +337,7 @@ impl Archive {
                 n != MANIFEST
                     && n != BARS_DIR
                     && n != crate::live::LIVE_DIR
+                    && n != crate::live::LIVE_QUOTES
                     && !m.symbols.values().any(|e| &e.file == n)
             })
             .collect();
