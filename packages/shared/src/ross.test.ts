@@ -29,7 +29,7 @@ describe("ross row view", () => {
     const v = rossRowView(row(), cutoff, hhmm);
     expect([v.symbol, v.price, v.gain, v.m1, v.fromHigh, v.rvol, v.tag]).toEqual(["BBBB", "6.08", "+21.5%", "+3.0%", "−0.4%", "7.4×", "Float 30M ✗"]);
     expect(v.move).toBe("▲");
-    expect(v.setup).toMatchObject({ label: "Crossing", note: "6.05 · close pending · 3.6% to stop", tone: "accent", pulse: true, attention: true, meter: 1 });
+    expect(v.setup).toMatchObject({ label: "Crossing", note: "6.05 · close pending · 3.6% stop", tone: "accent", pulse: true, attention: true, meter: 1 });
     expect(v.tagTone).toBe("critical");
     expect(v.badge).toBeNull();
   });
