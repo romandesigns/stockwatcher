@@ -1,8 +1,8 @@
 import { buildSlots, changeReference, formatChange, formatPrice, lastCandle, type Timeframe } from "@stockwatcher/chart-core";
-import { CandleChart, Icon } from "@stockwatcher/chart-native";
+import { CandleChart } from "@stockwatcher/chart-native";
 import { useNavigation, type RouteProp } from "@react-navigation/native";
 import { useMemo, useState, useSyncExternalStore } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useChartAlerts } from "../alerts/useChartAlerts";
@@ -30,8 +30,10 @@ type Props = { route: RouteProp<RootStackParamList, "TickerChart"> };
  * the chart only; the ticker's other information comes later. It reads the dashboard's market
  * (live unless Settings → Data says replay) on the dashboard's own socket.
  *
- * Dismissed by the chevron, Android back, or a swipe down from the header strip (motion spec
- * `chartModal`; lower down a vertical drag belongs to the chart).
+ * Dismissed by a swipe down from the header strip (motion spec `chartModal`; lower down a vertical
+ * drag belongs to the chart), Android back, or VoiceOver's escape gesture. No close button (owner,
+ * 2026-10-19: the swipe is known); the header row keeps the button's 44 pt height so the swipe
+ * strip still ends above the chart's toolbar and its timeframe wheel.
  */
 export function TickerChartScreen({ route }: Props) {
   const feed = useDashboardFeed();
@@ -39,17 +41,17 @@ export function TickerChartScreen({ route }: Props) {
   const insets = useSafeAreaInsets();
   const { symbol } = route.params;
   return (
-    <View style={[styles.screen, { paddingTop: insets.top + 4, paddingBottom: insets.bottom + 4 }]} accessibilityViewIsModal>
+    <View style={[styles.screen, { paddingTop: insets.top + 4, paddingBottom: insets.bottom + 4 }]} accessibilityViewIsModal onAccessibilityEscape={() => navigation.goBack()}>
       {feed ? (
-        <ModalChart key={symbol} feed={feed} symbol={symbol} onClose={() => navigation.goBack()} />
+        <ModalChart key={symbol} feed={feed} symbol={symbol} />
       ) : (
-        <Header symbol={symbol} price="—" change="" onClose={() => navigation.goBack()} />
+        <Header symbol={symbol} price="—" change="" />
       )}
     </View>
   );
 }
 
-function Header({ symbol, price, change, onClose }: { symbol: string; price: string; change: string; onClose: () => void }) {
+function Header({ symbol, price, change }: { symbol: string; price: string; change: string }) {
   return (
     <View style={styles.header}>
       {/* The grab handle: the strip a swipe down dismisses from. */}
@@ -64,15 +66,12 @@ function Header({ symbol, price, change, onClose }: { symbol: string; price: str
         <Text style={[styles.change, { color: change.startsWith("-") ? colors.critical : colors.good }]} numberOfLines={1}>
           {change}
         </Text>
-        <Pressable accessibilityRole="button" accessibilityLabel={`Close ${symbol} chart`} onPress={onClose} hitSlop={6} style={({ pressed }) => [styles.close, pressed && { backgroundColor: colors.bgRow }]}>
-          <Icon name="chevronDown" color={colors.textDim} size={18} />
-        </Pressable>
       </View>
     </View>
   );
 }
 
-function ModalChart({ feed, symbol, onClose }: { feed: MobileFeed; symbol: string; onClose: () => void }) {
+function ModalChart({ feed, symbol }: { feed: MobileFeed; symbol: string }) {
   const [app] = useState(appActions);
   const firstSlotTf = useApp((s) => s.dashboard.slots[0]?.timeframe);
   const [timeframe, setTimeframe] = useState<Timeframe>(() => lastTimeframe ?? firstSlotTf ?? "5m");
@@ -99,7 +98,7 @@ function ModalChart({ feed, symbol, onClose }: { feed: MobileFeed; symbol: strin
 
   return (
     <>
-      <Header symbol={symbol} price={last ? formatPrice(last.c) : "—"} change={change} onClose={onClose} />
+      <Header symbol={symbol} price={last ? formatPrice(last.c) : "—"} change={change} />
       <View style={styles.chartWrap}>
         <CandleChart
           style={styles.chart}
@@ -147,11 +146,10 @@ const styles = StyleSheet.create({
   // With the top inset, the handle and the 44 pt row fill the swipe-to-dismiss strip (CHART_MODAL_GRAB).
   header: { gap: 6 },
   handle: { alignSelf: "center", width: 36, height: 4, borderRadius: 2, backgroundColor: colors.bgRow, marginTop: 2 },
-  headRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 6 },
+  headRow: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 6 },
   symbol: { color: colors.text, fontFamily: fonts.semibold, fontSize: 18 },
   price: { color: colors.text, fontSize: 16, fontVariant: ["tabular-nums"] },
   change: { fontSize: 13, fontVariant: ["tabular-nums"] },
-  close: { marginLeft: "auto", width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center", backgroundColor: colors.bgPanel },
   chartWrap: { flex: 1, minHeight: 0, backgroundColor: colors.bgPanel, borderRadius: 12, padding: 6 },
   chart: { flex: 1 },
 });

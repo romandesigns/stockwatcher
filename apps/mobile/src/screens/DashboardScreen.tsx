@@ -13,6 +13,7 @@ import { useConnection } from "../feed/useConnection";
 import { useReducedMotion } from "../motion/useReducedMotion";
 import { openTickerChart } from "../navigation/ref";
 import { TickerSearchSheet } from "../search/TickerSearchSheet";
+import { SettingsHost } from "../settings/SettingsHost";
 import { appActions, useApp } from "../state/store";
 import { colors, fonts } from "../theme";
 import { SignInScreen } from "./SignInScreen";
@@ -91,6 +92,7 @@ function DashboardView({ feed, token, source }: { feed: MobileFeed; token: strin
         }}
         reducedMotion={reducedMotion}
       />
+      <SettingsHost />
     </View>
   );
 }
