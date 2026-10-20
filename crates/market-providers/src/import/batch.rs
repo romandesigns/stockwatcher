@@ -125,7 +125,7 @@ struct BarsPage {
     next_page_token: Option<String>,
 }
 
-fn alpaca_headers(c: &AlpacaCredentials) -> [(&str, &str); 3] {
+pub(crate) fn alpaca_headers(c: &AlpacaCredentials) -> [(&str, &str); 3] {
     [
         ("APCA-API-KEY-ID", c.key_id.as_str()),
         ("APCA-API-SECRET-KEY", c.secret.as_str()),
@@ -429,6 +429,8 @@ pub fn split_snapshot(
     from: NaiveDate,
     to: NaiveDate,
     per_minute: u32,
+    set: Option<String>,
+    command: &str,
     log: &mut dyn FnMut(&str),
 ) -> Result<SplitSnapshot, String> {
     let mut symbols: Vec<String> = symbols
@@ -488,17 +490,18 @@ pub fn split_snapshot(
             to,
             symbols.len(),
             requests,
-            "alpaca-split-bars",
+            command,
         ),
         symbols,
         bars,
+        set,
     })
 }
 
 /// A borrowed client behind a limiter (the batch workers' [`Limited`] owns its client).
-struct Paced<'a> {
-    inner: &'a mut dyn Http,
-    limiter: RateLimiter,
+pub(crate) struct Paced<'a> {
+    pub(crate) inner: &'a mut dyn Http,
+    pub(crate) limiter: RateLimiter,
 }
 
 impl Http for Paced<'_> {
@@ -604,7 +607,7 @@ impl RateLimiter {
 /// Wraps a worker's client so every request first passes the shared limiter, and counts it.
 struct Limited<H> {
     inner: H,
-    limiter: RateLimiter,
+    pub(crate) limiter: RateLimiter,
     requests: Arc<AtomicU64>,
 }
 

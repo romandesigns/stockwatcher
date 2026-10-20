@@ -10,7 +10,8 @@
 //! swimport alpaca-daily-closes --from <YYYY-MM-DD> --to <YYYY-MM-DD>  # -> daily-closes.json + daily-bars/raw/
 //! swimport alpaca-split-bars --from <YYYY-MM-DD> --to <YYYY-MM-DD> (--symbols A,B | --symbols-file F) [--per-minute 200]
 //!                                                        # opt-in: one split-adjusted snapshot -> daily-bars/split/
-//! swimport maintain [--once]                             # keep the rolling 21-trading-day window (runs forever)
+//! swimport volume-compat --from <YYYY-MM-DD> --to <YYYY-MM-DD> [--sample 500]  # offline: provider vs our daily volume
+//! swimport maintain [--once | --actions-once]             # rolling window + evidence + pre-market actions (runs forever)
 //! ```
 //!
 //! `maintain` is what the VPS runs as its `archiver` service (import::maintain has the window,
@@ -51,7 +52,8 @@ fn usage() -> ExitCode {
         "usage:\n  swimport credentials\n  swimport alpaca-trades <SYMBOL> <YYYY-MM-DD> [--feed sip|iex|boats] [--limit N] [--force]\n  swimport fmp-bars <SYMBOL> <YYYY-MM-DD> [--force]\n  swimport check <SYMBOL> <YYYY-MM-DD>\n  swimport alpaca-batch --from <YYYY-MM-DD> --to <YYYY-MM-DD> [--jobs N] [--per-minute N] [--plan-only]\n  swimport alpaca-assets
   swimport alpaca-daily-closes --from <YYYY-MM-DD> --to <YYYY-MM-DD>
   swimport alpaca-split-bars --from <YYYY-MM-DD> --to <YYYY-MM-DD> (--symbols A,B | --symbols-file FILE) [--per-minute N]
-  swimport maintain [--once]"
+  swimport volume-compat --from <YYYY-MM-DD> --to <YYYY-MM-DD> [--sample 500] [--out FILE]
+  swimport maintain [--once | --actions-once]"
     );
     ExitCode::from(2)
 }
@@ -86,6 +88,7 @@ fn main() -> ExitCode {
             Some("alpaca-assets") => alpaca_assets(),
             Some("alpaca-daily-closes") => alpaca_daily_closes(&args[1..]),
             Some("alpaca-split-bars") => alpaca_split_bars(&args[1..]),
+            Some("volume-compat") => volume_compat(&args[1..]),
             Some("maintain") => maintain(&args[1..]),
             _ => Ok(usage()),
         }
@@ -569,6 +572,8 @@ fn alpaca_split_bars(args: &[String]) -> Result<ExitCode, String> {
         from,
         to,
         per_minute,
+        None,
+        "alpaca-split-bars",
         &mut |l: &str| eprintln!("  {l}"),
     )?;
     let path = archive
@@ -582,6 +587,56 @@ fn alpaca_split_bars(args: &[String]) -> Result<ExitCode, String> {
         path.display()
     );
     Ok(ExitCode::SUCCESS)
+}
+
+/// Offline: Alpaca's daily-bar volume vs our own condition-filtered count over archived days
+/// (market_providers::compat, plan §9). No credentials, no request. Meaningful only for days
+/// imported after the trade-identity fix (PR #51). Writes the full report to
+/// `$ARCHIVE_ROOT/plans/volume-compat-<from>-<to>.json` (or `--out`).
+fn volume_compat(args: &[String]) -> Result<ExitCode, String> {
+    use market_providers::compat::{CompatOptions, MIN_SAMPLE, compare};
+    let day = |name: &str| -> Result<NaiveDate, String> {
+        let v = flag(args, name).ok_or_else(|| format!("missing {name} <YYYY-MM-DD>"))?;
+        NaiveDate::parse_from_str(&v, "%Y-%m-%d").map_err(|_| format!("invalid {name} {v:?}"))
+    };
+    let (from, to) = (day("--from")?, day("--to")?);
+    let sample: usize = flag(args, "--sample").map_or(Ok(500), |v| {
+        v.parse().map_err(|_| format!("invalid --sample {v:?}"))
+    })?;
+    let archive = archive()?;
+    let report = compare(
+        &archive,
+        &CompatOptions {
+            from,
+            to,
+            sample,
+            min_sample: MIN_SAMPLE,
+            include_fixture: false,
+        },
+    )?;
+    let out = flag(args, "--out")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            archive
+                .root()
+                .join("plans")
+                .join(format!("volume-compat-{from}-{to}.json"))
+        });
+    if let Some(dir) = out.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    std::fs::write(
+        &out,
+        serde_json::to_vec_pretty(&report).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| format!("{}: {e}", out.display()))?;
+    println!("{}", report.summary());
+    println!("full report: {}", out.display());
+    Ok(if report.verdict == "compatible" {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
 }
 
 /// Every symbol inside the configured price band on each completed trading day of a range.
@@ -759,7 +814,7 @@ fn sleep_or_stop(stop: &AtomicBool, d: Duration) -> bool {
 /// restart it in a loop), imports nothing, deletes nothing, and says so every cycle.
 fn maintain(args: &[String]) -> Result<ExitCode, String> {
     use market_providers::import::maintain::{
-        MaintainConfig, Maintainer, next_run, status_path, write_status,
+        MaintainConfig, Maintainer, next_actions_run, next_run, status_path, write_status,
     };
     let cfg = MaintainConfig::from_lookup(env)?;
     let creds = AlpacaCredentials::from_lookup(env);
@@ -790,37 +845,60 @@ fn maintain(args: &[String]) -> Result<ExitCode, String> {
     let make = ReqwestHttp::new;
     let wait = |d: Duration| sleep_or_stop(&stop, d);
     let log = |l: &str| println!("{} {l}", stamp());
+    let m = Maintainer {
+        cfg: &cfg,
+        creds: creds.as_ref(),
+        archive: &archive,
+        make_http: &make,
+        stop: &stop,
+        wait: &wait,
+        log: &log,
+    };
+    if args.iter().any(|a| a == "--actions-once") {
+        let rep = m.run_actions(Utc::now());
+        println!("{} {}", stamp(), rep.summary());
+        return Ok(if rep.success {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        });
+    }
+    // Two schedules in one process: the nightly cycle at MAINTAIN_AT (first one now), and the
+    // corporate-action announcement fetch at ACTIONS_AT on trading days (pre-market, so a live
+    // decision can rely on it: docs/stock-context/daily-baseline-plan.md §6).
+    let mut due_cycle = Utc::now();
+    let mut due_actions = next_actions_run(Utc::now(), &cfg.actions_at);
     loop {
-        let m = Maintainer {
-            cfg: &cfg,
-            creds: creds.as_ref(),
-            archive: &archive,
-            make_http: &make,
-            stop: &stop,
-            wait: &wait,
-            log: &log,
-        };
-        let mut report = m.run_cycle(Utc::now());
-        let next = next_run(Utc::now(), cfg.run_at);
-        report.next_run = Some(
-            next.with_timezone(&New_York)
-                .to_rfc3339_opts(chrono::SecondsFormat::Secs, false),
-        );
-        if let Err(e) = write_status(&archive, &report) {
-            report.errors.push(format!("status file: {e}"));
+        if Utc::now() >= due_cycle {
+            let mut report = m.run_cycle(Utc::now());
+            due_cycle = next_run(Utc::now(), cfg.run_at);
+            report.next_run = Some(
+                due_cycle
+                    .with_timezone(&New_York)
+                    .to_rfc3339_opts(chrono::SecondsFormat::Secs, false),
+            );
+            if let Err(e) = write_status(&archive, &report) {
+                report.errors.push(format!("status file: {e}"));
+            }
+            println!("{} {}", stamp(), report.summary());
+            if once {
+                return Ok(if report.outcome == "ok" {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::FAILURE
+                });
+            }
         }
-        println!("{} {}", stamp(), report.summary());
-        if once {
-            return Ok(if report.outcome == "ok" {
-                ExitCode::SUCCESS
-            } else {
-                ExitCode::FAILURE
-            });
+        if !stop.load(Ordering::Relaxed) && due_actions.is_some_and(|t| Utc::now() >= t) {
+            let rep = m.run_actions(Utc::now());
+            println!("{} {}", stamp(), rep.summary());
+            due_actions = next_actions_run(Utc::now(), &cfg.actions_at);
         }
         if stop.load(Ordering::Relaxed) {
             break;
         }
-        let ahead = (next - Utc::now()).to_std().unwrap_or(Duration::ZERO);
+        let wake = due_actions.map_or(due_cycle, |a| a.min(due_cycle));
+        let ahead = (wake - Utc::now()).to_std().unwrap_or(Duration::ZERO);
         if !sleep_or_stop(&stop, ahead) {
             break;
         }

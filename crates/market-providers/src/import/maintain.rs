@@ -60,9 +60,10 @@
 
 use super::alpaca::{AlpacaCredentials, Feed, TradesQuery};
 use super::batch::{
-    Failure, Plan, Task, asset_metadata, daily_closes_and_bars, plan_universe, run_batch_until,
-    sip_range,
+    Failure, MAX_SPLIT_SYMBOLS, Plan, Task, asset_metadata, daily_closes_and_bars, plan_universe,
+    run_batch_until, sip_range, split_snapshot,
 };
+use super::corporate::fetch_announcements;
 use super::http::{Http, HttpResponse};
 use chrono::{DateTime, NaiveDate, NaiveTime, SecondsFormat, TimeZone, Utc};
 use chrono_tz::America::New_York;
@@ -88,7 +89,11 @@ pub const MAX_FAILED_PER_MILLE: usize = 10;
 /// | Variable | Default | Meaning |
 /// |---|---|---|
 /// | `ARCHIVE_WINDOW_DAYS` | `21` | window length in trading days (module docs), 1–504 |
-/// | `DAILY_BARS_KEEP_DAYS` | `63` | trading dates of raw daily bars kept (0 = all, else 46–504) |
+/// | `DAILY_BARS_KEEP_DAYS` | `63` | trading dates of raw daily bars kept (0 = all, else 46–504); missing ones are backfilled |
+/// | `MAINTAIN_SPLIT_SNAPSHOTS` | `1` | split-adjusted snapshot of the watch list after the import (0 = off) |
+/// | `MAINTAIN_SPLIT_PER_MINUTE` | `200` | pace of the snapshot and announcement fetches (own limiter), 1–1000 |
+/// | `SPLIT_SETS_KEEP` | `5` | snapshot sets kept |
+/// | `ACTIONS_AT` | `07:00,09:15` | ET times, trading days, of the corporate-action announcement fetch (`off`) |
 /// | `MAINTAIN_AT` | `21:15` | ET wall time of the daily cycle (`HH:MM`) |
 /// | `MAINTAIN_JOBS` | `12` | parallel import workers |
 /// | `MAINTAIN_PER_MINUTE` | `9000` | request ceiling across all workers (plan limit is 10,000) |
@@ -113,11 +118,26 @@ pub struct MaintainConfig {
     pub band: PriceBand,
     pub data_base: String,
     pub trading_base: String,
+    /// Run the split-adjusted snapshot of the watch list after the import.
+    pub split_snapshots: bool,
+    /// Pace of the snapshot and of the announcement fetches (each its own limiter).
+    pub split_per_minute: u32,
+    /// Snapshot sets kept.
+    pub split_sets_keep: usize,
+    /// ET times on trading days for the corporate-action announcement fetch.
+    pub actions_at: Vec<NaiveTime>,
 }
 
 impl Default for MaintainConfig {
     fn default() -> Self {
         MaintainConfig {
+            split_snapshots: true,
+            split_per_minute: 200,
+            split_sets_keep: 5,
+            actions_at: vec![
+                NaiveTime::from_hms_opt(7, 0, 0).expect("valid"),
+                NaiveTime::from_hms_opt(9, 15, 0).expect("valid"),
+            ],
             window_days: 21,
             daily_bars_keep_days: 63,
             run_at: NaiveTime::from_hms_opt(21, 15, 0).expect("valid"),
@@ -216,8 +236,89 @@ impl MaintainConfig {
             band: price_band_from_lookup(&get)?,
             data_base: var("ALPACA_DATA_BASE").unwrap_or(d.data_base),
             trading_base: var("ALPACA_TRADING_BASE").unwrap_or(d.trading_base),
+            split_snapshots: match var("MAINTAIN_SPLIT_SNAPSHOTS").as_deref() {
+                None | Some("1") | Some("true") => true,
+                Some("0") | Some("false") => false,
+                Some(v) => return Err(format!("MAINTAIN_SPLIT_SNAPSHOTS is not 0/1: {v:?}")),
+            },
+            split_per_minute: {
+                let n = num(
+                    "MAINTAIN_SPLIT_PER_MINUTE",
+                    var("MAINTAIN_SPLIT_PER_MINUTE"),
+                    d.split_per_minute,
+                )?;
+                if !(1..=1000).contains(&n) {
+                    return Err(format!(
+                        "MAINTAIN_SPLIT_PER_MINUTE must be 1..=1000, got {n}"
+                    ));
+                }
+                n
+            },
+            split_sets_keep: num("SPLIT_SETS_KEEP", var("SPLIT_SETS_KEEP"), d.split_sets_keep)?
+                .max(1),
+            actions_at: match var("ACTIONS_AT") {
+                None => d.actions_at,
+                Some(v) if v == "off" => Vec::new(),
+                Some(v) => {
+                    let mut out = Vec::new();
+                    for t in v.split(',') {
+                        out.push(NaiveTime::parse_from_str(t.trim(), "%H:%M").map_err(|_| {
+                            format!("ACTIONS_AT is not HH:MM[,HH:MM…] (ET) or off: {v:?}")
+                        })?);
+                    }
+                    out.sort();
+                    out
+                }
+            },
         })
     }
+}
+
+/// The split watch list (`docs/stock-context/daily-baseline-plan.md` §2): every symbol whose raw
+/// daily close was inside `band` on any of the last 5 raw-bar dates at or before `latest`. Read
+/// from `daily-bars/raw/`, so it needs no request. Sorted.
+pub fn watch_list(archive: &Archive, latest: NaiveDate, band: PriceBand) -> Vec<String> {
+    let dates: Vec<NaiveDate> = archive
+        .raw_bar_dates()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|d| *d <= latest)
+        .collect();
+    let (lo, hi) = (band.min.to_f64(), band.max.to_f64());
+    let mut out = BTreeSet::new();
+    for d in dates.iter().rev().take(5) {
+        if let Ok(Some(day)) = archive.read_raw_bars(*d) {
+            out.extend(
+                day.bars
+                    .into_iter()
+                    .filter(|(_, b)| (lo..=hi).contains(&b.c))
+                    .map(|(s, _)| s),
+            );
+        }
+    }
+    out.into_iter().collect()
+}
+
+/// The next announcement fetch strictly after `now`: the earliest of `times` (ET) on a trading
+/// day. `None` when `times` is empty (`ACTIONS_AT=off`).
+pub fn next_actions_run(now: DateTime<Utc>, times: &[NaiveTime]) -> Option<DateTime<Utc>> {
+    let mut date = now.with_timezone(&New_York).date_naive();
+    for _ in 0..14 {
+        if is_trading_day(date) {
+            for t in times {
+                if let Some(at) = New_York
+                    .from_local_datetime(&date.and_time(*t))
+                    .earliest()
+                    .map(|t| t.with_timezone(&Utc))
+                    && at > now
+                {
+                    return Some(at);
+                }
+            }
+        }
+        date = date.succ_opt()?;
+    }
+    None
 }
 
 /// The trading day before `day` (calendar: market_events::session).
@@ -487,12 +588,55 @@ pub struct CycleReport {
     pub bars_dates_written: usize,
     #[serde(default)]
     pub bars_pruned: usize,
+    /// Raw daily-bar date files filled in by the backfill.
+    #[serde(default)]
+    pub bars_backfilled: usize,
+    /// Split-adjusted snapshot files written this cycle, their requests, and files pruned.
+    #[serde(default)]
+    pub split_snapshots: usize,
+    #[serde(default)]
+    pub split_requests: u64,
+    #[serde(default)]
+    pub split_files_pruned: usize,
     pub assets: Option<usize>,
     pub free_bytes: Option<u64>,
     pub requests: u64,
     pub errors: Vec<String>,
     /// Filled in by the loop before the final write.
     pub next_run: Option<String>,
+}
+
+/// One announcement fetch's account (logged as one line).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ActionsReport {
+    pub at: String,
+    pub date: NaiveDate,
+    pub symbols: usize,
+    pub covered: usize,
+    pub success: bool,
+    pub requests: u64,
+    /// Splits announced effective in (previous trading day, today].
+    pub splits_effective_today: usize,
+    pub errors: Vec<String>,
+}
+
+impl ActionsReport {
+    pub fn summary(&self) -> String {
+        format!(
+            "corporate actions {}: {}/{} watch-list symbols covered, {} splits effective today, {} requests, {}{}",
+            self.date,
+            self.covered,
+            self.symbols,
+            self.splits_effective_today,
+            self.requests,
+            if self.success { "ok" } else { "partial" },
+            if self.errors.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", self.errors.join("; "))
+            }
+        )
+    }
 }
 
 fn ts(t: DateTime<Utc>) -> String {
@@ -511,7 +655,7 @@ impl CycleReport {
             .map(|(d, n)| format!("{d}:{n}"))
             .collect();
         format!(
-            "maintain {}: window {window}, missing at start {}, imported {} symbol-days [{}], {} already complete, {} failed, still importing {:?}, pruned {:?}{}{}, closes {} (+{} -{} dates), daily bars +{} -{} dates, assets {}, free {}, {} requests, {} errors{}, next run {}",
+            "maintain {}: window {window}, missing at start {}, imported {} symbol-days [{}], {} already complete, {} failed, still importing {:?}, pruned {:?}{}{}, closes {} (+{} -{} dates), daily bars +{} -{} dates (backfilled {}), split snapshots {} ({} requests, {} files pruned), assets {}, free {}, {} requests, {} errors{}, next run {}",
             self.outcome,
             match self.missing_days.as_slice() {
                 [] => "none".to_string(),
@@ -540,6 +684,10 @@ impl CycleReport {
             self.closes_trimmed,
             self.bars_dates_written,
             self.bars_pruned,
+            self.bars_backfilled,
+            self.split_snapshots,
+            self.split_requests,
+            self.split_files_pruned,
             self.assets.map_or("-".into(), |n| n.to_string()),
             self.free_bytes
                 .map_or("-".into(), |b| format!("{:.1} GB", b as f64 / 1e9)),
@@ -653,6 +801,18 @@ impl<H: Http + Send + 'static> Maintainer<'_, H> {
             && !self.stopped()
         {
             self.import(creds, &w, &mut r);
+        }
+        // Stock-context evidence (docs/stock-context/daily-baseline-plan.md), after the import so
+        // the replay archive always goes first: raw daily-bar dates missing from the retention
+        // window, then the split-adjusted snapshot of the watch list. Neither needs disk beyond a
+        // few MB, so the floor does not gate them.
+        if let Some(creds) = self.creds
+            && !self.stopped()
+        {
+            self.backfill_bars(creds, &w, &mut r);
+            if self.cfg.split_snapshots && !self.stopped() {
+                self.split_set(creds, now, latest, &mut r);
+            }
         }
         if !pruned_already && !self.stopped() {
             let newest = self
@@ -820,6 +980,170 @@ impl<H: Http + Send + 'static> Maintainer<'_, H> {
                 Err(e) => r.errors.push(format!("daily bars prune: {e}")),
             }
         }
+    }
+
+    /// Fetches the raw daily bars of trading dates inside the retention window that have no file
+    /// and are older than what the nightly refresh covers. Bounded by the window (63 dates ≈ 120
+    /// requests the first time); afterwards there is nothing missing and it makes no request.
+    fn backfill_bars(&self, creds: &AlpacaCredentials, w: &Window, r: &mut CycleReport) {
+        let keep = match self.cfg.daily_bars_keep_days {
+            0 => 63,
+            n => n,
+        };
+        let have: BTreeSet<NaiveDate> = match self.archive.raw_bar_dates() {
+            Ok(d) => d.into_iter().collect(),
+            Err(e) => {
+                r.errors.push(format!("daily bars backfill: {e}"));
+                return;
+            }
+        };
+        let refreshed_from = prev_trading_day(w.first);
+        let missing: Vec<NaiveDate> = window(w.last, keep)
+            .days
+            .into_iter()
+            .filter(|d| *d < refreshed_from && !have.contains(d))
+            .collect();
+        let (Some(&from), Some(&to)) = (missing.first(), missing.last()) else {
+            return;
+        };
+        let Some(mut http) = self.client(r) else {
+            return;
+        };
+        let log = self.log;
+        match daily_closes_and_bars(
+            &mut http,
+            &self.cfg.trading_base,
+            &self.cfg.data_base,
+            creds,
+            from,
+            to,
+            "maintain-backfill",
+            &mut |l: &str| log(l),
+        ) {
+            // Only the bars: these closes are older than the replay window and would be trimmed.
+            Ok((_, bars)) => match self.archive.merge_raw_bars(bars) {
+                Ok(rep) => r.bars_backfilled = rep.dates_written.len(),
+                Err(e) => r.errors.push(format!("daily bars backfill: {e}")),
+            },
+            Err(e) => r.errors.push(format!("daily bars backfill: {e}")),
+        }
+    }
+
+    /// One split-adjusted snapshot set of the watch list over the retention window (64 trading
+    /// dates ending at `latest`), ≤ `MAX_SPLIT_SYMBOLS` symbols per file, paced by its own limiter
+    /// at `MAINTAIN_SPLIT_PER_MINUTE`; then sets beyond `SPLIT_SETS_KEEP` are deleted.
+    fn split_set(
+        &self,
+        creds: &AlpacaCredentials,
+        now: DateTime<Utc>,
+        latest: NaiveDate,
+        r: &mut CycleReport,
+    ) {
+        let symbols = watch_list(self.archive, latest, self.cfg.band);
+        if symbols.is_empty() {
+            r.errors
+                .push("split snapshot: empty watch list (no raw daily bars yet)".into());
+            return;
+        }
+        let from = window(latest, 64).first;
+        let set = now.format("%Y%m%dT%H%M%SZ").to_string();
+        let log = self.log;
+        for chunk in symbols.chunks(MAX_SPLIT_SYMBOLS) {
+            if self.stopped() {
+                return;
+            }
+            let Some(mut http) = self.client(r) else {
+                return;
+            };
+            match split_snapshot(
+                &mut http,
+                &self.cfg.data_base,
+                creds,
+                chunk,
+                from,
+                latest,
+                self.cfg.split_per_minute,
+                Some(set.clone()),
+                "maintain",
+                &mut |l: &str| log(l),
+            ) {
+                Ok(s) => {
+                    r.split_requests += s.fetch.requests;
+                    match self.archive.write_split_snapshot(&s) {
+                        Ok(_) => r.split_snapshots += 1,
+                        Err(e) => r.errors.push(format!("split snapshot: {e}")),
+                    }
+                }
+                Err(e) => r.errors.push(format!("split snapshot: {e}")),
+            }
+        }
+        if r.split_snapshots > 0 {
+            match self.archive.prune_split_sets(self.cfg.split_sets_keep) {
+                Ok(gone) => r.split_files_pruned = gone.len(),
+                Err(e) => r.errors.push(format!("split snapshot prune: {e}")),
+            }
+        }
+    }
+
+    /// The pre-market corporate-action announcement fetch for today's watch list (start = the
+    /// previous trading day, end = today), stored append-only whatever its outcome. Skips a
+    /// non-trading day. Run at `ACTIONS_AT` by `swimport maintain`.
+    pub fn run_actions(&self, now: DateTime<Utc>) -> ActionsReport {
+        let today = now.with_timezone(&New_York).date_naive();
+        let mut rep = ActionsReport {
+            at: ts(now),
+            date: today,
+            ..ActionsReport::default()
+        };
+        if !is_trading_day(today) {
+            rep.errors.push(format!("{today} is not a trading day"));
+            return rep;
+        }
+        let Some(creds) = self.creds else {
+            rep.errors
+                .push("ALPACA_API_KEY / ALPACA_API_SECRET are not set".into());
+            return rep;
+        };
+        let p = prev_trading_day(today);
+        let symbols = watch_list(self.archive, p, self.cfg.band);
+        rep.symbols = symbols.len();
+        if symbols.is_empty() {
+            rep.errors
+                .push("empty watch list (no raw daily bars yet)".into());
+            return rep;
+        }
+        let mut http = match (self.make_http)() {
+            Ok(h) => h,
+            Err(e) => {
+                rep.errors.push(format!("http client: {e}"));
+                return rep;
+            }
+        };
+        let log = self.log;
+        let got = fetch_announcements(
+            &mut http,
+            &self.cfg.data_base,
+            creds,
+            &symbols,
+            p,
+            today,
+            self.cfg.split_per_minute,
+            "maintain",
+            &mut |l: &str| log(l),
+        );
+        rep.covered = got.symbols_covered.len();
+        rep.success = got.success;
+        rep.requests = got.requests;
+        rep.splits_effective_today = got
+            .splits
+            .iter()
+            .filter(|s| s.ex_date > p && s.ex_date <= today)
+            .count();
+        rep.errors.extend(got.errors.iter().cloned());
+        if let Err(e) = self.archive.write_action_retrieval(&got) {
+            rep.errors.push(format!("corporate actions: {e}"));
+        }
+        rep
     }
 
     fn import(&self, creds: &AlpacaCredentials, w: &Window, r: &mut CycleReport) {
@@ -1254,11 +1578,56 @@ mod tests {
             ("ARCHIVE_WINDOW_DAYS", "505"),
             ("MAINTAIN_PER_MINUTE", "0"),
             ("PRICE_BAND_MIN", "x"),
+            ("DAILY_BARS_KEEP_DAYS", "30"),
+            ("MAINTAIN_SPLIT_SNAPSHOTS", "yes"),
+            ("MAINTAIN_SPLIT_PER_MINUTE", "5000"),
+            ("ACTIONS_AT", "7am"),
         ] {
             assert!(
                 MaintainConfig::from_lookup(|q| (q == k).then(|| v.to_string())).is_err(),
                 "{k}={v}"
             );
         }
+    }
+
+    #[test]
+    fn evidence_defaults_are_the_owner_accepted_ones() {
+        let c = MaintainConfig::from_lookup(|_| None).unwrap();
+        assert_eq!(c.daily_bars_keep_days, 63);
+        assert!(c.split_snapshots);
+        assert_eq!((c.split_per_minute, c.split_sets_keep), (200, 5));
+        assert_eq!(
+            c.actions_at,
+            [
+                NaiveTime::from_hms_opt(7, 0, 0).unwrap(),
+                NaiveTime::from_hms_opt(9, 15, 0).unwrap()
+            ]
+        );
+        let off = MaintainConfig::from_lookup(|k| (k == "ACTIONS_AT").then(|| "off".into()));
+        assert!(off.unwrap().actions_at.is_empty());
+    }
+
+    #[test]
+    fn announcement_fetches_run_pre_market_on_trading_days_only() {
+        let times = MaintainConfig::default().actions_at;
+        // Friday 2026-10-16 08:00 ET: next is 09:15 the same morning.
+        assert_eq!(
+            next_actions_run(utc("2026-10-16T08:00:00-04:00"), &times),
+            Some(utc("2026-10-16T09:15:00-04:00"))
+        );
+        // Friday after 09:15: Monday 07:00 (the weekend is skipped).
+        assert_eq!(
+            next_actions_run(utc("2026-10-16T10:00:00-04:00"), &times),
+            Some(utc("2026-10-19T07:00:00-04:00"))
+        );
+        // Wednesday before Thanksgiving: Friday 11-27 (an early close is still a trading day).
+        assert_eq!(
+            next_actions_run(utc("2026-11-25T12:00:00-05:00"), &times),
+            Some(utc("2026-11-27T07:00:00-05:00"))
+        );
+        assert_eq!(
+            next_actions_run(utc("2026-10-16T08:00:00-04:00"), &[]),
+            None
+        );
     }
 }

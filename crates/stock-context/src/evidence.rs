@@ -34,6 +34,44 @@ pub enum CloseBasis {
     SplitAdjusted,
 }
 
+/// What established a record's corporate-action coverage. Two kinds of different strength, never
+/// merged into one flag (docs/stock-context/daily-baseline-plan.md §6):
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionsSource {
+    /// Nothing: coverage is unknown.
+    #[default]
+    Unchecked,
+    /// Raw and split-adjusted daily bars agree through `actions_checked_through` (the bars
+    /// themselves show which splits took effect). Strong, but only after the fact.
+    BarVerified,
+    /// The last stretch (the evaluated date) rests on a pre-session corporate-action announcement
+    /// retrieval: "no split was announced effective that day", or the announced ratio. Weaker: it
+    /// trusts the announcement feed's completeness and timeliness.
+    Announced,
+}
+
+/// A split ratio as announced: `old_rate` shares became `new_rate` (2:1 forward = 1 → 2;
+/// 1:30 reverse = 30 → 1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct SplitRatio {
+    pub old_rate: u64,
+    pub new_rate: u64,
+}
+
+/// Provenance of a record's corporate-action coverage.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct ActionsEvidence {
+    pub source: ActionsSource,
+    /// Through which date daily bars verified the share basis (`BarVerified`, or the history
+    /// under an `Announced` last day).
+    pub bar_verified_through: Option<NaiveDate>,
+    /// The announcement retrieval relied on (`Announced`).
+    pub announcement: Option<String>,
+    /// A split applied from the announcement (`Announced`), with its action id.
+    pub applied_split: Option<(SplitRatio, String)>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct PrevClose {
     pub id: String,
@@ -46,6 +84,8 @@ pub struct PrevClose {
     /// Corporate actions were checked (and applied when `SplitAdjusted`) through this trading
     /// date; `None`: not checked. The gain pillar needs it to reach the evaluated date.
     pub actions_checked_through: Option<NaiveDate>,
+    /// What established `actions_checked_through` (the engine does not grade it; it is shown).
+    pub actions: ActionsEvidence,
     pub observed_at: i64,
 }
 
@@ -67,6 +107,8 @@ pub struct DailyBaseline {
     pub version: u32,
     pub instrument: InstrumentId,
     pub sessions: Vec<SessionVolume>,
+    /// What put the sessions on the evaluated date's share basis.
+    pub basis: ActionsEvidence,
     pub observed_at: i64,
 }
 

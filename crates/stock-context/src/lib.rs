@@ -21,9 +21,9 @@ pub mod policy;
 pub use engine::{Decision, Engine, Fidelity, RunInfo, Timeline, Verdict, VolumeFacts};
 pub use evaluate::{Coverage, NewsSummary, RvolDiagnostics};
 pub use evidence::{
-    Authenticity, CloseBasis, DailyBaseline, EvidenceStore, Favorability, FloatObservation,
-    InstrumentId, IntradayBaseline, IntradayCurve, NewsCoverage, NewsItem, PrevClose,
-    SessionVolume,
+    ActionsEvidence, ActionsSource, Authenticity, CloseBasis, DailyBaseline, EvidenceStore,
+    Favorability, FloatObservation, InstrumentId, IntradayBaseline, IntradayCurve, NewsCoverage,
+    NewsItem, PrevClose, SessionVolume, SplitRatio,
 };
 pub use pillar::{Counts, PillarId, PillarResult, Qualification, Tri, aggregate};
 pub use policy::{PILLARS_V1, Policy};

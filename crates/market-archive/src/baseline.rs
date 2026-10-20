@@ -41,11 +41,35 @@
 //! to E is verified and both sets have a bar on E**; `None` when P itself is not verified with a
 //! bar on both sides. The close is then restated onto E's basis: `R(P).c · f(E) / f(P)`, with
 //! basis `Raw` when that ratio is 1 (within 0.2 %, then the raw close is used exactly) and
-//! `SplitAdjusted` otherwise. The gain pillar needs E ≥ D, which this can only give once D's bar
-//! exists in a snapshot fetched after D: replay or research of past dates, never live. Live gain
-//! stays UNKNOWN until an announcements source can vouch for D (plan §11). Without a snapshot the
-//! raw close is still emitted with `None`, so the engine reports `gain_vs_stored_close_bp` and the
-//! pillar stays UNKNOWN (`adjustment_coverage_unknown`).
+//! `SplitAdjusted` otherwise. The gain pillar needs E ≥ D, which bars alone can only give once
+//! D's bar exists in a snapshot fetched after D: replay or research of past dates. Such a record
+//! is labelled `ActionsSource::BarVerified`.
+//!
+//! # Live: announcement coverage (weaker evidence, labelled `ActionsSource::Announced`)
+//!
+//! When bars do not reach D, [`announced`] consults the corporate-action retrievals
+//! ([`crate::corporate_actions`]). It uses the **latest** retrieval that covered the symbol (its
+//! request chunk completed), whose range includes `(P, D]` (`start ≤ P+1`, `end ≥ D`) and that was
+//! made **after P's last session ended and before D's 09:30 open**. Then:
+//!
+//! - a name change touching the symbol in `(P, D]` → unknown (`symbol_changed`: Alpaca files
+//!   actions under the ticker in force, so a rename makes the lookup ambiguous);
+//! - a unit split touching it in `(P, D]` (or undated) → unknown (`unit_split`);
+//! - no forward/reverse split for it with `ex_date` in `(P, D]` → **no split**: the raw close of P
+//!   (on P's basis by definition) is D's reference, `actions_checked_through = D`;
+//! - exactly one, with integral rates → the close is restated by `old_rate/new_rate` and prior
+//!   volumes by `new_rate/old_rate`, the ratio and action id recorded (`applied_split`);
+//! - several, or a fractional rate → unknown.
+//!
+//! No covering retrieval (none made, fetch failed for that chunk, made too late) → unknown, and
+//! the record stays as bars alone allow (`checked_before_evaluated_date` or `None`). The baseline
+//! uses the announcement only on top of bars that verify P (factors relative to P), so the prior
+//! history is still bar-verified and only the last day is announced; the record says
+//! `bar_verified_through = P`. `observed_at` includes the retrieval's time.
+//!
+//! Without a snapshot and without an announcement the raw close is still emitted with `None`, so
+//! the engine reports `gain_vs_stored_close_bp` and the pillar stays UNKNOWN
+//! (`adjustment_coverage_unknown`).
 //!
 //! "Actions" here means what Alpaca's `adjustment=split` restates: splits and reverse splits.
 //! Spin-offs, cash dividends and symbol changes are not covered (`adjustment=all` would fold
@@ -55,13 +79,16 @@
 //! evidence becomes visible to the engine only from then, so a snapshot fetched after D is
 //! future knowledge to a live decision on D (the engine's leakage rule handles that, not this).
 
+use crate::corporate_actions::{ActionRetrieval, SplitAction};
 use crate::daily_bars::{DailyBar, RawDayBars, SplitSnapshot};
 use chrono::{DateTime, NaiveDate, Utc};
 use market_events::session::{
     DayKind, calendar_covers, day_kind, is_trading_day, previous_trading_day, sessions_for,
 };
-use market_events::{Price, UnixNanos};
+use market_events::{Price, SessionKind, UnixNanos};
 use std::collections::BTreeMap;
+/// Re-exported so callers need no direct stock-context dependency for the provenance types.
+pub use stock_context::{ActionsEvidence, ActionsSource, SplitRatio};
 use stock_context::{CloseBasis, DailyBaseline, InstrumentId, PrevClose, SessionVolume};
 
 /// The metric these records measure, carried in every id.
@@ -82,14 +109,19 @@ pub struct Loaded {
     pub prev_close_reason: &'static str,
     pub baseline: Option<DailyBaseline>,
     pub baseline_reason: &'static str,
-    /// E in the module rule, for the P..=D chain (what `actions_checked_through` holds).
+    /// What `actions_checked_through` holds (E from bars, or D from an announcement).
     pub checked_through: Option<NaiveDate>,
+    /// What the announcements said, whether or not it was needed.
+    pub announced: Announced,
 }
 
-/// The inputs for one symbol: every raw date file in range and at most one split snapshot.
+/// The inputs for one symbol: every raw date file in range, at most one split snapshot (one
+/// snapshot is one basis: [`crate::Archive::latest_snapshot_for`]) and the announcement
+/// retrievals for D (`Archive::read_action_retrievals(D)`; may be empty).
 pub struct Inputs<'a> {
     pub raw: &'a BTreeMap<NaiveDate, RawDayBars>,
     pub split: Option<&'a SplitSnapshot>,
+    pub announcements: &'a [ActionRetrieval],
 }
 
 /// Instant the date's last session (after hours, or the regular session's end on a day without
@@ -236,21 +268,156 @@ fn latest_retrieval<'a>(it: impl Iterator<Item = Option<DateTime<Utc>>> + 'a) ->
     it.flatten().map(nanos).max().unwrap_or(0)
 }
 
+/// Start of D's regular session (09:30 ET).
+fn regular_open(date: NaiveDate) -> Option<DateTime<Utc>> {
+    sessions_for(date)
+        .into_iter()
+        .find(|s| s.0.kind == SessionKind::Regular)
+        .map(|s| s.1.to_utc())
+}
+
+/// What the pre-session announcement retrievals say about `(P, D]` for one symbol.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Announced {
+    /// A covering retrieval lists no split for the symbol effective in `(P, D]`.
+    NoSplit {
+        retrieval: String,
+        at: DateTime<Utc>,
+    },
+    /// Exactly one forward or reverse split effective in `(P, D]`, with integral rates.
+    Split {
+        ratio: SplitRatio,
+        action: String,
+        retrieval: String,
+        at: DateTime<Utc>,
+    },
+    /// Nothing can be vouched for (reason).
+    Unknown(&'static str),
+}
+
+/// The announcement rule (module docs, "Live: announcement coverage").
+pub fn announced(
+    retrievals: &[ActionRetrieval],
+    symbol: &str,
+    p: NaiveDate,
+    d: NaiveDate,
+) -> Announced {
+    let (Some(after_p), Some(open_d), Some(day_after_p)) =
+        (session_end(p), regular_open(d), p.succ_opt())
+    else {
+        return Announced::Unknown("not_a_trading_day");
+    };
+    let Some(r) = retrievals
+        .iter()
+        .filter(|r| {
+            r.covers(symbol)
+                && r.start <= day_after_p
+                && r.end >= d
+                && r.retrieved_at >= after_p
+                && r.retrieved_at < open_d
+        })
+        .max_by_key(|r| r.retrieved_at)
+    else {
+        return Announced::Unknown("no_announcement_coverage");
+    };
+    let within = |x: NaiveDate| x > p && x <= d;
+    // F7: actions are filed under the ticker in force at the time; a rename in the window makes
+    // "which ticker" ambiguous, so nothing is vouched for.
+    if r.name_changes
+        .iter()
+        .any(|n| within(n.process_date) && (n.old_symbol == symbol || n.new_symbol == symbol))
+    {
+        return Announced::Unknown("symbol_changed");
+    }
+    if r.unit_splits.iter().any(|u| {
+        let touches = [&u.old_symbol, &u.new_symbol, &u.alternate_symbol]
+            .iter()
+            .any(|s| s.as_deref() == Some(symbol));
+        touches && u.effective_date.is_none_or(within)
+    }) {
+        return Announced::Unknown("unit_split");
+    }
+    let splits: Vec<&SplitAction> = r
+        .splits
+        .iter()
+        .filter(|s| s.symbol == symbol && within(s.ex_date))
+        .collect();
+    match splits.as_slice() {
+        [] => Announced::NoSplit {
+            retrieval: r.id(),
+            at: r.retrieved_at,
+        },
+        [s] => {
+            let integral = |x: f64| x.is_finite() && x >= 1.0 && x.fract() == 0.0;
+            if !(integral(s.old_rate) && integral(s.new_rate)) {
+                return Announced::Unknown("split_ratio_not_integral");
+            }
+            Announced::Split {
+                ratio: SplitRatio {
+                    old_rate: s.old_rate as u64,
+                    new_rate: s.new_rate as u64,
+                },
+                action: s.id.clone(),
+                retrieval: r.id(),
+                at: r.retrieved_at,
+            }
+        }
+        _ => Announced::Unknown("multiple_splits"),
+    }
+}
+
 /// Builds the gain and RVOL evidence for `symbol` on evaluated date `d` (module docs), looking at
 /// up to `lookback` trading dates before `d`.
 pub fn load(inputs: &Inputs<'_>, symbol: &str, d: NaiveDate, lookback: usize) -> Loaded {
     let instrument = InstrumentId::symbol(symbol);
     let p = previous_trading_day(d);
     let snap_at = inputs.split.map(|s| s.fetch.retrieved_at);
+    let ann = announced(inputs.announcements, symbol, p, d);
+    let ann_at = match &ann {
+        Announced::NoSplit { at, .. } | Announced::Split { at, .. } => Some(*at),
+        Announced::Unknown(_) => None,
+    };
+    let announced_evidence = |bar_through: Option<NaiveDate>| -> Option<ActionsEvidence> {
+        match &ann {
+            Announced::NoSplit { retrieval, .. } => Some(ActionsEvidence {
+                source: ActionsSource::Announced,
+                bar_verified_through: bar_through,
+                announcement: Some(retrieval.clone()),
+                applied_split: None,
+            }),
+            Announced::Split {
+                ratio,
+                action,
+                retrieval,
+                ..
+            } => Some(ActionsEvidence {
+                source: ActionsSource::Announced,
+                bar_verified_through: bar_through,
+                announcement: Some(retrieval.clone()),
+                applied_split: Some((*ratio, action.clone())),
+            }),
+            Announced::Unknown(_) => None,
+        }
+    };
+    // Price multiplier onto D's basis from the announcement (old/new), and the volume one (new/old).
+    let (ann_price, ann_volume) = match &ann {
+        Announced::Split { ratio, .. } => (
+            ratio.old_rate as f64 / ratio.new_rate as f64,
+            ratio.new_rate as f64 / ratio.old_rate as f64,
+        ),
+        _ => (1.0, 1.0),
+    };
 
-    // ---- previous close
     let mut out = Loaded {
         prev_close: None,
         prev_close_reason: "",
         baseline: None,
         baseline_reason: "",
         checked_through: None,
+        announced: ann.clone(),
     };
+
+    // ---- previous close
     match raw_cov(inputs.raw, symbol, p) {
         None => out.prev_close_reason = "previous_day_not_covered",
         Some(None) => out.prev_close_reason = "no_bar_on_previous_day",
@@ -259,29 +426,79 @@ pub fn load(inputs: &Inputs<'_>, symbol: &str, d: NaiveDate, lookback: usize) ->
             Some(raw_close) => {
                 let raw_seen = inputs.raw.get(&p).and_then(|r| r.last_retrieved());
                 let ct = checked_through(inputs, symbol, p, d);
-                let (close_micros, basis, through, observed) = match ct {
-                    // `snap_one` makes a same-basis ratio exactly 1.0.
-                    Some((e, 1.0)) => (
-                        raw_close.micros(),
-                        CloseBasis::Raw,
+                let bar_through = ct.map(|(e, _)| e);
+                let bar_evidence = ActionsEvidence {
+                    source: ActionsSource::BarVerified,
+                    bar_verified_through: bar_through,
+                    ..ActionsEvidence::default()
+                };
+                let restated =
+                    |m: f64| Price::from_f64_rounded(bar.c * m).map_or(0, |p| p.micros());
+                // (close, basis, through, evidence, reason, observed)
+                let (close_micros, basis, through, actions, reason, observed) = match ct {
+                    // Bars verify D itself: the strong kind wins.
+                    Some((e, ratio)) if e >= d => (
+                        // `snap_one` makes a same-basis ratio exactly 1.0.
+                        if ratio == 1.0 {
+                            raw_close.micros()
+                        } else {
+                            restated(1.0 / ratio)
+                        },
+                        if ratio == 1.0 {
+                            CloseBasis::Raw
+                        } else {
+                            CloseBasis::SplitAdjusted
+                        },
                         Some(e),
+                        bar_evidence,
+                        "checked_through_evaluated_date",
                         [raw_seen, snap_at],
                     ),
-                    Some((e, ratio)) => (
-                        Price::from_f64_rounded(bar.c / ratio).map_or(0, |p| p.micros()),
-                        CloseBasis::SplitAdjusted,
-                        Some(e),
-                        [raw_seen, snap_at],
-                    ),
-                    None => (raw_close.micros(), CloseBasis::Raw, None, [raw_seen, None]),
+                    // Otherwise D rests on the announcement. P's raw close is on P's basis by
+                    // definition, so only `(P, D]` needs vouching for.
+                    _ => match announced_evidence(bar_through) {
+                        Some(ev) => (
+                            if ev.applied_split.is_some() {
+                                restated(ann_price)
+                            } else {
+                                raw_close.micros()
+                            },
+                            if ev.applied_split.is_some() {
+                                CloseBasis::SplitAdjusted
+                            } else {
+                                CloseBasis::Raw
+                            },
+                            Some(d),
+                            ev,
+                            "announced_through_evaluated_date",
+                            [raw_seen, ann_at],
+                        ),
+                        None => (
+                            raw_close.micros(),
+                            CloseBasis::Raw,
+                            // Bars through P (or nothing): truthful, short of D.
+                            bar_through.filter(|e| *e < d),
+                            if bar_through.is_some() {
+                                bar_evidence
+                            } else {
+                                ActionsEvidence::default()
+                            },
+                            match (&ann, bar_through) {
+                                (Announced::Unknown(why), _)
+                                    if *why != "no_announcement_coverage" =>
+                                {
+                                    why
+                                }
+                                (_, Some(_)) => "checked_before_evaluated_date",
+                                (_, None) if inputs.split.is_none() => "no_split_snapshot",
+                                (_, None) => "split_and_raw_disagree",
+                            },
+                            [raw_seen, snap_at.filter(|_| bar_through.is_some())],
+                        ),
+                    },
                 };
                 out.checked_through = through;
-                out.prev_close_reason = match through {
-                    Some(e) if e >= d => "checked_through_evaluated_date",
-                    Some(_) => "checked_before_evaluated_date",
-                    None if inputs.split.is_none() => "no_split_snapshot",
-                    None => "split_and_raw_disagree",
-                };
+                out.prev_close_reason = reason;
                 out.prev_close = Some(PrevClose {
                     id: format!("{METRIC}:prev_close:{symbol}:{d}"),
                     version: 1,
@@ -290,6 +507,7 @@ pub fn load(inputs: &Inputs<'_>, symbol: &str, d: NaiveDate, lookback: usize) ->
                     close_micros,
                     basis,
                     actions_checked_through: through,
+                    actions,
                     observed_at: latest_retrieval(observed.into_iter()),
                 });
             }
@@ -304,13 +522,42 @@ pub fn load(inputs: &Inputs<'_>, symbol: &str, d: NaiveDate, lookback: usize) ->
         dates.push(x);
     }
     dates.reverse();
-    let Some(factors) = basis_factors(inputs, symbol, &dates, d) else {
-        out.baseline_reason = if inputs.split.is_none() {
-            "no_split_snapshot"
-        } else {
-            "share_basis_unverified"
-        };
-        return out;
+    // Bars verify D's basis (strong), or verify P's and the announcement covers (P, D] (weaker).
+    let (factors, basis, extra_at) = match basis_factors(inputs, symbol, &dates, d) {
+        Some(f) => (
+            f,
+            ActionsEvidence {
+                source: ActionsSource::BarVerified,
+                bar_verified_through: Some(d),
+                ..ActionsEvidence::default()
+            },
+            None,
+        ),
+        None => {
+            let via_p = basis_factors(inputs, symbol, &dates, p);
+            match (via_p, announced_evidence(Some(p))) {
+                (Some(f), Some(ev)) => (
+                    f.into_iter()
+                        .map(|(x, r)| (x, snap_one(r * ann_volume)))
+                        .collect(),
+                    ev,
+                    ann_at,
+                ),
+                (via_p, _) => {
+                    out.baseline_reason = if inputs.split.is_none() {
+                        "no_split_snapshot"
+                    } else if via_p.is_none() {
+                        "share_basis_unverified"
+                    } else {
+                        match &ann {
+                            Announced::Unknown(why) => why,
+                            _ => "share_basis_unverified",
+                        }
+                    };
+                    return out;
+                }
+            }
+        }
     };
     let mut sessions = Vec::new();
     let mut seen = Vec::new();
@@ -336,6 +583,7 @@ pub fn load(inputs: &Inputs<'_>, symbol: &str, d: NaiveDate, lookback: usize) ->
         });
     }
     seen.push(snap_at);
+    seen.push(extra_at);
     let comparable = sessions.iter().filter(|s| s.comparable).count();
     out.baseline_reason = if comparable >= 30 {
         "ok"
@@ -347,6 +595,7 @@ pub fn load(inputs: &Inputs<'_>, symbol: &str, d: NaiveDate, lookback: usize) ->
         version: 1,
         instrument,
         sessions,
+        basis,
         observed_at: latest_retrieval(seen.into_iter()),
     });
     out

@@ -20,6 +20,8 @@
 //! complete, corrected day.
 
 pub mod alpaca_stream;
+/// Offline daily-volume compatibility check (plan §9); reads only the local archive.
+pub mod compat;
 mod config;
 pub mod import;
 mod live;

@@ -139,6 +139,7 @@ impl Market {
             fetch: fetch(Adjustment::Split, self.from, to, when),
             symbols: vec![SYM.into()],
             bars: BTreeMap::from([(SYM.to_string(), bars)]),
+            set: None,
         }
     }
 }
@@ -162,6 +163,7 @@ fn no_split_checked_through_d_and_early_close_and_holiday_handled() {
         &Inputs {
             raw: &raw,
             split: Some(&snap),
+            announcements: &[],
         },
         SYM,
         dd(),
@@ -206,6 +208,7 @@ fn sessions_on_or_after_the_evaluated_date_are_never_used() {
         &Inputs {
             raw: &raw,
             split: Some(&snap),
+            announcements: &[],
         },
         SYM,
         dd(),
@@ -219,6 +222,7 @@ fn sessions_on_or_after_the_evaluated_date_are_never_used() {
         &Inputs {
             raw: &raw,
             split: Some(&snap),
+            announcements: &[],
         },
         SYM,
         d("2026-12-11"),
@@ -255,6 +259,7 @@ fn twenty_nine_comparable_sessions_are_not_thirty() {
             &Inputs {
                 raw: &raw,
                 split: Some(&snap),
+                announcements: &[],
             },
             SYM,
             dd(),
@@ -286,6 +291,7 @@ fn missing_dates_are_missing_not_zero() {
         &Inputs {
             raw: &raw,
             split: Some(&snap),
+            announcements: &[],
         },
         SYM,
         dd(),
@@ -326,6 +332,7 @@ fn a_reverse_split_on_d_restates_the_close_and_the_volumes_onto_ds_basis() {
         &Inputs {
             raw: &raw,
             split: Some(&snap),
+            announcements: &[],
         },
         SYM,
         dd(),
@@ -372,6 +379,7 @@ fn a_reverse_split_on_d_restates_the_close_and_the_volumes_onto_ds_basis() {
         &Inputs {
             raw: &live_raw,
             split: Some(&live_snap),
+            announcements: &[],
         },
         SYM,
         dd(),
@@ -382,7 +390,7 @@ fn a_reverse_split_on_d_restates_the_close_and_the_volumes_onto_ds_basis() {
     assert_eq!(pc.actions_checked_through, Some(p));
     assert_eq!(l.prev_close_reason, "checked_before_evaluated_date");
     assert!(l.baseline.is_none());
-    assert_eq!(l.baseline_reason, "share_basis_unverified");
+    assert_eq!(l.baseline_reason, "no_announcement_coverage");
 }
 
 #[test]
@@ -393,6 +401,7 @@ fn without_a_snapshot_or_when_the_sets_disagree_nothing_is_checked() {
         &Inputs {
             raw: &raw,
             split: None,
+            announcements: &[],
         },
         SYM,
         dd(),
@@ -412,6 +421,7 @@ fn without_a_snapshot_or_when_the_sets_disagree_nothing_is_checked() {
         &Inputs {
             raw: &raw,
             split: Some(&snap),
+            announcements: &[],
         },
         SYM,
         dd(),
@@ -428,6 +438,7 @@ fn without_a_snapshot_or_when_the_sets_disagree_nothing_is_checked() {
         &Inputs {
             raw: &raw,
             split: Some(&snap),
+            announcements: &[],
         },
         SYM,
         dd(),
@@ -435,4 +446,241 @@ fn without_a_snapshot_or_when_the_sets_disagree_nothing_is_checked() {
     );
     assert_eq!(l.checked_through, Some(d("2026-12-09")));
     assert!(l.baseline.is_none());
+}
+
+// ---- live: announcement coverage (weaker evidence)
+
+use market_archive::baseline::Announced;
+use market_archive::{ActionRetrieval, NameChange, SplitAction, SplitKind};
+use stock_context::{ActionsSource, SplitRatio};
+
+/// 07:00 ET on D: a pre-market retrieval.
+const PREMARKET_D: &str = "2026-12-10T12:00:00Z";
+
+fn retrieval(when: &str, covered: &[&str], splits: Vec<SplitAction>) -> ActionRetrieval {
+    ActionRetrieval {
+        schema: 1,
+        retrieved_at: at(when),
+        provider: "alpaca".into(),
+        endpoint: "/v1/corporate-actions".into(),
+        types: vec![
+            "forward_split".into(),
+            "reverse_split".into(),
+            "unit_split".into(),
+            "name_change".into(),
+        ],
+        start: d("2026-12-09"),
+        end: dd(),
+        symbols_requested: vec!["OTHER".into(), SYM.into()],
+        symbols_covered: covered.iter().map(|s| s.to_string()).collect(),
+        success: covered.len() == 2,
+        errors: vec![],
+        requests: 1,
+        command: "test".into(),
+        splits,
+        unit_splits: vec![],
+        name_changes: vec![],
+    }
+}
+
+fn reverse_1_for_10(ex: &str) -> SplitAction {
+    SplitAction {
+        id: "rs-1".into(),
+        kind: SplitKind::Reverse,
+        symbol: SYM.into(),
+        ex_date: d(ex),
+        old_rate: 10.0,
+        new_rate: 1.0,
+    }
+}
+
+/// What a live run on D has: raw bars through P and a split snapshot, both fetched the night of
+/// P. All prior closes are $0.50 and nothing had taken effect yet (adjusted == raw).
+fn live_world() -> (BTreeMap<NaiveDate, RawDayBars>, SplitSnapshot) {
+    let m = Market {
+        split_on: Some(dd()),
+        f: 1.0,
+        ..Market::plain("2026-09-01", "2026-12-09")
+    };
+    (m.raw(NIGHT_OF_P), m.split(d("2026-12-09"), NIGHT_OF_P))
+}
+
+#[test]
+fn a_pre_market_retrieval_without_a_split_vouches_for_d_as_announced_evidence() {
+    let (raw, snap) = live_world();
+    let anns = [retrieval(PREMARKET_D, &["OTHER", SYM], vec![])];
+    let l = load(
+        &Inputs {
+            raw: &raw,
+            split: Some(&snap),
+            announcements: &anns,
+        },
+        SYM,
+        dd(),
+        45,
+    );
+    let pc = l.prev_close.unwrap();
+    assert_eq!((pc.basis, pc.close_micros), (CloseBasis::Raw, 500_000));
+    assert_eq!(pc.actions_checked_through, Some(dd()));
+    assert_eq!(pc.actions.source, ActionsSource::Announced);
+    assert_eq!(pc.actions.bar_verified_through, Some(d("2026-12-09")));
+    assert_eq!(
+        pc.actions.announcement.as_deref(),
+        Some(anns[0].id().as_str())
+    );
+    assert_eq!(l.prev_close_reason, "announced_through_evaluated_date");
+    assert_eq!(
+        pc.observed_at,
+        at(PREMARKET_D).timestamp_nanos_opt().unwrap(),
+        "visible from the retrieval, not before"
+    );
+    let b = l.baseline.unwrap();
+    assert_eq!(b.basis.source, ActionsSource::Announced);
+    assert_eq!(b.basis.bar_verified_through, Some(d("2026-12-09")));
+    assert!(b.sessions.iter().all(|s| s.volume == vol(s.date)));
+    assert_eq!(l.baseline_reason, "ok");
+}
+
+#[test]
+fn an_announced_reverse_split_on_d_restates_close_and_volumes_by_the_ratio() {
+    let (raw, snap) = live_world();
+    let anns = [retrieval(
+        PREMARKET_D,
+        &["OTHER", SYM],
+        vec![reverse_1_for_10("2026-12-10")],
+    )];
+    let l = load(
+        &Inputs {
+            raw: &raw,
+            split: Some(&snap),
+            announcements: &anns,
+        },
+        SYM,
+        dd(),
+        45,
+    );
+    let pc = l.prev_close.unwrap();
+    assert_eq!(pc.basis, CloseBasis::SplitAdjusted);
+    assert_eq!(pc.close_micros, 5_000_000, "$0.50 x 10");
+    assert_eq!(pc.actions_checked_through, Some(dd()));
+    assert_eq!(
+        pc.actions.applied_split,
+        Some((
+            SplitRatio {
+                old_rate: 10,
+                new_rate: 1
+            },
+            "rs-1".to_string()
+        ))
+    );
+    let b = l.baseline.unwrap();
+    assert!(
+        b.sessions
+            .iter()
+            .all(|s| s.volume == (vol(s.date) as f64 / 10.0).round() as u64)
+    );
+    assert_eq!(b.basis.applied_split, pc.actions.applied_split);
+}
+
+#[test]
+fn no_usable_retrieval_means_unknown() {
+    let (raw, snap) = live_world();
+    let p = d("2026-12-09");
+    let renamed = {
+        let mut r = retrieval(PREMARKET_D, &["OTHER", SYM], vec![]);
+        r.name_changes.push(NameChange {
+            id: "nc".into(),
+            old_symbol: "OLD".into(),
+            new_symbol: SYM.into(),
+            process_date: dd(),
+        });
+        r
+    };
+    let mut second = reverse_1_for_10("2026-12-10");
+    second.id = "rs-2".into();
+    let cases: Vec<(Vec<ActionRetrieval>, &str)> = vec![
+        // After the 09:30 open: too late to vouch for D.
+        (
+            vec![retrieval("2026-12-10T15:00:00Z", &["OTHER", SYM], vec![])],
+            "no_announcement_coverage",
+        ),
+        // Before P's session ended: blind to P's evening.
+        (
+            vec![retrieval("2026-12-09T20:00:00Z", &["OTHER", SYM], vec![])],
+            "no_announcement_coverage",
+        ),
+        // The chunk holding the symbol failed: not covered.
+        (
+            vec![retrieval(PREMARKET_D, &["OTHER"], vec![])],
+            "no_announcement_coverage",
+        ),
+        // A rename into the symbol on D (F7: actions are filed under the old ticker).
+        (vec![renamed], "symbol_changed"),
+        // Two splits in the window.
+        (
+            vec![retrieval(
+                PREMARKET_D,
+                &["OTHER", SYM],
+                vec![reverse_1_for_10("2026-12-10"), second],
+            )],
+            "multiple_splits",
+        ),
+    ];
+    for (anns, why) in cases {
+        let l = load(
+            &Inputs {
+                raw: &raw,
+                split: Some(&snap),
+                announcements: &anns,
+            },
+            SYM,
+            dd(),
+            45,
+        );
+        let pc = l.prev_close.unwrap();
+        assert_eq!(
+            pc.actions_checked_through,
+            Some(p),
+            "{why}: bars reach P only"
+        );
+        assert_eq!(pc.actions.source, ActionsSource::BarVerified);
+        assert!(l.baseline.is_none(), "{why}");
+        assert_eq!(l.baseline_reason, why);
+        if why != "no_announcement_coverage" {
+            assert_eq!(l.prev_close_reason, why);
+        }
+    }
+    // A split announced for a later date is not D's business.
+    let anns = [retrieval(
+        PREMARKET_D,
+        &["OTHER", SYM],
+        vec![reverse_1_for_10("2026-12-11")],
+    )];
+    assert!(matches!(
+        market_archive::baseline::announced(&anns, SYM, p, dd()),
+        Announced::NoSplit { .. }
+    ));
+}
+
+#[test]
+fn bar_verification_wins_over_an_announcement_when_both_exist() {
+    let m = Market::plain("2026-09-01", "2026-12-15");
+    let raw = m.raw(AFTER_D);
+    let snap = m.split(dd(), AFTER_D);
+    let anns = [retrieval(PREMARKET_D, &["OTHER", SYM], vec![])];
+    let l = load(
+        &Inputs {
+            raw: &raw,
+            split: Some(&snap),
+            announcements: &anns,
+        },
+        SYM,
+        dd(),
+        45,
+    );
+    assert_eq!(
+        l.prev_close.unwrap().actions.source,
+        ActionsSource::BarVerified
+    );
+    assert_eq!(l.baseline.unwrap().basis.source, ActionsSource::BarVerified);
 }

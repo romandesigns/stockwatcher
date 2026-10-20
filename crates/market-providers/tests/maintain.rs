@@ -41,6 +41,8 @@ struct World {
     /// Every trades request, by symbol and day.
     trade_requests: Mutex<Vec<String>>,
     probes: AtomicUsize,
+    /// Every daily-bars and corporate-actions request.
+    data_requests: Mutex<Vec<String>>,
 }
 
 #[derive(Clone)]
@@ -65,7 +67,16 @@ impl Http for Router {
                 {"symbol": "FAIL", "tradable": true, "name": "Fail Ltd", "exchange": "NYSE"}
             ]));
         }
+        if url.contains("/v1/corporate-actions") {
+            w.data_requests.lock().unwrap().push(url.to_string());
+            return Ok(HttpResponse {
+                status: 200,
+                body: include_bytes!("fixtures/alpaca-corporate-actions-BTOG.json").to_vec(),
+                retry_after: None,
+            });
+        }
         if url.contains("/v2/stocks/bars") {
+            w.data_requests.lock().unwrap().push(url.to_string());
             return ok(json!({"bars": {
                 "AAA":  [{"t": "2026-10-19T04:00:00Z", "c": 1.0, "n": 2},
                          {"t": "2026-10-20T04:00:00Z", "c": 1.1, "n": 2}],
@@ -290,6 +301,31 @@ fn a_cycle_fills_the_window_holds_a_failing_day_back_and_only_then_prunes() {
         ["BBB", "FAIL"]
     );
     assert_eq!(raw19.fetches[0].command, "maintain");
+    // Backfill: the retention window's dates older than the refresh (it starts 09-18) were asked
+    // for once, raw; then the watch list's split-adjusted snapshot over 64 dates, as one set.
+    let reqs = world.data_requests.lock().unwrap().clone();
+    let keep_first = window(d("2026-10-20"), 63).first;
+    assert!(
+        reqs.iter().any(|u| u.contains("adjustment=raw")
+            && u.contains(&format!("start={keep_first}&end=2026-09-17"))),
+        "{reqs:#?}"
+    );
+    let split_first = window(d("2026-10-20"), 64).first;
+    let split: Vec<&String> = reqs
+        .iter()
+        .filter(|u| u.contains("adjustment=split"))
+        .collect();
+    assert_eq!(split.len(), 1);
+    assert!(split[0].contains(&format!("start={split_first}&end=2026-10-20")));
+    assert!(
+        split[0].contains("symbols=AAA%2CBBB%2CFAIL"),
+        "watch list = in-band raw closes"
+    );
+    assert_eq!((rep.split_snapshots, rep.split_requests), (1, 1));
+    let snaps = a.read_split_snapshots().unwrap();
+    assert_eq!(snaps.len(), 1);
+    assert!(snaps[0].set.is_some());
+    world.data_requests.lock().unwrap().clear();
     let failures: serde_json::Value = serde_json::from_slice(
         &std::fs::read(a.root().join("plans/maintainer-failures.json")).unwrap(),
     )
@@ -435,6 +471,51 @@ fn a_stop_request_ends_the_cycle_without_importing_or_deleting() {
     assert_eq!(rep.outcome, "stopped");
     assert_eq!(rep.imported_symbol_days, 0);
     assert!(rep.pruned.is_empty());
+}
+
+#[test]
+fn the_pre_market_announcement_fetch_is_stored_append_only_for_the_watch_list() {
+    let tmp = tempfile::tempdir().unwrap();
+    let a = archive(tmp.path(), "0");
+    let world = Arc::new(World::default());
+    // A cycle the evening before gives the raw bars the watch list is read from.
+    cycle(&world, &a, Some(&creds()), false);
+    world.data_requests.lock().unwrap().clear();
+    let cfg = config();
+    let make = {
+        let w = world.clone();
+        move || Ok::<_, String>(Router(w.clone()))
+    };
+    let stop = AtomicBool::new(false);
+    let m = Maintainer {
+        cfg: &cfg,
+        creds: Some(&creds()),
+        archive: &a,
+        make_http: &make,
+        stop: &stop,
+        wait: &|_| true,
+        log: &|_l: &str| {},
+    };
+    // 07:00 ET Wednesday 10-21: P = 10-20.
+    let rep = m.run_actions(utc("2026-10-21T07:00:00-04:00"));
+    assert!(rep.success, "{:?}", rep.errors);
+    assert_eq!((rep.symbols, rep.covered, rep.requests), (3, 3, 1));
+    let reqs = world.data_requests.lock().unwrap().clone();
+    assert_eq!(reqs.len(), 1);
+    assert!(
+        reqs[0].contains("symbols=AAA%2CBBB%2CFAIL")
+            && reqs[0].contains("start=2026-10-20&end=2026-10-21"),
+        "{}",
+        reqs[0]
+    );
+    let stored = a.read_action_retrievals(d("2026-10-21")).unwrap();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].command, "maintain");
+    assert_eq!(stored[0].splits.len(), 3, "the recorded BTOG page, parsed");
+    // A weekend is skipped without a request.
+    let rep = m.run_actions(utc("2026-10-24T07:00:00-04:00"));
+    assert!(!rep.success && rep.requests == 0);
+    assert_eq!(world.data_requests.lock().unwrap().len(), 1);
 }
 
 #[test]

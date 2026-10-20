@@ -81,6 +81,7 @@ pub mod bars;
 pub mod baseline;
 pub mod closes;
 pub mod config;
+pub mod corporate_actions;
 pub mod daily_bars;
 pub mod fixture;
 pub mod format;
@@ -99,6 +100,10 @@ pub use assets::{ASSETS_FILE, AssetMap, AssetMeta};
 pub use bars::{Bar, BarDataset, BarEntry};
 pub use closes::{DAILY_CLOSES_FILE, DailyCloses, PrevCloses, merge_daily_closes};
 pub use config::ArchiveConfig;
+pub use corporate_actions::{
+    ACTIONS_SCHEMA, ActionRetrieval, CORPORATE_ACTIONS_DIR, NameChange, SplitAction, SplitKind,
+    UnitSplitAction,
+};
 pub use daily_bars::{
     Adjustment, BarFetch, DAILY_BARS_DIR, DailyBar, RawDayBars, RawMergeReport, SplitSnapshot,
     merge_raw_day,

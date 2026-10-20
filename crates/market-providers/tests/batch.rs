@@ -528,6 +528,8 @@ fn a_split_snapshot_is_opt_in_bounded_and_keeps_only_what_was_asked() {
         d("2026-10-14"),
         d("2026-10-15"),
         60_000,
+        None,
+        "test",
         &mut |_| {},
     )
     .unwrap();
@@ -560,6 +562,8 @@ fn a_split_snapshot_is_opt_in_bounded_and_keeps_only_what_was_asked() {
             d("2026-10-14"),
             d("2026-10-15"),
             60_000,
+            None,
+            "test",
             &mut |_| {},
         )
         .is_err()
@@ -573,6 +577,8 @@ fn a_split_snapshot_is_opt_in_bounded_and_keeps_only_what_was_asked() {
             d("2026-01-02"),
             d("2026-10-15"),
             60_000,
+            None,
+            "test",
             &mut |_| {},
         )
         .is_err()

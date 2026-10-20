@@ -195,6 +195,10 @@ pub struct SplitSnapshot {
     pub symbols: Vec<String>,
     /// symbol → date → bar, as returned (dates outside `from..=to` dropped).
     pub bars: BTreeMap<String, BTreeMap<NaiveDate, DailyBar>>,
+    /// The group this snapshot belongs to (one `maintain` run's watch list, a UTC timestamp);
+    /// `None` for a manual `alpaca-split-bars` run, which is a set of its own.
+    #[serde(default)]
+    pub set: Option<String>,
 }
 
 impl SplitSnapshot {
@@ -225,10 +229,22 @@ impl SplitSnapshot {
             h.update(b",");
         }
         let hash = hex::encode(&h.finalize()[..4]);
-        format!(
-            "{}-{hash}.json",
-            self.fetch.retrieved_at.format("%Y%m%dT%H%M%SZ")
-        )
+        // Milliseconds: two snapshots of one set may be fetched within the same second.
+        let at = self.fetch.retrieved_at.format("%Y%m%dT%H%M%S%.3fZ");
+        match &self.set {
+            // Grouped: `maintain` writes the watch list as several snapshots (≤ 2,000 symbols
+            // each); retention keeps or drops a set whole.
+            Some(set) => format!("set-{set}-{at}-{hash}.json"),
+            None => format!("{at}-{hash}.json"),
+        }
+    }
+}
+
+/// The retention group of a snapshot file name: its `set-<id>` prefix, or the file itself.
+fn set_key(name: &str) -> &str {
+    match name.strip_prefix("set-") {
+        Some(rest) => rest.split('-').next().unwrap_or(rest),
+        None => name.split('-').next().unwrap_or(name),
     }
 }
 
@@ -428,6 +444,50 @@ impl Archive {
         out.sort_by_key(|s| s.fetch.retrieved_at);
         Ok(out)
     }
+
+    /// Deletes every snapshot outside the `keep` most recent sets (by the set's timestamp, read
+    /// from the file names: no snapshot is parsed). Returns the files removed.
+    pub fn prune_split_sets(&self, keep: usize) -> Result<Vec<PathBuf>, ArchiveError> {
+        let dir = self.split_snapshots_dir();
+        let rd = match std::fs::read_dir(&dir) {
+            Ok(rd) => rd,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(ArchiveError::io(&dir, e)),
+        };
+        let files: Vec<(String, PathBuf)> = rd
+            .filter_map(|e| e.ok())
+            .filter_map(|e| {
+                let name = e.file_name().into_string().ok()?;
+                name.ends_with(".json").then(|| (name, e.path()))
+            })
+            .collect();
+        let mut sets: Vec<&str> = files.iter().map(|(n, _)| set_key(n)).collect();
+        sets.sort();
+        sets.dedup();
+        let cut = sets.len().saturating_sub(keep);
+        let old: std::collections::BTreeSet<String> =
+            sets[..cut].iter().map(|s| s.to_string()).collect();
+        let mut gone = Vec::new();
+        for (name, path) in &files {
+            if old.contains(set_key(name)) {
+                std::fs::remove_file(path).map_err(|e| ArchiveError::io(path, e))?;
+                gone.push(path.clone());
+            }
+        }
+        Ok(gone)
+    }
+
+    /// The most recent snapshot that requested `symbol`, if any (one snapshot is one basis).
+    pub fn latest_snapshot_for<'a>(
+        snapshots: &'a [SplitSnapshot],
+        symbol: &str,
+    ) -> Option<&'a SplitSnapshot> {
+        snapshots.iter().rev().find(|s| {
+            s.symbols
+                .binary_search_by(|x| x.as_str().cmp(symbol))
+                .is_ok()
+        })
+    }
 }
 
 #[cfg(test)]
@@ -547,6 +607,7 @@ mod tests {
             fetch: f,
             symbols: vec!["AAA".into(), "BBB".into()],
             bars: BTreeMap::new(),
+            set: None,
         };
         s.bars
             .entry("AAA".into())
@@ -571,6 +632,38 @@ mod tests {
             s.coverage("AAA", d("2026-10-16")),
             None,
             "outside the range"
+        );
+
+        // Retention by set: two snapshots of one maintain set count once.
+        for (set, at, sym) in [
+            ("20261018T030000Z", "2026-10-18T03:00:00Z", "AAA"),
+            ("20261018T030000Z", "2026-10-18T03:01:00Z", "BBB"),
+            ("20261019T030000Z", "2026-10-19T03:00:00Z", "AAA"),
+        ] {
+            let mut x = s.clone();
+            x.set = Some(set.into());
+            x.symbols = vec![sym.into()];
+            x.fetch.retrieved_at = DateTime::parse_from_rfc3339(at).unwrap().to_utc();
+            a.write_split_snapshot(&x).unwrap();
+        }
+        // Sets now: 10-16 (manual), 10-17 (manual), 10-18 (2 files), 10-19. Keep 2.
+        assert_eq!(a.prune_split_sets(2).unwrap().len(), 2);
+        let left = a.read_split_snapshots().unwrap();
+        assert_eq!(left.len(), 3);
+        assert!(left.iter().all(|x| x.set.is_some()));
+        assert_eq!(
+            Archive::latest_snapshot_for(&left, "AAA")
+                .unwrap()
+                .set
+                .as_deref(),
+            Some("20261019T030000Z")
+        );
+        assert_eq!(
+            Archive::latest_snapshot_for(&left, "BBB")
+                .unwrap()
+                .set
+                .as_deref(),
+            Some("20261018T030000Z")
         );
     }
 }
