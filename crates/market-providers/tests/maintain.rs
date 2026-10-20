@@ -541,7 +541,10 @@ fn the_pre_market_announcement_fetch_is_stored_append_only_for_the_watch_list() 
     assert!(a.pending_warmups(d("2026-10-21"), 10).unwrap().is_empty());
     let stored = a.read_action_retrievals(d("2026-10-21")).unwrap();
     assert_eq!(stored.len(), 2);
-    assert_eq!(stored[1].command, "warmup");
+    // Both fetches ran at the same test instant, so their order is the file-name tie-break.
+    let mut commands: Vec<&str> = stored.iter().map(|r| r.command.as_str()).collect();
+    commands.sort();
+    assert_eq!(commands, ["maintain", "warmup"]);
     assert!(
         a.read_split_snapshots()
             .unwrap()

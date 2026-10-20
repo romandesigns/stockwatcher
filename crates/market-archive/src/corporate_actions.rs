@@ -341,9 +341,14 @@ impl Archive {
                     format!("corporate actions schema {}", r.schema),
                 ));
             }
-            out.push(r);
+            out.push((p, r));
         }
-        out.sort_by_key(|r| r.retrieved_at);
+        // Equal times (two fetches in one clock tick) fall back to the file name, so the order
+        // never depends on read_dir, which is alphabetical on NTFS and hashed on ext4.
+        out.sort_by(|(pa, a), (pb, b)| {
+            a.retrieved_at.cmp(&b.retrieved_at).then_with(|| pa.cmp(pb))
+        });
+        let out = out.into_iter().map(|(_, r)| r).collect();
         Ok(out)
     }
 
