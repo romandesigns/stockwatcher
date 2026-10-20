@@ -30,6 +30,9 @@ use crate::panel::{
 };
 use crate::pillar::{Counts, PillarId, PillarResult, Qualification, Tri, aggregate, price_pillar};
 use crate::policy::Policy;
+use crate::setup::{
+    BARS_KEPT, Bar, BullFlag, SetupLogEntry, SetupPolicy, SetupState, SetupView, Step, spark,
+};
 use chrono::{Days, NaiveDate};
 use market_events::session::{SessionKind, classify, et, trading_date};
 use market_events::{Trade, UnixNanos};
@@ -156,7 +159,25 @@ struct Sym {
     day_high: Option<i64>,
     member: Membership,
     halted: bool,
+    /// Completed setup bars of the trading date (the latest `BARS_KEPT`), oldest first.
+    bars: VecDeque<Bar>,
+    /// End of the bar holding today's first volume-counted print (the average-volume clock).
+    first_bar: Option<i64>,
+    setup: BullFlag,
+    /// First time StockWatcher saw any of the qualifying news at the latest decision.
+    news_first_seen: Option<i64>,
 }
+
+/// A non-passing pillar, for the row tag.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct MissingPillar {
+    pub pillar: PillarId,
+    pub state: Tri,
+    pub reason: &'static str,
+}
+
+/// Closes kept in a row's sparkline.
+pub const SPARK_BARS: usize = 20;
 
 /// One Ross Panel member at one barrier.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -172,6 +193,23 @@ pub struct PanelRow {
     /// 1-based among ranked rows; `None`: momentum unavailable, listed after the ranked rows.
     pub rank: Option<u32>,
     pub prev_rank: Option<u32>,
+    /// The one-minute move (`momentum.r_primary_bp`), bp.
+    pub move_1m_bp: Option<i64>,
+    /// Below the day's high so far (`momentum.below_high_bp`), bp, 0 at the high.
+    pub from_high_bp: Option<i64>,
+    /// The RVOL pillar's daily-denominator value, thousandths, when computed.
+    pub rvol_milli: Option<i64>,
+    /// The float pillar's shares, when a float record is visible (even stale).
+    pub float_shares: Option<u64>,
+    /// When StockWatcher first saw a currently qualifying news item (its `observed_at`).
+    pub news_first_seen: Option<i64>,
+    /// The pillars not passing at the latest decision.
+    pub missing: Vec<MissingPillar>,
+    /// Closes (micros) of the last 20 completed 15 s setup bars that had an OHLC print, oldest
+    /// first; fewer when not available, never padded or interpolated.
+    pub spark: Vec<i64>,
+    /// The `bull_flag_v0` setup view (EXPERIMENTAL, `setups-v0`).
+    pub setup: SetupView,
 }
 
 /// The Ross Panel at one barrier: active members in momentum order, published with the same
@@ -186,6 +224,10 @@ pub struct PanelSnapshot {
     pub pillar_policy: String,
     pub bar_end: i64,
     pub cutoff: i64,
+    /// `setups-v0@<hash>`.
+    pub setup_policy: String,
+    /// Members whose setup is `near`, `crossing` or `triggered`.
+    pub attention: u32,
     pub rows: Vec<PanelRow>,
 }
 
@@ -214,6 +256,8 @@ pub struct Engine {
     panel_policy: PanelPolicy,
     panel_log: Vec<PanelSnapshot>,
     last_panel: Option<PanelSnapshot>,
+    setup_policy: SetupPolicy,
+    setup_log: Vec<SetupLogEntry>,
 }
 
 fn ceil_to(t: i64, step: i64) -> i64 {
@@ -233,7 +277,24 @@ impl Engine {
             panel_policy: PanelPolicy::v1(),
             panel_log: Vec::new(),
             last_panel: None,
+            setup_policy: SetupPolicy::v0(),
+            setup_log: Vec::new(),
         }
+    }
+
+    /// The same engine under another setup policy.
+    pub fn with_setup_policy(mut self, p: SetupPolicy) -> Self {
+        self.setup_policy = p;
+        self
+    }
+
+    pub fn setup_policy(&self) -> &SetupPolicy {
+        &self.setup_policy
+    }
+
+    /// Setup transitions and level versions logged since the last call, oldest first.
+    pub fn take_setup_log(&mut self) -> Vec<SetupLogEntry> {
+        std::mem::take(&mut self.setup_log)
     }
 
     /// The same engine under another Ross Panel policy.
@@ -343,6 +404,10 @@ impl Engine {
                 day_high: None,
                 member: Membership::default(),
                 halted: false,
+                bars: VecDeque::new(),
+                first_bar: None,
+                setup: BullFlag::default(),
+                news_first_seen: None,
             }
         });
         self.by_inst.entry(sym.inst.clone()).or_insert(name);
@@ -425,11 +490,38 @@ impl Engine {
     fn publish_panel(&mut self, b: i64, tau: i64) {
         let rules = &self.panel_policy.body.momentum;
         let date = trading_date(UnixNanos(b));
+        let bar_secs = self.policy.body.grid.bar_secs;
         let mut rows: Vec<PanelRow> = Vec::new();
-        for s in self.syms.values() {
+        for s in self.syms.values_mut() {
             if s.member.active().is_none() || s.date != Some(date) {
+                // Only members are monitored; a member that left starts from `watching` again.
+                if !s.setup.is_idle() {
+                    s.setup.leave();
+                }
                 continue;
             }
+            // The setup advances at every barrier while the stock is a member, print or not.
+            let prefix = format!("{}:{}:{}", self.run.run_id, date, s.name);
+            let setup = s.setup.step(
+                &self.setup_policy,
+                bar_secs,
+                &Step {
+                    bar_end: b,
+                    cutoff: tau,
+                    bar_ns: bar_secs * SEC,
+                    bars: &s.bars,
+                    last_price: s.last_price,
+                    halted: s.halted,
+                    day_volume: s.cum,
+                    day_slots: s
+                        .first_bar
+                        .filter(|&f| f <= b)
+                        .map_or(0, |f| ((b - f) / (bar_secs * SEC) + 1) as u64),
+                    symbol: &s.name,
+                    prefix: &prefix,
+                },
+                &mut self.setup_log,
+            );
             let ticks = &s.ticks;
             let price_at = |e: i64| ticks.iter().rev().find(|(x, _)| *x < e).copied();
             let segment = |t: i64| {
@@ -447,18 +539,47 @@ impl Engine {
                 self.run.numerator_coverage,
             );
             let last = s.last.as_ref();
+            let pillar = |p: PillarId| last.and_then(|d| d.pillars.iter().find(|x| x.pillar == p));
             rows.push(PanelRow {
                 symbol: s.name.clone(),
                 instrument: s.inst.clone(),
                 membership: s.member.clone(),
                 counts: last.map(|d| d.counts).unwrap_or_default(),
-                price: last.and_then(|d| d.pillars[0].value),
-                gain_bp: last.and_then(|d| d.pillars[1].value),
+                price: pillar(PillarId::Price).and_then(|p| p.value),
+                gain_bp: pillar(PillarId::Gain).and_then(|p| p.value),
+                move_1m_bp: m.r_primary_bp,
+                from_high_bp: m.below_high_bp,
                 momentum: m,
                 rank: None,
                 prev_rank: None,
+                rvol_milli: pillar(PillarId::Rvol).and_then(|p| p.value),
+                float_shares: pillar(PillarId::Float)
+                    .and_then(|p| p.value)
+                    .map(|v| v as u64),
+                news_first_seen: s.news_first_seen,
+                missing: s
+                    .member
+                    .nonpassing
+                    .iter()
+                    .map(|&(pillar, state, reason)| MissingPillar {
+                        pillar,
+                        state,
+                        reason,
+                    })
+                    .collect(),
+                spark: spark(&s.bars, SPARK_BARS),
+                setup,
             });
         }
+        let attention = rows
+            .iter()
+            .filter(|r| {
+                matches!(
+                    r.setup.state,
+                    SetupState::Near | SetupState::Crossing | SetupState::Triggered
+                )
+            })
+            .count() as u32;
         // Ranked rows first, in momentum order; unranked after, by symbol.
         rows.sort_by(|a, b| match (a.momentum.status, b.momentum.status) {
             (MomentumStatus::Ready, MomentumStatus::Ready) => {
@@ -494,6 +615,8 @@ impl Engine {
             pillar_policy: self.policy.tag(),
             bar_end: b,
             cutoff: tau,
+            setup_policy: self.setup_policy.tag(),
+            attention,
             rows,
         };
         self.panel_log.push(snap.clone());
@@ -521,8 +644,16 @@ impl Engine {
             s.ticks.clear();
             s.day_high = None;
             s.member = Membership::default();
+            s.bars.clear();
+            s.first_bar = None;
+            s.setup = BullFlag::default();
+            s.news_first_seen = None;
         }
         let exclude_overnight = policy.body.volume.exclude_overnight_boats;
+        let bar_ns = policy.body.grid.bar_secs * SEC;
+        // The setup bar completing at `b`; a late print (executed in an earlier, already decided
+        // bar) never edits a completed bar and stays out of the setup bars.
+        let mut cur = Bar::new(b);
         let mut keep = Vec::with_capacity(s.pending.len());
         for p in s.pending.drain(..) {
             if !(p.exec < b && p.admit <= tau) {
@@ -533,7 +664,13 @@ impl Engine {
             if d != date || (exclude_overnight && kind == SessionKind::Overnight) {
                 continue;
             }
+            if p.exec >= b - bar_ns {
+                cur.add(p.exec, p.price, p.size, p.verdict.ohlc, p.verdict.volume);
+            }
             if p.verdict.volume {
+                if s.first_bar.is_none() {
+                    s.first_bar = Some(ceil_to(p.exec + 1, bar_ns));
+                }
                 s.cum += p.size;
                 s.dollars_micros += p.price as u128 * p.size as u128;
                 s.trades += 1;
@@ -549,6 +686,12 @@ impl Engine {
             }
         }
         s.pending = keep;
+        if cur.ohlc.is_some() || cur.volume > 0 {
+            s.bars.push_back(cur);
+            if s.bars.len() > BARS_KEPT {
+                s.bars.pop_front();
+            }
+        }
         s.cums.push_back((b, s.cum));
         // The momentum endpoints reach back `context + endpoint age`; keep one print before that.
         let mo = &self.panel_policy.body.momentum;
@@ -613,6 +756,12 @@ impl Engine {
         let (rvol_r, rvol_d) = evaluate::rvol(policy, ev, &s.inst, date, tau, vol);
         let float_r = evaluate::float(policy, ev, &s.inst, tau);
         let (news_r, news_s) = evaluate::news(policy, ev, &s.inst, tau);
+        s.news_first_seen = ev
+            .news(&s.inst, tau)
+            .into_iter()
+            .filter(|n| news_s.items.contains(&format!("{}@{}", n.id, n.version)))
+            .map(|n| n.observed_at)
+            .min();
         let pillars = vec![price_r, g.pillar, rvol_r, float_r, news_r];
         let (qualification, counts) = aggregate(pillars.iter().map(|p| p.state));
 

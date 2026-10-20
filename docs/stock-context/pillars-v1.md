@@ -29,6 +29,13 @@ outage only means fewer records (UNKNOWN), never a blocked print.
 Policy: `crates/stock-context/policy/pillars-v1.json`, embedded, identified as
 `pillars-v1@<sha256 prefix>` on every decision. A rule change is a new file and id.
 
+**pillars-v2 (owner decision 2026-10-20).** `policy/pillars-v2.json` (`Policy::v2()`, returned by
+`Policy::current()`) is v1 with one change: the price pillar uses StockWatcher's own price band,
+**$0.10–$25 inclusive** (profile `stockwatcher_band_v1`, 100000–25000000 micros), instead of $2–$20.
+Every other field is v1's. v1 stays byte-identical, parseable and taggable, and remains the
+documented public reference ($2–$20) described below; the engine uses whichever policy its caller
+constructs it with, and each decision names it.
+
 ## 3. Reference profile `ross_public_reference_v1`
 
 A reproducible StockWatcher reading of publicly described criteria (Warrior Trading tools
