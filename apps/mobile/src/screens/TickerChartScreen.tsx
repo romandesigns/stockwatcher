@@ -2,7 +2,7 @@ import { buildSlots, changeReference, formatChange, formatPrice, lastCandle, typ
 import { CandleChart } from "@stockwatcher/chart-native";
 import { useNavigation, type RouteProp } from "@react-navigation/native";
 import { useMemo, useState, useSyncExternalStore } from "react";
-import { StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useChartAlerts } from "../alerts/useChartAlerts";
@@ -12,6 +12,7 @@ import type { MobileFeed } from "../feed/serverFeed";
 import type { RootStackParamList } from "../navigation/RootStack";
 import { appActions, getLoadedStore, useApp } from "../state/store";
 import { colors, fonts } from "../theme";
+import { useTickerPress } from "../ui/useTickerPress";
 
 /** The chart's metrics: the Chart tab's legible set (10 pt text, 40 pt volume, 52 pt panes). */
 const OPTIONS = { priceAxisWidth: 52, volumeHeight: 40, timeAxisHeight: 18, paneGap: 4, fontSize: 10, timeLabelSpacing: 64, indicatorPaneHeight: 52 } as const;
@@ -51,15 +52,24 @@ export function TickerChartScreen({ route }: Props) {
   );
 }
 
+/** The modal already shows this ticker, so a single tap does nothing; it only arms the copy. */
+const noop = () => {};
+
 function Header({ symbol, price, change }: { symbol: string; price: string; change: string }) {
+  // Tap, then press and hold copies the ticker, like every other ticker label in the app (owner,
+  // 2026-10-20: it did nothing here). The press sits inside the swipe-down strip; a swipe takes the
+  // responder away, which cancels the press, so dismissing never copies.
+  const press = useTickerPress(symbol, noop);
   return (
     <View style={styles.header}>
       {/* The grab handle: the strip a swipe down dismisses from. */}
       <View style={styles.handle} />
       <View style={styles.headRow}>
-        <Text accessibilityRole="header" style={styles.symbol} numberOfLines={1}>
-          {symbol}
-        </Text>
+        <Pressable accessibilityLabel={symbol} accessibilityHint="Tap, then press and hold to copy" {...press} hitSlop={8} style={({ pressed }) => pressed && { opacity: 0.6 }}>
+          <Text accessibilityRole="header" style={styles.symbol} numberOfLines={1}>
+            {symbol}
+          </Text>
+        </Pressable>
         <Text style={styles.price} numberOfLines={1}>
           {price}
         </Text>
