@@ -12,6 +12,7 @@ authors.workspace = true
 [dependencies]
 chart-engine = { path = "../chart-engine" }
 market-archive = { path = "../market-archive" }
+stock-context = { path = "../stock-context" }
 market-events = { path = "../market-events" }
 market-providers = { path = "../market-providers" }
 paper-broker = { path = "../paper-broker" }

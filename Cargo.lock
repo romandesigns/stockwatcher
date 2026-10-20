@@ -4101,6 +4101,7 @@ dependencies = [
  "rustls-platform-verifier",
  "serde",
  "serde_json",
+ "stock-context",
  "subtle",
  "tempfile",
  "tokio",

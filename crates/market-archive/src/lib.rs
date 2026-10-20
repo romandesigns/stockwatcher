@@ -13,6 +13,8 @@
 //! $ARCHIVE_ROOT/
 //!   assets.json            # optional: symbol → {name, exchange} (crate::assets)
 //!   daily-closes.json      # optional: date → symbol → official close (crate::closes)
+//!   daily-bars/            # optional: provider daily bars, raw per date + split snapshots
+//!                          #   (crate::daily_bars; evidence for stock-context: crate::baseline)
 //!   evidence/              # append-only float/news records (crate::evidence), never pruned
 //!   2026-10-15/
 //!     manifest.json        # symbols, counts, first/last ts, sources, bytes, sha256 per file
@@ -20,6 +22,10 @@
 //!     FXLO.swa.partial     # a writer that has not finalized (never read by replay)
 //!     live/                # the live recording of the day (crate::live): manifest.json with
 //!                          #   "live": {"sealed"}, quotes.json, SMPL.swa (a frame per flush)
+//!   live-original/
+//!     2026-10-14/          # a recording the import replaced, preserved unchanged (crate::original)
+//!   coverage/
+//!     2026-10-15.jsonl     # was the live market collecting? append-only (crate::coverage)
 //! ```
 //!
 //! The day is the **trading date** of the events' sessions (`market_events::session`), so the
@@ -77,16 +83,23 @@
 
 pub mod assets;
 pub mod bars;
+pub mod baseline;
 pub mod closes;
 pub mod config;
+pub mod corporate_actions;
+pub mod coverage;
+pub mod daily_bars;
 pub mod evidence;
 pub mod evidence_load;
 pub mod fixture;
 pub mod format;
 pub mod live;
 pub mod manifest;
+pub mod original;
 pub mod reader;
+pub mod retention;
 pub mod space;
+pub mod warmup;
 pub mod writer;
 
 mod archive;
@@ -98,6 +111,18 @@ pub use assets::{ASSETS_FILE, AssetMap, AssetMeta};
 pub use bars::{Bar, BarDataset, BarEntry};
 pub use closes::{DAILY_CLOSES_FILE, DailyCloses, PrevCloses, merge_daily_closes};
 pub use config::ArchiveConfig;
+pub use corporate_actions::{
+    ACTIONS_SCHEMA, ActionKind, ActionLedger, ActionRetrieval, CORPORATE_ACTIONS_DIR, ChunkOutcome,
+    CorporateAction, CoveragePolicy, LateAction, LedgerEntry,
+};
+pub use coverage::{
+    COVERAGE_DIR, COVERAGE_SCHEMA, Collection, CoverageBasis, CoverageEvent, CoverageGap,
+    CoverageLog, CoverageRecord, CoverageReport, DropStage, GapReason, LinkStatus, Subscription,
+};
+pub use daily_bars::{
+    Adjustment, BarFetch, DAILY_BARS_DIR, DailyBar, RawDayBars, RawMergeReport, SplitSnapshot,
+    merge_raw_day,
+};
 pub use error::ArchiveError;
 pub use evidence::{
     CoverageScope, EVIDENCE_DIR, FloatRecord, NewsCoverageRecord, NewsVersionRecord, sha256_hex,
@@ -106,7 +131,10 @@ pub use evidence_load::LoadedEvidence;
 pub use lifecycle::{IMPORTING_MARKER, REMOVING_PREFIX};
 pub use live::{DayData, LIVE_DIR, LiveQuote, LiveWriter};
 pub use manifest::{DayManifest, ImportProvenance, LiveDay, SymbolEntry};
+pub use original::ORIGINALS_DIR;
 pub use reader::SymbolReader;
+pub use retention::{OriginalPolicy, Pin, RetentionState, RetentionStatus};
+pub use warmup::WarmupRequest;
 pub use writer::{FsyncPolicy, SymbolWriter};
 
 /// Symbols allowed in file names: `A-Z`, `0-9`, `.` and `-`, 1–16 characters (e.g. `BRK.B`).

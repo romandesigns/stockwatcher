@@ -16,7 +16,7 @@ the wire protocol or the dashboard. Nothing here is a validated trading rule.
 | News | No client; Alpaca/Benzinga news has `created_at` 3y+, FMP ~11 months | News UNKNOWN (`news_coverage_unknown`) until an adapter writes `NewsItem`/`NewsCoverage` |
 | Corporate actions | Only on `research/foundation` (`crates/research-features/src/corporate.rs`), not on main | Engine takes a close plus `actions_checked_through`; no adjustment logic is duplicated here |
 | Eligibility / staleness | `eligibility-research-v1` on `research/foundation` (band $0.15–$25, stale 10 min regular / 30 min extended) | Same numbers recorded in `pillars-v1.json` with their source; production's $0.10–$25 quote band is untouched |
-| Recorder coverage | No coverage/gap records; nightly import **replaces** `live/` | Numerator coverage of a live run is `unverified` (§4.3); original arrival history is not preserved (risk, §8) |
+| Recorder coverage | No coverage/gap records; nightly import **replaces** `live/` | Numerator coverage of a live run is `unverified` (§4.3); original arrival history is not preserved (risk, §8). **Since 2026-10-19** the recorder writes coverage records and the import preserves the original (`live-original/`); `Archive::coverage` answers complete/partial/unverified but is not wired into this engine yet |
 | Exchange-D trade ids | Distinct FINRA TRF prints share `(D, id)` (`research/acquisition` 7c91eb5). **Fixed** (2026-10-19): the print identity adds the execution time, and a correction/cancel that cannot be pinned to one print is counted `*Ambiguous`, not applied (`docs/architecture/trade-identity.md`) | These prints are no longer dropped. An ambiguous revision is left unapplied, so a withdrawn `D` print can stay in volume; rare (4 candidate pairs in the pilot) and counted per session |
 | Quotes / NBBO | Live stream subscribes `trades` + `statuses` only | Liquidity context (brief §5.5) not implemented |
 
@@ -139,6 +139,8 @@ figure and not the integrated server; the with/without comparison comes with inc
 2. **3, evidence sources**, each needing a decision from Roman before any download:
    - Daily baseline: Alpaca SIP `1Day` bars (volume) for the eligible universe, ~45 calendar
      days, split-adjusted plus raw; a manifest with symbols, requests and storage comes first.
+     **Plan and first code: `daily-baseline-plan.md`** (raw bars now retained from the nightly
+     closes fetch; opt-in split snapshots; loader in `market_archive::baseline`, not wired).
    - Checked previous close: the same request, `adjustment=split` vs `raw`, with corporate
      actions (`research/foundation` `corporate.rs`) to set `actions_checked_through`.
    - Float: FMP float, cached once per trading day, forward use only.
