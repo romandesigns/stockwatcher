@@ -28,6 +28,9 @@ MNT=/mnt/stockwatcher-durable
 OPTS="nfsvers=4.2,soft,timeo=150,retrans=3,noatime,nofail,_netdev,x-systemd.automount,x-systemd.mount-timeout=30"
 
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nfs-common
+# nfs-common pulls in rpcbind and enables it on every interface, including this host's
+# public address (port 111, a classic amplification target). NFSv4 never uses it.
+sudo systemctl mask --now rpcbind.socket rpcbind.service
 sudo mkdir -p "$MNT"
 sudo grep -qF " $MNT " /etc/fstab || echo "$SRC $MNT nfs $OPTS 0 0" | sudo tee -a /etc/fstab >/dev/null
 sudo systemctl daemon-reload
