@@ -3,8 +3,8 @@
 Owner product policy (Roman, 2026-10-19), implemented in `crates/stock-context` (`panel.rs`,
 `engine.rs`), policy `crates/stock-context/policy/ross-panel-v1.json`, tagged
 `ross-panel-v1@<sha256>` on every panel snapshot. Not a sourced Ross rule, not a validated
-ranking, not wired into the server or the UI yet. The five pillars themselves are
-[pillars-v1.md](pillars-v1.md).
+ranking. On the server behind `STOCK_CONTEXT=1` (section "On the server"); the five pillars it
+uses are `pillars-v2` ([pillars-v1.md](pillars-v1.md) documents both).
 
 ## Membership: `five_pillars_membership_v1`
 
@@ -80,20 +80,45 @@ benchmark must measure barrier time, transport and fan-out on the real host.
 state; a replay seek rebuilds it with the candles). Every print is applied once, on arrival:
 with the chart engine's verdict when the symbol is loaded, with its own conditions when its
 history is still being loaded (the chart engine applies it later; the context engine never sees
-it twice). Admission time is the print's receive time when known. Evidence today: the raw,
-unchecked previous close from `daily-closes.json`, so the gain stays UNKNOWN and nothing is
-admitted until the evidence sources land (daily-bar baseline, corporate actions, float, news).
+it twice). Admission time is the print's receive time when known. The server runs
+**`pillars-v2`** (`Policy::current()`: price pillar on the app's own $0.10–$25 band, 120 s news
+coverage lag), `ross-panel-v1` and the EXPERIMENTAL `setups-v0`; it refuses to start context
+when either band differs from `PRICE_BAND_MIN` / `MAX`.
+
+Evidence (`crates/server/src/evidence.rs`, every `CONTEXT_EVIDENCE_CHECK_SECS` = 15 s, off the
+market path): float observations and news items written by `swimport evidence`, market-wide
+news coverage, and the previous close and 30-session daily baseline built from the stored daily
+bars and the corporate-action checks `swimport maintain` writes (`market_archive::baseline`).
+Each record joins decisions only from its own `observed_at`. The raw `daily-closes.json` close is
+still offered as a fallback (it can never pass the gain pillar; it keeps the stored-close
+diagnostic where no baseline exists). With the collector running and the maintainer's
+pre-session announcement check done, a stock can reach 5/5 in production.
+
 Wire: `ross.subscribe` / `ross.snapshot` / `ross.update` and `context.get` / `context.decision`
 (see the `ws.rs` header). The run's numerator coverage is reported `unverified` until the
-recorder's coverage records are consulted.
+recorder's coverage records are consulted (a PASS on an incomplete count still stands: missing
+prints only lower it).
 
 ## Not here yet
 
-Append-only decision log on disk, Ross Panel and Signals UI, ignition. Per-member setup
-monitoring now exists as the EXPERIMENTAL `bull_flag_v0` family ([setups-v0.md](setups-v0.md)):
-each row carries `setup`, plus `move_1m_bp`, `from_high_bp`, `rvol_milli`, `float_shares`,
-`news_first_seen`, `missing` (non-passing pillars) and `spark` (the last 20 completed 15 s bar
-closes); the snapshot carries `attention`. With `pillars-v2` the price pillar uses the app's own
-$0.10–$25 band, so the reference $2–$20 price failure described above applies to v1 only.
-Membership is only as reliable as the pillars beneath it: RVOL and gain
-stay UNKNOWN until their evidence sources land, so in production today no stock can be admitted.
+Append-only decision log on disk, Signals UI, ignition. Per-member setup monitoring exists as
+the EXPERIMENTAL `bull_flag_v0` family ([setups-v0.md](setups-v0.md)): each row carries `setup`,
+plus `move_1m_bp`, `from_high_bp`, `rvol_milli`, `float_shares`, `news_first_seen`, `missing`
+(non-passing pillars) and `spark` (the last 20 completed 15 s bar closes); the snapshot carries
+`setup_policy` and `attention`. With `pillars-v2` the price pillar uses the app's own $0.10–$25
+band, so the reference $2–$20 price failure described above applies to v1 only.
+
+Known limits of the evidence today:
+
+- **Band entrants.** A stock that enters the band intraday without an in-band close in the last
+  5 dates has no split snapshot or announcement check until a warmup runs, and the server does
+  not file warmup requests yet (`market_archive::warmup`): its gain and RVOL stay UNKNOWN that
+  day. The float collector's own warmup covers its float.
+- **Announcement freshness.** The coverage policy calls a check stale after 90 min, but the
+  engine does not re-grade a delivered close: it uses the latest one. Live, a new check every
+  30 min supersedes it; if the maintainer stops, the last "no known action" stays in use.
+- **Replay.** A replayed day builds its baselines as of its first announcement check, and raw
+  date files are re-fetched nightly, so older replayed days usually see no baseline (their
+  `observed_at` is after the day). That is the causal rule, not a gap.
+- **Renames.** Baselines are built for symbols in the previous day's raw bars; a ticker renamed
+  overnight has none under its new symbol.

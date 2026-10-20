@@ -445,6 +445,77 @@ impl Archive {
         Ok(out)
     }
 
+    /// The split snapshots a decision at `as_of` may use, oldest retrieval first: the newest
+    /// nightly set (`set-…` files) retrieved by then, plus every one-off snapshot (manual or
+    /// warmup) retrieved after that set's first file and by then. Older sets are not read: a
+    /// nightly set is the whole watch list on one basis (~35 MB of JSON), and parsing all five
+    /// kept sets on every reload would cost ~175 MB for symbols the newest set already has. A
+    /// symbol that only an older set requested gets no snapshot here, so its baseline is
+    /// unverified (UNKNOWN), never put on a wrong basis. While a set is still being written its
+    /// later chunks are simply not there yet; a reload after they land picks them up.
+    ///
+    /// Files are chosen by the time in their name, then checked against `fetch.retrieved_at`:
+    /// nothing retrieved after `as_of` is returned.
+    pub fn read_split_snapshots_as_of(
+        &self,
+        as_of: DateTime<Utc>,
+    ) -> Result<Vec<SplitSnapshot>, ArchiveError> {
+        let dir = self.split_snapshots_dir();
+        let rd = match std::fs::read_dir(&dir) {
+            Ok(rd) => rd,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(ArchiveError::io(&dir, e)),
+        };
+        let limit = as_of.naive_utc();
+        // (set id, retrieval time from the name, path) of every file retrieved by `as_of`.
+        let files: Vec<(Option<String>, chrono::NaiveDateTime, PathBuf)> = rd
+            .filter_map(|e| e.ok())
+            .filter_map(|e| {
+                let name = e.file_name().into_string().ok()?;
+                let stem = name.strip_suffix(".json")?;
+                let (set, rest) = match stem.strip_prefix("set-") {
+                    Some(r) => {
+                        let (set, rest) = r.split_once('-')?;
+                        (Some(set.to_string()), rest)
+                    }
+                    None => (None, stem),
+                };
+                let at =
+                    chrono::NaiveDateTime::parse_from_str(rest.get(..15)?, "%Y%m%dT%H%M%S").ok()?;
+                (at <= limit).then(|| (set, at, e.path()))
+            })
+            .collect();
+        let newest = files.iter().filter_map(|(s, _, _)| s.as_deref()).max();
+        let set_start = newest.and_then(|n| {
+            files
+                .iter()
+                .filter(|(s, _, _)| s.as_deref() == Some(n))
+                .map(|(_, at, _)| *at)
+                .min()
+        });
+        let mut out = Vec::new();
+        for (set, at, path) in &files {
+            let wanted = match (set, newest) {
+                (Some(s), Some(n)) => s == n,
+                (None, _) => set_start.is_none_or(|st| *at >= st),
+                (Some(_), None) => false,
+            };
+            if !wanted {
+                continue;
+            }
+            if let Some(s) = read_json::<SplitSnapshot>(path)? {
+                if s.fetch.adjustment != Adjustment::Split {
+                    return Err(ArchiveError::format(path, "not a split-adjusted fetch"));
+                }
+                if s.fetch.retrieved_at <= as_of {
+                    out.push(s);
+                }
+            }
+        }
+        out.sort_by_key(|s| s.fetch.retrieved_at);
+        Ok(out)
+    }
+
     /// Deletes snapshots outside the `keep` most recent nightly sets (by timestamp, read from the
     /// file names: no snapshot is parsed). Nightly sets (`set-` files) are kept by count; a manual
     /// or warmup snapshot (a set of its own) is kept while it is not older than the oldest nightly
@@ -676,6 +747,70 @@ mod tests {
                 .set
                 .as_deref(),
             Some("20261018T030000Z")
+        );
+    }
+
+    #[test]
+    fn as_of_reads_the_newest_set_by_then_and_later_one_offs_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = archive(dir.path());
+        let at = |s: &str| DateTime::parse_from_rfc3339(s).unwrap().to_utc();
+        let snap = |set: Option<&str>, when: &str, sym: &str| {
+            let mut f = fetch(when);
+            f.adjustment = Adjustment::Split;
+            let s = SplitSnapshot {
+                schema: DAILY_BARS_SCHEMA,
+                fetch: f,
+                symbols: vec![sym.into()],
+                bars: BTreeMap::new(),
+                set: set.map(String::from),
+            };
+            a.write_split_snapshot(&s).unwrap();
+            s
+        };
+        let old = snap(Some("20261018T030000Z"), "2026-10-18T03:00:00Z", "AAA");
+        let manual_before = snap(None, "2026-10-18T12:00:00Z", "CCC");
+        let s1 = snap(Some("20261019T030000Z"), "2026-10-19T03:00:00Z", "AAA");
+        let s2 = snap(Some("20261019T030000Z"), "2026-10-19T03:02:00Z", "BBB");
+        let warm = snap(None, "2026-10-19T14:00:00Z", "DDD");
+        let next = snap(Some("20261020T030000Z"), "2026-10-20T03:00:00Z", "AAA");
+        let names = |v: Vec<SplitSnapshot>| -> Vec<(Option<String>, Vec<String>)> {
+            v.into_iter().map(|s| (s.set, s.symbols)).collect()
+        };
+        // Mid-set: only the chunk already retrieved.
+        assert_eq!(
+            names(
+                a.read_split_snapshots_as_of(at("2026-10-19T03:01:00Z"))
+                    .unwrap()
+            ),
+            names(vec![s1.clone()])
+        );
+        assert_eq!(
+            names(
+                a.read_split_snapshots_as_of(at("2026-10-19T20:00:00Z"))
+                    .unwrap()
+            ),
+            names(vec![s1.clone(), s2.clone(), warm.clone()])
+        );
+        assert_eq!(
+            names(
+                a.read_split_snapshots_as_of(at("2026-10-20T04:00:00Z"))
+                    .unwrap()
+            ),
+            names(vec![next])
+        );
+        // Before any later set: the old one and the manual run after it.
+        assert_eq!(
+            names(
+                a.read_split_snapshots_as_of(at("2026-10-18T23:00:00Z"))
+                    .unwrap()
+            ),
+            names(vec![old, manual_before])
+        );
+        assert!(
+            a.read_split_snapshots_as_of(at("2026-10-01T00:00:00Z"))
+                .unwrap()
+                .is_empty()
         );
     }
 }

@@ -5,9 +5,11 @@ Status: **plan + code (2026-10-19; owner decisions 2026-10-20; rework per the co
 the nightly job already fetches and backfilled to the retention window; `maintain` takes a
 split-adjusted snapshot of the watch list after each import, keeps a corporate-action
 announcement cache populated before the 04:00 ET SIP start and refreshed during the day, and warms
-up intraday band entrants on request. The loader exists and is tested but is **not wired into the
-server**. Nothing here has called Alpaca from a development machine: it runs on the VPS after
-merge. Numbers marked *estimate* come from the code and the bar shape, not from a measured run.
+up intraday band entrants on request. The loader is wired into the server since 2026-10-20
+(`crates/server/src/evidence.rs`: rebuilt when a raw date file, the split snapshots or the session
+date's announcement checks change; live as of the wall clock, a replay as of its day's first
+check). The server does not file warmup requests yet. Nothing here has called Alpaca from a
+development machine: it runs on the VPS after merge. Numbers marked *estimate* come from the code and the bar shape, not from a measured run.
 
 ## 0. Owner decisions (2026-10-20)
 

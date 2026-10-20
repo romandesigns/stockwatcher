@@ -1,8 +1,10 @@
 # Stock context: five-pillar measurements (pillars-v1)
 
 Status: **increment 1–2 of the Five Pillars brief (2026-10-20)**: definitions, evidence
-records and the deterministic engine (`crates/stock-context`). Not yet wired into the server,
-the wire protocol or the dashboard. Nothing here is a validated trading rule.
+records and the deterministic engine (`crates/stock-context`). Since 2026-10-20 the server runs
+it behind `STOCK_CONTEXT=1` under **pillars-v2**, fed stored evidence
+(`crates/server/src/evidence.rs`, [ross-panel-v1.md](ross-panel-v1.md) "On the server"). Nothing
+here is a validated trading rule.
 
 ## 1. Reconciliation (repository as of `origin/main` 82a5b3b, 2026-10-20)
 
@@ -161,7 +163,8 @@ figure and not the integrated server; the with/without comparison comes with inc
    - Daily baseline: Alpaca SIP `1Day` bars (volume) for the eligible universe, ~45 calendar
      days, split-adjusted plus raw; a manifest with symbols, requests and storage comes first.
      **Plan and first code: `daily-baseline-plan.md`** (raw bars now retained from the nightly
-     closes fetch; opt-in split snapshots; loader in `market_archive::baseline`, not wired).
+     closes fetch; opt-in split snapshots; loader in `market_archive::baseline`, wired into the
+     server by `crates/server/src/evidence.rs` on 2026-10-20).
    - Checked previous close: the same request, `adjustment=split` vs `raw`, with corporate
      actions (`research/foundation` `corporate.rs`) to set `actions_checked_through`.
    - Float: FMP float, cached once per trading day, forward use only.

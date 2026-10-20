@@ -8,14 +8,25 @@
 //! not lose it, and must not count it again when it is applied later). The admission time is the
 //! print's receive time when the feed knows it (live, recorded live), else its execution time.
 //!
-//! Evidence today: the raw previous close from `daily-closes.json` (basis raw, corporate actions
-//! unchecked), so the gain pillar is UNKNOWN by design; RVOL, float and news are UNKNOWN until
-//! their sources are wired (docs/stock-context/pillars-v1.md). The panel will therefore be empty
-//! in production until then: an honest empty state, not a bug.
+//! Policies: `pillars-v2` ([`Policy::current`]: the price pillar on the app's own $0.10–$25 band,
+//! 120 s news coverage lag), `ross-panel-v1` and the EXPERIMENTAL `setups-v0`, so every panel
+//! snapshot carries each row's `setup` and the snapshot's `attention`. Both bands are checked
+//! against `PRICE_BAND_MIN` / `MAX` at construction.
+//!
+//! Evidence (`crate::evidence`): float, news, market-wide news coverage, and the previous close
+//! and daily baseline built from the stored daily bars and corporate-action checks, each with its
+//! own `observed_at`, delivered by the market's evidence task ([`ContextBoard::add_evidence`]).
+//! The raw previous close from `daily-closes.json` is still offered as a fallback: it carries no
+//! corporate-action check, so it can never pass the gain pillar (only feed the
+//! `gain_vs_stored_close_bp` diagnostic), and with `observed_at` 0 it loses every join to a
+//! baseline-built close of the same day, whose actions coverage is what lets the gain pillar
+//! decide at all. Where the maintainer has not built one (a symbol outside the watch list, a day
+//! not imported yet) the fallback keeps today's behaviour.
 //!
 //! The panel goes out as `ross.snapshot` / `ross.update` (the whole panel, at most once per wall
 //! second, only when its revision changed), a symbol's latest decision as `context.decision`.
 
+use crate::evidence::{Cursor, EvidenceBatch};
 use crate::quotes::Counted;
 use chrono::NaiveDate;
 use market_archive::PrevCloses;
@@ -24,7 +35,7 @@ use serde_json::json;
 use std::collections::HashSet;
 use stock_context::{
     CloseBasis, Coverage, Decision, Engine, Fidelity, InstrumentId, PanelPolicy, Policy, PrevClose,
-    RunInfo, Verdict,
+    RunInfo, SetupPolicy, Verdict,
 };
 
 pub(crate) struct ContextBoard {
@@ -33,26 +44,37 @@ pub(crate) struct ContextBoard {
     closes_offered: HashSet<(String, NaiveDate)>,
     /// The panel revision last published (`ross.update` only when it moves).
     published: Option<(u64, i64)>,
+    /// How far this board has taken the market's evidence log (`None`: nothing yet).
+    evidence: Option<Cursor>,
 }
 
 impl ContextBoard {
-    /// `None` when the panel policy's platform band is not the server's price band: membership
-    /// would then judge eligibility by a band the rest of the app does not use.
+    /// `None` when the pillar policy's price band or the panel policy's platform band is not the
+    /// server's price band: the price pillar and membership would then judge by a band the rest
+    /// of the app (the quote board, the collector's universe) does not use.
     pub(crate) fn new(
         live: bool,
         day: Option<NaiveDate>,
         band_min: Price,
         band_max: Price,
     ) -> Option<ContextBoard> {
+        let policy = Policy::current();
         let panel = PanelPolicy::v1();
         let b = &panel.body.membership.platform_band;
-        if b.min_micros != band_min.micros() || b.max_micros != band_max.micros() {
+        let prof = &policy.body.reference_profile;
+        let band = (band_min.micros(), band_max.micros());
+        if (prof.price_min_micros, prof.price_max_micros) != band
+            || (b.min_micros, b.max_micros) != band
+        {
             tracing::error!(
-                policy_min = b.min_micros,
-                policy_max = b.max_micros,
+                pillar_policy = %policy.tag(),
+                price_min = prof.price_min_micros,
+                price_max = prof.price_max_micros,
+                platform_min = b.min_micros,
+                platform_max = b.max_micros,
                 band_min = band_min.micros(),
                 band_max = band_max.micros(),
-                "STOCK_CONTEXT: the Ross Panel policy's platform band is not PRICE_BAND; context disabled"
+                "STOCK_CONTEXT: the pillar policy's price band or the Ross Panel's platform band is not PRICE_BAND; context disabled"
             );
             return None;
         }
@@ -74,10 +96,46 @@ impl ContextBoard {
             numerator_coverage: Coverage::Unverified,
         };
         Some(ContextBoard {
-            engine: Engine::new(Policy::v1(), run).with_panel_policy(panel),
+            engine: Engine::new(policy, run)
+                .with_panel_policy(panel)
+                .with_setup_policy(SetupPolicy::v0()),
             closes_offered: HashSet::new(),
             published: None,
+            evidence: None,
         })
+    }
+
+    /// Where this board is in the market's evidence log.
+    pub(crate) fn evidence_cursor(&self) -> Option<Cursor> {
+        self.evidence
+    }
+
+    /// Takes evidence records into the engine as they are (each joins decisions from its own
+    /// `observed_at` on), then drops what no later decision can read. In-memory only: called
+    /// under the core lock.
+    pub(crate) fn add_evidence(&mut self, b: EvidenceBatch) {
+        self.evidence = Some((b.generation, b.through));
+        for r in b.closes {
+            self.engine.add_prev_close(r);
+        }
+        for r in b.baselines {
+            self.engine.add_daily(r);
+        }
+        for r in b.floats {
+            self.engine.add_float(r);
+        }
+        for r in b.news {
+            self.engine.add_news(r);
+        }
+        for r in b.coverage {
+            self.engine.add_coverage(r);
+        }
+        self.engine.prune_evidence();
+    }
+
+    /// Evidence records the engine holds (logs).
+    pub(crate) fn evidence_len(&self) -> usize {
+        self.engine.evidence_len()
     }
 
     pub(crate) fn apply_trade(&mut self, t: &Trade, counted: Counted, closes: &PrevCloses) {

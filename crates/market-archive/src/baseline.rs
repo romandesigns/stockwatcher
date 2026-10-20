@@ -2,7 +2,8 @@
 //! [`stock_context::DailyBaseline`] (RVOL's 30-session denominator) and
 //! [`stock_context::PrevClose`] (the gain's reference), for one symbol and one evaluated trading
 //! date D. Pure: the caller reads the files and passes them in; nothing here touches the disk, a
-//! clock or a provider. Not wired into the server. Full rules and their reasons:
+//! clock or a provider. The server drives it (`crates/server/src/evidence.rs`). Full rules and
+//! their reasons:
 //! `docs/stock-context/daily-baseline-plan.md` §6.
 //!
 //! Metric: the sessions' volume is **Alpaca's SIP daily-bar volume** (`provider_daily_volume_v1`

@@ -88,6 +88,54 @@ services:
         max-size: "10m"
         max-file: "5"
 
+  # The float and news collector for the Ross Panel (stock context): FMP float
+  # once per trading day at 07:00 ET (bulk pages), Alpaca/Benzinga news every
+  # 60 s from 04:00 to 20:00 ET, both appended to archive/evidence/ on the
+  # shared volume, which the server reads with STOCK_CONTEXT=1 (it never calls
+  # a provider itself). Same image and tag as the server, so deploy.sh moves
+  # all three together. Rules and variables:
+  # crates/market-providers/src/import/evidence_collect.rs and
+  # docs/stock-context/float-news-plan.md. Status: a start line saying which
+  # keys are set, then one line per tick that made a request
+  # (`docker compose --env-file image.env logs --tail 20 evidence`).
+  evidence:
+    image: ghcr.io/romandesigns/stockwatcher-server:${STOCKWATCHER_IMAGE_TAG:?run via deploy.sh or pass --env-file image.env}
+    restart: unless-stopped
+    entrypoint: ["/app/swimport"]
+    command: ["evidence"]
+    # Same .env as the server: FMP_API_KEY (float) and ALPACA_API_KEY /
+    # ALPACA_API_SECRET (news), added by the owner on this host (SETUP.md,
+    # section 10). A missing key only turns its half off, and the start line
+    # says `NOT SET`. PRICE_BAND_* sets the float universe.
+    env_file: .env
+    volumes:
+      - stockwatcher_data:/app/data
+    # No ports: it only talks out (FMP, Alpaca).
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # The image's HEALTHCHECK probes the server's port, which this container
+    # does not have; its health is its log.
+    healthcheck:
+      disable: true
+    # At start it rebuilds its state from the stored records (every float
+    # retrieval so far, ~50 MB a month at bulk refresh, and 60 days of news),
+    # then holds a day of floats and the news index: a few hundred MB at most
+    # after months. The limit only stops a runaway from taking the server's
+    # memory.
+    mem_limit: 1g
+    # SIGTERM cuts its sleeps short and it stops after the current tick; a
+    # tick's records are appended as whole lines (a torn last line is skipped
+    # by every reader), so being killed mid-append loses at most that line.
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
 volumes:
   stockwatcher_data:
     # Fixed name (not project-prefixed) so publish-updates.sh and backups

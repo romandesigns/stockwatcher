@@ -180,6 +180,7 @@ pub const QUOTES_INTERVAL: Duration = Duration::from_secs(1);
 /// | `REPLAY_FOLLOW_LATEST` | `0` | switch the running replay to a newly imported latest day (see [`Market::follow_latest`]) |
 /// | `LIVE_HISTORY_PRELOAD` | `1` | live: load every symbol's history from the archive in the background, not only on a chart's request (`crate::history`) |
 /// | `STOCK_CONTEXT` | `0` | five-pillar stock context and the Ross Panel (`crate::context`, `ross.*` / `context.get`) |
+/// | `CONTEXT_EVIDENCE_CHECK_SECS` | `15` | with `STOCK_CONTEXT`: how often the archive's float, news and baseline evidence is checked for new records (`crate::evidence`; 0 = only at startup and on a replay day switch) |
 #[derive(Clone, Debug)]
 pub struct MarketConfig {
     pub provider: ProviderConfig,
@@ -199,6 +200,9 @@ pub struct MarketConfig {
     pub history_preload: bool,
     /// `STOCK_CONTEXT` (off by default): stock context and the Ross Panel (`crate::context`).
     pub stock_context: bool,
+    /// `CONTEXT_EVIDENCE_CHECK_SECS`: period of the evidence check (`crate::evidence`); zero =
+    /// only at startup and on a replay day switch.
+    pub evidence_check: Duration,
 }
 
 impl Default for MarketConfig {
@@ -214,6 +218,7 @@ impl Default for MarketConfig {
             follow_latest: false,
             history_preload: true,
             stock_context: false,
+            evidence_check: Duration::from_secs(crate::evidence::DEFAULT_CHECK_SECS),
         }
     }
 }
@@ -246,6 +251,11 @@ impl MarketConfig {
         if let Some(v) = var("ARCHIVE_META_CHECK_SECS") {
             c.meta_check = Duration::from_secs(v.parse().map_err(|_| {
                 format!("ARCHIVE_META_CHECK_SECS is not a whole number of seconds: {v:?}")
+            })?);
+        }
+        if let Some(v) = var("CONTEXT_EVIDENCE_CHECK_SECS") {
+            c.evidence_check = Duration::from_secs(v.parse().map_err(|_| {
+                format!("CONTEXT_EVIDENCE_CHECK_SECS is not a whole number of seconds: {v:?}")
             })?);
         }
         if let Some(d) = var("SIM_FIXTURE_DAY") {
@@ -419,6 +429,9 @@ pub(crate) struct Inner {
     ross_subs: AtomicUsize,
     /// Live: the archive history this market loads from (`crate::history`); set once at start.
     pub(crate) history: std::sync::OnceLock<History>,
+    /// With `STOCK_CONTEXT`: the archive evidence every context board is fed from
+    /// (`crate::evidence`); set once at start.
+    pub(crate) evidence: std::sync::OnceLock<crate::evidence::Evidence>,
     /// Live: the price alerts' input channel (`crate::alerts`), set once at start. Offered every
     /// eligible print, halt, resume and LULD change with `try_send`, never awaited.
     alerts: std::sync::OnceLock<Arc<crate::alerts::AlertSink>>,
@@ -577,6 +590,7 @@ impl Market {
             context_on: AtomicBool::new(false),
             ross_subs: AtomicUsize::new(0),
             history: std::sync::OnceLock::new(),
+            evidence: std::sync::OnceLock::new(),
             alerts: std::sync::OnceLock::new(),
         }));
         let board = market.new_context_board();
@@ -585,7 +599,10 @@ impl Market {
     }
 
     /// A fresh context board for this market's current day, or `None` with `STOCK_CONTEXT` off.
-    /// Takes the `info` lock (nobody holding it takes another), so call it before locking `core`.
+    /// Takes the `info` lock, then the evidence log's (nobody holding either takes another), so
+    /// call it before locking `core`. The board starts with every evidence record already loaded
+    /// for the day (`crate::evidence`): a seek's rebuild decides with the same evidence as the
+    /// first pass, each record still joining only from its own `observed_at`.
     fn new_context_board(&self) -> Option<ContextBoard> {
         if !self.0.context_on.load(Ordering::Relaxed) {
             return None;
@@ -597,12 +614,18 @@ impl Market {
             .expect("info lock")
             .as_ref()
             .and_then(|i| i.day);
-        ContextBoard::new(
+        let mut board = ContextBoard::new(
             self.0.mode == ClockMode::Live,
             day,
             self.0.band.min,
             self.0.band.max,
-        )
+        )?;
+        if let Some(ev) = self.0.evidence.get()
+            && let Some(batch) = ev.log.lock().expect("evidence log lock").since(None)
+        {
+            board.add_evidence(batch);
+        }
+        Some(board)
     }
 
     /// Turns stock context on or off for this market from now (tests; production reads
@@ -830,6 +853,9 @@ impl Market {
         );
         if cfg.stock_context {
             market.set_stock_context(true);
+            // Before the ingest starts: a replay's first load runs here (the feed waits on disk,
+            // nothing is lost), a live one in the background (crate::evidence).
+            market.init_evidence(archive.clone(), cfg.band.max, cfg.evidence_check);
         }
         if mode == ClockMode::Live {
             // Before the first event: the history decides which symbols the ingest holds back.
@@ -1312,6 +1338,9 @@ impl Market {
                 // Before the `Reset` behind it builds the new day's board: a day imported since
                 // the last check gets the closes file that came with it.
                 self.refresh_archive_meta();
+                // Same reason, same precedent: the new day's evidence is loaded before its board
+                // is built and seeded from it (only with STOCK_CONTEXT; crate::evidence).
+                self.load_evidence(Some(src.day));
                 *self.0.info.lock().expect("info lock") =
                     Some(Arc::new(ProviderInfo::replay(&src)));
             }
