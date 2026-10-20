@@ -251,8 +251,8 @@ const MIN_PRICE_AXIS = 30;
 const MONO_ADVANCE = 0.62;
 
 /**
- * The width the price column needs: its widest label (tick labels, the last-price tag in bold at
- * fontSize + 1, a crosshair value at the top of the range) plus padding. ChartOptions.priceAxisWidth
+ * The width the price column needs: its widest label (tick labels, the last-price tag in bold, a
+ * crosshair value at the top of the range) plus padding. ChartOptions.priceAxisWidth
  * is the maximum, so a $3 stock's "3.38" column is narrower than a sub-$1 stock's "0.9179".
  */
 function priceAxisNeed(model: ChartModel): number {
@@ -263,7 +263,7 @@ function priceAxisNeed(model: ChartModel): number {
   let need = 0;
   for (const label of model.priceTicks.labels) need = Math.max(need, AXIS_LABEL_PAD + w(label, o.fontSize) + 4);
   const last = lastCandle(model.slots);
-  if (last) need = Math.max(need, 2 + 5 + w(formatAxisTag(model, last.c), o.fontSize + 1) * 1.04 + 6);
+  if (last) need = Math.max(need, 2 + 5 + w(formatAxisTag(model, last.c), o.fontSize) * 1.04 + 6);
   need = Math.max(need, 4 + w(formatAxisTag(model, price.hi), o.fontSize) + 6);
   return Math.min(o.priceAxisWidth, Math.max(MIN_PRICE_AXIS, Math.ceil(need)));
 }
@@ -587,7 +587,7 @@ export function layoutChart(model: ChartModel, state: ChartState, theme: ChartTh
       const right = g.priceAxis.x + g.priceAxis.w - 2;
       const fill = last.c >= last.o ? theme.up : theme.down;
       out.push({ kind: "path", points: [ax, lastY, ax + 5, lastY - 9, right, lastY - 9, right, lastY + 9, ax + 5, lastY + 9], closed: true, fill, layer: "axes" });
-      out.push({ kind: "text", x: (ax + 5 + right) / 2, y: lastY, text: formatAxisTag(model, last.c), fill: theme.onTag, fontSize: fs + 1, fontFamily: mono, fontWeight: 600, align: "center", baseline: "middle", layer: "axes" });
+      out.push({ kind: "text", x: (ax + 5 + right) / 2, y: lastY, text: formatAxisTag(model, last.c), fill: theme.onTag, fontSize: fs, fontFamily: mono, fontWeight: 600, align: "center", baseline: "middle", layer: "axes" });
       // Countdown to the forming candle's close, tucked under the tag (above it near the bottom edge).
       const left = candleCountdown(last, model.timeframeMs, state.now ?? null);
       if (left !== null) {

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { backToLatestMs, formatAxisTag, backToLatestStep, buildSlots, defaultViewport, followLatest, MAX_BAR_SPACING, MIN_BAR_SPACING, ensureVisible, indexScale, isPannedBack, niceTicks, pan, panSlots, RIGHT_MARGIN_PX, rightEdge, rightMarginSlots, slotAt, slotsBehindLatest, slotX, timeTicks, zoom } from "./scale.ts";
+import { backToLatestMs, formatAxisTag, priceAxisTicks, backToLatestStep, buildSlots, defaultViewport, followLatest, MAX_BAR_SPACING, MIN_BAR_SPACING, ensureVisible, indexScale, isPannedBack, niceTicks, pan, panSlots, RIGHT_MARGIN_PX, rightEdge, rightMarginSlots, slotAt, slotsBehindLatest, slotX, timeTicks, zoom } from "./scale.ts";
 import { fixtureCandles, T0 } from "./testFixture.ts";
 
 describe("buildSlots", () => {
@@ -178,13 +178,16 @@ describe("right margin (owner, 2026-10-18: separation between the candles and th
 
 describe("price column tags", () => {
   const scale = { lo: 0.2, hi: 0.34, top: 0, bottom: 300 };
-  test("a tag takes the axis labels' precision, not the quote's four decimals below $1", () => {
-    expect(formatAxisTag({ price: scale, priceTicks: { decimals: 2 } }, 0.281)).toBe("0.28");
-    expect(formatAxisTag({ price: scale, priceTicks: { decimals: 3 } }, 0.2813)).toBe("0.281");
-    expect(formatAxisTag({ price: { lo: 0.012, hi: 0.014, top: 0, bottom: 300 }, priceTicks: { decimals: 4 } }, 0.01234)).toBe("0.0123");
+  test("tags read in cents, like the axis labels, whatever the price", () => {
+    expect(formatAxisTag({ price: scale }, 0.281)).toBe("0.28");
+    expect(formatAxisTag({ price: { lo: 0.012, hi: 0.014, top: 0, bottom: 300 } }, 0.01234)).toBe("0.01");
+    expect(formatAxisTag({ price: { lo: 100, hi: 200, top: 0, bottom: 300 } }, 150.456)).toBe("150.46");
+    expect(formatAxisTag({ price: { ...scale, type: "percent", base: 0.25 } }, 0.275)).toBe("+10.00%");
   });
-  test("never fewer than two decimals; percent mode still reads percent", () => {
-    expect(formatAxisTag({ price: { lo: 100, hi: 200, top: 0, bottom: 300 }, priceTicks: { decimals: 0 } }, 150.456)).toBe("150.46");
-    expect(formatAxisTag({ price: { ...scale, type: "percent", base: 0.25 }, priceTicks: { decimals: 2 } }, 0.275)).toBe("+10.00%");
+  test("the axis never steps finer than a cent", () => {
+    const t = priceAxisTicks({ lo: 0.26, hi: 0.29, top: 0, bottom: 500 }, 10);
+    expect(t.step).toBe(0.01);
+    expect(t.labels).toEqual(["0.26", "0.27", "0.28", "0.29"]);
+    expect(priceAxisTicks({ lo: 10, hi: 20, top: 0, bottom: 500 }, 10).labels[0]).toBe("10.00");
   });
 });

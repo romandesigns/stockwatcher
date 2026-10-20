@@ -136,6 +136,7 @@ describe("alert gestures", () => {
     t.handle(ev("down", 100, 40, 0, { pointerType: "touch" }), tctx);
     t.tick(500, tctx);
     const up = t.handle(ev("up", 500, 40, 900, { pointerType: "touch" }), tctx);
-    expect(up.at(-1)).toEqual({ kind: "liftChip", x: 358, y: 40 });
+    // Clamped to the plot's right edge (the price column fits its cents labels).
+    expect(up.at(-1)).toEqual({ kind: "liftChip", x: 361, y: 40 });
   });
 });
