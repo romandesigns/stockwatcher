@@ -9,7 +9,12 @@
 //! swimport alpaca-assets                                 # names + exchanges -> $ARCHIVE_ROOT/assets.json
 //! swimport alpaca-daily-closes --from <YYYY-MM-DD> --to <YYYY-MM-DD>  # -> $ARCHIVE_ROOT/daily-closes.json
 //! swimport maintain [--once]                             # keep the rolling 21-trading-day window (runs forever)
+//! swimport evidence [--once]                             # forward float + news collection (runs forever)
 //! ```
+//!
+//! `evidence` (import::evidence_collect) appends float retrievals, news versions and news
+//! coverage under `$ARCHIVE_ROOT/evidence/`. Either key may be missing: that source is skipped
+//! and said so at start. Not deployed yet (plan: docs/stock-context/float-news-plan.md).
 //!
 //! `maintain` is what the VPS runs as its `archiver` service (import::maintain has the window,
 //! schedule and safety rules, and its environment variables). It is a subcommand of this binary
@@ -48,7 +53,8 @@ fn usage() -> ExitCode {
     eprintln!(
         "usage:\n  swimport credentials\n  swimport alpaca-trades <SYMBOL> <YYYY-MM-DD> [--feed sip|iex|boats] [--limit N] [--force]\n  swimport fmp-bars <SYMBOL> <YYYY-MM-DD> [--force]\n  swimport check <SYMBOL> <YYYY-MM-DD>\n  swimport alpaca-batch --from <YYYY-MM-DD> --to <YYYY-MM-DD> [--jobs N] [--per-minute N] [--plan-only]\n  swimport alpaca-assets
   swimport alpaca-daily-closes --from <YYYY-MM-DD> --to <YYYY-MM-DD>
-  swimport maintain [--once]"
+  swimport maintain [--once]
+  swimport evidence [--once]"
     );
     ExitCode::from(2)
 }
@@ -83,6 +89,7 @@ fn main() -> ExitCode {
             Some("alpaca-assets") => alpaca_assets(),
             Some("alpaca-daily-closes") => alpaca_daily_closes(&args[1..]),
             Some("maintain") => maintain(&args[1..]),
+            Some("evidence") => evidence(&args[1..]),
             _ => Ok(usage()),
         }
     };
@@ -759,5 +766,64 @@ fn maintain(args: &[String]) -> Result<ExitCode, String> {
         }
     }
     println!("{} maintain stopped", stamp());
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The forward evidence collector (import::evidence_collect): a tick every 15 s until SIGTERM.
+/// `--once` runs one tick and exits. Missing keys skip that source rather than failing, like
+/// `maintain`, so compose does not restart it in a loop.
+fn evidence(args: &[String]) -> Result<ExitCode, String> {
+    use market_providers::import::evidence_collect::{Collector, EvidenceConfig};
+    let cfg = EvidenceConfig::from_lookup(env)?;
+    let creds = AlpacaCredentials::from_lookup(env);
+    let fmp_key = env("FMP_API_KEY").map(FmpKey);
+    let archive = archive()?;
+    let once = args.iter().any(|a| a == "--once");
+    let stop = Arc::new(AtomicBool::new(false));
+    watch_signals(stop.clone());
+    println!(
+        "{} evidence: archive {}, float at {} ET ({:?}, <= {}/min, warmup <= {}/day, universe {} closes), news every {}s / {}s idle (<= {}/min), Alpaca keys {}, FMP key {}",
+        stamp(),
+        archive.root().display(),
+        cfg.float_at.format("%H:%M"),
+        cfg.float_mode,
+        cfg.fmp_per_minute,
+        cfg.float_warmup_max,
+        cfg.universe_days,
+        cfg.news_poll_secs,
+        cfg.news_idle_poll_secs,
+        cfg.alpaca_per_minute,
+        if creds.is_some() { "set" } else { "NOT SET" },
+        if fmp_key.is_some() { "set" } else { "NOT SET" },
+    );
+    let mut collector = Collector::open(cfg, &archive, Utc::now())?;
+    let mut http = ReqwestHttp::new()?;
+    loop {
+        let report = collector.tick(
+            &archive,
+            &mut http,
+            fmp_key.as_ref(),
+            creds.as_ref(),
+            &mut Utc::now,
+            &mut |d| {
+                sleep_or_stop(&stop, d);
+            },
+            &mut |l| println!("{} {l}", stamp()),
+        );
+        if once || report.float_requests + report.news_requests > 0 || !report.errors.is_empty() {
+            println!("{} {}", stamp(), report.summary());
+        }
+        if once {
+            return Ok(if report.errors.is_empty() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            });
+        }
+        if !sleep_or_stop(&stop, Duration::from_secs(15)) {
+            break;
+        }
+    }
+    println!("{} evidence stopped", stamp());
     Ok(ExitCode::SUCCESS)
 }

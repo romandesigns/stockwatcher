@@ -11,6 +11,8 @@ authors.workspace = true
 
 [dependencies]
 market-events = { path = "../market-events" }
+# Evidence loader (`evidence_load`): stored float/news records into the context engine's types.
+stock-context = { path = "../stock-context" }
 chrono = { version = "0.4.45", default-features = false, features = ["std", "clock", "serde"] }
 chrono-tz = "0.10.4"
 fs4 = "1.1.0"

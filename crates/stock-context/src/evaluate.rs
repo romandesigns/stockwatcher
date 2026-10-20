@@ -389,7 +389,10 @@ pub fn news(
         return (r, summary);
     }
     match coverage {
-        Some(c) if c.covered_from <= cutoff - fresh && c.covered_through >= cutoff => {
+        Some(c)
+            if c.covered_from <= cutoff - fresh
+                && c.covered_through + policy.body.news.coverage_max_lag_secs * SEC >= cutoff =>
+        {
             let r = PillarResult::new(
                 PillarId::News,
                 Tri::Fail,

@@ -48,5 +48,8 @@ futures-util = { version = "0.3.34", default-features = false, features = ["sink
 flate2 = { version = "1.1.10", optional = true }
 
 [dev-dependencies]
+# tests/evidence.rs: fixture responses through the collector, the archive and the loader into the
+# context engine, end to end.
+stock-context = { path = "../stock-context" }
 tempfile = "3.27.0"
 tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "sync", "time"] }
