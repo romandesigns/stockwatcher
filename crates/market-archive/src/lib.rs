@@ -19,6 +19,10 @@
 //!     FXLO.swa.partial     # a writer that has not finalized (never read by replay)
 //!     live/                # the live recording of the day (crate::live): manifest.json with
 //!                          #   "live": {"sealed"}, quotes.json, SMPL.swa (a frame per flush)
+//!   live-original/
+//!     2026-10-14/          # a recording the import replaced, preserved unchanged (crate::original)
+//!   coverage/
+//!     2026-10-15.jsonl     # was the live market collecting? append-only (crate::coverage)
 //! ```
 //!
 //! The day is the **trading date** of the events' sessions (`market_events::session`), so the
@@ -78,10 +82,12 @@ pub mod assets;
 pub mod bars;
 pub mod closes;
 pub mod config;
+pub mod coverage;
 pub mod fixture;
 pub mod format;
 pub mod live;
 pub mod manifest;
+pub mod original;
 pub mod reader;
 pub mod space;
 pub mod writer;
@@ -95,10 +101,15 @@ pub use assets::{ASSETS_FILE, AssetMap, AssetMeta};
 pub use bars::{Bar, BarDataset, BarEntry};
 pub use closes::{DAILY_CLOSES_FILE, DailyCloses, PrevCloses, merge_daily_closes};
 pub use config::ArchiveConfig;
+pub use coverage::{
+    COVERAGE_DIR, COVERAGE_SCHEMA, Collection, CoverageBasis, CoverageEvent, CoverageGap,
+    CoverageLog, CoverageRecord, CoverageReport, DropStage, GapReason, LinkStatus, Subscription,
+};
 pub use error::ArchiveError;
 pub use lifecycle::{IMPORTING_MARKER, REMOVING_PREFIX};
 pub use live::{DayData, LIVE_DIR, LiveQuote, LiveWriter};
 pub use manifest::{DayManifest, ImportProvenance, LiveDay, SymbolEntry};
+pub use original::ORIGINALS_DIR;
 pub use reader::SymbolReader;
 pub use writer::{FsyncPolicy, SymbolWriter};
 

@@ -36,6 +36,26 @@
 //! [`RecorderConfig::keep_days`] that no import ever replaced are retired, never the day being
 //! written. On start, earlier days left unsealed by a stopped process are sealed the same way.
 //!
+//! # Coverage
+//!
+//! The thread also keeps the day's coverage file (`market_archive::coverage`): a `process_start`
+//! when it starts, the stream's link changes and subscription ([`Recorder::note_link`],
+//! [`Recorder::note_subscription`], from the live provider), drops with their time window (its
+//! own queue's and, through [`Recorder::watch_stream_drops`], the stream reader's), a stopped
+//! recording, a heartbeat every minute, `day_close`/`day_open` at each trading-date boundary
+//! (carrying the state into the new day's file), and `process_stop` on a clean stop. Notes are
+//! stamped when they happen and written on the next tick (<= 1 s), each tick's records in one
+//! appended, `fdatasync`ed write. Nothing is inferred from the events: a quiet symbol is not an
+//! outage. A killed process writes no stop; its silence is what says so.
+//!
+//! # Preserved originals
+//!
+//! The import moves a recording it replaces to `ARCHIVE_ROOT/live-original/<day>/`
+//! (`market_archive::original`). The recorder's housekeeping (at start and at every day change,
+//! one run at a time, off the writer thread) seals any original that was moved unsealed, keeps
+//! the newest [`RecorderConfig::original_days`] and deletes the rest, and drops coverage files
+//! older than every day that still has data.
+//!
 //! # Barrier
 //!
 //! [`Recorder::barrier`] passes through the same queue as the events, so when the thread answers,
@@ -43,12 +63,17 @@
 //! The server uses it to cut a symbol's history exactly where its own live tail begins.
 
 use chrono::NaiveDate;
-use market_archive::{Archive, ArchiveConfig, ArchiveError, LiveWriter};
+use market_archive::coverage::{HEARTBEAT_EVERY, HEARTBEAT_GRACE, wall_now};
+use market_archive::{
+    Archive, ArchiveConfig, ArchiveError, CoverageEvent, CoverageRecord, DropStage, LinkStatus,
+    LiveWriter, Subscription,
+};
 use market_events::session::trading_date;
 use market_events::{MarketEvent, UnixNanos};
-use std::sync::Arc;
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError, sync_channel};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// How often the thread writes the frames that are due.
@@ -63,6 +88,10 @@ pub struct RecorderConfig {
     pub archive: ArchiveConfig,
     /// `LIVE_RECORD_DAYS`, default 5: live recordings kept when no import replaced them.
     pub keep_days: usize,
+    /// `LIVE_ORIGINAL_DAYS`, default 5: preserved originals (recordings an import replaced) kept,
+    /// newest first. 0 deletes them at the next housekeeping. A sealed whole-market day is
+    /// expected around 0.8 GB (docs/architecture/simulator-and-chart.md, "Live recording").
+    pub original_days: usize,
     /// Events the queue holds before it drops. 65,536 is a few seconds of the whole market at
     /// the open, ~20 MB.
     pub queue: usize,
@@ -76,6 +105,7 @@ impl RecorderConfig {
         RecorderConfig {
             archive,
             keep_days: 5,
+            original_days: 5,
             queue: 65_536,
             today: None,
         }
@@ -113,9 +143,22 @@ enum Msg {
     Close(std::sync::mpsc::Sender<()>),
 }
 
+/// Reads a cumulative drop count (the stream reader's, `StreamStats::dropped`).
+pub type DropCounter = Arc<dyn Fn() -> u64 + Send + Sync>;
+
 #[derive(Default)]
 struct Stats {
     dropped: AtomicU64,
+    /// Coverage facts waiting for the thread's next tick (module docs, "Coverage"). A mutex, not
+    /// the event queue: a full queue must not lose the record of why it is full.
+    notes: Mutex<Vec<CoverageRecord>>,
+    stream_drops: Mutex<Option<DropCounter>>,
+}
+
+impl Stats {
+    fn note(&self, r: CoverageRecord) {
+        self.notes.lock().unwrap_or_else(|p| p.into_inner()).push(r);
+    }
 }
 
 /// The handle the live provider (append) and the server (barrier) hold. Cheap to clone; the
@@ -142,15 +185,22 @@ impl Recorder {
     ) -> Recorder {
         let (tx, rx) = sync_channel(cfg.queue.max(1));
         let stats = Arc::new(Stats::default());
+        let started = wall_now();
+        stats.note(CoverageRecord::new(
+            started,
+            CoverageEvent::ProcessStart {
+                version: concat!("stockwatcher live recorder ", env!("CARGO_PKG_VERSION")).into(),
+            },
+        ));
         let archive = Archive::new(cfg.archive.clone());
         let today = today.unwrap_or_else(|| {
             trading_date(UnixNanos::from_utc(chrono::Utc::now()).unwrap_or_default())
         });
-        let sealer = archive.clone();
-        let keep = cfg.keep_days.max(2);
-        let _ = std::thread::Builder::new()
-            .name("live-record-seal".into())
-            .spawn(move || seal_and_prune(&sealer, today, keep));
+        let keep = Keep {
+            live: cfg.keep_days.max(2),
+            originals: cfg.original_days,
+        };
+        spawn_housekeeping(&archive, today, keep, None);
         let thread = Thread {
             archive,
             keep,
@@ -159,6 +209,7 @@ impl Recorder {
             writer: None,
             refused: None,
             reported_drops: 0,
+            cov: Cov::new(started),
         };
         let spawned = std::thread::Builder::new()
             .name("live-record".into())
@@ -215,35 +266,99 @@ impl Recorder {
     pub fn dropped(&self) -> u64 {
         self.stats.dropped.load(Ordering::Relaxed)
     }
+
+    /// Records a change of the stream's link (coverage, module docs). Never blocks for long.
+    pub fn note_link(&self, state: LinkStatus, detail: Option<String>) {
+        self.stats
+            .note(CoverageRecord::now(CoverageEvent::Link { state, detail }));
+    }
+
+    /// Records what the stream subscribes (coverage).
+    pub fn note_subscription(&self, symbols: Subscription) {
+        self.stats
+            .note(CoverageRecord::now(CoverageEvent::Subscription { symbols }));
+    }
+
+    /// Has the thread record the stream reader's drops too (`drop` records with stage `stream`).
+    pub fn watch_stream_drops(&self, counter: DropCounter) {
+        *self
+            .stats
+            .stream_drops
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(counter);
+    }
 }
 
-/// Start-up housekeeping, off the writer thread: seal every recording before `today` that a
-/// stopped process left unsealed, then retire recordings beyond `keep` (never today's).
-fn seal_and_prune(archive: &Archive, today: NaiveDate, keep: usize) {
-    let days = match archive.live_days() {
-        Ok(d) => d,
-        Err(e) => {
-            tracing::warn!(error = %e, "live recorder: cannot list recordings");
-            return;
-        }
-    };
-    for d in days.into_iter().filter(|d| *d < today) {
-        let sealed = archive
-            .live_manifest(d)
-            .ok()
-            .flatten()
-            .and_then(|m| m.live)
-            .is_some_and(|l| l.sealed);
-        if !sealed && archive.accepts_live(d) {
-            seal(archive, d);
+/// Retention counts.
+#[derive(Clone, Copy, Debug)]
+struct Keep {
+    live: usize,
+    originals: usize,
+}
+
+/// One housekeeping run at a time: the start-up run may still be sealing when the first day
+/// change starts another, and two seals of one directory would race on its temp files.
+static HOUSEKEEPING: Mutex<()> = Mutex::new(());
+
+fn spawn_housekeeping(archive: &Archive, today: NaiveDate, keep: Keep, sealing: Option<NaiveDate>) {
+    let a = archive.clone();
+    let _ = std::thread::Builder::new()
+        .name("live-record-seal".into())
+        .spawn(move || housekeeping(&a, today, keep, sealing));
+}
+
+/// Housekeeping, off the writer thread. `sealing`: the day the recorder just left (a day
+/// change); `None` seals every recording before `today` that a stopped process left unsealed.
+/// Then: seal originals moved unsealed, retire recordings beyond `keep.live` (never today's),
+/// keep `keep.originals` originals, drop coverage nothing is left to describe.
+fn housekeeping(archive: &Archive, today: NaiveDate, keep: Keep, sealing: Option<NaiveDate>) {
+    let _one = HOUSEKEEPING.lock().unwrap_or_else(|p| p.into_inner());
+    match sealing {
+        Some(d) => seal(archive, d),
+        None => match archive.live_days() {
+            Ok(days) => {
+                for d in days.into_iter().filter(|d| *d < today) {
+                    let sealed = archive
+                        .live_manifest(d)
+                        .ok()
+                        .flatten()
+                        .and_then(|m| m.live)
+                        .is_some_and(|l| l.sealed);
+                    if !sealed && archive.accepts_live(d) {
+                        seal(archive, d);
+                    }
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "live recorder: cannot list recordings"),
+        },
+    }
+    for d in archive.original_days().unwrap_or_default() {
+        match archive.seal_original(d) {
+            Ok(true) => tracing::info!(day = %d, "live recorder: sealed a preserved original"),
+            Ok(false) => {}
+            Err(e) => {
+                tracing::warn!(day = %d, error = %e, "live recorder: sealing an original failed")
+            }
         }
     }
-    match archive.prune_live(keep, Some(today)) {
+    match archive.prune_live(keep.live, Some(today)) {
         Ok(p) if !p.is_empty() => {
             tracing::info!(days = ?p, "live recorder: retired old recordings no import replaced")
         }
         Ok(_) => {}
         Err(e) => tracing::warn!(error = %e, "live recorder: prune failed"),
+    }
+    match archive.prune_originals(keep.originals) {
+        Ok(p) if !p.is_empty() => tracing::info!(
+            days = ?p,
+            keep = keep.originals,
+            "live recorder: removed preserved originals beyond LIVE_ORIGINAL_DAYS"
+        ),
+        Ok(_) => {}
+        Err(e) => tracing::warn!(error = %e, "live recorder: pruning originals failed"),
+    }
+    if let Err(e) = archive.prune_coverage(Some(today)) {
+        tracing::warn!(error = %e, "live recorder: pruning coverage failed");
     }
 }
 
@@ -263,7 +378,7 @@ fn seal(archive: &Archive, day: NaiveDate) {
 
 struct Thread {
     archive: Archive,
-    keep: usize,
+    keep: Keep,
     floor: u64,
     stats: Arc<Stats>,
     writer: Option<LiveWriter>,
@@ -271,6 +386,116 @@ struct Thread {
     /// to it.
     refused: Option<NaiveDate>,
     reported_drops: u64,
+    cov: Cov,
+}
+
+/// The coverage writer's state (module docs, "Coverage").
+struct Cov {
+    /// The trading date records currently go to.
+    day: Option<NaiveDate>,
+    /// Carried into a new day's `day_open`.
+    link: LinkStatus,
+    sub: Option<Subscription>,
+    /// The latest record's time (liveness: a heartbeat is due [`HEARTBEAT_EVERY`] after it).
+    last: i64,
+    recorder_drops: u64,
+    stream_drops: u64,
+    /// Since when drops not yet recorded may have happened.
+    drops_since: i64,
+    pending: BTreeMap<NaiveDate, Vec<CoverageRecord>>,
+    write_failed: bool,
+}
+
+impl Cov {
+    fn new(started: i64) -> Self {
+        Cov {
+            day: None,
+            link: LinkStatus::Connecting,
+            sub: None,
+            last: started,
+            recorder_drops: 0,
+            stream_drops: 0,
+            drops_since: started,
+            pending: BTreeMap::new(),
+            write_failed: false,
+        }
+    }
+
+    fn push(&mut self, day: NaiveDate, r: CoverageRecord) {
+        self.pending.entry(day).or_default().push(r);
+    }
+
+    /// Queues a record in the file of its trading date, crossing into a new date first.
+    fn emit(&mut self, r: CoverageRecord) {
+        let d = trading_date(UnixNanos(r.ts));
+        match self.day {
+            None => self.day = Some(d),
+            Some(c) if d > c => self.cross(c, d, r.ts),
+            Some(_) => {}
+        }
+        match &r.event {
+            CoverageEvent::ProcessStart { .. } => {
+                self.link = LinkStatus::Connecting;
+                self.sub = None;
+            }
+            CoverageEvent::Link { state, .. } => self.link = *state,
+            CoverageEvent::Subscription { symbols } => self.sub = Some(symbols.clone()),
+            _ => {}
+        }
+        self.last = self.last.max(r.ts);
+        self.push(d, r);
+    }
+
+    /// A running process crosses from trading date `old` into `new` at `t`: the old file is
+    /// closed and the new one opened at the boundary itself, with the current state, so neither
+    /// day has an unvouched sliver around it. After a silence longer than the grace nothing
+    /// vouches for the boundary: the new day just opens at `t`.
+    fn cross(&mut self, old: NaiveDate, new: NaiveDate, t: i64) {
+        let at = if t - self.last <= HEARTBEAT_GRACE.as_nanos() as i64 {
+            let (mut lo, mut hi) = (self.last, t);
+            while hi - lo > 1 {
+                let mid = lo + (hi - lo) / 2;
+                if trading_date(UnixNanos(mid)) >= new {
+                    hi = mid;
+                } else {
+                    lo = mid;
+                }
+            }
+            self.push(old, CoverageRecord::new(hi, CoverageEvent::DayClose));
+            hi
+        } else {
+            t
+        };
+        self.push(
+            new,
+            CoverageRecord::new(
+                at,
+                CoverageEvent::DayOpen {
+                    link: self.link,
+                    subscription: self.sub.clone(),
+                },
+            ),
+        );
+        self.day = Some(new);
+    }
+
+    /// A drop window, recorded in the day it ends and, if it began the day before, there too.
+    fn drop_window(&mut self, stage: DropStage, from: i64, to: i64, count: u64) {
+        let r = CoverageRecord::new(
+            to,
+            CoverageEvent::Drop {
+                stage,
+                from,
+                to,
+                count,
+            },
+        );
+        let (d0, d1) = (trading_date(UnixNanos(from)), trading_date(UnixNanos(to)));
+        if d0 < d1 {
+            self.push(d0, r.clone());
+        }
+        self.emit(r);
+    }
 }
 
 impl Thread {
@@ -300,6 +525,7 @@ impl Thread {
                 }
                 self.flush(sync);
                 self.report_drops();
+                self.coverage(wall_now(), None);
             }
         }
         self.finish();
@@ -313,6 +539,58 @@ impl Thread {
             }
         }
         self.report_drops();
+        // After the files: a `process_stop` vouches that everything appended was written.
+        self.coverage(wall_now(), Some(CoverageEvent::ProcessStop));
+    }
+
+    /// The coverage tick (module docs): queued notes, drop windows, a heartbeat when due (or
+    /// `last`, the stop), then one append per day touched.
+    fn coverage(&mut self, now: i64, last: Option<CoverageEvent>) {
+        let mut notes =
+            std::mem::take(&mut *self.stats.notes.lock().unwrap_or_else(|p| p.into_inner()));
+        notes.sort_by_key(|r| r.ts);
+        for r in notes {
+            self.cov.emit(r);
+        }
+        let rec = self.stats.dropped.load(Ordering::Relaxed);
+        let stream = self
+            .stats
+            .stream_drops
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .map(|f| f());
+        let since = self.cov.drops_since;
+        if rec > self.cov.recorder_drops {
+            let n = rec - self.cov.recorder_drops;
+            self.cov.recorder_drops = rec;
+            self.cov.drop_window(DropStage::Recorder, since, now, n);
+        }
+        if let Some(n) = stream.filter(|n| *n > self.cov.stream_drops) {
+            let d = n - self.cov.stream_drops;
+            self.cov.stream_drops = n;
+            self.cov.drop_window(DropStage::Stream, since, now, d);
+        }
+        self.cov.drops_since = now;
+        match last {
+            Some(e) => self.cov.emit(CoverageRecord::new(now, e)),
+            None if now - self.cov.last >= HEARTBEAT_EVERY.as_nanos() as i64 => self
+                .cov
+                .emit(CoverageRecord::new(now, CoverageEvent::Heartbeat)),
+            None => {}
+        }
+        for (day, recs) in std::mem::take(&mut self.cov.pending) {
+            match self.archive.append_coverage(day, &recs) {
+                Ok(()) => self.cov.write_failed = false,
+                Err(e) => {
+                    // Once per failing stretch: a full disk would otherwise log every second.
+                    if !self.cov.write_failed {
+                        tracing::warn!(%day, error = %e, "live recorder: coverage records could not be written (the day will read as unverified)");
+                    }
+                    self.cov.write_failed = true;
+                }
+            }
+        }
     }
 
     fn write(&mut self, e: &MarketEvent) {
@@ -334,29 +612,20 @@ impl Thread {
         }
     }
 
-    /// Finishes the old day, seals it in the background, and opens the new one.
+    /// Finishes the old day and opens the new one; the old day is sealed and retention applied
+    /// in the background (`housekeeping`; `prune_live` never touches `day`).
     fn roll(&mut self, day: NaiveDate) {
+        let mut sealing = None;
         if let Some(old) = self.writer.take() {
             let d = old.day();
             match old.finish() {
-                Ok(()) => {
-                    let a = self.archive.clone();
-                    let _ = std::thread::Builder::new()
-                        .name("live-record-seal".into())
-                        .spawn(move || seal(&a, d));
-                }
+                Ok(()) => sealing = Some(d),
                 Err(e) => {
                     tracing::warn!(day = %d, error = %e, "live recorder: could not finish the day's files")
                 }
             }
         }
-        match self.archive.prune_live(self.keep, Some(day)) {
-            Ok(p) if !p.is_empty() => {
-                tracing::info!(days = ?p, "live recorder: retired old recordings no import replaced")
-            }
-            Ok(_) => {}
-            Err(e) => tracing::warn!(error = %e, "live recorder: prune failed"),
-        }
+        spawn_housekeeping(&self.archive, day, self.keep, sealing);
         let created_by = concat!("stockwatcher live recorder ", env!("CARGO_PKG_VERSION"));
         match LiveWriter::open(&self.archive, day, self.floor, created_by) {
             Ok(w) => {
@@ -368,6 +637,10 @@ impl Thread {
     }
 
     fn fail(&mut self, day: NaiveDate, e: &ArchiveError) {
+        self.stats
+            .note(CoverageRecord::now(CoverageEvent::RecordingStopped {
+                reason: e.to_string(),
+            }));
         match e {
             ArchiveError::DayIsFinal(_) => {
                 tracing::info!(%day, "live recorder: the day is imported (or being imported); live recording of it stops (imported data wins)")
@@ -524,6 +797,81 @@ mod tests {
         drop(r);
         let a = Archive::new(c.archive);
         eventually(|| seqs(&a, date(15)).len() == 8);
+        // The overflow is on record, as a window, for the recording only.
+        let drops = || -> Vec<(DropStage, u64)> {
+            a.coverage_days()
+                .unwrap()
+                .into_iter()
+                .flat_map(|d| a.read_coverage(d).unwrap().unwrap().records)
+                .filter_map(|r| match r.event {
+                    CoverageEvent::Drop { stage, count, .. } => Some((stage, count)),
+                    _ => None,
+                })
+                .collect()
+        };
+        eventually(|| drops() == [(DropStage::Recorder, 1_000 - 8)]);
+    }
+
+    /// The stream reader's drops (a lagging consumer) are recorded with their own stage.
+    #[test]
+    fn stream_drops_are_recorded_as_stream_gaps() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = Recorder::start_gated(&cfg(tmp.path()), None, Some(date(15)));
+        let n = Arc::new(AtomicU64::new(0));
+        let c = n.clone();
+        r.watch_stream_drops(Arc::new(move || c.load(Ordering::Relaxed)));
+        n.store(40, Ordering::Relaxed);
+        assert!(r.close(Duration::from_secs(10)));
+        let a = Archive::new(cfg(tmp.path()).archive);
+        let recs: Vec<_> = a
+            .coverage_days()
+            .unwrap()
+            .into_iter()
+            .flat_map(|d| a.read_coverage(d).unwrap().unwrap().records)
+            .collect();
+        assert!(recs.iter().any(|r| matches!(
+            r.event,
+            CoverageEvent::Drop {
+                stage: DropStage::Stream,
+                count: 40,
+                ..
+            }
+        )));
+        assert!(matches!(
+            recs.last().map(|r| &r.event),
+            Some(CoverageEvent::ProcessStop)
+        ));
+    }
+
+    /// A running process crossing 20:00 ET (the next trading date's overnight) closes the old
+    /// day's file and opens the new one at the boundary itself, carrying the link state.
+    #[test]
+    fn coverage_crosses_a_trading_date_at_the_boundary() {
+        let t0 = et(15, 19, 59).nanos();
+        let mut c = Cov::new(t0);
+        c.emit(CoverageRecord::new(
+            t0,
+            CoverageEvent::Link {
+                state: LinkStatus::Up,
+                detail: None,
+            },
+        ));
+        let later = et(15, 20, 0).nanos() + 30_000_000_000;
+        c.emit(CoverageRecord::new(later, CoverageEvent::Heartbeat));
+        let boundary = et(15, 20, 0).nanos();
+        let old = &c.pending[&date(15)];
+        assert_eq!(old.last().unwrap().event, CoverageEvent::DayClose);
+        assert_eq!(old.last().unwrap().ts, boundary);
+        let new = &c.pending[&date(16)];
+        assert_eq!(new[0].ts, boundary);
+        assert_eq!(
+            new[0].event,
+            CoverageEvent::DayOpen {
+                link: LinkStatus::Up,
+                subscription: None
+            }
+        );
+        assert_eq!(new[1].event, CoverageEvent::Heartbeat);
     }
 
     /// Frames wait for size or age, but a clean stop writes and syncs everything before it

@@ -61,6 +61,7 @@ services) sets `STOCKWATCHER_API_TOKEN`, `RUST_LOG`, `MARKET_DATA_MODE`, `REPLAY
 | `LIVE_SYMBOLS` | `*` | `*` (whole market) or a comma list |
 | `LIVE_RECORD` | `1` | record every event the live stream delivers into the archive itself, `ARCHIVE_ROOT/<trading date>/live/` (a provisional day: `crates/market-archive/src/live.rs`, `crates/market-providers/src/recorder.rs`). The nightly import replaces it with the complete day. `0` turns recording off; history already in the archive is still loaded |
 | `LIVE_RECORD_DAYS` | `5` | live recordings kept when no import replaced them (at least 2; never the day being recorded). Shares `ARCHIVE_MIN_FREE_MB` with the archive |
+| `LIVE_ORIGINAL_DAYS` | `5` | preserved originals kept, newest first: recordings the import replaced, moved unchanged to `ARCHIVE_ROOT/live-original/<day>/` for forward research (`crates/market-archive/src/original.rs`). ~0.8 GB a sealed whole-market day (estimate), so ~4 GB at the default. Not touched by the rolling window or `ARCHIVE_RETENTION_DAYS`. `0` keeps none (deleted at the recorder's next start or day change). Coverage records (`ARCHIVE_ROOT/coverage/`) have no setting: tiny, kept while their day has any data |
 | `LIVE_HISTORY_PRELOAD` | `1` | after a start, load every symbol's day from the archive in the background, busiest first; `0` loads a symbol only when a chart asks for it (`crates/server/src/history.rs`) |
 
 Alpaca allows one stream connection per account on most plans: run live on one host only.

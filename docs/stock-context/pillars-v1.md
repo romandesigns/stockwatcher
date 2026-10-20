@@ -16,7 +16,7 @@ the wire protocol or the dashboard. Nothing here is a validated trading rule.
 | News | No client; Alpaca/Benzinga news has `created_at` 3y+, FMP ~11 months | News UNKNOWN (`news_coverage_unknown`) until an adapter writes `NewsItem`/`NewsCoverage` |
 | Corporate actions | Only on `research/foundation` (`crates/research-features/src/corporate.rs`), not on main | Engine takes a close plus `actions_checked_through`; no adjustment logic is duplicated here |
 | Eligibility / staleness | `eligibility-research-v1` on `research/foundation` (band $0.15–$25, stale 10 min regular / 30 min extended) | Same numbers recorded in `pillars-v1.json` with their source; production's $0.10–$25 quote band is untouched |
-| Recorder coverage | No coverage/gap records; nightly import **replaces** `live/` | Numerator coverage of a live run is `unverified` (§4.3); original arrival history is not preserved (risk, §8) |
+| Recorder coverage | No coverage/gap records; nightly import **replaces** `live/` | Numerator coverage of a live run is `unverified` (§4.3); original arrival history is not preserved (risk, §8). **Since 2026-10-19** the recorder writes coverage records and the import preserves the original (`live-original/`); `Archive::coverage` answers complete/partial/unverified but is not wired into this engine yet |
 | Exchange-D trade ids | Distinct FINRA TRF prints share `(D, id)` and are dropped as duplicates (`research/acquisition` 7c91eb5); **unfixed** | Volume is undercounted for affected symbols; RVOL treats undercounts conservatively (§4.3) |
 | Quotes / NBBO | Live stream subscribes `trades` + `statuses` only | Liquidity context (brief §5.5) not implemented |
 

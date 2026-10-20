@@ -305,7 +305,8 @@ batches of 2048 events keep commands responsive. A seek over a whole fixture day
       (`Archive::day_data`): the import once complete (manifest, no `.importing` marker), else the
       recording. The importer's existing lifecycle is the switch: its marker also stops the
       recorder writing to the day (live never writes into imported data), and clearing it
-      (`Archive::finish_import`) makes every reader take the import, then deletes `live/`.
+      (`Archive::finish_import`) makes every reader take the import, then **moves** `live/` to
+      its preserved original (below) instead of deleting it.
     - **Writing.** Write-behind as before (a `try_send` into a 65,536-event queue, one OS thread;
       overflow is dropped from the recording and counted, never from the market). Each symbol's
       records are buffered and appended as one complete zstd frame once they reach 64 KiB or are
@@ -318,6 +319,56 @@ batches of 2048 events keep commands responsive. A seek over a whole fixture day
       **seals** the old one in the background: every file repaired, recounted, rewritten as one
       frame and hashed. Recordings no import replaced are kept `LIVE_RECORD_DAYS` (5), never the
       day being written.
+    - **Preserved original** (2026-10-19; `crates/market-archive/src/original.rs`). The import is
+      the corrected day in time order; forward research needs what the live market actually
+      received, in receipt order with its delivery times and its gaps, which only the recording
+      has. So `finish_import` renames `<day>/live/` to `ARCHIVE_ROOT/live-original/<day>/` (one
+      rename on the same volume: not a byte changes, its manifest keeps every file's SHA-256;
+      `Archive::verify_original` rechecks them, `Archive::original_reader` reads a symbol). It sits
+      beside the day directories, not inside them, so the rolling 21-day window and
+      `ARCHIVE_RETENTION_DAYS`, which delete whole day directories, never touch it: it is pinned
+      and has its own retention, `LIVE_ORIGINAL_DAYS` (default **5**, newest kept; `0` keeps
+      none), applied by the recorder's housekeeping at start and at every day change.
+      **Immutable after sealing**: sealing is the last write a recording gets. One that was moved
+      unsealed (the recorder was down when the import finished) is sealed once by that
+      housekeeping (`Archive::seal_original`); the import itself never seals, because it runs in
+      another process and sealing rewrites files the recorder's sealing thread may be working on.
+      A day that already has an original is never overwritten (`preserve_live` refuses; the
+      recording then stays in `live/` until `LIVE_RECORD_DAYS` retires it). **Size**: a sealed
+      whole-market recording measured 20 B/print on the synthetic day above; at the guessed ~40M
+      prints a real day that is **~0.8 GB**, so the default costs **~4 GB** (estimate from the
+      measurement, not a real day; the recording is the whole market, `LIVE_SYMBOLS=*`, so it is
+      larger than the band-filtered ~0.6 GB import). An original moved unsealed is ~3 GB until
+      sealed.
+    - **Coverage records** (2026-10-19; `crates/market-archive/src/coverage.rs`, written by the
+      recorder). There used to be no record of whether the live market was collecting: a
+      disconnect, a restart, a queue overflow or a torn tail left nothing durable, so a quiet
+      stretch and an outage looked the same. Now `ARCHIVE_ROOT/coverage/<trading date>.jsonl`
+      (JSON lines, append-only, schema `"v":1`, each tick's lines in one `fdatasync`ed append)
+      holds the facts: `process_start`, `process_stop` (clean stop only), `heartbeat` (every
+      60 s), `link` (`up`/`connecting`/`down` with the operator detail), `subscription`
+      (`all` or a list), `drop` (count and `[from, to]` window; stage `stream` = the socket
+      reader shed them, `recorder` = only the recording lost them), `recording_stopped`,
+      `torn_tail` (symbol and bytes cut) and `day_close`/`day_open` at the 20:00 ET boundary,
+      carrying the state into the next file. Nothing is inferred from the events: a no-trade
+      interval is never an outage. About 75 KB a day (the Monday file, which covers the weekend,
+      ~3×). Kept at the archive root so it survives the import and exists for days nothing was
+      recorded on; deleted once no data of its day is left (`Archive::prune_coverage`).
+    - **The coverage question** (`Archive::coverage(day, symbol, from, to, basis)` →
+      `CoverageReport { collection, gaps, unverified }`; `collection` is `complete`, `partial` or
+      `unverified`, one to one with stock-context's `Coverage`; not wired into stock-context or
+      the server yet). A process is vouched for from its `process_start` (or `day_open`) up to
+      its stop, its day close, or its last record when it went silent for over 150 s (a killed
+      process writes no stop); up to now while it is still heard from. Within that, `partial`
+      marks what is *known* missed: link not up, a clean stop until the next start, a drop
+      window, a symbol outside the subscription. `unverified` is everything nothing vouches for:
+      a day with **no coverage file (every day recorded before 2026-10-19, so old days can never
+      read as complete)**, a silence, the future, an unreadable or newer-schema line. Partial
+      wins over unverified; `complete` needs every instant vouched for. `basis: Stream` asks what
+      the live market saw (stock-context's numerator); `basis: Recording` asks what the
+      receipt-order recording holds, and also counts recorder drops, a stopped recording, torn
+      tails and, before an unclean end, the last 12 s a killed process may not have flushed; a
+      day whose recording is gone (neither `live/` nor an original) is `unverified` on this basis.
     - **Loading (the dashboard).** At start the market reads the plan (today; plus the previous
       trading day before 09:30 ET; when today has nothing, the last day with market data: a
       closed market shows its last session, labelled `session: {day, current: false}` in

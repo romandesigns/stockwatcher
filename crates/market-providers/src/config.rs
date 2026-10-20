@@ -28,6 +28,7 @@ pub enum MarketDataMode {
 /// | `LIVE_SYMBOLS` | `*` | live only: `*` (whole market) or a comma list |
 /// | `LIVE_RECORD` | `1` | live only: record what the stream delivers into the archive (`ARCHIVE_ROOT/<day>/live/`, `crate::recorder`); `0` turns recording off |
 /// | `LIVE_RECORD_DAYS` | `5` | live recordings kept when no nightly import replaced them (at least 2; never the day being recorded) |
+/// | `LIVE_ORIGINAL_DAYS` | `5` | preserved originals kept (recordings the import replaced, `ARCHIVE_ROOT/live-original/<day>/`, ~0.8 GB a sealed whole-market day); `0` keeps none |
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProviderConfig {
     pub mode: MarketDataMode,
@@ -171,6 +172,11 @@ impl ProviderConfig {
                     .filter(|n| *n >= 2)
                     .ok_or_else(|| format!("LIVE_RECORD_DAYS must be a whole number of at least 2 (today and the day before), got {n:?}"))?;
             }
+            if let Some(n) = var("LIVE_ORIGINAL_DAYS") {
+                r.original_days = n.parse::<usize>().map_err(|_| {
+                    format!("LIVE_ORIGINAL_DAYS must be a whole number (0 keeps none), got {n:?}")
+                })?;
+            }
             Some(r)
         };
         Ok(c)
@@ -265,12 +271,20 @@ mod tests {
         let c = ProviderConfig::from_lookup(|k| match k {
             "ARCHIVE_ROOT" => Some("/app/data/archive".into()),
             "LIVE_RECORD_DAYS" => Some("7".into()),
+            "LIVE_ORIGINAL_DAYS" => Some("0".into()),
             _ => None,
         })
         .unwrap();
         let r = c.live.record.unwrap();
         assert_eq!(r.archive, c.archive, "one store: the archive replay reads");
         assert_eq!(r.keep_days, 7);
+        assert_eq!(r.original_days, 0);
+        let d = ProviderConfig::from_lookup(|_| None).unwrap();
+        assert_eq!(d.live.record.unwrap().original_days, 5);
+        assert!(
+            ProviderConfig::from_lookup(|k| (k == "LIVE_ORIGINAL_DAYS").then(|| "-1".into()))
+                .is_err()
+        );
         let off = ProviderConfig::from_lookup(|k| (k == "LIVE_RECORD").then(|| "0".into()));
         assert_eq!(off.unwrap().live.record, None);
         assert!(
