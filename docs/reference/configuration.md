@@ -65,6 +65,7 @@ services) sets `STOCKWATCHER_API_TOKEN`, `RUST_LOG`, `MARKET_DATA_MODE`, `REPLAY
 | `LIVE_ORIGINAL_DURABLE_DIR` | unset (off) | durable research store. Each sealed original is copied to `<dir>/<day>/` with its coverage records and a verified `durable-copy.json`. The directory must already exist; a missing one is "unavailable" (originals kept, `retention_at_risk`). Unset: nothing past the window is ever deleted. Production: `/durable/originals`, the Pi's NFS share (set in `infra/vps/docker-compose.yml`; setup in `infra/vps/SETUP.md` section 9). Point it at a subdirectory that exists only on the mounted share: an unmounted mount point is an empty directory, which would otherwise count as available |
 | `LIVE_ORIGINAL_MIN_HEADROOM_MB` | `10240` | free space under this marks `plans/retention-status.json` `retention_at_risk` (with a warning log). Reports only: protected originals are never deleted to make room |
 | `LIVE_HISTORY_PRELOAD` | `1` | after a start, load every symbol's day from the archive in the background, busiest first; `0` loads a symbol only when a chart asks for it (`crates/server/src/history.rs`) |
+| `STOCK_CONTEXT` | `0` | five-pillar stock context and the Ross Panel (`crates/server/src/context.rs`, docs/stock-context/); off: `ross.snapshot` says `enabled: false`. Needs `PRICE_BAND_*` to match the panel policy's platform band ($0.10–$25), else it stays off with an error in the log |
 
 Alpaca allows one stream connection per account on most plans: run live on one host only.
 
