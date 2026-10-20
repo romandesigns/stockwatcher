@@ -43,16 +43,84 @@ pub enum Source {
     Fixture,
 }
 
-/// The identity of a trade print: `(source, exchange, source_seq)`.
+/// The provider's reference to a print: `(source, exchange, source_seq)`, i.e. Alpaca's `i` on venue
+/// `x`. This is what a [`Correction`] or [`Cancel`] names.
 ///
-/// The exchange is included because SIP trade ids are assigned per reporting venue; two venues may
-/// reuse an id for different prints. Including it cannot merge two distinct trades, and a genuine
-/// redelivery repeats the exchange, so duplicates are still detected.
+/// It is **not** a unique identity (docs/architecture/trade-identity.md): FINRA's trade reporting
+/// facilities all report under venue `D` with independent id sequences, and Alpaca's message has
+/// no field telling them apart, so distinct `D` prints share a `TradeId` (1,941 of 72,036 SIP
+/// prints in the 2026-10 pilot). Deduplicate on [`PrintId`]; resolve a revision's target with
+/// [`TradeRef::resolve`].
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct TradeId {
     pub source: Source,
     pub exchange: String,
     pub seq: u64,
+}
+
+/// The identity of a print: its [`TradeId`] plus its execution time.
+///
+/// A redelivery (reconnect replay, a recording read twice) repeats the message, so it repeats the
+/// execution time to the nanosecond and is still a duplicate. Distinct TRF prints that share an id
+/// were never observed at the same nanosecond (0 of 2,076 colliding pairs in the pilot). Every
+/// archived trade already carries `event_ts`, so this needs no new field and no format change.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PrintId {
+    pub id: TradeId,
+    pub event_ts: UnixNanos,
+}
+
+/// What a correction or cancel says about the print it revises: the provider reference plus the
+/// original's price and size, which Alpaca sends with both (`op`/`os`, `p`/`s`). It carries no
+/// execution time, so on venue `D` the reference alone can match several retained prints.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TradeRef {
+    pub id: TradeId,
+    pub price: Price,
+    pub size: u64,
+}
+
+/// Which retained print a [`TradeRef`] names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Resolution<T> {
+    /// Exactly one print fits: apply the revision to it.
+    Found(T),
+    /// No print with that reference is held (never seen, or no longer retained).
+    NotFound,
+    /// Prints with that reference are held but not exactly one of them fits: several match the
+    /// price and size, or none does (the named print may be one that is no longer held while a
+    /// different TRF's print with the same id is). Applying it would be a guess.
+    Ambiguous,
+}
+
+impl TradeRef {
+    /// Resolves the reference among the held prints that share its [`TradeId`], given as
+    /// `(handle, price, size)`. The rule (docs/architecture/trade-identity.md):
+    ///
+    /// - none held → [`Resolution::NotFound`];
+    /// - a reference with a size (every real provider message) must match price **and** size: the
+    ///   one print that does is the target; zero or several → [`Resolution::Ambiguous`]. This
+    ///   holds for a single held print too, because on venue `D` the named print may be gone and
+    ///   the held one another TRF's print with the same id;
+    /// - a reference without a payload (size 0, test fixtures only) is resolved by id alone, so
+    ///   only when exactly one print is held.
+    pub fn resolve<T>(&self, held: impl IntoIterator<Item = (T, Price, u64)>) -> Resolution<T> {
+        let mut any = false;
+        let mut found = None;
+        let mut fits = 0usize;
+        for (h, price, size) in held {
+            any = true;
+            if self.size == 0 || (price == self.price && size == self.size) {
+                fits += 1;
+                found = Some(h);
+            }
+        }
+        match (any, fits) {
+            (false, _) => Resolution::NotFound,
+            (true, 1) => Resolution::Found(found.expect("one fit")),
+            _ => Resolution::Ambiguous,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -167,11 +235,20 @@ impl Trade {
         self.session = classify(self.event_ts);
     }
 
+    /// The provider reference (not unique on venue `D`; see [`TradeId`]).
     pub fn id(&self) -> TradeId {
         TradeId {
             source: self.source,
             exchange: self.exchange.clone(),
             seq: self.source_seq,
+        }
+    }
+
+    /// The print's identity, for deduplication (see [`PrintId`]).
+    pub fn print_id(&self) -> PrintId {
+        PrintId {
+            id: self.id(),
+            event_ts: self.event_ts,
         }
     }
 }
@@ -195,9 +272,9 @@ pub struct Quote {
     pub source: Source,
 }
 
-/// A correction of an earlier print (Alpaca `"T":"c"`). The original's identity is
-/// `(source, exchange, original_id)`; the corrected print keeps the original's execution time and
-/// takes `corrected_id`.
+/// A correction of an earlier print (Alpaca `"T":"c"`). It names the original by
+/// `(source, exchange, original_id)` plus its price and size ([`Correction::target`]); the
+/// corrected print keeps the original's execution time and takes `corrected_id`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Correction {
     pub symbol: String,
@@ -227,6 +304,15 @@ impl Correction {
             source: self.source,
             exchange: self.exchange.clone(),
             seq: self.original_id,
+        }
+    }
+
+    /// The original print as this correction names it (resolve with [`TradeRef::resolve`]).
+    pub fn target(&self) -> TradeRef {
+        TradeRef {
+            id: self.original_trade_id(),
+            price: self.original_price,
+            size: self.original_size,
         }
     }
 }
@@ -263,6 +349,15 @@ impl Cancel {
             source: self.source,
             exchange: self.exchange.clone(),
             seq: self.trade_id,
+        }
+    }
+
+    /// The print as this cancel names it (resolve with [`TradeRef::resolve`]).
+    pub fn target(&self) -> TradeRef {
+        TradeRef {
+            id: self.target_trade_id(),
+            price: self.price,
+            size: self.size,
         }
     }
 }
@@ -527,5 +622,55 @@ mod tests {
                 seq: 7
             }
         );
+        assert_eq!(t.print_id().event_ts, t.event_ts);
+    }
+
+    /// Two FINRA TRF prints with the same `D` id (CONL 2026-10-12, ids 1-3 appear twice in the
+    /// first seconds of premarket) are two prints; a redelivery is the same print.
+    #[test]
+    fn print_identity_separates_trf_prints_and_keeps_redelivery_equal() {
+        let ts = et(day(), 4, 0, 2, 0).unwrap();
+        let a = Trade::new("CONL", ts, Price::from_cents(551), 70, 1).with_exchange("D");
+        let b = Trade::new(
+            "CONL",
+            ts.add_nanos(24_387_263),
+            Price::from_cents(548),
+            1,
+            1,
+        )
+        .with_exchange("D");
+        assert_eq!(a.id(), b.id(), "the provider reference collides");
+        assert_ne!(a.print_id(), b.print_id(), "the prints do not");
+        assert_eq!(a.print_id(), a.clone().print_id());
+    }
+
+    #[test]
+    fn a_reference_resolves_only_to_exactly_one_fitting_print() {
+        let id = TradeId {
+            source: Source::AlpacaSip,
+            exchange: "D".into(),
+            seq: 1,
+        };
+        let r = |cents, size| TradeRef {
+            id: id.clone(),
+            price: Price::from_cents(cents),
+            size,
+        };
+        let held = [
+            ("a", Price::from_cents(551), 70),
+            ("b", Price::from_cents(548), 1),
+        ];
+        assert_eq!(r(548, 1).resolve(held), Resolution::Found("b"));
+        assert_eq!(r(551, 70).resolve(held), Resolution::Found("a"));
+        // Fits none: the named print may be gone while another TRF's print is held.
+        assert_eq!(r(500, 70).resolve(held), Resolution::Ambiguous);
+        assert_eq!(r(500, 70).resolve([held[0]]), Resolution::Ambiguous);
+        // Fits several: identical price and size on different TRFs.
+        let twins = [held[1], ("c", Price::from_cents(548), 1)];
+        assert_eq!(r(548, 1).resolve(twins), Resolution::Ambiguous);
+        assert_eq!(r(548, 1).resolve::<&str>([]), Resolution::NotFound);
+        // No payload (fixtures): by id alone, only when unique.
+        assert_eq!(r(0, 0).resolve([held[0]]), Resolution::Found("a"));
+        assert_eq!(r(0, 0).resolve(held), Resolution::Ambiguous);
     }
 }
