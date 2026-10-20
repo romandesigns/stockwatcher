@@ -4048,6 +4048,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff7589a1859b09232522bb9edf076ca7fcf14ded96685d3fa629db73023ffbb7"
 
 [[package]]
+name = "stock-context"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "market-events",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "stockwatcher-desktop"
 version = "0.1.0"
 dependencies = [
