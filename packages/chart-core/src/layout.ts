@@ -133,6 +133,8 @@ export interface ChartStyle {
   highLow?: boolean;
   /** The overlay indicators' value legend at the top left of the price pane; absent = shown. */
   indicatorLegend?: boolean;
+  /** Indicator ids left out of that legend (chartSettings.legendHidden). */
+  legendHidden?: readonly string[];
 }
 
 export interface ChartGeometry {
@@ -299,6 +301,12 @@ function liftTop(r: { lo: number; hi: number }, headroom: number, plotH: number,
   return { lo: r.lo, hi: unitToPrice(type, hi + ((hi - lo) * headroom) / (plotH - headroom)) };
 }
 
+/** The overlay indicators the legend lists: every overlay but the ones its settings leave out. */
+function legendResults(results: readonly IndicatorResult[], style: ChartStyle | undefined): IndicatorResult[] {
+  const hidden = style?.legendHidden ?? [];
+  return results.filter((r) => r.placement === "overlay" && !hidden.includes(r.spec.id));
+}
+
 /** Gap between the plot's edge and a price label. */
 const AXIS_LABEL_PAD = 5;
 
@@ -315,7 +323,7 @@ export function computeChartModel(state: ChartState, viewport: Viewport, size: S
   const fit = autoFitRange(slots, index.from, index.to, { chartType, overlays }, 0.08, type);
   // Auto scale keeps the overlay legend's rows clear: without it the visible high sits right under
   // the legend (and the HOD tag beside it), unreadable on a phone (owner, 2026-10-19).
-  const headroom = state.chartStyle?.indicatorLegend === false ? 0 : legendHeadroom(state.indicators ?? [], geometry.plot, options, inspected);
+  const headroom = state.chartStyle?.indicatorLegend === false ? 0 : legendHeadroom(legendResults(state.indicators ?? [], state.chartStyle), geometry.plot, options, inspected);
   const auto = fit ? liftTop(fit, headroom, geometry.plot.h, type) : null;
   // A manual range (from a price-axis drag) holds until auto-scale; it still
   // needs candles to exist, so an empty chart has no price scale either way.
@@ -565,7 +573,8 @@ export function layoutChart(model: ChartModel, state: ChartState, theme: ChartTh
   // Alerts under the orders: an order's pill (what the grab priority favours) is never covered.
   if (state.alerts) out.push(...layoutAlerts(model, state.alerts, theme));
   if (state.trading) out.push(...layoutTrading(model, state.trading, theme));
-  if (price && style.indicatorLegend !== false && results.some((r) => r.placement === "overlay")) out.push(...overlayLegend(model, results, theme));
+  const legend = legendResults(results, style);
+  if (price && style.indicatorLegend !== false && legend.length > 0) out.push(...overlayLegend(model, legend, theme));
 
   // inspection line at the inspected (or latest) slot, through every time-aligned pane
   if (model.inspected !== null && model.inspected >= ix.from && model.inspected <= ix.to) {

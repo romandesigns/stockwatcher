@@ -3,9 +3,12 @@ import {
   CHART_TYPE_INFO,
   CHART_TYPES,
   DEFAULT_CHART_SETTINGS,
+  indicatorLabel,
+  INDICATOR_PLACEMENT,
   SETTINGS_SECTIONS,
   ZOOM_PRESETS,
   type ChartSettings,
+  type IndicatorSpec,
   type ChartType,
   type ChartVisibility,
   type PriceScaleType,
@@ -27,7 +30,7 @@ const SCALES: readonly { value: PriceScaleType; label: string; name: string }[] 
   { value: "log", label: "Log", name: "Logarithmic" },
 ];
 
-type Switch = Exclude<keyof ChartSettings, "version" | "chartType" | "priceScale" | "zoom" | "visibility" | "autoStretch">;
+type Switch = Exclude<keyof ChartSettings, "version" | "chartType" | "priceScale" | "zoom" | "visibility" | "autoStretch" | "legendHidden">;
 const SHOW: readonly { key: Switch; name: string; description: string }[] = [
   { key: "extendedHours", name: "Extended hours", description: "Pre-market, after-hours and overnight candles" },
   { key: "volume", name: "Volume", description: "Volume bars under the price" },
@@ -53,6 +56,8 @@ function isDefault(s: ChartSettings): boolean {
 export interface ChartSettingsPanelProps {
   settings: ChartSettings;
   onChange: (s: ChartSettings) => void;
+  /** The indicators on, for the per-indicator legend switches. */
+  indicators?: readonly IndicatorSpec[];
 }
 
 /**
@@ -76,8 +81,9 @@ export interface ChartSettingsPanelProps {
  * narrow panel (a phone-width browser) and all seven on one row once the
  * panel is wide enough (the desktop dialog).
  */
-export function ChartSettingsPanel({ settings, onChange }: ChartSettingsPanelProps) {
+export function ChartSettingsPanel({ settings, onChange, indicators = [] }: ChartSettingsPanelProps) {
   const set = (patch: Partial<ChartSettings>) => onChange({ ...settings, ...patch });
+  const overlays = indicators.filter((spec) => INDICATOR_PLACEMENT[spec.kind] === "overlay");
   return (
     <div className="@container flex flex-col gap-4">
       <Section label="Type">
@@ -125,6 +131,16 @@ export function ChartSettingsPanel({ settings, onChange }: ChartSettingsPanelPro
         ))}
       </Section>
 
+      {settings.indicatorLegend && overlays.length > 0 && (
+        // One switch per line indicator that is on (owner, 2026-10-19), named as the legend names it.
+        <Section label="Indicator values">
+          {overlays.map((spec) => {
+            const shown = !settings.legendHidden.includes(spec.id);
+            return <Row key={spec.id} name={indicatorLabel(spec)} checked={shown} onToggle={() => set({ legendHidden: shown ? [...settings.legendHidden, spec.id] : settings.legendHidden.filter((x) => x !== spec.id) })} />;
+          })}
+        </Section>
+      )}
+
       <Section label="Visibility">
         {VISIBILITY.map((r) => (
           <Row key={r.key} name={r.name} description={r.description} checked={settings.visibility[r.key]} onToggle={() => set({ visibility: { ...settings.visibility, [r.key]: !settings.visibility[r.key] } })} />
@@ -141,7 +157,7 @@ export function ChartSettingsReset({ settings, onChange }: ChartSettingsPanelPro
     <button
       type="button"
       disabled={unchanged}
-      onClick={() => onChange({ ...DEFAULT_CHART_SETTINGS, visibility: { ...DEFAULT_CHART_SETTINGS.visibility } })}
+      onClick={() => onChange({ ...DEFAULT_CHART_SETTINGS, legendHidden: [], visibility: { ...DEFAULT_CHART_SETTINGS.visibility } })}
       className="shrink-0 rounded-md bg-bg-row px-2.5 py-1 text-xs text-muted-foreground outline-none transition-[opacity,background-color,color] hover:bg-bg-raised hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-40"
     >
       Reset to defaults
@@ -150,9 +166,9 @@ export function ChartSettingsReset({ settings, onChange }: ChartSettingsPanelPro
 }
 
 /** The Chart tab as a SettingsDialog section: chart-core's label, icon and description, this panel and its reset. */
-export function chartSettingsSection(settings: ChartSettings, onChange: (s: ChartSettings) => void): SettingsDialogSection {
+export function chartSettingsSection(settings: ChartSettings, onChange: (s: ChartSettings) => void, indicators: readonly IndicatorSpec[] = []): SettingsDialogSection {
   const info = SETTINGS_SECTIONS.find((x) => x.id === "chart")!;
-  return { ...info, action: <ChartSettingsReset settings={settings} onChange={onChange} />, render: () => <ChartSettingsPanel settings={settings} onChange={onChange} /> };
+  return { ...info, action: <ChartSettingsReset settings={settings} onChange={onChange} />, render: () => <ChartSettingsPanel settings={settings} onChange={onChange} indicators={indicators} /> };
 }
 
 function Section({ label, children }: { label: string; children: ReactNode }) {

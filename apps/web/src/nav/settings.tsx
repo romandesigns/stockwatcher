@@ -15,7 +15,8 @@ export function AppSettingsDialog() {
   const chartSettings = useApp((s) => s.chartSettings);
   const drawingSettings = useApp((s) => s.drawingSettings);
   const source = useApp((s) => s.dashboard.source);
-  return <SettingsDialog open={open} onOpenChange={app.setSettingsOpen} persistKey="sw-settings" sections={[dataSourceSection(source, app.setDashboardSource), chartSettingsSection(chartSettings, app.setChartSettings), drawingSettingsSection(drawingSettings, app.setDrawingSettings)]} />;
+  const indicators = useApp((s) => s.indicators);
+  return <SettingsDialog open={open} onOpenChange={app.setSettingsOpen} persistKey="sw-settings" sections={[dataSourceSection(source, app.setDashboardSource), chartSettingsSection(chartSettings, app.setChartSettings, indicators), drawingSettingsSection(drawingSettings, app.setDrawingSettings)]} />;
 }
 
 /**

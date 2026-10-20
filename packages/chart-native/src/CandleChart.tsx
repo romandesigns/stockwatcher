@@ -426,7 +426,7 @@ export function CandleChart({
   const alertLines = alerts?.lines;
   const alertLayer: AlertLayer | null = useMemo(() => (alertLines ? { alerts: alertLines, dragging: alertDrag, bellY: null, last } : null), [alertLines, alertDrag, last]);
   const volumeHeight = Math.round(useTween(settings.volume ? (options?.volumeHeight ?? DEFAULT_CHART_OPTIONS.volumeHeight) : 0, reducedMotion));
-  const chartStyle = useMemo(() => ({ grid: settings.grid, sessionShading: settings.sessionShading, sessionBreaks: settings.sessionBreaks, highLow: settings.highLow, indicatorLegend: settings.indicatorLegend }), [settings.grid, settings.sessionShading, settings.sessionBreaks, settings.highLow, settings.indicatorLegend]);
+  const chartStyle = useMemo(() => ({ grid: settings.grid, sessionShading: settings.sessionShading, sessionBreaks: settings.sessionBreaks, highLow: settings.highLow, indicatorLegend: settings.indicatorLegend, legendHidden: settings.legendHidden }), [settings.grid, settings.sessionShading, settings.sessionBreaks, settings.highLow, settings.indicatorLegend, settings.legendHidden]);
 
   const state: ChartState = useMemo(
     () => ({
