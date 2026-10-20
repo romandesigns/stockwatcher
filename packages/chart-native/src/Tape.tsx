@@ -46,7 +46,7 @@ export function TapeSheet({ open, onClose, trades, note, reducedMotion }: { open
   return (
     <Sheet open={open} onClose={onClose} title="Time & sales" badge={note ? <Text style={s.symbolChip}>{note}</Text> : undefined} reducedMotion={reducedMotion}>
       <Text style={s.caption}>A blank note means the print counted toward price and volume.</Text>
-      <ScrollView>
+      <ScrollView showsVerticalScrollIndicator={false} showsHorizontalScrollIndicator={false}>
         <Tape trades={trades} />
       </ScrollView>
     </Sheet>

@@ -28,7 +28,7 @@ export function TickerList({ quotes, symbols, selectedSymbol, selectedIndex, onP
       {rows.length === 0 ? (
         <Text style={styles.empty}>Waiting for live quotes…</Text>
       ) : (
-        <FlatList data={rows} keyExtractor={(r) => r.symbol} renderItem={({ item }) => <Row row={item} active={item.symbol === selectedSymbol} onPick={onPick} />} />
+        <FlatList showsVerticalScrollIndicator={false} showsHorizontalScrollIndicator={false} data={rows} keyExtractor={(r) => r.symbol} renderItem={({ item }) => <Row row={item} active={item.symbol === selectedSymbol} onPick={onPick} />} />
       )}
     </View>
   );

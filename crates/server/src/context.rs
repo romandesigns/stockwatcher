@@ -93,6 +93,7 @@ impl ContextBoard {
                         close_micros: close.micros(),
                         basis: CloseBasis::Raw,
                         actions_checked_through: None,
+                        // Not checked, so no evidence of a check either (#53's field).
                         actions: Default::default(),
                         // Loaded before the session: visible to every decision of the day.
                         observed_at: 0,

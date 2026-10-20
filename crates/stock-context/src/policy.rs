@@ -73,13 +73,19 @@ pub struct FloatRules {
     pub stale_after_secs: i64,
 }
 
-/// How the news pillar reads search coverage (pillars-v2).
+/// How a news-coverage record may be read. Absent from `pillars-v1.json`, so v1 keeps its exact
+/// bytes, hash and behaviour (a lag of 0).
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
 pub struct NewsRules {
-    /// "No qualifying news" is a FAIL when the covered window reaches at least `cutoff - lag`:
-    /// a search is only known complete seconds after it ran, so coverage never reaches the
-    /// cutoff itself. The last `lag` seconds before a decision may hold news not yet seen.
-    pub max_coverage_lag_secs: i64,
+    /// How far a cutoff may run past a coverage record's `covered_through` and still count as
+    /// searched. Every real source is behind the clock: a poll covers through its request time and
+    /// is observed after it, so with 0 (v1) a forward run never sees `covered_through >= cutoff`
+    /// from an honest record, and the news pillar can only PASS or be UNKNOWN. A policy that lets
+    /// polled coverage FAIL the pillar states its tolerance here
+    /// (`docs/stock-context/float-news-plan.md` section 7). That is a new policy id, not an edit
+    /// of v1.
+    #[serde(default)]
+    pub coverage_max_lag_secs: i64,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -94,7 +100,6 @@ pub struct PolicyBody {
     pub volume: VolumeRules,
     pub diagnostics: Diagnostics,
     pub float: FloatRules,
-    /// Absent in pillars-v1: a zero lag, i.e. coverage must reach the cutoff itself.
     #[serde(default)]
     pub news: NewsRules,
 }
@@ -117,15 +122,15 @@ impl Policy {
         if body.grid.bar_secs <= 0 || body.grid.settle_ms < 0 {
             return Err("pillar policy: grid must be positive".into());
         }
+        if body.news.coverage_max_lag_secs < 0 {
+            return Err("pillar policy: news.coverage_max_lag_secs must not be negative".into());
+        }
         let p = &body.reference_profile;
         if p.price_min_micros <= 0
             || p.price_max_micros < p.price_min_micros
             || p.rvol_daily_sessions == 0
         {
             return Err("pillar policy: invalid reference profile".into());
-        }
-        if body.news.max_coverage_lag_secs < 0 {
-            return Err("pillar policy: news coverage lag must not be negative".into());
         }
         let hash = Sha256::digest(text.as_bytes())
             .iter()
@@ -194,8 +199,8 @@ mod tests {
         same.reference_profile.id = v1.body.reference_profile.id.clone();
         same.reference_profile.price_min_micros = 2_000_000;
         same.reference_profile.price_max_micros = 20_000_000;
-        assert_eq!(same.news.max_coverage_lag_secs, 120);
-        same.news.max_coverage_lag_secs = 0; // v1 has no field: the strict rule
+        assert_eq!(same.news.coverage_max_lag_secs, 120);
+        same.news.coverage_max_lag_secs = 0; // v1 has no field: the strict rule
         assert_eq!(same, v1.body);
         assert_ne!(v1.hash, v2.hash);
         assert!(v2.tag().starts_with("pillars-v2@"));

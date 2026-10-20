@@ -1,4 +1,4 @@
-//! The pillars-v2 news coverage tolerance (`news.max_coverage_lag_secs`, 120 s, owner decision
+//! The pillars-v2 news coverage tolerance (`news.coverage_max_lag_secs`, 120 s, owner decision
 //! 2026-10-20) against pillars-v1's strict rule (coverage must reach the cutoff itself).
 
 use chrono::NaiveDate;
@@ -101,7 +101,7 @@ fn v2_is_unknown_with_coverage_ending_121_s_before_the_decision() {
 
 #[test]
 fn v1_keeps_the_strict_rule_on_the_same_fixture() {
-    assert_eq!(Policy::v1().body.news.max_coverage_lag_secs, 0);
+    assert_eq!(Policy::v1().body.news.coverage_max_lag_secs, 0);
     assert_eq!(news_at(Policy::v1(), 0, None).state, Tri::Fail);
     for gap in [1, 119, 120, 121] {
         let n = news_at(Policy::v1(), gap, None);

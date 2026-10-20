@@ -41,6 +41,6 @@
     "stale_after_secs": 86400
   },
   "news": {
-    "max_coverage_lag_secs": 120
+    "coverage_max_lag_secs": 120
   }
 }

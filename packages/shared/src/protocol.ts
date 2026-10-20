@@ -215,6 +215,132 @@ export interface PressureUnsubscribeMessage {
   type: "pressure.unsubscribe";
 }
 
+// --- Ross Panel (after `welcome`; crates/server/src/context.rs, crates/stock-context) -------
+// The five-pillar watchlist (enter 5/5, stay 4/5) ordered by last-minute momentum, with each
+// member's experimental setup state. Opt in with `ross.subscribe`: a `ross.snapshot` at once,
+// then a `ross.update` with the WHOLE panel when it changed (at most once a second). Both
+// replace the client's panel. `enabled: false` means the server does not run stock context
+// (STOCK_CONTEXT off): "not enabled", never "nothing qualifies". Field names inside `panel` are
+// the engine's snake_case (stock_context::PanelSnapshot); prices are integer micro-dollars,
+// returns basis points, times epoch nanoseconds.
+
+export type RossSetupState = "watching" | "forming" | "near" | "crossing" | "triggered" | "invalidated" | "halted";
+
+export interface RossLevelWire {
+  price: number;
+  /** `<setup id>:trigger:<n>`; a moved level gets a new version. */
+  version: string;
+  set_at?: number;
+  reason?: string;
+}
+
+/** stock_context::SetupView (`bull_flag_v0`, policy `setups-v0`, EXPERIMENTAL). */
+export interface RossSetupWire {
+  family?: string;
+  policy?: string;
+  experimental?: boolean;
+  state: RossSetupState;
+  state_since?: number | null;
+  trigger?: RossLevelWire | null;
+  invalidation?: RossLevelWire | null;
+  distance_to_trigger_bp?: number | null;
+  /** Integer thousandths (0..1000) from invalidation to trigger, never a 0..1 float. */
+  meter_milli?: number | null;
+  risk_to_stop_bp?: number | null;
+  /** Only while crossing: what the bar still has to prove (close above the trigger, volume). */
+  pending?: { condition: "close_above_trigger" | "volume"; state: "PASS" | "FAIL" | "UNKNOWN" }[];
+  extended?: boolean;
+  reason?: string | null;
+  transition_id?: string | null;
+  setup_id?: string | null;
+  flag_bars?: number;
+  price?: number | null;
+  crossed_version?: string | null;
+}
+
+export interface RossMomentumWire {
+  status: "ready" | "unavailable";
+  reason: string;
+  r_short_bp: number | null;
+  r_primary_bp: number | null;
+  r_context_bp: number | null;
+  accel_bp: number | null;
+  below_high_bp: number | null;
+}
+
+export interface RossEpisodeWire {
+  id: string;
+  admitted_at: number;
+  retained_since: number | null;
+  exited_at: number | null;
+}
+
+export interface RossMembershipWire {
+  status: "not_member" | "qualified" | "retained" | "exited" | null;
+  episodes: RossEpisodeWire[];
+  /** [pillar, state, reason] of each pillar not passing. */
+  nonpassing: [string, "PASS" | "FAIL" | "UNKNOWN", string][];
+}
+
+export interface RossRowWire {
+  symbol: string;
+  membership: RossMembershipWire;
+  counts: { pass: number; fail: number; unknown: number };
+  price: number | null;
+  gain_bp: number | null;
+  momentum: RossMomentumWire;
+  rank: number | null;
+  prev_rank: number | null;
+  setup?: RossSetupWire | null;
+  /** The one-minute move (= momentum.r_primary_bp). */
+  move_1m_bp?: number | null;
+  /** The pillars not passing, as objects (the same facts as membership.nonpassing). */
+  missing?: { pillar: string; state: "FAIL" | "UNKNOWN"; reason: string }[];
+  from_high_bp?: number | null;
+  rvol_milli?: number | null;
+  float_shares?: number | null;
+  news_first_seen?: number | null;
+  /** Closes (micros) of the last ≤20 completed 15 s bars that traded, oldest first; no timestamps. */
+  spark?: number[];
+}
+
+export interface RossPanelWire {
+  revision: number;
+  bar_end: number;
+  cutoff: number;
+  /** `setups-v0@<hash>`. */
+  setup_policy?: string;
+  /** Members whose setup is near, crossing or triggered. */
+  attention?: number;
+  rows: RossRowWire[];
+}
+
+export interface RossSnapshotMessage {
+  type: "ross.snapshot";
+  enabled: boolean;
+  panelPolicy?: string;
+  pillarPolicy?: string;
+  panel: RossPanelWire | null;
+}
+
+export interface RossUpdateMessage {
+  type: "ross.update";
+  enabled: boolean;
+  panelPolicy?: string;
+  pillarPolicy?: string;
+  panel: RossPanelWire | null;
+}
+
+export type RossMessage = RossSnapshotMessage | RossUpdateMessage;
+
+export interface RossSubscribeMessage {
+  type: "ross.subscribe";
+}
+
+export interface RossUnsubscribeMessage {
+  type: "ross.unsubscribe";
+}
+
 // --- Synced settings (after `welcome`; crates/server/src/settings.rs, ws.rs) ---------------
 // The user's chart preferences and drawings, shared live by every client and kept on the
 // server (docs/architecture/settings-sync.md). Values are opaque to the server: each client
@@ -355,8 +481,8 @@ export interface PushUnregisterMessage {
   token: string;
 }
 
-export type ClientMessage = HelloMessage | PingMessage | PongMessage | QuotesSubscribeMessage | QuotesUnsubscribeMessage | PressureSubscribeMessage | PressureUnsubscribeMessage | SettingsClientMessage | PushRegisterMessage | PushUnregisterMessage;
-export type ServerMessage = WelcomeMessage | PingMessage | PongMessage | ErrorMessage | QuotesMessage | PressureMessage | SettingsServerMessage | AlertsServerMessage;
+export type ClientMessage = HelloMessage | PingMessage | PongMessage | QuotesSubscribeMessage | QuotesUnsubscribeMessage | PressureSubscribeMessage | PressureUnsubscribeMessage | RossSubscribeMessage | RossUnsubscribeMessage | SettingsClientMessage | PushRegisterMessage | PushUnregisterMessage;
+export type ServerMessage = WelcomeMessage | PingMessage | PongMessage | ErrorMessage | QuotesMessage | PressureMessage | RossMessage | SettingsServerMessage | AlertsServerMessage;
 
 const ALERT_TYPES = new Set(["alerts.history", "alert.fired", "alert.held", "alert.updated", "alerts.status"]);
 
@@ -365,7 +491,7 @@ export function isAlertsMessage(m: ServerMessage): m is AlertsServerMessage {
   return ALERT_TYPES.has(m.type);
 }
 
-const SERVER_TYPES = new Set(["welcome", "ping", "pong", "error", "quotes.snapshot", "quotes.update", "pressure.snapshot", "pressure.update", "settings.snapshot", "settings.changed", "settings.rejected", ...ALERT_TYPES]);
+const SERVER_TYPES = new Set(["welcome", "ping", "pong", "error", "quotes.snapshot", "quotes.update", "pressure.snapshot", "pressure.update", "ross.snapshot", "ross.update", "settings.snapshot", "settings.changed", "settings.rejected", ...ALERT_TYPES]);
 
 /** Parses one server frame; returns null for anything malformed or unknown. */
 export function parseServerMessage(raw: unknown): ServerMessage | null {

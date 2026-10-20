@@ -204,7 +204,7 @@ export function TickerSearchSheet({ open, onClose, symbols, quotes, mock, curren
         </View>
 
         {/* One sideways-scrolling row of chips; a soft bar between groups, as on the web. */}
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={s.chips} style={s.chipsScroll} accessibilityLabel="Filters">
+        <ScrollView horizontal showsVerticalScrollIndicator={false} showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={s.chips} style={s.chipsScroll} accessibilityLabel="Filters">
           {groups.map((g, gi) => (
             <Fragment key={g.id}>
               {gi > 0 && <View style={s.groupBar} />}
@@ -236,7 +236,7 @@ export function TickerSearchSheet({ open, onClose, symbols, quotes, mock, curren
           )}
         </View>
 
-        <FlatList
+        <FlatList showsVerticalScrollIndicator={false} showsHorizontalScrollIndicator={false}
           data={rows}
           keyExtractor={(r) => r.item.symbol}
           keyboardShouldPersistTaps="handled"

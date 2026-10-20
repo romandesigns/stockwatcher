@@ -2375,6 +2375,7 @@ dependencies = [
  "rustls-platform-verifier",
  "serde",
  "serde_json",
+ "stock-context",
  "tempfile",
  "tokio",
  "tokio-tungstenite 0.30.0",

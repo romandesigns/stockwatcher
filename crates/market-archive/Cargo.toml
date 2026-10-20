@@ -11,8 +11,9 @@ authors.workspace = true
 
 [dependencies]
 market-events = { path = "../market-events" }
-# Only for its evidence types (crate::baseline turns stored daily bars into them). stock-context
-# depends on market-events alone, so there is no cycle.
+# Only for its evidence types: crate::baseline turns stored daily bars into them, and
+# crate::evidence_load turns stored float/news records into them. stock-context depends on
+# market-events alone, so there is no cycle.
 stock-context = { path = "../stock-context" }
 chrono = { version = "0.4.45", default-features = false, features = ["std", "clock", "serde"] }
 chrono-tz = "0.10.4"

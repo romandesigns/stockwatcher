@@ -1,6 +1,6 @@
 import { ChartStore, parseReplayDayState, type ChartMessage, type Clock, type PaperState, type ReplayDayState, type Series, type TapeTrade, type Timeframe } from "@stockwatcher/chart-core";
 import type { ChartTrading } from "@stockwatcher/chart-native";
-import { authenticatedFetch, EMPTY_QUOTE_BOARD, parseLiveSession, withMarketSource, type LiveSession, type MarketSource, type PressureBoard, type PressureChannel, type QuoteBoard, type QuoteChannel } from "@stockwatcher/shared";
+import { authenticatedFetch, EMPTY_QUOTE_BOARD, parseLiveSession, withMarketSource, type LiveSession, type MarketSource, type PressureBoard, type PressureChannel, type QuoteBoard, type QuoteChannel, type RossChannel, type RossState } from "@stockwatcher/shared";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { SERVER_URL } from "./server";
@@ -74,6 +74,12 @@ export function useQuoteBoard(channel: QuoteChannel, enabled: boolean): QuoteBoa
   const subscribe = useCallback((cb: () => void) => (enabled ? channel.subscribe(cb) : NOOP), [channel, enabled]);
   const get = useCallback(() => (enabled ? channel.get() : EMPTY_QUOTE_BOARD), [channel, enabled]);
   return useSyncExternalStore(subscribe, get);
+}
+
+/** The server's Ross Panel while mounted (the web's useRoss). */
+export function useRoss(channel: RossChannel): RossState {
+  const subscribe = useCallback((cb: () => void) => channel.subscribe(cb), [channel]);
+  return useSyncExternalStore(subscribe, useCallback(() => channel.get(), [channel]));
 }
 
 /** The server's Halt watcher board while mounted (the web's usePressureBoard). */
