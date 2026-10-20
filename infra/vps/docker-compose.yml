@@ -12,8 +12,16 @@ services:
     ports:
       - "127.0.0.1:8790:8790"
     env_file: .env
+    environment:
+      # Preserved originals past LIVE_ORIGINAL_DAYS are copied to the Pi and only then
+      # deleted here. `originals/` exists only on the Pi's share, so with the share not
+      # mounted this path is missing and the recorder keeps everything (SETUP.md, section 9).
+      LIVE_ORIGINAL_DURABLE_DIR: /durable/originals
     volumes:
       - stockwatcher_data:/app/data
+      # The Pi's NFS share, mounted on the host by infra/vps/durable-mount.sh. rslave: a
+      # mount that arrives or comes back after the container started is seen without a restart.
+      - /mnt/stockwatcher-durable:/durable:rslave
     read_only: true
     security_opt:
       - no-new-privileges:true
