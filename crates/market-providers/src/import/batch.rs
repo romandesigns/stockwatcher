@@ -403,6 +403,63 @@ pub fn daily_closes_and_bars(
     Ok((out, days))
 }
 
+/// Raw daily bars of just `symbols` over `from..=to` (a warmup: intraday band entrants), one
+/// [`RawDayBars`] per trading date with a bar, `no_bar` = the other requested symbols. Bounded
+/// like [`split_snapshot`].
+#[allow(clippy::too_many_arguments)]
+pub fn raw_bars_for(
+    http: &mut dyn Http,
+    data_base: &str,
+    creds: &AlpacaCredentials,
+    symbols: &[String],
+    from: NaiveDate,
+    to: NaiveDate,
+    command: &str,
+    log: &mut dyn FnMut(&str),
+) -> Result<Vec<RawDayBars>, String> {
+    if symbols.is_empty() || symbols.len() > MAX_SPLIT_SYMBOLS {
+        return Err(format!(
+            "{} symbols (1..={MAX_SPLIT_SYMBOLS} allowed)",
+            symbols.len()
+        ));
+    }
+    if from > to || (to - from).num_days() > MAX_SPLIT_RANGE_DAYS {
+        return Err(format!("range {from}..{to} too long"));
+    }
+    let mut bars: BTreeMap<NaiveDate, BTreeMap<String, ArchivedBar>> = BTreeMap::new();
+    let requests = for_each_daily_bar(
+        http,
+        data_base,
+        creds,
+        symbols,
+        from,
+        to,
+        Adjustment::Raw,
+        log,
+        &mut |symbol, day, b| {
+            bars.entry(day)
+                .or_default()
+                .insert(symbol.to_string(), b.archived());
+        },
+    )?;
+    let fetch = bar_fetch(Adjustment::Raw, from, to, symbols.len(), requests, command);
+    let mut out = Vec::new();
+    for (day, got) in bars {
+        if !is_trading_day(day) {
+            continue;
+        }
+        let mut raw = RawDayBars::new(day, fetch.clone());
+        raw.no_bar = symbols
+            .iter()
+            .filter(|s| !got.contains_key(*s))
+            .cloned()
+            .collect();
+        raw.bars = got;
+        out.push(raw);
+    }
+    Ok(out)
+}
+
 /// Most symbols one [`split_snapshot`] may ask for: the in-band watch universe of a day in a few
 /// runs, small enough that a mistaken invocation is ~10 requests, not a market-wide sweep.
 pub const MAX_SPLIT_SYMBOLS: usize = 2_000;

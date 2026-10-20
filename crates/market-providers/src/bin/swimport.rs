@@ -52,7 +52,7 @@ fn usage() -> ExitCode {
         "usage:\n  swimport credentials\n  swimport alpaca-trades <SYMBOL> <YYYY-MM-DD> [--feed sip|iex|boats] [--limit N] [--force]\n  swimport fmp-bars <SYMBOL> <YYYY-MM-DD> [--force]\n  swimport check <SYMBOL> <YYYY-MM-DD>\n  swimport alpaca-batch --from <YYYY-MM-DD> --to <YYYY-MM-DD> [--jobs N] [--per-minute N] [--plan-only]\n  swimport alpaca-assets
   swimport alpaca-daily-closes --from <YYYY-MM-DD> --to <YYYY-MM-DD>
   swimport alpaca-split-bars --from <YYYY-MM-DD> --to <YYYY-MM-DD> (--symbols A,B | --symbols-file FILE) [--per-minute N]
-  swimport volume-compat --from <YYYY-MM-DD> --to <YYYY-MM-DD> [--sample 500] [--out FILE]
+  swimport volume-compat --from <YYYY-MM-DD> --to <YYYY-MM-DD> [--sample 500] [--seed N] [--denominator-symbols 100] [--min-sessions 10] [--out FILE]
   swimport maintain [--once | --actions-once]"
     );
     ExitCode::from(2)
@@ -594,26 +594,25 @@ fn alpaca_split_bars(args: &[String]) -> Result<ExitCode, String> {
 /// imported after the trade-identity fix (PR #51). Writes the full report to
 /// `$ARCHIVE_ROOT/plans/volume-compat-<from>-<to>.json` (or `--out`).
 fn volume_compat(args: &[String]) -> Result<ExitCode, String> {
-    use market_providers::compat::{CompatOptions, MIN_SAMPLE, compare};
+    use market_providers::compat::{CompatOptions, compare};
     let day = |name: &str| -> Result<NaiveDate, String> {
         let v = flag(args, name).ok_or_else(|| format!("missing {name} <YYYY-MM-DD>"))?;
         NaiveDate::parse_from_str(&v, "%Y-%m-%d").map_err(|_| format!("invalid {name} {v:?}"))
     };
     let (from, to) = (day("--from")?, day("--to")?);
-    let sample: usize = flag(args, "--sample").map_or(Ok(500), |v| {
-        v.parse().map_err(|_| format!("invalid --sample {v:?}"))
-    })?;
+    let mut opt = CompatOptions::new(from, to);
+    let num = |name: &str, d: u64| -> Result<u64, String> {
+        flag(args, name).map_or(Ok(d), |v| {
+            v.parse().map_err(|_| format!("invalid {name} {v:?}"))
+        })
+    };
+    opt.sample = num("--sample", opt.sample as u64)? as usize;
+    opt.seed = num("--seed", opt.seed)?;
+    opt.denominator_symbols =
+        num("--denominator-symbols", opt.denominator_symbols as u64)? as usize;
+    opt.min_sessions = num("--min-sessions", opt.min_sessions as u64)? as usize;
     let archive = archive()?;
-    let report = compare(
-        &archive,
-        &CompatOptions {
-            from,
-            to,
-            sample,
-            min_sample: MIN_SAMPLE,
-            include_fixture: false,
-        },
-    )?;
+    let report = compare(&archive, &opt)?;
     let out = flag(args, "--out")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
@@ -632,7 +631,7 @@ fn volume_compat(args: &[String]) -> Result<ExitCode, String> {
     .map_err(|e| format!("{}: {e}", out.display()))?;
     println!("{}", report.summary());
     println!("full report: {}", out.display());
-    Ok(if report.verdict == "compatible" {
+    Ok(if report.verdict == "within_engineering_tolerance" {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
@@ -864,11 +863,28 @@ fn maintain(args: &[String]) -> Result<ExitCode, String> {
         });
     }
     // Two schedules in one process: the nightly cycle at MAINTAIN_AT (first one now), and the
-    // corporate-action announcement fetch at ACTIONS_AT on trading days (pre-market, so a live
-    // decision can rely on it: docs/stock-context/daily-baseline-plan.md §6).
+    // corporate-action announcement fetch from the coverage policy: once at startup (before the
+    // cycle, which can run for hours), pre-session before 04:00 ET, then bounded refreshes
+    // through the day (docs/stock-context/daily-baseline-plan.md §6). A failed pre-session fetch
+    // is retried until the 04:00 deadline.
+    let policy = &cfg.coverage;
     let mut due_cycle = Utc::now();
-    let mut due_actions = next_actions_run(Utc::now(), &cfg.actions_at);
+    let mut due_actions = cfg.actions_fetch.then(Utc::now);
     loop {
+        if !stop.load(Ordering::Relaxed) && due_actions.is_some_and(|t| Utc::now() >= t) {
+            let rep = m.run_actions(Utc::now());
+            println!("{} {}", stamp(), rep.summary());
+            let now = Utc::now();
+            due_actions = next_actions_run(now, policy);
+            let et = now.with_timezone(&New_York);
+            if !rep.success
+                && et.date_naive() == rep.date
+                && et.time() < policy.pre_session_deadline()
+            {
+                let retry = now + chrono::Duration::seconds(policy.body.pre_session_retry_secs);
+                due_actions = Some(due_actions.map_or(retry, |t| t.min(retry)));
+            }
+        }
         if Utc::now() >= due_cycle {
             let mut report = m.run_cycle(Utc::now());
             due_cycle = next_run(Utc::now(), cfg.run_at);
@@ -888,11 +904,6 @@ fn maintain(args: &[String]) -> Result<ExitCode, String> {
                     ExitCode::FAILURE
                 });
             }
-        }
-        if !stop.load(Ordering::Relaxed) && due_actions.is_some_and(|t| Utc::now() >= t) {
-            let rep = m.run_actions(Utc::now());
-            println!("{} {}", stamp(), rep.summary());
-            due_actions = next_actions_run(Utc::now(), &cfg.actions_at);
         }
         if stop.load(Ordering::Relaxed) {
             break;

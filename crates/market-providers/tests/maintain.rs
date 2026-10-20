@@ -496,26 +496,61 @@ fn the_pre_market_announcement_fetch_is_stored_append_only_for_the_watch_list() 
         wait: &|_| true,
         log: &|_l: &str| {},
     };
-    // 07:00 ET Wednesday 10-21: P = 10-20.
-    let rep = m.run_actions(utc("2026-10-21T07:00:00-04:00"));
-    assert!(rep.success, "{:?}", rep.errors);
-    assert_eq!((rep.symbols, rep.covered, rep.requests), (3, 3, 1));
-    let reqs = world.data_requests.lock().unwrap().clone();
-    assert_eq!(reqs.len(), 1);
+    // An intraday band entrant from the day before asked for a warmup (the server's job later).
     assert!(
-        reqs[0].contains("symbols=AAA%2CBBB%2CFAIL")
-            && reqs[0].contains("start=2026-10-20&end=2026-10-21"),
+        a.request_warmup(&market_archive::WarmupRequest {
+            symbol: "NEWB".into(),
+            session_date: d("2026-10-21"),
+            requested_at: utc("2026-10-21T02:00:00-04:00"),
+            reason: "test".into(),
+            outcome: None,
+            done_at: None,
+        })
+        .unwrap()
+    );
+    // 03:30 ET Wednesday 10-21, before the SIP start: P = 10-20.
+    let rep = m.run_actions(utc("2026-10-21T03:30:00-04:00"));
+    assert_eq!(rep.date, d("2026-10-21"));
+    assert!(rep.success, "{:?}", rep.errors);
+    assert_eq!((rep.symbols, rep.covered), (4, 4), "watch list + warmup");
+    let reqs = world.data_requests.lock().unwrap().clone();
+    assert!(
+        reqs[0].contains("symbols=AAA%2CBBB%2CFAIL%2CNEWB")
+            && reqs[0].contains("start=2026-09-21&end=2026-10-31&data_quality=all"),
         "{}",
         reqs[0]
     );
+    assert!(
+        reqs[1].contains("symbols=BTOG%2CPLIN%2CSGRX"),
+        "the recorded page's rename counterparts are followed up: {}",
+        reqs[1]
+    );
+    // Validation: every symbol checked, nothing relevant (BTOG's actions are someone else's).
+    assert_eq!(
+        rep.states.get("no_known_action_provider_checked"),
+        Some(&4),
+        "{:?}",
+        rep.states
+    );
+    // BTOG's recorded actions all took effect before they were first seen here: late, recorded.
+    assert_eq!(rep.late, 5);
+    assert_eq!(a.read_late_actions().unwrap().len(), 5);
+    assert_eq!(a.read_action_ledger().unwrap().len(), 5);
+    // The warmup ran: raw bars, a snapshot and its own announcement check; the request is closed.
+    assert_eq!(rep.warmed, 1);
+    assert!(a.pending_warmups(d("2026-10-21"), 10).unwrap().is_empty());
     let stored = a.read_action_retrievals(d("2026-10-21")).unwrap();
-    assert_eq!(stored.len(), 1);
-    assert_eq!(stored[0].command, "maintain");
-    assert_eq!(stored[0].splits.len(), 3, "the recorded BTOG page, parsed");
-    // A weekend is skipped without a request.
+    assert_eq!(stored.len(), 2);
+    assert_eq!(stored[1].command, "warmup");
+    assert!(
+        a.read_split_snapshots()
+            .unwrap()
+            .iter()
+            .any(|s| s.fetch.command == "warmup")
+    );
+    // On a Saturday the fetch is for Monday's session.
     let rep = m.run_actions(utc("2026-10-24T07:00:00-04:00"));
-    assert!(!rep.success && rep.requests == 0);
-    assert_eq!(world.data_requests.lock().unwrap().len(), 1);
+    assert_eq!(rep.date, d("2026-10-26"));
 }
 
 #[test]

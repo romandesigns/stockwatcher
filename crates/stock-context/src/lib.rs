@@ -24,9 +24,9 @@ pub use engine::{
 };
 pub use evaluate::{Coverage, NewsSummary, RvolDiagnostics};
 pub use evidence::{
-    ActionsEvidence, ActionsSource, Authenticity, CloseBasis, DailyBaseline, EvidenceStore,
-    Favorability, FloatObservation, InstrumentId, IntradayBaseline, IntradayCurve, NewsCoverage,
-    NewsItem, PrevClose, SessionVolume, SplitRatio,
+    ActionsEvidence, ActionsSource, Authenticity, CloseBasis, CoverageState, DailyBaseline,
+    EvidenceStore, Favorability, FloatObservation, InstrumentId, IntradayBaseline, IntradayCurve,
+    NewsCoverage, NewsItem, PrevClose, SessionVolume, SplitRatio,
 };
 pub use panel::{
     Episode, ExitReason, MemberStatus, Membership, Momentum, MomentumStatus, PanelPolicy,

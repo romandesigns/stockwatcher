@@ -27,6 +27,8 @@ pub mod import;
 mod live;
 pub mod recorder;
 mod replay;
+/// Non-blocking trigger for warming up intraday band entrants (server API, not wired yet).
+pub mod warmup;
 
 pub use config::{LiveConfig, MarketDataMode, ProviderConfig};
 pub use live::{ChannelFeed, LiveFeed, LiveOptions, LiveProvider};

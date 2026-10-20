@@ -1,106 +1,88 @@
-//! Stored daily bars → stock-context evidence: [`stock_context::DailyBaseline`] (RVOL's 30-session
-//! denominator) and [`stock_context::PrevClose`] (the gain's reference), for one symbol and one
-//! evaluated trading date D. Pure: the caller reads the files ([`crate::daily_bars`]) and passes
-//! them in; nothing here touches the disk, a clock or a provider. Not wired into the server.
+//! Stored daily bars and corporate-action announcements → stock-context evidence:
+//! [`stock_context::DailyBaseline`] (RVOL's 30-session denominator) and
+//! [`stock_context::PrevClose`] (the gain's reference), for one symbol and one evaluated trading
+//! date D. Pure: the caller reads the files and passes them in; nothing here touches the disk, a
+//! clock or a provider. Not wired into the server. Full rules and their reasons:
+//! `docs/stock-context/daily-baseline-plan.md` §6.
 //!
 //! Metric: the sessions' volume is **Alpaca's SIP daily-bar volume** (`provider_daily_volume_v1`
-//! in every record id), not our condition-filtered 04:00 → end aggregation. Whether the two are
-//! comparable is the open compatibility check of `docs/stock-context/daily-baseline-plan.md` §9;
-//! until it passes, these records must not feed the strict pillar.
+//! in every record id), not our condition-filtered 04:00 → end aggregation. Whether the two agree
+//! is the volume study of plan §9 (`swimport volume-compat`).
 //!
-//! # Rules
+//! # Sessions
 //!
-//! - **Only dates before D** are sessions. D's own bar (and anything later) is used for one thing
-//!   only, finding D's share basis, never as volume.
-//! - **Missing is missing.** A date with no covered bar is left out, never a zero session. A date
-//!   whose raw file was fetched before the date's last session ended is not covered.
-//! - **`complete`** = a raw bar with a volume, covered after the session ended. **`comparable`** =
-//!   a full trading day in the calendar (`market_events::session`): an early close (13:00) is not
-//!   comparable, and neither is a date outside the calendar's years, whose early closes are
-//!   unknown.
-//! - **Share basis.** Volumes must be on D's share basis (a 1:10 reverse split the morning of D
-//!   makes every raw prior volume 10× too large). Daily bars can only establish that after the
-//!   fact, from a split-adjusted snapshot that contains D's bar. [`basis_factors`] has the rule.
-//!   No basis through D → **no baseline** (`share_basis_unverified`), so RVOL stays UNKNOWN.
+//! Only dates before D; missing is missing (never a zero session); a date whose raw file was
+//! fetched before its last session ended is not covered; `comparable` = a full trading day in the
+//! calendar (early closes and years outside the calendar are not).
 //!
-//! # `actions_checked_through` (precise rule)
+//! # Split consistency ([`split_consistency`])
 //!
-//! Let P = the trading day before D, raw `R(x)` and split-adjusted `A(x)` the bars of date x
-//! (one snapshot, one retrieval), `f(x) = R(x).c / A(x).c` the cumulative split factor from x to
-//! the snapshot's retrieval. A date x is **verified** when:
+//! For a date x with a raw bar R and a split-adjusted bar A from one snapshot, the adjustment
+//! multiplier is `m = A.c / R.c` (`P_adj = P_raw · m`). A split adjustment moves volume by the
+//! reciprocal (`V_adj = V_raw / m`), so `P·V` is preserved. For a split of `old → new` shares,
+//! `m = old/new`: a 1-for-10 reverse split (10 → 1) gives m = 10, $0.08 → $0.80 and
+//! 1,000,000 → 100,000 shares. Two splits after x multiply. The check allows 1 % (min 1 share) on
+//! volume and never compares floats for equality; trade counts must match. **It checks the
+//! consistency of the adjustment Alpaca supplied, not that every action is covered**, and it is
+//! only available after the fact: a final daily-bar adjustment never certifies an earlier live
+//! intraday decision. Records keep their basis date, `observed_at` (retrieval time) and source
+//! so a replay labels them `reconstructed_history`.
 //!
-//! 1. both sets cover x (raw: requested and fetched after x's last session ended; snapshot: symbol
-//!    requested, x inside `from..=to`, retrieved after x's last session ended), and
-//! 2. they agree on presence (both have a bar, or neither), and when both have one:
-//! 3. both closes are finite and positive, the trade counts `n` are equal when both are present
-//!    (adjustment never changes a count), and the volume moved by the same factor as the price
-//!    (`|A.v − R.v·f| ≤ max(1, 1 % of R.v·f)`), which is what a split-only adjustment does and a
-//!    dividend or other price-only adjustment does not.
+//! # `actions_checked_through`
 //!
-//! `actions_checked_through` = **E, the latest date in P..=D such that every trading date from P
-//! to E is verified and both sets have a bar on E**; `None` when P itself is not verified with a
-//! bar on both sides. The close is then restated onto E's basis: `R(P).c · f(E) / f(P)`, with
-//! basis `Raw` when that ratio is 1 (within 0.2 %, then the raw close is used exactly) and
-//! `SplitAdjusted` otherwise. The gain pillar needs E ≥ D, which bars alone can only give once
-//! D's bar exists in a snapshot fetched after D: replay or research of past dates. Such a record
-//! is labelled `ActionsSource::BarVerified`.
+//! 1. **Bars**: E = the latest date in P..=D such that every trading date from P to E is
+//!    consistent (both sets cover it, agree on presence, consistent bars) with bars on E. When
+//!    E = D the record is `BarVerified`.
+//! 2. **Announcements** (live; [`coverage_for`], coverage policy `corporate-actions-coverage-v1`):
+//!    otherwise the record rests on the provider's announcements for `(P, D]`:
+//!    - `ConfirmedAction`: complete, consistent split terms → close × Π(old/new), prior volumes
+//!      × Π(new/old), `AnnouncedAction`, checked through D;
+//!    - `NoKnownActionProviderChecked`: a fresh, fully paginated check that covered the symbol
+//!      found nothing relevant → unchanged basis is **assumed** under the policy
+//!      (`ProviderCheckedNoKnownAction`, `assumption = unchanged_share_basis_assumed`), checked
+//!      through D;
+//!    - `UnresolvedAction`, `StaleCoverage`, `UnavailableCoverage` → not checked through D (the
+//!      bars' E, or `None`); the state is still recorded.
 //!
-//! # Live: announcement coverage (weaker evidence, labelled `ActionsSource::Announced`)
-//!
-//! When bars do not reach D, [`announced`] consults the corporate-action retrievals
-//! ([`crate::corporate_actions`]). It uses the **latest** retrieval that covered the symbol (its
-//! request chunk completed), whose range includes `(P, D]` (`start ≤ P+1`, `end ≥ D`) and that was
-//! made **after P's last session ended and before D's 09:30 open**. Then:
-//!
-//! - a name change touching the symbol in `(P, D]` → unknown (`symbol_changed`: Alpaca files
-//!   actions under the ticker in force, so a rename makes the lookup ambiguous);
-//! - a unit split touching it in `(P, D]` (or undated) → unknown (`unit_split`);
-//! - no forward/reverse split for it with `ex_date` in `(P, D]` → **no split**: the raw close of P
-//!   (on P's basis by definition) is D's reference, `actions_checked_through = D`;
-//! - exactly one, with integral rates → the close is restated by `old_rate/new_rate` and prior
-//!   volumes by `new_rate/old_rate`, the ratio and action id recorded (`applied_split`);
-//! - several, or a fractional rate → unknown.
-//!
-//! No covering retrieval (none made, fetch failed for that chunk, made too late) → unknown, and
-//! the record stays as bars alone allow (`checked_before_evaluated_date` or `None`). The baseline
-//! uses the announcement only on top of bars that verify P (factors relative to P), so the prior
-//! history is still bar-verified and only the last day is announced; the record says
-//! `bar_verified_through = P`. `observed_at` includes the retrieval's time.
-//!
-//! Without a snapshot and without an announcement the raw close is still emitted with `None`, so
-//! the engine reports `gain_vs_stored_close_bp` and the pillar stays UNKNOWN
-//! (`adjustment_coverage_unknown`).
-//!
-//! "Actions" here means what Alpaca's `adjustment=split` restates: splits and reverse splits.
-//! Spin-offs, cash dividends and symbol changes are not covered (`adjustment=all` would fold
-//! dividends into the same factor and is never used for this split-only rule).
-//!
-//! `observed_at` of each record is the latest retrieval among the files it used, in nanoseconds:
-//! evidence becomes visible to the engine only from then, so a snapshot fetched after D is
-//! future knowledge to a live decision on D (the engine's leakage rule handles that, not this).
+//!    The baseline uses announcements only on top of bars consistent through P (44 of 45 dates
+//!    stay bar-checked).
 
-use crate::corporate_actions::{ActionRetrieval, SplitAction};
+use crate::corporate_actions::{ActionRetrieval, CorporateAction, CoveragePolicy};
 use crate::daily_bars::{DailyBar, RawDayBars, SplitSnapshot};
 use chrono::{DateTime, NaiveDate, Utc};
 use market_events::session::{
     DayKind, calendar_covers, day_kind, is_trading_day, previous_trading_day, sessions_for,
 };
-use market_events::{Price, SessionKind, UnixNanos};
-use std::collections::BTreeMap;
+use market_events::{Price, UnixNanos};
+use std::collections::{BTreeMap, BTreeSet};
 /// Re-exported so callers need no direct stock-context dependency for the provenance types.
-pub use stock_context::{ActionsEvidence, ActionsSource, SplitRatio};
+pub use stock_context::{ActionsEvidence, ActionsSource, CoverageState, SplitRatio};
 use stock_context::{CloseBasis, DailyBaseline, InstrumentId, PrevClose, SessionVolume};
 
 /// The metric these records measure, carried in every id.
 pub const METRIC: &str = "provider_daily_volume_v1";
-/// Trading dates before D looked at for sessions: 30 needed, plus room for early closes,
-/// holidays-adjacent gaps and days without a bar. An engineering choice, not validated.
+/// Trading dates before D looked at for sessions (owner-accepted 2026-10-20).
 pub const DEFAULT_LOOKBACK: usize = 45;
-/// Price/volume factor agreement (see the module rules).
-const VOLUME_FACTOR_TOL: f64 = 0.01;
-/// A factor ratio this close to 1 is "no split in between" (absorbs 4-decimal price rounding on
-/// sub-dollar stocks; the smallest real splits are ~5 %).
-const SAME_BASIS_TOL: f64 = 0.002;
+/// Volume/price reciprocity tolerance (owner-accepted 2026-10-20).
+pub const VOLUME_FACTOR_TOL: f64 = 0.01;
+/// A multiplier ratio this close to 1 is "same basis" (absorbs 4-decimal rounding of adjusted
+/// prices; the smallest real splits are ~5 %). Owner-accepted 2026-10-20.
+pub const SAME_BASIS_TOL: f64 = 0.002;
+/// The assumption label of a record resting on "no known action".
+pub const UNCHANGED_BASIS_ASSUMED: &str = "unchanged_share_basis_assumed";
+
+/// The ids of the evidence records for `symbol` on every trading date in `from..=through`: what
+/// a late-discovered action may have affected.
+pub fn record_ids(symbol: &str, from: NaiveDate, through: NaiveDate) -> Vec<String> {
+    let mut out = Vec::new();
+    for d in from.iter_days().take_while(|d| *d <= through) {
+        if is_trading_day(d) {
+            out.push(format!("{METRIC}:prev_close:{symbol}:{d}"));
+            out.push(format!("{METRIC}:baseline:{symbol}:{d}"));
+        }
+    }
+    out
+}
 
 /// Why a record was or was not produced, for logs and tests.
 #[derive(Clone, Debug, PartialEq)]
@@ -109,23 +91,28 @@ pub struct Loaded {
     pub prev_close_reason: &'static str,
     pub baseline: Option<DailyBaseline>,
     pub baseline_reason: &'static str,
-    /// What `actions_checked_through` holds (E from bars, or D from an announcement).
+    /// What `actions_checked_through` holds.
     pub checked_through: Option<NaiveDate>,
     /// What the announcements said, whether or not it was needed.
-    pub announced: Announced,
+    pub coverage: ActionCoverage,
 }
 
-/// The inputs for one symbol: every raw date file in range, at most one split snapshot (one
-/// snapshot is one basis: [`crate::Archive::latest_snapshot_for`]) and the announcement
-/// retrievals for D (`Archive::read_action_retrievals(D)`; may be empty).
+/// The inputs for one symbol and one evaluated date.
 pub struct Inputs<'a> {
+    /// Raw date files in range.
     pub raw: &'a BTreeMap<NaiveDate, RawDayBars>,
+    /// At most one split snapshot (one snapshot is one basis:
+    /// [`crate::Archive::latest_snapshot_for`] of the history symbol).
     pub split: Option<&'a SplitSnapshot>,
+    /// Announcement retrievals made for D (`Archive::read_action_retrievals(D)`; may be empty).
     pub announcements: &'a [ActionRetrieval],
+    pub policy: &'a CoveragePolicy,
+    /// The decision time the records are built for: nothing retrieved later is used, and
+    /// announcement freshness is measured against it.
+    pub as_of: DateTime<Utc>,
 }
 
-/// Instant the date's last session (after hours, or the regular session's end on a day without
-/// one) ends; `None` for a non-trading day.
+/// Instant the date's last session ends; `None` for a non-trading day.
 fn session_end(date: NaiveDate) -> Option<DateTime<Utc>> {
     sessions_for(date).last().map(|s| s.2.to_utc())
 }
@@ -160,14 +147,35 @@ fn split_cov<'a>(
     snap.coverage(symbol, date)
 }
 
-/// One date's verification (module rules 1–3).
+/// Checks that `adj` is `raw` under a split adjustment and returns its price multiplier
+/// `m = adj.c / raw.c` (module docs). Errors name the failed check.
+pub fn split_consistency(raw: &DailyBar, adj: &DailyBar) -> Result<f64, &'static str> {
+    if !(raw.c.is_finite() && adj.c.is_finite() && raw.c > 0.0 && adj.c > 0.0) {
+        return Err("nonpositive_close");
+    }
+    if let (Some(rn), Some(an)) = (raw.n, adj.n)
+        && rn != an
+    {
+        return Err("trade_count_differs");
+    }
+    let m = adj.c / raw.c;
+    if let (Some(rv), Some(av)) = (raw.v, adj.v) {
+        // V_adj = V_raw / m (P·V preserved); 1 % or one share, whichever is larger.
+        let want = rv as f64 / m;
+        if (av as f64 - want).abs() > (want * VOLUME_FACTOR_TOL).max(1.0) {
+            return Err("volume_not_reciprocal");
+        }
+    }
+    Ok(m)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Verified {
-    /// Both sides have a consistent bar; `f` = raw close / adjusted close.
-    Bar { f: f64 },
-    /// Both covered, neither has a bar.
+    /// Both sides have a consistent bar; `m` = adjusted / raw close.
+    Bar {
+        m: f64,
+    },
     NoBar,
-    /// Not covered by one side, presence disagrees, or the bars are inconsistent.
     Unverified,
 }
 
@@ -183,56 +191,19 @@ fn verify(inputs: &Inputs<'_>, symbol: &str, date: NaiveDate) -> Verified {
     };
     match (r, a) {
         (None, None) => Verified::NoBar,
-        (Some(r), Some(a)) => {
-            if !(r.c.is_finite() && a.c.is_finite() && r.c > 0.0 && a.c > 0.0) {
-                return Verified::Unverified;
-            }
-            if let (Some(rn), Some(an)) = (r.n, a.n)
-                && rn != an
-            {
-                return Verified::Unverified;
-            }
-            let f = r.c / a.c;
-            if let (Some(rv), Some(av)) = (r.v, a.v) {
-                let want = rv as f64 * f;
-                if (av as f64 - want).abs() > (want * VOLUME_FACTOR_TOL).max(1.0) {
-                    return Verified::Unverified;
-                }
-            }
-            Verified::Bar { f }
-        }
+        (Some(r), Some(a)) => match split_consistency(r, a) {
+            Ok(m) => Verified::Bar { m },
+            Err(_) => Verified::Unverified,
+        },
         _ => Verified::Unverified,
     }
 }
 
-/// Trading dates in `from..=to`, ascending.
 fn trading_dates(from: NaiveDate, to: NaiveDate) -> Vec<NaiveDate> {
     from.iter_days()
         .take_while(|d| *d <= to)
         .filter(|d| is_trading_day(*d))
         .collect()
-}
-
-/// `r(x) = f(x) / f(D)` for every verified-with-bar date x in `dates`, or `None` when D itself is
-/// not verified with a bar on both sides (its basis cannot be named). `r = 1` exactly when within
-/// [`SAME_BASIS_TOL`]. Each x stands alone: one snapshot is one basis, so a gap between x and D
-/// does not hide a split (it still shows in `f`).
-pub fn basis_factors(
-    inputs: &Inputs<'_>,
-    symbol: &str,
-    dates: &[NaiveDate],
-    d: NaiveDate,
-) -> Option<BTreeMap<NaiveDate, f64>> {
-    let Verified::Bar { f: fd } = verify(inputs, symbol, d) else {
-        return None;
-    };
-    let mut out = BTreeMap::new();
-    for &x in dates {
-        if let Verified::Bar { f } = verify(inputs, symbol, x) {
-            out.insert(x, snap_one(f / fd));
-        }
-    }
-    Some(out)
 }
 
 fn snap_one(r: f64) -> f64 {
@@ -243,20 +214,41 @@ fn snap_one(r: f64) -> f64 {
     }
 }
 
-/// E of the module rule over P..=D, with `f(P)/f(E)`.
-fn checked_through(
+/// Volume multiplier onto `anchor`'s basis, `m(anchor) / m(x)`, for every consistent date with
+/// bars in `dates`; `None` when `anchor` itself is not consistent with bars on both sides. Each x
+/// stands alone: one snapshot is one basis, so a gap does not hide a split.
+fn volume_factors(
+    inputs: &Inputs<'_>,
+    symbol: &str,
+    dates: &[NaiveDate],
+    anchor: NaiveDate,
+) -> Option<BTreeMap<NaiveDate, f64>> {
+    let Verified::Bar { m: ma } = verify(inputs, symbol, anchor) else {
+        return None;
+    };
+    let mut out = BTreeMap::new();
+    for &x in dates {
+        if let Verified::Bar { m } = verify(inputs, symbol, x) {
+            out.insert(x, snap_one(ma / m));
+        }
+    }
+    Some(out)
+}
+
+/// E of the module rule over P..=D, with the price multiplier `m(P)/m(E)` onto E's basis.
+fn bars_through(
     inputs: &Inputs<'_>,
     symbol: &str,
     p: NaiveDate,
     d: NaiveDate,
 ) -> Option<(NaiveDate, f64)> {
-    let Verified::Bar { f: fp } = verify(inputs, symbol, p) else {
+    let Verified::Bar { m: mp } = verify(inputs, symbol, p) else {
         return None;
     };
     let mut best = (p, 1.0);
     for x in trading_dates(p, d).into_iter().skip(1) {
         match verify(inputs, symbol, x) {
-            Verified::Bar { f } => best = (x, snap_one(fp / f)),
+            Verified::Bar { m } => best = (x, snap_one(mp / m)),
             Verified::NoBar => {}
             Verified::Unverified => break,
         }
@@ -264,105 +256,245 @@ fn checked_through(
     Some(best)
 }
 
-fn latest_retrieval<'a>(it: impl Iterator<Item = Option<DateTime<Utc>>> + 'a) -> i64 {
+fn latest_retrieval(it: impl Iterator<Item = Option<DateTime<Utc>>>) -> i64 {
     it.flatten().map(nanos).max().unwrap_or(0)
 }
 
-/// Start of D's regular session (09:30 ET).
-fn regular_open(date: NaiveDate) -> Option<DateTime<Utc>> {
-    sessions_for(date)
-        .into_iter()
-        .find(|s| s.0.kind == SessionKind::Regular)
-        .map(|s| s.1.to_utc())
-}
-
-/// What the pre-session announcement retrievals say about `(P, D]` for one symbol.
+/// What the announcements establish for `(P, D]` and one symbol (module docs).
 #[derive(Clone, Debug, PartialEq)]
-pub enum Announced {
-    /// A covering retrieval lists no split for the symbol effective in `(P, D]`.
-    NoSplit {
+pub enum ActionCoverage {
+    Confirmed {
+        splits: Vec<(SplitRatio, String)>,
+        /// Π old/new.
+        price_multiplier: f64,
+        retrieval: String,
+        at: DateTime<Utc>,
+        history_symbol: Option<String>,
+    },
+    NoKnownAction {
         retrieval: String,
         at: DateTime<Utc>,
     },
-    /// Exactly one forward or reverse split effective in `(P, D]`, with integral rates.
-    Split {
-        ratio: SplitRatio,
-        action: String,
+    Unresolved {
+        reason: &'static str,
         retrieval: String,
         at: DateTime<Utc>,
     },
-    /// Nothing can be vouched for (reason).
-    Unknown(&'static str),
+    Stale {
+        last: String,
+        at: DateTime<Utc>,
+    },
+    Unavailable(&'static str),
 }
 
-/// The announcement rule (module docs, "Live: announcement coverage").
-pub fn announced(
+impl ActionCoverage {
+    pub fn state(&self) -> CoverageState {
+        match self {
+            ActionCoverage::Confirmed { .. } => CoverageState::ConfirmedAction,
+            ActionCoverage::NoKnownAction { .. } => CoverageState::NoKnownActionProviderChecked,
+            ActionCoverage::Unresolved { .. } => CoverageState::UnresolvedAction,
+            ActionCoverage::Stale { .. } => CoverageState::StaleCoverage,
+            ActionCoverage::Unavailable(_) => CoverageState::UnavailableCoverage,
+        }
+    }
+
+    pub fn reason(&self) -> &'static str {
+        match self {
+            ActionCoverage::Confirmed { .. } => "confirmed_action",
+            ActionCoverage::NoKnownAction { .. } => "no_known_action_provider_checked",
+            ActionCoverage::Unresolved { reason, .. } => reason,
+            ActionCoverage::Stale { .. } => "stale_coverage",
+            ActionCoverage::Unavailable(why) => why,
+        }
+    }
+
+    fn at(&self) -> Option<DateTime<Utc>> {
+        match self {
+            ActionCoverage::Confirmed { at, .. }
+            | ActionCoverage::NoKnownAction { at, .. }
+            | ActionCoverage::Unresolved { at, .. }
+            | ActionCoverage::Stale { at, .. } => Some(*at),
+            ActionCoverage::Unavailable(_) => None,
+        }
+    }
+}
+
+/// The announcement rule for symbol `s` and `(P, D]`, as known at `as_of`:
+///
+/// 1. Usable retrievals: made for a process-date window containing the policy's window around D,
+///    after P's last session ended, at or before `as_of`, and covering `s`. None →
+///    `Unavailable`. The latest one older than the freshness limit → `Stale`.
+/// 2. Actions are the union over usable retrievals (latest version per id). An action relevant to
+///    the window that an earlier check listed and the latest omits → unresolved.
+/// 3. Identity: a name change into or out of `s`, or a reverse split whose `new_symbol` is `s`,
+///    effective in the window, adds the other ticker to the alias set (the history symbol when it
+///    is the old one); every alias must be covered by the latest check.
+/// 4. Relevant = splits on an alias effective in `(P, D]`, plus any undated action on an alias.
+///    Unit splits, undated or incomplete actions, fractional rates and same-day conflicts →
+///    unresolved. None → `NoKnownAction` (if the policy permits the inference); otherwise the
+///    product of the splits → `Confirmed`.
+pub fn coverage_for(
     retrievals: &[ActionRetrieval],
-    symbol: &str,
+    policy: &CoveragePolicy,
+    s: &str,
     p: NaiveDate,
     d: NaiveDate,
-) -> Announced {
-    let (Some(after_p), Some(open_d), Some(day_after_p)) =
-        (session_end(p), regular_open(d), p.succ_opt())
-    else {
-        return Announced::Unknown("not_a_trading_day");
+    as_of: DateTime<Utc>,
+) -> ActionCoverage {
+    let Some(after_p) = session_end(p) else {
+        return ActionCoverage::Unavailable("not_a_trading_day");
     };
-    let Some(r) = retrievals
+    let (want_start, want_end) = policy.process_window(d);
+    let usable: Vec<&ActionRetrieval> = retrievals
         .iter()
         .filter(|r| {
-            r.covers(symbol)
-                && r.start <= day_after_p
-                && r.end >= d
+            r.process_start <= want_start
+                && r.process_end >= want_end
                 && r.retrieved_at >= after_p
-                && r.retrieved_at < open_d
+                && r.retrieved_at <= as_of
+                && r.covers(s)
         })
-        .max_by_key(|r| r.retrieved_at)
-    else {
-        return Announced::Unknown("no_announcement_coverage");
-    };
-    let within = |x: NaiveDate| x > p && x <= d;
-    // F7: actions are filed under the ticker in force at the time; a rename in the window makes
-    // "which ticker" ambiguous, so nothing is vouched for.
-    if r.name_changes
-        .iter()
-        .any(|n| within(n.process_date) && (n.old_symbol == symbol || n.new_symbol == symbol))
-    {
-        return Announced::Unknown("symbol_changed");
-    }
-    if r.unit_splits.iter().any(|u| {
-        let touches = [&u.old_symbol, &u.new_symbol, &u.alternate_symbol]
-            .iter()
-            .any(|s| s.as_deref() == Some(symbol));
-        touches && u.effective_date.is_none_or(within)
-    }) {
-        return Announced::Unknown("unit_split");
-    }
-    let splits: Vec<&SplitAction> = r
-        .splits
-        .iter()
-        .filter(|s| s.symbol == symbol && within(s.ex_date))
         .collect();
-    match splits.as_slice() {
-        [] => Announced::NoSplit {
-            retrieval: r.id(),
-            at: r.retrieved_at,
-        },
-        [s] => {
-            let integral = |x: f64| x.is_finite() && x >= 1.0 && x.fract() == 0.0;
-            if !(integral(s.old_rate) && integral(s.new_rate)) {
-                return Announced::Unknown("split_ratio_not_integral");
-            }
-            Announced::Split {
-                ratio: SplitRatio {
-                    old_rate: s.old_rate as u64,
-                    new_rate: s.new_rate as u64,
-                },
-                action: s.id.clone(),
-                retrieval: r.id(),
-                at: r.retrieved_at,
+    let Some(latest) = usable.iter().max_by_key(|r| r.retrieved_at).copied() else {
+        return ActionCoverage::Unavailable("no_usable_retrieval");
+    };
+    let (rid, at) = (latest.id(), latest.retrieved_at);
+    if (as_of - at).num_seconds() > policy.body.freshness_secs {
+        return ActionCoverage::Stale { last: rid, at };
+    }
+    let unresolved = |reason| ActionCoverage::Unresolved {
+        reason,
+        retrieval: rid.clone(),
+        at,
+    };
+    // Union by id, the latest retrieval's version winning.
+    let mut by_id: BTreeMap<&str, (&CorporateAction, bool)> = BTreeMap::new();
+    for r in &usable {
+        let is_latest = std::ptr::eq(*r, latest);
+        for a in &r.actions {
+            let e = by_id.entry(a.id.as_str()).or_insert((a, is_latest));
+            if is_latest {
+                *e = (a, true);
             }
         }
-        _ => Announced::Unknown("multiple_splits"),
+    }
+    let within = |x: NaiveDate| x > p && x <= d;
+    // Identity chain (bounded: a ticker rarely changes twice in a day).
+    let mut aliases: BTreeSet<String> = BTreeSet::from([s.to_string()]);
+    let mut history_symbol: Option<String> = None;
+    for _ in 0..3 {
+        let before = aliases.len();
+        for (a, _) in by_id.values() {
+            let Some(eff) = a.effective_date else {
+                continue;
+            };
+            if !within(eff) {
+                continue;
+            }
+            let (old, new) = (a.symbol.as_deref(), a.new_symbol.as_deref());
+            let renames = matches!(a.kind, crate::ActionKind::NameChange)
+                || (a.kind.is_split() && new.is_some() && new != old);
+            if !renames {
+                continue;
+            }
+            if let (Some(o), Some(n)) = (old, new) {
+                if aliases.contains(n) && !aliases.contains(o) {
+                    aliases.insert(o.to_string());
+                    if n == s {
+                        history_symbol = Some(o.to_string());
+                    }
+                } else if aliases.contains(o) && !aliases.contains(n) {
+                    aliases.insert(n.to_string());
+                }
+            } else if a.touches(s) {
+                return unresolved("incomplete_name_change");
+            }
+        }
+        if aliases.len() == before {
+            break;
+        }
+    }
+    if aliases.iter().any(|x| !latest.covers(x)) {
+        return unresolved("rename_chain_not_covered");
+    }
+    let mut splits: Vec<&CorporateAction> = Vec::new();
+    for (a, in_latest) in by_id.values() {
+        if !aliases.iter().any(|x| a.touches(x)) {
+            continue;
+        }
+        let relevant = a.effective_date.is_none_or(within);
+        if !relevant {
+            continue;
+        }
+        if a.effective_date.is_none() {
+            return unresolved("undated_action");
+        }
+        if !in_latest {
+            return unresolved("action_missing_from_latest_check");
+        }
+        match a.kind {
+            crate::ActionKind::UnitSplit => return unresolved("unit_split"),
+            crate::ActionKind::NameChange => {}
+            _ => {
+                if !a.complete {
+                    return unresolved("incomplete_action");
+                }
+                splits.push(a);
+            }
+        }
+    }
+    // Duplicates (same ticker, date and terms under two ids) count once; different terms on the
+    // same date conflict.
+    let mut seen: BTreeMap<(String, NaiveDate), (Option<f64>, Option<f64>)> = BTreeMap::new();
+    let mut applied = Vec::new();
+    let mut multiplier = 1.0;
+    splits.sort_by_key(|a| (a.effective_date, a.id.clone()));
+    for a in splits {
+        let key = (
+            a.symbol.clone().unwrap_or_default(),
+            a.effective_date.expect("dated"),
+        );
+        match seen.get(&key) {
+            Some(terms) if *terms == (a.old_rate, a.new_rate) => continue,
+            Some(_) => return unresolved("conflicting_actions"),
+            None => {
+                seen.insert(key, (a.old_rate, a.new_rate));
+            }
+        }
+        let Some((old, new)) = a.integral_rates() else {
+            return unresolved("non_integral_ratio");
+        };
+        multiplier *= old as f64 / new as f64;
+        applied.push((
+            SplitRatio {
+                old_rate: old,
+                new_rate: new,
+            },
+            a.id.clone(),
+        ));
+    }
+    if applied.is_empty() {
+        if !policy.body.no_known_action_permits_unchanged_basis {
+            return ActionCoverage::Unavailable("policy_forbids_absence_inference");
+        }
+        if history_symbol.is_some() {
+            // A rename without a split: same shares, different ticker.
+            return ActionCoverage::Confirmed {
+                splits: Vec::new(),
+                price_multiplier: 1.0,
+                retrieval: rid,
+                at,
+                history_symbol,
+            };
+        }
+        return ActionCoverage::NoKnownAction { retrieval: rid, at };
+    }
+    ActionCoverage::Confirmed {
+        splits: applied,
+        price_multiplier: multiplier,
+        retrieval: rid,
+        at,
+        history_symbol,
     }
 }
 
@@ -371,127 +503,158 @@ pub fn announced(
 pub fn load(inputs: &Inputs<'_>, symbol: &str, d: NaiveDate, lookback: usize) -> Loaded {
     let instrument = InstrumentId::symbol(symbol);
     let p = previous_trading_day(d);
-    let snap_at = inputs.split.map(|s| s.fetch.retrieved_at);
-    let ann = announced(inputs.announcements, symbol, p, d);
-    let ann_at = match &ann {
-        Announced::NoSplit { at, .. } | Announced::Split { at, .. } => Some(*at),
-        Announced::Unknown(_) => None,
+    let snap_at = inputs
+        .split
+        .map(|s| s.fetch.retrieved_at)
+        .filter(|t| *t <= inputs.as_of);
+    let cov = coverage_for(
+        inputs.announcements,
+        inputs.policy,
+        symbol,
+        p,
+        d,
+        inputs.as_of,
+    );
+    let hist = match &cov {
+        ActionCoverage::Confirmed {
+            history_symbol: Some(h),
+            ..
+        } => h.clone(),
+        _ => symbol.to_string(),
     };
-    let announced_evidence = |bar_through: Option<NaiveDate>| -> Option<ActionsEvidence> {
-        match &ann {
-            Announced::NoSplit { retrieval, .. } => Some(ActionsEvidence {
-                source: ActionsSource::Announced,
-                bar_verified_through: bar_through,
-                announcement: Some(retrieval.clone()),
-                applied_split: None,
-            }),
-            Announced::Split {
-                ratio,
-                action,
+    let renamed = hist != symbol;
+    // Announcement-based evidence for (P, D], when it permits a calculation.
+    let announced = |bar_through: Option<NaiveDate>| -> Option<(ActionsEvidence, f64)> {
+        let (source, splits, mult, assumption, retrieval) = match &cov {
+            ActionCoverage::Confirmed {
+                splits,
+                price_multiplier,
                 retrieval,
                 ..
-            } => Some(ActionsEvidence {
-                source: ActionsSource::Announced,
+            } => (
+                ActionsSource::AnnouncedAction,
+                splits.clone(),
+                *price_multiplier,
+                None,
+                retrieval,
+            ),
+            ActionCoverage::NoKnownAction { retrieval, .. } => (
+                ActionsSource::ProviderCheckedNoKnownAction,
+                Vec::new(),
+                1.0,
+                Some(UNCHANGED_BASIS_ASSUMED.to_string()),
+                retrieval,
+            ),
+            _ => return None,
+        };
+        Some((
+            ActionsEvidence {
+                source,
+                basis_date: Some(d),
                 bar_verified_through: bar_through,
+                coverage: Some(cov.state()),
+                coverage_policy: Some(inputs.policy.tag.clone()),
                 announcement: Some(retrieval.clone()),
-                applied_split: Some((*ratio, action.clone())),
-            }),
-            Announced::Unknown(_) => None,
-        }
+                applied_splits: splits,
+                assumption,
+                history_symbol: renamed.then(|| hist.clone()),
+            },
+            mult,
+        ))
     };
-    // Price multiplier onto D's basis from the announcement (old/new), and the volume one (new/old).
-    let (ann_price, ann_volume) = match &ann {
-        Announced::Split { ratio, .. } => (
-            ratio.old_rate as f64 / ratio.new_rate as f64,
-            ratio.new_rate as f64 / ratio.old_rate as f64,
-        ),
-        _ => (1.0, 1.0),
-    };
-
     let mut out = Loaded {
         prev_close: None,
         prev_close_reason: "",
         baseline: None,
         baseline_reason: "",
         checked_through: None,
-        announced: ann.clone(),
+        coverage: cov.clone(),
     };
 
-    // ---- previous close
-    match raw_cov(inputs.raw, symbol, p) {
+    // ---- previous close (P's raw close, under the history ticker)
+    match raw_cov(inputs.raw, &hist, p) {
         None => out.prev_close_reason = "previous_day_not_covered",
         Some(None) => out.prev_close_reason = "no_bar_on_previous_day",
         Some(Some(bar)) => match Price::from_f64_rounded(bar.c).filter(|p| p.micros() > 0) {
             None => out.prev_close_reason = "nonpositive_close",
             Some(raw_close) => {
                 let raw_seen = inputs.raw.get(&p).and_then(|r| r.last_retrieved());
-                let ct = checked_through(inputs, symbol, p, d);
-                let bar_through = ct.map(|(e, _)| e);
-                let bar_evidence = ActionsEvidence {
-                    source: ActionsSource::BarVerified,
-                    bar_verified_through: bar_through,
-                    ..ActionsEvidence::default()
+                // Bars are only read under one ticker; across a rename they do not apply.
+                let bt = if renamed {
+                    None
+                } else {
+                    bars_through(inputs, symbol, p, d)
                 };
+                let bar_through = bt.map(|(e, _)| e);
                 let restated =
                     |m: f64| Price::from_f64_rounded(bar.c * m).map_or(0, |p| p.micros());
-                // (close, basis, through, evidence, reason, observed)
-                let (close_micros, basis, through, actions, reason, observed) = match ct {
-                    // Bars verify D itself: the strong kind wins.
-                    Some((e, ratio)) if e >= d => (
-                        // `snap_one` makes a same-basis ratio exactly 1.0.
-                        if ratio == 1.0 {
+                let (close_micros, basis, through, actions, reason, observed) = match bt {
+                    Some((e, m)) if e >= d => (
+                        if m == 1.0 {
                             raw_close.micros()
                         } else {
-                            restated(1.0 / ratio)
+                            restated(m)
                         },
-                        if ratio == 1.0 {
+                        if m == 1.0 {
                             CloseBasis::Raw
                         } else {
                             CloseBasis::SplitAdjusted
                         },
                         Some(e),
-                        bar_evidence,
-                        "checked_through_evaluated_date",
+                        ActionsEvidence {
+                            source: ActionsSource::BarVerified,
+                            basis_date: Some(d),
+                            bar_verified_through: Some(e),
+                            ..ActionsEvidence::default()
+                        },
+                        "bar_verified_through_evaluated_date",
                         [raw_seen, snap_at],
                     ),
-                    // Otherwise D rests on the announcement. P's raw close is on P's basis by
-                    // definition, so only `(P, D]` needs vouching for.
-                    _ => match announced_evidence(bar_through) {
-                        Some(ev) => (
-                            if ev.applied_split.is_some() {
-                                restated(ann_price)
-                            } else {
+                    _ => match announced(bar_through) {
+                        Some((ev, m)) => (
+                            if m == 1.0 {
                                 raw_close.micros()
-                            },
-                            if ev.applied_split.is_some() {
-                                CloseBasis::SplitAdjusted
                             } else {
+                                restated(m)
+                            },
+                            if m == 1.0 {
                                 CloseBasis::Raw
+                            } else {
+                                CloseBasis::SplitAdjusted
                             },
                             Some(d),
                             ev,
-                            "announced_through_evaluated_date",
-                            [raw_seen, ann_at],
+                            cov.reason(),
+                            [raw_seen, cov.at()],
                         ),
                         None => (
                             raw_close.micros(),
                             CloseBasis::Raw,
-                            // Bars through P (or nothing): truthful, short of D.
                             bar_through.filter(|e| *e < d),
-                            if bar_through.is_some() {
-                                bar_evidence
-                            } else {
-                                ActionsEvidence::default()
+                            ActionsEvidence {
+                                source: if bar_through.is_some() {
+                                    ActionsSource::BarVerified
+                                } else {
+                                    ActionsSource::Unchecked
+                                },
+                                basis_date: Some(p),
+                                bar_verified_through: bar_through,
+                                coverage: Some(cov.state()),
+                                coverage_policy: Some(inputs.policy.tag.clone()),
+                                ..ActionsEvidence::default()
                             },
-                            match (&ann, bar_through) {
-                                (Announced::Unknown(why), _)
-                                    if *why != "no_announcement_coverage" =>
-                                {
-                                    why
+                            match (&cov, bar_through) {
+                                // Nothing usable from announcements: say what the bars gave.
+                                (ActionCoverage::Unavailable(_), Some(_)) => {
+                                    "bar_verified_before_evaluated_date"
                                 }
-                                (_, Some(_)) => "checked_before_evaluated_date",
-                                (_, None) if inputs.split.is_none() => "no_split_snapshot",
-                                (_, None) => "split_and_raw_disagree",
+                                (ActionCoverage::Unavailable(_), None)
+                                    if inputs.split.is_none() =>
+                                {
+                                    "no_split_snapshot"
+                                }
+                                (ActionCoverage::Unavailable(_), None) => "split_and_raw_disagree",
+                                _ => cov.reason(),
                             },
                             [raw_seen, snap_at.filter(|_| bar_through.is_some())],
                         ),
@@ -514,7 +677,7 @@ pub fn load(inputs: &Inputs<'_>, symbol: &str, d: NaiveDate, lookback: usize) ->
         },
     }
 
-    // ---- baseline: the `lookback` trading dates strictly before d
+    // ---- baseline: the `lookback` trading dates strictly before d, under the history ticker
     let mut dates = Vec::with_capacity(lookback);
     let mut x = d;
     while dates.len() < lookback {
@@ -522,37 +685,43 @@ pub fn load(inputs: &Inputs<'_>, symbol: &str, d: NaiveDate, lookback: usize) ->
         dates.push(x);
     }
     dates.reverse();
-    // Bars verify D's basis (strong), or verify P's and the announcement covers (P, D] (weaker).
-    let (factors, basis, extra_at) = match basis_factors(inputs, symbol, &dates, d) {
+    let bar_d = if renamed {
+        None
+    } else {
+        volume_factors(inputs, symbol, &dates, d)
+    };
+    let (factors, basis, extra_at) = match bar_d {
         Some(f) => (
             f,
             ActionsEvidence {
                 source: ActionsSource::BarVerified,
+                basis_date: Some(d),
                 bar_verified_through: Some(d),
                 ..ActionsEvidence::default()
             },
             None,
         ),
         None => {
-            let via_p = basis_factors(inputs, symbol, &dates, p);
-            match (via_p, announced_evidence(Some(p))) {
-                (Some(f), Some(ev)) => (
-                    f.into_iter()
-                        .map(|(x, r)| (x, snap_one(r * ann_volume)))
-                        .collect(),
-                    ev,
-                    ann_at,
-                ),
+            let via_p = volume_factors(inputs, &hist, &dates, p);
+            match (via_p, announced(Some(p))) {
+                (Some(f), Some((ev, price_m))) => {
+                    // Volumes move by the reciprocal of the price multiplier.
+                    let vol_m = 1.0 / price_m;
+                    (
+                        f.into_iter()
+                            .map(|(x, r)| (x, snap_one(r * vol_m)))
+                            .collect(),
+                        ev,
+                        cov.at(),
+                    )
+                }
                 (via_p, _) => {
                     out.baseline_reason = if inputs.split.is_none() {
                         "no_split_snapshot"
                     } else if via_p.is_none() {
                         "share_basis_unverified"
                     } else {
-                        match &ann {
-                            Announced::Unknown(why) => why,
-                            _ => "share_basis_unverified",
-                        }
+                        cov.reason()
                     };
                     return out;
                 }
@@ -563,7 +732,7 @@ pub fn load(inputs: &Inputs<'_>, symbol: &str, d: NaiveDate, lookback: usize) ->
     let mut seen = Vec::new();
     for &x in &dates {
         debug_assert!(x < d);
-        let Some(Some(bar)) = raw_cov(inputs.raw, symbol, x) else {
+        let Some(Some(bar)) = raw_cov(inputs.raw, &hist, x) else {
             continue; // missing, not zero
         };
         let (Some(v), Some(&r)) = (bar.v, factors.get(&x)) else {
@@ -599,4 +768,85 @@ pub fn load(inputs: &Inputs<'_>, symbol: &str, d: NaiveDate, lookback: usize) ->
         observed_at: latest_retrieval(seen.into_iter()),
     });
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bar(c: f64, v: u64) -> DailyBar {
+        DailyBar {
+            o: None,
+            h: None,
+            l: None,
+            c,
+            v: Some(v),
+            n: Some(42),
+            vw: None,
+        }
+    }
+
+    fn close(a: f64, b: f64) -> bool {
+        (a - b).abs() <= 1e-9 * a.abs().max(b.abs()).max(1.0)
+    }
+
+    #[test]
+    fn reverse_split_one_for_ten_multiplies_price_and_divides_volume() {
+        // f = old/new = 10/1: $0.08 → $0.80, 1,000,000 → 100,000; P·V preserved.
+        let raw = bar(0.08, 1_000_000);
+        let adj = bar(0.80, 100_000);
+        let m = split_consistency(&raw, &adj).unwrap();
+        assert!(close(m, 10.0));
+        assert!(close(
+            raw.c * raw.v.unwrap() as f64,
+            adj.c * adj.v.unwrap() as f64
+        ));
+        // Volume moved the same way as price: not a split adjustment.
+        assert_eq!(
+            split_consistency(&raw, &bar(0.80, 10_000_000)),
+            Err("volume_not_reciprocal")
+        );
+    }
+
+    #[test]
+    fn forward_split_two_for_one() {
+        // f = 1/2: $10.00 → $5.00, 1,000 → 2,000.
+        let m = split_consistency(&bar(10.0, 1_000), &bar(5.0, 2_000)).unwrap();
+        assert!(close(m, 0.5));
+    }
+
+    #[test]
+    fn two_intervening_splits_multiply() {
+        // 2-for-1 then 1-for-10 after x: f = (1/2)·(10/1) = 5. $1.00 → $5.00, 50,000 → 10,000.
+        let m = split_consistency(&bar(1.0, 50_000), &bar(5.0, 10_000)).unwrap();
+        assert!(close(m, 5.0));
+    }
+
+    #[test]
+    fn unchanged_dates_have_multiplier_one() {
+        let m = split_consistency(&bar(3.21, 12_345), &bar(3.21, 12_345)).unwrap();
+        assert_eq!(snap_one(m), 1.0);
+    }
+
+    #[test]
+    fn zero_volume_edges() {
+        // Zero stays zero; a few raw shares divided by 10 round to zero within one share.
+        assert!(split_consistency(&bar(0.1, 0), &bar(1.0, 0)).is_ok());
+        assert!(split_consistency(&bar(0.1, 3), &bar(1.0, 0)).is_ok());
+        assert_eq!(
+            split_consistency(&bar(0.1, 0), &bar(1.0, 500)),
+            Err("volume_not_reciprocal")
+        );
+    }
+
+    #[test]
+    fn rounding_of_adjusted_prices_is_tolerated_not_equated() {
+        // 3-for-1 forward: $0.31 → 0.103333… published as 0.1033; 99,999 → 299,997 (299,998 ±1).
+        let m = split_consistency(&bar(0.31, 99_999), &bar(0.1033, 299_998)).unwrap();
+        assert!((m - 1.0 / 3.0).abs() < 0.001);
+        assert_ne!(m, 1.0 / 3.0, "never relies on exact float equality");
+        // Two dates on the same basis whose rounded multipliers differ slightly snap to 1.
+        let m2 = split_consistency(&bar(0.32, 10), &bar(0.1067, 30)).unwrap();
+        assert_eq!(snap_one(m / m2), 1.0);
+    }
 }

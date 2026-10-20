@@ -445,8 +445,11 @@ impl Archive {
         Ok(out)
     }
 
-    /// Deletes every snapshot outside the `keep` most recent sets (by the set's timestamp, read
-    /// from the file names: no snapshot is parsed). Returns the files removed.
+    /// Deletes snapshots outside the `keep` most recent nightly sets (by timestamp, read from the
+    /// file names: no snapshot is parsed). Nightly sets (`set-` files) are kept by count; a manual
+    /// or warmup snapshot (a set of its own) is kept while it is not older than the oldest nightly
+    /// set kept, so warmups never push a nightly set out and old one-offs do not pile up. Returns
+    /// the files removed.
     pub fn prune_split_sets(&self, keep: usize) -> Result<Vec<PathBuf>, ArchiveError> {
         let dir = self.split_snapshots_dir();
         let rd = match std::fs::read_dir(&dir) {
@@ -461,15 +464,24 @@ impl Archive {
                 name.ends_with(".json").then(|| (name, e.path()))
             })
             .collect();
-        let mut sets: Vec<&str> = files.iter().map(|(n, _)| set_key(n)).collect();
+        let mut sets: Vec<&str> = files
+            .iter()
+            .filter(|(n, _)| n.starts_with("set-"))
+            .map(|(n, _)| set_key(n))
+            .collect();
         sets.sort();
         sets.dedup();
         let cut = sets.len().saturating_sub(keep);
-        let old: std::collections::BTreeSet<String> =
-            sets[..cut].iter().map(|s| s.to_string()).collect();
+        let oldest_kept = sets.get(cut).copied();
         let mut gone = Vec::new();
         for (name, path) in &files {
-            if old.contains(set_key(name)) {
+            let key = set_key(name);
+            let drop = if name.starts_with("set-") {
+                sets[..cut].contains(&key)
+            } else {
+                oldest_kept.is_some_and(|o| key < o)
+            };
+            if drop {
                 std::fs::remove_file(path).map_err(|e| ArchiveError::io(path, e))?;
                 gone.push(path.clone());
             }

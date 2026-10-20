@@ -61,12 +61,13 @@
 use super::alpaca::{AlpacaCredentials, Feed, TradesQuery};
 use super::batch::{
     Failure, MAX_SPLIT_SYMBOLS, Plan, Task, asset_metadata, daily_closes_and_bars, plan_universe,
-    run_batch_until, sip_range, split_snapshot,
+    raw_bars_for, run_batch_until, sip_range, split_snapshot,
 };
 use super::corporate::fetch_announcements;
 use super::http::{Http, HttpResponse};
 use chrono::{DateTime, NaiveDate, NaiveTime, SecondsFormat, TimeZone, Utc};
 use chrono_tz::America::New_York;
+use market_archive::CoveragePolicy;
 use market_archive::{Archive, DailyCloses, merge_daily_closes};
 use market_events::{Price, PriceBand, is_trading_day};
 use serde::{Deserialize, Serialize};
@@ -93,7 +94,8 @@ pub const MAX_FAILED_PER_MILLE: usize = 10;
 /// | `MAINTAIN_SPLIT_SNAPSHOTS` | `1` | split-adjusted snapshot of the watch list after the import (0 = off) |
 /// | `MAINTAIN_SPLIT_PER_MINUTE` | `200` | pace of the snapshot and announcement fetches (own limiter), 1–1000 |
 /// | `SPLIT_SETS_KEEP` | `5` | snapshot sets kept |
-/// | `ACTIONS_AT` | `07:00,09:15` | ET times, trading days, of the corporate-action announcement fetch (`off`) |
+/// | `ACTIONS_FETCH` | `1` | corporate-action announcement fetches (schedule in the coverage policy; `0` = off) |
+/// | `WARMUP_MAX_PER_RUN` | `50` | intraday band entrants warmed up per refresh tick (1–500) |
 /// | `MAINTAIN_AT` | `21:15` | ET wall time of the daily cycle (`HH:MM`) |
 /// | `MAINTAIN_JOBS` | `12` | parallel import workers |
 /// | `MAINTAIN_PER_MINUTE` | `9000` | request ceiling across all workers (plan limit is 10,000) |
@@ -124,8 +126,12 @@ pub struct MaintainConfig {
     pub split_per_minute: u32,
     /// Snapshot sets kept.
     pub split_sets_keep: usize,
-    /// ET times on trading days for the corporate-action announcement fetch.
-    pub actions_at: Vec<NaiveTime>,
+    /// Corporate-action announcement fetches on (their schedule, window, pagination, retries and
+    /// freshness are the versioned coverage policy, not settings).
+    pub actions_fetch: bool,
+    pub coverage: CoveragePolicy,
+    /// Warmup requests handled per refresh tick.
+    pub warmup_max_per_run: usize,
 }
 
 impl Default for MaintainConfig {
@@ -134,10 +140,9 @@ impl Default for MaintainConfig {
             split_snapshots: true,
             split_per_minute: 200,
             split_sets_keep: 5,
-            actions_at: vec![
-                NaiveTime::from_hms_opt(7, 0, 0).expect("valid"),
-                NaiveTime::from_hms_opt(9, 15, 0).expect("valid"),
-            ],
+            actions_fetch: true,
+            coverage: CoveragePolicy::v1(),
+            warmup_max_per_run: 50,
             window_days: 21,
             daily_bars_keep_days: 63,
             run_at: NaiveTime::from_hms_opt(21, 15, 0).expect("valid"),
@@ -256,22 +261,79 @@ impl MaintainConfig {
             },
             split_sets_keep: num("SPLIT_SETS_KEEP", var("SPLIT_SETS_KEEP"), d.split_sets_keep)?
                 .max(1),
-            actions_at: match var("ACTIONS_AT") {
-                None => d.actions_at,
-                Some(v) if v == "off" => Vec::new(),
-                Some(v) => {
-                    let mut out = Vec::new();
-                    for t in v.split(',') {
-                        out.push(NaiveTime::parse_from_str(t.trim(), "%H:%M").map_err(|_| {
-                            format!("ACTIONS_AT is not HH:MM[,HH:MM…] (ET) or off: {v:?}")
-                        })?);
-                    }
-                    out.sort();
-                    out
+            actions_fetch: match var("ACTIONS_FETCH").as_deref() {
+                None | Some("1") | Some("true") => true,
+                Some("0") | Some("false") => false,
+                Some(v) => return Err(format!("ACTIONS_FETCH is not 0/1: {v:?}")),
+            },
+            coverage: d.coverage,
+            warmup_max_per_run: {
+                let n = num(
+                    "WARMUP_MAX_PER_RUN",
+                    var("WARMUP_MAX_PER_RUN"),
+                    d.warmup_max_per_run,
+                )?;
+                if !(1..=500).contains(&n) {
+                    return Err(format!("WARMUP_MAX_PER_RUN must be 1..=500, got {n}"));
                 }
+                n
             },
         })
     }
+}
+
+/// The session date an announcement fetch at `now` is for: today when it is a trading day and
+/// the extended session has not ended (policy `refresh_until_et`), else the next trading day.
+pub fn actions_session(now: DateTime<Utc>, policy: &CoveragePolicy) -> NaiveDate {
+    let et = now.with_timezone(&New_York);
+    let today = et.date_naive();
+    if is_trading_day(today) && et.time() < policy.refresh_until() {
+        return today;
+    }
+    let mut d = today;
+    for _ in 0..10 {
+        d = d.succ_opt().expect("date in range");
+        if is_trading_day(d) {
+            break;
+        }
+    }
+    d
+}
+
+/// The next scheduled announcement fetch strictly after `now` (coverage policy): on each
+/// trading day the pre-session fetch (`pre_session_fetch_et`, before the 04:00 SIP start), then
+/// every `refresh_every_secs` from the deadline (`pre_session_deadline_et`) until
+/// `refresh_until_et`. The process also fetches once at startup, and retries a failed
+/// pre-session fetch every `pre_session_retry_secs` until the deadline (`swimport maintain`).
+pub fn next_actions_run(now: DateTime<Utc>, policy: &CoveragePolicy) -> Option<DateTime<Utc>> {
+    let mut date = now.with_timezone(&New_York).date_naive();
+    let at = |date: NaiveDate, t: NaiveTime| {
+        New_York
+            .from_local_datetime(&date.and_time(t))
+            .earliest()
+            .map(|t| t.with_timezone(&Utc))
+    };
+    let step = policy.body.refresh_every_secs.max(60);
+    for _ in 0..14 {
+        if is_trading_day(date) {
+            let mut slots = vec![at(date, policy.pre_session_fetch())];
+            if let (Some(first), Some(until)) = (
+                at(date, policy.pre_session_deadline()),
+                at(date, policy.refresh_until()),
+            ) {
+                let mut t = first;
+                while t <= until {
+                    slots.push(Some(t));
+                    t += chrono::Duration::seconds(step);
+                }
+            }
+            if let Some(next) = slots.into_iter().flatten().find(|t| *t > now) {
+                return Some(next);
+            }
+        }
+        date = date.succ_opt()?;
+    }
+    None
 }
 
 /// The split watch list (`docs/stock-context/daily-baseline-plan.md` §2): every symbol whose raw
@@ -297,28 +359,6 @@ pub fn watch_list(archive: &Archive, latest: NaiveDate, band: PriceBand) -> Vec<
         }
     }
     out.into_iter().collect()
-}
-
-/// The next announcement fetch strictly after `now`: the earliest of `times` (ET) on a trading
-/// day. `None` when `times` is empty (`ACTIONS_AT=off`).
-pub fn next_actions_run(now: DateTime<Utc>, times: &[NaiveTime]) -> Option<DateTime<Utc>> {
-    let mut date = now.with_timezone(&New_York).date_naive();
-    for _ in 0..14 {
-        if is_trading_day(date) {
-            for t in times {
-                if let Some(at) = New_York
-                    .from_local_datetime(&date.and_time(*t))
-                    .earliest()
-                    .map(|t| t.with_timezone(&Utc))
-                    && at > now
-                {
-                    return Some(at);
-                }
-            }
-        }
-        date = date.succ_opt()?;
-    }
-    None
 }
 
 /// The trading day before `day` (calendar: market_events::session).
@@ -615,19 +655,26 @@ pub struct ActionsReport {
     pub covered: usize,
     pub success: bool,
     pub requests: u64,
-    /// Splits announced effective in (previous trading day, today].
-    pub splits_effective_today: usize,
+    /// Validation right after the fetch: the per-symbol coverage state for the session date,
+    /// counted (`confirmed_action`, `no_known_action_provider_checked`, `unresolved_action`, …).
+    pub states: BTreeMap<String, usize>,
+    /// Actions discovered after they had taken effect (also appended to `late.jsonl`).
+    pub late: usize,
+    /// Intraday entrants warmed up on this tick (see [`Maintainer::run_warmup`]).
+    pub warmed: usize,
     pub errors: Vec<String>,
 }
 
 impl ActionsReport {
     pub fn summary(&self) -> String {
         format!(
-            "corporate actions {}: {}/{} watch-list symbols covered, {} splits effective today, {} requests, {}{}",
+            "corporate actions for {}: {}/{} watch-list symbols covered, states {:?}, {} late, {} warmed up, {} requests, {}{}",
             self.date,
             self.covered,
             self.symbols,
-            self.splits_effective_today,
+            self.states,
+            self.late,
+            self.warmed,
             self.requests,
             if self.success { "ok" } else { "partial" },
             if self.errors.is_empty() {
@@ -1085,27 +1132,30 @@ impl<H: Http + Send + 'static> Maintainer<'_, H> {
         }
     }
 
-    /// The pre-market corporate-action announcement fetch for today's watch list (start = the
-    /// previous trading day, end = today), stored append-only whatever its outcome. Skips a
-    /// non-trading day. Run at `ACTIONS_AT` by `swimport maintain`.
+    /// One announcement fetch for the session date [`actions_session`] (`now` before the
+    /// evening's end: today; else the next trading day): the watch list plus open warmups,
+    /// stored append-only whatever its outcome, folded into the ledger (late discoveries
+    /// recorded), then validated: every symbol's coverage state as of `now`, counted. Then up to
+    /// `WARMUP_MAX_PER_RUN` intraday entrants are warmed up ([`Self::run_warmup`]).
     pub fn run_actions(&self, now: DateTime<Utc>) -> ActionsReport {
-        let today = now.with_timezone(&New_York).date_naive();
+        let d = actions_session(now, &self.cfg.coverage);
         let mut rep = ActionsReport {
             at: ts(now),
-            date: today,
+            date: d,
             ..ActionsReport::default()
         };
-        if !is_trading_day(today) {
-            rep.errors.push(format!("{today} is not a trading day"));
-            return rep;
-        }
         let Some(creds) = self.creds else {
             rep.errors
                 .push("ALPACA_API_KEY / ALPACA_API_SECRET are not set".into());
             return rep;
         };
-        let p = prev_trading_day(today);
-        let symbols = watch_list(self.archive, p, self.cfg.band);
+        let p = prev_trading_day(d);
+        let mut symbols = watch_list(self.archive, p, self.cfg.band);
+        if let Ok(w) = self.archive.pending_warmups(d, usize::MAX) {
+            symbols.extend(w.into_iter().map(|w| w.symbol));
+        }
+        symbols.sort();
+        symbols.dedup();
         rep.symbols = symbols.len();
         if symbols.is_empty() {
             rep.errors
@@ -1120,30 +1170,153 @@ impl<H: Http + Send + 'static> Maintainer<'_, H> {
             }
         };
         let log = self.log;
-        let got = fetch_announcements(
+        let mut got = fetch_announcements(
             &mut http,
             &self.cfg.data_base,
             creds,
+            &self.cfg.coverage,
             &symbols,
-            p,
-            today,
+            d,
             self.cfg.split_per_minute,
             "maintain",
             &mut |l: &str| log(l),
         );
-        rep.covered = got.symbols_covered.len();
+        // Never stamped earlier than the run that made it (the scheduler's clock; equal to or
+        // before the wall clock in production, a fixed time in tests).
+        got.retrieved_at = got.retrieved_at.max(now);
+        rep.covered = symbols.iter().filter(|s| got.covers(s)).count();
         rep.success = got.success;
         rep.requests = got.requests;
-        rep.splits_effective_today = got
-            .splits
-            .iter()
-            .filter(|s| s.ex_date > p && s.ex_date <= today)
-            .count();
-        rep.errors.extend(got.errors.iter().cloned());
+        rep.errors
+            .extend(got.chunks.iter().filter_map(|c| c.error.clone()).take(5));
         if let Err(e) = self.archive.write_action_retrieval(&got) {
             rep.errors.push(format!("corporate actions: {e}"));
         }
+        match self.archive.record_actions(&got, &|a, from, through| {
+            let sym = a
+                .new_symbol
+                .as_deref()
+                .or(a.symbol.as_deref())
+                .unwrap_or("");
+            market_archive::baseline::record_ids(sym, from, through)
+        }) {
+            Ok(late) => rep.late = late.len(),
+            Err(e) => rep.errors.push(format!("corporate actions ledger: {e}")),
+        }
+        // Validation: what a decision right now would get, per symbol.
+        let all = self.archive.read_action_retrievals(d).unwrap_or_default();
+        for s in &symbols {
+            let c = market_archive::baseline::coverage_for(&all, &self.cfg.coverage, s, p, d, now);
+            *rep.states.entry(c.reason().to_string()).or_default() += 1;
+        }
+        rep.warmed = self.run_warmup(creds, d, now, &mut rep.errors);
         rep
+    }
+
+    /// Warms up open requests for `d` (intraday band entrants, market_archive::warmup), at most
+    /// `WARMUP_MAX_PER_RUN`: their raw daily bars over the retention window, a split snapshot
+    /// (its own set) and an announcement check, then closes each request with its outcome. Runs
+    /// on the maintainer's thread, never the server's. Returns how many were handled.
+    pub fn run_warmup(
+        &self,
+        creds: &AlpacaCredentials,
+        d: NaiveDate,
+        now: DateTime<Utc>,
+        errors: &mut Vec<String>,
+    ) -> usize {
+        let reqs = match self.archive.pending_warmups(d, self.cfg.warmup_max_per_run) {
+            Ok(r) if r.is_empty() => return 0,
+            Ok(r) => r,
+            Err(e) => {
+                errors.push(format!("warmup: {e}"));
+                return 0;
+            }
+        };
+        let symbols: Vec<String> = reqs.iter().map(|r| r.symbol.clone()).collect();
+        let p = prev_trading_day(d);
+        let keep = match self.cfg.daily_bars_keep_days {
+            0 => 63,
+            n => n,
+        };
+        let from = window(p, keep).first;
+        let log = self.log;
+        let mut outcome = Ok(());
+        let mut http = match (self.make_http)() {
+            Ok(h) => h,
+            Err(e) => {
+                errors.push(format!("warmup: http client: {e}"));
+                return 0;
+            }
+        };
+        match raw_bars_for(
+            &mut http,
+            &self.cfg.data_base,
+            creds,
+            &symbols,
+            from,
+            p,
+            "warmup",
+            &mut |l: &str| log(l),
+        ) {
+            Ok(bars) => {
+                if let Err(e) = self.archive.merge_raw_bars(bars) {
+                    outcome = Err(format!("raw bars: {e}"));
+                }
+            }
+            Err(e) => outcome = Err(format!("raw bars: {e}")),
+        }
+        if outcome.is_ok() {
+            match split_snapshot(
+                &mut http,
+                &self.cfg.data_base,
+                creds,
+                &symbols,
+                window(p, keep + 1).first,
+                p,
+                self.cfg.split_per_minute,
+                None,
+                "warmup",
+                &mut |l: &str| log(l),
+            )
+            .and_then(|s| {
+                self.archive
+                    .write_split_snapshot(&s)
+                    .map_err(|e| e.to_string())
+            }) {
+                Ok(_) => {}
+                Err(e) => outcome = Err(format!("split snapshot: {e}")),
+            }
+        }
+        if outcome.is_ok() {
+            let mut got = fetch_announcements(
+                &mut http,
+                &self.cfg.data_base,
+                creds,
+                &self.cfg.coverage,
+                &symbols,
+                d,
+                self.cfg.split_per_minute,
+                "warmup",
+                &mut |l: &str| log(l),
+            );
+            got.retrieved_at = got.retrieved_at.max(now);
+            if let Err(e) = self.archive.write_action_retrieval(&got) {
+                outcome = Err(format!("corporate actions: {e}"));
+            }
+        }
+        let text = match &outcome {
+            Ok(()) => "ok".to_string(),
+            Err(e) => {
+                errors.push(format!("warmup: {e}"));
+                e.clone()
+            }
+        };
+        for r in reqs {
+            if let Err(e) = self.archive.finish_warmup(r, text.clone(), now) {
+                errors.push(format!("warmup: {e}"));
+            }
+        }
+        symbols.len()
     }
 
     fn import(&self, creds: &AlpacaCredentials, w: &Window, r: &mut CycleReport) {
@@ -1581,7 +1754,8 @@ mod tests {
             ("DAILY_BARS_KEEP_DAYS", "30"),
             ("MAINTAIN_SPLIT_SNAPSHOTS", "yes"),
             ("MAINTAIN_SPLIT_PER_MINUTE", "5000"),
-            ("ACTIONS_AT", "7am"),
+            ("ACTIONS_FETCH", "maybe"),
+            ("WARMUP_MAX_PER_RUN", "0"),
         ] {
             assert!(
                 MaintainConfig::from_lookup(|q| (q == k).then(|| v.to_string())).is_err(),
@@ -1596,38 +1770,52 @@ mod tests {
         assert_eq!(c.daily_bars_keep_days, 63);
         assert!(c.split_snapshots);
         assert_eq!((c.split_per_minute, c.split_sets_keep), (200, 5));
-        assert_eq!(
-            c.actions_at,
-            [
-                NaiveTime::from_hms_opt(7, 0, 0).unwrap(),
-                NaiveTime::from_hms_opt(9, 15, 0).unwrap()
-            ]
-        );
-        let off = MaintainConfig::from_lookup(|k| (k == "ACTIONS_AT").then(|| "off".into()));
-        assert!(off.unwrap().actions_at.is_empty());
+        assert!(c.actions_fetch);
+        assert_eq!(c.warmup_max_per_run, 50);
+        assert!(c.coverage.tag.starts_with("corporate-actions-coverage-v1@"));
+        let off = MaintainConfig::from_lookup(|k| (k == "ACTIONS_FETCH").then(|| "0".into()));
+        assert!(!off.unwrap().actions_fetch);
     }
 
     #[test]
-    fn announcement_fetches_run_pre_market_on_trading_days_only() {
-        let times = MaintainConfig::default().actions_at;
-        // Friday 2026-10-16 08:00 ET: next is 09:15 the same morning.
+    fn announcement_fetches_run_before_the_sip_start_then_refresh_until_evening() {
+        let p = CoveragePolicy::v1();
+        // Friday 2026-10-16 01:00 ET: the pre-session fetch at 03:30, before the 04:00 start.
         assert_eq!(
-            next_actions_run(utc("2026-10-16T08:00:00-04:00"), &times),
-            Some(utc("2026-10-16T09:15:00-04:00"))
+            next_actions_run(utc("2026-10-16T01:00:00-04:00"), &p),
+            Some(utc("2026-10-16T03:30:00-04:00"))
         );
-        // Friday after 09:15: Monday 07:00 (the weekend is skipped).
+        // Then from 04:00 every 30 minutes.
         assert_eq!(
-            next_actions_run(utc("2026-10-16T10:00:00-04:00"), &times),
-            Some(utc("2026-10-19T07:00:00-04:00"))
-        );
-        // Wednesday before Thanksgiving: Friday 11-27 (an early close is still a trading day).
-        assert_eq!(
-            next_actions_run(utc("2026-11-25T12:00:00-05:00"), &times),
-            Some(utc("2026-11-27T07:00:00-05:00"))
+            next_actions_run(utc("2026-10-16T03:30:00-04:00"), &p),
+            Some(utc("2026-10-16T04:00:00-04:00"))
         );
         assert_eq!(
-            next_actions_run(utc("2026-10-16T08:00:00-04:00"), &[]),
-            None
+            next_actions_run(utc("2026-10-16T10:10:00-04:00"), &p),
+            Some(utc("2026-10-16T10:30:00-04:00"))
+        );
+        // After 20:00 Friday: Monday 03:30 (the weekend is skipped).
+        assert_eq!(
+            next_actions_run(utc("2026-10-16T20:00:00-04:00"), &p),
+            Some(utc("2026-10-19T03:30:00-04:00"))
+        );
+        // Thanksgiving is skipped; the early-close Friday still gets its pre-session fetch.
+        assert_eq!(
+            next_actions_run(utc("2026-11-25T21:00:00-05:00"), &p),
+            Some(utc("2026-11-27T03:30:00-05:00"))
+        );
+        // Which session a fetch is for: today until 20:00, then the next trading day.
+        assert_eq!(
+            actions_session(utc("2026-10-16T19:59:00-04:00"), &p),
+            d("2026-10-16")
+        );
+        assert_eq!(
+            actions_session(utc("2026-10-16T20:00:00-04:00"), &p),
+            d("2026-10-19")
+        );
+        assert_eq!(
+            actions_session(utc("2026-10-17T12:00:00-04:00"), &p),
+            d("2026-10-19")
         );
     }
 }

@@ -1,299 +1,313 @@
 # Daily baseline and checked previous close: acquisition plan
 
-Status: **plan + code (2026-10-19, owner decisions 2026-10-20)**, branch `feat/daily-baseline`.
-Raw daily bars are kept from the responses the nightly job already fetches and backfilled to the
-retention window; `maintain` takes a split-adjusted snapshot of the watch list after each import
-and fetches corporate-action announcements pre-market; the loader exists and is tested but is
-**not wired into the server**. Nothing here has called Alpaca from a development machine: it runs
-on the VPS after merge. Numbers marked *estimate* come from the code and the bar shape, not from a
-measured run.
+Status: **plan + code (2026-10-19; owner decisions 2026-10-20; rework per the consolidated brief
+§1.2 A–D, 2026-10-20)**, branch `feat/daily-baseline`. Raw daily bars are kept from the responses
+the nightly job already fetches and backfilled to the retention window; `maintain` takes a
+split-adjusted snapshot of the watch list after each import, keeps a corporate-action
+announcement cache populated before the 04:00 ET SIP start and refreshed during the day, and warms
+up intraday band entrants on request. The loader exists and is tested but is **not wired into the
+server**. Nothing here has called Alpaca from a development machine: it runs on the VPS after
+merge. Numbers marked *estimate* come from the code and the bar shape, not from a measured run.
 
 ## 0. Owner decisions (2026-10-20)
 
-All four open questions of the first draft were approved:
-
-1. **Live corporate-action evidence: yes**, the runtime dependency on Alpaca's
-   `/v1/corporate-actions` is accepted (§6, "Announcement coverage").
-2. **Downloads approved**: `maintain` backfills missing raw dates to the 63-date retention (~120
-   requests once), takes the watch list's split snapshot after the import (~72 requests a night,
-   own 200/min limiter) and keeps 5 snapshot sets; the announcement fetch runs at 07:00 and 09:15
-   ET on trading days.
-3. **Compatibility thresholds accepted**: ±2 % for ≥ 95 % of symbol-days (and the median within
-   ±2 %). If it fails, the fallback is the separately versioned `provider_daily_volume_v1` metric
-   with a matching live numerator (§9). Harness: `swimport volume-compat`.
-4. **Defaults accepted as chosen** (owner-accepted 2026-10-20, still engineering choices, not
-   validated): lookback 45 trading dates, raw retention 63, same-basis tolerance 0.2 %,
-   volume/price factor agreement 1 %, watch band $0.10–$25.00 over the last 5 dates.
+1. **Live corporate-action evidence: yes** (runtime dependency on Alpaca's
+   `/v1/corporate-actions`), under a versioned coverage policy (§6).
+2. **Downloads approved**: raw backfill to the 63-date retention (~120 requests once), the watch
+   list's split snapshot after the import (~72 requests a night, own 200/min limiter, 5 sets kept),
+   announcement fetches per the coverage policy.
+3. **Volume study thresholds**: ±2 % for ≥ 95 % of symbol-days (median within ±2 %) as an
+   **engineering diagnostic, not a certification**; outside it, the fallback is the separately
+   versioned `provider_daily_volume_v1` metric with a matching live numerator (§9).
+4. **Defaults owner-accepted 2026-10-20** (engineering choices, not validated): lookback 45
+   trading dates, raw retention 63, same-basis tolerance 0.2 %, volume/price reciprocity 1 %, watch
+   band $0.10–$25.00 over the last 5 dates.
 
 What it serves (`pillars-v1.md` §4.2, §4.4, `crates/stock-context/src/evidence.rs`):
 
-- RVOL pillar: `DailyBaseline { sessions: [SessionVolume { date, volume, complete, comparable }] }`
-  with at least 30 complete, comparable sessions before the evaluated date D, on D's share basis.
-- Gain pillar: `PrevClose { date = previous trading day P, basis, actions_checked_through ≥ D }`.
+- RVOL pillar: `DailyBaseline { sessions: [SessionVolume { date, volume, complete, comparable }],
+  basis }` with at least 30 complete, comparable sessions before the evaluated date D, on D's share
+  basis.
+- Gain pillar: `PrevClose { date = previous trading day P, basis, actions_checked_through ≥ D,
+  actions }`.
 
 ## 1. What already exists (and what was thrown away)
 
 `swimport maintain` (VPS `archiver` service, daily at `MAINTAIN_AT` 21:15 ET) and
 `swimport alpaca-daily-closes` call `GET /v2/stocks/bars?timeframe=1Day&feed=sip&adjustment=raw`
 for every active US equity (`/v2/assets?status=active&asset_class=us_equity`, tradable or not), in
-chunks of 200 symbols (`batch::SYMBOLS_PER_REQUEST`), `limit=10000`, following
-`next_page_token`. Range: the 21-trading-day window plus the day before
-(`maintain::refresh_closes`). Until this branch only `c` reached disk
-(`$ARCHIVE_ROOT/daily-closes.json`); `o h l v n vw` were discarded. `plan_universe` makes a second,
-tradable-only pass over the window for the trade import; it is not changed.
+chunks of 200 symbols, `limit=10000`, following `next_page_token`. Range: the 21-trading-day window
+plus the day before. Until this branch only `c` reached disk (`daily-closes.json`); `o h l v n vw`
+were discarded.
 
-## 2. Watch universe
-
-Two sets, deliberately different sizes:
+## 2. Watch universe and intraday entrants
 
 | Set | Definition | Size (*estimate*) | Why |
 |---|---|---|---|
-| **Raw universe** | every active US equity the assets endpoint lists (what the closes fetch already requests) | ~12,000 requested; ~7,000–11,000 return a bar on a given date (OTC and dormant listings return none) | free: same responses. Covers any symbol that later enters a band, with no prefetch |
-| **Split watch list** | symbols whose raw close was within **$0.10–$25.00** (`PriceBand::DEFAULT`, the import band, wider than the pillars' $2–$20 and discovery $0.15–$25) on **any of the last 5 trading dates**, from `daily-bars/raw/` | ~7,000–7,500 (the window plan imports ~150k symbol-days over 21 days ≈ 7,100 a day) | not only stocks already meeting the pillars: a stock becomes interesting by moving into the band, and its baseline must already exist that morning |
+| **Raw universe** | every active US equity the assets endpoint lists | ~12,000 requested; ~7,000–11,000 return a bar a day | free: same responses; covers any later band entrant's history |
+| **Watch list** (split snapshots, announcements) | raw close within **$0.10–$25.00** on **any of the last 5 trading dates** | ~7,000–7,500 | a stock becomes interesting by moving into the band; its evidence must exist that morning |
 
-**New band entrants** need no separate prefetch: raw bars already cover every listed symbol, and
-the watch list is recomputed from the raw closes every night, so a symbol that closed in the band
-today is in tonight's split set and in tomorrow's 07:00 announcement fetch. One that enters the
-band intraday on D without having closed in it on any of the last 5 dates has no announcement
-coverage on D (UNKNOWN that day). A new listing has no history and correctly stays
-`insufficient_baseline` until it has 30 sessions.
+**Intraday entrants** (brief C). A stock that enters the band intraday on D without an in-band
+close in the last 5 dates is not on D's watch list. It gets a lazy, bounded warmup:
+
+1. The server (later, increment 2b) calls `market_providers::warmup::WarmupQueue::request(symbol,
+   D, reason, now)` on the market-event path: O(1), `try_lock` (never waits; `Busy` → try on a
+   later print), bounded (`Full` is counted), deduplicated per symbol and date.
+2. A background task calls `WarmupQueue::flush(&archive)`, filing each request as
+   `$ARCHIVE_ROOT/warmup/<D>/<SYMBOL>.json` (idempotent; the server and the maintainer are separate
+   processes, so the inbox is files).
+3. `swimport maintain`, on every announcement tick (§6), takes up to `WARMUP_MAX_PER_RUN` (50) open
+   requests and fetches their raw daily bars over the retention window, a split snapshot (its own
+   set) and an announcement check, then closes each request with its outcome
+   (`<SYMBOL>.done.json`).
+
+Until it is done, and if the history is short anyway, the symbol's evidence stays explicit:
+`unavailable_coverage` / `insufficient_baseline` / `fewer_than_30_comparable`, never guessed. A
+new listing correctly stays insufficient until it has 30 sessions.
 
 ## 3. Dates
 
-The engine needs 30 complete, comparable sessions strictly before D. Counted in **trading dates**
-from `market_events::session`, not calendar days:
+The engine needs 30 complete, comparable sessions strictly before D, counted in **trading dates**
+from `market_events::session`:
 
 - Lookback: **45 trading dates** before D (`baseline::DEFAULT_LOOKBACK`), leaving 15 for early
-  closes (not comparable: 2026-11-27, 2026-12-24, …), dates without a bar (halts, no trades) and
-  uncovered dates. ~45 calendar days (the brief's estimate) is only ~31 trading dates and would
-  fail the first holiday month.
-- Raw retention: **63 trading dates** (`DAILY_BARS_KEEP_DAYS`, 0 = all, else 46–504; pruned by
-  `maintain` after each refresh). 45 + D + room to evaluate the last ~17 dates of history.
-- Calendar coverage: the session table covers 2025–2027. A date outside it is never `comparable`
-  (its early closes are unknown), so a 2028 baseline fails loudly as `fewer_than_30_comparable`
-  rather than quietly mixing half days.
+  closes (not comparable), dates without a bar and uncovered dates. ~45 calendar days is only ~31
+  trading dates and would fail the first holiday month.
+- Raw retention: **63 trading dates** (`DAILY_BARS_KEEP_DAYS`), backfilled when missing.
+- Calendar coverage: 2025–2027. A date outside it is never `comparable`.
 
 ## 4. Feed and adjustment
 
-- **Feed `sip`** only: the archive's prints are SIP; IEX volume is a fraction of the tape.
-- **`adjustment=raw` is always kept**: history as printed, mergeable across fetches (a refetch of
-  a date returns the same numbers or a correction). One file per date.
-- **`adjustment=split` is a separate snapshot** (nightly for the watch list, or manual).
-  Alpaca's split adjustment restates **both
-  prices and volumes** of every bar before a split onto the share basis at the moment of the
-  request. Two split fetches on either side of a split are on different bases, so they are never
-  merged: each fetch is one immutable file, and a reader uses one snapshot at a time.
-- **`asof` is not a corporate-action knowledge cutoff.** It is Alpaca's symbol-mapping date (which
-  ticker a renamed instrument had). We never send it and record `asof: null` so nobody reads a
-  fetch as "adjusted as known on date X".
-- **Never `adjustment=all`** for this: it folds dividends into the same factor, so a price ratio
-  stops meaning "split" and the volume would not follow the price. The rule here is split-only.
+- **Feed `sip`** only.
+- **`adjustment=raw` is always kept**: history as printed, mergeable across fetches.
+- **`adjustment=split` is a separate, immutable snapshot**: Alpaca restates **prices and volumes**
+  of every bar before a split onto the share basis at the moment of the request, so two fetches on
+  either side of a split are on different bases and are never merged.
+- **`asof` is not a corporate-action knowledge cutoff** (it maps renamed symbols). Never sent.
+- **Never `adjustment=all`**: it folds dividends into the factor, and the volume would no longer be
+  the reciprocal of the price.
 
-## 5. Storage (code on this branch)
+## 5. Storage and commands
 
 ```text
-$ARCHIVE_ROOT/daily-bars/
-  raw/2026-10-15.json                 # RawDayBars: every symbol's raw bar on one trading date
-  split/20261019T231502Z-1a2b3c4d.json # SplitSnapshot: one split-adjusted fetch, never merged
+$ARCHIVE_ROOT/
+  daily-bars/raw/2026-10-15.json                      # RawDayBars, merged per date
+  daily-bars/split/set-<cycle>-<retrieved>-<h>.json   # nightly SplitSnapshot set (5 kept)
+  daily-bars/split/<retrieved>-<h>.json               # manual or warmup snapshot (own set)
+  corporate-actions/<D>/<retrieved>-<h>.json          # ActionRetrieval for session D, append-only
+  corporate-actions/ledger.json                       # every action id: first_observed, raw versions
+  corporate-actions/late.jsonl                        # late discoveries, append-only
+  warmup/<D>/<SYMBOL>[.done].json                     # warmup requests and outcomes
 ```
 
-Both are `"schema": 1` (a reader refuses anything else) and written atomically (temp file, fsync,
-rename), like `daily-closes.json`. Neither is a date-named directory, so replay and retention never
-mistake them for a day.
-
-- `RawDayBars { date, adjustment: raw, bars: {SYM: {o,h,l,c,v,n,vw}}, no_bar: [SYM…], fetches }`.
-  `no_bar` = requested, nothing returned: **covered, not zero**. A symbol in neither list was never
-  requested (unknown). A refetch replaces changed bars and never deletes one (a provider that
-  drops a bar it once served is more likely a partial answer). The file is rewritten only when
-  something changed, so the identical nightly refetch of 22 dates writes nothing (tested).
-- **Why per date** and not one file or per month: the nightly refresh touches ~22 dates; per-date
-  files rewrite only what changed and retention deletes whole files. One file would be rewritten
-  nightly at ~50 MB; per-month files would still rewrite ~20 dates to change one.
-- `SplitSnapshot { fetch, symbols: [requested, sorted], bars: {SYM: {date: bar}} }`. Coverage is
-  requested symbols × trading dates in `from..=to`; a symbol the provider returned unasked is
-  dropped.
-- **Provenance** (`BarFetch`, on every file): `retrieved_at`, provider `alpaca`, feed, adjustment,
-  timeframe `1Day`, `from`, `to`, symbols requested, symbols per request, requests made, `asof`,
-  and the command. A raw date file keeps the last 8 fetches that changed it.
-
-Commands:
+All files are schema 1 and written atomically. Raw `no_bar` = requested, nothing returned:
+**covered, not zero**; a symbol in neither list is unknown. Split retention: nightly sets by count;
+a manual/warmup snapshot is kept while not older than the oldest nightly set kept.
 
 | Command | Requests | Writes |
 |---|---|---|
-| `swimport maintain`, nightly cycle at `MAINTAIN_AT` | raw: none new; backfill: only dates missing from the retention window (~120 once, then 0); split set: ⌈watch list/200⌉ × pages (~72) | `daily-bars/raw/*` (pruned to `DAILY_BARS_KEEP_DAYS`), one `daily-bars/split/set-*` set (5 kept) |
-| `swimport maintain`, at `ACTIONS_AT` (07:00, 09:15 ET, trading days) | ⌈watch list/100⌉ × pages (~72) | one `corporate-actions/<D>/*.json` per fetch, append-only |
-| `swimport maintain --actions-once` | as above, once | as above |
-| `swimport alpaca-daily-closes --from --to` (existing) | none new | + `daily-bars/raw/*` (a manual backfill) |
-| `swimport alpaca-split-bars --from --to (--symbols A,B \| --symbols-file F) [--per-minute 200]` (manual) | ⌈symbols/200⌉ × pages | one `daily-bars/split/*.json` (a set of its own) |
-| `swimport volume-compat --from --to [--sample 500]` (offline) | none | `plans/volume-compat-<from>-<to>.json` |
+| `swimport maintain`, nightly cycle | raw: none new; backfill: missing dates only (~120 once); split set: ~72 | raw files, one split set |
+| `swimport maintain`, announcement ticks (§6) | ~72 per fetch + rename follow-ups; warmups bounded | one retrieval per fetch, ledger, late log, warmup outcomes |
+| `swimport maintain --actions-once` | one fetch | as above |
+| `swimport alpaca-daily-closes --from --to` | none new | raw files (manual backfill) |
+| `swimport alpaca-split-bars …` (manual) | ⌈symbols/200⌉ × pages | one snapshot |
+| `swimport volume-compat --from --to …` (offline) | none | `plans/volume-compat-<from>-<to>.json` |
 
-Every split fetch is bounded in code (≤ 2,000 symbols per snapshot, ≤ 120 calendar days, refused
-before any request) and only covers completed dates. Credentials: `ALPACA_API_KEY` /
-`ALPACA_API_SECRET` (or `APCA_API_KEY_ID` / `APCA_API_SECRET_KEY`). New settings:
-`MAINTAIN_SPLIT_SNAPSHOTS` (1), `MAINTAIN_SPLIT_PER_MINUTE` (200), `SPLIT_SETS_KEEP` (5),
-`ACTIONS_AT` (`07:00,09:15`, or `off`).
+Settings: `DAILY_BARS_KEEP_DAYS` (63), `MAINTAIN_SPLIT_SNAPSHOTS` (1), `MAINTAIN_SPLIT_PER_MINUTE`
+(200), `SPLIT_SETS_KEEP` (5), `ACTIONS_FETCH` (1), `WARMUP_MAX_PER_RUN` (50). The announcement
+schedule, window, pagination, retries and freshness are **not** settings: they are the versioned
+coverage policy.
 
-Announcement retrievals (`market_archive::corporate_actions`, schema 1):
-`corporate-actions/<request end D>/<retrieved>-<hash>.json` holding `retrieved_at`, endpoint,
-types, `start`/`end`, symbols requested, **symbols covered** (their request chunk completed, every
-page parsed), `success`, errors, requests, and the parsed forward/reverse splits (id, symbol in
-force, `ex_date`, `old_rate`, `new_rate`), unit splits and name changes. A failed fetch is stored
-too, so a gap is visible rather than read as "no actions". Shapes are the ones the research probes
-recorded (`reports/probes/alp-corp-actions-{BTOG,SGRX}.json`, copied to
-`crates/market-providers/tests/fixtures/`); unit-split fields follow Alpaca's documentation and
-have not been seen in a recorded response yet.
+## 6. From bars and announcements to evidence (`market_archive::baseline::load`)
 
-## 6. From bars to evidence (`market_archive::baseline::load`)
+For symbol S and evaluated date D, P = the trading day before D, `as_of` = the decision time the
+record is built for (nothing retrieved later is used).
 
-For symbol S and evaluated date D, P = the trading day before D. Raw `R(x)`, split-adjusted
-`A(x)` from **one** snapshot, `f(x) = R(x).c / A(x).c` (the split factor from x to the snapshot).
+### 6.1 Split consistency of the daily bars (brief B)
 
-**Coverage.** Raw `(S, x)` is covered when the date file lists S (bar or `no_bar`) and its first
-fetch happened after x's last session ended. A snapshot covers `(S, x)` when S was requested, x is
-in its range, and it was retrieved after x's last session ended.
+For a date x with raw bar R and split-adjusted bar A from **one** snapshot, the adjustment
+multiplier is `f = A.c / R.c`, so `P_adj = P_raw · f` and, for a split adjustment, `V_adj =
+V_raw / f` (`P·V` preserved). For a split of `old → new` shares `f = old/new`: a 1-for-10 reverse
+split gives f = 10, $0.08 → $0.80, 1,000,000 → 100,000 shares; a 2-for-1 forward split f = ½; two
+splits after x multiply. `split_consistency` checks exactly that: positive closes, equal trade
+counts, `|A.v − R.v/f| ≤ max(1 share, 1 %)`; never exact float equality (adjusted prices are
+rounded; same-basis ratios within 0.2 % snap to 1). Tested: forward, reverse, two intervening
+splits, unchanged dates, zero-volume edges, rounding.
 
-**A date x is verified** when both sides cover it, agree on presence (both bars or neither), and
-with bars: closes finite and positive, trade counts equal when both present, and the volume moved
-by the price factor (`|A.v − R.v·f| ≤ max(1, 1 %·R.v·f)`) — what a split adjustment does and a
-dividend-style, price-only adjustment does not.
+**This checks the consistency of the adjustment Alpaca supplied. It is not proof of coverage**
+(an action the provider never applied is invisible to it), and it exists only after the fact:
+**a final daily-bar adjustment never certifies an earlier live intraday decision.** Records keep
+their basis date (`actions.basis_date`), `observed_at` (the retrieval time; a snapshot fetched
+after D is invisible to a live decision on D) and source, so a replay labels them
+`reconstructed_history`.
 
-**`actions_checked_through`** = E, the latest date in P..=D such that every trading date from P
-to E is verified and both sides have a bar on E; `None` when P is not verified with a bar on both
-sides. The close is restated onto E's basis, `R(P).c · f(E)/f(P)`: basis `Raw` when that ratio is
-1 within 0.2 % (the raw close is used exactly), else `SplitAdjusted`. Without a snapshot, the raw
-close is still emitted with `None`, so the engine keeps showing `gain_vs_stored_close_bp` and the
-pillar stays UNKNOWN (`adjustment_coverage_unknown`).
+Bars give E = the latest date in P..=D with every date from P to E consistent and bars on E. When
+E = D (replay of a past date) the record is `bar_verified`.
 
-**Baseline.** Sessions = the 45 trading dates before D (never D or later). For each: skipped
-(missing, never zero) unless raw has a covered bar with a volume and the date is verified; volume
-on D's basis = `R.v · f(x)/f(D)` (exactly `R.v` when the ratio is 1); `complete = true`;
-`comparable` = a full day in the calendar. **No baseline at all** unless D itself is verified with
-bars on both sides (`share_basis_unverified`): a 1:10 reverse split on D makes every raw prior
-volume 10× too big.
+### 6.2 Announcement coverage (live; policy `corporate-actions-coverage-v1`, brief A)
 
-**Bars alone:** daily bars can establish D's basis only after D's bar exists, in a snapshot
-fetched after D: replay and research of past dates. The night-of-P snapshot gives
-`actions_checked_through = P` (truthful, insufficient for a live decision on D).
+**Endpoint.** `GET https://data.alpaca.markets/v1/corporate-actions` (the market-data host, the same
+one as the bars; confirmed against the probes' recorded requests).
 
-### Announcement coverage (live; a different, weaker kind of evidence)
+**Provider facts that shape the rules.** Arrival and processing can be delayed; requests are
+organized by **process date**, not by ex/effective date; the default `data_quality=complete` can
+omit early incomplete records; actions are filed under the **symbol in force** (report 02, F7); a
+reverse split can carry an optional `new_symbol`. **An empty response is never proof of no
+action.**
 
-For a live decision on D, `market_archive::baseline::announced` reads the announcement
-retrievals stored for D and uses the **latest** one that (a) covered the symbol, (b) requested a
-range containing `(P, D]` (`start ≤ P+1`, `end ≥ D`), and (c) was made **after P's last session
-ended and before D's 09:30 open**. Then:
+**The policy** (`crates/market-archive/policy/corporate-actions-coverage-v1.json`, embedded,
+identified as `corporate-actions-coverage-v1@<sha256 prefix>` on every record; a change is a new
+file and id):
 
-| Announcements in `(P, D]` for the symbol | Result |
+| Rule | v1 value |
 |---|---|
-| no covering retrieval (none made, its chunk failed, made too late or too early) | unknown (`no_announcement_coverage`) |
-| a name change into or out of the symbol | unknown (`symbol_changed`): Alpaca files actions under the ticker in force (report 02, F7), so a rename makes the lookup ambiguous |
-| a unit split touching it (or an undated one) | unknown (`unit_split`) |
-| no forward/reverse split | **no split**: P's raw close (on P's basis by definition) is D's reference; `actions_checked_through = D` |
-| exactly one, integral rates | close × `old_rate/new_rate`, prior volumes × `new_rate/old_rate`; ratio and action id recorded |
-| several, or a fractional rate | unknown |
+| request | `types=forward_split,reverse_split,unit_split,name_change`, `data_quality=all`, 100 symbols, `limit=1000`, every page (a chunk counts only when its last page had no token) |
+| process-date window | D − 30 days … D + 10 days; actions selected by their own ex/effective date |
+| retries | 5 attempts, 0.5 s → 30 s backoff (transient errors only) |
+| schedule | at process startup; **03:30 ET** pre-session (retried every 5 min until the **04:00** SIP start if it failed); then every **30 min** from 04:00 to 20:00 ET, trading days |
+| freshness | a check older than **90 min** at decision time is stale |
+| rename follow-ups | counterpart tickers not requested are fetched in a second pass, ≤ 200 |
+| absence inference | `no_known_action_provider_checked` **permits unchanged-share-basis calculations**, labelled as an assumption |
 
-The baseline uses an announcement only **on top of bar-verified history through P** (factors from
-a snapshot that verifies P), so 44 of the 45 dates stay bar-verified and only the last step is
-announced. When bars verify D itself (replay of a past date), bar verification wins.
+Each retrieval stores its request, per-chunk pages and completeness, the symbols covered, and every
+record normalized **and verbatim** (`raw`), with the provider's quality flag when present (no
+recorded response has one yet; the parser looks under `data_quality`, `quality`, `status`) and a
+`complete` flag (every field the rule needs is present and not flagged incomplete). The ledger
+keeps every action id's `first_observed` time and each raw version.
 
-**Why it is weaker, and how it is labelled.** Bar verification observes the restatement itself:
-raw and adjusted bars disagree exactly by the split. An announcement is a claim from a feed about
-the future (or the morning): it can be late, missing, or filed under another ticker, and "nothing
-announced" is an inference from absence. The two are never merged into one flag. Every record
-carries `actions: ActionsEvidence { source: unchecked | bar_verified | announced,
-bar_verified_through, announcement (retrieval id), applied_split (ratio, action id) }`
-(`PrevClose.actions`, `DailyBaseline.basis`), and `observed_at` includes the retrieval time, so a
-decision before the 07:00 fetch cannot see it. The engine does not yet grade the two kinds
-differently; a consumer that needs the strong kind filters on `source`.
+**Per-symbol coverage state** (`coverage_for`, `stock_context::CoverageState`). Usable retrievals
+cover S (its chunk completed), contain the policy window around D, were made after P's last
+session ended and at or before `as_of`. Then:
 
-Each record's `observed_at` is the latest retrieval among the files it used (ns), so the engine's
-leakage rule keeps a snapshot fetched after D away from a live decision on D. Ids carry the metric:
-`provider_daily_volume_v1:{baseline|prev_close}:{SYM}:{D}`.
+| State | When | Effect |
+|---|---|---|
+| `unavailable_coverage` | no usable retrieval (none made, chunk failed, wrong window, made later than the decision) | not checked through D |
+| `stale_coverage` | latest usable one older than 90 min | not checked through D |
+| `unresolved_action` | a relevant action that is incomplete, undated, a unit split, fractional, conflicting on the same date, or listed earlier but missing from the latest check; an incomplete rename; a rename counterpart not covered | not checked through D |
+| `confirmed_action` | complete, consistent split terms in `(P, D]` (duplicates of the same terms count once; several dates multiply), or a complete rename | close × Π(old/new), prior volumes × Π(new/old); `source = announced_action`, ratios and action ids recorded; history read under the old ticker after a rename |
+| `no_known_action_provider_checked` | a fresh, fully paginated check covering S (and every alias) with nothing relevant | **unchanged basis assumed**: `source = provider_checked_no_known_action`, `assumption = unchanged_share_basis_assumed`; **not verified absence** |
+
+Incomplete evidence for one symbol never affects another (coverage is per symbol, per chunk).
+
+**Identity.** The alias set starts with S; a name change into or out of S, or a reverse split whose
+`new_symbol` is S, effective in `(P, D]`, adds the other ticker (the history symbol when it is the
+old one). Splits filed under any alias count. Every alias must be covered by the latest check
+(`rename_chain_not_covered` otherwise), which is why the fetch follows renames up: an old-symbol
+query alone would lose the chain.
+
+**What the engine can tell apart.** Every record carries `ActionsEvidence { source:
+unchecked | bar_verified | announced_action | provider_checked_no_known_action, basis_date,
+bar_verified_through, coverage, coverage_policy, announcement, applied_splits, assumption,
+history_symbol }`. The engine still only checks `actions_checked_through ≥ D`; admission or a
+stricter profile can require `source = bar_verified` or reject the assumption label.
+
+The baseline uses an announcement only **on top of bars consistent through P** (44 of 45 dates
+stay bar-checked; only the last step is announced). Bar verification through D wins when present.
+
+**Late discoveries.** An action first seen (or seen with changed terms) after its effective date's
+04:00 start is appended to `late.jsonl` with the ids of the evidence records of the effective date
+through the discovery date (`provider_daily_volume_v1:{prev_close|baseline}:{SYM}:{D}`). Nothing is
+rewritten: earlier records keep their `observed_at` and coverage state. Decision ids proper join
+when decisions are logged (increment 2b).
+
+### 6.3 Sessions
+
+Only dates before D; missing is missing; a raw file fetched before the date's last session ended
+is not covered; `comparable` = a full trading day in the calendar.
 
 ## 7. Requests, bytes, storage, cadence (*estimates*)
 
-Assumptions: ~12,000 assets requested; ~10,000 bars per date; one Alpaca daily bar ≈ 100 B of
-JSON (`{"c":1.25,"h":1.31,"l":1.18,"n":812,"o":1.2,"t":"2026-10-14T04:00:00Z","v":120500,"vw":1.2471}`
-is 94 B); `limit=10000` bars per page across the request's symbols; stored compactly ≈ 75 B per bar
-plus ~8 B per `no_bar` symbol.
-
-| Item | Requests | Over the wire (JSON) | On disk | Cadence |
+| Item | Requests | Over the wire | On disk | Cadence |
 |---|---|---|---|---|
-| Nightly raw (existing closes fetch, 22 dates) | **0 new** (~60 today: 60 chunks × 1 page, 200 × 22 = 4,400 bars) | 0 new (~22 MB today) | ~0.8 MB per new date written; usually 1–2 dates a night | daily, `maintain` |
-| Raw backfill to 63 trading dates (inside `maintain`) | ~120 the first night (60 chunks × 2 pages: 12,600 bars > 10,000), then 0 | ~60 MB once | ~50 MB for 63 dates | automatic, only for missing dates |
-| Raw steady state | — | — | **~50 MB** (63 × ~0.8 MB) | pruned nightly |
-| Split snapshot set, watch list ~7,200 × 64 trading dates | ~72 (36 chunks × 2 pages), in 4 snapshots of ≤ 2,000 symbols | ~46 MB | ~35 MB per set; **5 sets kept ≈ 175 MB** | nightly, after the import |
-| Announcements, watch list ~7,200 | ~72 per fetch (100 symbols per request, 1 page: a 2-day window holds a handful of actions) | < 1 MB | a few KB to ~100 KB per fetch (the full requested-symbol list dominates) | 07:00 and 09:15 ET, trading days |
-| Lazy prefetch of new entrants | 0 (raw already covers every listed symbol; the next nightly set includes them) | — | — | — |
+| Nightly raw (existing closes fetch) | 0 new | 0 new | ~0.8 MB per new date | nightly |
+| Raw backfill to 63 dates | ~120 once | ~60 MB once | ~50 MB total | when dates are missing |
+| Split set, ~7,200 × 64 dates | ~72 | ~46 MB | ~35 MB per set, 5 kept ≈ 175 MB | nightly after the import |
+| Announcements, ~7,200 symbols | ~72 + follow-ups per fetch; ~34 fetches a trading day (03:30, then 04:00–20:00 every 30 min) ≈ 2,500/day | small (a 40-day process window holds a few hundred actions market-wide) | ~100–300 KB per retrieval (the covered-symbol list dominates) ≈ 5–10 MB a day | policy schedule |
+| Warmups | ≤ 50 symbols per tick: ~1 raw + 1 split + 1 announcement request | < 1 MB | small | announcement ticks |
 
-One snapshot whose range covers D's 45-date lookback and D serves every D in it, so the latest set
-covers the last ~19 dates for replay. Older sets are deleted by whole set (`SPLIT_SETS_KEEP`).
-
-Total new disk at steady state: **~50 MB raw + ~175 MB snapshots + ~50 MB a year of announcement
-retrievals**, against ~0.6 GB per archived trade day.
+Announcement retrievals grow ~2–3 GB a year at that cadence; pruning retrievals older than the
+raw retention (keeping the ledger and the late log) is a follow-up.
 
 ## 8. Rate limits
 
-- The plan limit is 10,000 requests/min (`MAINTAIN_PER_MINUTE` comment); the import's workers
-  share one `RateLimiter` at `MAINTAIN_PER_MINUTE` (default 9,000).
-- The closes/raw fetch and the backfill are sequential and unpaced (~60 and ~120 requests).
-- The split set and the announcement fetches each pace themselves with their **own**
-  `RateLimiter` at `MAINTAIN_SPLIT_PER_MINUTE` (default 200). Inside `maintain` they run after the
-  import (split set) or at 07:00/09:15 ET when no import runs (announcements), so they never
-  overlap the 9,000/min import; even if they did, 9,200 < 10,000. A set at 200/min takes ~22 s.
-- The manual `alpaca-split-bars` is a separate process with its own limiter (`--per-minute`,
-  default 200): the operator keeps it outside 21:15–~23:00 ET.
+The plan limit is 10,000 requests/min; the import's workers share one limiter at 9,000/min. The
+split set, the announcement fetches and warmups each pace themselves at
+`MAINTAIN_SPLIT_PER_MINUTE` (200/min). The maintainer runs one thing at a time, so announcement
+ticks never overlap the import; even if they did, 9,200 < 10,000. A full announcement fetch at
+200/min takes ~25 s.
 
-## 9. Compatibility check (required before the strict metric is used)
+## 9. Volume study (brief D): `swimport volume-compat`
 
-The pillar's numerator is our own count: SIP prints 04:00 → session end, BOATS excluded, kept by
-the chart engine's condition policy (`market_events::conditions`). The denominator from §6 is
-Alpaca's daily-bar `v`. They are not the same definition by construction:
+**Question.** How far is provider volume `Vp` (raw daily bar `v`) from `Ve`, the sum of eligible
+trade sizes under the corrected engine policy (SIP prints 04:00 → session end, overnight/BOATS
+excluded, one print per `PrintId` (PR #51), counted when `Trade::effect()` updates volume)? Trade
+counts (`n` vs eligible prints) are compared separately.
 
-- Alpaca applies separate condition rules to minute bars and daily bars; some conditions update
-  daily volume but not OHLC (extended-hours and some late or out-of-sequence prints).
-- Daily bars are New York calendar-day buckets; our session day starts at 04:00 and files the
-  20:00 → 04:00 overnight (BOATS, not SIP) to the next date.
+**Report** (`market_providers::compat`, JSON in `plans/`, fixed seed `--seed`, default 20261020):
 
-**The harness** (`market_providers::compat`, `swimport volume-compat --from --to [--sample 500]`,
-offline, no credentials, no request): for symbol-days present both in an imported (final, never
-fixture) archive day and in `daily-bars/raw/`, ours = Σ size of prints with `Trade::effect()`
-updating volume whose session is that date's pre/regular/after; compared with `v`.
+- `relative_error = |Vp − Ve| / Ve` for Ve > 0; zero-volume pairs kept apart by pattern; signed
+  bias `(Vp − Ve)/Ve` (mean, median); absolute share error; median / p95 / p99 / max; share within
+  ±1/±2/±5 %; trade-count ratio.
+- **Per stratum**: price (< $1, $1–$2, $2–$20, $20–$25), activity tercile, relevance (day gain
+  ≥ 10 %; in the pillars' $2–$20 band and up 10 % stands in for "small-cap gainer": float is not in
+  the archive), session composition (extended-hours share > 25 %), sparse trading (< 100 eligible
+  prints), early-close dates, split/rename examples (symbols with a ledger action in the range).
+- By session and by condition code (volume counted and not counted by our policy), duplicates
+  dropped.
+- **Excluded / damaged sessions with reasons**: provisional live recording, no archived trades,
+  fixture day, import incomplete (provenance `complete: false`), provider returned no bar, not in
+  the raw bars, bar without volume, archive read error.
+- **Effect on denominators and 5× classifications**: for `--denominator-symbols` (100) seeded
+  symbols followed over every date, leave-one-out: each session's full-day `Ve` against the mean
+  of the other sessions, once with our volumes and once with the provider's; the distribution of
+  `mean(Vp)/mean(Ve)`, sessions near 5× (4–6× on our denominator), and **how many flip** at 5×.
+  Full-day numerators and ≤ 21 sessions stand in for the intraday numerator and 30 sessions.
 
-- Sample: `--sample` symbol-days spread over the dates, stratified by price (< $1, $1–$5, $5–$25)
-  × volume tercile, taken round-robin across strata in a fixed hash order (re-runs pick the same
-  symbol-days). Listing exchange is not a stratum yet (it needs `assets.json`; a follow-up).
-- Report (JSON in `plans/volume-compat-<from>-<to>.json`): per symbol-day and in total, our volume
-  **by session**, volume **by condition code** counted and not counted by our policy, volume
-  outside the window, the distribution of `ours / v` (median, p5, p95, share within ±1/±2/±5 %),
-  median per stratum, and the verdict. Exit code 0 only when compatible.
-- **Run it only after the trade-identity fix (PR #51) has merged and the compared days were
-  re-imported with it.** Before that, distinct FINRA TRF prints sharing `(D, id)` are dropped as
-  duplicates, our count is low, and the check measures that bug. Every report carries this note.
-- Include an early-close date once one is in the window (11-27).
+**Verdict** (`within_engineering_tolerance` / `outside_engineering_tolerance` /
+`insufficient_sample` below 100 symbol-days): ≥ 95 % within ±2 % and the median signed error within
+±2 % — an **engineering diagnostic, not a certification**. Outside → `provider_daily_volume_v1` as
+its own versioned metric with a matching live numerator.
 
-**Decision rule (owner-accepted 2026-10-20):** **compatible** when ≥ 95 % of sampled symbol-days
-are within ±2 % and the median is within ±2 %; fewer than 100 symbol-days is
-`insufficient_sample`. **Incompatible** → the fallback the owner chose: the separately versioned
-**provider-volume metric** (`provider_daily_volume_v1`, the id already on these records) with a
-**matching live numerator** (today's prints filtered by Alpaca's daily-bar condition rules, over
-Alpaca's day boundary), shown as its own measure, never one unlabeled "RVOL"; the strict metric
-stays unavailable.
+**What it needs.** Imported (final) archive days with every print stored **and** raw daily bars of
+the same dates. The VPS holds the rolling ~21 trading days of trades (raw bars accumulate there once
+this branch deploys; the backfill covers the window's dates); a development machine has only the
+acquisition pilot (12 symbol-days under `C:\research\stockwatcher\data\archive`, no raw daily bars).
+The nightly import stores every provider print (the identity bug dropped prints in the engine, not
+in the archive), and the harness applies the corrected `PrintId` rule itself, so imported days are
+valid whether imported before or after #51; live recordings are excluded (a recorder that
+discarded prints before storage would be incomplete). Run on the VPS:
+`swimport volume-compat --from <first window day> --to <last>`.
 
-## 10. What this cannot provide
+## 10. Corporate-action SSE feed: evaluation only (not implemented)
 
-- **Same-time and recent-window RVOL** need intraday cumulative curves of prior sessions. Daily
-  bars have none: those diagnostics stay UNKNOWN (`no_intraday_baseline`). Daily volume is never
-  distributed across the day. (A separate route: curves from the archive's own trades, 21 days of
-  in-band symbols, ≥ 10 sessions for the diagnostic; not part of this plan.)
-- **Bar-verified live basis of D**: unknowable from daily bars before D's bar exists; live rests
-  on the weaker announcement kind (§6).
-- **Corporate actions other than splits**: spin-offs, cash dividends and mergers are not covered;
-  name changes are recorded but only used to refuse (no rename chain walk; no instrument master).
-- **Float, news**: separate sources.
+Alpaca also offers corporate-action events as a server-sent-events stream. Not used here; what
+would have to be established first, none of it verified from this session:
 
-## 11. Remaining open items
+- **Entitlement**: whether the stream is part of the market-data subscription in use or of another
+  Alpaca product (Alpaca's server-sent event streams are documented mainly for its Broker API); a
+  probe with the existing keys answers it.
+- **Replay limits**: how far back a reconnect can resume (`since` / `until`, or an event id), and
+  whether events older than the limit are lost; the REST cache above would stay the source of truth
+  and the stream only shorten latency.
+- **Cursor and dedup**: resume from the last event id after a disconnect; events would be deduped by
+  action id and version (the ledger already keeps raw versions), and a gap in the cursor would
+  mark coverage stale rather than "no action".
+- **Benefit**: minutes instead of ≤ 30 min to see a late-processed action; the cost is a second
+  long-lived connection beside the trade stream. Worth a probe once the REST cache has run for a
+  few weeks and the late log shows how often actions arrive after their effective date.
 
-- The engine treats `bar_verified` and `announced` coverage alike; whether the dashboard should
-  show the kind (it is on every record) is a UI decision for increment 4.
-- Server wiring (increment 2b) reads these files; not done here.
-- Unit-split response fields are unverified against a recorded response (none in the probes).
+## 11. What this cannot provide
+
+- Same-time and recent-window RVOL (intraday curves): UNKNOWN (`no_intraday_baseline`); daily
+  volume is never distributed across the day.
+- Verified absence of an action: `no_known_action_provider_checked` is an assumption by design.
+- Spin-offs, cash dividends, mergers: not covered.
+- Float, news: separate sources.
+
+## 12. Remaining open items
+
+- Server wiring (increment 2b): call `WarmupQueue::request` on band entry and `flush` from a task;
+  read the evidence files; log decisions so late actions can name decision ids.
+- The engine does not yet grade the evidence kinds; admission policy to decide.
+- Unit-split fields and the provider quality flag are unverified against a recorded response.
+- Retention of announcement retrievals.

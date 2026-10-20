@@ -89,6 +89,7 @@ pub mod live;
 pub mod manifest;
 pub mod reader;
 pub mod space;
+pub mod warmup;
 pub mod writer;
 
 mod archive;
@@ -101,8 +102,8 @@ pub use bars::{Bar, BarDataset, BarEntry};
 pub use closes::{DAILY_CLOSES_FILE, DailyCloses, PrevCloses, merge_daily_closes};
 pub use config::ArchiveConfig;
 pub use corporate_actions::{
-    ACTIONS_SCHEMA, ActionRetrieval, CORPORATE_ACTIONS_DIR, NameChange, SplitAction, SplitKind,
-    UnitSplitAction,
+    ACTIONS_SCHEMA, ActionKind, ActionLedger, ActionRetrieval, CORPORATE_ACTIONS_DIR, ChunkOutcome,
+    CorporateAction, CoveragePolicy, LateAction, LedgerEntry,
 };
 pub use daily_bars::{
     Adjustment, BarFetch, DAILY_BARS_DIR, DailyBar, RawDayBars, RawMergeReport, SplitSnapshot,
@@ -113,6 +114,7 @@ pub use lifecycle::{IMPORTING_MARKER, REMOVING_PREFIX};
 pub use live::{DayData, LIVE_DIR, LiveQuote, LiveWriter};
 pub use manifest::{DayManifest, ImportProvenance, LiveDay, SymbolEntry};
 pub use reader::SymbolReader;
+pub use warmup::WarmupRequest;
 pub use writer::{FsyncPolicy, SymbolWriter};
 
 /// Symbols allowed in file names: `A-Z`, `0-9`, `.` and `-`, 1–16 characters (e.g. `BRK.B`).

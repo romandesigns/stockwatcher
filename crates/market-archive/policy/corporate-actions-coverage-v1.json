@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "id": "corporate-actions-coverage-v1",
+  "note": "Operational coverage policy for corporate-action announcements used by the stock-context share-basis check. A change is a new file and id, never an edit. Engineering choices, not validated. See docs/stock-context/daily-baseline-plan.md section 6.",
+  "endpoint": "https://data.alpaca.markets/v1/corporate-actions",
+  "types": ["forward_split", "reverse_split", "unit_split", "name_change"],
+  "data_quality": "all",
+  "process_lookback_days": 30,
+  "process_lookahead_days": 10,
+  "symbols_per_request": 100,
+  "page_limit": 1000,
+  "retry": { "max_attempts": 5, "base_delay_ms": 500, "max_delay_ms": 30000 },
+  "pre_session_fetch_et": "03:30",
+  "pre_session_deadline_et": "04:00",
+  "pre_session_retry_secs": 300,
+  "refresh_every_secs": 1800,
+  "refresh_until_et": "20:00",
+  "freshness_secs": 5400,
+  "alias_followups_max": 200,
+  "no_known_action_permits_unchanged_basis": true,
+  "validated": false
+}
