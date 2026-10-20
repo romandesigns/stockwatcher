@@ -32,9 +32,23 @@ Policy: `crates/stock-context/policy/pillars-v1.json`, embedded, identified as
 **pillars-v2 (owner decision 2026-10-20).** `policy/pillars-v2.json` (`Policy::v2()`, returned by
 `Policy::current()`) is v1 with one change: the price pillar uses StockWatcher's own price band,
 **$0.10–$25 inclusive** (profile `stockwatcher_band_v1`, 100000–25000000 micros), instead of $2–$20.
-Every other field is v1's. v1 stays byte-identical, parseable and taggable, and remains the
-documented public reference ($2–$20) described below; the engine uses whichever policy its caller
-constructs it with, and each decision names it.
+It also adds a news coverage tolerance (owner decision 2026-10-20),
+`"news": {"max_coverage_lag_secs": 120}`. Every other field is v1's. v1 stays byte-identical,
+parseable and taggable, and remains the documented public reference ($2–$20) described below;
+the engine uses whichever policy its caller constructs it with, and each decision names it.
+
+*Why the news tolerance.* A news search window is only known complete a few seconds after its
+request, so coverage "right up to the decision time" is never strictly true and, under v1, "no
+qualifying news" could only ever be UNKNOWN, never FAIL. Under v2 the news pillar is FAIL (no
+qualifying item) when search coverage is continuous from the freshness window's start to at least
+`cutoff − 120 s`; anything less stays UNKNOWN (`news_coverage_unknown`). **The last ≤120 s before a
+decision may therefore hold news StockWatcher has not seen yet**: that is a change in what a FAIL
+claims, which is why it is a new policy version rather than an edit. Lookahead is unchanged: only
+coverage records and news items observed at or before the cutoff are visible, so an item first seen
+inside the lag window but before the decision still PASSes, and one seen after it does not count.
+v1 has no `news` section, read as a zero lag (today's rule). The engine re-decides a symbol when
+its coverage window starts or lapses with time alone (`covered_from + freshness`,
+`covered_through + lag`), under either version.
 
 ## 3. Reference profile `ross_public_reference_v1`
 
@@ -49,7 +63,7 @@ are documented here and deliberately not offered as switchable variants.
 | Gain | `P / C_prev_adj − 1 ≥ 10 %` | basis points | `C_prev_adj` must be the previous trading day's close with corporate actions checked through today; exact integer comparison `P·10000 ≥ C·11000` |
 | RVOL | `V(04:00→b) / mean(prior 30 full sessions 04:00→end) ≥ 5.0` | thousandths | 30 covered, comparable, earlier sessions or UNKNOWN; early closes excluded; BOATS excluded |
 | Float | public float `< 20,000,000`, positive | shares | stale 24 h after retrieval → UNKNOWN; shares outstanding never substitutes |
-| News | relevant, substantive, credible-source news published within 24 h, first observed by the cutoff | — | 24 h is our window; FAIL only when covered sources were searched over the whole window |
+| News | relevant, substantive, credible-source news published within 24 h, first observed by the cutoff | — | 24 h is our window; FAIL only when covered sources were searched over the whole window (v2: to at least 120 s before the cutoff) |
 
 Three-valued: PASS / FAIL / UNKNOWN per pillar; QUALIFIED only if all pass, NOT_QUALIFIED if any
 fails, else UNDETERMINED. Counts ("3 pass / 1 fail / 1 unknown") are counts, never a score.

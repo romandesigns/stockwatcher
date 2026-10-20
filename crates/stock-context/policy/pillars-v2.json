@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "id": "pillars-v2",
-  "note": "pillars-v1 with the price pillar set to StockWatcher's own price band ($0.10-$25 inclusive, owner decision 2026-10-20) instead of the public reference $2-$20. Every other field equals pillars-v1, which stays the documented public reference. See docs/stock-context/pillars-v1.md.",
+  "note": "pillars-v1 with the price pillar set to StockWatcher's own price band ($0.10-$25 inclusive, owner decision 2026-10-20) instead of the public reference $2-$20, and a 120 s news coverage tolerance (owner decision 2026-10-20): no qualifying news is a FAIL when search coverage reaches at least 120 s before the decision, so the last <=120 s may hold news not yet seen. Every other field equals pillars-v1, which stays the documented public reference. See docs/stock-context/pillars-v1.md.",
   "reference_profile": {
     "id": "stockwatcher_band_v1",
     "price_min_micros": 100000,
@@ -39,5 +39,8 @@
   },
   "float": {
     "stale_after_secs": 86400
+  },
+  "news": {
+    "max_coverage_lag_secs": 120
   }
 }

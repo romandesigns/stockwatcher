@@ -388,8 +388,12 @@ pub fn news(
         .as_of(first);
         return (r, summary);
     }
+    // A FAIL needs coverage continuous from the freshness window's start to at least
+    // `cutoff - lag` (pillars-v2: 120 s; v1: 0, the cutoff itself). Only coverage records and
+    // items observed by the cutoff are visible, so the lag never lets a later record in.
+    let lag = policy.body.news.max_coverage_lag_secs * SEC;
     match coverage {
-        Some(c) if c.covered_from <= cutoff - fresh && c.covered_through >= cutoff => {
+        Some(c) if c.covered_from <= cutoff - fresh && c.covered_through >= cutoff - lag => {
             let r = PillarResult::new(
                 PillarId::News,
                 Tri::Fail,

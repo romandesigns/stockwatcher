@@ -73,6 +73,15 @@ pub struct FloatRules {
     pub stale_after_secs: i64,
 }
 
+/// How the news pillar reads search coverage (pillars-v2).
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+pub struct NewsRules {
+    /// "No qualifying news" is a FAIL when the covered window reaches at least `cutoff - lag`:
+    /// a search is only known complete seconds after it ran, so coverage never reaches the
+    /// cutoff itself. The last `lag` seconds before a decision may hold news not yet seen.
+    pub max_coverage_lag_secs: i64,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct PolicyBody {
     pub schema: u32,
@@ -85,6 +94,9 @@ pub struct PolicyBody {
     pub volume: VolumeRules,
     pub diagnostics: Diagnostics,
     pub float: FloatRules,
+    /// Absent in pillars-v1: a zero lag, i.e. coverage must reach the cutoff itself.
+    #[serde(default)]
+    pub news: NewsRules,
 }
 
 /// A parsed policy and its identity.
@@ -111,6 +123,9 @@ impl Policy {
             || p.rvol_daily_sessions == 0
         {
             return Err("pillar policy: invalid reference profile".into());
+        }
+        if body.news.max_coverage_lag_secs < 0 {
+            return Err("pillar policy: news coverage lag must not be negative".into());
         }
         let hash = Sha256::digest(text.as_bytes())
             .iter()
@@ -163,7 +178,7 @@ mod tests {
     }
 
     #[test]
-    fn v2_changes_only_the_price_band() {
+    fn v2_changes_only_the_price_band_and_the_news_lag() {
         let (v1, v2) = (Policy::v1(), Policy::v2());
         assert_eq!(v2.body.id, "pillars-v2");
         assert_eq!(v2.body.reference_profile.id, "stockwatcher_band_v1");
@@ -179,6 +194,8 @@ mod tests {
         same.reference_profile.id = v1.body.reference_profile.id.clone();
         same.reference_profile.price_min_micros = 2_000_000;
         same.reference_profile.price_max_micros = 20_000_000;
+        assert_eq!(same.news.max_coverage_lag_secs, 120);
+        same.news.max_coverage_lag_secs = 0; // v1 has no field: the strict rule
         assert_eq!(same, v1.body);
         assert_ne!(v1.hash, v2.hash);
         assert!(v2.tag().starts_with("pillars-v2@"));
