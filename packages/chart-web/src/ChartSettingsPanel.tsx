@@ -35,6 +35,7 @@ const SHOW: readonly { key: Switch; name: string; description: string }[] = [
   { key: "sessionShading", name: "Highlight extended hours", description: "Shade candles outside 09:30–16:00" },
   { key: "sessionBreaks", name: "Session breaks", description: "A dashed line where each day starts" },
   { key: "highLow", name: "High / low labels", description: "Mark the highest and lowest price on screen" },
+  { key: "indicatorLegend", name: "Indicator values", description: "The line of indicator names and values at the top left" },
 ];
 const VISIBILITY: readonly { key: keyof ChartVisibility; name: string; description?: string }[] = [
   { key: "indicators", name: "Indicators" },

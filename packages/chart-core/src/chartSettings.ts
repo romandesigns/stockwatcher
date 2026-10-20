@@ -62,6 +62,12 @@ export interface ChartSettings {
   sessionBreaks: boolean;
   /** Labels on the highest high and lowest low on screen (Legend's "display the high and low price"). */
   highLow: boolean;
+  /**
+   * The line of indicator values at the top left of the price pane ("VWAP 0.3451 · EMA 9 …"),
+   * shown while overlay indicators are on (owner, 2026-10-19: a setting to show or hide it). Off,
+   * the lines stay and the candles take the room the legend kept free.
+   */
+  indicatorLegend: boolean;
   autoStretch: boolean;
   zoom: ZoomPreset;
   visibility: ChartVisibility;
@@ -83,13 +89,14 @@ export const DEFAULT_CHART_SETTINGS: ChartSettings = {
   sessionShading: true,
   sessionBreaks: false,
   highLow: false,
+  indicatorLegend: true,
   autoStretch: true,
   zoom: 100,
   visibility: { indicators: true, drawings: true, trading: true, linkStudies: true },
 };
 
 const SCALES: readonly PriceScaleType[] = ["linear", "percent", "log"];
-const BOOLS = ["extendedHours", "volume", "grid", "sessionShading", "sessionBreaks", "highLow", "autoStretch"] as const;
+const BOOLS = ["extendedHours", "volume", "grid", "sessionShading", "sessionBreaks", "highLow", "indicatorLegend", "autoStretch"] as const;
 
 /**
  * A saved value → valid settings. Storage outlives code: a save from before a

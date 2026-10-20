@@ -294,3 +294,10 @@ describe("right margin in opened views (owner, 2026-10-18)", () => {
     expect(gapOf(st, vp).gap).toBeCloseTo(RIGHT_MARGIN_PX, 0);
   });
 });
+
+test("the indicator legend is shown by default and its switch survives a save", () => {
+  expect(DEFAULT_CHART_SETTINGS.indicatorLegend).toBe(true);
+  expect(parseChartSettings({}).indicatorLegend).toBe(true);
+  expect(parseChartSettings({ indicatorLegend: false }).indicatorLegend).toBe(false);
+  expect(parseChartSettings({ indicatorLegend: "no" }).indicatorLegend).toBe(true);
+});
