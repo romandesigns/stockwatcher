@@ -48,7 +48,8 @@ trait PriceHack {
 }
 
 impl PriceHack for market_events::Trade {
-    /// Same identity, different payload: still a duplicate (identity is source+exchange+seq).
+    /// Same identity, different payload: still a duplicate (identity is source, exchange, seq and
+    /// execution time).
     fn with_price_hack(mut self) -> Self {
         self.price = px("9.99");
         self
@@ -440,4 +441,146 @@ fn apply_revising_reports_what_the_engine_removed_and_the_days_new_last_print() 
 
     // Unapplied (unknown target): no revision, as no candle changed.
     assert_eq!(e.apply_revising(&cancel(at(10, 1, 5, 0), 777)).1, None);
+}
+
+/// Venue `D` (FINRA's TRFs) reuses provider ids across facilities: distinct prints, one id
+/// (docs/architecture/trade-identity.md). These use the shape seen in the pilot (CONL 2026-10-12:
+/// id 1 three times in premarket, each with its own time, price and size).
+mod trf {
+    use super::*;
+    use market_events::{MarketEvent, Trade};
+
+    fn d(ts: UnixNanos, price: &str, size: u64, seq: u64) -> Trade {
+        trade(ts, price, size, seq).with_exchange("D")
+    }
+
+    /// A cancel as the provider sends it: id, venue, and the original's price and size.
+    fn cancel_d(ts: UnixNanos, id: u64, price: &str, size: u64) -> MarketEvent {
+        let MarketEvent::Cancel(mut c) = cancel(ts, id) else {
+            unreachable!()
+        };
+        (c.exchange, c.price, c.size) = ("D".into(), px(price), size);
+        MarketEvent::Cancel(c)
+    }
+
+    fn correction_d(
+        ts: UnixNanos,
+        (oi, op, os): (u64, &str, u64),
+        (ci, cp, cs): (u64, &str, u64),
+    ) -> MarketEvent {
+        let MarketEvent::Correction(mut c) = correction(ts, oi, ci, cp, cs, &["@"]) else {
+            unreachable!()
+        };
+        (c.exchange, c.original_price, c.original_size) = ("D".into(), px(op), os);
+        c.original_conditions = vec!["@".into()];
+        MarketEvent::Correction(c)
+    }
+
+    fn volume(e: &ChartEngine) -> u64 {
+        candles(e, Timeframe::M1).iter().map(|c| c.v).sum()
+    }
+
+    #[test]
+    fn distinct_prints_sharing_a_d_id_all_count_and_a_redelivery_does_not() {
+        let mut e = ChartEngine::default();
+        let a = d(at(10, 0, 2, 867), "5.51", 70, 1);
+        let b = d(at(10, 0, 2, 892), "5.48", 100, 1);
+        let c = d(at(10, 1, 16, 241), "5.46", 100, 1);
+        let ups = apply_all(&mut e, &[ev(a.clone()), ev(b.clone()), ev(c.clone())]);
+        assert_eq!(tape_counted(&ups), vec!["ohlc_and_volume"; 3]);
+        assert_eq!(volume(&e), 270, "no TRF print is lost");
+        // Reconnect replay: the same messages again are the same prints.
+        let ups = apply_all(&mut e, &[ev(a), ev(b), ev(c)]);
+        assert_eq!(tape_counted(&ups), vec!["excluded:duplicate"; 3]);
+        assert_eq!(volume(&e), 270);
+        assert_eq!(q(&e).duplicates, 3);
+    }
+
+    #[test]
+    fn a_cancel_and_a_correction_hit_the_print_whose_price_and_size_they_name() {
+        let mut e = ChartEngine::default();
+        apply_all(
+            &mut e,
+            &[
+                ev(d(at(10, 0, 2, 0), "5.51", 70, 1)),
+                ev(d(at(10, 0, 3, 0), "5.48", 100, 1)),
+                ev(d(at(10, 0, 4, 0), "5.40", 200, 2)),
+                ev(d(at(10, 1, 4, 0), "5.45", 300, 2)),
+            ],
+        );
+        let (_, rev) = e.apply_revising(&cancel_d(at(10, 1, 10, 0), 1, "5.48", 100));
+        let rev = rev.expect("one print fits");
+        assert_eq!((rev.removed.price, rev.removed.size), (px("5.48"), 100));
+        assert_eq!(
+            rev.ts,
+            at(10, 0, 3, 0),
+            "the second TRF's print, not the first"
+        );
+        let m = &candles(&e, Timeframe::M1)[0];
+        assert_eq!((m.h, m.c, m.v), (5.51, 5.40, 270));
+
+        // The correction names the 10:01 print by its price and size; the 10:00 one stays.
+        let (_, rev) = e.apply_revising(&correction_d(
+            at(10, 1, 11, 0),
+            (2, "5.45", 300),
+            (9, "5.47", 300),
+        ));
+        assert_eq!(rev.expect("one print fits").ts, at(10, 1, 4, 0));
+        let cs = candles(&e, Timeframe::M1);
+        assert_eq!((cs[0].c, cs[0].v), (5.40, 270));
+        assert_eq!((cs[1].c, cs[1].v), (5.47, 300));
+        let qq = q(&e);
+        assert_eq!((qq.cancels_applied, qq.corrections_applied), (1, 1));
+        assert_eq!((qq.cancels_ambiguous, qq.corrections_ambiguous), (0, 0));
+    }
+
+    #[test]
+    fn a_revision_that_fits_several_prints_or_none_is_counted_ambiguous_and_changes_nothing() {
+        let mut e = ChartEngine::default();
+        // Same id, price and size on two TRFs (4 such pairs within 10 minutes in the pilot).
+        apply_all(
+            &mut e,
+            &[
+                ev(d(at(10, 0, 2, 0), "10.49", 1, 17).with_conditions(["@", "I"])),
+                ev(d(at(10, 4, 6, 0), "10.49", 1, 17).with_conditions(["@", "I"])),
+                ev(d(at(10, 5, 0, 0), "10.50", 100, 18)),
+            ],
+        );
+        let before = candles(&e, Timeframe::M1);
+        let (ups, rev) = e.apply_revising(&cancel_d(at(10, 5, 1, 0), 17, "10.49", 1));
+        assert!(ups.is_empty() && rev.is_none(), "not applied to a guess");
+        let (ups, rev) = e.apply_revising(&correction_d(
+            at(10, 5, 2, 0),
+            (17, "10.49", 1),
+            (40, "10.48", 1),
+        ));
+        assert!(ups.is_empty() && rev.is_none());
+        // Fits none of the held prints with that id: the named one may be gone while another
+        // TRF's print with the same id is held, so this is ambiguous too, not applied to it.
+        let (ups, rev) = e.apply_revising(&cancel_d(at(10, 5, 3, 0), 18, "10.70", 100));
+        assert!(ups.is_empty() && rev.is_none());
+        assert_eq!(candles(&e, Timeframe::M1), before);
+        let qq = q(&e);
+        assert_eq!((qq.cancels_ambiguous, qq.corrections_ambiguous), (2, 1));
+        assert_eq!((qq.cancels_applied, qq.corrections_applied), (0, 0));
+        assert_eq!((qq.cancels_unapplied, qq.corrections_unapplied), (0, 0));
+        // An id nobody holds is still plain "unapplied".
+        e.apply(&cancel_d(at(10, 5, 4, 0), 99, "10.50", 100));
+        assert_eq!(q(&e).cancels_unapplied, 1);
+    }
+
+    #[test]
+    fn a_pruned_print_is_not_mistaken_for_a_held_one_with_the_same_id() {
+        let mut e = ChartEngine::default();
+        e.apply(&ev(d(at(10, 0, 1, 0), "3.00", 100, 5)));
+        e.apply(&ev(d(at(10, 14, 0, 0), "3.10", 200, 5)));
+        // The watermark moves past the 10:00 print's retention; the 10:14 one is still held.
+        e.apply(&ev(d(at(10, 20, 0, 0), "3.20", 100, 6)));
+        // A cancel naming the pruned print must not take the held one that shares its id.
+        let (_, rev) = e.apply_revising(&cancel_d(at(10, 20, 1, 0), 5, "3.00", 100));
+        assert!(rev.is_none());
+        assert_eq!(q(&e).cancels_ambiguous, 1);
+        let (_, rev) = e.apply_revising(&cancel_d(at(10, 20, 2, 0), 5, "3.10", 200));
+        assert_eq!(rev.expect("the held one").ts, at(10, 14, 0, 0));
+    }
 }

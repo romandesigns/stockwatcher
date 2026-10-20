@@ -9,8 +9,8 @@ use crate::wire::{
     TapeTrade, ValueArea,
 };
 use market_events::{
-    Cancel, Correction, EffectReason, MarketEvent, Price, SessionId, SessionKind, Source, Status,
-    StatusKind, Trade, TradeId, UnixNanos, classify, trade_effect,
+    Cancel, Correction, EffectReason, MarketEvent, Price, Resolution, SessionId, SessionKind,
+    Source, Status, StatusKind, Trade, TradeId, TradeRef, UnixNanos, classify, trade_effect,
 };
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, HashMap, VecDeque};
@@ -29,6 +29,9 @@ pub const VALUE_AREA_PERCENT: u32 = 70;
 #[derive(Clone, Debug, PartialEq)]
 pub struct Revision {
     pub symbol: String,
+    /// Execution time of the revised print (a correction keeps it), so a tally kept per interval
+    /// knows which interval changed.
+    pub ts: UnixNanos,
     /// The session of the original print (a correction keeps it: same execution time).
     pub session: SessionId,
     /// The print as the engine had counted it.
@@ -65,6 +68,10 @@ impl From<&TradeRec> for RevisedPrint {
 
 /// Total order of trades within a symbol: execution time, then provider sequence (so
 /// same-timestamp trades follow `source_seq`), then exchange and source as final tie-breakers.
+///
+/// It holds exactly the print identity (`market_events::PrintId`: provider reference plus execution
+/// time), so it is also the duplicate key: two FINRA TRF prints sharing a `D` id differ in time and
+/// are both kept, while a redelivered message repeats every part and is dropped.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct OrderKey {
     ts: i64,
@@ -460,7 +467,9 @@ struct SymbolState {
     max_key: Option<OrderKey>,
     current_session: Option<SessionId>,
     trades: BTreeMap<OrderKey, TradeRec>,
-    index: HashMap<TradeId, OrderKey>,
+    /// Provider reference → the retained prints carrying it. Usually one; on venue `D` several
+    /// TRFs reuse ids, so a correction or cancel resolves among them ([`TradeRef::resolve`]).
+    index: HashMap<TradeId, Vec<OrderKey>>,
     series: Vec<Series>,
     profiles: BTreeMap<SessionId, TickProfile>,
     quality: BTreeMap<Option<SessionId>, DataQuality>,
@@ -475,6 +484,28 @@ struct SymbolState {
 impl SymbolState {
     fn q(&mut self, session: Option<SessionId>) -> &mut DataQuality {
         self.quality.entry(session).or_default()
+    }
+
+    /// The retained print a correction or cancel names (docs/architecture/trade-identity.md).
+    fn resolve(&self, r: &TradeRef) -> Resolution<OrderKey> {
+        let held = self.index.get(&r.id).into_iter().flatten().filter_map(|k| {
+            let rec = self.trades.get(k)?;
+            Some((k.clone(), rec.price, rec.size))
+        });
+        r.resolve(held)
+    }
+
+    fn index_add(&mut self, id: TradeId, key: OrderKey) {
+        self.index.entry(id).or_default().push(key);
+    }
+
+    fn index_remove(&mut self, id: &TradeId, key: &OrderKey) {
+        if let Some(keys) = self.index.get_mut(id) {
+            keys.retain(|k| k != key);
+            if keys.is_empty() {
+                self.index.remove(id);
+            }
+        }
     }
 
     /// The newest OHLC-qualifying print of `session`'s trading date ([`Revision::last`]). Trades are
@@ -821,7 +852,9 @@ impl ChartEngine {
             })
         };
 
-        if st.index.contains_key(&id) {
+        let ts = t.event_ts.0;
+        let key = OrderKey::of(ts, &id);
+        if st.trades.contains_key(&key) {
             st.q(t.session).duplicates += 1;
             out.push(tape("excluded:duplicate".into()));
             return out;
@@ -831,7 +864,6 @@ impl ChartEngine {
             out.push(tape("excluded:outside_session".into()));
             return out;
         };
-        let ts = t.event_ts.0;
         let base_end = base_tf.end_of(t.event_ts).0;
         if let Some(w) = st.own_wm.max(clock) {
             if w >= base_end + settle {
@@ -843,7 +875,6 @@ impl ChartEngine {
                 st.q(Some(session)).late_applied += 1;
             }
         }
-        let key = OrderKey::of(ts, &id);
         if st.max_key.as_ref().is_some_and(|m| key < *m) {
             st.q(Some(session)).out_of_order_reordered += 1;
         }
@@ -875,7 +906,7 @@ impl ChartEngine {
         out.push(tape(counted));
 
         st.trades.insert(key.clone(), rec.clone());
-        st.index.insert(id, key.clone());
+        st.index_add(id, key.clone());
         st.own_wm = Some(st.own_wm.map_or(ts, |w| w.max(ts)));
         if st.max_key.as_ref().is_none_or(|m| key > *m) {
             st.max_key = Some(key.clone());
@@ -920,11 +951,19 @@ impl ChartEngine {
         );
         let st = Self::state(&mut self.symbols, &self.cfg, &c.symbol);
         let mut out = Vec::new();
-        let Some(key) = st.index.remove(&c.target_trade_id()) else {
-            st.q(classify(c.event_ts)).cancels_unapplied += 1;
-            return (out, None);
+        let key = match st.resolve(&c.target()) {
+            Resolution::Found(key) => key,
+            Resolution::NotFound => {
+                st.q(classify(c.event_ts)).cancels_unapplied += 1;
+                return (out, None);
+            }
+            Resolution::Ambiguous => {
+                st.q(classify(c.event_ts)).cancels_ambiguous += 1;
+                return (out, None);
+            }
         };
         let rec = st.trades.remove(&key).expect("index and trades agree");
+        st.index_remove(&rec.id, &key);
         st.q(Some(rec.session)).cancels_applied += 1;
         let mut rows = Vec::new();
         if rec.profile {
@@ -949,6 +988,7 @@ impl ChartEngine {
         Self::reschedule(&mut self.pending, st);
         let rev = Revision {
             symbol: c.symbol.clone(),
+            ts: UnixNanos(key.ts),
             session: rec.session,
             removed: RevisedPrint::from(&rec),
             added: None,
@@ -965,11 +1005,19 @@ impl ChartEngine {
         );
         let st = Self::state(&mut self.symbols, &self.cfg, &c.symbol);
         let mut out = Vec::new();
-        let Some(key) = st.index.remove(&c.original_trade_id()) else {
-            st.q(classify(c.event_ts)).corrections_unapplied += 1;
-            return (out, None);
+        let key = match st.resolve(&c.target()) {
+            Resolution::Found(key) => key,
+            Resolution::NotFound => {
+                st.q(classify(c.event_ts)).corrections_unapplied += 1;
+                return (out, None);
+            }
+            Resolution::Ambiguous => {
+                st.q(classify(c.event_ts)).corrections_ambiguous += 1;
+                return (out, None);
+            }
         };
         let old = st.trades.remove(&key).expect("index and trades agree");
+        st.index_remove(&old.id, &key);
         let effect = trade_effect(&c.corrected_conditions, c.tape);
         let new_id = TradeId {
             source: c.source,
@@ -1003,7 +1051,7 @@ impl ChartEngine {
         let affects = old.affects_candles() || new.affects_candles();
         let (removed, added) = (RevisedPrint::from(&old), RevisedPrint::from(&new));
         st.trades.insert(new_key.clone(), new);
-        st.index.insert(new_id, new_key);
+        st.index_add(new_id, new_key);
         if affects {
             let wm = st.own_wm.max(clock);
             let ctx = Ctx {
@@ -1020,6 +1068,7 @@ impl ChartEngine {
         Self::reschedule(&mut self.pending, st);
         let rev = Revision {
             symbol: c.symbol.clone(),
+            ts: UnixNanos(key.ts),
             session: old.session,
             removed,
             added: Some(added),
@@ -1043,8 +1092,8 @@ impl ChartEngine {
         while let Some((k, _)) = st.trades.first_key_value()
             && k.ts < cutoff
         {
-            let (_, rec) = st.trades.pop_first().expect("non-empty");
-            st.index.remove(&rec.id);
+            let (k, rec) = st.trades.pop_first().expect("non-empty");
+            st.index_remove(&rec.id, &k);
         }
         while st.profiles.len() > keep {
             st.profiles.pop_first();

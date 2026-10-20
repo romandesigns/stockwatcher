@@ -101,8 +101,12 @@ export interface DataQuality {
   outOfOrderReordered: number;
   correctionsApplied: number;
   correctionsUnapplied: number;
+  /** A correction whose id fits several retained prints, or none of them by price and size (venue D: FINRA TRFs reuse ids); not applied. docs/architecture/trade-identity.md */
+  correctionsAmbiguous: number;
   cancelsApplied: number;
   cancelsUnapplied: number;
+  /** As correctionsAmbiguous, for a cancel/error. */
+  cancelsAmbiguous: number;
   conditionExcluded: number;
   volumeOnly: number;
   unrecognizedConditions: number;

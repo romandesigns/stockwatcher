@@ -100,7 +100,8 @@ Code: `crates/market-events` (contract, calendar, condition policy) and `crates/
 
 **Contract units.** Times are `i64` UTC nanoseconds; prices are `i64` micro-dollars (exact, never `f64`
 for keys or sums); sizes are `u64` shares. Persisted events are JSON `{"v":1,"type":"trade",...}`;
-readers refuse another `v`. Trade identity is `(source, exchange, source_seq)`.
+readers refuse another `v`. A print's identity is `(source, exchange, source_seq, event_ts)`: the
+provider id alone repeats on venue `D` (FINRA's TRFs), see `trade-identity.md`.
 
 **Sessions (ET, `chrono-tz` America/New_York).** overnight 20:00 (previous calendar day)–04:00, pre
 04:00–09:30, regular 09:30–16:00, after 16:00–20:00. On early-close days: regular to 13:00, after
@@ -138,7 +139,9 @@ counted.
 **Corrections and cancels.** Trade-level records are kept for the retention window (10 min by default,
 pruned on 5-minute boundaries). A cancel or correction recomputes the affected interval of every
 timeframe and adjusts the profile's per-price volume exactly. It may revise a final candle, which is
-re-emitted. A target beyond retention is counted as unapplied.
+re-emitted. A target beyond retention is counted as unapplied. Its target is the one retained print
+with the named id whose price and size match; when several fit, or none of those holding the id does,
+it is counted as ambiguous and not applied (`trade-identity.md`).
 
 **Profile.** There is one profile per symbol per session id. Volume is stored per exact price, so any
 bin width is exact; bins are `floor(price/bin)*bin` anchored at zero. The profile includes

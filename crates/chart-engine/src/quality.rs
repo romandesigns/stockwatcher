@@ -6,7 +6,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DataQuality {
-    /// Same `(source, exchange, source_seq)` seen again within retention; ignored.
+    /// The same print (`(source, exchange, source_seq)` **and** execution time) seen again within
+    /// retention; ignored. Distinct prints sharing a venue-`D` id are not duplicates
+    /// (docs/architecture/trade-identity.md).
     pub duplicates: u64,
     /// Arrived after the settle window; excluded from candles and profile.
     pub late_excluded: u64,
@@ -17,8 +19,16 @@ pub struct DataQuality {
     pub corrections_applied: u64,
     /// Correction whose original print is not (or no longer) retained.
     pub corrections_unapplied: u64,
+    /// Correction naming an id held by several retained prints (or by prints that do not match its
+    /// original price and size), so its target is not known; not applied rather than applied to
+    /// a guess. Happens on venue `D`, where FINRA's TRFs reuse ids.
+    #[serde(default)]
+    pub corrections_ambiguous: u64,
     pub cancels_applied: u64,
     pub cancels_unapplied: u64,
+    /// As `corrections_ambiguous`, for a cancel/error.
+    #[serde(default)]
+    pub cancels_ambiguous: u64,
     /// Prints whose conditions update nothing (`M`, `Q`, `9`).
     pub condition_excluded: u64,
     /// Prints counted for volume only (odd lots, average price, …).

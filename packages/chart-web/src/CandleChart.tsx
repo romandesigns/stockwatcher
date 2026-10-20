@@ -1332,7 +1332,7 @@ export function CandleChart({
                 type="button"
                 aria-label={`Alert ${line.label}. Up and down arrows move it one tick, Enter saves, Delete removes.`}
                 className="absolute rounded opacity-0 outline-none focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring"
-                style={{ left: g.priceAxis.x + 2, top: t.y - 9, width: g.priceAxis.w - 4, height: 18 }}
+                style={{ left: g.priceAxis.x + 2, top: t.y - 9, width: g.priceAxis.w - 2, height: 18 }}
                 onBlur={() => setAlertDrag((d) => (d?.id === t.id ? null : d))}
                 onKeyDown={(e) => {
                   const cur = alertDrag?.id === t.id ? alertDrag.price : line.price;

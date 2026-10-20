@@ -24,6 +24,10 @@ use crate::evidence::{
     DailyBaseline, EvidenceStore, FloatObservation, InstrumentId, IntradayBaseline, NewsCoverage,
     NewsItem, PrevClose,
 };
+use crate::panel::{
+    Eligibility, Membership, Momentum, MomentumStatus, PanelPolicy, momentum, momentum_order,
+    update_membership,
+};
 use crate::pillar::{Counts, PillarId, PillarResult, Qualification, Tri, aggregate, price_pillar};
 use crate::policy::Policy;
 use chrono::{Days, NaiveDate};
@@ -113,6 +117,8 @@ pub struct Decision {
     pub rvol: RvolDiagnostics,
     pub news: NewsSummary,
     pub timeline: Timeline,
+    /// Ross Panel membership after this decision (`five_pillars_membership_v1`).
+    pub membership: Membership,
     /// Which parts differ from this symbol's previous decision.
     pub changed: Vec<&'static str>,
 }
@@ -144,6 +150,57 @@ struct Sym {
     timeline: Timeline,
     recheck_at: i64,
     dirty: bool,
+    /// The latest OHLC print per whole second, `(execution, price)`, for the momentum endpoints
+    /// (every endpoint is a whole second, so the compression is exact).
+    ticks: VecDeque<(i64, i64)>,
+    day_high: Option<i64>,
+    member: Membership,
+    halted: bool,
+}
+
+/// One Ross Panel member at one barrier.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct PanelRow {
+    pub symbol: String,
+    pub instrument: InstrumentId,
+    pub membership: Membership,
+    pub counts: Counts,
+    /// Last qualifying price and the gain pillar's value (bp), when known.
+    pub price: Option<i64>,
+    pub gain_bp: Option<i64>,
+    pub momentum: Momentum,
+    /// 1-based among ranked rows; `None`: momentum unavailable, listed after the ranked rows.
+    pub rank: Option<u32>,
+    pub prev_rank: Option<u32>,
+}
+
+/// The Ross Panel at one barrier: active members in momentum order, published with the same
+/// decision revision as the membership it reflects.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct PanelSnapshot {
+    /// The engine's decision sequence at this barrier.
+    pub revision: u64,
+    pub run_id: String,
+    pub source: String,
+    pub panel_policy: String,
+    pub pillar_policy: String,
+    pub bar_end: i64,
+    pub cutoff: i64,
+    pub rows: Vec<PanelRow>,
+}
+
+/// Records an OHLC print in the per-second history: the latest execution within each second.
+fn record_tick(ticks: &mut VecDeque<(i64, i64)>, exec: i64, price: i64) {
+    let sec = exec.div_euclid(SEC);
+    let pos = ticks.partition_point(|&(e, _)| e.div_euclid(SEC) < sec);
+    match ticks.get_mut(pos) {
+        Some(t) if t.0.div_euclid(SEC) == sec => {
+            if exec >= t.0 {
+                *t = (exec, price);
+            }
+        }
+        _ => ticks.insert(pos, (exec, price)),
+    }
 }
 
 pub struct Engine {
@@ -154,6 +211,9 @@ pub struct Engine {
     by_inst: HashMap<InstrumentId, String>,
     next_bar: Option<i64>,
     seq: u64,
+    panel_policy: PanelPolicy,
+    panel_log: Vec<PanelSnapshot>,
+    last_panel: Option<PanelSnapshot>,
 }
 
 fn ceil_to(t: i64, step: i64) -> i64 {
@@ -170,6 +230,39 @@ impl Engine {
             by_inst: HashMap::new(),
             next_bar: None,
             seq: 0,
+            panel_policy: PanelPolicy::v1(),
+            panel_log: Vec::new(),
+            last_panel: None,
+        }
+    }
+
+    /// The same engine under another Ross Panel policy.
+    pub fn with_panel_policy(mut self, p: PanelPolicy) -> Self {
+        self.panel_policy = p;
+        self
+    }
+
+    pub fn panel_policy(&self) -> &PanelPolicy {
+        &self.panel_policy
+    }
+
+    /// Panel snapshots published since the last call (each one changed), oldest first.
+    pub fn take_panels(&mut self) -> Vec<PanelSnapshot> {
+        std::mem::take(&mut self.panel_log)
+    }
+
+    /// The latest panel snapshot (what a client snapshot sends).
+    pub fn panel(&self) -> Option<&PanelSnapshot> {
+        self.last_panel.as_ref()
+    }
+
+    /// Observed trading status: a halted symbol is never ranked on a frozen pre-halt return.
+    pub fn set_halted(&mut self, symbol: &str, halted: bool) {
+        if let Some(s) = self.syms.get_mut(symbol)
+            && s.halted != halted
+        {
+            s.halted = halted;
+            s.dirty = true;
         }
     }
 
@@ -246,6 +339,10 @@ impl Engine {
                 timeline: Timeline::default(),
                 recheck_at: i64::MAX,
                 dirty: false,
+                ticks: VecDeque::new(),
+                day_high: None,
+                member: Membership::default(),
+                halted: false,
             }
         });
         self.by_inst.entry(sym.inst.clone()).or_insert(name);
@@ -288,7 +385,8 @@ impl Engine {
     fn next_due(&self, b: i64, bar: i64, settle: i64) -> i64 {
         let mut due = i64::MAX;
         for s in self.syms.values() {
-            if s.dirty {
+            // An active member's momentum window slides every barrier, print or not.
+            if s.dirty || s.member.active().is_some() {
                 return b;
             }
             for p in &s.pending {
@@ -320,6 +418,86 @@ impl Engine {
                 out.push(d);
             }
         }
+        self.publish_panel(b, tau);
+    }
+
+    /// Ranks the active members at barrier `b` and logs the panel when it changed.
+    fn publish_panel(&mut self, b: i64, tau: i64) {
+        let rules = &self.panel_policy.body.momentum;
+        let date = trading_date(UnixNanos(b));
+        let mut rows: Vec<PanelRow> = Vec::new();
+        for s in self.syms.values() {
+            if s.member.active().is_none() || s.date != Some(date) {
+                continue;
+            }
+            let ticks = &s.ticks;
+            let price_at = |e: i64| ticks.iter().rev().find(|(x, _)| *x < e).copied();
+            let segment = |t: i64| {
+                classify(UnixNanos(t))
+                    .filter(|x| x.kind != SessionKind::Overnight)
+                    .map(|x| x.kind as u8)
+            };
+            let m = momentum(
+                rules,
+                b,
+                price_at,
+                segment,
+                s.day_high,
+                s.halted,
+                self.run.numerator_coverage,
+            );
+            let last = s.last.as_ref();
+            rows.push(PanelRow {
+                symbol: s.name.clone(),
+                instrument: s.inst.clone(),
+                membership: s.member.clone(),
+                counts: last.map(|d| d.counts).unwrap_or_default(),
+                price: last.and_then(|d| d.pillars[0].value),
+                gain_bp: last.and_then(|d| d.pillars[1].value),
+                momentum: m,
+                rank: None,
+                prev_rank: None,
+            });
+        }
+        // Ranked rows first, in momentum order; unranked after, by symbol.
+        rows.sort_by(|a, b| match (a.momentum.status, b.momentum.status) {
+            (MomentumStatus::Ready, MomentumStatus::Ready) => {
+                momentum_order((&a.momentum, &a.symbol), (&b.momentum, &b.symbol))
+            }
+            (MomentumStatus::Ready, _) => std::cmp::Ordering::Less,
+            (_, MomentumStatus::Ready) => std::cmp::Ordering::Greater,
+            _ => a.symbol.cmp(&b.symbol),
+        });
+        let prev = self.last_panel.as_ref();
+        let mut k = 0u32;
+        for r in &mut rows {
+            if r.momentum.status == MomentumStatus::Ready {
+                k += 1;
+                r.rank = Some(k);
+            }
+            r.prev_rank = prev
+                .and_then(|p| p.rows.iter().find(|x| x.symbol == r.symbol))
+                .and_then(|x| x.rank);
+        }
+        let changed = match prev {
+            None => !rows.is_empty(),
+            Some(p) => p.rows != rows,
+        };
+        if !changed {
+            return;
+        }
+        let snap = PanelSnapshot {
+            revision: self.seq,
+            run_id: self.run.run_id.clone(),
+            source: self.run.source.clone(),
+            panel_policy: self.panel_policy.tag(),
+            pillar_policy: self.policy.tag(),
+            bar_end: b,
+            cutoff: tau,
+            rows,
+        };
+        self.panel_log.push(snap.clone());
+        self.last_panel = Some(snap);
     }
 
     fn evaluate(&mut self, name: &str, date: NaiveDate, b: i64, tau: i64) -> Option<Decision> {
@@ -339,6 +517,10 @@ impl Engine {
             s.cums.clear();
             s.timeline = Timeline::default();
             s.last = None;
+            // A new trading date needs a new admission; the old date stays in the decision log.
+            s.ticks.clear();
+            s.day_high = None;
+            s.member = Membership::default();
         }
         let exclude_overnight = policy.body.volume.exclude_overnight_boats;
         let mut keep = Vec::with_capacity(s.pending.len());
@@ -362,10 +544,18 @@ impl Engine {
                 if s.last_price.is_none_or(|(e, _)| p.exec >= e) {
                     s.last_price = Some((p.exec, p.price));
                 }
+                s.day_high = Some(s.day_high.map_or(p.price, |h| h.max(p.price)));
+                record_tick(&mut s.ticks, p.exec, p.price);
             }
         }
         s.pending = keep;
         s.cums.push_back((b, s.cum));
+        // The momentum endpoints reach back `context + endpoint age`; keep one print before that.
+        let mo = &self.panel_policy.body.momentum;
+        let horizon = b - (mo.context_secs + mo.endpoint_max_age_secs + 1) * SEC;
+        while s.ticks.len() > 1 && s.ticks[1].0 < horizon {
+            s.ticks.pop_front();
+        }
         while s.cums.len() > 2 && s.cums[1].0 <= b - w {
             s.cums.pop_front();
         }
@@ -425,6 +615,32 @@ impl Engine {
         let (news_r, news_s) = evaluate::news(policy, ev, &s.inst, tau);
         let pillars = vec![price_r, g.pillar, rvol_r, float_r, news_r];
         let (qualification, counts) = aggregate(pillars.iter().map(|p| p.state));
+
+        // Ross Panel membership: platform eligibility is a fresh price inside the platform band
+        // in a supported (non-overnight) session; it is not a pillar.
+        let platform = &self.panel_policy.body.membership.platform_band;
+        let supported = classify(UnixNanos(b)).is_some_and(|x| x.kind != SessionKind::Overnight);
+        let eligibility = match price.micros {
+            Some(p) if !stale && supported => {
+                if p >= platform.min_micros && p <= platform.max_micros {
+                    Eligibility::Eligible
+                } else {
+                    Eligibility::OutOfBand
+                }
+            }
+            _ => Eligibility::Ineligible,
+        };
+        let decision_id = format!("{}:{}:{}", self.run.run_id, s.name, b);
+        let membership_changed = update_membership(
+            &mut s.member,
+            &self.panel_policy.body.membership,
+            &pillars,
+            counts,
+            eligibility,
+            tau,
+            &decision_id,
+            &format!("{}:{}:{}", self.run.run_id, date, s.name),
+        );
 
         // When could this symbol's result change with no new print? Stale price, stale float,
         // news ageing out, evidence becoming visible, or the next trading date (20:00 ET).
@@ -529,13 +745,16 @@ impl Engine {
                 }
             }
         }
+        if membership_changed && !changed.contains(&"new") {
+            changed.push("membership");
+        }
         if changed.is_empty() {
             return None;
         }
         self.seq += 1;
         let d = Decision {
             seq: self.seq,
-            decision_id: format!("{}:{}:{}", self.run.run_id, s.name, b),
+            decision_id,
             run_id: self.run.run_id.clone(),
             source: self.run.source.clone(),
             fidelity: self.run.fidelity,
@@ -554,6 +773,7 @@ impl Engine {
             rvol: rvol_d,
             news: news_s,
             timeline: s.timeline.clone(),
+            membership: s.member.clone(),
             changed,
         };
         s.last = Some(d.clone());
