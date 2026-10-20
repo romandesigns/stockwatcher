@@ -129,7 +129,7 @@ export function rossRowView(r: RossRowWire, cutoff: number, formatTime: (epochNs
   const trigger = setupWire?.trigger?.price ?? null;
   const inval = setupWire?.invalidation?.price ?? null;
   const risk = setupWire?.risk_to_stop_bp ?? null;
-  const riskText = risk !== null ? ` · ${(risk / 100).toFixed(1)}% to stop` : "";
+  const riskText = risk !== null ? ` · ${(risk / 100).toFixed(1)}% stop` : "";
   let note = "";
   if (state === "crossing" && trigger !== null) note = `${rossPrice(trigger)} · close pending${riskText}`;
   else if (state === "near" && trigger !== null) note = `${rossPrice(trigger)} · ${((setupWire?.distance_to_trigger_bp ?? 0) / 100).toFixed(1)}% away${riskText}`;
