@@ -2,10 +2,11 @@ import type { DashboardSource } from "@stockwatcher/app-state";
 import { Icon } from "@stockwatcher/chart-native";
 import { lastSessionLabel } from "@stockwatcher/shared";
 import { useCallback, useEffect, useState } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { HaltWatcher } from "../dashboard/HaltWatcher";
+import { RossPanel } from "../dashboard/RossPanel";
 import { setDashboardFeed } from "../feed/dashboardFeed";
 import { useCandidates } from "../feed/hooks";
 import type { MobileFeed } from "../feed/serverFeed";
@@ -72,6 +73,10 @@ function DashboardView({ feed, token, source }: { feed: MobileFeed; token: strin
 
       {/* One row of six mini gauges, all in view (owner, 2026-10-19); a tap opens the ticker's chart. */}
       <HaltWatcher channel={feed.pressure} onPick={open} reducedMotion={reducedMotion} />
+      {/* The Ross Panel card (owner, 2026-10-20): a tapped row opens the chart modal like a gauge. */}
+      <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 8 }}>
+        <RossPanel channel={feed.ross} onPick={open} reducedMotion={reducedMotion} />
+      </ScrollView>
       {candidates.length === 0 && !fixture && (
         // The dashboard reads the LIVE market: an empty list means nothing has traded yet this
         // session (or it is the weekend), not a slow server.

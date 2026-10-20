@@ -15,6 +15,7 @@ import { SettingsButton } from "../nav/settings.tsx";
 import { getAppStore, useApp } from "../state/store.ts";
 import { ChartCell } from "./ChartCell.tsx";
 import { HaltWatcher } from "./HaltWatcher.tsx";
+import { RossPanel } from "./RossPanel.tsx";
 import { MultiViewMenu } from "./MultiViewMenu.tsx";
 
 /**
@@ -173,7 +174,10 @@ export function Dashboard({ choice, feed }: Connection) {
             the charts below their minimum height; on a phone it is one sideways-scrolling row,
             so a single chart fills the rest of the screen above the tab bar. */}
         {feed.pressure && <HaltWatcher channel={feed.pressure} onPick={app.loadIntoSelected} />}
-        <div role="group" aria-label="Charts" className={cn("grid flex-1 auto-rows-[minmax(18rem,1fr)] gap-2", GRID[dashboard.count])}>
+        {/* The Ross Panel beside the charts (owner, 2026-10-20: "a side panel adjacent to the chart
+            wrapper"); below them when the panel is narrow. Server feed only. */}
+        <div className="flex min-h-0 flex-1 flex-col gap-2 @4xl/panel:flex-row">
+        <div role="group" aria-label="Charts" className={cn("grid min-w-0 flex-1 auto-rows-[minmax(18rem,1fr)] gap-2", GRID[dashboard.count])}>
           {shown.map((symbol, i) => (
             <div key={i} className={cn("flex min-h-0 min-w-0 flex-col", dashboard.count === 3 && i === 2 && SPAN_THIRD)}>
               <ChartCell
@@ -192,6 +196,12 @@ export function Dashboard({ choice, feed }: Connection) {
               />
             </div>
           ))}
+        </div>
+        {feed.ross && (
+          <div className="flex min-h-0 shrink-0 flex-col @4xl/panel:w-[400px]">
+            <RossPanel channel={feed.ross} onPick={app.loadIntoSelected} />
+          </div>
+        )}
         </div>
       </div>
       )}

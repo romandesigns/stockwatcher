@@ -1,5 +1,5 @@
 import { createChartRouter, parseChartMessage, parsePaperMessage, type ChartSubscribe, type ChartUnsubscribe, type PaperMessage, type PaperState, type ReplayControl } from "@stockwatcher/chart-core";
-import { createPressureChannel, createQuoteChannel, createWsClient, sameOriginWsUrl, type AlertsServerMessage, type ConnectionStatus, type MarketSource, type SettingsSync, type WebSocketLike } from "@stockwatcher/shared";
+import { createPressureChannel, createQuoteChannel, createRossChannel, createWsClient, sameOriginWsUrl, type AlertsServerMessage, type ConnectionStatus, type MarketSource, type SettingsSync, type WebSocketLike } from "@stockwatcher/shared";
 import type { ChartFeed, PaperCommand, ReplayCommand } from "./types.ts";
 
 export interface ServerFeedOptions {
@@ -40,6 +40,7 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
   const quotes = createQuoteChannel({ subscribe: () => client.subscribeQuotes(), unsubscribe: () => client.unsubscribeQuotes() });
   // The dashboard's Halt watcher, opted in while its panel is mounted.
   const pressure = createPressureChannel({ subscribe: () => client.subscribePressure(), unsubscribe: () => client.unsubscribePressure() });
+  const ross = createRossChannel({ subscribe: () => client.subscribeRoss(), unsubscribe: () => client.unsubscribeRoss() });
 
   const sendRaw = (msg: ChartSubscribe | ChartUnsubscribe | ReplayControl | PaperCommand) => {
     if (raw && raw.readyState === 1) raw.send(JSON.stringify(msg));
@@ -61,6 +62,7 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
     },
     onQuotes: (m) => quotes.apply(m),
     onPressure: (m) => pressure.apply(m),
+    onRoss: (m) => ross.apply(m),
     onAlerts: opts.onAlerts,
     settings: opts.settings,
     createSocket: (url) => {
@@ -73,7 +75,7 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
         // A quotes.snapshot is hundreds of KB: hand it to shared's parser without first
         // parsing it twice as a chart or paper frame. The server writes `type` first. The
         // settings.*, pressure.* and alert frames (shared's own too) take the same shortcut.
-        if (typeof ev.data === "string" && (ev.data.startsWith('{"type":"quotes.') || ev.data.startsWith('{"type":"settings.') || ev.data.startsWith('{"type":"pressure.') || ev.data.startsWith('{"type":"alert'))) {
+        if (typeof ev.data === "string" && (ev.data.startsWith('{"type":"quotes.') || ev.data.startsWith('{"type":"settings.') || ev.data.startsWith('{"type":"pressure.') || ev.data.startsWith('{"type":"ross.') || ev.data.startsWith('{"type":"alert'))) {
           inner?.({ data: ev.data });
           return;
         }
@@ -126,6 +128,7 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
     },
     quotes,
     pressure,
+    ross,
     close() {
       client.close();
       router.clear();

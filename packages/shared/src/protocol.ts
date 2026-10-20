@@ -215,6 +215,112 @@ export interface PressureUnsubscribeMessage {
   type: "pressure.unsubscribe";
 }
 
+// --- Ross Panel (after `welcome`; crates/server/src/context.rs, crates/stock-context) -------
+// The five-pillar watchlist (enter 5/5, stay 4/5) ordered by last-minute momentum, with each
+// member's experimental setup state. Opt in with `ross.subscribe`: a `ross.snapshot` at once,
+// then a `ross.update` with the WHOLE panel when it changed (at most once a second). Both
+// replace the client's panel. `enabled: false` means the server does not run stock context
+// (STOCK_CONTEXT off): "not enabled", never "nothing qualifies". Field names inside `panel` are
+// the engine's snake_case (stock_context::PanelSnapshot); prices are integer micro-dollars,
+// returns basis points, times epoch nanoseconds.
+
+export type RossSetupState = "watching" | "forming" | "near" | "crossing" | "triggered" | "invalidated" | "halted";
+
+export interface RossLevelWire {
+  price: number;
+  version: string;
+}
+
+export interface RossSetupWire {
+  state: RossSetupState;
+  state_since?: number | null;
+  trigger?: RossLevelWire | null;
+  invalidation?: RossLevelWire | null;
+  distance_to_trigger_bp?: number | null;
+  /** 0..1 from invalidation to trigger. */
+  meter?: number | null;
+  risk_to_stop_bp?: number | null;
+  pending?: { condition: string; state: "PASS" | "FAIL" | "UNKNOWN" }[];
+  extended?: boolean;
+  reason?: string | null;
+}
+
+export interface RossMomentumWire {
+  status: "ready" | "unavailable";
+  reason: string;
+  r_short_bp: number | null;
+  r_primary_bp: number | null;
+  r_context_bp: number | null;
+  accel_bp: number | null;
+  below_high_bp: number | null;
+}
+
+export interface RossEpisodeWire {
+  id: string;
+  admitted_at: number;
+  retained_since: number | null;
+  exited_at: number | null;
+}
+
+export interface RossMembershipWire {
+  status: "not_member" | "qualified" | "retained" | "exited" | null;
+  episodes: RossEpisodeWire[];
+  /** [pillar, state, reason] of each pillar not passing. */
+  nonpassing: [string, "PASS" | "FAIL" | "UNKNOWN", string][];
+}
+
+export interface RossRowWire {
+  symbol: string;
+  membership: RossMembershipWire;
+  counts: { pass: number; fail: number; unknown: number };
+  price: number | null;
+  gain_bp: number | null;
+  momentum: RossMomentumWire;
+  rank: number | null;
+  prev_rank: number | null;
+  setup?: RossSetupWire | null;
+  from_high_bp?: number | null;
+  rvol_milli?: number | null;
+  float_shares?: number | null;
+  news_first_seen?: number | null;
+  /** Closes (micros) of the last completed 15 s bars, oldest first. */
+  spark?: number[];
+}
+
+export interface RossPanelWire {
+  revision: number;
+  bar_end: number;
+  cutoff: number;
+  attention?: number;
+  rows: RossRowWire[];
+}
+
+export interface RossSnapshotMessage {
+  type: "ross.snapshot";
+  enabled: boolean;
+  panelPolicy?: string;
+  pillarPolicy?: string;
+  panel: RossPanelWire | null;
+}
+
+export interface RossUpdateMessage {
+  type: "ross.update";
+  enabled: boolean;
+  panelPolicy?: string;
+  pillarPolicy?: string;
+  panel: RossPanelWire | null;
+}
+
+export type RossMessage = RossSnapshotMessage | RossUpdateMessage;
+
+export interface RossSubscribeMessage {
+  type: "ross.subscribe";
+}
+
+export interface RossUnsubscribeMessage {
+  type: "ross.unsubscribe";
+}
+
 // --- Synced settings (after `welcome`; crates/server/src/settings.rs, ws.rs) ---------------
 // The user's chart preferences and drawings, shared live by every client and kept on the
 // server (docs/architecture/settings-sync.md). Values are opaque to the server: each client
@@ -355,8 +461,8 @@ export interface PushUnregisterMessage {
   token: string;
 }
 
-export type ClientMessage = HelloMessage | PingMessage | PongMessage | QuotesSubscribeMessage | QuotesUnsubscribeMessage | PressureSubscribeMessage | PressureUnsubscribeMessage | SettingsClientMessage | PushRegisterMessage | PushUnregisterMessage;
-export type ServerMessage = WelcomeMessage | PingMessage | PongMessage | ErrorMessage | QuotesMessage | PressureMessage | SettingsServerMessage | AlertsServerMessage;
+export type ClientMessage = HelloMessage | PingMessage | PongMessage | QuotesSubscribeMessage | QuotesUnsubscribeMessage | PressureSubscribeMessage | PressureUnsubscribeMessage | RossSubscribeMessage | RossUnsubscribeMessage | SettingsClientMessage | PushRegisterMessage | PushUnregisterMessage;
+export type ServerMessage = WelcomeMessage | PingMessage | PongMessage | ErrorMessage | QuotesMessage | PressureMessage | RossMessage | SettingsServerMessage | AlertsServerMessage;
 
 const ALERT_TYPES = new Set(["alerts.history", "alert.fired", "alert.held", "alert.updated", "alerts.status"]);
 
@@ -365,7 +471,7 @@ export function isAlertsMessage(m: ServerMessage): m is AlertsServerMessage {
   return ALERT_TYPES.has(m.type);
 }
 
-const SERVER_TYPES = new Set(["welcome", "ping", "pong", "error", "quotes.snapshot", "quotes.update", "pressure.snapshot", "pressure.update", "settings.snapshot", "settings.changed", "settings.rejected", ...ALERT_TYPES]);
+const SERVER_TYPES = new Set(["welcome", "ping", "pong", "error", "quotes.snapshot", "quotes.update", "pressure.snapshot", "pressure.update", "ross.snapshot", "ross.update", "settings.snapshot", "settings.changed", "settings.rejected", ...ALERT_TYPES]);
 
 /** Parses one server frame; returns null for anything malformed or unknown. */
 export function parseServerMessage(raw: unknown): ServerMessage | null {
