@@ -180,7 +180,7 @@ export function IndicatorSheet({
         ) : undefined
       }
     >
-      <ScrollView>
+      <ScrollView showsVerticalScrollIndicator={false} showsHorizontalScrollIndicator={false}>
         {header("On the chart", active("overlay").length, MAX_OVERLAYS)}
         {group("overlay").map(row)}
         {header("Below the chart", active("pane").length, MAX_PANES)}
@@ -507,7 +507,7 @@ export function LayersSheet({
   const onCount = layerIds.filter((id) => layers[id]).length;
   return (
     <Sheet open={open} onClose={onClose} title="Levels" reducedMotion={reducedMotion}>
-      <ScrollView>
+      <ScrollView showsVerticalScrollIndicator={false} showsHorizontalScrollIndicator={false}>
         {profileBins && profileBin !== undefined && onProfileBinChange && (!layerIds.includes("profile") || layers.profile) && (
           <View style={s.profile} accessibilityLabel="Session volume profile">
             <View style={s.indHeader}>

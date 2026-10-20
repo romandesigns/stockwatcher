@@ -101,7 +101,7 @@ function Alerts() {
         </Pressable>
       )}
       <Seg value={view} onChange={setView} options={[{ value: "alerts", label: `Alerts · ${rules.filter((r) => isActiveAlert(r, states[r.id], now)).length}` }, { value: "activity", label: "Activity" }]} />
-      <ScrollView contentContainerStyle={{ gap: 8, paddingBottom: 24 }}>
+      <ScrollView showsVerticalScrollIndicator={false} showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingBottom: 24 }}>
         {view === "alerts" ? (
           ordered.length === 0 ? (
             <Text style={styles.empty}>No alerts yet. Long-press a chart, lift, and tap Alert; or long-press the price axis; or New alert.</Text>
