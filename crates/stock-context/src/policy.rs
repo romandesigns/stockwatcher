@@ -1,12 +1,20 @@
 //! The versioned pillar policy (`policy/pillars-v1.json`), embedded in the binary and identified by
 //! its id and the SHA-256 of its exact bytes, so every decision names the rules that made it.
 //! A changed rule is a new file and id (`pillars-v2`), never an edit of v1.
+//!
+//! - `pillars-v1`: the documented public reference (`ross_public_reference_v1`, price $2–$20).
+//! - `pillars-v2`: StockWatcher's own price band (`stockwatcher_band_v1`, price $0.10–$25
+//!   inclusive, owner decision 2026-10-20), every other field equal to v1. [`Policy::current`]
+//!   returns it; the engine uses whichever policy its caller constructs it with.
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 /// The v1 policy file, byte for byte.
 pub const PILLARS_V1: &str = include_str!("../policy/pillars-v1.json");
+
+/// The v2 policy file (price pillar on the app's own $0.10–$25 band), byte for byte.
+pub const PILLARS_V2: &str = include_str!("../policy/pillars-v2.json");
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct ReferenceProfile {
@@ -136,6 +144,17 @@ impl Policy {
         Policy::parse(PILLARS_V1).expect("embedded pillars-v1.json parses")
     }
 
+    /// The embedded v2 policy: v1 with the price pillar on StockWatcher's own band.
+    pub fn v2() -> Policy {
+        Policy::parse(PILLARS_V2).expect("embedded pillars-v2.json parses")
+    }
+
+    /// The policy the product runs today (v2). v1 stays parseable and taggable as the documented
+    /// public reference ($2–$20); decisions made under it keep naming it.
+    pub fn current() -> Policy {
+        Policy::v2()
+    }
+
     /// `pillars-v1@<first 12 hex of the hash>`, the tag every decision carries.
     pub fn tag(&self) -> String {
         format!("{}@{}", self.body.id, &self.hash[..12])
@@ -161,6 +180,31 @@ mod tests {
         let edited = PILLARS_V1.replacen("\"gain_min_bp\": 1000", "\"gain_min_bp\": 1001", 1);
         assert_ne!(Policy::parse(&edited).unwrap().hash, p.hash);
         assert!(p.tag().starts_with("pillars-v1@"));
+    }
+
+    #[test]
+    fn v2_changes_only_the_price_band_and_the_news_lag() {
+        let (v1, v2) = (Policy::v1(), Policy::v2());
+        assert_eq!(v2.body.id, "pillars-v2");
+        assert_eq!(v2.body.reference_profile.id, "stockwatcher_band_v1");
+        let prof = &v2.body.reference_profile;
+        assert_eq!(
+            (prof.price_min_micros, prof.price_max_micros),
+            (100_000, 25_000_000)
+        );
+        // Everything else is v1's.
+        let mut same = v2.body.clone();
+        same.id = v1.body.id.clone();
+        same.note = v1.body.note.clone();
+        same.reference_profile.id = v1.body.reference_profile.id.clone();
+        same.reference_profile.price_min_micros = 2_000_000;
+        same.reference_profile.price_max_micros = 20_000_000;
+        assert_eq!(same.news.coverage_max_lag_secs, 120);
+        same.news.coverage_max_lag_secs = 0; // v1 has no field: the strict rule
+        assert_eq!(same, v1.body);
+        assert_ne!(v1.hash, v2.hash);
+        assert!(v2.tag().starts_with("pillars-v2@"));
+        assert_eq!(Policy::current(), v2);
     }
 
     #[test]

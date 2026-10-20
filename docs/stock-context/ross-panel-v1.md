@@ -89,7 +89,11 @@ recorder's coverage records are consulted.
 
 ## Not here yet
 
-Append-only decision log on disk, Ross Panel and Signals UI, per-stock setup monitoring and
-entry-proximity cues (§9.2: needs setup families; until then a member's setup state is
-"Watching"), ignition. Membership is only as reliable as the pillars beneath it: RVOL and gain
+Append-only decision log on disk, Ross Panel and Signals UI, ignition. Per-member setup
+monitoring now exists as the EXPERIMENTAL `bull_flag_v0` family ([setups-v0.md](setups-v0.md)):
+each row carries `setup`, plus `move_1m_bp`, `from_high_bp`, `rvol_milli`, `float_shares`,
+`news_first_seen`, `missing` (non-passing pillars) and `spark` (the last 20 completed 15 s bar
+closes); the snapshot carries `attention`. With `pillars-v2` the price pillar uses the app's own
+$0.10–$25 band, so the reference $2–$20 price failure described above applies to v1 only.
+Membership is only as reliable as the pillars beneath it: RVOL and gain
 stay UNKNOWN until their evidence sources land, so in production today no stock can be admitted.

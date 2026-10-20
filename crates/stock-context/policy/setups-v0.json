@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "id": "setups-v0",
+  "experimental": true,
+  "note": "EXPERIMENTAL early-setup cues for Ross Panel members (owner decision 2026-10-20). Every number here is a development starting value, not a researched or validated one, and nothing here is a trading signal. See docs/stock-context/setups-v0.md.",
+  "bull_flag": {
+    "id": "bull_flag_v0",
+    "bar_secs": 15,
+    "impulse_lookback_bars": 20,
+    "impulse_min_bp": 300,
+    "impulse_vol_mult_milli": 1500,
+    "flag_min_bars": 2,
+    "flag_max_bars": 20,
+    "max_retrace_milli": 500,
+    "near_bp": 100,
+    "confirm_vol_mult_milli": 1000,
+    "extended_bp": 300,
+    "display_hold_secs": 120,
+    "max_quiet_secs": 60
+  }
+}

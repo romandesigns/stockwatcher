@@ -1,0 +1,46 @@
+{
+  "schema": 1,
+  "id": "pillars-v2",
+  "note": "pillars-v1 with the price pillar set to StockWatcher's own price band ($0.10-$25 inclusive, owner decision 2026-10-20) instead of the public reference $2-$20, and a 120 s news coverage tolerance (owner decision 2026-10-20): no qualifying news is a FAIL when search coverage reaches at least 120 s before the decision, so the last <=120 s may hold news not yet seen. Every other field equals pillars-v1, which stays the documented public reference. See docs/stock-context/pillars-v1.md.",
+  "reference_profile": {
+    "id": "stockwatcher_band_v1",
+    "price_min_micros": 100000,
+    "price_max_micros": 25000000,
+    "gain_min_bp": 1000,
+    "rvol_daily_min_milli": 5000,
+    "rvol_daily_sessions": 30,
+    "float_max_exclusive_shares": 20000000,
+    "news_freshness_secs": 86400
+  },
+  "discovery_band": {
+    "min_micros": 150000,
+    "max_micros": 25000000,
+    "source": "research eligibility default ($0.15-$25); production's quote band ($0.10-$25) is separate and unchanged"
+  },
+  "grid": {
+    "bar_secs": 15,
+    "settle_ms": 2000
+  },
+  "price_staleness": {
+    "regular_secs": 600,
+    "extended_secs": 1800,
+    "source": "eligibility-research-v1 (research/foundation)"
+  },
+  "volume": {
+    "day_start": "04:00 America/New_York",
+    "exclude_overnight_boats": true,
+    "counted": "chart engine volume verdict (conditions policy of the run)"
+  },
+  "diagnostics": {
+    "validated": false,
+    "same_time_min_sessions": 10,
+    "recent_window_secs": 300,
+    "recent_min_sessions": 10
+  },
+  "float": {
+    "stale_after_secs": 86400
+  },
+  "news": {
+    "coverage_max_lag_secs": 120
+  }
+}
