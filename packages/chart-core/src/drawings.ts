@@ -504,8 +504,8 @@ export function layoutDrawings(model: ChartModel, drawings: readonly Drawing[], 
     for (const [p, q] of geo.segments) out.push({ kind: "line", x1: p.x, y1: p.y, x2: q.x, y2: q.y, stroke, lineWidth: sel ? 2 : 1.5, layer: "overlay" });
     if (d.kind === "hline" && geo.a && model.price && geo.segments.length) {
       const y = geo.a.y;
-      out.push({ kind: "rect", x: g.priceAxis.x + 2, y: y - 9, w: g.priceAxis.w - 4, h: 18, fill: stroke, radius: 3, layer: "crosshair" });
-      out.push({ kind: "text", x: g.priceAxis.x + g.priceAxis.w / 2, y, text: formatAxisTag(model, d.a.p), fill: theme.onTag, fontSize: model.options.fontSize, fontFamily: theme.fontMono, fontWeight: 600, align: "center", baseline: "middle", layer: "crosshair" });
+      out.push({ kind: "rect", x: g.priceAxis.x + 2, y: y - 9, w: g.priceAxis.w - 2, h: 18, fill: stroke, radius: 3, layer: "crosshair" });
+      out.push({ kind: "text", x: g.priceAxis.x + 1 + g.priceAxis.w / 2, y, text: formatAxisTag(model, d.a.p), fill: theme.onTag, fontSize: model.options.fontSize, fontFamily: theme.fontMono, fontWeight: 600, align: "center", baseline: "middle", layer: "crosshair" });
     }
     if (!sel) continue;
     const handles = isOnePoint(d.kind) ? [] : [geo.a, geo.b];
