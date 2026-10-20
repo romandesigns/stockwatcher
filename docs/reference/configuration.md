@@ -93,6 +93,12 @@ Runs as the `archiver` compose service on the same `.env`; also reads the Alpaca
 | Variable | Default | Meaning |
 |---|---|---|
 | `ARCHIVE_WINDOW_DAYS` | `21` | rolling window in trading days (1–504) |
+| `DAILY_BARS_KEEP_DAYS` | `63` | trading dates of raw daily bars kept in `daily-bars/raw/` (0 = all, else 46–504); missing dates are backfilled (`docs/stock-context/daily-baseline-plan.md`) |
+| `MAINTAIN_SPLIT_SNAPSHOTS` | `1` | split-adjusted snapshot of the watch list after each import (`0` = off) |
+| `MAINTAIN_SPLIT_PER_MINUTE` | `200` | pace of the split snapshot and announcement fetches, each its own limiter (1–1000) |
+| `SPLIT_SETS_KEEP` | `5` | split snapshot sets kept in `daily-bars/split/` |
+| `ACTIONS_FETCH` | `1` | corporate-action announcement fetches (`0` = off); schedule, window, retries and freshness are the versioned policy `corporate-actions-coverage-v1`, not settings |
+| `WARMUP_MAX_PER_RUN` | `50` | intraday band entrants warmed up per announcement tick (1–500) |
 | `MAINTAIN_AT` | `21:15` | ET wall time of the daily cycle |
 | `MAINTAIN_JOBS` | `12` | parallel import workers |
 | `MAINTAIN_PER_MINUTE` | `9000` | request ceiling across workers (the plan allows 10,000) |

@@ -34,6 +34,76 @@ pub enum CloseBasis {
     SplitAdjusted,
 }
 
+/// What established a record's corporate-action coverage. The kinds differ in strength and are
+/// never merged into one flag (docs/stock-context/daily-baseline-plan.md §6):
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionsSource {
+    /// Nothing: coverage is unknown.
+    #[default]
+    Unchecked,
+    /// Raw and split-adjusted daily bars are consistent through `actions_checked_through`: the
+    /// supplied adjustment is internally consistent (prices × f, volumes ÷ f). This checks the
+    /// adjustment Alpaca supplied, it does not prove no other action exists, and it only exists
+    /// after the fact: it never certifies an earlier live decision.
+    BarVerified,
+    /// The evaluated date rests on a confirmed provider announcement (complete, consistent terms),
+    /// applied as documented.
+    AnnouncedAction,
+    /// The evaluated date rests on a fresh, fully paginated provider check that found **no known
+    /// relevant action**. Under the coverage policy this permits unchanged-share-basis
+    /// calculations; it is an assumption, not verified absence (an empty answer is never proof).
+    ProviderCheckedNoKnownAction,
+}
+
+/// Per-symbol corporate-action coverage state for the evaluated date (coverage policy
+/// `corporate-actions-coverage-v1`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CoverageState {
+    /// A relevant action with complete, consistent terms: the documented adjustment applies.
+    ConfirmedAction,
+    /// Fresh, fully paginated check; no relevant known action.
+    NoKnownActionProviderChecked,
+    /// A relevant action is known but incomplete, undated or conflicting.
+    UnresolvedAction,
+    /// The latest covering check is older than the policy's freshness limit.
+    StaleCoverage,
+    /// No usable check covers the symbol (none made, its chunk failed, wrong window).
+    UnavailableCoverage,
+}
+
+/// A split ratio as announced: `old_rate` shares became `new_rate` (2:1 forward = 1 → 2;
+/// 1-for-30 reverse = 30 → 1). Price multiplier `old/new`, volume multiplier `new/old`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct SplitRatio {
+    pub old_rate: u64,
+    pub new_rate: u64,
+}
+
+/// Provenance of a record's corporate-action coverage.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct ActionsEvidence {
+    pub source: ActionsSource,
+    /// The share basis the record is expressed on (the evaluated date).
+    pub basis_date: Option<NaiveDate>,
+    /// Through which date daily bars were consistent (`BarVerified`, or the history under an
+    /// announcement-based last day).
+    pub bar_verified_through: Option<NaiveDate>,
+    /// The announcement coverage state, when announcements were consulted.
+    pub coverage: Option<CoverageState>,
+    /// `corporate-actions-coverage-v1@<sha256 prefix>`, when announcements were consulted.
+    pub coverage_policy: Option<String>,
+    /// The announcement retrieval relied on.
+    pub announcement: Option<String>,
+    /// Splits applied from announcements, with their action ids, oldest first.
+    pub applied_splits: Vec<(SplitRatio, String)>,
+    /// An explicit assumption the record rests on (e.g. `unchanged_share_basis_assumed`).
+    pub assumption: Option<String>,
+    /// The ticker the history was read under, when it differs (a rename in the window).
+    pub history_symbol: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct PrevClose {
     pub id: String,
@@ -46,6 +116,8 @@ pub struct PrevClose {
     /// Corporate actions were checked (and applied when `SplitAdjusted`) through this trading
     /// date; `None`: not checked. The gain pillar needs it to reach the evaluated date.
     pub actions_checked_through: Option<NaiveDate>,
+    /// What established `actions_checked_through` (the engine does not grade it; it is shown).
+    pub actions: ActionsEvidence,
     pub observed_at: i64,
 }
 
@@ -67,6 +139,8 @@ pub struct DailyBaseline {
     pub version: u32,
     pub instrument: InstrumentId,
     pub sessions: Vec<SessionVolume>,
+    /// What put the sessions on the evaluated date's share basis.
+    pub basis: ActionsEvidence,
     pub observed_at: i64,
 }
 

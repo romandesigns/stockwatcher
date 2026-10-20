@@ -54,6 +54,7 @@ fn evidence(e: &mut Engine, sym: &str, close: i64, float: u64) {
         close_micros: close,
         basis: CloseBasis::SplitAdjusted,
         actions_checked_through: Some(day()),
+        actions: Default::default(),
         observed_at: t(4, 0, 0),
     });
     let mut sessions = Vec::new();
@@ -74,6 +75,7 @@ fn evidence(e: &mut Engine, sym: &str, close: i64, float: u64) {
         version: 1,
         instrument: inst(sym),
         sessions,
+        basis: Default::default(),
         observed_at: t(4, 0, 0),
     });
     e.add_float(FloatObservation {
