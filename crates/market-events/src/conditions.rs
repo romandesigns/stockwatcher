@@ -32,6 +32,11 @@
 
 use serde::{Deserialize, Serialize};
 
+/// This table's identity, for records that have to name the rules a print was judged by (the
+/// server's admission journal). A changed table is a new identity, never an edit of this one:
+/// prints admitted under the old rules counted differently and the two cannot be compared.
+pub const POLICY: &str = "conditions-alpaca-minute-bars-v1";
+
 /// SIP tape. `A`/`B` are CTA (NYSE / regional), `C` is UTP (Nasdaq), `O` is OTC in Alpaca's docs.
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,

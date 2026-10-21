@@ -436,6 +436,14 @@ pub(crate) struct Inner {
     /// queue filled under the core lock and absorbed off it, with counted drops. Measurement
     /// scaffolding, not a latency claim.
     observations: crate::observe::ObservationSink,
+    /// The admission journal's bounded queue (`crate::admit`), set once at start for a live
+    /// market with an archive to write into; `None` for replays and test sessions.
+    ///
+    /// What it is for: a restart has to be able to prove it replayed the same inputs in the same
+    /// order this run admitted them, and a recording cannot answer that
+    /// (`market_archive::admissions`). Filling it is one atomic and a bounded `try_send` under
+    /// the core lock; a disk write never happens there.
+    pub(crate) admissions: std::sync::OnceLock<Arc<crate::admit::AdmissionSink>>,
     /// Live: the archive history this market loads from (`crate::history`); set once at start.
     pub(crate) history: std::sync::OnceLock<History>,
     /// With `STOCK_CONTEXT`: the archive evidence every context board is fed from
@@ -600,6 +608,7 @@ impl Market {
             readiness: Mutex::new(None),
             ross_subs: AtomicUsize::new(0),
             observations: crate::observe::ObservationSink::new(crate::observe::QUEUE_CAPACITY),
+            admissions: std::sync::OnceLock::new(),
             history: std::sync::OnceLock::new(),
             evidence: std::sync::OnceLock::new(),
             alerts: std::sync::OnceLock::new(),
@@ -1208,6 +1217,10 @@ impl Market {
                     // Live: a symbol whose archived history is not in the engine yet is held
                     // back (crate::history), and the paper broker still gets the print below.
                     let held = crate::history::hold_unloaded(&mut core, &e);
+                    // The admission journal, before anything can refuse the event: the sequence
+                    // has to count every input this process took, held or applied, or a restore
+                    // reading it would see holes that were never drops.
+                    let journal = self.0.admissions.get();
                     // Stock context sees every print once, on arrival: a held one with its own
                     // verdict (it reaches the chart engine later, never the context again).
                     if held
@@ -1230,6 +1243,20 @@ impl Market {
                         // Alerts watch every live symbol, loaded into the engine or not.
                         if !core.rebuilding {
                             self.offer_alerts(&e, &[], None);
+                        }
+                        if let Some(j) = journal
+                            && crate::admit::is_fact_input(&e)
+                        {
+                            // The verdict a held print was taken with is its own conditions',
+                            // since there is no chart engine state for it yet.
+                            let v = match &e {
+                                MarketEvent::Trade(t) => {
+                                    let c = Counted::from_effect(t);
+                                    Some((c.ohlc, c.volume))
+                                }
+                                _ => None,
+                            };
+                            j.record(&e, v, crate::observe::wall_now());
                         }
                         core.seq += 1;
                         (core.seq, Vec::new(), core.rebuilding)
@@ -1272,6 +1299,18 @@ impl Market {
                         if let Some(rev) = &revision {
                             core.quotes.apply_revision(rev);
                         }
+                        if let Some(j) = journal
+                            && crate::admit::is_fact_input(&e)
+                        {
+                            let v = match (&e, ups.first()) {
+                                (MarketEvent::Trade(_), Some(ChartUpdate::Tape(row))) => {
+                                    let c = Counted::from_tape(&row.counted);
+                                    Some((c.ohlc, c.volume))
+                                }
+                                _ => None,
+                            };
+                            j.record(&e, v, crate::observe::wall_now());
+                        }
                         // The scanner is told whether or not the chart engine could resolve it:
                         // it resolves against its own admissions and uses the chart engine's
                         // answer only for the date's last price and high.
@@ -1304,6 +1343,11 @@ impl Market {
             FeedItem::Advance(t) => {
                 let (seq, ups, rebuilding) = {
                     let mut core = self.0.core.lock().expect("core lock");
+                    // A clock advance decides which barrier folds the prints admitted before it,
+                    // so it is part of the order a restore has to reproduce.
+                    if let Some(j) = self.0.admissions.get() {
+                        j.record_clock(t, crate::observe::wall_now());
+                    }
                     let ups = core.engine.advance_clock(t);
                     // The clock moves the bands too (the doubling windows, the close).
                     for u in &ups {
@@ -1861,6 +1905,12 @@ impl Market {
         self.0.observations.report()
     }
 
+    /// What the admission journal has recorded so far (`crate::admit`), or `None` when this
+    /// market writes none (a replay, or a live run with no recording to restore from).
+    pub(crate) fn admission_report(&self) -> Option<crate::admit::AdmissionReport> {
+        self.0.admissions.get().map(|j| j.report())
+    }
+
     /// Logs the observation capture's counters and segments, from the quotes task about once a
     /// minute. A segment under its sample floor prints `insufficient_data` rather than a number,
     /// and `complete` says whether anything was dropped: this is capture scaffolding for the
@@ -1871,6 +1921,19 @@ impl Market {
         let readiness = self.readiness();
         if r.captured == 0 && w.candidates == 0 && readiness.is_none() {
             return;
+        }
+        // The journal's own counters, said out loud: a run whose journal has holes cannot be
+        // restored from exactly, and that is worth knowing before a restart rather than after.
+        if let Some(j) = self.admission_report() {
+            tracing::info!(
+                admitted = j.admitted,
+                written = j.written,
+                dropped_queue_full = j.dropped,
+                write_errors = j.errors,
+                queue_capacity = j.queue_capacity,
+                complete = j.complete(),
+                "admission journal (what a restart of this day could prove)"
+            );
         }
         tracing::info!(
             readiness = readiness

@@ -251,12 +251,12 @@ struct Sym {
     /// The end of the last barrier whose volume came from a restore rather than from this run's
     /// own admissions ([`Engine::adopt_facts`]).
     ///
-    /// The day's totals a restore brings over are exact — the prints are the prints. Which
-    /// **barrier** each one folded into is not: a recording stamps the collector's delivery time,
-    /// and this run's own admission would have come a little later, through different queues. So
-    /// a recent window reaching back into the restored prefix is approximate, and says so
-    /// ([`Integrity::window_untrusted`]) until the window has moved past it, which it does by
-    /// itself within the window's own length.
+    /// Set when the restore could not prove it replayed the same prints in the same order the run
+    /// admitted them — no admission journal for the day, or an incomplete one
+    /// (`market_archive::admissions`). The day's totals are then still a sound lower bound, but
+    /// which **barrier** each print folded into is not established, so a recent window reaching
+    /// back into the prefix is not reportable ([`Integrity::window_untrusted`]). The doubt clears
+    /// by itself once the window has moved past the prefix, within the window's own length.
     restored_through: Option<i64>,
 }
 
@@ -1475,10 +1475,10 @@ impl Engine {
                 .map(|(_, c)| s.cum - c)
         };
         let coverage = s.coverage.map_or(self.run.numerator_coverage, |(c, _)| c);
-        // A window reaching back into a restored prefix is measured against checkpoints taken on
-        // the recording's delivery times rather than this run's own admissions, so its endpoints
-        // are approximate and it is not reportable. The day's total is unaffected — the prints
-        // are the prints — and the doubt clears by itself as the window moves past the prefix.
+        // A window reaching back into a restored prefix the run could not prove it replayed in
+        // its own admission order is not reportable: the checkpoints at its endpoints may hold a
+        // different set of prints than the live run's did. The day's total is unaffected — the
+        // prints are the prints — and the doubt clears as the window moves past the prefix.
         let mut integrity = s.integrity;
         if s.restored_through.is_some_and(|r| b - w <= r) {
             integrity.window_untrusted = true;

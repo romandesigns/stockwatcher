@@ -314,11 +314,13 @@ fn an_adoption_across_identities_or_dates_is_refused() {
 /// A recent window reaching into the restored prefix is not reportable, and clears by itself
 /// once the window has moved past it.
 ///
-/// The day's total a restore brings over is exact: the prints are the prints. Which **barrier**
-/// each one folded into is not — a recording stamps the collector's delivery time, and this
-/// run's own admission would have come later, through different queues — so a window measured
-/// across that boundary has approximate endpoints. The RVOL pillar's own threshold is the strict
-/// daily one and is unaffected; this is the intraday diagnostic.
+/// The day's total a restore brings over is a sound figure: the prints are the prints. Which
+/// **barrier** each one folded into is only established when the restore could prove it replayed
+/// the same prints in the same order the run admitted them — an admission journal for the day
+/// (`market_archive::admissions`). Without that proof the checkpoints at a window's endpoints may
+/// hold a different set than the live run's did, so the window is not reportable. The RVOL
+/// pillar's own threshold is the strict daily one and is unaffected; this is the intraday
+/// diagnostic.
 #[test]
 fn a_window_over_a_restored_prefix_is_not_reportable_until_it_has_passed() {
     let mut sessions = Vec::new();

@@ -36,7 +36,8 @@ use serde::Serialize;
 use serde_json::json;
 use std::collections::{BTreeSet, HashSet};
 use stock_context::{
-    CloseBasis, CorrectedPrint, Coverage, DayHigh, Decision, Engine, Fidelity, InstrumentId,
+    Adoption, CloseBasis, CorrectedPrint, Coverage, DayHigh, Decision, Engine, Fidelity,
+    InstrumentId,
     LastPrint, OutputTelemetry, PanelPolicy, PanelSnapshot, PillarId, Policy, PrevClose,
     PrintRevision, Qualification, RevisionTarget, RunInfo, SetupPolicy, Tri, Verdict,
 };
@@ -298,6 +299,49 @@ impl ContextBoard {
     /// The engine's output counters, drops included ([`stock_context::OutputTelemetry`]).
     pub(crate) fn output_telemetry(&self) -> OutputTelemetry {
         self.engine.output_telemetry()
+    }
+
+    /// A second engine for restoring one symbol's recorded day on its own, under **this** board's
+    /// policies and run identity.
+    ///
+    /// The restore cannot feed the recorded prints into this engine: its clock has already
+    /// advanced with the live tail, so every one of them would be late and none of the day's
+    /// barriers would be decided — the numerator would still start at zero after every deploy,
+    /// which is what the audit found (F1). It replays them on this engine instead and the result
+    /// is adopted ([`ContextBoard::adopt_symbol`]).
+    pub(crate) fn restore_engine(&self) -> Engine {
+        Engine::new(self.engine.policy().clone(), self.engine.run_info().clone())
+            .with_panel_policy(self.engine.panel_policy().clone())
+            .with_setup_policy(self.engine.setup_policy().clone())
+    }
+
+    /// Takes one symbol's restored **facts** into this board, with what is known about how
+    /// completely its day was collected and how far back the restored prefix reaches.
+    ///
+    /// `coverage` is the restore's own answer, not an assumption: a recorder drop means the
+    /// recording this process restored from is short while the live numerator was fine, and that
+    /// is a different statement from a stream gap. Where nothing is known the run-wide figure
+    /// stands, which for production is `Unverified` — never `Complete`, because a restart cannot
+    /// prove it saw the whole day.
+    ///
+    /// Membership, episodes and the latest decision are not adopted
+    /// ([`stock_context::Engine::adopt_facts`]): this board keeps whatever it has already
+    /// published and decides the symbol again, on the day's full facts, at the next barrier.
+    pub(crate) fn adopt_facts(
+        &mut self,
+        from: &mut Engine,
+        symbol: &str,
+        coverage: Option<(Coverage, &'static str)>,
+        restored_through: Option<i64>,
+    ) -> Adoption {
+        let outcome = self.engine.adopt_facts(from, symbol);
+        if matches!(outcome, Adoption::Adopted { .. }) {
+            if coverage.is_some() {
+                self.engine.set_coverage(symbol, coverage);
+            }
+            self.engine.set_restored_through(symbol, restored_through);
+        }
+        outcome
     }
 
     /// Where this board is in the market's evidence log.

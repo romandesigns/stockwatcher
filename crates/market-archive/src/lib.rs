@@ -81,6 +81,7 @@
 //!
 //! [`market-replay`]: ../market_replay/index.html
 
+pub mod admissions;
 pub mod assets;
 pub mod bars;
 pub mod baseline;
