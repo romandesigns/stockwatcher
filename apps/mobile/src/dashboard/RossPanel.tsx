@@ -1,6 +1,6 @@
 import { formatEtTime } from "@stockwatcher/chart-core";
 import { UI } from "@stockwatcher/chart-native";
-import { rossAttention, rossRowView, type RossChannel, type RossRowView, type RossTone } from "@stockwatcher/shared";
+import { rossAttention, rossFreshness, rossReadinessView, rossRowView, type RossChannel, type RossRowView, type RossTone } from "@stockwatcher/shared";
 import { memo, useEffect, useState } from "react";
 import { Animated, Pressable, StyleSheet, Text, View } from "react-native";
 import Svg, { Circle, Rect } from "react-native-svg";
@@ -28,9 +28,13 @@ const hhmm = (ns: number) => formatEtTime(Math.round(ns / 1_000_000));
  * Tapping a row opens its chart (the chart modal); tap, then hold copies the ticker.
  */
 export function RossPanel({ channel, onPick, reducedMotion }: { channel: RossChannel; onPick: (symbol: string) => void; reducedMotion: boolean }) {
-  const { enabled, panel } = useRoss(channel);
+  const state = useRoss(channel);
+  const { enabled, panel, readiness } = state;
   const rows = panel?.rows.map((r) => rossRowView(r, panel.cutoff, hhmm)) ?? [];
   const attention = panel ? rossAttention(panel) : 0;
+  // A dropped socket keeps the last rows and says so: they are the last known state, not now.
+  const fresh = rossFreshness(state, hhmm);
+  const why = readiness ? rossReadinessView(readiness, hhmm) : null;
   return (
     <View style={styles.card} accessibilityLabel="Ross Panel">
       <View style={styles.head}>
@@ -45,14 +49,33 @@ export function RossPanel({ channel, onPick, reducedMotion }: { channel: RossCha
           </View>
         )}
       </View>
+      {fresh.stale && enabled !== false && (
+        <Text accessibilityRole="alert" style={[styles.stale, { color: TONE[fresh.tone] }]}>
+          {fresh.label}
+        </Text>
+      )}
       {enabled === false ? (
         <Text style={[styles.empty, { color: UI.warning }]}>Off on this server</Text>
       ) : enabled === null ? (
         <Text style={styles.empty}>Connecting…</Text>
       ) : rows.length === 0 ? (
-        <Text style={styles.empty}>No stock at 5/5 yet</Text>
+        // Not "nothing qualifies": the server's own counts say whether a pillar could even be
+        // decided (crates/server/src/context.rs `Readiness`).
+        <View style={styles.whyBox}>
+          <Text style={styles.empty}>{why ? why.headline : "No stock at 5/5 yet"}</Text>
+          {why?.reasons.map((r) => (
+            <Text key={r} style={styles.whyLine}>
+              {r}
+            </Text>
+          ))}
+          {why ? <Text style={styles.whenLine}>{why.takenAt}</Text> : null}
+        </View>
       ) : (
-        rows.map((r) => <Row key={r.symbol} row={r} onPick={onPick} reducedMotion={reducedMotion} />)
+        <View style={fresh.stale ? styles.dimmed : undefined}>
+          {rows.map((r) => (
+            <Row key={r.symbol} row={r} onPick={onPick} reducedMotion={reducedMotion} />
+          ))}
+        </View>
       )}
     </View>
   );
@@ -139,6 +162,11 @@ const styles = StyleSheet.create({
   count: { marginLeft: "auto", flexDirection: "row", alignItems: "center", gap: 5, height: 22, paddingHorizontal: 8, borderRadius: 11, backgroundColor: "rgba(139,156,255,0.16)" },
   countText: { color: "#c3cbff", fontSize: 11 },
   empty: { color: UI.textFaint, fontSize: 12, paddingHorizontal: 4, paddingVertical: 6 },
+  stale: { fontSize: 11, paddingHorizontal: 4, paddingBottom: 2 },
+  whyBox: { gap: 2, paddingBottom: 4 },
+  whyLine: { color: UI.textFaint, fontSize: 11, fontFamily: fonts.regular, paddingHorizontal: 4 },
+  whenLine: { color: UI.textFaint, fontSize: 10, opacity: 0.7, paddingHorizontal: 4 },
+  dimmed: { opacity: 0.6, gap: 4 },
   row: { gap: 4, paddingVertical: 8, paddingHorizontal: 10, borderRadius: 10, backgroundColor: UI.row, overflow: "hidden" },
   edge: { position: "absolute", left: 0, top: 0, bottom: 0, width: 3 },
   line: { flexDirection: "row", alignItems: "center", gap: 7 },

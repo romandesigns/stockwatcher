@@ -736,6 +736,32 @@ impl Market {
         self.load_evidence(None);
         self.deliver_evidence();
         self.request_warmups();
+        self.refresh_readiness();
+    }
+
+    /// Takes the per-pillar readiness summary and caches it for the `ross` frames.
+    ///
+    /// On this task, not the publish path: it is one pass over every symbol's latest decision,
+    /// which is cheap per symbol and not something to run under the core lock once a second.
+    /// The summary carries the time it was taken, so a client shows it as a snapshot rather than
+    /// as live state.
+    pub(crate) fn refresh_readiness(&self) {
+        let at = crate::observe::wall_now();
+        let warmups = self.warmup_stats();
+        let mut r = {
+            let core = self.0.core.lock().expect("core lock");
+            match core.context.as_ref() {
+                Some(cx) => cx.readiness(at),
+                None => return,
+            }
+        };
+        r.warmups = warmups;
+        *self.0.readiness.lock().expect("readiness lock") = Some(r);
+    }
+
+    /// The last readiness summary taken (logs and tests).
+    pub(crate) fn readiness(&self) -> Option<crate::context::Readiness> {
+        self.0.readiness.lock().expect("readiness lock").clone()
     }
 
     /// Asks the archive maintainer to warm up the symbols whose evidence a warmup could supply.
@@ -1182,7 +1208,7 @@ mod tests {
 
         // The panel: XYZ is a member; QUIET (no news, searched) is not.
         let frame: serde_json::Value =
-            serde_json::from_str(&cx.panel_frame("ross.snapshot")).expect("json");
+            serde_json::from_str(&cx.panel_frame("ross.snapshot", None)).expect("json");
         assert!(
             frame["pillarPolicy"]
                 .as_str()
@@ -1243,7 +1269,7 @@ mod tests {
             before.membership
         );
         let frame: serde_json::Value =
-            serde_json::from_str(&cx.panel_frame("ross.snapshot")).unwrap();
+            serde_json::from_str(&cx.panel_frame("ross.snapshot", None)).unwrap();
         assert!(
             frame["panel"].is_null() || frame["panel"]["rows"].as_array().unwrap().is_empty(),
             "{frame}"
@@ -1354,18 +1380,18 @@ mod tests {
         // And the latest snapshot is still there for a client that subscribes later: draining
         // the journal is not the same as clearing the panel.
         let frame: serde_json::Value =
-            serde_json::from_str(&cx.panel_frame("ross.snapshot")).expect("json");
+            serde_json::from_str(&cx.panel_frame("ross.snapshot", None)).expect("json");
         assert_eq!(
             frame["panel"]["rows"].as_array().unwrap().len(),
             1,
             "{frame}"
         );
         assert!(
-            cx.take_update().is_some(),
+            cx.take_update(None).is_some(),
             "the first update after a drain still goes out"
         );
         assert!(
-            cx.take_update().is_none(),
+            cx.take_update(None).is_none(),
             "and only once per revision, as before"
         );
 
@@ -1396,7 +1422,7 @@ mod tests {
             tel.panels_taken + tel.panels_dropped + tel.panels_held as u64
         );
         // A client subscribing now still gets the current panel, not a dropped one.
-        assert!(cx.take_update().is_some());
+        assert!(cx.take_update(None).is_some());
     }
 
     /// The drain's stage timestamp must be read when each snapshot is captured, inside the core
@@ -1742,5 +1768,92 @@ mod tests {
         }
         assert!(q.dropped() > 0, "a full queue drops and counts it");
         assert_eq!(q.flush(&a).unwrap(), 3, "what it held is filed");
+    }
+
+    /// An empty panel says *why*: the per-pillar counts and the commonest blocking reasons ride
+    /// with every `ross` frame, so a client stops having to render "No stock at 5/5 yet" over a
+    /// missing-evidence state (the audit's F10).
+    #[test]
+    fn the_frame_says_why_the_panel_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = archive(dir.path());
+        // Raw bars and a split snapshot, but no corporate-action check and nothing collected:
+        // gain and RVOL cannot be decided, and news has not been searched.
+        let log = Mutex::new(EvidenceLog::default());
+        let mut cx = board();
+        load(&a, &log, &mut cx);
+        trade(&mut cx, t(9, 30, 0), t(9, 32, 0));
+
+        let r = cx.readiness(t(9, 32, 5));
+        assert_eq!(r.symbols, 2, "{r:?}");
+        assert_eq!((r.qualified, r.members), (0, 0), "{r:?}");
+        assert_eq!(r.observed_at, t(9, 32, 5));
+        let by = |name: &str| {
+            r.pillars
+                .iter()
+                .find(|p| p.pillar == name)
+                .copied()
+                .expect("every pillar is reported")
+        };
+        assert_eq!(by("price").pass, 2, "both prices are in the band");
+        assert_eq!(by("gain").unknown, 2, "{:?}", r.pillars);
+        assert_eq!(by("rvol").unknown, 2, "{:?}", r.pillars);
+        assert!(
+            r.blocking
+                .iter()
+                .any(|b| b.pillar == "rvol" && b.symbols == 2),
+            "the reason is named with its count: {:?}",
+            r.blocking
+        );
+        assert!(
+            r.blocking.len() <= crate::context::TOP_REASONS,
+            "the list is bounded: {:?}",
+            r.blocking
+        );
+        assert!(
+            r.summary_line().contains("0 qualified"),
+            "{}",
+            r.summary_line()
+        );
+
+        // The frame carries it; without one it is explicitly null, never a silent omission.
+        let frame: serde_json::Value =
+            serde_json::from_str(&cx.panel_frame("ross.snapshot", Some(&r))).expect("json");
+        assert_eq!(frame["readiness"]["symbols"], 2);
+        assert_eq!(frame["readiness"]["blocking"][0]["symbols"], 2);
+        assert!(
+            frame["panel"].is_null() || frame["panel"]["rows"].as_array().unwrap().is_empty(),
+            "no member, so no panel yet: exactly the state that needed a reason"
+        );
+        let bare: serde_json::Value =
+            serde_json::from_str(&cx.panel_frame("ross.snapshot", None)).expect("json");
+        assert!(bare["readiness"].is_null());
+    }
+
+    /// With the evidence in place the same summary says so, so a reader can tell "nothing
+    /// qualifies" from "nothing could be decided".
+    #[test]
+    fn readiness_distinguishes_nothing_qualifies_from_nothing_decided() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = archive(dir.path());
+        write_daily_world(&a);
+        write_collected(&a, t(7, 0, 0));
+        let log = Mutex::new(EvidenceLog::default());
+        let mut cx = board();
+        load(&a, &log, &mut cx);
+        trade(&mut cx, t(9, 30, 0), t(9, 32, 0));
+        let r = cx.readiness(t(9, 32, 5));
+        assert_eq!((r.symbols, r.qualified, r.members), (2, 1, 1), "{r:?}");
+        let gain = r
+            .pillars
+            .iter()
+            .find(|p| p.pillar == "gain")
+            .copied()
+            .unwrap();
+        assert_eq!(
+            (gain.pass, gain.fail, gain.unknown),
+            (1, 1, 0),
+            "QUIET fails the gain pillar on the facts, it is not undecided"
+        );
     }
 }

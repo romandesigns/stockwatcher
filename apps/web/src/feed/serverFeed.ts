@@ -58,6 +58,9 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
     source: opts.source,
     onStatus: (s) => {
       opts.onStatus?.(s);
+      // The Ross Panel keeps its last rows while the socket is down, so it has to be told: a
+      // panel nobody is updating must not read as live (shared/ross.ts `rossFreshness`).
+      ross.setConnected(s === "open");
       if (s === "open") resubscribe(); // subscriptions do not survive a reconnect
     },
     onQuotes: (m) => quotes.apply(m),

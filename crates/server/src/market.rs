@@ -426,6 +426,10 @@ pub(crate) struct Inner {
     /// `STOCK_CONTEXT` (`MarketConfig::stock_context`): every `Core` this market makes gets a
     /// context board.
     context_on: AtomicBool,
+    /// The last per-pillar readiness summary (`crate::context::Readiness`), taken on the evidence
+    /// task and sent with every `ross` frame so an empty panel says why. A whole-market pass
+    /// belongs nowhere near the publish path, so it is cached rather than computed per frame.
+    pub(crate) readiness: Mutex<Option<crate::context::Readiness>>,
     /// Connections that sent `ross.subscribe`. While 0, no `ross.update` is serialized.
     ross_subs: AtomicUsize,
     /// Baseline observation/latency capture for the context panel (`crate::observe`): a bounded
@@ -593,6 +597,7 @@ impl Market {
             quote_subs: AtomicUsize::new(0),
             pressure_subs: AtomicUsize::new(0),
             context_on: AtomicBool::new(false),
+            readiness: Mutex::new(None),
             ross_subs: AtomicUsize::new(0),
             observations: crate::observe::ObservationSink::new(crate::observe::QUEUE_CAPACITY),
             history: std::sync::OnceLock::new(),
@@ -1748,8 +1753,9 @@ impl Market {
     /// the engine seq it is consistent with.
     pub fn ross_snapshot(&self) -> (u64, String) {
         let core = self.0.core.lock().expect("core lock");
+        let readiness = self.0.readiness.lock().expect("readiness lock").clone();
         let frame = match core.context.as_ref() {
-            Some(cx) => cx.panel_frame("ross.snapshot"),
+            Some(cx) => cx.panel_frame("ross.snapshot", readiness.as_ref()),
             None => crate::context::disabled_frame(),
         };
         (core.seq, frame)
@@ -1844,10 +1850,15 @@ impl Market {
     pub(crate) fn log_observations(&self) {
         let r = self.observation_report();
         let w = self.warmup_stats();
-        if r.captured == 0 && w.candidates == 0 {
+        let readiness = self.readiness();
+        if r.captured == 0 && w.candidates == 0 && readiness.is_none() {
             return;
         }
         tracing::info!(
+            readiness = readiness
+                .as_ref()
+                .map(|x| x.summary_line())
+                .unwrap_or_else(|| "not taken yet".into()),
             warmup_candidates = w.candidates,
             warmup_queued = w.queued,
             warmup_filed = w.filed,
@@ -1879,7 +1890,12 @@ impl Market {
                 return;
             }
             let seq = core.seq;
-            match core.context.as_mut().and_then(|c| c.take_update()) {
+            let readiness = self.0.readiness.lock().expect("readiness lock").clone();
+            match core
+                .context
+                .as_mut()
+                .and_then(|c| c.take_update(readiness.as_ref()))
+            {
                 Some((frame, snap)) => (seq, frame, snap),
                 None => return,
             }

@@ -31,11 +31,12 @@ use crate::quotes::Counted;
 use chrono::NaiveDate;
 use market_archive::PrevCloses;
 use market_events::{Price, Trade, UnixNanos};
+use serde::Serialize;
 use serde_json::json;
 use std::collections::{BTreeSet, HashSet};
 use stock_context::{
     CloseBasis, Coverage, Decision, Engine, Fidelity, InstrumentId, OutputTelemetry, PanelPolicy,
-    PanelSnapshot, Policy, PrevClose, RunInfo, SetupPolicy, Tri, Verdict,
+    PanelSnapshot, PillarId, Policy, PrevClose, Qualification, RunInfo, SetupPolicy, Tri, Verdict,
 };
 
 /// What one [`ContextBoard::drain_outputs`] took off the engine, and what the engine had to drop
@@ -169,6 +170,69 @@ impl ContextBoard {
         self.drained
     }
 
+    /// Per-pillar readiness over the latest decision of every symbol, with the commonest reasons
+    /// a pillar could not decide.
+    ///
+    /// One pass over the decisions the engine already keeps, in memory. It is taken on the
+    /// evidence task and cached, not computed per frame: a whole-market pass belongs nowhere near
+    /// the publish path.
+    pub(crate) fn readiness(&self, observed_at: i64) -> Readiness {
+        use std::collections::HashMap;
+        let mut pillars: Vec<PillarReadiness> = PillarId::ALL
+            .iter()
+            .map(|p| PillarReadiness {
+                pillar: p.as_str(),
+                ..PillarReadiness::default()
+            })
+            .collect();
+        let mut reasons: HashMap<(&'static str, &'static str), u32> = HashMap::new();
+        let mut r = Readiness {
+            evidence_records: self.engine.evidence_len(),
+            observed_at,
+            ..Readiness::default()
+        };
+        for d in self.engine.current() {
+            r.symbols += 1;
+            if d.qualification == Qualification::Qualified {
+                r.qualified += 1;
+            }
+            if d.membership.active().is_some() {
+                r.members += 1;
+            }
+            for p in &d.pillars {
+                let Some(slot) = pillars.iter_mut().find(|x| x.pillar == p.pillar.as_str()) else {
+                    continue;
+                };
+                match p.state {
+                    Tri::Pass => slot.pass += 1,
+                    Tri::Fail => slot.fail += 1,
+                    Tri::Unknown => {
+                        slot.unknown += 1;
+                        *reasons.entry((p.pillar.as_str(), p.reason)).or_default() += 1;
+                    }
+                }
+            }
+        }
+        let mut blocking: Vec<ReasonCount> = reasons
+            .into_iter()
+            .map(|((pillar, reason), symbols)| ReasonCount {
+                pillar,
+                reason,
+                symbols,
+            })
+            .collect();
+        blocking.sort_by(|a, b| {
+            b.symbols
+                .cmp(&a.symbols)
+                .then(a.pillar.cmp(b.pillar))
+                .then(a.reason.cmp(b.reason))
+        });
+        blocking.truncate(TOP_REASONS);
+        r.pillars = pillars;
+        r.blocking = blocking;
+        r
+    }
+
     /// Symbols in the band whose latest decision is missing evidence a warmup could supply, with
     /// the reason, at most `max` ([`warmup_reason`]) — **skipping** the ones `asked` already
     /// holds.
@@ -282,8 +346,10 @@ impl ContextBoard {
         self.engine.set_halted(symbol, halted);
     }
 
-    /// The whole panel as a `ross.snapshot` / `ross.update` frame (empty `rows` before any).
-    pub(crate) fn panel_frame(&self, kind: &str) -> String {
+    /// The whole panel as a `ross.snapshot` / `ross.update` frame (empty `rows` before any),
+    /// with the cached readiness summary when there is one: an empty panel then says *why*
+    /// instead of reading as "nothing qualifies".
+    pub(crate) fn panel_frame(&self, kind: &str, readiness: Option<&Readiness>) -> String {
         let panel = self.engine.panel();
         json!({
             "type": kind,
@@ -291,6 +357,7 @@ impl ContextBoard {
             "panelPolicy": self.engine.panel_policy().tag(),
             "pillarPolicy": self.engine.policy().tag(),
             "panel": panel,
+            "readiness": readiness,
         })
         .to_string()
     }
@@ -301,7 +368,10 @@ impl ContextBoard {
     /// It reads the latest snapshot only; draining the journals is
     /// [`ContextBoard::drain_outputs`]'s job, so what the engine holds never depends on whether
     /// anyone is watching.
-    pub(crate) fn take_update(&mut self) -> Option<(String, PanelSnapshot)> {
+    pub(crate) fn take_update(
+        &mut self,
+        readiness: Option<&Readiness>,
+    ) -> Option<(String, PanelSnapshot)> {
         let p = self.engine.panel()?;
         let at = (p.revision, p.bar_end);
         if self.published == Some(at) {
@@ -309,7 +379,7 @@ impl ContextBoard {
         }
         let snap = p.clone();
         self.published = Some(at);
-        Some((self.panel_frame("ross.update"), snap))
+        Some((self.panel_frame("ross.update", readiness), snap))
     }
 
     pub(crate) fn decision(&self, symbol: &str) -> Option<&Decision> {
@@ -356,4 +426,68 @@ pub(crate) fn warmup_reason(d: &Decision) -> Option<&'static str> {
         .filter(|p| p.state == Tri::Unknown)
         .map(|p| p.reason)
         .find(|r| WARMUP_REPAIRS.contains(r))
+}
+
+/// Reasons listed in [`Readiness::blocking`], most symbols first.
+pub(crate) const TOP_REASONS: usize = 6;
+
+/// How many symbols each pillar can decide, and what is stopping the rest.
+///
+/// The panel showing no rows is not the same statement as "nothing qualifies today": it can also
+/// mean the evidence a pillar needs has not arrived, or has run out of freshness. Both read as an
+/// empty list unless the counts are published, which is what the clients needed to stop saying
+/// "No stock at 5/5 yet" over a missing-evidence state (the audit's F10).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub(crate) struct Readiness {
+    /// Symbols with a decision on the session date.
+    pub(crate) symbols: u32,
+    /// Symbols at five passes now.
+    pub(crate) qualified: u32,
+    /// Ross Panel members now (five to enter, four to stay).
+    pub(crate) members: u32,
+    pub(crate) pillars: Vec<PillarReadiness>,
+    /// The commonest reasons a pillar could not decide, most symbols first.
+    pub(crate) blocking: Vec<ReasonCount>,
+    /// Evidence records the engine holds.
+    pub(crate) evidence_records: usize,
+    /// What the warmup requester has done (`crate::evidence`).
+    pub(crate) warmups: crate::evidence::WarmupStats,
+    /// When this summary was taken (UTC ns, wall clock): it is a snapshot, not live.
+    pub(crate) observed_at: i64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub(crate) struct PillarReadiness {
+    pub(crate) pillar: &'static str,
+    pub(crate) pass: u32,
+    pub(crate) fail: u32,
+    /// Could not be decided: the evidence is missing, stale or expired.
+    pub(crate) unknown: u32,
+}
+
+impl Readiness {
+    /// One log line: the counts and the reasons, with `no blocking reason` said out loud rather
+    /// than left as an empty list a reader could take for "nothing is wrong".
+    pub(crate) fn summary_line(&self) -> String {
+        let blocking = if self.blocking.is_empty() {
+            "no blocking reason".to_string()
+        } else {
+            self.blocking
+                .iter()
+                .map(|b| format!("{}:{} x{}", b.pillar, b.reason, b.symbols))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        format!(
+            "{} symbols, {} qualified, {} members; {blocking}",
+            self.symbols, self.qualified, self.members
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct ReasonCount {
+    pub(crate) pillar: &'static str,
+    pub(crate) reason: &'static str,
+    pub(crate) symbols: u32,
 }

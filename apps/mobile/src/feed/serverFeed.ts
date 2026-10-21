@@ -77,6 +77,9 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
     source,
     onStatus: (s) => {
       onStatus?.(s);
+      // The Ross Panel keeps its last rows while the socket is down, so it has to be told: a
+      // panel nobody is updating must not read as live (shared/ross.ts `rossFreshness`).
+      ross.setConnected(s === "open");
       // Subscriptions do not survive a reconnect.
       if (s === "open") {
         for (const [id, a] of router.entries()) sendRaw(subscribeFrame(id, a));

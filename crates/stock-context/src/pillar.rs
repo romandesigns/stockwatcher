@@ -27,6 +27,17 @@ pub enum PillarId {
 }
 
 impl PillarId {
+    /// The wire name, the same string the serialized form uses.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PillarId::Price => "price",
+            PillarId::Gain => "gain",
+            PillarId::Rvol => "rvol",
+            PillarId::Float => "float",
+            PillarId::News => "news",
+        }
+    }
+
     pub const ALL: [PillarId; 5] = [
         PillarId::Price,
         PillarId::Gain,

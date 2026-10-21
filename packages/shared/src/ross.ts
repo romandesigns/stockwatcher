@@ -2,15 +2,28 @@
 // server's `ross.*` channel (protocol.ts, crates/server/src/context.rs) and ONE row view model,
 // so the web side panel and the phone card format a member identically.
 
-import type { RossMessage, RossPanelWire, RossRowWire, RossSetupState } from "./protocol.ts";
+import type { RossMessage, RossPanelWire, RossReadinessWire, RossRowWire, RossSetupState } from "./protocol.ts";
 
 export interface RossState {
   /** null until the first snapshot; false when the server does not run stock context. */
   enabled: boolean | null;
   panel: RossPanelWire | null;
+  /**
+   * Why the panel looks the way it does, when the server sent it. An empty panel with a
+   * readiness summary is a different statement from an empty panel without one.
+   */
+  readiness: RossReadinessWire | null;
+  /**
+   * The connection carrying this panel is open.
+   *
+   * While false the panel is the **last one received**, not the current market: the channel used
+   * to keep showing it with nothing to say the feed had dropped, so stale rows read as live. The
+   * rows are kept on purpose — the last known state is useful — but every client must label them.
+   */
+  connected: boolean;
 }
 
-export const EMPTY_ROSS: RossState = { enabled: null, panel: null };
+export const EMPTY_ROSS: RossState = { enabled: null, panel: null, readiness: null, connected: false };
 
 export interface RossChannel {
   get(): RossState;
@@ -18,8 +31,68 @@ export interface RossChannel {
   subscribe(fn: () => void): () => void;
 }
 
+/** The freshness cue a client shows above the rows. */
+export interface RossFreshness {
+  /** The rows on screen are not being updated: say so, do not let them read as live. */
+  stale: boolean;
+  label: string;
+  tone: RossTone;
+}
+
+/**
+ * What to say about the panel's freshness. A dropped connection is the only staleness a client
+ * can judge for itself: a replay's cutoff is its own simulated clock, and comparing a live
+ * cutoff with a browser's clock would measure the two clocks' disagreement as well as any delay.
+ */
+export function rossFreshness(state: RossState, formatTime?: (epochNs: number) => string): RossFreshness {
+  if (state.connected) return { stale: false, label: "", tone: "dim" };
+  const at = state.panel?.cutoff;
+  const when = at !== undefined && formatTime ? ` · last ${formatTime(at)}` : "";
+  return state.panel ? { stale: true, label: `Reconnecting${when}`, tone: "warning" } : { stale: true, label: "Reconnecting…", tone: "dim" };
+}
+
+/** A blocking reason as a short phrase; unknown reasons fall back to the raw string. */
+const REASON_LABEL: Record<string, string> = {
+  no_previous_close: "no previous close",
+  previous_close_date_mismatch: "previous close is for another date",
+  adjustment_coverage_unknown: "share basis unchecked",
+  adjustment_not_current: "share basis not current",
+  actions_coverage_expired: "share-basis check out of date",
+  no_daily_baseline: "no volume history",
+  insufficient_baseline: "fewer than 30 comparable sessions",
+  numerator_coverage_unverified: "today's volume unverified",
+  zero_denominator: "no comparable volume",
+  no_float_evidence: "no float figure",
+  float_stale: "float figure out of date",
+  nonpositive_float: "float figure unusable",
+  news_coverage_unknown: "news not searched yet",
+  price_unknown: "no price yet",
+  price_stale: "price out of date",
+};
+
+export interface RossReadinessView {
+  /** "1,204 symbols · none at 5/5". */
+  headline: string;
+  /** "812 need volume history", biggest first. */
+  reasons: string[];
+  /** "taken 09:31:15", when a formatter is given. */
+  takenAt: string;
+}
+
+/** The readiness summary as lines a panel can show instead of a bare "nothing yet". */
+export function rossReadinessView(r: RossReadinessWire, formatTime?: (epochNs: number) => string): RossReadinessView {
+  const n = (x: number) => x.toLocaleString("en-US");
+  const headline = `${n(r.symbols)} symbol${r.symbols === 1 ? "" : "s"} · ${r.members > 0 ? `${n(r.members)} on the panel` : r.qualified > 0 ? `${n(r.qualified)} at 5/5` : "none at 5/5"}`;
+  const label = (reason: string) => REASON_LABEL[reason] ?? reason.replace(/_/g, " ");
+  return {
+    headline,
+    reasons: r.blocking.map((b) => `${n(b.symbols)}: ${label(b.reason)}`),
+    takenAt: formatTime ? `taken ${formatTime(r.observed_at)}` : "",
+  };
+}
+
 /** Subscribed on demand like the pressure channel: the first listener opts in, the last opts out. */
-export function createRossChannel(io: { subscribe(): void; unsubscribe(): void }): RossChannel & { apply(m: RossMessage): void } {
+export function createRossChannel(io: { subscribe(): void; unsubscribe(): void }): RossChannel & { apply(m: RossMessage): void; setConnected(open: boolean): void } {
   let state: RossState = EMPTY_ROSS;
   const listeners = new Set<() => void>();
   return {
@@ -35,7 +108,13 @@ export function createRossChannel(io: { subscribe(): void; unsubscribe(): void }
       };
     },
     apply(m) {
-      state = { enabled: m.enabled, panel: m.panel };
+      state = { enabled: m.enabled, panel: m.panel, readiness: m.readiness ?? null, connected: true };
+      for (const l of listeners) l();
+    },
+    /** The socket's state. A drop keeps the last panel and marks it not live. */
+    setConnected(open: boolean) {
+      if (state.connected === open) return;
+      state = { ...state, connected: open };
       for (const l of listeners) l();
     },
   };

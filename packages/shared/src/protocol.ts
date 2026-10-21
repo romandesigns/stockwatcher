@@ -323,11 +323,60 @@ export interface RossPanelWire {
   revision: number;
   bar_end: number;
   cutoff: number;
+  /** `live` or `replay`: only a live run's cutoff is comparable with a wall clock. */
+  source?: string;
   /** `setups-v0@<hash>`. */
   setup_policy?: string;
   /** Members whose setup is near, crossing or triggered. */
   attention?: number;
   rows: RossRowWire[];
+}
+
+/** One pillar's counts over every symbol the engine decided today. */
+export interface RossPillarReadinessWire {
+  pillar: string;
+  pass: number;
+  fail: number;
+  /** Could not be decided: the evidence is missing, stale or expired. */
+  unknown: number;
+}
+
+export interface RossReasonCountWire {
+  pillar: string;
+  reason: string;
+  symbols: number;
+}
+
+/**
+ * Why the panel looks the way it does (crates/server/src/context.rs `Readiness`).
+ *
+ * An empty panel is not the same statement as "nothing qualifies today": it can also mean a
+ * pillar had no evidence to decide on. These counts let a client say which, instead of showing
+ * "No stock at 5/5 yet" over a missing-evidence state.
+ *
+ * Taken on the server's evidence task, so `observed_at` (UTC ns) is a snapshot time, not now.
+ */
+export interface RossReadinessWire {
+  symbols: number;
+  qualified: number;
+  members: number;
+  pillars: RossPillarReadinessWire[];
+  /** The commonest reasons a pillar could not decide, most symbols first, bounded. */
+  blocking: RossReasonCountWire[];
+  evidence_records: number;
+  warmups?: {
+    candidates: number;
+    queued: number;
+    known: number;
+    full: number;
+    busy: number;
+    filed: number;
+    flush_errors: number;
+    pending: number;
+    tracked: number;
+    rolled: number;
+  };
+  observed_at: number;
 }
 
 export interface RossSnapshotMessage {
@@ -336,6 +385,7 @@ export interface RossSnapshotMessage {
   panelPolicy?: string;
   pillarPolicy?: string;
   panel: RossPanelWire | null;
+  readiness?: RossReadinessWire | null;
 }
 
 export interface RossUpdateMessage {
@@ -344,6 +394,7 @@ export interface RossUpdateMessage {
   panelPolicy?: string;
   pillarPolicy?: string;
   panel: RossPanelWire | null;
+  readiness?: RossReadinessWire | null;
 }
 
 export type RossMessage = RossSnapshotMessage | RossUpdateMessage;
