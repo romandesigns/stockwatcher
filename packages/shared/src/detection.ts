@@ -79,6 +79,7 @@ export interface DetectionEpisode {
   default_visible: boolean;
   price_age_ms: number | null;
   price_stale: boolean;
+  near_trigger: boolean | null;
   /** Original engine record, retained for full anchors/features/level provenance in details. */
   raw: DetectionCoreEpisode;
   /** Context badges are evidence, never detector admission gates or confidence. */
@@ -130,6 +131,7 @@ export interface DetectionCoreEpisode {
 export interface DetectionCoreSnapshot {
   schema: number; run_id: string; source: string; fidelity: string; policy: string; experimental: true; alerts_enabled: false;
   cursor: number; bar_end: number | null; cutoff: number | null; as_of: number | null;
+  monitored?: { symbols_seen: number; symbols_today: number; symbols_active: number; symbols_interrupted: number };
   symbols: { symbol: string; dominant_episode_id: string | null; active_episode_ids: string[]; interrupted: string | null }[];
   active: DetectionCoreEpisode[]; recent: DetectionCoreEpisode[];
   data_status: Record<string, unknown>; telemetry: Record<string, number | string | boolean | null>;
@@ -174,20 +176,33 @@ export interface DetectionChannel {
 
 const object = (x: unknown): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x);
 const finite = (x: unknown): x is number => typeof x === "number" && Number.isFinite(x);
+const nullableNumber = (x: unknown) => x === null || finite(x);
+const nullableString = (x: unknown) => x === null || typeof x === "string";
+const strings = (x: unknown): x is string[] => Array.isArray(x) && x.every((s) => typeof s === "string");
+const coreLevel = (x: unknown): boolean => object(x) && typeof x.level_id === "string" && ["trigger", "invalidation", "range_high"].includes(String(x.kind)) && finite(x.version) && finite(x.price) && finite(x.known_at) && nullableNumber(x.armed_at) && Array.isArray(x.formed_from) && x.formed_from.length === 2 && x.formed_from.every(finite) && typeof x.reason === "string";
+function coreEpisode(x: unknown): boolean {
+  if (!object(x) || !["episode_id", "family", "variant", "policy", "symbol", "instrument", "trading_date", "segment", "state", "fidelity"].every((k) => typeof x[k] === "string") || !["first_detected_at", "last_material_seq", "last_material_at", "base_secs"].every((k) => finite(x[k])) || !nullableNumber(x.first_bar_end) || typeof x.default_visible !== "boolean" || typeof x.warmup !== "boolean" || !nullableString(x.parent_episode_id) || !nullableString(x.context) || !strings(x.related_episode_ids)) return false;
+  if (!Array.isArray(x.levels) || !x.levels.every(coreLevel) || !Array.isArray(x.checks) || !x.checks.every((c) => object(c) && typeof c.name === "string" && ["PASS", "FAIL", "UNKNOWN"].includes(String(c.state)) && nullableNumber(c.value) && nullableNumber(c.threshold) && typeof c.units === "string" && typeof c.reason === "string" && (c.required === undefined || typeof c.required === "boolean"))) return false;
+  if (!(x.anchors === null || object(x.anchors)) || !(x.recognition === null || (object(x.recognition) && finite(x.recognition.bar_end) && finite(x.recognition.cutoff)))) return false;
+  if (!(x.current === null || (object(x.current) && nullableNumber(x.current.price) && nullableNumber(x.current.price_exec) && nullableNumber(x.current.price_age_ms) && typeof x.current.stale === "boolean"))) return false;
+  return x.resolution === null || (object(x.resolution) && typeof x.resolution.state === "string" && typeof x.resolution.reason === "string" && typeof x.resolution.transition_id === "string" && finite(x.resolution.at) && nullableNumber(x.resolution.bar_end));
+}
 /** Validate the fields the presentation adapter traverses. An unsupported schema is kept as a
  * recognized envelope so the channel can show its explicit resync/error state. */
 export function isDetectionMessage(x: unknown): x is DetectionMessage {
   if (!object(x) || !["detection.snapshot", "detection.update"].includes(String(x.type)) || typeof x.enabled !== "boolean" || !["live", "replay", "fixture"].includes(String(x.source)) || typeof x.runEpoch !== "string" || !finite(x.cursor) || !object(x.history) || !Array.isArray(x.transitions) || !object(x.telemetry) || x.experimental !== true || x.alertsEnabled !== false) return false;
   if (!finite(x.history.dropped) || !finite(x.history.capacity)) return false;
-  const transitionsValid = x.transitions.every((r) => object(r) && finite(r.sequence) && finite(r.emitted_at) && finite(r.input_watermark) && object(r.transition) && typeof r.transition.transition_id === "string" && typeof r.transition.episode_id === "string" && finite(r.transition.seq) && finite(r.transition.observed_at));
+  const transitionsValid = x.transitions.every((r) => object(r) && finite(r.sequence) && finite(r.emitted_at) && finite(r.input_watermark) && typeof r.restored === "boolean" && object(r.transition) && ["transition_id", "episode_id", "to", "event", "reason", "certainty"].every((k) => typeof (r.transition as Record<string, unknown>)[k] === "string") && finite(r.transition.seq) && finite(r.transition.observed_at) && nullableNumber(r.transition.cutoff) && nullableNumber(r.transition.bar_end) && nullableString(r.transition.from) && nullableString(r.transition.correction_of) && typeof r.transition.warmup === "boolean" && (r.transition.level === null || coreLevel(r.transition.level)));
   if (!transitionsValid) return false;
   if (!x.enabled && x.snapshot === null) return true;
   const s = x.snapshot;
   if (!object(s) || !finite(s.schema)) return false;
   if (s.schema !== 1) return true;
   if (!object(x.profile) || !["price_min_micros", "price_max_micros", "research_min_micros", "research_max_micros"].every((k) => finite(x.profile && (x.profile as Record<string, unknown>)[k]))) return false;
-  if (typeof s.policy !== "string" || !Array.isArray(s.active) || !Array.isArray(s.recent) || !Array.isArray(s.symbols) || !object(s.data_status)) return false;
-  return [...s.active, ...s.recent].every((e) => object(e) && typeof e.episode_id === "string" && typeof e.symbol === "string" && typeof e.family === "string" && typeof e.state === "string" && finite(e.first_detected_at) && finite(e.last_material_at) && Array.isArray(e.checks) && e.checks.every((c) => object(c) && typeof c.name === "string" && ["PASS", "FAIL", "UNKNOWN"].includes(String(c.state))) && Array.isArray(e.levels) && e.levels.every((l) => object(l) && typeof l.level_id === "string" && finite(l.version) && finite(l.price) && finite(l.known_at) && Array.isArray(l.formed_from)));
+  if (!["policy", "run_id", "source", "fidelity"].every((k) => typeof s[k] === "string") || !nullableNumber(s.cutoff) || !nullableNumber(s.as_of) || !Array.isArray(s.active) || !Array.isArray(s.recent) || !Array.isArray(s.symbols) || !object(s.data_status)) return false;
+  if (!s.symbols.every((r) => object(r) && typeof r.symbol === "string" && nullableString(r.dominant_episode_id) && strings(r.active_episode_ids) && nullableString(r.interrupted))) return false;
+  if (s.monitored !== undefined && (!object(s.monitored) || !["symbols_seen", "symbols_today", "symbols_active", "symbols_interrupted"].every((k) => finite((s.monitored as Record<string, unknown>)[k])))) return false;
+  return [...s.active, ...s.recent].every(coreEpisode);
 }
 
 function capturedLoss(telemetry: Record<string, unknown>): boolean {
@@ -232,7 +247,7 @@ export function createDetectionChannel(io: { subscribe(): void; unsubscribe(): v
       }
       const last = previous?.runEpoch === m.runEpoch ? previous.history.last_sequence : null;
       const historyGap = last !== null && last !== undefined && m.history.first_sequence !== null && m.history.first_sequence > last + 1;
-      const coverageLost = historyGap || capturedLoss(m.telemetry);
+      const coverageLost = (previous?.runEpoch === m.runEpoch && state.coverageLost) || historyGap || capturedLoss(m.telemetry);
       state = { enabled: m.enabled, connected: true, snapshot: m.enabled ? detectionSnapshotView(m) : null, frame: m, resyncing: false, coverageLost, error: coverageLost ? "transition_history_incomplete" : null };
       requested = null;
       emit();
@@ -293,14 +308,17 @@ export function detectionSnapshotView(m: DetectionMessage): DetectionSnapshot | 
     featureEvidence(e.anchors, "anchors", e.first_detected_at, "engine causal anchor", evidence);
     evidence.push({ name: "quiet_context", value: e.context, units: "", state: null, required: false, rule: null, reason: null, source: "engine context", as_of: at, observed_at: at });
     const context = m.context?.[e.symbol];
-    return { episode_id: e.episode_id, instrument_id: e.instrument, symbol: e.symbol, run_id: s.run_id, source: m.source, fidelity: e.fidelity, trading_date: e.trading_date, segment: e.segment, family: e.family, variant: e.variant, policy_id: policyId ?? s.policy, policy_hash: m.policyHash ?? shortHash, parent_episode_id: e.parent_episode_id, related_episode_ids: e.related_episode_ids, first_detected_at: e.first_detected_at, last_material_transition_at: e.last_material_at, input_cutoff: e.recognition?.cutoff ?? at, bar_end: e.first_bar_end, state: e.state, status: last?.status ?? (e.warmup ? "restored" : "unknown"), terminal: e.resolution !== null, resolved_at: e.resolution?.at ?? null, reason: e.resolution?.reason ?? null, price: e.current?.price ?? null, price_at: e.current?.price_exec ?? null, price_age_ms: e.current?.price_age_ms ?? null, price_stale: e.current?.stale ?? true, level: levels.at(-1) ?? null, level_history: levels, evidence, timeline: history, coverage: e.warmup ? "restored/reconstructed — forward coverage unverified" : "collection completeness unverified", ross_member: context?.ross_member ?? null, catalyst: context?.catalyst ?? "unknown", default_visible: e.default_visible, raw: e };
+    return { episode_id: e.episode_id, instrument_id: e.instrument, symbol: e.symbol, run_id: s.run_id, source: m.source, fidelity: e.fidelity, trading_date: e.trading_date, segment: e.segment, family: e.family, variant: e.variant, policy_id: policyId ?? s.policy, policy_hash: m.policyHash ?? shortHash, parent_episode_id: e.parent_episode_id, related_episode_ids: e.related_episode_ids, first_detected_at: e.first_detected_at, last_material_transition_at: e.last_material_at, input_cutoff: e.recognition?.cutoff ?? at, bar_end: e.first_bar_end, state: e.state, status: last?.status ?? (e.warmup ? "restored" : "unknown"), terminal: e.resolution !== null, resolved_at: e.resolution?.at ?? null, reason: e.resolution?.reason ?? null, price: e.current?.price ?? null, price_at: e.current?.price_exec ?? null, price_age_ms: e.current?.price_age_ms ?? null, price_stale: e.current?.stale ?? true, near_trigger: typeof e.current?.near_trigger === "boolean" ? e.current.near_trigger : null, level: levels.at(-1) ?? null, level_history: levels, evidence, timeline: history, coverage: e.warmup ? "restored/reconstructed — forward coverage unverified" : "collection completeness unverified", ross_member: context?.ross_member ?? null, catalyst: context?.catalyst ?? "unknown", default_visible: e.default_visible, raw: e };
   });
   const unavailable = new Map<string, number>();
-  for (const symbol of s.symbols) if (symbol.interrupted) unavailable.set(symbol.interrupted, (unavailable.get(symbol.interrupted) ?? 0) + 1);
+  const interrupted = s.data_status.interrupted_symbols;
+  if (Array.isArray(interrupted)) {
+    for (const gap of interrupted) if (object(gap) && typeof gap.reason === "string") unavailable.set(gap.reason, (unavailable.get(gap.reason) ?? 0) + 1);
+  } else for (const symbol of s.symbols) if (symbol.interrupted) unavailable.set(symbol.interrupted, (unavailable.get(symbol.interrupted) ?? 0) + 1);
   const global = s.data_status.global_interruption;
-  if (object(global)) unavailable.set(typeof global.reason === "string" ? global.reason : "global_interruption", s.symbols.length);
-  if (typeof s.data_status.disabled_reason === "string") unavailable.set(s.data_status.disabled_reason, s.symbols.length);
-  return { schema: 1, run_id: s.run_id, source: m.source, fidelity: s.fidelity, policy_id: policyId ?? s.policy, policy_hash: m.policyHash ?? shortHash, experimental: true, base_timeframe_secs: 15, cutoff: s.cutoff ?? 0, as_of: s.as_of ?? s.cutoff ?? 0, ...m.profile, episodes, monitored_symbols: s.symbols.length, unavailable: [...unavailable].map(([reason, symbols]) => ({ reason, symbols })), dominant_episode_ids: Object.fromEntries(s.symbols.map((x) => [x.symbol, x.dominant_episode_id])) };
+  if (object(global)) unavailable.set(typeof global.reason === "string" ? global.reason : "global_interruption", (s.monitored?.symbols_today ?? s.symbols.length));
+  if (typeof s.data_status.disabled_reason === "string") unavailable.set(s.data_status.disabled_reason, (s.monitored?.symbols_today ?? s.symbols.length));
+  return { schema: 1, run_id: s.run_id, source: m.source, fidelity: s.fidelity, policy_id: policyId ?? s.policy, policy_hash: m.policyHash ?? shortHash, experimental: true, base_timeframe_secs: 15, cutoff: s.cutoff ?? 0, as_of: s.as_of ?? s.cutoff ?? 0, ...m.profile, episodes, monitored_symbols: s.monitored?.symbols_today ?? s.symbols.length, unavailable: [...unavailable].map(([reason, symbols]) => ({ reason, symbols })), dominant_episode_ids: Object.fromEntries(s.symbols.map((x) => [x.symbol, x.dominant_episode_id])) };
 }
 
 /** Structurally matches chart-core DetectionOverlay, without making shared depend on a chart.
@@ -311,7 +329,7 @@ export function detectionOverlays(snapshot: DetectionSnapshot | null, symbol: st
   const preferred = episodeId ?? snapshot?.dominant_episode_ids[symbol];
   const e = preferred ? rows.find((x) => x.episode_id === preferred) : rows.filter((x) => !x.terminal && x.default_visible).sort((a, b) => b.last_material_transition_at - a.last_material_transition_at || a.episode_id.localeCompare(b.episode_id))[0];
   if (!e) return [];
-  return [{ episodeId: e.episode_id, label: `${detectionFamilyLabel(e.family)} · ${detectionStateLabel(e.state)}`, recognizedAt: e.first_detected_at / 1_000_000, terminal: e.terminal, levels: e.level_history.map((l) => ({ id: l.level_id, version: l.version, knownAt: l.known_at / 1_000_000, armedAt: l.armed_at === null ? null : l.armed_at / 1_000_000, validTo: l.valid_to === null ? null : l.valid_to / 1_000_000, trigger: l.trigger / 1_000_000, invalidation: l.invalidation === null ? null : l.invalidation / 1_000_000 })) }];
+  return [{ episodeId: e.episode_id, label: `${detectionFamilyLabel(e.family)} · ${detectionStateLabel(e.state)}`, recognizedAt: e.first_detected_at / 1_000_000, terminal: e.terminal, stale: e.price_stale, levels: e.level_history.map((l) => ({ id: l.level_id, version: l.version, knownAt: l.known_at / 1_000_000, armedAt: l.armed_at === null ? null : l.armed_at / 1_000_000, validTo: l.valid_to === null ? null : l.valid_to / 1_000_000, trigger: l.trigger / 1_000_000, invalidation: l.invalidation === null ? null : l.invalidation / 1_000_000 })) }];
 }
 
 export type DetectionFilter = "all" | "momentum" | "ignition" | "micro" | "near" | "triggered" | "ross" | "catalyst";
@@ -327,7 +345,7 @@ export function detectionMatches(e: DetectionEpisode, filter: DetectionFilter): 
     case "momentum": return e.family === "momentum_building" || e.family === "upward_acceleration";
     case "ignition": return e.family === "ignition" || e.family === "expansion" || e.family === "range_breakout";
     case "micro": return e.family === "micro_pullback";
-    case "near": return ["armed", "near", "crossing_provisional", "crossing_wick"].includes(e.state);
+    case "near": return !e.terminal && !e.price_stale && (e.near_trigger === true || ["crossing_provisional", "crossing_wick"].includes(e.state));
     case "triggered": return ["trigger_observed", "confirmed", "recognized"].includes(e.state);
     case "ross": return e.ross_member === true;
     case "catalyst": return e.catalyst === "qualifying";
@@ -355,7 +373,12 @@ export function detectionDistance(price: number | null, level: number | null, ki
   return { dollars: Math.abs(delta) / 1_000_000, percent: Math.abs(delta) * 100 / price, atOrAbove: price >= level };
 }
 export function detectionBlocked(e: DetectionEpisode): DetectionEvidence[] { return e.evidence.filter((x) => x.required && x.state !== "PASS"); }
-export function detectionPrice(micros: number | null): string { return micros === null ? "—" : `$${(micros / 1_000_000).toFixed(micros < 1_000_000 ? 4 : 2)}`; }
+export function detectionPrice(micros: number | null): string {
+  if (micros === null) return "—";
+  const exact = (micros / 1_000_000).toFixed(6).replace(/0+$/, "");
+  const decimals = Math.max(Math.abs(micros) < 1_000_000 ? 4 : 2, exact.split(".")[1]?.length ?? 0);
+  return `$${(micros / 1_000_000).toFixed(decimals)}`;
+}
 export function detectionEvidenceValue(e: DetectionEvidence): string {
   if (e.value === null) return `unavailable${e.reason ? ` · ${e.reason.replace(/_/g, " ")}` : ""}`;
   if (e.units === "micros" && typeof e.value === "number") return detectionPrice(e.value);

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createDetectionChannel, detectionOverlays, detectionSnapshotView, groupDetections, type DetectionCoreEpisode, type DetectionMessage } from "./detection.ts";
+import { createDetectionChannel, detectionBlocked, detectionMatches, detectionOverlays, detectionPrice, detectionSnapshotView, groupDetections, type DetectionCoreEpisode, type DetectionMessage } from "./detection.ts";
 import { parseServerMessage } from "./protocol.ts";
 import { createWsClient, type WebSocketLike } from "./ws.ts";
 
@@ -42,6 +42,24 @@ describe("raw Rust -> display projection", () => {
     f.snapshot!.data_status = { disabled_reason: "bar_secs_mismatch", global_interruption: { from: 100, to: null, reason: "link_down" } };
     expect(detectionSnapshotView(f)!.unavailable.map((x) => x.reason)).toEqual(["link_down", "bar_secs_mismatch"]);
   });
+
+  test("uses authoritative monitoring, interruption, requirement and proximity metadata", () => {
+    const f = frame();
+    f.snapshot!.monitored = { symbols_seen: 7, symbols_today: 5, symbols_active: 1, symbols_interrupted: 1 };
+    f.snapshot!.data_status.interrupted_symbols = [{ symbol: "OTHER", reason: "symbol_gap" }];
+    f.snapshot!.active[0]!.checks.push({ name: "volume_condition", state: "UNKNOWN", value: null, threshold: null, units: "milli", reason: "measured_not_required", required: false });
+    f.snapshot!.active[0]!.current!.near_trigger = false;
+    let view = detectionSnapshotView(f)!;
+    expect(view.monitored_symbols).toBe(5);
+    expect(view.unavailable).toContainEqual({ reason: "symbol_gap", symbols: 1 });
+    expect(detectionBlocked(view.episodes[0]!)).toEqual([]);
+    expect(detectionMatches(view.episodes[0]!, "near")).toBe(false);
+    f.snapshot!.active[0]!.current!.near_trigger = true;
+    view = detectionSnapshotView(f)!;
+    expect(detectionMatches(view.episodes[0]!, "near")).toBe(true);
+    expect(detectionPrice(3_400_001)).toBe("$3.400001");
+    expect(detectionPrice(125_001)).toBe("$0.125001");
+  });
 });
 
 describe("snapshot cursor, freshness and source isolation", () => {
@@ -83,6 +101,11 @@ describe("snapshot cursor, freshness and source isolation", () => {
     c.apply(update); c.apply(update);
     expect(c.get().coverageLost).toBe(true); expect(requests).toBe(1);
     expect(c.get().snapshot!.episodes).toHaveLength(1);
+    c.apply({ ...update, type: "detection.snapshot" });
+    c.apply({ ...update, cursor: 3 });
+    expect(c.get().coverageLost).toBe(true);
+    c.apply({ ...frame(), runEpoch: "fixture:next" });
+    expect(c.get().coverageLost).toBe(false);
   });
 });
 
@@ -91,6 +114,10 @@ test("parser rejects incomplete envelopes and preserves a complete raw snapshot"
   expect(parseServerMessage(JSON.stringify(frame()))).toEqual(frame());
   const bad = frame(); (bad.snapshot!.active[0] as unknown as Record<string, unknown>).levels = null;
   expect(parseServerMessage(JSON.stringify(bad))).toBeNull();
+  for (const field of ["segment", "related_episode_ids", "resolution", "checks", "current"]) {
+    const incomplete = frame(); delete (incomplete.snapshot!.active[0] as unknown as Record<string, unknown>)[field];
+    expect(parseServerMessage(JSON.stringify(incomplete))).toBeNull();
+  }
 });
 
 class Socket implements WebSocketLike {

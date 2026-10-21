@@ -2,7 +2,6 @@
 // user drawings, alert instructions, or a second detector. Prices are dollars; times are ms.
 import type { ChartTheme, DisplayList } from "./displayList.ts";
 import { tToIndex } from "./drawings.ts";
-import { formatPrice } from "./format.ts";
 import type { ChartModel } from "./layout.ts";
 import { priceY, slotX } from "./scale.ts";
 
@@ -21,6 +20,7 @@ export interface DetectionOverlay {
   label: string;
   recognizedAt: number;
   terminal: boolean;
+  stale?: boolean;
   levels: readonly DetectionOverlayLevel[];
 }
 
@@ -38,7 +38,7 @@ export function layoutDetections(model: ChartModel, episodes: readonly Detection
   };
   for (const e of episodes) {
     const recognizedX = xAt(e.recognizedAt);
-    const color = e.terminal ? theme.textDim : theme.orderBuy;
+    const color = e.terminal || e.stale ? theme.textDim : theme.orderBuy;
     if (recognizedX >= plot.x && recognizedX <= right) {
       out.push({ kind: "line", x1: recognizedX, y1: plot.y + model.options.legendTop + 22, x2: recognizedX, y2: plot.y + plot.h, stroke: color, lineWidth: 1, dash: [2, 4], clip: plot, layer: "overlay" });
       text(Math.min(recognizedX + 4, Math.max(plot.x, right - 160)), plot.y + model.options.legendTop + 20, `${e.label} · experimental`, color);
@@ -51,12 +51,12 @@ export function layoutDetections(model: ChartModel, episodes: readonly Detection
       if (end < plot.x || start > right || end < start) continue;
       const x1 = Math.max(plot.x, start);
       const x2 = Math.min(right, end);
-      for (const [name, price, stroke] of [["T", level.trigger, color], ["I", level.invalidation, theme.orderSell]] as const) {
+      for (const [name, price, stroke] of [["T", level.trigger, color], ["I", level.invalidation, e.stale || e.terminal ? theme.textDim : theme.orderSell]] as const) {
         if (price === null || !Number.isFinite(price) || price <= 0) continue;
         const y = priceY(model.price, price);
         if (y < plot.y || y > plot.y + plot.h) continue;
         out.push({ kind: "line", x1, y1: y, x2, y2: y, stroke, lineWidth: 1, dash: name === "T" ? [6, 3] : [2, 3], clip: plot, layer: "overlay" });
-        if (x2 - x1 > 90) text(x1 + 4, y - 3, `${name} ${formatPrice(price)} · v${level.version}`, stroke);
+        if (x2 - x1 > 90) text(x1 + 4, y - 3, `${e.stale ? "Last known · " : ""}${name} ${price.toFixed(6).replace(/0+$/, "").replace(/\.$/, "")} · v${level.version}`, stroke);
       }
     }
   }

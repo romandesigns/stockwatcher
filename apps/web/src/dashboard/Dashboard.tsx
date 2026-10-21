@@ -16,6 +16,7 @@ import { getAppStore, useApp } from "../state/store.ts";
 import { ChartCell } from "./ChartCell.tsx";
 import { HaltWatcher } from "./HaltWatcher.tsx";
 import { RossPanel } from "./RossPanel.tsx";
+import { DetectionPanel } from "./DetectionPanel.tsx";
 import { MultiViewMenu } from "./MultiViewMenu.tsx";
 
 /**
@@ -53,11 +54,17 @@ export function Dashboard({ choice, feed }: Connection) {
   const recents = useApp((s) => s.searchRecents);
   // Whether a chart has focus (its ring shows): see the click-away effect below.
   const [focused, setFocused] = useState(false);
+  const [detectionSelection, setDetectionSelection] = useState<{ index: number; symbol: string; episodeId: string; runEpoch: string } | null>(null);
   // The trading day the charts' clock is on: the candidates follow it (a day switch, a new session).
   const [clockDay, setClockDay] = useState<string | null>(null);
   const candidates = useCandidates(choice, clockDay);
   const current = useMemo(() => followServer(choice, candidates.server), [choice, candidates.server]);
   const trading = usePaperTrading(feed);
+  const pickDetection = useCallback((symbol: string, episodeId: string, runEpoch: string) => {
+    if (runEpoch !== feed.detection?.get().frame?.runEpoch) return;
+    setDetectionSelection({ index: selected, symbol, episodeId, runEpoch });
+    app.loadIntoSelected(symbol);
+  }, [app, feed, selected]);
 
   // What each chart shows: its ticker, or (empty slot) a different candidate per chart. A ticker
   // that left the price band falls back too. Neither fallback is written back: a device with a
@@ -159,6 +166,7 @@ export function Dashboard({ choice, feed }: Connection) {
       {/* The panel takes the full width (the "Most active" side list was removed, owner 2026-10-18):
           tickers come from the search above. */}
       {liveEmpty ? (
+        <div className="@container/panel flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto @4xl/panel:flex-row">
         <div className="flex flex-1 flex-col items-center justify-center gap-1 text-center">
           <p className="m-0 text-sm font-medium">{liveStatus === "not_configured" ? "Live market data is not configured" : "No live trades yet"}</p>
           <p className="m-0 max-w-sm text-xs text-text-faint">
@@ -166,6 +174,11 @@ export function Dashboard({ choice, feed }: Connection) {
               ? "The server has no Alpaca credentials, so it cannot stream the live market."
               : "The dashboard shows the live market (Settings → Data). Charts appear with the session's first trades: overnight from 20:00 ET Sunday to Thursday, then 4:00 to 20:00 ET."}
           </p>
+        </div>
+        <div className="flex min-w-0 shrink-0 flex-col gap-2 @4xl/panel:w-[420px]">
+          <DetectionPanel channel={feed.detection} onPick={pickDetection} />
+          {feed.ross && <RossPanel channel={feed.ross} detection={feed.detection} onPick={app.loadIntoSelected} onEpisodePick={pickDetection} />}
+        </div>
         </div>
       ) : (
       <div className="@container/panel flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-y-auto">
@@ -193,15 +206,15 @@ export function Dashboard({ choice, feed }: Connection) {
                 onSelect={select}
                 onPickTicker={pickFor}
                 onDay={onDay}
+                detectionSelection={detectionSelection?.index === i && detectionSelection.symbol === symbol ? detectionSelection : undefined}
               />
             </div>
           ))}
         </div>
-        {feed.ross && (
-          <div className="flex min-h-0 shrink-0 flex-col @4xl/panel:w-[400px]">
-            <RossPanel channel={feed.ross} onPick={app.loadIntoSelected} />
-          </div>
-        )}
+        <div className="flex min-h-0 min-w-0 shrink-0 flex-col gap-2 @4xl/panel:w-[420px]">
+          <DetectionPanel channel={feed.detection} onPick={pickDetection} />
+          {feed.ross && <RossPanel channel={feed.ross} detection={feed.detection} onPick={app.loadIntoSelected} onEpisodePick={pickDetection} />}
+        </div>
         </div>
       </div>
       )}

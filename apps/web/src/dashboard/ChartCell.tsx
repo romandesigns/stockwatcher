@@ -9,6 +9,8 @@ import { useChartFeed } from "../feed/useChartFeed.ts";
 import { useChartAlerts } from "../alerts/useChartAlerts.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { getAppStore, useApp } from "../state/store.ts";
+import { detectionOverlays, groupDetections } from "@stockwatcher/shared";
+import { useDetection } from "../feed/useDetection.ts";
 
 /** A compact chart for a panel of up to four. */
 const CELL_CHART: Partial<ChartOptions> = { fontSize: 10, timeLabelSpacing: 64 };
@@ -31,6 +33,7 @@ export interface ChartCellProps {
   onPickTicker: (index: number) => void;
   /** Reports the trading day this cell's clock is on (the candidates follow it). */
   onDay: (day: string | null) => void;
+  detectionSelection?: { episodeId: string; runEpoch: string };
 }
 
 /**
@@ -40,12 +43,19 @@ export interface ChartCellProps {
  * symbol's drawings. Pressing anywhere in it selects it: the selected chart is ringed with the
  * accent (a 1px inset box shadow on an overlay, never a border: the no-borders rule) and is where a picked ticker loads.
  */
-export function ChartCell({ index, slot, symbol, feed, trading, selected, showSelection, multi, fixture, onSelect, onPickTicker, onDay }: ChartCellProps) {
+export function ChartCell({ index, slot, symbol, feed, trading, selected, showSelection, multi, fixture, onSelect, onPickTicker, onDay, detectionSelection }: ChartCellProps) {
   const [app] = useState(() => getAppStore().getState());
   const bin = useApp((s) => s.bin);
   // A phone-width cell has no room for four touch-size segments beside the ticker either.
   const phone = useMediaQuery("(max-width: 600px)");
   const { series, clock } = useChartFeed(feed, symbol, slot.timeframe, bin, `d${index}`);
+  const discovery = useDetection(feed.detection);
+  const annotations = useMemo(() => {
+    const visible = groupDetections(discovery.snapshot).find((g) => g.symbol === symbol)?.selected.episode_id;
+    const id = detectionSelection ? (detectionSelection.runEpoch === discovery.frame?.runEpoch ? detectionSelection.episodeId : undefined) : visible;
+    if (!id) return [];
+    return detectionOverlays(discovery.snapshot, symbol, id).map((x) => discovery.connected && !discovery.resyncing ? x : { ...x, stale: true, label: `Last known · ${x.label}` });
+  }, [discovery, symbol, detectionSelection]);
 
   const indicators = useApp((s) => s.indicators);
   const layers = useApp((s) => s.layers);
@@ -104,6 +114,7 @@ export function ChartCell({ index, slot, symbol, feed, trading, selected, showSe
         showRing && "after:shadow-[inset_0_0_0_1px_var(--color-primary)]",
       )}
     >
+      {detectionSelection && detectionSelection.runEpoch !== discovery.frame?.runEpoch ? <p role="status" className="m-0 px-2 py-1 text-[10px] text-warning">Selected detection belongs to an earlier run; its chart references are unavailable.</p> : annotations.length > 0 && <p role="status" className="m-0 truncate px-2 py-1 text-[10px] text-text-faint" title={annotations[0]!.episodeId}>{annotations[0]!.label} · experimental · {discovery.frame?.source} / {discovery.snapshot?.fidelity}</p>}
       <CandleChart
         className="min-h-0 flex-1"
         toolbar
@@ -150,6 +161,7 @@ export function ChartCell({ index, slot, symbol, feed, trading, selected, showSe
         onInspectChange={setInspectT}
         options={CELL_CHART}
         alerts={chartAlerts}
+        detection={annotations}
         label={`Chart ${index + 1}: ${symbol} ${slot.timeframe} candles${fixture ? ", fixture data" : ""}`}
       />
     </section>

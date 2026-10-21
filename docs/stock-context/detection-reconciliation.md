@@ -10,3 +10,10 @@ Initial read-only reconciliation, 2026-10-21
 
 Further verified evidence: original unfrozen ignition proposal found at C:/research/stockwatcher/protocol/ignition-v0-proposal.md, hash 6c435e0daaf57c767d942f5f967a90e86c39d0d1e72256d2930513c71c6de5ac. Existing research data manifest's146 files all verified; twelve SIP symbol-days and separate quotes are local. Full-day controls sample Oct12 HPAI/CNTN/CONL includes30,434 trades. Use reconstructed-history label, exclude BOATS; no live receipt or efficacy claim. Exact manifest, policies and hashes: outputs/detection-panel-20261021/data-replay-plan.json and research-reference/reference-provenance.json. Core contract v1 accepted via definition-agreement-v1.txt; normalized client view never re-evaluates Rust rules. Integration base c7252c22 includes current main plus all21 reviewed reliability commits; old branches remain untouched.
 
+
+Integration decisions (2026-10-21)
+- Detection-v0 remains byte-identical to the first replay receipt. Detection-v1 adds only a 100bp approaching-trigger geometry rule; no signal threshold/state/order changed. The server consistently runs DetectionPolicy::current() = v1. No proximity probability is displayed.
+- Core Check.required distinguishes optional diagnostics from mandatory qualification. Monitored.symbols_today supplies the denominator, independent of active episodes. All data_status interruptions are visible even after terminal episodes leave active symbols.
+- A demonstrated transition-history hole remains disclosed through state resynchronization for the rest of that run. Bounded ordinary retention alone is not declared a capture failure.
+- Explicit chart selection is epoch/episode scoped. A reset removes its references rather than substituting another episode; delayed gestures are cancelled at epoch replacement.
+- UI detector prices preserve micro precision; annotations start at known_at, do not affect autoscale or become editable drawings. Persistent chart status and stale level labels survive panning past the recognition marker.

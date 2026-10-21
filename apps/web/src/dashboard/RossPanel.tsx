@@ -1,8 +1,9 @@
 import { formatEtTime } from "@stockwatcher/chart-core";
 import { cn } from "@stockwatcher/chart-web/ui";
-import { rossAttention, rossDemoPanel, rossFreshness, rossReadinessView, rossRowView, type RossChannel, type RossRowView, type RossTone } from "@stockwatcher/shared";
+import { detectionFamilyLabel, detectionStateLabel, groupDetections, rossAttention, rossDemoPanel, rossFreshness, rossReadinessView, rossRowView, type DetectionChannel, type RossChannel, type RossRowView, type RossTone } from "@stockwatcher/shared";
 import { memo } from "react";
 import { useRoss } from "../feed/useRoss.ts";
+import { useDetection } from "../feed/useDetection.ts";
 import { useTickerPress } from "../lib/useTickerPress.ts";
 
 const TONE: Record<RossTone, string> = {
@@ -31,8 +32,10 @@ const hhmm = (ns: number) => formatEtTime(Math.round(ns / 1_000_000));
  * triggered); the header counts them. Pressing a row loads its ticker into the selected chart;
  * tap, then hold copies it (the Halt watcher's gesture). Server feed only.
  */
-export function RossPanel({ channel, onPick }: { channel: RossChannel; onPick: (symbol: string) => void }) {
+export function RossPanel({ channel, onPick, detection, onEpisodePick }: { channel: RossChannel; onPick: (symbol: string) => void; detection?: DetectionChannel; onEpisodePick?: (symbol: string, episodeId: string, runEpoch: string) => void }) {
   const live = useRoss(channel);
+  const detected = useDetection(detection);
+  const joined = new Map(groupDetections(detected.snapshot).map((g) => [g.symbol, g.selected]));
   // The labelled demo mode (dev builds only, `?rossDemo`): synthetic members to see the cues
   // before the evidence sources admit real ones. Never in a production build.
   const demo = import.meta.env.DEV && new URLSearchParams(window.location.search).has("rossDemo");
@@ -87,6 +90,10 @@ export function RossPanel({ channel, onPick }: { channel: RossChannel; onPick: (
           {rows.map((r) => (
             <li key={r.symbol}>
               <RossRow row={r} onPick={onPick} />
+              {joined.has(r.symbol) && (() => {
+                const e = joined.get(r.symbol)!;
+                return <button type="button" className="w-full rounded-b px-2.5 py-1 text-left text-[10px] text-primary outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => onEpisodePick ? onEpisodePick(e.symbol, e.episode_id, detected.frame?.runEpoch ?? "") : onPick(e.symbol)} title={e.episode_id}>Detection: {detectionFamilyLabel(e.family)} · {detectionStateLabel(e.state)}{!detected.connected ? " · last known" : ""}</button>;
+              })()}
             </li>
           ))}
         </ul>

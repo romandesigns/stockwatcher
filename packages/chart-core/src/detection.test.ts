@@ -41,4 +41,12 @@ describe("authoritative detection annotations", () => {
     const expected = slotX(model.index, tToIndex(model.slots, stop, model.timeframeMs)) - model.index.barSpacing / 2;
     for (const p of list) if (p.kind === "line" && p.y1 === p.y2) expect(p.x2).toBeCloseTo(Math.min(model.geometry.plot.x + model.geometry.plot.w, expected));
   });
+
+  test("stale level labels retain exact detector price precision beyond the recognition marker", () => {
+    const model = computeChartModel(state, vp, size);
+    const list = layoutDetections(model, [{ ...episode, stale: true, recognizedAt: at - 1_000_000, levels: [{ ...episode.levels[0]!, trigger: 2.700001 }] }], DEFAULT_CHART_THEME);
+    const label = list.find((p) => p.kind === "text" && p.text.includes("T 2.700001"));
+    expect(label?.kind === "text" && label.text).toContain("Last known");
+    expect(label?.kind === "text" && label.fill).toBe(DEFAULT_CHART_THEME.textDim);
+  });
 });
