@@ -375,10 +375,17 @@ pub struct LogSeal {
 }
 
 /// What a reader will take from one segment before it stops.
+///
+/// All three are enforced **while** reading, not from the file's size beforehand. A segment being
+/// appended to grows under the reader, and one very long line can allocate the whole byte budget
+/// before anything parses it — so the budget is spent as bytes arrive and each line is read
+/// through a cap of its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LogLimits {
     pub records: usize,
     pub bytes: u64,
+    /// The longest line that will be read, header included.
+    pub line_bytes: u64,
 }
 
 impl Default for LogLimits {
@@ -387,6 +394,7 @@ impl Default for LogLimits {
         LogLimits {
             records: 4_000_000,
             bytes: 2 << 30,
+            line_bytes: 1 << 20,
         }
     }
 }
@@ -400,7 +408,7 @@ pub enum LogTail {
     Unverified {
         records: u64,
         /// `shadow_log_unsealed`, `shadow_log_holes`, `shadow_log_torn_line`,
-        /// `shadow_log_disordered`.
+        /// `shadow_log_disordered`, `shadow_log_lost_tail`, `shadow_log_after_seal`.
         reason: &'static str,
     },
 }
@@ -457,6 +465,8 @@ pub fn read_log(path: &std::path::Path) -> LogRead {
 
 /// [`read_log`] under explicit limits.
 pub fn read_log_within(path: &std::path::Path, limits: LogLimits) -> LogRead {
+    use std::io::{BufRead, BufReader, Read};
+
     let mut out = LogRead {
         header: None,
         records: Vec::new(),
@@ -469,52 +479,91 @@ pub fn read_log_within(path: &std::path::Path, limits: LogLimits) -> LogRead {
         out.unusable = Some(why);
         out
     };
-    // The file's own size is checked before a byte of it is parsed, so an oversized segment never
-    // reaches memory at all.
-    if std::fs::metadata(path).map(|m| m.len()).unwrap_or(0) > limits.bytes {
-        return unusable(out, "shadow_log_too_large");
-    }
     let Ok(file) = std::fs::File::open(path) else {
         return unusable(out, "shadow_log_unreadable");
     };
-    let mut lines = std::io::BufRead::lines(std::io::BufReader::new(file));
-    match lines.next() {
-        Some(Ok(l)) => match serde_json::from_str::<ShadowHeader>(&l) {
+    let mut reader = BufReader::new(file);
+    let mut budget = limits.bytes;
+    let mut buf: Vec<u8> = Vec::new();
+
+    // One line, through a cap of its own, spending the total budget as it goes. `None` at EOF;
+    // `Err` when either bound is reached, which is a refusal rather than a truncation.
+    let mut line = |reader: &mut BufReader<std::fs::File>,
+                    budget: &mut u64|
+     -> Result<Option<String>, &'static str> {
+        buf.clear();
+        let cap = limits.line_bytes.min(*budget).saturating_add(1);
+        let n = reader
+            .take(cap)
+            .read_until(b'\n', &mut buf)
+            .map_err(|_| "shadow_log_unreadable")?;
+        if n == 0 {
+            return Ok(None);
+        }
+        let complete = buf.last() == Some(&b'\n');
+        if !complete && n as u64 >= cap {
+            // The cap stopped it mid-line: this file is beyond what will be read.
+            return Err("shadow_log_too_large");
+        }
+        if (n as u64) > *budget {
+            return Err("shadow_log_too_large");
+        }
+        *budget -= n as u64;
+        let text = String::from_utf8_lossy(&buf).trim_end().to_string();
+        Ok(Some(text))
+    };
+
+    match line(&mut reader, &mut budget) {
+        Err(why) => return unusable(out, why),
+        Ok(None) => return unusable(out, "shadow_log_empty"),
+        Ok(Some(l)) => match serde_json::from_str::<ShadowHeader>(&l) {
             Ok(h) => {
                 // A segment under another schema or another set of definitions is not this
                 // reader's to interpret, and its figures cannot be pooled with these.
-                if h.v != LOG_SCHEMA {
-                    out.header = Some(h);
-                    return unusable(out, "shadow_log_schema");
-                }
-                if h.definitions != DEFINITIONS {
-                    out.header = Some(h);
-                    return unusable(out, "shadow_log_other_definitions");
-                }
+                let why = if h.v != LOG_SCHEMA {
+                    Some("shadow_log_schema")
+                } else if h.definitions != DEFINITIONS {
+                    Some("shadow_log_other_definitions")
+                } else {
+                    None
+                };
                 out.header = Some(h);
+                if let Some(why) = why {
+                    return unusable(out, why);
+                }
             }
             Err(_) => return unusable(out, "shadow_log_header_unreadable"),
         },
-        _ => return unusable(out, "shadow_log_empty"),
     }
 
     let mut torn: Option<&'static str> = None;
     let mut seal: Option<LogSeal> = None;
-    for l in lines {
-        let Ok(l) = l else {
-            torn = Some("shadow_log_torn_line");
-            break;
+    let mut after_seal = 0u64;
+    loop {
+        let l = match line(&mut reader, &mut budget) {
+            Err(why) => return unusable(out, why),
+            Ok(None) => break,
+            Ok(Some(l)) => l,
         };
         if l.is_empty() {
             continue;
         }
-        // A seal is a different shape from a record, and ends the file.
+        // A seal is a different shape from a record. Reading does not stop at one: anything
+        // after a seal means the seal was not the end, and a verdict that hid it would be the
+        // same false completeness the seal is supposed to rule out.
         if let Ok(z) = serde_json::from_str::<LogSeal>(&l) {
-            seal = Some(z);
-            break;
+            if seal.is_some() {
+                after_seal += 1;
+            } else {
+                seal = Some(z);
+            }
+            continue;
         }
         match serde_json::from_str::<LoggedRecord>(&l) {
             Ok(r) => {
+                if seal.is_some() {
+                    after_seal += 1;
+                }
                 if out.records.len() >= limits.records {
                     return unusable(out, "shadow_log_too_large");
                 }
@@ -539,28 +588,53 @@ pub fn read_log_within(path: &std::path::Path, limits: LogLimits) -> LogRead {
         out.holes += r.s - expect;
         expect = r.s + 1;
     }
+    let last_persisted = out.records.last().map(|r| r.s).unwrap_or(0);
 
-    // A seal is only a proof if it describes the file: the same number of records, and a
-    // sequence that reaches them.
-    let proven = seal.filter(|z| z.n == out.records.len() as u64 && !disordered && out.holes == 0);
+    // A seal is a proof only if it describes exactly what is in the file: the same number of
+    // records, and a high-water mark that reaches no further than the last one persisted.
+    //
+    // The count alone is not enough. A capture that handed out sequence 2, had it refused by a
+    // full queue, wrote sequence 1 and then sealed at 2 leaves a file with no interior hole and
+    // a matching count — and sequence 2 is simply gone. The same shape follows a final append
+    // that failed. Either way the tail is lost, not proven.
+    let describes = |z: &LogSeal| {
+        z.n == out.records.len() as u64 && z.s == last_persisted && !disordered && out.holes == 0
+    };
+    let proven = seal.filter(describes);
+    let lost_tail = seal.is_some() && proven.is_none() && !disordered && out.holes == 0;
     out.prefix_through = proven.map(|z| z.s);
-    out.tail = match (disordered, out.holes > 0, torn, proven) {
-        (true, _, _, _) => LogTail::Unverified {
+    out.tail = match (
+        disordered,
+        out.holes > 0,
+        torn,
+        after_seal > 0,
+        lost_tail,
+        proven,
+    ) {
+        (true, ..) => LogTail::Unverified {
             records: out.records.len() as u64,
             reason: "shadow_log_disordered",
         },
-        (_, true, _, _) => LogTail::Unverified {
+        (_, true, ..) => LogTail::Unverified {
             records: out.records.len() as u64,
             reason: "shadow_log_holes",
         },
-        (_, _, Some(reason), _) => LogTail::Unverified {
+        (_, _, Some(reason), ..) => LogTail::Unverified {
             records: out.records.len() as u64,
             reason,
         },
-        (_, _, None, Some(_)) => LogTail::None,
+        (_, _, _, true, ..) => LogTail::Unverified {
+            records: after_seal,
+            reason: "shadow_log_after_seal",
+        },
+        (_, _, _, _, true, _) => LogTail::Unverified {
+            records: out.records.len() as u64,
+            reason: "shadow_log_lost_tail",
+        },
+        (_, _, _, _, _, Some(_)) => LogTail::None,
         // Contiguous to EOF and unsealed: no interior record was lost, and nothing says whether
         // any followed.
-        (_, _, None, None) => LogTail::Unverified {
+        (_, _, _, _, _, None) => LogTail::Unverified {
             records: 0,
             reason: "shadow_log_unsealed",
         },
@@ -1084,8 +1158,10 @@ impl ShadowSink {
     /// Writes the seal: nothing followed what is in the file.
     ///
     /// Only honest where no further record can arrive, which is why the absorber calls it when it
-    /// holds the last reference to the sink.
-    pub fn seal(&self) {
+    /// holds the last reference to the sink — and why nothing outside this module may: a seal on
+    /// request, while the market is still admitting, would be the same guess the admission
+    /// journal refuses to make.
+    fn seal(&self) {
         let Some(path) = &self.log else { return };
         let z = LogSeal {
             s: self.seq.load(Ordering::Relaxed),
@@ -2829,21 +2905,177 @@ mod tests {
         );
         assert_eq!(read.unusable, Some("shadow_log_too_large"));
 
-        // Past the byte cap: refused before a byte is parsed.
+        // Past the byte cap: the budget runs out inside the header line, so nothing is parsed.
         let read = read_log_within(
             &log,
             LogLimits {
                 records: 1_000,
                 bytes: 10,
+                ..LogLimits::default()
             },
         );
         assert_eq!(read.unusable, Some("shadow_log_too_large"));
-        assert!(read.header.is_none(), "not even the header was read");
+        assert!(read.header.is_none(), "{read:?}");
+
+        // A line longer than the per-line cap is refused rather than allocated: the whole byte
+        // budget must not be spendable on one line.
+        let read = read_log_within(
+            &log,
+            LogLimits {
+                line_bytes: 8,
+                ..LogLimits::default()
+            },
+        );
+        assert_eq!(read.unusable, Some("shadow_log_too_large"));
 
         // Inside both: read.
         let read = read_log_within(&log, LogLimits::default());
         assert_eq!(read.unusable, None);
         assert_eq!(read.records.len(), 20);
+    }
+
+    /// A record dropped as the **last** one leaves no interior hole, and a seal must not cover it
+    /// anyway.
+    ///
+    /// Capacity of one: sequence 1 is taken, sequence 2 is refused, only 1 reaches the file, and
+    /// the seal's high-water is 2. The record count matches and there is no gap between rows, so
+    /// checking the count alone called this a whole epoch and let a window ending at 2 be
+    /// compared — over a record that never existed on disk.
+    #[test]
+    fn a_final_dropped_record_is_a_lost_tail_not_a_whole_epoch() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let (log, epoch) = reserve_segment(tmp.path());
+        let log = log.expect("a segment");
+        let d = day(16);
+        let sink = ShadowSink::new(
+            1,
+            Some(log.clone()),
+            "testbuild".into(),
+            "code".into(),
+            epoch,
+        );
+        sink.capture_lifecycle(life(LifecycleKind::Start, at(d, 3, 0)));
+        // Refused: the queue already holds one.
+        sink.capture(ShadowEvent::of(&decision(
+            "ABCD",
+            d,
+            at(d, 9, 0),
+            Tri::Pass,
+            Tri::Pass,
+            true,
+        )));
+        sink.absorb();
+        assert_eq!(sink.report().dropped_events, 1);
+        sink.seal();
+
+        let read = read_log(&log);
+        assert_eq!(read.records.len(), 1);
+        assert_eq!(read.holes, 0, "the loss is at the end, so there is no gap");
+        assert_eq!(
+            read.tail,
+            LogTail::Unverified {
+                records: 1,
+                reason: "shadow_log_lost_tail"
+            },
+            "and the seal reaches past what is on disk: {read:?}"
+        );
+        assert_eq!(read.prefix_through, None);
+        assert!(!read.complete());
+        assert!(
+            !read.covers(1),
+            "nothing is proven, so no window is comparable"
+        );
+        assert!(!read.covers(2));
+    }
+
+    /// A final append that failed is the same shape, and is refused for the same reason.
+    #[test]
+    fn a_final_failed_write_is_a_lost_tail() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let (log, epoch) = reserve_segment(tmp.path());
+        let log = log.expect("a segment");
+        let d = day(16);
+        let sink = ShadowSink::new(
+            QUEUE_CAPACITY,
+            Some(log.clone()),
+            "testbuild".into(),
+            "code".into(),
+            epoch,
+        );
+        sink.capture_lifecycle(life(LifecycleKind::Start, at(d, 3, 0)));
+        sink.absorb();
+        // The file becomes unwritable, and the next fold's append is lost.
+        std::fs::remove_file(&log).expect("remove");
+        std::fs::create_dir(&log).expect("a directory where the file was");
+        sink.capture(ShadowEvent::of(&decision(
+            "ABCD",
+            d,
+            at(d, 9, 0),
+            Tri::Pass,
+            Tri::Pass,
+            true,
+        )));
+        sink.absorb();
+        assert!(sink.report().write_errors > 0);
+        // Writable again, and the capture seals.
+        std::fs::remove_dir(&log).expect("remove the directory");
+        std::fs::write(&log, b"").expect("an empty file");
+        sink.seal();
+
+        let read = read_log(&log);
+        // The header went with the file; what matters is that nothing claims a whole epoch.
+        assert!(!read.complete(), "{read:?}");
+        assert!(!read.covers(1), "{read:?}");
+    }
+
+    /// Anything after a seal means the seal was not the end, and the verdict says so rather than
+    /// hiding it.
+    #[test]
+    fn content_after_a_seal_is_not_hidden() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let (log, epoch) = reserve_segment(tmp.path());
+        let log = log.expect("a segment");
+        let d = day(16);
+        let sink = sink_with(Some(log.clone()));
+        sink.capture_lifecycle(life(LifecycleKind::Start, at(d, 3, 0)));
+        sink.absorb();
+        sink.seal();
+        let sealed = read_log(&log);
+        assert!(sealed.complete(), "sealed and whole first: {sealed:?}");
+        let _ = epoch;
+
+        // A record written after the seal: the file is no longer what the seal said it was.
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&log)
+            .expect("append");
+        std::io::Write::write_all(
+            &mut f,
+            b"{\"s\":2,\"r\":\"lifecycle\",\"run_id\":\"live\",\"source\":\"live\",\"fidelity\":\"RecordedLive\",\"kind\":\"clock\",\"at\":9}\n",
+        )
+        .expect("write");
+        drop(f);
+        let read = read_log(&log);
+        assert_eq!(
+            read.tail,
+            LogTail::Unverified {
+                records: 1,
+                reason: "shadow_log_after_seal"
+            },
+            "{read:?}"
+        );
+        assert!(!read.complete());
+        assert!(!read.covers(1));
+
+        // And a second, contradictory seal is caught the same way.
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&log)
+            .expect("append");
+        std::io::Write::write_all(&mut f, b"{\"s\":99,\"n\":99,\"at\":1}\n").expect("write");
+        drop(f);
+        let read = read_log(&log);
+        assert!(!read.complete(), "{read:?}");
     }
 
     /// The definitions are frozen, and RVOL is deliberately not a candidate pillar: it is the one
