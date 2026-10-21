@@ -135,6 +135,8 @@ fn news(
         published_at: Some(published),
         observed_at: observed,
         tag: Tag::Present,
+        content_key: "fixture".into(),
+            revision_at: Some(0),
         rules: "fixture".into(),
     }
 }

@@ -416,21 +416,29 @@ pub fn news(
         "relevant substantive credible news published within {}s",
         fresh / SEC
     );
-    // One current version per story (`news_current`), never every version ever observed: a
-    // version a later edit disqualified, or whose symbol tag was removed, must stop qualifying.
-    let qualifying: Vec<_> = store
-        .news_current(inst, cutoff)
-        .into_iter()
-        .filter(|n| {
-            n.relevant
-                && n.substantive
-                && n.credible_source
-                && n.authenticity != Authenticity::Unsupported
-        })
-        .filter(|n| {
-            n.published_at
+    // What makes a version qualify, applied to one version at a time.
+    let qualifies = |n: &crate::evidence::NewsItem| {
+        n.tag == crate::evidence::Tag::Present
+            && n.relevant
+            && n.substantive
+            && n.credible_source
+            && n.authenticity != Authenticity::Unsupported
+            && n.published_at
                 .is_some_and(|p| p <= cutoff && cutoff - p <= fresh)
-        })
+    };
+    // One current version per story, never every version ever observed: a version a later edit
+    // disqualified, or whose symbol tag was removed, must stop qualifying.
+    //
+    // A story whose visible versions could not be put in the provider's revision order
+    // ([`crate::evidence::Story::ordered`]) cannot *support* anything: which version is current
+    // is a guess, so a PASS from it might quote a headline already replaced. It is excluded here
+    // and reconsidered below, where the question is whether it could have changed the answer.
+    let stories = store.news_stories(inst, cutoff);
+    let qualifying: Vec<_> = stories
+        .iter()
+        .filter(|s| s.ordered)
+        .map(|s| s.current)
+        .filter(|n| qualifies(n))
         .collect();
     let coverage = store.coverage(inst, cutoff);
     let mut summary = NewsSummary {
@@ -476,6 +484,33 @@ pub fn news(
         .with_evidence(summary.items.clone())
         .as_of(first);
         return (r, summary);
+    }
+    // Nothing qualifies on the stories whose order is settled. Before that can be a FAIL, the
+    // unsettled ones have to be ruled out: if any version of an ambiguous story would itself
+    // qualify, then whether this symbol has a catalyst depends on which version is current, and
+    // that is exactly what cannot be established.
+    //
+    // The test is per story and per version, not "is anything ambiguous". The pillar's claim is
+    // existential — one qualifying story is enough — so a stale conflicting story outside the
+    // freshness window, or an irrelevant one, changes no answer and must not force UNKNOWN over
+    // a fresh unambiguous catalyst. An earlier draft asked the broad question and did exactly
+    // that.
+    if stories
+        .iter()
+        .filter(|s| !s.ordered)
+        .any(|s| s.visible.iter().any(|n| qualifies(n)))
+    {
+        return (
+            PillarResult::new(
+                PillarId::News,
+                Tri::Unknown,
+                None,
+                "",
+                rule,
+                "news_revision_order_unknown",
+            ),
+            summary,
+        );
     }
     // A FAIL needs coverage continuous from the freshness window's start to at least
     // `cutoff - lag` (pillars-v2: 120 s; v1: 0, the cutoff itself). Only coverage records and

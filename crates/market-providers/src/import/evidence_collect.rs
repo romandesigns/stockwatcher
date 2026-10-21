@@ -333,13 +333,23 @@ pub struct TickReport {
     pub news_versions: u32,
     pub news_complete: u32,
     pub news_through: Option<i64>,
+    /// Appends of news versions that failed. Nothing was marked seen for them, so the next search
+    /// offers the same versions again — and no coverage was claimed for that window either.
+    pub news_store_failures: u32,
+    /// Version keys dropped at either bound
+    /// ([`crate::import::alpaca_news::VERSIONS_PER_STORY`],
+    /// [`crate::import::alpaca_news::STORIES_TRACKED`]). A redelivery of one of those can no
+    /// longer be recognised as already stored, so it would be appended again.
+    pub news_versions_forgotten: u64,
+    /// Whole stories the version index forgot, least recently confirmed first.
+    pub news_stories_forgotten: u64,
     pub errors: Vec<String>,
 }
 
 impl TickReport {
     pub fn summary(&self) -> String {
         format!(
-            "evidence: float {} req, {} stored, {} queued, {} warmups, {} retries pending ({} scheduled, {} due, {} exhausted, {} dropped); news {} req, {} new versions, {} complete searches, covered through {}{}",
+            "evidence: float {} req, {} stored, {} queued, {} warmups, {} retries pending ({} scheduled, {} due, {} exhausted, {} dropped); news {} req, {} new versions, {} store failures, {} forgotten keys, {} complete searches, covered through {}{}",
             self.float_requests,
             self.float_records,
             self.float_queued,
@@ -351,6 +361,8 @@ impl TickReport {
             self.float_retry_dropped,
             self.news_requests,
             self.news_versions,
+            self.news_store_failures,
+            self.news_versions_forgotten,
             self.news_complete,
             self.news_through
                 .map(|t| DateTime::from_timestamp_nanos(t).to_rfc3339())
@@ -780,12 +792,22 @@ impl Collector {
             report.news_requests += f.requests;
             // Versions first, then the coverage they complete: a crash in between leaves stories
             // without a coverage claim (UNKNOWN), never a claim without its stories (a false FAIL).
-            let new = self.versions.observe(&f.stories);
+            //
+            // And nothing is believed stored until it is. `propose` changes no state, so an
+            // append that fails leaves this run's view exactly as it was and the next search
+            // offers the same versions again. Marking them seen first -- which is what this did
+            // -- made a failed append permanent: the story was suppressed from then on while the
+            // coverage record below still claimed the window had been searched.
+            let new = self.versions.propose(&f.stories);
             if let Err(e) = archive.append_news(&new) {
                 report.errors.push(format!("news store: {e}"));
+                report.news_store_failures += 1;
                 continue;
             }
+            self.versions.commit(&new);
             report.news_versions += new.len() as u32;
+            report.news_versions_forgotten = self.versions.forgotten();
+            report.news_stories_forgotten = self.versions.stories_forgotten();
             if let Some(e) = &f.error {
                 report.errors.push(format!("news search: {e}"));
             }

@@ -12,7 +12,7 @@
 
 use chrono::NaiveDate;
 use serde::Serialize;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, BTreeSet};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 pub struct InstrumentId(pub String);
@@ -294,10 +294,39 @@ pub struct NewsItem {
     pub observed_at: i64,
     /// Whether the version still tags this instrument ([`Tag::Removed`]: a tombstone).
     pub tag: Tag,
+    /// What distinguishes this version's content from another's (the collector's `version_key`).
+    ///
+    /// Needed to tell a re-fetch from a conflict. Two records can share a revision time because
+    /// they are the same revision delivered twice, or because the provider stamped two different
+    /// texts identically; the first is ordinary and the second is unanswerable, and only the
+    /// content says which. Keying that on the version ordinal instead called every redelivery a
+    /// conflict.
+    pub content_key: String,
+    /// The provider's own revision time for this version: when it says the article was last
+    /// changed (`updated_at`, falling back to `created_at`). `None` when neither parses.
+    ///
+    /// A fact about the record, carried rather than interpreted. Which version of a story is
+    /// **current** is decided per cutoff, over the versions visible then
+    /// ([`EvidenceStore::news_stories`]) — never by a flag computed over the whole file, because
+    /// a conflict first seen at 11:00 must not change what a replay of 10:00 decides.
+    pub revision_at: Option<i64>,
     /// The normalization rules that derived the classification fields (`news-rules-v1`,
     /// `news-rules-v2`, …). Carried on the record like a policy hash is carried on a decision:
     /// a changed rule is a new identity over the same stored stories, never an edit of them.
     pub rules: String,
+}
+
+/// One news story as of a cutoff.
+pub struct Story<'a> {
+    /// `news:<provider>:<article id>`.
+    pub id: &'a str,
+    /// The version the provider's revision order puts last among those visible.
+    pub current: &'a NewsItem,
+    /// Whether that order could be established from the visible versions. When false, which
+    /// version is current is a guess, so nothing may be decided on it.
+    pub ordered: bool,
+    /// Every version visible at the cutoff, in revision order.
+    pub visible: Vec<&'a NewsItem>,
 }
 
 /// Which news sources were searched successfully, over what window, for one instrument, or for
@@ -404,22 +433,68 @@ impl EvidenceStore {
     ///
     /// Causality is unchanged: a version is invisible until its own `observed_at`, so an edit
     /// cannot reach a decision already made, and the superseded rows stay in the store.
-    pub fn news_current(&self, i: &InstrumentId, cutoff: i64) -> Vec<&NewsItem> {
-        let mut by_story: BTreeMap<&str, &NewsItem> = BTreeMap::new();
+    /// One story as of a cutoff: the versions visible then, which of them is current, and whether
+    /// that could be established.
+    ///
+    /// Everything here is a function of the versions whose `observed_at` is at or before the
+    /// cutoff. That is the whole point: a conflicting version first seen at 11:00 must not change
+    /// what a decision at 10:00 says, and it used to — the order and the ambiguity were computed
+    /// over every row in the file and stamped onto each historical item, so replaying 10:00
+    /// against a full archive disagreed with replaying it against the 09:00 prefix. A projection
+    /// that depends on what came later is lookahead whatever the field is called.
+    pub fn news_stories<'a>(&'a self, i: &InstrumentId, cutoff: i64) -> Vec<Story<'a>> {
+        let mut by_story: BTreeMap<&'a str, Vec<&'a NewsItem>> = BTreeMap::new();
         for n in self.news.get(i).into_iter().flatten() {
             if n.observed_at > cutoff {
                 continue;
             }
-            match by_story.get_mut(n.id.as_str()) {
-                Some(cur) if (n.version, n.observed_at) <= (cur.version, cur.observed_at) => {}
-                Some(cur) => *cur = n,
-                None => {
-                    by_story.insert(n.id.as_str(), n);
-                }
-            }
+            by_story.entry(n.id.as_str()).or_default().push(n);
         }
         by_story
-            .into_values()
+            .into_iter()
+            .filter_map(|(id, mut visible)| {
+                // The provider's revision order, with the first sighting as a deterministic
+                // tiebreak. `version` is not used for this: it is observation order, which is
+                // what makes it a stable identity and what makes it the wrong answer here.
+                visible.sort_by_key(|n| (n.revision_at, n.observed_at, n.version));
+                let current = *visible.last()?;
+                // Whether the **current** version is determined — not whether the history is
+                // tidy. An old tie that a later unique revision has superseded decides nothing
+                // any more: rev09 may have arrived twice with different text, but once rev11 is
+                // visible and unique, what the story says now is settled. Treating any
+                // historical tie as permanent poisoned a story for the rest of its life.
+                //
+                // So only the newest revision is examined, with one exception: a version
+                // carrying no usable revision time cannot be placed at all, so it might be the
+                // newest, and nothing beside it can be called current.
+                let undated = visible.iter().any(|n| n.revision_at.is_none())
+                    && visible.iter().any(|n| n.revision_at.is_some());
+                let top = current.revision_at;
+                let contested: BTreeSet<&str> = visible
+                    .iter()
+                    .filter(|n| n.revision_at == top)
+                    .map(|n| n.content_key.as_str())
+                    .collect();
+                let tied = contested.len() > 1;
+                Some(Story {
+                    id,
+                    current,
+                    ordered: !tied && !undated,
+                    visible,
+                })
+            })
+            .collect()
+    }
+
+    /// The current version of each story that still tags this instrument.
+    ///
+    /// Includes stories whose order could not be established: whether that matters is the
+    /// caller's judgement, because it depends on what the caller would conclude from them
+    /// ([`Story::ordered`]).
+    pub fn news_current(&self, i: &InstrumentId, cutoff: i64) -> Vec<&NewsItem> {
+        self.news_stories(i, cutoff)
+            .into_iter()
+            .map(|s| s.current)
             .filter(|n| n.tag == Tag::Present)
             .collect()
     }
@@ -612,6 +687,8 @@ mod tests {
             published_at,
             observed_at,
             tag: Tag::Present,
+            content_key: "fixture".into(),
+            revision_at: Some(0),
             rules: "fixture".into(),
         }
     }

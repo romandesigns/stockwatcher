@@ -392,9 +392,40 @@ fn names_ticker(headline: &str, symbol: &str) -> bool {
         .any(|t| t == symbol)
 }
 
-/// Versions per story: records sorted by first sighting; consecutive identical `version_key`s
-/// collapse into the first (a re-fetch is not an edit), while a story that changes back to an
-/// earlier text is a new version (history is kept, not deduplicated).
+/// The provider's own revision time for a record: when it says the article was last changed.
+///
+/// `updated_at` is the article's revision; `created_at` is a fallback for a provider that sends no
+/// update time on a first publication. `None` when neither parses, which cannot be ordered
+/// against records that do.
+fn revision_at(r: &NewsVersionRecord) -> Option<i64> {
+    r.updated_at_ns.or(r.created_at_ns)
+}
+
+/// Versions per story, numbered by **first sighting**, with the provider's revision time carried
+/// alongside.
+///
+/// The numbering is observation order deliberately, and it is an identity rather than a ranking.
+/// Once a version has been observed its ordinal is fixed: nothing a later refresh discovers can
+/// change it, so `(id, version)` is stable and a decision that cited it still means the same
+/// thing afterwards. Numbering by the provider's revision time instead would renumber a story's
+/// earlier versions the moment an older revision was discovered late — rewriting the identity of
+/// evidence that had already been published.
+///
+/// Which version is **current** is a different question, and not one this function answers. It
+/// depends on the cutoff, because it must be settled over the versions visible then and no
+/// others (`stock_context::EvidenceStore::news_stories`).
+///
+/// Each canonical revision appears **once** per story, at its earliest observation (a re-fetch is
+/// not an edit). Collapsing only *adjacent* duplicates was not enough: a redelivery separated from
+/// its original by a late older revision — rev11 seen at 09:00, rev08 at 11:00, rev11 again at
+/// 12:00, which is what a forgotten cache entry produces — left two copies of rev11, and the later
+/// one won the revision-order tiebreak. The story's current version then carried the 12:00
+/// sighting instead of the 09:00 one, moving the observation time and the evidence identity of
+/// something already published.
+///
+/// A genuine edit back to an earlier text is not affected: the provider stamps it with a new
+/// revision time, which is part of the canonical key, so it is a distinct version and history
+/// keeps both.
 fn versions(records: &[NewsVersionRecord]) -> Vec<(u32, &NewsVersionRecord)> {
     let mut by_story: BTreeMap<(&str, &str), Vec<&NewsVersionRecord>> = BTreeMap::new();
     for r in records {
@@ -405,14 +436,16 @@ fn versions(records: &[NewsVersionRecord]) -> Vec<(u32, &NewsVersionRecord)> {
     }
     let mut out = Vec::new();
     for (_, mut rows) in by_story {
-        rows.sort_by_key(|r| r.first_observed_at);
-        let mut last: Option<&str> = None;
+        // Canonical content, not the raw key: the same revision of the same text written with a
+        // different timestamp format is one version, not two.
+        let key = |r: &NewsVersionRecord| r.content_key();
+        rows.sort_by_key(|r| (r.first_observed_at, key(r)));
+        let mut seen: BTreeSet<String> = BTreeSet::new();
         let mut n = 0;
         for r in rows {
-            if last == Some(r.version_key.as_str()) {
+            if !seen.insert(key(r)) {
                 continue;
             }
-            last = Some(r.version_key.as_str());
             n += 1;
             out.push((n, r));
         }
@@ -442,56 +475,84 @@ pub fn news_items_with(
     records: &[NewsVersionRecord],
     symbols: Option<&BTreeSet<String>>,
 ) -> Vec<NewsItem> {
+    // Every symbol any version of a story mentions, and when we first learned of that mention.
+    //
+    // A version has to produce a statement about *all* of them, not only about the symbols an
+    // earlier version happened to tag. Otherwise a symbol first revealed by a late-arriving older
+    // revision never learns that a newer revision dropped it: suppose revision 10 is seen first
+    // and tags only WXYZ, and revision 08 arrives two hours later tagging ABCD. ABCD's only
+    // visible version is then the older one that tags it, so ABCD qualifies on a story whose
+    // current content does not mention it at all.
+    //
+    // The tombstone for such a symbol is observed when the symbol's relation to the story became
+    // known, never when the version itself was seen — stamping it earlier would insert a record
+    // at a time nothing knew it existed, and a replay of that time would not be reproducible.
+    let mut revealed: BTreeMap<(&str, &str), BTreeMap<&str, i64>> = BTreeMap::new();
+    for (_, r) in versions(records) {
+        let key = (r.provider.as_str(), r.article_id.as_str());
+        let per_story = revealed.entry(key).or_default();
+        for sym in &r.symbols {
+            let e = per_story
+                .entry(sym.as_str())
+                .or_insert(r.first_observed_at);
+            *e = (*e).min(r.first_observed_at);
+        }
+    }
+
     let mut out = Vec::new();
-    let mut story: Option<(&str, &str)> = None;
-    let mut tagged_before: BTreeSet<&str> = BTreeSet::new();
     for (version, r) in versions(records) {
         let this = (r.provider.as_str(), r.article_id.as_str());
-        if story != Some(this) {
-            story = Some(this);
-            tagged_before = BTreeSet::new();
-        }
+        let all = revealed.get(&this).cloned().unwrap_or_default();
         let (event_type, noise) = classify_headline_with(rules, &r.headline);
         let credible = r.provider == "alpaca"
             && CREDIBLE_SOURCES.contains(&r.source.to_ascii_lowercase().as_str());
         let tagged_now: BTreeSet<&str> = r.symbols.iter().map(String::as_str).collect();
-        let item = |sym: &str, tag: Tag, relevant: bool, substantive: bool| NewsItem {
-            id: format!("news:{}:{}", r.provider, r.article_id),
-            version,
-            instrument: InstrumentId::symbol(sym),
-            event_type: event_type.into(),
-            source: format!("{}/{}", r.provider, r.source),
-            credible_source: credible,
-            relevant,
-            substantive,
-            // A news provider reporting a story: issuer or regulator confirmation is a
-            // separate, later enrichment.
-            authenticity: Authenticity::ReportedUnverified,
-            favorability: Favorability::Undetermined,
-            published_at: r.created_at_ns,
-            observed_at: r.first_observed_at,
-            tag,
-            rules: rules.tag().into(),
-        };
-        for sym in tagged_before.difference(&tagged_now) {
-            if symbols.is_none_or(|s| s.contains(*sym)) {
-                out.push(item(sym, Tag::Removed, false, false));
+        let item = |sym: &str, tag: Tag, relevant: bool, substantive: bool, observed_at: i64| {
+            NewsItem {
+                id: format!("news:{}:{}", r.provider, r.article_id),
+                version,
+                content_key: r.content_key(),
+                revision_at: revision_at(r),
+                instrument: InstrumentId::symbol(sym),
+                event_type: event_type.into(),
+                source: format!("{}/{}", r.provider, r.source),
+                credible_source: credible,
+                relevant,
+                substantive,
+                // A news provider reporting a story: issuer or regulator confirmation is a
+                // separate, later enrichment.
+                authenticity: Authenticity::ReportedUnverified,
+                favorability: Favorability::Undetermined,
+                published_at: r.created_at_ns,
+                observed_at,
+                tag,
+                rules: rules.tag().into(),
             }
-        }
-        for sym in &r.symbols {
-            if symbols.is_some_and(|s| !s.contains(sym)) {
+        };
+        for (sym, revealed_at) in &all {
+            if symbols.is_some_and(|s| !s.contains(*sym)) {
                 continue;
             }
-            let relevant =
-                r.symbols.len() <= MAX_SYMBOLS_FOR_RELEVANCE || names_ticker(&r.headline, sym);
-            out.push(item(
-                sym,
-                Tag::Present,
-                relevant,
-                event_type != "other" && !noise,
-            ));
+            if tagged_now.contains(sym) {
+                let relevant =
+                    r.symbols.len() <= MAX_SYMBOLS_FOR_RELEVANCE || names_ticker(&r.headline, sym);
+                out.push(item(
+                    sym,
+                    Tag::Present,
+                    relevant,
+                    event_type != "other" && !noise,
+                    r.first_observed_at,
+                ));
+            } else {
+                out.push(item(
+                    sym,
+                    Tag::Removed,
+                    false,
+                    false,
+                    r.first_observed_at.max(*revealed_at),
+                ));
+            }
         }
-        tagged_before = tagged_now;
     }
     out
 }

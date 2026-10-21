@@ -19,6 +19,7 @@ use market_providers::import::evidence_collect::{
 use market_providers::import::fmp::{FmpError, FmpKey};
 use market_providers::import::fmp_float::{fetch_float, fetch_float_all};
 use market_providers::import::http::{Http, HttpResponse, RetryPolicy};
+use serde_json::json;
 use std::cell::Cell;
 use std::collections::{BTreeSet, VecDeque};
 use std::time::Duration;
@@ -416,14 +417,15 @@ fn a_later_edit_is_a_new_version_that_an_earlier_cutoff_never_sees() {
         !http.urls[0].contains("symbols="),
         "one query for every symbol"
     );
-    let first = versions.observe(&f.stories);
+    let first = versions.propose(&f.stories);
     assert_eq!(first.len(), 10);
     a.append_news(&first).unwrap();
+    versions.commit(&first);
 
     // Poll 2 at 09:26: the same stories again add nothing.
     let mut http = Script::default().json(page_2023()).json(empty_page());
     let f = poll(&mut http, &q, t(day, 9, 26, 0));
-    assert!(versions.observe(&f.stories).is_empty());
+    assert!(versions.propose(&f.stories).is_empty());
 
     // Poll 3 at 11:00: story 35303347 was edited (new headline, later updated_at).
     let mut edited = page_2023();
@@ -438,11 +440,12 @@ fn a_later_edit_is_a_new_version_that_an_earlier_cutoff_never_sees() {
     let t3 = t(day, 11, 0, 0);
     let mut http = Script::default().json(edited).json(empty_page());
     let f = poll(&mut http, &q, t3);
-    let edit = versions.observe(&f.stories);
+    let edit = versions.propose(&f.stories);
     assert_eq!(edit.len(), 1);
     assert_eq!(edit[0].article_id, "35303347");
     assert_eq!(edit[0].first_observed_at, t3);
     a.append_news(&edit).unwrap();
+    versions.commit(&edit);
 
     let stored = a.read_news(None).unwrap();
     assert_eq!(stored.len(), 11);
@@ -517,7 +520,7 @@ fn coverage_fails_the_pillar_only_inside_the_searched_window() {
         (cov.covered_from, cov.covered_through, cov.observed_at),
         (start, end, now)
     );
-    a.append_news(&NewsVersions::default().observe(&f.stories))
+    a.append_news(&NewsVersions::default().propose(&f.stories))
         .unwrap();
     a.append_news_coverage(std::slice::from_ref(&cov)).unwrap();
 
@@ -639,14 +642,17 @@ fn duplicates_and_recycled_stories_are_kept_as_history() {
     let t0 = t("2026-10-15", 7, 0, 0);
     let mut v = NewsVersions::default();
     let mut stored: Vec<NewsVersionRecord> =
-        v.observe(&[(story(1, h, "2026-10-15T11:00:00Z"), t0)]);
+        v.propose(&[(story(1, h, "2026-10-15T11:00:00Z"), t0)]);
+    v.commit(&stored);
     // The identical story again: not a new version.
     assert!(
-        v.observe(&[(story(1, h, "2026-10-15T11:00:00Z"), t0 + H)])
+        v.propose(&[(story(1, h, "2026-10-15T11:00:00Z"), t0 + H)])
             .is_empty()
     );
     // The same headline under a new id (a recycled story): its own item, kept.
-    stored.extend(v.observe(&[(story(2, h, "2026-10-15T12:00:00Z"), t0 + 2 * H)]));
+    let recycled = v.propose(&[(story(2, h, "2026-10-15T12:00:00Z"), t0 + 2 * H)]);
+    v.commit(&recycled);
+    stored.extend(recycled);
     assert_eq!(stored.len(), 2);
     // A record written twice (a restart that lost the in-memory index) collapses in the loader,
     // keeping the first sighting.
@@ -673,7 +679,7 @@ fn duplicates_and_recycled_stories_are_kept_as_history() {
 fn roundups_are_not_relevant_and_screens_are_not_substantive() {
     let page = page_2023();
     let stories: Vec<RawStory> = serde_json::from_value(page["news"].clone()).unwrap();
-    let recs = NewsVersions::default().observe(
+    let recs = NewsVersions::default().propose(
         &stories
             .into_iter()
             .map(|s| (s, t("2023-10-18", 9, 25, 0)))
@@ -1023,4 +1029,250 @@ fn a_plan_refusal_clears_pending_float_retries() {
     clock.set(clock.get() + chrono::Duration::seconds(600));
     let r = float_tick(&mut c, &a, &mut Script::default(), &clock);
     assert_eq!(r.float_requests, 0, "paused until tomorrow: {r:?}");
+}
+
+/// A news append that fails leaves nothing believed stored, and no coverage is claimed for the
+/// window either.
+///
+/// This was the defect: the version index was updated as the records were handed to the caller,
+/// before the append. A failed append left the version marked in memory and absent from disk, so
+/// the next search suppressed the story as already known — and then wrote a coverage record
+/// saying the window had been searched. The story was permanently missing while coverage claimed
+/// it had been looked for, which reads as a confident "no qualifying news" rather than as an
+/// unknown. The lower-bound argument does not help here: a false FAIL is not a missing PASS.
+#[test]
+fn a_failed_news_append_leaves_nothing_seen_and_nothing_covered() {
+    let day = "2026-10-15";
+    let at = t(day, 9, 25, 0);
+    let story = |id: u64, headline: &str| -> RawStory {
+        serde_json::from_value(json!({
+            "id": id,
+            "headline": headline,
+            "summary": "",
+            "author": "Staff",
+            "created_at": "2026-10-15T13:00:00Z",
+            "updated_at": "2026-10-15T13:00:00Z",
+            "symbols": ["ABCD"],
+            "source": "benzinga",
+            "url": "https://example.invalid/1"
+        }))
+        .unwrap()
+    };
+    let stories = vec![(story(1, "ABCD Announces FDA Approval"), at)];
+
+    let mut v = NewsVersions::default();
+    let proposed = v.propose(&stories);
+    assert_eq!(proposed.len(), 1, "a new story is offered");
+    assert!(
+        v.is_empty(),
+        "and proposing it changed nothing: nothing is durable until it is stored"
+    );
+
+    // The append fails. The next search must offer the same version again.
+    let again = v.propose(&stories);
+    assert_eq!(
+        again, proposed,
+        "the same version is offered again, with its original first sighting"
+    );
+    assert_eq!(again[0].first_observed_at, at);
+
+    // Once it is really stored, it stops being offered.
+    v.commit(&proposed);
+    assert_eq!(v.len(), 1);
+    assert!(
+        v.propose(&stories).is_empty(),
+        "a durable version is not written twice"
+    );
+}
+
+/// A failed append and the real archive: the window's coverage is not claimed, so the news pillar
+/// stays UNKNOWN rather than reading as a searched window with no news.
+#[test]
+fn a_store_failure_does_not_claim_the_window() {
+    let (_tmp, a) = archive();
+
+    // A news directory that cannot be written into: a file where the directory belongs.
+    let dir = a.evidence_dir().join(market_archive::evidence::NEWS_DIR);
+    std::fs::create_dir_all(dir.parent().unwrap()).unwrap();
+    std::fs::write(&dir, b"not a directory").unwrap();
+
+    let at = t("2026-10-15", 9, 25, 0);
+    let s: RawStory = serde_json::from_value(json!({
+        "id": 7,
+        "headline": "ABCD Announces FDA Approval",
+        "summary": "",
+        "author": "Staff",
+        "created_at": "2026-10-15T13:00:00Z",
+        "updated_at": "2026-10-15T13:00:00Z",
+        "symbols": ["ABCD"],
+        "source": "benzinga",
+        "url": "https://example.invalid/7"
+    }))
+    .unwrap();
+    let v = NewsVersions::default();
+    let proposed = v.propose(&[(s, at)]);
+    assert_eq!(proposed.len(), 1);
+    assert!(
+        a.append_news(&proposed).is_err(),
+        "the fixture really made the append fail"
+    );
+    // The collector's rule: on a failed append it does not commit and does not claim coverage.
+    assert!(v.is_empty(), "nothing became durable");
+    assert_eq!(
+        a.read_news_coverage(None).map(|c| c.len()).unwrap_or(0),
+        0,
+        "and no coverage record says the window was searched"
+    );
+}
+
+/// A redelivery of an *older* version through another transport is not a new revision.
+///
+/// Keeping only the latest key meant a story that went v1 → v2 and was then redelivered as v1 — a
+/// REST page behind a stream, or the reverse — did not match, so a fresh record was written for
+/// v1 with a new `first_observed_at`. The story then reads as having changed back when nothing
+/// happened but a transport toggle.
+#[test]
+fn a_redelivered_older_version_is_not_a_new_revision() {
+    let at = t("2026-10-15", 9, 0, 0);
+    let story = |headline: &str, updated: &str| -> RawStory {
+        serde_json::from_value(json!({
+            "id": 11,
+            "headline": headline,
+            "summary": "",
+            "author": "Staff",
+            "created_at": "2026-10-15T13:00:00Z",
+            "updated_at": updated,
+            "symbols": ["ABCD"],
+            "source": "benzinga",
+            "url": "https://example.invalid/11"
+        }))
+        .unwrap()
+    };
+    let v1 = story("ABCD Announces FDA Approval", "2026-10-15T13:00:00Z");
+    let v2 = story(
+        "ABCD Announces FDA Approval Of Lead Candidate",
+        "2026-10-15T14:00:00Z",
+    );
+
+    let mut v = NewsVersions::default();
+    let first = v.propose(&[(v1.clone(), at)]);
+    v.commit(&first);
+    let second = v.propose(&[(v2.clone(), at + 3_600 * 1_000_000_000)]);
+    v.commit(&second);
+    assert_eq!((first.len(), second.len()), (1, 1), "an edit is a version");
+
+    // Now the first version arrives again, on the other transport, later.
+    let redelivered = v.propose(&[(v1, at + 7_200 * 1_000_000_000)]);
+    assert!(
+        redelivered.is_empty(),
+        "a version already stored is not written again with a new first sighting: {redelivered:?}"
+    );
+    // And the newer one is not re-proposed either.
+    assert!(
+        v.propose(&[(v2, at + 7_300 * 1_000_000_000)]).is_empty()
+    );
+    assert_eq!(v.forgotten(), 0);
+}
+
+/// Versions per story are bounded, and what is dropped is counted rather than changing the rule
+/// in silence.
+#[test]
+fn versions_per_story_are_bounded_and_counted() {
+    let at = t("2026-10-15", 9, 0, 0);
+    let mut v = NewsVersions::default();
+    let edit = |n: usize| -> RawStory {
+        serde_json::from_value(json!({
+            "id": 5,
+            "headline": format!("ABCD Announces FDA Approval, revision {n}"),
+            "summary": "",
+            "author": "Staff",
+            "created_at": "2026-10-15T13:00:00Z",
+            "updated_at": format!("2026-10-15T13:{:02}:00Z", n % 60),
+            "symbols": ["ABCD"],
+            "source": "benzinga",
+            "url": "https://example.invalid/5"
+        }))
+        .unwrap()
+    };
+    let first = v.propose(&[(edit(0), at)]);
+    v.commit(&first);
+    for n in 1..=market_providers::import::alpaca_news::VERSIONS_PER_STORY {
+        let r = v.propose(&[(edit(n), at + n as i64)]);
+        v.commit(&r);
+    }
+    assert_eq!(
+        v.forgotten(),
+        1,
+        "one key past the bound was dropped, and said so"
+    );
+    // The oldest version can no longer be recognised, which is the honest cost of the bound: it
+    // would be written again rather than silently treated as known.
+    assert_eq!(v.propose(&[(edit(0), at + 10_000)]).len(), 1);
+}
+
+/// Two versions of a story in one search are both offered once, not twice.
+#[test]
+fn one_search_offering_a_story_twice_proposes_it_once() {
+    let at = t("2026-10-15", 9, 0, 0);
+    let s: RawStory = serde_json::from_value(json!({
+        "id": 9,
+        "headline": "ABCD Announces FDA Approval",
+        "summary": "",
+        "author": "Staff",
+        "created_at": "2026-10-15T13:00:00Z",
+        "updated_at": "2026-10-15T13:00:00Z",
+        "symbols": ["ABCD"],
+        "source": "benzinga",
+        "url": "https://example.invalid/9"
+    }))
+    .unwrap();
+    let v = NewsVersions::default();
+    let out = v.propose(&[(s.clone(), at), (s, at + 1)]);
+    assert_eq!(out.len(), 1, "the same payload twice in one page is one version");
+    assert_eq!(out[0].first_observed_at, at, "and keeps the first sighting");
+}
+
+/// The version index is bounded in both directions: versions per story and stories in total.
+///
+/// `VERSIONS_PER_STORY` bounds each story's list, but the number of stories grew for the life of
+/// the process — a few thousand articles a day, every day a collector stays up. Both bounds now
+/// forget the least recent and count what they forget, because a forgotten version would be
+/// appended again and that is worth knowing rather than discovering from the file.
+#[test]
+fn the_version_index_is_bounded_by_stories_as_well_as_versions() {
+    use market_providers::import::alpaca_news::STORIES_TRACKED;
+    let at = t("2026-10-15", 9, 0, 0);
+    let story = |id: u64| -> RawStory {
+        serde_json::from_value(json!({
+            "id": id,
+            "headline": format!("ABCD Announces FDA Approval {id}"),
+            "summary": "",
+            "author": "Staff",
+            "created_at": "2026-10-15T13:00:00Z",
+            "updated_at": "2026-10-15T13:00:00Z",
+            "symbols": ["ABCD"],
+            "source": "benzinga",
+            "url": "https://example.invalid/x"
+        }))
+        .unwrap()
+    };
+    let mut v = NewsVersions::default();
+    for id in 0..(STORIES_TRACKED as u64 + 50) {
+        let r = v.propose(&[(story(id), at + id as i64)]);
+        v.commit(&r);
+    }
+    assert_eq!(
+        v.len(),
+        STORIES_TRACKED,
+        "the index never grows past its bound"
+    );
+    assert_eq!(v.stories_forgotten(), 50, "and says how many it dropped");
+    assert_eq!(v.forgotten(), 50, "one version each");
+
+    // The oldest story is no longer recognised, which is the honest cost: it would be appended
+    // again rather than silently treated as stored.
+    assert_eq!(v.propose(&[(story(0), at + 1_000_000)]).len(), 1);
+    // A story confirmed again moves to the back, so it is not the next to go.
+    let recent = STORIES_TRACKED as u64 + 49;
+    assert!(v.propose(&[(story(recent), at)]).is_empty());
 }

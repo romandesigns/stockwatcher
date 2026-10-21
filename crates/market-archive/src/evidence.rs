@@ -95,8 +95,47 @@ pub struct NewsVersionRecord {
     pub author: Option<String>,
     pub symbols: Vec<String>,
     pub url: Option<String>,
-    /// What distinguishes versions: SHA-256 over updated_at, headline, summary and symbols.
+    /// What distinguishes versions as the collector wrote it: SHA-256 over the **raw**
+    /// `updated_at` string, headline, summary and symbols.
+    ///
+    /// Kept exactly as written, because it is provenance: it is what that collector hashed, and
+    /// rewriting it would change the identity of records already on disk. It is not the right
+    /// thing to *compare*, though — see [`NewsVersionRecord::content_key`].
     pub version_key: String,
+}
+
+impl NewsVersionRecord {
+    /// What makes this version's content distinct, canonically.
+    ///
+    /// [`NewsVersionRecord::version_key`] hashes the raw `updated_at` string, and two transports
+    /// write the same instant differently: a REST page sends `2026-10-15T14:00:00Z` where a
+    /// stream sends `2026-10-15T14:00:00.000000+00:00`. Those parse to the same nanosecond and
+    /// describe the same revision of the same text, but they hash differently — so the same
+    /// content read as two contents at one revision time, which is precisely the shape of a
+    /// genuine conflict. The story would be reported unanswerable because of a formatting
+    /// difference.
+    ///
+    /// So comparisons use the parsed revision time and the content hashes the provider's text
+    /// produced, and the raw key stays on the record untouched.
+    pub fn content_key(&self) -> String {
+        let mut symbols = self.symbols.clone();
+        symbols.sort();
+        symbols.dedup();
+        let revision = self
+            .updated_at_ns
+            .or(self.created_at_ns)
+            .map(|t| t.to_string())
+            .unwrap_or_else(|| "none".to_string());
+        sha256_hex(
+            format!(
+                "{revision}\n{}\n{}\n{}",
+                self.headline_sha256,
+                self.summary_sha256,
+                symbols.join(",")
+            )
+            .as_bytes(),
+        )
+    }
 }
 
 /// Which symbols a successful search covered.

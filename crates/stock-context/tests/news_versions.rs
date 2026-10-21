@@ -61,6 +61,8 @@ fn version(v: u32, substantive: bool, relevant: bool, observed: i64) -> NewsItem
         published_at: Some(t(8, 0, 0)),
         observed_at: observed,
         tag: Tag::Present,
+        content_key: format!("fixture-v{v}"),
+        revision_at: Some(v as i64),
         rules: "news-rules-v2".into(),
     }
 }
@@ -206,4 +208,102 @@ fn pruning_never_revives_a_superseded_version() {
         "the latest visible version must still be the non-substantive edit, got {:?}",
         current.iter().map(|n| n.version).collect::<Vec<_>>()
     );
+}
+
+// --- ambiguity only blocks what it could decide ----------------------------------------------
+
+/// A version of another story, so one symbol can carry two stories at once.
+fn other_story(id: &str, content: &str, revision: i64, observed: i64, published: i64) -> NewsItem {
+    NewsItem {
+        id: id.into(),
+        version: 1,
+        content_key: content.into(),
+        revision_at: Some(revision),
+        published_at: Some(published),
+        observed_at: observed,
+        ..version(1, true, true, observed)
+    }
+}
+
+/// One story whose current version cannot be established does not block a fresh, separately
+/// established catalyst.
+///
+/// The pillar's claim is existential: one qualifying story is enough. A first draft asked the
+/// broad question "is anything about this symbol ambiguous" before looking at the qualifying
+/// items at all, so a stale conflicting story — outside the freshness window, or irrelevant —
+/// forced UNKNOWN beside a perfectly good company catalyst. The ambiguity has to be able to
+/// change the answer before it may withhold one.
+#[test]
+fn an_unrelated_ambiguous_story_does_not_block_a_fresh_catalyst() {
+    let mut e = engine();
+    // A fresh, unambiguous catalyst.
+    e.add_news(version(1, true, true, t(9, 0, 0)));
+    // And a second story with two contents claiming one revision time — but published two days
+    // ago, so no version of it could qualify whichever is current.
+    let stale = t(8, 0, 0) - 2 * 24 * 3_600 * 1_000_000_000;
+    e.add_news(other_story("news:ABCD:2", "a", 50, t(9, 0, 0), stale));
+    e.add_news(other_story("news:ABCD:2", "b", 50, t(9, 0, 0), stale));
+
+    let ds = run(&mut e, (9, 31, 0));
+    let last = ds.last().expect("a decision");
+    assert_eq!(
+        pillar(last, PillarId::News).state,
+        Tri::Pass,
+        "the fresh catalyst decides it: {:?}",
+        pillar(last, PillarId::News)
+    );
+    assert_eq!(
+        last.news.items,
+        vec!["news:ABCD:1@1".to_string()],
+        "and only the story that was actually established is cited"
+    );
+}
+
+/// An ambiguous story that *could* qualify does withhold the answer, because which version is
+/// current decides whether this symbol has a catalyst at all.
+#[test]
+fn an_ambiguous_story_that_could_qualify_withholds_the_answer() {
+    let mut e = engine();
+    let published = t(8, 0, 0);
+    // Two contents at one revision time, both fresh and both qualifying.
+    e.add_news(other_story("news:ABCD:2", "a", 50, t(9, 0, 0), published));
+    e.add_news(other_story("news:ABCD:2", "b", 50, t(9, 0, 0), published));
+    // Market-wide coverage, so without the ambiguity this would be a confident FAIL.
+    e.add_coverage(NewsCoverage {
+        id: "cov:all".into(),
+        instrument: InstrumentId::market(),
+        sources: vec!["benzinga".into()],
+        covered_from: t(4, 0, 0) - 48 * 3_600 * 1_000_000_000,
+        covered_through: t(9, 31, 0),
+        observed_at: t(9, 0, 0),
+    });
+
+    let ds = run(&mut e, (9, 31, 0));
+    let last = ds.last().expect("a decision");
+    let p = pillar(last, PillarId::News);
+    assert_eq!(p.state, Tri::Unknown, "{p:?}");
+    assert_eq!(p.reason, "news_revision_order_unknown");
+    assert!(
+        last.news.items.is_empty(),
+        "nothing is cited from a story whose current version is a guess"
+    );
+}
+
+/// With no ambiguity and covered sources, the absence of qualifying news is still a FAIL: the
+/// ambiguity check does not turn every FAIL into UNKNOWN.
+#[test]
+fn covered_sources_with_nothing_qualifying_still_fail() {
+    let mut e = engine();
+    e.add_coverage(NewsCoverage {
+        id: "cov:all".into(),
+        instrument: InstrumentId::market(),
+        sources: vec!["benzinga".into()],
+        covered_from: t(4, 0, 0) - 48 * 3_600 * 1_000_000_000,
+        covered_through: t(9, 31, 0),
+        observed_at: t(9, 0, 0),
+    });
+    let ds = run(&mut e, (9, 31, 0));
+    let p = pillar(ds.last().expect("a decision"), PillarId::News);
+    assert_eq!(p.state, Tri::Fail, "{p:?}");
+    assert_eq!(p.reason, "no_matching_news_in_covered_sources");
 }

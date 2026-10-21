@@ -32,7 +32,7 @@ use chrono::{DateTime, Utc};
 use market_archive::evidence::EVIDENCE_SCHEMA;
 use market_archive::{CoverageScope, NewsCoverageRecord, NewsVersionRecord, sha256_hex};
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
 
 pub const PROVIDER: &str = "alpaca";
@@ -231,57 +231,147 @@ pub fn version_record(s: &RawStory, observed_at: i64) -> NewsVersionRecord {
     }
 }
 
-/// Which version of each story was seen last, so a re-fetch adds nothing and an edit adds one.
+/// Version keys kept per story before the oldest is forgotten.
+///
+/// An article gets a handful of edits; this is generous for that and bounds a provider that
+/// changes one story endlessly. Past it the oldest key is dropped and counted, after which a
+/// redelivery of that exact version can no longer be recognised — so the overflow is reported
+/// rather than silently changing what the collector believes.
+pub const VERSIONS_PER_STORY: usize = 32;
+
+/// Stories the version index keeps before the least recently confirmed is forgotten.
+///
+/// [`VERSIONS_PER_STORY`] bounds each story's list; without this the number of *stories* grows
+/// for the life of the process — a few thousand articles a day, every day a long-running
+/// collector stays up. A story that has not been seen for that many newer stories is past every
+/// search window the collector asks about, so forgetting it costs at most one re-append if it
+/// ever comes back, and that is counted.
+pub const STORIES_TRACKED: usize = 20_000;
+
+/// Which versions of each story are **durably stored**, so a re-fetch adds nothing, an edit adds
+/// one, and a redelivery of an older version through another transport adds nothing either.
+///
 /// Built from the stored records at start-up (the loader applies the same rule, so a story whose
 /// earlier versions fell outside what was loaded is still collapsed correctly there).
+///
+/// # Durable, not merely seen
+///
+/// The two are different and conflating them lost evidence. This used to mark a version seen as
+/// it handed the record to its caller, before the caller had appended it. An append that failed
+/// left the version marked in memory and absent from disk: the next search suppressed it as
+/// already known, and then wrote a **coverage** record saying the window had been searched. So
+/// the story was permanently missing while coverage claimed it had been looked for — which is a
+/// false FAIL for the news pillar, the one direction the lower-bound argument cannot absorb.
+///
+/// [`NewsVersions::propose`] therefore changes nothing, and [`NewsVersions::commit`] is called
+/// only after the records are on disk.
+///
+/// # Every known version, not just the latest
+///
+/// Keeping only the latest key meant a story that went v1 → v2 and was then redelivered as v1
+/// (a REST page behind a stream, or the reverse) did not match, and a *new* record was written
+/// for v1 with a new `first_observed_at`. That fabricates a revision out of a transport toggle
+/// and backdates nothing: the story reads as having changed when it did not.
 #[derive(Debug, Default)]
 pub struct NewsVersions {
-    latest: HashMap<String, (i64, String)>,
+    /// Every durable version key per story, oldest first.
+    known: HashMap<String, VecDeque<String>>,
+    /// Story ids in the order they were last confirmed, least recent first: what to forget when
+    /// [`STORIES_TRACKED`] is reached.
+    order: VecDeque<String>,
+    /// Keys dropped at [`VERSIONS_PER_STORY`]. A redelivery of one of those can no longer be
+    /// recognised, so it is a number a caller can report rather than a silent change of rule.
+    forgotten: u64,
+    /// Whole stories dropped at [`STORIES_TRACKED`], for the same reason.
+    stories_forgotten: u64,
 }
 
 impl NewsVersions {
     pub fn from_records(records: &[NewsVersionRecord]) -> Self {
         let mut v = NewsVersions::default();
-        for r in records {
-            v.note(r);
-        }
+        v.commit(records);
         v
     }
 
-    fn note(&mut self, r: &NewsVersionRecord) {
-        let e = self
-            .latest
-            .entry(r.article_id.clone())
-            .or_insert((i64::MIN, String::new()));
-        if r.first_observed_at >= e.0 {
-            *e = (r.first_observed_at, r.version_key.clone());
+    /// Records whose versions are now on disk. Called **after** a successful append.
+    ///
+    /// Keyed on canonical content ([`NewsVersionRecord::content_key`]) rather than the raw
+    /// `version_key`, so the same revision of the same text delivered by two transports with
+    /// differently formatted timestamps is recognised as one version instead of being appended
+    /// twice.
+    pub fn commit(&mut self, records: &[NewsVersionRecord]) {
+        for r in records {
+            let key = r.content_key();
+            let fresh = !self.known.contains_key(&r.article_id);
+            let keys = self.known.entry(r.article_id.clone()).or_default();
+            if keys.iter().any(|k| *k == key) {
+                continue;
+            }
+            if keys.len() == VERSIONS_PER_STORY {
+                keys.pop_front();
+                self.forgotten += 1;
+            }
+            keys.push_back(key);
+            // Most recently confirmed goes to the back; a story confirmed again moves there.
+            if !fresh
+                && let Some(i) = self.order.iter().position(|id| *id == r.article_id)
+            {
+                self.order.remove(i);
+            }
+            self.order.push_back(r.article_id.clone());
+            while self.order.len() > STORIES_TRACKED {
+                if let Some(oldest) = self.order.pop_front()
+                    && let Some(dropped) = self.known.remove(&oldest)
+                {
+                    self.forgotten += dropped.len() as u64;
+                    self.stories_forgotten += 1;
+                }
+            }
         }
     }
 
-    /// The stories that are new or changed since their last sighting, as records to append.
-    pub fn observe(&mut self, stories: &[(RawStory, i64)]) -> Vec<NewsVersionRecord> {
-        let mut out = Vec::new();
+    /// The versions in `stories` that are not durable yet, as records to append.
+    ///
+    /// Changes nothing: until the caller has stored these and called [`NewsVersions::commit`],
+    /// nothing here believes it has seen them. Duplicates **within** the batch collapse too, so
+    /// one search returning a story twice proposes it once.
+    pub fn propose(&self, stories: &[(RawStory, i64)]) -> Vec<NewsVersionRecord> {
+        let mut out: Vec<NewsVersionRecord> = Vec::new();
         for (s, at) in stories {
             let r = version_record(s, *at);
-            if self
-                .latest
+            let key = r.content_key();
+            let durable = self
+                .known
                 .get(&r.article_id)
-                .is_some_and(|(_, k)| *k == r.version_key)
-            {
+                .is_some_and(|keys| keys.iter().any(|k| *k == key));
+            let proposed = out
+                .iter()
+                .any(|p| p.article_id == r.article_id && p.content_key() == key);
+            if durable || proposed {
                 continue;
             }
-            self.note(&r);
             out.push(r);
         }
         out
     }
 
+    /// Version keys dropped at either bound.
+    pub fn forgotten(&self) -> u64 {
+        self.forgotten
+    }
+
+    /// Whole stories dropped at [`STORIES_TRACKED`].
+    pub fn stories_forgotten(&self) -> u64 {
+        self.stories_forgotten
+    }
+
+    /// Stories with at least one durable version.
     pub fn len(&self) -> usize {
-        self.latest.len()
+        self.known.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.latest.is_empty()
+        self.known.is_empty()
     }
 }
 

@@ -56,6 +56,8 @@ fn news_at(policy: Policy, gap_secs: i64, item_observed: Option<i64>) -> PillarR
             published_at: Some(obs - S),
             observed_at: obs,
             tag: Tag::Present,
+            content_key: "fixture".into(),
+            revision_at: Some(0),
             rules: "fixture".into(),
         });
     }
