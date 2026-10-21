@@ -118,6 +118,19 @@ is admissible only if all of these hold:
 
 Fixture references are `synthetic: true`, and every window that read one says so.
 
+The core also refuses, with `unavailable` and a specific reason, any reference that:
+- has fewer than 10 prior sessions (`quiet_reference_too_few_sessions`), unless it is the
+  proposal's explicitly flagged pooled fallback (`short_history`, then labelled
+  `quiet_short_history`);
+- uses a percentile other than the policy's 30 (`quiet_reference_wrong_percentile`);
+- has a basis other than `split_adjusted` (`quiet_reference_basis_unsupported`; only fixtures may
+  use `synthetic`);
+- is synthetic in a run that is not a fixture (`quiet_reference_synthetic_outside_fixture`);
+- has a negative threshold.
+
+The latest version observed by the cutoff decides. An inadmissible latest version is never
+replaced by an older one.
+
 Quietness never gates the parent ignition; it is a stratum label on it.
 
 ## Families
@@ -311,7 +324,8 @@ Every `Check` carries `required`:
   (`dollar_volume_rate`, `trade_rate`, `volume_condition`), `below_range_high`, `extended`,
   `extended_above_range_high` and `ordering_ambiguous`.
 
-Clients read `required`; they never infer it from a check's name or reason.
+Clients read `required`; they never infer it from a check's name or reason. An episode's `checks` are the checks of its latest transition that carried any (for example, the
+rules at arming). A transition without checks, such as an interruption, leaves them as they were.
 
 ## Snapshot behaviour
 
@@ -325,6 +339,9 @@ Clients read `required`; they never infer it from a check's name or reason.
   7. acceleration.
 
   Ties go to the larger `last_material_seq`, then the episode id.
+- **Revisions of the latest print.** A correction or cancel recomputes the latest admitted price
+  from the prints still standing, in admission order, or leaves it unavailable. A revised print is
+  never shown again.
 - **Ordering.** Only transitions are sequenced. Price and proximity changes update `current`
   (distance to trigger/invalidation in micros and bp, `at_or_above_trigger`, `stale`) and never
   the sequence, so ordinary ticks cannot re-order rows.

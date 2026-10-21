@@ -353,9 +353,19 @@ fn an_armed_micro_stays_armed_with_an_optional_unknown_volume_check() {
     let ts = fixture::drive(&mut e, &s.steps);
     let armed = ts.last().unwrap();
     assert_eq!(armed.to, State::Armed);
-    let v = armed.checks.iter().find(|c| c.name == "volume_condition").unwrap();
+    let v = armed
+        .checks
+        .iter()
+        .find(|c| c.name == "volume_condition")
+        .unwrap();
     assert!(!v.required);
-    assert!(armed.checks.iter().filter(|c| c.required).all(|c| c.state == Tri::Pass));
+    assert!(
+        armed
+            .checks
+            .iter()
+            .filter(|c| c.required)
+            .all(|c| c.state == Tri::Pass)
+    );
     let ep = &e.detection_snapshot().unwrap().active[0];
     assert_eq!(ep.state, State::Armed);
 }
@@ -382,8 +392,15 @@ fn near_trigger_is_geometry_at_the_policy_boundary_and_absent_without_a_rule() {
         s.print_admitted("NEAR", at, at + 1, micros, 100);
         let mut e = fixture::engine("t");
         fixture::drive(&mut e, &s.steps);
-        let cur = e.detection_snapshot().unwrap().active[0].current.clone().unwrap();
-        (cur.near_trigger, cur.near_trigger_bp, e.detection_snapshot().unwrap().cursor)
+        let cur = e.detection_snapshot().unwrap().active[0]
+            .current
+            .clone()
+            .unwrap();
+        (
+            cur.near_trigger,
+            cur.near_trigger_bp,
+            e.detection_snapshot().unwrap().cursor,
+        )
     };
     let t = end(11) + 3 * S;
     // T = 3.40: 3.3664 is 0.0336 below, 99.8 bp of the price.
@@ -403,6 +420,9 @@ fn near_trigger_is_geometry_at_the_policy_boundary_and_absent_without_a_rule() {
     let mut e = Engine::new(Policy::current(), fixture::engine("t").run_info().clone())
         .with_detection_policy(DetectionPolicy::v0());
     fixture::drive(&mut e, &s.steps);
-    let cur = e.detection_snapshot().unwrap().active[0].current.clone().unwrap();
+    let cur = e.detection_snapshot().unwrap().active[0]
+        .current
+        .clone()
+        .unwrap();
     assert_eq!((cur.near_trigger, cur.near_trigger_bp), (None, None));
 }

@@ -242,9 +242,11 @@ pub(crate) fn window(
         match det
             .reference(x.symbol, seg.id, x.tau)
             .filter(|r| r.prior_through < seg.id.date && r.segment == seg.id.kind)
+            .map(|r| admissible(r, p.context.reference_percentile, x.fidelity))
         {
             None => (ContextClass::Unavailable, "quiet_reference_unavailable"),
-            Some(r) => {
+            Some(Err(why)) => (ContextClass::Unavailable, why),
+            Some(Ok(r)) => {
                 w.quiet_reference = Some(format!("{}@{}", r.id, r.version));
                 w.quiet_reference_synthetic = Some(r.synthetic);
                 w.q_low_ppm = Some(r.q_low_ppm);
@@ -270,6 +272,40 @@ pub(crate) fn window(
     w.context = ctx;
     w.context_reason = why;
     w
+}
+
+/// Prior sessions a symbol's own percentiles need (ignition-v0 proposal §4); fewer is only
+/// usable as the proposal's explicitly flagged pooled fallback (`short_history`).
+pub const QUIET_MIN_SESSIONS: u32 = 10;
+
+/// Whether a reference may label quietness at all. The engine cannot check how a loader computed
+/// it, so it refuses what it can see is outside the definition rather than trusting the label:
+/// too few sessions without the fallback flag, another percentile, a basis other than split-
+/// adjusted (cross-session ranges straddling a split are not comparable), or a synthetic
+/// reference in a run that is not a fixture. Refused means `unavailable`, never quiet or moving.
+pub(crate) fn admissible(
+    r: &super::QuietReference,
+    percentile: u32,
+    fidelity: crate::Fidelity,
+) -> Result<&super::QuietReference, &'static str> {
+    let fixture = fidelity == crate::Fidelity::SyntheticFixture;
+    if r.synthetic && !fixture {
+        return Err("quiet_reference_synthetic_outside_fixture");
+    }
+    if r.percentile != percentile {
+        return Err("quiet_reference_wrong_percentile");
+    }
+    if r.prior_sessions == 0 || (r.prior_sessions < QUIET_MIN_SESSIONS && !r.short_history) {
+        return Err("quiet_reference_too_few_sessions");
+    }
+    let basis_ok = r.basis == "split_adjusted" || (r.synthetic && r.basis == "synthetic");
+    if !basis_ok {
+        return Err("quiet_reference_basis_unsupported");
+    }
+    if r.q_low_ppm < 0 || r.d_low_ppm < 0 {
+        return Err("quiet_reference_invalid_threshold");
+    }
+    Ok(r)
 }
 
 /// Feature snapshot of the bar completing at this barrier, if it traded.

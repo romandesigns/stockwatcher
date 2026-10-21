@@ -1125,6 +1125,18 @@ impl Engine {
                 }
             }
         }
+        if self.detector.is_some() {
+            // The detectors' "latest admitted price" must not survive the revision of the print
+            // it came from: recompute it from the prints still standing, in admission order
+            // (the ledger's), and make it unavailable when none is left.
+            let latest = sym
+                .ledger
+                .iter()
+                .rev()
+                .find(|a| a.verdict.ohlc && !a.removed)
+                .map(|a| (a.exec, a.admit, a.price));
+            detect::set_latest_print(&mut sym.det, latest);
+        }
         if queued {
             // Revised before its barrier: nothing to undo, and the barrier will count whatever
             // the entry now says.

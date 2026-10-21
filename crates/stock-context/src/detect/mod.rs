@@ -834,12 +834,17 @@ pub(crate) fn emit(det: &mut Detector, ep: &mut Ep, c: Change) -> String {
         features: c.features,
         level: c.level,
         anchors,
-        checks: c.checks,
+        checks: c.checks.clone(),
         correction_of: c.correction_of,
         warmup: ep.view.warmup,
         default_visible: ep.view.default_visible,
         related_episode_ids: ep.view.related_episode_ids.clone(),
     });
+    // The episode's current checklist is the latest one a transition supplied; a transition
+    // with none (an interruption, an expiry) leaves the last evaluated rules visible.
+    if !c.checks.is_empty() {
+        ep.view.checks = c.checks;
+    }
     ep.view.state = c.to;
     ep.view.last_material_seq = det.seq;
     ep.view.last_material_at = c.observed_at;
@@ -1097,6 +1102,11 @@ pub(crate) fn on_revision(
     }
     micro::on_revision(det, sd, id, exec, now, admit);
     retire_terminal(det, sd);
+}
+
+/// Replaces a symbol's latest admitted price after a revision (`None`: no standing print).
+pub(crate) fn set_latest_print(sd: &mut SymDetect, latest: Option<(i64, i64, i64)>) {
+    sd.last_seen = latest.map(|(exec, admit, price)| Seen { exec, admit, price });
 }
 
 /// Opens or closes a gap for a symbol or the whole market.
