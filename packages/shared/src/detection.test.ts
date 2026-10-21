@@ -93,6 +93,19 @@ describe("snapshot cursor, freshness and source isolation", () => {
     for (let i = 1; i <= 30; i++) c.apply({ ...frame(), runEpoch: `server-boot:${i}` });
     c.apply({ ...frame(99), runEpoch: "server-boot:1" });
     expect(c.get().frame!.runEpoch).toBe("server-boot:30");
+    c.apply({ ...frame(), runEpoch: "new-boot:1" });
+    for (let i = 2; i <= 30; i++) c.apply({ ...frame(), runEpoch: `new-boot:${i}` });
+    c.apply({ ...frame(100), runEpoch: "server-boot:30" });
+    expect(c.get().frame!.runEpoch).toBe("new-boot:30");
+  });
+
+  test("exhausted server identity retention fails visibly instead of forgetting old servers", () => {
+    const c = createDetectionChannel({ subscribe() {}, unsubscribe() {} });
+    for (let i = 0; i <= 65; i++) c.apply({ ...frame(), runEpoch: `boot-${i}:1` });
+    expect(c.get().frame!.runEpoch).toBe("boot-64:1");
+    expect(c.get().error).toBe("epoch_history_full_reload_required");
+    c.apply({ ...frame(), runEpoch: "boot-0:1" });
+    expect(c.get().frame!.runEpoch).toBe("boot-64:1");
   });
 
   test("fixture is admissible on replay, rejected on live; unsupported schema requests explicit resync", () => {

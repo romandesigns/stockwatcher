@@ -226,7 +226,8 @@ function capturedLoss(telemetry: Record<string, unknown>): boolean {
 export function createDetectionChannel(io: { subscribe(): void; unsubscribe(): void; resync?(): void; source?: MarketSource }): DetectionChannel & { apply(m: DetectionMessage): void; reject(reason?: string): void; setConnected(open: boolean): void } {
   let state = EMPTY_DETECTION;
   const listeners = new Set<() => void>();
-  const retired: string[] = [];
+  const retired = new Set<string>();
+  const identity = (epoch: string) => { const p = epochPosition(epoch); return p ? `boot:${p.boot}` : `opaque:${epoch}`; };
   let requested: string | null = null;
   const emit = () => { for (const fn of listeners) fn(); };
   const resync = (m: DetectionMessage, reason: string) => {
@@ -251,7 +252,7 @@ export function createDetectionChannel(io: { subscribe(): void; unsubscribe(): v
     apply(m) {
       if (io.source && m.source !== io.source && !(io.source === "replay" && m.source === "fixture")) { resync(m, "source_mismatch"); return; }
       if (m.snapshot && m.snapshot.schema !== 1) { resync(m, "unsupported_schema"); return; }
-      if (retired.includes(m.runEpoch)) return;
+      if (retired.has(identity(m.runEpoch))) return;
       const previous = state.frame;
       const oldEpoch = previous && epochPosition(previous.runEpoch);
       const newEpoch = epochPosition(m.runEpoch);
@@ -260,8 +261,15 @@ export function createDetectionChannel(io: { subscribe(): void; unsubscribe(): v
       if (previous?.runEpoch === m.runEpoch && m.cursor < previous.cursor) return;
       if (previous?.runEpoch === m.runEpoch && m.cursor === previous.cursor && m.type !== "detection.snapshot") return;
       if (previous && previous.runEpoch !== m.runEpoch) {
-        retired.push(previous.runEpoch);
-        if (retired.length > 16) retired.shift();
+        const before = identity(previous.runEpoch);
+        if (before !== identity(m.runEpoch)) {
+          // Seeks within a boot need only its monotone generation. Retire the BOOT on a
+          // process replacement, so repeated seeks never evict a prior server identity.
+          // At the finite retention limit, require a fresh channel rather than forgetting
+          // an identity and letting its delayed snapshot become current again.
+          if (retired.size >= 64) { resync(m, "epoch_history_full_reload_required"); return; }
+          retired.add(before);
+        }
       }
       const last = previous?.runEpoch === m.runEpoch ? previous.history.last_sequence : null;
       const historyGap = last !== null && last !== undefined && m.history.first_sequence !== null && m.history.first_sequence > last + 1;
