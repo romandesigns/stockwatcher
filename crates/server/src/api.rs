@@ -92,6 +92,20 @@ pub async fn replay_state(
     Json(state.market_for(q.source).state_json())
 }
 
+/// Same bounded state/history as the opt-in socket. Export is deliberately a research seam,
+/// never a claim that a retained ring or unsealed journal is an exhaustive cohort.
+pub async fn detection_snapshot(
+    State(state): State<AppState>,
+    Query(q): Query<SourceQuery>,
+) -> Response {
+    let (_, _, frame) = state.market_for(q.source).detection_snapshot();
+    (
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        frame,
+    )
+        .into_response()
+}
+
 pub async fn symbols(
     State(state): State<AppState>,
     Query(q): Query<SourceQuery>,

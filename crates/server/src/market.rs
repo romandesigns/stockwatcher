@@ -201,6 +201,8 @@ pub struct MarketConfig {
     pub history_preload: bool,
     /// `STOCK_CONTEXT` (off by default): stock context and the Ross Panel (`crate::context`).
     pub stock_context: bool,
+    /// `DETECTION_PANEL` (off by default): independent experimental discovery, not Ross admission.
+    pub detection_panel: bool,
     /// `CONTEXT_EVIDENCE_CHECK_SECS`: period of the evidence check (`crate::evidence`); zero =
     /// only at startup and on a replay day switch.
     pub evidence_check: Duration,
@@ -219,6 +221,7 @@ impl Default for MarketConfig {
             follow_latest: false,
             history_preload: true,
             stock_context: false,
+            detection_panel: false,
             evidence_check: Duration::from_secs(crate::evidence::DEFAULT_CHECK_SECS),
         }
     }
@@ -248,6 +251,9 @@ impl MarketConfig {
         }
         if let Some(v) = var("STOCK_CONTEXT") {
             c.stock_context = on(&v);
+        }
+        if let Some(v) = var("DETECTION_PANEL") {
+            c.detection_panel = on(&v);
         }
         if let Some(v) = var("ARCHIVE_META_CHECK_SECS") {
             c.meta_check = Duration::from_secs(v.parse().map_err(|_| {
@@ -323,6 +329,12 @@ pub enum OutKind {
     /// A pre-serialized `ross.update` (the Ross Panel, `crate::context`) for the connections that
     /// sent `ross.subscribe`. `Outbound::seq` is the engine seq when it was taken.
     Ross(String),
+    /// Full bounded replacement; its cursor is independent of the chart engine sequence.
+    Detection {
+        epoch: String,
+        cursor: u64,
+        frame: String,
+    },
 }
 
 pub(crate) struct Core {
@@ -426,6 +438,9 @@ pub(crate) struct Inner {
     /// `STOCK_CONTEXT` (`MarketConfig::stock_context`): every `Core` this market makes gets a
     /// context board.
     context_on: AtomicBool,
+    detection_on: AtomicBool,
+    detection_subs: AtomicUsize,
+    pub(crate) detection: std::sync::OnceLock<Arc<crate::detection::Runtime>>,
     /// The last per-pillar readiness summary (`crate::context::Readiness`), taken on the evidence
     /// task and sent with every `ross` frame so an empty panel says why. A whole-market pass
     /// belongs nowhere near the publish path, so it is cached rather than computed per frame.
@@ -608,6 +623,9 @@ impl Market {
             quote_subs: AtomicUsize::new(0),
             pressure_subs: AtomicUsize::new(0),
             context_on: AtomicBool::new(false),
+            detection_on: AtomicBool::new(false),
+            detection_subs: AtomicUsize::new(0),
+            detection: std::sync::OnceLock::new(),
             readiness: Mutex::new(None),
             ross_subs: AtomicUsize::new(0),
             observations: crate::observe::ObservationSink::new(crate::observe::QUEUE_CAPACITY),
@@ -628,7 +646,9 @@ impl Market {
     /// for the day (`crate::evidence`): a seek's rebuild decides with the same evidence as the
     /// first pass, each record still joining only from its own `observed_at`.
     fn new_context_board(&self) -> Option<ContextBoard> {
-        if !self.0.context_on.load(Ordering::Relaxed) {
+        if !self.0.context_on.load(Ordering::Relaxed)
+            && !self.0.detection_on.load(Ordering::Relaxed)
+        {
             return None;
         }
         let day = self
@@ -1849,12 +1869,58 @@ impl Market {
         RossGuard(self.0.clone())
     }
 
+    pub fn detection_subscribe(&self) -> DetectionGuard {
+        self.0.detection_subs.fetch_add(1, Ordering::Relaxed);
+        DetectionGuard(self.0.clone())
+    }
+
+    pub fn detection_snapshot(&self) -> (String, u64, String) {
+        match self.0.detection.get() {
+            Some(d) => d.frame("detection.snapshot"),
+            None => (
+                String::new(),
+                0,
+                json!({"type":"detection.snapshot","enabled":false,
+                "source":self.detection_source(),"runEpoch":"","cursor":0,"snapshot":null,
+                "transitions":[],"replacement":true,"experimental":true,"alertsEnabled":false,
+                "history":{"capacity":crate::detection::HISTORY_CAPACITY,"dropped":0,
+                    "first_sequence":null,"last_sequence":null},"telemetry":{}})
+                .to_string(),
+            ),
+        }
+    }
+
+    pub fn detection_epoch_is_current(&self, epoch: &str) -> bool {
+        self.0.detection.get().is_some_and(|d| d.is_epoch(epoch))
+    }
+
+    fn detection_source(&self) -> &'static str {
+        if self
+            .0
+            .info
+            .lock()
+            .expect("info lock")
+            .as_ref()
+            .is_some_and(|i| i.fixture)
+        {
+            "fixture"
+        } else if self.0.mode == ClockMode::Live {
+            "live"
+        } else {
+            "replay"
+        }
+    }
+
     /// The Ross Panel as a `ross.snapshot` frame (`enabled: false` with `STOCK_CONTEXT` off), with
     /// the engine seq it is consistent with.
     pub fn ross_snapshot(&self) -> (u64, String) {
         let core = self.0.core.lock().expect("core lock");
         let readiness = self.0.readiness.lock().expect("readiness lock").clone();
-        let frame = match core.context.as_ref() {
+        let frame = match core
+            .context
+            .as_ref()
+            .filter(|_| self.0.context_on.load(Ordering::Relaxed))
+        {
             Some(cx) => cx.panel_frame("ross.snapshot", readiness.as_ref()),
             None => crate::context::disabled_frame(),
         };
@@ -1864,7 +1930,10 @@ impl Market {
     /// A symbol's latest stock-context decision as a `context.decision` frame.
     pub fn context_decision(&self, symbol: &str) -> String {
         let core = self.0.core.lock().expect("core lock");
-        let cx = core.context.as_ref();
+        let cx = core
+            .context
+            .as_ref()
+            .filter(|_| self.0.context_on.load(Ordering::Relaxed));
         crate::context::decision_frame(symbol, cx.and_then(|c| c.decision(symbol)), cx.is_some())
     }
 
@@ -2034,7 +2103,9 @@ impl Market {
     /// One `ross.update` when the panel changed and anyone is subscribed (from the quotes task,
     /// at most once per wall second). Skipped during a rebuild, like the other boards.
     pub fn publish_context(&self) {
-        if self.0.ross_subs.load(Ordering::Relaxed) == 0 {
+        if !self.0.context_on.load(Ordering::Relaxed)
+            || self.0.ross_subs.load(Ordering::Relaxed) == 0
+        {
             return;
         }
         let (seq, frame, snap) = {
@@ -2267,6 +2338,14 @@ impl Drop for QuotesGuard {
 
 /// Decrements the Ross Panel subscriber count when dropped.
 pub struct RossGuard(Arc<Inner>);
+
+pub struct DetectionGuard(Arc<Inner>);
+
+impl Drop for DetectionGuard {
+    fn drop(&mut self) {
+        self.0.detection_subs.fetch_sub(1, Ordering::Relaxed);
+    }
+}
 
 impl Drop for RossGuard {
     fn drop(&mut self) {

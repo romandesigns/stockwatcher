@@ -148,7 +148,8 @@ use serde::{Deserialize, Serialize};
 use tokio::time::{Instant, interval_at, timeout};
 
 use crate::market::{
-    ControlError, Market, OutKind, PressureGuard, QuotesGuard, RossGuard, SnapshotError,
+    ControlError, DetectionGuard, Market, OutKind, PressureGuard, QuotesGuard, RossGuard,
+    SnapshotError,
 };
 use crate::settings::{SettingsError, SettingsOp, rejected_frame as settings_rejected};
 use crate::{AppState, COMMIT, Settings, VERSION, api, auth};
@@ -220,6 +221,10 @@ enum ClientMessage {
     RossSubscribe,
     #[serde(rename = "ross.unsubscribe")]
     RossUnsubscribe,
+    #[serde(rename = "detection.subscribe")]
+    DetectionSubscribe,
+    #[serde(rename = "detection.unsubscribe")]
+    DetectionUnsubscribe,
     #[serde(rename = "context.get")]
     ContextGet {
         symbol: String,
@@ -349,6 +354,23 @@ async fn send_ross_snapshot(socket: &mut WebSocket, market: &Market, q: &mut Ros
     let (seq, json) = market.ross_snapshot();
     q.seq = seq;
     send_text(socket, json).await
+}
+
+struct DetectionSub {
+    _guard: DetectionGuard,
+    epoch: String,
+    cursor: u64,
+}
+
+async fn send_detection_snapshot(
+    socket: &mut WebSocket,
+    market: &Market,
+    q: &mut DetectionSub,
+) -> bool {
+    let (epoch, cursor, frame) = market.detection_snapshot();
+    q.epoch = epoch;
+    q.cursor = cursor;
+    send_text(socket, frame).await
 }
 
 /// True for a frame whose `type` is in the paper-trading namespace. Such a frame that failed to
@@ -619,6 +641,7 @@ async fn session(mut socket: WebSocket, state: AppState) {
     let mut quotes: Option<QuotesSub> = None;
     let mut pressure: Option<PressureSub> = None;
     let mut ross: Option<RossSub> = None;
+    let mut detection: Option<DetectionSub> = None;
 
     let mut heartbeat = interval_at(Instant::now() + HEARTBEAT, HEARTBEAT);
     let mut last_seen = Instant::now();
@@ -652,6 +675,14 @@ async fn session(mut socket: WebSocket, state: AppState) {
                             Some(q) if o.seq > q.seq => send_text(&mut socket, frame.clone()).await,
                             _ => true,
                         },
+                        OutKind::Detection { epoch, cursor, frame } => match detection.as_mut() {
+                            Some(q) if market.detection_epoch_is_current(epoch)
+                                && (q.epoch != *epoch || *cursor > q.cursor) => {
+                                q.epoch = epoch.clone(); q.cursor = *cursor;
+                                send_text(&mut socket, frame.clone()).await
+                            }
+                            _ => true,
+                        },
                         OutKind::Resync => {
                             (match quotes.as_mut() {
                                 Some(q) => send_quotes_snapshot(&mut socket, &market, q).await,
@@ -661,6 +692,9 @@ async fn session(mut socket: WebSocket, state: AppState) {
                                 None => true,
                             }) && (match ross.as_mut() {
                                 Some(q) => send_ross_snapshot(&mut socket, &market, q).await,
+                                None => true,
+                            }) && (match detection.as_mut() {
+                                Some(q) => send_detection_snapshot(&mut socket, &market, q).await,
                                 None => true,
                             }) && send_snapshots(&mut socket, &market, &mut subs).await
                         }
@@ -731,6 +765,10 @@ async fn session(mut socket: WebSocket, state: AppState) {
                             }
                             && match ross.as_mut() {
                                 Some(q) => send_ross_snapshot(&mut socket, &market, q).await,
+                                None => true,
+                            }
+                            && match detection.as_mut() {
+                                Some(q) => send_detection_snapshot(&mut socket, &market, q).await,
                                 None => true,
                             }
                             && send_snapshots(&mut socket, &market, &mut subs).await
@@ -925,6 +963,14 @@ async fn session(mut socket: WebSocket, state: AppState) {
                         ross = None;
                         None
                     }
+                    Ok(ClientMessage::DetectionSubscribe) => {
+                        let q = detection.get_or_insert_with(|| DetectionSub {
+                            _guard: market.detection_subscribe(), epoch: String::new(), cursor: 0,
+                        });
+                        if !send_detection_snapshot(&mut socket, &market, q).await { break; }
+                        None
+                    }
+                    Ok(ClientMessage::DetectionUnsubscribe) => { detection = None; None }
                     Ok(ClientMessage::ContextGet { symbol }) => {
                         let frame = market.context_decision(&symbol.trim().to_ascii_uppercase());
                         if !send_text(&mut socket, frame).await {

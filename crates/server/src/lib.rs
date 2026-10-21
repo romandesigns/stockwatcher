@@ -5,6 +5,7 @@ pub mod auth;
 pub mod config;
 pub mod context;
 pub mod days;
+pub mod detection;
 pub mod evidence;
 pub mod history;
 pub mod market;
@@ -203,6 +204,8 @@ pub fn router(state: AppState, static_dir: &Path, data_dir: &Path) -> Router {
         .route("/version", get(version))
         .route("/chart/{symbol}/snapshot", get(api::chart_snapshot))
         .route("/replay/state", get(api::replay_state))
+        .route("/detection", get(api::detection_snapshot))
+        .route("/detection/export", get(api::detection_snapshot))
         .route("/symbols", get(api::symbols))
         .route("/quotes", get(api::quotes))
         .route("/settings", get(api::settings))
