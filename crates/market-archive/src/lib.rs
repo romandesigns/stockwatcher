@@ -131,8 +131,9 @@ pub use evidence::{
 };
 pub use evidence_load::LoadedEvidence;
 pub use intraday::{
-    CURVE_RULES_VERSION, CurveCoverage, CurveFidelity, CurveSource, INTRADAY_DIR,
-    IntradayCurveRecord, MinuteVolumeSeries, derive_curve, intraday_baseline,
+    Assembled, CURVE_RULES_VERSION, CurveCoverage, CurveFidelity, CurveSource, CurveUnusable,
+    INCOMPARABLE_BASIS, INTRADAY_DIR, IntradayCurveRecord, MinuteVolumeSeries, derive_curve,
+    intraday_baseline,
 };
 pub use lifecycle::{IMPORTING_MARKER, REMOVING_PREFIX};
 pub use live::{DayData, LIVE_DIR, LiveQuote, LiveWriter};

@@ -96,6 +96,16 @@ pub struct Loaded {
     pub checked_through: Option<NaiveDate>,
     /// What the announcements said, whether or not it was needed.
     pub coverage: ActionCoverage,
+    /// The volume multiplier each prior date's shares were restated by, onto the evaluated
+    /// date's share basis — exactly what the daily denominator used.
+    ///
+    /// Any other measure over the same prior sessions has to apply the same restatement or it is
+    /// comparing share counts from two different bases: after a 5-for-1 split, a prior session's
+    /// raw shares are a fifth of what the same participation would print today, which would read
+    /// as five times the volume. A date missing from the map had no verifiable basis, so it is
+    /// not comparable at all — the daily denominator leaves such a date out, and so must anything
+    /// else (`crate::intraday`).
+    pub volume_factors: BTreeMap<NaiveDate, f64>,
 }
 
 /// The inputs for one symbol and one evaluated date.
@@ -585,6 +595,7 @@ pub fn load(inputs: &Inputs<'_>, symbol: &str, d: NaiveDate, lookback: usize) ->
         baseline: None,
         baseline_reason: "",
         checked_through: None,
+        volume_factors: BTreeMap::new(),
         coverage: cov.clone(),
     };
 
@@ -745,6 +756,7 @@ pub fn load(inputs: &Inputs<'_>, symbol: &str, d: NaiveDate, lookback: usize) ->
             }
         }
     };
+    out.volume_factors = factors.clone();
     let mut sessions = Vec::new();
     let mut seen = Vec::new();
     for &x in &dates {

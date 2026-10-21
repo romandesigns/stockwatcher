@@ -45,7 +45,7 @@ use market_events::conditions::trade_effect;
 use market_events::session::{et, sessions_for};
 use market_events::{MarketEvent, Price, Resolution, Source, TradeId, TradeRef};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::PathBuf;
 
 pub const INTRADAY_DIR: &str = "intraday-curves";
@@ -129,6 +129,37 @@ pub struct CurveCoverage {
     pub last_ts: Option<i64>,
 }
 
+/// Why a curve must not be used as a prior session for the diagnostic.
+///
+/// Collection completeness and derivation completeness are different questions. The import can
+/// report every page fetched and the derivation can still have been unable to apply a correction
+/// or a cancel, which leaves the volume wrong — publishing a number from that would be worse than
+/// publishing none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CurveUnusable {
+    /// A live recording: provisional, and its own gaps are not provable from the file.
+    ProvisionalRecording,
+    /// Fixture data. Never market evidence.
+    SyntheticFixture,
+    /// The import did not report every page fetched, so the window was not collected whole.
+    IncompleteCollection,
+    /// A correction or cancel could not be applied to exactly one retained print, so the
+    /// session's volume is not the volume that stands.
+    UnappliedRevisions,
+}
+
+impl CurveUnusable {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CurveUnusable::ProvisionalRecording => "provisional_recording",
+            CurveUnusable::SyntheticFixture => "synthetic_fixture",
+            CurveUnusable::IncompleteCollection => "incomplete_collection",
+            CurveUnusable::UnappliedRevisions => "unapplied_revisions",
+        }
+    }
+}
+
 /// One session's cumulative eligible-volume curve for one symbol, with its provenance.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IntradayCurveRecord {
@@ -140,8 +171,12 @@ pub struct IntradayCurveRecord {
     /// A point is emitted only where the cumulative changed, so a lookup takes the last point at
     /// or before the offset it asks about (`stock_context::IntradayCurve::at`).
     pub cum: Vec<(i64, u64)>,
-    /// The whole 04:00 → session end window was collected. Only ever true for a final day.
-    pub complete: bool,
+    /// The **input** was collected whole: a final day whose import reported every page fetched.
+    /// Says nothing about whether the derivation over it succeeded — see `unusable`.
+    pub collection_complete: bool,
+    /// Why this curve is not a usable prior session, or `None` when it is. Never inferred from
+    /// one of the two completeness questions alone.
+    pub unusable: Option<CurveUnusable>,
     pub source: CurveSource,
     pub coverage: CurveCoverage,
     /// `intraday-curves-v1`.
@@ -162,9 +197,14 @@ impl IntradayCurveRecord {
         self.cum.last().map(|&(_, c)| c).unwrap_or(0)
     }
 
-    /// Usable as a prior session for the diagnostic: a final day, collected whole.
+    /// Usable as a prior session for the diagnostic.
     pub fn usable_as_history(&self) -> bool {
-        self.complete && self.source.fidelity.usable_as_history()
+        self.unusable.is_none()
+    }
+
+    /// Why it is not, for a log or a diagnostic reason string.
+    pub fn unusable_reason(&self) -> Option<&'static str> {
+        self.unusable.map(CurveUnusable::as_str)
     }
 }
 
@@ -192,14 +232,41 @@ struct Held {
     exec: i64,
     price: Price,
     size: u64,
-    counted: bool,
+    /// The conditions let it update volume.
+    eligible: bool,
+    /// Its execution time is inside the session window, so it is in the curve at all.
+    ///
+    /// Kept apart from `eligible` on purpose: a print just before 04:00 can be condition-eligible
+    /// and still not belong to the day's curve, and a correction of it must not add its corrected
+    /// size to a total it was never in.
+    in_window: bool,
 }
 
-/// Seconds since 04:00 ET of `date`, and the session window's last offset.
-fn window(date: NaiveDate) -> Option<(i64, i64)> {
+impl Held {
+    /// Volume this print contributes to the curve.
+    fn volume(&self) -> u64 {
+        if self.eligible && self.in_window {
+            self.size
+        } else {
+            0
+        }
+    }
+}
+
+/// `(04:00 ET, the session window's last instant, its last offset in seconds)` for `date`.
+fn window(date: NaiveDate) -> Option<(i64, i64, i64)> {
     let start = et(date, 4, 0, 0, 0)?.nanos();
     let end = sessions_for(date).last().map(|s| s.2.nanos())?;
-    Some((start, (end - start) / 1_000_000_000))
+    Some((start, end, (end - start) / 1_000_000_000))
+}
+
+/// Seconds since the window's start, for an instant already known to be inside it.
+///
+/// `div_euclid`, not `/`: integer division truncates toward zero, so a print a millisecond
+/// *before* 04:00 would divide to offset 0 and pass a `>= 0` check as if it were inside the
+/// window. Callers range-check the raw nanoseconds first; this only converts.
+fn offset_of(start: i64, at: i64) -> i64 {
+    (at - start).div_euclid(1_000_000_000)
 }
 
 /// Derives `symbol`'s curve for `date` from the archived prints, or `None` when the day has no
@@ -220,7 +287,7 @@ pub fn derive_curve(
     let Some(entry) = manifest.symbols.get(symbol) else {
         return Ok(None);
     };
-    let Some((start, last_offset)) = window(date) else {
+    let Some((start, end_ns, last_offset)) = window(date) else {
         return Ok(None);
     };
     let live_day = manifest.live.is_some();
@@ -261,28 +328,31 @@ pub fn derive_curve(
         }
         match ev {
             MarketEvent::Trade(t) => {
-                let counted = t.effect().updates_volume;
+                let eligible = t.effect().updates_volume;
                 if !ids.insert((t.id(), exec)) {
                     // Same identity to the nanosecond: a redelivery, not a second print
                     // (`market_events::PrintId`).
                     cov.duplicates += 1;
                     continue;
                 }
+                // Range-checked on the raw nanoseconds, before any division: a print a
+                // millisecond before 04:00 must not become offset 0 and pass as inside the day.
+                let in_window = exec >= start && exec <= end_ns;
                 held.push_back((
                     t.id(),
                     Held {
                         exec,
                         price: t.price,
                         size: t.size,
-                        counted,
+                        eligible,
+                        in_window,
                     },
                 ));
-                if !counted {
+                if !eligible {
                     cov.excluded += 1;
                     continue;
                 }
-                let offset = (exec - start) / 1_000_000_000;
-                if offset < 0 || offset > last_offset {
+                if !in_window {
                     cov.outside_window += 1;
                     continue;
                 }
@@ -290,20 +360,22 @@ pub fn derive_curve(
                 cov.first_ts = Some(cov.first_ts.map_or(exec, |x: i64| x.min(exec)));
                 cov.last_ts = Some(cov.last_ts.map_or(exec, |x: i64| x.max(exec)));
                 total += t.size;
-                push(offset, total);
+                push(offset_of(start, exec), total);
             }
             MarketEvent::Correction(c) => {
-                let at = ((c.event_ts.nanos() - start) / 1_000_000_000).clamp(0, last_offset);
+                let at = offset_of(start, c.event_ts.nanos().clamp(start, end_ns));
                 match resolve(&held, &c.target()) {
                     Some(i) => {
                         cov.revisions_applied += 1;
-                        let was = if held[i].1.counted { held[i].1.size } else { 0 };
-                        let counts = trade_effect(&c.corrected_conditions, c.tape).updates_volume;
+                        // Both sides measured the same way: a print that was never in the
+                        // window contributes nothing before **or** after the correction, so a
+                        // correction of a 03:59 print cannot add its corrected size to the day.
+                        let was = held[i].1.volume();
                         let h = &mut held[i].1;
                         h.price = c.corrected_price;
                         h.size = c.corrected_size;
-                        h.counted = counts;
-                        let now = if counts { c.corrected_size } else { 0 };
+                        h.eligible = trade_effect(&c.corrected_conditions, c.tape).updates_volume;
+                        let now = h.volume();
                         total = total.saturating_sub(was) + now;
                         push(at, total);
                     }
@@ -311,12 +383,12 @@ pub fn derive_curve(
                 }
             }
             MarketEvent::Cancel(c) => {
-                let at = ((c.event_ts.nanos() - start) / 1_000_000_000).clamp(0, last_offset);
+                let at = offset_of(start, c.event_ts.nanos().clamp(start, end_ns));
                 match resolve(&held, &c.target()) {
                     Some(i) => {
                         cov.revisions_applied += 1;
-                        let was = if held[i].1.counted { held[i].1.size } else { 0 };
-                        held[i].1.counted = false;
+                        let was = held[i].1.volume();
+                        held[i].1.eligible = false;
                         total = total.saturating_sub(was);
                         push(at, total);
                     }
@@ -326,19 +398,36 @@ pub fn derive_curve(
             MarketEvent::Quote(_) | MarketEvent::Status(_) => {}
         }
     }
-    // Completeness is the import's own answer, not an assumption. A live recording is
-    // provisional and its own gaps are not provable from the file; a final day claims the window
-    // only when every page was fetched and the provider returned no further token
-    // (`ImportProvenance::complete`). A covered zero is a valid zero; a gap is not.
-    let complete = fidelity == CurveFidelity::ImportedHistory
+    // Two separate questions, neither standing in for the other.
+    //
+    // Was the **input** collected whole? Only a final day can say so, and only when its import
+    // reported every page fetched (`ImportProvenance::complete`); a live recording is
+    // provisional and a fixture is not market evidence. A covered zero is a valid zero; a gap is
+    // not.
+    let collection_complete = fidelity == CurveFidelity::ImportedHistory
         && entry.import.as_ref().is_some_and(|i| i.complete);
+    // Did the **derivation** over it succeed? A correction or cancel the resolver could not
+    // place leaves the session's volume different from the volume that stands, so the curve must
+    // not become a denominator however complete its input was.
+    let unusable = match fidelity {
+        CurveFidelity::SyntheticFixture => Some(CurveUnusable::SyntheticFixture),
+        CurveFidelity::RecordedLive => Some(CurveUnusable::ProvisionalRecording),
+        CurveFidelity::ImportedHistory if !collection_complete => {
+            Some(CurveUnusable::IncompleteCollection)
+        }
+        CurveFidelity::ImportedHistory if cov.unresolved_revisions > 0 => {
+            Some(CurveUnusable::UnappliedRevisions)
+        }
+        CurveFidelity::ImportedHistory => None,
+    };
     Ok(Some(IntradayCurveRecord {
         v: 1,
         symbol: symbol.to_string(),
         date,
         step_secs: STEP_SECS,
         cum,
-        complete,
+        collection_complete,
+        unusable,
         source: CurveSource {
             fidelity,
             file: entry.file.clone(),
@@ -431,36 +520,90 @@ impl Archive {
     }
 }
 
-/// The engine's diagnostic baseline from stored curves, or `None` when none are usable.
+/// What an assembly made of the stored curves, and what it had to leave out.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Assembled {
+    /// The record for the engine, or `None` when not one session was usable.
+    pub baseline: Option<stock_context::IntradayBaseline>,
+    /// Sessions offered as comparable prior history.
+    pub usable: usize,
+    /// Why the others were left out, counted by reason.
+    pub suppressed: BTreeMap<&'static str, usize>,
+}
+
+/// Why a session was left out although a curve for it exists.
+pub const INCOMPARABLE_BASIS: &str = "incomparable_share_basis";
+
+/// The engine's diagnostic baseline from stored curves, restated onto the evaluated date's share
+/// basis by `factors` ([`crate::baseline::Loaded::volume_factors`]).
 ///
-/// Only curves a prior **final** day was collected whole for are offered
-/// ([`IntradayCurveRecord::usable_as_history`]); a provisional live recording and a fixture are
-/// carried as `complete: false` so the engine leaves them out, and the minimum number of
-/// sessions the diagnostic needs is the policy's, unchanged. `observed_at` is the latest
-/// derivation time, so the records join decisions from when they existed and not before.
+/// # Why the restatement is not optional
+///
+/// A curve holds the shares that session actually printed. A split between then and the evaluated
+/// date changes what a share is: after a 5-for-1 split the same participation prints five times
+/// the share count, so comparing today's cumulative against a prior session's **raw** shares
+/// reads as five times the volume — a fabricated same-time RVOL, in the direction that invents
+/// opportunities. The daily denominator already restates its sessions by exactly these factors;
+/// anything measured over the same sessions has to use the same ones.
+///
+/// A date with no factor had no verifiable share basis, so it is not comparable at all and is
+/// suppressed (`incomparable_share_basis`) rather than restated by a guessed multiplier. So is a
+/// curve that is not usable history in its own right ([`IntradayCurveRecord::unusable_reason`]):
+/// a provisional recording, a fixture, an incomplete collection, or a derivation that could not
+/// apply a correction or a cancel.
+///
+/// Suppressed sessions are carried with `complete: false`, so the engine leaves them out and
+/// reports `insufficient_sessions` — the policy's minimum is unchanged, and no number is
+/// published from a session that could not be compared.
 pub fn intraday_baseline(
     records: &[IntradayCurveRecord],
     symbol: &str,
-) -> Option<stock_context::IntradayBaseline> {
-    let observed_at = records.iter().map(|r| r.observed_at).max()?;
-    let sessions: Vec<stock_context::IntradayCurve> = records
-        .iter()
-        .map(|r| stock_context::IntradayCurve {
+    factors: &BTreeMap<NaiveDate, f64>,
+) -> Assembled {
+    let mut out = Assembled::default();
+    let Some(observed_at) = records.iter().map(|r| r.observed_at).max() else {
+        return out;
+    };
+    let mut sessions = Vec::with_capacity(records.len());
+    for r in records {
+        let (comparable, reason) = match (r.unusable_reason(), factors.get(&r.date)) {
+            (Some(why), _) => (None, Some(why)),
+            (None, None) => (None, Some(INCOMPARABLE_BASIS)),
+            (None, Some(&f)) => (Some(f), None),
+        };
+        if let Some(why) = reason {
+            *out.suppressed.entry(why).or_default() += 1;
+        }
+        let cum = match comparable {
+            // Exactly the same basis: the stored counts, untouched.
+            Some(f) if (f - 1.0).abs() < f64::EPSILON => r.cum.clone(),
+            Some(f) => r
+                .cum
+                .iter()
+                .map(|&(at, c)| (at, (c as f64 * f).round() as u64))
+                .collect(),
+            None => r.cum.clone(),
+        };
+        if comparable.is_some() {
+            out.usable += 1;
+        }
+        sessions.push(stock_context::IntradayCurve {
             date: r.date,
-            cum: r.cum.clone(),
-            complete: r.usable_as_history(),
-        })
-        .collect();
-    if sessions.is_empty() {
-        return None;
+            cum,
+            complete: comparable.is_some(),
+        });
     }
-    Some(stock_context::IntradayBaseline {
+    if sessions.is_empty() {
+        return out;
+    }
+    out.baseline = Some(stock_context::IntradayBaseline {
         id: format!("{CURVE_RULES_VERSION}:intraday:{symbol}"),
         version: 1,
         instrument: stock_context::InstrumentId::symbol(symbol),
         sessions,
         observed_at,
-    })
+    });
+    out
 }
 
 #[cfg(test)]
@@ -497,7 +640,8 @@ mod tests {
             date: NaiveDate::from_ymd_opt(2026, 10, 15).expect("valid"),
             step_secs: STEP_SECS,
             cum: vec![(0, 0), (20_100, 10), (20_400, 30)],
-            complete: true,
+            collection_complete: true,
+            unusable: None,
             source: CurveSource {
                 fidelity: CurveFidelity::ImportedHistory,
                 file: "AAA.swa".into(),

@@ -73,7 +73,7 @@ use market_events::{Price, UnixNanos};
 use market_providers::ClockMode;
 use market_providers::warmup::{Enqueue, WarmupQueue};
 use serde::Serialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration as StdDuration, SystemTime};
@@ -206,6 +206,9 @@ pub struct RefreshReport {
     pub floats: usize,
     /// Diagnostic intraday baselines delivered (`market_archive::intraday`).
     pub intraday: usize,
+    /// Prior sessions a curve existed for but which were not comparable: an unverifiable share
+    /// basis, a provisional recording, an incomplete collection, or an unapplied revision.
+    pub intraday_suppressed: usize,
     pub news: usize,
     pub coverage: usize,
     pub closes: usize,
@@ -245,6 +248,14 @@ pub struct EvidenceLoader {
     /// Symbols whose diagnostic intraday baseline has been read for the current session date.
     /// Prior sessions do not change intraday, so each symbol is read once a day.
     intraday_done: HashSet<String>,
+    /// Per symbol, the volume multiplier each prior date's shares were restated by for the daily
+    /// denominator ([`market_archive::baseline::Loaded::volume_factors`]).
+    ///
+    /// The intraday diagnostic has to restate its curves by exactly these: a prior session's raw
+    /// share count is not comparable with today's across a split. Kept from the last baseline
+    /// build rather than recomputed, so the two measures can never drift apart, and bounded by
+    /// the universe times the lookback.
+    basis_factors: HashMap<String, BTreeMap<NaiveDate, f64>>,
     /// The earliest announcement retrieval of the day later than `baseline_as_of`, when the last
     /// build saw one: at that time a rebuild can read a check the last one could not, with no
     /// file having changed. `None`: none known.
@@ -322,6 +333,7 @@ impl EvidenceLoader {
             next_check_at: None,
             coverage_expires_at: None,
             intraday_done: HashSet::new(),
+            basis_factors: HashMap::new(),
             delivered: HashSet::new(),
             generations: 0,
         }
@@ -364,6 +376,7 @@ impl EvidenceLoader {
             self.next_check_at = None;
             self.coverage_expires_at = None;
             self.intraday_done.clear();
+            self.basis_factors.clear();
             self.delivered.clear();
             self.generations += 1;
             *log.lock().expect("evidence log lock") = EvidenceLog {
@@ -502,18 +515,39 @@ impl EvidenceLoader {
             dates.push(x);
         }
         dates.reverse();
+        let empty = BTreeMap::new();
         let mut out = Vec::new();
         for sym in symbols {
             // Read once per day whatever came back: a symbol with no curves must not be re-read
             // on every tick.
             self.intraday_done.insert(sym.clone());
-            match self.archive.read_intraday_curves(sym, &dates) {
-                Ok(curves) => {
-                    if let Some(b) = market_archive::intraday::intraday_baseline(&curves, sym) {
-                        out.push(b);
-                    }
+            let curves = match self.archive.read_intraday_curves(sym, &dates) {
+                Ok(c) => c,
+                Err(e) => {
+                    rep.errors.push(format!("intraday curves {sym}: {e}"));
+                    continue;
                 }
-                Err(e) => rep.errors.push(format!("intraday curves {sym}: {e}")),
+            };
+            if curves.is_empty() {
+                continue;
+            }
+            // Restated by exactly the factors the daily denominator used for the same sessions.
+            // No factors (an unverified share basis) means every session is suppressed, which is
+            // the honest answer: a prior session's raw shares are not comparable with today's
+            // across a split.
+            let factors = self.basis_factors.get(sym).unwrap_or(&empty);
+            let a = market_archive::intraday::intraday_baseline(&curves, sym, factors);
+            if !a.suppressed.is_empty() {
+                rep.intraday_suppressed += a.suppressed.values().sum::<usize>();
+                tracing::debug!(
+                    symbol = %sym,
+                    usable = a.usable,
+                    suppressed = ?a.suppressed,
+                    "intraday diagnostic sessions left out"
+                );
+            }
+            if let Some(b) = a.baseline {
+                out.push(b);
             }
         }
         out
@@ -608,6 +642,15 @@ impl EvidenceLoader {
                 as_of,
             };
             let l = baseline::load(&inputs, sym, day, baseline::DEFAULT_LOOKBACK);
+            // The restatement the daily denominator used, kept for the intraday diagnostic to
+            // apply to the same sessions. A symbol whose basis could not be verified has no
+            // factors, and its curves are then suppressed rather than compared across bases.
+            if l.volume_factors.is_empty() {
+                self.basis_factors.remove(sym);
+            } else {
+                self.basis_factors
+                    .insert(sym.clone(), l.volume_factors.clone());
+            }
             closes.extend(l.prev_close);
             baselines.extend(l.baseline);
         }
@@ -2080,7 +2123,8 @@ mod tests {
             date,
             step_secs: 15,
             cum: vec![(0, 0), (at + 15, shares)],
-            complete: true,
+            collection_complete: true,
+            unusable: None,
             source: market_archive::CurveSource {
                 fidelity: market_archive::CurveFidelity::ImportedHistory,
                 file: format!("{symbol}.swa"),
@@ -2187,23 +2231,42 @@ mod tests {
             "read once per session date, whatever came back"
         );
 
-        // Too few sessions is not enough either: nine of a minimum of ten stays insufficient.
+        // Curves exist but the loader has no share-basis factors for the symbol (no baseline
+        // build has verified one), so every session is suppressed as incomparable rather than
+        // compared across two share bases.
         let mut d = dd();
         for _ in 0..9 {
             d = previous_trading_day(d);
             write_curve(&a, d, SYM, 10_000, t(4, 0, 0));
         }
-        let records = loader(&a).intraday(dd(), &[SYM.to_string()], &mut rep);
-        assert_eq!(records[0].sessions.len(), 9);
+        let mut rep2 = RefreshReport::default();
+        let records = loader(&a).intraday(dd(), &[SYM.to_string()], &mut rep2);
+        assert_eq!(records.len(), 1, "carried for the record");
+        assert_eq!(rep2.intraday_suppressed, 9, "and every session left out");
+        assert!(records[0].sessions.iter().all(|s| !s.complete));
+
+        // Nine comparable sessions is still under the diagnostic's minimum of ten: the policy's
+        // minimum is unchanged, and the engine says so instead of publishing a number.
+        let factors: BTreeMap<NaiveDate, f64> =
+            records[0].sessions.iter().map(|s| (s.date, 1.0)).collect();
+        let curves = {
+            let mut dates = Vec::new();
+            let mut x = dd();
+            for _ in 0..INTRADAY_LOOKBACK_SESSIONS {
+                x = previous_trading_day(x);
+                dates.push(x);
+            }
+            a.read_intraday_curves(SYM, &dates).expect("read")
+        };
+        let asm = market_archive::intraday::intraday_baseline(&curves, SYM, &factors);
+        assert_eq!(asm.usable, 9);
         let log = Mutex::new(EvidenceLog::default());
         let mut cx = board();
         deliver(&mut loader(&a), &log, &mut cx, utc(t(9, 29, 0)));
         {
             let mut lg = log.lock().unwrap();
-            for r in records {
-                let s = lg.next();
-                lg.intraday.push((s, r));
-            }
+            let s = lg.next();
+            lg.intraday.push((s, asm.baseline.expect("a baseline")));
         }
         if let Some(b) = log.lock().unwrap().since(cx.evidence_cursor()) {
             cx.add_evidence(b);

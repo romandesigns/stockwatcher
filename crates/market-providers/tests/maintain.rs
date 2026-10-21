@@ -808,7 +808,8 @@ fn intraday_curves_are_derived_from_disk_bounded_and_resumable() {
                 c.source.fidelity,
                 market_archive::CurveFidelity::SyntheticFixture
             );
-            assert!(!c.complete && !c.usable_as_history());
+            assert!(!c.collection_complete && !c.usable_as_history());
+            assert_eq!(c.unusable_reason(), Some("synthetic_fixture"));
         }
     }
 }

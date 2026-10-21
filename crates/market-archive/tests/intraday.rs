@@ -144,7 +144,7 @@ fn a_curve_counts_the_same_prints_the_live_numerator_counts() {
     assert_eq!(r.source.sha256, entry.sha256);
     assert_eq!(r.source.events, entry.events);
     assert_eq!(r.source.fidelity, CurveFidelity::ImportedHistory);
-    assert!(r.complete && r.usable_as_history());
+    assert!(r.collection_complete && r.usable_as_history());
 }
 
 #[test]
@@ -227,9 +227,10 @@ fn a_live_recording_is_carried_but_never_counted_as_prior_history() {
         .expect("a curve");
     assert_eq!(r.source.fidelity, CurveFidelity::RecordedLive);
     assert!(
-        !r.complete && !r.usable_as_history(),
+        !r.collection_complete && !r.usable_as_history(),
         "provisional: its own gaps are not provable from the file"
     );
+    assert_eq!(r.unusable_reason(), Some("provisional_recording"));
     assert_eq!(
         r.total(),
         100,
@@ -275,7 +276,10 @@ fn curves_round_trip_and_assemble_into_the_engines_diagnostic_baseline() {
     let stored = a.read_intraday_curves(SYM, &dates).expect("read");
     assert_eq!(stored.len(), 1, "a missing date is simply absent");
 
-    let b = intraday_baseline(&stored, SYM).expect("a baseline");
+    let factors: std::collections::BTreeMap<NaiveDate, f64> = [(day(), 1.0)].into();
+    let b = intraday_baseline(&stored, SYM, &factors)
+        .baseline
+        .expect("a baseline");
     assert_eq!(b.instrument, stock_context::InstrumentId::symbol(SYM));
     assert_eq!(b.observed_at, 7, "the latest derivation time");
     assert_eq!(b.sessions.len(), 1);
@@ -288,7 +292,7 @@ fn curves_round_trip_and_assemble_into_the_engines_diagnostic_baseline() {
     );
 
     // Nothing stored: no baseline is invented.
-    assert!(intraday_baseline(&[], SYM).is_none());
+    assert!(intraday_baseline(&[], SYM, &factors).baseline.is_none());
 }
 
 /// A provider's one-minute series is a separate, coarser thing with its own name. There is no
@@ -314,4 +318,161 @@ fn provider_minute_bars_are_a_separate_series_and_never_a_curve() {
         serde_json::from_str::<market_archive::IntradayCurveRecord>(&json).is_err(),
         "a minute series must not deserialize as a curve"
     );
+}
+
+// --- review corrections: derivation completeness, window eligibility, share basis ------------
+
+/// A curve whose input was collected whole but whose derivation could not place a correction or a
+/// cancel is **not** a usable denominator.
+///
+/// Input collection completeness and derivation completeness are different questions. The import
+/// reporting every page fetched says nothing about whether a revision found its print, and an
+/// unapplied revision leaves the session's volume different from the volume that stands —
+/// publishing a number from that is worse than publishing none.
+#[test]
+fn an_unapplied_revision_makes_a_complete_day_unusable() {
+    let dir = tempfile::tempdir().expect("tmp");
+    let a = archive(dir.path());
+    // The import says the window was collected whole, and a cancel names a print that is not in
+    // the file.
+    let orphan = MarketEvent::Cancel(Cancel {
+        symbol: SYM.into(),
+        event_ts: UnixNanos(t(9, 42, 0)),
+        receive_ts: None,
+        source: Source::AlpacaSip,
+        exchange: "V".into(),
+        tape: Default::default(),
+        trade_id: 99,
+        price: Price::from_cents(500),
+        size: 10,
+        action: CancelAction::Cancel,
+    });
+    let m = write_day(&a, &[trade(1, t(9, 30, 1), 100, &["@"]), orphan], true);
+    let r = derive_curve(&a, &m, SYM, day(), 1)
+        .expect("derive")
+        .expect("a curve");
+    assert!(r.collection_complete, "the input was collected whole");
+    assert_eq!(r.coverage.unresolved_revisions, 1);
+    assert_eq!(
+        r.unusable,
+        Some(market_archive::CurveUnusable::UnappliedRevisions)
+    );
+    assert!(!r.usable_as_history());
+    assert_eq!(r.unusable_reason(), Some("unapplied_revisions"));
+
+    // And the assembly leaves it out, with the reason, rather than offering a denominator.
+    let f: std::collections::BTreeMap<NaiveDate, f64> = [(day(), 1.0)].into();
+    let asm = intraday_baseline(&[r], SYM, &f);
+    assert_eq!(asm.usable, 0);
+    assert_eq!(asm.suppressed.get("unapplied_revisions"), Some(&1));
+    assert!(
+        !asm.baseline.expect("carried").sessions[0].complete,
+        "carried for the record, never counted as a prior session"
+    );
+}
+
+/// A print just before the window is not in the curve, and a correction of it cannot put it
+/// there.
+///
+/// Two separate traps. The offset was computed with integer division, which truncates toward
+/// zero, so a print a millisecond before 04:00 divided to offset 0 and passed a `>= 0` check as
+/// if it were inside the day. And the held print recorded only its condition eligibility, so a
+/// correction added the corrected size to a total the original had never been part of.
+#[test]
+fn a_print_outside_the_window_stays_out_through_a_correction() {
+    let dir = tempfile::tempdir().expect("tmp");
+    let a = archive(dir.path());
+    let before_open = t(4, 0, 0) - 1_000_000; // 03:59:59.999
+    let correction = MarketEvent::Correction(Correction {
+        symbol: SYM.into(),
+        event_ts: UnixNanos(t(4, 1, 0)),
+        receive_ts: None,
+        source: Source::AlpacaSip,
+        exchange: "V".into(),
+        tape: Default::default(),
+        original_id: 1,
+        original_price: Price::from_cents(500),
+        original_size: 100,
+        original_conditions: vec!["@".into()],
+        corrected_id: 1,
+        corrected_price: Price::from_cents(500),
+        corrected_size: 200,
+        corrected_conditions: vec!["@".into()],
+    });
+    let events = vec![
+        trade(1, before_open, 100, &["@"]),
+        trade(2, t(4, 0, 1), 50, &["@"]),
+        correction,
+    ];
+    let m = write_day(&a, &events, true);
+    let r = derive_curve(&a, &m, SYM, day(), 1)
+        .expect("derive")
+        .expect("a curve");
+    assert_eq!(
+        r.total(),
+        50,
+        "only the 04:00:01 print is in the day; the correction of the 03:59:59.999 one is not"
+    );
+    assert_eq!(r.coverage.outside_window, 1);
+    assert_eq!(r.coverage.counted, 1);
+    assert_eq!(
+        r.coverage.revisions_applied, 1,
+        "it was placed, and changed nothing"
+    );
+    assert_eq!(r.at(0), 0, "nothing before the window's own start");
+    assert!(r.usable_as_history());
+}
+
+/// Prior sessions are restated onto the evaluated date's share basis, exactly as the daily
+/// denominator restates its own.
+///
+/// A curve holds the shares that session printed. After a 5-for-1 split the same participation
+/// prints five times the share count, so comparing today's cumulative with a prior session's raw
+/// shares reads as five times the volume — a fabricated same-time RVOL, in the direction that
+/// invents opportunities. A date with no factor had no verifiable basis and is suppressed rather
+/// than restated by a guess.
+#[test]
+fn prior_sessions_are_restated_onto_todays_share_basis() {
+    let dir = tempfile::tempdir().expect("tmp");
+    let a = archive(dir.path());
+    let m = write_day(&a, &[trade(1, t(9, 30, 1), 1_000, &["@"])], true);
+    let r = derive_curve(&a, &m, SYM, day(), 5)
+        .expect("derive")
+        .expect("a curve");
+    assert_eq!(r.total(), 1_000, "the shares that session printed");
+
+    // A 5-for-1 split since: one share then is five shares now, so the session's 1,000 shares
+    // are 5,000 on today's basis — the factor the daily denominator used.
+    let split: std::collections::BTreeMap<NaiveDate, f64> = [(day(), 5.0)].into();
+    let asm = intraday_baseline(std::slice::from_ref(&r), SYM, &split);
+    let b = asm.baseline.expect("a baseline");
+    assert_eq!(asm.usable, 1);
+    assert!(asm.suppressed.is_empty());
+    assert!(b.sessions[0].complete);
+    assert_eq!(
+        b.sessions[0].at(off(9, 30, 15)),
+        5_000,
+        "restated, so it is not read as five times the volume"
+    );
+
+    // Same basis: the stored counts, untouched.
+    let same: std::collections::BTreeMap<NaiveDate, f64> = [(day(), 1.0)].into();
+    let asm = intraday_baseline(std::slice::from_ref(&r), SYM, &same);
+    assert_eq!(
+        asm.baseline.expect("a baseline").sessions[0].at(off(9, 30, 15)),
+        1_000
+    );
+
+    // No factor for the date: not comparable at all, so suppressed with the reason.
+    let asm = intraday_baseline(
+        std::slice::from_ref(&r),
+        SYM,
+        &std::collections::BTreeMap::new(),
+    );
+    assert_eq!(asm.usable, 0);
+    assert_eq!(
+        asm.suppressed.get(market_archive::INCOMPARABLE_BASIS),
+        Some(&1)
+    );
+    assert!(!asm.baseline.expect("carried").sessions[0].complete);
 }
