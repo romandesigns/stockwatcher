@@ -32,7 +32,7 @@ use chrono::NaiveDate;
 use market_archive::PrevCloses;
 use market_events::{Price, Trade, UnixNanos};
 use serde_json::json;
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use stock_context::{
     CloseBasis, Coverage, Decision, Engine, Fidelity, InstrumentId, OutputTelemetry, PanelPolicy,
     PanelSnapshot, Policy, PrevClose, RunInfo, SetupPolicy, Tri, Verdict,
@@ -170,16 +170,30 @@ impl ContextBoard {
     }
 
     /// Symbols in the band whose latest decision is missing evidence a warmup could supply, with
-    /// the reason, at most `max` ([`warmup_reason`]).
+    /// the reason, at most `max` ([`warmup_reason`]) — **skipping** the ones `asked` already
+    /// holds.
+    ///
+    /// Skipping before the budget is taken, not after, is the whole point. The engine keeps its
+    /// symbols in a stable order, so taking the first `max` candidates and discarding the
+    /// already-asked ones afterwards means a first batch that never resolves (a provider outage,
+    /// attempts spent, a legitimately unanswerable symbol) blocks every candidate behind it for
+    /// the rest of the day. With the skip first, each tick moves on to the next ones.
     ///
     /// In-memory only: it reads the latest decision per symbol, which is what the engine already
     /// keeps, and allocates only the bounded result. Called under the core lock, so the caller
     /// files the requests and writes the inbox afterwards, off the lock and off the market path.
-    pub(crate) fn missing_evidence(&self, max: usize) -> Vec<(String, &'static str)> {
+    pub(crate) fn missing_evidence(
+        &self,
+        max: usize,
+        asked: &BTreeSet<String>,
+    ) -> Vec<(String, &'static str)> {
         let mut out = Vec::new();
         for d in self.engine.current() {
             if out.len() >= max {
                 break;
+            }
+            if asked.contains(&d.symbol) {
+                continue;
             }
             if let Some(r) = warmup_reason(d) {
                 out.push((d.symbol.clone(), r));

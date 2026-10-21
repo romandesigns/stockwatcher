@@ -14,7 +14,7 @@
 
 use chrono::{DateTime, NaiveDate, Utc};
 use market_archive::{Archive, ArchiveError, WarmupRequest};
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex, TryLockError};
 
 /// What [`WarmupQueue::request`] did.
@@ -32,8 +32,13 @@ pub enum Enqueue {
 #[derive(Default)]
 struct State {
     queue: VecDeque<WarmupRequest>,
-    seen: BTreeSet<(NaiveDate, String)>,
+    /// Symbols already asked for, **per session date**. Keyed by date so the day's dedup can be
+    /// dropped when the date rolls: a single flat set would accumulate one entry per symbol and
+    /// date for the lifetime of the process, which a live market is meant to have a long one of.
+    seen: BTreeMap<NaiveDate, BTreeSet<String>>,
     dropped: u64,
+    /// Dates whose dedup state was dropped when a later date was asked about.
+    rolled: u64,
 }
 
 /// Bounded, non-blocking, cloneable (shared) warmup request queue.
@@ -52,21 +57,28 @@ impl WarmupQueue {
     }
 
     /// Asks for `symbol` on session `d` to be warmed up. Safe on the market-event thread.
+    ///
+    /// Asking about a later date drops the dedup state of the earlier ones: a request only ever
+    /// concerns one session date, and the archive inbox is the durable record of what was filed.
     pub fn request(&self, symbol: &str, d: NaiveDate, reason: &str, at: DateTime<Utc>) -> Enqueue {
         let mut s = match self.state.try_lock() {
             Ok(s) => s,
             Err(TryLockError::WouldBlock) => return Enqueue::Busy,
             Err(TryLockError::Poisoned(p)) => p.into_inner(),
         };
-        let key = (d, symbol.to_string());
-        if s.seen.contains(&key) {
+        if s.seen.keys().next_back().is_some_and(|newest| *newest < d) {
+            let old = s.seen.len();
+            s.seen.retain(|k, _| *k >= d);
+            s.rolled += (old - s.seen.len()) as u64;
+        }
+        if s.seen.get(&d).is_some_and(|set| set.contains(symbol)) {
             return Enqueue::Known;
         }
         if s.queue.len() >= self.capacity {
             s.dropped += 1;
             return Enqueue::Full;
         }
-        s.seen.insert(key);
+        s.seen.entry(d).or_default().insert(symbol.to_string());
         s.queue.push_back(WarmupRequest {
             symbol: symbol.to_string(),
             session_date: d,
@@ -83,6 +95,35 @@ impl WarmupQueue {
     /// Requests dropped because the queue was full.
     pub fn dropped(&self) -> u64 {
         self.state.lock().map(|s| s.dropped).unwrap_or(0)
+    }
+
+    /// Dates whose dedup state was dropped as the session date moved on.
+    pub fn rolled(&self) -> u64 {
+        self.state.lock().map(|s| s.rolled).unwrap_or(0)
+    }
+
+    /// Symbols already asked for on `d` (buffered or filed). A caller that selects candidates
+    /// uses this to skip them **before** taking its request budget: taking the budget first and
+    /// discarding the known ones afterwards means a batch that never resolves blocks every
+    /// candidate behind it for the rest of the day.
+    pub fn asked_for(&self, d: NaiveDate) -> BTreeSet<String> {
+        self.state
+            .lock()
+            .map(|s| s.seen.get(&d).cloned().unwrap_or_default())
+            .unwrap_or_default()
+    }
+
+    /// Symbols held in memory, waiting to be filed.
+    pub fn pending(&self) -> usize {
+        self.state.lock().map(|s| s.queue.len()).unwrap_or(0)
+    }
+
+    /// Dedup entries held, all dates (bounded by the symbols asked for on the current date).
+    pub fn tracked(&self) -> usize {
+        self.state
+            .lock()
+            .map(|s| s.seen.values().map(BTreeSet::len).sum())
+            .unwrap_or(0)
     }
 
     /// Files every queued request in the archive inbox (call from a background task, never the

@@ -610,10 +610,19 @@ pub struct WarmupStats {
     pub filed: u64,
     /// Flushes that failed; the requests stay buffered for the next tick.
     pub flush_errors: u64,
+    /// Requests buffered in memory after the last flush.
+    pub pending: usize,
+    /// Dedup entries held, all dates: bounded by the symbols asked for on the current date.
+    pub tracked: usize,
+    /// Dates whose dedup state was dropped as the session date moved on.
+    pub rolled: u64,
 }
 
-/// Symbols the requester collects per tick. A bound, not a target: the queue deduplicates per
-/// symbol and date, so a long tail is asked for over several ticks instead of all at once.
+/// Symbols the requester collects per tick.
+///
+/// A bound, not a target: the scan skips what has already been asked for today before it takes
+/// this many, so a long tail really is covered over several ticks rather than blocked behind
+/// whatever happens to sort first.
 pub const WARMUP_SCAN_MAX: usize = 200;
 
 /// In-memory warmup requests held before `capture` starts dropping them (and counting it).
@@ -748,10 +757,14 @@ impl Market {
         let Some(day) = ev.log.lock().expect("evidence log lock").day() else {
             return;
         };
+        // What has already been asked for today, read off the core lock: the candidate scan
+        // skips these **before** it takes its budget, so an unresolved first batch cannot block
+        // the symbols behind it (and the queue's dedup is never consulted under the core lock).
+        let asked = ev.warmups.asked_for(day);
         let missing = {
             let core = self.0.core.lock().expect("core lock");
             match core.context.as_ref() {
-                Some(cx) => cx.missing_evidence(WARMUP_SCAN_MAX),
+                Some(cx) => cx.missing_evidence(WARMUP_SCAN_MAX, &asked),
                 None => return,
             }
         };
@@ -787,6 +800,9 @@ impl Market {
             t.busy += s.busy;
             t.filed += s.filed;
             t.flush_errors += s.flush_errors;
+            t.pending = ev.warmups.pending();
+            t.tracked = ev.warmups.tracked();
+            t.rolled = ev.warmups.rolled();
             *t
         };
         if s.queued > 0 || s.filed > 0 || s.full > 0 || s.flush_errors > 0 {
@@ -800,6 +816,9 @@ impl Market {
                 busy = s.busy,
                 dropped_total = total.full,
                 filed_total = total.filed,
+                pending = total.pending,
+                tracked = total.tracked,
+                dedup_dates_rolled = total.rolled,
                 "warmup requests for missing evidence"
             );
         }
@@ -1599,7 +1618,7 @@ mod tests {
         }
         cx.advance(UnixNanos(t(9, 34, 0)));
 
-        let missing = cx.missing_evidence(WARMUP_SCAN_MAX);
+        let missing = cx.missing_evidence(WARMUP_SCAN_MAX, &std::collections::BTreeSet::new());
         assert!(
             missing
                 .iter()
@@ -1703,15 +1722,22 @@ mod tests {
         }
         cx.advance(UnixNanos(t(9, 33, 0)));
         assert_eq!(
-            cx.missing_evidence(5).len(),
+            cx.missing_evidence(5, &std::collections::BTreeSet::new())
+                .len(),
             5,
             "the scan stops at the bound"
         );
-        assert!(cx.missing_evidence(WARMUP_SCAN_MAX).len() >= 12);
+        assert!(
+            cx.missing_evidence(WARMUP_SCAN_MAX, &std::collections::BTreeSet::new())
+                .len()
+                >= 12
+        );
 
         let q = WarmupQueue::new(3);
         let now = utc(t(9, 33, 1));
-        for (symbol, reason) in cx.missing_evidence(WARMUP_SCAN_MAX) {
+        for (symbol, reason) in
+            cx.missing_evidence(WARMUP_SCAN_MAX, &std::collections::BTreeSet::new())
+        {
             q.request(&symbol, dd(), &format!("server:{reason}"), now);
         }
         assert!(q.dropped() > 0, "a full queue drops and counts it");

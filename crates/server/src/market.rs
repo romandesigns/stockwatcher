@@ -2408,6 +2408,127 @@ mod tests {
         assert!(market.drain_context_at(&mut never).is_empty());
     }
 
+    /// Warmup requests are fair across ticks: a first batch that never resolves does not block
+    /// the candidates behind it.
+    ///
+    /// Codex's review of the warmup slice caught the opposite. `missing_evidence` took the first
+    /// `WARMUP_SCAN_MAX` candidates in the engine's stable symbol order and the requester only
+    /// discarded the already-asked ones *afterwards*, so with no evidence ever arriving the
+    /// alphabetically first 200 were re-selected on every tick and nothing after them was ever
+    /// requested. This drives the production path — `Market::request_warmups` — over more
+    /// candidates than the budget, with an unresolved first batch, across several ticks.
+    #[test]
+    fn warmup_requests_move_past_an_unresolved_first_batch() {
+        use market_events::{Price, Trade, UnixNanos};
+        let tmp = tempfile::tempdir().unwrap();
+        let a = Archive::new(market_archive::ArchiveConfig {
+            root: tmp.path().join("archive"),
+            retention_days: 0,
+            min_free_bytes: 0,
+        });
+        let day = NaiveDate::from_ymd_opt(2026, 10, 16).expect("valid");
+        let market = Market::idle(ClockMode::Replay, "test", None);
+        market.set_stock_context(true);
+        // A zero period loads once, synchronously, and spawns nothing: safe outside a runtime.
+        market.init_evidence(
+            a.clone(),
+            Price::from_cents(2500),
+            std::time::Duration::ZERO,
+        );
+        market.load_evidence(Some(day));
+
+        // 250 symbols trading in the band with no stored evidence of any kind, so every one of
+        // them is a candidate and none of them can ever resolve here.
+        let n = crate::evidence::WARMUP_SCAN_MAX + 50;
+        let open = market_events::session::et(day, 9, 30, 0, 0)
+            .expect("valid")
+            .nanos();
+        {
+            let mut core = market.0.core.lock().expect("core lock");
+            let cx = core.context.as_mut().expect("a board");
+            let closes = market_archive::PrevCloses::default();
+            let counted = crate::quotes::Counted {
+                ohlc: true,
+                volume: true,
+            };
+            for k in 0..n {
+                let sym = format!("S{k:04}");
+                for j in 0..3u64 {
+                    let ts =
+                        UnixNanos(open + (k as i64) * 1_000_000_000 + (j as i64) * 100_000_000);
+                    let tr = Trade::new(&sym, ts, Price::from_cents(300), 10_000, j);
+                    cx.apply_trade(&tr, counted, &closes);
+                }
+            }
+            cx.advance(UnixNanos(open + (n as i64 + 60) * 1_000_000_000));
+        }
+
+        // Tick one: the budget's worth, and no more.
+        market.request_warmups();
+        let first = a.pending_warmups(day, 10_000).expect("inbox");
+        assert_eq!(
+            first.len(),
+            crate::evidence::WARMUP_SCAN_MAX,
+            "the first tick files its budget"
+        );
+
+        // Tick two, with nothing resolved: the symbols behind the first batch are asked for.
+        market.request_warmups();
+        let second = a.pending_warmups(day, 10_000).expect("inbox");
+        assert_eq!(
+            second.len(),
+            n,
+            "every candidate is asked for by the second tick"
+        );
+        let before: std::collections::BTreeSet<&str> =
+            first.iter().map(|r| r.symbol.as_str()).collect();
+        let added: Vec<&str> = second
+            .iter()
+            .map(|r| r.symbol.as_str())
+            .filter(|s| !before.contains(s))
+            .collect();
+        assert_eq!(
+            added.len(),
+            50,
+            "the tail, not the same batch again: {added:?}"
+        );
+        assert!(
+            added.contains(&format!("S{:04}", n - 1).as_str()),
+            "including the last one: {added:?}"
+        );
+
+        // Tick three: everything is known, so nothing new is filed and nothing is re-asked.
+        market.request_warmups();
+        assert_eq!(a.pending_warmups(day, 10_000).expect("inbox").len(), n);
+        let w = market.warmup_stats();
+        assert_eq!(w.filed, n as u64, "each symbol filed once: {w:?}");
+        assert_eq!(w.full, 0, "the queue was never overrun: {w:?}");
+        assert_eq!(w.flush_errors, 0, "{w:?}");
+        assert_eq!(w.tracked, n, "one dedup entry per symbol, for one date");
+    }
+
+    /// The dedup state is per session date and rolls: a long-running market does not accumulate
+    /// an entry per symbol and date for its lifetime.
+    #[test]
+    fn the_warmup_dedup_state_rolls_with_the_session_date() {
+        use market_providers::warmup::{Enqueue, WarmupQueue};
+        let q = WarmupQueue::new(1_000);
+        let now = Utc::now();
+        let d1 = NaiveDate::from_ymd_opt(2026, 10, 15).expect("valid");
+        let d2 = NaiveDate::from_ymd_opt(2026, 10, 16).expect("valid");
+        for k in 0..100 {
+            q.request(&format!("S{k:03}"), d1, "test", now);
+        }
+        assert_eq!(q.tracked(), 100);
+        assert_eq!(q.rolled(), 0);
+
+        // The date rolls: the old day's dedup goes, and the same symbol is askable again.
+        assert_eq!(q.request("S000", d2, "test", now), Enqueue::Queued);
+        assert_eq!(q.tracked(), 1, "only the new date is tracked");
+        assert_eq!(q.rolled(), 1, "and it says what it dropped");
+        assert_eq!(q.request("S000", d2, "test", now), Enqueue::Known);
+    }
+
     #[test]
     fn a_halt_watcher_card_on_the_wire() {
         use crate::pressure::{Risk, Score};
