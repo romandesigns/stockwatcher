@@ -75,6 +75,7 @@ export function DetectionPanel({ channel, onPick, reducedMotion }: { channel: De
           {stale && <Text accessibilityRole="alert" style={styles.warning}>{state.resyncing ? "Resyncing · current assessment unavailable" : "Reconnecting · last received state"}{snapshot ? ` · ${at(snapshot.cutoff)}` : ""}</Text>}
           {state.coverageLost && <Text accessibilityRole="alert" style={styles.warning}>Transition history is incomplete. Current rows remain available; this is not a complete research record.</Text>}
           {state.error && state.error !== "transition_history_incomplete" && <Text accessibilityRole="alert" style={styles.warning}>{words(state.error)}</Text>}
+          {snapshot?.unavailable.map((r) => <Text key={r.reason} accessibilityRole="alert" style={styles.warning}>Assessment unavailable: {words(r.reason)}{r.symbols ? ` · ${r.symbols} symbols` : ""}</Text>)}
           <FilterStrip label="Detection family" options={DETECTION_FILTERS} value={filter} onChange={(id) => { setFilter(id as DetectionFilter); setPage(0); }} />
           <View style={styles.line}>
             <View style={{ flex: 1 }}><FilterStrip label="Episode history" options={[{ id: "active", label: "Active" }, { id: "recent", label: `Recent history (${terminalCount})` }]} value={history ? "recent" : "active"} onChange={(id) => { setHistory(id === "recent"); setPage(0); }} /></View>
@@ -85,7 +86,6 @@ export function DetectionPanel({ channel, onPick, reducedMotion }: { channel: De
           {groups.length === 0 ? (
             <View style={styles.emptyBox}>
               <Text style={styles.empty}>{!snapshot ? "Waiting for the server's first snapshot…" : history ? "No retained episodes match these filters" : snapshot.monitored_symbols === 0 ? "Warming · no admissible symbol history yet" : "No active detections match these filters"}</Text>
-              {snapshot?.unavailable.map((r) => <Text key={r.reason} style={styles.meta}>{r.symbols} · {words(r.reason)}</Text>)}
               <Text style={styles.meta}>Quiet-only stocks and the 1.15× diagnostics do not create discovery rows.</Text>
             </View>
           ) : (

@@ -61,6 +61,18 @@ describe("raw Rust -> display projection", () => {
     expect(detectionPrice(125_001)).toBe("$0.125001");
   });
 
+  test("pending history stays visible before the first print, even without an episode", () => {
+    const f = frame(); f.snapshot!.active = []; f.snapshot!.symbols = [];
+    f.snapshot!.monitored = { symbols_seen: 0, symbols_today: 0, symbols_active: 0, symbols_interrupted: 0, symbols_history_pending: 2 };
+    f.snapshot!.data_status.history_pending_symbols = ["WAIT", "WAIT", "LOAD"];
+    expect(detectionSnapshotView(f)!.unavailable).toContainEqual({ reason: "history_pending", symbols: 2 });
+    expect(detectionSnapshotView(f)!.episodes).toEqual([]);
+    delete f.snapshot!.data_status.history_pending_symbols;
+    expect(detectionSnapshotView(f)!.unavailable).toContainEqual({ reason: "history_pending", symbols: 2 });
+    f.snapshot!.data_status.history_pending_symbols = [];
+    expect(detectionSnapshotView(f)!.unavailable).toEqual([]);
+  });
+
   test("certainty survives restored replay history and recognized ignition is not a trigger", () => {
     const f = frame(); const raw = f.snapshot!.active[0]!;
     f.transitions.push({ sequence: 1, emitted_at: 105, input_watermark: 105, restored: true, transition: { seq: 1, transition_id: "t1", episode_id: raw.episode_id, symbol: raw.symbol, family: raw.family, variant: raw.variant, from: "armed", to: "crossing_provisional", event: "crossing_provisional", reason: "post_arm_print_above_trigger", certainty: "provisional", observed_at: 104, bar_end: null, cutoff: null, trade: null, features: null, level: raw.levels[0]!, anchors: null, correction_of: null, warmup: false, default_visible: true } });

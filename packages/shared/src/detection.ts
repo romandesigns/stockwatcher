@@ -134,7 +134,7 @@ export interface DetectionCoreEpisode {
 export interface DetectionCoreSnapshot {
   schema: number; run_id: string; source: string; fidelity: string; policy: string; experimental: true; alerts_enabled: false;
   cursor: number; bar_end: number | null; cutoff: number | null; as_of: number | null;
-  monitored?: { symbols_seen: number; symbols_today: number; symbols_active: number; symbols_interrupted: number };
+  monitored?: { symbols_seen: number; symbols_today: number; symbols_active: number; symbols_interrupted: number; symbols_history_pending?: number };
   symbols: { symbol: string; dominant_episode_id: string | null; active_episode_ids: string[]; interrupted: string | null }[];
   active: DetectionCoreEpisode[]; recent: DetectionCoreEpisode[];
   data_status: Record<string, unknown>; telemetry: Record<string, number | string | boolean | null>;
@@ -341,6 +341,11 @@ export function detectionSnapshotView(m: DetectionMessage): DetectionSnapshot | 
   if (Array.isArray(interrupted)) {
     for (const gap of interrupted) if (object(gap) && typeof gap.reason === "string") unavailable.set(gap.reason, (unavailable.get(gap.reason) ?? 0) + 1);
   } else for (const symbol of s.symbols) if (symbol.interrupted) unavailable.set(symbol.interrupted, (unavailable.get(symbol.interrupted) ?? 0) + 1);
+  // A loader may be waiting before a symbol's first print, with no episode to project.
+  // Use the engine's pending set (or its authoritative count), never infer from rows.
+  const pending = s.data_status.history_pending_symbols;
+  const pendingCount = Array.isArray(pending) ? new Set(pending.filter((x): x is string => typeof x === "string")).size : s.monitored?.symbols_history_pending ?? 0;
+  if (pendingCount > 0) unavailable.set("history_pending", pendingCount);
   const global = s.data_status.global_interruption;
   if (object(global)) unavailable.set(typeof global.reason === "string" ? global.reason : "global_interruption", (s.monitored?.symbols_today ?? s.symbols.length));
   if (typeof s.data_status.disabled_reason === "string") unavailable.set(s.data_status.disabled_reason, (s.monitored?.symbols_today ?? s.symbols.length));
