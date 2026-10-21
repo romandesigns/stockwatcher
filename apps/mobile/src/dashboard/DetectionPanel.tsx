@@ -182,7 +182,7 @@ function Geometry({ episode: e, currentAvailable = true }: { episode: DetectionE
   const trigger = detectionDistance(e.price_stale || !currentAvailable ? null : e.price, e.level?.trigger ?? null, "trigger");
   const invalidation = detectionDistance(e.price_stale || !currentAvailable ? null : e.price, e.level?.invalidation ?? null, "invalidation");
   return <View style={{ gap: 3 }}>
-    <Text style={styles.geometry}>Trigger {detectionPrice(e.level?.trigger ?? null)}{trigger ? trigger.atOrAbove ? " · at / above reference" : ` · ${detectionPrice(Math.round(trigger.dollars * 1_000_000))} / ${trigger.percent.toFixed(2)}% away` : " · distance unavailable"}</Text>
+    <Text style={styles.geometry}>{e.level?.kind === "range_high" ? "Range high" : "Trigger"} {detectionPrice(e.level?.trigger ?? null)}{trigger ? trigger.atOrAbove ? " · at / above reference" : ` · ${detectionPrice(Math.round(trigger.dollars * 1_000_000))} / ${trigger.percent.toFixed(2)}% away` : " · distance unavailable"}</Text>
     <Text style={styles.geometry}>Invalidation {detectionPrice(e.level?.invalidation ?? null)}{invalidation ? invalidation.atOrAbove ? ` · ${detectionPrice(Math.round(invalidation.dollars * 1_000_000))} / ${invalidation.percent.toFixed(2)}% below price` : " · price below reference" : " · distance unavailable"}</Text>
   </View>;
 }
@@ -216,7 +216,7 @@ export function DetectionEpisodeDetails({ episode: e, snapshot, currentAvailable
     <Text style={styles.section}>Causal level versions</Text>
     {e.level_history.length === 0 ? <Text style={styles.meta}>No armed level is available.</Text> : e.level_history.map((level) => <View key={`${level.level_id}/${level.version}`} style={styles.measurement}>
       <Text selectable style={styles.identifier}>{level.level_id} · v{level.version}</Text>
-      <Text style={styles.body}>T {detectionPrice(level.trigger)} · I {detectionPrice(level.invalidation)}</Text>
+      <Text style={styles.body}>{level.kind === "range_high" ? "Range high" : "T"} {detectionPrice(level.trigger)} · I {detectionPrice(level.invalidation)}</Text>
       <Text style={styles.meta}>Known {at(level.known_at)} · {level.armed_at === null ? "not armed" : `armed ${at(level.armed_at)}`}{level.valid_to === null ? "" : ` · valid through ${at(level.valid_to)}`}</Text>
       {level.formed_from.length > 0 && <Text selectable style={styles.identifier}>Formed from {level.formed_from.join(", ")}</Text>}
     </View>)}

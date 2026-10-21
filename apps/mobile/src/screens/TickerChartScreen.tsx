@@ -128,7 +128,7 @@ function ModalChart({ feed, symbol, detectionEpisodeId, detectionRunEpoch }: { f
           <Pressable accessibilityRole="button" accessibilityState={{ expanded: detailsOpen }} accessibilityLabel={`${detailsOpen ? "Hide" : "Show"} selected detection details`} onPress={() => setDetailsOpen(!detailsOpen)} style={styles.detectionButton}>
             <Text style={styles.detectionState}>{detectionFamilyLabel(episode.family)} · {detectionStateLabel(episode.state)} · {detailsOpen ? "hide details" : "details"}</Text>
           </Pressable>
-          <Text style={styles.detectionMeta}>T {detectionPrice(episode.level?.trigger ?? null)} · I {detectionPrice(episode.level?.invalidation ?? null)}{episode.level ? ` · v${episode.level.version}` : ""} · {episode.fidelity.replace(/_/g, " ")}</Text>
+          <Text style={styles.detectionMeta}>{episode.level?.kind === "range_high" ? "Range high" : "T"} {detectionPrice(episode.level?.trigger ?? null)} · I {detectionPrice(episode.level?.invalidation ?? null)}{episode.level ? ` · v${episode.level.version}` : ""} · {episode.fidelity.replace(/_/g, " ")}</Text>
           <Text selectable numberOfLines={1} style={styles.detectionId}>{episode.episode_id}</Text>
         </> : <Text style={styles.detectionMeta}>{detectionEpisodeId ? "Selected episode is unavailable in this source/run or bounded history." : detection.enabled === false ? "Off on this server" : "No active detection for this ticker."}</Text>}
       </View>
