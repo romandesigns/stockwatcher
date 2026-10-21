@@ -576,19 +576,26 @@ pub(crate) fn momentum(
             w.n_base as i64 * m.step_slots,
         )
     });
+    // Quiet context is the momentum_building rule; upward_acceleration is defined without it,
+    // so there its context is a descriptor, never a pending requirement.
+    let context_check = Check::new(
+        "prior_context",
+        if family == Family::MomentumBuilding {
+            Tri::Pass
+        } else {
+            Tri::Unknown
+        },
+        w.q_ppm,
+        w.q_low_ppm,
+        "ppm",
+        w.context_reason,
+    );
     let checks = vec![
-        Check::new(
-            "prior_context",
-            if family == Family::MomentumBuilding {
-                Tri::Pass
-            } else {
-                Tri::Unknown
-            },
-            w.q_ppm,
-            w.q_low_ppm,
-            "ppm",
-            w.context_reason,
-        ),
+        if family == Family::MomentumBuilding {
+            context_check
+        } else {
+            context_check.optional()
+        },
         Check::new(
             "rise",
             Tri::Pass,

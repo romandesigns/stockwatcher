@@ -334,3 +334,47 @@ fn a_resume_stamped_before_its_gap_closes_the_gap_at_its_start() {
     );
     assert!(snap.data_status.global_interruption.is_none());
 }
+
+#[test]
+fn upward_acceleration_lists_its_context_as_a_descriptor_not_a_requirement() {
+    let mut steps = fixture::script("quiet_build_ignition").unwrap();
+    steps.retain(|s| !matches!(s, FixtureStep::QuietReference(_) | FixtureStep::Advance(_)));
+    // Stop while the acceleration episode is still active, so the snapshot shows it.
+    steps.retain(|s| !matches!(s, FixtureStep::Print { exec, .. } if *exec >= end(43) - 15 * S));
+    steps.push(FixtureStep::Advance(cutoff(42)));
+    let mut e = fixture::engine("t");
+    fixture::drive(&mut e, &steps);
+    let snap = e.detection_snapshot().unwrap();
+    let ep = snap
+        .active
+        .iter()
+        .find(|e| e.family == Family::UpwardAcceleration)
+        .expect("an active acceleration episode");
+    let ctx = ep
+        .checks
+        .iter()
+        .find(|c| c.name == "prior_context")
+        .unwrap();
+    assert_eq!((ctx.state, ctx.required), (Tri::Unknown, false));
+    assert!(
+        ep.checks
+            .iter()
+            .filter(|c| c.required)
+            .all(|c| c.state == Tri::Pass),
+        "nothing required is pending: {:?}",
+        ep.checks
+    );
+    // The quiet family keeps it as its rule.
+    let r = fixture::run("quiet_build_ignition").unwrap();
+    let mb = r
+        .transitions
+        .iter()
+        .find(|t| t.family == Family::MomentumBuilding)
+        .unwrap();
+    let c = mb
+        .checks
+        .iter()
+        .find(|c| c.name == "prior_context")
+        .unwrap();
+    assert_eq!((c.state, c.required), (Tri::Pass, true));
+}

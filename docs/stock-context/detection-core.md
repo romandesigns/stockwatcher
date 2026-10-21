@@ -322,7 +322,9 @@ order.
 
 Every `Check` carries `required`:
 - `true`: part of the family's rule (PASS / FAIL / UNKNOWN decides it).
-- `false`: a measured descriptor, which is never pending and never blocks. These are participation
+- `false`: a measured descriptor, which is never pending and never blocks. `prior_context` is
+  `false` on `upward_acceleration`, which is defined without quietness, and `true` only on
+  `momentum_building`. These are participation
   (`dollar_volume_rate`, `trade_rate`, `volume_condition`), `below_range_high`, `extended`,
   `extended_above_range_high` and `ordering_ambiguous`.
 
