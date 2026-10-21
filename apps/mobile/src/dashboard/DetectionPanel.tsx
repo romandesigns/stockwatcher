@@ -62,6 +62,10 @@ export function DetectionPanel({ channel, onPick, reducedMotion }: { channel: De
   const latestResolution = groupDetections(snapshot, "all", true)[0]?.selected;
   const stale = !state.connected || state.resyncing;
   const pick = (episode: DetectionEpisode, capturedEpoch: string) => onPick(episode.symbol, episode.episode_id, capturedEpoch);
+  // Nothing at all while the detector is off or not yet known (owner review 2026-10-21: a
+  // permanently visible "off" card with filters is clutter). The subscription above stays, so
+  // the panel appears by itself the moment a server enables DETECTION_PANEL.
+  if (state.enabled !== true) return null;
   return (
     <View style={styles.card} accessibilityLabel="Detection Panel">
       <View style={styles.line}>
@@ -70,7 +74,7 @@ export function DetectionPanel({ channel, onPick, reducedMotion }: { channel: De
       </View>
       <Text style={styles.meta}>{state.frame?.source ?? "Source pending"} · {snapshot?.fidelity ? words(snapshot.fidelity) : "Fidelity pending"} · canonical 15s · times Eastern</Text>
       {snapshot && <Text style={styles.meta}>Active {detectionPrice(snapshot.price_min_micros)}–{detectionPrice(snapshot.price_max_micros)} · research {detectionPrice(snapshot.research_min_micros)}–{detectionPrice(snapshot.research_max_micros)}</Text>}
-      {state.enabled === false ? <Text style={styles.empty}>Off on this server</Text> : state.enabled === null ? <Text style={styles.empty}>Connecting to detection state…</Text> : (
+      {(
         <>
           {stale && <Text accessibilityRole="alert" style={styles.warning}>{state.resyncing ? "Resyncing · current assessment unavailable" : "Reconnecting · last received state"}{snapshot ? ` · ${at(snapshot.cutoff)}` : ""}</Text>}
           {state.coverageLost && <Text accessibilityRole="alert" style={styles.warning}>Transition history is incomplete. Current rows remain available; this is not a complete research record.</Text>}

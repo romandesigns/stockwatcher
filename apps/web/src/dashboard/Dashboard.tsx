@@ -175,7 +175,7 @@ export function Dashboard({ choice, feed }: Connection) {
               : "The dashboard shows the live market (Settings → Data). Charts appear with the session's first trades: overnight from 20:00 ET Sunday to Thursday, then 4:00 to 20:00 ET."}
           </p>
         </div>
-        <div className="flex min-w-0 shrink-0 flex-col gap-2 @4xl/panel:w-[420px]">
+        <div className="flex min-w-0 shrink-0 flex-col gap-2 @4xl/panel:w-[400px]">
           <DetectionPanel channel={feed.detection} onPick={pickDetection} />
           {feed.ross && <RossPanel channel={feed.ross} detection={feed.detection} onPick={app.loadIntoSelected} onEpisodePick={pickDetection} />}
         </div>
@@ -211,7 +211,7 @@ export function Dashboard({ choice, feed }: Connection) {
             </div>
           ))}
         </div>
-        <div className="flex min-h-0 min-w-0 shrink-0 flex-col gap-2 @4xl/panel:w-[420px]">
+        <div className="flex min-h-0 min-w-0 shrink-0 flex-col gap-2 @4xl/panel:w-[400px]">
           <DetectionPanel channel={feed.detection} onPick={pickDetection} />
           {feed.ross && <RossPanel channel={feed.ross} detection={feed.detection} onPick={app.loadIntoSelected} onEpisodePick={pickDetection} />}
         </div>

@@ -61,7 +61,8 @@ export function RossPanel({ channel, onPick, detection, onEpisodePick }: { chann
           </span>
         )}
       </div>
-      {fresh.stale && enabled !== false && (
+      {/* Only once connected before: the first connect has its own "Connecting…" line below. */}
+      {fresh.stale && enabled === true && (
         <p className={cn("m-0 flex items-center gap-1.5 px-1 text-[11px]", TONE[fresh.tone])} role="status">
           <span className="size-1.5 rounded-full bg-warning" aria-hidden />
           {fresh.label}

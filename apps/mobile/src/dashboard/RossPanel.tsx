@@ -52,7 +52,8 @@ export function RossPanel({ channel, detection, onPick, reducedMotion }: { chann
           </View>
         )}
       </View>
-      {fresh.stale && enabled !== false && (
+      {/* Only once connected before: the first connect has its own "Connecting…" line below. */}
+      {fresh.stale && enabled === true && (
         <Text accessibilityRole="alert" style={[styles.stale, { color: TONE[fresh.tone] }]}>
           {fresh.label}
         </Text>
@@ -74,9 +75,9 @@ export function RossPanel({ channel, detection, onPick, reducedMotion }: { chann
           {why ? <Text style={styles.whenLine}>{why.takenAt}</Text> : null}
         </View>
       ) : (
-        <View style={fresh.stale ? styles.dimmed : undefined}>
+        <View style={[styles.rows, fresh.stale && styles.dimmed]}>
           {rows.map((r) => (
-            <Row key={`${detectionEpoch ?? "ross"}/${r.symbol}`} row={r} episode={bySymbol.get(r.symbol)} detectionCurrent={detections.connected && !detections.resyncing} onPick={(symbol) => onPick(symbol, bySymbol.get(symbol)?.episode_id, detectionEpoch)} reducedMotion={reducedMotion} />
+            <Row key={r.symbol} row={r} episode={bySymbol.get(r.symbol)} detectionCurrent={detections.connected && !detections.resyncing} onPick={(symbol) => onPick(symbol, bySymbol.get(symbol)?.episode_id, detectionEpoch)} reducedMotion={reducedMotion} />
           ))}
         </View>
       )}
@@ -170,7 +171,9 @@ const styles = StyleSheet.create({
   whyBox: { gap: 2, paddingBottom: 4 },
   whyLine: { color: UI.textFaint, fontSize: 11, fontFamily: fonts.regular, paddingHorizontal: 4 },
   whenLine: { color: UI.textFaint, fontSize: 10, opacity: 0.7, paddingHorizontal: 4 },
-  dimmed: { opacity: 0.6, gap: 4 },
+  // The card's own row gap: the rows are separated by space, never borders.
+  rows: { gap: 6 },
+  dimmed: { opacity: 0.6 },
   row: { gap: 4, paddingVertical: 8, paddingHorizontal: 10, borderRadius: 10, backgroundColor: UI.row, overflow: "hidden" },
   edge: { position: "absolute", left: 0, top: 0, bottom: 0, width: 3 },
   line: { flexDirection: "row", alignItems: "center", gap: 7 },

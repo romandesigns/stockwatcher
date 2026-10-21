@@ -37,6 +37,10 @@ export function DetectionPanel({ channel, onPick }: { channel: DetectionChannel 
   const shown = groups.slice(currentPage * 40, (currentPage + 1) * 40);
   const detail = selection?.epoch === epoch ? snapshot?.episodes.find((e) => e.episode_id === selection.id) : undefined;
   const newestResolution = snapshot?.episodes.filter((e) => e.terminal && e.default_visible).sort((a, b) => (b.resolved_at ?? 0) - (a.resolved_at ?? 0))[0];
+  // Nothing at all while the detector is off or not yet known (owner review 2026-10-21: a
+  // permanently visible "off" card with filters is clutter). The subscription above stays, so
+  // the panel appears by itself the moment a server enables DETECTION_PANEL.
+  if (!channel || state.enabled !== true) return null;
   const select = (e: DetectionEpisode, chart: boolean) => { setSelection({ epoch, id: e.episode_id }); if (chart) onPick(e.symbol, e.episode_id, epoch); };
   return (
     <aside aria-labelledby="detection-title" className="flex min-h-0 min-w-0 flex-col gap-2 rounded-xl bg-card p-3">
@@ -61,7 +65,7 @@ export function DetectionPanel({ channel, onPick }: { channel: DetectionChannel 
         <button type="button" aria-pressed={!history} onClick={() => { setHistory(false); setPage(0); }} className={cn(CONTROL, !history && "bg-primary/10 text-primary")}>Active</button>
         <button type="button" aria-pressed={history} onClick={() => { setHistory(true); setPage(0); }} className={cn(CONTROL, history && "bg-primary/10 text-primary")}>Recent history</button>
       </div>
-      {!channel ? <p className="m-0 py-2 text-xs text-text-faint">This browser-only chart fixture has no detector engine. Connect to the StockWatcher server.</p> : state.enabled === false ? <p className="m-0 py-2 text-xs text-text-faint">Detection is off on this server.</p> : state.enabled === null ? <p className="m-0 py-2 text-xs text-text-faint">Connecting to detection…</p> : groups.length === 0 ? <p className="m-0 py-2 text-xs text-text-faint">{snapshot ? `${snapshot.monitored_symbols.toLocaleString()} reported symbols · no ${history ? "recent" : "active"} event in these filters. Baselines may still be warming.` : "Waiting for the detector's first clock and observations…"}</p> : (
+      {groups.length === 0 ? <p className="m-0 py-2 text-xs text-text-faint">{snapshot ? `${snapshot.monitored_symbols.toLocaleString()} reported symbols · no ${history ? "recent" : "active"} event in these filters. Baselines may still be warming.` : "Waiting for the detector's first clock and observations…"}</p> : (
         <ul className={cn("m-0 flex max-h-[55vh] list-none flex-col gap-1.5 overflow-y-auto p-0", !state.connected && "opacity-60")}>
           {shown.map((g) => <li key={`${epoch}/${g.selected.instrument_id}/${g.selected.episode_id}`}><DetectionRow group={g} fresh={state.connected && !state.resyncing} selected={detail?.episode_id === g.selected.episode_id} onSelect={select} /></li>)}
         </ul>

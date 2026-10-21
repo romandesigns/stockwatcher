@@ -170,10 +170,13 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
         </Pressable>
       </View>
 
+      {/* Only with the detector on and an episode for this ticker (see TickerChartScreen). */}
+      {detection.enabled === true && detectionEpisode ? (
       <View style={styles.detectionSummary}>
         <Text style={styles.detectionMeta}>Detection · experimental · {detection.frame?.source ?? "replay source pending"} · {detection.snapshot?.fidelity.replace(/_/g, " ") ?? "fidelity pending"} · canonical 15s{detection.connected ? "" : " · current assessment unavailable"}</Text>
-        {detectionEpisode ? <Pressable accessibilityRole="button" accessibilityLabel="Inspect the chart's authoritative detection episode" onPress={() => setDetectionDetail({ id: detectionEpisode.episode_id, epoch: detection.frame!.runEpoch })} style={styles.detectionButton}><Text style={styles.detectionState}>{detectionFamilyLabel(detectionEpisode.family)} · {detectionStateLabel(detectionEpisode.state)} · details</Text></Pressable> : <Text style={styles.detectionMeta}>{detection.enabled === false ? "Off on this server" : "No active detection for this ticker"}</Text>}
+        <Pressable accessibilityRole="button" accessibilityLabel="Inspect the chart's authoritative detection episode" onPress={() => setDetectionDetail({ id: detectionEpisode.episode_id, epoch: detection.frame!.runEpoch })} style={styles.detectionButton}><Text style={styles.detectionState}>{detectionFamilyLabel(detectionEpisode.family)} · {detectionStateLabel(detectionEpisode.state)} · details</Text></Pressable>
       </View>
+      ) : null}
 
       <CandleChart
         style={styles.chart}

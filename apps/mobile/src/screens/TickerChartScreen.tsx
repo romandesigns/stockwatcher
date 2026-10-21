@@ -121,6 +121,9 @@ function ModalChart({ feed, symbol, detectionEpisodeId, detectionRunEpoch }: { f
   return (
     <>
       <Header symbol={symbol} price={last ? formatPrice(last.c) : "—"} change={change} />
+      {/* Only with the detector on and an episode for this ticker (or one the user picked): an
+          "off" caption would take chart height on the cover screen for nothing. */}
+      {detection.enabled === true && (episode || detectionEpisodeId) ? (
       <View style={styles.detectionSummary}>
         <Text style={styles.detectionMeta}>Detection · experimental · {detection.frame?.source ?? "source pending"} · canonical 15s</Text>
         {!detection.connected && <Text style={styles.detectionWarning}>Current assessment unavailable · {detection.snapshot ? "last received state" : "waiting for snapshot"}</Text>}
@@ -130,8 +133,9 @@ function ModalChart({ feed, symbol, detectionEpisodeId, detectionRunEpoch }: { f
           </Pressable>
           <Text style={styles.detectionMeta}>{episode.level?.kind === "range_high" ? "Range high" : "T"} {detectionPrice(episode.level?.trigger ?? null)} · I {detectionPrice(episode.level?.invalidation ?? null)}{episode.level ? ` · v${episode.level.version}` : ""} · {episode.fidelity.replace(/_/g, " ")}</Text>
           <Text selectable numberOfLines={1} style={styles.detectionId}>{episode.episode_id}</Text>
-        </> : <Text style={styles.detectionMeta}>{detectionEpisodeId ? "Selected episode is unavailable in this source/run or bounded history." : detection.enabled === false ? "Off on this server" : "No active detection for this ticker."}</Text>}
+        </> : <Text style={styles.detectionMeta}>Selected episode is unavailable in this source/run or bounded history.</Text>}
       </View>
+      ) : null}
       <View style={styles.chartWrap}>
         <CandleChart
           style={styles.chart}
