@@ -87,6 +87,12 @@ pub fn gain(
         };
         return out(unknown(reason));
     }
+    // "A check found no known action" is an assumption the coverage policy permits only while
+    // that check is fresh. Past its horizon nothing is verifying today's share basis any more, so
+    // the pillar goes UNKNOWN rather than keeping a PASS alive through a provider outage.
+    if !pc.actions.valid_at(cutoff) {
+        return out(unknown("actions_coverage_expired"));
+    }
     let Some(p) = price.micros else {
         return out(unknown("price_unknown"));
     };
@@ -217,6 +223,18 @@ pub fn rvol(
         return (unknown("no_daily_baseline"), diag);
     };
     let ev = vec![format!("{}@{}", b.id, b.version)];
+    // The denominator's sessions were restated onto today's share basis. Where that rested on a
+    // freshness-dependent "no known action" assumption, it expires with the check behind it
+    // (`ActionsEvidence::valid_until`): an unapplied split moves the denominator, so a stale
+    // assumption is not a safe lower bound either.
+    if !b.basis.valid_at(cutoff) {
+        return (
+            unknown("actions_coverage_expired")
+                .with_evidence(ev)
+                .as_of(Some(b.observed_at)),
+            diag,
+        );
+    }
     let mut prior: Vec<_> = b
         .sessions
         .iter()

@@ -49,9 +49,13 @@ pub(crate) const MIN_SAMPLES: usize = 100;
 /// One thing that happened to a panel, with the times it happened at.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Stage {
-    /// Taken off the engine's output journal by the viewer-independent drain.
+    /// Taken off the engine's output journal by the viewer-independent drain. Its time is read
+    /// **after** the core lock was acquired, so the segment includes waiting for the lock: a
+    /// timestamp taken before the lock would under-report precisely under contention.
     Drained,
-    /// Broadcast to subscribers as a `ross.update`.
+    /// Handed to this server's broadcast channel as a `ross.update`. The segment ends at the
+    /// server's own send: nothing here measures network transport, a client's receipt or what a
+    /// browser rendered, and none of those may be inferred from it.
     Published,
 }
 

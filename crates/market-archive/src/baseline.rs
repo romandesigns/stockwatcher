@@ -548,6 +548,20 @@ pub fn load(inputs: &Inputs<'_>, symbol: &str, d: NaiveDate, lookback: usize) ->
             ),
             _ => return None,
         };
+        let coverage_at = cov.at().map(nanos);
+        // Only the "no known action" basis is an assumption that stops holding when nobody
+        // checks again: the policy permits it while the check is fresh, and `coverage_for`
+        // returns `Stale` past that limit at build time. A decision can outlive its build, so the
+        // horizon travels on the record and the engine refuses it there too
+        // (`ActionsEvidence::valid_until`). An applied announcement's terms, by contrast, do not
+        // stop being true because nobody looked again; a *later* action needs a fresh check,
+        // which is a new record, not an expiry of this one.
+        let valid_until = match source {
+            ActionsSource::ProviderCheckedNoKnownAction => {
+                coverage_at.map(|at| at + inputs.policy.body.freshness_secs * 1_000_000_000)
+            }
+            _ => None,
+        };
         Some((
             ActionsEvidence {
                 source,
@@ -559,6 +573,8 @@ pub fn load(inputs: &Inputs<'_>, symbol: &str, d: NaiveDate, lookback: usize) ->
                 applied_splits: splits,
                 assumption,
                 history_symbol: renamed.then(|| hist.clone()),
+                coverage_at,
+                valid_until,
             },
             mult,
         ))

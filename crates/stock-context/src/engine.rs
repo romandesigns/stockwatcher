@@ -862,6 +862,22 @@ impl Engine {
         if let Some(f) = ev.float(&s.inst, tau) {
             recheck = recheck.min(f.observed_at + policy.body.float.stale_after_secs * SEC + 1);
         }
+        // A corporate-action assumption expires on the clock, with no new print and no new
+        // record, so the barrier it expires at has to be due by itself
+        // (`ActionsEvidence::valid_until`). Past the horizon there is nothing left to recheck
+        // until evidence arrives, which marks the symbol dirty anyway.
+        for until in [
+            ev.prev_close(&s.inst, tau)
+                .and_then(|r| r.actions.valid_until),
+            ev.daily(&s.inst, tau).and_then(|r| r.basis.valid_until),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if until + 1 > b {
+                recheck = recheck.min(until + 1);
+            }
+        }
         let fresh = prof.news_freshness_secs * SEC;
         for n in ev.news(&s.inst, tau) {
             if let Some(p) = n.published_at

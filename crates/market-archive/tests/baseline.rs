@@ -958,3 +958,46 @@ fn a_late_discovered_action_is_recorded_with_the_records_it_affected() {
     assert_eq!(ledger["rs-late"].versions.len(), 2);
     assert_eq!(ledger["rs-late"].first_observed, at(PRE_SESSION_D));
 }
+
+/// The assumption horizon travels on the record: a decision can outlive the build that made it,
+/// so "a check found no known action" has to carry how long that is good for
+/// (`corporate-actions-coverage-v1`, `freshness_secs`). A finding — bars that were consistent, or
+/// an announcement whose terms were applied — carries no horizon, because it does not stop being
+/// true because nobody looked again.
+#[test]
+fn the_assumption_carries_its_freshness_horizon_and_a_finding_does_not() {
+    let p = policy();
+    let fresh = p.body.freshness_secs * 1_000_000_000;
+    let checked = at(PRE_SESSION_D).timestamp_nanos_opt().unwrap();
+
+    let anns = [retrieval(PRE_SESSION_D, &["OTHER", SYM], vec![])];
+    let l = live(&anns, DECISION);
+    let pc = l.prev_close.unwrap();
+    assert_eq!(
+        pc.actions.source,
+        ActionsSource::ProviderCheckedNoKnownAction
+    );
+    assert_eq!(pc.actions.coverage_at, Some(checked));
+    assert_eq!(pc.actions.valid_until, Some(checked + fresh));
+    assert!(pc.actions.valid_at(checked + fresh));
+    assert!(!pc.actions.valid_at(checked + fresh + 1));
+    let b = l.baseline.unwrap();
+    assert_eq!(b.basis.valid_until, Some(checked + fresh));
+
+    // A confirmed action: its terms were applied, so there is nothing to expire. The check it
+    // came from is still named, so a reader can see how old it is.
+    let anns = [retrieval(
+        PRE_SESSION_D,
+        &["OTHER", SYM],
+        vec![reverse_1_for_10("2026-12-10")],
+    )];
+    let l = live(&anns, DECISION);
+    let pc = l.prev_close.unwrap();
+    assert_eq!(pc.actions.source, ActionsSource::AnnouncedAction);
+    assert_eq!(pc.actions.coverage_at, Some(checked));
+    assert_eq!(
+        pc.actions.valid_until, None,
+        "an applied announcement is a finding, not an assumption"
+    );
+    assert!(pc.actions.valid_at(i64::MAX));
+}

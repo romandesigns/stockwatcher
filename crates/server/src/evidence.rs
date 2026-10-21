@@ -19,9 +19,10 @@
 //! (15 s, [`DEFAULT_CHECK_SECS`] says why) on a blocking thread, never on the market path: trade
 //! processing never waits for disk.
 //! The append-only files are followed with [`EvidenceTail`] (only bytes appended since the last
-//! call are parsed); baselines are rebuilt only when their inputs changed on disk (a raw date
-//! file, the split snapshots, or a new announcement check for the session date: the maintainer
-//! makes one every 30 minutes in the session). The new records go into the [`EvidenceLog`] and
+//! call are parsed); baselines are rebuilt when their inputs changed on disk (a raw date file,
+//! the split snapshots, or a new announcement check for the session date: the maintainer makes
+//! one every 30 minutes in the session) **or** when the clock alone can change the answer (see
+//! "as of" below). The new records go into the [`EvidenceLog`] and
 //! from there to the board under the core lock, which is only in-memory work. A replay day switch
 //! loads the new day synchronously before the rebuild (the same precedent as the archive
 //! metadata), and a seek's new board is seeded from the log in memory.
@@ -36,10 +37,14 @@
 //! has it from the start may then decide those bars differently. That is the honest difference
 //! between what was known and what was loaded, never a backdating.
 //!
-//! Baselines are computed **as of** a time, and nothing retrieved after it is used: live, the
-//! wall clock at the refresh; a replay, the session date's first announcement check (03:30 ET,
-//! or the day's start when there is none), so a replayed day sees the pre-session evidence a live
-//! run would have had and not the later re-checks. Raw date files are refreshed every night,
+//! Baselines are computed **as of** the run's own clock, and nothing retrieved after it is used:
+//! live, the wall clock at the refresh; a replay, its simulated clock, so a replayed day sees the
+//! announcement checks a live run would have had by the same point of the day and never a later
+//! one. (It used to freeze a replay at the day's *first* check, which denied a replayed 10:00 the
+//! 09:00 re-check a live 10:00 certainly had.) A build is therefore redone not only when an input
+//! file changes but also when time alone can change the answer: when the clock reaches a check
+//! the last build could not read, and when a coverage window runs out with no newer check.
+//! Raw date files are refreshed every night,
 //! so for an older replayed day the records usually carry an `observed_at` after that day and are
 //! invisible to it: the rule working, not a gap.
 //!
@@ -224,6 +229,16 @@ pub struct EvidenceLoader {
     news_raw: Vec<NewsVersionRecord>,
     coverage_raw: Vec<NewsCoverageRecord>,
     baseline_stamp: Option<Stamp>,
+    /// The run-clock `as_of` the last baseline build used.
+    baseline_as_of: Option<DateTime<Utc>>,
+    /// The earliest announcement retrieval of the day later than `baseline_as_of`, when the last
+    /// build saw one: at that time a rebuild can read a check the last one could not, with no
+    /// file having changed. `None`: none known.
+    next_check_at: Option<DateTime<Utc>>,
+    /// When the coverage the last build rested on runs out of freshness (the latest readable
+    /// check plus the policy's limit). Past it the same files give a different answer — the
+    /// outage case — so the build is redone. `None`: the build read no check, so nothing expires.
+    coverage_expires_at: Option<DateTime<Utc>>,
     /// Content hashes of the records put in the log for `day`: a recomputation repeats them.
     delivered: HashSet<u64>,
     generations: u64,
@@ -289,6 +304,9 @@ impl EvidenceLoader {
             news_raw: Vec::new(),
             coverage_raw: Vec::new(),
             baseline_stamp: None,
+            baseline_as_of: None,
+            next_check_at: None,
+            coverage_expires_at: None,
             delivered: HashSet::new(),
             generations: 0,
         }
@@ -327,6 +345,9 @@ impl EvidenceLoader {
             self.news_raw.retain(|r| r.first_observed_at >= from);
             self.coverage_raw.retain(|r| r.observed_at >= from);
             self.baseline_stamp = None;
+            self.baseline_as_of = None;
+            self.next_check_at = None;
+            self.coverage_expires_at = None;
             self.delivered.clear();
             self.generations += 1;
             *log.lock().expect("evidence log lock") = EvidenceLog {
@@ -444,7 +465,16 @@ impl EvidenceLoader {
         dir_stamp(&a.split_snapshots_dir(), &mut stamp);
         dir_stamp(&a.corporate_actions_dir(day), &mut stamp);
         stamp.sort();
-        if self.baseline_stamp.as_ref() == Some(&stamp) {
+        // Changed inputs are not the only reason to rebuild. A corporate-action record is only
+        // as good as the check behind it is fresh (`corporate-actions-coverage-v1`), so time
+        // alone changes the answer: a check that becomes visible as the run clock reaches it
+        // (recovery), and a coverage window that runs out with no newer check (the outage the
+        // audit found keeping a stale PASS alive). Neither touches a file, so an mtime stamp
+        // cannot see either.
+        let timed_out = self.next_check_at.is_some_and(|t| now >= t)
+            || self.coverage_expires_at.is_some_and(|t| now >= t);
+        let changed = self.baseline_stamp.as_ref() != Some(&stamp);
+        if !changed && self.baseline_as_of.is_some() && !timed_out {
             return (Vec::new(), Vec::new());
         }
         rep.rebuilt = true;
@@ -455,19 +485,15 @@ impl EvidenceLoader {
                 Vec::new()
             }
         };
-        let as_of = if self.live {
-            now
-        } else {
-            // A replay: the session date's first announcement check, else its first session.
-            let start = DateTime::from_timestamp_nanos(day_bounds(day).0);
-            announcements
-                .iter()
-                .map(|r| r.retrieved_at)
-                .filter(|t| *t >= start)
-                .min()
-                .unwrap_or(start)
-                .min(now)
-        };
+        // Evidence as of the **run's own clock**, live or replay (the caller passes it): a
+        // replayed day sees the checks a live run would have had by the same point of the day and
+        // never a later one, and each record still joins only from its own `observed_at`.
+        //
+        // This replaces freezing a replay at the day's first check. Freezing was not the safer
+        // reading: it denied a replayed 10:00 the 09:00 re-check a live 10:00 certainly had, and
+        // with the assumption horizon now enforced that left a replayed day permanently UNKNOWN
+        // from 90 minutes after its pre-session check.
+        let as_of = now;
         let p = previous_trading_day(day);
         let mut first = day;
         for _ in 0..baseline::DEFAULT_LOOKBACK {
@@ -492,7 +518,7 @@ impl EvidenceLoader {
             rep.errors.push(format!(
                 "no raw daily bars for {p} yet: no baselines for {day}"
             ));
-            self.baseline_stamp = Some(stamp);
+            self.remember_build(stamp, as_of, &announcements);
             return (Vec::new(), Vec::new());
         };
         let top = self.band_max.micros();
@@ -517,8 +543,33 @@ impl EvidenceLoader {
             closes.extend(l.prev_close);
             baselines.extend(l.baseline);
         }
-        self.baseline_stamp = Some(stamp);
+        self.remember_build(stamp, as_of, &announcements);
         (closes, baselines)
+    }
+
+    /// Records what the finished build rested on, so the next tick knows when time alone can
+    /// change the answer.
+    fn remember_build(
+        &mut self,
+        stamp: Stamp,
+        as_of: DateTime<Utc>,
+        announcements: &[market_archive::ActionRetrieval],
+    ) {
+        self.baseline_stamp = Some(stamp);
+        self.baseline_as_of = Some(as_of);
+        self.next_check_at = announcements
+            .iter()
+            .map(|r| r.retrieved_at)
+            .filter(|t| *t > as_of)
+            .min();
+        let freshness = Duration::seconds(CoveragePolicy::v1().body.freshness_secs);
+        self.coverage_expires_at = announcements
+            .iter()
+            .map(|r| r.retrieved_at)
+            .filter(|t| *t <= as_of)
+            .max()
+            .map(|t| t + freshness)
+            .filter(|t| *t > as_of);
     }
 }
 
@@ -584,16 +635,27 @@ impl Market {
         let Some(ev) = self.0.evidence.get() else {
             return;
         };
-        let now = Utc::now();
+        let wall = Utc::now();
         let day = match (day, self.mode()) {
             (Some(d), _) => d,
             (None, ClockMode::Live) => {
-                trading_date(UnixNanos::from_utc(now).unwrap_or(UnixNanos(0)))
+                trading_date(UnixNanos::from_utc(wall).unwrap_or(UnixNanos(0)))
             }
             (None, ClockMode::Replay) => match self.info().and_then(|i| i.day) {
                 Some(d) => d,
                 None => return,
             },
+        };
+        // The run's own clock: the wall clock live, the simulated clock in a replay, so a
+        // replayed day reads evidence as of the point of the day it is at (`EvidenceLoader`
+        // module docs, "as of"). Before the replay clock exists, the day's own start — never the
+        // wall clock, which would make every one of that day's later re-checks visible at once.
+        let now = match self.mode() {
+            ClockMode::Live => wall,
+            ClockMode::Replay => self
+                .clock()
+                .map(|c| DateTime::from_timestamp_nanos(c.now.nanos()))
+                .unwrap_or_else(|| DateTime::from_timestamp_nanos(day_bounds(day).0)),
         };
         let started = std::time::Instant::now();
         let rep = ev
@@ -762,12 +824,23 @@ mod tests {
             set: Some(night_of_p().format("%Y%m%dT%H%M%SZ").to_string()),
         })
         .unwrap();
+        // The 03:30 ET pre-session check and the 09:00 re-check: the maintainer makes one every
+        // 30 minutes through the session (`refresh_every_secs`), and the coverage policy only
+        // lets a "no known action" finding stand for 90 minutes, so a day with the pre-session
+        // check alone is an outage, not the normal case.
+        write_action_check(a, t(3, 30, 0));
+        write_action_check(a, t(9, 0, 0));
+    }
+
+    /// One fully paginated announcement check at `at` (ET ns) that found nothing for either
+    /// symbol.
+    fn write_action_check(a: &Archive, at: i64) {
         let policy = CoveragePolicy::v1();
         let (start, end) = policy.process_window(dd());
         a.write_action_retrieval(&ActionRetrieval {
             schema: 1,
             policy: policy.tag.clone(),
-            retrieved_at: utc(t(3, 30, 0)),
+            retrieved_at: utc(at),
             provider: "alpaca".into(),
             endpoint: policy.body.endpoint.clone(),
             types: policy.body.types.clone(),
@@ -863,13 +936,30 @@ mod tests {
         .expect("v2's band is the default band")
     }
 
-    fn load(a: &Archive, log: &Mutex<EvidenceLog>, cx: &mut ContextBoard) -> RefreshReport {
-        let mut loader = EvidenceLoader::new(a.clone(), Price::from_cents(2500), false);
-        let rep = loader.refresh(dd(), utc(t(23, 0, 0)), log);
+    fn loader(a: &Archive) -> EvidenceLoader {
+        EvidenceLoader::new(a.clone(), Price::from_cents(2500), false)
+    }
+
+    /// One refresh of `l` at the run clock `now`, with whatever it produced handed to the board.
+    /// The replay's `as_of` is its own clock, so the time passed here is the point of the
+    /// simulated day the board is at (module docs, "as of"). A run keeps **one** loader: a new
+    /// one restarts the log's sequence, which a board's cursor would then skip past.
+    fn deliver(
+        l: &mut EvidenceLoader,
+        log: &Mutex<EvidenceLog>,
+        cx: &mut ContextBoard,
+        now: DateTime<Utc>,
+    ) -> RefreshReport {
+        let rep = l.refresh(dd(), now, log);
         if let Some(b) = log.lock().unwrap().since(cx.evidence_cursor()) {
             cx.add_evidence(b);
         }
         rep
+    }
+
+    /// One refresh just before the open, where the 09:00 re-check is the latest one.
+    fn load(a: &Archive, log: &Mutex<EvidenceLog>, cx: &mut ContextBoard) -> RefreshReport {
+        deliver(&mut loader(a), log, cx, utc(t(9, 29, 0)))
     }
 
     /// XYZ: $3.00 against a $2.00 close (+50 %), 120,000 shares a print from 09:30. QUIET: the
@@ -1164,5 +1254,195 @@ mod tests {
         );
         // A client subscribing now still gets the current panel, not a dropped one.
         assert!(cx.take_update().is_some());
+    }
+
+    /// The drain's stage timestamp must be read when each snapshot is captured, inside the core
+    /// lock, not hoisted before `core.lock()`.
+    ///
+    /// Codex's review of the first slice caught the hoisted sample: it leaves the time spent
+    /// waiting for the core lock out of barrier-to-drain, so the segment under-reports exactly
+    /// when contention makes it worth measuring. The capture callback is the seam, and it runs
+    /// under the lock, so reading the clock inside it includes the wait by construction. A test
+    /// clock that advances on every read proves the read happens per capture rather than once
+    /// for the whole drain.
+    #[test]
+    fn the_drain_stage_time_is_read_per_capture_not_hoisted() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = archive(dir.path());
+        write_daily_world(&a);
+        write_collected(&a, t(7, 0, 0));
+        let log = Mutex::new(EvidenceLog::default());
+        let mut cx = board();
+        load(&a, &log, &mut cx);
+        trade(&mut cx, t(9, 30, 0), t(9, 40, 0));
+
+        let reads = std::cell::Cell::new(0i64);
+        let clock = || {
+            reads.set(reads.get() + 1);
+            reads.get()
+        };
+        let mut stamped: Vec<i64> = Vec::new();
+        let took = cx.drain_outputs(&mut |_p| stamped.push(clock()));
+        assert!(took.panels > 1, "several snapshots to stamp: {took:?}");
+        assert_eq!(stamped.len(), took.panels);
+        assert_eq!(
+            stamped,
+            (1..=took.panels as i64).collect::<Vec<_>>(),
+            "one clock read per captured snapshot, in order"
+        );
+    }
+
+    /// The outage the audit found, end to end on the server: the maintainer stops checking, the
+    /// assumption behind the gain and RVOL pillars runs out, and the verdict becomes UNKNOWN
+    /// **with no file changing on disk**. A fresh check then restores it.
+    ///
+    /// `coverage_for` already turned a check older than the policy's freshness into
+    /// `StaleCoverage`, but only at build time, and the build was skipped while the input mtimes
+    /// were unchanged (`ross-panel-v1.md` acknowledges the last provider check staying in use if
+    /// the maintainer stops). Two things fix it: the record carries the horizon its assumption is
+    /// good to, and the build is redone when the clock alone can change the answer.
+    #[test]
+    fn an_action_assumption_expires_on_the_clock_and_a_fresh_check_restores_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = archive(dir.path());
+        write_daily_world(&a);
+        write_collected(&a, t(7, 0, 0));
+        let log = Mutex::new(EvidenceLog::default());
+        let mut cx = board();
+
+        let mut l = loader(&a);
+        // 09:29: the 09:00 check is 29 minutes old, so the assumption holds and XYZ is 5/5.
+        deliver(&mut l, &log, &mut cx, utc(t(9, 29, 0)));
+        trade(&mut cx, t(9, 30, 0), t(9, 32, 0));
+        assert_eq!(state(&cx, SYM, PillarId::Gain).0, Tri::Pass);
+        assert_eq!(state(&cx, SYM, PillarId::Rvol).0, Tri::Pass);
+        assert_eq!(cx.decision(SYM).unwrap().counts.pass, 5);
+        let expired_at =
+            utc(t(9, 0, 0)) + Duration::seconds(CoveragePolicy::v1().body.freshness_secs);
+
+        // Nobody checks again. The decisions run past 10:30 on the engine's own clock, with no
+        // new record of any kind delivered.
+        trade(&mut cx, t(10, 25, 0), t(10, 40, 0));
+        assert_eq!(
+            state(&cx, SYM, PillarId::Gain),
+            (Tri::Unknown, "actions_coverage_expired"),
+            "the assumption ran out at {expired_at}"
+        );
+        assert_eq!(
+            state(&cx, SYM, PillarId::Rvol),
+            (Tri::Unknown, "actions_coverage_expired")
+        );
+        let d = cx.decision(SYM).unwrap();
+        assert_ne!(
+            d.qualification,
+            stock_context::Qualification::Qualified,
+            "a stale assumption is not a qualification"
+        );
+        assert_eq!(
+            d.counts.fail, 0,
+            "UNKNOWN, never a FAIL: nothing was ruled out"
+        );
+
+        // The maintainer comes back at 10:35 and the loader, now past the horizon, rebuilds.
+        write_action_check(&a, t(10, 35, 0));
+        let rep = deliver(&mut l, &log, &mut cx, utc(t(10, 36, 0)));
+        assert!(rep.rebuilt, "{rep:?}");
+        assert!(rep.closes > 0 && rep.baselines > 0, "{rep:?}");
+        trade(&mut cx, t(10, 41, 0), t(10, 43, 0));
+        let d = cx.decision(SYM).unwrap().clone();
+        assert_eq!(
+            state(&cx, SYM, PillarId::Gain),
+            (Tri::Pass, "at_or_above_min"),
+            "{d:#?}"
+        );
+        assert_eq!(state(&cx, SYM, PillarId::Rvol).0, Tri::Pass, "{d:#?}");
+        assert_eq!(d.counts.pass, 5);
+    }
+
+    /// The build is redone when time alone can change the answer, and skipped when it cannot:
+    /// the clock reaching a check the last build could not read, and a coverage window running
+    /// out with no newer check. Neither touches a file, so the mtime stamp cannot see either.
+    #[test]
+    fn baselines_are_rebuilt_when_the_clock_alone_changes_the_answer() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = archive(dir.path());
+        write_daily_world(&a);
+        let log = Mutex::new(EvidenceLog::default());
+        let mut loader = EvidenceLoader::new(a.clone(), Price::from_cents(2500), false);
+
+        // 04:00: only the 03:30 check is readable, and the 09:00 one is known to be ahead.
+        let rep = loader.refresh(dd(), utc(t(4, 0, 0)), &log);
+        assert!(rep.rebuilt, "the first build: {rep:?}");
+        assert!(rep.closes > 0, "{rep:?}");
+
+        // 04:05: same files, the same readable 03:30 check, still inside its 90 minutes, and the
+        // 09:00 check still ahead: nothing can have changed, so nothing is redone.
+        let rep = loader.refresh(dd(), utc(t(4, 5, 0)), &log);
+        assert!(!rep.rebuilt, "no reason to rebuild: {rep:?}");
+
+        // 05:01: the 03:30 check has run out of freshness and no newer one is readable yet, so
+        // the same files now give a different answer.
+        let rep = loader.refresh(dd(), utc(t(5, 1, 0)), &log);
+        assert!(rep.rebuilt, "the window ran out: {rep:?}");
+        // The record it issues is honest about it: a raw close whose corporate actions are not
+        // checked through the evaluated date, which the gain pillar refuses.
+        let through = log
+            .lock()
+            .unwrap()
+            .closes
+            .values()
+            .filter_map(|(_, c)| c.actions_checked_through)
+            .max();
+        assert!(
+            through.is_none_or(|x| x < dd()),
+            "a stale check cannot reach the evaluated date, got {through:?}"
+        );
+
+        // 09:01: the clock has reached the 09:00 check the earlier builds could not read.
+        let rep = loader.refresh(dd(), utc(t(9, 1, 0)), &log);
+        assert!(rep.rebuilt, "a check became readable: {rep:?}");
+        assert!(rep.closes > 0, "and it produced a usable close: {rep:?}");
+    }
+
+    /// A replayed day reads evidence as of the point of the day it is at, never later: the 09:00
+    /// check is invisible to a board replaying 04:00 and visible to one replaying 09:30.
+    #[test]
+    fn a_replay_sees_the_checks_a_live_run_would_have_had_by_then() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = archive(dir.path());
+        write_daily_world(&a);
+        let log = Mutex::new(EvidenceLog::default());
+        let mut early = EvidenceLoader::new(a.clone(), Price::from_cents(2500), false);
+        early.refresh(dd(), utc(t(4, 0, 0)), &log);
+        let at_four = log
+            .lock()
+            .unwrap()
+            .closes
+            .values()
+            .map(|(_, c)| c.actions.coverage_at)
+            .max()
+            .flatten();
+        assert_eq!(
+            at_four,
+            Some(t(3, 30, 0)),
+            "at 04:00 the latest readable check is the pre-session one"
+        );
+
+        let log = Mutex::new(EvidenceLog::default());
+        let mut later = EvidenceLoader::new(a.clone(), Price::from_cents(2500), false);
+        later.refresh(dd(), utc(t(9, 30, 0)), &log);
+        let at_open = log
+            .lock()
+            .unwrap()
+            .closes
+            .values()
+            .map(|(_, c)| c.actions.coverage_at)
+            .max()
+            .flatten();
+        assert_eq!(
+            at_open,
+            Some(t(9, 0, 0)),
+            "at 09:30 the 09:00 re-check is readable, as it was for a live 09:30"
+        );
     }
 }

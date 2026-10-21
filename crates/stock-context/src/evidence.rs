@@ -116,6 +116,30 @@ pub struct ActionsEvidence {
     pub assumption: Option<String>,
     /// The ticker the history was read under, when it differs (a rename in the window).
     pub history_symbol: Option<String>,
+    /// When the announcement check this record rests on was retrieved, when announcements were
+    /// consulted. Not the record's `observed_at`: a record can rest on an older check.
+    pub coverage_at: Option<i64>,
+    /// The cutoff past which the record's **assumption** no longer holds: `coverage_at` plus the
+    /// coverage policy's freshness limit.
+    ///
+    /// Set only where the basis is an assumption about what was *not* found — a fully paginated
+    /// check that saw no known action ([`ActionsSource::ProviderCheckedNoKnownAction`]), which
+    /// the coverage policy permits only while that check is fresh. `None` where the basis is a
+    /// finding: bars that were consistent through the date, or an announcement whose terms were
+    /// applied. A finding does not stop being true because nobody looked again.
+    ///
+    /// A decision past this horizon must not use the record ([`crate::evaluate::gain`],
+    /// [`crate::evaluate::rvol`]): the engine publishes UNKNOWN with
+    /// `actions_coverage_expired` until a fresh check arrives, rather than a PASS nothing is
+    /// still verifying.
+    pub valid_until: Option<i64>,
+}
+
+impl ActionsEvidence {
+    /// Whether a decision at `cutoff` may still rest on this record's basis.
+    pub fn valid_at(&self, cutoff: i64) -> bool {
+        self.valid_until.is_none_or(|until| cutoff <= until)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

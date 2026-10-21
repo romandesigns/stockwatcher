@@ -1775,13 +1775,28 @@ impl Market {
     /// (`crate::observe`): a bounded `try_send` under the lock, absorbed into the summary once the
     /// lock is released. Returns what this call took.
     pub(crate) fn drain_context(&self) -> crate::context::DrainReport {
-        let now = crate::observe::wall_now();
+        self.drain_context_at(&mut crate::observe::wall_now)
+    }
+
+    /// [`Market::drain_context`] with the stage clock injected, so a test can check **where** it
+    /// is read.
+    ///
+    /// `clock` is read once per drain, with the core lock already held. That is the whole point:
+    /// a sample taken before `core.lock()` leaves the time spent waiting for the lock out of
+    /// barrier-to-drain and under-reports the segment exactly when contention makes it worth
+    /// measuring. One read covers the drain because the whole journal is taken inside a single
+    /// critical section, microseconds apart.
+    pub(crate) fn drain_context_at(
+        &self,
+        clock: &mut dyn FnMut() -> i64,
+    ) -> crate::context::DrainReport {
         let sink = &self.0.observations;
         let (took, total, tel) = {
             let mut core = self.0.core.lock().expect("core lock");
             let Some(cx) = core.context.as_mut() else {
                 return Default::default();
             };
+            let now = clock();
             let took = cx.drain_outputs(&mut |p| {
                 sink.capture(crate::observe::Observation::of(
                     crate::observe::Stage::Drained,
@@ -1863,8 +1878,10 @@ impl Market {
                 None => return,
             }
         };
-        // The publication time of the snapshot this frame carries, for `crate::observe`. Captured
-        // after the lock: the send itself is what the segment ends at.
+        // The publication time of the snapshot this frame carries, for `crate::observe`: sampled
+        // here, with the frame already serialized and the core lock released, so the segment ends
+        // at **this server's own broadcast**. It says nothing about network transport, a client's
+        // receipt or what a browser rendered; those are separate segments nothing measures yet.
         self.0.observations.capture(crate::observe::Observation::of(
             crate::observe::Stage::Published,
             &snap,
@@ -2350,6 +2367,40 @@ async fn ingest(mut items: mpsc::Receiver<FeedItem>, market: Market, sim: Option
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The drain's stage clock is read with the core lock already held.
+    ///
+    /// Codex's review of the first slice caught the opposite: the sample was taken before
+    /// `core.lock()`, so the wait for the lock fell outside barrier-to-drain and the segment
+    /// under-reported under contention. The clock closure here proves where the read happens —
+    /// `Mutex::try_lock` from the thread that already holds the guard cannot succeed, so a
+    /// re-hoisted sample fails this test with no contention to arrange.
+    #[test]
+    fn the_drain_stage_clock_is_read_under_the_core_lock() {
+        let market = Market::idle(ClockMode::Replay, "test", None);
+        market.set_stock_context(true);
+        assert!(
+            market.0.core.lock().expect("core lock").context.is_some(),
+            "the default band is the pillar policy's band, so a board exists"
+        );
+        let mut reads = 0u32;
+        let mut clock = || {
+            reads += 1;
+            assert!(
+                market.0.core.try_lock().is_err(),
+                "the stage time must be read under the core lock, not before it"
+            );
+            0
+        };
+        let took = market.drain_context_at(&mut clock);
+        assert!(took.is_empty(), "an idle market published nothing yet");
+        assert_eq!(reads, 1, "read once per drain, inside the critical section");
+
+        // And with no board at all the clock is not read: nothing was drained to stamp.
+        market.set_stock_context(false);
+        let mut never = || panic!("no board, no stage time");
+        assert!(market.drain_context_at(&mut never).is_empty());
+    }
 
     #[test]
     fn a_halt_watcher_card_on_the_wire() {
