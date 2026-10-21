@@ -24,6 +24,7 @@ use crate::evidence::{
     DailyBaseline, EvidenceStore, FloatObservation, InstrumentId, IntradayBaseline, NewsCoverage,
     NewsItem, PrevClose,
 };
+use crate::output::{BoundedLog, OutputTelemetry, PANEL_LOG_MAX, SETUP_LOG_MAX};
 use crate::panel::{
     Eligibility, Membership, Momentum, MomentumStatus, PanelPolicy, momentum, momentum_order,
     update_membership,
@@ -254,10 +255,10 @@ pub struct Engine {
     next_bar: Option<i64>,
     seq: u64,
     panel_policy: PanelPolicy,
-    panel_log: Vec<PanelSnapshot>,
+    panel_log: BoundedLog<PanelSnapshot>,
     last_panel: Option<PanelSnapshot>,
     setup_policy: SetupPolicy,
-    setup_log: Vec<SetupLogEntry>,
+    setup_log: BoundedLog<SetupLogEntry>,
 }
 
 fn ceil_to(t: i64, step: i64) -> i64 {
@@ -275,10 +276,35 @@ impl Engine {
             next_bar: None,
             seq: 0,
             panel_policy: PanelPolicy::v1(),
-            panel_log: Vec::new(),
+            panel_log: BoundedLog::new(PANEL_LOG_MAX),
             last_panel: None,
             setup_policy: SetupPolicy::v0(),
-            setup_log: Vec::new(),
+            setup_log: BoundedLog::new(SETUP_LOG_MAX),
+        }
+    }
+
+    /// The same engine with other output journal bounds (the defaults are [`PANEL_LOG_MAX`] and
+    /// [`SETUP_LOG_MAX`]). Bounds only decide when the oldest held output is dropped and counted;
+    /// they never change a decision, a panel or the latest snapshot.
+    pub fn with_output_bounds(mut self, panels: usize, setup_entries: usize) -> Self {
+        self.panel_log = BoundedLog::new(panels);
+        self.setup_log = BoundedLog::new(setup_entries);
+        self
+    }
+
+    /// What the two output journals have produced, handed over and dropped.
+    pub fn output_telemetry(&self) -> OutputTelemetry {
+        OutputTelemetry {
+            panels_published: self.panel_log.logged(),
+            panels_taken: self.panel_log.taken(),
+            panels_dropped: self.panel_log.dropped(),
+            panels_held: self.panel_log.held(),
+            setup_entries_logged: self.setup_log.logged(),
+            setup_entries_taken: self.setup_log.taken(),
+            setup_entries_dropped: self.setup_log.dropped(),
+            setup_entries_held: self.setup_log.held(),
+            panel_log_max: self.panel_log.max(),
+            setup_log_max: self.setup_log.max(),
         }
     }
 
@@ -292,9 +318,11 @@ impl Engine {
         &self.setup_policy
     }
 
-    /// Setup transitions and level versions logged since the last call, oldest first.
+    /// Setup transitions and level versions held now, oldest first; the journal is empty
+    /// afterwards. Bounded ([`SETUP_LOG_MAX`]): a caller that stops taking loses the oldest
+    /// entries, counted in [`Engine::output_telemetry`].
     pub fn take_setup_log(&mut self) -> Vec<SetupLogEntry> {
-        std::mem::take(&mut self.setup_log)
+        self.setup_log.take()
     }
 
     /// The same engine under another Ross Panel policy.
@@ -307,9 +335,12 @@ impl Engine {
         &self.panel_policy
     }
 
-    /// Panel snapshots published since the last call (each one changed), oldest first.
+    /// Panel snapshots held now (each one a change), oldest first; the journal is empty
+    /// afterwards. Bounded ([`PANEL_LOG_MAX`]): a caller that stops taking loses the oldest
+    /// snapshots, counted in [`Engine::output_telemetry`]. The latest snapshot is kept apart
+    /// ([`Engine::panel`]), so what a client sees never depends on this.
     pub fn take_panels(&mut self) -> Vec<PanelSnapshot> {
-        std::mem::take(&mut self.panel_log)
+        self.panel_log.take()
     }
 
     /// The latest panel snapshot (what a client snapshot sends).

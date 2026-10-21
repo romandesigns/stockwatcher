@@ -1081,4 +1081,80 @@ mod tests {
         fresh.refresh(dd() - Duration::days(7), now, &log);
         assert_eq!(fresh.refresh(dd(), now, &log).floats, 3);
     }
+
+    /// The engine's output journals are drained every tick, with no `ross` subscriber anywhere:
+    /// the drain is the market's quotes task, not a viewer's side effect. Before this slice the
+    /// only panel drain was inside `take_update`, which `Market::publish_context` never reaches
+    /// with zero subscribers, and `take_setup_log` had no caller at all.
+    #[test]
+    fn outputs_are_drained_without_any_viewer() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = archive(dir.path());
+        write_daily_world(&a);
+        write_collected(&a, t(7, 0, 0));
+        let log = Mutex::new(EvidenceLog::default());
+        let mut cx = board();
+        load(&a, &log, &mut cx);
+        // A member, so the panel really changes from barrier to barrier.
+        trade(&mut cx, t(9, 30, 0), t(9, 40, 0));
+
+        // No `take_update` call: nobody is subscribed. The drain still takes everything.
+        let took = cx.drain_outputs();
+        assert!(took.panels > 0, "panels were published: {took:?}");
+        let tel = cx.output_telemetry();
+        assert_eq!(tel.panels_held, 0, "the drain emptied the journal");
+        assert_eq!(tel.panels_taken, took.panels as u64);
+        assert!(
+            tel.complete(),
+            "a drain that keeps up drops nothing: {tel:?}"
+        );
+        assert_eq!(cx.drained(), took);
+
+        // And the latest snapshot is still there for a client that subscribes later: draining
+        // the journal is not the same as clearing the panel.
+        let frame: serde_json::Value =
+            serde_json::from_str(&cx.panel_frame("ross.snapshot")).expect("json");
+        assert_eq!(
+            frame["panel"]["rows"].as_array().unwrap().len(),
+            1,
+            "{frame}"
+        );
+        assert!(
+            cx.take_update().is_some(),
+            "the first update after a drain still goes out"
+        );
+        assert!(
+            cx.take_update().is_none(),
+            "and only once per revision, as before"
+        );
+
+        // A second drain with nothing new takes nothing.
+        assert!(cx.drain_outputs().is_empty());
+    }
+
+    /// With no drain at all the engine holds at most its bound and counts what it dropped: the
+    /// unattended run costs bounded memory, and stops claiming the journal is complete.
+    #[test]
+    fn an_undrained_board_stays_bounded_and_reports_the_loss() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = archive(dir.path());
+        write_daily_world(&a);
+        write_collected(&a, t(7, 0, 0));
+        let log = Mutex::new(EvidenceLog::default());
+        let mut cx = board().with_output_bounds(4, 8);
+        load(&a, &log, &mut cx);
+        trade(&mut cx, t(9, 30, 0), t(9, 40, 0));
+
+        let tel = cx.output_telemetry();
+        assert!(tel.panels_published > 4, "{tel:?}");
+        assert_eq!(tel.panels_held, 4, "held at the bound: {tel:?}");
+        assert!(tel.panels_dropped > 0, "{tel:?}");
+        assert!(!tel.complete(), "{tel:?}");
+        assert_eq!(
+            tel.panels_published,
+            tel.panels_taken + tel.panels_dropped + tel.panels_held as u64
+        );
+        // A client subscribing now still gets the current panel, not a dropped one.
+        assert!(cx.take_update().is_some());
+    }
 }

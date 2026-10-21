@@ -399,7 +399,13 @@ impl BullFlag {
         }
     }
 
-    fn log_level(log: &mut Vec<SetupLogEntry>, sym: &str, id: &str, kind: &'static str, l: &Level) {
+    fn log_level(
+        log: &mut crate::output::BoundedLog<SetupLogEntry>,
+        sym: &str,
+        id: &str,
+        kind: &'static str,
+        l: &Level,
+    ) {
         log.push(SetupLogEntry::Level(LevelRecord {
             symbol: sym.to_string(),
             setup_id: id.to_string(),
@@ -414,7 +420,7 @@ impl BullFlag {
         policy: &SetupPolicy,
         grid_bar_secs: i64,
         x: &Step,
-        log: &mut Vec<SetupLogEntry>,
+        log: &mut crate::output::BoundedLog<SetupLogEntry>,
     ) -> SetupView {
         let r = &policy.body.bull_flag;
         let (state, reason, pending, crossed, pole) = self.decide(r, grid_bar_secs, x, log);
@@ -490,7 +496,7 @@ impl BullFlag {
         r: &BullFlagRules,
         grid_bar_secs: i64,
         x: &Step,
-        log: &mut Vec<SetupLogEntry>,
+        log: &mut crate::output::BoundedLog<SetupLogEntry>,
     ) -> (
         SetupState,
         &'static str,

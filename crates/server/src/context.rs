@@ -34,9 +34,27 @@ use market_events::{Price, Trade, UnixNanos};
 use serde_json::json;
 use std::collections::HashSet;
 use stock_context::{
-    CloseBasis, Coverage, Decision, Engine, Fidelity, InstrumentId, PanelPolicy, Policy, PrevClose,
-    RunInfo, SetupPolicy, Verdict,
+    CloseBasis, Coverage, Decision, Engine, Fidelity, InstrumentId, OutputTelemetry, PanelPolicy,
+    Policy, PrevClose, RunInfo, SetupPolicy, Verdict,
 };
+
+/// What one [`ContextBoard::drain_outputs`] took off the engine, and what the engine had to drop
+/// before it got there.
+///
+/// `panels` and `setup_entries` are counts, not a claim of persistence: this slice drains so the
+/// engine stays bounded and so the counts are honest. Nothing here is written to disk, and
+/// `dropped` is what a complete journal would have had to include.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct DrainReport {
+    pub(crate) panels: usize,
+    pub(crate) setup_entries: usize,
+}
+
+impl DrainReport {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.panels == 0 && self.setup_entries == 0
+    }
+}
 
 pub(crate) struct ContextBoard {
     engine: Engine,
@@ -46,6 +64,8 @@ pub(crate) struct ContextBoard {
     published: Option<(u64, i64)>,
     /// How far this board has taken the market's evidence log (`None`: nothing yet).
     evidence: Option<Cursor>,
+    /// Outputs this board has drained since it was built (`ross` viewers do not change it).
+    drained: DrainReport,
 }
 
 impl ContextBoard {
@@ -102,7 +122,49 @@ impl ContextBoard {
             closes_offered: HashSet::new(),
             published: None,
             evidence: None,
+            drained: DrainReport::default(),
         })
+    }
+
+    /// The same board with other engine output bounds (tests; production keeps the defaults).
+    #[cfg(test)]
+    pub(crate) fn with_output_bounds(self, panels: usize, setup_entries: usize) -> Self {
+        ContextBoard {
+            engine: self.engine.with_output_bounds(panels, setup_entries),
+            ..self
+        }
+    }
+
+    /// Takes the engine's bounded output journals, whatever any client is doing.
+    ///
+    /// The engine owns no consumer: it appends panel snapshots and setup-log entries and its
+    /// caller takes them. Draining used to happen only inside [`ContextBoard::take_update`],
+    /// which the market skips when nobody is subscribed to `ross`, and the setup log had no
+    /// caller at all — so an unattended run grew both for ever. This is called every tick
+    /// regardless of viewers. In-memory only (it runs under the core lock): no disk, no provider,
+    /// no serialization.
+    ///
+    /// The drained rows are dropped here. That is deliberate and limited: this slice makes the
+    /// engine bounded and the loss counted, it does not persist a decision journal, so nothing
+    /// here may be presented as a complete audit trail.
+    pub(crate) fn drain_outputs(&mut self) -> DrainReport {
+        let r = DrainReport {
+            panels: self.engine.take_panels().len(),
+            setup_entries: self.engine.take_setup_log().len(),
+        };
+        self.drained.panels += r.panels;
+        self.drained.setup_entries += r.setup_entries;
+        r
+    }
+
+    /// Everything this board has drained since it was built.
+    pub(crate) fn drained(&self) -> DrainReport {
+        self.drained
+    }
+
+    /// The engine's output counters, drops included ([`stock_context::OutputTelemetry`]).
+    pub(crate) fn output_telemetry(&self) -> OutputTelemetry {
+        self.engine.output_telemetry()
     }
 
     /// Where this board is in the market's evidence log.
@@ -194,8 +256,11 @@ impl ContextBoard {
     }
 
     /// The `ross.update` frame when the panel changed since the last call.
+    ///
+    /// It reads the latest snapshot only; draining the journals is
+    /// [`ContextBoard::drain_outputs`]'s job, so what the engine holds never depends on whether
+    /// anyone is watching.
     pub(crate) fn take_update(&mut self) -> Option<String> {
-        let _ = self.engine.take_panels();
         let p = self.engine.panel()?;
         let at = (p.revision, p.bar_end);
         if self.published == Some(at) {

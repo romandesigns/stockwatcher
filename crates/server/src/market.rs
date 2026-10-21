@@ -959,6 +959,9 @@ impl Market {
                 let market = Market(inner);
                 market.publish_quotes();
                 market.publish_pressure();
+                // Before the broadcast, and whether or not anyone is subscribed: the context
+                // engine's output journals are drained so an unattended run stays bounded.
+                market.drain_context();
                 market.publish_context();
                 n += 1;
                 // Live: the quote rows go into the archive's recording now and then, the
@@ -1749,6 +1752,45 @@ impl Market {
         let core = self.0.core.lock().expect("core lock");
         let cx = core.context.as_ref();
         crate::context::decision_frame(symbol, cx.and_then(|c| c.decision(symbol)), cx.is_some())
+    }
+
+    /// Drains the context engine's bounded output journals (panel snapshots, setup log), from the
+    /// quotes task, **whatever any client is doing**.
+    ///
+    /// The engine appends and its caller takes; nothing used to take the setup log at all, and
+    /// panels were only taken inside `publish_context`, which returns early with no `ross`
+    /// subscriber. An unattended live market therefore grew both without bound. The drain is
+    /// in-memory under the core lock (no disk, no provider, no serialization), and the engine's
+    /// counters say what it had to drop. Returns what this call took.
+    pub(crate) fn drain_context(&self) -> crate::context::DrainReport {
+        let mut core = self.0.core.lock().expect("core lock");
+        let Some(cx) = core.context.as_mut() else {
+            return Default::default();
+        };
+        let took = cx.drain_outputs();
+        let tel = cx.output_telemetry();
+        let total = cx.drained();
+        if !took.is_empty() {
+            tracing::debug!(
+                panels = took.panels,
+                setup_entries = took.setup_entries,
+                panels_total = total.panels,
+                setup_entries_total = total.setup_entries,
+                complete = tel.complete(),
+                "stock context outputs drained"
+            );
+        }
+        if !tel.complete() {
+            // Not a silent loss: a run whose journal is incomplete says so.
+            tracing::warn!(
+                panels_dropped = tel.panels_dropped,
+                setup_entries_dropped = tel.setup_entries_dropped,
+                panel_log_max = tel.panel_log_max,
+                setup_log_max = tel.setup_log_max,
+                "stock context outputs: the engine dropped outputs at its bound; the drained journal is incomplete"
+            );
+        }
+        took
     }
 
     /// One `ross.update` when the panel changed and anyone is subscribed (from the quotes task,

@@ -18,6 +18,7 @@
 pub mod engine;
 pub mod evaluate;
 pub mod evidence;
+pub mod output;
 pub mod panel;
 pub mod pillar;
 pub mod policy;
@@ -33,6 +34,7 @@ pub use evidence::{
     EvidenceStore, Favorability, FloatObservation, InstrumentId, IntradayBaseline, IntradayCurve,
     NewsCoverage, NewsItem, PrevClose, SessionVolume, SplitRatio, Tag,
 };
+pub use output::{BoundedLog, OutputTelemetry, PANEL_LOG_MAX, SETUP_LOG_MAX};
 pub use panel::{
     Episode, ExitReason, MemberStatus, Membership, Momentum, MomentumStatus, PanelPolicy,
     ROSS_PANEL_V1,
