@@ -2755,12 +2755,14 @@ mod tests {
             (before.shares, before.trades, before.dollars),
             "nothing was subtracted from an unrelated print"
         );
-        // But something the provider says is not there may still be in the count, so the
-        // numerator is no longer a lower bound and the pillar stops passing on it.
+        // But something the provider says is not there may still be in the count — up to the
+        // cancel's 120,000 shares — so the count alone is no longer a lower bound. Net of that
+        // bound it still clears the threshold here, so the pillar passes on the net figure and
+        // says so; the doubt itself is still reported.
         assert!(after.integrity.volume_untrusted);
         assert_eq!(
             state(&cx, SYM, PillarId::Rvol),
-            (Tri::Unknown, "volume_untrusted")
+            (Tri::Pass, "at_or_above_min_net_of_unplaced")
         );
         let tel = cx.revision_telemetry();
         assert_eq!(tel.unknown_target, 1);

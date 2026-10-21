@@ -1745,7 +1745,17 @@ impl Market {
                         // Discovery owns its need for history even with no chart and explicit
                         // preload off. The existing bounded per-symbol request goes to the
                         // off-core loader; this lock performs no file or provider I/O.
-                        if self.0.detection_on.load(Ordering::Relaxed) {
+                        //
+                        // So does the Ross board: a symbol printing now is history-pending
+                        // (RVOL UNKNOWN) until it loads, and the background preload is ordered by
+                        // the archive's past volume, so a restart's gappers — printing today,
+                        // quiet before — came last, minutes after the open. One request per
+                        // symbol (`request_load` keeps a flag), moved to the front. Only when the
+                        // background preload is on: with it off the operator asked for loads on
+                        // demand, and the board reports the symbol pending until one.
+                        let ross_wants = core.context.is_some()
+                            && self.0.history.get().is_some_and(|h| h.preload);
+                        if self.0.detection_on.load(Ordering::Relaxed) || ross_wants {
                             crate::history::request_load(self, &mut core, symbol);
                         }
                     }

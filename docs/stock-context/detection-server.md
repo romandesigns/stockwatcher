@@ -86,12 +86,19 @@ local admission time for live, never epoch zero.
 Lazy history has an explicit temporary `history_pending` guard before the first held input.
 The core keeps accumulating facts while RVOL, historical windows, setups and detections remain
 unavailable. Successful facts adoption clears that guard without clearing genuine integrity or
-coverage faults; failed or empty adoption remains unavailable. Detection requests the existing
-off-core history loader on a held input even when preload is off, independently of any chart.
-Refused adoption sets Partial `restore_refused_<reason>` coverage and an explicit per-symbol
-`history_restore_refused` interruption; an empty restore uses `history_restore_empty`. This is
-terminal for that History instance, including across a date roll. Recovery requires a
-process/source restart that reinitializes History; toggling a panel flag does not retry it.
+coverage faults. Detection requests the existing off-core history loader on a held input even
+when preload is off, independently of any chart; the Ross board does the same when preload is
+on, so a symbol printing now loads ahead of the archive-volume order. A load the live tail
+outpaces defers and the loader retries it with a 2–60 s backoff.
+Before adoption the restore engine is advanced to the live clock, so a thin symbol whose first
+barrier of the day no later delivery decided is not left on yesterday's date (which adoption
+refuses as `trading_date`). Refused adoption sets Partial `restore_refused_<reason>` coverage
+and an explicit per-symbol `history_restore_refused` interruption; an empty restore uses
+`history_restore_empty` and keeps whatever coverage the read itself reported. **Neither is
+terminal** (changed in review, 2026-10-21): the pending guard ends, the symbol continues from its
+live tail — a lower bound on the day — and coverage is dated, so a refusal's Partial ends with
+its trading date. It used to stay pending for the life of the process, which made RVOL UNKNOWN
+and kept the symbol off the Ross Panel until a restart.
 
 Named-build restoration keeps original global clocks only before the first omitted symbol
 admission, including clocks completing its last readable bar. Intentional held suffixes are not

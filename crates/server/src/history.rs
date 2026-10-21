@@ -64,9 +64,9 @@ use market_providers::Recorder;
 use market_providers::recorder::receive_time;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError, channel};
 use std::sync::{Arc, Mutex, Weak};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// The quote rows go to the recording every this many quote ticks (seconds).
 pub const QUOTES_CHECKPOINT_TICKS: u64 = 10;
@@ -105,6 +105,9 @@ pub(crate) struct History {
     /// Symbols at start, and the background load's progress.
     total: usize,
     started: Instant,
+    /// `LIVE_HISTORY_PRELOAD`: every symbol is being loaded in the background, so a held print may
+    /// move its own symbol to the front ([`request_load`] from the ingest).
+    pub(crate) preload: bool,
 }
 
 /// A symbol whose archived history is not in the engine yet.
@@ -448,6 +451,7 @@ impl Market {
             journals: Mutex::new(HashMap::new()),
             total,
             started: Instant::now(),
+            preload,
         });
         if total > 0 {
             let weak = Arc::downgrade(&self.0);
@@ -542,7 +546,7 @@ impl Market {
         let mut overflow = 0u64;
         let mut caught_up = false;
         for _ in 0..CATCHUP_ROUNDS {
-            let (batch, cursor, over) = {
+            let (batch, _offered, over) = {
                 let mut core = self.0.core.lock().expect("core lock");
                 let Some(u) = core.unloaded.get_mut(symbol) else {
                     // Loaded by someone else while this ran: give the drained events back to
@@ -552,16 +556,19 @@ impl Market {
                 (u.take_held(), u.pushed, u.overflow)
             };
             overflow = over;
-            // The cursor is what the ingest has offered; what this load has consumed plus what
-            // was dropped at the bound must account for all of it, or the tail moved under the
-            // replay and another round is due.
             consumed += batch.len() as u64;
-            let behind = cursor.saturating_sub(consumed + overflow);
+            // Small enough that what arrives while it replays will be small too: the final gap,
+            // closed under the lock, is then bounded by one short round. The condition used to
+            // be "cursor == consumed + overflow" read from the same snapshot the batch was
+            // drained from — always true, so the rounds never ran and every hot symbol whose
+            // read took long enough to gather more than `ATOMIC_MAX` held events was deferred,
+            // and (until the loader learned to retry) never loaded.
+            let small = batch.len() <= ATOMIC_MAX / 2;
             for e in &batch {
                 b.feed(e);
             }
             drained.push(batch);
-            if behind == 0 {
+            if small {
                 caught_up = true;
                 break;
             }
@@ -661,7 +668,19 @@ impl Market {
             .flatten()
             .max()
             .expect("known source start clock");
+            let live_clock = core.engine.clock();
             if let (Some(mut re), Some(cx)) = (context, core.context.as_mut()) {
+                // Bring the restore up to the live clock first. Its own clock only moved with
+                // this symbol's deliveries, so a thin symbol's first barrier of the day could
+                // still be undecided — no later print came to decide it — and the restored state
+                // was then still on yesterday's date, which `adopt_facts` refuses
+                // (`trading_date`). That refused, for good, exactly the thin premarket names a
+                // 04:00–09:30 deploy restores. The live engine has decided every barrier up to
+                // this clock over the same inputs, so the restore deciding them too is the
+                // like-for-like comparison; whatever it decides is discarded, only facts move.
+                if let Some(now) = live_clock {
+                    let _ = re.advance_to(now);
+                }
                 if verdict_conflicts > 0 {
                     unproven = Some("journal_verdict_conflict");
                 }
@@ -1371,16 +1390,25 @@ pub(crate) fn history_json(market: &Market) -> Value {
 /// The loader thread: urgent requests first, then (with preload) the background queue.
 fn loader(weak: Weak<crate::market::Inner>, urgent: Receiver<String>, mut queue: VecDeque<String>) {
     let mut done_logged = queue.is_empty();
+    // Deferred loads, each with when to try again and its current backoff. A load defers when the
+    // live tail outpaces it (`Market::load_history`); nothing else ever asked for those symbols
+    // again unless a chart opened one, so a hot symbol stayed unloaded — an empty chart and a
+    // history-pending scanner row — for the rest of the process.
+    let mut retry: VecDeque<(Instant, Duration, String)> = VecDeque::new();
     loop {
+        let due = retry
+            .front()
+            .is_some_and(|(at, _, _)| *at <= Instant::now());
         let next = match urgent.try_recv() {
-            Ok(s) => Some(s),
+            Ok(s) => Some((s, RETRY_FIRST)),
             Err(TryRecvError::Disconnected) => return,
-            Err(TryRecvError::Empty) => queue.pop_front(),
+            Err(TryRecvError::Empty) if due => retry.pop_front().map(|(_, b, s)| (s, b)),
+            Err(TryRecvError::Empty) => queue.pop_front().map(|s| (s, RETRY_FIRST)),
         };
-        let symbol = match next {
+        let (symbol, backoff) = match next {
             Some(s) => s,
             None => {
-                if !done_logged {
+                if !done_logged && retry.is_empty() {
                     done_logged = true;
                     if let Some(inner) = weak.upgrade()
                         && let Some(h) = inner.history.get()
@@ -1392,16 +1420,47 @@ fn loader(weak: Weak<crate::market::Inner>, urgent: Receiver<String>, mut queue:
                         );
                     }
                 }
-                match urgent.recv() {
-                    Ok(s) => s,
-                    Err(_) => return,
+                let got = match retry.front() {
+                    Some((at, _, _)) => {
+                        urgent.recv_timeout(at.saturating_duration_since(Instant::now()))
+                    }
+                    None => urgent.recv().map_err(|_| RecvTimeoutError::Disconnected),
+                };
+                match got {
+                    Ok(s) => (s, RETRY_FIRST),
+                    Err(RecvTimeoutError::Timeout) => continue,
+                    Err(RecvTimeoutError::Disconnected) => return,
                 }
             }
         };
         let Some(inner) = weak.upgrade() else { return };
-        Market(inner).load_history(&symbol);
+        let market = Market(inner);
+        market.load_history(&symbol);
+        // Still unloaded and nobody loading it: the load deferred. Come back to it later, with
+        // a growing pause so a symbol that keeps outpacing its catch-up does not monopolise the
+        // loader thread.
+        let deferred = market
+            .0
+            .core
+            .lock()
+            .expect("core lock")
+            .unloaded
+            .get(&symbol)
+            .is_some_and(|u| !u.loading);
+        if deferred && !retry.iter().any(|(_, _, s)| *s == symbol) {
+            retry.push_back((
+                Instant::now() + backoff,
+                (backoff * 2).min(RETRY_MAX),
+                symbol,
+            ));
+            retry.make_contiguous().sort_by_key(|(at, _, _)| *at);
+        }
     }
 }
+
+/// First pause before a deferred load is tried again, and the most it grows to.
+const RETRY_FIRST: Duration = Duration::from_secs(2);
+const RETRY_MAX: Duration = Duration::from_secs(60);
 
 #[cfg(test)]
 mod tests {
@@ -1557,6 +1616,7 @@ mod tests {
             journals: Mutex::new(HashMap::new()),
             total: 0,
             started: Instant::now(),
+            preload: false,
         }
     }
 

@@ -384,9 +384,17 @@ impl ContextBoard {
             }
             self.engine.set_restored_through(symbol, restored_through);
         } else {
-            let (coverage_reason, gap_reason) = match outcome {
-                Adoption::Refused(why) => (
-                    match why {
+            // A failed restore ends the temporary guard too. It used to leave the symbol
+            // history-pending for the life of the process ("terminal, even across a date roll"),
+            // and pending makes RVOL UNKNOWN: a symbol whose restore found nothing, or was
+            // refused, could never be admitted to the Ross Panel until a restart — and the
+            // commonest refusal was a thin premarket print after a 04:00–09:30 deploy, exactly
+            // the gappers. What the live tail holds is a lower bound on the day either way, which
+            // is what the pillars are built to reason about; the coverage says how much less.
+            self.engine.set_history_pending(symbol, false);
+            match outcome {
+                Adoption::Refused(why) => {
+                    let reason = match why {
                         "run_identity" => "restore_refused_run_identity",
                         "pillar_policy" => "restore_refused_pillar_policy",
                         "panel_policy" => "restore_refused_panel_policy",
@@ -394,17 +402,23 @@ impl ContextBoard {
                         "detection_policy" => "restore_refused_detection_policy",
                         "trading_date" => "restore_refused_trading_date",
                         _ => "restore_refused_unknown",
-                    },
-                    "history_restore_refused",
-                ),
-                _ => ("history_restore_empty", "history_restore_empty"),
-            };
-            // Terminal for this History instance: no tail-only qualification, even across a
-            // date roll. Only a process/source restart that reinitializes History retries it.
-            self.engine.set_history_pending(symbol, true);
-            self.detection_status(Some(symbol), at, false, gap_reason);
-            self.engine
-                .set_coverage(symbol, Some((Coverage::Partial, coverage_reason)));
+                    };
+                    // The recording had prints this board could not take: the tail is short of
+                    // the day by them. Dated, so it ends with the date (`Engine::evaluate`).
+                    self.detection_status(Some(symbol), at, false, "history_restore_refused");
+                    self.engine
+                        .set_coverage(symbol, Some((Coverage::Partial, reason)));
+                }
+                _ => {
+                    // Nothing recorded for the symbol on this date: the live tail is all of it
+                    // that anything saw, so there is nothing to protect. A read that came back
+                    // short says so through `coverage`, exactly as an adopted one would.
+                    self.detection_status(Some(symbol), at, false, "history_restore_empty");
+                    if coverage.is_some() {
+                        self.engine.set_coverage(symbol, coverage);
+                    }
+                }
+            }
         }
         outcome
     }
@@ -940,8 +954,72 @@ pub(crate) struct ReasonCount {
 mod restore_failure_tests {
     use super::*;
 
+    /// A premarket deploy: the restore holds yesterday's prints and one thin print today, with no
+    /// later delivery to decide today's first barrier on the restore's own clock. Left there it
+    /// is still on yesterday's date and the live board refuses it (`trading_date`) — which used
+    /// to leave the symbol pending for good. Advanced to the live clock first, as the loader now
+    /// does (`crate::history`), it is today's and adopted.
     #[test]
-    fn refused_and_empty_restores_remain_unavailable_with_exact_failure_across_date_roll() {
+    fn a_thin_premarket_restore_is_adopted_once_it_reaches_the_live_clock() {
+        let day = NaiveDate::from_ymd_opt(2026, 10, 16).unwrap();
+        let yesterday = NaiveDate::from_ymd_opt(2026, 10, 15).unwrap();
+        let both = Verdict {
+            ohlc: true,
+            volume: true,
+        };
+        let print = market_events::session::et(day, 7, 0, 0, 0).unwrap();
+        let now = market_events::session::et(day, 7, 5, 0, 0).unwrap();
+        let fresh = || {
+            let mut board = ContextBoard::new_labeled(
+                false,
+                Some(day),
+                Price::from_cents(10),
+                Price::from_cents(2500),
+                true,
+            )
+            .unwrap();
+            board.set_history_pending("THIN", true);
+            let t = Trade::new("THIN", print, Price::from_cents(300), 500, 2);
+            board.apply_trade(&t, Counted::from_effect(&t), &PrevCloses::default());
+            board.advance(now);
+            let mut restored = board.restore_engine();
+            let y = market_events::session::et(yesterday, 19, 59, 0, 0).unwrap();
+            restored.apply(
+                &Trade::new("THIN", y, Price::from_cents(280), 900, 1),
+                both,
+                y,
+            );
+            restored.apply(
+                &Trade::new("THIN", print, Price::from_cents(300), 500, 2),
+                both,
+                UnixNanos(print.0 + 100_000_000),
+            );
+            (board, restored)
+        };
+
+        // (Whether the restore's own clock leaves it on yesterday depends on whether some
+        // recheck happens to land after 04:00; the loader no longer depends on that.)
+        let (mut board, mut restored) = fresh();
+        let _ = restored.advance_to(now);
+        assert!(matches!(
+            board.adopt_facts(&mut restored, "THIN", None, None, now),
+            Adoption::Adopted { .. }
+        ));
+        assert!(!board.engine.history_pending("THIN"));
+        board.advance(UnixNanos(now.0 + 30_000_000_000));
+        let d = board.decision("THIN").expect("a decision");
+        assert_eq!(d.trading_date, day);
+        assert_eq!(
+            d.volume.shares, 500,
+            "today's facts, from the restore, and not yesterday's 900"
+        );
+    }
+
+    /// A failed restore names its failure, and then the symbol carries on from its live tail:
+    /// pending ends (it used to be terminal, so RVOL stayed UNKNOWN until a restart), a refusal
+    /// leaves today's coverage Partial, and the next date starts clean.
+    #[test]
+    fn refused_and_empty_restores_name_the_failure_and_do_not_block_the_symbol() {
         let day = NaiveDate::from_ymd_opt(2026, 10, 16).unwrap();
         let at = market_events::session::et(day, 9, 31, 0, 0).unwrap();
         for refused in [true, false] {
@@ -975,16 +1053,26 @@ mod restore_failure_tests {
                 );
             }
             let outcome = board.adopt_facts(&mut restored, "ABCD", None, None, at);
-            let (coverage_reason, gap_reason) = if refused {
+            let gap_reason = if refused {
                 assert_eq!(outcome, Adoption::Refused("run_identity"));
-                ("restore_refused_run_identity", "history_restore_refused")
+                assert_eq!(
+                    board.engine.coverage_of("ABCD"),
+                    Some((Coverage::Partial, "restore_refused_run_identity")),
+                    "the tail is short of the day by the prints it refused"
+                );
+                "history_restore_refused"
             } else {
                 assert_eq!(outcome, Adoption::Nothing);
-                ("history_restore_empty", "history_restore_empty")
+                assert_eq!(
+                    board.engine.coverage_of("ABCD"),
+                    None,
+                    "nothing was recorded, so the tail is all anything saw"
+                );
+                "history_restore_empty"
             };
-            assert_eq!(
-                board.engine.coverage_of("ABCD"),
-                Some((Coverage::Partial, coverage_reason))
+            assert!(
+                !board.engine.history_pending("ABCD"),
+                "a failed restore does not leave the symbol pending for the life of the process"
             );
             let snapshot = board.engine.detection_snapshot().unwrap();
             assert!(snapshot.active.is_empty());
@@ -998,18 +1086,23 @@ mod restore_failure_tests {
             let trade = Trade::new("ABCD", next, Price::from_cents(300), 200, 2);
             board.apply_trade(&trade, Counted::from_effect(&trade), &PrevCloses::default());
             board.advance(UnixNanos(next.0 + 60_000_000_000));
-            assert!(
-                board.engine.history_pending("ABCD"),
-                "date change must not silently clear a failed restore"
-            );
+            assert!(!board.engine.history_pending("ABCD"));
             let decision = board.decision("ABCD").unwrap();
             let rvol = decision
                 .pillars
                 .iter()
                 .find(|p| p.pillar == PillarId::Rvol)
                 .unwrap();
-            assert_eq!((rvol.state, rvol.reason), (Tri::Unknown, "history_pending"));
-            assert_eq!(decision.volume.coverage_reason, Some(coverage_reason));
+            assert_ne!(
+                rvol.reason, "history_pending",
+                "the next date is measured, not held"
+            );
+            assert_ne!(
+                decision.volume.coverage,
+                Coverage::Partial,
+                "and yesterday's refusal is not a statement about today: {:?}",
+                decision.volume.coverage_reason
+            );
             assert!(board.engine.detection_snapshot().unwrap().active.is_empty());
         }
     }

@@ -519,6 +519,49 @@ async fn a_load_with_a_live_tail_under_it_completes_off_the_lock() {
     }
 }
 
+/// With the background preload on and nothing else asking, every symbol still ends up loaded
+/// while the tail streams. A load the tail outpaces defers, and nothing used to ask for it again
+/// unless a chart opened the symbol: an empty chart and a history-pending (RVOL UNKNOWN) row for
+/// the life of the process. The loader now retries deferred loads itself.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_background_loader_finishes_every_symbol_under_a_moving_tail() {
+    let tmp = tempfile::tempdir().expect("tmp");
+    let events = fixture_events(&tmp.path().join("scratch"));
+    let split = events
+        .iter()
+        .position(|e| receive_time(e) >= et(11, 0))
+        .expect("a midday event");
+
+    let root = tmp.path().join("run");
+    let (before, tx) = live(&root, et(4, 0), true);
+    for e in &events[..split] {
+        tx.send(e.clone()).await.expect("send");
+    }
+    drop(tx);
+    until("the first run ended", || {
+        before.state_json()["status"]["state"] == "stopped"
+    })
+    .await;
+    drop(before);
+    recorded_in(&root, split).await;
+
+    let (after, tx) = live(&root, et(11, 0), true);
+    after.set_stock_context(true);
+    let tail: Vec<MarketEvent> = events[split..].to_vec();
+    let streaming = tokio::spawn(async move {
+        for e in tail {
+            if tx.send(e).await.is_err() {
+                break;
+            }
+        }
+    });
+    until("the background loader loaded every symbol", || {
+        after.state_json()["history"]["pending"] == 0
+    })
+    .await;
+    streaming.await.expect("the stream task");
+}
+
 /// A load whose archive read is short reports the symbol's day as partial, never as a day with
 /// no trades.
 ///
