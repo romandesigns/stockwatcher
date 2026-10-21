@@ -188,6 +188,39 @@ fn a_pending_tail_claims_nothing_and_adoption_ends_the_guard() {
 }
 
 #[test]
+fn pending_wins_over_a_missing_baseline_and_both_diagnostics_say_so() {
+    // No evidence at all: no daily or intraday baseline. Without the guard the pillar would say
+    // no_daily_baseline, which hides why nothing is assessed.
+    let mut live = engine("live");
+    live.set_history_pending("HNOB", true);
+    live_tail(&mut live, "HNOB");
+    let d = live.current().find(|d| d.symbol == "HNOB").unwrap();
+    let p = d
+        .pillars
+        .iter()
+        .find(|p| p.pillar == PillarId::Rvol)
+        .unwrap();
+    assert_eq!(
+        (p.state, p.reason, p.value),
+        (Tri::Unknown, "history_pending", None)
+    );
+    assert_eq!(d.rvol.same_time_reason, "history_pending");
+    assert_eq!(d.rvol.recent_reason, "history_pending");
+    // Resolved explicitly: the missing baseline is reported for what it is.
+    live.set_history_pending("HNOB", false);
+    print(&mut live, "HNOB", t(10, 1, 0), 100, 2000);
+    live.advance_to(UnixNanos(t(10, 1, 30)));
+    let d = live.current().find(|d| d.symbol == "HNOB").unwrap();
+    let p = d
+        .pillars
+        .iter()
+        .find(|p| p.pillar == PillarId::Rvol)
+        .unwrap();
+    assert_eq!((p.state, p.reason), (Tri::Unknown, "no_daily_baseline"));
+    assert_eq!(d.rvol.same_time_reason, "no_intraday_baseline");
+}
+
+#[test]
 fn adoption_ends_the_guard_but_never_a_genuine_doubt() {
     let mut live = engine("live");
     evidence(&mut live, "HDBT");

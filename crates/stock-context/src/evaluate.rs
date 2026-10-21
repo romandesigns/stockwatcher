@@ -216,6 +216,25 @@ pub fn rvol(
         recent_reason: "no_intraday_baseline",
     };
 
+    // History pending: the numerator is a tail awaiting the day's restore. Nothing about the
+    // denominators changes that, so the guard comes before every baseline lookup — a missing or
+    // expired baseline must not replace the reason a client needs to see.
+    if vol.integrity.history_pending {
+        diag.same_time_reason = "history_pending";
+        diag.recent_reason = "history_pending";
+        return (
+            PillarResult::new(
+                PillarId::Rvol,
+                Tri::Unknown,
+                None,
+                "milli",
+                rule,
+                "history_pending",
+            ),
+            diag,
+        );
+    }
+
     // Same-time and recent-window diagnostics: never the pillar.
     if let Some(b) = store.intraday(inst, cutoff) {
         // The restatement onto today's share basis rests on evidence with its own expiry, like
