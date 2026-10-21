@@ -10,8 +10,16 @@
 //! - **Float** (FMP `shares-float`, current-only): once per trading day at `EVIDENCE_FLOAT_AT`
 //!   ET (default 07:00, before the open) for the watch universe, plus once for a symbol that
 //!   enters the band intraday and was not fetched that day ("lazy warmup", capped per day). A
-//!   symbol is fetched at most once per ET date, restarts included: the day's stored records say
-//!   what is already done. The refresh is spread over ticks so news polling never waits on it.
+//!   symbol is fetched at most once **successfully** per ET date, restarts included: the day's
+//!   stored records say what is already done. The refresh is spread over ticks so news polling
+//!   never waits on it.
+//!
+//!   Done means **durably appended**, not "the request returned": a fetch that could not be
+//!   stored, exhausted HTTP retries or hit a network error is scheduled for another bounded
+//!   attempt (`EVIDENCE_FLOAT_RETRY_*`, exponential and jittered, capped per symbol per day and
+//!   with a bounded waiting queue whose drops are counted). Only a plan refusal is permanent: it
+//!   pauses the day's float work and clears the pending retries, because a provider that has
+//!   already said no will not change its mind before tomorrow.
 //! - **News** (Alpaca `/v1beta1/news`, all symbols in one query): every `EVIDENCE_NEWS_POLL_SECS`
 //!   (60 s) from 04:00 to 20:00 ET on trading days, every `EVIDENCE_NEWS_IDLE_POLL_SECS` (300 s)
 //!   otherwise. Each poll searches from the previous complete search's end minus an overlap
@@ -37,7 +45,7 @@ use chrono_tz::America::New_York;
 use market_archive::{Archive, CoverageScope, DailyCloses, FloatRecord, LiveQuote};
 use market_events::{Price, PriceBand, is_trading_day};
 use std::cell::RefCell;
-use std::collections::{BTreeSet, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
 const SEC: i64 = 1_000_000_000;
@@ -60,6 +68,10 @@ pub enum FloatMode {
 /// | `EVIDENCE_FLOAT_MODE` | `bulk` | `shares-float-all` pages, per-symbol on refusal; or `per-symbol` |
 /// | `EVIDENCE_FMP_PER_MINUTE` | `120` | FMP request ceiling for this process |
 /// | `EVIDENCE_FLOAT_WARMUP_MAX` | `500` | intraday entrants fetched per ET date, at most |
+/// | `EVIDENCE_FLOAT_RETRY_ATTEMPTS` | `4` | transient float retries per symbol per ET date |
+/// | `EVIDENCE_FLOAT_RETRY_BASE_SECS` | `30` | first transient retry delay (doubling, jittered) |
+/// | `EVIDENCE_FLOAT_RETRY_MAX_SECS` | `900` | transient retry delay ceiling |
+/// | `EVIDENCE_FLOAT_RETRY_QUEUE_MAX` | `2000` | symbols waiting for a retry, at most |
 /// | `EVIDENCE_UNIVERSE_DAYS` | `5` | trading dates of closes that define the watch universe |
 /// | `EVIDENCE_NEWS_POLL_SECS` | `60` | news poll interval, 04:00–20:00 ET on trading days |
 /// | `EVIDENCE_NEWS_IDLE_POLL_SECS` | `300` | news poll interval otherwise |
@@ -73,6 +85,13 @@ pub struct EvidenceConfig {
     pub float_mode: FloatMode,
     pub fmp_per_minute: u32,
     pub float_warmup_max: usize,
+    /// Transient float retries per symbol per ET date (0: none). A provider or disk failure is
+    /// not the symbol's whole day.
+    pub float_retry_attempts: u32,
+    pub float_retry_base_secs: i64,
+    pub float_retry_max_secs: i64,
+    /// Symbols waiting for a retry at once; over it the oldest wait is dropped and counted.
+    pub float_retry_queue_max: usize,
     pub universe_days: usize,
     pub news_poll_secs: i64,
     pub news_idle_poll_secs: i64,
@@ -97,6 +116,10 @@ impl Default for EvidenceConfig {
             float_mode: FloatMode::Bulk,
             fmp_per_minute: 120,
             float_warmup_max: 500,
+            float_retry_attempts: 4,
+            float_retry_base_secs: 30,
+            float_retry_max_secs: 900,
+            float_retry_queue_max: 2_000,
             universe_days: 5,
             news_poll_secs: 60,
             news_idle_poll_secs: 300,
@@ -151,6 +174,22 @@ impl EvidenceConfig {
             fmp_per_minute: num("EVIDENCE_FMP_PER_MINUTE", d.fmp_per_minute as i64, 1)? as u32,
             float_warmup_max: num("EVIDENCE_FLOAT_WARMUP_MAX", d.float_warmup_max as i64, 0)?
                 as usize,
+            float_retry_attempts: num(
+                "EVIDENCE_FLOAT_RETRY_ATTEMPTS",
+                d.float_retry_attempts as i64,
+                0,
+            )? as u32,
+            float_retry_base_secs: num(
+                "EVIDENCE_FLOAT_RETRY_BASE_SECS",
+                d.float_retry_base_secs,
+                1,
+            )?,
+            float_retry_max_secs: num("EVIDENCE_FLOAT_RETRY_MAX_SECS", d.float_retry_max_secs, 1)?,
+            float_retry_queue_max: num(
+                "EVIDENCE_FLOAT_RETRY_QUEUE_MAX",
+                d.float_retry_queue_max as i64,
+                0,
+            )? as usize,
             universe_days: num("EVIDENCE_UNIVERSE_DAYS", d.universe_days as i64, 1)? as usize,
             news_poll_secs: num("EVIDENCE_NEWS_POLL_SECS", d.news_poll_secs, 10)?,
             news_idle_poll_secs: num("EVIDENCE_NEWS_IDLE_POLL_SECS", d.news_idle_poll_secs, 10)?,
@@ -276,9 +315,20 @@ impl Pacer {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct TickReport {
     pub float_requests: u32,
+    /// Observations **durably appended** this tick: a fetch that could not be stored is not one.
     pub float_records: u32,
     pub float_queued: usize,
     pub warmups: u32,
+    /// Symbols scheduled for a transient retry this tick (a provider hiccup or a failed append).
+    pub float_retries_scheduled: u32,
+    /// Retries whose backoff had elapsed and that were put back on the queue this tick.
+    pub float_retries_due: u32,
+    /// Symbols that used their last retry and are not asked again today, counted not hidden.
+    pub float_retry_exhausted: u32,
+    /// Waiting retries dropped because the retry queue was full.
+    pub float_retry_dropped: u32,
+    /// Symbols waiting for a retry after this tick.
+    pub float_retry_pending: usize,
     pub news_requests: u32,
     pub news_versions: u32,
     pub news_complete: u32,
@@ -289,11 +339,16 @@ pub struct TickReport {
 impl TickReport {
     pub fn summary(&self) -> String {
         format!(
-            "evidence: float {} req, {} records, {} queued, {} warmups; news {} req, {} new versions, {} complete searches, covered through {}{}",
+            "evidence: float {} req, {} stored, {} queued, {} warmups, {} retries pending ({} scheduled, {} due, {} exhausted, {} dropped); news {} req, {} new versions, {} complete searches, covered through {}{}",
             self.float_requests,
             self.float_records,
             self.float_queued,
             self.warmups,
+            self.float_retry_pending,
+            self.float_retries_scheduled,
+            self.float_retries_due,
+            self.float_retry_exhausted,
+            self.float_retry_dropped,
             self.news_requests,
             self.news_versions,
             self.news_complete,
@@ -309,6 +364,31 @@ impl TickReport {
     }
 }
 
+/// A symbol waiting for another float attempt after a transient failure.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FloatRetry {
+    symbol: String,
+    /// Earliest UTC ns to ask again.
+    next_at: i64,
+}
+
+/// FNV-1a, so a retry's jitter is spread across symbols and still reproducible in a test (a
+/// random jitter would make the collector's own tests depend on the seed).
+fn fnv1a(parts: &[&str], salt: u32) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for p in parts {
+        for b in p.as_bytes() {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x100_0000_01b3);
+        }
+    }
+    for b in salt.to_le_bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x100_0000_01b3);
+    }
+    h
+}
+
 /// The collector's state between ticks. Everything it needs after a restart is rebuilt from the
 /// stored records, so a restart repeats no request it already made that day.
 pub struct Collector {
@@ -319,8 +399,16 @@ pub struct Collector {
     next_news_poll: i64,
     float_day: Option<NaiveDate>,
     float_refreshed: Option<NaiveDate>,
-    float_done: HashSet<String>,
+    /// Symbols whose float for the day is **durably stored**: the only state that means done.
+    /// A fetch that has not been appended yet, or an append that failed, is not in here.
+    float_durable: HashSet<String>,
+    /// Symbols that spent every retry today: not asked again, and not claimed as done either.
+    float_exhausted: HashSet<String>,
     float_queue: VecDeque<String>,
+    /// Transient failures waiting for their backoff, oldest wait first.
+    float_retry: VecDeque<FloatRetry>,
+    /// Requests already spent per symbol today (the first fetch counts as one).
+    float_attempts: HashMap<String, u32>,
     float_blocked: Option<NaiveDate>,
     warmups_today: usize,
     fmp_pacer: Pacer,
@@ -341,7 +429,9 @@ impl Collector {
             .map_err(|e| e.to_string())?;
         let today = et_date(now);
         let floats = archive.read_float().map_err(|e| e.to_string())?;
-        let float_done: HashSet<String> = floats
+        // Stored records are durable by definition: a restart neither repeats them nor inherits
+        // a pending retry (the symbol is simply queued again at the next due check).
+        let float_durable: HashSet<String> = floats
             .iter()
             .filter(|r| et_date(DateTime::from_timestamp_nanos(r.retrieved_at)) == today)
             .map(|r| r.symbol.clone())
@@ -357,8 +447,11 @@ impl Collector {
             // A refresh that already ran today left a record per universe symbol; the queue is
             // rebuilt at the next due check and skips them, so marking it not-run is harmless.
             float_refreshed: None,
-            float_done,
+            float_durable,
+            float_exhausted: HashSet::new(),
             float_queue: VecDeque::new(),
+            float_retry: VecDeque::new(),
+            float_attempts: HashMap::new(),
             float_blocked: None,
             warmups_today: 0,
             fmp_pacer,
@@ -388,6 +481,7 @@ impl Collector {
             self.news(archive, http, creds, now, clock, sleep, log, &mut report);
         }
         report.float_queued = self.float_queue.len();
+        report.float_retry_pending = self.float_retry.len();
         report.news_through = self.last_through;
         report
     }
@@ -407,13 +501,17 @@ impl Collector {
         let today = et_date(now);
         if self.float_day != Some(today) {
             self.float_day = Some(today);
-            self.float_done.clear();
+            self.float_durable.clear();
+            self.float_exhausted.clear();
             self.float_queue.clear();
+            self.float_retry.clear();
+            self.float_attempts.clear();
             self.warmups_today = 0;
         }
         if self.float_blocked == Some(today) {
             return;
         }
+        let tick_now_ns = now.timestamp_nanos_opt().unwrap_or(i64::MAX);
         let mut universe = BTreeSet::new();
         if let Some(day) = float_refresh_due(now, self.cfg.float_at, self.float_refreshed) {
             self.float_refreshed = Some(day);
@@ -445,7 +543,7 @@ impl Collector {
                 ) {
                     Ok((rows, requests)) => {
                         report.float_requests += requests;
-                        self.store_floats(archive, rows, report);
+                        self.store_floats(archive, rows, tick_now_ns, report);
                     }
                     Err(e) => {
                         report
@@ -455,15 +553,35 @@ impl Collector {
                 }
             }
             for s in &universe {
-                if !self.float_done.contains(s) && !self.float_queue.contains(s) {
+                if !self.known_float(s) {
                     self.float_queue.push_back(s.clone());
                 }
             }
         }
+        // Retries whose backoff has elapsed go to the front of the queue: each is one symbol
+        // already judged worth asking about, and the daily refresh queue is thousands long.
+        let due: Vec<FloatRetry> = {
+            let mut due = Vec::new();
+            let mut keep = VecDeque::with_capacity(self.float_retry.len());
+            for r in self.float_retry.drain(..) {
+                if r.next_at <= tick_now_ns {
+                    due.push(r);
+                } else {
+                    keep.push_back(r);
+                }
+            }
+            self.float_retry = keep;
+            due
+        };
+        report.float_retries_due += due.len() as u32;
+        for r in due.into_iter().rev() {
+            if !self.float_durable.contains(&r.symbol) {
+                self.float_queue.push_front(r.symbol);
+            }
+        }
         // Lazy warmup: intraday entrants jump the queue, capped per day.
         if let Ok(Some(quotes)) = archive.read_live_quotes(today) {
-            let known =
-                |s: &str| self.float_done.contains(s) || self.float_queue.iter().any(|q| q == s);
+            let known = |s: &str| self.known_float(s);
             let entrants = intraday_entrants(&quotes, self.cfg.band, &known);
             for s in entrants {
                 if self.warmups_today >= self.cfg.float_warmup_max {
@@ -483,6 +601,12 @@ impl Collector {
             };
             self.fmp_pacer.wait(sleep);
             report.float_requests += 1;
+            let attempts = self
+                .float_attempts
+                .entry(sym.clone())
+                .and_modify(|n| *n += 1)
+                .or_insert(1);
+            let attempts = *attempts;
             let mut now_ns = || clock().timestamp_nanos_opt().unwrap_or(i64::MAX);
             match fetch_float(
                 http,
@@ -494,41 +618,108 @@ impl Collector {
                 sleep,
                 log,
             ) {
-                Ok(r) => {
-                    self.float_done.insert(sym);
-                    rows.push(r);
-                }
+                // Fetched, not done: the symbol is complete only once `store_floats` has
+                // appended it durably.
+                Ok(r) => rows.push(r),
                 Err(FmpError::NotEntitled { status, message }) => {
-                    // A plan refusal will not change within the day: stop asking until tomorrow.
+                    // A plan refusal will not change within the day: stop asking until tomorrow,
+                    // pending retries included (a provider that said no is not a hiccup).
                     report.errors.push(format!(
                         "float not entitled (HTTP {status}): {message}; float paused until tomorrow"
                     ));
                     self.float_blocked = Some(today);
                     self.float_queue.clear();
+                    self.float_retry.clear();
                     break;
                 }
                 Err(e) => {
-                    // Exhausted retries: not asked again until the next ET date, so a symbol FMP
-                    // keeps failing costs one request (plus retries) a day, never a loop.
-                    self.float_done.insert(sym.clone());
                     report.errors.push(format!("float {sym}: {e}"));
+                    self.schedule_retry(&sym, attempts, now_ns(), report);
                 }
             }
         }
-        self.store_floats(archive, rows, report);
+        self.store_floats(archive, rows, tick_now_ns, report);
     }
 
-    fn store_floats(&mut self, archive: &Archive, rows: Vec<FloatRecord>, report: &mut TickReport) {
+    /// Queues another attempt for `sym` after an exponential, jittered backoff, unless it has
+    /// spent its allowance for the day (counted, never silently dropped).
+    ///
+    /// A genuine refusal is handled elsewhere and still pauses the whole day: this path is for
+    /// transient failures only — exhausted HTTP retries, a network error, a failed append.
+    fn schedule_retry(&mut self, sym: &str, attempts: u32, now_ns: i64, report: &mut TickReport) {
+        if attempts > self.cfg.float_retry_attempts {
+            self.float_exhausted.insert(sym.to_string());
+            report.float_retry_exhausted += 1;
+            return;
+        }
+        if self.float_retry.iter().any(|r| r.symbol == sym) {
+            return;
+        }
+        let step = self
+            .cfg
+            .float_retry_base_secs
+            .saturating_mul(1i64 << attempts.min(16).saturating_sub(1))
+            .min(self.cfg.float_retry_max_secs);
+        // Up to a quarter of the step, spread by symbol so a provider outage does not bring the
+        // whole queue back at the same instant.
+        let jitter = (fnv1a(&[sym], attempts) % (step / 4 + 1) as u64) as i64;
+        if self.cfg.float_retry_queue_max == 0 {
+            report.float_retry_dropped += 1;
+            return;
+        }
+        while self.float_retry.len() >= self.cfg.float_retry_queue_max {
+            self.float_retry.pop_front();
+            report.float_retry_dropped += 1;
+        }
+        self.float_retry.push_back(FloatRetry {
+            symbol: sym.to_string(),
+            next_at: now_ns + (step + jitter) * SEC,
+        });
+        report.float_retries_scheduled += 1;
+    }
+
+    /// Appends `rows` and marks a symbol done **only** when the append succeeded. An append that
+    /// fails leaves the observation unrecorded, so the symbol is scheduled for another attempt
+    /// rather than counted as collected.
+    fn store_floats(
+        &mut self,
+        archive: &Archive,
+        rows: Vec<FloatRecord>,
+        now_ns: i64,
+        report: &mut TickReport,
+    ) {
         if rows.is_empty() {
             return;
         }
-        for r in &rows {
-            self.float_done.insert(r.symbol.clone());
-        }
         match archive.append_float(&rows) {
-            Ok(()) => report.float_records += rows.len() as u32,
-            Err(e) => report.errors.push(format!("float store: {e}")),
+            Ok(()) => {
+                for r in &rows {
+                    self.float_durable.insert(r.symbol.clone());
+                }
+                report.float_records += rows.len() as u32;
+            }
+            Err(e) => {
+                report.errors.push(format!("float store: {e}"));
+                for r in &rows {
+                    let attempts = self
+                        .float_attempts
+                        .get(&r.symbol)
+                        .copied()
+                        .unwrap_or(1)
+                        .max(1);
+                    self.schedule_retry(&r.symbol, attempts, now_ns, report);
+                }
+            }
         }
+    }
+
+    /// Whether this symbol's float needs no new queue entry today: stored, queued, waiting for a
+    /// retry, or out of attempts.
+    fn known_float(&self, sym: &str) -> bool {
+        self.float_durable.contains(sym)
+            || self.float_exhausted.contains(sym)
+            || self.float_queue.iter().any(|q| q == sym)
+            || self.float_retry.iter().any(|r| r.symbol == sym)
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -830,3 +830,197 @@ fn a_float_plan_refusal_pauses_float_for_the_day() {
     assert!(!r.errors[0].contains("dummy-fmp-key"));
     let _ = day;
 }
+
+// --- float completion and transient retry -----------------------------------------------------
+
+/// `AAAA` in the watch universe, nothing else.
+fn one_symbol_universe(a: &Archive, day: NaiveDate) {
+    let mut closes = market_archive::DailyCloses::new();
+    closes.insert(day.pred_opt().unwrap(), [("AAAA".to_string(), 5.0)].into());
+    a.write_daily_closes(&closes).unwrap();
+}
+
+fn float_body(sym: &str) -> serde_json::Value {
+    serde_json::json!([{"symbol": sym, "floatShares": 1_000_000,
+    "outstandingShares": 2_000_000, "freeFloat": 50.0, "source": "https://x.test", "date": "d"}])
+}
+
+/// Five transient 500s: enough for `RetryPolicy::default()` to exhaust its attempts.
+fn five_transient() -> Script {
+    let mut s = Script::default();
+    for _ in 0..5 {
+        s = s.status(500, b"upstream hiccup");
+    }
+    s
+}
+
+/// A collector whose transient retries are quick and few, so a test can walk them.
+fn retry_cfg(attempts: u32) -> EvidenceConfig {
+    EvidenceConfig {
+        float_retry_attempts: attempts,
+        float_retry_base_secs: 10,
+        float_retry_max_secs: 60,
+        ..test_cfg()
+    }
+}
+
+/// One `Collector::tick` with no Alpaca credentials (float only).
+fn float_tick(
+    c: &mut Collector,
+    a: &Archive,
+    http: &mut Script,
+    clock: &Cell<DateTime<Utc>>,
+) -> market_providers::import::evidence_collect::TickReport {
+    c.tick(
+        a,
+        http,
+        Some(&key()),
+        None,
+        &mut || clock.get(),
+        &mut |_| {},
+        &mut |_| {},
+    )
+}
+
+/// A transient provider failure must not end the symbol's day: it is scheduled for a bounded
+/// retry and, crucially, never recorded as done. Inserting an exhausted retry into `float_done`
+/// (and marking rows done before `append_float`) was the audit's F12 — one hiccup hid a
+/// qualifying symbol's float until the next ET date or a collector restart.
+#[test]
+fn a_transient_float_failure_is_retried_rather_than_marked_done() {
+    let (_d, a) = archive();
+    let day = d("2026-10-15");
+    one_symbol_universe(&a, day);
+    let clock = Cell::new(utc(t("2026-10-15", 7, 5, 0)));
+    let mut c = Collector::open(retry_cfg(4), &a, clock.get()).unwrap();
+
+    let r = float_tick(&mut c, &a, &mut five_transient(), &clock);
+    assert_eq!(r.float_records, 0, "nothing was stored");
+    assert_eq!(r.float_retries_scheduled, 1, "{r:?}");
+    assert_eq!(r.float_retry_pending, 1);
+    assert_eq!(r.float_retry_exhausted, 0);
+    assert!(r.errors[0].contains("AAAA"), "{:?}", r.errors);
+    assert!(a.read_float().unwrap().is_empty());
+
+    // Too early: the backoff has not elapsed, so no request is made at all.
+    clock.set(clock.get() + chrono::Duration::seconds(1));
+    let r = float_tick(&mut c, &a, &mut Script::default(), &clock);
+    assert_eq!((r.float_requests, r.float_retries_due), (0, 0), "{r:?}");
+    assert_eq!(r.float_retry_pending, 1);
+
+    // Past the backoff (base 10 s plus deterministic jitter under a quarter of it): the retry
+    // runs and succeeds, and only then is the symbol done.
+    clock.set(clock.get() + chrono::Duration::seconds(60));
+    let r = float_tick(
+        &mut c,
+        &a,
+        &mut Script::default().json(float_body("AAAA")),
+        &clock,
+    );
+    assert_eq!((r.float_requests, r.float_records), (1, 1), "{r:?}");
+    assert_eq!(r.float_retry_pending, 0);
+    assert_eq!(a.read_float().unwrap().len(), 1);
+
+    // And it is not asked a second time that day.
+    clock.set(clock.get() + chrono::Duration::seconds(60));
+    let r = float_tick(&mut c, &a, &mut Script::default(), &clock);
+    assert_eq!(r.float_requests, 0, "{r:?}");
+}
+
+/// A fetch that succeeded but could not be stored is not complete either: completion is the
+/// durable append, not the HTTP 200. The old code marked the row done before `append_float`, so
+/// a disk error lost the observation silently.
+#[test]
+fn a_float_is_complete_only_once_the_append_succeeded() {
+    let (_d, a) = archive();
+    let day = d("2026-10-15");
+    one_symbol_universe(&a, day);
+    let clock = Cell::new(utc(t("2026-10-15", 7, 5, 0)));
+    let mut c = Collector::open(retry_cfg(4), &a, clock.get()).unwrap();
+    // Block the append: a directory where the month's file has to be opened.
+    let month = a
+        .evidence_dir()
+        .join(market_archive::evidence::FLOAT_DIR)
+        .join("2026-10.jsonl");
+    std::fs::create_dir_all(&month).unwrap();
+    let r = float_tick(
+        &mut c,
+        &a,
+        &mut Script::default().json(float_body("AAAA")),
+        &clock,
+    );
+    assert_eq!((r.float_requests, r.float_records), (1, 0), "{r:?}");
+    assert!(
+        r.errors.iter().any(|e| e.contains("float store")),
+        "{:?}",
+        r.errors
+    );
+    assert_eq!(r.float_retries_scheduled, 1, "the row is not durable yet");
+
+    // The disk recovers; the retry re-fetches and stores it, with no duplicate and no loss.
+    std::fs::remove_dir_all(&month).unwrap();
+    clock.set(clock.get() + chrono::Duration::seconds(60));
+    let r = float_tick(
+        &mut c,
+        &a,
+        &mut Script::default().json(float_body("AAAA")),
+        &clock,
+    );
+    assert_eq!((r.float_requests, r.float_records), (1, 1), "{r:?}");
+    let rows = a.read_float().unwrap();
+    assert_eq!(rows.len(), 1, "exactly one observation: {rows:?}");
+    assert_eq!(rows[0].symbol, "AAAA");
+}
+
+/// Retries are bounded: a symbol the provider keeps failing costs a fixed number of attempts a
+/// day, never a loop, and the exhaustion is counted rather than hidden.
+#[test]
+fn transient_float_retries_are_capped_per_symbol_per_day() {
+    let (_d, a) = archive();
+    let day = d("2026-10-15");
+    one_symbol_universe(&a, day);
+    let clock = Cell::new(utc(t("2026-10-15", 7, 5, 0)));
+    let mut c = Collector::open(retry_cfg(2), &a, clock.get()).unwrap();
+    let mut exhausted = 0;
+    let mut requests = 0;
+    for _ in 0..5 {
+        let r = float_tick(&mut c, &a, &mut five_transient(), &clock);
+        requests += r.float_requests;
+        exhausted += r.float_retry_exhausted;
+        clock.set(clock.get() + chrono::Duration::seconds(300));
+    }
+    assert_eq!(
+        requests, 3,
+        "the first attempt plus two capped retries, then nothing"
+    );
+    assert_eq!(exhausted, 1);
+    assert!(a.read_float().unwrap().is_empty());
+}
+
+/// A plan refusal is not transient: the day's float work pauses, and the pending retries go with
+/// it rather than hammering a provider that has already said no.
+#[test]
+fn a_plan_refusal_clears_pending_float_retries() {
+    let (_d, a) = archive();
+    let day = d("2026-10-15");
+    let mut closes = market_archive::DailyCloses::new();
+    closes.insert(
+        day.pred_opt().unwrap(),
+        [("AAAA".to_string(), 5.0), ("BBBB".to_string(), 6.0)].into(),
+    );
+    a.write_daily_closes(&closes).unwrap();
+    let clock = Cell::new(utc(t("2026-10-15", 7, 5, 0)));
+    let mut c = Collector::open(retry_cfg(4), &a, clock.get()).unwrap();
+
+    // AAAA fails transiently (scheduled for retry), then BBBB is refused by the plan.
+    let mut http = five_transient().status(402, &fixture("fmp-402-premium-query.txt"));
+    let r = float_tick(&mut c, &a, &mut http, &clock);
+    assert_eq!(r.float_retries_scheduled, 1, "{r:?}");
+    assert!(r.errors.iter().any(|e| e.contains("not entitled")));
+    assert_eq!(r.float_retry_pending, 0, "the refusal cleared them: {r:?}");
+    assert_eq!(r.float_queued, 0);
+
+    clock.set(clock.get() + chrono::Duration::seconds(600));
+    let r = float_tick(&mut c, &a, &mut Script::default(), &clock);
+    assert_eq!(r.float_requests, 0, "paused until tomorrow: {r:?}");
+}
