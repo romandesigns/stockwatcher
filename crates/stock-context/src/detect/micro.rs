@@ -544,6 +544,9 @@ pub(crate) fn on_print(
             price,
         });
         if price < i.price {
+            // A crossing at the same execution nanosecond: the true market order of the two is
+            // not established (only their delivery order is). Conservative: invalidation stands.
+            let ambiguous = inner.crossing.as_ref().is_some_and(|c| c.1 == exec);
             let c = Change::at(
                 State::Invalidated,
                 "invalidated",
@@ -552,7 +555,19 @@ pub(crate) fn on_print(
                 admit,
             )
             .trade(ev)
-            .level(Some(i));
+            .level(Some(i))
+            .checks(vec![Check::new(
+                "ordering_ambiguous",
+                if ambiguous { Tri::Pass } else { Tri::Fail },
+                None,
+                None,
+                "flag",
+                if ambiguous {
+                    "equal_timestamps_conservative_invalidation_first"
+                } else {
+                    "order_established_or_not_needed"
+                },
+            )]);
             let tid = emit(det, ep, c);
             // Kept so a later revision of this print appends a correction notice.
             while det.cited.len() >= det.policy.body.lifecycle.recent_max {

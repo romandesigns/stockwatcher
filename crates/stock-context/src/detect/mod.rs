@@ -502,6 +502,8 @@ pub(crate) struct SymDetect {
     pub micro_search_from: i64,
     /// Bars used by any new episode must start at or after this (after an interruption).
     pub requalify_from: i64,
+    /// The feature snapshot of this symbol's latest completed candidate bar (details view).
+    pub latest: Option<FeatureSnapshot>,
 }
 
 impl SymDetect {
@@ -973,6 +975,9 @@ pub(crate) fn step(det: &mut Detector, sd: &mut SymDetect, x: &Barrier) {
         return;
     };
     let f = features::candidate(det, sd, x, seg);
+    if f.is_some() {
+        sd.latest = f.clone();
+    }
     // Old levels first: every active episode is tested before anything new forms.
     micro::on_barrier(det, sd, x, seg);
     families::on_barrier(det, sd, x, f.as_ref());

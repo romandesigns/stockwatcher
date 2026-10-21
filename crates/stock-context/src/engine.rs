@@ -457,6 +457,13 @@ impl Engine {
             .map_or_else(Vec::new, |d| d.log.take())
     }
 
+    /// The feature snapshot of `symbol`'s latest completed candidate bar (body/range diagnostics,
+    /// baseline, window context), whether or not it opened an episode. Immutable once taken.
+    pub fn latest_features(&self, symbol: &str) -> Option<&detect::FeatureSnapshot> {
+        self.detector.as_ref()?;
+        self.syms.get(symbol)?.det.latest.as_ref()
+    }
+
     pub fn detection_telemetry(&self) -> DetectionTelemetry {
         let active = self.syms.values().map(|s| s.det.active.len()).sum();
         self.detector
