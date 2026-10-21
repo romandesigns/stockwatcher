@@ -19,7 +19,9 @@
 //! keeps only the latest per symbol. First-seen times live on the per-day [`Timeline`] and are
 //! never rewritten.
 
-use crate::evaluate::{self, Coverage, NewsSummary, PriceView, RvolDiagnostics, VolumeView};
+use crate::evaluate::{
+    self, Coverage, Integrity, NewsSummary, PriceView, RvolDiagnostics, VolumeView,
+};
 use crate::evidence::{
     DailyBaseline, EvidenceStore, FloatObservation, InstrumentId, IntradayBaseline, NewsCoverage,
     NewsItem, PrevClose,
@@ -102,8 +104,12 @@ pub struct VolumeFacts {
     /// This symbol's own coverage when something is known about it, else the run's.
     pub coverage: Coverage,
     /// Why this symbol's coverage differs from the run's, when it does: `recorder_drops`,
-    /// `stream_gap`, `restored_partial_day`. `None`: the run-wide figure.
+    /// `identities_evicted`, `admission_ledger_overflow`, `quarantined_old_prints`. `None`: the
+    /// run-wide figure.
     pub coverage_reason: Option<&'static str>,
+    /// What about this symbol's trade-derived state cannot be trusted, and therefore is not
+    /// reported ([`crate::evaluate::Integrity`]).
+    pub integrity: Integrity,
 }
 
 /// One frozen decision. Times are UTC nanoseconds.
@@ -163,6 +169,13 @@ struct Admitted {
     /// Folded into the aggregates. A print the barrier skipped (another date, an excluded
     /// session) is neither `queued` nor `counted`: a revision of it resolves and changes nothing.
     counted: bool,
+    /// The bar end of the barrier that folded it in, once one has.
+    ///
+    /// Not its execution time. A print executed inside one bar and admitted during a later one
+    /// is folded in at that later barrier, so the cumulative checkpoints taken in between never
+    /// held it — revising "every checkpoint after the execution" would have invented recent
+    /// volume for the ones that did not, or clamped away volume that was real.
+    folded_at: Option<i64>,
     /// Revised away: cancelled, or corrected into something that counts for nothing.
     removed: bool,
 }
@@ -227,6 +240,24 @@ struct Sym {
     /// drop, a stream gap, or a restore that could not reach the day's start. Per symbol and in
     /// memory, so nothing queries a disk per barrier (the audit's F2).
     coverage: Option<(Coverage, &'static str)>,
+    /// Whether this symbol's trade-derived state can be trusted, and for what
+    /// ([`crate::evaluate::Integrity`]). A doubt here makes the dependent outputs UNKNOWN; it is
+    /// not a log line.
+    integrity: Integrity,
+    /// Executions at or before this can no longer be proved new: their identities have left the
+    /// ledger. A print that old is refused rather than counted again
+    /// ([`RevisionTelemetry::quarantined_old`]).
+    quarantine_through: Option<i64>,
+    /// The end of the last barrier whose volume came from a restore rather than from this run's
+    /// own admissions ([`Engine::adopt_facts`]).
+    ///
+    /// The day's totals a restore brings over are exact — the prints are the prints. Which
+    /// **barrier** each one folded into is not: a recording stamps the collector's delivery time,
+    /// and this run's own admission would have come a little later, through different queues. So
+    /// a recent window reaching back into the restored prefix is approximate, and says so
+    /// ([`Integrity::window_untrusted`]) until the window has moved past it, which it does by
+    /// itself within the window's own length.
+    restored_through: Option<i64>,
 }
 
 /// A non-passing pillar, for the row tag.
@@ -326,8 +357,37 @@ pub struct Engine {
 /// What an engine adopted from per-symbol restores.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct RestoreTelemetry {
-    /// Symbols whose restored state was adopted into this engine.
+    /// Symbols whose restored facts were adopted into this engine.
     pub adopted: u64,
+    /// Adoptions refused because the restore decided as another run, under another policy, or
+    /// about another trading date ([`Adoption::Refused`]).
+    pub refused: u64,
+    /// Adoptions that kept a live symbol's already-published decisions and episodes.
+    pub published_preserved: u64,
+    /// Restores whose own replay-generated membership, episodes or latest decision were
+    /// discarded rather than published as if this run had observed them.
+    pub episodes_discarded: u64,
+}
+
+/// What [`Engine::adopt_facts`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum Adoption {
+    Adopted {
+        /// The symbol was already live, so its published decisions and episodes were kept.
+        published: bool,
+    },
+    /// The restore had nothing for the symbol.
+    Nothing,
+    /// Refused: `run_identity`, `pillar_policy`, `panel_policy`, `setup_policy`, `trading_date`.
+    Refused(&'static str),
+}
+
+fn max_opt(a: Option<i64>, b: Option<i64>) -> Option<i64> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (x, None) => x,
+        (None, y) => y,
+    }
 }
 
 fn ceil_to(t: i64, step: i64) -> i64 {
@@ -441,40 +501,144 @@ impl Engine {
         self.syms.get(symbol).and_then(|s| s.coverage)
     }
 
-    /// Moves one symbol's state out of `from` into this engine
-    /// ([`chart_engine::ChartEngine::adopt_symbol`]'s shape, for the same reason).
+    /// Moves one symbol's **trade-derived facts** out of a restore engine into this one, keeping
+    /// whatever this engine has already published about the symbol.
     ///
-    /// A restart restores a symbol by replaying its own recorded day on its **own** engine, in
+    /// A restart restores a symbol by replaying its own recorded day on a second engine, in
     /// receipt order with the recorded delivery times, and then adopting the result. Feeding
     /// those prints into this engine instead would classify every one of them as late against a
     /// clock that has already advanced with the live tail, and would decide none of the day's
     /// barriers: the numerator would still start at zero after every deploy, which is what the
     /// audit found (F1).
     ///
-    /// What moves: the day's volume, dollars, trades, price history, day high, setup bars and
-    /// levels, membership with its real admission times, and the timeline's first-seen times. The
-    /// adopted symbol's latest decision does **not**: it was made by the other run, under its own
-    /// id and sequence, so this run emits its own first decision for the symbol at the next
-    /// barrier rather than republishing another run's as its own.
+    /// # Facts, not decisions
     ///
-    /// The barriers between the restore's last and this engine's next are not decided for the
-    /// symbol. That is the honest cost of restoring lazily per symbol instead of pausing the
-    /// whole market, and it is why a restored symbol's coverage is set by the caller
-    /// ([`Engine::set_coverage`]) rather than assumed complete.
-    pub fn adopt_symbol(&mut self, from: &mut Engine, symbol: &str) -> bool {
-        let Some(mut sym) = from.syms.remove(symbol) else {
-            return false;
+    /// What the restore brings over is the arithmetic of the day's prints: volume, dollars, trade
+    /// count, the price and tick history, the day high, the setup bars, the admission ledger and
+    /// what is known about their integrity and coverage. Those are statements about prints that
+    /// really executed, and the recording is the evidence for them.
+    ///
+    /// What it does **not** bring over is membership, the timeline's first-seen times, the setup
+    /// state with its frozen levels, or the latest decision. Those are claims that this run
+    /// observed something at a time — a 5/5 at 09:41, a pole and a pullback — and a recording
+    /// made by a previous process is not evidence that this one saw it. Publishing them would
+    /// backdate decisions this engine never made, under this engine's run id, and would overwrite
+    /// an episode the live tail may already have broadcast with frozen levels. So they are
+    /// discarded and counted ([`RestoreTelemetry::episodes_discarded`]); the live symbol's own
+    /// published state stays exactly as it was, and the next barrier decides the symbol again on
+    /// the full day's facts.
+    ///
+    /// The restored facts are therefore a **bootstrap**: from the next barrier the symbol's RVOL
+    /// numerator is the day's, not the tail's, and anything it then qualifies for is qualified
+    /// prospectively, as of that barrier.
+    ///
+    /// # Refusals
+    ///
+    /// The restore must have decided as this run and under the same three policies, and must be
+    /// about the same trading date as the live state. Anything else is refused rather than
+    /// reconciled: adopting facts measured under other rules would mix two incompatible
+    /// arithmetics in one symbol with no way to tell afterwards which half is which.
+    pub fn adopt_facts(&mut self, from: &mut Engine, symbol: &str) -> Adoption {
+        let Some(restored) = from.syms.remove(symbol) else {
+            return Adoption::Nothing;
         };
-        from.by_inst.remove(&sym.inst);
-        // Another run's decision is not this run's to publish.
-        sym.last = None;
-        // Decide the symbol at the next barrier whatever else happens.
-        sym.dirty = true;
-        sym.recheck_at = i64::MAX;
-        self.by_inst.insert(sym.inst.clone(), symbol.to_string());
-        self.syms.insert(symbol.to_string(), sym);
+        from.by_inst.remove(&restored.inst);
+        if let Some(why) = self.identity_gap(from) {
+            self.restores.refused += 1;
+            return Adoption::Refused(why);
+        }
+        // The adoption boundary: one trading date. A restore of another date is not this
+        // symbol's day and its cumulative volume is not today's numerator.
+        let live_date = self.syms.get(symbol).and_then(|s| s.date);
+        if let (Some(a), Some(b)) = (live_date, restored.date)
+            && a != b
+        {
+            self.restores.refused += 1;
+            return Adoption::Refused("trading_date");
+        }
+        if restored.member.status.is_some()
+            || !restored.member.episodes.is_empty()
+            || restored.last.is_some()
+        {
+            self.restores.episodes_discarded += 1;
+        }
+        // The bar grid is a property of the clock, not of a symbol, so an engine that has not
+        // seen a print of its own takes the restore's anchor rather than staying unanchored and
+        // deciding nothing. An engine already running keeps its own.
+        self.next_bar = self.next_bar.or(from.next_bar);
+        let published = match self.syms.get_mut(symbol) {
+            Some(live) => {
+                // Facts in, published state untouched.
+                live.date = restored.date.or(live.date);
+                live.ledger = restored.ledger;
+                live.ids = restored.ids;
+                live.active = restored.active || live.active;
+                live.cum = restored.cum;
+                live.dollars_micros = restored.dollars_micros;
+                live.trades = restored.trades;
+                live.last_price = restored.last_price;
+                live.cums = restored.cums;
+                live.ticks = restored.ticks;
+                live.day_high = restored.day_high;
+                live.bars = restored.bars;
+                live.first_bar = restored.first_bar;
+                live.integrity = live.integrity.or(restored.integrity);
+                live.coverage = restored.coverage.or(live.coverage);
+                live.quarantine_through = max_opt(live.quarantine_through, restored.quarantine_through);
+                live.restored_through = max_opt(live.restored_through, restored.restored_through);
+                live.dirty = true;
+                live.recheck_at = i64::MAX;
+                true
+            }
+            None => {
+                // Nothing published about the symbol yet, so there is nothing to keep — but the
+                // restore's own membership, timeline, setup and decision are still not this
+                // run's observations and do not become them by arriving first.
+                let mut sym = restored;
+                sym.member = Membership::default();
+                sym.timeline = Timeline::default();
+                sym.setup = BullFlag::default();
+                sym.last = None;
+                sym.news_first_seen = None;
+                sym.halted = false;
+                sym.dirty = true;
+                sym.recheck_at = i64::MAX;
+                self.by_inst.insert(sym.inst.clone(), symbol.to_string());
+                self.syms.insert(symbol.to_string(), sym);
+                false
+            }
+        };
         self.restores.adopted += 1;
-        true
+        if published {
+            self.restores.published_preserved += 1;
+        }
+        Adoption::Adopted { published }
+    }
+
+    /// Marks a symbol's facts as reaching back into a restored prefix, whose barrier attribution
+    /// is the recording's rather than this run's ([`Sym::restored_through`]).
+    pub fn set_restored_through(&mut self, symbol: &str, through: Option<i64>) {
+        if let Some(s) = self.syms.get_mut(symbol) {
+            s.restored_through = max_opt(s.restored_through, through);
+            s.dirty = true;
+        }
+    }
+
+    /// Why another engine's decisions cannot be adopted into this one, if they cannot.
+    fn identity_gap(&self, other: &Engine) -> Option<&'static str> {
+        if self.run.run_id != other.run.run_id || self.run.source != other.run.source {
+            return Some("run_identity");
+        }
+        if self.policy.hash != other.policy.hash {
+            return Some("pillar_policy");
+        }
+        if self.panel_policy.hash != other.panel_policy.hash {
+            return Some("panel_policy");
+        }
+        if self.setup_policy.hash != other.setup_policy.hash {
+            return Some("setup_policy");
+        }
+        None
     }
 
     /// Drops a symbol's state (the live market reloading it from the archive).
@@ -505,6 +669,16 @@ impl Engine {
 
     pub fn policy(&self) -> &Policy {
         &self.policy
+    }
+
+    /// What this engine decides as: its run id, source and fidelity.
+    ///
+    /// A restart restores a symbol on a second engine and adopts the result
+    /// ([`Engine::adopt_symbol`]), and that engine has to decide under the same identity and the
+    /// same policies — a reconstruction of this run's own history is this run's, not a different
+    /// one whose ids would then travel on the adopted setup levels.
+    pub fn run_info(&self) -> &RunInfo {
+        &self.run
     }
 
     fn bar(&self) -> i64 {
@@ -612,6 +786,9 @@ impl Engine {
                 setup: BullFlag::default(),
                 news_first_seen: None,
                 coverage: None,
+                integrity: Integrity::default(),
+                quarantine_through: None,
+                restored_through: None,
             }
         });
         self.by_inst.entry(sym.inst.clone()).or_insert(name);
@@ -632,6 +809,11 @@ impl Engine {
                 break;
             };
             sym.ids.remove(&a.key());
+            // Nothing executing at or before this can be proved new again.
+            sym.quarantine_through = Some(
+                sym.quarantine_through
+                    .map_or(a.exec, |q: i64| q.max(a.exec)),
+            );
             if a.queued {
                 evicted_queued += 1;
             } else {
@@ -653,6 +835,20 @@ impl Engine {
             self.revisions.queued_evicted += evicted_queued;
             sym.coverage = Some((Coverage::Partial, "admission_ledger_overflow"));
         }
+        // Past the horizon the engine cannot tell a new old print from a redelivery of one it
+        // already counted, and counting it again would overstate the numerator — on the unloaded
+        // path there is no chart engine to refuse it either. Refusing keeps the count a lower
+        // bound, which is what lets an RVOL already over the threshold stay a PASS; the cost is
+        // that a genuinely new print this old is not counted, and that is the safe direction.
+        if sym.quarantine_through.is_some_and(|q| exec <= q) {
+            self.revisions.quarantined_old += 1;
+            // A refused print is a real gap in the count, which is a stronger statement than
+            // "identities were retired", so it replaces that reason rather than queuing behind
+            // it.
+            sym.coverage = Some((Coverage::Partial, "quarantined_old_prints"));
+            sym.dirty = true;
+            return out;
+        }
         let key = (t.id(), exec);
         if !sym.ids.insert(key) {
             self.revisions.duplicates_dropped += 1;
@@ -668,6 +864,7 @@ impl Engine {
             session: t.session.map(|s| (s.date, s.kind)),
             queued: true,
             counted: false,
+            folded_at: None,
             removed: false,
         });
         out
@@ -722,12 +919,18 @@ impl Engine {
         let i = match target.resolve(candidates) {
             Resolution::Found(i) => i,
             Resolution::NotFound => {
-                // Never admitted here, or past the ledger's horizon. Nothing is subtracted.
+                // Never admitted here, or past the ledger's horizon. Nothing is subtracted —
+                // but something the provider says is not there may still be in the count, so the
+                // numerator is no longer a lower bound and the pillar must say so.
                 self.revisions.unknown_target += 1;
+                sym.integrity.volume_untrusted = true;
+                sym.dirty = true;
                 return out;
             }
             Resolution::Ambiguous => {
                 self.revisions.ambiguous += 1;
+                sym.integrity.volume_untrusted = true;
+                sym.dirty = true;
                 return out;
             }
         };
@@ -744,7 +947,7 @@ impl Engine {
         let was_volume = sym.ledger[i].volume();
         let was_counted = sym.ledger[i].counted;
         let queued = sym.ledger[i].queued;
-        let exec = sym.ledger[i].exec;
+        let folded_at = sym.ledger[i].folded_at;
         let touched_ohlc =
             sym.ledger[i].verdict.ohlc || rev.corrected.is_some_and(|c| c.verdict.ohlc);
         {
@@ -791,36 +994,51 @@ impl Engine {
             sym.dollars_micros += now_price as u128 * now_volume as u128;
             sym.trades += 1;
         }
-        // The cumulative checkpoints the recent window reads: every checkpoint taken after the
-        // print's execution moves by the same delta, which is exact and needs no ledger
-        // coverage at all.
-        for (at, c) in sym.cums.iter_mut() {
-            if *at > exec {
-                *c = c.saturating_sub(was_volume) + now_volume;
+        // The cumulative checkpoints the recent window reads. Keyed to the barrier that folded
+        // the print in, not to its execution: a print executed in one bar and admitted during a
+        // later one was not in the checkpoints between the two, and moving those would have
+        // invented recent volume (or clamped real volume away).
+        if let Some(folded) = folded_at {
+            for (at, c) in sym.cums.iter_mut() {
+                if *at >= folded {
+                    *c = c.saturating_sub(was_volume) + now_volume;
+                }
             }
         }
         // The per-second price history and the setup bars are rebuilt from the ledger, so the
         // next decisions see the same window a stream without the revised print would have
         // produced. `rebuilt` is false when the ledger no longer reaches the window's start.
-        let b = sym.cums.back().map(|&(at, _)| at).unwrap_or(exec);
+        let b = sym
+            .cums
+            .back()
+            .map(|&(at, _)| at)
+            .or(folded_at)
+            .unwrap_or(0);
         let rebuilt = Self::rebuild_windows(sym, &mo, bar_ns, b);
         if !rebuilt {
+            // The window the next decisions read is not provably the stream's, so anything
+            // measured over a window stops being reported until the symbol's state is sound.
             self.revisions.windows_unproven += 1;
+            sym.integrity.window_untrusted = true;
         }
         if touched_ohlc {
             // The date's newest OHLC price: the ledger holds the most recent prints, so its
             // maximum execution time is the date's, when it has one at all.
             match Self::last_of_date(sym) {
                 Some(last) => sym.last_price = Some(last),
-                None => sym.last_price = rev.last,
+                // Nothing of the date is left in the ledger: fall back to the resolver's answer,
+                // which is a named `(exec, price)` and not a pair that can be read either way.
+                None => sym.last_price = rev.last.map(|l| (l.exec, l.price)),
             }
             // The date's **high** is a whole-day extremum, which a windowed ledger cannot prove.
             match rev.day_high {
                 Some(h) if h.complete => sym.day_high = Some(h.price),
                 _ => {
-                    // Left where it is, and counted: `below_high_bp` and the setup levels taken
-                    // from it may still reflect a print that is gone.
+                    // Left where it is, and no longer reported: the distance below the high and
+                    // the setup levels taken from it would be measured against a print that may
+                    // be gone.
                     self.revisions.day_high_unproven += 1;
+                    sym.integrity.high_untrusted = true;
                 }
             }
         }
@@ -982,16 +1200,27 @@ impl Engine {
                 }
                 continue;
             }
-            // The setup advances at every barrier while the stock is a member, print or not.
+            // The setup advances at every barrier while the stock is a member, print or not —
+            // unless its own inputs are not reportable. With the bars or the day high
+            // unprovable the family is left to re-arm and is given no bars for this barrier, so
+            // it claims nothing rather than claiming a flag off a window it cannot stand behind.
+            let untrusted = s.integrity.window_untrusted
+                || s.integrity.high_untrusted
+                || s.integrity.volume_untrusted;
+            if untrusted && !s.setup.is_idle() {
+                s.setup.leave();
+            }
+            let no_bars: VecDeque<Bar> = VecDeque::new();
+            let bars: &VecDeque<Bar> = if untrusted { &no_bars } else { &s.bars };
             let prefix = format!("{}:{}:{}", self.run.run_id, date, s.name);
-            let setup = s.setup.step(
+            let mut setup = s.setup.step(
                 &self.setup_policy,
                 bar_secs,
                 &Step {
                     bar_end: b,
                     cutoff: tau,
                     bar_ns: bar_secs * SEC,
-                    bars: &s.bars,
+                    bars,
                     last_price: s.last_price,
                     halted: s.halted,
                     day_volume: s.cum,
@@ -1004,6 +1233,9 @@ impl Engine {
                 },
                 &mut self.setup_log,
             );
+            if untrusted {
+                setup.reason = "inputs_untrusted";
+            }
             let ticks = &s.ticks;
             let price_at = |e: i64| ticks.iter().rev().find(|(x, _)| *x < e).copied();
             let segment = |t: i64| {
@@ -1016,7 +1248,8 @@ impl Engine {
                 b,
                 price_at,
                 segment,
-                s.day_high,
+                // An unprovable high is no high: the distance below it is not reported.
+                s.day_high.filter(|_| !s.integrity.high_untrusted),
                 s.halted,
                 s.coverage.map_or(self.run.numerator_coverage, |(c, _)| c),
             );
@@ -1134,6 +1367,9 @@ impl Engine {
             // prints had already been queued is what lost their identities, so a later
             // redelivery of one counted twice; its entries carry their own session date and the
             // bounds in `apply` retire them.
+            //
+            // The doubts are a property of the date's facts, which have just been reset.
+            s.integrity = Integrity::default();
         }
         let exclude_overnight = policy.body.volume.exclude_overnight_boats;
         let bar_ns = policy.body.grid.bar_secs * SEC;
@@ -1148,6 +1384,7 @@ impl Engine {
                 continue;
             }
             a.queued = false;
+            a.folded_at = Some(b);
             let Some((d, kind)) = a.session else { continue };
             if d != date || (exclude_overnight && kind == SessionKind::Overnight) {
                 // Skipped, and recorded as skipped: neither queued nor counted.
@@ -1238,11 +1475,20 @@ impl Engine {
                 .map(|(_, c)| s.cum - c)
         };
         let coverage = s.coverage.map_or(self.run.numerator_coverage, |(c, _)| c);
+        // A window reaching back into a restored prefix is measured against checkpoints taken on
+        // the recording's delivery times rather than this run's own admissions, so its endpoints
+        // are approximate and it is not reportable. The day's total is unaffected — the prints
+        // are the prints — and the doubt clears by itself as the window moves past the prefix.
+        let mut integrity = s.integrity;
+        if s.restored_through.is_some_and(|r| b - w <= r) {
+            integrity.window_untrusted = true;
+        }
         let vol = VolumeView {
             cum: s.cum,
             recent,
             offset: (b - day_start) / SEC,
             coverage,
+            integrity,
         };
 
         let ev = &self.evidence;
@@ -1380,6 +1626,7 @@ impl Engine {
             trades: s.trades,
             coverage,
             coverage_reason: s.coverage.map(|(_, why)| why),
+            integrity,
         };
         let mut changed = Vec::new();
         match &s.last {

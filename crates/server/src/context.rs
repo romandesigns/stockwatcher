@@ -37,8 +37,8 @@ use serde_json::json;
 use std::collections::{BTreeSet, HashSet};
 use stock_context::{
     CloseBasis, CorrectedPrint, Coverage, DayHigh, Decision, Engine, Fidelity, InstrumentId,
-    OutputTelemetry, PanelPolicy, PanelSnapshot, PillarId, Policy, PrevClose, PrintRevision,
-    Qualification, RevisionTarget, RunInfo, SetupPolicy, Tri, Verdict,
+    LastPrint, OutputTelemetry, PanelPolicy, PanelSnapshot, PillarId, Policy, PrevClose,
+    PrintRevision, Qualification, RevisionTarget, RunInfo, SetupPolicy, Tri, Verdict,
 };
 
 /// What one [`ContextBoard::drain_outputs`] took off the engine, and what the engine had to drop
@@ -197,6 +197,7 @@ impl ContextBoard {
         let mut r = Readiness {
             evidence_records: self.engine.evidence_len(),
             revisions: self.engine.revision_telemetry(),
+            restores: self.engine.restore_telemetry(),
             observed_at,
             ..Readiness::default()
         };
@@ -394,52 +395,7 @@ impl ContextBoard {
         resolved: Option<&chart_engine::Revision>,
         admit: UnixNanos,
     ) {
-        let (symbol, target, corrected) = match e {
-            MarketEvent::Correction(c) => (
-                c.symbol.clone(),
-                RevisionTarget {
-                    id: c.original_trade_id(),
-                    price: c.original_price.micros(),
-                    size: c.original_size,
-                },
-                Some(CorrectedPrint {
-                    price: c.corrected_price.micros(),
-                    size: c.corrected_size,
-                    verdict: {
-                        let eff = trade_effect(&c.corrected_conditions, c.tape);
-                        Verdict {
-                            ohlc: eff.updates_ohlc,
-                            volume: eff.updates_volume,
-                        }
-                    },
-                }),
-            ),
-            MarketEvent::Cancel(c) => (
-                c.symbol.clone(),
-                RevisionTarget {
-                    id: c.target_trade_id(),
-                    price: c.price.micros(),
-                    size: c.size,
-                },
-                None,
-            ),
-            _ => return,
-        };
-        let _ = self.engine.apply_revision(
-            &PrintRevision {
-                symbol,
-                target,
-                corrected,
-                last: resolved
-                    .and_then(|r| r.last)
-                    .map(|(p, ts)| (p.micros(), ts.nanos())),
-                day_high: resolved.and_then(|r| r.day_high).map(|h| DayHigh {
-                    price: h.price.micros(),
-                    complete: h.complete,
-                }),
-            },
-            admit,
-        );
+        apply_revision_to(&mut self.engine, e, resolved, admit);
     }
 
     /// What the engine did with the revisions and duplicates it was given (tests; production
@@ -502,6 +458,73 @@ impl ContextBoard {
     pub(crate) fn decision(&self, symbol: &str) -> Option<&Decision> {
         self.engine.current().find(|d| d.symbol == symbol)
     }
+}
+
+/// Applies a raw correction or cancel to a bare context engine (the restart restore's own
+/// replay, `crate::history`), by the same rule [`ContextBoard::apply_revision`] uses.
+pub(crate) fn apply_revision_to(
+    engine: &mut Engine,
+    e: &MarketEvent,
+    resolved: Option<&chart_engine::Revision>,
+    admit: UnixNanos,
+) {
+    if let Some(rev) = revision_of(e, resolved) {
+        let _ = engine.apply_revision(&rev, admit);
+    }
+}
+
+/// The provider's revision as the engine's contract names it, with the chart engine's
+/// recomputed last price and high when there is one.
+fn revision_of(
+    e: &MarketEvent,
+    resolved: Option<&chart_engine::Revision>,
+) -> Option<PrintRevision> {
+    let (symbol, target, corrected) = match e {
+        MarketEvent::Correction(c) => (
+            c.symbol.clone(),
+            RevisionTarget {
+                id: c.original_trade_id(),
+                price: c.original_price.micros(),
+                size: c.original_size,
+            },
+            Some(CorrectedPrint {
+                price: c.corrected_price.micros(),
+                size: c.corrected_size,
+                verdict: {
+                    let eff = trade_effect(&c.corrected_conditions, c.tape);
+                    Verdict {
+                        ohlc: eff.updates_ohlc,
+                        volume: eff.updates_volume,
+                    }
+                },
+            }),
+        ),
+        MarketEvent::Cancel(c) => (
+            c.symbol.clone(),
+            RevisionTarget {
+                id: c.target_trade_id(),
+                price: c.price.micros(),
+                size: c.size,
+            },
+            None,
+        ),
+        _ => return None,
+    };
+    Some(PrintRevision {
+        symbol,
+        target,
+        corrected,
+        // Named, so the price and the execution time cannot be swapped: the engine reads
+        // `(exec, price)` and the chart engine gives `(price, ts)`.
+        last: resolved.and_then(|r| r.last).map(|(p, ts)| LastPrint {
+            exec: ts.nanos(),
+            price: p.micros(),
+        }),
+        day_high: resolved.and_then(|r| r.day_high).map(|h| DayHigh {
+            price: h.price.micros(),
+            complete: h.complete,
+        }),
+    })
 }
 
 /// `ross.snapshot` while the feature is off: the client shows "not enabled", never an empty panel
@@ -572,6 +595,9 @@ pub(crate) struct Readiness {
     /// What the engine did with the corrections, cancels and duplicates it was given.
     /// `complete` false means something could not be repaired exactly, and the counts say what.
     pub(crate) revisions: stock_context::RevisionTelemetry,
+    /// Symbols whose recorded day was replayed and adopted after a restart
+    /// (`stock_context::RestoreTelemetry`).
+    pub(crate) restores: stock_context::RestoreTelemetry,
     /// When this summary was taken (UTC ns, wall clock): it is a snapshot, not live.
     pub(crate) observed_at: i64,
 }
@@ -600,10 +626,11 @@ impl Readiness {
         };
         let rev = self.revisions;
         format!(
-            "{} symbols, {} qualified, {} members; {blocking}; revisions {} applied, {} duplicates dropped{}",
+            "{} symbols, {} qualified, {} members, {} restored; {blocking}; revisions {} applied, {} duplicates dropped{}",
             self.symbols,
             self.qualified,
             self.members,
+            self.restores.adopted,
             rev.applied,
             rev.duplicates_dropped,
             if rev.complete() {

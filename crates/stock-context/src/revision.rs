@@ -74,6 +74,17 @@ pub struct CorrectedPrint {
     pub verdict: Verdict,
 }
 
+/// The date's newest OHLC-qualifying print after a revision: its execution time and its price.
+///
+/// A named type rather than a tuple. The engine's own last price is `(exec, price)` and the
+/// server built this as `(price, ts)`, so the fallback silently put a price where an execution
+/// time belonged — a bare pair of `i64`s cannot say which way round it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LastPrint {
+    pub exec: i64,
+    pub price: i64,
+}
+
 /// The day's highest OHLC-qualifying price after a revision, as far as the resolver that supplied
 /// it still retains that date.
 ///
@@ -94,10 +105,10 @@ pub struct PrintRevision {
     pub target: RevisionTarget,
     /// The replacement; `None` for a cancel.
     pub corrected: Option<CorrectedPrint>,
-    /// The date's newest OHLC-qualifying price after the revision, with its execution time, when
-    /// a resolver that retains the date could recompute it. `None`: not available, so the
-    /// engine's own last price is left where it is and counted.
-    pub last: Option<(i64, i64)>,
+    /// The date's newest OHLC-qualifying print after the revision, when a resolver that retains
+    /// the date could recompute it. `None`: not available, so the engine falls back to its own
+    /// ledger and, failing that, leaves its last price where it is.
+    pub last: Option<LastPrint>,
     /// The date's highest OHLC-qualifying price after the revision ([`DayHigh`]), when a resolver
     /// could recompute it.
     pub day_high: Option<DayHigh>,
@@ -138,6 +149,14 @@ pub struct RevisionTelemetry {
     /// Ledger entries retired at a bound while still **queued**: volume the engine will never
     /// count, so the symbol's coverage is degraded, not just counted.
     pub queued_evicted: u64,
+    /// Prints refused because they execute at or before the ledger's own horizon, so the engine
+    /// cannot prove they are not redeliveries of something it already counted.
+    ///
+    /// Refusing them keeps the count a **lower bound**, which is what lets an RVOL that already
+    /// clears the threshold stay a PASS. Admitting them would have inflated it: after an
+    /// identity left the ledger, replaying that print inserted it again and counted it twice,
+    /// and the unloaded path has no chart engine to refuse it.
+    pub quarantined_old: u64,
 }
 
 impl RevisionTelemetry {

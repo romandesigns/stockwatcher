@@ -143,6 +143,33 @@ impl EvidenceBatch {
     }
 }
 
+/// Puts a batch of evidence into a bare engine, each record keeping its own `observed_at`.
+///
+/// For the restart restore's own replay engine (`crate::history`): it decides the day's barriers
+/// on the recorded clock, so it needs the same records the live engine has, joined as of each
+/// historical cutoff. Nothing here changes an `observed_at`, so a record observed at 11:00 is as
+/// invisible to a 09:30 barrier in the replay as it was in the live run.
+pub fn seed_engine(engine: &mut stock_context::Engine, batch: EvidenceBatch) {
+    for r in batch.closes {
+        engine.add_prev_close(r);
+    }
+    for r in batch.baselines {
+        engine.add_daily(r);
+    }
+    for r in batch.floats {
+        engine.add_float(r);
+    }
+    for r in batch.intraday {
+        engine.add_intraday(r);
+    }
+    for r in batch.news {
+        engine.add_news(r);
+    }
+    for r in batch.coverage {
+        engine.add_coverage(r);
+    }
+}
+
 /// A board's place in the log: `(generation, sequence)`.
 pub type Cursor = (u64, u64);
 
@@ -196,6 +223,59 @@ impl EvidenceLog {
     fn next(&mut self) -> u64 {
         self.seq += 1;
         self.seq
+    }
+
+    /// Everything one symbol's decisions can read: its own records, and the market-wide news
+    /// coverage, which speaks for every instrument.
+    ///
+    /// For a restart's per-symbol restore ([`crate::history`]): the symbol's recorded day is
+    /// replayed on its own engine, and that engine needs the same evidence the live one had —
+    /// each record still carrying its own `observed_at`, so a historical cutoff joins exactly
+    /// what was known then and nothing later. Copying the whole log per symbol would be
+    /// thousands of records times thousands of symbols; this is one pass and only the matches.
+    pub fn for_symbol(&self, symbol: &str) -> EvidenceBatch {
+        let own = stock_context::InstrumentId::symbol(symbol);
+        let mine = |i: &stock_context::InstrumentId| *i == own;
+        EvidenceBatch {
+            generation: self.generation,
+            through: self.seq,
+            floats: self
+                .floats
+                .iter()
+                .filter(|(_, r)| mine(&r.instrument))
+                .map(|(_, r)| r.clone())
+                .collect(),
+            intraday: self
+                .intraday
+                .iter()
+                .filter(|(_, r)| mine(&r.instrument))
+                .map(|(_, r)| r.clone())
+                .collect(),
+            news: self
+                .news
+                .iter()
+                .filter(|(_, r)| mine(&r.instrument))
+                .map(|(_, r)| r.clone())
+                .collect(),
+            coverage: self
+                .coverage
+                .iter()
+                .filter(|(_, r)| mine(&r.instrument) || r.instrument.is_market())
+                .map(|(_, r)| r.clone())
+                .collect(),
+            closes: self
+                .closes
+                .values()
+                .filter(|(_, r)| mine(&r.instrument))
+                .map(|(_, r)| r.clone())
+                .collect(),
+            baselines: self
+                .baselines
+                .values()
+                .filter(|(_, r)| mine(&r.instrument))
+                .map(|(_, r)| r.clone())
+                .collect(),
+        }
     }
 }
 
@@ -2669,7 +2749,19 @@ mod tests {
         let raw = cancel_event(SYM, 9_999, 300, 120_000, t(9, 32, 31));
         cx.apply_revision(&raw, None, UnixNanos(t(9, 32, 31)));
         cx.advance(UnixNanos(t(9, 33, 0)));
-        assert_eq!(cx.decision(SYM).unwrap().volume, before);
+        let after = cx.decision(SYM).unwrap().volume.clone();
+        assert_eq!(
+            (after.shares, after.trades, after.dollars),
+            (before.shares, before.trades, before.dollars),
+            "nothing was subtracted from an unrelated print"
+        );
+        // But something the provider says is not there may still be in the count, so the
+        // numerator is no longer a lower bound and the pillar stops passing on it.
+        assert!(after.integrity.volume_untrusted);
+        assert_eq!(
+            state(&cx, SYM, PillarId::Rvol),
+            (Tri::Unknown, "volume_untrusted")
+        );
         let tel = cx.revision_telemetry();
         assert_eq!(tel.unknown_target, 1);
         assert_eq!(tel.applied, 0);

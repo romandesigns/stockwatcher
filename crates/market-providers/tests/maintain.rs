@@ -845,3 +845,51 @@ fn intraday_curves_can_be_switched_off() {
     assert_eq!((r.curves_derived, r.curves_pending), (0, 0), "{r:?}");
     assert!(a.read_intraday_curve(day, "AAAA").unwrap().is_none());
 }
+
+/// A retrieval is stamped at the run's own clock, so a cycle can always read what it just wrote.
+///
+/// `fetch_announcements` used to stamp `retrieved_at` from `Utc::now()` inside itself, and the
+/// maintainer then took `max(now)`. With a fixed `now` in the past the real clock won, so the
+/// retrieval was stamped *after* the as_of the same cycle validated against and
+/// `coverage_for` reported `no_usable_retrieval` — a test that passed only while the wall clock
+/// was before 03:30 ET on one particular date, and started failing at 03:30 that morning.
+#[test]
+fn an_announcement_retrieval_is_stamped_at_the_runs_own_clock() {
+    let tmp = tempfile::tempdir().unwrap();
+    let a = archive(tmp.path(), "0");
+    let world = Arc::new(World::default());
+    cycle(&world, &a, Some(&creds()), false);
+    let cfg = config();
+    let make = {
+        let w = world.clone();
+        move || Ok::<_, String>(Router(w.clone()))
+    };
+    let stop = AtomicBool::new(false);
+    let m = Maintainer {
+        cfg: &cfg,
+        creds: Some(&creds()),
+        archive: &a,
+        make_http: &make,
+        stop: &stop,
+        wait: &|_| true,
+        log: &|_l: &str| {},
+    };
+    // An as_of far in the past: whatever the wall clock says, the stamp is this.
+    let asked = utc("2026-10-21T03:30:00-04:00");
+    let rep = m.run_actions(asked);
+    assert!(rep.success, "{:?}", rep.errors);
+    let stored = a.read_action_retrievals(d("2026-10-21")).unwrap();
+    assert!(!stored.is_empty());
+    assert!(
+        stored.iter().all(|r| r.retrieved_at == asked),
+        "stamped at the run's clock, not the wall clock: {:?}",
+        stored.iter().map(|r| r.retrieved_at).collect::<Vec<_>>()
+    );
+    // And the same cycle can therefore use it: a decision at that instant has usable coverage.
+    assert_eq!(
+        rep.states.get("no_usable_retrieval"),
+        None,
+        "{:?}",
+        rep.states
+    );
+}

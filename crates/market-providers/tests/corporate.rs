@@ -66,6 +66,10 @@ fn recorded_responses_follow_the_rename_chain_and_record_per_chunk_completeness(
         &policy,
         &symbols,
         d("2026-08-21"),
+        // The retrieval's own stamp, injected: provenance a test can assert on.
+        chrono::DateTime::parse_from_rfc3339("2026-08-21T08:30:00Z")
+            .expect("valid")
+            .to_utc(),
         60_000,
         "test",
         &mut |_| {},

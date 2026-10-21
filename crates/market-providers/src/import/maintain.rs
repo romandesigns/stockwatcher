@@ -1223,20 +1223,19 @@ impl<H: Http + Send + 'static> Maintainer<'_, H> {
             }
         };
         let log = self.log;
-        let mut got = fetch_announcements(
+        // Stamped at the run's own clock: the wall clock in production, a fixed time in tests.
+        let got = fetch_announcements(
             &mut http,
             &self.cfg.data_base,
             creds,
             &self.cfg.coverage,
             &symbols,
             d,
+            now,
             self.cfg.split_per_minute,
             "maintain",
             &mut |l: &str| log(l),
         );
-        // Never stamped earlier than the run that made it (the scheduler's clock; equal to or
-        // before the wall clock in production, a fixed time in tests).
-        got.retrieved_at = got.retrieved_at.max(now);
         rep.covered = symbols.iter().filter(|s| got.covers(s)).count();
         rep.success = got.success;
         rep.requests = got.requests;
@@ -1410,18 +1409,18 @@ impl<H: Http + Send + 'static> Maintainer<'_, H> {
             }
         }
         if outcome.is_ok() {
-            let mut got = fetch_announcements(
+            let got = fetch_announcements(
                 &mut http,
                 &self.cfg.data_base,
                 creds,
                 &self.cfg.coverage,
                 &symbols,
                 d,
+                now,
                 self.cfg.split_per_minute,
                 "warmup",
                 &mut |l: &str| log(l),
             );
-            got.retrieved_at = got.retrieved_at.max(now);
             if let Err(e) = self.archive.write_action_retrieval(&got) {
                 outcome = Err(format!("corporate actions: {e}"));
             }

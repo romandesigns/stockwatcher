@@ -26,10 +26,10 @@ pub mod revision;
 pub mod setup;
 
 pub use engine::{
-    Decision, Engine, Fidelity, MissingPillar, PanelRow, PanelSnapshot, RestoreTelemetry, RunInfo,
-    SPARK_BARS, Timeline, Verdict, VolumeFacts,
+    Adoption, Decision, Engine, Fidelity, MissingPillar, PanelRow, PanelSnapshot, RestoreTelemetry,
+    RunInfo, SPARK_BARS, Timeline, Verdict, VolumeFacts,
 };
-pub use evaluate::{Coverage, NewsSummary, RvolDiagnostics};
+pub use evaluate::{Coverage, Integrity, NewsSummary, RvolDiagnostics};
 pub use evidence::{
     ActionsEvidence, ActionsSource, Authenticity, CloseBasis, CoverageState, DailyBaseline,
     EvidenceStore, Favorability, FloatObservation, InstrumentId, IntradayBaseline, IntradayCurve,
@@ -43,7 +43,7 @@ pub use panel::{
 pub use pillar::{Counts, PillarId, PillarResult, Qualification, Tri, aggregate};
 pub use policy::{PILLARS_V1, PILLARS_V2, Policy};
 pub use revision::{
-    CorrectedPrint, DEDUP_WINDOW_SECS, DayHigh, PrintRevision, REVISION_WINDOW_SECS,
+    CorrectedPrint, DEDUP_WINDOW_SECS, DayHigh, LastPrint, PrintRevision, REVISION_WINDOW_SECS,
     RevisionTarget, RevisionTelemetry,
 };
 pub use setup::{

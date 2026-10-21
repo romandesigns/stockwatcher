@@ -32,7 +32,7 @@
 use super::alpaca::AlpacaCredentials;
 use super::batch::{Paced, RateLimiter, alpaca_headers};
 use super::http::{Http, RetryPolicy, get_with_retry};
-use chrono::{NaiveDate, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use market_archive::{
     ACTIONS_SCHEMA, ActionKind, ActionRetrieval, ChunkOutcome, CorporateAction, CoveragePolicy,
 };
@@ -250,6 +250,14 @@ pub fn fetch_announcements(
     policy: &CoveragePolicy,
     symbols: &[String],
     d: NaiveDate,
+    // `now`: when the retrieval is stamped as made, passed in rather than read from the clock
+    // here. `retrieved_at` is provenance — a decision joins it by `observed_at <= cutoff` and
+    // the coverage policy measures freshness against it — and every other importer takes its
+    // time from its caller. A hidden `Utc::now()` in a provenance path cannot be reproduced: a
+    // caller asking "as of 03:30" got a stamp of the real wall clock, so from the moment real
+    // time passed 03:30 its own retrieval was too late for it to use and the coverage read
+    // `no_usable_retrieval`.
+    now: DateTime<Utc>,
     per_minute: u32,
     command: &str,
     log: &mut dyn FnMut(&str),
@@ -330,7 +338,7 @@ pub fn fetch_announcements(
     ActionRetrieval {
         schema: ACTIONS_SCHEMA,
         policy: policy.tag.clone(),
-        retrieved_at: Utc::now(),
+        retrieved_at: now,
         provider: "alpaca".into(),
         endpoint: policy.body.endpoint.clone(),
         types: policy.body.types.clone(),

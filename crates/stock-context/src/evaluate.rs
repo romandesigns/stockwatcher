@@ -121,6 +121,43 @@ pub fn gain(
     ))
 }
 
+/// Whether a symbol's trade-derived state can be trusted, and for what.
+///
+/// Separate from [`Coverage`], because the two say different things and only one of them is
+/// safe. Coverage is about **missing** prints: an incomplete count can only be lower than the
+/// truth, so an RVOL that already clears the threshold is a valid PASS. Integrity is about
+/// prints the engine may be counting that should not be there — a cancel it could not place, a
+/// print it could not prove was not a redelivery — and that can only be *higher* than the truth.
+/// A possibly-overstated numerator is not a lower bound, so it cannot pass anything.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct Integrity {
+    /// The counted volume may include a print that was revised away: a correction or cancel the
+    /// engine could not place against exactly one of its own admissions.
+    pub volume_untrusted: bool,
+    /// The retained-window state (the cumulative checkpoints, the price history, the setup bars)
+    /// may not match the stream, so anything measured over a window is not reportable.
+    pub window_untrusted: bool,
+    /// The day's high may still be a print that is gone, so the distance below it and the setup
+    /// levels taken from it are not reportable.
+    pub high_untrusted: bool,
+}
+
+impl Integrity {
+    pub fn trusted(&self) -> bool {
+        !self.volume_untrusted && !self.window_untrusted && !self.high_untrusted
+    }
+
+    /// Every doubt either of the two holds. Used when state from two sources meets in one symbol
+    /// (a restore adopted into a live symbol): a doubt about either half is a doubt about the sum.
+    pub fn or(self, other: Integrity) -> Integrity {
+        Integrity {
+            volume_untrusted: self.volume_untrusted || other.volume_untrusted,
+            window_untrusted: self.window_untrusted || other.window_untrusted,
+            high_untrusted: self.high_untrusted || other.high_untrusted,
+        }
+    }
+}
+
 /// Today's volume as the decision sees it.
 #[derive(Clone, Copy, Debug)]
 pub struct VolumeView {
@@ -131,6 +168,7 @@ pub struct VolumeView {
     /// Seconds from 04:00 to the bar end.
     pub offset: i64,
     pub coverage: Coverage,
+    pub integrity: Integrity,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -187,7 +225,11 @@ pub fn rvol(
             .collect();
         let min = policy.body.diagnostics.same_time_min_sessions;
         diag.same_time_sessions = prior.len();
-        if expired {
+        if vol.integrity.volume_untrusted {
+            // The numerator may hold a print that was revised away: no ratio is published from
+            // it, in either direction.
+            diag.same_time_reason = "volume_untrusted";
+        } else if expired {
             // Nothing more to say: the sessions are counted, but no number is published from a
             // basis nothing is still verifying.
         } else if prior.len() < min {
@@ -203,7 +245,12 @@ pub fn rvol(
         }
         let w = policy.body.diagnostics.recent_window_secs;
         diag.recent_sessions = prior.len();
-        if expired {
+        if vol.integrity.volume_untrusted {
+            diag.recent_reason = "volume_untrusted";
+        } else if vol.integrity.window_untrusted {
+            // The checkpoints the window is measured between may not match the stream.
+            diag.recent_reason = "window_untrusted";
+        } else if expired {
         } else if prior.len() < policy.body.diagnostics.recent_min_sessions {
             diag.recent_reason = "insufficient_sessions";
         } else if let Some(now) = vol.recent {
@@ -274,12 +321,21 @@ pub fn rvol(
         );
     };
     let passes = ratio_passes(vol.cum, sum, n, prof.rvol_daily_min_milli);
+    // Two different doubts, and only one of them is safe.
+    //
     // Missing prints only lower the numerator, so an incomplete count that already reaches the
-    // threshold is a valid PASS; one that falls short proves nothing.
-    let (state, reason) = match (passes, vol.coverage) {
-        (true, _) => (Tri::Pass, "at_or_above_min"),
-        (false, Coverage::Complete) => (Tri::Fail, "below_min"),
-        (false, _) => (Tri::Unknown, "numerator_coverage_unverified"),
+    // threshold is a valid PASS and one that falls short proves nothing — that is the lower-bound
+    // argument, and it holds for every `Coverage`.
+    //
+    // It does **not** hold for a numerator that may be too high. A correction or cancel the
+    // engine could not place against exactly one of its own admissions leaves volume in the
+    // count that should not be there, so the figure is neither a lower bound nor a measurement:
+    // UNKNOWN, with the reason, until the next decision computes it from a count that is sound.
+    let (state, reason) = match (vol.integrity.volume_untrusted, passes, vol.coverage) {
+        (true, _, _) => (Tri::Unknown, "volume_untrusted"),
+        (false, true, _) => (Tri::Pass, "at_or_above_min"),
+        (false, false, Coverage::Complete) => (Tri::Fail, "below_min"),
+        (false, false, _) => (Tri::Unknown, "numerator_coverage_unverified"),
     };
     (
         PillarResult::new(

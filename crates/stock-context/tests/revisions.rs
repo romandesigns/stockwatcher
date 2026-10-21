@@ -487,3 +487,271 @@ fn the_ledger_is_bounded_and_says_what_it_retired() {
         "and the symbol says why it can no longer prove them"
     );
 }
+
+// --- integrity: an unprovable fact is UNKNOWN for what depends on it, not a log line ----------
+
+/// Evidence enough for the RVOL pillar to be measurable: 30 sessions of 1,000 shares, so 5,000
+/// shares is the 5x threshold.
+fn rvol_evidence(e: &mut Engine) {
+    let mut sessions = Vec::new();
+    let mut d = day().pred_opt().expect("valid");
+    while sessions.len() < 30 {
+        if market_events::is_trading_day(d) {
+            sessions.push(SessionVolume {
+                date: d,
+                volume: 1_000,
+                complete: true,
+                comparable: true,
+            });
+        }
+        d = d.pred_opt().expect("valid");
+    }
+    e.add_daily(DailyBaseline {
+        id: "daily:ABCD".into(),
+        version: 1,
+        instrument: InstrumentId::symbol("ABCD"),
+        sessions,
+        basis: Default::default(),
+        observed_at: t(4, 0, 0),
+    });
+}
+
+fn rvol_of(e: &Engine) -> (Tri, &'static str) {
+    let d = e.current().next().expect("a decision");
+    let p = d
+        .pillars
+        .iter()
+        .find(|p| p.pillar == PillarId::Rvol)
+        .expect("the rvol pillar");
+    (p.state, p.reason)
+}
+
+/// A cancel the engine could not place makes the RVOL pillar UNKNOWN, not a PASS.
+///
+/// The lower-bound argument — missing prints only lower the numerator, so a count already over
+/// the threshold is a valid PASS — does not hold when the numerator may be too **high**. A
+/// correction or cancel the engine could not resolve against exactly one of its own admissions
+/// leaves volume in the count that the provider says is not there. Counting that as a PASS would
+/// be inventing a qualifying stock; it is UNKNOWN until the symbol's count is sound again.
+#[test]
+fn an_unplaceable_cancel_makes_the_rvol_pillar_unknown() {
+    let mut e = engine();
+    rvol_evidence(&mut e);
+    print_seq(&mut e, 1, t(9, 30, 1), 500, 20_000);
+    e.advance_to(UnixNanos(t(9, 30, 20)));
+    assert_eq!(
+        rvol_of(&e),
+        (Tri::Pass, "at_or_above_min"),
+        "20,000 against a 1,000-share mean is 20x"
+    );
+
+    // A cancel naming a print this engine never admitted: nothing is subtracted, and nothing can
+    // be said about the numerator any more.
+    e.apply_revision(&cancel(99, 700, 400, None), UnixNanos(t(9, 30, 25)));
+    e.advance_to(UnixNanos(t(9, 30, 40)));
+    assert_eq!(rvol_of(&e), (Tri::Unknown, "volume_untrusted"));
+    let d = e.current().next().expect("a decision");
+    assert!(d.volume.integrity.volume_untrusted);
+    assert!(!d.volume.integrity.trusted());
+    assert_eq!(
+        d.rvol.same_time_milli, None,
+        "and no ratio is published from it either: {:?}",
+        d.rvol
+    );
+    assert_ne!(
+        d.qualification,
+        Qualification::Qualified,
+        "a doubt about the count is not a qualification"
+    );
+
+    // An ambiguous reference does the same.
+    let mut f = engine();
+    rvol_evidence(&mut f);
+    print_seq(&mut f, 7, t(9, 30, 1), 500, 20_000);
+    print_seq(&mut f, 7, t(9, 30, 2), 500, 20_000);
+    f.advance_to(UnixNanos(t(9, 30, 20)));
+    assert_eq!(rvol_of(&f).0, Tri::Pass);
+    f.apply_revision(&cancel(7, 500, 20_000, None), UnixNanos(t(9, 30, 25)));
+    f.advance_to(UnixNanos(t(9, 30, 40)));
+    assert_eq!(rvol_of(&f), (Tri::Unknown, "volume_untrusted"));
+}
+
+/// A day high the engine cannot prove stops being reported, and the setup claims nothing from it.
+#[test]
+fn an_unprovable_day_high_is_not_reported_and_claims_no_setup() {
+    let mut e = engine();
+    rvol_evidence(&mut e);
+    print_seq(&mut e, 1, t(9, 30, 1), 500, 20_000);
+    print_seq(&mut e, 2, t(9, 30, 2), 900, 20_000);
+    e.advance_to(UnixNanos(t(9, 30, 20)));
+
+    // The $9.00 print was the day's high; the resolver's figure is only a lower bound.
+    e.apply_revision(
+        &cancel(2, 900, 20_000, high(500, false)),
+        UnixNanos(t(9, 30, 25)),
+    );
+    e.advance_to(UnixNanos(t(9, 30, 40)));
+    let d = e.current().next().expect("a decision");
+    assert!(d.volume.integrity.high_untrusted);
+    assert_eq!(
+        d.volume.shares, 20_000,
+        "the volume side is exact: the cancel was placed"
+    );
+    assert_eq!(
+        rvol_of(&e),
+        (Tri::Pass, "at_or_above_min"),
+        "an unprovable high says nothing about the count, so the pillar stands"
+    );
+    let tel = e.revision_telemetry();
+    assert_eq!(tel.day_high_unproven, 1);
+    assert!(!tel.complete());
+}
+
+/// A print older than the ledger's horizon is refused, not counted again.
+///
+/// Once an identity has left the ledger the engine cannot tell a new old print from a redelivery
+/// of one it already counted — and on the unloaded path there is no chart engine to refuse it, so
+/// replaying it inflated the numerator. Refusing keeps the count a lower bound, which is what
+/// lets an RVOL already over the threshold stay a PASS.
+#[test]
+fn a_print_past_the_horizon_is_quarantined_not_counted_again() {
+    let mut e = engine();
+    rvol_evidence(&mut e);
+    print_seq(&mut e, 1, t(9, 30, 1), 500, 20_000);
+    e.advance_to(UnixNanos(t(9, 30, 20)));
+    assert_eq!(facts(&e).0, 20_000);
+
+    // A print far enough ahead to retire the first one's identity.
+    let later = t(9, 30, 1) + (REVISION_WINDOW_SECS + 60) * SEC;
+    print_seq(&mut e, 2, later, 500, 1_000);
+    e.advance_to(UnixNanos(later + 20 * SEC));
+    assert_eq!(facts(&e).0, 21_000);
+    assert!(e.revision_telemetry().identities_evicted >= 1);
+
+    // The retired print is replayed. It must not be counted a second time.
+    print_seq(&mut e, 1, t(9, 30, 1), 500, 20_000);
+    e.advance_to(UnixNanos(later + 40 * SEC));
+    assert_eq!(
+        facts(&e).0,
+        21_000,
+        "the replay of a retired print is refused, not added"
+    );
+    let tel = e.revision_telemetry();
+    assert_eq!(tel.quarantined_old, 1, "{tel:?}");
+    assert_eq!(
+        e.coverage_of("ABCD").map(|(_, why)| why),
+        Some("quarantined_old_prints"),
+        "and the symbol says the count is short rather than inflated"
+    );
+    // Short, not overstated: the lower-bound argument still holds, so the pillar may pass.
+    let d = e.current().next().expect("a decision");
+    assert!(!d.volume.integrity.volume_untrusted);
+    assert_eq!(rvol_of(&e).0, Tri::Pass);
+}
+
+/// A print executed in one bar and admitted during a later one is revised against the barrier
+/// that folded it in, not against its execution.
+///
+/// The checkpoint delta used to key off the execution time, so checkpoints taken between the
+/// execution and the fold — which never held the print — were moved as well. On one side of the
+/// window that fabricates recent volume; on the other it clamps real volume away.
+#[test]
+fn a_late_admitted_print_is_revised_against_the_barrier_that_counted_it() {
+    let mut sessions = Vec::new();
+    let mut d = day().pred_opt().expect("valid");
+    while sessions.len() < 10 {
+        if market_events::is_trading_day(d) {
+            // 100 shares in the five minutes to 09:40 every prior session.
+            sessions.push(IntradayCurve {
+                date: d,
+                cum: vec![(0, 0), (19_800, 100), (20_100, 200)],
+                complete: true,
+            });
+        }
+        d = d.pred_opt().expect("valid");
+    }
+    let mut e = engine();
+    e.add_intraday(IntradayBaseline {
+        id: "intraday:ABCD".into(),
+        version: 1,
+        instrument: InstrumentId::symbol("ABCD"),
+        sessions,
+        basis: Default::default(),
+        observed_at: t(4, 0, 0),
+    });
+    // An early print so the window has a checkpoint before its start.
+    print_seq(&mut e, 9, t(9, 29, 0), 500, 100);
+    e.advance_to(UnixNanos(t(9, 33, 0)));
+    // Executed at 09:30 but delivered at 09:34: the barriers between held none of it.
+    e.apply(
+        &trade(1, t(9, 30, 0), 500, 400),
+        VOL,
+        UnixNanos(t(9, 34, 0)),
+    );
+    print_seq(&mut e, 2, t(9, 35, 0), 500, 100);
+    e.advance_to(UnixNanos(t(9, 36, 0)));
+    assert_eq!(facts(&e).0, 600, "100 + 400 + 100");
+
+    // Cancel the late print, then measure a window whose start lies between the print's
+    // execution and its admission.
+    e.apply_revision(
+        &cancel(1, 500, 400, high(500, true)),
+        UnixNanos(t(9, 36, 1)),
+    );
+    print_seq(&mut e, 3, t(9, 37, 0), 500, 100);
+    e.advance_to(UnixNanos(t(9, 38, 0)));
+    let d = e.current().next().expect("a decision");
+    assert_eq!(
+        d.volume.shares, 300,
+        "the cancelled 400 is gone: 100 + 100 + 100"
+    );
+    assert_eq!(
+        d.rvol.recent_reason, "ok",
+        "the window is still reportable: {:?}",
+        d.rvol
+    );
+    // The window start (about 09:32:45) is after the execution (09:30) and before the admission
+    // (09:34), so the checkpoint at it never held the print: the window is 09:35 + 09:37 = 200
+    // against a 100-share prior mean.
+    assert_eq!(d.rvol.recent_milli, Some(2_000), "{:?}", d.rvol);
+    let tel = e.revision_telemetry();
+    assert_eq!(tel.applied, 1);
+    assert_eq!(tel.windows_unproven, 0, "{tel:?}");
+}
+
+/// With every OHLC print of the date cancelled, the engine falls back to the resolver's own last
+/// print — as an execution time and a price, in that order.
+///
+/// The server built that fallback as `(price, timestamp)` while the engine reads `(exec, price)`,
+/// so a price landed where an execution time belonged and the price became a timestamp. A named
+/// type cannot be read the wrong way round.
+#[test]
+fn the_last_print_fallback_keeps_its_execution_time_and_price_apart() {
+    let mut e = engine();
+    print_seq(&mut e, 1, t(9, 30, 1), 500, 100);
+    e.advance_to(UnixNanos(t(9, 30, 20)));
+    let older = LastPrint {
+        exec: t(9, 15, 0),
+        price: Price::from_cents(420).micros(),
+    };
+    let mut rev = cancel(1, 500, 100, high(420, true));
+    rev.last = Some(older);
+    e.apply_revision(&rev, UnixNanos(t(9, 30, 25)));
+    e.advance_to(UnixNanos(t(9, 30, 40)));
+    let d = e.current().next().expect("a decision");
+    let price = d
+        .pillars
+        .iter()
+        .find(|p| p.pillar == PillarId::Price)
+        .expect("the price pillar");
+    assert_eq!(
+        price.value,
+        Some(older.price),
+        "the price is the price, not an epoch: {price:?}"
+    );
+    assert_eq!(
+        price.as_of,
+        Some(older.exec),
+        "and the execution time is the execution time"
+    );
+}
