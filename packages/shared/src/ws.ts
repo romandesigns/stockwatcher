@@ -1,5 +1,6 @@
 import { isAlertsMessage, parseServerMessage, type AlertsServerMessage, type ClientMessage, type HelloMessage, type MarketSource, type PressureMessage, type QuotesMessage, type RossMessage, type ServerMessage, type WelcomeMessage } from "./protocol.ts";
 import type { SettingsSync } from "./settingsSync.ts";
+import type { DetectionMessage } from "./detection.ts";
 
 export type ConnectionStatus = "connecting" | "open" | "reconnecting" | "unauthorized" | "closed";
 
@@ -29,6 +30,7 @@ export interface WsClientOptions {
   onPressure?: (message: PressureMessage) => void;
   /** `ross.snapshot` / `ross.update` frames, while subscribed (see `subscribeRoss`). */
   onRoss?: (message: RossMessage) => void;
+  onDetection?: (message: DetectionMessage) => void;
   /** The price alerts' frames (`alerts.history`, `alert.fired`, …): every connection gets them. */
   onAlerts?: (message: AlertsServerMessage) => void;
   /**
@@ -58,6 +60,8 @@ export interface WsClient {
   /** The Ross Panel (`ross.*`), remembered across reconnects like the pressure opt-in. */
   subscribeRoss(): void;
   unsubscribeRoss(): void;
+  subscribeDetection(): void;
+  unsubscribeDetection(): void;
   close(): void;
 }
 
@@ -91,6 +95,7 @@ export function createWsClient(opts: WsClientOptions): WsClient {
   let quotesWanted = false;
   let pressureWanted = false;
   let rossWanted = false;
+  let detectionWanted = false;
 
   const setStatus = (s: ConnectionStatus) => opts.onStatus?.(s);
 
@@ -115,6 +120,7 @@ export function createWsClient(opts: WsClientOptions): WsClient {
     let unauthorized = false;
 
     ws.onopen = () => {
+      if (stopped || socket !== ws) return;
       const hello: HelloMessage = { type: "hello" };
       if (opts.client) hello.client = opts.client;
       if (opts.token) hello.token = opts.token;
@@ -123,6 +129,8 @@ export function createWsClient(opts: WsClientOptions): WsClient {
       armLiveness();
     };
     ws.onmessage = (ev) => {
+      // A callback already queued on a retired socket must not overwrite a new source/epoch.
+      if (stopped || socket !== ws) return;
       const msg = parseServerMessage(ev.data);
       if (!msg) return;
       armLiveness();
@@ -135,6 +143,7 @@ export function createWsClient(opts: WsClientOptions): WsClient {
         if (quotesWanted) send({ type: "quotes.subscribe" });
         if (pressureWanted) send({ type: "pressure.subscribe" });
         if (rossWanted) send({ type: "ross.subscribe" });
+        if (detectionWanted) send({ type: "detection.subscribe" });
       } else if (msg.type === "ping") {
         send({ type: "pong", ts: msg.ts });
       } else if (msg.type === "error" && msg.code === "unauthorized") {
@@ -145,6 +154,8 @@ export function createWsClient(opts: WsClientOptions): WsClient {
         opts.onPressure?.(msg);
       } else if ((msg.type === "ross.snapshot" || msg.type === "ross.update") && rossWanted) {
         opts.onRoss?.(msg);
+      } else if ((msg.type === "detection.snapshot" || msg.type === "detection.update") && detectionWanted) {
+        opts.onDetection?.(msg);
       } else if (msg.type === "settings.snapshot" || msg.type === "settings.changed" || msg.type === "settings.rejected") {
         opts.settings?.handle(msg);
       } else if (isAlertsMessage(msg)) {
@@ -155,6 +166,7 @@ export function createWsClient(opts: WsClientOptions): WsClient {
     // onclose always follows onerror; reconnecting is handled there.
     ws.onerror = () => {};
     ws.onclose = () => {
+      if (socket !== ws) return;
       if (livenessTimer) clearTimeout(livenessTimer);
       if (socket === ws) {
         socket = null;
@@ -194,6 +206,14 @@ export function createWsClient(opts: WsClientOptions): WsClient {
     unsubscribeRoss() {
       rossWanted = false;
       send({ type: "ross.unsubscribe" });
+    },
+    subscribeDetection() {
+      detectionWanted = true;
+      send({ type: "detection.subscribe" });
+    },
+    unsubscribeDetection() {
+      detectionWanted = false;
+      send({ type: "detection.unsubscribe" });
     },
     unsubscribePressure() {
       pressureWanted = false;

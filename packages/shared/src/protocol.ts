@@ -1,5 +1,6 @@
 // Wire types shared by web, desktop and mobile. The Rust side mirrors these
 // in crates/server/src/{api,ws,market}.rs; change both together.
+import { isDetectionMessage } from "./detection.ts";
 
 /** GET /api/health (never requires auth). */
 export interface Health {
@@ -547,8 +548,8 @@ export interface PushUnregisterMessage {
   token: string;
 }
 
-export type ClientMessage = HelloMessage | PingMessage | PongMessage | QuotesSubscribeMessage | QuotesUnsubscribeMessage | PressureSubscribeMessage | PressureUnsubscribeMessage | RossSubscribeMessage | RossUnsubscribeMessage | SettingsClientMessage | PushRegisterMessage | PushUnregisterMessage;
-export type ServerMessage = WelcomeMessage | PingMessage | PongMessage | ErrorMessage | QuotesMessage | PressureMessage | RossMessage | SettingsServerMessage | AlertsServerMessage;
+export type ClientMessage = HelloMessage | PingMessage | PongMessage | QuotesSubscribeMessage | QuotesUnsubscribeMessage | PressureSubscribeMessage | PressureUnsubscribeMessage | RossSubscribeMessage | RossUnsubscribeMessage | { type: "detection.subscribe" | "detection.unsubscribe" } | SettingsClientMessage | PushRegisterMessage | PushUnregisterMessage;
+export type ServerMessage = WelcomeMessage | PingMessage | PongMessage | ErrorMessage | QuotesMessage | PressureMessage | RossMessage | import("./detection.ts").DetectionMessage | SettingsServerMessage | AlertsServerMessage;
 
 const ALERT_TYPES = new Set(["alerts.history", "alert.fired", "alert.held", "alert.updated", "alerts.status"]);
 
@@ -557,7 +558,7 @@ export function isAlertsMessage(m: ServerMessage): m is AlertsServerMessage {
   return ALERT_TYPES.has(m.type);
 }
 
-const SERVER_TYPES = new Set(["welcome", "ping", "pong", "error", "quotes.snapshot", "quotes.update", "pressure.snapshot", "pressure.update", "ross.snapshot", "ross.update", "settings.snapshot", "settings.changed", "settings.rejected", ...ALERT_TYPES]);
+const SERVER_TYPES = new Set(["welcome", "ping", "pong", "error", "quotes.snapshot", "quotes.update", "pressure.snapshot", "pressure.update", "ross.snapshot", "ross.update", "detection.snapshot", "detection.update", "settings.snapshot", "settings.changed", "settings.rejected", ...ALERT_TYPES]);
 
 /** Parses one server frame; returns null for anything malformed or unknown. */
 export function parseServerMessage(raw: unknown): ServerMessage | null {
@@ -570,5 +571,6 @@ export function parseServerMessage(raw: unknown): ServerMessage | null {
   }
   if (typeof value !== "object" || value === null) return null;
   const type = (value as { type?: unknown }).type;
+  if (type === "detection.snapshot" || type === "detection.update") return isDetectionMessage(value) ? value : null;
   return typeof type === "string" && SERVER_TYPES.has(type) ? (value as ServerMessage) : null;
 }

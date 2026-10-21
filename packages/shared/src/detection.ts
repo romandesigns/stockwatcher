@@ -122,13 +122,13 @@ export interface DetectionCoreEpisode {
   trading_date: string; segment: string; state: string; default_visible: boolean; first_detected_at: number;
   first_bar_end: number | null; last_material_seq: number; last_material_at: number; base_secs: number;
   fidelity: string; warmup: boolean; parent_episode_id: string | null; related_episode_ids: string[];
-  context: string; levels: DetectionCoreLevel[]; anchors: Record<string, unknown> | null;
+  context: string | null; levels: DetectionCoreLevel[]; anchors: Record<string, unknown> | null;
   recognition: DetectionCoreFeatures | null; checks: DetectionCoreCheck[];
-  current: { price: number | null; price_at: number | null; price_age_ms: number | null; stale: boolean; [key: string]: unknown } | null;
+  current: { price: number | null; price_exec: number | null; price_age_ms: number | null; stale: boolean; [key: string]: unknown } | null;
   resolution: { state: string; reason: string; at: number; bar_end: number | null; transition_id: string } | null;
 }
 export interface DetectionCoreSnapshot {
-  schema: 1; run_id: string; source: string; fidelity: string; policy: string; experimental: true; alerts_enabled: false;
+  schema: number; run_id: string; source: string; fidelity: string; policy: string; experimental: true; alerts_enabled: false;
   cursor: number; bar_end: number | null; cutoff: number | null; as_of: number | null;
   symbols: { symbol: string; dominant_episode_id: string | null; active_episode_ids: string[]; interrupted: string | null }[];
   active: DetectionCoreEpisode[]; recent: DetectionCoreEpisode[];
@@ -172,6 +172,30 @@ export interface DetectionChannel {
   subscribe(fn: () => void): () => void;
 }
 
+const object = (x: unknown): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x);
+const finite = (x: unknown): x is number => typeof x === "number" && Number.isFinite(x);
+/** Validate the fields the presentation adapter traverses. An unsupported schema is kept as a
+ * recognized envelope so the channel can show its explicit resync/error state. */
+export function isDetectionMessage(x: unknown): x is DetectionMessage {
+  if (!object(x) || !["detection.snapshot", "detection.update"].includes(String(x.type)) || typeof x.enabled !== "boolean" || !["live", "replay", "fixture"].includes(String(x.source)) || typeof x.runEpoch !== "string" || !finite(x.cursor) || !object(x.history) || !Array.isArray(x.transitions) || !object(x.telemetry) || x.experimental !== true || x.alertsEnabled !== false) return false;
+  if (!finite(x.history.dropped) || !finite(x.history.capacity)) return false;
+  const transitionsValid = x.transitions.every((r) => object(r) && finite(r.sequence) && finite(r.emitted_at) && finite(r.input_watermark) && object(r.transition) && typeof r.transition.transition_id === "string" && typeof r.transition.episode_id === "string" && finite(r.transition.seq) && finite(r.transition.observed_at));
+  if (!transitionsValid) return false;
+  if (!x.enabled && x.snapshot === null) return true;
+  const s = x.snapshot;
+  if (!object(s) || !finite(s.schema)) return false;
+  if (s.schema !== 1) return true;
+  if (!object(x.profile) || !["price_min_micros", "price_max_micros", "research_min_micros", "research_max_micros"].every((k) => finite(x.profile && (x.profile as Record<string, unknown>)[k]))) return false;
+  if (typeof s.policy !== "string" || !Array.isArray(s.active) || !Array.isArray(s.recent) || !Array.isArray(s.symbols) || !object(s.data_status)) return false;
+  return [...s.active, ...s.recent].every((e) => object(e) && typeof e.episode_id === "string" && typeof e.symbol === "string" && typeof e.family === "string" && typeof e.state === "string" && finite(e.first_detected_at) && finite(e.last_material_at) && Array.isArray(e.checks) && e.checks.every((c) => object(c) && typeof c.name === "string" && ["PASS", "FAIL", "UNKNOWN"].includes(String(c.state))) && Array.isArray(e.levels) && e.levels.every((l) => object(l) && typeof l.level_id === "string" && finite(l.version) && finite(l.price) && finite(l.known_at) && Array.isArray(l.formed_from)));
+}
+
+function capturedLoss(telemetry: Record<string, unknown>): boolean {
+  const engine = object(telemetry.engine) ? telemetry.engine : telemetry;
+  // Recent/history retention is a bounded view, not an ingestion or persistence failure.
+  return [engine.transitions_dropped, telemetry.journal_queue_dropped, telemetry.journal_write_errors].some((n) => finite(n) && n > 0);
+}
+
 /** Each update is a full replacement. Cursor jumps are therefore valid coalescing; a missing
  * significant transition is detected from its separate history sequence, never guessed from
  * the price-frame cadence. A reconnect does not replay notifications (there are none here). */
@@ -183,7 +207,7 @@ export function createDetectionChannel(io: { subscribe(): void; unsubscribe(): v
   const emit = () => { for (const fn of listeners) fn(); };
   const resync = (m: DetectionMessage, reason: string) => {
     state = { ...state, connected: false, resyncing: true, error: reason };
-    const key = `${m.runEpoch}/${m.cursor}`;
+    const key = `${m.runEpoch}/${reason}`;
     if (requested !== key) { requested = key; (io.resync ?? io.subscribe)(); }
     emit();
   };
@@ -208,7 +232,7 @@ export function createDetectionChannel(io: { subscribe(): void; unsubscribe(): v
       }
       const last = previous?.runEpoch === m.runEpoch ? previous.history.last_sequence : null;
       const historyGap = last !== null && last !== undefined && m.history.first_sequence !== null && m.history.first_sequence > last + 1;
-      const coverageLost = m.history.dropped > 0 || historyGap || Object.entries(m.telemetry).some(([k, v]) => /drop|write_errors/.test(k) && typeof v === "number" && v > 0);
+      const coverageLost = historyGap || capturedLoss(m.telemetry);
       state = { enabled: m.enabled, connected: true, snapshot: m.enabled ? detectionSnapshotView(m) : null, frame: m, resyncing: false, coverageLost, error: coverageLost ? "transition_history_incomplete" : null };
       requested = null;
       emit();
@@ -248,7 +272,7 @@ function featureEvidence(value: unknown, prefix: string, at: number, source: str
   }
   if (typeof value !== "number" && typeof value !== "string" && typeof value !== "boolean" && value !== null) return;
   const leaf = prefix.split(".").at(-1) ?? prefix;
-  const units = leaf.endsWith("_milli") ? "thousandths" : leaf.endsWith("_ppm") ? "ppm" : leaf.endsWith("_ms") ? "ms" : leaf.endsWith("_secs") ? "s" : ["open", "high", "low", "close", "c_prev", "price", "l0", "h0", "lp", "increment"].includes(leaf) ? "micros" : "";
+  const units = leaf.endsWith("_milli") ? "thousandths" : leaf.endsWith("_ppm") ? "ppm" : leaf.endsWith("_bp") ? "bp" : leaf.endsWith("_ms") ? "ms" : leaf.endsWith("_secs") ? "s" : ["open", "high", "low", "close", "c_prev", "price", "l0", "h0", "lp", "pullback_low", "increment"].includes(leaf) ? "micros" : /(_at|_exec|_end|_start)$/.test(leaf) || ["cutoff", "known_at", "armed_at"].includes(leaf) ? "UTC ns" : leaf === "dollar_volume" ? "USD" : leaf === "volume" ? "shares" : leaf === "trades" ? "trades" : "";
   out.push({ name: prefix, value, units, state: null, required: false, rule: null, reason: value === null ? "feature_unavailable" : null, source, as_of: at, observed_at: at });
 }
 
@@ -269,10 +293,13 @@ export function detectionSnapshotView(m: DetectionMessage): DetectionSnapshot | 
     featureEvidence(e.anchors, "anchors", e.first_detected_at, "engine causal anchor", evidence);
     evidence.push({ name: "quiet_context", value: e.context, units: "", state: null, required: false, rule: null, reason: null, source: "engine context", as_of: at, observed_at: at });
     const context = m.context?.[e.symbol];
-    return { episode_id: e.episode_id, instrument_id: e.instrument, symbol: e.symbol, run_id: s.run_id, source: m.source, fidelity: e.fidelity, trading_date: e.trading_date, segment: e.segment, family: e.family, variant: e.variant, policy_id: policyId ?? s.policy, policy_hash: m.policyHash ?? shortHash, parent_episode_id: e.parent_episode_id, related_episode_ids: e.related_episode_ids, first_detected_at: e.first_detected_at, last_material_transition_at: e.last_material_at, input_cutoff: e.recognition?.cutoff ?? at, bar_end: e.first_bar_end, state: e.state, status: last?.status ?? (e.warmup ? "restored" : "unknown"), terminal: e.resolution !== null, resolved_at: e.resolution?.at ?? null, reason: e.resolution?.reason ?? null, price: e.current?.price ?? null, price_at: e.current?.price_at ?? null, price_age_ms: e.current?.price_age_ms ?? null, price_stale: e.current?.stale ?? true, level: levels.at(-1) ?? null, level_history: levels, evidence, timeline: history, coverage: e.warmup ? "restored/reconstructed — forward coverage unverified" : "collection completeness unverified", ross_member: context?.ross_member ?? null, catalyst: context?.catalyst ?? "unknown", default_visible: e.default_visible, raw: e };
+    return { episode_id: e.episode_id, instrument_id: e.instrument, symbol: e.symbol, run_id: s.run_id, source: m.source, fidelity: e.fidelity, trading_date: e.trading_date, segment: e.segment, family: e.family, variant: e.variant, policy_id: policyId ?? s.policy, policy_hash: m.policyHash ?? shortHash, parent_episode_id: e.parent_episode_id, related_episode_ids: e.related_episode_ids, first_detected_at: e.first_detected_at, last_material_transition_at: e.last_material_at, input_cutoff: e.recognition?.cutoff ?? at, bar_end: e.first_bar_end, state: e.state, status: last?.status ?? (e.warmup ? "restored" : "unknown"), terminal: e.resolution !== null, resolved_at: e.resolution?.at ?? null, reason: e.resolution?.reason ?? null, price: e.current?.price ?? null, price_at: e.current?.price_exec ?? null, price_age_ms: e.current?.price_age_ms ?? null, price_stale: e.current?.stale ?? true, level: levels.at(-1) ?? null, level_history: levels, evidence, timeline: history, coverage: e.warmup ? "restored/reconstructed — forward coverage unverified" : "collection completeness unverified", ross_member: context?.ross_member ?? null, catalyst: context?.catalyst ?? "unknown", default_visible: e.default_visible, raw: e };
   });
   const unavailable = new Map<string, number>();
   for (const symbol of s.symbols) if (symbol.interrupted) unavailable.set(symbol.interrupted, (unavailable.get(symbol.interrupted) ?? 0) + 1);
+  const global = s.data_status.global_interruption;
+  if (object(global)) unavailable.set(typeof global.reason === "string" ? global.reason : "global_interruption", s.symbols.length);
+  if (typeof s.data_status.disabled_reason === "string") unavailable.set(s.data_status.disabled_reason, s.symbols.length);
   return { schema: 1, run_id: s.run_id, source: m.source, fidelity: s.fidelity, policy_id: policyId ?? s.policy, policy_hash: m.policyHash ?? shortHash, experimental: true, base_timeframe_secs: 15, cutoff: s.cutoff ?? 0, as_of: s.as_of ?? s.cutoff ?? 0, ...m.profile, episodes, monitored_symbols: s.symbols.length, unavailable: [...unavailable].map(([reason, symbols]) => ({ reason, symbols })), dominant_episode_ids: Object.fromEntries(s.symbols.map((x) => [x.symbol, x.dominant_episode_id])) };
 }
 
@@ -312,7 +339,7 @@ export interface DetectionGroup { symbol: string; selected: DetectionEpisode; ep
 export function groupDetections(snapshot: DetectionSnapshot | null, filter: DetectionFilter = "all", history = false, segment = "all"): DetectionGroup[] {
   const groups = new Map<string, DetectionEpisode[]>();
   for (const e of snapshot?.episodes ?? []) {
-    if (e.terminal !== history || !detectionMatches(e, filter) || (filter === "all" && !e.default_visible) || (segment !== "all" && e.segment !== segment)) continue;
+    if (e.terminal !== history || !detectionMatches(e, filter) || (filter === "all" && !e.default_visible) || (segment !== "all" && e.segment !== segment && !e.segment.endsWith(`/${segment}`))) continue;
     const key = `${e.instrument_id}/${e.symbol}`;
     const rows = groups.get(key) ?? [];
     rows.push(e); groups.set(key, rows);

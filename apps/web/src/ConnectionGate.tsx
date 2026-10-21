@@ -28,7 +28,7 @@ export interface Connection {
  * mount → unmount → mount gets a fresh feed, never a closed one.
  */
 export function ConnectionGate({ source, children }: { source: MarketSource; children: (c: Connection) => ReactNode }) {
-  const [ready, setReady] = useState<Connection | null>(null);
+  const [ready, setReady] = useState<(Connection & { marketSource: MarketSource; attempt: number }) | null>(null);
   // The server wants an access token (production): show the sign-in card instead of falling back to the fixture.
   const [signIn, setSignIn] = useState<{ rejected: boolean } | null>(null);
   const [attempt, setAttempt] = useState(0);
@@ -49,7 +49,7 @@ export function ConnectionGate({ source, children }: { source: MarketSource; chi
       const choice = chooseSource(ENV_SOURCE, probe, FIXTURE_SYMBOL, source);
       // Alert frames (Activity, fires) reach the app store whatever page is open (state/store.ts).
       feed = choice.kind === "server" ? createServerFeed({ token, settings: sync, source, onAlerts: (m) => getAppStore().getState().applyAlertsMessage(m) }) : createFixtureFeed();
-      setReady({ choice, feed });
+      setReady({ choice, feed, marketSource: source, attempt });
     });
     return () => {
       alive = false;
@@ -67,7 +67,7 @@ export function ConnectionGate({ source, children }: { source: MarketSource; chi
       />
     );
   }
-  if (!ready) {
+  if (!ready || ready.marketSource !== source || ready.attempt !== attempt) {
     return <div className="flex min-h-dvh items-center justify-center bg-background text-sm text-muted-foreground">Connecting to the server…</div>;
   }
   return <>{children(ready)}</>;
