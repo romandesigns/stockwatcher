@@ -8,7 +8,7 @@
 
 use chrono::NaiveDate;
 use market_archive::intraday::{
-    CURVE_RULES_VERSION, CurveFidelity, MinuteVolumeSeries, STEP_SECS, derive_curve,
+    Basis, CURVE_RULES_VERSION, CurveFidelity, MinuteVolumeSeries, STEP_SECS, derive_curve,
     intraday_baseline,
 };
 use market_archive::{Archive, ArchiveConfig, FsyncPolicy, ImportProvenance};
@@ -39,6 +39,19 @@ fn t(h: u32, m: u32, s: u32) -> i64 {
 /// Seconds since 04:00 ET.
 fn off(h: u32, m: u32, s: u32) -> i64 {
     (t(h, m, s) - t(4, 0, 0)) / 1_000_000_000
+}
+
+/// A restatement basis with `factors` and no expiry (bar-verified), observed at `observed_at`.
+fn basis_of<const N: usize>(factors: [(NaiveDate, f64); N], observed_at: i64) -> Basis {
+    Basis {
+        factors: factors.into_iter().collect(),
+        evidence: stock_context::ActionsEvidence {
+            source: stock_context::ActionsSource::BarVerified,
+            ..Default::default()
+        },
+        observed_at,
+        source: "fixture:baseline".into(),
+    }
 }
 
 fn trade(seq: u64, exec: i64, size: u64, conditions: &[&str]) -> MarketEvent {
@@ -276,12 +289,15 @@ fn curves_round_trip_and_assemble_into_the_engines_diagnostic_baseline() {
     let stored = a.read_intraday_curves(SYM, &dates).expect("read");
     assert_eq!(stored.len(), 1, "a missing date is simply absent");
 
-    let factors: std::collections::BTreeMap<NaiveDate, f64> = [(day(), 1.0)].into();
-    let b = intraday_baseline(&stored, SYM, &factors)
+    let basis = basis_of([(day(), 1.0)], 9);
+    let b = intraday_baseline(&stored, SYM, &basis)
         .baseline
         .expect("a baseline");
     assert_eq!(b.instrument, stock_context::InstrumentId::symbol(SYM));
-    assert_eq!(b.observed_at, 7, "the latest derivation time");
+    assert_eq!(
+        b.observed_at, 9,
+        "the latest of EVERY input: the curve was derived at 7, the basis observed at 9"
+    );
     assert_eq!(b.sessions.len(), 1);
     assert!(b.sessions[0].complete);
     assert_eq!(b.sessions[0].at(off(9, 30, 15)), 100);
@@ -292,7 +308,7 @@ fn curves_round_trip_and_assemble_into_the_engines_diagnostic_baseline() {
     );
 
     // Nothing stored: no baseline is invented.
-    assert!(intraday_baseline(&[], SYM, &factors).baseline.is_none());
+    assert!(intraday_baseline(&[], SYM, &basis).baseline.is_none());
 }
 
 /// A provider's one-minute series is a separate, coarser thing with its own name. There is no
@@ -361,8 +377,7 @@ fn an_unapplied_revision_makes_a_complete_day_unusable() {
     assert_eq!(r.unusable_reason(), Some("unapplied_revisions"));
 
     // And the assembly leaves it out, with the reason, rather than offering a denominator.
-    let f: std::collections::BTreeMap<NaiveDate, f64> = [(day(), 1.0)].into();
-    let asm = intraday_baseline(&[r], SYM, &f);
+    let asm = intraday_baseline(&[r], SYM, &basis_of([(day(), 1.0)], 1));
     assert_eq!(asm.usable, 0);
     assert_eq!(asm.suppressed.get("unapplied_revisions"), Some(&1));
     assert!(
@@ -443,8 +458,7 @@ fn prior_sessions_are_restated_onto_todays_share_basis() {
 
     // A 5-for-1 split since: one share then is five shares now, so the session's 1,000 shares
     // are 5,000 on today's basis — the factor the daily denominator used.
-    let split: std::collections::BTreeMap<NaiveDate, f64> = [(day(), 5.0)].into();
-    let asm = intraday_baseline(std::slice::from_ref(&r), SYM, &split);
+    let asm = intraday_baseline(std::slice::from_ref(&r), SYM, &basis_of([(day(), 5.0)], 5));
     let b = asm.baseline.expect("a baseline");
     assert_eq!(asm.usable, 1);
     assert!(asm.suppressed.is_empty());
@@ -456,23 +470,124 @@ fn prior_sessions_are_restated_onto_todays_share_basis() {
     );
 
     // Same basis: the stored counts, untouched.
-    let same: std::collections::BTreeMap<NaiveDate, f64> = [(day(), 1.0)].into();
-    let asm = intraday_baseline(std::slice::from_ref(&r), SYM, &same);
+    let asm = intraday_baseline(std::slice::from_ref(&r), SYM, &basis_of([(day(), 1.0)], 5));
     assert_eq!(
         asm.baseline.expect("a baseline").sessions[0].at(off(9, 30, 15)),
         1_000
     );
 
     // No factor for the date: not comparable at all, so suppressed with the reason.
-    let asm = intraday_baseline(
-        std::slice::from_ref(&r),
-        SYM,
-        &std::collections::BTreeMap::new(),
-    );
+    let asm = intraday_baseline(std::slice::from_ref(&r), SYM, &Basis::default());
     assert_eq!(asm.usable, 0);
     assert_eq!(
         asm.suppressed.get(market_archive::INCOMPARABLE_BASIS),
         Some(&1)
     );
     assert!(!asm.baseline.expect("carried").sessions[0].complete);
+}
+
+/// A factor verified later today cannot reach an earlier decision.
+///
+/// The engine joins evidence by `observed_at <= cutoff`, so a record must be invisible until all
+/// of it existed. The assembly used to stamp the record with only the curves' derivation times,
+/// which backdated a basis an announcement check verified hours later — future knowledge reaching
+/// an earlier cutoff, the one rule the whole pipeline rests on.
+#[test]
+fn a_later_verified_basis_cannot_reach_an_earlier_cutoff() {
+    let dir = tempfile::tempdir().expect("tmp");
+    let a = archive(dir.path());
+    let m = write_day(&a, &[trade(1, t(9, 30, 1), 1_000, &["@"])], true);
+    // The curves were derived overnight; the basis was only verified at 09:00 today.
+    let derived_at = t(4, 0, 0);
+    let verified_at = t(9, 0, 0);
+    let r = derive_curve(&a, &m, SYM, day(), derived_at)
+        .expect("derive")
+        .expect("a curve");
+    let b = intraday_baseline(&[r], SYM, &basis_of([(day(), 1.0)], verified_at))
+        .baseline
+        .expect("a baseline");
+    assert_eq!(
+        b.observed_at, verified_at,
+        "the later of the two, so the record is invisible before the basis existed"
+    );
+
+    // A store joins it by that time: a 04:00 decision cannot see it, a 09:00 one can.
+    let mut store = stock_context::EvidenceStore::default();
+    store.add_intraday(b);
+    let inst = stock_context::InstrumentId::symbol(SYM);
+    assert!(
+        store.intraday(&inst, verified_at - 1).is_none(),
+        "not yet: the basis had not been verified"
+    );
+    assert!(store.intraday(&inst, verified_at).is_some());
+}
+
+/// An expired restatement basis suppresses the diagnostic, and a fresh check brings it back.
+///
+/// The factors can rest on a check that found no known action, which the coverage policy permits
+/// only while it is fresh. Past that horizon nothing is verifying the share basis the prior
+/// sessions were restated onto — and a stale basis can be a whole split out, which is the
+/// direction that invents volume. The strict daily pillar and the diagnostic's minimum number of
+/// sessions are untouched by any of this.
+#[test]
+fn an_expired_restatement_basis_suppresses_the_diagnostic() {
+    let dir = tempfile::tempdir().expect("tmp");
+    let a = archive(dir.path());
+    let m = write_day(&a, &[trade(1, t(9, 30, 1), 1_000, &["@"])], true);
+    let r = derive_curve(&a, &m, SYM, day(), t(4, 0, 0))
+        .expect("derive")
+        .expect("a curve");
+
+    // A basis resting on an 08:00 check: good for 90 minutes under the v1 coverage policy.
+    let checked = t(8, 0, 0);
+    let horizon = checked + 5_400 * 1_000_000_000;
+    let assumed = Basis {
+        factors: [(day(), 1.0)].into_iter().collect(),
+        evidence: stock_context::ActionsEvidence {
+            source: stock_context::ActionsSource::ProviderCheckedNoKnownAction,
+            assumption: Some("unchanged_share_basis_assumed".into()),
+            coverage_at: Some(checked),
+            valid_until: Some(horizon),
+            ..Default::default()
+        },
+        observed_at: checked,
+        source: "fixture:baseline".into(),
+    };
+    let b = intraday_baseline(std::slice::from_ref(&r), SYM, &assumed)
+        .baseline
+        .expect("a baseline");
+    assert_eq!(
+        b.basis.valid_until,
+        Some(horizon),
+        "the horizon travels on it"
+    );
+    assert!(b.basis.valid_at(horizon));
+    assert!(
+        !b.basis.valid_at(horizon + 1),
+        "and the engine refuses it past the horizon"
+    );
+
+    // A fresh check: a new basis, a later observation, a later horizon.
+    let again = horizon + 60 * 1_000_000_000;
+    let fresh = Basis {
+        evidence: stock_context::ActionsEvidence {
+            coverage_at: Some(again),
+            valid_until: Some(again + 5_400 * 1_000_000_000),
+            ..assumed.evidence.clone()
+        },
+        observed_at: again,
+        ..assumed.clone()
+    };
+    let b2 = intraday_baseline(std::slice::from_ref(&r), SYM, &fresh)
+        .baseline
+        .expect("a baseline");
+    assert_eq!(b2.observed_at, again, "visible from the fresh check on");
+    assert!(b2.basis.valid_at(again + 1));
+
+    // A finding, not an assumption, has no horizon at all.
+    let verified = intraday_baseline(std::slice::from_ref(&r), SYM, &basis_of([(day(), 1.0)], 1))
+        .baseline
+        .expect("a baseline");
+    assert_eq!(verified.basis.valid_until, None);
+    assert!(verified.basis.valid_at(i64::MAX));
 }

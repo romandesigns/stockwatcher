@@ -206,6 +206,22 @@ pub struct IntradayBaseline {
     pub version: u32,
     pub instrument: InstrumentId,
     pub sessions: Vec<IntradayCurve>,
+    /// What put the sessions on the evaluated date's share basis, exactly as
+    /// [`DailyBaseline::basis`] does for the strict denominator.
+    ///
+    /// A prior session's share count is only comparable with today's once it has been restated
+    /// across any split between them, and the evidence for that restatement has the same
+    /// provenance and the same expiry as the daily baseline's: an assumption resting on a check
+    /// that found no known action stops holding when that check goes stale
+    /// ([`ActionsEvidence::valid_until`]), and the diagnostic then reports nothing rather than a
+    /// number nothing is still verifying.
+    pub basis: ActionsEvidence,
+    /// When the **latest of every input** was observed: the curves' derivation times and the
+    /// evidence the restatement rests on.
+    ///
+    /// All of them, because the join is by `observed_at <= cutoff`: a factor verified by a 09:00
+    /// announcement check must not reach a 04:00 decision, however old the curves themselves
+    /// are. Taking only the curves' times would have backdated the later knowledge.
     pub observed_at: i64,
 }
 

@@ -270,6 +270,7 @@ fn daily_and_same_time_rvol_are_different_numbers() {
         version: 1,
         instrument: inst("ABCD"),
         sessions,
+        basis: Default::default(),
         observed_at: t(4, 0, 0),
     });
     let mut ds = print(&mut e, "ABCD", t(7, 59, 50), 5_500_000, 1_000_000);

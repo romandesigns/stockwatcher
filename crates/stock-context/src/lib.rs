@@ -22,6 +22,7 @@ pub mod output;
 pub mod panel;
 pub mod pillar;
 pub mod policy;
+pub mod revision;
 pub mod setup;
 
 pub use engine::{
@@ -41,6 +42,7 @@ pub use panel::{
 };
 pub use pillar::{Counts, PillarId, PillarResult, Qualification, Tri, aggregate};
 pub use policy::{PILLARS_V1, PILLARS_V2, Policy};
+pub use revision::{DEDUP_WINDOW_SECS, DayHigh, PrintRevision, RevisedPrint, RevisionTelemetry};
 pub use setup::{
     Level, LevelRecord, Outcome, Pending, Pole, SETUPS_V0, SetupLogEntry, SetupPolicy, SetupState,
     SetupTransition, SetupView,

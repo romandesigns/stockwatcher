@@ -520,6 +520,25 @@ impl Archive {
     }
 }
 
+/// The share-basis restatement an assembly rests on, with its own provenance.
+///
+/// Copied from the daily baseline the same refresh built, so the diagnostic and the strict
+/// denominator can never drift apart: same factors, same evidence, same expiry.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Basis {
+    /// The volume multiplier each prior date's shares are restated by, onto the evaluated date's
+    /// share basis ([`crate::baseline::Loaded::volume_factors`]).
+    pub factors: BTreeMap<NaiveDate, f64>,
+    /// What established it, including its expiry
+    /// ([`stock_context::ActionsEvidence::valid_until`]).
+    pub evidence: stock_context::ActionsEvidence,
+    /// When the evidence the factors rest on was observed (UTC ns): the daily baseline's own
+    /// `observed_at`.
+    pub observed_at: i64,
+    /// The daily baseline record the factors came from.
+    pub source: String,
+}
+
 /// What an assembly made of the stored curves, and what it had to leave out.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Assembled {
@@ -535,7 +554,7 @@ pub struct Assembled {
 pub const INCOMPARABLE_BASIS: &str = "incomparable_share_basis";
 
 /// The engine's diagnostic baseline from stored curves, restated onto the evaluated date's share
-/// basis by `factors` ([`crate::baseline::Loaded::volume_factors`]).
+/// basis by `basis`.
 ///
 /// # Why the restatement is not optional
 ///
@@ -552,21 +571,32 @@ pub const INCOMPARABLE_BASIS: &str = "incomparable_share_basis";
 /// a provisional recording, a fixture, an incomplete collection, or a derivation that could not
 /// apply a correction or a cancel.
 ///
+/// # Why `observed_at` covers every input
+///
+/// The engine joins evidence by `observed_at <= cutoff`, so the record must be invisible until
+/// **all** of it existed. The factors can rest on an announcement check made hours after the
+/// curves were derived; stamping the record with only the curves' times would have let a 09:00
+/// verification reach a 04:00 decision. `observed_at` is therefore the latest of the curves' own
+/// derivation times and the basis evidence's observation, and the basis travels on the record so
+/// its expiry is enforced at every later cutoff too.
+///
 /// Suppressed sessions are carried with `complete: false`, so the engine leaves them out and
 /// reports `insufficient_sessions` — the policy's minimum is unchanged, and no number is
 /// published from a session that could not be compared.
 pub fn intraday_baseline(
     records: &[IntradayCurveRecord],
     symbol: &str,
-    factors: &BTreeMap<NaiveDate, f64>,
+    basis: &Basis,
 ) -> Assembled {
     let mut out = Assembled::default();
-    let Some(observed_at) = records.iter().map(|r| r.observed_at).max() else {
+    let Some(curves_at) = records.iter().map(|r| r.observed_at).max() else {
         return out;
     };
+    // Every input, not just the curves: the restatement's evidence is an input too.
+    let observed_at = curves_at.max(basis.observed_at);
     let mut sessions = Vec::with_capacity(records.len());
     for r in records {
-        let (comparable, reason) = match (r.unusable_reason(), factors.get(&r.date)) {
+        let (comparable, reason) = match (r.unusable_reason(), basis.factors.get(&r.date)) {
             (Some(why), _) => (None, Some(why)),
             (None, None) => (None, Some(INCOMPARABLE_BASIS)),
             (None, Some(&f)) => (Some(f), None),
@@ -601,6 +631,7 @@ pub fn intraday_baseline(
         version: 1,
         instrument: stock_context::InstrumentId::symbol(symbol),
         sessions,
+        basis: basis.evidence.clone(),
         observed_at,
     });
     out

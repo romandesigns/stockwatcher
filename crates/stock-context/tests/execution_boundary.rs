@@ -149,6 +149,7 @@ fn a_sparse_cumulative_gap_alone_does_not_overstate_the_recent_window() {
         version: 1,
         instrument: InstrumentId::symbol("TEST"),
         sessions,
+        basis: Default::default(),
         observed_at: at(4, 0, 0),
     });
     apply(&mut e, at(9, 30, 1), at(9, 30, 1) + 1, 100);

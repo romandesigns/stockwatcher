@@ -73,7 +73,7 @@ use market_events::{Price, UnixNanos};
 use market_providers::ClockMode;
 use market_providers::warmup::{Enqueue, WarmupQueue};
 use serde::Serialize;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration as StdDuration, SystemTime};
@@ -245,17 +245,28 @@ pub struct EvidenceLoader {
     baseline_stamp: Option<Stamp>,
     /// The run-clock `as_of` the last baseline build used.
     baseline_as_of: Option<DateTime<Utc>>,
-    /// Symbols whose diagnostic intraday baseline has been read for the current session date.
-    /// Prior sessions do not change intraday, so each symbol is read once a day.
-    intraday_done: HashSet<String>,
-    /// Per symbol, the volume multiplier each prior date's shares were restated by for the daily
-    /// denominator ([`market_archive::baseline::Loaded::volume_factors`]).
+    /// Per symbol, the input generation its diagnostic intraday baseline was last read at.
+    ///
+    /// Not "read once a day": a curve the maintainer derives later today, and a share basis a
+    /// later announcement check verifies, both change the answer for a symbol already looked at.
+    /// Caching the look for the whole date would have left those symbols without a diagnostic
+    /// until tomorrow. The generation moves when either input could have (`intraday_generation`),
+    /// and a bounded retry covers a filesystem whose directory stamps do not move.
+    intraday_read: HashMap<String, (u64, DateTime<Utc>)>,
+    /// Bumped when the stored curves or the share-basis factors could have changed.
+    intraday_generation: u64,
+    /// Modified times of the lookback dates' curve directories at the last check: a new curve
+    /// file moves its directory's stamp.
+    intraday_stamp: Vec<Option<SystemTime>>,
+    /// Per symbol, the share-basis restatement the daily denominator used, with its provenance
+    /// and expiry ([`market_archive::intraday::Basis`]).
     ///
     /// The intraday diagnostic has to restate its curves by exactly these: a prior session's raw
-    /// share count is not comparable with today's across a split. Kept from the last baseline
+    /// share count is not comparable with today's across a split, and the evidence behind the
+    /// restatement has its own observation time and its own expiry. Kept from the last baseline
     /// build rather than recomputed, so the two measures can never drift apart, and bounded by
-    /// the universe times the lookback.
-    basis_factors: HashMap<String, BTreeMap<NaiveDate, f64>>,
+    /// the universe.
+    basis: HashMap<String, market_archive::intraday::Basis>,
     /// The earliest announcement retrieval of the day later than `baseline_as_of`, when the last
     /// build saw one: at that time a rebuild can read a check the last one could not, with no
     /// file having changed. `None`: none known.
@@ -332,8 +343,10 @@ impl EvidenceLoader {
             baseline_as_of: None,
             next_check_at: None,
             coverage_expires_at: None,
-            intraday_done: HashSet::new(),
-            basis_factors: HashMap::new(),
+            intraday_read: HashMap::new(),
+            intraday_generation: 0,
+            intraday_stamp: Vec::new(),
+            basis: HashMap::new(),
             delivered: HashSet::new(),
             generations: 0,
         }
@@ -375,8 +388,10 @@ impl EvidenceLoader {
             self.baseline_as_of = None;
             self.next_check_at = None;
             self.coverage_expires_at = None;
-            self.intraday_done.clear();
-            self.basis_factors.clear();
+            self.intraday_read.clear();
+            self.intraday_stamp.clear();
+            self.intraday_generation += 1;
+            self.basis.clear();
             self.delivered.clear();
             self.generations += 1;
             *log.lock().expect("evidence log lock") = EvidenceLog {
@@ -480,14 +495,71 @@ impl EvidenceLoader {
         rep
     }
 
-    /// Symbols of `symbols` whose diagnostic intraday baseline has not been read for `day` yet.
-    pub fn intraday_pending(&self, symbols: &[String], max: usize) -> Vec<String> {
+    /// Notes whether the stored curves could have changed since the last check, and returns the
+    /// current input generation.
+    ///
+    /// One `stat` per lookback date, not a directory listing: a new curve file moves its date
+    /// directory's modified time. Cheap enough for the 15 s tick, and the bounded retry in
+    /// [`EvidenceLoader::intraday_pending`] covers a filesystem whose directory stamps do not
+    /// move at all.
+    pub fn intraday_generation(&mut self, day: NaiveDate) -> u64 {
+        let stamp: Vec<Option<SystemTime>> = self
+            .intraday_lookback(day)
+            .iter()
+            .map(|d| {
+                std::fs::metadata(
+                    self.archive
+                        .root()
+                        .join(market_archive::INTRADAY_DIR)
+                        .join(d.format("%Y-%m-%d").to_string()),
+                )
+                .ok()
+                .and_then(|m| m.modified().ok())
+            })
+            .collect();
+        if self.intraday_stamp != stamp {
+            self.intraday_stamp = stamp;
+            self.intraday_generation += 1;
+        }
+        self.intraday_generation
+    }
+
+    /// Symbols of `symbols` whose diagnostic intraday baseline needs reading: never read, read at
+    /// an older input generation, or last read longer ago than [`INTRADAY_RETRY_SECS`].
+    ///
+    /// The retry is the honest part. A symbol whose curves were missing at 09:30 may have them by
+    /// 10:00, and a symbol whose share basis was unverifiable may have a fresh check by then;
+    /// caching the look for the whole session date would have left both without a diagnostic
+    /// until the next day.
+    pub fn intraday_pending(
+        &self,
+        symbols: &[String],
+        max: usize,
+        generation: u64,
+        now: DateTime<Utc>,
+    ) -> Vec<String> {
+        let retry = Duration::seconds(INTRADAY_RETRY_SECS);
         symbols
             .iter()
-            .filter(|s| !self.intraday_done.contains(*s))
+            .filter(|s| match self.intraday_read.get(*s) {
+                None => true,
+                Some(&(g, at)) => g != generation || now - at >= retry,
+            })
             .take(max)
             .cloned()
             .collect()
+    }
+
+    /// The trading dates before `day` the diagnostic curves are looked for over.
+    fn intraday_lookback(&self, day: NaiveDate) -> Vec<NaiveDate> {
+        let mut dates = Vec::with_capacity(INTRADAY_LOOKBACK_SESSIONS);
+        let mut x = day;
+        for _ in 0..INTRADAY_LOOKBACK_SESSIONS {
+            x = previous_trading_day(x);
+            dates.push(x);
+        }
+        dates.reverse();
+        dates
     }
 
     /// Reads the stored intraday curves of the sessions before `day` for `symbols` and returns
@@ -506,21 +578,17 @@ impl EvidenceLoader {
         &mut self,
         day: NaiveDate,
         symbols: &[String],
+        generation: u64,
+        now: DateTime<Utc>,
         rep: &mut RefreshReport,
     ) -> Vec<IntradayBaseline> {
-        let mut dates = Vec::with_capacity(INTRADAY_LOOKBACK_SESSIONS);
-        let mut x = day;
-        for _ in 0..INTRADAY_LOOKBACK_SESSIONS {
-            x = previous_trading_day(x);
-            dates.push(x);
-        }
-        dates.reverse();
-        let empty = BTreeMap::new();
+        let dates = self.intraday_lookback(day);
+        let fallback = market_archive::intraday::Basis::default();
         let mut out = Vec::new();
         for sym in symbols {
-            // Read once per day whatever came back: a symbol with no curves must not be re-read
-            // on every tick.
-            self.intraday_done.insert(sym.clone());
+            // Note the look at this generation whatever came back, so an unchanged input is not
+            // re-read every tick; a later generation or the retry interval brings it back.
+            self.intraday_read.insert(sym.clone(), (generation, now));
             let curves = match self.archive.read_intraday_curves(sym, &dates) {
                 Ok(c) => c,
                 Err(e) => {
@@ -531,18 +599,19 @@ impl EvidenceLoader {
             if curves.is_empty() {
                 continue;
             }
-            // Restated by exactly the factors the daily denominator used for the same sessions.
-            // No factors (an unverified share basis) means every session is suppressed, which is
-            // the honest answer: a prior session's raw shares are not comparable with today's
-            // across a split.
-            let factors = self.basis_factors.get(sym).unwrap_or(&empty);
-            let a = market_archive::intraday::intraday_baseline(&curves, sym, factors);
+            // Restated by exactly the factors the daily denominator used for the same sessions,
+            // and stamped with the latest of every input's observation time, so a basis verified
+            // later today cannot reach an earlier decision. No basis at all means every session
+            // is suppressed, which is the honest answer.
+            let basis = self.basis.get(sym).unwrap_or(&fallback);
+            let a = market_archive::intraday::intraday_baseline(&curves, sym, basis);
             if !a.suppressed.is_empty() {
                 rep.intraday_suppressed += a.suppressed.values().sum::<usize>();
                 tracing::debug!(
                     symbol = %sym,
                     usable = a.usable,
                     suppressed = ?a.suppressed,
+                    basis = %basis.source,
                     "intraday diagnostic sessions left out"
                 );
             }
@@ -642,19 +711,34 @@ impl EvidenceLoader {
                 as_of,
             };
             let l = baseline::load(&inputs, sym, day, baseline::DEFAULT_LOOKBACK);
-            // The restatement the daily denominator used, kept for the intraday diagnostic to
-            // apply to the same sessions. A symbol whose basis could not be verified has no
-            // factors, and its curves are then suppressed rather than compared across bases.
-            if l.volume_factors.is_empty() {
-                self.basis_factors.remove(sym);
-            } else {
-                self.basis_factors
-                    .insert(sym.clone(), l.volume_factors.clone());
+            // The restatement the daily denominator used, with the evidence behind it, kept for
+            // the intraday diagnostic to apply to the same sessions. A symbol whose basis could
+            // not be verified has no factors, and its curves are then suppressed rather than
+            // compared across two share bases.
+            match (&l.baseline, l.volume_factors.is_empty()) {
+                (Some(b), false) => {
+                    self.basis.insert(
+                        sym.clone(),
+                        market_archive::intraday::Basis {
+                            factors: l.volume_factors.clone(),
+                            evidence: b.basis.clone(),
+                            observed_at: b.observed_at,
+                            source: format!("{}@{}", b.id, b.version),
+                        },
+                    );
+                }
+                _ => {
+                    self.basis.remove(sym);
+                }
             }
             closes.extend(l.prev_close);
             baselines.extend(l.baseline);
         }
         self.remember_build(stamp, as_of, &announcements);
+        // New factors are new input for the intraday diagnostic: a symbol already looked at has
+        // to be looked at again, or a basis verified by this build would never reach the curves
+        // read before it.
+        self.intraday_generation += 1;
         (closes, baselines)
     }
 
@@ -746,6 +830,11 @@ pub const INTRADAY_LOOKBACK_SESSIONS: usize = 25;
 /// Symbols whose intraday curves are read per tick. Bounded like the warmup scan, and for the
 /// same reason: the rest are read on later ticks.
 pub const INTRADAY_SCAN_MAX: usize = 100;
+
+/// How long a symbol's intraday read stands before it is tried again on an unchanged input
+/// generation. A backstop for a filesystem whose directory stamps do not move; the generation
+/// normally brings a symbol back as soon as its input really changed.
+pub const INTRADAY_RETRY_SECS: i64 = 300;
 
 impl Market {
     /// Sets up this market's evidence (once) and starts loading it: a replay synchronously, here,
@@ -873,24 +962,28 @@ impl Market {
         let Some(day) = ev.log.lock().expect("evidence log lock").day() else {
             return;
         };
-        let done: std::collections::BTreeSet<String> = {
-            let l = ev.loader.lock().expect("evidence loader lock");
-            l.intraday_done.iter().cloned().collect()
-        };
-        let symbols = {
+        // Every symbol with a decision today, then the loader decides which of them need
+        // reading: off the core lock, so a disk read never happens under it.
+        let all = {
             let core = self.0.core.lock().expect("core lock");
             match core.context.as_ref() {
-                Some(cx) => cx.decided_symbols(INTRADAY_SCAN_MAX, &done),
+                Some(cx) => cx.decided_symbols(usize::MAX, &std::collections::BTreeSet::new()),
                 None => return,
             }
         };
-        if symbols.is_empty() {
+        if all.is_empty() {
             return;
         }
+        let now = Utc::now();
         let mut rep = RefreshReport::default();
         let records = {
             let mut l = ev.loader.lock().expect("evidence loader lock");
-            l.intraday(day, &symbols, &mut rep)
+            let generation = l.intraday_generation(day);
+            let symbols = l.intraday_pending(&all, INTRADAY_SCAN_MAX, generation, now);
+            if symbols.is_empty() {
+                return;
+            }
+            l.intraday(day, &symbols, generation, now, &mut rep)
         };
         for e in &rep.errors {
             tracing::warn!(day = %day, error = %e, "intraday diagnostic curves");
@@ -909,7 +1002,7 @@ impl Market {
         tracing::debug!(
             day = %day,
             baselines = n,
-            scanned = symbols.len(),
+            symbols = all.len(),
             "intraday diagnostic curves loaded"
         );
     }
@@ -2176,7 +2269,7 @@ mod tests {
 
         // The loader reads them and the board takes them.
         let mut rep = RefreshReport::default();
-        let records = l.intraday(dd(), &[SYM.to_string()], &mut rep);
+        let records = l.intraday(dd(), &[SYM.to_string()], 1, utc(t(9, 29, 0)), &mut rep);
         assert_eq!(records.len(), 1, "{rep:?}");
         assert_eq!(records[0].sessions.len(), 10);
         assert!(records[0].sessions.iter().all(|s| s.complete));
@@ -2223,11 +2316,18 @@ mod tests {
         let mut l = loader(&a);
         let mut rep = RefreshReport::default();
         let syms = vec![SYM.to_string(), OTHER.to_string()];
-        assert_eq!(l.intraday_pending(&syms, INTRADAY_SCAN_MAX), syms);
-        assert!(l.intraday(dd(), &syms, &mut rep).is_empty());
+        assert_eq!(
+            l.intraday_pending(&syms, INTRADAY_SCAN_MAX, 1, utc(t(9, 29, 0))),
+            syms
+        );
+        assert!(
+            l.intraday(dd(), &syms, 1, utc(t(9, 29, 0)), &mut rep)
+                .is_empty()
+        );
         assert!(rep.errors.is_empty(), "{rep:?}");
         assert!(
-            l.intraday_pending(&syms, INTRADAY_SCAN_MAX).is_empty(),
+            l.intraday_pending(&syms, INTRADAY_SCAN_MAX, 1, utc(t(9, 29, 0)))
+                .is_empty(),
             "read once per session date, whatever came back"
         );
 
@@ -2240,15 +2340,22 @@ mod tests {
             write_curve(&a, d, SYM, 10_000, t(4, 0, 0));
         }
         let mut rep2 = RefreshReport::default();
-        let records = loader(&a).intraday(dd(), &[SYM.to_string()], &mut rep2);
+        let records = loader(&a).intraday(dd(), &[SYM.to_string()], 1, utc(t(9, 29, 0)), &mut rep2);
         assert_eq!(records.len(), 1, "carried for the record");
         assert_eq!(rep2.intraday_suppressed, 9, "and every session left out");
         assert!(records[0].sessions.iter().all(|s| !s.complete));
 
         // Nine comparable sessions is still under the diagnostic's minimum of ten: the policy's
         // minimum is unchanged, and the engine says so instead of publishing a number.
-        let factors: BTreeMap<NaiveDate, f64> =
-            records[0].sessions.iter().map(|s| (s.date, 1.0)).collect();
+        let basis = market_archive::intraday::Basis {
+            factors: records[0].sessions.iter().map(|s| (s.date, 1.0)).collect(),
+            evidence: stock_context::ActionsEvidence {
+                source: stock_context::ActionsSource::BarVerified,
+                ..Default::default()
+            },
+            observed_at: t(4, 0, 0),
+            source: "fixture:baseline".into(),
+        };
         let curves = {
             let mut dates = Vec::new();
             let mut x = dd();
@@ -2258,7 +2365,7 @@ mod tests {
             }
             a.read_intraday_curves(SYM, &dates).expect("read")
         };
-        let asm = market_archive::intraday::intraday_baseline(&curves, SYM, &factors);
+        let asm = market_archive::intraday::intraday_baseline(&curves, SYM, &basis);
         assert_eq!(asm.usable, 9);
         let log = Mutex::new(EvidenceLog::default());
         let mut cx = board();
@@ -2287,16 +2394,154 @@ mod tests {
         let mut l = loader(&a);
         let mut rep = RefreshReport::default();
         let syms: Vec<String> = (0..250).map(|k| format!("S{k:04}")).collect();
-        let first = l.intraday_pending(&syms, INTRADAY_SCAN_MAX);
+        let first = l.intraday_pending(&syms, INTRADAY_SCAN_MAX, 1, utc(t(9, 29, 0)));
         assert_eq!(first.len(), INTRADAY_SCAN_MAX);
-        l.intraday(dd(), &first, &mut rep);
-        let second = l.intraday_pending(&syms, INTRADAY_SCAN_MAX);
+        l.intraday(dd(), &first, 1, utc(t(9, 29, 0)), &mut rep);
+        let second = l.intraday_pending(&syms, INTRADAY_SCAN_MAX, 1, utc(t(9, 29, 0)));
         assert_eq!(second.len(), INTRADAY_SCAN_MAX);
         assert!(
             second.iter().all(|s| !first.contains(s)),
             "the next batch, not the same one again"
         );
-        l.intraday(dd(), &second, &mut rep);
-        assert_eq!(l.intraday_pending(&syms, INTRADAY_SCAN_MAX).len(), 50);
+        l.intraday(dd(), &second, 1, utc(t(9, 29, 0)), &mut rep);
+        assert_eq!(
+            l.intraday_pending(&syms, INTRADAY_SCAN_MAX, 1, utc(t(9, 29, 0)))
+                .len(),
+            50
+        );
+    }
+
+    /// A curve derived later today reaches the engine on the same date.
+    ///
+    /// The loader used to note "read" for the whole session date, so a symbol whose curves the
+    /// maintainer had not derived yet at 09:30 would have had no diagnostic until the next day
+    /// however many curves appeared at 10:00. The read is noted against an input generation
+    /// instead, and the generation moves when the stored curves could have changed.
+    #[test]
+    fn a_curve_derived_later_today_is_picked_up_on_the_same_date() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = archive(dir.path());
+        let mut l = loader(&a);
+        let mut rep = RefreshReport::default();
+        let syms = vec![SYM.to_string()];
+        let at = utc(t(9, 30, 0));
+
+        // Nothing derived yet: looked at, nothing to read.
+        let g0 = l.intraday_generation(dd());
+        assert_eq!(l.intraday_pending(&syms, INTRADAY_SCAN_MAX, g0, at), syms);
+        assert!(l.intraday(dd(), &syms, g0, at, &mut rep).is_empty());
+        assert!(
+            l.intraday_pending(&syms, INTRADAY_SCAN_MAX, g0, at)
+                .is_empty(),
+            "not re-read while nothing has changed"
+        );
+
+        // The maintainer derives the day's curves at 10:00. The input generation moves, so the
+        // symbol is read again on the same date.
+        let mut d = dd();
+        for _ in 0..10 {
+            d = previous_trading_day(d);
+            write_curve(&a, d, SYM, 10_000, t(4, 0, 0));
+        }
+        let g1 = l.intraday_generation(dd());
+        assert_ne!(g1, g0, "new curve input is a new generation");
+        let later = utc(t(10, 0, 0));
+        assert_eq!(
+            l.intraday_pending(&syms, INTRADAY_SCAN_MAX, g1, later),
+            syms,
+            "the symbol comes back"
+        );
+        let records = l.intraday(dd(), &syms, g1, later, &mut rep);
+        assert_eq!(records.len(), 1, "{rep:?}");
+        assert_eq!(records[0].sessions.len(), 10);
+    }
+
+    /// A share basis verified later today re-assembles the curves that were read before it.
+    ///
+    /// Without factors every session is suppressed as incomparable. A baseline build that then
+    /// verifies the basis has to bring the symbol back, or the curves read earlier would stay
+    /// suppressed for the rest of the day although the evidence to compare them arrived.
+    #[test]
+    fn a_basis_verified_later_today_reassembles_the_curves_read_before_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = archive(dir.path());
+        write_daily_world(&a);
+        write_collected(&a, t(7, 0, 0));
+        let mut d = dd();
+        for _ in 0..10 {
+            d = previous_trading_day(d);
+            write_curve(&a, d, SYM, 10_000, t(4, 0, 0));
+        }
+        let mut l = loader(&a);
+        let mut rep = RefreshReport::default();
+        let syms = vec![SYM.to_string()];
+        let at = utc(t(9, 30, 0));
+
+        // Read before any baseline build: no factors, so every session is suppressed.
+        let g0 = l.intraday_generation(dd());
+        let first = l.intraday(dd(), &syms, g0, at, &mut rep);
+        assert_eq!(first.len(), 1, "carried for the record");
+        assert!(
+            first[0].sessions.iter().all(|s| !s.complete),
+            "incomparable until a basis is verified"
+        );
+        assert_eq!(rep.intraday_suppressed, 10);
+        assert!(
+            l.intraday_pending(&syms, INTRADAY_SCAN_MAX, g0, at)
+                .is_empty(),
+            "not re-read while nothing has changed"
+        );
+
+        // A refresh builds the daily baselines, which verifies the share basis. That is new
+        // input for the diagnostic, so the generation moves and the symbol comes back.
+        let log = Mutex::new(EvidenceLog::default());
+        l.refresh(dd(), utc(t(9, 31, 0)), &log);
+        let g1 = l.intraday_generation(dd());
+        assert_ne!(g1, g0, "a new basis is a new generation");
+        assert_eq!(l.intraday_pending(&syms, INTRADAY_SCAN_MAX, g1, at), syms);
+        let mut rep2 = RefreshReport::default();
+        let again = l.intraday(dd(), &syms, g1, utc(t(9, 31, 0)), &mut rep2);
+        assert_eq!(again.len(), 1);
+        assert_eq!(
+            again[0].sessions.iter().filter(|s| s.complete).count(),
+            10,
+            "restated and comparable: {rep2:?}"
+        );
+        assert_eq!(rep2.intraday_suppressed, 0);
+        // And the record is not visible before the basis it rests on was observed.
+        assert!(
+            again[0].observed_at >= t(4, 0, 0),
+            "stamped with the latest of every input"
+        );
+    }
+
+    /// On an unchanged generation a symbol is still retried after the backstop interval, for a
+    /// filesystem whose directory stamps do not move.
+    #[test]
+    fn an_unchanged_generation_is_still_retried_after_the_backstop() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = archive(dir.path());
+        let mut l = loader(&a);
+        let mut rep = RefreshReport::default();
+        let syms = vec![SYM.to_string()];
+        let at = utc(t(9, 30, 0));
+        let g = l.intraday_generation(dd());
+        l.intraday(dd(), &syms, g, at, &mut rep);
+        assert!(
+            l.intraday_pending(&syms, INTRADAY_SCAN_MAX, g, at)
+                .is_empty()
+        );
+        let soon = at + Duration::seconds(INTRADAY_RETRY_SECS - 1);
+        assert!(
+            l.intraday_pending(&syms, INTRADAY_SCAN_MAX, g, soon)
+                .is_empty(),
+            "not yet"
+        );
+        let later = at + Duration::seconds(INTRADAY_RETRY_SECS);
+        assert_eq!(
+            l.intraday_pending(&syms, INTRADAY_SCAN_MAX, g, later),
+            syms,
+            "the backstop brings it back"
+        );
     }
 }

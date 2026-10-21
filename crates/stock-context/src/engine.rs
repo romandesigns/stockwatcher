@@ -870,6 +870,7 @@ impl Engine {
             ev.prev_close(&s.inst, tau)
                 .and_then(|r| r.actions.valid_until),
             ev.daily(&s.inst, tau).and_then(|r| r.basis.valid_until),
+            ev.intraday(&s.inst, tau).and_then(|r| r.basis.valid_until),
         ]
         .into_iter()
         .flatten()

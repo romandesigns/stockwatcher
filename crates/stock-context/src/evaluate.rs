@@ -171,6 +171,15 @@ pub fn rvol(
 
     // Same-time and recent-window diagnostics: never the pillar.
     if let Some(b) = store.intraday(inst, cutoff) {
+        // The restatement onto today's share basis rests on evidence with its own expiry, like
+        // the strict denominator's. Past it nothing is verifying the basis the prior sessions
+        // were restated onto, so the diagnostic reports no number — a stale basis could be a
+        // whole split out, which is the direction that invents volume.
+        let expired = !b.basis.valid_at(cutoff);
+        if expired {
+            diag.same_time_reason = "actions_coverage_expired";
+            diag.recent_reason = "actions_coverage_expired";
+        }
         let prior: Vec<_> = b
             .sessions
             .iter()
@@ -178,7 +187,10 @@ pub fn rvol(
             .collect();
         let min = policy.body.diagnostics.same_time_min_sessions;
         diag.same_time_sessions = prior.len();
-        if prior.len() < min {
+        if expired {
+            // Nothing more to say: the sessions are counted, but no number is published from a
+            // basis nothing is still verifying.
+        } else if prior.len() < min {
             diag.same_time_reason = "insufficient_sessions";
         } else {
             let sum: u64 = prior.iter().map(|s| s.at(vol.offset)).sum();
@@ -191,7 +203,8 @@ pub fn rvol(
         }
         let w = policy.body.diagnostics.recent_window_secs;
         diag.recent_sessions = prior.len();
-        if prior.len() < policy.body.diagnostics.recent_min_sessions {
+        if expired {
+        } else if prior.len() < policy.body.diagnostics.recent_min_sessions {
             diag.recent_reason = "insufficient_sessions";
         } else if let Some(now) = vol.recent {
             let sum: u64 = prior
