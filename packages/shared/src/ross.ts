@@ -14,11 +14,16 @@ export interface RossState {
    */
   readiness: RossReadinessWire | null;
   /**
-   * The connection carrying this panel is open.
+   * A frame has arrived on the connection that is open now.
    *
    * While false the panel is the **last one received**, not the current market: the channel used
    * to keep showing it with nothing to say the feed had dropped, so stale rows read as live. The
    * rows are kept on purpose — the last known state is useful — but every client must label them.
+   *
+   * A reopened socket does not set it. The rows on screen are still the ones from before the
+   * drop until a frame arrives on the new connection, and the server sends a fresh
+   * `ross.snapshot` for every `ross.subscribe` (which `createWsClient` re-sends on `welcome`),
+   * so that is the moment they are current again — not the moment the socket came back.
    */
   connected: boolean;
 }
@@ -40,15 +45,22 @@ export interface RossFreshness {
 }
 
 /**
- * What to say about the panel's freshness. A dropped connection is the only staleness a client
- * can judge for itself: a replay's cutoff is its own simulated clock, and comparing a live
- * cutoff with a browser's clock would measure the two clocks' disagreement as well as any delay.
+ * What to say about the panel's freshness.
+ *
+ * A connection that has not delivered a frame is the only staleness a client can judge for
+ * itself: a replay's cutoff is its own simulated clock, and comparing a live cutoff with a
+ * browser's clock would measure the two clocks' disagreement as well as any delay.
+ *
+ * The three states are distinct on purpose. Never had a frame: connecting. Had one and the feed
+ * is delivering: live. Had one and the feed is not — dropped, or reopened but not yet delivered —
+ * the rows are the last known state and say so.
  */
 export function rossFreshness(state: RossState, formatTime?: (epochNs: number) => string): RossFreshness {
   if (state.connected) return { stale: false, label: "", tone: "dim" };
+  if (state.enabled === null && !state.panel) return { stale: true, label: "Connecting…", tone: "dim" };
   const at = state.panel?.cutoff;
   const when = at !== undefined && formatTime ? ` · last ${formatTime(at)}` : "";
-  return state.panel ? { stale: true, label: `Reconnecting${when}`, tone: "warning" } : { stale: true, label: "Reconnecting…", tone: "dim" };
+  return { stale: true, label: `Reconnecting${when}`, tone: "warning" };
 }
 
 /** A blocking reason as a short phrase; unknown reasons fall back to the raw string. */
@@ -111,10 +123,15 @@ export function createRossChannel(io: { subscribe(): void; unsubscribe(): void }
       state = { enabled: m.enabled, panel: m.panel, readiness: m.readiness ?? null, connected: true };
       for (const l of listeners) l();
     },
-    /** The socket's state. A drop keeps the last panel and marks it not live. */
+    /**
+     * The socket's state. A drop keeps the last panel and marks it not live.
+     *
+     * Opening is deliberately **not** enough to mark it live again: `apply` does that, when a
+     * frame from the new connection arrives.
+     */
     setConnected(open: boolean) {
-      if (state.connected === open) return;
-      state = { ...state, connected: open };
+      if (open || !state.connected) return;
+      state = { ...state, connected: false };
       for (const l of listeners) l();
     },
   };

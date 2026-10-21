@@ -1904,11 +1904,17 @@ impl Market {
         // here, with the frame already serialized and the core lock released, so the segment ends
         // at **this server's own broadcast**. It says nothing about network transport, a client's
         // receipt or what a browser rendered; those are separate segments nothing measures yet.
-        self.0.observations.capture(crate::observe::Observation::of(
-            crate::observe::Stage::Published,
-            &snap,
-            crate::observe::wall_now(),
-        ));
+        //
+        // `snap` is `None` when the frame goes out only because the readiness summary moved: the
+        // panel in it is the one already published, so counting it again would inflate the
+        // observation count and add a latency sample for a detection that did not happen.
+        if let Some(snap) = &snap {
+            self.0.observations.capture(crate::observe::Observation::of(
+                crate::observe::Stage::Published,
+                snap,
+                crate::observe::wall_now(),
+            ));
+        }
         let _ = self.0.tx.send(Arc::new(Outbound {
             seq,
             kind: OutKind::Ross(frame),

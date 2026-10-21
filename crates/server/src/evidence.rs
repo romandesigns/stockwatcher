@@ -1856,4 +1856,83 @@ mod tests {
             "QUIET fails the gain pillar on the facts, it is not undecided"
         );
     }
+
+    /// Readiness is published on its own, over an empty panel that never changes.
+    ///
+    /// Codex's review of the readiness slice caught the gap: the engine publishes no panel at all
+    /// while nothing qualifies, and `take_update` used to need a new panel revision, so a
+    /// subscriber that connected before the first summary existed would have kept
+    /// `readiness: null` for ever — exactly the state the summary was added to explain. A frame
+    /// sent only because the summary moved carries the panel already published, so it is not a
+    /// new detection and must not become a latency sample.
+    #[test]
+    fn readiness_is_published_even_when_the_panel_never_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = archive(dir.path());
+        let log = Mutex::new(EvidenceLog::default());
+        let mut cx = board();
+        load(&a, &log, &mut cx);
+        // No evidence at all: nothing can qualify, so the engine publishes no panel ever.
+        trade(&mut cx, t(9, 30, 0), t(9, 32, 0));
+        assert!(
+            cx.take_update(None).is_none(),
+            "no panel and no readiness: nothing to send"
+        );
+
+        // The first summary goes out on its own, with no panel in it.
+        let first = cx.readiness(t(9, 32, 5));
+        let (frame, snap) = cx
+            .take_update(Some(&first))
+            .expect("a readiness-only frame");
+        assert!(
+            snap.is_none(),
+            "no new panel, so no publish observation and no latency sample"
+        );
+        let json: serde_json::Value = serde_json::from_str(&frame).expect("json");
+        assert_eq!(json["type"], "ross.update");
+        assert_eq!(json["readiness"]["symbols"], 2);
+        assert!(json["panel"].is_null(), "{json}");
+
+        // The same summary again is not news.
+        assert!(cx.take_update(Some(&first)).is_none());
+
+        // A later summary is: the counts a client shows must keep up with the market even while
+        // the panel stays empty.
+        let mut later = cx.readiness(t(9, 33, 5));
+        later.symbols += 1;
+        let (frame, snap) = cx.take_update(Some(&later)).expect("the next summary");
+        assert!(snap.is_none());
+        let json: serde_json::Value = serde_json::from_str(&frame).expect("json");
+        assert_eq!(json["readiness"]["observed_at"], t(9, 33, 5));
+    }
+
+    /// And when a panel does appear, the frame carries it and counts as a publication once.
+    #[test]
+    fn a_new_panel_is_published_once_and_a_resend_is_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = archive(dir.path());
+        write_daily_world(&a);
+        write_collected(&a, t(7, 0, 0));
+        let log = Mutex::new(EvidenceLog::default());
+        let mut cx = board();
+        load(&a, &log, &mut cx);
+        trade(&mut cx, t(9, 30, 0), t(9, 32, 0));
+
+        let r = cx.readiness(t(9, 32, 5));
+        let (_, snap) = cx.take_update(Some(&r)).expect("a panel frame");
+        let snap = snap.expect("the panel is new, so it is observed");
+        assert_eq!(snap.rows.len(), 1);
+        // Nothing moved: no frame at all.
+        assert!(cx.take_update(Some(&r)).is_none());
+        // Only the summary moved: a frame, but the same panel, and no second observation.
+        let mut again = r.clone();
+        again.observed_at = t(9, 32, 6);
+        let (_, resend) = cx
+            .take_update(Some(&again))
+            .expect("a readiness-only frame");
+        assert!(
+            resend.is_none(),
+            "the panel in it is the one already published"
+        );
+    }
 }

@@ -75,7 +75,7 @@ test("the engine's own row fields win: move_1m_bp, missing[], meter_milli in tho
 
 // --- freshness and readiness (S2a: the cues a client needs to stop guessing) -----------------
 
-test("a dropped connection keeps the last panel and says it is not live", () => {
+test("a drop keeps the last panel, and a reopened socket alone does not make it live again", () => {
   const ch = createRossChannel({ subscribe: () => {}, unsubscribe: () => {} });
   ch.subscribe(() => {});
   const panel = { revision: 1, bar_end: cutoff - 2_000_000_000, cutoff, rows: [] };
@@ -85,20 +85,32 @@ test("a dropped connection keeps the last panel and says it is not live", () => 
 
   // The socket drops. The rows stay — the last known state is useful — but they are labelled.
   ch.setConnected(false);
-  const f = rossFreshness(ch.get(), hhmm);
-  expect(f.stale).toBe(true);
-  expect(f.label).toContain("Reconnecting");
-  expect(f.label).toContain(hhmm(cutoff));
+  const dropped = rossFreshness(ch.get(), hhmm);
+  expect(dropped.stale).toBe(true);
+  expect(dropped.label).toContain("Reconnecting");
+  expect(dropped.label).toContain(hhmm());
   expect(ch.get().panel).toBe(panel);
 
-  // Reconnected: live again, with no label.
+  // The socket comes back. These are still the rows from before the drop: nothing has been
+  // delivered on the new connection yet, so they must not read as live.
   ch.setConnected(true);
+  expect(ch.get().connected).toBe(false);
+  expect(rossFreshness(ch.get(), hhmm).stale).toBe(true);
+  expect(ch.get().panel).toBe(panel);
+
+  // The server answers the re-subscribe with a fresh snapshot: live again, with no label.
+  const fresh = { revision: 2, bar_end: cutoff, cutoff: cutoff + 2_000_000_000, rows: [] };
+  ch.apply({ type: "ross.snapshot", enabled: true, panel: fresh });
+  expect(ch.get().connected).toBe(true);
   expect(rossFreshness(ch.get(), hhmm).stale).toBe(false);
+  expect(ch.get().panel).toBe(fresh);
 });
 
-test("before any panel, a dropped connection is still not presented as live", () => {
+test("before any frame the panel is connecting, not reconnecting", () => {
   const ch = createRossChannel({ subscribe: () => {}, unsubscribe: () => {} });
-  expect(rossFreshness(ch.get(), hhmm)).toEqual({ stale: true, label: "Reconnecting…", tone: "dim" });
+  expect(rossFreshness(ch.get(), hhmm)).toEqual({ stale: true, label: "Connecting…", tone: "dim" });
+  ch.setConnected(true);
+  expect(rossFreshness(ch.get(), hhmm).label).toBe("Connecting…");
 });
 
 test("readiness says why the panel is empty instead of 'nothing qualifies'", () => {
@@ -118,7 +130,7 @@ test("readiness says why the panel is empty instead of 'nothing qualifies'", () 
   const v = rossReadinessView(r, hhmm);
   expect(v.headline).toBe("1,204 symbols · none at 5/5");
   expect(v.reasons).toEqual(["812: no volume history", "391: news not searched yet", "44: share-basis check out of date"]);
-  expect(v.takenAt).toBe(`taken ${hhmm(cutoff)}`);
+  expect(v.takenAt).toBe(`taken ${hhmm()}`);
 
   // Members are reported when there are some, and an unmapped reason keeps its own words.
   const v2 = rossReadinessView({ ...r, members: 3, blocking: [{ pillar: "x", reason: "some_new_reason", symbols: 1 }] }, hhmm);

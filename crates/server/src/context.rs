@@ -63,6 +63,11 @@ pub(crate) struct ContextBoard {
     closes_offered: HashSet<(String, NaiveDate)>,
     /// The panel revision last published (`ross.update` only when it moves).
     published: Option<(u64, i64)>,
+    /// The readiness summary last published, by the time it was taken. The panel and the
+    /// readiness move independently: with nothing qualifying the panel never changes at all, and
+    /// a subscriber that connected before the first summary existed would otherwise never be
+    /// told why.
+    published_readiness: Option<i64>,
     /// How far this board has taken the market's evidence log (`None`: nothing yet).
     evidence: Option<Cursor>,
     /// Outputs this board has drained since it was built (`ross` viewers do not change it).
@@ -122,6 +127,7 @@ impl ContextBoard {
                 .with_setup_policy(SetupPolicy::v0()),
             closes_offered: HashSet::new(),
             published: None,
+            published_readiness: None,
             evidence: None,
             drained: DrainReport::default(),
         })
@@ -371,14 +377,24 @@ impl ContextBoard {
     pub(crate) fn take_update(
         &mut self,
         readiness: Option<&Readiness>,
-    ) -> Option<(String, PanelSnapshot)> {
-        let p = self.engine.panel()?;
-        let at = (p.revision, p.bar_end);
-        if self.published == Some(at) {
+    ) -> Option<(String, Option<PanelSnapshot>)> {
+        let at = self.engine.panel().map(|p| (p.revision, p.bar_end));
+        let taken = readiness.map(|r| r.observed_at);
+        let panel_new = at.is_some() && self.published != at;
+        let readiness_new = taken.is_some() && self.published_readiness != taken;
+        if !panel_new && !readiness_new {
             return None;
         }
-        let snap = p.clone();
-        self.published = Some(at);
+        // The snapshot is returned **only** when the panel itself is new. A frame sent because
+        // the readiness summary moved carries the same panel as before: it is not a new
+        // detection and must not become a latency sample (`crate::observe`).
+        let snap = panel_new.then(|| self.engine.panel().cloned()).flatten();
+        if panel_new {
+            self.published = at;
+        }
+        if readiness_new {
+            self.published_readiness = taken;
+        }
         Some((self.panel_frame("ross.update", readiness), snap))
     }
 
