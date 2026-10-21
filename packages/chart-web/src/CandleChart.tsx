@@ -9,6 +9,7 @@ import {
   stepTick,
   type AlertLayer,
   type ChartAlert,
+  type DetectionOverlay,
   autoScalePrice,
   buildSlots,
   computeChartModel,
@@ -142,6 +143,8 @@ export interface ChartSeriesLike {
 export interface CandleChartProps {
   series: ChartSeriesLike | null | undefined;
   timeframe: Timeframe;
+  /** Rust-authored episode/level references; display timeframe never changes their meaning. */
+  detection?: readonly DetectionOverlay[];
   /** t of the inspected slot; null = latest. Controlled when onInspectChange is set. */
   inspectT?: number | null;
   onInspectChange?: (t: number | null) => void;
@@ -349,6 +352,7 @@ export function CandleChart({
   headingInToolbar = false,
   timeframeControl = "segments",
   alerts = null,
+  detection,
 }: CandleChartProps) {
   const theme = useChartTheme(themeProp);
   // Price alerts (chart-core alerts.ts): a line being dragged or nudged from the keyboard (drawn at
@@ -597,6 +601,7 @@ export function CandleChart({
       draft,
       trading: showTrading ? { orders, position, last, dragging: drag?.order ? { id: drag.order.id, price: drag.order.price } : null, placeY } : null,
       alerts: alertLayer,
+      detection,
       context,
       now,
       paneHeights,
@@ -605,7 +610,7 @@ export function CandleChart({
       baselinePrice,
       extendedHours: settings.extendedHours,
     }),
-    [timeframe, series, slots, inspectT, pointer, tradeMenuOpen, tradeMenuAt, chartOptions, scaleType, indicatorResults, shownDrawings, selectedDrawing, draft, showTrading, orders, position, last, drag, placeY, alertLayer, context, now, paneHeights, settings.chartType, chartStyle, baselinePrice, settings.extendedHours],
+    [timeframe, series, slots, inspectT, pointer, tradeMenuOpen, tradeMenuAt, chartOptions, scaleType, indicatorResults, shownDrawings, selectedDrawing, draft, showTrading, orders, position, last, drag, placeY, alertLayer, detection, context, now, paneHeights, settings.chartType, chartStyle, baselinePrice, settings.extendedHours],
   );
 
   const paint = useCallback((ctx: CanvasRenderingContext2D, size: Size) => drawDisplayList(ctx, layoutChart(computeChartModel(state, vp, size), state, theme)), [state, vp, theme]);

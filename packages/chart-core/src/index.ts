@@ -17,6 +17,7 @@ export * from "./indicators.ts";
 export * from "./drawings.ts";
 export * from "./trading.ts";
 export * from "./alerts.ts";
+export * from "./detection.ts";
 export * from "./position.ts";
 export * from "./toolbox.ts";
 export * from "./levels.ts";
