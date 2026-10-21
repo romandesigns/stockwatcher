@@ -586,7 +586,7 @@ impl ContextBoard {
     pub(crate) fn with_detection(mut self, epoch: String) -> Self {
         self.engine = self
             .engine
-            .with_detection_policy(stock_context::DetectionPolicy::v0());
+            .with_detection_policy(stock_context::DetectionPolicy::current());
         self.detection_epoch = Some(epoch);
         self
     }

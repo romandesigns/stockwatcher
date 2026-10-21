@@ -137,7 +137,7 @@ impl Runtime {
             boot: boot.clone(),
             code_commit: crate::COMMIT.into(),
             code_identity: crate::admit::code_id_for_records().into(),
-            detector_policy: stock_context::DetectionPolicy::v0().tag(),
+            detector_policy: stock_context::DetectionPolicy::current().tag(),
         };
         let writes = Arc::new(AtomicU64::new(0));
         let write_errors = Arc::new(AtomicU64::new(0));

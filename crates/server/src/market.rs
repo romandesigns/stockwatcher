@@ -2307,8 +2307,8 @@ impl Market {
                 "history":{"capacity":crate::detection::HISTORY_CAPACITY,"dropped":0,
                     "first_sequence":null,"last_sequence":null},"telemetry":{},
                 "context":{},"profile":{"price_min_micros":self.0.band.min.micros(),"price_max_micros":self.0.band.max.micros(),
-                    "research_min_micros":stock_context::DetectionPolicy::v0().body.universe.research_band_min_micros,
-                    "research_max_micros":stock_context::DetectionPolicy::v0().body.universe.research_band_max_micros}}),
+                    "research_min_micros":stock_context::DetectionPolicy::current().body.universe.research_band_min_micros,
+                    "research_max_micros":stock_context::DetectionPolicy::current().body.universe.research_band_max_micros}}),
                 ),
             ),
         }
