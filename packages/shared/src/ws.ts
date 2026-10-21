@@ -134,7 +134,7 @@ export function createWsClient(opts: WsClientOptions): WsClient {
       if (stopped || socket !== ws) return;
       const msg = parseServerMessage(ev.data);
       if (!msg) {
-        if (typeof ev.data === "string" && /"type"\s*:\s*"detection\.(snapshot|update)"/.test(ev.data)) opts.onDetectionError?.("invalid_detection_frame");
+        if (detectionWanted && typeof ev.data === "string" && /"type"\s*:\s*"detection\.(snapshot|update)"/.test(ev.data)) opts.onDetectionError?.("invalid_detection_frame");
         return;
       }
       armLiveness();

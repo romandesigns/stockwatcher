@@ -182,6 +182,12 @@ const finite = (x: unknown): x is number => typeof x === "number" && Number.isFi
 const nullableNumber = (x: unknown) => x === null || finite(x);
 const nullableString = (x: unknown) => x === null || typeof x === "string";
 const strings = (x: unknown): x is string[] => Array.isArray(x) && x.every((s) => typeof s === "string");
+// Runtime::reset's wire identity is `<boot identity>:<monotone generation>`; comparing this
+// suffix prevents a delayed full snapshot reviving an old seek after bounded ID retention.
+const epochPosition = (epoch: string) => {
+  const cut = epoch.lastIndexOf(":"); const generation = epoch.slice(cut + 1);
+  return cut > 0 && /^\d+$/.test(generation) ? { boot: epoch.slice(0, cut), generation: BigInt(generation) } : null;
+};
 const coreLevel = (x: unknown): boolean => object(x) && typeof x.level_id === "string" && ["trigger", "invalidation", "range_high", "range_low"].includes(String(x.kind)) && finite(x.version) && finite(x.price) && finite(x.known_at) && nullableNumber(x.armed_at) && Array.isArray(x.formed_from) && x.formed_from.length === 2 && x.formed_from.every(finite) && typeof x.reason === "string";
 function coreEpisode(x: unknown): boolean {
   if (!object(x) || !["episode_id", "family", "variant", "policy", "symbol", "instrument", "trading_date", "segment", "state", "fidelity"].every((k) => typeof x[k] === "string") || !["first_detected_at", "last_material_seq", "last_material_at", "base_secs"].every((k) => finite(x[k])) || !nullableNumber(x.first_bar_end) || typeof x.default_visible !== "boolean" || typeof x.warmup !== "boolean" || !nullableString(x.parent_episode_id) || !nullableString(x.context) || !strings(x.related_episode_ids)) return false;
@@ -247,6 +253,9 @@ export function createDetectionChannel(io: { subscribe(): void; unsubscribe(): v
       if (m.snapshot && m.snapshot.schema !== 1) { resync(m, "unsupported_schema"); return; }
       if (retired.includes(m.runEpoch)) return;
       const previous = state.frame;
+      const oldEpoch = previous && epochPosition(previous.runEpoch);
+      const newEpoch = epochPosition(m.runEpoch);
+      if (oldEpoch && newEpoch && oldEpoch.boot === newEpoch.boot && newEpoch.generation < oldEpoch.generation) return;
       if ((!previous || previous.runEpoch !== m.runEpoch) && m.type !== "detection.snapshot") { resync(m, "snapshot_required"); return; }
       if (previous?.runEpoch === m.runEpoch && m.cursor < previous.cursor) return;
       if (previous?.runEpoch === m.runEpoch && m.cursor === previous.cursor && m.type !== "detection.snapshot") return;

@@ -88,6 +88,13 @@ describe("snapshot cursor, freshness and source isolation", () => {
     expect(subscriptions).toBe(0);
   });
 
+  test("a delayed full snapshot cannot revive an old seek after bounded ID retention", () => {
+    const c = createDetectionChannel({ subscribe() {}, unsubscribe() {} });
+    for (let i = 1; i <= 30; i++) c.apply({ ...frame(), runEpoch: `server-boot:${i}` });
+    c.apply({ ...frame(99), runEpoch: "server-boot:1" });
+    expect(c.get().frame!.runEpoch).toBe("server-boot:30");
+  });
+
   test("fixture is admissible on replay, rejected on live; unsupported schema requests explicit resync", () => {
     let n = 0;
     const c = createDetectionChannel({ source: "live", subscribe: () => n++, unsubscribe() {} });
@@ -159,7 +166,7 @@ test("malformed detection delivery is explicit and requests one repair snapshot"
   const channel = createDetectionChannel({ subscribe() {}, unsubscribe() {}, resync: () => repairs++ });
   const socket = new Socket();
   const client = createWsClient({ url: "ws://fixture", createSocket: () => socket, onDetection: channel.apply, onDetectionError: channel.reject });
-  socket.open(); socket.receive(frame());
+  client.subscribeDetection(); socket.open(); socket.receive(frame());
   socket.receive({ type: "detection.update", enabled: true });
   socket.receive({ type: "detection.update", enabled: true });
   expect(channel.get().error).toBe("invalid_detection_frame");
