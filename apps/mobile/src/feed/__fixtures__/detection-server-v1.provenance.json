@@ -1,0 +1,10 @@
+{
+  "origin": "outputs/detection-panel-20261021/actual-server-frames.json",
+  "synthetic": true,
+  "frame_count": 11,
+  "policy": "detection-v1@40ff6e441898",
+  "producer_code_commit": "unknown",
+  "producer_code_identity": "a2c2972b7d19abc7",
+  "sha256": "27447b09e67b68ed05c4ee19aabf8bb1639144c44222ad27d217d3c7e17e0e00",
+  "scope": "Rust-generated synthetic server snapshots for test consumers only; never injected into an application session"
+}

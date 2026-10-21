@@ -86,7 +86,7 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
   const detectionEpisode = groupDetections(detection.snapshot).find((g) => g.symbol === active)?.selected;
   const detailedEpisode = detectionDetail && detectionDetail.epoch === detection.frame?.runEpoch ? detection.snapshot?.episodes.find((e) => e.episode_id === detectionDetail.id && e.symbol === active) : undefined;
   const selectedEpisodeId = detailedEpisode?.episode_id ?? detectionEpisode?.episode_id;
-  const detectionAnnotations = selectedEpisodeId && (!detectionDetail || detailedEpisode) ? detectionOverlays(detection.snapshot, active ?? "", selectedEpisodeId) : [];
+  const detectionAnnotations = selectedEpisodeId && (!detectionDetail || detailedEpisode) ? detectionOverlays(detection.snapshot, active ?? "", selectedEpisodeId).map((item) => detection.connected && !detection.resyncing ? item : { ...item, stale: true, label: `Last known · ${item.label}` }) : [];
   // Drawings follow the shown symbol; before paint, so a ticker switch never flashes the old marks.
   useLayoutEffect(() => app.showSymbol(active ?? ""), [app, active]);
   const bin = useApp((s) => s.bin);

@@ -193,7 +193,7 @@ function Geometry({ episode: e, currentAvailable = true }: { episode: DetectionE
 export function DetectionEpisodeDetails({ episode: e, snapshot, currentAvailable = true }: { episode: DetectionEpisode; snapshot: DetectionSnapshot; currentAvailable?: boolean }) {
   return <View style={styles.details}>
     <Text style={[styles.state, { color: stateColor(e.state) }]}>{detectionFamilyLabel(e.family)} · {detectionStateLabel(e.state)}</Text>
-    <Text style={styles.meta}>Experimental · {e.source} · {words(e.fidelity)} · {words(e.coverage)}</Text>
+    <Text style={styles.meta}>Experimental · {e.source} · {words(e.fidelity)} · {words(e.coverage)}{e.restored ? " · restored history" : ""}</Text>
     <Text style={styles.meta}>{e.trading_date} · {words(e.segment)} · canonical {snapshot.base_timeframe_secs}s</Text>
     <Text style={e.price_stale ? styles.warning : styles.meta}>{e.price_age_ms === null ? "Price age unavailable" : `Price age ${(e.price_age_ms / 1000).toFixed(1)}s`}{e.price_stale ? " · current assessment unavailable" : ""}{e.raw.warmup ? " · restored warmup" : ""}</Text>
     <Text style={styles.meta}>Context: {words(e.raw.context ?? "unavailable")}</Text>
@@ -221,9 +221,14 @@ export function DetectionEpisodeDetails({ episode: e, snapshot, currentAvailable
       <Text style={styles.meta}>Known {at(level.known_at)} · {level.armed_at === null ? "not armed" : `armed ${at(level.armed_at)}`}{level.valid_to === null ? "" : ` · valid through ${at(level.valid_to)}`}</Text>
       {level.formed_from.length > 0 && <Text selectable style={styles.identifier}>Formed from {level.formed_from.join(", ")}</Text>}
     </View>)}
+    {e.raw.levels.filter((level) => level.kind === "range_low").map((level) => <View key={`${level.level_id}/${level.version}`} style={styles.measurement}>
+      <Text style={styles.body}>Range low {detectionPrice(level.price)} · v{level.version}</Text>
+      <Text selectable style={styles.identifier}>{level.level_id}</Text>
+      <Text style={styles.meta}>Known {at(level.known_at)} · range boundary</Text>
+    </View>)}
     <Text style={styles.section}>Episode timeline</Text>
     {e.timeline.length === 0 ? <Text style={styles.meta}>No transition is retained for this episode.</Text> : e.timeline.map((t) => <View key={t.transition_id} style={styles.measurement}>
-      <Text style={[styles.body, { color: stateColor(t.state) }]}>{at(t.observed_at)} · {detectionStateLabel(t.state)} · {t.status}</Text>
+      <Text style={[styles.body, { color: stateColor(t.state) }]}>{at(t.observed_at)} · {detectionStateLabel(t.state)} · {t.status}{t.restored ? " · restored history" : ""}{t.warmup ? " · warmup" : ""}</Text>
       <Text style={styles.meta}>{words(t.event)} · {words(t.reason)} · cutoff {at(t.input_cutoff)}</Text>
       <Text selectable style={styles.identifier}>{t.transition_id}{t.tested_level_id ? ` · ${t.tested_level_id} v${t.tested_level_version}` : ""}</Text>
       {t.supersedes && <Text selectable style={styles.identifier}>Supersedes {t.supersedes}</Text>}

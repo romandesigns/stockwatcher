@@ -110,7 +110,7 @@ function ModalChart({ feed, symbol, detectionEpisodeId, detectionRunEpoch }: { f
   const episode = detectionEpisodeId
     ? matchingRun ? detection.snapshot?.episodes.find((e) => e.episode_id === detectionEpisodeId && e.symbol === symbol) : undefined
     : groupDetections(detection.snapshot).find((g) => g.symbol === symbol)?.selected;
-  const annotations = episode ? detectionOverlays(detection.snapshot, symbol, episode.episode_id) : [];
+  const annotations = episode ? detectionOverlays(detection.snapshot, symbol, episode.episode_id).map((item) => detection.connected && !detection.resyncing ? item : { ...item, stale: true, label: `Last known · ${item.label}` }) : [];
 
   const slots = useMemo(() => (series ? buildSlots(series.candles, series.gaps) : []), [series]);
   const last = lastCandle(slots);

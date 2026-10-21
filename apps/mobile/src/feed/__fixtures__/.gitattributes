@@ -1,0 +1,2 @@
+# Pin the exact captured Rust output bytes used by the provenance hash on every platform.
+detection-server-v1.json -text

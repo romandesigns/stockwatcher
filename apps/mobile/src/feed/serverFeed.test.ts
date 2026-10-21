@@ -1,5 +1,7 @@
 import { afterEach, expect, mock, test } from "bun:test";
 import type { DetectionMessage } from "@stockwatcher/shared";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 
 // The routing test exercises the real shared WS client/channels without importing native
 // notification modules or opening an external socket.
@@ -110,4 +112,35 @@ test("a reopened mobile socket keeps Detection stale until its replacement snaps
   expect(feed.detection.get().connected).toBe(false);
   reopened.receive(disabled());
   expect(feed.detection.get().connected).toBe(true);
+});
+
+test("actual Rust synthetic server snapshots reach the mobile channel without losing episodes or enabling alerts", () => {
+  const data = readFileSync(new URL("./__fixtures__/detection-server-v1.json", import.meta.url));
+  const provenance = JSON.parse(readFileSync(new URL("./__fixtures__/detection-server-v1.provenance.json", import.meta.url), "utf8")) as { synthetic: boolean; frame_count: number; sha256: string };
+  const records = JSON.parse(data.toString("utf8")) as { scenario: string; frame: DetectionMessage }[];
+  expect(createHash("sha256").update(data).digest("hex")).toBe(provenance.sha256);
+  expect(provenance.synthetic).toBe(true);
+  expect(records).toHaveLength(provenance.frame_count);
+  // The real momentum output includes an unarmed range-low reference. Do not trim that
+  // schema case out to make an incomplete client validator pass.
+  expect(records.some((r) => [...r.frame.snapshot!.active, ...r.frame.snapshot!.recent].some((e) => e.levels.some((l) => String(l.kind) === "range_low")))).toBe(true);
+  globalThis.WebSocket = Socket as unknown as typeof WebSocket;
+  let alerts = 0;
+  const feed = createMobileFeed(null, undefined, undefined, "mobile-dashboard", "replay", () => { alerts++; });
+  cleanup = () => feed.close();
+  const socket = Socket.instances[0]!;
+  socket.open(); socket.receive(welcome);
+  feed.detection.subscribe(() => {});
+  for (const { frame } of records) {
+    expect(frame.source).toBe("fixture");
+    socket.receive(frame);
+    const state = feed.detection.get();
+    expect(state.connected).toBe(true);
+    expect(state.frame?.runEpoch).toBe(frame.runEpoch);
+    expect(state.frame?.snapshot).toEqual(frame.snapshot);
+    expect(state.snapshot?.episodes.map((e) => e.episode_id)).toEqual([...frame.snapshot!.active, ...frame.snapshot!.recent].map((e) => e.episode_id));
+    socket.receive(frame);
+    expect(feed.detection.get().snapshot?.episodes).toHaveLength(state.snapshot!.episodes.length);
+  }
+  expect(alerts).toBe(0);
 });
