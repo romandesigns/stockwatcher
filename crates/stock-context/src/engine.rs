@@ -584,7 +584,8 @@ impl Engine {
                 live.first_bar = restored.first_bar;
                 live.integrity = live.integrity.or(restored.integrity);
                 live.coverage = restored.coverage.or(live.coverage);
-                live.quarantine_through = max_opt(live.quarantine_through, restored.quarantine_through);
+                live.quarantine_through =
+                    max_opt(live.quarantine_through, restored.quarantine_through);
                 live.restored_through = max_opt(live.restored_through, restored.restored_through);
                 live.dirty = true;
                 live.recheck_at = i64::MAX;

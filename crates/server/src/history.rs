@@ -201,6 +201,11 @@ struct JournalCache {
 pub const JOURNAL_RECORDS_MAX: usize = 4_000_000;
 
 impl History {
+    /// Where this market's archive lives, for callers writing beside it.
+    pub(crate) fn archive_root(&self) -> &std::path::Path {
+        self.archive.root()
+    }
+
     /// This date's admission journal, parsed once and shared.
     ///
     /// `Err` is a reason the journal cannot be used at all, in the same vocabulary the archive's
@@ -641,7 +646,9 @@ impl Market {
                         reason = why,
                         "live history: the scanner refused the restored facts"
                     ),
-                    outcome => tracing::debug!(symbol, ?outcome, "live history: scanner facts adopted"),
+                    outcome => {
+                        tracing::debug!(symbol, ?outcome, "live history: scanner facts adopted")
+                    }
                 }
             }
             core.seq += 1;
@@ -655,7 +662,11 @@ impl Market {
             );
         }
         if let Some(why) = incomplete {
-            tracing::warn!(symbol, reason = why, "live history: the recording is incomplete");
+            tracing::warn!(
+                symbol,
+                reason = why,
+                "live history: the recording is incomplete"
+            );
         }
         let _ = self.0.tx.send(Arc::new(Outbound {
             seq,
@@ -676,11 +687,15 @@ impl Market {
         if let Some(j) = self.0.admissions.get() {
             j.close();
         }
-        let writer = h
-            .journal_writer
-            .lock()
-            .expect("journal writer lock")
-            .take();
+        // Monitoring ended: the shadow's sessions need to know, or a session the run stopped in
+        // the middle of would look like one it watched to the close.
+        {
+            let mut core = self.0.core.lock().expect("core lock");
+            if let Some(cx) = core.context.as_mut() {
+                cx.stop_monitoring();
+            }
+        }
+        let writer = h.journal_writer.lock().expect("journal writer lock").take();
         let rows = self.0.core.lock().expect("core lock").quotes.export();
         let archive = h.archive.clone();
         let recorder = h.recorder.clone();
@@ -1307,7 +1322,11 @@ mod tests {
             }
             u.held.push_back(print(k));
         }
-        assert_eq!(u.held.len(), HELD_MAX, "the hold never grows past its bound");
+        assert_eq!(
+            u.held.len(),
+            HELD_MAX,
+            "the hold never grows past its bound"
+        );
         assert_eq!(u.overflow, 250, "and the loss is a number, not an absence");
         assert_eq!(
             u.pushed,
@@ -1383,364 +1402,351 @@ mod tests {
         );
     }
 
-// --- the proven path, at the script/Builder seam ---------------------------------------------
+    // --- the proven path, at the script/Builder seam ---------------------------------------------
 
-/// A journal this process can name itself as the author of.
-///
-/// Production cannot: a local build has no commit baked in, so its journals are never a proof —
-/// which is right, and leaves the branch that *uses* one with no coverage. The seam is compiled
-/// only under `cfg(test)` (`crate::admit::test_seam`), so no release build carries it.
-fn named_build() -> market_archive::admissions::JournalIdentity {
-    crate::admit::test_seam::force("testcommit01", "testcode00000001");
-    crate::admit::identity("live", "recorded_live")
-}
-
-/// A history over `root` that reads the archive and records nothing.
-fn history_over(root: &std::path::Path, on: NaiveDate) -> History {
-    let (urgent, _rx) = channel();
-    History {
-        archive: market_archive::Archive::new(market_archive::ArchiveConfig {
-            root: root.to_path_buf(),
-            retention_days: 0,
-            min_free_bytes: 0,
-        }),
-        recorder: None,
-        days: vec![on],
-        started_on: on,
-        urgent: Mutex::new(urgent),
-        journal_writer: Mutex::new(None),
-        journals: Mutex::new(HashMap::new()),
-        total: 0,
-        started: Instant::now(),
+    /// A journal this process can name itself as the author of.
+    ///
+    /// Production cannot: a local build has no commit baked in, so its journals are never a proof —
+    /// which is right, and leaves the branch that *uses* one with no coverage. The seam is compiled
+    /// only under `cfg(test)` (`crate::admit::test_seam`), so no release build carries it.
+    fn named_build() -> market_archive::admissions::JournalIdentity {
+        crate::admit::test_seam::force("testcommit01", "testcode00000001");
+        crate::admit::identity("live", "recorded_live")
     }
-}
 
-fn fixture_day() -> NaiveDate {
-    NaiveDate::from_ymd_opt(2026, 10, 16).expect("valid")
-}
-
-fn fixture_at(h: u32, m: u32, s: u32) -> i64 {
-    market_events::session::et(fixture_day(), h, m, s, 0)
-        .expect("valid")
-        .nanos()
-}
-
-/// A print of `symbol`, delivered 50 ms after it executed.
-fn delivered(symbol: &str, seq: u64, exec: i64, size: u64) -> MarketEvent {
-    let mut t = market_events::Trade::new(
-        symbol,
-        UnixNanos(exec),
-        Price::from_cents(500),
-        size,
-        seq,
-    );
-    t.receive_ts = Some(UnixNanos(exec + 50_000_000));
-    MarketEvent::Trade(t)
-}
-
-/// The admission record for one delivery, as the market would have written it: the delivery time
-/// and the server's own clock kept apart, and the verdict that was applied.
-fn admitted(
-    s: u64,
-    e: &MarketEvent,
-    verdict: Option<(bool, bool)>,
-) -> market_archive::admissions::AdmissionRecord {
-    market_archive::admissions::AdmissionRecord {
-        s,
-        // Later than the delivery, as a real admission is: queues and a lock lie between them.
-        a: receive_time(e).0 + 7_000_000,
-        w: market_archive::admissions::Kind::Trade,
-        y: e.symbol().map(|x| x.to_string()),
-        h: crate::admit::occurrence_hash(e),
-        i: None,
-        e: Some(e.event_ts().0),
-        r: Some(receive_time(e).0),
-        o: verdict.map(|(o, _)| o),
-        vo: verdict.map(|(_, v)| v),
-    }
-}
-
-/// An idle clock advance, as the ingest issues between prints.
-fn clock_to(s: u64, to: i64) -> market_archive::admissions::AdmissionRecord {
-    market_archive::admissions::AdmissionRecord {
-        s,
-        a: to + 1_000_000,
-        w: market_archive::admissions::Kind::Clock,
-        y: None,
-        h: market_archive::admissions::payload_hash(&to.to_le_bytes()),
-        i: None,
-        e: Some(to),
-        r: None,
-        o: None,
-        vo: None,
-    }
-}
-
-/// The restore replays a proven journal in the run's own order, with its verdicts and its clock
-/// advances — over a journal that holds two symbols and two boots.
-///
-/// The first draft of this seam only sorted the recording by sequence: the marks, the barriers and
-/// the verdicts were all still re-derived from the deliveries, so even a successful join replayed
-/// something the run had not done. And the join was over the whole journal, so a second symbol's
-/// admissions read as deliveries this symbol's recording was missing — which made every
-/// multi-symbol day unprovable.
-#[test]
-fn a_proven_journal_supplies_the_order_the_verdicts_and_the_clock() {
-    let tmp = tempfile::tempdir().expect("tmp");
-    let root = tmp.path().to_path_buf();
-    let id = named_build();
-    let h = history_over(&root, fixture_day());
-    let dir = h.archive.live_dir(fixture_day());
-
-    // Two symbols, interleaved, with an idle clock advance between the two prints of ABCD.
-    let a1 = delivered("ABCD", 1, fixture_at(9, 30, 0), 100);
-    let other = delivered("WXYZ", 2, fixture_at(9, 30, 5), 700);
-    let a2 = delivered("ABCD", 3, fixture_at(9, 30, 20), 400);
-
-    // Boot one: the first two admissions, sealed.
-    let mut w =
-        market_archive::admissions::AdmissionWriter::open(&dir, fixture_day(), 1, id.clone())
-            .expect("open");
-    w.append(&[
-        admitted(1, &a1, Some((true, true))),
-        admitted(2, &other, Some((true, true))),
-        clock_to(3, fixture_at(9, 30, 15)),
-    ])
-    .expect("append");
-    w.seal().expect("seal");
-    drop(w);
-
-    // Boot two: one more admission, sealed, so the chain has no unknown tail and this case is
-    // only about the join. (An unsealed tail is its own case, below.)
-    let mut w2 =
-        market_archive::admissions::AdmissionWriter::open(&dir, fixture_day(), 2, id.clone())
-            .expect("open");
-    w2.append(&[admitted(1, &a2, Some((true, false)))])
-        .expect("append");
-    w2.seal().expect("seal");
-    drop(w2);
-
-    // The recording holds the two ABCD deliveries; the journal holds those plus WXYZ and a clock.
-    let plan = script(
-        &h,
-        fixture_day(),
-        "ABCD",
-        vec![a1.clone(), a2.clone()],
-    );
-    assert_eq!(
-        plan.unproven, None,
-        "another symbol's admissions are irrelevant to this one, not missing from it"
-    );
-
-    // The plan is the run's own order: the first print, the clock advance the run issued, then
-    // the second print. WXYZ is in the journal and not in this plan.
-    let shape: Vec<&str> = plan
-        .steps
-        .iter()
-        .map(|s| match s {
-            Step::Clock(_) => "clock",
-            Step::Event { .. } => "event",
-        })
-        .collect();
-    assert_eq!(shape, vec!["event", "clock", "event"], "{shape:?}");
-    match &plan.steps[1] {
-        Step::Clock(to) => assert_eq!(
-            *to,
-            fixture_at(9, 30, 15),
-            "the clock position is the run's, not one derived from the prints"
-        ),
-        other => panic!("expected the clock advance, got {other:?}"),
-    }
-    // The verdicts are the ones the run applied, including the one that counted no volume.
-    let verdicts: Vec<Option<(bool, bool)>> = plan
-        .steps
-        .iter()
-        .filter_map(|s| match s {
-            Step::Event { verdict, .. } => Some(*verdict),
-            Step::Clock(_) => None,
-        })
-        .collect();
-    assert_eq!(
-        verdicts,
-        vec![Some((true, true)), Some((true, false))],
-        "taken from the journal rather than re-derived"
-    );
-    // And the server's admission time travels as provenance, never as the engine's mark.
-    match &plan.steps[2] {
-        Step::Event {
-            admitted_at,
-            event,
-            ..
-        } => {
-            assert_eq!(*admitted_at, Some(receive_time(&a2).0 + 7_000_000));
-            assert_ne!(
-                *admitted_at,
-                Some(receive_time(event).0),
-                "the two clocks are not the same and are not conflated"
-            );
+    /// A history over `root` that reads the archive and records nothing.
+    fn history_over(root: &std::path::Path, on: NaiveDate) -> History {
+        let (urgent, _rx) = channel();
+        History {
+            archive: market_archive::Archive::new(market_archive::ArchiveConfig {
+                root: root.to_path_buf(),
+                retention_days: 0,
+                min_free_bytes: 0,
+            }),
+            recorder: None,
+            days: vec![on],
+            started_on: on,
+            urgent: Mutex::new(urgent),
+            journal_writer: Mutex::new(None),
+            journals: Mutex::new(HashMap::new()),
+            total: 0,
+            started: Instant::now(),
         }
-        other => panic!("expected the second print, got {other:?}"),
     }
 
-    // Running the plan through the real Builder applies the journal's verdicts: the second print
-    // counted no volume, so only the first print's 100 shares are in the day.
-    let mut b = Builder::new(Arc::new(market_archive::PrevCloses::default()))
-        .with_context(context_engine());
-    for st in &plan.steps {
-        b.step(st);
+    fn fixture_day() -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 10, 16).expect("valid")
     }
-    let cx = b.context.as_mut().expect("a context engine");
-    cx.advance_to(UnixNanos(fixture_at(9, 31, 0)));
-    let d = cx.current().next().expect("a decision").clone();
-    assert_eq!(
-        (d.volume.shares, d.volume.trades),
-        (100, 1),
-        "the second print carried the run's own volume-excluding verdict, so neither its shares          nor its trade are in the day: a re-derivation from the print's conditions would have          counted both"
-    );
-}
 
-/// A delivery the journal has no admission for is still replayed — it is a readable fact — and the
-/// symbol says the order past the proof is unestablished rather than dropping the print.
-#[test]
-fn a_delivery_outside_the_proof_is_replayed_and_labelled() {
-    let tmp = tempfile::tempdir().expect("tmp");
-    let root = tmp.path().to_path_buf();
-    let id = named_build();
-    let h = history_over(&root, fixture_day());
-    let dir = h.archive.live_dir(fixture_day());
+    fn fixture_at(h: u32, m: u32, s: u32) -> i64 {
+        market_events::session::et(fixture_day(), h, m, s, 0)
+            .expect("valid")
+            .nanos()
+    }
 
-    let first = delivered("ABCD", 1, fixture_at(9, 30, 0), 100);
-    let past_the_proof = delivered("ABCD", 2, fixture_at(9, 31, 0), 250);
-    let mut w =
-        market_archive::admissions::AdmissionWriter::open(&dir, fixture_day(), 1, id.clone())
-            .expect("open");
-    w.append(&[admitted(1, &first, Some((true, true)))])
+    /// A print of `symbol`, delivered 50 ms after it executed.
+    fn delivered(symbol: &str, seq: u64, exec: i64, size: u64) -> MarketEvent {
+        let mut t =
+            market_events::Trade::new(symbol, UnixNanos(exec), Price::from_cents(500), size, seq);
+        t.receive_ts = Some(UnixNanos(exec + 50_000_000));
+        MarketEvent::Trade(t)
+    }
+
+    /// The admission record for one delivery, as the market would have written it: the delivery time
+    /// and the server's own clock kept apart, and the verdict that was applied.
+    fn admitted(
+        s: u64,
+        e: &MarketEvent,
+        verdict: Option<(bool, bool)>,
+    ) -> market_archive::admissions::AdmissionRecord {
+        market_archive::admissions::AdmissionRecord {
+            s,
+            // Later than the delivery, as a real admission is: queues and a lock lie between them.
+            a: receive_time(e).0 + 7_000_000,
+            w: market_archive::admissions::Kind::Trade,
+            y: e.symbol().map(|x| x.to_string()),
+            h: crate::admit::occurrence_hash(e),
+            i: None,
+            e: Some(e.event_ts().0),
+            r: Some(receive_time(e).0),
+            o: verdict.map(|(o, _)| o),
+            vo: verdict.map(|(_, v)| v),
+        }
+    }
+
+    /// An idle clock advance, as the ingest issues between prints.
+    fn clock_to(s: u64, to: i64) -> market_archive::admissions::AdmissionRecord {
+        market_archive::admissions::AdmissionRecord {
+            s,
+            a: to + 1_000_000,
+            w: market_archive::admissions::Kind::Clock,
+            y: None,
+            h: market_archive::admissions::payload_hash(&to.to_le_bytes()),
+            i: None,
+            e: Some(to),
+            r: None,
+            o: None,
+            vo: None,
+        }
+    }
+
+    /// The restore replays a proven journal in the run's own order, with its verdicts and its clock
+    /// advances — over a journal that holds two symbols and two boots.
+    ///
+    /// The first draft of this seam only sorted the recording by sequence: the marks, the barriers and
+    /// the verdicts were all still re-derived from the deliveries, so even a successful join replayed
+    /// something the run had not done. And the join was over the whole journal, so a second symbol's
+    /// admissions read as deliveries this symbol's recording was missing — which made every
+    /// multi-symbol day unprovable.
+    #[test]
+    fn a_proven_journal_supplies_the_order_the_verdicts_and_the_clock() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let root = tmp.path().to_path_buf();
+        let id = named_build();
+        let h = history_over(&root, fixture_day());
+        let dir = h.archive.live_dir(fixture_day());
+
+        // Two symbols, interleaved, with an idle clock advance between the two prints of ABCD.
+        let a1 = delivered("ABCD", 1, fixture_at(9, 30, 0), 100);
+        let other = delivered("WXYZ", 2, fixture_at(9, 30, 5), 700);
+        let a2 = delivered("ABCD", 3, fixture_at(9, 30, 20), 400);
+
+        // Boot one: the first two admissions, sealed.
+        let mut w =
+            market_archive::admissions::AdmissionWriter::open(&dir, fixture_day(), 1, id.clone())
+                .expect("open");
+        w.append(&[
+            admitted(1, &a1, Some((true, true))),
+            admitted(2, &other, Some((true, true))),
+            clock_to(3, fixture_at(9, 30, 15)),
+        ])
         .expect("append");
-    w.checkpoint().expect("checkpoint");
-    // Admitted, and past the checkpoint: inside the file but outside the proof.
-    w.append(&[admitted(2, &past_the_proof, Some((true, true)))])
+        w.seal().expect("seal");
+        drop(w);
+
+        // Boot two: one more admission, sealed, so the chain has no unknown tail and this case is
+        // only about the join. (An unsealed tail is its own case, below.)
+        let mut w2 =
+            market_archive::admissions::AdmissionWriter::open(&dir, fixture_day(), 2, id.clone())
+                .expect("open");
+        w2.append(&[admitted(1, &a2, Some((true, false)))])
+            .expect("append");
+        w2.seal().expect("seal");
+        drop(w2);
+
+        // The recording holds the two ABCD deliveries; the journal holds those plus WXYZ and a clock.
+        let plan = script(&h, fixture_day(), "ABCD", vec![a1.clone(), a2.clone()]);
+        assert_eq!(
+            plan.unproven, None,
+            "another symbol's admissions are irrelevant to this one, not missing from it"
+        );
+
+        // The plan is the run's own order: the first print, the clock advance the run issued, then
+        // the second print. WXYZ is in the journal and not in this plan.
+        let shape: Vec<&str> = plan
+            .steps
+            .iter()
+            .map(|s| match s {
+                Step::Clock(_) => "clock",
+                Step::Event { .. } => "event",
+            })
+            .collect();
+        assert_eq!(shape, vec!["event", "clock", "event"], "{shape:?}");
+        match &plan.steps[1] {
+            Step::Clock(to) => assert_eq!(
+                *to,
+                fixture_at(9, 30, 15),
+                "the clock position is the run's, not one derived from the prints"
+            ),
+            other => panic!("expected the clock advance, got {other:?}"),
+        }
+        // The verdicts are the ones the run applied, including the one that counted no volume.
+        let verdicts: Vec<Option<(bool, bool)>> = plan
+            .steps
+            .iter()
+            .filter_map(|s| match s {
+                Step::Event { verdict, .. } => Some(*verdict),
+                Step::Clock(_) => None,
+            })
+            .collect();
+        assert_eq!(
+            verdicts,
+            vec![Some((true, true)), Some((true, false))],
+            "taken from the journal rather than re-derived"
+        );
+        // And the server's admission time travels as provenance, never as the engine's mark.
+        match &plan.steps[2] {
+            Step::Event {
+                admitted_at, event, ..
+            } => {
+                assert_eq!(*admitted_at, Some(receive_time(&a2).0 + 7_000_000));
+                assert_ne!(
+                    *admitted_at,
+                    Some(receive_time(event).0),
+                    "the two clocks are not the same and are not conflated"
+                );
+            }
+            other => panic!("expected the second print, got {other:?}"),
+        }
+
+        // Running the plan through the real Builder applies the journal's verdicts: the second print
+        // counted no volume, so only the first print's 100 shares are in the day.
+        let mut b = Builder::new(Arc::new(market_archive::PrevCloses::default()))
+            .with_context(context_engine());
+        for st in &plan.steps {
+            b.step(st);
+        }
+        let cx = b.context.as_mut().expect("a context engine");
+        cx.advance_to(UnixNanos(fixture_at(9, 31, 0)));
+        let d = cx.current().next().expect("a decision").clone();
+        assert_eq!(
+            (d.volume.shares, d.volume.trades),
+            (100, 1),
+            "the second print carried the run's own volume-excluding verdict, so neither its shares          nor its trade are in the day: a re-derivation from the print's conditions would have          counted both"
+        );
+    }
+
+    /// A delivery the journal has no admission for is still replayed — it is a readable fact — and the
+    /// symbol says the order past the proof is unestablished rather than dropping the print.
+    #[test]
+    fn a_delivery_outside_the_proof_is_replayed_and_labelled() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let root = tmp.path().to_path_buf();
+        let id = named_build();
+        let h = history_over(&root, fixture_day());
+        let dir = h.archive.live_dir(fixture_day());
+
+        let first = delivered("ABCD", 1, fixture_at(9, 30, 0), 100);
+        let past_the_proof = delivered("ABCD", 2, fixture_at(9, 31, 0), 250);
+        let mut w =
+            market_archive::admissions::AdmissionWriter::open(&dir, fixture_day(), 1, id.clone())
+                .expect("open");
+        w.append(&[admitted(1, &first, Some((true, true)))])
+            .expect("append");
+        w.checkpoint().expect("checkpoint");
+        // Admitted, and past the checkpoint: inside the file but outside the proof.
+        w.append(&[admitted(2, &past_the_proof, Some((true, true)))])
+            .expect("append");
+        w.flush().expect("flush");
+        drop(w);
+
+        let plan = script(
+            &h,
+            fixture_day(),
+            "ABCD",
+            vec![first.clone(), past_the_proof.clone()],
+        );
+        assert_eq!(
+            plan.unproven,
+            Some("journal_unproven_tail"),
+            "the tail is named, and the prefix before it is still used"
+        );
+        assert_eq!(plan.steps.len(), 2, "neither print was discarded");
+
+        let mut b = Builder::new(Arc::new(market_archive::PrevCloses::default()))
+            .with_context(context_engine());
+        for st in &plan.steps {
+            b.step(st);
+        }
+        let cx = b.context.as_mut().expect("a context engine");
+        cx.advance_to(UnixNanos(fixture_at(9, 32, 0)));
+        let d = cx.current().next().expect("a decision").clone();
+        assert_eq!(
+            (d.volume.shares, d.volume.trades),
+            (350, 2),
+            "the facts are all there; what is unproven is the order, not the arithmetic"
+        );
+    }
+
+    /// A recording the journal proves there was more of reports the recorder's loss, not a whole day.
+    #[test]
+    fn an_admission_with_no_delivery_is_a_recorder_drop() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let root = tmp.path().to_path_buf();
+        let id = named_build();
+        let h = history_over(&root, fixture_day());
+        let dir = h.archive.live_dir(fixture_day());
+
+        let kept = delivered("ABCD", 1, fixture_at(9, 30, 0), 100);
+        let lost = delivered("ABCD", 2, fixture_at(9, 30, 10), 900);
+        let mut w =
+            market_archive::admissions::AdmissionWriter::open(&dir, fixture_day(), 1, id.clone())
+                .expect("open");
+        w.append(&[
+            admitted(1, &kept, Some((true, true))),
+            admitted(2, &lost, Some((true, true))),
+        ])
         .expect("append");
-    w.flush().expect("flush");
-    drop(w);
+        w.seal().expect("seal");
+        drop(w);
 
-    let plan = script(
-        &h,
-        fixture_day(),
-        "ABCD",
-        vec![first.clone(), past_the_proof.clone()],
-    );
-    assert_eq!(
-        plan.unproven,
-        Some("journal_unproven_tail"),
-        "the tail is named, and the prefix before it is still used"
-    );
-    assert_eq!(plan.steps.len(), 2, "neither print was discarded");
-
-    let mut b = Builder::new(Arc::new(market_archive::PrevCloses::default()))
-        .with_context(context_engine());
-    for st in &plan.steps {
-        b.step(st);
+        // The recording has only one of them: the recorder's queue dropped the other.
+        let plan = script(&h, fixture_day(), "ABCD", vec![kept]);
+        assert_eq!(
+            plan.unproven,
+            Some("recorder_drops"),
+            "the live numerator had it and this restore cannot: {:?}",
+            plan.unproven
+        );
+        assert_eq!(plan.steps.len(), 1);
     }
-    let cx = b.context.as_mut().expect("a context engine");
-    cx.advance_to(UnixNanos(fixture_at(9, 32, 0)));
-    let d = cx.current().next().expect("a decision").clone();
-    assert_eq!(
-        (d.volume.shares, d.volume.trades),
-        (350, 2),
-        "the facts are all there; what is unproven is the order, not the arithmetic"
-    );
-}
 
-/// A recording the journal proves there was more of reports the recorder's loss, not a whole day.
-#[test]
-fn an_admission_with_no_delivery_is_a_recorder_drop() {
-    let tmp = tempfile::tempdir().expect("tmp");
-    let root = tmp.path().to_path_buf();
-    let id = named_build();
-    let h = history_over(&root, fixture_day());
-    let dir = h.archive.live_dir(fixture_day());
+    /// Two deliveries of one print join one admission each, in order.
+    #[test]
+    fn a_redelivery_joins_its_own_admission() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let root = tmp.path().to_path_buf();
+        let id = named_build();
+        let h = history_over(&root, fixture_day());
+        let dir = h.archive.live_dir(fixture_day());
 
-    let kept = delivered("ABCD", 1, fixture_at(9, 30, 0), 100);
-    let lost = delivered("ABCD", 2, fixture_at(9, 30, 10), 900);
-    let mut w =
-        market_archive::admissions::AdmissionWriter::open(&dir, fixture_day(), 1, id.clone())
-            .expect("open");
-    w.append(&[
-        admitted(1, &kept, Some((true, true))),
-        admitted(2, &lost, Some((true, true))),
-    ])
-    .expect("append");
-    w.seal().expect("seal");
-    drop(w);
+        let p = delivered("ABCD", 1, fixture_at(9, 30, 0), 100);
+        let mut w =
+            market_archive::admissions::AdmissionWriter::open(&dir, fixture_day(), 1, id.clone())
+                .expect("open");
+        // The same payload admitted twice: a reconnect replay. The second was refused by the ledger,
+        // which the recorded verdict does not say and does not need to — the engine decides that.
+        w.append(&[
+            admitted(1, &p, Some((true, true))),
+            admitted(2, &p, Some((true, true))),
+        ])
+        .expect("append");
+        w.seal().expect("seal");
+        drop(w);
 
-    // The recording has only one of them: the recorder's queue dropped the other.
-    let plan = script(&h, fixture_day(), "ABCD", vec![kept]);
-    assert_eq!(
-        plan.unproven,
-        Some("recorder_drops"),
-        "the live numerator had it and this restore cannot: {:?}",
-        plan.unproven
-    );
-    assert_eq!(plan.steps.len(), 1);
-}
+        let plan = script(&h, fixture_day(), "ABCD", vec![p.clone(), p.clone()]);
+        assert_eq!(plan.unproven, None, "two deliveries, two admissions");
+        assert_eq!(plan.steps.len(), 2);
 
-/// Two deliveries of one print join one admission each, in order.
-#[test]
-fn a_redelivery_joins_its_own_admission() {
-    let tmp = tempfile::tempdir().expect("tmp");
-    let root = tmp.path().to_path_buf();
-    let id = named_build();
-    let h = history_over(&root, fixture_day());
-    let dir = h.archive.live_dir(fixture_day());
-
-    let p = delivered("ABCD", 1, fixture_at(9, 30, 0), 100);
-    let mut w =
-        market_archive::admissions::AdmissionWriter::open(&dir, fixture_day(), 1, id.clone())
-            .expect("open");
-    // The same payload admitted twice: a reconnect replay. The second was refused by the ledger,
-    // which the recorded verdict does not say and does not need to — the engine decides that.
-    w.append(&[
-        admitted(1, &p, Some((true, true))),
-        admitted(2, &p, Some((true, true))),
-    ])
-    .expect("append");
-    w.seal().expect("seal");
-    drop(w);
-
-    let plan = script(&h, fixture_day(), "ABCD", vec![p.clone(), p.clone()]);
-    assert_eq!(plan.unproven, None, "two deliveries, two admissions");
-    assert_eq!(plan.steps.len(), 2);
-
-    // Replayed through the engine, the redelivery is refused on identity: the day is 100 shares,
-    // not 200. That is the ledger's job, and the restore does not undo it.
-    let mut b = Builder::new(Arc::new(market_archive::PrevCloses::default()))
-        .with_context(context_engine());
-    for st in &plan.steps {
-        b.step(st);
+        // Replayed through the engine, the redelivery is refused on identity: the day is 100 shares,
+        // not 200. That is the ledger's job, and the restore does not undo it.
+        let mut b = Builder::new(Arc::new(market_archive::PrevCloses::default()))
+            .with_context(context_engine());
+        for st in &plan.steps {
+            b.step(st);
+        }
+        let cx = b.context.as_mut().expect("a context engine");
+        cx.advance_to(UnixNanos(fixture_at(9, 31, 0)));
+        let d = cx.current().next().expect("a decision").clone();
+        assert_eq!(
+            (d.volume.shares, d.volume.trades),
+            (100, 1),
+            "the redelivery is still a duplicate"
+        );
     }
-    let cx = b.context.as_mut().expect("a context engine");
-    cx.advance_to(UnixNanos(fixture_at(9, 31, 0)));
-    let d = cx.current().next().expect("a decision").clone();
-    assert_eq!(
-        (d.volume.shares, d.volume.trades),
-        (100, 1),
-        "the redelivery is still a duplicate"
-    );
-}
 
-/// A context engine with this server's own policies, for the seam tests.
-fn context_engine() -> stock_context::Engine {
-    stock_context::Engine::new(
-        stock_context::Policy::current(),
-        stock_context::RunInfo {
-            run_id: "live".into(),
-            source: "live".into(),
-            fidelity: stock_context::Fidelity::RecordedLive,
-            numerator_coverage: stock_context::Coverage::Unverified,
-        },
-    )
-    .with_panel_policy(stock_context::PanelPolicy::v1())
-    .with_setup_policy(stock_context::SetupPolicy::v0())
-}
-
+    /// A context engine with this server's own policies, for the seam tests.
+    fn context_engine() -> stock_context::Engine {
+        stock_context::Engine::new(
+            stock_context::Policy::current(),
+            stock_context::RunInfo {
+                run_id: "live".into(),
+                source: "live".into(),
+                fidelity: stock_context::Fidelity::RecordedLive,
+                numerator_coverage: stock_context::Coverage::Unverified,
+            },
+        )
+        .with_panel_policy(stock_context::PanelPolicy::v1())
+        .with_setup_policy(stock_context::SetupPolicy::v0())
+    }
 }

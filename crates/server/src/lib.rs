@@ -12,6 +12,7 @@ pub mod observe;
 pub mod pressure;
 pub mod quotes;
 pub mod settings;
+pub mod shadow;
 pub mod ws;
 
 use std::path::Path;

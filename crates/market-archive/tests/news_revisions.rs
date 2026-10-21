@@ -35,7 +35,12 @@ fn ns(rfc: &str) -> i64 {
 }
 
 /// A stored version of story 1. `updated` is the provider's revision time, `seen` ours.
-fn version(headline: &str, updated: Option<&str>, seen: i64, symbols: &[&str]) -> NewsVersionRecord {
+fn version(
+    headline: &str,
+    updated: Option<&str>,
+    seen: i64,
+    symbols: &[&str],
+) -> NewsVersionRecord {
     let syms: Vec<String> = symbols.iter().map(|s| s.to_string()).collect();
     NewsVersionRecord {
         v: 1,
@@ -129,7 +134,10 @@ fn a_later_conflict_does_not_change_an_earlier_decision() {
     );
     assert_eq!(full.len(), 1);
     let (id, version_n, ordered, observed, tag) = full[0].clone();
-    assert_eq!((version_n, ordered, observed, tag), (1, true, nine, Tag::Present));
+    assert_eq!(
+        (version_n, ordered, observed, tag),
+        (1, true, nine, Tag::Present)
+    );
     assert_eq!(id, "news:alpaca:1");
 
     // From 11:00 the conflict is visible, and only then is the story unanswerable.
@@ -199,7 +207,11 @@ fn a_late_older_revision_is_kept_without_becoming_current_or_renumbering() {
         ids.contains(&("news:alpaca:1".to_string(), 1, t0)),
         "and it is still version 1 after the older revision arrived: {ids:?}"
     );
-    assert_eq!(ids.len(), 2, "the late older revision is kept as history: {ids:?}");
+    assert_eq!(
+        ids.len(),
+        2,
+        "the late older revision is kept as history: {ids:?}"
+    );
 
     // It is not current: the provider's revision order puts it before the newer one.
     let after = seen_at(&[v_new, v_old_late], t0 + 3 * H);
@@ -335,7 +347,10 @@ fn an_item_carries_the_revision_time_and_an_observation_ordinal() {
     let items: Vec<NewsItem> = news_items(std::slice::from_ref(&v), None);
     let mine = items.iter().find(|n| n.instrument == abcd()).expect("ABCD");
     assert_eq!(mine.revision_at, Some(ns("2026-10-15T14:30:00Z")));
-    assert_eq!(mine.observed_at, t0, "and our own first sighting is separate");
+    assert_eq!(
+        mine.observed_at, t0,
+        "and our own first sighting is separate"
+    );
     assert_eq!(mine.version, 1);
 }
 
@@ -488,10 +503,7 @@ fn equivalent_timestamps_from_two_transports_are_one_version() {
 
     let got = seen_at(&[rest.clone(), stream.clone()], t0 + 2 * H);
     assert_eq!(got.len(), 1);
-    assert!(
-        got[0].2,
-        "one version, so nothing is in doubt: {got:?}"
-    );
+    assert!(got[0].2, "one version, so nothing is in doubt: {got:?}");
     assert_eq!(
         (got[0].1, got[0].3),
         (1, t0),

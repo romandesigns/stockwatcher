@@ -37,9 +37,8 @@ use serde_json::json;
 use std::collections::{BTreeSet, HashSet};
 use stock_context::{
     Adoption, CloseBasis, CorrectedPrint, Coverage, DayHigh, Decision, Engine, Fidelity,
-    InstrumentId,
-    LastPrint, OutputTelemetry, PanelPolicy, PanelSnapshot, PillarId, Policy, PrevClose,
-    PrintRevision, Qualification, RevisionTarget, RunInfo, SetupPolicy, Tri, Verdict,
+    InstrumentId, LastPrint, OutputTelemetry, PanelPolicy, PanelSnapshot, PillarId, Policy,
+    PrevClose, PrintRevision, Qualification, RevisionTarget, RunInfo, SetupPolicy, Tri, Verdict,
 };
 
 /// What one [`ContextBoard::drain_outputs`] took off the engine, and what the engine had to drop
@@ -75,6 +74,13 @@ pub(crate) struct ContextBoard {
     evidence: Option<Cursor>,
     /// Outputs this board has drained since it was built (`ross` viewers do not change it).
     drained: DrainReport,
+    /// Shadow measurement capture (`crate::shadow`): a bounded non-blocking handoff, so the
+    /// folding and the append happen off this lock. `None` leaves the measurement off entirely.
+    shadow: Option<std::sync::Arc<crate::shadow::ShadowSink>>,
+    /// The latest barrier this board has decided at: the **run's** clock, which is what the
+    /// shadow's session-close rule is settled against. Never the wall clock — a replay's day is
+    /// its own, and yesterday's closed sessions must not reopen at this morning's 09:00.
+    run_clock: i64,
 }
 
 impl ContextBoard {
@@ -133,6 +139,8 @@ impl ContextBoard {
             published_readiness: None,
             evidence: None,
             drained: DrainReport::default(),
+            shadow: None,
+            run_clock: 0,
         })
     }
 
@@ -406,7 +414,7 @@ impl ContextBoard {
         }
         let admit = t.receive_ts.unwrap_or(t.event_ts);
         // Decisions stay in the engine (latest per symbol); the append-only log is a follow-up.
-        let _ = self.engine.apply(
+        let decided = self.engine.apply(
             t,
             Verdict {
                 ohlc: counted.ohlc,
@@ -414,10 +422,98 @@ impl ContextBoard {
             },
             admit,
         );
+        self.capture(&decided);
     }
 
     pub(crate) fn advance(&mut self, now: UnixNanos) {
-        let _ = self.engine.advance_to(now);
+        let decided = self.engine.advance_to(now);
+        self.capture(&decided);
+        // The clock marker goes **after** the decisions it produced, because that is what it
+        // means: processed through this point. Queued before them it would say the run had
+        // settled a barrier it had not yet decided.
+        //
+        // It is also emitted whether or not anything was decided: a quiet market produces no
+        // decisions, and without this nothing would ever advance the run's clock past a
+        // session's close.
+        self.clock(now.0);
+    }
+
+    /// Tells the shadow measurement where the run's clock is, and whether it jumped.
+    ///
+    /// A jump means the interval it skipped was not monitored, and nothing inside an unmonitored
+    /// interval may be read as absent (`crate::shadow`).
+    fn clock(&mut self, now: i64) {
+        let Some(sink) = self.shadow.as_ref() else {
+            self.run_clock = self.run_clock.max(now);
+            return;
+        };
+        let run = &self.engine.run_info().clone();
+        let life = |kind: crate::shadow::LifecycleKind, at: i64| {
+            sink.capture_lifecycle(crate::shadow::Lifecycle {
+                run_id: run.run_id.clone(),
+                source: run.source.clone(),
+                fidelity: format!("{:?}", run.fidelity),
+                kind,
+                at,
+            });
+        };
+        if self.run_clock == 0 {
+            // The first clock this board sees is when its monitoring began. Not a symbol's first
+            // decision, which is its first print and says nothing about when the run started.
+            life(crate::shadow::LifecycleKind::Start, now);
+        } else if now - self.run_clock > crate::shadow::GAP_SECS * 1_000_000_000 {
+            life(
+                crate::shadow::LifecycleKind::Gap {
+                    from: self.run_clock,
+                },
+                now,
+            );
+        } else {
+            life(crate::shadow::LifecycleKind::Clock, now);
+        }
+        self.run_clock = self.run_clock.max(now);
+    }
+
+    /// Records that monitoring ended (a clean shutdown), at the point the run had processed
+    /// through — never at the wall clock, which for a replay is a different day entirely.
+    pub(crate) fn stop_monitoring(&mut self) {
+        let at = self.run_clock;
+        if let Some(sink) = self.shadow.as_ref() {
+            let run = self.engine.run_info().clone();
+            sink.capture_lifecycle(crate::shadow::Lifecycle {
+                run_id: run.run_id,
+                source: run.source,
+                fidelity: format!("{:?}", run.fidelity),
+                kind: crate::shadow::LifecycleKind::Stop,
+                at,
+            });
+        }
+    }
+
+    /// Attaches the shadow measurement's capture. Without one the measurement is off.
+    pub(crate) fn with_shadow(mut self, sink: std::sync::Arc<crate::shadow::ShadowSink>) -> Self {
+        self.shadow = Some(sink);
+        self
+    }
+
+    /// Hands decisions to the shadow measurement's bounded queue (`crate::shadow`).
+    ///
+    /// Here rather than on a drain, because this is where the decisions are: the drained outputs
+    /// are panel snapshots, which carry rows and not the per-symbol pillar states the frozen
+    /// definition reads. What happens here is a reduction to a small event and a `try_send` —
+    /// the folding, the map walk and the append all happen off this lock
+    /// ([`crate::shadow::ShadowSink::absorb`]). It changes nothing about the decision itself: a
+    /// decision is immutable once made and the shadow only ever reads.
+    fn capture(&mut self, decided: &[Decision]) {
+        for d in decided {
+            self.run_clock = self.run_clock.max(d.cutoff);
+        }
+        let Some(sink) = self.shadow.as_ref() else {
+            return;
+        };
+        for d in decided {
+            sink.capture(crate::shadow::ShadowEvent::of(d));
+        }
     }
 
     /// Applies a correction or cancel, whether or not a chart is loaded for the symbol.

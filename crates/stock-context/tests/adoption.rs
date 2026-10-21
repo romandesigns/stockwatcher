@@ -131,7 +131,7 @@ fn qualifying_evidence(e: &mut Engine) {
         observed_at: t(7, 0, 1),
         tag: Tag::Present,
         content_key: "fixture".into(),
-            revision_at: Some(0),
+        revision_at: Some(0),
         rules: "fixture".into(),
     });
 }
@@ -251,8 +251,7 @@ fn a_restore_of_an_undecided_symbol_publishes_no_backdated_episode() {
     assert_eq!(d.volume.shares, 900_000, "the facts came across");
     let ep = d.membership.active().expect("admitted now");
     assert_eq!(
-        ep.admitted_at,
-        d.cutoff,
+        ep.admitted_at, d.cutoff,
         "admitted as of this barrier, not backdated to the replay's 09:31"
     );
     let was = &replayed.membership.episodes[0];
@@ -361,7 +360,10 @@ fn a_window_over_a_restored_prefix_is_not_reportable_until_it_has_passed() {
     // A barrier right after the adoption: the window still reaches back into the restored prefix.
     live.advance_to(UnixNanos(t(13, 1, 0)));
     let d = decision(&live);
-    assert_eq!(d.volume.shares, 2_000, "the day's total is exact either way");
+    assert_eq!(
+        d.volume.shares, 2_000,
+        "the day's total is exact either way"
+    );
     assert_eq!(
         d.rvol.recent_reason, "window_untrusted",
         "the window crosses the boundary: {:?}",

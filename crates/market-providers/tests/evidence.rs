@@ -11,10 +11,10 @@ use market_events::session::et;
 use market_events::{Price, Trade, UnixNanos};
 use market_providers::import::alpaca::AlpacaCredentials;
 use market_providers::import::alpaca_news::{
-    NewsQuery, NewsVersions, RawStory, coverage_record, fetch_news,
+    NewsFetch, NewsQuery, NewsVersions, RawStory, coverage_record, fetch_news,
 };
 use market_providers::import::evidence_collect::{
-    Collector, EvidenceConfig, FloatMode, news_window, watch_universe,
+    Collector, EvidenceConfig, FloatMode, news_repair_window, news_window, watch_universe,
 };
 use market_providers::import::fmp::{FmpError, FmpKey};
 use market_providers::import::fmp_float::{fetch_float, fetch_float_all};
@@ -788,19 +788,35 @@ fn the_collector_is_bounded_per_day_and_resumes_from_its_records() {
     let r = tick(&mut c, &mut http);
     assert_eq!((r.float_requests, r.news_requests), (0, 0));
 
-    // A restart: today's floats are not fetched again; news resumes from the stored coverage
-    // (forward search plus the first trailing edit search).
+    // A restart: today's floats are not fetched again; news resumes from the stored coverage.
+    // Three searches, each one answering a different question: the forward window for what is
+    // new, the trailing edit window for recent changes, and the repair window for a change to
+    // something older that neither of those would ask about.
     clock.set(clock.get() + chrono::Duration::seconds(60));
     let mut c = Collector::open(test_cfg(), &a, clock.get()).unwrap();
-    let mut http = Script::default().json(empty_page()).json(empty_page());
+    let mut http = Script::default()
+        .json(empty_page())
+        .json(empty_page())
+        .json(empty_page());
     let r = tick(&mut c, &mut http);
     assert_eq!(r.float_requests, 0);
-    assert_eq!((r.news_requests, r.news_complete), (2, 2));
+    assert_eq!((r.news_requests, r.news_complete), (3, 3));
+    assert_eq!((r.news_repairs, r.news_repair_incomplete), (1, 0));
     let cov = a.read_news_coverage(None).unwrap();
-    assert_eq!(cov.len(), 3);
+    assert_eq!(cov.len(), 4);
     assert!(
         cov[1].covered_from <= cov[0].covered_through,
         "the forward search overlaps"
+    );
+    // The repair search really read the whole horizon, not a window near now.
+    let widest = cov
+        .iter()
+        .max_by_key(|c| c.covered_through - c.covered_from)
+        .expect("a coverage record");
+    assert!(
+        widest.covered_through - widest.covered_from >= 24 * H,
+        "the repair covers the freshness horizon: {}h",
+        (widest.covered_through - widest.covered_from) / H
     );
     assert_eq!(a.read_float().unwrap().len(), 2);
 }
@@ -1168,9 +1184,7 @@ fn a_redelivered_older_version_is_not_a_new_revision() {
         "a version already stored is not written again with a new first sighting: {redelivered:?}"
     );
     // And the newer one is not re-proposed either.
-    assert!(
-        v.propose(&[(v2, at + 7_300 * 1_000_000_000)]).is_empty()
-    );
+    assert!(v.propose(&[(v2, at + 7_300 * 1_000_000_000)]).is_empty());
     assert_eq!(v.forgotten(), 0);
 }
 
@@ -1228,7 +1242,11 @@ fn one_search_offering_a_story_twice_proposes_it_once() {
     .unwrap();
     let v = NewsVersions::default();
     let out = v.propose(&[(s.clone(), at), (s, at + 1)]);
-    assert_eq!(out.len(), 1, "the same payload twice in one page is one version");
+    assert_eq!(
+        out.len(),
+        1,
+        "the same payload twice in one page is one version"
+    );
     assert_eq!(out[0].first_observed_at, at, "and keeps the first sighting");
 }
 
@@ -1275,4 +1293,509 @@ fn the_version_index_is_bounded_by_stories_as_well_as_versions() {
     // A story confirmed again moves to the back, so it is not the next to go.
     let recent = STORIES_TRACKED as u64 + 49;
     assert!(v.propose(&[(story(recent), at)]).is_empty());
+}
+
+/// The repair search covers the whole freshness horizon, so an edit to an older story is found.
+///
+/// Alpaca's REST news is documented as *sorted* by updated date; whether `start`/`end` filter on
+/// the update time or the publication time is not stated
+/// (`docs.alpaca.markets/us/reference/news-3`, read 2026-10-21). If it filters on publication,
+/// then an edit made now to a story published six hours ago is in neither of the windows anchored
+/// near `now`: the forward window starts at the last covered point, and the edit window reaches
+/// back three hours. The story is still inside the pillar's 24-hour horizon and could still decide
+/// a symbol, so missing its edit means deciding on content the provider has replaced.
+///
+/// This is query correctness, not a threshold change: the horizon searched is the one the first
+/// start already searches, and the per-minute request cap is untouched.
+#[test]
+fn the_repair_window_covers_the_whole_freshness_horizon() {
+    let cfg = EvidenceConfig::default();
+    let now = t("2026-10-15", 15, 0, 0);
+    let (start, end) = news_repair_window(&cfg, now);
+    assert_eq!(
+        end,
+        now - cfg.news_settle_secs * SEC,
+        "the settle is respected, as everywhere else"
+    );
+    let span = end - start;
+    assert!(
+        span >= 24 * H,
+        "the horizon a decision can read from is covered: {}h",
+        span / H
+    );
+    assert_eq!(
+        span,
+        (cfg.news_initial_lookback_secs + cfg.news_overlap_secs) * SEC,
+        "the first-start lookback plus the configured overlap"
+    );
+
+    // A story published six hours ago is inside the repair window and outside both others.
+    let published = now - 6 * H;
+    assert!(
+        published >= start && published <= end,
+        "the repair window reaches it"
+    );
+    let (_, edit_end) = (0, now - cfg.news_settle_secs * SEC);
+    let edit_start = edit_end - cfg.news_edit_window_secs * SEC;
+    assert!(
+        published < edit_start,
+        "while the edit window does not: it reaches back {}h",
+        cfg.news_edit_window_secs / 3600
+    );
+    // And the forward window starts at the last covered point, which is later still.
+    let (fwd_start, _) = news_window(&cfg, Some(now - 10 * 60 * SEC), now);
+    assert!(published < fwd_start, "nor does the forward window");
+}
+
+/// An edit made while the collector was disconnected is picked up by the repair search, and the
+/// coverage it claims is the window it actually finished reading.
+#[test]
+fn an_edit_during_a_disconnect_is_found_by_the_repair_search() {
+    let (_tmp, a) = archive();
+    let day = "2026-10-15";
+    // A story published six hours before the collector comes back: still inside the 24-hour
+    // horizon, and far outside the edit window.
+    let published = "2026-10-15T09:00:00Z";
+    let story = |headline: &str, updated: &str| -> serde_json::Value {
+        json!({
+            "id": 42,
+            "headline": headline,
+            "summary": "",
+            "author": "Staff",
+            "created_at": published,
+            "updated_at": updated,
+            "symbols": ["ABCD"],
+            "source": "benzinga",
+            "url": "https://example.invalid/42"
+        })
+    };
+
+    // Before the disconnect: the original version, stored.
+    let mut v = NewsVersions::default();
+    let before: Vec<RawStory> =
+        serde_json::from_value(json!([story("ABCD Announces FDA Approval", published)])).unwrap();
+    let first = v.propose(
+        &before
+            .into_iter()
+            .map(|s| (s, t(day, 9, 1, 0)))
+            .collect::<Vec<_>>(),
+    );
+    a.append_news(&first).unwrap();
+    v.commit(&first);
+    assert_eq!(first.len(), 1);
+
+    // During the disconnect the story is edited: a new revision of the same article.
+    let edited: Vec<RawStory> = serde_json::from_value(json!([story(
+        "ABCD Announces FDA Approval And Phase 3 Start",
+        "2026-10-15T14:40:00Z"
+    )]))
+    .unwrap();
+    // The repair search is what sees it; the edit window never asked about 09:00.
+    let repaired = v.propose(
+        &edited
+            .into_iter()
+            .map(|s| (s, t(day, 15, 0, 0)))
+            .collect::<Vec<_>>(),
+    );
+    assert_eq!(
+        repaired.len(),
+        1,
+        "the edit is a new version of the story: {repaired:?}"
+    );
+    a.append_news(&repaired).unwrap();
+    v.commit(&repaired);
+
+    // And from its own observation on, the edited content is what a decision reads.
+    let stored = a.read_news(None).unwrap();
+    let items = news_items(&stored, None);
+    let before_edit: Vec<u32> = items
+        .iter()
+        .filter(|n| n.observed_at <= t(day, 14, 0, 0))
+        .map(|n| n.version)
+        .collect();
+    assert_eq!(
+        before_edit,
+        vec![1],
+        "the original, until the edit was seen"
+    );
+    let latest = items
+        .iter()
+        .filter(|n| n.observed_at <= t(day, 15, 1, 0))
+        .max_by_key(|n| n.revision_at)
+        .expect("a version");
+    assert_eq!(
+        latest.version, 2,
+        "the edit is current once observed: {items:?}"
+    );
+}
+
+/// A stream delivery is not a search: it never advances coverage, so it cannot stand in for the
+/// repair.
+///
+/// Receiving one message says that one story changed. It says nothing about what else did, and
+/// coverage is a claim about a window having been read in full.
+#[test]
+fn coverage_is_never_inferred_from_a_delivery() {
+    let q = NewsQuery {
+        start: utc(t("2026-10-15", 9, 0, 0)),
+        end: utc(t("2026-10-15", 15, 0, 0)),
+        symbols: None,
+    };
+    // A fetch that did not finish its pagination claims nothing, however many stories it carried.
+    let partial = NewsFetch {
+        stories: Vec::new(),
+        requests: 1,
+        complete: false,
+        finished_at: t("2026-10-15", 15, 0, 1),
+        error: Some("page 2: 500".into()),
+    };
+    assert!(
+        coverage_record(&q, &partial).is_none(),
+        "an unfinished search covers nothing"
+    );
+    let whole = NewsFetch {
+        complete: true,
+        error: None,
+        ..partial
+    };
+    let c = coverage_record(&q, &whole).expect("a complete search covers its window");
+    assert_eq!(
+        (c.covered_from, c.covered_through),
+        (
+            q.start.timestamp_nanos_opt().unwrap(),
+            q.end.timestamp_nanos_opt().unwrap()
+        ),
+        "and covers exactly the window it read"
+    );
+}
+
+/// The float half's trouble does not delay the news half.
+///
+/// They were one tick: a float phase working through its retry backoff — five transient failures
+/// and the sleeps between them — held the news poll behind it, so an outage at FMP delayed
+/// catalyst detection that has nothing to do with FMP. The halves hold disjoint state and talk to
+/// different providers, and production now runs them as two workers; this pins that the split is
+/// real rather than cosmetic.
+#[test]
+fn a_float_outage_does_not_delay_the_news_poll() {
+    let (_d, a) = archive();
+    let day = d("2026-10-15");
+    one_symbol_universe(&a, day);
+    let clock = Cell::new(utc(t("2026-10-15", 9, 0, 0)));
+    let slept = Cell::new(Duration::ZERO);
+    let mut c = Collector::open(test_cfg(), &a, clock.get()).unwrap();
+
+    // The float half: every attempt fails transiently, and it sleeps through its backoff.
+    let mut http = five_transient();
+    let fr = c.tick_float(
+        &a,
+        &mut http,
+        Some(&key()),
+        &mut || clock.get(),
+        &mut |dur| slept.set(slept.get() + dur),
+        &mut |_| {},
+    );
+    assert!(fr.float_requests > 0, "the float half really tried: {fr:?}");
+    assert!(
+        !fr.errors.is_empty() || fr.float_retries_scheduled > 0,
+        "and really failed: {fr:?}"
+    );
+    assert_eq!(
+        (fr.news_requests, fr.news_complete),
+        (0, 0),
+        "and asked nothing of the news provider: {fr:?}"
+    );
+
+    // The news half, at the same instant: unaffected, and its own search runs.
+    let mut http = Script::default().json(empty_page());
+    let nr = c.tick_news(
+        &a,
+        &mut http,
+        Some(&creds()),
+        &mut || clock.get(),
+        &mut |_| {},
+        &mut |_| {},
+    );
+    assert_eq!(
+        (nr.news_requests, nr.news_complete),
+        (1, 1),
+        "the news poll was not waiting behind the float retries: {nr:?}"
+    );
+    assert_eq!(
+        nr.float_requests, 0,
+        "and it asked nothing of the float provider: {nr:?}"
+    );
+    // Nothing the float half did moved the news schedule, and nothing the news half did moved
+    // the float plan.
+    assert!(
+        nr.news_through.is_some(),
+        "and advanced its own coverage: {nr:?}"
+    );
+    assert_eq!(nr.float_retry_pending, 0, "{nr:?}");
+}
+
+/// A stream delivery reaches the archive by the same durable path a search uses, and claims no
+/// coverage.
+///
+/// The two transports must not own separate dedup state: a version stored by one is stored, and
+/// the other must not write it again. And a delivery is not a search — it says one story changed
+/// and nothing about what else did — so it never advances the covered-through point. Only the
+/// bounded repair search can claim a window was read.
+#[test]
+fn a_stream_delivery_shares_the_durable_path_and_claims_no_coverage() {
+    let (_tmp, a) = archive();
+    let day = "2026-10-15";
+    let at = t(day, 9, 0, 0);
+    let story: RawStory = serde_json::from_value(json!({
+        "id": 77,
+        "headline": "ABCD Announces FDA Approval",
+        "summary": "",
+        "author": "Staff",
+        "created_at": "2026-10-15T13:00:00Z",
+        "updated_at": "2026-10-15T13:00:00Z",
+        "symbols": ["ABCD"],
+        "source": "benzinga",
+        "url": "https://example.invalid/77"
+    }))
+    .unwrap();
+    let mut c = Collector::open(test_cfg(), &a, utc(at)).unwrap();
+
+    let mut report = market_providers::import::evidence_collect::TickReport::default();
+    c.ingest_stories(&a, &[(story.clone(), at)], &mut report);
+    assert_eq!(
+        (report.news_versions, report.news_from_stream),
+        (1, 1),
+        "the story was stored: {report:?}"
+    );
+    assert_eq!(a.read_news(None).unwrap().len(), 1);
+    assert_eq!(
+        a.read_news_coverage(None).map(|c| c.len()).unwrap_or(0),
+        0,
+        "and no window was claimed as searched"
+    );
+    assert_eq!(report.news_requests, 0, "no search happened");
+
+    // The same story again, from either transport: already durable, so nothing is written twice.
+    let mut again = market_providers::import::evidence_collect::TickReport::default();
+    c.ingest_stories(&a, &[(story.clone(), at + 60 * SEC)], &mut again);
+    assert_eq!(
+        (again.news_versions, again.news_from_stream),
+        (0, 0),
+        "one owner of version state, not two: {again:?}"
+    );
+    assert_eq!(a.read_news(None).unwrap().len(), 1);
+
+    // And a search that now finds it adds nothing either.
+    let mut http = Script::default().json(json!({
+        "news": [{
+            "id": 77,
+            "headline": "ABCD Announces FDA Approval",
+            "summary": "",
+            "author": "Staff",
+            "created_at": "2026-10-15T13:00:00Z",
+            "updated_at": "2026-10-15T13:00:00Z",
+            "symbols": ["ABCD"],
+            "source": "benzinga",
+            "url": "https://example.invalid/77"
+        }],
+        "next_page_token": null
+    }));
+    let clock = Cell::new(utc(at + 300 * SEC));
+    let r = c.tick_news(
+        &a,
+        &mut http,
+        Some(&creds()),
+        &mut || clock.get(),
+        &mut |_| {},
+        &mut |_| {},
+    );
+    assert_eq!(
+        r.news_versions, 0,
+        "the search found what the stream had already stored: {r:?}"
+    );
+    assert!(
+        r.news_complete > 0,
+        "and it did claim its own window: {r:?}"
+    );
+    assert_eq!(a.read_news(None).unwrap().len(), 1);
+}
+
+// --- the optional stream through the collector's own path -------------------------------------
+
+/// A transport that replays a script, as the news worker's socket would.
+struct ScriptedSocket {
+    frames: Vec<market_providers::news_stream::Recv>,
+}
+
+impl market_providers::news_stream::Transport for ScriptedSocket {
+    fn send(&mut self, _text: &str, _timeout: Duration) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn recv(&mut self, _timeout: Duration) -> market_providers::news_stream::Recv {
+        if self.frames.is_empty() {
+            market_providers::news_stream::Recv::Idle
+        } else {
+            self.frames.remove(0)
+        }
+    }
+}
+
+struct ScriptedDial {
+    sockets: Vec<Vec<market_providers::news_stream::Recv>>,
+}
+
+impl market_providers::news_stream::Dial for ScriptedDial {
+    fn dial(
+        &mut self,
+        _url: &str,
+        _timeout: Duration,
+    ) -> Result<Box<dyn market_providers::news_stream::Transport>, String> {
+        if self.sockets.is_empty() {
+            return Err("no socket".into());
+        }
+        Ok(Box::new(ScriptedSocket {
+            frames: self.sockets.remove(0),
+        }))
+    }
+}
+
+fn frame(text: &str) -> market_providers::news_stream::Recv {
+    market_providers::news_stream::Recv::Frame(text.to_string())
+}
+
+/// The whole optional path, as the news worker runs it: an injected socket, the runner's pump,
+/// and the collector's own durable append — with coverage untouched.
+///
+/// The enable flag used to change nothing in production, because nothing read it. This exercises
+/// the seam the worker actually uses: `Runner::pump` into `Collector::ingest_stories`, one owner
+/// of version state shared with the REST searches, and no claim of coverage from a delivery.
+#[test]
+fn the_runner_feeds_the_collectors_durable_path() {
+    use market_providers::news_stream::{NewsStreamConfig, Runner};
+    let (_tmp, a) = archive();
+    let at = t("2026-10-15", 9, 0, 0);
+    let mut c = Collector::open(test_cfg(), &a, utc(at)).unwrap();
+
+    let cfg = NewsStreamConfig {
+        enabled: true,
+        ..NewsStreamConfig::default()
+    };
+    let mut runner = Runner::new(cfg, creds()).expect("enabled");
+    let mut dial = ScriptedDial {
+        sockets: vec![vec![
+            frame(r#"[{"T":"success","msg":"authenticated"}]"#),
+            frame(r#"[{"T":"subscription","news":["*"]}]"#),
+            frame(
+                r#"[{"T":"n","id":501,"headline":"ABCD Announces FDA Approval","summary":"",
+                "author":"Staff","created_at":"2026-10-15T13:00:00Z",
+                "updated_at":"2026-10-15T13:00:00Z","symbols":["ABCD"],"source":"benzinga",
+                "url":"https://example.invalid/501"}]"#,
+            ),
+        ]],
+    };
+
+    let stories = runner.pump(
+        &mut dial,
+        &mut || at,
+        Duration::from_millis(500),
+        &mut |_| {},
+    );
+    assert_eq!(stories.len(), 1, "the pump yielded the delivery");
+    let mut report = market_providers::import::evidence_collect::TickReport::default();
+    c.ingest_stories(&a, &stories, &mut report);
+    assert_eq!(
+        (report.news_versions, report.news_from_stream),
+        (1, 1),
+        "and the collector stored it durably: {report:?}"
+    );
+    assert_eq!(a.read_news(None).unwrap().len(), 1);
+    assert_eq!(
+        a.read_news_coverage(None).map(|c| c.len()).unwrap_or(0),
+        0,
+        "a delivery claims no window"
+    );
+
+    // A second delivery of the same version adds nothing: one owner of version state.
+    let mut again = ScriptedDial {
+        sockets: vec![vec![
+            frame(r#"[{"T":"success","msg":"authenticated"}]"#),
+            frame(
+                r#"[{"T":"n","id":501,"headline":"ABCD Announces FDA Approval","summary":"",
+                "author":"Staff","created_at":"2026-10-15T13:00:00Z",
+                "updated_at":"2026-10-15T13:00:00Z","symbols":["ABCD"],"source":"benzinga",
+                "url":"https://example.invalid/501"}]"#,
+            ),
+        ]],
+    };
+    let mut r2 = Runner::new(
+        NewsStreamConfig {
+            enabled: true,
+            ..NewsStreamConfig::default()
+        },
+        creds(),
+    )
+    .expect("enabled");
+    let repeat = r2.pump(
+        &mut again,
+        &mut || at + 60 * SEC,
+        Duration::from_millis(500),
+        &mut |_| {},
+    );
+    assert_eq!(repeat.len(), 1, "the socket delivered it again");
+    let mut report2 = market_providers::import::evidence_collect::TickReport::default();
+    c.ingest_stories(&a, &repeat, &mut report2);
+    assert_eq!(
+        report2.news_versions, 0,
+        "already durable, so nothing is written twice: {report2:?}"
+    );
+    assert_eq!(a.read_news(None).unwrap().len(), 1);
+
+    // An edit does reach the archive, and still claims no coverage.
+    let mut edited = ScriptedDial {
+        sockets: vec![vec![
+            frame(r#"[{"T":"success","msg":"authenticated"}]"#),
+            frame(
+                r#"[{"T":"n","id":501,"headline":"ABCD Announces FDA Approval Of Lead Candidate",
+                "summary":"","author":"Staff","created_at":"2026-10-15T13:00:00Z",
+                "updated_at":"2026-10-15T14:00:00Z","symbols":["ABCD"],"source":"benzinga",
+                "url":"https://example.invalid/501"}]"#,
+            ),
+        ]],
+    };
+    let mut r3 = Runner::new(
+        NewsStreamConfig {
+            enabled: true,
+            ..NewsStreamConfig::default()
+        },
+        creds(),
+    )
+    .expect("enabled");
+    let edit = r3.pump(
+        &mut edited,
+        &mut || at + 3_600 * SEC,
+        Duration::from_millis(500),
+        &mut |_| {},
+    );
+    let mut report3 = market_providers::import::evidence_collect::TickReport::default();
+    c.ingest_stories(&a, &edit, &mut report3);
+    assert_eq!(report3.news_versions, 1, "the edit is a new version");
+    assert_eq!(a.read_news(None).unwrap().len(), 2);
+    assert_eq!(
+        a.read_news_coverage(None).map(|c| c.len()).unwrap_or(0),
+        0,
+        "and still no window is claimed from deliveries alone"
+    );
+}
+
+/// With the stream disabled — the default — there is no runner to pump, so the enable flag is the
+/// only thing that turns it on.
+#[test]
+fn the_default_configuration_has_no_runner_to_pump() {
+    use market_providers::news_stream::{NewsStreamConfig, Runner};
+    assert!(Runner::new(NewsStreamConfig::default(), creds()).is_none());
+    assert!(
+        !NewsStreamConfig::from_lookup(|_| None).enabled,
+        "and nothing in a bare environment enables it"
+    );
 }

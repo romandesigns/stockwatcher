@@ -492,9 +492,7 @@ pub fn news_items_with(
         let key = (r.provider.as_str(), r.article_id.as_str());
         let per_story = revealed.entry(key).or_default();
         for sym in &r.symbols {
-            let e = per_story
-                .entry(sym.as_str())
-                .or_insert(r.first_observed_at);
+            let e = per_story.entry(sym.as_str()).or_insert(r.first_observed_at);
             *e = (*e).min(r.first_observed_at);
         }
     }

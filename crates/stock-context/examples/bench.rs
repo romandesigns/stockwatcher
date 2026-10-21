@@ -98,6 +98,8 @@ fn main() {
                 published_at: Some(pre),
                 observed_at: pre,
                 tag: Tag::Present,
+                content_key: format!("bench:{s}"),
+                revision_at: Some(pre),
                 rules: "bench".into(),
             });
         }

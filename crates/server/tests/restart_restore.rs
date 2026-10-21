@@ -30,7 +30,9 @@ use std::time::{Duration, Instant};
 use market_archive::{Archive, ArchiveConfig};
 use market_events::{MarketEvent, UnixNanos};
 use market_providers::recorder::receive_time;
-use market_providers::{ChannelFeed, LiveOptions, LiveProvider, MarketDataProvider, RecorderConfig};
+use market_providers::{
+    ChannelFeed, LiveOptions, LiveProvider, MarketDataProvider, RecorderConfig,
+};
 use market_replay::{ArchiveDaySource, EventSource as _, Merger};
 use serde_json::Value;
 use stockwatcher_server::Market;
@@ -219,7 +221,8 @@ async fn a_restart_recovers_the_days_facts_and_labels_what_it_cannot_prove() {
     let (after, tx) = live(&root, et(11, 0), false);
     after.set_stock_context(true);
     assert_eq!(
-        after.state_json()["history"]["pending"], 2,
+        after.state_json()["history"]["pending"],
+        2,
         "nothing loaded yet"
     );
     let cut = events.len() - keep_back;
@@ -280,7 +283,10 @@ async fn a_restart_recovers_the_days_facts_and_labels_what_it_cannot_prove() {
             "{s}: whatever the restore could not establish is named: {got}"
         );
         assert!(
-            matches!(got["coverage"].as_str(), Some("partial") | Some("unverified")),
+            matches!(
+                got["coverage"].as_str(),
+                Some("partial") | Some("unverified")
+            ),
             "{s}: and a restored day is never complete: {got}"
         );
         // A local build cannot identify itself (`STOCKWATCHER_COMMIT` is `unknown`), so the
@@ -492,7 +498,10 @@ async fn a_truncated_recording_is_partial_and_not_an_empty_day() {
         (n, failed)
     };
     assert!(failed, "the fixture really corrupted the recording");
-    assert!(decoded > 0, "and left a readable prefix of {decoded} records");
+    assert!(
+        decoded > 0,
+        "and left a readable prefix of {decoded} records"
+    );
 
     let (after, tx) = reader_only(&root, et(20, 0));
     after.set_stock_context(true);
@@ -623,4 +632,204 @@ async fn a_shutdown_waits_for_the_journal_and_claims_no_clean_stop() {
         "and the journal says so rather than reading as a whole day: {report:?}"
     );
     assert_eq!(report.errors, 0, "{report:?}");
+}
+
+/// The shadow measurement, captured through the real market: decisions off the engine, a bounded
+/// handoff under the core lock, folding and an append-only log off it — and `insufficient_data`,
+/// which is the only honest answer this process can give.
+///
+/// An earlier draft folded into an in-memory summary under the lock with no durable handoff and
+/// no production caller, so the enable path gathered nothing a restart could review. This drives
+/// the seam the market actually uses.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_shadow_captures_through_the_market_and_reports_insufficient_data() {
+    let tmp = tempfile::tempdir().expect("tmp");
+    let events = fixture_events(&tmp.path().join("scratch"));
+    let root = tmp.path().join("run");
+    let (market, tx) = live(&root, et(4, 0), true);
+    market.set_stock_context(true);
+
+    // Nothing has been decided yet, so there is nothing to report but the definitions.
+    let before = market
+        .shadow_report()
+        .expect("a context board brings a capture");
+    assert_eq!(before.definitions, "shadow-candidate-vs-strict-v1");
+    assert_eq!(before.sessions_held, 0);
+    assert!(!before.outcome.measured());
+
+    // Inside the queue's bound, so this exercises the seam rather than the drop path (which has
+    // its own test over the sink). Nothing here folds: the capture's own thread does that, and
+    // the test waits for it exactly as a reader would.
+    for e in events.iter().take(4_000) {
+        tx.send(e.clone()).await.expect("send");
+    }
+    drop(tx);
+    until("the market finished", || {
+        market.state_json()["status"]["state"] == "stopped"
+    })
+    .await;
+    until(
+        "the capture's own thread folded and wrote what it saw",
+        || {
+            market.shadow_report().is_some_and(|r| {
+                r.absorbed > 0 && r.absorbed == r.captured && r.persisted == r.absorbed
+            })
+        },
+    )
+    .await;
+
+    let r = market.shadow_report().expect("a capture");
+    assert!(
+        r.captured > 0,
+        "decisions reached the capture through the market: {r:?}"
+    );
+    assert_eq!(
+        r.absorbed, r.captured,
+        "and every one was folded off the lock: {r:?}"
+    );
+    assert!(r.sessions_held > 0, "{r:?}");
+    assert_eq!(r.dropped_events, 0, "{r:?}");
+
+    // The log is on disk and reads back as the events it was, so a restart can review the cohort
+    // rather than losing it with the process.
+    assert!(r.durable, "the capture has somewhere to write: {r:?}");
+    assert_eq!(r.persisted, r.absorbed, "{r:?}");
+    let dir = root.join("shadow");
+    let logs: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+        .expect("the shadow directory")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .collect();
+    assert_eq!(logs.len(), 1, "one segment for this boot: {logs:?}");
+    let text = std::fs::read_to_string(&logs[0]).expect("the log");
+    let rows: Vec<&str> = text.lines().collect();
+    // A header naming the definitions and the build, then one line per record.
+    let header: serde_json::Value =
+        serde_json::from_str(rows.first().expect("a header")).expect("a header");
+    assert_eq!(header["definitions"], "shadow-candidate-vs-strict-v1");
+    assert!(header["epoch"].as_u64().is_some_and(|e| e >= 1), "{header}");
+    assert!(
+        header["code"].as_str().is_some_and(|c| !c.is_empty()),
+        "{header}"
+    );
+    assert_eq!(
+        rows.len() as u64 - 1,
+        r.persisted,
+        "every appended record is a line"
+    );
+    // The decisions among them carry the rules they were made under.
+    let parsed: Vec<serde_json::Value> = rows[1..]
+        .iter()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .collect();
+    let first = parsed
+        .iter()
+        .find(|v| v.get("symbol").is_some_and(|s| s.is_string()))
+        .expect("some records are decisions");
+    assert!(first["cutoff"].is_i64(), "{first}");
+    assert!(first["candidate"].is_boolean(), "{first}");
+    assert_eq!(
+        first["policy"].as_str().map(|p| p.starts_with("pillars-")),
+        Some(true),
+        "the rules the decision was made under travel with it: {first}"
+    );
+    // And the run's own lifecycle is in there too: without it nothing could say whether the run
+    // was watching, and every session would be censored for the wrong reason.
+    assert!(
+        parsed.iter().any(|v| v.get("kind").is_some()),
+        "the lifecycle is recorded beside the decisions"
+    );
+    // Every record carries its sequence, so a reader of the file alone can see a loss rather
+    // than inferring a clean negative from a gap between two retained clock records.
+    let seqs: Vec<u64> = parsed.iter().filter_map(|v| v["s"].as_u64()).collect();
+    assert_eq!(seqs.len(), parsed.len(), "every record is sequenced");
+    assert_eq!(
+        seqs,
+        (1..=seqs.len() as u64).collect::<Vec<_>>(),
+        "and this run lost none of them"
+    );
+    assert!(
+        r.runs >= 1,
+        "so the capture knows what the run monitored: {r:?}"
+    );
+
+    // And the figure itself: nothing. The fixture day is one date of one run, far short of the
+    // floor, and every session is censored because the run's clock never reached the close.
+    assert!(
+        !r.outcome.measured(),
+        "no figure from a fixture day: {:?}",
+        r.outcome
+    );
+    assert!(
+        r.outcome.line().starts_with("insufficient_data"),
+        "{}",
+        r.outcome.line()
+    );
+    assert_eq!(
+        r.live_sessions, 0,
+        "a run that stopped mid-session has nothing closed: {r:?}"
+    );
+    assert!(
+        r.censored_sessions > 0 || r.synthetic_sessions > 0,
+        "the sessions it did see are censored or synthetic, never negatives: {r:?}"
+    );
+    assert_eq!(
+        r.neither, 0,
+        "and nothing unobserved was counted as an absence: {r:?}"
+    );
+}
+
+/// With nowhere to put its log, the capture still runs and the report withholds every figure.
+///
+/// This is the no-segment case: the directory is blocked, so none is reserved and nothing is ever
+/// appended. What it pins is the honesty of the outcome — a cohort held only in memory is not a
+/// forward corpus — and not the behaviour of a slow write, which a gated append proves directly
+/// (`market::tests::a_stalled_shadow_append_holds_neither_the_reporter_nor_the_publisher`).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_capture_with_nowhere_to_write_still_runs_and_reports_nothing() {
+    let tmp = tempfile::tempdir().expect("tmp");
+    let events = fixture_events(&tmp.path().join("scratch"));
+    let root = tmp.path().join("run");
+    // A file where the shadow directory belongs, so no segment can be reserved and no append can
+    // land.
+    std::fs::create_dir_all(&root).expect("root");
+    std::fs::write(root.join("shadow"), b"not a directory").expect("blocker");
+
+    let (market, tx) = live(&root, et(4, 0), true);
+    market.set_stock_context(true);
+    for e in events.iter().take(3_000) {
+        tx.send(e.clone()).await.expect("send");
+    }
+    drop(tx);
+    // The market finishes normally: nothing waits on the capture.
+    until("the market finished", || {
+        market.state_json()["status"]["state"] == "stopped"
+    })
+    .await;
+    // And it still serves its own state.
+    assert!(market.state_json()["seq"].as_u64().unwrap_or(0) > 0);
+
+    let r = market.shadow_report().expect("a capture");
+    assert!(
+        !r.durable,
+        "no segment could be reserved, and the report says so: {r:?}"
+    );
+    assert!(
+        !r.complete(),
+        "so the cohort is not reviewable: {:?}",
+        r.outcome
+    );
+    assert!(
+        !r.outcome.measured(),
+        "and no figure is reported over it: {:?}",
+        r.outcome
+    );
+    assert!(
+        r.outcome.line().starts_with("insufficient_data"),
+        "{}",
+        r.outcome.line()
+    );
+    // The sessions it saw are still counted — the capture works, it just has nowhere to write —
+    // and nothing unobserved became a negative.
+    assert_eq!(r.neither, 0, "{r:?}");
+    assert_eq!(r.write_errors, 0, "nothing was even attempted: {r:?}");
 }

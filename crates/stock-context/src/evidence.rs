@@ -12,7 +12,7 @@
 
 use chrono::NaiveDate;
 use serde::Serialize;
-use std::collections::{BTreeMap, HashMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 pub struct InstrumentId(pub String);

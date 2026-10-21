@@ -952,9 +952,10 @@ fn evidence(args: &[String]) -> Result<ExitCode, String> {
         if creds.is_some() { "set" } else { "NOT SET" },
         if fmp_key.is_some() { "set" } else { "NOT SET" },
     );
-    let mut collector = Collector::open(cfg, &archive, Utc::now())?;
-    let mut http = ReqwestHttp::new()?;
-    loop {
+    if once {
+        // One tick of both halves, in one thread: what `--once` has always meant.
+        let mut collector = Collector::open(cfg, &archive, Utc::now())?;
+        let mut http = ReqwestHttp::new()?;
         let report = collector.tick(
             &archive,
             &mut http,
@@ -966,20 +967,171 @@ fn evidence(args: &[String]) -> Result<ExitCode, String> {
             },
             &mut |l| println!("{} {l}", stamp()),
         );
-        if once || report.float_requests + report.news_requests > 0 || !report.errors.is_empty() {
-            println!("{} {}", stamp(), report.summary());
+        println!("{} {}", stamp(), report.summary());
+        return Ok(if report.errors.is_empty() {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        });
+    }
+
+    // Two workers, each with its own collector, HTTP client and cadence, and each able to stop
+    // the other: `main` cannot sit in a join while its peer loops on, so a fatal failure has to
+    // reach the shared stop flag before anything waits.
+    let stream_cfg = market_providers::news_stream::NewsStreamConfig::from_lookup(env);
+    println!(
+        "{} evidence: news stream {} (default off){}",
+        stamp(),
+        if stream_cfg.enabled { "ENABLED" } else { "off" },
+        if stream_cfg.enabled {
+            format!(
+                ", {} (<= {} stories per pump); it reduces nothing that the REST searches do not already cover",
+                stream_cfg.url, stream_cfg.queue_capacity
+            )
+        } else {
+            String::new()
         }
-        if once {
-            return Ok(if report.errors.is_empty() {
-                ExitCode::SUCCESS
-            } else {
-                ExitCode::FAILURE
-            });
-        }
-        if !sleep_or_stop(&stop, Duration::from_secs(15)) {
-            break;
+    );
+    //
+    // The two halves talk to different providers, hold disjoint state and answer different
+    // questions. Running them in one tick meant a float phase working through its retry backoff
+    // delayed the next news poll — a detection delay caused by an outage at an unrelated
+    // provider — and a slow news page delayed the float plan the same way. Separate collectors
+    // rather than a shared one behind a lock, because a lock would put the coupling back.
+    let float_worker = {
+        let (archive, stop, key) = (archive.clone(), stop.clone(), fmp_key.clone());
+        let cfg = cfg.clone();
+        std::thread::Builder::new()
+            .name("evidence-float".into())
+            .spawn(move || -> Result<(), String> {
+                let mut c = Collector::open(cfg, &archive, Utc::now())?;
+                let mut http = ReqwestHttp::new()?;
+                while !stop.load(Ordering::Relaxed) {
+                    let r = c.tick_float(
+                        &archive,
+                        &mut http,
+                        key.as_ref(),
+                        &mut Utc::now,
+                        &mut |d| {
+                            sleep_or_stop(&stop, d);
+                        },
+                        &mut |l| println!("{} {l}", stamp()),
+                    );
+                    if r.float_requests > 0 || !r.errors.is_empty() {
+                        println!("{} {}", stamp(), r.summary());
+                    }
+                    if !sleep_or_stop(&stop, Duration::from_secs(15)) {
+                        break;
+                    }
+                }
+                Ok(())
+            })
+            .map_err(|e| format!("evidence float worker: {e}"))?
+    };
+    let news_worker = {
+        let (archive, stop, creds) = (archive.clone(), stop.clone(), creds.clone());
+        std::thread::Builder::new()
+            .name("evidence-news".into())
+            .spawn(move || -> Result<(), String> {
+                let mut c = Collector::open(cfg, &archive, Utc::now())?;
+                let mut http = ReqwestHttp::new()?;
+                // The optional stream, pumped from this thread so the collector stays the one
+                // owner of version state: a shared lock would couple the two halves again.
+                let mut runner = creds
+                    .clone()
+                    .and_then(|cr| market_providers::news_stream::Runner::new(stream_cfg, cr));
+                let mut dial = match runner.is_some() {
+                    true => Some(market_providers::news_stream::WebSocketDial::new()?),
+                    false => None,
+                };
+                // With the stream on, the loop turns often enough for a delivery to be stored
+                // promptly; `tick_news` gates its own searches, so turning often costs a clock
+                // read. Without it, the REST cadence is the only thing to wake for.
+                let cadence = if runner.is_some() {
+                    Duration::from_millis(250)
+                } else {
+                    Duration::from_secs(15)
+                };
+                let mut logged_stream = std::time::Instant::now();
+                while !stop.load(Ordering::Relaxed) {
+                    let mut r = c.tick_news(
+                        &archive,
+                        &mut http,
+                        creds.as_ref(),
+                        &mut Utc::now,
+                        &mut |d| {
+                            sleep_or_stop(&stop, d);
+                        },
+                        &mut |l| println!("{} {l}", stamp()),
+                    );
+                    if let (Some(run), Some(d)) = (runner.as_mut(), dial.as_mut()) {
+                        let stories = run.pump(
+                            d,
+                            &mut || Utc::now().timestamp_nanos_opt().unwrap_or(i64::MAX),
+                            Duration::from_millis(200),
+                            &mut |l| println!("{} {l}", stamp()),
+                        );
+                        if !stories.is_empty() {
+                            // The same durable path a search uses: propose, append, commit.
+                            c.ingest_stories(&archive, &stories, &mut r);
+                        }
+                        if logged_stream.elapsed() >= Duration::from_secs(60) {
+                            logged_stream = std::time::Instant::now();
+                            println!("{} {}", stamp(), run.line());
+                        }
+                        if run.stopped() {
+                            // Refused in a way retrying cannot fix. The searches carry the whole
+                            // load, as they do whenever the stream is off, so the worker lives on
+                            // without the socket rather than failing.
+                            println!(
+                                "{} news stream: giving up on the socket; the REST searches continue unchanged",
+                                stamp()
+                            );
+                            runner = None;
+                            dial = None;
+                        }
+                    }
+                    if r.news_requests > 0 || r.news_from_stream > 0 || !r.errors.is_empty() {
+                        println!("{} {}", stamp(), r.summary());
+                    }
+                    if !sleep_or_stop(&stop, cadence) {
+                        break;
+                    }
+                }
+                Ok(())
+            })
+            .map_err(|e| format!("evidence news worker: {e}"))?
+    };
+
+    // Supervision: whichever worker finishes first, the other is told to stop before anything
+    // waits on it. Joining them in a fixed order let a failure in one sit unnoticed while its
+    // peer looped on, which is a silent half-dead collector.
+    let mut failure: Option<String> = None;
+    let mut pending = vec![("float", float_worker), ("news", news_worker)];
+    while !pending.is_empty() {
+        let ready = pending.iter().position(|(_, h)| h.is_finished());
+        let (name, handle) = match ready {
+            Some(i) => pending.remove(i),
+            None => {
+                std::thread::sleep(Duration::from_millis(50));
+                continue;
+            }
+        };
+        // One of them is done, for whatever reason: stop the rest rather than waiting on them.
+        stop.store(true, Ordering::Relaxed);
+        match handle.join() {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                failure = failure.or(Some(format!("evidence {name} worker: {e}")));
+            }
+            Err(_) => {
+                failure = failure.or(Some(format!("evidence {name} worker panicked")));
+            }
         }
     }
     println!("{} evidence stopped", stamp());
-    Ok(ExitCode::SUCCESS)
+    match failure {
+        Some(e) => Err(e),
+        None => Ok(ExitCode::SUCCESS),
+    }
 }

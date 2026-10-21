@@ -106,7 +106,7 @@ fn evidence(e: &mut Engine, sym: &str) {
         observed_at: t(7, 0, 1),
         tag: Tag::Present,
         content_key: "fixture".into(),
-            revision_at: Some(0),
+        revision_at: Some(0),
         rules: "fixture".into(),
     });
 }

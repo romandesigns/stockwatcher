@@ -97,6 +97,20 @@ pub struct EvidenceConfig {
     pub news_idle_poll_secs: i64,
     pub news_edit_every_secs: i64,
     pub news_edit_window_secs: i64,
+    /// How often the repair search runs (0: never).
+    ///
+    /// The forward and edit windows are both anchored near `now`, and the provider's interval
+    /// semantics are not documented: Alpaca's REST news is **sorted** by updated date, but
+    /// whether `start`/`end` filter on the update time or the publication time is not stated
+    /// (`docs.alpaca.markets/us/reference/news-3`, read 2026-10-21). If it filters on
+    /// publication, an edit made now to a story published six hours ago falls outside both
+    /// windows and is never seen — while the story is still inside the pillar's 24 h freshness
+    /// horizon and could still decide a symbol.
+    ///
+    /// So a bounded repair search periodically re-reads the whole horizon. It is the only thing
+    /// that can close that gap: a stream message is a delivery, not a search, and nothing about
+    /// receiving one says what else changed.
+    pub news_repair_every_secs: i64,
     pub news_settle_secs: i64,
     pub news_overlap_secs: i64,
     /// First start (or a gap longer than `news_max_catchup_secs`): search this far back, so the
@@ -125,6 +139,9 @@ impl Default for EvidenceConfig {
             news_idle_poll_secs: 300,
             news_edit_every_secs: 900,
             news_edit_window_secs: 3 * 3600,
+            // Hourly: enough that an edit to an older story is picked up well inside the 24 h
+            // horizon, and few enough requests that the existing per-minute cap is untouched.
+            news_repair_every_secs: 3600,
             news_settle_secs: 30,
             news_overlap_secs: 300,
             news_initial_lookback_secs: 25 * 3600,
@@ -194,6 +211,11 @@ impl EvidenceConfig {
             news_poll_secs: num("EVIDENCE_NEWS_POLL_SECS", d.news_poll_secs, 10)?,
             news_idle_poll_secs: num("EVIDENCE_NEWS_IDLE_POLL_SECS", d.news_idle_poll_secs, 10)?,
             news_edit_every_secs: num("EVIDENCE_NEWS_EDIT_EVERY_SECS", d.news_edit_every_secs, 60)?,
+            news_repair_every_secs: num(
+                "EVIDENCE_NEWS_REPAIR_MINS",
+                d.news_repair_every_secs / 60,
+                0,
+            )? * 60,
             news_edit_window_secs: num(
                 "EVIDENCE_NEWS_EDIT_WINDOW_MINS",
                 d.news_edit_window_secs / 60,
@@ -278,6 +300,17 @@ pub fn news_window(cfg: &EvidenceConfig, last_through: Option<i64>, now: i64) ->
     (start.min(end), end)
 }
 
+/// The repair window: the whole news-freshness horizon, with the configured settle and overlap.
+///
+/// Deliberately the same horizon the first start searches, because that is the span a decision
+/// can read from — anything inside it may still qualify a symbol, so anything inside it may still
+/// be edited in a way that matters.
+pub fn news_repair_window(cfg: &EvidenceConfig, now: i64) -> (i64, i64) {
+    let end = now - cfg.news_settle_secs * SEC;
+    let start = end - cfg.news_initial_lookback_secs * SEC - cfg.news_overlap_secs * SEC;
+    (start, end)
+}
+
 /// The end of the contiguous all-symbol coverage that reaches furthest, from stored records.
 pub fn last_covered_through(records: &[market_archive::NewsCoverageRecord]) -> Option<i64> {
     records
@@ -285,6 +318,17 @@ pub fn last_covered_through(records: &[market_archive::NewsCoverageRecord]) -> O
         .filter(|r| r.scope == CoverageScope::All)
         .map(|r| r.covered_through)
         .max()
+}
+
+/// Which search a window belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Pass {
+    /// New stories since the last covered point: what advances coverage.
+    Forward,
+    /// The recent edit window.
+    Edit,
+    /// The whole freshness horizon ([`EvidenceConfig::news_repair_every_secs`]).
+    Repair,
 }
 
 /// Minimum spacing between requests to one provider. The sleep is injected (tests do not wait).
@@ -343,10 +387,47 @@ pub struct TickReport {
     pub news_versions_forgotten: u64,
     /// Whole stories the version index forgot, least recently confirmed first.
     pub news_stories_forgotten: u64,
+    /// Versions that reached the archive from a stream delivery rather than a search. Counted
+    /// apart because a delivery is not coverage: it never advances the covered-through point.
+    pub news_from_stream: u32,
+    /// Repair searches run over the whole freshness horizon
+    /// ([`EvidenceConfig::news_repair_every_secs`]).
+    pub news_repairs: u32,
+    /// Repair searches whose pagination did not finish. The horizon was not re-read, and no
+    /// coverage was claimed for it.
+    pub news_repair_incomplete: u32,
     pub errors: Vec<String>,
 }
 
 impl TickReport {
+    /// Folds another half's counters in, for a caller that runs both in one tick.
+    pub fn merge(&mut self, other: TickReport) {
+        self.float_requests += other.float_requests;
+        self.float_records += other.float_records;
+        self.warmups += other.warmups;
+        self.float_retries_scheduled += other.float_retries_scheduled;
+        self.float_retries_due += other.float_retries_due;
+        self.float_retry_exhausted += other.float_retry_exhausted;
+        self.float_retry_dropped += other.float_retry_dropped;
+        self.float_queued = self.float_queued.max(other.float_queued);
+        self.float_retry_pending = self.float_retry_pending.max(other.float_retry_pending);
+        self.news_requests += other.news_requests;
+        self.news_versions += other.news_versions;
+        self.news_complete += other.news_complete;
+        self.news_store_failures += other.news_store_failures;
+        self.news_versions_forgotten = self
+            .news_versions_forgotten
+            .max(other.news_versions_forgotten);
+        self.news_stories_forgotten = self
+            .news_stories_forgotten
+            .max(other.news_stories_forgotten);
+        self.news_from_stream += other.news_from_stream;
+        self.news_repairs += other.news_repairs;
+        self.news_repair_incomplete += other.news_repair_incomplete;
+        self.news_through = self.news_through.max(other.news_through);
+        self.errors.extend(other.errors);
+    }
+
     pub fn summary(&self) -> String {
         format!(
             "evidence: float {} req, {} stored, {} queued, {} warmups, {} retries pending ({} scheduled, {} due, {} exhausted, {} dropped); news {} req, {} new versions, {} store failures, {} forgotten keys, {} complete searches, covered through {}{}",
@@ -408,6 +489,7 @@ pub struct Collector {
     versions: NewsVersions,
     last_through: Option<i64>,
     last_edit_poll: Option<i64>,
+    last_repair_poll: Option<i64>,
     next_news_poll: i64,
     float_day: Option<NaiveDate>,
     float_refreshed: Option<NaiveDate>,
@@ -454,6 +536,7 @@ impl Collector {
             versions: NewsVersions::from_records(&news),
             last_through: last_covered_through(&cov),
             last_edit_poll: None,
+            last_repair_poll: None,
             next_news_poll: i64::MIN,
             float_day: Some(today),
             // A refresh that already ran today left a record per universe symbol; the queue is
@@ -474,6 +557,12 @@ impl Collector {
 
     /// One pass: queue/fetch floats (bounded per tick), then a news search when one is due.
     #[allow(clippy::too_many_arguments)]
+    /// Both halves in one tick, for a caller that wants one thread (`--once`, tests).
+    ///
+    /// Production runs them apart ([`Collector::tick_float`], [`Collector::tick_news`]): the two
+    /// talk to different providers, keep disjoint state and answer different questions, and a
+    /// float phase working through its retry backoff has no business delaying a news poll. In one
+    /// tick it does exactly that, which is a detection delay caused by an unrelated outage.
     pub fn tick(
         &mut self,
         archive: &Archive,
@@ -484,16 +573,81 @@ impl Collector {
         sleep: &mut dyn FnMut(Duration),
         log: &mut dyn FnMut(&str),
     ) -> TickReport {
+        let mut report = self.tick_float(archive, http, fmp_key, clock, sleep, log);
+        let news = self.tick_news(archive, http, alpaca, clock, sleep, log);
+        report.merge(news);
+        report
+    }
+
+    /// Takes stories a stream delivered, through the same durable path a search uses.
+    ///
+    /// Propose, append, commit — one owner of version state, so the stream and the searches
+    /// cannot race two dedup maps against each other and cannot write the same version twice.
+    ///
+    /// It does **not** write coverage and does not advance the covered-through point. Receiving a
+    /// message says one story changed; it says nothing about what else did, and coverage is a
+    /// claim about having read a window in full. The bounded repair search remains the only thing
+    /// that can make that claim, and it keeps running whether a socket is connected or not.
+    pub fn ingest_stories(
+        &mut self,
+        archive: &Archive,
+        stories: &[(crate::import::alpaca_news::RawStory, i64)],
+        report: &mut TickReport,
+    ) {
+        if stories.is_empty() {
+            return;
+        }
+        let new = self.versions.propose(stories);
+        if new.is_empty() {
+            return;
+        }
+        if let Err(e) = archive.append_news(&new) {
+            report.errors.push(format!("news store: {e}"));
+            report.news_store_failures += 1;
+            return;
+        }
+        self.versions.commit(&new);
+        report.news_versions += new.len() as u32;
+        report.news_from_stream += new.len() as u32;
+        report.news_versions_forgotten = self.versions.forgotten();
+        report.news_stories_forgotten = self.versions.stories_forgotten();
+    }
+
+    /// The float half: FMP, its own pacer, its own daily plan and retry queue.
+    pub fn tick_float(
+        &mut self,
+        archive: &Archive,
+        http: &mut dyn Http,
+        fmp_key: Option<&FmpKey>,
+        clock: &mut dyn FnMut() -> DateTime<Utc>,
+        sleep: &mut dyn FnMut(Duration),
+        log: &mut dyn FnMut(&str),
+    ) -> TickReport {
         let mut report = TickReport::default();
         let now = clock();
         if let Some(key) = fmp_key {
             self.floats(archive, http, key, now, clock, sleep, log, &mut report);
         }
+        report.float_queued = self.float_queue.len();
+        report.float_retry_pending = self.float_retry.len();
+        report
+    }
+
+    /// The news half: Alpaca, its own pacer, its own windows and version index.
+    pub fn tick_news(
+        &mut self,
+        archive: &Archive,
+        http: &mut dyn Http,
+        alpaca: Option<&AlpacaCredentials>,
+        clock: &mut dyn FnMut() -> DateTime<Utc>,
+        sleep: &mut dyn FnMut(Duration),
+        log: &mut dyn FnMut(&str),
+    ) -> TickReport {
+        let mut report = TickReport::default();
+        let now = clock();
         if let Some(creds) = alpaca {
             self.news(archive, http, creds, now, clock, sleep, log, &mut report);
         }
-        report.float_queued = self.float_queue.len();
-        report.float_retry_pending = self.float_retry.len();
         report.news_through = self.last_through;
         report
     }
@@ -756,7 +910,10 @@ impl Collector {
             self.cfg.news_idle_poll_secs
         };
         self.next_news_poll = now_ns + interval * SEC;
-        let mut windows = vec![(news_window(&self.cfg, self.last_through, now_ns), true)];
+        let mut windows = vec![(
+            news_window(&self.cfg, self.last_through, now_ns),
+            Pass::Forward,
+        )];
         if self
             .last_edit_poll
             .is_none_or(|t| now_ns - t >= self.cfg.news_edit_every_secs * SEC)
@@ -764,10 +921,26 @@ impl Collector {
         {
             self.last_edit_poll = Some(now_ns);
             let end = now_ns - self.cfg.news_settle_secs * SEC;
-            windows.push(((end - self.cfg.news_edit_window_secs * SEC, end), false));
+            windows.push((
+                (end - self.cfg.news_edit_window_secs * SEC, end),
+                Pass::Edit,
+            ));
+        }
+        // The repair pass: the whole freshness horizon, because neither window above can see an
+        // edit to an older story if the provider filters its interval on publication time
+        // ([`EvidenceConfig::news_repair_every_secs`]).
+        if self.cfg.news_repair_every_secs > 0
+            && self
+                .last_repair_poll
+                .is_none_or(|t| now_ns - t >= self.cfg.news_repair_every_secs * SEC)
+            && self.last_through.is_some()
+        {
+            self.last_repair_poll = Some(now_ns);
+            windows.push((news_repair_window(&self.cfg, now_ns), Pass::Repair));
         }
         let sleep = RefCell::new(sleep);
-        for ((start, end), forward) in windows {
+        for ((start, end), pass) in windows {
+            let forward = pass == Pass::Forward;
             let q = NewsQuery {
                 start: Utc.timestamp_nanos(start),
                 end: Utc.timestamp_nanos(end),
@@ -790,6 +963,15 @@ impl Collector {
                 log,
             );
             report.news_requests += f.requests;
+            if pass == Pass::Repair {
+                report.news_repairs += 1;
+                // Pagination has to finish before the window may be claimed, which is what
+                // `coverage_record` already requires; an unfinished repair is reported so a
+                // reader does not take the horizon as re-read.
+                if !f.complete {
+                    report.news_repair_incomplete += 1;
+                }
+            }
             // Versions first, then the coverage they complete: a crash in between leaves stories
             // without a coverage claim (UNKNOWN), never a claim without its stories (a false FAIL).
             //

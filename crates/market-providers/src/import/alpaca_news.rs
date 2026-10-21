@@ -42,7 +42,7 @@ pub const MAX_LIMIT: u32 = 50;
 /// Guard against a provider that never stops paginating.
 const MAX_PAGES: u32 = 2_000;
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(PartialEq, Clone, Debug, Deserialize)]
 pub struct RawStory {
     pub id: u64,
     #[serde(default)]
@@ -313,9 +313,7 @@ impl NewsVersions {
             }
             keys.push_back(key);
             // Most recently confirmed goes to the back; a story confirmed again moves there.
-            if !fresh
-                && let Some(i) = self.order.iter().position(|id| *id == r.article_id)
-            {
+            if !fresh && let Some(i) = self.order.iter().position(|id| *id == r.article_id) {
                 self.order.remove(i);
             }
             self.order.push_back(r.article_id.clone());

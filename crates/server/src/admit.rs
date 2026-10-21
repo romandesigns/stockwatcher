@@ -322,11 +322,7 @@ impl AdmissionSink {
             written: self.counters.written.load(Ordering::Relaxed),
             errors: self.counters.errors.load(Ordering::Relaxed),
             queue_capacity: QUEUE_CAPACITY,
-            dates_evicted: self
-                .seq
-                .lock()
-                .expect("admission sequence lock")
-                .evicted,
+            dates_evicted: self.seq.lock().expect("admission sequence lock").evicted,
             fenced: self.counters.fenced.load(Ordering::Relaxed),
         }
     }
@@ -404,6 +400,12 @@ pub(crate) fn occurrence_hash(e: &MarketEvent) -> u64 {
         _ => {}
     }
     payload_hash(&b)
+}
+
+/// [`code_id`], for other records that need the same identity (`crate::shadow`). Warmed at
+/// startup, off every lock.
+pub(crate) fn code_id_for_records() -> &'static str {
+    code_id()
 }
 
 /// A fingerprint of the running executable, computed once.
@@ -644,12 +646,16 @@ fn flush(
             }
         });
         let Some(w) = w else {
-            counters.errors.fetch_add(rows.len() as u64, Ordering::Relaxed);
+            counters
+                .errors
+                .fetch_add(rows.len() as u64, Ordering::Relaxed);
             continue;
         };
         match w.append(&rows) {
             Ok(()) => {
-                counters.written.fetch_add(rows.len() as u64, Ordering::Relaxed);
+                counters
+                    .written
+                    .fetch_add(rows.len() as u64, Ordering::Relaxed);
                 // Checkpoint on every flush rather than only every CHECKPOINT_EVERY records: the
                 // proven prefix is what a restore may use, and a quiet market would otherwise
                 // leave its whole day unproven.
@@ -658,7 +664,9 @@ fn flush(
                 }
             }
             Err(e) => {
-                counters.errors.fetch_add(rows.len() as u64, Ordering::Relaxed);
+                counters
+                    .errors
+                    .fetch_add(rows.len() as u64, Ordering::Relaxed);
                 tracing::warn!(%day, error = %e, "admission journal: append failed");
             }
         }
@@ -921,7 +929,11 @@ mod tests {
             "the predecessor was checkpointed rather than sealed, so the gap between the two \
              boots is declared rather than assumed away"
         );
-        assert_eq!(both.records.len(), 4, "both boots' admissions, in epoch order");
+        assert_eq!(
+            both.records.len(),
+            4,
+            "both boots' admissions, in epoch order"
+        );
         assert_eq!(
             both.records[3].rec.s, 1,
             "sequences restart per segment, so a position is (epoch, sequence)"
@@ -948,9 +960,11 @@ mod tests {
         let got = admissions::read(&dir, day(), &id);
         assert_eq!(got.headers.len(), 1);
         // The seal is there whatever the build identity says about using it.
-        let text = std::fs::read_to_string(
-            dir.join(format!("{}1.{}", admissions::SEGMENT_PREFIX, admissions::SEGMENT_EXT)),
-        )
+        let text = std::fs::read_to_string(dir.join(format!(
+            "{}1.{}",
+            admissions::SEGMENT_PREFIX,
+            admissions::SEGMENT_EXT
+        )))
         .expect("the segment");
         assert!(
             text.contains("\"k\":\"seal\""),
@@ -1027,7 +1041,11 @@ mod tests {
         sink.close();
         // The ingest had one more in flight.
         assert_eq!(
-            sink.record(&trade(2, at(9, 30, 2), 100), Some((true, true)), at(9, 30, 3)),
+            sink.record(
+                &trade(2, at(9, 30, 2), 100),
+                Some((true, true)),
+                at(9, 30, 3)
+            ),
             0,
             "refused rather than queued behind the seal"
         );
@@ -1105,7 +1123,9 @@ mod tests {
         let d1 = NaiveDate::from_ymd_opt(2026, 10, 15).expect("valid");
         let d2 = NaiveDate::from_ymd_opt(2026, 10, 16).expect("valid");
         let on = |d: NaiveDate, h: u32, m: u32, s: u32| {
-            market_events::session::et(d, h, m, s, 0).expect("valid").nanos()
+            market_events::session::et(d, h, m, s, 0)
+                .expect("valid")
+                .nanos()
         };
 
         // Three prints on the first date, two on the second, then a late one belonging to the
@@ -1166,7 +1186,9 @@ mod tests {
         let (sink, rx, _c) = AdmissionSink::new(2);
         let d = NaiveDate::from_ymd_opt(2026, 10, 16).expect("valid");
         let on = |k: u32| {
-            market_events::session::et(d, 9, 30, k, 0).expect("valid").nanos()
+            market_events::session::et(d, 9, 30, k, 0)
+                .expect("valid")
+                .nanos()
         };
         for k in 0..5u64 {
             sink.record(&trade(k, on(k as u32), 100), Some((true, true)), on(10));

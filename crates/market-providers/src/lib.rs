@@ -25,6 +25,7 @@ pub mod compat;
 mod config;
 pub mod import;
 mod live;
+pub mod news_stream;
 pub mod recorder;
 mod replay;
 /// Non-blocking trigger for warming up intraday band entrants (server API, not wired yet).

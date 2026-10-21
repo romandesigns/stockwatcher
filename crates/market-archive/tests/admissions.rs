@@ -118,7 +118,11 @@ fn records_past_the_last_checkpoint_are_an_unverified_tail() {
         }
     );
     assert_eq!(got.proven_records().len(), 2);
-    assert_eq!(got.records.len(), 4, "the tail is readable, just not proven");
+    assert_eq!(
+        got.records.len(),
+        4,
+        "the tail is readable, just not proven"
+    );
     assert_eq!(got.reason(), Some("journal_unproven_tail"));
 }
 
@@ -317,7 +321,9 @@ fn a_restart_writes_its_own_segment_and_keeps_the_old_prefix() {
     let tmp = tempfile::tempdir().expect("tmp");
     let dir = tmp.path().join("live");
     let mut first = open(&dir);
-    first.append(&[print_at(1, 11), print_at(2, 22)]).expect("append");
+    first
+        .append(&[print_at(1, 11), print_at(2, 22)])
+        .expect("append");
     first.seal().expect("seal");
     drop(first);
 
@@ -350,17 +356,16 @@ fn an_unsealed_predecessor_leaves_a_declared_gap() {
     let tmp = tempfile::tempdir().expect("tmp");
     let dir = tmp.path().join("live");
     let mut first = open(&dir);
-    first.append(&[print_at(1, 11), print_at(2, 22)]).expect("append");
+    first
+        .append(&[print_at(1, 11), print_at(2, 22)])
+        .expect("append");
     first.checkpoint().expect("checkpoint");
     // Killed: no seal.
     drop(first);
     let mut second = open(&dir);
     let pred = {
         let got = admissions::read(&dir, day(), &ident());
-        got.headers[1]
-            .predecessor
-            .clone()
-            .expect("a predecessor")
+        got.headers[1].predecessor.clone().expect("a predecessor")
     };
     assert_eq!(
         (pred.epoch, pred.through_seq, pred.sealed),

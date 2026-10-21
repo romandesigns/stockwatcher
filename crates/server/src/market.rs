@@ -436,6 +436,9 @@ pub(crate) struct Inner {
     /// queue filled under the core lock and absorbed off it, with counted drops. Measurement
     /// scaffolding, not a latency claim.
     observations: crate::observe::ObservationSink,
+    /// Shadow measurement capture (`crate::shadow`), set once at start when a context board
+    /// exists. Filled under the core lock with a bounded `try_send`; folded and appended off it.
+    pub(crate) shadow: std::sync::OnceLock<std::sync::Arc<crate::shadow::ShadowSink>>,
     /// The admission journal's bounded queue (`crate::admit`), set once at start for a live
     /// market with an archive to write into; `None` for replays and test sessions.
     ///
@@ -609,6 +612,7 @@ impl Market {
             ross_subs: AtomicUsize::new(0),
             observations: crate::observe::ObservationSink::new(crate::observe::QUEUE_CAPACITY),
             admissions: std::sync::OnceLock::new(),
+            shadow: std::sync::OnceLock::new(),
             history: std::sync::OnceLock::new(),
             evidence: std::sync::OnceLock::new(),
             alerts: std::sync::OnceLock::new(),
@@ -645,7 +649,41 @@ impl Market {
         {
             board.add_evidence(batch);
         }
-        Some(board)
+        // One capture for the life of the market, shared by every board it rebuilds: a replay
+        // seek replaces the board, and the sessions it had already observed are still the
+        // sessions it observed.
+        let sink = self.0.shadow.get_or_init(|| {
+            // A segment of this boot's own, reserved so two boots on one date cannot share a
+            // file: the header names the build and the epoch, and a second boot appending under
+            // the first one's header would attribute its records to the wrong build.
+            let (log, epoch) = match self.shadow_log_dir() {
+                Some(dir) => crate::shadow::reserve_segment(&dir),
+                None => (None, 0),
+            };
+            let sink = std::sync::Arc::new(crate::shadow::ShadowSink::new(
+                crate::shadow::QUEUE_CAPACITY,
+                log,
+                crate::COMMIT.to_string(),
+                // The same executable fingerprint the admission journal uses, warmed off any
+                // lock at startup rather than hashed on a hot path.
+                crate::admit::code_id_for_records().to_string(),
+                epoch,
+            ));
+            // The capture folds and appends on a thread of its own: no disk on a runtime worker,
+            // and no report waiting behind a file write.
+            crate::shadow::ShadowSink::spawn_absorber(sink.clone());
+            sink
+        });
+        Some(board.with_shadow(sink.clone()))
+    }
+
+    /// Where the shadow capture's segments live, when there is an archive to write beside.
+    ///
+    /// `None` leaves the capture in memory only, and the report then says so and withholds every
+    /// figure: a cohort a restart would lose is not a forward corpus.
+    fn shadow_log_dir(&self) -> Option<std::path::PathBuf> {
+        let h = self.0.history.get()?;
+        Some(h.archive_root().join("shadow"))
     }
 
     /// Turns stock context on or off for this market from now (tests; production reads
@@ -1905,6 +1943,23 @@ impl Market {
         self.0.observations.report()
     }
 
+    /// What the shadow measurement has so far (`crate::shadow`), or `None` when it is not
+    /// attached.
+    ///
+    /// Settled against the **run's** clock — the latest barrier the board has decided at — not
+    /// the wall clock: a replay's day is its own, and a session that closed yesterday must not
+    /// reopen at this morning's 09:00.
+    ///
+    /// `insufficient_data` until a forward cohort of live closed sessions exists, which is the
+    /// honest state and the only one this process can report.
+    pub fn shadow_report(&self) -> Option<crate::shadow::ShadowReport> {
+        // A read, and only a read. The capture's own thread folds and appends
+        // (`crate::shadow::ShadowSink::spawn_absorber`); a reporter that did the folding would
+        // put a file write behind whoever asked for a figure, and a capture that only advances
+        // when someone looks at it is not a capture.
+        Some(self.0.shadow.get()?.report())
+    }
+
     /// What the admission journal has recorded so far (`crate::admit`), or `None` when this
     /// market writes none (a replay, or a live run with no recording to restore from).
     pub fn admission_report(&self) -> Option<crate::admit::AdmissionReport> {
@@ -1925,6 +1980,23 @@ impl Market {
         // The journal's own counters, said out loud: a run whose journal has holes cannot be
         // restored from exactly, and that is worth knowing before a restart rather than after.
         if let Some(j) = self.admission_report() {
+            if let Some(sh) = self.shadow_report() {
+                tracing::info!(
+                    definitions = sh.definitions,
+                    live_closed_sessions = sh.live_sessions,
+                    candidate_then_strict = sh.candidate_then_strict,
+                    candidate_only = sh.candidate_only,
+                    neither = sh.neither,
+                    censored = sh.censored_sessions,
+                    missing = sh.missing_sessions,
+                    rejected = sh.rejected_sessions,
+                    synthetic = sh.synthetic_sessions,
+                    dropped = sh.dropped_sessions,
+                    complete = sh.complete(),
+                    outcome = %sh.outcome.line(),
+                    "shadow measurement (a description of what was observed, never a claim that either label is better)"
+                );
+            }
             tracing::info!(
                 admitted = j.admitted,
                 written = j.written,
@@ -2520,6 +2592,128 @@ mod tests {
         market.set_stock_context(false);
         let mut never = || panic!("no board, no stage time");
         assert!(market.drain_context_at(&mut never).is_empty());
+    }
+
+    /// A stalled shadow append holds neither the reporter nor the publisher — and the
+    /// synchronous call they used to make would block on exactly the same stall.
+    ///
+    /// The capture folded and appended from the quotes publisher and from the reporter, so a slow
+    /// append sat on a runtime worker and behind whoever asked for a figure. The write is gated
+    /// here (a `cfg(test)` latch, with no production path to it) to show the difference rather
+    /// than assert it.
+    ///
+    /// A record is deliberately queued **after** the first append has blocked. Without it a
+    /// restored synchronous absorb inside the reporter would find an empty queue, write nothing
+    /// and return promptly — and this test would pass over the very thing it is for.
+    #[test]
+    fn a_stalled_shadow_append_holds_neither_the_reporter_nor_the_publisher() {
+        use crate::shadow::{Lifecycle, LifecycleKind, ShadowEvent, ShadowSink};
+        use std::sync::mpsc;
+        use std::time::Instant;
+
+        let tmp = tempfile::tempdir().expect("tmp");
+        let (log, epoch) = crate::shadow::reserve_segment(tmp.path());
+        assert!(
+            log.is_some(),
+            "a segment was reserved, so a write really is attempted"
+        );
+        let sink = Arc::new(ShadowSink::new(
+            crate::shadow::QUEUE_CAPACITY,
+            log,
+            "testbuild".into(),
+            "testcode00000001".into(),
+            epoch,
+        ));
+        sink.hold_writes(true);
+
+        let market = Market::idle(ClockMode::Replay, "test", None);
+        market
+            .0
+            .shadow
+            .set(sink.clone())
+            .map_err(|_| "already set")
+            .expect("a fresh market");
+        market.set_stock_context(true);
+
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 10, 16).expect("valid");
+        let event = |cutoff: i64| ShadowEvent {
+            run_id: "replay".into(),
+            source: "replay".into(),
+            fidelity: "SyntheticFixture".into(),
+            policy: "pillars-v2@fixture".into(),
+            trading_date: date,
+            symbol: "ABCD".into(),
+            cutoff,
+            candidate: true,
+            strict: false,
+            four_decided: true,
+            rvol_decided: true,
+            rvol_value: None,
+            rvol_same_time_milli: None,
+            rvol_recent_milli: None,
+        };
+        sink.capture_lifecycle(Lifecycle {
+            run_id: "replay".into(),
+            source: "replay".into(),
+            fidelity: "SyntheticFixture".into(),
+            kind: LifecycleKind::Start,
+            at: 1,
+        });
+        sink.capture(event(2));
+
+        // The synchronous call the publisher used to make: it blocks inside the gated append.
+        let blocked = {
+            let s = sink.clone();
+            std::thread::spawn(move || s.absorb())
+        };
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            !blocked.is_finished(),
+            "a synchronous absorb waits for the append, which is why the publisher must not \
+             make one"
+        );
+
+        // One more record, queued while the write is stuck. A reporter that folded would now
+        // have something to write, and would block.
+        sink.capture(event(3));
+
+        // The reporter and the publisher, on a thread, so a regression fails rather than hangs.
+        let (done, waited) = mpsc::channel();
+        let reporter = {
+            let market = market.clone();
+            std::thread::spawn(move || {
+                let t = Instant::now();
+                let r = market.shadow_report().expect("a capture");
+                market.drain_context();
+                market.publish_context();
+                let _ = done.send(t.elapsed());
+                r
+            })
+        };
+        let quick = waited.recv_timeout(Duration::from_secs(2));
+        // Released before any assertion that could fail, so nothing is left hanging either way.
+        sink.hold_writes(false);
+        let took = quick.expect(
+            "the reporter and the publisher returned while the append was stalled; a \
+             synchronous fold inside either of them would have waited for it",
+        );
+        assert!(
+            took < Duration::from_millis(500),
+            "and returned promptly: {took:?}"
+        );
+        let r = reporter.join().expect("the reporter thread");
+        assert!(r.captured >= 3, "the records were handed off: {r:?}");
+
+        // The write lands once released, and the figures catch up.
+        let folded = blocked.join().expect("the absorb finishes once released");
+        assert!(
+            folded >= 2,
+            "it folded what was queued when it ran: {folded}"
+        );
+        sink.absorb();
+        let r = sink.report();
+        assert_eq!(r.persisted, r.absorbed, "{r:?}");
+        assert!(r.absorbed >= 3, "{r:?}");
     }
 
     /// Warmup requests are fair across ticks: a first batch that never resolves does not block

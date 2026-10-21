@@ -500,7 +500,8 @@ impl Occurrences {
             .iter()
             .map(|(h, v)| {
                 v.len()
-                    .saturating_sub(self.offered.get(h).copied().unwrap_or(0)) as u64
+                    .saturating_sub(self.offered.get(h).copied().unwrap_or(0))
+                    as u64
             })
             .sum()
     }
@@ -579,9 +580,7 @@ impl AdmissionWriter {
             // empty whenever the predecessor was another build — or, for a build that cannot name
             // itself, always — and the link is a statement about files, not about rules.
             let prior_epoch = epoch - 1;
-            let path = dir.join(format!(
-                "{SEGMENT_PREFIX}{prior_epoch}.{SEGMENT_EXT}"
-            ));
+            let path = dir.join(format!("{SEGMENT_PREFIX}{prior_epoch}.{SEGMENT_EXT}"));
             let mut budget = Limits::default();
             match read_segment(&path, day, None, &mut budget) {
                 Ok(seg) => match seg.proven {
@@ -891,9 +890,14 @@ pub fn read_within(
     }
     // The most specific reason first: a dropped record and a torn line say where the loss was,
     // a restart gap says the two runs cannot be joined, and an unproven tail is the residual.
-    let tail_reason = ["journal_holes", "journal_torn_line", "journal_unsealed_restart", "journal_unproven_tail"]
-        .into_iter()
-        .find(|r| reasons.contains(r));
+    let tail_reason = [
+        "journal_holes",
+        "journal_torn_line",
+        "journal_unsealed_restart",
+        "journal_unproven_tail",
+    ]
+    .into_iter()
+    .find(|r| reasons.contains(r));
     // A proof is only a proof if the build that wrote it can be named.
     if !headers.iter().all(|h| h.identity.names_a_build()) {
         return Admissions {
