@@ -15,7 +15,7 @@ export type RootStackParamList = {
   /** The main navigation's tabs (dashboard, chart). Pushed screens go beside it in this stack. */
   Home: NavigatorScreenParams<MainTabParamList> | undefined;
   /** A ticker's chart, presented as a modal over everything (owner, 2026-10-19). */
-  TickerChart: { symbol: string; detectionEpisodeId?: string };
+  TickerChart: { symbol: string; detectionEpisodeId?: string; detectionRunEpoch?: string };
 };
 
 const Stack = createBlankStackNavigator<RootStackParamList>();

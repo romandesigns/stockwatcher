@@ -1,11 +1,11 @@
 import { formatEtTime } from "@stockwatcher/chart-core";
 import { UI } from "@stockwatcher/chart-native";
-import { rossAttention, rossFreshness, rossReadinessView, rossRowView, type RossChannel, type RossRowView, type RossTone } from "@stockwatcher/shared";
+import { detectionFamilyLabel, detectionStateLabel, groupDetections, rossAttention, rossFreshness, rossReadinessView, rossRowView, type DetectionChannel, type DetectionEpisode, type RossChannel, type RossRowView, type RossTone } from "@stockwatcher/shared";
 import { memo, useEffect, useState } from "react";
 import { Animated, Pressable, StyleSheet, Text, View } from "react-native";
 import Svg, { Circle, Rect } from "react-native-svg";
 
-import { useRoss } from "../feed/hooks";
+import { useDetection, useRoss } from "../feed/hooks";
 import { fonts } from "../theme";
 import { useTickerPress } from "../ui/useTickerPress";
 
@@ -27,8 +27,10 @@ const hhmm = (ns: number) => formatEtTime(Math.round(ns / 1_000_000));
  * row earns a coloured edge only when it needs you (near the trigger, crossing, triggered).
  * Tapping a row opens its chart (the chart modal); tap, then hold copies the ticker.
  */
-export function RossPanel({ channel, onPick, reducedMotion }: { channel: RossChannel; onPick: (symbol: string) => void; reducedMotion: boolean }) {
+export function RossPanel({ channel, detection, onPick, reducedMotion }: { channel: RossChannel; detection: DetectionChannel; onPick: (symbol: string, episodeId?: string, runEpoch?: string) => void; reducedMotion: boolean }) {
   const state = useRoss(channel);
+  const detections = useDetection(detection);
+  const bySymbol = new Map(groupDetections(detections.snapshot).map((g) => [g.symbol, g.selected]));
   const { enabled, panel, readiness } = state;
   const rows = panel?.rows.map((r) => rossRowView(r, panel.cutoff, hhmm)) ?? [];
   const attention = panel ? rossAttention(panel) : 0;
@@ -73,7 +75,7 @@ export function RossPanel({ channel, onPick, reducedMotion }: { channel: RossCha
       ) : (
         <View style={fresh.stale ? styles.dimmed : undefined}>
           {rows.map((r) => (
-            <Row key={r.symbol} row={r} onPick={onPick} reducedMotion={reducedMotion} />
+            <Row key={r.symbol} row={r} episode={bySymbol.get(r.symbol)} detectionCurrent={detections.connected && !detections.resyncing} onPick={(symbol) => onPick(symbol, bySymbol.get(symbol)?.episode_id, detections.frame?.runEpoch)} reducedMotion={reducedMotion} />
           ))}
         </View>
       )}
@@ -83,7 +85,7 @@ export function RossPanel({ channel, onPick, reducedMotion }: { channel: RossCha
 
 const EDGE: Partial<Record<RossRowView["setup"]["state"], string>> = { crossing: UI.accent, near: UI.warning, triggered: UI.good };
 
-const Row = memo(function Row({ row: r, onPick, reducedMotion }: { row: RossRowView; onPick: (symbol: string) => void; reducedMotion: boolean }) {
+const Row = memo(function Row({ row: r, episode, detectionCurrent, onPick, reducedMotion }: { row: RossRowView; episode?: DetectionEpisode; detectionCurrent: boolean; onPick: (symbol: string) => void; reducedMotion: boolean }) {
   const press = useTickerPress(r.symbol, () => onPick(r.symbol));
   const edge = EDGE[r.setup.state];
   return (
@@ -121,6 +123,7 @@ const Row = memo(function Row({ row: r, onPick, reducedMotion }: { row: RossRowV
         {r.tag ? <Text style={[styles.tag, { color: TONE[r.tagTone] }]}>{r.tag}</Text> : null}
       </View>
       {r.setup.meter !== null && <Meter value={r.setup.meter} color={TONE[r.setup.tone]} />}
+      {episode && <Text style={styles.note}>Detection: {detectionFamilyLabel(episode.family)} · {detectionStateLabel(episode.state)} · experimental{detectionCurrent ? "" : " · last received"}</Text>}
     </Pressable>
   );
 });

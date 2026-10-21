@@ -9,8 +9,8 @@ import type { RootStackParamList } from "./RootStack";
 export const navigationRef = createNavigationContainerRef<RootStackParamList>();
 
 /** Opens a ticker's chart modal (it covers the dashboard, so nothing can open a second one over it). */
-export function openTickerChart(symbol: string, detectionEpisodeId?: string): void {
-  if (navigationRef.isReady()) navigationRef.navigate("TickerChart", { symbol, ...(detectionEpisodeId ? { detectionEpisodeId } : {}) });
+export function openTickerChart(symbol: string, detectionEpisodeId?: string, detectionRunEpoch?: string): void {
+  if (navigationRef.isReady()) navigationRef.navigate("TickerChart", { symbol, ...(detectionEpisodeId ? { detectionEpisodeId } : {}), ...(detectionRunEpoch ? { detectionRunEpoch } : {}) });
 }
 
 export function navigateToAlerts(): void {

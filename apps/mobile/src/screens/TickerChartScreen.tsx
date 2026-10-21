@@ -1,14 +1,18 @@
 import { buildSlots, changeReference, formatChange, formatPrice, lastCandle, type Timeframe } from "@stockwatcher/chart-core";
 import { CandleChart } from "@stockwatcher/chart-native";
+import { detectionFamilyLabel, detectionOverlays, detectionPrice, detectionStateLabel, groupDetections } from "@stockwatcher/shared";
 import { useNavigation, type RouteProp } from "@react-navigation/native";
 import { useMemo, useState, useSyncExternalStore } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
+import Animated, { FadeIn, FadeOut, LinearTransition, ReduceMotion } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useChartAlerts } from "../alerts/useChartAlerts";
+import { DetectionEpisodeDetails } from "../dashboard/DetectionPanel";
 import { useDashboardFeed } from "../feed/dashboardFeed";
-import { useChartFeed, usePaperTrading } from "../feed/hooks";
+import { useChartFeed, useDetection, usePaperTrading } from "../feed/hooks";
 import type { MobileFeed } from "../feed/serverFeed";
+import { useReducedMotion } from "../motion/useReducedMotion";
 import type { RootStackParamList } from "../navigation/RootStack";
 import { appActions, getLoadedStore, useApp } from "../state/store";
 import { colors, fonts } from "../theme";
@@ -40,11 +44,11 @@ export function TickerChartScreen({ route }: Props) {
   const feed = useDashboardFeed();
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
-  const { symbol } = route.params;
+  const { symbol, detectionEpisodeId, detectionRunEpoch } = route.params;
   return (
     <View style={[styles.screen, { paddingTop: insets.top + 4, paddingBottom: insets.bottom + 4 }]} accessibilityViewIsModal onAccessibilityEscape={() => navigation.goBack()}>
       {feed ? (
-        <ModalChart key={symbol} feed={feed} symbol={symbol} />
+        <ModalChart key={symbol} feed={feed} symbol={symbol} detectionEpisodeId={detectionEpisodeId} detectionRunEpoch={detectionRunEpoch} />
       ) : (
         <Header symbol={symbol} price="—" change="" />
       )}
@@ -81,7 +85,7 @@ function Header({ symbol, price, change }: { symbol: string; price: string; chan
   );
 }
 
-function ModalChart({ feed, symbol }: { feed: MobileFeed; symbol: string }) {
+function ModalChart({ feed, symbol, detectionEpisodeId, detectionRunEpoch }: { feed: MobileFeed; symbol: string; detectionEpisodeId?: string; detectionRunEpoch?: string }) {
   const [app] = useState(appActions);
   const firstSlotTf = useApp((s) => s.dashboard.slots[0]?.timeframe);
   const [timeframe, setTimeframe] = useState<Timeframe>(() => lastTimeframe ?? firstSlotTf ?? "5m");
@@ -99,6 +103,14 @@ function ModalChart({ feed, symbol }: { feed: MobileFeed; symbol: string }) {
   const drawingsHandle = useMemo(() => getLoadedStore().drawingsFor(symbol), [symbol]);
   const drawings = useSyncExternalStore(drawingsHandle.subscribe, drawingsHandle.get);
   const [inspectT, setInspectT] = useState<number | null>(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const reducedMotion = useReducedMotion();
+  const detection = useDetection(feed.detection);
+  const matchingRun = !detectionRunEpoch || detectionRunEpoch === detection.frame?.runEpoch;
+  const episode = detectionEpisodeId
+    ? matchingRun ? detection.snapshot?.episodes.find((e) => e.episode_id === detectionEpisodeId && e.symbol === symbol) : undefined
+    : groupDetections(detection.snapshot).find((g) => g.symbol === symbol)?.selected;
+  const annotations = episode ? detectionOverlays(detection.snapshot, symbol, episode.episode_id) : [];
 
   const slots = useMemo(() => (series ? buildSlots(series.candles, series.gaps) : []), [series]);
   const last = lastCandle(slots);
@@ -109,6 +121,17 @@ function ModalChart({ feed, symbol }: { feed: MobileFeed; symbol: string }) {
   return (
     <>
       <Header symbol={symbol} price={last ? formatPrice(last.c) : "—"} change={change} />
+      <View style={styles.detectionSummary}>
+        <Text style={styles.detectionMeta}>Detection · experimental · {detection.frame?.source ?? "source pending"} · canonical 15s</Text>
+        {!detection.connected && <Text style={styles.detectionWarning}>Current assessment unavailable · {detection.snapshot ? "last received state" : "waiting for snapshot"}</Text>}
+        {episode ? <>
+          <Pressable accessibilityRole="button" accessibilityState={{ expanded: detailsOpen }} accessibilityLabel={`${detailsOpen ? "Hide" : "Show"} selected detection details`} onPress={() => setDetailsOpen(!detailsOpen)} style={styles.detectionButton}>
+            <Text style={styles.detectionState}>{detectionFamilyLabel(episode.family)} · {detectionStateLabel(episode.state)} · {detailsOpen ? "hide details" : "details"}</Text>
+          </Pressable>
+          <Text style={styles.detectionMeta}>T {detectionPrice(episode.level?.trigger ?? null)} · I {detectionPrice(episode.level?.invalidation ?? null)}{episode.level ? ` · v${episode.level.version}` : ""} · {episode.fidelity.replace(/_/g, " ")}</Text>
+          <Text selectable numberOfLines={1} style={styles.detectionId}>{episode.episode_id}</Text>
+        </> : <Text style={styles.detectionMeta}>{detectionEpisodeId ? "Selected episode is unavailable in this source/run or bounded history." : detection.enabled === false ? "Off on this server" : "No active detection for this ticker."}</Text>}
+      </View>
       <View style={styles.chartWrap}>
         <CandleChart
           style={styles.chart}
@@ -144,9 +167,11 @@ function ModalChart({ feed, symbol }: { feed: MobileFeed; symbol: string }) {
           options={OPTIONS}
           barSpacing={8}
           alerts={alerts}
+          detection={annotations}
           label={`${symbol} ${timeframe} candles`}
         />
       </View>
+      {detailsOpen && episode && detection.snapshot && <Animated.ScrollView entering={FadeIn.duration(140).reduceMotion(reducedMotion ? ReduceMotion.Always : ReduceMotion.System)} exiting={FadeOut.duration(100).reduceMotion(reducedMotion ? ReduceMotion.Always : ReduceMotion.System)} layout={LinearTransition.duration(160).reduceMotion(reducedMotion ? ReduceMotion.Always : ReduceMotion.System)} style={styles.detectionDetails} showsVerticalScrollIndicator={false} showsHorizontalScrollIndicator={false}><DetectionEpisodeDetails episode={episode} snapshot={detection.snapshot} currentAvailable={detection.connected && !detection.resyncing} /></Animated.ScrollView>}
     </>
   );
 }
@@ -162,4 +187,11 @@ const styles = StyleSheet.create({
   change: { fontSize: 13, fontVariant: ["tabular-nums"] },
   chartWrap: { flex: 1, minHeight: 0, backgroundColor: colors.bgPanel, borderRadius: 12, padding: 6 },
   chart: { flex: 1 },
+  detectionSummary: { gap: 3, paddingHorizontal: 6 },
+  detectionMeta: { color: colors.textFaint, fontFamily: fonts.regular, fontSize: 10, lineHeight: 14 },
+  detectionWarning: { color: colors.warning, fontFamily: fonts.regular, fontSize: 10 },
+  detectionButton: { minHeight: 36, justifyContent: "center" },
+  detectionState: { color: colors.accent, fontFamily: fonts.semibold, fontSize: 11 },
+  detectionId: { color: colors.textFaint, fontFamily: fonts.regular, fontSize: 9 },
+  detectionDetails: { maxHeight: "42%", paddingHorizontal: 6 },
 });

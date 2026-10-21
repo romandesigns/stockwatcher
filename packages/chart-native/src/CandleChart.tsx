@@ -95,6 +95,7 @@ import {
   DEFAULT_DRAWING_SETTINGS,
   toolAllowed,
   type DrawingSettings,
+  type DetectionOverlay,
 } from "@stockwatcher/chart-core";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AccessibilityInfo, Pressable, StyleSheet, Text, View, type LayoutChangeEvent, type StyleProp, type ViewStyle } from "react-native";
@@ -194,6 +195,8 @@ export interface CandleChartProps {
   style?: StyleProp<ViewStyle>;
   /** Price alerts on this symbol (lines with 44 pt handles, the lift chip, the axis sheet's "Alert at"). Absent = off. */
   alerts?: ChartAlerts | null;
+  /** Authoritative detector annotations. Read-only and separate from editable user drawings. */
+  detection?: readonly DetectionOverlay[];
 }
 
 /** What the host wires for price alerts (chart-web's ChartAlerts; the chart never talks to a server). */
@@ -276,6 +279,7 @@ export function CandleChart({
   label,
   style,
   alerts = null,
+  detection,
 }: CandleChartProps) {
   // Price alerts: a line being dragged by its handle (drawn at its new price until the lift), and
   // the quick sheet's draft (keyed per opening).
@@ -452,6 +456,7 @@ export function CandleChart({
       draft,
       trading: showTrading ? { orders, position, last, dragging: drag?.order ?? null, placeY: null } : null,
       alerts: alertLayer,
+      detection,
       context,
       now: clockNow,
       paneHeights,
@@ -460,7 +465,7 @@ export function CandleChart({
       baselinePrice,
       extendedHours: settings.extendedHours,
     }),
-    [timeframe, series, slots, inspectT, pointer, options, volumeHeight, layers.profile, scaleType, indicatorResults, shownDrawings, selectedDrawing, draft, showTrading, orders, position, last, drag, alertLayer, context, clockNow, paneHeights, inspector, settings.chartType, chartStyle, baselinePrice, settings.extendedHours],
+    [timeframe, series, slots, inspectT, pointer, options, volumeHeight, layers.profile, scaleType, indicatorResults, shownDrawings, selectedDrawing, draft, showTrading, orders, position, last, drag, alertLayer, detection, context, clockNow, paneHeights, inspector, settings.chartType, chartStyle, baselinePrice, settings.extendedHours],
   );
   const model = useMemo(() => computeChartModel(state, vp, size), [state, vp, size]);
 

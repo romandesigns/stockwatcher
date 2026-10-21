@@ -15,14 +15,15 @@ import {
   volumeBuckets,
 } from "@stockwatcher/chart-core";
 import { PROFILE_BINS } from "@stockwatcher/app-state";
-import { CandleChart, Icon, ReplayDaySheet, SessionTimeline, TapeSheet, ToolButton, UI } from "@stockwatcher/chart-native";
-import type { ConnectionStatus } from "@stockwatcher/shared";
+import { CandleChart, Icon, ReplayDaySheet, SessionTimeline, Sheet, TapeSheet, ToolButton, UI } from "@stockwatcher/chart-native";
+import { detectionFamilyLabel, detectionOverlays, detectionStateLabel, groupDetections, type ConnectionStatus } from "@stockwatcher/shared";
 import { useLayoutEffect, useMemo, useState } from "react";
 import Animated, { FadeIn, FadeOut, ReduceMotion } from "react-native-reanimated";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { useCandidates, useChartFeed, usePaperTrading, useReplayDays } from "../feed/hooks";
+import { DetectionEpisodeDetails } from "../dashboard/DetectionPanel";
+import { useCandidates, useChartFeed, useDetection, usePaperTrading, useReplayDays } from "../feed/hooks";
 import type { MobileFeed } from "../feed/serverFeed";
 import { useConnection } from "../feed/useConnection";
 import { useReducedMotion } from "../motion/useReducedMotion";
@@ -59,6 +60,8 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
   const [app] = useState(appActions);
   // The trading day the replay clock is on; it changes on a day switch (and once a night while playing).
   const [clockDay, setClockDay] = useState<string | null>(null);
+  const [detectionDetail, setDetectionDetail] = useState<{ id: string; epoch: string } | null>(null);
+  const detection = useDetection(feed.detection);
   const { symbols: candidates, fixture } = useCandidates(token, clockDay, "replay");
   const replayDays = useReplayDays(token, clockDay);
   const dayOptions = useMemo(() => replayDayOptions(replayDays.state?.days ?? []), [replayDays.state]);
@@ -80,6 +83,10 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
   // Follow the price band: a symbol that leaves it is no longer let through. The fallback is not
   // written back (a phone with a momentarily stale list must not move every other device's chart).
   const active = symbol && candidates.includes(symbol) ? symbol : (candidates[0] ?? null);
+  const detectionEpisode = groupDetections(detection.snapshot).find((g) => g.symbol === active)?.selected;
+  const detailedEpisode = detectionDetail && detectionDetail.epoch === detection.frame?.runEpoch ? detection.snapshot?.episodes.find((e) => e.episode_id === detectionDetail.id && e.symbol === active) : undefined;
+  const selectedEpisodeId = detailedEpisode?.episode_id ?? detectionEpisode?.episode_id;
+  const detectionAnnotations = selectedEpisodeId && (!detectionDetail || detailedEpisode) ? detectionOverlays(detection.snapshot, active ?? "", selectedEpisodeId) : [];
   // Drawings follow the shown symbol; before paint, so a ticker switch never flashes the old marks.
   useLayoutEffect(() => app.showSymbol(active ?? ""), [app, active]);
   const bin = useApp((s) => s.bin);
@@ -163,6 +170,11 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
         </Pressable>
       </View>
 
+      <View style={styles.detectionSummary}>
+        <Text style={styles.detectionMeta}>Detection · experimental · {detection.frame?.source ?? "replay source pending"} · {detection.snapshot?.fidelity.replace(/_/g, " ") ?? "fidelity pending"} · canonical 15s{detection.connected ? "" : " · current assessment unavailable"}</Text>
+        {detectionEpisode ? <Pressable accessibilityRole="button" accessibilityLabel="Inspect the chart's authoritative detection episode" onPress={() => setDetectionDetail({ id: detectionEpisode.episode_id, epoch: detection.frame!.runEpoch })} style={styles.detectionButton}><Text style={styles.detectionState}>{detectionFamilyLabel(detectionEpisode.family)} · {detectionStateLabel(detectionEpisode.state)} · details</Text></Pressable> : <Text style={styles.detectionMeta}>{detection.enabled === false ? "Off on this server" : "No active detection for this ticker"}</Text>}
+      </View>
+
       <CandleChart
         style={styles.chart}
         toolbar
@@ -200,6 +212,7 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
         options={{ priceAxisWidth: 52, volumeHeight: 40, timeAxisHeight: 18, paneGap: 4, fontSize: 10, timeLabelSpacing: 60, indicatorPaneHeight: 56, showProfile: true, profileWidth: 0.2 }}
         barSpacing={8}
         label={`${active ?? ""} ${timeframe} candles`}
+        detection={detectionAnnotations}
       />
 
 
@@ -285,6 +298,11 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
         onSelect={(day) => feed.control({ action: "day", value: day })}
         reducedMotion={reducedMotion}
       />
+      <Sheet open={detectionDetail !== null} onClose={() => setDetectionDetail(null)} title="Replay detection details" reducedMotion={reducedMotion} tall>
+        <ScrollView showsVerticalScrollIndicator={false} showsHorizontalScrollIndicator={false}>
+          {detailedEpisode && detection.snapshot ? <DetectionEpisodeDetails episode={detailedEpisode} snapshot={detection.snapshot} currentAvailable={detection.connected && !detection.resyncing} /> : <Text style={styles.detectionMeta}>The replay run changed or the selected episode left bounded history. Select a current detection to inspect.</Text>}
+        </ScrollView>
+      </Sheet>
     </View>
   );
 }
@@ -303,6 +321,10 @@ const styles = StyleSheet.create({
   chip: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: colors.bgPanel, borderRadius: 999, paddingHorizontal: 10, paddingVertical: 4, alignSelf: "center" },
   chipText: { color: colors.textDim, fontSize: 11, fontWeight: "500" },
   chart: { flex: 1 },
+  detectionSummary: { gap: 2 },
+  detectionMeta: { color: colors.textFaint, fontFamily: fonts.regular, fontSize: 10, lineHeight: 14 },
+  detectionButton: { minHeight: 34, justifyContent: "center" },
+  detectionState: { color: colors.accent, fontFamily: fonts.semibold, fontSize: 11 },
   replayCard: { backgroundColor: UI.panel, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 8, gap: 6 },
   replay: { flexDirection: "row", alignItems: "center", gap: 8 },
   tapeButton: { backgroundColor: UI.row, height: 36, width: 36, paddingHorizontal: 0 },
