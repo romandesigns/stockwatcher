@@ -185,12 +185,19 @@ function shares(n: number): string {
 
 const PILLAR_LABEL: Record<string, string> = { price: "Price", gain: "Gain", rvol: "Volume", float: "Float", news: "News" };
 
+/**
+ * The cue labels (owner, 2026-10-21). A cue names the STAGE a member's pullback is at, from the
+ * same micro-pullback episodes the Detection Panel shows; it is not an entry signal. On the
+ * holdout a "broke trigger" episode failed about three times in four, so it gets the normal text
+ * colour, never a success green, and is not counted as needing attention. Accent is spent only on
+ * a crossing in progress; amber on a price at the trigger.
+ */
 const SETUP: Record<RossSetupState, { label: string; tone: RossTone; pulse: boolean; attention: boolean }> = {
   crossing: { label: "Crossing", tone: "accent", pulse: true, attention: true },
-  near: { label: "Near", tone: "warning", pulse: false, attention: true },
-  triggered: { label: "Triggered", tone: "good", pulse: false, attention: true },
-  forming: { label: "Flag forming", tone: "muted", pulse: false, attention: false },
-  invalidated: { label: "Invalidated", tone: "dim", pulse: false, attention: false },
+  near: { label: "At trigger", tone: "warning", pulse: false, attention: true },
+  triggered: { label: "Broke trigger", tone: "text", pulse: false, attention: false },
+  forming: { label: "Pullback", tone: "muted", pulse: false, attention: false },
+  invalidated: { label: "Failed", tone: "dim", pulse: false, attention: false },
   halted: { label: "Halted", tone: "dim", pulse: false, attention: false },
   watching: { label: "Watching", tone: "dim", pulse: false, attention: false },
 };
@@ -201,7 +208,8 @@ export const ROSS_NEW_NS = 5 * 60 * 1_000_000_000;
 /** The row's display, from the engine's row and the panel's cutoff (ns). */
 export function rossRowView(r: RossRowWire, cutoff: number, formatTime: (epochNs: number) => string): RossRowView {
   const setupWire = r.setup ?? null;
-  const state: RossSetupState = setupWire?.state ?? "watching";
+  // A token this client does not know (a newer server) reads as watching rather than breaking.
+  const state: RossSetupState = setupWire?.state && setupWire.state in SETUP ? setupWire.state : "watching";
   const look = SETUP[state];
   const m = r.momentum;
   const m1 = r.move_1m_bp ?? (m.status === "ready" ? m.r_primary_bp : null);
@@ -225,11 +233,13 @@ export function rossRowView(r: RossRowWire, cutoff: number, formatTime: (epochNs
   }
   const trigger = setupWire?.trigger?.price ?? null;
   const inval = setupWire?.invalidation?.price ?? null;
-  const risk = setupWire?.risk_to_stop_bp ?? null;
-  const riskText = risk !== null ? ` · ${(risk / 100).toFixed(1)}% stop` : "";
+  // How far the price sits above the pullback low (the failure level): a distance, not a stop.
+  const overLow = setupWire?.to_invalidation_bp ?? setupWire?.risk_to_stop_bp ?? null;
+  const lowText = overLow !== null ? ` · ${(overLow / 100).toFixed(1)}% over low` : "";
   let note = "";
-  if (state === "crossing" && trigger !== null) note = `${rossPrice(trigger)} · close pending${riskText}`;
-  else if (state === "near" && trigger !== null) note = `${rossPrice(trigger)} · ${((setupWire?.distance_to_trigger_bp ?? 0) / 100).toFixed(1)}% away${riskText}`;
+  if (state === "crossing" && trigger !== null) note = `${rossPrice(trigger)} · close pending${lowText}`;
+  else if (state === "near" && trigger !== null) note = `${rossPrice(trigger)} · ${((setupWire?.distance_to_trigger_bp ?? 0) / 100).toFixed(1)}% away${lowText}`;
+  else if (state === "forming" && trigger !== null) note = `trigger ${rossPrice(trigger)}`;
   else if (state === "triggered" && trigger !== null) note = `${rossPrice(trigger)}${setupWire?.state_since ? ` · ${formatTime(setupWire.state_since)}` : ""}`;
   else if (state === "invalidated" && inval !== null) note = `below ${rossPrice(inval)}`;
   const admitted = r.membership.episodes.at(-1)?.admitted_at;
@@ -258,9 +268,9 @@ export function rossRowView(r: RossRowWire, cutoff: number, formatTime: (epochNs
   return view;
 }
 
-/** Rows needing attention (near, crossing, triggered): the panel's count, or derived from the rows. */
+/** Rows needing attention (at trigger, crossing): the panel's count, or derived from the rows. */
 export function rossAttention(panel: RossPanelWire): number {
-  return panel.attention ?? panel.rows.filter((r) => r.setup && SETUP[r.setup.state].attention).length;
+  return panel.attention ?? panel.rows.filter((r) => r.setup && SETUP[r.setup.state]?.attention).length;
 }
 
 /**
@@ -285,8 +295,8 @@ export function rossDemoPanel(cutoff: number): RossPanelWire {
     cutoff,
     attention: 2,
     rows: [
-      row({ symbol: "BBBB", price: 6_080_000, gain_bp: 2150, momentum: mom(300, 40), rank: 1, prev_rank: 3, rvol_milli: 7400, float_shares: 30_100_000, membership: { status: "retained", episodes: ep(11), nonpassing: [["float", "FAIL", "at_or_above_max"]] }, counts: { pass: 4, fail: 1, unknown: 0 }, setup: { state: "crossing", trigger: { price: 6_050_000, version: "demo" }, invalidation: { price: 5_860_000, version: "demo" }, meter_milli: 1000, risk_to_stop_bp: 362 }, spark: spark(5_700_000, 6_080_000, 20_000) }),
-      row({ symbol: "EEEE", price: 2_470_000, gain_bp: 3100, momentum: mom(140, 80), rank: 2, prev_rank: 2, rvol_milli: 11_200, float_shares: 3_100_000, membership: { status: "qualified", episodes: ep(2), nonpassing: [] }, setup: { state: "near", trigger: { price: 2_490_000, version: "demo" }, invalidation: { price: 2_360_000, version: "demo" }, distance_to_trigger_bp: 80, meter_milli: 820, risk_to_stop_bp: 530 }, spark: spark(2_380_000, 2_470_000, 8_000) }),
+      row({ symbol: "BBBB", price: 6_080_000, gain_bp: 2150, momentum: mom(300, 40), rank: 1, prev_rank: 3, rvol_milli: 7400, float_shares: 30_100_000, membership: { status: "retained", episodes: ep(11), nonpassing: [["float", "FAIL", "at_or_above_max"]] }, counts: { pass: 4, fail: 1, unknown: 0 }, setup: { state: "crossing", trigger: { price: 6_050_000, version: "demo" }, invalidation: { price: 5_860_000, version: "demo" }, meter_milli: 1000, to_invalidation_bp: 362 }, spark: spark(5_700_000, 6_080_000, 20_000) }),
+      row({ symbol: "EEEE", price: 2_470_000, gain_bp: 3100, momentum: mom(140, 80), rank: 2, prev_rank: 2, rvol_milli: 11_200, float_shares: 3_100_000, membership: { status: "qualified", episodes: ep(2), nonpassing: [] }, setup: { state: "near", trigger: { price: 2_490_000, version: "demo" }, invalidation: { price: 2_360_000, version: "demo" }, distance_to_trigger_bp: 80, meter_milli: 820, to_invalidation_bp: 530 }, spark: spark(2_380_000, 2_470_000, 8_000) }),
       row({ symbol: "FFFF", price: 421_000, gain_bp: 6400, momentum: mom(90, 120), rank: 3, prev_rank: 3, rvol_milli: 22_000, float_shares: 1_800_000, setup: { state: "forming", trigger: { price: 429_000, version: "demo" }, invalidation: { price: 398_000, version: "demo" }, meter_milli: 550 }, spark: spark(405_000, 421_000, 2_000) }),
       row({ symbol: "AAAA", price: 5_680_000, gain_bp: 4200, momentum: mom(-200, 630), rank: 4, prev_rank: 2, rvol_milli: 9100, float_shares: 5_000_000, setup: { state: "forming", trigger: { price: 5_900_000, version: "demo" }, invalidation: { price: 5_500_000, version: "demo" }, meter_milli: 350 }, spark: spark(5_900_000, 5_680_000, 30_000) }),
       row({ symbol: "CCCC", price: 3_410_000, gain_bp: 1280, momentum: mom(-260, 980), rank: 5, prev_rank: 4, rvol_milli: 5600, membership: { status: "retained", episodes: ep(30), nonpassing: [["news", "UNKNOWN", "news_coverage_unknown"]] }, counts: { pass: 4, fail: 0, unknown: 1 }, setup: { state: "invalidated", invalidation: { price: 3_440_000, version: "demo" } }, spark: spark(3_550_000, 3_410_000) }),

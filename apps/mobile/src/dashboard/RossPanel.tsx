@@ -24,7 +24,8 @@ const hhmm = (ns: number) => formatEtTime(Math.round(ns / 1_000_000));
 /**
  * The Ross Panel on the phone (owner, 2026-10-20; design canvas "Ross Panel", phone): its own
  * card under the Halt watcher row, the web side panel's rows stacked for the narrow screen. A
- * row earns a coloured edge only when it needs you (near the trigger, crossing, triggered).
+ * row earns a coloured edge only at the trigger or crossing it. The cues are the micro-pullback
+ * stages the Detection Panel shows (one detector, 2026-10-21): stages, not entry signals.
  * Tapping a row opens its chart (the chart modal); tap, then hold copies the ticker.
  */
 export function RossPanel({ channel, detection, onPick, reducedMotion }: { channel: RossChannel; detection: DetectionChannel; onPick: (symbol: string, episodeId?: string, runEpoch?: string) => void; reducedMotion: boolean }) {
@@ -85,7 +86,8 @@ export function RossPanel({ channel, detection, onPick, reducedMotion }: { chann
   );
 }
 
-const EDGE: Partial<Record<RossRowView["setup"]["state"], string>> = { crossing: UI.accent, near: UI.warning, triggered: UI.good };
+/** Only a crossing in progress (accent) and a price at the trigger (amber) earn an edge: a broke-trigger is a past stage, never a green "go". */
+const EDGE: Partial<Record<RossRowView["setup"]["state"], string>> = { crossing: UI.accent, near: UI.warning };
 
 const Row = memo(function Row({ row: r, episode, detectionCurrent, onPick, reducedMotion }: { row: RossRowView; episode?: DetectionEpisode; detectionCurrent: boolean; onPick: (symbol: string) => void; reducedMotion: boolean }) {
   const press = useTickerPress(r.symbol, () => onPick(r.symbol));
@@ -130,14 +132,14 @@ const Row = memo(function Row({ row: r, episode, detectionCurrent, onPick, reduc
   );
 });
 
-/** Invalidation (left, red) to trigger (right, green), the price as a dot. */
+/** Pullback low (left, red: the failure level) to trigger (right, neutral: a level, not a "go"), the price as a dot. */
 function Meter({ value, color }: { value: number; color: string }) {
   const v = Math.max(0, Math.min(1, value));
   return (
     <Svg width="100%" height={8} viewBox="0 0 160 8" preserveAspectRatio="none">
       <Rect x={0} y={3} width={160} height={2} rx={1} fill={UI.raised} />
       <Rect x={0} y={0} width={2} height={8} fill={UI.critical} />
-      <Rect x={158} y={0} width={2} height={8} fill={UI.good} />
+      <Rect x={158} y={0} width={2} height={8} fill={UI.textDim} />
       <Rect x={0} y={3} width={v * 156} height={2} rx={1} fill={color} />
       <Circle cx={2 + v * 154} cy={4} r={3} fill={color} />
     </Svg>

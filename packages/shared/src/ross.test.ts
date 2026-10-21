@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { RossRowWire } from "./protocol.ts";
+import type { RossRowWire, RossSetupState, RossSetupWire } from "./protocol.ts";
 import { createRossChannel, rossAttention, rossFreshness, rossPrice, rossReadinessView, rossRowView } from "./ross.ts";
 
 const MIN = 60 * 1_000_000_000;
@@ -29,7 +29,7 @@ describe("ross row view", () => {
     const v = rossRowView(row(), cutoff, hhmm);
     expect([v.symbol, v.price, v.gain, v.m1, v.fromHigh, v.rvol, v.tag]).toEqual(["BBBB", "6.08", "+21.5%", "+3.0%", "−0.4%", "7.4×", "Float 30M ✗"]);
     expect(v.move).toBe("▲");
-    expect(v.setup).toMatchObject({ label: "Crossing", note: "6.05 · close pending · 3.6% stop", tone: "accent", pulse: true, attention: true, meter: 1 });
+    expect(v.setup).toMatchObject({ label: "Crossing", note: "6.05 · close pending · 3.6% over low", tone: "accent", pulse: true, attention: true, meter: 1 });
     expect(v.tagTone).toBe("critical");
     expect(v.badge).toBeNull();
   });
@@ -50,10 +50,45 @@ describe("ross row view", () => {
     expect(rossPrice(421_000)).toBe("0.4210");
     expect(rossRowView(row({ setup: null }), cutoff, hhmm).setup.label).toBe("Watching");
   });
-  test("attention counts near, crossing and triggered when the server sends no count", () => {
+  test("attention counts at-trigger and crossing (never a broke-trigger) when the server sends no count", () => {
     const panel = { revision: 1, bar_end: 0, cutoff, rows: [row(), row({ setup: { state: "forming" } }), row({ setup: { state: "triggered" } })] };
-    expect(rossAttention(panel)).toBe(2);
+    expect(rossAttention(panel)).toBe(1);
     expect(rossAttention({ ...panel, attention: 5 })).toBe(5);
+  });
+});
+
+describe("cues describe stages, not entry signals (owner, 2026-10-21)", () => {
+  // The detection-v2 micro-pullback cue as the server sends it: coarse state + detector stage.
+  const cue = (state: RossSetupState, extra: Partial<RossSetupWire> = {}) =>
+    rossRowView(row({ setup: { family: "micro_pullback", variant: "micro_pullback_mp5", state, trigger: { price: 5_300_000, version: "e:trigger:v1" }, invalidation: { price: 5_200_000, version: "e:invalidation:v1" }, meter_milli: 600, to_invalidation_bp: 115, distance_to_trigger_bp: 76, state_since: cutoff - MIN, ...extra } }), cutoff, hhmm);
+  test("every stage has its label and tone", () => {
+    const look = (s: Parameters<typeof cue>[0]) => [cue(s).setup.label, cue(s).setup.tone, cue(s).setup.pulse];
+    expect(look("forming")).toEqual(["Pullback", "muted", false]);
+    expect(look("near")).toEqual(["At trigger", "warning", false]);
+    expect(look("crossing")).toEqual(["Crossing", "accent", true]);
+    expect(look("triggered")).toEqual(["Broke trigger", "text", false]);
+    expect(look("invalidated")).toEqual(["Failed", "dim", false]);
+  });
+  test("a broke-trigger is never green, never attention, and no wording implies a buy", () => {
+    const views = (["watching", "forming", "near", "crossing", "triggered", "invalidated", "halted"] as const).map((s) => cue(s));
+    for (const v of views) {
+      expect(v.setup.tone).not.toBe("good");
+      expect(`${v.setup.label} ${v.setup.note} ${v.aria}`).not.toMatch(/\b(buy|entry|enter|go|stop|signal|triggered)\b/i);
+    }
+    expect(cue("triggered").setup.attention).toBe(false);
+    expect(cue("triggered").setup.note).toBe("5.30 · 10:41");
+  });
+  test("notes name the levels; the new distance wins over an old server's", () => {
+    expect(cue("forming").setup.note).toBe("trigger 5.30");
+    expect(cue("near").setup.note).toBe("5.30 · 0.8% away · 1.1% over low");
+    expect(cue("near", { to_invalidation_bp: null, risk_to_stop_bp: 200 }).setup.note).toBe("5.30 · 0.8% away · 2.0% over low");
+    expect(cue("forming", { trigger: null }).setup.note).toBe("");
+    expect(cue("forming").setup.meter).toBe(0.6);
+  });
+  test("an unknown state token from a newer server reads as watching", () => {
+    const v = rossRowView(row({ setup: { state: "something_new" as never } }), cutoff, hhmm);
+    expect([v.setup.state, v.setup.label]).toEqual(["watching", "Watching"]);
+    expect(rossAttention({ revision: 1, bar_end: 0, cutoff, rows: [row({ setup: { state: "something_new" as never } })] })).toBe(0);
   });
 });
 

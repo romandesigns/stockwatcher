@@ -16,20 +16,24 @@ const TONE: Record<RossTone, string> = {
   dim: "text-text-faint",
 };
 
-/** The left edge and background a setup cue earns; quiet rows get none (design canvas "Ross Panel"). */
+/**
+ * The left edge and background a cue earns; quiet rows get none (design canvas "Ross Panel"). Only
+ * a crossing in progress (accent) and a price at the trigger (amber) earn one: a broke-trigger is a
+ * past stage that failed about three times in four on the holdout, never a green "go".
+ */
 const EDGE: Partial<Record<RossRowView["setup"]["state"], string>> = {
   crossing: "shadow-[inset_3px_0_0_var(--accent)] bg-primary/10",
   near: "shadow-[inset_3px_0_0_var(--warning)]",
-  triggered: "shadow-[inset_3px_0_0_var(--good)]",
 };
 
 const hhmm = (ns: number) => formatEtTime(Math.round(ns / 1_000_000));
 
 /**
  * The Ross Panel (owner, 2026-10-19/20; design canvas "Ross Panel", web): the five-pillar
- * watchlist beside the charts, ordered by the last minute's move, each member monitored for an
- * early bull-flag setup. Rows earn a cue only when they need you (near the trigger, crossing it,
- * triggered); the header counts them. Pressing a row loads its ticker into the selected chart;
+ * watchlist beside the charts, ordered by the last minute's move, each member's pullback stage
+ * read from the same micro-pullback episodes the Detection Panel shows (one detector, 2026-10-21).
+ * The cues describe stages, not entry signals. Rows earn an edge only at the trigger or crossing
+ * it; the header counts them. Pressing a row loads its ticker into the selected chart;
  * tap, then hold copies it (the Halt watcher's gesture). Server feed only.
  */
 export function RossPanel({ channel, onPick, detection, onEpisodePick }: { channel: RossChannel; onPick: (symbol: string) => void; detection?: DetectionChannel; onEpisodePick?: (symbol: string, episodeId: string, runEpoch: string) => void }) {
@@ -160,14 +164,14 @@ function Sparkline({ points }: { points: number[] }) {
   );
 }
 
-/** Invalidation (left, red) to trigger (right, green), the price as a dot. */
+/** Pullback low (left, red: the failure level) to trigger (right, neutral: a level, not a "go"), the price as a dot. */
 function TriggerMeter({ value, tone }: { value: number; tone: RossTone }) {
   const v = Math.max(0, Math.min(1, value));
   return (
-    <svg viewBox="0 0 160 8" preserveAspectRatio="none" className={cn("ml-3.5 block h-2 w-[calc(100%-0.875rem)]", TONE[tone])} role="img" aria-label={`price ${Math.round(v * 100)}% of the way from invalidation to trigger`}>
+    <svg viewBox="0 0 160 8" preserveAspectRatio="none" className={cn("ml-3.5 block h-2 w-[calc(100%-0.875rem)]", TONE[tone])} role="img" aria-label={`price ${Math.round(v * 100)}% of the way from the pullback low to the trigger`}>
       <rect x="0" y="3" width="160" height="2" rx="1" className="fill-bg-raised" />
       <rect x="0" y="0" width="2" height="8" className="fill-critical" />
-      <rect x="158" y="0" width="2" height="8" className="fill-good" />
+      <rect x="158" y="0" width="2" height="8" className="fill-muted-foreground" />
       <rect x="0" y="3" width={v * 156} height="2" rx="1" fill="currentColor" />
       <circle cx={2 + v * 154} cy="4" r="3" fill="currentColor" />
     </svg>

@@ -233,44 +233,79 @@ export interface PressureUnsubscribeMessage {
 
 // --- Ross Panel (after `welcome`; crates/server/src/context.rs, crates/stock-context) -------
 // The five-pillar watchlist (enter 5/5, stay 4/5) ordered by last-minute momentum, with each
-// member's experimental setup state. Opt in with `ross.subscribe`: a `ross.snapshot` at once,
+// member's experimental pullback cue (a stage, not an entry signal). Opt in with `ross.subscribe`: a `ross.snapshot` at once,
 // then a `ross.update` with the WHOLE panel when it changed (at most once a second). Both
 // replace the client's panel. `enabled: false` means the server does not run stock context
 // (STOCK_CONTEXT off): "not enabled", never "nothing qualifies". Field names inside `panel` are
 // the engine's snake_case (stock_context::PanelSnapshot); prices are integer micro-dollars,
 // returns basis points, times epoch nanoseconds.
 
+/**
+ * The coarse cue state. Since 2026-10-21 (detection-v2) it maps the micro-pullback's stages:
+ * forming = `pullback_forming` / `armed`, near = armed within 1 % below the trigger, crossing =
+ * `crossing_provisional`, triggered = `trigger_observed` (held), invalidated (held). The tokens are
+ * the earlier `bull_flag_v0` cue's, kept so an older client still decodes a row. A cue describes a
+ * stage, not an entry signal.
+ */
 export type RossSetupState = "watching" | "forming" | "near" | "crossing" | "triggered" | "invalidated" | "halted";
+
+/** The detector state behind a cue (stock_context::State of the micro-pullback episode). */
+export type RossCueStage = "pullback_forming" | "armed" | "crossing_provisional" | "trigger_observed" | "invalidated" | "expired" | "superseded" | "interrupted";
 
 export interface RossLevelWire {
   price: number;
-  /** `<setup id>:trigger:<n>`; a moved level gets a new version. */
+  /** `<episode id>:trigger:v<n>` (`<setup id>:trigger:<n>` from servers before 2026-10-21). */
   version: string;
   set_at?: number;
   reason?: string;
 }
 
-/** stock_context::SetupView (`bull_flag_v0`, policy `setups-v0`, EXPERIMENTAL). */
+/**
+ * stock_context::RossCue: the row's pullback cue, read from the engine's `micro_pullback` episodes
+ * under `detection-v2` (variant MP5), the same episodes the Detection Panel shows. EXPERIMENTAL.
+ * Every field past `state` is optional so a frame from an older server (the `bull_flag_v0`
+ * SetupView) still decodes.
+ */
 export interface RossSetupWire {
+  /** `micro_pullback` (`bull_flag_v0` from older servers). */
   family?: string;
+  /** `micro_pullback_mp5`. */
+  variant?: string;
+  /** `detection-v2@<hash>`. */
   policy?: string;
   experimental?: boolean;
   state: RossSetupState;
+  stage?: RossCueStage | null;
   state_since?: number | null;
+  /** The Detection Panel's episode id for the same pullback. */
+  episode_id?: string | null;
   trigger?: RossLevelWire | null;
   invalidation?: RossLevelWire | null;
+  impulse_bp?: number | null;
+  /** Fraction of the impulse retraced, thousandths. */
+  depth_milli?: number | null;
+  pullback_bars?: number | null;
+  price?: number | null;
+  /** The price the cue was judged on is older than the policy's freshness limit. */
+  stale?: boolean;
+  near_trigger?: boolean | null;
   distance_to_trigger_bp?: number | null;
   /** Integer thousandths (0..1000) from invalidation to trigger, never a 0..1 float. */
   meter_milli?: number | null;
-  risk_to_stop_bp?: number | null;
-  /** Only while crossing: what the bar still has to prove (close above the trigger, volume). */
+  /** `(price − invalidation) / price`, bp. */
+  to_invalidation_bp?: number | null;
+  /** Only while crossing: what a completed bar still has to show. */
   pending?: { condition: "close_above_trigger" | "volume"; state: "PASS" | "FAIL" | "UNKNOWN" }[];
   extended?: boolean;
   reason?: string | null;
+  /** How a held `triggered` / `invalidated` episode resolved. */
+  resolution?: { state: RossCueStage; reason: string; at: number; bar_end: number | null; transition_id: string } | null;
+  /** Older servers only (`bull_flag_v0`): the same distance as `to_invalidation_bp`. */
+  risk_to_stop_bp?: number | null;
+  /** Older servers only (`bull_flag_v0`). */
   transition_id?: string | null;
   setup_id?: string | null;
   flag_bars?: number;
-  price?: number | null;
   crossed_version?: string | null;
 }
 
@@ -326,9 +361,9 @@ export interface RossPanelWire {
   cutoff: number;
   /** `live` or `replay`: only a live run's cutoff is comparable with a wall clock. */
   source?: string;
-  /** `setups-v0@<hash>`. */
+  /** The policy the cues come from: `detection-v2@<hash>` (`setups-v0@<hash>` from older servers). */
   setup_policy?: string;
-  /** Members whose setup is near, crossing or triggered. */
+  /** Members whose cue is near or crossing (older servers also counted triggered). */
   attention?: number;
   rows: RossRowWire[];
 }
