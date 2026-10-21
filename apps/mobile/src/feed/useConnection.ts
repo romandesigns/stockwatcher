@@ -23,7 +23,7 @@ export interface MobileConnection {
  * dashboard, `replay` for the chart tab (the practice feature).
  */
 export function useConnection(client: string, source: MarketSource): MobileConnection {
-  const [ready, setReady] = useState<MobileConnection["ready"]>(null);
+  const [ready, setReady] = useState<(NonNullable<MobileConnection["ready"]> & { source: MarketSource; client: string; attempt: number }) | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
   // Each sign-in restarts the connection with the new token.
   const [attempt, setAttempt] = useState(0);
@@ -33,7 +33,7 @@ export function useConnection(client: string, source: MarketSource): MobileConne
     void Promise.all([getAccessToken().catch(() => null), loadSettingsSync(), loadAppStore()]).then(([token, sync]) => {
       if (!alive) return;
       feed = createMobileFeed(token, setStatus, sync, client, source, (m) => appActions().applyAlertsMessage(m));
-      setReady({ feed, token });
+      setReady({ feed, token, source, client, attempt });
     });
     return () => {
       alive = false;
@@ -41,7 +41,9 @@ export function useConnection(client: string, source: MarketSource): MobileConne
     };
   }, [attempt, client, source]);
   return {
-    ready,
+    // Effects load asynchronously. Never label the previous source's socket with the newly
+    // selected source while its replacement is loading (the chart modal shares this feed).
+    ready: ready?.source === source && ready.client === client && ready.attempt === attempt ? ready : null,
     status,
     signIn: (t) => {
       void setAccessToken(t).then(() => {
