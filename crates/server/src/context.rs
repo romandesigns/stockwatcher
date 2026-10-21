@@ -30,14 +30,15 @@ use crate::evidence::{Cursor, EvidenceBatch};
 use crate::quotes::Counted;
 use chrono::NaiveDate;
 use market_archive::PrevCloses;
-use market_events::{Price, Trade, UnixNanos};
+use market_events::conditions::trade_effect;
+use market_events::{MarketEvent, Price, Trade, UnixNanos};
 use serde::Serialize;
 use serde_json::json;
 use std::collections::{BTreeSet, HashSet};
 use stock_context::{
-    CloseBasis, Coverage, DayHigh, Decision, Engine, Fidelity, InstrumentId, OutputTelemetry,
-    PanelPolicy, PanelSnapshot, PillarId, Policy, PrevClose, PrintRevision, Qualification,
-    RevisedPrint, RunInfo, SetupPolicy, Tri, Verdict,
+    CloseBasis, CorrectedPrint, Coverage, DayHigh, Decision, Engine, Fidelity, InstrumentId,
+    OutputTelemetry, PanelPolicy, PanelSnapshot, PillarId, Policy, PrevClose, PrintRevision,
+    Qualification, RevisionTarget, RunInfo, SetupPolicy, Tri, Verdict,
 };
 
 /// What one [`ContextBoard::drain_outputs`] took off the engine, and what the engine had to drop
@@ -374,33 +375,65 @@ impl ContextBoard {
         let _ = self.engine.advance_to(now);
     }
 
-    /// Applies a correction or cancel the chart engine resolved, so the scanner's facts follow
-    /// the candles and the quote row instead of keeping a print they agree is gone.
+    /// Applies a correction or cancel, whether or not a chart is loaded for the symbol.
     ///
     /// Nothing used to route a revision here at all: the server gave it to the quote board only,
     /// so an inflated RVOL numerator survived a cancel for the rest of the day and the "missing
-    /// prints can only lower RVOL" argument did not hold (the audit's F3). The chart engine is
-    /// the only thing that can resolve which retained print a reference names and recompute the
-    /// date's last price and high, so its answer is what the context engine applies — forward
-    /// effective, with prior decisions and frozen setup levels untouched.
-    pub(crate) fn apply_revision(&mut self, rev: &chart_engine::Revision, admit: UnixNanos) {
-        let to_print = |p: &chart_engine::RevisedPrint| RevisedPrint {
-            exec: rev.ts.nanos(),
-            price: p.price.micros(),
-            size: p.size,
-            verdict: Verdict {
-                ohlc: p.ohlc,
-                volume: p.volume,
-            },
+    /// prints can only lower RVOL" argument did not hold (the audit's F3). Routing it only on the
+    /// loaded path would have left the same hole for every symbol whose history is still loading,
+    /// which is exactly the window a restart spends in.
+    ///
+    /// So the scanner resolves its own: the raw reference the provider published goes to the
+    /// context engine, which matches it against the prints **it** admitted
+    /// (`stock_context::revision`). `resolved` is the chart engine's answer when there is one,
+    /// and contributes only the two things it alone can recompute — the date's last price and its
+    /// high. Their absence is counted, never assumed.
+    pub(crate) fn apply_revision(
+        &mut self,
+        e: &MarketEvent,
+        resolved: Option<&chart_engine::Revision>,
+        admit: UnixNanos,
+    ) {
+        let (symbol, target, corrected) = match e {
+            MarketEvent::Correction(c) => (
+                c.symbol.clone(),
+                RevisionTarget {
+                    id: c.original_trade_id(),
+                    price: c.original_price.micros(),
+                    size: c.original_size,
+                },
+                Some(CorrectedPrint {
+                    price: c.corrected_price.micros(),
+                    size: c.corrected_size,
+                    verdict: {
+                        let eff = trade_effect(&c.corrected_conditions, c.tape);
+                        Verdict {
+                            ohlc: eff.updates_ohlc,
+                            volume: eff.updates_volume,
+                        }
+                    },
+                }),
+            ),
+            MarketEvent::Cancel(c) => (
+                c.symbol.clone(),
+                RevisionTarget {
+                    id: c.target_trade_id(),
+                    price: c.price.micros(),
+                    size: c.size,
+                },
+                None,
+            ),
+            _ => return,
         };
         let _ = self.engine.apply_revision(
             &PrintRevision {
-                symbol: rev.symbol.clone(),
-                date: rev.session.date,
-                removed: to_print(&rev.removed),
-                added: rev.added.as_ref().map(to_print),
-                last: rev.last.map(|(p, ts)| (p.micros(), ts.nanos())),
-                day_high: rev.day_high.map(|h| DayHigh {
+                symbol,
+                target,
+                corrected,
+                last: resolved
+                    .and_then(|r| r.last)
+                    .map(|(p, ts)| (p.micros(), ts.nanos())),
+                day_high: resolved.and_then(|r| r.day_high).map(|h| DayHigh {
                     price: h.price.micros(),
                     complete: h.complete,
                 }),

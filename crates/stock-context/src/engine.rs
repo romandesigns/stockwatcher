@@ -26,23 +26,31 @@ use crate::evidence::{
 };
 use crate::output::{BoundedLog, OutputTelemetry, PANEL_LOG_MAX, SETUP_LOG_MAX};
 use crate::panel::{
-    Eligibility, Membership, Momentum, MomentumStatus, PanelPolicy, momentum, momentum_order,
-    update_membership,
+    Eligibility, Membership, Momentum, MomentumRules, MomentumStatus, PanelPolicy, momentum,
+    momentum_order, update_membership,
 };
 use crate::pillar::{Counts, PillarId, PillarResult, Qualification, Tri, aggregate, price_pillar};
 use crate::policy::Policy;
-use crate::revision::{DEDUP_WINDOW_SECS, PrintRevision, RevisionTelemetry};
+use crate::revision::{PrintRevision, REVISION_WINDOW_SECS, RevisionTelemetry};
 use crate::setup::{
     BARS_KEPT, Bar, BullFlag, SetupLogEntry, SetupPolicy, SetupState, SetupView, Step, spark,
 };
 use chrono::{Days, NaiveDate};
 use market_events::session::{SessionKind, classify, et, trading_date};
-use market_events::{Trade, TradeId, UnixNanos};
+use market_events::{Price, Resolution, Trade, TradeId, TradeRef, UnixNanos};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 const SEC: i64 = 1_000_000_000;
 const MS: i64 = 1_000_000;
+
+/// Hard bound on one symbol's admission ledger, beside the time bound.
+///
+/// Two bounds, not one: a reconnect replay's timing is not something to assume, so the time
+/// window alone could hold an unbounded number of entries for a symbol printing fast enough.
+/// Whichever bites first, an eviction is counted and a **queued** entry evicted degrades the
+/// symbol's coverage, because that is volume the engine will never count.
+pub const LEDGER_MAX: usize = 20_000;
 
 /// What kind of data a run decides on: recorded live arrival order, a reconstruction from
 /// history without arrival times (no latency claims), or a synthetic fixture.
@@ -91,7 +99,11 @@ pub struct VolumeFacts {
     /// Dollar volume, whole dollars (truncated).
     pub dollars: u64,
     pub trades: u64,
+    /// This symbol's own coverage when something is known about it, else the run's.
     pub coverage: Coverage,
+    /// Why this symbol's coverage differs from the run's, when it does: `recorder_drops`,
+    /// `stream_gap`, `restored_partial_day`. `None`: the run-wide figure.
+    pub coverage_reason: Option<&'static str>,
 }
 
 /// One frozen decision. Times are UTC nanoseconds.
@@ -128,20 +140,59 @@ pub struct Decision {
     pub changed: Vec<&'static str>,
 }
 
-struct Pending {
+/// One print this engine admitted, as the **admission ledger** holds it.
+///
+/// The ledger is one structure doing four jobs that have to agree with each other: it is the
+/// queue of prints waiting for their barrier, the duplicate index, what a revision is resolved
+/// against, and what the retained-window state is rebuilt from after one. They were three
+/// separate things, and they disagreed: a revision could subtract volume from a print the engine
+/// had never counted, a cancel arriving before its print's barrier was ignored and the print
+/// counted anyway, and the identity set was cleared after the first prints of a date had already
+/// been queued, so a later redelivery of one counted twice.
+struct Admitted {
+    id: TradeId,
     exec: i64,
     admit: i64,
     price: i64,
     size: u64,
     verdict: Verdict,
+    /// The print's own session, as delivered.
     session: Option<(NaiveDate, SessionKind)>,
+    /// Waiting for the barrier that will fold it into the aggregates.
+    queued: bool,
+    /// Folded into the aggregates. A print the barrier skipped (another date, an excluded
+    /// session) is neither `queued` nor `counted`: a revision of it resolves and changes nothing.
+    counted: bool,
+    /// Revised away: cancelled, or corrected into something that counts for nothing.
+    removed: bool,
+}
+
+impl Admitted {
+    fn key(&self) -> (TradeId, i64) {
+        (self.id.clone(), self.exec)
+    }
+
+    /// Volume this print contributes to the aggregates right now.
+    fn volume(&self) -> u64 {
+        if self.counted && !self.removed && self.verdict.volume {
+            self.size
+        } else {
+            0
+        }
+    }
 }
 
 struct Sym {
     name: String,
     inst: InstrumentId,
     date: Option<NaiveDate>,
-    pending: Vec<Pending>,
+    /// The admission ledger: every print this engine can still prove it admitted, in arrival
+    /// order ([`Admitted`]). Bounded twice — by execution time
+    /// ([`crate::revision::REVISION_WINDOW_SECS`]) and by a hard entry count
+    /// ([`LEDGER_MAX`]) — because a reconnect replay's timing is not something to assume.
+    ledger: VecDeque<Admitted>,
+    /// The ledger's identities, for an O(1) duplicate check.
+    ids: HashSet<(TradeId, i64)>,
     /// Had a counted print on `date`: only those symbols emit.
     active: bool,
     cum: u64,
@@ -168,17 +219,14 @@ struct Sym {
     setup: BullFlag,
     /// First time StockWatcher saw any of the qualifying news at the latest decision.
     news_first_seen: Option<i64>,
-    /// Identities of the prints applied recently, newest last, and the same identities as a set.
+    /// How completely this symbol's own prints were collected today, when something is known
+    /// about it that the run-wide figure does not say.
     ///
-    /// The engine deduplicates on [`market_events::PrintId`] itself, so every path a print can
-    /// reach it by behaves the same: the chart engine's verdict for a loaded symbol and the
-    /// print's own conditions for one still loading (`Counted::from_effect`, which has no
-    /// duplicate exclusion). A reconnect replay redelivers prints by design, and on the second
-    /// path they used to be counted twice. Bounded to [`DEDUP_WINDOW_SECS`]: a redelivery arrives
-    /// within seconds, and remembering a hot symbol's whole session is how a live engine's
-    /// memory stops being bounded.
-    seen: VecDeque<(TradeId, i64)>,
-    seen_ids: HashSet<(TradeId, i64)>,
+    /// Run-wide `Coverage` lives on [`RunInfo`] and production sets it to `Unverified`, which is
+    /// honest but says nothing about a symbol whose history is known to be short — a recorder
+    /// drop, a stream gap, or a restore that could not reach the day's start. Per symbol and in
+    /// memory, so nothing queries a disk per barrier (the audit's F2).
+    coverage: Option<(Coverage, &'static str)>,
 }
 
 /// A non-passing pillar, for the row tag.
@@ -272,6 +320,14 @@ pub struct Engine {
     setup_policy: SetupPolicy,
     setup_log: BoundedLog<SetupLogEntry>,
     revisions: RevisionTelemetry,
+    restores: RestoreTelemetry,
+}
+
+/// What an engine adopted from per-symbol restores.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct RestoreTelemetry {
+    /// Symbols whose restored state was adopted into this engine.
+    pub adopted: u64,
 }
 
 fn ceil_to(t: i64, step: i64) -> i64 {
@@ -294,6 +350,7 @@ impl Engine {
             setup_policy: SetupPolicy::v0(),
             setup_log: BoundedLog::new(SETUP_LOG_MAX),
             revisions: RevisionTelemetry::default(),
+            restores: RestoreTelemetry::default(),
         }
     }
 
@@ -360,6 +417,80 @@ impl Engine {
     /// The latest panel snapshot (what a client snapshot sends).
     pub fn panel(&self) -> Option<&PanelSnapshot> {
         self.last_panel.as_ref()
+    }
+
+    /// Records what is known about one symbol's own print collection today, overriding the
+    /// run-wide figure for it (`None` to go back to the run's).
+    ///
+    /// Called from memory — a link state, a recorder's drop counter, a restore that fell short —
+    /// never from a disk query per barrier. `reason` is a fixed label so a reader can tell the
+    /// kinds apart: a **recorder** drop means the recording this process restores from is short
+    /// while the live numerator was fine, and a **stream** gap means the numerator itself is
+    /// short. Conflating them would blame the wrong half.
+    pub fn set_coverage(&mut self, symbol: &str, coverage: Option<(Coverage, &'static str)>) {
+        if let Some(s) = self.syms.get_mut(symbol)
+            && s.coverage != coverage
+        {
+            s.coverage = coverage;
+            s.dirty = true;
+        }
+    }
+
+    /// This symbol's own coverage, when something is known about it.
+    pub fn coverage_of(&self, symbol: &str) -> Option<(Coverage, &'static str)> {
+        self.syms.get(symbol).and_then(|s| s.coverage)
+    }
+
+    /// Moves one symbol's state out of `from` into this engine
+    /// ([`chart_engine::ChartEngine::adopt_symbol`]'s shape, for the same reason).
+    ///
+    /// A restart restores a symbol by replaying its own recorded day on its **own** engine, in
+    /// receipt order with the recorded delivery times, and then adopting the result. Feeding
+    /// those prints into this engine instead would classify every one of them as late against a
+    /// clock that has already advanced with the live tail, and would decide none of the day's
+    /// barriers: the numerator would still start at zero after every deploy, which is what the
+    /// audit found (F1).
+    ///
+    /// What moves: the day's volume, dollars, trades, price history, day high, setup bars and
+    /// levels, membership with its real admission times, and the timeline's first-seen times. The
+    /// adopted symbol's latest decision does **not**: it was made by the other run, under its own
+    /// id and sequence, so this run emits its own first decision for the symbol at the next
+    /// barrier rather than republishing another run's as its own.
+    ///
+    /// The barriers between the restore's last and this engine's next are not decided for the
+    /// symbol. That is the honest cost of restoring lazily per symbol instead of pausing the
+    /// whole market, and it is why a restored symbol's coverage is set by the caller
+    /// ([`Engine::set_coverage`]) rather than assumed complete.
+    pub fn adopt_symbol(&mut self, from: &mut Engine, symbol: &str) -> bool {
+        let Some(mut sym) = from.syms.remove(symbol) else {
+            return false;
+        };
+        from.by_inst.remove(&sym.inst);
+        // Another run's decision is not this run's to publish.
+        sym.last = None;
+        // Decide the symbol at the next barrier whatever else happens.
+        sym.dirty = true;
+        sym.recheck_at = i64::MAX;
+        self.by_inst.insert(sym.inst.clone(), symbol.to_string());
+        self.syms.insert(symbol.to_string(), sym);
+        self.restores.adopted += 1;
+        true
+    }
+
+    /// Drops a symbol's state (the live market reloading it from the archive).
+    pub fn remove_symbol(&mut self, symbol: &str) -> bool {
+        match self.syms.remove(symbol) {
+            Some(s) => {
+                self.by_inst.remove(&s.inst);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// What this engine adopted from restores.
+    pub fn restore_telemetry(&self) -> RestoreTelemetry {
+        self.restores
     }
 
     /// Observed trading status: a halted symbol is never ranked on a frozen pre-halt return.
@@ -460,7 +591,8 @@ impl Engine {
                 name: name.clone(),
                 inst,
                 date: None,
-                pending: Vec::new(),
+                ledger: VecDeque::new(),
+                ids: HashSet::new(),
                 active: false,
                 cum: 0,
                 dollars_micros: 0,
@@ -479,93 +611,290 @@ impl Engine {
                 first_bar: None,
                 setup: BullFlag::default(),
                 news_first_seen: None,
-                seen: VecDeque::new(),
-                seen_ids: HashSet::new(),
+                coverage: None,
             }
         });
         self.by_inst.entry(sym.inst.clone()).or_insert(name);
         let exec = t.event_ts.nanos();
-        // One identity rule for every path. Evict what a redelivery can no longer repeat first,
-        // so the set stays bounded, then refuse a print already applied.
+        // One identity rule for every path, and one place that decides it. The ledger is never
+        // cleared on a date change — doing that after a date's first prints were already queued
+        // is how their identities were lost, so a later redelivery of one counted twice. Entries
+        // carry their own session date instead, and the bounds below retire them.
+        let mut evicted_counted = 0u64;
+        let mut evicted_queued = 0u64;
         while sym
-            .seen
+            .ledger
             .front()
-            .is_some_and(|(_, e)| exec - e > DEDUP_WINDOW_SECS * SEC)
+            .is_some_and(|a| exec - a.exec > REVISION_WINDOW_SECS * SEC)
+            || sym.ledger.len() >= LEDGER_MAX
         {
-            if let Some(k) = sym.seen.pop_front() {
-                sym.seen_ids.remove(&k);
+            let Some(a) = sym.ledger.pop_front() else {
+                break;
+            };
+            sym.ids.remove(&a.key());
+            if a.queued {
+                evicted_queued += 1;
+            } else {
+                evicted_counted += 1;
             }
         }
+        if evicted_counted > 0 {
+            // Past the horizon the engine can no longer prove a duplicate or place a revision for
+            // those prints. The volume it already counted is unaffected, but the limit is named
+            // rather than left to be discovered.
+            self.revisions.identities_evicted += evicted_counted;
+            if sym.coverage.is_none() {
+                sym.coverage = Some((self.run.numerator_coverage, "identities_evicted"));
+            }
+        }
+        if evicted_queued > 0 {
+            // A queued print evicted is volume this engine will never count: a real gap in the
+            // numerator, so the symbol's coverage says so.
+            self.revisions.queued_evicted += evicted_queued;
+            sym.coverage = Some((Coverage::Partial, "admission_ledger_overflow"));
+        }
         let key = (t.id(), exec);
-        if !sym.seen_ids.insert(key.clone()) {
+        if !sym.ids.insert(key) {
             self.revisions.duplicates_dropped += 1;
             return out;
         }
-        sym.seen.push_back(key);
-        sym.pending.push(Pending {
+        sym.ledger.push_back(Admitted {
+            id: t.id(),
             exec,
             admit: admit.nanos(),
             price: t.price.micros(),
             size: t.size,
             verdict,
             session: t.session.map(|s| (s.date, s.kind)),
+            queued: true,
+            counted: false,
+            removed: false,
         });
         out
     }
 
-    /// Applies a correction or cancel of a print already applied, as the run's chart engine
-    /// resolved it ([`PrintRevision`]).
+    /// Applies a correction or cancel of a print, resolved against this engine's **own**
+    /// admission ledger ([`PrintRevision`]).
     ///
-    /// Forward-effective: it changes the symbol's **current** facts from the barrier it is
-    /// admitted at. Decisions already emitted are never rewritten and a frozen setup level never
-    /// moves — an episode that happened, happened. The engine keeps aggregates rather than
-    /// prints, so it applies the delta the resolver gives it and counts anything it cannot apply
-    /// exactly ([`Engine::revision_telemetry`]): a day high the resolver could not prove is left
-    /// where it is and counted, never quietly lowered or quietly kept.
+    /// The resolution does not ask whether a chart is loaded. The scanner's facts must not depend
+    /// on that — a correction for a symbol whose history is still loading has to land too — so
+    /// the engine matches the provider's reference against the prints it retained, by
+    /// [`market_events::TradeRef::resolve`]'s rule: exactly one fit is applied, none or several
+    /// is counted and never guessed at. A chart engine contributes only the two things it alone
+    /// can recompute, the date's last price and its high, and their absence is counted.
+    ///
+    /// Proving the identity is the point. Subtracting a chart-resolved print without it would
+    /// take volume off an unrelated print whenever the named one came from before this engine
+    /// existed — a restart, a symbol still loading, a print past the ledger's horizon.
+    ///
+    /// A print still queued is revised **in the queue**: adjusting aggregates then would subtract
+    /// volume the engine had not added yet and let the print count afterwards anyway.
+    ///
+    /// Forward-effective: the symbol's current facts change from the barrier this is admitted at.
+    /// Decisions already emitted are never rewritten and a frozen setup level never moves. The
+    /// retained-window state the next decisions are computed from — the cumulative checkpoints,
+    /// the per-second price history and the setup bars — is made exact again from the ledger, or
+    /// counted as unproven when the ledger no longer reaches far enough back.
     pub fn apply_revision(&mut self, rev: &PrintRevision, admit: UnixNanos) -> Vec<Decision> {
         let out = self.advance_to(admit);
+        let mo = self.panel_policy.body.momentum.clone();
+        let (bar_ns, recent_w) = (
+            self.policy.body.grid.bar_secs * SEC,
+            self.policy.body.diagnostics.recent_window_secs * SEC,
+        );
         let Some(sym) = self.syms.get_mut(&rev.symbol) else {
             self.revisions.unknown_target += 1;
             return out;
         };
-        if sym.date != Some(rev.date) {
-            // The engine has moved on to another trading date (or has none yet): the facts this
-            // revision speaks about are not the current ones, and the old decisions stand.
+        // The one print the reference names, among those still standing.
+        let target = TradeRef {
+            id: rev.target.id.clone(),
+            price: Price::from_micros(rev.target.price),
+            size: rev.target.size,
+        };
+        let candidates: Vec<(usize, Price, u64)> = sym
+            .ledger
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| a.id == target.id && !a.removed)
+            .map(|(i, a)| (i, Price::from_micros(a.price), a.size))
+            .collect();
+        let i = match target.resolve(candidates) {
+            Resolution::Found(i) => i,
+            Resolution::NotFound => {
+                // Never admitted here, or past the ledger's horizon. Nothing is subtracted.
+                self.revisions.unknown_target += 1;
+                return out;
+            }
+            Resolution::Ambiguous => {
+                self.revisions.ambiguous += 1;
+                return out;
+            }
+        };
+        // The date check applies to a print the aggregates already hold: those belong to
+        // `sym.date`. A print still **queued** is revised whatever the symbol's date is — before
+        // the first barrier of a date there is no date yet, and discarding the revision then is
+        // what let a cancel lose to its own print's barrier.
+        if !sym.ledger[i].queued && sym.ledger[i].session.map(|(d, _)| d) != sym.date {
+            // The engine has moved on from that trading date: the facts the revision speaks
+            // about are not the current ones, and the old decisions stand.
             self.revisions.too_late += 1;
             return out;
         }
-        let removed = &rev.removed;
-        if removed.verdict.volume {
-            sym.cum = sym.cum.saturating_sub(removed.size);
+        let was_volume = sym.ledger[i].volume();
+        let was_counted = sym.ledger[i].counted;
+        let queued = sym.ledger[i].queued;
+        let exec = sym.ledger[i].exec;
+        let touched_ohlc =
+            sym.ledger[i].verdict.ohlc || rev.corrected.is_some_and(|c| c.verdict.ohlc);
+        {
+            let e = &mut sym.ledger[i];
+            match rev.corrected {
+                Some(c) => {
+                    e.price = c.price;
+                    e.size = c.size;
+                    e.verdict = c.verdict;
+                    e.removed = !c.verdict.volume && !c.verdict.ohlc;
+                }
+                None => {
+                    e.removed = true;
+                    e.queued = false;
+                }
+            }
+        }
+        if queued {
+            // Revised before its barrier: nothing to undo, and the barrier will count whatever
+            // the entry now says.
+            self.revisions.applied_queued += 1;
+            sym.dirty = true;
+            return out;
+        }
+        if !was_counted {
+            // The barrier skipped it (another date, an excluded session): the revision is placed
+            // and changes nothing.
+            self.revisions.applied += 1;
+            sym.dirty = true;
+            return out;
+        }
+        let now_volume = sym.ledger[i].volume();
+        let now_price = sym.ledger[i].price;
+        // Whole-day aggregates: adjusted by the delta, which the ledger proves is this print's.
+        if was_volume > 0 {
+            sym.cum = sym.cum.saturating_sub(was_volume);
             sym.dollars_micros = sym
                 .dollars_micros
-                .saturating_sub(removed.price as u128 * removed.size as u128);
+                .saturating_sub(rev.target.price as u128 * was_volume as u128);
             sym.trades = sym.trades.saturating_sub(1);
         }
-        if let Some(added) = rev.added.filter(|a| a.verdict.volume) {
-            sym.cum += added.size;
-            sym.dollars_micros += added.price as u128 * added.size as u128;
+        if now_volume > 0 {
+            sym.cum += now_volume;
+            sym.dollars_micros += now_price as u128 * now_volume as u128;
             sym.trades += 1;
         }
-        let touched_ohlc = removed.verdict.ohlc || rev.added.is_some_and(|a| a.verdict.ohlc);
+        // The cumulative checkpoints the recent window reads: every checkpoint taken after the
+        // print's execution moves by the same delta, which is exact and needs no ledger
+        // coverage at all.
+        for (at, c) in sym.cums.iter_mut() {
+            if *at > exec {
+                *c = c.saturating_sub(was_volume) + now_volume;
+            }
+        }
+        // The per-second price history and the setup bars are rebuilt from the ledger, so the
+        // next decisions see the same window a stream without the revised print would have
+        // produced. `rebuilt` is false when the ledger no longer reaches the window's start.
+        let b = sym.cums.back().map(|&(at, _)| at).unwrap_or(exec);
+        let rebuilt = Self::rebuild_windows(sym, &mo, bar_ns, b);
+        if !rebuilt {
+            self.revisions.windows_unproven += 1;
+        }
         if touched_ohlc {
-            // The date's newest OHLC-qualifying price after the revision, as the resolver has it.
-            sym.last_price = rev.last;
+            // The date's newest OHLC price: the ledger holds the most recent prints, so its
+            // maximum execution time is the date's, when it has one at all.
+            match Self::last_of_date(sym) {
+                Some(last) => sym.last_price = Some(last),
+                None => sym.last_price = rev.last,
+            }
+            // The date's **high** is a whole-day extremum, which a windowed ledger cannot prove.
             match rev.day_high {
                 Some(h) if h.complete => sym.day_high = Some(h.price),
                 _ => {
-                    // The resolver could not prove the date's high from what it still retains, so
-                    // this engine's high may still be a print that is gone. Counted rather than
-                    // guessed in either direction; `below_high_bp` and the setup levels derived
-                    // from it are affected and the count says so.
+                    // Left where it is, and counted: `below_high_bp` and the setup levels taken
+                    // from it may still reflect a print that is gone.
                     self.revisions.day_high_unproven += 1;
                 }
             }
         }
-        // The identity may be redelivered after a correction too, and it is still the same print.
+        let _ = recent_w;
         self.revisions.applied += 1;
         sym.dirty = true;
         out
+    }
+
+    /// The date's newest counted OHLC price and its execution time, from the ledger.
+    fn last_of_date(sym: &Sym) -> Option<(i64, i64)> {
+        sym.ledger
+            .iter()
+            .filter(|a| {
+                a.counted && !a.removed && a.verdict.ohlc && a.session.map(|(d, _)| d) == sym.date
+            })
+            .max_by_key(|a| a.exec)
+            .map(|a| (a.exec, a.price))
+    }
+
+    /// Rebuilds the retained-window state from the ledger: the per-second price history and the
+    /// setup bars, both of which depend on individual prints rather than a total.
+    ///
+    /// Returns whether the ledger reached back far enough to do it exactly. It normally does —
+    /// the windows are minutes wide and the ledger an hour — and when it does not the caller
+    /// counts it instead of publishing a window it cannot stand behind.
+    fn rebuild_windows(sym: &mut Sym, mo: &MomentumRules, bar_ns: i64, b: i64) -> bool {
+        let date = sym.date;
+        let ticks_from = b - (mo.context_secs + mo.endpoint_max_age_secs + 1) * SEC;
+        let bars_from = b - (BARS_KEPT as i64) * bar_ns;
+        let need_from = ticks_from.min(bars_from);
+        let covers = sym.ledger.front().is_some_and(|a| a.exec <= need_from)
+            || sym.first_bar.is_some_and(|f| f >= need_from);
+        let mut ticks: VecDeque<(i64, i64)> = VecDeque::new();
+        // Grouped by execution time, not arrival order: a late print arrives after a newer one,
+        // and grouping in arrival order would make two bars for the same interval.
+        let mut live: Vec<(i64, i64, u64, Verdict)> = Vec::new();
+        for a in sym
+            .ledger
+            .iter()
+            .filter(|a| a.counted && !a.removed && a.session.map(|(d, _)| d) == date)
+        {
+            if a.verdict.ohlc && a.exec >= ticks_from {
+                record_tick(&mut ticks, a.exec, a.price);
+            }
+            if a.exec >= bars_from {
+                live.push((a.exec, a.price, a.size, a.verdict));
+            }
+        }
+        live.sort_unstable_by_key(|x| x.0);
+        let mut bars: VecDeque<Bar> = VecDeque::new();
+        let mut cur: Option<Bar> = None;
+        for (exec, price, size, verdict) in live {
+            let end = ceil_to(exec + 1, bar_ns);
+            if cur.as_ref().is_some_and(|c| c.end != end)
+                && let Some(c) = cur.take()
+                && (c.ohlc.is_some() || c.volume > 0)
+            {
+                bars.push_back(c);
+            }
+            let c = cur.get_or_insert_with(|| Bar::new(end));
+            c.add(exec, price, size, verdict.ohlc, verdict.volume);
+        }
+        if let Some(c) = cur
+            && (c.ohlc.is_some() || c.volume > 0)
+        {
+            bars.push_back(c);
+        }
+        while bars.len() > BARS_KEPT {
+            bars.pop_front();
+        }
+        sym.ticks = ticks;
+        sym.bars = bars;
+        covers
     }
 
     /// What the engine did with the revisions and duplicates it was given.
@@ -605,10 +934,10 @@ impl Engine {
             if s.dirty || s.member.active().is_some() {
                 return b;
             }
-            for p in &s.pending {
+            for a in s.ledger.iter().filter(|a| a.queued) {
                 // Drained at the first barrier past its execution that it was admitted by.
-                let by_exec = ceil_to(p.exec + 1, bar);
-                let by_admit = ceil_to(p.admit - settle, bar);
+                let by_exec = ceil_to(a.exec + 1, bar);
+                let by_admit = ceil_to(a.admit - settle, bar);
                 due = due.min(by_exec.max(by_admit));
             }
             if s.recheck_at != i64::MAX {
@@ -628,7 +957,9 @@ impl Engine {
                 s.dirty
                     || s.date != Some(date)
                     || b >= s.recheck_at
-                    || s.pending.iter().any(|p| p.exec < b && p.admit <= tau)
+                    || s.ledger
+                        .iter()
+                        .any(|a| a.queued && a.exec < b && a.admit <= tau)
             };
             if due && let Some(d) = self.evaluate(&name, date, b, tau) {
                 out.push(d);
@@ -687,7 +1018,7 @@ impl Engine {
                 segment,
                 s.day_high,
                 s.halted,
-                self.run.numerator_coverage,
+                s.coverage.map_or(self.run.numerator_coverage, |(c, _)| c),
             );
             let last = s.last.as_ref();
             let pillar = |p: PillarId| last.and_then(|d| d.pillars.iter().find(|x| x.pillar == p));
@@ -799,48 +1130,55 @@ impl Engine {
             s.first_bar = None;
             s.setup = BullFlag::default();
             s.news_first_seen = None;
-            // A new trading date is a new set of prints; the old identities can no longer be
-            // redelivered into it.
-            s.seen.clear();
-            s.seen_ids.clear();
+            // The ledger is deliberately **not** cleared here. Clearing it after a date's first
+            // prints had already been queued is what lost their identities, so a later
+            // redelivery of one counted twice; its entries carry their own session date and the
+            // bounds in `apply` retire them.
         }
         let exclude_overnight = policy.body.volume.exclude_overnight_boats;
         let bar_ns = policy.body.grid.bar_secs * SEC;
         // The setup bar completing at `b`; a late print (executed in an earlier, already decided
         // bar) never edits a completed bar and stays out of the setup bars.
         let mut cur = Bar::new(b);
-        let mut keep = Vec::with_capacity(s.pending.len());
-        for p in s.pending.drain(..) {
-            if !(p.exec < b && p.admit <= tau) {
-                keep.push(p);
+        // Fold in the ledger entries this barrier may count, marking them in place rather than
+        // taking them out: the ledger stays the one record of what was admitted, so a revision
+        // arriving later can still find them (and tell a counted print from a queued one).
+        for a in s.ledger.iter_mut() {
+            if !(a.queued && a.exec < b && a.admit <= tau) {
                 continue;
             }
-            let Some((d, kind)) = p.session else { continue };
+            a.queued = false;
+            let Some((d, kind)) = a.session else { continue };
             if d != date || (exclude_overnight && kind == SessionKind::Overnight) {
+                // Skipped, and recorded as skipped: neither queued nor counted.
                 continue;
             }
-            if p.exec >= b - bar_ns {
-                cur.add(p.exec, p.price, p.size, p.verdict.ohlc, p.verdict.volume);
+            a.counted = true;
+            if a.removed {
+                // Cancelled before its barrier: the barrier counts nothing for it.
+                continue;
             }
-            if p.verdict.volume {
+            if a.exec >= b - bar_ns {
+                cur.add(a.exec, a.price, a.size, a.verdict.ohlc, a.verdict.volume);
+            }
+            if a.verdict.volume {
                 if s.first_bar.is_none() {
-                    s.first_bar = Some(ceil_to(p.exec + 1, bar_ns));
+                    s.first_bar = Some(ceil_to(a.exec + 1, bar_ns));
                 }
-                s.cum += p.size;
-                s.dollars_micros += p.price as u128 * p.size as u128;
+                s.cum += a.size;
+                s.dollars_micros += a.price as u128 * a.size as u128;
                 s.trades += 1;
                 s.active = true;
             }
-            if p.verdict.ohlc {
+            if a.verdict.ohlc {
                 s.active = true;
-                if s.last_price.is_none_or(|(e, _)| p.exec >= e) {
-                    s.last_price = Some((p.exec, p.price));
+                if s.last_price.is_none_or(|(e, _)| a.exec >= e) {
+                    s.last_price = Some((a.exec, a.price));
                 }
-                s.day_high = Some(s.day_high.map_or(p.price, |h| h.max(p.price)));
-                record_tick(&mut s.ticks, p.exec, p.price);
+                s.day_high = Some(s.day_high.map_or(a.price, |h| h.max(a.price)));
+                record_tick(&mut s.ticks, a.exec, a.price);
             }
         }
-        s.pending = keep;
         if cur.ohlc.is_some() || cur.volume > 0 {
             s.bars.push_back(cur);
             if s.bars.len() > BARS_KEPT {
@@ -899,11 +1237,12 @@ impl Engine {
                 .find(|(t, _)| *t <= b - w)
                 .map(|(_, c)| s.cum - c)
         };
+        let coverage = s.coverage.map_or(self.run.numerator_coverage, |(c, _)| c);
         let vol = VolumeView {
             cum: s.cum,
             recent,
             offset: (b - day_start) / SEC,
-            coverage: self.run.numerator_coverage,
+            coverage,
         };
 
         let ev = &self.evidence;
@@ -1039,7 +1378,8 @@ impl Engine {
             shares: s.cum,
             dollars: (s.dollars_micros / 1_000_000) as u64,
             trades: s.trades,
-            coverage: self.run.numerator_coverage,
+            coverage,
+            coverage_reason: s.coverage.map(|(_, why)| why),
         };
         let mut changed = Vec::new();
         match &s.last {

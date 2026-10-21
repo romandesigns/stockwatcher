@@ -1216,6 +1216,16 @@ impl Market {
                     {
                         cx.apply_trade(t, Counted::from_effect(t), closes);
                     }
+                    // A correction or cancel of a symbol whose history is still loading reaches
+                    // the scanner too. There is no chart engine state to resolve it against,
+                    // which is why the scanner resolves against its own admissions; leaving this
+                    // path out kept the hole open for exactly the symbols a restart is loading.
+                    if held
+                        && matches!(e, MarketEvent::Correction(_) | MarketEvent::Cancel(_))
+                        && let Some(cx) = core.context.as_mut()
+                    {
+                        cx.apply_revision(&e, None, revision_admit(&e));
+                    }
                     if held {
                         // Alerts watch every live symbol, loaded into the engine or not.
                         if !core.rebuilding {
@@ -1261,19 +1271,14 @@ impl Market {
                         }
                         if let Some(rev) = &revision {
                             core.quotes.apply_revision(rev);
-                            // And the scanner, which kept a cancelled print's volume, trades and
-                            // day high for the rest of the day while the candles and the quote
-                            // row agreed it was gone.
-                            if let Some(cx) = core.context.as_mut() {
-                                let admit = match &e {
-                                    MarketEvent::Correction(c) => {
-                                        c.receive_ts.unwrap_or(c.event_ts)
-                                    }
-                                    MarketEvent::Cancel(c) => c.receive_ts.unwrap_or(c.event_ts),
-                                    other => other.event_ts(),
-                                };
-                                cx.apply_revision(rev, admit);
-                            }
+                        }
+                        // The scanner is told whether or not the chart engine could resolve it:
+                        // it resolves against its own admissions and uses the chart engine's
+                        // answer only for the date's last price and high.
+                        if matches!(e, MarketEvent::Correction(_) | MarketEvent::Cancel(_))
+                            && let Some(cx) = core.context.as_mut()
+                        {
+                            cx.apply_revision(&e, revision.as_ref(), revision_admit(&e));
                         }
                         core.seq += 1;
                         let seq = core.seq;
@@ -2320,6 +2325,17 @@ fn load_closes(archive: &Archive) -> PrevCloses {
             tracing::warn!(error = %e, "daily-closes.json unreadable: change % falls back to the open");
             PrevCloses::default()
         }
+    }
+}
+
+/// When a revision reached this process: its receive time when the feed knows it, else its
+/// publication time. The same rule a print's admission uses, so a revision is never admitted
+/// before the print it revises.
+fn revision_admit(e: &MarketEvent) -> UnixNanos {
+    match e {
+        MarketEvent::Correction(c) => c.receive_ts.unwrap_or(c.event_ts),
+        MarketEvent::Cancel(c) => c.receive_ts.unwrap_or(c.event_ts),
+        other => other.event_ts(),
     }
 }
 

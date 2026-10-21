@@ -26,8 +26,8 @@ pub mod revision;
 pub mod setup;
 
 pub use engine::{
-    Decision, Engine, Fidelity, MissingPillar, PanelRow, PanelSnapshot, RunInfo, SPARK_BARS,
-    Timeline, Verdict, VolumeFacts,
+    Decision, Engine, Fidelity, MissingPillar, PanelRow, PanelSnapshot, RestoreTelemetry, RunInfo,
+    SPARK_BARS, Timeline, Verdict, VolumeFacts,
 };
 pub use evaluate::{Coverage, NewsSummary, RvolDiagnostics};
 pub use evidence::{
@@ -42,7 +42,10 @@ pub use panel::{
 };
 pub use pillar::{Counts, PillarId, PillarResult, Qualification, Tri, aggregate};
 pub use policy::{PILLARS_V1, PILLARS_V2, Policy};
-pub use revision::{DEDUP_WINDOW_SECS, DayHigh, PrintRevision, RevisedPrint, RevisionTelemetry};
+pub use revision::{
+    CorrectedPrint, DEDUP_WINDOW_SECS, DayHigh, PrintRevision, REVISION_WINDOW_SECS,
+    RevisionTarget, RevisionTelemetry,
+};
 pub use setup::{
     Level, LevelRecord, Outcome, Pending, Pole, SETUPS_V0, SetupLogEntry, SetupPolicy, SetupState,
     SetupTransition, SetupView,

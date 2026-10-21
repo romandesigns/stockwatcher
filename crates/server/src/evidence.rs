@@ -1168,8 +1168,8 @@ mod tests {
         ActionRetrieval, Adjustment, ArchiveConfig, BarFetch, ChunkOutcome, CoverageScope,
         DailyBar, PrevCloses, RawDayBars, SplitSnapshot,
     };
-    use market_events::Trade;
     use market_events::session::{et, is_trading_day};
+    use market_events::{MarketEvent, Trade};
     use std::collections::BTreeMap;
     use stock_context::{MemberStatus, PillarId, Tri};
 
@@ -1418,6 +1418,23 @@ mod tests {
             x += 10 * SEC;
         }
         cx.advance(UnixNanos(to));
+    }
+
+    /// A cancel of `(symbol, seq)` as the provider publishes it: a reference, the original price
+    /// and size, and no execution time.
+    fn cancel_event(symbol: &str, seq: u64, cents: i64, size: u64, at: i64) -> MarketEvent {
+        MarketEvent::Cancel(market_events::Cancel {
+            symbol: symbol.into(),
+            event_ts: UnixNanos(at),
+            receive_ts: None,
+            source: Default::default(),
+            exchange: String::new(),
+            tape: Default::default(),
+            trade_id: seq,
+            price: Price::from_cents(cents),
+            size,
+            action: market_events::CancelAction::Cancel,
+        })
     }
 
     fn state(cx: &ContextBoard, sym: &str, p: PillarId) -> (Tri, &'static str) {
@@ -2545,10 +2562,13 @@ mod tests {
         );
     }
 
-    /// The board applies a revision the chart engine resolved, so the scanner's RVOL numerator
-    /// follows the candles instead of keeping a cancelled print all day.
+    /// A cancel reaches the scanner on **both** paths: with a chart loaded and without one.
+    ///
+    /// Routing it only on the loaded branch left the hole open for every symbol whose history is
+    /// still loading, which is exactly the window a restart spends in. The scanner resolves the
+    /// provider reference against the prints it admitted itself, so it does not need a chart.
     #[test]
-    fn the_board_applies_a_cancel_the_chart_engine_resolved() {
+    fn a_cancel_reaches_the_scanner_loaded_or_not() {
         let dir = tempfile::tempdir().unwrap();
         let a = archive(dir.path());
         write_daily_world(&a);
@@ -2557,15 +2577,36 @@ mod tests {
         let mut cx = board();
         load(&a, &log, &mut cx);
         trade(&mut cx, t(9, 30, 0), t(9, 32, 0));
-        // Past the last print's own barrier, so nothing is still pending and `before` really is
-        // the day's facts.
+        // Past the last print's own barrier, so nothing is still queued.
         cx.advance(UnixNanos(t(9, 32, 30)));
         let before = cx.decision(SYM).unwrap().volume.clone();
         assert!(before.shares > 0 && before.trades > 0);
 
-        // One of those prints is cancelled: 120,000 shares at $3.00, as the chart engine
-        // resolved it, with the date's last price and high recomputed.
-        let rev = chart_engine::Revision {
+        // The cancel as the provider publishes it: a reference, a price and a size, and no
+        // execution time. `trade()` printed 120,000 shares at $3.00 with `source_seq` counting
+        // up; the first of SYM's prints carries seq 1.
+        let raw = cancel_event(SYM, 1, 300, 120_000, t(9, 32, 31));
+
+        // Without a chart engine answer at all (the unloaded path).
+        cx.apply_revision(&raw, None, UnixNanos(t(9, 32, 31)));
+        cx.advance(UnixNanos(t(9, 33, 0)));
+        let after = cx.decision(SYM).unwrap().volume.clone();
+        assert_eq!(
+            after.shares,
+            before.shares - 120_000,
+            "resolved against the scanner's own admissions; telemetry {:?}",
+            cx.revision_telemetry()
+        );
+        assert_eq!(after.trades, before.trades - 1);
+        let tel = cx.revision_telemetry();
+        assert_eq!(tel.applied, 1);
+        assert_eq!(
+            tel.day_high_unproven, 1,
+            "no resolver could prove the date's high, and it is counted: {tel:?}"
+        );
+
+        // And with the chart engine's answer, which supplies the date's last price and high.
+        let resolved = chart_engine::Revision {
             symbol: SYM.into(),
             ts: UnixNanos(t(9, 30, 0)),
             session: market_events::SessionId {
@@ -2585,29 +2626,54 @@ mod tests {
                 complete: true,
             }),
         };
-        cx.apply_revision(&rev, UnixNanos(t(9, 32, 31)));
-        cx.advance(UnixNanos(t(9, 33, 0)));
-
-        let after = cx.decision(SYM).unwrap().volume.clone();
-        assert_eq!(
-            after.shares,
-            before.shares - 120_000,
-            "the cancelled print is out of the numerator; telemetry {:?}",
-            cx.revision_telemetry()
-        );
-        assert_eq!(after.trades, before.trades - 1);
+        let raw2 = cancel_event(SYM, 3, 300, 120_000, t(9, 33, 1));
+        let before2 = cx.decision(SYM).unwrap().volume.clone();
+        cx.apply_revision(&raw2, Some(&resolved), UnixNanos(t(9, 33, 1)));
+        cx.advance(UnixNanos(t(9, 33, 30)));
+        let after2 = cx.decision(SYM).unwrap().volume.clone();
+        assert_eq!(after2.shares, before2.shares - 120_000);
         let tel = cx.revision_telemetry();
-        assert_eq!(tel.applied, 1);
-        assert!(tel.complete(), "{tel:?}");
+        assert_eq!(tel.applied, 2);
+        assert_eq!(
+            tel.day_high_unproven, 1,
+            "the second one had a proven high, so nothing new was counted: {tel:?}"
+        );
 
-        // And the readiness summary carries the counters, so an unrepaired revision would show.
-        let r = cx.readiness(t(9, 33, 1));
-        assert_eq!(r.revisions.applied, 1);
+        // The readiness summary carries the counters, so an unrepaired revision would show.
+        let r = cx.readiness(t(9, 33, 31));
+        assert_eq!(r.revisions.applied, 2);
         assert!(
-            r.summary_line().contains("1 applied"),
+            r.summary_line().contains("2 applied"),
             "{}",
             r.summary_line()
         );
+    }
+
+    /// A cancel naming a print the scanner never admitted subtracts nothing at all.
+    #[test]
+    fn a_cancel_for_a_print_the_scanner_never_admitted_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = archive(dir.path());
+        write_daily_world(&a);
+        write_collected(&a, t(7, 0, 0));
+        let log = Mutex::new(EvidenceLog::default());
+        let mut cx = board();
+        load(&a, &log, &mut cx);
+        trade(&mut cx, t(9, 30, 0), t(9, 32, 0));
+        cx.advance(UnixNanos(t(9, 32, 30)));
+        let before = cx.decision(SYM).unwrap().volume.clone();
+
+        // A print from before this process existed: the chart engine may well resolve it, but
+        // the scanner never counted it, so subtracting its size would take volume off an
+        // unrelated print.
+        let raw = cancel_event(SYM, 9_999, 300, 120_000, t(9, 32, 31));
+        cx.apply_revision(&raw, None, UnixNanos(t(9, 32, 31)));
+        cx.advance(UnixNanos(t(9, 33, 0)));
+        assert_eq!(cx.decision(SYM).unwrap().volume, before);
+        let tel = cx.revision_telemetry();
+        assert_eq!(tel.unknown_target, 1);
+        assert_eq!(tel.applied, 0);
+        assert!(!tel.complete(), "{tel:?}");
     }
 
     /// A print redelivered on the unloaded path is counted once, which is the path that had no
