@@ -86,8 +86,10 @@ the additional subscription uses the existing socket and does not enable the eng
 | `INTRADAY_CURVES` / `INTRADAY_MAX_PER_RUN` | `1` / `400` | Added maintainer derivation from local archived days; these diagnostics are enabled when the existing maintainer runs |
 
 Ross observation/shadow capture has no separate new environment opt-in: it follows an enabled
-Ross board. With an archive it writes separate per-boot segments under the archive's `shadow/`;
-without durable storage it reports insufficiency. Detection has its own separate per-source/boot
+Ross board. ~~With an archive it writes separate per-boot segments under the archive's
+`shadow/`~~ — **corrected in review**: a production server enables the board before the archive
+is set, so the capture is memory-only and writes no `shadow/` files (see "Review amendments"
+below); without durable storage it reports insufficiency. Detection has its own separate per-source/boot
 journal when enabled, with unverified EOF tail and explicit loss counters. Neither is a complete
 forward cohort or power-loss durability guarantee. Preserve all originals/journals on rollback.
 
@@ -131,7 +133,7 @@ was run. Replay used only the existing SIP archive; BOATS/overnight were exclude
 | `ross.*` wire | Message names/source opt-in unchanged; additive `readiness` summary can update even when rows do not. Bounded viewer-independent output draining, explicit stale/reconnecting display and freshness reasons replace silently stale/empty presentation. Core policy identity is unchanged |
 | `pressure.*` wire | Existing subscribe/unsubscribe/snapshot/update schema and source handling unchanged. New `detection.*` frames coexist; no pressure payload migration |
 | Phone connection handling | Source/client/attempt guard prevents the previous connection from being rendered under a newly selected source or sign-in attempt. Ross/Detection retain last-known rows but remain stale until a frame arrives on the current socket; a reopened socket alone is insufficient. Detection subscription uses existing reconnect machinery and skips redundant chart/paper JSON parsing. Chart modal shares its dashboard feed; replay retains its existing separate source connection |
-| Recording/restoration | Shared execution-aware identity/revision ledger; original admissions/clock proof or explicit uncertainty. Restore stops global clocks before the first omitted symbol input and never trusts condition-only held verdicts as chart-authoritative. Successful adoption clears only temporary history pending. Refused/empty adoption stays unavailable with an explicit failure; no historical alert burst |
+| Recording/restoration | Shared execution-aware identity/revision ledger; original admissions/clock proof (now opt-in, `ADMISSION_JOURNAL`) or explicit uncertainty. Restore stops global clocks before the first omitted symbol input and never trusts condition-only held verdicts as chart-authoritative. Successful adoption clears only temporary history pending. Refused/empty adoption names its failure and (since review) ends the pending guard; no historical alert burst |
 
 ## Checks and evidence
 
@@ -196,11 +198,12 @@ dependencies. The earlier failed named-build logs are retained alongside success
   bar end but admitted before cutoff, not future leakage. Freshness therefore allows the two-second
   settle beyond 60s at the cutoff; current price age is separately positive/as-of based. Clarify
   naming and consider cutoff-based freshness in a later version.
-- Conservative restore residuals accepted in local review: a genuinely empty archive can remain
+- ~~Conservative restore residuals accepted in local review: a genuinely empty archive can remain
   terminal `history_restore_empty` even if it later trades; recovery requires a source/process
-  restart rebuilding History. Reconstructed held verdicts remain `journal_verdict_unproven`.
-  The existing no-Tape condition fallback remains; the review found no overcount path with the
-  admission ledger's dedup. Failed restores do not silently recover across date roll.
+  restart rebuilding History.~~ **Superseded in review** (see "Review amendments"): a refused or
+  empty restore is no longer terminal. Reconstructed held verdicts remain
+  `journal_verdict_unproven`. The existing no-Tape condition fallback remains; the review found
+  no overcount path with the admission ledger's dedup.
 - Journals/readers/queues are bounded; EOF is unverified and loss is counted. No whole-feed/run
   completeness, power-loss durability or full unseen-input causality proof is claimed.
 - Pure Engine median on 30,434 trades: 29.40ms off → 36.03ms on (~22.5%). Actual Market synthetic
@@ -233,3 +236,34 @@ show how to rebuild it; it is not a production server.
 
 Codex's completion signal is the **last commit** on `feat/detection-final`, subject beginning
 `Codex: done`. Claude owns subsequent review, merge into local main and any authorized shipping.
+
+## Review amendments (Claude, 2026-10-21, branch `review/ship-fixes`)
+
+Pre-ship review against a whole-market live SIP server (`STOCK_CONTEXT=1`, `DETECTION_PANEL=0`).
+Measurements are local and synthetic (tests named below); no provider or host was contacted.
+
+- **Admission journal is now opt-in (`ADMISSION_JOURNAL`, default `0`).** Measured 187–268 B per
+  journalled print (`admit::tests::measure_bytes_per_record`): ~7.5–10.7 GB for a ~40M-print day,
+  beside a ~0.8 GB sealed recording, and its reader stops at 4M records, so a whole-market
+  restore after mid-morning could not use it anyway. Without it a restore replays the recording's
+  order labelled `no_admission_journal`, as before this branch.
+- **Restore merges unjournalled deliveries by time.** A recording that began before its journal
+  (the first deploy of a journalling build; any boot with the journal off) had its whole morning
+  replayed after this boot's clocks and excluded as late everywhere — charts, quotes, Halt
+  watcher, scanner. Fixed; labelled `journal_starts_after_recording`.
+- **Scanner ledger bounded for a whole market.** Was ~285 B/entry and an hour per symbol: ~1.9 GB
+  for an 8M-print hour, never released for an idle symbol. Now ~146 B/entry, 20 minutes
+  (`REVISION_WINDOW_SECS`), a 1,000-entry bound for symbols far outside the band, a once-a-minute
+  clock sweep that returns allocations, and barrier scans over the queued tail only
+  (`stock-context/tests/ledger_memory.rs`).
+- **Unplaceable corrections/cancels are bounded**, not fatal: RVOL passes on the count net of
+  their sizes (`at_or_above_min_net_of_unplaced`) instead of UNKNOWN for the rest of the date.
+- **Coverage is dated**: Partial from a short recording, refused restore or overflow ends with
+  its trading date. A refused old print is `Unverified`, not `Partial`, and only if it would
+  have counted.
+- **Failed restores are not terminal**; the restore engine is advanced to the live clock before
+  adoption; deferred loads are retried; with the preload on, a printing symbol loads first.
+- **Shadow capture** is memory-only in production (it never wrote `shadow/`); its recency bound
+  is O(1) and its periodic report no longer waits on the fold.
+- **Intraday curves**: band symbols first, pruned with the maintainer window, a corrupt day
+  skipped and re-derived.

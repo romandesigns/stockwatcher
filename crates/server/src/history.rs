@@ -228,6 +228,12 @@ impl History {
             return Ok(c.journal.clone());
         }
         let want = crate::admit::identity("live", "recorded_live");
+        // A build that cannot name itself can never be proved to match a journal, so the answer
+        // is known before reading one — which for a busy day is a parse of millions of lines,
+        // repeated per symbol while this boot's own segment grows.
+        if !want.names_a_build() {
+            return Err("journal_unknown_build");
+        }
         let got = market_archive::admissions::read(&dir, day, &want);
         if got.records.len() > JOURNAL_RECORDS_MAX {
             // Not cached: a day this size should not be held in memory for the rest of the run.

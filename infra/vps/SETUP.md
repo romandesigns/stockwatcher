@@ -324,6 +324,22 @@ leaves every gain UNKNOWN, so nothing reaches 5/5: check the archiver's log and
 `plans/maintainer-status.json` (step 7). Before 07:00 ET floats are the previous day's and turn
 stale after 24 h, so an early premarket mover can lack its float until the refresh.
 
+**Watch the corporate-actions check.** A "no known corporate action" finding is evidence with an
+expiry: 90 minutes after the announcement check it rests on
+(`crates/market-archive/src/baseline.rs`). If the archiver's corporate-actions step fails for
+longer than that, gain and RVOL turn UNKNOWN (`actions_coverage_expired`) for nearly every symbol
+and the panel empties. That is deliberate — a split nobody is checking for could invent a 5×
+gainer — but it looks like an outage of the panel itself. When the panel is empty, check
+`docker compose --env-file image.env logs --tail 50 archiver` for corporate-action errors before
+anything else.
+
+**Restart behaviour.** After a deploy the panel restores each symbol's day from the recording;
+until a symbol is restored its RVOL is UNKNOWN (`history_pending`). Symbols printing now are
+loaded first. A restore that fails or finds nothing no longer blocks the symbol: it continues from
+what this process saw (a lower bound), with its coverage marked for that date.
+`ADMISSION_JOURNAL` stays at its default `0` on a whole-market live server (see
+`docs/reference/configuration.md`).
+
 To turn the panel off: remove the `STOCK_CONTEXT=1` line and `up -d` again. The collector can
 keep running (it only appends to the volume) or be stopped with
 `docker compose --env-file image.env stop evidence`; with `restart: unless-stopped` a stopped
