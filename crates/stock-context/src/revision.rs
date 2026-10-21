@@ -49,8 +49,12 @@ use market_events::TradeId;
 /// How long a print is remembered: for duplicate detection, and so a revision can name it.
 ///
 /// A redelivery arrives within seconds (a reconnect replay) and a correction or cancel close
-/// behind its print, so an hour is a generous bound on both.
-pub const REVISION_WINDOW_SECS: i64 = 3_600;
+/// behind its print, so twenty minutes is a generous bound on both. It was an hour, which for an
+/// engine fed the whole market's prints held ~1.9 GB of ledger at a busy open
+/// ([`crate::engine::LEDGER_WINDOW_SECS`] has the measurement and what twenty minutes must still
+/// cover). A revision reaching further back is counted unplaced, with its size as the bound on
+/// what the count may overstate.
+pub const REVISION_WINDOW_SECS: i64 = 1_200;
 
 /// Kept for compatibility with the identity rule's own name; the same window serves both.
 pub const DEDUP_WINDOW_SECS: i64 = REVISION_WINDOW_SECS;

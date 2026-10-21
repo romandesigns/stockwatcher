@@ -37,7 +37,7 @@ use crate::panel::{
 };
 use crate::pillar::{Counts, PillarId, PillarResult, Qualification, Tri, aggregate, price_pillar};
 use crate::policy::Policy;
-use crate::revision::{PrintRevision, REVISION_WINDOW_SECS, RevisionTelemetry};
+use crate::revision::{PrintRevision, RevisionTelemetry};
 use crate::setup::{
     BARS_KEPT, Bar, BullFlag, SetupLogEntry, SetupPolicy, SetupState, SetupView, Step, spark,
 };
@@ -50,6 +50,68 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 const SEC: i64 = 1_000_000_000;
 const MS: i64 = 1_000_000;
 
+/// Execution time an admission ledger retains, beside [`LEDGER_MAX`].
+///
+/// The same as [`crate::revision::REVISION_WINDOW_SECS`], and twenty minutes rather than the
+/// hour it was, on purpose. The engine sees every print of the market,
+/// so the ledgers' peak is the busiest stretch of this window summed over every symbol: measured
+/// on a synthetic whole-market hour skewed like a real day (`tests/ledger_memory.rs`), an hour's
+/// window held 6.5M entries for an 8M-print hour, ~1.9 GB at the old 285 B/entry. Twenty minutes
+/// still covers what a revision rebuild must reach back to (64 setup bars of 15 s = 16 min,
+/// [`crate::setup::BARS_KEPT`]; the momentum context is 5 min), a reconnect redelivery (seconds)
+/// and a correction or cancel arriving behind its print (seconds to minutes). A revision reaching
+/// further back is counted unplaced and bounded ([`Sym::unplaced`]), not trusted blindly, and a
+/// print older than the retained horizon is refused as before.
+pub const LEDGER_WINDOW_SECS: i64 = crate::revision::REVISION_WINDOW_SECS;
+
+/// A print's provider identity ([`TradeId`]) packed into two words, for the ledger.
+///
+/// The ledger and its identity set held the `TradeId` twice per entry, each with its own heap
+/// `String` for an exchange code that is one letter on SIP. Packed: the source in the low byte
+/// and the exchange's bytes in the other seven, exactly, for any code up to seven bytes (every
+/// SIP and fixture code). A longer code is replaced by a 56-bit hash of it with the top bit set,
+/// so it cannot equal any packed ASCII code; two long codes could collide only by hash, and no
+/// provider this app reads has one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct LedgerId {
+    tag: u64,
+    seq: u64,
+}
+
+/// [`Sym::ids`]' key for one print.
+fn identity_key(id: LedgerId, exec: i64) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (id.tag, id.seq, exec).hash(&mut h);
+    h.finish()
+}
+
+impl LedgerId {
+    fn of(id: &TradeId) -> LedgerId {
+        let src: u64 = match id.source {
+            market_events::Source::AlpacaSip => 1,
+            market_events::Source::AlpacaBoats => 2,
+            market_events::Source::AlpacaIex => 3,
+            market_events::Source::Fixture => 4,
+        };
+        let x = id.exchange.as_bytes();
+        let body = if x.len() <= 7 && !x.contains(&0) {
+            x.iter()
+                .enumerate()
+                .fold(0u64, |acc, (i, b)| acc | (u64::from(*b) << (8 * i)))
+        } else {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            id.exchange.hash(&mut h);
+            (h.finish() >> 8) | (1 << 55)
+        };
+        LedgerId {
+            tag: src | (body << 8),
+            seq: id.seq,
+        }
+    }
+}
+
 /// Hard bound on one symbol's admission ledger, beside the time bound.
 ///
 /// Two bounds, not one: a reconnect replay's timing is not something to assume, so the time
@@ -57,6 +119,9 @@ const MS: i64 = 1_000_000;
 /// Whichever bites first, an eviction is counted and a **queued** entry evicted degrades the
 /// symbol's coverage, because that is volume the engine will never count.
 pub const LEDGER_MAX: usize = 20_000;
+
+/// [`LEDGER_MAX`] for a symbol printing far outside the discovery band ([`Engine::apply`]).
+pub const LEDGER_MAX_OUTSIDE_BAND: usize = 1_000;
 
 /// What kind of data a run decides on: recorded live arrival order, a reconstruction from
 /// history without arrival times (no latency claims), or a synthetic fixture.
@@ -160,7 +225,7 @@ pub struct Decision {
 /// counted anyway, and the identity set was cleared after the first prints of a date had already
 /// been queued, so a later redelivery of one counted twice.
 struct Admitted {
-    id: TradeId,
+    id: LedgerId,
     exec: i64,
     admit: i64,
     price: i64,
@@ -185,8 +250,9 @@ struct Admitted {
 }
 
 impl Admitted {
-    fn key(&self) -> (TradeId, i64) {
-        (self.id.clone(), self.exec)
+    /// The identity-set key: a 64-bit hash of (identity, execution time). See [`Sym::ids`].
+    fn key(&self) -> u64 {
+        identity_key(self.id, self.exec)
     }
 
     /// Volume this print contributes to the aggregates right now.
@@ -204,12 +270,31 @@ struct Sym {
     inst: InstrumentId,
     date: Option<NaiveDate>,
     /// The admission ledger: every print this engine can still prove it admitted, in arrival
-    /// order ([`Admitted`]). Bounded twice — by execution time
-    /// ([`crate::revision::REVISION_WINDOW_SECS`]) and by a hard entry count
-    /// ([`LEDGER_MAX`]) — because a reconnect replay's timing is not something to assume.
+    /// order ([`Admitted`]). Bounded twice — by execution time ([`LEDGER_WINDOW_SECS`]) and by a
+    /// hard entry count ([`LEDGER_MAX`]) — because a reconnect replay's timing is not something
+    /// to assume. The time bound is enforced on the symbol's own prints **and** by the clock
+    /// ([`Engine::advance_to`] sweeps every ledger once a minute), so a symbol that stops
+    /// trading releases its ledger instead of holding it overnight.
     ledger: VecDeque<Admitted>,
-    /// The ledger's identities, for an O(1) duplicate check.
-    ids: HashSet<(TradeId, i64)>,
+    /// The ledger's identities, for an O(1) duplicate check: 64-bit hashes of (identity,
+    /// execution time) rather than the pairs, a third of the bytes per entry. A collision can
+    /// only make a new print look like a redelivery and be dropped — an undercount, the safe
+    /// direction for a lower bound — at odds of about one in 2⁶⁴ ÷ the ledger's length.
+    ids: HashSet<u64>,
+    /// Ledger entries still `queued`. They sit at the back (a barrier folds by admission time),
+    /// so the per-barrier scans walk back from the end until they have seen this many, instead of
+    /// the whole ledger of every symbol — which at a whole-market open is millions of entries
+    /// under the core lock every 15 s.
+    queued_n: usize,
+    /// Shares the count may overstate: the sizes of corrections and cancels this engine could not
+    /// place against exactly one admission ([`Integrity::volume_untrusted`]). `cum - unplaced` is
+    /// still a lower bound, so an RVOL that clears the threshold on it passes. Reset with the
+    /// date's facts.
+    unplaced: u64,
+    /// The trading date `coverage` is a statement about. A short recording, a refused restore or
+    /// an overflowed ledger describes that date's prints, not the next one's, so a new date
+    /// starts without it ([`Engine::evaluate`]).
+    coverage_for: Option<NaiveDate>,
     /// Had a counted print on `date`: only those symbols emit.
     active: bool,
     cum: u64,
@@ -277,6 +362,9 @@ impl Sym {
             date: None,
             ledger: VecDeque::new(),
             ids: HashSet::new(),
+            queued_n: 0,
+            unplaced: 0,
+            coverage_for: None,
             active: false,
             cum: 0,
             dollars_micros: 0,
@@ -302,6 +390,94 @@ impl Sym {
             det: SymDetect::default(),
             history_pending: false,
         }
+    }
+}
+
+impl Sym {
+    /// Index of the oldest `queued` ledger entry (the ledger's length when none is): every entry
+    /// before it is folded or skipped. Walks back from the end, which is where queued entries
+    /// are, so a barrier costs the queued tail rather than the whole ledger.
+    fn queued_start(&self) -> usize {
+        let mut left = self.queued_n;
+        let mut i = self.ledger.len();
+        while left > 0 && i > 0 {
+            i -= 1;
+            if self.ledger[i].queued {
+                left -= 1;
+            }
+        }
+        debug_assert_eq!(
+            left, 0,
+            "queued_n ({}) exceeds the queued entries in the ledger",
+            self.queued_n
+        );
+        debug_assert!(
+            self.ledger.range(..i).all(|a| !a.queued),
+            "a queued entry before the counted tail"
+        );
+        i
+    }
+}
+
+/// Retires the front of a symbol's ledger: entries executed before `keep_from`, and any beyond
+/// `cap` entries. With `folded_only` (the clock's sweep, and the short bound for a symbol far
+/// outside the band) it stops at the first queued entry, which is still waiting for its barrier
+/// and is not theirs to drop.
+///
+/// Every retired identity moves the quarantine horizon: nothing executed at or before it can be
+/// proved new again. A retired queued entry is volume this engine will never count.
+fn retire(
+    sym: &mut Sym,
+    revisions: &mut RevisionTelemetry,
+    run: Coverage,
+    keep_from: i64,
+    cap: usize,
+    folded_only: bool,
+) {
+    let mut evicted_counted = 0u64;
+    let mut evicted_queued = 0u64;
+    let mut last_date = None;
+    while let Some(a) = sym.ledger.front() {
+        if !(a.exec < keep_from || sym.ledger.len() > cap) || (folded_only && a.queued) {
+            break;
+        }
+        let a = sym.ledger.pop_front().expect("just looked");
+        sym.ids.remove(&a.key());
+        sym.quarantine_through = Some(sym.quarantine_through.map_or(a.exec, |q| q.max(a.exec)));
+        last_date = a.session.map(|(d, _)| d).or(last_date);
+        if a.queued {
+            sym.queued_n -= 1;
+            evicted_queued += 1;
+        } else {
+            evicted_counted += 1;
+        }
+    }
+    if evicted_counted > 0 {
+        // Past the horizon the engine can no longer prove a duplicate or place a revision for
+        // those prints. The volume it already counted is unaffected, but the limit is named
+        // rather than left to be discovered.
+        revisions.identities_evicted += evicted_counted;
+        if sym.coverage.is_none() {
+            sym.coverage = Some((run, "identities_evicted"));
+            sym.coverage_for = last_date;
+        }
+    }
+    if evicted_queued > 0 {
+        // A queued print evicted is volume this engine will never count: a real gap in the
+        // numerator, so the symbol's coverage says so.
+        revisions.queued_evicted += evicted_queued;
+        sym.coverage = Some((Coverage::Partial, "admission_ledger_overflow"));
+        sym.coverage_for = last_date;
+    }
+    if sym.ledger.is_empty() {
+        // An idle symbol gives its allocations back: a VecDeque and a HashSet keep their
+        // capacity through `pop_front`, so without this a morning's runner held its peak
+        // ledger all night.
+        sym.ledger = VecDeque::new();
+        sym.ids = HashSet::new();
+    } else if folded_only && sym.ledger.capacity() > 4 * sym.ledger.len() + 64 {
+        sym.ledger.shrink_to_fit();
+        sym.ids.shrink_to_fit();
     }
 }
 
@@ -397,6 +573,8 @@ pub struct Engine {
     setup_log: BoundedLog<SetupLogEntry>,
     revisions: RevisionTelemetry,
     restores: RestoreTelemetry,
+    /// The clock at the last ledger sweep ([`Engine::advance_to`]).
+    swept_at: i64,
     /// The Detection Panel families (`crate::detect`); `None`: off.
     detector: Option<Detector>,
 }
@@ -429,7 +607,7 @@ pub enum Adoption {
     Refused(&'static str),
 }
 
-fn max_opt(a: Option<i64>, b: Option<i64>) -> Option<i64> {
+fn max_opt<T: Ord>(a: Option<T>, b: Option<T>) -> Option<T> {
     match (a, b) {
         (Some(a), Some(b)) => Some(a.max(b)),
         (x, None) => x,
@@ -458,6 +636,7 @@ impl Engine {
             setup_log: BoundedLog::new(SETUP_LOG_MAX),
             revisions: RevisionTelemetry::default(),
             restores: RestoreTelemetry::default(),
+            swept_at: i64::MIN,
             detector: None,
         }
     }
@@ -657,11 +836,15 @@ impl Engine {
     /// while the live numerator was fine, and a **stream** gap means the numerator itself is
     /// short. Conflating them would blame the wrong half.
     pub fn set_coverage(&mut self, symbol: &str, coverage: Option<(Coverage, &'static str)>) {
-        if let Some(s) = self.syms.get_mut(symbol)
-            && s.coverage != coverage
-        {
-            s.coverage = coverage;
-            s.dirty = true;
+        let clock_date = self.next_bar.map(|b| trading_date(UnixNanos(b)));
+        if let Some(s) = self.syms.get_mut(symbol) {
+            // About the date the symbol is on, or the clock's if that is later: a statement made
+            // now is about today's prints, whatever date the symbol last decided.
+            s.coverage_for = max_opt(s.date, clock_date);
+            if s.coverage != coverage {
+                s.coverage = coverage;
+                s.dirty = true;
+            }
         }
     }
 
@@ -772,6 +955,10 @@ impl Engine {
                 live.date = restored.date.or(live.date);
                 live.ledger = restored.ledger;
                 live.ids = restored.ids;
+                live.queued_n = restored.queued_n;
+                // The restore replayed the held tail too, so an unplaceable revision the live
+                // tail met is normally in both: the larger bound, never the sum.
+                live.unplaced = live.unplaced.max(restored.unplaced);
                 live.active = restored.active || live.active;
                 live.cum = restored.cum;
                 live.dollars_micros = restored.dollars_micros;
@@ -783,6 +970,9 @@ impl Engine {
                 live.bars = restored.bars;
                 live.first_bar = restored.first_bar;
                 live.integrity = live.integrity.or(restored.integrity);
+                if restored.coverage.is_some() {
+                    live.coverage_for = restored.coverage_for.or(restored.date);
+                }
                 live.coverage = restored.coverage.or(live.coverage);
                 live.quarantine_through =
                     max_opt(live.quarantine_through, restored.quarantine_through);
@@ -986,43 +1176,34 @@ impl Engine {
         // cleared on a date change — doing that after a date's first prints were already queued
         // is how their identities were lost, so a later redelivery of one counted twice. Entries
         // carry their own session date instead, and the bounds below retire them.
-        let mut evicted_counted = 0u64;
-        let mut evicted_queued = 0u64;
-        while sym
-            .ledger
-            .front()
-            .is_some_and(|a| exec - a.exec > REVISION_WINDOW_SECS * SEC)
-            || sym.ledger.len() >= LEDGER_MAX
-        {
-            let Some(a) = sym.ledger.pop_front() else {
-                break;
-            };
-            sym.ids.remove(&a.key());
-            // Nothing executing at or before this can be proved new again.
-            sym.quarantine_through = Some(
-                sym.quarantine_through
-                    .map_or(a.exec, |q: i64| q.max(a.exec)),
+        // A print far outside the discovery band (above twice its top, below half its bottom)
+        // belongs to a symbol no panel shows. Its count still matters, so it is still taken, but
+        // its ledger is kept short: most of the market's prints are on such symbols (the large
+        // caps), and the ledger is the scanner's largest structure. What a short ledger costs is
+        // safe in both directions: an older print is refused (the count stays a lower bound) and
+        // a revision past it is counted unplaced and bounded (`Sym::unplaced`).
+        // Only folded entries go to that shorter bound: a queued one is volume not yet counted,
+        // and a large cap prints far more than a thousand times between two barriers.
+        let band = &self.policy.body.discovery_band;
+        let p = t.price.micros();
+        let run = self.run.numerator_coverage;
+        retire(
+            sym,
+            &mut self.revisions,
+            run,
+            exec - LEDGER_WINDOW_SECS * SEC,
+            LEDGER_MAX - 1,
+            false,
+        );
+        if p > band.max_micros.saturating_mul(2) || p < band.min_micros / 2 {
+            retire(
+                sym,
+                &mut self.revisions,
+                run,
+                i64::MIN,
+                LEDGER_MAX_OUTSIDE_BAND - 1,
+                true,
             );
-            if a.queued {
-                evicted_queued += 1;
-            } else {
-                evicted_counted += 1;
-            }
-        }
-        if evicted_counted > 0 {
-            // Past the horizon the engine can no longer prove a duplicate or place a revision for
-            // those prints. The volume it already counted is unaffected, but the limit is named
-            // rather than left to be discovered.
-            self.revisions.identities_evicted += evicted_counted;
-            if sym.coverage.is_none() {
-                sym.coverage = Some((self.run.numerator_coverage, "identities_evicted"));
-            }
-        }
-        if evicted_queued > 0 {
-            // A queued print evicted is volume this engine will never count: a real gap in the
-            // numerator, so the symbol's coverage says so.
-            self.revisions.queued_evicted += evicted_queued;
-            sym.coverage = Some((Coverage::Partial, "admission_ledger_overflow"));
         }
         // Past the horizon the engine cannot tell a new old print from a redelivery of one it
         // already counted, and counting it again would overstate the numerator — on the unloaded
@@ -1031,14 +1212,31 @@ impl Engine {
         // that a genuinely new print this old is not counted, and that is the safe direction.
         if sym.quarantine_through.is_some_and(|q| exec <= q) {
             self.revisions.quarantined_old += 1;
-            // A refused print is a real gap in the count, which is a stronger statement than
-            // "identities were retired", so it replaces that reason rather than queuing behind
-            // it.
-            sym.coverage = Some((Coverage::Partial, "quarantined_old_prints"));
+            // A refused print that would have counted is volume missing from the count, so the
+            // symbol's coverage stops claiming more than the run's — but it is not `Partial`.
+            // Partial makes Ross momentum unavailable for the rest of the date, and an old print
+            // says nothing about the recent prices momentum reads: one late report used to
+            // unrank a runner for the whole day (and, before coverage was dated, for days). A
+            // print that would not have counted anyway — another date's, or one whose verdict
+            // counts no volume — is no gap at all and changes nothing.
+            let date = t.session.map(|s| s.date);
+            let would_count =
+                verdict.volume && date.is_some() && (sym.date.is_none() || sym.date == date);
+            if would_count && sym.coverage.is_none_or(|(c, _)| c != Coverage::Partial) {
+                let run = self.run.numerator_coverage;
+                let c = if run == Coverage::Partial {
+                    Coverage::Partial
+                } else {
+                    Coverage::Unverified
+                };
+                sym.coverage = Some((c, "quarantined_old_prints"));
+                sym.coverage_for = date;
+            }
             sym.dirty = true;
             return out;
         }
-        let key = (t.id(), exec);
+        let id = LedgerId::of(&t.id());
+        let key = identity_key(id, exec);
         if !sym.ids.insert(key) {
             self.revisions.duplicates_dropped += 1;
             return out;
@@ -1055,8 +1253,9 @@ impl Engine {
                 sym.history_pending,
             );
         }
+        sym.queued_n += 1;
         sym.ledger.push_back(Admitted {
-            id: t.id(),
+            id,
             exec,
             admit: admit.nanos(),
             price: t.price.micros(),
@@ -1110,27 +1309,33 @@ impl Engine {
             price: Price::from_micros(rev.target.price),
             size: rev.target.size,
         };
+        let want = LedgerId::of(&target.id);
         let candidates: Vec<(usize, Price, u64)> = sym
             .ledger
             .iter()
             .enumerate()
-            .filter(|(_, a)| a.id == target.id && !a.removed)
+            .filter(|(_, a)| a.id == want && !a.removed)
             .map(|(i, a)| (i, Price::from_micros(a.price), a.size))
             .collect();
         let i = match target.resolve(candidates) {
             Resolution::Found(i) => i,
             Resolution::NotFound => {
                 // Never admitted here, or past the ledger's horizon. Nothing is subtracted —
-                // but something the provider says is not there may still be in the count, so the
-                // numerator is no longer a lower bound and the pillar must say so.
+                // but something the provider says is not there may still be in the count, by at
+                // most the target's size. The count is no longer a lower bound by itself; the
+                // count less every such size is, so that is what the RVOL pillar may pass on
+                // ([`Sym::unplaced`]). It used to make RVOL UNKNOWN for the rest of the date,
+                // and a ledger horizon is minutes on a runner while a bust can come later.
                 self.revisions.unknown_target += 1;
                 sym.integrity.volume_untrusted = true;
+                sym.unplaced = sym.unplaced.saturating_add(rev.target.size);
                 sym.dirty = true;
                 return out;
             }
             Resolution::Ambiguous => {
                 self.revisions.ambiguous += 1;
                 sym.integrity.volume_untrusted = true;
+                sym.unplaced = sym.unplaced.saturating_add(rev.target.size);
                 sym.dirty = true;
                 return out;
             }
@@ -1148,7 +1353,7 @@ impl Engine {
         if let Some(det) = self.detector.as_mut() {
             // What the print says after this revision: a price only if it still sets one.
             let now = rev.corrected.filter(|c| c.verdict.ohlc).map(|c| c.price);
-            let (id, exec) = (sym.ledger[i].id.clone(), sym.ledger[i].exec);
+            let (id, exec) = (rev.target.id.clone(), sym.ledger[i].exec);
             detect::on_revision(det, &mut sym.det, &id, exec, now, admit.nanos());
         }
         let was_volume = sym.ledger[i].volume();
@@ -1168,7 +1373,10 @@ impl Engine {
                 }
                 None => {
                     e.removed = true;
-                    e.queued = false;
+                    if e.queued {
+                        e.queued = false;
+                        sym.queued_n -= 1;
+                    }
                 }
             }
         }
@@ -1342,6 +1550,24 @@ impl Engine {
         self.revisions
     }
 
+    /// What the admission ledgers hold across every symbol, and roughly what they cost in
+    /// memory: entries, and the bytes of their allocations (the ledger's and the identity set's
+    /// capacity, plus any heap an entry's identity owns).
+    ///
+    /// An estimate of allocations, not a measured RSS: allocator overhead per block is not
+    /// counted. It is what bounds the whole-market cost, so it is what a test measures.
+    pub fn ledger_footprint(&self) -> (usize, usize) {
+        let entry = std::mem::size_of::<Admitted>();
+        let key = std::mem::size_of::<u64>() + 1;
+        let mut entries = 0;
+        let mut bytes = 0;
+        for s in self.syms.values() {
+            entries += s.ledger.len();
+            bytes += s.ledger.capacity() * entry + s.ids.capacity() * key;
+        }
+        (entries, bytes)
+    }
+
     /// Decides every barrier `b + settle <= now` not yet decided.
     pub fn advance_to(&mut self, now: UnixNanos) -> Vec<Decision> {
         let now = now.nanos();
@@ -1362,6 +1588,28 @@ impl Engine {
             b += bar;
         }
         self.next_bar = Some(b);
+        // Once a minute of clock, every ledger gives up what its time bound no longer covers.
+        // Retiring only on a symbol's own next print left a symbol that stopped trading holding
+        // its whole ledger — at the close, the whole market's last twenty minutes, all night.
+        if now >= self.swept_at.saturating_add(60 * SEC) {
+            self.swept_at = now;
+            let run = self.run.numerator_coverage;
+            for s in self.syms.values_mut() {
+                if s.ledger
+                    .front()
+                    .is_some_and(|a| a.exec < now - LEDGER_WINDOW_SECS * SEC)
+                {
+                    retire(
+                        s,
+                        &mut self.revisions,
+                        run,
+                        now - LEDGER_WINDOW_SECS * SEC,
+                        LEDGER_MAX,
+                        true,
+                    );
+                }
+            }
+        }
         out
     }
 
@@ -1375,7 +1623,7 @@ impl Engine {
             if s.dirty || s.member.active().is_some() || s.det.has_active() {
                 return b;
             }
-            for a in s.ledger.iter().filter(|a| a.queued) {
+            for a in s.ledger.range(s.queued_start()..).filter(|a| a.queued) {
                 // Drained at the first barrier past its execution that it was admitted by.
                 let by_exec = ceil_to(a.exec + 1, bar);
                 let by_admit = ceil_to(a.admit - settle, bar);
@@ -1399,7 +1647,7 @@ impl Engine {
                     || s.date != Some(date)
                     || b >= s.recheck_at
                     || s.ledger
-                        .iter()
+                        .range(s.queued_start()..)
                         .any(|a| a.queued && a.exec < b && a.admit <= tau)
             };
             if due && let Some(d) = self.evaluate(&name, date, b, tau) {
@@ -1637,6 +1885,16 @@ impl Engine {
             //
             // The doubts are a property of the date's facts, which have just been reset.
             s.integrity = Integrity::default();
+            s.unplaced = 0;
+            // So is what was known about how completely the earlier date was collected. A short
+            // recording, a refused restore or an overflowed ledger left `Partial` here for the
+            // life of the process, and Partial makes Ross momentum unavailable: a symbol stayed
+            // unranked on every later date until a restart. A statement made about *this* date
+            // (a restore adopted before its first barrier) is kept.
+            if s.coverage_for.is_none_or(|d| d < date) {
+                s.coverage = None;
+                s.coverage_for = None;
+            }
         }
         let exclude_overnight = policy.body.volume.exclude_overnight_boats;
         let bar_ns = policy.body.grid.bar_secs * SEC;
@@ -1646,11 +1904,13 @@ impl Engine {
         // Fold in the ledger entries this barrier may count, marking them in place rather than
         // taking them out: the ledger stays the one record of what was admitted, so a revision
         // arriving later can still find them (and tell a counted print from a queued one).
-        for a in s.ledger.iter_mut() {
+        let start = s.queued_start();
+        for a in s.ledger.range_mut(start..) {
             if !(a.queued && a.exec < b && a.admit <= tau) {
                 continue;
             }
             a.queued = false;
+            s.queued_n -= 1;
             a.folded_at = Some(b);
             let Some((d, kind)) = a.session else { continue };
             if d != date || (exclude_overnight && kind == SessionKind::Overnight) {
@@ -1757,6 +2017,7 @@ impl Engine {
             offset: (b - day_start) / SEC,
             coverage,
             integrity,
+            unplaced: s.unplaced,
         };
 
         let ev = &self.evidence;

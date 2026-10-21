@@ -178,6 +178,9 @@ pub struct VolumeView {
     pub offset: i64,
     pub coverage: Coverage,
     pub integrity: Integrity,
+    /// The most `cum` may overstate by: the summed sizes of the revisions that could not be
+    /// placed (`Integrity::volume_untrusted`). `cum - unplaced` is a lower bound.
+    pub unplaced: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -365,8 +368,21 @@ pub fn rvol(
     // UNKNOWN, with the reason, until the next decision computes it from a count that is sound.
     // A tail awaiting its day's history is neither a measurement nor a safe lower bound for a
     // decision a client will read as the day's: UNKNOWN until the history is adopted.
+    //
+    // The overstatement is bounded, though: by at most the sizes of the revisions that could not
+    // be placed. The count less all of them is a lower bound again, and one that clears the
+    // threshold passes — so a single unplaceable bust no longer takes a runner's RVOL to UNKNOWN
+    // for the rest of the date.
+    let net_passes = vol.integrity.volume_untrusted
+        && ratio_passes(
+            vol.cum.saturating_sub(vol.unplaced),
+            sum,
+            n,
+            prof.rvol_daily_min_milli,
+        );
     let (state, reason) = match (vol.integrity.volume_untrusted, passes, vol.coverage) {
         _ if vol.integrity.history_pending => (Tri::Unknown, "history_pending"),
+        (true, _, _) if net_passes => (Tri::Pass, "at_or_above_min_net_of_unplaced"),
         (true, _, _) => (Tri::Unknown, "volume_untrusted"),
         (false, true, _) => (Tri::Pass, "at_or_above_min"),
         (false, false, Coverage::Complete) => (Tri::Fail, "below_min"),

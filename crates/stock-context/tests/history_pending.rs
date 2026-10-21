@@ -227,7 +227,9 @@ fn adoption_ends_the_guard_but_never_a_genuine_doubt() {
     live.set_history_pending("HDBT", true);
     live_tail(&mut live, "HDBT");
     // A cancel naming a print this engine never admitted: the count may hold volume that should
-    // not be there, a genuine and lasting doubt.
+    // not be there, a genuine and lasting doubt. Its size is larger than the whole day, so the
+    // count net of it proves nothing and the pillar stays UNKNOWN (a small one would pass on the
+    // net lower bound: `tests/revisions.rs`).
     live.apply_revision(
         &PrintRevision {
             symbol: "HDBT".into(),
@@ -238,7 +240,7 @@ fn adoption_ends_the_guard_but_never_a_genuine_doubt() {
                     seq: 999_999,
                 },
                 price: 3_500_000,
-                size: 100,
+                size: 1_000_000,
             },
             corrected: None,
             last: None,

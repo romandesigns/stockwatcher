@@ -526,13 +526,15 @@ fn rvol_of(e: &Engine) -> (Tri, &'static str) {
     (p.state, p.reason)
 }
 
-/// A cancel the engine could not place makes the RVOL pillar UNKNOWN, not a PASS.
+/// A cancel the engine could not place makes the count a possible overstatement — bounded by the
+/// cancel's size — so the RVOL pillar passes only on the count net of it, and is UNKNOWN otherwise.
 ///
 /// The lower-bound argument — missing prints only lower the numerator, so a count already over
-/// the threshold is a valid PASS — does not hold when the numerator may be too **high**. A
+/// the threshold is a valid PASS — does not hold for a numerator that may be too **high**. A
 /// correction or cancel the engine could not resolve against exactly one of its own admissions
-/// leaves volume in the count that the provider says is not there. Counting that as a PASS would
-/// be inventing a qualifying stock; it is UNKNOWN until the symbol's count is sound again.
+/// leaves up to its size in the count that the provider says is not there. Less that size, the
+/// count is a lower bound again. Treating every unplaced revision as unbounded made RVOL UNKNOWN
+/// for the rest of the date on one bust past a runner's ledger horizon.
 #[test]
 fn an_unplaceable_cancel_makes_the_rvol_pillar_unknown() {
     let mut e = engine();
@@ -545,10 +547,24 @@ fn an_unplaceable_cancel_makes_the_rvol_pillar_unknown() {
         "20,000 against a 1,000-share mean is 20x"
     );
 
-    // A cancel naming a print this engine never admitted: nothing is subtracted, and nothing can
-    // be said about the numerator any more.
+    // A small cancel naming a print this engine never admitted: nothing is subtracted, and the
+    // count may be 400 high. 19,600 is still 19.6x: a pass, on the net figure.
     e.apply_revision(&cancel(99, 700, 400, None), UnixNanos(t(9, 30, 25)));
     e.advance_to(UnixNanos(t(9, 30, 40)));
+    assert_eq!(rvol_of(&e), (Tri::Pass, "at_or_above_min_net_of_unplaced"));
+    assert!(
+        e.current()
+            .next()
+            .expect("a decision")
+            .volume
+            .integrity
+            .volume_untrusted,
+        "the doubt is still named"
+    );
+
+    // One the size of the day: net of it nothing is proved, and nothing can be said.
+    e.apply_revision(&cancel(98, 700, 20_000, None), UnixNanos(t(9, 30, 45)));
+    e.advance_to(UnixNanos(t(9, 31, 10)));
     assert_eq!(rvol_of(&e), (Tri::Unknown, "volume_untrusted"));
     let d = e.current().next().expect("a decision");
     assert!(d.volume.integrity.volume_untrusted);
@@ -564,7 +580,8 @@ fn an_unplaceable_cancel_makes_the_rvol_pillar_unknown() {
         "a doubt about the count is not a qualification"
     );
 
-    // An ambiguous reference does the same.
+    // An ambiguous reference does the same: one of two 20,000-share prints is gone, so 20,000 is
+    // proved either way and still passes; a second ambiguity leaves nothing proved.
     let mut f = engine();
     rvol_evidence(&mut f);
     print_seq(&mut f, 7, t(9, 30, 1), 500, 20_000);
@@ -573,6 +590,9 @@ fn an_unplaceable_cancel_makes_the_rvol_pillar_unknown() {
     assert_eq!(rvol_of(&f).0, Tri::Pass);
     f.apply_revision(&cancel(7, 500, 20_000, None), UnixNanos(t(9, 30, 25)));
     f.advance_to(UnixNanos(t(9, 30, 40)));
+    assert_eq!(rvol_of(&f), (Tri::Pass, "at_or_above_min_net_of_unplaced"));
+    f.apply_revision(&cancel(7, 500, 20_000, None), UnixNanos(t(9, 30, 45)));
+    f.advance_to(UnixNanos(t(9, 31, 10)));
     assert_eq!(rvol_of(&f), (Tri::Unknown, "volume_untrusted"));
 }
 
