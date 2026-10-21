@@ -81,6 +81,8 @@ pub(crate) struct ContextBoard {
     /// shadow's session-close rule is settled against. Never the wall clock — a replay's day is
     /// its own, and yesterday's closed sessions must not reopen at this morning's 09:00.
     run_clock: i64,
+    /// Transport namespace only; semantic IDs and decisions stay deterministic in the engine.
+    detection_epoch: Option<String>,
 }
 
 impl ContextBoard {
@@ -92,6 +94,16 @@ impl ContextBoard {
         day: Option<NaiveDate>,
         band_min: Price,
         band_max: Price,
+    ) -> Option<ContextBoard> {
+        Self::new_labeled(live, day, band_min, band_max, false)
+    }
+
+    pub(crate) fn new_labeled(
+        live: bool,
+        day: Option<NaiveDate>,
+        band_min: Price,
+        band_max: Price,
+        fixture: bool,
     ) -> Option<ContextBoard> {
         let policy = Policy::current();
         let panel = PanelPolicy::v1();
@@ -114,21 +126,38 @@ impl ContextBoard {
             return None;
         }
         let run = RunInfo {
-            run_id: match (live, day) {
-                (true, _) => "live".to_string(),
-                (false, Some(d)) => format!("replay:{d}"),
-                (false, None) => "replay".to_string(),
+            run_id: if fixture {
+                format!("fixture:{}", day.map(|d| d.to_string()).unwrap_or_default())
+            } else {
+                match (live, day) {
+                    (true, _) => "live".to_string(),
+                    (false, Some(d)) => format!("replay:{d}"),
+                    (false, None) => "replay".to_string(),
+                }
             },
-            source: if live { "live" } else { "replay" }.to_string(),
+            source: if fixture {
+                "fixture"
+            } else if live {
+                "live"
+            } else {
+                "replay"
+            }
+            .to_string(),
             // A replayed day may be a live recording or a corrected import; without telling them
             // apart here, claim the weaker one (no latency claims from a replay).
-            fidelity: if live {
+            fidelity: if fixture {
+                Fidelity::SyntheticFixture
+            } else if live {
                 Fidelity::RecordedLive
             } else {
                 Fidelity::ReconstructedHistory
             },
             // No coverage records are consulted yet (docs: recording provenance).
-            numerator_coverage: Coverage::Unverified,
+            numerator_coverage: if fixture {
+                Coverage::Complete
+            } else {
+                Coverage::Unverified
+            },
         };
         Some(ContextBoard {
             engine: Engine::new(policy, run)
@@ -141,6 +170,7 @@ impl ContextBoard {
             drained: DrainReport::default(),
             shadow: None,
             run_clock: 0,
+            detection_epoch: None,
         })
     }
 
@@ -318,9 +348,13 @@ impl ContextBoard {
     /// which is what the audit found (F1). It replays them on this engine instead and the result
     /// is adopted ([`ContextBoard::adopt_symbol`]).
     pub(crate) fn restore_engine(&self) -> Engine {
-        Engine::new(self.engine.policy().clone(), self.engine.run_info().clone())
+        let engine = Engine::new(self.engine.policy().clone(), self.engine.run_info().clone())
             .with_panel_policy(self.engine.panel_policy().clone())
-            .with_setup_policy(self.engine.setup_policy().clone())
+            .with_setup_policy(self.engine.setup_policy().clone());
+        match self.engine.detection_policy() {
+            Some(policy) => engine.with_detection_policy(policy.clone()),
+            None => engine,
+        }
     }
 
     /// Takes one symbol's restored **facts** into this board, with what is known about how
@@ -547,6 +581,82 @@ impl ContextBoard {
 
     pub(crate) fn set_halted(&mut self, symbol: &str, halted: bool) {
         self.engine.set_halted(symbol, halted);
+    }
+
+    pub(crate) fn with_detection(mut self, epoch: String) -> Self {
+        self.engine = self
+            .engine
+            .with_detection_policy(stock_context::DetectionPolicy::v0());
+        self.detection_epoch = Some(epoch);
+        self
+    }
+
+    pub(crate) fn add_detection_quiet_reference(
+        &mut self,
+        reference: stock_context::QuietReference,
+    ) {
+        self.engine.add_quiet_reference(reference);
+    }
+
+    pub(crate) fn detection_status(
+        &mut self,
+        symbol: Option<&str>,
+        at: UnixNanos,
+        up: bool,
+        reason: &'static str,
+    ) {
+        if self.detection_epoch.is_none() {
+            return;
+        }
+        let decided = if up {
+            self.engine.resume_detection(symbol, at)
+        } else {
+            self.engine.interrupt_detection(symbol, at, reason)
+        };
+        self.capture(&decided);
+    }
+
+    pub(crate) fn take_detection(&mut self, force: bool) -> Option<crate::detection::CoreCapture> {
+        let epoch = self.detection_epoch.as_ref()?;
+        let transitions = self.engine.take_detection_transitions();
+        if !force && transitions.is_empty() {
+            return None;
+        }
+        let policy = self.engine.detection_policy()?;
+        let policy_hash = policy.hash.clone();
+        let research_band = (
+            policy.body.universe.research_band_min_micros,
+            policy.body.universe.research_band_max_micros,
+        );
+        // Significant trade-driven transitions drain immediately, but a snapshot walks all
+        // symbols/episodes. That walk belongs only to the bounded display cadence.
+        let snapshot = force.then(|| self.engine.detection_snapshot()).flatten();
+        let symbols: BTreeSet<&str> = snapshot
+            .as_ref()
+            .into_iter()
+            .flat_map(|s| s.active.iter().chain(s.recent.iter()))
+            .map(|e| e.symbol.as_str())
+            .collect();
+        // Clone typed assessments under core; serialization happens after releasing it. Missing
+        // symbols have no context entry and remain UNKNOWN in the display join.
+        let context = if force {
+            self.engine
+                .current()
+                .filter(|d| symbols.contains(d.symbol.as_str()))
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        };
+        Some(crate::detection::CoreCapture {
+            epoch: epoch.clone(),
+            snapshot,
+            transitions,
+            telemetry: self.engine.detection_telemetry(),
+            context,
+            policy_hash,
+            research_band,
+        })
     }
 
     /// The whole panel as a `ross.snapshot` / `ross.update` frame (empty `rows` before any),

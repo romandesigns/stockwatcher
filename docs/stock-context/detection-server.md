@@ -41,12 +41,22 @@ bounded snapshot through the existing bearer-protected routing. Export is a rese
 not an exhaustive corpus: inspect retained-history, engine and journal loss counters. A new
 client or research tool must select its market explicitly.
 
+`profile` reports the actual active band as `price_min_micros` / `price_max_micros`, plus the
+policy's `research_min_micros` / `research_max_micros`. `policyHash` is its full byte hash.
+Optional `context[symbol]` carries authoritative `ross_member` (including retained members;
+null when Ross is disabled) and news-policy `catalyst: qualifying|none|unknown`. These badges
+are independent of detection. `rebuilding` marks partial seek state.
+
 ## Timing, persistence and restoration
 
 Every record preserves its core input cutoff and semantic recognition time. The server adds
 `emitted_at` only after releasing the market core lock. It is server emission telemetry, not
 provider publication time or browser-render latency. `input_watermark` is the market's admitted
 input sequence associated with that capture, not proof of complete feed acquisition.
+The inherited engine boundary is strict `admit < bar_end + settle`, clock first at equality.
+Detection preserves this documented legacy exception to the handoff's inclusive prose.
+Transition drain never walks the universe; full snapshot/context copies follow the 250ms
+display tick. `snapshot_captures`, `capture_batches` and `transitions_captured` expose this work.
 
 Significant transitions are retained in a 2,048-record immutable ring and offered to a separate
 bounded writer. Retention eviction, journal queue saturation and write failures are counted.
@@ -60,6 +70,30 @@ headers, sequence gaps/disorder and torn records. `prefix_integrity` concerns th
 `tail: unverified` remains explicit at EOF. There is no whole-epoch completion seal. Startup logs
 are research history and are never fed back into the live alert path. Replayed/rebuilt history
 is labeled restored; seek/current state are recoverable without a stale-alert burst.
+All attempted journal records (including documentary data-status changes with zero active
+episodes) receive a journal sequence before queue admission. The reader detects interior
+status loss as well as transition loss; a missing final record remains an unverified tail.
+
+## Local references and runnable fixture
+
+`DETECTION_QUIET_REFERENCES=/local/references.jsonl` optionally provisions raw Rust
+`QuietReference` records at startup: at most 16MiB, 1MiB per line and 16,384 lifetime identities.
+No file is fetched. Identity/version conflicts are refused; accepted versions remain available
+across a replay seek. The core validates date, prior-through, segment, basis and observed time
+at each join. Synthetic references are refused outside an explicitly labeled fixture market.
+Absent/invalid references leave quietness unavailable while price-only families continue.
+
+```powershell
+cargo run -p stockwatcher-server --example detection_fixture -- micro_valid
+cargo run -p stockwatcher-server --example detection_fixture -- micro_valid --serve --static apps/web/dist
+```
+
+The first prints an actual Market snapshot. The second binds only `127.0.0.1:8792`, exposes
+`/api/detection?source=replay` and the ordinary socket/UI routes, and keeps live idle. Choose
+the replay source explicitly. Inputs come from the core owner's adversarial scripts, pass
+through real Market/chart verdict/revision/clock handling and are `fixture` / `SyntheticFixture`.
+The fixture seam rejects live markets and nonfixture event sources. Its declared complete
+synthetic input is not evidence of real feed completeness. It never starts a live provider.
 
 No deployment or live provider probe is implied by local tests. Experimental detectors still
 need a frozen comparison protocol and adequately covered forward cohorts before usefulness,

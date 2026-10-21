@@ -203,6 +203,8 @@ pub struct MarketConfig {
     pub stock_context: bool,
     /// `DETECTION_PANEL` (off by default): independent experimental discovery, not Ross admission.
     pub detection_panel: bool,
+    /// Optional locally provisioned causal reference JSONL; never fetched from a provider.
+    pub detection_quiet_references: Option<std::path::PathBuf>,
     /// `CONTEXT_EVIDENCE_CHECK_SECS`: period of the evidence check (`crate::evidence`); zero =
     /// only at startup and on a replay day switch.
     pub evidence_check: Duration,
@@ -222,6 +224,7 @@ impl Default for MarketConfig {
             history_preload: true,
             stock_context: false,
             detection_panel: false,
+            detection_quiet_references: None,
             evidence_check: Duration::from_secs(crate::evidence::DEFAULT_CHECK_SECS),
         }
     }
@@ -255,6 +258,7 @@ impl MarketConfig {
         if let Some(v) = var("DETECTION_PANEL") {
             c.detection_panel = on(&v);
         }
+        c.detection_quiet_references = var("DETECTION_QUIET_REFERENCES").map(Into::into);
         if let Some(v) = var("ARCHIVE_META_CHECK_SECS") {
             c.meta_check = Duration::from_secs(v.parse().map_err(|_| {
                 format!("ARCHIVE_META_CHECK_SECS is not a whole number of seconds: {v:?}")
@@ -441,6 +445,11 @@ pub(crate) struct Inner {
     detection_on: AtomicBool,
     detection_subs: AtomicUsize,
     pub(crate) detection: std::sync::OnceLock<Arc<crate::detection::Runtime>>,
+    detection_published: Mutex<Option<(String, u64)>>,
+    /// Acquired before core; orders off-core captures from publisher and ingest. Never held by
+    /// a file writer, so serialization cannot overtake and discard an older drained transition.
+    detection_delivery: Mutex<()>,
+    detection_quiet_refs: Mutex<Arc<Vec<stock_context::QuietReference>>>,
     /// The last per-pillar readiness summary (`crate::context::Readiness`), taken on the evidence
     /// task and sent with every `ross` frame so an empty panel says why. A whole-market pass
     /// belongs nowhere near the publish path, so it is cached rather than computed per frame.
@@ -626,6 +635,9 @@ impl Market {
             detection_on: AtomicBool::new(false),
             detection_subs: AtomicUsize::new(0),
             detection: std::sync::OnceLock::new(),
+            detection_published: Mutex::new(None),
+            detection_delivery: Mutex::new(()),
+            detection_quiet_refs: Mutex::new(Arc::new(Vec::new())),
             readiness: Mutex::new(None),
             ross_subs: AtomicUsize::new(0),
             observations: crate::observe::ObservationSink::new(crate::observe::QUEUE_CAPACITY),
@@ -658,16 +670,52 @@ impl Market {
             .expect("info lock")
             .as_ref()
             .and_then(|i| i.day);
-        let mut board = ContextBoard::new(
-            self.0.mode == ClockMode::Live,
-            day,
-            self.0.band.min,
-            self.0.band.max,
-        )?;
+        let mut board = if self.0.detection_on.load(Ordering::Relaxed)
+            && self.detection_source() == "fixture"
+        {
+            ContextBoard::new_labeled(
+                self.0.mode == ClockMode::Live,
+                day,
+                self.0.band.min,
+                self.0.band.max,
+                true,
+            )
+        } else {
+            ContextBoard::new(
+                self.0.mode == ClockMode::Live,
+                day,
+                self.0.band.min,
+                self.0.band.max,
+            )
+        }?;
         if let Some(ev) = self.0.evidence.get()
             && let Some(batch) = ev.log.lock().expect("evidence log lock").since(None)
         {
             board.add_evidence(batch);
+        }
+        if self.0.detection_on.load(Ordering::Relaxed)
+            && let Some(runtime) = self.0.detection.get()
+        {
+            let _delivery = self
+                .0
+                .detection_delivery
+                .lock()
+                .expect("detection delivery");
+            let epoch = runtime.reset(true, self.detection_source());
+            board = board.with_detection(epoch);
+            let refs = self
+                .0
+                .detection_quiet_refs
+                .lock()
+                .expect("quiet references")
+                .clone();
+            for reference in refs.iter() {
+                board.add_detection_quiet_reference(reference.clone());
+            }
+        }
+        // Detection-only monitoring does not opt the run into Ross's separate shadow study.
+        if !self.0.context_on.load(Ordering::Relaxed) {
+            return Some(board);
         }
         // One capture for the life of the market, shared by every board it rebuilds: a replay
         // seek replaces the board, and the sessions it had already observed are still the
@@ -712,6 +760,271 @@ impl Market {
         self.0.context_on.store(on, Ordering::Relaxed);
         let board = self.new_context_board();
         self.0.core.lock().expect("core lock").context = board;
+        self.refresh_detection(true);
+    }
+
+    /// Local/test feature switch. Production reads flags once at startup. Reconfiguration is
+    /// an explicit new epoch, so old state is never relabeled as a newly detected event.
+    pub fn set_detection_panel(&self, on: bool) {
+        self.configure_detection(on, None);
+    }
+
+    /// A strictly labeled local demonstration seam. It has no provider, credentials, recording
+    /// acquisition or live slot; all inputs still pass through the real Market admission path.
+    pub fn detection_fixture(day: NaiveDate, log_directory: Option<&std::path::Path>) -> Market {
+        let market = Market::build(
+            ClockMode::Replay,
+            Some(ProviderInfo {
+                mode: ClockMode::Replay,
+                label: "Detection fixture (synthetic, not market evidence)".into(),
+                day: Some(day),
+                symbols: Vec::new(),
+                fixture: true,
+            }),
+            ProviderStatus {
+                state: "running",
+                detail: Some("labeled synthetic detector fixture".into()),
+            },
+            None,
+            PriceBand::DEFAULT,
+            ArchiveMeta::default(),
+        );
+        market.configure_detection(true, log_directory);
+        if tokio::runtime::Handle::try_current().is_ok() {
+            market.spawn_quotes_task();
+        }
+        market
+    }
+
+    pub fn apply_detection_fixture(&self, item: FeedItem) -> Result<(), &'static str> {
+        if self.0.mode != ClockMode::Replay || !self.info().is_some_and(|i| i.fixture) {
+            return Err("fixture input requires an explicitly labeled replay fixture market");
+        }
+        if let FeedItem::Source(source) = &item
+            && !source.fixture
+        {
+            return Err("fixture source cannot become market evidence");
+        }
+        if let FeedItem::Event(event) = &item {
+            let source = match event {
+                MarketEvent::Trade(e) => e.source,
+                MarketEvent::Quote(e) => e.source,
+                MarketEvent::Correction(e) => e.source,
+                MarketEvent::Cancel(e) => e.source,
+                MarketEvent::Status(e) => e.source,
+            };
+            if source != market_events::Source::Fixture {
+                return Err("fixture seam accepts only normalized fixture events");
+            }
+        }
+        self.apply(item);
+        Ok(())
+    }
+
+    /// Drives the core owner's adversarial script through real Market trades/revisions/clocks.
+    /// Supplemental documentary gaps are explicit fixture inputs, never inferred from silence.
+    pub fn apply_detection_fixture_step(
+        &self,
+        step: &stock_context::detect::fixture::FixtureStep,
+    ) -> Result<(), String> {
+        use stock_context::detect::fixture::FixtureStep;
+        match step {
+            FixtureStep::Print {
+                symbol,
+                exec,
+                admit,
+                price,
+                size,
+                seq,
+            } => {
+                let mut trade = market_events::Trade::new(
+                    symbol.as_str(),
+                    UnixNanos(*exec),
+                    Price::from_micros(*price),
+                    *size,
+                    *seq,
+                );
+                trade.receive_ts = Some(UnixNanos(*admit));
+                self.apply_detection_fixture(FeedItem::Event(MarketEvent::Trade(trade)))
+                    .map_err(str::to_string)
+            }
+            FixtureStep::Cancel {
+                symbol,
+                seq,
+                price,
+                size,
+                admit,
+            } => self
+                .apply_detection_fixture(FeedItem::Event(MarketEvent::Cancel(
+                    market_events::Cancel {
+                        symbol: symbol.clone(),
+                        event_ts: UnixNanos(*admit),
+                        receive_ts: Some(UnixNanos(*admit)),
+                        source: market_events::Source::Fixture,
+                        exchange: String::new(),
+                        tape: Default::default(),
+                        trade_id: *seq,
+                        price: Price::from_micros(*price),
+                        size: *size,
+                        action: market_events::CancelAction::Cancel,
+                    },
+                )))
+                .map_err(str::to_string),
+            FixtureStep::Advance(at) => self
+                .apply_detection_fixture(FeedItem::Advance(UnixNanos(*at)))
+                .map_err(str::to_string),
+            FixtureStep::QuietReference(reference) => self
+                .provision_detection_quiet_references(vec![reference.clone()])
+                .map(|_| ()),
+            FixtureStep::Interrupt { symbol, at, reason } => {
+                self.fixture_detection_status(symbol.as_deref(), *at, false, reason)
+            }
+            FixtureStep::Resume { symbol, at } => {
+                self.fixture_detection_status(symbol.as_deref(), *at, true, "resume")
+            }
+        }
+    }
+
+    fn fixture_detection_status(
+        &self,
+        symbol: Option<&str>,
+        at: i64,
+        up: bool,
+        reason: &'static str,
+    ) -> Result<(), String> {
+        if self.0.mode != ClockMode::Replay || self.detection_source() != "fixture" {
+            return Err("documentary fixture status requires a fixture market".into());
+        }
+        {
+            let mut core = self.0.core.lock().expect("core lock");
+            if let Some(board) = core.context.as_mut() {
+                board.detection_status(symbol, UnixNanos(at), up, reason);
+            }
+            core.seq += 1;
+        }
+        self.refresh_detection(false);
+        Ok(())
+    }
+
+    pub fn run_detection_fixture(
+        scenario: &str,
+        log_directory: Option<&std::path::Path>,
+    ) -> Result<Market, String> {
+        let steps = stock_context::detect::fixture::script(scenario)
+            .ok_or_else(|| format!("unknown detection fixture {scenario}"))?;
+        let market = Self::detection_fixture(stock_context::detect::fixture::day(), log_directory);
+        for step in &steps {
+            market.apply_detection_fixture_step(step)?;
+        }
+        market.publish_detection();
+        Ok(market)
+    }
+
+    /// A bounded local input seam. The core validates prior-only date/segment/basis/observed_at
+    /// on every join; provisioning a file cannot declare that those inputs are valid.
+    pub fn load_detection_quiet_references(&self, path: &std::path::Path) -> Result<usize, String> {
+        use std::io::Read;
+        const MAX_BYTES: u64 = 16 * 1024 * 1024;
+        let mut bytes = Vec::new();
+        std::fs::File::open(path)
+            .map_err(|e| e.to_string())?
+            .take(MAX_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| e.to_string())?;
+        if bytes.len() as u64 > MAX_BYTES {
+            return Err("quiet references exceed 16MiB".into());
+        }
+        let text = std::str::from_utf8(&bytes).map_err(|e| e.to_string())?;
+        let mut refs = Vec::new();
+        for line in text.lines().filter(|l| !l.trim().is_empty()) {
+            if line.len() > 1024 * 1024 || refs.len() >= 16_384 {
+                return Err("quiet reference line/record bound".into());
+            }
+            refs.push(
+                serde_json::from_str::<stock_context::QuietReference>(line)
+                    .map_err(|e| e.to_string())?,
+            );
+        }
+        self.provision_detection_quiet_references(refs)
+    }
+
+    /// Also used by labeled Rust fixtures; no HTTP path can inject research references.
+    pub fn provision_detection_quiet_references(
+        &self,
+        refs: Vec<stock_context::QuietReference>,
+    ) -> Result<usize, String> {
+        if !self.0.detection_on.load(Ordering::Relaxed) {
+            return Err("detection is disabled".into());
+        }
+        if refs.len() > 16_384 {
+            return Err("quiet reference record bound".into());
+        }
+        if self.detection_source() != "fixture" && refs.iter().any(|r| r.synthetic) {
+            return Err("synthetic quiet references require a fixture market".into());
+        }
+        let mut prior = self
+            .0
+            .detection_quiet_refs
+            .lock()
+            .expect("quiet references")
+            .as_ref()
+            .clone();
+        let key = |r: &stock_context::QuietReference| {
+            (
+                r.symbol.clone(),
+                r.trading_date,
+                format!("{:?}", r.segment),
+                r.id.clone(),
+                r.version,
+            )
+        };
+        let mut known: std::collections::BTreeMap<_, _> =
+            prior.iter().enumerate().map(|(i, r)| (key(r), i)).collect();
+        let mut added = Vec::new();
+        for reference in refs {
+            if let Some(index) = known.get(&key(&reference)) {
+                if prior[*index] != reference {
+                    return Err("conflicting quiet reference identity/version".into());
+                }
+                continue;
+            }
+            if prior.len() >= 16_384 {
+                return Err("quiet reference lifetime bound".into());
+            }
+            known.insert(key(&reference), prior.len());
+            prior.push(reference.clone());
+            added.push(reference);
+        }
+        let count = added.len();
+        *self
+            .0
+            .detection_quiet_refs
+            .lock()
+            .expect("quiet references") = Arc::new(prior);
+        if let Some(board) = self.0.core.lock().expect("core lock").context.as_mut() {
+            for reference in added {
+                board.add_detection_quiet_reference(reference);
+            }
+        }
+        self.refresh_detection(true);
+        Ok(count)
+    }
+
+    fn configure_detection(&self, on: bool, directory: Option<&std::path::Path>) {
+        self.0.detection_on.store(on, Ordering::Relaxed);
+        if on {
+            self.0.detection.get_or_init(|| {
+                Arc::new(crate::detection::Runtime::new(
+                    self.0.mode.as_str(),
+                    directory,
+                ))
+            });
+        } else if let Some(runtime) = self.0.detection.get() {
+            runtime.reset(false, self.detection_source());
+        }
+        let board = self.new_context_board();
+        self.0.core.lock().expect("core lock").context = board;
+        self.refresh_detection(true);
     }
 
     /// Connects the price alerts (crate::alerts) to this market. Only the live market gets one:
@@ -890,7 +1203,19 @@ impl Market {
                     ProviderError::Failed(_) => "error",
                 };
                 tracing::warn!(mode = mode.as_str(), error = %e, "market data provider not running");
-                return (Market::idle(mode, state, Some(e.to_string())), None);
+                let market = Market::idle(mode, state, Some(e.to_string()));
+                if cfg.stock_context {
+                    market.set_stock_context(true);
+                }
+                if cfg.detection_panel {
+                    market.configure_detection(true, Some(&archive.root().join("detection")));
+                    if let Some(cx) = market.0.core.lock().expect("core lock").context.as_mut() {
+                        cx.detection_status(None, UnixNanos(0), false, "provider_unavailable");
+                    }
+                    market.refresh_detection(true);
+                    market.spawn_detection_task();
+                }
+                return (market, None);
             }
         };
         tracing::info!(mode = mode.as_str(), source = %session.info.label, symbols = session.info.symbols.len(), "market data provider started");
@@ -931,6 +1256,16 @@ impl Market {
         );
         if cfg.stock_context {
             market.set_stock_context(true);
+        }
+        if cfg.detection_panel {
+            market.configure_detection(true, Some(&archive.root().join("detection")));
+            if let Some(path) = cfg.detection_quiet_references.as_deref()
+                && let Err(error) = market.load_detection_quiet_references(path)
+            {
+                tracing::warn!(%error, "Detection quiet references unavailable; price-only families remain enabled");
+            }
+        }
+        if cfg.stock_context || cfg.detection_panel {
             // Before the ingest starts: a replay's first load runs here (the feed waits on disk,
             // nothing is lost), a live one in the background (crate::evidence).
             market.init_evidence(archive.clone(), cfg.band.max, cfg.evidence_check);
@@ -1021,6 +1356,7 @@ impl Market {
     /// The once-per-[`QUOTES_INTERVAL`] broadcaster. Holds only a weak reference, so it ends with
     /// the market instead of keeping it alive.
     fn spawn_quotes_task(&self) {
+        self.spawn_detection_task();
         let weak: Weak<Inner> = Arc::downgrade(&self.0);
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(QUOTES_INTERVAL);
@@ -1049,6 +1385,19 @@ impl Market {
                 if n.is_multiple_of(crate::observe::LOG_EVERY_TICKS) {
                     market.log_observations();
                 }
+            }
+        });
+    }
+
+    fn spawn_detection_task(&self) {
+        let weak = Arc::downgrade(&self.0);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_millis(250));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tick.tick().await;
+                let Some(inner) = weak.upgrade() else { break };
+                Market(inner).publish_detection();
             }
         });
     }
@@ -1247,6 +1596,22 @@ impl Market {
     }
 
     fn apply(&self, item: FeedItem) {
+        // FeedItem::Link does not carry provider receipt time. For a live connection change,
+        // this wrapper samples actual local admission before taking core; replay/fixture uses
+        // the run clock. The distinction is recorded as an input/telemetry limitation.
+        let status_at = matches!(&item, FeedItem::Link(_) | FeedItem::Error(_)).then(|| {
+            if self.0.mode == ClockMode::Live {
+                UnixNanos(crate::observe::wall_now())
+            } else {
+                self.0
+                    .core
+                    .lock()
+                    .expect("core lock")
+                    .engine
+                    .clock()
+                    .unwrap_or(UnixNanos(0))
+            }
+        });
         match item {
             FeedItem::Event(e) => {
                 // Price-band and paper-broker input: the same price rule the candles use (a
@@ -1259,7 +1624,8 @@ impl Market {
                     _ => None,
                 };
                 // The context board's previous closes, taken before `core` (lock order).
-                let context_closes = (self.0.context_on.load(Ordering::Relaxed)
+                let context_closes = ((self.0.context_on.load(Ordering::Relaxed)
+                    || self.0.detection_on.load(Ordering::Relaxed))
                     && matches!(e, MarketEvent::Trade(_)))
                 .then(|| self.current_closes());
                 let (seq, ups, rebuilding) = {
@@ -1279,6 +1645,27 @@ impl Market {
                     // has to count every input this process took, held or applied, or a restore
                     // reading it would see holes that were never drops.
                     let journal = self.0.admissions.get();
+                    // Route normalized documentary status even when chart history is unloaded;
+                    // a closed chart or a held symbol cannot mask a halt from discovery.
+                    if let MarketEvent::Status(s) = &e
+                        && let Some(cx) = core.context.as_mut()
+                    {
+                        match s.kind {
+                            market_events::StatusKind::Halt => cx.detection_status(
+                                s.symbol.as_deref(),
+                                s.receive_ts.unwrap_or(s.event_ts),
+                                false,
+                                "halt",
+                            ),
+                            market_events::StatusKind::Resume => cx.detection_status(
+                                s.symbol.as_deref(),
+                                s.receive_ts.unwrap_or(s.event_ts),
+                                true,
+                                "resume",
+                            ),
+                            _ => {}
+                        }
+                    }
                     // Stock context sees every print once, on arrival: a held one with its own
                     // verdict (it reaches the chart engine later, never the context again).
                     if held
@@ -1442,6 +1829,7 @@ impl Market {
                     core.seq = seq;
                     core.rebuilding = true;
                 }
+                self.refresh_detection(true);
                 // Time travel resets the account (contract). Announced now rather than at the
                 // rebuild's end: the flat account is already the truth, and a command arriving
                 // mid-rebuild then works on it.
@@ -1468,6 +1856,9 @@ impl Market {
                     }
                     (core.seq, resync)
                 };
+                if resync {
+                    self.refresh_detection(true);
+                }
                 let _ = self.0.tx.send(Arc::new(Outbound {
                     seq,
                     kind: OutKind::Clock(frame),
@@ -1493,6 +1884,14 @@ impl Market {
                     Some(Arc::new(ProviderInfo::replay(&src)));
             }
             FeedItem::Error(e) => {
+                if let Some(cx) = self.0.core.lock().expect("core lock").context.as_mut() {
+                    cx.detection_status(
+                        None,
+                        status_at.expect("status time"),
+                        false,
+                        "provider_error",
+                    );
+                }
                 tracing::error!(error = %e, "market data provider error");
                 *self.0.status.lock().expect("status lock") = ProviderStatus {
                     state: "error",
@@ -1500,6 +1899,23 @@ impl Market {
                 };
             }
             FeedItem::Link(l) => {
+                if let Some(cx) = self.0.core.lock().expect("core lock").context.as_mut() {
+                    match l.state {
+                        LinkState::Up => cx.detection_status(
+                            None,
+                            status_at.expect("status time"),
+                            true,
+                            "link_up",
+                        ),
+                        LinkState::Down => cx.detection_status(
+                            None,
+                            status_at.expect("status time"),
+                            false,
+                            "link_down",
+                        ),
+                        LinkState::Connecting => {}
+                    }
+                }
                 // Live only. "reconnecting" is distinct from "error": the source is retrying on
                 // its own, and clients keep what they have rather than falling back to a fixture.
                 let state = match l.state {
@@ -1519,6 +1935,9 @@ impl Market {
                 };
             }
         }
+        // Take every significant core transition whether anyone is watching or not. JSON,
+        // actual emission stamping and durable append happen after core has been released.
+        self.refresh_detection(false);
     }
 
     /// [`Market::serialize`], except during a rebuild, where nothing is broadcast: then only the
@@ -1880,18 +2299,108 @@ impl Market {
             None => (
                 String::new(),
                 0,
-                json!({"type":"detection.snapshot","enabled":false,
+                crate::detection::frame_with_type(
+                    "detection.snapshot",
+                    json!({"enabled":false,
                 "source":self.detection_source(),"runEpoch":"","cursor":0,"snapshot":null,
                 "transitions":[],"replacement":true,"experimental":true,"alertsEnabled":false,
                 "history":{"capacity":crate::detection::HISTORY_CAPACITY,"dropped":0,
-                    "first_sequence":null,"last_sequence":null},"telemetry":{}})
-                .to_string(),
+                    "first_sequence":null,"last_sequence":null},"telemetry":{},
+                "context":{},"profile":{"price_min_micros":self.0.band.min.micros(),"price_max_micros":self.0.band.max.micros(),
+                    "research_min_micros":stock_context::DetectionPolicy::v0().body.universe.research_band_min_micros,
+                    "research_max_micros":stock_context::DetectionPolicy::v0().body.universe.research_band_max_micros}}),
+                ),
             ),
         }
     }
 
     pub fn detection_epoch_is_current(&self, epoch: &str) -> bool {
         self.0.detection.get().is_some_and(|d| d.is_epoch(epoch))
+    }
+
+    fn refresh_detection(&self, force: bool) {
+        if !self.0.detection_on.load(Ordering::Relaxed) {
+            return;
+        }
+        let Some(runtime) = self.0.detection.get() else {
+            return;
+        };
+        let _delivery = self
+            .0
+            .detection_delivery
+            .lock()
+            .expect("detection delivery");
+        let Some((capture, watermark, rebuilding)) = ({
+            let mut core = self.0.core.lock().expect("core lock");
+            let watermark = core.seq;
+            let rebuilding = core.rebuilding;
+            core.context
+                .as_mut()
+                .and_then(|c| c.take_detection(force))
+                .map(|c| (c, watermark, rebuilding))
+        }) else {
+            return;
+        };
+        let ross_on = self.0.context_on.load(Ordering::Relaxed);
+        let context: serde_json::Map<String, Value> = capture.context.iter().map(|d| {
+            let catalyst = match d.pillars.iter().find(|p| p.pillar == stock_context::PillarId::News).map(|p| p.state) {
+                Some(stock_context::Tri::Pass) => "qualifying",
+                Some(stock_context::Tri::Fail) => "none",
+                _ => "unknown",
+            };
+            (d.symbol.clone(),json!({"ross_member":ross_on.then(|| d.membership.active().is_some()),"catalyst":catalyst}))
+        }).collect();
+        runtime.accept(crate::detection::Capture {
+            epoch: capture.epoch,
+            snapshot: capture.snapshot.map(|snapshot| serde_json::to_value(snapshot).expect("core detection serializes")),
+            telemetry: serde_json::to_value(capture.telemetry).expect("core detection telemetry serializes"),
+            transitions: capture.transitions.into_iter().map(|t| serde_json::to_value(t).expect("core transition serializes")).collect(),
+            input_watermark: watermark,
+            restored: rebuilding || self.detection_source() != "live",
+            rebuilding,
+            context: Value::Object(context),
+            profile: json!({"price_min_micros":self.0.band.min.micros(),"price_max_micros":self.0.band.max.micros(),
+                "research_min_micros":capture.research_band.0,"research_max_micros":capture.research_band.1}),
+            policy_hash: Some(capture.policy_hash),
+        });
+    }
+
+    /// Advances ordinary display cues at <=4Hz. Significant transitions were already captured
+    /// by apply(), independent of this publisher and of all chart/row subscriptions.
+    pub fn publish_detection(&self) {
+        self.refresh_detection(true);
+        if self.0.detection_subs.load(Ordering::Relaxed) == 0 {
+            return;
+        }
+        let Some(runtime) = self.0.detection.get() else {
+            return;
+        };
+        let seq = {
+            let core = self.0.core.lock().expect("core lock");
+            if core.rebuilding {
+                return;
+            }
+            core.seq
+        };
+        let signature = runtime.signature();
+        let mut published = self
+            .0
+            .detection_published
+            .lock()
+            .expect("detection publication");
+        if published.as_ref() == Some(&signature) {
+            return;
+        }
+        let (epoch, cursor, frame) = runtime.frame("detection.update");
+        *published = Some((epoch.clone(), cursor));
+        let _ = self.0.tx.send(Arc::new(Outbound {
+            seq,
+            kind: OutKind::Detection {
+                epoch,
+                cursor,
+                frame,
+            },
+        }));
     }
 
     fn detection_source(&self) -> &'static str {
