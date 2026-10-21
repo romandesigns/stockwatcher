@@ -172,7 +172,7 @@ const DetectionRow = memo(function DetectionRow({ group, reducedMotion, currentA
     {e.raw.recognition?.in_research_band === false && <Text style={styles.meta}>Outside research band at recognition · active profile preserved</Text>}
     <Text style={styles.meta}>{e.trading_date} · first {at(e.first_detected_at)} · changed {at(e.last_material_transition_at)}{group.episodes.length > 1 ? ` · ${group.episodes.length} episodes` : ""}</Text>
     <Geometry episode={e} currentAvailable={currentAvailable} />
-    {currentAvailable && !e.price_stale && e.near_trigger === true && <Text style={styles.warning}>Near trigger{blocked.length ? " — blocked; see required checks" : " · geometry only"}</Text>}
+    {currentAvailable && !e.price_stale && e.near_trigger === true && <Text style={styles.warning}>Near {e.level?.kind === "range_high" ? "range high" : "trigger"}{blocked.length ? " — blocked; see required checks" : " · geometry only"}</Text>}
     {blocked.length > 0 && <Text style={styles.warning}>{blocked.slice(0, 3).map((c) => `${c.state} ${words(c.name)}${c.reason ? `: ${words(c.reason)}` : ""}`).join(" · ")}</Text>}
     {e.terminal && <Text style={[styles.meta, { color: stateColor(e.state) }]}>{e.resolved_at !== null ? `${at(e.resolved_at)} · ` : ""}{words(e.reason ?? e.state)}</Text>}
     <Text style={styles.meta}>Ross: {e.ross_member === null ? "unknown" : e.ross_member ? "member" : "not admitted"} · Catalyst: {words(e.catalyst)} · {words(e.coverage)}</Text>
