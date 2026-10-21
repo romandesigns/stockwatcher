@@ -7,6 +7,7 @@ import { priceY, slotX } from "./scale.ts";
 
 export interface DetectionOverlayLevel {
   id: string;
+  kind?: "trigger" | "range_high";
   version: number;
   knownAt: number;
   armedAt: number | null;
@@ -51,11 +52,11 @@ export function layoutDetections(model: ChartModel, episodes: readonly Detection
       if (end < plot.x || start > right || end < start) continue;
       const x1 = Math.max(plot.x, start);
       const x2 = Math.min(right, end);
-      for (const [name, price, stroke] of [["T", level.trigger, color], ["I", level.invalidation, e.stale || e.terminal ? theme.textDim : theme.orderSell]] as const) {
+      for (const [name, price, stroke] of [[level.kind === "range_high" ? "Range high" : "T", level.trigger, color], ["I", level.invalidation, e.stale || e.terminal ? theme.textDim : theme.orderSell]] as const) {
         if (price === null || !Number.isFinite(price) || price <= 0) continue;
         const y = priceY(model.price, price);
         if (y < plot.y || y > plot.y + plot.h) continue;
-        out.push({ kind: "line", x1, y1: y, x2, y2: y, stroke, lineWidth: 1, dash: name === "T" ? [6, 3] : [2, 3], clip: plot, layer: "overlay" });
+        out.push({ kind: "line", x1, y1: y, x2, y2: y, stroke, lineWidth: 1, dash: name === "I" ? [2, 3] : [6, 3], clip: plot, layer: "overlay" });
         if (x2 - x1 > 90) text(x1 + 4, y - 3, `${e.stale ? "Last known · " : ""}${name} ${price.toFixed(6).replace(/0+$/, "").replace(/\.$/, "")} · v${level.version}`, stroke);
       }
     }

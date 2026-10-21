@@ -108,7 +108,7 @@ export interface DetectionSnapshot {
 }
 /** Direct Rust serde records. Keep the semantic record intact on the wire and in exports;
  * the normalized types above are DISPLAY views, not a second detection protocol. */
-export interface DetectionCoreLevel { level_id: string; kind: "trigger" | "invalidation" | "range_high"; version: number; price: number; known_at: number; armed_at: number | null; formed_from: [number, number]; reason: string }
+export interface DetectionCoreLevel { level_id: string; kind: "trigger" | "invalidation" | "range_high" | "range_low"; version: number; price: number; known_at: number; armed_at: number | null; formed_from: [number, number]; reason: string }
 export interface DetectionCoreCheck { name: string; state: DetectionCheck; value: number | null; threshold: number | null; units: string; reason: string; required?: boolean }
 export interface DetectionCoreFeatures { bar_end: number; cutoff: number; [name: string]: unknown }
 export interface DetectionCoreTransition {
@@ -179,7 +179,7 @@ const finite = (x: unknown): x is number => typeof x === "number" && Number.isFi
 const nullableNumber = (x: unknown) => x === null || finite(x);
 const nullableString = (x: unknown) => x === null || typeof x === "string";
 const strings = (x: unknown): x is string[] => Array.isArray(x) && x.every((s) => typeof s === "string");
-const coreLevel = (x: unknown): boolean => object(x) && typeof x.level_id === "string" && ["trigger", "invalidation", "range_high"].includes(String(x.kind)) && finite(x.version) && finite(x.price) && finite(x.known_at) && nullableNumber(x.armed_at) && Array.isArray(x.formed_from) && x.formed_from.length === 2 && x.formed_from.every(finite) && typeof x.reason === "string";
+const coreLevel = (x: unknown): boolean => object(x) && typeof x.level_id === "string" && ["trigger", "invalidation", "range_high", "range_low"].includes(String(x.kind)) && finite(x.version) && finite(x.price) && finite(x.known_at) && nullableNumber(x.armed_at) && Array.isArray(x.formed_from) && x.formed_from.length === 2 && x.formed_from.every(finite) && typeof x.reason === "string";
 function coreEpisode(x: unknown): boolean {
   if (!object(x) || !["episode_id", "family", "variant", "policy", "symbol", "instrument", "trading_date", "segment", "state", "fidelity"].every((k) => typeof x[k] === "string") || !["first_detected_at", "last_material_seq", "last_material_at", "base_secs"].every((k) => finite(x[k])) || !nullableNumber(x.first_bar_end) || typeof x.default_visible !== "boolean" || typeof x.warmup !== "boolean" || !nullableString(x.parent_episode_id) || !nullableString(x.context) || !strings(x.related_episode_ids)) return false;
   if (!Array.isArray(x.levels) || !x.levels.every(coreLevel) || !Array.isArray(x.checks) || !x.checks.every((c) => object(c) && typeof c.name === "string" && ["PASS", "FAIL", "UNKNOWN"].includes(String(c.state)) && nullableNumber(c.value) && nullableNumber(c.threshold) && typeof c.units === "string" && typeof c.reason === "string" && (c.required === undefined || typeof c.required === "boolean"))) return false;
@@ -329,7 +329,7 @@ export function detectionOverlays(snapshot: DetectionSnapshot | null, symbol: st
   const preferred = episodeId ?? snapshot?.dominant_episode_ids[symbol];
   const e = preferred ? rows.find((x) => x.episode_id === preferred) : rows.filter((x) => !x.terminal && x.default_visible).sort((a, b) => b.last_material_transition_at - a.last_material_transition_at || a.episode_id.localeCompare(b.episode_id))[0];
   if (!e) return [];
-  return [{ episodeId: e.episode_id, label: `${detectionFamilyLabel(e.family)} · ${detectionStateLabel(e.state)}`, recognizedAt: e.first_detected_at / 1_000_000, terminal: e.terminal, stale: e.price_stale, levels: e.level_history.map((l) => ({ id: l.level_id, version: l.version, knownAt: l.known_at / 1_000_000, armedAt: l.armed_at === null ? null : l.armed_at / 1_000_000, validTo: l.valid_to === null ? null : l.valid_to / 1_000_000, trigger: l.trigger / 1_000_000, invalidation: l.invalidation === null ? null : l.invalidation / 1_000_000 })) }];
+  return [{ episodeId: e.episode_id, label: `${detectionFamilyLabel(e.family)} · ${detectionStateLabel(e.state)}`, recognizedAt: e.first_detected_at / 1_000_000, terminal: e.terminal, stale: e.price_stale, levels: e.level_history.map((l) => ({ id: l.level_id, kind: l.kind, version: l.version, knownAt: l.known_at / 1_000_000, armedAt: l.armed_at === null ? null : l.armed_at / 1_000_000, validTo: l.valid_to === null ? null : l.valid_to / 1_000_000, trigger: l.trigger / 1_000_000, invalidation: l.invalidation === null ? null : l.invalidation / 1_000_000 })) }];
 }
 
 export type DetectionFilter = "all" | "momentum" | "ignition" | "micro" | "near" | "triggered" | "ross" | "catalyst";
