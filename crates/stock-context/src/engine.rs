@@ -264,6 +264,45 @@ struct Sym {
     restored_through: Option<i64>,
     /// The Detection Panel families' state (`crate::detect`), when detection is on.
     det: SymDetect,
+    /// The day's history is still being restored by a loader ([`Engine::set_history_pending`]):
+    /// a temporary observation guard, never part of `integrity`.
+    history_pending: bool,
+}
+
+impl Sym {
+    fn new(name: &str) -> Sym {
+        Sym {
+            name: name.to_string(),
+            inst: InstrumentId::symbol(name),
+            date: None,
+            ledger: VecDeque::new(),
+            ids: HashSet::new(),
+            active: false,
+            cum: 0,
+            dollars_micros: 0,
+            trades: 0,
+            last_price: None,
+            cums: VecDeque::new(),
+            last: None,
+            timeline: Timeline::default(),
+            recheck_at: i64::MAX,
+            dirty: false,
+            ticks: VecDeque::new(),
+            day_high: None,
+            member: Membership::default(),
+            halted: false,
+            bars: VecDeque::new(),
+            first_bar: None,
+            setup: BullFlag::default(),
+            news_first_seen: None,
+            coverage: None,
+            integrity: Integrity::default(),
+            quarantine_through: None,
+            restored_through: None,
+            det: SymDetect::default(),
+            history_pending: false,
+        }
+    }
 }
 
 /// A non-passing pillar, for the row tag.
@@ -445,7 +484,9 @@ impl Engine {
         Some(detect::snapshot(
             det,
             &self.run,
-            self.syms.iter().map(|(k, s)| (k.as_str(), &s.det)),
+            self.syms
+                .iter()
+                .map(|(k, s)| (k.as_str(), &s.det, s.history_pending)),
         ))
     }
 
@@ -624,6 +665,36 @@ impl Engine {
         }
     }
 
+    /// Marks a symbol's day history as still being restored (`true`) or resolved (`false`).
+    ///
+    /// While pending, everything that depends on the day's history is unavailable rather than
+    /// computed from the live tail alone: the RVOL pillar and its diagnostics are UNKNOWN
+    /// (`history_pending`), Ross momentum is unavailable, `bull_flag_v0` gets no bars, and the
+    /// detection families interrupt and start nothing (without requalifying, so the restored
+    /// baselines are usable at once). Inputs keep flowing into the symbol's facts as usual.
+    ///
+    /// Separate from [`Integrity`]: clearing it never clears a genuine doubt or a coverage
+    /// reason. [`Engine::adopt_facts`] clears it when it adopts; a refused or empty restore
+    /// leaves it set for the caller to resolve (keep it, or clear it and report partial
+    /// coverage). Creates the symbol's state if absent, so it can be set before the first print.
+    pub fn set_history_pending(&mut self, symbol: &str, pending: bool) {
+        let s = self
+            .syms
+            .entry(symbol.to_string())
+            .or_insert_with(|| Sym::new(symbol));
+        self.by_inst
+            .entry(s.inst.clone())
+            .or_insert_with(|| symbol.to_string());
+        if s.history_pending != pending {
+            s.history_pending = pending;
+            s.dirty = true;
+        }
+    }
+
+    pub fn history_pending(&self, symbol: &str) -> bool {
+        self.syms.get(symbol).is_some_and(|s| s.history_pending)
+    }
+
     /// This symbol's own coverage, when something is known about it.
     pub fn coverage_of(&self, symbol: &str) -> Option<(Coverage, &'static str)> {
         self.syms.get(symbol).and_then(|s| s.coverage)
@@ -720,6 +791,9 @@ impl Engine {
                 // and stay this run's own.
                 live.det.returns = restored.det.returns;
                 live.det.last_seen = restored.det.last_seen.or(live.det.last_seen);
+                // The day's history has arrived: the temporary guard ends here. Genuine doubts
+                // and coverage reasons were merged above and stay.
+                live.history_pending = false;
                 live.dirty = true;
                 live.recheck_at = i64::MAX;
                 true
@@ -740,6 +814,7 @@ impl Engine {
                     ..SymDetect::default()
                 };
                 sym.halted = false;
+                sym.history_pending = false;
                 sym.dirty = true;
                 sym.recheck_at = i64::MAX;
                 self.by_inst.insert(sym.inst.clone(), symbol.to_string());
@@ -901,39 +976,10 @@ impl Engine {
     pub fn apply(&mut self, t: &Trade, verdict: Verdict, admit: UnixNanos) -> Vec<Decision> {
         let out = self.advance_to(admit);
         let name = t.symbol.clone();
-        let sym = self.syms.entry(name.clone()).or_insert_with(|| {
-            let inst = InstrumentId::symbol(&name);
-            Sym {
-                name: name.clone(),
-                inst,
-                date: None,
-                ledger: VecDeque::new(),
-                ids: HashSet::new(),
-                active: false,
-                cum: 0,
-                dollars_micros: 0,
-                trades: 0,
-                last_price: None,
-                cums: VecDeque::new(),
-                last: None,
-                timeline: Timeline::default(),
-                recheck_at: i64::MAX,
-                dirty: false,
-                ticks: VecDeque::new(),
-                day_high: None,
-                member: Membership::default(),
-                halted: false,
-                bars: VecDeque::new(),
-                first_bar: None,
-                setup: BullFlag::default(),
-                news_first_seen: None,
-                coverage: None,
-                integrity: Integrity::default(),
-                quarantine_through: None,
-                restored_through: None,
-                det: SymDetect::default(),
-            }
-        });
+        let sym = self
+            .syms
+            .entry(name.clone())
+            .or_insert_with(|| Sym::new(&name));
         self.by_inst.entry(sym.inst.clone()).or_insert(name);
         let exec = t.event_ts.nanos();
         // One identity rule for every path, and one place that decides it. The ledger is never
@@ -1006,6 +1052,7 @@ impl Engine {
                 admit.nanos(),
                 t.price.micros(),
                 verdict.ohlc,
+                sym.history_pending,
             );
         }
         sym.ledger.push_back(Admitted {
@@ -1390,6 +1437,7 @@ impl Engine {
             halted: s.halted,
             coverage_partial: s.coverage.map_or(run_cov, |(c, _)| c) == Coverage::Partial,
             untrusted: s.integrity.window_untrusted || s.integrity.volume_untrusted,
+            history_pending: s.history_pending,
             restored_through: s.restored_through,
         };
         detect::step(det, &mut s.det, &x);
@@ -1415,7 +1463,8 @@ impl Engine {
             // it claims nothing rather than claiming a flag off a window it cannot stand behind.
             let untrusted = s.integrity.window_untrusted
                 || s.integrity.high_untrusted
-                || s.integrity.volume_untrusted;
+                || s.integrity.volume_untrusted
+                || s.history_pending;
             if untrusted && !s.setup.is_idle() {
                 s.setup.leave();
             }
@@ -1443,7 +1492,11 @@ impl Engine {
                 &mut self.setup_log,
             );
             if untrusted {
-                setup.reason = "inputs_untrusted";
+                setup.reason = if s.history_pending {
+                    "history_pending"
+                } else {
+                    "inputs_untrusted"
+                };
             }
             let ticks = &s.ticks;
             let price_at = |e: i64| ticks.iter().rev().find(|(x, _)| *x < e).copied();
@@ -1452,7 +1505,7 @@ impl Engine {
                     .filter(|x| x.kind != SessionKind::Overnight)
                     .map(|x| x.kind as u8)
             };
-            let m = momentum(
+            let mut m = momentum(
                 rules,
                 b,
                 price_at,
@@ -1462,6 +1515,11 @@ impl Engine {
                 s.halted,
                 s.coverage.map_or(self.run.numerator_coverage, |(c, _)| c),
             );
+            if s.history_pending {
+                // A tail is not the day: no rank from a window the restore has not filled.
+                m.status = MomentumStatus::Unavailable;
+                m.reason = "history_pending";
+            }
             let last = s.last.as_ref();
             let pillar = |p: PillarId| last.and_then(|d| d.pillars.iter().find(|x| x.pillar == p));
             rows.push(PanelRow {
@@ -1689,6 +1747,7 @@ impl Engine {
         // different set of prints than the live run's did. The day's total is unaffected — the
         // prints are the prints — and the doubt clears as the window moves past the prefix.
         let mut integrity = s.integrity;
+        integrity.history_pending = s.history_pending;
         if s.restored_through.is_some_and(|r| b - w <= r) {
             integrity.window_untrusted = true;
         }

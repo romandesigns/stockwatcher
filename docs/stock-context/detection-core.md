@@ -293,6 +293,22 @@ Volume and indicators are measured only. Missing quotes and indicators never blo
 | A completed bar closing outside the active band ($0.10–$25 inclusive) | Every active episode of the symbol → `interrupted` (`outside_active_band`); nothing new starts on that bar. The bar still feeds the return baseline (a fact). No requalification: the next in-band bar may start new episodes. |
 | No print for 60 s while a micro episode is active | That episode → `interrupted` (`stale_price`). This is **not** a data gap: no baseline is reset and no global state changes. |
 
+**History pending.** `Engine::set_history_pending(symbol, true)` marks a symbol whose day history
+a loader is still restoring. It can be set before the symbol's first print. While pending:
+- the RVOL pillar and its diagnostics are UNKNOWN (`history_pending`), so there is no 5/5;
+- Ross momentum is unavailable and `bull_flag_v0` gets no bars;
+- detection interrupts active episodes (`history_pending`) and starts nothing, including no
+  trade-driven crossing between barriers.
+
+Facts keep flowing. The return baseline keeps growing and nothing requalifies, so clearing the
+flag never starves warmup.
+
+The flag is separate from integrity and coverage. `adopt_facts` clears it on `Adopted`, and
+genuine doubts survive. A refused or empty restore leaves it set, and the server then either
+keeps it or clears it and reports partial coverage. The snapshot lists pending symbols in
+`data_status.history_pending_symbols`, with the count in `monitored.symbols_history_pending`,
+even when they have no episodes.
+
 After a real interruption, `requalify_from` moves to the resume time. New anchors, windows and
 return baselines use only bars after it. This is conservative: ignition needs 30 fresh adjacent
 returns again.

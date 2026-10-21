@@ -422,6 +422,9 @@ pub struct DataStatus {
     pub recent_gaps: Vec<Gap>,
     /// Detection is configured but cannot run (e.g. `bar_secs_mismatch`).
     pub disabled_reason: Option<&'static str>,
+    /// Symbols whose day history is still being restored (`Engine::set_history_pending`):
+    /// nothing history-dependent is assessed for them, whether or not they have episodes.
+    pub history_pending_symbols: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -467,6 +470,8 @@ pub struct Monitored {
     pub symbols_active: usize,
     /// Symbols under a per-symbol interruption.
     pub symbols_interrupted: usize,
+    /// Symbols whose day history is still being restored.
+    pub symbols_history_pending: usize,
 }
 
 // ------------------------------------------------------------------------------------------
@@ -706,6 +711,8 @@ pub(crate) struct Barrier<'a> {
     pub halted: bool,
     pub coverage_partial: bool,
     pub untrusted: bool,
+    /// The symbol's day history is still being restored (`Engine::set_history_pending`).
+    pub history_pending: bool,
     pub restored_through: Option<i64>,
 }
 
@@ -964,7 +971,10 @@ pub(crate) fn interrupt_all(
     retire_terminal(det, sd);
     // A real observation failure: new episodes and baselines restart after it. A segment end
     // is not one (the next segment's windows never reach back anyway).
-    if !matches!(reason, "segment_end" | "outside_active_band") {
+    if !matches!(
+        reason,
+        "segment_end" | "outside_active_band" | "history_pending"
+    ) {
         sd.requalify_from = sd.requalify_from.max(at);
     }
 }
@@ -1041,8 +1051,18 @@ pub(crate) fn step(det: &mut Detector, sd: &mut SymDetect, x: &Barrier) {
     let f = features::candidate(det, sd, x, seg);
     // The active profile is the detection universe: a completed bar closing outside it ends every
     // active episode (never rescued), starts nothing, and only feeds the return baseline.
-    if f.as_ref().is_some_and(|f| !f.in_active_band) {
-        interrupt_all(det, sd, "outside_active_band", x.tau, Some((x.b, x.tau)));
+    // History pending (temporary, `Engine::set_history_pending`): interrupt and start nothing,
+    // but keep feeding the facts — the return baseline grows as usual and nothing requalifies,
+    // so clearing the flag never starves the warmup. Outside the active band: the same, for good.
+    let hold = if x.history_pending {
+        Some("history_pending")
+    } else if f.as_ref().is_some_and(|f| !f.in_active_band) {
+        Some("outside_active_band")
+    } else {
+        None
+    };
+    if let Some(why) = hold {
+        interrupt_all(det, sd, why, x.tau, Some((x.b, x.tau)));
         if let Some(f) = f {
             if f.return_class == ReturnClass::Adjacent
                 && let Some(r) = f.log_return_ppm
@@ -1086,6 +1106,7 @@ pub(crate) fn on_print(
     admit: i64,
     price: i64,
     ohlc: bool,
+    history_pending: bool,
 ) {
     det.as_of = Some(det.as_of.map_or(admit, |a| a.max(admit)));
     if !ohlc || det.disabled.is_some() {
@@ -1093,7 +1114,13 @@ pub(crate) fn on_print(
     }
     // The latest admitted print, in admission order (what a live observer knew last).
     sd.last_seen = Some(Seen { exec, admit, price });
-    if det.global.is_some() || sd.interrupted.is_some() || sd.halted_since.is_some() {
+    // No trade-driven crossing or breach between barriers while the day's history is pending
+    // (the next barrier interrupts any episode anyway).
+    if det.global.is_some()
+        || sd.interrupted.is_some()
+        || sd.halted_since.is_some()
+        || history_pending
+    {
         return;
     }
     micro::on_print(det, sd, id, exec, admit, price);
@@ -1209,7 +1236,7 @@ fn dominance(ep: &Episode) -> u8 {
 pub(crate) fn snapshot<'a>(
     det: &Detector,
     run: &crate::RunInfo,
-    syms: impl Iterator<Item = (&'a str, &'a SymDetect)>,
+    syms: impl Iterator<Item = (&'a str, &'a SymDetect, bool)>,
 ) -> DetectionSnapshot {
     let fresh = det.policy.body.timing.price_fresh_secs * SEC;
     let near_bp = det
@@ -1225,7 +1252,12 @@ pub(crate) fn snapshot<'a>(
         .last_barrier
         .map(|(b, _)| market_events::session::trading_date(market_events::UnixNanos(b)));
     let mut monitored = Monitored::default();
-    for (name, sd) in syms {
+    let mut pending_symbols = Vec::new();
+    for (name, sd, pending) in syms {
+        if pending {
+            monitored.symbols_history_pending += 1;
+            pending_symbols.push(name.to_string());
+        }
         monitored.symbols_seen += usize::from(sd.last_seen.is_some());
         monitored.symbols_today += usize::from(today.is_some() && sd.date == today);
         if let Some((from, why)) = sd.interrupted {
@@ -1295,6 +1327,7 @@ pub(crate) fn snapshot<'a>(
             interrupted_symbols,
             recent_gaps: det.gaps.iter().cloned().collect(),
             disabled_reason: det.disabled,
+            history_pending_symbols: pending_symbols,
         },
         monitored,
         telemetry: det.telemetry(n_active),

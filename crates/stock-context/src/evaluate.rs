@@ -140,11 +140,19 @@ pub struct Integrity {
     /// The day's high may still be a print that is gone, so the distance below it and the setup
     /// levels taken from it are not reportable.
     pub high_untrusted: bool,
+    /// The symbol's day history has not been restored yet (a loader is pending): the facts so
+    /// far are a tail, so nothing measured over the day or a window is reportable. Temporary and
+    /// effective-only — set at each decision from the symbol's pending flag
+    /// ([`crate::Engine::set_history_pending`]), never stored with the permanent doubts above.
+    pub history_pending: bool,
 }
 
 impl Integrity {
     pub fn trusted(&self) -> bool {
-        !self.volume_untrusted && !self.window_untrusted && !self.high_untrusted
+        !self.volume_untrusted
+            && !self.window_untrusted
+            && !self.high_untrusted
+            && !self.history_pending
     }
 
     /// Every doubt either of the two holds. Used when state from two sources meets in one symbol
@@ -154,6 +162,7 @@ impl Integrity {
             volume_untrusted: self.volume_untrusted || other.volume_untrusted,
             window_untrusted: self.window_untrusted || other.window_untrusted,
             high_untrusted: self.high_untrusted || other.high_untrusted,
+            history_pending: self.history_pending || other.history_pending,
         }
     }
 }
@@ -225,7 +234,9 @@ pub fn rvol(
             .collect();
         let min = policy.body.diagnostics.same_time_min_sessions;
         diag.same_time_sessions = prior.len();
-        if vol.integrity.volume_untrusted {
+        if vol.integrity.history_pending {
+            diag.same_time_reason = "history_pending";
+        } else if vol.integrity.volume_untrusted {
             // The numerator may hold a print that was revised away: no ratio is published from
             // it, in either direction.
             diag.same_time_reason = "volume_untrusted";
@@ -245,7 +256,9 @@ pub fn rvol(
         }
         let w = policy.body.diagnostics.recent_window_secs;
         diag.recent_sessions = prior.len();
-        if vol.integrity.volume_untrusted {
+        if vol.integrity.history_pending {
+            diag.recent_reason = "history_pending";
+        } else if vol.integrity.volume_untrusted {
             diag.recent_reason = "volume_untrusted";
         } else if vol.integrity.window_untrusted {
             // The checkpoints the window is measured between may not match the stream.
@@ -331,7 +344,10 @@ pub fn rvol(
     // engine could not place against exactly one of its own admissions leaves volume in the
     // count that should not be there, so the figure is neither a lower bound nor a measurement:
     // UNKNOWN, with the reason, until the next decision computes it from a count that is sound.
+    // A tail awaiting its day's history is neither a measurement nor a safe lower bound for a
+    // decision a client will read as the day's: UNKNOWN until the history is adopted.
     let (state, reason) = match (vol.integrity.volume_untrusted, passes, vol.coverage) {
+        _ if vol.integrity.history_pending => (Tri::Unknown, "history_pending"),
         (true, _, _) => (Tri::Unknown, "volume_untrusted"),
         (false, true, _) => (Tri::Pass, "at_or_above_min"),
         (false, false, Coverage::Complete) => (Tri::Fail, "below_min"),
