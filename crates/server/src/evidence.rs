@@ -1098,9 +1098,17 @@ mod tests {
         // A member, so the panel really changes from barrier to barrier.
         trade(&mut cx, t(9, 30, 0), t(9, 40, 0));
 
-        // No `take_update` call: nobody is subscribed. The drain still takes everything.
-        let took = cx.drain_outputs();
+        // No `take_update` call: nobody is subscribed. The drain still takes everything, and
+        // every snapshot it takes is offered to the observation capture (`crate::observe`) on the
+        // way past, so the measurement scaffolding does not depend on a viewer either.
+        let mut seen: Vec<(u64, i64)> = Vec::new();
+        let took = cx.drain_outputs(&mut |p| seen.push((p.revision, p.cutoff)));
         assert!(took.panels > 0, "panels were published: {took:?}");
+        assert_eq!(seen.len(), took.panels, "one observation per drained panel");
+        assert!(
+            seen.windows(2).all(|w| w[0].1 <= w[1].1),
+            "offered oldest first: {seen:?}"
+        );
         let tel = cx.output_telemetry();
         assert_eq!(tel.panels_held, 0, "the drain emptied the journal");
         assert_eq!(tel.panels_taken, took.panels as u64);
@@ -1129,7 +1137,7 @@ mod tests {
         );
 
         // A second drain with nothing new takes nothing.
-        assert!(cx.drain_outputs().is_empty());
+        assert!(cx.drain_outputs(&mut |_| {}).is_empty());
     }
 
     /// With no drain at all the engine holds at most its bound and counts what it dropped: the

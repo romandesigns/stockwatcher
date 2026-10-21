@@ -428,6 +428,10 @@ pub(crate) struct Inner {
     context_on: AtomicBool,
     /// Connections that sent `ross.subscribe`. While 0, no `ross.update` is serialized.
     ross_subs: AtomicUsize,
+    /// Baseline observation/latency capture for the context panel (`crate::observe`): a bounded
+    /// queue filled under the core lock and absorbed off it, with counted drops. Measurement
+    /// scaffolding, not a latency claim.
+    observations: crate::observe::ObservationSink,
     /// Live: the archive history this market loads from (`crate::history`); set once at start.
     pub(crate) history: std::sync::OnceLock<History>,
     /// With `STOCK_CONTEXT`: the archive evidence every context board is fed from
@@ -590,6 +594,7 @@ impl Market {
             pressure_subs: AtomicUsize::new(0),
             context_on: AtomicBool::new(false),
             ross_subs: AtomicUsize::new(0),
+            observations: crate::observe::ObservationSink::new(crate::observe::QUEUE_CAPACITY),
             history: std::sync::OnceLock::new(),
             evidence: std::sync::OnceLock::new(),
             alerts: std::sync::OnceLock::new(),
@@ -968,6 +973,9 @@ impl Market {
                 // startup summary of the next restart (`crate::history`).
                 if n.is_multiple_of(crate::history::QUOTES_CHECKPOINT_TICKS) {
                     market.checkpoint_quotes();
+                }
+                if n.is_multiple_of(crate::observe::LOG_EVERY_TICKS) {
+                    market.log_observations();
                 }
             }
         });
@@ -1761,15 +1769,30 @@ impl Market {
     /// panels were only taken inside `publish_context`, which returns early with no `ross`
     /// subscriber. An unattended live market therefore grew both without bound. The drain is
     /// in-memory under the core lock (no disk, no provider, no serialization), and the engine's
-    /// counters say what it had to drop. Returns what this call took.
+    /// counters say what it had to drop.
+    ///
+    /// Each drained snapshot is also captured for the baseline observation/latency scaffolding
+    /// (`crate::observe`): a bounded `try_send` under the lock, absorbed into the summary once the
+    /// lock is released. Returns what this call took.
     pub(crate) fn drain_context(&self) -> crate::context::DrainReport {
-        let mut core = self.0.core.lock().expect("core lock");
-        let Some(cx) = core.context.as_mut() else {
-            return Default::default();
+        let now = crate::observe::wall_now();
+        let sink = &self.0.observations;
+        let (took, total, tel) = {
+            let mut core = self.0.core.lock().expect("core lock");
+            let Some(cx) = core.context.as_mut() else {
+                return Default::default();
+            };
+            let took = cx.drain_outputs(&mut |p| {
+                sink.capture(crate::observe::Observation::of(
+                    crate::observe::Stage::Drained,
+                    p,
+                    now,
+                ));
+            });
+            (took, cx.drained(), cx.output_telemetry())
         };
-        let took = cx.drain_outputs();
-        let tel = cx.output_telemetry();
-        let total = cx.drained();
+        // Off the core lock: the queue is moved into the summary here, never under it.
+        sink.absorb();
         if !took.is_empty() {
             tracing::debug!(
                 panels = took.panels,
@@ -1793,23 +1816,60 @@ impl Market {
         took
     }
 
+    /// What the baseline observation/latency capture has recorded so far (`crate::observe`).
+    /// Segments with too few samples report `insufficient_data`, never a percentile.
+    pub(crate) fn observation_report(&self) -> crate::observe::ObservationReport {
+        self.0.observations.report()
+    }
+
+    /// Logs the observation capture's counters and segments, from the quotes task about once a
+    /// minute. A segment under its sample floor prints `insufficient_data` rather than a number,
+    /// and `complete` says whether anything was dropped: this is capture scaffolding for the
+    /// agreed measurement program, never a latency guarantee or a comparison with anything.
+    pub(crate) fn log_observations(&self) {
+        let r = self.observation_report();
+        if r.captured == 0 {
+            return;
+        }
+        tracing::info!(
+            captured = r.captured,
+            dropped = r.dropped,
+            absorbed = r.absorbed,
+            queue_capacity = r.queue_capacity,
+            untimed_replay = r.untimed_replay,
+            complete = r.complete(),
+            any_segment_measured =
+                r.barrier_to_drain.measured() || r.barrier_to_publish.measured(),
+            barrier_to_drain = %r.barrier_to_drain.line(),
+            barrier_to_publish = %r.barrier_to_publish.line(),
+            "stock context observations (capture scaffolding, not a latency guarantee)"
+        );
+    }
+
     /// One `ross.update` when the panel changed and anyone is subscribed (from the quotes task,
     /// at most once per wall second). Skipped during a rebuild, like the other boards.
     pub fn publish_context(&self) {
         if self.0.ross_subs.load(Ordering::Relaxed) == 0 {
             return;
         }
-        let (seq, frame) = {
+        let (seq, frame, snap) = {
             let mut core = self.0.core.lock().expect("core lock");
             if core.rebuilding {
                 return;
             }
             let seq = core.seq;
             match core.context.as_mut().and_then(|c| c.take_update()) {
-                Some(f) => (seq, f),
+                Some((frame, snap)) => (seq, frame, snap),
                 None => return,
             }
         };
+        // The publication time of the snapshot this frame carries, for `crate::observe`. Captured
+        // after the lock: the send itself is what the segment ends at.
+        self.0.observations.capture(crate::observe::Observation::of(
+            crate::observe::Stage::Published,
+            &snap,
+            crate::observe::wall_now(),
+        ));
         let _ = self.0.tx.send(Arc::new(Outbound {
             seq,
             kind: OutKind::Ross(frame),

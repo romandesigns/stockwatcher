@@ -35,7 +35,7 @@ use serde_json::json;
 use std::collections::HashSet;
 use stock_context::{
     CloseBasis, Coverage, Decision, Engine, Fidelity, InstrumentId, OutputTelemetry, PanelPolicy,
-    Policy, PrevClose, RunInfo, SetupPolicy, Verdict,
+    PanelSnapshot, Policy, PrevClose, RunInfo, SetupPolicy, Verdict,
 };
 
 /// What one [`ContextBoard::drain_outputs`] took off the engine, and what the engine had to drop
@@ -147,9 +147,16 @@ impl ContextBoard {
     /// The drained rows are dropped here. That is deliberate and limited: this slice makes the
     /// engine bounded and the loss counted, it does not persist a decision journal, so nothing
     /// here may be presented as a complete audit trail.
-    pub(crate) fn drain_outputs(&mut self) -> DrainReport {
+    /// `observe` sees each drained snapshot before it is discarded, so the baseline
+    /// observation/latency capture (`crate::observe`) can record its segment times. It must stay
+    /// cheap: this runs under the core lock.
+    pub(crate) fn drain_outputs(&mut self, observe: &mut dyn FnMut(&PanelSnapshot)) -> DrainReport {
+        let panels = self.engine.take_panels();
+        for p in &panels {
+            observe(p);
+        }
         let r = DrainReport {
-            panels: self.engine.take_panels().len(),
+            panels: panels.len(),
             setup_entries: self.engine.take_setup_log().len(),
         };
         self.drained.panels += r.panels;
@@ -255,19 +262,21 @@ impl ContextBoard {
         .to_string()
     }
 
-    /// The `ross.update` frame when the panel changed since the last call.
+    /// The `ross.update` frame when the panel changed since the last call, with the snapshot it
+    /// speaks for (`crate::observe` records the publication time against it).
     ///
     /// It reads the latest snapshot only; draining the journals is
     /// [`ContextBoard::drain_outputs`]'s job, so what the engine holds never depends on whether
     /// anyone is watching.
-    pub(crate) fn take_update(&mut self) -> Option<String> {
+    pub(crate) fn take_update(&mut self) -> Option<(String, PanelSnapshot)> {
         let p = self.engine.panel()?;
         let at = (p.revision, p.bar_end);
         if self.published == Some(at) {
             return None;
         }
+        let snap = p.clone();
         self.published = Some(at);
-        Some(self.panel_frame("ross.update"))
+        Some((self.panel_frame("ross.update"), snap))
     }
 
     pub(crate) fn decision(&self, symbol: &str) -> Option<&Decision> {

@@ -7,6 +7,7 @@ pub mod days;
 pub mod evidence;
 pub mod history;
 pub mod market;
+pub mod observe;
 pub mod pressure;
 pub mod quotes;
 pub mod settings;
