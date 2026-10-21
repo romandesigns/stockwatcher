@@ -583,12 +583,19 @@ impl ContextBoard {
         self.engine.set_halted(symbol, halted);
     }
 
-    pub(crate) fn with_detection(mut self, epoch: String) -> Self {
+    pub(crate) fn with_detection(mut self) -> Self {
         self.engine = self
             .engine
             .with_detection_policy(stock_context::DetectionPolicy::current());
-        self.detection_epoch = Some(epoch);
         self
+    }
+
+    pub(crate) fn detection_policy_tag(&self) -> Option<String> {
+        self.engine.detection_policy().map(|p| p.tag())
+    }
+
+    pub(crate) fn set_detection_epoch(&mut self, epoch: String) {
+        self.detection_epoch = Some(epoch);
     }
 
     pub(crate) fn add_detection_quiet_reference(

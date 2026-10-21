@@ -73,6 +73,15 @@ is labeled restored; seek/current state are recoverable without a stale-alert bu
 All attempted journal records (including documentary data-status changes with zero active
 episodes) receive a journal sequence before queue admission. The reader detects interior
 status loss as well as transition loss; a missing final record remains an unverified tail.
+The header's detector policy comes from the actual first configured engine; each epoch's status
+records also carry its actual snapshot policy. They do not independently guess a default profile.
+
+A recoverable provider error opens a documentary gap and interrupts existing setups. For sources
+without link messages, the next received normalized event closes that error gap and requires
+post-gap qualification; it never restores old anchors or claims continuous coverage. An explicit
+link-down remains interrupted until link-up, including when buffered prints arrive. An unavailable
+source starts its interruption at the configured replay day/start (ET 04:00 fallback), or actual
+local admission time for live, never epoch zero.
 
 ## Local references and runnable fixture
 

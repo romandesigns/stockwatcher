@@ -247,9 +247,194 @@ async fn zero_active_link_gap_is_reported_and_persisted_without_fabricated_detec
     })
     .await
     .unwrap();
-    assert_eq!(read.header.unwrap().source, "replay");
+    assert_eq!(read.header.as_ref().unwrap().source, "replay");
+    assert_eq!(
+        read.header.as_ref().unwrap().detector_policy,
+        value["snapshot"]["policy"].as_str().unwrap()
+    );
     assert!(read.status.iter().all(|s| s.source == "fixture"));
+    assert!(
+        read.status
+            .iter()
+            .all(|s| s.detector_policy == read.header.as_ref().unwrap().detector_policy)
+    );
     assert_eq!(read.tail, "unverified");
+}
+
+fn armed_fixture() -> Market {
+    let market = Market::detection_fixture(day(), None);
+    for step in stock_context::detect::fixture::script("micro_retracted").unwrap() {
+        market.apply_detection_fixture_step(&step).unwrap();
+        market.publish_detection();
+        if frame(&market)["snapshot"]["active"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["state"] == "armed")
+        {
+            return market;
+        }
+    }
+    panic!("fixture never armed");
+}
+
+#[test]
+fn recoverable_error_retains_gap_and_cannot_trigger_pre_gap_armed_setup() {
+    let market = armed_fixture();
+    let before = frame(&market);
+    let at = before["snapshot"]["as_of"].as_i64().unwrap();
+    let old_episode = before["snapshot"]["active"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["state"] == "armed")
+        .unwrap()["episode_id"]
+        .clone();
+    market
+        .apply_detection_fixture(FeedItem::Error("synthetic recoverable read error".into()))
+        .unwrap();
+    market.publish_detection();
+    let interrupted = frame(&market);
+    assert_eq!(
+        interrupted["snapshot"]["data_status"]["global_interruption"]["reason"],
+        "provider_error"
+    );
+    let gap_from = interrupted["snapshot"]["data_status"]["global_interruption"]["from"].clone();
+    assert!(gap_from.as_i64().unwrap() > 0);
+    assert!(
+        interrupted["transitions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["transition"]["episode_id"] == old_episode
+                && e["transition"]["to"] == "interrupted")
+    );
+    assert!(
+        interrupted["snapshot"]["active"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    // This would cross the old armed level. New receipt closes the documentary gap, but
+    // continuity and the old setup are not restored; the core requires post-gap qualification.
+    let resumed_at = at + 3_000_000_000;
+    let mut trade = Trade::new(
+        "MPXC",
+        UnixNanos(resumed_at),
+        Price::from_f64_rounded(3.50).unwrap(),
+        100,
+        900_001,
+    );
+    trade.receive_ts = Some(UnixNanos(resumed_at));
+    market
+        .apply_detection_fixture(FeedItem::Event(MarketEvent::Trade(trade)))
+        .unwrap();
+    market.publish_detection();
+    let resumed = frame(&market);
+    assert!(resumed["snapshot"]["data_status"]["global_interruption"].is_null());
+    assert!(
+        resumed["snapshot"]["data_status"]["recent_gaps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|g| g["reason"] == "provider_error"
+                && g["from"] == gap_from
+                && g["to"] == resumed_at)
+    );
+    assert!(resumed["snapshot"]["active"].as_array().unwrap().is_empty());
+    assert!(
+        resumed["transitions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["sequence"].as_u64().unwrap()
+                > interrupted["history"]["last_sequence"].as_u64().unwrap()
+                && e["transition"]["episode_id"] == old_episode)
+            .all(|e| !["crossing_provisional", "triggered"]
+                .iter()
+                .any(|s| e["transition"]["to"] == *s))
+    );
+    assert_eq!(resumed["alertsEnabled"], false);
+}
+
+#[test]
+fn explicit_link_down_requires_up_even_after_error_and_buffered_print() {
+    let market = armed_fixture();
+    let at = frame(&market)["snapshot"]["as_of"].as_i64().unwrap();
+    market
+        .apply_detection_fixture(FeedItem::Link(market_providers::Link {
+            state: market_providers::LinkState::Down,
+            detail: Some("synthetic disconnect".into()),
+        }))
+        .unwrap();
+    market
+        .apply_detection_fixture(FeedItem::Error("read failed while disconnected".into()))
+        .unwrap();
+    let mut trade = Trade::new(
+        "MPXC",
+        UnixNanos(at + 3_000_000_000),
+        Price::from_f64_rounded(3.50).unwrap(),
+        100,
+        900_002,
+    );
+    trade.receive_ts = Some(UnixNanos(at + 3_000_000_000));
+    market
+        .apply_detection_fixture(FeedItem::Event(MarketEvent::Trade(trade)))
+        .unwrap();
+    market.publish_detection();
+    assert_eq!(
+        frame(&market)["snapshot"]["data_status"]["global_interruption"]["reason"],
+        "link_down"
+    );
+    market
+        .apply_detection_fixture(FeedItem::Link(market_providers::Link {
+            state: market_providers::LinkState::Up,
+            detail: None,
+        }))
+        .unwrap();
+    market.publish_detection();
+    let recovered = frame(&market);
+    assert!(recovered["snapshot"]["data_status"]["global_interruption"].is_null());
+    assert!(
+        recovered["snapshot"]["data_status"]["recent_gaps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|g| g["reason"] == "link_down")
+    );
+    assert!(
+        recovered["snapshot"]["active"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn unavailable_replay_provider_uses_configured_instant_without_epoch_zero_gap() {
+    let archive = tempfile::tempdir().unwrap();
+    let mut cfg = MarketConfig {
+        detection_panel: true,
+        ..MarketConfig::default()
+    };
+    cfg.provider.archive = market_archive::ArchiveConfig {
+        root: archive.path().to_path_buf(),
+        retention_days: 0,
+        min_free_bytes: 0,
+    };
+    cfg.provider.day = Some(day());
+    cfg.provider.start_et = chrono::NaiveTime::from_hms_opt(9, 40, 0);
+    let (market, _) = Market::start(&cfg);
+    let snapshot = frame(&market);
+    assert_eq!(snapshot["enabled"], true);
+    assert_eq!(
+        snapshot["snapshot"]["data_status"]["global_interruption"]["reason"],
+        "provider_unavailable"
+    );
+    assert_eq!(
+        snapshot["snapshot"]["data_status"]["global_interruption"]["from"],
+        start()
+    );
 }
 
 #[tokio::test]

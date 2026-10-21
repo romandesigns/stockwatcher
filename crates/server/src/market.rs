@@ -450,6 +450,9 @@ pub(crate) struct Inner {
     /// a file writer, so serialization cannot overtake and discard an older drained transition.
     detection_delivery: Mutex<()>,
     detection_quiet_refs: Mutex<Arc<Vec<stock_context::QuietReference>>>,
+    detection_directory: Mutex<Option<std::path::PathBuf>>,
+    detection_error_recovery: AtomicBool,
+    detection_link_down: AtomicBool,
     /// The last per-pillar readiness summary (`crate::context::Readiness`), taken on the evidence
     /// task and sent with every `ross` frame so an empty panel says why. A whole-market pass
     /// belongs nowhere near the publish path, so it is cached rather than computed per frame.
@@ -592,6 +595,25 @@ fn mode_of(cfg: &ProviderConfig) -> ClockMode {
     }
 }
 
+/// No provider has supplied a run clock yet. Use its configured replay instant (or ET day
+/// start) and actual admission now for live; never create a fictitious 1970 interruption.
+fn unavailable_detection_clock(cfg: &MarketConfig, mode: ClockMode) -> UnixNanos {
+    if mode == ClockMode::Live {
+        return UnixNanos(crate::observe::wall_now());
+    }
+    let day = cfg
+        .provider
+        .day
+        .unwrap_or_else(|| Utc::now().with_timezone(&New_York).date_naive());
+    let time = cfg
+        .provider
+        .start_et
+        .unwrap_or_else(|| chrono::NaiveTime::from_hms_opt(4, 0, 0).expect("valid hour"));
+    market_events::session::et_instant(day, time)
+        .or_else(|| market_events::session::et(day, 4, 0, 0, 0))
+        .unwrap_or_else(|| UnixNanos(crate::observe::wall_now()))
+}
+
 impl Market {
     fn build(
         mode: ClockMode,
@@ -638,6 +660,9 @@ impl Market {
             detection_published: Mutex::new(None),
             detection_delivery: Mutex::new(()),
             detection_quiet_refs: Mutex::new(Arc::new(Vec::new())),
+            detection_directory: Mutex::new(None),
+            detection_error_recovery: AtomicBool::new(false),
+            detection_link_down: AtomicBool::new(false),
             readiness: Mutex::new(None),
             ross_subs: AtomicUsize::new(0),
             observations: crate::observe::ObservationSink::new(crate::observe::QUEUE_CAPACITY),
@@ -693,16 +718,31 @@ impl Market {
         {
             board.add_evidence(batch);
         }
-        if self.0.detection_on.load(Ordering::Relaxed)
-            && let Some(runtime) = self.0.detection.get()
-        {
+        if self.0.detection_on.load(Ordering::Relaxed) {
             let _delivery = self
                 .0
                 .detection_delivery
                 .lock()
                 .expect("detection delivery");
+            board = board.with_detection();
+            // Provenance comes from the actual configured engine, rather than independently
+            // guessing which profile current() means in a second component.
+            let policy = board.detection_policy_tag()?;
+            let directory = self
+                .0
+                .detection_directory
+                .lock()
+                .expect("detection directory")
+                .clone();
+            let runtime = self.0.detection.get_or_init(|| {
+                Arc::new(crate::detection::Runtime::new(
+                    self.0.mode.as_str(),
+                    directory.as_deref(),
+                    policy,
+                ))
+            });
             let epoch = runtime.reset(true, self.detection_source());
-            board = board.with_detection(epoch);
+            board.set_detection_epoch(epoch);
             let refs = self
                 .0
                 .detection_quiet_refs
@@ -1013,12 +1053,13 @@ impl Market {
     fn configure_detection(&self, on: bool, directory: Option<&std::path::Path>) {
         self.0.detection_on.store(on, Ordering::Relaxed);
         if on {
-            self.0.detection.get_or_init(|| {
-                Arc::new(crate::detection::Runtime::new(
-                    self.0.mode.as_str(),
-                    directory,
-                ))
-            });
+            if let Some(directory) = directory {
+                *self
+                    .0
+                    .detection_directory
+                    .lock()
+                    .expect("detection directory") = Some(directory.into());
+            }
         } else if let Some(runtime) = self.0.detection.get() {
             runtime.reset(false, self.detection_source());
         }
@@ -1209,8 +1250,9 @@ impl Market {
                 }
                 if cfg.detection_panel {
                     market.configure_detection(true, Some(&archive.root().join("detection")));
+                    let at = unavailable_detection_clock(cfg, mode);
                     if let Some(cx) = market.0.core.lock().expect("core lock").context.as_mut() {
-                        cx.detection_status(None, UnixNanos(0), false, "provider_unavailable");
+                        cx.detection_status(None, at, false, "provider_unavailable");
                     }
                     market.refresh_detection(true);
                     market.spawn_detection_task();
@@ -1603,17 +1645,36 @@ impl Market {
             if self.0.mode == ClockMode::Live {
                 UnixNanos(crate::observe::wall_now())
             } else {
+                let fallback = self
+                    .info()
+                    .and_then(|i| i.day)
+                    .and_then(|day| market_events::session::et(day, 4, 0, 0, 0));
                 self.0
                     .core
                     .lock()
                     .expect("core lock")
                     .engine
                     .clock()
-                    .unwrap_or(UnixNanos(0))
+                    .or(fallback)
+                    .unwrap_or_else(|| UnixNanos(crate::observe::wall_now()))
             }
         });
         match item {
             FeedItem::Event(e) => {
+                // A continuing provider without Link messages has demonstrably delivered a
+                // fresh input again. Close only the error gap, preserve it in history, and let
+                // the core requalify from post-gap windows. A documented link-down requires Up.
+                let recover_error = self
+                    .0
+                    .detection_error_recovery
+                    .swap(false, Ordering::Relaxed)
+                    && !self.0.detection_link_down.load(Ordering::Relaxed);
+                if recover_error {
+                    *self.0.status.lock().expect("status lock") = ProviderStatus {
+                        state: "running",
+                        detail: Some("provider resumed; recorded error gap retained".into()),
+                    };
+                }
                 // Price-band and paper-broker input: the same price rule the candles use (a
                 // print that may not set OHLC, e.g. an odd lot or average-price report, can
                 // neither move a stock into or out of the candidate set nor fill an order).
@@ -1630,6 +1691,14 @@ impl Market {
                 .then(|| self.current_closes());
                 let (seq, ups, rebuilding) = {
                     let mut core = self.0.core.lock().expect("core lock");
+                    if recover_error && let Some(cx) = core.context.as_mut() {
+                        cx.detection_status(
+                            None,
+                            market_providers::recorder::receive_time(&e),
+                            true,
+                            "provider_recovered",
+                        );
+                    }
                     if let Some((symbol, price, _)) = &qualifying {
                         core.last_price.insert(symbol.clone(), *price);
                         if let MarketEvent::Trade(t) = &e
@@ -1816,6 +1885,10 @@ impl Market {
                 }
             }
             FeedItem::Reset(_) => {
+                self.0
+                    .detection_error_recovery
+                    .store(false, Ordering::Relaxed);
+                self.0.detection_link_down.store(false, Ordering::Relaxed);
                 // The visible clock stays where it was until the rebuild's closing `Clock`, so a
                 // client never sees the target time over a half-rebuilt engine.
                 {
@@ -1884,6 +1957,11 @@ impl Market {
                     Some(Arc::new(ProviderInfo::replay(&src)));
             }
             FeedItem::Error(e) => {
+                self.0.detection_error_recovery.store(
+                    self.0.detection_on.load(Ordering::Relaxed)
+                        && !self.0.detection_link_down.load(Ordering::Relaxed),
+                    Ordering::Relaxed,
+                );
                 if let Some(cx) = self.0.core.lock().expect("core lock").context.as_mut() {
                     cx.detection_status(
                         None,
@@ -1899,6 +1977,21 @@ impl Market {
                 };
             }
             FeedItem::Link(l) => {
+                match l.state {
+                    LinkState::Up => {
+                        self.0.detection_link_down.store(false, Ordering::Relaxed);
+                        self.0
+                            .detection_error_recovery
+                            .store(false, Ordering::Relaxed);
+                    }
+                    LinkState::Down => {
+                        self.0.detection_link_down.store(true, Ordering::Relaxed);
+                        self.0
+                            .detection_error_recovery
+                            .store(false, Ordering::Relaxed);
+                    }
+                    LinkState::Connecting => {}
+                }
                 if let Some(cx) = self.0.core.lock().expect("core lock").context.as_mut() {
                     match l.state {
                         LinkState::Up => cx.detection_status(
@@ -3147,6 +3240,14 @@ async fn ingest(mut items: mpsc::Receiver<FeedItem>, market: Market, sim: Option
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unavailable_live_detection_clock_samples_actual_admission_now() {
+        let before = crate::observe::wall_now();
+        let at = unavailable_detection_clock(&MarketConfig::default(), ClockMode::Live);
+        let after = crate::observe::wall_now();
+        assert!((before..=after).contains(&at.0));
+    }
 
     /// The drain's stage clock is read with the core lock already held.
     ///

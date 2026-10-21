@@ -71,6 +71,7 @@ pub struct JournalStatus {
     pub input_watermark: u64,
     pub as_of: Option<i64>,
     pub data_status: Value,
+    pub detector_policy: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -123,7 +124,7 @@ pub struct Runtime {
 }
 
 impl Runtime {
-    pub fn new(source: &str, directory: Option<&Path>) -> Self {
+    pub fn new(source: &str, directory: Option<&Path>, detector_policy: String) -> Self {
         let boot = format!(
             "{}-{}-{}",
             std::process::id(),
@@ -137,7 +138,7 @@ impl Runtime {
             boot: boot.clone(),
             code_commit: crate::COMMIT.into(),
             code_identity: crate::admit::code_id_for_records().into(),
-            detector_policy: stock_context::DetectionPolicy::current().tag(),
+            detector_policy,
         };
         let writes = Arc::new(AtomicU64::new(0));
         let write_errors = Arc::new(AtomicU64::new(0));
@@ -293,6 +294,11 @@ impl Runtime {
                                 input_watermark,
                                 as_of: snapshot.get("as_of").and_then(Value::as_i64),
                                 data_status: health.clone(),
+                                detector_policy: snapshot
+                                    .get("policy")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("unavailable")
+                                    .into(),
                             },
                         })
                         .is_err()
@@ -538,7 +544,7 @@ mod tests {
 
     #[test]
     fn replacement_history_is_bounded_and_old_epochs_cannot_contaminate_reset() {
-        let r = Runtime::new("fixture", None);
+        let r = Runtime::new("fixture", None, "test-policy".into());
         let epoch = r.reset(true, "fixture");
         let records = (0..HISTORY_CAPACITY + 3)
             .map(|n| json!({"transition_id":format!("t{n}")}))
@@ -584,7 +590,7 @@ mod tests {
     #[test]
     fn off_core_journal_roundtrip_has_build_source_identity_and_unverified_tail() {
         let dir = tempfile::tempdir().unwrap();
-        let r = Runtime::new("fixture", Some(dir.path()));
+        let r = Runtime::new("fixture", Some(dir.path()), "test-policy".into());
         let epoch = r.reset(true, "fixture");
         accept(
             &r,
@@ -604,6 +610,7 @@ mod tests {
         assert!(read.prefix_integrity);
         assert_eq!(read.tail, "unverified");
         assert_eq!(read.header.as_ref().unwrap().source, "fixture");
+        assert_eq!(read.header.as_ref().unwrap().detector_policy, "test-policy");
         assert_eq!(read.header.as_ref().unwrap().code_commit, crate::COMMIT);
         assert!(!read.header.as_ref().unwrap().code_identity.is_empty());
         assert_eq!(read.transitions[0].0, epoch);
@@ -616,7 +623,7 @@ mod tests {
     fn reader_refuses_schema_holes_and_unbounded_lines() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("log.jsonl");
-        let r = Runtime::new("fixture", None);
+        let r = Runtime::new("fixture", None, "test-policy".into());
         let mut h = r.header.clone();
         h.schema = 99;
         let mut data = Vec::new();
@@ -662,6 +669,7 @@ mod tests {
                         input_watermark: sequence,
                         as_of: None,
                         data_status: json!({}),
+                        detector_policy: "test-policy".into(),
                     },
                 },
             )
@@ -681,7 +689,7 @@ mod tests {
 
     #[test]
     fn saturated_journal_cannot_block_state_and_exposes_every_lost_transition() {
-        let mut r = Runtime::new("fixture", None);
+        let mut r = Runtime::new("fixture", None, "test-policy".into());
         let (tx, _blocked_reader) = mpsc::sync_channel(1);
         r.queue = Some(tx);
         let epoch = r.reset(true, "fixture");
