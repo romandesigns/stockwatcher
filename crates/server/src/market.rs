@@ -812,6 +812,15 @@ impl Market {
     ///
     /// `None` leaves the capture in memory only, and the report then says so and withholds every
     /// figure: a cohort a restart would lose is not a forward corpus.
+    ///
+    /// **In production this is `None`**, and that is deliberate (review, 2026-10-21): `start`
+    /// turns the board on before `init_history` sets the archive, and the capture is created
+    /// once per process, so a live server keeps it in memory (bounded at
+    /// [`crate::shadow::SESSIONS_TRACKED`]) and writes no `shadow/` files. Making it durable as it
+    /// stands would write every decision of the whole market, unrotated and never pruned, for a
+    /// cohort whose session bound is below the market's daily symbol count — so it could never
+    /// report itself complete anyway. Persisting it needs a narrower capture (band/Ross
+    /// candidates) and retention first. Tests that build the history first do get a log.
     fn shadow_log_dir(&self) -> Option<std::path::PathBuf> {
         let h = self.0.history.get()?;
         Some(h.archive_root().join("shadow"))
@@ -2693,8 +2702,10 @@ impl Market {
         }
         // The journal's own counters, said out loud: a run whose journal has holes cannot be
         // restored from exactly, and that is worth knowing before a restart rather than after.
-        if let Some(j) = self.admission_report() {
-            if let Some(sh) = self.shadow_report() {
+        // The shadow line stands on its own (it used to be logged only when a journal existed,
+        // and the journal is now opt-in), and never waits for the capture's fold.
+        {
+            if let Some(sh) = self.0.shadow.get().and_then(|s| s.try_report()) {
                 tracing::info!(
                     definitions = sh.definitions,
                     live_closed_sessions = sh.live_sessions,
@@ -2711,6 +2722,8 @@ impl Market {
                     "shadow measurement (a description of what was observed, never a claim that either label is better)"
                 );
             }
+        }
+        if let Some(j) = self.admission_report() {
             tracing::info!(
                 admitted = j.admitted,
                 written = j.written,

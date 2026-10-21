@@ -72,7 +72,7 @@
 //! them makes the report insufficient rather than quietly smaller.
 
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -791,8 +791,14 @@ pub struct Shadow {
     /// What each run monitored, keyed `<run id>:<source>`. One entry per run of the process, so
     /// it is bounded by the number of boots a day, not by traffic.
     runs: BTreeMap<String, Monitoring>,
-    /// Session ids, least recently seen first, for the bound.
-    order: VecDeque<String>,
+    /// Session ids, least recently seen first, for the bound: `(touch, id)`, where an entry whose
+    /// touch is no longer the session's latest (`touched`) is stale and skipped. Moving a session
+    /// to the back used to be a linear search of up to 8,192 ids per decision, under the lock a
+    /// report takes, which at a whole-market open is most of every barrier.
+    order: VecDeque<(u64, String)>,
+    /// Each held session's latest touch.
+    touched: HashMap<String, u64>,
+    touches: u64,
     dropped_sessions: u64,
     dropped_runs: u64,
 }
@@ -865,7 +871,7 @@ impl Shadow {
             .collect();
         for k in gone {
             self.by_id.remove(&k);
-            self.order.retain(|x| *x != k);
+            self.touched.remove(&k);
             self.dropped_sessions += 1;
         }
     }
@@ -884,7 +890,6 @@ impl Shadow {
             .entry(format!("{}:{}", e.run_id, e.source))
             .or_default();
         run.clock = run.clock.max(e.cutoff);
-        let fresh = !self.by_id.contains_key(&id);
         let run_key = format!("{}:{}", e.run_id, e.source);
         let s = self.by_id.entry(id.clone()).or_insert_with(|| Session {
             id: id.clone(),
@@ -926,16 +931,26 @@ impl Shadow {
         if e.strict && s.first_strict_at.is_none() {
             s.first_strict_at = Some(e.cutoff);
         }
-        if !fresh && let Some(i) = self.order.iter().position(|x| *x == id) {
-            self.order.remove(i);
-        }
-        self.order.push_back(id);
-        while self.order.len() > SESSIONS_TRACKED {
-            if let Some(oldest) = self.order.pop_front()
-                && self.by_id.remove(&oldest).is_some()
-            {
+        self.touches += 1;
+        self.touched.insert(id.clone(), self.touches);
+        self.order.push_back((self.touches, id));
+        while self.by_id.len() > SESSIONS_TRACKED {
+            let Some((touch, oldest)) = self.order.pop_front() else {
+                break;
+            };
+            if self.touched.get(&oldest) != Some(&touch) {
+                continue; // touched again since: a later entry stands for it
+            }
+            self.touched.remove(&oldest);
+            if self.by_id.remove(&oldest).is_some() {
                 self.dropped_sessions += 1;
             }
+        }
+        // Stale entries are skipped lazily; compact when they dominate, so the queue stays
+        // bounded by a multiple of the sessions held.
+        if self.order.len() > 4 * SESSIONS_TRACKED.max(self.by_id.len()) {
+            let touched = &self.touched;
+            self.order.retain(|(t, k)| touched.get(k) == Some(t));
         }
     }
 
@@ -1234,9 +1249,24 @@ impl ShadowSink {
         append(path, bytes)
     }
 
+    /// [`ShadowSink::report`] if the sessions are not being folded right now, else `None`.
+    ///
+    /// For the periodic log line, which runs on the quotes/Ross publishing task: waiting there
+    /// behind an absorb of up to `ABSORB_MAX` records at the open delayed `quotes.update` and
+    /// `ross.update` for every client. A skipped line is only a skipped log line.
+    pub(crate) fn try_report(&self) -> Option<ShadowReport> {
+        let summary = self.shadow.try_lock().ok()?.summarise();
+        Some(self.finish_report(summary))
+    }
+
     /// The report, settled against what each run monitored.
     pub fn report(&self) -> ShadowReport {
-        let mut r = self.shadow.lock().expect("shadow lock").summarise();
+        let summary = self.shadow.lock().expect("shadow lock").summarise();
+        self.finish_report(summary)
+    }
+
+    fn finish_report(&self, summary: ShadowReport) -> ShadowReport {
+        let mut r = summary;
         r.captured = self.captured.load(Ordering::Relaxed);
         r.dropped_events = self.dropped.load(Ordering::Relaxed);
         r.absorbed = self.absorbed.load(Ordering::Relaxed);
@@ -2110,6 +2140,36 @@ mod tests {
         let r = s.summarise();
         assert_eq!(r.dropped_sessions, 7);
         assert_eq!(s.len(), SESSIONS_TRACKED);
+    }
+
+    /// The bound drops the least recently seen session, not the first one seen: a session
+    /// decided again moves to the back (without the linear search it used to cost).
+    #[test]
+    fn the_bound_drops_the_least_recently_seen_session() {
+        let d = day(16);
+        let mut s = Shadow::new();
+        monitored_whole(&mut s, d);
+        let ev = |k: u32| {
+            ShadowEvent::of(&decision(
+                &format!("S{k}"),
+                d,
+                at(d, 9, 0),
+                Tri::Fail,
+                Tri::Fail,
+                true,
+            ))
+        };
+        for k in 0..SESSIONS_TRACKED as u32 {
+            s.fold(&ev(k));
+        }
+        // S0 is seen again; S1 is now the least recent.
+        s.fold(&ev(0));
+        s.fold(&ev(SESSIONS_TRACKED as u32));
+        let ids: Vec<&str> = s.sessions().map(|x| x.symbol.as_str()).collect();
+        assert!(ids.contains(&"S0"), "touched again, so kept");
+        assert!(!ids.contains(&"S1"), "the least recently seen went");
+        assert_eq!(s.len(), SESSIONS_TRACKED);
+        assert_eq!(s.summarise().dropped_sessions, 1);
     }
 
     /// A stop followed by a later clock does not restore coverage over the interval nothing was
