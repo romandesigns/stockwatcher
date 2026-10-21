@@ -44,6 +44,24 @@ pub struct Revision {
     /// stamped with the candle's start (only the interval is known then). `None` when no candle
     /// of that date is left.
     pub last: Option<(Price, UnixNanos)>,
+    /// The **highest** OHLC-qualifying price of `session.date` after the revision, as far as this
+    /// engine still retains that date, and whether that retention reaches the date's first
+    /// candle.
+    ///
+    /// A consumer that keeps a day high as an aggregate cannot undo a print from it: removing the
+    /// print that *was* the high leaves no way to find the next one. This is that answer, from
+    /// the retained trades and then the base timeframe's candles. `complete` false makes it a
+    /// **lower bound** — earlier candles of the date have been evicted — so a consumer must not
+    /// treat it as the high; `None` means no candle of that date is left at all.
+    pub day_high: Option<DayHigh>,
+}
+
+/// A day's highest OHLC-qualifying price after a revision, with whether the retention it was
+/// taken over covers the whole date ([`Revision::day_high`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DayHigh {
+    pub price: Price,
+    pub complete: bool,
 }
 
 /// One side of a [`Revision`]: price, size and what the candles count it for.
@@ -511,6 +529,40 @@ impl SymbolState {
     /// The newest OHLC-qualifying print of `session`'s trading date ([`Revision::last`]). Trades are
     /// keyed by execution time, so the walk from the newest stops at the first older date; it
     /// runs only for a correction or cancel, never per print.
+    /// The date's highest OHLC-qualifying price from what is retained, and whether that
+    /// retention reaches the date's first candle ([`Revision::day_high`]).
+    fn high_of(&self, session: SessionId) -> Option<DayHigh> {
+        let date = session.date;
+        let mut high: Option<Price> = None;
+        for r in self.trades.values() {
+            if r.session.date == date && r.ohlc {
+                high = Some(high.map_or(r.price, |h: Price| h.max(r.price)));
+            }
+        }
+        // The base timeframe's candles of the date: they outlive the individual prints, so they
+        // are what says whether the retention still covers the date's start.
+        let base = self.series.iter().min_by_key(|s| s.tf.nanos());
+        let mut first_retained: Option<i64> = None;
+        if let Some(base) = base {
+            for b in base.buckets.iter().filter(|b| b.session.date == date) {
+                first_retained = Some(first_retained.map_or(b.start, |x: i64| x.min(b.start)));
+                if let Some(o) = b.ohlc {
+                    high = Some(high.map_or(o.h, |h: Price| h.max(o.h)));
+                }
+            }
+        }
+        // The retention covers the date only if a candle of it starts at or before the date's
+        // first session. Nothing of the date retained: no answer at all.
+        let starts_at = market_events::session::sessions_for(date)
+            .first()
+            .map(|s| s.1.nanos());
+        let complete = match (first_retained, starts_at) {
+            (Some(f), Some(s)) => f <= s,
+            _ => false,
+        };
+        high.map(|price| DayHigh { price, complete })
+    }
+
     fn last_print_of(&self, session: SessionId) -> Option<(Price, UnixNanos)> {
         let date = session.date;
         for (k, r) in self.trades.iter().rev() {
@@ -993,6 +1045,7 @@ impl ChartEngine {
             removed: RevisedPrint::from(&rec),
             added: None,
             last: st.last_print_of(rec.session),
+            day_high: st.high_of(rec.session),
         };
         (out, Some(rev))
     }
@@ -1073,6 +1126,7 @@ impl ChartEngine {
             removed,
             added: Some(added),
             last: st.last_print_of(old.session),
+            day_high: st.high_of(old.session),
         };
         (out, Some(rev))
     }

@@ -1261,6 +1261,19 @@ impl Market {
                         }
                         if let Some(rev) = &revision {
                             core.quotes.apply_revision(rev);
+                            // And the scanner, which kept a cancelled print's volume, trades and
+                            // day high for the rest of the day while the candles and the quote
+                            // row agreed it was gone.
+                            if let Some(cx) = core.context.as_mut() {
+                                let admit = match &e {
+                                    MarketEvent::Correction(c) => {
+                                        c.receive_ts.unwrap_or(c.event_ts)
+                                    }
+                                    MarketEvent::Cancel(c) => c.receive_ts.unwrap_or(c.event_ts),
+                                    other => other.event_ts(),
+                                };
+                                cx.apply_revision(rev, admit);
+                            }
                         }
                         core.seq += 1;
                         let seq = core.seq;

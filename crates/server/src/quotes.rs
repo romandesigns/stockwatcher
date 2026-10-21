@@ -835,6 +835,9 @@ mod tests {
             removed: print(removed),
             added: added.map(print),
             last: last.map(|(c, ts)| (Price::from_cents(c), ts)),
+            // The quote board does not keep a day high, so this fixture leaves it out; the
+            // context engine's own revision tests cover it.
+            day_high: None,
         }
     }
 

@@ -35,8 +35,9 @@ use serde::Serialize;
 use serde_json::json;
 use std::collections::{BTreeSet, HashSet};
 use stock_context::{
-    CloseBasis, Coverage, Decision, Engine, Fidelity, InstrumentId, OutputTelemetry, PanelPolicy,
-    PanelSnapshot, PillarId, Policy, PrevClose, Qualification, RunInfo, SetupPolicy, Tri, Verdict,
+    CloseBasis, Coverage, DayHigh, Decision, Engine, Fidelity, InstrumentId, OutputTelemetry,
+    PanelPolicy, PanelSnapshot, PillarId, Policy, PrevClose, PrintRevision, Qualification,
+    RevisedPrint, RunInfo, SetupPolicy, Tri, Verdict,
 };
 
 /// What one [`ContextBoard::drain_outputs`] took off the engine, and what the engine had to drop
@@ -194,6 +195,7 @@ impl ContextBoard {
         let mut reasons: HashMap<(&'static str, &'static str), u32> = HashMap::new();
         let mut r = Readiness {
             evidence_records: self.engine.evidence_len(),
+            revisions: self.engine.revision_telemetry(),
             observed_at,
             ..Readiness::default()
         };
@@ -372,6 +374,48 @@ impl ContextBoard {
         let _ = self.engine.advance_to(now);
     }
 
+    /// Applies a correction or cancel the chart engine resolved, so the scanner's facts follow
+    /// the candles and the quote row instead of keeping a print they agree is gone.
+    ///
+    /// Nothing used to route a revision here at all: the server gave it to the quote board only,
+    /// so an inflated RVOL numerator survived a cancel for the rest of the day and the "missing
+    /// prints can only lower RVOL" argument did not hold (the audit's F3). The chart engine is
+    /// the only thing that can resolve which retained print a reference names and recompute the
+    /// date's last price and high, so its answer is what the context engine applies — forward
+    /// effective, with prior decisions and frozen setup levels untouched.
+    pub(crate) fn apply_revision(&mut self, rev: &chart_engine::Revision, admit: UnixNanos) {
+        let to_print = |p: &chart_engine::RevisedPrint| RevisedPrint {
+            exec: rev.ts.nanos(),
+            price: p.price.micros(),
+            size: p.size,
+            verdict: Verdict {
+                ohlc: p.ohlc,
+                volume: p.volume,
+            },
+        };
+        let _ = self.engine.apply_revision(
+            &PrintRevision {
+                symbol: rev.symbol.clone(),
+                date: rev.session.date,
+                removed: to_print(&rev.removed),
+                added: rev.added.as_ref().map(to_print),
+                last: rev.last.map(|(p, ts)| (p.micros(), ts.nanos())),
+                day_high: rev.day_high.map(|h| DayHigh {
+                    price: h.price.micros(),
+                    complete: h.complete,
+                }),
+            },
+            admit,
+        );
+    }
+
+    /// What the engine did with the revisions and duplicates it was given (tests; production
+    /// reads it through [`Readiness::revisions`]).
+    #[cfg(test)]
+    pub(crate) fn revision_telemetry(&self) -> stock_context::RevisionTelemetry {
+        self.engine.revision_telemetry()
+    }
+
     pub(crate) fn set_halted(&mut self, symbol: &str, halted: bool) {
         self.engine.set_halted(symbol, halted);
     }
@@ -492,6 +536,9 @@ pub(crate) struct Readiness {
     pub(crate) evidence_records: usize,
     /// What the warmup requester has done (`crate::evidence`).
     pub(crate) warmups: crate::evidence::WarmupStats,
+    /// What the engine did with the corrections, cancels and duplicates it was given.
+    /// `complete` false means something could not be repaired exactly, and the counts say what.
+    pub(crate) revisions: stock_context::RevisionTelemetry,
     /// When this summary was taken (UTC ns, wall clock): it is a snapshot, not live.
     pub(crate) observed_at: i64,
 }
@@ -518,9 +565,22 @@ impl Readiness {
                 .collect::<Vec<_>>()
                 .join(", ")
         };
+        let rev = self.revisions;
         format!(
-            "{} symbols, {} qualified, {} members; {blocking}",
-            self.symbols, self.qualified, self.members
+            "{} symbols, {} qualified, {} members; {blocking}; revisions {} applied, {} duplicates dropped{}",
+            self.symbols,
+            self.qualified,
+            self.members,
+            rev.applied,
+            rev.duplicates_dropped,
+            if rev.complete() {
+                String::new()
+            } else {
+                format!(
+                    " (UNREPAIRED: {} unknown target, {} day high unproven, {} too late)",
+                    rev.unknown_target, rev.day_high_unproven, rev.too_late
+                )
+            }
         )
     }
 }

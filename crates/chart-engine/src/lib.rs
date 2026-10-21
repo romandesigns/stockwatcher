@@ -118,6 +118,6 @@ mod timeframe;
 pub mod wire;
 
 pub use config::EngineConfig;
-pub use engine::{ChartEngine, RevisedPrint, Revision, VALUE_AREA_PERCENT};
+pub use engine::{ChartEngine, DayHigh, RevisedPrint, Revision, VALUE_AREA_PERCENT};
 pub use quality::DataQuality;
 pub use timeframe::Timeframe;

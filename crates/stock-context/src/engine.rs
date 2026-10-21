@@ -31,14 +31,15 @@ use crate::panel::{
 };
 use crate::pillar::{Counts, PillarId, PillarResult, Qualification, Tri, aggregate, price_pillar};
 use crate::policy::Policy;
+use crate::revision::{DEDUP_WINDOW_SECS, PrintRevision, RevisionTelemetry};
 use crate::setup::{
     BARS_KEPT, Bar, BullFlag, SetupLogEntry, SetupPolicy, SetupState, SetupView, Step, spark,
 };
 use chrono::{Days, NaiveDate};
 use market_events::session::{SessionKind, classify, et, trading_date};
-use market_events::{Trade, UnixNanos};
+use market_events::{Trade, TradeId, UnixNanos};
 use serde::Serialize;
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 const SEC: i64 = 1_000_000_000;
 const MS: i64 = 1_000_000;
@@ -167,6 +168,17 @@ struct Sym {
     setup: BullFlag,
     /// First time StockWatcher saw any of the qualifying news at the latest decision.
     news_first_seen: Option<i64>,
+    /// Identities of the prints applied recently, newest last, and the same identities as a set.
+    ///
+    /// The engine deduplicates on [`market_events::PrintId`] itself, so every path a print can
+    /// reach it by behaves the same: the chart engine's verdict for a loaded symbol and the
+    /// print's own conditions for one still loading (`Counted::from_effect`, which has no
+    /// duplicate exclusion). A reconnect replay redelivers prints by design, and on the second
+    /// path they used to be counted twice. Bounded to [`DEDUP_WINDOW_SECS`]: a redelivery arrives
+    /// within seconds, and remembering a hot symbol's whole session is how a live engine's
+    /// memory stops being bounded.
+    seen: VecDeque<(TradeId, i64)>,
+    seen_ids: HashSet<(TradeId, i64)>,
 }
 
 /// A non-passing pillar, for the row tag.
@@ -259,6 +271,7 @@ pub struct Engine {
     last_panel: Option<PanelSnapshot>,
     setup_policy: SetupPolicy,
     setup_log: BoundedLog<SetupLogEntry>,
+    revisions: RevisionTelemetry,
 }
 
 fn ceil_to(t: i64, step: i64) -> i64 {
@@ -280,6 +293,7 @@ impl Engine {
             last_panel: None,
             setup_policy: SetupPolicy::v0(),
             setup_log: BoundedLog::new(SETUP_LOG_MAX),
+            revisions: RevisionTelemetry::default(),
         }
     }
 
@@ -465,11 +479,31 @@ impl Engine {
                 first_bar: None,
                 setup: BullFlag::default(),
                 news_first_seen: None,
+                seen: VecDeque::new(),
+                seen_ids: HashSet::new(),
             }
         });
         self.by_inst.entry(sym.inst.clone()).or_insert(name);
+        let exec = t.event_ts.nanos();
+        // One identity rule for every path. Evict what a redelivery can no longer repeat first,
+        // so the set stays bounded, then refuse a print already applied.
+        while sym
+            .seen
+            .front()
+            .is_some_and(|(_, e)| exec - e > DEDUP_WINDOW_SECS * SEC)
+        {
+            if let Some(k) = sym.seen.pop_front() {
+                sym.seen_ids.remove(&k);
+            }
+        }
+        let key = (t.id(), exec);
+        if !sym.seen_ids.insert(key.clone()) {
+            self.revisions.duplicates_dropped += 1;
+            return out;
+        }
+        sym.seen.push_back(key);
         sym.pending.push(Pending {
-            exec: t.event_ts.nanos(),
+            exec,
             admit: admit.nanos(),
             price: t.price.micros(),
             size: t.size,
@@ -477,6 +511,66 @@ impl Engine {
             session: t.session.map(|s| (s.date, s.kind)),
         });
         out
+    }
+
+    /// Applies a correction or cancel of a print already applied, as the run's chart engine
+    /// resolved it ([`PrintRevision`]).
+    ///
+    /// Forward-effective: it changes the symbol's **current** facts from the barrier it is
+    /// admitted at. Decisions already emitted are never rewritten and a frozen setup level never
+    /// moves — an episode that happened, happened. The engine keeps aggregates rather than
+    /// prints, so it applies the delta the resolver gives it and counts anything it cannot apply
+    /// exactly ([`Engine::revision_telemetry`]): a day high the resolver could not prove is left
+    /// where it is and counted, never quietly lowered or quietly kept.
+    pub fn apply_revision(&mut self, rev: &PrintRevision, admit: UnixNanos) -> Vec<Decision> {
+        let out = self.advance_to(admit);
+        let Some(sym) = self.syms.get_mut(&rev.symbol) else {
+            self.revisions.unknown_target += 1;
+            return out;
+        };
+        if sym.date != Some(rev.date) {
+            // The engine has moved on to another trading date (or has none yet): the facts this
+            // revision speaks about are not the current ones, and the old decisions stand.
+            self.revisions.too_late += 1;
+            return out;
+        }
+        let removed = &rev.removed;
+        if removed.verdict.volume {
+            sym.cum = sym.cum.saturating_sub(removed.size);
+            sym.dollars_micros = sym
+                .dollars_micros
+                .saturating_sub(removed.price as u128 * removed.size as u128);
+            sym.trades = sym.trades.saturating_sub(1);
+        }
+        if let Some(added) = rev.added.filter(|a| a.verdict.volume) {
+            sym.cum += added.size;
+            sym.dollars_micros += added.price as u128 * added.size as u128;
+            sym.trades += 1;
+        }
+        let touched_ohlc = removed.verdict.ohlc || rev.added.is_some_and(|a| a.verdict.ohlc);
+        if touched_ohlc {
+            // The date's newest OHLC-qualifying price after the revision, as the resolver has it.
+            sym.last_price = rev.last;
+            match rev.day_high {
+                Some(h) if h.complete => sym.day_high = Some(h.price),
+                _ => {
+                    // The resolver could not prove the date's high from what it still retains, so
+                    // this engine's high may still be a print that is gone. Counted rather than
+                    // guessed in either direction; `below_high_bp` and the setup levels derived
+                    // from it are affected and the count says so.
+                    self.revisions.day_high_unproven += 1;
+                }
+            }
+        }
+        // The identity may be redelivered after a correction too, and it is still the same print.
+        self.revisions.applied += 1;
+        sym.dirty = true;
+        out
+    }
+
+    /// What the engine did with the revisions and duplicates it was given.
+    pub fn revision_telemetry(&self) -> RevisionTelemetry {
+        self.revisions
     }
 
     /// Decides every barrier `b + settle <= now` not yet decided.
@@ -705,6 +799,10 @@ impl Engine {
             s.first_bar = None;
             s.setup = BullFlag::default();
             s.news_first_seen = None;
+            // A new trading date is a new set of prints; the old identities can no longer be
+            // redelivered into it.
+            s.seen.clear();
+            s.seen_ids.clear();
         }
         let exclude_overnight = policy.body.volume.exclude_overnight_boats;
         let bar_ns = policy.body.grid.bar_secs * SEC;

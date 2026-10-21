@@ -2544,4 +2544,101 @@ mod tests {
             "the backstop brings it back"
         );
     }
+
+    /// The board applies a revision the chart engine resolved, so the scanner's RVOL numerator
+    /// follows the candles instead of keeping a cancelled print all day.
+    #[test]
+    fn the_board_applies_a_cancel_the_chart_engine_resolved() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = archive(dir.path());
+        write_daily_world(&a);
+        write_collected(&a, t(7, 0, 0));
+        let log = Mutex::new(EvidenceLog::default());
+        let mut cx = board();
+        load(&a, &log, &mut cx);
+        trade(&mut cx, t(9, 30, 0), t(9, 32, 0));
+        // Past the last print's own barrier, so nothing is still pending and `before` really is
+        // the day's facts.
+        cx.advance(UnixNanos(t(9, 32, 30)));
+        let before = cx.decision(SYM).unwrap().volume.clone();
+        assert!(before.shares > 0 && before.trades > 0);
+
+        // One of those prints is cancelled: 120,000 shares at $3.00, as the chart engine
+        // resolved it, with the date's last price and high recomputed.
+        let rev = chart_engine::Revision {
+            symbol: SYM.into(),
+            ts: UnixNanos(t(9, 30, 0)),
+            session: market_events::SessionId {
+                date: dd(),
+                kind: market_events::session::SessionKind::Regular,
+            },
+            removed: chart_engine::RevisedPrint {
+                price: Price::from_cents(300),
+                size: 120_000,
+                ohlc: true,
+                volume: true,
+            },
+            added: None,
+            last: Some((Price::from_cents(300), UnixNanos(t(9, 31, 50)))),
+            day_high: Some(chart_engine::DayHigh {
+                price: Price::from_cents(300),
+                complete: true,
+            }),
+        };
+        cx.apply_revision(&rev, UnixNanos(t(9, 32, 31)));
+        cx.advance(UnixNanos(t(9, 33, 0)));
+
+        let after = cx.decision(SYM).unwrap().volume.clone();
+        assert_eq!(
+            after.shares,
+            before.shares - 120_000,
+            "the cancelled print is out of the numerator; telemetry {:?}",
+            cx.revision_telemetry()
+        );
+        assert_eq!(after.trades, before.trades - 1);
+        let tel = cx.revision_telemetry();
+        assert_eq!(tel.applied, 1);
+        assert!(tel.complete(), "{tel:?}");
+
+        // And the readiness summary carries the counters, so an unrepaired revision would show.
+        let r = cx.readiness(t(9, 33, 1));
+        assert_eq!(r.revisions.applied, 1);
+        assert!(
+            r.summary_line().contains("1 applied"),
+            "{}",
+            r.summary_line()
+        );
+    }
+
+    /// A print redelivered on the unloaded path is counted once, which is the path that had no
+    /// duplicate exclusion at all (`Counted::from_effect`).
+    #[test]
+    fn a_redelivered_print_on_the_unloaded_path_is_counted_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = archive(dir.path());
+        let log = Mutex::new(EvidenceLog::default());
+        let mut cx = board();
+        load(&a, &log, &mut cx);
+        let closes = PrevCloses::default();
+        let counted = Counted {
+            ohlc: true,
+            volume: true,
+        };
+        // The same print twice, with the verdict the market uses for a symbol whose history is
+        // not loaded yet: its own conditions, which exclude nothing.
+        let tr = Trade::new(
+            "NEWW",
+            UnixNanos(t(9, 30, 1)),
+            Price::from_cents(300),
+            5_000,
+            1,
+        );
+        cx.apply_trade(&tr, counted, &closes);
+        cx.apply_trade(&tr, counted, &closes);
+        cx.advance(UnixNanos(t(9, 30, 30)));
+        let d = cx.decision("NEWW").unwrap();
+        assert_eq!(d.volume.shares, 5_000, "counted once, not twice");
+        assert_eq!(d.volume.trades, 1);
+        assert_eq!(cx.revision_telemetry().duplicates_dropped, 1);
+    }
 }
