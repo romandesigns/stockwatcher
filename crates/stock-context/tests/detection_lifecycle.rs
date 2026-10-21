@@ -306,3 +306,103 @@ fn the_snapshot_names_one_dominant_episode_and_proximity_never_moves_seq() {
     assert_eq!(cur.distance_to_invalidation_micros, Some(70_000));
     assert_eq!(cur.at_or_above_trigger, Some(false));
 }
+
+#[test]
+fn descriptors_are_marked_optional_and_rules_required() {
+    let mut all = Vec::new();
+    for name in fixture::scenario_names() {
+        let r = fixture::run(name).unwrap();
+        for t in &r.transitions {
+            all.extend(t.checks.iter().map(|c| (c.name, c.required)));
+        }
+    }
+    let req = |n: &str| all.iter().find(|(x, _)| *x == n).map(|(_, r)| *r);
+    assert_eq!(req("volume_condition"), Some(false));
+    assert_eq!(req("dollar_volume_rate"), Some(false));
+    assert_eq!(req("below_range_high"), Some(false));
+    assert_eq!(req("extended"), Some(false));
+    assert_eq!(req("robust_surprise"), Some(true));
+    assert_eq!(req("range_expansion"), Some(true));
+    assert_eq!(req("pullback_bars"), Some(true));
+    assert_eq!(req("close_above_trigger"), Some(true));
+}
+
+#[test]
+fn the_monitored_count_includes_symbols_without_episodes() {
+    let mut s = Script::new();
+    micro_at(&mut s, "MONA", 0);
+    s.quiet("MONB", 0..12, 500, 501);
+    s.quiet("MONC", 0..12, 700, 701);
+    s.advance(cutoff(11));
+    let mut e = fixture::engine("t");
+    fixture::drive(&mut e, &s.steps);
+    e.interrupt_detection(Some("MONC"), UnixNanos(end(11) + 3 * S), "halt");
+    let m = e.detection_snapshot().unwrap().monitored;
+    assert_eq!(m.symbols_seen, 3);
+    assert_eq!(m.symbols_today, 3);
+    assert_eq!(m.symbols_active, 1);
+    assert_eq!(m.symbols_interrupted, 1);
+}
+
+#[test]
+fn an_armed_micro_stays_armed_with_an_optional_unknown_volume_check() {
+    let mut s = Script::new();
+    micro_at(&mut s, "VOLX", 0);
+    s.advance(cutoff(11));
+    let mut e = fixture::engine("t");
+    let ts = fixture::drive(&mut e, &s.steps);
+    let armed = ts.last().unwrap();
+    assert_eq!(armed.to, State::Armed);
+    let v = armed.checks.iter().find(|c| c.name == "volume_condition").unwrap();
+    assert!(!v.required);
+    assert!(armed.checks.iter().filter(|c| c.required).all(|c| c.state == Tri::Pass));
+    let ep = &e.detection_snapshot().unwrap().active[0];
+    assert_eq!(ep.state, State::Armed);
+}
+
+#[test]
+fn one_monitored_symbol_without_a_setup_counts_as_one() {
+    let mut s = Script::new();
+    s.quiet("ONLY", 0..5, 500, 501);
+    s.advance(cutoff(5));
+    let mut e = fixture::engine("t");
+    fixture::drive(&mut e, &s.steps);
+    let snap = e.detection_snapshot().unwrap();
+    assert!(snap.active.is_empty());
+    assert_eq!(snap.monitored.symbols_seen, 1);
+    assert_eq!(snap.monitored.symbols_today, 1);
+}
+
+#[test]
+fn near_trigger_is_geometry_at_the_policy_boundary_and_absent_without_a_rule() {
+    let near = |micros: i64, at: i64| {
+        let mut s = Script::new();
+        micro_at(&mut s, "NEAR", 0);
+        s.advance(cutoff(11));
+        s.print_admitted("NEAR", at, at + 1, micros, 100);
+        let mut e = fixture::engine("t");
+        fixture::drive(&mut e, &s.steps);
+        let cur = e.detection_snapshot().unwrap().active[0].current.clone().unwrap();
+        (cur.near_trigger, cur.near_trigger_bp, e.detection_snapshot().unwrap().cursor)
+    };
+    let t = end(11) + 3 * S;
+    // T = 3.40: 3.3664 is 0.0336 below, 99.8 bp of the price.
+    assert_eq!(near(3_366_400, t).0, Some(true));
+    assert_eq!(near(3_350_000, t).0, Some(false), "149 bp below");
+    assert_eq!(near(3_390_000, t).1, Some(100));
+    // Proximity never sequences anything.
+    assert_eq!(near(3_390_000, t).2, near(3_350_000, t).2);
+    // Exactly at the boundary: (T − P)·10⁴ = 100·P ⇔ P = T / 1.01.
+    let p = 3_400_000 * 100 / 101; // 3.366336…, truncated down: one micro outside
+    assert_eq!(near(p, t).0, Some(false));
+    assert_eq!(near(p + 1, t).0, Some(true));
+    // v0 has no near rule at all.
+    let mut s = Script::new();
+    micro_at(&mut s, "NEAR", 0);
+    s.advance(cutoff(11));
+    let mut e = Engine::new(Policy::current(), fixture::engine("t").run_info().clone())
+        .with_detection_policy(DetectionPolicy::v0());
+    fixture::drive(&mut e, &s.steps);
+    let cur = e.detection_snapshot().unwrap().active[0].current.clone().unwrap();
+    assert_eq!((cur.near_trigger, cur.near_trigger_bp), (None, None));
+}

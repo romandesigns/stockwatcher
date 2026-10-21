@@ -102,14 +102,17 @@ pub(crate) fn on_barrier(
                     {
                         // Descriptive, not a state: the move is extended beyond the range high.
                         *extended = true;
-                        ep.view.checks.push(Check::new(
-                            "extended_above_range_high",
-                            Tri::Pass,
-                            bps(f.close - level, level),
-                            Some(p.breakout.extended_bp),
-                            "bp",
-                            "close_above_level_by_more_than_extended_bp",
-                        ));
+                        ep.view.checks.push(
+                            Check::new(
+                                "extended_above_range_high",
+                                Tri::Pass,
+                                bps(f.close - level, level),
+                                Some(p.breakout.extended_bp),
+                                "bp",
+                                "close_above_level_by_more_than_extended_bp",
+                            )
+                            .optional(),
+                        );
                     }
                 }
                 if slots >= p.breakout.retention_slots {
@@ -616,7 +619,8 @@ pub(crate) fn momentum(
             None,
             "milli",
             "measured_not_required",
-        ),
+        )
+        .optional(),
         Check::new(
             "trade_rate",
             Tri::Unknown,
@@ -624,7 +628,8 @@ pub(crate) fn momentum(
             None,
             "milli",
             "measured_not_required",
-        ),
+        )
+        .optional(),
         Check::new(
             "below_range_high",
             Tri::Unknown,
@@ -632,7 +637,8 @@ pub(crate) fn momentum(
             None,
             "bp",
             "proximity_to_prior_range_high",
-        ),
+        )
+        .optional(),
     ];
     let wu = warmup(x, w.start - x.bar_ns);
     let range_low = w.low.unwrap_or(0);

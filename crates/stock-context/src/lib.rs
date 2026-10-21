@@ -30,10 +30,10 @@ pub mod revision;
 pub mod setup;
 
 pub use detect::{
-    Assessment, Certainty, Check, ContextClass, DETECTION_V0, DataStatus, DetectionPolicy,
-    DetectionSnapshot, DetectionTelemetry, DetectionTransition, Episode as DetectionEpisode,
-    Family, FeatureSnapshot, Gap, LevelVersion, MicroAnchors, QuietReference, Resolution, State,
-    SymbolDetections, TradeEvidence,
+    Assessment, Certainty, Check, ContextClass, DETECTION_V0, DETECTION_V1, DataStatus,
+    DetectionPolicy, DetectionSnapshot, DetectionTelemetry, DetectionTransition,
+    Episode as DetectionEpisode, Family, FeatureSnapshot, Gap, LevelVersion, MicroAnchors,
+    Monitored, QuietReference, Resolution, State, SymbolDetections, TradeEvidence,
 };
 pub use engine::{
     Adoption, Decision, Engine, Fidelity, MissingPillar, PanelRow, PanelSnapshot, RestoreTelemetry,

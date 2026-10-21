@@ -270,7 +270,8 @@ fn try_arm(det: &mut Detector, sd: &mut SymDetect, x: &Barrier, ep: &mut Ep) {
             None,
             "milli",
             "measured_not_required",
-        ),
+        )
+        .optional(),
     ];
     let c = Change::at_barrier(
         State::Armed,
@@ -430,18 +431,21 @@ pub(crate) fn on_barrier(det: &mut Detector, sd: &mut SymDetect, x: &Barrier, _s
                             x.tau,
                         )
                         .level(Some(i.clone()))
-                        .checks(vec![Check::new(
-                            "ordering_ambiguous",
-                            if ambiguous { Tri::Pass } else { Tri::Fail },
-                            None,
-                            None,
-                            "flag",
-                            if ambiguous {
-                                "equal_timestamps_conservative_invalidation_first"
-                            } else {
-                                "order_established_or_not_needed"
-                            },
-                        )]);
+                        .checks(vec![
+                            Check::new(
+                                "ordering_ambiguous",
+                                if ambiguous { Tri::Pass } else { Tri::Fail },
+                                None,
+                                None,
+                                "flag",
+                                if ambiguous {
+                                    "equal_timestamps_conservative_invalidation_first"
+                                } else {
+                                    "order_established_or_not_needed"
+                                },
+                            )
+                            .optional(),
+                        ]);
                         emit(det, ep, c);
                         continue;
                     }
@@ -473,7 +477,8 @@ pub(crate) fn on_barrier(det: &mut Detector, sd: &mut SymDetect, x: &Barrier, _s
                                 Some(m.extended_bp),
                                 "bp",
                                 "close_vs_trigger",
-                            ),
+                            )
+                            .optional(),
                         ]);
                         emit(det, ep, c);
                         sd.micro_search_from = sd.micro_search_from.max(x.b);
@@ -557,18 +562,21 @@ pub(crate) fn on_print(
             )
             .trade(ev)
             .level(Some(i))
-            .checks(vec![Check::new(
-                "ordering_ambiguous",
-                if ambiguous { Tri::Pass } else { Tri::Fail },
-                None,
-                None,
-                "flag",
-                if ambiguous {
-                    "equal_timestamps_conservative_invalidation_first"
-                } else {
-                    "order_established_or_not_needed"
-                },
-            )]);
+            .checks(vec![
+                Check::new(
+                    "ordering_ambiguous",
+                    if ambiguous { Tri::Pass } else { Tri::Fail },
+                    None,
+                    None,
+                    "flag",
+                    if ambiguous {
+                        "equal_timestamps_conservative_invalidation_first"
+                    } else {
+                        "order_established_or_not_needed"
+                    },
+                )
+                .optional(),
+            ]);
             let tid = emit(det, ep, c);
             // Kept so a later revision of this print appends a correction notice.
             while det.cited.len() >= det.policy.body.lifecycle.recent_max {

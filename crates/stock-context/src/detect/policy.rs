@@ -6,6 +6,10 @@ use sha2::{Digest, Sha256};
 
 pub const DETECTION_V0: &str = include_str!("../../policy/detection-v0.json");
 
+/// v0 plus the approaching-trigger display rule ([`AssessmentRules`]). The profile the product
+/// runs ([`DetectionPolicy::current`]); v0 stays parseable with its own hash.
+pub const DETECTION_V1: &str = include_str!("../../policy/detection-v1.json");
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct Universe {
     /// The active profile (production band, inclusive): gates detection.
@@ -104,6 +108,14 @@ pub struct MicroRules {
     pub extended_bp: i64,
 }
 
+/// Display geometry of the current assessment. Absent in v0 (no near cue there).
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub struct AssessmentRules {
+    /// `near_trigger` when the latest fresh price is below the trigger by at most this, bp of the
+    /// price. Geometry only: it never logs a transition or moves an order.
+    pub near_trigger_bp: i64,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct Lifecycle {
     pub transition_log_max: usize,
@@ -126,6 +138,8 @@ pub struct DetectionPolicyBody {
     pub momentum: MomentumRules,
     pub breakout: BreakoutRules,
     pub micro: MicroRules,
+    #[serde(default)]
+    pub assessment: Option<AssessmentRules>,
     pub lifecycle: Lifecycle,
 }
 
@@ -170,6 +184,10 @@ impl DetectionPolicy {
             && body.breakout.retention_slots > 0
             && body.lifecycle.transition_log_max > 0
             && body.lifecycle.recent_max > 0
+            && body
+                .assessment
+                .as_ref()
+                .is_none_or(|a| (0..10_000).contains(&a.near_trigger_bp))
             && body.universe.active_band_min_micros > 0
             && body.universe.active_band_max_micros >= body.universe.active_band_min_micros;
         if !ok {
@@ -190,6 +208,15 @@ impl DetectionPolicy {
 
     pub fn v0() -> DetectionPolicy {
         DetectionPolicy::parse(DETECTION_V0).expect("embedded detection-v0.json parses")
+    }
+
+    pub fn v1() -> DetectionPolicy {
+        DetectionPolicy::parse(DETECTION_V1).expect("embedded detection-v1.json parses")
+    }
+
+    /// The profile the product runs: v1.
+    pub fn current() -> DetectionPolicy {
+        DetectionPolicy::v1()
     }
 
     /// `detection-v0@<first 12 hex>`.
@@ -228,5 +255,22 @@ mod tests {
         assert!(DetectionPolicy::parse(&loud).is_err());
         assert_eq!(p.increment(999_999), 100);
         assert_eq!(p.increment(1_000_000), 10_000);
+        assert_eq!(p.body.assessment, None, "v0 has no near cue");
+    }
+
+    #[test]
+    fn v1_is_v0_plus_the_near_cue_only() {
+        let (v0, v1) = (DetectionPolicy::v0(), DetectionPolicy::current());
+        assert_eq!(v1.body.id, "detection-v1");
+        assert_eq!(
+            v1.body.assessment.as_ref().map(|a| a.near_trigger_bp),
+            Some(100)
+        );
+        let mut same = v1.body.clone();
+        same.id = v0.body.id.clone();
+        same.note = v0.body.note.clone();
+        same.assessment = None;
+        assert_eq!(same, v0.body);
+        assert_ne!(v0.hash, v1.hash);
     }
 }

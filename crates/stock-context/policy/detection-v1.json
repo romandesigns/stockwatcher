@@ -1,0 +1,88 @@
+{
+  "schema": 1,
+  "id": "detection-v1",
+  "experimental": true,
+  "alerts_enabled": false,
+  "note": "EXPERIMENTAL Detection Panel families (owner handoff 2026-10-21). detection-v0 plus one display rule: near_trigger_bp, the geometric approaching-trigger cue (100 bp, reused from setups-v0 near_bp), which never changes an event, a state or an order. ignition_exp_v0 reproduces the unfrozen research proposal ignition-v0-proposal.md (sha256 6c435e0d...) dev values exactly; every other number is a StockWatcher engineering default chosen from existing setups-v0 values or boundary fixtures, not researched or validated. No edge, probability or performance claim. A changed number is a new file and id. See docs/stock-context/detection-core.md.",
+  "universe": {
+    "active_band_min_micros": 100000,
+    "active_band_max_micros": 25000000,
+    "research_band_min_micros": 150000,
+    "research_band_max_micros": 25000000,
+    "segments": ["pre", "regular", "after"]
+  },
+  "timing": {
+    "bar_secs": 15,
+    "settle_ms": 2000,
+    "price_fresh_secs": 60
+  },
+  "baseline": {
+    "source": "ignition-v0-proposal.md section 2",
+    "window_slots": 20,
+    "min_valid_slots": 10,
+    "returns_max": 80,
+    "returns_min": 30,
+    "mad_scale_e4": 14826,
+    "s_floor_increments": 1,
+    "range_floor_increments": 2,
+    "increment_below_1_micros": 100,
+    "increment_at_or_above_1_micros": 10000,
+    "resolution_proxy": "proposal_v0_increment_proxy"
+  },
+  "context": {
+    "source": "ignition-v0-proposal.md section 4",
+    "a_min_milli": 600,
+    "n_base_min": 20,
+    "reference_percentile": 30
+  },
+  "ignition": {
+    "id": "ignition_exp_v0",
+    "source": "ignition-v0-proposal.md section 3 and 5 (dev values, NOT frozen; sensitivities S1/S2 not implemented)",
+    "z_min_milli": 4000,
+    "return_min_num": 101,
+    "return_min_den": 100,
+    "range_e_min_milli": 3000,
+    "cooldown_false_bars": 4,
+    "cooldown_secs": 300,
+    "display_slots": 8
+  },
+  "expansion": {
+    "range_diag_milli": 1150,
+    "body_diag_milli": 1150
+  },
+  "momentum": {
+    "building_id": "momentum_building_v0",
+    "acceleration_id": "upward_acceleration_v0",
+    "step_slots": 2,
+    "r_min_ppm": 5000,
+    "a_min_ppm": 2500,
+    "displacement_min_increments": 2,
+    "expiry_slots": 8,
+    "cooldown_slots": 4
+  },
+  "breakout": {
+    "id": "range_breakout_v0",
+    "retention_slots": 4,
+    "extended_bp": 300,
+    "cooldown_slots": 4
+  },
+  "micro": {
+    "id": "micro_pullback_v0",
+    "lookback_slots": 20,
+    "impulse_min_bp": 300,
+    "impulse_min_increments": 3,
+    "impulse_min_coverage_milli": 500,
+    "max_depth_milli": 500,
+    "min_pullback_bars": 2,
+    "formation_max_slots": 8,
+    "armed_max_slots": 8,
+    "extended_bp": 300
+  },
+  "assessment": {
+    "near_trigger_bp": 100
+  },
+  "lifecycle": {
+    "transition_log_max": 8192,
+    "recent_max": 256
+  }
+}

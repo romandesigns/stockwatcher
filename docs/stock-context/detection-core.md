@@ -287,6 +287,32 @@ restore's episodes (`episodes_discarded` counts them). It refuses a restore unde
 detection policy (`Refused("detection_policy")`). A recognition whose window reaches into a
 restored prefix (`set_restored_through`) carries `warmup: true`, and is never a fresh notification.
 
+## Policy versions
+
+- `detection-v0` (sha256 `9ee03f45…`): the families above. The first real-data engineering replay
+  ran on it.
+- `detection-v1`: identical rules, plus `assessment.near_trigger_bp = 100`. That value is reused
+  from setups-v0 `near_bp`. `DetectionPolicy::current()` returns v1.
+
+v1 adds one field to `current`: `near_trigger` is `Some(true)` when the latest fresh price is below
+the trigger by at most 100 bp of the price, using the exact integer test
+`(T − P)·10⁴ ≤ 100·P`. Its other values:
+- `Some(false)` when the price is further away, or at or above the trigger.
+- `None` when there is no trigger, the price is stale, or the policy has no near rule (v0).
+
+It is geometry, not a probability. It is never sequenced, and it never changes a state or an
+order.
+
+## Checks
+
+Every `Check` carries `required`:
+- `true`: part of the family's rule (PASS / FAIL / UNKNOWN decides it).
+- `false`: a measured descriptor, which is never pending and never blocks. These are participation
+  (`dollar_volume_rate`, `trade_rate`, `volume_condition`), `below_range_high`, `extended`,
+  `extended_above_range_high` and `ordering_ambiguous`.
+
+Clients read `required`; they never infer it from a check's name or reason.
+
 ## Snapshot behaviour
 
 - **One row per symbol.** One dominant episode per symbol, with this precedence:
@@ -302,6 +328,15 @@ restored prefix (`set_restored_through`) carries `warmup: true`, and is never a 
 - **Ordering.** Only transitions are sequenced. Price and proximity changes update `current`
   (distance to trigger/invalidation in micros and bp, `at_or_above_trigger`, `stale`) and never
   the sequence, so ordinary ticks cannot re-order rows.
+- **Monitored counts.** `monitored` counts the symbols the detectors watch, whether or not they have
+  an episode:
+  - `symbols_seen`: at least one admitted price-qualifying print in this run;
+  - `symbols_today`: evaluated on the latest barrier's trading date;
+  - `symbols_active`;
+  - `symbols_interrupted`.
+
+  `symbols` and `active` list only symbols with episodes, so a panel's denominator is
+  `monitored.symbols_today`.
 - **Bounds.** Recent terminal history is bounded at 256, the transition journal at 8192, and data
   gaps at 64. Every drop is counted.
 

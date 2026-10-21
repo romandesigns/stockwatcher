@@ -27,7 +27,7 @@ pub mod policy;
 pub use features::{
     BaselineStats, BodyStats, FeatureSnapshot, RangeRelation, RangeStats, ReturnClass, WindowStats,
 };
-pub use policy::{DETECTION_V0, DetectionPolicy};
+pub use policy::{DETECTION_V0, DETECTION_V1, DetectionPolicy};
 
 use crate::Fidelity;
 use crate::evidence::InstrumentId;
@@ -185,6 +185,9 @@ pub struct QuietReference {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Check {
     pub name: &'static str,
+    /// Whether the family's rule needs it. `false`: measured and shown, never pending, failing or
+    /// blocking (participation, proximity, extension and ambiguity descriptors).
+    pub required: bool,
     pub state: Tri,
     pub value: Option<i64>,
     pub threshold: Option<i64>,
@@ -203,12 +206,19 @@ impl Check {
     ) -> Check {
         Check {
             name,
+            required: true,
             state,
             value,
             threshold,
             units,
             reason,
         }
+    }
+
+    /// A descriptor, not a requirement.
+    pub(crate) fn optional(mut self) -> Check {
+        self.required = false;
+        self
     }
 
     pub(crate) fn tri(ok: Option<bool>) -> Tri {
@@ -295,6 +305,11 @@ pub struct Assessment {
     pub at_or_above_trigger: Option<bool>,
     pub distance_to_trigger_micros: Option<i64>,
     pub distance_to_trigger_bp: Option<i64>,
+    /// Below the trigger by at most `near_trigger_bp` (policy `assessment`). `None` when there is
+    /// no trigger, the price is stale, or the policy has no near rule; `Some(false)` at or above
+    /// the trigger. Geometry only: no probability, never sequenced.
+    pub near_trigger: Option<bool>,
+    pub near_trigger_bp: Option<i64>,
     pub invalidation: Option<i64>,
     pub distance_to_invalidation_micros: Option<i64>,
     pub distance_to_invalidation_bp: Option<i64>,
@@ -436,7 +451,22 @@ pub struct DetectionSnapshot {
     pub active: Vec<Episode>,
     pub recent: Vec<Episode>,
     pub data_status: DataStatus,
+    /// Every symbol the detectors watch, with or without an episode.
+    pub monitored: Monitored,
     pub telemetry: DetectionTelemetry,
+}
+
+/// How many symbols the detectors are watching (rows exist only for episodes; this does not).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct Monitored {
+    /// Symbols with at least one admitted price-qualifying print in this run.
+    pub symbols_seen: usize,
+    /// Of those, symbols the detectors evaluated on the latest barrier's trading date.
+    pub symbols_today: usize,
+    /// Symbols with a non-terminal episode.
+    pub symbols_active: usize,
+    /// Symbols under a per-symbol interruption.
+    pub symbols_interrupted: usize,
 }
 
 // ------------------------------------------------------------------------------------------
@@ -1149,11 +1179,24 @@ pub(crate) fn snapshot<'a>(
     syms: impl Iterator<Item = (&'a str, &'a SymDetect)>,
 ) -> DetectionSnapshot {
     let fresh = det.policy.body.timing.price_fresh_secs * SEC;
+    let near_bp = det
+        .policy
+        .body
+        .assessment
+        .as_ref()
+        .map(|a| a.near_trigger_bp);
     let mut symbols = Vec::new();
     let mut active = Vec::new();
     let mut interrupted_symbols = Vec::new();
+    let today = det
+        .last_barrier
+        .map(|(b, _)| market_events::session::trading_date(market_events::UnixNanos(b)));
+    let mut monitored = Monitored::default();
     for (name, sd) in syms {
+        monitored.symbols_seen += usize::from(sd.last_seen.is_some());
+        monitored.symbols_today += usize::from(today.is_some() && sd.date == today);
         if let Some((from, why)) = sd.interrupted {
+            monitored.symbols_interrupted += 1;
             interrupted_symbols.push(Gap {
                 symbol: Some(name.to_string()),
                 from,
@@ -1164,13 +1207,14 @@ pub(crate) fn snapshot<'a>(
         if !sd.has_active() {
             continue;
         }
+        monitored.symbols_active += 1;
         let mut eps: Vec<Episode> = sd
             .active
             .iter()
             .filter(|e| !e.view.state.is_terminal())
             .map(|e| {
                 let mut v = e.view.clone();
-                v.current = assess(&v, &e.extra, sd.last_seen, det.as_of, fresh);
+                v.current = assess(&v, &e.extra, sd.last_seen, det.as_of, fresh, near_bp);
                 v
             })
             .collect();
@@ -1219,6 +1263,7 @@ pub(crate) fn snapshot<'a>(
             recent_gaps: det.gaps.iter().cloned().collect(),
             disabled_reason: det.disabled,
         },
+        monitored,
         telemetry: det.telemetry(n_active),
     }
 }
@@ -1230,6 +1275,7 @@ fn assess(
     seen: Option<Seen>,
     as_of: Option<i64>,
     fresh: i64,
+    near_bp: Option<i64>,
 ) -> Option<Assessment> {
     let s = seen?;
     let now = as_of.unwrap_or(s.admit).max(s.admit);
@@ -1254,15 +1300,23 @@ fn assess(
         Some(i) if p > i && p > 0 => (Some(p - i), Some(math::bp(p - i, p))),
         _ => (None, None),
     };
+    let stale = now - s.exec > fresh;
+    let near_trigger = match (trigger, near_bp) {
+        (Some(_), Some(_)) if stale => None,
+        (Some(t), Some(n)) => Some(p < t && (t - p) as i128 * 10_000 <= n as i128 * p as i128),
+        _ => None,
+    };
     Some(Assessment {
         price: p,
         price_exec: s.exec,
         price_age_ms: (now - s.exec) / 1_000_000,
-        stale: now - s.exec > fresh,
+        stale,
         trigger,
         at_or_above_trigger: at_or_above,
         distance_to_trigger_micros: dt,
         distance_to_trigger_bp: dtb,
+        near_trigger,
+        near_trigger_bp: near_bp,
         invalidation,
         distance_to_invalidation_micros: di,
         distance_to_invalidation_bp: dib,

@@ -171,7 +171,7 @@ impl Script {
     }
 }
 
-/// A fixture engine: current pillar policy, detection-v0, labelled synthetic.
+/// A fixture engine: current pillar and detection policies, labelled synthetic.
 pub fn engine(run_id: &str) -> Engine {
     Engine::new(
         Policy::current(),
@@ -182,7 +182,7 @@ pub fn engine(run_id: &str) -> Engine {
             numerator_coverage: Coverage::Complete,
         },
     )
-    .with_detection_policy(DetectionPolicy::v0())
+    .with_detection_policy(DetectionPolicy::current())
 }
 
 fn fixture_id(seq: u64) -> TradeId {
