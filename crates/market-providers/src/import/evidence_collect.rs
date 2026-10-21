@@ -39,7 +39,7 @@ use super::alpaca::AlpacaCredentials;
 use super::alpaca_news::{NewsQuery, NewsVersions, coverage_record, fetch_news};
 use super::fmp::{FmpError, FmpKey};
 use super::fmp_float::{fetch_float, fetch_float_all};
-use super::http::{Http, RetryPolicy};
+use super::http::{FetchError, Http, RetryPolicy};
 use chrono::{DateTime, Duration as Days, NaiveDate, NaiveTime, TimeZone, Utc};
 use chrono_tz::America::New_York;
 use market_archive::{Archive, CoverageScope, DailyCloses, FloatRecord, LiveQuote};
@@ -798,6 +798,17 @@ impl Collector {
                     self.float_retry.clear();
                     break;
                 }
+                // A 4xx other than a plan refusal, or a body we cannot parse, will not change
+                // within the day: retrying it only spends FMP requests (each attempt is itself up
+                // to five HTTP tries). Counted as exhausted for today, like a spent allowance.
+                Err(
+                    e @ (FmpError::Fetch(FetchError::Permanent { .. }) | FmpError::Malformed(_)),
+                ) => {
+                    report
+                        .errors
+                        .push(format!("float {sym}: {e}; not retried today"));
+                    self.float_exhausted.insert(sym.clone());
+                }
                 Err(e) => {
                     report.errors.push(format!("float {sym}: {e}"));
                     self.schedule_retry(&sym, attempts, now_ns(), report);
@@ -928,8 +939,14 @@ impl Collector {
         }
         // The repair pass: the whole freshness horizon, because neither window above can see an
         // edit to an older story if the provider filters its interval on publication time
-        // ([`EvidenceConfig::news_repair_every_secs`]).
+        // ([`EvidenceConfig::news_repair_every_secs`]). Only outside active news hours (20:00 to
+        // 04:00 ET and non-trading days): a 25 h all-symbol search is 40–80 pages through the
+        // 60/min pacer, so during the session it held the next forward poll back by up to
+        // ~80 s once an hour, and the Ross news pillar's coverage tolerance (pillars-v2,
+        // 120 s) would lapse to UNKNOWN for every symbol (review of 2026-10-21). The repair
+        // is a safety net for late edits to older stories; catching up overnight is enough.
         if self.cfg.news_repair_every_secs > 0
+            && !news_active(now)
             && self
                 .last_repair_poll
                 .is_none_or(|t| now_ns - t >= self.cfg.news_repair_every_secs * SEC)

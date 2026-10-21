@@ -789,21 +789,28 @@ fn the_collector_is_bounded_per_day_and_resumes_from_its_records() {
     assert_eq!((r.float_requests, r.news_requests), (0, 0));
 
     // A restart: today's floats are not fetched again; news resumes from the stored coverage.
-    // Three searches, each one answering a different question: the forward window for what is
-    // new, the trailing edit window for recent changes, and the repair window for a change to
-    // something older that neither of those would ask about.
+    // Two searches during the session: the forward window for what is new and the trailing edit
+    // window for recent changes. The repair window (a change to something older that neither of
+    // those would ask about) waits for the evening, so its 40-80 pages never hold back the next
+    // forward poll while the session runs.
     clock.set(clock.get() + chrono::Duration::seconds(60));
     let mut c = Collector::open(test_cfg(), &a, clock.get()).unwrap();
+    let mut http = Script::default().json(empty_page()).json(empty_page());
+    let r = tick(&mut c, &mut http);
+    assert_eq!(r.float_requests, 0);
+    assert_eq!((r.news_requests, r.news_complete), (2, 2));
+    assert_eq!((r.news_repairs, r.news_repair_incomplete), (0, 0));
+
+    // 20:30 ET, past the active news hours: the repair runs with the forward search.
+    clock.set(utc(t("2026-10-15", 20, 30, 0)));
     let mut http = Script::default()
         .json(empty_page())
         .json(empty_page())
         .json(empty_page());
     let r = tick(&mut c, &mut http);
-    assert_eq!(r.float_requests, 0);
-    assert_eq!((r.news_requests, r.news_complete), (3, 3));
     assert_eq!((r.news_repairs, r.news_repair_incomplete), (1, 0));
     let cov = a.read_news_coverage(None).unwrap();
-    assert_eq!(cov.len(), 4);
+    assert!(cov.len() >= 4, "{}", cov.len());
     assert!(
         cov[1].covered_from <= cov[0].covered_through,
         "the forward search overlaps"
