@@ -511,12 +511,54 @@ impl Archive {
     ) -> Result<Vec<IntradayCurveRecord>, ArchiveError> {
         let mut out = Vec::new();
         for d in dates {
-            if let Some(r) = self.read_intraday_curve(*d, symbol)? {
-                out.push(r);
+            match self.read_intraday_curve(*d, symbol) {
+                Ok(Some(r)) => out.push(r),
+                Ok(None) => {}
+                // One unreadable file is one missing session, not a symbol with no history: a
+                // single torn or corrupt day used to fail every session of the symbol. The
+                // assembly counts what it got, so a missing day is visible in its session count;
+                // the maintainer re-derives the file.
+                Err(ArchiveError::Format { .. }) => {}
+                Err(e) => return Err(e),
             }
         }
         out.sort_by_key(|r| r.date);
         Ok(out)
+    }
+
+    /// Deletes the curves of dates before `keep_from` (whole date directories). Returns the dates
+    /// removed.
+    ///
+    /// Nothing else did: a curve is up to ~77 KB (3,840 fifteen-second points from 04:00 to
+    /// 20:00 at ~20 bytes each) and a fully derived whole-market day tens of MB, kept forever.
+    /// Only the sessions inside the maintainer's window are ever read.
+    pub fn prune_intraday_curves(
+        &self,
+        keep_from: NaiveDate,
+    ) -> Result<Vec<NaiveDate>, ArchiveError> {
+        let base = self.root().join(INTRADAY_DIR);
+        let rd = match std::fs::read_dir(&base) {
+            Ok(rd) => rd,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(ArchiveError::io(&base, e)),
+        };
+        let mut gone = Vec::new();
+        for e in rd.filter_map(|e| e.ok()) {
+            let name = e.file_name();
+            let Some(d) = name
+                .to_str()
+                .and_then(|n| NaiveDate::parse_from_str(n, "%Y-%m-%d").ok())
+            else {
+                continue;
+            };
+            if d < keep_from {
+                let p = e.path();
+                std::fs::remove_dir_all(&p).map_err(|e| ArchiveError::io(&p, e))?;
+                gone.push(d);
+            }
+        }
+        gone.sort();
+        Ok(gone)
     }
 }
 
@@ -688,5 +730,58 @@ mod tests {
         assert_eq!((r.at(20_399), r.at(20_400), r.at(99_999)), (10, 30, 30));
         assert_eq!(r.total(), 30);
         assert!(r.usable_as_history());
+    }
+
+    fn curve(date: NaiveDate) -> IntradayCurveRecord {
+        IntradayCurveRecord {
+            v: 1,
+            symbol: "AAA".into(),
+            date,
+            step_secs: STEP_SECS,
+            cum: vec![(0, 0), (20_100, 10)],
+            collection_complete: true,
+            unusable: None,
+            source: CurveSource {
+                fidelity: CurveFidelity::ImportedHistory,
+                file: "AAA.swa".into(),
+                sha256: "00".into(),
+                events: 1,
+                sources: vec![],
+            },
+            coverage: CurveCoverage::default(),
+            rules: CURVE_RULES_VERSION.into(),
+            observed_at: 1,
+        }
+    }
+
+    /// Curves outside the window are removed by date, and one corrupt day is one missing session
+    /// rather than an error for every session of the symbol.
+    #[test]
+    fn curves_are_pruned_by_date_and_a_corrupt_day_is_skipped() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let a = Archive::new(crate::ArchiveConfig {
+            root: tmp.path().to_path_buf(),
+            retention_days: 0,
+            min_free_bytes: 0,
+        });
+        let d = |n| NaiveDate::from_ymd_opt(2026, 10, n).expect("valid");
+        for n in [13, 14, 15] {
+            a.write_intraday_curve(&curve(d(n))).expect("write");
+        }
+        // Day 14's file torn mid-write.
+        std::fs::write(a.intraday_dir(d(14)).join("AAA.json"), b"{\"v\":1,").expect("tear");
+        let got = a
+            .read_intraday_curves("AAA", &[d(13), d(14), d(15)])
+            .expect("a corrupt day does not fail the symbol");
+        assert_eq!(
+            got.iter().map(|c| c.date).collect::<Vec<_>>(),
+            vec![d(13), d(15)]
+        );
+        assert_eq!(
+            a.prune_intraday_curves(d(15)).expect("prune"),
+            vec![d(13), d(14)]
+        );
+        assert!(a.read_intraday_curve(d(13), "AAA").expect("read").is_none());
+        assert!(a.read_intraday_curve(d(15), "AAA").expect("read").is_some());
     }
 }

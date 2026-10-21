@@ -685,6 +685,9 @@ pub struct CycleReport {
     pub curves_derived: usize,
     #[serde(default)]
     pub curves_pending: usize,
+    /// Dates of curves removed for falling out of the window.
+    #[serde(default)]
+    pub curves_pruned: usize,
     pub assets: Option<usize>,
     pub free_bytes: Option<u64>,
     pub requests: u64,
@@ -1266,7 +1269,8 @@ impl<H: Http + Send + 'static> Maintainer<'_, H> {
     }
 
     /// Derives the intraday diagnostic curves missing from the window's days, at most
-    /// `INTRADAY_MAX_PER_RUN` of them, newest day first.
+    /// `INTRADAY_MAX_PER_RUN` of them: the band's symbols (`watch_list`) first, then the rest, each
+    /// newest day first. Prunes curves older than the window first; a corrupt curve is re-derived.
     ///
     /// Reads only what is already on disk — the day's own archived prints — so there is no
     /// provider call and nothing to pace. It is bounded and resumable: a symbol without a curve
@@ -1283,53 +1287,92 @@ impl<H: Http + Send + 'static> Maintainer<'_, H> {
                 return;
             }
         };
+        // Curves outside the window are never read again; nothing else removes them.
+        match self.archive.prune_intraday_curves(w.first) {
+            Ok(gone) => r.curves_pruned = gone.len(),
+            Err(e) => r.errors.push(format!("intraday curves prune: {e}")),
+        }
         // Newest first: the most recent sessions are the ones a diagnostic reaches for.
         let mut days: Vec<NaiveDate> = days.into_iter().filter(|d| *d >= w.first).collect();
         days.sort_unstable_by(|a, b| b.cmp(a));
-        for day in days {
-            if self.stopped() {
-                return;
-            }
-            let manifest = match self.archive.manifest(day) {
-                Ok(Some(m)) => m,
-                Ok(None) => continue,
+        let manifests: Vec<(NaiveDate, market_archive::DayManifest)> = days
+            .into_iter()
+            .filter_map(|day| match self.archive.manifest(day) {
+                Ok(Some(m)) => Some((day, m)),
+                Ok(None) => None,
                 Err(e) => {
                     r.errors.push(format!("intraday curves {day}: {e}"));
-                    continue;
+                    None
                 }
-            };
-            for symbol in manifest.symbols.keys() {
-                match self.archive.read_intraday_curve(day, symbol) {
-                    Ok(Some(_)) => continue,
-                    Ok(None) => {}
-                    Err(e) => {
-                        r.errors
-                            .push(format!("intraday curves {day} {symbol}: {e}"));
-                        continue;
-                    }
-                }
-                if r.curves_derived >= self.cfg.intraday_max_per_run {
-                    r.curves_pending += 1;
-                    continue;
-                }
-                match market_archive::intraday::derive_curve(
-                    self.archive,
-                    &manifest,
-                    symbol,
-                    day,
+            })
+            .collect();
+        // The band's symbols first, over every day, then the rest. The budget is a few hundred a
+        // cycle against thousands of new symbol-days a day, and walking each day's manifest in
+        // alphabetical order spent all of it on the same early tickers every day while the
+        // symbols the panel can show never reached the sessions the diagnostic needs.
+        let watched: std::collections::HashSet<String> =
+            watch_list(self.archive, w.last, self.cfg.band)
+                .into_iter()
+                .collect();
+        for in_band in [true, false] {
+            for (day, manifest) in &manifests {
+                self.derive_curves_of(
+                    *day,
+                    manifest,
+                    |s| watched.contains(s) == in_band,
                     observed_at,
-                ) {
-                    Ok(Some(c)) => match self.archive.write_intraday_curve(&c) {
-                        Ok(()) => r.curves_derived += 1,
-                        Err(e) => r
-                            .errors
-                            .push(format!("intraday curves {day} {symbol}: {e}")),
-                    },
-                    Ok(None) => {}
+                    r,
+                );
+                if self.stopped() {
+                    return;
+                }
+            }
+        }
+    }
+
+    /// One day's missing curves, for the symbols `wanted` picks, within the cycle's budget.
+    fn derive_curves_of(
+        &self,
+        day: NaiveDate,
+        manifest: &market_archive::DayManifest,
+        wanted: impl Fn(&str) -> bool,
+        observed_at: i64,
+        r: &mut CycleReport,
+    ) {
+        for symbol in manifest.symbols.keys().filter(|s| wanted(s.as_str())) {
+            match self.archive.read_intraday_curve(day, symbol) {
+                Ok(Some(_)) => continue,
+                Ok(None) => {}
+                // A torn or corrupt file is re-derived over, not reported every cycle and
+                // left in place.
+                Err(market_archive::ArchiveError::Format { .. }) => {}
+                Err(e) => {
+                    r.errors
+                        .push(format!("intraday curves {day} {symbol}: {e}"));
+                    continue;
+                }
+            }
+            if r.curves_derived >= self.cfg.intraday_max_per_run {
+                r.curves_pending += 1;
+                continue;
+            }
+            match market_archive::intraday::derive_curve(
+                self.archive,
+                manifest,
+                symbol,
+                day,
+                observed_at,
+            ) {
+                Ok(Some(c)) => match self.archive.write_intraday_curve(&c) {
+                    Ok(()) => r.curves_derived += 1,
                     Err(e) => r
                         .errors
                         .push(format!("intraday curves {day} {symbol}: {e}")),
-                }
+                },
+                Ok(None) => {}
+                Err(e) => r
+                    .errors
+                    .push(format!("intraday curves {day} {symbol}: {e}")),
             }
         }
     }
