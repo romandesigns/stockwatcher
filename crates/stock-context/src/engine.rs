@@ -435,7 +435,7 @@ impl Engine {
     }
 
     pub fn detection_policy(&self) -> Option<&DetectionPolicy> {
-        self.detector.as_ref().map(|d| &d.policy)
+        self.detector.as_ref().map(|d| &*d.policy)
     }
 
     /// The detection snapshot: cursor, active episodes with current assessments, bounded recent

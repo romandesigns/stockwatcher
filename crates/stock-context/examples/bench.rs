@@ -1,5 +1,6 @@
 //! A reproducible synthetic workload for the context engine on its own (no server, no I/O):
-//! `cargo run --release -p stock-context --example bench -- [symbols] [prints]`.
+//! `cargo run --release -p stock-context --example bench -- [symbols] [prints] [--detection]`
+//! (`--detection`: the same workload with the EXPERIMENTAL detection families on).
 //!
 //! Prints are spread evenly over the regular session across `symbols` tickers, every symbol has
 //! a previous close and a 30-session baseline, a tenth have float and news. It measures the time
@@ -25,6 +26,7 @@ fn main() {
     let close = et(day, 16, 0, 0, 0).unwrap().nanos();
     let pre = et(day, 4, 0, 0, 0).unwrap().nanos();
 
+    let detection = std::env::args().any(|a| a == "--detection");
     let mut e = Engine::new(
         Policy::v1(),
         RunInfo {
@@ -34,6 +36,9 @@ fn main() {
             numerator_coverage: Coverage::Complete,
         },
     );
+    if detection {
+        e = e.with_detection_policy(DetectionPolicy::v0());
+    }
     let names: Vec<String> = (0..symbols).map(|i| format!("S{i:05}")).collect();
     for (i, s) in names.iter().enumerate() {
         let inst = InstrumentId::symbol(s);
@@ -158,4 +163,11 @@ fn main() {
         q(0.99),
         lat[lat.len() - 1]
     );
+    if detection {
+        let t = e.detection_telemetry();
+        println!(
+            "detection: episodes {} (active {}), transitions {} (dropped {}: nothing takes them here)",
+            t.episodes_opened, t.episodes_active, t.transitions_logged, t.transitions_dropped
+        );
+    }
 }

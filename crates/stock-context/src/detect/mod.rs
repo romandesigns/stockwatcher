@@ -514,13 +514,15 @@ impl SymDetect {
 
 /// The engine-wide detector: policy, sequence, bounded logs, references, global status.
 pub(crate) struct Detector {
-    pub policy: DetectionPolicy,
+    /// Shared so a step can hold its rules while it mutates the detector (no per-call clone).
+    pub policy: std::sync::Arc<DetectionPolicy>,
     pub seq: u64,
     pub log: BoundedLog<DetectionTransition>,
     pub recent: VecDeque<Episode>,
     pub recent_dropped: u64,
     pub episodes_opened: u64,
-    pub refs: HashMap<(String, NaiveDate, SessionKind), Vec<QuietReference>>,
+    /// By symbol (borrowed `&str` lookups, no per-call allocation).
+    pub refs: HashMap<String, Vec<QuietReference>>,
     pub refs_held: usize,
     pub global: Option<(i64, &'static str)>,
     pub gaps: VecDeque<Gap>,
@@ -541,7 +543,7 @@ impl Detector {
             .then_some("grid_mismatch");
         Detector {
             log: BoundedLog::new(policy.body.lifecycle.transition_log_max),
-            policy,
+            policy: std::sync::Arc::new(policy),
             seq: 0,
             recent: VecDeque::new(),
             recent_dropped: 0,
@@ -560,8 +562,7 @@ impl Detector {
     }
 
     pub fn add_reference(&mut self, r: QuietReference) {
-        let key = (r.symbol.clone(), r.trading_date, r.segment);
-        let v = self.refs.entry(key).or_default();
+        let v = self.refs.entry(r.symbol.clone()).or_default();
         if v.iter().any(|x| x.id == r.id && x.version == r.version) {
             return;
         }
@@ -573,15 +574,18 @@ impl Detector {
     /// The latest reference observed at or before `tau`.
     pub fn reference(&self, symbol: &str, seg: SessionId, tau: i64) -> Option<&QuietReference> {
         self.refs
-            .get(&(symbol.to_string(), seg.date, seg.kind))?
+            .get(symbol)?
             .iter()
             .rev()
-            .find(|r| r.observed_at <= tau)
+            .find(|r| r.trading_date == seg.date && r.segment == seg.kind && r.observed_at <= tau)
     }
 
     /// Drops references for dates before `date` (bounded memory over a long run).
     pub fn prune_references(&mut self, date: NaiveDate) {
-        self.refs.retain(|k, _| k.1 >= date);
+        for v in self.refs.values_mut() {
+            v.retain(|r| r.trading_date >= date);
+        }
+        self.refs.retain(|_, v| !v.is_empty());
         self.refs_held = self.refs.values().map(|v| v.len()).sum();
     }
 
@@ -630,6 +634,31 @@ impl Detector {
             self.recent_dropped += 1;
         }
         self.recent.push_back(ep);
+    }
+}
+
+/// A session segment and its UTC bounds, resolved once per barrier step (the calendar's
+/// time-zone conversion is far too slow to repeat for every slot of every window).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Seg {
+    pub id: SessionId,
+    pub start: i64,
+    pub end: i64,
+}
+
+impl Seg {
+    pub fn of(id: SessionId) -> Option<Seg> {
+        let (s, e) = id.bounds()?;
+        Some(Seg {
+            id,
+            start: s.nanos(),
+            end: e.nanos(),
+        })
+    }
+
+    /// Whether the slot `[end − bar, end)` lies inside the segment.
+    pub fn holds(&self, end: i64, bar_ns: i64) -> bool {
+        end - bar_ns >= self.start && end <= self.end
     }
 }
 
@@ -795,7 +824,7 @@ pub(crate) fn open(
     x: &Barrier,
     family: Family,
     variant: &str,
-    seg: SessionId,
+    seg: Seg,
     first_bar_end: Option<i64>,
     warmup: bool,
     extra: Extra,
@@ -820,7 +849,7 @@ pub(crate) fn open(
             symbol: x.symbol.to_string(),
             instrument: x.inst.clone(),
             trading_date: x.date,
-            segment: seg,
+            segment: seg.id,
             state: State::Observed,
             default_visible: family.default_visible(),
             first_detected_at: x.tau,
@@ -971,29 +1000,30 @@ pub(crate) fn step(det: &mut Detector, sd: &mut SymDetect, x: &Barrier) {
         interrupt_all(det, sd, why, x.tau, Some((x.b, x.tau)));
         return;
     }
-    let Some(seg) = seg else {
+    let Some(seg) = seg.and_then(Seg::of) else {
         return;
     };
     let f = features::candidate(det, sd, x, seg);
-    if f.is_some() {
-        sd.latest = f.clone();
-    }
     // Old levels first: every active episode is tested before anything new forms.
     micro::on_barrier(det, sd, x, seg);
     families::on_barrier(det, sd, x, f.as_ref());
-    // New detections.
-    let ignited = families::detect(det, sd, x, seg, f.as_ref());
-    if !ignited {
-        families::momentum(det, sd, x, seg);
+    // New detections need a bar completing now: nothing else can change their inputs.
+    if f.is_some() {
+        let ignited = families::detect(det, sd, x, seg, f.as_ref());
+        if !ignited {
+            families::momentum(det, sd, x, seg, f.as_ref());
+        }
+        micro::search(det, sd, x, seg);
     }
-    micro::search(det, sd, x, seg);
     retire_terminal(det, sd);
     // The candidate joins the return baseline only after it was tested against it.
-    if let Some(f) = &f
-        && f.return_class == ReturnClass::Adjacent
-        && let Some(r) = f.log_return_ppm
-    {
-        features::push_return(det, sd, x.b, seg, r);
+    if let Some(f) = f {
+        if f.return_class == ReturnClass::Adjacent
+            && let Some(r) = f.log_return_ppm
+        {
+            features::push_return(det, sd, x.b, seg.id, r);
+        }
+        sd.latest = Some(f);
     }
 }
 

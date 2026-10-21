@@ -6,7 +6,7 @@
 //! tested). Empty slots stay empty: they are counted as slots, never as zero-range bars.
 
 use super::math::{bp, ln_ratio_ppm, median_mad4, median2, milli};
-use super::{Barrier, ContextClass, Detector, RetEntry, SymDetect};
+use super::{Barrier, ContextClass, Detector, RetEntry, Seg, SymDetect};
 use crate::pillar::Tri;
 use crate::setup::Bar;
 use market_events::UnixNanos;
@@ -159,7 +159,7 @@ pub(crate) fn window(
     det: &Detector,
     sd: &SymDetect,
     x: &Barrier,
-    seg: SessionId,
+    seg: Seg,
     last_end: i64,
     slots: i64,
 ) -> WindowStats {
@@ -170,7 +170,7 @@ pub(crate) fn window(
     let (mut first_open, mut last_close) = (None, None);
     let mut end = start;
     while end <= last_end {
-        if segment_of(end) == Some(seg) {
+        if seg.holds(end, x.bar_ns) {
             in_seg += 1;
             if let Some(bar) = bar_at(x.bars, end) {
                 vol += bar.volume;
@@ -240,8 +240,8 @@ pub(crate) fn window(
         // Only a reference observed by this decision's cutoff, computed from sessions strictly
         // before this date and for this segment, may label quietness.
         match det
-            .reference(x.symbol, seg, x.tau)
-            .filter(|r| r.prior_through < seg.date && r.segment == seg.kind)
+            .reference(x.symbol, seg.id, x.tau)
+            .filter(|r| r.prior_through < seg.id.date && r.segment == seg.id.kind)
         {
             None => (ContextClass::Unavailable, "quiet_reference_unavailable"),
             Some(r) => {
@@ -277,7 +277,7 @@ pub(crate) fn candidate(
     det: &Detector,
     sd: &SymDetect,
     x: &Barrier,
-    seg: SessionId,
+    seg: Seg,
 ) -> Option<FeatureSnapshot> {
     let bar = x.bars.back().filter(|t| t.end == x.b)?;
     let o = bar.ohlc?;
@@ -288,7 +288,7 @@ pub(crate) fn candidate(
         .iter()
         .rev()
         .skip(1)
-        .take_while(|t| segment_of(t.end) == Some(seg))
+        .take_while(|t| seg.holds(t.end, x.bar_ns))
         .find_map(|t| t.ohlc.map(|po| (t.end, po.close)));
     let return_class = match prev {
         Some((e, _)) if e == x.b - x.bar_ns => ReturnClass::Adjacent,
@@ -309,7 +309,7 @@ pub(crate) fn candidate(
         .returns
         .iter()
         .rev()
-        .filter(|r| r.seg == seg && r.end < x.b && r.end - x.bar_ns >= sd.requalify_from)
+        .filter(|r| r.seg == seg.id && r.end < x.b && r.end - x.bar_ns >= sd.requalify_from)
         .take(p.baseline.returns_max)
         .map(|r| r.ppm)
         .collect();
@@ -348,7 +348,7 @@ pub(crate) fn candidate(
     let (mut ranges, mut bodies) = (Vec::new(), Vec::new());
     let mut end = w.start;
     while end <= w.end {
-        if segment_of(end) == Some(seg)
+        if seg.holds(end, x.bar_ns)
             && let Some(po) = bar_at(x.bars, end).and_then(|t| t.ohlc)
         {
             ranges.push(po.high - po.low);
@@ -398,7 +398,7 @@ pub(crate) fn candidate(
         id: format!("{}:{}:{}", x.run_id, x.symbol, x.b),
         bar_end: x.b,
         cutoff: x.tau,
-        segment: seg,
+        segment: seg.id,
         open: o.open,
         high: o.high,
         low: o.low,

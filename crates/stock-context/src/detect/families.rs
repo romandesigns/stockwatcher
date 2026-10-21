@@ -2,14 +2,13 @@
 //! gap events, and range breakout with retention or rejection. Each family is independent: no
 //! precursor is required for an ignition, and quietness never gates the parent ignition.
 
-use super::features::{FeatureSnapshot, ReturnClass, bar_at, bps, segment_of, window};
+use super::features::{FeatureSnapshot, ReturnClass, bar_at, bps, window};
 use super::math::{ln_ratio_ppm, milli};
 use super::{
     Barrier, Certainty, Change, Check, ContextClass, Detector, Ep, Extra, Family, LevelVersion,
-    State, SymDetect, emit, open,
+    Seg, State, SymDetect, emit, open,
 };
 use crate::pillar::Tri;
-use market_events::session::SessionId;
 
 /// Advances the non-micro episodes on the bar completing at this barrier.
 pub(crate) fn on_barrier(
@@ -18,7 +17,8 @@ pub(crate) fn on_barrier(
     x: &Barrier,
     f: Option<&FeatureSnapshot>,
 ) {
-    let p = det.policy.body.clone();
+    let pol = det.policy.clone();
+    let p = &pol.body;
     for i in 0..sd.active.len() {
         let ep = &mut sd.active[i];
         if ep.view.state.is_terminal() {
@@ -176,78 +176,82 @@ pub(crate) fn detect(
     det: &mut Detector,
     sd: &mut SymDetect,
     x: &Barrier,
-    seg: SessionId,
+    seg: Seg,
     f: Option<&FeatureSnapshot>,
 ) -> bool {
     let Some(f) = f else { return false };
-    let p = det.policy.body.clone();
+    let pol = det.policy.clone();
+    let p = &pol.body;
     let ig = &p.ignition;
     let up = f.upward_close.map(|u| u && f.bullish_body);
     let e_ok = f.range.e_adj_milli.map(|e| e >= ig.range_e_min_milli);
     let z_ok = f.z_milli.map(|z| z >= ig.z_min_milli);
     let adjacent = f.return_class == ReturnClass::Adjacent;
-    let checks = vec![
-        Check::new(
-            "adjacent_15s_return",
-            Check::tri(Some(adjacent)),
-            f.elapsed_secs,
-            Some(x.bar_ns / super::SEC),
-            "secs",
-            match f.return_class {
-                ReturnClass::Adjacent => "previous_slot_traded",
-                ReturnClass::GapEvent => "gap_event",
-                ReturnClass::FirstInSegment => "first_in_segment",
-            },
-        ),
-        Check::new(
-            "in_active_band",
-            Check::tri(Some(f.in_active_band)),
-            Some(f.close),
-            None,
-            "micros",
-            "close_in_active_profile",
-        ),
-        Check::new(
-            "upward_close_and_body",
-            Check::tri(up),
-            f.log_return_ppm,
-            None,
-            "log_ppm",
-            "close_above_prev_and_open",
-        ),
-        Check::new(
-            "robust_surprise",
-            Check::tri(z_ok),
-            f.z_milli,
-            Some(ig.z_min_milli),
-            "milli",
-            if z_ok.is_some() {
-                "z_vs_prior_returns"
-            } else {
-                f.baseline.status
-            },
-        ),
-        Check::new(
-            "return_at_least_1pct",
-            Check::tri(f.return_ge_1pct),
-            f.log_return_ppm,
-            Some(ln_ratio_ppm(ig.return_min_num, ig.return_min_den)),
-            "log_ppm",
-            "close_vs_prev_close",
-        ),
-        Check::new(
-            "range_expansion",
-            Check::tri(e_ok),
-            f.range.e_adj_milli,
-            Some(ig.range_e_min_milli),
-            "milli",
-            if e_ok.is_some() {
-                "floor_adjusted_vs_prior_window_median"
-            } else {
-                "range_baseline_unavailable"
-            },
-        ),
-    ];
+    // Built only when a rule fires (most bars are not candidates).
+    let checks = || {
+        vec![
+            Check::new(
+                "adjacent_15s_return",
+                Check::tri(Some(adjacent)),
+                f.elapsed_secs,
+                Some(x.bar_ns / super::SEC),
+                "secs",
+                match f.return_class {
+                    ReturnClass::Adjacent => "previous_slot_traded",
+                    ReturnClass::GapEvent => "gap_event",
+                    ReturnClass::FirstInSegment => "first_in_segment",
+                },
+            ),
+            Check::new(
+                "in_active_band",
+                Check::tri(Some(f.in_active_band)),
+                Some(f.close),
+                None,
+                "micros",
+                "close_in_active_profile",
+            ),
+            Check::new(
+                "upward_close_and_body",
+                Check::tri(up),
+                f.log_return_ppm,
+                None,
+                "log_ppm",
+                "close_above_prev_and_open",
+            ),
+            Check::new(
+                "robust_surprise",
+                Check::tri(z_ok),
+                f.z_milli,
+                Some(ig.z_min_milli),
+                "milli",
+                if z_ok.is_some() {
+                    "z_vs_prior_returns"
+                } else {
+                    f.baseline.status
+                },
+            ),
+            Check::new(
+                "return_at_least_1pct",
+                Check::tri(f.return_ge_1pct),
+                f.log_return_ppm,
+                Some(ln_ratio_ppm(ig.return_min_num, ig.return_min_den)),
+                "log_ppm",
+                "close_vs_prev_close",
+            ),
+            Check::new(
+                "range_expansion",
+                Check::tri(e_ok),
+                f.range.e_adj_milli,
+                Some(ig.range_e_min_milli),
+                "milli",
+                if e_ok.is_some() {
+                    "floor_adjusted_vs_prior_window_median"
+                } else {
+                    "range_baseline_unavailable"
+                },
+            ),
+        ]
+    };
     let mut ignited = false;
     let mut ignition_id = None;
     let trigger = adjacent
@@ -280,7 +284,7 @@ pub(crate) fn detect(
             );
             ep.view.context = Some(f.window.context);
             ep.view.recognition = Some(f.clone());
-            ep.view.checks = checks.clone();
+            ep.view.checks = checks();
             if let Some(h) = f.window.high {
                 let l = range_level(
                     &ep,
@@ -320,7 +324,7 @@ pub(crate) fn detect(
                 x.tau,
             )
             .features(Some(f.clone()))
-            .checks(checks.clone())
+            .checks(checks())
             .level(ep.view.levels.first().cloned());
             emit(det, &mut ep, c);
             let id = ep.view.episode_id.clone();
@@ -377,7 +381,7 @@ pub(crate) fn detect(
             );
             ep.view.context = Some(f.window.context);
             ep.view.recognition = Some(f.clone());
-            ep.view.checks = checks.clone();
+            ep.view.checks = checks();
             let c = Change::at_barrier(
                 State::Observed,
                 "gap_event_observed",
@@ -387,7 +391,7 @@ pub(crate) fn detect(
                 x.tau,
             )
             .features(Some(f.clone()))
-            .checks(checks.clone());
+            .checks(checks());
             emit(det, &mut ep, c);
             sd.active.push(ep);
         }
@@ -481,8 +485,15 @@ pub(crate) fn detect(
 }
 
 /// Momentum building (quiet prior context) or the separately named upward acceleration.
-pub(crate) fn momentum(det: &mut Detector, sd: &mut SymDetect, x: &Barrier, seg: SessionId) {
-    let p = det.policy.body.clone();
+pub(crate) fn momentum(
+    det: &mut Detector,
+    sd: &mut SymDetect,
+    x: &Barrier,
+    seg: Seg,
+    candidate: Option<&FeatureSnapshot>,
+) {
+    let pol = det.policy.clone();
+    let p = &pol.body;
     let m = &p.momentum;
     // A precursor precedes an ignition: none starts while an ignition episode is active.
     if has_active(
@@ -500,7 +511,7 @@ pub(crate) fn momentum(det: &mut Detector, sd: &mut SymDetect, x: &Barrier, seg:
     }
     let step = m.step_slots * x.bar_ns;
     let close = |end: i64| {
-        (segment_of(end) == Some(seg))
+        (seg.holds(end, x.bar_ns))
             .then(|| bar_at(x.bars, end).and_then(|b| b.ohlc))
             .flatten()
             .map(|o| o.close)
@@ -659,7 +670,7 @@ pub(crate) fn momentum(det: &mut Detector, sd: &mut SymDetect, x: &Barrier, seg:
         ep.view.levels.push(a);
         ep.view.levels.push(b);
     }
-    let f = super::features::candidate(det, sd, x, seg);
+    let f = candidate.cloned();
     ep.view.recognition = f.clone();
     let event = if family == Family::MomentumBuilding {
         "momentum_building_recognized"

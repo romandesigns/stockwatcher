@@ -8,15 +8,14 @@
 //! arming only prints executed at or after `armed_at` can cross or breach them, and only a full
 //! bar starting at or after `armed_at` can confirm. v0 never revises an armed level.
 
-use super::features::{bar_at, bps, segment_of};
+use super::features::{bar_at, bps};
 use super::math::milli;
 use super::{
     Barrier, Certainty, Change, Check, Detector, Ep, Extra, Family, LevelVersion, MicroAnchors,
-    State, SymDetect, TradeEvidence, emit, open,
+    Seg, State, SymDetect, TradeEvidence, emit, open,
 };
 use crate::pillar::Tri;
 use market_events::TradeId;
-use market_events::session::SessionId;
 
 #[derive(Clone, Debug)]
 pub(crate) struct Inner {
@@ -52,18 +51,19 @@ fn level(
 }
 
 /// Looks for a new impulse with a retreat when no micro episode is active.
-pub(crate) fn search(det: &mut Detector, sd: &mut SymDetect, x: &Barrier, seg: SessionId) {
+pub(crate) fn search(det: &mut Detector, sd: &mut SymDetect, x: &Barrier, seg: Seg) {
     if sd.active.iter().any(is_micro) {
         return;
     }
-    let m = det.policy.body.micro.clone();
+    let pol = det.policy.clone();
+    let m = &pol.body.micro;
     let from = x.b - (m.lookback_slots - 1) * x.bar_ns;
     // Bars of the lookback that traded, in this segment, after any interruption.
     let w: Vec<(i64, crate::setup::Ohlc)> = x
         .bars
         .iter()
         .filter(|t| t.end >= from && t.end <= x.b)
-        .filter(|t| segment_of(t.end) == Some(seg) && t.end - x.bar_ns >= sd.requalify_from)
+        .filter(|t| seg.holds(t.end, x.bar_ns) && t.end - x.bar_ns >= sd.requalify_from)
         .filter_map(|t| t.ohlc.map(|o| (t.end, o)))
         .collect();
     if w.len() < 3 {
@@ -288,8 +288,9 @@ fn try_arm(det: &mut Detector, sd: &mut SymDetect, x: &Barrier, ep: &mut Ep) {
 
 /// Tests armed levels against the bar completing now (old levels first), then updates forming
 /// episodes and arms them.
-pub(crate) fn on_barrier(det: &mut Detector, sd: &mut SymDetect, x: &Barrier, _seg: SessionId) {
-    let m = det.policy.body.micro.clone();
+pub(crate) fn on_barrier(det: &mut Detector, sd: &mut SymDetect, x: &Barrier, _seg: Seg) {
+    let pol = det.policy.clone();
+    let m = &pol.body.micro;
     let fresh = det.policy.body.timing.price_fresh_secs * super::SEC;
     let bar = bar_at(x.bars, x.b).and_then(|t| t.ohlc);
     let mut eps = std::mem::take(&mut sd.active);
