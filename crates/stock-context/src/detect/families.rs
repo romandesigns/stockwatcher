@@ -519,13 +519,14 @@ pub(crate) fn momentum(
             .flatten()
             .map(|o| o.close)
     };
-    // Endpoints must be traded bars (valid and fresh by construction), and every slot of the
-    // buildup window must have traded.
+    // Endpoints must be traded bars (valid and fresh by construction).
     let (Some(pb), Some(p1), Some(p2)) = (close(x.b), close(x.b - step), close(x.b - 2 * step))
     else {
         return;
     };
-    if (0..m.step_slots).any(|k| close(x.b - k * x.bar_ns).is_none()) {
+    // Coverage: every slot of both equal comparison windows, (b − 60 s, b], must have traded,
+    // besides the b − 60 s endpoint itself.
+    if (0..2 * m.step_slots).any(|k| close(x.b - k * x.bar_ns).is_none()) {
         return;
     }
     let first = x.b - 2 * step - x.bar_ns;

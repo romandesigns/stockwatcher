@@ -964,7 +964,7 @@ pub(crate) fn interrupt_all(
     retire_terminal(det, sd);
     // A real observation failure: new episodes and baselines restart after it. A segment end
     // is not one (the next segment's windows never reach back anyway).
-    if reason != "segment_end" {
+    if !matches!(reason, "segment_end" | "outside_active_band") {
         sd.requalify_from = sd.requalify_from.max(at);
     }
 }
@@ -1039,6 +1039,20 @@ pub(crate) fn step(det: &mut Detector, sd: &mut SymDetect, x: &Barrier) {
         return;
     };
     let f = features::candidate(det, sd, x, seg);
+    // The active profile is the detection universe: a completed bar closing outside it ends every
+    // active episode (never rescued), starts nothing, and only feeds the return baseline.
+    if f.as_ref().is_some_and(|f| !f.in_active_band) {
+        interrupt_all(det, sd, "outside_active_band", x.tau, Some((x.b, x.tau)));
+        if let Some(f) = f {
+            if f.return_class == ReturnClass::Adjacent
+                && let Some(r) = f.log_return_ppm
+            {
+                features::push_return(det, sd, x.b, seg.id, r);
+            }
+            sd.latest = Some(f);
+        }
+        return;
+    }
     // Old levels first: every active episode is tested before anything new forms.
     micro::on_barrier(det, sd, x, seg);
     families::on_barrier(det, sd, x, f.as_ref());

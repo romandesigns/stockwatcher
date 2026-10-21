@@ -169,7 +169,8 @@ confirmed. Same cooldown as ignition.
 ### `momentum_building` / `upward_acceleration` (**ours**, handoff §5.2)
 
 Endpoints are the closes of the traded bars ending at `b`, `b − 30 s` and `b − 60 s`. All three
-must exist, and every slot of the 30 s buildup must have traded.
+must exist, and every slot of both equal 30 s comparison windows, `(b − 60 s, b]`, must have
+traded.
 
 Rule:
 - `r30 = ln(P_b/P_{b−30}) ≥ 5000 ppm`;
@@ -289,6 +290,7 @@ Volume and indicators are measured only. Missing quotes and indicators never blo
 | `interrupt_detection(None, …, "link_down")` | The same for every symbol, plus `data_status.global_interruption`. |
 | Coverage `Partial` | Interrupted `coverage_partial`; nothing new. |
 | Integrity: window or volume untrusted (an unprovable revision) | Interrupted `inputs_untrusted`; nothing new. |
+| A completed bar closing outside the active band ($0.10–$25 inclusive) | Every active episode of the symbol → `interrupted` (`outside_active_band`); nothing new starts on that bar. The bar still feeds the return baseline (a fact). No requalification: the next in-band bar may start new episodes. |
 | No print for 60 s while a micro episode is active | That episode → `interrupted` (`stale_price`). This is **not** a data gap: no baseline is reset and no global state changes. |
 
 After a real interruption, `requalify_from` moves to the resume time. New anchors, windows and

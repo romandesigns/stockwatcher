@@ -212,3 +212,104 @@ fn inadmissible_references_leave_quietness_unavailable_with_the_reason() {
         .unwrap();
     assert_eq!(acc.reason, "quiet_reference_synthetic_outside_fixture");
 }
+
+/// The same script with every print price multiplied by `num / den`.
+fn scaled(mut steps: Vec<FixtureStep>, num: i64, den: i64) -> Vec<FixtureStep> {
+    for s in steps.iter_mut() {
+        match s {
+            FixtureStep::Print { price, .. } | FixtureStep::Cancel { price, .. } => {
+                *price = *price * num / den
+            }
+            _ => {}
+        }
+    }
+    steps
+}
+
+fn families(steps: &[FixtureStep]) -> Vec<(Family, State, &'static str)> {
+    let mut e = fixture::engine("t");
+    fixture::drive(&mut e, steps)
+        .iter()
+        .map(|t| (t.family, t.to, t.reason))
+        .collect()
+}
+
+#[test]
+fn micro_and_momentum_stay_inside_the_active_band() {
+    // In band ($3), the scenarios detect; outside ($30 and $0.03) they detect nothing at all.
+    let micro = fixture::script("micro_valid").unwrap();
+    let build = fixture::script("quiet_build_ignition").unwrap();
+    assert!(
+        families(&micro)
+            .iter()
+            .any(|f| f.0 == Family::MicroPullback)
+    );
+    assert!(
+        families(&build)
+            .iter()
+            .any(|f| f.0 == Family::MomentumBuilding)
+    );
+    for (num, den) in [(10, 1), (1, 100)] {
+        assert!(
+            families(&scaled(micro.clone(), num, den)).is_empty(),
+            "micro x{num}/{den}"
+        );
+        assert!(
+            families(&scaled(build.clone(), num, den)).is_empty(),
+            "build x{num}/{den}"
+        );
+    }
+}
+
+#[test]
+fn twenty_five_dollars_is_inside_and_one_cent_above_ends_the_episode() {
+    let mut s = Script::new();
+    for k in 0..6 {
+        s.bar("BAND", k, [2400, 2400, 2400, 2400], 100);
+    }
+    s.bar("BAND", 6, [2400, 2405, 2400, 2405], 200);
+    s.bar("BAND", 7, [2405, 2430, 2405, 2430], 300);
+    s.bar("BAND", 8, [2430, 2470, 2430, 2470], 300);
+    s.bar("BAND", 9, [2470, 2500, 2470, 2496], 400);
+    s.bar("BAND", 10, [2496, 2496, 2485, 2490], 150);
+    s.bar("BAND", 11, [2490, 2492, 2480, 2488], 120);
+    // Closes exactly at $25.00: inside the inclusive band, and not above T = $25.00.
+    s.bar("BAND", 12, [2488, 2500, 2488, 2500], 200);
+    // Closes at $25.01: outside the band.
+    s.bar("BAND", 13, [2500, 2501, 2499, 2501], 200);
+    s.advance(cutoff(16));
+    let f = families(&s.steps);
+    let micro: Vec<_> = f.iter().filter(|x| x.0 == Family::MicroPullback).collect();
+    assert_eq!(micro[1].1, State::Armed);
+    assert!(micro.iter().all(|x| x.1 != State::TriggerObserved));
+    let last = micro.last().unwrap();
+    assert_eq!(
+        (last.1, last.2),
+        (State::Interrupted, "outside_active_band")
+    );
+}
+
+#[test]
+fn momentum_needs_every_slot_of_both_comparison_windows() {
+    // Remove bar 39, the interior slot of the earlier window at bar 42. The precursor then waits
+    // until bar 44, whose windows (41..44 and endpoint 40) all traded.
+    let steps: Vec<FixtureStep> = fixture::script("quiet_build_ignition")
+        .unwrap()
+        .into_iter()
+        .filter(|s| !matches!(s, FixtureStep::Print { exec, .. } if *exec >= end(39) - 15 * S && *exec < end(39)))
+        .collect();
+    let mut e = fixture::engine("t");
+    let ts = fixture::drive(&mut e, &steps);
+    let mb = ts
+        .iter()
+        .find(|t| t.family == Family::MomentumBuilding)
+        .unwrap();
+    assert_eq!(mb.observed_at, cutoff(44));
+    let full = fixture::run("quiet_build_ignition").unwrap();
+    let mb_full = full
+        .transitions
+        .iter()
+        .find(|t| t.family == Family::MomentumBuilding)
+        .unwrap();
+    assert_eq!(mb_full.observed_at, cutoff(42));
+}
