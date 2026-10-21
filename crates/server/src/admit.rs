@@ -888,8 +888,11 @@ mod tests {
             assert_eq!(p.seq, 3, "and it covers everything that was written");
             assert_eq!(
                 after_one.tail,
-                admissions::Tail::None,
-                "nothing readable lies past it"
+                admissions::Tail::Unverified {
+                    records: 0,
+                    reason: "journal_unproven_tail",
+                },
+                "no readable record lies past the checkpoint, but only a seal proves no tail"
             );
         } else {
             // A development build cannot name itself, so its journal is never a proof whatever
@@ -1017,7 +1020,14 @@ mod tests {
             let p = got.proven.expect("a proof");
             assert_eq!(p.seq, n as u64, "checkpointed over all of it: {p:?}");
             assert!(!p.sealed, "a clean close does not seal");
-            assert_eq!(got.tail, admissions::Tail::None);
+            assert_eq!(
+                got.tail,
+                admissions::Tail::Unverified {
+                    records: 0,
+                    reason: "journal_unproven_tail",
+                },
+                "draining proves the prefix, while a clean close leaves the tail unsealed"
+            );
         }
     }
 
@@ -1168,10 +1178,13 @@ mod tests {
             assert_eq!(got.holes, 0, "{d}: a date roll is not a dropped record");
             assert_eq!(got.records.len(), want, "{d}");
             if id.names_a_build() {
-                assert!(
-                    matches!(got.tail, admissions::Tail::None),
-                    "{d}: and nothing is left unproven by the roll: {:?}",
-                    got.tail
+                assert_eq!(
+                    got.tail,
+                    admissions::Tail::Unverified {
+                        records: 0,
+                        reason: "journal_unproven_tail",
+                    },
+                    "{d}: the roll loses no readable records, but the checkpoint is not a seal"
                 );
             }
         }
