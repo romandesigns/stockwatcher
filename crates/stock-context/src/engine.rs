@@ -529,13 +529,13 @@ impl Engine {
         match symbol {
             Some(name) => {
                 if let Some(s) = self.syms.get_mut(name) {
-                    detect::clear_interrupted(det, Some(&mut s.det), Some(name), at);
+                    let _ = detect::clear_interrupted(det, Some(&mut s.det), Some(name), at);
                 }
             }
             None => {
-                detect::clear_interrupted(det, None, None, at);
+                let end = detect::clear_interrupted(det, None, None, at);
                 for s in self.syms.values_mut() {
-                    s.det.requalify_from = s.det.requalify_from.max(at);
+                    s.det.requalify_from = s.det.requalify_from.max(end);
                 }
             }
         }

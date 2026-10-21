@@ -1146,39 +1146,48 @@ pub(crate) fn set_interrupted(
     }
 }
 
+/// Closes a gap at `at` and returns the effective end. A resume stamped before its own gap began
+/// (a buffered event carrying an older receipt time) closes the gap at its start instead: an
+/// inverted interval would overlap nothing and quietly hand the gap's windows back as covered.
 pub(crate) fn clear_interrupted(
     det: &mut Detector,
     sd: Option<&mut SymDetect>,
     symbol: Option<&str>,
     at: i64,
-) {
+) -> i64 {
     match sd {
         Some(sd) => {
+            let mut end = at;
             if let Some((from, why)) = sd.interrupted.take() {
+                end = at.max(from);
                 while sd.gaps.len() >= GAPS_KEPT {
                     sd.gaps.pop_front();
                 }
-                sd.gaps.push_back((from, at, why));
+                sd.gaps.push_back((from, end, why));
                 det.push_gap(Gap {
                     symbol: symbol.map(str::to_string),
                     from,
-                    to: Some(at),
+                    to: Some(end),
                     reason: why,
                 });
             }
-            sd.requalify_from = sd.requalify_from.max(at);
+            sd.requalify_from = sd.requalify_from.max(end);
+            end
         }
         None => {
+            let mut end = at;
             if symbol.is_none()
                 && let Some((from, why)) = det.global.take()
             {
+                end = at.max(from);
                 det.push_gap(Gap {
                     symbol: None,
                     from,
-                    to: Some(at),
+                    to: Some(end),
                     reason: why,
                 });
             }
+            end
         }
     }
 }

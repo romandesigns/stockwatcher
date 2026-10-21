@@ -313,3 +313,24 @@ fn momentum_needs_every_slot_of_both_comparison_windows() {
         .unwrap();
     assert_eq!(mb_full.observed_at, cutoff(42));
 }
+
+#[test]
+fn a_resume_stamped_before_its_gap_closes_the_gap_at_its_start() {
+    let mut s = Script::new();
+    s.quiet("GAPX", 0..12, 500, 501);
+    s.advance(cutoff(11));
+    let mut e = fixture::engine("t");
+    fixture::drive(&mut e, &s.steps);
+    let from = end(11) + 5 * S;
+    e.interrupt_detection(None, UnixNanos(from), "provider_error");
+    // A buffered event's receipt time, older than the error.
+    e.resume_detection(None, UnixNanos(from - 3 * S));
+    let snap = e.detection_snapshot().unwrap();
+    let gap = snap.data_status.recent_gaps.last().unwrap();
+    assert_eq!(
+        (gap.from, gap.to),
+        (from, Some(from)),
+        "never an inverted interval"
+    );
+    assert!(snap.data_status.global_interruption.is_none());
+}
