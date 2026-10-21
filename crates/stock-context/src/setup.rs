@@ -119,6 +119,9 @@ pub struct Ohlc {
     pub close: i64,
     open_exec: i64,
     close_exec: i64,
+    /// Execution time of the first print at the bar's high / low (detection: intrabar order).
+    pub high_exec: i64,
+    pub low_exec: i64,
 }
 
 /// One completed bar `[end − bar, end)`. `ohlc` is `None` when only volume-counted prints fell in
@@ -128,6 +131,10 @@ pub struct Bar {
     pub end: i64,
     pub ohlc: Option<Ohlc>,
     pub volume: u64,
+    /// Σ price × shares of the volume-counted prints (micro-dollar·shares).
+    pub dollars_micros: u128,
+    /// Price-qualifying (OHLC-counted) prints.
+    pub trades: u32,
 }
 
 impl Bar {
@@ -136,6 +143,8 @@ impl Bar {
             end,
             ohlc: None,
             volume: 0,
+            dollars_micros: 0,
+            trades: 0,
         }
     }
 
@@ -143,10 +152,12 @@ impl Bar {
     pub fn add(&mut self, exec: i64, price: i64, size: u64, ohlc: bool, volume: bool) {
         if volume {
             self.volume += size;
+            self.dollars_micros += price as u128 * size as u128;
         }
         if !ohlc {
             return;
         }
+        self.trades += 1;
         match &mut self.ohlc {
             None => {
                 self.ohlc = Some(Ohlc {
@@ -156,11 +167,19 @@ impl Bar {
                     close: price,
                     open_exec: exec,
                     close_exec: exec,
+                    high_exec: exec,
+                    low_exec: exec,
                 })
             }
             Some(o) => {
-                o.high = o.high.max(price);
-                o.low = o.low.min(price);
+                if price > o.high || (price == o.high && exec < o.high_exec) {
+                    o.high = price;
+                    o.high_exec = exec;
+                }
+                if price < o.low || (price == o.low && exec < o.low_exec) {
+                    o.low = price;
+                    o.low_exec = exec;
+                }
                 if exec < o.open_exec {
                     o.open = price;
                     o.open_exec = exec;

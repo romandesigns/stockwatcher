@@ -19,6 +19,10 @@
 //! keeps only the latest per symbol. First-seen times live on the per-day [`Timeline`] and are
 //! never rewritten.
 
+use crate::detect::{
+    self, DetectionPolicy, DetectionSnapshot, DetectionTelemetry, DetectionTransition, Detector,
+    QuietReference, SymDetect,
+};
 use crate::evaluate::{
     self, Coverage, Integrity, NewsSummary, PriceView, RvolDiagnostics, VolumeView,
 };
@@ -258,6 +262,8 @@ struct Sym {
     /// back into the prefix is not reportable ([`Integrity::window_untrusted`]). The doubt clears
     /// by itself once the window has moved past the prefix, within the window's own length.
     restored_through: Option<i64>,
+    /// The Detection Panel families' state (`crate::detect`), when detection is on.
+    det: SymDetect,
 }
 
 /// A non-passing pillar, for the row tag.
@@ -352,6 +358,8 @@ pub struct Engine {
     setup_log: BoundedLog<SetupLogEntry>,
     revisions: RevisionTelemetry,
     restores: RestoreTelemetry,
+    /// The Detection Panel families (`crate::detect`); `None`: off.
+    detector: Option<Detector>,
 }
 
 /// What an engine adopted from per-symbol restores.
@@ -411,7 +419,120 @@ impl Engine {
             setup_log: BoundedLog::new(SETUP_LOG_MAX),
             revisions: RevisionTelemetry::default(),
             restores: RestoreTelemetry::default(),
+            detector: None,
         }
+    }
+
+    /// The same engine with the EXPERIMENTAL Detection Panel families on (`crate::detect`).
+    /// Off by default. They read the same admitted prints and bars as everything else, for every
+    /// symbol, whatever Ross membership, news or float say; they never change a decision, the
+    /// Ross Panel or a setup. A policy whose grid differs from the pillar grid stays disabled
+    /// with a reason in the snapshot.
+    pub fn with_detection_policy(mut self, p: DetectionPolicy) -> Self {
+        let g = &self.policy.body.grid;
+        self.detector = Some(Detector::new(p, g.bar_secs, g.settle_ms));
+        self
+    }
+
+    pub fn detection_policy(&self) -> Option<&DetectionPolicy> {
+        self.detector.as_ref().map(|d| &d.policy)
+    }
+
+    /// The detection snapshot: cursor, active episodes with current assessments, bounded recent
+    /// history, data status and telemetry. `None` when detection is off.
+    pub fn detection_snapshot(&self) -> Option<DetectionSnapshot> {
+        let det = self.detector.as_ref()?;
+        Some(detect::snapshot(
+            det,
+            &self.run,
+            self.syms.iter().map(|(k, s)| (k.as_str(), &s.det)),
+        ))
+    }
+
+    /// Detection transitions held now, oldest first; the journal is empty afterwards. Bounded:
+    /// a caller that stops taking loses the oldest, counted in [`Engine::detection_telemetry`].
+    pub fn take_detection_transitions(&mut self) -> Vec<DetectionTransition> {
+        self.detector
+            .as_mut()
+            .map_or_else(Vec::new, |d| d.log.take())
+    }
+
+    pub fn detection_telemetry(&self) -> DetectionTelemetry {
+        let active = self.syms.values().map(|s| s.det.active.len()).sum();
+        self.detector
+            .as_ref()
+            .map_or_else(DetectionTelemetry::default, |d| d.telemetry(active))
+    }
+
+    /// A symbol's prior-session quietness reference ([`QuietReference`]), read as of each
+    /// decision cutoff. Without one, quietness is `unavailable`.
+    pub fn add_quiet_reference(&mut self, r: QuietReference) {
+        if let Some(d) = self.detector.as_mut() {
+            d.add_reference(r);
+        }
+    }
+
+    /// Drops quiet references for dates before `date`.
+    pub fn prune_quiet_references(&mut self, date: NaiveDate) {
+        if let Some(d) = self.detector.as_mut() {
+            d.prune_references(date);
+        }
+    }
+
+    /// An observation failure from `at` (`symbol` `None`: every symbol, e.g. a provider link
+    /// down or a stream error; `Some`: a documented halt or a per-symbol gap). Decides the
+    /// barriers before `at` first; then every active episode in scope is interrupted, no new one
+    /// starts, and windows overlapping the gap are insufficient until requalified. No trades
+    /// alone is never a reason to call this.
+    pub fn interrupt_detection(
+        &mut self,
+        symbol: Option<&str>,
+        at: UnixNanos,
+        reason: &'static str,
+    ) -> Vec<Decision> {
+        let out = self.advance_to(at);
+        let Some(det) = self.detector.as_mut() else {
+            return out;
+        };
+        let at = at.nanos();
+        match symbol {
+            Some(name) => {
+                if let Some(s) = self.syms.get_mut(name) {
+                    detect::set_interrupted(det, Some(&mut s.det), Some(name), at, reason);
+                }
+            }
+            None => {
+                detect::set_interrupted(det, None, None, at, reason);
+                for s in self.syms.values_mut() {
+                    detect::interrupt_all(det, &mut s.det, reason, at, None);
+                }
+            }
+        }
+        out
+    }
+
+    /// The end of an observation failure: the gap is recorded as `[from, at)` and new episodes
+    /// requalify from bars after `at`.
+    pub fn resume_detection(&mut self, symbol: Option<&str>, at: UnixNanos) -> Vec<Decision> {
+        let out = self.advance_to(at);
+        let Some(det) = self.detector.as_mut() else {
+            return out;
+        };
+        let at = at.nanos();
+        match symbol {
+            Some(name) => {
+                if let Some(s) = self.syms.get_mut(name) {
+                    detect::clear_interrupted(det, Some(&mut s.det), Some(name), at);
+                }
+            }
+            None => {
+                detect::clear_interrupted(det, None, None, at);
+                for s in self.syms.values_mut() {
+                    s.det.requalify_from = s.det.requalify_from.max(at);
+                }
+            }
+        }
+        out
     }
 
     /// The same engine with other output journal bounds (the defaults are [`PANEL_LOG_MAX`] and
@@ -559,6 +680,7 @@ impl Engine {
         if restored.member.status.is_some()
             || !restored.member.episodes.is_empty()
             || restored.last.is_some()
+            || restored.det.has_active()
         {
             self.restores.episodes_discarded += 1;
         }
@@ -587,6 +709,10 @@ impl Engine {
                 live.quarantine_through =
                     max_opt(live.quarantine_through, restored.quarantine_through);
                 live.restored_through = max_opt(live.restored_through, restored.restored_through);
+                // Detection: the return baseline and latest print are facts; episodes are claims
+                // and stay this run's own.
+                live.det.returns = restored.det.returns;
+                live.det.last_seen = restored.det.last_seen.or(live.det.last_seen);
                 live.dirty = true;
                 live.recheck_at = i64::MAX;
                 true
@@ -601,6 +727,11 @@ impl Engine {
                 sym.setup = BullFlag::default();
                 sym.last = None;
                 sym.news_first_seen = None;
+                sym.det = SymDetect {
+                    returns: std::mem::take(&mut sym.det.returns),
+                    last_seen: sym.det.last_seen,
+                    ..SymDetect::default()
+                };
                 sym.halted = false;
                 sym.dirty = true;
                 sym.recheck_at = i64::MAX;
@@ -638,6 +769,9 @@ impl Engine {
         }
         if self.setup_policy.hash != other.setup_policy.hash {
             return Some("setup_policy");
+        }
+        if self.detection_policy().map(|p| &p.hash) != other.detection_policy().map(|p| &p.hash) {
+            return Some("detection_policy");
         }
         None
     }
@@ -790,6 +924,7 @@ impl Engine {
                 integrity: Integrity::default(),
                 quarantine_through: None,
                 restored_through: None,
+                det: SymDetect::default(),
             }
         });
         self.by_inst.entry(sym.inst.clone()).or_insert(name);
@@ -854,6 +989,17 @@ impl Engine {
         if !sym.ids.insert(key) {
             self.revisions.duplicates_dropped += 1;
             return out;
+        }
+        if let Some(det) = self.detector.as_mut() {
+            detect::on_print(
+                det,
+                &mut sym.det,
+                &t.id(),
+                exec,
+                admit.nanos(),
+                t.price.micros(),
+                verdict.ohlc,
+            );
         }
         sym.ledger.push_back(Admitted {
             id: t.id(),
@@ -945,6 +1091,12 @@ impl Engine {
             self.revisions.too_late += 1;
             return out;
         }
+        if let Some(det) = self.detector.as_mut() {
+            // What the print says after this revision: a price only if it still sets one.
+            let now = rev.corrected.filter(|c| c.verdict.ohlc).map(|c| c.price);
+            let (id, exec) = (sym.ledger[i].id.clone(), sym.ledger[i].exec);
+            detect::on_revision(det, &mut sym.det, &id, exec, now, admit.nanos());
+        }
         let was_volume = sym.ledger[i].volume();
         let was_counted = sym.ledger[i].counted;
         let queued = sym.ledger[i].queued;
@@ -1016,6 +1168,9 @@ impl Engine {
             .or(folded_at)
             .unwrap_or(0);
         let rebuilt = Self::rebuild_windows(sym, &mo, bar_ns, b);
+        if let Some(det) = self.detector.as_ref() {
+            detect::features::rebuild_returns(det, &mut sym.det, &sym.bars, bar_ns);
+        }
         if !rebuilt {
             // The window the next decisions read is not provably the stream's, so anything
             // measured over a window stops being reported until the symbol's state is sound.
@@ -1150,7 +1305,8 @@ impl Engine {
         let mut due = i64::MAX;
         for s in self.syms.values() {
             // An active member's momentum window slides every barrier, print or not.
-            if s.dirty || s.member.active().is_some() {
+            // So does a detection episode's lifecycle (expiry, staleness), print or not.
+            if s.dirty || s.member.active().is_some() || s.det.has_active() {
                 return b;
             }
             for a in s.ledger.iter().filter(|a| a.queued) {
@@ -1183,8 +1339,41 @@ impl Engine {
             if due && let Some(d) = self.evaluate(&name, date, b, tau) {
                 out.push(d);
             }
+            self.detect_symbol(&name, date, b, tau);
         }
         self.publish_panel(b, tau);
+    }
+
+    /// Runs the detection families for one symbol at barrier `b`, when detection is on and the
+    /// symbol has a bar completing now or an episode whose lifecycle advances with the clock.
+    fn detect_symbol(&mut self, name: &str, date: NaiveDate, b: i64, tau: i64) {
+        let Some(det) = self.detector.as_mut() else {
+            return;
+        };
+        let bar_ns = self.policy.body.grid.bar_secs * SEC;
+        let run_cov = self.run.numerator_coverage;
+        let s = self.syms.get_mut(name).expect("known symbol");
+        let fresh_bar = s.bars.back().is_some_and(|x| x.end == b);
+        let pending_halt = s.halted || s.det.halted_since.is_some();
+        if !(fresh_bar || s.det.has_active() || pending_halt) {
+            return;
+        }
+        let x = detect::Barrier {
+            b,
+            tau,
+            bar_ns,
+            run_id: &self.run.run_id,
+            fidelity: self.run.fidelity,
+            symbol: &s.name,
+            inst: &s.inst,
+            date,
+            bars: &s.bars,
+            halted: s.halted,
+            coverage_partial: s.coverage.map_or(run_cov, |(c, _)| c) == Coverage::Partial,
+            untrusted: s.integrity.window_untrusted || s.integrity.volume_untrusted,
+            restored_through: s.restored_through,
+        };
+        detect::step(det, &mut s.det, &x);
     }
 
     /// Ranks the active members at barrier `b` and logs the panel when it changed.

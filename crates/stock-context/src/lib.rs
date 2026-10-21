@@ -12,9 +12,13 @@
 //! The pillars are a published heuristic StockWatcher measures, not a validated trading rule and
 //! not Warrior Trading's scanner. Nothing here ranks, scores or predicts.
 //!
+//! `detect` adds the EXPERIMENTAL Detection Panel families (`policy/detection-v0.json`,
+//! `docs/stock-context/detection-core.md`), off unless the caller enables them.
+//!
 //! Pure and synchronous: no I/O, no clocks, no providers. The server feeds prints and evidence
 //! records; a provider outage only means fewer records (UNKNOWN), never a blocked print.
 
+pub mod detect;
 pub mod engine;
 pub mod evaluate;
 pub mod evidence;
@@ -25,6 +29,12 @@ pub mod policy;
 pub mod revision;
 pub mod setup;
 
+pub use detect::{
+    Assessment, Certainty, Check, ContextClass, DETECTION_V0, DataStatus, DetectionPolicy,
+    DetectionSnapshot, DetectionTelemetry, DetectionTransition, Episode as DetectionEpisode,
+    Family, FeatureSnapshot, Gap, LevelVersion, MicroAnchors, QuietReference, Resolution, State,
+    SymbolDetections, TradeEvidence,
+};
 pub use engine::{
     Adoption, Decision, Engine, Fidelity, MissingPillar, PanelRow, PanelSnapshot, RestoreTelemetry,
     RunInfo, SPARK_BARS, Timeline, Verdict, VolumeFacts,
