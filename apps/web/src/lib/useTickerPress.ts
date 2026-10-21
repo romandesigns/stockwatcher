@@ -1,5 +1,5 @@
 import { createTapHold } from "@stockwatcher/shared";
-import { useEffect, useLayoutEffect, useMemo, useRef, type MouseEvent, type PointerEvent } from "react";
+import { useLayoutEffect, useMemo, useRef, type MouseEvent, type PointerEvent } from "react";
 import { showToast } from "./toastStore.ts";
 
 /** Copies a ticker and says so. Clipboard writes need a user gesture: the hold is one. */
@@ -23,7 +23,7 @@ export function useTickerPress(symbol: string, onTap: () => void) {
     latest.current = { symbol, onTap };
   });
   const th = useMemo(() => createTapHold({ onTap: () => latest.current.onTap(), onHold: () => copyTicker(latest.current.symbol) }), []);
-  useEffect(() => () => th.cancel(), [th]);
+  useLayoutEffect(() => () => th.cancel(), [th]);
   return {
     onPointerDown: (e: PointerEvent) => {
       if (e.button === 0) th.down();

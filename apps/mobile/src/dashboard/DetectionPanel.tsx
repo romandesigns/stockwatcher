@@ -92,7 +92,7 @@ export function DetectionPanel({ channel, onPick, reducedMotion }: { channel: De
             <View style={stale ? styles.stale : undefined}>
               {/* A reset remounts the recognizer and cancels its delayed tap/hold. Price updates
                   keep this key so ordinary ticks never abandon a deliberate press. */}
-              {shown.map((group) => <DetectionRow key={`${epoch}/${group.selected.instrument_id}/${group.symbol}`} group={group} reducedMotion={reducedMotion} currentAvailable={!stale} onPick={() => pick(group.selected, epoch)} onDetail={() => setDetail({ id: group.selected.episode_id, epoch })} />)}
+              {shown.map((group) => <DetectionRow key={`${epoch}/${group.selected.instrument_id}/${group.selected.episode_id}`} group={group} reducedMotion={reducedMotion} currentAvailable={!stale} onPick={() => pick(group.selected, epoch)} onDetail={() => setDetail({ id: group.selected.episode_id, epoch })} />)}
             </View>
           )}
           {groups.length > PAGE && (
