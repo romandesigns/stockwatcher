@@ -101,6 +101,8 @@ fn evidence(e: &mut Engine, sym: &str, close: i64, float: u64) {
         favorability: Favorability::Favorable,
         published_at: Some(t(7, 0, 0)),
         observed_at: t(7, 0, 1),
+        tag: Tag::Present,
+        rules: "fixture".into(),
     });
 }
 

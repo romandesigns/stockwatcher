@@ -97,6 +97,8 @@ fn main() {
                 favorability: Favorability::Favorable,
                 published_at: Some(pre),
                 observed_at: pre,
+                tag: Tag::Present,
+                rules: "bench".into(),
             });
         }
     }

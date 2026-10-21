@@ -12,7 +12,7 @@
 
 use chrono::NaiveDate;
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 pub struct InstrumentId(pub String);
@@ -219,8 +219,23 @@ pub enum Favorability {
     Undetermined,
 }
 
+/// Whether a news version still tags the instrument it is stored under.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Tag {
+    /// This version tags the instrument.
+    #[default]
+    Present,
+    /// This version no longer tags it: the symbol tag was removed upstream. A tombstone, not a
+    /// deletion — the story's earlier versions stay in the store, so a decision made before this
+    /// version was observed replays exactly as it was made.
+    Removed,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct NewsItem {
+    /// The story identity, stable across versions (`news:<provider>:<article id>`): the key
+    /// [`EvidenceStore::news_current`] resolves one current version per.
     pub id: String,
     pub version: u32,
     pub instrument: InstrumentId,
@@ -237,6 +252,12 @@ pub struct NewsItem {
     pub published_at: Option<i64>,
     /// When StockWatcher first saw this version (the time a forward decision may use).
     pub observed_at: i64,
+    /// Whether the version still tags this instrument ([`Tag::Removed`]: a tombstone).
+    pub tag: Tag,
+    /// The normalization rules that derived the classification fields (`news-rules-v1`,
+    /// `news-rules-v2`, …). Carried on the record like a policy hash is carried on a decision:
+    /// a changed rule is a new identity over the same stored stories, never an edit of them.
+    pub rules: String,
 }
 
 /// Which news sources were searched successfully, over what window, for one instrument, or for
@@ -322,11 +343,45 @@ impl EvidenceStore {
         latest(self.float.get(i), cutoff, |r| (r.observed_at, r.version))
     }
     /// Every news version first observed at or before `cutoff` (later edits are separate rows).
+    ///
+    /// This is the raw history, several versions of one story included: it is what replays an
+    /// older semantics and what the engine scans for the next time a story ages out. A pillar
+    /// reads [`EvidenceStore::news_current`] instead, or a version a later edit disqualified
+    /// keeps qualifying for ever.
     pub fn news(&self, i: &InstrumentId, cutoff: i64) -> Vec<&NewsItem> {
         self.news
             .get(i)
             .map(|v| v.iter().filter(|n| n.observed_at <= cutoff).collect())
             .unwrap_or_default()
+    }
+
+    /// The **latest visible version of each story** at `cutoff`, tombstones removed, in story
+    /// order.
+    ///
+    /// For every story id (`NewsItem::id`) the version with the highest `(version, observed_at)`
+    /// observed at or before the cutoff wins, and the story is dropped when that version no
+    /// longer tags the instrument ([`Tag::Removed`]). Distinct stories are never collapsed.
+    ///
+    /// Causality is unchanged: a version is invisible until its own `observed_at`, so an edit
+    /// cannot reach a decision already made, and the superseded rows stay in the store.
+    pub fn news_current(&self, i: &InstrumentId, cutoff: i64) -> Vec<&NewsItem> {
+        let mut by_story: BTreeMap<&str, &NewsItem> = BTreeMap::new();
+        for n in self.news.get(i).into_iter().flatten() {
+            if n.observed_at > cutoff {
+                continue;
+            }
+            match by_story.get_mut(n.id.as_str()) {
+                Some(cur) if (n.version, n.observed_at) <= (cur.version, cur.observed_at) => {}
+                Some(cur) => *cur = n,
+                None => {
+                    by_story.insert(n.id.as_str(), n);
+                }
+            }
+        }
+        by_story
+            .into_values()
+            .filter(|n| n.tag == Tag::Present)
+            .collect()
     }
     /// The earliest `observed_at` after `t` of any record for `i`: when this instrument's visible
     /// evidence next changes.
@@ -435,11 +490,21 @@ impl EvidenceStore {
         n += keep_latest(&mut self.intraday, before, |r| (r.observed_at, r.version));
         n += keep_latest(&mut self.float, before, |r| (r.observed_at, r.version));
         n += keep_latest(&mut self.coverage, before, |r| (r.observed_at, 0));
+        // News is pruned per story, not per row: a story keeps every version it has while any
+        // one of them is still readable. Dropping a superseded version on its own would let
+        // `news_current` fall back to an older, qualifying version of a story a later edit
+        // disqualified — pruning must never change a verdict.
         for rows in self.news.values_mut() {
             let len = rows.len();
-            rows.retain(|r| {
-                r.observed_at > before || r.published_at.is_some_and(|p| p >= before - news_fresh)
-            });
+            let keep: std::collections::HashSet<String> = rows
+                .iter()
+                .filter(|r| {
+                    r.observed_at > before
+                        || r.published_at.is_some_and(|p| p >= before - news_fresh)
+                })
+                .map(|r| r.id.clone())
+                .collect();
+            rows.retain(|r| keep.contains(&r.id));
             n += len - rows.len();
         }
         self.news.retain(|_, v| !v.is_empty());
@@ -506,6 +571,8 @@ mod tests {
             favorability: Favorability::Undetermined,
             published_at,
             observed_at,
+            tag: Tag::Present,
+            rules: "fixture".into(),
         }
     }
 

@@ -329,8 +329,10 @@ pub fn news(
         "relevant substantive credible news published within {}s",
         fresh / SEC
     );
+    // One current version per story (`news_current`), never every version ever observed: a
+    // version a later edit disqualified, or whose symbol tag was removed, must stop qualifying.
     let qualifying: Vec<_> = store
-        .news(inst, cutoff)
+        .news_current(inst, cutoff)
         .into_iter()
         .filter(|n| {
             n.relevant

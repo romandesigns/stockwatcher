@@ -55,6 +55,8 @@ fn news_at(policy: Policy, gap_secs: i64, item_observed: Option<i64>) -> PillarR
             favorability: Favorability::Favorable,
             published_at: Some(obs - S),
             observed_at: obs,
+            tag: Tag::Present,
+            rules: "fixture".into(),
         });
     }
     e.apply(

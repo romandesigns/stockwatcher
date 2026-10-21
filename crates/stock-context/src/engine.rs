@@ -783,7 +783,7 @@ impl Engine {
         let float_r = evaluate::float(policy, ev, &s.inst, tau);
         let (news_r, news_s) = evaluate::news(policy, ev, &s.inst, tau);
         s.news_first_seen = ev
-            .news(&s.inst, tau)
+            .news_current(&s.inst, tau)
             .into_iter()
             .filter(|n| news_s.items.contains(&format!("{}@{}", n.id, n.version)))
             .map(|n| n.observed_at)

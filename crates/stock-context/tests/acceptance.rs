@@ -134,6 +134,8 @@ fn news(
         favorability: fav,
         published_at: Some(published),
         observed_at: observed,
+        tag: Tag::Present,
+        rules: "fixture".into(),
     }
 }
 

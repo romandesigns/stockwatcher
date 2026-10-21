@@ -14,11 +14,39 @@
 use crate::evidence::{FloatRecord, NewsCoverageRecord, NewsVersionRecord};
 use std::collections::{BTreeMap, BTreeSet};
 use stock_context::{
-    Authenticity, Favorability, FloatObservation, InstrumentId, NewsCoverage, NewsItem,
+    Authenticity, Favorability, FloatObservation, InstrumentId, NewsCoverage, NewsItem, Tag,
 };
 
 pub const FLOAT_RULES_VERSION: &str = "float-rules-v1";
-pub const NEWS_RULES_VERSION: &str = "news-rules-v1";
+
+pub const NEWS_RULES_V1: &str = "news-rules-v1";
+pub const NEWS_RULES_V2: &str = "news-rules-v2";
+/// The rules a new run normalizes stories under. Older identities stay callable
+/// ([`news_items_with`]) so the same stored history can be re-read exactly as a past decision
+/// read it.
+pub const NEWS_RULES_VERSION: &str = NEWS_RULES_V2;
+
+/// Which headline rules to classify under.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NewsRules {
+    /// The first rules: any phrase in [`NOISE_RULES`] anywhere in the headline makes the whole
+    /// headline commentary. Kept so stored stories re-normalize exactly.
+    V1,
+    /// [`SCREEN_RULES`] still disqualify the headline wherever they appear, but a
+    /// [`PRICE_COMMENTARY_RULES`] remark appended to a clause that states a company event no
+    /// longer cancels the event.
+    #[default]
+    V2,
+}
+
+impl NewsRules {
+    pub fn tag(self) -> &'static str {
+        match self {
+            NewsRules::V1 => NEWS_RULES_V1,
+            NewsRules::V2 => NEWS_RULES_V2,
+        }
+    }
+}
 
 /// Flags that make a retrieval unusable as float evidence (it still counts for versioning).
 /// - `no_row`: the provider returned no usable float figure.
@@ -234,6 +262,10 @@ pub const EVENT_RULES: [(&str, &[&str]); 7] = [
 
 /// Headlines that are market commentary or screens, not news about the company itself: never
 /// substantive whatever keyword they contain ("10 stocks with whale alerts", movers lists).
+///
+/// `news-rules-v1` applies all of these to the whole headline. `news-rules-v2` partitions exactly
+/// the same phrases into [`SCREEN_RULES`] and [`PRICE_COMMENTARY_RULES`] (nothing is dropped;
+/// `v2_drops_no_phrase_v1_used` asserts it) and treats the two differently.
 pub const NOISE_RULES: [&str; 14] = [
     "whale alerts",
     "unusual options",
@@ -249,6 +281,32 @@ pub const NOISE_RULES: [&str; 14] = [
     "trading lower",
     "price target",
     "analyst ratings",
+];
+
+/// `news-rules-v2`: the headline's own subject is a screen, a roundup or an analyst note. These
+/// disqualify wherever they appear — "12 Stocks Moving In Monday's Mid-Day Session: TEST Receives
+/// FDA Approval" is a list, not TEST's announcement.
+pub const SCREEN_RULES: [&str; 10] = [
+    "whale alerts",
+    "unusual options",
+    "options activity",
+    "stocks moving",
+    "movers",
+    "what's moving",
+    "mid-day",
+    "midday",
+    "price target",
+    "analyst ratings",
+];
+
+/// `news-rules-v2`: a remark about the tape. On its own it is commentary, but publishers append
+/// it to real announcements ("TEST Receives FDA Approval, Shares Trading Higher"), so it only
+/// disqualifies a headline in which no clause states a company event by itself.
+pub const PRICE_COMMENTARY_RULES: [&str; 4] = [
+    "52-week",
+    "shares are trading",
+    "trading higher",
+    "trading lower",
 ];
 
 /// More symbols than this on one story and it is a roundup: relevant to a symbol only when its
@@ -278,14 +336,53 @@ fn has_phrase(w: &str, phrase: &str) -> bool {
     w.contains(&format!(" {phrase} "))
 }
 
-/// `(event_type, noise)` for a headline.
-pub fn classify_headline(headline: &str) -> (&'static str, bool) {
-    let w = words(headline);
-    let noise = NOISE_RULES.iter().any(|p| has_phrase(&w, p));
-    let event = EVENT_RULES
+/// Clauses of a headline: publishers append a remark after a comma, a semicolon, a colon or a
+/// spaced dash. A bare `-` is not a boundary (it is inside "mid-day", "at-the-market", "52-week").
+fn clauses(headline: &str) -> Vec<String> {
+    headline
+        .replace(" - ", " , ")
+        .split([',', ';', ':', '\u{2013}', '\u{2014}', '|'])
+        .map(str::to_string)
+        .collect()
+}
+
+fn event_of(w: &str) -> Option<&'static str> {
+    EVENT_RULES
         .iter()
-        .find(|(_, phrases)| phrases.iter().any(|p| has_phrase(&w, p)))
-        .map_or("other", |(e, _)| e);
+        .find(|(_, phrases)| phrases.iter().any(|p| has_phrase(w, p)))
+        .map(|(e, _)| *e)
+}
+
+/// `(event_type, noise)` for a headline under the current rules ([`NEWS_RULES_VERSION`]).
+pub fn classify_headline(headline: &str) -> (&'static str, bool) {
+    classify_headline_with(NewsRules::default(), headline)
+}
+
+/// `(event_type, noise)` for a headline under `rules`.
+///
+/// The event type is the first [`EVENT_RULES`] category with a phrase in the headline, the same
+/// under every version. Only what counts as commentary differs: v1 disqualifies on any
+/// [`NOISE_RULES`] phrase, v2 on a [`SCREEN_RULES`] phrase, or on a [`PRICE_COMMENTARY_RULES`]
+/// phrase when **no** clause states a company event without one of its own.
+pub fn classify_headline_with(rules: NewsRules, headline: &str) -> (&'static str, bool) {
+    let w = words(headline);
+    let event = event_of(&w).unwrap_or("other");
+    let commentary = |text: &str| PRICE_COMMENTARY_RULES.iter().any(|p| has_phrase(text, p));
+    let noise = match rules {
+        NewsRules::V1 => NOISE_RULES.iter().any(|p| has_phrase(&w, p)),
+        NewsRules::V2 => {
+            if SCREEN_RULES.iter().any(|p| has_phrase(&w, p)) {
+                true
+            } else if !commentary(&w) {
+                false
+            } else {
+                !clauses(headline).iter().any(|c| {
+                    let cw = words(c);
+                    event_of(&cw).is_some() && !commentary(&cw)
+                })
+            }
+        }
+    };
     (event, noise)
 }
 
@@ -323,39 +420,78 @@ fn versions(records: &[NewsVersionRecord]) -> Vec<(u32, &NewsVersionRecord)> {
     out
 }
 
-/// Every news version as one `NewsItem` per tagged symbol (only `symbols` when given).
+/// Every news version as one `NewsItem` per tagged symbol (only `symbols` when given), under the
+/// current rules ([`NEWS_RULES_VERSION`]).
 pub fn news_items(
     records: &[NewsVersionRecord],
     symbols: Option<&BTreeSet<String>>,
 ) -> Vec<NewsItem> {
+    news_items_with(NewsRules::default(), records, symbols)
+}
+
+/// [`news_items`] under an explicit rules version, so a past decision's classification can be
+/// reproduced from the same stored stories.
+///
+/// A version that no longer tags a symbol an earlier version tagged also emits a **tombstone**
+/// for that symbol ([`Tag::Removed`]), observed when the edit was first seen. Without it the
+/// engine keeps reading the last version that named the symbol, so a story retagged away from it
+/// would qualify for ever. The tombstone is also marked neither relevant nor substantive, so a
+/// reader that ignores `tag` cannot qualify on it either.
+pub fn news_items_with(
+    rules: NewsRules,
+    records: &[NewsVersionRecord],
+    symbols: Option<&BTreeSet<String>>,
+) -> Vec<NewsItem> {
     let mut out = Vec::new();
+    let mut story: Option<(&str, &str)> = None;
+    let mut tagged_before: BTreeSet<&str> = BTreeSet::new();
     for (version, r) in versions(records) {
-        let (event_type, noise) = classify_headline(&r.headline);
+        let this = (r.provider.as_str(), r.article_id.as_str());
+        if story != Some(this) {
+            story = Some(this);
+            tagged_before = BTreeSet::new();
+        }
+        let (event_type, noise) = classify_headline_with(rules, &r.headline);
         let credible = r.provider == "alpaca"
             && CREDIBLE_SOURCES.contains(&r.source.to_ascii_lowercase().as_str());
+        let tagged_now: BTreeSet<&str> = r.symbols.iter().map(String::as_str).collect();
+        let item = |sym: &str, tag: Tag, relevant: bool, substantive: bool| NewsItem {
+            id: format!("news:{}:{}", r.provider, r.article_id),
+            version,
+            instrument: InstrumentId::symbol(sym),
+            event_type: event_type.into(),
+            source: format!("{}/{}", r.provider, r.source),
+            credible_source: credible,
+            relevant,
+            substantive,
+            // A news provider reporting a story: issuer or regulator confirmation is a
+            // separate, later enrichment.
+            authenticity: Authenticity::ReportedUnverified,
+            favorability: Favorability::Undetermined,
+            published_at: r.created_at_ns,
+            observed_at: r.first_observed_at,
+            tag,
+            rules: rules.tag().into(),
+        };
+        for sym in tagged_before.difference(&tagged_now) {
+            if symbols.is_none_or(|s| s.contains(*sym)) {
+                out.push(item(sym, Tag::Removed, false, false));
+            }
+        }
         for sym in &r.symbols {
             if symbols.is_some_and(|s| !s.contains(sym)) {
                 continue;
             }
             let relevant =
                 r.symbols.len() <= MAX_SYMBOLS_FOR_RELEVANCE || names_ticker(&r.headline, sym);
-            out.push(NewsItem {
-                id: format!("news:{}:{}", r.provider, r.article_id),
-                version,
-                instrument: InstrumentId::symbol(sym),
-                event_type: event_type.into(),
-                source: format!("{}/{}", r.provider, r.source),
-                credible_source: credible,
+            out.push(item(
+                sym,
+                Tag::Present,
                 relevant,
-                substantive: event_type != "other" && !noise,
-                // A news provider reporting a story: issuer or regulator confirmation is a
-                // separate, later enrichment.
-                authenticity: Authenticity::ReportedUnverified,
-                favorability: Favorability::Undetermined,
-                published_at: r.created_at_ns,
-                observed_at: r.first_observed_at,
-            });
+                event_type != "other" && !noise,
+            ));
         }
+        tagged_before = tagged_now;
     }
     out
 }
