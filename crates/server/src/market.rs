@@ -182,6 +182,7 @@ pub const QUOTES_INTERVAL: Duration = Duration::from_secs(1);
 /// | `LIVE_HISTORY_PRELOAD` | `1` | live: load every symbol's history from the archive in the background, not only on a chart's request (`crate::history`) |
 /// | `STOCK_CONTEXT` | `0` | five-pillar stock context and the Ross Panel (`crate::context`, `ross.*` / `context.get`) |
 /// | `CONTEXT_EVIDENCE_CHECK_SECS` | `15` | with `STOCK_CONTEXT`: how often the archive's float, news and baseline evidence is checked for new records (`crate::evidence`; 0 = only at startup and on a replay day switch) |
+/// | `ADMISSION_JOURNAL` | `0` | live with a recorder: write the admission journal beside the recording (`crate::admit`; ~190–270 B per print, so off for whole-market SIP: see `Market::init_history`) |
 #[derive(Clone, Debug)]
 pub struct MarketConfig {
     pub provider: ProviderConfig,
@@ -203,6 +204,10 @@ pub struct MarketConfig {
     pub stock_context: bool,
     /// `DETECTION_PANEL` (off by default): independent experimental discovery, not Ross admission.
     pub detection_panel: bool,
+    /// `ADMISSION_JOURNAL` (off by default): the live admission journal (`crate::admit`). Its
+    /// size and the reader's record cap make it unusable for a whole-market day; see
+    /// `Market::init_history`.
+    pub admission_journal: bool,
     /// Optional locally provisioned causal reference JSONL; never fetched from a provider.
     pub detection_quiet_references: Option<std::path::PathBuf>,
     /// `CONTEXT_EVIDENCE_CHECK_SECS`: period of the evidence check (`crate::evidence`); zero =
@@ -224,6 +229,7 @@ impl Default for MarketConfig {
             history_preload: true,
             stock_context: false,
             detection_panel: false,
+            admission_journal: false,
             detection_quiet_references: None,
             evidence_check: Duration::from_secs(crate::evidence::DEFAULT_CHECK_SECS),
         }
@@ -257,6 +263,9 @@ impl MarketConfig {
         }
         if let Some(v) = var("DETECTION_PANEL") {
             c.detection_panel = on(&v);
+        }
+        if let Some(v) = var("ADMISSION_JOURNAL") {
+            c.admission_journal = on(&v);
         }
         c.detection_quiet_references = var("DETECTION_QUIET_REFERENCES").map(Into::into);
         if let Some(v) = var("ARCHIVE_META_CHECK_SECS") {
@@ -1333,6 +1342,7 @@ impl Market {
                 session.recorder.clone(),
                 crate::history::wall_now(),
                 cfg.history_preload,
+                cfg.admission_journal,
             );
         }
         tokio::spawn(ingest(session.items, market.clone(), sim.clone()));
@@ -1345,6 +1355,10 @@ impl Market {
 
     /// A live market on a running session that loads its history from `archive` as if started
     /// at `now` (tests; [`Market::start`] does the same with the wall clock).
+    ///
+    /// Writes the admission journal, unlike production's default (`ADMISSION_JOURNAL=0`): the
+    /// restart tests built on this are what exercise the journal's proven-order restore, and a
+    /// test session is small enough for its cost not to matter.
     pub fn from_live_session(
         session: market_providers::ProviderSession,
         archive: Archive,
@@ -1362,7 +1376,7 @@ impl Market {
             PriceBand::DEFAULT,
             ArchiveMeta::default(),
         );
-        market.init_history(archive, session.recorder.clone(), now, preload);
+        market.init_history(archive, session.recorder.clone(), now, preload, true);
         tokio::spawn(ingest(session.items, market.clone(), None));
         market.spawn_quotes_task();
         market

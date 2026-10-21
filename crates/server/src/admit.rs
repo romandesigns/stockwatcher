@@ -1291,4 +1291,58 @@ mod tests {
             );
         }
     }
+
+    /// Measurement, not a gate: bytes on disk per journalled SIP-shaped print, with the writer's
+    /// checkpoint cadence at its extremes (one checkpoint per record, which is what a writer woken
+    /// per print does at an ordinary rate, up to one per 4,096-record batch).
+    ///
+    /// `cargo test -p stockwatcher-server --lib admit::tests::measure_bytes_per_record -- --ignored --nocapture`
+    #[test]
+    #[ignore = "measurement"]
+    fn measure_bytes_per_record() {
+        let syms = ["AAPL", "TSLA", "SOFI", "NVDA", "GME", "ABCDE"];
+        let exch = ["V", "P", "D", "Q", "K"];
+        let n = 100_000u64;
+        let (sink, rx, _c) = AdmissionSink::new(n as usize + 1);
+        for k in 0..n {
+            let exec = at(10, 0, 0) + (k as i64) * 1_700_000;
+            let mut t = Trade::new(
+                syms[(k % 6) as usize],
+                UnixNanos(exec),
+                Price::from_cents(1234 + (k % 50) as i64),
+                1 + (k % 300),
+                52_983_525_029_461 + k * 37,
+            )
+            .with_exchange(exch[(k % 5) as usize])
+            .with_source(market_events::Source::AlpacaSip)
+            .with_conditions(["@", "I"]);
+            t.receive_ts = Some(UnixNanos(exec + 3_000_000));
+            sink.record(&MarketEvent::Trade(t), Some((true, true)), exec + 4_000_000);
+        }
+        let all: Vec<AdmissionRecord> = rx.try_iter().collect();
+        for batch in [1usize, 16, 4_096] {
+            let tmp = tempfile::tempdir().expect("tmp");
+            let mut w = AdmissionWriter::open(
+                tmp.path(),
+                day(),
+                at(10, 0, 0),
+                identity("live", "recorded_live"),
+            )
+            .expect("open");
+            for chunk in all.chunks(batch) {
+                w.append(chunk).expect("append");
+                w.checkpoint().expect("checkpoint");
+            }
+            drop(w);
+            let bytes: u64 = std::fs::read_dir(tmp.path())
+                .expect("dir")
+                .filter_map(|e| e.ok())
+                .map(|e| std::fs::metadata(e.path()).map(|m| m.len()).unwrap_or(0))
+                .sum();
+            println!(
+                "batch {batch}: {n} records, {bytes} B, {:.1} B/record",
+                bytes as f64 / n as f64
+            );
+        }
+    }
 }

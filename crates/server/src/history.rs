@@ -337,6 +337,7 @@ impl Market {
         recorder: Option<Recorder>,
         now: UnixNanos,
         preload: bool,
+        admission_journal: bool,
     ) {
         let started = Instant::now();
         let mut journal_writer = None;
@@ -344,7 +345,18 @@ impl Market {
         // from, this run writes down what it admits so a later process can prove it replayed the
         // same inputs in the same order (`crate::admit`). Without a recorder there is nothing to
         // restore from, so there is nothing to prove and no journal is written.
-        if recorder.is_some() {
+        //
+        // **Opt-in (`ADMISSION_JOURNAL`, off by default).** Measured at 187–268 B per journalled
+        // print (`admit::tests::measure_bytes_per_record`) against the recording's ~20 B sealed,
+        // a whole-market SIP day (~40M prints) would be ~7.5–10.7 GB of journal beside a ~0.8 GB
+        // recording, moved into `live-original/` and copied to the Pi with it. And at that scale
+        // it cannot do its job: the reader stops at `JOURNAL_RECORDS_MAX` (4M records, the first
+        // ~10% of such a day), so any restore after mid-morning reports `journal_too_large` and
+        // falls back to the recording's own order anyway — the same figures, labelled
+        // `Unverified` — which is exactly what a run without a journal does
+        // (`no_admission_journal`). It earns its cost on fixture, replay-sized or narrowed
+        // research runs; whole-market live leaves it off.
+        if recorder.is_some() && admission_journal {
             let (sink, rx, counters) =
                 crate::admit::AdmissionSink::new(crate::admit::QUEUE_CAPACITY);
             if self.0.admissions.set(Arc::new(sink)).is_ok() {
@@ -949,42 +961,75 @@ fn script(
         .values()
         .any(|(e, v)| matches!(e, MarketEvent::Trade(_)) && v.is_none());
 
+    // Deliveries the proof does not cover are **merged** into the journal's steps by delivery
+    // time, never appended after all of them. Appending was only right for an unverified tail.
+    // A recording that starts before the journal does — the first boot of a build that journals,
+    // on a day an earlier build (or a boot with `ADMISSION_JOURNAL=0`) recorded the morning of —
+    // has its whole pre-journal part as leftovers, and the journal's steps include every global
+    // clock up to this boot's present. Replayed after those clocks, every morning print is behind
+    // the chart engine's watermark and excluded as late: the charts, quote rows, the Halt watcher
+    // and the scanner all lost the day before the restart, on every restart of that day. A
+    // leftover goes before the first journal step that is later than its delivery, which is
+    // where the run that admitted it had it.
+    leftover.sort_by_key(|e| receive_time(e).0);
+    let mut leftover: VecDeque<MarketEvent> = leftover.into();
     let mut steps = Vec::with_capacity(mine.len() + leftover.len());
+    let mut before_journal = false;
+    let mut journal_steps = 0usize;
+    let push_leftovers_before =
+        |t: i64, steps: &mut Vec<Step>, leftover: &mut VecDeque<MarketEvent>| -> bool {
+            let mut any = false;
+            while leftover.front().is_some_and(|e| receive_time(e).0 < t) {
+                let event = leftover.pop_front().expect("just checked");
+                steps.push(Step::Event {
+                    event,
+                    verdict: None,
+                    admitted_at: None,
+                    derive_clock: true,
+                });
+                any = true;
+            }
+            any
+        };
     for (i, a) in mine.iter().enumerate() {
         if a.rec.w == Kind::Clock {
             if i < clock_cutoff
                 && let Some(to) = a.rec.e
             {
+                if push_leftovers_before(to, &mut steps, &mut leftover) && journal_steps == 0 {
+                    before_journal = true;
+                }
                 steps.push(Step::Clock(to));
+                journal_steps += 1;
             }
             continue;
         }
         if let Some((event, verdict)) = joined.remove(&i) {
+            let t = receive_time(&event).0;
+            if push_leftovers_before(t, &mut steps, &mut leftover) && journal_steps == 0 {
+                before_journal = true;
+            }
             steps.push(Step::Event {
                 event,
                 verdict,
                 admitted_at: Some(a.rec.a),
                 derive_clock: i >= clock_cutoff,
             });
+            journal_steps += 1;
         }
     }
-    leftover.sort_by_key(|e| receive_time(e).0);
-    for event in leftover.drain(..) {
-        steps.push(Step::Event {
-            event,
-            verdict: None,
-            admitted_at: None,
-            derive_clock: true,
-        });
-    }
+    push_leftovers_before(i64::MAX, &mut steps, &mut leftover);
     // In order of what it tells a reader: a recorder drop means the recording is short of what
-    // the run admitted, a tail means the order past a point is unknown, and events outside the
-    // proof mean the same for them.
+    // the run admitted, a recording that begins before its journal has an unproven morning, a
+    // tail means the order past a point is unknown, and events outside the proof mean the same
+    // for them.
     let unproven = if missing > 0 {
         Some("recorder_drops")
     } else if unknown_verdict {
         Some("journal_verdict_unproven")
-    } else if steps.len() > mine.len() {
+    } else if before_journal {
+        Some("journal_starts_after_recording")
+    } else if steps.len() > journal_steps {
         tail_reason.or(Some("journal_unproven_tail"))
     } else {
         tail_reason
@@ -1781,6 +1826,82 @@ mod tests {
             plan.unproven
         );
         assert_eq!(plan.steps.len(), 1);
+    }
+
+    /// The first deploy of a journalling build, mid-day: the morning was recorded by a build that
+    /// wrote no journal, and this boot's own segment holds only whole-market clocks from its start
+    /// onward. The morning's prints are leftovers to the journal and must replay **before** those
+    /// clocks. Appended after them, the chart engine's watermark was already at the present and
+    /// every one of them was excluded as late: charts, quote rows, the Halt watcher and the
+    /// scanner all lost the day before the restart.
+    #[test]
+    fn a_recording_that_starts_before_its_journal_keeps_its_morning() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let root = tmp.path().to_path_buf();
+        let id = named_build();
+        let h = history_over(&root, fixture_day());
+        let dir = h.archive.live_dir(fixture_day());
+
+        let early = delivered("ABCD", 1, fixture_at(9, 0, 0), 100);
+        let later = delivered("ABCD", 2, fixture_at(9, 45, 0), 300);
+        let after = delivered("ABCD", 3, fixture_at(10, 6, 0), 50);
+        // This boot started at 10:00: its segment has clocks and, later, one ABCD admission.
+        let mut w = market_archive::admissions::AdmissionWriter::open(
+            &dir,
+            fixture_day(),
+            fixture_at(10, 0, 0),
+            id.clone(),
+        )
+        .expect("open");
+        w.append(&[
+            clock_to(1, fixture_at(10, 0, 15)),
+            clock_to(2, fixture_at(10, 5, 0)),
+            admitted(3, &after, Some((true, true))),
+            clock_to(4, fixture_at(10, 7, 0)),
+        ])
+        .expect("append");
+        w.seal().expect("seal");
+        drop(w);
+
+        let plan = script(
+            &h,
+            fixture_day(),
+            "ABCD",
+            vec![early.clone(), later.clone(), after.clone()],
+            false,
+        );
+        assert_eq!(
+            plan.unproven,
+            Some("journal_starts_after_recording"),
+            "the morning's order is not the journal's to prove, and it says so"
+        );
+        let shape: Vec<&str> = plan
+            .steps
+            .iter()
+            .map(|s| match s {
+                Step::Clock(_) => "clock",
+                Step::Event { .. } => "event",
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            vec!["event", "event", "clock", "clock", "event", "clock"],
+            "the morning first, then the journal's own order: {shape:?}"
+        );
+
+        let mut b = Builder::new(Arc::new(market_archive::PrevCloses::default()))
+            .with_context(context_engine());
+        for st in &plan.steps {
+            b.step(st);
+        }
+        let cx = b.context.as_mut().expect("a context engine");
+        cx.advance_to(UnixNanos(fixture_at(10, 8, 0)));
+        let d = cx.current().next().expect("a decision").clone();
+        assert_eq!(
+            (d.volume.shares, d.volume.trades),
+            (450, 3),
+            "every recorded print counts, the morning's included"
+        );
     }
 
     /// Two deliveries of one print join one admission each, in order.
