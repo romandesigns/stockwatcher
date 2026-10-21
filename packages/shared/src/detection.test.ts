@@ -60,6 +60,17 @@ describe("raw Rust -> display projection", () => {
     expect(detectionPrice(3_400_001)).toBe("$3.400001");
     expect(detectionPrice(125_001)).toBe("$0.125001");
   });
+
+  test("certainty survives restored replay history and recognized ignition is not a trigger", () => {
+    const f = frame(); const raw = f.snapshot!.active[0]!;
+    f.transitions.push({ sequence: 1, emitted_at: 105, input_watermark: 105, restored: true, transition: { seq: 1, transition_id: "t1", episode_id: raw.episode_id, symbol: raw.symbol, family: raw.family, variant: raw.variant, from: "armed", to: "crossing_provisional", event: "crossing_provisional", reason: "post_arm_print_above_trigger", certainty: "provisional", observed_at: 104, bar_end: null, cutoff: null, trade: null, features: null, level: raw.levels[0]!, anchors: null, correction_of: null, warmup: false, default_visible: true } });
+    const e = detectionSnapshotView(f)!.episodes[0]!;
+    expect(e.status).toBe("provisional"); expect(e.restored).toBe(true);
+    expect(e.timeline[0]!.warmup).toBe(false);
+    expect(detectionMatches({ ...e, family: "ignition", state: "recognized" }, "triggered")).toBe(false);
+    expect(detectionMatches({ ...e, family: "range_breakout", state: "confirmed" }, "triggered")).toBe(false);
+    expect(detectionMatches({ ...e, state: "trigger_observed" }, "triggered")).toBe(true);
+  });
 });
 
 describe("snapshot cursor, freshness and source isolation", () => {
@@ -140,5 +151,20 @@ test("real WS client resubscribes detection and ignores a retired socket's queue
   expect(seen).toEqual(["fixture:1", "fixture:2"]);
   expect(sockets).toHaveLength(2);
   expect(sockets[1]!.sent.some((x) => x === '{"type":"detection.subscribe"}')).toBe(true);
+  client.close();
+});
+
+test("malformed detection delivery is explicit and requests one repair snapshot", () => {
+  let repairs = 0;
+  const channel = createDetectionChannel({ subscribe() {}, unsubscribe() {}, resync: () => repairs++ });
+  const socket = new Socket();
+  const client = createWsClient({ url: "ws://fixture", createSocket: () => socket, onDetection: channel.apply, onDetectionError: channel.reject });
+  socket.open(); socket.receive(frame());
+  socket.receive({ type: "detection.update", enabled: true });
+  socket.receive({ type: "detection.update", enabled: true });
+  expect(channel.get().error).toBe("invalid_detection_frame");
+  expect(channel.get().resyncing).toBe(true); expect(channel.get().connected).toBe(false);
+  expect(channel.get().snapshot!.episodes).toHaveLength(1); expect(repairs).toBe(1);
+  socket.receive(frame()); expect(channel.get().error).toBeNull();
   client.close();
 });

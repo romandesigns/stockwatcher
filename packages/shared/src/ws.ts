@@ -31,6 +31,7 @@ export interface WsClientOptions {
   /** `ross.snapshot` / `ross.update` frames, while subscribed (see `subscribeRoss`). */
   onRoss?: (message: RossMessage) => void;
   onDetection?: (message: DetectionMessage) => void;
+  onDetectionError?: (reason: string) => void;
   /** The price alerts' frames (`alerts.history`, `alert.fired`, …): every connection gets them. */
   onAlerts?: (message: AlertsServerMessage) => void;
   /**
@@ -132,7 +133,10 @@ export function createWsClient(opts: WsClientOptions): WsClient {
       // A callback already queued on a retired socket must not overwrite a new source/epoch.
       if (stopped || socket !== ws) return;
       const msg = parseServerMessage(ev.data);
-      if (!msg) return;
+      if (!msg) {
+        if (typeof ev.data === "string" && /"type"\s*:\s*"detection\.(snapshot|update)"/.test(ev.data)) opts.onDetectionError?.("invalid_detection_frame");
+        return;
+      }
       armLiveness();
       if (msg.type === "welcome") {
         attempt = 0;

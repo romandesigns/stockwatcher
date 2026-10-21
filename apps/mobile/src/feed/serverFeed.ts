@@ -96,6 +96,7 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
     onPressure: (m) => pressure.apply(m),
     onRoss: (m) => ross.apply(m),
     onDetection: (m) => detection.apply(m),
+    onDetectionError: (reason) => detection.reject(reason),
     // Price alerts (Activity, fires): the app store takes them whatever tab is open.
     onAlerts,
     // Synced settings (src/settings/sync.ts): attached on every welcome by the shared client.

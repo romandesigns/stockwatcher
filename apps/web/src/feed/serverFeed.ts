@@ -69,6 +69,7 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
     onPressure: (m) => pressure.apply(m),
     onRoss: (m) => ross.apply(m),
     onDetection: (m) => detection.apply(m),
+    onDetectionError: (reason) => detection.reject(reason),
     onAlerts: opts.onAlerts,
     settings: opts.settings,
     createSocket: (url) => {

@@ -74,6 +74,7 @@ export function DetectionPanel({ channel, onPick, reducedMotion }: { channel: De
         <>
           {stale && <Text accessibilityRole="alert" style={styles.warning}>{state.resyncing ? "Resyncing · current assessment unavailable" : "Reconnecting · last received state"}{snapshot ? ` · ${at(snapshot.cutoff)}` : ""}</Text>}
           {state.coverageLost && <Text accessibilityRole="alert" style={styles.warning}>Transition history is incomplete. Current rows remain available; this is not a complete research record.</Text>}
+          {state.error && state.error !== "transition_history_incomplete" && <Text accessibilityRole="alert" style={styles.warning}>{words(state.error)}</Text>}
           <FilterStrip label="Detection family" options={DETECTION_FILTERS} value={filter} onChange={(id) => { setFilter(id as DetectionFilter); setPage(0); }} />
           <View style={styles.line}>
             <View style={{ flex: 1 }}><FilterStrip label="Episode history" options={[{ id: "active", label: "Active" }, { id: "recent", label: `Recent history (${terminalCount})` }]} value={history ? "recent" : "active"} onChange={(id) => { setHistory(id === "recent"); setPage(0); }} /></View>
@@ -166,7 +167,7 @@ const DetectionRow = memo(function DetectionRow({ group, reducedMotion, currentA
       </Pressable>
       <Action label="Details" onPress={onDetail} />
     </View>
-    <Text style={[styles.state, { color: stateColor(e.state) }]}>{detectionFamilyLabel(e.family)} · {e.state === "near" && blocked.length > 0 ? "Near trigger — blocked" : detectionStateLabel(e.state)}{e.status === "provisional" ? " · provisional" : ""}</Text>
+    <Text style={[styles.state, { color: stateColor(e.state) }]}>{detectionFamilyLabel(e.family)} · {detectionStateLabel(e.state)}{e.status === "provisional" ? " · provisional" : ""}{e.restored ? " · restored history" : ""}</Text>
     <Text style={e.price_stale ? styles.warning : styles.meta}>{e.price_age_ms === null ? "Price age unavailable" : `Price age ${(e.price_age_ms / 1000).toFixed(1)}s`}{e.price_stale ? " · current assessment unavailable" : ""}{e.raw.warmup ? " · restored warmup" : ""}</Text>
     {e.raw.recognition?.in_research_band === false && <Text style={styles.meta}>Outside research band at recognition · active profile preserved</Text>}
     <Text style={styles.meta}>{e.trading_date} · first {at(e.first_detected_at)} · changed {at(e.last_material_transition_at)}{group.episodes.length > 1 ? ` · ${group.episodes.length} episodes` : ""}</Text>

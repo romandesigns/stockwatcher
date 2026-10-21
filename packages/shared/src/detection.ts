@@ -40,7 +40,9 @@ export interface DetectionTransition {
   input_cutoff: number;
   bar_end: number | null;
   input_sequence: number | null;
-  status: "provisional" | "confirmed" | "retracted" | "restored" | "terminal" | "correction" | "unknown";
+  status: "provisional" | "confirmed" | "retracted" | "terminal" | "correction" | "unknown";
+  restored: boolean;
+  warmup: boolean;
   tested_level_id: string | null;
   tested_level_version: number | null;
   supersedes: string | null;
@@ -66,6 +68,7 @@ export interface DetectionEpisode {
   bar_end: number | null;
   state: string;
   status: DetectionTransition["status"];
+  restored: boolean;
   terminal: boolean;
   resolved_at: number | null;
   reason: string | null;
@@ -114,7 +117,7 @@ export interface DetectionCoreFeatures { bar_end: number; cutoff: number; [name:
 export interface DetectionCoreTransition {
   seq: number; transition_id: string; episode_id: string; symbol: string; family: string; variant: string;
   from: string | null; to: string; event: string; reason: string; certainty: string; observed_at: number;
-  bar_end: number | null; cutoff: number | null; trade: { trade_id: string; exec: number; admit: number; price: number } | null;
+  bar_end: number | null; cutoff: number | null; trade: { trade_id: { source: string; exchange: string; seq: number }; exec: number; admit: number; price: number } | null;
   features: DetectionCoreFeatures | null; level: DetectionCoreLevel | null; anchors: Record<string, unknown> | null;
   correction_of: string | null; warmup: boolean; default_visible: boolean;
 }
@@ -214,7 +217,7 @@ function capturedLoss(telemetry: Record<string, unknown>): boolean {
 /** Each update is a full replacement. Cursor jumps are therefore valid coalescing; a missing
  * significant transition is detected from its separate history sequence, never guessed from
  * the price-frame cadence. A reconnect does not replay notifications (there are none here). */
-export function createDetectionChannel(io: { subscribe(): void; unsubscribe(): void; resync?(): void; source?: MarketSource }): DetectionChannel & { apply(m: DetectionMessage): void; setConnected(open: boolean): void } {
+export function createDetectionChannel(io: { subscribe(): void; unsubscribe(): void; resync?(): void; source?: MarketSource }): DetectionChannel & { apply(m: DetectionMessage): void; reject(reason?: string): void; setConnected(open: boolean): void } {
   let state = EMPTY_DETECTION;
   const listeners = new Set<() => void>();
   const retired: string[] = [];
@@ -228,6 +231,12 @@ export function createDetectionChannel(io: { subscribe(): void; unsubscribe(): v
   };
   return {
     get: () => state,
+    reject(reason = "invalid_detection_frame") {
+      state = { ...state, connected: false, resyncing: true, error: reason };
+      const key = `${state.frame?.runEpoch ?? "pending"}/${reason}`;
+      if (requested !== key) { requested = key; (io.resync ?? io.subscribe)(); }
+      emit();
+    },
     subscribe(fn) {
       listeners.add(fn);
       if (listeners.size === 1) io.subscribe();
@@ -263,10 +272,10 @@ export function createDetectionChannel(io: { subscribe(): void; unsubscribe(): v
   };
 }
 
-const certainty = (raw: string, warmup: boolean): DetectionTransition["status"] => warmup ? "restored" : ["provisional", "confirmed", "retracted", "terminal", "correction"].includes(raw) ? raw as DetectionTransition["status"] : "unknown";
+const certainty = (raw: string): DetectionTransition["status"] => ["provisional", "confirmed", "retracted", "terminal", "correction"].includes(raw) ? raw as DetectionTransition["status"] : "unknown";
 const transitionView = (r: DetectionRecordedTransition): DetectionTransition => {
   const t = r.transition;
-  return { transition_id: t.transition_id, episode_id: t.episode_id, sequence: t.seq, previous_state: t.from, state: t.to, event: t.event, reason: t.reason, observed_at: t.observed_at, input_cutoff: t.cutoff ?? t.observed_at, bar_end: t.bar_end, input_sequence: r.input_watermark, status: certainty(t.certainty, r.restored || t.warmup), tested_level_id: t.level?.level_id ?? null, tested_level_version: t.level?.version ?? null, supersedes: t.correction_of };
+  return { transition_id: t.transition_id, episode_id: t.episode_id, sequence: t.seq, previous_state: t.from, state: t.to, event: t.event, reason: t.reason, observed_at: t.observed_at, input_cutoff: t.cutoff ?? t.observed_at, bar_end: t.bar_end, input_sequence: r.input_watermark, status: certainty(t.certainty), restored: r.restored, warmup: t.warmup, tested_level_id: t.level?.level_id ?? null, tested_level_version: t.level?.version ?? null, supersedes: t.correction_of };
 };
 
 /** Alias an engine level into one display pair. Both original identities/versions remain
@@ -308,7 +317,7 @@ export function detectionSnapshotView(m: DetectionMessage): DetectionSnapshot | 
     featureEvidence(e.anchors, "anchors", e.first_detected_at, "engine causal anchor", evidence);
     evidence.push({ name: "quiet_context", value: e.context, units: "", state: null, required: false, rule: null, reason: null, source: "engine context", as_of: at, observed_at: at });
     const context = m.context?.[e.symbol];
-    return { episode_id: e.episode_id, instrument_id: e.instrument, symbol: e.symbol, run_id: s.run_id, source: m.source, fidelity: e.fidelity, trading_date: e.trading_date, segment: e.segment, family: e.family, variant: e.variant, policy_id: policyId ?? s.policy, policy_hash: m.policyHash ?? shortHash, parent_episode_id: e.parent_episode_id, related_episode_ids: e.related_episode_ids, first_detected_at: e.first_detected_at, last_material_transition_at: e.last_material_at, input_cutoff: e.recognition?.cutoff ?? at, bar_end: e.first_bar_end, state: e.state, status: last?.status ?? (e.warmup ? "restored" : "unknown"), terminal: e.resolution !== null, resolved_at: e.resolution?.at ?? null, reason: e.resolution?.reason ?? null, price: e.current?.price ?? null, price_at: e.current?.price_exec ?? null, price_age_ms: e.current?.price_age_ms ?? null, price_stale: e.current?.stale ?? true, near_trigger: typeof e.current?.near_trigger === "boolean" ? e.current.near_trigger : null, level: levels.at(-1) ?? null, level_history: levels, evidence, timeline: history, coverage: e.warmup ? "restored/reconstructed — forward coverage unverified" : "collection completeness unverified", ross_member: context?.ross_member ?? null, catalyst: context?.catalyst ?? "unknown", default_visible: e.default_visible, raw: e };
+    return { episode_id: e.episode_id, instrument_id: e.instrument, symbol: e.symbol, run_id: s.run_id, source: m.source, fidelity: e.fidelity, trading_date: e.trading_date, segment: e.segment, family: e.family, variant: e.variant, policy_id: policyId ?? s.policy, policy_hash: m.policyHash ?? shortHash, parent_episode_id: e.parent_episode_id, related_episode_ids: e.related_episode_ids, first_detected_at: e.first_detected_at, last_material_transition_at: e.last_material_at, input_cutoff: e.recognition?.cutoff ?? at, bar_end: e.first_bar_end, state: e.state, status: last?.status ?? "unknown", restored: last?.restored ?? false, terminal: e.resolution !== null, resolved_at: e.resolution?.at ?? null, reason: e.resolution?.reason ?? null, price: e.current?.price ?? null, price_at: e.current?.price_exec ?? null, price_age_ms: e.current?.price_age_ms ?? null, price_stale: e.current?.stale ?? true, near_trigger: typeof e.current?.near_trigger === "boolean" ? e.current.near_trigger : null, level: levels.at(-1) ?? null, level_history: levels, evidence, timeline: history, coverage: e.warmup ? "restored/reconstructed — forward coverage unverified" : "collection completeness unverified", ross_member: context?.ross_member ?? null, catalyst: context?.catalyst ?? "unknown", default_visible: e.default_visible, raw: e };
   });
   const unavailable = new Map<string, number>();
   const interrupted = s.data_status.interrupted_symbols;
@@ -346,7 +355,7 @@ export function detectionMatches(e: DetectionEpisode, filter: DetectionFilter): 
     case "ignition": return e.family === "ignition" || e.family === "expansion" || e.family === "range_breakout";
     case "micro": return e.family === "micro_pullback";
     case "near": return !e.terminal && !e.price_stale && (e.near_trigger === true || ["crossing_provisional", "crossing_wick"].includes(e.state));
-    case "triggered": return ["trigger_observed", "confirmed", "recognized"].includes(e.state);
+    case "triggered": return e.state === "trigger_observed";
     case "ross": return e.ross_member === true;
     case "catalyst": return e.catalyst === "qualifying";
     default: return true;
