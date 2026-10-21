@@ -1,5 +1,15 @@
 # Early setups: `bull_flag_v0` (setups-v0, EXPERIMENTAL)
 
+> **Superseded for the Ross Panel on 2026-10-21 (owner decision).** The rows' cues now come from
+> the detection policy's micro-pullback, `detection-v2` variant MP5, the same episodes the
+> Detection Panel shows ([ross-panel-v1.md](ross-panel-v1.md) "Row cues",
+> [detection-core.md](detection-core.md) "One pullback detector"). On the 2026-10-07..20 holdout
+> BF1 (this family with a 5 % pole) scored 0.163 against MP5's 0.183 for "+3 % before −1.5 %",
+> intervals overlapping. The code (`crates/stock-context/src/setup.rs`) and `setups-v0.json` are
+> kept unchanged so the research harness (`research/setup-compare`) reproduces; no engine row
+> runs it any more, and `tests/setups.rs` pins its behaviour directly. What follows describes it
+> as it was shipped; "the engine" below means the pre-2026-10-21 engine.
+
 Owner product decision (Roman, 2026-10-20): every Ross Panel member is monitored continuously for
 an early bullish setup, before confirmation, so the UI can show cues. Implemented in
 `crates/stock-context/src/setup.rs` and `engine.rs`; policy

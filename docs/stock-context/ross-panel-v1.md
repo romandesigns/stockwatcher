@@ -82,8 +82,11 @@ with the chart engine's verdict when the symbol is loaded, with its own conditio
 history is still being loaded (the chart engine applies it later; the context engine never sees
 it twice). Admission time is the print's receive time when known. The server runs
 **`pillars-v2`** (`Policy::current()`: price pillar on the app's own $0.10–$25 band, 120 s news
-coverage lag), `ross-panel-v1` and the EXPERIMENTAL `setups-v0`; it refuses to start context
-when either band differs from `PRICE_BAND_MIN` / `MAX`.
+coverage lag), `ross-panel-v1` and the EXPERIMENTAL `detection-v2` for the row cues (section
+"Row cues" below); it refuses to start context when either band differs from `PRICE_BAND_MIN` /
+`MAX`. Halts, link drops and provider errors reach the cue detector whether or not
+`DETECTION_PANEL` is on, so a gap ends a member's episode exactly as it ends the Detection
+Panel's.
 
 Evidence (`crates/server/src/evidence.rs`, every `CONTEXT_EVIDENCE_CHECK_SECS` = 15 s, off the
 market path): float observations and news items written by `swimport evidence`, market-wide
@@ -99,11 +102,48 @@ Wire: `ross.subscribe` / `ross.snapshot` / `ross.update` and `context.get` / `co
 recorder's coverage records are consulted (a PASS on an incomplete count still stands: missing
 prints only lower it).
 
+## Row cues: one pullback detector (owner decision 2026-10-21)
+
+Each row's `setup` is read from the engine's **`micro_pullback`** episodes under the product
+detection policy **`detection-v2`** (variant `micro_pullback_mp5`; `stock_context::cue`,
+[detection-core.md](detection-core.md) "One pullback detector"). It replaced `bull_flag_v0`
+([setups-v0.md](setups-v0.md)), whose code is kept for research reproducibility only. The Ross
+Panel and the Detection Panel show the same episodes, levels, states and ids, so they cannot
+disagree. With `DETECTION_PANEL=0` (production) the engine runs only this family and only for
+the panel's members: a member is stepped from its first member barrier (the 20-bar lookback
+reaches a pullback already under way) and its episode is interrupted (`left_panel`) when it
+leaves. Measured on this machine with 10 members (`examples/ross_cue_cost.rs`): about +26 µs
+per barrier, +6–8 ns per print and +41 KiB held, inside the noise of a 3,000-symbol barrier.
+
+**Why.** A 21-day comparison (pre-registered protocol and frozen choice on the
+`research/setup-compare` branch, `docs/research/setup-compare/`) scored each detector's
+"+3 % before −1.5 %" outcome after its trigger. On the 2026-10-07..20 holdout, micro-pullback MP5
+(impulse ≥ 5 %, depth ≤ 38.2 %, impulse coverage ≥ 75 %) reached a precision of **0.183**,
+bull_flag_v0 BF1 **0.163**, confidence intervals overlapping: MP5 is slightly ahead, not shown to
+be better, and a triggered cue **failed about three times in four**.
+
+**So the cues describe stages; they are not validated entry signals.** Labels (web and phone
+share `packages/shared/src/ross.ts`):
+
+| Detector state | `setup.state` (wire) | Shown as | Tone |
+|---|---|---|---|
+| `pullback_forming`, `armed` | `forming` | Pullback (with "trigger X" once armed) | muted |
+| `armed`, price within 1 % below the trigger | `near` | At trigger | amber, edge |
+| `crossing_provisional` | `crossing` | Crossing (a full bar must still close above) | accent, pulse, edge |
+| `trigger_observed`, held 120 s | `triggered` | Broke trigger | normal text, never green, no edge |
+| `invalidated`, held 120 s | `invalidated` | Failed | dimmed |
+
+`attention` counts `near` and `crossing` only: a broke-trigger is history, not a call to act.
+The trigger meter runs from the pullback low (the failure level) to the trigger, whose end mark is
+neutral. Notes name levels and distances ("5.30 · 0.8% away · 1.1% over low"), never a stop or an
+entry. The wire keeps the earlier coarse tokens so an older client still decodes; new fields are
+`stage` (the detector state), `variant`, `episode_id`, `impulse_bp`, `depth_milli`,
+`pullback_bars`, `near_trigger`, `stale`, `to_invalidation_bp` and `resolution`; the snapshot's
+`setup_policy` is `detection-v2@<hash>`.
+
 ## Not here yet
 
-Append-only decision log on disk, Signals UI, ignition. Per-member setup monitoring exists as
-the EXPERIMENTAL `bull_flag_v0` family ([setups-v0.md](setups-v0.md)): each row carries `setup`,
-plus `move_1m_bp`, `from_high_bp`, `rvol_milli`, `float_shares`, `news_first_seen`, `missing`
+Append-only decision log on disk, ignition. Each row carries `setup` (above), plus `move_1m_bp`, `from_high_bp`, `rvol_milli`, `float_shares`, `news_first_seen`, `missing`
 (non-passing pillars) and `spark` (the last 20 completed 15 s bar closes); the snapshot carries
 `setup_policy` and `attention`. With `pillars-v2` the price pillar uses the app's own $0.10–$25
 band, so the reference $2–$20 price failure described above applies to v1 only.

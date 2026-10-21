@@ -52,9 +52,11 @@ for a separately authorized runtime transition. It has **not** been applied to p
 Preserve existing provider, archive, authentication, Ross and other feature settings. Use the
 existing authorized data; this increment requests no new subscription or acquisition.
 
-`DETECTION_PANEL=1` enables the current experimental profile, `detection-v1`. It preserves
-the active $0.10–$25 band and reports the $0.15–$25 research band separately. v1 adds the
-100bp near-trigger geometry cue to the unchanged v0 signal profile. See the exact hashed
+`DETECTION_PANEL=1` enables the current experimental profile, `detection-v2` (detection-v1 with
+the micro-pullback as variant MP5, owner decision 2026-10-21; its episodes are also the Ross
+Panel's cues, with or without this flag). It preserves the active $0.10–$25 band and reports the
+$0.15–$25 research band separately. v1 added the 100bp near-trigger geometry cue to the
+unchanged v0 signal profile. See the exact hashed
 policies and [core definitions](detection-core.md). Near-trigger is not a probability.
 
 When an archive handle is available, the server writes separate create-new

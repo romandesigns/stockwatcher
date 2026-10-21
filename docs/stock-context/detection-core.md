@@ -18,9 +18,11 @@ The detectors are part of `stock_context::Engine` and read exactly what the pill
 admission ledger (identity, duplicates, corrections and cancels), the 15 s grid with its 2 s
 settle, the completed bars, coverage and integrity flags, and observed halts. They run for **every
 symbol the engine sees**, with or without a chart, Ross membership, news or float, and they never
-change a pillar decision, the Ross Panel or `bull_flag_v0` (`tests/detection_core.rs`
-`ross_membership_and_panels_are_untouched_by_detection`). Detection is off unless the caller
-builds the engine with `.with_detection_policy(DetectionPolicy::v0())`. The engine is pure: no I/O
+change a pillar decision or Ross membership (`tests/detection_core.rs`
+`ross_membership_and_panels_are_untouched_by_detection`). The Detection Panel is off unless the
+caller builds the engine with `.with_detection_policy(DetectionPolicy::current())`; since
+detection-v2 the micro-pullback alone still runs for Ross members without it, because the Ross
+rows' cues are its episodes (section "One pullback detector" below). The engine is pure: no I/O
 and no wall clock.
 
 ### API
@@ -224,7 +226,9 @@ trade-driven breakout crossing (see limits).
 ### `micro_pullback` — `micro_pullback_v0` (**ours**, values from `setups-v0` where one exists)
 
 Independent of every other family, membership, news and float (handoff §6). Each stage applies
-only while no micro episode is active.
+only while no micro episode is active. The numbers below are detection-v0/v1's; the product runs
+detection-v2's variant `micro_pullback_mp5` (impulse ≥ 500 bp, depth ≤ 0.382, coverage ≥ 75 %,
+section "Policy versions"), which is also every Ross row's cue.
 
 **Anchors.** The lookback is 20 slots (setups-v0 `impulse_lookback_bars`), traded bars only, in the
 segment, after any requalification boundary.
@@ -323,7 +327,40 @@ restored prefix (`set_restored_through`) carries `warmup: true`, and is never a 
 - `detection-v0` (sha256 `9ee03f45…`): the families above. The first real-data engineering replay
   ran on it.
 - `detection-v1`: identical rules, plus `assessment.near_trigger_bp = 100`. That value is reused
-  from setups-v0 `near_bp`. `DetectionPolicy::current()` returns v1.
+  from setups-v0 `near_bp`.
+- `detection-v2` (owner decision 2026-10-21): v1 with the micro-pullback as variant **MP5** of the
+  pre-registered setup comparison (branch `research/setup-compare`,
+  `docs/research/setup-compare/frozen-choice.json` there): `impulse_min_bp` 500 (was 300),
+  `max_depth_milli` 382 (was 500), `impulse_min_coverage_milli` 750 (was 500), variant id
+  `micro_pullback_mp5`. Every other number is v1's. It adds `ross.outcome_hold_secs = 120`, how
+  long a Ross row keeps showing a `trigger_observed` or `invalidated` episode (display only).
+  `DetectionPolicy::current()` returns v2. v0 and v1 stay byte-identical and parseable, so records
+  citing their tags remain reproducible.
+
+### One pullback detector (detection-v2)
+
+The micro-pullback is the ONE pullback detector: the Detection Panel shows its episodes and every
+Ross Panel row's cue is read from them (`crates/stock-context/src/cue.rs`), replacing
+`bull_flag_v0` there. Same engine, same levels, same states, same episode ids, so the two panels
+cannot disagree (`tests/ross_cues.rs`,
+`the_ross_cue_and_the_detection_panel_are_one_detector`). With `DETECTION_PANEL=0` the engine
+still runs this one family, through the same `detect::step`, for the Ross members only
+(`Scope::RossMembers`); every other family and every non-member is skipped, the Detection Panel
+snapshot, journal, recent history and feature snapshots are not kept, and the transitions go to
+the engine's setup log. A member is stepped from its first member barrier (the 20-bar lookback
+already reaches a pullback that began before admission) and is interrupted with `left_panel`
+when it leaves. Measured cost on this machine (`examples/ross_cue_cost.rs`, 10 members): about
++26 µs per barrier, +6–8 ns per print, +41 KiB held; on a 3,000-symbol barrier that is inside the
+run-to-run noise.
+
+The comparison (21 trading days, 11 development, holdout 2026-10-07..20 scored once after the
+choice was frozen): on the holdout, MP5's precision for "+3 % before −1.5 %" after a
+`trigger_observed` was **0.183**, against bull_flag_v0 BF1's **0.163**, confidence intervals
+overlapping. MP5 is slightly ahead, not shown to be better, and a `trigger_observed` episode
+failed about **three times in four**. That is why the Ross cues are labelled as stages
+("Pullback", "At trigger", "Crossing", "Broke trigger", "Failed") and a broke-trigger is never
+shown as a green "go": they describe where the price stands against levels the engine can name,
+they are not validated entry signals.
 
 v1 adds one field to `current`: `near_trigger` is `Some(true)` when the latest fresh price is below
 the trigger by at most 100 bp of the price, using the exact integer test
