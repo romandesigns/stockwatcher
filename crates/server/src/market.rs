@@ -1843,10 +1843,16 @@ impl Market {
     /// agreed measurement program, never a latency guarantee or a comparison with anything.
     pub(crate) fn log_observations(&self) {
         let r = self.observation_report();
-        if r.captured == 0 {
+        let w = self.warmup_stats();
+        if r.captured == 0 && w.candidates == 0 {
             return;
         }
         tracing::info!(
+            warmup_candidates = w.candidates,
+            warmup_queued = w.queued,
+            warmup_filed = w.filed,
+            warmup_dropped_queue_full = w.full,
+            warmup_flush_errors = w.flush_errors,
             captured = r.captured,
             dropped = r.dropped,
             absorbed = r.absorbed,

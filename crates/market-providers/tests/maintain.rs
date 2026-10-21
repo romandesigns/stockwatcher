@@ -36,6 +36,8 @@ fn ok(v: serde_json::Value) -> Result<HttpResponse, String> {
 struct World {
     /// FAIL's trades answer 403 while set.
     fail: AtomicBool,
+    /// Daily-bars requests answer 503 while set (a transient provider failure).
+    bars_fail: AtomicBool,
     /// The day the server replays; `None` = the server is down.
     replaying: Mutex<Option<Option<&'static str>>>,
     /// Every trades request, by symbol and day.
@@ -77,6 +79,13 @@ impl Http for Router {
         }
         if url.contains("/v2/stocks/bars") {
             w.data_requests.lock().unwrap().push(url.to_string());
+            if w.bars_fail.load(Ordering::Relaxed) {
+                return Ok(HttpResponse {
+                    status: 503,
+                    body: b"{\"message\":\"upstream\"}".to_vec(),
+                    retry_after: None,
+                });
+            }
             return ok(json!({"bars": {
                 "AAA":  [{"t": "2026-10-19T04:00:00Z", "c": 1.0, "n": 2},
                          {"t": "2026-10-20T04:00:00Z", "c": 1.1, "n": 2}],
@@ -505,6 +514,8 @@ fn the_pre_market_announcement_fetch_is_stored_append_only_for_the_watch_list() 
             reason: "test".into(),
             outcome: None,
             done_at: None,
+            attempts: 0,
+            last_error: None,
         })
         .unwrap()
     );
@@ -581,5 +592,134 @@ fn the_status_file_round_trips_and_is_replaced_atomically() {
     assert!(
         line.starts_with("maintain ok: window 2026-09-21..2026-10-20 (22 days)"),
         "{line}"
+    );
+}
+
+/// A warmup whose fetch fails is tried again on the next run, and only closed once its attempts
+/// are spent.
+///
+/// `run_warmup` used to close every request with its outcome, success or not, so one transient
+/// provider failure cost an intraday band entrant its baseline, its previous close and its
+/// announcement coverage until the next session date — the audit's point about `.done`-ing a
+/// temporary failure.
+#[test]
+fn a_failed_warmup_is_retried_on_the_next_run_and_then_closed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let a = archive(tmp.path(), "0");
+    let world = Arc::new(World::default());
+    cycle(&world, &a, Some(&creds()), false);
+    let cfg = MaintainConfig {
+        warmup_max_attempts: 2,
+        ..config()
+    };
+    let make = {
+        let w = world.clone();
+        move || Ok::<_, String>(Router(w.clone()))
+    };
+    let stop = AtomicBool::new(false);
+    let m = Maintainer {
+        cfg: &cfg,
+        creds: Some(&creds()),
+        archive: &a,
+        make_http: &make,
+        stop: &stop,
+        wait: &|_| true,
+        log: &|_l: &str| {},
+    };
+    let day = d("2026-10-21");
+    assert!(
+        a.request_warmup(&market_archive::WarmupRequest {
+            symbol: "NEWB".into(),
+            session_date: day,
+            requested_at: utc("2026-10-21T02:00:00-04:00"),
+            reason: "server:no_daily_baseline".into(),
+            outcome: None,
+            done_at: None,
+            attempts: 0,
+            last_error: None,
+        })
+        .unwrap()
+    );
+
+    // The provider fails the warmup's daily bars. The request stays open, with the attempt and
+    // the error on it, so the next run tries again.
+    world.bars_fail.store(true, Ordering::Relaxed);
+    let rep = m.run_actions(utc("2026-10-21T03:30:00-04:00"));
+    assert_eq!(rep.warmed, 1);
+    let open = a.pending_warmups(day, 10).unwrap();
+    assert_eq!(open.len(), 1, "still open: {:?}", rep.errors);
+    assert_eq!(open[0].attempts, 1);
+    assert!(
+        open[0]
+            .last_error
+            .as_deref()
+            .is_some_and(|e| e.contains("raw bars"))
+    );
+    assert!(
+        rep.errors.iter().any(|e| e.contains("warmup")),
+        "{:?}",
+        rep.errors
+    );
+
+    // The second attempt spends the allowance: closed with the error, never retried again.
+    let rep = m.run_actions(utc("2026-10-21T04:00:00-04:00"));
+    assert!(
+        a.pending_warmups(day, 10).unwrap().is_empty(),
+        "attempts spent: {:?}",
+        rep.errors
+    );
+    assert!(
+        rep.errors.iter().any(|e| e.contains("attempts spent")),
+        "and it says so: {:?}",
+        rep.errors
+    );
+
+    // The provider recovers, but a request already closed is not re-run: a fresh ask is needed.
+    world.bars_fail.store(false, Ordering::Relaxed);
+    let rep = m.run_actions(utc("2026-10-21T04:30:00-04:00"));
+    assert_eq!(rep.warmed, 0);
+}
+
+/// And a warmup that works still closes on its first run.
+#[test]
+fn a_successful_warmup_closes_on_its_first_run() {
+    let tmp = tempfile::tempdir().unwrap();
+    let a = archive(tmp.path(), "0");
+    let world = Arc::new(World::default());
+    cycle(&world, &a, Some(&creds()), false);
+    let cfg = config();
+    let make = {
+        let w = world.clone();
+        move || Ok::<_, String>(Router(w.clone()))
+    };
+    let stop = AtomicBool::new(false);
+    let m = Maintainer {
+        cfg: &cfg,
+        creds: Some(&creds()),
+        archive: &a,
+        make_http: &make,
+        stop: &stop,
+        wait: &|_| true,
+        log: &|_l: &str| {},
+    };
+    let day = d("2026-10-21");
+    a.request_warmup(&market_archive::WarmupRequest {
+        symbol: "NEWB".into(),
+        session_date: day,
+        requested_at: utc("2026-10-21T02:00:00-04:00"),
+        reason: "server:no_daily_baseline".into(),
+        outcome: None,
+        done_at: None,
+        attempts: 0,
+        last_error: None,
+    })
+    .unwrap();
+    let rep = m.run_actions(utc("2026-10-21T03:30:00-04:00"));
+    assert_eq!(rep.warmed, 1);
+    assert!(a.pending_warmups(day, 10).unwrap().is_empty());
+    assert!(
+        !rep.errors.iter().any(|e| e.contains("warmup")),
+        "{:?}",
+        rep.errors
     );
 }

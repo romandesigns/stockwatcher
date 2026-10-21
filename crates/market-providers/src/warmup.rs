@@ -74,6 +74,8 @@ impl WarmupQueue {
             reason: reason.to_string(),
             outcome: None,
             done_at: None,
+            attempts: 0,
+            last_error: None,
         });
         Enqueue::Queued
     }

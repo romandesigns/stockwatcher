@@ -35,7 +35,7 @@ use serde_json::json;
 use std::collections::HashSet;
 use stock_context::{
     CloseBasis, Coverage, Decision, Engine, Fidelity, InstrumentId, OutputTelemetry, PanelPolicy,
-    PanelSnapshot, Policy, PrevClose, RunInfo, SetupPolicy, Verdict,
+    PanelSnapshot, Policy, PrevClose, RunInfo, SetupPolicy, Tri, Verdict,
 };
 
 /// What one [`ContextBoard::drain_outputs`] took off the engine, and what the engine had to drop
@@ -169,6 +169,25 @@ impl ContextBoard {
         self.drained
     }
 
+    /// Symbols in the band whose latest decision is missing evidence a warmup could supply, with
+    /// the reason, at most `max` ([`warmup_reason`]).
+    ///
+    /// In-memory only: it reads the latest decision per symbol, which is what the engine already
+    /// keeps, and allocates only the bounded result. Called under the core lock, so the caller
+    /// files the requests and writes the inbox afterwards, off the lock and off the market path.
+    pub(crate) fn missing_evidence(&self, max: usize) -> Vec<(String, &'static str)> {
+        let mut out = Vec::new();
+        for d in self.engine.current() {
+            if out.len() >= max {
+                break;
+            }
+            if let Some(r) = warmup_reason(d) {
+                out.push((d.symbol.clone(), r));
+            }
+        }
+        out
+    }
+
     /// The engine's output counters, drops included ([`stock_context::OutputTelemetry`]).
     pub(crate) fn output_telemetry(&self) -> OutputTelemetry {
         self.engine.output_telemetry()
@@ -293,4 +312,34 @@ pub(crate) fn disabled_frame() -> String {
 pub(crate) fn decision_frame(symbol: &str, d: Option<&Decision>, enabled: bool) -> String {
     json!({ "type": "context.decision", "symbol": symbol, "enabled": enabled, "decision": d })
         .to_string()
+}
+
+/// Pillar reasons a warmup can actually repair: a symbol that entered the band intraday was not
+/// on the day's watch list, so the maintainer never fetched its daily bars, its split snapshot or
+/// an announcement check for it.
+///
+/// Deliberately not here:
+/// - `insufficient_baseline` — a genuinely short history. A recent IPO cannot be given 30 prior
+///   sessions by asking again, and pretending otherwise would hide a real limit
+///   (`docs/stock-context/pillars-v1.md`).
+/// - `actions_coverage_expired` — the repair is the maintainer's periodic re-check, not a warmup.
+/// - anything about the price or today's volume, which no stored evidence changes.
+pub(crate) const WARMUP_REPAIRS: [&str; 5] = [
+    "no_previous_close",
+    "previous_close_date_mismatch",
+    "adjustment_coverage_unknown",
+    "adjustment_not_current",
+    "no_daily_baseline",
+];
+
+/// The first reason on `d` a warmup could repair, when the symbol is in the discovery band now.
+pub(crate) fn warmup_reason(d: &Decision) -> Option<&'static str> {
+    if d.in_discovery_band != Some(true) {
+        return None;
+    }
+    d.pillars
+        .iter()
+        .filter(|p| p.state == Tri::Unknown)
+        .map(|p| p.reason)
+        .find(|r| WARMUP_REPAIRS.contains(r))
 }

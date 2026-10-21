@@ -133,6 +133,10 @@ pub struct MaintainConfig {
     pub coverage: CoveragePolicy,
     /// Warmup requests handled per refresh tick.
     pub warmup_max_per_run: usize,
+    /// Fetch attempts a warmup request gets per session date. A failed attempt leaves the request
+    /// open for the next tick; at this many it is closed with the error, so a symbol the provider
+    /// keeps refusing costs a fixed number of fetches and never a loop.
+    pub warmup_max_attempts: u32,
 }
 
 impl Default for MaintainConfig {
@@ -144,6 +148,7 @@ impl Default for MaintainConfig {
             actions_fetch: true,
             coverage: CoveragePolicy::v1(),
             warmup_max_per_run: 50,
+            warmup_max_attempts: 4,
             window_days: 21,
             daily_bars_keep_days: 63,
             run_at: NaiveTime::from_hms_opt(21, 15, 0).expect("valid"),
@@ -278,6 +283,17 @@ impl MaintainConfig {
                     return Err(format!("WARMUP_MAX_PER_RUN must be 1..=500, got {n}"));
                 }
                 n
+            },
+            warmup_max_attempts: {
+                let n = num(
+                    "WARMUP_MAX_ATTEMPTS",
+                    var("WARMUP_MAX_ATTEMPTS"),
+                    d.warmup_max_attempts as usize,
+                )?;
+                if !(1..=20).contains(&n) {
+                    return Err(format!("WARMUP_MAX_ATTEMPTS must be 1..=20, got {n}"));
+                }
+                n as u32
             },
         })
     }
@@ -1305,16 +1321,34 @@ impl<H: Http + Send + 'static> Maintainer<'_, H> {
                 outcome = Err(format!("corporate actions: {e}"));
             }
         }
-        let text = match &outcome {
-            Ok(()) => "ok".to_string(),
-            Err(e) => {
-                errors.push(format!("warmup: {e}"));
-                e.clone()
+        // A failure is not the symbol's whole day: the request stays open for the next tick and
+        // is only closed once its attempts are spent. Closing on the first error made a single
+        // provider hiccup cost an intraday entrant its baseline until the next session date.
+        match &outcome {
+            Ok(()) => {
+                for r in reqs {
+                    if let Err(e) = self.archive.finish_warmup(r, "ok".to_string(), now) {
+                        errors.push(format!("warmup: {e}"));
+                    }
+                }
             }
-        };
-        for r in reqs {
-            if let Err(e) = self.archive.finish_warmup(r, text.clone(), now) {
-                errors.push(format!("warmup: {e}"));
+            Err(text) => {
+                errors.push(format!("warmup: {text}"));
+                for r in reqs {
+                    let (symbol, attempts) = (r.symbol.clone(), r.attempts + 1);
+                    match self.archive.defer_warmup(
+                        r,
+                        text.clone(),
+                        now,
+                        self.cfg.warmup_max_attempts,
+                    ) {
+                        Ok(true) => errors.push(format!(
+                            "warmup {symbol}: {attempts} attempts spent, closed"
+                        )),
+                        Ok(false) => {}
+                        Err(e) => errors.push(format!("warmup: {e}")),
+                    }
+                }
             }
         }
         symbols.len()

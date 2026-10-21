@@ -235,3 +235,80 @@ fn rejects_bad_symbols_and_foreign_files() {
         Err(ArchiveError::Format { .. })
     ));
 }
+
+/// A failed warmup attempt is not the symbol's whole day: the request stays open for the next
+/// run with its attempt counted, and is only closed once its attempts are spent.
+///
+/// Closing on the first error (the audit's point about the maintainer `.done`-ing a temporary
+/// failure) meant one provider hiccup cost an intraday band entrant its baseline until the next
+/// session date.
+#[test]
+fn a_failed_warmup_stays_open_until_its_attempts_are_spent() {
+    let tmp = tempfile::tempdir().unwrap();
+    let a = archive(tmp.path());
+    let d = day();
+    let at = chrono::Utc::now();
+    let req = market_archive::WarmupRequest {
+        symbol: "NEWW".into(),
+        session_date: d,
+        requested_at: at,
+        reason: "server:no_daily_baseline".into(),
+        outcome: None,
+        done_at: None,
+        attempts: 0,
+        last_error: None,
+    };
+    assert!(a.request_warmup(&req).unwrap());
+
+    // Two failures with three attempts allowed: still open, attempts and the error recorded.
+    for expected in 1..=2u32 {
+        let open = a.pending_warmups(d, 10).unwrap();
+        assert_eq!(open.len(), 1, "still open before attempt {expected}");
+        let closed = a
+            .defer_warmup(open[0].clone(), format!("boom {expected}"), at, 3)
+            .unwrap();
+        assert!(!closed, "attempt {expected} of 3 is not the last");
+        let again = a.pending_warmups(d, 10).unwrap();
+        assert_eq!(again[0].attempts, expected);
+        assert_eq!(
+            again[0].last_error.as_deref(),
+            Some(format!("boom {expected}").as_str())
+        );
+        assert!(again[0].outcome.is_none() && again[0].done_at.is_none());
+    }
+
+    // The third spends the allowance: closed with the error, and never retried.
+    let open = a.pending_warmups(d, 10).unwrap();
+    assert!(
+        a.defer_warmup(open[0].clone(), "boom 3".into(), at, 3)
+            .unwrap()
+    );
+    assert!(a.pending_warmups(d, 10).unwrap().is_empty());
+    assert!(
+        !a.request_warmup(&req).unwrap(),
+        "a closed request is not asked for again that day"
+    );
+}
+
+/// A success closes the request outright, with no attempt bookkeeping left behind.
+#[test]
+fn a_successful_warmup_closes_on_the_first_run() {
+    let tmp = tempfile::tempdir().unwrap();
+    let a = archive(tmp.path());
+    let d = day();
+    let at = chrono::Utc::now();
+    a.request_warmup(&market_archive::WarmupRequest {
+        symbol: "NEWW".into(),
+        session_date: d,
+        requested_at: at,
+        reason: "server:no_daily_baseline".into(),
+        outcome: None,
+        done_at: None,
+        attempts: 0,
+        last_error: None,
+    })
+    .unwrap();
+    let open = a.pending_warmups(d, 10).unwrap();
+    a.finish_warmup(open[0].clone(), "ok".into(), at).unwrap();
+    assert!(a.pending_warmups(d, 10).unwrap().is_empty());
+}

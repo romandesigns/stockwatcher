@@ -71,6 +71,7 @@ use market_archive::{
 use market_events::session::{previous_trading_day, sessions_for, trading_date};
 use market_events::{Price, UnixNanos};
 use market_providers::ClockMode;
+use market_providers::warmup::{Enqueue, WarmupQueue};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -582,7 +583,41 @@ fn start_minus(start: i64) -> DateTime<Utc> {
 pub struct Evidence {
     loader: Mutex<EvidenceLoader>,
     pub(crate) log: Mutex<EvidenceLog>,
+    /// The volume the records come from. The warmup inbox is written to it, never from the
+    /// market-event path.
+    archive: Archive,
+    /// Bounded, non-blocking warmup requests for symbols whose evidence a warmup could supply
+    /// ([`Market::request_warmups`]).
+    warmups: WarmupQueue,
+    stats: Mutex<WarmupStats>,
 }
+
+/// What the warmup requester has done, all of it counted rather than assumed
+/// ([`Market::request_warmups`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct WarmupStats {
+    /// Symbols seen missing evidence a warmup could supply.
+    pub candidates: u64,
+    /// New requests buffered in memory.
+    pub queued: u64,
+    /// Already asked for that date (buffered, filed or finished).
+    pub known: u64,
+    /// Dropped because the in-memory queue was full. The honest part.
+    pub full: u64,
+    /// The queue was locked that instant; the next tick asks again.
+    pub busy: u64,
+    /// Requests written to the archive inbox.
+    pub filed: u64,
+    /// Flushes that failed; the requests stay buffered for the next tick.
+    pub flush_errors: u64,
+}
+
+/// Symbols the requester collects per tick. A bound, not a target: the queue deduplicates per
+/// symbol and date, so a long tail is asked for over several ticks instead of all at once.
+pub const WARMUP_SCAN_MAX: usize = 200;
+
+/// In-memory warmup requests held before `capture` starts dropping them (and counting it).
+pub const WARMUP_QUEUE_CAPACITY: usize = 2_000;
 
 impl Market {
     /// Sets up this market's evidence (once) and starts loading it: a replay synchronously, here,
@@ -590,8 +625,11 @@ impl Market {
     pub(crate) fn init_evidence(&self, archive: Archive, band_max: Price, every: StdDuration) {
         let live = self.mode() == ClockMode::Live;
         let ev = Evidence {
-            loader: Mutex::new(EvidenceLoader::new(archive, band_max, live)),
+            loader: Mutex::new(EvidenceLoader::new(archive.clone(), band_max, live)),
             log: Mutex::new(EvidenceLog::default()),
+            archive,
+            warmups: WarmupQueue::new(WARMUP_QUEUE_CAPACITY),
+            stats: Mutex::new(WarmupStats::default()),
         };
         if self.0.evidence.set(ev).is_err() {
             return;
@@ -688,6 +726,92 @@ impl Market {
     pub(crate) fn refresh_evidence(&self) {
         self.load_evidence(None);
         self.deliver_evidence();
+        self.request_warmups();
+    }
+
+    /// Asks the archive maintainer to warm up the symbols whose evidence a warmup could supply.
+    ///
+    /// This is the half of the warmup path that was missing: `market_archive::warmup` and
+    /// `market_providers::warmup::WarmupQueue` existed and were tested, the maintainer consumed
+    /// the inbox, and nothing ever filed a request — so a stock that entered the band intraday
+    /// stayed gain/RVOL UNKNOWN all day however strongly it traded.
+    ///
+    /// Bounded and off both hot paths: the candidates are read from the latest decisions under
+    /// the core lock (in memory, `WARMUP_SCAN_MAX` at a time), the requests are buffered without
+    /// blocking, and the inbox is written here, on the evidence task's blocking thread. Drops,
+    /// contention and flush failures are counted, not assumed away; a failed flush leaves the
+    /// requests buffered for the next tick.
+    pub(crate) fn request_warmups(&self) {
+        let Some(ev) = self.0.evidence.get() else {
+            return;
+        };
+        let Some(day) = ev.log.lock().expect("evidence log lock").day() else {
+            return;
+        };
+        let missing = {
+            let core = self.0.core.lock().expect("core lock");
+            match core.context.as_ref() {
+                Some(cx) => cx.missing_evidence(WARMUP_SCAN_MAX),
+                None => return,
+            }
+        };
+        let now = Utc::now();
+        let mut s = WarmupStats {
+            candidates: missing.len() as u64,
+            ..WarmupStats::default()
+        };
+        for (symbol, reason) in &missing {
+            match ev
+                .warmups
+                .request(symbol, day, &format!("server:{reason}"), now)
+            {
+                Enqueue::Queued => s.queued += 1,
+                Enqueue::Known => s.known += 1,
+                Enqueue::Full => s.full += 1,
+                Enqueue::Busy => s.busy += 1,
+            }
+        }
+        match ev.warmups.flush(&ev.archive) {
+            Ok(n) => s.filed += n as u64,
+            Err(e) => {
+                s.flush_errors += 1;
+                tracing::warn!(day = %day, error = %e, "warmup requests: the inbox write failed; they stay buffered");
+            }
+        }
+        let total = {
+            let mut t = ev.stats.lock().expect("warmup stats lock");
+            t.candidates += s.candidates;
+            t.queued += s.queued;
+            t.known += s.known;
+            t.full += s.full;
+            t.busy += s.busy;
+            t.filed += s.filed;
+            t.flush_errors += s.flush_errors;
+            *t
+        };
+        if s.queued > 0 || s.filed > 0 || s.full > 0 || s.flush_errors > 0 {
+            tracing::info!(
+                day = %day,
+                candidates = s.candidates,
+                queued = s.queued,
+                filed = s.filed,
+                known = s.known,
+                dropped_queue_full = s.full,
+                busy = s.busy,
+                dropped_total = total.full,
+                filed_total = total.filed,
+                "warmup requests for missing evidence"
+            );
+        }
+    }
+
+    /// Everything the warmup requester has done since start (logs and tests).
+    pub(crate) fn warmup_stats(&self) -> WarmupStats {
+        self.0
+            .evidence
+            .get()
+            .map(|ev| *ev.stats.lock().expect("warmup stats lock"))
+            .unwrap_or_default()
     }
 
     /// Hands the running board the log's records it has not got. The batch is copied out with no
@@ -1444,5 +1568,153 @@ mod tests {
             Some(t(9, 0, 0)),
             "at 09:30 the 09:00 re-check is readable, as it was for a live 09:30"
         );
+    }
+
+    /// `XYZ` is on the watch list, so it has evidence. A symbol that entered the band intraday
+    /// has none, and nothing used to ask for any: `market_archive::warmup` and `WarmupQueue`
+    /// existed and were tested, the maintainer consumed the inbox, and no request was ever filed
+    /// (the audit's F2). The requester now files one, bounded, with the reason on it.
+    #[test]
+    fn a_symbol_missing_evidence_is_asked_for_by_name_and_only_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = archive(dir.path());
+        write_daily_world(&a);
+        write_collected(&a, t(7, 0, 0));
+        let log = Mutex::new(EvidenceLog::default());
+        let mut cx = board();
+        load(&a, &log, &mut cx);
+        trade(&mut cx, t(9, 30, 0), t(9, 32, 0));
+
+        // NEWW trades inside the band with no stored evidence of any kind.
+        let closes = PrevCloses::default();
+        let counted = Counted {
+            ohlc: true,
+            volume: true,
+        };
+        let mut x = t(9, 32, 0);
+        for n in 0..6 {
+            let tr = Trade::new("NEWW", UnixNanos(x), Price::from_cents(300), 50_000, n);
+            cx.apply_trade(&tr, counted, &closes);
+            x += 10 * SEC;
+        }
+        cx.advance(UnixNanos(t(9, 34, 0)));
+
+        let missing = cx.missing_evidence(WARMUP_SCAN_MAX);
+        assert!(
+            missing
+                .iter()
+                .any(|(s, r)| s == "NEWW" && crate::context::WARMUP_REPAIRS.contains(r)),
+            "the entrant is asked for: {missing:?}"
+        );
+        assert!(
+            !missing.iter().any(|(s, _)| s == SYM),
+            "a symbol with its evidence is not: {missing:?}"
+        );
+
+        // The queue files it once per symbol and date, with the reason, and the archive refuses
+        // a second request for the same day even from a fresh queue (a restart).
+        let q = WarmupQueue::new(WARMUP_QUEUE_CAPACITY);
+        let now = utc(t(9, 34, 1));
+        for (symbol, reason) in &missing {
+            assert_eq!(
+                q.request(symbol, dd(), &format!("server:{reason}"), now),
+                Enqueue::Queued
+            );
+            assert_eq!(
+                q.request(symbol, dd(), &format!("server:{reason}"), now),
+                Enqueue::Known
+            );
+        }
+        assert_eq!(q.flush(&a).unwrap(), missing.len());
+        let pending = a.pending_warmups(dd(), 100).unwrap();
+        assert!(pending.iter().any(|r| r.symbol == "NEWW"));
+        let neww = pending.iter().find(|r| r.symbol == "NEWW").unwrap();
+        assert!(
+            neww.reason.starts_with("server:"),
+            "the reason travels with it: {}",
+            neww.reason
+        );
+        assert_eq!((neww.attempts, neww.last_error.clone()), (0, None));
+        let fresh = WarmupQueue::new(WARMUP_QUEUE_CAPACITY);
+        assert_eq!(
+            fresh.request("NEWW", dd(), "server:again", now),
+            Enqueue::Queued,
+            "a restart buffers it again"
+        );
+        assert_eq!(
+            fresh.flush(&a).unwrap(),
+            0,
+            "but the inbox already has it: nothing new is filed"
+        );
+    }
+
+    /// A short history is not a missing one. A recent listing cannot be given 30 prior sessions
+    /// by asking again, so `insufficient_baseline` is never a warmup candidate — the limit is
+    /// reported, not papered over.
+    #[test]
+    fn a_short_history_is_not_a_warmup_candidate() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = archive(dir.path());
+        write_daily_world(&a);
+        write_collected(&a, t(7, 0, 0));
+        let log = Mutex::new(EvidenceLog::default());
+        let mut cx = board();
+        load(&a, &log, &mut cx);
+        trade(&mut cx, t(9, 30, 0), t(9, 32, 0));
+        let d = cx.decision(SYM).unwrap();
+        assert!(
+            crate::context::warmup_reason(d).is_none(),
+            "{:?}",
+            d.pillars
+        );
+        assert!(
+            !crate::context::WARMUP_REPAIRS.contains(&"insufficient_baseline"),
+            "a genuinely short history is not a missing baseline"
+        );
+        assert!(
+            !crate::context::WARMUP_REPAIRS.contains(&"actions_coverage_expired"),
+            "an expired check is repaired by the maintainer's re-check, not a warmup"
+        );
+    }
+
+    /// The scan is bounded: a long tail of symbols is asked for over several ticks instead of
+    /// all at once, and the in-memory queue counts what it had to drop.
+    #[test]
+    fn the_warmup_scan_and_queue_are_bounded_with_counted_drops() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = archive(dir.path());
+        let log = Mutex::new(EvidenceLog::default());
+        let mut cx = board();
+        load(&a, &log, &mut cx);
+        // Twelve band entrants, none with any evidence.
+        let closes = PrevCloses::default();
+        let counted = Counted {
+            ohlc: true,
+            volume: true,
+        };
+        let mut x = t(9, 30, 0);
+        for k in 0..12u32 {
+            let sym = format!("NW{k:02}");
+            for n in 0..4 {
+                let tr = Trade::new(&sym, UnixNanos(x), Price::from_cents(300), 50_000, n);
+                cx.apply_trade(&tr, counted, &closes);
+                x += SEC;
+            }
+        }
+        cx.advance(UnixNanos(t(9, 33, 0)));
+        assert_eq!(
+            cx.missing_evidence(5).len(),
+            5,
+            "the scan stops at the bound"
+        );
+        assert!(cx.missing_evidence(WARMUP_SCAN_MAX).len() >= 12);
+
+        let q = WarmupQueue::new(3);
+        let now = utc(t(9, 33, 1));
+        for (symbol, reason) in cx.missing_evidence(WARMUP_SCAN_MAX) {
+            q.request(&symbol, dd(), &format!("server:{reason}"), now);
+        }
+        assert!(q.dropped() > 0, "a full queue drops and counts it");
+        assert_eq!(q.flush(&a).unwrap(), 3, "what it held is filed");
     }
 }

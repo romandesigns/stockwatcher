@@ -29,6 +29,14 @@ pub struct WarmupRequest {
     pub outcome: Option<String>,
     #[serde(default)]
     pub done_at: Option<DateTime<Utc>>,
+    /// Fetches already spent on this request. A transient failure leaves the request open with
+    /// this raised ([`Archive::defer_warmup`]), so the next run tries again; a bound on it keeps
+    /// a symbol the provider keeps refusing from looping.
+    #[serde(default)]
+    pub attempts: u32,
+    /// Why the last attempt failed, while the request is still open.
+    #[serde(default)]
+    pub last_error: Option<String>,
 }
 
 impl Archive {
@@ -87,6 +95,37 @@ impl Archive {
         });
         out.truncate(max);
         Ok(out)
+    }
+
+    /// Puts a failed attempt back in the inbox for the next run, or closes it when its attempts
+    /// are spent. Returns whether the request was closed.
+    ///
+    /// Closing a request on every error (what `finish_warmup` used to be called for) made one bad
+    /// fetch permanent until the next session date, so a symbol that entered the band intraday
+    /// could stay without a baseline all day because of a single provider hiccup. The bound keeps
+    /// the other half of the promise: a symbol the provider keeps refusing costs `max_attempts`
+    /// fetches that day, never a loop.
+    pub fn defer_warmup(
+        &self,
+        mut req: WarmupRequest,
+        error: String,
+        at: DateTime<Utc>,
+        max_attempts: u32,
+    ) -> Result<bool, ArchiveError> {
+        req.attempts += 1;
+        req.last_error = Some(error.clone());
+        if req.attempts >= max_attempts.max(1) {
+            self.finish_warmup(req, error, at)?;
+            return Ok(true);
+        }
+        let dir = self.warmup_dir(req.session_date);
+        let path = dir.join(format!("{}.json", req.symbol));
+        std::fs::create_dir_all(&dir).map_err(|e| ArchiveError::io(&dir, e))?;
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, serde_json::to_vec(&req).expect("serializes"))
+            .map_err(|e| ArchiveError::io(&tmp, e))?;
+        std::fs::rename(&tmp, &path).map_err(|e| ArchiveError::io(&path, e))?;
+        Ok(false)
     }
 
     /// Closes a request with its outcome (`<SYMBOL>.done.json`); the open file is removed.
