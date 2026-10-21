@@ -1,12 +1,27 @@
-# Pull-request checks. release.yml calls this same workflow as its `checks`
-# job, so a push to main is gated by exactly what a PR is.
-# Every job here gates a release, so desktop and mobile checks live here
-# too and both callers pick them up.
+# The checks that gate a release. release.yml calls this workflow as its
+# `checks` job with which parts changed, so a push runs only the checks of
+# the parts it ships (owner, 2026-10-20: Actions spend keeps hitting the
+# billing limit, and work now goes straight to main without PRs). A
+# pull_request run (none are opened any more) still runs everything: an
+# absent input is null, and null != false.
 name: CI
 
 on:
   pull_request:
   workflow_call:
+    inputs:
+      web:
+        type: boolean
+        default: true
+      server:
+        type: boolean
+        default: true
+      mobile:
+        type: boolean
+        default: true
+      desktop:
+        type: boolean
+        default: true
 
 concurrency:
   group: ci-${{ github.event_name }}-${{ github.ref }}
@@ -19,6 +34,7 @@ permissions:
 jobs:
   web:
     name: Web and shared (test, lint, build)
+    if: ${{ inputs.web != false }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -45,6 +61,7 @@ jobs:
 
   server:
     name: Server (fmt, clippy, test)
+    if: ${{ inputs.server != false }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -64,6 +81,7 @@ jobs:
 
   mobile:
     name: Mobile (typecheck, lint, test, doctor, bundle)
+    if: ${{ inputs.mobile != false }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -103,6 +121,8 @@ jobs:
   desktop:
     name: Desktop (clippy, test, release scripts)
     # Windows, like the release build: no WebKitGTK packages to keep in sync.
+    # Billed at twice the Linux rate, so it runs only when desktop ships.
+    if: ${{ inputs.desktop != false }}
     runs-on: windows-latest
     timeout-minutes: 30
     defaults:

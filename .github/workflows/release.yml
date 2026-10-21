@@ -1,5 +1,8 @@
-# Every push to main ships everything (docs/CONVENTIONS.md, "Release
-# pipeline"). A red `checks` job ships nothing.
+# A push to main ships every part that changed since the last release that
+# fully succeeded (docs/CONVENTIONS.md, "Release pipeline"). A red `checks`
+# job ships nothing. Diffing against the last *successful* release, not the
+# previous push, matters: a run the billing block stopped (2026-10-20, #61)
+# leaves its changes unshipped, and the next push must pick them up.
 name: Release
 
 on:
@@ -17,12 +20,66 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    name: What changed since the last full release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      web: ${{ steps.diff.outputs.web }}
+      server: ${{ steps.diff.outputs.server }}
+      mobile: ${{ steps.diff.outputs.mobile }}
+      desktop: ${{ steps.diff.outputs.desktop }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Diff against the last successful release
+        id: diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          base="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/release.yml/runs?branch=main&status=success&per_page=1" \
+            -q '.workflow_runs[0].head_sha // empty' || true)"
+          # No successful release yet, or its commit is gone (force push): ship everything.
+          if [ -z "$base" ] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            echo "No usable last release (${base:-none}): shipping everything."
+            for k in web server mobile desktop; do echo "$k=true" >> "$GITHUB_OUTPUT"; done
+            exit 0
+          fi
+          files="$(git diff --name-only "$base" "$GITHUB_SHA")"
+          echo "Changed since ${base::7}:"; echo "$files" | sed 's/^/  /'
+          # A workflow or root manifest change can alter how any part is built: ship everything.
+          all='^\.github/workflows/|^package\.json$|^bun\.lock$'
+          # What each part is built from. The server image embeds the web app
+          # (infra/docker/Dockerfile); the desktop app embeds it too and has no
+          # path dependency on crates/*, only the shared Cargo.lock.
+          web='^apps/web/|^packages/(shared|app-state|chart-core|chart-web)/'
+          rust='^Cargo\.(toml|lock)$|^rust-toolchain\.toml$'
+          match() { if echo "$files" | grep -qE "$1|$all"; then echo true; else echo false; fi; }
+          {
+            echo "web=$(match "$web")"
+            echo "server=$(match "^crates/|^infra/docker/|$web|$rust")"
+            echo "mobile=$(match '^apps/mobile/|^packages/(shared|app-state|chart-core|chart-native)/')"
+            echo "desktop=$(match "^apps/desktop/|$web|$rust")"
+          } | tee -a "$GITHUB_OUTPUT" | sed 's/^/ship /' >> "$GITHUB_STEP_SUMMARY"
+
   checks:
+    needs: changes
     uses: ./.github/workflows/ci.yml
+    with:
+      web: ${{ needs.changes.outputs.web == 'true' || needs.changes.outputs.server == 'true' || needs.changes.outputs.desktop == 'true' }}
+      server: ${{ needs.changes.outputs.server == 'true' }}
+      mobile: ${{ needs.changes.outputs.mobile == 'true' }}
+      desktop: ${{ needs.changes.outputs.desktop == 'true' }}
 
   server:
     name: Server image and VPS deploy
-    needs: checks
+    needs: [changes, checks]
+    if: ${{ needs.changes.outputs.server == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment:
@@ -84,9 +141,22 @@ jobs:
         if: always()
         run: rm -f ~/.ssh/deploy_key
 
+      - name: Prune old server images
+        # Packages storage has a $0 budget (owner, 2026-10-20): every release
+        # adds an image of a few hundred MB, so keep the newest 10 (rollback
+        # room, SETUP.md "Operating it") and delete the rest. Never fails the
+        # release: the deploy above is what matters.
+        continue-on-error: true
+        uses: actions/delete-package-versions@v5
+        with:
+          package-name: stockwatcher-server
+          package-type: container
+          min-versions-to-keep: 10
+
   desktop:
     name: Desktop installers and update publish
-    needs: checks
+    needs: [changes, checks]
+    if: ${{ needs.changes.outputs.desktop == 'true' }}
     runs-on: windows-latest
     timeout-minutes: 45
     environment:
@@ -182,12 +252,13 @@ jobs:
 
   mobile:
     name: Mobile OTA update and preview APK
-    # Every push publishes an OTA update. A new APK is queued only when the
+    # Every release that changes the phone app publishes an OTA update. A new APK is queued only when the
     # native fingerprint differs from the latest finished preview build,
     # because EAS build quota is limited and an unchanged native layer
     # would produce an identical APK (docs/CONVENTIONS.md, "Release
     # pipeline").
-    needs: checks
+    needs: [changes, checks]
+    if: ${{ needs.changes.outputs.mobile == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     outputs:

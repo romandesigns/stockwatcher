@@ -64,10 +64,11 @@ Release builds of the server are about 6× faster than `bun dev`'s debug server 
 
 ## Deploy
 
-Every push to `main` runs `.github/workflows/release.yml`: the checks (the same workflow pull requests
-run), then in parallel the server image (deployed to the VPS with health check and rollback), the signed
-Windows desktop installers (installed apps update themselves), and an Expo OTA update for Android (a new
-APK only when native code changed). Details: `docs/CONVENTIONS.md` "Release pipeline"; one-time host
+Work is committed straight to `main` (no feature PRs since 2026-10-20) and pushed in batches. Every push
+runs `.github/workflows/release.yml`, which ships only the parts changed since the last successful
+release: their checks, then in parallel the server image (deployed to the VPS with health check and
+rollback), the signed Windows desktop installers (installed apps update themselves), and an Expo OTA
+update for Android (a new APK only when native code changed). Details: `docs/CONVENTIONS.md` "Release pipeline"; one-time host
 setup and operations (including switching replay/live): [`infra/vps/SETUP.md`](infra/vps/SETUP.md).
 
 ## Docs

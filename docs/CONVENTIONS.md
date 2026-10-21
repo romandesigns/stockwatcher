@@ -49,7 +49,7 @@ stockwatcher/
     app-state/               # the clients' Zustand store (synced + device + session state)
   infra/docker/Dockerfile    # one image: builds web + server (+ swimport), runs the server
   infra/vps/                 # compose file (server + archiver), deploy/publish scripts, Caddy snippet, SETUP.md
-  .github/workflows/         # ci.yml (checks; pull requests), release.yml (every push to main; reuses ci.yml)
+  .github/workflows/         # ci.yml (checks, per part), release.yml (every push to main: ships what changed; reuses ci.yml)
   docs/                      # CONVENTIONS, architecture/, reference/, specs/, research/
 ```
 
@@ -65,20 +65,33 @@ stockwatcher/
 - Mobile: Expo app slug `stockwatcher`, EAS owner `creativecoder87`, **EAS project id `b43c471a-3d47-4904-bd31-a7f5797ee45a`** (created by the owner; link with `eas init --id`), Android package `io.wavystyle.stockwatcher`, iOS bundle id `io.wavystyle.stockwatcher`. Channels: `preview`, `production`. runtimeVersion policy `fingerprint`.
 - Desktop: Tauri identifier `io.wavystyle.stockwatcher`, product name `stockwatcher`. Windows installers (NSIS + MSI), updater signed with a minisign key held only in GitHub secrets.
 
-## Release pipeline: every push to `main` ships everything (owner decision, 2026-10-16)
+## Release pipeline: every push to `main` ships what changed (owner decisions, 2026-10-16 and 2026-10-20)
 
-No release branches and no manual dispatch: a push to `main` runs one
-workflow, `.github/workflows/release.yml`:
+No release branches, no feature PRs (since 2026-10-20, to keep GitHub
+Actions spend under its budget: work is committed straight to `main`, checked
+locally with the same commands as `ci.yml`, and pushed in batches) and no
+manual dispatch. A push to `main` runs one workflow,
+`.github/workflows/release.yml`:
 
-1. `checks`: all tests, lints and builds (Rust, web, shared, mobile tsc,
-   desktop type/compile check). Every later job `needs` it. A red check
+0. `changes` diffs the push against the commit of the **last fully
+   successful** release (not the previous push: a run a billing block
+   stopped leaves its changes unshipped, and the next push picks them up)
+   and decides which parts ship: `server` (crates, the Docker image, the
+   web app it embeds, Rust manifests), `desktop` (the desktop app, the web
+   app, Rust manifests), `mobile` (the phone app and the packages it uses),
+   `web`. A change to a workflow, `package.json` or `bun.lock` ships
+   everything. A docs-only push ships nothing.
+1. `checks`: the tests, lints and builds of the parts that ship (`ci.yml`
+   with inputs; the Windows desktop job, billed at twice the Linux rate,
+   runs only when desktop ships). Every later job `needs` it. A red check
    ships nothing.
-2. In parallel after checks:
+2. In parallel after checks, each only when its part ships:
    - `server` builds and pushes `ghcr.io/romandesigns/stockwatcher-server:<sha>`,
      which already contains the web app. It then deploys to the VPS with the
      forced-command key (`VPS_DEPLOY_KEY`, environment `production`), with a
      health check and automatic rollback. The web app is live when this job
-     ends.
+     ends. It then deletes all but the newest 10 image versions (Packages
+     storage has a $0 budget; 10 leave room for a rollback).
    - `desktop` (windows-latest) sets the version to
      `0.1.<github.run_number>` (the committed version stays `0.1.0`). It
      builds signed NSIS and MSI installers and writes `latest.json` with URLs
@@ -94,7 +107,7 @@ workflow, `.github/workflows/release.yml`:
      A private repo's GitHub Releases are not used, because the updater
      cannot authenticate to them.
    - `mobile`:
-     - Always publishes an OTA update (`eas update --channel preview
+     - Publishes an OTA update (`eas update --channel preview
        --platform android`, using `EXPO_TOKEN`).
      - It also queues an EAS Android preview **build** when the native
        fingerprint differs from the latest finished preview build's
