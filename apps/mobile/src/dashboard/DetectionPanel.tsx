@@ -30,7 +30,8 @@ const words = (value: string) => value.replace(/_/g, " ");
 
 function stateColor(state: string): string {
   if (/invalidated|rejected|retracted/.test(state)) return UI.critical;
-  if (/trigger_observed|triggered|confirmed|retained/.test(state)) return UI.good;
+  // A stage, not a "go" (see the web panel): normal text, never success green.
+  if (/trigger_observed|triggered|confirmed|retained/.test(state)) return UI.text;
   if (/crossing|armed|extended|interrupted/.test(state)) return UI.warning;
   if (/building|forming|recognized|ignited/.test(state)) return UI.accent;
   return UI.textDim;

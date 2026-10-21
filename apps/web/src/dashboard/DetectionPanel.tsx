@@ -9,7 +9,9 @@ import { TickerLabel } from "../lib/TickerLabel.tsx";
 const at = (ns: number | null) => ns === null || ns === 0 ? "—" : `${formatEtMillis(ns / 1_000_000)} ET`;
 const words = (s: string) => s.replace(/[_.]/g, " ");
 const CONTROL = "min-h-8 rounded-md bg-bg-row px-2 text-[11px] text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring";
-const tone = (e: DetectionEpisode) => ["invalidated", "rejected", "interrupted"].includes(e.state) ? "text-critical" : ["trigger_observed", "confirmed", "recognized", "retained"].includes(e.state) ? "text-good" : ["armed", "crossing_provisional", "crossing_wick"].includes(e.state) ? "text-warning" : "text-primary";
+// A trigger observed is a stage, not a "go" (owner, 2026-10-21: in the 21-day test it was followed
+// by the stop about 3 times in 4), so it reads in the normal text color, never success green.
+const tone = (e: DetectionEpisode) => ["invalidated", "rejected", "interrupted"].includes(e.state) ? "text-critical" : ["trigger_observed", "confirmed", "recognized", "retained"].includes(e.state) ? "text-foreground" : ["armed", "crossing_provisional", "crossing_wick"].includes(e.state) ? "text-warning" : "text-primary";
 const measured = (c: DetectionEvidence): string => {
   if (typeof c.value !== "number") return detectionEvidenceValue(c);
   if (c.units === "UTC ns") return at(c.value);
