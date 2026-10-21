@@ -30,6 +30,7 @@ const hhmm = (ns: number) => formatEtTime(Math.round(ns / 1_000_000));
 export function RossPanel({ channel, detection, onPick, reducedMotion }: { channel: RossChannel; detection: DetectionChannel; onPick: (symbol: string, episodeId?: string, runEpoch?: string) => void; reducedMotion: boolean }) {
   const state = useRoss(channel);
   const detections = useDetection(detection);
+  const detectionEpoch = detections.frame?.runEpoch;
   const bySymbol = new Map(groupDetections(detections.snapshot).map((g) => [g.symbol, g.selected]));
   const { enabled, panel, readiness } = state;
   const rows = panel?.rows.map((r) => rossRowView(r, panel.cutoff, hhmm)) ?? [];
@@ -75,7 +76,7 @@ export function RossPanel({ channel, detection, onPick, reducedMotion }: { chann
       ) : (
         <View style={fresh.stale ? styles.dimmed : undefined}>
           {rows.map((r) => (
-            <Row key={r.symbol} row={r} episode={bySymbol.get(r.symbol)} detectionCurrent={detections.connected && !detections.resyncing} onPick={(symbol) => onPick(symbol, bySymbol.get(symbol)?.episode_id, detections.frame?.runEpoch)} reducedMotion={reducedMotion} />
+            <Row key={`${detectionEpoch ?? "ross"}/${r.symbol}`} row={r} episode={bySymbol.get(r.symbol)} detectionCurrent={detections.connected && !detections.resyncing} onPick={(symbol) => onPick(symbol, bySymbol.get(symbol)?.episode_id, detectionEpoch)} reducedMotion={reducedMotion} />
           ))}
         </View>
       )}

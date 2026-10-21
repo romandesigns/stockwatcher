@@ -1,7 +1,7 @@
 import { playHaptic } from "@stockwatcher/chart-native";
 import { createTapHold } from "@stockwatcher/shared";
 import * as Clipboard from "expo-clipboard";
-import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { useLayoutEffect, useMemo, useRef } from "react";
 
 import { showToast } from "./toast";
 
@@ -29,7 +29,9 @@ export function useTickerPress(symbol: string, onTap: () => void) {
     latest.current = { symbol, onTap };
   });
   const th = useMemo(() => createTapHold({ onTap: () => latest.current.onTap(), onHold: () => copyTicker(latest.current.symbol) }), []);
-  useEffect(() => () => th.cancel(), [th]);
+  // An epoch-keyed detection row must cancel before a queued timer can navigate or copy
+  // from its removed run, rather than waiting for passive-effect cleanup.
+  useLayoutEffect(() => () => th.cancel(), [th]);
   const completed = useRef(false);
   return {
     onPressIn: () => {

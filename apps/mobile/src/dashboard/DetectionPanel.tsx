@@ -49,6 +49,7 @@ export function DetectionPanel({ channel, onPick, reducedMotion }: { channel: De
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [detail, setDetail] = useState<{ id: string; epoch: string } | null>(null);
   const snapshot = state.snapshot;
+  const epoch = state.frame?.runEpoch ?? "";
   const groups = groupDetections(snapshot, filter, history, segment)
     .filter((g) => catalyst === "all" || g.selected.catalyst === catalyst)
     .filter(() => source === "all" || state.frame?.source === source);
@@ -60,8 +61,7 @@ export function DetectionPanel({ channel, onPick, reducedMotion }: { channel: De
   const terminalCount = snapshot?.episodes.filter((e) => e.terminal).length ?? 0;
   const latestResolution = groupDetections(snapshot, "all", true)[0]?.selected;
   const stale = !state.connected || state.resyncing;
-  const pick = (episode: DetectionEpisode) => onPick(episode.symbol, episode.episode_id, state.frame?.runEpoch);
-  const detailTickerPress = useTickerPress(selected?.symbol ?? "", () => { if (selected) { pick(selected); setDetail(null); } });
+  const pick = (episode: DetectionEpisode, capturedEpoch: string) => onPick(episode.symbol, episode.episode_id, capturedEpoch);
   return (
     <View style={styles.card} accessibilityLabel="Detection Panel">
       <View style={styles.line}>
@@ -80,7 +80,7 @@ export function DetectionPanel({ channel, onPick, reducedMotion }: { channel: De
             <Action label={`Filters${segment !== "all" || source !== "all" || catalyst !== "all" ? " · applied" : ""}`} onPress={() => setFiltersOpen(true)} />
           </View>
           {groups.length > 0 && <Text style={styles.meta}>{groups.length} instruments · showing {actualPage * PAGE + 1}–{Math.min(groups.length, (actualPage + 1) * PAGE)}</Text>}
-          {!history && latestResolution && <RecentResolution episode={latestResolution} onPick={() => pick(latestResolution)} onDetail={() => setDetail({ id: latestResolution.episode_id, epoch: state.frame!.runEpoch })} />}
+          {!history && latestResolution && <RecentResolution key={`${epoch}/${latestResolution.episode_id}`} episode={latestResolution} onPick={() => pick(latestResolution, epoch)} onDetail={() => setDetail({ id: latestResolution.episode_id, epoch })} />}
           {groups.length === 0 ? (
             <View style={styles.emptyBox}>
               <Text style={styles.empty}>{!snapshot ? "Waiting for the server's first snapshot…" : history ? "No retained episodes match these filters" : snapshot.monitored_symbols === 0 ? "Warming · no admissible symbol history yet" : "No active detections match these filters"}</Text>
@@ -89,7 +89,9 @@ export function DetectionPanel({ channel, onPick, reducedMotion }: { channel: De
             </View>
           ) : (
             <View style={stale ? styles.stale : undefined}>
-              {shown.map((group) => <DetectionRow key={`${group.selected.instrument_id}/${group.symbol}`} group={group} reducedMotion={reducedMotion} currentAvailable={!stale} onPick={() => pick(group.selected)} onDetail={() => setDetail({ id: group.selected.episode_id, epoch: state.frame!.runEpoch })} />)}
+              {/* A reset remounts the recognizer and cancels its delayed tap/hold. Price updates
+                  keep this key so ordinary ticks never abandon a deliberate press. */}
+              {shown.map((group) => <DetectionRow key={`${epoch}/${group.selected.instrument_id}/${group.symbol}`} group={group} reducedMotion={reducedMotion} currentAvailable={!stale} onPick={() => pick(group.selected, epoch)} onDetail={() => setDetail({ id: group.selected.episode_id, epoch })} />)}
             </View>
           )}
           {groups.length > PAGE && (
@@ -112,13 +114,13 @@ export function DetectionPanel({ channel, onPick, reducedMotion }: { channel: De
           <Action label="Done" onPress={() => setFiltersOpen(false)} />
         </View>
       </Sheet>
-      <Sheet open={detail !== null} onClose={() => setDetail(null)} title={selected ? "Detection details" : "Detection unavailable"} badge={selected ? <Pressable accessibilityRole="button" accessibilityLabel={selected.symbol} accessibilityHint="Opens its chart. Tap, then press and hold to copy" {...detailTickerPress} style={styles.detailTicker}><Text style={styles.symbol}>{selected.symbol}</Text></Pressable> : undefined} reducedMotion={reducedMotion} tall>
+      <Sheet open={detail !== null} onClose={() => setDetail(null)} title={selected ? "Detection details" : "Detection unavailable"} badge={selected && detail ? <DetailTicker key={`${detail.epoch}/${selected.episode_id}`} episode={selected} onPick={() => { pick(selected, detail.epoch); setDetail(null); }} /> : undefined} reducedMotion={reducedMotion} tall>
         <ScrollView showsVerticalScrollIndicator={false} showsHorizontalScrollIndicator={false} contentContainerStyle={styles.details}>
-          {selected && snapshot ? <>
+          {selected && snapshot && detail ? <>
             {stale && <Text accessibilityRole="alert" style={styles.warning}>Last received state · current assessment unavailable</Text>}
-            <Action label="Open chart with this episode" onPress={() => { pick(selected); setDetail(null); }} />
+            <Action label="Open chart with this episode" onPress={() => { pick(selected, detail.epoch); setDetail(null); }} />
             <DetectionEpisodeDetails episode={selected} snapshot={snapshot} currentAvailable={!stale} />
-            {snapshot.episodes.filter((e) => e.symbol === selected.symbol && e.episode_id !== selected.episode_id).map((e) => <Action key={e.episode_id} label={`${detectionFamilyLabel(e.family)} · ${detectionStateLabel(e.state)} · ${at(e.first_detected_at)}`} onPress={() => setDetail({ id: e.episode_id, epoch: state.frame!.runEpoch })} />)}
+            {snapshot.episodes.filter((e) => e.symbol === selected.symbol && e.episode_id !== selected.episode_id).map((e) => <Action key={e.episode_id} label={`${detectionFamilyLabel(e.family)} · ${detectionStateLabel(e.state)} · ${at(e.first_detected_at)}`} onPress={() => setDetail({ id: e.episode_id, epoch: detail.epoch })} />)}
           </> : <Text style={styles.empty}>The source/run changed or this episode left bounded history. Select a current row to inspect its authoritative references.</Text>}
         </ScrollView>
       </Sheet>
@@ -130,6 +132,12 @@ function FilterStrip({ label, options, value, onChange }: { label: string; optio
   return <ScrollView horizontal showsVerticalScrollIndicator={false} showsHorizontalScrollIndicator={false} accessibilityLabel={label} contentContainerStyle={styles.filters}>
     {options.map((item) => <Pressable key={item.id} accessibilityRole="button" accessibilityState={{ selected: value === item.id }} accessibilityLabel={`${label}: ${item.label}`} onPress={() => onChange(item.id)} style={[styles.filter, value === item.id && styles.selectedFilter]}><Text style={[styles.filterText, value === item.id && { color: UI.accent }]}>{item.label}</Text></Pressable>)}
   </ScrollView>;
+}
+
+/** Kept inside the epoch-keyed element so a removed detail cannot finish an old copy/tap. */
+function DetailTicker({ episode, onPick }: { episode: DetectionEpisode; onPick: () => void }) {
+  const press = useTickerPress(episode.symbol, onPick);
+  return <Pressable accessibilityRole="button" accessibilityLabel={episode.symbol} accessibilityHint="Opens its chart. Tap, then press and hold to copy" {...press} style={styles.detailTicker}><Text style={styles.symbol}>{episode.symbol}</Text></Pressable>;
 }
 
 function RecentResolution({ episode: e, onPick, onDetail }: { episode: DetectionEpisode; onPick: () => void; onDetail: () => void }) {
@@ -174,8 +182,8 @@ function Geometry({ episode: e, currentAvailable = true }: { episode: DetectionE
   const trigger = detectionDistance(e.price_stale || !currentAvailable ? null : e.price, e.level?.trigger ?? null, "trigger");
   const invalidation = detectionDistance(e.price_stale || !currentAvailable ? null : e.price, e.level?.invalidation ?? null, "invalidation");
   return <View style={{ gap: 3 }}>
-    <Text style={styles.geometry}>Trigger {detectionPrice(e.level?.trigger ?? null)}{trigger ? trigger.atOrAbove ? " · at / above reference" : ` · $${trigger.dollars.toFixed(4)} / ${trigger.percent.toFixed(2)}% away` : " · distance unavailable"}</Text>
-    <Text style={styles.geometry}>Invalidation {detectionPrice(e.level?.invalidation ?? null)}{invalidation ? invalidation.atOrAbove ? ` · $${invalidation.dollars.toFixed(4)} / ${invalidation.percent.toFixed(2)}% below price` : " · price below reference" : " · distance unavailable"}</Text>
+    <Text style={styles.geometry}>Trigger {detectionPrice(e.level?.trigger ?? null)}{trigger ? trigger.atOrAbove ? " · at / above reference" : ` · ${detectionPrice(Math.round(trigger.dollars * 1_000_000))} / ${trigger.percent.toFixed(2)}% away` : " · distance unavailable"}</Text>
+    <Text style={styles.geometry}>Invalidation {detectionPrice(e.level?.invalidation ?? null)}{invalidation ? invalidation.atOrAbove ? ` · ${detectionPrice(Math.round(invalidation.dollars * 1_000_000))} / ${invalidation.percent.toFixed(2)}% below price` : " · price below reference" : " · distance unavailable"}</Text>
   </View>;
 }
 
