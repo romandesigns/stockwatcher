@@ -20,9 +20,9 @@
 //!   (`market_archive::admissions`). Where it cannot be answered the figures still come back, and
 //!   the symbol says the order is unproven so no window over the restored prefix is reportable.
 //!
-//! Every fixture is synthetic and offline. A local build cannot name itself
-//! (`STOCKWATCHER_COMMIT` is `unknown`), so these runs take the unverified path by construction —
-//! which is the honest outcome for a development binary and is asserted as such.
+//! Every fixture is synthetic and offline. An unnamed build cannot prove journal identity. A
+//! named build can prove its admission prefix, but a held print's provisional condition count
+//! still does not prove the chart verdict; that distinction remains explicit after restoration.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -241,6 +241,22 @@ async fn a_restart_recovers_the_days_facts_and_labels_what_it_cannot_prove() {
 
     // Before the load the scanner has only the tail: the bug this fixes.
     let tail = volume(&after, SYMS[0]);
+    assert_eq!(
+        tail["integrity"]["history_pending"], true,
+        "held facts are explicitly provisional before adoption"
+    );
+    let held_decision: Value = serde_json::from_str(&after.context_decision(SYMS[0])).unwrap();
+    let held_rvol = held_decision["decision"]["pillars"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["pillar"] == "rvol")
+        .unwrap();
+    assert_eq!(held_rvol["state"], "UNKNOWN");
+    assert_eq!(
+        held_rvol["reason"], "history_pending",
+        "a provisional tail cannot qualify a stock on RVOL"
+    );
     assert!(
         tail["shares"].as_u64().unwrap_or(0) < want[0]["shares"].as_u64().expect("shares"),
         "the tail alone is short of the day: {tail:?} vs {:?}",
@@ -262,6 +278,10 @@ async fn a_restart_recovers_the_days_facts_and_labels_what_it_cannot_prove() {
 
     for (s, want) in SYMS.iter().zip(&want) {
         let got = volume(&after, s);
+        assert_eq!(
+            got["integrity"]["history_pending"], false,
+            "successful factual adoption clears only the temporary pending guard"
+        );
         let have = got["shares"].as_u64().unwrap_or(0);
         let full = want["shares"].as_u64().expect("shares");
         assert!(
@@ -276,8 +296,8 @@ async fn a_restart_recovers_the_days_facts_and_labels_what_it_cannot_prove() {
             have > tail["shares"].as_u64().unwrap_or(0) || *s != SYMS[0],
             "{s}: and more than the tail alone had"
         );
-        // Whatever it could not establish is named. A local build cannot identify itself, so the
-        // admission order is unprovable here by construction and the symbol says so.
+        // Whatever it could not establish is named, including a held print's unknown chart
+        // verdict in a named build and an unprovable journal identity in an unnamed build.
         assert!(
             got["coverage_reason"].is_string(),
             "{s}: whatever the restore could not establish is named: {got}"
@@ -289,16 +309,66 @@ async fn a_restart_recovers_the_days_facts_and_labels_what_it_cannot_prove() {
             ),
             "{s}: and a restored day is never complete: {got}"
         );
-        // A local build cannot identify itself (`STOCKWATCHER_COMMIT` is `unknown`), so the
-        // admission order is unprovable here by construction and that is the reason reported —
-        // unless something worse happened, which would be a `partial` day with its own reason.
+        // The reason distinguishes an unknown executable from known admissions whose chart
+        // verdicts were still provisional. Neither can become a fully verified restored day.
         if got["coverage"] == "unverified" {
+            let expected = if stockwatcher_server::COMMIT == "unknown" {
+                "journal_unknown_build"
+            } else {
+                "journal_verdict_unproven"
+            };
             assert_eq!(
-                got["coverage_reason"], "journal_unknown_build",
-                "{s}: the reason a development build's order is unproven: {got}"
+                got["coverage_reason"], expected,
+                "{s}: the reason this build's restored inputs remain unverified: {got}"
             );
         }
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn detection_requests_pending_history_without_preload_or_any_chart() {
+    let tmp = tempfile::tempdir().expect("tmp");
+    let events = fixture_events(&tmp.path().join("scratch"));
+    let split = events
+        .iter()
+        .position(|e| receive_time(e) >= et(11, 0))
+        .unwrap();
+    let root = tmp.path().join("run");
+    let (before, tx) = live(&root, et(4, 0), true);
+    for e in &events[..split] {
+        tx.send(e.clone()).await.unwrap();
+    }
+    drop(tx);
+    until("recording run ended", || {
+        before.state_json()["status"]["state"] == "stopped"
+    })
+    .await;
+    drop(before);
+    recorded_in(&root, split).await;
+    let (after, tx) = live(&root, et(11, 0), false);
+    after.set_detection_panel(true);
+    assert_eq!(after.state_json()["history"]["pending"], 2);
+    for e in events.iter().skip(split).take(500) {
+        tx.send(e.clone()).await.unwrap();
+    }
+    until(
+        "detector independently requested and loaded both histories",
+        || after.state_json()["history"]["pending"] == 0,
+    )
+    .await;
+    after.publish_detection();
+    let frame: Value = serde_json::from_str(&after.detection_snapshot().2).unwrap();
+    assert_eq!(frame["enabled"], true);
+    assert_eq!(frame["snapshot"]["monitored"]["symbols_history_pending"], 0);
+    assert_eq!(
+        frame["snapshot"]["data_status"]["history_pending_symbols"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(&after.ross_snapshot().1).unwrap()["enabled"],
+        false
+    );
+    drop(tx);
 }
 
 /// A restored symbol publishes no episode it did not observe, and the next barrier decides it on

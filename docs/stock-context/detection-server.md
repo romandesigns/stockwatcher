@@ -83,6 +83,23 @@ link-down remains interrupted until link-up, including when buffered prints arri
 source starts its interruption at the configured replay day/start (ET 04:00 fallback), or actual
 local admission time for live, never epoch zero.
 
+Lazy history has an explicit temporary `history_pending` guard before the first held input.
+The core keeps accumulating facts while RVOL, historical windows, setups and detections remain
+unavailable. Successful facts adoption clears that guard without clearing genuine integrity or
+coverage faults; failed or empty adoption remains unavailable. Detection requests the existing
+off-core history loader on a held input even when preload is off, independently of any chart.
+Refused adoption sets Partial `restore_refused_<reason>` coverage and an explicit per-symbol
+`history_restore_refused` interruption; an empty restore uses `history_restore_empty`. This is
+terminal for that History instance, including across a date roll. Recovery requires a
+process/source restart that reinitializes History; toggling a panel flag does not retry it.
+
+Named-build restoration keeps original global clocks only before the first omitted symbol
+admission, including clocks completing its last readable bar. Intentional held suffixes are not
+recorder drops; genuinely missing inputs remain partial. A held print's journal chart verdict
+is unknown (`None`), then derived by the reconstructed chart. Legacy saved/chart conflicts use
+their conservative intersection and explicitly report `journal_verdict_conflict`; corrupted
+archive coverage still takes precedence. No provisional acceptance can inflate restored facts.
+
 ## Local references and runnable fixture
 
 `DETECTION_QUIET_REFERENCES=/local/references.jsonl` optionally provisions raw Rust

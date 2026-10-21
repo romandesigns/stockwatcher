@@ -713,6 +713,20 @@ impl Market {
                 self.0.band.max,
             )
         }?;
+        // Enabling a board during a lazy restore must not briefly assess the held tail as a
+        // whole day's trustworthy history. This guard exists before any print or barrier.
+        let pending: Vec<String> = self
+            .0
+            .core
+            .lock()
+            .expect("core lock")
+            .unloaded
+            .keys()
+            .cloned()
+            .collect();
+        for symbol in pending {
+            board.set_history_pending(&symbol, true);
+        }
         if let Some(ev) = self.0.evidence.get()
             && let Some(batch) = ev.log.lock().expect("evidence log lock").since(None)
         {
@@ -1710,6 +1724,17 @@ impl Market {
                     // Live: a symbol whose archived history is not in the engine yet is held
                     // back (crate::history), and the paper broker still gets the print below.
                     let held = crate::history::hold_unloaded(&mut core, &e);
+                    if held && let Some(symbol) = e.symbol() {
+                        if let Some(cx) = core.context.as_mut() {
+                            cx.set_history_pending(symbol, true);
+                        }
+                        // Discovery owns its need for history even with no chart and explicit
+                        // preload off. The existing bounded per-symbol request goes to the
+                        // off-core loader; this lock performs no file or provider I/O.
+                        if self.0.detection_on.load(Ordering::Relaxed) {
+                            crate::history::request_load(self, &mut core, symbol);
+                        }
+                    }
                     // The admission journal, before anything can refuse the event: the sequence
                     // has to count every input this process took, held or applied, or a restore
                     // reading it would see holes that were never drops.
@@ -1761,16 +1786,10 @@ impl Market {
                         if let Some(j) = journal
                             && crate::admit::is_fact_input(&e)
                         {
-                            // The verdict a held print was taken with is its own conditions',
-                            // since there is no chart engine state for it yet.
-                            let v = match &e {
-                                MarketEvent::Trade(t) => {
-                                    let c = Counted::from_effect(t);
-                                    Some((c.ohlc, c.volume))
-                                }
-                                _ => None,
-                            };
-                            j.record(&e, v, crate::observe::wall_now());
+                            // The chart has not classified a held print yet. Its condition-only
+                            // provisional count is not an authoritative acceptance: a restore
+                            // must derive the actual chart verdict and label it unproven.
+                            j.record(&e, None, crate::observe::wall_now());
                         }
                         core.seq += 1;
                         (core.seq, Vec::new(), core.rebuilding)

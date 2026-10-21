@@ -85,6 +85,8 @@ pub(crate) struct History {
     days: Vec<NaiveDate>,
     /// Today's trading date at start: recordings from here on are this run's and are read too.
     started_on: NaiveDate,
+    /// Supplied source/start clock, used only if a failed empty restore has no later input clock.
+    started_at: UnixNanos,
     /// Loads a chart asked for (they jump the background queue).
     urgent: Mutex<Sender<String>>,
     /// The admission journal's writer thread, so a shutdown can wait for it.
@@ -428,6 +430,7 @@ impl Market {
             recorder,
             days,
             started_on: trading_date(now),
+            started_at: now,
             urgent: Mutex::new(urgent),
             journal_writer: Mutex::new(journal_writer),
             journals: Mutex::new(HashMap::new()),
@@ -504,7 +507,10 @@ impl Market {
         for day in days {
             let got = read_day(h, day, symbol, seen.get(&day).copied().unwrap_or(0));
             incomplete = incomplete.or(got.incomplete);
-            let plan = script(h, day, symbol, got.events);
+            let plan = script(h, day, symbol, got.events, got.intentional_cutoff);
+            if plan.unproven == Some("recorder_drops") {
+                incomplete = incomplete.or(Some("recorder_drops"));
+            }
             unproven = unproven.or(plan.unproven);
             for st in &plan.steps {
                 if matches!(st, Step::Event { .. }) {
@@ -618,6 +624,7 @@ impl Market {
                 last_price,
                 context,
                 restored_through,
+                verdict_conflicts,
                 ..
             } = b;
             core.engine.adopt_symbol(&mut engine, symbol);
@@ -633,14 +640,26 @@ impl Market {
             // read or a dropped tail means the day itself is incomplete; an unproved order means
             // the figures are sound but the barrier each print folded into is not established, so
             // windows over the restored prefix are not reportable.
+            let failure_at = [
+                Some(h.started_at),
+                core.engine.clock(),
+                restored_through.map(UnixNanos),
+            ]
+            .into_iter()
+            .flatten()
+            .max()
+            .expect("known source start clock");
             if let (Some(mut re), Some(cx)) = (context, core.context.as_mut()) {
+                if verdict_conflicts > 0 {
+                    unproven = Some("journal_verdict_conflict");
+                }
                 let coverage = match (incomplete, overflow > 0) {
                     (Some(why), _) => Some((stock_context::Coverage::Partial, why)),
                     (None, true) => Some((stock_context::Coverage::Partial, "held_tail_overflow")),
                     (None, false) => unproven.map(|why| (stock_context::Coverage::Unverified, why)),
                 };
                 let prefix = unproven.and(restored_through);
-                match cx.adopt_facts(&mut re, symbol, coverage, prefix) {
+                match cx.adopt_facts(&mut re, symbol, coverage, prefix, failure_at) {
                     stock_context::Adoption::Refused(why) => tracing::warn!(
                         symbol,
                         reason = why,
@@ -787,6 +806,9 @@ enum Step {
         /// prove the order and the replay has to re-derive it.
         verdict: Option<(bool, bool)>,
         admitted_at: Option<i64>,
+        /// After the first missing/cutoff input, later clock placement cannot be proved.
+        /// Keep the original admission provenance, but derive this suffix's chart marks.
+        derive_clock: bool,
     },
     /// A clock advance the run issued. The scanner's barriers are decided by these, so a replay
     /// that invents its own from the prints' timestamps decides different barriers — which is
@@ -815,9 +837,15 @@ struct Script {
 /// The journal is one sequence for the whole market, and a load reads one symbol's file. So the
 /// join is over this symbol's own admissions only — a second symbol's records are not missing
 /// from the recording, they are simply irrelevant to it, and counting them as a mismatch would
-/// make every multi-symbol day unprovable. Clock records are kept whatever symbol is being
-/// restored, because they are what decides the barriers.
-fn script(h: &History, day: NaiveDate, symbol: &str, events: Vec<MarketEvent>) -> Script {
+/// make every multi-symbol day unprovable. Global clocks before the symbol's replay cutoff are
+/// retained because they decide its barriers; later clocks belong to the held/live suffix.
+fn script(
+    h: &History,
+    day: NaiveDate,
+    symbol: &str,
+    events: Vec<MarketEvent>,
+    intentional_cutoff: bool,
+) -> Script {
     let plain = |events: Vec<MarketEvent>, why: Option<&'static str>| Script {
         steps: events
             .into_iter()
@@ -825,6 +853,7 @@ fn script(h: &History, day: NaiveDate, symbol: &str, events: Vec<MarketEvent>) -
                 event,
                 verdict: None,
                 admitted_at: None,
+                derive_clock: true,
             })
             .collect(),
         unproven: why,
@@ -866,7 +895,6 @@ fn script(h: &History, day: NaiveDate, symbol: &str, events: Vec<MarketEvent>) -
             by_payload.entry(a.rec.h).or_default().push_back(i);
         }
     }
-    let wanted: usize = by_payload.values().map(|v| v.len()).sum();
     let mut joined: HashMap<usize, (MarketEvent, Option<(bool, bool)>)> = HashMap::new();
     let mut leftover: Vec<MarketEvent> = Vec::new();
     for e in events {
@@ -892,14 +920,41 @@ fn script(h: &History, day: NaiveDate, symbol: &str, events: Vec<MarketEvent>) -
             None => leftover.push(e),
         }
     }
-    // Admissions inside the proof that the recording has nothing for: the recorder's queue
-    // dropped them. The live numerator had them and this restore cannot.
-    let missing = wanted - joined.len();
+    // A per-symbol archive cutoff, a damaged recording, or an unproven suffix may end before
+    // the journal does. Later whole-market clocks must not advance this shorter replay past
+    // the held/live inputs that still have to follow it. We restore facts, not quiet decisions
+    // made beyond the cutoff. The next real clock settles those facts prospectively.
+    let last_joined = joined.keys().max().copied();
+    // The recorder's explicit barrier/hold boundary is not a recording failure. Admissions
+    // after it will be replayed from the held tail. Missing records *inside* the read prefix
+    // still count as recorder drops, including when later records joined successfully.
+    let input_cutoff = if intentional_cutoff {
+        last_joined.map_or(0, |last| last + 1)
+    } else {
+        mine.len()
+    };
+    let missing = mine
+        .iter()
+        .enumerate()
+        .filter(|(i, a)| *i < input_cutoff && a.rec.w != Kind::Clock && !joined.contains_key(i))
+        .count();
+    // Preserve all original global clocks before the first omitted symbol admission, including
+    // those completing its last readable bar. No later clock may run ahead of the held suffix.
+    let clock_cutoff = mine
+        .iter()
+        .enumerate()
+        .find(|(i, a)| a.rec.w != Kind::Clock && !joined.contains_key(i))
+        .map_or(mine.len(), |(i, _)| i);
+    let unknown_verdict = joined
+        .values()
+        .any(|(e, v)| matches!(e, MarketEvent::Trade(_)) && v.is_none());
 
     let mut steps = Vec::with_capacity(mine.len() + leftover.len());
     for (i, a) in mine.iter().enumerate() {
         if a.rec.w == Kind::Clock {
-            if let Some(to) = a.rec.e {
+            if i < clock_cutoff
+                && let Some(to) = a.rec.e
+            {
                 steps.push(Step::Clock(to));
             }
             continue;
@@ -909,6 +964,7 @@ fn script(h: &History, day: NaiveDate, symbol: &str, events: Vec<MarketEvent>) -
                 event,
                 verdict,
                 admitted_at: Some(a.rec.a),
+                derive_clock: i >= clock_cutoff,
             });
         }
     }
@@ -918,6 +974,7 @@ fn script(h: &History, day: NaiveDate, symbol: &str, events: Vec<MarketEvent>) -
             event,
             verdict: None,
             admitted_at: None,
+            derive_clock: true,
         });
     }
     // In order of what it tells a reader: a recorder drop means the recording is short of what
@@ -925,6 +982,8 @@ fn script(h: &History, day: NaiveDate, symbol: &str, events: Vec<MarketEvent>) -
     // proof mean the same for them.
     let unproven = if missing > 0 {
         Some("recorder_drops")
+    } else if unknown_verdict {
+        Some("journal_verdict_unproven")
     } else if steps.len() > mine.len() {
         tail_reason.or(Some("journal_unproven_tail"))
     } else {
@@ -936,6 +995,9 @@ fn script(h: &History, day: NaiveDate, symbol: &str, events: Vec<MarketEvent>) -
 /// What one day's read produced, and whether it is all of it.
 struct DayRead {
     events: Vec<MarketEvent>,
+    /// The recorder barrier deliberately excludes this process's held suffix. Its later
+    /// admissions are not missing recordings and must not be labelled recorder_drops.
+    intentional_cutoff: bool,
     /// Why the read is short of the day, when it is: `archive_unreadable`,
     /// `archive_truncated`, `recorder_drops`. `None` means the file was read to its end.
     ///
@@ -965,18 +1027,24 @@ fn read_day(h: &History, day: NaiveDate, symbol: &str, seen: u64) -> DayRead {
                     }
                 }
             }
-            DayRead { events, incomplete }
+            DayRead {
+                events,
+                incomplete,
+                intentional_cutoff: false,
+            }
         }
         // No file: the symbol did not trade that day. That is a complete read of nothing.
         Err(market_archive::ArchiveError::NotFound(_)) => DayRead {
             events: Vec::new(),
             incomplete: None,
+            intentional_cutoff: false,
         },
         Err(e) => {
             tracing::warn!(%day, symbol, error = %e, "live history: unreadable");
             DayRead {
                 events: Vec::new(),
                 incomplete: Some("archive_unreadable"),
+                intentional_cutoff: false,
             }
         }
     };
@@ -995,6 +1063,7 @@ fn read_day(h: &History, day: NaiveDate, symbol: &str, seen: u64) -> DayRead {
                 got.incomplete = got.incomplete.or(Some("recorder_drops"));
             }
             got.events.truncate(keep as usize);
+            got.intentional_cutoff = got.incomplete.is_none();
             got
         }
         None => collect(a.live_reader(day, symbol, None)),
@@ -1021,6 +1090,9 @@ struct Builder {
     /// The latest server admission time of a replayed step, from the journal. Provenance: what
     /// the run's own clock read, as distinct from when the collector delivered the print.
     admitted_through: Option<i64>,
+    /// Older journals could name a held print's provisional condition verdict as if the chart
+    /// had accepted it. Restoring cannot inflate facts on that basis; disagreements are named.
+    verdict_conflicts: u64,
 }
 
 impl Builder {
@@ -1035,6 +1107,7 @@ impl Builder {
             context: None,
             restored_through: None,
             admitted_through: None,
+            verdict_conflicts: 0,
         }
     }
 
@@ -1057,8 +1130,9 @@ impl Builder {
                 event,
                 verdict,
                 admitted_at,
+                derive_clock,
             } => {
-                if verdict.is_none() {
+                if *derive_clock {
                     // No proven plan: the clock follows the deliveries, to the second, as the
                     // live ingest's own idle ticks would have.
                     let m = receive_time(event).0.div_euclid(1_000_000_000) * 1_000_000_000;
@@ -1094,6 +1168,7 @@ impl Builder {
             event: e.clone(),
             verdict: None,
             admitted_at: None,
+            derive_clock: true,
         });
     }
 
@@ -1124,16 +1199,21 @@ impl Builder {
             match e {
                 MarketEvent::Trade(t) => {
                     // The verdict the run recorded, when the journal proved the order; the chart
-                    // engine's own otherwise.
+                    // engine's own otherwise. A legacy provisional acceptance cannot overrule
+                    // an actual reconstructed rejection. Preserve authoritative exclusions and
+                    // name any acceptance conflict instead of overstating the restored numerator.
+                    let derived = match ups.first() {
+                        Some(ChartUpdate::Tape(row)) => Counted::from_tape(&row.counted),
+                        _ => Counted::from_effect(t),
+                    };
                     let (ohlc, volume) = match saved {
-                        Some(v) => v,
-                        None => {
-                            let counted = match ups.first() {
-                                Some(ChartUpdate::Tape(row)) => Counted::from_tape(&row.counted),
-                                _ => Counted::from_effect(t),
-                            };
-                            (counted.ohlc, counted.volume)
+                        Some((o, v)) => {
+                            if (o, v) != (derived.ohlc, derived.volume) {
+                                self.verdict_conflicts += 1;
+                            }
+                            (o && derived.ohlc, v && derived.volume)
                         }
+                        None => (derived.ohlc, derived.volume),
                     };
                     cx.apply(t, stock_context::Verdict { ohlc, volume }, admit);
                 }
@@ -1426,6 +1506,7 @@ mod tests {
             recorder: None,
             days: vec![on],
             started_on: on,
+            started_at: market_events::session::et(on, 4, 0, 0, 0).expect("fixture start"),
             urgent: Mutex::new(urgent),
             journal_writer: Mutex::new(None),
             journals: Mutex::new(HashMap::new()),
@@ -1535,7 +1616,13 @@ mod tests {
         drop(w2);
 
         // The recording holds the two ABCD deliveries; the journal holds those plus WXYZ and a clock.
-        let plan = script(&h, fixture_day(), "ABCD", vec![a1.clone(), a2.clone()]);
+        let plan = script(
+            &h,
+            fixture_day(),
+            "ABCD",
+            vec![a1.clone(), a2.clone()],
+            false,
+        );
         assert_eq!(
             plan.unproven, None,
             "another symbol's admissions are irrelevant to this one, not missing from it"
@@ -1596,6 +1683,10 @@ mod tests {
         for st in &plan.steps {
             b.step(st);
         }
+        assert_eq!(
+            b.verdict_conflicts, 1,
+            "a saved exclusion remains excluded and a replay disagreement is explicitly unverified"
+        );
         let cx = b.context.as_mut().expect("a context engine");
         cx.advance_to(UnixNanos(fixture_at(9, 31, 0)));
         let d = cx.current().next().expect("a decision").clone();
@@ -1635,6 +1726,7 @@ mod tests {
             fixture_day(),
             "ABCD",
             vec![first.clone(), past_the_proof.clone()],
+            false,
         );
         assert_eq!(
             plan.unproven,
@@ -1681,7 +1773,7 @@ mod tests {
         drop(w);
 
         // The recording has only one of them: the recorder's queue dropped the other.
-        let plan = script(&h, fixture_day(), "ABCD", vec![kept]);
+        let plan = script(&h, fixture_day(), "ABCD", vec![kept], false);
         assert_eq!(
             plan.unproven,
             Some("recorder_drops"),
@@ -1714,7 +1806,7 @@ mod tests {
         w.seal().expect("seal");
         drop(w);
 
-        let plan = script(&h, fixture_day(), "ABCD", vec![p.clone(), p.clone()]);
+        let plan = script(&h, fixture_day(), "ABCD", vec![p.clone(), p.clone()], false);
         assert_eq!(plan.unproven, None, "two deliveries, two admissions");
         assert_eq!(plan.steps.len(), 2);
 
@@ -1732,6 +1824,190 @@ mod tests {
             (d.volume.shares, d.volume.trades),
             (100, 1),
             "the redelivery is still a duplicate"
+        );
+    }
+
+    #[test]
+    fn a_short_symbol_prefix_cannot_import_later_market_clocks() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let id = named_build();
+        let h = history_over(tmp.path(), fixture_day());
+        let first = delivered("ABCD", 1, fixture_at(9, 30, 0), 100);
+        let unread = delivered("ABCD", 2, fixture_at(10, 0, 0), 900);
+        let mut w = market_archive::admissions::AdmissionWriter::open(
+            &h.archive.live_dir(fixture_day()),
+            fixture_day(),
+            1,
+            id,
+        )
+        .expect("open");
+        w.append(&[
+            admitted(1, &first, Some((true, true))),
+            clock_to(2, fixture_at(9, 31, 0)),
+            admitted(3, &unread, Some((true, true))),
+            clock_to(4, fixture_at(19, 59, 0)),
+        ])
+        .expect("append");
+        w.seal().expect("seal");
+        drop(w);
+        let plan = script(&h, fixture_day(), "ABCD", vec![first], false);
+        assert_eq!(plan.unproven, Some("recorder_drops"));
+        let mut b = Builder::new(Arc::new(market_archive::PrevCloses::default()))
+            .with_context(context_engine());
+        for step in &plan.steps {
+            b.step(step);
+        }
+        b.feed(&delivered("ABCD", 3, fixture_at(9, 32, 0), 200));
+        let cx = b.context.as_mut().unwrap();
+        cx.advance_to(UnixNanos(fixture_at(9, 33, 0)));
+        let d = cx
+            .current()
+            .next()
+            .expect("a subsequent real barrier can still decide the symbol");
+        assert_eq!(d.volume.shares, 300);
+    }
+
+    #[test]
+    fn a_held_trade_has_unknown_chart_verdict_even_inside_a_sealed_journal() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let id = named_build();
+        let h = history_over(tmp.path(), fixture_day());
+        let print = delivered("ABCD", 1, fixture_at(9, 30, 20), 100);
+        let mut w = market_archive::admissions::AdmissionWriter::open(
+            &h.archive.live_dir(fixture_day()),
+            fixture_day(),
+            1,
+            id,
+        )
+        .expect("open");
+        w.append(&[clock_to(1, fixture_at(9, 30, 0)), admitted(2, &print, None)])
+            .expect("append");
+        w.seal().expect("seal");
+        drop(w);
+        let plan = script(&h, fixture_day(), "ABCD", vec![print], false);
+        assert_eq!(plan.unproven, Some("journal_verdict_unproven"));
+        assert!(matches!(&plan.steps[1], Step::Event { verdict: None, .. }));
+        let mut b = Builder::new(Arc::new(market_archive::PrevCloses::default()))
+            .with_context(context_engine());
+        for step in &plan.steps {
+            b.step(step);
+        }
+        assert_eq!(
+            b.engine.clock(),
+            Some(UnixNanos(fixture_at(9, 30, 0))),
+            "unknown chart effect must not replace the independently proven original clock placement"
+        );
+        let cx = b.context.as_mut().unwrap();
+        cx.advance_to(UnixNanos(fixture_at(9, 31, 0)));
+        assert_eq!(
+            cx.current().next().unwrap().volume.shares,
+            100,
+            "unknown is rederived from the actual chart, not treated as an exclusion or a proven acceptance"
+        );
+    }
+
+    #[test]
+    fn an_intentional_held_suffix_is_not_a_recorder_drop_but_an_interior_loss_is() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let id = named_build();
+        let h = history_over(tmp.path(), fixture_day());
+        let first = delivered("ABCD", 1, fixture_at(9, 30, 0), 100);
+        let held = delivered("ABCD", 2, fixture_at(9, 32, 0), 200);
+        let later = delivered("ABCD", 3, fixture_at(9, 33, 0), 300);
+        let mut w = market_archive::admissions::AdmissionWriter::open(
+            &h.archive.live_dir(fixture_day()),
+            fixture_day(),
+            1,
+            id,
+        )
+        .expect("open");
+        w.append(&[
+            admitted(1, &first, Some((true, true))),
+            clock_to(2, fixture_at(9, 31, 0)),
+            admitted(3, &held, None),
+            clock_to(4, fixture_at(9, 33, 0)),
+            admitted(5, &later, Some((true, true))),
+        ])
+        .expect("append");
+        w.seal().expect("seal");
+        drop(w);
+        let prefix = script(&h, fixture_day(), "ABCD", vec![first.clone()], true);
+        assert_eq!(
+            prefix.unproven, None,
+            "the explicitly held suffix is not lost from the recording"
+        );
+        assert_eq!(
+            prefix.steps.len(),
+            2,
+            "keep the clock completing the prefix, stop before the held input"
+        );
+        assert!(matches!(prefix.steps[1],Step::Clock(t) if t == fixture_at(9,31,0)));
+        let mut restored = Builder::new(Arc::new(market_archive::PrevCloses::default()))
+            .with_context(
+                context_engine().with_detection_policy(stock_context::DetectionPolicy::current()),
+            );
+        for step in &prefix.steps {
+            restored.step(step);
+        }
+        let mut unbroken =
+            context_engine().with_detection_policy(stock_context::DetectionPolicy::current());
+        let MarketEvent::Trade(t) = &first else {
+            unreachable!()
+        };
+        unbroken.apply(
+            t,
+            stock_context::Verdict {
+                ohlc: true,
+                volume: true,
+            },
+            receive_time(&first),
+        );
+        unbroken.advance_to(UnixNanos(fixture_at(9, 31, 0)));
+        let expected = unbroken.latest_features("ABCD");
+        assert!(
+            expected.is_some(),
+            "the last joined print's bar really completed"
+        );
+        assert_eq!(
+            serde_json::to_value(restored.context.as_ref().unwrap().latest_features("ABCD"))
+                .unwrap(),
+            serde_json::to_value(expected).unwrap(),
+            "the prefix retains exactly the unbroken run's completed last bar, not just its share count"
+        );
+        let interior = script(&h, fixture_day(), "ABCD", vec![first, later.clone()], true);
+        assert_eq!(
+            interior.unproven,
+            Some("recorder_drops"),
+            "a missing input before a later joined input is still loss"
+        );
+        assert!(
+            matches!(interior.steps.last().unwrap(),Step::Event { derive_clock:true, admitted_at:Some(a),.. } if *a == receive_time(&later).0+7_000_000),
+            "suffix clock placement is derived while the original journal admission provenance is retained"
+        );
+    }
+
+    #[test]
+    fn legacy_provisional_acceptance_cannot_overrule_a_reconstructed_late_exclusion() {
+        let mut b = Builder::new(Arc::new(market_archive::PrevCloses::default()))
+            .with_context(context_engine());
+        b.feed(&delivered("ABCD", 1, fixture_at(9, 31, 0), 100));
+        let late = delivered("ABCD", 2, fixture_at(9, 30, 0), 900);
+        b.step(&Step::Event {
+            event: late,
+            verdict: Some((true, true)),
+            admitted_at: Some(fixture_at(9, 31, 0)),
+            derive_clock: false,
+        });
+        assert_eq!(
+            b.verdict_conflicts, 1,
+            "the conflict must be propagated as unverified coverage at adoption"
+        );
+        let cx = b.context.as_mut().unwrap();
+        cx.advance_to(UnixNanos(fixture_at(9, 32, 0)));
+        assert_eq!(
+            cx.current().next().unwrap().volume.shares,
+            100,
+            "the restored day cannot gain the rejected late print's900 shares"
         );
     }
 

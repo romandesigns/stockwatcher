@@ -375,6 +375,7 @@ impl ContextBoard {
         symbol: &str,
         coverage: Option<(Coverage, &'static str)>,
         restored_through: Option<i64>,
+        at: UnixNanos,
     ) -> Adoption {
         let outcome = self.engine.adopt_facts(from, symbol);
         if matches!(outcome, Adoption::Adopted { .. }) {
@@ -382,6 +383,28 @@ impl ContextBoard {
                 self.engine.set_coverage(symbol, coverage);
             }
             self.engine.set_restored_through(symbol, restored_through);
+        } else {
+            let (coverage_reason, gap_reason) = match outcome {
+                Adoption::Refused(why) => (
+                    match why {
+                        "run_identity" => "restore_refused_run_identity",
+                        "pillar_policy" => "restore_refused_pillar_policy",
+                        "panel_policy" => "restore_refused_panel_policy",
+                        "setup_policy" => "restore_refused_setup_policy",
+                        "detection_policy" => "restore_refused_detection_policy",
+                        "trading_date" => "restore_refused_trading_date",
+                        _ => "restore_refused_unknown",
+                    },
+                    "history_restore_refused",
+                ),
+                _ => ("history_restore_empty", "history_restore_empty"),
+            };
+            // Terminal for this History instance: no tail-only qualification, even across a
+            // date roll. Only a process/source restart that reinitializes History retries it.
+            self.engine.set_history_pending(symbol, true);
+            self.detection_status(Some(symbol), at, false, gap_reason);
+            self.engine
+                .set_coverage(symbol, Some((Coverage::Partial, coverage_reason)));
         }
         outcome
     }
@@ -581,6 +604,10 @@ impl ContextBoard {
 
     pub(crate) fn set_halted(&mut self, symbol: &str, halted: bool) {
         self.engine.set_halted(symbol, halted);
+    }
+
+    pub(crate) fn set_history_pending(&mut self, symbol: &str, pending: bool) {
+        self.engine.set_history_pending(symbol, pending);
     }
 
     pub(crate) fn with_detection(mut self) -> Self {
@@ -907,4 +934,83 @@ pub(crate) struct ReasonCount {
     pub(crate) pillar: &'static str,
     pub(crate) reason: &'static str,
     pub(crate) symbols: u32,
+}
+
+#[cfg(test)]
+mod restore_failure_tests {
+    use super::*;
+
+    #[test]
+    fn refused_and_empty_restores_remain_unavailable_with_exact_failure_across_date_roll() {
+        let day = NaiveDate::from_ymd_opt(2026, 10, 16).unwrap();
+        let at = market_events::session::et(day, 9, 31, 0, 0).unwrap();
+        for refused in [true, false] {
+            let mut board = ContextBoard::new_labeled(
+                false,
+                Some(day),
+                Price::from_cents(10),
+                Price::from_cents(2500),
+                true,
+            )
+            .unwrap()
+            .with_detection();
+            board.set_detection_epoch("fixture-test:1".into());
+            board.set_history_pending("ABCD", true);
+            let mut restored = if refused {
+                let mut run = board.engine.run_info().clone();
+                run.run_id = "different-run".into();
+                Engine::new(Policy::current(), run)
+            } else {
+                board.restore_engine()
+            };
+            if refused {
+                let t = Trade::new("ABCD", at, Price::from_cents(300), 100, 1);
+                restored.apply(
+                    &t,
+                    Verdict {
+                        ohlc: true,
+                        volume: true,
+                    },
+                    at,
+                );
+            }
+            let outcome = board.adopt_facts(&mut restored, "ABCD", None, None, at);
+            let (coverage_reason, gap_reason) = if refused {
+                assert_eq!(outcome, Adoption::Refused("run_identity"));
+                ("restore_refused_run_identity", "history_restore_refused")
+            } else {
+                assert_eq!(outcome, Adoption::Nothing);
+                ("history_restore_empty", "history_restore_empty")
+            };
+            assert_eq!(
+                board.engine.coverage_of("ABCD"),
+                Some((Coverage::Partial, coverage_reason))
+            );
+            let snapshot = board.engine.detection_snapshot().unwrap();
+            assert!(snapshot.active.is_empty());
+            assert!(snapshot.data_status.interrupted_symbols.iter().any(
+                |gap| gap.symbol.as_deref() == Some("ABCD")
+                    && gap.reason == gap_reason
+                    && gap.from == at.0
+            ));
+            let tomorrow = NaiveDate::from_ymd_opt(2026, 10, 19).unwrap();
+            let next = market_events::session::et(tomorrow, 9, 30, 0, 0).unwrap();
+            let trade = Trade::new("ABCD", next, Price::from_cents(300), 200, 2);
+            board.apply_trade(&trade, Counted::from_effect(&trade), &PrevCloses::default());
+            board.advance(UnixNanos(next.0 + 60_000_000_000));
+            assert!(
+                board.engine.history_pending("ABCD"),
+                "date change must not silently clear a failed restore"
+            );
+            let decision = board.decision("ABCD").unwrap();
+            let rvol = decision
+                .pillars
+                .iter()
+                .find(|p| p.pillar == PillarId::Rvol)
+                .unwrap();
+            assert_eq!((rvol.state, rvol.reason), (Tri::Unknown, "history_pending"));
+            assert_eq!(decision.volume.coverage_reason, Some(coverage_reason));
+            assert!(board.engine.detection_snapshot().unwrap().active.is_empty());
+        }
+    }
 }
