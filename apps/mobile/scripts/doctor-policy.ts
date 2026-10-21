@@ -16,6 +16,15 @@
 
 const DUPLICATE_CHECK = "Check that no duplicate dependencies are installed";
 
+// Also tolerated: the SDK version check when EVERY mismatch it lists is a PATCH mismatch
+// (owner release 2026-10-21: Expo published patch versions of 8 SDK 58 packages overnight and
+// every CI run started failing). Taking those patches changes the native fingerprint, so the
+// next release would build a new APK and phones on the current one would stop receiving OTA
+// updates until they install it. That is a deliberate step (bump the packages together with a
+// planned APK), not something a third-party release should force on an ordinary push. A minor
+// or major mismatch, or a mismatch list we cannot parse, still fails.
+const SDK_CHECK = "Check that packages match versions required by installed Expo SDK";
+
 export interface DoctorVerdict {
   ok: boolean;
   reasons: string[];
@@ -31,7 +40,14 @@ export function judgeDoctorOutput(output: string, exitCode: number): DoctorVerdi
 
   const reasons: string[] = [];
   for (const check of failed) {
-    if (check !== DUPLICATE_CHECK) reasons.push(`failed: ${check}`);
+    if (check === DUPLICATE_CHECK) continue;
+    if (check === SDK_CHECK) {
+      const kinds = [...output.matchAll(/(\w+) version mismatches/gi)].map((m) => m[1]!.toLowerCase());
+      if (kinds.length === 0) reasons.push("SDK version check failed but its mismatches could not be parsed");
+      else if (kinds.some((k) => k !== "patch")) reasons.push(`failed: ${check} (${[...new Set(kinds)].join(", ")} mismatches)`);
+      continue;
+    }
+    reasons.push(`failed: ${check}`);
   }
 
   // Each "Found duplicates for <pkg>:" is followed by tree lines naming

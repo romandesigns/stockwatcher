@@ -32,6 +32,29 @@ describe("judgeDoctorOutput", () => {
     expect(verdict.reasons).toEqual(["failed: Check that required peer dependencies are installed"]);
   });
 
+  const sdkMismatch = (kind: string) => `${sameVersionDuplicates}✖ Check that packages match versions required by installed Expo SDK
+
+🔧 ${kind} version mismatches
+package             expected  found
+expo                ~58.0.17  58.0.16
+expo-updates        ~58.0.18  58.0.17
+`;
+
+  test("patch-only SDK mismatches pass (taking them would force a new APK)", () => {
+    expect(judgeDoctorOutput(sdkMismatch("Patch"), 1)).toEqual({ ok: true, reasons: [] });
+  });
+
+  test("a minor or major SDK mismatch fails", () => {
+    expect(judgeDoctorOutput(sdkMismatch("Minor"), 1).ok).toBe(false);
+    expect(judgeDoctorOutput(sdkMismatch("Major"), 1).ok).toBe(false);
+  });
+
+  test("an SDK check failure without a parsable mismatch list fails", () => {
+    const output = `${sameVersionDuplicates}✖ Check that packages match versions required by installed Expo SDK
+`;
+    expect(judgeDoctorOutput(output, 1).ok).toBe(false);
+  });
+
   test("a non-zero exit with no parsed failure fails", () => {
     expect(judgeDoctorOutput("network error", 1).ok).toBe(false);
   });

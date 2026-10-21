@@ -19,7 +19,7 @@ process.stdout.write(output);
 const verdict = judgeDoctorOutput(output, exitCode);
 if (verdict.ok) {
   if (exitCode !== 0) {
-    console.log("\nexpo-doctor: only same-version duplicates from Bun's isolated linker (accepted, see scripts/doctor-policy.ts).");
+    console.log("\nexpo-doctor: only accepted findings (same-version duplicates from Bun's isolated linker, patch-only SDK mismatches; see scripts/doctor-policy.ts).");
   }
 } else {
   console.error(`\nexpo-doctor failed:\n- ${verdict.reasons.join("\n- ")}`);
