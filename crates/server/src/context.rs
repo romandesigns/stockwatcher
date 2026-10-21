@@ -239,6 +239,25 @@ impl ContextBoard {
         r
     }
 
+    /// Symbols with a decision on the session date, skipping the ones `done` already holds, at
+    /// most `max`.
+    ///
+    /// Skipping before the budget is taken, not after: with the skip the other way round a first
+    /// batch that never resolves would block every symbol behind it, which is the fairness defect
+    /// the warmup scan had.
+    pub(crate) fn decided_symbols(&self, max: usize, done: &BTreeSet<String>) -> Vec<String> {
+        let mut out = Vec::new();
+        for d in self.engine.current() {
+            if out.len() >= max {
+                break;
+            }
+            if !done.contains(&d.symbol) {
+                out.push(d.symbol.clone());
+            }
+        }
+        out
+    }
+
     /// Symbols in the band whose latest decision is missing evidence a warmup could supply, with
     /// the reason, at most `max` ([`warmup_reason`]) — **skipping** the ones `asked` already
     /// holds.
@@ -295,6 +314,11 @@ impl ContextBoard {
         }
         for r in b.floats {
             self.engine.add_float(r);
+        }
+        for r in b.intraday {
+            // Diagnostic only: the same-time and recent-window measures beside the pillar, never
+            // an input to it (`stock_context::evaluate::rvol`).
+            self.engine.add_intraday(r);
         }
         for r in b.news {
             self.engine.add_news(r);

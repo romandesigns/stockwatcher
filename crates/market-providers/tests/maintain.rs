@@ -723,3 +723,124 @@ fn a_successful_warmup_closes_on_its_first_run() {
         rep.errors
     );
 }
+
+/// The nightly cycle derives the intraday diagnostic curves from the days already on disk,
+/// bounded per run and resumable, with no provider call at all.
+///
+/// `stock_context::IntradayBaseline` had no producer anywhere, so the same-time and
+/// recent-window RVOL measures were permanently `None` (the audit's F5/F10). These curves are
+/// the diagnostic denominator only: the pillar keeps the owner's 30-session daily denominator.
+#[test]
+fn intraday_curves_are_derived_from_disk_bounded_and_resumable() {
+    let tmp = tempfile::tempdir().unwrap();
+    let a = archive(tmp.path(), "0");
+    // Two fixture days with several symbols each, already on disk.
+    let days = [d("2026-10-19"), d("2026-10-20")];
+    let symbols: Vec<String> = ["AAAA", "BBBB", "CCCC"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    for day in days {
+        write_fixture_day(&a, day, &symbols, DEFAULT_SEED).unwrap();
+    }
+    let world = Arc::new(World::default());
+    let make = {
+        let w = world.clone();
+        move || Ok::<_, String>(Router(w.clone()))
+    };
+    let stop = AtomicBool::new(false);
+    // Two curves a run, so the bound and the resume are both visible.
+    let cfg = MaintainConfig {
+        intraday_max_per_run: 2,
+        ..config()
+    };
+    let m = Maintainer {
+        cfg: &cfg,
+        creds: None,
+        archive: &a,
+        make_http: &make,
+        stop: &stop,
+        wait: &|_| true,
+        log: &|_l: &str| {},
+    };
+    let w = window(d("2026-10-20"), 22);
+
+    let mut r = CycleReport::default();
+    m.run_intraday_curves(&w, utc(NOW), &mut r);
+    assert_eq!(r.curves_derived, 2, "the bound: {r:?}");
+    assert_eq!(r.curves_pending, 4, "and what is still waiting: {r:?}");
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert!(
+        world.data_requests.lock().unwrap().is_empty()
+            && world.trade_requests.lock().unwrap().is_empty(),
+        "derived from disk: no provider call"
+    );
+
+    // The newest day is served first: the sessions a diagnostic reaches for.
+    let newest: Vec<&String> = symbols
+        .iter()
+        .filter(|s| a.read_intraday_curve(days[1], s).unwrap().is_some())
+        .collect();
+    assert_eq!(newest.len(), 2, "the newest day first: {newest:?}");
+
+    // Later runs pick up the rest, and nothing is derived twice.
+    for _ in 0..3 {
+        let mut r = CycleReport::default();
+        m.run_intraday_curves(&w, utc(NOW), &mut r);
+        assert!(r.errors.is_empty(), "{:?}", r.errors);
+    }
+    let mut r = CycleReport::default();
+    m.run_intraday_curves(&w, utc(NOW), &mut r);
+    assert_eq!(
+        (r.curves_derived, r.curves_pending),
+        (0, 0),
+        "every symbol-day has one and none is re-derived: {r:?}"
+    );
+    for day in days {
+        for s in &symbols {
+            let c = a.read_intraday_curve(day, s).unwrap().expect("a curve");
+            assert_eq!(c.symbol, *s);
+            assert_eq!(c.date, day);
+            assert_eq!(c.rules, market_archive::CURVE_RULES_VERSION);
+            // A fixture day is never market evidence, and the record says so rather than
+            // quietly posing as a prior session.
+            assert_eq!(
+                c.source.fidelity,
+                market_archive::CurveFidelity::SyntheticFixture
+            );
+            assert!(!c.complete && !c.usable_as_history());
+        }
+    }
+}
+
+/// With the step switched off, nothing is derived.
+#[test]
+fn intraday_curves_can_be_switched_off() {
+    let tmp = tempfile::tempdir().unwrap();
+    let a = archive(tmp.path(), "0");
+    let day = d("2026-10-20");
+    write_fixture_day(&a, day, &["AAAA".to_string()], DEFAULT_SEED).unwrap();
+    let world = Arc::new(World::default());
+    *world.replaying.lock().unwrap() = Some(None);
+    let cfg = MaintainConfig {
+        intraday_curves: false,
+        ..config()
+    };
+    let make = {
+        let w = world.clone();
+        move || Ok::<_, String>(Router(w.clone()))
+    };
+    let stop = AtomicBool::new(false);
+    let m = Maintainer {
+        cfg: &cfg,
+        creds: None,
+        archive: &a,
+        make_http: &make,
+        stop: &stop,
+        wait: &|_| true,
+        log: &|_l: &str| {},
+    };
+    let r = m.run_cycle(utc(NOW));
+    assert_eq!((r.curves_derived, r.curves_pending), (0, 0), "{r:?}");
+    assert!(a.read_intraday_curve(day, "AAAA").unwrap().is_none());
+}

@@ -137,6 +137,12 @@ pub struct MaintainConfig {
     /// open for the next tick; at this many it is closed with the error, so a symbol the provider
     /// keeps refusing costs a fixed number of fetches and never a loop.
     pub warmup_max_attempts: u32,
+    /// Derive intraday diagnostic curves from the archived days (`market_archive::intraday`).
+    pub intraday_curves: bool,
+    /// Symbols whose curve is derived per cycle. A bound, not a target: the rest are picked up by
+    /// later cycles, and until enough prior sessions exist the engine reports the diagnostic as
+    /// `insufficient_sessions` rather than a number.
+    pub intraday_max_per_run: usize,
 }
 
 impl Default for MaintainConfig {
@@ -149,6 +155,8 @@ impl Default for MaintainConfig {
             coverage: CoveragePolicy::v1(),
             warmup_max_per_run: 50,
             warmup_max_attempts: 4,
+            intraday_curves: true,
+            intraday_max_per_run: 400,
             window_days: 21,
             daily_bars_keep_days: 63,
             run_at: NaiveTime::from_hms_opt(21, 15, 0).expect("valid"),
@@ -294,6 +302,22 @@ impl MaintainConfig {
                     return Err(format!("WARMUP_MAX_ATTEMPTS must be 1..=20, got {n}"));
                 }
                 n as u32
+            },
+            intraday_curves: match var("INTRADAY_CURVES").as_deref() {
+                None | Some("1") | Some("true") => true,
+                Some("0") | Some("false") => false,
+                Some(v) => return Err(format!("INTRADAY_CURVES is not 0/1: {v:?}")),
+            },
+            intraday_max_per_run: {
+                let n = num(
+                    "INTRADAY_MAX_PER_RUN",
+                    var("INTRADAY_MAX_PER_RUN"),
+                    d.intraday_max_per_run,
+                )?;
+                if !(1..=5000).contains(&n) {
+                    return Err(format!("INTRADAY_MAX_PER_RUN must be 1..=5000, got {n}"));
+                }
+                n
             },
         })
     }
@@ -655,6 +679,12 @@ pub struct CycleReport {
     pub split_requests: u64,
     #[serde(default)]
     pub split_files_pruned: usize,
+    /// Intraday diagnostic curves derived this cycle, and the symbol-days still without one in
+    /// the days the cycle looked at (`market_archive::intraday`; diagnostic-only).
+    #[serde(default)]
+    pub curves_derived: usize,
+    #[serde(default)]
+    pub curves_pending: usize,
     pub assets: Option<usize>,
     pub free_bytes: Option<u64>,
     pub requests: u64,
@@ -877,6 +907,12 @@ impl<H: Http + Send + 'static> Maintainer<'_, H> {
             if self.cfg.split_snapshots && !self.stopped() {
                 self.split_set(creds, now, latest, &mut r);
             }
+        }
+        // Intraday diagnostic curves from the days already on disk: no provider call, no
+        // network, and bounded per cycle. Derived after the import so a day is only read once it
+        // is final (`market_archive::intraday` decides what counts as collected whole).
+        if self.cfg.intraday_curves && !self.stopped() {
+            self.run_intraday_curves(&w, now, &mut r);
         }
         if !pruned_already && !self.stopped() {
             let newest = self
@@ -1228,6 +1264,75 @@ impl<H: Http + Send + 'static> Maintainer<'_, H> {
         }
         rep.warmed = self.run_warmup(creds, d, now, &mut rep.errors);
         rep
+    }
+
+    /// Derives the intraday diagnostic curves missing from the window's days, at most
+    /// `INTRADAY_MAX_PER_RUN` of them, newest day first.
+    ///
+    /// Reads only what is already on disk — the day's own archived prints — so there is no
+    /// provider call and nothing to pace. It is bounded and resumable: a symbol without a curve
+    /// is picked up by a later cycle, and `curves_pending` says how many are still waiting, so a
+    /// backlog is visible rather than silently incomplete. The curves feed the same-time and
+    /// recent-window RVOL **diagnostics** only; the pillar keeps its 30-session daily
+    /// denominator, unchanged.
+    pub fn run_intraday_curves(&self, w: &Window, now: DateTime<Utc>, r: &mut CycleReport) {
+        let observed_at = now.timestamp_nanos_opt().unwrap_or(i64::MAX);
+        let days = match self.archive.ready_days() {
+            Ok(d) => d,
+            Err(e) => {
+                r.errors.push(format!("intraday curves: {e}"));
+                return;
+            }
+        };
+        // Newest first: the most recent sessions are the ones a diagnostic reaches for.
+        let mut days: Vec<NaiveDate> = days.into_iter().filter(|d| *d >= w.first).collect();
+        days.sort_unstable_by(|a, b| b.cmp(a));
+        for day in days {
+            if self.stopped() {
+                return;
+            }
+            let manifest = match self.archive.manifest(day) {
+                Ok(Some(m)) => m,
+                Ok(None) => continue,
+                Err(e) => {
+                    r.errors.push(format!("intraday curves {day}: {e}"));
+                    continue;
+                }
+            };
+            for symbol in manifest.symbols.keys() {
+                match self.archive.read_intraday_curve(day, symbol) {
+                    Ok(Some(_)) => continue,
+                    Ok(None) => {}
+                    Err(e) => {
+                        r.errors
+                            .push(format!("intraday curves {day} {symbol}: {e}"));
+                        continue;
+                    }
+                }
+                if r.curves_derived >= self.cfg.intraday_max_per_run {
+                    r.curves_pending += 1;
+                    continue;
+                }
+                match market_archive::intraday::derive_curve(
+                    self.archive,
+                    &manifest,
+                    symbol,
+                    day,
+                    observed_at,
+                ) {
+                    Ok(Some(c)) => match self.archive.write_intraday_curve(&c) {
+                        Ok(()) => r.curves_derived += 1,
+                        Err(e) => r
+                            .errors
+                            .push(format!("intraday curves {day} {symbol}: {e}")),
+                    },
+                    Ok(None) => {}
+                    Err(e) => r
+                        .errors
+                        .push(format!("intraday curves {day} {symbol}: {e}")),
+                }
+            }
+        }
     }
 
     /// Warms up open requests for `d` (intraday band entrants, market_archive::warmup), at most

@@ -93,6 +93,7 @@ pub mod evidence;
 pub mod evidence_load;
 pub mod fixture;
 pub mod format;
+pub mod intraday;
 pub mod live;
 pub mod manifest;
 pub mod original;
@@ -129,6 +130,10 @@ pub use evidence::{
     TailRead, sha256_hex,
 };
 pub use evidence_load::LoadedEvidence;
+pub use intraday::{
+    CURVE_RULES_VERSION, CurveCoverage, CurveFidelity, CurveSource, INTRADAY_DIR,
+    IntradayCurveRecord, MinuteVolumeSeries, derive_curve, intraday_baseline,
+};
 pub use lifecycle::{IMPORTING_MARKER, REMOVING_PREFIX};
 pub use live::{DayData, LIVE_DIR, LiveQuote, LiveWriter};
 pub use manifest::{DayManifest, ImportProvenance, LiveDay, SymbolEntry};

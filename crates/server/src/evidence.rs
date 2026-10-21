@@ -77,7 +77,9 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration as StdDuration, SystemTime};
-use stock_context::{DailyBaseline, FloatObservation, NewsCoverage, NewsItem, PrevClose};
+use stock_context::{
+    DailyBaseline, FloatObservation, IntradayBaseline, NewsCoverage, NewsItem, PrevClose,
+};
 
 /// Default period of the evidence check (`CONTEXT_EVIDENCE_CHECK_SECS`), chosen from the news
 /// pillar's arithmetic rather than for cost (a check that finds nothing is a few `stat`s). A
@@ -101,6 +103,7 @@ pub struct EvidenceLog {
     day: Option<NaiveDate>,
     seq: u64,
     floats: Vec<(u64, FloatObservation)>,
+    intraday: Vec<(u64, IntradayBaseline)>,
     news: Vec<(u64, NewsItem)>,
     coverage: Vec<(u64, NewsCoverage)>,
     /// The latest per record id: every announcement check re-issues every symbol's records, and
@@ -116,6 +119,9 @@ pub struct EvidenceBatch {
     /// The log's sequence this batch brings the board up to.
     pub through: u64,
     pub floats: Vec<FloatObservation>,
+    /// Diagnostic intraday curves (`market_archive::intraday`): the same-time and recent-window
+    /// RVOL measures only, never the pillar.
+    pub intraday: Vec<IntradayBaseline>,
     pub news: Vec<NewsItem>,
     pub coverage: Vec<NewsCoverage>,
     pub closes: Vec<PrevClose>,
@@ -125,6 +131,7 @@ pub struct EvidenceBatch {
 impl EvidenceBatch {
     pub fn len(&self) -> usize {
         self.floats.len()
+            + self.intraday.len()
             + self.news.len()
             + self.coverage.len()
             + self.closes.len()
@@ -178,6 +185,7 @@ impl EvidenceLog {
             generation: self.generation,
             through: self.seq,
             floats: pick(self.floats.iter(), after),
+            intraday: pick(self.intraday.iter(), after),
             news: pick(self.news.iter(), after),
             coverage: pick(self.coverage.iter(), after),
             closes: pick(self.closes.values(), after),
@@ -196,6 +204,8 @@ impl EvidenceLog {
 pub struct RefreshReport {
     pub day: Option<NaiveDate>,
     pub floats: usize,
+    /// Diagnostic intraday baselines delivered (`market_archive::intraday`).
+    pub intraday: usize,
     pub news: usize,
     pub coverage: usize,
     pub closes: usize,
@@ -209,7 +219,7 @@ pub struct RefreshReport {
 
 impl RefreshReport {
     pub fn new_records(&self) -> usize {
-        self.floats + self.news + self.coverage + self.closes + self.baselines
+        self.floats + self.intraday + self.news + self.coverage + self.closes + self.baselines
     }
 }
 
@@ -232,6 +242,9 @@ pub struct EvidenceLoader {
     baseline_stamp: Option<Stamp>,
     /// The run-clock `as_of` the last baseline build used.
     baseline_as_of: Option<DateTime<Utc>>,
+    /// Symbols whose diagnostic intraday baseline has been read for the current session date.
+    /// Prior sessions do not change intraday, so each symbol is read once a day.
+    intraday_done: HashSet<String>,
     /// The earliest announcement retrieval of the day later than `baseline_as_of`, when the last
     /// build saw one: at that time a rebuild can read a check the last one could not, with no
     /// file having changed. `None`: none known.
@@ -308,6 +321,7 @@ impl EvidenceLoader {
             baseline_as_of: None,
             next_check_at: None,
             coverage_expires_at: None,
+            intraday_done: HashSet::new(),
             delivered: HashSet::new(),
             generations: 0,
         }
@@ -349,6 +363,7 @@ impl EvidenceLoader {
             self.baseline_as_of = None;
             self.next_check_at = None;
             self.coverage_expires_at = None;
+            self.intraday_done.clear();
             self.delivered.clear();
             self.generations += 1;
             *log.lock().expect("evidence log lock") = EvidenceLog {
@@ -450,6 +465,58 @@ impl EvidenceLoader {
             }
         }
         rep
+    }
+
+    /// Symbols of `symbols` whose diagnostic intraday baseline has not been read for `day` yet.
+    pub fn intraday_pending(&self, symbols: &[String], max: usize) -> Vec<String> {
+        symbols
+            .iter()
+            .filter(|s| !self.intraday_done.contains(*s))
+            .take(max)
+            .cloned()
+            .collect()
+    }
+
+    /// Reads the stored intraday curves of the sessions before `day` for `symbols` and returns
+    /// one diagnostic baseline each (`market_archive::intraday`).
+    ///
+    /// Diagnostic-only: these feed `RvolDiagnostics::same_time_milli` and `recent_milli`, never
+    /// the RVOL pillar, whose 30-session daily denominator is unchanged. Each symbol is read once
+    /// per session date, because prior sessions do not change during a day, and a symbol with no
+    /// stored curves gets no record at all — the engine then says `insufficient_sessions` rather
+    /// than a number.
+    ///
+    /// How many prior sessions can ever exist is capped by the archive's own retention window, so
+    /// on a short archive the diagnostic stays `insufficient_sessions`. That is the truth about
+    /// the data, not a failure of this path.
+    pub fn intraday(
+        &mut self,
+        day: NaiveDate,
+        symbols: &[String],
+        rep: &mut RefreshReport,
+    ) -> Vec<IntradayBaseline> {
+        let mut dates = Vec::with_capacity(INTRADAY_LOOKBACK_SESSIONS);
+        let mut x = day;
+        for _ in 0..INTRADAY_LOOKBACK_SESSIONS {
+            x = previous_trading_day(x);
+            dates.push(x);
+        }
+        dates.reverse();
+        let mut out = Vec::new();
+        for sym in symbols {
+            // Read once per day whatever came back: a symbol with no curves must not be re-read
+            // on every tick.
+            self.intraday_done.insert(sym.clone());
+            match self.archive.read_intraday_curves(sym, &dates) {
+                Ok(curves) => {
+                    if let Some(b) = market_archive::intraday::intraday_baseline(&curves, sym) {
+                        out.push(b);
+                    }
+                }
+                Err(e) => rep.errors.push(format!("intraday curves {sym}: {e}")),
+            }
+        }
+        out
     }
 
     /// The previous closes and daily baselines of `day` when their inputs changed since the last
@@ -628,6 +695,15 @@ pub const WARMUP_SCAN_MAX: usize = 200;
 /// In-memory warmup requests held before `capture` starts dropping them (and counting it).
 pub const WARMUP_QUEUE_CAPACITY: usize = 2_000;
 
+/// Prior trading dates the diagnostic intraday curves are looked for over. More than the
+/// diagnostic's minimum so a few missing days still leave enough, and no more than the archive's
+/// own retention window can hold anyway.
+pub const INTRADAY_LOOKBACK_SESSIONS: usize = 25;
+
+/// Symbols whose intraday curves are read per tick. Bounded like the warmup scan, and for the
+/// same reason: the rest are read on later ticks.
+pub const INTRADAY_SCAN_MAX: usize = 100;
+
 impl Market {
     /// Sets up this market's evidence (once) and starts loading it: a replay synchronously, here,
     /// before its ingest starts; a live market in the background. Then every `every`.
@@ -734,9 +810,65 @@ impl Market {
     /// [`Market::load_evidence`] for today, then hands the board what it has not got.
     pub(crate) fn refresh_evidence(&self) {
         self.load_evidence(None);
+        self.load_intraday();
         self.deliver_evidence();
         self.request_warmups();
         self.refresh_readiness();
+    }
+
+    /// Reads the diagnostic intraday curves for the symbols that have traded today and puts them
+    /// in the log for the board to take (`market_archive::intraday`).
+    ///
+    /// Bounded and resumable like the warmup scan: `INTRADAY_SCAN_MAX` symbols a tick, the
+    /// already-read ones skipped **before** the budget is taken, and the disk read on this
+    /// blocking thread rather than under the core lock. Diagnostic-only — the RVOL pillar's
+    /// 30-session daily denominator is untouched.
+    pub(crate) fn load_intraday(&self) {
+        let Some(ev) = self.0.evidence.get() else {
+            return;
+        };
+        let Some(day) = ev.log.lock().expect("evidence log lock").day() else {
+            return;
+        };
+        let done: std::collections::BTreeSet<String> = {
+            let l = ev.loader.lock().expect("evidence loader lock");
+            l.intraday_done.iter().cloned().collect()
+        };
+        let symbols = {
+            let core = self.0.core.lock().expect("core lock");
+            match core.context.as_ref() {
+                Some(cx) => cx.decided_symbols(INTRADAY_SCAN_MAX, &done),
+                None => return,
+            }
+        };
+        if symbols.is_empty() {
+            return;
+        }
+        let mut rep = RefreshReport::default();
+        let records = {
+            let mut l = ev.loader.lock().expect("evidence loader lock");
+            l.intraday(day, &symbols, &mut rep)
+        };
+        for e in &rep.errors {
+            tracing::warn!(day = %day, error = %e, "intraday diagnostic curves");
+        }
+        if records.is_empty() {
+            return;
+        }
+        let n = records.len();
+        {
+            let mut log = ev.log.lock().expect("evidence log lock");
+            for r in records {
+                let s = log.next();
+                log.intraday.push((s, r));
+            }
+        }
+        tracing::debug!(
+            day = %day,
+            baselines = n,
+            scanned = symbols.len(),
+            "intraday diagnostic curves loaded"
+        );
     }
 
     /// Takes the per-pillar readiness summary and caches it for the `ross` frames.
@@ -1934,5 +2066,174 @@ mod tests {
             resend.is_none(),
             "the panel in it is the one already published"
         );
+    }
+
+    /// Writes a derived intraday curve for `date` holding `shares` eligible shares from 09:30,
+    /// marked as a final day collected whole so it counts as prior-session history.
+    fn write_curve(a: &Archive, date: NaiveDate, symbol: &str, shares: u64, observed_at: i64) {
+        let open = et(date, 9, 30, 0, 0).expect("valid").nanos();
+        let four = et(date, 4, 0, 0, 0).expect("valid").nanos();
+        let at = (open - four) / SEC;
+        a.write_intraday_curve(&market_archive::IntradayCurveRecord {
+            v: 1,
+            symbol: symbol.into(),
+            date,
+            step_secs: 15,
+            cum: vec![(0, 0), (at + 15, shares)],
+            complete: true,
+            source: market_archive::CurveSource {
+                fidelity: market_archive::CurveFidelity::ImportedHistory,
+                file: format!("{symbol}.swa"),
+                sha256: "00".into(),
+                events: 1,
+                sources: vec![],
+            },
+            coverage: Default::default(),
+            rules: market_archive::CURVE_RULES_VERSION.into(),
+            observed_at,
+        })
+        .expect("write curve");
+    }
+
+    /// Stored curves reach the engine as the same-time and recent-window **diagnostics**, and the
+    /// RVOL pillar is untouched by them.
+    ///
+    /// `IntradayBaseline` had been in the engine since the pillars went in with nothing producing
+    /// one, so both measures were permanently `None` (the audit's F5/F10). The loader reads the
+    /// curves the maintainer derives, once per symbol per session date, bounded per tick.
+    #[test]
+    fn stored_intraday_curves_become_diagnostics_and_not_the_pillar() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = archive(dir.path());
+        write_daily_world(&a);
+        write_collected(&a, t(7, 0, 0));
+        // Ten prior sessions, 10,000 eligible shares each by 09:30: the diagnostic's minimum.
+        let mut d = dd();
+        for _ in 0..10 {
+            d = previous_trading_day(d);
+            write_curve(&a, d, SYM, 10_000, t(4, 0, 0));
+        }
+        let log = Mutex::new(EvidenceLog::default());
+        let mut cx = board();
+        let mut l = loader(&a);
+        deliver(&mut l, &log, &mut cx, utc(t(9, 29, 0)));
+
+        // Before any curve is loaded the diagnostic is honestly unavailable.
+        trade(&mut cx, t(9, 30, 0), t(9, 32, 0));
+        let before = cx.decision(SYM).unwrap();
+        assert_eq!(before.rvol.same_time_reason, "no_intraday_baseline");
+        assert_eq!(before.rvol.same_time_milli, None);
+        let pillar_before = before
+            .pillars
+            .iter()
+            .find(|p| p.pillar == PillarId::Rvol)
+            .cloned()
+            .unwrap();
+
+        // The loader reads them and the board takes them.
+        let mut rep = RefreshReport::default();
+        let records = l.intraday(dd(), &[SYM.to_string()], &mut rep);
+        assert_eq!(records.len(), 1, "{rep:?}");
+        assert_eq!(records[0].sessions.len(), 10);
+        assert!(records[0].sessions.iter().all(|s| s.complete));
+        {
+            let mut lg = log.lock().unwrap();
+            for r in records {
+                let s = lg.next();
+                lg.intraday.push((s, r));
+            }
+        }
+        if let Some(b) = log.lock().unwrap().since(cx.evidence_cursor()) {
+            cx.add_evidence(b);
+        }
+        trade(&mut cx, t(9, 32, 0), t(9, 34, 0));
+
+        let after = cx.decision(SYM).unwrap();
+        assert_eq!(after.rvol.same_time_sessions, 10);
+        assert_eq!(after.rvol.same_time_reason, "ok", "{:?}", after.rvol);
+        let same_time = after.rvol.same_time_milli.expect("a same-time measure");
+        assert!(same_time > 0, "{:?}", after.rvol);
+
+        // And the pillar is exactly what it was: same rule, same state.
+        let pillar_after = after
+            .pillars
+            .iter()
+            .find(|p| p.pillar == PillarId::Rvol)
+            .cloned()
+            .unwrap();
+        assert_eq!(pillar_after.rule, pillar_before.rule);
+        assert_eq!(pillar_after.state, pillar_before.state);
+        assert!(
+            pillar_after.rule.contains("daily denominator"),
+            "the pillar keeps the owner's daily denominator: {}",
+            pillar_after.rule
+        );
+    }
+
+    /// A symbol with no stored curves gets no record, is not re-read every tick, and the engine
+    /// says `insufficient_sessions` rather than inventing a number.
+    #[test]
+    fn a_symbol_without_curves_is_read_once_and_stays_insufficient() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = archive(dir.path());
+        let mut l = loader(&a);
+        let mut rep = RefreshReport::default();
+        let syms = vec![SYM.to_string(), OTHER.to_string()];
+        assert_eq!(l.intraday_pending(&syms, INTRADAY_SCAN_MAX), syms);
+        assert!(l.intraday(dd(), &syms, &mut rep).is_empty());
+        assert!(rep.errors.is_empty(), "{rep:?}");
+        assert!(
+            l.intraday_pending(&syms, INTRADAY_SCAN_MAX).is_empty(),
+            "read once per session date, whatever came back"
+        );
+
+        // Too few sessions is not enough either: nine of a minimum of ten stays insufficient.
+        let mut d = dd();
+        for _ in 0..9 {
+            d = previous_trading_day(d);
+            write_curve(&a, d, SYM, 10_000, t(4, 0, 0));
+        }
+        let records = loader(&a).intraday(dd(), &[SYM.to_string()], &mut rep);
+        assert_eq!(records[0].sessions.len(), 9);
+        let log = Mutex::new(EvidenceLog::default());
+        let mut cx = board();
+        deliver(&mut loader(&a), &log, &mut cx, utc(t(9, 29, 0)));
+        {
+            let mut lg = log.lock().unwrap();
+            for r in records {
+                let s = lg.next();
+                lg.intraday.push((s, r));
+            }
+        }
+        if let Some(b) = log.lock().unwrap().since(cx.evidence_cursor()) {
+            cx.add_evidence(b);
+        }
+        trade(&mut cx, t(9, 30, 0), t(9, 32, 0));
+        let got = cx.decision(SYM).unwrap();
+        assert_eq!(got.rvol.same_time_sessions, 9);
+        assert_eq!(got.rvol.same_time_reason, "insufficient_sessions");
+        assert_eq!(got.rvol.same_time_milli, None);
+    }
+
+    /// The scan is bounded and skips what it has read **before** taking its budget, so a long
+    /// tail is read over several ticks rather than blocked behind whatever sorts first.
+    #[test]
+    fn the_intraday_scan_is_bounded_and_fair() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = archive(dir.path());
+        let mut l = loader(&a);
+        let mut rep = RefreshReport::default();
+        let syms: Vec<String> = (0..250).map(|k| format!("S{k:04}")).collect();
+        let first = l.intraday_pending(&syms, INTRADAY_SCAN_MAX);
+        assert_eq!(first.len(), INTRADAY_SCAN_MAX);
+        l.intraday(dd(), &first, &mut rep);
+        let second = l.intraday_pending(&syms, INTRADAY_SCAN_MAX);
+        assert_eq!(second.len(), INTRADAY_SCAN_MAX);
+        assert!(
+            second.iter().all(|s| !first.contains(s)),
+            "the next batch, not the same one again"
+        );
+        l.intraday(dd(), &second, &mut rep);
+        assert_eq!(l.intraday_pending(&syms, INTRADAY_SCAN_MAX).len(), 50);
     }
 }
