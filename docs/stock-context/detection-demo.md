@@ -70,6 +70,11 @@ disclosed through resynchronization for that run. Quietness remains unavailable 
 admissible prior-session reference; price-only ignition and micro-pullbacks remain independent.
 Historical data without original receipt times does not establish observer-time parity.
 
+While a symbol's archive is loading, the panel reports **Assessment unavailable: history pending**
+even if other symbols have active rows. RVOL and momentum ranking remain unavailable for that
+symbol; inputs continue accumulating. Successful history adoption ends this temporary guard
+without erasing genuine coverage or revision doubts. A failed load remains unavailable.
+
 Disable by restoring the prior `DETECTION_PANEL` value (default `0`) and restarting the same
 authorized runtime. Keep the journal and prior configuration; no data deletion or policy
 rewrite is part of rollback. No main merge, PR, push or deployment is needed for this local demo.
