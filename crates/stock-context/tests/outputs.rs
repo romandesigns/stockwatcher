@@ -134,8 +134,8 @@ fn bar(e: &mut Engine, sym: &str, k: i64, ohlc: [i64; 4], vol: u64) {
     print(e, sym, e0 + 13 * S, c, vol - 3 * (vol / 4));
 }
 
-/// One pole, flag, cross and trigger, then the hold that re-arms the family: 19 bars that walk
-/// the setup through every state, so each cycle writes several transitions and level versions.
+/// One impulse, pullback, cross and trigger, then a flat hold: 19 bars that walk the Ross cue's
+/// micro-pullback through several states, so each cycle writes several setup-log transitions.
 const CYCLE: [([i64; 4], u64); 19] = [
     ([500, 500, 500, 500], 400),
     ([500, 500, 500, 500], 400),

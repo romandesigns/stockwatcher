@@ -19,9 +19,10 @@
 //! keeps only the latest per symbol. First-seen times live on the per-day [`Timeline`] and are
 //! never rewritten.
 
+use crate::cue::RossCue;
 use crate::detect::{
     self, DetectionPolicy, DetectionSnapshot, DetectionTelemetry, DetectionTransition, Detector,
-    QuietReference, SymDetect,
+    QuietReference, Scope, SymDetect,
 };
 use crate::evaluate::{
     self, Coverage, Integrity, NewsSummary, PriceView, RvolDiagnostics, VolumeView,
@@ -30,7 +31,7 @@ use crate::evidence::{
     DailyBaseline, EvidenceStore, FloatObservation, InstrumentId, IntradayBaseline, NewsCoverage,
     NewsItem, PrevClose,
 };
-use crate::output::{BoundedLog, OutputTelemetry, PANEL_LOG_MAX, SETUP_LOG_MAX};
+use crate::output::{BoundedLog, OutputTelemetry, PANEL_LOG_MAX};
 use crate::panel::{
     Eligibility, Membership, Momentum, MomentumRules, MomentumStatus, PanelPolicy, momentum,
     momentum_order, update_membership,
@@ -38,9 +39,7 @@ use crate::panel::{
 use crate::pillar::{Counts, PillarId, PillarResult, Qualification, Tri, aggregate, price_pillar};
 use crate::policy::Policy;
 use crate::revision::{PrintRevision, RevisionTelemetry};
-use crate::setup::{
-    BARS_KEPT, Bar, BullFlag, SetupLogEntry, SetupPolicy, SetupState, SetupView, Step, spark,
-};
+use crate::setup::{BARS_KEPT, Bar, spark};
 use chrono::{Days, NaiveDate};
 use market_events::session::{SessionKind, classify, et, trading_date};
 use market_events::{Price, Resolution, Trade, TradeId, TradeRef, UnixNanos};
@@ -318,7 +317,6 @@ struct Sym {
     bars: VecDeque<Bar>,
     /// End of the bar holding today's first volume-counted print (the average-volume clock).
     first_bar: Option<i64>,
-    setup: BullFlag,
     /// First time StockWatcher saw any of the qualifying news at the latest decision.
     news_first_seen: Option<i64>,
     /// How completely this symbol's own prints were collected today, when something is known
@@ -347,7 +345,8 @@ struct Sym {
     /// back into the prefix is not reportable ([`Integrity::window_untrusted`]). The doubt clears
     /// by itself once the window has moved past the prefix, within the window's own length.
     restored_through: Option<i64>,
-    /// The Detection Panel families' state (`crate::detect`), when detection is on.
+    /// The detection families' state (`crate::detect`): every family with the Detection Panel
+    /// on, the micro-pullback for a Ross member otherwise. The Ross row's cue reads it.
     det: SymDetect,
     /// The day's history is still being restored by a loader ([`Engine::set_history_pending`]):
     /// a temporary observation guard, never part of `integrity`.
@@ -381,7 +380,6 @@ impl Sym {
             halted: false,
             bars: VecDeque::new(),
             first_bar: None,
-            setup: BullFlag::default(),
             news_first_seen: None,
             coverage: None,
             integrity: Integrity::default(),
@@ -521,8 +519,9 @@ pub struct PanelRow {
     /// Closes (micros) of the last 20 completed 15 s setup bars that had an OHLC print, oldest
     /// first; fewer when not available, never padded or interpolated.
     pub spark: Vec<i64>,
-    /// The `bull_flag_v0` setup view (EXPERIMENTAL, `setups-v0`).
-    pub setup: SetupView,
+    /// The pullback cue, read from the engine's `micro_pullback` episodes ([`crate::cue`],
+    /// EXPERIMENTAL, descriptive: a stage, not an entry signal).
+    pub setup: RossCue,
 }
 
 /// The Ross Panel at one barrier: active members in momentum order, published with the same
@@ -537,9 +536,9 @@ pub struct PanelSnapshot {
     pub pillar_policy: String,
     pub bar_end: i64,
     pub cutoff: i64,
-    /// `setups-v0@<hash>`.
+    /// The detection policy the cues come from (`detection-v2@<hash>`).
     pub setup_policy: String,
-    /// Members whose setup is `near`, `crossing` or `triggered`.
+    /// Members whose cue is `near` or `crossing` ([`RossCue::attention`]).
     pub attention: u32,
     pub rows: Vec<PanelRow>,
 }
@@ -569,14 +568,13 @@ pub struct Engine {
     panel_policy: PanelPolicy,
     panel_log: BoundedLog<PanelSnapshot>,
     last_panel: Option<PanelSnapshot>,
-    setup_policy: SetupPolicy,
-    setup_log: BoundedLog<SetupLogEntry>,
     revisions: RevisionTelemetry,
     restores: RestoreTelemetry,
     /// The clock at the last ledger sweep ([`Engine::advance_to`]).
     swept_at: i64,
-    /// The Detection Panel families (`crate::detect`); `None`: off.
-    detector: Option<Detector>,
+    /// The detection families (`crate::detect`). Always present: [`Scope::RossMembers`] runs the
+    /// micro-pullback for Ross members only (the cues), [`Scope::All`] is the Detection Panel.
+    detector: Detector,
 }
 
 /// What an engine adopted from per-symbol restores.
@@ -620,7 +618,16 @@ fn ceil_to(t: i64, step: i64) -> i64 {
 }
 
 impl Engine {
+    /// An engine with the Detection Panel off. The Ross rows' cues still come from the product
+    /// detection policy ([`DetectionPolicy::current`]), run for the panel's members only.
     pub fn new(policy: Policy, run: RunInfo) -> Self {
+        let g = &policy.body.grid;
+        let detector = Detector::new(
+            DetectionPolicy::current(),
+            g.bar_secs,
+            g.settle_ms,
+            Scope::RossMembers,
+        );
         Engine {
             policy,
             run,
@@ -632,78 +639,88 @@ impl Engine {
             panel_policy: PanelPolicy::v1(),
             panel_log: BoundedLog::new(PANEL_LOG_MAX),
             last_panel: None,
-            setup_policy: SetupPolicy::v0(),
-            setup_log: BoundedLog::new(SETUP_LOG_MAX),
             revisions: RevisionTelemetry::default(),
             restores: RestoreTelemetry::default(),
             swept_at: i64::MIN,
-            detector: None,
+            detector,
         }
     }
 
     /// The same engine with the EXPERIMENTAL Detection Panel families on (`crate::detect`).
     /// Off by default. They read the same admitted prints and bars as everything else, for every
-    /// symbol, whatever Ross membership, news or float say; they never change a decision, the
-    /// Ross Panel or a setup. A policy whose grid differs from the pillar grid stays disabled
-    /// with a reason in the snapshot.
+    /// symbol, whatever Ross membership, news or float say; they never change a decision or the
+    /// Ross Panel's membership. The Ross rows' cues are this policy's micro-pullback episodes, so
+    /// the two panels show one detector. A policy whose grid differs from the pillar grid stays
+    /// disabled with a reason in the snapshot (and every cue is `watching`).
     pub fn with_detection_policy(mut self, p: DetectionPolicy) -> Self {
         let g = &self.policy.body.grid;
-        self.detector = Some(Detector::new(p, g.bar_secs, g.settle_ms));
+        self.detector = Detector::new(p, g.bar_secs, g.settle_ms, Scope::All);
         self
     }
 
+    fn detection_on(&self) -> bool {
+        self.detector.scope == Scope::All
+    }
+
+    /// The Detection Panel's policy; `None` while the panel is off (the cues still run under
+    /// [`Engine::setup_policy`]).
     pub fn detection_policy(&self) -> Option<&DetectionPolicy> {
-        self.detector.as_ref().map(|d| &*d.policy)
+        self.detection_on().then_some(&*self.detector.policy)
     }
 
     /// The detection snapshot: cursor, active episodes with current assessments, bounded recent
     /// history, data status and telemetry. `None` when detection is off.
     pub fn detection_snapshot(&self) -> Option<DetectionSnapshot> {
-        let det = self.detector.as_ref()?;
-        Some(detect::snapshot(
-            det,
-            &self.run,
-            self.syms
-                .iter()
-                .map(|(k, s)| (k.as_str(), &s.det, s.history_pending)),
-        ))
+        self.detection_on().then(|| {
+            detect::snapshot(
+                &self.detector,
+                &self.run,
+                self.syms
+                    .iter()
+                    .map(|(k, s)| (k.as_str(), &s.det, s.history_pending)),
+            )
+        })
     }
 
     /// Detection transitions held now, oldest first; the journal is empty afterwards. Bounded:
     /// a caller that stops taking loses the oldest, counted in [`Engine::detection_telemetry`].
+    /// Empty with the Detection Panel off: the Ross-only transitions are the setup log.
     pub fn take_detection_transitions(&mut self) -> Vec<DetectionTransition> {
-        self.detector
-            .as_mut()
-            .map_or_else(Vec::new, |d| d.log.take())
+        if !self.detection_on() {
+            return Vec::new();
+        }
+        self.detector.log.take()
     }
 
     /// The feature snapshot of `symbol`'s latest completed candidate bar (body/range diagnostics,
     /// baseline, window context), whether or not it opened an episode. Immutable once taken.
     pub fn latest_features(&self, symbol: &str) -> Option<&detect::FeatureSnapshot> {
-        self.detector.as_ref()?;
+        if !self.detection_on() {
+            return None;
+        }
         self.syms.get(symbol)?.det.latest.as_ref()
     }
 
     pub fn detection_telemetry(&self) -> DetectionTelemetry {
+        if !self.detection_on() {
+            return DetectionTelemetry::default();
+        }
         let active = self.syms.values().map(|s| s.det.active.len()).sum();
-        self.detector
-            .as_ref()
-            .map_or_else(DetectionTelemetry::default, |d| d.telemetry(active))
+        self.detector.telemetry(active)
     }
 
     /// A symbol's prior-session quietness reference ([`QuietReference`]), read as of each
-    /// decision cutoff. Without one, quietness is `unavailable`.
+    /// decision cutoff. Without one, quietness is `unavailable`. Ignored with the Detection Panel
+    /// off (only the ignition family reads it).
     pub fn add_quiet_reference(&mut self, r: QuietReference) {
-        if let Some(d) = self.detector.as_mut() {
-            d.add_reference(r);
+        if self.detection_on() {
+            self.detector.add_reference(r);
         }
     }
 
     /// Drops quiet references for dates before `date`.
     pub fn prune_quiet_references(&mut self, date: NaiveDate) {
-        if let Some(d) = self.detector.as_mut() {
-            d.prune_references(date);
-        }
+        self.detector.prune_references(date);
     }
 
     /// An observation failure from `at` (`symbol` `None`: every symbol, e.g. a provider link
@@ -718,9 +735,7 @@ impl Engine {
         reason: &'static str,
     ) -> Vec<Decision> {
         let out = self.advance_to(at);
-        let Some(det) = self.detector.as_mut() else {
-            return out;
-        };
+        let det = &mut self.detector;
         let at = at.nanos();
         match symbol {
             Some(name) => {
@@ -742,9 +757,7 @@ impl Engine {
     /// requalify from bars after `at`.
     pub fn resume_detection(&mut self, symbol: Option<&str>, at: UnixNanos) -> Vec<Decision> {
         let out = self.advance_to(at);
-        let Some(det) = self.detector.as_mut() else {
-            return out;
-        };
+        let det = &mut self.detector;
         let at = at.nanos();
         match symbol {
             Some(name) => {
@@ -763,45 +776,65 @@ impl Engine {
     }
 
     /// The same engine with other output journal bounds (the defaults are [`PANEL_LOG_MAX`] and
-    /// [`SETUP_LOG_MAX`]). Bounds only decide when the oldest held output is dropped and counted;
+    /// [`crate::output::SETUP_LOG_MAX`]). Bounds only decide when the oldest held output is dropped and counted;
     /// they never change a decision, a panel or the latest snapshot.
+    ///
+    /// With the Detection Panel on, the cue transitions travel in the detection journal under the
+    /// detection policy's own bound, and `setup_entries` changes nothing.
     pub fn with_output_bounds(mut self, panels: usize, setup_entries: usize) -> Self {
         self.panel_log = BoundedLog::new(panels);
-        self.setup_log = BoundedLog::new(setup_entries);
+        if !self.detection_on() {
+            self.detector.log = BoundedLog::new(setup_entries);
+        }
         self
     }
 
-    /// What the two output journals have produced, handed over and dropped.
+    /// What the two output journals have produced, handed over and dropped. The setup counts are
+    /// the Ross-only detector's transitions; zero with the Detection Panel on, whose journal
+    /// carries them ([`Engine::detection_telemetry`]).
     pub fn output_telemetry(&self) -> OutputTelemetry {
+        let on = self.detection_on();
+        let log = &self.detector.log;
+        let n = |x: u64| if on { 0 } else { x };
         OutputTelemetry {
             panels_published: self.panel_log.logged(),
             panels_taken: self.panel_log.taken(),
             panels_dropped: self.panel_log.dropped(),
             panels_held: self.panel_log.held(),
-            setup_entries_logged: self.setup_log.logged(),
-            setup_entries_taken: self.setup_log.taken(),
-            setup_entries_dropped: self.setup_log.dropped(),
-            setup_entries_held: self.setup_log.held(),
+            setup_entries_logged: n(log.logged()),
+            setup_entries_taken: n(log.taken()),
+            setup_entries_dropped: n(log.dropped()),
+            setup_entries_held: if on { 0 } else { log.held() },
             panel_log_max: self.panel_log.max(),
-            setup_log_max: self.setup_log.max(),
+            setup_log_max: if on { 0 } else { log.max() },
         }
     }
 
-    /// The same engine under another setup policy.
-    pub fn with_setup_policy(mut self, p: SetupPolicy) -> Self {
-        self.setup_policy = p;
+    /// The same engine with its one detector under another detection policy, keeping the scope:
+    /// the cues (and the Detection Panel, when on) then come from `p`.
+    pub fn with_setup_policy(mut self, p: DetectionPolicy) -> Self {
+        let g = &self.policy.body.grid;
+        let scope = self.detector.scope;
+        self.detector = Detector::new(p, g.bar_secs, g.settle_ms, scope);
         self
     }
 
-    pub fn setup_policy(&self) -> &SetupPolicy {
-        &self.setup_policy
+    /// The detection policy the Ross rows' cues come from, whether or not the Detection Panel
+    /// is on (`detection-v2` in the product).
+    pub fn setup_policy(&self) -> &DetectionPolicy {
+        &self.detector.policy
     }
 
-    /// Setup transitions and level versions held now, oldest first; the journal is empty
-    /// afterwards. Bounded ([`SETUP_LOG_MAX`]): a caller that stops taking loses the oldest
-    /// entries, counted in [`Engine::output_telemetry`].
-    pub fn take_setup_log(&mut self) -> Vec<SetupLogEntry> {
-        self.setup_log.take()
+    /// The Ross-only detector's transitions (the cues' `micro_pullback` episodes) held now, oldest
+    /// first; the journal is empty afterwards. Bounded ([`crate::output::SETUP_LOG_MAX`]): a
+    /// caller that stops taking loses the oldest entries, counted in
+    /// [`Engine::output_telemetry`]. Empty with the Detection Panel on: they are detection
+    /// transitions then ([`Engine::take_detection_transitions`]).
+    pub fn take_setup_log(&mut self) -> Vec<DetectionTransition> {
+        if self.detection_on() {
+            return Vec::new();
+        }
+        self.detector.log.take()
     }
 
     /// The same engine under another Ross Panel policy.
@@ -852,8 +885,8 @@ impl Engine {
     ///
     /// While pending, everything that depends on the day's history is unavailable rather than
     /// computed from the live tail alone: the RVOL pillar and its diagnostics are UNKNOWN
-    /// (`history_pending`), Ross momentum is unavailable, `bull_flag_v0` gets no bars, and the
-    /// detection families interrupt and start nothing (without requalifying, so the restored
+    /// (`history_pending`), Ross momentum is unavailable, and the detection families (the Ross
+    /// cues' micro-pullback among them) interrupt and start nothing (without requalifying, so the restored
     /// baselines are usable at once). Inputs keep flowing into the symbol's facts as usual.
     ///
     /// Separate from [`Integrity`]: clearing it never clears a genuine doubt or a coverage
@@ -995,7 +1028,6 @@ impl Engine {
                 let mut sym = restored;
                 sym.member = Membership::default();
                 sym.timeline = Timeline::default();
-                sym.setup = BullFlag::default();
                 sym.last = None;
                 sym.news_first_seen = None;
                 sym.det = SymDetect {
@@ -1039,11 +1071,13 @@ impl Engine {
         if self.panel_policy.hash != other.panel_policy.hash {
             return Some("panel_policy");
         }
-        if self.setup_policy.hash != other.setup_policy.hash {
-            return Some("setup_policy");
-        }
+        // One detector: with the Detection Panel on in either engine its policy is named;
+        // otherwise the cues' policy is.
         if self.detection_policy().map(|p| &p.hash) != other.detection_policy().map(|p| &p.hash) {
             return Some("detection_policy");
+        }
+        if self.setup_policy().hash != other.setup_policy().hash {
+            return Some("setup_policy");
         }
         None
     }
@@ -1241,18 +1275,19 @@ impl Engine {
             self.revisions.duplicates_dropped += 1;
             return out;
         }
-        if let Some(det) = self.detector.as_mut() {
-            detect::on_print(
-                det,
-                &mut sym.det,
-                &t.id(),
-                exec,
-                admit.nanos(),
-                t.price.micros(),
-                verdict.ohlc,
-                sym.history_pending,
-            );
-        }
+        // Every symbol's latest admitted price is kept (a new Ross member arms on it at once);
+        // the level tests run over active episodes only, which outside the Detection Panel are
+        // the members'.
+        detect::on_print(
+            &mut self.detector,
+            &mut sym.det,
+            &t.id(),
+            exec,
+            admit.nanos(),
+            t.price.micros(),
+            verdict.ohlc,
+            sym.history_pending,
+        );
         sym.queued_n += 1;
         sym.ledger.push_back(Admitted {
             id,
@@ -1350,11 +1385,18 @@ impl Engine {
             self.revisions.too_late += 1;
             return out;
         }
-        if let Some(det) = self.detector.as_mut() {
+        {
             // What the print says after this revision: a price only if it still sets one.
             let now = rev.corrected.filter(|c| c.verdict.ohlc).map(|c| c.price);
             let (id, exec) = (rev.target.id.clone(), sym.ledger[i].exec);
-            detect::on_revision(det, &mut sym.det, &id, exec, now, admit.nanos());
+            detect::on_revision(
+                &mut self.detector,
+                &mut sym.det,
+                &id,
+                exec,
+                now,
+                admit.nanos(),
+            );
         }
         let was_volume = sym.ledger[i].volume();
         let was_counted = sym.ledger[i].counted;
@@ -1380,7 +1422,7 @@ impl Engine {
                 }
             }
         }
-        if self.detector.is_some() {
+        {
             // The detectors' "latest admitted price" must not survive the revision of the print
             // it came from: recompute it from the prints still standing, in admission order
             // (the ledger's), and make it unavailable when none is left.
@@ -1442,8 +1484,10 @@ impl Engine {
             .or(folded_at)
             .unwrap_or(0);
         let rebuilt = Self::rebuild_windows(sym, &mo, bar_ns, b);
-        if let Some(det) = self.detector.as_ref() {
-            detect::features::rebuild_returns(det, &mut sym.det, &sym.bars, bar_ns);
+        // Only where the detector keeps a return baseline: everywhere with the Detection Panel
+        // on, a Ross member's otherwise (no ring is grown for a symbol nothing steps).
+        if self.detector.scope == Scope::All || sym.member.active().is_some() {
+            detect::features::rebuild_returns(&self.detector, &mut sym.det, &sym.bars, bar_ns);
         }
         if !rebuilt {
             // The window the next decisions read is not provably the stream's, so anything
@@ -1658,15 +1702,28 @@ impl Engine {
         self.publish_panel(b, tau);
     }
 
-    /// Runs the detection families for one symbol at barrier `b`, when detection is on and the
-    /// symbol has a bar completing now or an episode whose lifecycle advances with the clock.
+    /// Runs the detection families for one symbol at barrier `b`, when the symbol has a bar
+    /// completing now or an episode whose lifecycle advances with the clock.
+    ///
+    /// With the Detection Panel off only Ross members are stepped, after this barrier's
+    /// membership was decided ([`Engine::evaluate`] runs first): a member's micro-pullback runs
+    /// from its first member barrier, whose 20-bar lookback already reaches a pullback that began
+    /// before admission. A symbol that leaves the panel has its episodes interrupted
+    /// (`left_panel`) and its held outcome dropped, so nothing about it is carried while it is
+    /// not watched and a re-admitted member starts clean (ids keep counting for the day).
     fn detect_symbol(&mut self, name: &str, date: NaiveDate, b: i64, tau: i64) {
-        let Some(det) = self.detector.as_mut() else {
-            return;
-        };
+        let det = &mut self.detector;
         let bar_ns = self.policy.body.grid.bar_secs * SEC;
         let run_cov = self.run.numerator_coverage;
         let s = self.syms.get_mut(name).expect("known symbol");
+        if det.scope == Scope::RossMembers && (s.member.active().is_none() || s.date != Some(date))
+        {
+            if s.det.has_active() {
+                detect::interrupt_all(det, &mut s.det, "left_panel", tau, Some((b, tau)));
+            }
+            s.det.last_micro = None;
+            return;
+        }
         let fresh_bar = s.bars.back().is_some_and(|x| x.end == b);
         let pending_halt = s.halted || s.det.halted_since.is_some();
         if !(fresh_bar || s.det.has_active() || pending_halt) {
@@ -1695,57 +1752,24 @@ impl Engine {
     fn publish_panel(&mut self, b: i64, tau: i64) {
         let rules = &self.panel_policy.body.momentum;
         let date = trading_date(UnixNanos(b));
-        let bar_secs = self.policy.body.grid.bar_secs;
         let mut rows: Vec<PanelRow> = Vec::new();
         for s in self.syms.values_mut() {
             if s.member.active().is_none() || s.date != Some(date) {
-                // Only members are monitored; a member that left starts from `watching` again.
-                if !s.setup.is_idle() {
-                    s.setup.leave();
-                }
+                // Only members are on the panel ([`Engine::detect_symbol`] forgets a member that
+                // left when the Detection Panel is off).
                 continue;
             }
-            // The setup advances at every barrier while the stock is a member, print or not —
-            // unless its own inputs are not reportable. With the bars or the day high
-            // unprovable the family is left to re-arm and is given no bars for this barrier, so
-            // it claims nothing rather than claiming a flag off a window it cannot stand behind.
-            let untrusted = s.integrity.window_untrusted
-                || s.integrity.high_untrusted
-                || s.integrity.volume_untrusted
-                || s.history_pending;
-            if untrusted && !s.setup.is_idle() {
-                s.setup.leave();
-            }
-            let no_bars: VecDeque<Bar> = VecDeque::new();
-            let bars: &VecDeque<Bar> = if untrusted { &no_bars } else { &s.bars };
-            let prefix = format!("{}:{}:{}", self.run.run_id, date, s.name);
-            let mut setup = s.setup.step(
-                &self.setup_policy,
-                bar_secs,
-                &Step {
-                    bar_end: b,
-                    cutoff: tau,
-                    bar_ns: bar_secs * SEC,
-                    bars,
-                    last_price: s.last_price,
-                    halted: s.halted,
-                    day_volume: s.cum,
-                    day_slots: s
-                        .first_bar
-                        .filter(|&f| f <= b)
-                        .map_or(0, |f| ((b - f) / (bar_secs * SEC) + 1) as u64),
-                    symbol: &s.name,
-                    prefix: &prefix,
-                },
-                &mut self.setup_log,
-            );
-            if untrusted {
-                setup.reason = if s.history_pending {
-                    "history_pending"
-                } else {
-                    "inputs_untrusted"
-                };
-            }
+            // The cue is read, never stepped here: the detector already advanced this barrier
+            // (`detect_symbol`), over the same bars and prints the Detection Panel reads. Inputs
+            // it cannot stand behind interrupted the episode there; the reason is named here.
+            let hold_reason = if s.history_pending {
+                Some("history_pending")
+            } else if s.integrity.window_untrusted || s.integrity.volume_untrusted {
+                Some("inputs_untrusted")
+            } else {
+                None
+            };
+            let setup = crate::cue::cue(&self.detector, &s.det, s.halted, hold_reason, tau);
             let ticks = &s.ticks;
             let price_at = |e: i64| ticks.iter().rev().find(|(x, _)| *x < e).copied();
             let segment = |t: i64| {
@@ -1801,15 +1825,7 @@ impl Engine {
                 setup,
             });
         }
-        let attention = rows
-            .iter()
-            .filter(|r| {
-                matches!(
-                    r.setup.state,
-                    SetupState::Near | SetupState::Crossing | SetupState::Triggered
-                )
-            })
-            .count() as u32;
+        let attention = rows.iter().filter(|r| r.setup.attention()).count() as u32;
         // Ranked rows first, in momentum order; unranked after, by symbol.
         rows.sort_by(|a, b| match (a.momentum.status, b.momentum.status) {
             (MomentumStatus::Ready, MomentumStatus::Ready) => {
@@ -1845,7 +1861,7 @@ impl Engine {
             pillar_policy: self.policy.tag(),
             bar_end: b,
             cutoff: tau,
-            setup_policy: self.setup_policy.tag(),
+            setup_policy: self.detector.policy.tag(),
             attention,
             rows,
         };
@@ -1876,7 +1892,6 @@ impl Engine {
             s.member = Membership::default();
             s.bars.clear();
             s.first_bar = None;
-            s.setup = BullFlag::default();
             s.news_first_seen = None;
             // The ledger is deliberately **not** cleared here. Clearing it after a date's first
             // prints had already been queued is what lost their identities, so a later

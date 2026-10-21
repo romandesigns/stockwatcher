@@ -152,7 +152,7 @@ pub struct JournalIdentity {
     pub pillars: String,
     /// `ross-panel-v1@<sha256>`.
     pub panel: String,
-    /// `setups-v0@<sha256>` (EXPERIMENTAL).
+    /// The Ross cues' policy: `detection-v2@<sha256>` (EXPERIMENTAL; `setups-v0@...` before 2026-10-21).
     pub setup: String,
     /// The conditions policy that decided each print's verdict.
     pub conditions: String,

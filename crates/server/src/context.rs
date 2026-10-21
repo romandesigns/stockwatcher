@@ -9,9 +9,13 @@
 //! print's receive time when the feed knows it (live, recorded live), else its execution time.
 //!
 //! Policies: `pillars-v2` ([`Policy::current`]: the price pillar on the app's own $0.10–$25 band,
-//! 120 s news coverage lag), `ross-panel-v1` and the EXPERIMENTAL `setups-v0`, so every panel
-//! snapshot carries each row's `setup` and the snapshot's `attention`. Both bands are checked
-//! against `PRICE_BAND_MIN` / `MAX` at construction.
+//! 120 s news coverage lag), `ross-panel-v1`, and the EXPERIMENTAL `detection-v2` whose
+//! micro-pullback (variant MP5) is each row's `setup` cue (`stock_context::cue`, owner decision
+//! 2026-10-21: one pullback detector, so the Ross and Detection panels cannot disagree). With
+//! `DETECTION_PANEL` off the engine runs that one family for the panel's members only. A cue
+//! describes a stage, not an entry signal. Every panel snapshot carries each row's `setup` and the
+//! snapshot's `attention`. Both bands are checked against `PRICE_BAND_MIN` / `MAX` at
+//! construction.
 //!
 //! Evidence (`crate::evidence`): float, news, market-wide news coverage, and the previous close
 //! and daily baseline built from the stored daily bars and corporate-action checks, each with its
@@ -38,7 +42,7 @@ use std::collections::{BTreeSet, HashSet};
 use stock_context::{
     Adoption, CloseBasis, CorrectedPrint, Coverage, DayHigh, Decision, Engine, Fidelity,
     InstrumentId, LastPrint, OutputTelemetry, PanelPolicy, PanelSnapshot, PillarId, Policy,
-    PrevClose, PrintRevision, Qualification, RevisionTarget, RunInfo, SetupPolicy, Tri, Verdict,
+    PrevClose, PrintRevision, Qualification, RevisionTarget, RunInfo, Tri, Verdict,
 };
 
 /// What one [`ContextBoard::drain_outputs`] took off the engine, and what the engine had to drop
@@ -162,7 +166,7 @@ impl ContextBoard {
         Some(ContextBoard {
             engine: Engine::new(policy, run)
                 .with_panel_policy(panel)
-                .with_setup_policy(SetupPolicy::v0()),
+                .with_setup_policy(stock_context::DetectionPolicy::current()),
             closes_offered: HashSet::new(),
             published: None,
             published_readiness: None,
@@ -185,7 +189,8 @@ impl ContextBoard {
 
     /// Takes the engine's bounded output journals, whatever any client is doing.
     ///
-    /// The engine owns no consumer: it appends panel snapshots and setup-log entries and its
+    /// The engine owns no consumer: it appends panel snapshots and setup-log entries (the
+    /// Ross-only cue transitions; with the Detection Panel on those travel in its journal) and its
     /// caller takes them. Draining used to happen only inside [`ContextBoard::take_update`],
     /// which the market skips when nobody is subscribed to `ross`, and the setup log had no
     /// caller at all — so an unattended run grew both for ever. This is called every tick
@@ -653,9 +658,9 @@ impl ContextBoard {
         up: bool,
         reason: &'static str,
     ) {
-        if self.detection_epoch.is_none() {
-            return;
-        }
+        // Not only with the Detection Panel on: the Ross rows' cues are the same detector's
+        // micro-pullback episodes (stock_context::cue), and a gap, halt or provider error must
+        // end a member's episode exactly as it ends the panel's, or the two would disagree.
         let decided = if up {
             self.engine.resume_detection(symbol, at)
         } else {

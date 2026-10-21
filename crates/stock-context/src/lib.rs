@@ -6,18 +6,23 @@
 //! UNDETERMINED, decided on a grid of completed bars with an explicit data barrier and emitted as
 //! append-only decisions. Design and sources: `docs/stock-context/pillars-v1.md`.
 //!
-//! `setup` adds the EXPERIMENTAL early-setup family `bull_flag_v0` for Ross Panel members
-//! (`policy/setups-v0.json`, `docs/stock-context/setups-v0.md`).
-//!
 //! The pillars are a published heuristic StockWatcher measures, not a validated trading rule and
 //! not Warrior Trading's scanner. Nothing here ranks, scores or predicts.
 //!
-//! `detect` adds the EXPERIMENTAL Detection Panel families (`policy/detection-v0.json`,
-//! `docs/stock-context/detection-core.md`), off unless the caller enables them.
+//! `detect` holds the EXPERIMENTAL detection families (`policy/detection-v2.json`,
+//! `docs/stock-context/detection-core.md`). The Detection Panel runs all of them, off unless the
+//! caller enables it; without it the engine still runs the micro-pullback for Ross Panel members,
+//! because `cue` reads each row's pullback cue from those episodes (owner decision 2026-10-21:
+//! one pullback detector everywhere). A cue describes a stage, not an entry signal.
+//!
+//! `setup` keeps the earlier Ross cue family `bull_flag_v0` (`policy/setups-v0.json`,
+//! `docs/stock-context/setups-v0.md`) for research reproducibility only; no row uses it.
 //!
 //! Pure and synchronous: no I/O, no clocks, no providers. The server feeds prints and evidence
 //! records; a provider outage only means fewer records (UNKNOWN), never a blocked print.
 
+pub mod cue;
+pub use cue::{CueLevel, CueState, RossCue};
 pub mod detect;
 pub mod engine;
 pub mod evaluate;
@@ -30,8 +35,8 @@ pub mod revision;
 pub mod setup;
 
 pub use detect::{
-    Assessment, Certainty, Check, ContextClass, DETECTION_V0, DETECTION_V1, DataStatus,
-    DetectionPolicy, DetectionSnapshot, DetectionTelemetry, DetectionTransition,
+    Assessment, Certainty, Check, ContextClass, DETECTION_V0, DETECTION_V1, DETECTION_V2,
+    DataStatus, DetectionPolicy, DetectionSnapshot, DetectionTelemetry, DetectionTransition,
     Episode as DetectionEpisode, Family, FeatureSnapshot, Gap, LevelVersion, MicroAnchors,
     Monitored, QuietReference, Resolution, State, SymbolDetections, TradeEvidence,
 };

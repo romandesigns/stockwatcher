@@ -1585,7 +1585,7 @@ mod tests {
             panel["setup_policy"]
                 .as_str()
                 .unwrap()
-                .starts_with("setups-v0@"),
+                .starts_with("detection-v2@"),
             "{panel}"
         );
         assert!(panel["attention"].is_u64());
@@ -1596,6 +1596,7 @@ mod tests {
         assert_eq!(rows[0]["float_shares"], 5_000_000);
         assert_eq!(rows[0]["news_first_seen"], t(7, 31, 0));
         assert!(rows[0]["setup"].is_object());
+        assert_eq!(rows[0]["setup"]["family"], "micro_pullback");
         assert_eq!(
             cx.decision(SYM).unwrap().membership.status,
             Some(MemberStatus::Qualified)

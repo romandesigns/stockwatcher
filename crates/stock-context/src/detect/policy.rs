@@ -1,4 +1,4 @@
-//! The detection policy (`policy/detection-v0.json`), embedded and identified by the SHA-256 of
+//! The detection policies (`policy/detection-v*.json`), embedded and identified by the SHA-256 of
 //! its exact bytes like every other stock-context policy. A changed number is a new file and id.
 
 use serde::Deserialize;
@@ -6,9 +6,14 @@ use sha2::{Digest, Sha256};
 
 pub const DETECTION_V0: &str = include_str!("../../policy/detection-v0.json");
 
-/// v0 plus the approaching-trigger display rule ([`AssessmentRules`]). The profile the product
-/// runs ([`DetectionPolicy::current`]); v0 stays parseable with its own hash.
+/// v0 plus the approaching-trigger display rule ([`AssessmentRules`]); v0 stays parseable with its
+/// own hash.
 pub const DETECTION_V1: &str = include_str!("../../policy/detection-v1.json");
+
+/// v1 with the micro-pullback as variant MP5 of the pre-registered setup comparison, plus the Ross
+/// row display hold ([`RossRules`]). The profile the product runs ([`DetectionPolicy::current`]):
+/// the ONE pullback detector, read by the Detection Panel and by every Ross Panel row.
+pub const DETECTION_V2: &str = include_str!("../../policy/detection-v2.json");
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct Universe {
@@ -116,6 +121,14 @@ pub struct AssessmentRules {
     pub near_trigger_bp: i64,
 }
 
+/// How the Ross Panel shows this policy's micro-pullback episodes. Absent before v2.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub struct RossRules {
+    /// A `trigger_observed` or `invalidated` episode stays on its Ross row this long after the
+    /// transition, unless a newer episode is active. Display only: never an event, state or order.
+    pub outcome_hold_secs: i64,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct Lifecycle {
     pub transition_log_max: usize,
@@ -140,6 +153,8 @@ pub struct DetectionPolicyBody {
     pub micro: MicroRules,
     #[serde(default)]
     pub assessment: Option<AssessmentRules>,
+    #[serde(default)]
+    pub ross: Option<RossRules>,
     pub lifecycle: Lifecycle,
 }
 
@@ -188,6 +203,7 @@ impl DetectionPolicy {
                 .assessment
                 .as_ref()
                 .is_none_or(|a| (0..10_000).contains(&a.near_trigger_bp))
+            && body.ross.as_ref().is_none_or(|r| r.outcome_hold_secs >= 0)
             && body.universe.active_band_min_micros > 0
             && body.universe.active_band_max_micros >= body.universe.active_band_min_micros;
         if !ok {
@@ -214,9 +230,13 @@ impl DetectionPolicy {
         DetectionPolicy::parse(DETECTION_V1).expect("embedded detection-v1.json parses")
     }
 
-    /// The profile the product runs: v1.
+    pub fn v2() -> DetectionPolicy {
+        DetectionPolicy::parse(DETECTION_V2).expect("embedded detection-v2.json parses")
+    }
+
+    /// The profile the product runs: v2, for the Detection Panel and the Ross Panel's cues alike.
     pub fn current() -> DetectionPolicy {
-        DetectionPolicy::v1()
+        DetectionPolicy::v2()
     }
 
     /// `detection-v0@<first 12 hex>`.
@@ -260,17 +280,52 @@ mod tests {
 
     #[test]
     fn v1_is_v0_plus_the_near_cue_only() {
-        let (v0, v1) = (DetectionPolicy::v0(), DetectionPolicy::current());
+        let (v0, v1) = (DetectionPolicy::v0(), DetectionPolicy::v1());
         assert_eq!(v1.body.id, "detection-v1");
         assert_eq!(
             v1.body.assessment.as_ref().map(|a| a.near_trigger_bp),
             Some(100)
         );
+        assert_eq!(v1.body.ross, None, "v1 has no Ross display rule");
         let mut same = v1.body.clone();
         same.id = v0.body.id.clone();
         same.note = v0.body.note.clone();
         same.assessment = None;
         assert_eq!(same, v0.body);
         assert_ne!(v0.hash, v1.hash);
+    }
+
+    /// The owner's decision of 2026-10-21: MP5 of the frozen setup comparison
+    /// (docs/research/setup-compare/frozen-choice.json on research/setup-compare) and nothing else.
+    #[test]
+    fn v2_is_v1_with_the_mp5_micro_pullback_and_the_ross_hold_only() {
+        let (v1, v2) = (DetectionPolicy::v1(), DetectionPolicy::current());
+        assert_eq!(v2.body.id, "detection-v2");
+        assert!(v2.tag().starts_with("detection-v2@"));
+        assert!(v2.body.experimental && !v2.body.alerts_enabled);
+        let m = &v2.body.micro;
+        assert_eq!(m.id, "micro_pullback_mp5");
+        assert_eq!(
+            (
+                m.impulse_min_bp,
+                m.max_depth_milli,
+                m.impulse_min_coverage_milli
+            ),
+            (500, 382, 750)
+        );
+        assert_eq!(
+            v2.body.ross.as_ref().map(|r| r.outcome_hold_secs),
+            Some(120)
+        );
+        let mut same = v2.body.clone();
+        same.id = v1.body.id.clone();
+        same.note = v1.body.note.clone();
+        same.micro = v1.body.micro.clone();
+        same.ross = None;
+        assert_eq!(same, v1.body, "every other number is detection-v1's");
+        assert_ne!(v1.hash, v2.hash);
+        // The frozen files are untouched: their tags are what earlier records cite.
+        assert_eq!(v1.body.micro.id, "micro_pullback_v0");
+        assert_eq!(v1.body.micro.impulse_min_bp, 300);
     }
 }

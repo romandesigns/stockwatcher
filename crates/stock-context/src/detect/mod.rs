@@ -27,7 +27,7 @@ pub mod policy;
 pub use features::{
     BaselineStats, BodyStats, FeatureSnapshot, RangeRelation, RangeStats, ReturnClass, WindowStats,
 };
-pub use policy::{DETECTION_V0, DETECTION_V1, DetectionPolicy};
+pub use policy::{DETECTION_V0, DETECTION_V1, DETECTION_V2, DetectionPolicy, RossRules};
 
 use crate::Fidelity;
 use crate::evidence::InstrumentId;
@@ -539,6 +539,9 @@ pub(crate) struct SymDetect {
     pub requalify_from: i64,
     /// The feature snapshot of this symbol's latest completed candidate bar (details view).
     pub latest: Option<FeatureSnapshot>,
+    /// The latest micro-pullback episode that ended today (a Ross row shows a `trigger_observed`
+    /// or `invalidated` one for the policy's `ross.outcome_hold_secs`, `crate::cue`).
+    pub last_micro: Option<Episode>,
 }
 
 impl SymDetect {
@@ -547,8 +550,19 @@ impl SymDetect {
     }
 }
 
+/// What a detector runs on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Scope {
+    /// Every family, every symbol (the Detection Panel, `Engine::with_detection_policy`).
+    All,
+    /// The micro-pullback alone, and only for Ross Panel members while they are members: what
+    /// the Ross rows need when the Detection Panel is off, at the cost of a handful of symbols.
+    RossMembers,
+}
+
 /// The engine-wide detector: policy, sequence, bounded logs, references, global status.
 pub(crate) struct Detector {
+    pub scope: Scope,
     /// Shared so a step can hold its rules while it mutates the detector (no per-call clone).
     pub policy: std::sync::Arc<DetectionPolicy>,
     pub seq: u64,
@@ -572,12 +586,24 @@ pub(crate) struct Detector {
 }
 
 impl Detector {
-    pub fn new(policy: DetectionPolicy, grid_bar_secs: i64, grid_settle_ms: i64) -> Detector {
+    pub fn new(
+        policy: DetectionPolicy,
+        grid_bar_secs: i64,
+        grid_settle_ms: i64,
+        scope: Scope,
+    ) -> Detector {
         let disabled = (policy.body.timing.bar_secs != grid_bar_secs
             || policy.body.timing.settle_ms != grid_settle_ms)
             .then_some("grid_mismatch");
+        // Ross-only transitions are the engine's setup log (`Engine::take_setup_log`), under its
+        // bound; `Engine::with_output_bounds` can replace it.
+        let log_max = match scope {
+            Scope::All => policy.body.lifecycle.transition_log_max,
+            Scope::RossMembers => crate::output::SETUP_LOG_MAX,
+        };
         Detector {
-            log: BoundedLog::new(policy.body.lifecycle.transition_log_max),
+            scope,
+            log: BoundedLog::new(log_max),
             policy: std::sync::Arc::new(policy),
             seq: 0,
             recent: VecDeque::new(),
@@ -664,6 +690,10 @@ impl Detector {
     }
 
     pub fn retire(&mut self, ep: Episode) {
+        // The recent history is the Detection Panel's snapshot; nothing reads it Ross-only.
+        if self.scope == Scope::RossMembers {
+            return;
+        }
         while self.recent.len() >= self.policy.body.lifecycle.recent_max {
             self.recent.pop_front();
             self.recent_dropped += 1;
@@ -921,6 +951,9 @@ pub(crate) fn retire_terminal(det: &mut Detector, sd: &mut SymDetect) {
     let mut keep = Vec::with_capacity(sd.active.len());
     for ep in sd.active.drain(..) {
         if ep.view.state.is_terminal() {
+            if ep.view.family == Family::MicroPullback {
+                sd.last_micro = Some(ep.view.clone());
+            }
             det.retire(ep.view);
         } else {
             keep.push(ep);
@@ -973,7 +1006,7 @@ pub(crate) fn interrupt_all(
     // is not one (the next segment's windows never reach back anyway).
     if !matches!(
         reason,
-        "segment_end" | "outside_active_band" | "history_pending"
+        "segment_end" | "outside_active_band" | "history_pending" | "left_panel"
     ) {
         sd.requalify_from = sd.requalify_from.max(at);
     }
@@ -1069,18 +1102,28 @@ pub(crate) fn step(det: &mut Detector, sd: &mut SymDetect, x: &Barrier) {
             {
                 features::push_return(det, sd, x.b, seg.id, r);
             }
-            sd.latest = Some(f);
+            if det.scope == Scope::All {
+                sd.latest = Some(f);
+            }
         }
         return;
     }
     // Old levels first: every active episode is tested before anything new forms.
+    // The Ross-only scope runs the micro-pullback alone, through exactly this code: the same
+    // features, holds and interruptions, so its states and levels are the ones the Detection
+    // Panel would show for the same symbol over the same bars.
+    let all = det.scope == Scope::All;
     micro::on_barrier(det, sd, x, seg);
-    families::on_barrier(det, sd, x, f.as_ref());
+    if all {
+        families::on_barrier(det, sd, x, f.as_ref());
+    }
     // New detections need a bar completing now: nothing else can change their inputs.
     if f.is_some() {
-        let ignited = families::detect(det, sd, x, seg, f.as_ref());
-        if !ignited {
-            families::momentum(det, sd, x, seg, f.as_ref());
+        if all {
+            let ignited = families::detect(det, sd, x, seg, f.as_ref());
+            if !ignited {
+                families::momentum(det, sd, x, seg, f.as_ref());
+            }
         }
         micro::search(det, sd, x, seg);
     }
@@ -1092,7 +1135,10 @@ pub(crate) fn step(det: &mut Detector, sd: &mut SymDetect, x: &Barrier) {
         {
             features::push_return(det, sd, x.b, seg.id, r);
         }
-        sd.latest = Some(f);
+        // The details view is the Detection Panel's; Ross-only keeps no feature snapshot.
+        if det.scope == Scope::All {
+            sd.latest = Some(f);
+        }
     }
 }
 
@@ -1121,6 +1167,11 @@ pub(crate) fn on_print(
         || sd.halted_since.is_some()
         || history_pending
     {
+        return;
+    }
+    // Most symbols have no episode (outside the Detection Panel, every non-member): nothing to
+    // test, and nothing to allocate for it on the hottest path.
+    if sd.active.is_empty() {
         return;
     }
     micro::on_print(det, sd, id, exec, admit, price);
@@ -1335,7 +1386,7 @@ pub(crate) fn snapshot<'a>(
 }
 
 /// Distances from the latest admitted price to the episode's current levels.
-fn assess(
+pub(crate) fn assess(
     ep: &Episode,
     extra: &Extra,
     seen: Option<Seen>,

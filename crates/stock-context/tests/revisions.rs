@@ -596,7 +596,7 @@ fn an_unplaceable_cancel_makes_the_rvol_pillar_unknown() {
     assert_eq!(rvol_of(&f), (Tri::Unknown, "volume_untrusted"));
 }
 
-/// A day high the engine cannot prove stops being reported, and the setup claims nothing from it.
+/// A day high the engine cannot prove stops being reported (the Ross cue reads bars, never it).
 #[test]
 fn an_unprovable_day_high_is_not_reported_and_claims_no_setup() {
     let mut e = engine();

@@ -53,7 +53,7 @@ fn run() -> RunInfo {
 fn engine() -> Engine {
     Engine::new(Policy::v1(), run())
         .with_panel_policy(PanelPolicy::v1())
-        .with_setup_policy(SetupPolicy::v0())
+        .with_setup_policy(DetectionPolicy::current())
 }
 
 fn print_seq(e: &mut Engine, seq: u64, exec: i64, cents: i64, size: u64) {
@@ -282,7 +282,7 @@ fn an_adoption_across_identities_or_dates_is_refused() {
     };
     let mut from = Engine::new(Policy::v1(), other_run)
         .with_panel_policy(PanelPolicy::v1())
-        .with_setup_policy(SetupPolicy::v0());
+        .with_setup_policy(DetectionPolicy::current());
     print_seq(&mut from, 1, t(9, 30, 0), 500, 1_000);
     from.advance_to(UnixNanos(t(9, 31, 0)));
     assert_eq!(
@@ -297,7 +297,7 @@ fn an_adoption_across_identities_or_dates_is_refused() {
     // Another pillar policy: v1's price band is not v2's.
     let mut from = Engine::new(Policy::current(), run())
         .with_panel_policy(PanelPolicy::v1())
-        .with_setup_policy(SetupPolicy::v0());
+        .with_setup_policy(DetectionPolicy::current());
     print_seq(&mut from, 1, t(9, 30, 0), 500, 1_000);
     from.advance_to(UnixNanos(t(9, 31, 0)));
     assert_eq!(

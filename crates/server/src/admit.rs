@@ -497,7 +497,7 @@ pub(crate) fn identity(source: &str, fidelity: &str) -> JournalIdentity {
         fidelity: fidelity.to_string(),
         pillars: stock_context::Policy::current().tag(),
         panel: stock_context::PanelPolicy::v1().tag(),
-        setup: stock_context::SetupPolicy::v0().tag(),
+        setup: stock_context::DetectionPolicy::current().tag(),
         conditions: market_events::conditions::POLICY.to_string(),
     }
 }

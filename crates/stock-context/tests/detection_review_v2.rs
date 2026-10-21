@@ -264,12 +264,13 @@ fn micro_and_momentum_stay_inside_the_active_band() {
 #[test]
 fn twenty_five_dollars_is_inside_and_one_cent_above_ends_the_episode() {
     let mut s = Script::new();
+    // The impulse is $23.50 → $25.00 (6.4 %): over detection-v2's 5 % micro-pullback minimum.
     for k in 0..6 {
-        s.bar("BAND", k, [2400, 2400, 2400, 2400], 100);
+        s.bar("BAND", k, [2350, 2350, 2350, 2350], 100);
     }
-    s.bar("BAND", 6, [2400, 2405, 2400, 2405], 200);
-    s.bar("BAND", 7, [2405, 2430, 2405, 2430], 300);
-    s.bar("BAND", 8, [2430, 2470, 2430, 2470], 300);
+    s.bar("BAND", 6, [2350, 2360, 2350, 2360], 200);
+    s.bar("BAND", 7, [2360, 2410, 2360, 2410], 300);
+    s.bar("BAND", 8, [2410, 2470, 2410, 2470], 300);
     s.bar("BAND", 9, [2470, 2500, 2470, 2496], 400);
     s.bar("BAND", 10, [2496, 2496, 2485, 2490], 150);
     s.bar("BAND", 11, [2490, 2492, 2480, 2488], 120);

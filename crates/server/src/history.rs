@@ -2210,6 +2210,6 @@ mod tests {
             },
         )
         .with_panel_policy(stock_context::PanelPolicy::v1())
-        .with_setup_policy(stock_context::SetupPolicy::v0())
+        .with_setup_policy(stock_context::DetectionPolicy::current())
     }
 }
