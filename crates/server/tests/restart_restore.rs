@@ -533,3 +533,94 @@ async fn a_truncated_recording_is_partial_and_not_an_empty_day() {
         "one symbol's corrupt file is not another's: {fine}"
     );
 }
+
+/// A shutdown through the real `close_recording` boundary, with more than one batch queued and
+/// offers still arriving: the journal is drained and waited for, and nothing on disk claims that
+/// nothing followed.
+///
+/// `close_recording` closes WebSocket sessions, but the market ingest and clock tasks keep
+/// running and keep admitting. So the shutdown cannot establish quiescence, and the journal it
+/// leaves is a checkpointed prefix with an unverified tail — not a sealed one. What it *can*
+/// guarantee is that it does not return while records are still queued, which is what the
+/// discarded writer handle used to allow.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_shutdown_waits_for_the_journal_and_claims_no_clean_stop() {
+    let tmp = tempfile::tempdir().expect("tmp");
+    let events = fixture_events(&tmp.path().join("scratch"));
+    let root = tmp.path().join("run");
+    let (market, tx) = live(&root, et(4, 0), true);
+    market.set_stock_context(true);
+
+    // Enough to need several writer batches.
+    let bulk = events.len().min(12_000);
+    for e in &events[..bulk] {
+        tx.send(e.clone()).await.expect("send");
+    }
+    until("the market took the bulk", || {
+        market.state_json()["seq"].as_u64().unwrap_or(0) >= (bulk / 2) as u64
+    })
+    .await;
+
+    // Keep offering while the shutdown runs: this is the schedule the seal could not survive.
+    let late = {
+        let tail: Vec<MarketEvent> = events[bulk..].iter().take(2_000).cloned().collect();
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            for e in tail {
+                if tx.send(e).await.is_err() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+    };
+    market.close_recording(Duration::from_secs(10)).await;
+    let _ = late.await;
+    drop(tx);
+
+    // Whatever the race did, the file is internally consistent and nothing is sealed.
+    let dir = archive(&root).live_dir(day());
+    let segments: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+        .expect("the live directory")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with(market_archive::admissions::SEGMENT_PREFIX))
+        })
+        .collect();
+    assert_eq!(segments.len(), 1, "one boot, one segment: {segments:?}");
+    let text = std::fs::read_to_string(&segments[0]).expect("the segment");
+    assert!(
+        text.contains("\"k\":\"ck\""),
+        "the prefix was checkpointed before the shutdown returned"
+    );
+    assert!(
+        !text.contains("\"k\":\"seal\""),
+        "and nothing claims a clean stop while the market was still admitting"
+    );
+
+    // The shutdown waited: everything the writer had accepted is on disk, so the file has no
+    // hole where a record was queued and the process exited.
+    let lines = text.lines().count();
+    assert!(lines > 1, "the journal has records, not just a header");
+    let report = market
+        .admission_report()
+        .expect("a live market with a recording keeps a journal");
+    assert_eq!(
+        report.written + report.dropped,
+        report.admitted,
+        "every record that took a sequence is either written or a counted queue drop: {report:?}"
+    );
+    // Offers the fence turned away are counted apart: the engine admitted them and the journal
+    // does not have them, which is exactly why no seal is written.
+    assert!(
+        report.fenced > 0,
+        "this fixture really did keep admitting across the shutdown: {report:?}"
+    );
+    assert!(
+        !report.complete(),
+        "and the journal says so rather than reading as a whole day: {report:?}"
+    );
+    assert_eq!(report.errors, 0, "{report:?}");
+}

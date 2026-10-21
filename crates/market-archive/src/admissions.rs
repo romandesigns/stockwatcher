@@ -547,6 +547,13 @@ pub struct AdmissionWriter {
     last_seq: u64,
     /// Admission lines since the last checkpoint.
     since_checkpoint: u64,
+    /// The admission time of the last line appended.
+    ///
+    /// A checkpoint or seal is stamped with this rather than with a clock read at the time it is
+    /// written. The stamp says "everything up to here is on disk as of this moment in the run's
+    /// own stream"; taking it from the wall clock at shutdown would move the proven time past the
+    /// last fact the proof actually covers, and a restore reads that time as a boundary.
+    last_at: i64,
     /// The last sequence a checkpoint or seal proved.
     proven: u64,
 }
@@ -628,6 +635,7 @@ impl AdmissionWriter {
             lines: 0,
             last_seq: 0,
             since_checkpoint: 0,
+            last_at: started_at,
             proven: 0,
         })
     }
@@ -654,13 +662,13 @@ impl AdmissionWriter {
             self.lines += 1;
             self.since_checkpoint += 1;
             self.last_seq = self.last_seq.max(r.s);
+            self.last_at = self.last_at.max(r.a);
         }
         self.file
             .write_all(&buf)
             .map_err(|e| ArchiveError::io(&self.path, e))?;
         if self.since_checkpoint >= CHECKPOINT_EVERY {
-            let at = batch.last().map(|r| r.a).unwrap_or_default();
-            self.checkpoint(at)?;
+            self.checkpoint()?;
         }
         Ok(())
     }
@@ -668,8 +676,10 @@ impl AdmissionWriter {
     /// Writes a checkpoint: everything appended so far is on disk, and this is its digest.
     ///
     /// Flushes first, because a checkpoint that reached the disk before the records it vouches
-    /// for would be a proof of something that is not there.
-    pub fn checkpoint(&mut self, at: i64) -> Result<(), ArchiveError> {
+    /// for would be a proof of something that is not there. Stamped at the last line's own
+    /// admission time ([`AdmissionWriter::last_at`]), never at a clock read here.
+    pub fn checkpoint(&mut self) -> Result<(), ArchiveError> {
+        let at = self.last_at;
         self.file
             .flush()
             .map_err(|e| ArchiveError::io(&self.path, e))?;
@@ -692,8 +702,10 @@ impl AdmissionWriter {
         Ok(())
     }
 
-    /// Closes the segment cleanly: nothing followed what is written.
-    pub fn seal(&mut self, at: i64) -> Result<(), ArchiveError> {
+    /// Closes the segment: nothing followed what is written. Stamped at the last line's own
+    /// admission time, for the same reason a checkpoint is.
+    pub fn seal(&mut self) -> Result<(), ArchiveError> {
+        let at = self.last_at;
         self.file
             .flush()
             .map_err(|e| ArchiveError::io(&self.path, e))?;
@@ -762,6 +774,8 @@ pub fn read_within(
     let mut reasons: Vec<&'static str> = Vec::new();
     // Set once something between segments is unknown: no later proof may reach across it.
     let mut gap = false;
+    // Whether the final segment declares that nothing followed it.
+    let mut last_sealed = false;
 
     let mut budget = limits;
     for (epoch, path) in segs {
@@ -862,12 +876,19 @@ pub fn read_within(
         }
         // Anything unproven in this segment is an unknown quantity between it and the next one,
         // so no later segment's checkpoint can extend the chain's proof across it.
-        if seg.torn.is_some() || seg.holes > 0 || !seg.proven.is_some_and(|p| p.2) {
+        last_sealed = seg.torn.is_none() && seg.holes == 0 && seg.proven.is_some_and(|p| p.2);
+        if !last_sealed {
             gap = true;
         }
         records.extend(seg.records.into_iter().map(|rec| Admitted { epoch, rec }));
     }
 
+    // An unsealed last segment leaves an unknown tail even when nothing readable lies past its
+    // proof: more may have been admitted and never reached the file, and the absence of records
+    // is not evidence that nothing followed. Only a seal says that.
+    if !last_sealed {
+        reasons.push("journal_unproven_tail");
+    }
     // The most specific reason first: a dropped record and a torn line say where the loss was,
     // a restart gap says the two runs cannot be joined, and an unproven tail is the residual.
     let tail_reason = ["journal_holes", "journal_torn_line", "journal_unsealed_restart", "journal_unproven_tail"]
@@ -887,12 +908,10 @@ pub fn read_within(
 
     let tail = match tail_reason {
         Some(reason) => Tail::Unverified {
+            // Zero is a real answer here: the proof reaches the last readable line and nothing
+            // says whether anything came after it.
             records: unproven_tail,
             reason,
-        },
-        None if unproven_tail > 0 => Tail::Unverified {
-            records: unproven_tail,
-            reason: "journal_unproven_tail",
         },
         None => Tail::None,
     };

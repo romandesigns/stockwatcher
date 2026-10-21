@@ -71,7 +71,7 @@ fn a_sealed_segment_is_proven_to_its_end() {
     w.append(&[print_at(1, 11), print_at(2, 22)])
         .expect("append");
     w.append(&[print_at(3, 33)]).expect("append");
-    w.seal(2_000_000).expect("seal");
+    w.seal().expect("seal");
 
     let got = admissions::read(&dir, day(), &ident());
     assert_eq!(got.unusable, None);
@@ -100,7 +100,7 @@ fn records_past_the_last_checkpoint_are_an_unverified_tail() {
     let mut w = open(&dir);
     w.append(&[print_at(1, 11), print_at(2, 22)])
         .expect("append");
-    w.checkpoint(1_500_000).expect("checkpoint");
+    w.checkpoint().expect("checkpoint");
     w.append(&[print_at(3, 33), print_at(4, 44)])
         .expect("append");
     w.flush().expect("flush");
@@ -131,7 +131,7 @@ fn trailing_loss_shortens_the_proof_and_not_the_claim() {
     let mut w = open(&dir);
     w.append(&[print_at(1, 11), print_at(2, 22)])
         .expect("append");
-    w.checkpoint(1_500_000).expect("checkpoint");
+    w.checkpoint().expect("checkpoint");
     drop(w);
     // Sequences 3 and 4 were admitted and never written: nothing in the file mentions them.
     let got = admissions::read(&dir, day(), &ident());
@@ -139,8 +139,11 @@ fn trailing_loss_shortens_the_proof_and_not_the_claim() {
     assert_eq!(got.holes, 0, "there is no interior hole to find");
     assert_eq!(
         got.tail,
-        Tail::None,
-        "and nothing claims the day ended at sequence 2"
+        Tail::Unverified {
+            records: 0,
+            reason: "journal_unproven_tail"
+        },
+        "and nothing claims the day ended at sequence 2: the segment is unsealed, so whether          anything followed is simply unknown"
     );
     // The honest reading: the proof is a prefix through 2, and a restore of a window past it is
     // not exact. That is what the proven boundary is for.
@@ -156,7 +159,7 @@ fn an_interior_hole_is_found_and_unproves_the_tail() {
     let mut w = open(&dir);
     w.append(&[print_at(1, 11), print_at(4, 44)])
         .expect("append");
-    w.seal(2_000_000).expect("seal");
+    w.seal().expect("seal");
     let got = admissions::read(&dir, day(), &ident());
     assert_eq!(got.holes, 2, "sequences 2 and 3 never reached the file");
     assert_eq!(
@@ -182,7 +185,7 @@ fn a_torn_line_is_a_named_tail_loss() {
     let dir = tmp.path().join("live");
     let mut w = open(&dir);
     w.append(&[print_at(1, 11)]).expect("append");
-    w.checkpoint(1_500_000).expect("checkpoint");
+    w.checkpoint().expect("checkpoint");
     let path = w.path().to_path_buf();
     drop(w);
     let mut f = std::fs::OpenOptions::new()
@@ -209,6 +212,67 @@ fn a_torn_line_is_a_named_tail_loss() {
     assert_eq!(got.reason(), Some("journal_torn_line"));
 }
 
+/// An unsealed segment ending exactly at a valid checkpoint keeps its prefix and still declares
+/// an unknown tail — with `records: 0`, because the absence of readable records past a proof is
+/// not evidence that nothing followed.
+///
+/// Only a seal says that. The reader used to report `Tail::None` here, which read as "the proof
+/// reaches the end of what there is", and a restore would then have treated a window over the
+/// boundary as established.
+#[test]
+fn an_unsealed_segment_declares_an_unknown_tail_even_with_nothing_past_its_proof() {
+    let tmp = tempfile::tempdir().expect("tmp");
+    let dir = tmp.path().join("live");
+    let mut w = open(&dir);
+    w.append(&[print_at(1, 11), print_at(2, 22)])
+        .expect("append");
+    w.checkpoint().expect("checkpoint");
+    // No seal, and nothing after the checkpoint: the file ends exactly on its own proof.
+    drop(w);
+
+    let got = admissions::read(&dir, day(), &ident());
+    assert_eq!(got.unusable, None);
+    let p = got.proven.expect("the prefix is still proven");
+    assert_eq!((p.seq, p.sealed), (2, false));
+    assert_eq!(got.proven_records().len(), 2, "and is usable");
+    assert_eq!(
+        got.tail,
+        Tail::Unverified {
+            records: 0,
+            reason: "journal_unproven_tail"
+        },
+        "nothing readable follows the proof, and nothing says nothing was admitted after it"
+    );
+    assert_eq!(got.reason(), Some("journal_unproven_tail"));
+}
+
+/// A checkpoint is stamped at the last record it covers, never at a clock read when it is written.
+///
+/// A close checkpoint taken from the wall clock moved the proven time past the last admitted
+/// fact, and a restore reads that time as a boundary — so it would have claimed a proof over an
+/// interval in which nothing was recorded.
+#[test]
+fn a_checkpoint_is_stamped_at_the_last_record_it_covers() {
+    let tmp = tempfile::tempdir().expect("tmp");
+    let dir = tmp.path().join("live");
+    let mut w = AdmissionWriter::open(&dir, day(), 1_000_000, ident()).expect("open");
+    let last = print_at(3, 33);
+    w.append(&[print_at(1, 11), print_at(2, 22), last.clone()])
+        .expect("append");
+    // Written long after the last admission, as a shutdown would.
+    w.checkpoint().expect("checkpoint");
+    w.seal().expect("seal");
+    drop(w);
+
+    let got = admissions::read(&dir, day(), &ident());
+    let p = got.proven.expect("a proof");
+    assert_eq!(
+        p.at, last.a,
+        "the proof reaches the last fact it covers and no further"
+    );
+    assert_eq!(p.seq, 3);
+}
+
 /// A checkpoint is only believed if the records behind it are the ones it describes.
 ///
 /// A corrupted or rewritten row changes the digest, and the checkpoint vouching for it stops
@@ -220,7 +284,7 @@ fn a_checkpoint_over_changed_records_is_not_a_proof() {
     let mut w = open(&dir);
     w.append(&[print_at(1, 11), print_at(2, 22)])
         .expect("append");
-    w.seal(2_000_000).expect("seal");
+    w.seal().expect("seal");
     let path = w.path().to_path_buf();
     drop(w);
 
@@ -254,14 +318,14 @@ fn a_restart_writes_its_own_segment_and_keeps_the_old_prefix() {
     let dir = tmp.path().join("live");
     let mut first = open(&dir);
     first.append(&[print_at(1, 11), print_at(2, 22)]).expect("append");
-    first.seal(1_900_000).expect("seal");
+    first.seal().expect("seal");
     drop(first);
 
     // The new boot starts admitting immediately, before any restore has read the old segment.
     let mut second = open(&dir);
     assert_eq!(second.epoch(), 2, "its own segment");
     second.append(&[print_at(1, 77)]).expect("append");
-    second.seal(2_900_000).expect("seal");
+    second.seal().expect("seal");
 
     let got = admissions::read(&dir, day(), &ident());
     assert_eq!(got.unusable, None, "{:?}", got.unusable);
@@ -287,7 +351,7 @@ fn an_unsealed_predecessor_leaves_a_declared_gap() {
     let dir = tmp.path().join("live");
     let mut first = open(&dir);
     first.append(&[print_at(1, 11), print_at(2, 22)]).expect("append");
-    first.checkpoint(1_500_000).expect("checkpoint");
+    first.checkpoint().expect("checkpoint");
     // Killed: no seal.
     drop(first);
     let mut second = open(&dir);
@@ -304,7 +368,7 @@ fn an_unsealed_predecessor_leaves_a_declared_gap() {
         "the link says the predecessor was not sealed"
     );
     second.append(&[print_at(1, 77)]).expect("append");
-    second.seal(2_900_000).expect("seal");
+    second.seal().expect("seal");
 
     let got = admissions::read(&dir, day(), &ident());
     assert_eq!(
@@ -331,7 +395,7 @@ fn another_builds_journal_is_a_named_mismatch() {
     let dir = tmp.path().join("live");
     let mut w = open(&dir);
     w.append(&[print_at(1, 11)]).expect("append");
-    w.seal(2_000_000).expect("seal");
+    w.seal().expect("seal");
 
     for (want, why) in [
         (
@@ -403,7 +467,7 @@ fn an_unknown_build_can_never_be_exact() {
     );
     let mut w = AdmissionWriter::open(&dir, day(), 1_000_000, anon.clone()).expect("open");
     w.append(&[print_at(1, 11)]).expect("append");
-    w.seal(2_000_000).expect("seal");
+    w.seal().expect("seal");
 
     let got = admissions::read(&dir, day(), &anon);
     assert_eq!(
@@ -430,7 +494,7 @@ fn deliveries_of_one_print_join_one_at_a_time() {
     // The same payload admitted twice (a reconnect replay), with another print between them.
     w.append(&[print_at(1, 11), print_at(2, 22), print_at(3, 11)])
         .expect("append");
-    w.seal(2_000_000).expect("seal");
+    w.seal().expect("seal");
     let got = admissions::read(&dir, day(), &ident());
 
     let mut j = got.index();
@@ -481,7 +545,7 @@ fn a_journal_of_another_date_is_refused() {
     let dir = tmp.path().join("live");
     let mut w = open(&dir);
     w.append(&[print_at(1, 11)]).expect("append");
-    w.seal(2_000_000).expect("seal");
+    w.seal().expect("seal");
     let other = NaiveDate::from_ymd_opt(2026, 10, 15).expect("valid");
     assert_eq!(
         admissions::read(&dir, other, &ident()).unusable,
@@ -515,7 +579,7 @@ fn revisions_and_clock_advances_are_in_the_order() {
         ..print_at(3, 7)
     };
     w.append(&[print_at(1, 11), cancel, tick]).expect("append");
-    w.seal(2_000_000).expect("seal");
+    w.seal().expect("seal");
     let got = admissions::read(&dir, day(), &ident());
     let kinds: Vec<Kind> = got.proven_records().iter().map(|a| a.rec.w).collect();
     assert_eq!(kinds, vec![Kind::Trade, Kind::Cancel, Kind::Clock]);

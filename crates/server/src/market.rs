@@ -1907,7 +1907,7 @@ impl Market {
 
     /// What the admission journal has recorded so far (`crate::admit`), or `None` when this
     /// market writes none (a replay, or a live run with no recording to restore from).
-    pub(crate) fn admission_report(&self) -> Option<crate::admit::AdmissionReport> {
+    pub fn admission_report(&self) -> Option<crate::admit::AdmissionReport> {
         self.0.admissions.get().map(|j| j.report())
     }
 

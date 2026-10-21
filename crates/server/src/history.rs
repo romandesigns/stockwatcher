@@ -87,6 +87,12 @@ pub(crate) struct History {
     started_on: NaiveDate,
     /// Loads a chart asked for (they jump the background queue).
     urgent: Mutex<Sender<String>>,
+    /// The admission journal's writer thread, so a shutdown can wait for it.
+    ///
+    /// Discarding the handle meant `close_recording` returned while the journal was still
+    /// draining: the process could exit with records queued and never written, which the file
+    /// would afterwards report as a hole. Taken (not cloned) at shutdown, so it is joined once.
+    journal_writer: Mutex<Option<std::thread::JoinHandle<()>>>,
     /// The admission journal per trading date, parsed once and shared by every symbol's load.
     ///
     /// The journal is one sequence for the whole market, so parsing it inside each symbol's load
@@ -326,6 +332,7 @@ impl Market {
         preload: bool,
     ) {
         let started = Instant::now();
+        let mut journal_writer = None;
         // The admission journal, for the restarts after this one: with a recording to restore
         // from, this run writes down what it admits so a later process can prove it replayed the
         // same inputs in the same order (`crate::admit`). Without a recorder there is nothing to
@@ -336,14 +343,13 @@ impl Market {
             if self.0.admissions.set(Arc::new(sink)).is_ok() {
                 let a = archive.clone();
                 // The writer takes only the counters, never the sink: holding the sink would keep
-                // the queue's sender alive, so the thread could never see the channel close and
-                // would never seal its segments.
-                crate::admit::spawn_writer(
+                // the queue's sender alive, so the thread could never see the channel close.
+                journal_writer = Some(crate::admit::spawn_writer(
                     counters,
                     rx,
                     move |day| a.live_dir(day),
                     crate::admit::identity("live", "recorded_live"),
-                );
+                ));
             }
         }
         let days = plan(&archive, now);
@@ -418,6 +424,7 @@ impl Market {
             days,
             started_on: trading_date(now),
             urgent: Mutex::new(urgent),
+            journal_writer: Mutex::new(journal_writer),
             journals: Mutex::new(HashMap::new()),
             total,
             started: Instant::now(),
@@ -663,24 +670,63 @@ impl Market {
         let Some(h) = self.0.history.get() else {
             return;
         };
-        // Seal the admission journal first: the next process reads it to decide whether it may
-        // take this run's prefix as proven, and an unsealed segment leaves that prefix's tail
-        // unknown for no reason when the stop was clean.
+        // Close the admission journal first, so what is already queued is written while the
+        // shutdown does its other work. It is checkpointed, not sealed: the ingest and clock
+        // tasks are still running, so nothing readable here could establish that nothing follows.
         if let Some(j) = self.0.admissions.get() {
             j.close();
         }
+        let writer = h
+            .journal_writer
+            .lock()
+            .expect("journal writer lock")
+            .take();
         let rows = self.0.core.lock().expect("core lock").quotes.export();
         let archive = h.archive.clone();
         let recorder = h.recorder.clone();
-        let done = tokio::task::spawn_blocking(move || {
+        // One deadline for the whole shutdown. The journal is waited for only within what is
+        // left of it, and the recorder gets the remainder: joining the writer outright would
+        // ignore the grace entirely, and giving the recorder a fresh `grace` afterwards would
+        // double it.
+        let (journal_done, recorder_done) = tokio::task::spawn_blocking(move || {
+            let deadline = Instant::now() + grace;
             save_quotes(&archive, rows);
-            recorder.is_none_or(|r| r.close(grace))
+            let journal_done = match writer {
+                Some(w) => {
+                    // Polled rather than joined, so the deadline is real. A writer that has not
+                    // finished is left alone to finish on its own: killing it mid-append is how a
+                    // file gets a torn line, and its segment is unsealed either way.
+                    while !w.is_finished() && Instant::now() < deadline {
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                    w.is_finished() && w.join().is_ok()
+                }
+                None => true,
+            };
+            let left = deadline.saturating_duration_since(Instant::now());
+            (journal_done, recorder.is_none_or(|r| r.close(left)))
         })
         .await
-        .unwrap_or(false);
-        if !done {
+        .unwrap_or((false, false));
+        if !journal_done {
+            tracing::warn!(
+                "admission journal: still writing when the shutdown grace ran out; its segment stays checkpointed and unsealed, and a restore will treat the tail as unverified"
+            );
+        }
+        if !recorder_done {
             tracing::warn!(
                 "live recorder: not finished within the shutdown grace; the last seconds may be missing from the recording"
+            );
+        }
+        if let Some(r) = self.admission_report() {
+            tracing::info!(
+                admitted = r.admitted,
+                written = r.written,
+                dropped_queue_full = r.dropped,
+                write_errors = r.errors,
+                fenced_after_close = r.fenced,
+                complete = r.complete(),
+                "admission journal closed: a checkpointed prefix, its tail unverified by design"
             );
         }
     }
@@ -1362,6 +1408,7 @@ fn history_over(root: &std::path::Path, on: NaiveDate) -> History {
         days: vec![on],
         started_on: on,
         urgent: Mutex::new(urgent),
+        journal_writer: Mutex::new(None),
         journals: Mutex::new(HashMap::new()),
         total: 0,
         started: Instant::now(),
@@ -1460,16 +1507,17 @@ fn a_proven_journal_supplies_the_order_the_verdicts_and_the_clock() {
         clock_to(3, fixture_at(9, 30, 15)),
     ])
     .expect("append");
-    w.seal(fixture_at(9, 30, 16)).expect("seal");
+    w.seal().expect("seal");
     drop(w);
 
-    // Boot two: one more admission, checkpointed, then a record past the proof.
+    // Boot two: one more admission, sealed, so the chain has no unknown tail and this case is
+    // only about the join. (An unsealed tail is its own case, below.)
     let mut w2 =
         market_archive::admissions::AdmissionWriter::open(&dir, fixture_day(), 2, id.clone())
             .expect("open");
     w2.append(&[admitted(1, &a2, Some((true, false)))])
         .expect("append");
-    w2.checkpoint(fixture_at(9, 30, 21)).expect("checkpoint");
+    w2.seal().expect("seal");
     drop(w2);
 
     // The recording holds the two ABCD deliveries; the journal holds those plus WXYZ and a clock.
@@ -1568,7 +1616,7 @@ fn a_delivery_outside_the_proof_is_replayed_and_labelled() {
             .expect("open");
     w.append(&[admitted(1, &first, Some((true, true)))])
         .expect("append");
-    w.checkpoint(fixture_at(9, 30, 1)).expect("checkpoint");
+    w.checkpoint().expect("checkpoint");
     // Admitted, and past the checkpoint: inside the file but outside the proof.
     w.append(&[admitted(2, &past_the_proof, Some((true, true)))])
         .expect("append");
@@ -1622,7 +1670,7 @@ fn an_admission_with_no_delivery_is_a_recorder_drop() {
         admitted(2, &lost, Some((true, true))),
     ])
     .expect("append");
-    w.seal(fixture_at(9, 30, 11)).expect("seal");
+    w.seal().expect("seal");
     drop(w);
 
     // The recording has only one of them: the recorder's queue dropped the other.
@@ -1656,7 +1704,7 @@ fn a_redelivery_joins_its_own_admission() {
         admitted(2, &p, Some((true, true))),
     ])
     .expect("append");
-    w.seal(fixture_at(9, 30, 5)).expect("seal");
+    w.seal().expect("seal");
     drop(w);
 
     let plan = script(&h, fixture_day(), "ABCD", vec![p.clone(), p.clone()]);

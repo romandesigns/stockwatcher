@@ -67,28 +67,30 @@ const BATCH_MAX: usize = 4_096;
 
 /// What the journal writer has done, and what it could not.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct AdmissionReport {
-    /// Inputs this process assigned a sequence to.
-    pub(crate) admitted: u64,
+pub struct AdmissionReport {
+    /// Inputs this process assigned a journal sequence to. An offer the close fence turned away
+    /// never takes one and is counted in `fenced` instead, so `written + dropped == admitted`
+    /// while `fenced` is the journal's own incompleteness.
+    pub admitted: u64,
     /// Records the queue refused. Each leaves a hole in the journal's sequence, which is how a
     /// later restore learns the journal is not a whole account of the day.
-    pub(crate) dropped: u64,
+    pub dropped: u64,
     /// Records the writer appended.
-    pub(crate) written: u64,
+    pub written: u64,
     /// Append or open failures (a full disk, a removed directory).
-    pub(crate) errors: u64,
-    pub(crate) queue_capacity: usize,
+    pub errors: u64,
+    pub queue_capacity: usize,
     /// Trading dates whose sequence run was evicted (more than four in one boot). Their records
     /// restart at 1 and the journal reports itself disordered.
-    pub(crate) dates_evicted: u64,
+    pub dates_evicted: u64,
     /// Admissions offered after the journal was closed. Not in the file, so the segments are
     /// left unsealed rather than sealed over them.
-    pub(crate) fenced: u64,
+    pub fenced: u64,
 }
 
 impl AdmissionReport {
     /// Whether a restore of this run's own day could be joined to every admission it made.
-    pub(crate) fn complete(&self) -> bool {
+    pub fn complete(&self) -> bool {
         self.dropped == 0
             && self.errors == 0
             && self.dates_evicted == 0
@@ -193,14 +195,20 @@ impl AdmissionSink {
         )
     }
 
-    /// Closes the journal: no further admission is accepted, what is queued is written, and the
-    /// segments are sealed.
+    /// Closes the journal: no further admission is accepted, and what is queued is written and
+    /// checkpointed.
     ///
-    /// Sealing matters to the *next* process: a sealed segment says nothing followed it, so a
-    /// restart can take its whole prefix as proven instead of treating the tail as unknown. That
-    /// is exactly why the fence comes first. An admission after the close would not be in the
-    /// file, and a seal over it would be a false statement — so one is counted
-    /// ([`AdmissionReport::fenced`]) and the segment is left unsealed instead.
+    /// It does **not** seal. A seal says nothing followed the records before it, and at the point
+    /// a shutdown asks for one that is not something this process can know: the ingest and clock
+    /// tasks are still running and still admitting, so an offer can pass the fence check, or
+    /// reach the queue, after the writer has looked. A seal already on disk cannot be taken back,
+    /// so resting one on a counter read would be guessing — and the one thing a seal must never be
+    /// is a guess.
+    ///
+    /// What a clean close leaves is therefore a **checkpointed prefix with an unverified tail**,
+    /// which is exactly what it can support: the next process restores from the prefix and treats
+    /// the tail as unknown. The seal is written only where it is provable — when the channel
+    /// disconnects, because then the only sender is gone and nothing can arrive at all.
     pub(crate) fn close(&self) {
         self.counters.closing.store(true, Ordering::Relaxed);
     }
@@ -261,9 +269,11 @@ impl AdmissionSink {
         s
     }
 
-    /// Whether the journal is closed. An admission offered after that is counted and refused:
-    /// the writer is sealing, and a record that reached the queue afterwards would either be
-    /// lost behind the seal or make the seal untrue.
+    /// Whether the journal is closed. An admission offered after that is counted and refused,
+    /// which bounds how far past the shutdown the file has to reach — not because the refusal
+    /// makes anything provable (a concurrent offer can always pass this check a moment before the
+    /// flag is set) but because there is nothing useful to do with a record whose writer is
+    /// finishing. Nothing that is written depends on this being race-free.
     fn fenced(&self) -> bool {
         if !self.counters.closing.load(Ordering::Relaxed) {
             return false;
@@ -540,10 +550,8 @@ fn writer_loop(
             continue;
         }
 
-        // Closing. Write everything still queued **before** sealing: a batch is bounded, and a
-        // busy market can have many batches waiting. Sealing after one of them would leave the
-        // rest unwritten behind a seal that says nothing followed — the one statement a seal must
-        // never get wrong.
+        // Finishing. Write everything still queued first: a batch is bounded and a busy market
+        // can have many waiting, so stopping after one of them would leave the rest unwritten.
         loop {
             while batch.len() < BATCH_MAX {
                 match rx.try_recv() {
@@ -556,21 +564,24 @@ fn writer_loop(
             }
             flush(counters, &mut writers, &mut batch, &dir_of, &identity);
         }
-        // A seal is only honest if nothing was turned away after the fence. If something was,
-        // the segments are left checkpointed and their tails explicitly unverified.
-        let fenced = counters.fenced.load(Ordering::Relaxed);
-        if fenced == 0 {
+        if gone {
+            // The sink itself is gone, so there is no sender left in the process and the queue is
+            // empty. *That* is a proof that nothing followed, and the only thing this writer ever
+            // seals on.
             for w in writers.values_mut().flatten() {
-                let _ = w.seal(crate::observe::wall_now());
+                let _ = w.seal();
             }
         } else {
-            tracing::warn!(
-                fenced,
-                "admission journal: admissions were offered after the close; the segments are left unsealed so a restore treats their tails as unverified"
-            );
+            // A clean close while the market is still running: checkpointed, not sealed. The
+            // ingest and clock tasks can still be admitting, and no reading of a counter here
+            // could establish otherwise.
             for w in writers.values_mut().flatten() {
-                let _ = w.flush();
+                let _ = w.checkpoint();
             }
+            tracing::info!(
+                fenced = counters.fenced.load(Ordering::Relaxed),
+                "admission journal: closed on request; the prefix is checkpointed and the tail is left unverified, because a clean-stop seal cannot be proved while the market is still admitting"
+            );
         }
         return;
     }
@@ -619,7 +630,7 @@ fn flush(
                 break;
             };
             if let Some(Some(mut w)) = writers.remove(&oldest) {
-                let _ = w.seal(crate::observe::wall_now());
+                let _ = w.seal();
             }
         }
         let started = rows.first().map(|r| r.a).unwrap_or_default();
@@ -636,14 +647,13 @@ fn flush(
             counters.errors.fetch_add(rows.len() as u64, Ordering::Relaxed);
             continue;
         };
-        let at = rows.last().map(|r| r.a).unwrap_or_default();
         match w.append(&rows) {
             Ok(()) => {
                 counters.written.fetch_add(rows.len() as u64, Ordering::Relaxed);
                 // Checkpoint on every flush rather than only every CHECKPOINT_EVERY records: the
                 // proven prefix is what a restore may use, and a quiet market would otherwise
                 // leave its whole day unproven.
-                if let Err(e) = w.checkpoint(at) {
+                if let Err(e) = w.checkpoint() {
                     tracing::warn!(%day, error = %e, "admission journal: checkpoint failed");
                 }
             }
@@ -819,14 +829,16 @@ mod tests {
         );
     }
 
-    /// A clean close seals the segment, so the next process may take its whole prefix as proven;
-    /// and the run after that writes its own segment without disturbing it.
+    /// A clean close checkpoints and does **not** seal, and the next boot still writes its own
+    /// segment naming this one.
     ///
-    /// The writer used to hold the sink, so its own receiver could never disconnect and the seal
-    /// branch was unreachable: no segment was ever closed cleanly, and every restart treated its
-    /// predecessor's tail as unknown for no reason.
+    /// A seal says nothing followed. At the moment a shutdown asks for one, the ingest and clock
+    /// tasks are still admitting, so an offer can pass the fence a moment before the flag is set
+    /// or reach the queue after the writer last looked — and a seal already on disk cannot be
+    /// taken back. So the clean path leaves a checkpointed prefix with an unverified tail, which
+    /// is what it can actually support.
     #[test]
-    fn a_clean_close_seals_the_segment_and_the_next_boot_adds_its_own() {
+    fn a_clean_close_checkpoints_without_claiming_nothing_followed() {
         let tmp = tempfile::tempdir().expect("tmp");
         let dir = tmp.path().join("live");
         let id = identity("live", "recorded_live");
@@ -847,16 +859,33 @@ mod tests {
         assert_eq!(sink.report().written, 3);
 
         let after_one = admissions::read(&dir, day(), &id);
-        let segments_one = after_one.headers.len();
-        assert_eq!(segments_one, 1, "one boot, one segment");
+        assert_eq!(after_one.headers.len(), 1, "one boot, one segment");
+        let path = dir.join(format!(
+            "{}1.{}",
+            admissions::SEGMENT_PREFIX,
+            admissions::SEGMENT_EXT
+        ));
+        let text = std::fs::read_to_string(&path).expect("the segment");
+        assert!(
+            text.contains("\"k\":\"ck\""),
+            "the prefix is checkpointed: {text}"
+        );
+        assert!(
+            !text.contains("\"k\":\"seal\""),
+            "and not sealed, because a clean stop cannot prove nothing followed: {text}"
+        );
         if id.names_a_build() {
-            let p = after_one.proven.expect("a proof");
-            assert!(p.sealed, "the clean close sealed it: {p:?}");
-            assert_eq!(after_one.tail, admissions::Tail::None);
-            assert_eq!(p.seq, 3);
+            let p = after_one.proven.expect("a proof of the prefix");
+            assert!(!p.sealed, "checkpointed, not sealed: {p:?}");
+            assert_eq!(p.seq, 3, "and it covers everything that was written");
+            assert_eq!(
+                after_one.tail,
+                admissions::Tail::None,
+                "nothing readable lies past it"
+            );
         } else {
-            // A development build cannot name itself, so its journal is never a proof. The seal
-            // is still on disk, which is what the next assertion reads.
+            // A development build cannot name itself, so its journal is never a proof whatever
+            // is on disk. The file assertions above are what this case checks.
             assert_eq!(
                 after_one.unusable,
                 Some(admissions::Unusable::Reason("journal_unknown_build"))
@@ -888,8 +917,9 @@ mod tests {
             .expect("the second names the first");
         assert_eq!((pred.epoch, pred.through_seq), (1, 3));
         assert!(
-            pred.sealed,
-            "and saw that it had closed cleanly, so there is no gap between them"
+            !pred.sealed,
+            "the predecessor was checkpointed rather than sealed, so the gap between the two \
+             boots is declared rather than assumed away"
         );
         assert_eq!(both.records.len(), 4, "both boots' admissions, in epoch order");
         assert_eq!(
@@ -961,7 +991,7 @@ mod tests {
         assert_eq!(
             (rep.admitted, rep.written),
             (n as u64, n as u64),
-            "every queued record reached the file before the seal: {rep:?}"
+            "every queued record reached the file before the writer stopped: {rep:?}"
         );
         assert_eq!(rep.fenced, 0);
         assert!(rep.complete(), "{rep:?}");
@@ -971,15 +1001,20 @@ mod tests {
         assert_eq!(got.holes, 0);
         if id.names_a_build() {
             let p = got.proven.expect("a proof");
-            assert!(p.sealed && p.seq == n as u64, "sealed over all of it: {p:?}");
+            assert_eq!(p.seq, n as u64, "checkpointed over all of it: {p:?}");
+            assert!(!p.sealed, "a clean close does not seal");
             assert_eq!(got.tail, admissions::Tail::None);
         }
     }
 
-    /// An admission offered after the close is refused, counted, and leaves the segment unsealed:
-    /// a seal over a record that is not in the file would be a false statement.
+    /// An admission offered after the close is refused and counted, and nothing on disk claims
+    /// otherwise: the segment carries a checkpoint, never a seal.
+    ///
+    /// The fence is a bound on how far past a shutdown the file has to reach, not a proof. A
+    /// concurrent offer can always pass it a moment before the flag is set, which is exactly why
+    /// nothing written depends on it.
     #[test]
-    fn an_admission_after_the_close_leaves_the_segment_unsealed() {
+    fn an_admission_after_the_close_is_refused_and_nothing_is_sealed() {
         let tmp = tempfile::tempdir().expect("tmp");
         let dir = tmp.path().join("live");
         let id = identity("live", "recorded_live");
@@ -1015,6 +1050,44 @@ mod tests {
             !text.contains("\"k\":\"seal\""),
             "and it is not sealed, so a restore treats its tail as unverified: {text}"
         );
+    }
+
+    /// Dropping the sink is the one state a seal can rest on: the only sender in the process is
+    /// gone, so nothing can arrive, and the queue was drained first.
+    #[test]
+    fn only_a_vanished_sink_justifies_a_seal() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let dir = tmp.path().join("live");
+        let id = identity("live", "recorded_live");
+        let (sink, rx, counters) = AdmissionSink::new(QUEUE_CAPACITY);
+        let d = dir.clone();
+        let handle = spawn_writer(counters, rx, move |_| d.clone(), id.clone());
+        for k in 0..(BATCH_MAX as u64 + 5) {
+            sink.record(
+                &trade(k, at(9, 30, 0) + k as i64, 100),
+                Some((true, true)),
+                at(9, 30, 1) + k as i64,
+            );
+        }
+        // No close() at all: the sink simply goes away, as it does when the market is dropped.
+        drop(sink);
+        handle.join().expect("the writer stops when its sink goes");
+        let text = std::fs::read_to_string(dir.join(format!(
+            "{}1.{}",
+            admissions::SEGMENT_PREFIX,
+            admissions::SEGMENT_EXT
+        )))
+        .expect("the segment");
+        assert!(
+            text.contains("\"k\":\"seal\""),
+            "with no sender left, nothing can follow and the seal is a fact"
+        );
+        let got = admissions::read(&dir, day(), &id);
+        assert_eq!(got.records.len(), BATCH_MAX + 5, "drained before sealing");
+        if id.names_a_build() {
+            assert!(got.proven.expect("a proof").sealed);
+            assert_eq!(got.tail, admissions::Tail::None);
+        }
     }
 
     /// A normal date roll is not queue loss.
