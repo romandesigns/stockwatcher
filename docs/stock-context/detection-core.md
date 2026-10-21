@@ -396,7 +396,12 @@ Doc-tests are not run (Rust 1.98 on Windows); the API examples above are not exe
 `cargo run --release -p stock-context --example bench -- 3000 500000 [--detection]` replays the
 same synthetic stream twice: 3,000 symbols and 500,000 prints spread over the regular session.
 That makes about 320 fresh candidate bars per barrier, a worst case in which nearly every print
-opens a new bar. On the development machine (Windows, synthetic, not a VPS figure, 2026-10-21):
+opens a new bar.
+
+**INTERMEDIATE development snapshot, before final integration.** These figures were measured
+once on core commit 77eab53 (development machine, Windows, synthetic, not a VPS figure,
+2026-10-21). They have not been rerun on later commits. The benchmark receipts in the final
+integration handoff supersede them.
 
 | Detection | Throughput | Largest single barrier |
 |---|---|---|
