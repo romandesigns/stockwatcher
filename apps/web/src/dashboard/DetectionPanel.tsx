@@ -6,7 +6,7 @@ import { useDetection } from "../feed/useDetection.ts";
 import { useTickerPress } from "../lib/useTickerPress.ts";
 import { TriggerMeter } from "./RossPanel.tsx";
 
-const at = (ns: number | null) => ns === null || ns === 0 ? "—" : `${formatEtMillis(ns / 1_000_000)} ET`;
+const at = (ns: number | null) => ns === null || ns === 0 ? "—" : `${formatEtMillis(Math.floor(ns / 1_000_000))} ET`;
 const hhmm = (ns: number) => formatEtTime(Math.round(ns / 1_000_000));
 const words = (s: string) => s.replace(/[_.]/g, " ");
 /** The price band as the Ross Panel prints it: "$0.10–$25". */

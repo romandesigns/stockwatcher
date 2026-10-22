@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { detectionSnapshotView, EMPTY_DETECTION, type DetectionCoreEpisode, type DetectionMessage, type DetectionState } from "@stockwatcher/shared";
+import { detectionSnapshotView, EMPTY_DETECTION, type DetectionChannel, type DetectionCoreEpisode, type DetectionMessage, type DetectionState } from "@stockwatcher/shared";
 import { renderToStaticMarkup } from "react-dom/server";
 import { DetectionPanelView } from "./DetectionPanel.tsx";
+import { SideTabs } from "./SideTabs.tsx";
 
 const MIN = 60_000_000_000;
 const NOW = 1_792_075_200_000_000_000;
@@ -50,6 +51,17 @@ describe("Signals (design canvas, 2026-10-22)", () => {
     const quiet = render(stateOf(message([])));
     expect(quiet).toContain("Nothing developing right now");
     expect(quiet).toContain("watching 1,284 symbols · $0.10–$25");
+  });
+
+  test("the Signals tab exists only while the detector is on; its count only from current data", () => {
+    const channel = (s: DetectionState): DetectionChannel => ({ get: () => s, subscribe: () => () => {} });
+    const tabs = (s: DetectionState) => renderToStaticMarkup(<SideTabs ross={<p>ross</p>} rocket={undefined} detection={channel(s)} onPick={() => {}} onEpisodePick={() => {}} />);
+    const on = stateOf(message([episode("KLMN", "crossing_provisional")]));
+    expect(tabs({ ...EMPTY_DETECTION, enabled: false })).toBe("<p>ross</p>");
+    expect(tabs({ ...EMPTY_DETECTION, enabled: null })).toBe("<p>ross</p>");
+    expect(tabs(on)).toContain(">Signals<");
+    expect(tabs(on)).toContain('aria-label="1 at the trigger or crossing it"');
+    expect(tabs({ ...on, connected: false })).not.toContain("at the trigger or crossing it");
   });
 
   test("reconnecting: last known rows dim, nothing pulses or claims to be at the trigger", () => {

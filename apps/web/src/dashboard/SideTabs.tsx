@@ -44,7 +44,8 @@ export function SideTabs({ ross, rocket, detection, onPick, onEpisodePick }: { r
       // A private window: the choice lasts this session.
     }
   };
-  const attention = signals ? detectionAttention(detected.snapshot) : 0;
+  // Only from current data: while reconnecting the rows are last known, so nothing claims attention.
+  const attention = signals && detected.connected && !detected.resyncing ? detectionAttention(detected.snapshot) : 0;
   return (
     <div className="flex min-h-0 min-w-0 flex-col gap-2">
       <div role="tablist" aria-label="Side panel" className="inline-flex gap-0.5 self-start rounded-[9px] bg-card p-0.5">
