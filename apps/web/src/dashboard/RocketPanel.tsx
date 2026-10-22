@@ -1,4 +1,4 @@
-import { cn } from "@stockwatcher/chart-web/ui";
+import { cn, Tip } from "@stockwatcher/chart-web/ui";
 import { rocketHeaderView, rocketLinePaths, rocketNow, rocketRowsView, type RocketChannel, type RocketRowView, type RocketState, type RocketTone } from "@stockwatcher/shared";
 import { memo, useEffect, useState } from "react";
 import { useRocket } from "../feed/useRocket.ts";
@@ -131,9 +131,9 @@ const RocketRow = memo(function RocketRow({ row: r, onPick }: { row: RocketRowVi
             {m.note && <span className="truncate font-mono font-normal text-muted-foreground">{m.note}</span>}
           </span>
           <span className="flex gap-2 text-[11px] whitespace-nowrap tabular-nums" aria-label="from flag, from high, last minute">
-            <span className={TONE[r.fromFlagTone]} title="From the flag price">{r.fromFlag}</span>
-            <span className={TONE[r.fromHighTone]} title="Off the high since the flag">{r.fromHigh}</span>
-            <span className={TONE[r.move1mTone]} title="Last minute">{r.move1m}</span>
+            <Tip label="From the flag price"><span className={TONE[r.fromFlagTone]}>{r.fromFlag}</span></Tip>
+            <Tip label="Off the high since the flag"><span className={TONE[r.fromHighTone]}>{r.fromHigh}</span></Tip>
+            <Tip label="Last minute"><span className={TONE[r.move1mTone]}>{r.move1m}</span></Tip>
           </span>
         </span>
         <DayLine line={r.line} />
@@ -147,7 +147,7 @@ const RocketRow = memo(function RocketRow({ row: r, onPick }: { row: RocketRowVi
         ))}
         <span className="ml-auto flex shrink-0 items-center gap-2">
           {r.outcome && <span className={cn("font-sans text-[11px] font-semibold", TONE[r.outcome.tone])}>{r.outcome.label}</span>}
-          {r.score && <span className="text-[10px] text-text-faint tabular-nums" title="Strategy score">{r.score}</span>}
+          {r.score && <Tip label="Strategy score"><span className="text-[10px] text-text-faint tabular-nums">{r.score}</span></Tip>}
         </span>
       </span>
     </button>

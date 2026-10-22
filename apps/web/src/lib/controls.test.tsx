@@ -72,8 +72,6 @@ test("no browser-native controls, dialogs or title tooltips in the web UI", () =
   const src = [join(import.meta.dir, ".."), join(import.meta.dir, "../../../../packages/chart-web/src")];
   const hits = src.flatMap(walk).flatMap((file) =>
     readFileSync(file, "utf8").split("\n").flatMap((line, i) => (!/^\s*(?:\/\/|\*|\/\*)/.test(line) && NATIVE.some((re) => re.test(line)) ? [`${file}:${i + 1}`] : [])),
-  )
-    // The Runners panel is being reworked on another branch (2026-10-22); its one `title` goes with it.
-    .filter((h) => !/RocketPanel\.tsx/.test(h));
+  );
   expect(hits).toEqual([]);
 });
