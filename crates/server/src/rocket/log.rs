@@ -24,7 +24,7 @@
 //!   a move during the outage can be missing). The last `later` line per id wins.
 //! - `state` — `{kind, v, id, date, symbol, alert_ns, at_ns, from, to, price, high, vwap,
 //!   from_flag_pct, from_high_pct}` on each momentum-state transition of a flagged row
-//!   (`super::track`, "Momentum state"), at most `MAX_TRANSITIONS` (60) per alert a day.
+//!   (`super::track`, "Momentum state"), at most `MAX_TRANSITIONS` (1,000) per alert a day.
 //! - `burst` — `{kind, v, id, date, symbol, alert_ns, boundary_ns, price, score, threshold,
 //!   per_day, start_ns, start_price, gain_pct, move_pct, rate_x, new_highs, sweeps, buy_pct,
 //!   reasons, features, strategy, version}` when a buying burst alerts (`super::burst`):

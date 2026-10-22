@@ -706,6 +706,40 @@ fn a_halt_is_a_state() {
     assert_ne!(b.alerts()[0].track.state, MState::Halted);
 }
 
+/// A busy runner logs its states all day (owner, 2026-10-22: SHFS and POM hit the old cap of
+/// 60 state lines by about 12:15 ET and logged nothing while SHFS ran on). 150 halts and resumes
+/// (immediate both ways, one a barrier) are at least 300 transitions (a resume can settle into
+/// another state a barrier later), every one of them logged.
+#[test]
+fn a_busy_row_logs_every_transition_past_the_old_cap() {
+    let mut b = board(vec![("BUSY", 1.0)], fixed(0.5, 10));
+    play(
+        &mut b,
+        flat("BUSY", at(9, 30, 0), at(10, 0, 0), 2.0, 2000),
+        at(9, 59, 50),
+        at(10, 0, 5),
+    );
+    b.take_log();
+    let mut t = at(10, 0, 16);
+    for _ in 0..150 {
+        for halted in [true, false] {
+            b.set_halted("BUSY", halted);
+            b.tick(t, |_| None);
+            t += 15 * S;
+        }
+    }
+    let states = b
+        .take_log()
+        .into_iter()
+        .filter(|(_, l)| l.contains(r#""kind":"state""#))
+        .count();
+    assert!(states >= 300, "{states}");
+    // Fixed scores re-flag the symbol after each dedup window: every row's transitions count.
+    let made: u32 = b.alerts().iter().map(|a| a.track.transitions).sum();
+    assert!(b.alerts()[0].track.transitions > 60);
+    assert_eq!(states as u32, made, "none unlogged");
+}
+
 /// The momentum states' and later outcomes' share of a barrier: 50 flagged rows (a busy day)
 /// among 7,000 active symbols, each followed every barrier. Prints the measurement.
 #[test]

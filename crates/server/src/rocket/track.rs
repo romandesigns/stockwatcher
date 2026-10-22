@@ -82,8 +82,18 @@ pub const PULLBACK_MIN_PCT: f64 = 0.02;
 pub const VWAP_TOL: f64 = 0.001;
 /// Consecutive barriers a candidate must hold to become the state.
 pub const DEBOUNCE: u8 = 2;
-/// `state` log lines per alert per day, at most.
-pub const MAX_TRANSITIONS: u32 = 60;
+/// `state` log lines per alert per day, at most: a guard against a broken feed, not a budget.
+///
+/// It was 60, and on 2026-10-22 SHFS and POM reached it by about 12:15 ET. Both stopped logging
+/// while SHFS ran from $0.32 to $0.48, and a restart resumes a row from its last logged state,
+/// so the state it resumed from was stale too. The state machine already limits churn:
+/// transitions happen only at 15 s barriers, and every state except `halted` and `breaking_out`
+/// must hold [`DEBOUNCE`] barriers. That day's busiest rows made about 7 transitions an hour,
+/// about 120 over the full 16-hour 04:00–20:00 session. 1,000 is about 8 times that, an average
+/// of one a minute all session, and bounds a pathological row at about 330 KB of log a day
+/// (state lines are about 330 bytes). Each logged line is one real transition: nothing is
+/// coalesced away, since a short breakout is exactly what the log is for.
+pub const MAX_TRANSITIONS: u32 = 1_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MState {
