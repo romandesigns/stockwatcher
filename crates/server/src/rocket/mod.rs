@@ -547,6 +547,28 @@ impl RocketBoard {
         }
     }
 
+    /// A restart's history load: the detector to rebuild one symbol's day in, when bursts are
+    /// on (`burst` module docs, "After a restart").
+    pub fn burst_rebuilder(&self) -> Option<burst::BurstDetector> {
+        self.burst
+            .as_ref()
+            .map(|_| burst::BurstDetector::rebuilder())
+    }
+
+    /// Adopts a symbol's rebuilt burst state ([`burst::BurstDetector::adopt`]).
+    pub fn adopt_burst(&mut self, symbol: &str, rebuilt: burst::BurstDetector, now: i64) {
+        if let Some(b) = self.burst.as_mut() {
+            b.adopt(symbol, rebuilt, now);
+        }
+    }
+
+    /// Whether a print of a symbol not loaded yet needs its history for bursts: the detector
+    /// does not gate a symbol before its day is rebuilt, so one printing in its band must not
+    /// wait for the background preload.
+    pub fn burst_wants_history(&self, t: &market_events::Trade) -> bool {
+        self.enabled && self.burst.is_some() && burst::in_wide_band(t.price.micros())
+    }
+
     fn runners(&self) -> impl Iterator<Item = &Alert> {
         self.alerts.iter().filter(|a| a.kind == AlertKind::Runner)
     }
@@ -599,6 +621,22 @@ impl RocketBoard {
             self.tape.apply_trade(t, counted);
             if let Some(b) = self.burst.as_mut() {
                 b.apply_trade(t, counted);
+            }
+        }
+    }
+
+    /// A print of a symbol whose history is not loaded yet (`crate::history::hold_unloaded`):
+    /// the tape takes it as usual (the load replaces it), the burst detector marks the symbol
+    /// unrestored until [`RocketBoard::adopt_burst`].
+    pub fn apply_unrestored_trade(
+        &mut self,
+        t: &market_events::Trade,
+        counted: crate::quotes::Counted,
+    ) {
+        if self.enabled {
+            self.tape.apply_trade(t, counted);
+            if let Some(b) = self.burst.as_mut() {
+                b.apply_trade_unrestored(t, counted);
             }
         }
     }

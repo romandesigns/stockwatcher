@@ -52,8 +52,32 @@
 //!   loaded in the background each trading day; until it is in, `radv30` and `rvol` are missing
 //!   (the model has a learned direction for missing values). The previous close is the quote
 //!   board's (the research: the latest date of `daily-closes.json`).
-//! - A restart loses the day's episode counts (`ep`) and open outcome tracking (an alert's
-//!   outcome is then `partial`).
+//! - A restart loses open outcome tracking (an alert's outcome is then `partial`). The day's
+//!   tape state is rebuilt, see "After a restart" below.
+//!
+//! # After a restart
+//!
+//! A detector started mid-session sees only the prints from then on. Left alone, every symbol
+//! would have an empty base for 30 minutes, so the rate gate passes on any 1.5 % tick (SHFS on
+//! 2026-10-22: "2118× base"), and every day-level feature counts from the restart instead of
+//! 04:00: `rvol` read −3.3 for a stock trading 20× its ADV, and `gap`, `dhi`, `vwap`, `ldd` and
+//! `ep` were wrong too. Scores then move either way. In a replay of that day, XLABW went from
+//! 0.222 (no alert) to 0.240 (an alert) on state that had been reset.
+//!
+//! So the live history load (`crate::history`) rebuilds each symbol's state the way it rebuilds
+//! the chart: a [`BurstDetector::rebuilder`] gets the symbol's whole recorded day and the held
+//! tail, ticked at every 5 s boundary on the history's own clock (episodes are reconstructed,
+//! and no feature or model is computed), then [`BurstDetector::adopt`] swaps it in under the
+//! core lock. Until then the symbol's prints still go into the detector, which marks the symbol
+//! unrestored ([`BurstDetector::apply_trade_unrestored`]) and never gates or scores it: an alert
+//! on reset state is worse than one a minute late. The detector keeps the live symbol's last
+//! alert and open outcomes ([`BurstDetector::restore_alert`]), so nothing that fired before
+//! the restart fires again.
+//!
+//! What can still differ from an uninterrupted run is only what arrival order can change: the
+//! rebuild checks each boundary on the recorded delivery clock, the live run on the wall clock,
+//! so a print delivered within the same second as a boundary's check may count from the next
+//! boundary in one and not the other (`tests::a_restart_rebuilds_the_day`).
 //!
 //! # Outcomes (protocol §3), for the forward log
 //!
@@ -450,6 +474,9 @@ pub(crate) struct BSym {
     ep_ref: f64,
     last_alert: Option<i64>,
     open: Vec<Outcome>,
+    /// Its prints since a restart are in, its day before them not yet: never gated or scored
+    /// until the history load adopts its rebuilt day ([`BurstDetector::adopt`]).
+    unrestored: bool,
 }
 
 impl BSym {
@@ -475,14 +502,16 @@ impl BSym {
             ep_ref: f64::NAN,
             last_alert: None,
             open: Vec::new(),
+            unrestored: false,
         }
     }
 
     fn reset_day(&mut self, day: u32) {
         let symbol = self.symbol.clone();
-        let in_recent = self.in_recent;
+        let (in_recent, unrestored) = (self.in_recent, self.unrestored);
         *self = BSym::new(symbol);
         self.in_recent = in_recent;
+        self.unrestored = unrestored;
         self.day = day;
     }
 
@@ -578,7 +607,7 @@ impl BSym {
     fn apply(&mut self, k: i64, price: i64, size: u64, c: Counted, ex: u8) {
         // A late print is counted in the open second (module docs, "Differences").
         let k = k.max(self.fin);
-        if self.rings.is_none() && (WIDE_BAND.0..=WIDE_BAND.1).contains(&price) {
+        if self.rings.is_none() && in_wide_band(price) {
             // The first print in the wide band today, or the first after the rings were freed
             // while idle. The open second may hold prints: finish it before the rings start, so
             // a ring never holds a second it did not see whole. The empty seconds after it are
@@ -694,6 +723,11 @@ fn sess_code(t: i64) -> Option<f64> {
         Some(SessionKind::After) => Some(2.0),
         _ => None,
     }
+}
+
+/// A price (micro-dollars) in the band rings are kept for.
+pub fn in_wide_band(price: i64) -> bool {
+    (WIDE_BAND.0..=WIDE_BAND.1).contains(&price)
 }
 
 fn in_band(last: f64) -> bool {
@@ -1041,6 +1075,9 @@ pub struct BurstDetector {
     /// Tests and the parity replay: every gate pass, scored.
     capture: Option<Vec<Pass>>,
     settled: Vec<Settled>,
+    /// A restart's rebuild ([`BurstDetector::rebuilder`]): every boundary is checked however
+    /// far behind, and a gate pass only records its episode (no features, model or alert).
+    rebuild: bool,
 }
 
 impl BurstDetector {
@@ -1065,7 +1102,20 @@ impl BurstDetector {
             last_free_s: 0,
             capture: None,
             settled: Vec::new(),
+            rebuild: false,
         }
+    }
+
+    /// The detector a restart's history load feeds one symbol's recorded day into (module docs,
+    /// "After a restart"), adopted afterwards with [`BurstDetector::adopt`]. It is ticked on
+    /// the history's clock, which jumps from one delivery to the next: a gap never skips
+    /// boundaries, as the live tick's stall guard would. A gap holds at most the boundaries the
+    /// symbol had prints for, and those go before the next print is applied, so the rings
+    /// still hold every second they need.
+    pub fn rebuilder() -> BurstDetector {
+        let mut d = BurstDetector::new(BurstPolicy::default());
+        d.rebuild = true;
+        d
     }
 
     pub fn policy(&self) -> &BurstPolicy {
@@ -1123,17 +1173,29 @@ impl BurstDetector {
 
     /// One print with the chart engine's verdict on it. O(1).
     pub fn apply_trade(&mut self, t: &Trade, counted: Counted) {
-        if !counted.ohlc && !counted.volume {
-            return;
+        self.apply(t, counted);
+    }
+
+    /// A print of a symbol whose day the history load has not rebuilt yet (module docs, "After
+    /// a restart"): counted like any print, and the symbol is not gated until it is adopted.
+    pub fn apply_trade_unrestored(&mut self, t: &Trade, counted: Counted) {
+        if let Some(i) = self.apply(t, counted) {
+            self.syms[i].unrestored = true;
         }
-        let Some(session) = t.session else { return };
+    }
+
+    fn apply(&mut self, t: &Trade, counted: Counted) -> Option<usize> {
+        if !counted.ohlc && !counted.volume {
+            return None;
+        }
+        let session = t.session?;
         if session.kind == SessionKind::Overnight {
-            return;
+            return None;
         }
         let (t0, ord) = self.days.get(session.date);
         let exec = t.event_ts.0;
         if exec < t0 || exec >= t0 + NSEC * SEC {
-            return;
+            return None;
         }
         let price = t.price.micros();
         let i = self.sym_index(&t.symbol);
@@ -1153,6 +1215,50 @@ impl BurstDetector {
             s.in_recent = true;
             self.recent.push(i);
         }
+        Some(i)
+    }
+
+    /// Swaps in `symbol`'s day as `from` (a [`BurstDetector::rebuilder`] fed the symbol's
+    /// recorded day and held tail) rebuilt it, after ticking `from` up to the market clock `now`.
+    /// Keeps what only this detector knows: the symbol's last alert (the 10-minute dedup, also
+    /// restored from the forward log after a restart) and its open outcomes. Clears the
+    /// unrestored mark. O(rings) once per symbol load.
+    pub fn adopt(&mut self, symbol: &str, mut from: BurstDetector, now: i64) {
+        from.tick(now, &|_| None);
+        let date = market_events::session::trading_date(UnixNanos(now));
+        if self.date != Some(date) {
+            self.roll(date);
+        }
+        let ord = self.ord;
+        let i = self.sym_index(symbol);
+        let mut day = match from.index.get(symbol) {
+            Some(&j) if from.syms[j].day == ord => {
+                std::mem::replace(&mut from.syms[j], BSym::new(Arc::from(symbol)))
+            }
+            // Nothing recorded today: the day is empty, whatever arrived before the load did
+            // went into the rebuild too.
+            _ => {
+                let mut b = BSym::new(Arc::from(symbol));
+                b.day = ord;
+                b
+            }
+        };
+        let s = &mut self.syms[i];
+        day.symbol = s.symbol.clone();
+        day.last_alert = s.last_alert;
+        day.open = std::mem::take(&mut s.open);
+        day.in_recent = s.in_recent;
+        day.unrestored = false;
+        *s = day;
+        if !s.in_recent && s.last_print_s >= 0 {
+            s.in_recent = true;
+            self.recent.push(i);
+        }
+    }
+
+    /// Symbols marked unrestored (tests).
+    pub fn unrestored(&self) -> usize {
+        self.syms.iter().filter(|s| s.unrestored).count()
     }
 
     fn roll(&mut self, date: NaiveDate) {
@@ -1185,7 +1291,8 @@ impl BurstDetector {
         if due <= self.checked {
             return Vec::new();
         }
-        let first = if due - self.checked > MAX_LAG_S || self.checked < 0 {
+        let stalled = !self.rebuild && due - self.checked > MAX_LAG_S;
+        let first = if stalled || self.checked < 0 {
             due
         } else {
             self.checked + STEP_S
@@ -1221,12 +1328,18 @@ impl BurstDetector {
                 continue;
             }
             keep.push(i);
+            if s.unrestored {
+                continue;
+            }
             looked += 1;
             s.advance_to(hi);
             let Some((_, reference, rate)) = s.gate(t0, hi) else {
                 continue;
             };
             let (ep, age) = s.episode(t, reference);
+            if self.rebuild {
+                continue;
+            }
             let c = Ctx {
                 prev_close: prev_close(&s.symbol),
                 adv30: self.adv.get(&*s.symbol).copied(),

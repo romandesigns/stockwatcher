@@ -286,6 +286,53 @@ async fn after_a_restart_a_chart_loads_its_day_from_the_archive_and_matches_an_u
     assert_eq!(paper["fills"], json!([]));
 }
 
+/// Buying bursts after a restart (crates/server/src/rocket/burst, "After a restart"): a symbol
+/// printing before its history loads is held unrestored, never gated on a day that starts at the
+/// restart, and its print asks for the load itself, even with the background preload off and
+/// no chart open, so the detector gets every symbol's whole day back without waiting for one.
+#[tokio::test(flavor = "multi_thread")]
+async fn after_a_restart_bursts_get_each_printing_symbols_day_back() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("archive");
+    let events = fixture_events(&tmp.path().join("scratch"));
+    let split = events
+        .iter()
+        .position(|e| receive_time(e) >= et(11, 0))
+        .unwrap();
+    let cut = events
+        .iter()
+        .position(|e| receive_time(e) >= et(12, 0))
+        .unwrap();
+    let (before, tx) = live(&root, et(4, 0), true);
+    for e in &events[..split] {
+        tx.send(e.clone()).await.unwrap();
+    }
+    drop(tx);
+    until("the first run ended", || {
+        before.state_json()["status"]["state"] == "stopped"
+    })
+    .await;
+    drop(before);
+    recorded(&root, split).await;
+
+    let (after, tx) = live(&root, et(11, 0), false);
+    after.set_rocket_watch(true, stockwatcher_server::rocket::Policy::default());
+    after.enable_burst(
+        stockwatcher_server::rocket::burst::BurstPolicy::default(),
+        None,
+    );
+    assert_eq!(after.burst_symbols(), Some((0, 0)));
+    assert_eq!(after.state_json()["history"]["pending"], 2);
+    for e in &events[split..cut] {
+        tx.send(e.clone()).await.unwrap();
+    }
+    // Without bursts nothing asks for these loads (the test above: only a chart does).
+    until("both symbols' days were rebuilt", || {
+        after.burst_symbols() == Some((2, 0)) && after.state_json()["history"]["pending"] == 0
+    })
+    .await;
+}
+
 /// With the background preload every symbol loads by itself, and the charts equal an unbroken
 /// run's at every timeframe.
 #[tokio::test(flavor = "multi_thread")]

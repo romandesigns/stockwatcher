@@ -793,6 +793,13 @@ impl Market {
             .enable_burst(policy);
     }
 
+    /// Live with bursts on: the symbols the burst detector holds and how many of them still wait
+    /// for their day to be rebuilt after a restart (`crate::rocket::burst`, "After a restart").
+    pub fn burst_symbols(&self) -> Option<(usize, usize)> {
+        let core = self.0.core.lock().expect("core lock");
+        core.rocket.burst().map(|b| (b.symbols(), b.unrestored()))
+    }
+
     /// Loads a trading date's ADV30 for the burst detector on a blocking thread (30 small
     /// archive files), then hands it to the board. Never under the core lock.
     fn load_burst_adv(&self, date: NaiveDate) {
@@ -1934,7 +1941,13 @@ impl Market {
                         // demand, and the board reports the symbol pending until one.
                         let ross_wants = core.context.is_some()
                             && self.0.history.get().is_some_and(|h| h.preload);
-                        if self.0.detection_on.load(Ordering::Relaxed) || ross_wants {
+                        // And so do buying bursts: the detector does not gate a symbol before its
+                        // day is rebuilt (crate::rocket::burst, "After a restart"), so a symbol
+                        // printing in its band must not wait for the background preload.
+                        let burst_wants = matches!(&e, MarketEvent::Trade(t)
+                            if core.rocket.burst_wants_history(t));
+                        if self.0.detection_on.load(Ordering::Relaxed) || ross_wants || burst_wants
+                        {
                             crate::history::request_load(self, &mut core, symbol);
                         }
                     }

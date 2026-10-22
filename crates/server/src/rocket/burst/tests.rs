@@ -1,7 +1,7 @@
 use super::*;
 use market_events::session::et;
 use market_events::{Price, Trade};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 fn day() -> NaiveDate {
     NaiveDate::from_ymd_opt(2026, 10, 21).unwrap()
@@ -132,6 +132,268 @@ pub(super) fn num(x: f64) -> String {
 /// them alerted that day), their counted prints as the archive replay produced them, through the
 /// live detector; every gate pass and every feature must equal the research's export
 /// (`burst_fixture.csv`, written by `replay_parity` with `BURST_PARITY_FIXTURE`).
+/// The fixture's day: every print of its symbols in execution order, previous closes, ADV30.
+struct Fixture {
+    day: NaiveDate,
+    t0: i64,
+    all: Vec<(Trade, Counted)>,
+    pcs: HashMap<String, f64>,
+    adv: HashMap<String, f64>,
+}
+
+fn fixture() -> Fixture {
+    let txt = include_str!("burst_fixture.csv");
+    let mut all = Vec::new();
+    let (mut pcs, mut adv) = (HashMap::new(), HashMap::new());
+    for l in txt.lines().filter(|l| !l.starts_with('#')) {
+        let c: Vec<&str> = l.split(',').collect();
+        let opt = |s: &str| (!s.is_empty()).then(|| s.parse::<f64>().unwrap());
+        match c[0] {
+            "c" => {
+                if let Some(p) = opt(c[2]) {
+                    pcs.insert(c[1].to_string(), p);
+                }
+                if let Some(a) = opt(c[3]) {
+                    adv.insert(c[1].to_string(), a);
+                }
+            }
+            "p" => {
+                let mut t = Trade::new(
+                    c[1],
+                    UnixNanos(c[2].parse().unwrap()),
+                    Price::from_micros(c[3].parse().unwrap()),
+                    c[4].parse().unwrap(),
+                    1,
+                );
+                t.exchange = c[7].into();
+                let k = Counted {
+                    ohlc: c[5] == "1",
+                    volume: c[6] == "1",
+                };
+                all.push((t, k));
+            }
+            _ => {}
+        }
+    }
+    all.sort_by_key(|x| x.0.event_ts.0);
+    let day = NaiveDate::from_ymd_opt(2026, 9, 2).unwrap();
+    Fixture {
+        day,
+        t0: et(day, 4, 0, 0, 0).unwrap().0,
+        all,
+        pcs,
+        adv,
+    }
+}
+
+/// A live detector over the fixture's prints from `from` (the process was down before it) to
+/// the end of the day, every boundary checked at `w + 1 s`. With `adopt_at`, a restart: the
+/// prints before that time take the unrestored path (their symbols' history is not loaded), and
+/// at it every symbol's day is rebuilt from every print executed by then and adopted. `restored`
+/// are the alerts the forward log hands back after a restart.
+fn live_run(
+    f: &Fixture,
+    from: i64,
+    adopt_at: Option<i64>,
+    restored: &[BurstAlert],
+) -> (Vec<Pass>, Vec<BurstAlert>) {
+    let pc = |s: &str| f.pcs.get(s).copied();
+    let mut d = BurstDetector::new(BurstPolicy::default());
+    d.capture();
+    d.tick(from, &pc);
+    d.set_adv(f.day, f.adv.clone());
+    for a in restored {
+        d.restore_alert(&a.pass.symbol, a.at_ns, a.price, from);
+    }
+    let mut alerts = Vec::new();
+    let mut j = f.all.partition_point(|x| x.0.event_ts.0 < from);
+    let mut w = from.div_euclid(STEP_S * SEC) * STEP_S * SEC;
+    let mut pending = adopt_at;
+    while w <= f.t0 + NSEC * SEC {
+        let now = w + SETTLE_NS;
+        while j < f.all.len() && f.all[j].0.event_ts.0 <= now {
+            let (t, k) = &f.all[j];
+            if pending.is_some() {
+                d.apply_trade_unrestored(t, *k);
+            } else {
+                d.apply_trade(t, *k);
+            }
+            j += 1;
+        }
+        alerts.extend(d.tick(now, &pc));
+        if pending.is_some_and(|at| now >= at) {
+            pending = None;
+            let syms: BTreeSet<&str> = f.all.iter().map(|x| &*x.0.symbol).collect();
+            for sym in syms {
+                d.adopt(sym, rebuild(f, sym, now), now);
+            }
+            assert_eq!(d.unrestored(), 0);
+        }
+        w += STEP_S * SEC;
+    }
+    (d.take_captured(), alerts)
+}
+
+/// What the history load's `Builder` does for one symbol: every recorded print executed by
+/// `until`, the clock moved to each print's second BEFORE the print is applied (its delivery
+/// mark; here delivery = execution), with no tick between prints.
+fn rebuild(f: &Fixture, sym: &str, until: i64) -> BurstDetector {
+    let mut b = BurstDetector::rebuilder();
+    for (t, k) in f.all.iter().filter(|x| &*x.0.symbol == sym) {
+        if t.event_ts.0 > until {
+            break;
+        }
+        b.tick(t.event_ts.0.div_euclid(SEC) * SEC, &|_| None);
+        b.apply_trade(t, *k);
+    }
+    b
+}
+
+/// A restart mid-session (owner, 2026-10-22: zero bursts after two deploys). After the history
+/// load adopts each symbol's rebuilt day, the detector gates, scores and alerts exactly as a run
+/// that never stopped: the same passes with the same 34 features and score, and the same alerts.
+/// Nothing is gated while a symbol is unrestored, and the alerts from before the restart
+/// (restored from the forward log) do not fire again. Without the rebuild the same restart
+/// diverges.
+///
+/// Exact here because delivery = execution in the fixture. Live, the rebuild checks boundaries
+/// on the recorded delivery clock and the uninterrupted run on the wall clock, so a print
+/// delivered in the same second as a boundary's check can count from the next boundary in one
+/// and not the other (module docs, "After a restart").
+#[test]
+fn a_restart_rebuilds_the_day() {
+    let f = fixture();
+    let (full_passes, full_alerts) = live_run(&f, f.t0, None, &[]);
+    assert_eq!(full_alerts.len(), 5, "the fixture's five research alerts");
+    // Restart at 15:50 ET, the history load done 90 s later. UCL (16:00), FGL (16:14) and LGHL
+    // (19:10) fire after it; JEM and GCTK fired before it.
+    let restart = f.t0 + (11 * 3600 + 50 * 60) * SEC;
+    let adopted = restart + 90 * SEC;
+    let before: Vec<BurstAlert> = full_alerts
+        .iter()
+        .filter(|a| a.at_ns < restart)
+        .cloned()
+        .collect();
+    assert_eq!(before.len(), 2);
+    let (passes, alerts) = live_run(&f, restart, Some(adopted), &before);
+    let after = |v: &[Pass]| -> Vec<(String, i64, f64, Vec<String>)> {
+        v.iter()
+            .filter(|p| p.t_ns + SETTLE_NS > adopted)
+            .map(|p| {
+                (
+                    p.symbol.to_string(),
+                    p.t_ns,
+                    p.score,
+                    p.x.iter().map(|x| num(*x)).collect(),
+                )
+            })
+            .collect()
+    };
+    let want = after(&full_passes);
+    assert!(want.len() > 20, "{} passes after the adoption", want.len());
+    assert_eq!(after(&passes), want, "passes, features and scores");
+    assert!(
+        passes.iter().all(|p| p.t_ns + SETTLE_NS > adopted),
+        "nothing is gated while unrestored"
+    );
+    let key = |v: &[BurstAlert]| -> Vec<(String, i64, f64)> {
+        v.iter()
+            .map(|a| (a.pass.symbol.to_string(), a.at_ns, a.price))
+            .collect()
+    };
+    let want: Vec<BurstAlert> = full_alerts
+        .iter()
+        .filter(|a| a.at_ns > adopted)
+        .cloned()
+        .collect();
+    assert_eq!(want.len(), 3);
+    assert_eq!(
+        key(&alerts),
+        key(&want),
+        "the same alerts, none fired again"
+    );
+
+    // The same restart without the rebuild: every symbol's day starts at 15:50.
+    let (naive, _) = live_run(&f, restart, None, &before);
+    assert_ne!(after(&naive), after(&full_passes), "the test has teeth");
+}
+
+/// A burst that fired just before a restart does not fire again once its symbol's day is
+/// rebuilt and still passing: the adoption keeps the forward log's restored alert (the 10-minute
+/// dedup) and its open outcome.
+#[test]
+fn an_alert_before_a_restart_does_not_fire_again() {
+    let policy = BurstPolicy {
+        threshold: 0.0001,
+        ..BurstPolicy::default()
+    };
+    let start = t0() + 3600 * SEC;
+    let mut tape = burst_tape("RSTR", start);
+    let b_end = tape.last().unwrap().event_ts.0;
+    // The burst keeps going for two minutes: every boundary passes the gate.
+    for n in 0..120 {
+        tape.push(trade(
+            "RSTR",
+            b_end + (1 + n) * SEC,
+            1.21 + 0.01 * n as f64,
+            5_000,
+            if n % 2 == 0 { "Q" } else { "P" },
+        ));
+    }
+    let end = b_end + 3 * MIN;
+    let mut full = BurstDetector::new(policy.clone());
+    let alerts = drive(&mut full, &tape, end);
+    assert_eq!(alerts.len(), 1, "one alert, then the dedup");
+    let a = &alerts[0];
+
+    // The process restarts 5 s after the alert; the history load lands 30 s later.
+    let restart = a.at_ns + 5 * SEC;
+    let adopted = restart + 30 * SEC;
+    let run = |restore: bool| {
+        let mut d = BurstDetector::new(policy.clone());
+        d.tick(restart, &pc);
+        let seq = restore.then(|| {
+            d.restore_alert("RSTR", a.at_ns, a.price, restart)
+                .expect("an open outcome")
+        });
+        let mut out = Vec::new();
+        let mut j = tape.partition_point(|t| t.event_ts.0 < restart);
+        let mut w = restart.div_euclid(5 * SEC) * 5 * SEC;
+        let mut pending = true;
+        while w <= end {
+            let now = w + SETTLE_NS;
+            while j < tape.len() && tape[j].event_ts.0 <= now {
+                if pending {
+                    d.apply_trade_unrestored(&tape[j], BOTH);
+                } else {
+                    d.apply_trade(&tape[j], BOTH);
+                }
+                j += 1;
+            }
+            out.extend(d.tick(now, &pc));
+            if pending && now >= adopted {
+                pending = false;
+                let mut b = BurstDetector::rebuilder();
+                for t in tape.iter().take_while(|t| t.event_ts.0 <= now) {
+                    b.tick(t.event_ts.0.div_euclid(SEC) * SEC, &|_| None);
+                    b.apply_trade(t, BOTH);
+                }
+                d.adopt("RSTR", b, now);
+                if let Some(seq) = seq {
+                    assert!(d.outcome("RSTR", seq).is_some(), "the open outcome is kept");
+                }
+            }
+            w += 5 * SEC;
+        }
+        out
+    };
+    assert!(
+        run(true).is_empty(),
+        "the restored alert is not fired again"
+    );
+    assert_eq!(run(false).len(), 1, "without it the rebuilt day would fire");
+}
+
 #[test]
 fn fixture_replays_like_the_research() {
     let txt = include_str!("burst_fixture.csv");

@@ -508,11 +508,14 @@ impl Market {
         days.dedup();
         // The scanner's restore engine, built under this board's own policies and run identity.
         // Taken here, with the lock held only long enough to clone three policies.
-        let restore = {
+        let (restore, burst) = {
             let core = self.0.core.lock().expect("core lock");
-            core.context.as_ref().map(|cx| cx.restore_engine())
+            (
+                core.context.as_ref().map(|cx| cx.restore_engine()),
+                core.rocket.burst_rebuilder(),
+            )
         };
-        let mut b = Builder::new(self.current_closes());
+        let mut b = Builder::new(self.current_closes()).with_burst(burst);
         if let Some(mut re) = restore {
             // The evidence this symbol's decisions join, as the market's loader has it. Only the
             // symbol's own records: a restore of one symbol has no business seeding others.
@@ -646,6 +649,8 @@ impl Market {
                 board,
                 pressure,
                 rocket,
+                burst,
+                mark,
                 tape,
                 last_price,
                 context,
@@ -658,6 +663,13 @@ impl Market {
             core.pressure.replace_from(symbol, &pressure);
             if core.rocket.enabled() {
                 core.rocket.tape.replace_from(symbol, &rocket);
+            }
+            if let Some(bd) = burst {
+                // Brought up to the live clock first, so the boundaries since the last replayed
+                // delivery are checked (and their episodes recorded) on the restored day.
+                if let Some(now) = core.engine.clock().map(|c| c.0).or(mark) {
+                    core.rocket.adopt_burst(symbol, bd, now);
+                }
             }
             if !tape.is_empty() {
                 core.tape.insert(symbol.to_string(), tape);
@@ -1151,6 +1163,10 @@ struct Builder {
     pressure: PressureBoard,
     /// Rocket watch's per-symbol state (`crate::rocket`), adopted like the pressure board's.
     rocket: crate::rocket::features::Tape,
+    /// The burst detector's day for this symbol, when bursts are on: fed every print and ticked
+    /// at every clock advance, so its episodes are the live run's (`crate::rocket::burst`,
+    /// "After a restart"); adopted like the tape.
+    burst: Option<crate::rocket::burst::BurstDetector>,
     tape: VecDeque<String>,
     last_price: Option<Price>,
     mark: Option<i64>,
@@ -1178,6 +1194,7 @@ impl Builder {
             board: QuoteBoard::with_closes(closes),
             pressure: PressureBoard::new(),
             rocket: crate::rocket::features::Tape::default(),
+            burst: None,
             tape: VecDeque::new(),
             last_price: None,
             mark: None,
@@ -1186,6 +1203,12 @@ impl Builder {
             admitted_through: None,
             verdict_conflicts: 0,
         }
+    }
+
+    /// The same builder rebuilding the burst detector's day too, in `rebuilder`.
+    fn with_burst(mut self, rebuilder: Option<crate::rocket::burst::BurstDetector>) -> Self {
+        self.burst = rebuilder;
+        self
     }
 
     /// The same builder restoring the scanner's state too, on `engine`.
@@ -1238,6 +1261,11 @@ impl Builder {
         if let Some(cx) = self.context.as_mut() {
             cx.advance_to(UnixNanos(m));
         }
+        // Before the print that moved the clock is applied: the boundaries due by `m` are
+        // checked with what had arrived by then, as the live tick would have.
+        if let Some(bd) = self.burst.as_mut() {
+            bd.tick(m, &|_| None);
+        }
     }
 
     fn feed(&mut self, e: &MarketEvent) {
@@ -1263,6 +1291,9 @@ impl Builder {
             self.board.apply_trade(t, counted);
             self.pressure.apply_trade(t, counted);
             self.rocket.apply_trade(t, counted);
+            if let Some(bd) = self.burst.as_mut() {
+                bd.apply_trade(t, counted);
+            }
         }
         if let Some(rev) = &rev {
             self.board.apply_revision(rev);
@@ -1351,7 +1382,7 @@ pub(crate) fn hold_unloaded(core: &mut Core, e: &MarketEvent) -> bool {
         // Provisional, like the quote row: the load replaces both with what the history built.
         quotes.apply_trade(t, Counted::from_effect(t));
         pressure.apply_trade(t, Counted::from_effect(t));
-        rocket.apply_trade(t, Counted::from_effect(t));
+        rocket.apply_unrestored_trade(t, Counted::from_effect(t));
     }
     true
 }
