@@ -16,7 +16,7 @@ import {
 } from "@stockwatcher/app-state";
 import { formatPrice, snapPrice } from "@stockwatcher/chart-core";
 import { Icon } from "@stockwatcher/chart-web";
-import { Dialog, DialogContent, DialogTitle, cn } from "@stockwatcher/chart-web/ui";
+import { Dialog, DialogContent, DialogTitle, Input, OptionSelect, cn } from "@stockwatcher/chart-web/ui";
 import { useState, useSyncExternalStore, type ReactNode } from "react";
 import { getAppStore } from "../state/store.ts";
 import { alertForm, createAlert, type AlertFormState } from "./actions.ts";
@@ -29,6 +29,23 @@ const tabOf = (c: AlertCondition): Tab => (c.kind === "price" ? "price" : c.kind
 // 44 px fields and 16 px text on touch: a finger target, and no zoom-on-focus on phones.
 const fieldClass = "h-[34px] w-full rounded-lg bg-background px-2.5 text-[13px] text-foreground outline-none pointer-coarse:h-11 pointer-coarse:text-base focus-visible:ring-2 focus-visible:ring-ring";
 const labelClass = "flex min-w-0 flex-col gap-1.5 text-[11.5px] text-muted-foreground";
+// The shadcn Select's default size is this form's 34 px field; on the dialog's bg-bg-row it sits
+// on bg-background like the text fields.
+const selectClass = "w-full bg-background hover:bg-bg-raised";
+
+const DIR_OPTIONS = [{ value: "above", label: "Crosses above" }, { value: "below", label: "Crosses below" }] as const;
+const MOVE_DIR_OPTIONS = [{ value: "up", label: "Up" }, { value: "down", label: "Down" }, { value: "either", label: "Either way" }] as const;
+const WINDOW_OPTIONS = MOVE_WINDOWS.map((w) => ({ value: w, label: MOVE_WINDOW_LABELS[w] }));
+const SIGNAL_OPTIONS: readonly { value: Signal; label: string }[] = [
+  { value: "halt", label: "Halted or resumed" },
+  { value: "luld", label: "Near the limit-up/down band (modelled)" },
+  { value: "hod", label: "New high of day" },
+  { value: "pressure", label: "Halt watcher pressure" },
+];
+const BAND_OPTIONS = [{ value: "up", label: "Limit up" }, { value: "down", label: "Limit down" }, { value: "either", label: "Either" }] as const;
+const PRESSURE_SIDE_OPTIONS = [{ value: "buy", label: "Buy pressure" }, { value: "sell", label: "Sell pressure" }, { value: "either", label: "Either" }] as const;
+const GAP_OPTIONS = GAP_CHOICES.map((g) => ({ value: g, label: `${g} min` }));
+const EXPIRY_OPTIONS = (["week", "day", "never"] as const).map((x) => ({ value: x, label: EXPIRY_LABELS[x] }));
 
 /** A segmented control: one choice, the active segment raised (no accent: the design's segmented rule). */
 function Segmented<T extends string>({ label, value, options, onChange }: { label: string; value: T; options: readonly { v: T; label: string }[]; onChange: (v: T) => void }) {
@@ -166,23 +183,17 @@ function FormBody({ state, d, close }: { state: AlertFormState; d: AlertRule; cl
       {(!d?.symbol || state.editId) && (
         <label className={labelClass}>
           Ticker
-          <input value={symbol} onChange={(e) => setSymbol(e.target.value.toUpperCase())} placeholder="XLAB" autoComplete="off" spellCheck={false} className={cn(fieldClass, "font-mono uppercase")} />
+          <Input value={symbol} onChange={(e) => setSymbol(e.target.value.toUpperCase())} placeholder="XLAB" autoComplete="off" spellCheck={false} className={cn(fieldClass, "font-mono uppercase")} />
         </label>
       )}
       <Segmented label="Alert type" value={tab} onChange={setTab} options={[{ v: "price", label: "Price" }, { v: "move", label: "% move" }, { v: "signal", label: "Signal" }]} />
       {tab === "price" && (
         <>
           <div className="grid grid-cols-2 gap-2.5">
-            <label className={labelClass}>
-              When the price
-              <select value={dir} onChange={(e) => setDir(e.target.value as "above" | "below")} className={fieldClass}>
-                <option value="above">Crosses above</option>
-                <option value="below">Crosses below</option>
-              </select>
-            </label>
+            <OptionSelect label="When the price" labelClassName={labelClass} className={selectClass} options={DIR_OPTIONS} value={dir} onValueChange={setDir} />
             <label className={labelClass}>
               Price
-              <input value={price} onChange={(e) => setPrice(e.target.value)} inputMode="decimal" className={cn(fieldClass, "font-mono")} />
+              <Input value={price} onChange={(e) => setPrice(e.target.value)} inputMode="decimal" className={cn(fieldClass, "font-mono")} />
             </label>
           </div>
           {hint && <span className="-mt-1 text-[11.5px] text-text-faint">{hint} · drag the line on the chart to change it</span>}
@@ -191,56 +202,25 @@ function FormBody({ state, d, close }: { state: AlertFormState; d: AlertRule; cl
       {tab === "move" && (
         <>
           <div className="grid grid-cols-2 gap-2.5">
-            <label className={labelClass}>
-              Moves
-              <select value={moveDir} onChange={(e) => setMoveDir(e.target.value as "up" | "down" | "either")} className={fieldClass}>
-                <option value="up">Up</option>
-                <option value="down">Down</option>
-                <option value="either">Either way</option>
-              </select>
-            </label>
+            <OptionSelect label="Moves" labelClassName={labelClass} className={selectClass} options={MOVE_DIR_OPTIONS} value={moveDir} onValueChange={setMoveDir} />
             <label className={labelClass}>
               By (%)
-              <input value={pct} onChange={(e) => setPct(e.target.value)} inputMode="decimal" className={cn(fieldClass, "font-mono")} />
+              <Input value={pct} onChange={(e) => setPct(e.target.value)} inputMode="decimal" className={cn(fieldClass, "font-mono")} />
             </label>
           </div>
-          <label className={labelClass}>
-            Within
-            <select value={win} onChange={(e) => setWin(e.target.value as MoveWindow)} className={fieldClass}>
-              {MOVE_WINDOWS.map((w) => (
-                <option key={w} value={w}>
-                  {MOVE_WINDOW_LABELS[w]}
-                </option>
-              ))}
-            </select>
-          </label>
+          <OptionSelect label="Within" labelClassName={labelClass} className={selectClass} options={WINDOW_OPTIONS} value={win} onValueChange={setWin} />
         </>
       )}
       {tab === "signal" && (
         <>
-          <label className={labelClass}>
-            Signal
-            <select value={signal} onChange={(e) => setSignal(e.target.value as Signal)} className={fieldClass}>
-              <option value="halt">Halted or resumed</option>
-              <option value="luld">Near the limit-up/down band (modelled)</option>
-              <option value="hod">New high of day</option>
-              <option value="pressure">Halt watcher pressure</option>
-            </select>
-          </label>
+          <OptionSelect label="Signal" labelClassName={labelClass} className={selectClass} options={SIGNAL_OPTIONS} value={signal} onValueChange={setSignal} />
           {signal === "luld" && (
             <>
               <div className="grid grid-cols-2 gap-2.5">
-                <label className={labelClass}>
-                  Band
-                  <select value={side} onChange={(e) => setSide(e.target.value as "up" | "down" | "either")} className={fieldClass}>
-                    <option value="up">Limit up</option>
-                    <option value="down">Limit down</option>
-                    <option value="either">Either</option>
-                  </select>
-                </label>
+                <OptionSelect label="Band" labelClassName={labelClass} className={selectClass} options={BAND_OPTIONS} value={side} onValueChange={setSide} />
                 <label className={labelClass}>
                   Within (%)
-                  <input value={bandPct} onChange={(e) => setBandPct(e.target.value)} inputMode="decimal" className={cn(fieldClass, "font-mono")} />
+                  <Input value={bandPct} onChange={(e) => setBandPct(e.target.value)} inputMode="decimal" className={cn(fieldClass, "font-mono")} />
                 </label>
               </div>
               <span className="-mt-1 text-[11.5px] text-text-faint">The band is our model of the LULD plan, not the exchange's numbers.</span>
@@ -249,17 +229,10 @@ function FormBody({ state, d, close }: { state: AlertFormState; d: AlertRule; cl
           {signal === "pressure" && (
             <>
               <div className="grid grid-cols-2 gap-2.5">
-                <label className={labelClass}>
-                  Side
-                  <select value={pSide} onChange={(e) => setPSide(e.target.value as "buy" | "sell" | "either")} className={fieldClass}>
-                    <option value="buy">Buy pressure</option>
-                    <option value="sell">Sell pressure</option>
-                    <option value="either">Either</option>
-                  </select>
-                </label>
+                <OptionSelect label="Side" labelClassName={labelClass} className={selectClass} options={PRESSURE_SIDE_OPTIONS} value={pSide} onValueChange={setPSide} />
                 <label className={labelClass}>
                   Reaches (0–100)
-                  <input value={pMin} onChange={(e) => setPMin(e.target.value)} inputMode="numeric" className={cn(fieldClass, "font-mono")} />
+                  <Input value={pMin} onChange={(e) => setPMin(e.target.value)} inputMode="numeric" className={cn(fieldClass, "font-mono")} />
                 </label>
               </div>
               <span className="-mt-1 text-[11.5px] text-text-faint">The Halt watcher's score: how one-sided and how heavy the last minute was.</span>
@@ -271,17 +244,11 @@ function FormBody({ state, d, close }: { state: AlertFormState; d: AlertRule; cl
         <div className="flex flex-wrap items-center gap-2">
           <Segmented label="Fires" value={fire} onChange={setFire} options={[{ v: "once", label: "Once" }, { v: "every", label: "Every time" }]} />
           {fire === "every" && (
-            <label className="flex items-center gap-1.5 text-[11.5px] text-muted-foreground">
+            <span className="flex items-center gap-1.5 text-[11.5px] text-muted-foreground">
               at least
-              <select value={gap} onChange={(e) => setGap(Number(e.target.value))} aria-label="Minimum gap" className={cn(fieldClass, "h-7 w-auto")}>
-                {GAP_CHOICES.map((g) => (
-                  <option key={g} value={g}>
-                    {g} min
-                  </option>
-                ))}
-              </select>
+              <OptionSelect aria-label="Minimum gap" size="sm" className="h-7 bg-background hover:bg-bg-raised" options={GAP_OPTIONS} value={gap} onValueChange={setGap} />
               apart
-            </label>
+            </span>
           )}
         </div>
       </Fieldset>
@@ -295,16 +262,7 @@ function FormBody({ state, d, close }: { state: AlertFormState; d: AlertRule; cl
         </div>
       </Fieldset>
       <div className="grid grid-cols-2 gap-2.5">
-        <label className={labelClass}>
-          Expires
-          <select value={expiry} onChange={(e) => setExpiry(e.target.value as AlertExpiry)} className={fieldClass}>
-            {(["week", "day", "never"] as const).map((x) => (
-              <option key={x} value={x}>
-                {EXPIRY_LABELS[x]}
-              </option>
-            ))}
-          </select>
-        </label>
+        <OptionSelect label="Expires" labelClassName={labelClass} className={selectClass} options={EXPIRY_OPTIONS} value={expiry} onValueChange={setExpiry} />
         <Fieldset legend="Notify">
           <div className="flex gap-1.5">
             <Chip pressed={notify.app} onClick={() => setNotify((n) => ({ ...n, app: !n.app }))}>

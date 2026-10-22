@@ -1,6 +1,7 @@
 import { flipPosition, formatPrice, formatSize, positionPlan, type Drawing } from "@stockwatcher/chart-core";
 import { useEffect, useState } from "react";
 import { Button } from "./ui/button.tsx";
+import { Input } from "./ui/input.tsx";
 import { ToggleGroup, ToggleGroupItem } from "./ui/toggle-group.tsx";
 import { cn } from "./ui/utils.ts";
 
@@ -58,7 +59,7 @@ export function PositionPlanCard({ drawing, onChange, onPlace, className }: Posi
       <div className="grid grid-cols-2 gap-2">
         <label className="flex flex-col gap-1 text-[11px] text-muted-foreground">
           Risk per trade
-          <input
+          <Input
             className={inputClass}
             inputMode="decimal"
             value={risk}
@@ -73,7 +74,7 @@ export function PositionPlanCard({ drawing, onChange, onPlace, className }: Posi
         </label>
         <label className="flex flex-col gap-1 text-[11px] text-muted-foreground">
           Shares
-          <input
+          <Input
             className={inputClass}
             inputMode="numeric"
             value={qty}

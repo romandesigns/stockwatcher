@@ -1,6 +1,6 @@
 import { formatPrice, formatVolume } from "@stockwatcher/chart-core";
 import { Icon } from "@stockwatcher/chart-web";
-import { cn, Dialog, DialogContent, DialogTitle, ScrollArea } from "@stockwatcher/chart-web/ui";
+import { cn, Dialog, DialogContent, DialogTitle, Input, ScrollArea } from "@stockwatcher/chart-web/ui";
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import {
   activeTickerFilters,
@@ -252,7 +252,7 @@ export function TickerSearch({ open, onOpenChange, symbols, quotes, mock, curren
         <DialogTitle>Go to ticker</DialogTitle>
         <div className="flex items-center gap-2 px-3 pt-3 pb-2">
           <Icon name="search" className="size-4 text-muted-foreground" />
-          <input
+          <Input
             ref={inputRef}
             value={query}
             onChange={(e) => {

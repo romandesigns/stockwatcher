@@ -2,6 +2,7 @@ import { formatPrice, orderTypeAt, snapPrice, tickSize, type FillMark, type Orde
 import { TradeHistory } from "./ContextMenus.tsx";
 import { useEffect, useMemo, useState, type RefObject } from "react";
 import { Button } from "./ui/button.tsx";
+import { Input } from "./ui/input.tsx";
 import { Popover, PopoverContent } from "./ui/popover.tsx";
 import { ToggleGroup, ToggleGroupItem } from "./ui/toggle-group.tsx";
 import { cn } from "./ui/utils.ts";
@@ -142,7 +143,7 @@ export function OrderTicket({ open, onOpenChange, anchor, symbol, last, price, o
               Shares
             </label>
             <div className="flex gap-1">
-              <input id="ticket-qty" className={cn(inputClass, "min-w-0 flex-1")} inputMode="numeric" value={qty} onChange={(e) => setQty(e.target.value.replace(/[^\d]/g, ""))} aria-invalid={!qtyOk} />
+              <Input id="ticket-qty" className={cn(inputClass, "min-w-0 flex-1")} inputMode="numeric" value={qty} onChange={(e) => setQty(e.target.value.replace(/[^\d]/g, ""))} aria-invalid={!qtyOk} />
               {QUICK_QTY.map((q) => (
                 <Button
                   key={q}
@@ -161,7 +162,7 @@ export function OrderTicket({ open, onOpenChange, anchor, symbol, last, price, o
           {type !== "market" && (
             <label className="flex flex-col gap-1 text-[11px] text-muted-foreground">
               {type === "limit" ? "Limit price" : "Stop price"}
-              <input
+              <Input
                 className={inputClass}
                 inputMode="decimal"
                 value={px}
