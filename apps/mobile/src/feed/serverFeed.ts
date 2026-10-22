@@ -13,7 +13,7 @@ import {
   type ReplayControl,
   type Timeframe,
 } from "@stockwatcher/chart-core";
-import { createDetectionChannel, createPressureChannel, createQuoteChannel, createRossChannel, createWsClient, type AlertsServerMessage, type ConnectionStatus, type DetectionChannel, type MarketSource, type PressureChannel, type QuoteChannel, type RossChannel, type SettingsSync, type WebSocketLike } from "@stockwatcher/shared";
+import { createDetectionChannel, createPressureChannel, createQuoteChannel, createRocketChannel, createRossChannel, createWsClient, type AlertsServerMessage, type ConnectionStatus, type DetectionChannel, type MarketSource, type PressureChannel, type QuoteChannel, type RocketChannel, type RossChannel, type SettingsSync, type WebSocketLike } from "@stockwatcher/shared";
 
 import { deviceInfo, pushToken } from "../notifications/push";
 import { wsUrl } from "./server";
@@ -39,6 +39,8 @@ export interface MobileFeed {
   /** The server's Halt watcher board (the dashboard's gauges); subscribing opts the connection in. */
   pressure: PressureChannel;
   ross: RossChannel;
+  /** Rocket watch (experimental): flags of a likely +30 % leg; subscribing opts the connection in. */
+  rocket: RocketChannel;
   /** Independent authoritative event discovery; it does not subscribe to chart bars. */
   detection: DetectionChannel;
   close(): void;
@@ -63,6 +65,7 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
   const quotes = createQuoteChannel({ subscribe: () => client.subscribeQuotes(), unsubscribe: () => client.unsubscribeQuotes() });
   const pressure = createPressureChannel({ subscribe: () => client.subscribePressure(), unsubscribe: () => client.unsubscribePressure() });
   const ross = createRossChannel({ subscribe: () => client.subscribeRoss(), unsubscribe: () => client.unsubscribeRoss() });
+  const rocket = createRocketChannel({ subscribe: () => client.subscribeRocket(), unsubscribe: () => client.unsubscribeRocket() });
   const detection = createDetectionChannel({ subscribe: () => client.subscribeDetection(), unsubscribe: () => client.unsubscribeDetection(), resync: () => client.subscribeDetection(), source });
 
   const sendRaw = (msg: ChartSubscribe | ChartUnsubscribe | ReplayControl | PaperCommand) => {
@@ -83,6 +86,7 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
       // The Ross Panel keeps its last rows while the socket is down, so it has to be told: a
       // panel nobody is updating must not read as live (shared/ross.ts `rossFreshness`).
       ross.setConnected(s === "open");
+      rocket.setConnected(s === "open");
       detection.setConnected(s === "open");
       // Subscriptions do not survive a reconnect.
       if (s === "open") {
@@ -95,6 +99,7 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
     onQuotes: (m) => quotes.apply(m),
     onPressure: (m) => pressure.apply(m),
     onRoss: (m) => ross.apply(m),
+    onRocket: (m) => rocket.apply(m),
     onDetection: (m) => detection.apply(m),
     onDetectionError: (reason) => detection.reject(reason),
     // Price alerts (Activity, fires): the app store takes them whatever tab is open.
@@ -108,7 +113,7 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
         // A quotes.snapshot is hundreds of KB: skip the chart/paper parsers (the server writes
         // `type` first), which would each JSON.parse it again on the phone's JS thread. The
         // settings.* and pressure.* frames are shared's own too and take the same shortcut.
-        if (typeof ev.data === "string" && (ev.data.startsWith('{"type":"quotes.') || ev.data.startsWith('{"type":"settings.') || ev.data.startsWith('{"type":"pressure.') || ev.data.startsWith('{"type":"ross.') || ev.data.startsWith('{"type":"detection.') || ev.data.startsWith('{"type":"alert'))) {
+        if (typeof ev.data === "string" && (ev.data.startsWith('{"type":"quotes.') || ev.data.startsWith('{"type":"settings.') || ev.data.startsWith('{"type":"pressure.') || ev.data.startsWith('{"type":"ross.') || ev.data.startsWith('{"type":"rocket.') || ev.data.startsWith('{"type":"detection.') || ev.data.startsWith('{"type":"alert'))) {
           inner?.({ data: ev.data });
           return;
         }
@@ -160,6 +165,7 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
     quotes,
     pressure,
     ross,
+    rocket,
     detection,
     close() {
       client.close();

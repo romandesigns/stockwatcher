@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useReducedMotion } from "../motion/useReducedMotion";
 import { appActions, useApp } from "../state/store";
 import { dataSourceSection } from "./dataSource";
+import { rocketSection } from "./rocketWatch";
 
 /**
  * The app's one Settings sheet, opened by the Settings tab (owner, 2026-10-19: the tab bar was
@@ -24,7 +25,7 @@ export function SettingsHost() {
     <SettingsSheet
       open={open}
       onClose={() => app.setSettingsOpen(false)}
-      sections={[dataSourceSection(dashboardSource, app.setDashboardSource), chartSettingsSection(chartSettings, app.setChartSettings, indicators), drawingSettingsSection(drawingSettings, app.setDrawingSettings, reducedMotion)]}
+      sections={[dataSourceSection(dashboardSource, app.setDashboardSource), chartSettingsSection(chartSettings, app.setChartSettings, indicators), drawingSettingsSection(drawingSettings, app.setDrawingSettings, reducedMotion), rocketSection()]}
       reducedMotion={reducedMotion}
     />
   );

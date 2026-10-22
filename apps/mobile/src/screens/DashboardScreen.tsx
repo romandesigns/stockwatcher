@@ -8,6 +8,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { HaltWatcher } from "../dashboard/HaltWatcher";
 import { DetectionPanel } from "../dashboard/DetectionPanel";
 import { RossPanel } from "../dashboard/RossPanel";
+import { RocketPanel } from "../dashboard/RocketPanel";
 import { setDashboardFeed } from "../feed/dashboardFeed";
 import { useCandidates } from "../feed/hooks";
 import type { MobileFeed } from "../feed/serverFeed";
@@ -78,6 +79,8 @@ function DashboardView({ feed, token, source }: { feed: MobileFeed; token: strin
       <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 8, gap: 8 }}>
         <DetectionPanel channel={feed.detection} onPick={open} reducedMotion={reducedMotion} />
         <RossPanel channel={feed.ross} detection={feed.detection} onPick={open} reducedMotion={reducedMotion} />
+        {/* Rocket watch (owner, 2026-10-21; experimental): under the Ross card, same row gestures. */}
+        <RocketPanel channel={feed.rocket} onPick={open} reducedMotion={reducedMotion} />
       </ScrollView>
       {candidates.length === 0 && !fixture && (
         // The dashboard reads the LIVE market: an empty list means nothing has traded yet this
