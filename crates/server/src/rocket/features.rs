@@ -184,6 +184,20 @@ pub(crate) struct Sym {
     run: u32,
     /// Key of the last finalized slot with an OHLC print (0 = none today).
     last_traded: u32,
+    /// The session (`session_of`) of the finalized bars, its highest high, and that high before
+    /// the last finalized OHLC bar (the session-high variant the "running" calibration compared, [`super::running`]).
+    sess: u8,
+    sess_high: f64,
+    sess_high_prev: f64,
+}
+
+/// 0 pre-market (04:00), 1 regular (09:30), 2 after-hours (16:00), by slot.
+pub(crate) fn session_of(slot: i64) -> u8 {
+    match slot {
+        ..330 => 0,
+        330..720 => 1,
+        _ => 2,
+    }
 }
 
 impl Sym {
@@ -203,6 +217,9 @@ impl Sym {
             last_close: f64::NAN,
             run: 0,
             last_traded: 0,
+            sess: 0,
+            sess_high: f64::NAN,
+            sess_high_prev: f64::NAN,
         }
     }
 
@@ -254,6 +271,17 @@ impl Sym {
             b.run = self.run.min(u32::from(u16::MAX)) as u16;
             self.last_close = c;
             self.last_traded = key;
+            let sess = session_of(i64::from(key % 4096));
+            if sess != self.sess {
+                self.sess = sess;
+                self.sess_high = f64::NAN;
+            }
+            self.sess_high_prev = self.sess_high;
+            self.sess_high = if self.sess_high.is_nan() {
+                h
+            } else {
+                self.sess_high.max(h)
+            };
         }
     }
 }
@@ -677,6 +705,71 @@ pub(crate) fn features(
         day_high: s.day_high,
         vwap,
         minutes_in_session: b.minutes_in_session,
+    })
+}
+
+/// What the "running" entry ([`super::running`]) reads at a barrier: one pass over the ring.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct RunInputs {
+    /// The barrier bar's close (it traded: no entry on a bar that did not).
+    pub(crate) price: f64,
+    /// The barrier bar's high made a new high for the session (pre-market, regular or
+    /// after-hours) on 15 s bars; the session's first bar counts.
+    pub(crate) fresh_high: bool,
+    /// The barrier bar's high is above every bar of the 60 minutes before it (a breakout out of
+    /// the last hour's range, even under an earlier session high).
+    pub(crate) fresh_high60: bool,
+    /// The lowest low of the last 60 minutes (240 slots), the barrier bar included.
+    pub(crate) base_low: f64,
+    /// Dollars over the last 5 minutes (20 slots) and volume over the last 30 (120 slots).
+    pub(crate) dollars5: f64,
+    pub(crate) vol30: f64,
+}
+
+/// The [`RunInputs`] at barrier `b` (call [`settle`] first), or `None` when the barrier's own bar
+/// did not trade.
+pub(crate) fn run_inputs(s: &Sym, b: &Barrier) -> Option<RunInputs> {
+    let ring = s.ring.as_ref()?;
+    if s.last_traded != b.key {
+        return None;
+    }
+    let bar = s.bar(b.key)?;
+    let price = f64::from(bar.close);
+    let high = f64::from(bar.high);
+    let fresh_high = s.sess_high_prev.is_nan() || high > s.sess_high_prev;
+    let base = key_of(b.ord, 0);
+    let (mut lo, mut d5, mut v30, mut hi_before) = (f64::NAN, 0.0, 0.0, f64::NAN);
+    for x in ring.iter() {
+        if x.key == 0 || x.key > b.key || x.key < base {
+            continue;
+        }
+        let d = b.key - x.key;
+        if d < 20 {
+            d5 += f64::from(x.dollars);
+        }
+        if d < 120 {
+            v30 += f64::from(x.vol);
+        }
+        if d < 240 && x.has_ohlc {
+            let l = f64::from(x.low);
+            lo = if lo.is_nan() { l } else { lo.min(l) };
+            if d > 0 {
+                let h = f64::from(x.high);
+                hi_before = if hi_before.is_nan() {
+                    h
+                } else {
+                    hi_before.max(h)
+                };
+            }
+        }
+    }
+    Some(RunInputs {
+        price,
+        fresh_high,
+        fresh_high60: hi_before.is_nan() || high > hi_before,
+        base_low: lo,
+        dollars5: d5,
+        vol30: v30,
     })
 }
 

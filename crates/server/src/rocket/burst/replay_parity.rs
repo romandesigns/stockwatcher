@@ -82,7 +82,7 @@ fn num(x: f64) -> String {
 }
 
 /// One symbol-day's counted prints, sorted by execution (the research's `burst::load`).
-fn load(
+pub(crate) fn load(
     archive: &Archive,
     day: NaiveDate,
     sym: &str,

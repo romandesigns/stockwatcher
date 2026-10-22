@@ -1498,4 +1498,4 @@ impl BurstDetector {
 mod tests;
 
 #[cfg(test)]
-mod replay_parity;
+pub(crate) mod replay_parity;

@@ -79,6 +79,8 @@ pub struct Loaded {
     pub today: Vec<(Value, Option<Value>)>,
     /// Today's `burst` lines, oldest first, each with its `burst_outcome` line when written.
     pub bursts: Vec<(Value, Option<Value>)>,
+    /// Today's `running` lines (`super::running`), oldest first.
+    pub running: Vec<Value>,
     /// Up to [`HISTORY_DAYS`] earlier days, oldest first.
     pub days: Vec<DaySummary>,
     /// `(date, strategy, version, ideal_threshold)` from the earlier days' `day` lines.
@@ -253,6 +255,10 @@ impl RocketLog {
             }
             for v in lines {
                 let kind = v.get("kind").and_then(Value::as_str).map(str::to_string);
+                if kind.as_deref() == Some("running") {
+                    out.running.push(v);
+                    continue;
+                }
                 if !matches!(kind.as_deref(), Some("alert") | Some("burst")) {
                     continue;
                 }

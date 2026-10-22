@@ -195,6 +195,7 @@ pub fn data_kind(kind: NoticeKind) -> &'static str {
         NoticeKind::New => "runners.new",
         NoticeKind::Breakout => "runners.breakout",
         NoticeKind::Burst => "runners.burst",
+        NoticeKind::Running => "runners.running",
     }
 }
 
@@ -205,6 +206,7 @@ pub fn message(n: &Notice) -> (String, String, Value) {
         NoticeKind::New => format!("Runners: {} {}", n.symbol, dollars(n.price)),
         NoticeKind::Breakout => format!("{} breaking out {}", n.symbol, dollars(n.price)),
         NoticeKind::Burst => format!("{} buying burst {}", n.symbol, dollars(n.price)),
+        NoticeKind::Running => format!("{} running {}", n.symbol, dollars(n.price)),
     };
     if n.kind == NoticeKind::Burst {
         // "+18.2% in 6 min · $ rate 6.4× base": how far the burst already went, and why.

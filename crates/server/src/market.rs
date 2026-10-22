@@ -509,6 +509,9 @@ pub(crate) struct Inner {
     /// Live with bursts on: the archive the burst detector's ADV30 is read from, once a day
     /// (`crate::rocket::burst::facts`).
     burst_archive: std::sync::OnceLock<Archive>,
+    /// The archive the Runners running entry's facts are read from, once a day
+    /// (`crate::rocket::running::facts`); live and replay.
+    running_archive: std::sync::OnceLock<Archive>,
     /// Baseline observation/latency capture for the context panel (`crate::observe`): a bounded
     /// queue filled under the core lock and absorbed off it, with counted drops. Measurement
     /// scaffolding, not a latency claim.
@@ -722,6 +725,7 @@ impl Market {
             rocket_lines: Mutex::new(crate::day_line::Published::default()),
             rocket_log: std::sync::OnceLock::new(),
             burst_archive: std::sync::OnceLock::new(),
+            running_archive: std::sync::OnceLock::new(),
             observations: crate::observe::ObservationSink::new(crate::observe::QUEUE_CAPACITY),
             admissions: std::sync::OnceLock::new(),
             shadow: std::sync::OnceLock::new(),
@@ -798,6 +802,28 @@ impl Market {
     pub fn burst_symbols(&self) -> Option<(usize, usize)> {
         let core = self.0.core.lock().expect("core lock");
         core.rocket.burst().map(|b| (b.symbols(), b.unrestored()))
+    }
+
+    /// Loads a trading date's running-entry facts (`crate::rocket::running::facts`) on a
+    /// blocking thread, then hands them to the board. Never under the core lock. Without an
+    /// archive the rule runs on its defaults (the cap, no volume ratio).
+    fn load_running_facts(&self, date: NaiveDate) {
+        let Some(archive) = self.0.running_archive.get().cloned() else {
+            return;
+        };
+        let market = self.clone();
+        std::thread::spawn(move || {
+            let t = std::time::Instant::now();
+            let facts = crate::rocket::running::facts(&archive, date);
+            tracing::info!(%date, symbols = facts.len(), ms = t.elapsed().as_millis() as u64, "runners running entry: facts loaded");
+            market
+                .0
+                .core
+                .lock()
+                .expect("core lock")
+                .rocket
+                .set_running_facts(date, facts);
+        });
     }
 
     /// Loads a trading date's ADV30 for the burst detector on a blocking thread (30 small
@@ -1496,6 +1522,7 @@ impl Market {
             market.set_stock_context(true);
         }
         market.set_rocket_watch(cfg.rocket_watch, cfg.rocket_policy.clone());
+        let _ = market.0.running_archive.set(archive.clone());
         if mode == ClockMode::Live && cfg.rocket_watch {
             market.enable_burst(cfg.burst_policy.clone(), Some(archive.clone()));
         }
@@ -2669,7 +2696,7 @@ impl Market {
         let Some(clock) = self.clock() else {
             return false;
         };
-        let (seq, frame, log, notices, adv_wanted) = {
+        let (seq, frame, log, notices, adv_wanted, facts_wanted) = {
             let mut core = self.0.core.lock().expect("core lock");
             if core.rebuilding || !core.rocket.enabled() {
                 return false;
@@ -2693,6 +2720,7 @@ impl Market {
             // Taken whatever the market, so a replay's never pile up.
             let notices = core.rocket.take_notices();
             let adv_wanted = core.rocket.take_burst_adv_request();
+            let facts_wanted = core.rocket.take_running_facts_request();
             let mut frame = None;
             if self.rocket_subscribers() > 0 {
                 let body = core.rocket.body(&|s| Self::rocket_quote(&core, s), &|s| {
@@ -2718,10 +2746,13 @@ impl Market {
                     frame = Some(v.to_string());
                 }
             }
-            (core.seq, frame, log, notices, adv_wanted)
+            (core.seq, frame, log, notices, adv_wanted, facts_wanted)
         };
         if let Some(date) = adv_wanted {
             self.load_burst_adv(date);
+        }
+        if let Some(date) = facts_wanted {
+            self.load_running_facts(date);
         }
         if self.0.mode == ClockMode::Live
             && let Some(sink) = self.alert_sink()

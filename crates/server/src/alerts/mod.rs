@@ -943,6 +943,7 @@ mod tests {
                 new: Some(false),
                 breakout: Some(true),
                 burst: Some(false),
+                running: None,
             },
         ));
         // Each register answers with an alerts.status frame once handled.

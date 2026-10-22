@@ -22,6 +22,11 @@
 //!   a flag (momentum state, later outcomes, day line, levels) but with their own strict outcome
 //!   ([`BurstRow::outcome`]), log lines (`burst`, `burst_outcome`) and push kind
 //!   ([`NoticeKind::Burst`]). They never count in the Runners day record, budget or cap.
+//! - [`running`]: the "running" entry, every stock in `$0.10–$25` that IS running by a
+//!   price-relative rule (a move scaled by the symbol's own daily range, a fresh session high,
+//!   real money), not a forecast. Its rows ([`AlertKind::Running`]) are tracked like the others,
+//!   logged as `running` lines, at most one per symbol a day and none for a symbol that already
+//!   has a row; their push ([`NoticeKind::Running`]) is opt-in per phone. Not in the day record.
 //!
 //! # Alert policy
 //!
@@ -71,6 +76,7 @@ pub mod features;
 pub mod log;
 pub mod r0;
 pub mod r2;
+pub mod running;
 pub mod scorer;
 pub mod track;
 
@@ -114,6 +120,8 @@ pub enum NoticeKind {
     Breakout,
     /// A new buying-burst row ([`burst`]).
     Burst,
+    /// A new running row ([`running`]); per-phone opt-in, off by default.
+    Running,
 }
 
 impl NoticeKind {
@@ -122,6 +130,7 @@ impl NoticeKind {
             NoticeKind::New => "new",
             NoticeKind::Breakout => "breakout",
             NoticeKind::Burst => "burst",
+            NoticeKind::Running => "running",
         }
     }
 }
@@ -132,6 +141,19 @@ pub enum AlertKind {
     #[default]
     Runner,
     Burst,
+    /// A running entry ([`running`]).
+    Running,
+}
+
+impl AlertKind {
+    /// The row's `kind` on the wire and its source label in the clients.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AlertKind::Runner => "runner",
+            AlertKind::Burst => "burst",
+            AlertKind::Running => "running",
+        }
+    }
 }
 
 /// A buying-burst row's own facts ([`burst`]), beside what every tracked row has.
@@ -340,6 +362,18 @@ impl Alert {
         .to_string()
     }
 
+    /// The `running` log line: the entry and what the rule read.
+    fn running_line(&self, date: NaiveDate, e: &running::Entry) -> String {
+        json!({
+            "kind": "running", "v": 1, "id": self.id, "date": date.to_string(),
+            "symbol": &*self.symbol, "alert_ns": self.at_ns, "price": self.price,
+            "score": self.score, "reasons": self.reasons, "strategy": self.strategy,
+            "version": self.version, "base_low": e.base_low, "gain": e.gain, "req": e.req,
+            "dollars5": e.dollars5, "rvol30": e.rvol30,
+        })
+        .to_string()
+    }
+
     fn outcome_line(&self, date: NaiveDate, settled_ns: i64) -> String {
         let m = self.outcome.mark;
         json!({
@@ -492,6 +526,11 @@ pub struct RocketBoard {
     notices: Vec<Notice>,
     /// Buying bursts ([`burst`]): live market only (`RocketBoard::enable_burst`).
     burst: Option<burst::BurstDetector>,
+    /// The running entry's facts for `running_facts_date` ([`running::facts`]), and the date
+    /// whose facts the market should load (once per date).
+    running_facts: HashMap<String, running::Fact>,
+    running_facts_date: Option<NaiveDate>,
+    running_facts_wanted: Option<NaiveDate>,
 }
 
 impl RocketBoard {
@@ -521,6 +560,22 @@ impl RocketBoard {
             watch_sent: Vec::new(),
             notices: Vec::new(),
             burst: None,
+            running_facts: HashMap::new(),
+            running_facts_date: None,
+            running_facts_wanted: None,
+        }
+    }
+
+    /// The trading date whose running facts ([`running::facts`]) the market should load.
+    pub fn take_running_facts_request(&mut self) -> Option<NaiveDate> {
+        self.running_facts_wanted.take()
+    }
+
+    /// Installs a trading date's running facts.
+    pub fn set_running_facts(&mut self, date: NaiveDate, facts: HashMap<String, running::Fact>) {
+        if self.date.is_none_or(|d| d == date) {
+            self.running_facts = facts;
+            self.running_facts_date = Some(date);
         }
     }
 
@@ -825,6 +880,11 @@ impl RocketBoard {
         self.day_written = false;
         self.threshold = f64::INFINITY;
         self.revision += 1;
+        if self.running_facts_date != Some(date) {
+            self.running_facts.clear();
+            self.running_facts_date = None;
+            self.running_facts_wanted = Some(date);
+        }
     }
 
     /// Processes the latest completed 15 s barrier at the market clock `now` (epoch ns), if it
@@ -971,6 +1031,7 @@ impl RocketBoard {
     fn barrier(&mut self, b: &Barrier, prev_close: &dyn Fn(&str) -> Option<f64>) {
         let start = Instant::now();
         let mut cands: Vec<(f64, Features)> = Vec::new();
+        let mut running: Vec<(Arc<str>, running::Entry)> = Vec::new();
         let mut live = 0usize;
         let scorer = self.scorer.clone();
         for s in self.tape.syms.iter_mut() {
@@ -979,6 +1040,11 @@ impl RocketBoard {
             }
             let s: &features::Sym = s;
             live += 1;
+            if let Some(x) = features::run_inputs(s, b)
+                && let Some(e) = running::decide(&x, self.running_facts.get(&*s.symbol))
+            {
+                running.push((s.symbol.clone(), e));
+            }
             if let Some(f) = features::features(s, b, || prev_close(&s.symbol))
                 && let Some(sc) = scorer.score(&f)
                 && sc.is_finite()
@@ -1054,12 +1120,75 @@ impl RocketBoard {
             self.alerts.push(a);
             self.revision += 1;
         }
+        self.running_entries(b, date, running);
         self.outcomes(b, date);
         self.last_cost = Some(Cost {
             elapsed: start.elapsed(),
             symbols: live,
             scored,
         });
+    }
+
+    /// New running rows ([`running`]) at barrier `b`: the strongest move first (gain over the
+    /// symbol's requirement), none for a symbol with a row today, at most
+    /// [`running::MAX_PER_DAY`].
+    fn running_entries(
+        &mut self,
+        b: &Barrier,
+        date: NaiveDate,
+        mut entries: Vec<(Arc<str>, running::Entry)>,
+    ) {
+        entries.sort_by(|x, y| (y.1.gain / y.1.req).total_cmp(&(x.1.gain / x.1.req)));
+        for (symbol, e) in entries {
+            let today = self
+                .alerts
+                .iter()
+                .filter(|a| a.kind == AlertKind::Running)
+                .count();
+            if today >= running::MAX_PER_DAY || self.alerts.len() >= 2 * MAX_ALERTS_PER_DAY {
+                break;
+            }
+            if self.alerts.iter().any(|a| a.symbol == symbol) {
+                continue;
+            }
+            let a = Alert {
+                id: format!("{date}-{symbol}-r{}", b.slot),
+                symbol: symbol.clone(),
+                at_ns: b.at_ns,
+                price: e.price,
+                score: e.gain / e.req,
+                threshold: 1.0,
+                reasons: e.reasons(),
+                strategy: running::STRATEGY.to_string(),
+                version: running::VERSION.to_string(),
+                // The Runners strict outcome (a +30 % rocket mark) does not apply: settled from
+                // the start, like a burst row's.
+                outcome: Outcome {
+                    checked: b.key,
+                    high: f64::NAN,
+                    low: f64::NAN,
+                    mark: None,
+                    settled: true,
+                    partial: false,
+                },
+                track: Track::new(b.at_ns, e.price),
+                kind: AlertKind::Running,
+                burst: None,
+            };
+            self.pending.push((date, a.running_line(date, &e)));
+            self.notice(Notice {
+                kind: NoticeKind::Running,
+                alert_id: a.id.clone(),
+                symbol: a.symbol.to_string(),
+                at_ns: a.at_ns,
+                price: a.price,
+                from_flag_pct: Some(round2(e.gain * 100.0)),
+                reasons: a.reasons.clone(),
+                since_start_min: None,
+            });
+            self.alerts.push(a);
+            self.revision += 1;
+        }
     }
 
     /// Advances every alert through barrier `b`: the strict outcome while it is open (module
@@ -1191,9 +1320,20 @@ impl RocketBoard {
         let base = features::key_of(self.ord, 0);
         let mut later = loaded.later;
         let mut states = loaded.states;
-        let today_rows = loaded.today.into_iter().map(|(v, o)| (false, v, o));
-        let burst_rows = loaded.bursts.into_iter().map(|(v, o)| (true, v, o));
-        for (is_burst, v, o) in today_rows.chain(burst_rows) {
+        let today_rows = loaded
+            .today
+            .into_iter()
+            .map(|(v, o)| (AlertKind::Runner, v, o));
+        let burst_rows = loaded
+            .bursts
+            .into_iter()
+            .map(|(v, o)| (AlertKind::Burst, v, o));
+        let running_rows = loaded
+            .running
+            .into_iter()
+            .map(|v| (AlertKind::Running, v, None));
+        for (kind, v, o) in today_rows.chain(burst_rows).chain(running_rows) {
+            let is_burst = kind == AlertKind::Burst;
             let (Some(symbol), Some(at_ns)) = (
                 v.get("symbol").and_then(Value::as_str),
                 v.get("alert_ns").and_then(Value::as_i64),
@@ -1213,7 +1353,7 @@ impl RocketBoard {
             };
             let price = f("price");
             let o_vals = o.clone();
-            if let Some(o) = o.as_ref().filter(|_| !is_burst) {
+            if let Some(o) = o.as_ref().filter(|_| kind == AlertKind::Runner) {
                 let g = |k: &str| o.get(k).and_then(Value::as_f64);
                 outcome.settled = true;
                 outcome.partial = o.get("partial").and_then(Value::as_bool) == Some(true);
@@ -1304,6 +1444,15 @@ impl RocketBoard {
                     a.track.since_ns = t;
                 }
                 a.track.transitions = n;
+            }
+            if kind == AlertKind::Running {
+                // Its strict outcome never applies (`running_entries`).
+                a.kind = AlertKind::Running;
+                a.outcome.settled = true;
+                if self.alerts.len() < 2 * MAX_ALERTS_PER_DAY {
+                    self.alerts.push(a);
+                }
+                continue;
             }
             if is_burst {
                 self.restore_burst(&mut a, &v, o.as_ref());
@@ -1441,10 +1590,7 @@ impl RocketBoard {
                         .then(|| from_high.map(|x| round2(-x)))
                         .flatten(),
                     "levels": levels(&a.symbol),
-                    "kind": match a.kind {
-                        AlertKind::Runner => "runner",
-                        AlertKind::Burst => "burst",
-                    },
+                    "kind": a.kind.as_str(),
                     "burst": a.burst.as_deref().map(burst_json),
                 })
             })

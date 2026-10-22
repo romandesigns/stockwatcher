@@ -169,7 +169,7 @@
 //! - server `alert.fired {event, phoneToday}` and `alert.held {event}` as they happen, to EVERY
 //!   connection; `alert.updated {event}` when a recorded event changes (a phone push that failed
 //!   after it was recorded); `alerts.status {phoneToday, phoneBudget, devices, dropped}`.
-//! - client `push.register {token, platform?, name?, runnersNew?, runnersBreakout?, runnersBurst?}`: this
+//! - client `push.register {token, platform?, name?, runnersNew?, runnersBreakout?, runnersBurst?, runnersRunning?}`: this
 //!   phone's Expo push token, kept by the server for phone notifications and never sent to other
 //!   clients, with its Runners push opt-ins (crate::alerts::runners; an absent one keeps what the
 //!   phone had, new flags on and breakouts off for a new phone); a malformed token gets
@@ -303,6 +303,9 @@ enum ClientMessage {
         runners_breakout: Option<bool>,
         #[serde(default, rename = "runnersBurst")]
         runners_burst: Option<bool>,
+        /// Running-entry pushes (`crate::rocket::running`); off by default.
+        #[serde(default, rename = "runnersRunning")]
+        runners_running: Option<bool>,
     },
     #[serde(rename = "push.unregister")]
     PushUnregister {
@@ -1080,8 +1083,8 @@ async fn session(mut socket: WebSocket, state: AppState) {
                         }
                         None
                     }
-                    Ok(ClientMessage::PushRegister { token, platform, name, runners_new, runners_breakout, runners_burst }) => {
-                        let runners = crate::alerts::push::RunnersOptIn { new: runners_new, breakout: runners_breakout, burst: runners_burst };
+                    Ok(ClientMessage::PushRegister { token, platform, name, runners_new, runners_breakout, runners_burst, runners_running }) => {
+                        let runners = crate::alerts::push::RunnersOptIn { new: runners_new, breakout: runners_breakout, burst: runners_burst, running: runners_running };
                         if alerts.register_device(token.trim(), &platform, &name, runners) {
                             None
                         } else {

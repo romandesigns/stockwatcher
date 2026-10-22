@@ -909,3 +909,81 @@ fn no_burst_rows_without_the_detector() {
     let body = b.body(&|_| (None, None), &|_| None);
     assert!(body.get("burst").is_none());
 }
+
+/// The running entry (owner, 2026-10-22: TANH ran $8 → $28 and the forecast flagged it at
+/// $24.61): a stock that IS running gets a row, tracked like a flag, its own log line and push
+/// kind, once a day, and comes back from the log after a restart. Its required move is the
+/// symbol's own: the same climb enters a quiet stock early and a wild one not at all.
+#[test]
+fn a_running_stock_gets_a_running_row() {
+    let run = |facts: Option<running::Fact>| {
+        let mut b = board(vec![], fixed(0.5, 10));
+        // Roll to the day first, so the facts are for it.
+        b.tick(at(8, 59, 0), |_| None);
+        assert_eq!(b.take_running_facts_request(), Some(day()));
+        if let Some(f) = facts {
+            b.set_running_facts(day(), HashMap::from([("TNH".to_string(), f)]));
+        }
+        // A $8 base for an hour on $100k a minute, then +1 % a slot on heavier volume.
+        let mut tape = flat("TNH", at(9, 0, 0), at(10, 0, 0), 8.0, 3_000);
+        let (run, _) = climb("TNH", at(10, 0, 0), 40, 8.0, 0.01, 20_000);
+        tape.extend(run);
+        play(&mut b, tape, at(9, 0, 0), at(10, 12, 0));
+        b
+    };
+    let quiet = running::Fact {
+        vol: Some(0.05),
+        adv: Some(500_000.0),
+    };
+    let mut b = run(Some(quiet));
+    let rows: Vec<&Alert> = b.alerts().iter().collect();
+    assert_eq!(rows.len(), 1, "one row a day");
+    let a = rows[0];
+    assert_eq!(a.kind, AlertKind::Running);
+    // 2.5 × 5 % = 12.5 % off the 60-minute low: the 12th +1 % slot, about $9.01.
+    assert!(a.price > 9.0 && a.price < 9.1, "{}", a.price);
+    assert_eq!(a.at_ns, at(10, 3, 0));
+    assert_eq!(a.strategy, running::STRATEGY);
+    let body = b.body(&|_| (Some(9.0), Some(8.0)), &|_| None);
+    assert_eq!(body["rows"][0]["kind"], "running");
+    // The push: its own kind (opt-in per phone, off by default). Its later breakouts are the
+    // breakout kind, under that switch (off by default too).
+    let n = b.take_notices();
+    assert_eq!(n[0].kind, NoticeKind::Running);
+    assert!(
+        n[1..].iter().all(|n| n.kind == NoticeKind::Breakout),
+        "{n:?}"
+    );
+    // The log line, and the row back from it after a restart (no notice on a restore).
+    let lines: Vec<String> = b.take_log().into_iter().map(|(_, l)| l).collect();
+    let entry: Vec<&String> = lines
+        .iter()
+        .filter(|l| l.contains(r#""kind":"running""#))
+        .collect();
+    assert_eq!(entry.len(), 1);
+    let tmp = tempfile::tempdir().unwrap();
+    let log = RocketLog::new(tmp.path().join("rocket-watch"), 30);
+    log.append(day(), &lines);
+    let mut r = board(vec![], fixed(0.5, 10));
+    r.restore(day(), log.load(day()));
+    assert_eq!(r.alerts().len(), 1);
+    assert_eq!(r.alerts()[0].kind, AlertKind::Running);
+    assert!(r.take_notices().is_empty());
+    // Not in the Runners day record.
+    assert_eq!(r.body(&|_| (None, None), &|_| None)["today"]["alerts"], 0);
+
+    // A wild stock (its days span 25 %) needs the cap: +25 %, which this climb reaches later.
+    let wild = running::Fact {
+        vol: Some(0.25),
+        adv: Some(500_000.0),
+    };
+    let b = run(Some(wild));
+    assert_eq!(b.alerts().len(), 1);
+    assert!(b.alerts()[0].price >= 10.0, "{}", b.alerts()[0].price);
+    // A symbol that already has a row gets no running row.
+    let mut c = board(vec![("TNH", 1.0)], fixed(0.5, 10));
+    let mut tape = flat("TNH", at(9, 0, 0), at(10, 0, 0), 8.0, 3_000);
+    tape.extend(climb("TNH", at(10, 0, 0), 40, 8.0, 0.01, 20_000).0);
+    play(&mut c, tape, at(9, 0, 0), at(10, 12, 0));
+    assert!(c.alerts().iter().all(|a| a.kind == AlertKind::Runner));
+}
