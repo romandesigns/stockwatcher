@@ -6,6 +6,22 @@ use std::time::Duration;
 use stockwatcher_server::{AppState, COMMIT, Config, Markets, Settings, VERSION, router};
 use tracing_subscriber::EnvFilter;
 
+/// mimalloc instead of glibc's malloc, for the server binary only (tests keep the system one).
+///
+/// Why (2026-10-22): the server's RSS climbed from ~7 GB after a restart to ~24 GB by the close
+/// and never came back down, also on days its live heap could not account for that. Its heap is
+/// many small, mixed-lifetime allocations made and freed across a dozen threads: a whole-market
+/// open fills the trade-retention windows (chart engine, scanner ledger, held events of symbols
+/// still loading) several times over what they hold an hour later, interleaved with candle
+/// buckets that live all day. glibc keeps per-thread arenas and only returns memory at an
+/// arena's top, so the open's high-water mark stayed resident for the rest of the day — the
+/// "+7 GB in the first half hour, then never down" shape production showed. mimalloc frees
+/// whole pages back to the OS as they empty and does not strand freed memory in another
+/// thread's arena. Measured live heap and production RSS are compared in the commit that added
+/// this; `crates/server/tests/memory_bench.rs` reproduces the heap side.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn main() -> ExitCode {
     // The runtime image is distroless (no shell, no curl), so the Docker
     // HEALTHCHECK runs this binary again with --healthcheck.

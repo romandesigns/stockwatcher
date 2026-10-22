@@ -107,7 +107,12 @@
 //! **Memory.** Per symbol: a ring buffer of `max_intervals_per_timeframe` intervals per timeframe,
 //! trade records for the retention window, and profiles/counters for `sessions_retained`
 //! sessions. No thread or timer per symbol: `advance_clock` walks a min-heap of pending interval
-//! ends and touches only symbols that have something to finalize.
+//! ends and touches only symbols that have something to finalize. Once a symbol's latest trading
+//! date reaches its regular open, earlier dates' candles and profiles are dropped
+//! ([`EngineConfig::drop_prior_dates_at_open`]): the rings are counted in intervals, and would
+//! otherwise keep up to twenty days of 5 m candles. A candle that has left the retention window
+//! keeps no trade key. Measured on a synthetic whole-market day (~40M prints, 12k symbols):
+//! ~16M candles, ~3.1 GB of heap after the close, 3.7 GB at the peak (`examples/memory.rs`).
 
 mod config;
 mod engine;

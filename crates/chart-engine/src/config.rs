@@ -23,6 +23,12 @@ pub struct EngineConfig {
     /// Sessions whose profile and data-quality counters are kept per symbol. Default 4
     /// (overnight, pre, regular, after of one trading date).
     pub sessions_retained: usize,
+    /// Once a symbol's latest trading date has reached its regular open (09:30 ET), drop its
+    /// candles and profiles of earlier dates. Default `true`. The rings are counted in intervals,
+    /// so without this they keep one earlier day of 15 s candles but up to twenty of 5 m, and an
+    /// engine started before the open carries the whole previous session all day (several GB on
+    /// a whole-market tape; see `SymbolState::drop_prior_dates`).
+    pub drop_prior_dates_at_open: bool,
 }
 
 impl Default for EngineConfig {
@@ -34,6 +40,7 @@ impl Default for EngineConfig {
             max_intervals_per_timeframe: 4000,
             profile_bin: Price::from_cents(1),
             sessions_retained: 4,
+            drop_prior_dates_at_open: true,
         }
     }
 }

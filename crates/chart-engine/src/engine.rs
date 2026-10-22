@@ -94,7 +94,7 @@ impl From<&TradeRec> for RevisedPrint {
 struct OrderKey {
     ts: i64,
     seq: u64,
-    exchange: String,
+    exchange: Venue,
     source: Source,
 }
 
@@ -105,12 +105,21 @@ impl OrderKey {
         OrderKey {
             ts,
             seq: 0,
-            exchange: String::new(),
+            exchange: Venue::new(""),
             source: Source::AlpacaSip,
         }
     }
 
-    fn of(ts: i64, id: &TradeId) -> Self {
+    /// The provider reference this key carries (everything but the execution time).
+    fn id(&self) -> IdKey {
+        IdKey {
+            source: self.source,
+            exchange: self.exchange.clone(),
+            seq: self.seq,
+        }
+    }
+
+    fn with_id(ts: i64, id: &IdKey) -> Self {
         OrderKey {
             ts,
             seq: id.seq,
@@ -120,10 +129,147 @@ impl OrderKey {
     }
 }
 
-/// A retained trade, after the condition policy.
+/// An exchange code held inline: no heap allocation for any real venue code.
+///
+/// Memory, not style (2026-10-22). The code used to be a `String`, and an `OrderKey` is stored
+/// four times per retained trade (the trades map, the record's id, the index key and the index
+/// value) **and once in every candle bucket** (`Bucket::last_key`). On a whole-market day that is
+/// ~16M buckets plus millions of retained trades at the open, each with its own tiny heap
+/// allocation (32 B apiece in glibc), and a fresh clone of one on every fold — four allocations
+/// and frees per print. Production's server grew ~7 → 24 GB a day; these allocations were a
+/// measurable part of the heap and the main source of the allocator churn behind its
+/// fragmentation. Ordering, equality and hashing are those of the string, so every key orders
+/// exactly as it did; a code longer than the inline space (none seen from any provider) still
+/// works, on the heap.
+#[derive(Clone)]
+enum Venue {
+    Inline { len: u8, bytes: [u8; VENUE_INLINE] },
+    Heap(Box<str>),
+}
+
+const VENUE_INLINE: usize = 22;
+
+impl Venue {
+    fn new(s: &str) -> Self {
+        if s.len() <= VENUE_INLINE {
+            let mut bytes = [0u8; VENUE_INLINE];
+            bytes[..s.len()].copy_from_slice(s.as_bytes());
+            Venue::Inline {
+                len: s.len() as u8,
+                bytes,
+            }
+        } else {
+            Venue::Heap(s.into())
+        }
+    }
+
+    fn as_str(&self) -> &str {
+        match self {
+            Venue::Inline { len, bytes } => {
+                std::str::from_utf8(&bytes[..*len as usize]).expect("copied from a str")
+            }
+            Venue::Heap(s) => s,
+        }
+    }
+}
+
+impl PartialEq for Venue {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+impl Eq for Venue {}
+
+impl PartialOrd for Venue {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Venue {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.as_str().cmp(other.as_str())
+    }
+}
+
+impl std::hash::Hash for Venue {
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        self.as_str().hash(h);
+    }
+}
+
+impl std::fmt::Debug for Venue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.as_str().fmt(f)
+    }
+}
+
+/// A provider reference (`TradeId`) without the heap: the index key ([`SymbolState::index`]).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct IdKey {
+    source: Source,
+    exchange: Venue,
+    seq: u64,
+}
+
+impl IdKey {
+    fn of(id: &TradeId) -> Self {
+        IdKey {
+            source: id.source,
+            exchange: Venue::new(&id.exchange),
+            seq: id.seq,
+        }
+    }
+}
+
+/// The execution times of the retained prints sharing one provider reference. Almost always one
+/// (only venue `D`'s TRFs reuse ids), so that case is inline rather than a one-element `Vec`.
+#[derive(Clone, Debug)]
+enum Times {
+    One(i64),
+    Many(Vec<i64>),
+}
+
+impl Times {
+    fn push(&mut self, ts: i64) {
+        match self {
+            Times::One(a) => *self = Times::Many(vec![*a, ts]),
+            Times::Many(v) => v.push(ts),
+        }
+    }
+
+    fn as_slice(&self) -> &[i64] {
+        match self {
+            Times::One(a) => std::slice::from_ref(a),
+            Times::Many(v) => v,
+        }
+    }
+
+    /// Removes `ts`; true when nothing is left.
+    fn remove(&mut self, ts: i64) -> bool {
+        match self {
+            Times::One(a) => *a == ts,
+            Times::Many(v) => {
+                v.retain(|t| *t != ts);
+                match v.len() {
+                    0 => true,
+                    1 => {
+                        let a = v[0];
+                        *self = Times::One(a);
+                        false
+                    }
+                    _ => false,
+                }
+            }
+        }
+    }
+}
+
+/// A retained trade, after the condition policy. Its provider reference is in its key
+/// ([`OrderKey::id`]): storing it here too was a second copy of the exchange per print.
 #[derive(Clone, Debug)]
 struct TradeRec {
-    id: TradeId,
     price: Price,
     size: u64,
     ohlc: bool,
@@ -156,7 +302,14 @@ struct Bucket {
     n: u64,
     /// Key of the last trade folded in; a new trade with a greater key folds incrementally,
     /// anything else triggers an exact recompute from the retained trades.
-    last_key: Option<OrderKey>,
+    ///
+    /// Boxed, and released (`None`) once the bucket ends before the trade-retention cutoff
+    /// ([`ChartEngine::prune`]): no trade can land in such a bucket any more (it is past the
+    /// settle window, which the retention exceeds) and no revision can reach it (its prints are
+    /// gone), so the key has no reader. Inline it was 48 of the bucket's ~136 bytes in every one
+    /// of the ~16M buckets a whole-market day holds; boxed it is 8, and only the buckets inside
+    /// the retention window pay for the key itself (2026-10-22, the server memory growth).
+    last_key: Option<Box<OrderKey>>,
     final_emitted: bool,
 }
 
@@ -196,7 +349,11 @@ impl Bucket {
             self.volume += rec.size;
             self.n += 1;
         }
-        self.last_key = Some(key.clone());
+        // Reuses the box on every fold: no allocation per print once the bucket has one.
+        match &mut self.last_key {
+            Some(k) => **k = key.clone(),
+            None => self.last_key = Some(Box::new(key.clone())),
+        }
     }
 
     fn recompute(&mut self, trades: &BTreeMap<OrderKey, TradeRec>) {
@@ -387,7 +544,7 @@ impl Series {
             }
         };
         let b = &mut self.buckets[i];
-        if b.last_key.as_ref().is_none_or(|lk| key > lk) {
+        if b.last_key.as_deref().is_none_or(|lk| key > lk) {
             b.fold(key, rec);
         } else {
             b.recompute(trades);
@@ -487,7 +644,7 @@ struct SymbolState {
     trades: BTreeMap<OrderKey, TradeRec>,
     /// Provider reference → the retained prints carrying it. Usually one; on venue `D` several
     /// TRFs reuse ids, so a correction or cancel resolves among them ([`TradeRef::resolve`]).
-    index: HashMap<TradeId, Vec<OrderKey>>,
+    index: HashMap<IdKey, Times>,
     series: Vec<Series>,
     profiles: BTreeMap<SessionId, TickProfile>,
     quality: BTreeMap<Option<SessionId>, DataQuality>,
@@ -497,6 +654,10 @@ struct SymbolState {
     halts: Vec<HaltRec>,
     /// LULD bands of the latest regular session the symbol traded in.
     luld: Option<LuldState>,
+    /// The regular open (epoch ns) of a trading date, cached for [`Self::drop_prior_dates`].
+    open_of: Option<(SessionId, i64)>,
+    /// The trade-retention cutoff up to which buckets' last keys have been released.
+    released_through: i64,
 }
 
 impl SymbolState {
@@ -506,23 +667,85 @@ impl SymbolState {
 
     /// The retained print a correction or cancel names (docs/architecture/trade-identity.md).
     fn resolve(&self, r: &TradeRef) -> Resolution<OrderKey> {
-        let held = self.index.get(&r.id).into_iter().flatten().filter_map(|k| {
-            let rec = self.trades.get(k)?;
-            Some((k.clone(), rec.price, rec.size))
+        let id = IdKey::of(&r.id);
+        let times = self.index.get(&id).map_or(&[][..], Times::as_slice);
+        let held = times.iter().filter_map(|&ts| {
+            let k = OrderKey::with_id(ts, &id);
+            let rec = self.trades.get(&k)?;
+            Some((k, rec.price, rec.size))
         });
         r.resolve(held)
     }
 
-    fn index_add(&mut self, id: TradeId, key: OrderKey) {
-        self.index.entry(id).or_default().push(key);
+    /// Drops every interval of a trading date older than the symbol's latest one, once the latest
+    /// date's regular session has opened (`wm` at or past 09:30 ET of it).
+    ///
+    /// Why (2026-10-22): the rings are sized in intervals (4,000 per timeframe), not dates, so
+    /// they held one day of 15 s candles but two of 30 s, four of 1 m and twenty of 5 m. An
+    /// engine that started before the open loads yesterday's whole session (`crate::history` in
+    /// the server, so the dashboard has something to show pre-market) and then kept nearly all of
+    /// it beside today's, all day: on a whole-market tape a day of candles is several GB, and it
+    /// was a large part of the server growing to ~24 GB. After the open nothing needs it — a
+    /// server restarted after 09:30 never loads the previous day at all, the day line and key
+    /// levels read the latest date, and the previous close comes from the closes file — so this
+    /// makes a long-running engine hold what a restarted one does. Before the open the previous
+    /// session stays, exactly as before.
+    fn drop_prior_dates(&mut self, wm: i64) {
+        let newest = self
+            .series
+            .iter()
+            .filter_map(|s| s.buckets.back().map(|b| b.session.date))
+            .max();
+        let Some(newest) = newest else { return };
+        let stale = self
+            .series
+            .iter()
+            .any(|s| s.buckets.front().is_some_and(|b| b.session.date < newest));
+        if !stale {
+            return;
+        }
+        // One time-zone conversion per symbol and date, not per print while it waits for 09:30.
+        let open = match self.open_of {
+            Some((s, t)) if s.date == newest => t,
+            _ => {
+                let regular = SessionId::new(newest, SessionKind::Regular);
+                let Some((t, _)) = regular.bounds() else {
+                    return;
+                };
+                self.open_of = Some((regular, t.0));
+                t.0
+            }
+        };
+        if wm < open {
+            return;
+        }
+        for s in &mut self.series {
+            while s.buckets.front().is_some_and(|b| b.session.date < newest) {
+                s.buckets.pop_front();
+            }
+            // The ring's buffer was sized for both days; give the difference back.
+            if s.buckets.capacity() > 2 * s.buckets.len().max(64) {
+                s.buckets.shrink_to(s.buckets.len().max(64));
+            }
+        }
+        self.profiles.retain(|k, _| k.date >= newest);
     }
 
-    fn index_remove(&mut self, id: &TradeId, key: &OrderKey) {
-        if let Some(keys) = self.index.get_mut(id) {
-            keys.retain(|k| k != key);
-            if keys.is_empty() {
-                self.index.remove(id);
+    fn index_add(&mut self, key: &OrderKey) {
+        match self.index.entry(key.id()) {
+            std::collections::hash_map::Entry::Occupied(mut e) => e.get_mut().push(key.ts),
+            std::collections::hash_map::Entry::Vacant(e) => {
+                e.insert(Times::One(key.ts));
             }
+        }
+    }
+
+    fn index_remove(&mut self, key: &OrderKey) {
+        let id = key.id();
+        if let Some(times) = self.index.get_mut(&id)
+            && times.remove(key.ts)
+        {
+            self.index.remove(&id);
         }
     }
 
@@ -835,6 +1058,7 @@ impl ChartEngine {
                 self.retention,
                 self.max_tf,
                 self.cfg.sessions_retained,
+                self.cfg.drop_prior_dates_at_open,
             );
         }
         out
@@ -876,6 +1100,8 @@ impl ChartEngine {
                 scheduled: None,
                 halts: Vec::new(),
                 luld: None,
+                open_of: None,
+                released_through: i64::MIN,
             })
     }
 
@@ -884,8 +1110,8 @@ impl ChartEngine {
         let (clock, base_tf, settle) = (self.clock, self.base_tf, self.cfg.settle_window_ns);
         let (cap, bin) = (self.cfg.max_intervals_per_timeframe, self.cfg.profile_bin);
         let (retention, max_tf, keep) = (self.retention, self.max_tf, self.cfg.sessions_retained);
+        let drop_prior = self.cfg.drop_prior_dates_at_open;
         let st = Self::state(&mut self.symbols, &self.cfg, &t.symbol);
-        let id = t.id();
         let mut out = Vec::new();
         let reason = effect.reason_code();
         let tape = |counted: String| {
@@ -905,7 +1131,13 @@ impl ChartEngine {
         };
 
         let ts = t.event_ts.0;
-        let key = OrderKey::of(ts, &id);
+        // `Trade::id` would clone the exchange into a `TradeId` only to copy it again.
+        let key = OrderKey {
+            ts,
+            seq: t.source_seq,
+            exchange: Venue::new(&t.exchange),
+            source: t.source,
+        };
         if st.trades.contains_key(&key) {
             st.q(t.session).duplicates += 1;
             out.push(tape("excluded:duplicate".into()));
@@ -934,7 +1166,6 @@ impl ChartEngine {
             st.q(Some(session)).unrecognized_conditions += 1;
         }
         let rec = TradeRec {
-            id: id.clone(),
             price: t.price,
             size: t.size,
             ohlc: effect.updates_ohlc,
@@ -958,7 +1189,7 @@ impl ChartEngine {
         out.push(tape(counted));
 
         st.trades.insert(key.clone(), rec.clone());
-        st.index_add(id, key.clone());
+        st.index_add(&key);
         st.own_wm = Some(st.own_wm.map_or(ts, |w| w.max(ts)));
         if st.max_key.as_ref().is_none_or(|m| key > *m) {
             st.max_key = Some(key.clone());
@@ -991,7 +1222,7 @@ impl ChartEngine {
         let pts = st.luld_trade(ts, &rec);
         luld_updates(&t.symbol, pts, &mut out);
         Self::reschedule(&mut self.pending, st);
-        Self::prune(st, wm, retention, max_tf, keep);
+        Self::prune(st, wm, retention, max_tf, keep, drop_prior);
         out
     }
 
@@ -1015,7 +1246,7 @@ impl ChartEngine {
             }
         };
         let rec = st.trades.remove(&key).expect("index and trades agree");
-        st.index_remove(&rec.id, &key);
+        st.index_remove(&key);
         st.q(Some(rec.session)).cancels_applied += 1;
         let mut rows = Vec::new();
         if rec.profile {
@@ -1070,16 +1301,15 @@ impl ChartEngine {
             }
         };
         let old = st.trades.remove(&key).expect("index and trades agree");
-        st.index_remove(&old.id, &key);
+        st.index_remove(&key);
         let effect = trade_effect(&c.corrected_conditions, c.tape);
-        let new_id = TradeId {
-            source: c.source,
-            exchange: c.exchange.clone(),
+        let new_key = OrderKey {
+            ts: key.ts,
             seq: c.corrected_id,
+            exchange: Venue::new(&c.exchange),
+            source: c.source,
         };
-        let new_key = OrderKey::of(key.ts, &new_id);
         let new = TradeRec {
-            id: new_id.clone(),
             price: c.corrected_price,
             size: c.corrected_size,
             ohlc: effect.updates_ohlc,
@@ -1103,8 +1333,8 @@ impl ChartEngine {
         let rows = st.profile_rows(old.session, bin, &touched);
         let affects = old.affects_candles() || new.affects_candles();
         let (removed, added) = (RevisedPrint::from(&old), RevisedPrint::from(&new));
-        st.trades.insert(new_key.clone(), new);
-        st.index_add(new_id, new_key);
+        st.index_add(&new_key);
+        st.trades.insert(new_key, new);
         if affects {
             let wm = st.own_wm.max(clock);
             let ctx = Ctx {
@@ -1132,22 +1362,51 @@ impl ChartEngine {
     }
 
     /// Drops trade records older than the retention window (aligned down to the largest
-    /// timeframe, so every retained interval is retained whole and recomputes stay exact), and
-    /// sessions beyond `keep`.
+    /// timeframe, so every retained interval is retained whole and recomputes stay exact),
+    /// sessions beyond `keep`, and (with [`EngineConfig::drop_prior_dates_at_open`]) the candles
+    /// of earlier trading dates once the symbol's latest date has opened.
     fn prune(
         st: &mut SymbolState,
         wm: Option<i64>,
         retention: i64,
         max_tf: Timeframe,
         keep: usize,
+        drop_prior_dates: bool,
     ) {
         let Some(wm) = wm else { return };
         let cutoff = max_tf.start_of(UnixNanos(wm - retention)).0;
         while let Some((k, _)) = st.trades.first_key_value()
             && k.ts < cutoff
         {
-            let (k, rec) = st.trades.pop_first().expect("non-empty");
-            st.index_remove(&rec.id, &k);
+            let (k, _) = st.trades.pop_first().expect("non-empty");
+            st.index_remove(&k);
+        }
+        // Buckets wholly before the cutoff can take no trade and no revision any more: release
+        // their last keys (`Bucket::last_key`). The cutoff moves once per largest timeframe, so
+        // this walks the series only then, and from the newest bucket back to the first one
+        // already released.
+        if cutoff > st.released_through {
+            st.released_through = cutoff;
+            for s in &mut st.series {
+                for b in s.buckets.iter_mut().rev() {
+                    if b.end > cutoff {
+                        continue;
+                    }
+                    if b.last_key.is_none() {
+                        break;
+                    }
+                    b.last_key = None;
+                }
+            }
+        }
+        // A `HashMap` never gives back what it grew to. The index follows the retention window,
+        // which at a whole-market open holds several times what it does an hour later, so
+        // without this every busy symbol kept its open-sized table all day (2026-10-22).
+        if st.index.capacity() > 64 && st.index.len() * 4 < st.index.capacity() {
+            st.index.shrink_to(st.index.len() * 2);
+        }
+        if drop_prior_dates {
+            st.drop_prior_dates(wm);
         }
         while st.profiles.len() > keep {
             st.profiles.pop_first();
