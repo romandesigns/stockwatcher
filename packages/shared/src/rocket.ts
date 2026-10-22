@@ -5,6 +5,13 @@
 // A "rocket" is the research bake-off's event: a +30 % leg within 15 minutes from $0.15–$25. A
 // row is a symbol the server's strategy flagged as likely to start one soon; its outcome is filled
 // in after the fact by the server (a hit = a rocket started 1–10 minutes after the flag).
+//
+// Since 2026-10-22 every row is also watched for bullish momentum until 20:00 ET (server
+// crates/server/src/rocket/track.rs): a state per row, colour-coded in the Ross row language,
+// the micro-pullback levels when the stock-context engine runs, the day line, and the later-move
+// outcome ("ran later +43%") beside the strict one.
+
+import { rossLinePaths, type RossLineView } from "./ross.ts";
 
 /** `pending` until known; `rocketed` = the bake-off's hit; `late` = started 10–30 min after;
  * `moved` = +30 % on a leg that started too early to count; `faded` = 45 min without one. */
@@ -17,6 +24,27 @@ export interface RocketOutcomeWire {
   drawdown: number | null;
   /** Settled at 20:00 ET before its 45 minutes were up. */
   partial: boolean;
+  /** Later-move outcomes (newer servers): max gain / drawdown over 2 hours, max gain to 20:00 ET. */
+  gain_2h?: number | null;
+  drawdown_2h?: number | null;
+  gain_session?: number | null;
+  /** A canonical +30 % mark came any time after the flag that day. */
+  rocket_later?: boolean;
+}
+
+/** The server's momentum state for a flagged row (crates/server/src/rocket/track.rs). */
+export type RocketMomentumState = "watching" | "building" | "breaking_out" | "running" | "pullback" | "fading" | "halted";
+
+/** The micro-pullback (MP5) levels of the stock-context engine, as on a Ross row (prices in micros). */
+export interface RocketLevelsWire {
+  state: string;
+  trigger: number | null;
+  invalidation: number | null;
+  meter_milli: number | null;
+  distance_to_trigger_bp?: number | null;
+  to_invalidation_bp?: number | null;
+  near_trigger?: boolean | null;
+  episode_id?: string | null;
 }
 
 export interface RocketRowWire {
@@ -31,6 +59,24 @@ export interface RocketRowWire {
   score: number;
   reasons: string[];
   outcome: RocketOutcomeWire;
+  /** Momentum (newer servers; absent = watching). */
+  state?: RocketMomentumState;
+  /** Epoch ms the state took effect. */
+  state_since?: number;
+  /** A breakout seen in the bar still forming (or a halt not yet at a barrier). */
+  provisional?: boolean;
+  from_flag_pct?: number | null;
+  /** ≤ 0: below the high since the flag. */
+  from_high_pct?: number | null;
+  move_1m_pct?: number | null;
+  pullback_depth_pct?: number | null;
+  levels?: RocketLevelsWire | null;
+  /** The day line (crates/server/src/day_line.rs): 30 s closes in micros from `day_line_from`. */
+  day_line_start?: number;
+  day_line_step_s?: number;
+  day_line_from?: number;
+  day_line?: number[];
+  prev_close?: number;
 }
 
 export interface RocketStrategyWire {
@@ -55,7 +101,7 @@ export interface RocketPanelWire {
   mode: "budget" | "fixed";
   budget: number;
   threshold: number | null;
-  today: { date: string | null; alerts: number; hits: number; hits30: number; known: number };
+  today: { date: string | null; alerts: number; hits: number; hits30: number; known: number; ran_later?: number };
   /** The last 20 trading days before today, oldest first. */
   days: RocketDayWire[];
   /** Newest first, at most 50. */
@@ -94,6 +140,28 @@ export interface RocketChannel {
   subscribe(fn: () => void): () => void;
 }
 
+/**
+ * Applies a frame's day-line slices to the lines already held (the `mergeRossDayLines` rule,
+ * keyed by the row's symbol `s`), so every row holds its WHOLE line with `day_line_from: 0`.
+ */
+export function mergeRocketDayLines(prev: RocketPanelWire | null, next: RocketPanelWire): { panel: RocketPanelWire; resync: boolean } {
+  if (!next.rows.some((r) => r.day_line && (r.day_line_from ?? 0) > 0)) return { panel: next, resync: false };
+  let resync = false;
+  const held = new Map(prev?.rows.map((r) => [r.s, r]) ?? []);
+  const rows = next.rows.map((r) => {
+    const from = r.day_line_from ?? 0;
+    if (!r.day_line || from === 0) return r;
+    const old = held.get(r.s);
+    if (old?.day_line && old.day_line_start === r.day_line_start && old.day_line.length >= from) {
+      return { ...r, day_line: old.day_line.slice(0, from).concat(r.day_line), day_line_from: 0 };
+    }
+    resync = true;
+    const { day_line: _line, day_line_from: _from, day_line_start: _start, ...rest } = r;
+    return rest;
+  });
+  return { panel: { ...next, rows }, resync };
+}
+
 /** Subscribed on demand like the Ross channel: the first listener opts in, the last opts out. */
 export function createRocketChannel(
   io: { subscribe(): void; unsubscribe(): void },
@@ -117,8 +185,12 @@ export function createRocketChannel(
       };
     },
     apply(m) {
-      const { type: _type, ...panel } = m;
-      state = { enabled: m.enabled, panel: m.enabled ? panel : null, receivedAt: now(), connected: true };
+      const { type: _type, ...next } = m;
+      const merged = m.enabled ? mergeRocketDayLines(state.panel, next) : { panel: null, resync: false };
+      state = { enabled: m.enabled, panel: merged.panel, receivedAt: now(), connected: true };
+      // A slice this client cannot place: the server answers every `rocket.subscribe` with a
+      // whole snapshot, so ask again rather than draw a broken line.
+      if (merged.resync && listeners.size > 0) io.subscribe();
       emit();
     },
     /** A drop keeps the last rows and marks them not live; a frame on the new socket clears it. */
@@ -130,8 +202,44 @@ export function createRocketChannel(
   };
 }
 
-/** Semantic colours; each app maps them to its tokens. `good` only ever marks an outcome. */
-export type RocketTone = "good" | "accent" | "text" | "muted" | "dim";
+/** Semantic colours; each app maps them to its tokens. `good` only ever marks the strict outcome. */
+export type RocketTone = "good" | "warning" | "accent" | "text" | "muted" | "dim";
+
+/** How a momentum state looks (the Ross row language): label, tone, pulse, inset edge. */
+export interface RocketStateLook {
+  label: string;
+  tone: RocketTone;
+  /** A breathing dot (still with reduced motion). */
+  pulse: boolean;
+  /** The inset edge bar's tone, or null for none (never a border). */
+  edge: RocketTone | null;
+  /** Counted in the header's attention count. */
+  attention: boolean;
+  /** The whole row dimmed. */
+  dimmed: boolean;
+}
+
+/**
+ * The momentum states (owner, 2026-10-22). Accent is spent only on a breakout (pulsing) and a
+ * run; amber on building pressure and on a halt; a pullback is muted with its depth and trigger
+ * meter; a fade dims the row. Never a success green: that stays the strict outcome's.
+ */
+export const ROCKET_STATES: Record<RocketMomentumState, RocketStateLook> = {
+  breaking_out: { label: "Breaking out", tone: "accent", pulse: true, edge: "accent", attention: true, dimmed: false },
+  running: { label: "Running", tone: "accent", pulse: false, edge: "accent", attention: false, dimmed: false },
+  halted: { label: "Halted", tone: "warning", pulse: false, edge: null, attention: false, dimmed: false },
+  building: { label: "Building", tone: "warning", pulse: false, edge: "warning", attention: true, dimmed: false },
+  pullback: { label: "Pullback", tone: "muted", pulse: false, edge: null, attention: false, dimmed: false },
+  watching: { label: "Watching", tone: "muted", pulse: false, edge: null, attention: false, dimmed: false },
+  fading: { label: "Fading", tone: "dim", pulse: false, edge: null, attention: false, dimmed: true },
+};
+
+/** Row order by state: what is moving first, what is fading last. */
+export const ROCKET_STATE_ORDER: RocketMomentumState[] = ["breaking_out", "running", "halted", "building", "pullback", "watching", "fading"];
+
+function momentumOf(r: RocketRowWire): RocketMomentumState {
+  return r.state && r.state in ROCKET_STATES ? r.state : "watching";
+}
 
 export interface RocketRowView {
   key: string;
@@ -147,8 +255,23 @@ export interface RocketRowView {
   reasons: string[];
   /** The score, shown subtly ("2.31"). */
   score: string;
-  /** The outcome tag once known ("+34% ✓", "faded"), else null. */
+  /** The outcome tag once known ("+34% ✓", "ran later +43%", "faded"), else null. */
   outcome: { label: string; tone: RocketTone } | null;
+  /** The momentum state: label, look, since when, and its note (pullback depth, trigger). */
+  momentum: RocketStateLook & { state: RocketMomentumState; since: string; provisional: boolean; note: string };
+  /** The halted badge (amber). */
+  halted: boolean;
+  /** From the flag price, off the high since the flag, the last minute ("+12.4%", "—"). */
+  fromFlag: string;
+  fromFlagTone: RocketTone;
+  fromHigh: string;
+  fromHighTone: RocketTone;
+  move1m: string;
+  move1mTone: RocketTone;
+  /** The trigger meter (0–1) in a pullback with micro-pullback levels, else null. */
+  meter: number | null;
+  /** The row chart: the day line with the live price as its end; null with < 2 points. */
+  line: RossLineView | null;
   aria: string;
 }
 
@@ -167,8 +290,16 @@ export function rocketAge(ms: number): string {
   return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`;
 }
 
+/**
+ * The outcome tag (owner, 2026-10-22): "+34% ✓" when it rocketed in the strict window (the only
+ * green); else "ran later +43%" once the strict outcome is known and the 2-hour max gain reached
+ * +15 % (neutral text: a later move, not the strict success); else the strict tags.
+ */
 function outcomeTag(o: RocketOutcomeWire): RocketRowView["outcome"] {
   const g = o.gain !== null ? `+${Math.max(0, Math.round(o.gain))}%` : "";
+  if (o.state !== "rocketed" && o.state !== "pending" && o.gain_2h != null && o.gain_2h >= RAN_LATER_PCT) {
+    return { label: `ran later +${Math.round(o.gain_2h)}%`, tone: "text" };
+  }
   switch (o.state) {
     case "rocketed":
       return { label: `${g} ✓`.trim(), tone: "good" };
@@ -183,6 +314,25 @@ function outcomeTag(o: RocketOutcomeWire): RocketRowView["outcome"] {
   }
 }
 
+/** "Ran later": the 2-hour max gain at least this (percent; the server's `RAN_LATER_PCT`). */
+export const RAN_LATER_PCT = 15;
+
+const signed = (x: number | null | undefined): string => (x === null || x === undefined || !Number.isFinite(x) ? "—" : pct(x).replace("-", "−"));
+/** Positive moves in plain text, the rest muted: never green (that is the outcome's). */
+const moveTone = (x: number | null | undefined): RocketTone => (x === null || x === undefined ? "dim" : x > 0 ? "text" : "muted");
+
+/** The row chart's line: the day's 30 s closes, then the live price (micros), drawn neutral. */
+export function rocketLine(r: RocketRowWire): RossLineView | null {
+  const day = r.day_line;
+  if (!day || day.length === 0) return null;
+  const live = r.last ?? null;
+  const values = live !== null ? [...day, Math.round(live * 1_000_000)] : day.slice();
+  if (values.length < 2) return null;
+  return { kind: "day", values, prevClose: r.prev_close ?? null, tone: values[values.length - 1]! >= values[0]! ? "good" : "critical" };
+}
+
+export { rossLinePaths as rocketLinePaths };
+
 /**
  * One row. `nowMs` is the market clock now: the frame's `t` plus the wall time since it arrived
  * ({@link rocketNow}), so an age keeps ticking between frames.
@@ -194,7 +344,21 @@ export function rocketRowView(r: RocketRowWire, nowMs: number): RocketRowView {
   const outcome = outcomeTag(r.outcome);
   const reasons = r.reasons.slice(0, 2);
   const age = rocketAge(ageMs);
-  return {
+  const state = momentumOf(r);
+  const look = ROCKET_STATES[state];
+  const lv = r.levels ?? null;
+  let note = "";
+  if (state === "pullback") {
+    const depth = r.pullback_depth_pct ?? (r.from_high_pct != null ? -r.from_high_pct : null);
+    const parts = [depth != null ? `−${Math.abs(depth).toFixed(1)}% off high` : ""];
+    if (lv?.trigger != null) parts.push(`trigger ${money(lv.trigger / 1_000_000)}${lv.distance_to_trigger_bp != null && lv.distance_to_trigger_bp > 0 ? ` · ${(lv.distance_to_trigger_bp / 100).toFixed(1)}% away` : ""}`);
+    note = parts.filter(Boolean).join(" · ");
+  } else if (state === "running" && r.from_flag_pct != null) {
+    note = `${pct(r.from_flag_pct)} from flag`;
+  }
+  const since = r.state_since !== undefined && state !== "watching" ? rocketAge(Math.max(0, nowMs - r.state_since)) : "";
+  const meter = state === "pullback" && lv?.meter_milli != null ? lv.meter_milli / 1000 : null;
+  const view: RocketRowView = {
     key: r.id,
     symbol: r.s,
     price: money(last),
@@ -204,8 +368,34 @@ export function rocketRowView(r: RocketRowWire, nowMs: number): RocketRowView {
     reasons,
     score: Number.isFinite(r.score) ? r.score.toFixed(2) : "",
     outcome,
-    aria: `${r.s} ${money(last)}${gain ? ` ${gain} on the day` : ""}, flagged ${age === "now" ? "just now" : `${age} ago`}${reasons.length ? `: ${reasons.join(", ")}` : ""}${outcome ? `. Outcome ${outcome.label}` : ""}`,
+    momentum: { ...look, state, since, provisional: r.provisional ?? false, note },
+    halted: state === "halted",
+    fromFlag: signed(r.from_flag_pct),
+    fromFlagTone: moveTone(r.from_flag_pct),
+    fromHigh: signed(r.from_high_pct),
+    fromHighTone: r.from_high_pct != null && r.from_high_pct > -1 ? "text" : "muted",
+    move1m: signed(r.move_1m_pct),
+    move1mTone: moveTone(r.move_1m_pct),
+    meter,
+    line: rocketLine(r),
+    aria: "",
   };
+  view.aria = `${r.s} ${money(last)}${gain ? ` ${gain} on the day` : ""}, flagged ${age === "now" ? "just now" : `${age} ago`}, ${look.label}${view.momentum.provisional ? " (provisional)" : ""}${note ? ` ${note}` : ""}, ${view.fromFlag} from the flag${reasons.length ? `: ${reasons.join(", ")}` : ""}${outcome ? `. Outcome ${outcome.label}` : ""}`;
+  return view;
+}
+
+/** The rows in panel order: by momentum state (breaking out first, fading last), newest first within one. */
+export function rocketRowsView(p: RocketPanelWire, nowMs: number): RocketRowView[] {
+  const rank = (s: RocketMomentumState) => ROCKET_STATE_ORDER.indexOf(s);
+  return p.rows
+    .map((r, i) => ({ v: rocketRowView(r, nowMs), i }))
+    .sort((a, b) => rank(a.v.momentum.state) - rank(b.v.momentum.state) || a.i - b.i)
+    .map((x) => x.v);
+}
+
+/** Rows that need attention now: building or breaking out (the header count). */
+export function rocketAttention(p: RocketPanelWire): number {
+  return p.rows.filter((r) => ROCKET_STATES[momentumOf(r)].attention).length;
 }
 
 /** The market clock now, for ages: the frame's `t` advanced by the wall time since it arrived. */
@@ -218,6 +408,10 @@ export function rocketNow(state: RocketState, wallNow: number = Date.now()): num
 export interface RocketHeaderView {
   /** "4 of 9 rocketed today", "Nothing flagged today". */
   record: string;
+  /** "2 ran ≥ +15% later", "" when none (or an older server). */
+  ranLater: string;
+  /** Rows building or breaking out now. */
+  attention: number;
   /** "last 20 days: 31 of 180 (17%)", "" with no history. */
   history: string;
   /** "placeholder-b2 · budget 10/day" — what is running, for the subtle line. */
@@ -233,7 +427,9 @@ export function rocketHeaderView(p: RocketPanelWire): RocketHeaderView {
   const history = a > 0 ? `last ${p.days.length} day${p.days.length === 1 ? "" : "s"}: ${h} of ${a} (${Math.round((h / a) * 100)}%)` : "";
   const s = p.strategy;
   const strategy = s ? `${s.id}${s.version ? ` v${s.version}` : ""} · ${p.mode === "budget" ? `budget ${p.budget}/day` : "fixed threshold"}` : "";
-  return { record, history, strategy, placeholder: s?.placeholder ?? false };
+  const k = p.today.ran_later ?? 0;
+  const ranLater = k > 0 ? `${k} ran ≥ +${RAN_LATER_PCT}% later` : "";
+  return { record, ranLater, attention: rocketAttention(p), history, strategy, placeholder: s?.placeholder ?? false };
 }
 
 /** Rows flagged under a minute ago (the tab's count). */

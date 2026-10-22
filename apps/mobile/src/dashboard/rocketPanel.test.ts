@@ -31,3 +31,19 @@ test("the new-flag notification is off by default and per device", () => {
   expect(src).toContain("if (!on) return;");
   expect(read("../settings/SettingsHost.tsx")).toContain("rocketSection()");
 });
+
+test("momentum rows (2026-10-22): edge bar not border, crossfade by opacity honouring reduced motion, compact day line", () => {
+  const src = read("RocketPanel.tsx");
+  // The state edge is a filled bar and the wash a fill; both crossfade through opacity only.
+  expect(src).toContain("styles.edge");
+  const fade = src.slice(src.indexOf("function useCrossfade"), src.indexOf("const Row = memo"));
+  expect(fade).toContain("useNativeDriver: true");
+  expect(fade).toContain("reducedMotion");
+  // The day line keeps the Ross row's compact box (the Fold's cover screen).
+  const num = (name: string) => Number(src.match(new RegExp(`export const ${name} = (\\d+);`))?.[1]);
+  expect(num("DAY_LINE_W")).toBeLessThanOrEqual(80);
+  expect(num("DAY_LINE_H")).toBeLessThanOrEqual(28);
+  // Rows are ordered by state through the shared view model; green only via the outcome tone map.
+  expect(src).toContain("rocketRowsView(panel, now)");
+  expect(src).not.toMatch(/UI\.good[^,]/);
+});

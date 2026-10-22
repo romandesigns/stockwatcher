@@ -47,3 +47,31 @@ describe("Runners panel", () => {
     expect(render({ enabled: true, panel, receivedAt: 0, connected: false })).toContain("Reconnecting");
   });
 });
+
+describe("Runners momentum rows (2026-10-22)", () => {
+  const rows: RocketPanelWire["rows"] = [
+    { id: "w", s: "WAIT", at: T - 20 * 60_000, p: 1, last: 1, pc: 1, score: 1, reasons: [], outcome: { state: "faded", gain: 2, drawdown: -3, partial: false, gain_2h: 43.4 }, state: "watching" },
+    { id: "b", s: "BRKO", at: T - 5 * 60_000, p: 1, last: 1.2, pc: 1, score: 1, reasons: [], outcome: { state: "pending", gain: null, drawdown: null, partial: false }, state: "breaking_out", provisional: true, state_since: T - 30_000, from_flag_pct: 20, from_high_pct: 0, move_1m_pct: 3.1, day_line_start: 1, day_line_from: 0, day_line: [1_000_000, 1_100_000] },
+    { id: "p", s: "PULL", at: T - 9 * 60_000, p: 1, last: 1.1, pc: 1, score: 1, reasons: [], outcome: { state: "pending", gain: null, drawdown: null, partial: false }, state: "pullback", from_high_pct: -4, pullback_depth_pct: 4, levels: { state: "forming", trigger: 1_150_000, invalidation: 1_050_000, meter_milli: 500 } },
+    { id: "h", s: "HLTD", at: T - 9 * 60_000, p: 1, last: 1.1, pc: 1, score: 1, reasons: [], outcome: { state: "pending", gain: null, drawdown: null, partial: false }, state: "halted" },
+  ];
+  const html = render({ enabled: true, panel: { ...panel, today: { ...panel.today, ran_later: 1 }, rows }, receivedAt: 5, connected: true });
+  test("state labels, order, edge, halted badge, meter, day line, ran later", () => {
+    expect(html.indexOf("BRKO")).toBeLessThan(html.indexOf("HLTD"));
+    expect(html.indexOf("HLTD")).toBeLessThan(html.indexOf("PULL"));
+    expect(html.indexOf("PULL")).toBeLessThan(html.indexOf("WAIT"));
+    expect(html).toContain("Breaking out");
+    expect(html).toContain("provisional");
+    expect(html).toContain("inset_3px_0_0_var(--accent)");
+    expect(html).toContain("HALTED");
+    expect(html).toContain("−4.0% off high · trigger 1.15");
+    expect(html).toContain("of the way from the pullback low to the trigger");
+    expect(html).toContain('data-testid="rocket-day-line"');
+    expect(html).toContain("ran later +43%");
+    expect(html).toContain("1 ran ≥ +15% later");
+    expect(html).toContain("1 building or breaking out");
+    // Still no green but the strict outcome tag (none here), and the pulse stills with reduced motion.
+    expect(html).not.toContain("text-good");
+    expect(html).toContain("motion-reduce:animate-none");
+  });
+});
