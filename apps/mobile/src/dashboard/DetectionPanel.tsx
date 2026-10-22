@@ -1,23 +1,26 @@
-import { formatEtMillis } from "@stockwatcher/chart-core";
-import { Sheet, UI } from "@stockwatcher/chart-native";
+import { formatEtMillis, formatEtTime } from "@stockwatcher/chart-core";
+import { Icon, Segmented, Sheet, UI } from "@stockwatcher/chart-native";
 import {
   DETECTION_FILTERS,
-  detectionBlocked,
+  detectionAttention,
   detectionDistance,
   detectionEvidenceValue,
   detectionFamilyLabel,
   detectionPrice,
+  detectionRowView,
   detectionStateLabel,
   groupDetections,
   type DetectionChannel,
   type DetectionEpisode,
   type DetectionFilter,
   type DetectionGroup,
+  type DetectionRowView,
   type DetectionSnapshot,
+  type DetectionTone,
 } from "@stockwatcher/shared";
-import { memo, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
-import Animated, { FadeIn, FadeOut, LinearTransition, ReduceMotion } from "react-native-reanimated";
+import { memo, useEffect, useRef, useState } from "react";
+import { Animated, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import Svg, { Circle, Rect } from "react-native-svg";
 
 import { useDetection } from "../feed/hooks";
 import { fonts } from "../theme";
@@ -26,19 +29,48 @@ import { useTickerPress } from "../ui/useTickerPress";
 // Bound native view work without limiting discovery: the count and paging retain every group.
 const PAGE = 12;
 const at = (ns: number) => Number.isFinite(ns) && ns > 0 ? formatEtMillis(Math.floor(ns / 1_000_000)) : "unavailable";
+const hhmm = (ns: number) => formatEtTime(Math.round(ns / 1_000_000));
 const words = (value: string) => value.replace(/_/g, " ");
+/** The price band as the Ross Panel prints it: "$0.10–$25". */
+const band = (micros: number) => {
+  const p = micros / 1_000_000;
+  return `$${Number.isInteger(p) ? p : p.toFixed(2)}`;
+};
+
+const TONE: Record<DetectionTone, string> = {
+  critical: UI.critical,
+  warning: UI.warning,
+  accent: UI.accent,
+  text: UI.text,
+  muted: UI.textDim,
+  dim: UI.textFaint,
+};
+/** Only a crossing in progress (accent) and a price at the trigger (amber) earn an edge: a broke-trigger is a past stage, never a green "go". */
+const EDGE: Partial<Record<DetectionRowView["stage"], string>> = { crossing: UI.accent, near: UI.warning };
 
 function stateColor(state: string): string {
   if (/invalidated|rejected|retracted/.test(state)) return UI.critical;
   // A stage, not a "go" (see the web panel): normal text, never success green.
   if (/trigger_observed|triggered|confirmed|retained/.test(state)) return UI.text;
   if (/crossing|armed|extended|interrupted/.test(state)) return UI.warning;
-  if (/building|forming|recognized|ignited/.test(state)) return UI.accent;
   return UI.textDim;
 }
 
-/** The phone's event-discovery surface. The shared projection formats authoritative Rust
- * episodes; this layout does not derive detections from chart candles or Ross membership. */
+/**
+ * Signals on the phone (design canvas "Detection Panel", phone; approved 2026-10-21/22): its own
+ * card under the Ross card, the web tab's rows stacked for the narrow screen (the Fold's cover
+ * screen and unfolded alike: rows take the card's width, notes truncate). One row per
+ * instrument from the shared `detectionRowView`, so the stage labels are the Ross cue's: an
+ * edge only at the trigger (amber) or crossing it (accent, pulsing). Tapping a row opens its
+ * chart with the episode drawn (the chart modal holds its evidence and timeline); tap, then
+ * hold copies the ticker. Filters live in a sheet behind the header's filter button. A stage
+ * change crossfades the edge and wash (opacity, native driver); with reduced motion it simply
+ * changes. No layout animation on the rows: a moving Pressable takes stale taps on Android.
+ *
+ * Nothing at all while the detector is off or not yet known (owner review 2026-10-21; the
+ * canvas's "off" state). The subscription stays, so the card appears by itself the moment a
+ * server enables DETECTION_PANEL.
+ */
 export function DetectionPanel({ channel, onPick, reducedMotion }: { channel: DetectionChannel; onPick: (symbol: string, episodeId?: string, runEpoch?: string) => void; reducedMotion: boolean }) {
   const state = useDetection(channel);
   const [filter, setFilter] = useState<DetectionFilter>("all");
@@ -48,7 +80,6 @@ export function DetectionPanel({ channel, onPick, reducedMotion }: { channel: De
   const [catalyst, setCatalyst] = useState("all");
   const [page, setPage] = useState(0);
   const [filtersOpen, setFiltersOpen] = useState(false);
-  const [detail, setDetail] = useState<{ id: string; epoch: string } | null>(null);
   const snapshot = state.snapshot;
   const epoch = state.frame?.runEpoch ?? "";
   const groups = groupDetections(snapshot, filter, history, segment)
@@ -57,78 +88,91 @@ export function DetectionPanel({ channel, onPick, reducedMotion }: { channel: De
   const pages = Math.max(1, Math.ceil(groups.length / PAGE));
   const actualPage = Math.min(page, pages - 1);
   const shown = groups.slice(actualPage * PAGE, (actualPage + 1) * PAGE);
-  const selected = detail && detail.epoch === state.frame?.runEpoch ? snapshot?.episodes.find((e) => e.episode_id === detail.id) : undefined;
   const segments = [...new Set(snapshot?.episodes.map((e) => e.segment) ?? [])].sort();
-  const terminalCount = snapshot?.episodes.filter((e) => e.terminal).length ?? 0;
-  const latestResolution = groupDetections(snapshot, "all", true)[0]?.selected;
-  const stale = !state.connected || state.resyncing;
-  const pick = (episode: DetectionEpisode, capturedEpoch: string) => onPick(episode.symbol, episode.episode_id, capturedEpoch);
-  // Nothing at all while the detector is off or not yet known (owner review 2026-10-21: a
-  // permanently visible "off" card with filters is clutter). The subscription above stays, so
-  // the panel appears by itself the moment a server enables DETECTION_PANEL.
+  const current = state.connected && !state.resyncing;
+  const now = snapshot ? Math.max(snapshot.cutoff, snapshot.as_of) : 0;
+  const attention = detectionAttention(snapshot);
+  const applied = [filter !== "all", segment !== "all", source !== "all", catalyst !== "all"].filter(Boolean).length;
   if (state.enabled !== true) return null;
   return (
-    <View style={styles.card} accessibilityLabel="Detection Panel">
-      <View style={styles.line}>
-        <Text accessibilityRole="header" style={styles.title}>Detection Panel</Text>
-        <Text style={styles.experimental}>Experimental · alerts off</Text>
-      </View>
-      <Text style={styles.meta}>{state.frame?.source ?? "Source pending"} · {snapshot?.fidelity ? words(snapshot.fidelity) : "Fidelity pending"} · canonical 15s · times Eastern</Text>
-      {snapshot && <Text style={styles.meta}>Active {detectionPrice(snapshot.price_min_micros)}–{detectionPrice(snapshot.price_max_micros)} · research {detectionPrice(snapshot.research_min_micros)}–{detectionPrice(snapshot.research_max_micros)}</Text>}
-      {(
-        <>
-          {stale && <Text accessibilityRole="alert" style={styles.warning}>{state.resyncing ? "Resyncing · current assessment unavailable" : "Reconnecting · last received state"}{snapshot ? ` · ${at(snapshot.cutoff)}` : ""}</Text>}
-          {state.coverageLost && <Text accessibilityRole="alert" style={styles.warning}>Transition history is incomplete. Current rows remain available; this is not a complete research record.</Text>}
-          {state.error && state.error !== "transition_history_incomplete" && <Text accessibilityRole="alert" style={styles.warning}>{words(state.error)}</Text>}
-          {snapshot?.unavailable.map((r) => <Text key={r.reason} accessibilityRole="alert" style={styles.warning}>Assessment unavailable: {words(r.reason)}{r.symbols ? ` · ${r.symbols} symbols` : ""}</Text>)}
-          <FilterStrip label="Detection family" options={DETECTION_FILTERS} value={filter} onChange={(id) => { setFilter(id as DetectionFilter); setPage(0); }} />
-          <View style={styles.line}>
-            <View style={{ flex: 1 }}><FilterStrip label="Episode history" options={[{ id: "active", label: "Active" }, { id: "recent", label: `Recent history (${terminalCount})` }]} value={history ? "recent" : "active"} onChange={(id) => { setHistory(id === "recent"); setPage(0); }} /></View>
-            <Action label={`Filters${segment !== "all" || source !== "all" || catalyst !== "all" ? " · applied" : ""}`} onPress={() => setFiltersOpen(true)} />
+    <View style={styles.card} accessibilityLabel="Signals">
+      <View style={styles.head}>
+        <Text accessibilityRole="header" style={styles.title}>
+          Signals
+        </Text>
+        {attention > 0 && (
+          <View style={styles.count} accessibilityLabel={`${attention} at the trigger or crossing it`}>
+            <Pulse color={UI.accent} size={6} reducedMotion={reducedMotion || !current} />
+            <Text style={styles.countText}>{attention}</Text>
           </View>
-          {groups.length > 0 && <Text style={styles.meta}>{groups.length} instruments · showing {actualPage * PAGE + 1}–{Math.min(groups.length, (actualPage + 1) * PAGE)}</Text>}
-          {!history && latestResolution && <RecentResolution key={`${epoch}/${latestResolution.episode_id}`} episode={latestResolution} onPick={() => pick(latestResolution, epoch)} onDetail={() => setDetail({ id: latestResolution.episode_id, epoch })} />}
-          {groups.length === 0 ? (
-            <View style={styles.emptyBox}>
-              <Text style={styles.empty}>{!snapshot ? "Waiting for the server's first snapshot…" : history ? "No retained episodes match these filters" : snapshot.monitored_symbols === 0 ? "Warming · no admissible symbol history yet" : "No active detections match these filters"}</Text>
-              <Text style={styles.meta}>Quiet-only stocks and the 1.15× diagnostics do not create discovery rows.</Text>
-            </View>
-          ) : (
-            <View style={stale ? styles.stale : undefined}>
-              {/* A reset remounts the recognizer and cancels its delayed tap/hold. Price updates
-                  keep this key so ordinary ticks never abandon a deliberate press. */}
-              {shown.map((group) => <DetectionRow key={`${epoch}/${group.selected.instrument_id}/${group.selected.episode_id}`} group={group} reducedMotion={reducedMotion} currentAvailable={!stale} onPick={() => pick(group.selected, epoch)} onDetail={() => setDetail({ id: group.selected.episode_id, epoch })} />)}
-            </View>
-          )}
-          {groups.length > PAGE && (
-            <View style={styles.line}>
-              <Action label="Previous" disabled={actualPage === 0} onPress={() => setPage(actualPage - 1)} />
-              <Text style={styles.meta}>{actualPage * PAGE + 1}–{Math.min(groups.length, (actualPage + 1) * PAGE)} of {groups.length}</Text>
-              <Action label="Next" disabled={actualPage + 1 === pages} onPress={() => setPage(actualPage + 1)} />
-            </View>
-          )}
-        </>
+        )}
+        <Segmented
+          style={styles.show}
+          options={[
+            { value: "active", label: "Active", a11y: "Show active signals" },
+            { value: "recent", label: "Recent", a11y: "Show recent signals" },
+          ]}
+          value={history ? "recent" : "active"}
+          onChange={(v) => {
+            setHistory(v === "recent");
+            setPage(0);
+          }}
+        />
+        <Pressable accessibilityRole="button" accessibilityLabel={`Filters${applied ? `, ${applied} applied` : ""}`} onPress={() => setFiltersOpen(true)} hitSlop={6} style={({ pressed }) => [styles.round, pressed && { backgroundColor: UI.raised }]}>
+          <Icon name="levels" color={applied ? UI.text : UI.textDim} size={14} />
+          {applied > 0 && <View style={styles.appliedDot} />}
+        </Pressable>
+      </View>
+      {snapshot && snapshot.source !== "live" && (
+        <Text style={[styles.sub, snapshot.source === "fixture" && { color: UI.warning }]}>{snapshot.source === "fixture" ? "Fixture / demo data" : `${words(snapshot.source)} data`} · experimental</Text>
       )}
-      <Sheet open={filtersOpen} onClose={() => setFiltersOpen(false)} title="Detection filters" reducedMotion={reducedMotion}>
+      {/* The canvas's "connection lost" state: the rows stay, dimmed and still, as last known. */}
+      {!state.connected && (
+        <View style={styles.status} accessibilityRole="alert">
+          <View style={styles.statusDot} />
+          <Text style={styles.statusText}>
+            {state.resyncing ? "Resyncing" : "Reconnecting"}
+            {snapshot ? ` · last ${hhmm(snapshot.cutoff)}` : ""}
+          </Text>
+        </View>
+      )}
+      {state.coverageLost && <Text accessibilityRole="alert" style={styles.warning}>Transition history is incomplete. Current rows remain available; this is not a complete research record.</Text>}
+      {state.error && state.error !== "transition_history_incomplete" && <Text accessibilityRole="alert" style={styles.warning}>{words(state.error)}</Text>}
+      {snapshot?.unavailable.map((r) => <Text key={r.reason} accessibilityRole="alert" style={styles.warning}>Assessment unavailable: {words(r.reason)}{r.symbols ? ` · ${r.symbols} symbols` : ""}</Text>)}
+      {groups.length === 0 ? (
+        <View style={styles.quiet}>
+          <Text style={styles.quietText}>{!snapshot ? "Waiting for the detector's first observations…" : applied > 0 ? `Nothing ${history ? "resolved" : "developing"} in these filters` : history ? "Nothing resolved yet" : "Nothing developing right now"}</Text>
+          {snapshot && <Text style={styles.quietMeta}>watching {snapshot.monitored_symbols.toLocaleString()} symbols · {band(snapshot.price_min_micros)}–{band(snapshot.price_max_micros)}</Text>}
+        </View>
+      ) : (
+        <View style={[styles.rows, !state.connected && styles.dimmed]}>
+          {/* A reset remounts the recognizer and cancels its delayed tap/hold. Price updates
+              keep this key so ordinary ticks never abandon a deliberate press. */}
+          {shown.map((group) => (
+            <SignalRow key={`${epoch}/${group.selected.instrument_id}/${group.selected.episode_id}`} group={group} row={detectionRowView(group, now, current, hhmm)} reducedMotion={reducedMotion} onPick={() => onPick(group.selected.symbol, group.selected.episode_id, epoch)} />
+          ))}
+        </View>
+      )}
+      {groups.length > PAGE && (
+        <View style={styles.pager}>
+          <Action label="Previous" disabled={actualPage === 0} onPress={() => setPage(actualPage - 1)} />
+          <Text style={styles.meta}>{actualPage * PAGE + 1}–{Math.min(groups.length, (actualPage + 1) * PAGE)} of {groups.length}</Text>
+          <Action label="Next" disabled={actualPage + 1 === pages} onPress={() => setPage(actualPage + 1)} />
+        </View>
+      )}
+      <Sheet open={filtersOpen} onClose={() => setFiltersOpen(false)} title="Signal filters" reducedMotion={reducedMotion}>
         <View style={styles.details}>
+          <Text style={styles.section}>Family</Text>
+          <FilterStrip label="Detection family" options={DETECTION_FILTERS} value={filter} onChange={(id) => { setFilter(id as DetectionFilter); setPage(0); }} />
           <Text style={styles.section}>Session</Text>
           <FilterStrip label="Session" options={[{ id: "all", label: "All sessions" }, ...segments.map((id) => ({ id, label: words(id) }))]} value={segment} onChange={(id) => { setSegment(id); setPage(0); }} />
           <Text style={styles.section}>Source · this connection reads {state.frame?.source ?? "the selected market"}</Text>
           <FilterStrip label="Source" options={[{ id: "all", label: "Current source" }, { id: "live", label: "Live" }, { id: "replay", label: "Replay" }, { id: "fixture", label: "Fixture" }]} value={source} onChange={(id) => { setSource(id); setPage(0); }} />
           <Text style={styles.section}>Catalyst evidence</Text>
           <FilterStrip label="Catalyst status" options={[{ id: "all", label: "Any status" }, { id: "qualifying", label: "Qualifying evidence" }, { id: "none", label: "No qualifying evidence" }, { id: "unknown", label: "Unknown coverage" }]} value={catalyst} onChange={(id) => { setCatalyst(id); setPage(0); }} />
+          {snapshot && <Text style={styles.meta}>Experimental · alerts off · {words(snapshot.fidelity)} · canonical {snapshot.base_timeframe_secs}s · research {detectionPrice(snapshot.research_min_micros)}–{detectionPrice(snapshot.research_max_micros)} · {snapshot.policy_id}</Text>}
           <Action label="Done" onPress={() => setFiltersOpen(false)} />
         </View>
-      </Sheet>
-      <Sheet open={detail !== null} onClose={() => setDetail(null)} title={selected ? "Detection details" : "Detection unavailable"} badge={selected && detail ? <DetailTicker key={`${detail.epoch}/${selected.episode_id}`} episode={selected} onPick={() => { pick(selected, detail.epoch); setDetail(null); }} /> : undefined} reducedMotion={reducedMotion} tall>
-        <ScrollView showsVerticalScrollIndicator={false} showsHorizontalScrollIndicator={false} contentContainerStyle={styles.details}>
-          {selected && snapshot && detail ? <>
-            {stale && <Text accessibilityRole="alert" style={styles.warning}>Last received state · current assessment unavailable</Text>}
-            <Action label="Open chart with this episode" onPress={() => { pick(selected, detail.epoch); setDetail(null); }} />
-            <DetectionEpisodeDetails episode={selected} snapshot={snapshot} currentAvailable={!stale} />
-            {snapshot.episodes.filter((e) => e.symbol === selected.symbol && e.episode_id !== selected.episode_id).map((e) => <Action key={e.episode_id} label={`${detectionFamilyLabel(e.family)} · ${detectionStateLabel(e.state)} · ${at(e.first_detected_at)}`} onPress={() => setDetail({ id: e.episode_id, epoch: detail.epoch })} />)}
-          </> : <Text style={styles.empty}>The source/run changed or this episode left bounded history. Select a current row to inspect its authoritative references.</Text>}
-        </ScrollView>
       </Sheet>
     </View>
   );
@@ -136,53 +180,92 @@ export function DetectionPanel({ channel, onPick, reducedMotion }: { channel: De
 
 function FilterStrip({ label, options, value, onChange }: { label: string; options: readonly { id: string; label: string }[]; value: string; onChange: (id: string) => void }) {
   return <ScrollView horizontal showsVerticalScrollIndicator={false} showsHorizontalScrollIndicator={false} accessibilityLabel={label} contentContainerStyle={styles.filters}>
-    {options.map((item) => <Pressable key={item.id} accessibilityRole="button" accessibilityState={{ selected: value === item.id }} accessibilityLabel={`${label}: ${item.label}`} onPress={() => onChange(item.id)} style={[styles.filter, value === item.id && styles.selectedFilter]}><Text style={[styles.filterText, value === item.id && { color: UI.accent }]}>{item.label}</Text></Pressable>)}
+    {options.map((item) => <Pressable key={item.id} accessibilityRole="button" accessibilityState={{ selected: value === item.id }} accessibilityLabel={`${label}: ${item.label}`} onPress={() => onChange(item.id)} style={[styles.filter, value === item.id && styles.selectedFilter]}><Text style={[styles.filterText, value === item.id && { color: UI.text }]}>{item.label}</Text></Pressable>)}
   </ScrollView>;
 }
 
-/** Kept inside the epoch-keyed element so a removed detail cannot finish an old copy/tap. */
-function DetailTicker({ episode, onPick }: { episode: DetectionEpisode; onPick: () => void }) {
-  const press = useTickerPress(episode.symbol, onPick);
-  return <Pressable accessibilityRole="button" accessibilityLabel={episode.symbol} accessibilityHint="Opens its chart. Tap, then press and hold to copy" {...press} style={styles.detailTicker}><Text style={styles.symbol}>{episode.symbol}</Text></Pressable>;
+/** Fades to 1 whenever `key` changes (0 → 1 over 300 ms); with reduced motion it is simply 1 (Runners' crossfade). */
+function useCrossfade(key: string, reducedMotion: boolean): Animated.Value {
+  const [o] = useState(() => new Animated.Value(1));
+  const first = useRef(true);
+  useEffect(() => {
+    if (first.current || reducedMotion) {
+      first.current = false;
+      o.setValue(1);
+      return;
+    }
+    o.setValue(0);
+    const a = Animated.timing(o, { toValue: 1, duration: 300, useNativeDriver: true });
+    a.start();
+    return () => a.stop();
+  }, [o, key, reducedMotion]);
+  return o;
 }
 
-function RecentResolution({ episode: e, onPick, onDetail }: { episode: DetectionEpisode; onPick: () => void; onDetail: () => void }) {
-  const press = useTickerPress(e.symbol, onPick);
-  return <View style={styles.recent}>
-    <Text style={styles.meta}>Latest resolution · retained in recent history</Text>
-    <View style={styles.line}>
-      <Pressable accessibilityRole="button" accessibilityLabel={`${e.symbol}. ${detectionStateLabel(e.state)}. ${words(e.reason ?? e.state)}`} accessibilityHint="Opens its episode on the chart. Tap, then press and hold to copy" {...press} style={styles.tickerPress}>
-        <Text style={styles.symbol}>{e.symbol}</Text><Text style={[styles.state, { color: stateColor(e.state), flexShrink: 1 }]}>{detectionStateLabel(e.state)}</Text>
-      </Pressable>
-      <Action label="Details" onPress={onDetail} />
-    </View>
-    <Text style={styles.meta}>{e.trading_date} · {e.resolved_at === null ? at(e.last_material_transition_at) : at(e.resolved_at)} · {words(e.reason ?? e.state)}</Text>
-  </View>;
-}
-
-const DetectionRow = memo(function DetectionRow({ group, reducedMotion, currentAvailable, onPick, onDetail }: { group: DetectionGroup; reducedMotion: boolean; currentAvailable: boolean; onPick: () => void; onDetail: () => void }) {
-  const e = group.selected;
-  const press = useTickerPress(e.symbol, onPick);
-  const blocked = detectionBlocked(e);
-  const motion = reducedMotion ? ReduceMotion.Always : ReduceMotion.System;
-  return <Animated.View layout={LinearTransition.duration(160).reduceMotion(motion)} entering={FadeIn.duration(140).reduceMotion(motion)} exiting={FadeOut.duration(100).reduceMotion(motion)} style={styles.row}>
-    <View style={styles.line}>
-      <Pressable accessibilityRole="button" accessibilityLabel={`${e.symbol} ${detectionPrice(e.price)}. ${detectionFamilyLabel(e.family)}. ${detectionStateLabel(e.state)}.`} accessibilityHint="Opens this episode on the chart. Tap, then press and hold to copy the ticker" {...press} style={styles.tickerPress}>
-        <Text style={styles.symbol}>{e.symbol}</Text><Text style={styles.price}>{detectionPrice(e.price)}</Text>
-      </Pressable>
-      <Action label="Details" onPress={onDetail} />
-    </View>
-    <Text style={[styles.state, { color: stateColor(e.state) }]}>{detectionFamilyLabel(e.family)} · {detectionStateLabel(e.state)}{e.status === "provisional" ? " · provisional" : ""}{e.restored ? " · restored history" : ""}</Text>
-    <Text style={e.price_stale ? styles.warning : styles.meta}>{e.price_age_ms === null ? "Price age unavailable" : `Price age ${(e.price_age_ms / 1000).toFixed(1)}s`}{e.price_stale ? " · current assessment unavailable" : ""}{e.raw.warmup ? " · restored warmup" : ""}</Text>
-    {e.raw.recognition?.in_research_band === false && <Text style={styles.meta}>Outside research band at recognition · active profile preserved</Text>}
-    <Text style={styles.meta}>{e.trading_date} · first {at(e.first_detected_at)} · changed {at(e.last_material_transition_at)}{group.episodes.length > 1 ? ` · ${group.episodes.length} episodes` : ""}</Text>
-    <Geometry episode={e} currentAvailable={currentAvailable} />
-    {currentAvailable && !e.price_stale && e.near_trigger === true && <Text style={styles.warning}>Near {e.level?.kind === "range_high" ? "range high" : "trigger"}{blocked.length ? " — blocked; see required checks" : " · geometry only"}</Text>}
-    {blocked.length > 0 && <Text style={styles.warning}>{blocked.slice(0, 3).map((c) => `${c.state} ${words(c.name)}${c.reason ? `: ${words(c.reason)}` : ""}`).join(" · ")}</Text>}
-    {e.terminal && <Text style={[styles.meta, { color: stateColor(e.state) }]}>{e.resolved_at !== null ? `${at(e.resolved_at)} · ` : ""}{words(e.reason ?? e.state)}</Text>}
-    <Text style={styles.meta}>Ross: {e.ross_member === null ? "unknown" : e.ross_member ? "member" : "not admitted"} · Catalyst: {words(e.catalyst)} · {words(e.coverage)}</Text>
-  </Animated.View>;
+const SignalRow = memo(function SignalRow({ group, row: r, reducedMotion, onPick }: { group: DetectionGroup; row: DetectionRowView; reducedMotion: boolean; onPick: () => void }) {
+  const press = useTickerPress(group.selected.symbol, onPick);
+  const fade = useCrossfade(r.stage, reducedMotion);
+  const edge = EDGE[r.stage];
+  return (
+    <Pressable accessibilityRole="button" accessibilityLabel={r.aria} accessibilityHint="Opens the chart with this signal. Tap, then press and hold to copy" {...press} style={({ pressed }) => [styles.row, r.dimmed && { opacity: 0.6 }, pressed && { backgroundColor: UI.raised }]}>
+      {/* The stage's wash and inset edge: filled views, never borders, crossfading in on a change. */}
+      {r.stage === "crossing" && <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, styles.wash, { opacity: fade }]} />}
+      {edge && <Animated.View pointerEvents="none" style={[styles.edge, { backgroundColor: edge, opacity: fade }]} />}
+      <View style={styles.line}>
+        <Text style={styles.symbol}>{r.symbol}</Text>
+        <Text style={styles.price}>{r.price}</Text>
+        {r.ross && <View style={styles.rossDot} />}
+        {r.news && (
+          <View style={styles.badge}>
+            <Text style={styles.badgeText}>NEWS</Text>
+          </View>
+        )}
+        <Text style={styles.ago}>{r.ago}</Text>
+      </View>
+      <Animated.View style={[styles.line, { opacity: fade }]}>
+        <Text style={styles.family} numberOfLines={1}>
+          {r.family}
+        </Text>
+        <Text style={styles.faint}>·</Text>
+        {r.pulse && <Pulse color={TONE[r.tone]} size={6} reducedMotion={reducedMotion} />}
+        <Text numberOfLines={1} style={[styles.stage, { color: TONE[r.tone], fontFamily: r.attention ? fonts.semibold : fonts.regular }]}>
+          {r.label}
+          {r.note ? <Text style={styles.note}>{` ${r.note}`}</Text> : null}
+        </Text>
+      </Animated.View>
+      {r.meter !== null && <Meter value={r.meter} color={TONE[r.tone]} />}
+    </Pressable>
+  );
 });
+
+/** Pullback low (left, red: the failure level) to trigger (right, neutral: a level, not a "go"), the price as a dot: the Ross row's meter. */
+function Meter({ value, color }: { value: number; color: string }) {
+  const v = Math.max(0, Math.min(1, value));
+  return (
+    <Svg width="100%" height={8} viewBox="0 0 160 8" preserveAspectRatio="none" accessibilityLabel={`price ${Math.round(v * 100)}% of the way from the pullback low to the trigger`}>
+      <Rect x={0} y={3} width={160} height={2} rx={1} fill={UI.raised} />
+      <Rect x={0} y={0} width={2} height={8} fill={UI.critical} />
+      <Rect x={158} y={0} width={2} height={8} fill={UI.textDim} />
+      <Rect x={0} y={3} width={v * 156} height={2} rx={1} fill={color} />
+      <Circle cx={2 + v * 154} cy={4} r={3} fill={color} />
+    </Svg>
+  );
+}
+
+/** A dot that breathes while a crossing is in progress; still with reduced motion or stale data. */
+function Pulse({ color, size, reducedMotion }: { color: string; size: number; reducedMotion: boolean }) {
+  const [o] = useState(() => new Animated.Value(1));
+  useEffect(() => {
+    if (reducedMotion) {
+      o.setValue(1);
+      return;
+    }
+    const loop = Animated.loop(Animated.sequence([Animated.timing(o, { toValue: 0.35, duration: 500, useNativeDriver: true }), Animated.timing(o, { toValue: 1, duration: 500, useNativeDriver: true })]));
+    loop.start();
+    return () => loop.stop();
+  }, [o, reducedMotion]);
+  return <Animated.View style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: color, opacity: o }} />;
+}
 
 function Geometry({ episode: e, currentAvailable = true }: { episode: DetectionEpisode; currentAvailable?: boolean }) {
   const trigger = detectionDistance(e.price_stale || !currentAvailable ? null : e.price, e.level?.trigger ?? null, "trigger");
@@ -278,28 +361,50 @@ function Action({ label, onPress, disabled = false }: { label: string; onPress: 
 }
 
 const styles = StyleSheet.create({
-  card: { backgroundColor: UI.panel, borderRadius: 14, padding: 10, gap: 6 },
-  line: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8 },
-  title: { fontFamily: fonts.semibold, fontSize: 14, color: UI.text },
-  experimental: { color: UI.warning, fontSize: 10, marginLeft: "auto" },
+  card: { borderRadius: 14, backgroundColor: UI.panel, paddingVertical: 10, paddingHorizontal: 8, gap: 6 },
+  head: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 4 },
+  title: { color: UI.text, fontSize: 14, fontFamily: fonts.semibold },
+  count: { flexDirection: "row", alignItems: "center", gap: 5, height: 22, paddingHorizontal: 8, borderRadius: 11, backgroundColor: "rgba(139,156,255,0.16)" },
+  countText: { color: "#c3cbff", fontSize: 11, fontVariant: ["tabular-nums"] },
+  // Active / Recent at the right, then the filter button: fits the Fold's ~360 dp cover screen.
+  show: { marginLeft: "auto" },
+  round: { width: 32, height: 32, borderRadius: 16, alignItems: "center", justifyContent: "center", backgroundColor: UI.row },
+  appliedDot: { position: "absolute", top: 6, right: 6, width: 5, height: 5, borderRadius: 2.5, backgroundColor: UI.text },
+  sub: { color: UI.textFaint, fontSize: 10, paddingHorizontal: 4 },
+  status: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 4 },
+  statusDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: UI.warning },
+  statusText: { color: UI.warning, fontSize: 11, fontFamily: fonts.regular },
+  quiet: { alignItems: "center", gap: 4, paddingVertical: 14, paddingHorizontal: 4 },
+  quietText: { color: UI.text, fontSize: 13, fontFamily: fonts.regular, textAlign: "center" },
+  quietMeta: { color: UI.textFaint, fontSize: 11, fontVariant: ["tabular-nums"], textAlign: "center" },
+  pager: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 },
+  // The card's own row gap: the rows are separated by space, never borders.
+  rows: { gap: 6 },
+  dimmed: { opacity: 0.6 },
+  row: { gap: 4, paddingVertical: 8, paddingHorizontal: 10, borderRadius: 10, backgroundColor: UI.row, overflow: "hidden" },
+  wash: { backgroundColor: "rgba(139,156,255,0.10)" },
+  edge: { position: "absolute", left: 0, top: 0, bottom: 0, width: 3 },
+  line: { flexDirection: "row", alignItems: "center", gap: 6 },
+  symbol: { color: UI.text, fontSize: 14, fontFamily: fonts.semibold },
+  price: { color: UI.text, fontSize: 13, fontVariant: ["tabular-nums"] },
+  rossDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: "#c3cbff" },
+  badge: { borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1, backgroundColor: UI.raised },
+  badgeText: { color: UI.textDim, fontSize: 9, fontFamily: fonts.semibold },
+  ago: { marginLeft: "auto", color: UI.textFaint, fontSize: 11, fontVariant: ["tabular-nums"] },
+  family: { flexShrink: 0, maxWidth: "45%", color: UI.textDim, fontSize: 12, fontFamily: fonts.regular },
+  faint: { color: UI.textFaint, fontSize: 12 },
+  stage: { flexShrink: 1, fontSize: 12 },
+  note: { color: UI.textDim, fontFamily: fonts.regular, fontVariant: ["tabular-nums"] },
   meta: { color: UI.textFaint, fontFamily: fonts.regular, fontSize: 11, lineHeight: 16 },
   body: { color: UI.textDim, fontFamily: fonts.regular, fontSize: 12, lineHeight: 17 },
-  empty: { color: UI.textDim, fontFamily: fonts.regular, fontSize: 12, paddingVertical: 6 },
-  emptyBox: { gap: 3 },
-  warning: { color: UI.warning, fontFamily: fonts.regular, fontSize: 11, lineHeight: 16 },
+  warning: { color: UI.warning, fontFamily: fonts.regular, fontSize: 11, lineHeight: 16, paddingHorizontal: 4 },
   filters: { gap: 5, alignItems: "center" },
   filter: { backgroundColor: UI.row, borderRadius: 12, minHeight: 34, paddingHorizontal: 10, justifyContent: "center" },
-  selectedFilter: { backgroundColor: "rgba(139,156,255,0.13)" },
+  // A picked filter is raised one surface step, never accent (the segmented rule).
+  selectedFilter: { backgroundColor: UI.raised },
   filterText: { color: UI.textDim, fontSize: 11, fontFamily: fonts.regular },
-  row: { backgroundColor: UI.row, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 7, gap: 4, marginTop: 5 },
-  recent: { backgroundColor: UI.row, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 5, gap: 2 },
-  tickerPress: { flexDirection: "row", alignItems: "center", gap: 8, minHeight: 44, flex: 1 },
-  detailTicker: { minHeight: 44, paddingHorizontal: 8, justifyContent: "center" },
-  symbol: { color: UI.text, fontFamily: fonts.semibold, fontSize: 14 },
-  price: { color: UI.text, fontFamily: fonts.regular, fontSize: 13, fontVariant: ["tabular-nums"] },
   state: { fontFamily: fonts.semibold, fontSize: 12, lineHeight: 17 },
   geometry: { color: UI.textDim, fontFamily: fonts.regular, fontSize: 11, fontVariant: ["tabular-nums"] },
-  stale: { opacity: 0.62 },
   action: { minHeight: 44, paddingHorizontal: 10, paddingVertical: 8, justifyContent: "center", borderRadius: 10, backgroundColor: UI.row },
   actionText: { color: UI.accent, fontFamily: fonts.semibold, fontSize: 11 },
   details: { paddingVertical: 6, gap: 9 },
