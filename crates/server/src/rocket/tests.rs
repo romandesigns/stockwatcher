@@ -753,3 +753,125 @@ fn momentum_cost_for_fifty_flagged_rows() {
     assert!(b.alerts().iter().all(|a| a.outcome.checked > 0));
     assert!(with < Duration::from_secs(2), "{with:?}");
 }
+
+/// A burst tape on a board with the detector on: one burst row (kind `burst`) beside the Runners
+/// rows, a `burst` log line, a `Burst` notice, the outcome settled 30 minutes later into a
+/// `burst_outcome` line, and the row back after a restart. Runners counts never include it.
+#[test]
+fn a_burst_becomes_a_tracked_row() {
+    let mut b = board(vec![], fixed(0.5, 10));
+    b.enable_burst(burst::BurstPolicy {
+        threshold: 0.0001,
+        ..burst::BurstPolicy::default()
+    });
+    let start = at(9, 0, 0);
+    let mut trades = flat("BRST", start, start + 30 * 60 * S, 1.0, 100);
+    let b0 = start + 30 * 60 * S + 3 * S;
+    for n in 0..10i64 {
+        let mut t = tr("BRST", b0 + n * S / 2, 1.0 + 0.02 * (n + 1) as f64, 5000);
+        t.exchange = if n % 2 == 0 { "Q".into() } else { "P".into() };
+        trades.push(t);
+    }
+    // The run goes on to +25 % over the next seconds.
+    for n in 0..20i64 {
+        trades.push(tr("BRST", b0 + (10 + n) * S, 1.25 + 0.005 * n as f64, 5000));
+    }
+    trades.sort_by_key(|t| t.event_ts.0);
+    // Tick every second like the quotes task.
+    let mut i = 0;
+    let mut t = start;
+    let end = b0 + 40 * 60 * S;
+    while t < end {
+        while i < trades.len() && trades[i].event_ts.0 <= t {
+            b.apply_trade(&trades[i], BOTH);
+            i += 1;
+        }
+        b.tick(t, |_| Some(1.0));
+        t += S;
+    }
+    assert_eq!(b.alerts().len(), 1);
+    let a = &b.alerts()[0];
+    assert_eq!(a.kind, AlertKind::Burst);
+    // The burst notice first; the row is tracked like a flag, so its breakout may follow (the
+    // push's per-stock cooldown holds that one back).
+    let notices = b.take_notices();
+    assert_eq!(notices[0].kind, NoticeKind::Burst, "{notices:?}");
+    assert_eq!(
+        notices
+            .iter()
+            .filter(|n| n.kind == NoticeKind::Burst)
+            .count(),
+        1
+    );
+    assert!(notices[0].from_flag_pct.unwrap() > 10.0);
+    assert!(notices[0].since_start_min.is_some());
+    let log: Vec<Value> = b
+        .take_log()
+        .into_iter()
+        .map(|(_, l)| serde_json::from_str(&l).unwrap())
+        .collect();
+    let kinds: Vec<&str> = log.iter().map(|v| v["kind"].as_str().unwrap()).collect();
+    assert!(kinds.contains(&"burst"), "{kinds:?}");
+    assert!(kinds.contains(&"burst_outcome"), "{kinds:?}");
+    assert!(
+        !kinds.contains(&"outcome"),
+        "no Runners strict outcome for a burst"
+    );
+    let bl = log.iter().find(|v| v["kind"] == "burst").unwrap();
+    assert_eq!(bl["features"].as_object().unwrap().len(), burst::NF);
+    assert_eq!(bl["strategy"], burst::STRATEGY);
+    let ol = log.iter().find(|v| v["kind"] == "burst_outcome").unwrap();
+    assert_eq!(ol["cont10"], true);
+    assert_eq!(ol["partial"], false);
+    // The frame: a burst row with its facts, the panel's burst block, Runners counts untouched.
+    let body = b.body(&|_| (Some(1.3), Some(1.0)), &|_| None);
+    let row = &body["rows"][0];
+    assert_eq!(row["kind"], "burst");
+    assert!(row["burst"]["gain_pct"].as_f64().unwrap() > 10.0);
+    assert!(row["burst"]["rate_x"].as_f64().unwrap() >= 3.0);
+    assert_eq!(row["burst"]["outcome"]["settled"], true);
+    assert_eq!(row["burst"]["outcome"]["c10"], true);
+    assert!(row["state"].is_string(), "tracked like a flag");
+    assert_eq!(body["burst"]["today"], 1);
+    assert_eq!(body["burst"]["per_day"], 20);
+    assert_eq!(body["today"]["alerts"], 0);
+    // A restart: the row comes back from the log, settled, with nothing re-logged or re-pushed.
+    let tmp = tempfile::tempdir().unwrap();
+    let rl = RocketLog::new(tmp.path().join("rocket-watch"), 30);
+    let lines: Vec<String> = log.iter().map(|v| v.to_string()).collect();
+    rl.append(day(), &lines);
+    let mut r = board(vec![], fixed(0.5, 10));
+    r.enable_burst(burst::BurstPolicy::default());
+    r.restore(day(), rl.load(day()));
+    assert_eq!(r.alerts().len(), 1);
+    let a2 = &r.alerts()[0];
+    assert_eq!(a2.kind, AlertKind::Burst);
+    let o = &a2.burst.as_ref().unwrap().outcome;
+    assert!(o.settled && o.cont()[0]);
+    assert!(r.take_log().is_empty() && r.take_notices().is_empty());
+    let body = r.body(&|_| (None, None), &|_| None);
+    assert_eq!(body["rows"][0]["kind"], "burst");
+    assert_eq!(body["today"]["alerts"], 0);
+}
+
+/// A board without the detector (a replay, `BURST_ALERTS=0`) sends no burst block and makes no
+/// burst rows whatever the tape.
+#[test]
+fn no_burst_rows_without_the_detector() {
+    let mut b = board(vec![], fixed(0.5, 10));
+    let start = at(9, 0, 0);
+    let mut trades = flat("BRST", start, start + 30 * 60 * S, 1.0, 100);
+    for n in 0..10i64 {
+        trades.push(tr(
+            "BRST",
+            start + 30 * 60 * S + n * S / 2,
+            1.0 + 0.02 * (n + 1) as f64,
+            5000,
+        ));
+    }
+    play(&mut b, trades, start, start + 35 * 60 * S);
+    assert!(b.alerts().is_empty());
+    assert!(b.take_notices().is_empty());
+    let body = b.body(&|_| (None, None), &|_| None);
+    assert!(body.get("burst").is_none());
+}

@@ -186,6 +186,9 @@ pub const QUOTES_INTERVAL: Duration = Duration::from_secs(1);
 /// | `ROCKET_ALERTS_PER_DAY` | `10` | Rocket watch's daily alert budget (the adaptive threshold's target and cap) |
 /// | `ROCKET_THRESHOLD` | unset | a fixed Rocket watch threshold (overrides the scorer's frozen one), or `budget` to force the adaptive one |
 /// | `RUNNERS_SCORER` | `r0` | the Runners strategy: `r0` (`precursors-R0`), `r2` (`precursors-R2`, LightGBM) or `placeholder` (`placeholder-b2`); `crate::rocket::ScorerChoice` |
+/// | `BURST_ALERTS` | `1` | live market with `ROCKET_WATCH`: buying-burst rows in the Runners panel and their phone push (`crate::rocket::burst`, the research's V3-5 detector): O(1) per print, a 5 s check over the symbols that printed in the last 15 s; never on a replay |
+/// | `BURST_ALERTS_PER_DAY` | `20` | the frozen threshold to alert at: `10`, `20` or `40` (the alert counts it gave a day on the research's DEV days) |
+/// | `BURST_THRESHOLD` | unset | a burst model probability threshold in (0, 1), overriding `BURST_ALERTS_PER_DAY`'s |
 /// | `ADMISSION_JOURNAL` | `0` | live with a recorder: write the admission journal beside the recording (`crate::admit`; ~190–270 B per print, so off for whole-market SIP: see `Market::init_history`) |
 #[derive(Clone, Debug)]
 pub struct MarketConfig {
@@ -212,6 +215,8 @@ pub struct MarketConfig {
     pub rocket_watch: bool,
     /// `ROCKET_ALERTS_PER_DAY` / `ROCKET_THRESHOLD` (`crate::rocket::Policy`).
     pub rocket_policy: crate::rocket::Policy,
+    /// `BURST_ALERTS` / `BURST_ALERTS_PER_DAY` / `BURST_THRESHOLD` (`crate::rocket::burst`).
+    pub burst_policy: crate::rocket::burst::BurstPolicy,
     /// `ADMISSION_JOURNAL` (off by default): the live admission journal (`crate::admit`). Its
     /// size and the reader's record cap make it unusable for a whole-market day; see
     /// `Market::init_history`.
@@ -239,6 +244,7 @@ impl Default for MarketConfig {
             detection_panel: false,
             rocket_watch: true,
             rocket_policy: crate::rocket::Policy::default(),
+            burst_policy: crate::rocket::burst::BurstPolicy::default(),
             admission_journal: false,
             detection_quiet_references: None,
             evidence_check: Duration::from_secs(crate::evidence::DEFAULT_CHECK_SECS),
@@ -278,6 +284,7 @@ impl MarketConfig {
             c.rocket_watch = on(&v);
         }
         c.rocket_policy = crate::rocket::Policy::from_lookup(&get)?;
+        c.burst_policy = crate::rocket::burst::BurstPolicy::from_lookup(&get)?;
         if let Some(v) = var("ADMISSION_JOURNAL") {
             c.admission_journal = on(&v);
         }
@@ -499,6 +506,9 @@ pub(crate) struct Inner {
     rocket_lines: Mutex<crate::day_line::Published>,
     /// Live: the forward log (`crate::rocket::log`), set once at start.
     rocket_log: std::sync::OnceLock<Arc<crate::rocket::RocketLog>>,
+    /// Live with bursts on: the archive the burst detector's ADV30 is read from, once a day
+    /// (`crate::rocket::burst::facts`).
+    burst_archive: std::sync::OnceLock<Archive>,
     /// Baseline observation/latency capture for the context panel (`crate::observe`): a bounded
     /// queue filled under the core lock and absorbed off it, with counted drops. Measurement
     /// scaffolding, not a latency claim.
@@ -711,6 +721,7 @@ impl Market {
             rocket_published: Mutex::new(None),
             rocket_lines: Mutex::new(crate::day_line::Published::default()),
             rocket_log: std::sync::OnceLock::new(),
+            burst_archive: std::sync::OnceLock::new(),
             observations: crate::observe::ObservationSink::new(crate::observe::QUEUE_CAPACITY),
             admissions: std::sync::OnceLock::new(),
             shadow: std::sync::OnceLock::new(),
@@ -747,6 +758,60 @@ impl Market {
         self.0.core.lock().expect("core lock").rocket = board;
         *self.0.rocket_published.lock().expect("rocket published") = None;
         *self.0.rocket_lines.lock().expect("rocket lines") = Default::default();
+    }
+
+    /// Live: turns on the buying-burst detector on the Runners board (`crate::rocket::burst`),
+    /// with `archive` for its daily ADV30. Call after `set_rocket_watch` (which rebuilds the
+    /// board) and before `init_rocket_log` (which restores today's burst rows into it). A replay
+    /// never calls this: bursts are a live-market alert.
+    pub fn enable_burst(
+        &self,
+        policy: crate::rocket::burst::BurstPolicy,
+        archive: Option<Archive>,
+    ) {
+        if !policy.enabled
+            || !self.0.rocket_on.load(Ordering::Relaxed)
+            || self.0.mode != ClockMode::Live
+        {
+            return;
+        }
+        if let Some(a) = archive {
+            let _ = self.0.burst_archive.set(a);
+        }
+        tracing::info!(
+            per_day = policy.per_day,
+            threshold = policy.threshold,
+            "buying bursts: detector on ({} {})",
+            crate::rocket::burst::STRATEGY,
+            crate::rocket::burst::VERSION
+        );
+        self.0
+            .core
+            .lock()
+            .expect("core lock")
+            .rocket
+            .enable_burst(policy);
+    }
+
+    /// Loads a trading date's ADV30 for the burst detector on a blocking thread (30 small
+    /// archive files), then hands it to the board. Never under the core lock.
+    fn load_burst_adv(&self, date: NaiveDate) {
+        let Some(archive) = self.0.burst_archive.get().cloned() else {
+            return;
+        };
+        let market = self.clone();
+        std::thread::spawn(move || {
+            let t = std::time::Instant::now();
+            let adv = crate::rocket::burst::facts::adv30(&archive, date);
+            tracing::info!(%date, symbols = adv.len(), ms = t.elapsed().as_millis() as u64, "buying bursts: ADV30 loaded");
+            market
+                .0
+                .core
+                .lock()
+                .expect("core lock")
+                .rocket
+                .set_burst_adv(date, adv);
+        });
     }
 
     /// Live: opens the forward log in `dir` (`ARCHIVE_ROOT/rocket-watch`), prunes it to the
@@ -1424,6 +1489,9 @@ impl Market {
             market.set_stock_context(true);
         }
         market.set_rocket_watch(cfg.rocket_watch, cfg.rocket_policy.clone());
+        if mode == ClockMode::Live && cfg.rocket_watch {
+            market.enable_burst(cfg.burst_policy.clone(), Some(archive.clone()));
+        }
         if mode == ClockMode::Live && cfg.rocket_watch {
             // Before the ingest: today's alerts and the record come back after a restart.
             market.init_rocket_log(
@@ -2588,7 +2656,7 @@ impl Market {
         let Some(clock) = self.clock() else {
             return false;
         };
-        let (seq, frame, log, notices) = {
+        let (seq, frame, log, notices, adv_wanted) = {
             let mut core = self.0.core.lock().expect("core lock");
             if core.rebuilding || !core.rocket.enabled() {
                 return false;
@@ -2611,6 +2679,7 @@ impl Market {
             let log = core.rocket.take_log();
             // Taken whatever the market, so a replay's never pile up.
             let notices = core.rocket.take_notices();
+            let adv_wanted = core.rocket.take_burst_adv_request();
             let mut frame = None;
             if self.rocket_subscribers() > 0 {
                 let body = core.rocket.body(&|s| Self::rocket_quote(&core, s), &|s| {
@@ -2636,8 +2705,11 @@ impl Market {
                     frame = Some(v.to_string());
                 }
             }
-            (core.seq, frame, log, notices)
+            (core.seq, frame, log, notices, adv_wanted)
         };
+        if let Some(date) = adv_wanted {
+            self.load_burst_adv(date);
+        }
         if self.0.mode == ClockMode::Live
             && let Some(sink) = self.alert_sink()
         {
@@ -3585,6 +3657,7 @@ mod tests {
             price: 1.0,
             from_flag_pct: Some(0.0),
             reasons: vec![],
+            since_start_min: None,
         };
         for mode in [ClockMode::Live, ClockMode::Replay] {
             let market = Market::idle(mode, "test", None);
@@ -3624,6 +3697,31 @@ mod tests {
             // Taken either way: nothing is left to leak into a later tick.
             market.publish_rocket();
             assert!(notices.try_recv().is_err());
+        }
+    }
+
+    /// Buying bursts are a live-market alert: a replay market never turns the detector on, so
+    /// it never makes a burst row or a burst push; `BURST_ALERTS=0` keeps it off live too.
+    #[test]
+    fn burst_detector_runs_on_the_live_market_only() {
+        use crate::rocket::burst::BurstPolicy;
+        for (mode, policy, on) in [
+            (ClockMode::Live, BurstPolicy::default(), true),
+            (ClockMode::Replay, BurstPolicy::default(), false),
+            (
+                ClockMode::Live,
+                BurstPolicy {
+                    enabled: false,
+                    ..BurstPolicy::default()
+                },
+                false,
+            ),
+        ] {
+            let market = Market::idle(mode, "test", None);
+            market.set_rocket_watch(true, crate::rocket::Policy::default());
+            market.enable_burst(policy, None);
+            let core = market.0.core.lock().expect("core lock");
+            assert_eq!(core.rocket.burst().is_some(), on, "{mode:?}");
         }
     }
 

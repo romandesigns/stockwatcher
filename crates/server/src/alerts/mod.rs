@@ -902,6 +902,7 @@ mod tests {
             price: 2.5,
             from_flag_pct: Some(0.0),
             reasons: vec!["volume 9x pace".into()],
+            since_start_min: None,
         }
     }
 
@@ -940,7 +941,8 @@ mod tests {
             "Tab",
             RunnersOptIn {
                 new: Some(false),
-                breakout: Some(true)
+                breakout: Some(true),
+                burst: Some(false),
             },
         ));
         // Each register answers with an alerts.status frame once handled.
@@ -981,6 +983,15 @@ mod tests {
         );
         assert_eq!(j.tokens, vec!["ExponentPushToken[tab]".to_string()]);
         assert!(j.title.starts_with("BBB breaking out"));
+        // A buying burst: the Fold (bursts on by default), not the tablet (turned them off).
+        sink.offer_runner(notice(NoticeKind::Burst, "EEE", now_ms()));
+        let j = tokio::time::timeout(Duration::from_secs(5), jobs.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(j.tokens, vec!["ExponentPushToken[fold]".to_string()]);
+        assert_eq!(j.title, "EEE buying burst $2.50");
+        assert_eq!(j.data["kind"], "runners.burst");
         // Old news (a stalled board catching up) is not pushed.
         sink.offer_runner(notice(NoticeKind::New, "OLD", now_ms() - 10 * 60_000));
         // The push service gone: the task carries on (it still answers a register).

@@ -69,6 +69,9 @@ pub struct Device {
     /// Runners pushes for breakouts; off unless the phone turned them on.
     #[serde(default)]
     pub runners_breakout: bool,
+    /// Buying-burst pushes (`crate::rocket::burst`); on unless the phone said otherwise.
+    #[serde(default = "yes")]
+    pub runners_burst: bool,
 }
 
 fn yes() -> bool {
@@ -81,6 +84,7 @@ fn yes() -> bool {
 pub struct RunnersOptIn {
     pub new: Option<bool>,
     pub breakout: Option<bool>,
+    pub burst: Option<bool>,
 }
 
 /// The registered phones, persisted on every change (tiny file, temp + rename).
@@ -130,6 +134,7 @@ impl Devices {
             .filter(|d| match kind {
                 crate::rocket::NoticeKind::New => d.runners_new,
                 crate::rocket::NoticeKind::Breakout => d.runners_breakout,
+                crate::rocket::NoticeKind::Burst => d.runners_burst,
             })
             .map(|d| d.token.clone())
             .collect()
@@ -173,6 +178,10 @@ impl Devices {
             .breakout
             .or(had.map(|d| d.runners_breakout))
             .unwrap_or(false);
+        let runners_burst = runners
+            .burst
+            .or(had.map(|d| d.runners_burst))
+            .unwrap_or(true);
         self.list.retain(|d| d.token != token);
         let clip = |s: &str| {
             s.chars()
@@ -187,6 +196,7 @@ impl Devices {
             registered_at: now,
             runners_new,
             runners_breakout,
+            runners_burst,
         });
         while self.list.len() > MAX_DEVICES {
             self.list.remove(0);
@@ -558,9 +568,12 @@ mod tests {
         assert!(d.register(fold, "android", "Fold", 1, RunnersOptIn::default()));
         assert_eq!(d.runner_tokens(NoticeKind::New), vec![fold.to_string()]);
         assert!(d.runner_tokens(NoticeKind::Breakout).is_empty());
+        // Bursts are on by default.
+        assert_eq!(d.runner_tokens(NoticeKind::Burst), vec![fold.to_string()]);
         let both = RunnersOptIn {
             new: Some(false),
             breakout: Some(true),
+            burst: Some(false),
         };
         assert!(d.register(fold, "android", "Fold", 2, both));
         assert!(d.runner_tokens(NoticeKind::New).is_empty());
@@ -572,7 +585,8 @@ mod tests {
         assert!(d.register(fold, "android", "Fold", 3, RunnersOptIn::default()));
         let back = Devices::open(dir.path());
         let dev = back.get(fold).unwrap();
-        assert!(!dev.runners_new && dev.runners_breakout);
+        assert!(!dev.runners_new && dev.runners_breakout && !dev.runners_burst);
+        assert!(back.runner_tokens(NoticeKind::Burst).is_empty());
         // A file from before the opt-ins existed: new flags on, breakouts off.
         std::fs::write(
             dir.path().join(FILE),
@@ -582,6 +596,7 @@ mod tests {
         let old = Devices::open(dir.path());
         assert_eq!(old.runner_tokens(NoticeKind::New).len(), 1);
         assert!(old.runner_tokens(NoticeKind::Breakout).is_empty());
+        assert_eq!(old.runner_tokens(NoticeKind::Burst).len(), 1);
     }
 
     /// A stub of Expo's two endpoints: records batches; the second token is "not registered".

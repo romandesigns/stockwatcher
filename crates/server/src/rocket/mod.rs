@@ -17,6 +17,11 @@
 //!   baseline).
 //! - [`RocketBoard`] (here): the alert policy, the outcomes, the track record and the panel frame.
 //! - [`log`]: the forward log on the archive volume (live market only).
+//! - [`burst`]: buying bursts (live market only, `BURST_ALERTS`): the burst-onset research's
+//!   detector, whose alerts become rows of this board ([`AlertKind::Burst`]) tracked exactly like
+//!   a flag (momentum state, later outcomes, day line, levels) but with their own strict outcome
+//!   ([`BurstRow::outcome`]), log lines (`burst`, `burst_outcome`) and push kind
+//!   ([`NoticeKind::Burst`]). They never count in the Runners day record, budget or cap.
 //!
 //! # Alert policy
 //!
@@ -107,6 +112,8 @@ pub enum NoticeKind {
     New,
     /// A flagged row's momentum state turned `breaking_out` (from any other state).
     Breakout,
+    /// A new buying-burst row ([`burst`]).
+    Burst,
 }
 
 impl NoticeKind {
@@ -114,8 +121,40 @@ impl NoticeKind {
         match self {
             NoticeKind::New => "new",
             NoticeKind::Breakout => "breakout",
+            NoticeKind::Burst => "burst",
         }
     }
+}
+
+/// What a row is: a Runners flag (the precursor strategy) or a buying burst ([`burst`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AlertKind {
+    #[default]
+    Runner,
+    Burst,
+}
+
+/// A buying-burst row's own facts ([`burst`]), beside what every tracked row has.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BurstRow {
+    /// The 5 s boundary scored (epoch ns); the alert is 1 s after it.
+    pub boundary_ns: i64,
+    /// The burst's first gate pass (epoch ns) and the last price before its window.
+    pub start_ns: i64,
+    pub start_price: f64,
+    /// % from `start_price` to the alert price; % over the 30 s before the boundary.
+    pub gain_pct: Option<f64>,
+    pub move_pct: Option<f64>,
+    /// Dollar rate over the last 15 s as a multiple of the 30-minute base; new-day-high prints,
+    /// sweep seconds and up-tick volume share (%) in those 15 s.
+    pub rate_x: f64,
+    pub new_highs: f64,
+    pub sweeps: f64,
+    pub buy_pct: f64,
+    /// The detector's outcome tracker key (`None` after a restart without one).
+    pub seq: Option<u32>,
+    /// The strict outcome (protocol §3) as last known.
+    pub outcome: burst::Outcome,
 }
 
 /// One new flag or one breakout, as the push needs it.
@@ -129,10 +168,12 @@ pub struct Notice {
     pub at_ns: i64,
     /// The price then (the flag price for a new alert).
     pub price: f64,
-    /// % from the flag price (0 for a new alert).
+    /// % from the flag price (0 for a new alert); for a burst, % since the burst started.
     pub from_flag_pct: Option<f64>,
     /// The alert's reasons, strongest first.
     pub reasons: Vec<String>,
+    /// A burst: minutes since it started.
+    pub since_start_min: Option<f64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -226,6 +267,9 @@ pub struct Alert {
     pub outcome: Outcome,
     /// The later-move outcomes and the momentum state ([`track`]).
     pub track: Track,
+    pub kind: AlertKind,
+    /// A burst row's facts (`kind == Burst`).
+    pub burst: Option<Box<BurstRow>>,
 }
 
 impl Alert {
@@ -270,7 +314,10 @@ impl Alert {
 
     /// `pending` | `rocketed` | `late` | `moved` | `faded` (module docs, "Outcomes").
     pub fn state(&self) -> &'static str {
-        if self.hit10() {
+        if self.kind == AlertKind::Burst {
+            // A burst row has its own strict outcome (`BurstRow::outcome`), not this one.
+            "pending"
+        } else if self.hit10() {
             "rocketed"
         } else if self.hit30() {
             "late"
@@ -342,6 +389,50 @@ impl Alert {
     }
 }
 
+impl Alert {
+    /// The `burst` log line ([`log`]): the alert, its burst facts and the 34 features.
+    fn burst_line(&self, date: NaiveDate, per_day: u32, x: &[f64; burst::NF]) -> String {
+        let b = self.burst.as_deref();
+        let feats: serde_json::Map<String, Value> = burst::FEATS
+            .iter()
+            .zip(x)
+            .map(|(n, v)| (n.to_string(), json!(finite(*v))))
+            .collect();
+        json!({
+            "kind": "burst", "v": 1, "id": self.id, "date": date.to_string(),
+            "symbol": &*self.symbol, "alert_ns": self.at_ns,
+            "boundary_ns": b.map(|b| b.boundary_ns), "price": self.price,
+            "score": self.score, "threshold": self.threshold, "per_day": per_day,
+            "start_ns": b.map(|b| b.start_ns), "start_price": b.and_then(|b| finite(b.start_price)),
+            "gain_pct": b.and_then(|b| b.gain_pct).map(round2),
+            "move_pct": b.and_then(|b| b.move_pct).map(round2),
+            "rate_x": b.map(|b| round2(b.rate_x)), "new_highs": b.map(|b| b.new_highs),
+            "sweeps": b.map(|b| b.sweeps), "buy_pct": b.map(|b| round2(b.buy_pct)),
+            "reasons": self.reasons, "features": feats,
+            "strategy": self.strategy, "version": self.version,
+        })
+        .to_string()
+    }
+
+    /// The `burst_outcome` log line: CONT10/20/30 and the 30-minute MFE / MAE (protocol §3).
+    fn burst_outcome_line(&self, date: NaiveDate, settled_ns: i64) -> Option<String> {
+        let o = &self.burst.as_deref()?.outcome;
+        let c = o.cont();
+        Some(
+            json!({
+                "kind": "burst_outcome", "v": 1, "id": self.id, "date": date.to_string(),
+                "symbol": &*self.symbol, "alert_ns": self.at_ns, "settled_ns": settled_ns,
+                "price": o.pa, "cont10": c[0], "cont20": c[1], "cont30": c[2],
+                "stopped": o.stopped(), "state": o.state(), "t20_s": o.t20_s(),
+                "mfe_pct": finite(o.mfe_pct()).map(round2),
+                "mae_pct": finite(o.mae_pct()).map(round2),
+                "partial": o.partial,
+            })
+            .to_string(),
+        )
+    }
+}
+
 /// The end (epoch ns) of the slot `key` on the day starting at `t0` with ordinal `ord`.
 fn end_of(t0: i64, ord: u32, key: u32) -> i64 {
     let slot = i64::from(key) - i64::from(features::key_of(ord, 0));
@@ -399,6 +490,8 @@ pub struct RocketBoard {
     watch_sent: Vec<String>,
     /// New flags and breakouts since the last [`RocketBoard::take_notices`].
     notices: Vec<Notice>,
+    /// Buying bursts ([`burst`]): live market only (`RocketBoard::enable_burst`).
+    burst: Option<burst::BurstDetector>,
 }
 
 impl RocketBoard {
@@ -427,7 +520,35 @@ impl RocketBoard {
             halted: HashSet::new(),
             watch_sent: Vec::new(),
             notices: Vec::new(),
+            burst: None,
         }
+    }
+
+    /// Turns on the buying-burst detector ([`burst`]) with `policy` (a no-op when the board or
+    /// `BURST_ALERTS` is off). Only the live market calls this: a replay never alerts on bursts.
+    pub fn enable_burst(&mut self, policy: burst::BurstPolicy) {
+        if self.enabled && policy.enabled {
+            self.burst = Some(burst::BurstDetector::new(policy));
+        }
+    }
+
+    pub fn burst(&self) -> Option<&burst::BurstDetector> {
+        self.burst.as_ref()
+    }
+
+    /// The trading date whose ADV30 the burst detector wants loaded (once per date).
+    pub fn take_burst_adv_request(&mut self) -> Option<NaiveDate> {
+        self.burst.as_mut()?.take_adv_request()
+    }
+
+    pub fn set_burst_adv(&mut self, date: NaiveDate, adv: HashMap<String, f64>) {
+        if let Some(b) = self.burst.as_mut() {
+            b.set_adv(date, adv);
+        }
+    }
+
+    fn runners(&self) -> impl Iterator<Item = &Alert> {
+        self.alerts.iter().filter(|a| a.kind == AlertKind::Runner)
     }
 
     /// Off: takes no prints, ticks nothing.
@@ -476,6 +597,9 @@ impl RocketBoard {
     pub fn apply_trade(&mut self, t: &market_events::Trade, counted: crate::quotes::Counted) {
         if self.enabled {
             self.tape.apply_trade(t, counted);
+            if let Some(b) = self.burst.as_mut() {
+                b.apply_trade(t, counted);
+            }
         }
     }
 
@@ -614,7 +738,7 @@ impl RocketBoard {
             json!({
                 "kind": "day", "v": 1, "date": date.to_string(), "alerts": s.alerts,
                 "hits10": s.hits10, "hits30": s.hits30,
-                "ran_later": self.alerts.iter().filter(|a| a.ran_later()).count(),
+                "ran_later": self.runners().filter(|a| a.ran_later()).count(),
                 "ideal_threshold": ideal.and_then(finite),
                 "strategy": self.scorer.id(), "version": self.scorer.version(),
             })
@@ -634,9 +758,9 @@ impl RocketBoard {
     fn summary(&self, date: NaiveDate) -> DaySummary {
         DaySummary {
             date,
-            alerts: self.alerts.len() as u32,
-            hits10: self.alerts.iter().filter(|a| a.hit10()).count() as u32,
-            hits30: self.alerts.iter().filter(|a| a.hit30()).count() as u32,
+            alerts: self.runners().count() as u32,
+            hits10: self.runners().filter(|a| a.hit10()).count() as u32,
+            hits30: self.runners().filter(|a| a.hit30()).count() as u32,
         }
     }
 
@@ -673,6 +797,7 @@ impl RocketBoard {
             return false;
         }
         let rev = self.revision;
+        let clock = now;
         // The tape may already hold prints a little past the clock (a replay at speed, a clock
         // frame behind the feed). The barrier is the slot before the one the newest print is in,
         // so a print past the barrier is always in the slot in progress, never in a finished
@@ -682,6 +807,9 @@ impl RocketBoard {
         if self.date != Some(date) {
             self.roll(date, now);
         }
+        // Bursts run on the clock itself: a 5 s boundary is checked 1 s after it, with the
+        // prints that arrived by then (`burst` module docs).
+        self.burst_tick(clock, &prev_close);
         let mut slot = (now - self.t0).div_euclid(BAR_NS) - 1;
         if slot < 0 {
             return self.revision != rev;
@@ -697,6 +825,109 @@ impl RocketBoard {
             self.finish_day(now);
         }
         self.revision != rev
+    }
+
+    /// The burst detector's due checks: new burst rows (log line, phone notice), the open
+    /// outcomes' progress, the settled outcomes (log line).
+    fn burst_tick(&mut self, now: i64, prev_close: &dyn Fn(&str) -> Option<f64>) {
+        let Some(det) = self.burst.as_mut() else {
+            return;
+        };
+        let new = det.tick(now, prev_close);
+        let settled = det.take_settled();
+        let per_day = det.policy().per_day;
+        let Some(date) = self.date else { return };
+        for a in new {
+            let p = &a.pass;
+            let slot = (a.at_ns - self.t0).div_euclid(BAR_NS).clamp(0, NSLOT - 1);
+            let row = BurstRow {
+                boundary_ns: p.t_ns,
+                start_ns: p.ep_start_ns,
+                start_price: p.ep_ref,
+                gain_pct: a.gain_pct(),
+                move_pct: a.move_pct(),
+                rate_x: p.rate_x,
+                new_highs: p.new_highs,
+                sweeps: p.sweeps,
+                buy_pct: p.buy15 * 100.0,
+                seq: Some(a.seq),
+                outcome: burst::Outcome::new(a.seq, a.at_ns, a.price),
+            };
+            let alert = Alert {
+                id: format!("{date}-{}-b{}", p.symbol, p.hi),
+                symbol: p.symbol.clone(),
+                at_ns: a.at_ns,
+                price: a.price,
+                score: p.score,
+                threshold: a.threshold,
+                reasons: a.reasons(),
+                strategy: burst::STRATEGY.to_string(),
+                version: burst::VERSION.to_string(),
+                // The Runners strict outcome (a +30 % rocket mark) does not apply: settled from
+                // the start so it never writes one. The burst's own is `BurstRow::outcome`.
+                outcome: Outcome {
+                    checked: features::key_of(self.ord, slot),
+                    high: f64::NAN,
+                    low: f64::NAN,
+                    mark: None,
+                    settled: true,
+                    partial: false,
+                },
+                track: Track::new(a.at_ns, a.price),
+                kind: AlertKind::Burst,
+                burst: Some(Box::new(row)),
+            };
+            self.pending
+                .push((date, alert.burst_line(date, per_day, &p.x)));
+            self.notice(Notice {
+                kind: NoticeKind::Burst,
+                alert_id: alert.id.clone(),
+                symbol: alert.symbol.to_string(),
+                at_ns: alert.at_ns,
+                price: alert.price,
+                from_flag_pct: a.gain_pct().map(round2),
+                reasons: alert.reasons.clone(),
+                since_start_min: Some((a.at_ns - p.ep_start_ns) as f64 / MIN_NS as f64),
+            });
+            if self.alerts.len() < 2 * MAX_ALERTS_PER_DAY {
+                self.alerts.push(alert);
+            }
+            self.revision += 1;
+        }
+        // Open outcomes: the latest progress onto the rows.
+        let det = self.burst.as_ref().expect("checked above");
+        for a in &mut self.alerts {
+            let Some(b) = a.burst.as_deref_mut() else {
+                continue;
+            };
+            if b.outcome.settled {
+                continue;
+            }
+            if let Some(seq) = b.seq
+                && let Some(o) = det.outcome(&a.symbol, seq)
+                && *o != b.outcome
+            {
+                b.outcome = o.clone();
+                self.revision += 1;
+            }
+        }
+        for s in settled {
+            let Some(a) = self.alerts.iter_mut().find(|a| {
+                a.symbol == s.symbol
+                    && a.burst
+                        .as_deref()
+                        .is_some_and(|b| b.seq == Some(s.outcome.seq))
+            }) else {
+                continue;
+            };
+            if let Some(b) = a.burst.as_deref_mut() {
+                b.outcome = s.outcome.clone();
+            }
+            if let Some(line) = a.burst_outcome_line(date, s.settled_ns) {
+                self.pending.push((date, line));
+            }
+            self.revision += 1;
+        }
     }
 
     fn barrier(&mut self, b: &Barrier, prev_close: &dyn Fn(&str) -> Option<f64>) {
@@ -738,7 +969,7 @@ impl RocketBoard {
             Threshold::Fixed(_) => "fixed",
         };
         for (sc, f) in cands {
-            if sc < self.threshold || self.alerts.len() >= self.cap() {
+            if sc < self.threshold || self.runners().count() >= self.cap() {
                 break;
             }
             if self
@@ -767,6 +998,8 @@ impl RocketBoard {
                     partial: false,
                 },
                 track: Track::new(b.at_ns, f.price),
+                kind: AlertKind::Runner,
+                burst: None,
             };
             self.pending.push((date, a.alert_line(date, mode)));
             self.last_alert.insert(f.symbol.clone(), b.at_ns);
@@ -778,6 +1011,7 @@ impl RocketBoard {
                 price: a.price,
                 from_flag_pct: Some(0.0),
                 reasons: a.reasons.clone(),
+                since_start_min: None,
             });
             self.alerts.push(a);
             self.revision += 1;
@@ -882,6 +1116,7 @@ impl RocketBoard {
                         price: tr.price,
                         from_flag_pct: a.track.pct(tr.price).map(round2),
                         reasons: a.reasons.clone(),
+                        since_start_min: None,
                     });
                 if let Some(n) = breakout {
                     self.notice(n);
@@ -918,7 +1153,9 @@ impl RocketBoard {
         let base = features::key_of(self.ord, 0);
         let mut later = loaded.later;
         let mut states = loaded.states;
-        for (v, o) in loaded.today {
+        let today_rows = loaded.today.into_iter().map(|(v, o)| (false, v, o));
+        let burst_rows = loaded.bursts.into_iter().map(|(v, o)| (true, v, o));
+        for (is_burst, v, o) in today_rows.chain(burst_rows) {
             let (Some(symbol), Some(at_ns)) = (
                 v.get("symbol").and_then(Value::as_str),
                 v.get("alert_ns").and_then(Value::as_i64),
@@ -938,7 +1175,7 @@ impl RocketBoard {
             };
             let price = f("price");
             let o_vals = o.clone();
-            if let Some(o) = o {
+            if let Some(o) = o.as_ref().filter(|_| !is_burst) {
                 let g = |k: &str| o.get(k).and_then(Value::as_f64);
                 outcome.settled = true;
                 outcome.partial = o.get("partial").and_then(Value::as_bool) == Some(true);
@@ -981,6 +1218,8 @@ impl RocketBoard {
                 version: str_of("version"),
                 outcome,
                 track: Track::new(at_ns, price),
+                kind: AlertKind::Runner,
+                burst: None,
             };
             let mut a = a;
             a.track = Track::new(at_ns, price);
@@ -1028,13 +1267,75 @@ impl RocketBoard {
                 }
                 a.track.transitions = n;
             }
+            if is_burst {
+                self.restore_burst(&mut a, &v, o.as_ref());
+                if self.alerts.len() < 2 * MAX_ALERTS_PER_DAY {
+                    self.alerts.push(a);
+                }
+                continue;
+            }
             let e = self.last_alert.entry(symbol).or_insert(at_ns);
             *e = (*e).max(at_ns);
             if self.alerts.len() < MAX_ALERTS_PER_DAY {
                 self.alerts.push(a);
             }
         }
+        self.alerts.sort_by_key(|a| a.at_ns);
         self.revision += 1;
+    }
+
+    /// A burst row back from its `burst` line (and `burst_outcome` line, once settled). An open
+    /// one is followed again from now on, `partial` (the detector's tracker was lost).
+    fn restore_burst(&mut self, a: &mut Alert, v: &Value, o: Option<&Value>) {
+        let f = |k: &str| v.get(k).and_then(Value::as_f64);
+        let price = a.price;
+        let mut out = burst::Outcome::new(0, a.at_ns, price);
+        let mut seq = None;
+        if let Some(o) = o {
+            let b = |k: &str| o.get(k).and_then(Value::as_bool) == Some(true);
+            let g = |k: &str| o.get(k).and_then(Value::as_f64);
+            out.settled = true;
+            out.partial = b("partial");
+            // The logged facts, re-expressed as touches in the right order.
+            for (x, k) in ["cont10", "cont20", "cont30"].into_iter().enumerate() {
+                if b(k) {
+                    out.t_up[x] = Some(a.at_ns + 1);
+                }
+            }
+            if b("stopped") {
+                out.t_stop = Some(a.at_ns + 2);
+            }
+            out.mfe_p = g("mfe_pct").map_or(price, |p| price * (1.0 + p / 100.0));
+            out.mae_at_mfe = g("mae_pct").map_or(price, |p| price * (1.0 + p / 100.0));
+        } else if let Some(det) = self.burst.as_mut() {
+            seq = det.restore_alert(&a.symbol, a.at_ns, price, a.at_ns);
+            if let Some(s) = seq {
+                out = det.outcome(&a.symbol, s).cloned().unwrap_or(out);
+            }
+        }
+        a.kind = AlertKind::Burst;
+        // The Runners strict outcome never applies to a burst row (`burst_tick`).
+        a.outcome.settled = true;
+        a.outcome.checked = features::key_of(
+            self.ord,
+            (a.at_ns - self.t0).div_euclid(BAR_NS).clamp(0, NSLOT - 1),
+        );
+        a.burst = Some(Box::new(BurstRow {
+            boundary_ns: v
+                .get("boundary_ns")
+                .and_then(Value::as_i64)
+                .unwrap_or(a.at_ns - burst::SETTLE_NS),
+            start_ns: v.get("start_ns").and_then(Value::as_i64).unwrap_or(a.at_ns),
+            start_price: f("start_price").unwrap_or(f64::NAN),
+            gain_pct: f("gain_pct"),
+            move_pct: f("move_pct"),
+            rate_x: f("rate_x").unwrap_or(f64::NAN),
+            new_highs: f("new_highs").unwrap_or(0.0),
+            sweeps: f("sweeps").unwrap_or(0.0),
+            buy_pct: f("buy_pct").unwrap_or(f64::NAN),
+            seq,
+            outcome: out,
+        }));
     }
 
     /// The panel as a `rocket.snapshot` / `rocket.update` frame. `quote` gives a symbol's last
@@ -1059,8 +1360,7 @@ impl RocketBoard {
     pub fn body(&self, quote: &dyn Fn(&str) -> Quote, levels: Levels<'_>) -> Value {
         let today = self.date.map(|d| self.summary(d));
         let known = self
-            .alerts
-            .iter()
+            .runners()
             .filter(|a| a.outcome.settled || a.hit10())
             .count();
         let rows: Vec<Value> = self
@@ -1103,6 +1403,11 @@ impl RocketBoard {
                         .then(|| from_high.map(|x| round2(-x)))
                         .flatten(),
                     "levels": levels(&a.symbol),
+                    "kind": match a.kind {
+                        AlertKind::Runner => "runner",
+                        AlertKind::Burst => "burst",
+                    },
+                    "burst": a.burst.as_deref().map(burst_json),
                 })
             })
             .collect();
@@ -1110,7 +1415,16 @@ impl RocketBoard {
             Threshold::Budget => "budget",
             Threshold::Fixed(_) => "fixed",
         };
-        json!({
+        let mut rows = rows;
+        for r in &mut rows {
+            // A Runners flag carries no `burst` (older clients never saw the key).
+            if let Some(m) = r.as_object_mut()
+                && m.get("burst").is_some_and(Value::is_null)
+            {
+                m.remove("burst");
+            }
+        }
+        let mut v = json!({
             "enabled": self.enabled,
             "strategy": {
                 "id": self.scorer.id(), "version": self.scorer.version(),
@@ -1125,12 +1439,58 @@ impl RocketBoard {
                 "hits": today.as_ref().map_or(0, |s| s.hits10),
                 "hits30": today.as_ref().map_or(0, |s| s.hits30),
                 "known": known,
-                "ran_later": self.alerts.iter().filter(|a| a.ran_later()).count(),
+                "ran_later": self.runners().filter(|a| a.ran_later()).count(),
             },
             "days": self.days,
             "rows": rows,
-        })
+        });
+        if let Some(b) = self.burst.as_ref()
+            && let Some(m) = v.as_object_mut()
+        {
+            let p = b.policy();
+            m.insert(
+                "burst".into(),
+                json!({
+                    "enabled": true,
+                    "threshold": (p.threshold * 10_000.0).round() / 10_000.0,
+                    "per_day": p.per_day,
+                    "today": self.alerts.iter().filter(|a| a.kind == AlertKind::Burst).count(),
+                    "typical": {
+                        "mfe30_med_pct": burst::TYPICAL_MFE30_MED_PCT,
+                        "mae_med_pct": burst::TYPICAL_MAE_MED_PCT,
+                        "cont10_pct": burst::TYPICAL_CONT10_PCT,
+                        "cont20_pct": burst::TYPICAL_CONT20_PCT,
+                        "fires_after_min": [burst::TYPICAL_FIRES_AFTER_MIN.0, burst::TYPICAL_FIRES_AFTER_MIN.1],
+                    },
+                }),
+            );
+        }
+        v
     }
+}
+
+/// A burst row's `burst` object on the wire (packages/shared/src/rocket.ts).
+fn burst_json(b: &BurstRow) -> Value {
+    let o = &b.outcome;
+    let c = o.cont();
+    json!({
+        "start": b.start_ns / 1_000_000,
+        "start_price": finite(b.start_price),
+        "gain_pct": b.gain_pct.map(round2),
+        "move_pct": b.move_pct.map(round2),
+        "rate_x": round2(b.rate_x),
+        "new_highs": b.new_highs,
+        "sweeps": b.sweeps,
+        "buy_pct": round2(b.buy_pct),
+        "outcome": {
+            "state": o.state(),
+            "c10": c[0], "c20": c[1], "c30": c[2],
+            "stopped": o.stopped(),
+            "mfe": finite(o.mfe_pct()).map(round2),
+            "mae": finite(o.mae_pct()).map(round2),
+            "settled": o.settled,
+        },
+    })
 }
 
 /// The frame for a market whose board is off (`ROCKET_WATCH=0`).

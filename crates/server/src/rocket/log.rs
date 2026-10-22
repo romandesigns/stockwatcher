@@ -1,6 +1,6 @@
 //! The forward log: the live track record of every Rocket watch alert.
 //!
-//! `ARCHIVE_ROOT/rocket-watch/<trading date>.jsonl`, append-only, one JSON object per line, five
+//! `ARCHIVE_ROOT/rocket-watch/<trading date>.jsonl`, append-only, one JSON object per line, seven
 //! kinds (all with `"v": 1`):
 //!
 //! - `alert` — `{kind, v, id, date, symbol, alert_ns, price, score, threshold, mode, reasons,
@@ -25,6 +25,17 @@
 //! - `state` — `{kind, v, id, date, symbol, alert_ns, at_ns, from, to, price, high, vwap,
 //!   from_flag_pct, from_high_pct}` on each momentum-state transition of a flagged row
 //!   (`super::track`, "Momentum state"), at most `MAX_TRANSITIONS` (60) per alert a day.
+//! - `burst` — `{kind, v, id, date, symbol, alert_ns, boundary_ns, price, score, threshold,
+//!   per_day, start_ns, start_price, gain_pct, move_pct, rate_x, new_highs, sweeps, buy_pct,
+//!   reasons, features, strategy, version}` when a buying burst alerts (`super::burst`):
+//!   `boundary_ns` is the 5 s boundary scored (`alert_ns` = it + 1 s), `features` the 34 research
+//!   features by name (`null` = missing), `score` the model probability. Burst rows also get
+//!   `later` and `state` lines (they are tracked like a flag) but never an `outcome` line, and do
+//!   not count in the `day` line or the history.
+//! - `burst_outcome` — `{kind, v, id, date, symbol, alert_ns, settled_ns, price, cont10, cont20,
+//!   cont30, stopped, state, t20_s, mfe_pct, mae_pct, partial}` 30 minutes after a burst alert
+//!   (protocol §3: +10/20/30 % before −5 %, print by print; MFE and the MAE before it, in
+//!   percent), or at 20:00 ET / after a restart with `partial: true`.
 //! - `day` — `{kind, v, date, alerts, hits10, hits30, ran_later, ideal_threshold, strategy,
 //!   version}` at
 //!   20:00 ET (or at the next day's first barrier when the process was down at 20:00):
@@ -66,6 +77,8 @@ pub struct DaySummary {
 pub struct Loaded {
     /// Today's alert lines, oldest first, each with its outcome line when one was written.
     pub today: Vec<(Value, Option<Value>)>,
+    /// Today's `burst` lines, oldest first, each with its `burst_outcome` line when written.
+    pub bursts: Vec<(Value, Option<Value>)>,
     /// Up to [`HISTORY_DAYS`] earlier days, oldest first.
     pub days: Vec<DaySummary>,
     /// `(date, strategy, version, ideal_threshold)` from the earlier days' `day` lines.
@@ -225,7 +238,7 @@ impl RocketLog {
                     continue;
                 };
                 match v.get("kind").and_then(Value::as_str) {
-                    Some("outcome") => {
+                    Some("outcome") | Some("burst_outcome") => {
                         outcomes.insert(id.to_string(), v.clone());
                     }
                     Some("later") => {
@@ -239,9 +252,15 @@ impl RocketLog {
                 }
             }
             for v in lines {
-                if v.get("kind").and_then(Value::as_str) == Some("alert") {
-                    let id = v.get("id").and_then(Value::as_str).unwrap_or_default();
-                    let o = outcomes.remove(id);
+                let kind = v.get("kind").and_then(Value::as_str).map(str::to_string);
+                if !matches!(kind.as_deref(), Some("alert") | Some("burst")) {
+                    continue;
+                }
+                let id = v.get("id").and_then(Value::as_str).unwrap_or_default();
+                let o = outcomes.remove(id);
+                if kind.as_deref() == Some("burst") {
+                    out.bursts.push((v, o));
+                } else {
                     out.today.push((v, o));
                 }
             }

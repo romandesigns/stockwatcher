@@ -6,11 +6,13 @@
 //! sender, batching, retries and token clean-up. What is Runners-specific lives here:
 //!
 //! - **What:** a [`Notice`] from the LIVE market's board (`crate::rocket`, "Phone pushes"): a new
-//!   flag, or a flagged row turning `breaking_out`. The market offers it to the alerts task with
+//!   flag, a flagged row turning `breaking_out`, or a new buying burst (`crate::rocket::burst`,
+//!   "SYM buying burst $price", "+X% in N min · <top reason>"). The market offers it to the alerts task with
 //!   `try_send` after the core lock is released, so ingest and the board never wait on a push. A
 //!   replay market never offers one.
 //! - **Who:** each registered phone opts in per kind, on the device record
-//!   (`push-devices.json`, sent in `push.register`): new flags ON by default, breakouts OFF.
+//!   (`push-devices.json`, sent in `push.register`): new flags ON by default, breakouts OFF,
+//!   bursts ON.
 //!   Per device rather than synced because it is about which phone makes noise, exactly like the
 //!   token itself.
 //! - **Limits**, checked in this order (the first that applies holds it back; logged, never
@@ -192,6 +194,7 @@ pub fn data_kind(kind: NoticeKind) -> &'static str {
     match kind {
         NoticeKind::New => "runners.new",
         NoticeKind::Breakout => "runners.breakout",
+        NoticeKind::Burst => "runners.burst",
     }
 }
 
@@ -201,7 +204,27 @@ pub fn message(n: &Notice) -> (String, String, Value) {
     let title = match n.kind {
         NoticeKind::New => format!("Runners: {} {}", n.symbol, dollars(n.price)),
         NoticeKind::Breakout => format!("{} breaking out {}", n.symbol, dollars(n.price)),
+        NoticeKind::Burst => format!("{} buying burst {}", n.symbol, dollars(n.price)),
     };
+    if n.kind == NoticeKind::Burst {
+        // "+18.2% in 6 min · $ rate 6.4× base": how far the burst already went, and why.
+        let mut parts: Vec<String> = Vec::new();
+        match (n.from_flag_pct, n.since_start_min) {
+            (Some(p), Some(m)) => parts.push(format!("{p:+.1}% in {:.0} min", m.max(0.0).round())),
+            (Some(p), None) => parts.push(format!("{p:+.1}% in the burst")),
+            _ => {}
+        }
+        parts.extend(n.reasons.iter().take(1).cloned());
+        if parts.is_empty() {
+            parts.push("Heavy buying on the tape".into());
+        }
+        let data = json!({
+            "symbol": n.symbol,
+            "kind": data_kind(n.kind),
+            "alert_id": n.alert_id,
+        });
+        return (title, parts.join(" · "), data);
+    }
     let mut parts: Vec<String> = Vec::new();
     if n.kind == NoticeKind::Breakout
         && let Some(p) = n.from_flag_pct
@@ -304,6 +327,7 @@ mod tests {
             price: 2.4512,
             from_flag_pct: Some(0.0),
             reasons: vec!["volume 9x pace".into(), "new high".into(), "third".into()],
+            since_start_min: None,
         };
         let (t, b, data) = message(&n);
         assert_eq!(t, "Runners: CJMB $2.45");
@@ -322,5 +346,16 @@ mod tests {
         assert_eq!(data["kind"], "runners.breakout");
         n.kind = NoticeKind::New;
         assert_eq!(message(&n).1, "Flagged (experimental)");
+        // A buying burst: "+X% in N min · <top reason>", tap opens the chart (runners.*).
+        n.kind = NoticeKind::Burst;
+        n.price = 2.1;
+        n.from_flag_pct = Some(18.24);
+        n.since_start_min = Some(6.4);
+        n.reasons = vec!["$ rate 6.4× base".into(), "12 new highs in 15 s".into()];
+        let (t, b, data) = message(&n);
+        assert_eq!(t, "CJMB buying burst $2.10");
+        assert_eq!(b, "+18.2% in 6 min · $ rate 6.4× base");
+        assert_eq!(data["kind"], "runners.burst");
+        assert!(!t.to_lowercase().contains("buy ") && !b.to_lowercase().contains("buy "));
     }
 }

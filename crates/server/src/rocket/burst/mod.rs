@@ -1360,7 +1360,7 @@ impl BurstDetector {
         }
         s.last_alert = Some(s.last_alert.map_or(at_ns, |l| l.max(at_ns)));
         self.alerts_today += 1;
-        if now >= at_ns + HORIZON_NS || !(price > 0.0) {
+        if now >= at_ns + HORIZON_NS || price.is_nan() || price <= 0.0 {
             return None;
         }
         self.seq += 1;
