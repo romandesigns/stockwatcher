@@ -508,14 +508,18 @@ impl Market {
         days.dedup();
         // The scanner's restore engine, built under this board's own policies and run identity.
         // Taken here, with the lock held only long enough to clone three policies.
-        let (restore, burst) = {
+        let (restore, burst, zones) = {
             let core = self.0.core.lock().expect("core lock");
             (
                 core.context.as_ref().map(|cx| cx.restore_engine()),
                 core.rocket.burst_rebuilder(),
+                core.zones
+                    .enabled()
+                    .then(crate::zones::ZoneBoard::rebuilder),
             )
         };
         let mut b = Builder::new(self.current_closes()).with_burst(burst);
+        b.zones = zones;
         if let Some(mut re) = restore {
             // The evidence this symbol's decisions join, as the market's loader has it. Only the
             // symbol's own records: a restore of one symbol has no business seeding others.
@@ -650,6 +654,7 @@ impl Market {
                 pressure,
                 rocket,
                 burst,
+                zones,
                 mark,
                 tape,
                 last_price,
@@ -670,6 +675,13 @@ impl Market {
                 if let Some(now) = core.engine.clock().map(|c| c.0).or(mark) {
                     core.rocket.adopt_burst(symbol, bd, now);
                 }
+            }
+            if let Some(zb) = zones
+                && let Some(now) = core.engine.clock().map(|c| c.0).or(mark)
+            {
+                // Like the burst detector: decided up to the live clock, then swapped in; the
+                // forward log writes only what the previous process had not (`crate::zones`).
+                core.zones.adopt(symbol, zb, now);
             }
             if !tape.is_empty() {
                 core.tape.insert(symbol.to_string(), tape);
@@ -1167,6 +1179,9 @@ struct Builder {
     /// at every clock advance, so its episodes are the live run's (`crate::rocket::burst`,
     /// "After a restart"); adopted like the tape.
     burst: Option<crate::rocket::burst::BurstDetector>,
+    /// The volume shelves' day for this symbol (`crate::zones`, "After a restart"): fed every
+    /// print and ticked at every clock advance like `burst`, adopted the same way.
+    zones: Option<crate::zones::ZoneBoard>,
     tape: VecDeque<String>,
     last_price: Option<Price>,
     mark: Option<i64>,
@@ -1195,6 +1210,7 @@ impl Builder {
             pressure: PressureBoard::new(),
             rocket: crate::rocket::features::Tape::default(),
             burst: None,
+            zones: None,
             tape: VecDeque::new(),
             last_price: None,
             mark: None,
@@ -1266,6 +1282,9 @@ impl Builder {
         if let Some(bd) = self.burst.as_mut() {
             bd.tick(m, &|_| None);
         }
+        if let Some(zb) = self.zones.as_mut() {
+            zb.tick(m);
+        }
     }
 
     fn feed(&mut self, e: &MarketEvent) {
@@ -1293,6 +1312,9 @@ impl Builder {
             self.rocket.apply_trade(t, counted);
             if let Some(bd) = self.burst.as_mut() {
                 bd.apply_trade(t, counted);
+            }
+            if let Some(zb) = self.zones.as_mut() {
+                zb.apply_trade(t, counted);
             }
         }
         if let Some(rev) = &rev {

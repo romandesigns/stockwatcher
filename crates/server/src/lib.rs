@@ -17,6 +17,7 @@ pub mod rocket;
 pub mod settings;
 pub mod shadow;
 pub mod ws;
+pub mod zones;
 
 use std::path::Path;
 use std::sync::Arc;

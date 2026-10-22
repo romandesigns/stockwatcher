@@ -188,6 +188,7 @@ pub const QUOTES_INTERVAL: Duration = Duration::from_secs(1);
 /// | `RUNNERS_SCORER` | `r0` | the Runners strategy: `r0` (`precursors-R0`), `r2` (`precursors-R2`, LightGBM) or `placeholder` (`placeholder-b2`); `crate::rocket::ScorerChoice` |
 /// | `BURST_ALERTS` | `1` | live market with `ROCKET_WATCH`: buying-burst rows in the Runners panel and their phone push (`crate::rocket::burst`, the research's V3-5 detector): O(1) per print, a 5 s check over the symbols that printed in the last 15 s; never on a replay |
 /// | `BURST_ALERTS_PER_DAY` | `20` | the frozen threshold to alert at: `10`, `20` or `40` (the alert counts it gave a day on the research's DEV days) |
+/// | `VOLUME_SHELVES` | `1` | with `ROCKET_WATCH`: volume shelves (`crate::zones`, the zones bake-off's winner) for every symbol with a confirmed +20 % run today, in the Runners frame's `zones` and on the chart; the live market keeps its forward log under `ARCHIVE_ROOT/zones/` |
 /// | `BURST_THRESHOLD` | unset | a burst model probability threshold in (0, 1), overriding `BURST_ALERTS_PER_DAY`'s |
 /// | `ADMISSION_JOURNAL` | `0` | live with a recorder: write the admission journal beside the recording (`crate::admit`; ~190–270 B per print, so off for whole-market SIP: see `Market::init_history`) |
 #[derive(Clone, Debug)]
@@ -217,6 +218,8 @@ pub struct MarketConfig {
     pub rocket_policy: crate::rocket::Policy,
     /// `BURST_ALERTS` / `BURST_ALERTS_PER_DAY` / `BURST_THRESHOLD` (`crate::rocket::burst`).
     pub burst_policy: crate::rocket::burst::BurstPolicy,
+    /// `VOLUME_SHELVES` (on by default, needs `ROCKET_WATCH`): `crate::zones`.
+    pub volume_shelves: bool,
     /// `ADMISSION_JOURNAL` (off by default): the live admission journal (`crate::admit`). Its
     /// size and the reader's record cap make it unusable for a whole-market day; see
     /// `Market::init_history`.
@@ -245,6 +248,7 @@ impl Default for MarketConfig {
             rocket_watch: true,
             rocket_policy: crate::rocket::Policy::default(),
             burst_policy: crate::rocket::burst::BurstPolicy::default(),
+            volume_shelves: true,
             admission_journal: false,
             detection_quiet_references: None,
             evidence_check: Duration::from_secs(crate::evidence::DEFAULT_CHECK_SECS),
@@ -282,6 +286,9 @@ impl MarketConfig {
         }
         if let Some(v) = var("ROCKET_WATCH") {
             c.rocket_watch = on(&v);
+        }
+        if let Some(v) = var("VOLUME_SHELVES") {
+            c.volume_shelves = on(&v);
         }
         c.rocket_policy = crate::rocket::Policy::from_lookup(&get)?;
         c.burst_policy = crate::rocket::burst::BurstPolicy::from_lookup(&get)?;
@@ -397,6 +404,9 @@ pub(crate) struct Core {
     pub(crate) context: Option<ContextBoard>,
     /// Rocket watch (`ROCKET_WATCH`, `crate::rocket`): per-symbol 15 s state, alerts, outcomes.
     pub(crate) rocket: crate::rocket::RocketBoard,
+    /// Volume shelves (`VOLUME_SHELVES`, `crate::zones`): fed the same prints as `rocket`,
+    /// ticked just before it, published in its frame.
+    pub(crate) zones: crate::zones::ZoneBoard,
 }
 
 impl Core {
@@ -414,6 +424,7 @@ impl Core {
             latest_trade_day: None,
             context: None,
             rocket: crate::rocket::RocketBoard::disabled(),
+            zones: crate::zones::ZoneBoard::disabled(),
         }
     }
 
@@ -506,6 +517,10 @@ pub(crate) struct Inner {
     rocket_lines: Mutex<crate::day_line::Published>,
     /// Live: the forward log (`crate::rocket::log`), set once at start.
     rocket_log: std::sync::OnceLock<Arc<crate::rocket::RocketLog>>,
+    /// `VOLUME_SHELVES` (with `ROCKET_WATCH`): every `Core` gets an enabled `crate::zones` board.
+    zones_on: AtomicBool,
+    /// Live: the volume shelves' forward log (`ARCHIVE_ROOT/zones`), set once at start.
+    zones_log: std::sync::OnceLock<Arc<crate::rocket::RocketLog>>,
     /// Live with bursts on: the archive the burst detector's ADV30 is read from, once a day
     /// (`crate::rocket::burst::facts`).
     burst_archive: std::sync::OnceLock<Archive>,
@@ -724,6 +739,8 @@ impl Market {
             rocket_published: Mutex::new(None),
             rocket_lines: Mutex::new(crate::day_line::Published::default()),
             rocket_log: std::sync::OnceLock::new(),
+            zones_on: AtomicBool::new(true),
+            zones_log: std::sync::OnceLock::new(),
             burst_archive: std::sync::OnceLock::new(),
             running_archive: std::sync::OnceLock::new(),
             observations: crate::observe::ObservationSink::new(crate::observe::QUEUE_CAPACITY),
@@ -739,8 +756,43 @@ impl Market {
             let mut core = market.0.core.lock().expect("core lock");
             core.context = board;
             core.rocket = rocket;
+            core.zones = market.new_zone_board();
         }
         market
+    }
+
+    /// A fresh volume-shelf board (`crate::zones`) for a new `Core`: off with `ROCKET_WATCH=0`
+    /// or `VOLUME_SHELVES=0` (the shelves ride in the Runners frame).
+    fn new_zone_board(&self) -> crate::zones::ZoneBoard {
+        crate::zones::ZoneBoard::new(
+            self.0.rocket_on.load(Ordering::Relaxed) && self.0.zones_on.load(Ordering::Relaxed),
+        )
+    }
+
+    /// Turns the volume shelves on or off from now (production reads `VOLUME_SHELVES` once at
+    /// start; tests). Rebuilds the board: its state starts over.
+    pub fn set_volume_shelves(&self, on: bool) {
+        self.0.zones_on.store(on, Ordering::Relaxed);
+        let board = self.new_zone_board();
+        self.0.core.lock().expect("core lock").zones = board;
+    }
+
+    /// Live: opens the volume shelves' forward log in `dir` (`ARCHIVE_ROOT/zones`), prunes it to
+    /// the archive's retention window and reads today's keys back, so a restart logs nothing
+    /// twice (`crate::zones`, "After a restart").
+    pub fn init_zones_log(&self, dir: std::path::PathBuf, retention_days: u32, now: UnixNanos) {
+        let log = Arc::new(crate::rocket::RocketLog::new(dir, retention_days));
+        let today = market_events::session::trading_date(now);
+        log.prune(today);
+        let keys = crate::zones::logged_keys(log.dir(), today);
+        tracing::info!(dir = %log.dir().display(), logged = keys.len(), "volume shelves: forward log opened");
+        let mut core = self.0.core.lock().expect("core lock");
+        if !core.zones.enabled() {
+            return;
+        }
+        core.zones.enable_log(keys);
+        drop(core);
+        let _ = self.0.zones_log.set(log);
     }
 
     /// A fresh Rocket watch board (`crate::rocket`) for a new `Core`: off with `ROCKET_WATCH=0`.
@@ -759,7 +811,12 @@ impl Market {
         self.0.rocket_on.store(on, Ordering::Relaxed);
         *self.0.rocket_policy.lock().expect("rocket policy") = policy;
         let board = self.new_rocket_board();
-        self.0.core.lock().expect("core lock").rocket = board;
+        let zones = self.new_zone_board();
+        {
+            let mut core = self.0.core.lock().expect("core lock");
+            core.rocket = board;
+            core.zones = zones;
+        }
         *self.0.rocket_published.lock().expect("rocket published") = None;
         *self.0.rocket_lines.lock().expect("rocket lines") = Default::default();
     }
@@ -1523,6 +1580,14 @@ impl Market {
         }
         market.set_rocket_watch(cfg.rocket_watch, cfg.rocket_policy.clone());
         let _ = market.0.running_archive.set(archive.clone());
+        market.set_volume_shelves(cfg.volume_shelves);
+        if mode == ClockMode::Live && cfg.rocket_watch && cfg.volume_shelves {
+            market.init_zones_log(
+                archive.root().join("zones"),
+                archive.config().retention_days,
+                crate::history::wall_now(),
+            );
+        }
         if mode == ClockMode::Live && cfg.rocket_watch {
             market.enable_burst(cfg.burst_policy.clone(), Some(archive.clone()));
         }
@@ -1971,8 +2036,13 @@ impl Market {
                         // And so do buying bursts: the detector does not gate a symbol before its
                         // day is rebuilt (crate::rocket::burst, "After a restart"), so a symbol
                         // printing in its band must not wait for the background preload.
+                        // Volume shelves too (crate::zones, "After a restart": a symbol has no
+                        // shelf state until its day is adopted), but like the Ross board only
+                        // when the background preload is on: then this only moves it forward.
+                        let preload = self.0.history.get().is_some_and(|h| h.preload);
                         let burst_wants = matches!(&e, MarketEvent::Trade(t)
-                            if core.rocket.burst_wants_history(t));
+                            if core.rocket.burst_wants_history(t)
+                                || (preload && core.zones.wants_history(t)));
                         if self.0.detection_on.load(Ordering::Relaxed) || ross_wants || burst_wants
                         {
                             crate::history::request_load(self, &mut core, symbol);
@@ -2054,6 +2124,7 @@ impl Market {
                             core.quotes.apply_trade(t, counted);
                             core.pressure.apply_trade(t, counted);
                             core.rocket.apply_trade(t, counted);
+                            core.zones.apply_trade(t, counted);
                             if let (Some(closes), Some(cx)) =
                                 (context_closes.as_ref(), core.context.as_mut())
                             {
@@ -2165,6 +2236,7 @@ impl Market {
                     *core = Core::new(closes);
                     core.context = board;
                     core.rocket = rocket;
+                    core.zones = self.new_zone_board();
                     core.seq = seq;
                     core.rebuilding = true;
                 }
@@ -2651,9 +2723,10 @@ impl Market {
         if !core.rocket.enabled() {
             return (core.seq, crate::rocket::disabled_frame("rocket.snapshot"));
         }
-        let body = core.rocket.body(&|s| Self::rocket_quote(&core, s), &|s| {
+        let mut body = core.rocket.body(&|s| Self::rocket_quote(&core, s), &|s| {
             self.rocket_levels(&core, s, tau)
         });
+        Self::add_zones(&core, &mut body, tau);
         let mut v = serde_json::json!({"type": "rocket.snapshot", "t": t});
         if let (Some(m), serde_json::Value::Object(b)) = (v.as_object_mut(), body) {
             m.extend(b);
@@ -2664,6 +2737,16 @@ impl Market {
         };
         crate::day_line::decorate_by(&mut v, "s", src, None);
         (core.seq, v.to_string())
+    }
+
+    /// The volume shelves (`crate::zones`) as the Runners frame's `zones` key, when they are on.
+    /// In the body, so a shelf that changes sends an update like a row that changes.
+    fn add_zones(core: &Core, body: &mut serde_json::Value, now: i64) {
+        if core.zones.enabled()
+            && let Some(m) = body.as_object_mut()
+        {
+            m.insert("zones".into(), core.zones.json(now));
+        }
     }
 
     fn rocket_quote(core: &Core, symbol: &str) -> crate::rocket::Quote {
@@ -2696,11 +2779,14 @@ impl Market {
         let Some(clock) = self.clock() else {
             return false;
         };
-        let (seq, frame, log, notices, adv_wanted, facts_wanted) = {
+        let (seq, frame, log, notices, adv_wanted, facts_wanted, zones_log) = {
             let mut core = self.0.core.lock().expect("core lock");
             if core.rebuilding || !core.rocket.enabled() {
                 return false;
             }
+            // The shelves first, so this frame carries the slot just decided.
+            core.zones.tick(clock.now.0);
+            let zones_log = core.zones.take_log();
             let Core {
                 rocket,
                 quotes,
@@ -2723,9 +2809,10 @@ impl Market {
             let facts_wanted = core.rocket.take_running_facts_request();
             let mut frame = None;
             if self.rocket_subscribers() > 0 {
-                let body = core.rocket.body(&|s| Self::rocket_quote(&core, s), &|s| {
+                let mut body = core.rocket.body(&|s| Self::rocket_quote(&core, s), &|s| {
                     self.rocket_levels(&core, s, clock.now.0)
                 });
+                Self::add_zones(&core, &mut body, clock.now.0);
                 let mut v = serde_json::json!({"type": "rocket.update", "t": clock.now.millis()});
                 if let (Some(m), serde_json::Value::Object(b)) = (v.as_object_mut(), body.clone()) {
                     m.extend(b);
@@ -2746,8 +2833,28 @@ impl Market {
                     frame = Some(v.to_string());
                 }
             }
-            (core.seq, frame, log, notices, adv_wanted, facts_wanted)
+            (
+                core.seq,
+                frame,
+                log,
+                notices,
+                adv_wanted,
+                facts_wanted,
+                zones_log,
+            )
         };
+        if let Some(l) = self.0.zones_log.get() {
+            let mut by_date: Vec<(NaiveDate, Vec<String>)> = Vec::new();
+            for (d, line) in zones_log {
+                match by_date.last_mut() {
+                    Some((ld, v)) if *ld == d => v.push(line),
+                    _ => by_date.push((d, vec![line])),
+                }
+            }
+            for (d, lines) in by_date {
+                l.append(d, &lines);
+            }
+        }
         if let Some(date) = adv_wanted {
             self.load_burst_adv(date);
         }

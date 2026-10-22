@@ -1,0 +1,69 @@
+{
+ "source": "research/zones-volume-profile 178c4ab variant C, DEV 2026-04-01 (_cache-dev-C, with --score) and reports/rockets/events-g20",
+ "events": [
+  {
+   "symbol": "GENK",
+   "t_ns": 1775050650000000000,
+   "entry_price": 1.52,
+   "zone_lo": 1.5,
+   "zone_hi": 1.54,
+   "peak_price": 1.89,
+   "run_start_ns": 1775050215000000000,
+   "score": 0.949,
+   "_res": "HELD"
+  },
+  {
+   "symbol": "GENK",
+   "t_ns": 1775052315000000000,
+   "entry_price": 1.7,
+   "zone_lo": 1.68,
+   "zone_hi": 1.74,
+   "peak_price": 1.9999,
+   "run_start_ns": 1775050215000000000,
+   "score": 0.6,
+   "_res": "HELD"
+  },
+  {
+   "symbol": "ROMA",
+   "t_ns": 1775071455000000000,
+   "entry_price": 4.0,
+   "zone_lo": 3.92,
+   "zone_hi": 4.04,
+   "peak_price": 4.9319,
+   "run_start_ns": 1775051085000000000,
+   "score": 0.5386,
+   "_res": "NEITHER"
+  },
+  {
+   "symbol": "AMOD",
+   "t_ns": 1775074155000000000,
+   "entry_price": 0.4048,
+   "zone_lo": 0.396,
+   "zone_hi": 0.41400000000000003,
+   "peak_price": 0.474,
+   "run_start_ns": 1775073225000000000,
+   "score": 0.5966,
+   "_res": "LOST"
+  }
+ ],
+ "runs": [
+  {
+   "symbol": "GENK",
+   "start_ns": 1775050215000000000,
+   "start_price": 1.5001,
+   "plus20_ns": 1775050335000000000
+  },
+  {
+   "symbol": "ROMA",
+   "start_ns": 1775051085000000000,
+   "start_price": 3.2016,
+   "plus20_ns": 1775051235000000000
+  },
+  {
+   "symbol": "AMOD",
+   "start_ns": 1775073225000000000,
+   "start_price": 0.358,
+   "plus20_ns": 1775074080000000000
+  }
+ ]
+}
