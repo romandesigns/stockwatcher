@@ -10,9 +10,9 @@
 //! - [`features`]: per-symbol rolling state on the research's 15 s grid, fed every print the chart
 //!   engine counted (O(1) per print, under the core lock like the quote and pressure boards), and
 //!   the research's 31 causal features at each completed barrier.
-//! - [`scorer`]: the [`RocketScorer`] seam. The shipped scorer is `placeholder-b2` (the bake-off's
-//!   volume-acceleration baseline); the research leader replaces it by changing
-//!   [`scorer::production_scorer`].
+//! - [`scorer`]: the [`RocketScorer`] seam. The shipped scorer is `precursors-R0` ([`r0`], the
+//!   bake-off's round-1 pick, frozen thresholds); `placeholder-b2` (the volume-acceleration
+//!   baseline) stays as the fallback. [`scorer::production_scorer`] picks one.
 //! - [`RocketBoard`] (here): the alert policy, the outcomes, the track record and the panel frame.
 //! - [`log`]: the forward log on the archive volume (live market only).
 //!
@@ -45,6 +45,7 @@
 
 pub mod features;
 pub mod log;
+pub mod r0;
 pub mod scorer;
 
 use std::collections::HashMap;

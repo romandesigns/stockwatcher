@@ -112,9 +112,11 @@ async fn rocket_subscribe_gets_a_snapshot_then_whole_panel_updates() {
     send(&mut ws, json!({"type": "rocket.subscribe"})).await;
     let snap = next(&mut ws, is("rocket.snapshot")).await;
     assert_eq!(snap["enabled"], true, "{snap}");
-    assert_eq!(snap["strategy"]["id"], "placeholder-b2");
-    assert_eq!(snap["strategy"]["placeholder"], true);
-    assert_eq!(snap["mode"], "budget");
+    // The production scorer since 2026-10-22: the bake-off's frozen precursors-R0, with its
+    // frozen threshold (fixed mode).
+    assert_eq!(snap["strategy"]["id"], "precursors-R0");
+    assert_eq!(snap["strategy"]["placeholder"], false);
+    assert_eq!(snap["mode"], "fixed");
     assert_eq!(snap["budget"], 10);
     assert!(snap["rows"].is_array());
     assert!(snap["days"].is_array());

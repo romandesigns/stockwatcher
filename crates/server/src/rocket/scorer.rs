@@ -49,8 +49,9 @@ pub trait RocketScorer: Send + Sync + 'static {
 }
 
 /// The strategy the server runs. **The one line to change when a research scorer is plugged in.**
+/// Since 2026-10-22: `precursors-R0`, the bake-off's round-1 pick (see `r0.rs` for its evidence).
 pub fn production_scorer() -> Box<dyn RocketScorer> {
-    Box::new(PlaceholderB2)
+    Box::new(super::r0::PrecursorsR0)
 }
 
 /// The bake-off's baseline B2, shipped until the research leader is plugged in: volume
