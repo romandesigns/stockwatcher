@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createDetectionChannel, detectionBlocked, detectionMatches, detectionOverlays, detectionPrice, detectionSnapshotView, groupDetections, type DetectionCoreEpisode, type DetectionMessage } from "./detection.ts";
+import { createDetectionChannel, detectionAgo, detectionAttention, detectionBlocked, detectionMatches, detectionOverlays, detectionPrice, detectionRowView, detectionSnapshotView, groupDetections, type DetectionCoreEpisode, type DetectionMessage } from "./detection.ts";
 import { parseServerMessage } from "./protocol.ts";
 import { createWsClient, type WebSocketLike } from "./ws.ts";
 
@@ -199,4 +199,50 @@ test("malformed detection delivery is explicit and requests one repair snapshot"
   expect(channel.get().snapshot!.episodes).toHaveLength(1); expect(repairs).toBe(1);
   socket.receive(frame()); expect(channel.get().error).toBeNull();
   client.close();
+});
+
+describe("Signals rows (design canvas, 2026-10-22)", () => {
+  const T = (ns: number) => `t${ns}`;
+  const row = (patch: Partial<DetectionCoreEpisode> = {}, current = true, near: boolean | null = null) => {
+    const f = frame();
+    Object.assign(f.snapshot!.active[0]!, patch);
+    if (near !== null) f.snapshot!.active[0]!.current!.near_trigger = near;
+    const view = detectionSnapshotView(f)!;
+    return detectionRowView(groupDetections(view, "all", view.episodes[0]!.terminal)[0]!, 100 + 90_000_000_000, current, T);
+  };
+
+  test("the honest stage labels; broke-trigger is plain text, never counted, never green", () => {
+    expect([row().label, row().tone, row().note]).toEqual(["Pullback", "muted", "trigger 3.40 · 1.8% away"]);
+    expect(row().meter).toBeCloseTo(0.25);
+    expect([row({}, true, true).label, row({}, true, true).tone, row({}, true, true).attention]).toEqual(["At trigger", "warning", true]);
+    const crossing = row({ state: "crossing_provisional" });
+    expect([crossing.label, crossing.tone, crossing.pulse, crossing.attention, crossing.note]).toEqual(["Crossing", "accent", true, true, "3.40 · close pending"]);
+    const broke = row({ state: "trigger_observed" });
+    expect([broke.label, broke.tone, broke.attention, broke.meter]).toEqual(["Broke trigger", "text", false, null]);
+    const failed = row({ state: "invalidated", resolution: { state: "invalidated", reason: "below_invalidation", transition_id: "x", at: 100, bar_end: null } });
+    expect([failed.label, failed.tone, failed.dimmed, failed.note]).toEqual(["Failed", "dim", true, "below 3.32"]);
+    // A family with no pullback stage keeps its own label, muted, never accent.
+    const ignition = row({ family: "ignition", state: "recognized" });
+    expect([ignition.label, ignition.tone, ignition.family]).toEqual(["Ignition recognized", "muted", "Ignition"]);
+  });
+
+  test("not current: no pulse, no meter, no 'At trigger'; age and badges", () => {
+    const stale = row({ state: "crossing_provisional" }, false);
+    expect([stale.label, stale.pulse, stale.meter]).toEqual(["Crossing", false, null]);
+    expect(row({}, false, true).label).toBe("Pullback");
+    expect(row().ago).toBe("1m");
+    expect(detectionAgo(0, 30_000_000_000)).toBe("now");
+    expect(detectionAgo(0, 7_200_000_000_000)).toBe("2h");
+    expect([row().news, row().ross]).toEqual([false, false]);
+    expect(row().aria).toBe("MPXA 3.34, Micro-pullback, Pullback trigger 3.40 · 1.8% away, 1m");
+  });
+
+  test("the count is the active rows at the trigger or crossing it", () => {
+    const f = frame();
+    f.snapshot!.active.push({ ...episode("fixture/X/micro/1", "XX"), state: "crossing_provisional" }, { ...episode("fixture/Y/micro/1", "YY"), state: "trigger_observed" });
+    expect(detectionAttention(detectionSnapshotView(f))).toBe(1);
+    f.snapshot!.active[0]!.current!.near_trigger = true;
+    expect(detectionAttention(detectionSnapshotView(f))).toBe(2);
+    expect(detectionAttention(null)).toBe(0);
+  });
 });

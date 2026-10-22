@@ -415,3 +415,116 @@ export function detectionEvidenceValue(e: DetectionEvidence): string {
   if (e.units === "micros" && typeof e.value === "number") return detectionPrice(e.value);
   return `${typeof e.value === "number" ? Number(e.value.toFixed(4)).toLocaleString("en-US") : String(e.value)}${e.units ? ` ${e.units}` : ""}`;
 }
+
+/**
+ * The Signals row (design canvas "Detection Panel", owner-approved 2026-10-21/22): one compact
+ * row per instrument, shared by web and phone so they cannot disagree. The STAGE labels are the
+ * Ross cue's (packages/shared/src/ross.ts): Pullback, At trigger, Crossing, Broke trigger,
+ * Failed. They describe where the price stands against levels the engine names, not entry
+ * signals: on the 2026-10-07..20 holdout a trigger observed failed about three times in four, so
+ * "Broke trigger" reads in the normal text colour, never a success green, and never counts as
+ * needing attention. Accent is spent only on a crossing in progress, amber on a price at the
+ * trigger. Families without a pullback stage (momentum, ignition) keep their own state label,
+ * muted. Nothing here derives a detection: every field is the engine's.
+ */
+export type DetectionStage = "crossing" | "near" | "triggered" | "forming" | "failed" | "other";
+export type DetectionTone = "critical" | "warning" | "accent" | "text" | "muted" | "dim";
+export interface DetectionRowView {
+  symbol: string;
+  price: string;
+  family: string;
+  stage: DetectionStage;
+  label: string;
+  tone: DetectionTone;
+  /** A crossing in progress pulses, only while the data is current. */
+  pulse: boolean;
+  /** At the trigger or crossing it: the tab/card count. */
+  attention: boolean;
+  note: string;
+  /** 0 at the invalidation (pullback low), 1 at the trigger; null when there is nothing current to place. */
+  meter: number | null;
+  dimmed: boolean;
+  ago: string;
+  news: boolean;
+  ross: boolean;
+  aria: string;
+}
+
+const CROSSING = new Set(["crossing_provisional", "crossing_wick"]);
+const FORMING = new Set(["pullback_forming", "armed", "near"]);
+const BROKE = new Set(["trigger_observed", "confirmed", "retained"]);
+const FAILED = new Set(["invalidated", "rejected"]);
+/** Prices as the rows print them (the canvas): four decimals below $1, two from $1, no "$". */
+const rowPrice = (micros: number | null) => (micros === null ? "—" : (micros / 1_000_000).toFixed(Math.abs(micros) < 1_000_000 ? 4 : 2));
+
+/** "now" under a minute, then minutes, then hours: since the instrument's last material change. */
+export function detectionAgo(thenNs: number, nowNs: number): string {
+  const s = Math.max(0, (nowNs - thenNs) / 1_000_000_000);
+  return s < 60 ? "now" : s < 3600 ? `${Math.floor(s / 60)}m` : `${Math.floor(s / 3600)}h`;
+}
+
+/** An episode's stage. "At trigger" needs a current price: a stale one reads as Pullback. */
+export function detectionStage(e: DetectionEpisode, current = true): DetectionStage {
+  if (CROSSING.has(e.state)) return "crossing";
+  if (BROKE.has(e.state)) return "triggered";
+  if (FAILED.has(e.state)) return "failed";
+  if (FORMING.has(e.state)) return current && !e.price_stale && !e.terminal && (e.near_trigger === true || e.state === "near") ? "near" : "forming";
+  return "other";
+}
+
+/** The row for an instrument's selected episode. `current` is false while the feed is
+ * reconnecting/resyncing: then nothing pulses, no distance is shown and the meter is withheld. */
+export function detectionRowView(group: DetectionGroup, nowNs: number, current: boolean, formatTime: (epochNs: number) => string): DetectionRowView {
+  const e = group.selected;
+  const live = current && !e.price_stale && !e.terminal;
+  const trigger = e.level?.trigger ?? null;
+  const inval = e.level?.invalidation ?? null;
+  const stage = detectionStage(e, current);
+  const LOOK: Record<DetectionStage, [string, DetectionTone]> = {
+    crossing: ["Crossing", "accent"],
+    near: ["At trigger", "warning"],
+    triggered: ["Broke trigger", "text"],
+    forming: ["Pullback", "muted"],
+    failed: ["Failed", "dim"],
+    other: [detectionStateLabel(e.state), e.terminal ? "dim" : "muted"],
+  };
+  const [label, tone] = LOOK[stage];
+  const distance = live && trigger !== null ? detectionDistance(e.price, trigger, "trigger") : null;
+  const away = distance && !distance.atOrAbove ? ` · ${distance.percent.toFixed(1)}% away` : "";
+  const when = e.resolved_at ?? e.last_material_transition_at;
+  let note = "";
+  if (stage === "crossing" && trigger !== null) note = `${rowPrice(trigger)} · close pending`;
+  else if (stage === "near" && trigger !== null) note = `${rowPrice(trigger)}${away}`;
+  else if (stage === "forming" && trigger !== null) note = `trigger ${rowPrice(trigger)}${away}`;
+  else if (stage === "triggered" && trigger !== null) note = `${rowPrice(trigger)}${when ? ` · ${formatTime(when)}` : ""}`;
+  else if (stage === "failed") note = e.state === "rejected" ? "back inside range" : inval !== null ? `below ${rowPrice(inval)}` : "";
+  // The meter only where a pullback stage is live and both levels are known.
+  const meter = live && (stage === "forming" || stage === "near" || stage === "crossing") && trigger !== null && inval !== null && e.price !== null && trigger > inval ? Math.max(0, Math.min(1, (e.price - inval) / (trigger - inval))) : null;
+  const view: DetectionRowView = {
+    symbol: e.symbol,
+    price: rowPrice(e.price),
+    family: detectionFamilyLabel(e.family),
+    stage,
+    label,
+    tone,
+    pulse: stage === "crossing" && live,
+    attention: !e.terminal && (stage === "crossing" || stage === "near"),
+    note,
+    meter,
+    dimmed: stage === "failed" || (e.terminal && stage === "other"),
+    ago: detectionAgo(group.lastMaterialAt, nowNs),
+    news: e.catalyst === "qualifying",
+    ross: e.ross_member === true,
+    aria: "",
+  };
+  view.aria = `${view.symbol} ${view.price}, ${view.family}, ${label}${note ? ` ${note}` : ""}, ${view.ago}${view.news ? ", news" : ""}${view.ross ? ", on the Ross Panel" : ""}${e.price_stale ? ", price stale" : ""}`;
+  return view;
+}
+
+/** Active instruments at the trigger or crossing it: the Signals tab's and card's count. */
+export function detectionAttention(snapshot: DetectionSnapshot | null): number {
+  return groupDetections(snapshot).filter((g) => {
+    const s = detectionStage(g.selected);
+    return !g.selected.terminal && (s === "crossing" || s === "near");
+  }).length;
+}
