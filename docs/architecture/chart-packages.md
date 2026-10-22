@@ -110,6 +110,16 @@ purpose (a locked phone is reachable only through FCM/APNs): optional at runtime
 request), retried on 429/5xx, receipts checked after 15 min, `DeviceNotRegistered` drops the
 token.
 
+**Runners pushes (2026-10-22).** The same task and the same Expo sender also push the live
+Runners board's new flags and, per phone, its breakouts (`crates/server/src/alerts/runners.rs`):
+the market offers each notice with `try_send` after the core lock, a replay never does. Opt-ins
+live on the device record (`push.register {runnersNew, runnersBreakout}`; new flags on, breakouts
+off), not in the synced settings: they are about which phone makes noise. Limits of their own:
+one per stock per 10 min, 30 a day (kept across restarts, apart from the price alerts' budget),
+the price alerts' quiet hours, nothing older than 3 min. Not in Activity (logged only). A tap
+opens the ticker's chart (`apps/mobile/src/notifications/route.ts`); while the phone has no push
+token, the dashboard's local banner for new flags stands in.
+
 **On the chart (chart-core `alerts.ts`, both renderers; the chart never talks to the server, the
 app passes `alerts={lines, onCreate, onMore, onMove, onDelete, onUndo}`).**
 

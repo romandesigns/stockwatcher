@@ -19,7 +19,7 @@ Production (`~/apps/stockwatcher/.env` on the VPS, shared by the `server`, `arch
 | `PORT` | `8790` | HTTP port |
 | `HOST` | `127.0.0.1` | bind address; the image sets `0.0.0.0` |
 | `STATIC_DIR` | `./apps/web/dist` | the built web app the server serves |
-| `DATA_DIR` | `./data` | `updates/` (desktop installers, served at `/updates/*`), `settings/` (synced settings) and `alerts/` (price alerts' Activity `history.jsonl` and the phones registered for push, `push-devices.json`) live here |
+| `DATA_DIR` | `./data` | `updates/` (desktop installers, served at `/updates/*`), `settings/` (synced settings) and `alerts/` (price alerts' Activity `history.jsonl`, the phones registered for push with their Runners opt-ins, `push-devices.json`, and today's Runners push count and per-stock cooldowns, `runners-push.json`) live here |
 | `RUST_LOG` | `info` | tracing filter |
 | `LOG_FORMAT` | pretty | `json` in the image |
 
@@ -73,6 +73,7 @@ Production (`~/apps/stockwatcher/.env` on the VPS, shared by the `server`, `arch
 | `ROCKET_ALERTS_PER_DAY` | `10` | Rocket watch's daily budget: the adaptive threshold aims for it and never exceeds it (1–200) |
 | `ROCKET_THRESHOLD` | unset | a fixed Rocket watch threshold in the scorer's own units (overrides its frozen one; capped at max(5 × budget, 50) alerts a day), or `budget` to force the adaptive one. Unset: the scorer's frozen threshold if it has one, else the budget |
 | `RUNNERS_SCORER` | `r0` | which strategy flags Runners (`crates/server/src/rocket/scorer.rs` `ScorerChoice`): `r0` = `precursors-R0`, the bake-off's round-1 rule (frozen B10 threshold); `r2` = `precursors-R2`, the round-2 LightGBM model (300 trees on 26 research features, frozen B10 raw-score threshold 3.0595, embedded as `rocket/r2_model.txt` and evaluated in Rust bit-identically to LightGBM; ~10 ms per barrier for 7,000 symbols in release; `pdh`/`rvol` are not wired yet and take their training medians); `placeholder` = `placeholder-b2`, the volume-acceleration baseline (adaptive budget). Anything else refuses to start. Every alert and log line carries the strategy id and version, so switching never mixes track records |
+| (no variable) Runners phone push | on | the LIVE market's Runners board sends an Expo push (the price alerts' pipeline, `crates/server/src/alerts/runners.rs`) for each new flag ("Runners: CJMB $2.45", the top two reasons) and, for phones that turned it on, each flagged row turning *breaking out* ("CJMB breaking out $3.10", % from the flag). Data `{symbol, kind: "runners.new" \| "runners.breakout", alert_id}`: a tap opens that ticker's chart. Opt-in per phone, sent in `push.register` (`runnersNew`, default on; `runnersBreakout`, default off; Settings → Runners on the phone). Limits: at most one Runners push per stock per 10 minutes (either kind), 30 a day (ET; kept across restarts, separate from the price alerts' phone budget), the price alerts' quiet hours, nothing older than 3 minutes. Off the ingest path (a bounded `try_send` after the core lock); a failed push is logged and costs nothing else. A replay never pushes. Needs `ROCKET_WATCH` and a registered phone; tune by editing the constants, not the environment |
 
 Alpaca allows one stream connection per account on most plans: run live on one host only.
 
