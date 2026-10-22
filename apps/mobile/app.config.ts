@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import type { ConfigContext, ExpoConfig } from "expo/config";
 
 // Names and ids are fixed in docs/CONVENTIONS.md ("Names, ports, URLs").
@@ -9,6 +10,15 @@ const APP_ID = "io.wavystyle.stockwatcher";
 // Dominant background from src/theme.ts, repeated here because app config
 // runs in Node at build time and cannot import app code.
 const BACKGROUND = "#0f1216";
+
+// Android push needs Firebase Cloud Messaging: without google-services.json in the build,
+// getExpoPushTokenAsync throws and no phone can register (found 2026-10-22, when no Runners or
+// burst push had ever been delivered). The file stays out of git: on EAS it is the file-type
+// environment variable GOOGLE_SERVICES_JSON, locally ./google-services.json. The FCM v1
+// service-account key that lets Expo send is a separate EAS credential, never in the repo.
+const GOOGLE_SERVICES_JSON =
+  process.env.GOOGLE_SERVICES_JSON ??
+  (existsSync("./google-services.json") ? "./google-services.json" : undefined);
 
 export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
@@ -53,6 +63,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   },
   android: {
     package: APP_ID,
+    ...(GOOGLE_SERVICES_JSON ? { googleServicesFile: GOOGLE_SERVICES_JSON } : {}),
     adaptiveIcon: {
       backgroundColor: BACKGROUND,
       foregroundImage: "./assets/android-icon-foreground.png",
