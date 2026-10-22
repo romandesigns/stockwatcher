@@ -40,7 +40,7 @@ test("rows: tap opens, tap-then-hold copies; crossfade, not layout animation; no
   }
 });
 
-test("reconnecting: rows dim and the count stops pulsing", () => {
+test("reconnecting: rows dim and the count (last known) is withheld", () => {
   expect(panel).toContain("!state.connected && styles.dimmed");
-  expect(panel).toContain("reducedMotion={reducedMotion || !current}");
+  expect(panel).toContain("const attention = current ? detectionAttention(snapshot) : 0;");
 });

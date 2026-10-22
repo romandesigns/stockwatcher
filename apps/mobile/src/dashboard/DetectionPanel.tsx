@@ -91,7 +91,8 @@ export function DetectionPanel({ channel, onPick, reducedMotion }: { channel: De
   const segments = [...new Set(snapshot?.episodes.map((e) => e.segment) ?? [])].sort();
   const current = state.connected && !state.resyncing;
   const now = snapshot ? Math.max(snapshot.cutoff, snapshot.as_of) : 0;
-  const attention = detectionAttention(snapshot);
+  // Only from current data: while reconnecting the rows are last known, so nothing claims attention.
+  const attention = current ? detectionAttention(snapshot) : 0;
   const applied = [filter !== "all", segment !== "all", source !== "all", catalyst !== "all"].filter(Boolean).length;
   if (state.enabled !== true) return null;
   return (
@@ -102,7 +103,7 @@ export function DetectionPanel({ channel, onPick, reducedMotion }: { channel: De
         </Text>
         {attention > 0 && (
           <View style={styles.count} accessibilityLabel={`${attention} at the trigger or crossing it`}>
-            <Pulse color={UI.accent} size={6} reducedMotion={reducedMotion || !current} />
+            <Pulse color={UI.accent} size={6} reducedMotion={reducedMotion} />
             <Text style={styles.countText}>{attention}</Text>
           </View>
         )}
