@@ -52,6 +52,14 @@
 //! log on every transition). The rows also carry the micro-pullback levels of the stock-context
 //! engine (`STOCK_CONTEXT=1`; the engine runs MP5 for the flagged symbols as for Ross members)
 //! and the day line (`crate::day_line`), both added by the market when it serializes a frame.
+//!
+//! # Phone pushes
+//!
+//! Each new alert, and each flagged row whose momentum state turns `breaking_out`, also leaves a
+//! [`Notice`] ([`RocketBoard::take_notices`]). The live market hands them to the alerts service
+//! (`crate::alerts::runners`), which sends the Expo push within its own limits; a replay board's
+//! notices are taken and dropped. A restore from the forward log leaves none: a restart must not
+//! re-announce the morning's flags.
 
 pub mod features;
 pub mod log;
@@ -88,6 +96,43 @@ const SETTLE_NS: i64 = 45 * MIN_NS;
 const GAIN_WINDOW_NS: i64 = 30 * MIN_NS;
 /// Rows sent to the panel (newest first).
 pub const ROWS: usize = 50;
+/// Notices kept while nobody takes them (a board ticked without a market, a test).
+const MAX_NOTICES: usize = 256;
+
+/// What a phone push may be about (module docs, "Phone pushes").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoticeKind {
+    /// A new alert (a new row on the board).
+    New,
+    /// A flagged row's momentum state turned `breaking_out` (from any other state).
+    Breakout,
+}
+
+impl NoticeKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            NoticeKind::New => "new",
+            NoticeKind::Breakout => "breakout",
+        }
+    }
+}
+
+/// One new flag or one breakout, as the push needs it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Notice {
+    pub kind: NoticeKind,
+    /// The board row's id (`Alert::id`).
+    pub alert_id: String,
+    pub symbol: String,
+    /// The barrier it happened at (epoch ns).
+    pub at_ns: i64,
+    /// The price then (the flag price for a new alert).
+    pub price: f64,
+    /// % from the flag price (0 for a new alert).
+    pub from_flag_pct: Option<f64>,
+    /// The alert's reasons, strongest first.
+    pub reasons: Vec<String>,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Threshold {
@@ -351,6 +396,8 @@ pub struct RocketBoard {
     halted: HashSet<String>,
     /// The flagged symbols last handed to the stock-context engine ([`RocketBoard::take_watch`]).
     watch_sent: Vec<String>,
+    /// New flags and breakouts since the last [`RocketBoard::take_notices`].
+    notices: Vec<Notice>,
 }
 
 impl RocketBoard {
@@ -378,6 +425,7 @@ impl RocketBoard {
             last_cost: None,
             halted: HashSet::new(),
             watch_sent: Vec::new(),
+            notices: Vec::new(),
         }
     }
 
@@ -461,6 +509,23 @@ impl RocketBoard {
     /// The forward-log lines produced since the last take, by trading date.
     pub fn take_log(&mut self) -> Vec<(NaiveDate, String)> {
         std::mem::take(&mut self.pending)
+    }
+
+    /// The new flags and breakouts since the last take (module docs, "Phone pushes").
+    pub fn take_notices(&mut self) -> Vec<Notice> {
+        std::mem::take(&mut self.notices)
+    }
+
+    /// Tests: a notice as if the board had produced it.
+    #[cfg(test)]
+    pub(crate) fn inject_notice(&mut self, n: Notice) {
+        self.notice(n);
+    }
+
+    fn notice(&mut self, n: Notice) {
+        if self.notices.len() < MAX_NOTICES {
+            self.notices.push(n);
+        }
     }
 
     /// The median of the last five days' ideal thresholds for this scorer.
@@ -704,6 +769,15 @@ impl RocketBoard {
             };
             self.pending.push((date, a.alert_line(date, mode)));
             self.last_alert.insert(f.symbol.clone(), b.at_ns);
+            self.notice(Notice {
+                kind: NoticeKind::New,
+                alert_id: a.id.clone(),
+                symbol: a.symbol.to_string(),
+                at_ns: a.at_ns,
+                price: a.price,
+                from_flag_pct: Some(0.0),
+                reasons: a.reasons.clone(),
+            });
             self.alerts.push(a);
             self.revision += 1;
         }
@@ -797,6 +871,19 @@ impl RocketBoard {
                 if a.track.transitions <= track::MAX_TRANSITIONS {
                     let line = a.state_line(date, &tr);
                     self.pending.push((date, line));
+                }
+                let breakout = (tr.to == MState::BreakingOut && tr.from != MState::BreakingOut)
+                    .then(|| Notice {
+                        kind: NoticeKind::Breakout,
+                        alert_id: a.id.clone(),
+                        symbol: a.symbol.to_string(),
+                        at_ns: tr.at_ns,
+                        price: tr.price,
+                        from_flag_pct: a.track.pct(tr.price).map(round2),
+                        reasons: a.reasons.clone(),
+                    });
+                if let Some(n) = breakout {
+                    self.notice(n);
                 }
                 self.revision += 1;
             }

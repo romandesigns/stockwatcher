@@ -2580,13 +2580,15 @@ impl Market {
     /// 15 s barrier, scored only once it completed), the forward-log appends it produced (live,
     /// after the core lock is released), and one `rocket.update` when the panel or a row's day
     /// line changed and anyone is subscribed. Runs with no subscriber too: the alerts, the
-    /// momentum states and the forward log must not depend on a panel being open. Returns
-    /// whether it broadcast. Public so tests can tick.
+    /// momentum states and the forward log must not depend on a panel being open. The board's
+    /// new flags and breakouts go to the phone push (`crate::alerts::runners`) on the LIVE market
+    /// only, offered after the lock is released and never waited on; a replay's are dropped.
+    /// Returns whether it broadcast. Public so tests can tick.
     pub fn publish_rocket(&self) -> bool {
         let Some(clock) = self.clock() else {
             return false;
         };
-        let (seq, frame, log) = {
+        let (seq, frame, log, notices) = {
             let mut core = self.0.core.lock().expect("core lock");
             if core.rebuilding || !core.rocket.enabled() {
                 return false;
@@ -2607,6 +2609,8 @@ impl Market {
                 cx.set_watched(w);
             }
             let log = core.rocket.take_log();
+            // Taken whatever the market, so a replay's never pile up.
+            let notices = core.rocket.take_notices();
             let mut frame = None;
             if self.rocket_subscribers() > 0 {
                 let body = core.rocket.body(&|s| Self::rocket_quote(&core, s), &|s| {
@@ -2632,8 +2636,15 @@ impl Market {
                     frame = Some(v.to_string());
                 }
             }
-            (core.seq, frame, log)
+            (core.seq, frame, log, notices)
         };
+        if self.0.mode == ClockMode::Live
+            && let Some(sink) = self.alert_sink()
+        {
+            for n in notices {
+                sink.offer_runner(n);
+            }
+        }
         if let Some(l) = self.0.rocket_log.get() {
             let mut by_date: Vec<(NaiveDate, Vec<String>)> = Vec::new();
             for (d, line) in log {
@@ -3560,6 +3571,61 @@ async fn ingest(mut items: mpsc::Receiver<FeedItem>, market: Market, sim: Option
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Runners board's notices reach the phone push from the LIVE market only, after the
+    /// lock, without waiting: a replay's are taken and dropped, and a full sink costs the
+    /// notice, never the board.
+    #[test]
+    fn runners_notices_leave_the_live_market_only() {
+        let notice = |s: &str| crate::rocket::Notice {
+            kind: crate::rocket::NoticeKind::New,
+            alert_id: format!("x-{s}"),
+            symbol: s.into(),
+            at_ns: 0,
+            price: 1.0,
+            from_flag_pct: Some(0.0),
+            reasons: vec![],
+        };
+        for mode in [ClockMode::Live, ClockMode::Replay] {
+            let market = Market::idle(mode, "test", None);
+            market.set_rocket_watch(true, crate::rocket::Policy::default());
+            *market.0.clock.lock().expect("clock lock") = Some(ClockState {
+                mode,
+                now: UnixNanos(1_792_670_400_000_000_000),
+                speed: market_providers::Speed::Times(1),
+                playing: true,
+                day: None,
+                start: None,
+                end: None,
+                finished: false,
+                events: 0,
+            });
+            let (sink, _inputs, mut notices) = crate::alerts::AlertSink::for_test();
+            market.attach_alerts(sink.clone());
+            {
+                let mut core = market.0.core.lock().expect("core lock");
+                for s in ["A", "B", "C"] {
+                    core.rocket.inject_notice(notice(s));
+                }
+            }
+            market.publish_rocket();
+            let mut got = Vec::new();
+            while let Ok(n) = notices.try_recv() {
+                got.push(n.symbol);
+            }
+            if mode == ClockMode::Live {
+                // The sink holds 2: the third is dropped and counted, the board carries on.
+                assert_eq!(got, ["A", "B"]);
+                assert_eq!(sink.runners_dropped(), 1);
+            } else {
+                assert!(got.is_empty(), "a replay never pushes: {got:?}");
+                assert_eq!(sink.runners_dropped(), 0);
+            }
+            // Taken either way: nothing is left to leak into a later tick.
+            market.publish_rocket();
+            assert!(notices.try_recv().is_err());
+        }
+    }
 
     #[test]
     fn unavailable_live_detection_clock_samples_actual_admission_now() {

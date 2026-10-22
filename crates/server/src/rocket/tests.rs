@@ -357,6 +357,10 @@ fn outcomes_fill_after_the_fact_and_the_forward_log_restores_them() {
     assert_eq!(r.prior(), Some(0.75));
     // The restored dedup holds: no second ROCK alert inside 30 minutes of the first.
     assert!(r.take_log().is_empty(), "a restore writes nothing");
+    assert!(
+        r.take_notices().is_empty(),
+        "a restart re-announces nothing"
+    );
 }
 
 #[test]
@@ -592,6 +596,15 @@ fn a_later_run_is_caught_and_states_are_logged_and_restored() {
     assert_eq!(a.state(), "faded", "strict: nothing in 45 minutes");
     assert!(!a.ran_later());
     assert_eq!(a.track.state, MState::Watching);
+    let a_id = a.id.clone();
+    // The flag is one "new" notice for the phone push (crate::alerts::runners).
+    let n = b.take_notices();
+    assert_eq!(n.len(), 1, "{n:?}");
+    assert_eq!(n[0].kind, NoticeKind::New);
+    assert_eq!(n[0].symbol, "SLOW");
+    assert_eq!(n[0].alert_id, a_id);
+    assert_eq!(n[0].at_ns, alert_ns);
+    assert!(b.take_notices().is_empty(), "taken once");
     // 10:50–11:00: +0.91 % a slot on 10× volume (new highs, past 2× pace), ~+44 %.
     let (mut run, top) = climb("SLOW", at(10, 50, 0), 40, 0.21, 0.0091, 200_000);
     run.extend(flat("SLOW", at(11, 0, 0), at(11, 30, 0), top, 20_000));
@@ -613,6 +626,13 @@ fn a_later_run_is_caught_and_states_are_logged_and_restored() {
         .map(|v| v["to"].as_str().unwrap())
         .collect();
     assert!(states.contains(&"breaking_out"), "{states:?}");
+    // Each turn into breaking_out is one "breakout" notice, with its % from the flag.
+    let notices = b.take_notices();
+    let outs = states.iter().filter(|s| **s == "breaking_out").count();
+    assert_eq!(notices.len(), outs, "{notices:?}");
+    assert!(notices.iter().all(|n| n.kind == NoticeKind::Breakout));
+    assert!(notices[0].from_flag_pct.unwrap() > 0.0, "{notices:?}");
+    assert!(notices[0].at_ns > at(10, 50, 0));
     assert!(states.contains(&"running"), "{states:?}");
     // Causal: every transition at a barrier after the flag, at or after the run began.
     for v in lines.iter().filter(|v| v["kind"] == "state") {

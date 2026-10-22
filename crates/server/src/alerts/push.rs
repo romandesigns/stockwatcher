@@ -11,7 +11,8 @@
 //!
 //! - **Devices** register their Expo push token over the socket (`push.register`); tokens are
 //!   kept in `DATA_DIR/alerts/push-devices.json`, never synced to other clients. At most
-//!   [`MAX_DEVICES`]; the oldest goes first.
+//!   [`MAX_DEVICES`]; the oldest goes first. Each device also carries its Runners opt-ins
+//!   ([`RunnersOptIn`], `super::runners`): new flags on by default, breakouts off.
 //! - **Batching:** jobs queued within [`BATCH_WINDOW`] go out in one request of up to
 //!   [`MAX_BATCH`] messages (Expo's limit is 100 per request).
 //! - **Retries:** a network error, a 429 or a 5xx is retried after 2, 4 and 8 s; then the
@@ -62,6 +63,24 @@ pub struct Device {
     #[serde(default)]
     pub name: String,
     pub registered_at: i64,
+    /// Runners pushes for new flags (`super::runners`); on unless the phone said otherwise.
+    #[serde(default = "yes")]
+    pub runners_new: bool,
+    /// Runners pushes for breakouts; off unless the phone turned them on.
+    #[serde(default)]
+    pub runners_breakout: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// What `push.register` says about the Runners pushes; `None` = keep what the device had (or the
+/// default for a new one), so an older app that does not know about them changes nothing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RunnersOptIn {
+    pub new: Option<bool>,
+    pub breakout: Option<bool>,
 }
 
 /// The registered phones, persisted on every change (tiny file, temp + rename).
@@ -104,6 +123,22 @@ impl Devices {
         self.list.iter().map(|d| d.token.clone()).collect()
     }
 
+    /// The phones that opted in to this kind of Runners push.
+    pub fn runner_tokens(&self, kind: crate::rocket::NoticeKind) -> Vec<String> {
+        self.list
+            .iter()
+            .filter(|d| match kind {
+                crate::rocket::NoticeKind::New => d.runners_new,
+                crate::rocket::NoticeKind::Breakout => d.runners_breakout,
+            })
+            .map(|d| d.token.clone())
+            .collect()
+    }
+
+    pub fn get(&self, token: &str) -> Option<&Device> {
+        self.list.iter().find(|d| d.token == token)
+    }
+
     fn save(&self) {
         let Some(dir) = &self.dir else { return };
         let res = (|| -> std::io::Result<()> {
@@ -121,10 +156,23 @@ impl Devices {
     }
 
     /// Adds or refreshes a phone. False when the token is not an Expo push token.
-    pub fn register(&mut self, token: &str, platform: &str, name: &str, now: i64) -> bool {
+    pub fn register(
+        &mut self,
+        token: &str,
+        platform: &str,
+        name: &str,
+        now: i64,
+        runners: RunnersOptIn,
+    ) -> bool {
         if !valid_token(token) {
             return false;
         }
+        let had = self.get(token);
+        let runners_new = runners.new.or(had.map(|d| d.runners_new)).unwrap_or(true);
+        let runners_breakout = runners
+            .breakout
+            .or(had.map(|d| d.runners_breakout))
+            .unwrap_or(false);
         self.list.retain(|d| d.token != token);
         let clip = |s: &str| {
             s.chars()
@@ -137,6 +185,8 @@ impl Devices {
             platform: clip(platform),
             name: clip(name),
             registered_at: now,
+            runners_new,
+            runners_breakout,
         });
         while self.list.len() > MAX_DEVICES {
             self.list.remove(0);
@@ -478,13 +528,14 @@ mod tests {
         assert!(!valid_token("fcm:abc"));
         let dir = tempfile::tempdir().unwrap();
         let mut d = Devices::open(dir.path());
-        assert!(!d.register("nope", "android", "Fold", 1));
+        assert!(!d.register("nope", "android", "Fold", 1, RunnersOptIn::default()));
         for i in 0..12 {
             assert!(d.register(
                 &format!("ExponentPushToken[{i}]"),
                 "android",
                 "Fold\u{0}7",
-                i
+                i,
+                RunnersOptIn::default()
             ));
         }
         assert_eq!(d.len(), MAX_DEVICES, "the oldest go first");
@@ -493,6 +544,44 @@ mod tests {
         assert_eq!(back.list[0].name, "Fold7", "control characters dropped");
         assert!(d.remove("ExponentPushToken[5]"));
         assert!(!d.remove("ExponentPushToken[5]"));
+    }
+
+    /// The Runners opt-ins: defaults for a new phone, kept when an older app re-registers
+    /// without them, changed when sent, persisted, and read from a file written before they
+    /// existed.
+    #[test]
+    fn runners_opt_ins_round_trip() {
+        use crate::rocket::NoticeKind;
+        let dir = tempfile::tempdir().unwrap();
+        let mut d = Devices::open(dir.path());
+        let fold = "ExponentPushToken[fold]";
+        assert!(d.register(fold, "android", "Fold", 1, RunnersOptIn::default()));
+        assert_eq!(d.runner_tokens(NoticeKind::New), vec![fold.to_string()]);
+        assert!(d.runner_tokens(NoticeKind::Breakout).is_empty());
+        let both = RunnersOptIn {
+            new: Some(false),
+            breakout: Some(true),
+        };
+        assert!(d.register(fold, "android", "Fold", 2, both));
+        assert!(d.runner_tokens(NoticeKind::New).is_empty());
+        assert_eq!(
+            d.runner_tokens(NoticeKind::Breakout),
+            vec![fold.to_string()]
+        );
+        // An older app's register (no opt-ins) keeps them.
+        assert!(d.register(fold, "android", "Fold", 3, RunnersOptIn::default()));
+        let back = Devices::open(dir.path());
+        let dev = back.get(fold).unwrap();
+        assert!(!dev.runners_new && dev.runners_breakout);
+        // A file from before the opt-ins existed: new flags on, breakouts off.
+        std::fs::write(
+            dir.path().join(FILE),
+            r#"[{"token":"ExponentPushToken[old]","registeredAt":1}]"#,
+        )
+        .unwrap();
+        let old = Devices::open(dir.path());
+        assert_eq!(old.runner_tokens(NoticeKind::New).len(), 1);
+        assert!(old.runner_tokens(NoticeKind::Breakout).is_empty());
     }
 
     /// A stub of Expo's two endpoints: records batches; the second token is "not registered".

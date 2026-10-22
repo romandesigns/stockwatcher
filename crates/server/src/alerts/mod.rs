@@ -19,14 +19,19 @@
 //! - server `alert.fired {event, phoneToday}` / `alert.held {event}` to every connection as they
 //!   happen; `alert.updated {event}` when a recorded event changes (a push that failed later);
 //! - server `alerts.status {phoneToday, phoneBudget, devices, dropped}` when one of those moves;
-//! - client `push.register {token, platform?, name?}` / `push.unregister {token}`: this phone's
-//!   Expo push token (per device, never synced to other clients).
+//! - client `push.register {token, platform?, name?, runnersNew?, runnersBreakout?}` /
+//!   `push.unregister {token}`: this phone's Expo push token (per device, never synced to other
+//!   clients) and its Runners push opt-ins ([`runners`]; absent = unchanged).
+//!
+//! The same task also pushes the Runners board's new flags and breakouts ([`runners`]): the live
+//! market offers them through [`AlertSink::offer_runner`], as non-blocking as the price inputs.
 
 pub mod delivery;
 pub mod eval;
 pub mod history;
 pub mod model;
 pub mod push;
+pub mod runners;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -45,12 +50,15 @@ use delivery::{Delivery, Phone};
 use eval::{Evaluator, HoldReason, Input, MarketView, Outcome, Seed};
 use history::{Event, EventKind, History};
 use model::{Fire, PREFS_NS, Prefs, RULES_NS, STATE_NS, Status};
-use push::{Devices, Job, PushConfig, PushResult};
+use push::{Devices, Job, PushConfig, PushResult, RunnersOptIn};
+use runners::RunnersDelivery;
 
 pub use model::server_owned;
 
 /// How far the evaluator may fall behind the market before inputs are dropped (and counted).
 pub const INPUT_CAPACITY: usize = 8192;
+/// Runners notices waiting for the task (a handful a day; a full queue drops and counts).
+pub const RUNNERS_CAPACITY: usize = 64;
 /// Expiry, re-arming by the clock and the dropped-input report.
 const TICK: Duration = Duration::from_secs(5);
 
@@ -58,6 +66,9 @@ const TICK: Duration = Duration::from_secs(5);
 pub struct AlertSink {
     tx: mpsc::Sender<Input>,
     dropped: AtomicU64,
+    /// The Runners board's new flags and breakouts ([`runners`]).
+    runners: mpsc::Sender<crate::rocket::Notice>,
+    runners_dropped: AtomicU64,
     /// The symbols a pressure alert watches: the market scores only these, once a second
     /// (Market::publish_pressure), so alerts do not make the Halt watcher score every symbol.
     pressure_watch: Mutex<Arc<[String]>>,
@@ -81,6 +92,41 @@ impl AlertSink {
     pub fn dropped(&self) -> u64 {
         self.dropped.load(Ordering::Relaxed)
     }
+
+    /// A Runners notice for the phone push. Never blocks: a full or closed channel drops it
+    /// (counted, logged) and the board carries on.
+    pub fn offer_runner(&self, notice: crate::rocket::Notice) {
+        if self.runners.try_send(notice).is_err() {
+            let n = self.runners_dropped.fetch_add(1, Ordering::Relaxed) + 1;
+            tracing::warn!(
+                dropped = n,
+                "runners push: the alerts task is not keeping up; a notice was dropped"
+            );
+        }
+    }
+
+    pub fn runners_dropped(&self) -> u64 {
+        self.runners_dropped.load(Ordering::Relaxed)
+    }
+
+    /// Tests: a sink whose two ends the test reads itself.
+    #[cfg(test)]
+    pub(crate) fn for_test() -> (
+        Arc<AlertSink>,
+        mpsc::Receiver<Input>,
+        mpsc::Receiver<crate::rocket::Notice>,
+    ) {
+        let (tx, rx) = mpsc::channel(8);
+        let (rtx, rrx) = mpsc::channel(2);
+        let sink = Arc::new(AlertSink {
+            tx,
+            dropped: AtomicU64::new(0),
+            runners: rtx,
+            runners_dropped: AtomicU64::new(0),
+            pressure_watch: Mutex::new(Arc::from(Vec::new())),
+        });
+        (sink, rx, rrx)
+    }
 }
 
 enum Command {
@@ -88,6 +134,7 @@ enum Command {
         token: String,
         platform: String,
         name: String,
+        runners: RunnersOptIn,
     },
     Unregister {
         token: String,
@@ -206,7 +253,13 @@ impl Alerts {
     }
 
     /// `push.register`: false when the token is malformed (nothing is stored).
-    pub fn register_device(&self, token: &str, platform: &str, name: &str) -> bool {
+    pub fn register_device(
+        &self,
+        token: &str,
+        platform: &str,
+        name: &str,
+        runners: RunnersOptIn,
+    ) -> bool {
         if !push::valid_token(token) {
             return false;
         }
@@ -215,6 +268,7 @@ impl Alerts {
                 token: token.to_owned(),
                 platform: platform.to_owned(),
                 name: name.to_owned(),
+                runners,
             });
         }
         true
@@ -237,6 +291,20 @@ impl Alerts {
         dir: Option<PathBuf>,
         push_cfg: PushConfig,
     ) -> Alerts {
+        let (res_tx, res_rx) = mpsc::channel(64);
+        let pusher = push::spawn(push_cfg, res_tx);
+        Self::start_with(settings, live, dir, pusher, res_rx)
+    }
+
+    /// [`Alerts::start`] with the push sender given: tests hand in a channel they read instead
+    /// of Expo (no network), and the results channel they feed.
+    fn start_with(
+        settings: Settings,
+        live: Market,
+        dir: Option<PathBuf>,
+        pusher: mpsc::Sender<Job>,
+        res_rx: mpsc::Receiver<PushResult>,
+    ) -> Alerts {
         let now = now_ms();
         let history = match &dir {
             Some(d) => History::open(d, now).unwrap_or_else(|e| {
@@ -249,10 +317,17 @@ impl Alerts {
             .as_deref()
             .map(Devices::open)
             .unwrap_or_else(Devices::in_memory);
+        let runners = dir
+            .as_deref()
+            .map(RunnersDelivery::open)
+            .unwrap_or_else(RunnersDelivery::in_memory);
         let (in_tx, in_rx) = mpsc::channel(INPUT_CAPACITY);
+        let (run_tx, run_rx) = mpsc::channel(RUNNERS_CAPACITY);
         let sink = Arc::new(AlertSink {
             tx: in_tx,
             dropped: AtomicU64::new(0),
+            runners: run_tx,
+            runners_dropped: AtomicU64::new(0),
             pressure_watch: Mutex::new(Arc::from(Vec::new())),
         });
         live.attach_alerts(sink.clone());
@@ -262,8 +337,6 @@ impl Alerts {
             snapshot: Mutex::new("".into()),
             cmd: Some(cmd_tx),
         }));
-        let (res_tx, res_rx) = mpsc::channel(64);
-        let pusher = push::spawn(push_cfg, res_tx);
         let mut task = Task {
             shared: alerts.0.clone(),
             settings,
@@ -274,13 +347,14 @@ impl Alerts {
             prefs: Prefs::default(),
             history,
             devices,
+            runners,
             pusher,
             seq: 0,
             op: 0,
             dropped_logged: 0,
         };
         task.rebuild_snapshot();
-        tokio::spawn(async move { task.run(in_rx, cmd_rx, res_rx).await });
+        tokio::spawn(async move { task.run(in_rx, cmd_rx, res_rx, run_rx).await });
         alerts
     }
 }
@@ -308,6 +382,7 @@ struct Task {
     prefs: Prefs,
     history: History,
     devices: Devices,
+    runners: RunnersDelivery,
     pusher: mpsc::Sender<Job>,
     seq: u64,
     op: u64,
@@ -378,6 +453,7 @@ impl Task {
         mut inputs: mpsc::Receiver<Input>,
         mut cmds: mpsc::Receiver<Command>,
         mut results: mpsc::Receiver<PushResult>,
+        mut runner_notices: mpsc::Receiver<crate::rocket::Notice>,
     ) {
         let mut settings_feed = self.settings.subscribe();
         let stored =
@@ -461,8 +537,8 @@ impl Task {
                 }
                 cmd = cmds.recv() => {
                     match cmd {
-                        Some(Command::Register { token, platform, name }) => {
-                            self.devices.register(&token, &platform, &name, now_ms());
+                        Some(Command::Register { token, platform, name, runners }) => {
+                            self.devices.register(&token, &platform, &name, now_ms(), runners);
                         }
                         Some(Command::Unregister { token }) => {
                             self.devices.remove(&token);
@@ -472,6 +548,7 @@ impl Task {
                     self.broadcast(status_frame(self.status()));
                     changed = true;
                 }
+                Some(n) = runner_notices.recv() => self.runner(n, now_ms()),
                 r = results.recv() => match r {
                     Some(PushResult::Failed { event_id, detail }) => {
                         tracing::warn!(event = %event_id, detail, "alerts: phone notification failed");
@@ -496,6 +573,41 @@ impl Task {
             if changed {
                 self.rebuild_snapshot();
             }
+        }
+    }
+
+    /// One Runners notice: the push to the phones that opted in, within the limits
+    /// ([`runners`]). Logged either way; never touches Activity (that is the price alerts').
+    fn runner(&mut self, n: crate::rocket::Notice, now: i64) {
+        let tokens = self.devices.runner_tokens(n.kind);
+        let now_et = et(now);
+        let decision = self.runners.decide(
+            &n.symbol,
+            tokens.len(),
+            &self.prefs,
+            n.at_ns.div_euclid(1_000_000),
+            now,
+            now_et.date_naive(),
+            now_et.hour() * 60 + now_et.minute(),
+        );
+        let kind = n.kind.as_str();
+        if let runners::Decision::Held(h) = decision {
+            tracing::info!(symbol = %n.symbol, kind, held = h.code(), "runners push: held back");
+            return;
+        }
+        let (title, body, data) = runners::message(&n);
+        let job = Job {
+            // Not an Activity event: a failure later is only logged (history.update finds nothing).
+            event_id: format!("runners-{kind}-{}", n.alert_id),
+            tokens,
+            title,
+            body,
+            data,
+        };
+        if self.pusher.try_send(job).is_err() {
+            tracing::warn!(symbol = %n.symbol, kind, "runners push: push queue full or closed; not sent");
+        } else {
+            tracing::info!(symbol = %n.symbol, kind, "runners push: sent to the push service");
         }
     }
 
@@ -781,12 +893,119 @@ mod tests {
         panic!("state not persisted as done");
     }
 
+    fn notice(kind: crate::rocket::NoticeKind, symbol: &str, at_ms: i64) -> crate::rocket::Notice {
+        crate::rocket::Notice {
+            kind,
+            alert_id: format!("2026-10-22-{symbol}-1"),
+            symbol: symbol.into(),
+            at_ns: at_ms * 1_000_000,
+            price: 2.5,
+            from_flag_pct: Some(0.0),
+            reasons: vec!["volume 9x pace".into()],
+        }
+    }
+
+    /// The Runners pushes through the real task with a fake sender (a channel read here; no
+    /// Expo, no network): a new flag goes to the phones opted in to new flags, a breakout only to
+    /// those opted in to breakouts, the per-stock cooldown holds the second, and a dead push
+    /// queue costs the push, never the task.
+    #[tokio::test]
+    async fn runners_pushes_follow_the_opt_ins_and_limits() {
+        use crate::rocket::NoticeKind;
+        let settings = Settings::in_memory();
+        let live = Market::idle(market_providers::ClockMode::Live, "idle", None);
+        let (job_tx, mut jobs) = mpsc::channel(16);
+        let (_res_tx, res_rx) = mpsc::channel(4);
+        let alerts = Alerts::start_with(settings, live.clone(), None, job_tx, res_rx);
+        let mut frames = alerts.subscribe();
+        let sink = live.alert_sink().expect("attached").clone();
+        let next_job = |jobs: &mut mpsc::Receiver<Job>| {
+            let j = jobs.try_recv();
+            j.ok()
+        };
+        // No phone yet: held (no_device), nothing queued.
+        sink.offer_runner(notice(NoticeKind::New, "AAA", now_ms()));
+        // The notice and the registers below travel on different channels: let it land first.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        // Two phones: the Fold with defaults (new on, breakout off), a tablet with breakouts on.
+        assert!(alerts.register_device(
+            "ExponentPushToken[fold]",
+            "android",
+            "Fold",
+            RunnersOptIn::default()
+        ));
+        assert!(alerts.register_device(
+            "ExponentPushToken[tab]",
+            "android",
+            "Tab",
+            RunnersOptIn {
+                new: Some(false),
+                breakout: Some(true)
+            },
+        ));
+        // Each register answers with an alerts.status frame once handled.
+        let mut statuses = 0;
+        while statuses < 2 {
+            let f = tokio::time::timeout(Duration::from_secs(5), frames.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if f.starts_with("{\"type\":\"alerts.status\"") {
+                statuses += 1;
+            }
+        }
+        assert!(
+            next_job(&mut jobs).is_none(),
+            "no phone was registered for AAA"
+        );
+        sink.offer_runner(notice(NoticeKind::New, "CJMB", now_ms()));
+        let j = tokio::time::timeout(Duration::from_secs(5), jobs.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(j.tokens, vec!["ExponentPushToken[fold]".to_string()]);
+        assert_eq!(j.title, "Runners: CJMB $2.50");
+        assert_eq!(j.data["symbol"], "CJMB");
+        assert_eq!(j.data["kind"], "runners.new");
+        // A breakout of the same stock right after: the 10-minute cooldown holds it.
+        sink.offer_runner(notice(NoticeKind::Breakout, "CJMB", now_ms()));
+        // Another stock's breakout: only the tablet opted in.
+        sink.offer_runner(notice(NoticeKind::Breakout, "BBB", now_ms()));
+        let j = tokio::time::timeout(Duration::from_secs(5), jobs.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            j.data["symbol"], "BBB",
+            "the CJMB breakout was held by the cooldown"
+        );
+        assert_eq!(j.tokens, vec!["ExponentPushToken[tab]".to_string()]);
+        assert!(j.title.starts_with("BBB breaking out"));
+        // Old news (a stalled board catching up) is not pushed.
+        sink.offer_runner(notice(NoticeKind::New, "OLD", now_ms() - 10 * 60_000));
+        // The push service gone: the task carries on (it still answers a register).
+        drop(jobs);
+        sink.offer_runner(notice(NoticeKind::New, "DDD", now_ms()));
+        alerts.unregister_device("ExponentPushToken[tab]");
+        loop {
+            let f = tokio::time::timeout(Duration::from_secs(5), frames.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if f.starts_with("{\"type\":\"alerts.status\"") {
+                assert!(f.contains("\"devices\":1"), "{f}");
+                break;
+            }
+        }
+        assert_eq!(sink.runners_dropped(), 0);
+    }
+
     #[test]
     fn idle_snapshot_is_a_valid_frame() {
         let a = Alerts::idle();
         let v: Value = serde_json::from_str(&a.snapshot_frame()).unwrap();
         assert_eq!(v["type"], "alerts.history");
         assert_eq!(v["phoneBudget"], 20);
-        assert!(!a.register_device("junk", "", ""));
+        assert!(!a.register_device("junk", "", "", RunnersOptIn::default()));
     }
 }

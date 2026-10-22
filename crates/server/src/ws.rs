@@ -169,8 +169,10 @@
 //! - server `alert.fired {event, phoneToday}` and `alert.held {event}` as they happen, to EVERY
 //!   connection; `alert.updated {event}` when a recorded event changes (a phone push that failed
 //!   after it was recorded); `alerts.status {phoneToday, phoneBudget, devices, dropped}`.
-//! - client `push.register {token, platform?, name?}`: this phone's Expo push token, kept by the
-//!   server for phone notifications and never sent to other clients; a malformed token gets
+//! - client `push.register {token, platform?, name?, runnersNew?, runnersBreakout?}`: this
+//!   phone's Expo push token, kept by the server for phone notifications and never sent to other
+//!   clients, with its Runners push opt-ins (crate::alerts::runners; an absent one keeps what the
+//!   phone had, new flags on and breakouts off for a new phone); a malformed token gets
 //!   `error bad_request`. `push.unregister {token}` removes it. No direct reply on success (the
 //!   `alerts.status` frame's `devices` count moves).
 //! - The rules themselves are the synced `alerts` namespace (settings.* above).
@@ -295,6 +297,10 @@ enum ClientMessage {
         platform: String,
         #[serde(default)]
         name: String,
+        #[serde(default, rename = "runnersNew")]
+        runners_new: Option<bool>,
+        #[serde(default, rename = "runnersBreakout")]
+        runners_breakout: Option<bool>,
     },
     #[serde(rename = "push.unregister")]
     PushUnregister {
@@ -1072,8 +1078,9 @@ async fn session(mut socket: WebSocket, state: AppState) {
                         }
                         None
                     }
-                    Ok(ClientMessage::PushRegister { token, platform, name }) => {
-                        if alerts.register_device(token.trim(), &platform, &name) {
+                    Ok(ClientMessage::PushRegister { token, platform, name, runners_new, runners_breakout }) => {
+                        let runners = crate::alerts::push::RunnersOptIn { new: runners_new, breakout: runners_breakout };
+                        if alerts.register_device(token.trim(), &platform, &name, runners) {
                             None
                         } else {
                             Some(ServerMessage::Error { code: "bad_request", message: "not an Expo push token" })
