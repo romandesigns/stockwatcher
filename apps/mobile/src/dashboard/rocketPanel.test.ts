@@ -7,7 +7,7 @@ import { join } from "node:path";
 
 const read = (p: string) => readFileSync(join(import.meta.dir, p), "utf8");
 
-test("the Rocket watch card sits under the Ross card and opens the chart modal on tap", () => {
+test("the Runners card sits under the Ross card and opens the chart modal on tap", () => {
   const screen = read("../screens/DashboardScreen.tsx");
   const ross = screen.indexOf("<RossPanel ");
   const rocket = screen.indexOf("<RocketPanel ");

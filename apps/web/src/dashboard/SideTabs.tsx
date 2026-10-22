@@ -39,7 +39,7 @@ export function SideTabs({ ross, rocket, onPick }: { ross: ReactNode; rocket: Ro
           Ross
         </TabButton>
         <TabButton active={tab === "rocket"} onClick={() => pick("rocket")}>
-          Rocket watch
+          Runners
           {tab !== "rocket" && <FreshBadge channel={rocket} />}
         </TabButton>
       </div>

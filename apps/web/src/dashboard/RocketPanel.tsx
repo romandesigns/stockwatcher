@@ -44,7 +44,7 @@ export function RocketPanelView({ state, wallNow, onPick }: { state: RocketState
     <aside aria-labelledby="rocket-title" className="flex min-h-0 min-w-0 flex-col gap-2 rounded-xl bg-card p-2.5">
       <div className="flex items-center gap-2 px-1">
         <h2 id="rocket-title" className="m-0 text-sm font-semibold">
-          Rocket watch
+          Runners
         </h2>
         <span className="rounded bg-bg-raised px-1.5 py-px text-[10px] font-medium text-muted-foreground">Experimental</span>
         {head && <span className="ml-auto truncate font-mono text-[11px] text-muted-foreground tabular-nums">{head.record}</span>}

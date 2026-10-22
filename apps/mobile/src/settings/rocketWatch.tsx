@@ -10,7 +10,7 @@ import { fonts } from "../theme";
 export function rocketSection(): SettingsSheetSection {
   return {
     id: "rocket",
-    label: "Rocket watch",
+    label: "Runners",
     icon: "bell",
     description: "Experimental flags of a likely +30 % move.",
     render: () => <RocketWatchPanel />,
@@ -26,7 +26,7 @@ function RocketWatchPanel() {
       <Pressable
         accessibilityRole="switch"
         accessibilityState={{ checked: on, busy }}
-        accessibilityLabel="Notify me about new flags. A banner with sound for each new Rocket watch flag while the dashboard is open."
+        accessibilityLabel="Notify me about new flags. A banner with sound for each new Runners flag while the dashboard is open."
         disabled={busy}
         onPress={() => {
           playHaptic("selection");

@@ -22,10 +22,10 @@ const panel: RocketPanelWire = {
 
 const render = (state: RocketState) => renderToStaticMarkup(<RocketPanelView state={state} wallNow={state.receivedAt} onPick={() => {}} />);
 
-describe("Rocket watch panel", () => {
+describe("Runners panel", () => {
   test("header, experimental chip, record, rows with reasons, fresh accent, outcome tag", () => {
     const html = render({ enabled: true, panel, receivedAt: 5, connected: true });
-    expect(html).toContain("Rocket watch");
+    expect(html).toContain("Runners");
     expect(html).toContain("Experimental");
     expect(html).toContain("1 of 2 rocketed today");
     expect(html).toContain("placeholder-b2 v1 · budget 10/day (placeholder)");

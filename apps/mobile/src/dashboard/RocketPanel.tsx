@@ -47,10 +47,10 @@ export function RocketPanel({ channel, onPick, reducedMotion }: { channel: Rocke
   const rows = panel?.rows.map((r) => rocketRowView(r, now)) ?? [];
   const head = panel ? rocketHeaderView(panel) : null;
   return (
-    <View style={styles.card} accessibilityLabel="Rocket watch">
+    <View style={styles.card} accessibilityLabel="Runners">
       <View style={styles.head}>
         <Text accessibilityRole="header" style={styles.title}>
-          Rocket watch
+          Runners
         </Text>
         <View style={styles.chip}>
           <Text style={styles.chipText}>Experimental</Text>

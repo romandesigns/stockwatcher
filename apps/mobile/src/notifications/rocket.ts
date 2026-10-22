@@ -56,7 +56,7 @@ export function notifyRocketFlags(rows: RocketRowWire[]): void {
   for (const r of rows.slice(0, 3)) {
     void Notifications.scheduleNotificationAsync({
       content: {
-        title: `Rocket watch: ${r.s} ${r.p.toFixed(r.p >= 1 ? 2 : 4)}`,
+        title: `Runners: ${r.s} ${r.p.toFixed(r.p >= 1 ? 2 : 4)}`,
         body: r.reasons.length ? r.reasons.slice(0, 2).join(" · ") : "Flagged (experimental)",
         sound: true,
       },
