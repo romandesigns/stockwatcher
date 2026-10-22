@@ -29,3 +29,17 @@ export { Dialog, DialogClose, DialogContent, DialogTitle } from "./dialog.tsx";
 export { Switch } from "./switch.tsx";
 export { Tabs, TabsContent, TabsIndicator, TabsList, TabsTrigger } from "./tabs.tsx";
 export { ScrollArea, ScrollBar } from "./scroll-area.tsx";
+export {
+  OptionSelect,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+  SelectValue,
+  selectTriggerVariants,
+  type OptionSelectProps,
+  type SelectOption,
+} from "./select.tsx";
+export { Input } from "./input.tsx";
+export { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./collapsible.tsx";

@@ -1,3 +1,4 @@
+import { Input } from "@stockwatcher/chart-web/ui";
 import type { MarketSource } from "@stockwatcher/shared";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { createServerFeed } from "./feed/serverFeed.ts";
@@ -92,7 +93,7 @@ function SignIn({ rejected, onSubmit }: { rejected: boolean; onSubmit: (token: s
         <label htmlFor="access-token" className="sr-only">
           Access token
         </label>
-        <input
+        <Input
           id="access-token"
           type="password"
           autoComplete="current-password"

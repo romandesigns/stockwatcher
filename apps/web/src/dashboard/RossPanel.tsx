@@ -1,5 +1,5 @@
 import { formatEtTime } from "@stockwatcher/chart-core";
-import { cn } from "@stockwatcher/chart-web/ui";
+import { cn, Tip } from "@stockwatcher/chart-web/ui";
 import { detectionFamilyLabel, detectionStateLabel, groupDetections, rossAttention, rossDemoPanel, rossFreshness, rossLinePaths, rossReadinessView, rossRowView, type DetectionChannel, type RossChannel, type RossLineView, type RossRowView, type RossTone } from "@stockwatcher/shared";
 import { memo } from "react";
 import { useRoss } from "../feed/useRoss.ts";
@@ -97,7 +97,7 @@ export function RossPanel({ channel, onPick, detection, onEpisodePick }: { chann
               <RossRow row={r} onPick={onPick} />
               {joined.has(r.symbol) && (() => {
                 const e = joined.get(r.symbol)!;
-                return <button type="button" className="w-full rounded-b px-2.5 py-1 text-left text-[10px] text-primary outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => onEpisodePick ? onEpisodePick(e.symbol, e.episode_id, detected.frame?.runEpoch ?? "") : onPick(e.symbol)} title={e.episode_id}>Detection: {detectionFamilyLabel(e.family)} · {detectionStateLabel(e.state)}{!detected.connected ? " · last known" : ""}</button>;
+                return <Tip label={e.episode_id}><button type="button" className="w-full rounded-b px-2.5 py-1 text-left text-[10px] text-primary outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => onEpisodePick ? onEpisodePick(e.symbol, e.episode_id, detected.frame?.runEpoch ?? "") : onPick(e.symbol)}>Detection: {detectionFamilyLabel(e.family)} · {detectionStateLabel(e.state)}{!detected.connected ? " · last known" : ""}</button></Tip>;
               })()}
             </li>
           ))}

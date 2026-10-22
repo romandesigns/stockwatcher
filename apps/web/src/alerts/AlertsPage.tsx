@@ -14,6 +14,7 @@ import { Icon } from "@stockwatcher/chart-web";
 import { Popover, PopoverContent, PopoverTrigger, Switch, cn } from "@stockwatcher/chart-web/ui";
 import { useEffect, useMemo, useState } from "react";
 import { ConnectionGate } from "../ConnectionGate.tsx";
+import { TimeSelect } from "../lib/TimeSelect.tsx";
 import { NavToggle } from "../nav/NavToggle.tsx";
 import { useHasRail } from "../nav/navRail.ts";
 import { SettingsButton } from "../nav/settings.tsx";
@@ -173,9 +174,9 @@ function PhoneBudget({ today, budget, devices, prefs, onPrefs }: { today: number
           </label>
           {prefs.quietHours.on && (
             <div className="flex items-center gap-2 text-muted-foreground">
-              <input type="time" aria-label="Quiet from (ET)" value={prefs.quietHours.start} onChange={(e) => e.target.value && onPrefs({ ...prefs, quietHours: { ...prefs.quietHours, start: e.target.value } })} className="h-8 rounded-md bg-background px-2 font-mono text-xs text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring" />
+              <TimeSelect label="Quiet from (ET)" value={prefs.quietHours.start} onChange={(start) => onPrefs({ ...prefs, quietHours: { ...prefs.quietHours, start } })} />
               to
-              <input type="time" aria-label="Quiet until (ET)" value={prefs.quietHours.end} onChange={(e) => e.target.value && onPrefs({ ...prefs, quietHours: { ...prefs.quietHours, end: e.target.value } })} className="h-8 rounded-md bg-background px-2 font-mono text-xs text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring" />
+              <TimeSelect label="Quiet until (ET)" value={prefs.quietHours.end} onChange={(end) => onPrefs({ ...prefs, quietHours: { ...prefs.quietHours, end } })} />
               <span className="text-[11px]">ET</span>
             </div>
           )}
