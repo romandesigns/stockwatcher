@@ -24,6 +24,7 @@
 // distinguishable from a move already under way. `p` is the entry price.
 
 import { rossLinePaths, type RossLineView } from "./ross.ts";
+import type { ZoneNoteView, ZonesWire } from "./zones.ts";
 
 /** `pending` until known; `rocketed` = the bake-off's hit; `late` = started 10–30 min after;
  * `moved` = +30 % on a leg that started too early to count; `faded` = 45 min without one. */
@@ -164,6 +165,11 @@ export interface RocketPanelWire {
   rows: RocketRowWire[];
   /** The buying-burst detector (newer servers). `today` above counts Runners flags only. */
   burst?: RocketBurstPanelWire;
+  /**
+   * Volume shelves by symbol (newer servers; zones.ts). Untrusted wire data: read it through
+   * `zonesFor`, which drops anything malformed.
+   */
+  zones?: ZonesWire;
 }
 
 export interface RocketBurstPanelWire {
@@ -317,6 +323,11 @@ function momentumOf(r: RocketRowWire): RocketMomentumState {
 export interface RocketRowView {
   key: string;
   symbol: string;
+  /**
+   * The symbol's volume-shelf note (zones.ts: `withZoneSections` over {@link rocketSectionsView},
+   * which the panels use); absent or null when it has none to show.
+   */
+  zone?: ZoneNoteView | null;
   price: string;
   /** Day gain vs the previous close ("+12.4%"), "" when unknown. */
   gain: string;

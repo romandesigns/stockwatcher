@@ -1,5 +1,5 @@
 import { Icon, UI } from "@stockwatcher/chart-native";
-import { newRocketFlags, rocketHeaderView, rocketLinePaths, rocketNow, rocketSectionCounts, rocketSectionsView, type RocketChannel, type RocketRowView, type RocketSectionsView, type RocketTone } from "@stockwatcher/shared";
+import { newRocketFlags, rocketHeaderView, rocketLinePaths, rocketNow, rocketSectionCounts, rocketSectionsView, type RocketChannel, type RocketRowView, type RocketSectionsView, type RocketTone, withZoneSections } from "@stockwatcher/shared";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Animated, Pressable, StyleSheet, Text, View } from "react-native";
 import Svg, { Circle, Line, Path, Rect } from "react-native-svg";
@@ -7,6 +7,7 @@ import Svg, { Circle, Line, Path, Rect } from "react-native-svg";
 import { useRocket } from "../feed/hooks";
 import { notifyRocketFlags } from "../notifications/rocket";
 import { Collapse } from "../motion/Collapse";
+import { ZoneNote } from "./ZoneNote";
 import { fonts } from "../theme";
 import { useTickerPress } from "../ui/useTickerPress";
 
@@ -25,6 +26,8 @@ export const DAY_LINE_W = 72;
 export const DAY_LINE_H = 28;
 /** The card's gap between its blocks, which a closed section must cancel (Collapse). */
 const CARD_GAP = 6;
+/** A row's gap between its lines, which a closed volume-shelf note must cancel (Collapse). */
+const ROW_GAP = 4;
 
 /**
  * Runners on the phone (owner, 2026-10-21/22; EXPERIMENTAL): its own card under the Ross card,
@@ -45,6 +48,10 @@ const CARD_GAP = 6;
  * says how far the burst already went and what typically remains, never "buy". The accent marks
  * only a live burst (pulsing dot, headline and edge while fresh and pending); green and red only
  * its strict outcome tag.
+ *
+ * A row whose symbol came down into a volume shelf (the frame's `zones`, shared zones.ts) says so
+ * on its own full-width line with the research base rate muted beside it, then "Shelf held" /
+ * "Shelf lost" once resolved (ZoneNote): plain text, never green, never the accent.
  *
  * Nothing empty is drawn (owner, 2026-10-22): no card while off, not yet known or empty, no
  * Bursts section without bursts, no Flags without flags. Each opens and closes by its real height
@@ -69,7 +76,7 @@ export function RocketPanel({ channel, onPick, reducedMotion, gap = 0 }: { chann
   }, [state]);
   const { panel } = state;
   const now = rocketNow(state, wall);
-  const { bursts, runners: rows }: RocketSectionsView = panel ? rocketSectionsView(panel, now) : { bursts: null, runners: [] };
+  const { bursts, runners: rows }: RocketSectionsView = panel ? withZoneSections(rocketSectionsView(panel, now), panel.zones) : { bursts: null, runners: [] };
   const head = panel ? rocketHeaderView(panel) : null;
   const counts = rocketSectionCounts(state);
   const burstCount = bursts ? bursts.rows.length : 0;
@@ -231,6 +238,8 @@ const Row = memo(function Row({ row: r, onPick, reducedMotion }: { row: RocketRo
         <DayLine line={r.line} />
       </View>
       {r.meter !== null && <Meter value={r.meter} color={TONE[m.tone]} />}
+      {/* The row's whole width (the Fold's cover screen needs it for the range and base rate). */}
+      <ZoneNote note={r.zone ?? null} reducedMotion={reducedMotion} gap={ROW_GAP} />
       <View style={styles.line}>
         <View style={styles.chips}>
           {r.reasons.map((x) => (

@@ -96,6 +96,7 @@ import {
   toolAllowed,
   type DrawingSettings,
   type DetectionOverlay,
+  type VolumeShelf,
 } from "@stockwatcher/chart-core";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AccessibilityInfo, Pressable, StyleSheet, Text, View, type LayoutChangeEvent, type StyleProp, type ViewStyle } from "react-native";
@@ -197,6 +198,8 @@ export interface CandleChartProps {
   alerts?: ChartAlerts | null;
   /** Authoritative detector annotations. Read-only and separate from editable user drawings. */
   detection?: readonly DetectionOverlay[];
+  /** Volume shelves from the server's latest Runners frame (chart-core layoutVolumeShelves); read-only, absent = none. */
+  volumeShelves?: readonly VolumeShelf[];
 }
 
 /** What the host wires for price alerts (chart-web's ChartAlerts; the chart never talks to a server). */
@@ -280,6 +283,7 @@ export function CandleChart({
   style,
   alerts = null,
   detection,
+  volumeShelves,
 }: CandleChartProps) {
   // Price alerts: a line being dragged by its handle (drawn at its new price until the lift), and
   // the quick sheet's draft (keyed per opening).
@@ -414,9 +418,10 @@ export function CandleChart({
       halts: layers.halts ? (series?.halts ?? []) : [],
       luld: layers.luld ? (series?.luld ?? []) : [],
       fills: layers.fills ? fills : [],
+      shelves: volumeShelves ?? [],
       now: clockNow,
     }),
-    [levels, ranges, layers, series, fills, clockNow],
+    [levels, ranges, layers, series, fills, volumeShelves, clockNow],
   );
   const orders = useMemo(() => (trading?.state?.orders ?? []).filter((o) => o.symbol === symbol && isWorking(o)), [trading?.state, symbol]);
   const position = useMemo(() => trading?.state?.positions.find((p) => p.symbol === symbol) ?? null, [trading?.state, symbol]);

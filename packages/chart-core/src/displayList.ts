@@ -204,6 +204,11 @@ export interface ChartTheme {
    */
   openingRange: string;
   /**
+   * A volume shelf (levels.ts layoutVolumeShelves): a faint structural wash like the opening
+   * range, never the accent, never a stroke; its "Volume shelf" label is textDim.
+   */
+  volumeShelf: string;
+  /**
    * Faint backgrounds behind candles outside the regular session, so the
    * session a candle belongs to is visible in the chart itself. Regular
    * hours stay the plain background: it is the normal state.

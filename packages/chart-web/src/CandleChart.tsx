@@ -10,6 +10,7 @@ import {
   type AlertLayer,
   type ChartAlert,
   type DetectionOverlay,
+  type VolumeShelf,
   autoScalePrice,
   buildSlots,
   computeChartModel,
@@ -145,6 +146,8 @@ export interface CandleChartProps {
   timeframe: Timeframe;
   /** Rust-authored episode/level references; display timeframe never changes their meaning. */
   detection?: readonly DetectionOverlay[];
+  /** Volume shelves from the server's latest Runners frame (chart-core layoutVolumeShelves); read-only, absent = none. */
+  volumeShelves?: readonly VolumeShelf[];
   /** t of the inspected slot; null = latest. Controlled when onInspectChange is set. */
   inspectT?: number | null;
   onInspectChange?: (t: number | null) => void;
@@ -353,6 +356,7 @@ export function CandleChart({
   timeframeControl = "segments",
   alerts = null,
   detection,
+  volumeShelves,
 }: CandleChartProps) {
   const theme = useChartTheme(themeProp);
   // Price alerts (chart-core alerts.ts): a line being dragged or nudged from the keyboard (drawn at
@@ -531,9 +535,10 @@ export function CandleChart({
       halts: layers.halts ? (series?.halts ?? []) : [],
       luld: layers.luld ? (series?.luld ?? []) : [],
       fills: layers.fills ? fills : [],
+      shelves: volumeShelves ?? [],
       now,
     }),
-    [levels, ranges, layers, series, fills, now],
+    [levels, ranges, layers, series, fills, volumeShelves, now],
   );
   const orders = useMemo(() => (trading?.state?.orders ?? []).filter((o) => o.symbol === symbol && isWorking(o)), [trading?.state, symbol]);
   const position = useMemo(() => trading?.state?.positions.find((p) => p.symbol === symbol) ?? null, [trading?.state, symbol]);

@@ -1,6 +1,6 @@
 import { ChartStore, parseReplayDayState, type ChartMessage, type Clock, type PaperState, type ReplayDayState, type Series, type TapeTrade, type Timeframe } from "@stockwatcher/chart-core";
 import type { ChartTrading } from "@stockwatcher/chart-native";
-import { authenticatedFetch, EMPTY_QUOTE_BOARD, parseLiveSession, withMarketSource, type DetectionChannel, type DetectionState, type LiveSession, type MarketSource, type PressureBoard, type PressureChannel, type QuoteBoard, type QuoteChannel, type RocketChannel, type RocketState, type RossChannel, type RossState } from "@stockwatcher/shared";
+import { authenticatedFetch, EMPTY_QUOTE_BOARD, parseLiveSession, withMarketSource, type DetectionChannel, type DetectionState, type LiveSession, type MarketSource, type PressureBoard, type PressureChannel, type QuoteBoard, type QuoteChannel, type RocketChannel, type RocketState, type RossChannel, type RossState, zoneSelector, type ZoneView } from "@stockwatcher/shared";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { SERVER_URL } from "./server";
@@ -86,6 +86,18 @@ export function useRoss(channel: RossChannel): RossState {
 export function useRocket(channel: RocketChannel): RocketState {
   const subscribe = useCallback((cb: () => void) => channel.subscribe(cb), [channel]);
   return useSyncExternalStore(subscribe, useCallback(() => channel.get(), [channel]));
+}
+
+/**
+ * A chart's volume shelves (shared zones.ts) from the Runners channel's latest frame, the web's
+ * useZones. It subscribes itself, so a chart gets its bands and caption whatever else is mounted
+ * (the channel is ref-counted), and its snapshot changes only when this symbol's bands or note do,
+ * so a Runners frame does not re-render the chart.
+ */
+export function useZones(channel: RocketChannel, symbol: string): ZoneView {
+  const [pick] = useState(zoneSelector);
+  const subscribe = useCallback((cb: () => void) => channel.subscribe(cb), [channel]);
+  return useSyncExternalStore(subscribe, useCallback(() => pick(channel.get().panel, symbol), [channel, pick, symbol]));
 }
 
 /** Shares one authoritative channel between the dashboard, Ross links and chart modal. */

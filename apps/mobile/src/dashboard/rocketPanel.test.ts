@@ -59,3 +59,19 @@ test("buying bursts (2026-10-22): their own section above the flags; accent only
   // No new scroller (the card sits in the dashboard's own scroll view).
   expect(src).not.toContain("ScrollView");
 });
+
+test("volume shelves: a plain note on rows and both chart screens, bands on both charts (2026-10-22)", () => {
+  const note = read("ZoneNote.tsx");
+  // Information, never a call: no success green, no accent, no border; opens by its real height.
+  expect(note).not.toMatch(/UI\.good|UI\.accent|colors\.good|colors\.accent/);
+  expect(note).not.toMatch(/border(Width|Color|Top|Bottom|Left|Right)/);
+  expect(note).toContain("<Collapse");
+  expect(note).toContain("numberOfLines={1}");
+  expect(read("RocketPanel.tsx")).toContain("<ZoneNote note={r.zone ?? null}");
+  for (const screen of ["../screens/ChartScreen.tsx", "../screens/TickerChartScreen.tsx"]) {
+    const src = read(screen);
+    expect(src).toContain("useZones(feed.rocket");
+    expect(src).toContain("<ZoneNote note={zones.note}");
+    expect(src).toContain("volumeShelves={zones.bands}");
+  }
+});

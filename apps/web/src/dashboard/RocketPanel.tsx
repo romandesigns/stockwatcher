@@ -1,9 +1,10 @@
 import { Icon } from "@stockwatcher/chart-web";
 import { cn, Tip } from "@stockwatcher/chart-web/ui";
-import { rocketHeaderView, rocketLinePaths, rocketNow, rocketSectionsView, type RocketRowView, type RocketSectionsView, type RocketState, type RocketTone } from "@stockwatcher/shared";
+import { rocketHeaderView, rocketLinePaths, rocketNow, rocketSectionsView, type RocketRowView, type RocketSectionsView, type RocketState, type RocketTone, withZoneSections } from "@stockwatcher/shared";
 import { memo } from "react";
 import { useTickerPress } from "../lib/useTickerPress.ts";
 import { Reveal } from "./Reveal.tsx";
+import { ZoneNote } from "./ZoneNote.tsx";
 
 const TONE: Record<RocketTone, string> = {
   good: "text-good",
@@ -50,11 +51,15 @@ const EDGE: Partial<Record<RocketTone, string>> = {
  *
  * It takes its state, not the channel: the side column subscribes (useRocket) to decide whether
  * the tab is offered and passes the same state down, and tests render it without a socket.
+ *
+ * A row whose symbol came down into a volume shelf (the frame's `zones`, shared zones.ts) says so
+ * on its own full-width line, with the research base rate muted beside it, then "Shelf held" /
+ * "Shelf lost" once resolved (ZoneNote): plain text, never green, never the accent.
  */
 export function RocketPanelView({ state, wallNow, onPick }: { state: RocketState; wallNow: number; onPick: (symbol: string) => void }) {
   const { enabled, panel } = state;
   const now = rocketNow(state, wallNow);
-  const { bursts, runners: rows }: RocketSectionsView = panel ? rocketSectionsView(panel, now) : { bursts: null, runners: [] };
+  const { bursts, runners: rows }: RocketSectionsView = panel ? withZoneSections(rocketSectionsView(panel, now), panel.zones) : { bursts: null, runners: [] };
   const head = panel ? rocketHeaderView(panel) : null;
   return (
     <aside aria-labelledby="rocket-title" className="flex min-h-0 min-w-0 flex-col gap-2 rounded-xl bg-card p-2.5">
@@ -183,6 +188,9 @@ const RocketRow = memo(function RocketRow({ row: r, onPick }: { row: RocketRowVi
         <DayLine line={r.line} />
       </span>
       {r.meter !== null && <TriggerMeter value={r.meter} tone={m.tone} />}
+      {/* The row's whole width (the shelf range and base rate need it on a narrow column); while
+          closed it cancels the row's gap-1 so an absent note costs no space. */}
+      <ZoneNote note={r.zone ?? null} closedClassName="-mt-1" />
       <span className="flex items-center gap-1.5 overflow-hidden whitespace-nowrap">
         {r.reasons.map((x) => (
           <span key={x} className="truncate rounded bg-bg-raised px-1.5 py-px font-sans text-[11px] text-muted-foreground">

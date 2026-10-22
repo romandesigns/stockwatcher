@@ -151,3 +151,27 @@ describe("Buying bursts (2026-10-22)", () => {
     expect(onlyBursts).not.toContain("Nothing flagged");
   });
 });
+
+describe("Volume shelves on a row (2026-10-22)", () => {
+  const inShelf = { state: "in_shelf" as const, lo: 1.3, hi: 1.38, entry: 1.35, at: T - 60_000, resolved: null };
+  test("in the shelf: the range and the muted base rate, no green and no extra accent", () => {
+    const plain = render({ enabled: true, panel, receivedAt: 5, connected: true });
+    const html = render({ enabled: true, panel: { ...panel, zones: { ROCK: { bands: [], event: inShelf } } }, receivedAt: 5, connected: true });
+    expect(html).toContain("In volume shelf $1.30–$1.38");
+    expect(html).toContain("about 1 in 3 hold, 1 in 2 fail");
+    expect(html).toContain('data-zone="in_shelf"');
+    expect(html.match(/text-good/g)?.length).toBe(plain.match(/text-good/g)?.length);
+    expect(html.match(/text-primary/g)?.length).toBe(plain.match(/text-primary/g)?.length);
+    // Inside a <button> row: phrasing content only.
+    const row = html.slice(html.lastIndexOf("<button", html.indexOf("In volume shelf")), html.indexOf("In volume shelf"));
+    expect(row).not.toContain("<div");
+  });
+  test("held / lost are stated plainly; expired, no zones and garbage show nothing", () => {
+    const at = (state: "held" | "lost" | "expired") => render({ enabled: true, panel: { ...panel, zones: { ROCK: { bands: [], event: { ...inShelf, state, resolved: T } } } }, receivedAt: 5, connected: true });
+    expect(at("held")).toContain("Shelf held");
+    expect(at("lost")).toContain("Shelf lost");
+    expect(at("expired")).not.toContain("data-zone");
+    expect(render({ enabled: true, panel, receivedAt: 5, connected: true })).not.toContain("data-zone");
+    expect(render({ enabled: true, panel: { ...panel, zones: { ROCK: 7 } as never }, receivedAt: 5, connected: true })).not.toContain("data-zone");
+  });
+});

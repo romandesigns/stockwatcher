@@ -23,7 +23,8 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { DetectionEpisodeDetails } from "../dashboard/DetectionPanel";
-import { useCandidates, useChartFeed, useDetection, usePaperTrading, useReplayDays } from "../feed/hooks";
+import { ZoneNote } from "../dashboard/ZoneNote";
+import { useCandidates, useChartFeed, useDetection, usePaperTrading, useReplayDays, useZones } from "../feed/hooks";
 import type { MobileFeed } from "../feed/serverFeed";
 import { useConnection } from "../feed/useConnection";
 import { useReducedMotion } from "../motion/useReducedMotion";
@@ -34,6 +35,8 @@ import { SignInScreen } from "./SignInScreen";
 import { colors, fonts } from "../theme";
 
 const SPEEDS = [1, 2, 10, 60, 0] as const;
+/** The screen's gap between its blocks, which a closed volume-shelf note cancels (Collapse). */
+const SCREEN_GAP = 8;
 /** Timeline minimap bucket: 20 minutes, as on the web's phone layout. */
 const bucketMs = 20 * 60_000;
 const speedLabel = (s: number) => (s === 0 ? "Max" : `${s}×`);
@@ -114,8 +117,10 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
   }, [dayKey]);
   const buckets = useMemo(() => (series && bands.length ? volumeBuckets(series.candles, bands[0]!.start, bands[3]!.end, bucketMs) : []), [series, bands]);
   const trading = usePaperTrading(feed);
+  // Volume shelves for the shown ticker from this connection's Runners channel (zones.ts).
+  const zones = useZones(feed.rocket, active ?? "");
 
-  const slots = useMemo(() => (series ? buildSlots(series.candles, series.gaps) : []), [series]);
+  const slots =useMemo(() => (series ? buildSlots(series.candles, series.gaps) : []), [series]);
   const last = lastCandle(slots);
   // Previous close when the server knows it, else the anchor session's first candle: the web
   // header's and the search rows' rule (changeReference in chart-core).
@@ -170,6 +175,8 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
         </Pressable>
       </View>
 
+      <ZoneNote note={zones.note} reducedMotion={reducedMotion} gap={SCREEN_GAP} style={styles.zone} />
+
       {/* Only with the detector on and an episode for this ticker (see TickerChartScreen). */}
       {detection.enabled === true && detectionEpisode ? (
       <View style={styles.detectionSummary}>
@@ -216,6 +223,7 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
         barSpacing={8}
         label={`${active ?? ""} ${timeframe} candles`}
         detection={detectionAnnotations}
+        volumeShelves={zones.bands}
       />
 
 
@@ -311,7 +319,8 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: colors.bg, paddingHorizontal: 6, gap: 8 },
+  screen: { flex: 1, backgroundColor: colors.bg, paddingHorizontal: 6, gap: SCREEN_GAP },
+  zone: { paddingHorizontal: 2 },
   header: { flexDirection: "row", alignItems: "center", gap: 8 },
   tickerButton: { flexDirection: "row", alignItems: "center", gap: 4 },
   searchButton: { marginLeft: "auto", width: 32, height: 32, borderRadius: 16, alignItems: "center", justifyContent: "center", backgroundColor: colors.bgPanel },

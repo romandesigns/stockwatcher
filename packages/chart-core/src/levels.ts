@@ -246,8 +246,55 @@ export interface ContextLayer {
   halts: readonly Halt[];
   luld: readonly LuldPoint[];
   fills: readonly FillMark[];
+  /** Volume shelves from the server's latest Runners frame (layoutVolumeShelves); absent or empty when none. */
+  shelves?: readonly VolumeShelf[];
   /** The clock, for an ongoing halt's length and the right end of open spans. */
   now: number | null;
+}
+
+/**
+ * A volume shelf (server crates/server/src/rocket/, client packages/shared/src/zones.ts): a
+ * high-volume price band of today's profile that the server says qualifies as a launch base.
+ * Prices in dollars; `formed` is when it qualified (epoch ms). Read-only context: the chart draws
+ * exactly the bands of the latest frame and nothing it worked out itself.
+ */
+export interface VolumeShelf {
+  lo: number;
+  hi: number;
+  formed: number;
+}
+
+/**
+ * Volume shelves as faint borderless bands (the opening range's language: layer "background",
+ * under candles, grid and levels, clipped to the plot so the axis is never covered), from the
+ * shelf's `formed` time to the plot's right edge, since a shelf holds until the server drops it.
+ * A band formed before the visible range starts at the left edge. Labelled "Volume shelf" in the
+ * dim text at its top-left when there is room, so it is never mistaken for the opening range.
+ */
+export function layoutVolumeShelves(model: ChartModel, shelves: readonly VolumeShelf[], theme: ChartTheme): DisplayList {
+  const out: DisplayList = [];
+  const price = model.price;
+  if (!price || !shelves.length || !model.slots.length) return out;
+  const plot = model.geometry.plot;
+  const right = plot.x + plot.w;
+  const fs = model.options.fontSize;
+  for (const s of shelves) {
+    if (!(s.hi >= s.lo) || !Number.isFinite(s.lo) || !Number.isFinite(s.hi)) continue;
+    const x0 = Math.max(plot.x, xOfT(model, s.formed));
+    if (x0 >= right) continue;
+    const yTop = Math.max(plot.y, priceY(price, s.hi));
+    const yBottom = Math.min(plot.y + plot.h, priceY(price, s.lo));
+    if (yBottom < plot.y || yTop > plot.y + plot.h) continue;
+    const h = Math.max(1, yBottom - yTop);
+    out.push({ kind: "rect", x: x0, y: yTop, w: right - x0, h, fill: theme.volumeShelf, layer: "background" });
+    if (right - x0 > 90 && h >= fs + 2) {
+      out.push({ kind: "text", x: x0 + 4, y: yTop + 2, text: "Volume shelf", fill: theme.textDim, fontSize: fs, fontFamily: theme.fontSans, fontWeight: 500, align: "left", baseline: "top", layer: "background" });
+    } else if (right - x0 > 90) {
+      // A thin band: the label sits just above it.
+      out.push({ kind: "text", x: x0 + 4, y: yTop - 2, text: "Volume shelf", fill: theme.textDim, fontSize: fs, fontFamily: theme.fontSans, fontWeight: 500, align: "left", baseline: "bottom", layer: "background" });
+    }
+  }
+  return out;
 }
 
 const xOfT = (model: ChartModel, t: number) => slotX(model.index, tToIndex(model.slots, t, model.timeframeMs)) - model.index.barSpacing / 2;
@@ -440,7 +487,7 @@ export function layoutFills(model: ChartModel, fills: readonly FillMark[], theme
 }
 
 export function layoutContext(model: ChartModel, ctx: ContextLayer, theme: ChartTheme): DisplayList {
-  return [...layoutOpeningRanges(model, ctx.openingRanges ?? [], theme), ...layoutHalts(model, ctx.halts, ctx.now, theme), ...layoutKeyLevels(model, ctx.levels, theme), ...layoutLuld(model, ctx.luld, theme), ...layoutFills(model, ctx.fills, theme)];
+  return [...layoutOpeningRanges(model, ctx.openingRanges ?? [], theme), ...layoutVolumeShelves(model, ctx.shelves ?? [], theme), ...layoutHalts(model, ctx.halts, ctx.now, theme), ...layoutKeyLevels(model, ctx.levels, theme), ...layoutLuld(model, ctx.luld, theme), ...layoutFills(model, ctx.fills, theme)];
 }
 
 /** Today's trading-day key of a time, for grouping fills in a trade list. */

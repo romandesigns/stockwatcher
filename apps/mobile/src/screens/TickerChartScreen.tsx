@@ -10,7 +10,8 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useChartAlerts } from "../alerts/useChartAlerts";
 import { DetectionEpisodeDetails } from "../dashboard/DetectionPanel";
 import { useDashboardFeed } from "../feed/dashboardFeed";
-import { useChartFeed, useDetection, usePaperTrading } from "../feed/hooks";
+import { useChartFeed, useDetection, usePaperTrading, useZones } from "../feed/hooks";
+import { ZoneNote } from "../dashboard/ZoneNote";
 import type { MobileFeed } from "../feed/serverFeed";
 import { useReducedMotion } from "../motion/useReducedMotion";
 import type { RootStackParamList } from "../navigation/RootStack";
@@ -117,10 +118,13 @@ function ModalChart({ feed, symbol, detectionEpisodeId, detectionRunEpoch }: { f
   const reference = useMemo(() => changeReference(series), [series]);
   const change = last && reference ? formatChange(reference.price, last.c) : "";
   const alerts = useChartAlerts(symbol, last?.c ?? null);
+  // Volume shelves from the Runners channel (subscribed here too, whether or not the card is shown).
+  const zones = useZones(feed.rocket, symbol);
 
   return (
     <>
       <Header symbol={symbol} price={last ? formatPrice(last.c) : "—"} change={change} />
+      <ZoneNote note={zones.note} reducedMotion={reducedMotion} gap={6} style={styles.zone} />
       {/* Only with the detector on and an episode for this ticker (or one the user picked): an
           "off" caption would take chart height on the cover screen for nothing. */}
       {detection.enabled === true && (episode || detectionEpisodeId) ? (
@@ -172,6 +176,7 @@ function ModalChart({ feed, symbol, detectionEpisodeId, detectionRunEpoch }: { f
           barSpacing={8}
           alerts={alerts}
           detection={annotations}
+          volumeShelves={zones.bands}
           label={`${symbol} ${timeframe} candles`}
         />
       </View>
@@ -192,6 +197,7 @@ const styles = StyleSheet.create({
   chartWrap: { flex: 1, minHeight: 0, backgroundColor: colors.bgPanel, borderRadius: 12, padding: 6 },
   chart: { flex: 1 },
   detectionSummary: { gap: 3, paddingHorizontal: 6 },
+  zone: { paddingHorizontal: 6 },
   detectionMeta: { color: colors.textFaint, fontFamily: fonts.regular, fontSize: 10, lineHeight: 14 },
   detectionWarning: { color: colors.warning, fontFamily: fonts.regular, fontSize: 10 },
   detectionButton: { minHeight: 36, justifyContent: "center" },

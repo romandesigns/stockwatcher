@@ -72,6 +72,9 @@ export const DEFAULT_CHART_THEME: ChartTheme = {
   // --text-dim at 8 %: on --bg (#0f1216) a lift of about 9 RGB steps, the same order as the
   // overnight shading, so it reads as a region and never as a candle-coloured block.
   openingRange: "rgba(152, 162, 174, 0.08)",
+  // The same structural tone, a touch fainter: a shelf is context under the candles, and two of
+  // them (or one over the opening range) must still read as background.
+  volumeShelf: "rgba(152, 162, 174, 0.07)",
   // Barely there: enough to see where the session changes, never enough to compete with candles.
   shadePre: "rgba(139, 156, 255, 0.045)",
   shadeAfter: "rgba(139, 156, 255, 0.045)",

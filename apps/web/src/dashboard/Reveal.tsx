@@ -13,21 +13,24 @@ import { useHeld } from "../lib/useHeld.ts";
  * hidden from assistive tech. Content that was never open is not rendered at all. The clip has a
  * small margin so focus rings at the content's edges are not cut off.
  */
-export function Reveal({ show, axis = "y", className, innerClassName, children }: { show: boolean; axis?: "x" | "y"; className?: string; innerClassName?: string; children: ReactNode }) {
+export function Reveal({ show, axis = "y", as = "div", className, innerClassName, children }: { show: boolean; axis?: "x" | "y"; as?: "div" | "span"; className?: string; innerClassName?: string; children: ReactNode }) {
   const shown = useHeld<ReactNode>(children, show, null);
+  // `span` inside phrasing content (a row that is a <button>): the same grid, valid markup.
+  const Outer = as;
+  const Inner = as;
   return (
-    <div
+    <Outer
       data-reveal={show ? "open" : "closed"}
       aria-hidden={show ? undefined : true}
       inert={!show}
       className={cn(
-        "grid transition-[grid-template-rows,grid-template-columns,opacity] duration-300 ease-out motion-reduce:transition-none",
+        "grid transition-[grid-template-rows,grid-template-columns,opacity,margin] duration-300 ease-out motion-reduce:transition-none",
         axis === "y" ? (show ? "grid-rows-[1fr]" : "grid-rows-[0fr]") : show ? "grid-cols-[1fr]" : "grid-cols-[0fr]",
         show ? "opacity-100" : "opacity-0",
         className,
       )}
     >
-      <div className={cn("min-h-0 min-w-0 overflow-clip [overflow-clip-margin:4px]", innerClassName)}>{shown}</div>
-    </div>
+      <Inner className={cn("min-h-0 min-w-0 overflow-clip [overflow-clip-margin:4px]", as === "span" && "block", innerClassName)}>{shown}</Inner>
+    </Outer>
   );
 }

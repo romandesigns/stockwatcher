@@ -11,6 +11,8 @@ import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { getAppStore, useApp } from "../state/store.ts";
 import { detectionOverlays, groupDetections } from "@stockwatcher/shared";
 import { useDetection } from "../feed/useDetection.ts";
+import { useZones } from "../feed/useZones.ts";
+import { ZoneNote } from "./ZoneNote.tsx";
 
 /** A compact chart for a panel of up to four. */
 const CELL_CHART: Partial<ChartOptions> = { fontSize: 10, timeLabelSpacing: 64 };
@@ -56,6 +58,9 @@ export function ChartCell({ index, slot, symbol, feed, trading, selected, showSe
     if (!id) return [];
     return detectionOverlays(discovery.snapshot, symbol, id).map((x) => discovery.connected && !discovery.resyncing ? x : { ...x, stale: true, label: `Last known · ${x.label}` });
   }, [discovery, symbol, detectionSelection]);
+  // Volume shelves for this symbol from the Runners channel (subscribed here too, so the bands and
+  // the caption show with the Runners tab closed); one object per change, not per frame.
+  const zones = useZones(feed.rocket, symbol);
 
   const indicators = useApp((s) => s.indicators);
   const layers = useApp((s) => s.layers);
@@ -115,6 +120,7 @@ export function ChartCell({ index, slot, symbol, feed, trading, selected, showSe
       )}
     >
       {detectionSelection && detectionSelection.runEpoch !== discovery.frame?.runEpoch ? <p role="status" className="m-0 px-2 py-1 text-[10px] text-warning">Selected detection belongs to an earlier run; its chart references are unavailable.</p> : annotations.length > 0 && <Tip label={annotations[0]!.episodeId}><p role="status" className="m-0 truncate px-2 py-1 text-[10px] text-text-faint">{annotations[0]!.label} · experimental · {discovery.frame?.source} / {discovery.snapshot?.fidelity}</p></Tip>}
+      <ZoneNote note={zones.note} className="px-2 py-1" />
       <CandleChart
         className="min-h-0 flex-1"
         toolbar
@@ -162,6 +168,7 @@ export function ChartCell({ index, slot, symbol, feed, trading, selected, showSe
         options={CELL_CHART}
         alerts={chartAlerts}
         detection={annotations}
+        volumeShelves={zones.bands}
         label={`Chart ${index + 1}: ${symbol} ${slot.timeframe} candles${fixture ? ", fixture data" : ""}`}
       />
     </section>
