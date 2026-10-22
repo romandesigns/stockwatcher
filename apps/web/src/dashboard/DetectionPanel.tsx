@@ -1,9 +1,9 @@
 import { formatEtMillis, formatEtTime } from "@stockwatcher/chart-core";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger, OptionSelect, Tip, cn } from "@stockwatcher/chart-web/ui";
-import { DETECTION_FILTERS, detectionEvidenceValue, detectionFamilyLabel, detectionPrice, detectionRowView, detectionStateLabel, groupDetections, type DetectionChannel, type DetectionEpisode, type DetectionEvidence, type DetectionFilter, type DetectionGroup, type DetectionRowView, type DetectionState, type DetectionTone } from "@stockwatcher/shared";
+import { DETECTION_FILTERS, detectionEvidenceValue, detectionFamilyLabel, detectionPrice, detectionRowView, detectionStateLabel, detectionView, detectionViewCounts, groupDetections, type DetectionEpisode, type DetectionEvidence, type DetectionFilter, type DetectionGroup, type DetectionRowView, type DetectionState, type DetectionTone } from "@stockwatcher/shared";
 import { memo, useMemo, useState } from "react";
-import { useDetection } from "../feed/useDetection.ts";
 import { useTickerPress } from "../lib/useTickerPress.ts";
+import { Reveal } from "./Reveal.tsx";
 import { TriggerMeter } from "./RossPanel.tsx";
 
 const at = (ns: number | null) => ns === null || ns === 0 ? "—" : `${formatEtMillis(Math.floor(ns / 1_000_000))} ET`;
@@ -65,19 +65,15 @@ const measured = (c: DetectionEvidence): string => {
  * the ticker. Filters fold away under one disclosure. All state and checks come from Rust:
  * filters, pages and the selection never change what is monitored.
  *
- * Renders nothing while the detector is off or not yet known (owner review 2026-10-21; the
- * canvas's "off" state): the tab itself is hidden then (SideTabs).
+ * Its tab is hidden while the detector is off or not yet known (owner review 2026-10-21; the
+ * canvas's "off" state) and while neither view has rows (owner, 2026-10-22: a panel with 0 items
+ * is hidden), so there is no quiet "Nothing developing" state. The Active / Recent toggle shows
+ * only while both views have rows; with one, that one is shown. It takes its state: the side
+ * column subscribes (useDetection) to decide the tab and passes it down; tests need no socket.
  */
-export function DetectionPanel({ channel, onPick }: { channel: DetectionChannel | undefined; onPick: (symbol: string, episodeId: string, runEpoch: string) => void }) {
-  const state = useDetection(channel);
-  if (!channel || state.enabled !== true) return null;
-  return <DetectionPanelView state={state} onPick={onPick} />;
-}
-
-/** The panel for a given state (separate so it renders in tests without a socket). */
 export function DetectionPanelView({ state, onPick }: { state: DetectionState; onPick: (symbol: string, episodeId: string, runEpoch: string) => void }) {
   const [filter, setFilter] = useState<DetectionFilter>("all");
-  const [history, setHistory] = useState(false);
+  const [pickedRecent, setHistory] = useState(false);
   const [segment, setSegment] = useState("all");
   const [source, setSource] = useState("all");
   const [catalyst, setCatalyst] = useState("all");
@@ -85,6 +81,10 @@ export function DetectionPanelView({ state, onPick }: { state: DetectionState; o
   const [selection, setSelection] = useState<{ epoch: string; id: string } | null>(null);
   const snapshot = state.snapshot;
   const epoch = state.frame?.runEpoch ?? "";
+  // A view with no rows is not offered (owner, 2026-10-22): the toggle only while both have rows,
+  // and the panel itself only while either has (its tab is hidden otherwise, SideTabs).
+  const counts = useMemo(() => detectionViewCounts(state), [state]);
+  const { recent: history, showToggle } = detectionView(pickedRecent, counts);
   const groups = useMemo(() => source === "all" || source === snapshot?.source ? groupDetections(snapshot, filter, history, segment).filter((g) => catalyst === "all" || g.episodes.some((e) => e.catalyst === catalyst)) : [], [snapshot, filter, history, segment, source, catalyst]);
   const currentPage = Math.min(page, Math.max(0, Math.ceil(groups.length / PAGE) - 1));
   const shown = groups.slice(currentPage * PAGE, (currentPage + 1) * PAGE);
@@ -105,10 +105,12 @@ export function DetectionPanelView({ state, onPick }: { state: DetectionState; o
       <div className="flex items-center gap-2 px-1">
         <span className="rounded bg-bg-raised px-1.5 py-px text-[10px] font-medium text-muted-foreground">Experimental</span>
         {snapshot && snapshot.source !== "live" && <span className={cn("rounded px-1.5 py-px text-[10px] font-semibold", snapshot.source === "fixture" ? "bg-warning/15 text-warning" : "bg-bg-raised text-muted-foreground")}>{snapshot.source === "fixture" ? "FIXTURE / DEMO" : snapshot.source.toUpperCase()}</span>}
-        <div role="group" aria-label="Show" className="ml-auto inline-flex gap-0.5 rounded-[9px] bg-background p-0.5">
-          <button type="button" aria-pressed={!history} onClick={() => view(false)} className={cn("h-6 rounded-[7px] px-2 text-[11px] outline-none transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none", !history ? SELECTED : UNSELECTED)}>Active</button>
-          <button type="button" aria-pressed={history} onClick={() => view(true)} className={cn("h-6 rounded-[7px] px-2 text-[11px] outline-none transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none", history ? SELECTED : UNSELECTED)}>Recent</button>
-        </div>
+        <Reveal show={showToggle} axis="x" className="ml-auto">
+          <div role="group" aria-label="Show" className="inline-flex gap-0.5 rounded-[9px] bg-background p-0.5">
+            <button type="button" aria-pressed={!history} onClick={() => view(false)} className={cn("h-6 rounded-[7px] px-2 text-[11px] whitespace-nowrap outline-none transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none", !history ? SELECTED : UNSELECTED)}>Active</button>
+            <button type="button" aria-pressed={history} onClick={() => view(true)} className={cn("h-6 rounded-[7px] px-2 text-[11px] whitespace-nowrap outline-none transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none", history ? SELECTED : UNSELECTED)}>Recent</button>
+          </div>
+        </Reveal>
       </div>
       {/* The canvas's "connection lost" state: the rows stay, dimmed and still, as last known. */}
       {!state.connected && (
@@ -134,10 +136,14 @@ export function DetectionPanelView({ state, onPick }: { state: DetectionState; o
         </CollapsibleContent>
       </Collapsible>
       {groups.length === 0 ? (
-        <div className="flex flex-col items-center justify-center gap-1 px-1 py-6 text-center">
-          <p className="m-0 text-[13px]">{!snapshot ? "Waiting for the detector's first observations…" : applied > 0 ? `Nothing ${history ? "resolved" : "developing"} in these filters` : history ? "Nothing resolved yet" : "Nothing developing right now"}</p>
-          {snapshot && <p className="m-0 font-mono text-[11px] text-text-faint">watching {snapshot.monitored_symbols.toLocaleString()} symbols · {band(snapshot.price_min_micros)}–{band(snapshot.price_max_micros)}</p>}
-        </div>
+        // Only the user's own filters can empty a shown view (an empty view is never offered),
+        // so this says so; clearing them is right above.
+        applied > 0 && snapshot ? (
+          <div className="flex flex-col items-center justify-center gap-1 px-1 py-4 text-center">
+            <p className="m-0 text-[13px]">Nothing {history ? "resolved" : "developing"} in these filters</p>
+            <p className="m-0 font-mono text-[11px] text-text-faint">watching {snapshot.monitored_symbols.toLocaleString()} symbols · {band(snapshot.price_min_micros)}–{band(snapshot.price_max_micros)}</p>
+          </div>
+        ) : null
       ) : (
         <ul className={cn("m-0 flex min-h-0 list-none flex-col gap-1 overflow-y-auto p-0 transition-opacity duration-200 motion-reduce:transition-none", !state.connected && "opacity-60")}>
           {shown.map((g) => {

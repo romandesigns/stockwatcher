@@ -74,15 +74,15 @@ function DashboardView({ feed, token, source }: { feed: MobileFeed; token: strin
       </View>
 
       {/* One row of six mini gauges, all in view (owner, 2026-10-19); a tap opens the ticker's chart. */}
-      <HaltWatcher channel={feed.pressure} onPick={open} reducedMotion={reducedMotion} />
+      <HaltWatcher channel={feed.pressure} onPick={open} reducedMotion={reducedMotion} gap={GAP} />
       {/* The Ross Panel card (owner, 2026-10-20): a tapped row opens the chart modal like a gauge. */}
-      <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 8, gap: 8 }}>
-        <RossPanel channel={feed.ross} detection={feed.detection} onPick={open} reducedMotion={reducedMotion} />
+      <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 8, gap: GAP }}>
+        <RossPanel channel={feed.ross} detection={feed.detection} onPick={open} reducedMotion={reducedMotion} gap={GAP} />
         {/* Signals (design canvas "Detection Panel", phone): its card under Ross, only while the
             server's detector is on; a tapped row opens the chart modal with the episode drawn. */}
-        <DetectionPanel channel={feed.detection} onPick={open} reducedMotion={reducedMotion} />
+        <DetectionPanel channel={feed.detection} onPick={open} reducedMotion={reducedMotion} gap={GAP} />
         {/* Rocket watch (owner, 2026-10-21; experimental): under the Ross card, same row gestures. */}
-        <RocketPanel channel={feed.rocket} onPick={open} reducedMotion={reducedMotion} />
+        <RocketPanel channel={feed.rocket} onPick={open} reducedMotion={reducedMotion} gap={GAP} />
       </ScrollView>
       {candidates.length === 0 && !fixture && (
         // The dashboard reads the LIVE market: an empty list means nothing has traded yet this
@@ -109,8 +109,15 @@ function DashboardView({ feed, token, source }: { feed: MobileFeed; token: strin
   );
 }
 
+/**
+ * The space between the screen's blocks and between the cards. Every card (and the Halt watcher
+ * row) is hidden while it has 0 items (owner, 2026-10-22) and opens or closes by its real height;
+ * it gets this gap so a closed one cancels the gap it would still take (motion/Collapse).
+ */
+const GAP = 8;
+
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: colors.bg, paddingHorizontal: 6, paddingBottom: 4, gap: 8 },
+  screen: { flex: 1, backgroundColor: colors.bg, paddingHorizontal: 6, paddingBottom: 4, gap: GAP },
   header: { flexDirection: "row", alignItems: "center", gap: 8 },
   title: { color: colors.text, fontFamily: fonts.semibold, fontSize: 18 },
   sub: { color: colors.textFaint, fontFamily: fonts.regular, fontSize: 12 },

@@ -9,6 +9,7 @@ export * from "./pressure.ts";
 export * from "./ross.ts";
 export * from "./rocket.ts";
 export * from "./detection.ts";
+export * from "./panels.ts";
 export * from "./tickers/search.ts";
 export * from "./tapHold.ts";
 export * from "./session.ts";

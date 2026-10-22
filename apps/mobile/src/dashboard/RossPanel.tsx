@@ -1,11 +1,12 @@
 import { formatEtTime } from "@stockwatcher/chart-core";
 import { UI } from "@stockwatcher/chart-native";
-import { detectionFamilyLabel, detectionStateLabel, groupDetections, rossAttention, rossFreshness, rossLinePaths, rossReadinessView, rossRowView, type DetectionChannel, type DetectionEpisode, type RossChannel, type RossRowView, type RossTone } from "@stockwatcher/shared";
+import { detectionFamilyLabel, detectionStateLabel, groupDetections, rossAttention, rossFreshness, rossItemCount, rossLinePaths, rossRowView, type DetectionChannel, type DetectionEpisode, type RossChannel, type RossRowView, type RossTone } from "@stockwatcher/shared";
 import { memo, useEffect, useMemo, useState } from "react";
 import { Animated, Pressable, StyleSheet, Text, View } from "react-native";
 import Svg, { Circle, Line, Path, Rect } from "react-native-svg";
 
 import { useDetection, useRoss } from "../feed/hooks";
+import { Collapse } from "../motion/Collapse";
 import { fonts } from "../theme";
 import { useTickerPress } from "../ui/useTickerPress";
 
@@ -26,20 +27,24 @@ const hhmm = (ns: number) => formatEtTime(Math.round(ns / 1_000_000));
  * card under the Halt watcher row, the web side panel's rows stacked for the narrow screen. A
  * row earns a coloured edge only at the trigger or crossing it. The cues are the micro-pullback
  * stages the Detection Panel shows (one detector, 2026-10-21): stages, not entry signals.
- * Tapping a row opens its chart (the chart modal); tap, then hold copies the ticker.
+ * Tapping a row opens its chart (the chart modal); tap, then hold copies the ticker. No rows, no
+ * card (owner, 2026-10-22): it opens and closes by its real height (Collapse), `gap` being the
+ * list's gap it sits in.
  */
-export function RossPanel({ channel, detection, onPick, reducedMotion }: { channel: RossChannel; detection: DetectionChannel; onPick: (symbol: string, episodeId?: string, runEpoch?: string) => void; reducedMotion: boolean }) {
+export function RossPanel({ channel, detection, onPick, reducedMotion, gap = 0 }: { channel: RossChannel; detection: DetectionChannel; onPick: (symbol: string, episodeId?: string, runEpoch?: string) => void; reducedMotion: boolean; gap?: number }) {
   const state = useRoss(channel);
   const detections = useDetection(detection);
   const detectionEpoch = detections.frame?.runEpoch;
   const bySymbol = new Map(groupDetections(detections.snapshot).map((g) => [g.symbol, g.selected]));
-  const { enabled, panel, readiness } = state;
+  const { enabled, panel } = state;
   const rows = panel?.rows.map((r) => rossRowView(r, panel.cutoff, hhmm)) ?? [];
   const attention = panel ? rossAttention(panel) : 0;
   // A dropped socket keeps the last rows and says so: they are the last known state, not now.
   const fresh = rossFreshness(state, hhmm);
-  const why = readiness ? rossReadinessView(readiness, hhmm) : null;
+  // No rows, no card (owner, 2026-10-22): off, not yet known and empty all hide it. It opens and
+  // closes by its real height; a reconnect keeps the last rows, so it does not flash.
   return (
+    <Collapse open={rossItemCount(state) > 0} reducedMotion={reducedMotion} gap={gap}>
     <View style={styles.card} accessibilityLabel="Ross Panel">
       <View style={styles.head}>
         <Text accessibilityRole="header" style={styles.title}>
@@ -53,36 +58,18 @@ export function RossPanel({ channel, detection, onPick, reducedMotion }: { chann
           </View>
         )}
       </View>
-      {/* Only once connected before: the first connect has its own "Connecting…" line below. */}
       {fresh.stale && enabled === true && (
         <Text accessibilityRole="alert" style={[styles.stale, { color: TONE[fresh.tone] }]}>
           {fresh.label}
         </Text>
       )}
-      {enabled === false ? (
-        <Text style={[styles.empty, { color: UI.warning }]}>Off on this server</Text>
-      ) : enabled === null ? (
-        <Text style={styles.empty}>Connecting…</Text>
-      ) : rows.length === 0 ? (
-        // Not "nothing qualifies": the server's own counts say whether a pillar could even be
-        // decided (crates/server/src/context.rs `Readiness`).
-        <View style={styles.whyBox}>
-          <Text style={styles.empty}>{why ? why.headline : "No stock at 5/5 yet"}</Text>
-          {why?.reasons.map((r) => (
-            <Text key={r} style={styles.whyLine}>
-              {r}
-            </Text>
-          ))}
-          {why ? <Text style={styles.whenLine}>{why.takenAt}</Text> : null}
-        </View>
-      ) : (
-        <View style={[styles.rows, fresh.stale && styles.dimmed]}>
-          {rows.map((r) => (
-            <Row key={r.symbol} row={r} episode={bySymbol.get(r.symbol)} detectionCurrent={detections.connected && !detections.resyncing} onPick={(symbol) => onPick(symbol, bySymbol.get(symbol)?.episode_id, detectionEpoch)} reducedMotion={reducedMotion} />
-          ))}
-        </View>
-      )}
+      <View style={[styles.rows, fresh.stale && styles.dimmed]}>
+        {rows.map((r) => (
+          <Row key={r.symbol} row={r} episode={bySymbol.get(r.symbol)} detectionCurrent={detections.connected && !detections.resyncing} onPick={(symbol) => onPick(symbol, bySymbol.get(symbol)?.episode_id, detectionEpoch)} reducedMotion={reducedMotion} />
+        ))}
+      </View>
     </View>
+    </Collapse>
   );
 }
 
@@ -218,11 +205,7 @@ const styles = StyleSheet.create({
   band: { color: UI.textFaint, fontSize: 11, fontVariant: ["tabular-nums"] },
   count: { marginLeft: "auto", flexDirection: "row", alignItems: "center", gap: 5, height: 22, paddingHorizontal: 8, borderRadius: 11, backgroundColor: "rgba(139,156,255,0.16)" },
   countText: { color: "#c3cbff", fontSize: 11 },
-  empty: { color: UI.textFaint, fontSize: 12, paddingHorizontal: 4, paddingVertical: 6 },
   stale: { fontSize: 11, paddingHorizontal: 4, paddingBottom: 2 },
-  whyBox: { gap: 2, paddingBottom: 4 },
-  whyLine: { color: UI.textFaint, fontSize: 11, fontFamily: fonts.regular, paddingHorizontal: 4 },
-  whenLine: { color: UI.textFaint, fontSize: 10, opacity: 0.7, paddingHorizontal: 4 },
   // The card's own row gap: the rows are separated by space, never borders.
   rows: { gap: 6 },
   dimmed: { opacity: 0.6 },

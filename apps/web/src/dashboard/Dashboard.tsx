@@ -15,7 +15,6 @@ import { SettingsButton } from "../nav/settings.tsx";
 import { getAppStore, useApp } from "../state/store.ts";
 import { ChartCell } from "./ChartCell.tsx";
 import { HaltWatcher } from "./HaltWatcher.tsx";
-import { RossPanel } from "./RossPanel.tsx";
 import { SideTabs } from "./SideTabs.tsx";
 import { useRunnersToasts } from "./runnersToasts.ts";
 import { MultiViewMenu } from "./MultiViewMenu.tsx";
@@ -169,7 +168,7 @@ export function Dashboard({ choice, feed }: Connection) {
       {/* The panel takes the full width (the "Most active" side list was removed, owner 2026-10-18):
           tickers come from the search above. */}
       {liveEmpty ? (
-        <div className="@container/panel flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto @4xl/panel:flex-row">
+        <div className="@container/panel flex min-h-0 flex-1 flex-col overflow-y-auto @4xl/panel:flex-row">
         <div className="flex flex-1 flex-col items-center justify-center gap-1 text-center">
           <p className="m-0 text-sm font-medium">{liveStatus === "not_configured" ? "Live market data is not configured" : "No live trades yet"}</p>
           <p className="m-0 max-w-sm text-xs text-text-faint">
@@ -178,9 +177,7 @@ export function Dashboard({ choice, feed }: Connection) {
               : "The dashboard shows the live market (Settings → Data). Charts appear with the session's first trades: overnight from 20:00 ET Sunday to Thursday, then 4:00 to 20:00 ET."}
           </p>
         </div>
-        <div className="flex min-w-0 shrink-0 flex-col gap-2 @4xl/panel:w-[400px]">
-          <SideTabs rocket={feed.rocket} detection={feed.detection} onPick={app.loadIntoSelected} onEpisodePick={pickDetection} ross={feed.ross && <RossPanel channel={feed.ross} detection={feed.detection} onPick={app.loadIntoSelected} onEpisodePick={pickDetection} />} />
-        </div>
+        <SideTabs ross={feed.ross} rocket={feed.rocket} detection={feed.detection} onPick={app.loadIntoSelected} onEpisodePick={pickDetection} />
         </div>
       ) : (
       <div className="@container/panel flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-y-auto">
@@ -190,8 +187,10 @@ export function Dashboard({ choice, feed }: Connection) {
             so a single chart fills the rest of the screen above the tab bar. */}
         {feed.pressure && <HaltWatcher channel={feed.pressure} onPick={app.loadIntoSelected} />}
         {/* The Ross Panel beside the charts (owner, 2026-10-20: "a side panel adjacent to the chart
-            wrapper"); below them when the panel is narrow. Server feed only. */}
-        <div className="flex min-h-0 flex-1 flex-col gap-2 @4xl/panel:flex-row">
+            wrapper"); below them when the panel is narrow. Server feed only. No gap here: the side
+            column brings its own margin, so when every side panel is empty and it closes, the
+            charts take the whole width (SideTabs). */}
+        <div className="flex min-h-0 flex-1 flex-col @4xl/panel:flex-row">
         <div role="group" aria-label="Charts" className={cn("grid min-w-0 flex-1 auto-rows-[minmax(18rem,1fr)] gap-2", GRID[dashboard.count])}>
           {shown.map((symbol, i) => (
             <div key={i} className={cn("flex min-h-0 min-w-0 flex-col", dashboard.count === 3 && i === 2 && SPAN_THIRD)}>
@@ -213,9 +212,7 @@ export function Dashboard({ choice, feed }: Connection) {
             </div>
           ))}
         </div>
-        <div className="flex min-h-0 min-w-0 shrink-0 flex-col gap-2 @4xl/panel:w-[400px]">
-          <SideTabs rocket={feed.rocket} detection={feed.detection} onPick={app.loadIntoSelected} onEpisodePick={pickDetection} ross={feed.ross && <RossPanel channel={feed.ross} detection={feed.detection} onPick={app.loadIntoSelected} onEpisodePick={pickDetection} />} />
-        </div>
+        <SideTabs ross={feed.ross} rocket={feed.rocket} detection={feed.detection} onPick={app.loadIntoSelected} onEpisodePick={pickDetection} />
         </div>
       </div>
       )}

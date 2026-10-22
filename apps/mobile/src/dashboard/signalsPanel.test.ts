@@ -19,8 +19,21 @@ test("the Signals card sits under the Ross card, above Runners, and opens the ch
   expect(panel).toContain("onPick(group.selected.symbol, group.selected.episode_id, epoch)");
 });
 
-test("nothing while the detector is off; the shared row model and honest stages", () => {
-  expect(panel).toContain("if (state.enabled !== true) return null;");
+test("no card while neither view has rows (off and not yet known included); no quiet state", () => {
+  expect(panel).toContain("<Collapse open={counts.active + counts.recent > 0} reducedMotion={reducedMotion} gap={gap}>");
+  expect(panel).toContain("const counts = detectionViewCounts(state);");
+  expect(panel).not.toContain("Nothing developing right now");
+  expect(panel).not.toContain("Nothing resolved yet");
+  expect(panel).not.toContain("Waiting for the detector");
+});
+
+test("the Active / Recent toggle only while both views have rows; it fades, never a layout animation", () => {
+  expect(panel).toContain("const { recent: history, showToggle } = detectionView(pickedRecent, counts);");
+  expect(panel).toMatch(/\{showToggle && \(\s*<Reanimated\.View entering=\{FadeIn/);
+  expect(panel).toContain("ReduceMotion.Always");
+});
+
+test("the shared row model and honest stages", () => {
   expect(panel).toContain("detectionRowView(group, now, current, hhmm)");
   // Only a crossing and a price at the trigger earn an edge; never green anywhere on the card.
   expect(src).toContain("const EDGE: Partial<Record<DetectionRowView[\"stage\"], string>> = { crossing: UI.accent, near: UI.warning };");

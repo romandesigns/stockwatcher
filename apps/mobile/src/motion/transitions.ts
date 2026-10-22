@@ -7,7 +7,7 @@
 // fallback (a short cross-fade, no movement, no gesture) is decided in one
 // place instead of per screen.
 
-import { interpolate } from "react-native-reanimated";
+import { Easing, interpolate } from "react-native-reanimated";
 import Transition, {
   type ScreenStyleInterpolator,
   type TransitionSpec,
@@ -28,6 +28,12 @@ const navSpring: TransitionSpec = {
   open: Transition.Specs.DefaultSpec,
   close: Transition.Specs.DefaultSpec,
 };
+
+/**
+ * In-screen open/close of a card or section (Collapse): its real height and opacity. Matches the
+ * web's 300 ms ease-out (Reveal), so a panel appearing reads the same on both.
+ */
+export const collapseTiming = { duration: 300, easing: Easing.out(Easing.cubic) };
 
 const fadeTiming: TransitionSpec = {
   open: { duration: 180 },

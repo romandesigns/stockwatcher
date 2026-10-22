@@ -1,11 +1,12 @@
 import { formatEtTime, formatPrice } from "@stockwatcher/chart-core";
 import { Icon } from "@stockwatcher/chart-web";
 import { cn, Tip } from "@stockwatcher/chart-web/ui";
-import { buildupCue, buildupCueShort, buildupSentence, haltLine, haltSentence, NO_BUILDUPS, riskPhrase, type PressureCard, type PressureChannel } from "@stockwatcher/shared";
+import { buildupCue, buildupCueShort, buildupSentence, haltLine, haltSentence, riskPhrase, type PressureCard, type PressureChannel } from "@stockwatcher/shared";
 import { memo } from "react";
 import { usePressureBoard } from "../feed/usePressureBoard.ts";
 import { useTickerPress } from "../lib/useTickerPress.ts";
 import { PressureGauge } from "./PressureGauge.tsx";
+import { Reveal } from "./Reveal.tsx";
 
 const hhmm = (ms: number) => formatEtTime(ms);
 
@@ -18,7 +19,7 @@ function changeText(pct: number): string {
  * 2026-10-20: "observe for a rapid increasing amounting pressure that could potentially lead to a
  * halt", and no card when none is happening). The server's board (crates/server/src/pressure.rs):
  * only symbols whose one-sided pressure is rising fast while the price runs at its LULD band, at
- * most 6, usually none, so an empty board is a normal state with its own line. Each card: the
+ * most 6, usually none, so the strip is usually hidden (no card, no heading). Each card: the
  * gauge filled with the halt risk on the left; the ticker, price and change on the right, and
  * under the ticker the cue "+45 in 30s · 1.2% to LULD up". Pressing a card loads its ticker into
  * the selected chart, like a pick from the search (tap, then hold copies it). It reads the
@@ -31,18 +32,19 @@ function changeText(pct: number): string {
  */
 export function HaltWatcher({ channel, onPick }: { channel: PressureChannel; onPick: (symbol: string) => void }) {
   const board = usePressureBoard(channel);
+  // No build-ups, no strip (owner, 2026-10-22: a panel with 0 items is hidden): it opens and
+  // closes by its real height, so the charts below slide rather than jump. The negative margin
+  // cancels the panel's gap-3 while closed; the padding restores it while open.
   return (
-    <section aria-labelledby="halt-watcher-title" className="@container/hw flex shrink-0 flex-col gap-2">
-      <div className="flex flex-wrap items-center gap-2">
-        <Icon name="gauge" className="size-4 text-muted-foreground" />
-        <h2 id="halt-watcher-title" className="m-0 text-sm font-semibold">
-          Halt watcher
-        </h2>
-        <span className="text-xs text-text-faint">Pressure building toward a LULD band</span>
-      </div>
-      {board.length === 0 ? (
-        <p className="m-0 text-xs text-text-faint">{NO_BUILDUPS}</p>
-      ) : (
+    <Reveal show={board.length > 0} className="-mb-3 shrink-0" innerClassName="pb-3">
+      <section aria-labelledby="halt-watcher-title" className="@container/hw flex flex-col gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <Icon name="gauge" className="size-4 text-muted-foreground" />
+          <h2 id="halt-watcher-title" className="m-0 text-sm font-semibold">
+            Halt watcher
+          </h2>
+          <span className="text-xs text-text-faint">Pressure building toward a LULD band</span>
+        </div>
         <ul className="m-0 grid list-none grid-cols-6 gap-1.5 p-0 @xl/hw:grid-cols-2 @xl/hw:gap-2 @4xl/hw:grid-cols-3">
           {board.map((c) => (
             <li key={c.symbol} className="min-w-0">
@@ -50,8 +52,8 @@ export function HaltWatcher({ channel, onPick }: { channel: PressureChannel; onP
             </li>
           ))}
         </ul>
-      )}
-    </section>
+      </section>
+    </Reveal>
   );
 }
 

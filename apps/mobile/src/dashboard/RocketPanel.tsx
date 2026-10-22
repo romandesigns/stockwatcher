@@ -1,11 +1,12 @@
 import { Icon, UI } from "@stockwatcher/chart-native";
-import { newRocketFlags, rocketHeaderView, rocketLinePaths, rocketNow, rocketSectionsView, type RocketChannel, type RocketRowView, type RocketSectionsView, type RocketTone } from "@stockwatcher/shared";
+import { newRocketFlags, rocketHeaderView, rocketLinePaths, rocketNow, rocketSectionCounts, rocketSectionsView, type RocketChannel, type RocketRowView, type RocketSectionsView, type RocketTone } from "@stockwatcher/shared";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Animated, Pressable, StyleSheet, Text, View } from "react-native";
 import Svg, { Circle, Line, Path, Rect } from "react-native-svg";
 
 import { useRocket } from "../feed/hooks";
 import { notifyRocketFlags } from "../notifications/rocket";
+import { Collapse } from "../motion/Collapse";
 import { fonts } from "../theme";
 import { useTickerPress } from "../ui/useTickerPress";
 
@@ -22,6 +23,8 @@ const TONE: Record<RocketTone, string> = {
 /** The row chart's box (dp), the Ross row's: fits the Fold's ~360 dp cover screen beside the text. */
 export const DAY_LINE_W = 72;
 export const DAY_LINE_H = 28;
+/** The card's gap between its blocks, which a closed section must cancel (Collapse). */
+const CARD_GAP = 6;
 
 /**
  * Runners on the phone (owner, 2026-10-21/22; EXPERIMENTAL): its own card under the Ross card,
@@ -42,8 +45,12 @@ export const DAY_LINE_H = 28;
  * says how far the burst already went and what typically remains, never "buy". The accent marks
  * only a live burst (pulsing dot, headline and edge while fresh and pending); green and red only
  * its strict outcome tag.
+ *
+ * Nothing empty is drawn (owner, 2026-10-22): no card while off, not yet known or empty, no
+ * Bursts section without bursts, no Flags without flags. Each opens and closes by its real height
+ * (Collapse: layout, not a transform, so taps stay true); a reconnect keeps the last rows, dimmed.
  */
-export function RocketPanel({ channel, onPick, reducedMotion }: { channel: RocketChannel; onPick: (symbol: string) => void; reducedMotion: boolean }) {
+export function RocketPanel({ channel, onPick, reducedMotion, gap = 0 }: { channel: RocketChannel; onPick: (symbol: string) => void; reducedMotion: boolean; gap?: number }) {
   const state = useRocket(channel);
   // Ages tick between frames.
   const [wall, setWall] = useState(() => Date.now());
@@ -60,11 +67,16 @@ export function RocketPanel({ channel, onPick, reducedMotion }: { channel: Rocke
     primed.current = true;
     if (fresh.length) notifyRocketFlags(fresh);
   }, [state]);
-  const { enabled, panel } = state;
+  const { panel } = state;
   const now = rocketNow(state, wall);
   const { bursts, runners: rows }: RocketSectionsView = panel ? rocketSectionsView(panel, now) : { bursts: null, runners: [] };
   const head = panel ? rocketHeaderView(panel) : null;
+  const counts = rocketSectionCounts(state);
+  const burstCount = bursts ? bursts.rows.length : 0;
+  // No rows, no card (owner, 2026-10-22): off, not yet known and empty all hide it. It stays
+  // mounted (the subscription and the local-banner memory above), only collapsed.
   return (
+    <Collapse open={counts.bursts + counts.flags > 0} reducedMotion={reducedMotion} gap={gap}>
     <View style={styles.card} accessibilityLabel="Runners">
       <View style={styles.head}>
         <Text accessibilityRole="header" style={styles.title}>
@@ -95,50 +107,43 @@ export function RocketPanel({ channel, onPick, reducedMotion }: { channel: Rocke
           Reconnecting · last known flags
         </Text>
       )}
-      {enabled === false ? (
-        <Text style={[styles.empty, { color: UI.warning }]}>Off on this server</Text>
-      ) : enabled === null ? (
-        <Text style={styles.empty}>Connecting…</Text>
-      ) : (
-        <>
-          {bursts && (
-            <View style={styles.section} accessibilityLabel="Bursts">
-              <View style={styles.sectionHead}>
-                <Icon name="trend" color={UI.textDim} size={14} />
-                <Text accessibilityRole="header" style={styles.sectionTitle}>
-                  Bursts
-                </Text>
-                <Text style={styles.record}>{bursts.head.count}</Text>
-              </View>
-              <Text style={styles.sub}>{[bursts.head.what, bursts.head.typical].filter(Boolean).join(". ")}</Text>
-              {bursts.rows.length === 0 ? (
-                <Text style={styles.empty}>No buying bursts yet today</Text>
-              ) : (
-                <View style={[styles.rows, !state.connected && styles.dimmed]}>
-                  {bursts.rows.map((r) => (
-                    <Row key={r.key} row={r} onPick={onPick} reducedMotion={reducedMotion} />
-                  ))}
-                </View>
-              )}
+      {/* Each section only while it has rows, its heading included (owner, 2026-10-22). */}
+      <Collapse open={burstCount > 0} reducedMotion={reducedMotion} gap={CARD_GAP}>
+        {bursts && (
+          <View style={styles.section} accessibilityLabel="Bursts">
+            <View style={styles.sectionHead}>
+              <Icon name="trend" color={UI.textDim} size={14} />
+              <Text accessibilityRole="header" style={styles.sectionTitle}>
+                Bursts
+              </Text>
+              <Text style={styles.record}>{bursts.head.count}</Text>
             </View>
-          )}
-          {bursts && (
-            <Text accessibilityRole="header" style={[styles.sectionTitle, styles.sectionPad]}>
-              Flags
-            </Text>
-          )}
-          {rows.length === 0 ? (
-            <Text style={styles.empty}>Nothing flagged right now</Text>
-          ) : (
+            <Text style={styles.sub}>{[bursts.head.what, bursts.head.typical].filter(Boolean).join(". ")}</Text>
             <View style={[styles.rows, !state.connected && styles.dimmed]}>
-              {rows.map((r) => (
+              {bursts.rows.map((r) => (
                 <Row key={r.key} row={r} onPick={onPick} reducedMotion={reducedMotion} />
               ))}
             </View>
-          )}
-        </>
-      )}
+          </View>
+        )}
+      </Collapse>
+      <Collapse open={rows.length > 0} reducedMotion={reducedMotion} gap={CARD_GAP}>
+        <View accessibilityLabel="Flags">
+          {/* The heading only beside a Bursts section: alone, the card's title says it. */}
+          <Collapse open={burstCount > 0} reducedMotion={reducedMotion}>
+            <Text accessibilityRole="header" style={[styles.sectionTitle, styles.sectionPad, styles.flagsHead]}>
+              Flags
+            </Text>
+          </Collapse>
+          <View style={[styles.rows, !state.connected && styles.dimmed]}>
+            {rows.map((r) => (
+              <Row key={r.key} row={r} onPick={onPick} reducedMotion={reducedMotion} />
+            ))}
+          </View>
+        </View>
+      </Collapse>
     </View>
+    </Collapse>
   );
 }
 
@@ -287,7 +292,7 @@ function Pulse({ color, size, reducedMotion }: { color: string; size: number; re
 }
 
 const styles = StyleSheet.create({
-  card: { borderRadius: 14, backgroundColor: UI.panel, paddingVertical: 10, paddingHorizontal: 8, gap: 6 },
+  card: { borderRadius: 14, backgroundColor: UI.panel, paddingVertical: 10, paddingHorizontal: 8, gap: CARD_GAP },
   head: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 4 },
   title: { color: UI.text, fontSize: 14, fontFamily: fonts.semibold },
   chip: { borderRadius: 4, paddingHorizontal: 6, paddingVertical: 1, backgroundColor: UI.raised },
@@ -296,12 +301,12 @@ const styles = StyleSheet.create({
   countText: { color: "#c3cbff", fontSize: 11 },
   record: { marginLeft: "auto", flexShrink: 1, color: UI.textDim, fontSize: 11, fontVariant: ["tabular-nums"] },
   sub: { color: UI.textFaint, fontSize: 10, paddingHorizontal: 4, fontVariant: ["tabular-nums"] },
-  empty: { color: UI.textFaint, fontSize: 12, paddingHorizontal: 4, paddingVertical: 6 },
   // Bursts on top: a heading, its one-line context and its rows; separated by space, never borders.
   section: { gap: 6, paddingBottom: 4 },
   sectionHead: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 4 },
   sectionTitle: { color: UI.text, fontSize: 12, fontFamily: fonts.semibold },
   sectionPad: { paddingHorizontal: 4 },
+  flagsHead: { paddingBottom: CARD_GAP },
   // The card's own row gap: the rows are separated by space, never borders.
   rows: { gap: 6 },
   dimmed: { opacity: 0.6 },

@@ -1,8 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { detectionSnapshotView, EMPTY_DETECTION, type DetectionChannel, type DetectionCoreEpisode, type DetectionMessage, type DetectionState } from "@stockwatcher/shared";
+import { detectionSnapshotView, EMPTY_DETECTION, type DetectionCoreEpisode, type DetectionMessage, type DetectionState } from "@stockwatcher/shared";
 import { renderToStaticMarkup } from "react-dom/server";
 import { DetectionPanelView } from "./DetectionPanel.tsx";
-import { SideTabs } from "./SideTabs.tsx";
 
 const MIN = 60_000_000_000;
 const NOW = 1_792_075_200_000_000_000;
@@ -27,10 +26,8 @@ const render = (s: DetectionState) => renderToStaticMarkup(<DetectionPanelView s
 describe("Signals (design canvas, 2026-10-22)", () => {
   const html = render(stateOf(message([episode("KLMN", "crossing_provisional", { last_material_at: NOW - 10_000_000_000 }), episode("PQRS", "armed", {}, true), episode("XYZA", "pullback_forming"), episode("TUVW", "trigger_observed")])));
 
-  test("honest stage labels with level notes and ages; Active / Recent segmented", () => {
-    for (const s of ["KLMN", "Crossing", "3.15 · close pending", "At trigger", "Pullback", "Broke trigger", "now", "2m", "Micro-pullback", "Active", "Recent", "Filters"]) expect(html).toContain(s);
-    expect(html).toContain('aria-pressed="true"');
-    expect(html).toContain('role="group" aria-label="Show"');
+  test("honest stage labels with level notes and ages", () => {
+    for (const s of ["KLMN", "Crossing", "3.15 · close pending", "At trigger", "Pullback", "Broke trigger", "now", "2m", "Micro-pullback", "Filters"]) expect(html).toContain(s);
   });
 
   test("accent only on the crossing; amber edge at the trigger; no green, no borders, no native controls", () => {
@@ -47,21 +44,26 @@ describe("Signals (design canvas, 2026-10-22)", () => {
     expect(html.match(/from the pullback low to the trigger/g)?.length).toBe(3);
   });
 
-  test("quiet: nothing developing, with what is watched", () => {
+  test("no quiet state: an empty view is never shown, so nothing says 'Nothing developing'", () => {
     const quiet = render(stateOf(message([])));
-    expect(quiet).toContain("Nothing developing right now");
-    expect(quiet).toContain("watching 1,284 symbols · $0.10–$25");
+    expect(quiet).not.toContain("Nothing developing");
+    expect(quiet).not.toContain("Nothing resolved");
+    expect(quiet).not.toContain("Waiting for the detector");
   });
 
-  test("the Signals tab exists only while the detector is on; its count only from current data", () => {
-    const channel = (s: DetectionState): DetectionChannel => ({ get: () => s, subscribe: () => () => {} });
-    const tabs = (s: DetectionState) => renderToStaticMarkup(<SideTabs ross={<p>ross</p>} rocket={undefined} detection={channel(s)} onPick={() => {}} onEpisodePick={() => {}} />);
-    const on = stateOf(message([episode("KLMN", "crossing_provisional")]));
-    expect(tabs({ ...EMPTY_DETECTION, enabled: false })).toBe("<p>ross</p>");
-    expect(tabs({ ...EMPTY_DETECTION, enabled: null })).toBe("<p>ross</p>");
-    expect(tabs(on)).toContain(">Signals<");
-    expect(tabs(on)).toContain('aria-label="1 at the trigger or crossing it"');
-    expect(tabs({ ...on, connected: false })).not.toContain("at the trigger or crossing it");
+  test("Active / Recent toggle only while both views have rows; one view alone is shown without it", () => {
+    const resolved = episode("DONE", "invalidated", { resolution: { state: "invalidated", reason: "broke_low", at: NOW - MIN, bar_end: null, transition_id: "t1" } });
+    const both = render(stateOf(message([episode("KLMN", "armed")], [resolved])));
+    expect(both).toContain('role="group" aria-label="Show"');
+    expect(both).toContain(">Active<");
+    expect(both).toContain(">Recent<");
+    expect(both).toContain("KLMN");
+    // Only recent rows: the Recent view is shown, without a toggle.
+    const recentOnly = render(stateOf(message([], [resolved])));
+    expect(recentOnly).not.toContain('aria-label="Show"');
+    expect(recentOnly).toContain("DONE");
+    // Only active rows: no toggle either.
+    expect(html).not.toContain('aria-label="Show"');
   });
 
   test("reconnecting: last known rows dim, nothing pulses or claims to be at the trigger", () => {

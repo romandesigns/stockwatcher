@@ -1,10 +1,11 @@
 import { formatEtTime, formatPrice } from "@stockwatcher/chart-core";
 import { UI } from "@stockwatcher/chart-native";
-import { buildupCue, buildupCueShort, buildupSentence, haltLine, haltSentence, NO_BUILDUPS, riskPhrase, type PressureCard, type PressureChannel } from "@stockwatcher/shared";
+import { buildupCue, buildupCueShort, buildupSentence, haltLine, haltSentence, riskPhrase, type PressureCard, type PressureChannel } from "@stockwatcher/shared";
 import { memo, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { usePressureBoard } from "../feed/hooks";
+import { Collapse } from "../motion/Collapse";
 import { fonts } from "../theme";
 import { useTickerPress } from "../ui/useTickerPress";
 import { PressureGauge } from "./PressureGauge";
@@ -20,25 +21,25 @@ function changeText(pct: number): string {
  * The phone dashboard's Halt watcher (the web's HaltWatcher; design canvas "Halt Watcher";
  * build-ups since 2026-10-20): only the symbols whose one-sided pressure is rising fast while the
  * price runs at its LULD band (crates/server/src/pressure.rs), at most 6 and usually none, so the
- * empty board has its own line. The cards are ONE row of mini gauges across the screen (owner,
+ * row is usually hidden: no cards, no line. The cards are ONE row of mini gauges across the screen (owner,
  * 2026-10-19: "fit them all on a single row"), above the charts. Each cell: the dial filled with
  * the halt risk, the ticker and the short cue ("+45 · 1.2%↑"); on a wide cell (the unfolded
  * Fold) the price, the change and the full cue ("+45 in 30s · 1.2% to LULD up") too. Tap a cell
  * to open its ticker's chart (the chart modal); tap, then hold copies it.
  */
-export function HaltWatcher({ channel, onPick, reducedMotion }: { channel: PressureChannel; onPick: (symbol: string) => void; reducedMotion: boolean }) {
+export function HaltWatcher({ channel, onPick, reducedMotion, gap = 0 }: { channel: PressureChannel; onPick: (symbol: string) => void; reducedMotion: boolean; gap?: number }) {
   const board = usePressureBoard(channel);
   const [width, setWidth] = useState(0);
   // Six equal cells, whatever the board holds, so a short board does not stretch two dials wide.
   const cellWidth = width > 0 ? (width - GAP * (SLOTS - 1)) / SLOTS : 0;
+  // No build-ups, no row (owner, 2026-10-22: a panel with 0 items is hidden): it opens and closes
+  // by its real height, so the cards below slide rather than jump.
   return (
-    <View onLayout={(e) => setWidth(e.nativeEvent.layout.width)} accessibilityLabel="Halt watcher, pressure building toward a LULD band">
-      {board.length === 0 ? (
-        <Text style={styles.empty}>Halt watcher · {NO_BUILDUPS}</Text>
-      ) : (
+    <Collapse open={board.length > 0} reducedMotion={reducedMotion} gap={gap}>
+      <View onLayout={(e) => setWidth(e.nativeEvent.layout.width)} accessibilityLabel="Halt watcher, pressure building toward a LULD band">
         <View style={styles.row}>{cellWidth > 0 && board.slice(0, SLOTS).map((c) => <MiniCard key={c.symbol} card={c} width={cellWidth} onPick={onPick} reducedMotion={reducedMotion} />)}</View>
-      )}
-    </View>
+      </View>
+    </Collapse>
   );
 }
 
@@ -79,7 +80,6 @@ const MiniCard = memo(function MiniCard({ card, width, onPick, reducedMotion }: 
 
 const styles = StyleSheet.create({
   row: { flexDirection: "row", gap: GAP },
-  empty: { color: UI.textFaint, fontSize: 12, paddingVertical: 6 },
   cell: { alignItems: "center", gap: 1, backgroundColor: UI.panel, borderRadius: 10, paddingTop: 6, paddingBottom: 5, paddingHorizontal: 2 },
   symbol: { color: UI.text, fontSize: 11.5, fontFamily: fonts.semibold, maxWidth: "100%" },
   price: { color: UI.text, fontSize: 13, fontVariant: ["tabular-nums"], fontFamily: fonts.regular },

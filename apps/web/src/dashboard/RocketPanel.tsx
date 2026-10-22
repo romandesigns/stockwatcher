@@ -1,9 +1,9 @@
 import { Icon } from "@stockwatcher/chart-web";
 import { cn, Tip } from "@stockwatcher/chart-web/ui";
-import { rocketHeaderView, rocketLinePaths, rocketNow, rocketSectionsView, type RocketChannel, type RocketRowView, type RocketSectionsView, type RocketState, type RocketTone } from "@stockwatcher/shared";
-import { memo, useEffect, useState } from "react";
-import { useRocket } from "../feed/useRocket.ts";
+import { rocketHeaderView, rocketLinePaths, rocketNow, rocketSectionsView, type RocketRowView, type RocketSectionsView, type RocketState, type RocketTone } from "@stockwatcher/shared";
+import { memo } from "react";
 import { useTickerPress } from "../lib/useTickerPress.ts";
+import { Reveal } from "./Reveal.tsx";
 
 const TONE: Record<RocketTone, string> = {
   good: "text-good",
@@ -25,16 +25,6 @@ const EDGE: Partial<Record<RocketTone, string>> = {
   accent: "shadow-[inset_3px_0_0_var(--accent)]",
 };
 
-/** Re-renders every `ms` so ages ("now", "3m") keep moving between frames. */
-function useTick(ms: number): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), ms);
-    return () => clearInterval(id);
-  }, [ms]);
-  return now;
-}
-
 /**
  * Runners (owner, 2026-10-21/22; EXPERIMENTAL): symbols the server's strategy flags as likely to
  * start a +30 % leg soon, each then watched for bullish momentum until 20:00 ET. Rows are ordered
@@ -48,14 +38,14 @@ function useTick(ms: number): number {
  * confirmed on the tape, typically about halfway into a move, so each row says how far the burst
  * already went and what typically remains, never "buy". The accent marks only a live burst (its
  * pulsing dot and edge while fresh and pending); green and red only its strict outcome tag.
+ *
+ * Nothing empty is drawn (owner, 2026-10-22): no Bursts section without bursts, no Flags without
+ * flags, and no panel at all (its tab is hidden) while off, not yet known or empty. While a socket
+ * reconnects the last rows stay, dimmed and labelled.
+ *
+ * It takes its state, not the channel: the side column subscribes (useRocket) to decide whether
+ * the tab is offered and passes the same state down, and tests render it without a socket.
  */
-export function RocketPanel({ channel, onPick }: { channel: RocketChannel; onPick: (symbol: string) => void }) {
-  const state = useRocket(channel);
-  const wall = useTick(15_000);
-  return <RocketPanelView state={state} wallNow={wall} onPick={onPick} />;
-}
-
-/** The panel for a given state (separate so it renders in tests without a socket). */
 export function RocketPanelView({ state, wallNow, onPick }: { state: RocketState; wallNow: number; onPick: (symbol: string) => void }) {
   const { enabled, panel } = state;
   const now = rocketNow(state, wallNow);
@@ -81,34 +71,35 @@ export function RocketPanelView({ state, wallNow, onPick }: { state: RocketState
           {[head.ranLater, head.placeholder ? `${head.strategy} (placeholder)` : head.strategy, head.history].filter(Boolean).join(" · ")}
         </p>
       )}
-      {panel && !state.connected && <p className="m-0 px-1 text-[11px] text-warning">Reconnecting · last known flags</p>}
-      {enabled === false ? (
-        <p className="m-0 px-1 py-2 text-xs text-warning">Off on this server</p>
-      ) : enabled === null ? (
-        <p className="m-0 px-1 py-2 text-xs text-text-faint">Connecting…</p>
-      ) : (
-        <div className="flex min-h-0 flex-col gap-3 overflow-y-auto">
-          {bursts && (
-            <section aria-labelledby="burst-title" className="flex flex-col gap-1">
-              <div className="flex items-center gap-1.5 px-1">
-                <Icon name="trend" className="size-3.5 text-muted-foreground" />
-                <h3 id="burst-title" className="m-0 text-xs font-semibold">
-                  Bursts
-                </h3>
-                <span className="ml-auto font-mono text-[11px] text-muted-foreground tabular-nums">{bursts.head.count}</span>
-              </div>
-              <p className="m-0 px-1 text-[10px] leading-snug text-text-faint">{[bursts.head.what, bursts.head.typical].filter(Boolean).join(". ")}</p>
-              {bursts.rows.length === 0 ? (
-                <p className="m-0 px-1 py-1 text-xs text-text-faint">No buying bursts yet today</p>
-              ) : (
+      {panel && !state.connected && <p role="status" className="m-0 px-1 text-[11px] text-warning">Reconnecting · last known flags</p>}
+      {/* Each section only while it has rows (owner, 2026-10-22), its heading included; the whole
+          panel is hidden by its tab at 0 (SideTabs). Sections open and close by their real height. */}
+      {enabled === true && (
+        <div className={cn("flex min-h-0 flex-col overflow-y-auto transition-opacity duration-200 motion-reduce:transition-none", panel && !state.connected && "opacity-60")}>
+          <Reveal show={(bursts?.rows.length ?? 0) > 0}>
+            {bursts && (
+              <section aria-labelledby="burst-title" className="flex flex-col gap-1 pb-3">
+                <div className="flex items-center gap-1.5 px-1">
+                  <Icon name="trend" className="size-3.5 text-muted-foreground" />
+                  <h3 id="burst-title" className="m-0 text-xs font-semibold">
+                    Bursts
+                  </h3>
+                  <span className="ml-auto font-mono text-[11px] text-muted-foreground tabular-nums">{bursts.head.count}</span>
+                </div>
+                <p className="m-0 px-1 text-[10px] leading-snug text-text-faint">{[bursts.head.what, bursts.head.typical].filter(Boolean).join(". ")}</p>
                 <RowList rows={bursts.rows} onPick={onPick} />
-              )}
+              </section>
+            )}
+          </Reveal>
+          <Reveal show={rows.length > 0}>
+            <section aria-label="Flags" className="flex flex-col">
+              {/* The heading only beside a Bursts section: alone, the panel's title says it. */}
+              <Reveal show={(bursts?.rows.length ?? 0) > 0}>
+                <h3 className="m-0 px-1 pb-1 text-xs font-semibold">Flags</h3>
+              </Reveal>
+              <RowList rows={rows} onPick={onPick} />
             </section>
-          )}
-          {bursts && (
-            <h3 className="m-0 px-1 text-xs font-semibold">Flags</h3>
-          )}
-          {rows.length === 0 ? <p className="m-0 px-1 py-2 text-xs text-text-faint">Nothing flagged right now</p> : <RowList rows={rows} onPick={onPick} />}
+          </Reveal>
         </div>
       )}
     </aside>

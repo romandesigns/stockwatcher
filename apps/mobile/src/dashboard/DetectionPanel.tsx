@@ -9,6 +9,8 @@ import {
   detectionPrice,
   detectionRowView,
   detectionStateLabel,
+  detectionView,
+  detectionViewCounts,
   groupDetections,
   type DetectionChannel,
   type DetectionEpisode,
@@ -20,9 +22,11 @@ import {
 } from "@stockwatcher/shared";
 import { memo, useEffect, useRef, useState } from "react";
 import { Animated, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import Reanimated, { FadeIn, FadeOut, ReduceMotion } from "react-native-reanimated";
 import Svg, { Circle, Rect } from "react-native-svg";
 
 import { useDetection } from "../feed/hooks";
+import { Collapse } from "../motion/Collapse";
 import { fonts } from "../theme";
 import { useTickerPress } from "../ui/useTickerPress";
 
@@ -68,13 +72,15 @@ function stateColor(state: string): string {
  * changes. No layout animation on the rows: a moving Pressable takes stale taps on Android.
  *
  * Nothing at all while the detector is off or not yet known (owner review 2026-10-21; the
- * canvas's "off" state). The subscription stays, so the card appears by itself the moment a
- * server enables DETECTION_PANEL.
+ * canvas's "off" state), and nothing while neither view has rows (owner, 2026-10-22: a card
+ * with 0 items is not shown), so there is no quiet "Nothing developing" state. The Active /
+ * Recent toggle shows only while both views have rows; with one, that one is shown. The card
+ * stays mounted, collapsed (Collapse), so it opens by itself the moment rows arrive.
  */
-export function DetectionPanel({ channel, onPick, reducedMotion }: { channel: DetectionChannel; onPick: (symbol: string, episodeId?: string, runEpoch?: string) => void; reducedMotion: boolean }) {
+export function DetectionPanel({ channel, onPick, reducedMotion, gap = 0 }: { channel: DetectionChannel; onPick: (symbol: string, episodeId?: string, runEpoch?: string) => void; reducedMotion: boolean; gap?: number }) {
   const state = useDetection(channel);
   const [filter, setFilter] = useState<DetectionFilter>("all");
-  const [history, setHistory] = useState(false);
+  const [pickedRecent, setHistory] = useState(false);
   const [segment, setSegment] = useState("all");
   const [source, setSource] = useState("all");
   const [catalyst, setCatalyst] = useState("all");
@@ -82,6 +88,8 @@ export function DetectionPanel({ channel, onPick, reducedMotion }: { channel: De
   const [filtersOpen, setFiltersOpen] = useState(false);
   const snapshot = state.snapshot;
   const epoch = state.frame?.runEpoch ?? "";
+  const counts = detectionViewCounts(state);
+  const { recent: history, showToggle } = detectionView(pickedRecent, counts);
   const groups = groupDetections(snapshot, filter, history, segment)
     .filter((g) => catalyst === "all" || g.selected.catalyst === catalyst)
     .filter(() => source === "all" || state.frame?.source === source);
@@ -94,8 +102,9 @@ export function DetectionPanel({ channel, onPick, reducedMotion }: { channel: De
   // Only from current data: while reconnecting the rows are last known, so nothing claims attention.
   const attention = current ? detectionAttention(snapshot) : 0;
   const applied = [filter !== "all", segment !== "all", source !== "all", catalyst !== "all"].filter(Boolean).length;
-  if (state.enabled !== true) return null;
+  // No rows in either view, no card (owner, 2026-10-22); it opens and closes by its real height.
   return (
+    <Collapse open={counts.active + counts.recent > 0} reducedMotion={reducedMotion} gap={gap}>
     <View style={styles.card} accessibilityLabel="Signals">
       <View style={styles.head}>
         <Text accessibilityRole="header" style={styles.title}>
@@ -107,18 +116,25 @@ export function DetectionPanel({ channel, onPick, reducedMotion }: { channel: De
             <Text style={styles.countText}>{attention}</Text>
           </View>
         )}
-        <Segmented
-          style={styles.show}
-          options={[
-            { value: "active", label: "Active", a11y: "Show active signals" },
-            { value: "recent", label: "Recent", a11y: "Show recent signals" },
-          ]}
-          value={history ? "recent" : "active"}
-          onChange={(v) => {
-            setHistory(v === "recent");
-            setPage(0);
-          }}
-        />
+        {/* The view toggle only while both views have rows; it fades (opacity only, no layout
+            animation on its buttons), and its slot keeps the filter button where it is. */}
+        <View style={styles.show}>
+          {showToggle && (
+            <Reanimated.View entering={FadeIn.duration(180).reduceMotion(reducedMotion ? ReduceMotion.Always : ReduceMotion.System)} exiting={FadeOut.duration(150).reduceMotion(reducedMotion ? ReduceMotion.Always : ReduceMotion.System)}>
+              <Segmented
+                options={[
+                  { value: "active", label: "Active", a11y: "Show active signals" },
+                  { value: "recent", label: "Recent", a11y: "Show recent signals" },
+                ]}
+                value={history ? "recent" : "active"}
+                onChange={(v) => {
+                  setHistory(v === "recent");
+                  setPage(0);
+                }}
+              />
+            </Reanimated.View>
+          )}
+        </View>
         <Pressable accessibilityRole="button" accessibilityLabel={`Filters${applied ? `, ${applied} applied` : ""}`} onPress={() => setFiltersOpen(true)} hitSlop={6} style={({ pressed }) => [styles.round, pressed && { backgroundColor: UI.raised }]}>
           <Icon name="levels" color={applied ? UI.text : UI.textDim} size={14} />
           {applied > 0 && <View style={styles.appliedDot} />}
@@ -141,10 +157,14 @@ export function DetectionPanel({ channel, onPick, reducedMotion }: { channel: De
       {state.error && state.error !== "transition_history_incomplete" && <Text accessibilityRole="alert" style={styles.warning}>{words(state.error)}</Text>}
       {snapshot?.unavailable.map((r) => <Text key={r.reason} accessibilityRole="alert" style={styles.warning}>Assessment unavailable: {words(r.reason)}{r.symbols ? ` · ${r.symbols} symbols` : ""}</Text>)}
       {groups.length === 0 ? (
-        <View style={styles.quiet}>
-          <Text style={styles.quietText}>{!snapshot ? "Waiting for the detector's first observations…" : applied > 0 ? `Nothing ${history ? "resolved" : "developing"} in these filters` : history ? "Nothing resolved yet" : "Nothing developing right now"}</Text>
-          {snapshot && <Text style={styles.quietMeta}>watching {snapshot.monitored_symbols.toLocaleString()} symbols · {band(snapshot.price_min_micros)}–{band(snapshot.price_max_micros)}</Text>}
-        </View>
+        // Only the user's own filters can empty a shown view (an empty view is never offered),
+        // so this says so; the filter button clears them.
+        applied > 0 && snapshot ? (
+          <View style={styles.quiet}>
+            <Text style={styles.quietText}>Nothing {history ? "resolved" : "developing"} in these filters</Text>
+            <Text style={styles.quietMeta}>watching {snapshot.monitored_symbols.toLocaleString()} symbols · {band(snapshot.price_min_micros)}–{band(snapshot.price_max_micros)}</Text>
+          </View>
+        ) : null
       ) : (
         <View style={[styles.rows, !state.connected && styles.dimmed]}>
           {/* A reset remounts the recognizer and cancels its delayed tap/hold. Price updates
@@ -176,6 +196,7 @@ export function DetectionPanel({ channel, onPick, reducedMotion }: { channel: De
         </View>
       </Sheet>
     </View>
+    </Collapse>
   );
 }
 

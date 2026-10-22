@@ -129,6 +129,13 @@
       opacity: 0;
     }
   }
+  /* A side tab's panel fades in when the tab changes (picked, or its tab emptied). */
+  --animate-panel-in: panel-in 180ms ease-out;
+  @keyframes panel-in {
+    from {
+      opacity: 0;
+    }
+  }
 }
 
 body {
