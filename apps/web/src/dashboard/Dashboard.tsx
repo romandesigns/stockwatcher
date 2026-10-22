@@ -16,7 +16,6 @@ import { getAppStore, useApp } from "../state/store.ts";
 import { ChartCell } from "./ChartCell.tsx";
 import { HaltWatcher } from "./HaltWatcher.tsx";
 import { RossPanel } from "./RossPanel.tsx";
-import { DetectionPanel } from "./DetectionPanel.tsx";
 import { SideTabs } from "./SideTabs.tsx";
 import { useRunnersToasts } from "./runnersToasts.ts";
 import { MultiViewMenu } from "./MultiViewMenu.tsx";
@@ -180,8 +179,7 @@ export function Dashboard({ choice, feed }: Connection) {
           </p>
         </div>
         <div className="flex min-w-0 shrink-0 flex-col gap-2 @4xl/panel:w-[400px]">
-          <DetectionPanel channel={feed.detection} onPick={pickDetection} />
-          <SideTabs rocket={feed.rocket} onPick={app.loadIntoSelected} ross={feed.ross && <RossPanel channel={feed.ross} detection={feed.detection} onPick={app.loadIntoSelected} onEpisodePick={pickDetection} />} />
+          <SideTabs rocket={feed.rocket} detection={feed.detection} onPick={app.loadIntoSelected} onEpisodePick={pickDetection} ross={feed.ross && <RossPanel channel={feed.ross} detection={feed.detection} onPick={app.loadIntoSelected} onEpisodePick={pickDetection} />} />
         </div>
         </div>
       ) : (
@@ -216,8 +214,7 @@ export function Dashboard({ choice, feed }: Connection) {
           ))}
         </div>
         <div className="flex min-h-0 min-w-0 shrink-0 flex-col gap-2 @4xl/panel:w-[400px]">
-          <DetectionPanel channel={feed.detection} onPick={pickDetection} />
-          <SideTabs rocket={feed.rocket} onPick={app.loadIntoSelected} ross={feed.ross && <RossPanel channel={feed.ross} detection={feed.detection} onPick={app.loadIntoSelected} onEpisodePick={pickDetection} />} />
+          <SideTabs rocket={feed.rocket} detection={feed.detection} onPick={app.loadIntoSelected} onEpisodePick={pickDetection} ross={feed.ross && <RossPanel channel={feed.ross} detection={feed.detection} onPick={app.loadIntoSelected} onEpisodePick={pickDetection} />} />
         </div>
         </div>
       </div>

@@ -167,10 +167,10 @@ function Sparkline({ line }: { line: RossLineView | null }) {
 }
 
 /** Pullback low (left, red: the failure level) to trigger (right, neutral: a level, not a "go"), the price as a dot. */
-function TriggerMeter({ value, tone }: { value: number; tone: RossTone }) {
+export function TriggerMeter({ value, tone, inset = true }: { value: number; tone: RossTone; inset?: boolean }) {
   const v = Math.max(0, Math.min(1, value));
   return (
-    <svg viewBox="0 0 160 8" preserveAspectRatio="none" className={cn("ml-3.5 block h-2 w-[calc(100%-0.875rem)]", TONE[tone])} role="img" aria-label={`price ${Math.round(v * 100)}% of the way from the pullback low to the trigger`}>
+    <svg viewBox="0 0 160 8" preserveAspectRatio="none" className={cn("block h-2", inset ? "ml-3.5 w-[calc(100%-0.875rem)]" : "w-full", TONE[tone])} role="img" aria-label={`price ${Math.round(v * 100)}% of the way from the pullback low to the trigger`}>
       <rect x="0" y="3" width="160" height="2" rx="1" className="fill-bg-raised" />
       <rect x="0" y="0" width="2" height="8" className="fill-critical" />
       <rect x="158" y="0" width="2" height="8" className="fill-muted-foreground" />
