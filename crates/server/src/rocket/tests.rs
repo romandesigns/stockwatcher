@@ -368,9 +368,14 @@ fn the_panel_frame() {
         at(9, 59, 50),
         at(10, 0, 5),
     );
-    let f: Value =
-        serde_json::from_str(&b.frame("rocket.snapshot", Some(5), |_| (Some(1.1), Some(1.0))))
-            .unwrap();
+    let levels = json!({"state": "forming", "trigger": 1_050_000, "invalidation": 950_000, "meter_milli": 500});
+    let f: Value = serde_json::from_str(&b.frame(
+        "rocket.snapshot",
+        Some(5),
+        |_| (Some(1.1), Some(1.0)),
+        |s| (s == "ROCK").then(|| levels.clone()),
+    ))
+    .unwrap();
     assert_eq!(f["type"], "rocket.snapshot");
     assert_eq!(f["t"], 5);
     assert_eq!(f["enabled"], true);
@@ -383,6 +388,19 @@ fn the_panel_frame() {
     assert_eq!(row["last"], 1.1);
     assert_eq!(row["pc"], 1.0);
     assert_eq!(row["outcome"]["state"], "pending");
+    // The additive momentum and later-move fields.
+    assert_eq!(row["outcome"]["rocket_later"], false);
+    assert!(row["outcome"].get("gain_2h").is_some());
+    assert_eq!(f["today"]["ran_later"], 0);
+    // The live price is above the high since the flag: a provisional breakout.
+    assert_eq!(row["state"], "breaking_out");
+    assert_eq!(row["provisional"], true);
+    assert_eq!(row["state_since"], at(9, 59, 45) / 1_000_000);
+    assert_eq!(row["from_flag_pct"], 10.0);
+    assert_eq!(row["from_high_pct"], 0.0);
+    assert_eq!(row["move_1m_pct"], 10.0);
+    assert_eq!(row["pullback_depth_pct"], Value::Null);
+    assert_eq!(row["levels"], levels);
     let off: Value = serde_json::from_str(&disabled_frame("rocket.snapshot")).unwrap();
     assert_eq!(off["enabled"], false);
     assert_eq!(off["rows"], json!([]));
@@ -526,4 +544,192 @@ fn r2_cost_per_barrier() {
     );
     assert_eq!(c.scored, N, "R2 scores every unit symbol");
     assert!(per_barrier < Duration::from_secs(2), "{per_barrier:?}");
+}
+
+/// Scores `symbol` only at the barrier ending at `at_ns` (one alert, at a known time).
+struct Once(&'static str, i64);
+
+impl RocketScorer for Once {
+    fn id(&self) -> &str {
+        "once"
+    }
+    fn version(&self) -> &str {
+        "t1"
+    }
+    fn score(&self, f: &Features) -> Option<f64> {
+        (&*f.symbol == self.0 && f.at_ns == self.1).then_some(1.0)
+    }
+}
+
+/// `n` slots of a +`step` compounding climb from `from`, one print of `size` a slot.
+fn climb(sym: &str, from: i64, n: i64, p0: f64, step: f64, size: u64) -> (Vec<Trade>, f64) {
+    let mut p = p0;
+    let mut out = Vec::new();
+    for k in 0..n {
+        p *= 1.0 + step;
+        out.push(tr(sym, from + k * 15 * S + S, p, size));
+    }
+    (out, p)
+}
+
+/// The SHFS shape the owner saw (2026-10-22): flagged, nothing for the strict 45 minutes (the
+/// strict tag says faded), then a climb to +43 % within the hour after. The later-move outcome
+/// catches it, the momentum states walk with it, both reach the log, and a restart restores them.
+#[test]
+fn a_later_run_is_caught_and_states_are_logged_and_restored() {
+    let alert_ns = at(10, 0, 15);
+    let mut b = RocketBoard::new(true, Arc::new(Once("SLOW", alert_ns)), fixed(0.5, 10));
+    // A quiet base from 09:00 at $0.21 (the alert at 10:00:15).
+    play(
+        &mut b,
+        flat("SLOW", at(9, 0, 0), at(10, 50, 0), 0.21, 20_000),
+        at(9, 0, 0),
+        at(10, 50, 0),
+    );
+    assert_eq!(b.alerts().len(), 1);
+    let a = &b.alerts()[0];
+    assert_eq!(a.at_ns, alert_ns);
+    assert_eq!(a.state(), "faded", "strict: nothing in 45 minutes");
+    assert!(!a.ran_later());
+    assert_eq!(a.track.state, MState::Watching);
+    // 10:50–11:00: +0.91 % a slot on 10× volume (new highs, past 2× pace), ~+44 %.
+    let (mut run, top) = climb("SLOW", at(10, 50, 0), 40, 0.21, 0.0091, 200_000);
+    run.extend(flat("SLOW", at(11, 0, 0), at(11, 30, 0), top, 20_000));
+    play(&mut b, run, at(10, 50, 0), at(11, 30, 0));
+    let a = b.alerts()[0].clone();
+    let g = a.max_gain_2h_pct().unwrap();
+    assert!(g > 40.0, "{g}");
+    assert!(a.ran_later());
+    assert_eq!(a.state(), "faded", "the strict tag never changes");
+    assert!(a.track.later.is_some(), "a +30 % mark later that day");
+    let lines: Vec<Value> = b
+        .take_log()
+        .into_iter()
+        .map(|(_, l)| serde_json::from_str(&l).unwrap())
+        .collect();
+    let states: Vec<&str> = lines
+        .iter()
+        .filter(|v| v["kind"] == "state")
+        .map(|v| v["to"].as_str().unwrap())
+        .collect();
+    assert!(states.contains(&"breaking_out"), "{states:?}");
+    assert!(states.contains(&"running"), "{states:?}");
+    // Causal: every transition at a barrier after the flag, at or after the run began.
+    for v in lines.iter().filter(|v| v["kind"] == "state") {
+        assert!(v["at_ns"].as_i64().unwrap() > at(10, 50, 0), "{v}");
+    }
+    let body = b.body(&|_| (Some(top), Some(0.2)), &|_| None);
+    assert_eq!(body["today"]["ran_later"], 1);
+    let row = &body["rows"][0];
+    assert!(row["outcome"]["gain_2h"].as_f64().unwrap() > 40.0);
+    assert_eq!(row["outcome"]["rocket_later"], true);
+
+    // The 2-hour line once 12:00:15 passed, the final one at 20:00.
+    b.tick(at(12, 1, 0), |_| None);
+    b.tick(at(20, 0, 1), |_| None);
+    let later: Vec<Value> = b
+        .take_log()
+        .into_iter()
+        .map(|(_, l)| serde_json::from_str::<Value>(&l).unwrap())
+        .filter(|v| v["kind"] == "later")
+        .collect();
+    assert_eq!(later.len(), 2, "{later:?}");
+    assert_eq!(later[0]["final"], false);
+    assert_eq!(later[0]["complete_2h"], true);
+    assert_eq!(later[1]["final"], true);
+    assert_eq!(later[1]["rocket_later"], true);
+    assert!(later[1]["max_gain_session_pct"].as_f64().unwrap() > 40.0);
+
+    // A restart mid-day restores the later outcome and the state from the log.
+    let tmp = tempfile::tempdir().unwrap();
+    let log = RocketLog::new(tmp.path().join("rocket-watch"), 30);
+    let all: Vec<String> = lines
+        .iter()
+        .chain(later.iter().take(1))
+        .map(|v| v.to_string())
+        .collect();
+    log.append(day(), &all);
+    let mut r = board(vec![], fixed(0.5, 10));
+    r.restore(day(), log.load(day()));
+    let a2 = &r.alerts()[0];
+    assert!(a2.track.resumed);
+    assert!(a2.ran_later());
+    assert!(a2.track.later.is_some());
+    assert_eq!(a2.track.state, a.track.state);
+    assert_eq!(a2.track.since_ns, a.track.since_ns);
+    assert!(r.take_log().is_empty(), "a restore writes nothing");
+}
+
+/// A halt from the chart engine shows at once and is a logged transition at the next barrier.
+#[test]
+fn a_halt_is_a_state() {
+    let mut b = board(vec![("HALT", 1.0)], fixed(0.5, 10));
+    play(
+        &mut b,
+        flat("HALT", at(9, 30, 0), at(10, 0, 0), 2.0, 2000),
+        at(9, 59, 50),
+        at(10, 0, 5),
+    );
+    b.take_log();
+    b.set_halted("HALT", true);
+    let body = b.body(&|_| (Some(2.0), None), &|_| None);
+    assert_eq!(body["rows"][0]["state"], "halted");
+    b.tick(at(10, 0, 31), |_| None);
+    assert_eq!(b.alerts()[0].track.state, MState::Halted);
+    let log: Vec<String> = b.take_log().into_iter().map(|(_, l)| l).collect();
+    assert!(
+        log.iter().any(|l| l.contains(r#""to":"halted""#)),
+        "{log:?}"
+    );
+    b.set_halted("HALT", false);
+    b.tick(at(10, 0, 46), |_| None);
+    assert_ne!(b.alerts()[0].track.state, MState::Halted);
+}
+
+/// The momentum states' and later outcomes' share of a barrier: 50 flagged rows (a busy day)
+/// among 7,000 active symbols, each followed every barrier. Prints the measurement.
+#[test]
+fn momentum_cost_for_fifty_flagged_rows() {
+    const N: usize = 7000;
+    const SLOTS: i64 = 260;
+    let names: Vec<&'static str> = (0..N)
+        .map(|i| &*Box::leak(format!("S{i:04}").into_boxed_str()))
+        .collect();
+    let flagged: Vec<(&'static str, f64)> = names.iter().take(50).map(|s| (*s, 1.0)).collect();
+    let mut b = board(flagged, fixed(0.5, 50));
+    let start = at(9, 0, 0);
+    let trades: Vec<Trade> = (0..SLOTS)
+        .flat_map(|k| {
+            names.iter().enumerate().map(move |(i, s)| {
+                let p = 1.0 + (i % 100) as f64 * 0.1 + (k % 7) as f64 * 0.001;
+                tr(s, start + k * 15 * S + S, p, 100 + (k as u64 % 5) * 10)
+            })
+        })
+        .collect();
+    let mut i = 0;
+    // Flag at the first barrier, then feed the rest and time one barrier.
+    let first = start + 15 * S + S;
+    while i < trades.len() && trades[i].event_ts.0 < first {
+        b.apply_trade(&trades[i], BOTH);
+        i += 1;
+    }
+    b.tick(first, |_| Some(1.0));
+    assert_eq!(b.alerts().len(), 50);
+    for x in &trades[i..] {
+        b.apply_trade(x, BOTH);
+    }
+    let now = start + SLOTS * 15 * S;
+    let t = Instant::now();
+    b.tick(now, |_| Some(1.0));
+    let with = t.elapsed();
+    let mut plain = board(vec![], fixed(0.5, 50));
+    for x in &trades {
+        plain.apply_trade(x, BOTH);
+    }
+    let t = Instant::now();
+    plain.tick(now, |_| Some(1.0));
+    let without = t.elapsed();
+    eprintln!("momentum cost: barrier with 50 flagged rows {with:?}, without {without:?}");
+    assert!(b.alerts().iter().all(|a| a.outcome.checked > 0));
+    assert!(with < Duration::from_secs(2), "{with:?}");
 }

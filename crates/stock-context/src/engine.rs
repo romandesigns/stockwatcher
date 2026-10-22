@@ -44,7 +44,7 @@ use chrono::{Days, NaiveDate};
 use market_events::session::{SessionKind, classify, et, trading_date};
 use market_events::{Price, Resolution, Trade, TradeId, TradeRef, UnixNanos};
 use serde::Serialize;
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 const SEC: i64 = 1_000_000_000;
 const MS: i64 = 1_000_000;
@@ -575,6 +575,9 @@ pub struct Engine {
     /// The detection families (`crate::detect`). Always present: [`Scope::RossMembers`] runs the
     /// micro-pullback for Ross members only (the cues), [`Scope::All`] is the Detection Panel.
     detector: Detector,
+    /// Symbols the micro-pullback also runs for under [`Scope::RossMembers`], whatever their
+    /// membership: the server's Runners rows ([`Engine::set_watched`]).
+    watched: BTreeSet<String>,
 }
 
 /// What an engine adopted from per-symbol restores.
@@ -643,6 +646,7 @@ impl Engine {
             restores: RestoreTelemetry::default(),
             swept_at: i64::MIN,
             detector,
+            watched: BTreeSet::new(),
         }
     }
 
@@ -1098,6 +1102,44 @@ impl Engine {
         self.restores
     }
 
+    /// Also runs the micro-pullback for `symbols` (replacing the previous set), members or not:
+    /// the server's Runners rows get the same cue and levels as a Ross row. With the Detection
+    /// Panel on every symbol runs anyway. A symbol that leaves the set (and is not a member) has
+    /// its episodes interrupted at its next barrier (`left_panel`), as a member that leaves does.
+    /// Bounded by the caller (a Runners day is at most a few dozen symbols).
+    pub fn set_watched<I: IntoIterator<Item = String>>(&mut self, symbols: I) {
+        self.watched = symbols.into_iter().collect();
+    }
+
+    /// The micro-pullback cue for a watched symbol (or a member) at `tau`, read exactly as a Ross
+    /// row's is ([`crate::cue::cue`]); `None` for a symbol the engine has not seen today.
+    pub fn watched_cue(&self, symbol: &str, tau: i64) -> Option<RossCue> {
+        let s = self.syms.get(symbol)?;
+        if s.date != Some(trading_date(UnixNanos(tau))) {
+            return None;
+        }
+        if !(self.detector.scope == Scope::All
+            || self.watched.contains(symbol)
+            || s.member.active().is_some())
+        {
+            return None;
+        }
+        let hold_reason = if s.history_pending {
+            Some("history_pending")
+        } else if s.integrity.window_untrusted || s.integrity.volume_untrusted {
+            Some("inputs_untrusted")
+        } else {
+            None
+        };
+        Some(crate::cue::cue(
+            &self.detector,
+            &s.det,
+            s.halted,
+            hold_reason,
+            tau,
+        ))
+    }
+
     /// Observed trading status: a halted symbol is never ranked on a frozen pre-halt return.
     pub fn set_halted(&mut self, symbol: &str, halted: bool) {
         if let Some(s) = self.syms.get_mut(symbol)
@@ -1486,7 +1528,10 @@ impl Engine {
         let rebuilt = Self::rebuild_windows(sym, &mo, bar_ns, b);
         // Only where the detector keeps a return baseline: everywhere with the Detection Panel
         // on, a Ross member's otherwise (no ring is grown for a symbol nothing steps).
-        if self.detector.scope == Scope::All || sym.member.active().is_some() {
+        if self.detector.scope == Scope::All
+            || sym.member.active().is_some()
+            || self.watched.contains(&rev.symbol)
+        {
             detect::features::rebuild_returns(&self.detector, &mut sym.det, &sym.bars, bar_ns);
         }
         if !rebuilt {
@@ -1712,11 +1757,13 @@ impl Engine {
     /// (`left_panel`) and its held outcome dropped, so nothing about it is carried while it is
     /// not watched and a re-admitted member starts clean (ids keep counting for the day).
     fn detect_symbol(&mut self, name: &str, date: NaiveDate, b: i64, tau: i64) {
+        let watched = self.watched.contains(name);
         let det = &mut self.detector;
         let bar_ns = self.policy.body.grid.bar_secs * SEC;
         let run_cov = self.run.numerator_coverage;
         let s = self.syms.get_mut(name).expect("known symbol");
-        if det.scope == Scope::RossMembers && (s.member.active().is_none() || s.date != Some(date))
+        if det.scope == Scope::RossMembers
+            && ((s.member.active().is_none() && !watched) || s.date != Some(date))
         {
             if s.det.has_active() {
                 detect::interrupt_all(det, &mut s.det, "left_panel", tau, Some((b, tau)));

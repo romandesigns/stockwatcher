@@ -680,6 +680,92 @@ pub(crate) fn features(
     })
 }
 
+/// What the Runners momentum state ([`super::track`]) reads at a barrier, from the same ring and
+/// running totals as the features, so it is causal the same way (slots `<= through` only).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Window {
+    /// The last OHLC close at or before the barrier.
+    pub(crate) price: f64,
+    /// The day's VWAP from 04:00 (`NaN` before any volume).
+    pub(crate) vwap: f64,
+    /// The barrier slot's own bar: traded, its high and volume.
+    pub(crate) bar_traded: bool,
+    pub(crate) bar_high: f64,
+    pub(crate) bar_vol: f64,
+    /// Volume over the last 12 slots (3 minutes), and the average per slot over the 120 slots
+    /// before them (the prior 30 minutes; 0 when nothing traded then).
+    pub(crate) vol12: f64,
+    pub(crate) pace_slot: f64,
+    /// The lowest low of the last three rolling minutes: slots `d` in 0..4, 4..8 and 8..12 back
+    /// (`NaN` for a minute without an OHLC print).
+    pub(crate) min_lows: [f64; 3],
+    /// The close a minute (4 slots) or more back: the traded slot nearest to 4 back.
+    pub(crate) close_1m: f64,
+}
+
+/// The [`Window`] of `s` at slot key `through` (call [`settle`] first), or `None` when the symbol
+/// has no ring or has not traded today by then.
+pub(crate) fn window(s: &Sym, through: u32, base: u32) -> Option<Window> {
+    let ring = s.ring.as_ref()?;
+    if s.last_traded == 0 || s.last_traded > through {
+        return None;
+    }
+    let price = f64::from(s.bar(s.last_traded)?.close);
+    let vwap = if s.cum_vol > 0.0 {
+        s.cum_dollars / s.cum_vol
+    } else {
+        f64::NAN
+    };
+    let mut w = Window {
+        price,
+        vwap,
+        bar_traded: false,
+        bar_high: f64::NAN,
+        bar_vol: 0.0,
+        vol12: 0.0,
+        pace_slot: 0.0,
+        min_lows: [f64::NAN; 3],
+        close_1m: f64::NAN,
+    };
+    let mut prior = 0.0;
+    let mut best_d = u32::MAX;
+    for bar in ring.iter() {
+        if bar.key == 0 || bar.key > through || bar.key < base {
+            continue;
+        }
+        let d = through - bar.key;
+        if d as usize >= RING {
+            continue;
+        }
+        let vol = f64::from(bar.vol);
+        if d == 0 {
+            w.bar_vol = vol;
+        }
+        if d < 12 {
+            w.vol12 += vol;
+        } else if d <= 131 {
+            prior += vol;
+        }
+        if bar.has_ohlc {
+            if d == 0 {
+                w.bar_traded = true;
+                w.bar_high = f64::from(bar.high);
+            }
+            if d < 12 {
+                let m = &mut w.min_lows[(d / 4) as usize];
+                let l = f64::from(bar.low);
+                *m = if m.is_nan() { l } else { m.min(l) };
+            }
+            if d >= 4 && d < best_d {
+                best_d = d;
+                w.close_1m = f64::from(bar.close);
+            }
+        }
+    }
+    w.pace_slot = prior / 120.0;
+    Some(w)
+}
+
 /// The 15 s bars of `s` with keys in `(after, through]` that had an OHLC print, oldest first, as
 /// `(key, close, high, low)`.
 pub(crate) fn bars_between(s: &Sym, after: u32, through: u32) -> Vec<(u32, f64, f64, f64)> {

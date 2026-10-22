@@ -109,8 +109,9 @@
 //! Rocket watch (EXPERIMENTAL, `ROCKET_WATCH`, on by default; crates/server/src/rocket/, after
 //! `welcome`):
 //! - client `rocket.subscribe` -> server `rocket.snapshot {t, enabled, strategy, mode, budget,
-//!   threshold, today, days, rows}` at once, then `rocket.update` (same shape, the WHOLE panel)
-//!   when it changed, at most once per second of wall time. `enabled: false` (feature off) has no
+//!   threshold, today, days, rows}` at once, then `rocket.update` (same shape, the WHOLE panel
+//!   except the day lines, which are slices as in `ross.update`) when it changed, at most once per
+//!   second of wall time. `enabled: false` (feature off) has no
 //!   strategy and no rows: "not enabled", never "nothing flagged".
 //! - `strategy {id, version, placeholder}`; `mode` `budget` | `fixed`; `budget` the alerts-per-day
 //!   target; `threshold` the score an alert needs right now (null before one exists);
@@ -120,8 +121,20 @@
 //! - Row (newest first, at most 50): `{id, s, at, p, last, pc, score, reasons, outcome}`: symbol,
 //!   alert time (epoch ms), price at the alert, last price now and previous close (day gain
 //!   `(last - pc) / pc`, null when unknown), the strategy's score, 1–3 human-readable reasons,
-//!   `outcome {state, gain, drawdown, partial}` with state `pending` | `rocketed` | `late` |
-//!   `moved` | `faded` and the max gain / drawdown (%) over the 30 minutes after the alert.
+//!   `outcome {state, gain, drawdown, partial, gain_2h, drawdown_2h, gain_session,
+//!   rocket_later}` with state `pending` | `rocketed` | `late` | `moved` | `faded`, the max gain /
+//!   drawdown (%) over the 30 minutes after the alert, over 2 hours, the max gain to 20:00 ET, and
+//!   whether a +30 % rocket mark came any time later (crate::rocket::track); `today.ran_later`
+//!   counts rows that did not rocket strictly but gained ≥ 15 % within 2 hours.
+//! - Momentum (additive, crate::rocket::track): `state` `watching` | `building` | `breaking_out`
+//!   | `running` | `pullback` | `fading` | `halted`, `state_since` (epoch ms), `provisional`
+//!   (a breakout seen in the forming bar, or a halt not yet at a barrier), `from_flag_pct`,
+//!   `from_high_pct` (≤ 0, against the high since the flag), `move_1m_pct`, `pullback_depth_pct`
+//!   (in `pullback`), `levels {state, trigger, invalidation, meter_milli, distance_to_trigger_bp,
+//!   to_invalidation_bp, near_trigger, episode_id}` (the micro-pullback MP5 cue, prices in
+//!   micros; null without `STOCK_CONTEXT` or before a level exists), and the day line fields
+//!   (`day_line_start`, `day_line_step_s`, `day_line_from`, `day_line`, `prev_close`) of
+//!   crate::day_line.
 //! - client `rocket.unsubscribe` stops the updates; a seek or a lag sends a fresh snapshot.
 //!
 //! Synced settings (crates/server/src/settings.rs, docs/architecture/settings-sync.md, after

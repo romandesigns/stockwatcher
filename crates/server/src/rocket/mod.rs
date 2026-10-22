@@ -44,14 +44,23 @@
 //! of that leg is 60–600 s after the alert (the bake-off's HIT), `late` for 600–1,800 s, `moved`
 //! when it went +30 % on a leg that started too early to count, `faded` when 45 minutes passed
 //! without one. Settled outcomes go to the forward log.
+//!
+//! After that strict window every alert keeps being followed until 20:00 ET ([`track`]): the
+//! later-move outcomes (max gain / drawdown over 2 hours, max gain to 20:00, a +30 % mark any time
+//! later: `later` lines in the log) and the live momentum state shown on the row (`watching`,
+//! `building`, `breaking_out`, `running`, `pullback`, `fading`, `halted`: `state` lines in the
+//! log on every transition). The rows also carry the micro-pullback levels of the stock-context
+//! engine (`STOCK_CONTEXT=1`; the engine runs MP5 for the flagged symbols as for Ross members)
+//! and the day line (`crate::day_line`), both added by the market when it serializes a frame.
 
 pub mod features;
 pub mod log;
 pub mod r0;
 pub mod r2;
 pub mod scorer;
+pub mod track;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -64,6 +73,7 @@ pub use log::{DaySummary, Loaded, RocketLog};
 pub use scorer::{PlaceholderB2, RocketScorer, ScorerChoice, production_scorer, standard_reasons};
 
 use features::{BAR_NS, Barrier, NSLOT, Tape};
+use track::{MState, Track, Transition};
 
 pub const MIN_NS: i64 = 60_000_000_000;
 /// At most one alert per symbol per 30 minutes.
@@ -168,6 +178,8 @@ pub struct Alert {
     pub strategy: String,
     pub version: String,
     pub outcome: Outcome,
+    /// The later-move outcomes and the momentum state ([`track`]).
+    pub track: Track,
 }
 
 impl Alert {
@@ -192,6 +204,24 @@ impl Alert {
         (self.outcome.low.is_finite() && self.price > 0.0)
             .then(|| (self.outcome.low / self.price - 1.0) * 100.0)
     }
+    /// Max gain / drawdown over the 2 hours after the alert, max gain to 20:00 ([`track`]).
+    pub fn max_gain_2h_pct(&self) -> Option<f64> {
+        self.track.pct(self.track.high_2h)
+    }
+    pub fn max_drawdown_2h_pct(&self) -> Option<f64> {
+        self.track.pct(self.track.low_2h)
+    }
+    pub fn max_gain_session_pct(&self) -> Option<f64> {
+        self.track.pct(self.track.high_day)
+    }
+    /// Not a strict hit, but +15 % or more within 2 hours (the panel's "ran later").
+    pub fn ran_later(&self) -> bool {
+        !self.hit10()
+            && self
+                .max_gain_2h_pct()
+                .is_some_and(|g| g >= track::RAN_LATER_PCT)
+    }
+
     /// `pending` | `rocketed` | `late` | `moved` | `faded` (module docs, "Outcomes").
     pub fn state(&self) -> &'static str {
         if self.hit10() {
@@ -233,6 +263,39 @@ impl Alert {
     }
 }
 
+impl Alert {
+    /// The 2-hour (`final: false`) or end-of-day (`final: true`) later-move line ([`log`]).
+    fn later_line(&self, date: NaiveDate, at_ns: i64, final_: bool) -> String {
+        let t = &self.track;
+        json!({
+            "kind": "later", "v": 1, "id": self.id, "date": date.to_string(),
+            "symbol": &*self.symbol, "alert_ns": self.at_ns, "at_ns": at_ns, "final": final_,
+            "max_gain_2h_pct": self.max_gain_2h_pct().map(round2),
+            "max_drawdown_2h_pct": self.max_drawdown_2h_pct().map(round2),
+            "max_gain_session_pct": self.max_gain_session_pct().map(round2),
+            "rocket_later": t.later.is_some(),
+            "later_start_ns": t.later.map(|m| m.start_ns),
+            "later_mark_ns": t.later.map(|m| m.mark_ns),
+            "complete_2h": at_ns >= self.at_ns + track::LATER_WINDOW_NS,
+            "resumed": t.resumed,
+        })
+        .to_string()
+    }
+
+    fn state_line(&self, date: NaiveDate, tr: &Transition) -> String {
+        json!({
+            "kind": "state", "v": 1, "id": self.id, "date": date.to_string(),
+            "symbol": &*self.symbol, "alert_ns": self.at_ns, "at_ns": tr.at_ns,
+            "from": tr.from.as_str(), "to": tr.to.as_str(), "price": finite(tr.price),
+            "high": finite(tr.high), "vwap": finite(tr.vwap),
+            "from_flag_pct": self.track.pct(tr.price).map(round2),
+            "from_high_pct": (tr.high > 0.0 && tr.price.is_finite())
+                .then(|| round2((tr.price / tr.high - 1.0) * 100.0)),
+        })
+        .to_string()
+    }
+}
+
 /// The end (epoch ns) of the slot `key` on the day starting at `t0` with ordinal `ord`.
 fn end_of(t0: i64, ord: u32, key: u32) -> i64 {
     let slot = i64::from(key) - i64::from(features::key_of(ord, 0));
@@ -249,6 +312,10 @@ fn round2(x: f64) -> f64 {
 
 /// A symbol's last price and previous close (dollars), for the panel rows.
 pub type Quote = (Option<f64>, Option<f64>);
+
+/// A symbol's micro-pullback levels for its row, from the stock-context engine (the market's
+/// `levels_json`), `None` without one.
+pub type Levels<'a> = &'a dyn Fn(&str) -> Option<Value>;
 
 /// What one barrier cost, for the logs and the cost test.
 #[derive(Clone, Copy, Debug, Default)]
@@ -280,6 +347,10 @@ pub struct RocketBoard {
     pending: Vec<(NaiveDate, String)>,
     revision: u64,
     last_cost: Option<Cost>,
+    /// Symbols with a trading halt in force (`chart.halt`, [`RocketBoard::set_halted`]).
+    halted: HashSet<String>,
+    /// The flagged symbols last handed to the stock-context engine ([`RocketBoard::take_watch`]).
+    watch_sent: Vec<String>,
 }
 
 impl RocketBoard {
@@ -305,6 +376,8 @@ impl RocketBoard {
             pending: Vec::new(),
             revision: 0,
             last_cost: None,
+            halted: HashSet::new(),
+            watch_sent: Vec::new(),
         }
     }
 
@@ -355,6 +428,34 @@ impl RocketBoard {
         if self.enabled {
             self.tape.apply_trade(t, counted);
         }
+    }
+
+    /// A trading halt started (`true`) or ended for `symbol` (the chart engine's `chart.halt`).
+    pub fn set_halted(&mut self, symbol: &str, halted: bool) {
+        if !self.enabled {
+            return;
+        }
+        let changed = if halted {
+            self.halted.insert(symbol.to_string())
+        } else {
+            self.halted.remove(symbol)
+        };
+        if changed && self.alerts.iter().any(|a| &*a.symbol == symbol) {
+            self.revision += 1;
+        }
+    }
+
+    /// Today's flagged symbols when they changed since the last call (sorted, deduplicated):
+    /// what the stock-context engine runs the micro-pullback for (`stock_context::Engine::set_watched`).
+    pub fn take_watch(&mut self) -> Option<Vec<String>> {
+        let mut v: Vec<String> = self.alerts.iter().map(|a| a.symbol.to_string()).collect();
+        v.sort();
+        v.dedup();
+        if v == self.watch_sent {
+            return None;
+        }
+        self.watch_sent = v.clone();
+        Some(v)
     }
 
     /// The forward-log lines produced since the last take, by trading date.
@@ -430,6 +531,11 @@ impl RocketBoard {
                 let line = self.alerts[i].outcome_line(date, now);
                 self.pending.push((date, line));
             }
+            if !self.alerts[i].track.logged_final {
+                self.alerts[i].track.logged_final = true;
+                let line = self.alerts[i].later_line(date, now, true);
+                self.pending.push((date, line));
+            }
         }
         self.flush_block();
         let ideal = self
@@ -441,7 +547,9 @@ impl RocketBoard {
             date,
             json!({
                 "kind": "day", "v": 1, "date": date.to_string(), "alerts": s.alerts,
-                "hits10": s.hits10, "hits30": s.hits30, "ideal_threshold": ideal.and_then(finite),
+                "hits10": s.hits10, "hits30": s.hits30,
+                "ran_later": self.alerts.iter().filter(|a| a.ran_later()).count(),
+                "ideal_threshold": ideal.and_then(finite),
                 "strategy": self.scorer.id(), "version": self.scorer.version(),
             })
             .to_string(),
@@ -482,6 +590,7 @@ impl RocketBoard {
         self.processed = 0;
         self.alerts.clear();
         self.last_alert.clear();
+        self.halted.clear();
         self.block = None;
         self.block_max.clear();
         self.top.clear();
@@ -591,6 +700,7 @@ impl RocketBoard {
                     settled: false,
                     partial: false,
                 },
+                track: Track::new(b.at_ns, f.price),
             };
             self.pending.push((date, a.alert_line(date, mode)));
             self.last_alert.insert(f.symbol.clone(), b.at_ns);
@@ -605,53 +715,104 @@ impl RocketBoard {
         });
     }
 
-    /// Advances every open outcome through barrier `b` (module docs, "Outcomes").
+    /// Advances every alert through barrier `b`: the strict outcome while it is open (module
+    /// docs, "Outcomes"), the later-move outcomes and the momentum state until the day ends
+    /// ([`track`]).
     fn outcomes(&mut self, b: &Barrier, date: NaiveDate) {
+        let (t0, ord) = (self.t0, self.ord);
+        let base = features::key_of(ord, 0);
         for i in 0..self.alerts.len() {
-            if self.alerts[i].outcome.settled {
+            if self.alerts[i].track.logged_final {
                 continue;
             }
-            let before = self.alerts[i].outcome.clone();
+            let before = (
+                self.alerts[i].outcome.clone(),
+                self.alerts[i].track.high_day,
+                self.alerts[i].track.later,
+            );
             let at = self.alerts[i].at_ns;
-            let (t0, ord) = (self.t0, self.ord);
+            let settled = self.alerts[i].outcome.settled;
             // A symbol with no state yet (a restart before its first print or history load):
             // leave `checked` where it is so the bars since the alert are read once they exist.
             let Some(s) = self.tape.sym(&self.alerts[i].symbol) else {
                 continue;
             };
-            {
-                for (key, _close, high, low) in
-                    features::bars_between(s, self.alerts[i].outcome.checked, b.key)
+            let bars = features::bars_between(s, self.alerts[i].outcome.checked, b.key);
+            let mut new: Vec<track::NewBar> = Vec::with_capacity(bars.len());
+            for (key, close, high, low) in bars {
+                let end = end_of(t0, ord, key);
+                new.push((key, end, close, high, low));
+                if settled {
+                    continue;
+                }
+                let o = &mut self.alerts[i].outcome;
+                if end <= at + GAIN_WINDOW_NS {
+                    o.high = if o.high.is_nan() {
+                        high
+                    } else {
+                        o.high.max(high)
+                    };
+                    o.low = if o.low.is_nan() { low } else { o.low.min(low) };
+                }
+                if o.mark.is_none()
+                    && let Some((start, l)) = features::mark_at(s, key)
                 {
-                    let end = end_of(t0, ord, key);
-                    let o = &mut self.alerts[i].outcome;
-                    if end <= at + GAIN_WINDOW_NS {
-                        o.high = if o.high.is_nan() {
-                            high
-                        } else {
-                            o.high.max(high)
-                        };
-                        o.low = if o.low.is_nan() { low } else { o.low.min(low) };
-                    }
-                    if o.mark.is_none()
-                        && let Some((start, l)) = features::mark_at(s, key)
-                    {
-                        o.mark = Some(Mark {
-                            start_ns: end_of(t0, ord, start),
-                            mark_ns: end,
-                            start_price: l,
-                        });
-                    }
+                    o.mark = Some(Mark {
+                        start_ns: end_of(t0, ord, start),
+                        mark_ns: end,
+                        start_price: l,
+                    });
                 }
             }
-            let o = &mut self.alerts[i].outcome;
-            o.checked = b.key;
-            if b.at_ns >= at + SETTLE_NS {
-                o.settled = true;
-                let line = self.alerts[i].outcome_line(date, b.at_ns);
+            let strict = self.alerts[i].outcome.mark;
+            let a = &mut self.alerts[i];
+            a.track.bars(&new, |key, end| {
+                // The strict mark is the first mark after the alert too.
+                if let Some(m) = strict.filter(|m| m.mark_ns <= end) {
+                    return Some(m);
+                }
+                features::mark_at(s, key).map(|(start, l)| Mark {
+                    start_ns: end_of(t0, ord, start),
+                    mark_ns: end,
+                    start_price: l,
+                })
+            });
+            let w = features::window(s, b.key, base);
+            let x = track::Inputs {
+                key: b.key,
+                at_ns: b.at_ns,
+                price: w.map_or(f64::NAN, |w| w.price),
+                vwap: w.map_or(f64::NAN, |w| w.vwap),
+                bar_traded: w.is_some_and(|w| w.bar_traded),
+                bar_high: w.map_or(f64::NAN, |w| w.bar_high),
+                bar_vol: w.map_or(0.0, |w| w.bar_vol),
+                vol12: w.map_or(0.0, |w| w.vol12),
+                pace_slot: w.map_or(0.0, |w| w.pace_slot),
+                min_lows: w.map_or([f64::NAN; 3], |w| w.min_lows),
+                close_1m: w.map_or(f64::NAN, |w| w.close_1m),
+                halted: self.halted.contains(&*a.symbol),
+            };
+            if let Some(tr) = a.track.step(&x) {
+                a.track.transitions += 1;
+                if a.track.transitions <= track::MAX_TRANSITIONS {
+                    let line = a.state_line(date, &tr);
+                    self.pending.push((date, line));
+                }
+                self.revision += 1;
+            }
+            let a = &mut self.alerts[i];
+            a.outcome.checked = b.key;
+            if !settled && b.at_ns >= at + SETTLE_NS {
+                a.outcome.settled = true;
+                let line = a.outcome_line(date, b.at_ns);
                 self.pending.push((date, line));
             }
-            if self.alerts[i].outcome != before {
+            if !a.track.logged_2h && b.at_ns >= at + track::LATER_WINDOW_NS {
+                a.track.logged_2h = true;
+                let line = a.later_line(date, b.at_ns, false);
+                self.pending.push((date, line));
+            }
+            if (a.outcome.clone(), a.track.high_day, a.track.later) != before {
                 self.revision += 1;
             }
         }
@@ -667,6 +828,8 @@ impl RocketBoard {
             self.pending.clear();
         }
         let base = features::key_of(self.ord, 0);
+        let mut later = loaded.later;
+        let mut states = loaded.states;
         for (v, o) in loaded.today {
             let (Some(symbol), Some(at_ns)) = (
                 v.get("symbol").and_then(Value::as_str),
@@ -686,6 +849,7 @@ impl RocketBoard {
                 partial: false,
             };
             let price = f("price");
+            let o_vals = o.clone();
             if let Some(o) = o {
                 let g = |k: &str| o.get(k).and_then(Value::as_f64);
                 outcome.settled = true;
@@ -728,7 +892,54 @@ impl RocketBoard {
                 strategy: str_of("strategy"),
                 version: str_of("version"),
                 outcome,
+                track: Track::new(at_ns, price),
             };
+            let mut a = a;
+            a.track = Track::new(at_ns, price);
+            a.track.resumed = true;
+            // The bars since the alert are re-read from the ring (the last 64 minutes); what
+            // the logged lines knew is the floor (track docs; `resumed` says so).
+            let pct_px = |p: Option<f64>| p.map_or(f64::NAN, |p| price * (1.0 + p / 100.0));
+            let og = |k: &str| {
+                o_vals
+                    .as_ref()
+                    .and_then(|o| o.get(k))
+                    .and_then(Value::as_f64)
+            };
+            let (h30, l30) = (og("max_gain_pct"), og("max_drawdown_pct"));
+            a.track.high_2h = pct_px(h30);
+            a.track.low_2h = pct_px(l30);
+            a.track.high_day = pct_px(h30);
+            if let Some(l) = later.remove(&a.id) {
+                let g = |k: &str| l.get(k).and_then(Value::as_f64);
+                a.track.high_2h = pct_px(g("max_gain_2h_pct"));
+                a.track.low_2h = pct_px(g("max_drawdown_2h_pct"));
+                a.track.high_day = pct_px(g("max_gain_session_pct"));
+                a.track.logged_2h = true;
+                a.track.logged_final = l.get("final").and_then(Value::as_bool) == Some(true);
+                if let (Some(s), Some(m)) = (
+                    l.get("later_start_ns").and_then(Value::as_i64),
+                    l.get("later_mark_ns").and_then(Value::as_i64),
+                ) {
+                    a.track.later = Some(Mark {
+                        start_ns: s,
+                        mark_ns: m,
+                        start_price: f64::NAN,
+                    });
+                }
+            }
+            if a.track.later.is_none() {
+                a.track.later = a.outcome.mark;
+            }
+            if let Some((st, n)) = states.remove(&a.id) {
+                if let Some(m) = st.get("to").and_then(Value::as_str).and_then(MState::parse) {
+                    a.track.state = m;
+                }
+                if let Some(t) = st.get("at_ns").and_then(Value::as_i64) {
+                    a.track.since_ns = t;
+                }
+                a.track.transitions = n;
+            }
             let e = self.last_alert.entry(symbol).or_insert(at_ns);
             *e = (*e).max(at_ns);
             if self.alerts.len() < MAX_ALERTS_PER_DAY {
@@ -739,9 +950,16 @@ impl RocketBoard {
     }
 
     /// The panel as a `rocket.snapshot` / `rocket.update` frame. `quote` gives a symbol's last
-    /// price and previous close.
-    pub fn frame(&self, kind: &str, t: Option<i64>, quote: impl Fn(&str) -> Quote) -> String {
-        let body = self.body(&quote);
+    /// price and previous close, `levels` its micro-pullback levels when the stock-context engine
+    /// runs ([`Levels`]).
+    pub fn frame(
+        &self,
+        kind: &str,
+        t: Option<i64>,
+        quote: impl Fn(&str) -> Quote,
+        levels: impl Fn(&str) -> Option<Value>,
+    ) -> String {
+        let body = self.body(&quote, &levels);
         let mut v = json!({ "type": kind, "t": t });
         if let (Some(m), Value::Object(b)) = (v.as_object_mut(), body) {
             m.extend(b);
@@ -750,7 +968,7 @@ impl RocketBoard {
     }
 
     /// The frame without its type and clock: what decides whether an update is due.
-    pub fn body(&self, quote: &dyn Fn(&str) -> Quote) -> Value {
+    pub fn body(&self, quote: &dyn Fn(&str) -> Quote, levels: Levels<'_>) -> Value {
         let today = self.date.map(|d| self.summary(d));
         let known = self
             .alerts
@@ -764,6 +982,14 @@ impl RocketBoard {
             .take(ROWS)
             .map(|a| {
                 let (last, pc) = quote(&a.symbol);
+                let t = &a.track;
+                let live = last.filter(|p| p.is_finite() && *p > 0.0);
+                let (state, provisional) = t.shown(live, self.halted.contains(&*a.symbol));
+                let now = live.unwrap_or(t.price);
+                let high = t.high().max(live.unwrap_or(0.0));
+                let from_high = (high > 0.0 && now.is_finite()).then(|| (now / high - 1.0) * 100.0);
+                let move_1m =
+                    (t.close_1m > 0.0 && now.is_finite()).then(|| (now / t.close_1m - 1.0) * 100.0);
                 json!({
                     "id": a.id, "s": &*a.symbol, "at": a.at_ns / 1_000_000,
                     "p": a.price, "last": last, "pc": pc,
@@ -774,7 +1000,21 @@ impl RocketBoard {
                         "gain": a.max_gain_pct().map(round2),
                         "drawdown": a.max_drawdown_pct().map(round2),
                         "partial": a.outcome.partial,
+                        "gain_2h": a.max_gain_2h_pct().map(round2),
+                        "drawdown_2h": a.max_drawdown_2h_pct().map(round2),
+                        "gain_session": a.max_gain_session_pct().map(round2),
+                        "rocket_later": t.later.is_some(),
                     },
+                    "state": state.as_str(),
+                    "state_since": t.since_ns / 1_000_000,
+                    "provisional": provisional,
+                    "from_flag_pct": t.pct(now).map(round2),
+                    "from_high_pct": from_high.map(round2),
+                    "move_1m_pct": move_1m.map(round2),
+                    "pullback_depth_pct": (state == MState::Pullback)
+                        .then(|| from_high.map(|x| round2(-x)))
+                        .flatten(),
+                    "levels": levels(&a.symbol),
                 })
             })
             .collect();
@@ -797,6 +1037,7 @@ impl RocketBoard {
                 "hits": today.as_ref().map_or(0, |s| s.hits10),
                 "hits30": today.as_ref().map_or(0, |s| s.hits30),
                 "known": known,
+                "ran_later": self.alerts.iter().filter(|a| a.ran_later()).count(),
             },
             "days": self.days,
             "rows": rows,
@@ -809,7 +1050,7 @@ pub fn disabled_frame(kind: &str) -> String {
     json!({
         "type": kind, "t": null, "enabled": false, "strategy": null, "mode": "budget",
         "budget": 0, "threshold": null,
-        "today": {"date": null, "alerts": 0, "hits": 0, "hits30": 0, "known": 0},
+        "today": {"date": null, "alerts": 0, "hits": 0, "hits30": 0, "known": 0, "ran_later": 0},
         "days": [], "rows": [],
     })
     .to_string()

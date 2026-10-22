@@ -561,3 +561,67 @@ fn a_42_cent_stock_passes_price_under_v2_and_fails_under_v1() {
         }
     }
 }
+
+#[test]
+fn a_watched_symbol_runs_the_micro_pullback_without_membership() {
+    // The server's Runners rows (owner, 2026-10-22): OUTS has no evidence and is never a Ross
+    // member, but once watched it gets the same micro-pullback, the same levels a member would.
+    let run = |watch: bool| {
+        let mut e = engine(Policy::v1());
+        evidence(&mut e, "PULL", 4_000_000);
+        if watch {
+            e.set_watched(["OUTS".to_string()]);
+        }
+        const BARS: [[i64; 4]; 8] = [
+            [500, 500, 500, 500],
+            [500, 500, 500, 500],
+            [500, 500, 500, 500],
+            [500, 500, 500, 500],
+            [500, 510, 500, 510],
+            [510, 530, 510, 528],
+            [528, 528, 521, 522],
+            [522, 524, 520, 521],
+        ];
+        for (k, o) in BARS.into_iter().enumerate() {
+            bar(&mut e, "PULL", k as i64, o, 2_000);
+            bar(&mut e, "OUTS", k as i64, o, 2_000);
+        }
+        decide_through(&mut e, 8);
+        e
+    };
+    let syms = |e: &mut Engine| {
+        e.take_setup_log()
+            .into_iter()
+            .filter(|t| t.family == Family::MicroPullback)
+            .map(|t| t.symbol)
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    let mut plain = run(false);
+    assert_eq!(syms(&mut plain), ["PULL".to_string()].into());
+    assert_eq!(plain.watched_cue("OUTS", cutoff(8)), None, "not watched");
+    let mut w = run(true);
+    assert_eq!(
+        syms(&mut w),
+        ["OUTS".to_string(), "PULL".to_string()].into()
+    );
+    let (a, b) = (
+        w.watched_cue("OUTS", cutoff(8)).unwrap(),
+        w.watched_cue("PULL", cutoff(8)).unwrap(),
+    );
+    // Same bars, same detector: the same stage and levels as the member's.
+    assert_eq!(a.state, b.state);
+    assert_eq!(
+        a.trigger.as_ref().map(|l| l.price),
+        b.trigger.as_ref().map(|l| l.price)
+    );
+    assert_eq!(a.meter_milli, b.meter_milli);
+    assert!(a.trigger.is_some());
+    assert_eq!(
+        w.panel().unwrap().rows.len(),
+        1,
+        "watching is not membership"
+    );
+    // Unwatched again: its episode is interrupted at the next barrier, nothing more is read.
+    w.set_watched(Vec::<String>::new());
+    assert_eq!(w.watched_cue("OUTS", cutoff(8)), None);
+}

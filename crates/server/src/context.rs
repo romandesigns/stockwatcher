@@ -629,6 +629,32 @@ impl ContextBoard {
         self.engine.set_halted(symbol, halted);
     }
 
+    /// The Runners' flagged symbols (`crate::rocket`): the engine also runs the micro-pullback
+    /// (MP5) for them, as for Ross members, so their rows get the same levels.
+    pub(crate) fn set_watched(&mut self, symbols: Vec<String>) {
+        self.engine.set_watched(symbols);
+    }
+
+    /// A Runners row's micro-pullback levels at `tau` (`rocket.*` row `levels`): the cue's state,
+    /// trigger and invalidation (micros), the trigger meter and the distances, exactly as a Ross
+    /// row reads them (`stock_context::cue`). `None` before the symbol has a level.
+    pub(crate) fn runner_levels(&self, symbol: &str, tau: i64) -> Option<Value> {
+        let c = self.engine.watched_cue(symbol, tau)?;
+        if c.trigger.is_none() && c.invalidation.is_none() {
+            return None;
+        }
+        Some(json!({
+            "state": c.state,
+            "trigger": c.trigger.as_ref().map(|l| l.price),
+            "invalidation": c.invalidation.as_ref().map(|l| l.price),
+            "meter_milli": c.meter_milli,
+            "distance_to_trigger_bp": c.distance_to_trigger_bp,
+            "to_invalidation_bp": c.to_invalidation_bp,
+            "near_trigger": c.near_trigger,
+            "episode_id": c.episode_id,
+        }))
+    }
+
     pub(crate) fn set_history_pending(&mut self, symbol: &str, pending: bool) {
         self.engine.set_history_pending(symbol, pending);
     }

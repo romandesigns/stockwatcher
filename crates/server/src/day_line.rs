@@ -1,5 +1,7 @@
 //! The Ross Panel row chart's **day line** (owner, 2026-10-21): how a member's price developed
-//! over the day, so a glance at the panel shows the shape before the ticker is opened.
+//! over the day, so a glance at the panel shows the shape before the ticker is opened. The
+//! Runners rows (`crate::rocket`, `rocket.*`) carry the same line by the same rules, keyed by
+//! their `s` field ([`decorate_by`]).
 //!
 //! # What the line is
 //!
@@ -70,7 +72,7 @@ pub(crate) struct Line {
 }
 
 /// The lines the last `ross.update` carried, by symbol: what the next one is a delta against.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Published(HashMap<String, Line>);
 
 /// A symbol's current line, or `None` before its first price.
@@ -91,6 +93,16 @@ pub(crate) fn line(src: Source<'_>, symbol: &str) -> Option<Line> {
 /// `published`: `None` for a snapshot (whole lines, the baseline untouched); `Some` for an update
 /// (slices against the baseline, which then becomes this frame's lines, members only).
 pub(crate) fn decorate(panel: &mut Value, src: Source<'_>, published: Option<&mut Published>) {
+    decorate_by(panel, "symbol", src, published);
+}
+
+/// [`decorate`] for rows whose symbol is under `key` (the Runners rows' `s`).
+pub(crate) fn decorate_by(
+    panel: &mut Value,
+    key: &str,
+    src: Source<'_>,
+    published: Option<&mut Published>,
+) {
     let Some(rows) = panel.get_mut("rows").and_then(Value::as_array_mut) else {
         if let Some(p) = published {
             p.0.clear();
@@ -99,7 +111,7 @@ pub(crate) fn decorate(panel: &mut Value, src: Source<'_>, published: Option<&mu
     };
     let mut next: HashMap<String, Line> = HashMap::new();
     for row in rows.iter_mut() {
-        let Some(symbol) = row.get("symbol").and_then(Value::as_str).map(str::to_owned) else {
+        let Some(symbol) = row.get(key).and_then(Value::as_str).map(str::to_owned) else {
             continue;
         };
         let Some(l) = line(src, &symbol) else {

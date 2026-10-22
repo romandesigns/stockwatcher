@@ -1,6 +1,6 @@
 //! The forward log: the live track record of every Rocket watch alert.
 //!
-//! `ARCHIVE_ROOT/rocket-watch/<trading date>.jsonl`, append-only, one JSON object per line, three
+//! `ARCHIVE_ROOT/rocket-watch/<trading date>.jsonl`, append-only, one JSON object per line, five
 //! kinds (all with `"v": 1`):
 //!
 //! - `alert` — `{kind, v, id, date, symbol, alert_ns, price, score, threshold, mode, reasons,
@@ -13,13 +13,27 @@
 //!   out to 1,800 s; gain and drawdown are the max high / min low over the 30 minutes after the
 //!   alert against the alert price, in percent. Computed causally after the fact from the same
 //!   15 s bars (`super::features::mark_at`), never from anything the alert could have seen.
-//! - `day` — `{kind, v, date, alerts, hits10, hits30, ideal_threshold, strategy, version}` at
+//! - `later` — `{kind, v, id, date, symbol, alert_ns, at_ns, final, max_gain_2h_pct,
+//!   max_drawdown_2h_pct, max_gain_session_pct, rocket_later, later_start_ns, later_mark_ns,
+//!   complete_2h, resumed}`, the later-move outcomes (`super::track`): written when the 2 hours
+//!   after the alert are up (`final: false`) and again at 20:00 ET (`final: true`, the session
+//!   max final). Gains and drawdown are percent against the alert price; `rocket_later` = a
+//!   canonical +30 % mark any time after the alert that day (a strict hit included);
+//!   `complete_2h: false` when the day ended first; `resumed: true` when the process restarted
+//!   after the alert (the values then rest on the logged lines plus the bars still in memory, so
+//!   a move during the outage can be missing). The last `later` line per id wins.
+//! - `state` — `{kind, v, id, date, symbol, alert_ns, at_ns, from, to, price, high, vwap,
+//!   from_flag_pct, from_high_pct}` on each momentum-state transition of a flagged row
+//!   (`super::track`, "Momentum state"), at most `MAX_TRANSITIONS` (60) per alert a day.
+//! - `day` — `{kind, v, date, alerts, hits10, hits30, ran_later, ideal_threshold, strategy,
+//!   version}` at
 //!   20:00 ET (or at the next day's first barrier when the process was down at 20:00):
 //!   `ideal_threshold` is the score that would have given exactly the budget that day, the
 //!   adaptive threshold's prior for the next days.
 //!
-//! Size: ~450 B per alert line, ~330 B per outcome, ~200 B per day line: about 8 KB a day at
-//! the default 10 alerts. Bounded anyway: a file stops growing at [`MAX_FILE_BYTES`] (logged),
+//! Size: ~450 B per alert line, ~330 B per outcome, ~350 B per later line (two per alert),
+//! ~280 B per state line (typically 5–20 per alert), ~200 B per day line: about 30–70 KB a day at
+//! 10 alerts. Bounded anyway: a file stops growing at [`MAX_FILE_BYTES`] (logged),
 //! and the alert policy caps alerts per day. Files older than the archive's retention window
 //! (`ARCHIVE_RETENTION_DAYS`) are deleted at startup and at every day roll, like the days they
 //! were recorded beside.
@@ -56,6 +70,10 @@ pub struct Loaded {
     pub days: Vec<DaySummary>,
     /// `(date, strategy, version, ideal_threshold)` from the earlier days' `day` lines.
     pub thresholds: Vec<(NaiveDate, String, String, f64)>,
+    /// Today's last `later` line per alert id.
+    pub later: BTreeMap<String, Value>,
+    /// Today's last `state` line per alert id, with the number of `state` lines for it.
+    pub states: BTreeMap<String, (Value, u32)>,
 }
 
 #[derive(Debug)]
@@ -203,10 +221,21 @@ impl RocketLog {
             let lines = Self::read_lines(path);
             let mut outcomes: BTreeMap<String, Value> = BTreeMap::new();
             for v in &lines {
-                if v.get("kind").and_then(Value::as_str) == Some("outcome")
-                    && let Some(id) = v.get("id").and_then(Value::as_str)
-                {
-                    outcomes.insert(id.to_string(), v.clone());
+                let Some(id) = v.get("id").and_then(Value::as_str) else {
+                    continue;
+                };
+                match v.get("kind").and_then(Value::as_str) {
+                    Some("outcome") => {
+                        outcomes.insert(id.to_string(), v.clone());
+                    }
+                    Some("later") => {
+                        out.later.insert(id.to_string(), v.clone());
+                    }
+                    Some("state") => {
+                        let e = out.states.entry(id.to_string()).or_insert((Value::Null, 0));
+                        *e = (v.clone(), e.1 + 1);
+                    }
+                    _ => {}
                 }
             }
             for v in lines {

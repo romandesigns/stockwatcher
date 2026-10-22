@@ -495,6 +495,8 @@ pub(crate) struct Inner {
     rocket_subs: AtomicUsize,
     /// The body of the last `rocket.*` frame broadcast (an unchanged panel sends nothing).
     rocket_published: Mutex<Option<serde_json::Value>>,
+    /// The Runners rows' day lines the last `rocket.update` carried (`crate::day_line`).
+    rocket_lines: Mutex<crate::day_line::Published>,
     /// Live: the forward log (`crate::rocket::log`), set once at start.
     rocket_log: std::sync::OnceLock<Arc<crate::rocket::RocketLog>>,
     /// Baseline observation/latency capture for the context panel (`crate::observe`): a bounded
@@ -707,6 +709,7 @@ impl Market {
             rocket_policy: Mutex::new(crate::rocket::Policy::default()),
             rocket_subs: AtomicUsize::new(0),
             rocket_published: Mutex::new(None),
+            rocket_lines: Mutex::new(crate::day_line::Published::default()),
             rocket_log: std::sync::OnceLock::new(),
             observations: crate::observe::ObservationSink::new(crate::observe::QUEUE_CAPACITY),
             admissions: std::sync::OnceLock::new(),
@@ -743,6 +746,7 @@ impl Market {
         let board = self.new_rocket_board();
         self.0.core.lock().expect("core lock").rocket = board;
         *self.0.rocket_published.lock().expect("rocket published") = None;
+        *self.0.rocket_lines.lock().expect("rocket lines") = Default::default();
     }
 
     /// Live: opens the forward log in `dir` (`ARCHIVE_ROOT/rocket-watch`), prunes it to the
@@ -1954,6 +1958,7 @@ impl Market {
                                 if let Some(cx) = core.context.as_mut() {
                                     cx.set_halted(&h.symbol, h.halt.end.is_none());
                                 }
+                                core.rocket.set_halted(&h.symbol, h.halt.end.is_none());
                             }
                             // In order: a halt freezes the readings before the null band point
                             // that follows it clears the band (crate::pressure, "Halts").
@@ -2529,17 +2534,28 @@ impl Market {
     }
 
     /// The Rocket watch panel as a `rocket.snapshot` frame, with the engine seq it is consistent
-    /// with (`enabled: false` with `ROCKET_WATCH=0`).
+    /// with (`enabled: false` with `ROCKET_WATCH=0`). Every row carries its whole day line.
     pub fn rocket_snapshot(&self) -> (u64, String) {
-        let t = self.clock().map(|c| c.now.millis());
+        let clock = self.clock();
+        let t = clock.as_ref().map(|c| c.now.millis());
+        let tau = clock.as_ref().map_or(0, |c| c.now.0);
         let core = self.0.core.lock().expect("core lock");
         if !core.rocket.enabled() {
             return (core.seq, crate::rocket::disabled_frame("rocket.snapshot"));
         }
-        let frame = core
-            .rocket
-            .frame("rocket.snapshot", t, |s| Self::rocket_quote(&core, s));
-        (core.seq, frame)
+        let body = core.rocket.body(&|s| Self::rocket_quote(&core, s), &|s| {
+            self.rocket_levels(&core, s, tau)
+        });
+        let mut v = serde_json::json!({"type": "rocket.snapshot", "t": t});
+        if let (Some(m), serde_json::Value::Object(b)) = (v.as_object_mut(), body) {
+            m.extend(b);
+        }
+        let src = crate::day_line::Source {
+            engine: &core.engine,
+            closes: core.quotes.closes(),
+        };
+        crate::day_line::decorate_by(&mut v, "s", src, None);
+        (core.seq, v.to_string())
     }
 
     fn rocket_quote(core: &Core, symbol: &str) -> crate::rocket::Quote {
@@ -2552,28 +2568,71 @@ impl Market {
         )
     }
 
+    /// A Runners row's micro-pullback levels (`STOCK_CONTEXT=1` only).
+    fn rocket_levels(&self, core: &Core, symbol: &str, tau: i64) -> Option<serde_json::Value> {
+        core.context
+            .as_ref()
+            .filter(|_| self.0.context_on.load(Ordering::Relaxed))
+            .and_then(|cx| cx.runner_levels(symbol, tau))
+    }
+
     /// One Rocket watch step at the market clock (`crate::rocket::RocketBoard::tick`: at most one
     /// 15 s barrier, scored only once it completed), the forward-log appends it produced (live,
-    /// after the core lock is released), and one `rocket.update` when the panel changed and
-    /// anyone is subscribed. Runs with no subscriber too: the alerts and the forward log must not
-    /// depend on a panel being open. Returns whether it broadcast. Public so tests can tick.
+    /// after the core lock is released), and one `rocket.update` when the panel or a row's day
+    /// line changed and anyone is subscribed. Runs with no subscriber too: the alerts, the
+    /// momentum states and the forward log must not depend on a panel being open. Returns
+    /// whether it broadcast. Public so tests can tick.
     pub fn publish_rocket(&self) -> bool {
         let Some(clock) = self.clock() else {
             return false;
         };
-        let (seq, body, log) = {
+        let (seq, frame, log) = {
             let mut core = self.0.core.lock().expect("core lock");
             if core.rebuilding || !core.rocket.enabled() {
                 return false;
             }
-            let Core { rocket, quotes, .. } = &mut *core;
+            let Core {
+                rocket,
+                quotes,
+                context,
+                ..
+            } = &mut *core;
             rocket.tick(clock.now.0, |s| {
                 quotes.get(s).and_then(|r| r.prev_close).map(|p| p.to_f64())
             });
+            // The flagged symbols get the micro-pullback too (a few dozen at most a day).
+            if let Some(w) = rocket.take_watch()
+                && let Some(cx) = context.as_mut()
+            {
+                cx.set_watched(w);
+            }
             let log = core.rocket.take_log();
-            let body = (self.rocket_subscribers() > 0)
-                .then(|| core.rocket.body(&|s| Self::rocket_quote(&core, s)));
-            (core.seq, body, log)
+            let mut frame = None;
+            if self.rocket_subscribers() > 0 {
+                let body = core.rocket.body(&|s| Self::rocket_quote(&core, s), &|s| {
+                    self.rocket_levels(&core, s, clock.now.0)
+                });
+                let mut v = serde_json::json!({"type": "rocket.update", "t": clock.now.millis()});
+                if let (Some(m), serde_json::Value::Object(b)) = (v.as_object_mut(), body.clone()) {
+                    m.extend(b);
+                }
+                // Day lines as slices against the last update's (crate::day_line); committed
+                // only when this update is sent.
+                let mut lines = self.0.rocket_lines.lock().expect("rocket lines");
+                let mut next = lines.clone();
+                let src = crate::day_line::Source {
+                    engine: &core.engine,
+                    closes: core.quotes.closes(),
+                };
+                crate::day_line::decorate_by(&mut v, "s", src, Some(&mut next));
+                let mut last = self.0.rocket_published.lock().expect("rocket published");
+                if last.as_ref() != Some(&body) || *lines != next {
+                    *last = Some(body);
+                    *lines = next;
+                    frame = Some(v.to_string());
+                }
+            }
+            (core.seq, frame, log)
         };
         if let Some(l) = self.0.rocket_log.get() {
             let mut by_date: Vec<(NaiveDate, Vec<String>)> = Vec::new();
@@ -2587,23 +2646,12 @@ impl Market {
                 l.append(d, &lines);
             }
         }
-        let Some(body) = body else {
+        let Some(frame) = frame else {
             return false;
         };
-        {
-            let mut last = self.0.rocket_published.lock().expect("rocket published");
-            if last.as_ref() == Some(&body) {
-                return false;
-            }
-            *last = Some(body.clone());
-        }
-        let mut v = serde_json::json!({"type": "rocket.update", "t": clock.now.millis()});
-        if let (Some(m), serde_json::Value::Object(b)) = (v.as_object_mut(), body) {
-            m.extend(b);
-        }
         let _ = self.0.tx.send(Arc::new(Outbound {
             seq,
-            kind: OutKind::Rocket(v.to_string()),
+            kind: OutKind::Rocket(frame),
         }));
         true
     }
