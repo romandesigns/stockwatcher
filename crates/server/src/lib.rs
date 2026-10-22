@@ -13,6 +13,7 @@ pub mod market;
 pub mod observe;
 pub mod pressure;
 pub mod quotes;
+pub mod rocket;
 pub mod settings;
 pub mod shadow;
 pub mod ws;

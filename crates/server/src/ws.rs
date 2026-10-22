@@ -106,6 +106,24 @@
 //!   symbol's latest stock-context decision (five pillars with values, rules, reasons, evidence),
 //!   or `null` before its first trade.
 //!
+//! Rocket watch (EXPERIMENTAL, `ROCKET_WATCH`, on by default; crates/server/src/rocket/, after
+//! `welcome`):
+//! - client `rocket.subscribe` -> server `rocket.snapshot {t, enabled, strategy, mode, budget,
+//!   threshold, today, days, rows}` at once, then `rocket.update` (same shape, the WHOLE panel)
+//!   when it changed, at most once per second of wall time. `enabled: false` (feature off) has no
+//!   strategy and no rows: "not enabled", never "nothing flagged".
+//! - `strategy {id, version, placeholder}`; `mode` `budget` | `fixed`; `budget` the alerts-per-day
+//!   target; `threshold` the score an alert needs right now (null before one exists);
+//!   `today {date, alerts, hits, hits30, known}` (hits = a rocket started 60–600 s after the
+//!   alert, the bake-off's HIT; `known` = alerts whose outcome is known); `days [{date, alerts,
+//!   hits10, hits30}]` the last 20 trading days before today, oldest first.
+//! - Row (newest first, at most 50): `{id, s, at, p, last, pc, score, reasons, outcome}`: symbol,
+//!   alert time (epoch ms), price at the alert, last price now and previous close (day gain
+//!   `(last - pc) / pc`, null when unknown), the strategy's score, 1–3 human-readable reasons,
+//!   `outcome {state, gain, drawdown, partial}` with state `pending` | `rocketed` | `late` |
+//!   `moved` | `faded` and the max gain / drawdown (%) over the 30 minutes after the alert.
+//! - client `rocket.unsubscribe` stops the updates; a seek or a lag sends a fresh snapshot.
+//!
 //! Synced settings (crates/server/src/settings.rs, docs/architecture/settings-sync.md, after
 //! `welcome`): the user's chart preferences and drawings, shared by every client.
 //! - server `settings.snapshot {docs: [{ns, rev, updatedAt, value}]}` once right after `welcome`
@@ -153,8 +171,8 @@ use serde::{Deserialize, Serialize};
 use tokio::time::{Instant, interval_at, timeout};
 
 use crate::market::{
-    ControlError, DetectionGuard, Market, OutKind, PressureGuard, QuotesGuard, RossGuard,
-    SnapshotError,
+    ControlError, DetectionGuard, Market, OutKind, PressureGuard, QuotesGuard, RocketGuard,
+    RossGuard, SnapshotError,
 };
 use crate::settings::{SettingsError, SettingsOp, rejected_frame as settings_rejected};
 use crate::{AppState, COMMIT, Settings, VERSION, api, auth};
@@ -226,6 +244,10 @@ enum ClientMessage {
     RossSubscribe,
     #[serde(rename = "ross.unsubscribe")]
     RossUnsubscribe,
+    #[serde(rename = "rocket.subscribe")]
+    RocketSubscribe,
+    #[serde(rename = "rocket.unsubscribe")]
+    RocketUnsubscribe,
     #[serde(rename = "detection.subscribe")]
     DetectionSubscribe,
     #[serde(rename = "detection.unsubscribe")]
@@ -357,6 +379,20 @@ struct RossSub {
 /// Sends a fresh `ross.snapshot` and records its sequence.
 async fn send_ross_snapshot(socket: &mut WebSocket, market: &Market, q: &mut RossSub) -> bool {
     let (seq, json) = market.ross_snapshot();
+    q.seq = seq;
+    send_text(socket, json).await
+}
+
+/// The connection's Rocket watch opt-in (the Ross opt-in's twin).
+struct RocketSub {
+    _guard: RocketGuard,
+    /// `rocket.update`s with `seq` <= this are not newer than the snapshot.
+    seq: u64,
+}
+
+/// Sends a fresh `rocket.snapshot` and records its sequence.
+async fn send_rocket_snapshot(socket: &mut WebSocket, market: &Market, q: &mut RocketSub) -> bool {
+    let (seq, json) = market.rocket_snapshot();
     q.seq = seq;
     send_text(socket, json).await
 }
@@ -646,6 +682,7 @@ async fn session(mut socket: WebSocket, state: AppState) {
     let mut quotes: Option<QuotesSub> = None;
     let mut pressure: Option<PressureSub> = None;
     let mut ross: Option<RossSub> = None;
+    let mut rocket: Option<RocketSub> = None;
     let mut detection: Option<DetectionSub> = None;
 
     let mut heartbeat = interval_at(Instant::now() + HEARTBEAT, HEARTBEAT);
@@ -680,6 +717,10 @@ async fn session(mut socket: WebSocket, state: AppState) {
                             Some(q) if o.seq > q.seq => send_text(&mut socket, frame.clone()).await,
                             _ => true,
                         },
+                        OutKind::Rocket(frame) => match rocket.as_ref() {
+                            Some(q) if o.seq > q.seq => send_text(&mut socket, frame.clone()).await,
+                            _ => true,
+                        },
                         OutKind::Detection { epoch, cursor, frame } => match detection.as_mut() {
                             Some(q) if market.detection_epoch_is_current(epoch)
                                 && (q.epoch != *epoch || *cursor > q.cursor) => {
@@ -697,6 +738,9 @@ async fn session(mut socket: WebSocket, state: AppState) {
                                 None => true,
                             }) && (match ross.as_mut() {
                                 Some(q) => send_ross_snapshot(&mut socket, &market, q).await,
+                                None => true,
+                            }) && (match rocket.as_mut() {
+                                Some(q) => send_rocket_snapshot(&mut socket, &market, q).await,
                                 None => true,
                             }) && (match detection.as_mut() {
                                 Some(q) => send_detection_snapshot(&mut socket, &market, q).await,
@@ -770,6 +814,10 @@ async fn session(mut socket: WebSocket, state: AppState) {
                             }
                             && match ross.as_mut() {
                                 Some(q) => send_ross_snapshot(&mut socket, &market, q).await,
+                                None => true,
+                            }
+                            && match rocket.as_mut() {
+                                Some(q) => send_rocket_snapshot(&mut socket, &market, q).await,
                                 None => true,
                             }
                             && match detection.as_mut() {
@@ -966,6 +1014,20 @@ async fn session(mut socket: WebSocket, state: AppState) {
                     }
                     Ok(ClientMessage::RossUnsubscribe) => {
                         ross = None;
+                        None
+                    }
+                    Ok(ClientMessage::RocketSubscribe) => {
+                        let q = rocket.get_or_insert_with(|| RocketSub {
+                            _guard: market.rocket_subscribe(),
+                            seq: 0,
+                        });
+                        if !send_rocket_snapshot(&mut socket, &market, q).await {
+                            break;
+                        }
+                        None
+                    }
+                    Ok(ClientMessage::RocketUnsubscribe) => {
+                        rocket = None;
                         None
                     }
                     Ok(ClientMessage::DetectionSubscribe) => {

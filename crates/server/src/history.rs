@@ -645,6 +645,7 @@ impl Market {
                 mut engine,
                 board,
                 pressure,
+                rocket,
                 tape,
                 last_price,
                 context,
@@ -655,6 +656,9 @@ impl Market {
             core.engine.adopt_symbol(&mut engine, symbol);
             core.quotes.replace_from(symbol, &board);
             core.pressure.replace_from(symbol, &pressure);
+            if core.rocket.enabled() {
+                core.rocket.tape.replace_from(symbol, &rocket);
+            }
             if !tape.is_empty() {
                 core.tape.insert(symbol.to_string(), tape);
             }
@@ -1145,6 +1149,8 @@ struct Builder {
     engine: ChartEngine,
     board: QuoteBoard,
     pressure: PressureBoard,
+    /// Rocket watch's per-symbol state (`crate::rocket`), adopted like the pressure board's.
+    rocket: crate::rocket::features::Tape,
     tape: VecDeque<String>,
     last_price: Option<Price>,
     mark: Option<i64>,
@@ -1171,6 +1177,7 @@ impl Builder {
             engine: ChartEngine::default(),
             board: QuoteBoard::with_closes(closes),
             pressure: PressureBoard::new(),
+            rocket: crate::rocket::features::Tape::default(),
             tape: VecDeque::new(),
             last_price: None,
             mark: None,
@@ -1255,6 +1262,7 @@ impl Builder {
             let counted = Counted::from_tape(&row.counted);
             self.board.apply_trade(t, counted);
             self.pressure.apply_trade(t, counted);
+            self.rocket.apply_trade(t, counted);
         }
         if let Some(rev) = &rev {
             self.board.apply_revision(rev);
@@ -1321,6 +1329,7 @@ pub(crate) fn hold_unloaded(core: &mut Core, e: &MarketEvent) -> bool {
         unloaded,
         quotes,
         pressure,
+        rocket,
         ..
     } = core;
     let Some(u) = unloaded.get_mut(symbol) else {
@@ -1342,6 +1351,7 @@ pub(crate) fn hold_unloaded(core: &mut Core, e: &MarketEvent) -> bool {
         // Provisional, like the quote row: the load replaces both with what the history built.
         quotes.apply_trade(t, Counted::from_effect(t));
         pressure.apply_trade(t, Counted::from_effect(t));
+        rocket.apply_trade(t, Counted::from_effect(t));
     }
     true
 }

@@ -1,6 +1,7 @@
 import { isAlertsMessage, parseServerMessage, type AlertsServerMessage, type ClientMessage, type HelloMessage, type MarketSource, type PressureMessage, type QuotesMessage, type RossMessage, type ServerMessage, type WelcomeMessage } from "./protocol.ts";
 import type { SettingsSync } from "./settingsSync.ts";
 import type { DetectionMessage } from "./detection.ts";
+import type { RocketMessage } from "./rocket.ts";
 
 export type ConnectionStatus = "connecting" | "open" | "reconnecting" | "unauthorized" | "closed";
 
@@ -30,6 +31,8 @@ export interface WsClientOptions {
   onPressure?: (message: PressureMessage) => void;
   /** `ross.snapshot` / `ross.update` frames, while subscribed (see `subscribeRoss`). */
   onRoss?: (message: RossMessage) => void;
+  /** `rocket.snapshot` / `rocket.update` frames, while subscribed (see `subscribeRocket`). */
+  onRocket?: (message: RocketMessage) => void;
   onDetection?: (message: DetectionMessage) => void;
   onDetectionError?: (reason: string) => void;
   /** The price alerts' frames (`alerts.history`, `alert.fired`, …): every connection gets them. */
@@ -61,6 +64,9 @@ export interface WsClient {
   /** The Ross Panel (`ross.*`), remembered across reconnects like the pressure opt-in. */
   subscribeRoss(): void;
   unsubscribeRoss(): void;
+  /** Rocket watch (`rocket.*`), remembered across reconnects like the Ross opt-in. */
+  subscribeRocket(): void;
+  unsubscribeRocket(): void;
   subscribeDetection(): void;
   unsubscribeDetection(): void;
   close(): void;
@@ -96,6 +102,7 @@ export function createWsClient(opts: WsClientOptions): WsClient {
   let quotesWanted = false;
   let pressureWanted = false;
   let rossWanted = false;
+  let rocketWanted = false;
   let detectionWanted = false;
 
   const setStatus = (s: ConnectionStatus) => opts.onStatus?.(s);
@@ -147,6 +154,7 @@ export function createWsClient(opts: WsClientOptions): WsClient {
         if (quotesWanted) send({ type: "quotes.subscribe" });
         if (pressureWanted) send({ type: "pressure.subscribe" });
         if (rossWanted) send({ type: "ross.subscribe" });
+        if (rocketWanted) send({ type: "rocket.subscribe" });
         if (detectionWanted) send({ type: "detection.subscribe" });
       } else if (msg.type === "ping") {
         send({ type: "pong", ts: msg.ts });
@@ -158,6 +166,8 @@ export function createWsClient(opts: WsClientOptions): WsClient {
         opts.onPressure?.(msg);
       } else if ((msg.type === "ross.snapshot" || msg.type === "ross.update") && rossWanted) {
         opts.onRoss?.(msg);
+      } else if ((msg.type === "rocket.snapshot" || msg.type === "rocket.update") && rocketWanted) {
+        opts.onRocket?.(msg);
       } else if ((msg.type === "detection.snapshot" || msg.type === "detection.update") && detectionWanted) {
         opts.onDetection?.(msg);
       } else if (msg.type === "settings.snapshot" || msg.type === "settings.changed" || msg.type === "settings.rejected") {
@@ -210,6 +220,14 @@ export function createWsClient(opts: WsClientOptions): WsClient {
     unsubscribeRoss() {
       rossWanted = false;
       send({ type: "ross.unsubscribe" });
+    },
+    subscribeRocket() {
+      rocketWanted = true;
+      send({ type: "rocket.subscribe" });
+    },
+    unsubscribeRocket() {
+      rocketWanted = false;
+      send({ type: "rocket.unsubscribe" });
     },
     subscribeDetection() {
       detectionWanted = true;

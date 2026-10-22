@@ -182,6 +182,9 @@ pub const QUOTES_INTERVAL: Duration = Duration::from_secs(1);
 /// | `LIVE_HISTORY_PRELOAD` | `1` | live: load every symbol's history from the archive in the background, not only on a chart's request (`crate::history`) |
 /// | `STOCK_CONTEXT` | `0` | five-pillar stock context and the Ross Panel (`crate::context`, `ross.*` / `context.get`) |
 /// | `CONTEXT_EVIDENCE_CHECK_SECS` | `15` | with `STOCK_CONTEXT`: how often the archive's float, news and baseline evidence is checked for new records (`crate::evidence`; 0 = only at startup and on a replay day switch) |
+/// | `ROCKET_WATCH` | `1` | the EXPERIMENTAL Rocket watch panel (`crate::rocket`, `rocket.*`): read-only, O(1) per print, one pass over the active symbols per 15 s barrier; the live market keeps its forward log under `ARCHIVE_ROOT/rocket-watch/` |
+/// | `ROCKET_ALERTS_PER_DAY` | `10` | Rocket watch's daily alert budget (the adaptive threshold's target and cap) |
+/// | `ROCKET_THRESHOLD` | unset | a fixed Rocket watch threshold (overrides the scorer's frozen one), or `budget` to force the adaptive one |
 /// | `ADMISSION_JOURNAL` | `0` | live with a recorder: write the admission journal beside the recording (`crate::admit`; ~190–270 B per print, so off for whole-market SIP: see `Market::init_history`) |
 #[derive(Clone, Debug)]
 pub struct MarketConfig {
@@ -204,6 +207,10 @@ pub struct MarketConfig {
     pub stock_context: bool,
     /// `DETECTION_PANEL` (off by default): independent experimental discovery, not Ross admission.
     pub detection_panel: bool,
+    /// `ROCKET_WATCH` (on by default): the experimental Rocket watch (`crate::rocket`).
+    pub rocket_watch: bool,
+    /// `ROCKET_ALERTS_PER_DAY` / `ROCKET_THRESHOLD` (`crate::rocket::Policy`).
+    pub rocket_policy: crate::rocket::Policy,
     /// `ADMISSION_JOURNAL` (off by default): the live admission journal (`crate::admit`). Its
     /// size and the reader's record cap make it unusable for a whole-market day; see
     /// `Market::init_history`.
@@ -229,6 +236,8 @@ impl Default for MarketConfig {
             history_preload: true,
             stock_context: false,
             detection_panel: false,
+            rocket_watch: true,
+            rocket_policy: crate::rocket::Policy::default(),
             admission_journal: false,
             detection_quiet_references: None,
             evidence_check: Duration::from_secs(crate::evidence::DEFAULT_CHECK_SECS),
@@ -264,6 +273,10 @@ impl MarketConfig {
         if let Some(v) = var("DETECTION_PANEL") {
             c.detection_panel = on(&v);
         }
+        if let Some(v) = var("ROCKET_WATCH") {
+            c.rocket_watch = on(&v);
+        }
+        c.rocket_policy = crate::rocket::Policy::from_lookup(&get)?;
         if let Some(v) = var("ADMISSION_JOURNAL") {
             c.admission_journal = on(&v);
         }
@@ -342,6 +355,9 @@ pub enum OutKind {
     /// A pre-serialized `ross.update` (the Ross Panel, `crate::context`) for the connections that
     /// sent `ross.subscribe`. `Outbound::seq` is the engine seq when it was taken.
     Ross(String),
+    /// A pre-serialized `rocket.update` (the Rocket watch panel, `crate::rocket`) for the
+    /// connections that sent `rocket.subscribe`. `Outbound::seq` is the engine seq when taken.
+    Rocket(String),
     /// Full bounded replacement; its cursor is independent of the chart engine sequence.
     Detection {
         epoch: String,
@@ -371,6 +387,8 @@ pub(crate) struct Core {
     pub(crate) latest_trade_day: Option<NaiveDate>,
     /// Stock context and the Ross Panel (`STOCK_CONTEXT=1`, `crate::context`); `None` when off.
     pub(crate) context: Option<ContextBoard>,
+    /// Rocket watch (`ROCKET_WATCH`, `crate::rocket`): per-symbol 15 s state, alerts, outcomes.
+    pub(crate) rocket: crate::rocket::RocketBoard,
 }
 
 impl Core {
@@ -387,6 +405,7 @@ impl Core {
             unloaded: HashMap::new(),
             latest_trade_day: None,
             context: None,
+            rocket: crate::rocket::RocketBoard::disabled(),
         }
     }
 
@@ -468,6 +487,15 @@ pub(crate) struct Inner {
     pub(crate) readiness: Mutex<Option<crate::context::Readiness>>,
     /// Connections that sent `ross.subscribe`. While 0, no `ross.update` is serialized.
     ross_subs: AtomicUsize,
+    /// `ROCKET_WATCH` and its policy: every `Core` this market makes gets a board built from them.
+    rocket_on: AtomicBool,
+    rocket_policy: Mutex<crate::rocket::Policy>,
+    /// Connections that sent `rocket.subscribe`.
+    rocket_subs: AtomicUsize,
+    /// The body of the last `rocket.*` frame broadcast (an unchanged panel sends nothing).
+    rocket_published: Mutex<Option<serde_json::Value>>,
+    /// Live: the forward log (`crate::rocket::log`), set once at start.
+    rocket_log: std::sync::OnceLock<Arc<crate::rocket::RocketLog>>,
     /// Baseline observation/latency capture for the context panel (`crate::observe`): a bounded
     /// queue filled under the core lock and absorbed off it, with counted drops. Measurement
     /// scaffolding, not a latency claim.
@@ -674,6 +702,11 @@ impl Market {
             detection_link_down: AtomicBool::new(false),
             readiness: Mutex::new(None),
             ross_subs: AtomicUsize::new(0),
+            rocket_on: AtomicBool::new(true),
+            rocket_policy: Mutex::new(crate::rocket::Policy::default()),
+            rocket_subs: AtomicUsize::new(0),
+            rocket_published: Mutex::new(None),
+            rocket_log: std::sync::OnceLock::new(),
             observations: crate::observe::ObservationSink::new(crate::observe::QUEUE_CAPACITY),
             admissions: std::sync::OnceLock::new(),
             shadow: std::sync::OnceLock::new(),
@@ -682,8 +715,61 @@ impl Market {
             alerts: std::sync::OnceLock::new(),
         }));
         let board = market.new_context_board();
-        market.0.core.lock().expect("core lock").context = board;
+        let rocket = market.new_rocket_board();
+        {
+            let mut core = market.0.core.lock().expect("core lock");
+            core.context = board;
+            core.rocket = rocket;
+        }
         market
+    }
+
+    /// A fresh Rocket watch board (`crate::rocket`) for a new `Core`: off with `ROCKET_WATCH=0`.
+    fn new_rocket_board(&self) -> crate::rocket::RocketBoard {
+        if !self.0.rocket_on.load(Ordering::Relaxed) {
+            return crate::rocket::RocketBoard::disabled();
+        }
+        let policy = self.0.rocket_policy.lock().expect("rocket policy").clone();
+        crate::rocket::RocketBoard::new(true, Arc::from(crate::rocket::production_scorer()), policy)
+    }
+
+    /// Turns Rocket watch on or off with a policy from now (production reads `ROCKET_WATCH` once
+    /// at start; tests). Rebuilds the board: its state starts over.
+    pub fn set_rocket_watch(&self, on: bool, policy: crate::rocket::Policy) {
+        self.0.rocket_on.store(on, Ordering::Relaxed);
+        *self.0.rocket_policy.lock().expect("rocket policy") = policy;
+        let board = self.new_rocket_board();
+        self.0.core.lock().expect("core lock").rocket = board;
+        *self.0.rocket_published.lock().expect("rocket published") = None;
+    }
+
+    /// Live: opens the forward log in `dir` (`ARCHIVE_ROOT/rocket-watch`), prunes it to the
+    /// archive's retention window and restores today's alerts and the record into the board.
+    /// Reads a few small files once, before the ingest starts.
+    pub fn init_rocket_log(&self, dir: std::path::PathBuf, retention_days: u32, now: UnixNanos) {
+        if !self.0.rocket_on.load(Ordering::Relaxed) {
+            return;
+        }
+        let log = Arc::new(crate::rocket::RocketLog::new(dir, retention_days));
+        let today = market_events::session::trading_date(now);
+        let pruned = log.prune(today);
+        if !pruned.is_empty() {
+            tracing::info!(days = ?pruned, "rocket watch: forward log pruned");
+        }
+        let loaded = log.load(today);
+        tracing::info!(
+            dir = %log.dir().display(),
+            today = loaded.today.len(),
+            days = loaded.days.len(),
+            "rocket watch: forward log opened"
+        );
+        self.0
+            .core
+            .lock()
+            .expect("core lock")
+            .rocket
+            .restore(today, loaded);
+        let _ = self.0.rocket_log.set(log);
     }
 
     /// A fresh context board for this market's current day, or `None` with `STOCK_CONTEXT` off.
@@ -1331,6 +1417,15 @@ impl Market {
         if cfg.stock_context {
             market.set_stock_context(true);
         }
+        market.set_rocket_watch(cfg.rocket_watch, cfg.rocket_policy.clone());
+        if mode == ClockMode::Live && cfg.rocket_watch {
+            // Before the ingest: today's alerts and the record come back after a restart.
+            market.init_rocket_log(
+                archive.root().join("rocket-watch"),
+                archive.config().retention_days,
+                crate::history::wall_now(),
+            );
+        }
         if cfg.detection_panel {
             market.configure_detection(true, Some(&archive.root().join("detection")));
             if let Some(path) = cfg.detection_quiet_references.as_deref()
@@ -1451,6 +1546,7 @@ impl Market {
                 let market = Market(inner);
                 market.publish_quotes();
                 market.publish_pressure();
+                market.publish_rocket();
                 // Before the broadcast, and whether or not anyone is subscribed: the context
                 // engine's output journals are drained so an unattended run stays bounded.
                 market.drain_context();
@@ -1843,6 +1939,7 @@ impl Market {
                             let counted = Counted::from_tape(&row.counted);
                             core.quotes.apply_trade(t, counted);
                             core.pressure.apply_trade(t, counted);
+                            core.rocket.apply_trade(t, counted);
                             if let (Some(closes), Some(cx)) =
                                 (context_closes.as_ref(), core.context.as_mut())
                             {
@@ -1947,10 +2044,12 @@ impl Market {
                     let closes = self.current_closes();
                     // A seek rebuilds stock context from the re-read day, like the candles.
                     let board = self.new_context_board();
+                    let rocket = self.new_rocket_board();
                     let mut core = self.0.core.lock().expect("core lock");
                     let seq = core.seq + 1;
                     *core = Core::new(closes);
                     core.context = board;
+                    core.rocket = rocket;
                     core.seq = seq;
                     core.rebuilding = true;
                 }
@@ -2412,6 +2511,97 @@ impl Market {
         let _ = self.0.tx.send(Arc::new(Outbound {
             seq,
             kind: OutKind::Quotes(frame),
+        }));
+        true
+    }
+
+    /// Registers a `rocket.subscribe` (the pressure guard's twin).
+    pub fn rocket_subscribe(&self) -> RocketGuard {
+        self.0.rocket_subs.fetch_add(1, Ordering::Relaxed);
+        RocketGuard(self.0.clone())
+    }
+
+    /// Connections currently subscribed to Rocket watch.
+    pub fn rocket_subscribers(&self) -> usize {
+        self.0.rocket_subs.load(Ordering::Relaxed)
+    }
+
+    /// The Rocket watch panel as a `rocket.snapshot` frame, with the engine seq it is consistent
+    /// with (`enabled: false` with `ROCKET_WATCH=0`).
+    pub fn rocket_snapshot(&self) -> (u64, String) {
+        let t = self.clock().map(|c| c.now.millis());
+        let core = self.0.core.lock().expect("core lock");
+        if !core.rocket.enabled() {
+            return (core.seq, crate::rocket::disabled_frame("rocket.snapshot"));
+        }
+        let frame = core
+            .rocket
+            .frame("rocket.snapshot", t, |s| Self::rocket_quote(&core, s));
+        (core.seq, frame)
+    }
+
+    fn rocket_quote(core: &Core, symbol: &str) -> crate::rocket::Quote {
+        (
+            core.last_price.get(symbol).map(|p| p.to_f64()),
+            core.quotes
+                .get(symbol)
+                .and_then(|r| r.prev_close)
+                .map(|p| p.to_f64()),
+        )
+    }
+
+    /// One Rocket watch step at the market clock (`crate::rocket::RocketBoard::tick`: at most one
+    /// 15 s barrier, scored only once it completed), the forward-log appends it produced (live,
+    /// after the core lock is released), and one `rocket.update` when the panel changed and
+    /// anyone is subscribed. Runs with no subscriber too: the alerts and the forward log must not
+    /// depend on a panel being open. Returns whether it broadcast. Public so tests can tick.
+    pub fn publish_rocket(&self) -> bool {
+        let Some(clock) = self.clock() else {
+            return false;
+        };
+        let (seq, body, log) = {
+            let mut core = self.0.core.lock().expect("core lock");
+            if core.rebuilding || !core.rocket.enabled() {
+                return false;
+            }
+            let Core { rocket, quotes, .. } = &mut *core;
+            rocket.tick(clock.now.0, |s| {
+                quotes.get(s).and_then(|r| r.prev_close).map(|p| p.to_f64())
+            });
+            let log = core.rocket.take_log();
+            let body = (self.rocket_subscribers() > 0)
+                .then(|| core.rocket.body(&|s| Self::rocket_quote(&core, s)));
+            (core.seq, body, log)
+        };
+        if let Some(l) = self.0.rocket_log.get() {
+            let mut by_date: Vec<(NaiveDate, Vec<String>)> = Vec::new();
+            for (d, line) in log {
+                match by_date.last_mut() {
+                    Some((ld, v)) if *ld == d => v.push(line),
+                    _ => by_date.push((d, vec![line])),
+                }
+            }
+            for (d, lines) in by_date {
+                l.append(d, &lines);
+            }
+        }
+        let Some(body) = body else {
+            return false;
+        };
+        {
+            let mut last = self.0.rocket_published.lock().expect("rocket published");
+            if last.as_ref() == Some(&body) {
+                return false;
+            }
+            *last = Some(body.clone());
+        }
+        let mut v = serde_json::json!({"type": "rocket.update", "t": clock.now.millis()});
+        if let (Some(m), serde_json::Value::Object(b)) = (v.as_object_mut(), body) {
+            m.extend(b);
+        }
+        let _ = self.0.tx.send(Arc::new(Outbound {
+            seq,
+            kind: OutKind::Rocket(v.to_string()),
         }));
         true
     }
@@ -3006,6 +3196,15 @@ pub struct QuotesGuard(Arc<Inner>);
 impl Drop for QuotesGuard {
     fn drop(&mut self) {
         self.0.quote_subs.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// Decrements the Rocket watch subscriber count when dropped.
+pub struct RocketGuard(Arc<Inner>);
+
+impl Drop for RocketGuard {
+    fn drop(&mut self) {
+        self.0.rocket_subs.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
