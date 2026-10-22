@@ -604,7 +604,12 @@ impl RocketBoard {
             let before = self.alerts[i].outcome.clone();
             let at = self.alerts[i].at_ns;
             let (t0, ord) = (self.t0, self.ord);
-            if let Some(s) = self.tape.sym(&self.alerts[i].symbol) {
+            // A symbol with no state yet (a restart before its first print or history load):
+            // leave `checked` where it is so the bars since the alert are read once they exist.
+            let Some(s) = self.tape.sym(&self.alerts[i].symbol) else {
+                continue;
+            };
+            {
                 for (key, _close, high, low) in
                     features::bars_between(s, self.alerts[i].outcome.checked, b.key)
                 {

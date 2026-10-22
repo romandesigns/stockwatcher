@@ -656,7 +656,9 @@ impl Market {
             core.engine.adopt_symbol(&mut engine, symbol);
             core.quotes.replace_from(symbol, &board);
             core.pressure.replace_from(symbol, &pressure);
-            core.rocket.tape.replace_from(symbol, &rocket);
+            if core.rocket.enabled() {
+                core.rocket.tape.replace_from(symbol, &rocket);
+            }
             if !tape.is_empty() {
                 core.tape.insert(symbol.to_string(), tape);
             }
