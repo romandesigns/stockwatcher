@@ -185,6 +185,7 @@ pub const QUOTES_INTERVAL: Duration = Duration::from_secs(1);
 /// | `ROCKET_WATCH` | `1` | the EXPERIMENTAL Rocket watch panel (`crate::rocket`, `rocket.*`): read-only, O(1) per print, one pass over the active symbols per 15 s barrier; the live market keeps its forward log under `ARCHIVE_ROOT/rocket-watch/` |
 /// | `ROCKET_ALERTS_PER_DAY` | `10` | Rocket watch's daily alert budget (the adaptive threshold's target and cap) |
 /// | `ROCKET_THRESHOLD` | unset | a fixed Rocket watch threshold (overrides the scorer's frozen one), or `budget` to force the adaptive one |
+/// | `RUNNERS_SCORER` | `r0` | the Runners strategy: `r0` (`precursors-R0`), `r2` (`precursors-R2`, LightGBM) or `placeholder` (`placeholder-b2`); `crate::rocket::ScorerChoice` |
 /// | `ADMISSION_JOURNAL` | `0` | live with a recorder: write the admission journal beside the recording (`crate::admit`; ~190–270 B per print, so off for whole-market SIP: see `Market::init_history`) |
 #[derive(Clone, Debug)]
 pub struct MarketConfig {
@@ -730,7 +731,8 @@ impl Market {
             return crate::rocket::RocketBoard::disabled();
         }
         let policy = self.0.rocket_policy.lock().expect("rocket policy").clone();
-        crate::rocket::RocketBoard::new(true, Arc::from(crate::rocket::production_scorer()), policy)
+        let scorer = crate::rocket::production_scorer(policy.scorer);
+        crate::rocket::RocketBoard::new(true, Arc::from(scorer), policy)
     }
 
     /// Turns Rocket watch on or off with a policy from now (production reads `ROCKET_WATCH` once

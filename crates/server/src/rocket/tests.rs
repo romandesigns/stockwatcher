@@ -54,6 +54,7 @@ fn fixed(t: f64, budget: u32) -> Policy {
     Policy {
         budget,
         threshold: Some(Threshold::Fixed(t)),
+        ..Policy::default()
     }
 }
 
@@ -200,6 +201,7 @@ fn budget_caps_and_one_alert_per_symbol_per_30_minutes() {
         Policy {
             budget: 3,
             threshold: Some(Threshold::Budget),
+            ..Policy::default()
         },
     );
     let trades = syms
@@ -238,6 +240,7 @@ fn the_adaptive_threshold_waits_for_data_without_a_prior() {
         Policy {
             budget: 10,
             threshold: Some(Threshold::Budget),
+            ..Policy::default()
         },
     );
     let trades = flat("AAA", at(4, 0, 0), at(5, 30, 0), 2.0, 100);
@@ -406,6 +409,25 @@ fn the_policy_from_the_environment() {
     assert_eq!(p.threshold, Some(Threshold::Budget));
     assert!(Policy::from_lookup(|k| (k == "ROCKET_ALERTS_PER_DAY").then(|| "0".into())).is_err());
     assert!(Policy::from_lookup(|k| (k == "ROCKET_THRESHOLD").then(|| "x".into())).is_err());
+    // RUNNERS_SCORER picks the strategy; r0 until the judge confirms R2.
+    assert_eq!(p.scorer, ScorerChoice::R0);
+    for (v, want, id) in [
+        ("r0", ScorerChoice::R0, "precursors-R0"),
+        ("R2", ScorerChoice::R2, "precursors-R2"),
+        ("placeholder", ScorerChoice::Placeholder, "placeholder-b2"),
+    ] {
+        let p = Policy::from_lookup(|k| (k == "RUNNERS_SCORER").then(|| v.into())).unwrap();
+        assert_eq!(p.scorer, want);
+        assert_eq!(production_scorer(p.scorer).id(), id);
+    }
+    assert!(Policy::from_lookup(|k| (k == "RUNNERS_SCORER").then(|| "r9".into())).is_err());
+    // R2 runs at its frozen B10 threshold.
+    let b = RocketBoard::new(
+        true,
+        Arc::from(production_scorer(ScorerChoice::R2)),
+        Policy::default(),
+    );
+    assert_eq!(b.mode(), Threshold::Fixed(r2::model().theta_b10));
     // Without an override the placeholder has no frozen threshold: budget mode.
     let b = RocketBoard::new(true, Arc::new(PlaceholderB2), Policy::default());
     assert_eq!(b.mode(), Threshold::Budget);
@@ -446,5 +468,62 @@ fn cost_per_trade_and_per_barrier() {
     );
     assert_eq!(c.symbols, N);
     assert!(per_trade < Duration::from_micros(50), "{per_trade:?}");
+    assert!(per_barrier < Duration::from_secs(2), "{per_barrier:?}");
+}
+
+/// R2's share of a barrier: the LightGBM walk for every unit symbol, on ~7k symbols' real
+/// feature vectors. The bound is loose for a debug build; the release figure is printed.
+#[test]
+fn r2_cost_per_barrier() {
+    const N: usize = 7000;
+    const SLOTS: i64 = 260;
+    let names: Vec<String> = (0..N).map(|i| format!("S{i:04}")).collect();
+    let mut b = RocketBoard::new(
+        true,
+        Arc::from(production_scorer(ScorerChoice::R2)),
+        Policy::default(),
+    );
+    let start = at(9, 0, 0);
+    let trades: Vec<Trade> = (0..SLOTS)
+        .flat_map(|k| {
+            names.iter().enumerate().map(move |(i, s)| {
+                let p = 1.0 + (i % 100) as f64 * 0.1 + ((k * (i as i64 % 13)) % 7) as f64 * 0.01;
+                tr(s, start + k * 15 * S + S, p, 100 + (k as u64 % 5) * 10)
+            })
+        })
+        .collect();
+    for x in &trades {
+        b.apply_trade(x, BOTH);
+    }
+    let now = start + SLOTS * 15 * S;
+    let t = Instant::now();
+    b.tick(now, |_| Some(1.0));
+    let per_barrier = t.elapsed();
+    let c = b.last_cost().unwrap();
+    // The model alone on the same vectors.
+    let mut tape = std::mem::take(&mut b.tape);
+    let bar = Barrier::new(b.t0, b.ord, (now - b.t0).div_euclid(15 * S) - 1);
+    let xs: Vec<[f64; NF]> = tape
+        .syms
+        .iter_mut()
+        .filter_map(|s| {
+            settle(s, &bar);
+            features(s, &bar, || Some(1.0)).map(|f| f.x)
+        })
+        .collect();
+    let m = r2::model();
+    let t = Instant::now();
+    let mut acc = 0.0;
+    for x in &xs {
+        acc += m.raw(x);
+    }
+    let model_only = t.elapsed();
+    eprintln!(
+        "r2 cost: barrier over {} symbols ({} scored): {per_barrier:?}; model alone on {}: {model_only:?} (sum {acc:.3})",
+        c.symbols,
+        c.scored,
+        xs.len()
+    );
+    assert_eq!(c.scored, N, "R2 scores every unit symbol");
     assert!(per_barrier < Duration::from_secs(2), "{per_barrier:?}");
 }

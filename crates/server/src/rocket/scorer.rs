@@ -8,8 +8,10 @@
 //!    `x` (with the research's NaN handling), a rule is a few comparisons.
 //! 2. `fixed_threshold` returns the frozen.json threshold for the chosen budget, or `None` to let
 //!    the alert policy adapt the threshold to `ROCKET_ALERTS_PER_DAY` (`super::Policy`).
-//! 3. Change the ONE line in [`production_scorer`] to return it. `id`/`version` go into every
-//!    alert, the forward log and the panel, so the track record never mixes strategies.
+//! 3. Add a [`ScorerChoice`] variant for it (the `RUNNERS_SCORER` value) and its arm in
+//!    [`production_scorer`]; flip [`ScorerChoice::default`] once it is the one to run. `id`/`version`
+//!    go into every alert, the forward log and the panel, so the track record never mixes
+//!    strategies.
 //!
 //! Nothing else changes: the features, the budget and dedup, the forward log, the wire and both
 //! panels are strategy-agnostic.
@@ -48,10 +50,42 @@ pub trait RocketScorer: Send + Sync + 'static {
     }
 }
 
-/// The strategy the server runs. **The one line to change when a research scorer is plugged in.**
-/// Since 2026-10-22: `precursors-R0`, the bake-off's round-1 pick (see `r0.rs` for its evidence).
-pub fn production_scorer() -> Box<dyn RocketScorer> {
-    Box::new(super::r0::PrecursorsR0)
+/// Which strategy the server runs: `RUNNERS_SCORER` (read once at start, with the rest of
+/// [`super::Policy`]).
+///
+/// | Value | Scorer |
+/// |---|---|
+/// | `r0` (default) | `precursors-R0` ([`super::r0`]), the bake-off's round-1 pick, live since 2026-10-22 |
+/// | `r2` | `precursors-R2` ([`super::r2`]), the round-2 LightGBM runner-up, ready to switch to once the judge confirms it |
+/// | `placeholder` | `placeholder-b2`, the volume-acceleration baseline |
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ScorerChoice {
+    #[default]
+    R0,
+    R2,
+    Placeholder,
+}
+
+impl ScorerChoice {
+    pub fn parse(v: &str) -> Result<ScorerChoice, String> {
+        match v.trim().to_ascii_lowercase().as_str() {
+            "r0" | "precursors-r0" => Ok(ScorerChoice::R0),
+            "r2" | "precursors-r2" => Ok(ScorerChoice::R2),
+            "placeholder" | "placeholder-b2" | "b2" => Ok(ScorerChoice::Placeholder),
+            _ => Err(format!(
+                "RUNNERS_SCORER must be r0, r2 or placeholder: {v:?}"
+            )),
+        }
+    }
+}
+
+/// The strategy the server runs, by `RUNNERS_SCORER` ([`ScorerChoice`]).
+pub fn production_scorer(choice: ScorerChoice) -> Box<dyn RocketScorer> {
+    match choice {
+        ScorerChoice::R0 => Box::new(super::r0::PrecursorsR0),
+        ScorerChoice::R2 => Box::new(super::r2::PrecursorsR2::new()),
+        ScorerChoice::Placeholder => Box::new(PlaceholderB2),
+    }
 }
 
 /// The bake-off's baseline B2, shipped until the research leader is plugged in: volume

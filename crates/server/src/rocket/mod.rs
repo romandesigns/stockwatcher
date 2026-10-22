@@ -10,9 +10,11 @@
 //! - [`features`]: per-symbol rolling state on the research's 15 s grid, fed every print the chart
 //!   engine counted (O(1) per print, under the core lock like the quote and pressure boards), and
 //!   the research's 31 causal features at each completed barrier.
-//! - [`scorer`]: the [`RocketScorer`] seam. The shipped scorer is `precursors-R0` ([`r0`], the
-//!   bake-off's round-1 pick, frozen thresholds); `placeholder-b2` (the volume-acceleration
-//!   baseline) stays as the fallback. [`scorer::production_scorer`] picks one.
+//! - [`scorer`]: the [`RocketScorer`] seam. `RUNNERS_SCORER` ([`ScorerChoice`]) picks the
+//!   strategy: `r0` = `precursors-R0` ([`r0`], the bake-off's round-1 pick, frozen thresholds, the
+//!   default), `r2` = `precursors-R2` ([`r2`], the round-2 LightGBM runner-up, evaluated in pure
+//!   Rust, ready to switch to), `placeholder` = `placeholder-b2` (the volume-acceleration
+//!   baseline).
 //! - [`RocketBoard`] (here): the alert policy, the outcomes, the track record and the panel frame.
 //! - [`log`]: the forward log on the archive volume (live market only).
 //!
@@ -46,6 +48,7 @@
 pub mod features;
 pub mod log;
 pub mod r0;
+pub mod r2;
 pub mod scorer;
 
 use std::collections::HashMap;
@@ -58,7 +61,7 @@ use serde_json::{Value, json};
 
 pub use features::{FEATS, Features, NF, ix};
 pub use log::{DaySummary, Loaded, RocketLog};
-pub use scorer::{PlaceholderB2, RocketScorer, production_scorer, standard_reasons};
+pub use scorer::{PlaceholderB2, RocketScorer, ScorerChoice, production_scorer, standard_reasons};
 
 use features::{BAR_NS, Barrier, NSLOT, Tape};
 
@@ -82,12 +85,14 @@ pub enum Threshold {
     Fixed(f64),
 }
 
-/// `ROCKET_ALERTS_PER_DAY`, `ROCKET_THRESHOLD`.
+/// `ROCKET_ALERTS_PER_DAY`, `ROCKET_THRESHOLD`, `RUNNERS_SCORER`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Policy {
     pub budget: u32,
     /// `None`: the scorer decides (its fixed threshold, else the budget).
     pub threshold: Option<Threshold>,
+    /// `RUNNERS_SCORER`: which strategy a new board runs ([`production_scorer`]).
+    pub scorer: ScorerChoice,
 }
 
 impl Default for Policy {
@@ -95,6 +100,7 @@ impl Default for Policy {
         Policy {
             budget: DEFAULT_BUDGET,
             threshold: None,
+            scorer: ScorerChoice::default(),
         }
     }
 }
@@ -124,6 +130,9 @@ impl Policy {
                     || format!("ROCKET_THRESHOLD is not a number or \"budget\": {v:?}"),
                 )?)
             });
+        }
+        if let Some(v) = var("RUNNERS_SCORER") {
+            p.scorer = ScorerChoice::parse(&v)?;
         }
         Ok(p)
     }
