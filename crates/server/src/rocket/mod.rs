@@ -61,6 +61,7 @@
 //! notices are taken and dropped. A restore from the forward log leaves none: a restart must not
 //! re-announce the morning's flags.
 
+pub mod burst;
 pub mod features;
 pub mod log;
 pub mod r0;
