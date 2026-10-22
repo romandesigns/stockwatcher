@@ -5,7 +5,7 @@ import { Animated, Pressable, StyleSheet, Text, View } from "react-native";
 import Svg, { Circle, Line, Path, Rect } from "react-native-svg";
 
 import { useRocket } from "../feed/hooks";
-import { notifyRocketFlags, useRocketNotify } from "../notifications/rocket";
+import { notifyRocketFlags } from "../notifications/rocket";
 import { fonts } from "../theme";
 import { useTickerPress } from "../ui/useTickerPress";
 
@@ -31,13 +31,13 @@ export const DAY_LINE_H = 28;
  * an inset edge bar, amber while building (edge) and on a halt (badge), a pullback muted with its
  * depth and trigger meter, a fade dimmed. Green only for the strict outcome tag. A state change
  * crossfades the edge and wash (opacity, native driver); with reduced motion it simply changes.
- * Tapping a row opens its chart (the chart modal); tap, then hold copies the ticker. With
- * Settings → Rocket watch on, each new flag also rings a local notification. No layout
+ * Tapping a row opens its chart (the chart modal); tap, then hold copies the ticker. New flags
+ * reach the phone as a server push (Settings → Runners); only while this phone has no push token
+ * does the card ring a local banner for them instead (notifications/rocket.ts). No layout
  * animation on the rows: a moving Pressable takes stale taps on Android.
  */
 export function RocketPanel({ channel, onPick, reducedMotion }: { channel: RocketChannel; onPick: (symbol: string) => void; reducedMotion: boolean }) {
   const state = useRocket(channel);
-  const notify = useRocketNotify();
   // Ages tick between frames.
   const [wall, setWall] = useState(() => Date.now());
   useEffect(() => {
@@ -51,8 +51,8 @@ export function RocketPanel({ channel, onPick, reducedMotion }: { channel: Rocke
     if (!state.panel) return;
     const fresh = newRocketFlags(state, seen.current, primed.current);
     primed.current = true;
-    if (notify && fresh.length) notifyRocketFlags(fresh);
-  }, [state, notify]);
+    if (fresh.length) notifyRocketFlags(fresh);
+  }, [state]);
   const { enabled, panel } = state;
   const now = rocketNow(state, wall);
   const rows = panel ? rocketRowsView(panel, now) : [];

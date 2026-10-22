@@ -5,7 +5,17 @@ import { readFileSync } from "node:fs";
 
 // The routing test exercises the real shared WS client/channels without importing native
 // notification modules or opening an external socket.
-mock.module("../notifications/push", () => ({ pushToken: () => null, deviceInfo: () => ({ platform: "test", name: "test" }) }));
+let token: string | null = null;
+let runners = { runnersNew: true, runnersBreakout: false };
+const runnersListeners = new Set<() => void>();
+mock.module("../notifications/push", () => ({ pushToken: () => token, subscribePushToken: () => () => {}, deviceInfo: () => ({ platform: "test", name: "test" }) }));
+mock.module("../notifications/runnersPush", () => ({
+  runnersRegisterFields: () => runners,
+  subscribeRunnersPush: (fn: () => void) => {
+    runnersListeners.add(fn);
+    return () => runnersListeners.delete(fn);
+  },
+}));
 mock.module("./server", () => ({ wsUrl: () => "ws://local-fixture.invalid/ws" }));
 
 const { createMobileFeed } = await import("./serverFeed");
@@ -40,6 +50,28 @@ afterEach(() => {
   cleanup = undefined;
   globalThis.WebSocket = realSocket;
   Socket.instances = [];
+});
+
+test("push.register carries this phone's Runners opt-ins, and goes again when a switch changes", () => {
+  globalThis.WebSocket = Socket as unknown as typeof WebSocket;
+  token = "ExponentPushToken[fold]";
+  const feed = createMobileFeed(null, undefined, undefined, "mobile-dashboard", "live");
+  cleanup = () => {
+    feed.close();
+    token = null;
+    runners = { runnersNew: true, runnersBreakout: false };
+  };
+  const socket = Socket.instances[0]!;
+  socket.open();
+  socket.receive(welcome);
+  const registers = () => socket.sent.filter((m) => (m as { type: string }).type === "push.register");
+  expect(registers()).toEqual([{ type: "push.register", token: "ExponentPushToken[fold]", platform: "test", name: "test", runnersNew: true, runnersBreakout: false }]);
+  runners = { runnersNew: true, runnersBreakout: true };
+  for (const l of runnersListeners) l();
+  expect(registers().at(-1)).toMatchObject({ runnersNew: true, runnersBreakout: true });
+  // Closed: a change no longer reaches the (gone) socket, and the listener is released.
+  feed.close();
+  expect(runnersListeners.size).toBe(0);
 });
 
 test("the modal's mobile feed handshakes with its explicit market source", () => {

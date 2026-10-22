@@ -24,11 +24,10 @@ test("rows: tap opens, tap-then-hold copies; no layout animation on a Pressable 
   expect(src).not.toMatch(/border(Width|Color|Top|Bottom|Left|Right)/);
 });
 
-test("the new-flag notification is off by default and per device", () => {
+test("new flags ring locally only while this phone has no push (the server's push rings otherwise)", () => {
   const src = read("../notifications/rocket.ts");
-  expect(src).toContain("let on = false;");
-  expect(src).toContain("on = v === true;");
-  expect(src).toContain("if (!on) return;");
+  expect(src).toContain("if (!ringRunnersLocally(runnersPushPrefs().pushNew, pushToken())) return;");
+  expect(read("RocketPanel.tsx")).toContain("notifyRocketFlags(fresh)");
   expect(read("../settings/SettingsHost.tsx")).toContain("rocketSection()");
 });
 

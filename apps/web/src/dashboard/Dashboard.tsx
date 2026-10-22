@@ -18,6 +18,7 @@ import { HaltWatcher } from "./HaltWatcher.tsx";
 import { RossPanel } from "./RossPanel.tsx";
 import { DetectionPanel } from "./DetectionPanel.tsx";
 import { SideTabs } from "./SideTabs.tsx";
+import { useRunnersToasts } from "./runnersToasts.ts";
 import { MultiViewMenu } from "./MultiViewMenu.tsx";
 
 /**
@@ -66,6 +67,8 @@ export function Dashboard({ choice, feed }: Connection) {
     setDetectionSelection({ index: selected, symbol, episodeId, runEpoch });
     app.loadIntoSelected(symbol);
   }, [app, feed, selected]);
+  // Runners' new flags and breakouts as toasts with "Chart", whatever side tab is open.
+  useRunnersToasts(feed.rocket, app.loadIntoSelected);
 
   // What each chart shows: its ticker, or (empty slot) a different candidate per chart. A ticker
   // that left the price band falls back too. Neither fallback is written back: a device with a

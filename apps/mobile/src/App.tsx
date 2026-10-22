@@ -7,7 +7,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { AlertSheet } from "./alerts/AlertSheet";
 import { useFiredBanner } from "./alerts/useFiredBanner";
 import { ErrorBoundary } from "./ErrorBoundary";
-import { navigationRef } from "./navigation/ref";
+import { flushNavigation, navigationRef } from "./navigation/ref";
 import { RootStack, type RootStackParamList } from "./navigation/RootStack";
 import { colors } from "./theme";
 import { Toaster } from "./ui/Toaster";
@@ -58,7 +58,7 @@ export default function App() {
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: colors.bg }}>
       <SafeAreaProvider>
         <ErrorBoundary>
-          <NavigationContainer ref={navigationRef} linking={linking} theme={navigationTheme}>
+          <NavigationContainer ref={navigationRef} linking={linking} theme={navigationTheme} onReady={flushNavigation}>
             <RootStack />
           </NavigationContainer>
         </ErrorBoundary>

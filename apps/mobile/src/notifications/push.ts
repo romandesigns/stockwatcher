@@ -2,8 +2,9 @@ import * as Device from "expo-device";
 import * as Notifications from "expo-notifications";
 import { Platform } from "react-native";
 
-import { navigateToAlerts } from "../navigation/ref";
+import { navigateToAlerts, openTickerChart, whenNavigationReady } from "../navigation/ref";
 import { getPreference, setPreference } from "../storage/preferences";
+import { notificationTarget } from "./route";
 import { configureForegroundPresentation, registerForPushNotifications } from "./setup";
 
 // Phone alerts (crates/server/src/alerts/push.rs): this phone's Expo push token, registered with
@@ -41,13 +42,33 @@ export function deviceInfo(): { platform: string; name: string } {
   return { platform: Platform.OS, name: Device.modelName ?? Device.deviceName ?? Platform.OS };
 }
 
+// A response is handled once: the one that launched the app can come both from
+// getLastNotificationResponse and from the listener.
+let handled: string | null = null;
+
+/** A tapped notification: a Runners push opens its ticker's chart, anything else the Alerts tab. */
+function openFrom(response: Notifications.NotificationResponse | null): void {
+  if (!response) return;
+  const id = response.notification.request.identifier;
+  if (id && id === handled) return;
+  handled = id;
+  const target = notificationTarget(response.notification.request.content.data);
+  whenNavigationReady(() => (target.to === "chart" ? openTickerChart(target.symbol) : navigateToAlerts()));
+}
+
 /**
  * At launch: the stored token at once, then a fresh one when permission is already granted (no
- * prompt). Also routes a tapped notification to the Alerts tab.
+ * prompt). Also routes a tapped notification (src/notifications/route.ts), including the one
+ * that opened the app from closed.
  */
 export async function initPush(): Promise<void> {
   configureForegroundPresentation();
-  Notifications.addNotificationResponseReceivedListener(() => navigateToAlerts());
+  Notifications.addNotificationResponseReceivedListener(openFrom);
+  try {
+    openFrom(Notifications.getLastNotificationResponse());
+  } catch {
+    // Not available on this platform/build: a cold-start tap just opens the app.
+  }
   token = await getPreference<string>(KEY).catch(() => null);
   try {
     const perm = await Notifications.getPermissionsAsync();

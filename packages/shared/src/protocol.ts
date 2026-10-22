@@ -592,6 +592,10 @@ export interface PushRegisterMessage {
   token: string;
   platform?: string;
   name?: string;
+  /** Runners pushes for new flags on this phone (server default on; absent = unchanged). */
+  runnersNew?: boolean;
+  /** Runners pushes for breakouts on this phone (server default off; absent = unchanged). */
+  runnersBreakout?: boolean;
 }
 
 export interface PushUnregisterMessage {

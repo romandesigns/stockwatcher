@@ -15,7 +15,8 @@ import {
 } from "@stockwatcher/chart-core";
 import { createDetectionChannel, createPressureChannel, createQuoteChannel, createRocketChannel, createRossChannel, createWsClient, type AlertsServerMessage, type ConnectionStatus, type DetectionChannel, type MarketSource, type PressureChannel, type QuoteChannel, type RocketChannel, type RossChannel, type SettingsSync, type WebSocketLike } from "@stockwatcher/shared";
 
-import { deviceInfo, pushToken } from "../notifications/push";
+import { deviceInfo, pushToken, subscribePushToken } from "../notifications/push";
+import { runnersRegisterFields, subscribeRunnersPush } from "../notifications/runnersPush";
 import { wsUrl } from "./server";
 
 export interface ChartSubscription {
@@ -74,6 +75,16 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
   // The default slot ("") goes without an id: exactly the single-chart protocol.
   const subscribeFrame = (id: string, s: Omit<ChartSubscription, "id">): ChartSubscribe => ({ type: "chart.subscribe", symbol: s.symbol, timeframe: s.timeframe, profileBin: s.profileBin, ...(id ? { id } : {}) });
 
+  // This phone's push token and its Runners opt-ins (src/notifications/runnersPush.ts): on every
+  // connection, and again when either changes while connected (a switch in Settings → Runners,
+  // phone alerts turned on), so the server's copy follows at once.
+  let open = false;
+  const registerPush = () => {
+    const t = pushToken();
+    if (open && t) client.send({ type: "push.register", token: t, ...deviceInfo(), ...runnersRegisterFields() });
+  };
+  const unsubPush = [subscribePushToken(registerPush), subscribeRunnersPush(registerPush)];
+
   const client = createWsClient({
     url: wsUrl(),
     token,
@@ -83,6 +94,7 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
     source,
     onStatus: (s) => {
       onStatus?.(s);
+      open = s === "open";
       // The Ross Panel keeps its last rows while the socket is down, so it has to be told: a
       // panel nobody is updating must not read as live (shared/ross.ts `rossFreshness`).
       ross.setConnected(s === "open");
@@ -92,8 +104,7 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
       if (s === "open") {
         for (const [id, a] of router.entries()) sendRaw(subscribeFrame(id, a));
         // This phone's push token, on every connection (idempotent; heals a lost or rotated one).
-        const t = pushToken();
-        if (t) client.send({ type: "push.register", token: t, ...deviceInfo() });
+        registerPush();
       }
     },
     onQuotes: (m) => quotes.apply(m),
@@ -168,6 +179,7 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
     rocket,
     detection,
     close() {
+      for (const u of unsubPush) u();
       client.close();
       router.clear();
       current.clear();
