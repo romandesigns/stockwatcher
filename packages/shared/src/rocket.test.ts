@@ -263,3 +263,24 @@ describe("buying bursts (2026-10-22)", () => {
     expect(m?.type).toBe("rocket.snapshot");
   });
 });
+
+describe("running entries (2026-10-22)", () => {
+  test("each row says where it came from; a running row measures from its entry", () => {
+    const p = panel({
+      strategy: { id: "precursors-R2", version: "1", placeholder: false },
+      rows: [row({ id: "f", s: "FLAG", state: "watching" }), row({ id: "r", s: "TANH", kind: "running", state: "running", from_flag_pct: 12.5 })],
+    });
+    const v = rocketSectionsView(p, T).runners;
+    // Strongest first across sources: the running row's state outranks the watched flag.
+    expect(v.map((x) => [x.symbol, x.source.label])).toEqual([
+      ["TANH", "Running"],
+      ["FLAG", "R2 flag"],
+    ]);
+    expect(v[0]?.fromWhat).toBe("entry");
+    expect(v[0]?.momentum.note).toBe("+12.5% from entry");
+    expect(v[0]?.aria).toContain("running, entered");
+    expect(v[1]?.fromWhat).toBe("flag");
+    expect(rocketRowView(row(), T).source).toEqual({ kind: "runner", label: "Flag" });
+    expect(rocketRowView(row(), T, "precursors-R0").source.label).toBe("R0 flag");
+  });
+});

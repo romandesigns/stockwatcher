@@ -25,7 +25,7 @@ test("Runners: the Bursts section and the Flags section each collapse at 0; the 
   expect(src).toContain("<Collapse open={burstCount > 0} reducedMotion={reducedMotion} gap={CARD_GAP}>");
   expect(src).toContain("<Collapse open={rows.length > 0} reducedMotion={reducedMotion} gap={CARD_GAP}>");
   const flags = src.slice(src.indexOf('accessibilityLabel="Flags"'));
-  expect(flags.indexOf("<Collapse open={burstCount > 0} reducedMotion={reducedMotion}>")).toBeLessThan(flags.indexOf("Flags\n"));
+  expect(flags.indexOf("<Collapse open={burstCount > 0} reducedMotion={reducedMotion}>")).toBeLessThan(flags.indexOf("Flags & running\n"));
   // Bursts come before the flags.
   expect(src.indexOf('accessibilityLabel="Bursts"')).toBeLessThan(src.indexOf('accessibilityLabel="Flags"'));
 });

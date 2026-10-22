@@ -16,6 +16,12 @@
 // typically 5–9 minutes into a move, about halfway. They are tracked like a flag (`at` = the
 // alert, `p` = its price) and shown in their own section at the top of the panel
 // ({@link rocketSectionsView}) with their strict 30-minute outcome (+10/20/30 % before −5 %).
+//
+// And "running" rows (`kind: "running"`, owner 2026-10-22): every stock in $0.10–$25 that IS
+// running, by a price-relative rule on the tape (crates/server/src/rocket/running.rs), not a
+// forecast. They sit with the flags, in the same momentum order, each labelled with its source
+// ({@link RocketRowView.source}: "R2 flag", "Burst", "Running") so an early pick stays
+// distinguishable from a move already under way. `p` is the entry price.
 
 import { rossLinePaths, type RossLineView } from "./ross.ts";
 
@@ -96,7 +102,7 @@ export interface RocketBurstWire {
 export interface RocketRowWire {
   id: string;
   /** Absent = "runner" (older servers). */
-  kind?: "runner" | "burst";
+  kind?: "runner" | "burst" | "running";
   /** A burst row's detector read-out and strict outcome. */
   burst?: RocketBurstWire;
   s: string;
@@ -341,7 +347,20 @@ export interface RocketRowView {
   line: RossLineView | null;
   /** A buying-burst row's own lines, null for a Runners flag. */
   burst: RocketBurstView | null;
+  /** Where the row came from: the strategy's flag ("R2 flag"), a buying burst, or a running entry. */
+  source: { kind: "runner" | "burst" | "running"; label: string };
+  /** What `fromFlag` is measured from: "flag", "alert" (a burst) or "entry" (a running row). */
+  fromWhat: "flag" | "alert" | "entry";
   aria: string;
+}
+
+/** A running-entry row (owner, 2026-10-22). */
+export const isRunningRow = (r: RocketRowWire): boolean => r.kind === "running";
+
+/** "R2 flag" for `precursors-R2`, "R0 flag" for `precursors-R0`, else "Flag". */
+export function flagLabel(strategyId: string | undefined | null): string {
+  const m = strategyId ? /-R(\d+)$/i.exec(strategyId) : null;
+  return m ? `R${m[1]} flag` : "Flag";
 }
 
 export interface RocketBurstView {
@@ -455,7 +474,7 @@ function burstView(b: RocketBurstWire, at: number, nowMs: number): RocketBurstVi
  * One row. `nowMs` is the market clock now: the frame's `t` plus the wall time since it arrived
  * ({@link rocketNow}), so an age keeps ticking between frames.
  */
-export function rocketRowView(r: RocketRowWire, nowMs: number): RocketRowView {
+export function rocketRowView(r: RocketRowWire, nowMs: number, strategyId?: string | null): RocketRowView {
   const last = r.last ?? r.p;
   const gain = r.pc && r.pc > 0 ? pct(((last - r.pc) / r.pc) * 100) : "";
   const ageMs = Math.max(0, nowMs - r.at);
@@ -473,7 +492,7 @@ export function rocketRowView(r: RocketRowWire, nowMs: number): RocketRowView {
     if (lv?.trigger != null) parts.push(`trigger ${money(lv.trigger / 1_000_000)}${lv.distance_to_trigger_bp != null && lv.distance_to_trigger_bp > 0 ? ` · ${(lv.distance_to_trigger_bp / 100).toFixed(1)}% away` : ""}`);
     note = parts.filter(Boolean).join(" · ");
   } else if (state === "running" && r.from_flag_pct != null) {
-    note = `${pct(r.from_flag_pct)} from flag`;
+    note = `${pct(r.from_flag_pct)} from ${isRunningRow(r) ? "entry" : "flag"}`;
   }
   const since = r.state_since !== undefined && state !== "watching" ? rocketAge(Math.max(0, nowMs - r.state_since)) : "";
   const meter = state === "pullback" && lv?.meter_milli != null ? lv.meter_milli / 1000 : null;
@@ -498,6 +517,8 @@ export function rocketRowView(r: RocketRowWire, nowMs: number): RocketRowView {
     meter,
     line: rocketLine(r),
     burst: b ? burstView(b, r.at, nowMs) : null,
+    source: b ? { kind: "burst", label: "Burst" } : isRunningRow(r) ? { kind: "running", label: "Running" } : { kind: "runner", label: flagLabel(strategyId) },
+    fromWhat: b ? "alert" : isRunningRow(r) ? "entry" : "flag",
     aria: "",
   };
   if (view.burst) {
@@ -505,15 +526,19 @@ export function rocketRowView(r: RocketRowWire, nowMs: number): RocketRowView {
     view.aria = `${r.s} ${money(last)}${gain ? ` ${gain} on the day` : ""}. ${bv.headline} alerted ${age === "now" ? "just now" : `${age} ago`}, ${bv.since}, ${bv.move}, ${look.label}${note ? ` ${note}` : ""}${reasons.length ? `: ${reasons.join(", ")}` : ""}${outcome ? `. Outcome ${outcome.label}` : ""}`;
     return view;
   }
-  view.aria = `${r.s} ${money(last)}${gain ? ` ${gain} on the day` : ""}, flagged ${age === "now" ? "just now" : `${age} ago`}, ${look.label}${view.momentum.provisional ? " (provisional)" : ""}${note ? ` ${note}` : ""}, ${view.fromFlag} from the flag${reasons.length ? `: ${reasons.join(", ")}` : ""}${outcome ? `. Outcome ${outcome.label}` : ""}`;
+  const running = isRunningRow(r);
+  view.aria = `${r.s} ${money(last)}${gain ? ` ${gain} on the day` : ""}, ${running ? "running, entered" : `${view.source.label}, flagged`} ${age === "now" ? "just now" : `${age} ago`}, ${look.label}${view.momentum.provisional ? " (provisional)" : ""}${note ? ` ${note}` : ""}, ${view.fromFlag} from the ${view.fromWhat}${reasons.length ? `: ${reasons.join(", ")}` : ""}${outcome ? `. Outcome ${outcome.label}` : ""}`;
   return view;
 }
 
-/** The rows in panel order: by momentum state (breaking out first, fading last), newest first within one. */
+/**
+ * The rows in panel order, strongest first: by momentum state (breaking out and running first,
+ * fading last, dimmed), newest first within one. Flags and running entries share the order.
+ */
 export function rocketRowsView(p: RocketPanelWire, nowMs: number): RocketRowView[] {
   const rank = (s: RocketMomentumState) => ROCKET_STATE_ORDER.indexOf(s);
   return p.rows
-    .map((r, i) => ({ v: rocketRowView(r, nowMs), i }))
+    .map((r, i) => ({ v: rocketRowView(r, nowMs, p.strategy?.id), i }))
     .sort((a, b) => rank(a.v.momentum.state) - rank(b.v.momentum.state) || a.i - b.i)
     .map((x) => x.v);
 }
@@ -558,7 +583,7 @@ export function rocketSectionsView(p: RocketPanelWire, nowMs: number): RocketSec
   const rows = burstRows
     .map((r, i) => ({ r, i }))
     .sort((a, b) => b.r.at - a.r.at || a.i - b.i)
-    .map((x) => rocketRowView(x.r, nowMs));
+    .map((x) => rocketRowView(x.r, nowMs, p.strategy?.id));
   return { bursts: { head: rocketBurstSectionView(p.burst, burstRows.length), rows }, runners };
 }
 

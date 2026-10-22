@@ -43,8 +43,8 @@ test("push.register carries the Runners opt-ins, on connect and whenever they or
   expect(feed).toContain("subscribePushToken(registerPush)");
   const prefs = read("runnersPush.ts");
   // The server's defaults: new flags on, breakouts off, buying bursts on.
-  expect(prefs).toContain("RUNNERS_PUSH_DEFAULTS: RunnersPushPrefs = { pushNew: true, pushBreakout: false, pushBurst: true }");
-  expect(prefs).toContain("runnersNew: prefs.pushNew, runnersBreakout: prefs.pushBreakout, runnersBurst: prefs.pushBurst");
+  expect(prefs).toContain("RUNNERS_PUSH_DEFAULTS: RunnersPushPrefs = { pushNew: true, pushBreakout: false, pushBurst: true, pushRunning: false }");
+  expect(prefs).toContain("runnersNew: prefs.pushNew, runnersBreakout: prefs.pushBreakout, runnersBurst: prefs.pushBurst, runnersRunning: prefs.pushRunning");
   // A preference saved before bursts existed keeps the default (on).
   expect(prefs).toContain('pushBurst: typeof v.pushBurst === "boolean" ? v.pushBurst : RUNNERS_PUSH_DEFAULTS.pushBurst');
 });
@@ -54,6 +54,8 @@ test("Settings → Runners: three compact switches, no borders", () => {
   expect(src).toContain('toggle("pushNew")');
   expect(src).toContain('toggle("pushBreakout")');
   expect(src).toContain('toggle("pushBurst")');
+  // Running entries: their own switch, off by default (2026-10-22).
+  expect(src).toContain('toggle("pushRunning")');
   expect(src).toContain('name="Buying bursts"');
   expect(src).not.toMatch(/border(Width|Color|Top|Bottom|Left|Right)/);
   // Turning one on without a token asks for permission and registers (as the Alerts tab does).

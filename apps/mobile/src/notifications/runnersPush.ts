@@ -10,16 +10,18 @@ import { getPreference, setPreference } from "../storage/preferences";
 // Defaults match the server's: new flags ON (the reason this exists: a +95 % move in 30 minutes
 // that was only on a closed app's screen), breakouts OFF (several a day per flag at most, but the
 // owner chooses), buying bursts ON (2026-10-22: the owner asked to be alerted when massive buying
-// hits the tape; ~20 a day).
+// hits the tape; ~20 a day), running entries OFF (2026-10-22: 10–40 a day, a move already under
+// way rather than a forecast; the owner opts a phone in).
 
 export interface RunnersPushPrefs {
   pushNew: boolean;
   pushBreakout: boolean;
   pushBurst: boolean;
+  pushRunning: boolean;
 }
 
 const KEY = "runners.push";
-export const RUNNERS_PUSH_DEFAULTS: RunnersPushPrefs = { pushNew: true, pushBreakout: false, pushBurst: true };
+export const RUNNERS_PUSH_DEFAULTS: RunnersPushPrefs = { pushNew: true, pushBreakout: false, pushBurst: true, pushRunning: false };
 
 let prefs: RunnersPushPrefs = RUNNERS_PUSH_DEFAULTS;
 const listeners = new Set<(p: RunnersPushPrefs) => void>();
@@ -34,6 +36,8 @@ void getPreference<Partial<RunnersPushPrefs>>(KEY)
       pushBreakout: typeof v.pushBreakout === "boolean" ? v.pushBreakout : RUNNERS_PUSH_DEFAULTS.pushBreakout,
       // Saved before bursts existed: the default (on), like the server's.
       pushBurst: typeof v.pushBurst === "boolean" ? v.pushBurst : RUNNERS_PUSH_DEFAULTS.pushBurst,
+      // Saved before running entries existed: the default (off), like the server's.
+      pushRunning: typeof v.pushRunning === "boolean" ? v.pushRunning : RUNNERS_PUSH_DEFAULTS.pushRunning,
     };
     emit();
   })
@@ -61,6 +65,6 @@ export async function setRunnersPush(change: Partial<RunnersPushPrefs>): Promise
 }
 
 /** What `push.register` carries for Runners (the server's field names). */
-export function runnersRegisterFields(): { runnersNew: boolean; runnersBreakout: boolean; runnersBurst: boolean } {
-  return { runnersNew: prefs.pushNew, runnersBreakout: prefs.pushBreakout, runnersBurst: prefs.pushBurst };
+export function runnersRegisterFields(): { runnersNew: boolean; runnersBreakout: boolean; runnersBurst: boolean; runnersRunning: boolean } {
+  return { runnersNew: prefs.pushNew, runnersBreakout: prefs.pushBreakout, runnersBurst: prefs.pushBurst, runnersRunning: prefs.pushRunning };
 }

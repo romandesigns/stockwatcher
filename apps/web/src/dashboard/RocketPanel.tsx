@@ -39,6 +39,11 @@ const EDGE: Partial<Record<RocketTone, string>> = {
  * already went and what typically remains, never "buy". The accent marks only a live burst (its
  * pulsing dot and edge while fresh and pending); green and red only its strict outcome tag.
  *
+ * Running entries (2026-10-22, `kind: "running"`) sit with the flags in the same strongest-first
+ * order: a stock that IS running by a price-relative rule on the tape, not a forecast. Every row
+ * carries a quiet source chip ("R2 flag", "Burst", "Running") so an early pick stays
+ * distinguishable from a move already under way; the chip never spends accent.
+ *
  * Nothing empty is drawn (owner, 2026-10-22): no Bursts section without bursts, no Flags without
  * flags, and no panel at all (its tab is hidden) while off, not yet known or empty. While a socket
  * reconnects the last rows stay, dimmed and labelled.
@@ -95,7 +100,7 @@ export function RocketPanelView({ state, wallNow, onPick }: { state: RocketState
             <section aria-label="Flags" className="flex flex-col">
               {/* The heading only beside a Bursts section: alone, the panel's title says it. */}
               <Reveal show={(bursts?.rows.length ?? 0) > 0}>
-                <h3 className="m-0 px-1 pb-1 text-xs font-semibold">Flags</h3>
+                <h3 className="m-0 px-1 pb-1 text-xs font-semibold">Flags &amp; running</h3>
               </Reveal>
               <RowList rows={rows} onPick={onPick} />
             </section>
@@ -130,7 +135,7 @@ const RocketRow = memo(function RocketRow({ row: r, onPick }: { row: RocketRowVi
       {...press}
       aria-label={`${r.aria}. Load into the selected chart`}
       data-state={m.state}
-      data-kind={b ? "burst" : "runner"}
+      data-kind={r.source.kind}
       className={cn(
         // State changes crossfade (colours, edge, wash); reduced motion: instant.
         "flex w-full cursor-pointer touch-manipulation flex-col gap-1 rounded-lg bg-bg-row px-2.5 py-2 text-left font-mono outline-none select-none transition-[background-color,box-shadow,opacity,color] duration-300 hover:bg-bg-raised focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none",
@@ -143,6 +148,9 @@ const RocketRow = memo(function RocketRow({ row: r, onPick }: { row: RocketRowVi
         <span className="text-sm font-semibold">{r.symbol}</span>
         <span className="text-[13px] tabular-nums">{r.price}</span>
         {r.gain && <span className="text-xs text-muted-foreground tabular-nums">{r.gain}</span>}
+        <span className="self-center rounded bg-bg-raised px-1 py-px font-sans text-[9px] font-medium whitespace-nowrap text-muted-foreground" data-testid="rocket-source">
+          {r.source.label}
+        </span>
         {r.halted && <span className="rounded bg-warning px-1 py-px font-sans text-[9px] font-semibold text-background">HALTED</span>}
         <span className={cn("ml-auto inline-flex items-center gap-1 text-[11px] tabular-nums", r.fresh ? "font-semibold text-primary" : "text-text-faint")}>
           {r.fresh && <span className="size-1.5 animate-pulse rounded-full bg-primary motion-reduce:animate-none" aria-hidden />}
@@ -165,10 +173,10 @@ const RocketRow = memo(function RocketRow({ row: r, onPick }: { row: RocketRowVi
             {m.since && <span className="font-mono font-normal text-text-faint">{m.since}</span>}
             {m.note && <span className="truncate font-mono font-normal text-muted-foreground">{m.note}</span>}
           </span>
-          <span className="flex gap-2 text-[11px] whitespace-nowrap tabular-nums" aria-label={b ? "last 30 s before the alert, from the alert, from high, last minute" : "from flag, from high, last minute"}>
+          <span className="flex gap-2 text-[11px] whitespace-nowrap tabular-nums" aria-label={b ? "last 30 s before the alert, from the alert, from high, last minute" : `from ${r.fromWhat}, from high, last minute`}>
             {b?.move && <Tip label="The 30 s before the alert"><span className="text-foreground">{b.move}</span></Tip>}
-            <Tip label={b ? "From the alert price" : "From the flag price"}><span className={TONE[r.fromFlagTone]}>{r.fromFlag}</span></Tip>
-            <Tip label="Off the high since the flag"><span className={TONE[r.fromHighTone]}>{r.fromHigh}</span></Tip>
+            <Tip label={`From the ${r.fromWhat} price`}><span className={TONE[r.fromFlagTone]}>{r.fromFlag}</span></Tip>
+            <Tip label={`Off the high since the ${r.fromWhat}`}><span className={TONE[r.fromHighTone]}>{r.fromHigh}</span></Tip>
             <Tip label="Last minute"><span className={TONE[r.move1mTone]}>{r.move1m}</span></Tip>
           </span>
         </span>
@@ -183,7 +191,7 @@ const RocketRow = memo(function RocketRow({ row: r, onPick }: { row: RocketRowVi
         ))}
         <span className="ml-auto flex shrink-0 items-center gap-2">
           {r.outcome && <span className={cn("font-sans text-[11px] font-semibold", TONE[r.outcome.tone])}>{r.outcome.label}</span>}
-          {r.score && <Tip label={b ? "Burst model score" : "Strategy score"}><span className="text-[10px] text-text-faint tabular-nums">{r.score}</span></Tip>}
+          {r.score && <Tip label={b ? "Burst model score" : r.source.kind === "running" ? "Move over its requirement" : "Strategy score"}><span className="text-[10px] text-text-faint tabular-nums">{r.score}</span></Tip>}
         </span>
       </span>
     </button>

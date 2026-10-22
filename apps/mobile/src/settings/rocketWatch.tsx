@@ -9,8 +9,9 @@ import { fonts } from "../theme";
 
 /**
  * Settings → Runners: this phone's Runners pushes (owner, 2026-10-22), sent by the server even
- * with the app closed (crates/server/src/alerts/runners.rs). Three switches, per device: new flags
- * (on by default), breakouts (off) and buying bursts (on, 2026-10-22). Turning one on when this phone has no push token asks for
+ * with the app closed (crates/server/src/alerts/runners.rs). Four switches, per device: new flags
+ * (on by default), breakouts (off), buying bursts (on, 2026-10-22) and running entries (off,
+ * 2026-10-22: 10–40 a day, a move already under way). Turning one on when this phone has no push token asks for
  * notification permission and registers it (the Alerts tab's "Turn on phone alerts" does the
  * same). Without push, new flags ring a local banner while the dashboard is open instead.
  */
@@ -64,6 +65,14 @@ function RunnersPushPanel() {
         name="Buying bursts"
         description="When heavy buying is confirmed on the tape, with how far the burst already went."
         onPress={() => toggle("pushBurst")}
+      />
+      <Switch
+        on={prefs.pushRunning}
+        busy={busy}
+        icon="gauge"
+        name="Running entries"
+        description="Every stock that starts running by its own range (10–40 a day). Off by default."
+        onPress={() => toggle("pushRunning")}
       />
       <Text style={[s.status, note ? { color: UI.warning } : null]}>
         {note ??

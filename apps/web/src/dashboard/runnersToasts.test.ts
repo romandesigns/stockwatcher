@@ -32,6 +32,11 @@ test("the first frame primes; a new fresh flag and a turn into breaking out toas
   expect(runnersToasts([row("b", "CJMB", { state: "breaking_out", state_since: NOW - 1000 })], mem, NOW)).toEqual([]);
 });
 
+test("a running entry never toasts as news (opt-in push on the phone only, 2026-10-22)", () => {
+  const mem: RunnersToastMemory = { seen: new Map(), primed: true };
+  expect(runnersToasts([row("r", "TANH", { kind: "running" })], mem, NOW)).toEqual([]);
+});
+
 test("old news never toasts (a reconnect, a replay's own day)", () => {
   const mem: RunnersToastMemory = { seen: new Map(), primed: true };
   expect(runnersToasts([row("r", "REPL", { at: NOW - FRESH_MS - 1 })], mem, NOW)).toEqual([]);

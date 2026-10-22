@@ -132,7 +132,7 @@ export function RocketPanel({ channel, onPick, reducedMotion, gap = 0 }: { chann
           {/* The heading only beside a Bursts section: alone, the card's title says it. */}
           <Collapse open={burstCount > 0} reducedMotion={reducedMotion}>
             <Text accessibilityRole="header" style={[styles.sectionTitle, styles.sectionPad, styles.flagsHead]}>
-              Flags
+              Flags & running
             </Text>
           </Collapse>
           <View style={[styles.rows, !state.connected && styles.dimmed]}>
@@ -183,6 +183,12 @@ const Row = memo(function Row({ row: r, onPick, reducedMotion }: { row: RocketRo
         <Text style={styles.symbol}>{r.symbol}</Text>
         <Text style={styles.price}>{r.price}</Text>
         {r.gain ? <Text style={[styles.small, { color: UI.textDim }]}>{r.gain}</Text> : null}
+        {/* Where the row came from ("R2 flag", "Burst", "Running"): quiet, never accent. */}
+        <View style={styles.source} testID="rocket-source">
+          <Text numberOfLines={1} style={styles.sourceText}>
+            {r.source.label}
+          </Text>
+        </View>
         {r.halted && (
           <View style={styles.badge}>
             <Text style={styles.badgeText}>HALTED</Text>
@@ -215,7 +221,7 @@ const Row = memo(function Row({ row: r, onPick, reducedMotion }: { row: RocketRo
               {m.note ? <Text style={styles.note}>{` ${m.note}`}</Text> : null}
             </Text>
           </Animated.View>
-          <View style={styles.line} accessibilityLabel={b ? "last 30 s before the alert, from the alert, from high, last minute" : "from flag, from high, last minute"}>
+          <View style={styles.line} accessibilityLabel={b ? "last 30 s before the alert, from the alert, from high, last minute" : `from ${r.fromWhat}, from high, last minute`}>
             {b?.move ? <Text style={[styles.metric, { color: UI.text }]}>{b.move}</Text> : null}
             <Text style={[styles.metric, { color: TONE[r.fromFlagTone] }]}>{r.fromFlag}</Text>
             <Text style={[styles.metric, { color: TONE[r.fromHighTone] }]}>{r.fromHigh}</Text>
@@ -320,6 +326,8 @@ const styles = StyleSheet.create({
   symbol: { color: UI.text, fontSize: 14, fontFamily: fonts.semibold },
   price: { color: UI.text, fontSize: 13, fontVariant: ["tabular-nums"] },
   small: { fontSize: 12, fontVariant: ["tabular-nums"] },
+  source: { flexShrink: 0, borderRadius: 4, paddingHorizontal: 4, paddingVertical: 1, backgroundColor: UI.raised },
+  sourceText: { color: UI.textDim, fontSize: 9, fontFamily: fonts.semibold },
   badge: { borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1, backgroundColor: UI.warning },
   badgeText: { color: UI.accentFg, fontSize: 9, fontFamily: fonts.semibold },
   age: { marginLeft: "auto", flexDirection: "row", alignItems: "center", gap: 4 },

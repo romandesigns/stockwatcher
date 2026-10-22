@@ -40,6 +40,17 @@ describe("Runners panel", () => {
     expect(html.match(/text-primary/g)?.length).toBe(1);
     expect(html.match(/text-good/g)?.length).toBe(1);
   });
+  test("running entries (2026-10-22): a quiet source chip on every row, strongest first, measured from the entry", () => {
+    const running = { id: "r", s: "TANH", kind: "running" as const, at: T - 5 * 60_000, p: 10.4, last: 11.2, pc: 8.8, score: 1.3, reasons: ["+30% off the 60-min low (needs 22%)"], outcome: { state: "pending" as const, gain: null, drawdown: null, partial: false }, state: "running" as const, from_flag_pct: 7.7 };
+    const html = render({ enabled: true, panel: { ...panel, strategy: { id: "precursors-R2", version: "1", placeholder: false }, rows: [...panel.rows, running] }, receivedAt: 5, connected: true });
+    // Running (accent state) is listed above the watched flags.
+    expect(html.indexOf("TANH")).toBeLessThan(html.indexOf("FRSH"));
+    expect(html).toContain('data-kind="running"');
+    expect(html).toContain(">Running</span>");
+    expect(html).toContain(">R2 flag</span>");
+    expect(html).toContain("+7.7% from entry");
+    expect(html).toContain("from entry, from high, last minute");
+  });
   test("no quiet, off or connecting lines (the tab is hidden then); reconnecting keeps the rows, dimmed", () => {
     const empty = render({ enabled: true, panel: { ...panel, rows: [] }, receivedAt: 0, connected: true });
     expect(empty).not.toContain("Nothing flagged");
@@ -129,14 +140,14 @@ describe("Buying bursts (2026-10-22)", () => {
     const noBursts = render({ enabled: true, panel: { ...panel, burst: { ...detector, today: 0 } }, receivedAt: 5, connected: true });
     expect(noBursts).not.toContain("Bursts");
     expect(noBursts).not.toContain("No buying bursts");
-    expect(noBursts).not.toContain(">Flags<");
+    expect(noBursts).not.toContain(">Flags &amp; running<");
     expect(noBursts).toContain("FRSH");
     expect(render({ enabled: true, panel, receivedAt: 5, connected: true })).not.toContain("Bursts");
     // Bursts but no flags: the Bursts section alone, no Flags heading or quiet line.
     const onlyBursts = render({ enabled: true, panel: { ...panel, burst: detector, rows: [burstRow("new", "NEWB", T - 60_000)] }, receivedAt: 5, connected: true });
     expect(onlyBursts).toContain("Bursts");
     expect(onlyBursts).toContain("NEWB");
-    expect(onlyBursts).not.toContain(">Flags<");
+    expect(onlyBursts).not.toContain(">Flags &amp; running<");
     expect(onlyBursts).not.toContain("Nothing flagged");
   });
 });

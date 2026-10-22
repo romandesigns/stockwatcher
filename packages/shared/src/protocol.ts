@@ -598,6 +598,8 @@ export interface PushRegisterMessage {
   runnersBreakout?: boolean;
   /** Runners pushes for buying bursts on this phone (server default on; absent = unchanged). */
   runnersBurst?: boolean;
+  /** Runners pushes for running entries on this phone (server default off; absent = unchanged). */
+  runnersRunning?: boolean;
 }
 
 export interface PushUnregisterMessage {
