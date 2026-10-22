@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { RossRowWire, RossSetupState, RossSetupWire } from "./protocol.ts";
-import { createRossChannel, rossAttention, rossFreshness, rossPrice, rossReadinessView, rossRowView } from "./ross.ts";
+import { createRossChannel, mergeRossDayLines, rossAttention, rossDemoPanel, rossFreshness, rossLinePaths, rossPrice, rossReadinessView, rossRowView } from "./ross.ts";
 
 const MIN = 60 * 1_000_000_000;
 const cutoff = 1_000 * MIN;
@@ -179,4 +179,82 @@ test("a readiness-free frame leaves readiness null rather than inventing one", (
   expect(ch.get().readiness).toBeNull();
   ch.apply({ type: "ross.update", enabled: true, panel: null, readiness: { symbols: 1, qualified: 0, members: 0, pillars: [], blocking: [], evidence_records: 0, observed_at: 1 } });
   expect(ch.get().readiness?.symbols).toBe(1);
+});
+
+// --- the day line (owner, 2026-10-21: the row chart of the day's 30 s closes) ----------------
+
+describe("day line", () => {
+  const panel = (rows: RossRowWire[]) => ({ revision: 1, bar_end: 0, cutoff, rows });
+  const START = 7 * MIN;
+
+  test("an update's slice appends to the line held; a snapshot replaces it", () => {
+    const calls: string[] = [];
+    const ch = createRossChannel({ subscribe: () => calls.push("sub"), unsubscribe: () => calls.push("unsub") });
+    ch.subscribe(() => {});
+    ch.apply({ type: "ross.snapshot", enabled: true, panel: panel([row({ day_line_start: START, day_line_from: 0, day_line: [1, 2, 3] })]) });
+    ch.apply({ type: "ross.update", enabled: true, panel: panel([row({ day_line_start: START, day_line_from: 3, day_line: [4, 5] })]) });
+    expect(ch.get().panel?.rows[0]?.day_line).toEqual([1, 2, 3, 4, 5]);
+    expect(ch.get().panel?.rows[0]?.day_line_from).toBe(0);
+    // A correction revised the last close: the slice starts earlier and replaces the tail.
+    ch.apply({ type: "ross.update", enabled: true, panel: panel([row({ day_line_start: START, day_line_from: 4, day_line: [9, 6] })]) });
+    expect(ch.get().panel?.rows[0]?.day_line).toEqual([1, 2, 3, 4, 9, 6]);
+    ch.apply({ type: "ross.snapshot", enabled: true, panel: panel([row({ day_line_start: START, day_line_from: 0, day_line: [7] })]) });
+    expect(ch.get().panel?.rows[0]?.day_line).toEqual([7]);
+    expect(calls).toEqual(["sub"]);
+  });
+
+  test("a slice that cannot be placed drops the line and asks for a fresh snapshot", () => {
+    const calls: string[] = [];
+    const ch = createRossChannel({ subscribe: () => calls.push("sub"), unsubscribe: () => calls.push("unsub") });
+    ch.subscribe(() => {});
+    ch.apply({ type: "ross.snapshot", enabled: true, panel: panel([row({ day_line_start: START, day_line_from: 0, day_line: [1, 2] })]) });
+    // A missed frame: the client holds 2 points, the slice starts at 5.
+    ch.apply({ type: "ross.update", enabled: true, panel: panel([row({ day_line_start: START, day_line_from: 5, day_line: [6] })]) });
+    expect(ch.get().panel?.rows[0]?.day_line).toBeUndefined();
+    expect(calls).toEqual(["sub", "sub"]);
+    // Another line start (a new day) with a nonzero index cannot be placed either.
+    ch.apply({ type: "ross.snapshot", enabled: true, panel: panel([row({ day_line_start: START, day_line_from: 0, day_line: [1, 2] })]) });
+    ch.apply({ type: "ross.update", enabled: true, panel: panel([row({ day_line_start: START + MIN, day_line_from: 1, day_line: [3] })]) });
+    expect(calls).toEqual(["sub", "sub", "sub"]);
+  });
+
+  test("the row chart is the day line plus the live price, toned against the day's first price", () => {
+    const up = rossRowView(row({ price: 2_300_000, day_line: [2_000_000, 1_900_000, 2_200_000], prev_close: 1_500_000 }), cutoff, hhmm);
+    expect(up.line).toEqual({ kind: "day", values: [2_000_000, 1_900_000, 2_200_000, 2_300_000], prevClose: 1_500_000, tone: "good" });
+    const down = rossRowView(row({ price: 1_950_000, day_line: [2_000_000, 2_100_000] }), cutoff, hhmm);
+    expect([down.line?.tone, down.line?.prevClose]).toEqual(["critical", null]);
+    // An older server: the 15 s spark, as before.
+    const old = rossRowView(row({ spark: [5_700_000, 6_080_000] }), cutoff, hhmm);
+    expect(old.line).toMatchObject({ kind: "spark", values: [5_700_000, 6_080_000], tone: "good" });
+    expect(old.spark).toEqual([5_700_000, 6_080_000]);
+    expect(rossRowView(row({ spark: [1] }), cutoff, hhmm).line).toBeNull();
+  });
+
+  test("paths: every point drawn when few, thinned per column keeping each spike when many", () => {
+    const few = rossLinePaths({ kind: "day", values: [1, 3, 2], prevClose: null, tone: "good" }, 80, 28);
+    expect(few.line).toBe("M0 26 L40 2 L80 14");
+    expect(few.area.endsWith("L80 28 L0 28 Z")).toBe(true);
+    expect(few.baseY).toBeNull();
+    // A full day (1,920 points) in 80 units: one spike in the middle must survive the thinning.
+    const values = Array.from({ length: 1920 }, (_, i) => (i === 960 ? 500 : 100));
+    const many = rossLinePaths({ kind: "day", values, prevClose: null, tone: "good" }, 80, 28);
+    const ys = many.line.slice(1).split(" L").map((p) => Number(p.split(" ")[1]));
+    expect(ys.length).toBeLessThanOrEqual(2 * 80 + 2);
+    expect(Math.min(...ys)).toBe(2);
+    expect(many.line.startsWith("M0 26")).toBe(true);
+    expect(many.line.endsWith("L80 26")).toBe(true);
+  });
+
+  test("the previous close is a baseline only when it is near the line", () => {
+    const near = rossLinePaths({ kind: "day", values: [100, 120], prevClose: 98, tone: "good" }, 80, 28);
+    expect(near.baseY).toBe(26);
+    const far = rossLinePaths({ kind: "day", values: [140, 150], prevClose: 100, tone: "good" }, 80, 28);
+    expect(far.baseY).toBeNull();
+  });
+
+  test("the demo panel carries day lines", () => {
+    const demo = rossDemoPanel(cutoff);
+    expect(demo.rows.every((r) => (r.day_line?.length ?? 0) > 100)).toBe(true);
+    expect(mergeRossDayLines(null, demo).resync).toBe(false);
+  });
 });

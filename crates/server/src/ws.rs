@@ -96,6 +96,11 @@
 //!   never "nothing qualifies". `panel` is null until the first barrier with members, then
 //!   `{revision, runId, source, barEnd, cutoff, rows: [row]}` (snake_case fields, see
 //!   `stock_context::PanelSnapshot`): rows ranked by momentum first, unranked rows after.
+//! - Each row may carry its day line (crate::day_line): `day_line_start`, `day_line_step_s`
+//!   (30), `day_line_from`, `day_line` (micros from that index) and `prev_close`. A snapshot sends
+//!   whole lines; an update sends only what changed since the previous update, which the client
+//!   merges. A slice it cannot place: drop the line and send `ross.subscribe` again (a fresh
+//!   snapshot answers every subscribe).
 //! - client `ross.unsubscribe` stops the updates; a seek or a lag sends a fresh snapshot.
 //! - client `context.get {symbol}` -> server `context.decision {symbol, enabled, decision}`: the
 //!   symbol's latest stock-context decision (five pillars with values, rules, reasons, evidence),

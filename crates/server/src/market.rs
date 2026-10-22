@@ -2570,12 +2570,17 @@ impl Market {
     pub fn ross_snapshot(&self) -> (u64, String) {
         let core = self.0.core.lock().expect("core lock");
         let readiness = self.0.readiness.lock().expect("readiness lock").clone();
+        // The members' whole day lines (crate::day_line), read here at serialization time.
+        let lines = crate::day_line::Source {
+            engine: &core.engine,
+            closes: core.quotes.closes(),
+        };
         let frame = match core
             .context
             .as_ref()
             .filter(|_| self.0.context_on.load(Ordering::Relaxed))
         {
-            Some(cx) => cx.panel_frame("ross.snapshot", readiness.as_ref()),
+            Some(cx) => cx.panel_frame_with("ross.snapshot", readiness.as_ref(), Some(lines)),
             None => crate::context::disabled_frame(),
         };
         (core.seq, frame)
@@ -2773,10 +2778,20 @@ impl Market {
             }
             let seq = core.seq;
             let readiness = self.0.readiness.lock().expect("readiness lock").clone();
-            match core
-                .context
+            // Disjoint borrows: the board's day-line baseline moves, the candles are only read.
+            let Core {
+                context,
+                engine,
+                quotes,
+                ..
+            } = &mut *core;
+            let lines = crate::day_line::Source {
+                engine,
+                closes: quotes.closes(),
+            };
+            match context
                 .as_mut()
-                .and_then(|c| c.take_update(readiness.as_ref()))
+                .and_then(|c| c.take_update_with(readiness.as_ref(), Some(lines)))
             {
                 Some((frame, snap)) => (seq, frame, snap),
                 None => return,

@@ -235,7 +235,8 @@ export interface PressureUnsubscribeMessage {
 // The five-pillar watchlist (enter 5/5, stay 4/5) ordered by last-minute momentum, with each
 // member's experimental pullback cue (a stage, not an entry signal). Opt in with `ross.subscribe`: a `ross.snapshot` at once,
 // then a `ross.update` with the WHOLE panel when it changed (at most once a second). Both
-// replace the client's panel. `enabled: false` means the server does not run stock context
+// replace the client's panel, except each row's day line, which an update sends as a slice to
+// merge (`RossRowWire.day_line`; `createRossChannel` does it). `enabled: false` means the server does not run stock context
 // (STOCK_CONTEXT off): "not enabled", never "nothing qualifies". Field names inside `panel` are
 // the engine's snake_case (stock_context::PanelSnapshot); prices are integer micro-dollars,
 // returns basis points, times epoch nanoseconds.
@@ -353,6 +354,21 @@ export interface RossRowWire {
   news_first_seen?: number | null;
   /** Closes (micros) of the last ≤20 completed 15 s bars that traded, oldest first; no timestamps. */
   spark?: number[];
+  /**
+   * The day line (crates/server/src/day_line.rs, owner 2026-10-21): 30 s closes (micros) of the
+   * member's trading date from 04:00 ET, one per interval from `day_line_start` (epoch ns), the
+   * first at the day's first price, the last at the last COMPLETED interval (`price` is the live
+   * end). On the wire `day_line` holds the points from index `day_line_from`: 0 and the whole
+   * line in every snapshot; in an update only what changed since the previous update.
+   * `createRossChannel` merges the slices, so a row a client reads always holds the WHOLE line
+   * with `day_line_from: 0`. Absent: no line yet (or an older server).
+   */
+  day_line_start?: number;
+  day_line_step_s?: number;
+  day_line_from?: number;
+  day_line?: number[];
+  /** The previous regular close (micros), when the closes file has it: the line's baseline. */
+  prev_close?: number;
 }
 
 export interface RossPanelWire {

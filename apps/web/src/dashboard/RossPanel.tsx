@@ -1,6 +1,6 @@
 import { formatEtTime } from "@stockwatcher/chart-core";
 import { cn } from "@stockwatcher/chart-web/ui";
-import { detectionFamilyLabel, detectionStateLabel, groupDetections, rossAttention, rossDemoPanel, rossFreshness, rossReadinessView, rossRowView, type DetectionChannel, type RossChannel, type RossRowView, type RossTone } from "@stockwatcher/shared";
+import { detectionFamilyLabel, detectionStateLabel, groupDetections, rossAttention, rossDemoPanel, rossFreshness, rossLinePaths, rossReadinessView, rossRowView, type DetectionChannel, type RossChannel, type RossLineView, type RossRowView, type RossTone } from "@stockwatcher/shared";
 import { memo } from "react";
 import { useRoss } from "../feed/useRoss.ts";
 import { useDetection } from "../feed/useDetection.ts";
@@ -141,25 +141,27 @@ const RossRow = memo(function RossRow({ row: r, onPick }: { row: RossRowView; on
             {r.setup.note && <span className="truncate font-mono font-normal text-muted-foreground">{r.setup.note}</span>}
           </span>
         </span>
-        <Sparkline points={r.spark} />
+        <Sparkline line={r.line} />
       </span>
       {r.setup.meter !== null && <TriggerMeter value={r.setup.meter} tone={r.setup.tone} />}
     </button>
   );
 });
 
-/** The last completed 15 s closes as an area sparkline (the shadcn area-chart look, inline SVG). */
-function Sparkline({ points }: { points: number[] }) {
-  if (points.length < 2) return <span className="h-7 w-[72px]" aria-hidden />;
-  const lo = Math.min(...points);
-  const hi = Math.max(...points);
-  const xy = points.map((v, i) => [(i / (points.length - 1)) * 72, 25 - ((v - lo) / (hi - lo || 1)) * 21] as const);
-  const line = `M${xy.map(([x, y]) => `${x.toFixed(1)} ${y.toFixed(1)}`).join(" L")}`;
-  const up = points[points.length - 1]! >= points[0]!;
+/**
+ * The row chart (owner, 2026-10-21): the day's 30 s closes from 04:00 ET with the live price as
+ * the end, or an older server's last 15 s closes, as an area sparkline (the shadcn area-chart
+ * look, inline SVG). Good when the line ends at or above the day's first price; the previous
+ * close is a faint dotted baseline when it is near enough to draw (`rossLinePaths`).
+ */
+function Sparkline({ line }: { line: RossLineView | null }) {
+  if (!line) return <span className="h-7 w-[72px]" aria-hidden />;
+  const p = rossLinePaths(line, 72, 28);
   return (
-    <svg viewBox="0 0 72 28" className={cn("h-7 w-[72px]", up ? "text-good" : "text-critical")} aria-hidden>
-      <path d={`${line} L72 28 L0 28 Z`} fill="currentColor" fillOpacity={0.12} />
-      <path d={line} fill="none" stroke="currentColor" strokeWidth={1.5} />
+    <svg viewBox="0 0 72 28" className={cn("h-7 w-[72px] animate-line-in", line.tone === "good" ? "text-good" : "text-critical")} aria-hidden>
+      {p.baseY !== null && <line x1={0} x2={72} y1={p.baseY} y2={p.baseY} stroke="currentColor" strokeOpacity={0.35} strokeWidth={1} strokeDasharray="1.5 2.5" />}
+      <path d={p.area} fill="currentColor" fillOpacity={0.12} />
+      <path d={p.line} fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinejoin="round" />
     </svg>
   );
 }

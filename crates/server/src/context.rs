@@ -37,7 +37,7 @@ use market_archive::PrevCloses;
 use market_events::conditions::trade_effect;
 use market_events::{MarketEvent, Price, Trade, UnixNanos};
 use serde::Serialize;
-use serde_json::json;
+use serde_json::{Value, json};
 use std::collections::{BTreeSet, HashSet};
 use stock_context::{
     Adoption, CloseBasis, CorrectedPrint, Coverage, DayHigh, Decision, Engine, Fidelity,
@@ -87,6 +87,9 @@ pub(crate) struct ContextBoard {
     run_clock: i64,
     /// Transport namespace only; semantic IDs and decisions stay deterministic in the engine.
     detection_epoch: Option<String>,
+    /// The members' day lines the last `ross.update` carried (`crate::day_line`): the next
+    /// update sends only what changed against them.
+    day_lines: crate::day_line::Published,
 }
 
 impl ContextBoard {
@@ -175,6 +178,7 @@ impl ContextBoard {
             shadow: None,
             run_clock: 0,
             detection_epoch: None,
+            day_lines: crate::day_line::Published::default(),
         })
     }
 
@@ -715,13 +719,39 @@ impl ContextBoard {
     /// The whole panel as a `ross.snapshot` / `ross.update` frame (empty `rows` before any),
     /// with the cached readiness summary when there is one: an empty panel then says *why*
     /// instead of reading as "nothing qualifies".
+    /// Without day lines: the tests' frame (the market always passes its candles).
+    #[cfg(test)]
     pub(crate) fn panel_frame(&self, kind: &str, readiness: Option<&Readiness>) -> String {
-        let panel = self.engine.panel();
+        self.panel_frame_with(kind, readiness, None)
+    }
+
+    /// [`ContextBoard::panel_frame`] with each member's day line (`crate::day_line`) when `lines`
+    /// is given: whole lines, as a `ross.snapshot` sends them.
+    pub(crate) fn panel_frame_with(
+        &self,
+        kind: &str,
+        readiness: Option<&Readiness>,
+        lines: Option<crate::day_line::Source<'_>>,
+    ) -> String {
+        Self::frame(&self.engine, kind, readiness, lines, None)
+    }
+
+    fn frame(
+        engine: &Engine,
+        kind: &str,
+        readiness: Option<&Readiness>,
+        lines: Option<crate::day_line::Source<'_>>,
+        published: Option<&mut crate::day_line::Published>,
+    ) -> String {
+        let mut panel = serde_json::to_value(engine.panel()).unwrap_or(Value::Null);
+        if let Some(src) = lines {
+            crate::day_line::decorate(&mut panel, src, published);
+        }
         json!({
             "type": kind,
             "enabled": true,
-            "panelPolicy": self.engine.panel_policy().tag(),
-            "pillarPolicy": self.engine.policy().tag(),
+            "panelPolicy": engine.panel_policy().tag(),
+            "pillarPolicy": engine.policy().tag(),
             "panel": panel,
             "readiness": readiness,
         })
@@ -734,9 +764,21 @@ impl ContextBoard {
     /// It reads the latest snapshot only; draining the journals is
     /// [`ContextBoard::drain_outputs`]'s job, so what the engine holds never depends on whether
     /// anyone is watching.
+    /// Without day lines (tests; the market uses [`ContextBoard::take_update_with`]).
+    #[cfg(test)]
     pub(crate) fn take_update(
         &mut self,
         readiness: Option<&Readiness>,
+    ) -> Option<(String, Option<PanelSnapshot>)> {
+        self.take_update_with(readiness, None)
+    }
+
+    /// [`ContextBoard::take_update`] with the members' day lines as deltas against the previous
+    /// update's (`crate::day_line`) when `lines` is given.
+    pub(crate) fn take_update_with(
+        &mut self,
+        readiness: Option<&Readiness>,
+        lines: Option<crate::day_line::Source<'_>>,
     ) -> Option<(String, Option<PanelSnapshot>)> {
         let at = self.engine.panel().map(|p| (p.revision, p.bar_end));
         let taken = readiness.map(|r| r.observed_at);
@@ -755,7 +797,14 @@ impl ContextBoard {
         if readiness_new {
             self.published_readiness = taken;
         }
-        Some((self.panel_frame("ross.update", readiness), snap))
+        let frame = Self::frame(
+            &self.engine,
+            "ross.update",
+            readiness,
+            lines,
+            Some(&mut self.day_lines),
+        );
+        Some((frame, snap))
     }
 
     pub(crate) fn decision(&self, symbol: &str) -> Option<&Decision> {

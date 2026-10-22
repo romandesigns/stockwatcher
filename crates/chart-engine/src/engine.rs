@@ -1303,4 +1303,86 @@ impl ChartEngine {
     pub fn retained_trades(&self, symbol: &str) -> usize {
         self.symbols.get(symbol).map_or(0, |s| s.trades.len())
     }
+
+    /// The symbol's **day line** at `tf`: one close per completed interval of its latest trading
+    /// date's extended day (pre, regular and after: 04:00 ET onward; the overnight session is
+    /// left out), for the Ross Panel's row chart (crates/server/src/day_line.rs).
+    ///
+    /// - The line starts at the first interval of that date with an OHLC-qualifying print (the
+    ///   day's first price) and has exactly one point per interval from there, so a client can
+    ///   index it by time: point `i` is the close of `[start + i·tf, start + (i+1)·tf)`.
+    /// - An interval with no OHLC print (no trades, volume-only trades, a halt) repeats the
+    ///   previous close: the price did not move, and a gap in an index-aligned line would
+    ///   desynchronise every point after it.
+    /// - It ends at the last interval completed by the symbol's watermark (the engine clock or its
+    ///   own latest print, whichever is later), capped at the date's last session end. The
+    ///   forming interval is never included: its close is not one yet.
+    ///
+    /// Read-only and proportional to the retained intervals (≤ the ring capacity): meant to be
+    /// called for the few panel members at publish time, never per trade.
+    pub fn day_line(&self, symbol: &str, tf: Timeframe) -> Option<DayLine> {
+        let st = self.symbols.get(symbol)?;
+        let series = st.series.iter().find(|s| s.tf == tf)?;
+        let wm = st.own_wm.max(self.clock)?;
+        let session = series
+            .buckets
+            .iter()
+            .rev()
+            .find(|b| b.session.kind != SessionKind::Overnight && b.ohlc.is_some())?
+            .session;
+        let date = session.date;
+        let day = |b: &&Bucket| b.session.date == date && b.session.kind != SessionKind::Overnight;
+        let step = tf.nanos();
+        let mut start: Option<i64> = None;
+        let mut next = 0i64;
+        let mut last = Price::ZERO;
+        let mut closes: Vec<Price> = Vec::new();
+        for b in series.buckets.iter().filter(day) {
+            if b.end > wm {
+                break;
+            }
+            let Some(x) = b.ohlc else { continue };
+            if start.is_none() {
+                start = Some(b.start);
+            } else {
+                while next < b.start {
+                    closes.push(last);
+                    next += step;
+                }
+            }
+            closes.push(x.c);
+            last = x.c;
+            next = b.start + step;
+        }
+        let start = start?;
+        // Quiet intervals after the last print still completed: carry the close up to the clock,
+        // but never past the date's last session (17:00 on an early-close day, else 20:00).
+        let day_end = [SessionKind::After, SessionKind::Regular]
+            .iter()
+            .find_map(|k| SessionId::new(date, *k).bounds())
+            .map_or(i64::MAX, |(_, e)| e.0);
+        let upto = tf.start_of(UnixNanos(wm)).0.min(day_end);
+        while next + step <= upto {
+            closes.push(last);
+            next += step;
+        }
+        Some(DayLine {
+            session,
+            start: UnixNanos(start),
+            step: tf,
+            closes,
+        })
+    }
+}
+
+/// A symbol's closes over its latest trading date ([`ChartEngine::day_line`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DayLine {
+    /// The session of the latest interval that traded; its `date` is the line's trading date.
+    pub session: SessionId,
+    /// Start of the first point's interval.
+    pub start: UnixNanos,
+    pub step: Timeframe,
+    /// One close per interval from `start`, oldest first; never empty.
+    pub closes: Vec<Price>,
 }

@@ -122,6 +122,13 @@
       transform: translateY(-3px);
     }
   }
+  /* A Ross row's chart fades in when its line first arrives. */
+  --animate-line-in: line-in 240ms ease-out;
+  @keyframes line-in {
+    from {
+      opacity: 0;
+    }
+  }
 }
 
 body {

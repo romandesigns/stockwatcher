@@ -103,6 +103,35 @@ export function rossReadinessView(r: RossReadinessWire, formatTime?: (epochNs: n
   };
 }
 
+/**
+ * Applies a frame's day-line slices (`RossRowWire.day_line`) to the lines already held, so every
+ * row of the returned panel holds its WHOLE line with `day_line_from: 0`.
+ *
+ * A slice from index `from` keeps the first `from` points held for the same symbol and line
+ * start and replaces the rest (normally an append; less when a correction revised a close). A
+ * slice this client cannot place — fewer points held than `from`, another start — drops that
+ * row's line and sets `resync`: the caller asks for a fresh snapshot. A row without a line has
+ * none.
+ */
+export function mergeRossDayLines(prev: RossPanelWire | null, next: RossPanelWire): { panel: RossPanelWire; resync: boolean } {
+  // Nothing to merge (a snapshot, an older server): the frame's own panel, unchanged.
+  if (!next.rows.some((r) => r.day_line && (r.day_line_from ?? 0) > 0)) return { panel: next, resync: false };
+  let resync = false;
+  const held = new Map(prev?.rows.map((r) => [r.symbol, r]) ?? []);
+  const rows = next.rows.map((r) => {
+    const from = r.day_line_from ?? 0;
+    if (!r.day_line || from === 0) return r;
+    const old = held.get(r.symbol);
+    if (old?.day_line && old.day_line_start === r.day_line_start && old.day_line.length >= from) {
+      return { ...r, day_line: old.day_line.slice(0, from).concat(r.day_line), day_line_from: 0 };
+    }
+    resync = true;
+    const { day_line: _line, day_line_from: _from, day_line_start: _start, ...rest } = r;
+    return rest;
+  });
+  return { panel: { ...next, rows }, resync };
+}
+
 /** Subscribed on demand like the pressure channel: the first listener opts in, the last opts out. */
 export function createRossChannel(io: { subscribe(): void; unsubscribe(): void }): RossChannel & { apply(m: RossMessage): void; setConnected(open: boolean): void } {
   let state: RossState = EMPTY_ROSS;
@@ -120,7 +149,11 @@ export function createRossChannel(io: { subscribe(): void; unsubscribe(): void }
       };
     },
     apply(m) {
-      state = { enabled: m.enabled, panel: m.panel, readiness: m.readiness ?? null, connected: true };
+      const merged = m.panel ? mergeRossDayLines(state.panel, m.panel) : { panel: m.panel, resync: false };
+      state = { enabled: m.enabled, panel: merged.panel, readiness: m.readiness ?? null, connected: true };
+      // A slice this client cannot place (a frame it never saw): the server answers every
+      // `ross.subscribe` with a whole snapshot, so ask again rather than draw a broken line.
+      if (merged.resync && listeners.size > 0) io.subscribe();
       for (const l of listeners) l();
     },
     /**
@@ -163,8 +196,106 @@ export interface RossRowView {
   /** Dimmed row (an invalidated setup). */
   dimmed: boolean;
   spark: number[];
+  /** The row chart: the day line when the server sends one, else the 15 s spark; null with < 2 points. */
+  line: RossLineView | null;
   /** Spoken summary for the row's accessible name. */
   aria: string;
+}
+
+/**
+ * A Ross row's chart (owner, 2026-10-21: "get a sense of how the actual price action ... is
+ * developing before I actually click on the ticker").
+ */
+export interface RossLineView {
+  /**
+   * `day`: the day's 30 s closes from 04:00 ET, then the row's live price as the end point.
+   * `spark`: an older server's last ≤20 15 s closes (five minutes), drawn the same way.
+   */
+  kind: "day" | "spark";
+  /** Micros, oldest first, every point (the drawing may thin them; this never does). */
+  values: number[];
+  /** The previous regular close (micros): a dotted baseline when it falls inside the drawing. */
+  prevClose: number | null;
+  /**
+   * Good when the line ends at or above its FIRST point (the day's first price), else critical.
+   * Deliberately not against the previous close: every member gained ≥ 10 % on it (the gain
+   * pillar), so that colour would be green on every row and say nothing about the day.
+   */
+  tone: "good" | "critical";
+}
+
+/** The row chart's line from a wire row ([`RossLineView`]). */
+export function rossLine(r: RossRowWire): RossLineView | null {
+  const day = r.day_line;
+  if (day && day.length > 0) {
+    const values = r.price !== null && r.price !== undefined ? [...day, r.price] : day.slice();
+    if (values.length < 2) return null;
+    return { kind: "day", values, prevClose: r.prev_close ?? null, tone: values[values.length - 1]! >= values[0]! ? "good" : "critical" };
+  }
+  const spark = r.spark ?? [];
+  if (spark.length < 2) return null;
+  return { kind: "spark", values: spark, prevClose: null, tone: spark[spark.length - 1]! >= spark[0]! ? "good" : "critical" };
+}
+
+/** SVG paths for a row chart in a `w`×`h` box (y down), shared by web and phone. */
+export interface RossLinePaths {
+  line: string;
+  /** The line closed down to the bottom edge, for the faint fill under it. */
+  area: string;
+  /** The previous close's y, or null when it lies outside the line's range (then not drawn). */
+  baseY: number | null;
+}
+
+/**
+ * Draws every point of a line into `w`×`h`. Beyond two points per horizontal unit the points are
+ * thinned for DRAWING only: each column keeps its lowest and highest close in time order, so no
+ * spike disappears; the first and last points are always exact. A previous close inside the
+ * line's range (plus 10 % of it) joins the vertical scale; one far below — a member up 40 % on
+ * the day — would flatten the shape the chart exists to show, so it is left out.
+ */
+export function rossLinePaths(line: RossLineView, w: number, h: number, pad = 2): RossLinePaths {
+  const v = line.values;
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const x of v) {
+    if (x < lo) lo = x;
+    if (x > hi) hi = x;
+  }
+  const slack = (hi - lo) * 0.1;
+  const pc = line.prevClose;
+  const base = pc !== null && pc >= lo - slack && pc <= hi + slack ? pc : null;
+  if (base !== null) {
+    lo = Math.min(lo, base);
+    hi = Math.max(hi, base);
+  }
+  const span = hi - lo || 1;
+  const y = (p: number) => pad + (1 - (p - lo) / span) * (h - 2 * pad);
+  const n = v.length;
+  const xAt = (i: number) => (i / (n - 1)) * w;
+  const pts: [number, number][] = [];
+  const cols = Math.max(1, Math.floor(w));
+  if (n <= 2 * cols) {
+    for (let i = 0; i < n; i++) pts.push([xAt(i), y(v[i]!)]);
+  } else {
+    pts.push([0, y(v[0]!)]);
+    let i = 1;
+    for (let c = 0; c < cols && i < n - 1; c++) {
+      const end = Math.min(n - 1, Math.floor(((c + 1) * (n - 1)) / cols));
+      if (i >= end) continue;
+      let iMin = i;
+      let iMax = i;
+      for (let j = i; j < end; j++) {
+        if (v[j]! < v[iMin]!) iMin = j;
+        if (v[j]! > v[iMax]!) iMax = j;
+      }
+      for (const k of iMin === iMax ? [iMin] : iMin < iMax ? [iMin, iMax] : [iMax, iMin]) pts.push([xAt(k), y(v[k]!)]);
+      i = end;
+    }
+    pts.push([w, y(v[n - 1]!)]);
+  }
+  const f = (x: number) => (Math.round(x * 10) / 10).toString();
+  const d = `M${pts.map(([x, yy]) => `${f(x)} ${f(yy)}`).join(" L")}`;
+  return { line: d, area: `${d} L${f(w)} ${f(h)} L0 ${f(h)} Z`, baseY: base === null ? null : Math.round(y(base) * 10) / 10 };
 }
 
 /** Micro-dollars as the app prints prices: four decimals below $1, two from $1. */
@@ -262,6 +393,7 @@ export function rossRowView(r: RossRowWire, cutoff: number, formatTime: (epochNs
     setup: { state, label: look.label, note, tone: look.tone, pulse: look.pulse, attention: look.attention, meter: state === "watching" || state === "halted" || state === "invalidated" || setupWire?.meter_milli == null ? null : setupWire.meter_milli / 1000 },
     dimmed: state === "invalidated",
     spark: r.spark ?? [],
+    line: rossLine(r),
     aria: "",
   };
   view.aria = `${view.symbol} ${view.price} ${view.gain}, last minute ${view.m1}, ${look.label}${note ? ` ${note}` : ""}${tag ? `, ${tag}` : ""}`;
@@ -282,11 +414,27 @@ export function rossDemoPanel(cutoff: number): RossPanelWire {
   const ep = (agoMin: number) => [{ id: "demo", admitted_at: cutoff - agoMin * MIN, retained_since: null, exited_at: null }];
   const mom = (m1: number | null, high: number) => ({ status: m1 === null ? ("unavailable" as const) : ("ready" as const), reason: m1 === null ? "halted" : "ready", r_short_bp: null, r_primary_bp: m1, r_context_bp: null, accel_bp: null, below_high_bp: high });
   const spark = (from: number, to: number, wobble = 0) => Array.from({ length: 20 }, (_, i) => Math.round(from + ((to - from) * i) / 19 + (i % 3 === 1 ? wobble : 0)));
+  // A synthetic day: 04:00 to the cutoff at 30 s, from the previous close's level through a gap
+  // up and the spark's last stretch, with a deterministic wobble. Never market data.
+  const STEP = 30 * 1_000_000_000;
+  const dayLine = (price: number, gainBp: number, seed: number) => {
+    const n = 360;
+    const pc = Math.round(price / (1 + gainBp / 10_000));
+    const open = pc + (price - pc) * 0.55;
+    return {
+      day_line_start: cutoff - n * STEP,
+      day_line_step_s: 30,
+      day_line_from: 0,
+      prev_close: pc,
+      day_line: Array.from({ length: n }, (_, i) => Math.round(open + (price - open) * (i / (n - 1)) + Math.sin(i / (9 + seed)) * (price - pc) * 0.12)),
+    };
+  };
   const row = (o: Partial<RossRowWire> & Pick<RossRowWire, "symbol" | "price" | "gain_bp" | "momentum">): RossRowWire => ({
     membership: { status: "qualified", episodes: ep(20), nonpassing: [] },
     counts: { pass: 5, fail: 0, unknown: 0 },
     rank: null,
     prev_rank: null,
+    ...(o.price !== null && o.gain_bp !== null ? dayLine(o.price, o.gain_bp, o.symbol.charCodeAt(0) % 7) : {}),
     ...o,
   });
   return {

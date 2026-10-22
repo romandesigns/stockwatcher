@@ -1,9 +1,9 @@
 import { formatEtTime } from "@stockwatcher/chart-core";
 import { UI } from "@stockwatcher/chart-native";
-import { detectionFamilyLabel, detectionStateLabel, groupDetections, rossAttention, rossFreshness, rossReadinessView, rossRowView, type DetectionChannel, type DetectionEpisode, type RossChannel, type RossRowView, type RossTone } from "@stockwatcher/shared";
-import { memo, useEffect, useState } from "react";
+import { detectionFamilyLabel, detectionStateLabel, groupDetections, rossAttention, rossFreshness, rossLinePaths, rossReadinessView, rossRowView, type DetectionChannel, type DetectionEpisode, type RossChannel, type RossRowView, type RossTone } from "@stockwatcher/shared";
+import { memo, useEffect, useMemo, useState } from "react";
 import { Animated, Pressable, StyleSheet, Text, View } from "react-native";
-import Svg, { Circle, Rect } from "react-native-svg";
+import Svg, { Circle, Line, Path, Rect } from "react-native-svg";
 
 import { useDetection, useRoss } from "../feed/hooks";
 import { fonts } from "../theme";
@@ -107,30 +107,80 @@ const Row = memo(function Row({ row: r, episode, detectionCurrent, onPick, reduc
     >
       {/* The cue's edge: a filled bar, not a border (house rule: no borders). */}
       {edge && <View style={[styles.edge, { backgroundColor: edge }]} />}
-      <View style={styles.line}>
-        <Text style={styles.symbol}>{r.symbol}</Text>
-        <Text style={styles.price}>{r.price}</Text>
-        <Text style={[styles.small, { color: UI.good }]}>{r.gain}</Text>
-        {r.badge && (
-          <View style={[styles.badge, { backgroundColor: r.badge.label === "NEW" ? UI.accent : UI.warning }]}>
-            <Text style={styles.badgeText}>{r.badge.label}</Text>
+      {/* The two text lines on the left, the day's line chart on their right (like the web row):
+          the chart's box is always reserved, so a line arriving never moves the text. */}
+      <View style={styles.top}>
+        <View style={styles.lines}>
+          <View style={styles.line}>
+            <Text style={styles.symbol}>{r.symbol}</Text>
+            <Text style={styles.price}>{r.price}</Text>
+            <Text style={[styles.small, { color: UI.good }]}>{r.gain}</Text>
+            {r.badge && (
+              <View style={[styles.badge, { backgroundColor: r.badge.label === "NEW" ? UI.accent : UI.warning }]}>
+                <Text style={styles.badgeText}>{r.badge.label}</Text>
+              </View>
+            )}
+            <Text style={[styles.m1, { color: TONE[r.m1Tone] }]}>{r.m1}</Text>
           </View>
-        )}
-        <Text style={[styles.m1, { color: TONE[r.m1Tone] }]}>{r.m1}</Text>
-      </View>
-      <View style={styles.line}>
-        {r.setup.pulse && <Pulse color={TONE[r.setup.tone]} size={6} reducedMotion={reducedMotion} />}
-        <Text numberOfLines={1} style={[styles.setup, { color: TONE[r.setup.tone], fontFamily: r.setup.attention ? fonts.semibold : fonts.regular }]}>
-          {r.setup.label}
-          {r.setup.note ? <Text style={styles.note}>{` ${r.setup.note}`}</Text> : null}
-        </Text>
-        {r.tag ? <Text style={[styles.tag, { color: TONE[r.tagTone] }]}>{r.tag}</Text> : null}
+          <View style={styles.line}>
+            {r.setup.pulse && <Pulse color={TONE[r.setup.tone]} size={6} reducedMotion={reducedMotion} />}
+            <Text numberOfLines={1} style={[styles.setup, { color: TONE[r.setup.tone], fontFamily: r.setup.attention ? fonts.semibold : fonts.regular }]}>
+              {r.setup.label}
+              {r.setup.note ? <Text style={styles.note}>{` ${r.setup.note}`}</Text> : null}
+            </Text>
+            {r.tag ? <Text style={[styles.tag, { color: TONE[r.tagTone] }]}>{r.tag}</Text> : null}
+          </View>
+        </View>
+        <DayLine line={r.line} reducedMotion={reducedMotion} />
       </View>
       {r.setup.meter !== null && <Meter value={r.setup.meter} color={TONE[r.setup.tone]} />}
       {episode && <Text style={styles.note}>Detection: {detectionFamilyLabel(episode.family)} · {detectionStateLabel(episode.state)} · experimental{detectionCurrent ? "" : " · last received"}</Text>}
     </Pressable>
   );
 });
+
+/** The row chart's box (dp): fits the Fold's ~360 dp cover screen beside the row's text. */
+export const DAY_LINE_W = 72;
+export const DAY_LINE_H = 28;
+
+/**
+ * The day's price line (owner, 2026-10-21: "a sense of how the actual price action ... is
+ * developing before I actually click on the ticker"): every 30 s close from 04:00 ET and the
+ * live price as its end (an older server: the last 15 s closes), good when it ends at or above
+ * the day's first price, critical below, with a faint dotted previous-close baseline when it is
+ * near the line (`rossLinePaths`, shared with the web row). It fades in when its line first
+ * arrives; with reduced motion it simply appears. The box is reserved either way.
+ */
+export function DayLine({ line, reducedMotion }: { line: RossRowView["line"]; reducedMotion: boolean }) {
+  const has = line !== null;
+  const [o] = useState(() => new Animated.Value(has ? (reducedMotion ? 1 : 0) : 0));
+  useEffect(() => {
+    if (!has) {
+      o.setValue(0);
+      return;
+    }
+    if (reducedMotion) {
+      o.setValue(1);
+      return;
+    }
+    const a = Animated.timing(o, { toValue: 1, duration: 240, useNativeDriver: true });
+    a.start();
+    return () => a.stop();
+  }, [o, has, reducedMotion]);
+  const paths = useMemo(() => (line ? rossLinePaths(line, DAY_LINE_W, DAY_LINE_H) : null), [line]);
+  const color = line?.tone === "critical" ? UI.critical : UI.good;
+  return (
+    <Animated.View style={[styles.chart, { opacity: o }]} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" testID="ross-day-line">
+      {paths && (
+        <Svg width={DAY_LINE_W} height={DAY_LINE_H} viewBox={`0 0 ${DAY_LINE_W} ${DAY_LINE_H}`}>
+          {paths.baseY !== null && <Line x1={0} x2={DAY_LINE_W} y1={paths.baseY} y2={paths.baseY} stroke={UI.textFaint} strokeWidth={1} strokeDasharray="1.5 2.5" />}
+          <Path d={paths.area} fill={color} fillOpacity={0.14} />
+          <Path d={paths.line} fill="none" stroke={color} strokeWidth={1.5} strokeLinejoin="round" />
+        </Svg>
+      )}
+    </Animated.View>
+  );
+}
 
 /** Pullback low (left, red: the failure level) to trigger (right, neutral: a level, not a "go"), the price as a dot. */
 function Meter({ value, color }: { value: number; color: string }) {
@@ -178,6 +228,9 @@ const styles = StyleSheet.create({
   dimmed: { opacity: 0.6 },
   row: { gap: 4, paddingVertical: 8, paddingHorizontal: 10, borderRadius: 10, backgroundColor: UI.row, overflow: "hidden" },
   edge: { position: "absolute", left: 0, top: 0, bottom: 0, width: 3 },
+  top: { flexDirection: "row", alignItems: "center", gap: 8 },
+  lines: { flex: 1, minWidth: 0, gap: 4 },
+  chart: { width: DAY_LINE_W, height: DAY_LINE_H },
   line: { flexDirection: "row", alignItems: "center", gap: 7 },
   symbol: { color: UI.text, fontSize: 14, fontFamily: fonts.semibold },
   price: { color: UI.text, fontSize: 13, fontVariant: ["tabular-nums"] },

@@ -1523,6 +1523,96 @@ mod tests {
         (r.state, r.reason)
     }
 
+    /// The Ross row chart (owner, 2026-10-21; `crate::day_line`): a member's row carries its day
+    /// line of 30 s closes from the day's first price to the last completed interval, the prior
+    /// close as the baseline, and an update after more trading carries only the new points.
+    #[test]
+    fn a_member_row_carries_its_day_line_to_the_last_completed_30s_close() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = archive(dir.path());
+        write_daily_world(&a);
+        write_collected(&a, t(7, 0, 0));
+        let log = Mutex::new(EvidenceLog::default());
+        let mut cx = board();
+        load(&a, &log, &mut cx);
+        // The chart engine sees the same prints the board does (the market feeds both).
+        let mut charts = chart_engine::ChartEngine::default();
+        let feed = |charts: &mut chart_engine::ChartEngine, from: i64, to: i64, cents: i64| {
+            let mut x = from;
+            let mut n = from as u64;
+            while x < to {
+                n += 1;
+                charts.apply(&MarketEvent::Trade(Trade::new(
+                    SYM,
+                    UnixNanos(x),
+                    Price::from_cents(cents),
+                    120_000,
+                    n,
+                )));
+                x += 10 * SEC;
+            }
+            charts.advance_clock(UnixNanos(to));
+        };
+        trade(&mut cx, t(9, 30, 0), t(9, 32, 0));
+        feed(&mut charts, t(9, 30, 0), t(9, 31, 0), 300);
+        // The last completed minute closes higher; a print in the forming 09:32:00 interval is
+        // not a close yet.
+        feed(&mut charts, t(9, 31, 0), t(9, 32, 0), 310);
+        charts.apply(&MarketEvent::Trade(Trade::new(
+            SYM,
+            UnixNanos(t(9, 32, 5)),
+            Price::from_cents(320),
+            100,
+            9_999,
+        )));
+        charts.advance_clock(UnixNanos(t(9, 32, 10)));
+        let mut closes_file = BTreeMap::new();
+        closes_file.insert(
+            dd().pred_opt().unwrap(),
+            BTreeMap::from([(SYM.to_string(), 2.0)]),
+        );
+        let (closes, _) = PrevCloses::new(&closes_file);
+        let src = crate::day_line::Source {
+            engine: &charts,
+            closes: &closes,
+        };
+
+        let frame: serde_json::Value =
+            serde_json::from_str(&cx.panel_frame_with("ross.snapshot", None, Some(src))).unwrap();
+        let row = &frame["panel"]["rows"][0];
+        assert_eq!(row["symbol"], SYM, "{frame}");
+        assert_eq!(row["day_line_start"], t(9, 30, 0));
+        assert_eq!(row["day_line_step_s"], 30);
+        assert_eq!(row["day_line_from"], 0);
+        assert_eq!(
+            row["day_line"],
+            serde_json::json!([3_000_000, 3_000_000, 3_100_000, 3_100_000]),
+            "ends at the last completed 30 s close, 09:31:30–09:32:00"
+        );
+        assert_eq!(row["prev_close"], 2_000_000);
+        // The engine's 20-close spark is still there for older clients.
+        assert!(row["spark"].is_array());
+
+        // An update: the first one carries the whole line (nothing published yet)…
+        let (first, _) = cx
+            .take_update_with(None, Some(src))
+            .expect("a first update");
+        let first: serde_json::Value = serde_json::from_str(&first).unwrap();
+        assert_eq!(first["panel"]["rows"][0]["day_line_from"], 0);
+        // …and after more trading only the points since.
+        trade(&mut cx, t(9, 32, 0), t(9, 33, 0));
+        feed(&mut charts, t(9, 32, 10), t(9, 33, 0), 330);
+        let src = crate::day_line::Source {
+            engine: &charts,
+            closes: &closes,
+        };
+        let (next, _) = cx.take_update_with(None, Some(src)).expect("a new barrier");
+        let next: serde_json::Value = serde_json::from_str(&next).unwrap();
+        let row = &next["panel"]["rows"][0];
+        assert_eq!(row["day_line_from"], 4);
+        assert_eq!(row["day_line"], serde_json::json!([3_300_000, 3_300_000]));
+    }
+
     #[test]
     fn stored_evidence_admits_a_symbol_at_five_of_five_under_v2() {
         let dir = tempfile::tempdir().unwrap();
