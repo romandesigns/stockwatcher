@@ -26,7 +26,9 @@ test("rows: tap opens, tap-then-hold copies; no layout animation on a Pressable 
 
 test("new flags ring locally only while this phone has no push (the server's push rings otherwise)", () => {
   const src = read("../notifications/rocket.ts");
-  expect(src).toContain("if (!ringRunnersLocally(runnersPushPrefs().pushNew, pushToken())) return;");
+  // Flags under the "new flags" switch, buying bursts under their own (2026-10-22).
+  expect(src).toContain("ringRunnersLocally(isBurstRow(r) ? prefs.pushBurst : prefs.pushNew, token)");
+  expect(src).toContain('kind: burst ? "runners.burst" : "runners.new"');
   expect(read("RocketPanel.tsx")).toContain("notifyRocketFlags(fresh)");
   expect(read("../settings/SettingsHost.tsx")).toContain("rocketSection()");
 });
@@ -43,6 +45,17 @@ test("momentum rows (2026-10-22): edge bar not border, crossfade by opacity hono
   expect(num("DAY_LINE_W")).toBeLessThanOrEqual(80);
   expect(num("DAY_LINE_H")).toBeLessThanOrEqual(28);
   // Rows are ordered by state through the shared view model; green only via the outcome tone map.
-  expect(src).toContain("rocketRowsView(panel, now)");
+  expect(src).toContain("rocketSectionsView(panel, now)");
   expect(src).not.toMatch(/UI\.good[^,]/);
+});
+
+test("buying bursts (2026-10-22): their own section above the flags; accent only while live; loss tone mapped", () => {
+  const src = read("RocketPanel.tsx");
+  const panel = src.slice(src.indexOf("export function RocketPanel"), src.indexOf("function useCrossfade"));
+  expect(panel.indexOf("bursts.rows.map(")).toBeGreaterThan(0);
+  expect(panel.indexOf("bursts.rows.map(")).toBeLessThan(panel.indexOf("rows.map((r) => (\n                <Row"));
+  expect(src).toContain("b.live ? UI.accent : UI.text");
+  expect(src).toContain("loss: UI.critical");
+  // No new scroller (the card sits in the dashboard's own scroll view).
+  expect(src).not.toContain("ScrollView");
 });

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { RocketPanelWire, RocketState } from "@stockwatcher/shared";
+import type { BurstOutcomeWire, RocketPanelWire, RocketState } from "@stockwatcher/shared";
 import { renderToStaticMarkup } from "react-dom/server";
 import { RocketPanelView } from "./RocketPanel.tsx";
 
@@ -73,5 +73,54 @@ describe("Runners momentum rows (2026-10-22)", () => {
     // Still no green but the strict outcome tag (none here), and the pulse stills with reduced motion.
     expect(html).not.toContain("text-good");
     expect(html).toContain("motion-reduce:animate-none");
+  });
+});
+
+describe("Buying bursts (2026-10-22)", () => {
+  const outcome: BurstOutcomeWire = { state: "pending", c10: false, c20: false, c30: false, stopped: false, mfe: null, mae: null, settled: false };
+  const burstRow = (id: string, s: string, at: number, o: Partial<BurstOutcomeWire> = {}): RocketPanelWire["rows"][number] => ({
+    id,
+    s,
+    kind: "burst",
+    at,
+    p: 2,
+    last: 2.1,
+    pc: 1.5,
+    score: 0.61,
+    reasons: ["$ rate 6.4× base", "12 new highs in 15 s", "3 sweeps"],
+    outcome: { state: "pending", gain: null, drawdown: null, partial: false },
+    burst: { start: at - 6 * 60_000, start_price: 1.7, gain_pct: 18, move_pct: 4.2, rate_x: 6.4, new_highs: 12, sweeps: 3, buy_pct: 88, outcome: { ...outcome, ...o } },
+  });
+  const detector: RocketPanelWire["burst"] = { enabled: true, threshold: 0.42, per_day: 20, today: 2, typical: { mfe30_med_pct: 13.4, mae_med_pct: -2.8, cont10_pct: 37, cont20_pct: 23, fires_after_min: [5, 9] } };
+  const runner = { ...panel.rows[1]!, id: "r", s: "FLAG", at: T - 40 * 60_000 };
+
+  test("a Bursts section on top, newest first, then the flags; the accent only on the live burst; strict tags coloured", () => {
+    const rows = [runner, burstRow("old", "OLDB", T - 20 * 60_000, { state: "stopped", stopped: true }), burstRow("new", "NEWB", T - 60_000)];
+    const html = render({ enabled: true, panel: { ...panel, burst: detector, rows }, receivedAt: 5, connected: true });
+    expect(html).toContain("Bursts");
+    expect(html).toContain("2 today");
+    expect(html).toContain("typically 5–9 min into a move (about halfway)");
+    expect(html).toContain("Typical from here: +13% max in 30 min (median), 1 in 4 reach +20% before −5%");
+    expect(html.indexOf("NEWB")).toBeLessThan(html.indexOf("OLDB"));
+    expect(html.indexOf("OLDB")).toBeLessThan(html.indexOf("Flags"));
+    expect(html.indexOf("Flags")).toBeLessThan(html.indexOf("FLAG<"));
+    expect(html).toContain("Buying burst");
+    expect(html).toContain("+18.0% since burst start · 7m ago");
+    expect(html).toContain("+4.2% last 30 s");
+    expect(html).toContain("−5% first");
+    expect(html).toContain("text-critical");
+    // Green only on the runner's strict tag; no "buy" advice anywhere.
+    expect(html.match(/text-good/g)?.length).toBe(1);
+    expect(html).not.toMatch(/\bBuy\b|\bbuy\b/);
+    // The live burst (NEWB) has the accent headline and edge; the stopped one does not.
+    const newb = html.slice(html.indexOf("NEWB"), html.indexOf("OLDB"));
+    expect(newb).toContain("text-primary");
+    const oldb = html.slice(html.indexOf("OLDB"), html.indexOf("Flags"));
+    expect(oldb).not.toContain("text-primary");
+  });
+
+  test("detector on, nothing yet: an empty Bursts section; no detector: no section", () => {
+    expect(render({ enabled: true, panel: { ...panel, burst: { ...detector, today: 0 } }, receivedAt: 5, connected: true })).toContain("No buying bursts yet today");
+    expect(render({ enabled: true, panel, receivedAt: 5, connected: true })).not.toContain("Bursts");
   });
 });

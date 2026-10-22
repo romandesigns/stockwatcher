@@ -9,8 +9,8 @@ import { fonts } from "../theme";
 
 /**
  * Settings → Runners: this phone's Runners pushes (owner, 2026-10-22), sent by the server even
- * with the app closed (crates/server/src/alerts/runners.rs). Two switches, per device: new flags
- * (on by default) and breakouts (off). Turning one on when this phone has no push token asks for
+ * with the app closed (crates/server/src/alerts/runners.rs). Three switches, per device: new flags
+ * (on by default), breakouts (off) and buying bursts (on, 2026-10-22). Turning one on when this phone has no push token asks for
  * notification permission and registers it (the Alerts tab's "Turn on phone alerts" does the
  * same). Without push, new flags ring a local banner while the dashboard is open instead.
  */
@@ -57,17 +57,25 @@ function RunnersPushPanel() {
         description="When a flagged stock turns breaking out, with its % from the flag."
         onPress={() => toggle("pushBreakout")}
       />
+      <Switch
+        on={prefs.pushBurst}
+        busy={busy}
+        icon="trend"
+        name="Buying bursts"
+        description="When heavy buying is confirmed on the tape, with how far the burst already went."
+        onPress={() => toggle("pushBurst")}
+      />
       <Text style={[s.status, note ? { color: UI.warning } : null]}>
         {note ??
           (token
             ? "Pushed to this phone, also when the app is closed. At most one per stock per 10 min, 30 a day; the alerts' quiet hours apply. Tap one to open its chart."
-            : "Phone push is off on this phone: new flags ring only while the dashboard is open. Turning a switch on asks to allow notifications.")}
+            : "Phone push is off on this phone: new flags and bursts ring only while the dashboard is open. Turning a switch on asks to allow notifications.")}
       </Text>
     </View>
   );
 }
 
-function Switch({ on, busy, icon, name, description, onPress }: { on: boolean; busy: boolean; icon: "bell" | "gauge"; name: string; description: string; onPress: () => void }) {
+function Switch({ on, busy, icon, name, description, onPress }: { on: boolean; busy: boolean; icon: "bell" | "gauge" | "trend"; name: string; description: string; onPress: () => void }) {
   return (
     <Pressable
       accessibilityRole="switch"

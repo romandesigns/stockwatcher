@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { parseServerMessage } from "./protocol.ts";
-import { createRocketChannel, mergeRocketDayLines, newRocketFlags, rocketAge, rocketAttention, rocketFreshCount, rocketHeaderView, rocketNow, rocketRowsView, rocketRowView, type RocketPanelWire, type RocketRowWire, type RocketSnapshotMessage } from "./rocket.ts";
+import { createRocketChannel, mergeRocketDayLines, newRocketFlags, rocketAge, rocketAttention, rocketFreshCount, rocketHeaderView, rocketNow, rocketRowsView, rocketRowView, rocketSectionsView, type RocketPanelWire, type RocketRowWire, type RocketSnapshotMessage } from "./rocket.ts";
 
 const T = 1_792_075_200_000;
 
@@ -187,5 +187,79 @@ describe("runners momentum and later moves (2026-10-22)", () => {
     expect(ch.get().panel?.rows[0]?.day_line).toBeUndefined();
     expect(calls).toEqual(["sub", "sub"]);
     expect(mergeRocketDayLines(null, panel()).resync).toBe(false);
+  });
+});
+
+describe("buying bursts (2026-10-22)", () => {
+  type Burst = NonNullable<RocketRowWire["burst"]>;
+  const outcome = (over: Partial<Burst["outcome"]> = {}): Burst["outcome"] => ({ state: "pending", c10: false, c20: false, c30: false, stopped: false, mfe: null, mae: null, settled: false, ...over });
+  const burst = (over: Partial<RocketRowWire> = {}, b: Partial<Burst> = {}): RocketRowWire =>
+    row({
+      kind: "burst",
+      id: "burst-1",
+      s: "BRST",
+      at: T - 2 * 60_000,
+      reasons: ["$ rate 6.4× base", "12 new highs in 15 s", "3 sweeps", "88% up-tick volume"],
+      burst: { start: T - 6 * 60_000, start_price: 0.9, gain_pct: 18.04, move_pct: 4.21, rate_x: 6.4, new_highs: 12, sweeps: 3, buy_pct: 88, outcome: outcome(), ...b },
+      ...over,
+    });
+  const detector: NonNullable<RocketPanelWire["burst"]> = { enabled: true, threshold: 0.42, per_day: 20, today: 3, typical: { mfe30_med_pct: 13.4, mae_med_pct: -2.8, cont10_pct: 37, cont20_pct: 23, fires_after_min: [5, 9] } };
+
+  test("a burst row: headline, gain since the burst start with its age, the last 30 s, live while fresh and pending", () => {
+    const v = rocketRowView(burst(), T);
+    expect(v.burst).toEqual({ headline: "Buying burst", since: "+18.0% since burst start · 6m ago", move: "+4.2% last 30 s", live: true });
+    expect(v.reasons).toEqual(["$ rate 6.4× base", "12 new highs in 15 s"]);
+    expect(v.outcome).toBeNull();
+    expect(v.aria).toContain("Buying burst alerted 2m ago");
+    // Never "buy" advice: the only buy-word is the headline's "Buying".
+    expect(v.aria.toLowerCase()).not.toMatch(/\bbuy\b/);
+    // Older than BURST_LIVE_MS, or settled: no longer the live accent.
+    expect(rocketRowView(burst({ at: T - 6 * 60_000 }), T).burst?.live).toBe(false);
+    expect(rocketRowView(burst({}, { outcome: outcome({ state: "cont10", c10: true, settled: true }) }), T).burst?.live).toBe(false);
+    // A Runners flag has no burst view; `kind: "burst"` without its block reads as a flag rather than breaking.
+    expect(rocketRowView(row(), T).burst).toBeNull();
+    expect(rocketRowView(row({ kind: "burst" }), T).burst).toBeNull();
+  });
+
+  test("strict outcome tags: continuation success, stopped loss, faded and pending neutral", () => {
+    const tag = (o: Partial<Burst["outcome"]>) => rocketRowView(burst({ outcome: { state: "rocketed", gain: 40, drawdown: -1, partial: false } }, { outcome: outcome(o) }), T).outcome;
+    expect(tag({ state: "cont30" })).toEqual({ label: "+30% before −5% ✓", tone: "good" });
+    expect(tag({ state: "cont20" })).toEqual({ label: "+20% before −5% ✓", tone: "good" });
+    expect(tag({ state: "cont10" })).toEqual({ label: "+10% before −5% ✓", tone: "good" });
+    expect(tag({ state: "stopped", stopped: true })).toEqual({ label: "−5% first", tone: "loss" });
+    expect(tag({ state: "faded", mfe: 7.6 })).toEqual({ label: "faded · max +8%", tone: "dim" });
+    expect(tag({ state: "faded" })).toEqual({ label: "faded", tone: "dim" });
+    // Pending: no tag, though the row's Runners outcome says rocketed (the burst's own strict outcome rules).
+    expect(tag({ state: "pending", mfe: 9 })).toBeNull();
+  });
+
+  test("sections: bursts on top newest first, runners below in momentum order, header counts runners only", () => {
+    const p = panel({
+      burst: detector,
+      rows: [row({ id: "r1", s: "RUN", state: "watching" }), burst({ id: "b-old", s: "OLD", at: T - 20 * 60_000 }), row({ id: "r2", s: "BRK", state: "breaking_out" }), burst({ id: "b-new", s: "NEW", at: T - 60_000 })],
+    });
+    const v = rocketSectionsView(p, T);
+    expect(v.bursts?.rows.map((r) => r.symbol)).toEqual(["NEW", "OLD"]);
+    expect(v.runners.map((r) => r.symbol)).toEqual(["BRK", "RUN"]);
+    expect(v.bursts?.head).toEqual({
+      count: "3 today",
+      what: "Heavy buying confirmed, typically 5–9 min into a move (about halfway)",
+      typical: "Typical from here: +13% max in 30 min (median), 1 in 4 reach +20% before −5%",
+    });
+    expect(rocketHeaderView(p).record).toBe("4 of 9 rocketed today");
+  });
+
+  test("sections: no detector and no burst rows = no section; detector on with none yet = an empty section", () => {
+    expect(rocketSectionsView(panel(), T).bursts).toBeNull();
+    const empty = rocketSectionsView(panel({ burst: { ...detector, today: 0 } }), T);
+    expect(empty.bursts?.rows).toEqual([]);
+    expect(empty.bursts?.head.count).toBe("0 today");
+    // An older server's burst rows without the detector block: counted from the rows, no typical line.
+    expect(rocketSectionsView(panel({ rows: [burst()] }), T).bursts?.head).toMatchObject({ count: "1 today", typical: "" });
+  });
+
+  test("the frames parse with the burst fields", () => {
+    const m = parseServerMessage(JSON.stringify({ type: "rocket.snapshot", ...panel({ burst: detector, rows: [burst()] }) }));
+    expect(m?.type).toBe("rocket.snapshot");
   });
 });

@@ -1,4 +1,4 @@
-import type { RocketRowWire } from "@stockwatcher/shared";
+import { isBurstRow, type RocketRowWire } from "@stockwatcher/shared";
 import * as Notifications from "expo-notifications";
 import { Platform } from "react-native";
 
@@ -14,17 +14,26 @@ import { ALERTS_CHANNEL_ID } from "./setup";
 // the dashboard rings a local banner for each new flag while it is open, under the same "new
 // flags" switch. A local notification, not a push: nothing reaches the server.
 
-/** One banner (with the channel's sound) per new flag, when this phone has no push. */
+/**
+ * One banner (with the channel's sound) per new flag or buying burst, when this phone has no
+ * push; flags under the "new flags" switch, bursts under "buying bursts" (the push's kinds).
+ */
 export function notifyRocketFlags(rows: RocketRowWire[]): void {
-  if (!ringRunnersLocally(runnersPushPrefs().pushNew, pushToken())) return;
-  for (const r of rows.slice(0, 3)) {
+  const prefs = runnersPushPrefs();
+  const token = pushToken();
+  const ring = rows.filter((r) => ringRunnersLocally(isBurstRow(r) ? prefs.pushBurst : prefs.pushNew, token));
+  for (const r of ring.slice(0, 3)) {
+    const price = `$${r.p.toFixed(r.p >= 1 ? 2 : 4)}`;
+    const burst = isBurstRow(r) ? r.burst : null;
     void Notifications.scheduleNotificationAsync({
       content: {
-        title: `Runners: ${r.s} $${r.p.toFixed(r.p >= 1 ? 2 : 4)}`,
-        body: r.reasons.length ? r.reasons.slice(0, 2).join(" · ") : "Flagged (experimental)",
+        title: burst
+          ? `Buying burst: ${r.s} ${price}${burst.gain_pct != null ? ` (+${Math.round(burst.gain_pct)}% since start)` : ""}`
+          : `Runners: ${r.s} ${price}`,
+        body: r.reasons.length ? r.reasons.slice(0, 2).join(" · ") : burst ? "Heavy buying confirmed (experimental)" : "Flagged (experimental)",
         sound: true,
         // A tap opens the chart, like the push (src/notifications/route.ts).
-        data: { symbol: r.s, kind: "runners.new", alert_id: r.id },
+        data: { symbol: r.s, kind: burst ? "runners.burst" : "runners.new", alert_id: r.id },
       },
       // Now, on the alerts channel (Android: its sound and importance).
       trigger: Platform.OS === "android" ? { channelId: ALERTS_CHANNEL_ID } : null,

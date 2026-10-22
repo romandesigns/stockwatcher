@@ -9,15 +9,17 @@ import { getPreference, setPreference } from "../storage/preferences";
 //
 // Defaults match the server's: new flags ON (the reason this exists: a +95 % move in 30 minutes
 // that was only on a closed app's screen), breakouts OFF (several a day per flag at most, but the
-// owner chooses).
+// owner chooses), buying bursts ON (2026-10-22: the owner asked to be alerted when massive buying
+// hits the tape; ~20 a day).
 
 export interface RunnersPushPrefs {
   pushNew: boolean;
   pushBreakout: boolean;
+  pushBurst: boolean;
 }
 
 const KEY = "runners.push";
-export const RUNNERS_PUSH_DEFAULTS: RunnersPushPrefs = { pushNew: true, pushBreakout: false };
+export const RUNNERS_PUSH_DEFAULTS: RunnersPushPrefs = { pushNew: true, pushBreakout: false, pushBurst: true };
 
 let prefs: RunnersPushPrefs = RUNNERS_PUSH_DEFAULTS;
 const listeners = new Set<(p: RunnersPushPrefs) => void>();
@@ -30,6 +32,8 @@ void getPreference<Partial<RunnersPushPrefs>>(KEY)
     prefs = {
       pushNew: typeof v.pushNew === "boolean" ? v.pushNew : RUNNERS_PUSH_DEFAULTS.pushNew,
       pushBreakout: typeof v.pushBreakout === "boolean" ? v.pushBreakout : RUNNERS_PUSH_DEFAULTS.pushBreakout,
+      // Saved before bursts existed: the default (on), like the server's.
+      pushBurst: typeof v.pushBurst === "boolean" ? v.pushBurst : RUNNERS_PUSH_DEFAULTS.pushBurst,
     };
     emit();
   })
@@ -57,6 +61,6 @@ export async function setRunnersPush(change: Partial<RunnersPushPrefs>): Promise
 }
 
 /** What `push.register` carries for Runners (the server's field names). */
-export function runnersRegisterFields(): { runnersNew: boolean; runnersBreakout: boolean } {
-  return { runnersNew: prefs.pushNew, runnersBreakout: prefs.pushBreakout };
+export function runnersRegisterFields(): { runnersNew: boolean; runnersBreakout: boolean; runnersBurst: boolean } {
+  return { runnersNew: prefs.pushNew, runnersBreakout: prefs.pushBreakout, runnersBurst: prefs.pushBurst };
 }

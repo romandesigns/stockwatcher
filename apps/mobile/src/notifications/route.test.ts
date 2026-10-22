@@ -11,6 +11,7 @@ const read = (p: string) => readFileSync(join(import.meta.dir, p), "utf8");
 test("a Runners push opens its ticker's chart; a price alert's (or anything else) the Alerts tab", () => {
   expect(notificationTarget({ symbol: "CJMB", kind: "runners.new", alert_id: "2026-10-22-CJMB-260" })).toEqual({ to: "chart", symbol: "CJMB" });
   expect(notificationTarget({ symbol: "brk.b", kind: "runners.breakout" })).toEqual({ to: "chart", symbol: "BRK.B" });
+  expect(notificationTarget({ symbol: "BRST", kind: "runners.burst", alert_id: "2026-10-22-BRST-b1" })).toEqual({ to: "chart", symbol: "BRST" });
   // The price alerts' payload has no kind: the Alerts tab, as before.
   expect(notificationTarget({ alertId: "a1", symbol: "XLAB", eventId: "h-1", url: "stockwatcher://alerts" })).toEqual({ to: "alerts" });
   expect(notificationTarget({ kind: "runners.new", symbol: "not a ticker!" })).toEqual({ to: "alerts" });
@@ -41,15 +42,19 @@ test("push.register carries the Runners opt-ins, on connect and whenever they or
   expect(feed).toContain("subscribeRunnersPush(registerPush)");
   expect(feed).toContain("subscribePushToken(registerPush)");
   const prefs = read("runnersPush.ts");
-  // The server's defaults: new flags on, breakouts off.
-  expect(prefs).toContain("RUNNERS_PUSH_DEFAULTS: RunnersPushPrefs = { pushNew: true, pushBreakout: false }");
-  expect(prefs).toContain("runnersNew: prefs.pushNew, runnersBreakout: prefs.pushBreakout");
+  // The server's defaults: new flags on, breakouts off, buying bursts on.
+  expect(prefs).toContain("RUNNERS_PUSH_DEFAULTS: RunnersPushPrefs = { pushNew: true, pushBreakout: false, pushBurst: true }");
+  expect(prefs).toContain("runnersNew: prefs.pushNew, runnersBreakout: prefs.pushBreakout, runnersBurst: prefs.pushBurst");
+  // A preference saved before bursts existed keeps the default (on).
+  expect(prefs).toContain('pushBurst: typeof v.pushBurst === "boolean" ? v.pushBurst : RUNNERS_PUSH_DEFAULTS.pushBurst');
 });
 
-test("Settings → Runners: two compact switches, no borders", () => {
+test("Settings → Runners: three compact switches, no borders", () => {
   const src = read("../settings/rocketWatch.tsx");
   expect(src).toContain('toggle("pushNew")');
   expect(src).toContain('toggle("pushBreakout")');
+  expect(src).toContain('toggle("pushBurst")');
+  expect(src).toContain('name="Buying bursts"');
   expect(src).not.toMatch(/border(Width|Color|Top|Bottom|Left|Right)/);
   // Turning one on without a token asks for permission and registers (as the Alerts tab does).
   expect(src).toContain("enablePush()");

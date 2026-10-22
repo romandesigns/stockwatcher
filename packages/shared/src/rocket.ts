@@ -10,6 +10,12 @@
 // crates/server/src/rocket/track.rs): a state per row, colour-coded in the Ross row language,
 // the micro-pullback levels when the stock-context engine runs, the day line, and the later-move
 // outcome ("ran later +43%") beside the strict one.
+//
+// Since 2026-10-22 the channel also carries "buying burst" rows (`kind: "burst"`): a research
+// detector (5 s windows + LightGBM) that fires once heavy buying is confirmed on the tape,
+// typically 5–9 minutes into a move, about halfway. They are tracked like a flag (`at` = the
+// alert, `p` = its price) and shown in their own section at the top of the panel
+// ({@link rocketSectionsView}) with their strict 30-minute outcome (+10/20/30 % before −5 %).
 
 import { rossLinePaths, type RossLineView } from "./ross.ts";
 
@@ -47,8 +53,52 @@ export interface RocketLevelsWire {
   episode_id?: string | null;
 }
 
+/**
+ * A burst's strict outcome, 30 minutes after the alert: the highest of +10/20/30 % reached BEFORE
+ * −5 %; `stopped` = −5 % came first; `faded` = 30 minutes with neither.
+ */
+export type BurstOutcomeState = "pending" | "cont30" | "cont20" | "cont10" | "stopped" | "faded";
+
+export interface BurstOutcomeWire {
+  state: BurstOutcomeState;
+  c10: boolean;
+  c20: boolean;
+  c30: boolean;
+  stopped: boolean;
+  /** Max gain % within 30 minutes (so far while pending). */
+  mfe: number | null;
+  /** Max drawdown % before that high. */
+  mae: number | null;
+  settled: boolean;
+}
+
+/** What the burst detector saw when it fired (a `kind: "burst"` row). */
+export interface RocketBurstWire {
+  /** Epoch ms: the burst's start (its first gate pass). */
+  start: number;
+  /** Dollars: the price just before the burst started (null when unknown). */
+  start_price: number | null;
+  /** % from `start_price` to the alert price (already gained in the burst); null when unknown. */
+  gain_pct: number | null;
+  /** % over the 30 s before the alert; null when nothing traded 30 s before. */
+  move_pct: number | null;
+  /** Dollar rate in the last 15 s as a multiple of its 30-min base. */
+  rate_x: number;
+  /** Prints that set a new day high in the last 15 s. */
+  new_highs: number;
+  /** Multi-venue up-tick "sweep" seconds in the last 15 s. */
+  sweeps: number;
+  /** % of the last 15 s volume on up-ticks. */
+  buy_pct: number;
+  outcome: BurstOutcomeWire;
+}
+
 export interface RocketRowWire {
   id: string;
+  /** Absent = "runner" (older servers). */
+  kind?: "runner" | "burst";
+  /** A burst row's detector read-out and strict outcome. */
+  burst?: RocketBurstWire;
   s: string;
   /** Flag time, epoch ms (the market clock: a replay's own day). */
   at: number;
@@ -106,6 +156,20 @@ export interface RocketPanelWire {
   days: RocketDayWire[];
   /** Newest first, at most 50. */
   rows: RocketRowWire[];
+  /** The buying-burst detector (newer servers). `today` above counts Runners flags only. */
+  burst?: RocketBurstPanelWire;
+}
+
+export interface RocketBurstPanelWire {
+  enabled: boolean;
+  /** The model probability threshold. */
+  threshold: number;
+  /** The target alerts/day of that threshold. */
+  per_day: number;
+  /** Burst alerts today. */
+  today: number;
+  /** The research's typical outcome from the alert (35 unseen days). */
+  typical: { mfe30_med_pct: number; mae_med_pct: number; cont10_pct: number; cont20_pct: number; fires_after_min: [number, number] };
 }
 
 export interface RocketSnapshotMessage extends RocketPanelWire {
@@ -202,8 +266,11 @@ export function createRocketChannel(
   };
 }
 
-/** Semantic colours; each app maps them to its tokens. `good` only ever marks the strict outcome. */
-export type RocketTone = "good" | "warning" | "accent" | "text" | "muted" | "dim";
+/**
+ * Semantic colours; each app maps them to its tokens. `good` only ever marks a strict outcome,
+ * `loss` only a burst stopped out (−5 % first).
+ */
+export type RocketTone = "good" | "loss" | "warning" | "accent" | "text" | "muted" | "dim";
 
 /** How a momentum state looks (the Ross row language): label, tone, pulse, inset edge. */
 export interface RocketStateLook {
@@ -272,7 +339,20 @@ export interface RocketRowView {
   meter: number | null;
   /** The row chart: the day line with the live price as its end; null with < 2 points. */
   line: RossLineView | null;
+  /** A buying-burst row's own lines, null for a Runners flag. */
+  burst: RocketBurstView | null;
   aria: string;
+}
+
+export interface RocketBurstView {
+  /** "Buying burst". */
+  headline: string;
+  /** "+18.0% since burst start · 6m ago". */
+  since: string;
+  /** "+4.2% last 30 s". */
+  move: string;
+  /** Pending and alerted under {@link BURST_LIVE_MS} ago: the row's accent marker. */
+  live: boolean;
 }
 
 const money = (x: number) => (x >= 10 ? x.toFixed(2) : x >= 1 ? x.toFixed(2) : x.toFixed(4).replace(/0{1,2}$/, ""));
@@ -333,6 +413,44 @@ export function rocketLine(r: RocketRowWire): RossLineView | null {
 
 export { rossLinePaths as rocketLinePaths };
 
+/** A burst row's marker stays accent this long after the alert while its outcome is pending. */
+export const BURST_LIVE_MS = 5 * 60_000;
+
+/** A buying-burst row (absent `kind` = a Runners flag, from older servers too). */
+export const isBurstRow = (r: RocketRowWire): r is RocketRowWire & { burst: RocketBurstWire } => r.kind === "burst" && r.burst !== undefined;
+
+/**
+ * A burst's strict outcome tag: "+20% before −5% ✓" (the only green), "−5% first" (loss),
+ * "faded" (dim); null while pending (the row is still live).
+ */
+function burstOutcomeTag(o: BurstOutcomeWire): RocketRowView["outcome"] {
+  switch (o.state) {
+    case "cont30":
+      return { label: "+30% before −5% ✓", tone: "good" };
+    case "cont20":
+      return { label: "+20% before −5% ✓", tone: "good" };
+    case "cont10":
+      return { label: "+10% before −5% ✓", tone: "good" };
+    case "stopped":
+      return { label: "−5% first", tone: "loss" };
+    case "faded":
+      return { label: o.mfe != null ? `faded · max +${Math.max(0, Math.round(o.mfe))}%` : "faded", tone: "dim" };
+    default:
+      return null;
+  }
+}
+
+/** "about halfway in": no "buy" wording, only what the tape showed and how long ago. */
+function burstView(b: RocketBurstWire, at: number, nowMs: number): RocketBurstView {
+  const ago = rocketAge(Math.max(0, nowMs - b.start));
+  return {
+    headline: "Buying burst",
+    since: `${b.gain_pct != null && Number.isFinite(b.gain_pct) ? `${pct(b.gain_pct)} since burst start` : "Burst started"} · ${ago === "now" ? "just now" : `${ago} ago`}`,
+    move: b.move_pct != null && Number.isFinite(b.move_pct) ? `${pct(b.move_pct)} last 30 s` : "",
+    live: b.outcome.state === "pending" && nowMs - at < BURST_LIVE_MS,
+  };
+}
+
 /**
  * One row. `nowMs` is the market clock now: the frame's `t` plus the wall time since it arrived
  * ({@link rocketNow}), so an age keeps ticking between frames.
@@ -341,7 +459,8 @@ export function rocketRowView(r: RocketRowWire, nowMs: number): RocketRowView {
   const last = r.last ?? r.p;
   const gain = r.pc && r.pc > 0 ? pct(((last - r.pc) / r.pc) * 100) : "";
   const ageMs = Math.max(0, nowMs - r.at);
-  const outcome = outcomeTag(r.outcome);
+  const b = isBurstRow(r) ? r.burst : null;
+  const outcome = b ? burstOutcomeTag(b.outcome) : outcomeTag(r.outcome);
   const reasons = r.reasons.slice(0, 2);
   const age = rocketAge(ageMs);
   const state = momentumOf(r);
@@ -378,8 +497,14 @@ export function rocketRowView(r: RocketRowWire, nowMs: number): RocketRowView {
     move1mTone: moveTone(r.move_1m_pct),
     meter,
     line: rocketLine(r),
+    burst: b ? burstView(b, r.at, nowMs) : null,
     aria: "",
   };
+  if (view.burst) {
+    const bv = view.burst;
+    view.aria = `${r.s} ${money(last)}${gain ? ` ${gain} on the day` : ""}. ${bv.headline} alerted ${age === "now" ? "just now" : `${age} ago`}, ${bv.since}, ${bv.move}, ${look.label}${note ? ` ${note}` : ""}${reasons.length ? `: ${reasons.join(", ")}` : ""}${outcome ? `. Outcome ${outcome.label}` : ""}`;
+    return view;
+  }
   view.aria = `${r.s} ${money(last)}${gain ? ` ${gain} on the day` : ""}, flagged ${age === "now" ? "just now" : `${age} ago`}, ${look.label}${view.momentum.provisional ? " (provisional)" : ""}${note ? ` ${note}` : ""}, ${view.fromFlag} from the flag${reasons.length ? `: ${reasons.join(", ")}` : ""}${outcome ? `. Outcome ${outcome.label}` : ""}`;
   return view;
 }
@@ -391,6 +516,50 @@ export function rocketRowsView(p: RocketPanelWire, nowMs: number): RocketRowView
     .map((r, i) => ({ v: rocketRowView(r, nowMs), i }))
     .sort((a, b) => rank(a.v.momentum.state) - rank(b.v.momentum.state) || a.i - b.i)
     .map((x) => x.v);
+}
+
+export interface RocketBurstSectionView {
+  /** "3 today". */
+  count: string;
+  /** "Heavy buying confirmed, typically 5–9 min into a move (about halfway)". */
+  what: string;
+  /** "Typical from here: +13% max in 30 min (median), 1 in 4 reach +20% before −5%"; "" unknown. */
+  typical: string;
+}
+
+/** "1 in 4" for 23 %: the odds in words. */
+function oneIn(p: number): string {
+  return p > 0 ? `1 in ${Math.max(1, Math.round(100 / p))}` : "none";
+}
+
+/** The Bursts section's header, from the panel's detector block (older servers: the row count). */
+export function rocketBurstSectionView(b: RocketBurstPanelWire | undefined, rows: number): RocketBurstSectionView {
+  const t = b?.typical;
+  const [lo, hi] = t?.fires_after_min ?? [5, 9];
+  return {
+    count: `${b?.today ?? rows} today`,
+    what: `Heavy buying confirmed, typically ${lo}–${hi} min into a move (about halfway)`,
+    typical: t ? `Typical from here: +${Math.round(t.mfe30_med_pct)}% max in 30 min (median), ${oneIn(t.cont20_pct)} reach +20% before −5%` : "",
+  };
+}
+
+export interface RocketSectionsView {
+  /** The Bursts section (top), newest first; null when the server has no burst detector and sent none. */
+  bursts: { head: RocketBurstSectionView; rows: RocketRowView[] } | null;
+  /** The Runners flags below, in momentum order ({@link rocketRowsView}). */
+  runners: RocketRowView[];
+}
+
+/** The panel split in two: buying bursts first (newest alert first), then the Runners flags. */
+export function rocketSectionsView(p: RocketPanelWire, nowMs: number): RocketSectionsView {
+  const burstRows = p.rows.filter(isBurstRow);
+  const runners = rocketRowsView({ ...p, rows: p.rows.filter((r) => !isBurstRow(r)) }, nowMs);
+  if (burstRows.length === 0 && p.burst?.enabled !== true) return { bursts: null, runners };
+  const rows = burstRows
+    .map((r, i) => ({ r, i }))
+    .sort((a, b) => b.r.at - a.r.at || a.i - b.i)
+    .map((x) => rocketRowView(x.r, nowMs));
+  return { bursts: { head: rocketBurstSectionView(p.burst, burstRows.length), rows }, runners };
 }
 
 /** Rows that need attention now: building or breaking out (the header count). */

@@ -1,5 +1,5 @@
-import { UI } from "@stockwatcher/chart-native";
-import { newRocketFlags, rocketHeaderView, rocketLinePaths, rocketNow, rocketRowsView, type RocketChannel, type RocketRowView, type RocketTone } from "@stockwatcher/shared";
+import { Icon, UI } from "@stockwatcher/chart-native";
+import { newRocketFlags, rocketHeaderView, rocketLinePaths, rocketNow, rocketSectionsView, type RocketChannel, type RocketRowView, type RocketSectionsView, type RocketTone } from "@stockwatcher/shared";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Animated, Pressable, StyleSheet, Text, View } from "react-native";
 import Svg, { Circle, Line, Path, Rect } from "react-native-svg";
@@ -11,6 +11,7 @@ import { useTickerPress } from "../ui/useTickerPress";
 
 const TONE: Record<RocketTone, string> = {
   good: UI.good,
+  loss: UI.critical,
   warning: UI.warning,
   accent: UI.accent,
   text: UI.text,
@@ -35,6 +36,12 @@ export const DAY_LINE_H = 28;
  * reach the phone as a server push (Settings → Runners); only while this phone has no push token
  * does the card ring a local banner for them instead (notifications/rocket.ts). No layout
  * animation on the rows: a moving Pressable takes stale taps on Android.
+ *
+ * Buying bursts (2026-10-22) get their own section at the top, newest first (the shared
+ * `rocketSectionsView`): heavy buying confirmed, typically about halfway into a move, so a row
+ * says how far the burst already went and what typically remains, never "buy". The accent marks
+ * only a live burst (pulsing dot, headline and edge while fresh and pending); green and red only
+ * its strict outcome tag.
  */
 export function RocketPanel({ channel, onPick, reducedMotion }: { channel: RocketChannel; onPick: (symbol: string) => void; reducedMotion: boolean }) {
   const state = useRocket(channel);
@@ -55,7 +62,7 @@ export function RocketPanel({ channel, onPick, reducedMotion }: { channel: Rocke
   }, [state]);
   const { enabled, panel } = state;
   const now = rocketNow(state, wall);
-  const rows = panel ? rocketRowsView(panel, now) : [];
+  const { bursts, runners: rows }: RocketSectionsView = panel ? rocketSectionsView(panel, now) : { bursts: null, runners: [] };
   const head = panel ? rocketHeaderView(panel) : null;
   return (
     <View style={styles.card} accessibilityLabel="Runners">
@@ -92,14 +99,44 @@ export function RocketPanel({ channel, onPick, reducedMotion }: { channel: Rocke
         <Text style={[styles.empty, { color: UI.warning }]}>Off on this server</Text>
       ) : enabled === null ? (
         <Text style={styles.empty}>Connecting…</Text>
-      ) : rows.length === 0 ? (
-        <Text style={styles.empty}>Nothing flagged right now</Text>
       ) : (
-        <View style={[styles.rows, !state.connected && styles.dimmed]}>
-          {rows.map((r) => (
-            <Row key={r.key} row={r} onPick={onPick} reducedMotion={reducedMotion} />
-          ))}
-        </View>
+        <>
+          {bursts && (
+            <View style={styles.section} accessibilityLabel="Bursts">
+              <View style={styles.sectionHead}>
+                <Icon name="trend" color={UI.textDim} size={14} />
+                <Text accessibilityRole="header" style={styles.sectionTitle}>
+                  Bursts
+                </Text>
+                <Text style={styles.record}>{bursts.head.count}</Text>
+              </View>
+              <Text style={styles.sub}>{[bursts.head.what, bursts.head.typical].filter(Boolean).join(". ")}</Text>
+              {bursts.rows.length === 0 ? (
+                <Text style={styles.empty}>No buying bursts yet today</Text>
+              ) : (
+                <View style={[styles.rows, !state.connected && styles.dimmed]}>
+                  {bursts.rows.map((r) => (
+                    <Row key={r.key} row={r} onPick={onPick} reducedMotion={reducedMotion} />
+                  ))}
+                </View>
+              )}
+            </View>
+          )}
+          {bursts && (
+            <Text accessibilityRole="header" style={[styles.sectionTitle, styles.sectionPad]}>
+              Flags
+            </Text>
+          )}
+          {rows.length === 0 ? (
+            <Text style={styles.empty}>Nothing flagged right now</Text>
+          ) : (
+            <View style={[styles.rows, !state.connected && styles.dimmed]}>
+              {rows.map((r) => (
+                <Row key={r.key} row={r} onPick={onPick} reducedMotion={reducedMotion} />
+              ))}
+            </View>
+          )}
+        </>
       )}
     </View>
   );
@@ -126,8 +163,12 @@ function useCrossfade(key: string, reducedMotion: boolean): Animated.Value {
 const Row = memo(function Row({ row: r, onPick, reducedMotion }: { row: RocketRowView; onPick: (symbol: string) => void; reducedMotion: boolean }) {
   const press = useTickerPress(r.symbol, () => onPick(r.symbol));
   const m = r.momentum;
-  const fade = useCrossfade(m.state, reducedMotion);
-  const edge = m.edge ? TONE[m.edge] : null;
+  const b = r.burst;
+  // A live burst takes the accent edge; once it settles the row falls back to its momentum edge
+  // (the change crossfades like a state change).
+  const fade = useCrossfade(`${m.state}${b?.live ? ":live" : ""}`, reducedMotion);
+  const edgeTone = b?.live ? "accent" : m.edge;
+  const edge = edgeTone ? TONE[edgeTone] : null;
   return (
     <Pressable accessibilityRole="button" accessibilityLabel={r.aria} accessibilityHint="Opens its chart. Tap, then press and hold to copy" {...press} style={({ pressed }) => [styles.row, m.dimmed && { opacity: 0.6 }, pressed && { backgroundColor: UI.raised }]}>
       {/* The state's wash and inset edge: filled views, never borders, crossfading in on a change. */}
@@ -151,6 +192,15 @@ const Row = memo(function Row({ row: r, onPick, reducedMotion }: { row: RocketRo
           the chart's box is always reserved, so a line arriving never moves the text. */}
       <View style={styles.top}>
         <View style={styles.lines}>
+          {b && (
+            <Animated.View style={[styles.line, { opacity: fade }]}>
+              {b.live && <Pulse color={UI.accent} size={6} reducedMotion={reducedMotion} />}
+              <Text numberOfLines={1} style={[styles.state, { color: b.live ? UI.accent : UI.text, fontFamily: fonts.semibold }]}>
+                {b.headline}
+                <Text style={styles.note}>{` ${b.since}`}</Text>
+              </Text>
+            </Animated.View>
+          )}
           <Animated.View style={[styles.line, { opacity: fade }]}>
             {m.pulse && <Pulse color={TONE[m.tone]} size={6} reducedMotion={reducedMotion} />}
             <Text numberOfLines={1} style={[styles.state, { color: TONE[m.tone], fontFamily: m.attention ? fonts.semibold : fonts.regular }]}>
@@ -160,7 +210,8 @@ const Row = memo(function Row({ row: r, onPick, reducedMotion }: { row: RocketRo
               {m.note ? <Text style={styles.note}>{` ${m.note}`}</Text> : null}
             </Text>
           </Animated.View>
-          <View style={styles.line} accessibilityLabel="from flag, from high, last minute">
+          <View style={styles.line} accessibilityLabel={b ? "last 30 s before the alert, from the alert, from high, last minute" : "from flag, from high, last minute"}>
+            {b?.move ? <Text style={[styles.metric, { color: UI.text }]}>{b.move}</Text> : null}
             <Text style={[styles.metric, { color: TONE[r.fromFlagTone] }]}>{r.fromFlag}</Text>
             <Text style={[styles.metric, { color: TONE[r.fromHighTone] }]}>{r.fromHigh}</Text>
             <Text style={[styles.metric, { color: TONE[r.move1mTone] }]}>{r.move1m}</Text>
@@ -246,6 +297,11 @@ const styles = StyleSheet.create({
   record: { marginLeft: "auto", flexShrink: 1, color: UI.textDim, fontSize: 11, fontVariant: ["tabular-nums"] },
   sub: { color: UI.textFaint, fontSize: 10, paddingHorizontal: 4, fontVariant: ["tabular-nums"] },
   empty: { color: UI.textFaint, fontSize: 12, paddingHorizontal: 4, paddingVertical: 6 },
+  // Bursts on top: a heading, its one-line context and its rows; separated by space, never borders.
+  section: { gap: 6, paddingBottom: 4 },
+  sectionHead: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 4 },
+  sectionTitle: { color: UI.text, fontSize: 12, fontFamily: fonts.semibold },
+  sectionPad: { paddingHorizontal: 4 },
   // The card's own row gap: the rows are separated by space, never borders.
   rows: { gap: 6 },
   dimmed: { opacity: 0.6 },
