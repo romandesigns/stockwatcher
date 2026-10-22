@@ -1,5 +1,5 @@
 import { createChartRouter, parseChartMessage, parsePaperMessage, type ChartSubscribe, type ChartUnsubscribe, type PaperMessage, type PaperState, type ReplayControl } from "@stockwatcher/chart-core";
-import { createDetectionChannel, createPressureChannel, createQuoteChannel, createRossChannel, createWsClient, sameOriginWsUrl, type AlertsServerMessage, type ConnectionStatus, type MarketSource, type SettingsSync, type WebSocketLike } from "@stockwatcher/shared";
+import { createDetectionChannel, createPressureChannel, createQuoteChannel, createRocketChannel, createRossChannel, createWsClient, sameOriginWsUrl, type AlertsServerMessage, type ConnectionStatus, type MarketSource, type SettingsSync, type WebSocketLike } from "@stockwatcher/shared";
 import type { ChartFeed, PaperCommand, ReplayCommand } from "./types.ts";
 
 export interface ServerFeedOptions {
@@ -41,6 +41,8 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
   // The dashboard's Halt watcher, opted in while its panel is mounted.
   const pressure = createPressureChannel({ subscribe: () => client.subscribePressure(), unsubscribe: () => client.unsubscribePressure() });
   const ross = createRossChannel({ subscribe: () => client.subscribeRoss(), unsubscribe: () => client.unsubscribeRoss() });
+  // Rocket watch (experimental), opted in while its tab is open.
+  const rocket = createRocketChannel({ subscribe: () => client.subscribeRocket(), unsubscribe: () => client.unsubscribeRocket() });
   const detection = createDetectionChannel({ source: opts.source, subscribe: () => client.subscribeDetection(), unsubscribe: () => client.unsubscribeDetection(), resync: () => client.subscribeDetection() });
 
   const sendRaw = (msg: ChartSubscribe | ChartUnsubscribe | ReplayControl | PaperCommand) => {
@@ -62,12 +64,14 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
       // The Ross Panel keeps its last rows while the socket is down, so it has to be told: a
       // panel nobody is updating must not read as live (shared/ross.ts `rossFreshness`).
       ross.setConnected(s === "open");
+      rocket.setConnected(s === "open");
       detection.setConnected(s === "open");
       if (s === "open") resubscribe(); // subscriptions do not survive a reconnect
     },
     onQuotes: (m) => quotes.apply(m),
     onPressure: (m) => pressure.apply(m),
     onRoss: (m) => ross.apply(m),
+    onRocket: (m) => rocket.apply(m),
     onDetection: (m) => detection.apply(m),
     onDetectionError: (reason) => detection.reject(reason),
     onAlerts: opts.onAlerts,
@@ -82,7 +86,7 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
         // A quotes.snapshot is hundreds of KB: hand it to shared's parser without first
         // parsing it twice as a chart or paper frame. The server writes `type` first. The
         // settings.*, pressure.* and alert frames (shared's own too) take the same shortcut.
-        if (typeof ev.data === "string" && (ev.data.startsWith('{"type":"quotes.') || ev.data.startsWith('{"type":"settings.') || ev.data.startsWith('{"type":"pressure.') || ev.data.startsWith('{"type":"ross.') || ev.data.startsWith('{"type":"alert') || /"type"\s*:\s*"detection\.(snapshot|update)"/.test(ev.data))) {
+        if (typeof ev.data === "string" && (ev.data.startsWith('{"type":"quotes.') || ev.data.startsWith('{"type":"settings.') || ev.data.startsWith('{"type":"pressure.') || ev.data.startsWith('{"type":"ross.') || ev.data.startsWith('{"type":"rocket.') || ev.data.startsWith('{"type":"alert') || /"type"\s*:\s*"detection\.(snapshot|update)"/.test(ev.data))) {
           inner?.({ data: ev.data });
           return;
         }
@@ -136,6 +140,7 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
     quotes,
     pressure,
     ross,
+    rocket,
     detection,
     close() {
       client.close();

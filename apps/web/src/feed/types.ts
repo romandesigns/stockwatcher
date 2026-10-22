@@ -1,5 +1,5 @@
 import type { ChartMessage, OrderCancel, OrderModify, OrderPlace, PaperMessage, PaperState, ReplayControl, Timeframe } from "@stockwatcher/chart-core";
-import type { DetectionChannel, PressureChannel, QuoteChannel, RossChannel } from "@stockwatcher/shared";
+import type { DetectionChannel, PressureChannel, QuoteChannel, RocketChannel, RossChannel } from "@stockwatcher/shared";
 
 export interface ChartSubscription {
   symbol: string;
@@ -33,6 +33,8 @@ export interface ChartFeed {
   readonly pressure?: PressureChannel;
   /** The server's Ross Panel (server feed only); subscribing opts the connection in. */
   readonly ross?: RossChannel;
+  /** The server's Rocket watch (experimental; server feed only); subscribing opts the connection in. */
+  readonly rocket?: RocketChannel;
   /** Independent Rust event discovery; subscribing never changes its monitored universe. */
   readonly detection?: DetectionChannel;
   close(): void;

@@ -7,6 +7,7 @@ export * from "./tickers/mockTickers.ts";
 export * from "./tickers/quotes.ts";
 export * from "./pressure.ts";
 export * from "./ross.ts";
+export * from "./rocket.ts";
 export * from "./detection.ts";
 export * from "./tickers/search.ts";
 export * from "./tapHold.ts";
