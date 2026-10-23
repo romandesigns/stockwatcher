@@ -946,8 +946,8 @@ fn a_running_stock_gets_a_running_row() {
     assert_eq!(a.strategy, running::STRATEGY);
     let body = b.body(&|_| (Some(9.0), Some(8.0)), &|_| None);
     assert_eq!(body["rows"][0]["kind"], "running");
-    // The push: its own kind (opt-in per phone, off by default). Its later breakouts are the
-    // breakout kind, under that switch (off by default too).
+    // The push: its own kind (a per-phone switch, on by default). Its later breakouts are the
+    // breakout kind, under that switch (off by default).
     let n = b.take_notices();
     assert_eq!(n[0].kind, NoticeKind::Running);
     assert!(
@@ -986,4 +986,128 @@ fn a_running_stock_gets_a_running_row() {
     tape.extend(climb("TNH", at(10, 0, 0), 40, 8.0, 0.01, 20_000).0);
     play(&mut c, tape, at(9, 0, 0), at(10, 12, 0));
     assert!(c.alerts().iter().all(|a| a.kind == AlertKind::Runner));
+}
+
+/// The "Run +20%" entry (owner, 2026-10-22): a +20 % run from the volume-shelf trigger becomes a
+/// row at its mark, tracked like the others, with its own log line, push kind and day count;
+/// once a symbol a day, never for a symbol that already has a row, and back after a restart.
+#[test]
+fn a_plus20_run_gets_a_run_row() {
+    let run = |sym: &str, start: i64, mark: i64, p0: f64, close: f64| {
+        (
+            Arc::<str>::from(sym),
+            crate::zones::Run {
+                start_ns: start,
+                start_price: p0,
+                plus20_ns: mark,
+                close,
+                exec_ns: mark - 500_000_000,
+                early: false,
+            },
+        )
+    };
+    // FLG is flagged by the strategy at 10:03 (as in the running test), RUNX is not.
+    let mut b = board(vec![("FLG", 1.0)], fixed(0.5, 10));
+    let mut tape = flat("FLG", at(9, 0, 0), at(10, 0, 0), 8.0, 3_000);
+    tape.extend(climb("FLG", at(10, 0, 0), 40, 8.0, 0.01, 20_000).0);
+    tape.extend(flat("RUNX", at(9, 0, 0), at(10, 0, 0), 1.0, 30_000));
+    tape.extend(climb("RUNX", at(10, 0, 0), 40, 1.0, 0.01, 50_000).0);
+    play(&mut b, tape, at(9, 0, 0), at(10, 5, 0));
+    assert!(b.alerts().iter().any(|a| &*a.symbol == "FLG"));
+    let before = b.alerts().len();
+    let _ = b.take_notices();
+    b.add_runs(vec![
+        run("RUNX", at(10, 0, 0), at(10, 5, 0), 1.0, 1.22),
+        // Already has a row (its R2 flag): none.
+        run("FLG", at(10, 0, 0), at(10, 5, 0), 8.0, 9.7),
+        // A second run the same day: none (one row per symbol a day).
+        run("RUNX", at(10, 1, 0), at(10, 5, 0), 1.0, 1.25),
+    ]);
+    b.tick(at(10, 5, 1), |_| None);
+    let runs: Vec<&Alert> = b
+        .alerts()
+        .iter()
+        .filter(|a| a.kind == AlertKind::Run)
+        .collect();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(b.alerts().len(), before + 1);
+    let a = runs[0];
+    assert_eq!(&*a.symbol, "RUNX");
+    assert_eq!(a.at_ns, at(10, 5, 0), "at the end of the mark slot");
+    assert_eq!(a.price, 1.22);
+    assert_eq!(a.strategy, run::STRATEGY);
+    assert_eq!(a.reasons[0], "+22% in 5 min off $1.00");
+    let body = b.body(&|_| (Some(1.22), Some(1.0)), &|_| None);
+    let row = body["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["s"] == "RUNX")
+        .unwrap();
+    assert_eq!(row["kind"], "run");
+    // Its push kind: a per-phone switch, on by default.
+    let n = b.take_notices();
+    assert_eq!(n.len(), 1, "{n:?}");
+    assert_eq!(n[0].kind, NoticeKind::Run);
+    assert_eq!(n[0].from_flag_pct, Some(22.0));
+    // Tracked like the others: the climb goes on, the row's momentum follows.
+    let more = climb("RUNX", at(10, 5, 0), 20, 1.01f64.powi(20), 0.01, 50_000).0;
+    play(&mut b, more, at(10, 5, 0), at(10, 12, 0));
+    let a = b
+        .alerts()
+        .iter()
+        .find(|a| a.kind == AlertKind::Run)
+        .unwrap();
+    assert!(a.track.high() > 1.22, "{}", a.track.high());
+    // The log line, the day's count, and the row back after a restart (no notice).
+    b.tick(at(20, 0, 1), |_| None);
+    let lines: Vec<String> = b.take_log().into_iter().map(|(_, l)| l).collect();
+    let entry: Vec<&String> = lines
+        .iter()
+        .filter(|l| l.contains(r#""kind":"run""#))
+        .collect();
+    assert_eq!(entry.len(), 1);
+    let day_line: Value = lines
+        .iter()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .find(|v| v["kind"] == "day")
+        .unwrap();
+    assert_eq!(day_line["rows"]["run"], 1);
+    let flags = b
+        .alerts()
+        .iter()
+        .filter(|a| a.kind == AlertKind::Runner)
+        .count();
+    assert!(flags >= 1);
+    assert_eq!(day_line["rows"]["runner"], flags);
+    assert_eq!(day_line["alerts"], flags, "the run row is not a flag");
+    let tmp = tempfile::tempdir().unwrap();
+    let log = RocketLog::new(tmp.path().join("rocket-watch"), 30);
+    log.append(day(), &lines);
+    let mut r = board(vec![], fixed(0.5, 10));
+    r.restore(day(), log.load(day()));
+    let back: Vec<&Alert> = r
+        .alerts()
+        .iter()
+        .filter(|a| a.kind == AlertKind::Run)
+        .collect();
+    assert_eq!(back.len(), 1);
+    assert_eq!(back[0].at_ns, at(10, 5, 0));
+    assert!(r.take_notices().is_empty());
+    // A run handed over after a restart for a symbol it restored: still one row.
+    r.tick(at(10, 30, 0), |_| None);
+    r.add_runs(vec![run("RUNX", at(10, 20, 0), at(10, 30, 0), 1.3, 1.6)]);
+    r.tick(at(10, 30, 1), |_| None);
+    assert_eq!(
+        r.alerts()
+            .iter()
+            .filter(|a| a.kind == AlertKind::Run)
+            .count(),
+        1
+    );
+    // Not in the Runners day record.
+    assert_eq!(
+        r.body(&|_| (None, None), &|_| None)["today"]["alerts"],
+        flags
+    );
 }

@@ -6,13 +6,18 @@
 //! sender, batching, retries and token clean-up. What is Runners-specific lives here:
 //!
 //! - **What:** a [`Notice`] from the LIVE market's board (`crate::rocket`, "Phone pushes"): a new
-//!   flag, a flagged row turning `breaking_out`, or a new buying burst (`crate::rocket::burst`,
-//!   "SYM buying burst $price", "+X% in N min · <top reason>"). The market offers it to the alerts task with
-//!   `try_send` after the core lock is released, so ingest and the board never wait on a push. A
-//!   replay market never offers one.
+//!   flag, a flagged row turning `breaking_out`, a new buying burst (`crate::rocket::burst`), a
+//!   running entry (`crate::rocket::running`) or a "Run +20%" entry (`crate::rocket::run`). The
+//!   market offers it to the alerts task with `try_send` after the core lock is released, so
+//!   ingest and the board never wait on a push. A replay market never offers one.
+//! - **Text** ([`message`]): the evidence in one line, short enough for a lock screen. Title
+//!   "SYM · <source> · $price" ("Buying burst", "Running", "Run +20%"); body the % move and its
+//!   window, then for a burst the research's odds ("typ. +13% max in 30 min, 1 in 4 reach +20%
+//!   before −5%", the panel's Bursts line).
 //! - **Who:** each registered phone opts in per kind, on the device record
 //!   (`push-devices.json`, sent in `push.register`): new flags ON by default, breakouts OFF,
-//!   bursts ON.
+//!   bursts, running and run entries ON (owner, 2026-10-22: "I don't wanna lose opportunities
+//!   because I'm away from my phone").
 //!   Per device rather than synced because it is about which phone makes noise, exactly like the
 //!   token itself.
 //! - **Limits**, checked in this order (the first that applies holds it back; logged, never
@@ -20,9 +25,22 @@
 //!   1. no phone opted in for this kind → `no_device`;
 //!   2. the price alerts' quiet hours (`alerts.prefs`, ET wall time) → `quiet_hours`;
 //!   3. the notice is over [`MAX_AGE_MS`] old (a catch-up after a stall) → `stale`;
-//!   4. the same stock got a Runners push less than [`SYMBOL_GAP_MS`] ago, whatever the kind →
-//!      `symbol_limit`;
-//!   5. [`DAILY_CAP`] Runners pushes already went out this ET day → `cap`.
+//!   4. the same stock got a Runners push less than [`SYMBOL_GAP_MS`] ago, whatever the kind
+//!      (a burst: [`BURST_GAP_MS`], so a burst right after a run or running push still goes
+//!      out) → `symbol_limit`;
+//!   5. [`DAILY_CAP`] Runners pushes already went out this ET day → `cap`, by priority: bursts
+//!      and new flags are never dropped by the cap (they still count), breakouts, running and
+//!      run entries are. With ~50 running, ~25 run and ~20 burst pushes on a typical day the cap
+//!      is a runaway guard, not a budget.
+//!
+//! - **Latency** (target: under 5 s from the triggering trade to Expo): a Runners push skips the
+//!   push task's batch window ([`super::push`]) and, once Expo took it, logs `runners push:
+//!   latency` with `exec_ns` (the triggering print, when the source knows it: a "Run +20%" row),
+//!   `decided_ns` (the board's row), `queued_ns` (handed to the push task) and `expo_ns`, and the
+//!   three legs in ms. Where the sources decide: a "Run +20%" row within about a second of the
+//!   print that makes it (`crate::zones`, "Early fire"; 1–2 s with the 2-print guard), a burst
+//!   at 5 s boundaries checked 1 s after (up to ~6 s after the print), a running entry and an R2
+//!   flag at 15 s barriers (up to ~15 s after the print, plus the ≤ 1 s tick).
 //!
 //!   The count and each stock's last push are kept in `runners-push.json` beside the devices, so
 //!   a redeploy at 09:00 does not hand out a fresh cap. They are separate from the price alerts'
@@ -38,10 +56,14 @@ use serde_json::{Value, json};
 use super::model::Prefs;
 use crate::rocket::{Notice, NoticeKind};
 
-/// At most one Runners push per stock per 10 minutes (new flag and breakout alike).
+/// At most one Runners push per stock per 10 minutes (every kind but a burst).
 pub const SYMBOL_GAP_MS: i64 = 10 * 60_000;
-/// At most this many Runners pushes per ET calendar day.
-pub const DAILY_CAP: u32 = 30;
+/// A burst's gap after the same stock's last Runners push: shorter, so heavy buying confirmed
+/// minutes after a run or running push still reaches the phone.
+pub const BURST_GAP_MS: i64 = 2 * 60_000;
+/// Breakout, running and run pushes stop once this many Runners pushes went out in the ET
+/// calendar day; bursts and new flags never do (module docs, "Limits").
+pub const DAILY_CAP: u32 = 120;
 /// A notice older than this when it reaches the task is not pushed: news about a move minutes
 /// ago is noise on a lock screen.
 pub const MAX_AGE_MS: i64 = 3 * 60_000;
@@ -132,12 +154,13 @@ impl RunnersDelivery {
         }
     }
 
-    /// The decision for one notice (module docs, "Limits"). `devices` = phones opted in for its
-    /// kind; `at` = when it happened, `now` = now (epoch ms); `today` / `et_minute` = the ET day
-    /// and minute of the day at `now`.
+    /// The decision for one notice of `kind` (module docs, "Limits"). `devices` = phones opted in
+    /// for its kind; `at` = when it happened, `now` = now (epoch ms); `today` / `et_minute` = the
+    /// ET day and minute of the day at `now`.
     #[allow(clippy::too_many_arguments)]
     pub fn decide(
         &mut self,
+        kind: NoticeKind,
         symbol: &str,
         devices: usize,
         prefs: &Prefs,
@@ -162,15 +185,21 @@ impl RunnersDelivery {
         if now - at > MAX_AGE_MS {
             return Decision::Held(Hold::Stale);
         }
+        let gap = if kind == NoticeKind::Burst {
+            BURST_GAP_MS
+        } else {
+            SYMBOL_GAP_MS
+        };
         if self
             .s
             .last_by_symbol
             .get(symbol)
-            .is_some_and(|t| now - t < SYMBOL_GAP_MS)
+            .is_some_and(|t| now - t < gap)
         {
             return Decision::Held(Hold::SymbolLimit);
         }
-        if self.s.sent >= DAILY_CAP {
+        let never_capped = matches!(kind, NoticeKind::Burst | NoticeKind::New);
+        if self.s.sent >= DAILY_CAP && !never_capped {
             return Decision::Held(Hold::Cap);
         }
         self.s.sent += 1;
@@ -196,36 +225,92 @@ pub fn data_kind(kind: NoticeKind) -> &'static str {
         NoticeKind::Breakout => "runners.breakout",
         NoticeKind::Burst => "runners.burst",
         NoticeKind::Running => "runners.running",
+        NoticeKind::Run => "runners.run",
     }
 }
 
-/// Title, body and data of the push for one notice. The data's `symbol` is what the phone opens
-/// the chart for on a tap.
+/// "+18.2% in 6 min" (under a minute: "in 45 s").
+fn moved(p: f64, min: f64) -> String {
+    let min = min.max(0.0);
+    if min < 1.0 {
+        format!("{p:+.1}% in {:.0} s", min * 60.0)
+    } else {
+        format!("{p:+.1}% in {:.0} min", min.round())
+    }
+}
+
+/// The research's typical outcome from a burst alert, as the panel's Bursts line says it
+/// (packages/shared `rocketBurstSectionView`): "typ. +13% max in 30 min, 1 in 4 reach +20%
+/// before −5%".
+fn burst_odds() -> String {
+    use crate::rocket::burst::{TYPICAL_CONT20_PCT, TYPICAL_MFE30_MED_PCT};
+    format!(
+        "typ. +{:.0}% max in 30 min, 1 in {:.0} reach +20% before −5%",
+        TYPICAL_MFE30_MED_PCT,
+        (100.0 / TYPICAL_CONT20_PCT).round().max(1.0)
+    )
+}
+
+/// Title, body and data of the push for one notice (module docs, "Text"). The data's `symbol` is
+/// what the phone opens the chart for on a tap.
 pub fn message(n: &Notice) -> (String, String, Value) {
+    let p = dollars(n.price);
+    let s = &n.symbol;
     let title = match n.kind {
-        NoticeKind::New => format!("Runners: {} {}", n.symbol, dollars(n.price)),
-        NoticeKind::Breakout => format!("{} breaking out {}", n.symbol, dollars(n.price)),
-        NoticeKind::Burst => format!("{} buying burst {}", n.symbol, dollars(n.price)),
-        NoticeKind::Running => format!("{} running {}", n.symbol, dollars(n.price)),
+        NoticeKind::New => format!("Runners: {s} {p}"),
+        NoticeKind::Breakout => format!("{s} breaking out {p}"),
+        NoticeKind::Burst => format!("{s} · Buying burst · {p}"),
+        NoticeKind::Running => format!("{s} · Running · {p}"),
+        NoticeKind::Run => format!("{s} · Run +20% · {p}"),
     };
-    if n.kind == NoticeKind::Burst {
-        // "+18.2% in 6 min · $ rate 6.4× base": how far the burst already went, and why.
-        let mut parts: Vec<String> = Vec::new();
-        match (n.from_flag_pct, n.since_start_min) {
-            (Some(p), Some(m)) => parts.push(format!("{p:+.1}% in {:.0} min", m.max(0.0).round())),
-            (Some(p), None) => parts.push(format!("{p:+.1}% in the burst")),
-            _ => {}
+    let data = json!({
+        "symbol": n.symbol,
+        "kind": data_kind(n.kind),
+        "alert_id": n.alert_id,
+    });
+    let first = n.reasons.first().cloned();
+    let body = match n.kind {
+        // "+18.2% in 6 min · typ. +13% max in 30 min, 1 in 4 reach +20% before −5%": how far
+        // the burst already went, and what typically remains.
+        NoticeKind::Burst => {
+            let mv = match (n.from_flag_pct, n.since_start_min) {
+                (Some(x), Some(m)) => moved(x, m),
+                (Some(x), None) => format!("{x:+.1}% in the burst"),
+                _ => "Heavy buying on the tape".into(),
+            };
+            format!("{mv} · {}", burst_odds())
         }
-        parts.extend(n.reasons.iter().take(1).cloned());
-        if parts.is_empty() {
-            parts.push("Heavy buying on the tape".into());
+        // "+22.0% in 5 min off $1.00 · 25+ trades and $25k+": the leg and its liquidity.
+        NoticeKind::Run => {
+            let mv = match (n.from_flag_pct, n.since_start_min) {
+                (Some(x), Some(m)) => moved(x, m),
+                _ => first.clone().unwrap_or_else(|| "+20% leg".into()),
+            };
+            let off = n
+                .reasons
+                .first()
+                .and_then(|r| r.split(" off ").nth(1))
+                .map(|x| format!(" off {x}"))
+                .unwrap_or_default();
+            format!("{mv}{off} · 25+ trades, $25k+")
         }
-        let data = json!({
-            "symbol": n.symbol,
-            "kind": data_kind(n.kind),
-            "alert_id": n.alert_id,
-        });
-        return (title, parts.join(" · "), data);
+        // "+15.3% in 60 min · $120k in 5 min": the move off the hour's low and its money.
+        NoticeKind::Running => {
+            let mut parts: Vec<String> = Vec::new();
+            match n.from_flag_pct {
+                Some(x) => parts.push(format!("{x:+.1}% in 60 min")),
+                None => parts.extend(first.clone()),
+            }
+            parts.extend(n.reasons.iter().find(|r| r.contains(" in 5 min")).cloned());
+            if parts.is_empty() {
+                parts.push("Running on the tape".into());
+            }
+            parts.join(" · ")
+        }
+        NoticeKind::New | NoticeKind::Breakout => String::new(),
+    };
+    if !body.is_empty() {
+        return (title, body, data);
     }
     let mut parts: Vec<String> = Vec::new();
     if n.kind == NoticeKind::Breakout
@@ -237,11 +322,6 @@ pub fn message(n: &Notice) -> (String, String, Value) {
     if parts.is_empty() {
         parts.push("Flagged (experimental)".into());
     }
-    let data = json!({
-        "symbol": n.symbol,
-        "kind": data_kind(n.kind),
-        "alert_id": n.alert_id,
-    });
     (title, parts.join(" · "), data)
 }
 
@@ -260,11 +340,12 @@ mod tests {
     fn cooldown_cap_quiet_hours_and_staleness() {
         let mut d = RunnersDelivery::in_memory();
         let prefs = Prefs::default();
+        let run = NoticeKind::Run;
         let go = |d: &mut RunnersDelivery, s: &str, now: i64| {
-            d.decide(s, 1, &prefs, now, now, day(22), 8 * 60)
+            d.decide(run, s, 1, &prefs, now, now, day(22), 8 * 60)
         };
         assert_eq!(
-            d.decide("CJMB", 0, &prefs, 0, 0, day(22), 480),
+            d.decide(run, "CJMB", 0, &prefs, 0, 0, day(22), 480),
             Decision::Held(Hold::NoDevice)
         );
         assert_eq!(go(&mut d, "CJMB", 0), Decision::Send);
@@ -274,19 +355,64 @@ mod tests {
             Decision::Held(Hold::SymbolLimit)
         );
         assert_eq!(go(&mut d, "CJMB", 10 * MIN), Decision::Send);
+        // A burst 2 minutes after the same stock's run push still goes out; 1 minute does not.
+        let burst = |d: &mut RunnersDelivery, s: &str, now: i64| {
+            d.decide(NoticeKind::Burst, s, 1, &prefs, now, now, day(22), 8 * 60)
+        };
+        assert_eq!(
+            burst(&mut d, "CJMB", 11 * MIN),
+            Decision::Held(Hold::SymbolLimit)
+        );
+        assert_eq!(burst(&mut d, "CJMB", 12 * MIN), Decision::Send);
         // Old news is not pushed.
         assert_eq!(
-            d.decide("OLD", 1, &prefs, 0, 4 * MIN, day(22), 480),
+            d.decide(run, "OLD", 1, &prefs, 0, 4 * MIN, day(22), 480),
             Decision::Held(Hold::Stale)
         );
-        // The daily cap of 30, then a new ET day.
-        for i in 0..(DAILY_CAP - 2) {
-            assert_eq!(go(&mut d, &format!("S{i}"), 11 * MIN), Decision::Send);
+        // The daily cap of 120: running and run pushes stop there, bursts and new flags do not.
+        for i in 0..(DAILY_CAP - 3) {
+            assert_eq!(go(&mut d, &format!("S{i}"), 13 * MIN), Decision::Send);
         }
         assert_eq!(d.sent_today(day(22)), DAILY_CAP);
-        assert_eq!(go(&mut d, "LATE", 12 * MIN), Decision::Held(Hold::Cap));
+        assert_eq!(go(&mut d, "LATE", 14 * MIN), Decision::Held(Hold::Cap));
+        let running = d.decide(
+            NoticeKind::Running,
+            "LATE",
+            1,
+            &prefs,
+            14 * MIN,
+            14 * MIN,
+            day(22),
+            480,
+        );
+        assert_eq!(running, Decision::Held(Hold::Cap));
+        let breakout = d.decide(
+            NoticeKind::Breakout,
+            "LATE",
+            1,
+            &prefs,
+            14 * MIN,
+            14 * MIN,
+            day(22),
+            480,
+        );
+        assert_eq!(breakout, Decision::Held(Hold::Cap));
+        assert_eq!(burst(&mut d, "BURST", 14 * MIN), Decision::Send);
+        let new = d.decide(
+            NoticeKind::New,
+            "FLAG",
+            1,
+            &prefs,
+            14 * MIN,
+            14 * MIN,
+            day(22),
+            480,
+        );
+        assert_eq!(new, Decision::Send);
+        assert_eq!(d.sent_today(day(22)), DAILY_CAP + 2, "they still count");
+        // A new ET day.
         assert_eq!(
-            d.decide("LATE", 1, &prefs, 13 * MIN, 13 * MIN, day(23), 480),
+            d.decide(run, "LATE", 1, &prefs, 15 * MIN, 15 * MIN, day(23), 480),
             Decision::Send
         );
         assert_eq!(d.sent_today(day(22)), 0);
@@ -299,7 +425,7 @@ mod tests {
             ..Prefs::default()
         };
         assert_eq!(
-            d.decide("Q", 1, &quiet, 20 * MIN, 20 * MIN, day(23), 6 * 60),
+            d.decide(run, "Q", 1, &quiet, 20 * MIN, 20 * MIN, day(23), 6 * 60),
             Decision::Held(Hold::QuietHours)
         );
     }
@@ -309,11 +435,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let prefs = Prefs::default();
         let mut d = RunnersDelivery::open(dir.path());
-        assert_eq!(d.decide("A", 1, &prefs, 0, 0, day(22), 480), Decision::Send);
+        let k = NoticeKind::New;
+        assert_eq!(
+            d.decide(k, "A", 1, &prefs, 0, 0, day(22), 480),
+            Decision::Send
+        );
         let mut back = RunnersDelivery::open(dir.path());
         assert_eq!(back.sent_today(day(22)), 1);
         assert_eq!(
-            back.decide("A", 1, &prefs, MIN, MIN, day(22), 481),
+            back.decide(k, "A", 1, &prefs, MIN, MIN, day(22), 481),
             Decision::Held(Hold::SymbolLimit),
             "a redeploy does not forget the cooldown"
         );
@@ -330,6 +460,7 @@ mod tests {
             from_flag_pct: Some(0.0),
             reasons: vec!["volume 9x pace".into(), "new high".into(), "third".into()],
             since_start_min: None,
+            exec_ns: None,
         };
         let (t, b, data) = message(&n);
         assert_eq!(t, "Runners: CJMB $2.45");
@@ -348,16 +479,52 @@ mod tests {
         assert_eq!(data["kind"], "runners.breakout");
         n.kind = NoticeKind::New;
         assert_eq!(message(&n).1, "Flagged (experimental)");
-        // A buying burst: "+X% in N min · <top reason>", tap opens the chart (runners.*).
+        // A buying burst: source, price, the move and its window, the research odds; a tap
+        // opens the chart (runners.*).
         n.kind = NoticeKind::Burst;
         n.price = 2.1;
         n.from_flag_pct = Some(18.24);
         n.since_start_min = Some(6.4);
         n.reasons = vec!["$ rate 6.4× base".into(), "12 new highs in 15 s".into()];
         let (t, b, data) = message(&n);
-        assert_eq!(t, "CJMB buying burst $2.10");
-        assert_eq!(b, "+18.2% in 6 min · $ rate 6.4× base");
+        assert_eq!(t, "CJMB · Buying burst · $2.10");
+        assert_eq!(
+            b,
+            "+18.2% in 6 min · typ. +13% max in 30 min, 1 in 4 reach +20% before −5%"
+        );
         assert_eq!(data["kind"], "runners.burst");
         assert!(!t.to_lowercase().contains("buy ") && !b.to_lowercase().contains("buy "));
+        // A "Run +20%" entry: the leg, its window and start, its liquidity floor.
+        n.kind = NoticeKind::Run;
+        n.price = 1.22;
+        n.from_flag_pct = Some(22.0);
+        n.since_start_min = Some(5.0);
+        n.reasons = crate::rocket::run::reasons(&crate::zones::Run {
+            start_ns: 0,
+            start_price: 1.0,
+            plus20_ns: 5 * 60_000_000_000,
+            close: 1.22,
+            exec_ns: 0,
+            early: false,
+        });
+        let (t, b, data) = message(&n);
+        assert_eq!(t, "CJMB · Run +20% · $1.22");
+        assert_eq!(b, "+22.0% in 5 min off $1.00 · 25+ trades, $25k+");
+        assert_eq!(data["kind"], "runners.run");
+        // A running entry: the move off the hour's low and its money.
+        n.kind = NoticeKind::Running;
+        n.price = 11.49;
+        n.from_flag_pct = Some(15.26);
+        n.since_start_min = None;
+        n.reasons = vec![
+            "+15% off the 60-min low (needs 12%)".into(),
+            "new 1-hour high".into(),
+            "$120k in 5 min".into(),
+        ];
+        let (t, b, data) = message(&n);
+        assert_eq!(t, "CJMB · Running · $11.49");
+        assert_eq!(b, "+15.3% in 60 min · $120k in 5 min");
+        assert_eq!(data["kind"], "runners.running");
+        assert!(t.chars().count() + b.chars().count() < 110, "{t} / {b}");
     }
 }

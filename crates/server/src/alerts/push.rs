@@ -12,7 +12,8 @@
 //! - **Devices** register their Expo push token over the socket (`push.register`); tokens are
 //!   kept in `DATA_DIR/alerts/push-devices.json`, never synced to other clients. At most
 //!   [`MAX_DEVICES`]; the oldest goes first. Each device also carries its Runners opt-ins
-//!   ([`RunnersOptIn`], `super::runners`): new flags on by default, breakouts off.
+//!   ([`RunnersOptIn`], `super::runners`): new flags, bursts, running and run entries on by
+//!   default, breakouts off.
 //! - **Batching:** jobs queued within [`BATCH_WINDOW`] go out in one request of up to
 //!   [`MAX_BATCH`] messages (Expo's limit is 100 per request).
 //! - **Retries:** a network error, a 429 or a 5xx is retried after 2, 4 and 8 s; then the
@@ -72,10 +73,15 @@ pub struct Device {
     /// Buying-burst pushes (`crate::rocket::burst`); on unless the phone said otherwise.
     #[serde(default = "yes")]
     pub runners_burst: bool,
-    /// Running-entry pushes (`crate::rocket::running`): off unless the phone turned them on.
-    /// They are many (10–40 a day) and describe a move under way, not a forecast.
+    /// Running-entry pushes (`crate::rocket::running`): on for a new registration (owner,
+    /// 2026-10-22: "I don't wanna lose opportunities because I'm away from my phone"); a record
+    /// saved before they existed stays off until the phone registers again.
     #[serde(default)]
     pub runners_running: bool,
+    /// "Run +20%" pushes (`crate::rocket::run`): on unless the phone turned them off, a record
+    /// saved before they existed included (same reason).
+    #[serde(default = "yes")]
+    pub runners_run: bool,
 }
 
 fn yes() -> bool {
@@ -90,6 +96,7 @@ pub struct RunnersOptIn {
     pub breakout: Option<bool>,
     pub burst: Option<bool>,
     pub running: Option<bool>,
+    pub run: Option<bool>,
 }
 
 /// The registered phones, persisted on every change (tiny file, temp + rename).
@@ -141,6 +148,7 @@ impl Devices {
                 crate::rocket::NoticeKind::Breakout => d.runners_breakout,
                 crate::rocket::NoticeKind::Burst => d.runners_burst,
                 crate::rocket::NoticeKind::Running => d.runners_running,
+                crate::rocket::NoticeKind::Run => d.runners_run,
             })
             .map(|d| d.token.clone())
             .collect()
@@ -191,7 +199,8 @@ impl Devices {
         let runners_running = runners
             .running
             .or(had.map(|d| d.runners_running))
-            .unwrap_or(false);
+            .unwrap_or(true);
+        let runners_run = runners.run.or(had.map(|d| d.runners_run)).unwrap_or(true);
         self.list.retain(|d| d.token != token);
         let clip = |s: &str| {
             s.chars()
@@ -208,6 +217,7 @@ impl Devices {
             runners_breakout,
             runners_burst,
             runners_running,
+            runners_run,
         });
         while self.list.len() > MAX_DEVICES {
             self.list.remove(0);
@@ -235,6 +245,22 @@ pub struct Job {
     pub title: String,
     pub body: String,
     pub data: Value,
+    /// A Runners push (`super::runners`): sent at once, never held for the batch window, and its
+    /// latency logged once Expo took it.
+    pub runner: Option<RunnerLatency>,
+}
+
+/// A Runners push's clock (`super::runners`, "Latency"): epoch ns.
+#[derive(Clone, Debug)]
+pub struct RunnerLatency {
+    pub symbol: String,
+    pub kind: &'static str,
+    /// The triggering print's execution time, when the source knows it (a "Run +20%" row).
+    pub exec_ns: Option<i64>,
+    /// When the board decided (the row's time: the market clock, the wall clock live).
+    pub decided_ns: i64,
+    /// When the alerts task handed it to this task.
+    pub queued_ns: i64,
 }
 
 /// What the push task reports back to the alerts task.
@@ -377,16 +403,46 @@ async fn run(
         tokio::select! {
             job = rx.recv() => {
                 let Some(first) = job else { break };
-                // Batch: whatever else arrives within the window, up to the request limit.
+                // Batch: whatever else arrives within the window, up to the request limit. A
+                // Runners push does not wait for the window (seconds matter on a +20 % leg): it
+                // goes with whatever is already queued.
+                let urgent = first.runner.is_some();
                 let mut jobs = vec![first];
                 let deadline = tokio::time::Instant::now() + BATCH_WINDOW;
                 while jobs.iter().map(|j| j.tokens.len()).sum::<usize>() < MAX_BATCH {
+                    if urgent {
+                        match rx.try_recv() {
+                            Ok(j) => jobs.push(j),
+                            Err(_) => break,
+                        }
+                        continue;
+                    }
                     match tokio::time::timeout_at(deadline, rx.recv()).await {
                         Ok(Some(j)) => jobs.push(j),
                         _ => break,
                     }
                 }
+                let lat: Vec<RunnerLatency> = jobs.iter().filter_map(|j| j.runner.clone()).collect();
                 send_batch(&http, &cfg, jobs, &mut tickets, &results).await;
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos() as i64);
+                for l in lat {
+                    let ms = |a: i64, b: i64| (b - a) as f64 / 1e6;
+                    tracing::info!(
+                        symbol = %l.symbol,
+                        kind = l.kind,
+                        exec_ns = l.exec_ns,
+                        decided_ns = l.decided_ns,
+                        queued_ns = l.queued_ns,
+                        expo_ns = now,
+                        trade_to_board_ms = l.exec_ns.map(|e| ms(e, l.decided_ns)),
+                        board_to_queue_ms = ms(l.decided_ns, l.queued_ns),
+                        queue_to_expo_ms = ms(l.queued_ns, now),
+                        trade_to_expo_ms = l.exec_ns.map(|e| ms(e, now)),
+                        "runners push: latency"
+                    );
+                }
             }
             _ = receipts.tick() => check_receipts(&http, &cfg, &mut tickets, &results).await,
         }
@@ -581,13 +637,15 @@ mod tests {
         assert!(d.runner_tokens(NoticeKind::Breakout).is_empty());
         // Bursts are on by default.
         assert_eq!(d.runner_tokens(NoticeKind::Burst), vec![fold.to_string()]);
-        // Running entries are off by default (crate::rocket::running: many, and not a forecast).
-        assert!(d.runner_tokens(NoticeKind::Running).is_empty());
+        // Running and "Run +20%" entries are on by default (owner, 2026-10-22).
+        assert_eq!(d.runner_tokens(NoticeKind::Running), vec![fold.to_string()]);
+        assert_eq!(d.runner_tokens(NoticeKind::Run), vec![fold.to_string()]);
         let both = RunnersOptIn {
             new: Some(false),
             breakout: Some(true),
             burst: Some(false),
-            running: Some(true),
+            running: Some(false),
+            run: Some(false),
         };
         assert!(d.register(fold, "android", "Fold", 2, both));
         assert!(d.runner_tokens(NoticeKind::New).is_empty());
@@ -600,7 +658,8 @@ mod tests {
         let back = Devices::open(dir.path());
         let dev = back.get(fold).unwrap();
         assert!(!dev.runners_new && dev.runners_breakout && !dev.runners_burst);
-        assert!(dev.runners_running, "kept from the register before");
+        assert!(!dev.runners_running, "kept from the register before");
+        assert!(!dev.runners_run, "kept from the register before");
         assert!(back.runner_tokens(NoticeKind::Burst).is_empty());
         // A file from before the opt-ins existed: new flags on, breakouts off.
         std::fs::write(
@@ -613,6 +672,8 @@ mod tests {
         assert!(old.runner_tokens(NoticeKind::Breakout).is_empty());
         assert_eq!(old.runner_tokens(NoticeKind::Burst).len(), 1);
         assert!(old.runner_tokens(NoticeKind::Running).is_empty());
+        // A record without the "Run +20%" field: on.
+        assert_eq!(old.runner_tokens(NoticeKind::Run).len(), 1);
     }
 
     /// A stub of Expo's two endpoints: records batches; the second token is "not registered".
@@ -663,6 +724,7 @@ mod tests {
                 title: "XLAB".into(),
                 body: "Crossed".into(),
                 data: json!({}),
+                runner: None,
             })
             .await
             .unwrap();
@@ -705,6 +767,7 @@ mod tests {
             title: "t".into(),
             body: "b".into(),
             data: json!({}),
+            runner: None,
         })
         .await
         .unwrap();

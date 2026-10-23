@@ -1,6 +1,6 @@
 //! The forward log: the live track record of every Rocket watch alert.
 //!
-//! `ARCHIVE_ROOT/rocket-watch/<trading date>.jsonl`, append-only, one JSON object per line, seven
+//! `ARCHIVE_ROOT/rocket-watch/<trading date>.jsonl`, append-only, one JSON object per line, nine
 //! kinds (all with `"v": 1`):
 //!
 //! - `alert` — `{kind, v, id, date, symbol, alert_ns, price, score, threshold, mode, reasons,
@@ -36,11 +36,20 @@
 //!   cont30, stopped, state, t20_s, mfe_pct, mae_pct, partial}` 30 minutes after a burst alert
 //!   (protocol §3: +10/20/30 % before −5 %, print by print; MFE and the MAE before it, in
 //!   percent), or at 20:00 ET / after a restart with `partial: true`.
-//! - `day` — `{kind, v, date, alerts, hits10, hits30, ran_later, ideal_threshold, strategy,
+//! - `running` — `{kind, v, id, date, symbol, alert_ns, price, score, reasons, strategy, version,
+//!   base_low, gain, req, dollars5, rvol30}` when a running entry enters (`super::running`).
+//! - `run` — `{kind, v, id, date, symbol, alert_ns, price, score, reasons, strategy, version,
+//!   start_ns, start_price, plus20_ns, early, exec_ns}` when a "Run +20%" entry enters
+//!   (`super::run`): `alert_ns` = `plus20_ns`, the second an early fire held (`early: true`) or
+//!   the mark slot's end, and `price` the last price or the close; `exec_ns` the triggering print.
+//!   Running and run rows also get `later` and `state` lines, never an `outcome` line, and do not
+//!   count in the `day` line's `alerts` or the history.
+//! - `day` — `{kind, v, date, alerts, hits10, hits30, ran_later, rows, ideal_threshold, strategy,
 //!   version}` at
 //!   20:00 ET (or at the next day's first barrier when the process was down at 20:00):
 //!   `ideal_threshold` is the score that would have given exactly the budget that day, the
-//!   adaptive threshold's prior for the next days.
+//!   adaptive threshold's prior for the next days; `rows` = `{runner, burst, running, run}`, the
+//!   day's rows by source (the owner's row budget across the four entry paths).
 //!
 //! Size: ~450 B per alert line, ~330 B per outcome, ~350 B per later line (two per alert),
 //! ~280 B per state line (typically 5–20 per alert), ~200 B per day line: about 30–70 KB a day at
@@ -81,6 +90,8 @@ pub struct Loaded {
     pub bursts: Vec<(Value, Option<Value>)>,
     /// Today's `running` lines (`super::running`), oldest first.
     pub running: Vec<Value>,
+    /// Today's `run` lines (`super::run`), oldest first.
+    pub runs: Vec<Value>,
     /// Up to [`HISTORY_DAYS`] earlier days, oldest first.
     pub days: Vec<DaySummary>,
     /// `(date, strategy, version, ideal_threshold)` from the earlier days' `day` lines.
@@ -257,6 +268,10 @@ impl RocketLog {
                 let kind = v.get("kind").and_then(Value::as_str).map(str::to_string);
                 if kind.as_deref() == Some("running") {
                     out.running.push(v);
+                    continue;
+                }
+                if kind.as_deref() == Some("run") {
+                    out.runs.push(v);
                     continue;
                 }
                 if !matches!(kind.as_deref(), Some("alert") | Some("burst")) {

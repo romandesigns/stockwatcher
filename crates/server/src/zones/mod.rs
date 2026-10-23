@@ -26,6 +26,26 @@
 //!   least 25 volume-counted trades and $25,000 from the start slot through `j`; no mark slot
 //!   ending within 30 minutes of the previous mark counts. Confirmed at `j`'s END (`plus20_ns`),
 //!   which is when the slot is complete: nothing later is read.
+//! - **The same trigger feeds the Runners "Run +20%" entry** (`crate::rocket`, owner
+//!   2026-10-22), with the start-price band widened to `$0.10–$25` ([`RUN_BAND_MICROS`]) and
+//!   its own refractory, so a `$0.10–$0.15` run never suppresses or creates a shelf: the shelves
+//!   keep the labels' `$0.15` floor ([`BAND_MICROS`]) and stay exactly the frozen definition.
+//!   For a start price of `$0.15` or more the two agree unless a `$0.10–$0.15` run came in the
+//!   30 minutes before. Each such run is queued for the Runners board ([`ZoneBoard::take_entries`])
+//!   when its mark slot is decided; one rule, computed once.
+//! - **Early fire** (owner, 2026-10-22: "many of these events happen within 15 seconds, 30
+//!   seconds and 1 min"; [`ZoneBoard::set_early`], on in the market): the Runners entry does not
+//!   wait for the mark slot to close. At every tick (once a wall second) the same trigger is read
+//!   on the slot in progress: its last price against the min close of the traded slots of the
+//!   15 minutes before it, the trade and dollar floors counted from the start slot up to now,
+//!   the same band. It fires the second it holds, guarded against one bad print (at least
+//!   [`EARLY_PRINTS`] prints of that slot at or over the mark, or the condition holding for
+//!   [`EARLY_HOLD_NS`]), outside the 15 s entry's refractory and with a 30-minute refractory of
+//!   its own. It is queued like a run ([`Run::early`], `plus20_ns` = the second it fired). The
+//!   15 s-close trigger stays the reference: it still runs, still confirms its own runs (the
+//!   Runners board keeps one row a symbol), and the shelves never see an early fire.
+//!   `zones::early_calib` (ignored, run by hand) replays archive days and counts the early fires
+//!   the 15 s closes never confirmed.
 //! - **Profile**: volume-counted prints from the first run's start-slot OPEN (start − 15 s) on,
 //!   binned at `tick × max(1, ceil(0.01 · P0 / tick))` ([`profile::bin_width`]), `P0` = the first
 //!   run's start price.
@@ -91,6 +111,8 @@
 //! run's retracement at entry) and `outcome` (`symbol, t_ns, outcome, resolved_ns`), so live
 //! performance can be scored exactly like the bake-off's files.
 
+#[cfg(test)]
+mod early_calib;
 pub mod profile;
 #[cfg(test)]
 mod tests;
@@ -118,8 +140,23 @@ pub const GAIN_PCT: f64 = 20.0;
 const LEG_SLOTS: i64 = 60;
 /// After a mark at T no mark slot ending before T + 30 min counts.
 const REFRACTORY_NS: i64 = 30 * MIN_NS;
-/// The research band on the run's start price (micro-dollars), `in_band` of the labels.
+/// The research band on the run's start price (micro-dollars), `in_band` of the labels: the
+/// shelves' runs.
 pub const BAND_MICROS: (i64, i64) = (150_000, 25_000_000);
+/// The Runners "Run +20%" entry's band on the start price (micro-dollars, owner 2026-10-22):
+/// the same trigger as the shelves' runs with a `$0.10` floor (module docs).
+pub const RUN_BAND_MICROS: (i64, i64) = (100_000, 25_000_000);
+/// Runs queued for the Runners board and not taken yet are dropped past this (a board ticked
+/// without one: tests, a rebuild).
+const MAX_ENTRIES: usize = 4096;
+/// On a restart, a rebuilt symbol's runs reach the Runners board only when their mark slot ended
+/// this recently: an older one is not news, and its row (if it had one) comes back from the
+/// Runners forward log instead.
+pub const ADOPT_FRESH_NS: i64 = 2 * MIN_NS;
+/// The early fire's guard against one bad print: this many prints of the slot in progress at or
+/// over the mark, or the condition holding for [`EARLY_HOLD_NS`].
+pub const EARLY_PRINTS: usize = 2;
+pub const EARLY_HOLD_NS: i64 = 2 * SEC_NS;
 /// Only symbols printing in this wider band get a state (micro-dollars).
 const WIDE_MICROS: (i64, i64) = (100_000, 40_000_000);
 const MIN_TRADES: f64 = 25.0;
@@ -156,6 +193,15 @@ pub struct Run {
     pub start_price: f64,
     /// The mark slot's END: when the run became known.
     pub plus20_ns: i64,
+    /// The mark slot's close (at least 1.2 × `start_price`).
+    pub close: f64,
+    /// Execution time of the print that made the mark (the mark slot's closing print, or for an
+    /// early fire the last print it read): the start of the push's latency budget.
+    pub exec_ns: i64,
+    /// A per-second early fire on the slot in progress ([`ZoneBoard::set_early`]), not the 15 s
+    /// close's confirmation: `plus20_ns` is then the wall second it fired at and `close` the last
+    /// price. Never a shelf's run.
+    pub early: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -424,6 +470,13 @@ struct Sym {
     /// (slot, trades, dollars) of the decided slots of the last 61.
     liq: VecDeque<(i64, f64, f64)>,
     refr: Option<i64>,
+    /// The Runners entry's refractory ([`RUN_BAND_MICROS`]): its own, so the shelves' runs stay
+    /// the frozen definition.
+    run_refr: Option<i64>,
+    /// The early fire's own refractory (its last fire), and since when its condition has held
+    /// without the 2-print guard passing ([`Sym::early`]).
+    early_refr: Option<i64>,
+    early_hold: Option<i64>,
     day_high: f64,
     prev_close: Option<f64>,
     /// Unconfirmed: volume per (slot, price micros, shares) over the last 61 slots; 12 bytes an
@@ -444,6 +497,9 @@ impl Sym {
             mins: VecDeque::new(),
             liq: VecDeque::new(),
             refr: None,
+            run_refr: None,
+            early_refr: None,
+            early_hold: None,
             day_high: f64::NAN,
             prev_close: None,
             buf: VecDeque::new(),
@@ -517,8 +573,10 @@ impl Sym {
         changed
     }
 
-    /// Decides every slot up to `due` that has prints. Returns (changed, runs confirmed).
-    fn process(&mut self, due: i64, t0: i64, out: &mut Vec<Run>) -> bool {
+    /// Decides every slot up to `due` that has prints: the shelves' runs confirmed go to `out`,
+    /// the Runners entry's runs ([`RUN_BAND_MICROS`]) to `entries`. Returns whether anything
+    /// shown changed.
+    fn process(&mut self, due: i64, t0: i64, out: &mut Vec<Run>, entries: &mut Vec<Run>) -> bool {
         let mut ready: Vec<Print> = Vec::new();
         let mut keep: Vec<Print> = Vec::new();
         for p in self.tail.drain(..) {
@@ -538,7 +596,7 @@ impl Sym {
             while j < ready.len() && (ready[j].exec - t0).div_euclid(BAR_NS) == k {
                 j += 1;
             }
-            changed |= self.slot(k, &ready[i..j], t0, out);
+            changed |= self.slot(k, &ready[i..j], t0, out, entries);
             i = j;
         }
         self.done = self.done.max(due);
@@ -554,16 +612,25 @@ impl Sym {
         changed
     }
 
-    fn slot(&mut self, k: i64, ps: &[Print], t0: i64, out: &mut Vec<Run>) -> bool {
+    fn slot(
+        &mut self,
+        k: i64,
+        ps: &[Print],
+        t0: i64,
+        out: &mut Vec<Run>,
+        entries: &mut Vec<Run>,
+    ) -> bool {
         let end = t0 + (k + 1) * BAR_NS;
         let mut changed = false;
         let mut close = None;
+        let mut close_exec = 0;
         let mut high = f64::NAN;
         let (mut trades, mut dollars) = (0.0, 0.0);
         for p in ps {
             let px = p.price as f64 / 1e6;
             if p.ohlc {
                 close = Some(px);
+                close_exec = p.exec;
                 high = if high.is_nan() { px } else { high.max(px) };
                 if let Some(sh) = self.shelf.as_mut() {
                     changed |= sh.print(p.exec, px);
@@ -594,34 +661,22 @@ impl Sym {
         let Some(close) = close else {
             return changed;
         };
-        // The run trigger (`rockets(d, 20)`), on the traded slots.
+        // The run trigger (`rockets(d, 20)`), on the traded slots: once for the shelves (the
+        // labels' band), once for the Runners entry (its wider band, its own refractory).
         while self.mins.front().is_some_and(|&(i, _)| i <= k - LEG_SLOTS) {
             self.mins.pop_front();
         }
-        let in_refr = self.refr.is_some_and(|t| end < t + REFRACTORY_NS);
-        if !in_refr && let Some(&(ki, l)) = self.mins.front() {
-            let lm = (l * 1e6).round() as i64;
-            let factor = 1.0 + GAIN_PCT / 100.0;
-            if close >= factor * l - 1e-12 && (BAND_MICROS.0..=BAND_MICROS.1).contains(&lm) {
-                let (mut tr, mut dl) = (0.0, 0.0);
-                for &(kk, t, d) in &self.liq {
-                    if kk >= ki && kk <= k {
-                        tr += t;
-                        dl += d;
-                    }
-                }
-                if tr >= MIN_TRADES && dl >= MIN_DOLLARS {
-                    let run = Run {
-                        start_ns: t0 + (ki + 1) * BAR_NS,
-                        start_price: l,
-                        plus20_ns: end,
-                    };
-                    self.confirm(run, ki);
-                    self.refr = Some(end);
-                    out.push(run);
-                    changed = true;
-                }
-            }
+        if let Some(mut run) = self.trigger(k, t0, close, self.refr, BAND_MICROS) {
+            run.exec_ns = close_exec;
+            self.confirm(run, (run.start_ns - t0) / BAR_NS - 1);
+            self.refr = Some(end);
+            out.push(run);
+            changed = true;
+        }
+        if let Some(mut run) = self.trigger(k, t0, close, self.run_refr, RUN_BAND_MICROS) {
+            run.exec_ns = close_exec;
+            self.run_refr = Some(end);
+            entries.push(run);
         }
         while self.mins.back().is_some_and(|&(_, c)| c >= close) {
             self.mins.pop_back();
@@ -632,6 +687,134 @@ impl Sym {
         }
         self.prev_close = Some(close);
         changed
+    }
+
+    /// The run trigger at traded slot `k` (its close `close`, `mins` already trimmed to the 15
+    /// minutes before it) with a start-price `band` and a refractory `refr` (the last mark's
+    /// end): the run it confirms, if any (module docs, "Run").
+    fn trigger(
+        &self,
+        k: i64,
+        t0: i64,
+        close: f64,
+        refr: Option<i64>,
+        band: (i64, i64),
+    ) -> Option<Run> {
+        let end = t0 + (k + 1) * BAR_NS;
+        if refr.is_some_and(|t| end < t + REFRACTORY_NS) {
+            return None;
+        }
+        let &(ki, l) = self.mins.front()?;
+        let lm = (l * 1e6).round() as i64;
+        let factor = 1.0 + GAIN_PCT / 100.0;
+        if close < factor * l - 1e-12 || !(band.0..=band.1).contains(&lm) {
+            return None;
+        }
+        let (mut tr, mut dl) = (0.0, 0.0);
+        for &(kk, t, d) in &self.liq {
+            if kk >= ki && kk <= k {
+                tr += t;
+                dl += d;
+            }
+        }
+        (tr >= MIN_TRADES && dl >= MIN_DOLLARS).then_some(Run {
+            start_ns: t0 + (ki + 1) * BAR_NS,
+            start_price: l,
+            plus20_ns: end,
+            close,
+            exec_ns: 0,
+            early: false,
+        })
+    }
+
+    /// The Runners entry's early fire at the market clock `now` (module docs, "Early fire"): the
+    /// run trigger read on the slot in progress, with the prints that arrived by `now`. Its last
+    /// price against the min close of the traded slots of the 15 minutes before it (decided ones
+    /// and complete ones not decided yet), the trade and dollar floors counted from the start
+    /// slot up to now, the `$0.10–$25` band; outside both refractories (the 15 s entry's and its
+    /// own). Guarded against a single bad print: at least [`EARLY_PRINTS`] prints of the slot at
+    /// or over the mark, or the condition held for [`EARLY_HOLD_NS`].
+    fn early(&mut self, now: i64, t0: i64) -> Option<Run> {
+        let cool = |r: Option<i64>| r.is_some_and(|t| now < t + REFRACTORY_NS);
+        if cool(self.run_refr) || cool(self.early_refr) {
+            self.early_hold = None;
+            return None;
+        }
+        let mut ps: Vec<Print> = self
+            .tail
+            .iter()
+            .filter(|p| p.exec <= now)
+            .copied()
+            .collect();
+        ps.sort_by_key(|p| p.exec);
+        let Some(last) = ps.iter().rev().find(|p| p.ohlc).copied() else {
+            self.early_hold = None;
+            return None;
+        };
+        let slot = |p: &Print| (p.exec - t0).div_euclid(BAR_NS);
+        let kc = slot(&last);
+        let price = last.price as f64 / 1e6;
+        // The 15 minutes before the slot in progress: the decided traded slots (the monotone
+        // deque, its in-window front is the min, the latest at it) and the complete slots whose
+        // decision is still to come (their last OHLC print).
+        let mut lo: Option<(i64, f64)> = self
+            .mins
+            .iter()
+            .find(|&&(i, _)| i > kc - LEG_SLOTS && i < kc)
+            .copied();
+        let mut pending: Vec<(i64, f64)> = Vec::new();
+        for p in ps.iter().filter(|p| p.ohlc && slot(p) < kc) {
+            match pending.last_mut() {
+                Some((k, c)) if *k == slot(p) => *c = p.price as f64 / 1e6,
+                _ => pending.push((slot(p), p.price as f64 / 1e6)),
+            }
+        }
+        for (k, c) in pending {
+            if k > kc - LEG_SLOTS && lo.is_none_or(|(_, l)| c <= l) {
+                lo = Some((k, c));
+            }
+        }
+        let held = lo.and_then(|(ki, l)| {
+            let lm = (l * 1e6).round() as i64;
+            let mark = (1.0 + GAIN_PCT / 100.0) * l - 1e-12;
+            if price < mark || !(RUN_BAND_MICROS.0..=RUN_BAND_MICROS.1).contains(&lm) {
+                return None;
+            }
+            let (mut tr, mut dl) = (0.0, 0.0);
+            for &(kk, t, d) in &self.liq {
+                if kk >= ki {
+                    tr += t;
+                    dl += d;
+                }
+            }
+            for p in ps.iter().filter(|p| p.vol && slot(p) >= ki) {
+                tr += 1.0;
+                dl += p.size * p.price as f64 / 1e6;
+            }
+            let over = ps
+                .iter()
+                .filter(|p| p.ohlc && slot(p) == kc && p.price as f64 / 1e6 >= mark)
+                .count();
+            (tr >= MIN_TRADES && dl >= MIN_DOLLARS).then_some((ki, l, over))
+        });
+        let Some((ki, l, over)) = held else {
+            self.early_hold = None;
+            return None;
+        };
+        let since = *self.early_hold.get_or_insert(now);
+        if over < EARLY_PRINTS && now - since < EARLY_HOLD_NS {
+            return None;
+        }
+        self.early_hold = None;
+        self.early_refr = Some(now);
+        Some(Run {
+            start_ns: t0 + (ki + 1) * BAR_NS,
+            start_price: l,
+            plus20_ns: now,
+            close: price,
+            exec_ns: last.exec,
+            early: true,
+        })
     }
 
     fn confirm(&mut self, run: Run, start_k: i64) {
@@ -696,6 +879,11 @@ pub struct ZoneBoard {
     revision: u64,
     log: Vec<(NaiveDate, String)>,
     logged: HashSet<String>,
+    /// The Runners entry's runs ([`RUN_BAND_MICROS`]) not taken yet ([`ZoneBoard::take_entries`]).
+    entries: Vec<(Arc<str>, Run)>,
+    /// The Runners entry's per-second early fire ([`ZoneBoard::set_early`]); off on a board that
+    /// [`ZoneBoard::new`] made until the market turns it on.
+    early: bool,
 }
 
 fn round4(x: f64) -> f64 {
@@ -722,6 +910,11 @@ impl ZoneBoard {
 
     pub fn enabled(&self) -> bool {
         self.enabled
+    }
+
+    /// Turns the Runners entry's per-second early fire on or off (module docs, "Early fire").
+    pub fn set_early(&mut self, on: bool) {
+        self.early = on;
     }
 
     /// Live: write the forward log, skipping the keys already in today's file.
@@ -839,17 +1032,23 @@ impl ZoneBoard {
         }
         let due = ((now - SETTLE_NS - self.t0).div_euclid(BAR_NS) - 1).min(NSLOT - 1);
         if due <= self.due {
+            self.early_tick(now);
             return false;
         }
         self.due = due;
         let before = self.revision;
         let t0 = self.t0;
         let mut runs = Vec::new();
+        let mut entries = Vec::new();
         let dirty = std::mem::take(&mut self.dirty);
         for i in dirty {
             let was = self.syms[i].shelf.is_some();
             runs.clear();
-            let changed = self.syms[i].process(due, t0, &mut runs);
+            entries.clear();
+            let changed = self.syms[i].process(due, t0, &mut runs, &mut entries);
+            for r in &entries {
+                self.push_entry(self.syms[i].symbol.clone(), *r);
+            }
             if self.syms[i].dirty {
                 self.dirty.push(i);
             }
@@ -887,7 +1086,37 @@ impl ZoneBoard {
                 }
             }
         }
+        self.early_tick(now);
         self.revision != before
+    }
+
+    /// The Runners entry's early fire (module docs, "Early fire") for every symbol with prints
+    /// not decided yet, after the decisions this tick made.
+    fn early_tick(&mut self, now: i64) {
+        if !self.early || now >= self.t0 + NSLOT * BAR_NS {
+            return;
+        }
+        let t0 = self.t0;
+        for i in self.dirty.clone() {
+            if let Some(r) = self.syms[i].early(now, t0) {
+                self.push_entry(self.syms[i].symbol.clone(), r);
+            }
+        }
+    }
+
+    fn push_entry(&mut self, symbol: Arc<str>, run: Run) {
+        if self.entries.len() >= MAX_ENTRIES {
+            self.entries.remove(0);
+        }
+        self.entries.push((symbol, run));
+    }
+
+    /// The Runners "Run +20%" entry's runs decided since the last call, oldest first: every run
+    /// the trigger confirmed with a start price in [`RUN_BAND_MICROS`], at most one per symbol
+    /// per 30 minutes (module docs). The Runners board makes its rows from these
+    /// (`crate::rocket::RocketBoard::add_runs`).
+    pub fn take_entries(&mut self) -> Vec<(Arc<str>, Run)> {
+        std::mem::take(&mut self.entries)
     }
 
     fn log_line(&mut self, k: String, line: Value) {
@@ -990,6 +1219,12 @@ impl ZoneBoard {
             self.roll(date, t0, ord);
         } else if self.date != Some(date) {
             return; // the live board is on a later day
+        }
+        // The rebuilt day's Runners entries: only a fresh one is news ([`ADOPT_FRESH_NS`]).
+        for (sym, r) in rebuilt.take_entries() {
+            if r.plus20_ns >= now - ADOPT_FRESH_NS {
+                self.push_entry(sym, r);
+            }
         }
         let s = rebuilt.syms.swap_remove(ri);
         let i = self.sym_index(symbol);

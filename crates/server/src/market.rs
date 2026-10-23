@@ -188,7 +188,7 @@ pub const QUOTES_INTERVAL: Duration = Duration::from_secs(1);
 /// | `RUNNERS_SCORER` | `r0` | the Runners strategy: `r0` (`precursors-R0`), `r2` (`precursors-R2`, LightGBM) or `placeholder` (`placeholder-b2`); `crate::rocket::ScorerChoice` |
 /// | `BURST_ALERTS` | `1` | live market with `ROCKET_WATCH`: buying-burst rows in the Runners panel and their phone push (`crate::rocket::burst`, the research's V3-5 detector): O(1) per print, a 5 s check over the symbols that printed in the last 15 s; never on a replay |
 /// | `BURST_ALERTS_PER_DAY` | `20` | the frozen threshold to alert at: `10`, `20` or `40` (the alert counts it gave a day on the research's DEV days) |
-/// | `VOLUME_SHELVES` | `1` | with `ROCKET_WATCH`: volume shelves (`crate::zones`, the zones bake-off's winner) for every symbol with a confirmed +20 % run today, in the Runners frame's `zones` and on the chart; the live market keeps its forward log under `ARCHIVE_ROOT/zones/` |
+/// | `VOLUME_SHELVES` | `1` | with `ROCKET_WATCH`: volume shelves (`crate::zones`, the zones bake-off's winner) for every symbol with a confirmed +20 % run today, in the Runners frame's `zones` and on the chart; the live market keeps its forward log under `ARCHIVE_ROOT/zones/`. Its run trigger also feeds the Runners "Run +20%" entry (`crate::rocket::run`), so `0` turns that off too |
 /// | `BURST_THRESHOLD` | unset | a burst model probability threshold in (0, 1), overriding `BURST_ALERTS_PER_DAY`'s |
 /// | `ADMISSION_JOURNAL` | `0` | live with a recorder: write the admission journal beside the recording (`crate::admit`; ~190–270 B per print, so off for whole-market SIP: see `Market::init_history`) |
 #[derive(Clone, Debug)]
@@ -764,9 +764,12 @@ impl Market {
     /// A fresh volume-shelf board (`crate::zones`) for a new `Core`: off with `ROCKET_WATCH=0`
     /// or `VOLUME_SHELVES=0` (the shelves ride in the Runners frame).
     fn new_zone_board(&self) -> crate::zones::ZoneBoard {
-        crate::zones::ZoneBoard::new(
+        let mut z = crate::zones::ZoneBoard::new(
             self.0.rocket_on.load(Ordering::Relaxed) && self.0.zones_on.load(Ordering::Relaxed),
-        )
+        );
+        // The Runners "Run +20%" entry fires within seconds (crate::zones, "Early fire").
+        z.set_early(true);
+        z
     }
 
     /// Turns the volume shelves on or off from now (production reads `VOLUME_SHELVES` once at
@@ -2784,15 +2787,18 @@ impl Market {
             if core.rebuilding || !core.rocket.enabled() {
                 return false;
             }
-            // The shelves first, so this frame carries the slot just decided.
+            // The shelves first, so this frame carries the slot just decided; and their +20 %
+            // runs become Runners rows at this tick (crate::rocket::run).
             core.zones.tick(clock.now.0);
             let zones_log = core.zones.take_log();
             let Core {
                 rocket,
                 quotes,
                 context,
+                zones,
                 ..
             } = &mut *core;
+            rocket.add_runs(zones.take_entries());
             rocket.tick(clock.now.0, |s| {
                 quotes.get(s).and_then(|r| r.prev_close).map(|p| p.to_f64())
             });
@@ -3830,6 +3836,7 @@ mod tests {
             from_flag_pct: Some(0.0),
             reasons: vec![],
             since_start_min: None,
+            exec_ns: None,
         };
         for mode in [ClockMode::Live, ClockMode::Replay] {
             let market = Market::idle(mode, "test", None);

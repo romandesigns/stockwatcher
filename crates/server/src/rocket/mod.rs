@@ -26,7 +26,17 @@
 //!   price-relative rule (a move scaled by the symbol's own daily range, a fresh session high,
 //!   real money), not a forecast. Its rows ([`AlertKind::Running`]) are tracked like the others,
 //!   logged as `running` lines, at most one per symbol a day and none for a symbol that already
-//!   has a row; their push ([`NoticeKind::Running`]) is opt-in per phone. Not in the day record.
+//!   has a row; their push ([`NoticeKind::Running`]) is per phone, on by default. Not in the day record.
+//! - [`run`]: the "Run +20%" entry, the research labeller's +20 % leg (`rockets(d, 20)`) in
+//!   `$0.10–$25`, computed once by the volume-shelf module's run trigger (`crate::zones`) and
+//!   handed here ([`RocketBoard::add_runs`]). Its rows ([`AlertKind::Run`]) appear within
+//!   seconds of the print that makes the leg (its early fire, [`run`]), are tracked like the
+//!   others, logged as `run` lines and restored after a restart; one per symbol a day and none for a symbol that already has a row (an R2 flag, a
+//!   burst or a running entry). Push ([`NoticeKind::Run`]) is per phone, on by default.
+//!   Not in the day record, but the `day` line counts each source's rows (`rows`).
+//!
+//! So a row reaches Runners four ways: the strategy's flag (R2), a buying burst, a running entry
+//! or a +20 % run.
 //!
 //! # Alert policy
 //!
@@ -76,6 +86,7 @@ pub mod features;
 pub mod log;
 pub mod r0;
 pub mod r2;
+pub mod run;
 pub mod running;
 pub mod scorer;
 pub mod track;
@@ -120,8 +131,10 @@ pub enum NoticeKind {
     Breakout,
     /// A new buying-burst row ([`burst`]).
     Burst,
-    /// A new running row ([`running`]); per-phone opt-in, off by default.
+    /// A new running row ([`running`]); per-phone switch, on by default.
     Running,
+    /// A new "Run +20%" row ([`run`]); per-phone switch, on by default.
+    Run,
 }
 
 impl NoticeKind {
@@ -131,6 +144,7 @@ impl NoticeKind {
             NoticeKind::Breakout => "breakout",
             NoticeKind::Burst => "burst",
             NoticeKind::Running => "running",
+            NoticeKind::Run => "run",
         }
     }
 }
@@ -143,6 +157,8 @@ pub enum AlertKind {
     Burst,
     /// A running entry ([`running`]).
     Running,
+    /// A "Run +20%" entry ([`run`]).
+    Run,
 }
 
 impl AlertKind {
@@ -152,6 +168,7 @@ impl AlertKind {
             AlertKind::Runner => "runner",
             AlertKind::Burst => "burst",
             AlertKind::Running => "running",
+            AlertKind::Run => "run",
         }
     }
 }
@@ -196,6 +213,10 @@ pub struct Notice {
     pub reasons: Vec<String>,
     /// A burst: minutes since it started.
     pub since_start_min: Option<f64>,
+    /// Execution time of the print that triggered it, when the source knows it (a "Run +20%"
+    /// row: [`crate::zones::Run::exec_ns`]): the start of the push's latency log
+    /// (`crate::alerts::runners`, "Latency").
+    pub exec_ns: Option<i64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -336,8 +357,9 @@ impl Alert {
 
     /// `pending` | `rocketed` | `late` | `moved` | `faded` (module docs, "Outcomes").
     pub fn state(&self) -> &'static str {
-        if self.kind == AlertKind::Burst {
-            // A burst row has its own strict outcome (`BurstRow::outcome`), not this one.
+        if self.kind != AlertKind::Runner {
+            // A burst row has its own strict outcome (`BurstRow::outcome`), not this one; a
+            // running or run row has none (settled from the start, it would read "faded").
             "pending"
         } else if self.hit10() {
             "rocketed"
@@ -370,6 +392,18 @@ impl Alert {
             "score": self.score, "reasons": self.reasons, "strategy": self.strategy,
             "version": self.version, "base_low": e.base_low, "gain": e.gain, "req": e.req,
             "dollars5": e.dollars5, "rvol30": e.rvol30,
+        })
+        .to_string()
+    }
+
+    /// The `run` log line: the entry and the run it came from (`crate::zones::Run`).
+    fn run_line(&self, date: NaiveDate, r: &crate::zones::Run) -> String {
+        json!({
+            "kind": "run", "v": 1, "id": self.id, "date": date.to_string(),
+            "symbol": &*self.symbol, "alert_ns": self.at_ns, "price": self.price,
+            "score": self.score, "reasons": self.reasons, "strategy": self.strategy,
+            "version": self.version, "start_ns": r.start_ns, "start_price": r.start_price,
+            "plus20_ns": r.plus20_ns, "early": r.early, "exec_ns": r.exec_ns,
         })
         .to_string()
     }
@@ -531,6 +565,8 @@ pub struct RocketBoard {
     running_facts: HashMap<String, running::Fact>,
     running_facts_date: Option<NaiveDate>,
     running_facts_wanted: Option<NaiveDate>,
+    /// The volume-shelf module's +20 % runs not made into rows yet ([`RocketBoard::add_runs`]).
+    runs: Vec<(Arc<str>, crate::zones::Run)>,
 }
 
 impl RocketBoard {
@@ -563,7 +599,20 @@ impl RocketBoard {
             running_facts: HashMap::new(),
             running_facts_date: None,
             running_facts_wanted: None,
+            runs: Vec::new(),
         }
+    }
+
+    /// The volume-shelf module's +20 % runs (`crate::zones::ZoneBoard::take_entries`), made into
+    /// "Run +20%" rows ([`run`]) at the next [`RocketBoard::tick`]. The market hands them over
+    /// under the core lock right before the tick, so a row appears with its mark slot's decision.
+    pub fn add_runs(&mut self, runs: Vec<(Arc<str>, crate::zones::Run)>) {
+        if !self.enabled {
+            return;
+        }
+        self.runs.extend(runs);
+        let over = self.runs.len().saturating_sub(4096);
+        self.runs.drain(..over);
     }
 
     /// The trading date whose running facts ([`running::facts`]) the market should load.
@@ -832,6 +881,8 @@ impl RocketBoard {
                 "kind": "day", "v": 1, "date": date.to_string(), "alerts": s.alerts,
                 "hits10": s.hits10, "hits30": s.hits30,
                 "ran_later": self.runners().filter(|a| a.ran_later()).count(),
+                // Every source's rows that day: the owner's row budget across the four paths.
+                "rows": self.rows_by_kind(),
                 "ideal_threshold": ideal.and_then(finite),
                 "strategy": self.scorer.id(), "version": self.scorer.version(),
             })
@@ -846,6 +897,15 @@ impl RocketBoard {
             ));
         }
         self.revision += 1;
+    }
+
+    /// Today's rows by source: `{runner, burst, running, run}`.
+    fn rows_by_kind(&self) -> Value {
+        let n = |k: AlertKind| self.alerts.iter().filter(|a| a.kind == k).count();
+        json!({
+            "runner": n(AlertKind::Runner), "burst": n(AlertKind::Burst),
+            "running": n(AlertKind::Running), "run": n(AlertKind::Run),
+        })
     }
 
     fn summary(&self, date: NaiveDate) -> DaySummary {
@@ -919,6 +979,8 @@ impl RocketBoard {
             self.processed = b.key;
             self.barrier(&b, &prev_close);
         }
+        // After the barrier, so an R2 flag or a running entry at the run's own slot keeps its row.
+        self.run_entries();
         if end_of_day {
             self.finish_day(now);
         }
@@ -986,6 +1048,7 @@ impl RocketBoard {
                 from_flag_pct: a.gain_pct().map(round2),
                 reasons: alert.reasons.clone(),
                 since_start_min: Some((a.at_ns - p.ep_start_ns) as f64 / MIN_NS as f64),
+                exec_ns: None,
             });
             if self.alerts.len() < 2 * MAX_ALERTS_PER_DAY {
                 self.alerts.push(alert);
@@ -1116,6 +1179,7 @@ impl RocketBoard {
                 from_flag_pct: Some(0.0),
                 reasons: a.reasons.clone(),
                 since_start_min: None,
+                exec_ns: None,
             });
             self.alerts.push(a);
             self.revision += 1;
@@ -1185,6 +1249,72 @@ impl RocketBoard {
                 from_flag_pct: Some(round2(e.gain * 100.0)),
                 reasons: a.reasons.clone(),
                 since_start_min: None,
+                exec_ns: None,
+            });
+            self.alerts.push(a);
+            self.revision += 1;
+        }
+    }
+
+    /// New "Run +20%" rows ([`run`]) from the runs handed over ([`RocketBoard::add_runs`]): in the
+    /// order they were decided, none for a symbol with a row today, at most [`run::MAX_PER_DAY`].
+    /// A run from another day is dropped.
+    fn run_entries(&mut self) {
+        let Some(date) = self.date else {
+            self.runs.clear();
+            return;
+        };
+        for (symbol, r) in std::mem::take(&mut self.runs) {
+            let slot = (r.plus20_ns - self.t0).div_euclid(BAR_NS) - 1;
+            if !(0..NSLOT).contains(&slot) {
+                continue; // another day's
+            }
+            let today = self
+                .alerts
+                .iter()
+                .filter(|a| a.kind == AlertKind::Run)
+                .count();
+            if today >= run::MAX_PER_DAY || self.alerts.len() >= 2 * MAX_ALERTS_PER_DAY {
+                break;
+            }
+            if self.alerts.iter().any(|a| a.symbol == symbol) {
+                continue;
+            }
+            let a = Alert {
+                id: format!("{date}-{symbol}-g{slot}"),
+                symbol: symbol.clone(),
+                at_ns: r.plus20_ns,
+                price: r.close,
+                score: run::score(&r),
+                threshold: 1.0,
+                reasons: run::reasons(&r),
+                strategy: run::STRATEGY.to_string(),
+                version: run::VERSION.to_string(),
+                // The Runners strict outcome (a +30 % rocket mark) does not apply: settled from
+                // the start, like a running row. Tracked from the mark slot on.
+                outcome: Outcome {
+                    checked: features::key_of(self.ord, slot),
+                    high: f64::NAN,
+                    low: f64::NAN,
+                    mark: None,
+                    settled: true,
+                    partial: false,
+                },
+                track: Track::new(r.plus20_ns, r.close),
+                kind: AlertKind::Run,
+                burst: None,
+            };
+            self.pending.push((date, a.run_line(date, &r)));
+            self.notice(Notice {
+                kind: NoticeKind::Run,
+                alert_id: a.id.clone(),
+                symbol: a.symbol.to_string(),
+                at_ns: a.at_ns,
+                price: a.price,
+                from_flag_pct: Some(round2(run::gain(&r) * 100.0)),
+                reasons: a.reasons.clone(),
+                since_start_min: Some((r.plus20_ns - r.start_ns) as f64 / MIN_NS as f64),
+                exec_ns: Some(r.exec_ns),
             });
             self.alerts.push(a);
             self.revision += 1;
@@ -1284,6 +1414,7 @@ impl RocketBoard {
                         from_flag_pct: a.track.pct(tr.price).map(round2),
                         reasons: a.reasons.clone(),
                         since_start_min: None,
+                        exec_ns: None,
                     });
                 if let Some(n) = breakout {
                     self.notice(n);
@@ -1332,7 +1463,12 @@ impl RocketBoard {
             .running
             .into_iter()
             .map(|v| (AlertKind::Running, v, None));
-        for (kind, v, o) in today_rows.chain(burst_rows).chain(running_rows) {
+        let run_rows = loaded.runs.into_iter().map(|v| (AlertKind::Run, v, None));
+        for (kind, v, o) in today_rows
+            .chain(burst_rows)
+            .chain(running_rows)
+            .chain(run_rows)
+        {
             let is_burst = kind == AlertKind::Burst;
             let (Some(symbol), Some(at_ns)) = (
                 v.get("symbol").and_then(Value::as_str),
@@ -1445,9 +1581,9 @@ impl RocketBoard {
                 }
                 a.track.transitions = n;
             }
-            if kind == AlertKind::Running {
-                // Its strict outcome never applies (`running_entries`).
-                a.kind = AlertKind::Running;
+            if matches!(kind, AlertKind::Running | AlertKind::Run) {
+                // Its strict outcome never applies (`running_entries`, `run_entries`).
+                a.kind = kind;
                 a.outcome.settled = true;
                 if self.alerts.len() < 2 * MAX_ALERTS_PER_DAY {
                     self.alerts.push(a);

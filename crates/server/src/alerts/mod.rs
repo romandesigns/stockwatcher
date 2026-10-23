@@ -582,6 +582,7 @@ impl Task {
         let tokens = self.devices.runner_tokens(n.kind);
         let now_et = et(now);
         let decision = self.runners.decide(
+            n.kind,
             &n.symbol,
             tokens.len(),
             &self.prefs,
@@ -603,6 +604,14 @@ impl Task {
             title,
             body,
             data,
+            // Sent at once, latency logged (runners, "Latency").
+            runner: Some(push::RunnerLatency {
+                symbol: n.symbol.clone(),
+                kind,
+                exec_ns: n.exec_ns,
+                decided_ns: n.at_ns,
+                queued_ns: now.saturating_mul(1_000_000),
+            }),
         };
         if self.pusher.try_send(job).is_err() {
             tracing::warn!(symbol = %n.symbol, kind, "runners push: push queue full or closed; not sent");
@@ -723,6 +732,7 @@ impl Task {
                         body,
                         // The app opens its Alerts tab on a tap (apps/mobile src/notifications).
                         data: json!({ "alertId": alert_id, "symbol": symbol, "eventId": id, "url": "stockwatcher://alerts" }),
+                        runner: None,
                     };
                     if self.pusher.try_send(job).is_err() {
                         event.phone = "failed".into();
@@ -903,6 +913,7 @@ mod tests {
             from_flag_pct: Some(0.0),
             reasons: vec!["volume 9x pace".into()],
             since_start_min: None,
+            exec_ns: None,
         }
     }
 
@@ -944,6 +955,7 @@ mod tests {
                 breakout: Some(true),
                 burst: Some(false),
                 running: None,
+                run: None,
             },
         ));
         // Each register answers with an alerts.status frame once handled.
@@ -991,7 +1003,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(j.tokens, vec!["ExponentPushToken[fold]".to_string()]);
-        assert_eq!(j.title, "EEE buying burst $2.50");
+        assert_eq!(j.title, "EEE · Buying burst · $2.50");
         assert_eq!(j.data["kind"], "runners.burst");
         // Old news (a stalled board catching up) is not pushed.
         sink.offer_runner(notice(NoticeKind::New, "OLD", now_ms() - 10 * 60_000));

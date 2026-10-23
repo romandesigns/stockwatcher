@@ -23,8 +23,8 @@
 //!    minutes' volume at least `RVOL30` × the symbol's 30-minute share of its ADV30 (skipped when
 //!    the ADV is unknown).
 //! 4. **In band** `$0.10–$25` at the close, and the symbol has no row today (a running entry,
-//!    an R2 flag or a burst): one row per symbol a day; its momentum states follow the later
-//!    legs.
+//!    an R2 flag, a burst or a "Run +20%" row, [`super::run`]): one row per symbol a day; its
+//!    momentum states follow the later legs.
 //!
 //! Causal: everything is read from bars completed by the barrier and facts from before the day.
 //! Cheap: one pass over the ring (≤ 256 slots) for the symbols whose barrier bar traded, the

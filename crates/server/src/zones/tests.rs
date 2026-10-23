@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use market_events::{Price, Trade, UnixNanos};
 use serde_json::Value;
@@ -488,4 +488,269 @@ fn cost() {
         eprintln!("zones cost: {s} profile {p} B");
         assert!(p < 16_384);
     }
+}
+
+/// The Runners "Run +20%" entry (`crate::rocket::run`) is this trigger with a `$0.10` floor and
+/// its own refractory: on the research DEV day its runs are exactly the shelves' runs (every
+/// start there is over `$0.15`), a `$0.12` start gets an entry but no shelf, and a second leg
+/// inside 30 minutes gets neither.
+#[test]
+fn the_runners_entry_is_the_same_trigger_with_a_ten_cent_floor() {
+    let mut b = ZoneBoard::new(true);
+    for r in dev_day() {
+        feed(&mut b, &r);
+    }
+    end_of_day(&mut b);
+    let mut want: Vec<(String, Run)> = Vec::new();
+    for sym in ["GENK", "ROMA", "AMOD"] {
+        for r in &b.shelf(sym).unwrap().runs {
+            want.push((sym.to_string(), *r));
+        }
+    }
+    let mut got: Vec<(String, Run)> = b
+        .take_entries()
+        .into_iter()
+        .map(|(s, r)| (s.to_string(), r))
+        .collect();
+    let order = |v: &mut Vec<(String, Run)>| {
+        v.sort_by(|x, y| (x.1.plus20_ns, &x.0).cmp(&(y.1.plus20_ns, &y.0)));
+    };
+    order(&mut want);
+    order(&mut got);
+    assert_eq!(got.len(), 3, "{got:?}");
+    assert_eq!(got, want);
+    assert!(b.take_entries().is_empty(), "taken once");
+
+    let t0 = day_t0();
+    let ts: Vec<Trade> = leg("PENNY", t0, 1.30, 3, 1_000_000)
+        .into_iter()
+        .map(|t| trade("PENNY", t.event_ts.0, t.price.to_f64() * 0.12, t.size))
+        .collect();
+    let end = ts.last().unwrap().event_ts.0;
+    let mut b = run_board(&ts);
+    b.tick(end + MIN_NS);
+    assert!(b.shelf("PENNY").is_none(), "no shelf under $0.15");
+    let e = b.take_entries();
+    assert_eq!(e.len(), 1, "{e:?}");
+    let r = e[0].1;
+    assert_eq!(&*e[0].0, "PENNY");
+    assert!((0.10..0.15).contains(&r.start_price), "{r:?}");
+    assert!(r.close >= 1.2 * r.start_price - 1e-12, "{r:?}");
+
+    // Two legs 20 minutes apart: one entry (its own refractory, like the shelves').
+    let mut ts = leg("TWICE", t0, 1.30, 3, 1_000);
+    let later: Vec<Trade> = leg("TWICE", t0, 1.30, 3, 1_000)
+        .into_iter()
+        .map(|t| {
+            trade(
+                "TWICE",
+                t.event_ts.0 + 20 * MIN_NS,
+                t.price.to_f64() * 1.3,
+                t.size,
+            )
+        })
+        .collect();
+    ts.extend(later);
+    let end = ts.last().unwrap().event_ts.0;
+    let mut b = run_board(&ts);
+    b.tick(end + MIN_NS);
+    assert_eq!(b.take_entries().len(), 1);
+}
+
+/// The research DEV day played through this board and the Runners board together, as the
+/// market does (`Market::publish_rocket`: the shelves tick, their runs go to the Runners board,
+/// then it ticks, once a second). Returns both boards, every entry handed over, and when each
+/// symbol's row first showed.
+type BothBoards = (
+    crate::rocket::RocketBoard,
+    ZoneBoard,
+    Vec<(String, Run)>,
+    HashMap<String, i64>,
+);
+
+fn both_boards(early: bool) -> BothBoards {
+    use crate::rocket::{Policy, RocketBoard, Threshold, running};
+    // No R2 flag (an unreachable threshold) and no running entry (an ADV no tape reaches 3× of),
+    // so the run rows are all there is to compare.
+    let policy = Policy {
+        threshold: Some(Threshold::Fixed(f64::INFINITY)),
+        ..Policy::default()
+    };
+    let mut rocket = RocketBoard::new(true, Arc::new(crate::rocket::PlaceholderB2), policy);
+    let date = NaiveDate::from_ymd_opt(2026, 4, 1).unwrap();
+    let facts = ["GENK", "ROMA", "AMOD"]
+        .iter()
+        .map(|s| {
+            let f = running::Fact {
+                vol: Some(0.05),
+                adv: Some(1e15),
+            };
+            (s.to_string(), f)
+        })
+        .collect();
+    rocket.set_running_facts(date, facts);
+    let mut zones = ZoneBoard::new(true);
+    zones.set_early(early);
+    let day = dev_day();
+    let t0 = day_t0();
+    let mut seen: HashMap<String, i64> = HashMap::new();
+    let mut handed: Vec<(String, Run)> = Vec::new();
+    let mut i = 0;
+    let mut now = t0;
+    // To 19:59:59: at 20:00 the Runners board rolls to the next trading date.
+    while now < t0 + NSLOT * BAR_NS {
+        zones.tick(now);
+        let e = zones.take_entries();
+        handed.extend(e.iter().map(|(s, r)| (s.to_string(), *r)));
+        rocket.add_runs(e);
+        rocket.tick(now, |_| None);
+        for a in rocket.alerts() {
+            seen.entry(a.symbol.to_string()).or_insert(now);
+        }
+        while i < day.len() && day[i].t < now + SEC_NS {
+            let r = &day[i];
+            let t = trade(r.sym, r.t, r.p, r.s as u64);
+            let c = Counted {
+                ohlc: r.o,
+                volume: r.v,
+            };
+            zones.apply_trade(&t, c);
+            rocket.apply_trade(&t, c);
+            i += 1;
+        }
+        now += SEC_NS;
+    }
+    (rocket, zones, handed, seen)
+}
+
+/// Parity with the Runners board, the 15 s-close reference (early fire off): every symbol's
+/// first run becomes one "Run +20%" row at the run's mark-slot end and close, visible from the
+/// tick that decided it, and no other row appears.
+#[test]
+fn every_run_is_a_runners_row_at_its_mark() {
+    use crate::rocket::AlertKind;
+    let (rocket, zones, _, seen) = both_boards(false);
+    let rows = rocket.alerts();
+    assert_eq!(rows.len(), 3, "one row per symbol with a run");
+    for a in rows {
+        let first = zones.shelf(&a.symbol).unwrap().runs[0];
+        assert_eq!(a.kind, AlertKind::Run, "{}", a.symbol);
+        assert_eq!(a.at_ns, first.plus20_ns, "{}", a.symbol);
+        assert_eq!(a.price, first.close, "{}", a.symbol);
+        assert_eq!(a.strategy, crate::rocket::run::STRATEGY);
+        // Shown from the first tick that decided the mark slot (its end + the 1 s settle).
+        let at = seen[&*a.symbol];
+        assert!(
+            at >= first.plus20_ns + SETTLE_NS && at < first.plus20_ns + SETTLE_NS + SEC_NS,
+            "{}: seen at {at}, mark end {}",
+            a.symbol,
+            first.plus20_ns
+        );
+    }
+}
+
+/// The early fire on the same day: each symbol's row fires within its leg, no later than the
+/// 15 s close confirms it, on the second it fired; every early fire is confirmed by a 15 s run of
+/// the same leg; the shelves are exactly the reference's.
+#[test]
+fn the_early_fire_comes_first_and_the_closes_confirm_it() {
+    use crate::rocket::AlertKind;
+    let (rocket, zones, handed, seen) = both_boards(true);
+    let (_, reference, _, _) = both_boards(false);
+    let rows = rocket.alerts();
+    assert_eq!(rows.len(), 3, "one row per symbol with a run");
+    for a in rows {
+        let first = zones.shelf(&a.symbol).unwrap().runs[0];
+        assert_eq!(
+            zones.shelf(&a.symbol).unwrap().runs,
+            reference.shelf(&a.symbol).unwrap().runs,
+            "the shelves never see an early fire"
+        );
+        assert_eq!(a.kind, AlertKind::Run, "{}", a.symbol);
+        assert!(
+            a.at_ns <= first.plus20_ns + SETTLE_NS && a.at_ns > first.start_ns,
+            "{}: fired at {}, the 15 s mark ends at {}",
+            a.symbol,
+            a.at_ns,
+            first.plus20_ns
+        );
+        assert_eq!(seen[&*a.symbol], a.at_ns, "shown the tick it fired");
+        eprintln!(
+            "{}: early fire {:.0} s before the 15 s mark is decided",
+            a.symbol,
+            (first.plus20_ns + SETTLE_NS - a.at_ns) as f64 / 1e9
+        );
+    }
+    let early: Vec<&(String, Run)> = handed.iter().filter(|(_, r)| r.early).collect();
+    assert_eq!(early.len(), 3, "{handed:?}");
+    for (s, e) in early {
+        assert!(e.close >= 1.2 * e.start_price - 1e-12);
+        assert!(
+            e.exec_ns <= e.plus20_ns && e.plus20_ns - e.exec_ns < 3 * SEC_NS,
+            "{e:?}"
+        );
+        assert!(
+            handed.iter().any(|(s2, r)| s2 == s
+                && !r.early
+                && r.plus20_ns >= e.plus20_ns - BAR_NS
+                && r.plus20_ns <= e.plus20_ns + LEG_SLOTS * BAR_NS),
+            "{s}: an early fire the 15 s closes never confirmed"
+        );
+    }
+}
+
+/// One bad print over the mark does not fire early; two prints of the slot over it do, inside
+/// the slot, before its 15 s close is decided.
+#[test]
+fn a_single_bad_print_does_not_fire_early() {
+    let t0 = day_t0();
+    // A liquid $1.00 base, then one print at $1.30 and back to $1.00.
+    let base = t0 + 22_200 * SEC_NS; // 10:10 ET
+    let mut ts: Vec<Trade> = Vec::new();
+    for k in 0..40 {
+        for n in 0..3 {
+            let at = base + k * BAR_NS + (n + 1) * 100_000_000;
+            ts.push(trade("SPKE", at, 1.0, 1_000));
+        }
+    }
+    let spike = base + 40 * BAR_NS + 3 * SEC_NS;
+    // The money a run needs from its start (the last base slot): 30 trades, $30k, at the base.
+    for n in 0..30 {
+        ts.push(trade(
+            "SPKE",
+            spike - 2 * SEC_NS + n * 10_000_000,
+            1.0,
+            1_000,
+        ));
+    }
+    ts.push(trade("SPKE", spike, 1.30, 1_000));
+    ts.push(trade("SPKE", spike + 1_500_000_000, 1.0, 1_000));
+    let play = |ts: &[Trade], until: i64| {
+        let mut b = ZoneBoard::new(true);
+        b.set_early(true);
+        let mut i = 0;
+        let mut now = ts[0].event_ts.0 - ts[0].event_ts.0.rem_euclid(SEC_NS);
+        let mut got = Vec::new();
+        while now < until {
+            b.tick(now);
+            got.extend(b.take_entries().into_iter().map(|(_, r)| r));
+            while i < ts.len() && ts[i].event_ts.0 < now + SEC_NS {
+                b.apply_trade(&ts[i], BOTH);
+                i += 1;
+            }
+            now += SEC_NS;
+        }
+        got
+    };
+    let got = play(&ts, spike + 30 * SEC_NS);
+    assert!(got.iter().all(|r| !r.early), "{got:?}");
+    // A second print over the mark in the slot: fires the second after it.
+    ts.pop();
+    ts.push(trade("SPKE", spike + 1_500_000_000, 1.31, 1_000));
+    let got = play(&ts, spike + 30 * SEC_NS);
+    let e: Vec<&Run> = got.iter().filter(|r| r.early).collect();
+    assert_eq!(e.len(), 1, "{got:?}");
+    assert!(e[0].plus20_ns <= spike + 3 * SEC_NS, "{:?}", e[0]);
+    assert_eq!(e[0].exec_ns, spike + 1_500_000_000);
+    assert!((e[0].start_price - 1.0).abs() < 1e-9);
 }
