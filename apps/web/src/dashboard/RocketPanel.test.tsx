@@ -23,6 +23,13 @@ const panel: RocketPanelWire = {
 const render = (state: RocketState) => renderToStaticMarkup(<RocketPanelView state={state} wallNow={state.receivedAt} onPick={() => {}} />);
 
 describe("Runners panel", () => {
+  test("a disconnected header does not claim building or breakout attention", () => {
+    const p = { ...panel, rows: panel.rows.map((r) => ({ ...r, state: "building" as const })) };
+    expect(render({ enabled: true, panel: p, receivedAt: 5, connected: true })).toContain("2 building or breaking out");
+    const stale = render({ enabled: true, panel: p, receivedAt: 5, connected: false });
+    expect(stale).toContain("Reconnecting");
+    expect(stale).not.toContain("2 building or breaking out");
+  });
   test("header, experimental chip, record, rows with reasons, fresh accent, outcome tag", () => {
     const html = render({ enabled: true, panel, receivedAt: 5, connected: true });
     expect(html).toContain("Runners");

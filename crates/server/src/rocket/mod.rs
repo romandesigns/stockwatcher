@@ -88,6 +88,21 @@
 //! (`crate::alerts::runners`), which sends the Expo push within its own limits; a replay board's
 //! notices are taken and dropped. A restore from the forward log leaves none: a restart must not
 //! re-announce the morning's flags.
+//!
+//! # Readiness and trading halts
+//!
+//! A provisional live-only prefix is excluded from precursor/running features and adaptive
+//! calibration until history adoption. A short rebuild clears pending adoption but leaves a
+//! Runners-only unavailable mark until the next real date roll or explicit successful adoption.
+//! Other consumers continue taking live events; structural losses are never auto-retried.
+//! Unverified delivery order is
+//! still reported by scanner coverage and is not presented as complete feed coverage here.
+//! Running also waits for the date's facts table (an explicitly loaded empty table retains the
+//! known-absent fallback). Halted symbols cannot acquire new precursor/running rows. A matching
+//! official resume admits them only after a completed bar whose OPEN is at or after that resume.
+//! Halt state known when a barrier is processed wins even on an exact timestamp tie. Existing
+//! rows remain visible; the precursor's windows may still span the halt. Open halts survive a
+//! date roll and end only on a matching official resume, never on an invented timeout.
 
 pub mod burst;
 pub mod fast;
@@ -594,6 +609,7 @@ pub struct RocketBoard {
     last_cost: Option<Cost>,
     /// Symbols with a trading halt in force (`chart.halt`, [`RocketBoard::set_halted`]).
     halted: HashSet<String>,
+    resumed_at: HashMap<String, i64>,
     /// The flagged symbols last handed to the stock-context engine ([`RocketBoard::take_watch`]).
     watch_sent: Vec<String>,
     /// New flags and breakouts since the last [`RocketBoard::take_notices`].
@@ -670,6 +686,7 @@ impl RocketBoard {
             revision: 0,
             last_cost: None,
             halted: HashSet::new(),
+            resumed_at: HashMap::new(),
             watch_sent: Vec::new(),
             notices: Vec::new(),
             burst: None,
@@ -706,6 +723,36 @@ impl RocketBoard {
             self.running_facts = facts;
             self.running_facts_date = Some(date);
         }
+    }
+
+    /// Read-only startup/adoption counters, also exposed through the market's history status.
+    pub fn readiness(&self) -> Value {
+        let unrestored = self.tape.syms.iter().filter(|s| s.unrestored).count();
+        let unavailable = self.tape.syms.iter().filter(|s| s.unavailable).count();
+        let withheld = self
+            .tape
+            .syms
+            .iter()
+            .filter(|s| s.unrestored || s.unavailable)
+            .count();
+        json!({
+            "symbols": self.tape.syms.len(), "unrestored": unrestored,
+            "unavailable": unavailable, "withheld": withheld,
+            "running_facts_ready": self.date.is_some() && self.running_facts_date == self.date,
+        })
+    }
+
+    /// Called atomically with the engine/quote/pressure adoption, never from the ingest.
+    pub(crate) fn adopt_tape(
+        &mut self,
+        symbol: &str,
+        other: &Tape,
+        unavailable: bool,
+        date: NaiveDate,
+    ) {
+        self.tape.adopt(symbol, other, unavailable.then_some(date));
+        // No provisional score may survive to become a later adaptive block maximum.
+        self.block_max.remove(symbol);
     }
 
     /// Turns on the buying-burst detector ([`burst`]) with `policy` (a no-op when the board or
@@ -854,15 +901,14 @@ impl RocketBoard {
     }
 
     /// A print of a symbol whose history is not loaded yet (`crate::history::hold_unloaded`):
-    /// the tape takes it as usual (the load replaces it), the burst detector marks the symbol
-    /// unrestored until [`RocketBoard::adopt_burst`].
+    /// precursor/running scoring waits for adoption; the independent fast path needs no history.
     pub fn apply_unrestored_trade(
         &mut self,
         t: &market_events::Trade,
         counted: crate::quotes::Counted,
     ) {
         if self.enabled {
-            self.tape.apply_trade(t, counted);
+            self.tape.apply_unrestored_trade(t, counted);
             if let Some(b) = self.burst.as_mut() {
                 b.apply_trade_unrestored(t, counted);
             }
@@ -872,7 +918,7 @@ impl RocketBoard {
     }
 
     /// A trading halt started (`true`) or ended for `symbol` (the chart engine's `chart.halt`).
-    pub fn set_halted(&mut self, symbol: &str, halted: bool) {
+    pub fn set_halted(&mut self, symbol: &str, halted: bool, resumed_at: Option<i64>) {
         if !self.enabled {
             return;
         }
@@ -881,9 +927,23 @@ impl RocketBoard {
         } else {
             self.halted.remove(symbol)
         };
+        if let Some(at) = resumed_at {
+            self.resumed_at
+                .entry(symbol.to_string())
+                .and_modify(|t| *t = (*t).max(at))
+                .or_insert(at);
+        }
         if changed && self.alerts.iter().any(|a| &*a.symbol == symbol) {
             self.revision += 1;
         }
+    }
+
+    fn admission_ready(&self, symbol: &str, b: &Barrier) -> bool {
+        !self.halted.contains(symbol)
+            && self
+                .resumed_at
+                .get(symbol)
+                .is_none_or(|resume| b.at_ns - BAR_NS >= *resume)
     }
 
     /// Today's flagged symbols when they changed since the last call (sorted, deduplicated):
@@ -1011,6 +1071,7 @@ impl RocketBoard {
                 "rows": self.rows_by_kind(),
                 "ideal_threshold": ideal.and_then(finite),
                 "strategy": self.scorer.id(), "version": self.scorer.version(),
+                "admission_gate": "restored-facts-halt-v1", "build": crate::COMMIT,
             })
             .to_string(),
         ));
@@ -1060,7 +1121,7 @@ impl RocketBoard {
         self.processed = 0;
         self.alerts.clear();
         self.last_alert.clear();
-        self.halted.clear();
+        // Official open halts can cross dates. Only the pressure board's matching resume ends one.
         self.block = None;
         self.block_max.clear();
         self.top.clear();
@@ -1239,7 +1300,11 @@ impl RocketBoard {
             }
             let s: &features::Sym = s;
             live += 1;
-            if let Some(x) = features::run_inputs(s, b)
+            if s.unrestored || s.unavailable {
+                continue;
+            }
+            if self.running_facts_date == self.date
+                && let Some(x) = features::run_inputs(s, b)
                 && let Some(e) = running::decide(&x, self.running_facts.get(&*s.symbol))
             {
                 running.push((s.symbol.clone(), e));
@@ -1274,6 +1339,9 @@ impl RocketBoard {
         for (sc, f) in cands {
             if sc < self.threshold || self.runners().count() >= self.cap() {
                 break;
+            }
+            if !self.admission_ready(&f.symbol, b) {
+                continue;
             }
             if self
                 .last_alert
@@ -1340,6 +1408,9 @@ impl RocketBoard {
     ) {
         entries.sort_by(|x, y| (y.1.gain / y.1.req).total_cmp(&(x.1.gain / x.1.req)));
         for (symbol, e) in entries {
+            if !self.admission_ready(&symbol, b) {
+                continue;
+            }
             let today = self
                 .alerts
                 .iter()

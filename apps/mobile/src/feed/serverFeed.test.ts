@@ -1,5 +1,5 @@
 import { afterEach, expect, mock, test } from "bun:test";
-import type { DetectionMessage } from "@stockwatcher/shared";
+import type { DetectionMessage, PressureMessage } from "@stockwatcher/shared";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
@@ -144,6 +144,36 @@ test("a reopened mobile socket keeps Detection stale until its replacement snaps
   expect(feed.detection.get().connected).toBe(false);
   reopened.receive(disabled());
   expect(feed.detection.get().connected).toBe(true);
+});
+
+test("mobile pressure retains last-known rows through reconnect, and refreshes only on the new frame", async () => {
+  globalThis.WebSocket = Socket as unknown as typeof WebSocket;
+  const feed = createMobileFeed(null, undefined, undefined, "mobile-dashboard", "live");
+  cleanup = () => feed.close();
+  const off = feed.pressure.subscribe(() => {});
+  const socket = Socket.instances[0]!;
+  socket.open(); socket.receive(welcome);
+  expect(feed.pressure.status()).toEqual({ connected: false, asOf: null });
+  const frame: PressureMessage = { type: "pressure.snapshot", t: 1234, board: [{ s: "TEST", p: 2, o: 2, risk: 75, side: "bull", rise: 40, riseSecs: 30, band: 2.1, toBand: 5, pressure: 80, buyShare: 0.8, pace: 4 }] };
+  socket.receive(frame);
+  expect(feed.pressure.status()).toEqual({ connected: true, asOf: 1234 });
+  const board = feed.pressure.get();
+  socket.close();
+  expect(feed.pressure.get()).toBe(board);
+  expect(feed.pressure.status()).toEqual({ connected: false, asOf: 1234 });
+  await new Promise((resolve) => setTimeout(resolve, 550));
+  const reopened = Socket.instances[1]!;
+  expect(reopened).toBeDefined();
+  reopened.open(); reopened.receive(welcome);
+  expect(reopened.sent).toContainEqual({ type: "pressure.subscribe" });
+  expect(feed.pressure.status().connected).toBe(false);
+  socket.receive({ ...frame, t: 9999 }); // queued delivery from the retired socket is ignored
+  expect(feed.pressure.status()).toEqual({ connected: false, asOf: 1234 });
+  reopened.receive({ ...frame, t: 2234, board: [] });
+  expect(feed.pressure.status()).toEqual({ connected: true, asOf: 2234 });
+  expect(feed.pressure.get()).toEqual([]);
+  off();
+  expect(feed.pressure.status()).toEqual({ connected: false, asOf: null });
 });
 
 test("actual Rust synthetic server snapshots reach the mobile channel without losing episodes or enabling alerts", () => {

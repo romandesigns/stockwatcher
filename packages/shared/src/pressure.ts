@@ -31,6 +31,20 @@ export type PressureBoard = readonly PressureCard[];
 
 export const EMPTY_PRESSURE_BOARD: PressureBoard = [];
 
+export interface PressureStatus {
+  /** A pressure frame has arrived on the current connection, not merely an open socket. */
+  connected: boolean;
+  /** The wire's `t`, for a last-known label only; unchanged boards need no periodic frame. */
+  asOf: number | null;
+}
+
+export const EMPTY_PRESSURE_STATUS: PressureStatus = { connected: false, asOf: null };
+
+/** No wall-clock timeout: the server sends pressure frames only when the board changes. */
+export function pressureFreshnessLine(status: PressureStatus, formatTime: (ms: number) => string): string {
+  return status.connected ? "" : `Reconnecting${status.asOf === null ? "" : ` · last ${formatTime(status.asOf)}`}`;
+}
+
 /** The empty board's line: no card is the normal state (owner, 2026-10-20). */
 export const NO_BUILDUPS = "No build-ups right now";
 
@@ -66,15 +80,19 @@ export function pressureBoardFrom(m: PressureMessage): PressureCard[] {
  */
 export interface PressureChannel {
   get(): PressureBoard;
-  /** `fn` runs after every frame. Returns the unsubscribe. */
+  /** Stable between status changes, suitable for useSyncExternalStore. */
+  status(): PressureStatus;
+  /** `fn` runs after every frame or connection-status change. Returns the unsubscribe. */
   subscribe(fn: () => void): () => void;
 }
 
-export function createPressureChannel(io: { subscribe(): void; unsubscribe(): void }): PressureChannel & { apply(m: PressureMessage): void } {
+export function createPressureChannel(io: { subscribe(): void; unsubscribe(): void }): PressureChannel & { apply(m: PressureMessage): void; setConnected(open: boolean): void } {
   let board: PressureBoard = EMPTY_PRESSURE_BOARD;
+  let status: PressureStatus = EMPTY_PRESSURE_STATUS;
   const listeners = new Set<() => void>();
   return {
     get: () => board,
+    status: () => status,
     subscribe(fn) {
       listeners.add(fn);
       if (listeners.size === 1) io.subscribe();
@@ -83,10 +101,18 @@ export function createPressureChannel(io: { subscribe(): void; unsubscribe(): vo
         if (listeners.size > 0) return;
         io.unsubscribe();
         board = EMPTY_PRESSURE_BOARD;
+        status = EMPTY_PRESSURE_STATUS;
       };
     },
     apply(m) {
       board = pressureBoardFrom(m);
+      if (!status.connected || status.asOf !== m.t) status = { connected: true, asOf: m.t };
+      for (const l of listeners) l();
+    },
+    // Retain last-known rows but mark them stale. A reopened socket is not fresh until apply.
+    setConnected(open) {
+      if (open || !status.connected) return;
+      status = { ...status, connected: false };
       for (const l of listeners) l();
     },
   };

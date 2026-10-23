@@ -433,22 +433,58 @@ type Print = (i64, u64, bool, Price);
 /// The prints of the last `WINDOW + HORIZON`, in three segments by execution time, so both the
 /// window ending now and the one ending a horizon earlier are running sums (no rescan per tick):
 /// `[0]` = `(t − H − W, t − W]`, `[1]` = `(t − W, t − H]`, `[2]` = `(t − H, t]`. The window now
-/// is `[1] + [2]`, a horizon earlier `[0] + [1]`. Prints move between segments at the front, in
-/// arrival order (a print that arrived late moves when it reaches the front, as the one-minute
-/// window always pruned).
+/// is `[1] + [2]`, a horizon earlier `[0] + [1]`. The roll clock never goes backward. Each
+/// segment is sorted by execution time, with arrival order preserved for equal timestamps.
+/// Ordered prints append in O(1); retained late prints are inserted in their current segment.
+/// Prints at or before the oldest cut are dropped, never reintroduced into a closed window.
+/// Given fixed sides and distinct execution timestamps, sums and the anchor do not depend on
+/// arrival order. The upstream tick rule deliberately still depends on arrival order.
 #[derive(Clone, Debug, Default)]
 struct Segments {
     seg: [VecDeque<Print>; 3],
     /// (buy, sell) volume per segment.
     sums: [(u64, u64); 3],
+    clock: Option<i64>,
     /// The price of the newest print that left segment 2: the last price at or before `t − H`.
     anchor: Option<Price>,
+    anchor_ts: Option<i64>,
 }
 
 impl Segments {
-    fn push(&mut self, p: Print) {
-        Self::add(&mut self.sums[2], &p, true);
-        self.seg[2].push_back(p);
+    /// Returns false for an expired print (the caller counts the rejection).
+    fn push(&mut self, p: Print) -> bool {
+        self.roll(p.0);
+        let now = self.clock.expect("roll sets the clock");
+        if p.0 <= now.saturating_sub(HORIZON + WINDOW) {
+            return false;
+        }
+        let k = if p.0 <= now.saturating_sub(WINDOW) {
+            0
+        } else if p.0 <= now.saturating_sub(HORIZON) {
+            1
+        } else {
+            2
+        };
+        if k < 2 {
+            self.observe_anchor(&p);
+        }
+        Self::add(&mut self.sums[k], &p, true);
+        let seg = &mut self.seg[k];
+        if seg.back().is_none_or(|last| last.0 <= p.0) {
+            seg.push_back(p);
+        } else {
+            // Upper bound: equal execution times retain their arrival order.
+            let at = seg.partition_point(|existing| existing.0 <= p.0);
+            seg.insert(at, p);
+        }
+        true
+    }
+
+    fn observe_anchor(&mut self, p: &Print) {
+        if self.anchor_ts.is_none_or(|ts| p.0 >= ts) {
+            self.anchor_ts = Some(p.0);
+            self.anchor = Some(p.3);
+        }
     }
 
     fn add(sum: &mut (u64, u64), p: &Print, plus: bool) {
@@ -462,6 +498,8 @@ impl Segments {
 
     /// Moves prints forward to the segments of clock `now`.
     fn roll(&mut self, now: i64) {
+        let now = self.clock.map_or(now, |clock| clock.max(now));
+        self.clock = Some(now);
         let cuts = [
             now.saturating_sub(HORIZON + WINDOW),
             now.saturating_sub(WINDOW),
@@ -477,7 +515,7 @@ impl Segments {
                 self.seg[k].pop_front();
                 Self::add(&mut self.sums[k], &p, false);
                 if k == 2 {
-                    self.anchor = Some(p.3);
+                    self.observe_anchor(&p);
                 }
                 if k > 0 {
                     Self::add(&mut self.sums[k - 1], &p, true);
@@ -515,12 +553,12 @@ struct Entry {
     symbol: Arc<str>,
     day: Option<NaiveDate>,
     prints: Segments,
-    /// Newest execution time applied (rolls on apply, so a busy symbol's segments stay short
-    /// between ticks).
-    newest: i64,
     /// The previous OHLC-counted print's price and side (tick rule), in arrival order.
     last_price: Option<Price>,
     last_side: Option<bool>,
+    /// Latest execution price, separate from the arrival-order tick rule. Equal execution
+    /// times use the latest arrival; an older print never moves this timestamp backward.
+    last_exec: Option<(i64, Price)>,
     /// The session the baseline below belongs to, its OHLC-counted volume and its first print.
     session: Option<SessionKind>,
     session_volume: u64,
@@ -528,6 +566,8 @@ struct Entry {
     /// The modelled LULD band in effect; `None` outside the regular session and while halted.
     band: Option<Band>,
     halt: Option<HaltInfo>,
+    /// Latest matching official resume, epoch ns. Kept across day rolls and history adoption.
+    resumed_at: Option<i64>,
     /// The readings at the halt, shown until the resume.
     frozen: Option<Frozen>,
     /// The readings at the last tick.
@@ -548,14 +588,15 @@ impl Entry {
             symbol,
             day: None,
             prints: Segments::default(),
-            newest: i64::MIN,
             last_price: None,
             last_side: None,
+            last_exec: None,
             session: None,
             session_volume: 0,
             session_start: 0,
             band: None,
             halt: None,
+            resumed_at: None,
             frozen: None,
             last: None,
             last_risk: None,
@@ -568,6 +609,7 @@ impl Entry {
     /// The pressure now and a horizon earlier, at `now` (not frozen; rolls the segments).
     fn scores(&mut self, now: i64, minimums: (usize, u64)) -> (Option<Score>, Option<Score>) {
         self.prints.roll(now);
+        let now = self.prints.clock.expect("roll sets the clock");
         let (b, s, n) = self.prints.window(false);
         let cur = score_with(
             b,
@@ -596,8 +638,10 @@ impl Entry {
             return (f.score, f.risk);
         }
         let (cur, before) = self.scores(now, minimums);
-        let risk = match (cur, self.band, self.last_price) {
-            (Some(c), Some(b), Some(p)) => Some(halt_risk(c, before, p, self.prints.anchor, &b)),
+        let risk = match (cur, self.band, self.last_exec) {
+            (Some(c), Some(b), Some((_, p))) => {
+                Some(halt_risk(c, before, p, self.prints.anchor, &b))
+            }
             _ => None,
         };
         (cur, risk)
@@ -619,6 +663,8 @@ pub struct PressureBoard {
     entries: Vec<Entry>,
     /// The cards shown, in display order (entry indices).
     board: Vec<usize>,
+    /// Expired sided prints rejected on this board's ingest path, since construction.
+    expired_prints_dropped: u64,
 }
 
 impl PressureBoard {
@@ -637,8 +683,8 @@ impl PressureBoard {
         i
     }
 
-    /// Applies one print with the engine's verdict on it. Cheap: a hash lookup, a push and a few
-    /// integer updates (it runs on the ingest path, under the core lock).
+    /// Applies one print with the engine's verdict on it. Ordered traffic appends in O(1)
+    /// amortized time; a late retained print uses an ordered insert (under the core lock).
     pub fn apply_trade(&mut self, t: &Trade, counted: Counted) {
         if !counted.ohlc {
             return;
@@ -657,6 +703,7 @@ impl PressureBoard {
                 let mut fresh = Entry::new(e.symbol.clone());
                 fresh.day = Some(session.date);
                 fresh.halt = e.halt.take();
+                fresh.resumed_at = e.resumed_at;
                 fresh.frozen = e.frozen.take();
                 fresh.halt_watch = e.halt_watch;
                 fresh.band = e.band;
@@ -678,13 +725,17 @@ impl PressureBoard {
             None => None,
         };
         e.last_price = Some(t.price);
-        let Some(buy) = side else { return };
-        e.last_side = Some(buy);
         let ts = t.event_ts.0;
-        e.prints.push((ts, t.size, buy, t.price));
-        if ts > e.newest {
-            e.newest = ts;
+        if e.last_exec.is_none_or(|(last, _)| ts >= last) {
+            e.last_exec = Some((ts, t.price));
+        }
+        let Some(buy) = side else {
             e.prints.roll(ts);
+            return;
+        };
+        e.last_side = Some(buy);
+        if !e.prints.push((ts, t.size, buy, t.price)) {
+            self.expired_prints_dropped = self.expired_prints_dropped.saturating_add(1);
         }
     }
 
@@ -704,10 +755,18 @@ impl PressureBoard {
         let e = &mut self.entries[i];
         match h.end {
             None => {
-                if e.halt.is_some() {
+                let at = UnixNanos::from_millis(h.start).0;
+                if e.halt
+                    .as_ref()
+                    .is_some_and(|active| h.start <= active.start)
+                    || e.resumed_at.is_some_and(|resume| at <= resume)
+                {
                     return;
                 }
-                let at = UnixNanos::from_millis(h.start).0;
+                // A newer official halt supersedes an older still-open halt, so its matching
+                // official resume can terminate carried state. Never fabricate a timer resume.
+                e.halt = None;
+                e.frozen = None;
                 let (score, risk) = e.evaluate(at, (MIN_TRADES / 2, MIN_VOLUME / 2));
                 let frozen = Frozen {
                     score: score.or(e.last),
@@ -720,8 +779,13 @@ impl PressureBoard {
                     reason: h.reason.clone(),
                 });
             }
-            Some(_) => {
-                if e.halt.as_ref().is_some_and(|x| x.start == h.start) {
+            Some(end) => {
+                let resume = UnixNanos::from_millis(end).0;
+                if end >= h.start
+                    && e.halt.as_ref().is_some_and(|x| x.start == h.start)
+                    && e.resumed_at.is_none_or(|previous| resume >= previous)
+                {
+                    e.resumed_at = Some(resume);
                     e.halt = None;
                     e.frozen = None;
                     e.halt_watch = false;
@@ -929,6 +993,21 @@ impl PressureBoard {
     pub fn risk_of(&mut self, symbol: &str, now: i64) -> Option<Risk> {
         let &i = self.index.get(symbol)?;
         self.entries[i].evaluate(now, (MIN_TRADES, MIN_VOLUME)).1
+    }
+
+    /// Active official halt and latest matching resume (epoch ns), for history adoption.
+    /// An open halt lasts until a matching official resume or a newer official halt replaces it.
+    pub fn halt_state(&self, symbol: &str) -> (bool, Option<i64>) {
+        self.index.get(symbol).map_or((false, None), |&i| {
+            let e = &self.entries[i];
+            (e.halt.is_some(), e.resumed_at)
+        })
+    }
+
+    /// Read-only ingest telemetry. Counts expired sided prints rejected by this board instance;
+    /// restoring another board's symbol state does not reset or import its diagnostic counter.
+    pub fn expired_prints_dropped(&self) -> u64 {
+        self.expired_prints_dropped
     }
 }
 
@@ -1474,5 +1553,278 @@ mod tests {
         assert_eq!(s.window(false), (0, 0, 0));
         assert_eq!(s.window(true), (0, 0, 0));
         assert_eq!(s.anchor, Some(px(619)));
+    }
+
+    #[test]
+    fn late_print_is_inserted_into_its_current_execution_segment() {
+        let mut s = Segments::default();
+        let t0 = at(10, 0, 0);
+        s.roll(t0 + 100 * S);
+        s.push((t0 + 15 * S, 100, true, px(501)));
+        s.push((t0 + 55 * S, 200, false, px(502)));
+        s.push((t0 + 85 * S, 300, true, px(503)));
+        assert_eq!(s.window(false), (300, 200, 2));
+        assert_eq!(s.window(true), (100, 200, 2));
+        assert_eq!(s.anchor, Some(px(502)));
+    }
+
+    #[test]
+    fn expired_late_print_cannot_reenter_a_closed_window() {
+        let mut s = Segments::default();
+        let t0 = at(10, 0, 0);
+        s.roll(t0 + 100 * S);
+        s.push((t0 + 10 * S, 100_000, true, px(500)));
+        assert_eq!(s.window(false), (0, 0, 0));
+        assert_eq!(s.window(true), (0, 0, 0));
+    }
+
+    #[test]
+    fn late_anchor_uses_the_newest_execution_before_the_horizon() {
+        let mut s = Segments::default();
+        let t0 = at(10, 0, 0);
+        s.push((t0 + 60 * S, 100, true, px(500)));
+        s.roll(t0 + 100 * S);
+        s.push((t0 + 65 * S, 100, true, px(510)));
+        s.push((t0 + 62 * S, 100, true, px(505)));
+        assert_eq!(s.anchor, Some(px(510)));
+    }
+
+    #[test]
+    fn late_print_does_not_replace_the_latest_execution_price_in_risk() {
+        let t0 = at(10, 0, 0);
+        let mut b = PressureBoard::new();
+        b.apply_luld("AAA", &luld(t0, 1.0, 1.1, 0.9));
+        for k in 0..=10 {
+            b.apply_trade(&trade("AAA", t0 + k * S, 100 + k, 1_000), BOTH);
+        }
+        assert_eq!(b.risk_of("AAA", t0 + 11 * S).unwrap().to_band, 0.0);
+        let late = Trade::new(
+            "AAA",
+            UnixNanos(t0 + 9 * S + S / 2),
+            Price::from_f64_rounded(1.095).unwrap(),
+            1_000,
+            1,
+        );
+        b.apply_trade(&late, BOTH);
+        assert_eq!(b.risk_of("AAA", t0 + 11 * S).unwrap().to_band, 0.0);
+    }
+
+    #[test]
+    fn expired_large_late_print_does_not_outlive_newer_front_prints() {
+        let t0 = at(10, 0, 0);
+        let mut b = PressureBoard::new();
+        b.apply_trade(&trade("AAA", t0, 100, 1_000), BOTH);
+        for k in 0..10 {
+            let t = Trade::new(
+                "AAA",
+                UnixNanos(t0 + 61 * S + k * S / 20),
+                Price::from_micros(1_100_000 + k * 1_000),
+                1_000,
+                1,
+            );
+            b.apply_trade(&t, BOTH);
+        }
+        let late = Trade::new(
+            "AAA",
+            UnixNanos(t0 + 60 * S + 9 * S / 10),
+            Price::from_micros(1_105_000),
+            100_000,
+            1,
+        );
+        b.apply_trade(&late, BOTH);
+        assert_eq!(
+            b.score_of("AAA", t0 + 121 * S),
+            None,
+            "only nine newer prints remain, below the unchanged ten-print minimum"
+        );
+    }
+
+    #[test]
+    fn segment_boundaries_are_open_on_the_left_and_closed_on_the_right() {
+        let t0 = at(10, 0, 0);
+        let mut s = Segments::default();
+        s.roll(t0 + 100 * S);
+        assert!(!s.push((t0 + 10 * S, 100_000, true, px(500))));
+        for (ts, size) in [
+            (10 * S + 1, 1),
+            (40 * S, 2),
+            (40 * S + 1, 4),
+            (70 * S, 8),
+            (70 * S + 1, 16),
+            (100 * S, 32),
+        ] {
+            assert!(s.push((t0 + ts, size, true, px(500))));
+        }
+        assert_eq!(s.sums, [(3, 0), (12, 0), (48, 0)]);
+        assert_eq!(s.window(false), (60, 0, 4));
+        assert_eq!(s.window(true), (15, 0, 4));
+    }
+
+    #[test]
+    fn the_roll_clock_and_execution_price_never_move_backward() {
+        let t0 = at(10, 0, 0);
+        let mut b = PressureBoard::new();
+        run(&mut b, "AAA", t0, 120, 1_000, 500, true);
+        let expected = b.score_of("AAA", t0 + 120 * S);
+        assert_eq!(b.score_of("AAA", t0 + 90 * S), expected);
+        b.apply_trade(&trade("AAA", t0 + 80 * S, 100, 1_000), BOTH);
+        let e = &b.entries[b.index["AAA"]];
+        assert_eq!(e.prints.clock, Some(t0 + 120 * S));
+        assert_eq!(e.last_exec, Some((t0 + 119 * S, px(619))));
+        assert_eq!(
+            e.last_price,
+            Some(px(100)),
+            "tick rule remains in arrival order"
+        );
+    }
+
+    #[test]
+    fn equal_execution_timestamps_preserve_arrival_order() {
+        let t0 = at(10, 0, 0);
+        let mut s = Segments::default();
+        s.roll(t0 + 100 * S);
+        for (seconds, cents) in [(95, 501), (94, 502), (94, 503), (65, 504), (65, 505)] {
+            s.push((t0 + seconds * S, 100, true, px(cents)));
+        }
+        assert_eq!(
+            s.seg[2].iter().map(|p| p.3).collect::<Vec<_>>(),
+            vec![px(502), px(503), px(501)]
+        );
+        assert_eq!(s.anchor, Some(px(505)));
+        let mut b = PressureBoard::new();
+        for cents in [501, 502] {
+            b.apply_trade(&trade("AAA", t0 + 100 * S, cents, 100), BOTH);
+        }
+        assert_eq!(
+            b.entries[b.index["AAA"]].last_exec,
+            Some((t0 + 100 * S, px(502)))
+        );
+    }
+
+    #[test]
+    fn fixed_side_distinct_time_permutations_have_identical_windows_and_anchor() {
+        let t0 = at(10, 0, 0);
+        let prints = [
+            (t0 + 11 * S, 10, true, px(501)),
+            (t0 + 40 * S, 20, false, px(502)),
+            (t0 + 41 * S, 30, true, px(503)),
+            (t0 + 70 * S, 40, false, px(504)),
+            (t0 + 71 * S, 50, true, px(505)),
+            (t0 + 99 * S, 60, false, px(506)),
+        ];
+        fn permute(prefix: usize, order: &mut [usize; 6], check: &mut impl FnMut(&[usize; 6])) {
+            if prefix == order.len() {
+                check(order);
+                return;
+            }
+            for i in prefix..order.len() {
+                order.swap(prefix, i);
+                permute(prefix + 1, order, check);
+                order.swap(prefix, i);
+            }
+        }
+        let mut checked = 0;
+        permute(0, &mut [0, 1, 2, 3, 4, 5], &mut |order| {
+            let mut s = Segments::default();
+            s.roll(t0 + 100 * S);
+            let mut b = PressureBoard::new();
+            for &i in order {
+                s.push(prints[i]);
+                let p = prints[i];
+                b.apply_trade(&Trade::new("AAA", UnixNanos(p.0), p.3, p.1, 1), BOTH);
+            }
+            assert_eq!(s.window(false), (80, 100, 4), "{order:?}");
+            assert_eq!(s.window(true), (40, 60, 4), "{order:?}");
+            assert_eq!(s.anchor, Some(px(504)), "{order:?}");
+            assert_eq!(s.anchor_ts, Some(t0 + 70 * S));
+            assert_eq!(
+                b.entries[b.index["AAA"]].last_exec,
+                Some((t0 + 99 * S, px(506))),
+                "{order:?}"
+            );
+            s.roll(t0 + 110 * S);
+            assert_eq!(s.window(false), (50, 100, 3), "{order:?}");
+            assert_eq!(s.window(true), (80, 60, 4), "{order:?}");
+            checked += 1;
+        });
+        assert_eq!(checked, 720);
+    }
+
+    #[test]
+    fn first_no_side_print_still_sets_the_latest_execution_price() {
+        let t0 = at(10, 0, 0);
+        let mut b = PressureBoard::new();
+        b.apply_trade(&trade("AAA", t0, 500, 100), BOTH);
+        let e = &b.entries[b.index["AAA"]];
+        assert_eq!(e.last_exec, Some((t0, px(500))));
+        assert_eq!(e.last_side, None);
+        assert_eq!(e.prints.window(false), (0, 0, 0));
+    }
+
+    #[test]
+    fn expired_drop_telemetry_is_read_only_and_survives_restore_and_day_roll() {
+        let t0 = at(10, 0, 0);
+        let mut b = PressureBoard::new();
+        b.apply_trade(&trade("AAA", t0, 500, 100), BOTH);
+        b.score_of("AAA", t0 + 100 * S);
+        b.apply_trade(&trade("AAA", t0 + 10 * S, 501, 100_000), BOTH);
+        assert_eq!(b.expired_prints_dropped(), 1);
+        assert_eq!(b.expired_prints_dropped(), 1);
+        let mut hist = PressureBoard::new();
+        hist.apply_trade(&trade("AAA", t0 + 100 * S, 502, 100), BOTH);
+        b.replace_from("AAA", &hist);
+        let next = et(NaiveDate::from_ymd_opt(2026, 10, 19).unwrap(), 4, 0, 0, 0)
+            .unwrap()
+            .0;
+        b.apply_trade(&trade("AAA", next, 503, 100), BOTH);
+        assert_eq!(b.expired_prints_dropped(), 1);
+    }
+
+    #[test]
+    fn only_a_valid_matching_resume_clears_the_active_halt() {
+        let t0 = at(10, 0, 0);
+        let mut b = PressureBoard::new();
+        assert_eq!(b.halt_state("AAA"), (false, None));
+        b.apply_halt("AAA", &halt(t0, None));
+        b.apply_halt("AAA", &halt(t0 - S, Some(t0 + 20 * S)));
+        b.apply_halt("AAA", &halt(t0, Some(t0 - S)));
+        assert_eq!(b.halt_state("AAA"), (true, None));
+        b.apply_halt("AAA", &halt(t0, Some(t0 + 60 * S)));
+        assert_eq!(b.halt_state("AAA"), (false, Some(t0 + 60 * S)));
+        // A delayed original start cannot reopen an officially completed halt.
+        b.apply_halt("AAA", &halt(t0, None));
+        assert_eq!(b.halt_state("AAA"), (false, Some(t0 + 60 * S)));
+        b.apply_halt("AAA", &halt(t0 + 120 * S, None));
+        b.apply_halt("AAA", &halt(t0, Some(t0 + 60 * S)));
+        assert_eq!(b.halt_state("AAA"), (true, Some(t0 + 60 * S)));
+        b.apply_halt("AAA", &halt(t0 + 120 * S, Some(t0 + 180 * S)));
+        assert_eq!(b.halt_state("AAA"), (false, Some(t0 + 180 * S)));
+    }
+
+    #[test]
+    fn official_halt_state_survives_restore_day_roll_and_newer_halt_supersession() {
+        let t0 = at(10, 0, 0);
+        let mut hist = PressureBoard::new();
+        hist.apply_trade(&trade("AAA", t0, 500, 100), BOTH);
+        hist.apply_halt("AAA", &halt(t0, None));
+        hist.apply_halt("AAA", &halt(t0, Some(t0 + 60 * S)));
+        hist.apply_halt("AAA", &halt(t0 + 120 * S, None));
+        let mut live = PressureBoard::new();
+        live.replace_from("AAA", &hist);
+        assert_eq!(live.halt_state("AAA"), (true, Some(t0 + 60 * S)));
+        let next = et(NaiveDate::from_ymd_opt(2026, 10, 19).unwrap(), 4, 0, 0, 0)
+            .unwrap()
+            .0;
+        live.apply_trade(&trade("AAA", next, 500, 100), BOTH);
+        assert_eq!(live.halt_state("AAA"), (true, Some(t0 + 60 * S)));
+        // A newer official start replaces stale carried state and gives it a terminal resume.
+        live.apply_halt("AAA", &halt(next + S, None));
+        live.apply_halt("AAA", &halt(t0 + 120 * S, Some(next + 2 * S)));
+        assert_eq!(live.halt_state("AAA"), (true, Some(t0 + 60 * S)));
+        live.apply_halt("AAA", &halt(next + S, Some(next + 60 * S)));
+        assert_eq!(live.halt_state("AAA"), (false, Some(next + 60 * S)));
+        let mut adopted = PressureBoard::new();
+        adopted.replace_from("AAA", &live);
+        assert_eq!(adopted.halt_state("AAA"), (false, Some(next + 60 * S)));
     }
 }

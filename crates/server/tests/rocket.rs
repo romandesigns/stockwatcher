@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
-use stockwatcher_server::{AppState, MarketConfig, Markets, Settings, router};
+use stockwatcher_server::{AppState, Market, MarketConfig, Markets, Settings, router};
 use tokio_tungstenite::tungstenite::Message;
 
 type Ws =
@@ -15,6 +15,7 @@ type Ws =
 struct Stack {
     _tmp: tempfile::TempDir,
     url: String,
+    replay: Market,
 }
 
 async fn stack(extra: &[(&str, &str)]) -> Stack {
@@ -37,6 +38,7 @@ async fn stack(extra: &[(&str, &str)]) -> Stack {
     })
     .unwrap();
     let (markets, _sim) = Markets::start(&cfg);
+    let replay = markets.replay.clone();
     let dir = tmp.path().join("static");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("index.html"), "<!doctype html>").unwrap();
@@ -51,6 +53,7 @@ async fn stack(extra: &[(&str, &str)]) -> Stack {
     Stack {
         _tmp: tmp,
         url: format!("ws://{addr}/ws"),
+        replay,
     }
 }
 
@@ -102,13 +105,20 @@ fn is(t: &'static str) -> impl Fn(&Value) -> bool {
 }
 
 /// On by default: a snapshot at once with the strategy and the track record, then whole-panel
-/// updates while the replay plays; unsubscribed connections never see a rocket frame, and
+/// updates after an explicit panel change; unsubscribed connections never see a rocket frame, and
 /// unsubscribing stops them.
 #[tokio::test]
 async fn rocket_subscribe_gets_a_snapshot_then_whole_panel_updates() {
     let s = stack(&[]).await;
     let mut ws = connect(&s.url).await;
     let mut bystander = connect(&s.url).await;
+    // Finish initial catch-up and its resync before taking the subscription snapshot. The
+    // initial playing clock precedes this paused clock in the ordered outbound stream.
+    s.replay.control("pause", None).await.unwrap();
+    next(&mut ws, |m| {
+        m["type"] == "replay.clock" && m["clock"]["playing"] == false
+    })
+    .await;
     send(&mut ws, json!({"type": "rocket.subscribe"})).await;
     let snap = next(&mut ws, is("rocket.snapshot")).await;
     assert_eq!(snap["enabled"], true, "{snap}");
@@ -122,8 +132,31 @@ async fn rocket_subscribe_gets_a_snapshot_then_whole_panel_updates() {
     assert!(snap["days"].is_array());
     assert!(snap["today"]["alerts"].is_u64());
 
-    let up = next(&mut ws, is("rocket.update")).await;
+    // A quiet fixture need not qualify for R0, and clock-only changes deliberately send no
+    // panel update. Advance past the snapshot sequence, then make a known body change.
+    let advanced = s
+        .replay
+        .control("stepInterval", Some(&json!("15s")))
+        .await
+        .unwrap();
+    next(&mut ws, |m| {
+        m["type"] == "replay.clock" && m["clock"]["now"] == advanced.now.millis()
+    })
+    .await;
+    s.replay.set_rocket_watch(
+        true,
+        stockwatcher_server::rocket::Policy {
+            budget: 11,
+            ..Default::default()
+        },
+    );
+    s.replay.publish_rocket();
+    let up = next(&mut ws, |m| {
+        m["type"] == "rocket.update" && m["budget"] == 11
+    })
+    .await;
     assert_eq!(up["enabled"], true);
+    assert_eq!(up["budget"], 11);
     assert!(up["t"].is_i64());
     assert!(up["rows"].is_array());
 

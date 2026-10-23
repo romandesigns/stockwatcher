@@ -77,7 +77,7 @@ export function RocketPanel({ channel, onPick, reducedMotion, gap = 0 }: { chann
   const { panel } = state;
   const now = rocketNow(state, wall);
   const { bursts, runners: rows }: RocketSectionsView = panel ? withZoneSections(rocketSectionsView(panel, now), panel.zones) : { bursts: null, runners: [] };
-  const head = panel ? rocketHeaderView(panel) : null;
+  const head = panel ? rocketHeaderView(panel, state.connected) : null;
   const counts = rocketSectionCounts(state);
   const burstCount = bursts ? bursts.rows.length : 0;
   // No rows, no card (owner, 2026-10-22): off, not yet known and empty all hide it. It stays

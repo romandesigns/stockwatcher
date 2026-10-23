@@ -84,6 +84,14 @@ describe("rocket header", () => {
     expect(h.history).toBe("");
     expect(h.strategy).toBe("placeholder-b2 v1 · fixed threshold");
   });
+
+  test("disconnected headers claim no attention, with unchanged default callers", () => {
+    const p = panel({ rows: [row({ state: "building" }), row({ id: "b", state: "breaking_out" })] });
+    expect(rocketAttention(p)).toBe(2);
+    expect(rocketAttention(p, true)).toBe(2);
+    expect(rocketAttention(p, false)).toBe(0);
+    expect(rocketHeaderView(p, false)).toEqual({ ...rocketHeaderView(p), attention: 0 });
+  });
 });
 
 describe("rocket channel", () => {
@@ -130,6 +138,22 @@ describe("rocket channel", () => {
   test("the frames parse", () => {
     const m = parseServerMessage(JSON.stringify({ type: "rocket.update", ...panel() }));
     expect(m?.type).toBe("rocket.update");
+  });
+
+  test("fresh badges stop exactly at one minute and stay off through reconnect without a frame", () => {
+    const ch = createRocketChannel({ subscribe() {}, unsubscribe() {} }, () => 0);
+    const off = ch.subscribe(() => {});
+    ch.apply({ type: "rocket.snapshot", ...panel({ rows: [row({ at: T })] }) });
+    expect(rocketFreshCount(ch.get(), 59_999)).toBe(1);
+    expect(rocketFreshCount(ch.get(), 60_000)).toBe(0);
+    expect(rocketFreshCount(ch.get(), 60_001)).toBe(0);
+    ch.setConnected(false);
+    expect(rocketFreshCount(ch.get(), 10_000)).toBe(0);
+    ch.setConnected(true);
+    expect(rocketFreshCount(ch.get(), 10_000)).toBe(0);
+    ch.apply({ type: "rocket.snapshot", ...panel({ rows: [row({ at: T })] }) });
+    expect(rocketFreshCount(ch.get(), 10_000)).toBe(1);
+    off();
   });
 });
 

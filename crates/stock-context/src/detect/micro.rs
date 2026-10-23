@@ -75,6 +75,11 @@ pub(crate) fn search(det: &mut Detector, sd: &mut SymDetect, x: &Barrier, seg: S
     if j == w.len() - 1 || j == 0 || h0_end <= sd.micro_search_from {
         return;
     }
+    // Discovery may start after history adoption or late watch admission. The impulse high's
+    // age still starts at its bar, not at discovery; silently decline an already-expired setup.
+    if (x.b - h0_end) / x.bar_ns > m.formation_max_slots {
+        return;
+    }
     // L0: the lowest low strictly before H0's bar (latest on ties).
     let i = (0..j).fold(0, |a, k| if w[k].1.low <= w[a].1.low { k } else { a });
     let (l0_end, l0) = (w[i].0, w[i].1.low);
@@ -181,7 +186,10 @@ fn try_arm(det: &mut Detector, sd: &mut SymDetect, x: &Barrier, ep: &mut Ep) {
     let Some(a) = ep.view.anchors.clone() else {
         return;
     };
-    if ep.view.state != State::PullbackForming || a.pullback_bars < m.min_pullback_bars {
+    if ep.view.state != State::PullbackForming
+        || a.pullback_bars < m.min_pullback_bars
+        || (x.b - a.h0_bar_end) / x.bar_ns > m.formation_max_slots
+    {
         return;
     }
     let fresh = det.policy.body.timing.price_fresh_secs * super::SEC;

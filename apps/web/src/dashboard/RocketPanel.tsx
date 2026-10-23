@@ -63,7 +63,7 @@ export function RocketPanelView({ state, wallNow, onPick }: { state: RocketState
   const { enabled, panel } = state;
   const now = rocketNow(state, wallNow);
   const { bursts, runners: rows }: RocketSectionsView = panel ? withZoneSections(rocketSectionsView(panel, now), panel.zones) : { bursts: null, runners: [] };
-  const head = panel ? rocketHeaderView(panel) : null;
+  const head = panel ? rocketHeaderView(panel, state.connected) : null;
   return (
     <aside aria-labelledby="rocket-title" className="flex min-h-0 min-w-0 flex-col gap-2 rounded-xl bg-card p-2.5">
       <div className="flex items-center gap-2 px-1">

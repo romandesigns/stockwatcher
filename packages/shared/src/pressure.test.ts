@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { buildupCue, buildupCueShort, buildupSentence, createPressureChannel, gaugeCaption, gaugeGeometry, gaugeTone, haltLine, haltSentence, LULD_PAUSE_MS, NO_BUILDUPS, pressureBoardFrom, riskPhrase } from "./pressure.ts";
+import { buildupCue, buildupCueShort, buildupSentence, createPressureChannel, gaugeCaption, gaugeGeometry, gaugeTone, haltLine, haltSentence, LULD_PAUSE_MS, NO_BUILDUPS, pressureBoardFrom, pressureFreshnessLine, riskPhrase } from "./pressure.ts";
 import { parseServerMessage, type PressureMessage } from "./protocol.ts";
 import { createWsClient, type WebSocketLike } from "./ws.ts";
 
+const T = 1_792_075_200_000;
 const update: PressureMessage = {
   type: "pressure.update",
-  t: 1_792_075_200_000,
+  t: T,
   board: [
     { s: "SAFX", p: 0.2881, pc: 0.1403, o: 0.15, risk: 83, side: "bull", rise: 52, riseSecs: 30, band: 0.31, toBand: 7.6, pressure: 91, buyShare: 0.84, pace: 9.2 },
     { s: "ZTG", p: 0.7639, o: 0.623, risk: 100, side: "bull", rise: 40, riseSecs: 30, band: 0.7639, toBand: 0, pressure: 88, buyShare: 0.81, pace: 7.7, halt: { start: 1_792_075_200_000, reason: "LUDP" } },
@@ -45,6 +46,59 @@ describe("pressure board", () => {
     b();
     expect(calls).toEqual(["sub", "unsub"]);
     expect(ch.get().length).toBe(0);
+  });
+
+  test("status snapshots are stable; reopening is stale until a replacement frame", () => {
+    const ch = createPressureChannel({ subscribe() {}, unsubscribe() {} });
+    let seen = 0;
+    const off = ch.subscribe(() => seen++);
+    const empty = ch.status();
+    expect(empty).toEqual({ connected: false, asOf: null });
+    expect(ch.status()).toBe(empty);
+    ch.setConnected(true);
+    expect(ch.status()).toBe(empty);
+    expect(seen).toBe(0);
+    ch.apply(update);
+    expect(ch.status()).toEqual({ connected: true, asOf: update.t });
+    const live = ch.status();
+    const board = ch.get();
+    expect(ch.status()).toBe(live);
+    expect(seen).toBe(1);
+    ch.apply(update);
+    expect(ch.status()).toBe(live); // unchanged status never allocates a new snapshot
+    expect(seen).toBe(2);
+    ch.setConnected(false);
+    const stale = ch.status();
+    expect(stale).toEqual({ connected: false, asOf: update.t });
+    expect(ch.get()).toEqual(board); // retained only as last known, never as live
+    expect(seen).toBe(3); // status alone must wake the UI
+    ch.setConnected(false);
+    ch.setConnected(true);
+    expect(ch.status()).toBe(stale);
+    expect(seen).toBe(3);
+    ch.apply({ ...update, type: "pressure.snapshot", t: T + 1000, board: [] });
+    expect(ch.status()).toEqual({ connected: true, asOf: T + 1000 });
+    expect(ch.get()).toEqual([]); // absent retained rows are discarded by the new snapshot
+    off();
+    expect(ch.status()).toBe(empty);
+    expect(ch.get()).toEqual([]);
+  });
+
+  test("last-known labels use the frame time and disappear only after a frame", () => {
+    const hhmm = (ms: number) => new Date(ms).toISOString().slice(11, 16);
+    expect(pressureFreshnessLine({ connected: false, asOf: null }, hhmm)).toBe("Reconnecting");
+    expect(pressureFreshnessLine({ connected: false, asOf: T }, hhmm)).toBe(`Reconnecting · last ${hhmm(T)}`);
+    expect(pressureFreshnessLine({ connected: true, asOf: update.t }, hhmm)).toBe("");
+  });
+
+  test("as-of is only a label; an unchanged board stays connected without an age timeout", () => {
+    const ch = createPressureChannel({ subscribe() {}, unsubscribe() {} });
+    const off = ch.subscribe(() => {});
+    ch.apply({ ...update, t: 1 }); // deliberately old frame time
+    expect(ch.status()).toEqual({ connected: true, asOf: 1 });
+    ch.setConnected(true);
+    expect(ch.status().connected).toBe(true);
+    off();
   });
 });
 

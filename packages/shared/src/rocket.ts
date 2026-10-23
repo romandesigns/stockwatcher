@@ -627,8 +627,8 @@ export function rocketSectionsView(p: RocketPanelWire, nowMs: number): RocketSec
 }
 
 /** Rows that need attention now: building or breaking out (the header count). */
-export function rocketAttention(p: RocketPanelWire): number {
-  return p.rows.filter((r) => ROCKET_STATES[momentumOf(r)].attention).length;
+export function rocketAttention(p: RocketPanelWire, current = true): number {
+  return current ? p.rows.filter((r) => ROCKET_STATES[momentumOf(r)].attention).length : 0;
 }
 
 /** The market clock now, for ages: the frame's `t` advanced by the wall time since it arrived. */
@@ -652,7 +652,7 @@ export interface RocketHeaderView {
   placeholder: boolean;
 }
 
-export function rocketHeaderView(p: RocketPanelWire): RocketHeaderView {
+export function rocketHeaderView(p: RocketPanelWire, current = true): RocketHeaderView {
   const n = p.today.alerts;
   const record = n === 0 ? "Nothing flagged today" : `${p.today.hits} of ${n} rocketed today`;
   const a = p.days.reduce((s, d) => s + d.alerts, 0);
@@ -662,11 +662,12 @@ export function rocketHeaderView(p: RocketPanelWire): RocketHeaderView {
   const strategy = s ? `${s.id}${s.version ? ` v${s.version}` : ""} · ${p.mode === "budget" ? `budget ${p.budget}/day` : "fixed threshold"}` : "";
   const k = p.today.ran_later ?? 0;
   const ranLater = k > 0 ? `${k} ran ≥ +${RAN_LATER_PCT}% later` : "";
-  return { record, ranLater, attention: rocketAttention(p), history, strategy, placeholder: s?.placeholder ?? false };
+  return { record, ranLater, attention: rocketAttention(p, current), history, strategy, placeholder: s?.placeholder ?? false };
 }
 
 /** Rows flagged under a minute ago (the tab's count). */
 export function rocketFreshCount(state: RocketState, wallNow: number = Date.now()): number {
+  if (!state.connected) return 0;
   const now = rocketNow(state, wallNow);
   return state.panel?.rows.filter((r) => now - r.at < 60_000).length ?? 0;
 }

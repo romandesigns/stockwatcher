@@ -49,6 +49,12 @@
 //! What a load cannot have: events the recorder dropped (its queue overflowed; counted and
 //! logged), and the **restart gap** (nothing was connected; not backfilled, the archive's import
 //! fills it at night).
+//! A structurally short rebuild is adopted once with Runners marked unavailable for that
+//! trading date. The symbol leaves `unloaded` so charts, scanner, zones and bursts keep taking
+//! live events. Structural loss is not a catch-up deferral and is never automatically retried.
+//! A later real date roll or successful explicit authoritative adoption clears the Runners-only
+//! block; lost events remain explicit partial coverage. Merely unverified admission order
+//! retains its coverage provenance without blocking sound figures.
 
 use crate::market::{Core, Market, OutKind, Outbound, TAPE_HISTORY};
 use crate::pressure::PressureBoard;
@@ -647,6 +653,10 @@ impl Market {
                 );
                 incomplete = incomplete.or(Some("held_tail_unreconciled"));
             }
+            let unavailable = incomplete.is_some() || overflow > 0;
+            // A short prefix is a completed adoption with explicit partial coverage, not a
+            // retryable catch-up deferral. Keeping it held would freeze every other panel,
+            // and re-reading can never recover an overflow or recorder drop.
             core.unloaded.remove(symbol);
             let Builder {
                 mut engine,
@@ -667,7 +677,16 @@ impl Market {
             core.quotes.replace_from(symbol, &board);
             core.pressure.replace_from(symbol, &pressure);
             if core.rocket.enabled() {
-                core.rocket.tape.replace_from(symbol, &rocket);
+                let adopted_at = [Some(h.started_at), core.engine.clock(), mark.map(UnixNanos)]
+                    .into_iter()
+                    .flatten()
+                    .max()
+                    .expect("known source start clock");
+                core.rocket
+                    .adopt_tape(symbol, &rocket, unavailable, trading_date(adopted_at));
+                let (halted, resumed_at) = core.pressure.halt_state(symbol);
+                core.rocket.set_halted(symbol, halted, resumed_at);
+                tracing::debug!(symbol, unavailable, readiness = %core.rocket.readiness(), "runners: history facts adopted");
             }
             if let Some(bd) = burst {
                 // Brought up to the live clock first, so the boundaries since the last replayed
@@ -1453,6 +1472,8 @@ pub(crate) fn history_json(market: &Market) -> Value {
         "days": h.days.iter().map(|d| d.to_string()).collect::<Vec<_>>(),
         "symbols": h.total,
         "pending": pending,
+        "runners_readiness": market.runner_readiness(),
+        "pressure_expired_sided_prints_dropped": market.pressure_expired_prints_dropped(),
     })
 }
 
@@ -1535,6 +1556,158 @@ const RETRY_MAX: Duration = Duration::from_secs(60);
 mod tests {
     use super::*;
     use market_events::{Price, Trade};
+
+    struct Admit;
+    impl crate::rocket::RocketScorer for Admit {
+        fn id(&self) -> &str {
+            "test"
+        }
+        fn version(&self) -> &str {
+            "t1"
+        }
+        fn score(&self, _: &crate::rocket::Features) -> Option<f64> {
+            Some(1.0)
+        }
+    }
+
+    fn restore_fixture(root: &std::path::Path, resume: bool) -> (Market, Archive, NaiveDate) {
+        let day = NaiveDate::from_ymd_opt(2026, 10, 15).unwrap();
+        let at = |m, s| market_events::session::et(day, 10, m, s, 0).unwrap();
+        let a = Archive::new(market_archive::ArchiveConfig {
+            root: root.to_path_buf(),
+            retention_days: 0,
+            min_free_bytes: 0,
+        });
+        let mut w = market_archive::LiveWriter::open(&a, day, 0, "readiness-test").unwrap();
+        let mut t = Trade::new("COLD", at(0, 1), Price::from_cents(200), 1000, 1);
+        t.receive_ts = Some(t.event_ts);
+        w.append(&MarketEvent::Trade(t)).unwrap();
+        for (s, kind) in [
+            (7, market_events::StatusKind::Halt),
+            (22, market_events::StatusKind::Resume),
+        ] {
+            if kind == market_events::StatusKind::Resume && !resume {
+                continue;
+            }
+            w.append(&MarketEvent::Status(market_events::Status {
+                symbol: Some("COLD".into()),
+                event_ts: at(0, s),
+                receive_ts: Some(at(0, s)),
+                source: market_events::Source::Fixture,
+                kind,
+                code: if kind == market_events::StatusKind::Halt {
+                    "H"
+                } else {
+                    "T"
+                }
+                .into(),
+                reason: "LUDP".into(),
+                tape: market_events::Tape::C,
+            }))
+            .unwrap();
+        }
+        w.finish().unwrap();
+        let m = Market::idle(market_providers::ClockMode::Live, "test", None);
+        let p = crate::rocket::Policy {
+            threshold: Some(crate::rocket::Threshold::Fixed(0.5)),
+            fast: false,
+            ..Default::default()
+        };
+        m.set_rocket_watch(true, p.clone());
+        m.0.core.lock().unwrap().rocket = crate::rocket::RocketBoard::new(true, Arc::new(Admit), p);
+        m.init_history(a.clone(), None, at(1, 0), false, false);
+        (m, a, day)
+    }
+
+    #[test]
+    fn incomplete_adoption_releases_live_flow_and_explicit_authoritative_repair_clears_unavailable()
+    {
+        let tmp = tempfile::tempdir().unwrap();
+        let (m, a, day) = restore_fixture(tmp.path(), false);
+        let path = a.live_path(day, "COLD");
+        let original = std::fs::read(&path).unwrap();
+        // Valid manifest, unreadable data: distinct from an authoritative empty tape.
+        std::fs::write(&path, b"broken archive header").unwrap();
+        assert!(m.load_history("COLD").is_some());
+        assert_eq!(m.runner_readiness()["unrestored"], 0);
+        assert_eq!(m.runner_readiness()["unavailable"], 1);
+        assert!(!m.0.core.lock().unwrap().unloaded.contains_key("COLD"));
+        assert_eq!(m.state_json()["history"]["pending"], 0);
+        assert!(
+            m.load_history("COLD").is_none(),
+            "completed adoption is not a loader retry"
+        );
+        std::fs::write(&path, &original).unwrap();
+        // A deliberate authoritative rebuild can clear the Runners-only guard. This is an
+        // explicit adoption, not an automatic loader path or a promise that loss was repaired.
+        let got = read_day(m.0.history.get().unwrap(), day, "COLD", 0);
+        assert!(got.incomplete.is_none());
+        let mut rebuilt = Builder::new(m.current_closes());
+        for e in &got.events {
+            rebuilt.feed(e);
+        }
+        m.0.core
+            .lock()
+            .unwrap()
+            .rocket
+            .adopt_tape("COLD", &rebuilt.rocket, false, day);
+        assert_eq!(m.runner_readiness()["withheld"], 0);
+        assert!(!m.0.core.lock().unwrap().unloaded.contains_key("COLD"));
+    }
+
+    #[test]
+    fn the_loader_adopts_structural_loss_once_without_scheduling_another_rebuild() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (m, a, day) = restore_fixture(tmp.path(), false);
+        let path = a.live_path(day, "COLD");
+        std::fs::write(&path, b"broken archive header").unwrap();
+        request_load(&m, &mut m.0.core.lock().unwrap(), "COLD");
+        let wait = |what: &str, f: &dyn Fn() -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(8);
+            while !f() {
+                assert!(Instant::now() < deadline, "never: {what}");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        wait("unavailable adoption", &|| {
+            m.runner_readiness()["unavailable"] == 1
+        });
+        let seq = m.0.core.lock().unwrap().seq;
+        assert!(!m.0.core.lock().unwrap().unloaded.contains_key("COLD"));
+        std::thread::sleep(RETRY_FIRST + Duration::from_millis(100));
+        assert_eq!(
+            m.0.core.lock().unwrap().seq,
+            seq,
+            "no full-day re-adoption at the former first retry"
+        );
+        assert_eq!(
+            m.runner_readiness()["withheld"],
+            1,
+            "only Runners stays unavailable on this date"
+        );
+    }
+
+    #[test]
+    fn restored_halt_and_resume_keep_pressure_and_runner_admission_in_agreement() {
+        for resumed in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let (m, _, day) = restore_fixture(tmp.path(), resumed);
+            let at = |s| market_events::session::et(day, 10, 0, s, 0).unwrap().0;
+            assert!(m.load_history("COLD").is_some());
+            let mut core = m.0.core.lock().unwrap();
+            assert_eq!(
+                core.pressure.halt_state("COLD"),
+                (!resumed, resumed.then_some(at(22)))
+            );
+            core.rocket.tick(at(31), |_| None);
+            assert!(
+                core.rocket.alerts().is_empty(),
+                "halt and resume-containing bar are both withheld after adoption"
+            );
+            core.rocket.tick(at(46), |_| None);
+            assert_eq!(core.rocket.alerts().len(), usize::from(resumed));
+        }
+    }
 
     fn unloaded() -> Unloaded {
         Unloaded {

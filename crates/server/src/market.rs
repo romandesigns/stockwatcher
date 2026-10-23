@@ -905,11 +905,34 @@ impl Market {
         core.rocket.burst().map(|b| (b.symbols(), b.unrestored()))
     }
 
+    /// Read-only Runners adoption/facts readiness, independent of strategy thresholds.
+    pub fn runner_readiness(&self) -> Value {
+        self.0.core.lock().expect("core lock").rocket.readiness()
+    }
+
+    /// Counted expired sided prints, separate from history/readiness provenance.
+    pub fn pressure_expired_prints_dropped(&self) -> u64 {
+        self.0
+            .core
+            .lock()
+            .expect("core lock")
+            .pressure
+            .expired_prints_dropped()
+    }
+
     /// Loads a trading date's running-entry facts (`crate::rocket::running::facts`) on a
     /// blocking thread, then hands them to the board. Never under the core lock. Without an
     /// archive the rule runs on its defaults (the cap, no volume ratio).
     fn load_running_facts(&self, date: NaiveDate) {
         let Some(archive) = self.0.running_archive.get().cloned() else {
+            // Known absent differs from not loaded. Preserve the documented fallback only
+            // after explicitly completing this date's facts request.
+            self.0
+                .core
+                .lock()
+                .expect("core lock")
+                .rocket
+                .set_running_facts(date, HashMap::new());
             return;
         };
         let market = self.clone();
@@ -2182,7 +2205,8 @@ impl Market {
                                 if let Some(cx) = core.context.as_mut() {
                                     cx.set_halted(&h.symbol, h.halt.end.is_none());
                                 }
-                                core.rocket.set_halted(&h.symbol, h.halt.end.is_none());
+                                let (halted, resumed_at) = core.pressure.halt_state(&h.symbol);
+                                core.rocket.set_halted(&h.symbol, halted, resumed_at);
                             }
                             // In order: a halt freezes the readings before the null band point
                             // that follows it clears the band (crate::pressure, "Halts").
@@ -3863,6 +3887,266 @@ async fn ingest(mut items: mpsc::Receiver<FeedItem>, market: Market, sim: Option
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Manual synthetic pressure portion of the real Core critical section; no feed or sockets.
+    /// Excludes lock acquisition and every other ingest consumer, and is not production latency.
+    #[test]
+    #[ignore = "manual Core-lock pressure measurement; run with --ignored --nocapture"]
+    fn pressure_cost_under_market_core_lock() {
+        use std::time::Instant;
+
+        const COUNT: usize = 100_000;
+        const SEC: i64 = 1_000_000_000;
+        let day = NaiveDate::from_ymd_opt(2026, 10, 16).unwrap();
+        let start = market_events::session::et(day, 10, 0, 0, 0).unwrap().0;
+        for late in [false, true] {
+            let market = Market::idle(ClockMode::Live, "synthetic Core pressure bench", None);
+            let trades: Vec<_> = (0..COUNT)
+                .map(|i| {
+                    let now = start + i as i64 * SEC / 1_000;
+                    let exec = if late && i > 5_000 && i % 20 == 0 {
+                        now - 5 * SEC
+                    } else {
+                        now
+                    };
+                    market_events::Trade::new(
+                        "COST",
+                        UnixNanos(exec),
+                        market_events::Price::from_micros(1_000_000 + i as i64 % 100),
+                        100,
+                        i as u64,
+                    )
+                })
+                .collect();
+            let mut ns = Vec::with_capacity(COUNT);
+            for trade in &trades {
+                let mut core = market.0.core.lock().unwrap();
+                let held = Instant::now();
+                core.pressure.apply_trade(
+                    trade,
+                    Counted {
+                        ohlc: true,
+                        volume: true,
+                    },
+                );
+                let elapsed = held.elapsed().as_nanos();
+                drop(core);
+                ns.push(elapsed);
+            }
+            ns.sort_unstable();
+            println!(
+                "actual_core_pressure_only late={late} n={} mean_ns={} p50_ns={} p95_ns={} p99_ns={} max_ns={} profile=debug synthetic=true lock_acquisition_excluded=true other_ingest_excluded=true",
+                ns.len(),
+                ns.iter().sum::<u128>() / ns.len() as u128,
+                ns[ns.len() / 2],
+                ns[ns.len() * 95 / 100],
+                ns[ns.len() * 99 / 100],
+                ns.last().unwrap(),
+            );
+        }
+    }
+
+    #[test]
+    fn no_archive_explicitly_completes_the_running_facts_request() {
+        let market = Market::idle(ClockMode::Live, "test", None);
+        market.set_rocket_watch(true, crate::rocket::Policy::default());
+        let day = NaiveDate::from_ymd_opt(2026, 10, 15).unwrap();
+        let at = market_events::session::et(day, 10, 0, 0, 0).unwrap().0;
+        market.0.core.lock().unwrap().rocket.tick(at, |_| None);
+        assert_eq!(market.runner_readiness()["running_facts_ready"], false);
+        assert!(market.0.running_archive.get().is_none());
+        market.load_running_facts(day);
+        assert_eq!(market.runner_readiness()["running_facts_ready"], true);
+    }
+
+    /// A real held-tail overflow cannot turn the chart/scanner into a repeated full-day
+    /// rebuild. Partial coverage ends the hold; only Runners remains guarded for this date.
+    #[test]
+    fn overflow_adoption_releases_live_engine_and_scanner_but_keeps_runners_unavailable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let day = NaiveDate::from_ymd_opt(2026, 10, 15).unwrap();
+        let at = |h, m, s| market_events::session::et(day, h, m, s, 0).unwrap();
+        let archive = Archive::new(market_archive::ArchiveConfig {
+            root: tmp.path().to_path_buf(),
+            retention_days: 0,
+            min_free_bytes: 0,
+        });
+        let mut writer =
+            market_archive::LiveWriter::open(&archive, day, 0, "overflow-regression").unwrap();
+        writer
+            .append(&MarketEvent::Trade(market_events::Trade::new(
+                "HOT",
+                at(9, 59, 1),
+                Price::from_cents(200),
+                100,
+                1,
+            )))
+            .unwrap();
+        writer.finish().unwrap();
+        let market = Market::idle(ClockMode::Live, "test", None);
+        market.set_rocket_watch(
+            true,
+            crate::rocket::Policy {
+                fast: false,
+                ..Default::default()
+            },
+        );
+        market.set_stock_context(true);
+        market.init_history(archive, None, at(10, 1, 0), false, false);
+        for i in 0..=crate::history::HELD_MAX {
+            let t = UnixNanos(at(10, 0, 1).0 + i as i64 * 10_000);
+            market.apply(FeedItem::Event(MarketEvent::Trade(
+                market_events::Trade::new("HOT", t, Price::from_cents(200), 100, i as u64 + 2),
+            )));
+        }
+        assert_eq!(market.state_json()["history"]["pending"], 1);
+        assert!(market.load_history("HOT").is_some());
+        assert_eq!(
+            market.state_json()["history"]["pending"],
+            0,
+            "overflow is a completed partial adoption, not a deferred load"
+        );
+        assert!(
+            market.load_history("HOT").is_none(),
+            "the loader cannot repeatedly rebuild a completed adoption"
+        );
+        market.apply(FeedItem::Advance(at(10, 1, 0)));
+        let (engine_before, scanner_before) = {
+            let core = market.0.core.lock().unwrap();
+            assert!(!core.unloaded.contains_key("HOT"));
+            let d = core.context.as_ref().unwrap().decision("HOT").unwrap();
+            assert_eq!(d.volume.coverage, stock_context::Coverage::Partial);
+            assert_eq!(d.volume.coverage_reason, Some("held_tail_overflow"));
+            assert!(d.pillars.iter().all(|p| p.reason != "history_pending"));
+            (
+                core.engine
+                    .snapshot("HOT", Timeframe::M1, None)
+                    .unwrap()
+                    .candles
+                    .iter()
+                    .map(|c| c.v)
+                    .sum::<u64>(),
+                d.volume.shares,
+            )
+        };
+        market.apply(FeedItem::Event(MarketEvent::Trade(
+            market_events::Trade::new("HOT", at(10, 1, 1), Price::from_cents(250), 777, 100_000),
+        )));
+        market.apply(FeedItem::Advance(at(10, 1, 30)));
+        let mut core = market.0.core.lock().unwrap();
+        let engine_after = core
+            .engine
+            .snapshot("HOT", Timeframe::M1, None)
+            .unwrap()
+            .candles
+            .iter()
+            .map(|c| c.v)
+            .sum::<u64>();
+        assert_eq!(
+            engine_after,
+            engine_before + 777,
+            "the following print reaches the chart immediately"
+        );
+        let d = core.context.as_ref().unwrap().decision("HOT").unwrap();
+        assert_eq!(
+            d.volume.shares,
+            scanner_before + 777,
+            "the scanner resumes its normal live path"
+        );
+        assert!(d.pillars.iter().all(|p| p.reason != "history_pending"));
+        core.rocket.tick(at(10, 1, 31).0, |_| None);
+        assert_eq!(core.rocket.readiness()["unrestored"], 0);
+        assert_eq!(core.rocket.readiness()["unavailable"], 1);
+        assert_eq!(core.rocket.readiness()["withheld"], 1);
+        assert!(core.rocket.alerts().is_empty() && core.rocket.take_notices().is_empty());
+    }
+
+    /// Real Market ingest must apply pressure's official status before syncing Runners.
+    #[test]
+    fn ingest_halt_and_resume_gate_the_next_runner_admission() {
+        struct Fixed;
+        impl crate::rocket::RocketScorer for Fixed {
+            fn id(&self) -> &str {
+                "test"
+            }
+            fn version(&self) -> &str {
+                "t1"
+            }
+            fn score(&self, _: &crate::rocket::Features) -> Option<f64> {
+                Some(1.0)
+            }
+        }
+        let market = Market::idle(ClockMode::Live, "test", None);
+        let policy = crate::rocket::Policy {
+            threshold: Some(crate::rocket::Threshold::Fixed(0.5)),
+            fast: false,
+            ..Default::default()
+        };
+        market.set_rocket_watch(true, policy.clone());
+        market.0.core.lock().unwrap().rocket =
+            crate::rocket::RocketBoard::new(true, Arc::new(Fixed), policy);
+        let day = NaiveDate::from_ymd_opt(2026, 10, 15).unwrap();
+        let at = |m, s| market_events::session::et(day, 10, m, s, 0).unwrap();
+        let trade = |ts| {
+            MarketEvent::Trade(market_events::Trade::new(
+                "STOP",
+                ts,
+                Price::from_cents(200),
+                1000,
+                1,
+            ))
+        };
+        let status = |ts, kind| {
+            MarketEvent::Status(market_events::Status {
+                symbol: Some("STOP".into()),
+                event_ts: ts,
+                receive_ts: None,
+                source: market_events::Source::Fixture,
+                kind,
+                code: if kind == market_events::StatusKind::Halt {
+                    "H"
+                } else {
+                    "T"
+                }
+                .into(),
+                reason: "LUDP".into(),
+                tape: market_events::Tape::C,
+            })
+        };
+        market.apply(FeedItem::Event(trade(at(0, 1))));
+        market.apply(FeedItem::Event(status(
+            at(0, 7),
+            market_events::StatusKind::Halt,
+        )));
+        {
+            let mut core = market.0.core.lock().unwrap();
+            assert!(core.pressure.halt_state("STOP").0);
+            core.rocket.tick(at(0, 16).0, |_| None);
+            assert!(core.rocket.alerts().is_empty());
+        }
+        market.apply(FeedItem::Event(status(
+            at(0, 22),
+            market_events::StatusKind::Resume,
+        )));
+        market.apply(FeedItem::Event(trade(at(0, 23))));
+        {
+            let mut core = market.0.core.lock().unwrap();
+            assert_eq!(core.pressure.halt_state("STOP"), (false, Some(at(0, 22).0)));
+            core.rocket.tick(at(0, 31).0, |_| None);
+            assert!(
+                core.rocket.alerts().is_empty(),
+                "bar containing resume is withheld"
+            );
+        }
+        market.apply(FeedItem::Event(trade(at(0, 31))));
+        let mut core = market.0.core.lock().unwrap();
+        core.rocket.tick(at(0, 46).0, |_| None);
+        assert_eq!(core.rocket.alerts().len(), 1);
+        assert_eq!(
+            core.rocket.take_notices()[0].kind,
+            crate::rocket::NoticeKind::New
+        );
+    }
 
     /// The Runners board's notices reach the phone push from the LIVE market only, after the
     /// lock, without waiting: a replay's are taken and dropped, and a full sink costs the

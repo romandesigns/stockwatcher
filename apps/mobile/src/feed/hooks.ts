@@ -1,6 +1,6 @@
 import { ChartStore, parseReplayDayState, type ChartMessage, type Clock, type PaperState, type ReplayDayState, type Series, type TapeTrade, type Timeframe } from "@stockwatcher/chart-core";
 import type { ChartTrading } from "@stockwatcher/chart-native";
-import { authenticatedFetch, EMPTY_QUOTE_BOARD, parseLiveSession, withMarketSource, type DetectionChannel, type DetectionState, type LiveSession, type MarketSource, type PressureBoard, type PressureChannel, type QuoteBoard, type QuoteChannel, type RocketChannel, type RocketState, type RossChannel, type RossState, zoneSelector, type ZoneView } from "@stockwatcher/shared";
+import { authenticatedFetch, EMPTY_QUOTE_BOARD, parseLiveSession, withMarketSource, type DetectionChannel, type DetectionState, type LiveSession, type MarketSource, type PressureBoard, type PressureChannel, type PressureStatus, type QuoteBoard, type QuoteChannel, type RocketChannel, type RocketState, type RossChannel, type RossState, zoneSelector, type ZoneView } from "@stockwatcher/shared";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { SERVER_URL } from "./server";
@@ -110,6 +110,13 @@ export function useDetection(channel: DetectionChannel): DetectionState {
 export function usePressureBoard(channel: PressureChannel): PressureBoard {
   const subscribe = useCallback((cb: () => void) => channel.subscribe(cb), [channel]);
   const get = useCallback(() => channel.get(), [channel]);
+  return useSyncExternalStore(subscribe, get);
+}
+
+/** Status changes notify independently of the retained board, just like the web panel. */
+export function usePressureStatus(channel: PressureChannel): PressureStatus {
+  const subscribe = useCallback((cb: () => void) => channel.subscribe(cb), [channel]);
+  const get = useCallback(() => channel.status(), [channel]);
   return useSyncExternalStore(subscribe, get);
 }
 

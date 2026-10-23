@@ -169,6 +169,11 @@ struct Bar {
 #[derive(Clone, Debug)]
 pub(crate) struct Sym {
     pub(crate) symbol: Arc<str>,
+    /// The live prefix has not yet been atomically adopted from history.
+    pub(crate) unrestored: bool,
+    /// This date's rebuilt prefix was adopted, but was structurally incomplete. Runners only.
+    pub(crate) unavailable: bool,
+    unavailable_day: u32,
     ring: Option<Box<[Bar; RING]>>,
     day: u32,
     /// The newest slot key folded, and the last one finalized into the day's totals.
@@ -204,6 +209,9 @@ impl Sym {
     fn new(symbol: Arc<str>) -> Self {
         Sym {
             symbol,
+            unrestored: false,
+            unavailable: false,
+            unavailable_day: 0,
             ring: None,
             day: 0,
             newest: 0,
@@ -226,7 +234,15 @@ impl Sym {
     fn reset_day(&mut self, day: u32) {
         let ring = self.ring.take();
         let symbol = self.symbol.clone();
+        let unrestored = self.unrestored;
+        let unavailable = self.unavailable && self.unavailable_day == day;
+        let unavailable_day = self.unavailable_day;
         *self = Sym::new(symbol);
+        // Pending adoption can cross dates; a previous date's structural loss cannot make
+        // today's live prefix unavailable once that symbol actually starts a new date.
+        self.unrestored = unrestored;
+        self.unavailable = unavailable;
+        self.unavailable_day = unavailable_day;
         self.ring = ring;
         self.day = day;
     }
@@ -437,16 +453,27 @@ impl Tape {
         }
     }
 
-    /// Takes `symbol`'s state from `other` (a history load replayed the symbol's recorded day on
-    /// its own board: `crate::history`).
-    pub(crate) fn replace_from(&mut self, symbol: &str, other: &Tape) {
-        let Some(&j) = other.index.get(symbol) else {
-            return;
-        };
+    pub(crate) fn apply_unrestored_trade(&mut self, t: &Trade, counted: Counted) {
+        self.apply_trade(t, counted);
+        if let Some(&i) = self.index.get(t.symbol.as_str()) {
+            self.syms[i].unrestored = true;
+        }
+    }
+
+    /// An empty authoritative rebuild replaces provisional facts too. Merely clearing the
+    /// mark would otherwise let the old live-only bars become admissible again.
+    pub(crate) fn adopt(&mut self, symbol: &str, other: &Tape, unavailable: Option<NaiveDate>) {
         let i = self.sym_index(symbol);
         let sym = self.syms[i].symbol.clone();
-        self.syms[i] = other.syms[j].clone();
+        self.syms[i] = other
+            .index
+            .get(symbol)
+            .map_or_else(|| Sym::new(sym.clone()), |&j| other.syms[j].clone());
         self.syms[i].symbol = sym;
+        self.syms[i].unrestored = false;
+        self.syms[i].unavailable = unavailable.is_some();
+        self.syms[i].unavailable_day = unavailable.map_or(0, |date| self.days.get(date).1);
+        self.latest_ts = self.latest_ts.max(other.latest_ts);
     }
 
     /// The trading date's 04:00 and ordinal (cached).

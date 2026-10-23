@@ -691,7 +691,7 @@ fn a_halt_is_a_state() {
         at(10, 0, 5),
     );
     b.take_log();
-    b.set_halted("HALT", true);
+    b.set_halted("HALT", true, None);
     let body = b.body(&|_| (Some(2.0), None), &|_| None);
     assert_eq!(body["rows"][0]["state"], "halted");
     b.tick(at(10, 0, 31), |_| None);
@@ -701,7 +701,7 @@ fn a_halt_is_a_state() {
         log.iter().any(|l| l.contains(r#""to":"halted""#)),
         "{log:?}"
     );
-    b.set_halted("HALT", false);
+    b.set_halted("HALT", false, Some(at(10, 0, 31)));
     b.tick(at(10, 0, 46), |_| None);
     assert_ne!(b.alerts()[0].track.state, MState::Halted);
 }
@@ -723,7 +723,7 @@ fn a_busy_row_logs_every_transition_past_the_old_cap() {
     let mut t = at(10, 0, 16);
     for _ in 0..150 {
         for halted in [true, false] {
-            b.set_halted("BUSY", halted);
+            b.set_halted("BUSY", halted, (!halted).then_some(t));
             b.tick(t, |_| None);
             t += 15 * S;
         }
@@ -915,6 +915,217 @@ fn no_burst_rows_without_the_detector() {
     assert!(b.take_notices().is_empty());
     let body = b.body(&|_| (None, None), &|_| None);
     assert!(body.get("burst").is_none());
+}
+
+/// These fixtures would qualify both admission paths on a fully restored tape. Provisional
+/// prints must not create rows/notices or contaminate the adaptive calibration population.
+#[test]
+fn peer_regression_unrestored_precursor_and_running_are_withheld() {
+    for scorer in [vec![("COLD", 1.0)], vec![]] {
+        let mut p = fixed(0.5, 10);
+        p.fast = false;
+        let mut b = board(scorer, p);
+        b.tick(at(8, 59, 0), |_| None);
+        b.set_running_facts(day(), HashMap::new());
+        let mut tape = flat("COLD", at(9, 0, 0), at(10, 0, 0), 8.0, 3_000);
+        tape.extend(climb("COLD", at(10, 0, 0), 40, 8.0, 0.01, 20_000).0);
+        for t in tape {
+            b.apply_unrestored_trade(&t, BOTH);
+            b.tick(t.event_ts.0 + 15 * S, |_| None);
+        }
+        assert!(
+            b.alerts().is_empty(),
+            "live-only prefixes cannot admit rows"
+        );
+        assert!(b.take_notices().is_empty());
+        assert!(
+            b.block_max.is_empty() && b.top.is_empty(),
+            "invalid scores cannot calibrate"
+        );
+    }
+}
+
+#[test]
+fn peer_regression_running_waits_for_facts_then_known_absent_keeps_fallback() {
+    let mut p = fixed(0.5, 10);
+    p.fast = false;
+    let mut b = board(vec![], p);
+    let mut tape = flat("FACT", at(9, 0, 0), at(10, 0, 0), 8.0, 3_000);
+    tape.extend(climb("FACT", at(10, 0, 0), 40, 8.0, 0.01, 20_000).0);
+    play(&mut b, tape, at(9, 0, 0), at(10, 10, 1));
+    assert!(b.alerts().is_empty(), "not loaded is not known absent");
+    assert!(b.take_notices().is_empty());
+    b.set_running_facts(day(), HashMap::new());
+    b.apply_trade(&tr("FACT", at(10, 10, 1), 12.1, 20_000), BOTH);
+    b.tick(at(10, 10, 16), |_| None);
+    assert_eq!(
+        b.alerts().len(),
+        1,
+        "an explicitly empty facts table uses existing fallback"
+    );
+    assert_eq!(b.alerts()[0].kind, AlertKind::Running);
+}
+
+#[test]
+fn peer_regression_known_halt_blocks_new_precursor_and_running_rows() {
+    for scorer in [vec![("STOP", 1.0)], vec![]] {
+        let mut p = fixed(0.5, 10);
+        p.fast = false;
+        let mut b = board(scorer, p);
+        b.tick(at(8, 59, 0), |_| None);
+        b.set_running_facts(day(), HashMap::new());
+        // Direct state setup also lets this regression run unchanged on the pre-fix tree.
+        b.halted.insert("STOP".to_string());
+        let mut tape = flat("STOP", at(9, 0, 0), at(10, 0, 0), 8.0, 3_000);
+        tape.extend(climb("STOP", at(10, 0, 0), 40, 8.0, 0.01, 20_000).0);
+        play(&mut b, tape, at(9, 0, 0), at(10, 10, 1));
+        assert!(
+            b.alerts().is_empty(),
+            "known halts block new admissions even with delayed prints"
+        );
+        assert!(b.take_notices().is_empty());
+        assert_eq!(b.last_cost.as_ref().unwrap().symbols, 1);
+    }
+}
+
+#[test]
+fn restored_tape_matches_full_prefix_and_empty_adoption_discards_provisional_bars() {
+    let mut b = board(vec![("COLD", 1.0)], fixed(0.5, 10));
+    let prefix = flat("COLD", at(9, 0, 0), at(9, 59, 30), 2.0, 1000);
+    let held = flat("COLD", at(9, 59, 30), at(10, 0, 0), 2.1, 2000);
+    let mut restored = Tape::default();
+    for t in prefix.iter().chain(held.iter()) {
+        restored.apply_trade(t, BOTH);
+    }
+    for t in &held {
+        b.apply_unrestored_trade(t, BOTH);
+    }
+    b.tick(at(10, 0, 1), |_| None);
+    assert!(b.alerts().is_empty());
+    b.adopt_tape("COLD", &restored, false, day());
+    assert_eq!(b.readiness()["unrestored"], 0);
+    let slot = (at(10, 0, 0) - at(4, 0, 0)) / (15 * S) - 1;
+    assert!(same(
+        &features_at(&mut b.tape, "COLD", slot).unwrap(),
+        &features_at(&mut restored, "COLD", slot).unwrap()
+    ));
+    b.adopt_tape("COLD", &Tape::default(), false, day());
+    assert_eq!(b.readiness()["withheld"], 0);
+    assert!(
+        features_at(&mut b.tape, "COLD", slot).is_none(),
+        "empty authoritative tape removes the old nonempty state"
+    );
+    b.tick(at(10, 0, 16), |_| None);
+    assert!(b.alerts().is_empty() && b.take_notices().is_empty());
+}
+
+#[test]
+fn pending_adoption_survives_date_roll_until_explicit_authoritative_adoption() {
+    let mut b = board(vec![("COLD", 1.0)], fixed(0.5, 10));
+    b.apply_unrestored_trade(&tr("COLD", at(10, 0, 1), 2.0, 1000), BOTH);
+    b.tick(at(10, 0, 16), |_| None);
+    assert_eq!(b.readiness()["unrestored"], 1);
+    let next = et(NaiveDate::from_ymd_opt(2026, 10, 19).unwrap(), 10, 0, 1, 0)
+        .unwrap()
+        .0;
+    // The ordinary tape reset must preserve readiness too, even without re-marking it.
+    b.apply_trade(&tr("COLD", next, 2.0, 1000), BOTH);
+    b.tick(next + 15 * S, |_| None);
+    assert_eq!(
+        b.readiness()["unrestored"],
+        1,
+        "reset_day must not make the provisional prefix ready"
+    );
+    let rebuilt = b.tape.clone();
+    b.adopt_tape(
+        "COLD",
+        &rebuilt,
+        false,
+        NaiveDate::from_ymd_opt(2026, 10, 19).unwrap(),
+    );
+    assert_eq!(b.readiness()["withheld"], 0);
+    b.tick(next + 30 * S, |_| None);
+    assert_eq!(b.alerts().len(), 1);
+}
+
+#[test]
+fn unavailable_adoption_blocks_only_its_date_including_an_empty_rebuild() {
+    for empty in [false, true] {
+        let mut b = board(vec![("COLD", 1.0)], fixed(0.5, 10));
+        b.apply_unrestored_trade(&tr("COLD", at(10, 0, 1), 2.0, 1000), BOTH);
+        let restored = if empty {
+            Tape::default()
+        } else {
+            b.tape.clone()
+        };
+        b.adopt_tape("COLD", &restored, true, day());
+        assert_eq!(b.readiness()["unrestored"], 0);
+        assert_eq!(b.readiness()["unavailable"], 1);
+        // Initializing an empty restored symbol on the SAME date cannot clear the guard.
+        b.apply_trade(&tr("COLD", at(10, 0, 2), 2.0, 1000), BOTH);
+        b.tick(at(10, 0, 16), |_| None);
+        assert_eq!(b.readiness()["unavailable"], 1);
+        assert!(b.alerts().is_empty());
+        let next = et(NaiveDate::from_ymd_opt(2026, 10, 19).unwrap(), 10, 0, 1, 0)
+            .unwrap()
+            .0;
+        b.apply_trade(&tr("COLD", next, 2.0, 1000), BOTH);
+        b.tick(next + 15 * S, |_| None);
+        assert_eq!(
+            b.readiness()["unavailable"],
+            0,
+            "old structural loss does not describe a new date"
+        );
+        assert_eq!(b.alerts().len(), 1);
+    }
+}
+
+#[test]
+fn halt_resume_requires_a_completed_bar_opened_after_resume_for_both_paths() {
+    for scorer in [vec![("STOP", 1.0)], vec![]] {
+        let mut p = fixed(0.5, 10);
+        p.fast = false;
+        let mut b = board(scorer, p);
+        b.tick(at(8, 59, 0), |_| None);
+        b.set_running_facts(day(), HashMap::new());
+        b.set_halted("STOP", true, None);
+        let mut tape = flat("STOP", at(9, 0, 0), at(10, 0, 0), 8.0, 3_000);
+        tape.extend(climb("STOP", at(10, 0, 0), 40, 8.0, 0.01, 20_000).0);
+        play(&mut b, tape, at(9, 0, 0), at(10, 10, 1));
+        let resume = at(10, 10, 7);
+        b.set_halted("STOP", false, Some(resume));
+        b.apply_trade(&tr("STOP", at(10, 10, 8), 12.1, 20_000), BOTH);
+        b.tick(at(10, 10, 16), |_| None);
+        assert!(
+            b.alerts().is_empty(),
+            "bar containing resume is not fully post-resume"
+        );
+        b.apply_trade(&tr("STOP", at(10, 10, 16), 12.2, 20_000), BOTH);
+        b.tick(at(10, 10, 31), |_| None);
+        assert_eq!(
+            b.alerts().len(),
+            1,
+            "10:10:15–30 is the first completed eligible bar"
+        );
+    }
+}
+
+#[test]
+fn open_halts_survive_date_roll_until_an_official_resume() {
+    let mut b = board(vec![("STOP", 1.0)], fixed(0.5, 10));
+    b.tick(at(10, 0, 0), |_| None);
+    b.set_halted("STOP", true, None);
+    let next = et(NaiveDate::from_ymd_opt(2026, 10, 19).unwrap(), 10, 0, 1, 0)
+        .unwrap()
+        .0;
+    b.apply_trade(&tr("STOP", next, 2.0, 1000), BOTH);
+    b.tick(next + 15 * S, |_| None);
+    assert!(b.halted.contains("STOP") && b.alerts().is_empty());
+    b.set_halted("STOP", false, Some(next + 16 * S));
+    b.tick(next + 30 * S, |_| None);
+    assert!(b.alerts().is_empty());
+    b.tick(next + 45 * S, |_| None);
+    assert_eq!(b.alerts().len(), 1);
 }
 
 /// The running entry (owner, 2026-10-22: TANH ran $8 → $28 and the forecast flagged it at

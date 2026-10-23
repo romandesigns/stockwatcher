@@ -228,7 +228,7 @@ describe("Signals rows (design canvas, 2026-10-22)", () => {
 
   test("not current: no pulse, no meter, no 'At trigger'; age and badges", () => {
     const stale = row({ state: "crossing_provisional" }, false);
-    expect([stale.label, stale.pulse, stale.meter]).toEqual(["Crossing", false, null]);
+    expect([stale.label, stale.pulse, stale.meter, stale.attention]).toEqual(["Crossing", false, null, false]);
     expect(row({}, false, true).label).toBe("Pullback");
     expect(row().ago).toBe("1m");
     expect(detectionAgo(0, 30_000_000_000)).toBe("now");
@@ -278,5 +278,19 @@ describe("Signals rows (design canvas, 2026-10-22)", () => {
     f.snapshot!.active[0]!.current!.near_trigger = true;
     expect(detectionAttention(detectionSnapshotView(f))).toBe(2);
     expect(detectionAttention(null)).toBe(0);
+  });
+
+  test("a stale crossing price has no attention, pulse or meter even on an open connection", () => {
+    const f = frame();
+    const e = f.snapshot!.active[0]!;
+    e.state = "crossing_provisional";
+    e.current = { ...e.current!, stale: true };
+    const snapshot = detectionSnapshotView(f)!;
+    expect(detectionAttention(snapshot)).toBe(0);
+    const r = detectionRowView(groupDetections(snapshot)[0]!, 100, true, T);
+    expect([r.attention, r.pulse, r.meter]).toEqual([false, false, null]);
+    expect(r.aria).toContain("price stale");
+    e.current.stale = false;
+    expect(detectionAttention(detectionSnapshotView(f))).toBe(1);
   });
 });

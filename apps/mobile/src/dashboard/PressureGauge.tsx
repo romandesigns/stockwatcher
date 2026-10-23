@@ -43,15 +43,16 @@ const FILL = { good: UI.good, critical: UI.critical, halted: UI.textFaint } as c
  * side the build-up pushes (green toward limit up, red toward limit down), the reading inside the
  * ring and "limit-up/limit-down risk" under it. Halted: a grey fill, the frozen value shown.
  */
-export function PressureGauge({ value, side, halted, label, width, reducedMotion, compact = false }: { value: number; side: "bull" | "bear"; halted: boolean; label: string; width: number; reducedMotion: boolean; /** The one-row strip's mini ring: no caption, the reading larger (a caption is unreadable at ~56 px). */ compact?: boolean }) {
-  const shown = useSweep(Math.max(0, Math.min(100, Math.round(value))), reducedMotion);
+export function PressureGauge({ value, side, halted, label, width, reducedMotion, compact = false, stale = false }: { value: number; side: "bull" | "bear"; halted: boolean; label: string; width: number; reducedMotion: boolean; /** The one-row strip's mini ring: no caption, the reading larger (a caption is unreadable at ~56 px). */ compact?: boolean; stale?: boolean }) {
+  const shown = useSweep(Math.max(0, Math.min(100, Math.round(value))), reducedMotion || stale);
   const g = gaugeGeometry(shown);
-  const tone = gaugeTone(side, halted);
-  const ink = halted ? UI.textFaint : UI.text;
+  const neutral = halted || stale;
+  const tone = gaugeTone(side, neutral);
+  const ink = neutral ? UI.textFaint : UI.text;
   return (
     <Svg width={width} height={(width * GAUGE.height) / GAUGE.width} viewBox={`0 0 ${GAUGE.width} ${GAUGE.height}`} accessible accessibilityRole="image" accessibilityLabel={label}>
       <Path d={g.track} fill="none" stroke={UI.raised} strokeWidth={GAUGE.stroke} strokeLinecap="round" />
-      {g.value && <Path d={g.value} fill="none" stroke={FILL[tone]} strokeOpacity={halted ? 0.55 : 1} strokeWidth={GAUGE.stroke} strokeLinecap="round" />}
+      {g.value && <Path d={g.value} fill="none" stroke={FILL[tone]} strokeOpacity={neutral ? 0.55 : 1} strokeWidth={GAUGE.stroke} strokeLinecap="round" />}
       {compact ? (
         <SvgText x={GAUGE.cx} y={101} textAnchor="middle" fill={ink} fontSize={52} fontFamily={fonts.semibold}>
           {String(g.label)}
@@ -62,7 +63,7 @@ export function PressureGauge({ value, side, halted, label, width, reducedMotion
             {String(g.label)}
           </SvgText>
           <SvgText x={GAUGE.cx} y={110} textAnchor="middle" fill={UI.textDim} fontSize={12} fontFamily={fonts.regular}>
-            {gaugeCaption(side, halted)}
+            {stale ? "last known risk" : gaugeCaption(side, halted)}
           </SvgText>
         </>
       )}

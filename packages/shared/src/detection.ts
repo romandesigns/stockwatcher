@@ -562,7 +562,7 @@ export function detectionRowView(group: DetectionGroup, nowNs: number, current: 
     label,
     tone,
     pulse: stage === "crossing" && live,
-    attention: !e.terminal && (stage === "crossing" || stage === "near"),
+    attention: live && (stage === "crossing" || stage === "near"),
     note,
     meter,
     dimmed: stage === "failed" || (e.terminal && stage === "other"),
@@ -579,6 +579,6 @@ export function detectionRowView(group: DetectionGroup, nowNs: number, current: 
 export function detectionAttention(snapshot: DetectionSnapshot | null): number {
   return groupDetections(snapshot).filter((g) => {
     const s = detectionStage(g.selected);
-    return !g.selected.terminal && (s === "crossing" || s === "near");
+    return !g.selected.terminal && !g.selected.price_stale && (s === "crossing" || s === "near");
   }).length;
 }

@@ -17,9 +17,10 @@ const FILL = { good: "var(--good)", critical: "var(--critical)", halted: "color-
  * In the phone's one-row strip (the Halt watcher container below @xl, ~56 px a ring) the caption
  * is hidden and the reading drawn larger: at that size the caption is unreadable.
  */
-export function PressureGauge({ value, side, halted, label }: { value: number; side: "bull" | "bear"; halted: boolean; label: string }) {
+export function PressureGauge({ value, side, halted, label, stale = false }: { value: number; side: "bull" | "bear"; halted: boolean; label: string; stale?: boolean }) {
   const v = Math.max(0, Math.min(100, Math.round(value)));
-  const ink = halted ? "var(--text-faint)" : "var(--text)";
+  const neutral = halted || stale;
+  const ink = neutral ? "var(--text-faint)" : "var(--text)";
   return (
     <svg viewBox={`0 0 ${GAUGE.width} ${GAUGE.height}`} role="img" aria-label={label} className="block h-auto w-full">
       <path d={TRACK} fill="none" style={{ stroke: "var(--bg-raised)" }} strokeWidth={GAUGE.stroke} strokeLinecap="round" />
@@ -28,19 +29,19 @@ export function PressureGauge({ value, side, halted, label }: { value: number; s
         pathLength={100}
         fill="none"
         // Paint through style: var() in an SVG presentation attribute is not reliable (chart-web Icon).
-        style={{ stroke: FILL[gaugeTone(side, halted)] }}
+        style={{ stroke: FILL[gaugeTone(side, neutral)] }}
         strokeWidth={GAUGE.stroke}
         strokeLinecap="round"
         // A round cap would leave a dot at zero.
         strokeDasharray={`${v} 100`}
         opacity={v > 0 ? 1 : 0}
-        className="transition-[stroke-dasharray] duration-300 ease-out motion-reduce:transition-none"
+        className={stale ? "transition-none" : "transition-[stroke-dasharray] duration-300 ease-out motion-reduce:transition-none"}
       />
       <text x={GAUGE.cx} y={90} textAnchor="middle" style={{ fill: ink }} className="font-mono @max-xl/hw:hidden" fontSize={36} fontWeight={600}>
         {v}
       </text>
       <text x={GAUGE.cx} y={110} textAnchor="middle" style={{ fill: "var(--text-dim)" }} className="@max-xl/hw:hidden" fontSize={12}>
-        {gaugeCaption(side, halted)}
+        {stale ? "last known risk" : gaugeCaption(side, halted)}
       </text>
       <text x={GAUGE.cx} y={101} textAnchor="middle" style={{ fill: ink }} className="hidden font-mono @max-xl/hw:inline" fontSize={52} fontWeight={600}>
         {v}
