@@ -45,7 +45,8 @@ function ScrollArea({
         className={cn(
           // The focus mark is an outline drawn inside the edge: it paints over the content
           // (a ring would be covered by the first row) and is never clipped by a parent.
-          "peer/viewport min-h-0 w-full flex-1 overscroll-contain rounded-[inherit] outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring/60",
+          // outline-solid is needed: outline-none sets the style to none for every state.
+          "peer/viewport min-h-0 w-full flex-1 overscroll-contain rounded-[inherit] outline-none focus-visible:outline-2 focus-visible:outline-solid focus-visible:-outline-offset-2 focus-visible:outline-ring/60",
           viewportClassName
         )}
       >
