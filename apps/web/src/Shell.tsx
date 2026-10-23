@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { ScrollArea } from "@stockwatcher/chart-web/ui";
 import { AlertForm } from "./alerts/AlertForm.tsx";
 import { AlertsPage } from "./alerts/AlertsPage.tsx";
 import { showToast } from "./lib/toastStore.ts";
@@ -69,7 +70,7 @@ export function Shell() {
     // of sitting at their 18rem minimum over empty space (owner, 2026-10-19).
     return (
       <div className="flex h-dvh flex-col bg-background" style={{ paddingBottom: `calc(${TAB_BAR_HEIGHT} + env(safe-area-inset-bottom))` }}>
-        <div className="min-h-0 flex-1 overflow-y-auto">{content}</div>
+        <ScrollArea className="flex-1">{content}</ScrollArea>
         <NavTabBar page={page} />
         <AppSettingsDialog />
         <AlertForm />
@@ -82,7 +83,7 @@ export function Shell() {
     <NavRailContext.Provider value={rail}>
       <div className="flex h-dvh bg-background">
         <NavRail page={page} collapsed={collapsed} settingsOpen={settingsOpen} onSettings={() => getAppStore().getState().setSettingsOpen(true)} />
-        <div className="min-w-0 flex-1 overflow-y-auto">{content}</div>
+        <ScrollArea className="flex-1">{content}</ScrollArea>
         <AppSettingsDialog />
         <AlertForm />
         <Toaster />

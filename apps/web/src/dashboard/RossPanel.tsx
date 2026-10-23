@@ -1,5 +1,5 @@
 import { formatEtTime } from "@stockwatcher/chart-core";
-import { cn, Tip } from "@stockwatcher/chart-web/ui";
+import { cn, ScrollArea, Tip } from "@stockwatcher/chart-web/ui";
 import { detectionFamilyLabel, detectionStateLabel, groupDetections, rossAttention, rossFreshness, rossLinePaths, rossRowView, type DetectionChannel, type RossLineView, type RossRowView, type RossTone } from "@stockwatcher/shared";
 import { memo } from "react";
 import type { RossDemoState } from "../feed/useRossState.ts";
@@ -69,7 +69,8 @@ export function RossPanelView({ state, onPick, detection, onEpisodePick }: { sta
           {fresh.label}
         </p>
       )}
-      <ul className={cn("m-0 flex min-h-0 list-none flex-col gap-1 overflow-y-auto p-0 transition-opacity duration-200 motion-reduce:transition-none", fresh.stale && "opacity-60")}>
+      <ScrollArea className={cn("transition-opacity duration-200 motion-reduce:transition-none", fresh.stale && "opacity-60")}>
+      <ul className="m-0 flex list-none flex-col gap-1 p-0">
         {rows.map((r) => (
           <li key={r.symbol}>
             <RossRow row={r} onPick={onPick} />
@@ -80,6 +81,7 @@ export function RossPanelView({ state, onPick, detection, onEpisodePick }: { sta
           </li>
         ))}
       </ul>
+      </ScrollArea>
     </aside>
   );
 }

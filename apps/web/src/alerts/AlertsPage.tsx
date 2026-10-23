@@ -11,7 +11,7 @@ import {
 } from "@stockwatcher/app-state";
 import { etToUtc, etParts, formatEtDate } from "@stockwatcher/chart-core";
 import { Icon } from "@stockwatcher/chart-web";
-import { Popover, PopoverContent, PopoverTrigger, Switch, cn } from "@stockwatcher/chart-web/ui";
+import { Popover, PopoverContent, PopoverTrigger, ScrollArea, Switch, cn } from "@stockwatcher/chart-web/ui";
 import { useEffect, useMemo, useState } from "react";
 import { ConnectionGate } from "../ConnectionGate.tsx";
 import { TimeSelect } from "../lib/TimeSelect.tsx";
@@ -110,7 +110,7 @@ function Alerts() {
           {!hasRail && <SettingsButton />}
         </div>
       </header>
-      <div className="grid min-h-0 flex-1 grid-cols-1 gap-6 overflow-y-auto @4xl/alerts:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)] @4xl/alerts:gap-8">
+      <ScrollArea className="flex-1" viewportClassName="grid grid-cols-1 gap-6 @4xl/alerts:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)] @4xl/alerts:gap-8">
         <section aria-labelledby="alerts-active" className="flex min-w-0 flex-col gap-2">
           <h2 id="alerts-active" className="m-0 mb-1 text-xs font-medium tracking-wider text-muted-foreground uppercase">
             Alerts
@@ -138,7 +138,7 @@ function Alerts() {
           ))}
           <p className="m-0 mt-3 text-[11px] text-text-faint">Alerts watch the live market only. Delivery to a phone cannot be guaranteed (the phone, its OS and the push service decide); Activity is the record.</p>
         </section>
-      </div>
+      </ScrollArea>
     </div>
   );
 }

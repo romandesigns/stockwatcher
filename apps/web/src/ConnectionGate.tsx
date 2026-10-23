@@ -71,7 +71,7 @@ export function ConnectionGate({ source, children }: { source: MarketSource; chi
     );
   }
   if (!ready || ready.marketSource !== source || ready.attempt !== attempt) {
-    return <div className="flex min-h-dvh items-center justify-center bg-background text-sm text-muted-foreground">Connecting to the server…</div>;
+    return <div className="flex min-h-full items-center justify-center bg-background text-sm text-muted-foreground">Connecting to the server…</div>;
   }
   return <>{children(ready)}</>;
 }
@@ -80,7 +80,7 @@ export function ConnectionGate({ source, children }: { source: MarketSource; chi
 function SignIn({ rejected, onSubmit }: { rejected: boolean; onSubmit: (token: string) => void }) {
   const [value, setValue] = useState("");
   return (
-    <div className="flex min-h-dvh items-center justify-center bg-background p-4 text-foreground">
+    <div className="flex min-h-full items-center justify-center bg-background p-4 text-foreground">
       <form
         className="flex w-full max-w-sm flex-col gap-3 rounded-2xl bg-card p-5"
         onSubmit={(e) => {

@@ -146,6 +146,42 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* The app is a fixed-viewport layout (Shell: h-dvh); every region that scrolls does it inside the
+   shadcn ScrollArea (packages/chart-web/src/ui/scroll-area.tsx), never with a browser scrollbar
+   (owner, 2026-10-23). The document itself must never scroll: hidden overflow here means no
+   native bar can appear on <html> even if something overshoots by a pixel (a 100dvh child under
+   a mobile URL bar, a toast during its slide), and no rubber-band of the whole page. */
+html,
+body {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+/* The browser's own focus mark (a blue or black double ring in Chromium/WebView2) clashed with
+   the palette wherever a focusable element had no focus-visible style of its own. In the base layer,
+   so every component's own utilities (outline-none plus a focus-visible ring) still win: an
+   unlayered rule would beat Tailwind's utilities layer whatever its specificity. */
+@layer base {
+  :focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+    outline-offset: 2px;
+  }
+}
+
+/* Text selection in the palette instead of the system blue: the accent, softened, so selected
+   text reads as "chosen" without a saturated block of colour. */
+::selection {
+  background: color-mix(in srgb, var(--accent) 32%, transparent);
+  color: var(--text);
+}
+
+/* Edge/WebView2 (the desktop app) draws its own eye button in a password field and a clear (x)
+   button in text fields: native chrome the shadcn Input does not use. */
+input::-ms-reveal,
+input::-ms-clear {
+  display: none;
+}
+
 /* viewport-fit=cover (index.html) lets the page run under a notch or rounded corners: keep the
    content clear of them in landscape. The bottom inset is the tab bar's own (MainNav). */
 #root {

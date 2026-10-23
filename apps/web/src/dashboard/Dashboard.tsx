@@ -1,5 +1,5 @@
 import { Icon } from "@stockwatcher/chart-web";
-import { cn, TOUCH_HIT } from "@stockwatcher/chart-web/ui";
+import { cn, ScrollArea, TOUCH_HIT } from "@stockwatcher/chart-web/ui";
 import { lastSessionLabel, parseLiveSession } from "@stockwatcher/shared";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Connection } from "../ConnectionGate.tsx";
@@ -170,7 +170,7 @@ export function Dashboard({ choice, feed }: Connection) {
       {/* The panel takes the full width (the "Most active" side list was removed, owner 2026-10-18):
           tickers come from the search above. */}
       {liveEmpty ? (
-        <div className="@container/panel flex min-h-0 flex-1 flex-col overflow-y-auto @4xl/panel:flex-row">
+        <ScrollArea className="flex-1" viewportClassName="@container/panel flex flex-col @4xl/panel:flex-row">
         <div className="flex flex-1 flex-col items-center justify-center gap-1 text-center">
           <p className="m-0 text-sm font-medium">{liveStatus === "not_configured" ? "Live market data is not configured" : "No live trades yet"}</p>
           <p className="m-0 max-w-sm text-xs text-text-faint">
@@ -180,9 +180,9 @@ export function Dashboard({ choice, feed }: Connection) {
           </p>
         </div>
         <SideTabs ross={feed.ross} rocket={feed.rocket} detection={feed.detection} onPick={app.loadIntoSelected} onEpisodePick={pickDetection} onEpisodeClear={clearDetection} />
-        </div>
+        </ScrollArea>
       ) : (
-      <div className="@container/panel flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-y-auto">
+      <ScrollArea className="flex-1" viewportClassName="@container/panel flex flex-col gap-3">
         {/* The Halt watcher strip above the charts (owner, 2026-10-19); server feed only (the
             fixture has no pressure board). It scrolls with the panel, so its cards never squeeze
             the charts below their minimum height; on a phone it is one sideways-scrolling row,
@@ -216,7 +216,7 @@ export function Dashboard({ choice, feed }: Connection) {
         </div>
         <SideTabs ross={feed.ross} rocket={feed.rocket} detection={feed.detection} onPick={app.loadIntoSelected} onEpisodePick={pickDetection} onEpisodeClear={clearDetection} />
         </div>
-      </div>
+      </ScrollArea>
       )}
 
       <TickerSearch open={searchOpen} onOpenChange={app.setSearchOpen} symbols={candidates.symbols} quotes={feed.quotes} mock={current.fixtureData} current={shown[selected] ?? ""} recents={recents} onSelect={app.loadIntoSelected} anchor={hasRail ? pillRef : undefined} />

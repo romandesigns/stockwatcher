@@ -1,5 +1,5 @@
 import { Icon } from "@stockwatcher/chart-web";
-import { cn, Tip } from "@stockwatcher/chart-web/ui";
+import { cn, ScrollArea, Tip } from "@stockwatcher/chart-web/ui";
 import { rocketHeaderView, rocketLinePaths, rocketNow, rocketSectionsView, type RocketRowView, type RocketSectionsView, type RocketState, type RocketTone, withZoneSections } from "@stockwatcher/shared";
 import { memo } from "react";
 import { useTickerPress } from "../lib/useTickerPress.ts";
@@ -88,7 +88,7 @@ export function RocketPanelView({ state, wallNow, onPick }: { state: RocketState
       {/* Each section only while it has rows (owner, 2026-10-22), its heading included; the whole
           panel is hidden by its tab at 0 (SideTabs). Sections open and close by their real height. */}
       {enabled === true && (
-        <div className={cn("flex min-h-0 flex-col overflow-y-auto transition-opacity duration-200 motion-reduce:transition-none", panel && !state.connected && "opacity-60")}>
+        <ScrollArea className={cn("transition-opacity duration-200 motion-reduce:transition-none", panel && !state.connected && "opacity-60")} viewportClassName="flex flex-col">
           <Reveal show={(bursts?.rows.length ?? 0) > 0}>
             {bursts && (
               <section aria-labelledby="burst-title" className="flex flex-col gap-1 pb-3">
@@ -113,7 +113,7 @@ export function RocketPanelView({ state, wallNow, onPick }: { state: RocketState
               <RowList rows={rows} onPick={onPick} />
             </section>
           </Reveal>
-        </div>
+        </ScrollArea>
       )}
     </aside>
   );

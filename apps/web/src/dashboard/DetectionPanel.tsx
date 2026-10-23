@@ -1,5 +1,5 @@
 import { formatEtMillis, formatEtTime } from "@stockwatcher/chart-core";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger, OptionSelect, Tip, cn } from "@stockwatcher/chart-web/ui";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger, OptionSelect, ScrollArea, Tip, cn } from "@stockwatcher/chart-web/ui";
 import { DETECTION_FILTERS, detectionEvidenceValue, detectionFamilyLabel, detectionPrice, detectionRowView, detectionStateLabel, detectionView, detectionViewCounts, groupDetections, type DetectionEpisode, type DetectionEvidence, type DetectionFilter, type DetectionGroup, type DetectionRowView, type DetectionState, type DetectionTone } from "@stockwatcher/shared";
 import { memo, useMemo, useState } from "react";
 import { useTickerPress } from "../lib/useTickerPress.ts";
@@ -156,7 +156,8 @@ export function DetectionPanelView({ state, onPick, onClear }: { state: Detectio
           </div>
         ) : null
       ) : (
-        <ul className={cn("m-0 flex min-h-0 list-none flex-col gap-1 overflow-y-auto p-0 transition-opacity duration-200 motion-reduce:transition-none", !state.connected && "opacity-60")}>
+        <ScrollArea className={cn("transition-opacity duration-200 motion-reduce:transition-none", !state.connected && "opacity-60")}>
+        <ul className="m-0 flex list-none flex-col gap-1 p-0">
           {shown.map((g) => {
             // A related episode picked from the details stays under its instrument's row.
             const selected = detail !== undefined && g.episodes.some((x) => x.episode_id === detail.episode_id);
@@ -168,6 +169,7 @@ export function DetectionPanelView({ state, onPick, onClear }: { state: Detectio
             );
           })}
         </ul>
+        </ScrollArea>
       )}
       {groups.length > PAGE && (
         <div className="flex items-center gap-2 px-1 text-[10px] text-text-faint">
@@ -228,7 +230,8 @@ function DetectionDetails({ episode: e, developments, onRelated, availableIds }:
     <Collapsible className="rounded-lg bg-bg-row px-2.5 py-1.5">
       <CollapsibleTrigger className={DISCLOSURE}>Evidence & timeline</CollapsibleTrigger>
       <CollapsibleContent>
-        <section aria-label={`${e.symbol} detection details`} className="flex max-h-[55vh] min-h-0 flex-col gap-2 overflow-y-auto pt-2">
+        <ScrollArea viewportClassName="max-h-[55vh]">
+        <section aria-label={`${e.symbol} detection details`} className="flex flex-col gap-2 pt-2">
           <p className="m-0 text-[11px]"><strong className="font-mono">{e.symbol}</strong> ·{detectionFamilyLabel(e.family)} · <span className={tone(e)}>{detectionStateLabel(e.state)}</span> · {e.status}{e.restored ? " · restored history" : ""}{e.raw.warmup ? " · warmup" : ""}</p>
           <p className="m-0 text-[10px] text-text-faint">First {at(e.first_detected_at)} · price {e.price_stale ? "stale" : e.price_age_ms === null ? "age unknown" : `${(e.price_age_ms / 1000).toFixed(1)}s old`} · Ross: {e.ross_member === null ? "context unavailable" : e.ross_member ? "member" : "not admitted"} · News: {e.catalyst === "qualifying" ? "qualifying evidence" : e.catalyst === "none" ? "no qualifying evidence" : "coverage unknown"}{developments > 1 ? ` · ${developments} developments` : ""}</p>
           {e.raw.recognition?.in_research_band === false && <p className="m-0 text-[10px] text-warning">Recognition outside the research price band</p>}
@@ -246,6 +249,7 @@ function DetectionDetails({ episode: e, developments, onRelated, availableIds }:
           {tab === "provenance" && <div className="space-y-1 break-all font-mono text-[10px] text-text-faint"><p className="m-0">{e.source} · {e.fidelity} · {e.coverage}</p><p className="m-0">{e.trading_date} · {e.segment}</p><p className="m-0">Episode {e.episode_id}</p><p className="m-0">{e.policy_id}@{e.policy_hash} · {e.variant}</p><p className="m-0">Bar end {at(e.bar_end)} · input cutoff {at(e.input_cutoff)}</p>{e.raw.levels.map((l) => <p className="m-0" key={`${l.level_id}/${l.version}`}>{l.kind} · {l.level_id} v{l.version} · known {at(l.known_at)} · {words(l.reason)}</p>)}</div>}
           {e.related_episode_ids.length > 0 && <div className="flex flex-wrap gap-1"><span className="text-[10px] text-text-faint">Related:</span>{e.related_episode_ids.map((id) => <Tip key={id} label={id}><button type="button" disabled={!availableIds.has(id)} className="max-w-full truncate rounded text-[10px] text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:text-text-faint" onClick={() => onRelated(id)}>{id}{!availableIds.has(id) ? " (outside this history)" : ""}</button></Tip>)}</div>}
         </section>
+        </ScrollArea>
       </CollapsibleContent>
     </Collapsible>
   );
