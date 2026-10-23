@@ -21,8 +21,10 @@ test("a press copies the push's own symbol; a tap or another push copies nothing
   expect(copyTickerSymbol(response(COPY_TICKER_ACTION, JSON.stringify(runners)))).toBe("YMAT");
   // The default tap still opens the chart (push.ts), it is not a copy.
   expect(copyTickerSymbol(response(TAP, runners))).toBeNull();
-  // A price alert's push, junk, a symbol that is not a ticker: nothing.
-  expect(copyTickerSymbol(response(COPY_TICKER_ACTION, { alertId: "a1", symbol: "XLAB" }))).toBeNull();
+  // Any push naming a valid ticker resolves to it (route.ts opens every ticker's chart since the
+  // open-ticker fix); a price alert's push carries no Copy button, so this only matters if it did.
+  expect(copyTickerSymbol(response(COPY_TICKER_ACTION, { alertId: "a1", symbol: "XLAB" }))).toBe("XLAB");
+  // Junk, a symbol that is not a ticker: nothing.
   expect(copyTickerSymbol(response(COPY_TICKER_ACTION, { ...runners, symbol: "not a ticker!" }))).toBeNull();
   expect(copyTickerSymbol(response(COPY_TICKER_ACTION, null))).toBeNull();
   expect(copyTickerSymbol(null)).toBeNull();
@@ -59,5 +61,6 @@ test("wiring: registered first thing at startup, task in module scope, listener 
   expect(native).toContain("Notifications.setNotificationCategoryAsync(RUNNERS_CATEGORY_ID, COPY_TICKER_ACTIONS)");
   expect(native).toContain("Notifications.registerTaskAsync(COPY_TICKER_TASK)");
   const push = read("push.ts");
-  expect(push.indexOf("handleCopyTickerResponse(response")).toBeLessThan(push.indexOf("notificationTarget(response"));
+  expect(push.indexOf("handleCopyTickerResponse(")).toBeGreaterThan(-1);
+  expect(push.indexOf("handleCopyTickerResponse(")).toBeLessThan(push.indexOf("route(response)"));
 });
