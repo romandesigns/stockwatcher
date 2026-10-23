@@ -34,9 +34,17 @@
 //!   others, logged as `run` lines and restored after a restart; one per symbol a day and none for a symbol that already has a row (an R2 flag, a
 //!   burst or a running entry). Push ([`NoticeKind::Run`]) is per phone, on by default.
 //!   Not in the day record, but the `day` line counts each source's rows (`rows`).
+//! - [`fast`]: the "Fast move" entry, a stock in `$0.10–$25` that jumps +8 % in 60 s or +12 % in
+//!   15 s at a held price with real trading behind it, read every second. Every counted print
+//!   feeds a per-symbol 1 s tape ([`fast::FastTape`]) beside the 15 s tape; the once-a-second
+//!   tick reads the second that just ended, only for symbols that printed in the 2 s before it.
+//!   Its rows ([`AlertKind::Fast`]) are tracked like the run rows, logged as `fast` lines,
+//!   restored after a restart (the 1 s tapes start empty then: 64 s of history is all they
+//!   need), one per symbol a day and none for a symbol that already has a row. Push
+//!   ([`NoticeKind::Fast`]) is per phone, on by default.
 //!
-//! So a row reaches Runners four ways: the strategy's flag (R2), a buying burst, a running entry
-//! or a +20 % run.
+//! So a row reaches Runners five ways: the strategy's flag (R2), a buying burst, a running entry,
+//! a +20 % run or a fast move.
 //!
 //! # Alert policy
 //!
@@ -92,7 +100,7 @@ pub mod running;
 pub mod scorer;
 pub mod track;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -118,8 +126,10 @@ pub const MAX_ALERTS_PER_DAY: usize = 200;
 const SETTLE_NS: i64 = 45 * MIN_NS;
 /// Max gain / drawdown window after the alert.
 const GAIN_WINDOW_NS: i64 = 30 * MIN_NS;
-/// Rows sent to the panel (newest first).
-pub const ROWS: usize = 50;
+/// Rows sent to the panel: the most relevant ones when the day has more ([`row_rank`]), sent
+/// newest first. 80 full rows are about 75 KB of JSON before the market adds levels and day
+/// lines (`rocket::tests`, `the_row_limit_keeps_active_rows_then_the_newest`).
+pub const ROWS: usize = 80;
 /// Notices kept while nobody takes them (a board ticked without a market, a test).
 const MAX_NOTICES: usize = 256;
 
@@ -136,6 +146,8 @@ pub enum NoticeKind {
     Running,
     /// A new "Run +20%" row ([`run`]); per-phone switch, on by default.
     Run,
+    /// A new "Fast move" row ([`fast`]); per-phone switch, on by default.
+    Fast,
 }
 
 impl NoticeKind {
@@ -146,6 +158,7 @@ impl NoticeKind {
             NoticeKind::Burst => "burst",
             NoticeKind::Running => "running",
             NoticeKind::Run => "run",
+            NoticeKind::Fast => "fast",
         }
     }
 }
@@ -160,6 +173,8 @@ pub enum AlertKind {
     Running,
     /// A "Run +20%" entry ([`run`]).
     Run,
+    /// A "Fast move" entry ([`fast`]).
+    Fast,
 }
 
 impl AlertKind {
@@ -170,6 +185,7 @@ impl AlertKind {
             AlertKind::Burst => "burst",
             AlertKind::Running => "running",
             AlertKind::Run => "run",
+            AlertKind::Fast => "fast",
         }
     }
 }
@@ -226,7 +242,7 @@ pub enum Threshold {
     Fixed(f64),
 }
 
-/// `ROCKET_ALERTS_PER_DAY`, `ROCKET_THRESHOLD`, `RUNNERS_SCORER`.
+/// `ROCKET_ALERTS_PER_DAY`, `ROCKET_THRESHOLD`, `RUNNERS_SCORER`, `RUNNERS_FAST`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Policy {
     pub budget: u32,
@@ -234,6 +250,9 @@ pub struct Policy {
     pub threshold: Option<Threshold>,
     /// `RUNNERS_SCORER`: which strategy a new board runs ([`production_scorer`]).
     pub scorer: ScorerChoice,
+    /// `RUNNERS_FAST` (default `1`): the "Fast move" entry ([`fast`]); `0` takes no prints into
+    /// its tapes and makes no fast rows.
+    pub fast: bool,
 }
 
 impl Default for Policy {
@@ -242,6 +261,7 @@ impl Default for Policy {
             budget: DEFAULT_BUDGET,
             threshold: None,
             scorer: ScorerChoice::default(),
+            fast: true,
         }
     }
 }
@@ -274,6 +294,13 @@ impl Policy {
         }
         if let Some(v) = var("RUNNERS_SCORER") {
             p.scorer = ScorerChoice::parse(&v)?;
+        }
+        if let Some(v) = var("RUNNERS_FAST") {
+            p.fast = match v.as_str() {
+                "1" => true,
+                "0" => false,
+                _ => return Err(format!("RUNNERS_FAST must be 0 or 1: {v:?}")),
+            };
         }
         Ok(p)
     }
@@ -405,6 +432,18 @@ impl Alert {
             "score": self.score, "reasons": self.reasons, "strategy": self.strategy,
             "version": self.version, "start_ns": r.start_ns, "start_price": r.start_price,
             "plus20_ns": r.plus20_ns, "early": r.early, "exec_ns": r.exec_ns,
+        })
+        .to_string()
+    }
+
+    /// The `fast` log line: the entry, its triggering second (epoch s) and what the rule read.
+    fn fast_line(&self, date: NaiveDate, sec: i64, e: &fast::FastEntry) -> String {
+        json!({
+            "kind": "fast", "v": 1, "id": self.id, "date": date.to_string(),
+            "symbol": &*self.symbol, "alert_ns": self.at_ns, "price": self.price,
+            "score": self.score, "reasons": self.reasons, "strategy": self.strategy,
+            "version": self.version, "sec": sec, "secs": e.secs, "held": e.held, "low": e.low,
+            "gain": e.gain, "trades": e.trades, "dollars": e.dollars,
         })
         .to_string()
     }
@@ -568,6 +607,43 @@ pub struct RocketBoard {
     running_facts_wanted: Option<NaiveDate>,
     /// The volume-shelf module's +20 % runs not made into rows yet ([`RocketBoard::add_runs`]).
     runs: Vec<(Arc<str>, crate::zones::Run)>,
+    /// Fast move ([`fast`]): each symbol's 1 s tape (created on its first print in
+    /// [`FAST_WIDE_BAND`], dropped at the day roll).
+    fast: HashMap<Arc<str>, FastSym>,
+    /// `(second, symbol)` on each symbol's first print of a second, oldest first: the symbols
+    /// the tick reads (printed in the 2 s before the second read).
+    fast_touched: VecDeque<(i64, Arc<str>)>,
+    /// The last second the fast rule was read for.
+    fast_read: i64,
+}
+
+/// A symbol's fast-move state ([`fast`]).
+#[derive(Debug)]
+struct FastSym {
+    name: Arc<str>,
+    tape: fast::FastTape,
+    /// The second of its newest print, the last second read, the last fire (epoch ns).
+    printed: i64,
+    read: i64,
+    fired_ns: Option<i64>,
+}
+
+/// Prices a fast-move tape starts at (wider than the rule's band, like the 15 s tape's, so a
+/// stock coming into the band already has its minute).
+const FAST_WIDE_BAND: (f64, f64) = (0.05, 30.0);
+/// A bound on the touched queue when nobody ticks (a board fed without a market).
+const FAST_TOUCHED_MAX: usize = 100_000;
+const SEC_NS: i64 = 1_000_000_000;
+
+/// The panel's keep order when a day has more than [`ROWS`] rows: rows in an active momentum
+/// state (`breaking_out`, `running`, `pullback`) first, then the quiet ones, `fading` last;
+/// newest first inside each.
+fn row_rank(state: MState) -> u8 {
+    match state {
+        MState::BreakingOut | MState::Running | MState::Pullback => 0,
+        MState::Fading => 2,
+        _ => 1,
+    }
 }
 
 impl RocketBoard {
@@ -601,6 +677,9 @@ impl RocketBoard {
             running_facts_date: None,
             running_facts_wanted: None,
             runs: Vec::new(),
+            fast: HashMap::new(),
+            fast_touched: VecDeque::new(),
+            fast_read: i64::MIN,
         }
     }
 
@@ -727,6 +806,50 @@ impl RocketBoard {
             if let Some(b) = self.burst.as_mut() {
                 b.apply_trade(t, counted);
             }
+            self.fast_apply(t, counted);
+        }
+    }
+
+    /// One print into its symbol's fast-move tape ([`fast`]). O(1): two map lookups, a ring
+    /// slot, and a queue push on the symbol's first print of a second.
+    fn fast_apply(&mut self, t: &market_events::Trade, counted: crate::quotes::Counted) {
+        if !self.policy.fast || (!counted.ohlc && !counted.volume) {
+            return;
+        }
+        let Some(session) = t.session else { return };
+        if session.kind == market_events::session::SessionKind::Overnight {
+            return;
+        }
+        let price = t.price.to_f64();
+        if !self.fast.contains_key(t.symbol.as_str()) {
+            if !(FAST_WIDE_BAND.0..=FAST_WIDE_BAND.1).contains(&price) {
+                return;
+            }
+            let name: Arc<str> = Arc::from(t.symbol.as_str());
+            self.fast.insert(
+                name.clone(),
+                FastSym {
+                    name,
+                    tape: fast::FastTape::default(),
+                    printed: i64::MIN,
+                    read: i64::MIN,
+                    fired_ns: None,
+                },
+            );
+        }
+        let Some(s) = self.fast.get_mut(t.symbol.as_str()) else {
+            return;
+        };
+        let ts = t.event_ts.0;
+        s.tape
+            .apply(ts, price, t.size, counted.ohlc, counted.volume);
+        let sec = ts.div_euclid(SEC_NS);
+        if sec > s.printed {
+            s.printed = sec;
+            self.fast_touched.push_back((sec, s.name.clone()));
+            if self.fast_touched.len() > FAST_TOUCHED_MAX {
+                self.fast_touched.pop_front();
+            }
         }
     }
 
@@ -743,6 +866,8 @@ impl RocketBoard {
             if let Some(b) = self.burst.as_mut() {
                 b.apply_trade_unrestored(t, counted);
             }
+            // Provisional like the rest; the fast tape needs no history (module docs, [`fast`]).
+            self.fast_apply(t, counted);
         }
     }
 
@@ -900,12 +1025,13 @@ impl RocketBoard {
         self.revision += 1;
     }
 
-    /// Today's rows by source: `{runner, burst, running, run}`.
+    /// Today's rows by source: `{runner, burst, running, run, fast}`.
     fn rows_by_kind(&self) -> Value {
         let n = |k: AlertKind| self.alerts.iter().filter(|a| a.kind == k).count();
         json!({
             "runner": n(AlertKind::Runner), "burst": n(AlertKind::Burst),
             "running": n(AlertKind::Running), "run": n(AlertKind::Run),
+            "fast": n(AlertKind::Fast),
         })
     }
 
@@ -940,6 +1066,11 @@ impl RocketBoard {
         self.top.clear();
         self.day_written = false;
         self.threshold = f64::INFINITY;
+        // The 1 s tapes keep 64 s: nothing worth carrying into a new day, and the map would
+        // otherwise keep every symbol that ever printed.
+        self.fast.clear();
+        self.fast_touched.clear();
+        self.fast_read = i64::MIN;
         self.revision += 1;
         if self.running_facts_date != Some(date) {
             self.running_facts.clear();
@@ -982,6 +1113,10 @@ impl RocketBoard {
         }
         // After the barrier, so an R2 flag or a running entry at the run's own slot keeps its row.
         self.run_entries();
+        // Last: the other four paths keep their row when they fire at the same tick.
+        if self.policy.fast {
+            self.fast_tick(now);
+        }
         if end_of_day {
             self.finish_day(now);
         }
@@ -1322,6 +1457,115 @@ impl RocketBoard {
         }
     }
 
+    /// The fast-move rule ([`fast::decide`]) for the seconds that ended since the last tick (at
+    /// most the last 3), each read only for the symbols that printed in the 2 s before it, then
+    /// their rows. `now` is the board's clock (the market clock, or the newest print when the
+    /// clock is behind the feed).
+    fn fast_tick(&mut self, now: i64) {
+        let Some(date) = self.date else { return };
+        let end = now.div_euclid(SEC_NS) - 1;
+        if end < self.fast_read.saturating_sub(5) {
+            // The clock went back (a replay restarted): read from now on.
+            self.fast_read = i64::MIN;
+        }
+        let from = self.fast_read.saturating_add(1).max(end - 2);
+        let (day0, day1) = (self.t0, self.t0 + NSLOT * BAR_NS);
+        let mut fires: Vec<(Arc<str>, i64, fast::FastEntry)> = Vec::new();
+        for sec in from..=end {
+            while self.fast_touched.front().is_some_and(|x| x.0 < sec - 2) {
+                self.fast_touched.pop_front();
+            }
+            if !(day0..day1).contains(&(sec * SEC_NS)) {
+                continue;
+            }
+            for (_, name) in &self.fast_touched {
+                let Some(s) = self.fast.get_mut(name) else {
+                    continue;
+                };
+                if s.read >= sec || sec - s.printed > 2 {
+                    continue;
+                }
+                s.read = sec;
+                let Some(e) = s.tape.inputs_settled(sec).and_then(|x| fast::decide(&x)) else {
+                    continue;
+                };
+                let at = sec * SEC_NS;
+                if s.fired_ns.is_some_and(|f| at - f < fast::REFRACTORY_NS) {
+                    continue;
+                }
+                s.fired_ns = Some(at);
+                fires.push((s.name.clone(), sec, e));
+            }
+        }
+        self.fast_read = self.fast_read.max(end);
+        self.fast_entries(date, fires);
+    }
+
+    /// New "Fast move" rows ([`fast`]): in the order they fired, none for a symbol with a row
+    /// today, at most [`fast::MAX_PER_DAY`].
+    fn fast_entries(&mut self, date: NaiveDate, fires: Vec<(Arc<str>, i64, fast::FastEntry)>) {
+        for (symbol, sec, e) in fires {
+            let today = self
+                .alerts
+                .iter()
+                .filter(|a| a.kind == AlertKind::Fast)
+                .count();
+            if today >= fast::MAX_PER_DAY || self.alerts.len() >= 2 * MAX_ALERTS_PER_DAY {
+                break;
+            }
+            if self.alerts.iter().any(|a| a.symbol == symbol) {
+                continue;
+            }
+            // The row is at the end of the second that fired it.
+            let at_ns = (sec + 1) * SEC_NS;
+            let slot = ((at_ns - self.t0).div_euclid(BAR_NS) - 1).clamp(0, NSLOT - 1);
+            let need = fast::ARMS
+                .iter()
+                .find(|a| a.secs == e.secs)
+                .map_or(e.gain, |a| a.gain);
+            let a = Alert {
+                id: format!("{date}-{symbol}-f{sec}"),
+                symbol: symbol.clone(),
+                at_ns,
+                price: e.price,
+                // The held move over the arm's requirement (>= 1).
+                score: e.gain / need,
+                threshold: 1.0,
+                reasons: e.reasons(),
+                strategy: fast::STRATEGY.to_string(),
+                version: fast::VERSION.to_string(),
+                // The Runners strict outcome (a +30 % rocket mark) does not apply: settled from
+                // the start, like a run row.
+                outcome: Outcome {
+                    checked: features::key_of(self.ord, slot),
+                    high: f64::NAN,
+                    low: f64::NAN,
+                    mark: None,
+                    settled: true,
+                    partial: false,
+                },
+                track: Track::new(at_ns, e.price),
+                kind: AlertKind::Fast,
+                burst: None,
+            };
+            self.pending.push((date, a.fast_line(date, sec, &e)));
+            self.notice(Notice {
+                kind: NoticeKind::Fast,
+                alert_id: a.id.clone(),
+                symbol: a.symbol.to_string(),
+                at_ns,
+                price: a.price,
+                from_flag_pct: Some(round2(e.gain * 100.0)),
+                reasons: a.reasons.clone(),
+                since_start_min: Some(e.secs as f64 / 60.0),
+                // The second it fired: the start of the push's latency log.
+                exec_ns: Some(sec * SEC_NS),
+            });
+            self.alerts.push(a);
+            self.revision += 1;
+        }
+    }
+
     /// Advances every alert through barrier `b`: the strict outcome while it is open (module
     /// docs, "Outcomes"), the later-move outcomes and the momentum state until the day ends
     /// ([`track`]).
@@ -1465,10 +1709,12 @@ impl RocketBoard {
             .into_iter()
             .map(|v| (AlertKind::Running, v, None));
         let run_rows = loaded.runs.into_iter().map(|v| (AlertKind::Run, v, None));
+        let fast_rows = loaded.fasts.into_iter().map(|v| (AlertKind::Fast, v, None));
         for (kind, v, o) in today_rows
             .chain(burst_rows)
             .chain(running_rows)
             .chain(run_rows)
+            .chain(fast_rows)
         {
             let is_burst = kind == AlertKind::Burst;
             let (Some(symbol), Some(at_ns)) = (
@@ -1582,8 +1828,9 @@ impl RocketBoard {
                 }
                 a.track.transitions = n;
             }
-            if matches!(kind, AlertKind::Running | AlertKind::Run) {
-                // Its strict outcome never applies (`running_entries`, `run_entries`).
+            if matches!(kind, AlertKind::Running | AlertKind::Run | AlertKind::Fast) {
+                // Its strict outcome never applies (`running_entries`, `run_entries`,
+                // `fast_entries`).
                 a.kind = kind;
                 a.outcome.settled = true;
                 if self.alerts.len() < 2 * MAX_ALERTS_PER_DAY {
@@ -1687,16 +1934,36 @@ impl RocketBoard {
             .runners()
             .filter(|a| a.outcome.settled || a.hit10())
             .count();
-        let rows: Vec<Value> = self
+        // Each row's shown state once; the panel keeps the most relevant ROWS (`row_rank`),
+        // still sent newest first.
+        let mut shown: Vec<(usize, Quote, MState, bool)> = self
             .alerts
             .iter()
-            .rev()
-            .take(ROWS)
-            .map(|a| {
-                let (last, pc) = quote(&a.symbol);
+            .enumerate()
+            .map(|(i, a)| {
+                let q = quote(&a.symbol);
+                let live = q.0.filter(|p| p.is_finite() && *p > 0.0);
+                let (state, provisional) = a.track.shown(live, self.halted.contains(&*a.symbol));
+                (i, q, state, provisional)
+            })
+            .collect();
+        let newest = |x: &(usize, Quote, MState, bool), y: &(usize, Quote, MState, bool)| {
+            self.alerts[y.0]
+                .at_ns
+                .cmp(&self.alerts[x.0].at_ns)
+                .then(y.0.cmp(&x.0))
+        };
+        if shown.len() > ROWS {
+            shown.sort_by(|x, y| row_rank(x.2).cmp(&row_rank(y.2)).then(newest(x, y)));
+            shown.truncate(ROWS);
+        }
+        shown.sort_by(newest);
+        let rows: Vec<Value> = shown
+            .into_iter()
+            .map(|(i, (last, pc), state, provisional)| {
+                let a = &self.alerts[i];
                 let t = &a.track;
                 let live = last.filter(|p| p.is_finite() && *p > 0.0);
-                let (state, provisional) = t.shown(live, self.halted.contains(&*a.symbol));
                 let now = live.unwrap_or(t.price);
                 let high = t.high().max(live.unwrap_or(0.0));
                 let from_high = (high > 0.0 && now.is_finite()).then(|| (now / high - 1.0) * 100.0);

@@ -184,6 +184,7 @@ pub const QUOTES_INTERVAL: Duration = Duration::from_secs(1);
 /// | `CONTEXT_EVIDENCE_CHECK_SECS` | `15` | with `STOCK_CONTEXT`: how often the archive's float, news and baseline evidence is checked for new records (`crate::evidence`; 0 = only at startup and on a replay day switch) |
 /// | `ROCKET_WATCH` | `1` | the EXPERIMENTAL Rocket watch panel (`crate::rocket`, `rocket.*`): read-only, O(1) per print, one pass over the active symbols per 15 s barrier; the live market keeps its forward log under `ARCHIVE_ROOT/rocket-watch/` |
 /// | `ROCKET_ALERTS_PER_DAY` | `10` | Rocket watch's daily alert budget (the adaptive threshold's target and cap) |
+/// | `RUNNERS_FAST` | `1` | with `ROCKET_WATCH`: the Runners "Fast move" entry (`crate::rocket::fast`: +8 % in 60 s or +12 % in 15 s, held, with real trading), its 1 s tapes (~3.8 KB per symbol printing in $0.05–$30) and its phone push; `0` turns it off |
 /// | `ROCKET_THRESHOLD` | unset | a fixed Rocket watch threshold (overrides the scorer's frozen one), or `budget` to force the adaptive one |
 /// | `RUNNERS_SCORER` | `r0` | the Runners strategy: `r0` (`precursors-R0`), `r2` (`precursors-R2`, LightGBM) or `placeholder` (`placeholder-b2`); `crate::rocket::ScorerChoice` |
 /// | `BURST_ALERTS` | `1` | live market with `ROCKET_WATCH`: buying-burst rows in the Runners panel and their phone push (`crate::rocket::burst`, the research's V3-5 detector): O(1) per print, a 5 s check over the symbols that printed in the last 15 s; never on a replay |

@@ -956,6 +956,7 @@ mod tests {
                 burst: Some(false),
                 running: None,
                 run: None,
+                fast: None,
             },
         ));
         // Each register answers with an alerts.status frame once handled.

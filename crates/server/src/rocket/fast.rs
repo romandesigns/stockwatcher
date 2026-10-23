@@ -1,4 +1,4 @@
-//! Fast move (NOT WIRED YET): a stock in `$0.10–$25` that jumps inside a minute, with real
+//! Fast move: a stock in `$0.10–$25` that jumps inside a minute, with real
 //! trading behind it. The owner, 2026-10-22: "many of these events happen within 15 seconds,
 //! 30 seconds and 1 min". The other entry paths look at 15 s bars (the +20 %-in-15-min leg, the
 //! running entry, R2) or at bursts; this one is evaluated every second.
@@ -25,6 +25,19 @@
 //!
 //! Cost: O(1) per print, O(64) per symbol per second (only for symbols that printed in the last
 //! 2 s: after that nothing can newly fire), a 64-second ring per symbol.
+//!
+//! # In Runners
+//!
+//! The fifth way into the Runners panel ([`super::RocketBoard`], `AlertKind::Fast`, chip "Fast
+//! move"): the board feeds every print the chart engine counted into a per-symbol tape (the
+//! live path and the provisional one for a symbol whose history is still loading, exactly where
+//! the 15 s tape and the burst detector are fed) and reads the rule at the once-a-second rocket
+//! tick for the second that just ended ([`FastTape::inputs_settled`]: a print of the next second
+//! may already be in). One row per symbol a day, none for a symbol that already has a row, at
+//! most [`MAX_PER_DAY`]; logged as a `fast` line, restored after a restart, pushed per phone
+//! (on by default). **After a restart the tapes start empty**: the rule reads 64 s of history,
+//! so a symbol can fire again about a minute after the process is back, and nothing older is
+//! worth rebuilding.
 //!
 //! # Calibration
 //!
@@ -67,6 +80,13 @@
 //! paths; together 38/60, the fast trigger alone adding AUID, BEZ, CHOW, ESLA, GPUS, IBX, KFIIR,
 //! KPTI, OPTU, SBFM, SDEV, SPHL, WORX and YHC.
 
+/// The Runners row's strategy id and version (`fast` log lines).
+pub const STRATEGY: &str = "fast-move";
+pub const VERSION: &str = "v1";
+/// A runaway guard: at most this many fast rows a day (calibration: ~140 fires a day, many on
+/// symbols that already have a row).
+pub const MAX_PER_DAY: usize = 200;
+
 /// Band, dollars (the running entry's).
 pub const BAND: (f64, f64) = (0.10, 25.0);
 /// Window lengths, seconds.
@@ -99,6 +119,13 @@ pub struct FastTape {
     /// The last [`HOLD_N`] OHLC-counted prices, oldest first.
     recent: [f64; HOLD_N],
     nrecent: usize,
+    /// `last`, `recent` and `nrecent` as they stood at the end of `prev.0`, the second before
+    /// the first print of `head` (O(1), taken in [`FastTape::apply`]): what
+    /// [`FastTape::inputs_settled`] reads for a second that ended while the next one already
+    /// has prints.
+    prev: (i64, f64, [f64; HOLD_N], usize),
+    /// The second of the newest print applied.
+    printed: i64,
 }
 
 impl Default for FastTape {
@@ -109,6 +136,8 @@ impl Default for FastTape {
             last: f64::NAN,
             recent: [f64::NAN; HOLD_N],
             nrecent: 0,
+            prev: (i64::MIN, f64::NAN, [f64::NAN; HOLD_N], 0),
+            printed: i64::MIN,
         }
     }
 }
@@ -136,6 +165,11 @@ pub struct FastInputs {
 }
 
 impl FastTape {
+    /// The ring's heap size, bytes (the struct itself is `size_of::<FastTape>()`).
+    pub fn heap_bytes() -> usize {
+        RING * std::mem::size_of::<Option<Sec>>()
+    }
+
     fn slot(&mut self, sec: i64) -> &mut Option<Sec> {
         &mut self.ring[sec.rem_euclid(RING as i64) as usize]
     }
@@ -169,6 +203,10 @@ impl FastTape {
         if sec < self.head {
             return; // out of order: the second is already read
         }
+        if sec > self.head && self.head != i64::MIN {
+            self.prev = (self.head, self.last, self.recent, self.nrecent);
+        }
+        self.printed = sec;
         self.advance(sec);
         let i = sec.rem_euclid(RING as i64) as usize;
         let Some(s) = self.ring[i].as_mut() else {
@@ -202,6 +240,41 @@ impl FastTape {
             return None;
         }
         self.advance(sec);
+        self.read(sec, self.last, self.recent, self.nrecent)
+    }
+
+    /// The readings at the end of second `sec` even when a print of a later second already
+    /// arrived (the live tick reads a second just after it ended). Equal to what
+    /// [`FastTape::inputs`] gave at the end of `sec`, as long as `sec` is at most 3 s behind the
+    /// newest print (the 60 s window and its standing price fit the ring beside it); `None`
+    /// further back.
+    pub fn inputs_settled(&mut self, sec: i64) -> Option<FastInputs> {
+        if self.head == i64::MIN || sec >= self.head {
+            return self.inputs(sec);
+        }
+        if self.head - sec > (RING - WINDOWS[2] - 1) as i64 {
+            return None;
+        }
+        if sec >= self.printed {
+            // No print after `sec`: the price state is today's.
+            return self.read(sec, self.last, self.recent, self.nrecent);
+        }
+        let (at, last, recent, n) = self.prev;
+        if sec < at || last.is_nan() {
+            return None;
+        }
+        self.read(sec, last, recent, n)
+    }
+
+    /// The readings at the end of `sec` with the price state `last`/`recent`/`nrecent` as it
+    /// stood then; every second up to `sec` is in the ring.
+    fn read(
+        &self,
+        sec: i64,
+        last: f64,
+        recent: [f64; HOLD_N],
+        nrecent: usize,
+    ) -> Option<FastInputs> {
         let get = |r: &[Option<Sec>], s: i64| {
             r[s.rem_euclid(RING as i64) as usize].filter(|x| x.sec == s)
         };
@@ -234,8 +307,8 @@ impl FastTape {
                 held_s = x.lo;
             }
         }
-        let held_n = if self.nrecent == HOLD_N {
-            self.recent.iter().copied().fold(f64::INFINITY, f64::min)
+        let held_n = if nrecent == HOLD_N {
+            recent.iter().copied().fold(f64::INFINITY, f64::min)
         } else {
             f64::NAN
         };
@@ -246,7 +319,7 @@ impl FastTape {
             (true, true) => return None,
         };
         Some(FastInputs {
-            price: self.last,
+            price: last,
             held,
             win,
         })
@@ -456,6 +529,44 @@ mod tests {
         let x = t.inputs(T0 / S + 33).unwrap();
         assert_eq!(x.price, 1.00);
         assert!(decide(&x).is_none());
+    }
+
+    /// Reading a second after a print of the next one arrived gives what reading it at its end
+    /// gave (the live tick's case), and nothing further back than the ring allows.
+    #[test]
+    fn a_settled_read_matches_the_read_at_the_end_of_the_second() {
+        let feed = |t: &mut FastTape, upto: i64| {
+            prints(t, 0, 2.00, 2, 100);
+            for s in 1..=upto {
+                if s % 7 != 3 {
+                    prints(t, s, 2.00 + 0.004 * s as f64, 2, 1000);
+                }
+            }
+        };
+        for sec in [20, 41, 45, 50] {
+            let mut a = FastTape::default();
+            feed(&mut a, sec);
+            let want = a.inputs(T0 / S + sec).unwrap();
+            // The same tape with the next seconds' first prints already in.
+            for ahead in 1..=3 {
+                let mut b = FastTape::default();
+                feed(&mut b, sec);
+                prints(&mut b, sec + ahead, 9.99, 1, 1);
+                assert_eq!(b.inputs_settled(T0 / S + sec), Some(want), "{sec} +{ahead}");
+            }
+            let mut c = FastTape::default();
+            feed(&mut c, sec);
+            prints(&mut c, sec + 4, 9.99, 1, 1);
+            assert_eq!(c.inputs_settled(T0 / S + sec), None, "too far back");
+        }
+        // A second with no print after the newest print reads the current state.
+        let mut d = FastTape::default();
+        feed(&mut d, 30);
+        let _ = d.inputs(T0 / S + 32);
+        let mut e = FastTape::default();
+        feed(&mut e, 30);
+        assert_eq!(e.inputs_settled(T0 / S + 31), d.inputs_settled(T0 / S + 31));
+        assert!(d.inputs_settled(T0 / S + 31).is_some());
     }
 
     #[test]

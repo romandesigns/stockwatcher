@@ -12,8 +12,8 @@
 //! - **Devices** register their Expo push token over the socket (`push.register`); tokens are
 //!   kept in `DATA_DIR/alerts/push-devices.json`, never synced to other clients. At most
 //!   [`MAX_DEVICES`]; the oldest goes first. Each device also carries its Runners opt-ins
-//!   ([`RunnersOptIn`], `super::runners`): new flags, bursts, running and run entries on by
-//!   default, breakouts off.
+//!   ([`RunnersOptIn`], `super::runners`): new flags, bursts, running, run and fast-move entries
+//!   on by default, breakouts off.
 //! - **Batching:** jobs queued within [`BATCH_WINDOW`] go out in one request of up to
 //!   [`MAX_BATCH`] messages (Expo's limit is 100 per request).
 //! - **Retries:** a network error, a 429 or a 5xx is retried after 2, 4 and 8 s; then the
@@ -82,6 +82,10 @@ pub struct Device {
     /// saved before they existed included (same reason).
     #[serde(default = "yes")]
     pub runners_run: bool,
+    /// "Fast move" pushes (`crate::rocket::fast`): on unless the phone turned them off, a record
+    /// saved before they existed included (same reason).
+    #[serde(default = "yes")]
+    pub runners_fast: bool,
 }
 
 fn yes() -> bool {
@@ -97,6 +101,7 @@ pub struct RunnersOptIn {
     pub burst: Option<bool>,
     pub running: Option<bool>,
     pub run: Option<bool>,
+    pub fast: Option<bool>,
 }
 
 /// The registered phones, persisted on every change (tiny file, temp + rename).
@@ -149,6 +154,7 @@ impl Devices {
                 crate::rocket::NoticeKind::Burst => d.runners_burst,
                 crate::rocket::NoticeKind::Running => d.runners_running,
                 crate::rocket::NoticeKind::Run => d.runners_run,
+                crate::rocket::NoticeKind::Fast => d.runners_fast,
             })
             .map(|d| d.token.clone())
             .collect()
@@ -201,6 +207,7 @@ impl Devices {
             .or(had.map(|d| d.runners_running))
             .unwrap_or(true);
         let runners_run = runners.run.or(had.map(|d| d.runners_run)).unwrap_or(true);
+        let runners_fast = runners.fast.or(had.map(|d| d.runners_fast)).unwrap_or(true);
         self.list.retain(|d| d.token != token);
         let clip = |s: &str| {
             s.chars()
@@ -218,6 +225,7 @@ impl Devices {
             runners_burst,
             runners_running,
             runners_run,
+            runners_fast,
         });
         while self.list.len() > MAX_DEVICES {
             self.list.remove(0);
@@ -640,12 +648,15 @@ mod tests {
         // Running and "Run +20%" entries are on by default (owner, 2026-10-22).
         assert_eq!(d.runner_tokens(NoticeKind::Running), vec![fold.to_string()]);
         assert_eq!(d.runner_tokens(NoticeKind::Run), vec![fold.to_string()]);
+        // So are "Fast move" entries.
+        assert_eq!(d.runner_tokens(NoticeKind::Fast), vec![fold.to_string()]);
         let both = RunnersOptIn {
             new: Some(false),
             breakout: Some(true),
             burst: Some(false),
             running: Some(false),
             run: Some(false),
+            fast: Some(false),
         };
         assert!(d.register(fold, "android", "Fold", 2, both));
         assert!(d.runner_tokens(NoticeKind::New).is_empty());
@@ -660,6 +671,8 @@ mod tests {
         assert!(!dev.runners_new && dev.runners_breakout && !dev.runners_burst);
         assert!(!dev.runners_running, "kept from the register before");
         assert!(!dev.runners_run, "kept from the register before");
+        assert!(!dev.runners_fast, "kept from the register before");
+        assert!(back.runner_tokens(NoticeKind::Fast).is_empty());
         assert!(back.runner_tokens(NoticeKind::Burst).is_empty());
         // A file from before the opt-ins existed: new flags on, breakouts off.
         std::fs::write(
@@ -674,6 +687,8 @@ mod tests {
         assert!(old.runner_tokens(NoticeKind::Running).is_empty());
         // A record without the "Run +20%" field: on.
         assert_eq!(old.runner_tokens(NoticeKind::Run).len(), 1);
+        // A record without the "Fast move" field: on.
+        assert_eq!(old.runner_tokens(NoticeKind::Fast).len(), 1);
     }
 
     /// A stub of Expo's two endpoints: records batches; the second token is "not registered".

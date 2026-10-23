@@ -793,7 +793,14 @@ fn momentum_cost_for_fifty_flagged_rows() {
 /// `burst_outcome` line, and the row back after a restart. Runners counts never include it.
 #[test]
 fn a_burst_becomes_a_tracked_row() {
-    let mut b = board(vec![], fixed(0.5, 10));
+    // This tape is also a fast move (+25 % in 15 s); the fast entry has its own test.
+    let mut b = board(
+        vec![],
+        Policy {
+            fast: false,
+            ..fixed(0.5, 10)
+        },
+    );
     b.enable_burst(burst::BurstPolicy {
         threshold: 0.0001,
         ..burst::BurstPolicy::default()
@@ -1110,4 +1117,290 @@ fn a_plus20_run_gets_a_run_row() {
         r.body(&|_| (None, None), &|_| None)["today"]["alerts"],
         flags
     );
+}
+
+/// Plays `trades` second by second over `[from, to)` with a tick 300 ms into every second, as
+/// the quotes task does: the prints of a second's first 300 ms are already in when the second
+/// before it is read (`fast::FastTape::inputs_settled`).
+fn play_secs(b: &mut RocketBoard, mut trades: Vec<Trade>, from: i64, to: i64) {
+    trades.sort_by_key(|t| t.event_ts.0);
+    let mut i = 0;
+    let mut t = from - from.rem_euclid(S) + 300_000_000;
+    while t < to {
+        while i < trades.len() && trades[i].event_ts.0 < t {
+            b.apply_trade(&trades[i], BOTH);
+            i += 1;
+        }
+        b.tick(t, |_| None);
+        t += S;
+    }
+}
+
+/// The "Fast move" entry, end to end: a replayed spike (+10 % in 50 s on 100 prints and
+/// $200k+) makes exactly one fast row and one push decision; a symbol that already has a row
+/// gets none; the row is logged, counted in the day line and back after a restart.
+#[test]
+fn a_fast_spike_gets_one_fast_row_and_one_push() {
+    let mut b = board(vec![], fixed(0.5, 10));
+    let mut tape = Vec::new();
+    for sym in ["ZAP", "HAS"] {
+        // A quiet minute at $2.00, then two prints a second climbing 0.2 % a second for 50 s,
+        // then holding at the top for two minutes.
+        for k in 0..60 {
+            tape.push(tr(sym, at(9, 59, 0) + k * S + 100_000_000, 2.00, 100));
+        }
+        for k in 0..170i64 {
+            let p = 2.00 + 0.004 * (k.min(50) as f64);
+            for off in [100_000_000, 600_000_000] {
+                tape.push(tr(sym, at(10, 0, 0) + k * S + off, p, 1_000));
+            }
+        }
+    }
+    // HAS already has a row (a run entry, say): none for it.
+    b.tick(at(9, 0, 1), |_| None);
+    b.alerts.push(test_row(
+        "HAS",
+        at(9, 30, 0),
+        AlertKind::Run,
+        MState::Watching,
+    ));
+    play_secs(&mut b, tape, at(9, 59, 0), at(10, 3, 0));
+    let fast: Vec<&Alert> = b
+        .alerts()
+        .iter()
+        .filter(|a| a.kind == AlertKind::Fast)
+        .collect();
+    assert_eq!(fast.len(), 1, "{fast:?}");
+    let a = fast[0].clone();
+    assert_eq!(&*a.symbol, "ZAP");
+    // +8 % held over the minute's low ($2.16) is reached about 40 s in.
+    assert!(
+        a.at_ns > at(10, 0, 30) && a.at_ns <= at(10, 0, 50),
+        "{}",
+        (a.at_ns - at(10, 0, 0)) / S
+    );
+    assert!(a.price >= 2.16 && a.score >= 1.0, "{a:?}");
+    assert_eq!(a.strategy, fast::STRATEGY);
+    assert!(a.reasons[0].contains("in 60 s"), "{:?}", a.reasons);
+    let body = b.body(&|_| (Some(2.2), Some(2.0)), &|_| None);
+    let row = body["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["s"] == "ZAP")
+        .unwrap();
+    assert_eq!(row["kind"], "fast");
+    assert_eq!(row["outcome"]["state"], "pending", "no strict outcome tag");
+    // One notice, and one push decision through the Runners delivery (on by default).
+    let n: Vec<Notice> = b
+        .take_notices()
+        .into_iter()
+        .filter(|n| n.kind == NoticeKind::Fast)
+        .collect();
+    assert_eq!(n.len(), 1, "{n:?}");
+    assert_eq!(n[0].exec_ns, Some(a.at_ns - S), "the second it fired");
+    let mut delivery = crate::alerts::runners::RunnersDelivery::in_memory();
+    let prefs = crate::alerts::model::Prefs::default();
+    let sent = n
+        .iter()
+        .filter(|x| {
+            let ms = x.at_ns / 1_000_000;
+            delivery.decide(x.kind, &x.symbol, 1, &prefs, ms, ms, day(), 600)
+                == crate::alerts::runners::Decision::Send
+        })
+        .count();
+    assert_eq!(sent, 1);
+    let (title, text, _) = crate::alerts::runners::message(&n[0]);
+    assert!(title.starts_with("ZAP · Fast move · $"), "{title}");
+    assert!(
+        text.contains(" in 60 s · ") && text.contains(" trades, $"),
+        "{text}"
+    );
+    // The log line, the day's count, and the row back after a restart (no notice).
+    b.tick(at(20, 0, 1), |_| None);
+    let lines: Vec<String> = b.take_log().into_iter().map(|(_, l)| l).collect();
+    let entry: Vec<Value> = lines
+        .iter()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .filter(|v| v["kind"] == "fast")
+        .collect();
+    assert_eq!(entry.len(), 1);
+    assert_eq!(entry[0]["sec"], (a.at_ns - S) / S);
+    assert_eq!(entry[0]["secs"], 60);
+    let day_line: Value = lines
+        .iter()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .find(|v| v["kind"] == "day")
+        .unwrap();
+    assert_eq!(day_line["rows"]["fast"], 1);
+    let tmp = tempfile::tempdir().unwrap();
+    let log = RocketLog::new(tmp.path().join("rocket-watch"), 30);
+    log.append(day(), &lines);
+    let mut r = board(vec![], fixed(0.5, 10));
+    r.restore(day(), log.load(day()));
+    let back: Vec<&Alert> = r
+        .alerts()
+        .iter()
+        .filter(|a| a.kind == AlertKind::Fast)
+        .collect();
+    assert_eq!(back.len(), 1);
+    assert_eq!(&*back[0].symbol, "ZAP");
+    assert!(r.take_notices().is_empty());
+}
+
+/// A row as the board would hold it, in momentum state `state`.
+fn test_row(sym: &str, at_ns: i64, kind: AlertKind, state: MState) -> Alert {
+    let mut track = Track::new(at_ns, 1.0);
+    track.state = state;
+    Alert {
+        id: format!("{sym}-{at_ns}"),
+        symbol: Arc::from(sym),
+        at_ns,
+        price: 1.0,
+        score: 1.0,
+        threshold: 1.0,
+        reasons: vec![
+            "+9% in 60 s (held)".into(),
+            "48 trades, $64k in 60 s".into(),
+        ],
+        strategy: fast::STRATEGY.into(),
+        version: fast::VERSION.into(),
+        outcome: Outcome {
+            checked: 0,
+            high: f64::NAN,
+            low: f64::NAN,
+            mark: None,
+            settled: true,
+            partial: false,
+        },
+        track,
+        kind,
+        burst: None,
+    }
+}
+
+/// Past [`ROWS`] rows the panel keeps the active ones (breaking out, running, pullback) first,
+/// then the newest; fading rows go first. Sent newest first. Also measures the payload.
+#[test]
+fn the_row_limit_keeps_active_rows_then_the_newest() {
+    let mut b = board(vec![], fixed(0.5, 10));
+    b.tick(at(9, 0, 1), |_| None);
+    // 10 old running rows, 80 quiet ones, 10 new fading ones.
+    for i in 0..100usize {
+        let state = match i {
+            0..10 => MState::Running,
+            90.. => MState::Fading,
+            _ => MState::Watching,
+        };
+        let kind = [AlertKind::Fast, AlertKind::Run, AlertKind::Running][i % 3];
+        b.alerts.push(test_row(
+            &format!("S{i:03}"),
+            at(9, 0, 0) + i as i64 * MIN_NS,
+            kind,
+            state,
+        ));
+    }
+    let body = b.body(&|_| (None, None), &|_| None);
+    let rows = body["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), ROWS);
+    let syms: Vec<&str> = rows.iter().map(|r| r["s"].as_str().unwrap()).collect();
+    assert_eq!(syms[0], "S089", "newest first, the fading ones dropped");
+    for i in 0..10 {
+        let s = format!("S{i:03}");
+        assert!(syms.contains(&s.as_str()), "active {s} kept");
+    }
+    assert!(!syms.iter().any(|s| *s >= "S090"), "fading dropped first");
+    assert!(
+        !syms.contains(&"S019") && syms.contains(&"S020"),
+        "then the oldest"
+    );
+    let ats: Vec<i64> = rows.iter().map(|r| r["at"].as_i64().unwrap()).collect();
+    assert!(ats.windows(2).all(|w| w[0] >= w[1]), "newest first");
+    // Under the limit nothing is dropped.
+    b.alerts.truncate(30);
+    let body = b.body(&|_| (None, None), &|_| None);
+    assert_eq!(body["rows"].as_array().unwrap().len(), 30);
+    // Payload: ROWS rows with prices (no levels, no day lines: the market adds those).
+    b.alerts.clear();
+    for i in 0..ROWS {
+        b.alerts.push(test_row(
+            &format!("SYM{i}"),
+            at(9, 0, 0) + i as i64 * MIN_NS,
+            AlertKind::Fast,
+            MState::Running,
+        ));
+    }
+    let body = b.body(&|_| (Some(2.41), Some(1.87)), &|_| None);
+    let bytes = body.to_string().len();
+    eprintln!("rocket body with {ROWS} rows: {bytes} B");
+    assert!(bytes < 100_000, "{bytes}");
+}
+
+/// The fast-move state's memory per symbol (reported with the integration).
+#[test]
+fn fast_state_memory_per_symbol() {
+    // The map entry (key + value inline) plus the ring on the heap and the symbol's name.
+    let per = std::mem::size_of::<(Arc<str>, FastSym)>() + fast::FastTape::heap_bytes() + 16 + 8;
+    eprintln!(
+        "fast tape: ~{per} B per symbol, ~{:.1} MB for 13k symbols",
+        (per * 13_000) as f64 / 1e6
+    );
+    assert!(per < 5_000, "{per}");
+}
+
+/// The fast-move CPU cost at whole-market scale: 13,000 symbols printing twice every second
+/// (far busier than any real second). Reports the cost per print and per tick.
+#[test]
+fn fast_cost_at_market_scale() {
+    for fast in [false, true] {
+        fast_cost(fast);
+    }
+}
+
+fn fast_cost(fast: bool) {
+    const N: usize = 13_000;
+    let mut b = board(
+        vec![],
+        Policy {
+            fast,
+            ..fixed(0.5, 10)
+        },
+    );
+    b.tick(at(9, 0, 1), |_| None);
+    let syms: Vec<String> = (0..N).map(|i| format!("S{i}")).collect();
+    let t0 = at(10, 0, 0);
+    let (mut apply, mut tick, mut prints, mut ticks) = (Duration::ZERO, Duration::ZERO, 0u32, 0u32);
+    let mut worst = Duration::ZERO;
+    for k in 0..70i64 {
+        let trades: Vec<Trade> = syms
+            .iter()
+            .enumerate()
+            .flat_map(|(i, s)| {
+                let p = 1.0 + (i % 50) as f64 * 0.1;
+                [
+                    tr(s, t0 + k * S + 100_000_000, p, 100),
+                    tr(s, t0 + k * S + 600_000_000, p * 1.001, 100),
+                ]
+            })
+            .collect();
+        let t = Instant::now();
+        for x in &trades {
+            b.apply_trade(x, BOTH);
+        }
+        apply += t.elapsed();
+        prints += trades.len() as u32;
+        let t = Instant::now();
+        b.tick(t0 + (k + 1) * S + 300_000_000, |_| None);
+        let e = t.elapsed();
+        tick += e;
+        worst = worst.max(e);
+        ticks += 1;
+    }
+    eprintln!(
+        "fast={fast}: {:.0} ns per print (the whole board), tick {:?} mean / {:?} worst with {N} symbols printing",
+        apply.as_nanos() as f64 / f64::from(prints),
+        tick / ticks,
+        worst
+    );
+    assert!(worst < Duration::from_secs(1), "{worst:?}");
 }

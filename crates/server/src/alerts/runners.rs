@@ -7,16 +7,18 @@
 //!
 //! - **What:** a [`Notice`] from the LIVE market's board (`crate::rocket`, "Phone pushes"): a new
 //!   flag, a flagged row turning `breaking_out`, a new buying burst (`crate::rocket::burst`), a
-//!   running entry (`crate::rocket::running`) or a "Run +20%" entry (`crate::rocket::run`). The
+//!   running entry (`crate::rocket::running`), a "Run +20%" entry (`crate::rocket::run`) or a
+//!   "Fast move" entry (`crate::rocket::fast`). The
 //!   market offers it to the alerts task with `try_send` after the core lock is released, so
 //!   ingest and the board never wait on a push. A replay market never offers one.
 //! - **Text** ([`message`]): the evidence in one line, short enough for a lock screen. Title
-//!   "SYM · <source> · $price" ("Buying burst", "Running", "Run +20%"); body the % move and its
+//!   "SYM · <source> · $price" ("Buying burst", "Running", "Run +20%", "Fast move"); body the %
+//!   move and its
 //!   window, then for a burst the research's odds ("typ. +13% max in 30 min, 1 in 4 reach +20%
 //!   before −5%", the panel's Bursts line).
 //! - **Who:** each registered phone opts in per kind, on the device record
 //!   (`push-devices.json`, sent in `push.register`): new flags ON by default, breakouts OFF,
-//!   bursts, running and run entries ON (owner, 2026-10-22: "I don't wanna lose opportunities
+//!   bursts, running, run and fast-move entries ON (owner, 2026-10-22: "I don't wanna lose opportunities
 //!   because I'm away from my phone").
 //!   Per device rather than synced because it is about which phone makes noise, exactly like the
 //!   token itself.
@@ -29,8 +31,9 @@
 //!      (a burst: [`BURST_GAP_MS`], so a burst right after a run or running push still goes
 //!      out) → `symbol_limit`;
 //!   5. [`DAILY_CAP`] Runners pushes already went out this ET day → `cap`, by priority: bursts
-//!      and new flags are never dropped by the cap (they still count), breakouts, running and
-//!      run entries are. With ~50 running, ~25 run and ~20 burst pushes on a typical day the cap
+//!      and new flags are never dropped by the cap (they still count); breakouts, running, run
+//!      and fast-move entries are. With ~50 running, ~25 run, ~20 burst and up to ~100 fast
+//!      pushes on a typical day the cap
 //!      is a runaway guard, not a budget.
 //!
 //! - **Latency** (target: under 5 s from the triggering trade to Expo): a Runners push skips the
@@ -226,6 +229,7 @@ pub fn data_kind(kind: NoticeKind) -> &'static str {
         NoticeKind::Burst => "runners.burst",
         NoticeKind::Running => "runners.running",
         NoticeKind::Run => "runners.run",
+        NoticeKind::Fast => "runners.fast",
     }
 }
 
@@ -262,6 +266,7 @@ pub fn message(n: &Notice) -> (String, String, Value) {
         NoticeKind::Burst => format!("{s} · Buying burst · {p}"),
         NoticeKind::Running => format!("{s} · Running · {p}"),
         NoticeKind::Run => format!("{s} · Run +20% · {p}"),
+        NoticeKind::Fast => format!("{s} · Fast move · {p}"),
     };
     let data = json!({
         "symbol": n.symbol,
@@ -293,6 +298,18 @@ pub fn message(n: &Notice) -> (String, String, Value) {
                 .map(|x| format!(" off {x}"))
                 .unwrap_or_default();
             format!("{mv}{off} · 25+ trades, $25k+")
+        }
+        // "+8.4% in 60 s · 52 trades, $71k": the held move, its window and the trading in it
+        // (`crate::rocket::fast::FastEntry::reasons`).
+        NoticeKind::Fast => {
+            let mv = match (n.from_flag_pct, n.since_start_min) {
+                (Some(x), Some(m)) => format!("{x:+.1}% in {:.0} s", (m * 60.0).max(0.0)),
+                _ => first.clone().unwrap_or_else(|| "Fast move".into()),
+            };
+            match n.reasons.get(1).and_then(|r| r.split(" in ").next()) {
+                Some(t) => format!("{mv} · {t}"),
+                None => mv,
+            }
         }
         // "+15.3% in 60 min · $120k in 5 min": the move off the hour's low and its money.
         NoticeKind::Running => {
@@ -397,6 +414,18 @@ mod tests {
             480,
         );
         assert_eq!(breakout, Decision::Held(Hold::Cap));
+        // A fast move is droppable first too, with running and run.
+        let fast = d.decide(
+            NoticeKind::Fast,
+            "FAST",
+            1,
+            &prefs,
+            14 * MIN,
+            14 * MIN,
+            day(22),
+            480,
+        );
+        assert_eq!(fast, Decision::Held(Hold::Cap));
         assert_eq!(burst(&mut d, "BURST", 14 * MIN), Decision::Send);
         let new = d.decide(
             NoticeKind::New,
@@ -526,5 +555,24 @@ mod tests {
         assert_eq!(b, "+15.3% in 60 min · $120k in 5 min");
         assert_eq!(data["kind"], "runners.running");
         assert!(t.chars().count() + b.chars().count() < 110, "{t} / {b}");
+        // A fast move: the held move, its window, the trading in it.
+        n.kind = NoticeKind::Fast;
+        n.price = 2.41;
+        n.from_flag_pct = Some(8.44);
+        n.since_start_min = Some(1.0);
+        n.reasons = crate::rocket::fast::FastEntry {
+            secs: 60,
+            price: 2.41,
+            held: 2.40,
+            low: 2.213,
+            gain: 0.0844,
+            trades: 52,
+            dollars: 71_200.0,
+        }
+        .reasons();
+        let (t, b, data) = message(&n);
+        assert_eq!(t, "CJMB · Fast move · $2.41");
+        assert_eq!(b, "+8.4% in 60 s · 52 trades, $71k");
+        assert_eq!(data["kind"], "runners.fast");
     }
 }
