@@ -82,6 +82,7 @@
 //! re-announce the morning's flags.
 
 pub mod burst;
+pub mod fast;
 pub mod features;
 pub mod log;
 pub mod r0;
