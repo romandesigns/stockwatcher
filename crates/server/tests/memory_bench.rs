@@ -103,12 +103,24 @@ async fn measure_live_market_heap() {
     .start()
     .unwrap();
     let m = Market::from_live_session(session, archive, UnixNanos(t0), false);
-    m.set_stock_context(true);
-    m.set_rocket_watch(true, stockwatcher_server::rocket::Policy::default());
-    m.enable_burst(
-        stockwatcher_server::rocket::burst::BurstPolicy::default(),
-        None,
+    // Each feature can be switched off to measure what it costs (1 = on, the production default):
+    // MEM_CONTEXT, MEM_ROCKET, MEM_FAST (RUNNERS_FAST), MEM_ZONES (VOLUME_SHELVES), MEM_BURST.
+    let on = |k: &str| env(k, 1) != 0;
+    m.set_stock_context(on("MEM_CONTEXT"));
+    m.set_rocket_watch(
+        on("MEM_ROCKET"),
+        stockwatcher_server::rocket::Policy {
+            fast: on("MEM_FAST"),
+            ..Default::default()
+        },
     );
+    m.set_volume_shelves(on("MEM_ZONES"));
+    if on("MEM_BURST") {
+        m.enable_burst(
+            stockwatcher_server::rocket::burst::BurstPolicy::default(),
+            None,
+        );
+    }
 
     let w: Vec<f64> = (0..n).map(|i| 1.0 / (i as f64 + 8.0).powf(1.15)).collect();
     let mut cum = Vec::with_capacity(n);
@@ -132,6 +144,9 @@ async fn measure_live_market_heap() {
         let per_sec = (prints as f64 * intensity(minute) / total_int / 60.0).round() as u64;
         for s in 0..60 {
             let sec_ts = t0 + (minute * 60 + s) * SEC;
+            // The market clock follows the synthetic day (the provider's own clock is the
+            // wall's), so the once-a-wall-second tick decides slots and reads fast moves.
+            m.bench_set_clock(UnixNanos(sec_ts));
             for k in 0..per_sec {
                 let u = rng.unit() * acc;
                 let i = cum.partition_point(|c| *c < u).min(n - 1);
@@ -177,6 +192,7 @@ async fn measure_live_market_heap() {
                 (LIVE.load(Ordering::Relaxed) - base) as f64 / 1e9,
                 started.elapsed().as_secs_f64()
             );
+            eprintln!("          {}", m.memory_report());
         }
     }
 }
