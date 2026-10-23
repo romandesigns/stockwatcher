@@ -314,3 +314,27 @@ describe("Run +20% entries (2026-10-22)", () => {
     expect(rocketSectionCounts({ enabled: true, panel: only, receivedAt: T, connected: true })).toEqual({ bursts: 0, flags: 1 });
   });
 });
+
+describe("Fast move entries (2026-10-22)", () => {
+  test("a fast row has its own quiet source, measures from its entry and shares the order", () => {
+    const p = panel({
+      strategy: { id: "precursors-R2", version: "1", placeholder: false },
+      rows: [
+        row({ id: "f", s: "FLAG", state: "watching" }),
+        row({ id: "z", s: "ZAP", kind: "fast", state: "running", from_flag_pct: 3.1, outcome: { state: "pending", gain: null, drawdown: null, partial: false } }),
+      ],
+    });
+    const v = rocketSectionsView(p, T).runners;
+    expect(v.map((x) => [x.symbol, x.source.kind, x.source.label])).toEqual([
+      ["ZAP", "fast", "Fast move"],
+      ["FLAG", "runner", "R2 flag"],
+    ]);
+    expect(v[0]?.fromWhat).toBe("entry");
+    expect(v[0]?.momentum.note).toBe("+3.1% from entry");
+    expect(v[0]?.aria).toContain("fast move, entered");
+    expect(v[0]?.outcome).toBeNull();
+    expect(rocketSectionsView(p, T).bursts).toBeNull();
+    const only = panel({ rows: [row({ id: "z", s: "ZAP", kind: "fast" })] });
+    expect(rocketSectionCounts({ enabled: true, panel: only, receivedAt: T, connected: true })).toEqual({ bursts: 0, flags: 1 });
+  });
+});

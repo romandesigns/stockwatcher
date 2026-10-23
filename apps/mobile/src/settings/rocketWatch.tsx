@@ -9,10 +9,10 @@ import { fonts } from "../theme";
 
 /**
  * Settings → Runners: this phone's Runners pushes (owner, 2026-10-22), sent by the server even
- * with the app closed (crates/server/src/alerts/runners.rs). Five switches, per device: new flags
- * (on by default), breakouts (off), buying bursts (on, 2026-10-22), running entries and "Run
- * +20%" entries (on, 2026-10-22: the owner does not want to miss a move while away from the
- * phone). Turning one on when this phone has no push token asks for
+ * with the app closed (crates/server/src/alerts/runners.rs). Six switches, per device: new flags
+ * (on by default), breakouts (off), buying bursts (on, 2026-10-22), running entries, "Run +20%"
+ * and "Fast move" entries (on, 2026-10-22: the owner does not want to miss a move while away
+ * from the phone). Turning one on when this phone has no push token asks for
  * notification permission and registers it (the Alerts tab's "Turn on phone alerts" does the
  * same). Without push, new flags ring a local banner while the dashboard is open instead.
  */
@@ -83,6 +83,14 @@ function RunnersPushPanel() {
         description="A +20% leg within 15 minutes on real trades, with its window and start price."
         onPress={() => toggle("pushRun")}
       />
+      <Switch
+        on={prefs.pushFast}
+        busy={busy}
+        icon="live"
+        name="Fast move"
+        description="+8% in a minute or +12% in 15 s on real trades, with the move and its money."
+        onPress={() => toggle("pushFast")}
+      />
       <Text style={[s.status, note ? { color: UI.warning } : null]}>
         {note ??
           (token
@@ -93,7 +101,7 @@ function RunnersPushPanel() {
   );
 }
 
-function Switch({ on, busy, icon, name, description, onPress }: { on: boolean; busy: boolean; icon: "bell" | "gauge" | "trend"; name: string; description: string; onPress: () => void }) {
+function Switch({ on, busy, icon, name, description, onPress }: { on: boolean; busy: boolean; icon: "bell" | "gauge" | "trend" | "live"; name: string; description: string; onPress: () => void }) {
   return (
     <Pressable
       accessibilityRole="switch"

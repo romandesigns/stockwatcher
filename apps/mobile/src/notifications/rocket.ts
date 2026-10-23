@@ -1,4 +1,4 @@
-import { isBurstRow, isRunningRow, isRunRow, type RocketRowWire } from "@stockwatcher/shared";
+import { isBurstRow, isFastRow, isRunningRow, isRunRow, type RocketRowWire } from "@stockwatcher/shared";
 import * as Notifications from "expo-notifications";
 import { Platform } from "react-native";
 
@@ -21,8 +21,8 @@ import { ALERTS_CHANNEL_ID } from "./setup";
 export function notifyRocketFlags(rows: RocketRowWire[]): void {
   const prefs = runnersPushPrefs();
   const token = pushToken();
-  // Running and "Run +20%" entries under their own switches (2026-10-22), like the push.
-  const ring = rows.filter((r) => ringRunnersLocally(isBurstRow(r) ? prefs.pushBurst : isRunningRow(r) ? prefs.pushRunning : isRunRow(r) ? prefs.pushRun : prefs.pushNew, token));
+  // Running, "Run +20%" and "Fast move" entries under their own switches (2026-10-22), like the push.
+  const ring = rows.filter((r) => ringRunnersLocally(isBurstRow(r) ? prefs.pushBurst : isRunningRow(r) ? prefs.pushRunning : isRunRow(r) ? prefs.pushRun : isFastRow(r) ? prefs.pushFast : prefs.pushNew, token));
   for (const r of ring.slice(0, 3)) {
     const price = `$${r.p.toFixed(r.p >= 1 ? 2 : 4)}`;
     const burst = isBurstRow(r) ? r.burst : null;
@@ -34,11 +34,13 @@ export function notifyRocketFlags(rows: RocketRowWire[]): void {
             ? `Running: ${r.s} ${price}`
             : isRunRow(r)
               ? `Run +20%: ${r.s} ${price}`
-              : `Runners: ${r.s} ${price}`,
+              : isFastRow(r)
+                ? `Fast move: ${r.s} ${price}`
+                : `Runners: ${r.s} ${price}`,
         body: r.reasons.length ? r.reasons.slice(0, 2).join(" · ") : burst ? "Heavy buying confirmed (experimental)" : "Flagged (experimental)",
         sound: true,
         // A tap opens the chart, like the push (src/notifications/route.ts).
-        data: { symbol: r.s, kind: burst ? "runners.burst" : isRunningRow(r) ? "runners.running" : isRunRow(r) ? "runners.run" : "runners.new", alert_id: r.id },
+        data: { symbol: r.s, kind: burst ? "runners.burst" : isRunningRow(r) ? "runners.running" : isRunRow(r) ? "runners.run" : isFastRow(r) ? "runners.fast" : "runners.new", alert_id: r.id },
       },
       // Now, on the alerts channel (Android: its sound and importance).
       trigger: Platform.OS === "android" ? { channelId: ALERTS_CHANNEL_ID } : null,

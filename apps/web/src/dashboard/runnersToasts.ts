@@ -40,9 +40,9 @@ export function runnersToasts(rows: RocketRowWire[], mem: RunnersToastMemory, wa
     mem.seen.set(r.id, state);
     if (!mem.primed) continue;
     if (!had) {
-      // Running and "Run +20%" entries never toast (owner, 2026-10-22): many a day, and a move
-      // under way rather than a forecast; the phone push for them is opt-in, off by default.
-      if (fresh(r.at) && r.kind !== "running" && r.kind !== "run") out.push({ kind: "new", symbol: r.s, text: [`Runners: ${r.s} ${dollars(r.p)}`, ...r.reasons.slice(0, 1)].join(" · ") });
+      // Running, "Run +20%" and "Fast move" entries never toast (owner, 2026-10-22): many a day,
+      // and a move under way rather than a forecast; the phone push is their per-device switch.
+      if (fresh(r.at) && r.kind !== "running" && r.kind !== "run" && r.kind !== "fast") out.push({ kind: "new", symbol: r.s, text: [`Runners: ${r.s} ${dollars(r.p)}`, ...r.reasons.slice(0, 1)].join(" · ") });
     } else if (state === "breaking_out" && before !== "breaking_out" && fresh(r.state_since)) {
       const pct = r.from_flag_pct;
       const price = r.last ?? r.p;

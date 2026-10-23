@@ -1,7 +1,7 @@
 // Where a tapped phone notification goes (pure, so bun tests it without a native runtime).
 //
 // - A Runners push (crates/server/src/alerts/runners.rs, data `{symbol, kind: "runners.new" |
-//   "runners.breakout" | "runners.burst" | "runners.running" | "runners.run", alert_id}`) opens that ticker's chart modal: the point of the push is to
+//   "runners.breakout" | "runners.burst" | "runners.running" | "runners.run" | "runners.fast", alert_id}`) opens that ticker's chart modal: the point of the push is to
 //   see the move now.
 // - Anything else (a price alert's push, data `{alertId, symbol, eventId, url}`; an unknown or
 //   older payload) opens the Alerts tab, as before.

@@ -61,6 +61,15 @@ describe("Runners panel", () => {
     expect(html).toContain(">R2 flag</span>");
     expect(html).toContain("from entry, from high, last minute");
   });
+  test("Fast move entries (2026-10-22): their own quiet chip, never accent, measured from the entry", () => {
+    const fast = { id: "z", s: "ZAP", kind: "fast" as const, at: T - 60_000, p: 2.41, last: 2.5, pc: 2.0, score: 1.05, reasons: ["+8% in 60 s (held)", "52 trades, $71k in 60 s"], outcome: { state: "pending" as const, gain: null, drawdown: null, partial: false }, state: "watching" as const, from_flag_pct: 3.7 };
+    const html = render({ enabled: true, panel: { ...panel, strategy: { id: "precursors-R2", version: "1", placeholder: false }, rows: [...panel.rows, fast] }, receivedAt: 5, connected: true });
+    expect(html).toContain('data-kind="fast"');
+    const chip = /<span class="([^"]*)" data-testid="rocket-source">Fast move<\/span>/.exec(html);
+    expect(chip).not.toBeNull();
+    expect(chip?.[1]).not.toMatch(/primary|accent/);
+    expect(html).toContain("from entry, from high, last minute");
+  });
   test("no quiet, off or connecting lines (the tab is hidden then); reconnecting keeps the rows, dimmed", () => {
     const empty = render({ enabled: true, panel: { ...panel, rows: [] }, receivedAt: 0, connected: true });
     expect(empty).not.toContain("Nothing flagged");

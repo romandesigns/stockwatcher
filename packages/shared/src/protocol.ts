@@ -602,6 +602,8 @@ export interface PushRegisterMessage {
   runnersRunning?: boolean;
   /** Runners pushes for "Run +20%" entries on this phone (server default off; absent = unchanged). */
   runnersRun?: boolean;
+  /** Runners pushes for "Fast move" entries on this phone (server default on; absent = unchanged). */
+  runnersFast?: boolean;
 }
 
 export interface PushUnregisterMessage {

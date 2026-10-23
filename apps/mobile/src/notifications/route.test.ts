@@ -44,8 +44,10 @@ test("push.register carries the Runners opt-ins, on connect and whenever they or
   const prefs = read("runnersPush.ts");
   // The server's defaults: new flags on, breakouts off, buying bursts, running and run entries on
   // (owner, 2026-10-22: not to miss a move while away from the phone).
-  expect(prefs).toContain("RUNNERS_PUSH_DEFAULTS: RunnersPushPrefs = { pushNew: true, pushBreakout: false, pushBurst: true, pushRunning: true, pushRun: true }");
-  expect(prefs).toContain("runnersNew: prefs.pushNew, runnersBreakout: prefs.pushBreakout, runnersBurst: prefs.pushBurst, runnersRunning: prefs.pushRunning, runnersRun: prefs.pushRun");
+  expect(prefs).toContain("RUNNERS_PUSH_DEFAULTS: RunnersPushPrefs = { pushNew: true, pushBreakout: false, pushBurst: true, pushRunning: true, pushRun: true, pushFast: true }");
+  expect(prefs).toContain("runnersNew: prefs.pushNew, runnersBreakout: prefs.pushBreakout, runnersBurst: prefs.pushBurst, runnersRunning: prefs.pushRunning, runnersRun: prefs.pushRun, runnersFast: prefs.pushFast");
+  // A preference saved before "Fast move" existed gets the default (on).
+  expect(prefs).toContain('pushFast: typeof v.pushFast === "boolean" ? v.pushFast : RUNNERS_PUSH_DEFAULTS.pushFast');
   // A preference saved before "Run +20%" existed gets the default (on).
   expect(prefs).toContain('pushRun: typeof v.pushRun === "boolean" ? v.pushRun : RUNNERS_PUSH_DEFAULTS.pushRun');
   // A preference saved before bursts existed keeps the default (on).
@@ -61,6 +63,9 @@ test("Settings → Runners: three compact switches, no borders", () => {
   expect(src).toContain('toggle("pushRunning")');
   expect(src).toContain('toggle("pushRun")');
   expect(src).toContain('name="Run +20%"');
+  // "Fast move" entries: their own switch, on by default (2026-10-22).
+  expect(src).toContain('toggle("pushFast")');
+  expect(src).toContain('name="Fast move"');
   expect(src).toContain('name="Buying bursts"');
   expect(src).not.toMatch(/border(Width|Color|Top|Bottom|Left|Right)/);
   // Turning one on without a token asks for permission and registers (as the Alerts tab does).

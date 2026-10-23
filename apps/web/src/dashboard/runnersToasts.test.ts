@@ -37,6 +37,8 @@ test("a running entry never toasts as news (opt-in push on the phone only, 2026-
   expect(runnersToasts([row("r", "TANH", { kind: "running" })], mem, NOW)).toEqual([]);
   // Nor a "Run +20%" entry.
   expect(runnersToasts([row("g", "LEGS", { kind: "run" })], mem, NOW)).toEqual([]);
+  // Nor a "Fast move" entry.
+  expect(runnersToasts([row("f", "ZAP", { kind: "fast" })], mem, NOW)).toEqual([]);
 });
 
 test("old news never toasts (a reconnect, a replay's own day)", () => {
