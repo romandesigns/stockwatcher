@@ -1,9 +1,11 @@
 import * as Device from "expo-device";
 import * as Notifications from "expo-notifications";
-import { Platform } from "react-native";
+import { AppState, Platform } from "react-native";
 
 import { navigateToAlerts, openTickerChart } from "../navigation/ref";
 import { getPreference, setPreference } from "../storage/preferences";
+import { copyTicker } from "../ui/useTickerPress";
+import { handleCopyTickerResponse } from "./copyTickerAction";
 import { createResponseRouter, type NotificationTarget } from "./route";
 import { configureForegroundPresentation, registerForPushNotifications } from "./setup";
 
@@ -52,8 +54,25 @@ export function goToTarget(target: NotificationTarget): void {
 // getLastNotificationResponse and from the listener, and is routed once; after each tap the native
 // "last response" is cleared, so nothing can replay an old tap over a chart opened since (a JS
 // reload, a remounted root running initPush again, then reading the old response).
-const openFrom = createResponseRouter(goToTarget, { clearLast: () => Notifications.clearLastNotificationResponse() });
+const route = createResponseRouter(goToTarget, { clearLast: () => Notifications.clearLastNotificationResponse() });
 let listening = false;
+/** When the response listener started (a "Copy ticker" press queued from before is not redone). */
+let listeningSince = 0;
+
+/** A notification response: "Copy ticker" copies and opens nothing (copyTickerAction.ts); a tap is routed. */
+function openFrom(response: Notifications.NotificationResponse | null): void {
+  if (
+    response &&
+    handleCopyTickerResponse(
+      response,
+      { active: AppState.currentState === "active", listeningForMs: Date.now() - listeningSince },
+      copyTicker,
+    )
+  ) {
+    return;
+  }
+  route(response);
+}
 
 /**
  * At launch: the stored token at once, then a fresh one when permission is already granted (no
@@ -66,6 +85,7 @@ export async function initPush(): Promise<void> {
   // background), and each extra listener would route every later tap again.
   if (!listening) {
     listening = true;
+    listeningSince = Date.now();
     Notifications.addNotificationResponseReceivedListener(openFrom);
   }
   try {
