@@ -36,6 +36,14 @@
 //!      pushes on a typical day the cap
 //!      is a runaway guard, not a budget.
 //!
+//! - **Desktop and web** (owner, 2026-10-23: the phone's notifications there too): every notice
+//!   is decided a second time for the open desktop and web clients ([`desk_frame`]), with the
+//!   same limits but its own count and gaps (`runners-desk.json`). Their "devices" are the
+//!   connections that sent `runners.notify` with this kind on (`super::DeskKinds`, the phone's
+//!   defaults); a Send goes to every socket as a `runners.notice` frame carrying [`message`]'s
+//!   title and body, and each client shows it as a system notification if its own switch is on.
+//!   Separate counts so that a kind only the phone wants never spends a desk gap, and the reverse.
+//!
 //! - **Latency** (target: under 5 s from the triggering trade to Expo): a Runners push skips the
 //!   push task's batch window ([`super::push`]) and, once Expo took it, logs `runners push:
 //!   latency` with `exec_ns` (the triggering print, when the source knows it: a "Run +20%" row),
@@ -71,6 +79,10 @@ pub const DAILY_CAP: u32 = 120;
 /// ago is noise on a lock screen.
 pub const MAX_AGE_MS: i64 = 3 * 60_000;
 const FILE: &str = "runners-push.json";
+/// The desktop and web notifications' own count and gaps ([`desk_frame`]): kept apart from the
+/// phones' so a notice the phones held (none opted in) still reaches an open desktop, and the
+/// reverse; the limits themselves are the same.
+pub const DESK_FILE: &str = "runners-desk.json";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Decision {
@@ -114,6 +126,7 @@ struct Saved {
 #[derive(Debug, Default)]
 pub struct RunnersDelivery {
     dir: Option<PathBuf>,
+    file: &'static str,
     s: Saved,
 }
 
@@ -122,27 +135,35 @@ impl RunnersDelivery {
         Self::default()
     }
 
+    /// The phones' memory (`runners-push.json`).
     pub fn open(dir: &Path) -> Self {
-        let s = std::fs::read(dir.join(FILE))
+        Self::open_file(dir, FILE)
+    }
+
+    /// The same memory under another file ([`DESK_FILE`] for the desktop and web notices).
+    pub fn open_file(dir: &Path, file: &'static str) -> Self {
+        let s = std::fs::read(dir.join(file))
             .ok()
             .and_then(|b| serde_json::from_slice::<Saved>(&b).ok())
             .unwrap_or_default();
         RunnersDelivery {
             dir: Some(dir.to_owned()),
+            file,
             s,
         }
     }
 
     fn save(&self) {
         let Some(dir) = &self.dir else { return };
+        let file = self.file;
         let res = (|| -> std::io::Result<()> {
             std::fs::create_dir_all(dir)?;
-            let tmp = dir.join(format!("{FILE}.tmp"));
+            let tmp = dir.join(format!("{file}.tmp"));
             std::fs::write(
                 &tmp,
                 serde_json::to_vec(&self.s).map_err(std::io::Error::other)?,
             )?;
-            std::fs::rename(&tmp, dir.join(FILE))
+            std::fs::rename(&tmp, dir.join(file))
         })();
         if let Err(e) = res {
             tracing::warn!(error = %e, "runners push: save failed");
@@ -342,9 +363,69 @@ pub fn message(n: &Notice) -> (String, String, Value) {
     (title, parts.join(" · "), data)
 }
 
+/// The `runners.notice` frame for desktop and web (owner, 2026-10-23: the phone's notifications
+/// on the desktop and web too). Title, body and data are the phone push's own ([`message`]), so
+/// the clients cannot drift from the phone. Sent to every connection once the desk decision
+/// (`super::Task::runner`) said Send; each client shows it only when its own switch for `kind`
+/// is on and remembers `id`, so a reconnect never shows it twice. `id` is per kind because a
+/// row's new flag and its breakout share `alertId`. Never in a snapshot: live news only.
+pub fn desk_frame(n: &Notice) -> String {
+    let (title, body, data) = message(n);
+    json!({
+        "type": "runners.notice",
+        "id": format!("runners-{}-{}", n.kind.as_str(), n.alert_id),
+        "alertId": n.alert_id,
+        "symbol": n.symbol,
+        "kind": data_kind(n.kind),
+        "title": title,
+        "body": body,
+        "data": data,
+        "at": n.at_ns.div_euclid(1_000_000),
+    })
+    .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_desk_frame_carries_the_phone_text() {
+        for kind in [
+            NoticeKind::New,
+            NoticeKind::Breakout,
+            NoticeKind::Burst,
+            NoticeKind::Running,
+            NoticeKind::Run,
+            NoticeKind::Fast,
+        ] {
+            let n = Notice {
+                kind,
+                alert_id: "2026-10-23-CJMB-7".into(),
+                symbol: "CJMB".into(),
+                at_ns: 1_761_200_000_123_000_000,
+                price: 2.41,
+                from_flag_pct: Some(8.44),
+                reasons: vec!["$120k in 5 min".into(), "52 trades, $71k in 60 s".into()],
+                since_start_min: Some(1.0),
+                exec_ns: None,
+            };
+            let (title, body, data) = message(&n);
+            let f: Value = serde_json::from_str(&desk_frame(&n)).unwrap();
+            assert_eq!(f["type"], "runners.notice");
+            assert_eq!(f["title"], title.as_str());
+            assert_eq!(f["body"], body.as_str());
+            assert_eq!(f["data"], data);
+            assert_eq!(f["kind"], data_kind(kind));
+            assert_eq!(f["symbol"], "CJMB");
+            assert_eq!(f["alertId"], "2026-10-23-CJMB-7");
+            assert_eq!(
+                f["id"],
+                format!("runners-{}-2026-10-23-CJMB-7", kind.as_str())
+            );
+            assert_eq!(f["at"], 1_761_200_000_123_i64);
+        }
+    }
     use crate::alerts::model::QuietHours;
 
     fn day(d: u32) -> NaiveDate {

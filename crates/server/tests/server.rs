@@ -219,6 +219,32 @@ async fn ws_handshake_with_token_then_ping_pong() {
     assert_eq!(recv(&mut ws).await, json!({ "type": "pong", "ts": 42 }));
 }
 
+/// `runners.notify` (desktop and web Runners notifications) is accepted without a reply, in
+/// its full and its minimal form: the next answer is the pong, not an error.
+#[tokio::test]
+async fn ws_accepts_runners_notify() {
+    let (url, _dir) = spawn(None).await;
+    let (mut ws, _) = tokio_tungstenite::connect_async(url).await.unwrap();
+    send(&mut ws, json!({ "type": "hello" })).await;
+    for want in [
+        "welcome",
+        "paper.state",
+        "settings.snapshot",
+        "alerts.history",
+    ] {
+        assert_eq!(recv(&mut ws).await["type"], want);
+    }
+    send(&mut ws, json!({ "type": "runners.notify", "new": true, "breakout": false, "burst": true, "running": true, "run": false, "fast": true })).await;
+    send(&mut ws, json!({ "type": "runners.notify" })).await;
+    send(
+        &mut ws,
+        json!({ "type": "runners.notify", "enabled": false }),
+    )
+    .await;
+    send(&mut ws, json!({ "type": "ping", "ts": 7 })).await;
+    assert_eq!(recv(&mut ws).await, json!({ "type": "pong", "ts": 7 }));
+}
+
 #[tokio::test]
 async fn ws_rejects_bad_token() {
     let (url, _dir) = spawn(Some(TOKEN)).await;

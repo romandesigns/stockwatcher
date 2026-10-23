@@ -176,6 +176,14 @@
 //!   `error bad_request`. `push.unregister {token}` removes it. No direct reply on success (the
 //!   `alerts.status` frame's `devices` count moves).
 //! - The rules themselves are the synced `alerts` namespace (settings.* above).
+//! - client `runners.notify {enabled?, new?, breakout?, burst?, running?, run?, fast?}`: this
+//!   desktop or web connection shows Runners system notifications for those kinds (absent = the
+//!   phone's default: breakouts off, the rest on; `enabled: false` stops). Per connection, for
+//!   as long as the socket lives; resend after a reconnect. No reply.
+//! - server `runners.notice {id, alertId, symbol, kind, title, body, data, at}` to EVERY
+//!   connection when the desk limits let a Runners notice through
+//!   (crate::alerts::runners::desk_frame): the phone push's own text. A client shows it only if
+//!   its switch for `kind` is on, once per `id`. Older clients ignore the unknown type.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -317,6 +325,29 @@ enum ClientMessage {
     PushUnregister {
         token: String,
     },
+    /// A desktop or web client that shows Runners system notifications, with its switches
+    /// (crate::alerts::DeskKinds; absent = the phone's default). `enabled: false` stops it.
+    #[serde(rename = "runners.notify")]
+    RunnersNotify {
+        #[serde(default = "yes")]
+        enabled: bool,
+        #[serde(default)]
+        new: Option<bool>,
+        #[serde(default)]
+        breakout: Option<bool>,
+        #[serde(default)]
+        burst: Option<bool>,
+        #[serde(default)]
+        running: Option<bool>,
+        #[serde(default)]
+        run: Option<bool>,
+        #[serde(default)]
+        fast: Option<bool>,
+    },
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// For a frame in the settings namespace that failed to parse: its `ns` and `opId` if readable,
@@ -714,6 +745,8 @@ async fn session(mut socket: WebSocket, state: AppState) {
     let mut ross: Option<RossSub> = None;
     let mut rocket: Option<RocketSub> = None;
     let mut detection: Option<DetectionSub> = None;
+    // Listed among the Runners notification desks while held (`runners.notify`).
+    let mut desk: Option<crate::alerts::DeskGuard> = None;
 
     let mut heartbeat = interval_at(Instant::now() + HEARTBEAT, HEARTBEAT);
     let mut last_seen = Instant::now();
@@ -1099,6 +1132,18 @@ async fn session(mut socket: WebSocket, state: AppState) {
                     }
                     Ok(ClientMessage::PushUnregister { token }) => {
                         alerts.unregister_device(token.trim());
+                        None
+                    }
+                    Ok(ClientMessage::RunnersNotify { enabled, new, breakout, burst, running, run, fast }) => {
+                        if enabled {
+                            let kinds = crate::alerts::DeskKinds::from_opt_in(crate::alerts::push::RunnersOptIn { new, breakout, burst, running, run, fast });
+                            match &desk {
+                                Some(g) => g.set(kinds),
+                                None => desk = Some(alerts.desk(kinds)),
+                            }
+                        } else {
+                            desk = None;
+                        }
                         None
                     }
                     Err(_) if let Some((ns, op_id)) = settings_frame_ids(&text) => {

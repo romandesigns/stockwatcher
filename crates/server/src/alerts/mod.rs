@@ -33,6 +33,7 @@ pub mod model;
 pub mod push;
 pub mod runners;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -146,6 +147,87 @@ struct Shared {
     /// The current `alerts.history` frame, rebuilt by the task whenever it changes.
     snapshot: Mutex<Arc<str>>,
     cmd: Option<mpsc::Sender<Command>>,
+    /// Desktop and web connections that show Runners system notifications, by connection, with
+    /// their switches (`runners.notify`; [`DeskGuard`] removes one when its socket ends). Read
+    /// by the task as the desk side's "devices" ([`runners`]): a kind no open client wants is
+    /// held as `no_device` and costs no stock gap, exactly as a phone's switch does.
+    desks: Mutex<HashMap<u64, DeskKinds>>,
+    next_desk: AtomicU64,
+}
+
+impl Shared {
+    fn desks_for(&self, kind: crate::rocket::NoticeKind) -> usize {
+        self.desks
+            .lock()
+            .expect("desks lock")
+            .values()
+            .filter(|k| k.wants(kind))
+            .count()
+    }
+}
+
+/// One desktop or web client's Runners notification switches (`runners.notify`). Defaults are
+/// the phone's ([`push::Devices::register`]): every kind on except breakouts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DeskKinds {
+    pub new: bool,
+    pub breakout: bool,
+    pub burst: bool,
+    pub running: bool,
+    pub run: bool,
+    pub fast: bool,
+}
+
+impl DeskKinds {
+    /// An absent switch takes the phone's default.
+    pub fn from_opt_in(o: RunnersOptIn) -> Self {
+        DeskKinds {
+            new: o.new.unwrap_or(true),
+            breakout: o.breakout.unwrap_or(false),
+            burst: o.burst.unwrap_or(true),
+            running: o.running.unwrap_or(true),
+            run: o.run.unwrap_or(true),
+            fast: o.fast.unwrap_or(true),
+        }
+    }
+
+    pub fn wants(self, kind: crate::rocket::NoticeKind) -> bool {
+        use crate::rocket::NoticeKind as K;
+        match kind {
+            K::New => self.new,
+            K::Breakout => self.breakout,
+            K::Burst => self.burst,
+            K::Running => self.running,
+            K::Run => self.run,
+            K::Fast => self.fast,
+        }
+    }
+}
+
+/// A connection's place among the desks; dropping it (the socket ended) takes it out.
+pub struct DeskGuard {
+    shared: Arc<Shared>,
+    id: u64,
+}
+
+impl DeskGuard {
+    pub fn set(&self, kinds: DeskKinds) {
+        self.shared
+            .desks
+            .lock()
+            .expect("desks lock")
+            .insert(self.id, kinds);
+    }
+}
+
+impl Drop for DeskGuard {
+    fn drop(&mut self) {
+        self.shared
+            .desks
+            .lock()
+            .expect("desks lock")
+            .remove(&self.id);
+    }
 }
 
 /// The alerts service handle (cheap to clone). [`Alerts::idle`] has no task (tests, or a server
@@ -236,6 +318,8 @@ impl Alerts {
             frames: broadcast::channel(64).0,
             snapshot: Mutex::new(empty.into()),
             cmd: None,
+            desks: Mutex::new(HashMap::new()),
+            next_desk: AtomicU64::new(0),
         }))
     }
 
@@ -272,6 +356,18 @@ impl Alerts {
             });
         }
         true
+    }
+
+    /// `runners.notify`: this connection shows Runners system notifications for `kinds`. The
+    /// guard keeps it listed until the socket ends.
+    pub fn desk(&self, kinds: DeskKinds) -> DeskGuard {
+        let id = self.0.next_desk.fetch_add(1, Ordering::Relaxed);
+        let g = DeskGuard {
+            shared: self.0.clone(),
+            id,
+        };
+        g.set(kinds);
+        g
     }
 
     pub fn unregister_device(&self, token: &str) {
@@ -321,6 +417,10 @@ impl Alerts {
             .as_deref()
             .map(RunnersDelivery::open)
             .unwrap_or_else(RunnersDelivery::in_memory);
+        let desk_runners = dir
+            .as_deref()
+            .map(|d| RunnersDelivery::open_file(d, runners::DESK_FILE))
+            .unwrap_or_else(RunnersDelivery::in_memory);
         let (in_tx, in_rx) = mpsc::channel(INPUT_CAPACITY);
         let (run_tx, run_rx) = mpsc::channel(RUNNERS_CAPACITY);
         let sink = Arc::new(AlertSink {
@@ -336,6 +436,8 @@ impl Alerts {
             frames: broadcast::channel(256).0,
             snapshot: Mutex::new("".into()),
             cmd: Some(cmd_tx),
+            desks: Mutex::new(HashMap::new()),
+            next_desk: AtomicU64::new(0),
         }));
         let mut task = Task {
             shared: alerts.0.clone(),
@@ -348,6 +450,7 @@ impl Alerts {
             history,
             devices,
             runners,
+            desk_runners,
             pusher,
             seq: 0,
             op: 0,
@@ -383,6 +486,8 @@ struct Task {
     history: History,
     devices: Devices,
     runners: RunnersDelivery,
+    /// The desktop and web notices' limits (the phones' rules, their own count: [`runners::desk_frame`]).
+    desk_runners: RunnersDelivery,
     pusher: mpsc::Sender<Job>,
     seq: u64,
     op: u64,
@@ -579,8 +684,27 @@ impl Task {
     /// One Runners notice: the push to the phones that opted in, within the limits
     /// ([`runners`]). Logged either way; never touches Activity (that is the price alerts').
     fn runner(&mut self, n: crate::rocket::Notice, now: i64) {
-        let tokens = self.devices.runner_tokens(n.kind);
         let now_et = et(now);
+        // Desktop and web first (runners::desk_frame): the same limits, decided once here with
+        // the open clients that want this kind as the "devices", and their own count, so the
+        // phones' switches and the desks' never hold each other back.
+        let desk = self.desk_runners.decide(
+            n.kind,
+            &n.symbol,
+            self.shared.desks_for(n.kind),
+            &self.prefs,
+            n.at_ns.div_euclid(1_000_000),
+            now,
+            now_et.date_naive(),
+            now_et.hour() * 60 + now_et.minute(),
+        );
+        match desk {
+            runners::Decision::Send => self.broadcast(runners::desk_frame(&n)),
+            runners::Decision::Held(h) => {
+                tracing::debug!(symbol = %n.symbol, kind = n.kind.as_str(), held = h.code(), "runners desk notice: held back");
+            }
+        }
+        let tokens = self.devices.runner_tokens(n.kind);
         let decision = self.runners.decide(
             n.kind,
             &n.symbol,
@@ -1023,6 +1147,56 @@ mod tests {
             }
         }
         assert_eq!(sink.runners_dropped(), 0);
+    }
+
+    /// Desktop and web notices (runners::desk_frame) through the real task: none while no client
+    /// listens (and that costs no gap), the phone's text once one does, its switches respected,
+    /// the 10-minute gap applied, and a closed socket's guard takes it off the list.
+    #[tokio::test]
+    async fn desk_notices_follow_the_open_clients_and_limits() {
+        use crate::rocket::NoticeKind;
+        let settings = Settings::in_memory();
+        let live = Market::idle(market_providers::ClockMode::Live, "idle", None);
+        let (job_tx, _jobs) = mpsc::channel(16);
+        let (_res_tx, res_rx) = mpsc::channel(4);
+        let alerts = Alerts::start_with(settings, live.clone(), None, job_tx, res_rx);
+        let mut frames = alerts.subscribe();
+        let sink = live.alert_sink().expect("attached").clone();
+        let next_notice = async |frames: &mut broadcast::Receiver<Arc<str>>| loop {
+            match tokio::time::timeout(Duration::from_millis(400), frames.recv()).await {
+                Ok(Ok(f)) if f.starts_with("{") && f.contains("\"runners.notice\"") => {
+                    break Some(serde_json::from_str::<Value>(&f).unwrap());
+                }
+                Ok(Ok(_)) => continue,
+                _ => break None,
+            }
+        };
+        // Nobody listening: held (no_device) and the stock's gap is not spent.
+        sink.offer_runner(notice(NoticeKind::New, "CJMB", now_ms()));
+        assert!(next_notice(&mut frames).await.is_none());
+        let desk = alerts.desk(DeskKinds::from_opt_in(RunnersOptIn::default()));
+        sink.offer_runner(notice(NoticeKind::New, "CJMB", now_ms()));
+        let f = next_notice(&mut frames).await.expect("a notice");
+        let (title, body, _) = runners::message(&notice(NoticeKind::New, "CJMB", 0));
+        assert_eq!(f["title"], title.as_str());
+        assert_eq!(f["body"], body.as_str());
+        assert_eq!(f["kind"], "runners.new");
+        assert_eq!(f["id"], "runners-new-2026-10-22-CJMB-1");
+        // Same stock within 10 minutes: held. Breakouts are off by default.
+        sink.offer_runner(notice(NoticeKind::Run, "CJMB", now_ms()));
+        sink.offer_runner(notice(NoticeKind::Breakout, "BBB", now_ms()));
+        assert!(next_notice(&mut frames).await.is_none());
+        desk.set(DeskKinds {
+            breakout: true,
+            ..DeskKinds::from_opt_in(RunnersOptIn::default())
+        });
+        sink.offer_runner(notice(NoticeKind::Breakout, "BBB", now_ms()));
+        let f = next_notice(&mut frames).await.expect("a breakout");
+        assert_eq!(f["kind"], "runners.breakout");
+        // The socket ended: nobody listens again.
+        drop(desk);
+        sink.offer_runner(notice(NoticeKind::Fast, "FFF", now_ms()));
+        assert!(next_notice(&mut frames).await.is_none());
     }
 
     #[test]
