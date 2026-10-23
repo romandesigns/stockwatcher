@@ -27,6 +27,44 @@ pub(crate) struct CoreCapture {
     pub research_band: (i64, i64),
 }
 
+/// Each snapshot symbol's admitted price (the price its Signals row prints): the first episode
+/// with a current assessment, active before recent. Every episode of a symbol is assessed against
+/// the same latest admitted print, so which one is read does not matter.
+pub(crate) fn snapshot_prices(snapshot: &stock_context::DetectionSnapshot) -> Vec<(&str, i64)> {
+    let mut out: Vec<(&str, i64)> = Vec::new();
+    for e in snapshot.active.iter().chain(snapshot.recent.iter()) {
+        if let Some(c) = &e.current
+            && !out.iter().any(|(s, _)| *s == e.symbol)
+        {
+            out.push((e.symbol.as_str(), c.price));
+        }
+    }
+    out
+}
+
+/// The day's gain of each Signals row, as `{symbol: {prev_close_micros, gain_bp}}` for the frame's
+/// `context` (additive keys: an old client ignores them). `prev_close` is the quote board's
+/// official previous close (the daily-closes file, the same lookup the Runners rows and the chart
+/// header use) and the gain is `stock_context::pillar::gain_bp`, the Ross rows' rule (basis
+/// points, truncated toward zero), measured at the row's own price so the two never disagree. A
+/// symbol without a known close is left out: the row shows no gain rather than a guessed one.
+pub(crate) fn day_gains<'a>(
+    prices: impl IntoIterator<Item = (&'a str, i64)>,
+    prev_close: impl Fn(&str) -> Option<i64>,
+) -> serde_json::Map<String, Value> {
+    prices
+        .into_iter()
+        .filter_map(|(symbol, price)| {
+            let close = prev_close(symbol).filter(|&c| c > 0)?;
+            let gain = (price > 0).then(|| stock_context::pillar::gain_bp(price, close));
+            Some((
+                symbol.to_string(),
+                json!({"prev_close_micros": close, "gain_bp": gain}),
+            ))
+        })
+        .collect()
+}
+
 #[derive(Default)]
 pub struct Capture {
     pub epoch: String,
@@ -521,6 +559,34 @@ pub fn read_journal(path: &Path) -> std::io::Result<JournalRead> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn day_gains_use_the_previous_close_and_the_ross_rounding_and_skip_unknown_closes() {
+        let closes = |s: &str| match s {
+            "UPPP" => Some(2_000_000),
+            "DOWN" => Some(4_000_000),
+            "ZERO" => Some(0),
+            _ => None,
+        };
+        let gains = day_gains(
+            [
+                ("UPPP", 2_768_000),
+                ("DOWN", 3_999_999),
+                ("NONE", 1_000_000),
+                ("ZERO", 1_000_000),
+            ],
+            closes,
+        );
+        // +38.4%: (2.768 − 2) / 2.
+        assert_eq!(
+            gains["UPPP"],
+            json!({"prev_close_micros": 2_000_000, "gain_bp": 3840})
+        );
+        // Truncated toward zero, like the Ross gain pillar: −0.000025% is 0 bp, not −1.
+        assert_eq!(gains["DOWN"]["gain_bp"], 0);
+        // No close (or an unusable one): no entry at all, never a guessed gain.
+        assert!(!gains.contains_key("NONE") && !gains.contains_key("ZERO"));
+    }
 
     fn accept(
         r: &Runtime,

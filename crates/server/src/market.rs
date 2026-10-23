@@ -2949,19 +2949,31 @@ impl Market {
             .detection_delivery
             .lock()
             .expect("detection delivery");
-        let Some((capture, watermark, rebuilding)) = ({
+        let Some((capture, watermark, rebuilding, gains)) = ({
             let mut core = self.0.core.lock().expect("core lock");
             let watermark = core.seq;
             let rebuilding = core.rebuilding;
-            core.context
-                .as_mut()
-                .and_then(|c| c.take_detection(force))
-                .map(|c| (c, watermark, rebuilding))
+            let capture = core.context.as_mut().and_then(|c| c.take_detection(force));
+            // The rows' day gains: one board lookup per snapshot symbol (a few dozen at most),
+            // only on the display cadence that walks the snapshot anyway.
+            let gains = capture
+                .as_ref()
+                .and_then(|c| c.snapshot.as_ref())
+                .map(|s| {
+                    crate::detection::day_gains(crate::detection::snapshot_prices(s), |sym| {
+                        core.quotes
+                            .get(sym)
+                            .and_then(|r| r.prev_close)
+                            .map(|p| p.micros())
+                    })
+                })
+                .unwrap_or_default();
+            capture.map(|c| (c, watermark, rebuilding, gains))
         }) else {
             return;
         };
         let ross_on = self.0.context_on.load(Ordering::Relaxed);
-        let context: serde_json::Map<String, Value> = capture.context.iter().map(|d| {
+        let mut context: serde_json::Map<String, Value> = capture.context.iter().map(|d| {
             let catalyst = match d.pillars.iter().find(|p| p.pillar == stock_context::PillarId::News).map(|p| p.state) {
                 Some(stock_context::Tri::Pass) => "qualifying",
                 Some(stock_context::Tri::Fail) => "none",
@@ -2969,6 +2981,15 @@ impl Market {
             };
             (d.symbol.clone(),json!({"ross_member":ross_on.then(|| d.membership.active().is_some()),"catalyst":catalyst}))
         }).collect();
+        // Merged into each symbol's context entry: additive keys, so an old client ignores them;
+        // a symbol with no context decision gets an entry holding only its gain.
+        for (symbol, gain) in gains {
+            if let (Value::Object(entry), Value::Object(g)) =
+                (context.entry(symbol).or_insert_with(|| json!({})), gain)
+            {
+                entry.extend(g);
+            }
+        }
         runtime.accept(crate::detection::Capture {
             epoch: capture.epoch,
             snapshot: capture.snapshot.map(|snapshot| serde_json::to_value(snapshot).expect("core detection serializes")),

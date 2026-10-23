@@ -168,6 +168,27 @@ async fn actual_market_discovers_nonmember_without_a_chart_and_keeps_live_isolat
     );
     assert!(transitions.iter().all(|t| t["restored"] == true));
     assert_eq!(detected["context"]["MPXA"]["ross_member"], Value::Null);
+    // No daily-closes file in a fixture market: no previous close, so no gain is sent (never a
+    // guessed one), and the new keys stay absent rather than null.
+    assert!(detected["context"]["MPXA"].get("gain_bp").is_none());
+    assert!(
+        detected["context"]["MPXA"]
+            .get("prev_close_micros")
+            .is_none()
+    );
+    // Every episode record carries the additive `summary` list; a micro-pullback's is empty
+    // (its row note is its levels).
+    let episodes: Vec<&Value> = ["active", "recent"]
+        .iter()
+        .flat_map(|k| detected["snapshot"][k].as_array().unwrap())
+        .collect();
+    assert!(!episodes.is_empty());
+    for e in episodes {
+        assert!(e["summary"].is_array(), "{e}");
+        if e["family"] == "micro_pullback" {
+            assert_eq!(e["summary"], json!([]));
+        }
+    }
     assert_eq!(
         serde_json::from_str::<Value>(&market.ross_snapshot().1).unwrap()["enabled"],
         false

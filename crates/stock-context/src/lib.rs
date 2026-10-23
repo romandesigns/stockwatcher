@@ -38,7 +38,7 @@ pub use detect::{
     Assessment, Certainty, Check, ContextClass, DETECTION_V0, DETECTION_V1, DETECTION_V2,
     DataStatus, DetectionPolicy, DetectionSnapshot, DetectionTelemetry, DetectionTransition,
     Episode as DetectionEpisode, Family, FeatureSnapshot, Gap, LevelVersion, MicroAnchors,
-    Monitored, QuietReference, Resolution, State, SymbolDetections, TradeEvidence,
+    Monitored, QuietReference, Resolution, State, SummaryFact, SymbolDetections, TradeEvidence,
 };
 pub use engine::{
     Adoption, Decision, Engine, Fidelity, MissingPillar, PanelRow, PanelSnapshot, RestoreTelemetry,

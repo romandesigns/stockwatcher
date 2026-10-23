@@ -315,6 +315,21 @@ pub struct Assessment {
     pub distance_to_invalidation_bp: Option<i64>,
 }
 
+/// One measurement an episode was recognized on, copied verbatim from that recognition's own
+/// checks, for a compact row note on the families with no pullback stage (ignition, momentum):
+/// a range expansion, a dollar-volume rate, a return over a stated span. Never a new
+/// derivation, a score or a probability; a value the check did not have is simply left out.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct SummaryFact {
+    /// The check it was copied from (`range_expansion`, `dollar_volume_rate`, `return`, `rise`).
+    pub name: &'static str,
+    pub value: i64,
+    /// `milli` (a ratio in thousandths) or `log_ppm` (a log return in ppm).
+    pub units: &'static str,
+    /// The span a return or a rate is measured over; `None` for a single-bar ratio.
+    pub window_secs: Option<i64>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Episode {
     /// `<run>:<date>:<symbol>:<family>:<n>`.
@@ -345,6 +360,9 @@ pub struct Episode {
     pub anchors: Option<MicroAnchors>,
     pub recognition: Option<FeatureSnapshot>,
     pub checks: Vec<Check>,
+    /// The recognition's headline measurements ([`SummaryFact`]), fixed when the episode opens.
+    /// Empty for the families whose row note is their levels (micro-pullback, range breakout).
+    pub summary: Vec<SummaryFact>,
     /// Filled in snapshots only.
     pub current: Option<Assessment>,
     pub resolution: Option<Resolution>,
@@ -938,6 +956,7 @@ pub(crate) fn open(
             anchors: None,
             recognition: None,
             checks: Vec::new(),
+            summary: Vec::new(),
             current: None,
             resolution: None,
         },

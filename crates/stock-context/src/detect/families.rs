@@ -6,9 +6,55 @@ use super::features::{FeatureSnapshot, ReturnClass, bar_at, bps, window};
 use super::math::{ln_ratio_ppm, milli};
 use super::{
     Barrier, Certainty, Change, Check, ContextClass, Detector, Ep, Extra, Family, LevelVersion,
-    Seg, State, SymDetect, emit, open,
+    Seg, State, SummaryFact, SymDetect, emit, open,
 };
 use crate::pillar::Tri;
+
+/// An ignition's (or gap event's) headline: the floor-adjusted range expansion and the bar's
+/// return over the span it really covers (`elapsed_secs`: 15 s for an adjacent bar, longer for
+/// a gap event). The same values as its `range_expansion` and `return_at_least_1pct` checks.
+fn ignition_summary(f: &FeatureSnapshot) -> Vec<SummaryFact> {
+    let mut out = Vec::with_capacity(2);
+    if let Some(e) = f.range.e_adj_milli {
+        out.push(SummaryFact {
+            name: "range_expansion",
+            value: e,
+            units: "milli",
+            window_secs: None,
+        });
+    }
+    if let Some(r) = f.log_return_ppm {
+        out.push(SummaryFact {
+            name: "return",
+            value: r,
+            units: "log_ppm",
+            window_secs: f.elapsed_secs,
+        });
+    }
+    out
+}
+
+/// A momentum episode's headline: the buildup's dollar-volume rate against the prior window's
+/// (when that window traded) and its rise over one comparison step. The same values as its
+/// `dollar_volume_rate` and `rise` checks.
+fn momentum_summary(dv_ratio: Option<i64>, rise: i64, step_secs: i64) -> Vec<SummaryFact> {
+    let mut out = Vec::with_capacity(2);
+    if let Some(v) = dv_ratio {
+        out.push(SummaryFact {
+            name: "dollar_volume_rate",
+            value: v,
+            units: "milli",
+            window_secs: Some(step_secs),
+        });
+    }
+    out.push(SummaryFact {
+        name: "rise",
+        value: rise,
+        units: "log_ppm",
+        window_secs: Some(step_secs),
+    });
+    out
+}
 
 /// Advances the non-micro episodes on the bar completing at this barrier.
 pub(crate) fn on_barrier(
@@ -288,6 +334,7 @@ pub(crate) fn detect(
             ep.view.context = Some(f.window.context);
             ep.view.recognition = Some(f.clone());
             ep.view.checks = checks();
+            ep.view.summary = ignition_summary(f);
             if let Some(h) = f.window.high {
                 let l = range_level(
                     &ep,
@@ -385,6 +432,7 @@ pub(crate) fn detect(
             ep.view.context = Some(f.window.context);
             ep.view.recognition = Some(f.clone());
             ep.view.checks = checks();
+            ep.view.summary = ignition_summary(f);
             let c = Change::at_barrier(
                 State::Observed,
                 "gap_event_observed",
@@ -663,6 +711,7 @@ pub(crate) fn momentum(
     );
     ep.view.context = Some(w.context);
     ep.view.checks = checks.clone();
+    ep.view.summary = momentum_summary(dv_ratio, r, step / super::SEC);
     // The context window is frozen at first recognition: later windows never move it.
     if let (Some(h), Some(l)) = (w.high, w.low) {
         let a = range_level(

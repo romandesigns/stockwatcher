@@ -137,6 +137,77 @@ fn quiet_build_then_ignition_are_separate_linked_recognitions() {
 }
 
 #[test]
+fn ignition_and_momentum_summaries_copy_their_own_checks() {
+    let r = fixture::run("quiet_build_ignition").unwrap();
+    let all: Vec<&DetectionEpisode> = r
+        .snapshot
+        .active
+        .iter()
+        .chain(r.snapshot.recent.iter())
+        .collect();
+    let check = |e: &DetectionEpisode, name: &str| {
+        e.checks
+            .iter()
+            .find(|c| c.name == name)
+            .and_then(|c| c.value)
+    };
+    let ig = all
+        .iter()
+        .find(|e| e.family == Family::Ignition)
+        .expect("ignition");
+    let facts: Vec<_> = ig
+        .summary
+        .iter()
+        .map(|f| (f.name, f.value, f.units, f.window_secs))
+        .collect();
+    let f = ig.recognition.as_ref().unwrap();
+    assert_eq!(
+        facts,
+        vec![
+            (
+                "range_expansion",
+                check(ig, "range_expansion").unwrap(),
+                "milli",
+                None
+            ),
+            (
+                "return",
+                check(ig, "return_at_least_1pct").unwrap(),
+                "log_ppm",
+                Some(15)
+            ),
+        ]
+    );
+    assert_eq!(f.elapsed_secs, Some(15), "an adjacent bar: a 15 s return");
+    let mb = all
+        .iter()
+        .find(|e| e.family == Family::MomentumBuilding)
+        .expect("momentum");
+    let step = DetectionPolicy::current().body.momentum.step_slots * 15;
+    let mut want = Vec::new();
+    if let Some(dv) = check(mb, "dollar_volume_rate") {
+        want.push(("dollar_volume_rate", dv, "milli", Some(step)));
+    }
+    want.push(("rise", check(mb, "rise").unwrap(), "log_ppm", Some(step)));
+    let got: Vec<_> = mb
+        .summary
+        .iter()
+        .map(|f| (f.name, f.value, f.units, f.window_secs))
+        .collect();
+    assert_eq!(got, want);
+    // Families whose note is their levels carry none.
+    assert!(
+        all.iter()
+            .filter(|e| matches!(e.family, Family::MicroPullback | Family::RangeBreakout))
+            .all(|e| e.summary.is_empty())
+    );
+    // On the wire it is an additive key of the episode record.
+    let json = serde_json::to_value(ig).unwrap();
+    assert_eq!(json["summary"][0]["name"], "range_expansion");
+    assert_eq!(json["summary"][1]["window_secs"], 15);
+}
+
+#[test]
 fn a_reference_observed_after_the_cutoff_or_from_today_cannot_label_quietness() {
     for late in [true, false] {
         let mut steps = fixture::script("quiet_build_ignition").unwrap();
