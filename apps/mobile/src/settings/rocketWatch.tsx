@@ -9,9 +9,10 @@ import { fonts } from "../theme";
 
 /**
  * Settings → Runners: this phone's Runners pushes (owner, 2026-10-22), sent by the server even
- * with the app closed (crates/server/src/alerts/runners.rs). Four switches, per device: new flags
- * (on by default), breakouts (off), buying bursts (on, 2026-10-22) and running entries (off,
- * 2026-10-22: 10–40 a day, a move already under way). Turning one on when this phone has no push token asks for
+ * with the app closed (crates/server/src/alerts/runners.rs). Five switches, per device: new flags
+ * (on by default), breakouts (off), buying bursts (on, 2026-10-22), running entries and "Run
+ * +20%" entries (on, 2026-10-22: the owner does not want to miss a move while away from the
+ * phone). Turning one on when this phone has no push token asks for
  * notification permission and registers it (the Alerts tab's "Turn on phone alerts" does the
  * same). Without push, new flags ring a local banner while the dashboard is open instead.
  */
@@ -71,13 +72,21 @@ function RunnersPushPanel() {
         busy={busy}
         icon="gauge"
         name="Running entries"
-        description="Every stock that starts running by its own range (10–40 a day). Off by default."
+        description="Every stock that starts running by its own range, with its move and money."
         onPress={() => toggle("pushRunning")}
+      />
+      <Switch
+        on={prefs.pushRun}
+        busy={busy}
+        icon="trend"
+        name="Run +20%"
+        description="A +20% leg within 15 minutes on real trades, with its window and start price."
+        onPress={() => toggle("pushRun")}
       />
       <Text style={[s.status, note ? { color: UI.warning } : null]}>
         {note ??
           (token
-            ? "Pushed to this phone, also when the app is closed. At most one per stock per 10 min, 30 a day; the alerts' quiet hours apply. Tap one to open its chart."
+            ? "Pushed to this phone, also when the app is closed. At most one per stock per 10 min (a burst: 2 min); past 120 a day only bursts and new flags. The alerts' quiet hours apply. Tap one to open its chart."
             : "Phone push is off on this phone: new flags and bursts ring only while the dashboard is open. Turning a switch on asks to allow notifications.")}
       </Text>
     </View>

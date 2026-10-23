@@ -600,6 +600,8 @@ export interface PushRegisterMessage {
   runnersBurst?: boolean;
   /** Runners pushes for running entries on this phone (server default off; absent = unchanged). */
   runnersRunning?: boolean;
+  /** Runners pushes for "Run +20%" entries on this phone (server default off; absent = unchanged). */
+  runnersRun?: boolean;
 }
 
 export interface PushUnregisterMessage {

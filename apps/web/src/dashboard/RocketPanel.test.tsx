@@ -51,6 +51,16 @@ describe("Runners panel", () => {
     expect(html).toContain("+7.7% from entry");
     expect(html).toContain("from entry, from high, last minute");
   });
+  test("Run +20% entries (2026-10-22): their own quiet chip beside the others, never accent, measured from the entry", () => {
+    const run = { id: "g", s: "LEGS", kind: "run" as const, at: T - 5 * 60_000, p: 1.22, last: 1.3, pc: 0.9, score: 1.1, reasons: ["+22% in 5 min off $1.00"], outcome: { state: "pending" as const, gain: null, drawdown: null, partial: false }, state: "watching" as const, from_flag_pct: 6.6 };
+    const html = render({ enabled: true, panel: { ...panel, strategy: { id: "precursors-R2", version: "1", placeholder: false }, rows: [...panel.rows, run] }, receivedAt: 5, connected: true });
+    expect(html).toContain('data-kind="run"');
+    const chip = /<span class="([^"]*)" data-testid="rocket-source">Run \+20%<\/span>/.exec(html);
+    expect(chip).not.toBeNull();
+    expect(chip?.[1]).not.toMatch(/primary|accent/);
+    expect(html).toContain(">R2 flag</span>");
+    expect(html).toContain("from entry, from high, last minute");
+  });
   test("no quiet, off or connecting lines (the tab is hidden then); reconnecting keeps the rows, dimmed", () => {
     const empty = render({ enabled: true, panel: { ...panel, rows: [] }, receivedAt: 0, connected: true });
     expect(empty).not.toContain("Nothing flagged");

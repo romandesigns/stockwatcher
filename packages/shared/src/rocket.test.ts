@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { rocketSectionCounts } from "./panels.ts";
 import { parseServerMessage } from "./protocol.ts";
 import { createRocketChannel, mergeRocketDayLines, newRocketFlags, rocketAge, rocketAttention, rocketFreshCount, rocketHeaderView, rocketNow, rocketRowsView, rocketRowView, rocketSectionsView, type RocketPanelWire, type RocketRowWire, type RocketSnapshotMessage } from "./rocket.ts";
 
@@ -282,5 +283,34 @@ describe("running entries (2026-10-22)", () => {
     expect(v[1]?.fromWhat).toBe("flag");
     expect(rocketRowView(row(), T).source).toEqual({ kind: "runner", label: "Flag" });
     expect(rocketRowView(row(), T, "precursors-R0").source.label).toBe("R0 flag");
+  });
+});
+
+describe("Run +20% entries (2026-10-22)", () => {
+  test("a run row has its own quiet source, measures from its entry and shares the order", () => {
+    const p = panel({
+      strategy: { id: "precursors-R2", version: "1", placeholder: false },
+      rows: [
+        row({ id: "f", s: "FLAG", state: "watching" }),
+        row({ id: "g", s: "LEGS", kind: "run", state: "running", from_flag_pct: 6.4, outcome: { state: "pending", gain: null, drawdown: null, partial: false } }),
+        row({ id: "r", s: "TANH", kind: "running", state: "fading" }),
+      ],
+    });
+    const v = rocketSectionsView(p, T).runners;
+    expect(v.map((x) => [x.symbol, x.source.kind, x.source.label])).toEqual([
+      ["LEGS", "run", "Run +20%"],
+      ["FLAG", "runner", "R2 flag"],
+      ["TANH", "running", "Running"],
+    ]);
+    expect(v[0]?.fromWhat).toBe("entry");
+    expect(v[0]?.momentum.note).toBe("+6.4% from entry");
+    expect(v[0]?.aria).toContain("run +20%, entered");
+    // No outcome tag: the strict Runners outcome does not apply to an entry on a move under way.
+    expect(v[0]?.outcome).toBeNull();
+    // Not a burst: it never goes to the Bursts section.
+    expect(rocketSectionsView(p, T).bursts).toBeNull();
+    // Hide-empty counts it with the flags: a panel holding only a run row is not empty.
+    const only = panel({ rows: [row({ id: "g", s: "LEGS", kind: "run" })] });
+    expect(rocketSectionCounts({ enabled: true, panel: only, receivedAt: T, connected: true })).toEqual({ bursts: 0, flags: 1 });
   });
 });

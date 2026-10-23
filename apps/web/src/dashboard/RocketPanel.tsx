@@ -43,7 +43,9 @@ const EDGE: Partial<Record<RocketTone, string>> = {
  * Running entries (2026-10-22, `kind: "running"`) sit with the flags in the same strongest-first
  * order: a stock that IS running by a price-relative rule on the tape, not a forecast. Every row
  * carries a quiet source chip ("R2 flag", "Burst", "Running") so an early pick stays
- * distinguishable from a move already under way; the chip never spends accent.
+ * distinguishable from a move already under way; the chip never spends accent. "Run +20%" rows
+ * (`kind: "run"`, the research labeller's +20 % leg) are the fourth source and sit there too,
+ * measured from their entry like a running row.
  *
  * Nothing empty is drawn (owner, 2026-10-22): no Bursts section without bursts, no Flags without
  * flags, and no panel at all (its tab is hidden) while off, not yet known or empty. While a socket
@@ -199,7 +201,7 @@ const RocketRow = memo(function RocketRow({ row: r, onPick }: { row: RocketRowVi
         ))}
         <span className="ml-auto flex shrink-0 items-center gap-2">
           {r.outcome && <span className={cn("font-sans text-[11px] font-semibold", TONE[r.outcome.tone])}>{r.outcome.label}</span>}
-          {r.score && <Tip label={b ? "Burst model score" : r.source.kind === "running" ? "Move over its requirement" : "Strategy score"}><span className="text-[10px] text-text-faint tabular-nums">{r.score}</span></Tip>}
+          {r.score && <Tip label={b ? "Burst model score" : r.source.kind === "running" ? "Move over its requirement" : r.source.kind === "run" ? "Leg gain over the +20% it needed" : "Strategy score"}><span className="text-[10px] text-text-faint tabular-nums">{r.score}</span></Tip>}
         </span>
       </span>
     </button>

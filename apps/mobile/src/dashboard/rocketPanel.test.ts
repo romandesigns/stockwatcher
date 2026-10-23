@@ -27,8 +27,8 @@ test("rows: tap opens, tap-then-hold copies; no layout animation on a Pressable 
 test("new flags ring locally only while this phone has no push (the server's push rings otherwise)", () => {
   const src = read("../notifications/rocket.ts");
   // Flags under the "new flags" switch, buying bursts under their own (2026-10-22).
-  expect(src).toContain("ringRunnersLocally(isBurstRow(r) ? prefs.pushBurst : isRunningRow(r) ? prefs.pushRunning : prefs.pushNew, token)");
-  expect(src).toContain('kind: burst ? "runners.burst" : isRunningRow(r) ? "runners.running" : "runners.new"');
+  expect(src).toContain("ringRunnersLocally(isBurstRow(r) ? prefs.pushBurst : isRunningRow(r) ? prefs.pushRunning : isRunRow(r) ? prefs.pushRun : prefs.pushNew, token)");
+  expect(src).toContain('kind: burst ? "runners.burst" : isRunningRow(r) ? "runners.running" : isRunRow(r) ? "runners.run" : "runners.new"');
   expect(read("RocketPanel.tsx")).toContain("notifyRocketFlags(fresh)");
   expect(read("../settings/SettingsHost.tsx")).toContain("rocketSection()");
 });

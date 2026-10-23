@@ -10,18 +10,20 @@ import { getPreference, setPreference } from "../storage/preferences";
 // Defaults match the server's: new flags ON (the reason this exists: a +95 % move in 30 minutes
 // that was only on a closed app's screen), breakouts OFF (several a day per flag at most, but the
 // owner chooses), buying bursts ON (2026-10-22: the owner asked to be alerted when massive buying
-// hits the tape; ~20 a day), running entries OFF (2026-10-22: 10–40 a day, a move already under
-// way rather than a forecast; the owner opts a phone in).
+// hits the tape; ~20 a day), running entries and "Run +20%" entries ON (2026-10-22: "I don't
+// wanna lose opportunities because I'm away from my phone"; a move already under way, ~50 and
+// ~25 a day, held to one push per stock per 10 minutes and dropped first past the daily cap).
 
 export interface RunnersPushPrefs {
   pushNew: boolean;
   pushBreakout: boolean;
   pushBurst: boolean;
   pushRunning: boolean;
+  pushRun: boolean;
 }
 
 const KEY = "runners.push";
-export const RUNNERS_PUSH_DEFAULTS: RunnersPushPrefs = { pushNew: true, pushBreakout: false, pushBurst: true, pushRunning: false };
+export const RUNNERS_PUSH_DEFAULTS: RunnersPushPrefs = { pushNew: true, pushBreakout: false, pushBurst: true, pushRunning: true, pushRun: true };
 
 let prefs: RunnersPushPrefs = RUNNERS_PUSH_DEFAULTS;
 const listeners = new Set<(p: RunnersPushPrefs) => void>();
@@ -36,8 +38,10 @@ void getPreference<Partial<RunnersPushPrefs>>(KEY)
       pushBreakout: typeof v.pushBreakout === "boolean" ? v.pushBreakout : RUNNERS_PUSH_DEFAULTS.pushBreakout,
       // Saved before bursts existed: the default (on), like the server's.
       pushBurst: typeof v.pushBurst === "boolean" ? v.pushBurst : RUNNERS_PUSH_DEFAULTS.pushBurst,
-      // Saved before running entries existed: the default (off), like the server's.
+      // Saved before running entries existed: the default (on), like the server's.
       pushRunning: typeof v.pushRunning === "boolean" ? v.pushRunning : RUNNERS_PUSH_DEFAULTS.pushRunning,
+      // Saved before "Run +20%" entries existed: the default (on), like the server's.
+      pushRun: typeof v.pushRun === "boolean" ? v.pushRun : RUNNERS_PUSH_DEFAULTS.pushRun,
     };
     emit();
   })
@@ -65,6 +69,6 @@ export async function setRunnersPush(change: Partial<RunnersPushPrefs>): Promise
 }
 
 /** What `push.register` carries for Runners (the server's field names). */
-export function runnersRegisterFields(): { runnersNew: boolean; runnersBreakout: boolean; runnersBurst: boolean; runnersRunning: boolean } {
-  return { runnersNew: prefs.pushNew, runnersBreakout: prefs.pushBreakout, runnersBurst: prefs.pushBurst, runnersRunning: prefs.pushRunning };
+export function runnersRegisterFields(): { runnersNew: boolean; runnersBreakout: boolean; runnersBurst: boolean; runnersRunning: boolean; runnersRun: boolean } {
+  return { runnersNew: prefs.pushNew, runnersBreakout: prefs.pushBreakout, runnersBurst: prefs.pushBurst, runnersRunning: prefs.pushRunning, runnersRun: prefs.pushRun };
 }

@@ -22,6 +22,11 @@
 // forecast. They sit with the flags, in the same momentum order, each labelled with its source
 // ({@link RocketRowView.source}: "R2 flag", "Burst", "Running") so an early pick stays
 // distinguishable from a move already under way. `p` is the entry price.
+//
+// And "Run +20%" rows (`kind: "run"`, owner 2026-10-22): the research labeller's +20 % leg in
+// $0.10–$25 (crates/server/src/rocket/run.rs, the volume-shelf module's run trigger), entered at
+// the mark slot's close. Like running rows they sit with the flags, measure from their entry and
+// carry a quiet source chip ("Run +20%").
 
 import { rossLinePaths, type RossLineView } from "./ross.ts";
 import type { ZoneNoteView, ZonesWire } from "./zones.ts";
@@ -103,7 +108,7 @@ export interface RocketBurstWire {
 export interface RocketRowWire {
   id: string;
   /** Absent = "runner" (older servers). */
-  kind?: "runner" | "burst" | "running";
+  kind?: "runner" | "burst" | "running" | "run";
   /** A burst row's detector read-out and strict outcome. */
   burst?: RocketBurstWire;
   s: string;
@@ -358,15 +363,28 @@ export interface RocketRowView {
   line: RossLineView | null;
   /** A buying-burst row's own lines, null for a Runners flag. */
   burst: RocketBurstView | null;
-  /** Where the row came from: the strategy's flag ("R2 flag"), a buying burst, or a running entry. */
-  source: { kind: "runner" | "burst" | "running"; label: string };
-  /** What `fromFlag` is measured from: "flag", "alert" (a burst) or "entry" (a running row). */
+  /** Where the row came from: the strategy's flag ("R2 flag"), a buying burst, a running entry or a +20 % run ("Run +20%"). */
+  source: { kind: "runner" | "burst" | "running" | "run"; label: string };
+  /** What `fromFlag` is measured from: "flag", "alert" (a burst) or "entry" (a running or run row). */
   fromWhat: "flag" | "alert" | "entry";
   aria: string;
 }
 
 /** A running-entry row (owner, 2026-10-22). */
 export const isRunningRow = (r: RocketRowWire): boolean => r.kind === "running";
+
+/** A "Run +20%" row (owner, 2026-10-22). */
+export const isRunRow = (r: RocketRowWire): boolean => r.kind === "run";
+
+/** A row entered on a move already under way (a running entry or a +20 % run): measured from its entry. */
+export const isEntryRow = (r: RocketRowWire): boolean => isRunningRow(r) || isRunRow(r);
+
+/** The source chip of a row that is not a burst. */
+function sourceOf(r: RocketRowWire, strategyId: string | undefined | null): RocketRowView["source"] {
+  if (isRunningRow(r)) return { kind: "running", label: "Running" };
+  if (isRunRow(r)) return { kind: "run", label: "Run +20%" };
+  return { kind: "runner", label: flagLabel(strategyId) };
+}
 
 /** "R2 flag" for `precursors-R2`, "R0 flag" for `precursors-R0`, else "Flag". */
 export function flagLabel(strategyId: string | undefined | null): string {
@@ -503,7 +521,7 @@ export function rocketRowView(r: RocketRowWire, nowMs: number, strategyId?: stri
     if (lv?.trigger != null) parts.push(`trigger ${money(lv.trigger / 1_000_000)}${lv.distance_to_trigger_bp != null && lv.distance_to_trigger_bp > 0 ? ` · ${(lv.distance_to_trigger_bp / 100).toFixed(1)}% away` : ""}`);
     note = parts.filter(Boolean).join(" · ");
   } else if (state === "running" && r.from_flag_pct != null) {
-    note = `${pct(r.from_flag_pct)} from ${isRunningRow(r) ? "entry" : "flag"}`;
+    note = `${pct(r.from_flag_pct)} from ${isEntryRow(r) ? "entry" : "flag"}`;
   }
   const since = r.state_since !== undefined && state !== "watching" ? rocketAge(Math.max(0, nowMs - r.state_since)) : "";
   const meter = state === "pullback" && lv?.meter_milli != null ? lv.meter_milli / 1000 : null;
@@ -528,8 +546,8 @@ export function rocketRowView(r: RocketRowWire, nowMs: number, strategyId?: stri
     meter,
     line: rocketLine(r),
     burst: b ? burstView(b, r.at, nowMs) : null,
-    source: b ? { kind: "burst", label: "Burst" } : isRunningRow(r) ? { kind: "running", label: "Running" } : { kind: "runner", label: flagLabel(strategyId) },
-    fromWhat: b ? "alert" : isRunningRow(r) ? "entry" : "flag",
+    source: b ? { kind: "burst", label: "Burst" } : sourceOf(r, strategyId),
+    fromWhat: b ? "alert" : isEntryRow(r) ? "entry" : "flag",
     aria: "",
   };
   if (view.burst) {
@@ -537,14 +555,15 @@ export function rocketRowView(r: RocketRowWire, nowMs: number, strategyId?: stri
     view.aria = `${r.s} ${money(last)}${gain ? ` ${gain} on the day` : ""}. ${bv.headline} alerted ${age === "now" ? "just now" : `${age} ago`}, ${bv.since}, ${bv.move}, ${look.label}${note ? ` ${note}` : ""}${reasons.length ? `: ${reasons.join(", ")}` : ""}${outcome ? `. Outcome ${outcome.label}` : ""}`;
     return view;
   }
-  const running = isRunningRow(r);
-  view.aria = `${r.s} ${money(last)}${gain ? ` ${gain} on the day` : ""}, ${running ? "running, entered" : `${view.source.label}, flagged`} ${age === "now" ? "just now" : `${age} ago`}, ${look.label}${view.momentum.provisional ? " (provisional)" : ""}${note ? ` ${note}` : ""}, ${view.fromFlag} from the ${view.fromWhat}${reasons.length ? `: ${reasons.join(", ")}` : ""}${outcome ? `. Outcome ${outcome.label}` : ""}`;
+  const how = isRunningRow(r) ? "running, entered" : isRunRow(r) ? "run +20%, entered" : `${view.source.label}, flagged`;
+  view.aria = `${r.s} ${money(last)}${gain ? ` ${gain} on the day` : ""}, ${how} ${age === "now" ? "just now" : `${age} ago`}, ${look.label}${view.momentum.provisional ? " (provisional)" : ""}${note ? ` ${note}` : ""}, ${view.fromFlag} from the ${view.fromWhat}${reasons.length ? `: ${reasons.join(", ")}` : ""}${outcome ? `. Outcome ${outcome.label}` : ""}`;
   return view;
 }
 
 /**
  * The rows in panel order, strongest first: by momentum state (breaking out and running first,
- * fading last, dimmed), newest first within one. Flags and running entries share the order.
+ * fading last, dimmed), newest first within one. Flags, running entries and +20 % runs share
+ * the order.
  */
 export function rocketRowsView(p: RocketPanelWire, nowMs: number): RocketRowView[] {
   const rank = (s: RocketMomentumState) => ROCKET_STATE_ORDER.indexOf(s);

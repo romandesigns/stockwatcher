@@ -190,7 +190,7 @@ const Row = memo(function Row({ row: r, onPick, reducedMotion }: { row: RocketRo
         <Text style={styles.symbol}>{r.symbol}</Text>
         <Text style={styles.price}>{r.price}</Text>
         {r.gain ? <Text style={[styles.small, { color: UI.textDim }]}>{r.gain}</Text> : null}
-        {/* Where the row came from ("R2 flag", "Burst", "Running"): quiet, never accent. */}
+        {/* Where the row came from ("R2 flag", "Burst", "Running", "Run +20%"): quiet, never accent. */}
         <View style={styles.source} testID="rocket-source">
           <Text numberOfLines={1} style={styles.sourceText}>
             {r.source.label}
