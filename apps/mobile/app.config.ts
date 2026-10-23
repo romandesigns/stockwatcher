@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import type { ConfigContext, ExpoConfig } from "expo/config";
 
 // Names and ids are fixed in docs/CONVENTIONS.md ("Names, ports, URLs").
@@ -13,13 +12,12 @@ const BACKGROUND = "#0f1216";
 
 // Android push needs Firebase Cloud Messaging: without google-services.json in the build,
 // getExpoPushTokenAsync throws and no phone can register (found 2026-10-22, when no Runners or
-// burst push had ever been delivered). The file stays out of git: on EAS it is the file-type
-// environment variable GOOGLE_SERVICES_JSON, locally ./google-services.json. The FCM v1
-// service-account key that lets Expo send is a separate EAS credential, never in the repo.
-const GOOGLE_SERVICES_JSON =
-  process.env.GOOGLE_SERVICES_JSON ??
-  (existsSync("./google-services.json") ? "./google-services.json" : undefined);
-
+// burst push had ever been delivered). The file is committed, not an EAS file variable: it is
+// client config, not a secret (Firebase ships it inside every APK), and the fingerprint runtime
+// version must hash the same file on the GitHub runner that queues the build as on EAS. With an
+// EAS-only file the runner's fingerprint lacked it and the build failed with "Runtime version
+// mismatch". The FCM v1 service-account key that lets Expo SEND is the secret; it is an EAS
+// credential and never in the repo.
 export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
   name: "stockwatcher",
@@ -63,7 +61,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   },
   android: {
     package: APP_ID,
-    ...(GOOGLE_SERVICES_JSON ? { googleServicesFile: GOOGLE_SERVICES_JSON } : {}),
+    googleServicesFile: "./google-services.json",
     adaptiveIcon: {
       backgroundColor: BACKGROUND,
       foregroundImage: "./assets/android-icon-foreground.png",

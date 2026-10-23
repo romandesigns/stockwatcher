@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "840121548885",
+    "project_id": "stockwatcher-82233",
+    "storage_bucket": "stockwatcher-82233.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:840121548885:android:6b4b1a06075206c8db54dc",
+        "android_client_info": {
+          "package_name": "io.wavystyle.stockwatcher"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCPmtmUCHKBEtt4Ehj9VQipqJhzrbHcOTg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
