@@ -725,6 +725,23 @@ impl RocketBoard {
         }
     }
 
+    /// What the board holds, for the memory report (`Market::memory_report`): rows, 15 s tape
+    /// symbols, fast-move tapes and the bytes those tapes hold (estimate), running facts.
+    pub fn cost(&self) -> Value {
+        let fast_bytes = self.fast.capacity() * (std::mem::size_of::<(Arc<str>, FastSym)>() + 8)
+            + self.fast.len() * fast::FastTape::heap_bytes()
+            + self.fast_touched.capacity() * std::mem::size_of::<(i64, Arc<str>)>();
+        json!({
+            "alerts": self.alerts.len(),
+            "tape_symbols": self.tape.syms.len(),
+            "fast_tapes": self.fast.len(),
+            "fast_touched": self.fast_touched.len(),
+            "fast_bytes": fast_bytes,
+            "running_facts": self.running_facts.len(),
+            "pending_log": self.pending.len(),
+        })
+    }
+
     /// Read-only startup/adoption counters, also exposed through the market's history status.
     pub fn readiness(&self) -> Value {
         let unrestored = self.tape.syms.iter().filter(|s| s.unrestored).count();

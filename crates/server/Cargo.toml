@@ -35,7 +35,18 @@ rustls-platform-verifier = "0.7.1"
 # The process allocator (src/main.rs): MIT, Microsoft's, widely deployed. Pinned to the v2 line
 # (the long-standing stable one; the crate defaults to v3 now). Statically linked C, built by
 # `cc` with the gcc already in the Docker build stage; nothing changes in the distroless runtime.
-mimalloc = { version = "0.1.52", default-features = false, features = ["v2"] }
+#
+# `no_thp` (2026-10-23): mimalloc otherwise madvises every 1 GiB arena MADV_HUGEPAGE, and the VPS
+# runs THP in `madvise` mode with khugepaged's max_ptes_none at 511, so a 2 MiB range with a
+# single live 4 KiB page is collapsed back into a whole huge page after mimalloc returned the
+# rest. Production showed it: 19 GB RSS, 11.2 GB of it AnonHugePages, khugepaged collapsing in
+# the quiet after-hours while the heap had nothing new to hold. Without the madvise the host's
+# THP never applies to this process. It is a compile-time define (MI_NO_THP) in the C build.
+mimalloc = { version = "0.1.52", default-features = false, features = ["v2", "no_thp"] }
+# mimalloc's own process figures for the `MEM_STATS_SECS` log line (src/main.rs): the library
+# `mimalloc` already links, with its extended API (`mi_process_info`) declared. Same features,
+# so it is one build of the C library, not two.
+libmimalloc-sys = { version = "0.1.49", default-features = false, features = ["v2", "extended", "no_thp"] }
 
 [dev-dependencies]
 market-replay = { path = "../market-replay" }

@@ -148,6 +148,11 @@ pub(crate) struct Unloaded {
 }
 
 impl Unloaded {
+    /// Events held now (`Market::memory_report`).
+    pub(crate) fn held_len(&self) -> usize {
+        self.held.len()
+    }
+
     /// Takes everything held now, leaving the cursor where it is.
     fn take_held(&mut self) -> Vec<MarketEvent> {
         self.held.drain(..).collect()

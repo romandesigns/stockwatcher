@@ -905,6 +905,26 @@ impl Market {
         core.rocket.burst().map(|b| (b.symbols(), b.unrestored()))
     }
 
+    /// What the market's per-symbol structures hold right now (counts and estimated bytes), for
+    /// the server's `MEM_STATS_SECS` log line and the memory bench. Cheap (one pass over the
+    /// boards' symbol lists) but under the core lock, so it is meant for once a minute, not per
+    /// tick. It is an attribution aid, not the heap: the chart engine's candles are counted in
+    /// symbols, not bytes.
+    pub fn memory_report(&self) -> Value {
+        let core = self.0.core.lock().expect("core lock");
+        let (zone_syms, zone_confirmed, zone_bytes) = core.zones.cost();
+        let held: usize = core.unloaded.values().map(|u| u.held_len()).sum();
+        serde_json::json!({
+            "engine_symbols": core.engine.symbols().count(),
+            "tape_symbols": core.tape.len(),
+            "last_price": core.last_price.len(),
+            "unloaded": core.unloaded.len(),
+            "unloaded_held_events": held,
+            "rocket": core.rocket.cost(),
+            "zones": {"symbols": zone_syms, "confirmed": zone_confirmed, "bytes": zone_bytes},
+        })
+    }
+
     /// Read-only Runners adoption/facts readiness, independent of strategy thresholds.
     pub fn runner_readiness(&self) -> Value {
         self.0.core.lock().expect("core lock").rocket.readiness()
@@ -1951,6 +1971,26 @@ impl Market {
 
     pub fn default_bin(&self) -> Price {
         self.0.bin
+    }
+
+    /// Benches only: sets the live market clock to `now`, as the provider's once-a-second
+    /// `Clock` would. The memory bench replays a synthetic day far faster than real time, and the
+    /// live provider stamps its own clock from the wall, so without this nothing that runs at the
+    /// market clock (the Runners board, the shelves, fast moves) ever ticked in it: its shelves
+    /// held every print they were given, and their bounds went unmeasured.
+    #[doc(hidden)]
+    pub fn bench_set_clock(&self, now: UnixNanos) {
+        *self.0.clock.lock().expect("clock lock") = Some(ClockState {
+            mode: self.0.mode,
+            now,
+            speed: market_providers::Speed::Times(1),
+            playing: true,
+            day: None,
+            start: None,
+            end: None,
+            finished: false,
+            events: 0,
+        });
     }
 
     pub fn clock(&self) -> Option<ClockState> {
@@ -4145,6 +4185,38 @@ mod tests {
         assert_eq!(
             core.rocket.take_notices()[0].kind,
             crate::rocket::NoticeKind::New
+        );
+    }
+
+    /// `memory_report` (the `MEM_STATS_SECS` line) counts what a print creates on each board, and
+    /// a fast-move tape costs its fixed ring, not something that grows with the prints.
+    #[test]
+    fn memory_report_counts_per_symbol_state() {
+        let market = Market::idle(ClockMode::Live, "test", None);
+        market.set_rocket_watch(true, crate::rocket::Policy::default());
+        let r = market.memory_report();
+        assert_eq!(r["engine_symbols"], 0);
+        assert_eq!(r["rocket"]["fast_tapes"], 0);
+        assert_eq!(r["zones"]["symbols"], 0);
+        let day = NaiveDate::from_ymd_opt(2026, 10, 15).unwrap();
+        let mut seq = 0;
+        for s in 0..120 {
+            let ts = market_events::session::et(day, 10, 0, 0, 0).unwrap().0 + s * 1_000_000_000;
+            for sym in ["AAA", "BBB"] {
+                seq += 1;
+                market.apply(FeedItem::Event(MarketEvent::Trade(
+                    market_events::Trade::new(sym, UnixNanos(ts), Price::from_cents(200), 100, seq),
+                )));
+            }
+        }
+        let r = market.memory_report();
+        assert_eq!(r["engine_symbols"], 2);
+        assert_eq!(r["rocket"]["fast_tapes"], 2);
+        assert_eq!(r["zones"]["symbols"], 2);
+        let fast = r["rocket"]["fast_bytes"].as_u64().unwrap();
+        assert!(
+            fast < 2 * 16_384,
+            "two fast tapes hold {fast} B after 120 s of prints"
         );
     }
 

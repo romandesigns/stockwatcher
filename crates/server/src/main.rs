@@ -73,6 +73,7 @@ async fn serve(config: Config) -> std::io::Result<()> {
     let settings = Settings::open(config.data_dir.join("settings"))?;
     // Live and replay side by side (the dashboard reads live, the chart page practises on replay).
     let (markets, sim) = Markets::start(&config.market);
+    spawn_memory_stats(&markets);
     // Price alerts watch the live market (never replay), with their rules in the same store and
     // Activity + the registered phones under DATA_DIR/alerts.
     let alerts = stockwatcher_server::alerts::Alerts::start(
@@ -123,6 +124,66 @@ async fn serve(config: Config) -> std::io::Result<()> {
         .await?;
     tracing::info!("stopped");
     Ok(())
+}
+
+/// `MEM_STATS_SECS=<n>` (unset or 0 = off): every `n` seconds, one `memory` log line with
+/// mimalloc's view of the process (RSS, committed memory and their peaks) and what the live
+/// market's per-symbol structures hold (`Market::memory_report`).
+///
+/// Why (2026-10-23): production RSS reached 19 GB with no way to tell the heap from what the
+/// kernel had attached to it. The host's transparent huge pages had collapsed ~11 GB of the
+/// process into 2 MiB pages, which is invisible from inside without this. The process cannot
+/// read its own `smaps_rollup` in the distroless image either, so `AnonHugePages` is read from
+/// `/proc/self/smaps_rollup` when it can be and left out when it cannot.
+fn spawn_memory_stats(markets: &Markets) {
+    let secs: u64 = std::env::var("MEM_STATS_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(0);
+    if secs == 0 {
+        return;
+    }
+    let live = markets.live.clone();
+    let spawned = std::thread::Builder::new()
+        .name("memory-stats".into())
+        .spawn(move || {
+            loop {
+                let (mut rss, mut peak_rss, mut commit, mut peak_commit) = (0, 0, 0, 0);
+                // SAFETY: every out-pointer is a valid, writable usize or null.
+                unsafe {
+                    libmimalloc_sys::mi_process_info(
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
+                        &mut rss,
+                        &mut peak_rss,
+                        &mut commit,
+                        &mut peak_commit,
+                        std::ptr::null_mut(),
+                    );
+                }
+                let huge_kb = std::fs::read_to_string("/proc/self/smaps_rollup")
+                    .ok()
+                    .and_then(|s| {
+                        s.lines()
+                            .find(|l| l.starts_with("AnonHugePages:"))
+                            .and_then(|l| l.split_whitespace().nth(1)?.parse::<u64>().ok())
+                    });
+                tracing::info!(
+                    rss_mb = rss / 1_000_000,
+                    peak_rss_mb = peak_rss / 1_000_000,
+                    commit_mb = commit / 1_000_000,
+                    peak_commit_mb = peak_commit / 1_000_000,
+                    anon_huge_mb = huge_kb.map(|k| k / 1000),
+                    live = %live.memory_report(),
+                    "memory"
+                );
+                std::thread::sleep(Duration::from_secs(secs));
+            }
+        });
+    if let Err(e) = spawned {
+        tracing::warn!(error = %e, "MEM_STATS_SECS: could not start the stats thread");
+    }
 }
 
 async fn shutdown_requested() {

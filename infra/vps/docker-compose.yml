@@ -17,6 +17,15 @@ services:
       # deleted here. `originals/` exists only on the Pi's share, so with the share not
       # mounted this path is missing and the recorder keeps everything (SETUP.md, section 9).
       LIVE_ORIGINAL_DURABLE_DIR: /durable/originals
+      # No transparent huge pages for this process (prctl PR_SET_THP_DISABLE at start). The
+      # binary is already built without mimalloc's MADV_HUGEPAGE (crates/server/Cargo.toml,
+      # `no_thp`); this also covers a host switched to THP `always`. With THP, khugepaged
+      # re-collapsed memory mimalloc had returned: 19 GB RSS, 11.2 GB of it huge pages
+      # (2026-10-23).
+      MIMALLOC_ALLOW_THP: "0"
+      # One `memory` log line a minute: mimalloc's RSS/commit and the live market's
+      # per-symbol structures (crates/server/src/main.rs, spawn_memory_stats).
+      MEM_STATS_SECS: "60"
     volumes:
       - stockwatcher_data:/app/data
       # The Pi's NFS share, mounted on the host by infra/vps/durable-mount.sh. rslave: a
