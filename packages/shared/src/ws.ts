@@ -2,6 +2,7 @@ import { isAlertsMessage, parseServerMessage, type AlertsServerMessage, type Cli
 import type { SettingsSync } from "./settingsSync.ts";
 import type { DetectionMessage } from "./detection.ts";
 import type { RocketMessage } from "./rocket.ts";
+import type { RunnersNoticeMessage, RunnersNotifyMessage } from "./runnersNotify.ts";
 
 export type ConnectionStatus = "connecting" | "open" | "reconnecting" | "unauthorized" | "closed";
 
@@ -37,6 +38,13 @@ export interface WsClientOptions {
   onDetectionError?: (reason: string) => void;
   /** The price alerts' frames (`alerts.history`, `alert.fired`, …): every connection gets them. */
   onAlerts?: (message: AlertsServerMessage) => void;
+  /** `runners.notice` frames (runnersNotify.ts): every connection gets them; show per `runnersNotify`. */
+  onRunnersNotice?: (message: RunnersNoticeMessage) => void;
+  /**
+   * This client's Runners notification opt-in, read on every `welcome` and by
+   * `refreshRunnersNotify` (null = this client shows none; nothing is sent on welcome).
+   */
+  runnersNotify?: () => RunnersNotifyMessage | null;
   /**
    * The synced settings (settingsSync.ts). Attached on every `welcome` (the server's
    * `settings.snapshot` follows it), fed every `settings.*` frame, and detached when the
@@ -69,6 +77,8 @@ export interface WsClient {
   unsubscribeRocket(): void;
   subscribeDetection(): void;
   unsubscribeDetection(): void;
+  /** Sends `runnersNotify()` now (or `enabled: false` when it is null): the switches changed. */
+  refreshRunnersNotify(): void;
   close(): void;
 }
 
@@ -156,6 +166,10 @@ export function createWsClient(opts: WsClientOptions): WsClient {
         if (rossWanted) send({ type: "ross.subscribe" });
         if (rocketWanted) send({ type: "rocket.subscribe" });
         if (detectionWanted) send({ type: "detection.subscribe" });
+        const notify = opts.runnersNotify?.();
+        if (notify) send(notify);
+      } else if (msg.type === "runners.notice") {
+        opts.onRunnersNotice?.(msg);
       } else if (msg.type === "ping") {
         send({ type: "pong", ts: msg.ts });
       } else if (msg.type === "error" && msg.code === "unauthorized") {
@@ -240,6 +254,10 @@ export function createWsClient(opts: WsClientOptions): WsClient {
     unsubscribePressure() {
       pressureWanted = false;
       send({ type: "pressure.unsubscribe" });
+    },
+    refreshRunnersNotify() {
+      // Not open yet: the welcome handler sends it.
+      send(opts.runnersNotify?.() ?? { type: "runners.notify", enabled: false });
     },
     close() {
       stopped = true;

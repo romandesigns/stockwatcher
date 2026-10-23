@@ -1,6 +1,7 @@
 // Wire types shared by web, desktop and mobile. The Rust side mirrors these
 // in crates/server/src/{api,ws,market}.rs; change both together.
 import { isDetectionMessage } from "./detection.ts";
+import { parseRunnersNotice } from "./runnersNotify.ts";
 
 /** GET /api/health (never requires auth). */
 export interface Health {
@@ -611,8 +612,8 @@ export interface PushUnregisterMessage {
   token: string;
 }
 
-export type ClientMessage = HelloMessage | PingMessage | PongMessage | QuotesSubscribeMessage | QuotesUnsubscribeMessage | PressureSubscribeMessage | PressureUnsubscribeMessage | RossSubscribeMessage | RossUnsubscribeMessage | { type: "detection.subscribe" | "detection.unsubscribe" } | import("./rocket.ts").RocketClientMessage | SettingsClientMessage | PushRegisterMessage | PushUnregisterMessage;
-export type ServerMessage = WelcomeMessage | PingMessage | PongMessage | ErrorMessage | QuotesMessage | PressureMessage | RossMessage | import("./detection.ts").DetectionMessage | import("./rocket.ts").RocketMessage | SettingsServerMessage | AlertsServerMessage;
+export type ClientMessage = HelloMessage | PingMessage | PongMessage | QuotesSubscribeMessage | QuotesUnsubscribeMessage | PressureSubscribeMessage | PressureUnsubscribeMessage | RossSubscribeMessage | RossUnsubscribeMessage | { type: "detection.subscribe" | "detection.unsubscribe" } | import("./rocket.ts").RocketClientMessage | SettingsClientMessage | PushRegisterMessage | PushUnregisterMessage | import("./runnersNotify.ts").RunnersNotifyMessage;
+export type ServerMessage = WelcomeMessage | PingMessage | PongMessage | ErrorMessage | QuotesMessage | PressureMessage | RossMessage | import("./detection.ts").DetectionMessage | import("./rocket.ts").RocketMessage | SettingsServerMessage | AlertsServerMessage | import("./runnersNotify.ts").RunnersNoticeMessage;
 
 const ALERT_TYPES = new Set(["alerts.history", "alert.fired", "alert.held", "alert.updated", "alerts.status"]);
 
@@ -635,5 +636,6 @@ export function parseServerMessage(raw: unknown): ServerMessage | null {
   if (typeof value !== "object" || value === null) return null;
   const type = (value as { type?: unknown }).type;
   if (type === "detection.snapshot" || type === "detection.update") return isDetectionMessage(value) ? value : null;
+  if (type === "runners.notice") return parseRunnersNotice(value);
   return typeof type === "string" && SERVER_TYPES.has(type) ? (value as ServerMessage) : null;
 }

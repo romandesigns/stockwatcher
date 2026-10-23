@@ -8,6 +8,7 @@ import type { ChartFeed } from "./feed/types.ts";
 import { createFixtureFeed, FIXTURE_SYMBOL } from "./fixtures/fixtureFeed.ts";
 import { getSettingsSync } from "./settings/sync.ts";
 import { getAppStore } from "./state/store.ts";
+import { getRunnersNotifier } from "./notify/runnersNotify.ts";
 
 // Data source: the Rust server by default, the in-browser fixture only when the
 // server is unreachable or has no data (feed/source.ts), or when forced with
@@ -49,7 +50,8 @@ export function ConnectionGate({ source, children }: { source: MarketSource; chi
       setSignIn(null);
       const choice = chooseSource(ENV_SOURCE, probe, FIXTURE_SYMBOL, source);
       // Alert frames (Activity, fires) reach the app store whatever page is open (state/store.ts).
-      feed = choice.kind === "server" ? createServerFeed({ token, settings: sync, source, onAlerts: (m) => getAppStore().getState().applyAlertsMessage(m) }) : createFixtureFeed();
+      // Runners notices too (notify/runnersNotify.ts): a system notification on any page.
+      feed = choice.kind === "server" ? createServerFeed({ token, settings: sync, source, onAlerts: (m) => getAppStore().getState().applyAlertsMessage(m), notifier: getRunnersNotifier() }) : createFixtureFeed();
       setReady({ choice, feed, marketSource: source, attempt });
     });
     return () => {

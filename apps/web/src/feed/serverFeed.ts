@@ -1,5 +1,6 @@
 import { createChartRouter, parseChartMessage, parsePaperMessage, type ChartSubscribe, type ChartUnsubscribe, type PaperMessage, type PaperState, type ReplayControl } from "@stockwatcher/chart-core";
 import { createDetectionChannel, createPressureChannel, createQuoteChannel, createRocketChannel, createRossChannel, createWsClient, sameOriginWsUrl, type AlertsServerMessage, type ConnectionStatus, type MarketSource, type SettingsSync, type WebSocketLike } from "@stockwatcher/shared";
+import type { RunnersNotifier } from "../notify/runnersNotify.ts";
 import type { ChartFeed, PaperCommand, ReplayCommand } from "./types.ts";
 
 export interface ServerFeedOptions {
@@ -12,6 +13,8 @@ export interface ServerFeedOptions {
   onAlerts?: (m: AlertsServerMessage) => void;
   /** The market this page reads: `live` (dashboard) or `replay` (chart page). */
   source?: MarketSource;
+  /** Runners system notifications: the opt-in this connection sends, and where notices go. */
+  notifier?: Pick<RunnersNotifier, "notifyMessage" | "handle" | "attach">;
 }
 
 /**
@@ -75,6 +78,8 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
     onDetection: (m) => detection.apply(m),
     onDetectionError: (reason) => detection.reject(reason),
     onAlerts: opts.onAlerts,
+    runnersNotify: () => opts.notifier?.notifyMessage() ?? null,
+    onRunnersNotice: (m) => opts.notifier?.handle(m),
     settings: opts.settings,
     createSocket: (url) => {
       const socket = new WebSocket(url);
@@ -86,7 +91,7 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
         // A quotes.snapshot is hundreds of KB: hand it to shared's parser without first
         // parsing it twice as a chart or paper frame. The server writes `type` first. The
         // settings.*, pressure.* and alert frames (shared's own too) take the same shortcut.
-        if (typeof ev.data === "string" && (ev.data.startsWith('{"type":"quotes.') || ev.data.startsWith('{"type":"settings.') || ev.data.startsWith('{"type":"pressure.') || ev.data.startsWith('{"type":"ross.') || ev.data.startsWith('{"type":"rocket.') || ev.data.startsWith('{"type":"alert') || /"type"\s*:\s*"detection\.(snapshot|update)"/.test(ev.data))) {
+        if (typeof ev.data === "string" && (ev.data.startsWith('{"type":"quotes.') || ev.data.startsWith('{"type":"settings.') || ev.data.startsWith('{"type":"pressure.') || ev.data.startsWith('{"type":"ross.') || ev.data.startsWith('{"type":"rocket.') || ev.data.startsWith('{"type":"alert') || ev.data.startsWith('{"type":"runners.') || /"type"\s*:\s*"detection\.(snapshot|update)"/.test(ev.data))) {
           inner?.({ data: ev.data });
           return;
         }
@@ -108,6 +113,9 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
       return raw;
     },
   });
+
+  // The switches changed (Settings → Runners): tell the server on this connection.
+  const detachNotifier = opts.notifier?.attach(() => client.refreshRunnersNotify());
 
   return {
     kind: "server",
@@ -143,6 +151,7 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
     rocket,
     detection,
     close() {
+      detachNotifier?.();
       client.close();
       router.clear();
       current.clear();

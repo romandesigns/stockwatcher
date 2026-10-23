@@ -2,10 +2,11 @@ import { chartSettingsSection, drawingSettingsSection, Icon, SettingsDialog } fr
 import { Tip, TOUCH_HIT, cn } from "@stockwatcher/chart-web/ui";
 import { useState } from "react";
 import { getAppStore, useApp } from "../state/store.ts";
+import { runnersNotifySection } from "../notify/runnersSection.tsx";
 import { dataSourceSection } from "./dataSource.tsx";
 
 /**
- * The app's one Settings dialog (Data, Chart and Drawing tabs), rendered once by the Shell so every page
+ * The app's one Settings dialog (Data, Runners, Chart and Drawing tabs), rendered once by the Shell so every page
  * shares it. Opened from the rail's footer on wider screens, from a page header's gear on a phone
  * layout (no rail there). Open state is the store's `settingsOpen`.
  */
@@ -16,7 +17,7 @@ export function AppSettingsDialog() {
   const drawingSettings = useApp((s) => s.drawingSettings);
   const source = useApp((s) => s.dashboard.source);
   const indicators = useApp((s) => s.indicators);
-  return <SettingsDialog open={open} onOpenChange={app.setSettingsOpen} persistKey="sw-settings" sections={[dataSourceSection(source, app.setDashboardSource), chartSettingsSection(chartSettings, app.setChartSettings, indicators), drawingSettingsSection(drawingSettings, app.setDrawingSettings)]} />;
+  return <SettingsDialog open={open} onOpenChange={app.setSettingsOpen} persistKey="sw-settings" sections={[dataSourceSection(source, app.setDashboardSource), runnersNotifySection(), chartSettingsSection(chartSettings, app.setChartSettings, indicators), drawingSettingsSection(drawingSettings, app.setDrawingSettings)]} />;
 }
 
 /**

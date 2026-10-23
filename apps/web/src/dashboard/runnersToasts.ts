@@ -9,6 +9,7 @@ import type { RocketChannel, RocketMomentumState, RocketRowWire } from "@stockwa
 import { useEffect, useRef } from "react";
 
 import { showToast } from "../lib/toastStore.ts";
+import { getRunnersNotifier, type RunnersNotifier } from "../notify/runnersNotify.ts";
 
 /** The server's MAX_AGE_MS for a push. */
 export const FRESH_MS = 3 * 60_000;
@@ -53,6 +54,16 @@ export function runnersToasts(rows: RocketRowWire[], mem: RunnersToastMemory, wa
   return out.slice(0, MAX_PER_FRAME);
 }
 
+/**
+ * One event, one signal (owner, 2026-10-23): while this device shows Runners system
+ * notifications for the kind (notify/runnersNotify.ts), the toast stands down, focused window
+ * or not; the notification carries the phone's text and its own click to the chart. A kind
+ * switched off there still toasts as before.
+ */
+export function toastStandsDown(kind: RunnersToast["kind"], notifier: Pick<RunnersNotifier, "active" | "prefs">): boolean {
+  return notifier.active() && notifier.prefs().kinds[kind];
+}
+
 /** While the dashboard is mounted: a toast with "Chart" for each new flag and breakout. */
 export function useRunnersToasts(channel: RocketChannel | undefined, onPick: (symbol: string) => void): void {
   // The latest callback, without resubscribing (a resubscribe would prime again and miss news).
@@ -69,7 +80,9 @@ export function useRunnersToasts(channel: RocketChannel | undefined, onPick: (sy
     return channel.subscribe(() => {
       const rows = channel.get().panel?.rows;
       if (!rows) return;
+      const notifier = getRunnersNotifier();
       for (const t of runnersToasts(rows, mem, Date.now())) {
+        if (toastStandsDown(t.kind, notifier)) continue;
         showToast(t.text, { icon: "bell", ms: 8000, action: { label: "Chart", run: () => pick.current(t.symbol) } });
       }
     });
