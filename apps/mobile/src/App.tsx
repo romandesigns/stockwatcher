@@ -13,8 +13,10 @@ import { colors } from "./theme";
 import { Toaster } from "./ui/Toaster";
 import { useForegroundUpdates } from "./updates/useForegroundUpdates";
 
-// Deep links: stockwatcher:// opens the dashboard, stockwatcher://chart the chart (scheme set in
-// app.config.ts).
+// Deep links: stockwatcher:// opens the dashboard, stockwatcher://chart the chart tab,
+// stockwatcher://ticker/CJMB that ticker's chart modal (scheme set in app.config.ts). A ticker link
+// arriving while the modal shows another ticker replaces its params (React Navigation's navigate
+// to the focused route), so the modal shows the linked ticker, never the old one.
 const linking: LinkingOptions<RootStackParamList> = {
   prefixes: [Linking.createURL("/")],
   config: {
@@ -26,6 +28,7 @@ const linking: LinkingOptions<RootStackParamList> = {
           Alerts: "alerts",
         },
       },
+      TickerChart: { path: "ticker/:symbol", parse: { symbol: (s: string) => s.trim().toUpperCase() } },
     },
   },
 };

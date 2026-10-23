@@ -35,6 +35,13 @@ const navSpring: TransitionSpec = {
  */
 export const collapseTiming = { duration: 300, easing: Easing.out(Easing.cubic) };
 
+/**
+ * The open chart modal switching to another ticker (a notification tapped while it shows one,
+ * owner 2026-10-23): the old chart goes at once (it must never show under the new ticker's name)
+ * and the new one fades in over the page background. Short, because the modal itself does not move.
+ */
+export const chartSwapTiming = { duration: 160, easing: Easing.out(Easing.cubic) };
+
 const fadeTiming: TransitionSpec = {
   open: { duration: 180 },
   close: { duration: 150 },

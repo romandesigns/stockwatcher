@@ -8,12 +8,13 @@ import { notificationTarget, ringRunnersLocally } from "./route";
 
 const read = (p: string) => readFileSync(join(import.meta.dir, p), "utf8");
 
-test("a Runners push opens its ticker's chart; a price alert's (or anything else) the Alerts tab", () => {
+test("a notification about a ticker opens THAT ticker's chart; anything else the Alerts tab", () => {
   expect(notificationTarget({ symbol: "CJMB", kind: "runners.new", alert_id: "2026-10-22-CJMB-260" })).toEqual({ to: "chart", symbol: "CJMB" });
   expect(notificationTarget({ symbol: "brk.b", kind: "runners.breakout" })).toEqual({ to: "chart", symbol: "BRK.B" });
   expect(notificationTarget({ symbol: "BRST", kind: "runners.burst", alert_id: "2026-10-22-BRST-b1" })).toEqual({ to: "chart", symbol: "BRST" });
-  // The price alerts' payload has no kind: the Alerts tab, as before.
-  expect(notificationTarget({ alertId: "a1", symbol: "XLAB", eventId: "h-1", url: "stockwatcher://alerts" })).toEqual({ to: "alerts" });
+  // A price alert's push (owner, 2026-10-23): its ticker's chart too, no longer the Alerts tab
+  // (which left the previously open chart modal on screen).
+  expect(notificationTarget({ alertId: "a1", symbol: "XLAB", eventId: "h-1", url: "stockwatcher://alerts" })).toEqual({ to: "chart", symbol: "XLAB" });
   expect(notificationTarget({ kind: "runners.new", symbol: "not a ticker!" })).toEqual({ to: "alerts" });
   expect(notificationTarget({ kind: "runners.new" })).toEqual({ to: "alerts" });
   expect(notificationTarget(null)).toEqual({ to: "alerts" });
@@ -30,9 +31,10 @@ test("taps route through notificationTarget, including the one that launched the
   const push = read("push.ts");
   expect(push).toContain("addNotificationResponseReceivedListener(openFrom)");
   expect(push).toContain("openFrom(Notifications.getLastNotificationResponse())");
-  expect(push).toContain('target.to === "chart" ? openTickerChart(target.symbol) : navigateToAlerts()');
-  // Before the navigation exists, the tap waits for the container's onReady.
-  expect(push).toContain("whenNavigationReady(");
+  expect(push).toContain('if (target.to === "chart") openTickerChart(target.symbol);');
+  expect(push).toContain("clearLast: () => Notifications.clearLastNotificationResponse()");
+  // Before the navigation exists, the tap waits for the container's onReady (ref.ts).
+  expect(read("../navigation/ref.ts")).toContain("whenNavigationReady(() => navigationRef.dispatch(openChartAction(params)))");
   expect(read("../App.tsx")).toContain("onReady={flushNavigation}");
 });
 

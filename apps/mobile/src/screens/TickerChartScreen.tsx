@@ -4,7 +4,7 @@ import { detectionFamilyLabel, detectionOverlays, detectionPrice, detectionState
 import { useNavigation, type RouteProp } from "@react-navigation/native";
 import { useMemo, useState, useSyncExternalStore } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
-import Animated, { FadeIn, FadeOut, LinearTransition, ReduceMotion } from "react-native-reanimated";
+import Animated, { FadeIn, FadeOut, LayoutAnimationConfig, LinearTransition, ReduceMotion } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useChartAlerts } from "../alerts/useChartAlerts";
@@ -13,6 +13,7 @@ import { useDashboardFeed } from "../feed/dashboardFeed";
 import { useChartFeed, useDetection, usePaperTrading, useZones } from "../feed/hooks";
 import { ZoneNote } from "../dashboard/ZoneNote";
 import type { MobileFeed } from "../feed/serverFeed";
+import { chartSwapTiming } from "../motion/transitions";
 import { useReducedMotion } from "../motion/useReducedMotion";
 import type { RootStackParamList } from "../navigation/RootStack";
 import { appActions, getLoadedStore, useApp } from "../state/store";
@@ -45,14 +46,25 @@ export function TickerChartScreen({ route }: Props) {
   const feed = useDashboardFeed();
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
+  // The ticker comes from the route's params on every render, never copied into state: a ticker
+  // opened while this modal is up (a notification tap, owner 2026-10-23) replaces the params of
+  // this same route (navigation/openTicker.ts), and the chart below is keyed by the ticker, so its
+  // data subscription, drawings, readout and detection marks start over for the new one.
   const { symbol, detectionEpisodeId, detectionRunEpoch } = route.params;
+  const reducedMotion = useReducedMotion();
   return (
     <View style={[styles.screen, { paddingTop: insets.top + 4, paddingBottom: insets.bottom + 4 }]} accessibilityViewIsModal onAccessibilityEscape={() => navigation.goBack()}>
-      {feed ? (
-        <ModalChart key={symbol} feed={feed} symbol={symbol} detectionEpisodeId={detectionEpisodeId} detectionRunEpoch={detectionRunEpoch} />
-      ) : (
-        <Header symbol={symbol} price="—" change="" />
-      )}
+      {/* No fade on the modal's first ticker (the modal's own present runs); a later one fades in
+          (chartSwapTiming) while the old one is already gone, so it never shows under the new name. */}
+      <LayoutAnimationConfig skipEntering>
+        <Animated.View key={symbol} style={styles.swap} entering={FadeIn.duration(chartSwapTiming.duration).easing(chartSwapTiming.easing).reduceMotion(reducedMotion ? ReduceMotion.Always : ReduceMotion.System)}>
+          {feed ? (
+            <ModalChart feed={feed} symbol={symbol} detectionEpisodeId={detectionEpisodeId} detectionRunEpoch={detectionRunEpoch} />
+          ) : (
+            <Header symbol={symbol} price="—" change="" />
+          )}
+        </Animated.View>
+      </LayoutAnimationConfig>
     </View>
   );
 }
@@ -186,7 +198,8 @@ function ModalChart({ feed, symbol, detectionEpisodeId, detectionRunEpoch }: { f
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: colors.bg, paddingHorizontal: 6, gap: 6 },
+  screen: { flex: 1, backgroundColor: colors.bg, paddingHorizontal: 6 },
+  swap: { flex: 1, gap: 6 },
   // With the top inset, the handle and the 44 pt row fill the swipe-to-dismiss strip (CHART_MODAL_GRAB).
   header: { gap: 6 },
   handle: { alignSelf: "center", width: 36, height: 4, borderRadius: 2, backgroundColor: colors.bgRow, marginTop: 2 },

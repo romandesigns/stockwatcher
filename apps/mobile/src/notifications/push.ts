@@ -2,9 +2,9 @@ import * as Device from "expo-device";
 import * as Notifications from "expo-notifications";
 import { Platform } from "react-native";
 
-import { navigateToAlerts, openTickerChart, whenNavigationReady } from "../navigation/ref";
+import { navigateToAlerts, openTickerChart } from "../navigation/ref";
 import { getPreference, setPreference } from "../storage/preferences";
-import { notificationTarget } from "./route";
+import { createResponseRouter, type NotificationTarget } from "./route";
 import { configureForegroundPresentation, registerForPushNotifications } from "./setup";
 
 // Phone alerts (crates/server/src/alerts/push.rs): this phone's Expo push token, registered with
@@ -42,19 +42,18 @@ export function deviceInfo(): { platform: string; name: string } {
   return { platform: Platform.OS, name: Device.modelName ?? Device.deviceName ?? Platform.OS };
 }
 
-// A response is handled once: the one that launched the app can come both from
-// getLastNotificationResponse and from the listener.
-let handled: string | null = null;
-
-/** A tapped notification: a Runners push opens its ticker's chart, anything else the Alerts tab. */
-function openFrom(response: Notifications.NotificationResponse | null): void {
-  if (!response) return;
-  const id = response.notification.request.identifier;
-  if (id && id === handled) return;
-  handled = id;
-  const target = notificationTarget(response.notification.request.content.data);
-  whenNavigationReady(() => (target.to === "chart" ? openTickerChart(target.symbol) : navigateToAlerts()));
+/** Where a tap goes: a ticker's notification opens THAT ticker's chart (route.ts), anything else the Alerts tab. */
+export function goToTarget(target: NotificationTarget): void {
+  if (target.to === "chart") openTickerChart(target.symbol);
+  else navigateToAlerts();
 }
+
+// One router for the app's life: the tap that launched the app comes both from
+// getLastNotificationResponse and from the listener, and is routed once; after each tap the native
+// "last response" is cleared, so nothing can replay an old tap over a chart opened since (a JS
+// reload, a remounted root running initPush again, then reading the old response).
+const openFrom = createResponseRouter(goToTarget, { clearLast: () => Notifications.clearLastNotificationResponse() });
+let listening = false;
 
 /**
  * At launch: the stored token at once, then a fresh one when permission is already granted (no
@@ -63,7 +62,12 @@ function openFrom(response: Notifications.NotificationResponse | null): void {
  */
 export async function initPush(): Promise<void> {
   configureForegroundPresentation();
-  Notifications.addNotificationResponseReceivedListener(openFrom);
+  // Once: initPush runs again whenever the root remounts (an Activity recreated in the
+  // background), and each extra listener would route every later tap again.
+  if (!listening) {
+    listening = true;
+    Notifications.addNotificationResponseReceivedListener(openFrom);
+  }
   try {
     openFrom(Notifications.getLastNotificationResponse());
   } catch {

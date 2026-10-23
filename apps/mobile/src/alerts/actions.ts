@@ -5,7 +5,7 @@
 import { editedAlert, newAlert, type AlertRule } from "@stockwatcher/app-state";
 import { formatPrice } from "@stockwatcher/chart-core";
 
-import { navigateToAlerts } from "../navigation/ref";
+import { onOpenTicker, openTickerChart } from "../navigation/ref";
 import { appActions } from "../state/store";
 import { showToast } from "../ui/toast";
 
@@ -38,9 +38,13 @@ export function deleteAlert(id: string): void {
   withUndo(`Alert deleted · ${cur.symbol}`, () => appActions().saveAlert(editedAlert(cur, {})));
 }
 
-/** The in-app banner for a fire heard live (a reconnect's Activity is history, not news). */
+/**
+ * The in-app banner for a fire heard live (a reconnect's Activity is history, not news). Its
+ * action opens the alert's ticker (owner, 2026-10-23: acting on a ticker opens THAT chart; it used
+ * to open the Alerts tab, under whatever chart modal was open), like the web's toast.
+ */
 export function showFired(symbol: string, text: string): void {
-  showToast(`${symbol} · ${text}`, { icon: "bell", ms: 6000, action: { label: "View", run: navigateToAlerts } });
+  showToast(`${symbol} · ${text}`, { icon: "bell", ms: 6000, action: { label: "Chart", run: () => openTickerChart(symbol) } });
 }
 
 // --- the full sheet's open state ---------------------------------------------------------------
@@ -55,6 +59,12 @@ export interface AlertSheetState {
 
 let state: AlertSheetState = { open: false, editId: null, draft: null, last: null, seq: 0 };
 const listeners = new Set<() => void>();
+
+// The sheet is drawn over every screen (App.tsx): a ticker opened from anywhere (a notification
+// tap while it is open) closes it, or it would hide the chart that just opened.
+onOpenTicker(() => {
+  if (state.open) alertSheet.set({ open: false });
+});
 
 export const alertSheet = {
   get: () => state,

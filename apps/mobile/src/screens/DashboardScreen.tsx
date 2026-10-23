@@ -17,7 +17,7 @@ import { useReducedMotion } from "../motion/useReducedMotion";
 import { openTickerChart } from "../navigation/ref";
 import { TickerSearchSheet } from "../search/TickerSearchSheet";
 import { SettingsHost } from "../settings/SettingsHost";
-import { appActions, useApp } from "../state/store";
+import { useApp } from "../state/store";
 import { colors, fonts } from "../theme";
 import { SignInScreen } from "./SignInScreen";
 
@@ -43,7 +43,6 @@ export function DashboardScreen() {
 function DashboardView({ feed, token, source }: { feed: MobileFeed; token: string | null; source: DashboardSource }) {
   const insets = useSafeAreaInsets();
   const reducedMotion = useReducedMotion();
-  const [app] = useState(appActions);
   const recents = useApp((s) => s.searchRecents);
   const { symbols: candidates, fixture, session } = useCandidates(token, null, source);
   // A closed market shows its last session from the archive (owner, 2026-10-18): say which day.
@@ -53,13 +52,9 @@ function DashboardView({ feed, token, source }: { feed: MobileFeed; token: strin
     setDashboardFeed(feed);
     return () => setDashboardFeed(null);
   }, [feed]);
-  const open = useCallback(
-    (symbol: string, detectionEpisodeId?: string, detectionRunEpoch?: string) => {
-      app.rememberTicker(symbol);
-      openTickerChart(symbol, detectionEpisodeId, detectionRunEpoch);
-    },
-    [app],
-  );
+  // Every row, gauge and search result opens through the app's one action (navigation/ref.ts),
+  // which also records the recents.
+  const open = useCallback((symbol: string, detectionEpisodeId?: string, detectionRunEpoch?: string) => openTickerChart(symbol, detectionEpisodeId, detectionRunEpoch), []);
 
   return (
     <View style={[styles.screen, { paddingTop: insets.top + 4 }]}>

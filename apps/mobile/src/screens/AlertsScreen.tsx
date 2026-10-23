@@ -18,6 +18,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { deleteAlert, openAlertSheet } from "../alerts/actions";
 import { useReducedMotion } from "../motion/useReducedMotion";
+import { openTickerChart } from "../navigation/ref";
 import { enablePush, pushToken, subscribePushToken } from "../notifications/push";
 import { appActions, loadAppStore, useApp } from "../state/store";
 import { colors, fonts } from "../theme";
@@ -118,7 +119,10 @@ function Alerts() {
                   onLongPress={() => setMenu(r)}
                   style={({ pressed }) => [styles.row, pressed && { backgroundColor: UI.row }]}
                 >
-                  <Text style={styles.ticker}>{r.symbol}</Text>
+                  {/* The ticker opens its chart; the rest of the row opens the alert. */}
+                  <Pressable accessibilityRole="button" accessibilityLabel={`${r.symbol}, open chart`} onPress={() => openTickerChart(r.symbol)} hitSlop={8} style={({ pressed }) => pressed && { opacity: 0.6 }}>
+                    <Text style={styles.ticker}>{r.symbol}</Text>
+                  </Pressable>
                   <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
                     <Text style={styles.rule} numberOfLines={1}>
                       {shortConditionText(r.rule)}
@@ -169,7 +173,11 @@ function RowActions({ r, now, close }: { r: AlertRule; now: number; close: () =>
     close();
     f();
   };
-  const items: { label: string; run: () => void; danger?: boolean }[] = [{ label: "Edit", run: () => setTimeout(() => openAlertSheet(r, { editId: r.id }), 0) }];
+  const items: { label: string; run: () => void; danger?: boolean }[] = [
+    // The alerts list's way to the ticker (owner, 2026-10-23): its chart, whatever chart was open.
+    { label: "Open chart", run: () => openTickerChart(r.symbol) },
+    { label: "Edit", run: () => setTimeout(() => openAlertSheet(r, { editId: r.id }), 0) },
+  ];
   if (d.kind === "fired" || d.kind === "expired") items.push({ label: "Re-arm", run: () => app.updateAlert(r.id, { expiry: r.expiry }) });
   else if (d.kind === "snoozed") items.push({ label: "Unsnooze", run: () => app.snoozeAlert(r.id, null) });
   else {
@@ -200,7 +208,14 @@ function ActivityList({ events, now }: { events: readonly AlertEventWire[]; now:
         return (
           <View key={e.id}>
             {head && <Text style={styles.dayHead}>{head}</Text>}
-            <View style={styles.event} accessible accessibilityLabel={`${formatEtTime(e.t)}, ${e.symbol}: ${e.text}. ${e.note}`}>
+            {/* A tap opens the event's ticker (owner, 2026-10-23: every ticker shown opens its own chart). */}
+            <Pressable
+              style={({ pressed }) => [styles.event, pressed && { opacity: 0.6 }]}
+              accessibilityRole="button"
+              accessibilityLabel={`${formatEtTime(e.t)}, ${e.symbol}: ${e.text}. ${e.note}`}
+              accessibilityHint="Opens the chart"
+              onPress={() => openTickerChart(e.symbol)}
+            >
               <Text style={styles.time}>{formatEtTime(e.t)}</Text>
               <View style={{ flex: 1, gap: 2 }}>
                 <Text style={styles.rule}>
@@ -209,7 +224,7 @@ function ActivityList({ events, now }: { events: readonly AlertEventWire[]; now:
                 </Text>
                 <Text style={[styles.small, held && { color: colors.warning }]}>{e.note}</Text>
               </View>
-            </View>
+            </Pressable>
           </View>
         );
       })}
