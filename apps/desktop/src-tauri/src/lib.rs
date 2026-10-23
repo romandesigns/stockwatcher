@@ -4,7 +4,10 @@
 //! web build; the plugins below are registered so the UI can use them later.
 //! The webview is granted only `core:default` (see `capabilities/`): the
 //! updater runs entirely in Rust, so no plugin is exposed to JavaScript.
+//! The one app command is [`notify::runners_notify`] (Runners system
+//! notifications), which validates what it shows.
 
+mod notify;
 mod updater;
 
 use tauri::Manager;
@@ -43,7 +46,9 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_opener::init())
+        .invoke_handler(tauri::generate_handler![notify::runners_notify])
         .setup(|app| {
+            notify::listen(app.handle());
             log::info!(
                 "stockwatcher {} starting ({} {})",
                 app.package_info().version,
