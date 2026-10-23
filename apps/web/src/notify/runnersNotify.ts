@@ -22,8 +22,7 @@
 // Closed-tab Web Push (a service worker + VAPID, RFC 8030/8292) is not built: see the commit.
 
 import { createNoticeDedupe, DEFAULT_RUNNERS_NOTIFY, runnersNotifyKinds, shouldShowNotice, type RunnersNoticeMessage, type RunnersNotifyKinds, type RunnersNotifyMessage } from "@stockwatcher/shared";
-import { pageOf } from "../nav/routes.ts";
-import { getAppStore } from "../state/store.ts";
+import { openTickerChart } from "../nav/openTicker.ts";
 
 const PREFS_KEY = "sw-runners-notify";
 const SEEN_KEY = "sw-runners-notify:seen";
@@ -68,12 +67,15 @@ function browserEnv(): NotifyEnv {
 }
 
 /**
- * A click's destination: the dashboard, with the ticker loaded into its selected chart (the same
- * action as clicking a ticker on the dashboard: app-state `loadIntoSelected`).
+ * A click's destination: the dashboard, with the ticker loaded into its selected chart: the app's
+ * one "open this ticker" action (nav/openTicker.ts), the same as clicking a ticker on the dashboard.
  */
-export function openTickerChart(symbol: string): void {
-  if (typeof window !== "undefined" && pageOf(window.location.hash) !== "dashboard") window.location.hash = "#/";
-  getAppStore().getState().loadIntoSelected(symbol);
+export { openTickerChart };
+
+/** The desktop shell's click target (notify.rs runs `window.__stockwatcherOpenChart(symbol)`). */
+export function installOpenChartHook(): void {
+  if (typeof window === "undefined") return;
+  (window as Window & { __stockwatcherOpenChart?: (s: string) => void }).__stockwatcherOpenChart = openTickerChart;
 }
 
 export interface RunnersNotifier {
@@ -197,8 +199,8 @@ export function getRunnersNotifier(): RunnersNotifier {
     shared = createRunnersNotifier();
     // The desktop shell's click handler calls this after restoring the window (notify.rs).
     if (typeof window !== "undefined") {
-      const w = window as Window & { __stockwatcherOpenChart?: (s: string) => void; __stockwatcherNotice?: (m: RunnersNoticeMessage) => boolean };
-      w.__stockwatcherOpenChart = openTickerChart;
+      installOpenChartHook();
+      const w = window as Window & { __stockwatcherNotice?: (m: RunnersNoticeMessage) => boolean };
       // Dev builds only: feed a notice by hand to check the notification and its click.
       const n = shared;
       if (import.meta.env?.DEV) w.__stockwatcherNotice = (m) => n.handle(m);

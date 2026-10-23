@@ -10,6 +10,7 @@ import { FIXTURE_SYMBOL } from "../fixtures/fixtureFeed.ts";
 import { SearchPill } from "../search/SearchPill.tsx";
 import { TickerSearch } from "../search/TickerSearch.tsx";
 import { NavToggle } from "../nav/NavToggle.tsx";
+import { openTickerChart } from "../nav/openTicker.ts";
 import { useHasRail } from "../nav/navRail.ts";
 import { SettingsButton } from "../nav/settings.tsx";
 import { getAppStore, useApp } from "../state/store.ts";
@@ -60,22 +61,26 @@ export function Dashboard({ choice, feed }: Connection) {
   const candidates = useCandidates(choice, clockDay);
   const current = useMemo(() => followServer(choice, candidates.server), [choice, candidates.server]);
   const trading = usePaperTrading(feed);
+  // A Signals row always opens its ticker (owner, 2026-10-23: a pick is never ignored); only its
+  // episode marks wait for the current detector run.
   const pickDetection = useCallback((symbol: string, episodeId: string, runEpoch: string) => {
-    if (runEpoch !== feed.detection?.get().frame?.runEpoch) return;
-    setDetectionSelection({ index: selected, symbol, episodeId, runEpoch });
-    app.loadIntoSelected(symbol);
-  }, [app, feed, selected]);
+    setDetectionSelection(runEpoch === feed.detection?.get().frame?.runEpoch ? { index: selected, symbol, episodeId, runEpoch } : null);
+    openTickerChart(symbol);
+  }, [feed, selected]);
   // Deselecting the Signals row takes its marks off the chart (the chart loaded stays).
   const clearDetection = useCallback(() => setDetectionSelection(null), []);
   // Runners' new flags and breakouts as toasts with "Chart", whatever side tab is open.
-  useRunnersToasts(feed.rocket, app.loadIntoSelected);
+  useRunnersToasts(feed.rocket, openTickerChart);
 
   // What each chart shows: its ticker, or (empty slot) a different candidate per chart. A ticker
   // that left the price band falls back too. Neither fallback is written back: a device with a
   // momentarily stale list must not change every other device's panel.
+  // A ticker this device opened (a click, a notification, a search pick) is always shown as asked:
+  // app-state `picked` (owner, 2026-10-23).
+  const picked = useApp((s) => s.picked);
   const shown = dashboard.slots.slice(0, dashboard.count).map((slot, i) => {
     const fallback = candidates.symbols[i] ?? candidates.symbols[0] ?? FIXTURE_SYMBOL;
-    return followCandidates(slot.symbol ?? fallback, candidates.symbols);
+    return followCandidates(slot.symbol ?? fallback, candidates.symbols, picked);
   });
 
   // Ticker quick-open (Ctrl+P / ⌘P), as on the chart page; here it loads into the selected chart.
@@ -179,7 +184,7 @@ export function Dashboard({ choice, feed }: Connection) {
               : "The dashboard shows the live market (Settings → Data). Charts appear with the session's first trades: overnight from 20:00 ET Sunday to Thursday, then 4:00 to 20:00 ET."}
           </p>
         </div>
-        <SideTabs ross={feed.ross} rocket={feed.rocket} detection={feed.detection} onPick={app.loadIntoSelected} onEpisodePick={pickDetection} onEpisodeClear={clearDetection} />
+        <SideTabs ross={feed.ross} rocket={feed.rocket} detection={feed.detection} onPick={openTickerChart} onEpisodePick={pickDetection} onEpisodeClear={clearDetection} />
         </ScrollArea>
       ) : (
       <ScrollArea className="flex-1" viewportClassName="@container/panel flex flex-col gap-3">
@@ -187,7 +192,7 @@ export function Dashboard({ choice, feed }: Connection) {
             fixture has no pressure board). It scrolls with the panel, so its cards never squeeze
             the charts below their minimum height; on a phone it is one sideways-scrolling row,
             so a single chart fills the rest of the screen above the tab bar. */}
-        {feed.pressure && <HaltWatcher channel={feed.pressure} onPick={app.loadIntoSelected} />}
+        {feed.pressure && <HaltWatcher channel={feed.pressure} onPick={openTickerChart} />}
         {/* The Ross Panel beside the charts (owner, 2026-10-20: "a side panel adjacent to the chart
             wrapper"); below them when the panel is narrow. Server feed only. No gap here: the side
             column brings its own margin, so when every side panel is empty and it closes, the
@@ -214,12 +219,12 @@ export function Dashboard({ choice, feed }: Connection) {
             </div>
           ))}
         </div>
-        <SideTabs ross={feed.ross} rocket={feed.rocket} detection={feed.detection} onPick={app.loadIntoSelected} onEpisodePick={pickDetection} onEpisodeClear={clearDetection} />
+        <SideTabs ross={feed.ross} rocket={feed.rocket} detection={feed.detection} onPick={openTickerChart} onEpisodePick={pickDetection} onEpisodeClear={clearDetection} />
         </div>
       </ScrollArea>
       )}
 
-      <TickerSearch open={searchOpen} onOpenChange={app.setSearchOpen} symbols={candidates.symbols} quotes={feed.quotes} mock={current.fixtureData} current={shown[selected] ?? ""} recents={recents} onSelect={app.loadIntoSelected} anchor={hasRail ? pillRef : undefined} />
+      <TickerSearch open={searchOpen} onOpenChange={app.setSearchOpen} symbols={candidates.symbols} quotes={feed.quotes} mock={current.fixtureData} current={shown[selected] ?? ""} recents={recents} onSelect={openTickerChart} anchor={hasRail ? pillRef : undefined} />
     </div>
   );
 }

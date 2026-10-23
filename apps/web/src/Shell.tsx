@@ -8,6 +8,7 @@ import { Toaster } from "./lib/toast.tsx";
 import { useMediaQuery } from "./lib/useMediaQuery.ts";
 import { NavRail, NavTabBar, TAB_BAR_HEIGHT } from "./nav/MainNav.tsx";
 import { NavRailContext } from "./nav/navRail.ts";
+import { openTickerChart } from "./nav/openTicker.ts";
 import { usePage } from "./nav/routes.ts";
 import { AppSettingsDialog } from "./nav/settings.tsx";
 import { DashboardPage } from "./pages/DashboardPage.tsx";
@@ -94,9 +95,10 @@ export function Shell() {
 
 /**
  * The in-app delivery of a fired alert (approved design: "an alert.fired frame on every open
- * socket; a toast and an Activity row"): a bell toast with View, whatever page is open. Only for
- * fires heard live (a reconnect's Activity snapshot is history, not news) and only when the
- * alert's "In app" chip is on.
+ * socket; a toast and an Activity row"): a bell toast, whatever page is open. Only for fires heard
+ * live (a reconnect's Activity snapshot is history, not news) and only when the alert's "In app"
+ * chip is on. Its action opens the alert's ticker (owner, 2026-10-23: whatever presents a ticker,
+ * acting on it opens THAT chart; it used to open the Alerts page), like a Runners toast's "Chart".
  */
 function useFiredToasts() {
   useEffect(
@@ -104,7 +106,7 @@ function useFiredToasts() {
       getAppStore().subscribe((s, prev) => {
         const e = s.lastFired;
         if (!e || e === prev.lastFired || !e.app) return;
-        showToast(`${e.symbol} · ${e.text}`, { icon: "bell", ms: 6000, action: { label: "View", run: () => void (window.location.hash = "#/alerts") } });
+        showToast(`${e.symbol} · ${e.text}`, { icon: "bell", ms: 6000, action: { label: "Chart", run: () => openTickerChart(e.symbol) } });
       }),
     [],
   );

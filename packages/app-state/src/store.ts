@@ -101,6 +101,14 @@ export interface AppState {
   daysOpen: boolean;
   /** The dashboard chart a picked ticker loads into (0-based; always below `dashboard.count`). Per device. */
   dashboardSelected: number;
+  /**
+   * Tickers this device explicitly opened this session (a click, a tap, a search pick, a
+   * notification), newest first. A host's "the ticker left the price band, show the first
+   * candidate" fallback must never replace one of these (owner, 2026-10-23: the chart must always
+   * show the ticker just picked; see `shownTicker`). Not synced: another device's pick still falls
+   * back here like before.
+   */
+  picked: readonly string[];
 
   // Synced setters.
   setIndicators(next: IndicatorSpec[]): void;
@@ -204,6 +212,26 @@ function syncedFrom(sync: SettingsSync, shownSymbol: string) {
   };
 }
 
+/** How many explicit picks are remembered (`AppState.picked`). */
+const MAX_PICKED = 32;
+
+function pushPicked(list: readonly string[], symbol: string): readonly string[] {
+  if (list[0] === symbol) return list;
+  return [symbol, ...list.filter((s) => s !== symbol)].slice(0, MAX_PICKED);
+}
+
+/**
+ * What a chart shows for the ticker it was given: that ticker, unless it is no longer a candidate
+ * (it traded out of the server's price band), in which case the first candidate. A ticker this
+ * device explicitly opened (`picked`) is always shown as asked (owner, 2026-10-23): a click on a
+ * Runners notification, a panel row or a search result for a ticker the candidate list (polled)
+ * did not hold yet showed the first candidate instead, i.e. some other chart.
+ */
+export function shownTicker(current: string, candidates: readonly string[], picked: readonly string[] = []): string {
+  if (candidates.length === 0 || candidates.includes(current) || picked.includes(current)) return current;
+  return candidates[0]!;
+}
+
 export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppStore {
   if (legacy) {
     if (sync.get(APP_NS.searchRecents) === undefined && legacy.searchRecents !== undefined && legacy.searchRecents !== null) {
@@ -233,6 +261,7 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
     tapeOpen: false,
     daysOpen: false,
     dashboardSelected: 0,
+    picked: [],
     alertActivity: [],
     alertStatus: null,
     lastFired: null,
@@ -246,7 +275,7 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
       if (!symbol) return;
       sync.set(APP_NS.searchRecents, pushRecentTicker(get().searchRecents, symbol));
       writeView({ symbol });
-      set({ inspectT: null });
+      set({ inspectT: null, picked: pushPicked(get().picked, symbol) });
     },
     rememberTicker: (raw) => {
       const symbol = parseSymbol(raw);
@@ -276,6 +305,7 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
       if (!symbol) return;
       sync.set(APP_NS.searchRecents, pushRecentTicker(get().searchRecents, symbol));
       writeSlot(slot, { symbol });
+      set({ picked: pushPicked(get().picked, symbol) });
     },
     setDashboardTimeframe: (slot, timeframe) => writeSlot(slot, { timeframe }),
     setDashboardIndicators: (slot, next) => writeSlot(slot, { indicators: parseIndicators(next) }),

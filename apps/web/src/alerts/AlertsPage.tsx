@@ -16,6 +16,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ConnectionGate } from "../ConnectionGate.tsx";
 import { TimeSelect } from "../lib/TimeSelect.tsx";
 import { NavToggle } from "../nav/NavToggle.tsx";
+import { openTickerChart } from "../nav/openTicker.ts";
 import { useHasRail } from "../nav/navRail.ts";
 import { SettingsButton } from "../nav/settings.tsx";
 import { getAppStore, useApp } from "../state/store.ts";
@@ -80,7 +81,7 @@ function Alerts() {
 
   const actionsFor = (r: AlertRule): (AlertRowAction | "separator")[] => {
     const d = alertDisplay(r, states[r.id], now);
-    const out: (AlertRowAction | "separator")[] = [{ label: "Edit…", onSelect: () => openAlertForm(r, { editId: r.id }) }];
+    const out: (AlertRowAction | "separator")[] = [{ label: "Open chart", onSelect: () => openTickerChart(r.symbol) }, { label: "Edit…", onSelect: () => openAlertForm(r, { editId: r.id }) }];
     if (d.kind === "fired" || d.kind === "expired") out.push({ label: "Re-arm", onSelect: () => app.updateAlert(r.id, { expiry: r.expiry }) });
     if (d.kind === "snoozed") out.push({ label: "Unsnooze", onSelect: () => app.snoozeAlert(r.id, null) });
     else if (d.kind !== "fired" && d.kind !== "expired") {
@@ -118,7 +119,7 @@ function Alerts() {
           {ordered.length === 0 ? (
             <p className="m-0 text-[13px] text-text-faint">No alerts yet. Hold the chart for half a second, use the bell beside the + on the price axis, or New alert.</p>
           ) : (
-            ordered.map((r) => <AlertRow key={r.id} symbol={r.symbol} rule={conditionText(r.rule)} meta={metaText(r, now)} state={alertDisplay(r, states[r.id], now)} actions={actionsFor(r)} onOpen={() => openAlertForm(r, { editId: r.id })} />)
+            ordered.map((r) => <AlertRow key={r.id} symbol={r.symbol} rule={conditionText(r.rule)} meta={metaText(r, now)} state={alertDisplay(r, states[r.id], now)} actions={actionsFor(r)} onOpen={() => openAlertForm(r, { editId: r.id })} onOpenChart={() => openTickerChart(r.symbol)} />)
           )}
         </section>
         <section aria-label="Activity" className="flex min-w-0 flex-col gap-1">
@@ -132,7 +133,7 @@ function Alerts() {
             <div key={g.key} className="flex flex-col">
               <h2 className="m-0 mt-1 mb-1 text-xs font-medium tracking-wider text-muted-foreground uppercase">{g.label}</h2>
               {g.events.map((e) => (
-                <ActivityRow key={e.id} event={e} />
+                <ActivityRow key={e.id} event={e} onOpenChart={openTickerChart} />
               ))}
             </div>
           ))}

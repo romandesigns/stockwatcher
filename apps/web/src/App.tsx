@@ -110,7 +110,9 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
   // stock that traded out of the price band is no longer let through by the server, so the chart
   // moves to the first remaining candidate. That fallback is NOT written back: a device with a
   // momentarily stale candidate list must not move every other device's chart.
-  const symbol = followCandidates(syncedSymbol ?? initialSymbol(choice, FIXTURE_SYMBOL), candidates.symbols);
+  // A ticker this device opened is never swapped for a candidate (app-state `picked`).
+  const picked = useApp((s) => s.picked);
+  const symbol = followCandidates(syncedSymbol ?? initialSymbol(choice, FIXTURE_SYMBOL), candidates.symbols, picked);
   // Drawings follow the shown symbol; before paint, so a ticker switch never flashes the old marks.
   useLayoutEffect(() => app.showSymbol(symbol), [app, symbol]);
   const { series, tape, clock } = useChartFeed(feed, symbol, timeframe, bin);

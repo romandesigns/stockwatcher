@@ -7,6 +7,7 @@
 // in-browser fixture. A live page (the dashboard) never falls back for an empty list: an empty
 // live market is real (see chooseSource).
 
+import { shownTicker } from "@stockwatcher/app-state";
 import { withMarketSource, type MarketSource } from "@stockwatcher/shared";
 
 export interface ServerSymbols {
@@ -108,9 +109,10 @@ export function initialSymbol(choice: SourceChoice, preferred: string): string {
  * The symbol to keep showing after the candidate list changed. The server lets through only
  * stocks inside its price band, so a stock that trades out of the band disappears from the list;
  * the view then moves to the first remaining candidate rather than showing a stale chart.
- * Returns the current symbol when it is still a candidate (or no candidates are known yet).
+ * Returns the current symbol when it is still a candidate (or no candidates are known yet), and
+ * always when this device explicitly opened it (`picked`, app-state `shownTicker`: owner,
+ * 2026-10-23, a picked ticker is never swapped for another one).
  */
-export function followCandidates(current: string, candidates: readonly string[]): string {
-  if (candidates.length === 0 || candidates.includes(current)) return current;
-  return candidates[0]!;
+export function followCandidates(current: string, candidates: readonly string[], picked: readonly string[] = []): string {
+  return shownTicker(current, candidates, picked);
 }

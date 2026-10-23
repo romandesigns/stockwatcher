@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { DEFAULT_TOOLBOX_PHONE, drawingsNs, drawingsToDoc, SYNC_NS, type Drawing } from "@stockwatcher/chart-core";
 import { createSettingsSync, type SettingsClientMessage } from "@stockwatcher/shared";
 import { APP_NS, DEFAULT_VIEW, parseSearchRecents, parseSymbol, parseTradeQty, parseView } from "./namespaces.ts";
-import { createAppStore, type DevicePrefs } from "./store.ts";
+import { createAppStore, shownTicker, type DevicePrefs } from "./store.ts";
 
 /** A store on a real (offline) sync engine, plus a way to play another device's write. */
 function rig(opts: { legacy?: { searchRecents?: unknown; tradeQty?: unknown }; device?: boolean } = {}) {
@@ -163,6 +163,26 @@ describe("app store: drawings follow the shown symbol", () => {
     const r = rig();
     r.s().setDrawings([trend("a")]);
     expect(r.sync.namespaces()).toEqual([]);
+  });
+});
+
+describe("app store: explicit picks (owner, 2026-10-23)", () => {
+  test("every way of opening a ticker records it as this device's pick, newest first, once", () => {
+    const r = rig();
+    r.s().loadIntoSelected("cjmb");
+    r.s().openTicker("aal");
+    r.s().setDashboardSymbol(0, "CJMB");
+    r.s().setDashboardSymbol(0, "junk!");
+    expect(r.s().picked).toEqual(["CJMB", "AAL"]);
+  });
+
+  test("another device's slot write is not a pick here: the band fallback still applies to it", () => {
+    const r = rig();
+    r.remote(APP_NS.dashboard, { count: 1, slots: [{ symbol: "FXHI", timeframe: "1m" }] });
+    expect(r.s().picked).toEqual([]);
+    expect(shownTicker(r.s().dashboard.slots[0]!.symbol!, ["FXLO"], r.s().picked)).toBe("FXLO");
+    r.s().loadIntoSelected("FXHI");
+    expect(shownTicker(r.s().dashboard.slots[0]!.symbol!, ["FXLO"], r.s().picked)).toBe("FXHI");
   });
 });
 

@@ -54,6 +54,9 @@ export function useChartFeed(feed: ChartFeed, symbol: string, timeframe: Timefra
   const subscribe = useCallback((cb: () => void) => store.subscribe(cb), [store]);
   const getSeries = useCallback((): Series | undefined => store.getSeries(symbol, timeframe), [store, symbol, timeframe]);
   const series = useSyncExternalStore(subscribe, getSeries);
+  // A new ticker's tape is empty until its snapshot clears the buffer: the previous ticker's prints
+  // never show under the new one meanwhile (the newest print says whose the buffer is).
+  const shownTape = useMemo(() => (tape[0] && tape[0].symbol !== symbol ? [] : tape), [tape, symbol]);
   const clock = useSyncExternalStore(subscribe, useCallback((): Clock | null => store.getClock(), [store]));
-  return { series, tape, clock };
+  return { series, tape: shownTape, clock };
 }

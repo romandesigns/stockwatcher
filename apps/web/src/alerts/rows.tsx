@@ -3,6 +3,7 @@ import type { AlertEventWire } from "@stockwatcher/shared";
 import { formatEtTime } from "@stockwatcher/chart-core";
 import { Icon } from "@stockwatcher/chart-web";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger, cn } from "@stockwatcher/chart-web/ui";
+import { TickerLabel } from "../lib/TickerLabel.tsx";
 
 // The Alerts page's two rows (approved design, "Alerts manager"), also in wavykit as alert-row
 // and activity-row: no borders, the row a step up from the page, the state as a soft chip whose
@@ -33,12 +34,18 @@ export interface AlertRowProps {
   actions: readonly (AlertRowAction | "separator")[];
   /** The row itself opens the alert (edit). */
   onOpen?: () => void;
+  /** The ticker opens its chart (nav/openTicker.ts; owner, 2026-10-23: every ticker shown opens its own chart). */
+  onOpenChart?: () => void;
 }
 
-export function AlertRow({ symbol, rule, meta, state, actions, onOpen }: AlertRowProps) {
+export function AlertRow({ symbol, rule, meta, state, actions, onOpen, onOpenChart }: AlertRowProps) {
   return (
     <div className="grid grid-cols-[4.5rem_minmax(0,1fr)_auto_auto] items-center gap-3 rounded-[10px] bg-card py-2 pr-1.5 pl-3 @max-md/alerts:grid-cols-[minmax(0,1fr)_auto]">
-      <span className="font-mono text-[13.5px] font-semibold @max-md/alerts:hidden">{symbol}</span>
+      {onOpenChart ? (
+        <TickerLabel symbol={symbol} onTap={onOpenChart} aria-label={`${symbol}, open chart`} className="justify-self-start font-mono text-[13.5px] @max-md/alerts:hidden" />
+      ) : (
+        <span className="font-mono text-[13.5px] font-semibold @max-md/alerts:hidden">{symbol}</span>
+      )}
       <button type="button" onClick={onOpen} className="flex min-w-0 flex-col items-start gap-0.5 rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-ring">
         <span className="max-w-full truncate text-[13px]">
           <span className="mr-1.5 hidden font-mono font-semibold @max-md/alerts:inline">{symbol}</span>
@@ -71,12 +78,16 @@ export function AlertRow({ symbol, rule, meta, state, actions, onOpen }: AlertRo
 }
 
 /** One Activity line: time (ET), ticker, what happened, and how it was delivered or why it was held. */
-export function ActivityRow({ event }: { event: AlertEventWire }) {
+export function ActivityRow({ event, onOpenChart }: { event: AlertEventWire; onOpenChart?: (symbol: string) => void }) {
   const held = event.kind === "held" || event.phone === "held" || event.phone === "failed";
   return (
     <div className="grid grid-cols-[3.9rem_4rem_minmax(0,1fr)] items-baseline gap-2.5 px-1 py-2">
       <span className="font-mono text-xs text-muted-foreground">{formatEtTime(event.t, true)}</span>
-      <span className="font-mono text-[12.5px] font-semibold">{event.symbol}</span>
+      {onOpenChart ? (
+        <TickerLabel symbol={event.symbol} onTap={() => onOpenChart(event.symbol)} aria-label={`${event.symbol}, open chart`} className="justify-self-start font-mono text-[12.5px]" />
+      ) : (
+        <span className="font-mono text-[12.5px] font-semibold">{event.symbol}</span>
+      )}
       <span className="flex min-w-0 flex-col gap-0.5">
         <span className="text-[12.5px]">{event.text}</span>
         <span className={cn("text-[11px]", held ? "text-warning" : "text-text-faint")}>{event.note}</span>
