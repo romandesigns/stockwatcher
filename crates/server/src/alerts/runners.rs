@@ -34,11 +34,13 @@
 //!   4. the same stock got a Runners push less than [`SYMBOL_GAP_MS`] ago, whatever the kind
 //!      (a burst: [`BURST_GAP_MS`], so a burst right after a run or running push still goes
 //!      out) → `symbol_limit`;
-//!   5. [`DAILY_CAP`] Runners pushes already went out this ET day → `cap`, by priority: bursts
-//!      and new flags are never dropped by the cap (they still count); breakouts, running, run
-//!      and fast-move entries are. With ~50 running, ~25 run, ~20 burst and up to ~100 fast
-//!      pushes on a typical day the cap
-//!      is a runaway guard, not a budget.
+//!   5. the day's cap → `cap`. Entries (new flags, bursts, running, run, fast moves) count
+//!      against [`DAILY_CAP`]; bursts and new flags are never dropped by it (they still count).
+//!      Breakouts, a follow-up on a stock already pushed, have their own [`BREAKOUT_CAP`] and do
+//!      not count against the entries': on 2026-10-23 a phone with breakouts on spent the shared
+//!      cap of 120 by mid-afternoon and 3 fast and 5 run pushes, new opportunities, were held.
+//!      With up to ~140 fast, ~75 run, ~50 running and ~20 burst pushes on a busy day the entry
+//!      cap is a runaway guard, not a budget.
 //!
 //! - **Desktop and web** (owner, 2026-10-23: the phone's notifications there too): every notice
 //!   is decided a second time for the open desktop and web clients ([`desk_frame`]), with the
@@ -76,9 +78,11 @@ pub const SYMBOL_GAP_MS: i64 = 10 * 60_000;
 /// A burst's gap after the same stock's last Runners push: shorter, so heavy buying confirmed
 /// minutes after a run or running push still reaches the phone.
 pub const BURST_GAP_MS: i64 = 2 * 60_000;
-/// Breakout, running and run pushes stop once this many Runners pushes went out in the ET
-/// calendar day; bursts and new flags never do (module docs, "Limits").
-pub const DAILY_CAP: u32 = 120;
+/// Running, run and fast-move pushes stop once this many entry pushes went out in the ET calendar
+/// day; bursts and new flags never do (module docs, "Limits").
+pub const DAILY_CAP: u32 = 300;
+/// Breakout pushes per ET day, counted apart so follow-ups never crowd out a new entry.
+pub const BREAKOUT_CAP: u32 = 40;
 /// A notice older than this when it reaches the task is not pushed: news about a move minutes
 /// ago is noise on a lock screen.
 pub const MAX_AGE_MS: i64 = 3 * 60_000;
@@ -122,6 +126,9 @@ struct Saved {
     day: String,
     #[serde(default)]
     sent: u32,
+    /// Breakouts sent today, apart from `sent` ([`BREAKOUT_CAP`]).
+    #[serde(default)]
+    breakouts: u32,
     #[serde(default)]
     last_by_symbol: HashMap<String, i64>,
 }
@@ -201,6 +208,7 @@ impl RunnersDelivery {
         if self.s.day != day {
             self.s.day = day;
             self.s.sent = 0;
+            self.s.breakouts = 0;
             // Yesterday's stocks cannot hold anything back today (10 minutes < a night).
             self.s.last_by_symbol.clear();
         }
@@ -226,14 +234,42 @@ impl RunnersDelivery {
         {
             return Decision::Held(Hold::SymbolLimit);
         }
-        let never_capped = matches!(kind, NoticeKind::Burst | NoticeKind::New);
-        if self.s.sent >= DAILY_CAP && !never_capped {
-            return Decision::Held(Hold::Cap);
+        if kind == NoticeKind::Breakout {
+            if self.s.breakouts >= BREAKOUT_CAP {
+                return Decision::Held(Hold::Cap);
+            }
+            self.s.breakouts += 1;
+        } else {
+            let never_capped = matches!(kind, NoticeKind::Burst | NoticeKind::New);
+            if self.s.sent >= DAILY_CAP && !never_capped {
+                return Decision::Held(Hold::Cap);
+            }
+            self.s.sent += 1;
         }
-        self.s.sent += 1;
         self.s.last_by_symbol.insert(symbol.to_owned(), now);
         self.save();
         Decision::Send
+    }
+}
+
+#[cfg(test)]
+mod breakout_cap_tests {
+    use super::*;
+
+    #[test]
+    fn breakouts_have_their_own_cap_and_never_spend_the_entries() {
+        let mut d = RunnersDelivery::in_memory();
+        let prefs = Prefs::default();
+        let day = NaiveDate::from_ymd_opt(2026, 10, 23).unwrap();
+        let mut go = |kind: NoticeKind, s: &str| d.decide(kind, s, 1, &prefs, 0, 0, day, 600);
+        for i in 0..BREAKOUT_CAP {
+            assert_eq!(go(NoticeKind::Breakout, &format!("B{i}")), Decision::Send);
+        }
+        assert_eq!(go(NoticeKind::Breakout, "BX"), Decision::Held(Hold::Cap));
+        // 40 breakouts later, entries still have their whole budget.
+        assert_eq!(go(NoticeKind::Fast, "F1"), Decision::Send);
+        assert_eq!(go(NoticeKind::Run, "R1"), Decision::Send);
+        assert_eq!(d.sent_today(day), 2);
     }
 }
 
@@ -534,7 +570,7 @@ mod tests {
             d.decide(run, "OLD", 1, &prefs, 0, 4 * MIN, day(22), 480),
             Decision::Held(Hold::Stale)
         );
-        // The daily cap of 120: running and run pushes stop there, bursts and new flags do not.
+        // The entry cap: running and run pushes stop there, bursts and new flags do not.
         for i in 0..(DAILY_CAP - 3) {
             assert_eq!(go(&mut d, &format!("S{i}"), 13 * MIN), Decision::Send);
         }
@@ -561,7 +597,8 @@ mod tests {
             day(22),
             480,
         );
-        assert_eq!(breakout, Decision::Held(Hold::Cap));
+        // Breakouts have their own budget: the entries' cap does not hold them back.
+        assert_eq!(breakout, Decision::Send);
         // A fast move is droppable first too, with running and run.
         let fast = d.decide(
             NoticeKind::Fast,

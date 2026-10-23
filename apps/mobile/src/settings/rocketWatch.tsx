@@ -21,7 +21,7 @@ export function rocketSection(): SettingsSheetSection {
     id: "rocket",
     label: "Runners",
     icon: "bell",
-    description: "Experimental flags of a likely +30 % move.",
+    description: "Stocks that start running, from five detectors: flags, bursts, running, Run +20% and fast moves.",
     render: () => <RunnersPushPanel />,
   };
 }
