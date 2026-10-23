@@ -205,6 +205,8 @@ pub fn facts(archive: &Archive, day: NaiveDate) -> HashMap<String, Fact> {
 
 #[cfg(test)]
 mod calib;
+#[cfg(test)]
+mod movers;
 
 #[cfg(test)]
 mod tests {
