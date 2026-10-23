@@ -44,6 +44,9 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
+        // Rust-side only (a Runners toast's "Copy" button, notify.rs); its JavaScript commands
+        // stay ungranted like every other plugin's.
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![notify::runners_notify])

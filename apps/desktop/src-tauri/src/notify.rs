@@ -12,9 +12,16 @@
 //! `window.__stockwatcherOpenChart(symbol)`: the dashboard's "load into the selected chart",
 //! the same action as clicking a ticker on the dashboard.
 //!
+//! **Copy** (owner, 2026-10-23: a YMAT limit never filled while the ticker was being typed into
+//! the broker). Every Runners toast has a "Copy" button ([`COPY_ACTION`], an action type the
+//! plugin turns into a toast button on Windows) that puts the ticker on the clipboard from Rust
+//! (tauri-plugin-clipboard-manager, not exposed to the page) and leaves the window where it is,
+//! so the next window brought forward is the broker's. The body keeps its line break: the
+//! server puts the "Alert $2.41 · +5% = $2.53" reference on a line of its own.
+//!
 //! **Windows limits** (tauri-plugin-notification 2.7, notify-rust / WinRT toasts): a click is
 //! reported only while the toast is on screen; once it moved to the Action Center a click opens
-//! nothing in the app. In a dev build (`target\debug`) the toast carries PowerShell's identity and
+//! nothing in the app, and the "Copy" button copies nothing either. In a dev build (`target\debug`) the toast carries PowerShell's identity and
 //! icon, because only the installed app has the AppUserModelID (`io.wavystyle.stockwatcher`) that
 //! gives it the stockwatcher icon and name.
 
@@ -22,7 +29,12 @@ use std::sync::Mutex;
 
 use serde_json::Value;
 use tauri::{AppHandle, Manager, Runtime};
-use tauri_plugin_notification::NotificationExt;
+use tauri_plugin_clipboard_manager::ClipboardExt;
+use tauri_plugin_notification::{Action, ActionType, NotificationExt};
+
+/// The action type every Runners toast carries, and its "Copy" button's action id.
+const ACTION_TYPE: &str = "runners";
+pub const COPY_ACTION: &str = "copy";
 
 /// Toast text beyond this is cut (the server's lines are well under it).
 const MAX_TITLE: usize = 120;
@@ -43,8 +55,12 @@ pub fn valid_symbol(s: &str) -> bool {
         && chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '.' || c == '-')
 }
 
+/// `s` without control characters but its line breaks, cut at `max`.
 fn clip(s: &str, max: usize) -> String {
-    s.chars().filter(|c| !c.is_control()).take(max).collect()
+    s.chars()
+        .filter(|c| *c == '\n' || !c.is_control())
+        .take(max)
+        .collect()
 }
 
 /// The script a click runs in the page: open `symbol`'s chart (None for an invalid ticker, so
@@ -96,6 +112,7 @@ pub fn runners_notify<R: Runtime>(
         .title(clip(&title, MAX_TITLE))
         .body(clip(&body, MAX_BODY))
         .extra("symbol", &symbol)
+        .action_type_id(ACTION_TYPE)
         .show()
         .map_err(|e| {
             log::warn!("runners notification not shown: {e}");
@@ -117,11 +134,48 @@ fn symbol_of(p: &tauri_plugin_notification::ActionPerformed, shown: &Shown) -> O
         .map(|(_, s)| s.clone())
 }
 
-/// Registers the click handler: restore and focus the window, then open the ticker's chart.
+/// What a performed action does: the "Copy" button copies the ticker; anything else (a click on
+/// the toast itself, `tap`) opens its chart.
+#[derive(Debug, PartialEq, Eq)]
+enum Act {
+    Copy,
+    Open,
+}
+
+fn act(action_id: &str) -> Act {
+    if action_id == COPY_ACTION {
+        Act::Copy
+    } else {
+        Act::Open
+    }
+}
+
+/// Registers the "Copy" button and the click handler: "Copy" puts the ticker on the clipboard and
+/// leaves the window alone; a click restores and focuses the window, then opens the ticker's
+/// chart.
 pub fn listen<R: Runtime>(app: &AppHandle<R>) {
     app.manage(Shown::default());
+    let copy = ActionType::builder(ACTION_TYPE)
+        .actions(vec![Action::builder(COPY_ACTION, "Copy").build()])
+        .build();
+    if let Err(e) = app.notification().register_action_types(vec![copy]) {
+        log::warn!("runners notifications: no Copy button: {e}");
+    }
     let handle = app.clone();
     let res = app.notification().on_action(move |p| {
+        if act(p.action_id()) == Act::Copy {
+            let shown = handle.state::<Shown>();
+            // Only a ticker reaches the clipboard (the same rule as the chart's).
+            match symbol_of(p, &shown).filter(|s| valid_symbol(s)) {
+                Some(s) => {
+                    if let Err(e) = handle.clipboard().write_text(s) {
+                        log::warn!("runners notification copy failed: {e}");
+                    }
+                }
+                None => log::info!("runners notification copy without a ticker"),
+            }
+            return;
+        }
         let Some(window) = handle.get_webview_window("main") else {
             return;
         };
@@ -165,6 +219,13 @@ mod tests {
     }
 
     #[test]
+    fn the_copy_button_copies_and_a_click_opens() {
+        assert_eq!(act(COPY_ACTION), Act::Copy);
+        assert_eq!(act("tap"), Act::Open);
+        assert_eq!(act(""), Act::Open);
+    }
+
+    #[test]
     fn ids_are_stable_and_positive() {
         let a = notification_id("runners-new-2026-10-23-CJMB-7");
         assert_eq!(a, notification_id("runners-new-2026-10-23-CJMB-7"));
@@ -174,7 +235,8 @@ mod tests {
 
     #[test]
     fn text_is_clipped_and_cleaned() {
-        assert_eq!(clip("a\nb\u{7}c", 10), "abc");
+        // The line break before the reference line survives; other control characters do not.
+        assert_eq!(clip("a\nb\u{7}c\r", 10), "a\nbc");
         assert_eq!(clip("CJMB · Fast move · $2.41", 4), "CJMB");
     }
 }
