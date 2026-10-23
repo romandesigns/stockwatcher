@@ -88,7 +88,14 @@ export interface DetectionEpisode {
   /** Context badges are evidence, never detector admission gates or confidence. */
   ross_member: boolean | null;
   catalyst: "qualifying" | "none" | "unknown";
+  /** The day's gain against the previous official close, basis points (the Ross rule); null
+   * when the server knows no close for the symbol (or is older than this field). */
+  gain_bp: number | null;
+  /** The recognition's headline measurements (ignition, momentum); [] for the others or an
+   * older server. Copied verbatim from the engine's checks: format them, never derive. */
+  summary: DetectionSummaryFact[];
 }
+export interface DetectionSummaryFact { name: string; value: number; units: string; window_secs: number | null }
 export interface DetectionSnapshot {
   schema: 1;
   run_id: string;
@@ -130,6 +137,8 @@ export interface DetectionCoreEpisode {
   recognition: DetectionCoreFeatures | null; checks: DetectionCoreCheck[];
   current: { price: number | null; price_exec: number | null; price_age_ms: number | null; stale: boolean; [key: string]: unknown } | null;
   resolution: { state: string; reason: string; at: number; bar_end: number | null; transition_id: string } | null;
+  /** Additive (2026-10-22); absent from older servers. */
+  summary?: DetectionSummaryFact[];
 }
 export interface DetectionCoreSnapshot {
   schema: number; run_id: string; source: string; fidelity: string; policy: string; experimental: true; alerts_enabled: false;
@@ -158,7 +167,9 @@ export interface DetectionMessage {
   telemetry: Record<string, unknown>;
   profile: { price_min_micros: number; price_max_micros: number; research_min_micros: number; research_max_micros: number };
   policyHash?: string | null;
-  context?: Record<string, { ross_member: boolean | null; catalyst: DetectionEpisode["catalyst"] }>;
+  /** Per symbol. `prev_close_micros`/`gain_bp` are additive (2026-10-22) and present only when the
+   * server knows the symbol's previous close; an entry may then hold only those two. */
+  context?: Record<string, { ross_member?: boolean | null; catalyst?: DetectionEpisode["catalyst"]; prev_close_micros?: number; gain_bp?: number | null }>;
   experimental: true;
   alertsEnabled: false;
 }
@@ -317,6 +328,9 @@ function featureEvidence(value: unknown, prefix: string, at: number, source: str
   out.push({ name: prefix, value, units, state: null, required: false, rule: null, reason: value === null ? "feature_unavailable" : null, source, as_of: at, observed_at: at });
 }
 
+/** The well-formed summary facts of an episode (an additive field: absent or malformed is []). */
+const summaryFacts = (x: unknown): DetectionSummaryFact[] => Array.isArray(x) ? x.filter((f): f is DetectionSummaryFact => object(f) && typeof f.name === "string" && finite(f.value) && typeof f.units === "string" && (f.window_secs === null || finite(f.window_secs))) : [];
+
 /** Presentation-only projection of the untouched raw Rust snapshot. Measurements are copied,
  * never re-evaluated from client candles. In particular confidence and buyer pressure are absent. */
 export function detectionSnapshotView(m: DetectionMessage): DetectionSnapshot | null {
@@ -334,7 +348,8 @@ export function detectionSnapshotView(m: DetectionMessage): DetectionSnapshot | 
     featureEvidence(e.anchors, "anchors", e.first_detected_at, "engine causal anchor", evidence);
     evidence.push({ name: "quiet_context", value: e.context, units: "", state: null, required: false, rule: null, reason: null, source: "engine context", as_of: at, observed_at: at });
     const context = m.context?.[e.symbol];
-    return { episode_id: e.episode_id, instrument_id: e.instrument, symbol: e.symbol, run_id: s.run_id, source: m.source, fidelity: e.fidelity, trading_date: e.trading_date, segment: e.segment, family: e.family, variant: e.variant, policy_id: policyId ?? s.policy, policy_hash: m.policyHash ?? shortHash, parent_episode_id: e.parent_episode_id, related_episode_ids: e.related_episode_ids, first_detected_at: e.first_detected_at, last_material_transition_at: e.last_material_at, input_cutoff: e.recognition?.cutoff ?? at, bar_end: e.first_bar_end, state: e.state, status: last?.status ?? "unknown", restored: last?.restored ?? false, terminal: e.resolution !== null, resolved_at: e.resolution?.at ?? null, reason: e.resolution?.reason ?? null, price: e.current?.price ?? null, price_at: e.current?.price_exec ?? null, price_age_ms: e.current?.price_age_ms ?? null, price_stale: e.current?.stale ?? true, near_trigger: typeof e.current?.near_trigger === "boolean" ? e.current.near_trigger : null, level: levels.at(-1) ?? null, level_history: levels, evidence, timeline: history, coverage: e.warmup ? "restored/reconstructed — forward coverage unverified" : "collection completeness unverified", ross_member: context?.ross_member ?? null, catalyst: context?.catalyst ?? "unknown", default_visible: e.default_visible, raw: e };
+    const gain = context?.gain_bp;
+    return { episode_id: e.episode_id, instrument_id: e.instrument, symbol: e.symbol, run_id: s.run_id, source: m.source, fidelity: e.fidelity, trading_date: e.trading_date, segment: e.segment, family: e.family, variant: e.variant, policy_id: policyId ?? s.policy, policy_hash: m.policyHash ?? shortHash, parent_episode_id: e.parent_episode_id, related_episode_ids: e.related_episode_ids, first_detected_at: e.first_detected_at, last_material_transition_at: e.last_material_at, input_cutoff: e.recognition?.cutoff ?? at, bar_end: e.first_bar_end, state: e.state, status: last?.status ?? "unknown", restored: last?.restored ?? false, terminal: e.resolution !== null, resolved_at: e.resolution?.at ?? null, reason: e.resolution?.reason ?? null, price: e.current?.price ?? null, price_at: e.current?.price_exec ?? null, price_age_ms: e.current?.price_age_ms ?? null, price_stale: e.current?.stale ?? true, near_trigger: typeof e.current?.near_trigger === "boolean" ? e.current.near_trigger : null, level: levels.at(-1) ?? null, level_history: levels, evidence, timeline: history, coverage: e.warmup ? "restored/reconstructed — forward coverage unverified" : "collection completeness unverified", ross_member: context?.ross_member ?? null, catalyst: context?.catalyst ?? "unknown", gain_bp: finite(gain) ? gain : null, summary: summaryFacts(e.summary), default_visible: e.default_visible, raw: e };
   });
   const unavailable = new Map<string, number>();
   const interrupted = s.data_status.interrupted_symbols;
@@ -354,12 +369,15 @@ export function detectionSnapshotView(m: DetectionMessage): DetectionSnapshot | 
 
 /** Structurally matches chart-core DetectionOverlay, without making shared depend on a chart.
  * The caller supplies its symbol and optional exact episode selection; a missing ID yields no
- * substitute annotation. ns/micros -> ms/dollars is the only transformation. */
+ * substitute annotation. ns/micros -> ms/dollars is the only transformation.
+ *
+ * A resolved (terminal) episode yields none: the chart marks are the selected row's LIVE
+ * references (design canvas, 2026-10-22), so they leave the chart the moment it resolves. */
 export function detectionOverlays(snapshot: DetectionSnapshot | null, symbol: string, episodeId?: string) {
   const rows = snapshot?.episodes.filter((e) => e.symbol === symbol) ?? [];
   const preferred = episodeId ?? snapshot?.dominant_episode_ids[symbol];
   const e = preferred ? rows.find((x) => x.episode_id === preferred) : rows.filter((x) => !x.terminal && x.default_visible).sort((a, b) => b.last_material_transition_at - a.last_material_transition_at || a.episode_id.localeCompare(b.episode_id))[0];
-  if (!e) return [];
+  if (!e || e.terminal) return [];
   return [{ episodeId: e.episode_id, label: `${detectionFamilyLabel(e.family)} · ${detectionStateLabel(e.state)}`, recognizedAt: e.first_detected_at / 1_000_000, terminal: e.terminal, stale: e.price_stale, levels: e.level_history.map((l) => ({ id: l.level_id, kind: l.kind, version: l.version, knownAt: l.known_at / 1_000_000, armedAt: l.armed_at === null ? null : l.armed_at / 1_000_000, validTo: l.valid_to === null ? null : l.valid_to / 1_000_000, trigger: l.trigger / 1_000_000, invalidation: l.invalidation === null ? null : l.invalidation / 1_000_000 })) }];
 }
 
@@ -432,6 +450,10 @@ export type DetectionTone = "critical" | "warning" | "accent" | "text" | "muted"
 export interface DetectionRowView {
   symbol: string;
   price: string;
+  /** The day's gain, as the Ross rows print it ("+38.4%"); "" when the server sent none. */
+  gain: string;
+  /** Green up / red down like the Ross and Runners gain; never a stage colour. */
+  gainTone: "good" | "critical" | "muted";
   family: string;
   stage: DetectionStage;
   label: string;
@@ -456,6 +478,35 @@ const BROKE = new Set(["trigger_observed", "confirmed", "retained"]);
 const FAILED = new Set(["invalidated", "rejected"]);
 /** Prices as the rows print them (the canvas): four decimals below $1, two from $1, no "$". */
 const rowPrice = (micros: number | null) => (micros === null ? "—" : (micros / 1_000_000).toFixed(Math.abs(micros) < 1_000_000 ? 4 : 2));
+
+/** Basis points as the Ross rows print a gain: one decimal, a sign, a real minus. */
+export function detectionGain(bp: number | null): string {
+  if (bp === null) return "";
+  const v = bp / 100;
+  const s = Math.abs(v).toFixed(1);
+  return v > 0 ? `+${s}%` : v < 0 ? `−${s}%` : "0.0%";
+}
+
+const span = (secs: number | null) => (secs === null ? "" : secs >= 60 && secs % 60 === 0 ? ` in ${secs / 60}m` : ` in ${secs}s`);
+const ratio = (milli: number) => `${(milli / 1000).toFixed(milli >= 10_000 ? 0 : 1)}×`;
+const logPercent = (ppm: number) => {
+  const p = (Math.exp(ppm / 1_000_000) - 1) * 100;
+  return `${p >= 0 ? "+" : "−"}${Math.abs(p).toFixed(1)}%`;
+};
+/**
+ * The row note of a family with no pullback stage (ignition, momentum): the engine's own
+ * recognition measurements (`summary`, copied from its checks), formatted, never derived:
+ * "range 3.2× · +2.1% in 15s", "$vol 4.1× · +1.2% in 30s". A fact of an unknown kind is skipped.
+ */
+export function detectionSummaryNote(facts: readonly DetectionSummaryFact[]): string {
+  const parts: string[] = [];
+  for (const f of facts) {
+    if (f.name === "range_expansion" && f.units === "milli") parts.push(`range ${ratio(f.value)}`);
+    else if (f.name === "dollar_volume_rate" && f.units === "milli") parts.push(`$vol ${ratio(f.value)}`);
+    else if ((f.name === "return" || f.name === "rise") && f.units === "log_ppm") parts.push(`${logPercent(f.value)}${span(f.window_secs)}`);
+  }
+  return parts.join(" · ");
+}
 
 /** "now" under a minute, then minutes, then hours: since the instrument's last material change. */
 export function detectionAgo(thenNs: number, nowNs: number): string {
@@ -498,11 +549,14 @@ export function detectionRowView(group: DetectionGroup, nowNs: number, current: 
   else if (stage === "forming" && trigger !== null) note = `trigger ${rowPrice(trigger)}${away}`;
   else if (stage === "triggered" && trigger !== null) note = `${rowPrice(trigger)}${when ? ` · ${formatTime(when)}` : ""}`;
   else if (stage === "failed") note = e.state === "rejected" ? "back inside range" : inval !== null ? `below ${rowPrice(inval)}` : "";
+  else if (stage === "other") note = detectionSummaryNote(e.summary);
   // The meter only where a pullback stage is live and both levels are known.
   const meter = live && (stage === "forming" || stage === "near" || stage === "crossing") && trigger !== null && inval !== null && e.price !== null && trigger > inval ? Math.max(0, Math.min(1, (e.price - inval) / (trigger - inval))) : null;
   const view: DetectionRowView = {
     symbol: e.symbol,
     price: rowPrice(e.price),
+    gain: detectionGain(e.gain_bp),
+    gainTone: e.gain_bp === null || e.gain_bp === 0 ? "muted" : e.gain_bp > 0 ? "good" : "critical",
     family: detectionFamilyLabel(e.family),
     stage,
     label,
@@ -517,7 +571,7 @@ export function detectionRowView(group: DetectionGroup, nowNs: number, current: 
     ross: e.ross_member === true,
     aria: "",
   };
-  view.aria = `${view.symbol} ${view.price}, ${view.family}, ${label}${note ? ` ${note}` : ""}, ${view.ago}${view.news ? ", news" : ""}${view.ross ? ", on the Ross Panel" : ""}${e.price_stale ? ", price stale" : ""}`;
+  view.aria = `${view.symbol} ${view.price}${view.gain ? ` ${view.gain}` : ""}, ${view.family}, ${label}${note ? ` ${note}` : ""}, ${view.ago}${view.news ? ", news" : ""}${view.ross ? ", on the Ross Panel" : ""}${e.price_stale ? ", price stale" : ""}`;
   return view;
 }
 

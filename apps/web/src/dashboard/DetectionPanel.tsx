@@ -35,6 +35,8 @@ const TONE: Record<DetectionTone, string> = {
   muted: "text-muted-foreground",
   dim: "text-text-faint",
 };
+/** The day's gain, coloured like the Ross row's (text-good), red only when down. */
+const GAIN: Record<DetectionRowView["gainTone"], string> = { good: "text-good", critical: "text-critical", muted: "text-muted-foreground" };
 /**
  * The edge a stage earns (the Ross cue edge: a filled inset shadow, never a border). Only a
  * crossing in progress (accent, with a faint wash) and a price at the trigger (amber): a
@@ -60,9 +62,11 @@ const measured = (c: DetectionEvidence): string => {
  * side column's third tab, beside Ross and Runners. One compact row per instrument: ticker,
  * price, age, Ross/news marks, then family · stage · level note, and the trigger meter while a
  * pullback is live. The stage labels are the Ross cue's (shared `detectionRowView`); a row's
- * colour is spent only at the trigger (amber) or crossing it (accent, pulsing). Pressing a row
- * shows its episode on the selected chart and opens its evidence below it; tap, then hold copies
- * the ticker. Filters fold away under one disclosure. All state and checks come from Rust:
+ * colour is spent only at the trigger (amber) or crossing it (accent, pulsing). The day's gain
+ * follows the price (server `context.gain_bp`), and an ignition or momentum row's note is the
+ * engine's recognition summary. Pressing a row draws its episode on the selected chart (faint
+ * event-start, trigger and invalidation marks: chart-core `layoutDetections`) and opens its
+ * evidence below it; pressing it again clears both. Tap, then hold copies the ticker. Filters fold away under one disclosure. All state and checks come from Rust:
  * filters, pages and the selection never change what is monitored.
  *
  * Its tab is hidden while the detector is off or not yet known (owner review 2026-10-21; the
@@ -71,7 +75,7 @@ const measured = (c: DetectionEvidence): string => {
  * only while both views have rows; with one, that one is shown. It takes its state: the side
  * column subscribes (useDetection) to decide the tab and passes it down; tests need no socket.
  */
-export function DetectionPanelView({ state, onPick }: { state: DetectionState; onPick: (symbol: string, episodeId: string, runEpoch: string) => void }) {
+export function DetectionPanelView({ state, onPick, onClear }: { state: DetectionState; onPick: (symbol: string, episodeId: string, runEpoch: string) => void; onClear?: () => void }) {
   const [filter, setFilter] = useState<DetectionFilter>("all");
   const [pickedRecent, setHistory] = useState(false);
   const [segment, setSegment] = useState("all");
@@ -92,7 +96,14 @@ export function DetectionPanelView({ state, onPick }: { state: DetectionState; o
   const current = state.connected && !state.resyncing;
   const now = snapshot ? Math.max(snapshot.cutoff, snapshot.as_of) : 0;
   const applied = [filter !== "all", segment !== "all", source !== "all", catalyst !== "all"].filter(Boolean).length;
-  const select = (e: DetectionEpisode) => {
+  // Pressing the selected row again deselects it: its details fold away and its marks leave the
+  // chart (the chart keeps the ticker).
+  const select = (e: DetectionEpisode, wasSelected: boolean) => {
+    if (wasSelected) {
+      setSelection(null);
+      onClear?.();
+      return;
+    }
     setSelection({ epoch, id: e.episode_id });
     onPick(e.symbol, e.episode_id, epoch);
   };
@@ -170,15 +181,15 @@ export function DetectionPanelView({ state, onPick }: { state: DetectionState; o
   );
 }
 
-const SignalRow = memo(function SignalRow({ group, row: r, selected, onSelect }: { group: DetectionGroup; row: DetectionRowView; selected: boolean; onSelect: (e: DetectionEpisode) => void }) {
+const SignalRow = memo(function SignalRow({ group, row: r, selected, onSelect }: { group: DetectionGroup; row: DetectionRowView; selected: boolean; onSelect: (e: DetectionEpisode, wasSelected: boolean) => void }) {
   const e = group.selected;
-  const press = useTickerPress(e.symbol, () => onSelect(e));
+  const press = useTickerPress(e.symbol, () => onSelect(e, selected));
   return (
     <button
       type="button"
       {...press}
       aria-pressed={selected}
-      aria-label={`${r.aria}. Shows it on the chart`}
+      aria-label={`${r.aria}. ${selected ? "Shown on the chart; press to clear" : "Shows it on the chart"}`}
       className={cn(
         "flex w-full cursor-pointer touch-manipulation flex-col gap-1 rounded-lg bg-bg-row px-2.5 py-2 text-left font-mono outline-none select-none transition-[background-color,box-shadow,opacity] duration-200 hover:bg-bg-raised focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none",
         EDGE[r.stage],
@@ -189,6 +200,7 @@ const SignalRow = memo(function SignalRow({ group, row: r, selected, onSelect }:
       <span className="flex items-baseline gap-1.5">
         <span className="text-sm font-semibold">{r.symbol}</span>
         <span className="text-[13px] tabular-nums">{r.price}</span>
+        {r.gain && <span className={cn("text-xs tabular-nums", GAIN[r.gainTone])}>{r.gain}</span>}
         {r.ross && <span className="size-1.5 self-center rounded-full bg-primary/70" aria-hidden />}
         {r.news && <span className="rounded bg-bg-raised px-1 py-px font-sans text-[9px] font-semibold text-muted-foreground">NEWS</span>}
         <span className="ml-auto text-[11px] text-text-faint tabular-nums">{r.ago}</span>

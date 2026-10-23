@@ -35,9 +35,15 @@ test("the Active / Recent toggle only while both views have rows; it fades, neve
 
 test("the shared row model and honest stages", () => {
   expect(panel).toContain("detectionRowView(group, now, current, hhmm)");
-  // Only a crossing and a price at the trigger earn an edge; never green anywhere on the card.
+  // Only a crossing and a price at the trigger earn an edge; green never marks a stage. Its one
+  // use is the day's gain, as on the Ross row.
   expect(src).toContain("const EDGE: Partial<Record<DetectionRowView[\"stage\"], string>> = { crossing: UI.accent, near: UI.warning };");
-  expect(src).not.toMatch(/UI\.good/);
+  expect(src.match(/UI\.good/g)).toHaveLength(1);
+  expect(src).toContain("const GAIN: Record<DetectionRowView[\"gainTone\"], string> = { good: UI.good, critical: UI.critical, muted: UI.textDim };");
+});
+
+test("the day's gain follows the price on the row, only when the server sent one", () => {
+  expect(src).toContain("{r.gain ? <Text style={[styles.gain, { color: GAIN[r.gainTone] }]}>{r.gain}</Text> : null}");
 });
 
 test("rows: tap opens, tap-then-hold copies; crossfade, not layout animation; no borders; scroll views hide bars", () => {

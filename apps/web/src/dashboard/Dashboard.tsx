@@ -65,6 +65,8 @@ export function Dashboard({ choice, feed }: Connection) {
     setDetectionSelection({ index: selected, symbol, episodeId, runEpoch });
     app.loadIntoSelected(symbol);
   }, [app, feed, selected]);
+  // Deselecting the Signals row takes its marks off the chart (the chart loaded stays).
+  const clearDetection = useCallback(() => setDetectionSelection(null), []);
   // Runners' new flags and breakouts as toasts with "Chart", whatever side tab is open.
   useRunnersToasts(feed.rocket, app.loadIntoSelected);
 
@@ -177,7 +179,7 @@ export function Dashboard({ choice, feed }: Connection) {
               : "The dashboard shows the live market (Settings → Data). Charts appear with the session's first trades: overnight from 20:00 ET Sunday to Thursday, then 4:00 to 20:00 ET."}
           </p>
         </div>
-        <SideTabs ross={feed.ross} rocket={feed.rocket} detection={feed.detection} onPick={app.loadIntoSelected} onEpisodePick={pickDetection} />
+        <SideTabs ross={feed.ross} rocket={feed.rocket} detection={feed.detection} onPick={app.loadIntoSelected} onEpisodePick={pickDetection} onEpisodeClear={clearDetection} />
         </div>
       ) : (
       <div className="@container/panel flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-y-auto">
@@ -212,7 +214,7 @@ export function Dashboard({ choice, feed }: Connection) {
             </div>
           ))}
         </div>
-        <SideTabs ross={feed.ross} rocket={feed.rocket} detection={feed.detection} onPick={app.loadIntoSelected} onEpisodePick={pickDetection} />
+        <SideTabs ross={feed.ross} rocket={feed.rocket} detection={feed.detection} onPick={app.loadIntoSelected} onEpisodePick={pickDetection} onEpisodeClear={clearDetection} />
         </div>
       </div>
       )}

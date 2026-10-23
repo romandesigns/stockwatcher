@@ -40,6 +40,19 @@ describe("Signals (design canvas, 2026-10-22)", () => {
     expect(html.match(/text-primary/g)?.length).toBe(2);
   });
 
+  test("the day's gain beside the price (green like the Ross row, never on a stage); a summary note for ignition", () => {
+    const m = message([episode("KLMN", "trigger_observed"), episode("TUVW", "recognized", { family: "ignition", levels: [], summary: [{ name: "range_expansion", value: 3240, units: "milli", window_secs: null }, { name: "return", value: 20_783, units: "log_ppm", window_secs: 15 }] })]);
+    m.context = { KLMN: { ross_member: true, catalyst: "qualifying", prev_close_micros: 2_253_000, gain_bp: 3848 }, TUVW: { prev_close_micros: 3_400_000, gain_bp: -820 } };
+    const out = render(stateOf(m));
+    expect(out).toContain('<span class="text-xs tabular-nums text-good">+38.5%</span>');
+    expect(out).toContain('<span class="text-xs tabular-nums text-critical">−8.2%</span>');
+    expect(out.match(/text-good/g)?.length).toBe(1);
+    expect(out).toContain("range 3.2× · +2.1% in 15s");
+    expect(out).toContain("Broke trigger");
+    // Without a gain from the server, the row simply has none.
+    expect(html).not.toContain("tabular-nums text-muted-foreground\">0.0%");
+  });
+
   test("the trigger meter only on live pullback stages", () => {
     expect(html.match(/from the pullback low to the trigger/g)?.length).toBe(3);
   });

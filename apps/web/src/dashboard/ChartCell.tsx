@@ -9,7 +9,7 @@ import { useChartFeed } from "../feed/useChartFeed.ts";
 import { useChartAlerts } from "../alerts/useChartAlerts.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { getAppStore, useApp } from "../state/store.ts";
-import { detectionOverlays, groupDetections } from "@stockwatcher/shared";
+import { detectionOverlays } from "@stockwatcher/shared";
 import { useDetection } from "../feed/useDetection.ts";
 import { useZones } from "../feed/useZones.ts";
 import { ZoneNote } from "./ZoneNote.tsx";
@@ -53,8 +53,10 @@ export function ChartCell({ index, slot, symbol, feed, trading, selected, showSe
   const { series, clock } = useChartFeed(feed, symbol, slot.timeframe, bin, `d${index}`);
   const discovery = useDetection(feed.detection);
   const annotations = useMemo(() => {
-    const visible = groupDetections(discovery.snapshot).find((g) => g.symbol === symbol)?.selected.episode_id;
-    const id = detectionSelection ? (detectionSelection.runEpoch === discovery.frame?.runEpoch ? detectionSelection.episodeId : undefined) : visible;
+    // Only a picked Signals (or Ross) row's episode is drawn (design canvas, 2026-10-22): no row
+    // selected, no marks, so deselecting the row clears the chart. A resolved episode yields none
+    // (detectionOverlays), so the marks also leave the moment it resolves.
+    const id = detectionSelection && detectionSelection.runEpoch === discovery.frame?.runEpoch ? detectionSelection.episodeId : undefined;
     if (!id) return [];
     return detectionOverlays(discovery.snapshot, symbol, id).map((x) => discovery.connected && !discovery.resyncing ? x : { ...x, stale: true, label: `Last known · ${x.label}` });
   }, [discovery, symbol, detectionSelection]);

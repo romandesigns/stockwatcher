@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createDetectionChannel, detectionAgo, detectionAttention, detectionBlocked, detectionMatches, detectionOverlays, detectionPrice, detectionRowView, detectionSnapshotView, groupDetections, type DetectionCoreEpisode, type DetectionMessage } from "./detection.ts";
+import { createDetectionChannel, detectionAgo, detectionAttention, detectionBlocked, detectionGain, detectionMatches, detectionOverlays, detectionPrice, detectionRowView, detectionSnapshotView, detectionSummaryNote, groupDetections, type DetectionCoreEpisode, type DetectionMessage } from "./detection.ts";
 import { parseServerMessage } from "./protocol.ts";
 import { createWsClient, type WebSocketLike } from "./ws.ts";
 
@@ -235,6 +235,40 @@ describe("Signals rows (design canvas, 2026-10-22)", () => {
     expect(detectionAgo(0, 7_200_000_000_000)).toBe("2h");
     expect([row().news, row().ross]).toEqual([false, false]);
     expect(row().aria).toBe("MPXA 3.34, Micro-pullback, Pullback trigger 3.40 · 1.8% away, 1m");
+  });
+
+  test("gain from the server's previous close, as the Ross rows print it; none without one", () => {
+    expect([row().gain, row().gainTone]).toEqual(["", "muted"]);
+    const f = frame();
+    f.context = { MPXA: { ross_member: true, catalyst: "qualifying", prev_close_micros: 2_413_000, gain_bp: 3842 } };
+    const view = detectionSnapshotView(f)!;
+    const r = detectionRowView(groupDetections(view)[0]!, 100 + 90_000_000_000, true, T);
+    expect([r.gain, r.gainTone, r.ross, r.news]).toEqual(["+38.4%", "good", true, true]);
+    expect(r.aria.startsWith("MPXA 3.34 +38.4%, Micro-pullback")).toBe(true);
+    // A gain-only context entry (no Ross decision yet) keeps the badges unknown.
+    f.context = { MPXA: { prev_close_micros: 4_000_000, gain_bp: -1650 } };
+    const down = detectionSnapshotView(f)!.episodes[0]!;
+    expect([down.gain_bp, down.ross_member, down.catalyst, detectionGain(down.gain_bp)]).toEqual([-1650, null, "unknown", "−16.5%"]);
+  });
+
+  test("families with no pullback stage get the engine's own summary as their note", () => {
+    const summary = [{ name: "range_expansion", value: 3240, units: "milli", window_secs: null }, { name: "return", value: 20_783, units: "log_ppm", window_secs: 15 }];
+    const ignition = row({ family: "ignition", state: "recognized", summary, levels: [] });
+    expect([ignition.label, ignition.note]).toEqual(["Ignition recognized", "range 3.2× · +2.1% in 15s"]);
+    const building = row({ family: "momentum_building", state: "building", levels: [], summary: [{ name: "dollar_volume_rate", value: 14_200, units: "milli", window_secs: 30 }, { name: "rise", value: 11_929, units: "log_ppm", window_secs: 30 }] });
+    expect(building.note).toBe("$vol 14× · +1.2% in 30s");
+    // An older server (no summary) or an unknown fact: no note, never a guess.
+    expect(row({ family: "ignition", state: "recognized", levels: [] }).note).toBe("");
+    expect(detectionSummaryNote([{ name: "mystery", value: 1, units: "milli", window_secs: null }])).toBe("");
+    // A pullback stage keeps its level note even if a summary were present.
+    expect(row({ summary }).note).toBe("trigger 3.40 · 1.8% away");
+  });
+
+  test("chart marks: the selected live episode only; none once it resolves", () => {
+    const f = frame();
+    expect(detectionOverlays(detectionSnapshotView(f), "MPXA", "fixture/MPXA/micro/1")).toHaveLength(1);
+    Object.assign(f.snapshot!.active[0]!, { state: "invalidated", resolution: { state: "invalidated", reason: "below_invalidation", transition_id: "x", at: 100, bar_end: null } });
+    expect(detectionOverlays(detectionSnapshotView(f), "MPXA", "fixture/MPXA/micro/1")).toEqual([]);
   });
 
   test("the count is the active rows at the trigger or crossing it", () => {

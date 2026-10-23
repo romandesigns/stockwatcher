@@ -49,6 +49,8 @@ const TONE: Record<DetectionTone, string> = {
   muted: UI.textDim,
   dim: UI.textFaint,
 };
+/** The day's gain, coloured like the Ross row's (good), red only when down; never a stage colour. */
+const GAIN: Record<DetectionRowView["gainTone"], string> = { good: UI.good, critical: UI.critical, muted: UI.textDim };
 /** Only a crossing in progress (accent) and a price at the trigger (amber) earn an edge: a broke-trigger is a past stage, never a green "go". */
 const EDGE: Partial<Record<DetectionRowView["stage"], string>> = { crossing: UI.accent, near: UI.warning };
 
@@ -236,6 +238,7 @@ const SignalRow = memo(function SignalRow({ group, row: r, reducedMotion, onPick
       <View style={styles.line}>
         <Text style={styles.symbol}>{r.symbol}</Text>
         <Text style={styles.price}>{r.price}</Text>
+        {r.gain ? <Text style={[styles.gain, { color: GAIN[r.gainTone] }]}>{r.gain}</Text> : null}
         {r.ross && <View style={styles.rossDot} />}
         {r.news && (
           <View style={styles.badge}>
@@ -409,6 +412,7 @@ const styles = StyleSheet.create({
   line: { flexDirection: "row", alignItems: "center", gap: 6 },
   symbol: { color: UI.text, fontSize: 14, fontFamily: fonts.semibold },
   price: { color: UI.text, fontSize: 13, fontVariant: ["tabular-nums"] },
+  gain: { fontSize: 12, fontVariant: ["tabular-nums"] },
   rossDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: "#c3cbff" },
   badge: { borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1, backgroundColor: UI.raised },
   badgeText: { color: UI.textDim, fontSize: 9, fontFamily: fonts.semibold },

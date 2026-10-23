@@ -60,7 +60,7 @@ const NONE: SideTab[] = [];
  * anything: the channels keep their last rows (dimmed by each panel) until the new connection
  * says otherwise.
  */
-export function SideTabs({ ross, rocket, detection, onPick, onEpisodePick }: { ross: RossChannel | undefined; rocket: RocketChannel | undefined; detection: DetectionChannel | undefined; onPick: (symbol: string) => void; onEpisodePick: (symbol: string, episodeId: string, runEpoch: string) => void }) {
+export function SideTabs({ ross, rocket, detection, onPick, onEpisodePick, onEpisodeClear }: { ross: RossChannel | undefined; rocket: RocketChannel | undefined; detection: DetectionChannel | undefined; onPick: (symbol: string) => void; onEpisodePick: (symbol: string, episodeId: string, runEpoch: string) => void; onEpisodeClear?: () => void }) {
   const [picked, setPicked] = useState<SideTab>(readTab);
   const rossState = useRossState(ross);
   const rocketState = useRocket(rocket);
@@ -91,7 +91,7 @@ export function SideTabs({ ross, rocket, detection, onPick, onEpisodePick }: { r
     ) : t === "rocket" ? (
       <RocketPanelView state={rocketState} wallNow={wall} onPick={onPick} />
     ) : t === "signals" ? (
-      <DetectionPanelView state={detected} onPick={onEpisodePick} />
+      <DetectionPanelView state={detected} onPick={onEpisodePick} onClear={onEpisodeClear} />
     ) : null;
   const has = (t: SideTab) => visible.includes(t);
   // Only from current data: while reconnecting the rows are last known, so nothing claims attention.
