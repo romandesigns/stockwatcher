@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger, Input, OptionSelect } from "@stockwatcher/chart-web/ui";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { renderToStaticMarkup } from "react-dom/server";
 import { TimeSelect } from "./TimeSelect.tsx";
@@ -60,18 +61,94 @@ describe("shadcn controls (owner, 2026-10-22: no browser-native UI)", () => {
   });
 });
 
-// A guard so a native control does not creep back in: every .tsx under the web app and the chart
-// package. Bare <input> is allowed only for what has no shadcn equivalent here (none today).
-const NATIVE = [/<select[\s>]/, /<option[\s>]/, /<datalist[\s>]/, /<details[\s>]/, /<summary[\s>]/, /<dialog[\s>]/, /<input[\s>]/, /<textarea[\s>]/, /\btype="(?:checkbox|radio|range|date|time|datetime-local|month|week|number|color|file)"/, /\bwindow\.(?:alert|confirm|prompt)\(/, /\stitle=\{/, /\stitle="/];
+// A guard so native UI does not creep back in, over every .tsx/.ts/.css file under the web app
+// and the chart package (the desktop app wraps the web app and has no UI source of its own).
+// Bare <input> is allowed only for what has no shadcn equivalent here (none today). A line that
+// truly needs a native piece carries `native-ok: <why>` in a comment on that same line; keep
+// them rare and specific (none today). Comment lines are skipped, so docs can name what they replace.
+const SCROLL_JSX = [/\boverflow(?:-[xy])?-(?:auto|scroll)\b/, /\boverflow[XY]?:\s*["'`](?:auto|scroll)/];
+const NATIVE_SCRIPT = [
+  // Blocking browser dialogs and the native <dialog> API: use the shadcn Dialog or a toast.
+  /(?<![\w$.])(?:alert|confirm|prompt)\(/,
+  /\b(?:window|globalThis|self)\.(?:alert|confirm|prompt)\(/,
+  /\.showModal\(/,
+];
+const NATIVE_JSX = [
+  // Controls with shadcn/Base UI equivalents (Select, Switch, Collapsible, Dialog, Input).
+  /<select[\s>]/, /<option[\s>]/, /<datalist[\s>]/, /<details[\s>]/, /<summary[\s>]/, /<dialog[\s>]/, /<input[\s>]/, /<textarea[\s>]/,
+  // Unstyled native gauges: draw them (the Alerts page's phone budget bar is a span).
+  /<progress[\s>]/, /<meter[\s>]/,
+  // Input types whose UI is the browser's: spinners, pickers, the search field's clear button.
+  /\btype=\{?["'`](?:checkbox|radio|range|date|time|datetime-local|month|week|number|color|file|search)["'`]/,
+  // Native tooltips.
+  /\stitle=\{/, /\stitle="/,
+  // Browser scrollbars (owner, 2026-10-23): every scroll region is the shadcn ScrollArea.
+  ...SCROLL_JSX,
+  ...NATIVE_SCRIPT,
+];
+// A CSS scroll container: only the ScrollArea's Base UI viewport scrolls (it styles itself).
+const NATIVE_CSS = [/\boverflow(?:-[xy]|-block|-inline)?\s*:\s*(?:auto|scroll|overlay)\b/];
+// The ScrollArea itself is the one place that may make something scroll.
+const ALLOWED = [/[\\/]ui[\\/]scroll-area\.tsx$/];
 const walk = (dir: string): string[] => readdirSync(dir).flatMap((f) => {
   const p = join(dir, f);
-  return statSync(p).isDirectory() ? walk(p) : /\.tsx$/.test(f) && !/\.test\.tsx$/.test(f) ? [p] : [];
+  if (statSync(p).isDirectory()) return f === "node_modules" ? [] : walk(p);
+  return /\.(?:tsx?|css)$/.test(f) && !/\.test\.tsx?$/.test(f) && !/\.d\.ts$/.test(f) ? [p] : [];
+});
+const ROOTS = [join(import.meta.dir, ".."), join(import.meta.dir, "../../../../packages/chart-web/src")];
+
+/** Each offending `file:line`, outside comments and `native-ok` lines. */
+function nativeHits(files: string[]): string[] {
+  return files.filter((f) => !ALLOWED.some((re) => re.test(f))).flatMap((file) => {
+    const css = file.endsWith(".css");
+    const rules = css ? NATIVE_CSS : file.endsWith(".tsx") ? NATIVE_JSX : [...NATIVE_SCRIPT, ...SCROLL_JSX];
+    const text = readFileSync(file, "utf8");
+    // CSS comments span lines: blank them (keeping the line breaks, so line numbers hold), since
+    // a rule quoted inside one is documentation, not a hit.
+    const body = css ? text.replace(/\/\*[\s\S]*?\*\//g, (c) => c.replace(/[^\n]/g, " ")) : text;
+    return body.split("\n").flatMap((line, i) => {
+      if (/^\s*(?:\/\/|\*|\/\*)/.test(line) || /native-ok:/.test(line)) return [];
+      return rules.some((re) => re.test(line)) ? [`${file}:${i + 1}`] : [];
+    });
+  });
+}
+
+test("no browser-native controls, dialogs, title tooltips or scrollbars in the web UI", () => {
+  expect(nativeHits(ROOTS.flatMap(walk))).toEqual([]);
 });
 
-test("no browser-native controls, dialogs or title tooltips in the web UI", () => {
-  const src = [join(import.meta.dir, ".."), join(import.meta.dir, "../../../../packages/chart-web/src")];
-  const hits = src.flatMap(walk).flatMap((file) =>
-    readFileSync(file, "utf8").split("\n").flatMap((line, i) => (!/^\s*(?:\/\/|\*|\/\*)/.test(line) && NATIVE.some((re) => re.test(line)) ? [`${file}:${i + 1}`] : [])),
-  );
-  expect(hits).toEqual([]);
+test("the guard catches what it is meant to, and only that", () => {
+  const banned: [string, string][] = [
+    ["tsx", `<div className="min-h-0 overflow-y-auto">`],
+    ["tsx", `<div className="overflow-auto p-2">`],
+    ["tsx", `<div className="overflow-x-scroll">`],
+    ["tsx", `<div style={{ overflowY: "scroll" }}>`],
+    ["tsx", `<Input type="number" />`],
+    ["tsx", `<Input type={"date"} />`],
+    ["tsx", `<details open>`],
+    ["tsx", `<dialog open>`],
+    ["tsx", `<progress value={1} />`],
+    ["tsx", `ref.current?.showModal();`],
+    ["ts", `if (confirm("Delete?")) remove();`],
+    ["ts", `window.alert("hi");`],
+    ["ts", `const row = "flex overflow-y-auto";`],
+    ["css", `.list { overflow-y: auto; }`],
+    ["css", `.list {\n  overflow: scroll;\n}`],
+  ];
+  const dir = mkdtempSync(join(tmpdir(), "native-guard-"));
+  try {
+    banned.forEach(([ext, src], i) => {
+      const file = join(dir, `${i}.${ext}`);
+      writeFileSync(file, `${src}\n`);
+      expect([src, nativeHits([file]).length]).toEqual([src, 1]);
+    });
+    const ok = join(dir, "ok.tsx");
+    writeFileSync(ok, [`// overflow-y-auto named in a comment`, `<div className="overflow-hidden" />`, `<div className="overflow-auto" /> {/* native-ok: a test */}`, `<Input type="password" />`, `onConfirm(x);`].join("\n"));
+    expect(nativeHits([ok])).toEqual([]);
+    const okCss = join(dir, "ok.css");
+    writeFileSync(okCss, `/* a comment that says\n   overflow: auto is banned */\nhtml { overflow: hidden; }\n/* one line, overflow: scroll */\n`);
+    expect(nativeHits([okCss])).toEqual([]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
