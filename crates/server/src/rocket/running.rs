@@ -36,15 +36,28 @@
 //! engine and the tape, and reports entries per day and the share of the day's in-band +20 %
 //! legs (`reports/rockets/events-g20`) entered, with the entry point as a fraction of the leg.
 //! Set on 9 archive days (2026-09-22 to 10-02, every symbol whose daily bar touched the band,
-//! ~6,600 a day, replayed through the production chart engine): **42 entries a day median, p90
-//! 48** (min 22, max 48). Of the days' 733 in-band +20 % legs, **61.9 % had a running row by
-//! their peak** (32.5 % entered inside the leg itself, the rest earlier the same day), and an
-//! entry inside a leg came a median **61 % of the way** from the leg's start to its peak: this
-//! confirms a move under way, it does not call the bottom. The loosest settings that keep about
-//! 40 a day were picked; a dollar floor of $25k with a 3× volume ratio would enter TANH at
-//! $11.10 at 13:43 but at ~120 entries a day. On 2026-10-22: SHFS 04:38 $0.244, XLAB 07:19 $3.53
-//! … 10:18 $3.87, CJMB 08:15 $0.54, MLTX 09:58 $12.77 (after its 09:30–09:45 stair-step: its
-//! first 15 minutes traded under 2× its usual 30-minute volume), TANH 13:56 $11.49.
+//! ~6,600 a day, replayed through the production chart engine). v1 ($100k in 5 minutes, 5×
+//! volume) made **42 entries a day median, p90 47**; of the days' 733 in-band +20 % legs, **61.9 %
+//! had a running row by their peak** (32.5 % entered inside the leg itself, the rest earlier the
+//! same day), and an entry inside a leg came a median **61 % of the way** from the leg's start
+//! to its peak: this confirms a move under way, it does not call the bottom.
+//!
+//! **v2** (2026-10-22 evening, after the day's missed-movers report): v1 missed most $1–25
+//! regular-session legs of +20–30 %, blocked by the 5× ratio on names with a big ADV (MLTX,
+//! ATGL, WORX) or by the dollar floor on thin ones (OPTU, VSME). Four looser neighbours were
+//! compared on the same 9 days (`running::movers` with `MOVERS_LITE=1`, then the rule swept over
+//! the loose candidates), choosing the best leg recall with a p90 of at most 60 entries a day:
+//! `RVOL30` 3 and `DOLLARS5` $50k, `CAP` unchanged. The same 9 days: **51 a day median, p90 58;
+//! 68.3 % of the legs** (35.9 % inside the leg, median entry 62 %). Checked afterwards, never used
+//! to choose: 12 later days (10-05 to 10-20) v1 31 a day (p90 41) / 60.8 % → v2 38 (p90 46) /
+//! 68.3 %; 10 busier archive-hist days (2026-06-01 to 06-12) v1 51 (p90 81) / 64.3 % → v2 58
+//! (p90 94) / 71.6 %; and 2026-10-22's 60 movers (+20 % in 30 min or +30 % on the day, $0.10–25,
+//! any session) 22 → 29 entered by a peak. Also with a 20 % `CAP` it gained one more point for
+//! three more entries a day (p90 61 on the 9 days), so the cap stays. A dollar floor of $25k with
+//! a 3× ratio would enter TANH at $11.10 at 13:43 but at ~120 entries a day. On 2026-10-22 (v1):
+//! SHFS 04:38 $0.244, XLAB 07:19 $3.53 … 10:18 $3.87, CJMB 08:15 $0.54, MLTX 09:58 $12.77 (after
+//! its 09:30–09:45 stair-step: its first 15 minutes traded under 2× its usual 30-minute volume),
+//! TANH 13:56 $11.49.
 
 use std::collections::HashMap;
 
@@ -54,7 +67,7 @@ use market_archive::Archive;
 use super::features::RunInputs;
 
 pub const STRATEGY: &str = "running";
-pub const VERSION: &str = "v1";
+pub const VERSION: &str = "v2";
 
 /// Band, dollars.
 pub const BAND: (f64, f64) = (0.10, 25.0);
@@ -62,10 +75,10 @@ pub const BAND: (f64, f64) = (0.10, 25.0);
 pub const K: f64 = 2.5;
 pub const FLOOR: f64 = 0.10;
 pub const CAP: f64 = 0.25;
-/// Dollars in the last 5 minutes.
-pub const DOLLARS5: f64 = 100_000.0;
-/// Last 30 minutes' volume against ADV30 × 30 / 390.
-pub const RVOL30: f64 = 5.0;
+/// Dollars in the last 5 minutes (v1: $100k).
+pub const DOLLARS5: f64 = 50_000.0;
+/// Last 30 minutes' volume against ADV30 × 30 / 390 (v1: 5×).
+pub const RVOL30: f64 = 3.0;
 /// A runaway guard: at most this many running entries a day.
 pub const MAX_PER_DAY: usize = 150;
 
@@ -265,7 +278,18 @@ mod tests {
         assert!(decide(&i, Some(&f)).is_none());
         let mut i = x(11.5, 10.0);
         i.dollars5 = 50_000.0;
+        assert!(
+            decide(&i, Some(&f)).is_some(),
+            "v2: $50k in 5 minutes is enough"
+        );
+        i.dollars5 = 40_000.0;
         assert!(decide(&i, Some(&f)).is_none());
+        // 30 minutes of 1M shares against an ADV of 3M: 4.3× usual, in since v2 (v1 needed 5×).
+        let big = Fact {
+            vol: Some(0.05),
+            adv: Some(3e6),
+        };
+        assert!(decide(&x(11.5, 10.0), Some(&big)).is_some());
         // 30 minutes of 1M shares against an ADV of 10M: 1.3× usual, not enough.
         let busy = Fact {
             vol: Some(0.05),
