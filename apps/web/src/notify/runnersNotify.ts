@@ -4,7 +4,7 @@
 //
 // - **What:** the server's `runners.notice` frames (crates/server/src/alerts/runners.rs
 //   `desk_frame`): it already applied the phone's limits (10 min per stock, 2 for a burst, the
-//   daily cap of 120, live market only) once for every open client, and the title and body are
+//   no daily cap, live market only) once for every open client, and the title and body are
 //   the phone push's own, so nothing here re-derives text.
 // - **Who:** this device's switches (Settings → Runners), the phone's defaults (everything on
 //   but breakouts), kept in localStorage: per device, like the phone's, never synced. The

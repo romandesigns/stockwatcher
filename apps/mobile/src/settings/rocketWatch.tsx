@@ -94,7 +94,7 @@ function RunnersPushPanel() {
       <Text style={[s.status, note ? { color: UI.warning } : null]}>
         {note ??
           (token
-            ? "Pushed to this phone, also when the app is closed. At most one per stock per 10 min (a burst: 2 min); past 120 a day only bursts and new flags. The alerts' quiet hours apply. Tap one to open its chart."
+            ? "Pushed to this phone, also when the app is closed. At most one per stock per 10 min (a burst: 2 min). No daily limit. The alerts' quiet hours apply. Tap one to open its chart."
             : "Phone push is off on this phone: new flags and bursts ring only while the dashboard is open. Turning a switch on asks to allow notifications.")}
       </Text>
     </View>

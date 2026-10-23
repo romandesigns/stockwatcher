@@ -29,7 +29,7 @@ export function RunnersNotifyPanel({ notifier }: { notifier: RunnersNotifier }) 
       : permission === "denied"
         ? "Notifications are blocked for this site in the browser's settings. Allow them there, then turn this on."
         : on
-          ? `${notifier.desktop ? "Shown while the app is open, minimized or behind other windows." : "Shown while this tab is open, also in the background; a closed tab gets nothing."} At most one per stock per 10 min (a burst: 2 min); past 120 a day only bursts and new flags. The alerts' quiet hours apply. Click one to open its chart.`
+          ? `${notifier.desktop ? "Shown while the app is open, minimized or behind other windows." : "Shown while this tab is open, also in the background; a closed tab gets nothing."} At most one per stock per 10 min (a burst: 2 min). No daily limit. The alerts' quiet hours apply. Click one to open its chart.`
           : "Off on this device: the Runners board toasts new flags and breakouts while the dashboard is open.";
 
   return (
