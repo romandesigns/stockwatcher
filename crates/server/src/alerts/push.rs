@@ -457,6 +457,27 @@ async fn run(
     }
 }
 
+/// One Expo push message: `job` to the device `token`.
+fn expo_message(job: &Job, token: &str) -> Value {
+    let mut m = json!({
+        "to": token,
+        "title": job.title,
+        "body": job.body,
+        "data": job.data,
+        "sound": "default",
+        "priority": "high",
+        // The channel the app creates (apps/mobile/src/notifications/setup.ts ALERTS_CHANNEL_ID).
+        "channelId": "alerts",
+    });
+    // A Runners push gets the phone's "Copy ticker" button (super::runners::CATEGORY_ID). Expo
+    // forwards `categoryId` to Android in the FCM data (expo-notifications NotificationData reads
+    // `categoryId`) and to iOS as the APNs category. A price alert's push has no button.
+    if job.runner.is_some() {
+        m["categoryId"] = Value::from(super::runners::CATEGORY_ID);
+    }
+    m
+}
+
 async fn send_batch(
     http: &reqwest::Client,
     cfg: &PushConfig,
@@ -469,16 +490,7 @@ async fn send_batch(
     let mut owner: Vec<(usize, String)> = Vec::new();
     for (j, job) in jobs.iter().enumerate() {
         for t in &job.tokens {
-            msgs.push(json!({
-                "to": t,
-                "title": job.title,
-                "body": job.body,
-                "data": job.data,
-                "sound": "default",
-                "priority": "high",
-                // The channel the app creates (apps/mobile/src/notifications/setup.ts ALERTS_CHANNEL_ID).
-                "channelId": "alerts",
-            }));
+            msgs.push(expo_message(job, t));
             owner.push((j, t.clone()));
         }
     }
@@ -762,6 +774,53 @@ mod tests {
         );
         assert_eq!(batches[0].as_array().unwrap().len(), 6);
         assert_eq!(batches[0][0]["channelId"], "alerts");
+    }
+
+    #[test]
+    fn runners_pushes_carry_the_copy_ticker_category() {
+        let n = crate::rocket::Notice {
+            kind: crate::rocket::NoticeKind::Fast,
+            alert_id: "2026-10-23-YMAT-1".into(),
+            symbol: "YMAT".into(),
+            at_ns: 0,
+            price: 2.41,
+            from_flag_pct: None,
+            reasons: vec![],
+            since_start_min: None,
+            exec_ns: None,
+        };
+        let (title, body, data) = super::super::runners::message(&n);
+        let mut job = Job {
+            event_id: "runners-fast-1".into(),
+            tokens: vec!["ExponentPushToken[a]".into()],
+            title,
+            body,
+            data,
+            runner: Some(RunnerLatency {
+                symbol: "YMAT".into(),
+                kind: "fast",
+                exec_ns: None,
+                decided_ns: 0,
+                queued_ns: 0,
+            }),
+        };
+        let m = expo_message(&job, "ExponentPushToken[a]");
+        assert_eq!(m["categoryId"], "runners");
+        assert_eq!(m["channelId"], "alerts");
+        assert_eq!(m["data"]["symbol"], "YMAT");
+        assert!(
+            m["body"]
+                .as_str()
+                .unwrap()
+                .ends_with("Alert $2.41 · +5% = $2.53")
+        );
+        // A price alert's push: no button.
+        job.runner = None;
+        assert!(
+            expo_message(&job, "ExponentPushToken[a]")
+                .get("categoryId")
+                .is_none()
+        );
     }
 
     #[tokio::test]

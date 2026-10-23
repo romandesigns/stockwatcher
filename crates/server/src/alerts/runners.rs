@@ -15,7 +15,11 @@
 //!   "SYM · <source> · $price" ("Buying burst", "Running", "Run +20%", "Fast move"); body the %
 //!   move and its
 //!   window, then for a burst the research's odds ("typ. +13% max in 30 min, 1 in 4 reach +20%
-//!   before −5%", the panel's Bursts line).
+//!   before −5%", the panel's Bursts line). The body always ends with a reference line of its
+//!   own, "Alert $2.41 · +5% = $2.53" ([`LIMIT_REF_PCT`]; owner, 2026-10-23), and the push
+//!   carries the "runners" category ([`CATEGORY_ID`]) whose "Copy ticker" button the phone
+//!   registers. One text for every surface: the phone push, the desktop and web `runners.notice`
+//!   and the watch (which mirrors the phone).
 //! - **Who:** each registered phone opts in per kind, on the device record
 //!   (`push-devices.json`, sent in `push.register`): new flags ON by default, breakouts OFF,
 //!   bursts, running, run and fast-move entries ON (owner, 2026-10-22: "I don't wanna lose opportunities
@@ -233,6 +237,69 @@ impl RunnersDelivery {
     }
 }
 
+/// The reference line's step above the alert price, in percent (owner, 2026-10-23). A Fast-move
+/// push for YMAT said $2.41 within 1.4 s of the move; a limit at $2.48 never filled while the
+/// stock ran to $3.55+ in about a minute. The line ("Alert $2.41 · +5% = $2.53") saves working
+/// out, under time pressure, a price that is still marketable a few seconds later. It is a
+/// reference, not advice: the text never says "buy" or "limit", and StockSpotter never places
+/// orders.
+pub const LIMIT_REF_PCT: f64 = 5.0;
+
+/// The longest body a Runners notification carries. Android shows all of it once expanded
+/// (BigTextStyle); a lock screen or a watch cuts it anyway. Past this, [`message`] drops the
+/// evidence's last clauses, never the reference line.
+pub const MAX_BODY_CHARS: usize = 110;
+
+/// The notification category of every Runners push (Expo `categoryId`, set in
+/// `super::push::expo_message`): the phone registers it at startup with its "Copy ticker" action
+/// (apps/mobile src/notifications/copyTicker.ts `RUNNERS_CATEGORY_ID`; the two must match).
+pub const CATEGORY_ID: &str = "runners";
+
+/// `p` on its instrument's tick: $0.0001 below $1, $0.01 from $1 (Reg NMS Rule 612's minimum
+/// quoting increments). Half up; the snap to a millionth of a tick first absorbs the binary error
+/// that would otherwise round 24.50 × 1.05 = 25.725 down to $25.72.
+fn on_tick(p: f64) -> f64 {
+    let tick = if p >= 1.0 { 0.01 } else { 0.0001 };
+    let ticks = ((p / tick) * 1e6).round() / 1e6;
+    ticks.round() * tick
+}
+
+/// "Alert $2.41 · +5% = $2.53": the alert price and [`LIMIT_REF_PCT`] above it, both on tick
+/// (the second on its own tick: $0.9999 → $1.05).
+pub fn price_line(price: f64) -> String {
+    let at = on_tick(price);
+    let up = on_tick(at * (1.0 + LIMIT_REF_PCT / 100.0));
+    format!(
+        "Alert {} · +{LIMIT_REF_PCT:.0}% = {}",
+        dollars(at),
+        dollars(up)
+    )
+}
+
+/// The evidence, then the reference line on a line of its own (separate in the expanded
+/// notification on Android, Windows and the browser). Evidence too long for [`MAX_BODY_CHARS`]
+/// loses its last " · " clauses first (a burst's research odds), down to its first.
+fn with_price_line(evidence: String, price: f64) -> String {
+    // No price known (never expected from the board): no line rather than "$0.0000".
+    if !(price.is_finite() && price > 0.0) {
+        return evidence;
+    }
+    let line = price_line(price);
+    let room = MAX_BODY_CHARS.saturating_sub(line.chars().count() + 1);
+    let mut ev = evidence;
+    while ev.chars().count() > room {
+        match ev.rfind(" · ") {
+            Some(i) => ev.truncate(i),
+            None => break,
+        }
+    }
+    if ev.is_empty() {
+        line
+    } else {
+        format!("{ev}\n{line}")
+    }
+}
+
 /// "$2.45", "$0.4321".
 fn dollars(p: f64) -> String {
     if p >= 1.0 {
@@ -279,7 +346,7 @@ fn burst_odds() -> String {
 /// Title, body and data of the push for one notice (module docs, "Text"). The data's `symbol` is
 /// what the phone opens the chart for on a tap.
 pub fn message(n: &Notice) -> (String, String, Value) {
-    let p = dollars(n.price);
+    let p = dollars(on_tick(n.price));
     let s = &n.symbol;
     let title = match n.kind {
         NoticeKind::New => format!("Runners: {s} {p}"),
@@ -348,7 +415,7 @@ pub fn message(n: &Notice) -> (String, String, Value) {
         NoticeKind::New | NoticeKind::Breakout => String::new(),
     };
     if !body.is_empty() {
-        return (title, body, data);
+        return (title, with_price_line(body, n.price), data);
     }
     let mut parts: Vec<String> = Vec::new();
     if n.kind == NoticeKind::Breakout
@@ -360,7 +427,7 @@ pub fn message(n: &Notice) -> (String, String, Value) {
     if parts.is_empty() {
         parts.push("Flagged (experimental)".into());
     }
-    (title, parts.join(" · "), data)
+    (title, with_price_line(parts.join(" · "), n.price), data)
 }
 
 /// The `runners.notice` frame for desktop and web (owner, 2026-10-23: the phone's notifications
@@ -574,7 +641,11 @@ mod tests {
         };
         let (t, b, data) = message(&n);
         assert_eq!(t, "Runners: CJMB $2.45");
-        assert_eq!(b, "volume 9x pace · new high");
+        assert_eq!(
+            b,
+            "volume 9x pace · new high
+Alert $2.45 · +5% = $2.57"
+        );
         assert_eq!(
             data,
             json!({"symbol": "CJMB", "kind": "runners.new", "alert_id": "2026-10-22-CJMB-260"})
@@ -585,10 +656,18 @@ mod tests {
         n.reasons.clear();
         let (t, b, data) = message(&n);
         assert_eq!(t, "CJMB breaking out $0.3000");
-        assert_eq!(b, "+12.3% from flag");
+        assert_eq!(
+            b,
+            "+12.3% from flag
+Alert $0.3000 · +5% = $0.3150"
+        );
         assert_eq!(data["kind"], "runners.breakout");
         n.kind = NoticeKind::New;
-        assert_eq!(message(&n).1, "Flagged (experimental)");
+        assert_eq!(
+            message(&n).1,
+            "Flagged (experimental)
+Alert $0.3000 · +5% = $0.3150"
+        );
         // A buying burst: source, price, the move and its window, the research odds; a tap
         // opens the chart (runners.*).
         n.kind = NoticeKind::Burst;
@@ -600,7 +679,8 @@ mod tests {
         assert_eq!(t, "CJMB · Buying burst · $2.10");
         assert_eq!(
             b,
-            "+18.2% in 6 min · typ. +13% max in 30 min, 1 in 4 reach +20% before −5%"
+            "+18.2% in 6 min · typ. +13% max in 30 min, 1 in 4 reach +20% before −5%
+Alert $2.10 · +5% = $2.21"
         );
         assert_eq!(data["kind"], "runners.burst");
         assert!(!t.to_lowercase().contains("buy ") && !b.to_lowercase().contains("buy "));
@@ -619,7 +699,11 @@ mod tests {
         });
         let (t, b, data) = message(&n);
         assert_eq!(t, "CJMB · Run +20% · $1.22");
-        assert_eq!(b, "+22.0% in 5 min off $1.00 · 25+ trades, $25k+");
+        assert_eq!(
+            b,
+            "+22.0% in 5 min off $1.00 · 25+ trades, $25k+
+Alert $1.22 · +5% = $1.28"
+        );
         assert_eq!(data["kind"], "runners.run");
         // A running entry: the move off the hour's low and its money.
         n.kind = NoticeKind::Running;
@@ -633,7 +717,11 @@ mod tests {
         ];
         let (t, b, data) = message(&n);
         assert_eq!(t, "CJMB · Running · $11.49");
-        assert_eq!(b, "+15.3% in 60 min · $120k in 5 min");
+        assert_eq!(
+            b,
+            "+15.3% in 60 min · $120k in 5 min
+Alert $11.49 · +5% = $12.06"
+        );
         assert_eq!(data["kind"], "runners.running");
         assert!(t.chars().count() + b.chars().count() < 110, "{t} / {b}");
         // A fast move: the held move, its window, the trading in it.
@@ -653,7 +741,66 @@ mod tests {
         .reasons();
         let (t, b, data) = message(&n);
         assert_eq!(t, "CJMB · Fast move · $2.41");
-        assert_eq!(b, "+8.4% in 60 s · 52 trades, $71k");
+        assert_eq!(
+            b,
+            "+8.4% in 60 s · 52 trades, $71k
+Alert $2.41 · +5% = $2.53"
+        );
         assert_eq!(data["kind"], "runners.fast");
+    }
+
+    #[test]
+    fn the_reference_line_is_on_tick() {
+        // The YMAT case (owner, 2026-10-23).
+        assert_eq!(price_line(2.41), "Alert $2.41 · +5% = $2.53");
+        // Sub-dollar on $0.0001; the +5% crosses $1 and goes to cents.
+        assert_eq!(price_line(0.9999), "Alert $0.9999 · +5% = $1.05");
+        assert_eq!(price_line(1.0), "Alert $1.00 · +5% = $1.05");
+        // 25.725 exactly: half up, not the binary 25.7249… down.
+        assert_eq!(price_line(24.5), "Alert $24.50 · +5% = $25.73");
+        assert_eq!(price_line(0.4321), "Alert $0.4321 · +5% = $0.4537");
+        // An alert price off tick is put on it first: $0.99996 is $1.00.
+        assert_eq!(price_line(0.99996), "Alert $1.00 · +5% = $1.05");
+        // Neutral wording: a reference, never advice.
+        let l = price_line(2.41).to_lowercase();
+        assert!(!l.contains("buy") && !l.contains("limit") && !l.contains("sell"));
+    }
+
+    #[test]
+    fn a_long_body_drops_evidence_not_the_reference_line() {
+        let n = Notice {
+            kind: NoticeKind::New,
+            alert_id: "a".into(),
+            symbol: "YMAT".into(),
+            at_ns: 0,
+            price: 2.41,
+            from_flag_pct: None,
+            reasons: vec!["x".repeat(60), "y".repeat(60)],
+            since_start_min: None,
+            exec_ns: None,
+        };
+        let (_, b, _) = message(&n);
+        assert_eq!(b, format!("{}\nAlert $2.41 · +5% = $2.53", "x".repeat(60)));
+        assert!(b.chars().count() <= MAX_BODY_CHARS);
+        // Every kind's body ends with the line.
+        for kind in [
+            NoticeKind::New,
+            NoticeKind::Breakout,
+            NoticeKind::Burst,
+            NoticeKind::Running,
+            NoticeKind::Run,
+            NoticeKind::Fast,
+        ] {
+            let n = Notice {
+                kind,
+                from_flag_pct: Some(8.0),
+                since_start_min: Some(1.0),
+                reasons: vec!["$120k in 5 min".into(), "52 trades, $71k in 60 s".into()],
+                ..n.clone()
+            };
+            let (_, b, _) = message(&n);
+            assert!(b.ends_with("\nAlert $2.41 · +5% = $2.53"), "{kind:?}: {b}");
+            assert!(b.chars().count() <= MAX_BODY_CHARS, "{kind:?}: {b}");
+        }
     }
 }
