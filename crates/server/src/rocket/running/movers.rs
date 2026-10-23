@@ -89,10 +89,20 @@ fn export_movers() {
     let t0 = market_events::session::et(day, 4, 0, 0, 0).unwrap().0;
     let started = std::time::Instant::now();
     let next = AtomicUsize::new(0);
-    let files = ["bars.csv", "running.jsonl", "loose.jsonl", "burst.jsonl", "zones.jsonl"];
+    let files = [
+        "bars.csv",
+        "running.jsonl",
+        "loose.jsonl",
+        "burst.jsonl",
+        "zones.jsonl",
+    ];
     let w: Vec<Mutex<std::io::BufWriter<std::fs::File>>> = files
         .iter()
-        .map(|f| Mutex::new(std::io::BufWriter::new(std::fs::File::create(out.join(f)).unwrap())))
+        .map(|f| {
+            Mutex::new(std::io::BufWriter::new(
+                std::fs::File::create(out.join(f)).unwrap(),
+            ))
+        })
         .collect();
     writeln!(w[0].lock().unwrap(), "s,k,o,h,l,c,v,n,d").unwrap();
     let done = AtomicUsize::new(0);
@@ -103,7 +113,7 @@ fn export_movers() {
                     let i = next.fetch_add(1, Ordering::Relaxed);
                     let Some(sym) = syms.get(i) else { break };
                     let n = done.fetch_add(1, Ordering::Relaxed);
-                    if n % 1000 == 0 {
+                    if n.is_multiple_of(1000) {
                         eprintln!("  {n} symbols, {:.0} s", started.elapsed().as_secs_f64());
                     }
                     let Ok(prints) = load(&archive, day, sym, live) else {
@@ -127,8 +137,10 @@ fn export_movers() {
                     let pc = prev_close.get(sym.as_str()).copied();
 
                     // 1. 15 s bars.
+                    // MOVERS_LITE: running candidates (for every symbol) and shelves only.
+                    let lite = env("MOVERS_LITE").is_some();
                     let moved = hi / lo >= 1.15 || pc.is_some_and(|c| hi / c >= 1.25);
-                    if moved {
+                    if moved && !lite {
                         let mut bars: Vec<[f64; 8]> = Vec::new();
                         let mut ks: Vec<i64> = Vec::new();
                         for (t, c) in &prints {
@@ -230,11 +242,12 @@ fn export_movers() {
                     if !run_lines.is_empty() {
                         w[1].lock().unwrap().write_all(run_lines.as_bytes()).unwrap();
                     }
-                    if !loose_lines.is_empty() && moved {
+                    if !loose_lines.is_empty() && (moved || lite) {
                         w[2].lock().unwrap().write_all(loose_lines.as_bytes()).unwrap();
                     }
 
                     // 3. Burst detector over the whole day (no restart).
+                    if !lite {
                     let mut d = BurstDetector::new(BurstPolicy::default());
                     d.set_adv(day, adv.clone());
                     d.capture();
@@ -256,8 +269,7 @@ fn export_movers() {
                             for p in d.take_captured() {
                                 if dump {
                                     passes += &format!(
-                                        "{}
-",
+                                        "{}\n",
                                         serde_json::json!({"s": sym, "t": p.t_ns, "p": p.last,
                                             "score": p.score, "rate_x": p.rate_x,
                                             "new_highs": p.new_highs, "sweeps": p.sweeps})
@@ -294,6 +306,7 @@ fn export_movers() {
                     }
                     if !bl.is_empty() {
                         w[3].lock().unwrap().write_all(bl.as_bytes()).unwrap();
+                    }
                     }
 
                     // 4. Volume shelves.

@@ -67,7 +67,7 @@ fn halt_movers() {
                 loop {
                     let i = next.fetch_add(1, Ordering::Relaxed);
                     let Some(sym) = syms.get(i) else { break };
-                    if i % 1000 == 0 {
+                    if i.is_multiple_of(1000) {
                         eprintln!("  {i} symbols, {:.0} s", started.elapsed().as_secs_f64());
                     }
                     let r = if live {
