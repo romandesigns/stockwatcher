@@ -167,6 +167,46 @@ pub const BROADCAST_CAPACITY: usize = 16_384;
 /// replay time: at 10× a row may change many times a second, and a client wants a steady,
 /// bounded frame rate rather than one that scales with the replay speed.
 pub const QUOTES_INTERVAL: Duration = Duration::from_secs(1);
+/// How far past each wall-second boundary the once-a-second tick runs: long enough for that
+/// second's last prints to arrive from the SIP feed and be applied (tens of ms), short enough that
+/// a decision on the finished second reaches the phone without waiting most of another second.
+pub const TICK_PHASE: Duration = Duration::from_millis(250);
+
+/// The wait until the next tick: the first `k·QUOTES_INTERVAL + TICK_PHASE` (wall clock) that is
+/// still ahead, at least 1 ms away.
+fn until_next_tick() -> Duration {
+    let period = QUOTES_INTERVAL.as_nanos();
+    let phase = TICK_PHASE.as_nanos();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let into = (now + period - phase) % period; // how far past the last tick point we are
+    let wait = (period - into).max(1_000_000);
+    Duration::from_nanos(wait as u64)
+}
+
+#[cfg(test)]
+mod tick_phase_tests {
+    use super::*;
+
+    #[test]
+    fn the_next_tick_is_within_a_second_and_lands_on_the_phase() {
+        let w = until_next_tick();
+        assert!(w > Duration::ZERO && w <= QUOTES_INTERVAL, "{w:?}");
+        let at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            + w;
+        let off = at.as_nanos() % QUOTES_INTERVAL.as_nanos();
+        let want = TICK_PHASE.as_nanos();
+        // A few ms of slack for the time between the two clock reads.
+        assert!(
+            off.abs_diff(want) < 20_000_000,
+            "lands {off} ns past the second"
+        );
+    }
+}
 
 /// Market configuration (environment). Provider and simulator variables are documented on
 /// [`ProviderConfig`] and [`SimConfig`]; here:
@@ -1710,15 +1750,16 @@ impl Market {
         self.spawn_detection_task();
         let weak: Weak<Inner> = Arc::downgrade(&self.0);
         tokio::spawn(async move {
-            let mut tick = tokio::time::interval(QUOTES_INTERVAL);
-            // Delay, not Skip: after a late tick (a busy runtime at the open) Skip fires the next
-            // one on the original schedule, which can be well under a second later and breaks the
-            // "at most once per wall second" promise in the ws protocol docs. Delay restarts the
-            // period from the late tick.
-            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             let mut n = 0u64;
             loop {
-                tick.tick().await;
+                // Phase-locked to the wall clock: TICK_PHASE after each second boundary, not
+                // whenever the server happened to start. The Runners board decides a second's
+                // fast moves, run marks and bursts on this tick, so a free-running interval added
+                // a random 0–1 s (measured 861 ms live, 2026-10-23) between a move qualifying and
+                // its phone push. Each tick waits for a later boundary than the last, so it still
+                // fires at most once per wall second (the ws protocol's promise); a tick that
+                // overruns a second skips that boundary instead of firing twice.
+                tokio::time::sleep(until_next_tick()).await;
                 let Some(inner) = weak.upgrade() else { break };
                 let market = Market(inner);
                 market.publish_quotes();
