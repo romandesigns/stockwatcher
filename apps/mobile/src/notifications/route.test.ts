@@ -38,38 +38,26 @@ test("taps route through notificationTarget, including the one that launched the
   expect(read("../App.tsx")).toContain("onReady={flushNavigation}");
 });
 
-test("push.register carries the Runners opt-ins, on connect and whenever they or the token change", () => {
+test("Ross, Signals, shelf, follow-up and Halt watcher pushes open their ticker's chart too", () => {
+  for (const kind of ["ross.crossing", "signals.crossing", "ross.trigger", "signals.trigger", "runners.shelf", "runners.followup", "halt.watch"]) {
+    expect(notificationTarget({ symbol: "YMAT", kind, alert_id: "x" })).toEqual({ to: "chart", symbol: "YMAT" });
+  }
+});
+
+test("push.register carries the opt-ins, on connect and whenever they or the token change", () => {
   const feed = read("../feed/serverFeed.ts");
   expect(feed).toContain('client.send({ type: "push.register", token: t, ...deviceInfo(), ...runnersRegisterFields() })');
   expect(feed).toContain("subscribeRunnersPush(registerPush)");
   expect(feed).toContain("subscribePushToken(registerPush)");
-  const prefs = read("runnersPush.ts");
-  // The server's defaults: new flags on, breakouts off, buying bursts, running and run entries on
-  // (owner, 2026-10-22: not to miss a move while away from the phone).
-  expect(prefs).toContain("RUNNERS_PUSH_DEFAULTS: RunnersPushPrefs = { pushNew: true, pushBreakout: false, pushBurst: true, pushRunning: true, pushRun: true, pushFast: true }");
-  expect(prefs).toContain("runnersNew: prefs.pushNew, runnersBreakout: prefs.pushBreakout, runnersBurst: prefs.pushBurst, runnersRunning: prefs.pushRunning, runnersRun: prefs.pushRun, runnersFast: prefs.pushFast");
-  // A preference saved before "Fast move" existed gets the default (on).
-  expect(prefs).toContain('pushFast: typeof v.pushFast === "boolean" ? v.pushFast : RUNNERS_PUSH_DEFAULTS.pushFast');
-  // A preference saved before "Run +20%" existed gets the default (on).
-  expect(prefs).toContain('pushRun: typeof v.pushRun === "boolean" ? v.pushRun : RUNNERS_PUSH_DEFAULTS.pushRun');
-  // A preference saved before bursts existed keeps the default (on).
-  expect(prefs).toContain('pushBurst: typeof v.pushBurst === "boolean" ? v.pushBurst : RUNNERS_PUSH_DEFAULTS.pushBurst');
 });
 
-test("Settings → Runners: three compact switches, no borders", () => {
+test("Settings → Alerts: every shared switch by panel, compact, no borders", () => {
   const src = read("../settings/rocketWatch.tsx");
-  expect(src).toContain('toggle("pushNew")');
-  expect(src).toContain('toggle("pushBreakout")');
-  expect(src).toContain('toggle("pushBurst")');
-  // Running and "Run +20%" entries: their own switches (2026-10-22).
-  expect(src).toContain('toggle("pushRunning")');
-  expect(src).toContain('toggle("pushRun")');
-  expect(src).toContain('name="Run +20%"');
-  // "Fast move" entries: their own switch, on by default (2026-10-22).
-  expect(src).toContain('toggle("pushFast")');
-  expect(src).toContain('name="Fast move"');
-  expect(src).toContain('name="Buying bursts"');
+  expect(src).toContain('label: "Alerts"');
+  expect(src).toContain("ALERT_SWITCH_SECTIONS.map");
+  expect(src).toContain("toggle(key)");
   expect(src).not.toMatch(/border(Width|Color|Top|Bottom|Left|Right)/);
   // Turning one on without a token asks for permission and registers (as the Alerts tab does).
   expect(src).toContain("enablePush()");
 });
+

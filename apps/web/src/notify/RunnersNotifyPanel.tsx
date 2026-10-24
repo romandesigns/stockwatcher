@@ -1,13 +1,14 @@
-import type { RunnersNotifyKinds } from "@stockwatcher/shared";
+import type { AlertSwitch, RunnersNotifyKinds } from "@stockwatcher/shared";
 import { Icon } from "@stockwatcher/chart-web";
 import { Button, Switch, cn } from "@stockwatcher/chart-web/ui";
 import { useId, useState, useSyncExternalStore } from "react";
 import type { RunnersNotifier } from "./runnersNotify.ts";
-import { RUNNERS_SWITCHES } from "./runnersSwitches.ts";
+import { RUNNERS_SWITCH_SECTIONS } from "./runnersSwitches.ts";
 
 /**
- * Settings → Runners' panel (runnersSection.tsx): the master switch (on the web, the "Turn on
- * desktop alerts" button that asks for permission, from a click only) and the phone's six kinds.
+ * Settings → Alerts panel (runnersSection.tsx): the master switch (on the web, the "Turn on
+ * desktop alerts" button that asks for permission, from a click only) and the phone's switches,
+ * by panel (Runners, Ross, Signals, Halt watcher).
  */
 export function RunnersNotifyPanel({ notifier }: { notifier: RunnersNotifier }) {
   const prefs = useSyncExternalStore(notifier.subscribe, notifier.prefs, notifier.prefs);
@@ -29,7 +30,7 @@ export function RunnersNotifyPanel({ notifier }: { notifier: RunnersNotifier }) 
       : permission === "denied"
         ? "Notifications are blocked for this site in the browser's settings. Allow them there, then turn this on."
         : on
-          ? `${notifier.desktop ? "Shown while the app is open, minimized or behind other windows." : "Shown while this tab is open, also in the background; a closed tab gets nothing."} At most one per stock per 10 min (a burst: 2 min). No daily limit. The alerts' quiet hours apply. Click one to open its chart.`
+          ? `${notifier.desktop ? "Shown while the app is open, minimized or behind other windows." : "Shown while this tab is open, also in the background; a closed tab gets nothing."} The same kind at most once per stock per 10 min; new evidence (a burst, crossing, shelf entry or follow-up) 2 min after any other. No daily limit. The alerts' quiet hours apply. Click one to open its chart.`
           : "Off on this device: the Runners board toasts new flags and breakouts while the dashboard is open.";
 
   return (
@@ -45,23 +46,28 @@ export function RunnersNotifyPanel({ notifier }: { notifier: RunnersNotifier }) 
           </span>
         </span>
         {on || notifier.desktop ? (
-          <Switch checked={on} disabled={permission !== "granted"} onCheckedChange={(v) => (v ? turnOn() : notifier.setPrefs({ ...prefs, enabled: false }))} aria-label="Runners notifications on this device" aria-describedby={statusId} />
+          <Switch checked={on} disabled={permission !== "granted"} onCheckedChange={(v) => (v ? turnOn() : notifier.setPrefs({ ...prefs, enabled: false }))} aria-label="Alert notifications on this device" aria-describedby={statusId} />
         ) : (
           <Button size="sm" disabled={busy || permission === "denied" || permission === "unsupported"} onClick={turnOn} aria-describedby={statusId}>
             Turn on desktop alerts
           </Button>
         )}
       </div>
-      <div role="group" aria-label="Which Runners events notify" className={cn("flex flex-col gap-0.5 transition-opacity duration-150", !on && "opacity-50")}>
-        {RUNNERS_SWITCHES.map((s) => (
-          <KindRow key={s.key} item={s} checked={prefs.kinds[s.key]} disabled={!on} onChange={(v) => setKind(s.key, v)} />
+      <div className={cn("flex flex-col gap-3 transition-opacity duration-150", !on && "opacity-50")}>
+        {RUNNERS_SWITCH_SECTIONS.map((section) => (
+          <div key={section.id} role="group" aria-label={`${section.label} alerts`} className="flex flex-col gap-0.5">
+            <span className="px-2 pb-0.5 text-[11px] font-medium uppercase tracking-wide text-text-faint">{section.label}</span>
+            {section.items.map((s) => (
+              <KindRow key={s.key} item={s} checked={prefs.kinds[s.key]} disabled={!on} onChange={(v) => setKind(s.key, v)} />
+            ))}
+          </div>
         ))}
       </div>
     </div>
   );
 }
 
-function KindRow({ item, checked, disabled, onChange }: { item: (typeof RUNNERS_SWITCHES)[number]; checked: boolean; disabled: boolean; onChange: (v: boolean) => void }) {
+function KindRow({ item, checked, disabled, onChange }: { item: AlertSwitch; checked: boolean; disabled: boolean; onChange: (v: boolean) => void }) {
   const descId = useId();
   return (
     <label className={cn("flex min-h-11 items-center gap-3 rounded-lg px-2 py-1.5 transition-colors", disabled ? "cursor-default" : "cursor-pointer hover:bg-bg-row")}>

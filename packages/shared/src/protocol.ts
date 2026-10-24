@@ -605,6 +605,20 @@ export interface PushRegisterMessage {
   runnersRun?: boolean;
   /** Runners pushes for "Fast move" entries on this phone (server default on; absent = unchanged). */
   runnersFast?: boolean;
+  /** Pushes when a Runners stock comes down into a volume shelf (server default on; absent = unchanged). */
+  runnersShelf?: boolean;
+  /** Pushes when a later Runners path fires on a stock already listed (server default on). */
+  runnersFollowUp?: boolean;
+  /** Pushes when a Ross stock's pullback trigger is being crossed (server default on). */
+  rossCrossing?: boolean;
+  /** The same for the Signals panel's episodes (server default on). */
+  signalsCrossing?: boolean;
+  /** Pushes when a Ross stock's price reaches its trigger (server default off). */
+  rossTrigger?: boolean;
+  /** The same for the Signals panel (server default off). */
+  signalsTrigger?: boolean;
+  /** Pushes when the Halt watcher's gauge appears for a stock (server default off). */
+  haltWatch?: boolean;
 }
 
 export interface PushUnregisterMessage {

@@ -159,6 +159,14 @@ const RocketRow = memo(function RocketRow({ row: r, onPick }: { row: RocketRowVi
         <span className="self-center rounded bg-bg-raised px-1 py-px font-sans text-[9px] font-medium whitespace-nowrap text-muted-foreground" data-testid="rocket-source">
           {r.source.label}
         </span>
+        {/* Later paths on the same stock (follow-ups): secondary, quieter than the source chip. */}
+        {r.also.map((a) => (
+          <Tip key={a.kind} label={`${a.label} ${a.age === "now" ? "just now" : `${a.age} ago`}, after the row`}>
+            <span className="self-center truncate font-sans text-[9px] whitespace-nowrap text-text-faint" data-testid="rocket-also">
+              + {a.label}
+            </span>
+          </Tip>
+        ))}
         {r.halted && <span className="rounded bg-warning px-1 py-px font-sans text-[9px] font-semibold text-background">HALTED</span>}
         <span className={cn("ml-auto inline-flex items-center gap-1 text-[11px] tabular-nums", r.fresh ? "font-semibold text-primary" : "text-text-faint")}>
           {r.fresh && <span className="size-1.5 animate-pulse rounded-full bg-primary motion-reduce:animate-none" aria-hidden />}

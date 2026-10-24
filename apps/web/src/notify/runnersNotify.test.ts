@@ -63,7 +63,7 @@ test("web: off until the switch asks for permission; the phone's defaults after"
   expect(n.notifyMessage()).toBeNull();
   expect(n.handle(notice)).toBe(false);
   expect(await n.enable()).toBe(true);
-  expect(n.notifyMessage()).toEqual({ type: "runners.notify", enabled: true, new: true, breakout: false, burst: true, running: true, run: true, fast: true });
+  expect(n.notifyMessage()).toEqual({ type: "runners.notify", enabled: true, new: true, breakout: false, burst: true, running: true, run: true, fast: true, shelf: true, followUp: true, rossCrossing: true, signalsCrossing: true, rossTrigger: false, signalsTrigger: false, halt: false });
   // Remembered on this device.
   expect(createRunnersNotifier(env).prefs().enabled).toBe(true);
 });
@@ -106,6 +106,27 @@ test("a kind switched off is not shown, and its toast keeps toasting", async () 
   // Off altogether: the dashboard toasts as before.
   n.setPrefs({ ...n.prefs(), enabled: false });
   expect(toastStandsDown("new", n)).toBe(false);
+});
+
+test("Ross, Signals, shelf, follow-up and Halt notices follow their switches; a Ross crossing in Signals too shows with either", async () => {
+  const { env, calls } = webEnv();
+  const n = createRunnersNotifier(env);
+  await n.enable();
+  const ross = { ...notice, id: "ross.crossing-e1", kind: "ross.crossing" as const, title: "CJMB · Ross crossing · $2.10", alsoSignals: true };
+  n.setPrefs({ ...n.prefs(), kinds: { ...n.prefs().kinds, rossCrossing: false } });
+  expect(n.handle(ross)).toBe(true);
+  expect(n.handle({ ...ross, id: "ross.crossing-e2", alsoSignals: undefined })).toBe(false);
+  expect(n.handle({ ...notice, id: "runners.shelf-a", kind: "runners.shelf" })).toBe(true);
+  expect(n.handle({ ...notice, id: "runners.followup-a", kind: "runners.followup" })).toBe(true);
+  // Opt-in: off by default.
+  expect(n.handle({ ...notice, id: "halt.watch-a", kind: "halt.watch" })).toBe(false);
+  expect(n.handle({ ...notice, id: "signals.trigger-a", kind: "signals.trigger" })).toBe(false);
+  n.setPrefs({ ...n.prefs(), kinds: { ...n.prefs().kinds, halt: true } });
+  expect(n.handle({ ...notice, id: "halt.watch-b", kind: "halt.watch" })).toBe(true);
+  expect(n.notifyMessage()).toMatchObject({ rossCrossing: false, halt: true });
+  // Every one opens its ticker's chart on a click.
+  FakeNotification.shown[0]!.onclick?.({ preventDefault() {} });
+  expect(calls).toEqual(["focus", "chart CJMB"]);
 });
 
 test("desktop shell: on by default, shown through its command, switches resent to the server", () => {

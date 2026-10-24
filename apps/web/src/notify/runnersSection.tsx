@@ -3,16 +3,18 @@ import { RunnersNotifyPanel } from "./RunnersNotifyPanel.tsx";
 import { getRunnersNotifier } from "./runnersNotify.ts";
 
 /**
- * Settings → Runners on the web and the desktop shell (owner, 2026-10-23): this device's Runners
- * system notifications (runnersNotify.ts). Per device, never synced, like the phone's.
+ * Settings → Alerts on the web and the desktop shell (owner, 2026-10-23): this device's system
+ * notifications for the Runners, Ross, Signals and Halt watcher panels (runnersNotify.ts), as the
+ * phone gets them. Per device, never synced, like the phone's. The id stays "runners" so a
+ * remembered open section still finds it.
  */
 export function runnersNotifySection(): SettingsDialogSection {
   const notifier = getRunnersNotifier();
   return {
     id: "runners",
-    label: "Runners",
+    label: "Alerts",
     icon: "bell",
-    description: notifier.desktop ? "System notifications on this computer for the Runners board, as the phone gets them." : "Browser notifications in this tab for the Runners board, as the phone gets them.",
+    description: notifier.desktop ? "System notifications on this computer for Runners, Ross, Signals and the Halt watcher, as the phone gets them." : "Browser notifications in this tab for Runners, Ross, Signals and the Halt watcher, as the phone gets them.",
     render: () => <RunnersNotifyPanel notifier={notifier} />,
   };
 }

@@ -110,10 +110,23 @@ export interface RocketBurstWire {
   outcome: BurstOutcomeWire;
 }
 
+/** One follow-up path on a row ({@link RocketRowWire.also}). */
+export interface RocketAlsoWire {
+  kind: "run" | "running" | "fast";
+  /** When it fired, epoch ms. */
+  at: number;
+}
+
 export interface RocketRowWire {
   id: string;
   /** Absent = "runner" (older servers). */
   kind?: "runner" | "burst" | "running" | "run" | "fast";
+  /**
+   * Later paths that fired on this stock after its row was made (owner, 2026-10-23: new
+   * evidence, so it notifies, but the stock keeps one row): oldest first, at most one per path.
+   * Absent from older servers and on rows without any.
+   */
+  also?: RocketAlsoWire[];
   /** A burst row's detector read-out and strict outcome. */
   burst?: RocketBurstWire;
   s: string;
@@ -370,6 +383,11 @@ export interface RocketRowView {
   burst: RocketBurstView | null;
   /** Where the row came from: the strategy's flag ("R2 flag"), a buying burst, a running entry or a +20 % run ("Run +20%"). */
   source: { kind: "runner" | "burst" | "running" | "run" | "fast"; label: string };
+  /**
+   * Secondary source chips: later paths that fired on this stock after its row was made
+   * ("+ Run +20% · 3m"), oldest first. Quiet, never accent: the row's own source leads.
+   */
+  also: { kind: RocketAlsoWire["kind"]; label: string; age: string }[];
   /** What `fromFlag` is measured from: "flag", "alert" (a burst) or "entry" (a running or run row). */
   fromWhat: "flag" | "alert" | "entry";
   aria: string;
@@ -393,6 +411,18 @@ function sourceOf(r: RocketRowWire, strategyId: string | undefined | null): Rock
   if (isRunRow(r)) return { kind: "run", label: "Run +20%" };
   if (isFastRow(r)) return { kind: "fast", label: "Fast move" };
   return { kind: "runner", label: flagLabel(strategyId) };
+}
+
+const ALSO_LABEL: Record<RocketAlsoWire["kind"], string> = { running: "Running", run: "Run +20%", fast: "Fast move" };
+
+/** A row's follow-up chips ({@link RocketRowView.also}): known paths only, one per path, oldest first. */
+export function rocketAlsoView(r: Pick<RocketRowWire, "also">, nowMs: number): RocketRowView["also"] {
+  const seen = new Set<string>();
+  return (Array.isArray(r.also) ? r.also : [])
+    .filter((a) => a && typeof a === "object" && a.kind in ALSO_LABEL && Number.isFinite(a.at))
+    .sort((x, y) => x.at - y.at)
+    .filter((a) => (seen.has(a.kind) ? false : (seen.add(a.kind), true)))
+    .map((a) => ({ kind: a.kind, label: ALSO_LABEL[a.kind], age: rocketAge(Math.max(0, nowMs - a.at)) }));
 }
 
 /** "R2 flag" for `precursors-R2`, "R0 flag" for `precursors-R0`, else "Flag". */
@@ -556,16 +586,18 @@ export function rocketRowView(r: RocketRowWire, nowMs: number, strategyId?: stri
     line: rocketLine(r),
     burst: b ? burstView(b, r.at, nowMs) : null,
     source: b ? { kind: "burst", label: "Burst" } : sourceOf(r, strategyId),
+    also: rocketAlsoView(r, nowMs),
     fromWhat: b ? "alert" : isEntryRow(r) ? "entry" : "flag",
     aria: "",
   };
+  const alsoAria = view.also.length ? `. Then ${view.also.map((a) => `${a.label} ${a.age === "now" ? "just now" : `${a.age} ago`}`).join(", ")}` : "";
   if (view.burst) {
     const bv = view.burst;
-    view.aria = `${r.s} ${money(last)}${gain ? ` ${gain} on the day` : ""}. ${bv.headline} alerted ${age === "now" ? "just now" : `${age} ago`}, ${bv.since}, ${bv.move}, ${look.label}${note ? ` ${note}` : ""}${reasons.length ? `: ${reasons.join(", ")}` : ""}${outcome ? `. Outcome ${outcome.label}` : ""}`;
+    view.aria = `${r.s} ${money(last)}${gain ? ` ${gain} on the day` : ""}. ${bv.headline} alerted ${age === "now" ? "just now" : `${age} ago`}, ${bv.since}, ${bv.move}, ${look.label}${note ? ` ${note}` : ""}${reasons.length ? `: ${reasons.join(", ")}` : ""}${outcome ? `. Outcome ${outcome.label}` : ""}${alsoAria}`;
     return view;
   }
   const how = isRunningRow(r) ? "running, entered" : isRunRow(r) ? "run +20%, entered" : isFastRow(r) ? "fast move, entered" : `${view.source.label}, flagged`;
-  view.aria = `${r.s} ${money(last)}${gain ? ` ${gain} on the day` : ""}, ${how} ${age === "now" ? "just now" : `${age} ago`}, ${look.label}${view.momentum.provisional ? " (provisional)" : ""}${note ? ` ${note}` : ""}, ${view.fromFlag} from the ${view.fromWhat}${reasons.length ? `: ${reasons.join(", ")}` : ""}${outcome ? `. Outcome ${outcome.label}` : ""}`;
+  view.aria = `${r.s} ${money(last)}${gain ? ` ${gain} on the day` : ""}, ${how} ${age === "now" ? "just now" : `${age} ago`}, ${look.label}${view.momentum.provisional ? " (provisional)" : ""}${note ? ` ${note}` : ""}, ${view.fromFlag} from the ${view.fromWhat}${reasons.length ? `: ${reasons.join(", ")}` : ""}${outcome ? `. Outcome ${outcome.label}` : ""}${alsoAria}`;
   return view;
 }
 

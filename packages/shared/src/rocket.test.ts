@@ -46,6 +46,16 @@ describe("rocket row view", () => {
     expect(v.outcome).toBeNull();
     expect(v.aria).toContain("flagged 3m ago");
   });
+  test("follow-up paths are secondary chips on the same row, oldest first, one per path", () => {
+    expect(rocketRowView(row(), T).also).toEqual([]);
+    const v = rocketRowView(row({ kind: "fast", also: [{ kind: "running", at: T - 30_000 }, { kind: "run", at: T - 180_000 }, { kind: "run", at: T - 10_000 }, { kind: "bogus" as never, at: T }] }), T);
+    expect(v.source.label).toBe("Fast move");
+    expect(v.also).toEqual([
+      { kind: "run", label: "Run +20%", age: "3m" },
+      { kind: "running", label: "Running", age: "now" },
+    ]);
+    expect(v.aria).toContain("Then Run +20% 3m ago, Running just now");
+  });
   test("a fresh flag is 'now' and the only accent", () => {
     const v = rocketRowView(row({ at: T - 20_000 }), T);
     expect(v.age).toBe("now");

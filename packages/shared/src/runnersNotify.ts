@@ -1,17 +1,37 @@
-// Runners system notifications on the desktop and the web (owner, 2026-10-23: "the same
-// notifications as the phone, and a click takes me to the chart"). The server decides once
-// (crates/server/src/alerts/runners.rs `desk_frame`, the phone's limits with their own count) and
-// sends every socket a `runners.notice` carrying the phone push's own title and body; a client
-// that sent `runners.notify` shows it when its switch for that kind is on, once per `id`.
+// Runners (and, since 2026-10-23, Ross, Signals and Halt watcher) system notifications on the
+// desktop and the web (owner, 2026-10-23: "the same notifications as the phone, and a click takes
+// me to the chart"). The server decides once (crates/server/src/alerts/runners.rs `desk_frame`,
+// the phone's limits with their own count) and sends every socket a `runners.notice` carrying the
+// phone push's own title and body; a client that sent `runners.notify` shows it when its switch
+// for that kind is on, once per `id`.
 
-/** The kinds a Runners notice can be about (the phone push's `data.kind`). */
-export const RUNNERS_NOTICE_KINDS = ["runners.new", "runners.breakout", "runners.burst", "runners.running", "runners.run", "runners.fast"] as const;
+/**
+ * The kinds a notice can be about (the phone push's `data.kind`). Since 2026-10-23 every panel
+ * event backed by evidence notifies, not only Runners: Ross and Signals crossings and at-trigger,
+ * a Runners stock entering a volume shelf, a later path on a stock already in Runners, and the
+ * Halt watcher's gauge appearing.
+ */
+export const RUNNERS_NOTICE_KINDS = [
+  "runners.new",
+  "runners.breakout",
+  "runners.burst",
+  "runners.running",
+  "runners.run",
+  "runners.fast",
+  "runners.shelf",
+  "runners.followup",
+  "ross.crossing",
+  "signals.crossing",
+  "ross.trigger",
+  "signals.trigger",
+  "halt.watch",
+] as const;
 export type RunnersNoticeKind = (typeof RUNNERS_NOTICE_KINDS)[number];
 
 /** server `runners.notice`: one notice the desk limits let through. */
 export interface RunnersNoticeMessage {
   type: "runners.notice";
-  /** `runners-<kind>-<alertId>`: what a client dedupes on (a row's flag and its breakout share `alertId`). */
+  /** `<kind>-<alertId>`: what a client dedupes on (a row's flag and its breakout share `alertId`). */
   id: string;
   alertId: string;
   symbol: string;
@@ -23,9 +43,15 @@ export interface RunnersNoticeMessage {
   data?: Record<string, unknown>;
   /** When it happened, epoch ms. */
   at: number;
+  /**
+   * A Ross notice (`ross.crossing` / `ross.trigger`) about a stock the Signals panel shows too.
+   * The server sends ONE notice for the one episode, never a Ross and a Signals one, so a client
+   * with only the Signals switch on still shows it ([`wantsNotice`]).
+   */
+  alsoSignals?: boolean;
 }
 
-/** One client's switches, the phone's names (Settings → Runners). */
+/** One client's switches (the phone's Settings → Alerts names). */
 export interface RunnersNotifyKinds {
   new: boolean;
   breakout: boolean;
@@ -33,18 +59,45 @@ export interface RunnersNotifyKinds {
   running: boolean;
   run: boolean;
   fast: boolean;
+  /** A Runners stock came down into a volume shelf. */
+  shelf: boolean;
+  /** A later Runners path fired on a stock already listed. */
+  followUp: boolean;
+  rossCrossing: boolean;
+  signalsCrossing: boolean;
+  rossTrigger: boolean;
+  signalsTrigger: boolean;
+  /** The Halt watcher's gauge appeared for a stock. */
+  halt: boolean;
 }
 
-/** The phone's defaults (crates/server/src/alerts/push.rs `register`): everything but breakouts. */
-export const DEFAULT_RUNNERS_NOTIFY: Readonly<RunnersNotifyKinds> = Object.freeze({ new: true, breakout: false, burst: true, running: true, run: true, fast: true });
+/**
+ * The phone's defaults (crates/server/src/alerts/push.rs `register`): every evidence kind on;
+ * breakouts, at-trigger and the Halt watcher off (opt-in).
+ */
+export const DEFAULT_RUNNERS_NOTIFY: Readonly<RunnersNotifyKinds> = Object.freeze({
+  new: true,
+  breakout: false,
+  burst: true,
+  running: true,
+  run: true,
+  fast: true,
+  shelf: true,
+  followUp: true,
+  rossCrossing: true,
+  signalsCrossing: true,
+  rossTrigger: false,
+  signalsTrigger: false,
+  halt: false,
+});
 
-/** client `runners.notify`: this connection shows Runners notifications for these kinds (`enabled: false` stops). */
+/** client `runners.notify`: this connection shows notifications for these kinds (`enabled: false` stops). */
 export interface RunnersNotifyMessage extends Partial<RunnersNotifyKinds> {
   type: "runners.notify";
   enabled?: boolean;
 }
 
-/** A stored or partial value as a full set of switches (anything unreadable takes the default). */
+/** A stored or partial value as a full set of switches (anything unreadable or missing takes the default). */
 export function runnersNotifyKinds(v: unknown): RunnersNotifyKinds {
   const o = v && typeof v === "object" ? (v as Record<string, unknown>) : {};
   const out = { ...DEFAULT_RUNNERS_NOTIFY };
@@ -52,9 +105,38 @@ export function runnersNotifyKinds(v: unknown): RunnersNotifyKinds {
   return out;
 }
 
+/** The switch each kind answers to. */
+export const RUNNERS_NOTIFY_KEY: Readonly<Record<RunnersNoticeKind, keyof RunnersNotifyKinds>> = Object.freeze({
+  "runners.new": "new",
+  "runners.breakout": "breakout",
+  "runners.burst": "burst",
+  "runners.running": "running",
+  "runners.run": "run",
+  "runners.fast": "fast",
+  "runners.shelf": "shelf",
+  "runners.followup": "followUp",
+  "ross.crossing": "rossCrossing",
+  "signals.crossing": "signalsCrossing",
+  "ross.trigger": "rossTrigger",
+  "signals.trigger": "signalsTrigger",
+  "halt.watch": "halt",
+});
+
 /** The switch a notice's kind answers to. */
 export function runnersNotifyKey(kind: RunnersNoticeKind): keyof RunnersNotifyKinds {
-  return kind.slice("runners.".length) as keyof RunnersNotifyKinds;
+  return RUNNERS_NOTIFY_KEY[kind];
+}
+
+/**
+ * Whether the switches want `notice`: its kind's switch or, for a Ross notice about a stock the
+ * Signals panel shows too (`alsoSignals`), the Signals twin's switch.
+ */
+export function wantsNotice(notice: Pick<RunnersNoticeMessage, "kind" | "alsoSignals">, kinds: RunnersNotifyKinds): boolean {
+  if (kinds[runnersNotifyKey(notice.kind)]) return true;
+  if (!notice.alsoSignals) return false;
+  if (notice.kind === "ross.crossing") return kinds.signalsCrossing;
+  if (notice.kind === "ross.trigger") return kinds.signalsTrigger;
+  return false;
 }
 
 /** A ticker as the wire spells it (the phone's route.ts rule). */
@@ -70,7 +152,10 @@ export function parseRunnersNotice(v: unknown): RunnersNoticeMessage | null {
   const symbol = str("symbol").trim().toUpperCase();
   const id = str("id");
   if (!id || !SYMBOL.test(symbol) || !RUNNERS_NOTICE_KINDS.includes(kind) || !str("title")) return null;
-  return { type: "runners.notice", id, alertId: str("alertId"), symbol, kind, title: str("title"), body: str("body"), data: m.data && typeof m.data === "object" ? (m.data as Record<string, unknown>) : undefined, at: typeof m.at === "number" ? m.at : 0 };
+  const data = m.data && typeof m.data === "object" ? (m.data as Record<string, unknown>) : undefined;
+  const out: RunnersNoticeMessage = { type: "runners.notice", id, alertId: str("alertId"), symbol, kind, title: str("title"), body: str("body"), data, at: typeof m.at === "number" ? m.at : 0 };
+  if (m.alsoSignals === true || data?.also_signals === true) out.alsoSignals = true;
+  return out;
 }
 
 /**
@@ -113,5 +198,56 @@ export function createNoticeDedupe(opts: { max?: number; load?: () => string[]; 
 
 /** Whether this client shows `notice`: its switch is on and it was not shown before. */
 export function shouldShowNotice(notice: RunnersNoticeMessage, kinds: RunnersNotifyKinds, dedupe: NoticeDedupe): boolean {
-  return kinds[runnersNotifyKey(notice.kind)] && dedupe.claim(notice.id);
+  return wantsNotice(notice, kinds) && dedupe.claim(notice.id);
 }
+
+/** One notification switch as every client shows it (icons are chart-core icon names). */
+export interface AlertSwitch {
+  key: keyof RunnersNotifyKinds;
+  icon: "bell" | "gauge" | "trend" | "live" | "levels" | "hline" | "plus";
+  name: string;
+  description: string;
+}
+
+/**
+ * Settings → Alerts on every client (owner, 2026-10-23: every panel event backed by evidence
+ * notifies on the phone, the watch, the desktop and the web), by panel, in the same order and
+ * words so the three clients read the same. Descriptions say what happened, never what to do.
+ */
+export const ALERT_SWITCH_SECTIONS: readonly { id: "runners" | "ross" | "signals" | "halt"; label: string; items: readonly AlertSwitch[] }[] = [
+  {
+    id: "runners",
+    label: "Runners",
+    items: [
+      { key: "new", icon: "bell", name: "New flags", description: "Ticker, price and the top reasons as soon as Runners flags it." },
+      { key: "breakout", icon: "gauge", name: "Breakouts", description: "When a flagged stock turns breaking out, with its % from the flag." },
+      { key: "burst", icon: "trend", name: "Buying bursts", description: "When heavy buying is confirmed on the tape, with how far the burst already went." },
+      { key: "running", icon: "gauge", name: "Running entries", description: "Every stock that starts running by its own range, with its move and money." },
+      { key: "run", icon: "trend", name: "Run +20%", description: "A +20% leg within 15 minutes on real trades, with its window and start price." },
+      { key: "fast", icon: "live", name: "Fast move", description: "+8% in a minute or +12% in 15 s on real trades, with the move and its money." },
+      { key: "followUp", icon: "plus", name: "Follow-ups", description: "A later Runners path fires on a stock already listed, e.g. Run +20% after a fast move." },
+      { key: "shelf", icon: "levels", name: "Volume shelf entry", description: "Price came into a volume shelf. About 1 in 3 hold, 1 in 2 fail." },
+    ],
+  },
+  {
+    id: "ross",
+    label: "Ross",
+    items: [
+      { key: "rossCrossing", icon: "trend", name: "Crossing", description: "The pullback's trigger is being crossed (close pending). Most do not follow through." },
+      { key: "rossTrigger", icon: "hline", name: "At trigger", description: "Price is just under the pullback's trigger." },
+    ],
+  },
+  {
+    id: "signals",
+    label: "Signals",
+    items: [
+      { key: "signalsCrossing", icon: "trend", name: "Crossing", description: "A Signals pullback's trigger is being crossed (close pending). Sent once if Ross has it too." },
+      { key: "signalsTrigger", icon: "hline", name: "At trigger", description: "Price is just under a Signals pullback's trigger." },
+    ],
+  },
+  {
+    id: "halt",
+    label: "Halt watcher",
+    items: [{ key: "halt", icon: "gauge", name: "Gauge appears", description: "Pressure building fast near the LULD band. A possible halt, not a forecast." }],
+  },
+];

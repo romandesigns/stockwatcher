@@ -1,27 +1,30 @@
 import type { SettingsSheetSection } from "@stockwatcher/chart-native";
 import { Icon, playHaptic, UI } from "@stockwatcher/chart-native";
-import { useState, useSyncExternalStore } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { ALERT_SWITCH_SECTIONS, type AlertSwitch } from "@stockwatcher/shared";
+import { useEffect, useState, useSyncExternalStore } from "react";
+import { AccessibilityInfo, Animated, Easing, Pressable, StyleSheet, Text, View } from "react-native";
 
 import { enablePush, pushToken, subscribePushToken } from "../notifications/push";
-import { setRunnersPush, useRunnersPush, type RunnersPushPrefs } from "../notifications/runnersPush";
+import { PUSH_PREF_OF, setRunnersPush, useRunnersPush, type RunnersPushPrefs } from "../notifications/runnersPush";
 import { fonts } from "../theme";
 
 /**
- * Settings → Runners: this phone's Runners pushes (owner, 2026-10-22), sent by the server even
- * with the app closed (crates/server/src/alerts/runners.rs). Six switches, per device: new flags
- * (on by default), breakouts (off), buying bursts (on, 2026-10-22), running entries, "Run +20%"
- * and "Fast move" entries (on, 2026-10-22: the owner does not want to miss a move while away
- * from the phone). Turning one on when this phone has no push token asks for
- * notification permission and registers it (the Alerts tab's "Turn on phone alerts" does the
- * same). Without push, new flags ring a local banner while the dashboard is open instead.
+ * Settings → Alerts: this phone's pushes, sent by the server even with the app closed
+ * (crates/server/src/alerts/runners.rs), by panel (owner, 2026-10-23: every panel event backed by
+ * evidence notifies). Runners: new flags, breakouts (off), bursts, running, Run +20%, fast moves,
+ * follow-ups and volume-shelf entries. Ross and Signals: crossing (on) and at trigger (off). Halt
+ * watcher: the gauge appearing (off). Per device; the words are shared with the web and the
+ * desktop (packages/shared `ALERT_SWITCH_SECTIONS`). Turning one on when this phone has no push
+ * token asks for notification permission and registers it (the Alerts tab's "Turn on phone
+ * alerts" does the same). Without push, new flags ring a local banner while the dashboard is open.
  */
 export function rocketSection(): SettingsSheetSection {
   return {
+    // The id stays "rocket" so a remembered open section still finds it.
     id: "rocket",
-    label: "Runners",
+    label: "Alerts",
     icon: "bell",
-    description: "Stocks that start running, from five detectors: flags, bursts, running, Run +20% and fast moves.",
+    description: "Pushes for Runners, Ross, Signals and the Halt watcher, by panel.",
     render: () => <RunnersPushPanel />,
   };
 }
@@ -43,88 +46,68 @@ function RunnersPushPanel() {
   };
   return (
     <View style={s.list}>
-      <Switch
-        on={prefs.pushNew}
-        busy={busy}
-        icon="bell"
-        name="New flags"
-        description="Ticker, price and the top reasons as soon as Runners flags it."
-        onPress={() => toggle("pushNew")}
-      />
-      <Switch
-        on={prefs.pushBreakout}
-        busy={busy}
-        icon="gauge"
-        name="Breakouts"
-        description="When a flagged stock turns breaking out, with its % from the flag."
-        onPress={() => toggle("pushBreakout")}
-      />
-      <Switch
-        on={prefs.pushBurst}
-        busy={busy}
-        icon="trend"
-        name="Buying bursts"
-        description="When heavy buying is confirmed on the tape, with how far the burst already went."
-        onPress={() => toggle("pushBurst")}
-      />
-      <Switch
-        on={prefs.pushRunning}
-        busy={busy}
-        icon="gauge"
-        name="Running entries"
-        description="Every stock that starts running by its own range, with its move and money."
-        onPress={() => toggle("pushRunning")}
-      />
-      <Switch
-        on={prefs.pushRun}
-        busy={busy}
-        icon="trend"
-        name="Run +20%"
-        description="A +20% leg within 15 minutes on real trades, with its window and start price."
-        onPress={() => toggle("pushRun")}
-      />
-      <Switch
-        on={prefs.pushFast}
-        busy={busy}
-        icon="live"
-        name="Fast move"
-        description="+8% in a minute or +12% in 15 s on real trades, with the move and its money."
-        onPress={() => toggle("pushFast")}
-      />
+      {ALERT_SWITCH_SECTIONS.map((section) => (
+        <View key={section.id} style={s.section} accessibilityRole="summary" accessibilityLabel={`${section.label} alerts`}>
+          <Text style={s.heading} accessibilityRole="header">
+            {section.label}
+          </Text>
+          {section.items.map((item) => {
+            const key = PUSH_PREF_OF[item.key];
+            return <Switch key={item.key} item={item} on={prefs[key]} busy={busy} onPress={() => toggle(key)} />;
+          })}
+        </View>
+      ))}
       <Text style={[s.status, note ? { color: UI.warning } : null]}>
         {note ??
           (token
-            ? "Pushed to this phone, also when the app is closed. At most one per stock per 10 min (a burst: 2 min). No daily limit. The alerts' quiet hours apply. Tap one to open its chart."
+            ? "Pushed to this phone, also when the app is closed. The same kind at most once per stock per 10 min; new evidence (a burst, crossing, shelf entry or follow-up) 2 min after any other. No daily limit. The alerts' quiet hours apply. Tap one to open its chart."
             : "Phone push is off on this phone: new flags and bursts ring only while the dashboard is open. Turning a switch on asks to allow notifications.")}
       </Text>
     </View>
   );
 }
 
-function Switch({ on, busy, icon, name, description, onPress }: { on: boolean; busy: boolean; icon: "bell" | "gauge" | "trend" | "live"; name: string; description: string; onPress: () => void }) {
+function Switch({ item, on, busy, onPress }: { item: AlertSwitch; on: boolean; busy: boolean; onPress: () => void }) {
+  // The knob slides (smooth motion), or jumps with reduced motion on.
+  const [x] = useState(() => new Animated.Value(on ? 1 : 0));
+  useEffect(() => {
+    let cancelled = false;
+    void AccessibilityInfo.isReduceMotionEnabled()
+      .catch(() => false)
+      .then((reduced) => {
+        if (cancelled) return;
+        if (reduced) x.setValue(on ? 1 : 0);
+        else Animated.timing(x, { toValue: on ? 1 : 0, duration: 160, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [on, x]);
   return (
     <Pressable
       accessibilityRole="switch"
       accessibilityState={{ checked: on, busy }}
-      accessibilityLabel={`${name}. ${description}`}
+      accessibilityLabel={`${item.name}. ${item.description}`}
       disabled={busy}
       onPress={onPress}
       style={({ pressed }) => [s.row, pressed && { backgroundColor: UI.row }]}
     >
-      <Icon name={icon} color={on ? UI.accent : UI.textDim} size={18} />
+      <Icon name={item.icon} color={on ? UI.accent : UI.textDim} size={18} />
       <View style={s.text}>
-        <Text style={s.name}>{name}</Text>
-        <Text style={s.description}>{description}</Text>
+        <Text style={s.name}>{item.name}</Text>
+        <Text style={s.description}>{item.description}</Text>
       </View>
       <View style={[s.track, on && { backgroundColor: UI.accent }]}>
-        <View style={[s.knob, on && { transform: [{ translateX: 14 }] }]} />
+        <Animated.View style={[s.knob, { transform: [{ translateX: x.interpolate({ inputRange: [0, 1], outputRange: [0, 14] }) }] }]} />
       </View>
     </Pressable>
   );
 }
 
 const s = StyleSheet.create({
-  list: { gap: 2 },
+  list: { gap: 10 },
+  section: { gap: 2 },
+  heading: { color: UI.textFaint, fontSize: 11, fontFamily: fonts.semibold, letterSpacing: 0.6, textTransform: "uppercase", paddingHorizontal: 12, paddingBottom: 2 },
   row: { minHeight: 48, flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10 },
   text: { flex: 1, gap: 2 },
   name: { color: UI.text, fontSize: 14, fontFamily: fonts.semibold },

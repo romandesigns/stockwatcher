@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { parseServerMessage } from "./protocol.ts";
-import { createNoticeDedupe, DEFAULT_RUNNERS_NOTIFY, parseRunnersNotice, runnersNotifyKinds, shouldShowNotice, type RunnersNoticeMessage } from "./runnersNotify.ts";
+import { createNoticeDedupe, DEFAULT_RUNNERS_NOTIFY, parseRunnersNotice, RUNNERS_NOTICE_KINDS, runnersNotifyKey, runnersNotifyKinds, shouldShowNotice, wantsNotice, type RunnersNoticeMessage } from "./runnersNotify.ts";
 import { createWsClient, type WebSocketLike } from "./ws.ts";
 
 // The frame the server sends (crates/server/src/alerts/runners.rs desk_frame test).
@@ -17,10 +17,49 @@ const frame = {
 };
 
 describe("runners notices", () => {
-  test("the defaults are the phone's: everything on but breakouts", () => {
-    expect(DEFAULT_RUNNERS_NOTIFY).toEqual({ new: true, breakout: false, burst: true, running: true, run: true, fast: true });
+  test("the defaults are the phone's: every evidence kind on; breakouts, at-trigger and the Halt watcher off", () => {
+    expect(DEFAULT_RUNNERS_NOTIFY).toEqual({ new: true, breakout: false, burst: true, running: true, run: true, fast: true, shelf: true, followUp: true, rossCrossing: true, signalsCrossing: true, rossTrigger: false, signalsTrigger: false, halt: false });
     expect(runnersNotifyKinds(undefined)).toEqual({ ...DEFAULT_RUNNERS_NOTIFY });
+    // A value stored before the new kinds existed: the new switches take their defaults.
+    expect(runnersNotifyKinds({ new: false, breakout: true, burst: true, running: true, run: true, fast: true })).toEqual({ ...DEFAULT_RUNNERS_NOTIFY, new: false, breakout: true });
     expect(runnersNotifyKinds({ fast: false, breakout: true, junk: 1, run: "no" })).toEqual({ ...DEFAULT_RUNNERS_NOTIFY, fast: false, breakout: true });
+  });
+
+  test("every kind answers to its own switch", () => {
+    expect(RUNNERS_NOTICE_KINDS.map((k) => [k, runnersNotifyKey(k)])).toEqual([
+      ["runners.new", "new"],
+      ["runners.breakout", "breakout"],
+      ["runners.burst", "burst"],
+      ["runners.running", "running"],
+      ["runners.run", "run"],
+      ["runners.fast", "fast"],
+      ["runners.shelf", "shelf"],
+      ["runners.followup", "followUp"],
+      ["ross.crossing", "rossCrossing"],
+      ["signals.crossing", "signalsCrossing"],
+      ["ross.trigger", "rossTrigger"],
+      ["signals.trigger", "signalsTrigger"],
+      ["halt.watch", "halt"],
+    ]);
+    for (const k of RUNNERS_NOTICE_KINDS) expect(runnersNotifyKey(k) in DEFAULT_RUNNERS_NOTIFY).toBe(true);
+  });
+
+  test("a Ross notice for a stock in Signals too shows with either switch, once", () => {
+    const off = { ...DEFAULT_RUNNERS_NOTIFY, rossCrossing: false, rossTrigger: false };
+    const cross = parseRunnersNotice({ ...frame, id: "ross.crossing-e1", kind: "ross.crossing", data: { symbol: "CJMB", kind: "ross.crossing", alert_id: "e1", also_signals: true } })!;
+    expect(cross.alsoSignals).toBe(true);
+    expect(parseRunnersNotice({ ...frame, kind: "ross.trigger", alsoSignals: true })!.alsoSignals).toBe(true);
+    expect(wantsNotice(cross, off)).toBe(true);
+    expect(wantsNotice(cross, { ...off, signalsCrossing: false })).toBe(false);
+    expect(wantsNotice({ kind: "ross.crossing" }, off)).toBe(false);
+    expect(wantsNotice({ kind: "ross.trigger", alsoSignals: true }, { ...off, signalsTrigger: true })).toBe(true);
+    expect(wantsNotice({ kind: "ross.trigger", alsoSignals: true }, off)).toBe(false);
+    // Opt-in kinds are off by default.
+    expect(wantsNotice({ kind: "halt.watch" }, DEFAULT_RUNNERS_NOTIFY)).toBe(false);
+    expect(wantsNotice({ kind: "runners.shelf" }, DEFAULT_RUNNERS_NOTIFY)).toBe(true);
+    const d = createNoticeDedupe();
+    expect(shouldShowNotice(cross, off, d)).toBe(true);
+    expect(shouldShowNotice(cross, DEFAULT_RUNNERS_NOTIFY, d)).toBe(false);
   });
 
   test("the server's text is taken as is; malformed frames are dropped", () => {

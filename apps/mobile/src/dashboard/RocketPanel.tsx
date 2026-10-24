@@ -196,6 +196,12 @@ const Row = memo(function Row({ row: r, onPick, reducedMotion }: { row: RocketRo
             {r.source.label}
           </Text>
         </View>
+        {/* Later paths on the same stock (follow-ups, "+ Run +20%"): secondary, no fill, shrinks first on the cover screen. */}
+        {r.also.map((a) => (
+          <Text key={a.kind} numberOfLines={1} style={styles.alsoText} testID="rocket-also">
+            + {a.label}
+          </Text>
+        ))}
         {r.halted && (
           <View style={styles.badge}>
             <Text style={styles.badgeText}>HALTED</Text>
@@ -337,6 +343,7 @@ const styles = StyleSheet.create({
   small: { fontSize: 12, fontVariant: ["tabular-nums"] },
   source: { flexShrink: 0, borderRadius: 4, paddingHorizontal: 4, paddingVertical: 1, backgroundColor: UI.raised },
   sourceText: { color: UI.textDim, fontSize: 9, fontFamily: fonts.semibold },
+  alsoText: { flexShrink: 1, color: UI.textFaint, fontSize: 9, fontFamily: fonts.regular },
   badge: { borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1, backgroundColor: UI.warning },
   badgeText: { color: UI.accentFg, fontSize: 9, fontFamily: fonts.semibold },
   age: { marginLeft: "auto", flexDirection: "row", alignItems: "center", gap: 4 },
