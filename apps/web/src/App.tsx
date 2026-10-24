@@ -9,11 +9,10 @@ import {
   replayDayOptions,
   sessionBands,
   tradingDayOf,
-  volumeBuckets,
   type ChartOptions,
 } from "@stockwatcher/chart-core";
 import { PROFILE_BINS } from "@stockwatcher/app-state";
-import { CandleChart, Icon, ReplayControls, SessionTimeline, Tape, VolumeProfile } from "@stockwatcher/chart-web";
+import { CandleChart, Icon, ReplayBar, Tape, VolumeProfile } from "@stockwatcher/chart-web";
 import { Tip, ToggleGroup, ToggleGroupItem, cn } from "@stockwatcher/chart-web/ui";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ConnectionGate } from "./ConnectionGate.tsx";
@@ -26,6 +25,7 @@ import { NavToggle } from "./nav/NavToggle.tsx";
 import { SettingsButton } from "./nav/settings.tsx";
 import { usePaperTrading } from "./feed/usePaperTrading.ts";
 import { useReplayDays } from "./feed/useReplayDays.ts";
+import { useReplayAlerts } from "./feed/useReplayAlerts.ts";
 import { FIXTURE_SYMBOL } from "./fixtures/fixtureFeed.ts";
 import { useMediaQuery } from "./lib/useMediaQuery.ts";
 import { SearchPill } from "./search/SearchPill.tsx";
@@ -195,10 +195,8 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
     const [year, month, day] = dayKey.split("-").map(Number) as [number, number, number];
     return sessionBands({ year, month, day });
   }, [dayKey]);
-  const bucketMs = phone ? 20 * 60_000 : 15 * 60_000;
-  const buckets = useMemo(() => (series && bands.length ? volumeBuckets(series.candles, bands[0]!.start, bands[3]!.end, bucketMs) : []), [series, bands, bucketMs]);
 
-  // A day picked here that the server is still switching to (ReplayControls `pendingDay`). Cleared
+  // A day picked here that the server is still switching to (ReplayBar `pendingDay`). Cleared
   // during render once the replay names it (the clock's new trading day refetches the day state),
   // and after a timeout in case the server refused it (an error frame, no day change).
   const [pendingDay, setPendingDay] = useState<string | null>(null);
@@ -209,11 +207,24 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
     const id = setTimeout(() => setPendingDay(null), PENDING_DAY_TIMEOUT_MS);
     return () => clearTimeout(id);
   }, [pendingDay]);
+  // The day's Runners entries: the scrubber's alert dots and the Prev/Next alert jumps.
+  const replayAlerts = useReplayAlerts(current, replayDay ?? clockDay);
   const replay = {
     clock,
     onPlayPause: (play: boolean) => feed.control({ action: play ? "play" : "pause" }),
-    onStep: () => feed.control({ action: "step" }),
     onSpeedChange: (speed: number) => feed.control({ action: "speed", value: speed }),
+    // Jump the replay; the server rebuilds from the session start and resends snapshots.
+    onSeek: (t: number) => feed.control({ action: "seek", value: t }),
+    bands,
+    // The histogram re-sums the shown chart's candle volume (what fed the old session timeline).
+    candles: series?.candles ?? [],
+    symbol,
+    price: last ? formatPrice(last.c) : "",
+    // The ticker search; its pick (app.openTicker) replaces this page's chart.
+    onTickerClick: () => app.setSearchOpen(true),
+    alerts: replayAlerts,
+    // An "any ticker" alert jump: that ticker replaces the chart, as a search pick would.
+    onOpenTicker: (s: string) => app.openTicker(s),
     days: dayOptions,
     day: replayDay,
     pendingDay,
@@ -225,8 +236,6 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
     },
     onDayMenuOpenChange: (open: boolean) => open && replayDays.refresh(),
   };
-  // Jump the replay; the server rebuilds from the session start and resends snapshots.
-  const seek = (t: number) => feed.control({ action: "seek", value: t });
   const price = last ? formatPrice(last.c) : "—";
   const change = last && reference ? formatChange(reference.price, last.c) : "";
   const changeColor = change.startsWith("-") ? "text-critical" : "text-good";
@@ -264,9 +273,8 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
         {/* The timeframe in the toolbar row as the wheel (as on the native phone app), not four
             segments floating over the chart's top-right, where they ran into the candle readout. */}
         <CandleChart className="h-[360px]" toolbar inspector headingInToolbar timeframeControl="wheel" defaultToolsVisible={false} symbol={symbol} persistKey={CHART_KEY} {...synced} trading={trading} now={clock?.now ?? null} onTimeframeChange={app.setTimeframe} series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={app.setInspectT} options={PHONE_CHART} barSpacing={10} label={chartLabel} />
-        <section aria-label="Session timeline and replay" className="flex flex-col gap-1.5 rounded-xl bg-card px-3 py-2">
-          <ReplayControls {...replay} variant="compact" />
-          <SessionTimeline bands={bands} buckets={buckets} bucketMs={bucketMs} now={clock?.now ?? null} variant="minimal" onSeek={seek} />
+        <section aria-label="Replay" className="rounded-[18px] bg-card p-3.5">
+          <ReplayBar {...replay} />
         </section>
         <section aria-label="Time and sales" className="flex flex-col gap-1.5 rounded-xl bg-card p-3">
           <div className="flex items-baseline">
@@ -317,10 +325,6 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
                 </div>
               } symbol={symbol} persistKey={CHART_KEY} {...synced} trading={trading} now={clock?.now ?? null} onTimeframeChange={app.setTimeframe} series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={app.setInspectT} options={DESKTOP_CHART} label={chartLabel} />
           </div>
-          <section aria-label="Session timeline and replay" className="flex flex-col gap-2 rounded-xl bg-card px-3 py-2.5">
-            <ReplayControls {...replay} />
-            <SessionTimeline bands={bands} buckets={buckets} bucketMs={bucketMs} now={clock?.now ?? null} variant="minimal" onSeek={seek} />
-          </section>
         </main>
 
         <aside className="grid gap-2 min-[601px]:max-[900px]:grid-cols-2 min-[901px]:flex min-[901px]:w-[300px] min-[901px]:shrink-0 min-[901px]:flex-col">
@@ -329,10 +333,16 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
           </section>
           <section aria-label="Time and sales" className="flex min-h-0 flex-1 flex-col gap-1.5 rounded-xl bg-card p-3">
             <h2 className="m-0 text-xs font-medium text-muted-foreground">Time &amp; sales</h2>
-            <Tape trades={tape} maxRows={16} />
+            <Tape trades={tape} maxRows={12} />
           </section>
         </aside>
       </div>
+      {/* The replay bar spans the page under the chart and the side panels, as the approved
+          two-tier design draws it: its one-row top tier needs the full width (ReplayBar picks
+          the two-row arrangement itself when the window is narrower). */}
+      <section aria-label="Replay" className="mx-4 mb-3 rounded-[14px] bg-card px-4.5 pt-3.5 pb-3">
+        <ReplayBar {...replay} />
+      </section>
     </div>
   );
 }

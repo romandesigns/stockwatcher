@@ -13,7 +13,8 @@ export { QuickAlertCard, type QuickAlertCardProps, type QuickAlertDraft } from "
 export { HoldRing, type HoldRingProps } from "./HoldRing.tsx";
 export { PriceAxisMenu, PRICE_SCALE_LABELS, type PriceAxisMenuProps } from "./PriceAxisMenu.tsx";
 export { CandleInspector, type CandleInspectorProps } from "./CandleInspector.tsx";
-export { ReplayControls, DEFAULT_SPEEDS, speedLabel, type ReplayControlsProps } from "./ReplayControls.tsx";
+export { ReplayBar, type ReplayBarProps } from "./ReplayBar.tsx";
+export { ReplayScrubber, type ReplayScrubberProps } from "./ReplayScrubber.tsx";
 export { SessionTimeline, type SessionTimelineProps } from "./SessionTimeline.tsx";
 export { Tape, type TapeProps } from "./Tape.tsx";
 export { TimeframeSelector, type TimeframeSelectorProps } from "./TimeframeSelector.tsx";

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createAppStore } from "@stockwatcher/app-state";
-import { currentReplayDay, parseReplayDayState, replayDayOptions, type ChartMessage, type Clock } from "@stockwatcher/chart-core";
-import { ReplayControls } from "@stockwatcher/chart-web";
+import { currentReplayDay, parseReplayDayState, replayDayOptions, sessionBands, type ChartMessage, type Clock } from "@stockwatcher/chart-core";
+import { ReplayBar } from "@stockwatcher/chart-web";
 import { createSettingsSync } from "@stockwatcher/shared";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createServerFeed } from "./serverFeed.ts";
@@ -81,7 +81,24 @@ function openFeed() {
 
 /** The replay bar as App.tsx renders it (days from /api/replay/state, the clock from the socket). */
 function replayBar(clock: Clock | null, pendingDay: string | null = null, state = parseReplayDayState(dayState)) {
-  return renderToStaticMarkup(<ReplayControls clock={clock} onPlayPause={() => {}} onStep={() => {}} onSpeedChange={() => {}} days={replayDayOptions(state.days)} day={currentReplayDay(state, clock)} onDayChange={() => {}} pendingDay={pendingDay} />);
+  return renderToStaticMarkup(
+    <ReplayBar
+      layout="desktop"
+      clock={clock}
+      onPlayPause={() => {}}
+      onSpeedChange={() => {}}
+      onSeek={() => {}}
+      bands={sessionBands({ year: 2026, month: 10, day: 23 })}
+      candles={[]}
+      symbol="AAL"
+      price="12.34"
+      onTickerClick={() => {}}
+      days={replayDayOptions(state.days)}
+      day={currentReplayDay(state, clock)}
+      onDayChange={() => {}}
+      pendingDay={pendingDay}
+    />,
+  );
 }
 
 describe("replay practice: a page opened while the replay builds (owner, 2026-10-23)", () => {

@@ -122,7 +122,8 @@ export type IconName =
   | "gauge"
   | "bell"
   | "plus"
-  | "more";
+  | "more"
+  | "calendar";
 
 export const ICONS: Readonly<Record<IconName, IconDef>> = {
   // Drawing tools: the drawn object is primary, its handles and fills secondary.
@@ -234,6 +235,8 @@ export const ICONS: Readonly<Record<IconName, IconDef>> = {
   plus: icon([S(circlePath(8, 8, 6.5), { paint: "fill" }), P("M8 4.5v7M4.5 8h7")], 1.6),
   // Row menus (an alert's options): three dots, the middle one primary.
   more: icon([S(circlePath(3, 8, 1.4), { paint: "fill" }), P(circlePath(8, 8, 1.4), { paint: "fill" }), S(circlePath(13, 8, 1.4), { paint: "fill" })]),
+  // The replay bar's day picker (2026-10-24, the approved two-tier design): the page soft; its frame, header rule and rings crisp.
+  calendar: icon([S("M2.5 4.5h11v9h-11z", { paint: "fill" }), P("M3.5 3.5h9a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-8a1 1 0 0 1 1-1zM2.5 6.5h11M5.5 2v3M10.5 2v3")]),
 };
 
 export const ICON_NAMES = Object.keys(ICONS) as IconName[];

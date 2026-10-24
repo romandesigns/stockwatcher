@@ -30,3 +30,4 @@ export * from "./drawingSettings.ts";
 export * from "./settingsDialog.ts";
 export * from "./syncedSettings.ts";
 export * from "./chartRouter.ts";
+export * from "./replayBar.ts";
