@@ -3583,6 +3583,13 @@ impl Market {
         .expect("quotes serialize")
     }
 
+    /// The archive this market reads (`ARCHIVE_ROOT`), once it started on one; `None` for an
+    /// idle or provider-less market. The replay bar's alert dots are read beside it
+    /// (`crate::replay_alerts`).
+    pub fn archive_root(&self) -> Option<std::path::PathBuf> {
+        self.0.running_archive.get().map(|a| a.root().to_path_buf())
+    }
+
     /// `GET /api/replay/state`.
     ///
     /// `days`: every day `replay.control {action: "day"}` accepts, ascending, as

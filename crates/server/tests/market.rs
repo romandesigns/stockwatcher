@@ -444,6 +444,48 @@ async fn rest_routes() {
 }
 
 #[tokio::test]
+async fn replay_alerts_serve_the_days_logged_entries() {
+    let s = stack_prepared(&[("REPLAY_AUTOPLAY", "0")], |root| {
+        let dir = root.join("rocket-watch");
+        std::fs::create_dir_all(&dir).unwrap();
+        let lines = [
+            json!({"kind":"fast","v":1,"symbol":"SMPL","alert_ns":1_792_075_500_000_000_000_i64,"price":4.2,"reasons":["+12% in 60 s"]}),
+            json!({"kind":"state","v":1,"symbol":"SMPL","alert_ns":1_792_075_500_000_000_000_i64}),
+            json!({"kind":"alert","v":1,"symbol":"FXLO","alert_ns":1_792_075_200_000_000_000_i64,"price":1.1}),
+        ];
+        let text: String = lines.iter().map(|l| format!("{l}\n")).collect();
+        std::fs::write(dir.join("2026-10-15.jsonl"), text).unwrap();
+    })
+    .await;
+    let mut ws = connect(&s.url).await;
+    wait_for_replay(&mut ws).await;
+
+    let (st, v) = get(&s.app, "/api/replay/alerts?day=2026-10-15").await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(v["day"], "2026-10-15");
+    assert_eq!(
+        v["alerts"],
+        json!([
+            {"t": 1_792_075_200_000_i64, "kind": "r2", "symbol": "FXLO", "price": 1.1},
+            {"t": 1_792_075_500_000_i64, "kind": "fast", "symbol": "SMPL", "price": 4.2, "reason": "+12% in 60 s"},
+        ])
+    );
+    let (_, v) = get(&s.app, "/api/replay/alerts?day=2026-10-15&symbol=smpl").await;
+    assert_eq!(v["alerts"].as_array().unwrap().len(), 1);
+    // A day nothing was logged on is an empty list; a bad day is refused before it names a file.
+    let (st, v) = get(&s.app, "/api/replay/alerts?day=2026-10-14").await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(v["alerts"], json!([]));
+    for bad in [
+        "/api/replay/alerts",
+        "/api/replay/alerts?day=../../etc",
+        "/api/replay/alerts?day=2026-13-01",
+    ] {
+        assert_eq!(get(&s.app, bad).await.0, StatusCode::BAD_REQUEST, "{bad}");
+    }
+}
+
+#[tokio::test]
 async fn live_mode_is_not_configured_and_refuses_replay_controls() {
     let s = stack(&[("MARKET_DATA_MODE", "live")]).await;
     let (_, v) = get(&s.app, "/api/replay/state").await;

@@ -3,6 +3,9 @@
 //!
 //! - `GET /api/chart/{symbol}/snapshot?timeframe=1m&bin=0.01` → a `chart.snapshot` (with clock)
 //! - `GET /api/replay/state` → mode, provider status, day, symbols, clock, and the switchable `days`
+//! - `GET /api/replay/alerts?day=YYYY-MM-DD[&symbol=X]` → `{day, alerts: [{t, kind, symbol, price?,
+//!   reason?}]}`, the Runners entries the live server logged that day (`crate::replay_alerts`): the
+//!   replay bar's alert dots. Always the replay market's archive; an unlogged day is `[]`
 //! - `GET /api/symbols` → the symbols the server can chart, and whether the data is fixture data
 //! - `GET /api/quotes` → the quote board as a `quotes.snapshot` (the body a `/ws`
 //!   `quotes.subscribe` starts with; for tests and debugging, clients use the socket)
@@ -90,6 +93,37 @@ pub async fn replay_state(
     Query(q): Query<SourceQuery>,
 ) -> Json<serde_json::Value> {
     Json(state.market_for(q.source).state_json())
+}
+
+#[derive(Deserialize)]
+pub struct ReplayAlertsQuery {
+    day: Option<String>,
+    symbol: Option<String>,
+}
+
+pub async fn replay_alerts(
+    State(state): State<AppState>,
+    Query(q): Query<ReplayAlertsQuery>,
+) -> Response {
+    // Parsed into a date before it names a file, so nothing but `YYYY-MM-DD.jsonl` is ever read.
+    let Some(day) = q
+        .day
+        .as_deref()
+        .and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
+    else {
+        return bad("day must be YYYY-MM-DD".into());
+    };
+    let symbol = q.symbol.filter(|s| !s.is_empty());
+    let alerts = match state.market_for(Some(Source::Replay)).archive_root() {
+        // At most a few MB of small lines, but still file IO: off the async workers.
+        Some(root) => tokio::task::spawn_blocking(move || {
+            crate::replay_alerts::read_day(&root, day, symbol.as_deref())
+        })
+        .await
+        .unwrap_or_default(),
+        None => Vec::new(),
+    };
+    Json(json!({ "day": day.format("%Y-%m-%d").to_string(), "alerts": alerts })).into_response()
 }
 
 /// Same bounded state/history as the opt-in socket. Export is deliberately a research seam,

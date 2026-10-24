@@ -14,6 +14,7 @@ pub mod market;
 pub mod observe;
 pub mod pressure;
 pub mod quotes;
+pub mod replay_alerts;
 pub mod rocket;
 pub mod settings;
 pub mod shadow;
@@ -208,6 +209,7 @@ pub fn router(state: AppState, static_dir: &Path, data_dir: &Path) -> Router {
         .route("/version", get(version))
         .route("/chart/{symbol}/snapshot", get(api::chart_snapshot))
         .route("/replay/state", get(api::replay_state))
+        .route("/replay/alerts", get(api::replay_alerts))
         .route("/detection", get(api::detection_snapshot))
         .route("/detection/export", get(api::detection_snapshot))
         .route("/symbols", get(api::symbols))
