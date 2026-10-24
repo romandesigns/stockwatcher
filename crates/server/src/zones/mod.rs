@@ -172,6 +172,11 @@ pub const HORIZON_NS: i64 = 30 * MIN_NS;
 pub const SHOW_RESOLVED_NS: i64 = 10 * MIN_NS;
 /// An unconfirmed symbol's buffers are freed after this long without a print.
 const IDLE_FREE_NS: i64 = 16 * MIN_NS;
+/// The bake-off's base rates on unseen TEST days (module docs): an entry HELD 31.9 % of the time
+/// and was LOST about 52 %. The panels and the shelf-entry push say "about 1 in 3 hold, 1 in 2
+/// fail" from these, never a prediction for one stock.
+pub const HELD_PCT: f64 = 31.9;
+pub const LOST_PCT: f64 = 52.0;
 pub const STRATEGY: &str = "volume-shelf-C";
 pub const VERSION: &str = "178c4ab";
 
@@ -252,6 +257,24 @@ pub struct Event {
 }
 
 impl Event {
+    /// Tests: an open entry at `t_ns` into the shelf `[lo, hi]`.
+    #[cfg(test)]
+    pub fn test(t_ns: i64, entry: f64, lo: f64, hi: f64) -> Event {
+        Event {
+            t_ns,
+            entry,
+            lo,
+            hi,
+            peak: hi * 1.5,
+            run_start_ns: t_ns - 10 * MIN_NS,
+            retr: 0.6,
+            state: State::InShelf,
+            resolved_ns: None,
+            min_end: 0,
+            min_close: f64::NAN,
+        }
+    }
+
     fn end(&self) -> i64 {
         self.t_ns + HORIZON_NS
     }
@@ -881,6 +904,9 @@ pub struct ZoneBoard {
     logged: HashSet<String>,
     /// The Runners entry's runs ([`RUN_BAND_MICROS`]) not taken yet ([`ZoneBoard::take_entries`]).
     entries: Vec<(Arc<str>, Run)>,
+    /// New `in_shelf` events not taken yet ([`ZoneBoard::take_shelf_entries`]): the Runners
+    /// shelf-entry notice. Never a rebuilt day's (an adopted symbol's events are not news).
+    shelf_entries: Vec<(Arc<str>, Event)>,
     /// The Runners entry's per-second early fire ([`ZoneBoard::set_early`]); off on a board that
     /// [`ZoneBoard::new`] made until the market turns it on.
     early: bool,
@@ -1043,11 +1069,20 @@ impl ZoneBoard {
         let dirty = std::mem::take(&mut self.dirty);
         for i in dirty {
             let was = self.syms[i].shelf.is_some();
+            let events_before = self.syms[i].shelf.as_ref().map_or(0, |s| s.events.len());
             runs.clear();
             entries.clear();
             let changed = self.syms[i].process(due, t0, &mut runs, &mut entries);
             for r in &entries {
                 self.push_entry(self.syms[i].symbol.clone(), *r);
+            }
+            if let Some(sh) = self.syms[i].shelf.as_ref()
+                && sh.events.len() > events_before
+                && self.shelf_entries.len() < MAX_ENTRIES
+            {
+                let sym = self.syms[i].symbol.clone();
+                self.shelf_entries
+                    .extend(sh.events[events_before..].iter().map(|e| (sym.clone(), *e)));
             }
             if self.syms[i].dirty {
                 self.dirty.push(i);
@@ -1117,6 +1152,13 @@ impl ZoneBoard {
     /// (`crate::rocket::RocketBoard::add_runs`).
     pub fn take_entries(&mut self) -> Vec<(Arc<str>, Run)> {
         std::mem::take(&mut self.entries)
+    }
+
+    /// The `in_shelf` events decided since the last call, oldest first (one per shelf, at most
+    /// [`MAX_EVENTS`] a symbol-day): the Runners shelf-entry notice (`crate::rocket`). Outcomes
+    /// (held, lost) are not here: they never notify.
+    pub fn take_shelf_entries(&mut self) -> Vec<(Arc<str>, Event)> {
+        std::mem::take(&mut self.shelf_entries)
     }
 
     fn log_line(&mut self, k: String, line: Value) {

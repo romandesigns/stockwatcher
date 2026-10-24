@@ -4,6 +4,7 @@ pub mod api;
 pub mod auth;
 pub mod config;
 pub mod context;
+pub mod cue_notices;
 pub mod day_line;
 pub mod days;
 pub mod detection;

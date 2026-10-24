@@ -169,16 +169,18 @@
 //! - server `alert.fired {event, phoneToday}` and `alert.held {event}` as they happen, to EVERY
 //!   connection; `alert.updated {event}` when a recorded event changes (a phone push that failed
 //!   after it was recorded); `alerts.status {phoneToday, phoneBudget, devices, dropped}`.
-//! - client `push.register {token, platform?, name?, runnersNew?, runnersBreakout?, runnersBurst?, runnersRunning?, runnersRun?, runnersFast?}`: this
+//! - client `push.register {token, platform?, name?, runnersNew?, runnersBreakout?, runnersBurst?, runnersRunning?, runnersRun?, runnersFast?, runnersShelf?, runnersFollowUp?, rossCrossing?, signalsCrossing?, rossTrigger?, signalsTrigger?, haltWatch?}`: this
 //!   phone's Expo push token, kept by the server for phone notifications and never sent to other
 //!   clients, with its Runners push opt-ins (crate::alerts::runners; an absent one keeps what the
 //!   phone had; for a new phone breakouts off, the rest on); a malformed token gets
 //!   `error bad_request`. `push.unregister {token}` removes it. No direct reply on success (the
 //!   `alerts.status` frame's `devices` count moves).
 //! - The rules themselves are the synced `alerts` namespace (settings.* above).
-//! - client `runners.notify {enabled?, new?, breakout?, burst?, running?, run?, fast?}`: this
-//!   desktop or web connection shows Runners system notifications for those kinds (absent = the
-//!   phone's default: breakouts off, the rest on; `enabled: false` stops). Per connection, for
+//! - client `runners.notify {enabled?, new?, breakout?, burst?, running?, run?, fast?, shelf?,
+//!   followUp?, rossCrossing?, signalsCrossing?, rossTrigger?, signalsTrigger?, halt?}`: this
+//!   desktop or web connection shows Runners, Ross, Signals and Halt watcher system notifications
+//!   for those kinds (absent = the phone's default: breakouts, "At trigger" and the Halt watcher
+//!   off, the rest on; `enabled: false` stops). Per connection, for
 //!   as long as the socket lives; resend after a reconnect. No reply.
 //! - server `runners.notice {id, alertId, symbol, kind, title, body, data, at}` to EVERY
 //!   connection when the desk limits let a Runners notice through
@@ -320,6 +322,10 @@ enum ClientMessage {
         /// "Fast move" pushes (`crate::rocket::fast`); on by default.
         #[serde(default, rename = "runnersFast")]
         runners_fast: Option<bool>,
+        /// `runnersShelf`, `runnersFollowUp`, `rossCrossing`, `signalsCrossing`, `rossTrigger`,
+        /// `signalsTrigger`, `haltWatch` (crate::alerts::push::MoreOptIn).
+        #[serde(flatten)]
+        more: crate::alerts::push::MoreOptIn,
     },
     #[serde(rename = "push.unregister")]
     PushUnregister {
@@ -343,6 +349,10 @@ enum ClientMessage {
         run: Option<bool>,
         #[serde(default)]
         fast: Option<bool>,
+        /// `shelf`, `followUp`, `rossCrossing`, `signalsCrossing`, `rossTrigger`,
+        /// `signalsTrigger`, `halt` (crate::alerts::push::MoreOptIn).
+        #[serde(flatten)]
+        more: crate::alerts::push::MoreOptIn,
     },
 }
 
@@ -1122,8 +1132,8 @@ async fn session(mut socket: WebSocket, state: AppState) {
                         }
                         None
                     }
-                    Ok(ClientMessage::PushRegister { token, platform, name, runners_new, runners_breakout, runners_burst, runners_running, runners_run, runners_fast }) => {
-                        let runners = crate::alerts::push::RunnersOptIn { new: runners_new, breakout: runners_breakout, burst: runners_burst, running: runners_running, run: runners_run, fast: runners_fast };
+                    Ok(ClientMessage::PushRegister { token, platform, name, runners_new, runners_breakout, runners_burst, runners_running, runners_run, runners_fast, more }) => {
+                        let runners = more.with(crate::alerts::push::RunnersOptIn { new: runners_new, breakout: runners_breakout, burst: runners_burst, running: runners_running, run: runners_run, fast: runners_fast, ..Default::default() });
                         if alerts.register_device(token.trim(), &platform, &name, runners) {
                             None
                         } else {
@@ -1134,9 +1144,9 @@ async fn session(mut socket: WebSocket, state: AppState) {
                         alerts.unregister_device(token.trim());
                         None
                     }
-                    Ok(ClientMessage::RunnersNotify { enabled, new, breakout, burst, running, run, fast }) => {
+                    Ok(ClientMessage::RunnersNotify { enabled, new, breakout, burst, running, run, fast, more }) => {
                         if enabled {
-                            let kinds = crate::alerts::DeskKinds::from_opt_in(crate::alerts::push::RunnersOptIn { new, breakout, burst, running, run, fast });
+                            let kinds = crate::alerts::DeskKinds::from_opt_in(more.with(crate::alerts::push::RunnersOptIn { new, breakout, burst, running, run, fast, ..Default::default() }));
                             match &desk {
                                 Some(g) => g.set(kinds),
                                 None => desk = Some(alerts.desk(kinds)),

@@ -106,6 +106,9 @@ pub struct Loaded {
     pub later: BTreeMap<String, Value>,
     /// Today's last `state` line per alert id, with the number of `state` lines for it.
     pub states: BTreeMap<String, (Value, u32)>,
+    /// Today's `also` lines (a row's follow-ups, `super::RocketBoard` "Follow-ups") per alert id,
+    /// oldest first.
+    pub also: BTreeMap<String, Vec<Value>>,
 }
 
 #[derive(Debug)]
@@ -266,6 +269,9 @@ impl RocketLog {
                     Some("state") => {
                         let e = out.states.entry(id.to_string()).or_insert((Value::Null, 0));
                         *e = (v.clone(), e.1 + 1);
+                    }
+                    Some("also") => {
+                        out.also.entry(id.to_string()).or_default().push(v.clone());
                     }
                     _ => {}
                 }

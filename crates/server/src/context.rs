@@ -90,6 +90,8 @@ pub(crate) struct ContextBoard {
     /// The members' day lines the last `ross.update` carried (`crate::day_line`): the next
     /// update sends only what changed against them.
     day_lines: crate::day_line::Published,
+    /// Ross and Signals push notices decided from the drained journals (`crate::cue_notices`).
+    cue: crate::cue_notices::CueNotices,
 }
 
 impl ContextBoard {
@@ -179,6 +181,7 @@ impl ContextBoard {
             run_clock: 0,
             detection_epoch: None,
             day_lines: crate::day_line::Published::default(),
+            cue: crate::cue_notices::CueNotices::default(),
         })
     }
 
@@ -212,9 +215,17 @@ impl ContextBoard {
         for p in &panels {
             observe(p);
         }
+        // The Ross-only journal (Detection Panel off) carries the members' crossings; the latest
+        // panel their "At trigger" (crate::cue_notices). Read before the entries are dropped.
+        let setup = self.engine.take_setup_log();
+        self.cue.transitions(&self.engine, &setup);
+        if let Some(p) = self.engine.panel() {
+            let signals = self.engine.detection_policy().is_some();
+            self.cue.ross_panel(p, signals);
+        }
         let r = DrainReport {
             panels: panels.len(),
-            setup_entries: self.engine.take_setup_log().len(),
+            setup_entries: setup.len(),
         };
         self.drained.panels += r.panels;
         self.drained.setup_entries += r.setup_entries;
@@ -702,6 +713,8 @@ impl ContextBoard {
     pub(crate) fn take_detection(&mut self, force: bool) -> Option<crate::detection::CoreCapture> {
         let epoch = self.detection_epoch.as_ref()?;
         let transitions = self.engine.take_detection_transitions();
+        // The crossings among them, the moment they are drained (crate::cue_notices).
+        self.cue.transitions(&self.engine, &transitions);
         if !force && transitions.is_empty() {
             return None;
         }
@@ -714,6 +727,9 @@ impl ContextBoard {
         // Significant trade-driven transitions drain immediately, but a snapshot walks all
         // symbols/episodes. That walk belongs only to the bounded display cadence.
         let snapshot = force.then(|| self.engine.detection_snapshot()).flatten();
+        if let Some(s) = &snapshot {
+            self.cue.signals_snapshot(&self.engine, s);
+        }
         let symbols: BTreeSet<&str> = snapshot
             .as_ref()
             .into_iter()
@@ -831,6 +847,11 @@ impl ContextBoard {
             Some(&mut self.day_lines),
         );
         Some((frame, snap))
+    }
+
+    /// The Ross and Signals notices decided since the last call (`crate::cue_notices`).
+    pub(crate) fn take_cue_notices(&mut self) -> Vec<crate::rocket::Notice> {
+        self.cue.take()
     }
 
     pub(crate) fn decision(&self, symbol: &str) -> Option<&Decision> {

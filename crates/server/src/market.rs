@@ -530,6 +530,9 @@ pub(crate) struct Inner {
     /// `STOCK_CONTEXT` (`MarketConfig::stock_context`): every `Core` this market makes gets a
     /// context board.
     context_on: AtomicBool,
+    /// The Halt watcher has ranked once: its gauges from then on are new (a push notice), not
+    /// the board as found at start.
+    pressure_primed: AtomicBool,
     detection_on: AtomicBool,
     detection_subs: AtomicUsize,
     pub(crate) detection: std::sync::OnceLock<Arc<crate::detection::Runtime>>,
@@ -763,6 +766,7 @@ impl Market {
             quote_subs: AtomicUsize::new(0),
             pressure_subs: AtomicUsize::new(0),
             context_on: AtomicBool::new(false),
+            pressure_primed: AtomicBool::new(false),
             detection_on: AtomicBool::new(false),
             detection_subs: AtomicUsize::new(0),
             detection: std::sync::OnceLock::new(),
@@ -2905,6 +2909,7 @@ impl Market {
                 ..
             } = &mut *core;
             rocket.add_runs(zones.take_entries());
+            rocket.add_shelf_entries(zones.take_shelf_entries());
             rocket.tick(clock.now.0, |s| {
                 quotes.get(s).and_then(|r| r.prev_close).map(|p| p.to_f64())
             });
@@ -2973,13 +2978,7 @@ impl Market {
         if let Some(date) = facts_wanted {
             self.load_running_facts(date);
         }
-        if self.0.mode == ClockMode::Live
-            && let Some(sink) = self.alert_sink()
-        {
-            for n in notices {
-                sink.offer_runner(n);
-            }
-        }
+        self.offer_notices(notices);
         if let Some(l) = self.0.rocket_log.get() {
             let mut by_date: Vec<(NaiveDate, Vec<String>)> = Vec::new();
             for (d, line) in log {
@@ -3000,6 +2999,20 @@ impl Market {
             kind: OutKind::Rocket(frame),
         }));
         true
+    }
+
+    /// Push notices (Runners, Ross, Signals, Halt watcher) to the alerts task
+    /// (`crate::alerts::runners`): on the LIVE market only, called after the core lock is
+    /// released, never waited on. A replay's are dropped.
+    fn offer_notices(&self, notices: Vec<crate::rocket::Notice>) {
+        if notices.is_empty() || self.0.mode != ClockMode::Live {
+            return;
+        }
+        if let Some(sink) = self.alert_sink() {
+            for n in notices {
+                sink.offer_runner(n);
+            }
+        }
     }
 
     /// Registers a `pressure.subscribe` (the quotes guard's twin).
@@ -3061,7 +3074,7 @@ impl Market {
             .detection_delivery
             .lock()
             .expect("detection delivery");
-        let Some((capture, watermark, rebuilding, gains)) = ({
+        let Some((capture, watermark, rebuilding, gains, cue)) = ({
             let mut core = self.0.core.lock().expect("core lock");
             let watermark = core.seq;
             let rebuilding = core.rebuilding;
@@ -3080,10 +3093,17 @@ impl Market {
                     })
                 })
                 .unwrap_or_default();
-            capture.map(|c| (c, watermark, rebuilding, gains))
+            // The crossings this drain decided (crate::cue_notices), offered right away. With
+            // nothing captured they stay for the next drain.
+            let cue = match (&capture, core.context.as_mut()) {
+                (Some(_), Some(c)) => c.take_cue_notices(),
+                _ => Vec::new(),
+            };
+            capture.map(|c| (c, watermark, rebuilding, gains, cue))
         }) else {
             return;
         };
+        self.offer_notices(cue);
         let ross_on = self.0.context_on.load(Ordering::Relaxed);
         let mut context: serde_json::Map<String, Value> = capture.context.iter().map(|d| {
             let catalyst = match d.pillars.iter().find(|p| p.pillar == stock_context::PillarId::News).map(|p| p.state) {
@@ -3232,7 +3252,7 @@ impl Market {
         clock: &mut dyn FnMut() -> i64,
     ) -> crate::context::DrainReport {
         let sink = &self.0.observations;
-        let (took, total, tel) = {
+        let (took, total, tel, cue) = {
             let mut core = self.0.core.lock().expect("core lock");
             let Some(cx) = core.context.as_mut() else {
                 return Default::default();
@@ -3245,8 +3265,14 @@ impl Market {
                     now,
                 ));
             });
-            (took, cx.drained(), cx.output_telemetry())
+            (
+                took,
+                cx.drained(),
+                cx.output_telemetry(),
+                cx.take_cue_notices(),
+            )
         };
+        self.offer_notices(cue);
         // Off the core lock: the queue is moved into the summary here, never under it.
         sink.absorb();
         if !took.is_empty() {
@@ -3445,7 +3471,7 @@ impl Market {
             return false;
         };
         let band = self.0.band;
-        let (seq, cards) = {
+        let (seq, cards, appeared) = {
             let mut core = self.0.core.lock().expect("core lock");
             if core.rebuilding {
                 return false;
@@ -3479,12 +3505,25 @@ impl Market {
                     }
                 }
             }
+            // A gauge that was not on the board a second ago (the Halt watcher push, off by
+            // default: crate::alerts::runners). Not on the first ranking after a start.
+            let primed = self.0.pressure_primed.swap(true, Ordering::Relaxed);
+            let appeared: Vec<crate::rocket::Notice> = if primed {
+                cards
+                    .iter()
+                    .filter(|c| !core.pressure_cards.iter().any(|o| o.s == c.s))
+                    .map(|c| c.notice(clock.now.0))
+                    .collect()
+            } else {
+                Vec::new()
+            };
             if cards == core.pressure_cards {
                 return false;
             }
             core.pressure_cards = cards.clone();
-            (core.seq, cards)
+            (core.seq, cards, appeared)
         };
+        self.offer_notices(appeared);
         if self.pressure_subscribers() == 0 {
             return false;
         }
@@ -3693,6 +3732,27 @@ pub struct PressureCardWire {
 }
 
 impl PressureCardWire {
+    /// The Halt watcher push for this card appearing at `now` (epoch ns): one event per
+    /// appearance (`crate::alerts::runners`).
+    fn notice(&self, now: i64) -> crate::rocket::Notice {
+        crate::rocket::Notice {
+            kind: crate::rocket::NoticeKind::Halt,
+            alert_id: format!("{}-h{}", self.s, now.div_euclid(1_000_000_000)),
+            symbol: self.s.clone(),
+            at_ns: now,
+            price: self.p,
+            from_flag_pct: None,
+            reasons: Vec::new(),
+            since_start_min: None,
+            exec_ns: None,
+            detail: Some(crate::rocket::NoticeDetail::Halt {
+                bull: self.side == "bull",
+                risk: self.risk,
+                band: self.band,
+            }),
+        }
+    }
+
     fn new(c: &Card, quotes: &QuoteBoard, last_price: &HashMap<String, Price>) -> Self {
         let row = quotes.get(&c.symbol);
         // A ranked symbol is in the band, so it has a price; the quote row normally has it too.
@@ -4235,6 +4295,7 @@ mod tests {
             reasons: vec![],
             since_start_min: None,
             exec_ns: None,
+            detail: None,
         };
         for mode in [ClockMode::Live, ClockMode::Replay] {
             let market = Market::idle(mode, "test", None);

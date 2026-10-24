@@ -19,7 +19,8 @@
 //! - server `alert.fired {event, phoneToday}` / `alert.held {event}` to every connection as they
 //!   happen; `alert.updated {event}` when a recorded event changes (a push that failed later);
 //! - server `alerts.status {phoneToday, phoneBudget, devices, dropped}` when one of those moves;
-//! - client `push.register {token, platform?, name?, runnersNew?, runnersBreakout?}` /
+//! - client `push.register {token, platform?, name?, runnersNew?, runnersBreakout?, …}` (every
+//!   switch: `crate::ws`) /
 //!   `push.unregister {token}`: this phone's Expo push token (per device, never synced to other
 //!   clients) and its Runners push opt-ins ([`runners`]; absent = unchanged).
 //!
@@ -156,18 +157,21 @@ struct Shared {
 }
 
 impl Shared {
-    fn desks_for(&self, kind: crate::rocket::NoticeKind) -> usize {
+    fn desks_for(&self, n: &crate::rocket::Notice) -> usize {
         self.desks
             .lock()
             .expect("desks lock")
             .values()
-            .filter(|k| k.wants(kind))
+            .filter(|k| k.wants(n))
             .count()
     }
 }
 
 /// One desktop or web client's Runners notification switches (`runners.notify`). Defaults are
 /// the phone's ([`push::Devices::register`]): every kind on except breakouts.
+///
+/// The same struct is a phone's switches ([`push::Device::kinds`]): one place decides which
+/// switch a notice answers to ([`DeskKinds::wants`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DeskKinds {
     pub new: bool,
@@ -176,10 +180,29 @@ pub struct DeskKinds {
     pub running: bool,
     pub run: bool,
     pub fast: bool,
+    /// Volume-shelf entry of a Runners stock (on by default).
+    pub shelf: bool,
+    /// A later Runners path on a stock that already has a row (on by default).
+    pub follow_up: bool,
+    /// Ross / Signals "Crossing" (on by default).
+    pub ross_crossing: bool,
+    pub signals_crossing: bool,
+    /// Ross / Signals "At trigger" (off by default).
+    pub ross_trigger: bool,
+    pub signals_trigger: bool,
+    /// A Halt watcher gauge appearing (off by default).
+    pub halt: bool,
+}
+
+impl Default for DeskKinds {
+    fn default() -> Self {
+        DeskKinds::from_opt_in(RunnersOptIn::default())
+    }
 }
 
 impl DeskKinds {
-    /// An absent switch takes the phone's default.
+    /// An absent switch takes the phone's default (owner, 2026-10-23: every evidence-backed
+    /// kind on; "At trigger", the Halt watcher and breakouts opt-in).
     pub fn from_opt_in(o: RunnersOptIn) -> Self {
         DeskKinds {
             new: o.new.unwrap_or(true),
@@ -188,18 +211,35 @@ impl DeskKinds {
             running: o.running.unwrap_or(true),
             run: o.run.unwrap_or(true),
             fast: o.fast.unwrap_or(true),
+            shelf: o.shelf.unwrap_or(true),
+            follow_up: o.follow_up.unwrap_or(true),
+            ross_crossing: o.ross_crossing.unwrap_or(true),
+            signals_crossing: o.signals_crossing.unwrap_or(true),
+            ross_trigger: o.ross_trigger.unwrap_or(false),
+            signals_trigger: o.signals_trigger.unwrap_or(false),
+            halt: o.halt.unwrap_or(false),
         }
     }
 
-    pub fn wants(self, kind: crate::rocket::NoticeKind) -> bool {
-        use crate::rocket::NoticeKind as K;
-        match kind {
+    /// Whether these switches want `n`. A Ross notice whose episode the Signals panel shows too
+    /// (`crate::cue_notices`, "One episode, one notice") is wanted through either switch.
+    pub fn wants(self, n: &crate::rocket::Notice) -> bool {
+        use crate::rocket::{NoticeDetail, NoticeKind as K};
+        let also_signals = matches!(&n.detail, Some(NoticeDetail::Cue(c)) if c.also_signals);
+        match n.kind {
             K::New => self.new,
             K::Breakout => self.breakout,
             K::Burst => self.burst,
             K::Running => self.running,
             K::Run => self.run,
             K::Fast => self.fast,
+            K::Shelf => self.shelf,
+            K::FollowUp => self.follow_up,
+            K::RossCrossing => self.ross_crossing || (also_signals && self.signals_crossing),
+            K::SignalsCrossing => self.signals_crossing,
+            K::RossTrigger => self.ross_trigger || (also_signals && self.signals_trigger),
+            K::SignalsTrigger => self.signals_trigger,
+            K::Halt => self.halt,
         }
     }
 }
@@ -688,10 +728,12 @@ impl Task {
         // Desktop and web first (runners::desk_frame): the same limits, decided once here with
         // the open clients that want this kind as the "devices", and their own count, so the
         // phones' switches and the desks' never hold each other back.
+        let event_id = n.event_id();
         let desk = self.desk_runners.decide(
             n.kind,
             &n.symbol,
-            self.shared.desks_for(n.kind),
+            &event_id,
+            self.shared.desks_for(&n),
             &self.prefs,
             n.at_ns.div_euclid(1_000_000),
             now,
@@ -704,10 +746,11 @@ impl Task {
                 tracing::debug!(symbol = %n.symbol, kind = n.kind.as_str(), held = h.code(), "runners desk notice: held back");
             }
         }
-        let tokens = self.devices.runner_tokens(n.kind);
+        let tokens = self.devices.runner_tokens(&n);
         let decision = self.runners.decide(
             n.kind,
             &n.symbol,
+            &event_id,
             tokens.len(),
             &self.prefs,
             n.at_ns.div_euclid(1_000_000),
@@ -723,7 +766,7 @@ impl Task {
         let (title, body, data) = runners::message(&n);
         let job = Job {
             // Not an Activity event: a failure later is only logged (history.update finds nothing).
-            event_id: format!("runners-{kind}-{}", n.alert_id),
+            event_id,
             tokens,
             title,
             body,
@@ -1038,6 +1081,7 @@ mod tests {
             reasons: vec!["volume 9x pace".into()],
             since_start_min: None,
             exec_ns: None,
+            detail: None,
         }
     }
 
@@ -1081,6 +1125,7 @@ mod tests {
                 running: None,
                 run: None,
                 fast: None,
+                ..RunnersOptIn::default()
             },
         ));
         // Each register answers with an alerts.status frame once handled.
@@ -1193,6 +1238,26 @@ mod tests {
         sink.offer_runner(notice(NoticeKind::Breakout, "BBB", now_ms()));
         let f = next_notice(&mut frames).await.expect("a breakout");
         assert_eq!(f["kind"], "runners.breakout");
+        // The panel kinds: a Ross crossing on both panels reaches a desk whose Ross switch is
+        // off but Signals on, once; the Halt watcher stays off by default.
+        desk.set(DeskKinds {
+            ross_crossing: false,
+            ..DeskKinds::default()
+        });
+        let mut x = notice(NoticeKind::RossCrossing, "XING", now_ms());
+        x.detail = Some(crate::rocket::NoticeDetail::Cue(crate::rocket::CueNotice {
+            episode_id: "ep".into(),
+            trigger: Some(2.4),
+            also_signals: true,
+        }));
+        sink.offer_runner(x.clone());
+        let f = next_notice(&mut frames).await.expect("a crossing");
+        assert_eq!(f["kind"], "ross.crossing");
+        assert_eq!(f["alsoSignals"], true);
+        assert_eq!(f["id"], x.event_id());
+        sink.offer_runner(x);
+        sink.offer_runner(notice(NoticeKind::Halt, "HALT", now_ms()));
+        assert!(next_notice(&mut frames).await.is_none(), "once; Halt off");
         // The socket ended: nobody listens again.
         drop(desk);
         sink.offer_runner(notice(NoticeKind::Fast, "FFF", now_ms()));

@@ -86,6 +86,48 @@ pub struct Device {
     /// saved before they existed included (same reason).
     #[serde(default = "yes")]
     pub runners_fast: bool,
+    /// Owner, 2026-10-23: every evidence-backed panel event notifies. A record saved before
+    /// these existed takes each one's default (serde), exactly as a new registration does.
+    /// Volume-shelf entry of a Runners stock: on.
+    #[serde(default = "yes")]
+    pub runners_shelf: bool,
+    /// A follow-up on a stock already in Runners: on.
+    #[serde(default = "yes")]
+    pub runners_follow_up: bool,
+    /// Ross / Signals "Crossing": on.
+    #[serde(default = "yes")]
+    pub ross_crossing: bool,
+    #[serde(default = "yes")]
+    pub signals_crossing: bool,
+    /// Ross / Signals "At trigger": off.
+    #[serde(default)]
+    pub ross_trigger: bool,
+    #[serde(default)]
+    pub signals_trigger: bool,
+    /// A Halt watcher gauge appearing: off.
+    #[serde(default)]
+    pub halt_watch: bool,
+}
+
+impl Device {
+    /// This phone's switches, in the one shape that decides what a notice answers to.
+    pub fn kinds(&self) -> super::DeskKinds {
+        super::DeskKinds {
+            new: self.runners_new,
+            breakout: self.runners_breakout,
+            burst: self.runners_burst,
+            running: self.runners_running,
+            run: self.runners_run,
+            fast: self.runners_fast,
+            shelf: self.runners_shelf,
+            follow_up: self.runners_follow_up,
+            ross_crossing: self.ross_crossing,
+            signals_crossing: self.signals_crossing,
+            ross_trigger: self.ross_trigger,
+            signals_trigger: self.signals_trigger,
+            halt: self.halt_watch,
+        }
+    }
 }
 
 fn yes() -> bool {
@@ -102,6 +144,52 @@ pub struct RunnersOptIn {
     pub running: Option<bool>,
     pub run: Option<bool>,
     pub fast: Option<bool>,
+    pub shelf: Option<bool>,
+    pub follow_up: Option<bool>,
+    pub ross_crossing: Option<bool>,
+    pub signals_crossing: Option<bool>,
+    pub ross_trigger: Option<bool>,
+    pub signals_trigger: Option<bool>,
+    pub halt: Option<bool>,
+}
+
+/// The newer switches as `push.register` and `runners.notify` spell them (owner, 2026-10-23),
+/// flattened into both messages (`crate::ws`). The phone's names are `runnersShelf`,
+/// `runnersFollowUp` and `haltWatch`; the desk's `shelf`, `followUp` and `halt`; the Ross and
+/// Signals ones are the same in both. Absent = unchanged (phone) or the default (desk).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MoreOptIn {
+    #[serde(default, alias = "runnersShelf")]
+    pub shelf: Option<bool>,
+    #[serde(default, alias = "runnersFollowUp")]
+    pub follow_up: Option<bool>,
+    #[serde(default)]
+    pub ross_crossing: Option<bool>,
+    #[serde(default)]
+    pub signals_crossing: Option<bool>,
+    #[serde(default)]
+    pub ross_trigger: Option<bool>,
+    #[serde(default)]
+    pub signals_trigger: Option<bool>,
+    #[serde(default, alias = "haltWatch")]
+    pub halt: Option<bool>,
+}
+
+impl MoreOptIn {
+    /// These switches added to the six Runners ones.
+    pub fn with(self, o: RunnersOptIn) -> RunnersOptIn {
+        RunnersOptIn {
+            shelf: self.shelf,
+            follow_up: self.follow_up,
+            ross_crossing: self.ross_crossing,
+            signals_crossing: self.signals_crossing,
+            ross_trigger: self.ross_trigger,
+            signals_trigger: self.signals_trigger,
+            halt: self.halt,
+            ..o
+        }
+    }
 }
 
 /// The registered phones, persisted on every change (tiny file, temp + rename).
@@ -145,17 +233,10 @@ impl Devices {
     }
 
     /// The phones that opted in to this kind of Runners push.
-    pub fn runner_tokens(&self, kind: crate::rocket::NoticeKind) -> Vec<String> {
+    pub fn runner_tokens(&self, n: &crate::rocket::Notice) -> Vec<String> {
         self.list
             .iter()
-            .filter(|d| match kind {
-                crate::rocket::NoticeKind::New => d.runners_new,
-                crate::rocket::NoticeKind::Breakout => d.runners_breakout,
-                crate::rocket::NoticeKind::Burst => d.runners_burst,
-                crate::rocket::NoticeKind::Running => d.runners_running,
-                crate::rocket::NoticeKind::Run => d.runners_run,
-                crate::rocket::NoticeKind::Fast => d.runners_fast,
-            })
+            .filter(|d| d.kinds().wants(n))
             .map(|d| d.token.clone())
             .collect()
     }
@@ -208,6 +289,31 @@ impl Devices {
             .unwrap_or(true);
         let runners_run = runners.run.or(had.map(|d| d.runners_run)).unwrap_or(true);
         let runners_fast = runners.fast.or(had.map(|d| d.runners_fast)).unwrap_or(true);
+        // The newer switches: what the phone says, else what it had, else the default
+        // (super::DeskKinds::from_opt_in).
+        let def = super::DeskKinds::default();
+        let pick = |v: Option<bool>, had_v: fn(&Device) -> bool, d: bool| {
+            v.or(had.map(had_v)).unwrap_or(d)
+        };
+        let runners_shelf = pick(runners.shelf, |d| d.runners_shelf, def.shelf);
+        let runners_follow_up = pick(runners.follow_up, |d| d.runners_follow_up, def.follow_up);
+        let ross_crossing = pick(
+            runners.ross_crossing,
+            |d| d.ross_crossing,
+            def.ross_crossing,
+        );
+        let signals_crossing = pick(
+            runners.signals_crossing,
+            |d| d.signals_crossing,
+            def.signals_crossing,
+        );
+        let ross_trigger = pick(runners.ross_trigger, |d| d.ross_trigger, def.ross_trigger);
+        let signals_trigger = pick(
+            runners.signals_trigger,
+            |d| d.signals_trigger,
+            def.signals_trigger,
+        );
+        let halt_watch = pick(runners.halt, |d| d.halt_watch, def.halt);
         self.list.retain(|d| d.token != token);
         let clip = |s: &str| {
             s.chars()
@@ -226,6 +332,13 @@ impl Devices {
             runners_running,
             runners_run,
             runners_fast,
+            runners_shelf,
+            runners_follow_up,
+            ross_crossing,
+            signals_crossing,
+            ross_trigger,
+            signals_trigger,
+            halt_watch,
         });
         while self.list.len() > MAX_DEVICES {
             self.list.remove(0);
@@ -653,15 +766,33 @@ mod tests {
         let mut d = Devices::open(dir.path());
         let fold = "ExponentPushToken[fold]";
         assert!(d.register(fold, "android", "Fold", 1, RunnersOptIn::default()));
-        assert_eq!(d.runner_tokens(NoticeKind::New), vec![fold.to_string()]);
-        assert!(d.runner_tokens(NoticeKind::Breakout).is_empty());
+        assert_eq!(
+            d.runner_tokens(&crate::rocket::Notice::test(NoticeKind::New, "A")),
+            vec![fold.to_string()]
+        );
+        assert!(
+            d.runner_tokens(&crate::rocket::Notice::test(NoticeKind::Breakout, "A"))
+                .is_empty()
+        );
         // Bursts are on by default.
-        assert_eq!(d.runner_tokens(NoticeKind::Burst), vec![fold.to_string()]);
+        assert_eq!(
+            d.runner_tokens(&crate::rocket::Notice::test(NoticeKind::Burst, "A")),
+            vec![fold.to_string()]
+        );
         // Running and "Run +20%" entries are on by default (owner, 2026-10-22).
-        assert_eq!(d.runner_tokens(NoticeKind::Running), vec![fold.to_string()]);
-        assert_eq!(d.runner_tokens(NoticeKind::Run), vec![fold.to_string()]);
+        assert_eq!(
+            d.runner_tokens(&crate::rocket::Notice::test(NoticeKind::Running, "A")),
+            vec![fold.to_string()]
+        );
+        assert_eq!(
+            d.runner_tokens(&crate::rocket::Notice::test(NoticeKind::Run, "A")),
+            vec![fold.to_string()]
+        );
         // So are "Fast move" entries.
-        assert_eq!(d.runner_tokens(NoticeKind::Fast), vec![fold.to_string()]);
+        assert_eq!(
+            d.runner_tokens(&crate::rocket::Notice::test(NoticeKind::Fast, "A")),
+            vec![fold.to_string()]
+        );
         let both = RunnersOptIn {
             new: Some(false),
             breakout: Some(true),
@@ -669,11 +800,15 @@ mod tests {
             running: Some(false),
             run: Some(false),
             fast: Some(false),
+            ..RunnersOptIn::default()
         };
         assert!(d.register(fold, "android", "Fold", 2, both));
-        assert!(d.runner_tokens(NoticeKind::New).is_empty());
+        assert!(
+            d.runner_tokens(&crate::rocket::Notice::test(NoticeKind::New, "A"))
+                .is_empty()
+        );
         assert_eq!(
-            d.runner_tokens(NoticeKind::Breakout),
+            d.runner_tokens(&crate::rocket::Notice::test(NoticeKind::Breakout, "A")),
             vec![fold.to_string()]
         );
         // An older app's register (no opt-ins) keeps them.
@@ -684,8 +819,14 @@ mod tests {
         assert!(!dev.runners_running, "kept from the register before");
         assert!(!dev.runners_run, "kept from the register before");
         assert!(!dev.runners_fast, "kept from the register before");
-        assert!(back.runner_tokens(NoticeKind::Fast).is_empty());
-        assert!(back.runner_tokens(NoticeKind::Burst).is_empty());
+        assert!(
+            back.runner_tokens(&crate::rocket::Notice::test(NoticeKind::Fast, "A"))
+                .is_empty()
+        );
+        assert!(
+            back.runner_tokens(&crate::rocket::Notice::test(NoticeKind::Burst, "A"))
+                .is_empty()
+        );
         // A file from before the opt-ins existed: new flags on, breakouts off.
         std::fs::write(
             dir.path().join(FILE),
@@ -693,14 +834,103 @@ mod tests {
         )
         .unwrap();
         let old = Devices::open(dir.path());
-        assert_eq!(old.runner_tokens(NoticeKind::New).len(), 1);
-        assert!(old.runner_tokens(NoticeKind::Breakout).is_empty());
-        assert_eq!(old.runner_tokens(NoticeKind::Burst).len(), 1);
-        assert!(old.runner_tokens(NoticeKind::Running).is_empty());
+        assert_eq!(
+            old.runner_tokens(&crate::rocket::Notice::test(NoticeKind::New, "A"))
+                .len(),
+            1
+        );
+        assert!(
+            old.runner_tokens(&crate::rocket::Notice::test(NoticeKind::Breakout, "A"))
+                .is_empty()
+        );
+        assert_eq!(
+            old.runner_tokens(&crate::rocket::Notice::test(NoticeKind::Burst, "A"))
+                .len(),
+            1
+        );
+        assert!(
+            old.runner_tokens(&crate::rocket::Notice::test(NoticeKind::Running, "A"))
+                .is_empty()
+        );
         // A record without the "Run +20%" field: on.
-        assert_eq!(old.runner_tokens(NoticeKind::Run).len(), 1);
+        assert_eq!(
+            old.runner_tokens(&crate::rocket::Notice::test(NoticeKind::Run, "A"))
+                .len(),
+            1
+        );
         // A record without the "Fast move" field: on.
-        assert_eq!(old.runner_tokens(NoticeKind::Fast).len(), 1);
+        assert_eq!(
+            old.runner_tokens(&crate::rocket::Notice::test(NoticeKind::Fast, "A"))
+                .len(),
+            1
+        );
+    }
+
+    /// The panel kinds (owner, 2026-10-23): crossings, shelf entries and follow-ups on, "At
+    /// trigger" and the Halt watcher off, for a new phone AND a record saved before they existed;
+    /// an older app's register keeps what the phone chose; a Ross crossing on both panels
+    /// reaches a phone through either switch.
+    #[test]
+    fn panel_opt_ins_defaults_and_old_records() {
+        use crate::rocket::{CueNotice, Notice, NoticeDetail, NoticeKind as K};
+        let on = [K::Shelf, K::FollowUp, K::RossCrossing, K::SignalsCrossing];
+        let off = [K::RossTrigger, K::SignalsTrigger, K::Halt];
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(FILE),
+            r#"[{"token":"ExponentPushToken[old]","registeredAt":1,"runnersFast":false}]"#,
+        )
+        .unwrap();
+        let mut d = Devices::open(dir.path());
+        let fresh = "ExponentPushToken[new]";
+        assert!(d.register(fresh, "android", "Fold", 2, RunnersOptIn::default()));
+        for k in on {
+            assert_eq!(d.runner_tokens(&Notice::test(k, "A")).len(), 2, "{k:?} on");
+        }
+        for k in off {
+            assert!(
+                d.runner_tokens(&Notice::test(k, "A")).is_empty(),
+                "{k:?} off"
+            );
+        }
+        // The phone turns Ross crossings off and the Halt watcher on; an older app's register
+        // then keeps both.
+        let more: MoreOptIn =
+            serde_json::from_str(r#"{"rossCrossing":false,"haltWatch":true,"runnersShelf":false}"#)
+                .unwrap();
+        assert!(d.register(
+            fresh,
+            "android",
+            "Fold",
+            3,
+            more.with(RunnersOptIn::default())
+        ));
+        assert!(d.register(fresh, "android", "Fold", 4, RunnersOptIn::default()));
+        let dev = Devices::open(dir.path()).get(fresh).unwrap().clone();
+        assert!(!dev.ross_crossing && dev.halt_watch && !dev.runners_shelf);
+        assert!(dev.signals_crossing && dev.runners_follow_up && !dev.ross_trigger);
+        // A Ross crossing whose episode Signals shows too: this phone (Signals on) still gets it.
+        let mut n = Notice::test(K::RossCrossing, "A");
+        n.detail = Some(NoticeDetail::Cue(CueNotice {
+            episode_id: "e".into(),
+            trigger: Some(2.4),
+            also_signals: true,
+        }));
+        assert_eq!(d.runner_tokens(&n).len(), 2);
+        n.detail = Some(NoticeDetail::Cue(CueNotice {
+            episode_id: "e".into(),
+            trigger: Some(2.4),
+            also_signals: false,
+        }));
+        assert_eq!(
+            d.runner_tokens(&n),
+            vec!["ExponentPushToken[old]".to_string()]
+        );
+        // The desk's own spellings parse into the same switches.
+        let desk: MoreOptIn =
+            serde_json::from_str(r#"{"shelf":false,"followUp":false,"halt":true}"#).unwrap();
+        let k = crate::alerts::DeskKinds::from_opt_in(desk.with(RunnersOptIn::default()));
+        assert!(!k.shelf && !k.follow_up && k.halt && k.ross_crossing && !k.ross_trigger);
     }
 
     /// A stub of Expo's two endpoints: records batches; the second token is "not registered".
@@ -788,6 +1018,7 @@ mod tests {
             reasons: vec![],
             since_start_min: None,
             exec_ns: None,
+            detail: None,
         };
         let (title, body, data) = super::super::runners::message(&n);
         let mut job = Job {

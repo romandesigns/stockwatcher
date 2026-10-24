@@ -426,6 +426,25 @@ fn the_frame_shows_bands_and_the_event_for_a_while() {
         }
     }
     assert!(seen_in_shelf);
+    // Each entry is handed to the Runners shelf-entry notice exactly once, at its slot; the
+    // outcomes are not.
+    let entries = b.take_shelf_entries();
+    for s in ["GENK", "ROMA", "AMOD"] {
+        let events = &b.shelf(s).unwrap().events;
+        let mine: Vec<i64> = entries
+            .iter()
+            .filter(|(x, _)| &**x == s)
+            .map(|(_, e)| e.t_ns)
+            .collect();
+        assert_eq!(
+            mine,
+            events.iter().map(|e| e.t_ns).collect::<Vec<_>>(),
+            "{s}"
+        );
+    }
+    assert_eq!(entries[0].1.t_ns, ev);
+    assert!(entries.iter().all(|(_, e)| e.state == State::InShelf));
+    assert!(b.take_shelf_entries().is_empty());
     let e = b.shelf("GENK").unwrap().events[0];
     let resolved = e.resolved_ns.unwrap();
     // Not the latest event any more by the end of the day (a second one fired), so check the

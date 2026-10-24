@@ -1263,11 +1263,40 @@ fn a_plus20_run_gets_a_run_row() {
         .find(|r| r["s"] == "RUNX")
         .unwrap();
     assert_eq!(row["kind"], "run");
+    // FLG's run is new evidence on its existing row (owner, 2026-10-23): a secondary chip and a
+    // follow-up notice, never a second row; RUNX's second run adds nothing (its own path).
+    let flg = body["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["s"] == "FLG")
+        .unwrap();
+    assert_eq!(flg["also"][0]["kind"], "run");
+    assert!(row.get("also").is_none(), "no follow-up on RUNX");
     // Its push kind: a per-phone switch, on by default.
     let n = b.take_notices();
-    assert_eq!(n.len(), 1, "{n:?}");
+    assert_eq!(n.len(), 2, "{n:?}");
     assert_eq!(n[0].kind, NoticeKind::Run);
     assert_eq!(n[0].from_flag_pct, Some(22.0));
+    assert_eq!(n[1].kind, NoticeKind::FollowUp);
+    assert_eq!(n[1].symbol, "FLG");
+    let (title, text, data) = crate::alerts::runners::message(&n[1]);
+    assert_eq!(title, "FLG · Run +20% (after Flag 5 min ago) · $9.70");
+    assert!(
+        text.starts_with("+21.2% in 5 min off $8.00 · 25+ trades, $25k+\n"),
+        "{text}"
+    );
+    assert!(text.ends_with("Alert $9.70 · +5% = $10.19"), "{text}");
+    assert_eq!(data["kind"], "runners.followup");
+    // The same path again on FLG (its 15 s confirmation, a restart's re-fire): nothing.
+    b.add_runs(vec![run("FLG", at(10, 1, 0), at(10, 5, 15), 8.0, 9.8)]);
+    b.tick(at(10, 5, 16), |_| None);
+    assert!(
+        b.take_notices()
+            .iter()
+            .all(|n| n.kind != NoticeKind::FollowUp),
+        "one follow-up per path per row"
+    );
     // Tracked like the others: the climb goes on, the row's momentum follows.
     let more = climb("RUNX", at(10, 5, 0), 20, 1.01f64.powi(20), 0.01, 50_000).0;
     play(&mut b, more, at(10, 5, 0), at(10, 12, 0));
@@ -1416,8 +1445,17 @@ fn a_fast_spike_gets_one_fast_row_and_one_push() {
         .iter()
         .filter(|x| {
             let ms = x.at_ns / 1_000_000;
-            delivery.decide(x.kind, &x.symbol, 1, &prefs, ms, ms, day(), 600)
-                == crate::alerts::runners::Decision::Send
+            delivery.decide(
+                x.kind,
+                &x.symbol,
+                &x.event_id(),
+                1,
+                &prefs,
+                ms,
+                ms,
+                day(),
+                600,
+            ) == crate::alerts::runners::Decision::Send
         })
         .count();
     assert_eq!(sent, 1);
@@ -1487,11 +1525,46 @@ fn test_row(sym: &str, at_ns: i64, kind: AlertKind, state: MState) -> Alert {
         track,
         kind,
         burst: None,
+        also: Vec::new(),
     }
 }
 
 /// Past [`ROWS`] rows the panel keeps the active ones (breaking out, running, pullback) first,
 /// then the newest; fading rows go first. Sent newest first. Also measures the payload.
+#[test]
+fn a_shelf_entry_of_a_runners_stock_is_one_notice() {
+    let mut b = board(vec![], fixed(0.5, 10));
+    b.tick(at(9, 0, 1), |_| None);
+    b.alerts.push(test_row(
+        "SHLF",
+        at(9, 0, 0),
+        AlertKind::Run,
+        MState::Running,
+    ));
+    let _ = b.take_notices();
+    let e = crate::zones::Event::test(at(9, 30, 0), 0.40, 0.38, 0.42);
+    b.add_shelf_entries(vec![
+        (Arc::from("SHLF"), e),
+        // Not on Runners: nothing.
+        (Arc::from("OTHER"), e),
+    ]);
+    b.tick(at(9, 30, 1), |_| None);
+    let n = b.take_notices();
+    assert_eq!(n.len(), 1, "{n:?}");
+    assert_eq!(n[0].kind, NoticeKind::Shelf);
+    assert_eq!(n[0].symbol, "SHLF");
+    assert_eq!(n[0].at_ns, at(9, 30, 0));
+    let (title, body, _) = crate::alerts::runners::message(&n[0]);
+    assert_eq!(title, "SHLF · Volume shelf · $0.4000");
+    assert!(
+        body.starts_with("In volume shelf $0.38–0.42 · about 1 in 3 hold, 1 in 2 fail\n"),
+        "{body}"
+    );
+    // Taken once: the next tick has nothing.
+    b.tick(at(9, 30, 2), |_| None);
+    assert!(b.take_notices().is_empty());
+}
+
 #[test]
 fn the_row_limit_keeps_active_rows_then_the_newest() {
     let mut b = board(vec![], fixed(0.5, 10));

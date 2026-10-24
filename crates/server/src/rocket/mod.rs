@@ -46,6 +46,18 @@
 //! So a row reaches Runners five ways: the strategy's flag (R2), a buying burst, a running entry,
 //! a +20 % run or a fast move.
 //!
+//! # Follow-ups
+//!
+//! Each path adds a stock once a day (bursts excepted), so a later path firing on a stock that
+//! already has a row used to be silent. It is new evidence (owner, 2026-10-23: Run +20% after a
+//! Fast move, Running after Run +20%): the newest row of the stock records it ([`Alert::also`],
+//! a secondary source chip, `also` on the wire, never a second row), the forward log gets an
+//! `also` line (restored after a restart) and a [`NoticeKind::FollowUp`] notice leaves, once per
+//! path per row. The row's own path, or a path already on it, adds nothing.
+//!
+//! A Runners stock's volume-shelf entry (`crate::zones`, handed over by
+//! [`RocketBoard::add_shelf_entries`]) is a [`NoticeKind::Shelf`] notice too; no row changes.
+//!
 //! # Alert policy
 //!
 //! At each completed 15 s barrier (checked by the quotes task once per wall second, never on the
@@ -149,7 +161,7 @@ pub const ROWS: usize = 80;
 const MAX_NOTICES: usize = 256;
 
 /// What a phone push may be about (module docs, "Phone pushes").
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum NoticeKind {
     /// A new alert (a new row on the board).
     New,
@@ -163,6 +175,25 @@ pub enum NoticeKind {
     Run,
     /// A new "Fast move" row ([`fast`]); per-phone switch, on by default.
     Fast,
+    /// A Runners stock came down into a volume shelf (`crate::zones`, an `in_shelf` event).
+    /// Held / lost outcomes never notify. On by default.
+    Shelf,
+    /// A later path (running, run, fast move) fired on a stock that already had a row: new
+    /// evidence on the same row ([`Also`]). On by default.
+    FollowUp,
+    /// A Ross Panel member's MP5 pullback episode reached `crossing_provisional` (the cue's
+    /// "Crossing"). One per episode. On by default. A member's crossing is never also sent as
+    /// [`NoticeKind::SignalsCrossing`]: [`CueNotice::also_signals`] says it is on both panels.
+    RossCrossing,
+    /// The same for an episode on the Signals (Detection) panel whose stock is not a Ross member.
+    SignalsCrossing,
+    /// A Ross member's cue reached "At trigger" (armed, price within the near distance). Off by
+    /// default.
+    RossTrigger,
+    /// The same on the Signals panel (not a Ross member). Off by default.
+    SignalsTrigger,
+    /// A Halt watcher gauge appeared (`crate::pressure`'s board gained the stock). Off by default.
+    Halt,
 }
 
 impl NoticeKind {
@@ -174,8 +205,86 @@ impl NoticeKind {
             NoticeKind::Running => "running",
             NoticeKind::Run => "run",
             NoticeKind::Fast => "fast",
+            NoticeKind::Shelf => "shelf",
+            NoticeKind::FollowUp => "followup",
+            NoticeKind::RossCrossing => "ross_crossing",
+            NoticeKind::SignalsCrossing => "signals_crossing",
+            NoticeKind::RossTrigger => "ross_trigger",
+            NoticeKind::SignalsTrigger => "signals_trigger",
+            NoticeKind::Halt => "halt",
         }
     }
+
+    pub const ALL: [NoticeKind; 13] = [
+        NoticeKind::New,
+        NoticeKind::Breakout,
+        NoticeKind::Burst,
+        NoticeKind::Running,
+        NoticeKind::Run,
+        NoticeKind::Fast,
+        NoticeKind::Shelf,
+        NoticeKind::FollowUp,
+        NoticeKind::RossCrossing,
+        NoticeKind::SignalsCrossing,
+        NoticeKind::RossTrigger,
+        NoticeKind::SignalsTrigger,
+        NoticeKind::Halt,
+    ];
+
+    /// New evidence on a stock (owner, 2026-10-23): a burst, a crossing, a shelf entry or a
+    /// follow-up. Its per-stock gap after an unrelated push is the burst's 2 minutes, so it is
+    /// never swallowed by a push about something else minutes earlier
+    /// (`crate::alerts::runners`, "Limits").
+    pub fn is_new_evidence(self) -> bool {
+        matches!(
+            self,
+            NoticeKind::Burst
+                | NoticeKind::Shelf
+                | NoticeKind::FollowUp
+                | NoticeKind::RossCrossing
+                | NoticeKind::SignalsCrossing
+        )
+    }
+}
+
+/// What a notice beyond a row's own entry carries for its text (`crate::alerts::runners::message`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum NoticeDetail {
+    /// [`NoticeKind::FollowUp`]: the path that fired now, and the row's first source with when
+    /// the row appeared (epoch ns).
+    FollowUp {
+        path: AlertKind,
+        first: AlertKind,
+        first_at_ns: i64,
+    },
+    /// [`NoticeKind::Shelf`]: the shelf's range (dollars).
+    Shelf { lo: f64, hi: f64 },
+    /// Ross / Signals crossing and at-trigger notices.
+    Cue(CueNotice),
+    /// [`NoticeKind::Halt`]: the gauge's side, its halt-risk score (0–100) and the LULD band it
+    /// runs at (dollars).
+    Halt { bull: bool, risk: u8, band: f64 },
+}
+
+/// A Ross or Signals cue notice's facts.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CueNotice {
+    /// The detection episode (`stock_context` `micro_pullback`): one notice per episode and stage.
+    pub episode_id: String,
+    /// The trigger level (dollars), when known.
+    pub trigger: Option<f64>,
+    /// A Ross member whose episode the Signals panel shows too (the Detection Panel is on): the
+    /// one notice stands for both panels, so a device that wants either switch gets it.
+    pub also_signals: bool,
+}
+
+/// A later path's evidence on an existing row (a follow-up, [`NoticeKind::FollowUp`]): shown as
+/// a secondary source chip on that row, never as a second row.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Also {
+    pub kind: AlertKind,
+    pub at_ns: i64,
+    pub price: f64,
 }
 
 /// What a row is: a Runners flag (the precursor strategy) or a buying burst ([`burst`]).
@@ -201,6 +310,29 @@ impl AlertKind {
             AlertKind::Running => "running",
             AlertKind::Run => "run",
             AlertKind::Fast => "fast",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<AlertKind> {
+        [
+            AlertKind::Runner,
+            AlertKind::Burst,
+            AlertKind::Running,
+            AlertKind::Run,
+            AlertKind::Fast,
+        ]
+        .into_iter()
+        .find(|k| k.as_str() == s)
+    }
+
+    /// The source as the panel's chip and the push text name it.
+    pub fn label(self) -> &'static str {
+        match self {
+            AlertKind::Runner => "Flag",
+            AlertKind::Burst => "Buying burst",
+            AlertKind::Running => "Running",
+            AlertKind::Run => "Run +20%",
+            AlertKind::Fast => "Fast move",
         }
     }
 }
@@ -249,6 +381,33 @@ pub struct Notice {
     /// row: [`crate::zones::Run::exec_ns`]): the start of the push's latency log
     /// (`crate::alerts::runners`, "Latency").
     pub exec_ns: Option<i64>,
+    /// The newer kinds' facts ([`NoticeDetail`]); `None` for a row's own entry or breakout.
+    pub detail: Option<NoticeDetail>,
+}
+
+impl Notice {
+    /// The event's identity: what every surface dedupes on (one push per event, ever). A row's
+    /// flag and its breakout share `alert_id`, so the kind is part of it.
+    pub fn event_id(&self) -> String {
+        format!("runners-{}-{}", self.kind.as_str(), self.alert_id)
+    }
+
+    /// Tests: a plain notice of `kind` for `symbol` at time 0.
+    #[cfg(test)]
+    pub fn test(kind: NoticeKind, symbol: &str) -> Notice {
+        Notice {
+            kind,
+            alert_id: format!("{symbol}-1"),
+            symbol: symbol.into(),
+            at_ns: 0,
+            price: 2.41,
+            from_flag_pct: None,
+            reasons: Vec::new(),
+            since_start_min: None,
+            exec_ns: None,
+            detail: None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -356,6 +515,9 @@ pub struct Alert {
     pub kind: AlertKind,
     /// A burst row's facts (`kind == Burst`).
     pub burst: Option<Box<BurstRow>>,
+    /// Later paths that fired on this stock after the row appeared (follow-ups, oldest first, at
+    /// most one per path): the row's secondary source chips (`also` on the wire).
+    pub also: Vec<Also>,
 }
 
 impl Alert {
@@ -623,6 +785,9 @@ pub struct RocketBoard {
     running_facts_wanted: Option<NaiveDate>,
     /// The volume-shelf module's +20 % runs not made into rows yet ([`RocketBoard::add_runs`]).
     runs: Vec<(Arc<str>, crate::zones::Run)>,
+    /// Volume-shelf entries (`crate::zones::ZoneBoard::take_shelf_entries`) not read yet: a
+    /// Runners stock's one is a [`NoticeKind::Shelf`] notice at the next tick.
+    shelves: Vec<(Arc<str>, crate::zones::Event)>,
     /// Fast move ([`fast`]): each symbol's 1 s tape (created on its first print in
     /// [`FAST_WIDE_BAND`], dropped at the day roll).
     fast: HashMap<Arc<str>, FastSym>,
@@ -694,6 +859,7 @@ impl RocketBoard {
             running_facts_date: None,
             running_facts_wanted: None,
             runs: Vec::new(),
+            shelves: Vec::new(),
             fast: HashMap::new(),
             fast_touched: VecDeque::new(),
             fast_read: i64::MIN,
@@ -703,6 +869,18 @@ impl RocketBoard {
     /// The volume-shelf module's +20 % runs (`crate::zones::ZoneBoard::take_entries`), made into
     /// "Run +20%" rows ([`run`]) at the next [`RocketBoard::tick`]. The market hands them over
     /// under the core lock right before the tick, so a row appears with its mark slot's decision.
+    /// The volume-shelf module's new `in_shelf` entries (`crate::zones::ZoneBoard::take_shelf_entries`),
+    /// read at the next [`RocketBoard::tick`]: a stock with a Runners row gets a
+    /// [`NoticeKind::Shelf`] notice, any other stock nothing (the push is about Runners stocks).
+    pub fn add_shelf_entries(&mut self, entries: Vec<(Arc<str>, crate::zones::Event)>) {
+        if !self.enabled {
+            return;
+        }
+        self.shelves.extend(entries);
+        let over = self.shelves.len().saturating_sub(1024);
+        self.shelves.drain(..over);
+    }
+
     pub fn add_runs(&mut self, runs: Vec<(Arc<str>, crate::zones::Run)>) {
         if !self.enabled {
             return;
@@ -1191,6 +1369,7 @@ impl RocketBoard {
         }
         // After the barrier, so an R2 flag or a running entry at the run's own slot keeps its row.
         self.run_entries();
+        self.shelf_notices();
         // Last: the other four paths keep their row when they fire at the same tick.
         if self.policy.fast {
             self.fast_tick(now);
@@ -1250,6 +1429,7 @@ impl RocketBoard {
                 track: Track::new(a.at_ns, a.price),
                 kind: AlertKind::Burst,
                 burst: Some(Box::new(row)),
+                also: Vec::new(),
             };
             self.pending
                 .push((date, alert.burst_line(date, per_day, &p.x)));
@@ -1263,6 +1443,7 @@ impl RocketBoard {
                 reasons: alert.reasons.clone(),
                 since_start_min: Some((a.at_ns - p.ep_start_ns) as f64 / MIN_NS as f64),
                 exec_ns: None,
+                detail: None,
             });
             if self.alerts.len() < 2 * MAX_ALERTS_PER_DAY {
                 self.alerts.push(alert);
@@ -1388,6 +1569,7 @@ impl RocketBoard {
                 track: Track::new(b.at_ns, f.price),
                 kind: AlertKind::Runner,
                 burst: None,
+                also: Vec::new(),
             };
             self.pending.push((date, a.alert_line(date, mode)));
             self.last_alert.insert(f.symbol.clone(), b.at_ns);
@@ -1401,6 +1583,7 @@ impl RocketBoard {
                 reasons: a.reasons.clone(),
                 since_start_min: None,
                 exec_ns: None,
+                detail: None,
             });
             self.alerts.push(a);
             self.revision += 1;
@@ -1428,6 +1611,20 @@ impl RocketBoard {
             if !self.admission_ready(&symbol, b) {
                 continue;
             }
+            // A stock with a row: new evidence on that row, not a second one.
+            let reasons = e.reasons();
+            let mv = (Some(round2(e.gain * 100.0)), None);
+            if self.follow_up(
+                &symbol,
+                AlertKind::Running,
+                b.at_ns,
+                e.price,
+                &reasons,
+                mv,
+                None,
+            ) {
+                continue;
+            }
             let today = self
                 .alerts
                 .iter()
@@ -1435,9 +1632,6 @@ impl RocketBoard {
                 .count();
             if today >= running::MAX_PER_DAY || self.alerts.len() >= 2 * MAX_ALERTS_PER_DAY {
                 break;
-            }
-            if self.alerts.iter().any(|a| a.symbol == symbol) {
-                continue;
             }
             let a = Alert {
                 id: format!("{date}-{symbol}-r{}", b.slot),
@@ -1462,6 +1656,7 @@ impl RocketBoard {
                 track: Track::new(b.at_ns, e.price),
                 kind: AlertKind::Running,
                 burst: None,
+                also: Vec::new(),
             };
             self.pending.push((date, a.running_line(date, &e)));
             self.notice(Notice {
@@ -1474,6 +1669,7 @@ impl RocketBoard {
                 reasons: a.reasons.clone(),
                 since_start_min: None,
                 exec_ns: None,
+                detail: None,
             });
             self.alerts.push(a);
             self.revision += 1;
@@ -1493,6 +1689,23 @@ impl RocketBoard {
             if !(0..NSLOT).contains(&slot) {
                 continue; // another day's
             }
+            // A stock with a row: new evidence on that row (the early fire and its 15 s
+            // confirmation are one run: the second finds the path already on the row).
+            let reasons = run::reasons(&r);
+            if self.follow_up(
+                &symbol,
+                AlertKind::Run,
+                r.plus20_ns,
+                r.close,
+                &reasons,
+                (
+                    Some(round2(run::gain(&r) * 100.0)),
+                    Some((r.plus20_ns - r.start_ns) as f64 / MIN_NS as f64),
+                ),
+                Some(r.exec_ns),
+            ) {
+                continue;
+            }
             let today = self
                 .alerts
                 .iter()
@@ -1500,9 +1713,6 @@ impl RocketBoard {
                 .count();
             if today >= run::MAX_PER_DAY || self.alerts.len() >= 2 * MAX_ALERTS_PER_DAY {
                 break;
-            }
-            if self.alerts.iter().any(|a| a.symbol == symbol) {
-                continue;
             }
             let a = Alert {
                 id: format!("{date}-{symbol}-g{slot}"),
@@ -1527,6 +1737,7 @@ impl RocketBoard {
                 track: Track::new(r.plus20_ns, r.close),
                 kind: AlertKind::Run,
                 burst: None,
+                also: Vec::new(),
             };
             self.pending.push((date, a.run_line(date, &r)));
             self.notice(Notice {
@@ -1539,6 +1750,7 @@ impl RocketBoard {
                 reasons: a.reasons.clone(),
                 since_start_min: Some((r.plus20_ns - r.start_ns) as f64 / MIN_NS as f64),
                 exec_ns: Some(r.exec_ns),
+                detail: None,
             });
             self.alerts.push(a);
             self.revision += 1;
@@ -1593,6 +1805,21 @@ impl RocketBoard {
     /// today, at most [`fast::MAX_PER_DAY`].
     fn fast_entries(&mut self, date: NaiveDate, fires: Vec<(Arc<str>, i64, fast::FastEntry)>) {
         for (symbol, sec, e) in fires {
+            // The row is at the end of the second that fired it.
+            let at_ns = (sec + 1) * SEC_NS;
+            // A stock with a row: new evidence on that row, not a second one.
+            let reasons = e.reasons();
+            if self.follow_up(
+                &symbol,
+                AlertKind::Fast,
+                at_ns,
+                e.price,
+                &reasons,
+                (Some(round2(e.gain * 100.0)), Some(e.secs as f64 / 60.0)),
+                Some(sec * SEC_NS),
+            ) {
+                continue;
+            }
             let today = self
                 .alerts
                 .iter()
@@ -1601,11 +1828,6 @@ impl RocketBoard {
             if today >= fast::MAX_PER_DAY || self.alerts.len() >= 2 * MAX_ALERTS_PER_DAY {
                 break;
             }
-            if self.alerts.iter().any(|a| a.symbol == symbol) {
-                continue;
-            }
-            // The row is at the end of the second that fired it.
-            let at_ns = (sec + 1) * SEC_NS;
             let slot = ((at_ns - self.t0).div_euclid(BAR_NS) - 1).clamp(0, NSLOT - 1);
             let need = fast::ARMS
                 .iter()
@@ -1635,6 +1857,7 @@ impl RocketBoard {
                 track: Track::new(at_ns, e.price),
                 kind: AlertKind::Fast,
                 burst: None,
+                also: Vec::new(),
             };
             self.pending.push((date, a.fast_line(date, sec, &e)));
             self.notice(Notice {
@@ -1648,10 +1871,107 @@ impl RocketBoard {
                 since_start_min: Some(e.secs as f64 / 60.0),
                 // The second it fired: the start of the push's latency log.
                 exec_ns: Some(sec * SEC_NS),
+                detail: None,
             });
             self.alerts.push(a);
             self.revision += 1;
         }
+    }
+
+    /// The shelf entries handed over ([`RocketBoard::add_shelf_entries`]) as notices: one per
+    /// entry (the shelf module makes at most one entry per shelf), only for a stock with a row
+    /// today, none from another day. Held / lost outcomes are never handed over.
+    fn shelf_notices(&mut self) {
+        let shelves = std::mem::take(&mut self.shelves);
+        if self.date.is_none() {
+            return;
+        }
+        let day = (self.t0, self.t0 + NSLOT * BAR_NS);
+        for (symbol, e) in shelves {
+            if !(day.0..=day.1).contains(&e.t_ns) {
+                continue;
+            }
+            let Some(a) = self.alerts.iter().rev().find(|a| a.symbol == symbol) else {
+                continue;
+            };
+            let n = Notice {
+                kind: NoticeKind::Shelf,
+                alert_id: format!("{}-z{}", a.id, e.t_ns / SEC_NS),
+                symbol: symbol.to_string(),
+                at_ns: e.t_ns,
+                price: e.entry,
+                from_flag_pct: a.track.pct(e.entry).map(round2),
+                reasons: Vec::new(),
+                since_start_min: None,
+                exec_ns: None,
+                detail: Some(NoticeDetail::Shelf { lo: e.lo, hi: e.hi }),
+            };
+            self.notice(n);
+        }
+    }
+
+    /// A path firing on a stock that already has a row today (module docs, "Follow-ups"). True
+    /// when the stock has a row: the caller then adds none. The first time this path fires on
+    /// that row it is recorded there ([`Alert::also`], the secondary chip), logged (an `also`
+    /// line, so a restart keeps the chip) and leaves a [`NoticeKind::FollowUp`] notice; the
+    /// row's own path, or a path already on it, adds nothing.
+    #[allow(clippy::too_many_arguments)]
+    fn follow_up(
+        &mut self,
+        symbol: &str,
+        path: AlertKind,
+        at_ns: i64,
+        price: f64,
+        reasons: &[String],
+        // The path's own move (% and minutes), as its own row's notice carries it.
+        mv: (Option<f64>, Option<f64>),
+        exec_ns: Option<i64>,
+    ) -> bool {
+        // The newest row (a stock can have an R2 flag and burst rows).
+        let Some(i) = self.alerts.iter().rposition(|a| &*a.symbol == symbol) else {
+            return false;
+        };
+        let Some(date) = self.date else { return true };
+        let a = &mut self.alerts[i];
+        if a.kind == path || a.also.iter().any(|x| x.kind == path) {
+            return true;
+        }
+        // "after" names the latest evidence before this one: the last follow-up, else the row.
+        let (first, first_at_ns) = a
+            .also
+            .last()
+            .map_or((a.kind, a.at_ns), |x| (x.kind, x.at_ns));
+        a.also.push(Also {
+            kind: path,
+            at_ns,
+            price,
+        });
+        let line = json!({
+            "kind": "also", "v": 1, "id": a.id, "date": date.to_string(),
+            "symbol": &*a.symbol, "path": path.as_str(), "at_ns": at_ns, "price": price,
+            "reasons": reasons,
+        })
+        .to_string();
+        let n = Notice {
+            kind: NoticeKind::FollowUp,
+            alert_id: format!("{}-{}", a.id, path.as_str()),
+            symbol: symbol.to_string(),
+            at_ns,
+            price,
+            from_flag_pct: mv.0,
+            reasons: reasons.to_vec(),
+            since_start_min: mv.1,
+            exec_ns,
+            detail: Some(NoticeDetail::FollowUp {
+                path,
+                first,
+                first_at_ns,
+            }),
+        };
+        self.pending.push((date, line));
+        self.notice(n);
+        self.revision += 1;
+        true
     }
 
     /// Advances every alert through barrier `b`: the strict outcome while it is open (module
@@ -1748,6 +2068,7 @@ impl RocketBoard {
                         reasons: a.reasons.clone(),
                         since_start_min: None,
                         exec_ns: None,
+                        detail: None,
                     });
                 if let Some(n) = breakout {
                     self.notice(n);
@@ -1869,6 +2190,7 @@ impl RocketBoard {
                 track: Track::new(at_ns, price),
                 kind: AlertKind::Runner,
                 burst: None,
+                also: Vec::new(),
             };
             let mut a = a;
             a.track = Track::new(at_ns, price);
@@ -1940,6 +2262,27 @@ impl RocketBoard {
             }
         }
         self.alerts.sort_by_key(|a| a.at_ns);
+        // The rows' follow-ups (`also` lines): their chips come back, and the same path firing
+        // again after the restart finds itself on the row and announces nothing.
+        for a in &mut self.alerts {
+            for v in loaded.also.get(&a.id).into_iter().flatten() {
+                let (Some(kind), Some(at_ns)) = (
+                    v.get("path")
+                        .and_then(Value::as_str)
+                        .and_then(AlertKind::parse),
+                    v.get("at_ns").and_then(Value::as_i64),
+                ) else {
+                    continue;
+                };
+                if kind != a.kind && !a.also.iter().any(|x| x.kind == kind) {
+                    a.also.push(Also {
+                        kind,
+                        at_ns,
+                        price: v.get("price").and_then(Value::as_f64).unwrap_or(f64::NAN),
+                    });
+                }
+            }
+        }
         self.revision += 1;
     }
 
@@ -2084,6 +2427,9 @@ impl RocketBoard {
                     "levels": levels(&a.symbol),
                     "kind": a.kind.as_str(),
                     "burst": a.burst.as_deref().map(burst_json),
+                    "also": a.also.iter().map(|x| json!({
+                        "kind": x.kind.as_str(), "at": x.at_ns / 1_000_000,
+                    })).collect::<Vec<_>>(),
                 })
             })
             .collect();
@@ -2098,6 +2444,14 @@ impl RocketBoard {
                 && m.get("burst").is_some_and(Value::is_null)
             {
                 m.remove("burst");
+            }
+            // Likewise a row without follow-ups carries no `also`.
+            if let Some(m) = r.as_object_mut()
+                && m.get("also")
+                    .and_then(Value::as_array)
+                    .is_some_and(Vec::is_empty)
+            {
+                m.remove("also");
             }
         }
         let mut v = json!({

@@ -26,14 +26,26 @@
 //!   because I'm away from my phone").
 //!   Per device rather than synced because it is about which phone makes noise, exactly like the
 //!   token itself.
+//! - **Every panel event backed by evidence** (owner, 2026-10-23), through this same pipeline
+//!   and text: a Runners stock entering a volume shelf ([`NoticeKind::Shelf`], `crate::zones`;
+//!   held / lost outcomes never notify), a later Runners path on a stock that already has a row
+//!   ([`NoticeKind::FollowUp`], `crate::rocket` "Follow-ups"), a Ross or Signals MP5 episode
+//!   reaching "Crossing" (on) or "At trigger" (off) (`crate::cue_notices`, which also explains
+//!   the Ross/Signals dedupe: one episode is one notice, the Ross kind, wanted through either
+//!   switch) and a Halt watcher gauge appearing ([`NoticeKind::Halt`], off). The data's `kind`
+//!   is [`data_kind`] (`ross.crossing`, `signals.trigger`, `halt.watch`, …), every push the
+//!   same "runners" category.
 //! - **Limits**, checked in this order (the first that applies holds it back; logged, never
 //!   sent later):
+//!   0. this event ([`crate::rocket::Notice::event_id`]) was sent already (persisted) → `duplicate`;
 //!   1. no phone opted in for this kind → `no_device`;
 //!   2. the price alerts' quiet hours (`alerts.prefs`, ET wall time) → `quiet_hours`;
 //!   3. the notice is over [`MAX_AGE_MS`] old (a catch-up after a stall) → `stale`;
-//!   4. the same stock got a Runners push less than [`SYMBOL_GAP_MS`] ago, whatever the kind
-//!      (a burst: [`BURST_GAP_MS`], so a burst right after a run or running push still goes
-//!      out) → `symbol_limit`.
+//!   4. the same stock got a push of the SAME kind less than [`SYMBOL_GAP_MS`] ago, or a push
+//!      of any kind less than [`SYMBOL_GAP_MS`] ago, except that new evidence (a burst, a
+//!      crossing, a shelf entry, a follow-up: [`NoticeKind::is_new_evidence`]) only waits
+//!      [`BURST_GAP_MS`] after an unrelated push, so it is never swallowed by a push about
+//!      something else minutes earlier → `symbol_limit`.
 //!
 //!   There is NO daily cap (owner, 2026-10-23: "always send out notifications as long as the
 //!   evidence of such events supports it"). A shared cap of 120 had held back 3 fast-move and 5
@@ -62,7 +74,7 @@
 //!   a redeploy at 09:00 does not hand out a fresh cap. They are separate from the price alerts'
 //!   phone budget: a busy Runners morning must not silence a price alert the owner set himself.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use chrono::NaiveDate;
@@ -70,7 +82,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::model::Prefs;
-use crate::rocket::{Notice, NoticeKind};
+use crate::rocket::{AlertKind, Notice, NoticeDetail, NoticeKind};
 
 /// At most one Runners push per stock per 10 minutes (every kind but a burst).
 pub const SYMBOL_GAP_MS: i64 = 10 * 60_000;
@@ -98,6 +110,8 @@ pub enum Hold {
     QuietHours,
     Stale,
     SymbolLimit,
+    /// This event was already sent (its [`crate::rocket::Notice::event_id`]).
+    Duplicate,
 }
 
 impl Hold {
@@ -107,6 +121,7 @@ impl Hold {
             Hold::QuietHours => "quiet_hours",
             Hold::Stale => "stale",
             Hold::SymbolLimit => "symbol_limit",
+            Hold::Duplicate => "duplicate",
         }
     }
 }
@@ -120,6 +135,12 @@ struct Saved {
     sent: u32,
     #[serde(default)]
     last_by_symbol: HashMap<String, i64>,
+    /// Each stock's last push of each kind, keyed `SYMBOL kind`: the same-kind gap.
+    #[serde(default)]
+    last_by_kind: HashMap<String, i64>,
+    /// Today's events already sent ([`crate::rocket::Notice::event_id`]): never twice.
+    #[serde(default)]
+    sent_ids: HashSet<String>,
 }
 
 /// The Runners side's memory: today's count and each stock's last push, persisted.
@@ -186,6 +207,7 @@ impl RunnersDelivery {
         &mut self,
         kind: NoticeKind,
         symbol: &str,
+        event_id: &str,
         devices: usize,
         prefs: &Prefs,
         at: i64,
@@ -197,8 +219,14 @@ impl RunnersDelivery {
         if self.s.day != day {
             self.s.day = day;
             self.s.sent = 0;
-            // Yesterday's stocks cannot hold anything back today (10 minutes < a night).
+            // Yesterday's stocks cannot hold anything back today (10 minutes < a night), and
+            // an event belongs to its day.
             self.s.last_by_symbol.clear();
+            self.s.last_by_kind.clear();
+            self.s.sent_ids.clear();
+        }
+        if self.s.sent_ids.contains(event_id) {
+            return Decision::Held(Hold::Duplicate);
         }
         if devices == 0 {
             return Decision::Held(Hold::NoDevice);
@@ -209,21 +237,22 @@ impl RunnersDelivery {
         if now - at > MAX_AGE_MS {
             return Decision::Held(Hold::Stale);
         }
-        let gap = if kind == NoticeKind::Burst {
+        let key = format!("{symbol} {}", kind.as_str());
+        let gap = if kind.is_new_evidence() {
             BURST_GAP_MS
         } else {
             SYMBOL_GAP_MS
         };
-        if self
-            .s
-            .last_by_symbol
-            .get(symbol)
-            .is_some_and(|t| now - t < gap)
+        let recent = |t: Option<&i64>, gap: i64| t.is_some_and(|t| now - t < gap);
+        if recent(self.s.last_by_kind.get(&key), SYMBOL_GAP_MS)
+            || recent(self.s.last_by_symbol.get(symbol), gap)
         {
             return Decision::Held(Hold::SymbolLimit);
         }
         self.s.sent += 1;
         self.s.last_by_symbol.insert(symbol.to_owned(), now);
+        self.s.last_by_kind.insert(key, now);
+        self.s.sent_ids.insert(event_id.to_owned());
         self.save();
         Decision::Send
     }
@@ -310,6 +339,13 @@ pub fn data_kind(kind: NoticeKind) -> &'static str {
         NoticeKind::Running => "runners.running",
         NoticeKind::Run => "runners.run",
         NoticeKind::Fast => "runners.fast",
+        NoticeKind::Shelf => "runners.shelf",
+        NoticeKind::FollowUp => "runners.followup",
+        NoticeKind::RossCrossing => "ross.crossing",
+        NoticeKind::SignalsCrossing => "signals.crossing",
+        NoticeKind::RossTrigger => "ross.trigger",
+        NoticeKind::SignalsTrigger => "signals.trigger",
+        NoticeKind::Halt => "halt.watch",
     }
 }
 
@@ -335,9 +371,185 @@ fn burst_odds() -> String {
     )
 }
 
-/// Title, body and data of the push for one notice (module docs, "Text"). The data's `symbol` is
-/// what the phone opens the chart for on a tap.
+/// Title, body and data of the push for one notice (module docs, "Text"): the ONE place every
+/// surface's text comes from (phone, watch, desktop, web). The data's `symbol` is what a tap or
+/// click opens the chart for.
 pub fn message(n: &Notice) -> (String, String, Value) {
+    match n.kind {
+        NoticeKind::New
+        | NoticeKind::Breakout
+        | NoticeKind::Burst
+        | NoticeKind::Running
+        | NoticeKind::Run
+        | NoticeKind::Fast => runner_message(n),
+        _ => panel_message(n),
+    }
+}
+
+/// " · $2.45", or nothing without a usable price.
+fn title_price(price: f64) -> String {
+    if price.is_finite() && price > 0.0 {
+        format!(" · {}", dollars(on_tick(price)))
+    } else {
+        String::new()
+    }
+}
+
+/// "3 min ago", "40 s ago".
+fn ago(from_ns: i64, to_ns: i64) -> String {
+    let s = (to_ns - from_ns).max(0) / 1_000_000_000;
+    if s < 60 {
+        format!("{s} s ago")
+    } else {
+        format!("{} min ago", (s + 30) / 60)
+    }
+}
+
+/// "$0.38–0.42", "$2.10–2.25": a range on its tick, trailing zeros trimmed to cents.
+fn range(lo: f64, hi: f64) -> String {
+    let fmt = |p: f64| {
+        let p = on_tick(p);
+        let mut s = if p >= 1.0 {
+            format!("{p:.2}")
+        } else {
+            format!("{p:.4}")
+        };
+        while s.ends_with('0') && s.len() - s.find('.').unwrap_or(s.len()) > 3 {
+            s.pop();
+        }
+        s
+    };
+    format!("${}–{}", fmt(lo), fmt(hi))
+}
+
+/// The volume shelves' honest base rate (`crate::zones::HELD_PCT` / `LOST_PCT`): "about 1 in 3
+/// hold, 1 in 2 fail". The bake-off's rate over all entries, never a forecast for this one.
+pub fn shelf_odds() -> String {
+    use crate::zones::{HELD_PCT, LOST_PCT};
+    format!(
+        "about 1 in {:.0} hold, 1 in {:.0} fail",
+        (100.0 / HELD_PCT).round().max(1.0),
+        (100.0 / LOST_PCT).round().max(1.0)
+    )
+}
+
+/// The newer kinds' text (owner, 2026-10-23): follow-ups, shelf entries, Ross and Signals
+/// crossings and at-trigger stages, Halt watcher gauges. Descriptive: a stage or an observation,
+/// never "buy" or "sell".
+fn panel_message(n: &Notice) -> (String, String, Value) {
+    let s = &n.symbol;
+    let p = title_price(n.price);
+    let mut data = json!({
+        "symbol": n.symbol,
+        "kind": data_kind(n.kind),
+        "alert_id": n.alert_id,
+    });
+    let (title, body) = match (n.kind, &n.detail) {
+        // "YMAT · Run +20% (after Fast move 3 min ago) · $2.71", the path's own evidence below.
+        (
+            NoticeKind::FollowUp,
+            Some(NoticeDetail::FollowUp {
+                path,
+                first,
+                first_at_ns,
+            }),
+        ) => {
+            let title = format!(
+                "{s} · {} (after {} {}){p}",
+                path.label(),
+                first.label(),
+                ago(*first_at_ns, n.at_ns)
+            );
+            let own = match path {
+                AlertKind::Running => Some(NoticeKind::Running),
+                AlertKind::Run => Some(NoticeKind::Run),
+                AlertKind::Fast => Some(NoticeKind::Fast),
+                _ => None,
+            };
+            // The path's own body (its reasons), as its own push would say it.
+            let body = own.map_or_else(
+                || n.reasons.first().cloned().unwrap_or_default(),
+                |k| {
+                    let (_, b, _) = runner_message(&Notice {
+                        kind: k,
+                        price: f64::NAN,
+                        detail: None,
+                        ..n.clone()
+                    });
+                    b
+                },
+            );
+            (title, body)
+        }
+        // "In volume shelf $0.38–0.42 · about 1 in 3 hold, 1 in 2 fail".
+        (NoticeKind::Shelf, Some(NoticeDetail::Shelf { lo, hi })) => (
+            format!("{s} · Volume shelf{p}"),
+            format!("In volume shelf {} · {}", range(*lo, *hi), shelf_odds()),
+        ),
+        (
+            NoticeKind::RossCrossing
+            | NoticeKind::SignalsCrossing
+            | NoticeKind::RossTrigger
+            | NoticeKind::SignalsTrigger,
+            Some(NoticeDetail::Cue(c)),
+        ) => {
+            data["also_signals"] = json!(c.also_signals);
+            let panel = match n.kind {
+                NoticeKind::RossCrossing | NoticeKind::RossTrigger => "Ross",
+                _ => "Signals",
+            };
+            let crossing = matches!(
+                n.kind,
+                NoticeKind::RossCrossing | NoticeKind::SignalsCrossing
+            );
+            let stage = if crossing { "Crossing" } else { "At trigger" };
+            let trig = c.trigger.filter(|t| t.is_finite() && *t > 0.0);
+            let body = match (crossing, trig) {
+                (true, Some(t)) => format!(
+                    "Above the {} pullback trigger · bar close pending",
+                    dollars(on_tick(t))
+                ),
+                (true, None) => "Above the pullback trigger · bar close pending".into(),
+                (false, Some(t)) if n.price.is_finite() && n.price > 0.0 => format!(
+                    "{:.1}% below the {} pullback trigger",
+                    ((t / n.price - 1.0) * 100.0).max(0.0),
+                    dollars(on_tick(t))
+                ),
+                (false, _) => "Near the pullback trigger".into(),
+            };
+            let both = if c.also_signals {
+                " · also on Signals"
+            } else {
+                ""
+            };
+            (
+                format!("{s} · {panel} · {stage}{p}"),
+                format!("{body}{both}"),
+            )
+        }
+        // "Buying pressure at the $2.80 band · halt risk 72/100".
+        (NoticeKind::Halt, Some(NoticeDetail::Halt { bull, risk, band })) => {
+            let side = if *bull { "Buying" } else { "Selling" };
+            let at = if band.is_finite() && *band > 0.0 {
+                format!(" at the {} LULD band", dollars(on_tick(*band)))
+            } else {
+                " at its LULD band".into()
+            };
+            (
+                format!("{s} · Halt watcher{p}"),
+                format!("{side} pressure building{at} · halt risk {risk}/100"),
+            )
+        }
+        // A notice without its facts (never expected): its name and price only.
+        _ => (
+            format!("{s} · {}{p}", n.kind.as_str().replace('_', " ")),
+            String::new(),
+        ),
+    };
+    (title, with_price_line(body, n.price), data)
+}
+
+fn runner_message(n: &Notice) -> (String, String, Value) {
     let p = dollars(on_tick(n.price));
     let s = &n.symbol;
     let title = match n.kind {
@@ -347,6 +559,7 @@ pub fn message(n: &Notice) -> (String, String, Value) {
         NoticeKind::Running => format!("{s} · Running · {p}"),
         NoticeKind::Run => format!("{s} · Run +20% · {p}"),
         NoticeKind::Fast => format!("{s} · Fast move · {p}"),
+        _ => format!("{s} {p}"),
     };
     let data = json!({
         "symbol": n.symbol,
@@ -404,7 +617,7 @@ pub fn message(n: &Notice) -> (String, String, Value) {
             }
             parts.join(" · ")
         }
-        NoticeKind::New | NoticeKind::Breakout => String::new(),
+        _ => String::new(),
     };
     if !body.is_empty() {
         return (title, with_price_line(body, n.price), data);
@@ -432,7 +645,8 @@ pub fn desk_frame(n: &Notice) -> String {
     let (title, body, data) = message(n);
     json!({
         "type": "runners.notice",
-        "id": format!("runners-{}-{}", n.kind.as_str(), n.alert_id),
+        "id": n.event_id(),
+        "alsoSignals": matches!(&n.detail, Some(NoticeDetail::Cue(c)) if c.also_signals),
         "alertId": n.alert_id,
         "symbol": n.symbol,
         "kind": data_kind(n.kind),
@@ -468,6 +682,7 @@ mod tests {
                 reasons: vec!["$120k in 5 min".into(), "52 trades, $71k in 60 s".into()],
                 since_start_min: Some(1.0),
                 exec_ns: None,
+                detail: None,
             };
             let (title, body, data) = message(&n);
             let f: Value = serde_json::from_str(&desk_frame(&n)).unwrap();
@@ -493,16 +708,23 @@ mod tests {
 
     const MIN: i64 = 60_000;
 
+    /// A fresh event id per decision (these tests are about the gaps, not the dedupe).
+    fn uid() -> String {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        format!("e{}", N.fetch_add(1, Ordering::Relaxed))
+    }
+
     #[test]
     fn cooldown_cap_quiet_hours_and_staleness() {
         let mut d = RunnersDelivery::in_memory();
         let prefs = Prefs::default();
         let run = NoticeKind::Run;
         let go = |d: &mut RunnersDelivery, s: &str, now: i64| {
-            d.decide(run, s, 1, &prefs, now, now, day(22), 8 * 60)
+            d.decide(run, s, &uid(), 1, &prefs, now, now, day(22), 8 * 60)
         };
         assert_eq!(
-            d.decide(run, "CJMB", 0, &prefs, 0, 0, day(22), 480),
+            d.decide(run, "CJMB", &uid(), 0, &prefs, 0, 0, day(22), 480),
             Decision::Held(Hold::NoDevice)
         );
         assert_eq!(go(&mut d, "CJMB", 0), Decision::Send);
@@ -514,7 +736,17 @@ mod tests {
         assert_eq!(go(&mut d, "CJMB", 10 * MIN), Decision::Send);
         // A burst 2 minutes after the same stock's run push still goes out; 1 minute does not.
         let burst = |d: &mut RunnersDelivery, s: &str, now: i64| {
-            d.decide(NoticeKind::Burst, s, 1, &prefs, now, now, day(22), 8 * 60)
+            d.decide(
+                NoticeKind::Burst,
+                s,
+                &uid(),
+                1,
+                &prefs,
+                now,
+                now,
+                day(22),
+                8 * 60,
+            )
         };
         assert_eq!(
             burst(&mut d, "CJMB", 11 * MIN),
@@ -523,7 +755,7 @@ mod tests {
         assert_eq!(burst(&mut d, "CJMB", 12 * MIN), Decision::Send);
         // Old news is not pushed.
         assert_eq!(
-            d.decide(run, "OLD", 1, &prefs, 0, 4 * MIN, day(22), 480),
+            d.decide(run, "OLD", &uid(), 1, &prefs, 0, 4 * MIN, day(22), 480),
             Decision::Held(Hold::Stale)
         );
         // No daily cap: every kind still goes out after hundreds of pushes in a day.
@@ -539,14 +771,34 @@ mod tests {
         ] {
             let sym = format!("{kind:?}");
             assert_eq!(
-                d.decide(kind, &sym, 1, &prefs, 14 * MIN, 14 * MIN, day(22), 480),
+                d.decide(
+                    kind,
+                    &sym,
+                    &uid(),
+                    1,
+                    &prefs,
+                    14 * MIN,
+                    14 * MIN,
+                    day(22),
+                    480
+                ),
                 Decision::Send
             );
         }
         assert!(d.sent_today(day(22)) > 400, "still counted for the logs");
         // A new ET day.
         assert_eq!(
-            d.decide(run, "LATE", 1, &prefs, 15 * MIN, 15 * MIN, day(23), 480),
+            d.decide(
+                run,
+                "LATE",
+                &uid(),
+                1,
+                &prefs,
+                15 * MIN,
+                15 * MIN,
+                day(23),
+                480
+            ),
             Decision::Send
         );
         assert_eq!(d.sent_today(day(22)), 0);
@@ -559,7 +811,17 @@ mod tests {
             ..Prefs::default()
         };
         assert_eq!(
-            d.decide(run, "Q", 1, &quiet, 20 * MIN, 20 * MIN, day(23), 6 * 60),
+            d.decide(
+                run,
+                "Q",
+                &uid(),
+                1,
+                &quiet,
+                20 * MIN,
+                20 * MIN,
+                day(23),
+                6 * 60
+            ),
             Decision::Held(Hold::QuietHours)
         );
     }
@@ -571,13 +833,13 @@ mod tests {
         let mut d = RunnersDelivery::open(dir.path());
         let k = NoticeKind::New;
         assert_eq!(
-            d.decide(k, "A", 1, &prefs, 0, 0, day(22), 480),
+            d.decide(k, "A", &uid(), 1, &prefs, 0, 0, day(22), 480),
             Decision::Send
         );
         let mut back = RunnersDelivery::open(dir.path());
         assert_eq!(back.sent_today(day(22)), 1);
         assert_eq!(
-            back.decide(k, "A", 1, &prefs, MIN, MIN, day(22), 481),
+            back.decide(k, "A", &uid(), 1, &prefs, MIN, MIN, day(22), 481),
             Decision::Held(Hold::SymbolLimit),
             "a redeploy does not forget the cooldown"
         );
@@ -595,6 +857,7 @@ mod tests {
             reasons: vec!["volume 9x pace".into(), "new high".into(), "third".into()],
             since_start_min: None,
             exec_ns: None,
+            detail: None,
         };
         let (t, b, data) = message(&n);
         assert_eq!(t, "Runners: CJMB $2.45");
@@ -735,6 +998,7 @@ Alert $2.41 · +5% = $2.53"
             reasons: vec!["x".repeat(60), "y".repeat(60)],
             since_start_min: None,
             exec_ns: None,
+            detail: None,
         };
         let (_, b, _) = message(&n);
         assert_eq!(b, format!("{}\nAlert $2.41 · +5% = $2.53", "x".repeat(60)));
@@ -759,5 +1023,197 @@ Alert $2.41 · +5% = $2.53"
             assert!(b.ends_with("\nAlert $2.41 · +5% = $2.53"), "{kind:?}: {b}");
             assert!(b.chars().count() <= MAX_BODY_CHARS, "{kind:?}: {b}");
         }
+    }
+
+    /// A notice of every kind as its source makes it (the newer kinds with their facts).
+    fn sample(kind: NoticeKind) -> Notice {
+        use crate::rocket::CueNotice;
+        let mut n = Notice::test(kind, "YMAT");
+        n.at_ns = 1_761_200_000_000_000_000;
+        n.price = 2.71;
+        n.from_flag_pct = Some(22.0);
+        n.since_start_min = Some(5.0);
+        n.reasons = vec!["+22% in 5 min off $2.22".into(), "25+ trades".into()];
+        n.detail = match kind {
+            NoticeKind::FollowUp => Some(NoticeDetail::FollowUp {
+                path: AlertKind::Run,
+                first: AlertKind::Fast,
+                first_at_ns: n.at_ns - 3 * 60_000_000_000,
+            }),
+            NoticeKind::Shelf => Some(NoticeDetail::Shelf { lo: 0.38, hi: 0.42 }),
+            NoticeKind::RossCrossing
+            | NoticeKind::SignalsCrossing
+            | NoticeKind::RossTrigger
+            | NoticeKind::SignalsTrigger => Some(NoticeDetail::Cue(CueNotice {
+                episode_id: "run:2026-10-23:YMAT:micro_pullback:3".into(),
+                trigger: Some(2.75),
+                also_signals: kind == NoticeKind::RossCrossing,
+            })),
+            NoticeKind::Halt => Some(NoticeDetail::Halt {
+                bull: true,
+                risk: 72,
+                band: 2.8,
+            }),
+            _ => None,
+        };
+        n
+    }
+
+    /// Desktop and web carry exactly the phone text for every kind, with the event id, the
+    /// copy-ticker data and the reference line; nothing is worded as advice.
+    #[test]
+    fn every_kind_has_one_text_on_every_surface() {
+        for kind in NoticeKind::ALL {
+            let n = sample(kind);
+            let (title, body, data) = message(&n);
+            let f: Value = serde_json::from_str(&desk_frame(&n)).unwrap();
+            assert_eq!(f["title"], title.as_str());
+            assert_eq!(f["body"], body.as_str());
+            assert_eq!(f["data"], data);
+            assert_eq!(f["id"], n.event_id());
+            assert_eq!(f["kind"], data_kind(kind));
+            assert_eq!(data["symbol"], "YMAT");
+            assert_eq!(data["alert_id"], n.alert_id.as_str());
+            assert!(title.contains("YMAT"), "{kind:?}: {title}");
+            assert!(
+                body.ends_with("Alert $2.71 · +5% = $2.85"),
+                "{kind:?}: {body}"
+            );
+            assert!(body.chars().count() <= MAX_BODY_CHARS, "{kind:?}: {body}");
+            let all = format!("{title} {body}").to_lowercase();
+            assert!(
+                !all.contains("buy ") && !all.contains("sell ") && !all.contains("enter"),
+                "{kind:?}: {all}"
+            );
+        }
+        let t = |k| {
+            let (t, b, _) = message(&sample(k));
+            (t, b.lines().next().unwrap_or_default().to_string())
+        };
+        assert_eq!(
+            t(NoticeKind::FollowUp),
+            (
+                "YMAT · Run +20% (after Fast move 3 min ago) · $2.71".into(),
+                "+22.0% in 5 min off $2.22 · 25+ trades, $25k+".into()
+            )
+        );
+        assert_eq!(
+            t(NoticeKind::Shelf),
+            (
+                "YMAT · Volume shelf · $2.71".into(),
+                "In volume shelf $0.38–0.42 · about 1 in 3 hold, 1 in 2 fail".into()
+            )
+        );
+        assert_eq!(
+            t(NoticeKind::RossCrossing),
+            (
+                "YMAT · Ross · Crossing · $2.71".into(),
+                "Above the $2.75 pullback trigger · bar close pending · also on Signals".into()
+            )
+        );
+        assert_eq!(
+            t(NoticeKind::SignalsCrossing).0,
+            "YMAT · Signals · Crossing · $2.71"
+        );
+        assert_eq!(
+            t(NoticeKind::RossTrigger),
+            (
+                "YMAT · Ross · At trigger · $2.71".into(),
+                "1.5% below the $2.75 pullback trigger".into()
+            )
+        );
+        assert_eq!(
+            t(NoticeKind::Halt),
+            (
+                "YMAT · Halt watcher · $2.71".into(),
+                "Buying pressure building at the $2.80 LULD band · halt risk 72/100".into()
+            )
+        );
+        let f: Value =
+            serde_json::from_str(&desk_frame(&sample(NoticeKind::RossCrossing))).unwrap();
+        assert_eq!(f["alsoSignals"], true);
+        assert_eq!(f["data"]["also_signals"], true);
+    }
+
+    /// The gaps (owner, 2026-10-23): the same kind on a stock at most once per 10 minutes; new
+    /// evidence (crossing, shelf entry, follow-up, burst) 2 minutes after an unrelated push;
+    /// the other kinds 10 minutes after any; one event never twice, even after a restart.
+    #[test]
+    fn gaps_and_event_dedupe() {
+        let dir = tempfile::tempdir().unwrap();
+        let prefs = Prefs::default();
+        let mut d = RunnersDelivery::open(dir.path());
+        let go = |d: &mut RunnersDelivery, k: NoticeKind, id: &str, now: i64| {
+            d.decide(k, "YMAT", id, 1, &prefs, now, now, day(23), 600)
+        };
+        assert_eq!(go(&mut d, NoticeKind::Fast, "f1", 0), Decision::Send);
+        // New evidence 1 minute after a fast-move push: held; at 2 minutes: sent.
+        for (k, id) in [
+            (NoticeKind::RossCrossing, "c1"),
+            (NoticeKind::Shelf, "z1"),
+            (NoticeKind::FollowUp, "u1"),
+        ] {
+            assert_eq!(go(&mut d, k, id, MIN), Decision::Held(Hold::SymbolLimit));
+        }
+        assert_eq!(
+            go(&mut d, NoticeKind::FollowUp, "u1", 2 * MIN),
+            Decision::Send
+        );
+        assert_eq!(
+            go(&mut d, NoticeKind::RossCrossing, "c1", 4 * MIN),
+            Decision::Send
+        );
+        assert_eq!(go(&mut d, NoticeKind::Shelf, "z1", 6 * MIN), Decision::Send);
+        // A second crossing (another episode) 3 minutes after the first: same kind, held
+        // until 10 minutes have passed.
+        assert_eq!(
+            go(&mut d, NoticeKind::RossCrossing, "c2", 7 * MIN),
+            Decision::Held(Hold::SymbolLimit)
+        );
+        assert_eq!(
+            go(&mut d, NoticeKind::RossCrossing, "c2", 14 * MIN),
+            Decision::Send
+        );
+        // A plain kind (Halt watcher, At trigger) 10 minutes after any push of the stock.
+        assert_eq!(
+            go(&mut d, NoticeKind::Halt, "h1", 20 * MIN),
+            Decision::Held(Hold::SymbolLimit)
+        );
+        assert_eq!(go(&mut d, NoticeKind::Halt, "h1", 24 * MIN), Decision::Send);
+        // The identical event never twice, also after a restart.
+        assert_eq!(
+            go(&mut d, NoticeKind::Shelf, "z1", 60 * MIN),
+            Decision::Held(Hold::Duplicate)
+        );
+        let mut back = RunnersDelivery::open(dir.path());
+        assert_eq!(
+            back.decide(
+                NoticeKind::FollowUp,
+                "YMAT",
+                "u1",
+                1,
+                &prefs,
+                90 * MIN,
+                90 * MIN,
+                day(23),
+                700
+            ),
+            Decision::Held(Hold::Duplicate)
+        );
+        // Stale and quiet hours apply to the new kinds as to every other.
+        assert_eq!(
+            back.decide(
+                NoticeKind::RossCrossing,
+                "B",
+                "c9",
+                1,
+                &prefs,
+                0,
+                4 * MIN,
+                day(23),
+                700
+            ),
+            Decision::Held(Hold::Stale)
+        );
     }
 }
