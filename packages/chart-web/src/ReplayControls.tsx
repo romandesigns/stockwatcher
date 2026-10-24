@@ -24,6 +24,13 @@ export interface ReplayControlsProps {
   onDayChange?: (day: string) => void;
   /** The day menu opened or closed; opening is the moment to refresh `days`. */
   onDayMenuOpenChange?: (open: boolean) => void;
+  /**
+   * A day picked from the menu that the server is still switching to ("YYYY-MM-DD"). The switch
+   * rebuilds the whole market from the session start, which takes a minute or two on a
+   * whole-market day: without this the menu closed and the old date stayed, so a pick looked
+   * ignored (owner, 2026-10-23). The date reads "Loading Oct 22…" until `day` becomes it.
+   */
+  pendingDay?: string | null;
 }
 
 export const DEFAULT_SPEEDS = [1, 2, 10, 60, 0] as const;
@@ -45,16 +52,17 @@ function PlayIcon({ playing }: { playing: boolean }) {
  * warning tone, as the source chip does, so synthetic data never passes for a
  * real session.
  */
-function ReplayDayMenu({ day, days, onDayChange, onOpenChange }: { day: string; days: readonly ReplayDayOption[]; onDayChange: (day: string) => void; onOpenChange?: (open: boolean) => void }) {
+function ReplayDayMenu({ day, days, onDayChange, onOpenChange, pendingDay }: { day: string; days: readonly ReplayDayOption[]; onDayChange: (day: string) => void; onOpenChange?: (open: boolean) => void; pendingDay?: string | null }) {
   const current = days.find((d) => d.value === day);
+  const loading = pendingDay && pendingDay !== day ? pendingDay : null;
   return (
     <DropdownMenu onOpenChange={(open) => onOpenChange?.(open)}>
       <DropdownMenuTrigger
-        aria-label={`Replay day ${current?.longLabel ?? formatDayKey(day)}, change`}
+        aria-label={loading ? `Replay day ${current?.longLabel ?? formatDayKey(day)}, loading ${formatDayKey(loading)}` : `Replay day ${current?.longLabel ?? formatDayKey(day)}, change`}
         // Small dim text by design; a finger gets the 44 px TOUCH_HIT area around it.
         className={cn("relative -mx-1 inline-flex shrink-0 cursor-pointer items-center gap-0.5 rounded px-1 text-[11px] text-muted-foreground outline-none transition-colors duration-150 hover:bg-bg-row hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring data-popup-open:bg-bg-row data-popup-open:text-foreground", TOUCH_HIT)}
       >
-        {formatDayKey(day)}
+        {loading ? <span className="motion-safe:animate-pulse">Loading {formatDayKey(loading)}…</span> : formatDayKey(day)}
         <Icon name="chevronDown" width={10} height={10} />
       </DropdownMenuTrigger>
       <DropdownMenuContent side="top" align="start" aria-label="Replay day" className="min-w-56">
@@ -86,7 +94,7 @@ function ReplayDayMenu({ day, days, onDayChange, onOpenChange }: { day: string; 
  * Picking one changes the whole replay (the server rebuilds as for a seek), so
  * it is a deliberate two-step menu rather than a cycling chip like speed.
  */
-export function ReplayControls({ clock, onPlayPause, onStep, onSpeedChange, speeds = DEFAULT_SPEEDS, variant = "full", className, days, day, onDayChange, onDayMenuOpenChange }: ReplayControlsProps) {
+export function ReplayControls({ clock, onPlayPause, onStep, onSpeedChange, speeds = DEFAULT_SPEEDS, variant = "full", className, days, day, onDayChange, onDayMenuOpenChange, pendingDay }: ReplayControlsProps) {
   const live = clock?.mode === "live";
   const playing = !!clock?.playing;
   const speed = clock?.speed ?? speeds[0] ?? 1;
@@ -117,7 +125,7 @@ export function ReplayControls({ clock, onPlayPause, onStep, onSpeedChange, spee
             <span className="text-[11px] text-muted-foreground" aria-hidden="true">
               ·
             </span>
-            <ReplayDayMenu day={pick.day} days={pick.days} onDayChange={pick.onDayChange} onOpenChange={onDayMenuOpenChange} />
+            <ReplayDayMenu day={pick.day} days={pick.days} onDayChange={pick.onDayChange} onOpenChange={onDayMenuOpenChange} pendingDay={pendingDay} />
           </>
         )}
       </span>

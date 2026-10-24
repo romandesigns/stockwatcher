@@ -50,6 +50,9 @@ function sourceText(choice: SourceChoice): string {
  * user's preferences and drawings are synced across devices instead (settings/sync.ts).
  */
 const CHART_KEY = "sw-chart";
+/** How long a picked replay day may read "Loading…" before the label gives up (a refused switch sends
+ *  an error frame and never changes the day). A whole-market rebuild takes one to two minutes on the VPS. */
+const PENDING_DAY_TIMEOUT_MS = 5 * 60_000;
 
 
 /** Replay: a clock turned back. Live: a broadcast dot with its waves. */
@@ -195,16 +198,31 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
   const bucketMs = phone ? 20 * 60_000 : 15 * 60_000;
   const buckets = useMemo(() => (series && bands.length ? volumeBuckets(series.candles, bands[0]!.start, bands[3]!.end, bucketMs) : []), [series, bands, bucketMs]);
 
+  // A day picked here that the server is still switching to (ReplayControls `pendingDay`). Cleared
+  // during render once the replay names it (the clock's new trading day refetches the day state),
+  // and after a timeout in case the server refused it (an error frame, no day change).
+  const [pendingDay, setPendingDay] = useState<string | null>(null);
+  const replayDay = currentReplayDay(replayDays.state, clock);
+  if (pendingDay && replayDay === pendingDay) setPendingDay(null);
+  useEffect(() => {
+    if (!pendingDay) return;
+    const id = setTimeout(() => setPendingDay(null), PENDING_DAY_TIMEOUT_MS);
+    return () => clearTimeout(id);
+  }, [pendingDay]);
   const replay = {
     clock,
     onPlayPause: (play: boolean) => feed.control({ action: play ? "play" : "pause" }),
     onStep: () => feed.control({ action: "step" }),
     onSpeedChange: (speed: number) => feed.control({ action: "speed", value: speed }),
     days: dayOptions,
-    day: currentReplayDay(replayDays.state, clock),
+    day: replayDay,
+    pendingDay,
     // The server rebuilds on the new day and resends every snapshot; the clock's new trading day
     // then refetches the candidates and this list.
-    onDayChange: (day: string) => feed.control({ action: "day", value: day }),
+    onDayChange: (day: string) => {
+      setPendingDay(day);
+      feed.control({ action: "day", value: day });
+    },
     onDayMenuOpenChange: (open: boolean) => open && replayDays.refresh(),
   };
   // Jump the replay; the server rebuilds from the session start and resends snapshots.

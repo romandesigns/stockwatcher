@@ -17,7 +17,7 @@ import {
 import { PROFILE_BINS } from "@stockwatcher/app-state";
 import { CandleChart, Icon, ReplayDaySheet, SessionTimeline, Sheet, TapeSheet, ToolButton, UI } from "@stockwatcher/chart-native";
 import { detectionFamilyLabel, detectionOverlays, detectionStateLabel, groupDetections, type ConnectionStatus } from "@stockwatcher/shared";
-import { useLayoutEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useState } from "react";
 import Animated, { FadeIn, FadeOut, ReduceMotion } from "react-native-reanimated";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -41,6 +41,8 @@ const SCREEN_GAP = 8;
 const bucketMs = 20 * 60_000;
 const speedLabel = (s: number) => (s === 0 ? "Max" : `${s}×`);
 const SESSION = { overnight: "Overnight", pre: "Premarket", regular: "Regular", after: "After hours" } as const;
+/** How long a picked day may read "Loading…" (a refused switch never changes the day). */
+const PENDING_DAY_TIMEOUT_MS = 5 * 60_000;
 const SESSION_A11Y = { overnight: "overnight session", pre: "premarket", regular: "regular session", after: "after hours" } as const;
 
 /** The chart screen: connects once (useConnection: token, app store, its own socket), then renders the chart. */
@@ -134,6 +136,18 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
   const replayDay = currentReplayDay(replayDays.state, clock);
   // The date is the day picker only when there is something to pick (replay mode, days offered).
   const canPickDay = !live && !!clock && !!replayDay && dayOptions.length > 0;
+  // A picked day the server is still switching to: a whole-market rebuild takes a minute or two,
+  // and without this the sheet closed on the old date as if the pick was ignored (owner,
+  // 2026-10-23; the web's ReplayControls `pendingDay`). Cleared once the replay names it, or after
+  // a timeout when the server refused it.
+  const [pendingDay, setPendingDay] = useState<string | null>(null);
+  if (pendingDay && replayDay === pendingDay) setPendingDay(null);
+  useEffect(() => {
+    if (!pendingDay) return;
+    const id = setTimeout(() => setPendingDay(null), PENDING_DAY_TIMEOUT_MS);
+    return () => clearTimeout(id);
+  }, [pendingDay]);
+  const loadingDay = pendingDay && pendingDay !== replayDay ? pendingDay : null;
 
   return (
     // No bottom inset: the main nav's tab bar sits below this screen and takes the home-indicator inset.
@@ -246,7 +260,7 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
             {canPickDay && replayDay && (
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel={`Replay day ${formatDayKey(replayDay)}, change`}
+                accessibilityLabel={loadingDay ? `Replay day ${formatDayKey(replayDay)}, loading ${formatDayKey(loadingDay)}` : `Replay day ${formatDayKey(replayDay)}, change`}
                 hitSlop={{ top: 10, bottom: 10, left: 4, right: 8 }}
                 onPress={() => {
                   replayDays.refresh();
@@ -254,7 +268,7 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
                 }}
                 style={({ pressed }) => [styles.dayButton, pressed && { backgroundColor: UI.row }]}
               >
-                <Text style={styles.session}>· {formatDayKey(replayDay)}</Text>
+                <Text style={styles.session}>· {loadingDay ? `Loading ${formatDayKey(loadingDay)}…` : formatDayKey(replayDay)}</Text>
                 <Icon name="chevronDown" color={colors.textFaint} size={8} />
               </Pressable>
             )}
@@ -306,7 +320,10 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
         day={replayDay}
         // The server rebuilds on that day and resends every snapshot; the clock's new trading day
         // then refetches the candidates and the day list.
-        onSelect={(day) => feed.control({ action: "day", value: day })}
+        onSelect={(day) => {
+          setPendingDay(day);
+          feed.control({ action: "day", value: day });
+        }}
         reducedMotion={reducedMotion}
       />
       <Sheet open={detectionDetail !== null} onClose={() => setDetectionDetail(null)} title="Replay detection details" reducedMotion={reducedMotion} tall>

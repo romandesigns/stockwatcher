@@ -2,7 +2,8 @@
 //
 // The server is the default (VITE_CHART_SOURCE unset or "server"). The app
 // asks GET /api/symbols first; it falls back to the in-browser fixture ONLY if
-// the server is unreachable, refuses, or reports no symbols, and it always
+// the server is unreachable, refuses, or has no data to replay (an empty list
+// from a replay that is still building is not that: `replayBuilding`), and it always
 // says which source is active and why. VITE_CHART_SOURCE=fixture forces the
 // in-browser fixture. A live page (the dashboard) never falls back for an empty list: an empty
 // live market is real (see chooseSource).
@@ -73,7 +74,9 @@ export function chooseSource(env: string | undefined, probe: Probe | null, fixtu
   const symbols = Array.isArray(d.symbols) ? d.symbols : [];
   // An empty live market is the market, not a missing server: before a session's first trade (and
   // all weekend) nothing has traded. The live page shows that, never made-up fixture prices.
-  if (symbols.length === 0 && market !== "live") return fixture(`server has no data (${d.status}${d.mode ? `, ${d.mode} mode` : ""})`);
+  // A replay that is still building is not a missing server either (owner, 2026-10-23: "I cannot
+  // select a date nor a ticker"): see `replayBuilding`.
+  if (symbols.length === 0 && market !== "live" && !replayBuilding(d)) return fixture(`server has no data (${d.status}${d.mode ? `, ${d.mode} mode` : ""})`);
   return {
     kind: "server",
     reason: d.source ?? "server",
@@ -83,6 +86,22 @@ export function chooseSource(env: string | undefined, probe: Probe | null, fixtu
     label: serverLabel(d),
     market,
   };
+}
+
+/**
+ * The replay market is up but has not reached its start time yet: its provider runs on an archived
+ * day, but the rebuild to `REPLAY_START` (or to a seek, or onto a newly picked day) has not got to
+ * the first in-band trade, so `/api/symbols` lists no candidates for now. On a whole-market day
+ * that takes one to two minutes on the VPS, longer while the live market loads its history after
+ * a restart. The chart page used to read that as "server has no data" and fall back to the
+ * in-browser fixture for the rest of the session (the choice is made once): no day menu (the
+ * fixture has no days) and only fixture tickers in the search, i.e. replay looked broken after
+ * every deploy and to any page opened during a day switch. It stays on the server instead: the
+ * candidate list fills on its next poll and the clock (with the day menu) arrives on the socket
+ * when the rebuild ends.
+ */
+export function replayBuilding(d: ServerSymbols): boolean {
+  return (d.status === "running" || d.status === "starting") && !!d.day;
 }
 
 /** The label for a server source: "Server replay · 2026-10-15". */
