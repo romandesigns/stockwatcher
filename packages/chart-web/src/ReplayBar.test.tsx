@@ -32,17 +32,42 @@ describe("ReplayBar", () => {
     expect(desktop).toContain(">Pre-market<");
     expect(desktop).toContain(">05:00<");
     expect(desktop).not.toContain(">20:00<");
-    const fold = render({}, "fold");
-    expect(fold).toContain('data-layout="fold"');
-    expect(fold).toContain(">06:00<");
-    expect(fold).not.toContain(">05:00<");
-    expect(fold).toContain("‹ Prev alert");
-    const cover = render({}, "cover");
-    expect(cover).toContain('data-layout="cover"');
-    expect(cover).toContain(">Pre<");
-    expect(cover).toContain(">08:00<");
-    expect(cover).not.toContain(">06:00<");
-    expect(cover).toContain(">20:00<");
+    // Under 1100 px the bar rests compact (owner, 2026-10-24: the two-tier bar took half a phone).
+    for (const layout of ["fold", "cover"] as const) {
+      const html = render({}, layout);
+      expect(html).toContain(`data-layout="${layout}"`);
+      expect(html).not.toContain("Jump to");
+      expect(html).not.toContain(">Pre<");
+      expect(html).not.toContain(">06:00<");
+    }
+  });
+
+  test("compact: one row of play, Prev/Next alert, the clock, a thin scrubber, a speed chip and more", () => {
+    for (const layout of ["fold", "cover"] as const) {
+      const html = render({}, layout);
+      expect(html).toContain('aria-label="Play replay"');
+      expect(html).toContain('aria-label="Previous alert: LABT Fast move at 09:41:15, $0.8877"');
+      expect(html).toContain('aria-label="Next alert: LABT Run +20% at 13:00:00, $1.10"');
+      expect(html).toContain("11:11:35");
+      expect(html).toContain("Regular · 1h 41m in");
+      expect(html).toContain('role="slider"');
+      expect(html).toContain('aria-valuetext="11:11:35 Eastern, regular session"');
+      // The speed chip cycles from 5× to 10×; the segments are in "more".
+      expect(html).toContain('aria-label="Speed 5×, change to 10×"');
+      expect(html).not.toContain('aria-label="Replay speed"');
+      expect(html).toMatch(/aria-label="More replay controls"[^>]*aria-expanded="false"|aria-expanded="false"[^>]*aria-label="More replay controls"/);
+      // The thin scrubber's dots are drawn, not buttons (a release near one snaps onto it).
+      expect(html).not.toContain("jump there");
+    }
+    // The day and the ticker sit in "more" on the compact layouts' forced (unmeasured) render.
+    expect(render({}, "fold")).not.toContain("search tickers");
+  });
+
+  test("compact: a quiet ticker's Prev/Next cross to every ticker, marked any", () => {
+    const html = render({ symbol: "QUIET" }, "cover");
+    expect(html).toContain('aria-label="Previous alert: XXII R2 flag at 10:00:00"');
+    expect(count(html, ">any<")).toBe(2);
+    expect(render({}, "cover")).not.toContain(">any<");
   });
 
   test("top row: play as the accent button, the clock with its session and time in, the ticker", () => {

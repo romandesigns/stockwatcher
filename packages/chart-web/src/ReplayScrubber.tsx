@@ -4,6 +4,7 @@ import {
   REPLAY_ALERT_COLOR,
   scrubberFraction,
   scrubberKeySeek,
+  scrubberReleaseTarget,
   scrubberTimeAt,
   scrubberTooltip,
   scrubberVolumeAt,
@@ -14,7 +15,7 @@ import {
   type ScrubberSpan,
   type ScrubberTick,
 } from "@stockwatcher/chart-core";
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { cn } from "./ui/utils.ts";
 
 export interface ReplayScrubberProps {
@@ -36,6 +37,14 @@ export interface ReplayScrubberProps {
   labels?: "long" | "short";
   /** Where the time · volume · alert tooltip shows: on mouse hover and while dragging ("hover"), or only while dragging ("drag", touch layouts). */
   tooltip?: "hover" | "drag";
+  /**
+   * "full": the two-tier bar's lower tier (labels, histogram, ticks, tappable alert dots).
+   * "micro": the compact bar's thin scrubber, a 16 px band (session shading, a micro-histogram, the
+   * played tint, the alert dots drawn above it, the handle) centred in a taller touch area, with no
+   * labels or ticks and the tooltip above it. Its dots are too small to tap, so a release near one
+   * snaps onto that alert instead (chart-core scrubberReleaseTarget).
+   */
+  variant?: "full" | "micro";
   className?: string;
 }
 
@@ -54,13 +63,15 @@ const HOLD_MS = 180_000;
  * It is a slider for the keyboard and assistive tech: arrows step a minute
  * (Shift 15), Page Up/Down 30 minutes, Home/End the day's ends. Each alert
  * dot is a button that seeks to it, named for its kind, time and price.
+ * The compact bar uses the same component as its thin scrubber (`variant="micro"`).
  */
-export function ReplayScrubber({ span, segments, bars, ticks, dots, now, onSeek, disabled, labels = "long", tooltip = "hover", className }: ReplayScrubberProps) {
+export function ReplayScrubber({ span, segments, bars, ticks, dots, now, onSeek, disabled, labels = "long", tooltip = "hover", variant = "full", className }: ReplayScrubberProps) {
   const trackRef = useRef<HTMLDivElement>(null);
   const [drag, setDrag] = useState<number | null>(null);
   const [hover, setHover] = useState<{ x: number; t: number } | null>(null);
   const [held, setHeld] = useState<{ t: number; from: number | null } | null>(null);
   const interactive = !!onSeek && !disabled;
+  const micro = variant === "micro";
 
   // Drop the held target once the rebuilt clock has arrived near it, or after HOLD_MS (a refused
   // seek). Playing on from the old position moves the clock too, but stays about as far away.
@@ -101,47 +112,106 @@ export function ReplayScrubber({ span, segments, bars, ticks, dots, now, onSeek,
   };
   const onPointerUp = () => {
     if (drag === null) return;
-    seek(drag);
+    const w = trackRef.current?.getBoundingClientRect().width ?? 0;
+    seek(micro && hover ? scrubberReleaseTarget(dots, w, hover.x, drag) : drag);
     setDrag(null);
     setHover(null);
   };
 
   const width = trackRef.current?.getBoundingClientRect().width ?? 0;
-  const tip = hover && (drag !== null || tooltip === "hover") ? scrubberTooltip(hover.t, scrubberVolumeAt(bars, span, hover.t), alertNear(dots, width, hover.x)?.alert ?? null) : null;
-  const tipAlert = hover ? alertNear(dots, width, hover.x)?.alert : undefined;
+  const near = hover ? alertNear(dots, width, hover.x, micro ? 8 : 6)?.alert : undefined;
+  const tip = hover && (drag !== null || tooltip === "hover") ? scrubberTooltip(hover.t, scrubberVolumeAt(bars, span, hover.t), near ?? null) : null;
   const valueText = shown === null ? "Clock not started" : `${formatEtTime(shown, true)} Eastern, ${SESSION_NAME[sessionOf(shown)]}`;
   const short = labels === "short";
 
+  // The slider owns the pointer and the keys (both variants).
+  const slider = {
+    ref: trackRef,
+    role: "slider",
+    tabIndex: interactive ? 0 : -1,
+    "aria-label": "Replay position",
+    "aria-disabled": !interactive || undefined,
+    "aria-valuemin": span.start,
+    "aria-valuemax": span.end,
+    "aria-valuenow": Math.round(shown ?? span.start),
+    "aria-valuetext": valueText,
+    onPointerDown,
+    onPointerMove,
+    onPointerUp,
+    onPointerCancel: () => {
+      setDrag(null);
+      setHover(null);
+    },
+    onPointerLeave: () => drag === null && setHover(null),
+    onKeyDown: (e: ReactKeyboardEvent) => {
+      if (!interactive) return;
+      const t = scrubberKeySeek(e.key, e.shiftKey, shown ?? span.start, span);
+      if (t === null) return;
+      e.preventDefault();
+      seek(t);
+    },
+  } as const;
+  const tipBox = tip && hover && (
+    <div
+      role="status"
+      className={cn("pointer-events-none absolute z-10 flex gap-2 rounded-lg bg-bg-raised px-2 py-1.5 text-[11px] whitespace-nowrap text-foreground shadow-[0_6px_18px_rgb(0_0_0/0.35)]", micro ? "bottom-full mb-1" : "top-[18px]")}
+      style={{ left: `clamp(0px, calc(${hover.x}px - 60px), calc(100% - 200px))` }}
+    >
+      <span className="font-mono">{tip.time}</span>
+      {tip.volume && <span className="text-muted-foreground">{tip.volume}</span>}
+      {tip.alert && near && <span style={{ color: REPLAY_ALERT_COLOR[near.kind] }}>{tip.alert}</span>}
+    </div>
+  );
+
+  if (micro) {
+    // Everything drawn sits in a 16 px band centred in the element, so the touch area (the whole
+    // element) can be as tall as the row allows without moving anything.
+    const band = "absolute inset-x-0 top-1/2 h-4 -translate-y-1/2";
+    return (
+      <div className={cn("relative min-w-0 select-none", className)}>
+        <div {...slider} className={cn("absolute inset-0 touch-none rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring", interactive ? "cursor-pointer" : "cursor-default")}>
+          <div className={cn(band, "flex overflow-hidden rounded-[5px]")} aria-hidden="true">
+            {segments.map((s) => (
+              <div key={s.kind} className={cn("h-full", s.kind === "regular" ? "bg-bg-row" : "bg-background/70")} style={{ width: pct(s.to - s.from) }} />
+            ))}
+          </div>
+          <div className={cn(band, "flex items-end gap-px overflow-hidden rounded-[5px] px-px")} aria-hidden="true">
+            {bars.map((b) => {
+              const played = shown !== null && b.t < shown;
+              return <div key={b.t} className={cn("min-w-0 flex-1 rounded-t-[1px]", played ? "bg-primary/70" : "bg-text-faint/35")} style={{ height: `${Math.round(b.h * 100)}%` }} />;
+            })}
+          </div>
+          {frac !== null && (
+            <div aria-hidden="true" className={cn(band, "right-auto rounded-l-[5px] bg-primary/[0.14]", drag === null && "transition-[width] duration-200 ease-linear motion-reduce:transition-none")} style={{ width: pct(frac) }} />
+          )}
+          {dots.map((d) => (
+            <span
+              key={`${d.alert.symbol}-${d.alert.kind}-${d.alert.t}`}
+              aria-hidden="true"
+              className="absolute top-1/2 size-1.5 -translate-x-1/2 -translate-y-[13px] rounded-full"
+              style={{ left: pct(d.frac), background: REPLAY_ALERT_COLOR[d.alert.kind] }}
+            />
+          ))}
+        </div>
+        {frac !== null && (
+          <div
+            aria-hidden="true"
+            className={cn("pointer-events-none absolute top-1/2 h-5 -translate-x-1/2 -translate-y-1/2", drag === null && "transition-[left] duration-200 ease-linear motion-reduce:transition-none")}
+            style={{ left: pct(frac) }}
+          >
+            <div className="absolute inset-y-0 left-1/2 w-0.5 -translate-x-1/2 rounded-full bg-foreground" />
+            <div className="absolute top-1/2 left-1/2 size-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-foreground shadow-[0_1px_6px_rgb(0_0_0/0.45)]" />
+          </div>
+        )}
+        {tipBox}
+      </div>
+    );
+  }
+
   return (
     <div className={cn("relative select-none", className)}>
-      {/* The track: bands, histogram, tint and ticks; the slider owns the pointer and the keys. */}
-      <div
-        ref={trackRef}
-        role="slider"
-        tabIndex={interactive ? 0 : -1}
-        aria-label="Replay position"
-        aria-disabled={!interactive || undefined}
-        aria-valuemin={span.start}
-        aria-valuemax={span.end}
-        aria-valuenow={Math.round(shown ?? span.start)}
-        aria-valuetext={valueText}
-        className={cn("absolute inset-0 touch-none rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-ring", interactive ? "cursor-pointer" : "cursor-default")}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={() => {
-          setDrag(null);
-          setHover(null);
-        }}
-        onPointerLeave={() => drag === null && setHover(null)}
-        onKeyDown={(e) => {
-          if (!interactive) return;
-          const t = scrubberKeySeek(e.key, e.shiftKey, shown ?? span.start, span);
-          if (t === null) return;
-          e.preventDefault();
-          seek(t);
-        }}
-      >
+      {/* The track: bands, histogram, tint and ticks. */}
+      <div {...slider} className={cn("absolute inset-0 touch-none rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-ring", interactive ? "cursor-pointer" : "cursor-default")}>
         <div className="absolute inset-x-0 top-0 bottom-[18px] flex overflow-hidden rounded-lg" aria-hidden="true">
           {segments.map((s) => (
             <div key={s.kind} className={cn("relative h-full", s.kind === "regular" ? "bg-bg-row/70" : "bg-background/55")} style={{ width: pct(s.to - s.from) }}>
@@ -199,17 +269,7 @@ export function ReplayScrubber({ span, segments, bars, ticks, dots, now, onSeek,
         </div>
       )}
 
-      {tip && hover && (
-        <div
-          role="status"
-          className="pointer-events-none absolute top-[18px] z-10 flex gap-2 rounded-lg bg-bg-raised px-2 py-1.5 text-[11px] whitespace-nowrap text-foreground shadow-[0_6px_18px_rgb(0_0_0/0.35)]"
-          style={{ left: `clamp(0px, calc(${hover.x}px - 60px), calc(100% - 200px))` }}
-        >
-          <span className="font-mono">{tip.time}</span>
-          {tip.volume && <span className="text-muted-foreground">{tip.volume}</span>}
-          {tip.alert && tipAlert && <span style={{ color: REPLAY_ALERT_COLOR[tipAlert.kind] }}>{tip.alert}</span>}
-        </div>
-      )}
+      {tipBox}
     </div>
   );
 }

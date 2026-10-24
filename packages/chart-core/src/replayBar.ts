@@ -31,6 +31,47 @@ export function replayBarLayout(width: number): ReplayBarLayout {
   return "desktop";
 }
 
+// The compact bar (owner, 2026-10-24, on the shipped two-tier bar: "the playback control panel
+// takes about 50% of the vertical screen on mobile, not practical"). Under REPLAY_BAR_DESKTOP_MIN
+// the bar rests as ONE control row (play, Prev/Next alert, the clock, a thin scrubber, a speed
+// chip that cycles, "more"), and "more" opens everything else (day, ticker, Jump to, the speed
+// segments, the full scrubber) over the chart: a bottom sheet on the phone, a popover on the web,
+// so the chart never relayouts. The desktop keeps the two-tier bar, which the owner liked there.
+
+/** The compact bar's speed chip: 1 → 2 → 5 → 10 → 30 → 1. An off-list speed (another client set it) goes to the next one up. */
+export function nextReplaySpeed(speed: number): number {
+  return REPLAY_SPEEDS.find((s) => s > speed) ?? REPLAY_SPEEDS[0];
+}
+
+/**
+ * Whether the compact bar's thin scrubber fits inside the control row. On the Fold's cover screen
+ * and phone-width web ("cover", 344–599 px) the row's six 44 px targets and the clock would leave
+ * it 40–80 px, too coarse to aim (a pixel would be 12–24 minutes of the day), so there it runs the
+ * bar's full width as a strip along the top of the row instead.
+ */
+export const replayScrubberInline = (layout: ReplayBarLayout) => layout !== "cover";
+
+/**
+ * From this bar width the compact row also shows the day and the ticker (a tablet, a narrow
+ * window), still leaving the inline scrubber about 300 px. Narrower, they are under "more".
+ */
+export const REPLAY_BAR_DETAILS_INLINE_MIN = 900;
+export const replayDetailsInline = (width: number) => width >= REPLAY_BAR_DETAILS_INLINE_MIN;
+
+/** The thin scrubber's micro-histogram: 15-minute bars across the 16-hour day. */
+export const SCRUBBER_MICRO_BARS = 64;
+
+/** The device-local preference that remembers whether the compact bar was left expanded. */
+export const REPLAY_BAR_EXPANDED_KEY = "replay.barExpanded";
+
+/** How close (px) to an alert dot a thin-scrubber release snaps onto it: the dots there are drawn, too small to tap. */
+export const SCRUBBER_SNAP_PX = 8;
+
+/** Where a thin-scrubber drag released at x seeks: onto an alert within SCRUBBER_SNAP_PX, else the time under the finger. */
+export function scrubberReleaseTarget(dots: readonly AlertDot[], width: number, x: number, t: number): number {
+  return alertNear(dots, width, x, SCRUBBER_SNAP_PX)?.alert.t ?? t;
+}
+
 /** Hours between scrubber ticks: hourly on the desktop, 2-hourly unfolded, 4-hourly on the cover screen. */
 export const SCRUBBER_TICK_HOURS: Record<ReplayBarLayout, number> = { desktop: 1, fold: 2, cover: 4 };
 /** Histogram bars across the 16-hour day (7.5, 10 and 15 minutes each), as in the artboards. */

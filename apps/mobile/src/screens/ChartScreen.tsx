@@ -8,6 +8,7 @@ import {
   formatPrice,
   lastCandle,
   formatEtDateKey,
+  REPLAY_BAR_EXPANDED_KEY,
   sessionBands,
   tradingDayOf,
   type Candle,
@@ -26,6 +27,7 @@ import type { MobileFeed } from "../feed/serverFeed";
 import { useConnection } from "../feed/useConnection";
 import { useReducedMotion } from "../motion/useReducedMotion";
 import { TickerSearchSheet } from "../search/TickerSearchSheet";
+import { getPreference, setPreference } from "../storage/preferences";
 import { appActions, useApp } from "../state/store";
 import { useTickerPress } from "../ui/useTickerPress";
 import { SignInScreen } from "./SignInScreen";
@@ -143,6 +145,22 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
   const loadingDay = pendingDay && pendingDay !== replayDay ? pendingDay : null;
   // The day's Runners entries: the scrubber's alert dots and the Prev/Next alert jumps.
   const replayAlerts = useReplayAlerts(token, replayDay ?? clockDay);
+  // The compact replay bar's "more" sheet, remembered on this phone (a device-local preference,
+  // never synced: another phone or the desktop has its own room for it).
+  const [barExpanded, setBarExpanded] = useState(false);
+  useEffect(() => {
+    let mounted = true;
+    getPreference<boolean>(REPLAY_BAR_EXPANDED_KEY)
+      .then((v) => mounted && v === true && setBarExpanded(true))
+      .catch(() => {});
+    return () => {
+      mounted = false;
+    };
+  }, []);
+  const changeBarExpanded = (v: boolean) => {
+    setBarExpanded(v);
+    void setPreference(REPLAY_BAR_EXPANDED_KEY, v).catch(() => {});
+  };
 
   return (
     // No bottom inset: the main nav's tab bar sits below this screen and takes the home-indicator inset.
@@ -237,10 +255,13 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
         volumeShelves={zones.bands}
       />
 
-      {/* The replay bar, "B · Two-tier scrubber" (owner-approved 2026-10-24): stacked on the Fold's
-          cover screen, two rows around the scrubber unfolded (chart-native ReplayBar, by width). */}
+      {/* The compact replay bar (owner, 2026-10-24: the two-tier bar took half the cover screen):
+          one row, the thin scrubber over it on the cover screen and inside it unfolded
+          (chart-native ReplayBar, by width); "more" opens the rest in a sheet over the chart. */}
       <ReplayBar
         width={windowWidth - 2 * SCREEN_PAD}
+        expanded={barExpanded}
+        onExpandedChange={changeBarExpanded}
         clock={clock}
         onPlayPause={(play) => feed.control({ action: play ? "play" : "pause" })}
         onSpeedChange={(value) => feed.control({ action: "speed", value })}

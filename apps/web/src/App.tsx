@@ -272,8 +272,10 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
         </header>
         {/* The timeframe in the toolbar row as the wheel (as on the native phone app), not four
             segments floating over the chart's top-right, where they ran into the candle readout. */}
-        <CandleChart className="h-[360px]" toolbar inspector headingInToolbar timeframeControl="wheel" defaultToolsVisible={false} symbol={symbol} persistKey={CHART_KEY} {...synced} trading={trading} now={clock?.now ?? null} onTimeframeChange={app.setTimeframe} series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={app.setInspectT} options={PHONE_CHART} barSpacing={10} label={chartLabel} />
-        <section aria-label="Replay" className="rounded-[18px] bg-card p-3.5">
+        <CandleChart className="min-h-[360px] flex-1" toolbar inspector headingInToolbar timeframeControl="wheel" defaultToolsVisible={false} symbol={symbol} persistKey={CHART_KEY} {...synced} trading={trading} now={clock?.now ?? null} onTimeframeChange={app.setTimeframe} series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={app.setInspectT} options={PHONE_CHART} barSpacing={10} label={chartLabel} />
+        {/* The compact replay bar (one row; "more" opens the rest over the chart). It pads itself
+            per layout, so the section only gives it its surface. */}
+        <section aria-label="Replay" className="rounded-[18px] bg-card">
           <ReplayBar {...replay} />
         </section>
         <section aria-label="Time and sales" className="flex flex-col gap-1.5 rounded-xl bg-card p-3">
@@ -339,8 +341,8 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
       </div>
       {/* The replay bar spans the page under the chart and the side panels, as the approved
           two-tier design draws it: its one-row top tier needs the full width (ReplayBar picks
-          the two-row arrangement itself when the window is narrower). */}
-      <section aria-label="Replay" className="mx-4 mb-3 rounded-[14px] bg-card px-4.5 pt-3.5 pb-3">
+          the compact one-row bar itself when the window is narrower). It pads itself. */}
+      <section aria-label="Replay" className="mx-4 mb-3 rounded-[14px] bg-card">
         <ReplayBar {...replay} />
       </section>
     </div>

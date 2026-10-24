@@ -99,6 +99,8 @@ export type IconName =
   | "play"
   | "pause"
   | "step"
+  | "alertPrev"
+  | "alertNext"
   | "toLatest"
   | "chevronDown"
   | "chevronRight"
@@ -177,6 +179,10 @@ export const ICONS: Readonly<Record<IconName, IconDef>> = {
   play: icon([S(PLAY, { paint: "fill" }), P(PLAY)], 1.4),
   pause: icon([S("M4.5 3.5h2v9h-2zM9.5 3.5h2v9h-2z", { paint: "fill" }), P("M4.5 3.5h2v9h-2zM9.5 3.5h2v9h-2z")], 1.4),
   step: icon([S(STEP, { paint: "fill" }), P(STEP), P("M12 3.5v9")], 1.4),
+  // The compact replay bar's Prev/Next alert jumps: a chevron (primary) toward the alert it lands
+  // on, drawn as the scrubber draws the day's alerts: a dot (secondary) at the far end.
+  alertPrev: icon([S(circlePath(3.5, 8, 2), { paint: "fill" }), P("M12 3.5 7.5 8l4.5 4.5")], 1.7),
+  alertNext: icon([P("M4 3.5 8.5 8 4 12.5"), S(circlePath(12.5, 8, 2), { paint: "fill" })], 1.7),
   // Back to the latest candle: the arrowhead and the "now" bar primary, the way there secondary.
   toLatest: icon([S("M2.5 8h9"), P("M8 4.5 11.5 8 8 11.5M13.5 3.5v9")], 1.6),
 

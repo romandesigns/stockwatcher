@@ -24,6 +24,10 @@ import {
   scrubberTooltip,
   scrubberVolumeAt,
   sessionProgress,
+  nextReplaySpeed,
+  replayDetailsInline,
+  replayScrubberInline,
+  scrubberReleaseTarget,
   type ReplayAlert,
 } from "./replayBar.ts";
 import { etToUtc, sessionBands } from "./time.ts";
@@ -52,6 +56,29 @@ describe("session proportions", () => {
   test("no span without the bands", () => {
     expect(scrubberSpan([])).toBeNull();
     expect(scrubberSegments([])).toEqual([]);
+  });
+});
+
+describe("the compact bar", () => {
+  test("the speed chip cycles 1 → 2 → 5 → 10 → 30 → 1; an off-list speed goes to the next one up", () => {
+    expect([1, 2, 5, 10, 30].map(nextReplaySpeed)).toEqual([2, 5, 10, 30, 1]);
+    expect(nextReplaySpeed(3)).toBe(5);
+    expect(nextReplaySpeed(60)).toBe(1);
+  });
+
+  test("the thin scrubber is inline from the unfolded width; day and ticker join the row from 900 px", () => {
+    expect(replayScrubberInline("cover")).toBe(false);
+    expect(replayScrubberInline("fold")).toBe(true);
+    expect(replayDetailsInline(740)).toBe(false);
+    expect(replayDetailsInline(900)).toBe(true);
+  });
+
+  test("a release near a drawn alert dot snaps onto that alert", () => {
+    const a: ReplayAlert = { t: at(9, 41, 15), kind: "fast", symbol: "LABT" };
+    const dots = alertDots([a], span);
+    const x = dots[0]!.frac * 400;
+    expect(scrubberReleaseTarget(dots, 400, x + 6, at(9, 50))).toBe(a.t);
+    expect(scrubberReleaseTarget(dots, 400, x + 12, at(9, 50))).toBe(at(9, 50));
   });
 });
 
