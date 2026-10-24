@@ -5,26 +5,23 @@ import {
   formatDayKey,
   replayDayOptions,
   formatChange,
-  formatEtTime,
   formatPrice,
   lastCandle,
-  sessionOf,
   formatEtDateKey,
   sessionBands,
   tradingDayOf,
-  volumeBuckets,
+  type Candle,
 } from "@stockwatcher/chart-core";
 import { PROFILE_BINS } from "@stockwatcher/app-state";
-import { CandleChart, Icon, ReplayDaySheet, SessionTimeline, Sheet, TapeSheet, ToolButton, UI } from "@stockwatcher/chart-native";
+import { CandleChart, Icon, ReplayBar, ReplayDaySheet, Sheet, TapeSheet } from "@stockwatcher/chart-native";
 import { detectionFamilyLabel, detectionOverlays, detectionStateLabel, groupDetections, type ConnectionStatus } from "@stockwatcher/shared";
 import { useEffect, useLayoutEffect, useMemo, useState } from "react";
-import Animated, { FadeIn, FadeOut, ReduceMotion } from "react-native-reanimated";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { DetectionEpisodeDetails } from "../dashboard/DetectionPanel";
 import { ZoneNote } from "../dashboard/ZoneNote";
-import { useCandidates, useChartFeed, useDetection, usePaperTrading, useReplayDays, useZones } from "../feed/hooks";
+import { useCandidates, useChartFeed, useDetection, usePaperTrading, useReplayAlerts, useReplayDays, useZones } from "../feed/hooks";
 import type { MobileFeed } from "../feed/serverFeed";
 import { useConnection } from "../feed/useConnection";
 import { useReducedMotion } from "../motion/useReducedMotion";
@@ -34,16 +31,13 @@ import { useTickerPress } from "../ui/useTickerPress";
 import { SignInScreen } from "./SignInScreen";
 import { colors, fonts } from "../theme";
 
-const SPEEDS = [1, 2, 10, 60, 0] as const;
 /** The screen's gap between its blocks, which a closed volume-shelf note cancels (Collapse). */
 const SCREEN_GAP = 8;
-/** Timeline minimap bucket: 20 minutes, as on the web's phone layout. */
-const bucketMs = 20 * 60_000;
-const speedLabel = (s: number) => (s === 0 ? "Max" : `${s}×`);
-const SESSION = { overnight: "Overnight", pre: "Premarket", regular: "Regular", after: "After hours" } as const;
+/** The screen's side padding: the replay bar's width is the window's less this on each side. */
+const SCREEN_PAD = 6;
+const NO_CANDLES: readonly Candle[] = [];
 /** How long a picked day may read "Loading…" (a refused switch never changes the day). */
 const PENDING_DAY_TIMEOUT_MS = 5 * 60_000;
-const SESSION_A11Y = { overnight: "overnight session", pre: "premarket", regular: "regular session", after: "after hours" } as const;
 
 /** The chart screen: connects once (useConnection: token, app store, its own socket), then renders the chart. */
 export function ChartScreen() {
@@ -117,7 +111,6 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
     const [year, month, day] = dayKey.split("-").map(Number) as [number, number, number];
     return sessionBands({ year, month, day });
   }, [dayKey]);
-  const buckets = useMemo(() => (series && bands.length ? volumeBuckets(series.candles, bands[0]!.start, bands[3]!.end, bucketMs) : []), [series, bands]);
   const trading = usePaperTrading(feed);
   // Volume shelves for the shown ticker from this connection's Runners channel (zones.ts).
   const zones = useZones(feed.rocket, active ?? "");
@@ -129,16 +122,16 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
   const reference = useMemo(() => changeReference(series), [series]);
   const change = last && reference ? formatChange(reference.price, last.c) : "";
 
-  const playing = !!clock?.playing;
   const live = clock?.mode === "live";
-  const speed = clock?.speed ?? 1;
+  // The Fold's cover screen or unfolded: the replay bar picks its artboard from this width.
+  const { width: windowWidth } = useWindowDimensions();
   const offline = status !== "open";
   const replayDay = currentReplayDay(replayDays.state, clock);
   // The date is the day picker only when there is something to pick (replay mode, days offered).
   const canPickDay = !live && !!clock && !!replayDay && dayOptions.length > 0;
   // A picked day the server is still switching to: a whole-market rebuild takes a minute or two,
   // and without this the sheet closed on the old date as if the pick was ignored (owner,
-  // 2026-10-23; the web's ReplayControls `pendingDay`). Cleared once the replay names it, or after
+  // 2026-10-23; the web's ReplayBar `pendingDay`). Cleared once the replay names it, or after
   // a timeout when the server refused it.
   const [pendingDay, setPendingDay] = useState<string | null>(null);
   if (pendingDay && replayDay === pendingDay) setPendingDay(null);
@@ -148,6 +141,8 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
     return () => clearTimeout(id);
   }, [pendingDay]);
   const loadingDay = pendingDay && pendingDay !== replayDay ? pendingDay : null;
+  // The day's Runners entries: the scrubber's alert dots and the Prev/Next alert jumps.
+  const replayAlerts = useReplayAlerts(token, replayDay ?? clockDay);
 
   return (
     // No bottom inset: the main nav's tab bar sits below this screen and takes the home-indicator inset.
@@ -159,8 +154,10 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
         </Pressable>
         <Text style={styles.price}>{last ? formatPrice(last.c) : "—"}</Text>
         <Text style={[styles.change, { color: change.startsWith("-") ? colors.critical : colors.good }]}>{change}</Text>
-        <Pressable accessibilityRole="button" accessibilityLabel="Search tickers" onPress={() => app.setSearchOpen(true)} hitSlop={6} style={({ pressed }) => [styles.searchButton, pressed && { backgroundColor: colors.bgRow }]}>
-          <Icon name="search" color={colors.textDim} size={15} />
+        {/* Time and sales (its button left the replay row in the two-tier redesign; the bar's own
+            ticker button is the search now, beside the header ticker's tap). */}
+        <Pressable accessibilityRole="button" accessibilityLabel="Time and sales" accessibilityState={{ expanded: tapeOpen }} onPress={() => app.setTapeOpen(true)} hitSlop={6} style={({ pressed }) => [styles.tapeButton, (pressed || tapeOpen) && { backgroundColor: colors.bgRow }]}>
+          <Icon name="menu" color={colors.textDim} size={15} />
         </Pressable>
         {/* An icon, not words (owner, 2026-10-17): replay clock or live broadcast; offline still says so in words. */}
         <View
@@ -240,67 +237,35 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
         volumeShelves={zones.bands}
       />
 
-
-      <View style={styles.replayCard}>
-      <View style={styles.replay}>
-        <ToolButton primary label={playing ? "Pause replay" : "Play replay"} disabled={!clock || live} onPress={() => feed.control({ action: playing ? "pause" : "play" })} style={styles.play}>
-          <Icon name={playing ? "pause" : "play"} color={UI.accentFg} />
-        </ToolButton>
-        {/* The replay clock (Eastern) over its session and the replay date. The date is the day
-            picker: there is no room for another button in this row, and the date is what it changes. */}
-        <View style={styles.clockCol}>
-          <Text style={styles.clock} accessibilityLabel={clock ? `${formatEtTime(clock.now, true)} Eastern, ${SESSION_A11Y[sessionOf(clock.now)]}` : "Clock not started"}>
-            {clock ? formatEtTime(clock.now, true) : "--:--:--"}
-          </Text>
-          <View style={styles.subRow}>
-            <Text style={styles.session} numberOfLines={1}>
-              {clock ? SESSION[sessionOf(clock.now)] : ""}
-              {clock && replayDay && !canPickDay ? ` · ${formatDayKey(replayDay)}` : ""}
-            </Text>
-            {canPickDay && replayDay && (
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={loadingDay ? `Replay day ${formatDayKey(replayDay)}, loading ${formatDayKey(loadingDay)}` : `Replay day ${formatDayKey(replayDay)}, change`}
-                hitSlop={{ top: 10, bottom: 10, left: 4, right: 8 }}
-                onPress={() => {
-                  replayDays.refresh();
-                  app.setDaysOpen(true);
-                }}
-                style={({ pressed }) => [styles.dayButton, pressed && { backgroundColor: UI.row }]}
-              >
-                <Text style={styles.session}>· {loadingDay ? `Loading ${formatDayKey(loadingDay)}…` : formatDayKey(replayDay)}</Text>
-                <Icon name="chevronDown" color={colors.textFaint} size={8} />
-              </Pressable>
-            )}
-          </View>
-        </View>
-        {/* Step only does something while paused, so it only shows then. It sits beside the speed button,
-            in space the clock does not use, so nothing shifts when it appears. */}
-        {!playing && !live && clock && (
-          <Animated.View entering={FadeIn.duration(150).reduceMotion(ReduceMotion.System)} exiting={FadeOut.duration(120).reduceMotion(ReduceMotion.System)} style={styles.stepWrap}>
-            <ToolButton label="Step one event" onPress={() => feed.control({ action: "step" })} style={styles.step}>
-              <Icon name="step" color={colors.textDim} size={14} />
-            </ToolButton>
-          </Animated.View>
-        )}
-        <ToolButton
-          label={`Replay speed ${speedLabel(speed)}, change`}
-          disabled={!clock || live}
-          onPress={() => {
-            const i = SPEEDS.indexOf(speed as (typeof SPEEDS)[number]);
-            feed.control({ action: "speed", value: SPEEDS[(i + 1) % SPEEDS.length] });
-          }}
-          style={styles.speed}
-        >
-          {speedLabel(speed)}
-        </ToolButton>
-        <ToolButton label="Time and sales" onPress={() => app.setTapeOpen(true)} style={styles.tapeButton}>
-          <Icon name="menu" color={colors.textDim} />
-        </ToolButton>
-      </View>
-      {/* Tap a time to jump the replay there. */}
-      <SessionTimeline variant="minimal" bands={bands} buckets={buckets} bucketMs={bucketMs} now={clock?.now ?? null} onSeek={live ? undefined : (t) => feed.control({ action: "seek", value: t })} />
-      </View>
+      {/* The replay bar, "B · Two-tier scrubber" (owner-approved 2026-10-24): stacked on the Fold's
+          cover screen, two rows around the scrubber unfolded (chart-native ReplayBar, by width). */}
+      <ReplayBar
+        width={windowWidth - 2 * SCREEN_PAD}
+        clock={clock}
+        onPlayPause={(play) => feed.control({ action: play ? "play" : "pause" })}
+        onSpeedChange={(value) => feed.control({ action: "speed", value })}
+        onSeek={(t) => feed.control({ action: "seek", value: t })}
+        bands={bands}
+        candles={series?.candles ?? NO_CANDLES}
+        symbol={active ?? ""}
+        price={last ? formatPrice(last.c) : ""}
+        // The ticker search sheet; its pick (app.openTicker) replaces this tab's chart.
+        onTickerPress={() => app.setSearchOpen(true)}
+        dayLabel={replayDay ? (dayOptions.find((d) => d.value === replayDay)?.label ?? formatDayKey(replayDay)) : null}
+        loadingDay={loadingDay ? formatDayKey(loadingDay) : null}
+        onDayPress={
+          canPickDay
+            ? () => {
+                replayDays.refresh();
+                app.setDaysOpen(true);
+              }
+            : undefined
+        }
+        alerts={replayAlerts}
+        // An "any ticker" alert jump: that ticker replaces the chart, as a search pick would.
+        onOpenTicker={app.openTicker}
+        reducedMotion={reducedMotion}
+      />
       <TickerSearchSheet
         open={searchOpen}
         onClose={() => app.setSearchOpen(false)}
@@ -336,14 +301,12 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: colors.bg, paddingHorizontal: 6, gap: SCREEN_GAP },
+  screen: { flex: 1, backgroundColor: colors.bg, paddingHorizontal: SCREEN_PAD, gap: SCREEN_GAP },
   zone: { paddingHorizontal: 2 },
   header: { flexDirection: "row", alignItems: "center", gap: 8 },
   tickerButton: { flexDirection: "row", alignItems: "center", gap: 4 },
-  searchButton: { marginLeft: "auto", width: 32, height: 32, borderRadius: 16, alignItems: "center", justifyContent: "center", backgroundColor: colors.bgPanel },
+  tapeButton: { marginLeft: "auto", width: 32, height: 32, borderRadius: 16, alignItems: "center", justifyContent: "center", backgroundColor: colors.bgPanel },
   roundButton: { width: 32, height: 32, borderRadius: 16, alignItems: "center", justifyContent: "center", backgroundColor: colors.bgPanel },
-  stepWrap: {},
-  step: { width: 36, height: 36, paddingHorizontal: 0, backgroundColor: UI.row },
   symbol: { color: colors.text, fontFamily: fonts.semibold, fontSize: 16 },
   price: { color: colors.text, fontSize: 16, fontVariant: ["tabular-nums"] },
   change: { fontSize: 11, fontVariant: ["tabular-nums"] },
@@ -354,16 +317,4 @@ const styles = StyleSheet.create({
   detectionMeta: { color: colors.textFaint, fontFamily: fonts.regular, fontSize: 10, lineHeight: 14 },
   detectionButton: { minHeight: 34, justifyContent: "center" },
   detectionState: { color: colors.accent, fontFamily: fonts.semibold, fontSize: 11 },
-  replayCard: { backgroundColor: UI.panel, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 8, gap: 6 },
-  replay: { flexDirection: "row", alignItems: "center", gap: 8 },
-  tapeButton: { backgroundColor: UI.row, height: 36, width: 36, paddingHorizontal: 0 },
-  play: { width: 36, height: 36, paddingHorizontal: 0 },
-  // The clock takes the free width, so step, speed and tape stay pinned right.
-  clockCol: { flex: 1, minWidth: 0 },
-  clock: { color: colors.text, fontSize: 14, lineHeight: 17, fontVariant: ["tabular-nums"] },
-  subRow: { flexDirection: "row", alignItems: "center" },
-  session: { color: colors.textFaint, fontSize: 10, lineHeight: 13 },
-  // Pressed shows the row colour (no border); the padding is the touch target, the hitSlop the rest.
-  dayButton: { flexDirection: "row", alignItems: "center", gap: 2, marginLeft: 3, paddingHorizontal: 3, borderRadius: 4 },
-  speed: { backgroundColor: UI.row, height: 36, minWidth: 48 },
 });

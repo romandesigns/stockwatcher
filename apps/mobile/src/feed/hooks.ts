@@ -1,4 +1,4 @@
-import { ChartStore, parseReplayDayState, type ChartMessage, type Clock, type PaperState, type ReplayDayState, type Series, type TapeTrade, type Timeframe } from "@stockwatcher/chart-core";
+import { ChartStore, parseReplayAlerts, parseReplayDayState, type ChartMessage, type Clock, type PaperState, type ReplayAlert, type ReplayDayState, type Series, type TapeTrade, type Timeframe } from "@stockwatcher/chart-core";
 import type { ChartTrading } from "@stockwatcher/chart-native";
 import { authenticatedFetch, EMPTY_QUOTE_BOARD, parseLiveSession, withMarketSource, type DetectionChannel, type DetectionState, type LiveSession, type MarketSource, type PressureBoard, type PressureChannel, type PressureStatus, type QuoteBoard, type QuoteChannel, type RocketChannel, type RocketState, type RossChannel, type RossState, zoneSelector, type ZoneView } from "@stockwatcher/shared";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
@@ -181,4 +181,31 @@ export function useReplayDays(token: string | null, clockDay: string | null): { 
   }, [token]);
   useEffect(() => refresh(), [refresh, clockDay]);
   return { state, refresh };
+}
+
+const NO_ALERTS: readonly ReplayAlert[] = [];
+
+/**
+ * The replay bar's alert dots: GET /api/replay/alerts?day= (the web's useReplayAlerts), every
+ * Runners entry the live server logged that day, all tickers. Once per day: a past day's log is fixed.
+ */
+export function useReplayAlerts(token: string | null, day: string | null): readonly ReplayAlert[] {
+  const [got, setGot] = useState<{ day: string; alerts: readonly ReplayAlert[] } | null>(null);
+  useEffect(() => {
+    if (!day) return;
+    let live = true;
+    void authenticatedFetch(`${SERVER_URL}/api/replay/alerts?day=${encodeURIComponent(day)}`, token)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((body: unknown) => {
+        const parsed = parseReplayAlerts(body);
+        if (live && parsed) setGot(parsed);
+      })
+      .catch(() => {
+        // Offline or an older server: no dots, the alert jumps disable.
+      });
+    return () => {
+      live = false;
+    };
+  }, [token, day]);
+  return got && got.day === day ? got.alerts : NO_ALERTS;
 }

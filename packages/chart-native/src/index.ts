@@ -13,6 +13,7 @@ export { PositionPlanPanel } from "./PositionPlanPanel.tsx";
 export { CandleInspector } from "./CandleInspector.tsx";
 export { DrawingToolbox, type DrawingToolboxProps } from "./DrawingToolbox.tsx";
 export { SessionTimeline } from "./SessionTimeline.tsx";
+export { ReplayBar, nativeReplayLayout, type ReplayBarProps } from "./ReplayBar.tsx";
 export { Tape, TapeSheet } from "./Tape.tsx";
 export { QuickTradeSheet, QUICK_TRADE_SIZES } from "./sheets.tsx";
 export { TimeframeWheel } from "./TimeframeWheel.tsx";
