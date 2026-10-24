@@ -26,10 +26,16 @@ import type { Halt, LuldPoint, SessionRef } from "./types.ts";
 // no parameters, and it wants the same on/off persistence. The indicators list
 // is for computed series with periods, colour slots and caps (MAX_OVERLAYS),
 // none of which a box has.
+//
+// Volume shelves (owner, 2026-10-23: "so I can turn it on and off when desired") are a layer for
+// the same reason: bands read off the server's Runners frame, a switch with no parameters. On by
+// default, since the bands were always drawn before the switch existed. The switch covers the
+// chart only (the bands, their "Volume shelf" label and the shelf caption above a chart); Runners
+// rows and shelf notifications have their own switches.
 
-export type LayerId = "profile" | "halts" | "luld" | "premarket" | "dayRange" | "open" | "openingRange" | "prevClose" | "fills";
+export type LayerId = "profile" | "halts" | "luld" | "premarket" | "dayRange" | "open" | "openingRange" | "shelves" | "prevClose" | "fills";
 
-export const LAYER_IDS: readonly LayerId[] = ["profile", "halts", "luld", "premarket", "dayRange", "open", "openingRange", "prevClose", "fills"];
+export const LAYER_IDS: readonly LayerId[] = ["profile", "halts", "luld", "premarket", "dayRange", "open", "openingRange", "shelves", "prevClose", "fills"];
 
 /**
  * The layers a chart can show. "profile" is the session profile drawn inside
@@ -48,6 +54,7 @@ export const LAYER_INFO: Readonly<Record<LayerId, { name: string; description: s
   dayRange: { name: "High / low of day", description: "Regular-session extremes so far" },
   open: { name: "Open", description: "First regular-session price" },
   openingRange: { name: "Opening range", description: "First candle's high–low, to the close" },
+  shelves: { name: "Volume shelves", description: "Price bands where heavy volume traded" },
   prevClose: { name: "Previous close", description: "The prior trading day's close" },
   fills: { name: "My fills", description: "Your simulated buys and sells" },
 };
@@ -85,6 +92,12 @@ export const LAYER_SWATCHES: Readonly<Record<LayerId, IconDef>> = {
     { d: "M5 2.5v11", role: "primary" },
     { d: "M3.5 4h3v8h-3z", paint: "fill", role: "primary" },
   ]),
+  // The faint band (secondary) and the volume stacked in it (primary), at the band's left edge
+  // where the chart writes "Volume shelf".
+  shelves: swatch([
+    { d: "M2 5h20v6H2z", paint: "fill", role: "secondary" },
+    { d: "M4 7h8M4 9h5", role: "primary" },
+  ]),
   prevClose: swatch([PRICE("M2 8 6 7l3-3 4 2 4-2.5 5 1"), { d: "M2 11h20", role: "primary", dash: [2, 2.5] }]),
   fills: swatch([
     PRICE("M2 12 8 9l5 2 9-6"),
@@ -101,12 +114,17 @@ export type ChartLayers = Readonly<Record<LayerId, boolean>>;
  * active"): a box over the whole session is too much to impose on everyone.
  * A stored set from before a layer existed falls back to these (parseLayers).
  */
-export const DEFAULT_LAYERS: ChartLayers = { profile: true, halts: true, luld: true, premarket: true, dayRange: true, open: false, openingRange: false, prevClose: true, fills: true };
+export const DEFAULT_LAYERS: ChartLayers = { profile: true, halts: true, luld: true, premarket: true, dayRange: true, open: false, openingRange: false, shelves: true, prevClose: true, fills: true };
 
 export function parseLayers(raw: unknown): ChartLayers {
   const out: Record<LayerId, boolean> = { ...DEFAULT_LAYERS };
   if (typeof raw === "object" && raw !== null) for (const id of LAYER_IDS) if (typeof (raw as Record<string, unknown>)[id] === "boolean") out[id] = (raw as Record<string, boolean>)[id]!;
   return out;
+}
+
+/** The shelves a chart draws: all of them with the "shelves" layer on, none with it off. */
+export function shownShelves(layers: ChartLayers, shelves: readonly VolumeShelf[] | null | undefined): readonly VolumeShelf[] {
+  return layers.shelves ? (shelves ?? []) : [];
 }
 
 export type KeyLevelId = "pmHigh" | "pmLow" | "hod" | "lod" | "open" | "prevClose";

@@ -122,7 +122,8 @@ export function ChartCell({ index, slot, symbol, feed, trading, selected, showSe
       )}
     >
       {detectionSelection && detectionSelection.runEpoch !== discovery.frame?.runEpoch ? <p role="status" className="m-0 px-2 py-1 text-[10px] text-warning">Selected detection belongs to an earlier run; its chart references are unavailable.</p> : annotations.length > 0 && <Tip label={annotations[0]!.episodeId}><p role="status" className="m-0 truncate px-2 py-1 text-[10px] text-text-faint">{annotations[0]!.label} · experimental · {discovery.frame?.source} / {discovery.snapshot?.fidelity}</p></Tip>}
-      <ZoneNote note={zones.note} className="px-2 py-1" />
+      {/* The shelf caption goes with the bands: both follow the "Volume shelves" layer (levels.ts). */}
+      <ZoneNote note={ownLayers.shelves ? zones.note : null} className="px-2 py-1" />
       <CandleChart
         className="min-h-0 flex-1"
         toolbar

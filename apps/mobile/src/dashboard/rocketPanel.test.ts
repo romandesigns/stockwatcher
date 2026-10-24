@@ -75,7 +75,9 @@ test("volume shelves: a plain note on rows and both chart screens, bands on both
   for (const screen of ["../screens/ChartScreen.tsx", "../screens/TickerChartScreen.tsx"]) {
     const src = read(screen);
     expect(src).toContain("useZones(feed.rocket");
-    expect(src).toContain("<ZoneNote note={zones.note}");
+    // The chart's caption follows the "Volume shelves" level with the bands (owner, 2026-10-23).
+    expect(src).toContain("<ZoneNote note={layers.shelves ? zones.note : null}");
+    expect(src).toContain("layers={layers}");
     expect(src).toContain("volumeShelves={zones.bands}");
   }
 });

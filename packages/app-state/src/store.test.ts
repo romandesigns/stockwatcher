@@ -133,6 +133,22 @@ describe("app store: synced state", () => {
     expect(r.s().indicators).toBe(before.indicators);
     expect(r.s().chartSettings).toBe(before.chartSettings);
   });
+
+  test("the Volume shelves level: on by default, switched off here it syncs, and another device's switch arrives", () => {
+    const r = rig();
+    expect(r.s().layers.shelves).toBe(true);
+    // A set stored before the switch existed keeps the bands on.
+    r.remote(SYNC_NS.layers, { halts: false });
+    expect(r.s().layers).toMatchObject({ halts: false, shelves: true });
+    r.s().setLayers({ ...r.s().layers, shelves: false });
+    expect(r.sync.get(SYNC_NS.layers)).toMatchObject({ shelves: false });
+    const sent = r.connect();
+    expect(sent.some((m) => m.type === "settings.set" && m.ns === SYNC_NS.layers && (m.value as { shelves?: boolean }).shelves === false)).toBe(true);
+    // Another device (no unconfirmed edit of its own here) turns them off: this one follows.
+    const other = rig();
+    other.remote(SYNC_NS.layers, { ...other.s().layers, shelves: false });
+    expect(other.s().layers.shelves).toBe(false);
+  });
 });
 
 describe("app store: drawings follow the shown symbol", () => {

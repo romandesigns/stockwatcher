@@ -175,7 +175,7 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
         </Pressable>
       </View>
 
-      <ZoneNote note={zones.note} reducedMotion={reducedMotion} gap={SCREEN_GAP} style={styles.zone} />
+      <ZoneNote note={layers.shelves ? zones.note : null} reducedMotion={reducedMotion} gap={SCREEN_GAP} style={styles.zone} />
 
       {/* Only with the detector on and an episode for this ticker (see TickerChartScreen). */}
       {detection.enabled === true && detectionEpisode ? (

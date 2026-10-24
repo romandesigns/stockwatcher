@@ -136,7 +136,7 @@ function ModalChart({ feed, symbol, detectionEpisodeId, detectionRunEpoch }: { f
   return (
     <>
       <Header symbol={symbol} price={last ? formatPrice(last.c) : "—"} change={change} />
-      <ZoneNote note={zones.note} reducedMotion={reducedMotion} gap={6} style={styles.zone} />
+      <ZoneNote note={layers.shelves ? zones.note : null} reducedMotion={reducedMotion} gap={6} style={styles.zone} />
       {/* Only with the detector on and an episode for this ticker (or one the user picked): an
           "off" caption would take chart height on the cover screen for nothing. */}
       {detection.enabled === true && (episode || detectionEpisodeId) ? (

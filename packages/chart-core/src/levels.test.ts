@@ -68,6 +68,13 @@ test("parseLayers keeps defaults for anything missing or malformed", () => {
   expect(parseLayers(null)).toEqual(DEFAULT_LAYERS);
 });
 
+test("Volume shelves: a layer, on by default, kept on for a set stored before it existed, and its off survives a round trip", () => {
+  expect(DEFAULT_LAYERS.shelves).toBe(true);
+  expect(parseLayers({ halts: false, luld: true, openingRange: true }).shelves).toBe(true);
+  const off = parseLayers(JSON.parse(JSON.stringify({ ...DEFAULT_LAYERS, shelves: false })));
+  expect(off).toEqual({ ...DEFAULT_LAYERS, shelves: false });
+});
+
 describe("drawing the context layers", () => {
   const snap = fixtureSnapshot("1m", 40);
   const state: ChartState = { timeframe: "1m", candles: snap.candles, gaps: snap.gaps, profile: snap.profile, inspectT: null, pointer: null };

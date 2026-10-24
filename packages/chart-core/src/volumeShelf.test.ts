@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { computeChartModel, layoutChart, type ChartState } from "./layout.ts";
-import { layoutContext, layoutVolumeShelves } from "./levels.ts";
+import { DEFAULT_LAYERS, LAYER_IDS, layoutContext, layoutVolumeShelves, shownShelves } from "./levels.ts";
 import { defaultViewport, priceY, slotX } from "./scale.ts";
 import { DEFAULT_CHART_THEME } from "./theme.ts";
 import { etToUtc } from "./time.ts";
@@ -54,5 +54,20 @@ describe("volume shelves", () => {
     const candle = list.findIndex((p) => p.layer === "candles");
     expect(band).toBeGreaterThanOrEqual(0);
     expect(band).toBeLessThan(candle);
+  });
+
+  test("the Volume shelves layer switch: off draws no band and no label, on draws both", () => {
+    const shelves = [{ lo: 3.05, hi: 3.12, formed: ET(9, 35) }];
+    const ctx = (layers: typeof DEFAULT_LAYERS) => ({ levels: [], halts: [], luld: [], fills: [], now: null, shelves: shownShelves(layers, shelves) });
+    const isBand = (p: { kind: string; fill?: string }) => p.kind === "rect" && p.fill === theme.volumeShelf;
+    const isLabel = (p: { kind: string; text?: string }) => p.kind === "text" && p.text === "Volume shelf";
+    const off = layoutContext(model, ctx({ ...DEFAULT_LAYERS, shelves: false }), theme);
+    expect(off.some(isBand) || off.some(isLabel)).toBe(false);
+    const on = layoutContext(model, ctx(DEFAULT_LAYERS), theme);
+    expect(on.some(isBand) && on.some(isLabel)).toBe(true);
+    // The helper both CandleCharts build their context with; it lists the switch in the Levels menu.
+    expect(shownShelves({ ...DEFAULT_LAYERS, shelves: false }, shelves)).toEqual([]);
+    expect(shownShelves(DEFAULT_LAYERS, undefined)).toEqual([]);
+    expect(LAYER_IDS).toContain("shelves");
   });
 });
