@@ -222,6 +222,8 @@ mod calib;
 mod movers;
 #[cfg(test)]
 mod paa;
+#[cfg(test)]
+mod lateness;
 
 #[cfg(test)]
 mod tests {
