@@ -57,7 +57,14 @@ def et_now() -> dt.datetime:
     return (u + dt.timedelta(hours=off)).replace(tzinfo=None)
 
 
+NO_PAUSE_FLAG = os.environ.get("AQ_NO_PAUSE_FLAG", "C:/research/stockwatcher/work-pat/AQ_NO_PAUSE")
+
+
 def in_pause(t: dt.datetime | None = None) -> bool:
+    # Opt-in override, set by hand only on a night when production's import has nothing to fetch
+    # (e.g. Sunday after its 21:15 ET cycle found Friday complete). Re-read on every call.
+    if os.path.exists(NO_PAUSE_FLAG):
+        return False
     t = t or et_now()
     m = t.hour * 60 + t.minute
     return 21 * 60 <= m < 23 * 60 + 30
