@@ -141,4 +141,24 @@ paths and their alerts are untouched. Unit tests replay the named owner cases.
 
 ## Amendments
 
-(none)
+**A1 (2026-10-25, before any DEV outcome was read; implementation clarifications).**
+1. *R2 flag excluded.* It has no per-symbol replay: it is a market-wide board (RocketBoard) whose
+   replay needs the full cross-section, and the strategy-lab replay (Phase 2, 298,010 scored
+   rows over four days) never reached its threshold. Re-implementing it is forbidden by §3.
+   Triggers come from the four paths `running::movers` already replays with production code.
+2. *Per-path caps* (Running 150/day, Fast 200/day) are applied by the reader in time order over
+   each path's first entries, as production's runaway guards do; Burst and Run have none.
+3. *Empty 1-min bars* are skipped in C2 (they neither count toward `k` nor enter the volume means).
+4. *`L` with no print in the 5 minutes before `t0`* = the last price before that window; with
+   no earlier print at all the trigger cannot arm C2/C3.
+5. *EMA-9* = EMA (α = 0.2) of completed non-empty 1-min closes from 04:00, seeded with the SMA
+   of the first nine; VWAP = day VWAP of volume-counted prints from 04:00. Both read at the
+   boundary from bars that ended at or before it.
+6. *B2* uses the first red bar that completes after `t0` (it may be the bar containing `t0`).
+7. *C1 entry* = first print at or after the MP5 transition with reason
+   `full_post_arm_bar_closed_above_trigger` (the confirmed crossing); stop = that episode's
+   invalidation level.
+8. *Selection cost (§5):* the paired Δ uses the 1 % round-trip scenario for both rules, under
+   which a flat cost cancels; quotes enter only the TEST verdict and the reported tables.
+9. *Bracket mechanics:* outcomes read OHLC-counted prints strictly after the entry print;
+   a win/loss books exactly +10 % / −5 % from the cost-adjusted entry, then the exit cost.
