@@ -113,6 +113,59 @@ async fn auth_on_requires_matching_bearer() {
     assert_eq!(get(a, "/api/version", Some(TOKEN)).await.0, StatusCode::OK);
 }
 
+/// The installed desktop app's page is `http://tauri.localhost`, so its API calls are cross-origin:
+/// the preflight (no token) must be answered for it, and only for it.
+#[tokio::test]
+async fn api_allows_the_desktop_origin_only() {
+    let dir = site();
+    let a = app(dir.path(), Some(TOKEN));
+    let preflight = |origin: &'static str| {
+        Request::builder()
+            .method("OPTIONS")
+            .uri("/api/symbols")
+            .header(header::ORIGIN, origin)
+            .header(header::ACCESS_CONTROL_REQUEST_METHOD, "GET")
+            .header(header::ACCESS_CONTROL_REQUEST_HEADERS, "authorization")
+            .body(Body::empty())
+            .unwrap()
+    };
+    let res = a
+        .clone()
+        .oneshot(preflight("http://tauri.localhost"))
+        .await
+        .unwrap();
+    assert!(res.status().is_success());
+    assert_eq!(
+        res.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN],
+        "http://tauri.localhost"
+    );
+    let res = a
+        .clone()
+        .oneshot(preflight("https://evil.example"))
+        .await
+        .unwrap();
+    assert!(
+        !res.headers()
+            .contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+    );
+
+    let res = a
+        .oneshot(
+            Request::get("/api/version")
+                .header(header::ORIGIN, "http://tauri.localhost")
+                .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(
+        res.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN],
+        "http://tauri.localhost"
+    );
+}
+
 #[tokio::test]
 async fn unknown_api_route_is_json_404_not_the_spa() {
     let dir = site();

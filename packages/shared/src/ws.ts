@@ -1,4 +1,5 @@
 import { isAlertsMessage, parseServerMessage, type AlertsServerMessage, type ClientMessage, type HelloMessage, type MarketSource, type PressureMessage, type QuotesMessage, type RossMessage, type ServerMessage, type WelcomeMessage } from "./protocol.ts";
+import { serverUrl } from "./http.ts";
 import type { SettingsSync } from "./settingsSync.ts";
 import type { DetectionMessage } from "./detection.ts";
 import type { RocketMessage } from "./rocket.ts";
@@ -93,6 +94,12 @@ export function backoffDelay(attempt: number, baseMs = 500, maxMs = 30_000, rand
 /** Builds a ws:// or wss:// URL for `path` on the page's own origin. */
 export function sameOriginWsUrl(location: { protocol: string; host: string }, path = "/ws"): string {
   return `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}${path}`;
+}
+
+/** The server's socket URL: the page's own origin unless one was named (`setServerOrigin`, desktop). */
+export function serverWsUrl(location: { protocol: string; host: string }, path = "/ws"): string {
+  const origin = serverUrl("");
+  return origin ? `${origin.replace(/^http/, "ws")}${path}` : sameOriginWsUrl(location, path);
 }
 
 /**

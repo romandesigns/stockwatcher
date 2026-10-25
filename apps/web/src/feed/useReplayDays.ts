@@ -5,6 +5,7 @@
 // shows up), and again whenever the clock's trading day changes, which is how
 // a switch made from another client or device reaches this one's label.
 import { parseReplayDayState, type ReplayDayState } from "@stockwatcher/chart-core";
+import { serverUrl } from "@stockwatcher/shared";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SourceChoice } from "./source.ts";
 import { getToken } from "./token.ts";
@@ -25,7 +26,7 @@ export function useReplayDays(choice: SourceChoice, clockDay: string | null): Re
     const id = ++latest.current;
     const token = getToken();
     // The replay market's days: only the practice page (replay) has a day menu.
-    void fetch("/api/replay/state?source=replay", { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+    void fetch(serverUrl("/api/replay/state?source=replay"), { headers: token ? { Authorization: `Bearer ${token}` } : {} })
       .then((res) => (res.ok ? res.json() : null))
       .then((body: unknown) => {
         if (id === latest.current && body) setState(parseReplayDayState(body));

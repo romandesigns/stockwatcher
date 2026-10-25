@@ -9,7 +9,7 @@
 // live market is real (see chooseSource).
 
 import { shownTicker } from "@stockwatcher/app-state";
-import { withMarketSource, type MarketSource } from "@stockwatcher/shared";
+import { serverUrl, withMarketSource, type MarketSource } from "@stockwatcher/shared";
 
 export interface ServerSymbols {
   mode: "replay" | "live" | (string & {});
@@ -51,7 +51,7 @@ export async function probeServer(fetchImpl: typeof fetch = fetch, timeoutMs = 2
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), timeoutMs);
   try {
-    const res = await fetchImpl(withMarketSource("/api/symbols", market), { signal: ctl.signal, headers: token ? { Authorization: `Bearer ${token}` } : {} });
+    const res = await fetchImpl(serverUrl(withMarketSource("/api/symbols", market)), { signal: ctl.signal, headers: token ? { Authorization: `Bearer ${token}` } : {} });
     if (res.status === 401) return { ok: false, reason: "the server needs an access token", unauthorized: true };
     if (!res.ok) return { ok: false, reason: `server answered HTTP ${res.status}` };
     const type = res.headers.get("content-type") ?? "";

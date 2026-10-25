@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { authenticatedFetch, UnauthorizedError } from "./http.ts";
+import { authenticatedFetch, serverUrl, setServerOrigin, UnauthorizedError } from "./http.ts";
 import { parseServerMessage } from "./protocol.ts";
-import { backoffDelay, createWsClient, sameOriginWsUrl, type ConnectionStatus, type WebSocketLike } from "./ws.ts";
+import { backoffDelay, createWsClient, sameOriginWsUrl, serverWsUrl, type ConnectionStatus, type WebSocketLike } from "./ws.ts";
 
 class FakeSocket implements WebSocketLike {
   static instances: FakeSocket[] = [];
@@ -198,4 +198,16 @@ describe("quote board opt-in", () => {
     expect(got.length).toBe(2);
     client.close();
   });
+});
+
+test("serverUrl and serverWsUrl stay same-origin until a server is named (desktop)", () => {
+  expect(serverUrl("/api/symbols")).toBe("/api/symbols");
+  expect(serverWsUrl({ protocol: "http:", host: "tauri.localhost" })).toBe("ws://tauri.localhost/ws");
+  setServerOrigin("https://stockwatcher.example/");
+  try {
+    expect(serverUrl("/api/symbols")).toBe("https://stockwatcher.example/api/symbols");
+    expect(serverWsUrl({ protocol: "http:", host: "tauri.localhost" })).toBe("wss://stockwatcher.example/ws");
+  } finally {
+    setServerOrigin("");
+  }
 });

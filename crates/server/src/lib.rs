@@ -32,6 +32,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use serde_json::json;
 use tokio::sync::watch;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
@@ -202,6 +203,26 @@ async fn update_content_type(req: Request, next: Next) -> Response {
     res
 }
 
+/// The installed desktop app's page origins (Tauri 2: `http://tauri.localhost` on Windows,
+/// `tauri://localhost` on macOS/Linux). Its page is not served from here, so its `/api` calls are
+/// cross-origin and the webview needs these headers, including on the preflight that the
+/// `Authorization` header triggers. Only these exact origins: a browser page elsewhere still
+/// cannot read the API. The socket needs no CORS (the token travels in `hello`).
+pub const DESKTOP_ORIGINS: [&str; 3] = [
+    "http://tauri.localhost",
+    "https://tauri.localhost",
+    "tauri://localhost",
+];
+
+fn desktop_cors() -> CorsLayer {
+    CorsLayer::new()
+        .allow_origin(AllowOrigin::list(
+            DESKTOP_ORIGINS.map(HeaderValue::from_static),
+        ))
+        .allow_methods([axum::http::Method::GET])
+        .allow_headers([header::AUTHORIZATION])
+}
+
 /// `static_dir` holds the built web app; `data_dir` is the persistent
 /// volume, whose `updates/` subtree publish-updates.sh fills.
 pub fn router(state: AppState, static_dir: &Path, data_dir: &Path) -> Router {
@@ -222,7 +243,9 @@ pub fn router(state: AppState, static_dir: &Path, data_dir: &Path) -> Router {
     let api = Router::new()
         .route("/health", get(health))
         .merge(protected)
-        .fallback(api_not_found);
+        .fallback(api_not_found)
+        // Outside the auth layer, so a preflight (which carries no token) is answered here.
+        .layer(desktop_cors());
 
     // ServeDir rejects `..` and absolute-path components itself, so a
     // traversal attempt never leaves static_dir; it just gets the SPA shell.

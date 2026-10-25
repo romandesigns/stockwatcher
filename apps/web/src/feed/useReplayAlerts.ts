@@ -3,6 +3,7 @@
 // the shown one, and falls back to every ticker for its "any" jumps). Fetched once per day: a past
 // day's log does not change, and the bar has no business on the socket.
 import { parseReplayAlerts, type ReplayAlert } from "@stockwatcher/chart-core";
+import { serverUrl } from "@stockwatcher/shared";
 import { useEffect, useState } from "react";
 import type { SourceChoice } from "./source.ts";
 import { getToken } from "./token.ts";
@@ -15,7 +16,7 @@ export function useReplayAlerts(choice: SourceChoice, day: string | null): reado
     if (choice.kind !== "server" || !day) return;
     let live = true;
     const token = getToken();
-    void fetch(`/api/replay/alerts?day=${encodeURIComponent(day)}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+    void fetch(serverUrl(`/api/replay/alerts?day=${encodeURIComponent(day)}`), { headers: token ? { Authorization: `Bearer ${token}` } : {} })
       .then((res) => (res.ok ? res.json() : null))
       .then((body: unknown) => {
         const parsed = parseReplayAlerts(body);
