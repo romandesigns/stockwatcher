@@ -225,7 +225,8 @@ struct Pull {
 }
 
 fn pull(d: &Day, t0: i64, m: usize) -> Option<Pull> {
-    let from = t0 - 5 * MIN;
+    // Live recordings carry overnight prints before 04:00; the bars start at 04:00 (A2).
+    let from = (t0 - 5 * MIN).max(d.t04);
     let end = d.t04 + m as i64 * MIN;
     // H, and the latest print holding it, over [t0 - 5 min, end).
     let i0 = d.first_at(from);

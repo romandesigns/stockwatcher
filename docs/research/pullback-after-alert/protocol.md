@@ -162,3 +162,10 @@ paths and their alerts are untouched. Unit tests replay the named owner cases.
    which a flat cost cancels; quotes enter only the TEST verdict and the reported tables.
 9. *Bracket mechanics:* outcomes read OHLC-counted prints strictly after the entry print;
    a win/loss books exactly +10 % / −5 % from the cost-adjusted entry, then the exit cost.
+
+**A2 (2026-10-25, after the freeze, before any TEST outcome was read; crash fix).** Live
+recordings (archive-vps 10-22, 10-23, and any with an overnight session) contain prints before
+04:00. When one of them held `H`, its minute index went negative and the export panicked, so no
+output exists for those days and no completed day was affected. `H`'s window now starts at
+`max(t0 - 5 min, 04:00)`, matching the bars, VWAP and EMA, which already start at 04:00.
+`L`'s fallback may still read the last pre-04:00 price.
