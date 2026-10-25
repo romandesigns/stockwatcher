@@ -163,4 +163,32 @@ every derived table, versions). Tables and rows under `C:\research\stockwatcher\
 
 ## Amendments
 
-(none)
+**A1 (2026-10-25, HA-HD implementation, before any EXPLORE or CONFIRM outcome was computed).**
+Clarifications forced by the data; none changes a hypothesis, candidate, threshold or verdict rule.
+1. Triggers: the pullback study's replay of the unchanged Runners code (f4b8862 + `paa.rs`,
+   `work-paa/<split>/<day>/triggers.jsonl`, first entry per path per symbol, which is also
+   production's "one row per stock per day per path") is reused for EXPLORE; CONFIRM-PAST is
+   replayed with the same binary. Caps in time order as before. P1 = the first capped-in entry in
+   band and in 04:00-15:15 ET; P2 = every capped-in entry in band and window, grouped per §3.
+2. Resolution: a new export (`running/pat.rs`) writes per-second counted-print series; decisions
+   are taken on second boundaries from completed seconds; a rule triggered by a print (RC, PB) is
+   decided at the end of that print's second. The bracket is checked on per-second highs/lows of
+   seconds strictly after the fill second; when target and stop are both crossed in the same
+   second the stop is taken (conservative) and the case counted. A bracket exit is filled at the
+   end of the hit second + latency.
+3. Fill quote: "the first ask quote at or after decision + latency" is implemented as the NBBO
+   prevailing at that instant (latest update at or before it), valid if <= 10 s old, bid > 0 and
+   ask > bid.
+4. Imputation reference prices: entry = last OHLC print before the fill second; bracket exit = the
+   bracket level; timeout = last print before t0 + 45 min. An alert whose symbol-day has no valid
+   quote anywhere in its window is excluded from every strategy (count reported), so pairs stay
+   matched. B0 and the fixed delays always enter.
+5. Quote windows run to t0 + 46 min (a timeout fill at t0 + 45 min + latency must be quoted).
+6. PB is the frozen C2 (b9ac39a) definitions re-implemented on the per-second series.
+7. "Higher low kept" is implemented literally (last completed 1-min low >= lowest low since t0,
+   prints up to the decision); it is a weak condition, reported as such.
+8. Alpaca quote sizes are round lots before 2025-11-03 (shares after): x100 for the $2,000
+   displayed-size diagnostic.
+9. Universe: `swimport alpaca-batch` plans from currently active tradable assets, for archive-hist
+   and archive-past alike; delisted symbols are absent from both (survivorship, larger for the
+   older CONFIRM-PAST period).
