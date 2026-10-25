@@ -28,7 +28,7 @@ import numpy as np
 
 ENV = os.environ.get("ROCKETQ_ENV", r"H:\wavystack\stockwatcher\.env")
 HOST = "data.alpaca.markets"
-RATE_PER_MIN = 2700.0
+RATE_PER_MIN = float(os.environ.get("AQ_RATE_PER_MIN", "2700"))
 
 
 def _creds() -> tuple[str, str]:
@@ -233,7 +233,14 @@ def save(path: str, arr: dict) -> int:
     out["t"] = np.diff(arr["t"], prepend=np.int64(0))
     tmp = path + ".tmp.npz"
     np.savez_compressed(tmp, **out)
-    os.replace(tmp, path)
+    for i in range(30):  # Windows: a reader (scanner, AV) can hold the target for a moment
+        try:
+            os.replace(tmp, path)
+            break
+        except PermissionError:
+            if i == 29:
+                raise
+            time.sleep(1)
     return os.path.getsize(path)
 
 
