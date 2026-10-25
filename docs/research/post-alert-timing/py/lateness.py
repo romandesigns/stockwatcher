@@ -185,9 +185,22 @@ def measure(a: dict, fires: list[dict], q: Quotes | None, day: str, pc: float | 
 # ---------------------------------------------------------------- triggers / fires
 
 
+_PAT: dict = {}
+
+
 def triggers_of(roots: list[str], day: str) -> dict[str, list[int]]:
     """Every capped Runners path-first entry time per symbol for the day (sorted)."""
     for root in roots:
+        if root.endswith(".jsonl"):  # the sibling's every-entry stream (already capped, in band)
+            if root not in _PAT:
+                m = collections.defaultdict(lambda: collections.defaultdict(list))
+                for l in open(root):
+                    r = json.loads(l)
+                    m[r["day"]][r["sym"]].append(r["t0"])
+                _PAT[root] = m
+            if day in _PAT[root]:
+                return _PAT[root][day]
+            continue
         p = os.path.join(root, day, "triggers.jsonl")
         if os.path.exists(p):
             trig = [json.loads(l) for l in open(p)]
@@ -331,6 +344,11 @@ def cmd_analyse(export: str, trigroots: str, outdir: str, qroot: str | None):
         "n": len(op), "share_of_alerts": len(op) / max(len(rows), 1),
         "trigger_is_first_print": boot_share(_dv(op, lambda r: r["first"] is not None and r["first"][0] >= r["t0"] - 2 * SEC)),
         "n_before_dist": dist([r["n_before"] for r in op]),
+        "within_60s_of_first_print": boot_share(_dv(op, lambda r: r["first"] is not None and r["t0"] - r["first"][0] <= 60 * SEC)),
+        "secs_first_print_to_alert": dist([(r["t0"] - r["first"][0]) / SEC for r in op if r["first"]]),
+        "rise_first_print_to_alert": dist([r["p0"] / r["first"][1] - 1 for r in op if r["first"]]),
+        "first_print_vs_prev_close": dist([r["first"][1] / (r["p0"] / (1 + r["gap_prev_close"])) - 1
+                                           for r in op if r["first"] and "gap_prev_close" in r]),
         "by_path_n": dict(collections.Counter(r["path"] for r in op)),
         "follow_through": {},
     }
@@ -409,7 +427,10 @@ def render(res: dict) -> str:
     L += ["\n## Opening prints (alerts 04:00:00–04:02:00 ET)\n",
           f"n = {o['n']} ({o['share_of_alerts']*100:.1f}% of first alerts); by path {o['by_path_n']}; "
           f"trigger second holds the session's first print: {pct3(o['trigger_is_first_print'])}; "
-          f"OHLC prints before the alert: median {o['n_before_dist'].get('med', 0):.0f} (p90 {o['n_before_dist'].get('p90', 0):.0f}).\n",
+          f"OHLC prints before the alert: median {o['n_before_dist'].get('med', 0):.0f} (p90 {o['n_before_dist'].get('p90', 0):.0f}). "
+          f"Alert within 60 s of the session's first print (a 60-s rule window spans the opening print): {pct3(o['within_60s_of_first_print'])}; "
+          f"seconds first print→alert {fmt(o, 'secs_first_print_to_alert', False)}; rise first print→alert % {fmt(o, 'rise_first_print_to_alert')}; "
+          f"first print vs previous close % {fmt(o, 'first_print_vs_prev_close')}.\n",
           "Scorecard follow-through (+10% before −5%, 30 min, from the first print at/after the alert, no costs):\n",
           "| path | all first alerts | without open_print | open_print only | n all / n open |", "|---|---|---|---|---|"]
     for p, v in o["follow_through"].items():
