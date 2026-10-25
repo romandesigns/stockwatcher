@@ -27,7 +27,8 @@ ENTRY_WIN = 15 * MIN
 LIFE = 45 * MIN
 QVALID = 10 * SEC
 Q60 = 60 * SEC
-SIZE_SHARES_FROM = "2025-11-03"  # Alpaca quote sizes: round lots before, shares from this date
+SIZE_SHARES_FROM = "2025-11-03"
+SANITY = os.environ.get("PAT_A1_ONLY") != "1"  # A2 stub-quote filter (PAT_A1_ONLY=1 reproduces A1 rows)  # Alpaca quote sizes: round lots before, shares from this date
 
 DELAYS = {"D30s": 30, "D1": 60, "D2": 120, "D3": 180, "D5": 300, "D8": 480, "D10": 600,
           "D12": 720, "D15": 900}
@@ -59,6 +60,28 @@ class Quotes:
         self.valid = (self.bp > 0) & (self.ap > self.bp)
         with np.errstate(divide="ignore", invalid="ignore"):
             self.hs = np.where(self.valid, (self.ap - self.bp) / (self.ap + self.bp), np.nan)
+        self.vi = np.flatnonzero(self.valid)
+        self.tv = self.t[self.vi]
+
+    def apply_sanity(self, D: "Dense") -> None:
+        """A2: a quote is also invalid when its half-spread is > 20 % of the mid, or its mid is
+        > 25 % away from the last OHLC print of the preceding 60 s (stub / erroneous quotes)."""
+        if len(self.t) == 0:
+            return
+        S = D.S
+        qs = (self.t - S.t04) // SEC
+        j = np.searchsorted(S.ps, qs, side="right") - 1
+        has = (j >= 0)
+        jc = np.clip(j, 0, max(len(S.ps) - 1, 0))
+        recent = has & (qs - S.ps[jc] <= 60) if len(S.ps) else np.zeros(len(qs), bool)
+        lastp = np.where(recent, S.pc[jc] if len(S.ps) else 0.0, np.nan)
+        mid = (self.ap + self.bp) / 2
+        with np.errstate(divide="ignore", invalid="ignore"):
+            off = np.abs(mid / lastp - 1)
+        sane = (np.nan_to_num(self.hs, nan=9.0) <= 0.20) & ~(recent & (off > 0.25))
+        self.n_insane = int((self.valid & ~sane).sum())
+        self.valid = self.valid & sane
+        self.hs = np.where(self.valid, self.hs, np.nan)
         self.vi = np.flatnonzero(self.valid)
         self.tv = self.t[self.vi]
 
@@ -426,6 +449,8 @@ def run_day(args):
             continue
         D = Dense(S)
         Q = Quotes(os.path.join(qroot, day, f"{sym}.npz"))
+        if SANITY:
+            Q.apply_sanity(D)
         for a in al:
             t0 = a["t0"]
             end = t0 + ENTRY_WIN

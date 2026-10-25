@@ -192,3 +192,15 @@ Clarifications forced by the data; none changes a hypothesis, candidate, thresho
 9. Universe: `swimport alpaca-batch` plans from currently active tradable assets, for archive-hist
    and archive-past alike; delisted symbols are absent from both (survivorship, larger for the
    older CONFIRM-PAST period).
+
+**A2 (2026-10-25, after the EXPLORE run and the freeze, before any CONFIRM-PAST trade, trigger or
+outcome existed).** The outlier check found stub/erroneous NBBO states that pass §5's validity test
+(bid > 0, ask > bid): e.g. an ask of $94 on a ~$5 stock (B0 −75 %), a bid 16x the last price
+(D8 +1,559 %). They are few (B0: 55 entry quotes with half-spread > 20 % of 12,734) but each
+dominates a mean. From A2 on, a quote is also invalid when its half-spread exceeds 20 % of the mid
+or its mid is more than 25 % from the last OHLC print of the preceding 60 s; an invalid quote falls
+to §5's imputation like any other. This applies to every strategy, the S1/S2 rules and the feed
+check. **The frozen candidate stays S2(0.5)** (e58d87e); EXPLORE is re-run under A2 and the A2
+re-selection is reported for transparency only. EXPLORE A1 rows are kept (`rows-explore-a1`;
+`PAT_A1_ONLY=1` reproduces them).
+
