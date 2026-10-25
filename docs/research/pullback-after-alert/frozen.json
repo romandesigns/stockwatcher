@@ -1,0 +1,58 @@
+{
+ "protocol": "docs/research/pullback-after-alert/protocol.md (v1 + A1)",
+ "harness_commit": "980c01b",
+ "winner": "C2_k2_d25-65_none",
+ "b1_delay_s": 504,
+ "winner_dev_val_delta_vs_B0_1pct": -0.013435192485887744,
+ "note": "Every one of the 55 candidates had a negative pooled paired delta vs B0 on the DEV validation blocks; the winner is the least negative eligible one (>= 8 entries/val day). Frozen mechanically as \u00a75 requires.",
+ "eligible_ranked": [
+  "C2_k2_d25-65_none",
+  "C2_k2_d25-65_vwap",
+  "C2_k3_d25-65_none",
+  "C2_k4_d25-65_none",
+  "C2_k2_d15-65_none",
+  "C2_k2_d15-65_vwap",
+  "C2_k3_d15-65_none",
+  "C2_k3_d15-65_vwap",
+  "C2_k4_d15-65_none",
+  "C2_k2_d15-50_vwap",
+  "C2_k2_d15-50_none",
+  "C2_k3_d15-50_none",
+  "C1"
+ ],
+ "blocks": [
+  [
+   "2026-03-23",
+   "2026-04-14",
+   16
+  ],
+  [
+   "2026-04-15",
+   "2026-05-05",
+   15
+  ],
+  [
+   "2026-05-06",
+   "2026-05-27",
+   15
+  ],
+  [
+   "2026-05-28",
+   "2026-06-17",
+   15
+  ],
+  [
+   "2026-06-18",
+   "2026-07-10",
+   15
+  ],
+  [
+   "2026-07-13",
+   "2026-07-31",
+   15
+  ]
+ ],
+ "criterion": "pooled paired mean net delta vs B0, 1% RT scenario, val blocks 2-6, >= 8 entries/val day",
+ "outcome": "+10% before -5% within 30 min from the cost-adjusted entry; timeouts marked; costs: NBBO half-spread per side (age <= 10 s, not crossed/locked) else 0.5% per side",
+ "verdict_bar": "MEANINGFUL iff lo(delta vs B0)>0 and lo(delta vs B1)>0 and point delta vs B0 >= +1.0 pp and >= 150 TEST entries; cluster bootstrap over days, 5000"
+}

@@ -1,0 +1,426 @@
+{
+ "winner": "C2_k2_d25-65_none",
+ "b1_delay_s": 504,
+ "selection": [
+  {
+   "rule": "C1",
+   "n_val": 1059,
+   "per_day": 14.12,
+   "delta_mean": -0.02005634528434021,
+   "eligible": true
+  },
+  {
+   "rule": "C2_k2_d15-50_ema9",
+   "n_val": 428,
+   "per_day": 5.71,
+   "delta_mean": -0.016035241974850435,
+   "eligible": false
+  },
+  {
+   "rule": "C2_k2_d15-50_none",
+   "n_val": 981,
+   "per_day": 13.08,
+   "delta_mean": -0.01865455128197459,
+   "eligible": true
+  },
+  {
+   "rule": "C2_k2_d15-50_vwap",
+   "n_val": 786,
+   "per_day": 10.48,
+   "delta_mean": -0.017840852495946545,
+   "eligible": true
+  },
+  {
+   "rule": "C2_k2_d15-65_ema9",
+   "n_val": 502,
+   "per_day": 6.69,
+   "delta_mean": -0.013245095877375972,
+   "eligible": false
+  },
+  {
+   "rule": "C2_k2_d15-65_none",
+   "n_val": 1297,
+   "per_day": 17.29,
+   "delta_mean": -0.015199529407200305,
+   "eligible": true
+  },
+  {
+   "rule": "C2_k2_d15-65_vwap",
+   "n_val": 934,
+   "per_day": 12.45,
+   "delta_mean": -0.015574012862723183,
+   "eligible": true
+  },
+  {
+   "rule": "C2_k2_d25-65_ema9",
+   "n_val": 363,
+   "per_day": 4.84,
+   "delta_mean": -0.008806690875814377,
+   "eligible": false
+  },
+  {
+   "rule": "C2_k2_d25-65_none",
+   "n_val": 1134,
+   "per_day": 15.12,
+   "delta_mean": -0.013435192485887744,
+   "eligible": true
+  },
+  {
+   "rule": "C2_k2_d25-65_vwap",
+   "n_val": 760,
+   "per_day": 10.13,
+   "delta_mean": -0.013755131480930412,
+   "eligible": true
+  },
+  {
+   "rule": "C2_k3_d15-50_ema9",
+   "n_val": 192,
+   "per_day": 2.56,
+   "delta_mean": -0.01438470406040781,
+   "eligible": false
+  },
+  {
+   "rule": "C2_k3_d15-50_none",
+   "n_val": 765,
+   "per_day": 10.2,
+   "delta_mean": -0.019234326269119733,
+   "eligible": true
+  },
+  {
+   "rule": "C2_k3_d15-50_vwap",
+   "n_val": 591,
+   "per_day": 7.88,
+   "delta_mean": -0.018410397800325603,
+   "eligible": false
+  },
+  {
+   "rule": "C2_k3_d15-65_ema9",
+   "n_val": 217,
+   "per_day": 2.89,
+   "delta_mean": -0.01317970062716126,
+   "eligible": false
+  },
+  {
+   "rule": "C2_k3_d15-65_none",
+   "n_val": 1032,
+   "per_day": 13.76,
+   "delta_mean": -0.01605081235579126,
+   "eligible": true
+  },
+  {
+   "rule": "C2_k3_d15-65_vwap",
+   "n_val": 709,
+   "per_day": 9.45,
+   "delta_mean": -0.01644146060139658,
+   "eligible": true
+  },
+  {
+   "rule": "C2_k3_d25-65_ema9",
+   "n_val": 150,
+   "per_day": 2.0,
+   "delta_mean": -0.006248354723005959,
+   "eligible": false
+  },
+  {
+   "rule": "C2_k3_d25-65_none",
+   "n_val": 911,
+   "per_day": 12.15,
+   "delta_mean": -0.014628081170979775,
+   "eligible": true
+  },
+  {
+   "rule": "C2_k3_d25-65_vwap",
+   "n_val": 584,
+   "per_day": 7.79,
+   "delta_mean": -0.01581651869017066,
+   "eligible": false
+  },
+  {
+   "rule": "C2_k4_d15-50_ema9",
+   "n_val": 79,
+   "per_day": 1.05,
+   "delta_mean": -0.015047705679028507,
+   "eligible": false
+  },
+  {
+   "rule": "C2_k4_d15-50_none",
+   "n_val": 595,
+   "per_day": 7.93,
+   "delta_mean": -0.020985938039657693,
+   "eligible": false
+  },
+  {
+   "rule": "C2_k4_d15-50_vwap",
+   "n_val": 448,
+   "per_day": 5.97,
+   "delta_mean": -0.01962810455371206,
+   "eligible": false
+  },
+  {
+   "rule": "C2_k4_d15-65_ema9",
+   "n_val": 89,
+   "per_day": 1.19,
+   "delta_mean": -0.013173609884347228,
+   "eligible": false
+  },
+  {
+   "rule": "C2_k4_d15-65_none",
+   "n_val": 829,
+   "per_day": 11.05,
+   "delta_mean": -0.01682899644650379,
+   "eligible": true
+  },
+  {
+   "rule": "C2_k4_d15-65_vwap",
+   "n_val": 552,
+   "per_day": 7.36,
+   "delta_mean": -0.01721413148346174,
+   "eligible": false
+  },
+  {
+   "rule": "C2_k4_d25-65_ema9",
+   "n_val": 55,
+   "per_day": 0.73,
+   "delta_mean": -0.004376259845926873,
+   "eligible": false
+  },
+  {
+   "rule": "C2_k4_d25-65_none",
+   "n_val": 736,
+   "per_day": 9.81,
+   "delta_mean": -0.015048549017194565,
+   "eligible": true
+  },
+  {
+   "rule": "C2_k4_d25-65_vwap",
+   "n_val": 454,
+   "per_day": 6.05,
+   "delta_mean": -0.016235997252431997,
+   "eligible": false
+  },
+  {
+   "rule": "C3_k2_d15-50_ema9",
+   "n_val": 120,
+   "per_day": 1.6,
+   "delta_mean": -0.022618838703416865,
+   "eligible": false
+  },
+  {
+   "rule": "C3_k2_d15-50_none",
+   "n_val": 336,
+   "per_day": 4.48,
+   "delta_mean": -0.025074335267054097,
+   "eligible": false
+  },
+  {
+   "rule": "C3_k2_d15-50_vwap",
+   "n_val": 258,
+   "per_day": 3.44,
+   "delta_mean": -0.022154714391538127,
+   "eligible": false
+  },
+  {
+   "rule": "C3_k2_d15-65_ema9",
+   "n_val": 141,
+   "per_day": 1.88,
+   "delta_mean": -0.016482137968414703,
+   "eligible": false
+  },
+  {
+   "rule": "C3_k2_d15-65_none",
+   "n_val": 440,
+   "per_day": 5.87,
+   "delta_mean": -0.019191274888830198,
+   "eligible": false
+  },
+  {
+   "rule": "C3_k2_d15-65_vwap",
+   "n_val": 297,
+   "per_day": 3.96,
+   "delta_mean": -0.018076093028731557,
+   "eligible": false
+  },
+  {
+   "rule": "C3_k2_d25-65_ema9",
+   "n_val": 104,
+   "per_day": 1.39,
+   "delta_mean": -0.012538976787022267,
+   "eligible": false
+  },
+  {
+   "rule": "C3_k2_d25-65_none",
+   "n_val": 383,
+   "per_day": 5.11,
+   "delta_mean": -0.016701081410011042,
+   "eligible": false
+  },
+  {
+   "rule": "C3_k2_d25-65_vwap",
+   "n_val": 236,
+   "per_day": 3.15,
+   "delta_mean": -0.01413126449360851,
+   "eligible": false
+  },
+  {
+   "rule": "C3_k3_d15-50_ema9",
+   "n_val": 44,
+   "per_day": 0.59,
+   "delta_mean": -0.015616219905209689,
+   "eligible": false
+  },
+  {
+   "rule": "C3_k3_d15-50_none",
+   "n_val": 258,
+   "per_day": 3.44,
+   "delta_mean": -0.02756097364670367,
+   "eligible": false
+  },
+  {
+   "rule": "C3_k3_d15-50_vwap",
+   "n_val": 193,
+   "per_day": 2.57,
+   "delta_mean": -0.024839491912239827,
+   "eligible": false
+  },
+  {
+   "rule": "C3_k3_d15-65_ema9",
+   "n_val": 46,
+   "per_day": 0.61,
+   "delta_mean": -0.014937253822374487,
+   "eligible": false
+  },
+  {
+   "rule": "C3_k3_d15-65_none",
+   "n_val": 336,
+   "per_day": 4.48,
+   "delta_mean": -0.02132258163841985,
+   "eligible": false
+  },
+  {
+   "rule": "C3_k3_d15-65_vwap",
+   "n_val": 216,
+   "per_day": 2.88,
+   "delta_mean": -0.02271222593652164,
+   "eligible": false
+  },
+  {
+   "rule": "C3_k3_d25-65_ema9",
+   "n_val": 36,
+   "per_day": 0.48,
+   "delta_mean": -0.004530178589723963,
+   "eligible": false
+  },
+  {
+   "rule": "C3_k3_d25-65_none",
+   "n_val": 303,
+   "per_day": 4.04,
+   "delta_mean": -0.019556057978521856,
+   "eligible": false
+  },
+  {
+   "rule": "C3_k3_d25-65_vwap",
+   "n_val": 179,
+   "per_day": 2.39,
+   "delta_mean": -0.021322037728601542,
+   "eligible": false
+  },
+  {
+   "rule": "C3_k4_d15-50_ema9",
+   "n_val": 13,
+   "per_day": 0.17,
+   "delta_mean": -0.0427282036752633,
+   "eligible": false
+  },
+  {
+   "rule": "C3_k4_d15-50_none",
+   "n_val": 193,
+   "per_day": 2.57,
+   "delta_mean": -0.03407092758231006,
+   "eligible": false
+  },
+  {
+   "rule": "C3_k4_d15-50_vwap",
+   "n_val": 141,
+   "per_day": 1.88,
+   "delta_mean": -0.029141027807599112,
+   "eligible": false
+  },
+  {
+   "rule": "C3_k4_d15-65_ema9",
+   "n_val": 14,
+   "per_day": 0.19,
+   "delta_mean": -0.039676189127030206,
+   "eligible": false
+  },
+  {
+   "rule": "C3_k4_d15-65_none",
+   "n_val": 261,
+   "per_day": 3.48,
+   "delta_mean": -0.02467392529285388,
+   "eligible": false
+  },
+  {
+   "rule": "C3_k4_d15-65_vwap",
+   "n_val": 162,
+   "per_day": 2.16,
+   "delta_mean": -0.025716010389861335,
+   "eligible": false
+  },
+  {
+   "rule": "C3_k4_d25-65_ema9",
+   "n_val": 9,
+   "per_day": 0.12,
+   "delta_mean": -0.008300413538070588,
+   "eligible": false
+  },
+  {
+   "rule": "C3_k4_d25-65_none",
+   "n_val": 238,
+   "per_day": 3.17,
+   "delta_mean": -0.021888600542693603,
+   "eligible": false
+  },
+  {
+   "rule": "C3_k4_d25-65_vwap",
+   "n_val": 135,
+   "per_day": 1.8,
+   "delta_mean": -0.022854716783398586,
+   "eligible": false
+  }
+ ],
+ "blocks": [
+  [
+   "2026-03-23",
+   "2026-04-14",
+   16
+  ],
+  [
+   "2026-04-15",
+   "2026-05-05",
+   15
+  ],
+  [
+   "2026-05-06",
+   "2026-05-27",
+   15
+  ],
+  [
+   "2026-05-28",
+   "2026-06-17",
+   15
+  ],
+  [
+   "2026-06-18",
+   "2026-07-10",
+   15
+  ],
+  [
+   "2026-07-13",
+   "2026-07-31",
+   15
+  ]
+ ],
+ "validation_days": 75,
+ "dev_days": 91,
+ "criterion": "pooled paired mean net delta vs B0, 1% RT scenario, val blocks 2-6, >= 8 entries/val day"
+}
