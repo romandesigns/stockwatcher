@@ -189,10 +189,10 @@ def band(p):
     return "0.10-1" if p < 1 else ("1-5" if p < 5 else "5-25")
 
 
-def tables(rows_dir: str, frozen_path: str, prefix: str, confirm: bool) -> None:
+def tables(rows_dir: str, frozen_path: str, prefix: str, confirm: bool, pop: str = "p1") -> None:
     fz = json.load(open(frozen_path))
     W = fz["winner"]
-    al = load(rows_dir)
+    al = load(rows_dir, pop)
     keys = eligible(al)
     for k in keys:
         al[k]["B0"]["band"] = band(al[k]["B0"]["p0"])
@@ -208,6 +208,15 @@ def tables(rows_dir: str, frozen_path: str, prefix: str, confirm: bool) -> None:
                                "quote_complete": delta(al, keys, st, "D8", qconly=True),
                                "gross": delta(al, keys, st, "D8", "gross")}
                           for st in strats if st != "D8"}
+    # matched per-trade: only alerts the strategy entered (separates timing from abstention)
+    def matched(st, ref):
+        ks = [k for k in keys if al[k][st].get("entered") and not al[k][st].get("bad")]
+        d = [al[k][st]["net"] - ret(al[k][ref]) for k in ks]
+        g = [al[k][st]["gross"] - ret(al[k][ref], "gross") for k in ks]
+        return {"n": len(ks), "net_pp": ci(boot(d, [k[0] for k in ks])),
+                "gross_pp": ci(boot(g, [k[0] for k in ks]))}
+    res["matched_per_trade"] = {st: {"vs_B0": matched(st, "B0"), "vs_D8": matched(st, "D8")}
+                                for st in strats if st not in ("B0",)}
     core = ["B0", "D8", W]
     res["segments"] = split_tab(al, keys, "segment", core, vals=SEGS)
     # share of the waiting gain (sum of D8 - B0 per-alert) by segment
@@ -217,6 +226,9 @@ def tables(rows_dir: str, frozen_path: str, prefix: str, confirm: bool) -> None:
         for sg in SEGS}
     res["waiting_gain_without_open_print"] = delta(al, [k for k in keys if al[k]["B0"]["segment"] != "open_print"], "D8", "B0")
     res["paths"] = split_tab(al, keys, "path", core)
+    if pop == "p2":
+        res["event_types"] = split_tab(al, keys, "event_type", core,
+                                       vals=["first", "after_failed", "after_consolidation", "later_other"])
     res["bands"] = split_tab(al, keys, "band", core)
     res["halts_excluded"] = {st: delta(al, [k for k in keys if not al[k][st].get("halt") and not al[k]["B0"].get("halt")], st, "B0") for st in ["D8", W]}
     # robustness
@@ -280,4 +292,4 @@ if __name__ == "__main__":
     if a[1] == "select":
         select(a[2], a[3])
     elif a[1] == "tables":
-        tables(a[2], a[3], a[4], "--confirm" in a)
+        tables(a[2], a[3], a[4], "--confirm" in a, a[a.index("--pop") + 1] if "--pop" in a else "p1")

@@ -37,12 +37,16 @@ def main():
                  f"{(f(a['quote_complete']['delta_pp']) + ' (' + str(a['quote_complete']['n']) + ')') if a else '—'} | "
                  f"{f(a['gross']['delta_pp']) if a else '—'} | {f(b['primary']['delta_pp']) if b else '—'} | "
                  f"{f(b['quote_complete']['delta_pp']) if b else '—'} |")
+    L += ["", "## Matched per-trade Δ (pp; only alerts the strategy entered: timing without abstention)", "",
+          "| strategy | n | vs B0 net | vs B0 gross | vs D8 net | vs D8 gross |", "|---|---|---|---|---|---|"]
+    for st, m in d.get("matched_per_trade", {}).items():
+        L.append(f"| {st} | {m['vs_B0']['n']} | {f(m['vs_B0']['net_pp'])} | {f(m['vs_B0']['gross_pp'])} | {f(m['vs_D8']['net_pp'])} | {f(m['vs_D8']['gross_pp'])} |")
     L += ["", "## Segments", "", "| segment | alerts | B0 per-alert | D8 per-alert | D8−B0 | D8−B0 gross | " + W + "−B0 | share of waiting gain |", "|---|---|---|---|---|---|---|---|"]
     for sg, e in d["segments"].items():
         L.append(f"| {sg}{' (thin)' if e['thin'] else ''} | {e['alerts']} | {f(e['B0']['per_alert_net'])} | {f(e['D8']['per_alert_net'])} | "
                  f"{f(e['D8']['delta_vs_B0'])} | {f(e['D8']['gross_delta_vs_B0'])} | {f(e[W]['delta_vs_B0'])} | {f(d['waiting_gain_share_by_segment'].get(sg))} |")
     L.append(f"\nD8−B0 without open_print: {f(d['waiting_gain_without_open_print']['delta_pp'])} (n {d['waiting_gain_without_open_print']['n']})")
-    for name in ("paths", "bands"):
+    for name in [n for n in ("paths", "bands", "event_types") if n in d]:
         L += ["", f"## {name}", "", f"| {name} | alerts | B0 per-alert | D8−B0 | {W}−B0 | {W}−D8 approx |", "|---|---|---|---|---|---|"]
         for g, e in d[name].items():
             L.append(f"| {g}{' (thin)' if e['thin'] else ''} | {e['alerts']} | {f(e['B0']['per_alert_net'])} | {f(e['D8']['delta_vs_B0'])} | {f(e[W]['delta_vs_B0'])} | — |")
