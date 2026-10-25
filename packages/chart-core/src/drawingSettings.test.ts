@@ -100,8 +100,8 @@ describe("the armed tool", () => {
 describe("toolbox layout for fewer items", () => {
   test("hidden tools drop out in order; the cursor stays first", () => {
     const l = toolboxLayout(hide("trend", "vline", "measure"));
-    expect(l.tools).toEqual(["cursor", "ray", "hline", "rect", "long", "short"]);
-    expect(l.buttons).toBe(6 + 5);
+    expect(l.tools).toEqual(["cursor", "ray", "hline", "rect", "supply", "demand", "long", "short"]);
+    expect(l.buttons).toBe(8 + 5);
   });
 
   test("the edit pill holds only what shows, and disappears when empty (no empty dimmed surface)", () => {

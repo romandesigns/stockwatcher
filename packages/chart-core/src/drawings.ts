@@ -7,8 +7,8 @@ import { withAlpha } from "./theme.ts";
 import { dragPosition, hitPosition, isPositionKind, layoutPosition, newPosition } from "./position.ts";
 import { lowerBound } from "./store.ts";
 
-// User drawings: trend lines, rays, horizontal levels, vertical markers and
-// ranges. Anchors are DATA coordinates (time, price), never pixels, so a
+// User drawings: trend lines, rays, horizontal levels, vertical markers,
+// ranges and supply/demand zones. Anchors are DATA coordinates (time, price), never pixels, so a
 // drawing stays on its candles through pans, zooms, timeframe switches and
 // new data. Time maps to the index-based x axis through the slots (gaps take
 // one slot, see scale.ts); a time between two slots interpolates, and a time
@@ -23,9 +23,9 @@ import { lowerBound } from "./store.ts";
  * placed like a two-point drawing but never stored (the host keeps it until
  * the next press, Escape or tool change).
  */
-export type DrawingKind = "trend" | "ray" | "hline" | "vline" | "rect" | "long" | "short" | "measure";
+export type DrawingKind = "trend" | "ray" | "hline" | "vline" | "rect" | "supply" | "demand" | "long" | "short" | "measure";
 
-export const DRAWING_KINDS: readonly DrawingKind[] = ["trend", "ray", "hline", "vline", "rect", "long", "short"];
+export const DRAWING_KINDS: readonly DrawingKind[] = ["trend", "ray", "hline", "vline", "rect", "supply", "demand", "long", "short"];
 
 export const DRAWING_LABELS: Readonly<Record<DrawingKind, string>> = {
   trend: "Trend line",
@@ -33,6 +33,8 @@ export const DRAWING_LABELS: Readonly<Record<DrawingKind, string>> = {
   hline: "Horizontal line",
   vline: "Vertical line",
   rect: "Range",
+  supply: "Supply zone",
+  demand: "Demand zone",
   long: "Long position",
   short: "Short position",
   measure: "Measure",
@@ -81,8 +83,16 @@ export const DRAWING_COLORS: readonly { value: string; name: string }[] = [
   { value: "#f0645c", name: "Red" },
 ];
 
-/** Whether the toolbox offers a colour for this drawing (positions keep theirs). */
-export const isColorable = (d: Drawing) => !isPositionKind(d.kind);
+/**
+ * Supply and demand zones (owner request 2026-10-25): a price band marked by hand, from the earlier
+ * anchor's time to the latest candle and beyond, so it stays in view as new bars print. Red is
+ * supply (sellers waited there), green is demand; the hue is the meaning, so a zone is not
+ * recoloured, like a position. Placed and edited like a range (two anchors), never turned.
+ */
+export const isZoneKind = (k: DrawingKind): k is "supply" | "demand" => k === "supply" || k === "demand";
+
+/** Whether the toolbox offers a colour for this drawing (positions and zones keep theirs). */
+export const isColorable = (d: Drawing) => !isPositionKind(d.kind) && !isZoneKind(d.kind);
 
 /** Whether a kind is placed with one point (a level, a marker) or two. */
 export const isOnePoint = (k: DrawingKind) => k === "hline" || k === "vline" || isPositionKind(k);
@@ -376,6 +386,15 @@ function geometryOf(model: ChartModel, d: Drawing): { segments: [Point, Point][]
     case "measure":
       // Drawn by layoutMeasure; never hit-tested (it is not a stored drawing).
       return none;
+    case "supply":
+    case "demand": {
+      // Open to the right: from the earlier anchor to the plot's right edge, whatever the scroll.
+      const x0 = Math.max(plot.x, Math.min(a.x, b.x));
+      const x1 = plot.x + plot.w;
+      const y0 = Math.max(plot.y, Math.min(a.y, b.y));
+      const y1 = Math.min(plot.y + plot.h, Math.max(a.y, b.y));
+      return { segments: [], box: x1 > x0 && y1 > y0 ? { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } : null, a, b };
+    }
     case "rect": {
       const x0 = Math.max(plot.x, Math.min(a.x, b.x));
       const x1 = Math.min(plot.x + plot.w, Math.max(a.x, b.x));
@@ -496,6 +515,10 @@ export function layoutDrawings(model: ChartModel, drawings: readonly Drawing[], 
       out.push(...layoutRect(model, d, sel, d.color ?? (sel ? theme.drawingSelected : theme.drawing), theme));
       continue;
     }
+    if (isZoneKind(d.kind)) {
+      out.push(...layoutZone(model, d, sel, theme));
+      continue;
+    }
     // A drawing keeps its own colour when selected; selection shows as a
     // heavier line and handles, so recolouring is visible as it happens.
     const stroke = d.color ?? (sel ? theme.drawingSelected : theme.drawing);
@@ -514,6 +537,47 @@ export function layoutDrawings(model: ChartModel, drawings: readonly Drawing[], 
       out.push({ kind: "rect", x: h.x - 5, y: h.y - 5, w: 10, h: 10, radius: 5, fill: stroke, layer: "overlay" });
       out.push({ kind: "rect", x: h.x - 3, y: h.y - 3, w: 6, h: 6, radius: 3, fill: theme.handleFill, layer: "overlay" });
     }
+  }
+  return out;
+}
+
+/**
+ * A zone: its tinted band, a label with its kind and price range inside the top edge (above the
+ * band when it is too thin to hold it), and, when selected, both edges' prices on the axis and
+ * the two anchor handles.
+ */
+function layoutZone(model: ChartModel, d: Drawing, sel: boolean, theme: ChartTheme): DisplayList {
+  const out: DisplayList = [];
+  const geo = geometryOf(model, d);
+  const box = geo.box;
+  if (!box || !model.price) return out;
+  const g = model.geometry;
+  const hue = d.kind === "supply" ? theme.down : theme.up;
+  out.push({ kind: "rect", ...box, fill: withAlpha(hue, sel ? 0.24 : 0.16), layer: "overlay" });
+  const fs = model.options.fontSize;
+  const lo = Math.min(d.a.p, d.b.p);
+  const hi = Math.max(d.a.p, d.b.p);
+  const dec = priceDecimals(hi);
+  const label = `${d.kind === "supply" ? "Supply" : "Demand"} ${formatPrice(lo, dec)} – ${formatPrice(hi, dec)}`;
+  const inside = box.h >= fs + 8;
+  const ly = inside ? box.y + 4 + fs / 2 : box.y - 4 - fs / 2;
+  // Text is not clipped, so a zone starting near the right edge pulls its label back inside the plot.
+  const lw = Math.ceil(label.length * fs * 0.62);
+  const lx = Math.max(g.plot.x + 4, Math.min(box.x + 6, g.plot.x + g.plot.w - lw - 6));
+  if (ly - fs / 2 >= g.plot.y) {
+    out.push({ kind: "text", x: lx, y: ly, text: label, fill: hue, fontSize: fs, fontFamily: theme.fontMono, fontWeight: 600, align: "left", baseline: "middle", layer: "overlay" });
+  }
+  if (!sel) return out;
+  for (const p of [hi, lo]) {
+    const y = priceY(model.price, p);
+    if (y < g.plot.y || y > g.plot.y + g.plot.h) continue;
+    out.push({ kind: "rect", x: g.priceAxis.x + 2, y: y - 9, w: g.priceAxis.w - 2, h: 18, fill: hue, radius: 3, layer: "crosshair" });
+    out.push({ kind: "text", x: g.priceAxis.x + 1 + g.priceAxis.w / 2, y, text: formatAxisTag(model, p), fill: theme.onTag, fontSize: fs, fontFamily: theme.fontMono, fontWeight: 600, align: "center", baseline: "middle", layer: "crosshair" });
+  }
+  for (const h of [geo.a, geo.b]) {
+    if (!h || h.x < g.plot.x || h.x > g.plot.x + g.plot.w || h.y < g.plot.y || h.y > g.plot.y + g.plot.h) continue;
+    out.push({ kind: "rect", x: h.x - 5, y: h.y - 5, w: 10, h: 10, radius: 5, fill: hue, layer: "overlay" });
+    out.push({ kind: "rect", x: h.x - 3, y: h.y - 3, w: 6, h: 6, radius: 3, fill: theme.handleFill, layer: "overlay" });
   }
   return out;
 }

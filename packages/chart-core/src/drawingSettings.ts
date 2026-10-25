@@ -61,6 +61,8 @@ export const TOOLBOX_ITEMS: readonly ToolboxItemInfo[] = [
   { id: "hline", group: "tools", name: DRAWING_LABELS.hline, description: "A price level across the chart", icon: "hline" },
   { id: "vline", group: "tools", name: DRAWING_LABELS.vline, description: "A moment in time, top to bottom", icon: "vline" },
   { id: "rect", group: "tools", name: DRAWING_LABELS.rect, description: "A shaded price and time range", icon: "rect" },
+  { id: "supply", group: "tools", name: DRAWING_LABELS.supply, description: "A red price band where sellers waited, running on to the latest candle", icon: "supply" },
+  { id: "demand", group: "tools", name: DRAWING_LABELS.demand, description: "A green price band where buyers waited, running on to the latest candle", icon: "demand" },
   { id: "long", group: "tools", name: DRAWING_LABELS.long, description: "Entry, target and stop for a buy (L)", icon: "long" },
   { id: "short", group: "tools", name: DRAWING_LABELS.short, description: "Entry, target and stop for a sell (S)", icon: "short" },
   { id: "measure", group: "tools", name: DRAWING_LABELS.measure, description: "Price, percent and time between two points", icon: "measure" },

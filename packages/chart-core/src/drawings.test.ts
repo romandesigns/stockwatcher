@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { anchorXY, clipSegment, measure, ROTATE_HANDLE_GAP, dragDrawing, drawingFromPoints, hitDrawing, indexToT, layoutDrawings, tToIndex, type Drawing } from "./drawings.ts";
+import { anchorXY, clipSegment, measure, ROTATE_HANDLE_GAP, dragDrawing, drawingFromPoints, hitDrawing, indexToT, isColorable, layoutDrawings, tToIndex, type Drawing } from "./drawings.ts";
+import { parseDrawing } from "./syncedSettings.ts";
 import { computeChartModel, type ChartState } from "./layout.ts";
 import { defaultViewport, slotX } from "./scale.ts";
 import { DEFAULT_CHART_THEME } from "./theme.ts";
@@ -146,5 +147,35 @@ describe("measure", () => {
     expect(m.change).toBeGreaterThan(0);
     const list = layoutDrawings(model, [d], null, DEFAULT_CHART_THEME);
     expect(list.some((p) => p.kind === "text" && p.text.includes("bars"))).toBe(true);
+  });
+});
+
+describe("supply and demand zones", () => {
+  const a = { x: slotX(model.index, 4), y: 60 };
+  const b = { x: slotX(model.index, 7), y: 100 };
+  const supply = drawingFromPoints(model, "z1", "supply", a, b)!;
+  const plot = model.geometry.plot;
+
+  test("a zone runs from its earlier anchor to the plot's right edge, tinted by its kind and labelled", () => {
+    const list = layoutDrawings(model, [supply], null, DEFAULT_CHART_THEME);
+    const band = list.find((p) => p.kind === "rect" && p.layer === "overlay");
+    expect(band && band.kind === "rect" ? [band.x, band.x + band.w] : null).toEqual([a.x, plot.x + plot.w]);
+    expect(band && band.kind === "rect" ? band.fill : "").toBe("rgba(240, 100, 92, 0.16)");
+    expect(list.some((p) => p.kind === "text" && p.text.startsWith("Supply "))).toBe(true);
+    const demand = { ...supply, id: "z2", kind: "demand" as const };
+    const fill = layoutDrawings(model, [demand], null, DEFAULT_CHART_THEME).find((p) => p.kind === "rect");
+    expect(fill && fill.kind === "rect" ? fill.fill : "").toBe("rgba(63, 185, 122, 0.16)");
+  });
+
+  test("the band is hit to the right of where it was drawn; selected, both edges get axis tags", () => {
+    expect(hitDrawing(model, [supply], slotX(model.index, 14), 80, 6)).toEqual({ id: "z1", part: "body" });
+    expect(hitDrawing(model, [supply], slotX(model.index, 14), 140, 6)).toBeNull();
+    const tags = layoutDrawings(model, [supply], "z1", DEFAULT_CHART_THEME).filter((p) => p.kind === "text" && p.layer === "crosshair");
+    expect(tags.length).toBe(2);
+  });
+
+  test("a zone keeps its hue (not recolourable) and survives the sync parser", () => {
+    expect(isColorable(supply)).toBe(false);
+    expect(parseDrawing(JSON.parse(JSON.stringify(supply)))).toEqual(supply);
   });
 });

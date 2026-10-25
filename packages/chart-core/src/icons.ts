@@ -79,6 +79,8 @@ export type IconName =
   | "hline"
   | "vline"
   | "rect"
+  | "supply"
+  | "demand"
   | "measure"
   | "long"
   | "short"
@@ -135,6 +137,10 @@ export const ICONS: Readonly<Record<IconName, IconDef>> = {
   hline: icon([P("M1.5 8h13"), S(circlePath(8, 8, 1.8), { paint: "fill" })]),
   vline: icon([P("M8 1.5v13"), S(circlePath(8, 8, 1.8), { paint: "fill" })]),
   rect: icon([S("M4 4h8a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z", { paint: "fill" }), P(circlePath(3, 4, 1.3), { paint: "fill" }), P(circlePath(13, 12, 1.3), { paint: "fill" })]),
+  // Zones: the band in the hue that is its meaning (supply red above, demand green below), the price
+  // path that meets it primary.
+  supply: icon([S("M3 2.5h10a1 1 0 0 1 1 1v3H2v-3a1 1 0 0 1 1-1z", { paint: "fill", hue: "critical" }), P("M2 13.5 5 10l2 2 3-4.5 2 1.5")]),
+  demand: icon([S("M2 9.5h12v3a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z", { paint: "fill", hue: "good" }), P("M2 2.5 5 6l2-2 3 4.5 2-1.5")]),
   // The ruler: a measure is not stored, it reads between two points.
   measure: icon([P("M2 11.5 11.5 2l2.5 2.5L4.5 14z"), S("M5 9.5l1 1M7 7.5l1.5 1.5M9 5.5l1 1")]),
   // Position tools: the green zone on the side the trade profits, the red one on the side it loses; the entry line is the object.
