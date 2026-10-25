@@ -27,8 +27,14 @@ ENTRY_WIN = 15 * MIN
 LIFE = 45 * MIN
 QVALID = 10 * SEC
 Q60 = 60 * SEC
-SIZE_SHARES_FROM = "2025-11-03"
-SANITY = os.environ.get("PAT_A1_ONLY") != "1"  # A2 stub-quote filter (PAT_A1_ONLY=1 reproduces A1 rows)  # Alpaca quote sizes: round lots before, shares from this date
+SIZE_SHARES_FROM = "2025-11-03"  # Alpaca quote sizes: round lots before, shares from this date
+SANITY = os.environ.get("PAT_A1_ONLY") != "1"  # A2 stub-quote filter (PAT_A1_ONLY=1 reproduces A1 rows)
+# A3.7 sensitivities (not verdict-bearing): a = a locked/crossed/insane latest quote falls back to
+# the last valid quote <= 10 s old; b = an imputed stop exit at the hit second's last print
+# (gap-through) instead of the stop level; c = the timeout exit + latency.
+SENS = os.environ.get("PAT_SENS", "")
+# A3.8 early-close days: alerts up to 12:15 ET, every lifecycle ends by 13:00 ET.
+EARLY_CLOSE = {"2025-07-03", "2025-11-28", "2025-12-24", "2026-11-27", "2026-12-24"}
 
 DELAYS = {"D30s": 30, "D1": 60, "D2": 120, "D3": 180, "D5": 300, "D8": 480, "D10": 600,
           "D12": 720, "D15": 900}
@@ -188,6 +194,8 @@ class Dense:
 def fill(Q: Quotes, ns: int, side: str, ref: float, lo: int, hi: int):
     """(price, mid, half-spread, kind) of a fill at `ns` (§5)."""
     i = Q.prevailing(ns)
+    if i is None and SENS == "a":
+        i = Q.last_valid_within(ns, QVALID)
     if i is not None:
         mid = (Q.ap[i] + Q.bp[i]) / 2
         px = Q.ap[i] if side == "buy" else Q.bp[i]
@@ -377,6 +385,8 @@ def trade(D: Dense, Q: Quotes, t0: int, dec: int, lat: int, day: str) -> dict:
         ref = np.nan
     epx, emid, ehs, ekind, ei = fill(Q, fns, "buy", ref, lo_w, hi_w)
     endns = t0 + LIFE
+    if day in EARLY_CLOSE:
+        endns = min(endns, series.t04(day) + 9 * 3600 * SEC)  # 13:00 ET
     es = (endns - t04) // SEC
     out = {"te": int(fns), "epx": epx, "emid": emid, "ehs": ehs, "ekind": ekind}
     if ei is not None:
@@ -404,13 +414,19 @@ def trade(D: Dense, Q: Quotes, t0: int, dec: int, lat: int, day: str) -> dict:
         xns = t04 + (int(psec[k]) + 1) * SEC + lat * SEC
         xref = level
         xsec = int(psec[k])
+        hitp = float(S.pc[a + k])  # last print of the hit second
+        if SENS == "b" and reason == "loss":
+            xref = hitp
     else:
-        xns = endns
+        hitp = None
+        xns = endns + (lat * SEC if SENS == "c" else 0)
         xref = D.last[min(es, len(D.last) - 1) - 1] if es > 0 else np.nan
         if not np.isfinite(xref):
             xref = epx
         xsec = es
     xpx, xmid, xhs, xkind, _ = fill(Q, xns, "sell", xref, lo_w, hi_w)
+    if xkind != "q" and hitp is not None:
+        xmid = hitp  # A3.6: an imputed bracket exit's mid is the hit second's print, not the level
     out.update({"reason": reason, "ambig": bool(ambig), "xkind": xkind, "xhs": xhs,
                 "net": xpx / epx - 1, "gross": xmid / emid - 1 if emid > 0 else np.nan,
                 "hold_s": int((xns - fns) // SEC)})
@@ -454,6 +470,8 @@ def run_day(args):
         for a in al:
             t0 = a["t0"]
             end = t0 + ENTRY_WIN
+            if day in EARLY_CLOSE:
+                end = min(end, series.t04(day) + 9 * 3600 * SEC)
             base = {k: a[k] for k in ("day", "sym", "path", "t0", "p0", "segment", "event_id",
                                       "event_type")}
             base["pops"] = a["pops"]

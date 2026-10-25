@@ -50,6 +50,11 @@ def main():
         L += ["", f"## {name}", "", f"| {name} | alerts | B0 per-alert | D8−B0 | {W}−B0 | {W}−D8 approx |", "|---|---|---|---|---|---|"]
         for g, e in d[name].items():
             L.append(f"| {g}{' (thin)' if e['thin'] else ''} | {e['alerts']} | {f(e['B0']['per_alert_net'])} | {f(e['D8']['delta_vs_B0'])} | {f(e[W]['delta_vs_B0'])} | — |")
+    if "decomposition_vs_D8" in d:
+        L += ["", "## Per-alert Δ vs D8 split into timing and skip (A3.1)", "",
+              "| strategy | per-alert | timing | skip | skip share | random-skip expected [band] | filter beyond random | skip on imputed D8 entry |", "|---|---|---|---|---|---|---|---|"]
+        for st, x in d["decomposition_vs_D8"].items():
+            L.append(f"| {st} | {x['per_alert_delta_pp']} | {x['timing_component_pp']} | {x['skip_component_pp']} | {x['skip_share']:.1%} | {x['random_skip_expected_pp']} {x['random_skip_band_pp']} | {x['filter_value_beyond_random_pp']} | {x['skip_component_on_imputed_ref_entry_pp']} |")
     L += ["", "## Robustness", "", "```", json.dumps({"quarters": d["quarters"], "drop_top1pct": d["drop_top1pct"],
                                                     "halts_excluded": d["halts_excluded"], "sibling": d["sibling"]}, indent=1), "```"]
     L += ["", "## Verdicts", "", "```", json.dumps(d["verdicts"], indent=1), "```", "",

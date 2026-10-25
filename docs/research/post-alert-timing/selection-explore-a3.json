@@ -1,0 +1,153 @@
+{
+ "eligible_alerts": 12733,
+ "all_alerts": 12734,
+ "candidates": {
+  "S1_0.5": {
+   "coverage": 0.8752,
+   "matched_per_trade_delta_vs_D8": [
+    -0.469,
+    -0.609,
+    -0.33
+   ],
+   "matched_n": 11144,
+   "per_alert_delta_vs_D8": [
+    0.462,
+    0.319,
+    0.602
+   ],
+   "per_trade_net": [
+    -2.525,
+    -2.665,
+    -2.38
+   ],
+   "per_alert_net": [
+    -2.21,
+    -2.336,
+    -2.08
+   ]
+  },
+  "S1_1.0": {
+   "coverage": 0.9312,
+   "matched_per_trade_delta_vs_D8": [
+    -0.623,
+    -0.769,
+    -0.484
+   ],
+   "matched_n": 11857,
+   "per_alert_delta_vs_D8": [
+    0.01,
+    -0.139,
+    0.149
+   ],
+   "per_trade_net": [
+    -2.859,
+    -3.007,
+    -2.707
+   ],
+   "per_alert_net": [
+    -2.662,
+    -2.799,
+    -2.521
+   ]
+  },
+  "S2_0.5": {
+   "coverage": 0.6633,
+   "matched_per_trade_delta_vs_D8": [
+    -0.085,
+    -0.232,
+    0.063
+   ],
+   "matched_n": 8446,
+   "per_alert_delta_vs_D8": [
+    1.044,
+    0.917,
+    1.17
+   ],
+   "per_trade_net": [
+    -2.455,
+    -2.583,
+    -2.327
+   ],
+   "per_alert_net": [
+    -1.628,
+    -1.726,
+    -1.533
+   ]
+  },
+  "S2_0.7": {
+   "coverage": 0.7618,
+   "matched_per_trade_delta_vs_D8": [
+    -0.26,
+    -0.4,
+    -0.121
+   ],
+   "matched_n": 9700,
+   "per_alert_delta_vs_D8": [
+    0.561,
+    0.434,
+    0.681
+   ],
+   "per_trade_net": [
+    -2.771,
+    -2.899,
+    -2.642
+   ],
+   "per_alert_net": [
+    -2.111,
+    -2.215,
+    -2.005
+   ]
+  },
+  "L_S1_1.0": {
+   "coverage": 0.5961,
+   "matched_per_trade_delta_vs_D8": [
+    -0.482,
+    -0.629,
+    -0.331
+   ],
+   "matched_n": 7590,
+   "per_alert_delta_vs_D8": [
+    1.569,
+    1.434,
+    1.706
+   ],
+   "per_trade_net": [
+    -1.851,
+    -1.996,
+    -1.696
+   ],
+   "per_alert_net": [
+    -1.103,
+    -1.188,
+    -1.011
+   ]
+  },
+  "L_S2_0.7": {
+   "coverage": 0.3988,
+   "matched_per_trade_delta_vs_D8": [
+    -0.62,
+    -0.81,
+    -0.431
+   ],
+   "matched_n": 5078,
+   "per_alert_delta_vs_D8": [
+    1.855,
+    1.72,
+    1.988
+   ],
+   "per_trade_net": [
+    -2.049,
+    -2.228,
+    -1.853
+   ],
+   "per_alert_net": [
+    -0.817,
+    -0.89,
+    -0.737
+   ]
+  }
+ },
+ "winner": "S2_0.5",
+ "rule": "A3.2: highest matched per-trade net delta vs D8 among coverage >= 60%",
+ "sibling": "S2_0.7"
+}

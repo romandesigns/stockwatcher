@@ -204,3 +204,39 @@ check. **The frozen candidate stays S2(0.5)** (e58d87e); EXPLORE is re-run under
 re-selection is reported for transparency only. EXPLORE A1 rows are kept (`rows-explore-a1`;
 `PAT_A1_ONLY=1` reproduces them).
 
+**A3 (2026-10-25, specified by the study lead after an independent read-only review of the EXPLORE
+code, before any CONFIRM-PAST outcome was computed).** The review found no lookahead or leakage but
+found that §7/§8's per-alert criterion rewards abstaining: every rule loses money, so a skipped
+alert scores 0, better than a trade. Recomputed on A2 rows, S2(0.5) − D8 per alert = +1.044 pp =
++1.100 pp from the 33.7 % of alerts it skips and −0.056 pp from the alerts it enters; skipping the
+same share at random gives ≈ +0.90 pp.
+1. **HB is judged on timing**: the matched per-trade net Δ (candidate − D8 on the alerts where the
+   candidate entered), day-clustered bootstrap. *Supported* needs its lower bound > 0 and point
+   ≥ +0.5 pp plus: strict quote-complete sign agreement, ≥ 3/4 quarters positive, positive with the
+   candidate's top 1 % of trades removed, sibling same sign, coverage ≥ 60 %. The per-alert Δ is
+   reported split into a timing and a skip component, the skip component against a coverage-matched
+   random-skip control (expected value and 2,000 random draws); value beyond random skipping is a
+   descriptive "filter" finding, never HB support.
+2. **Selection** (§7) becomes: highest matched per-trade net Δ vs D8 among candidates with coverage
+   ≥ 60 %, same tie rule. Re-run on EXPLORE (A3 rows): **S2(0.5) is still selected** (−0.085 pp
+   [−0.232, +0.063]; S2(0.7) −0.26, S1(0.5) −0.47, S1(1.0) −0.62; L_S1(1.0) at 59.6 % and
+   L_S2(0.7) at 39.9 % coverage are ineligible), so `frozen.json` (e58d87e) is unchanged.
+3. **Strict quote-complete** = both strategies entered and all four fills on valid, non-imputed
+   quotes; it must agree in sign for *Supported* (HA and HB). The A1 definition is kept as a
+   labelled extra.
+4. **Data-limited**: per strategy, the share of entry and exit fills on a valid non-imputed quote,
+   for B0, D8 and the frozen candidate; if any is < 70 % on CONFIRM, HA/HB become *Inconclusive due
+   to data limitations* (numbers still reported).
+5. *Promising but unconfirmed* = point ≥ +0.5 pp and **exactly one** condition failing; two or more
+   → *Unsupported*.
+6. Decomposition: an imputed bracket exit takes the hit second's last print as its exit mid (not the
+   bracket level).
+7. Sensitivities, reported, not verdict-bearing (`PAT_SENS`): (a) a locked/crossed/insane latest
+   quote falls back to the last valid quote ≤ 10 s old; (b) an imputed stop exit at the hit second's
+   last print (gap-through) instead of the stop level; (c) the timeout exit + latency.
+8. Early-close days (2025-11-28, 2025-12-24 in CONFIRM-PAST; none in EXPLORE): alerts up to 12:15 ET
+   and every lifecycle ends by 13:00 ET.
+9. Top-1 % removal: HA removes D8's top 1 % of trades; HB removes the candidate's top 1 %.
+10. HD: P2 holds at most 4 entries per symbol-day, because the triggers keep the first entry per
+    path (A1.1, production's one row per stock per day per path).
+

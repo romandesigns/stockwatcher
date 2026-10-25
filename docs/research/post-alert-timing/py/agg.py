@@ -139,6 +139,65 @@ def delta(al: dict, keys: list, a: str, b: str, f: str = "net", qconly: bool = F
     return {"n": len(ks), "delta_pp": ci(t)}
 
 
+def entered(r: dict) -> bool:
+    return bool(r.get("entered")) and not r.get("bad")
+
+
+def strict_qc(a: dict, b: dict) -> bool:
+    """A3.3: both entered and all four fills on valid, non-imputed quotes."""
+    return (entered(a) and entered(b) and a.get("ekind") == "q" and a.get("xkind") == "q"
+            and b.get("ekind") == "q" and b.get("xkind") == "q")
+
+
+def matched_delta(al: dict, keys: list, st: str, ref: str, f: str = "net", strict: bool = False,
+                  drop_top: float = 0.0) -> dict:
+    """A3.1: candidate - ref on the alerts the candidate entered (timing, no abstention)."""
+    ks = [k for k in keys if entered(al[k][st])]
+    if strict:
+        ks = [k for k in ks if strict_qc(al[k][st], al[k][ref])]
+    if drop_top > 0:
+        cut = int(round(drop_top * len(ks)))
+        drop = set(sorted(ks, key=lambda k: al[k][st]["net"], reverse=True)[:cut])
+        ks = [k for k in ks if k not in drop]
+    d = [ret(al[k][st], f) - ret(al[k][ref], f) for k in ks]
+    return {"n": len(ks), "delta_pp": ci(boot(d, [k[0] for k in ks]))}
+
+
+def strict_delta(al: dict, keys: list, a: str, b: str) -> dict:
+    ks = [k for k in keys if strict_qc(al[k][a], al[k][b])]
+    d = [ret(al[k][a]) - ret(al[k][b]) for k in ks]
+    return {"n": len(ks), "delta_pp": ci(boot(d, [k[0] for k in ks]))}
+
+
+def decompose(al: dict, keys: list, st: str, ref: str = "D8", reps: int = 2000) -> dict:
+    """A3.1: per-alert delta = timing component + skip component, and the skip component against
+    a coverage-matched random-skip control."""
+    n = len(keys)
+    ent = [k for k in keys if entered(al[k][st])]
+    skp = [k for k in keys if not entered(al[k][st])]
+    timing = sum(ret(al[k][st]) - ret(al[k][ref]) for k in ent) / n
+    skip = sum(-ret(al[k][ref]) for k in skp) / n
+    allref = np.array([-ret(al[k][ref]) for k in keys])
+    expected = len(skp) / n * allref.mean()
+    rng = np.random.default_rng(RNG_SEED)
+    sims = np.array([allref[rng.choice(n, len(skp), replace=False)].sum() / n for _ in range(reps)])
+    imp = sum(-ret(al[k][ref]) for k in skp if al[k][ref].get("ekind") != "q") / n
+    return {"per_alert_delta_pp": pct(timing + skip), "timing_component_pp": pct(timing),
+            "skip_component_pp": pct(skip), "skip_share": round(len(skp) / n, 4),
+            "random_skip_expected_pp": pct(expected),
+            "random_skip_band_pp": [pct(float(np.percentile(sims, 2.5))), pct(float(np.percentile(sims, 97.5)))],
+            "filter_value_beyond_random_pp": pct(skip - expected),
+            "skip_component_on_imputed_ref_entry_pp": pct(imp)}
+
+
+def fill_share(al: dict, keys: list, st: str) -> float:
+    """A3.4: share of this strategy's entry and exit fills on valid, non-imputed quotes."""
+    ent = [al[k][st] for k in keys if entered(al[k][st])]
+    if not ent:
+        return float("nan")
+    return (sum(r.get("ekind") == "q" for r in ent) + sum(r.get("xkind") == "q" for r in ent)) / (2 * len(ent))
+
+
 def select(rows_dir: str, out: str) -> None:
     al = load(rows_dir)
     keys = eligible(al)
@@ -146,14 +205,16 @@ def select(rows_dir: str, out: str) -> None:
     for st in DYN:
         s = summarize(al, keys, st)
         d = delta(al, keys, st, "D8")
-        tab[st] = {"coverage": s["coverage"], "per_alert_delta_vs_D8": d["delta_pp"],
-                   "per_alert_net": s["per_alert_net"]}
+        m = matched_delta(al, keys, st, "D8")
+        tab[st] = {"coverage": s["coverage"], "matched_per_trade_delta_vs_D8": m["delta_pp"],
+                   "matched_n": m["n"], "per_alert_delta_vs_D8": d["delta_pp"],
+                   "per_trade_net": s["per_trade_net"], "per_alert_net": s["per_alert_net"]}
     ok = [st for st in DYN if tab[st]["coverage"] >= 0.60]
     order = {st: i for i, st in enumerate(DYN)}  # S before L, lower h / higher r handled below
     simp = {"S1_0.5": 0, "S1_1.0": 1, "S2_0.7": 2, "S2_0.5": 3, "L_S1_1.0": 4, "L_S2_0.7": 5}
     if ok:
-        win = max(ok, key=lambda s: (tab[s]["per_alert_delta_vs_D8"][0], -simp[s]))
-        note = "highest per-alert mean net delta vs D8 among coverage >= 60%"
+        win = max(ok, key=lambda s: (tab[s]["matched_per_trade_delta_vs_D8"][0], -simp[s]))
+        note = "A3.2: highest matched per-trade net delta vs D8 among coverage >= 60%"
     else:
         win = max(DYN, key=lambda s: tab[s]["coverage"])
         note = "no candidate reached 60% coverage: highest-coverage frozen"
@@ -245,42 +306,68 @@ def tables(rows_dir: str, frozen_path: str, prefix: str, confirm: bool, pop: str
     res["drop_top1pct"] = {"D8_vs_B0": delta(al, keys, "D8", "B0", drop_top=0.01),
                            f"{W}_vs_D8": delta(al, keys, W, "D8", drop_top=0.01)}
     res["sibling"] = {"name": SIBLING[W], "vs_D8": delta(al, keys, SIBLING[W], "D8")} if SIBLING[W] in strats else None
-    # verdicts
-    def verdict(a, b, extra_cov=None, sib=None):
-        p = delta(al, keys, a, b)["delta_pp"]
-        qcd = delta(al, keys, a, b, qconly=True)["delta_pp"]
-        qpos = [v[a + "_vs_" + b if a + "_vs_" + b in v else list(v)[0]][0] for v in res["quarters"].values()] if False else None
-        quarters = []
+    # verdicts (A3)
+    def quarters_of(fn):
+        out = []
         for qd in q:
             qs = set(qd.tolist())
-            ks = [k for k in keys if k[0] in qs]
-            quarters.append(delta(al, ks, a, b)["delta_pp"][0])
-        dt = delta(al, keys, a, b, drop_top=0.01)["delta_pp"][0]
-        conds = {"lower_bound_gt_0": p[1] is not None and p[1] > 0,
-                 "point_ge_0.5pp": p[0] is not None and p[0] >= 0.5,
-                 "quote_complete_same_sign": qcd[0] is not None and p[0] is not None and (qcd[0] > 0) == (p[0] > 0),
-                 "quarters_positive_ge_3_of_4": sum(1 for x in quarters if x is not None and x > 0) >= 3,
-                 "drop_top1pct_positive": dt is not None and dt > 0}
-        if extra_cov is not None:
-            conds["coverage_ge_60pct"] = extra_cov >= 0.60
-        if sib is not None:
-            conds["sibling_same_sign"] = sib is not None and p[0] is not None and (sib > 0) == (p[0] > 0)
-        if all(conds.values()):
-            v = "Supported"
-        elif conds["point_ge_0.5pp"]:
-            v = "Promising but unconfirmed"
-        else:
-            v = "Unsupported"
-        return {"delta_pp": p, "quote_complete_pp": qcd, "quarters_point_pp": quarters,
-                "drop_top1pct_point_pp": dt, "conditions": conds, "verdict": v}
-    qcov = np.mean([1.0 if (al[k]["B0"].get("ekind") == "q" and al[k]["B0"].get("xkind") == "q") else 0.0 for k in keys])
-    sib = res["sibling"]["vs_D8"]["delta_pp"][0] if res["sibling"] else None
-    res["verdicts"] = {
-        "HA_D8_vs_B0": verdict("D8", "B0"),
-        "HB_frozen_vs_D8": verdict(W, "D8", extra_cov=res["strategies"][W]["coverage"], sib=sib),
-        "B0_fill_quote_coverage": round(float(qcov), 4),
-        "data_limited": bool(qcov < 0.70),
-    }
+            out.append(fn([k for k in keys if k[0] in qs])["delta_pp"][0])
+        return out
+
+    def decide(conds, p0):
+        fails = [c for c, v in conds.items() if not v]
+        if not fails:
+            return "Supported"
+        if p0 is not None and p0 >= 0.5 and len(fails) == 1:
+            return "Promising but unconfirmed"
+        return "Unsupported"
+
+    def same_sign(a, b):
+        return a is not None and b is not None and (a > 0) == (b > 0)
+
+    shares = {st: round(fill_share(al, keys, st), 4) for st in ["B0", "D8", W]}
+    limited = any(not (v >= 0.70) for v in shares.values())
+    # HA: per-alert = per-trade (both always enter); top 1% of D8 removed
+    p = delta(al, keys, "D8", "B0")["delta_pp"]
+    sq = strict_delta(al, keys, "D8", "B0")
+    qa = quarters_of(lambda ks: delta(al, ks, "D8", "B0"))
+    dt = delta(al, keys, "D8", "B0", drop_top=0.01)["delta_pp"][0]
+    ca = {"lower_bound_gt_0": p[1] is not None and p[1] > 0,
+          "point_ge_0.5pp": p[0] is not None and p[0] >= 0.5,
+          "strict_quote_complete_same_sign": same_sign(sq["delta_pp"][0], p[0]),
+          "quarters_positive_ge_3_of_4": sum(1 for x in qa if x is not None and x > 0) >= 3,
+          "drop_top1pct_of_D8_positive": dt is not None and dt > 0}
+    va = decide(ca, p[0])
+    ha = {"delta_pp": p, "strict_quote_complete": sq,
+          "old_quote_complete_extra": delta(al, keys, "D8", "B0", qconly=True),
+          "quarters_point_pp": qa, "drop_top1pct_of_D8_point_pp": dt, "conditions": ca,
+          "verdict_if_not_data_limited": va,
+          "verdict": "Inconclusive due to data limitations" if limited else va}
+    # HB: matched per-trade timing vs D8; top 1% of the candidate removed
+    m = matched_delta(al, keys, W, "D8")
+    mp = m["delta_pp"]
+    msq = matched_delta(al, keys, W, "D8", strict=True)
+    qb = quarters_of(lambda ks: matched_delta(al, ks, W, "D8"))
+    mdt = matched_delta(al, keys, W, "D8", drop_top=0.01)["delta_pp"][0]
+    sib = SIBLING[W]
+    sibm = matched_delta(al, keys, sib, "D8")["delta_pp"][0] if sib in strats else None
+    cb = {"lower_bound_gt_0": mp[1] is not None and mp[1] > 0,
+          "point_ge_0.5pp": mp[0] is not None and mp[0] >= 0.5,
+          "strict_quote_complete_same_sign": same_sign(msq["delta_pp"][0], mp[0]),
+          "quarters_positive_ge_3_of_4": sum(1 for x in qb if x is not None and x > 0) >= 3,
+          "drop_top1pct_of_candidate_positive": mdt is not None and mdt > 0,
+          "sibling_same_sign": same_sign(sibm, mp[0]),
+          "coverage_ge_60pct": res["strategies"][W]["coverage"] >= 0.60}
+    vb = decide(cb, mp[0])
+    hb = {"matched_per_trade_delta_pp": mp, "n": m["n"], "strict_quote_complete": msq,
+          "quarters_point_pp": qb, "drop_top1pct_of_candidate_point_pp": mdt,
+          "sibling": {"name": sib, "matched_point_pp": sibm}, "conditions": cb,
+          "decomposition_vs_D8": decompose(al, keys, W, "D8"),
+          "verdict_if_not_data_limited": vb,
+          "verdict": "Inconclusive due to data limitations" if limited else vb}
+    res["decomposition_vs_D8"] = {st: decompose(al, keys, st, "D8") for st in DYN + ["RC", "PB"] if st in strats}
+    res["verdicts"] = {"HA_D8_vs_B0": ha, "HB_frozen_vs_D8": hb,
+                       "fill_quote_share": shares, "data_limited": limited}
     res["H0_per_trade_net"] = {st: res["strategies"][st]["per_trade_net"] for st in ["B0", "D8", W]}
     res["H0_profitable"] = {st: (res["strategies"][st]["per_trade_net"][1] or -1) > 0 for st in ["B0", "D8", W]}
     json.dump(res, open(prefix + ".json", "w"), indent=1)

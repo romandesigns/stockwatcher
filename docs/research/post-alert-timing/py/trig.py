@@ -26,6 +26,7 @@ SEC = 10**9
 CAPS = {"running": 150, "fast": 200}
 PATH_ORDER = ["burst", "run", "fast", "running"]
 EVENT_GAP = 15 * 60 * SEC
+EARLY_CLOSE = {"2025-07-03", "2025-11-28", "2025-12-24", "2026-11-27", "2026-12-24"}  # A3.8
 
 
 def et_of(ns: int) -> dt.datetime:
@@ -59,7 +60,7 @@ def entries_of(root: str, day: str) -> list[dict]:
     trig.sort(key=lambda r: (r["t"], r["s"], PATH_ORDER.index(r["path"])))
     used = collections.Counter()
     out = []
-    lo, hi = t_et(day, 4, 0), t_et(day, 15, 15)
+    lo, hi = t_et(day, 4, 0), t_et(day, 12, 15) if day in EARLY_CLOSE else t_et(day, 15, 15)
     for r in trig:
         c = CAPS.get(r["path"])
         if c is not None:
