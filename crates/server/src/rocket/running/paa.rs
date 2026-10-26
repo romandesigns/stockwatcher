@@ -258,7 +258,11 @@ fn pull(d: &Day, t0: i64, m: usize) -> Option<Pull> {
         x = x.max(d.m1[k].h);
         pv += d.m1[k].v;
     }
-    let pb_vol = if bars.is_empty() { f64::NAN } else { pv / bars.len() as f64 };
+    let pb_vol = if bars.is_empty() {
+        f64::NAN
+    } else {
+        pv / bars.len() as f64
+    };
     let fm = d.minute(from).max(0) as usize;
     let imp: Vec<usize> = (fm..=hb).filter(|&k| !d.m1[k].empty()).collect();
     let imp_vol = if imp.is_empty() {
@@ -266,7 +270,16 @@ fn pull(d: &Day, t0: i64, m: usize) -> Option<Pull> {
     } else {
         imp.iter().map(|&k| d.m1[k].v).sum::<f64>() / imp.len() as f64
     };
-    Some(Pull { h, l, hb, bars, lp, x, imp_vol, pb_vol })
+    Some(Pull {
+        h,
+        l,
+        hb,
+        bars,
+        lp,
+        x,
+        imp_vol,
+        pb_vol,
+    })
 }
 
 fn armed(d: &Day, pl: &Pull, c: &Cfg, m: usize) -> bool {
@@ -302,7 +315,11 @@ fn pull_med15(d: &Day, pl: &Pull, m: usize) -> f64 {
     }
     r.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let n = r.len();
-    if n % 2 == 1 { r[n / 2] } else { (r[n / 2 - 1] + r[n / 2]) / 2.0 }
+    if n % 2 == 1 {
+        r[n / 2]
+    } else {
+        (r[n / 2 - 1] + r[n / 2]) / 2.0
+    }
 }
 
 /// The last 4 completed 15 s bars before `t`.
@@ -335,7 +352,9 @@ fn scenario(d: &Day, t0: i64, t: i64) -> &'static str {
         return "D";
     }
     let m = d.minute(t) as usize;
-    let Some(pl) = pull(d, t0, m) else { return "none" };
+    let Some(pl) = pull(d, t0, m) else {
+        return "none";
+    };
     if pl.bars.is_empty() {
         return "none";
     }
@@ -475,13 +494,21 @@ fn entries(d: &Day, t0: i64, b1: &[i64], mp: &[(i64, f64)], g: &[Cfg]) -> Vec<En
     let within = |i: usize| i < iend && i < d.ot.len();
     // B0
     if within(i0) {
-        v.push(Ent { rule: "B0".into(), i: i0, stop: f64::NAN });
+        v.push(Ent {
+            rule: "B0".into(),
+            i: i0,
+            stop: f64::NAN,
+        });
     }
     // B1
     for &dl in b1 {
         let i = d.first_at(t0 + dl * SEC);
         if within(i) {
-            v.push(Ent { rule: format!("B1_{dl}"), i, stop: f64::NAN });
+            v.push(Ent {
+                rule: format!("B1_{dl}"),
+                i,
+                stop: f64::NAN,
+            });
         }
     }
     // B2: the first completed red 1-min bar that ends after t0.
@@ -496,7 +523,11 @@ fn entries(d: &Day, t0: i64, b1: &[i64], mp: &[(i64, f64)], g: &[Cfg]) -> Vec<En
                     i += 1;
                 }
                 if within(i) {
-                    v.push(Ent { rule: "B2".into(), i, stop: b.l });
+                    v.push(Ent {
+                        rule: "B2".into(),
+                        i,
+                        stop: b.l,
+                    });
                 }
                 break;
             }
@@ -509,7 +540,11 @@ fn entries(d: &Day, t0: i64, b1: &[i64], mp: &[(i64, f64)], g: &[Cfg]) -> Vec<En
         let mut i = i0;
         while within(i) {
             if d.ot[i] >= t0 + 2 * MIN && hi > f64::MIN && d.op[i] > hi {
-                v.push(Ent { rule: "B3".into(), i, stop: f64::NAN });
+                v.push(Ent {
+                    rule: "B3".into(),
+                    i,
+                    stop: f64::NAN,
+                });
                 break;
             }
             hi = hi.max(d.op[i]);
@@ -520,7 +555,11 @@ fn entries(d: &Day, t0: i64, b1: &[i64], mp: &[(i64, f64)], g: &[Cfg]) -> Vec<En
     if let Some(&(at, stop)) = mp.iter().find(|(at, _)| *at >= t0 && *at <= t0 + WINDOW) {
         let i = d.first_at(at);
         if within(i) {
-            v.push(Ent { rule: "C1".into(), i, stop });
+            v.push(Ent {
+                rule: "C1".into(),
+                i,
+                stop,
+            });
         }
     }
     // C2 / C3 grid.
@@ -543,7 +582,11 @@ fn entries(d: &Day, t0: i64, b1: &[i64], mp: &[(i64, f64)], g: &[Cfg]) -> Vec<En
             let mut i = d.first_at(bstart);
             while within(i) && d.ot[i] < bend {
                 if d.op[i] > pl.x && (!c.c3 || c3_ok(d, pl, *m, d.ot[i])) {
-                    got = Some(Ent { rule: c.id(), i, stop: pl.lp });
+                    got = Some(Ent {
+                        rule: c.id(),
+                        i,
+                        stop: pl.lp,
+                    });
                     break 'outer;
                 }
                 i += 1;
@@ -570,6 +613,21 @@ fn export_paa() {
         .unwrap_or_default();
     let only: Option<Vec<String>> =
         env("PAA_SYMBOLS").map(|v| v.split(',').map(str::to_string).collect());
+    // research/fast-0800: a Fast-move variant ("" = production rule unchanged). "drop_d_t" feeds
+    // the fast tape no venue-D Form-T print reported in the window after a FINRA TRF opening
+    // (its batch of late reports: 08:00 until 2026-03-27, 04:00 from 2026-03-30); "blackout"
+    // makes no fast decision in that window. PAA_FAST_WIN = "HH:MM" (default 08:00) and
+    // PAA_FAST_WIN_S = its length in seconds (default 120).
+    let fast_variant = env("PAA_FAST_VARIANT").unwrap_or_default();
+    let (wh, wm) = env("PAA_FAST_WIN")
+        .and_then(|v| {
+            v.split_once(':')
+                .map(|(h, m)| (h.parse().unwrap(), m.parse().unwrap()))
+        })
+        .unwrap_or((8, 0));
+    let win_s: i64 = env("PAA_FAST_WIN_S").map_or(120, |v| v.parse().unwrap());
+    let t800 = market_events::session::et(day, wh, wm, 0, 0).unwrap().0;
+    let in_800 = |ts: i64| (t800..t800 + win_s * SEC).contains(&ts);
     let archive = Archive::new(ArchiveConfig {
         root: root.clone(),
         retention_days: 0,
@@ -629,6 +687,9 @@ fn export_paa() {
     ));
     let we = Mutex::new(std::io::BufWriter::new(
         std::fs::File::create(out.join("entries.jsonl")).unwrap(),
+    ));
+    let wf = Mutex::new(std::io::BufWriter::new(
+        std::fs::File::create(out.join("fires.jsonl")).unwrap(),
     ));
     std::thread::scope(|sc| {
         for _ in 0..threads {
@@ -717,6 +778,14 @@ fn export_paa() {
                             let mut any = false;
                             while j < prints.len() && prints[j].0.event_ts.0 < end {
                                 let (t, c) = &prints[j];
+                                if fast_variant == "drop_d_t"
+                                    && t.exchange == "D"
+                                    && t.conditions.iter().any(|x| x == "T")
+                                    && in_800(t.event_ts.0)
+                                {
+                                    j += 1;
+                                    continue;
+                                }
                                 ft.apply(
                                     t.event_ts.0,
                                     t.price.micros() as f64 / 1e6,
@@ -731,6 +800,9 @@ fn export_paa() {
                                 prev_traded = k;
                             }
                             if prev_traded < 0 || k - prev_traded > 2 {
+                                continue;
+                            }
+                            if fast_variant == "blackout" && in_800(end) {
                                 continue;
                             }
                             if let Some(e) = ft.inputs(s0 + k).and_then(|x| fastm::decide(&x)) {
@@ -791,6 +863,36 @@ fn export_paa() {
                         );
                     }
                     wt.lock().unwrap().write_all(tl.as_bytes()).unwrap();
+                    // research/fast-0800: each path's first fire with its follow-through (+10 %
+                    // before -5 % within 30 min on OHLC prints after the fire, no costs).
+                    let mut fl = String::new();
+                    for (path, t, p) in &first {
+                        let mut out_ft = "timeout";
+                        for (x, c) in prints.iter() {
+                            let ts = x.event_ts.0;
+                            if ts <= *t || !c.ohlc {
+                                continue;
+                            }
+                            if ts > t + 30 * 60 * SEC {
+                                break;
+                            }
+                            let q = x.price.micros() as f64 / 1e6;
+                            if q >= p * 1.10 {
+                                out_ft = "win";
+                                break;
+                            }
+                            if q <= p * 0.95 {
+                                out_ft = "loss";
+                                break;
+                            }
+                        }
+                        fl += &format!(
+                            "{}
+",
+                            serde_json::json!({"day": day.to_string(), "s": sym, "path": path, "t": t, "p": p, "ft": out_ft, "variant": fast_variant})
+                        );
+                    }
+                    wf.lock().unwrap().write_all(fl.as_bytes()).unwrap();
 
                     // Entry rules for every in-window first trigger.
                     let todo: Vec<&(&str, i64, f64)> = first
@@ -828,6 +930,7 @@ fn export_paa() {
         }
     });
     wt.lock().unwrap().flush().unwrap();
+    wf.lock().unwrap().flush().unwrap();
     we.lock().unwrap().flush().unwrap();
     eprintln!("done in {:.0} s", started.elapsed().as_secs_f64());
 }
