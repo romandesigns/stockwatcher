@@ -10,6 +10,7 @@ import { Collapse } from "../motion/Collapse";
 import { ZoneNote } from "./ZoneNote";
 import { fonts } from "../theme";
 import { useTickerPress } from "../ui/useTickerPress";
+import { StarToggle } from "../ui/StarToggle";
 
 const TONE: Record<RocketTone, string> = {
   good: UI.good,
@@ -219,6 +220,7 @@ const Row = memo(function Row({ row: r, onPick, reducedMotion }: { row: RocketRo
           {r.fresh && <Pulse color={UI.accent} size={6} reducedMotion={reducedMotion} />}
           <Text style={[styles.small, r.fresh ? { color: UI.accent, fontFamily: fonts.semibold } : { color: UI.textFaint }]}>{r.age}</Text>
         </View>
+        <StarToggle symbol={r.symbol} size={14} />
       </View>
       {/* The state and metrics on the left, the day line on their right (the Ross row's layout):
           the chart's box is always reserved, so a line arriving never moves the text. */}

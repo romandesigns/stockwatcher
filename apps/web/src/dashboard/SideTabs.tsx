@@ -1,7 +1,10 @@
 import { cn } from "@stockwatcher/chart-web/ui";
-import { detectionAttention, detectionItemCount, panelsSettled, pickSideTab, rocketFreshCount, rocketItemCount, rossItemCount, visibleSideTabs, type DetectionChannel, type RocketChannel, type RossChannel, type SideTab } from "@stockwatcher/shared";
+import { detectionAttention, detectionItemCount, panelsSettled, pickSideTab, rocketFreshCount, rocketItemCount, rossItemCount, visibleSideTabs, type DetectionChannel, type FavoritesChannel, type RocketChannel, type RossChannel, type SideTab } from "@stockwatcher/shared";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useDetection } from "../feed/useDetection.ts";
+import { useFavorites } from "../feed/useFavorites.ts";
+import { FavoritesPanelView } from "../favorites/FavoritesPanel.tsx";
+import { useFavoriteList } from "../favorites/useFavoriteList.ts";
 import { useRocket } from "../feed/useRocket.ts";
 import { useRossState } from "../feed/useRossState.ts";
 import { DetectionPanelView } from "./DetectionPanel.tsx";
@@ -18,7 +21,7 @@ export const SETTLE_MS = 1500;
 function readTab(): SideTab {
   try {
     const t = window.localStorage.getItem(KEY);
-    return t === "rocket" || t === "signals" ? t : "ross";
+    return t === "rocket" || t === "signals" || t === "favorites" ? t : "ross";
   } catch {
     return "ross";
   }
@@ -60,16 +63,20 @@ const NONE: SideTab[] = [];
  * anything: the channels keep their last rows (dimmed by each panel) until the new connection
  * says otherwise.
  */
-export function SideTabs({ ross, rocket, detection, onPick, onEpisodePick, onEpisodeClear }: { ross: RossChannel | undefined; rocket: RocketChannel | undefined; detection: DetectionChannel | undefined; onPick: (symbol: string) => void; onEpisodePick: (symbol: string, episodeId: string, runEpoch: string) => void; onEpisodeClear?: () => void }) {
+export function SideTabs({ ross, rocket, detection, favorites, onPick, onEpisodePick, onEpisodeClear }: { ross: RossChannel | undefined; rocket: RocketChannel | undefined; detection: DetectionChannel | undefined; favorites?: FavoritesChannel; onPick: (symbol: string) => void; onEpisodePick: (symbol: string, episodeId: string, runEpoch: string) => void; onEpisodeClear?: () => void }) {
   const [picked, setPicked] = useState<SideTab>(readTab);
   const rossState = useRossState(ross);
   const rocketState = useRocket(rocket);
   const detected = useDetection(detection);
+  const favoritesState = useFavorites(favorites);
+  // The owner's list counts from the synced setting, before any row arrives (panels.ts).
+  const favoriteList = useFavoriteList();
   const wall = useTick(15_000);
   const live = visibleSideTabs({
     ross: ross ? rossItemCount(rossState) : 0,
     rocket: rocket ? rocketItemCount(rocketState) : 0,
     signals: detection ? detectionItemCount(detected) : 0,
+    favorites: favorites ? favoriteList.length : 0,
   });
   const settled = panelsSettled([ross && rossState.enabled, rocket && rocketState.enabled, detection && detected.enabled]);
   const visible = useSettledTabs(live, settled);
@@ -92,6 +99,8 @@ export function SideTabs({ ross, rocket, detection, onPick, onEpisodePick, onEpi
       <RocketPanelView state={rocketState} wallNow={wall} onPick={onPick} />
     ) : t === "signals" ? (
       <DetectionPanelView state={detected} onPick={onEpisodePick} onClear={onEpisodeClear} />
+    ) : t === "favorites" ? (
+      <FavoritesPanelView list={favoriteList} state={favoritesState} onPick={onPick} />
     ) : null;
   const has = (t: SideTab) => visible.includes(t);
   // Only from current data: while reconnecting the rows are last known, so nothing claims attention.
@@ -129,6 +138,11 @@ export function SideTabs({ ross, rocket, detection, onPick, onEpisodePick, onEpi
               <TabButton id="signals" active={tab === "signals"} onClick={() => pick("signals")}>
                 Signals
                 {attention > 0 && <CountBadge n={attention} label={`${attention} at the trigger or crossing it`} />}
+              </TabButton>
+            </TabReveal>
+            <TabReveal show={has("favorites")}>
+              <TabButton id="favorites" active={tab === "favorites"} onClick={() => pick("favorites")}>
+                Favorites
               </TabButton>
             </TabReveal>
           </div>

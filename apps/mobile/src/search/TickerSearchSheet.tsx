@@ -17,6 +17,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useQuoteBoard } from "../feed/hooks";
 import { colors, fonts } from "../theme";
+import { StarToggle } from "../ui/StarToggle";
 
 /** Text with the matched letters in the accent, as on the web. */
 function Highlight({ text, indices, style }: { text: string; indices: readonly number[]; style: object }) {
@@ -75,6 +76,8 @@ const Row = memo(function Row({ row: r, current, onChoose, onMore }: RowProps) {
               </Text>
             </View>
           )}
+          {/* Add to the Favorites card without opening the ticker (its own press). */}
+          <StarToggle symbol={t.symbol} />
         </View>
       </Pressable>
       {r.moreRecents ? (

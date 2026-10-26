@@ -106,6 +106,13 @@
 //!   symbol's latest stock-context decision (five pillars with values, rules, reasons, evidence),
 //!   or `null` before its first trade.
 //!
+//! Favorites (crates/server/src/favorites.rs, after `welcome`; the list is the synced settings
+//! namespace `favorites`):
+//! - client `favorites.subscribe` -> server `favorites.snapshot {t, symbols, rows}` at once, then
+//!   `favorites.update` (same shape; day lines as slices, as in `ross.update`) when a row or the
+//!   list changed, at most once per second. The row fields are in that module's docs.
+//! - client `favorites.unsubscribe` stops the updates; a seek or a lag sends a fresh snapshot.
+//!
 //! Rocket watch (EXPERIMENTAL, `ROCKET_WATCH`, on by default; crates/server/src/rocket/, after
 //! `welcome`):
 //! - client `rocket.subscribe` -> server `rocket.snapshot {t, enabled, strategy, mode, budget,
@@ -196,8 +203,8 @@ use serde::{Deserialize, Serialize};
 use tokio::time::{Instant, interval_at, timeout};
 
 use crate::market::{
-    ControlError, DetectionGuard, Market, OutKind, PressureGuard, QuotesGuard, RocketGuard,
-    RossGuard, SnapshotError,
+    ControlError, DetectionGuard, FavoritesGuard, Market, OutKind, PressureGuard, QuotesGuard,
+    RocketGuard, RossGuard, SnapshotError,
 };
 use crate::settings::{SettingsError, SettingsOp, rejected_frame as settings_rejected};
 use crate::{AppState, COMMIT, Settings, VERSION, api, auth};
@@ -269,6 +276,10 @@ enum ClientMessage {
     RossSubscribe,
     #[serde(rename = "ross.unsubscribe")]
     RossUnsubscribe,
+    #[serde(rename = "favorites.subscribe")]
+    FavoritesSubscribe,
+    #[serde(rename = "favorites.unsubscribe")]
+    FavoritesUnsubscribe,
     #[serde(rename = "rocket.subscribe")]
     RocketSubscribe,
     #[serde(rename = "rocket.unsubscribe")]
@@ -450,6 +461,24 @@ struct RossSub {
 /// Sends a fresh `ross.snapshot` and records its sequence.
 async fn send_ross_snapshot(socket: &mut WebSocket, market: &Market, q: &mut RossSub) -> bool {
     let (seq, json) = market.ross_snapshot();
+    q.seq = seq;
+    send_text(socket, json).await
+}
+
+/// The connection's Favorites opt-in (the Ross opt-in's twin, `crate::favorites`).
+struct FavoritesSub {
+    _guard: FavoritesGuard,
+    /// `favorites.update`s with `seq` <= this are not newer than the snapshot.
+    seq: u64,
+}
+
+/// Sends a fresh `favorites.snapshot` and records its sequence.
+async fn send_favorites_snapshot(
+    socket: &mut WebSocket,
+    market: &Market,
+    q: &mut FavoritesSub,
+) -> bool {
+    let (seq, json) = market.favorites_snapshot();
     q.seq = seq;
     send_text(socket, json).await
 }
@@ -753,6 +782,7 @@ async fn session(mut socket: WebSocket, state: AppState) {
     let mut quotes: Option<QuotesSub> = None;
     let mut pressure: Option<PressureSub> = None;
     let mut ross: Option<RossSub> = None;
+    let mut favorites: Option<FavoritesSub> = None;
     let mut rocket: Option<RocketSub> = None;
     let mut detection: Option<DetectionSub> = None;
     // Listed among the Runners notification desks while held (`runners.notify`).
@@ -790,6 +820,10 @@ async fn session(mut socket: WebSocket, state: AppState) {
                             Some(q) if o.seq > q.seq => send_text(&mut socket, frame.clone()).await,
                             _ => true,
                         },
+                        OutKind::Favorites(frame) => match favorites.as_ref() {
+                            Some(q) if o.seq > q.seq => send_text(&mut socket, frame.clone()).await,
+                            _ => true,
+                        },
                         OutKind::Rocket(frame) => match rocket.as_ref() {
                             Some(q) if o.seq > q.seq => send_text(&mut socket, frame.clone()).await,
                             _ => true,
@@ -811,6 +845,9 @@ async fn session(mut socket: WebSocket, state: AppState) {
                                 None => true,
                             }) && (match ross.as_mut() {
                                 Some(q) => send_ross_snapshot(&mut socket, &market, q).await,
+                                None => true,
+                            }) && (match favorites.as_mut() {
+                                Some(q) => send_favorites_snapshot(&mut socket, &market, q).await,
                                 None => true,
                             }) && (match rocket.as_mut() {
                                 Some(q) => send_rocket_snapshot(&mut socket, &market, q).await,
@@ -887,6 +924,10 @@ async fn session(mut socket: WebSocket, state: AppState) {
                             }
                             && match ross.as_mut() {
                                 Some(q) => send_ross_snapshot(&mut socket, &market, q).await,
+                                None => true,
+                            }
+                            && match favorites.as_mut() {
+                                Some(q) => send_favorites_snapshot(&mut socket, &market, q).await,
                                 None => true,
                             }
                             && match rocket.as_mut() {
@@ -1087,6 +1128,20 @@ async fn session(mut socket: WebSocket, state: AppState) {
                     }
                     Ok(ClientMessage::RossUnsubscribe) => {
                         ross = None;
+                        None
+                    }
+                    Ok(ClientMessage::FavoritesSubscribe) => {
+                        let q = favorites.get_or_insert_with(|| FavoritesSub {
+                            _guard: market.favorites_subscribe(),
+                            seq: 0,
+                        });
+                        if !send_favorites_snapshot(&mut socket, &market, q).await {
+                            break;
+                        }
+                        None
+                    }
+                    Ok(ClientMessage::FavoritesUnsubscribe) => {
+                        favorites = None;
                         None
                     }
                     Ok(ClientMessage::RocketSubscribe) => {

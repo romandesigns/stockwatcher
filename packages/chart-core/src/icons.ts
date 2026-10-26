@@ -71,6 +71,7 @@ const PENCIL = "M10.5 2.5 13.5 5.5 5.5 13.5H2.5v-3z";
 const PLAY = "M4.8 3.4v9.2l7.6-4.6z";
 const STEP = "M4 3.5 9.5 8 4 12.5z";
 const DROP = "M8 2.2c2.6 3 4.2 5.2 4.2 7.2a4.2 4.2 0 0 1-8.4 0c0-2 1.6-4.2 4.2-7.2z";
+const STAR = "M8 2 9.59 6.22 14.09 6.42 10.57 9.23 11.76 13.58 8 11.1 4.24 13.58 5.43 9.23 1.91 6.42 6.41 6.22z";
 
 export type IconName =
   | "cursor"
@@ -105,7 +106,10 @@ export type IconName =
   | "alertNext"
   | "toLatest"
   | "chevronDown"
+  | "chevronUp"
   | "chevronRight"
+  | "star"
+  | "starOn"
   | "chevronLeft"
   | "check"
   | "menu"
@@ -194,6 +198,12 @@ export const ICONS: Readonly<Record<IconName, IconDef>> = {
 
   // Affordances: a caret with a soft wedge inside it; the check's long stroke primary, its short leg secondary.
   chevronDown: icon([S("M3.2 5.6 8 10.4 12.8 5.6z", { paint: "fill" }), P("M3.2 5.6 8 10.4 12.8 5.6")], 2.4),
+  // chevronDown turned over: the Favorites panel's move-up.
+  chevronUp: icon([S("M3.2 10.4 8 5.6 12.8 10.4z", { paint: "fill" }), P("M3.2 10.4 8 5.6 12.8 10.4")], 2.4),
+  // Favorites (owner, 2026-10-26): off is an outline round a soft star; on fills the star inside
+  // a soft halo, so the state reads at a glance without leaning on colour alone.
+  star: icon([S(STAR, { paint: "fill" }), P(STAR, { width: 1.3 })]),
+  starOn: icon([S(STAR, { width: 2.8 }), P(STAR, { paint: "fill" })]),
   chevronRight: icon([S("M5.6 3.2 10.4 8 5.6 12.8z", { paint: "fill" }), P("M5.6 3.2 10.4 8 5.6 12.8")], 1.8),
   // The single-column Settings' back button: chevronRight mirrored, so "in" and "back" read as one mark.
   chevronLeft: icon([S("M10.4 3.2 5.6 8 10.4 12.8z", { paint: "fill" }), P("M10.4 3.2 5.6 8 10.4 12.8")], 1.8),

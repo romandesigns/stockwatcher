@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { DEFAULT_TOOLBOX_PHONE, drawingsNs, drawingsToDoc, SYNC_NS, type Drawing } from "@stockwatcher/chart-core";
 import { createSettingsSync, type SettingsClientMessage } from "@stockwatcher/shared";
-import { APP_NS, DEFAULT_VIEW, parseSearchRecents, parseSymbol, parseTradeQty, parseView } from "./namespaces.ts";
+import { APP_NS, DEFAULT_VIEW, parseFavorites, parseSearchRecents, parseSymbol, parseTradeQty, parseView } from "./namespaces.ts";
 import { createAppStore, shownTicker, type DevicePrefs } from "./store.ts";
 
 /** A store on a real (offline) sync engine, plus a way to play another device's write. */
@@ -349,5 +349,30 @@ describe("app store: migration and device state", () => {
     r.store.dispose();
     r.remote(APP_NS.tradeQty, 1000);
     expect(r.s().tradeQty).toBe(100);
+  });
+});
+
+describe("favorites", () => {
+  test("parse keeps valid unique tickers in order, capped", () => {
+    expect(parseFavorites([" smpl", "AAPL", "SMPL", "1BAD", 4, "brk.b"])).toEqual(["SMPL", "AAPL", "BRK.B"]);
+    expect(parseFavorites({})).toEqual([]);
+    expect(parseFavorites(Array.from({ length: 60 }, (_, i) => `S${i}`)).length).toBe(40);
+  });
+
+  test("toggle adds at the end and removes; move reorders; another device's write lands", () => {
+    const { store, s } = rig();
+    store.getState().toggleFavorite("smpl");
+    store.getState().toggleFavorite("AAPL");
+    expect(s().favorites).toEqual(["SMPL", "AAPL"]);
+    store.getState().moveFavorite("AAPL", -1);
+    expect(s().favorites).toEqual(["AAPL", "SMPL"]);
+    store.getState().moveFavorite("AAPL", -5);
+    expect(s().favorites).toEqual(["AAPL", "SMPL"]);
+    store.getState().toggleFavorite("AAPL");
+    expect(s().favorites).toEqual(["SMPL"]);
+    // Another device's list (this one has no unconfirmed edit of its own).
+    const other = rig();
+    other.remote(APP_NS.favorites, ["TSLA", "junk!", "SMPL"]);
+    expect(other.s().favorites).toEqual(["TSLA", "SMPL"]);
   });
 });

@@ -5,6 +5,7 @@ import { memo } from "react";
 import type { RossDemoState } from "../feed/useRossState.ts";
 import { useDetection } from "../feed/useDetection.ts";
 import { useTickerPress } from "../lib/useTickerPress.ts";
+import { StarButton } from "../favorites/StarButton.tsx";
 
 const TONE: Record<RossTone, string> = {
   good: "text-good",
@@ -72,8 +73,10 @@ export function RossPanelView({ state, onPick, detection, onEpisodePick }: { sta
       <ScrollArea className={cn("transition-opacity duration-200 motion-reduce:transition-none", fresh.stale && "opacity-60")}>
       <ul className="m-0 flex list-none flex-col gap-1 p-0">
         {rows.map((r) => (
-          <li key={r.symbol}>
+          <li key={r.symbol} className="relative">
             <RossRow row={r} onPick={onPick} />
+            {/* Beside the row, not in it (a button cannot hold a button). */}
+            <StarButton symbol={r.symbol} className="absolute top-1 right-1" />
             {joined.has(r.symbol) && (() => {
               const e = joined.get(r.symbol)!;
               return <Tip label={e.episode_id}><button type="button" className="w-full rounded-b px-2.5 py-1 text-left text-[10px] text-primary outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => onEpisodePick ? onEpisodePick(e.symbol, e.episode_id, detected.frame?.runEpoch ?? "") : onPick(e.symbol)}>Detection: {detectionFamilyLabel(e.family)} · {detectionStateLabel(e.state)}{!detected.connected ? " · last known" : ""}</button></Tip>;
@@ -99,7 +102,7 @@ const RossRow = memo(function RossRow({ row: r, onPick }: { row: RossRowView; on
         r.dimmed && "opacity-60",
       )}
     >
-      <span className="flex items-baseline gap-1.5">
+      <span className="flex items-baseline gap-1.5 pr-7">
         <span className={cn("w-2 text-[10px]", TONE[r.moveTone])}>{r.move}</span>
         <span className="text-sm font-semibold">{r.symbol}</span>
         <span className="text-[13px] tabular-nums">{r.price}</span>

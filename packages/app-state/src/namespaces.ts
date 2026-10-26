@@ -1,5 +1,5 @@
 import { parseIndicators, parseLayers, TIMEFRAMES, TRADE_SIZES, type ChartLayers, type IndicatorSpec, type Timeframe } from "@stockwatcher/chart-core";
-import { MAX_TICKER_RECENTS } from "@stockwatcher/shared";
+import { MAX_FAVORITES, MAX_TICKER_RECENTS } from "@stockwatcher/shared";
 
 // The app-level state that syncs across devices on top of chart-core's SYNC_NS (owner,
 // 2026-10-18: "sync everything possible"; docs/architecture/app-state.md). Same rules as the
@@ -18,6 +18,9 @@ export const APP_NS = {
   tradeQty: "tradeQty",
   searchRecents: "searchRecents",
   dashboard: "dashboard",
+  // The Favorites panel's list (owner, 2026-10-26), in the owner's order. The server reads it
+  // too: it builds the panel's rows (crates/server/src/favorites.rs, same validation).
+  favorites: "favorites",
 } as const;
 
 /** The session volume profile's bin widths, the same on every client. */
@@ -106,6 +109,35 @@ export function parseDashboard(raw: unknown): DashboardState {
   // Anything but "replay" is live: the dashboard is the live page unless asked otherwise.
   const source: DashboardSource = raw.source === "replay" ? "replay" : "live";
   return { count, slots, source };
+}
+
+/** The favorites list: valid tickers, first occurrence kept, in order, at most MAX_FAVORITES. */
+export function parseFavorites(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  for (const r of raw) {
+    const s = parseSymbol(r);
+    if (s && !out.includes(s)) out.push(s);
+    if (out.length >= MAX_FAVORITES) break;
+  }
+  return out;
+}
+
+/** The list with `symbol` added at the end, or removed when it is already there. */
+export function toggledFavorites(list: readonly string[], symbol: string): string[] {
+  const s = parseSymbol(symbol);
+  if (!s) return [...list];
+  return list.includes(s) ? list.filter((x) => x !== s) : [...list, s].slice(0, MAX_FAVORITES);
+}
+
+/** The list with `symbol` moved by `delta` places (clamped); unchanged when it is not in it. */
+export function movedFavorite(list: readonly string[], symbol: string, delta: number): string[] {
+  const i = list.indexOf(symbol);
+  if (i < 0) return [...list];
+  const j = Math.max(0, Math.min(list.length - 1, i + delta));
+  const out = list.filter((x) => x !== symbol);
+  out.splice(j, 0, symbol);
+  return out;
 }
 
 /** Valid, de-duplicated tickers, newest first, capped like pushRecentTicker. */

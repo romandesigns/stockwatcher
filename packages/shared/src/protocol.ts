@@ -628,8 +628,8 @@ export interface PushUnregisterMessage {
   token: string;
 }
 
-export type ClientMessage = HelloMessage | PingMessage | PongMessage | QuotesSubscribeMessage | QuotesUnsubscribeMessage | PressureSubscribeMessage | PressureUnsubscribeMessage | RossSubscribeMessage | RossUnsubscribeMessage | { type: "detection.subscribe" | "detection.unsubscribe" } | import("./rocket.ts").RocketClientMessage | SettingsClientMessage | PushRegisterMessage | PushUnregisterMessage | import("./runnersNotify.ts").RunnersNotifyMessage;
-export type ServerMessage = WelcomeMessage | PingMessage | PongMessage | ErrorMessage | QuotesMessage | PressureMessage | RossMessage | import("./detection.ts").DetectionMessage | import("./rocket.ts").RocketMessage | SettingsServerMessage | AlertsServerMessage | import("./runnersNotify.ts").RunnersNoticeMessage;
+export type ClientMessage = HelloMessage | PingMessage | PongMessage | QuotesSubscribeMessage | QuotesUnsubscribeMessage | PressureSubscribeMessage | PressureUnsubscribeMessage | RossSubscribeMessage | RossUnsubscribeMessage | import("./favorites.ts").FavoritesClientMessage | { type: "detection.subscribe" | "detection.unsubscribe" } | import("./rocket.ts").RocketClientMessage | SettingsClientMessage | PushRegisterMessage | PushUnregisterMessage | import("./runnersNotify.ts").RunnersNotifyMessage;
+export type ServerMessage = WelcomeMessage | PingMessage | PongMessage | ErrorMessage | QuotesMessage | PressureMessage | RossMessage | import("./favorites.ts").FavoritesMessage | import("./detection.ts").DetectionMessage | import("./rocket.ts").RocketMessage | SettingsServerMessage | AlertsServerMessage | import("./runnersNotify.ts").RunnersNoticeMessage;
 
 const ALERT_TYPES = new Set(["alerts.history", "alert.fired", "alert.held", "alert.updated", "alerts.status"]);
 
@@ -638,7 +638,7 @@ export function isAlertsMessage(m: ServerMessage): m is AlertsServerMessage {
   return ALERT_TYPES.has(m.type);
 }
 
-const SERVER_TYPES = new Set(["welcome", "ping", "pong", "error", "quotes.snapshot", "quotes.update", "pressure.snapshot", "pressure.update", "ross.snapshot", "ross.update", "detection.snapshot", "detection.update", "rocket.snapshot", "rocket.update", "settings.snapshot", "settings.changed", "settings.rejected", ...ALERT_TYPES]);
+const SERVER_TYPES = new Set(["welcome", "ping", "pong", "error", "quotes.snapshot", "quotes.update", "pressure.snapshot", "pressure.update", "ross.snapshot", "ross.update", "favorites.snapshot", "favorites.update", "detection.snapshot", "detection.update", "rocket.snapshot", "rocket.update", "settings.snapshot", "settings.changed", "settings.rejected", ...ALERT_TYPES]);
 
 /** Parses one server frame; returns null for anything malformed or unknown. */
 export function parseServerMessage(raw: unknown): ServerMessage | null {

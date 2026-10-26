@@ -63,9 +63,9 @@ describe("hide-when-empty item counts (owner, 2026-10-22)", () => {
 
 describe("side tabs (web)", () => {
   test("a tab with 0 items is not offered; order is fixed", () => {
-    expect(visibleSideTabs({ ross: 0, rocket: 2, signals: 1 })).toEqual(["rocket", "signals"]);
-    expect(visibleSideTabs({ ross: 1, rocket: 0, signals: 0 })).toEqual(["ross"]);
-    expect(visibleSideTabs({ ross: 0, rocket: 0, signals: 0 })).toEqual([]);
+    expect(visibleSideTabs({ ross: 0, rocket: 2, signals: 1, favorites: 0 })).toEqual(["rocket", "signals"]);
+    expect(visibleSideTabs({ ross: 1, rocket: 0, signals: 0, favorites: 3 })).toEqual(["ross", "favorites"]);
+    expect(visibleSideTabs({ ross: 0, rocket: 0, signals: 0, favorites: 0 })).toEqual([]);
   });
 
   test("the picked tab while it has items, else the first non-empty one, else none", () => {

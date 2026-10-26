@@ -92,6 +92,11 @@ pub(crate) struct ContextBoard {
     day_lines: crate::day_line::Published,
     /// Ross and Signals push notices decided from the drained journals (`crate::cue_notices`).
     cue: crate::cue_notices::CueNotices,
+    /// The Runners' flagged symbols and the owner's favorites (`crate::favorites`): together the
+    /// engine's watched set, so both kinds of row get micro-pullback levels. Kept apart because
+    /// only the Runners list is the pullback notices' context.
+    runners_watched: Vec<String>,
+    favorites: Vec<String>,
 }
 
 impl ContextBoard {
@@ -182,6 +187,8 @@ impl ContextBoard {
             detection_epoch: None,
             day_lines: crate::day_line::Published::default(),
             cue: crate::cue_notices::CueNotices::default(),
+            runners_watched: Vec::new(),
+            favorites: Vec::new(),
         })
     }
 
@@ -646,7 +653,52 @@ impl ContextBoard {
         // The pullback notices' context too (crate::cue_notices, "Pullback"), with the time each
         // stock was first flagged.
         self.cue.set_watched(&symbols, now_ns);
-        self.engine.set_watched(symbols);
+        self.runners_watched = symbols;
+        self.sync_watched();
+    }
+
+    /// The owner's favorites (`crate::favorites`): watched by the engine like Runners rows, so a
+    /// favorite's row gets its micro-pullback levels; never the pullback notices' context.
+    pub(crate) fn set_favorites(&mut self, symbols: &[String]) {
+        self.favorites = symbols.to_vec();
+        self.sync_watched();
+    }
+
+    pub(crate) fn favorites(&self) -> &[String] {
+        &self.favorites
+    }
+
+    fn sync_watched(&mut self) {
+        let mut all = self.runners_watched.clone();
+        for s in &self.favorites {
+            if !all.contains(s) {
+                all.push(s.clone());
+            }
+        }
+        self.engine.set_watched(all);
+    }
+
+    /// A symbol's latest five-pillar decision as the Favorites row's context
+    /// (`crate::favorites::Pillars`).
+    pub(crate) fn pillars(&self, symbol: &str) -> Option<crate::favorites::Pillars> {
+        let d = self.decision(symbol)?;
+        let state = |id: stock_context::PillarId| {
+            d.pillars
+                .iter()
+                .find(|p| p.pillar == id)
+                .map(|p| (p.state, p.value))
+        };
+        Some(crate::favorites::Pillars {
+            passes: d
+                .pillars
+                .iter()
+                .filter(|p| p.state == stock_context::Tri::Pass)
+                .count(),
+            of: d.pillars.len(),
+            news: state(stock_context::PillarId::News).map(|(s, _)| s),
+            rvol_milli: state(stock_context::PillarId::Rvol).and_then(|(_, v)| v),
+            member: d.membership.active().is_some(),
+        })
     }
 
     /// A Runners row's micro-pullback levels at `tau` (`rocket.*` row `levels`): the cue's state,

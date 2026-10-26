@@ -13,6 +13,7 @@ import { detectionOverlays } from "@stockwatcher/shared";
 import { useDetection } from "../feed/useDetection.ts";
 import { useZones } from "../feed/useZones.ts";
 import { ZoneNote } from "./ZoneNote.tsx";
+import { StarButton } from "../favorites/StarButton.tsx";
 
 /** A compact chart for a panel of up to four. */
 const CELL_CHART: Partial<ChartOptions> = { fontSize: 10, timeLabelSpacing: 64 };
@@ -142,6 +143,7 @@ export function ChartCell({ index, slot, symbol, feed, trading, selected, showSe
             </Tip>
             <span className="font-mono text-sm tabular-nums">{last ? formatPrice(last.c) : "—"}</span>
             <span className={cn("font-mono text-[11px]", change.startsWith("-") ? "text-critical" : "text-good")}>{change}</span>
+            {symbol && <StarButton symbol={symbol} className="pointer-events-auto self-center" />}
           </div>
         }
         symbol={symbol}

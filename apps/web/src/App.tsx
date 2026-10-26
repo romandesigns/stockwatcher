@@ -31,6 +31,7 @@ import { useMediaQuery } from "./lib/useMediaQuery.ts";
 import { SearchPill } from "./search/SearchPill.tsx";
 import { TickerSearch } from "./search/TickerSearch.tsx";
 import { getAppStore, useApp } from "./state/store.ts";
+import { StarButton } from "./favorites/StarButton.tsx";
 
 
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
@@ -265,6 +266,7 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
             {tickerButton("text-base")}
             <span className="font-mono text-base tabular-nums">{price}</span>
             <span className={cn("font-mono text-[11px]", changeColor)}>{change}</span>
+            {symbol && <StarButton symbol={symbol} className="self-center" />}
           </div>
           <SourceChip className="ml-auto" choice={current} mode={mode} />
           <SettingsButton />
@@ -324,6 +326,7 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
                   <Tip label="Change since the session's first candle">
                     <span className={cn("pointer-events-auto font-mono text-[11px]", changeColor)}>{change}</span>
                   </Tip>
+                  {symbol && <StarButton symbol={symbol} className="pointer-events-auto self-center" />}
                 </div>
               } symbol={symbol} persistKey={CHART_KEY} {...synced} trading={trading} now={clock?.now ?? null} onTimeframeChange={app.setTimeframe} series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={app.setInspectT} options={DESKTOP_CHART} label={chartLabel} />
           </div>

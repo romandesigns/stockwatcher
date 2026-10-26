@@ -9,6 +9,7 @@ pub mod day_line;
 pub mod days;
 pub mod detection;
 pub mod evidence;
+pub mod favorites;
 pub mod history;
 pub mod market;
 pub mod observe;

@@ -414,6 +414,9 @@ pub enum OutKind {
     /// A pre-serialized `rocket.update` (the Rocket watch panel, `crate::rocket`) for the
     /// connections that sent `rocket.subscribe`. `Outbound::seq` is the engine seq when taken.
     Rocket(String),
+    /// A pre-serialized `favorites.update` (`crate::favorites`) for the connections that sent
+    /// `favorites.subscribe`. `Outbound::seq` is the favorites generation, not the engine seq.
+    Favorites(String),
     /// Full bounded replacement; its cursor is independent of the chart engine sequence.
     Detection {
         epoch: String,
@@ -550,6 +553,11 @@ pub(crate) struct Inner {
     pub(crate) readiness: Mutex<Option<crate::context::Readiness>>,
     /// Connections that sent `ross.subscribe`. While 0, no `ross.update` is serialized.
     ross_subs: AtomicUsize,
+    /// The owner's favorites and what the last `favorites.update` carried (`crate::favorites`).
+    /// Locked after the core lock, never before it.
+    favorites: Mutex<crate::favorites::Board>,
+    /// Connections that sent `favorites.subscribe`.
+    favorites_subs: AtomicUsize,
     /// `ROCKET_WATCH` and its policy: every `Core` this market makes gets a board built from them.
     rocket_on: AtomicBool,
     rocket_policy: Mutex<crate::rocket::Policy>,
@@ -778,6 +786,8 @@ impl Market {
             detection_link_down: AtomicBool::new(false),
             readiness: Mutex::new(None),
             ross_subs: AtomicUsize::new(0),
+            favorites: Mutex::new(crate::favorites::Board::default()),
+            favorites_subs: AtomicUsize::new(0),
             rocket_on: AtomicBool::new(true),
             rocket_policy: Mutex::new(crate::rocket::Policy::default()),
             rocket_subs: AtomicUsize::new(0),
@@ -1816,6 +1826,7 @@ impl Market {
                 // engine's output journals are drained so an unattended run stays bounded.
                 market.drain_context();
                 market.publish_context();
+                market.publish_favorites();
                 n += 1;
                 // Live: the quote rows go into the archive's recording now and then, the
                 // startup summary of the next restart (`crate::history`).
@@ -3032,6 +3043,132 @@ impl Market {
         RossGuard(self.0.clone())
     }
 
+    /// Registers a `favorites.subscribe` (the Ross guard's twin).
+    pub fn favorites_subscribe(&self) -> FavoritesGuard {
+        self.0.favorites_subs.fetch_add(1, Ordering::Relaxed);
+        FavoritesGuard(self.0.clone())
+    }
+
+    /// The owner's favorites (`crate::favorites::follow`). The next tick sends an update, and the
+    /// stock-context engine starts watching them (their rows' micro-pullback levels).
+    pub fn set_favorites(&self, list: Vec<String>) {
+        {
+            let mut b = self.0.favorites.lock().expect("favorites lock");
+            if b.list == list {
+                return;
+            }
+            b.list = list;
+            b.list_changed = true;
+        }
+        // The engine side follows on the next tick (`sync_favorites`), under the core lock.
+    }
+
+    /// The favorites' rows (`crate::favorites::row`) at `tau`, in the list's order.
+    fn favorites_rows(&self, core: &Core, list: &[String], tau: i64) -> Vec<Value> {
+        let context = core
+            .context
+            .as_ref()
+            .filter(|_| self.0.context_on.load(Ordering::Relaxed));
+        list.iter()
+            .map(|s| {
+                let quote = core.quotes.get(s);
+                let last = core.last_price.get(s.as_str()).copied();
+                crate::favorites::row(
+                    &crate::favorites::RowFacts {
+                        symbol: s.clone(),
+                        price: last
+                            .map(|p| p.micros())
+                            .or(quote.as_ref().map(|q| q.last.micros())),
+                        prev_close: quote
+                            .as_ref()
+                            .and_then(|q| q.prev_close)
+                            .map(|p| p.micros()),
+                        reference: quote.as_ref().map(|q| q.reference.micros()),
+                        volume: quote.as_ref().map(|q| q.volume),
+                        trades: quote.as_ref().map(|q| q.trades),
+                        last_trade_ns: core.quotes.last_trade_ns(s),
+                        extremes: core.engine.day_extremes(s, crate::day_line::STEP),
+                        runners: core.rocket.symbol_context(s, last.map(|p| p.to_f64())),
+                        levels: self.rocket_levels(core, s, tau),
+                        pillars: context.and_then(|cx| cx.pillars(s)),
+                        halted: core.rocket.is_halted(s),
+                    },
+                    tau,
+                )
+            })
+            .collect()
+    }
+
+    /// The favorites as a `favorites.snapshot` frame with whole day lines, and the favorites
+    /// generation it is consistent with (`crate::favorites::Board::generation`).
+    pub fn favorites_snapshot(&self) -> (u64, String) {
+        let clock = self.clock();
+        let tau = clock.as_ref().map_or(0, |c| c.now.0);
+        let core = self.0.core.lock().expect("core lock");
+        let (list, generation) = {
+            let b = self.0.favorites.lock().expect("favorites lock");
+            (b.list.clone(), b.generation)
+        };
+        let rows = self.favorites_rows(&core, &list, tau);
+        let mut v = json!({
+            "type": "favorites.snapshot",
+            "t": clock.as_ref().map(|c| c.now.millis()),
+            "symbols": list,
+            "rows": rows,
+        });
+        let src = crate::day_line::Source {
+            engine: &core.engine,
+            closes: core.quotes.closes(),
+        };
+        crate::day_line::decorate(&mut v, src, None);
+        (generation, v.to_string())
+    }
+
+    /// Keeps the stock-context engine's favorites equal to the list (a rebuilt core starts with
+    /// none), then one `favorites.update` when a row, a day line or the list changed and anyone is
+    /// subscribed. Called every tick, subscribed or not, for the first part.
+    pub fn publish_favorites(&self) {
+        let clock = self.clock();
+        let tau = clock.as_ref().map_or(0, |c| c.now.0);
+        let (seq, frame) = {
+            let mut core = self.0.core.lock().expect("core lock");
+            let mut board = self.0.favorites.lock().expect("favorites lock");
+            if let Some(cx) = core.context.as_mut()
+                && cx.favorites() != board.list.as_slice()
+            {
+                cx.set_favorites(&board.list);
+            }
+            if core.rebuilding || self.0.favorites_subs.load(Ordering::Relaxed) == 0 {
+                return;
+            }
+            let list = board.list.clone();
+            let rows = Value::Array(self.favorites_rows(&core, &list, tau));
+            let rows_changed = board.rows.as_ref() != Some(&rows);
+            let mut v = json!({
+                "type": "favorites.update",
+                "t": clock.as_ref().map(|c| c.now.millis()),
+                "symbols": list,
+                "rows": rows.clone(),
+            });
+            let src = crate::day_line::Source {
+                engine: &core.engine,
+                closes: core.quotes.closes(),
+            };
+            crate::day_line::decorate(&mut v, src, Some(&mut board.lines));
+            if !rows_changed && !board.list_changed && !crate::favorites::has_new_points(&v) {
+                return;
+            }
+            board.rows = Some(rows);
+            board.list_changed = false;
+            board.generation += 1;
+            (board.generation, v.to_string())
+        };
+        let _ = self.0.tx.send(Arc::new(Outbound {
+            seq,
+            kind: OutKind::Favorites(frame),
+        }));
+    }
+
     pub fn detection_subscribe(&self) -> DetectionGuard {
         self.0.detection_subs.fetch_add(1, Ordering::Relaxed);
         DetectionGuard(self.0.clone())
@@ -3685,6 +3822,15 @@ impl Drop for DetectionGuard {
 impl Drop for RossGuard {
     fn drop(&mut self) {
         self.0.ross_subs.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// Decrements the favorites subscriber count when dropped.
+pub struct FavoritesGuard(Arc<Inner>);
+
+impl Drop for FavoritesGuard {
+    fn drop(&mut self) {
+        self.0.favorites_subs.fetch_sub(1, Ordering::Relaxed);
     }
 }
 

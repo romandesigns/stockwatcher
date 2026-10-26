@@ -9,6 +9,7 @@ import { useDetection, useRoss } from "../feed/hooks";
 import { Collapse } from "../motion/Collapse";
 import { fonts } from "../theme";
 import { useTickerPress } from "../ui/useTickerPress";
+import { StarToggle } from "../ui/StarToggle";
 
 const TONE: Record<RossTone, string> = {
   good: UI.good,
@@ -108,6 +109,7 @@ const Row = memo(function Row({ row: r, episode, detectionCurrent, onPick, reduc
               </View>
             )}
             <Text style={[styles.m1, { color: TONE[r.m1Tone] }]}>{r.m1}</Text>
+            <StarToggle symbol={r.symbol} size={14} />
           </View>
           <View style={styles.line}>
             {r.setup.pulse && <Pulse color={TONE[r.setup.tone]} size={6} reducedMotion={reducedMotion} />}

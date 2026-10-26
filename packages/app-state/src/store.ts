@@ -21,8 +21,11 @@ import { ALERTS_NS, editedAlert, mergeActivity, parseAlertPrefs, parseAlertRules
 import {
   APP_NS,
   MAX_DASHBOARD_CHARTS,
+  movedFavorite,
   parseDashboard,
+  parseFavorites,
   parseSearchRecents,
+  toggledFavorites,
   parseSymbol,
   parseTradeQty,
   parseView,
@@ -71,6 +74,8 @@ export interface AppState {
   bin: number;
   tradeQty: number;
   searchRecents: string[];
+  /** The Favorites panel's tickers, in the owner's order (APP_NS.favorites). */
+  favorites: string[];
   /** The shown symbol's drawings. */
   drawings: Drawing[];
   /** The dashboard's multi-chart panel: chart count and each slot's ticker and timeframe. */
@@ -136,6 +141,10 @@ export interface AppState {
   loadIntoSelected(symbol: string): void;
   /** Puts a ticker at the top of the search recents only (the phone's chart modal: it opens a ticker without loading it into any chart). */
   rememberTicker(symbol: string): void;
+  /** Adds a ticker to the end of the favorites, or removes it when it is there (the star toggles). */
+  toggleFavorite(symbol: string): void;
+  /** Moves a favorite up (−1) or down (+1) in the list. */
+  moveFavorite(symbol: string, delta: number): void;
   /** Adds an alert (or puts a deleted one back: Undo), written as one entry of `alerts`. The sessions picked become the next alert's default. */
   saveAlert(rule: AlertRule): void;
   /** Edits an alert: `editedAt` moves on, so the server re-arms it (a dragged line, the form). */
@@ -204,6 +213,7 @@ function syncedFrom(sync: SettingsSync, shownSymbol: string) {
     bin: view.bin,
     tradeQty: parseTradeQty(sync.get(APP_NS.tradeQty)),
     searchRecents: parseSearchRecents(sync.get(APP_NS.searchRecents)),
+    favorites: parseFavorites(sync.get(APP_NS.favorites)),
     drawings: shownSymbol ? drawingsFromDoc(sync.get(drawingsNs(shownSymbol))) : [],
     dashboard: parseDashboard(sync.get(APP_NS.dashboard)),
     alerts: parseAlertRules(sync.get(ALERTS_NS.rules)),
@@ -307,6 +317,9 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
       writeSlot(slot, { symbol });
       set({ picked: pushPicked(get().picked, symbol) });
     },
+    // Read from the engine, not the slice, so two quick toggles both land.
+    toggleFavorite: (symbol) => sync.set(APP_NS.favorites, toggledFavorites(parseFavorites(sync.get(APP_NS.favorites)), symbol)),
+    moveFavorite: (symbol, delta) => sync.set(APP_NS.favorites, movedFavorite(parseFavorites(sync.get(APP_NS.favorites)), symbol, delta)),
     setDashboardTimeframe: (slot, timeframe) => writeSlot(slot, { timeframe }),
     setDashboardIndicators: (slot, next) => writeSlot(slot, { indicators: parseIndicators(next) }),
     setDashboardLayers: (slot, next) => writeSlot(slot, { layers: parseLayers(next) }),
@@ -398,6 +411,8 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
         return store.setState({ tradeQty: parseTradeQty(sync.get(ns)) });
       case APP_NS.searchRecents:
         return store.setState({ searchRecents: parseSearchRecents(sync.get(ns)) });
+      case APP_NS.favorites:
+        return store.setState({ favorites: parseFavorites(sync.get(ns)) });
       case ALERTS_NS.rules:
         return store.setState({ alerts: parseAlertRules(sync.get(ns)) });
       case ALERTS_NS.state:

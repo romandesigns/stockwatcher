@@ -1632,6 +1632,56 @@ impl ChartEngine {
             closes,
         })
     }
+
+    /// The symbol's high and low over the same trading date as [`ChartEngine::day_line`] (pre,
+    /// regular and after hours; overnight left out), and the premarket's, from the `tf` candles
+    /// including the forming one, so the high is live. For the Favorites panel's rows
+    /// (crates/server/src/favorites.rs): read at publish time for a few dozen symbols, never per
+    /// trade. A candle evicted from the ring is not counted; the 30 s ring holds a whole
+    /// 04:00–20:00 day.
+    pub fn day_extremes(&self, symbol: &str, tf: Timeframe) -> Option<DayExtremes> {
+        let st = self.symbols.get(symbol)?;
+        let series = st.series.iter().find(|s| s.tf == tf)?;
+        let date = series
+            .buckets
+            .iter()
+            .rev()
+            .find(|b| b.session.kind != SessionKind::Overnight && b.ohlc.is_some())?
+            .session
+            .date;
+        let mut out: Option<DayExtremes> = None;
+        for b in series
+            .buckets
+            .iter()
+            .filter(|b| b.session.date == date && b.session.kind != SessionKind::Overnight)
+        {
+            let Some(x) = b.ohlc else { continue };
+            let e = out.get_or_insert(DayExtremes {
+                high: x.h,
+                low: x.l,
+                pm_high: None,
+                pm_low: None,
+            });
+            e.high = e.high.max(x.h);
+            e.low = e.low.min(x.l);
+            if b.session.kind == SessionKind::Pre {
+                e.pm_high = Some(e.pm_high.map_or(x.h, |h| h.max(x.h)));
+                e.pm_low = Some(e.pm_low.map_or(x.l, |l| l.min(x.l)));
+            }
+        }
+        out
+    }
+}
+
+/// A symbol's extremes over its latest trading date ([`ChartEngine::day_extremes`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DayExtremes {
+    /// The date's high and low over pre, regular and after hours (the day line's span).
+    pub high: Price,
+    pub low: Price,
+    /// The premarket session's (04:00–09:30 ET) high and low, when it traded.
+    pub pm_high: Option<Price>,
+    pub pm_low: Option<Price>,
 }
 
 /// A symbol's closes over its latest trading date ([`ChartEngine::day_line`]).

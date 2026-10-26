@@ -14,6 +14,7 @@ import {
   type TickerRow,
 } from "@stockwatcher/shared";
 import { useQuoteBoard } from "../feed/useQuoteBoard.ts";
+import { StarButton } from "../favorites/StarButton.tsx";
 
 /** Text with the matched characters emphasised (accent), as VS Code's quick open does. */
 function Highlight({ text, indices, className }: { text: string; indices: readonly number[]; className?: string }) {
@@ -79,7 +80,7 @@ const Row = memo(function Row({ row: r, index: i, active, current, onHover, onCh
         onClick={() => onChoose(r)}
         className={cn(
           // 44 px rows to a finger (coarse pointers; owner 2026-10-19).
-          "grid cursor-pointer grid-cols-[64px_minmax(0,1fr)_auto] items-center gap-3 rounded-lg px-2.5 py-1.5 pointer-coarse:min-h-11",
+          "grid cursor-pointer grid-cols-[64px_minmax(0,1fr)_auto_auto] items-center gap-3 rounded-lg px-2.5 py-1.5 pointer-coarse:min-h-11",
           active && "bg-bg-raised",
           !t.available && "cursor-default opacity-55",
         )}
@@ -95,6 +96,8 @@ const Row = memo(function Row({ row: r, index: i, active, current, onHover, onCh
           {t.mock && <span className="rounded bg-warning-bg px-1 font-sans text-[9px] font-medium text-warning">mock</span>}
           <Quote price={t.price} changePct={t.changePct} volume={t.volume} />
         </span>
+        {/* Add to the Favorites panel without opening the ticker (it stops the row's click). */}
+        <StarButton symbol={t.symbol} className="-my-1" />
       </div>
     </li>
   );

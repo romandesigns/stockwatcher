@@ -32,6 +32,7 @@ import { appActions, useApp } from "../state/store";
 import { useTickerPress } from "../ui/useTickerPress";
 import { SignInScreen } from "./SignInScreen";
 import { colors, fonts } from "../theme";
+import { StarToggle } from "../ui/StarToggle";
 
 /** The screen's gap between its blocks, which a closed volume-shelf note cancels (Collapse). */
 const SCREEN_GAP = 8;
@@ -172,6 +173,7 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
         </Pressable>
         <Text style={styles.price}>{last ? formatPrice(last.c) : "—"}</Text>
         <Text style={[styles.change, { color: change.startsWith("-") ? colors.critical : colors.good }]}>{change}</Text>
+        {active && <StarToggle symbol={active} />}
         {/* Time and sales (its button left the replay row in the two-tier redesign; the bar's own
             ticker button is the search now, beside the header ticker's tap). */}
         <Pressable accessibilityRole="button" accessibilityLabel="Time and sales" accessibilityState={{ expanded: tapeOpen }} onPress={() => app.setTapeOpen(true)} hitSlop={6} style={({ pressed }) => [styles.tapeButton, (pressed || tapeOpen) && { backgroundColor: colors.bgRow }]}>

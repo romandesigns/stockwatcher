@@ -1172,6 +1172,39 @@ impl RocketBoard {
         }
     }
 
+    /// Whether a trading halt is in force for `symbol` (any symbol, not only flagged ones).
+    pub fn is_halted(&self, symbol: &str) -> bool {
+        self.halted.contains(symbol)
+    }
+
+    /// `symbol`'s Runners context today for the Favorites panel (crate::favorites): its first
+    /// entry (path and time, ms), its latest, how many paths fired, and the latest row's shown
+    /// momentum state at `last`. `None` when no Runners path flagged it today.
+    pub fn symbol_context(&self, symbol: &str, last: Option<f64>) -> Option<Value> {
+        let mut mine = self.alerts.iter().filter(|a| &*a.symbol == symbol);
+        let first = mine.next()?;
+        let (mut earliest, mut latest, mut entries) = (first, first, 1 + first.also.len());
+        for a in mine {
+            entries += 1 + a.also.len();
+            if a.at_ns < earliest.at_ns {
+                earliest = a;
+            }
+            if a.at_ns > latest.at_ns {
+                latest = a;
+            }
+        }
+        let live = last.filter(|p| p.is_finite() && *p > 0.0);
+        let (state, _) = latest.track.shown(live, self.halted.contains(symbol));
+        Some(json!({
+            "kind": earliest.kind.as_str(),
+            "at": earliest.at_ns / 1_000_000,
+            "latest_kind": latest.kind.as_str(),
+            "latest_at": latest.at_ns / 1_000_000,
+            "entries": entries,
+            "state": state.as_str(),
+        }))
+    }
+
     fn admission_ready(&self, symbol: &str, b: &Barrier) -> bool {
         !self.halted.contains(symbol)
             && self

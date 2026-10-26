@@ -3,6 +3,7 @@ import { cn, ScrollArea, Tip } from "@stockwatcher/chart-web/ui";
 import { rocketHeaderView, rocketLinePaths, rocketNow, rocketSectionsView, type RocketRowView, type RocketSectionsView, type RocketState, type RocketTone, withZoneSections } from "@stockwatcher/shared";
 import { memo } from "react";
 import { useTickerPress } from "../lib/useTickerPress.ts";
+import { StarButton } from "../favorites/StarButton.tsx";
 import { Reveal } from "./Reveal.tsx";
 import { ZoneNote } from "./ZoneNote.tsx";
 
@@ -123,8 +124,10 @@ function RowList({ rows, onPick }: { rows: RocketRowView[]; onPick: (symbol: str
   return (
     <ul className="m-0 flex list-none flex-col gap-1 p-0">
       {rows.map((r) => (
-        <li key={r.key}>
+        <li key={r.key} className="relative">
           <RocketRow row={r} onPick={onPick} />
+          {/* Beside the row, not in it (a button cannot hold a button). */}
+          <StarButton symbol={r.symbol} className="absolute top-1 right-1" />
         </li>
       ))}
     </ul>
@@ -152,7 +155,7 @@ const RocketRow = memo(function RocketRow({ row: r, onPick }: { row: RocketRowVi
         m.dimmed && "opacity-60",
       )}
     >
-      <span className="flex items-baseline gap-1.5">
+      <span className="flex items-baseline gap-1.5 pr-7">
         <span className="text-sm font-semibold">{r.symbol}</span>
         <span className="text-[13px] tabular-nums">{r.price}</span>
         {r.gain && <span className="text-xs text-muted-foreground tabular-nums">{r.gain}</span>}

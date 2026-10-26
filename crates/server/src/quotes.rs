@@ -412,6 +412,13 @@ impl QuoteBoard {
             .and_then(|&i| Self::row(&self.entries[i], false))
     }
 
+    /// Execution time (epoch ns) of the print behind `symbol`'s last price, when it has one: the
+    /// Favorites panel's stale marker (crate::favorites).
+    pub fn last_trade_ns(&self, symbol: &str) -> Option<i64> {
+        let e = &self.entries[*self.index.get(symbol)?];
+        e.last.map(|_| e.last_ts.0)
+    }
+
     /// The index of `symbol`'s entry, created empty when missing.
     fn entry_index(&mut self, symbol: &str) -> usize {
         if let Some(&i) = self.index.get(symbol) {

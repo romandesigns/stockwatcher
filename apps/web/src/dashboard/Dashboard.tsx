@@ -184,7 +184,7 @@ export function Dashboard({ choice, feed }: Connection) {
               : "The dashboard shows the live market (Settings → Data). Charts appear with the session's first trades: overnight from 20:00 ET Sunday to Thursday, then 4:00 to 20:00 ET."}
           </p>
         </div>
-        <SideTabs ross={feed.ross} rocket={feed.rocket} detection={feed.detection} onPick={openTickerChart} onEpisodePick={pickDetection} onEpisodeClear={clearDetection} />
+        <SideTabs ross={feed.ross} rocket={feed.rocket} detection={feed.detection} favorites={feed.favorites} onPick={openTickerChart} onEpisodePick={pickDetection} onEpisodeClear={clearDetection} />
         </ScrollArea>
       ) : (
       <ScrollArea className="flex-1" viewportClassName="@container/panel flex flex-col gap-3">
@@ -219,7 +219,7 @@ export function Dashboard({ choice, feed }: Connection) {
             </div>
           ))}
         </div>
-        <SideTabs ross={feed.ross} rocket={feed.rocket} detection={feed.detection} onPick={openTickerChart} onEpisodePick={pickDetection} onEpisodeClear={clearDetection} />
+        <SideTabs ross={feed.ross} rocket={feed.rocket} detection={feed.detection} favorites={feed.favorites} onPick={openTickerChart} onEpisodePick={pickDetection} onEpisodeClear={clearDetection} />
         </div>
       </ScrollArea>
       )}

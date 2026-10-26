@@ -82,6 +82,11 @@ async fn serve(config: Config) -> std::io::Result<()> {
         Some(config.data_dir.join("alerts")),
         stockwatcher_server::alerts::push::PushConfig::from_lookup(|k| std::env::var(k).ok()),
     );
+    // The Favorites panel's list is a synced setting the server also reads (crate::favorites).
+    stockwatcher_server::favorites::follow(
+        settings.clone(),
+        vec![markets.live.clone(), markets.replay.clone()],
+    );
     let state = AppState::with_alerts(config.api_token.clone(), markets, settings, alerts);
     if let Some(sim) = sim {
         // The provider-compatible simulator on its own port (loopback by default), so Alpaca/FMP

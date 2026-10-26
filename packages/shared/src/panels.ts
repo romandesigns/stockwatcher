@@ -53,8 +53,13 @@ export function detectionView(pickedRecent: boolean, c: { active: number; recent
   return { recent: c.active === 0 && c.recent > 0, showToggle };
 }
 
-export type SideTab = "ross" | "rocket" | "signals";
-export const SIDE_TABS: readonly SideTab[] = ["ross", "rocket", "signals"];
+/**
+ * The side column's tabs, in order. Favorites (owner, 2026-10-26) is the owner's own list, last
+ * so the detectors keep their places; like every tab it shows only while it has items (a favorite
+ * counts as soon as it is in the synced list, before its row arrives).
+ */
+export type SideTab = "ross" | "rocket" | "signals" | "favorites";
+export const SIDE_TABS: readonly SideTab[] = ["ross", "rocket", "signals", "favorites"];
 
 /** The web side column's tabs with items, in their fixed order. */
 export function visibleSideTabs(counts: Readonly<Record<SideTab, number>>): SideTab[] {
