@@ -579,6 +579,8 @@ pub(crate) struct Inner {
     /// The archive the Runners running entry's facts are read from, once a day
     /// (`crate::rocket::running::facts`); live and replay.
     running_archive: std::sync::OnceLock<Archive>,
+    /// The day's cue transitions on the archive (`crate::oplog`, "Cue transitions"); live only.
+    transition_log: std::sync::OnceLock<crate::oplog::DailyLog>,
     /// Baseline observation/latency capture for the context panel (`crate::observe`): a bounded
     /// queue filled under the core lock and absorbed off it, with counted drops. Measurement
     /// scaffolding, not a latency claim.
@@ -798,6 +800,7 @@ impl Market {
             zones_log: std::sync::OnceLock::new(),
             burst_archive: std::sync::OnceLock::new(),
             running_archive: std::sync::OnceLock::new(),
+            transition_log: std::sync::OnceLock::new(),
             observations: crate::observe::ObservationSink::new(crate::observe::QUEUE_CAPACITY),
             admissions: std::sync::OnceLock::new(),
             shadow: std::sync::OnceLock::new(),
@@ -1008,6 +1011,22 @@ impl Market {
     /// Live: opens the forward log in `dir` (`ARCHIVE_ROOT/rocket-watch`), prunes it to the
     /// archive's retention window and restores today's alerts and the record into the board.
     /// Reads a few small files once, before the ingest starts.
+    /// Starts the day's cue-transition log under `dir` (`crate::oplog`): the micro-pullback
+    /// transitions the context engine drains (Ross members, Runners rows, favorites) were counted
+    /// and dropped before, so a missed or late cue could not be traced afterwards. Live only; a
+    /// second call is ignored.
+    pub fn init_transition_log(&self, dir: std::path::PathBuf) {
+        let _ = self.0.transition_log.set(crate::oplog::DailyLog::start(
+            "transitions",
+            crate::oplog::DailyLogConfig {
+                dir,
+                prefix: "",
+                retention_days: crate::oplog::TRANSITIONS_DAYS,
+                cap_bytes: crate::oplog::TRANSITIONS_CAP,
+            },
+        ));
+    }
+
     pub fn init_rocket_log(&self, dir: std::path::PathBuf, retention_days: u32, now: UnixNanos) {
         if !self.0.rocket_on.load(Ordering::Relaxed) {
             return;
@@ -1707,6 +1726,9 @@ impl Market {
             {
                 tracing::warn!(%error, "Detection quiet references unavailable; price-only families remain enabled");
             }
+        }
+        if mode == ClockMode::Live && (cfg.stock_context || cfg.detection_panel) {
+            market.init_transition_log(archive.root().join(crate::oplog::TRANSITIONS_DIR));
         }
         if cfg.stock_context || cfg.detection_panel {
             // Before the ingest starts: a replay's first load runs here (the feed waits on disk,
@@ -3389,7 +3411,7 @@ impl Market {
         clock: &mut dyn FnMut() -> i64,
     ) -> crate::context::DrainReport {
         let sink = &self.0.observations;
-        let (took, total, tel, cue) = {
+        let (took, total, tel, cue, transitions) = {
             let mut core = self.0.core.lock().expect("core lock");
             let Some(cx) = core.context.as_mut() else {
                 return Default::default();
@@ -3407,9 +3429,19 @@ impl Market {
                 cx.drained(),
                 cx.output_telemetry(),
                 cx.take_cue_notices(),
+                cx.take_setup_transitions(),
             )
         };
         self.offer_notices(cue);
+        // Off the core lock; serialized on the log's own thread (crate::oplog).
+        if let Some(log) = self.0.transition_log.get() {
+            for t in transitions {
+                log.send(
+                    crate::oplog::et_date_ms(t.observed_at.div_euclid(1_000_000)),
+                    move || transition_line(&t),
+                );
+            }
+        }
         // Off the core lock: the queue is moved into the summary here, never under it.
         sink.absorb();
         if !took.is_empty() {
@@ -4865,5 +4897,57 @@ mod tests {
         assert!(parse_control("day", Some(&json!(20261014))).is_err());
         assert!(parse_control("day", None).is_err());
         assert!(parse_control("rewind", None).is_err());
+    }
+}
+
+/// One line of the cue-transition log (`crate::oplog`): the engine's transition as it serializes
+/// it, tagged `kind: "transition"`, `v: 1`.
+pub(crate) fn transition_line(t: &stock_context::DetectionTransition) -> String {
+    let mut v = serde_json::to_value(t).unwrap_or(serde_json::Value::Null);
+    if let Some(o) = v.as_object_mut() {
+        o.insert("kind".into(), "transition".into());
+        o.insert("v".into(), 1.into());
+    }
+    v.to_string()
+}
+
+#[cfg(test)]
+mod transition_log_tests {
+    use super::transition_line;
+    use stock_context::{Certainty, DetectionTransition, Family, State};
+
+    #[test]
+    fn a_transition_line_is_the_engines_record_tagged_for_the_log() {
+        let t = DetectionTransition {
+            seq: 7,
+            transition_id: "e1:t7".into(),
+            episode_id: "e1".into(),
+            symbol: "SRTM".into(),
+            family: Family::MicroPullback,
+            variant: "micro_pullback_mp5".into(),
+            from: Some(State::PullbackForming),
+            to: State::Armed,
+            event: "armed",
+            reason: "levels_fixed",
+            certainty: Certainty::Provisional,
+            observed_at: 1_793_017_427_000_000_000,
+            bar_end: None,
+            cutoff: None,
+            trade: None,
+            features: None,
+            level: None,
+            anchors: None,
+            checks: Vec::new(),
+            correction_of: None,
+            warmup: false,
+            default_visible: true,
+            related_episode_ids: Vec::new(),
+        };
+        let v: serde_json::Value = serde_json::from_str(&transition_line(&t)).unwrap();
+        assert_eq!(v["kind"], "transition");
+        assert_eq!(v["v"], 1);
+        assert_eq!(v["symbol"], "SRTM");
+        assert_eq!(v["episode_id"], "e1");
+        assert_eq!(v["observed_at"], 1_793_017_427_000_000_000_i64);
     }
 }

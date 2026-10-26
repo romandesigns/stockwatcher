@@ -388,6 +388,8 @@ pub struct Job {
 pub struct RunnerLatency {
     pub symbol: String,
     pub kind: &'static str,
+    /// The data kind the clients see (`runners::data_kind`), for the ledger.
+    pub notice: &'static str,
     /// The triggering print's execution time, when the source knows it (a "Run +20%" row).
     pub exec_ns: Option<i64>,
     /// When the board decided (the row's time: the market clock, the wall clock live).
@@ -448,11 +450,15 @@ fn client() -> Result<reqwest::Client, String> {
 
 /// Starts the push task. Jobs go in through the returned sender (bounded: a full queue drops
 /// the job, which the caller records as failed); results come out on `results`.
-pub fn spawn(cfg: PushConfig, results: mpsc::Sender<PushResult>) -> mpsc::Sender<Job> {
+pub fn spawn(
+    cfg: PushConfig,
+    results: mpsc::Sender<PushResult>,
+    ledger: super::ledger::Ledger,
+) -> mpsc::Sender<Job> {
     let (tx, rx) = mpsc::channel(256);
     match client() {
         Ok(http) => {
-            tokio::spawn(run(http, cfg, rx, results));
+            tokio::spawn(run(http, cfg, rx, results, ledger));
         }
         Err(e) => {
             tracing::error!(error = %e, "push: no HTTP client; phone notifications are off (in-app alerts still work)");
@@ -528,6 +534,7 @@ async fn run(
     cfg: PushConfig,
     mut rx: mpsc::Receiver<Job>,
     results: mpsc::Sender<PushResult>,
+    ledger: super::ledger::Ledger,
 ) {
     let mut tickets: HashMap<String, Ticket> = HashMap::new();
     let mut receipts = tokio::time::interval(RECEIPT_CHECK);
@@ -555,12 +562,17 @@ async fn run(
                         _ => break,
                     }
                 }
-                let lat: Vec<RunnerLatency> = jobs.iter().filter_map(|j| j.runner.clone()).collect();
+                let lat: Vec<(String, RunnerLatency)> = jobs
+                    .iter()
+                    .filter_map(|j| j.runner.clone().map(|l| (j.event_id.clone(), l)))
+                    .collect();
                 send_batch(&http, &cfg, jobs, &mut tickets, &results).await;
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_or(0, |d| d.as_nanos() as i64);
-                for l in lat {
+                for (event_id, l) in lat {
+                    // The notification ledger keeps it past a deploy (super::ledger, `pushed`).
+                    ledger.pushed(&event_id, l.notice, &l.symbol, l.exec_ns, l.decided_ns, l.queued_ns, now);
                     let ms = |a: i64, b: i64| (b - a) as f64 / 1e6;
                     tracing::info!(
                         symbol = %l.symbol,
@@ -995,6 +1007,7 @@ mod tests {
                 access_token: None,
             },
             rtx,
+            super::super::ledger::Ledger::default(),
         );
         for n in 0..3 {
             tx.send(Job {
@@ -1055,6 +1068,7 @@ mod tests {
             runner: Some(RunnerLatency {
                 symbol: "YMAT".into(),
                 kind: "fast",
+                notice: "runners.fast",
                 exec_ns: None,
                 decided_ns: 0,
                 queued_ns: 0,
@@ -1090,6 +1104,7 @@ mod tests {
                 access_token: None,
             },
             rtx,
+            super::super::ledger::Ledger::default(),
         );
         tx.send(Job {
             event_id: "e1".into(),

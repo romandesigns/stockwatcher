@@ -30,6 +30,7 @@
 pub mod delivery;
 pub mod eval;
 pub mod history;
+pub mod ledger;
 pub mod model;
 pub mod push;
 pub mod runners;
@@ -438,10 +439,11 @@ impl Alerts {
         live: Market,
         dir: Option<PathBuf>,
         push_cfg: PushConfig,
+        ledger: ledger::Ledger,
     ) -> Alerts {
         let (res_tx, res_rx) = mpsc::channel(64);
-        let pusher = push::spawn(push_cfg, res_tx);
-        Self::start_with(settings, live, dir, pusher, res_rx)
+        let pusher = push::spawn(push_cfg, res_tx, ledger.clone());
+        Self::start_with(settings, live, dir, pusher, res_rx, ledger)
     }
 
     /// [`Alerts::start`] with the push sender given: tests hand in a channel they read instead
@@ -452,6 +454,7 @@ impl Alerts {
         dir: Option<PathBuf>,
         pusher: mpsc::Sender<Job>,
         res_rx: mpsc::Receiver<PushResult>,
+        ledger: ledger::Ledger,
     ) -> Alerts {
         let now = now_ms();
         let history = match &dir {
@@ -504,6 +507,7 @@ impl Alerts {
             runners,
             desk_runners,
             pusher,
+            ledger,
             seq: 0,
             op: 0,
             dropped_logged: 0,
@@ -541,6 +545,8 @@ struct Task {
     /// The desktop and web notices' limits (the phones' rules, their own count: [`runners::desk_frame`]).
     desk_runners: RunnersDelivery,
     pusher: mpsc::Sender<Job>,
+    /// Every decided notice, on the data volume (ledger.rs).
+    ledger: ledger::Ledger,
     seq: u64,
     op: u64,
     dropped_logged: u64,
@@ -709,6 +715,7 @@ impl Task {
                 r = results.recv() => match r {
                     Some(PushResult::Failed { event_id, detail }) => {
                         tracing::warn!(event = %event_id, detail, "alerts: phone notification failed");
+                        self.ledger.failed(&event_id, &detail, now_ms());
                         if let Some(e) = self.history.update(&event_id, |e| {
                             e.phone = "failed".into();
                             e.reason = Some("push_failed".into());
@@ -741,17 +748,22 @@ impl Task {
         // the open clients that want this kind as the "devices", and their own count, so the
         // phones' switches and the desks' never hold each other back.
         let event_id = n.event_id();
+        // Rendered once: the ledger keeps the text with both decisions, the phones get it.
+        let (title, body, data) = runners::message(&n);
+        let desks = self.shared.desks_for(&n);
         let desk = self.desk_runners.decide(
             n.kind,
             &n.symbol,
             &event_id,
-            self.shared.desks_for(&n),
+            desks,
             &self.prefs,
             n.at_ns.div_euclid(1_000_000),
             now,
             now_et.date_naive(),
             now_et.hour() * 60 + now_et.minute(),
         );
+        self.ledger
+            .decision(&n, &event_id, "desk", &desk, desks, &title, &body, now);
         match desk {
             runners::Decision::Send => self.broadcast(runners::desk_frame(&n)),
             runners::Decision::Held(h) => {
@@ -771,11 +783,20 @@ impl Task {
             now_et.hour() * 60 + now_et.minute(),
         );
         let kind = n.kind.as_str();
+        self.ledger.decision(
+            &n,
+            &event_id,
+            "phone",
+            &decision,
+            tokens.len(),
+            &title,
+            &body,
+            now,
+        );
         if let runners::Decision::Held(h) = decision {
             tracing::info!(symbol = %n.symbol, kind, held = h.code(), "runners push: held back");
             return;
         }
-        let (title, body, data) = runners::message(&n);
         let job = Job {
             // Not an Activity event: a failure later is only logged (history.update finds nothing).
             event_id,
@@ -787,6 +808,7 @@ impl Task {
             runner: Some(push::RunnerLatency {
                 symbol: n.symbol.clone(),
                 kind,
+                notice: runners::data_kind(n.kind),
                 exec_ns: n.exec_ns,
                 decided_ns: n.at_ns,
                 queued_ns: now.saturating_mul(1_000_000),
@@ -898,6 +920,17 @@ impl Task {
                     reason,
                     note,
                 };
+                self.ledger.alert(
+                    &id,
+                    &alert_id,
+                    &symbol,
+                    price,
+                    &text,
+                    phone_word,
+                    event.reason.as_deref(),
+                    self.devices.len(),
+                    now,
+                );
                 if let Phone::Send { extra } = phone {
                     let body = if extra > 0 {
                         format!("{text} · +{extra} more since the last one")
@@ -1015,6 +1048,7 @@ mod tests {
                 base: "http://127.0.0.1:9".into(),
                 access_token: None,
             },
+            ledger::Ledger::default(),
         );
         let mut frames = alerts.subscribe();
         let now = now_ms();
@@ -1108,7 +1142,14 @@ mod tests {
         let live = Market::idle(market_providers::ClockMode::Live, "idle", None);
         let (job_tx, mut jobs) = mpsc::channel(16);
         let (_res_tx, res_rx) = mpsc::channel(4);
-        let alerts = Alerts::start_with(settings, live.clone(), None, job_tx, res_rx);
+        let alerts = Alerts::start_with(
+            settings,
+            live.clone(),
+            None,
+            job_tx,
+            res_rx,
+            ledger::Ledger::default(),
+        );
         let mut frames = alerts.subscribe();
         let sink = live.alert_sink().expect("attached").clone();
         let next_job = |jobs: &mut mpsc::Receiver<Job>| {
@@ -1216,7 +1257,14 @@ mod tests {
         let live = Market::idle(market_providers::ClockMode::Live, "idle", None);
         let (job_tx, _jobs) = mpsc::channel(16);
         let (_res_tx, res_rx) = mpsc::channel(4);
-        let alerts = Alerts::start_with(settings, live.clone(), None, job_tx, res_rx);
+        let alerts = Alerts::start_with(
+            settings,
+            live.clone(),
+            None,
+            job_tx,
+            res_rx,
+            ledger::Ledger::default(),
+        );
         let mut frames = alerts.subscribe();
         let sink = live.alert_sink().expect("attached").clone();
         let next_notice = async |frames: &mut broadcast::Receiver<Arc<str>>| loop {

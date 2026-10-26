@@ -48,9 +48,9 @@ use stock_context::{
 /// What one [`ContextBoard::drain_outputs`] took off the engine, and what the engine had to drop
 /// before it got there.
 ///
-/// `panels` and `setup_entries` are counts, not a claim of persistence: this slice drains so the
-/// engine stays bounded and so the counts are honest. Nothing here is written to disk, and
-/// `dropped` is what a complete journal would have had to include.
+/// `panels` and `setup_entries` are counts. The setup entries (cue transitions) are also written
+/// to the day's transition log by a live market (`crate::oplog`, owner 2026-10-26); the panels
+/// are not persisted.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct DrainReport {
     pub(crate) panels: usize,
@@ -62,6 +62,10 @@ impl DrainReport {
         self.panels == 0 && self.setup_entries == 0
     }
 }
+
+/// Cue transitions held between drains at most (a day sees a few thousand; a market that never
+/// takes them stops holding more rather than growing).
+const SETUP_OUT_MAX: usize = 20_000;
 
 pub(crate) struct ContextBoard {
     engine: Engine,
@@ -92,6 +96,9 @@ pub(crate) struct ContextBoard {
     day_lines: crate::day_line::Published,
     /// Ross and Signals push notices decided from the drained journals (`crate::cue_notices`).
     cue: crate::cue_notices::CueNotices,
+    /// The drained cue transitions, held for the market to write off the core lock
+    /// ([`ContextBoard::take_setup_transitions`], `crate::oplog` "Cue transitions").
+    setup_out: Vec<stock_context::DetectionTransition>,
     /// The Runners' flagged symbols and the owner's favorites (`crate::favorites`): together the
     /// engine's watched set, so both kinds of row get micro-pullback levels. Kept apart because
     /// only the Runners list is the pullback notices' context.
@@ -187,6 +194,7 @@ impl ContextBoard {
             detection_epoch: None,
             day_lines: crate::day_line::Published::default(),
             cue: crate::cue_notices::CueNotices::default(),
+            setup_out: Vec::new(),
             runners_watched: Vec::new(),
             favorites: Vec::new(),
         })
@@ -211,9 +219,10 @@ impl ContextBoard {
     /// regardless of viewers. In-memory only (it runs under the core lock): no disk, no provider,
     /// no serialization.
     ///
-    /// The drained rows are dropped here. That is deliberate and limited: this slice makes the
-    /// engine bounded and the loss counted, it does not persist a decision journal, so nothing
-    /// here may be presented as a complete audit trail.
+    /// The drained panels are dropped here. The cue transitions are kept for the market to append
+    /// to the day's transition log off the lock ([`ContextBoard::take_setup_transitions`],
+    /// owner 2026-10-26); bounded by [`SETUP_OUT_MAX`] so a market that never takes them (a
+    /// replay, a test) cannot grow it.
     /// `observe` sees each drained snapshot before it is discarded, so the baseline
     /// observation/latency capture (`crate::observe`) can record its segment times. It must stay
     /// cheap: this runs under the core lock.
@@ -234,9 +243,18 @@ impl ContextBoard {
             panels: panels.len(),
             setup_entries: setup.len(),
         };
+        if self.setup_out.len() + setup.len() <= SETUP_OUT_MAX {
+            self.setup_out.extend(setup);
+        }
         self.drained.panels += r.panels;
         self.drained.setup_entries += r.setup_entries;
         r
+    }
+
+    /// The cue transitions drained since the last call (a move, never a copy: it runs under the
+    /// core lock).
+    pub(crate) fn take_setup_transitions(&mut self) -> Vec<stock_context::DetectionTransition> {
+        std::mem::take(&mut self.setup_out)
     }
 
     /// Everything this board has drained since it was built.

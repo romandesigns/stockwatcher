@@ -48,14 +48,48 @@ fn main() -> ExitCode {
     }
 }
 
+/// stdout as before (`LOG_FORMAT=json` in the image), plus the same events as JSON lines in
+/// `DATA_DIR/logs/server-<ET date>.jsonl` (crate::oplog), which survive deploys. `SERVER_LOG=0`
+/// turns the file off. DATA_DIR is read here directly: tracing starts before the configuration is
+/// parsed, so a configuration error is logged to the file too.
 fn init_tracing() {
+    use stockwatcher_server::oplog;
+    use tracing_subscriber::Layer;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    let builder = tracing_subscriber::fmt().with_env_filter(filter);
-    if std::env::var("LOG_FORMAT").is_ok_and(|f| f == "json") {
-        builder.json().flatten_event(true).init();
+    let json = std::env::var("LOG_FORMAT").is_ok_and(|f| f == "json");
+    let stdout = if json {
+        tracing_subscriber::fmt::layer()
+            .json()
+            .flatten_event(true)
+            .boxed()
     } else {
-        builder.init();
-    }
+        tracing_subscriber::fmt::layer().boxed()
+    };
+    let file = (std::env::var("SERVER_LOG").as_deref() != Ok("0")).then(|| {
+        let data = std::env::var("DATA_DIR").unwrap_or_else(|_| "./data".into());
+        let log = oplog::DailyLog::start(
+            "server",
+            oplog::DailyLogConfig {
+                dir: std::path::PathBuf::from(data).join(oplog::SERVER_LOG_DIR),
+                prefix: "server-",
+                retention_days: oplog::SERVER_LOG_DAYS,
+                cap_bytes: oplog::SERVER_LOG_CAP,
+            },
+        );
+        tracing_subscriber::fmt::layer()
+            .json()
+            .flatten_event(true)
+            .with_ansi(false)
+            .with_writer(oplog::ServerLogWriter(log))
+    });
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(stdout)
+        .with(file)
+        .init();
 }
 
 async fn serve(config: Config) -> std::io::Result<()> {
@@ -81,12 +115,46 @@ async fn serve(config: Config) -> std::io::Result<()> {
         markets.live.clone(),
         Some(config.data_dir.join("alerts")),
         stockwatcher_server::alerts::push::PushConfig::from_lookup(|k| std::env::var(k).ok()),
+        // Every decided notice, beside rocket-watch on the archive (alerts::ledger).
+        stockwatcher_server::alerts::ledger::Ledger::start(&config.market.provider.archive.root),
     );
     // The Favorites panel's list is a synced setting the server also reads (crate::favorites).
     stockwatcher_server::favorites::follow(
         settings.clone(),
         vec![markets.live.clone(), markets.replay.clone()],
     );
+    // The finished days of every operational log, copied to the Pi beside the preserved
+    // originals (crate::oplog, "Durable copy").
+    {
+        use stockwatcher_server::oplog::{self, DurableSource};
+        let archive = &config.market.provider.archive.root;
+        stockwatcher_server::oplog::spawn_durable_copy(
+            vec![
+                DurableSource {
+                    name: "rocket-watch",
+                    dir: archive.join("rocket-watch"),
+                },
+                DurableSource {
+                    name: "zones",
+                    dir: archive.join("zones"),
+                },
+                DurableSource {
+                    name: oplog::NOTICES_DIR,
+                    dir: archive.join(oplog::NOTICES_DIR),
+                },
+                DurableSource {
+                    name: oplog::TRANSITIONS_DIR,
+                    dir: archive.join(oplog::TRANSITIONS_DIR),
+                },
+                DurableSource {
+                    name: "server",
+                    dir: config.data_dir.join(oplog::SERVER_LOG_DIR),
+                },
+            ],
+            std::env::var("LOG_DURABLE_DIR").ok(),
+            std::env::var("LIVE_ORIGINAL_DURABLE_DIR").ok(),
+        );
+    }
     let state = AppState::with_alerts(config.api_token.clone(), markets, settings, alerts);
     if let Some(sim) = sim {
         // The provider-compatible simulator on its own port (loopback by default), so Alpaca/FMP
