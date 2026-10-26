@@ -20,9 +20,11 @@ import type { Candle } from "./types.ts";
 // trading back into it after the departure marks it tested, drawn fainter. ATR is the mean true
 // range of the ATR_N candles before the base, so a zone is judged by the volatility it formed in.
 //
-// UNVALIDATED on purpose: the zone bake-off (research/zones-*) found five of six automatic zone
-// types no better than random placement, and this rule has not been tested. The owner chose to have
-// it as a drawing aid anyway; the Levels menu says it is untested. It is never an alert input.
+// Tested after it shipped (research/auto-zones-hold, pre-registered, 118 never-read days, Runners
+// stocks): retested zones held 59–67% of the time vs 47–59% for random zones of the same kind,
+// height and distance (+8.6 to +11.4 pp by timeframe, every interval above 0; the seen days agree).
+// A hold is a level respecting price, not a trade: no costs, no entry rule, and random levels hold
+// about half the time too. The Levels menu says so in one line. It is never an alert input.
 
 export const AUTO_ZONE_RULES = { ATR_N: 14, BASE_MAX: 5, BASE_RANGE_ATR: 1.0, LEG_MAX: 3, LEG_ATR: 2.0, DECISIVE_BODY: 0.6, PER_SIDE: 3 } as const;
 

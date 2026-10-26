@@ -56,7 +56,7 @@ export const LAYER_INFO: Readonly<Record<LayerId, { name: string; description: s
   open: { name: "Open", description: "First regular-session price" },
   openingRange: { name: "Opening range", description: "First candle's high–low, to the close" },
   shelves: { name: "Volume shelves", description: "Price bands where heavy volume traded" },
-  autoZones: { name: "Supply / demand zones", description: "Auto-found bases before sharp moves, per timeframe (untested)" },
+  autoZones: { name: "Supply / demand zones", description: "Held ~6 in 10 retests, ~5 in 10 at random levels" },
   prevClose: { name: "Previous close", description: "The prior trading day's close" },
   fills: { name: "My fills", description: "Your simulated buys and sells" },
 };
