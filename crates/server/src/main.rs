@@ -176,6 +176,15 @@ async fn serve(config: Config) -> std::io::Result<()> {
         );
     }
     let state = AppState::with_alerts(config.api_token.clone(), markets, settings, alerts);
+    // The Insights page reads the same ledger back (GET /api/notices, crate::notices).
+    state.set_notices_dir(
+        config
+            .market
+            .provider
+            .archive
+            .root
+            .join(stockwatcher_server::oplog::NOTICES_DIR),
+    );
     if let Some(sim) = sim {
         // The provider-compatible simulator on its own port (loopback by default), so Alpaca/FMP
         // base URLs can point at it by configuration. Dummy credentials only.

@@ -462,3 +462,36 @@ fn a_second_server_cannot_take_the_data_dir() {
     drop(first);
     assert!(stockwatcher_server::lock_data_dir(dir.path()).is_ok());
 }
+
+/// The Insights page's log: the ledger's day grouped per notice, behind auth, a bad day refused.
+#[tokio::test]
+async fn notices_reads_the_ledger_day() {
+    let dir = site();
+    let notices = dir.path().join("notices");
+    std::fs::create_dir_all(&notices).unwrap();
+    std::fs::write(
+        notices.join("2026-10-26.jsonl"),
+        concat!(
+            r#"{"kind":"decision","v":1,"decided_at":5,"event_id":"a","notice":"runners.fast","symbol":"SRTM","path":"phone","decision":"sent","held":null,"devices":1,"title":"t","body":"b"}"#,
+            "\n"
+        ),
+    )
+    .unwrap();
+    let state = AppState::new(Some(TOKEN.to_owned()));
+    state.set_notices_dir(notices);
+    let a = router(state, &dir.path().join("static"), &dir.path().join("data"));
+    assert_eq!(
+        get(a.clone(), "/api/notices?day=2026-10-26", None).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (status, body, _) = get(a.clone(), "/api/notices?day=2026-10-26", Some(TOKEN)).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["items"][0]["symbol"], "SRTM");
+    assert_eq!(v["items"][0]["phone"]["decision"], "sent");
+    assert_eq!(v["days"][0], "2026-10-26");
+    assert_eq!(
+        get(a, "/api/notices?day=../x", Some(TOKEN)).await.0,
+        StatusCode::BAD_REQUEST
+    );
+}

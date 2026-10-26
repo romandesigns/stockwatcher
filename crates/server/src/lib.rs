@@ -13,6 +13,7 @@ pub mod evidence;
 pub mod favorites;
 pub mod history;
 pub mod market;
+pub mod notices;
 pub mod observe;
 pub mod oplog;
 pub mod pressure;
@@ -61,6 +62,9 @@ struct Inner {
     /// Only WebSocket sessions subscribe, so `closed()` resolving means
     /// every session has finished.
     shutdown: watch::Sender<bool>,
+    /// Where the notification ledger's day files are (`crate::notices`, `GET /api/notices`);
+    /// unset = no ledger (tests, a replay-only server).
+    notices_dir: std::sync::OnceLock<std::path::PathBuf>,
 }
 
 impl AppState {
@@ -101,7 +105,18 @@ impl AppState {
             settings,
             alerts,
             shutdown: watch::Sender::new(false),
+            notices_dir: std::sync::OnceLock::new(),
         }))
+    }
+
+    /// The notification ledger's directory, for the Insights page's log (`crate::notices`). Set
+    /// once at start; a second call is ignored.
+    pub fn set_notices_dir(&self, dir: std::path::PathBuf) {
+        let _ = self.0.notices_dir.set(dir);
+    }
+
+    pub fn notices_dir(&self) -> Option<&std::path::Path> {
+        self.0.notices_dir.get().map(|p| p.as_path())
     }
 
     pub fn alerts(&self) -> &alerts::Alerts {
@@ -271,6 +286,7 @@ pub fn router(state: AppState, static_dir: &Path, data_dir: &Path) -> Router {
         .route("/symbols", get(api::symbols))
         .route("/quotes", get(api::quotes))
         .route("/settings", get(api::settings))
+        .route("/notices", get(api::notices))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_bearer,

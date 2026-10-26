@@ -18,3 +18,4 @@ export * from "./tapHold.ts";
 export * from "./session.ts";
 export * from "./runnersNotify.ts";
 export * from "./scorecard.ts";
+export * from "./noticeLog.ts";

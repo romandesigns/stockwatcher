@@ -24,6 +24,8 @@ export const colors = {
 
   accent: "#8b9cff",
   accentFg: "#0f1216",
+  /** Panel titles (owner, 2026-10-26): the web's --heading, the accent mixed 62% toward the text. */
+  heading: "#adb9f8",
 
   good: "#3fb97a",
   goodBg: "rgba(63, 185, 122, 0.14)",

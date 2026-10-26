@@ -138,7 +138,9 @@ export type IconName =
   | "pathBurst"
   | "pathFast"
   | "pathRun"
-  | "pathRunning";
+  | "pathRunning"
+  | "insights"
+  | "phone";
 
 export const ICONS: Readonly<Record<IconName, IconDef>> = {
   // Drawing tools: the drawn object is primary, its handles and fills secondary.
@@ -260,6 +262,11 @@ export const ICONS: Readonly<Record<IconName, IconDef>> = {
   gauge: icon([S("M2.5 11.5a5.5 5.5 0 0 1 11 0"), P("M8 11.5 11 6.5", { width: 1.6 }), P(circlePath(8, 11.5, 1.3), { paint: "fill" })]),
   // Price alerts (2026-10-19, the approved design's bell): its body soft, outline and clapper crisp.
   bell: icon([S("M4 11.5V7.5a4 4 0 0 1 8 0v4l1 1.5H3z", { paint: "fill" }), P("M4 11.5V7.5a4 4 0 0 1 8 0v4l1 1.5H3z"), P("M6.5 14.5h3")], 1.4),
+  // Insights (owner, 2026-10-26: the notification log and the scorecard): three bars soft, the
+  // baseline and the trend over them crisp.
+  insights: icon([S("M3 13V9h2.5v4zM6.75 13V6.5h2.5V13zM10.5 13V4h2.5v9z", { paint: "fill" }), P("M2 13.5h12M2.5 8 6 5l3 1.5 4.5-4")]),
+  // A phone, for "sent to the phone" in the notification log: its glass soft, frame and speaker crisp.
+  phone: icon([S("M5 2h6v12H5z", { paint: "fill" }), P("M5.5 1.5h5a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1h-5a1 1 0 0 1-1-1v-11a1 1 0 0 1 1-1zM7 12.5h2")]),
   // "New": the cross crisp on a soft disc (the alerts header's add button).
   plus: icon([S(circlePath(8, 8, 6.5), { paint: "fill" }), P("M8 4.5v7M4.5 8h7")], 1.6),
   // Row menus (an alert's options): three dots, the middle one primary.

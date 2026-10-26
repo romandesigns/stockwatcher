@@ -96,6 +96,42 @@ pub async fn replay_state(
 }
 
 #[derive(Deserialize)]
+pub struct NoticesQuery {
+    day: Option<String>,
+}
+
+/// `GET /api/notices?day=YYYY-MM-DD` (default: today in ET): the notification ledger's day, one
+/// item per notice, newest first, plus the days that have a ledger (`crate::notices`).
+pub async fn notices(State(state): State<AppState>, Query(q): Query<NoticesQuery>) -> Response {
+    // Parsed into a date before it names a file, so nothing but `YYYY-MM-DD.jsonl` is ever read.
+    let day = match q.day.as_deref().filter(|d| !d.is_empty()) {
+        Some(d) => match chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d") {
+            Ok(day) => day,
+            Err(_) => return bad("day must be YYYY-MM-DD".into()),
+        },
+        None => crate::oplog::et_date_ms(crate::oplog::now_ms()),
+    };
+    let dir = state.notices_dir().map(|p| p.to_path_buf());
+    // Up to the ledger's daily cap: file IO and parsing off the async workers.
+    let (days, items, truncated) = match dir {
+        Some(dir) => tokio::task::spawn_blocking(move || {
+            let (items, truncated) = crate::notices::read_day(&dir, day);
+            (crate::notices::days(&dir), items, truncated)
+        })
+        .await
+        .unwrap_or_default(),
+        None => (Vec::new(), Vec::new(), false),
+    };
+    Json(json!({
+        "day": day.format("%Y-%m-%d").to_string(),
+        "days": days.iter().map(|d| d.format("%Y-%m-%d").to_string()).collect::<Vec<_>>(),
+        "items": items,
+        "truncated": truncated,
+    }))
+    .into_response()
+}
+
+#[derive(Deserialize)]
 pub struct ReplayAlertsQuery {
     day: Option<String>,
     symbol: Option<String>,

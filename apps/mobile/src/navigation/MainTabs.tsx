@@ -5,6 +5,7 @@ import { useReducedMotion } from "../motion/useReducedMotion";
 import { ChartScreen } from "../screens/ChartScreen";
 import { AlertsScreen } from "../screens/AlertsScreen";
 import { DashboardScreen } from "../screens/DashboardScreen";
+import { InsightsScreen } from "../screens/InsightsScreen";
 import { appActions } from "../state/store";
 import { MainTabBar } from "./MainTabBar";
 
@@ -23,6 +24,8 @@ export type MainTabParamList = {
   Dashboard: undefined;
   Chart: undefined;
   Alerts: undefined;
+  /** The notification log and the scorecard (owner, 2026-10-26). */
+  Insights: undefined;
   /** Not a page: pressing it opens the Settings sheet over the current tab, like the web's nav item. */
   Settings: undefined;
 };
@@ -42,6 +45,8 @@ export function MainTabs() {
       <Tab.Screen name="Chart" component={ChartScreen} options={{ title: "Chart" }} />
       {/* Price alerts (2026-10-19): the list and Activity; the same tab-switch spec as the others. */}
       <Tab.Screen name="Alerts" component={AlertsScreen} options={{ title: "Alerts" }} />
+      {/* Insights (owner, 2026-10-26): the notification log and the scorecard; same tab-switch spec. */}
+      <Tab.Screen name="Insights" component={InsightsScreen} options={{ title: "Insights" }} />
       {/* Settings (owner, 2026-10-19): the press opens the app's Settings sheet (SettingsHost) and never switches tab. */}
       <Tab.Screen
         name="Settings"

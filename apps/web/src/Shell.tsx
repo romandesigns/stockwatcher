@@ -12,6 +12,7 @@ import { openTickerChart } from "./nav/openTicker.ts";
 import { usePage } from "./nav/routes.ts";
 import { AppSettingsDialog } from "./nav/settings.tsx";
 import { DashboardPage } from "./pages/DashboardPage.tsx";
+import { InsightsPage } from "./insights/InsightsPage.tsx";
 import { getAppStore, useApp } from "./state/store.ts";
 
 /** Whether the rail is collapsed, remembered on this device (screen layout is never synced). */
@@ -61,7 +62,7 @@ export function Shell() {
   // The page headers' NavToggle reads these (far left of each header); stable while unchanged.
   const rail = useMemo(() => ({ collapsed, toggle }), [collapsed]);
 
-  const content = page === "chart" ? <App /> : page === "alerts" ? <AlertsPage /> : <DashboardPage />;
+  const content = page === "chart" ? <App /> : page === "alerts" ? <AlertsPage /> : page === "insights" ? <InsightsPage /> : <DashboardPage />;
   useFiredToasts();
 
   if (phone) {
