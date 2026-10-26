@@ -202,6 +202,14 @@ const Row = memo(function Row({ row: r, onPick, reducedMotion }: { row: RocketRo
             + {a.label}
           </Text>
         ))}
+        {/* The armed MP5 setup ("Pullback · trigger $3.42"): quiet like the source chip, never accent. */}
+        {r.setup && (
+          <View style={styles.source} testID="rocket-setup">
+            <Text numberOfLines={1} style={[styles.sourceText, { color: UI.text }]}>
+              {r.setup.label}
+            </Text>
+          </View>
+        )}
         {r.halted && (
           <View style={styles.badge}>
             <Text style={styles.badgeText}>HALTED</Text>

@@ -619,6 +619,8 @@ export interface PushRegisterMessage {
   signalsTrigger?: boolean;
   /** Pushes when the Halt watcher's gauge appears for a stock (server default off). */
   haltWatch?: boolean;
+  /** Pushes when a Runners or Ross stock's pullback sets up, then crosses its trigger (server default on). */
+  runnersPullback?: boolean;
 }
 
 export interface PushUnregisterMessage {

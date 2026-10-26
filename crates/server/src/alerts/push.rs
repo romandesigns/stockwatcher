@@ -107,6 +107,10 @@ pub struct Device {
     /// A Halt watcher gauge appearing: off.
     #[serde(default)]
     pub halt_watch: bool,
+    /// "Pullback setting up" and its crossing (owner, 2026-10-25): on, a record saved before it
+    /// existed included.
+    #[serde(default = "yes")]
+    pub runners_pullback: bool,
 }
 
 impl Device {
@@ -126,6 +130,7 @@ impl Device {
             ross_trigger: self.ross_trigger,
             signals_trigger: self.signals_trigger,
             halt: self.halt_watch,
+            pullback: self.runners_pullback,
         }
     }
 }
@@ -151,6 +156,7 @@ pub struct RunnersOptIn {
     pub ross_trigger: Option<bool>,
     pub signals_trigger: Option<bool>,
     pub halt: Option<bool>,
+    pub pullback: Option<bool>,
 }
 
 /// The newer switches as `push.register` and `runners.notify` spell them (owner, 2026-10-23),
@@ -174,6 +180,9 @@ pub struct MoreOptIn {
     pub signals_trigger: Option<bool>,
     #[serde(default, alias = "haltWatch")]
     pub halt: Option<bool>,
+    /// "Pullback setting up" (the phone spells it `runnersPullback`, the desk `pullback`).
+    #[serde(default, alias = "runnersPullback")]
+    pub pullback: Option<bool>,
 }
 
 impl MoreOptIn {
@@ -187,6 +196,7 @@ impl MoreOptIn {
             ross_trigger: self.ross_trigger,
             signals_trigger: self.signals_trigger,
             halt: self.halt,
+            pullback: self.pullback,
             ..o
         }
     }
@@ -314,6 +324,7 @@ impl Devices {
             def.signals_trigger,
         );
         let halt_watch = pick(runners.halt, |d| d.halt_watch, def.halt);
+        let runners_pullback = pick(runners.pullback, |d| d.runners_pullback, def.pullback);
         self.list.retain(|d| d.token != token);
         let clip = |s: &str| {
             s.chars()
@@ -339,6 +350,7 @@ impl Devices {
             ross_trigger,
             signals_trigger,
             halt_watch,
+            runners_pullback,
         });
         while self.list.len() > MAX_DEVICES {
             self.list.remove(0);
@@ -873,7 +885,15 @@ mod tests {
     #[test]
     fn panel_opt_ins_defaults_and_old_records() {
         use crate::rocket::{CueNotice, Notice, NoticeDetail, NoticeKind as K};
-        let on = [K::Shelf, K::FollowUp, K::RossCrossing, K::SignalsCrossing];
+        // The pullback stages too: on for a new phone AND for a record saved before they existed.
+        let on = [
+            K::Shelf,
+            K::FollowUp,
+            K::RossCrossing,
+            K::SignalsCrossing,
+            K::Pullback,
+            K::PullbackCrossing,
+        ];
         let off = [K::RossTrigger, K::SignalsTrigger, K::Halt];
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -895,9 +915,10 @@ mod tests {
         }
         // The phone turns Ross crossings off and the Halt watcher on; an older app's register
         // then keeps both.
-        let more: MoreOptIn =
-            serde_json::from_str(r#"{"rossCrossing":false,"haltWatch":true,"runnersShelf":false}"#)
-                .unwrap();
+        let more: MoreOptIn = serde_json::from_str(
+            r#"{"rossCrossing":false,"haltWatch":true,"runnersShelf":false,"runnersPullback":false}"#,
+        )
+        .unwrap();
         assert!(d.register(
             fresh,
             "android",
@@ -908,6 +929,10 @@ mod tests {
         assert!(d.register(fresh, "android", "Fold", 4, RunnersOptIn::default()));
         let dev = Devices::open(dir.path()).get(fresh).unwrap().clone();
         assert!(!dev.ross_crossing && dev.halt_watch && !dev.runners_shelf);
+        assert!(
+            !dev.runners_pullback,
+            "the phone's pullback switch off is kept"
+        );
         assert!(dev.signals_crossing && dev.runners_follow_up && !dev.ross_trigger);
         // A Ross crossing whose episode Signals shows too: this phone (Signals on) still gets it.
         let mut n = Notice::test(K::RossCrossing, "A");

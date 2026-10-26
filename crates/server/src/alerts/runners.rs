@@ -346,6 +346,8 @@ pub fn data_kind(kind: NoticeKind) -> &'static str {
         NoticeKind::RossTrigger => "ross.trigger",
         NoticeKind::SignalsTrigger => "signals.trigger",
         NoticeKind::Halt => "halt.watch",
+        // One switch for both stages; the data's `stage` tells them apart.
+        NoticeKind::Pullback | NoticeKind::PullbackCrossing => "runners.pullback",
     }
 }
 
@@ -527,6 +529,48 @@ fn panel_message(n: &Notice) -> (String, String, Value) {
                 format!("{body}{both}"),
             )
         }
+        // "Trigger $3.42 · stop $3.21 · dipped 6.1% (31% of the move) · volume in dip 0.4×":
+        // only the episode's own facts, in that order, so the clause trimming drops the dip's
+        // volume first and the levels last.
+        (NoticeKind::Pullback, Some(NoticeDetail::Pullback(f))) => {
+            data["stage"] = json!("setup");
+            let mut parts = Vec::new();
+            if let Some(t) = f.trigger {
+                parts.push(format!("Trigger {}", dollars(on_tick(t))));
+            }
+            if let Some(st) = f.stop {
+                parts.push(format!("stop {}", dollars(on_tick(st))));
+            }
+            match (f.dip_pct, f.retraced_pct) {
+                (Some(d), Some(r)) => parts.push(format!("dipped {d:.1}% ({r:.0}% of the move)")),
+                (Some(d), None) => parts.push(format!("dipped {d:.1}%")),
+                _ => {}
+            }
+            if let Some(v) = f.dip_volume_ratio {
+                parts.push(format!("volume in dip {v:.1}×"));
+            }
+            (format!("{s} · Pullback setting up{p}"), parts.join(" · "))
+        }
+        (NoticeKind::PullbackCrossing, Some(NoticeDetail::Pullback(f))) => {
+            data["stage"] = json!("crossing");
+            data["also_signals"] = json!(f.also_signals);
+            let body = match f.trigger {
+                Some(t) => format!(
+                    "Above the {} pullback trigger · bar close pending",
+                    dollars(on_tick(t))
+                ),
+                None => "Above the pullback trigger · bar close pending".into(),
+            };
+            let both = if f.also_signals {
+                " · also on Signals"
+            } else {
+                ""
+            };
+            (
+                format!("{s} · Pullback · Crossing{p}"),
+                format!("{body}{both}"),
+            )
+        }
         // "Buying pressure at the $2.80 band · halt risk 72/100".
         (NoticeKind::Halt, Some(NoticeDetail::Halt { bull, risk, band })) => {
             let side = if *bull { "Buying" } else { "Selling" };
@@ -646,7 +690,11 @@ pub fn desk_frame(n: &Notice) -> String {
     json!({
         "type": "runners.notice",
         "id": n.event_id(),
-        "alsoSignals": matches!(&n.detail, Some(NoticeDetail::Cue(c)) if c.also_signals),
+        "alsoSignals": match &n.detail {
+            Some(NoticeDetail::Cue(c)) => c.also_signals,
+            Some(NoticeDetail::Pullback(p)) => p.also_signals,
+            _ => false,
+        },
         "alertId": n.alert_id,
         "symbol": n.symbol,
         "kind": data_kind(n.kind),
@@ -1054,6 +1102,17 @@ Alert $2.41 · +5% = $2.53"
                 risk: 72,
                 band: 2.8,
             }),
+            NoticeKind::Pullback | NoticeKind::PullbackCrossing => {
+                Some(NoticeDetail::Pullback(crate::rocket::PullbackNotice {
+                    episode_id: "run:2026-10-23:YMAT:micro_pullback:4".into(),
+                    trigger: Some(2.75),
+                    stop: Some(2.58),
+                    dip_pct: Some(6.14),
+                    retraced_pct: Some(31.0),
+                    dip_volume_ratio: Some(0.4),
+                    also_signals: kind == NoticeKind::PullbackCrossing,
+                }))
+            }
             _ => None,
         };
         n
@@ -1128,6 +1187,32 @@ Alert $2.41 · +5% = $2.53"
                 "YMAT · Halt watcher · $2.71".into(),
                 "Buying pressure building at the $2.80 LULD band · halt risk 72/100".into()
             )
+        );
+        assert_eq!(
+            t(NoticeKind::Pullback),
+            (
+                "YMAT · Pullback setting up · $2.71".into(),
+                "Trigger $2.75 · stop $2.58 · dipped 6.1% (31% of the move) · volume in dip 0.4×"
+                    .into()
+            )
+        );
+        assert_eq!(
+            t(NoticeKind::PullbackCrossing),
+            (
+                "YMAT · Pullback · Crossing · $2.71".into(),
+                "Above the $2.75 pullback trigger · bar close pending · also on Signals".into()
+            )
+        );
+        let (_, _, setup) = message(&sample(NoticeKind::Pullback));
+        assert_eq!(
+            (setup["kind"].as_str(), setup["stage"].as_str()),
+            (Some("runners.pullback"), Some("setup"))
+        );
+        let f: Value =
+            serde_json::from_str(&desk_frame(&sample(NoticeKind::PullbackCrossing))).unwrap();
+        assert_eq!(
+            (f["alsoSignals"].clone(), f["data"]["stage"].clone()),
+            (json!(true), json!("crossing"))
         );
         let f: Value =
             serde_json::from_str(&desk_frame(&sample(NoticeKind::RossCrossing))).unwrap();

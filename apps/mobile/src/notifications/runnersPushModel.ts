@@ -17,6 +17,7 @@ export interface RunnersPushPrefs {
   pushRossTrigger: boolean;
   pushSignalsTrigger: boolean;
   pushHalt: boolean;
+  pushPullback: boolean;
 }
 
 export const RUNNERS_PUSH_DEFAULTS: RunnersPushPrefs = {
@@ -33,6 +34,8 @@ export const RUNNERS_PUSH_DEFAULTS: RunnersPushPrefs = {
   pushRossTrigger: false,
   pushSignalsTrigger: false,
   pushHalt: false,
+  // "Pullback setting up": on, the owner asked for it (2026-10-25); the server's default too.
+  pushPullback: true,
 };
 
 /** The phone pref behind each shared switch (packages/shared `ALERT_SWITCH_SECTIONS`). */
@@ -50,6 +53,7 @@ export const PUSH_PREF_OF: Readonly<Record<keyof RunnersNotifyKinds, keyof Runne
   rossTrigger: "pushRossTrigger",
   signalsTrigger: "pushSignalsTrigger",
   halt: "pushHalt",
+  pullback: "pushPullback",
 };
 
 /**
@@ -78,6 +82,7 @@ export interface RunnersRegisterFields {
   rossTrigger: boolean;
   signalsTrigger: boolean;
   haltWatch: boolean;
+  runnersPullback: boolean;
 }
 
 export function registerFieldsOf(p: RunnersPushPrefs): RunnersRegisterFields {
@@ -95,5 +100,6 @@ export function registerFieldsOf(p: RunnersPushPrefs): RunnersRegisterFields {
     rossTrigger: p.pushRossTrigger,
     signalsTrigger: p.pushSignalsTrigger,
     haltWatch: p.pushHalt,
+    runnersPullback: p.pushPullback,
   };
 }

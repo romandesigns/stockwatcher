@@ -192,6 +192,8 @@ pub struct DeskKinds {
     pub signals_trigger: bool,
     /// A Halt watcher gauge appearing (off by default).
     pub halt: bool,
+    /// "Pullback setting up" and its crossing (`crate::cue_notices`, "Pullback"; on by default).
+    pub pullback: bool,
 }
 
 impl Default for DeskKinds {
@@ -218,6 +220,8 @@ impl DeskKinds {
             ross_trigger: o.ross_trigger.unwrap_or(false),
             signals_trigger: o.signals_trigger.unwrap_or(false),
             halt: o.halt.unwrap_or(false),
+            // Owner, 2026-10-25: asked to receive it, so on like the other evidence kinds.
+            pullback: o.pullback.unwrap_or(true),
         }
     }
 
@@ -225,7 +229,11 @@ impl DeskKinds {
     /// (`crate::cue_notices`, "One episode, one notice") is wanted through either switch.
     pub fn wants(self, n: &crate::rocket::Notice) -> bool {
         use crate::rocket::{NoticeDetail, NoticeKind as K};
-        let also_signals = matches!(&n.detail, Some(NoticeDetail::Cue(c)) if c.also_signals);
+        let also_signals = match &n.detail {
+            Some(NoticeDetail::Cue(c)) => c.also_signals,
+            Some(NoticeDetail::Pullback(p)) => p.also_signals,
+            _ => false,
+        };
         match n.kind {
             K::New => self.new,
             K::Breakout => self.breakout,
@@ -240,6 +248,10 @@ impl DeskKinds {
             K::RossTrigger => self.ross_trigger || (also_signals && self.signals_trigger),
             K::SignalsTrigger => self.signals_trigger,
             K::Halt => self.halt,
+            K::Pullback => self.pullback,
+            // A Runners stock's crossing that the Signals panel lists too is the Signals
+            // crossing as well (one episode, one notice), as the Ross kind is.
+            K::PullbackCrossing => self.pullback || (also_signals && self.signals_crossing),
         }
     }
 }

@@ -194,6 +194,14 @@ pub enum NoticeKind {
     SignalsTrigger,
     /// A Halt watcher gauge appeared (`crate::pressure`'s board gained the stock). Off by default.
     Halt,
+    /// "Pullback setting up" (owner, 2026-10-25): an MP5 episode ARMED (trigger and stop fixed) on
+    /// a stock with context, i.e. a Runners row earlier today or a Ross member
+    /// (`crate::cue_notices`, "Pullback"). One per episode. On by default (owner asked for it).
+    Pullback,
+    /// The same episode's trigger being crossed: the setup's follow-up, under the same switch as
+    /// [`NoticeKind::Pullback`]. Never for a Ross member, whose crossing is
+    /// [`NoticeKind::RossCrossing`] already.
+    PullbackCrossing,
 }
 
 impl NoticeKind {
@@ -212,10 +220,12 @@ impl NoticeKind {
             NoticeKind::RossTrigger => "ross_trigger",
             NoticeKind::SignalsTrigger => "signals_trigger",
             NoticeKind::Halt => "halt",
+            NoticeKind::Pullback => "pullback",
+            NoticeKind::PullbackCrossing => "pullback_crossing",
         }
     }
 
-    pub const ALL: [NoticeKind; 13] = [
+    pub const ALL: [NoticeKind; 15] = [
         NoticeKind::New,
         NoticeKind::Breakout,
         NoticeKind::Burst,
@@ -229,6 +239,8 @@ impl NoticeKind {
         NoticeKind::RossTrigger,
         NoticeKind::SignalsTrigger,
         NoticeKind::Halt,
+        NoticeKind::Pullback,
+        NoticeKind::PullbackCrossing,
     ];
 
     /// New evidence on a stock (owner, 2026-10-23): a burst, a crossing, a shelf entry or a
@@ -243,6 +255,10 @@ impl NoticeKind {
                 | NoticeKind::FollowUp
                 | NoticeKind::RossCrossing
                 | NoticeKind::SignalsCrossing
+                // A setup almost always arms within minutes of the Runners push that put the
+                // stock in context: as new evidence it waits 2 minutes after it, not 10.
+                | NoticeKind::Pullback
+                | NoticeKind::PullbackCrossing
         )
     }
 }
@@ -264,6 +280,29 @@ pub enum NoticeDetail {
     /// [`NoticeKind::Halt`]: the gauge's side, its halt-risk score (0–100) and the LULD band it
     /// runs at (dollars).
     Halt { bull: bool, risk: u8, band: f64 },
+    /// [`NoticeKind::Pullback`] / [`NoticeKind::PullbackCrossing`].
+    Pullback(PullbackNotice),
+}
+
+/// A pullback setup's facts, read off the MP5 episode's own anchors at arming (never invented:
+/// a value the episode does not have stays `None` and the text leaves it out).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PullbackNotice {
+    /// The detection episode: one notice per episode and stage.
+    pub episode_id: String,
+    /// The trigger (the impulse high H0) and the stop (the pullback low at arming), dollars.
+    pub trigger: Option<f64>,
+    pub stop: Option<f64>,
+    /// How far the price dipped from the high, % of the stock price.
+    pub dip_pct: Option<f64>,
+    /// The share of the impulse retraced, %.
+    pub retraced_pct: Option<f64>,
+    /// Dollar volume per bar in the dip over the impulse's (0.4 = the dip traded 40% of the
+    /// impulse's rate). Measured, never required (the MP5 rule's `volume_condition`).
+    pub dip_volume_ratio: Option<f64>,
+    /// The Signals panel lists this episode too (the Detection Panel is on, a non-member): the
+    /// crossing then stands for the Signals one, so a device with only that switch still gets it.
+    pub also_signals: bool,
 }
 
 /// A Ross or Signals cue notice's facts.

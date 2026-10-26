@@ -388,6 +388,12 @@ export interface RocketRowView {
    * ("+ Run +20% · 3m"), oldest first. Quiet, never accent: the row's own source leads.
    */
   also: { kind: RocketAlsoWire["kind"]; label: string; age: string }[];
+  /**
+   * The MP5 pullback setup on this stock (owner, 2026-10-25, "Pullback setting up"): "Pullback ·
+   * trigger $3.42" while armed, "Pullback · crossing $3.42" while the trigger is being crossed,
+   * else null. From the row's `levels`, which exist only once the episode has armed.
+   */
+  setup: { label: string; crossing: boolean } | null;
   /** What `fromFlag` is measured from: "flag", "alert" (a burst) or "entry" (a running or run row). */
   fromWhat: "flag" | "alert" | "entry";
   aria: string;
@@ -414,6 +420,20 @@ function sourceOf(r: RocketRowWire, strategyId: string | undefined | null): Rock
 }
 
 const ALSO_LABEL: Record<RocketAlsoWire["kind"], string> = { running: "Running", run: "Run +20%", fast: "Fast move" };
+
+/**
+ * The setup chip ({@link RocketRowView.setup}). The cue's states (stock_context `CueState`):
+ * "forming" with a trigger (armed, not yet near) and "near" are the armed setup; "crossing" is the
+ * trigger being crossed. Triggered, invalidated, halted and watching show no chip: the push
+ * already told of the crossing, and a broken setup is not news on the row.
+ */
+export function rocketSetupView(lv: RocketLevelsWire | null | undefined): RocketRowView["setup"] {
+  if (!lv || lv.trigger == null || !(lv.trigger > 0)) return null;
+  const at = `$${money(lv.trigger / 1_000_000)}`;
+  if (lv.state === "crossing") return { label: `Pullback · crossing ${at}`, crossing: true };
+  if (lv.state === "forming" || lv.state === "near") return { label: `Pullback · trigger ${at}`, crossing: false };
+  return null;
+}
 
 /** A row's follow-up chips ({@link RocketRowView.also}): known paths only, one per path, oldest first. */
 export function rocketAlsoView(r: Pick<RocketRowWire, "also">, nowMs: number): RocketRowView["also"] {
@@ -587,10 +607,11 @@ export function rocketRowView(r: RocketRowWire, nowMs: number, strategyId?: stri
     burst: b ? burstView(b, r.at, nowMs) : null,
     source: b ? { kind: "burst", label: "Burst" } : sourceOf(r, strategyId),
     also: rocketAlsoView(r, nowMs),
+    setup: rocketSetupView(lv),
     fromWhat: b ? "alert" : isEntryRow(r) ? "entry" : "flag",
     aria: "",
   };
-  const alsoAria = view.also.length ? `. Then ${view.also.map((a) => `${a.label} ${a.age === "now" ? "just now" : `${a.age} ago`}`).join(", ")}` : "";
+  const alsoAria = (view.also.length ? `. Then ${view.also.map((a) => `${a.label} ${a.age === "now" ? "just now" : `${a.age} ago`}`).join(", ")}` : "") + (view.setup ? `. ${view.setup.label}` : "");
   if (view.burst) {
     const bv = view.burst;
     view.aria = `${r.s} ${money(last)}${gain ? ` ${gain} on the day` : ""}. ${bv.headline} alerted ${age === "now" ? "just now" : `${age} ago`}, ${bv.since}, ${bv.move}, ${look.label}${note ? ` ${note}` : ""}${reasons.length ? `: ${reasons.join(", ")}` : ""}${outcome ? `. Outcome ${outcome.label}` : ""}${alsoAria}`;

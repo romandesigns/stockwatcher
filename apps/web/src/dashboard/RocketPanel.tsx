@@ -167,6 +167,12 @@ const RocketRow = memo(function RocketRow({ row: r, onPick }: { row: RocketRowVi
             </span>
           </Tip>
         ))}
+        {/* The armed MP5 setup ("Pullback · trigger $3.42"): a fact on the row, quiet like the source chip, never accent. */}
+        {r.setup && (
+          <span className="self-center truncate rounded bg-bg-raised px-1 py-px font-sans text-[9px] font-medium whitespace-nowrap text-foreground" data-testid="rocket-setup">
+            {r.setup.label}
+          </span>
+        )}
         {r.halted && <span className="rounded bg-warning px-1 py-px font-sans text-[9px] font-semibold text-background">HALTED</span>}
         <span className={cn("ml-auto inline-flex items-center gap-1 text-[11px] tabular-nums", r.fresh ? "font-semibold text-primary" : "text-text-faint")}>
           {r.fresh && <span className="size-1.5 animate-pulse rounded-full bg-primary motion-reduce:animate-none" aria-hidden />}

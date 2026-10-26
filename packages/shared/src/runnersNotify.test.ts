@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { parseServerMessage } from "./protocol.ts";
-import { createNoticeDedupe, DEFAULT_RUNNERS_NOTIFY, parseRunnersNotice, RUNNERS_NOTICE_KINDS, runnersNotifyKey, runnersNotifyKinds, shouldShowNotice, wantsNotice, type RunnersNoticeMessage } from "./runnersNotify.ts";
+import { ALERT_SWITCH_SECTIONS, createNoticeDedupe, DEFAULT_RUNNERS_NOTIFY, parseRunnersNotice, RUNNERS_NOTICE_KINDS, runnersNotifyKey, runnersNotifyKinds, shouldShowNotice, wantsNotice, type RunnersNoticeMessage } from "./runnersNotify.ts";
 import { createWsClient, type WebSocketLike } from "./ws.ts";
 
 // The frame the server sends (crates/server/src/alerts/runners.rs desk_frame test).
@@ -18,7 +18,7 @@ const frame = {
 
 describe("runners notices", () => {
   test("the defaults are the phone's: every evidence kind on; breakouts, at-trigger and the Halt watcher off", () => {
-    expect(DEFAULT_RUNNERS_NOTIFY).toEqual({ new: true, breakout: false, burst: true, running: true, run: true, fast: true, shelf: true, followUp: true, rossCrossing: true, signalsCrossing: true, rossTrigger: false, signalsTrigger: false, halt: false });
+    expect(DEFAULT_RUNNERS_NOTIFY).toEqual({ new: true, breakout: false, burst: true, running: true, run: true, fast: true, shelf: true, followUp: true, rossCrossing: true, signalsCrossing: true, rossTrigger: false, signalsTrigger: false, halt: false, pullback: true });
     expect(runnersNotifyKinds(undefined)).toEqual({ ...DEFAULT_RUNNERS_NOTIFY });
     // A value stored before the new kinds existed: the new switches take their defaults.
     expect(runnersNotifyKinds({ new: false, breakout: true, burst: true, running: true, run: true, fast: true })).toEqual({ ...DEFAULT_RUNNERS_NOTIFY, new: false, breakout: true });
@@ -40,8 +40,24 @@ describe("runners notices", () => {
       ["ross.trigger", "rossTrigger"],
       ["signals.trigger", "signalsTrigger"],
       ["halt.watch", "halt"],
+      ["runners.pullback", "pullback"],
     ]);
     for (const k of RUNNERS_NOTICE_KINDS) expect(runnersNotifyKey(k) in DEFAULT_RUNNERS_NOTIFY).toBe(true);
+  });
+
+  test("pullback setting up: on by default, its own switch, and a crossing that Signals lists too shows with that switch", () => {
+    const setup = parseRunnersNotice({ ...frame, id: "runners-pullback-e9", kind: "runners.pullback", data: { symbol: "CJMB", kind: "runners.pullback", alert_id: "e9", stage: "setup" } })!;
+    expect(setup.kind).toBe("runners.pullback");
+    expect(wantsNotice(setup, DEFAULT_RUNNERS_NOTIFY)).toBe(true);
+    const off = { ...DEFAULT_RUNNERS_NOTIFY, pullback: false };
+    expect(wantsNotice(setup, off)).toBe(false);
+    // A stored value from before the switch existed takes the default (on).
+    expect(runnersNotifyKinds({ new: true, halt: true }).pullback).toBe(true);
+    const crossing = parseRunnersNotice({ ...frame, id: "runners-pullback_crossing-e9", kind: "runners.pullback", data: { symbol: "CJMB", kind: "runners.pullback", alert_id: "e9", stage: "crossing", also_signals: true } })!;
+    expect(wantsNotice(crossing, off)).toBe(true);
+    expect(wantsNotice(crossing, { ...off, signalsCrossing: false })).toBe(false);
+    // The switch is listed under Runners on every client.
+    expect(ALERT_SWITCH_SECTIONS.find((s) => s.id === "runners")!.items.some((i) => i.key === "pullback")).toBe(true);
   });
 
   test("a Ross notice for a stock in Signals too shows with either switch, once", () => {

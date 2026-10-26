@@ -63,7 +63,7 @@ test("web: off until the switch asks for permission; the phone's defaults after"
   expect(n.notifyMessage()).toBeNull();
   expect(n.handle(notice)).toBe(false);
   expect(await n.enable()).toBe(true);
-  expect(n.notifyMessage()).toEqual({ type: "runners.notify", enabled: true, new: true, breakout: false, burst: true, running: true, run: true, fast: true, shelf: true, followUp: true, rossCrossing: true, signalsCrossing: true, rossTrigger: false, signalsTrigger: false, halt: false });
+  expect(n.notifyMessage()).toEqual({ type: "runners.notify", enabled: true, new: true, breakout: false, burst: true, running: true, run: true, fast: true, shelf: true, followUp: true, rossCrossing: true, signalsCrossing: true, rossTrigger: false, signalsTrigger: false, halt: false, pullback: true });
   // Remembered on this device.
   expect(createRunnersNotifier(env).prefs().enabled).toBe(true);
 });

@@ -25,6 +25,9 @@ export const RUNNERS_NOTICE_KINDS = [
   "ross.trigger",
   "signals.trigger",
   "halt.watch",
+  // "Pullback setting up" and its crossing (owner, 2026-10-25): one switch, `data.stage`
+  // "setup" | "crossing" (crates/server/src/cue_notices.rs, "Pullback").
+  "runners.pullback",
 ] as const;
 export type RunnersNoticeKind = (typeof RUNNERS_NOTICE_KINDS)[number];
 
@@ -69,6 +72,8 @@ export interface RunnersNotifyKinds {
   signalsTrigger: boolean;
   /** The Halt watcher's gauge appeared for a stock. */
   halt: boolean;
+  /** A Runners or Ross stock's pullback armed its trigger and stop, then its trigger crossing. */
+  pullback: boolean;
 }
 
 /**
@@ -89,6 +94,8 @@ export const DEFAULT_RUNNERS_NOTIFY: Readonly<RunnersNotifyKinds> = Object.freez
   rossTrigger: false,
   signalsTrigger: false,
   halt: false,
+  // On: the owner asked to receive it (2026-10-25).
+  pullback: true,
 });
 
 /** client `runners.notify`: this connection shows notifications for these kinds (`enabled: false` stops). */
@@ -120,6 +127,7 @@ export const RUNNERS_NOTIFY_KEY: Readonly<Record<RunnersNoticeKind, keyof Runner
   "ross.trigger": "rossTrigger",
   "signals.trigger": "signalsTrigger",
   "halt.watch": "halt",
+  "runners.pullback": "pullback",
 });
 
 /** The switch a notice's kind answers to. */
@@ -134,7 +142,8 @@ export function runnersNotifyKey(kind: RunnersNoticeKind): keyof RunnersNotifyKi
 export function wantsNotice(notice: Pick<RunnersNoticeMessage, "kind" | "alsoSignals">, kinds: RunnersNotifyKinds): boolean {
   if (kinds[runnersNotifyKey(notice.kind)]) return true;
   if (!notice.alsoSignals) return false;
-  if (notice.kind === "ross.crossing") return kinds.signalsCrossing;
+  // A Runners stock's pullback crossing stands for the Signals crossing too, as a Ross one does.
+  if (notice.kind === "ross.crossing" || notice.kind === "runners.pullback") return kinds.signalsCrossing;
   if (notice.kind === "ross.trigger") return kinds.signalsTrigger;
   return false;
 }
@@ -226,6 +235,7 @@ export const ALERT_SWITCH_SECTIONS: readonly { id: "runners" | "ross" | "signals
       { key: "run", icon: "trend", name: "Run +20%", description: "A +20% leg within 15 minutes on real trades, with its window and start price." },
       { key: "fast", icon: "live", name: "Fast move", description: "+8% in a minute or +12% in 15 s on real trades, with the move and its money." },
       { key: "followUp", icon: "plus", name: "Follow-ups", description: "A later Runners path fires on a stock already listed, e.g. Run +20% after a fast move." },
+      { key: "pullback", icon: "hline", name: "Pullback setting up", description: "A Runners or Ross stock's dip fixes its trigger and stop, then when the trigger is crossed. Most do not follow through." },
       { key: "shelf", icon: "levels", name: "Volume shelf entry", description: "Price came into a volume shelf. About 1 in 3 hold, 1 in 2 fail." },
     ],
   },

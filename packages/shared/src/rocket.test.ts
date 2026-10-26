@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { rocketSectionCounts } from "./panels.ts";
 import { parseServerMessage } from "./protocol.ts";
-import { createRocketChannel, mergeRocketDayLines, newRocketFlags, rocketAge, rocketAttention, rocketFreshCount, rocketHeaderView, rocketNow, rocketRowsView, rocketRowView, rocketSectionsView, type RocketPanelWire, type RocketRowWire, type RocketSnapshotMessage } from "./rocket.ts";
+import { createRocketChannel, mergeRocketDayLines, newRocketFlags, rocketAge, rocketAttention, rocketFreshCount, rocketHeaderView, rocketNow, rocketRowsView, rocketRowView, rocketSectionsView, rocketSetupView, type RocketPanelWire, type RocketRowWire, type RocketSnapshotMessage } from "./rocket.ts";
 
 const T = 1_792_075_200_000;
 
@@ -370,5 +370,24 @@ describe("Fast move entries (2026-10-22)", () => {
     expect(rocketSectionsView(p, T).bursts).toBeNull();
     const only = panel({ rows: [row({ id: "z", s: "ZAP", kind: "fast" })] });
     expect(rocketSectionCounts({ enabled: true, panel: only, receivedAt: T, connected: true })).toEqual({ bursts: 0, flags: 1 });
+  });
+});
+
+describe("pullback setup chip", () => {
+  const lv = (state: string, trigger: number | null) => ({ state, trigger, invalidation: 3_210_000, meter_milli: null });
+  test("armed (forming with a trigger, or near) and crossing show it; anything else does not", () => {
+    expect(rocketSetupView(lv("forming", 3_420_000))).toEqual({ label: "Pullback · trigger $3.42", crossing: false });
+    expect(rocketSetupView(lv("near", 3_420_000))).toEqual({ label: "Pullback · trigger $3.42", crossing: false });
+    expect(rocketSetupView(lv("crossing", 3_420_000))).toEqual({ label: "Pullback · crossing $3.42", crossing: true });
+    expect(rocketSetupView(lv("forming", null))).toBeNull();
+    for (const s of ["triggered", "invalidated", "halted", "watching"]) expect(rocketSetupView(lv(s, 3_420_000))).toBeNull();
+    expect(rocketSetupView(null)).toBeNull();
+    expect(rocketSetupView(lv("near", 420_000))?.label).toBe("Pullback · trigger $0.42");
+  });
+  test("a row with armed levels carries the chip and says it to a screen reader", () => {
+    const v = rocketRowView(row({ levels: lv("near", 3_420_000) }), T);
+    expect(v.setup?.label).toBe("Pullback · trigger $3.42");
+    expect(v.aria).toContain("Pullback · trigger $3.42");
+    expect(rocketRowView(row({}), T).setup).toBeNull();
   });
 });

@@ -6,7 +6,8 @@
 // - a Runners push (crates/server/src/alerts/runners.rs, data `{symbol, kind: "runners.new" |
 //   "runners.breakout" | "runners.burst" | "runners.running" | "runners.run" | "runners.fast",
 //   alert_id}`), and since 2026-10-23 the same shape for "runners.shelf", "runners.followup",
-//   "ross.crossing", "signals.crossing", "ross.trigger", "signals.trigger" and "halt.watch":
+//   "ross.crossing", "signals.crossing", "ross.trigger", "signals.trigger", "halt.watch" and
+//   (2026-10-25) "runners.pullback":
 //   any kind with a valid ticker opens its chart, so a new kind needs nothing here;
 // - a price alert's push (crates/server/src/alerts/push.rs, data `{alertId, symbol, eventId,
 //   url}`). It used to open the Alerts tab, which left whatever chart was open on screen (the
