@@ -143,6 +143,11 @@ pub struct MaintainConfig {
     /// later cycles, and until enough prior sessions exist the engine reports the diagnostic as
     /// `insufficient_sessions` rather than a number.
     pub intraday_max_per_run: usize,
+    /// Score the day's alerts after the import (`super::scorecard`): `scorecard/<date>.json`.
+    pub scorecard: bool,
+    /// Days scored per cycle at most (newest first): tonight's day, then a backfill a few at a
+    /// time, so a first start over many days of logs never holds up the next cycle.
+    pub scorecard_max_per_run: usize,
 }
 
 impl Default for MaintainConfig {
@@ -157,6 +162,8 @@ impl Default for MaintainConfig {
             warmup_max_attempts: 4,
             intraday_curves: true,
             intraday_max_per_run: 400,
+            scorecard: true,
+            scorecard_max_per_run: 25,
             window_days: 21,
             daily_bars_keep_days: 63,
             run_at: NaiveTime::from_hms_opt(21, 15, 0).expect("valid"),
@@ -319,6 +326,12 @@ impl MaintainConfig {
                 }
                 n
             },
+            scorecard: match var("SCORECARD").as_deref() {
+                None | Some("1") | Some("true") => true,
+                Some("0") | Some("false") => false,
+                Some(v) => return Err(format!("SCORECARD is not 0/1: {v:?}")),
+            },
+            scorecard_max_per_run: d.scorecard_max_per_run,
         })
     }
 }
@@ -688,6 +701,12 @@ pub struct CycleReport {
     /// Dates of curves removed for falling out of the window.
     #[serde(default)]
     pub curves_pruned: usize,
+    /// Days whose scorecard was (re)written this cycle (`super::scorecard`), and cards removed
+    /// for age.
+    #[serde(default)]
+    pub scorecards_written: Vec<NaiveDate>,
+    #[serde(default)]
+    pub scorecards_pruned: usize,
     pub assets: Option<usize>,
     pub free_bytes: Option<u64>,
     pub requests: u64,
@@ -752,7 +771,7 @@ impl CycleReport {
             .map(|(d, n)| format!("{d}:{n}"))
             .collect();
         format!(
-            "maintain {}: window {window}, missing at start {}, imported {} symbol-days [{}], {} already complete, {} failed, still importing {:?}, pruned {:?}{}{}, closes {} (+{} -{} dates), daily bars +{} -{} dates (backfilled {}), split snapshots {} ({} requests, {} files pruned), assets {}, free {}, {} requests, {} errors{}, next run {}",
+            "maintain {}: window {window}, missing at start {}, imported {} symbol-days [{}], {} already complete, {} failed, still importing {:?}, pruned {:?}{}{}, closes {} (+{} -{} dates), daily bars +{} -{} dates (backfilled {}), split snapshots {} ({} requests, {} files pruned), scorecards {:?} (-{}), assets {}, free {}, {} requests, {} errors{}, next run {}",
             self.outcome,
             match self.missing_days.as_slice() {
                 [] => "none".to_string(),
@@ -785,6 +804,11 @@ impl CycleReport {
             self.split_snapshots,
             self.split_requests,
             self.split_files_pruned,
+            self.scorecards_written
+                .iter()
+                .map(|d| d.to_string())
+                .collect::<Vec<_>>(),
+            self.scorecards_pruned,
             self.assets.map_or("-".into(), |n| n.to_string()),
             self.free_bytes
                 .map_or("-".into(), |b| format!("{:.1} GB", b as f64 / 1e9)),
@@ -916,6 +940,18 @@ impl<H: Http + Send + 'static> Maintainer<'_, H> {
         // is final (`market_archive::intraday` decides what counts as collected whole).
         if self.cfg.intraday_curves && !self.stopped() {
             self.run_intraday_curves(&w, now, &mut r);
+        }
+        // The day's scorecard, once its import made it ready (`super::scorecard`): read-only over
+        // the archive and the alert logs, so it never competes with the import for anything but
+        // disk reads, and the newest day goes first.
+        if self.cfg.scorecard && !self.stopped() {
+            let s =
+                super::scorecard::run(self.archive, now, self.cfg.scorecard_max_per_run, &|| {
+                    self.stopped()
+                });
+            r.scorecards_written = s.written;
+            r.scorecards_pruned = s.pruned;
+            r.errors.extend(s.errors);
         }
         if !pruned_already && !self.stopped() {
             let newest = self

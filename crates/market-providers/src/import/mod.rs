@@ -15,6 +15,7 @@ pub mod fmp;
 pub mod fmp_float;
 pub mod http;
 pub mod maintain;
+pub mod scorecard;
 
 #[cfg(feature = "import")]
 pub mod client;

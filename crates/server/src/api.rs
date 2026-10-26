@@ -126,6 +126,34 @@ pub async fn replay_alerts(
     Json(json!({ "day": day.format("%Y-%m-%d").to_string(), "alerts": alerts })).into_response()
 }
 
+#[derive(Deserialize)]
+pub struct ScorecardQuery {
+    days: Option<usize>,
+}
+
+/// The daily scorecards (`market_providers::import::scorecard`, written by the maintainer after
+/// each nightly import), newest first, at most `days` (default 30, capped at the retention). An
+/// empty list before the first night has been scored; the clients say so.
+pub async fn scorecard(State(state): State<AppState>, Query(q): Query<ScorecardQuery>) -> Response {
+    use market_providers::import::scorecard;
+    let days = q
+        .days
+        .unwrap_or(30)
+        .clamp(1, scorecard::RETENTION_DAYS as usize);
+    let root = state
+        .market_for(Some(Source::Live))
+        .archive_root()
+        .or_else(|| state.market_for(Some(Source::Replay)).archive_root());
+    let cards = match root {
+        // A few dozen small files, still file IO: off the async workers.
+        Some(root) => tokio::task::spawn_blocking(move || scorecard::recent(&root, days))
+            .await
+            .unwrap_or_default(),
+        None => Vec::new(),
+    };
+    Json(json!({ "days": cards })).into_response()
+}
+
 /// Same bounded state/history as the opt-in socket. Export is deliberately a research seam,
 /// never a claim that a retained ring or unsealed journal is an exhaustive cohort.
 pub async fn detection_snapshot(

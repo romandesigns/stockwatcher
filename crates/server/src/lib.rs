@@ -265,6 +265,7 @@ pub fn router(state: AppState, static_dir: &Path, data_dir: &Path) -> Router {
         .route("/chart/{symbol}/snapshot", get(api::chart_snapshot))
         .route("/replay/state", get(api::replay_state))
         .route("/replay/alerts", get(api::replay_alerts))
+        .route("/scorecard", get(api::scorecard))
         .route("/detection", get(api::detection_snapshot))
         .route("/detection/export", get(api::detection_snapshot))
         .route("/symbols", get(api::symbols))

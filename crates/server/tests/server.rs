@@ -113,6 +113,22 @@ async fn auth_on_requires_matching_bearer() {
     assert_eq!(get(a, "/api/version", Some(TOKEN)).await.0, StatusCode::OK);
 }
 
+/// The daily scorecards: behind the token like every other read, and an empty list (never an
+/// error) before the maintainer has scored a night.
+#[tokio::test]
+async fn scorecard_needs_the_token_and_is_empty_before_any_night() {
+    let dir = site();
+    let a = app(dir.path(), Some(TOKEN));
+    assert_eq!(
+        get(a.clone(), "/api/scorecard?days=30", None).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (status, body, _) = get(a, "/api/scorecard?days=9999", Some(TOKEN)).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["days"], json!([]));
+}
+
 /// The installed desktop app's page is `http://tauri.localhost`, so its API calls are cross-origin:
 /// the preflight (no token) must be answered for it, and only for it.
 #[tokio::test]
