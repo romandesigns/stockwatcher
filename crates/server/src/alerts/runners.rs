@@ -45,7 +45,13 @@
 //!      of any kind less than [`SYMBOL_GAP_MS`] ago, except that new evidence (a burst, a
 //!      crossing, a shelf entry, a follow-up: [`NoticeKind::is_new_evidence`]) only waits
 //!      [`BURST_GAP_MS`] after an unrelated push, so it is never swallowed by a push about
-//!      something else minutes earlier → `symbol_limit`.
+//!      something else minutes earlier → `symbol_limit`. The pullback notices
+//!      ([`NoticeKind::Pullback`], [`NoticeKind::PullbackCrossing`]) skip the any-kind gap and do
+//!      not start one: they are bounded upstream (one setup per stock per day, one crossing per
+//!      announced setup, `crate::cue_notices`) and only exist minutes after a Runners push on the
+//!      same stock, so the gap held back exactly the ones that matter. SRTM 2026-10-26: Run +20%
+//!      08:20:04, burst 08:23:02, then its setup at 08:23:47, 50 s before the leg to $0.74, was
+//!      held as `symbol_limit`.
 //!
 //!   There is NO daily cap (owner, 2026-10-23: "always send out notifications as long as the
 //!   evidence of such events supports it"). A shared cap of 120 had held back 3 fast-move and 5
@@ -244,13 +250,17 @@ impl RunnersDelivery {
             SYMBOL_GAP_MS
         };
         let recent = |t: Option<&i64>, gap: i64| t.is_some_and(|t| now - t < gap);
+        // Module docs, "Limits" 4: the pullback notices neither wait for nor start the stock's gap.
+        let pullback = matches!(kind, NoticeKind::Pullback | NoticeKind::PullbackCrossing);
         if recent(self.s.last_by_kind.get(&key), SYMBOL_GAP_MS)
-            || recent(self.s.last_by_symbol.get(symbol), gap)
+            || (!pullback && recent(self.s.last_by_symbol.get(symbol), gap))
         {
             return Decision::Held(Hold::SymbolLimit);
         }
         self.s.sent += 1;
-        self.s.last_by_symbol.insert(symbol.to_owned(), now);
+        if !pullback {
+            self.s.last_by_symbol.insert(symbol.to_owned(), now);
+        }
         self.s.last_by_kind.insert(key, now);
         self.s.sent_ids.insert(event_id.to_owned());
         self.save();
@@ -1120,6 +1130,39 @@ Alert $2.41 · +5% = $2.53"
 
     /// Desktop and web carry exactly the phone text for every kind, with the event id, the
     /// copy-ticker data and the reference line; nothing is worded as advice.
+    /// SRTM 2026-10-26: a pullback setup 45 s after a burst push is sent, its crossing 20 s later
+    /// too, and neither holds back the stock's next Runners push.
+    #[test]
+    fn pullback_notices_skip_the_stock_gap() {
+        let dir = tempfile::tempdir().unwrap();
+        let prefs = Prefs::default();
+        let mut d = RunnersDelivery::open(dir.path());
+        let go = |d: &mut RunnersDelivery, k: NoticeKind, id: &str, now: i64| {
+            d.decide(k, "SRTM", id, 1, &prefs, now, now, day(26), 500)
+        };
+        let s = 1_000;
+        assert_eq!(go(&mut d, NoticeKind::Burst, "b1", 0), Decision::Send);
+        assert_eq!(
+            go(&mut d, NoticeKind::Pullback, "p1", 45 * s),
+            Decision::Send
+        );
+        assert_eq!(
+            go(&mut d, NoticeKind::PullbackCrossing, "x1", 65 * s),
+            Decision::Send
+        );
+        // The burst's own gap still governs the next unrelated push, not the pullback's.
+        assert_eq!(
+            go(&mut d, NoticeKind::Shelf, "z1", 100 * s),
+            Decision::Held(Hold::SymbolLimit)
+        );
+        assert_eq!(go(&mut d, NoticeKind::Shelf, "z1", 2 * MIN), Decision::Send);
+        // Still never the same event twice.
+        assert_eq!(
+            go(&mut d, NoticeKind::Pullback, "p1", 3 * MIN),
+            Decision::Held(Hold::Duplicate)
+        );
+    }
+
     #[test]
     fn every_kind_has_one_text_on_every_surface() {
         for kind in NoticeKind::ALL {
