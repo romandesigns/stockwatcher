@@ -72,7 +72,7 @@ export interface RunnersNotifyKinds {
   signalsTrigger: boolean;
   /** The Halt watcher's gauge appeared for a stock. */
   halt: boolean;
-  /** A Runners or Ross stock's pullback armed its trigger and stop, then its trigger crossing. */
+  /** A Runners stock's first pullback within 30 min of its alert (or a Ross stock's first of the day) armed its trigger and stop, then its trigger crossing. */
   pullback: boolean;
 }
 
@@ -235,7 +235,7 @@ export const ALERT_SWITCH_SECTIONS: readonly { id: "runners" | "ross" | "signals
       { key: "run", icon: "trend", name: "Run +20%", description: "A +20% leg within 15 minutes on real trades, with its window and start price." },
       { key: "fast", icon: "live", name: "Fast move", description: "+8% in a minute or +12% in 15 s on real trades, with the move and its money." },
       { key: "followUp", icon: "plus", name: "Follow-ups", description: "A later Runners path fires on a stock already listed, e.g. Run +20% after a fast move." },
-      { key: "pullback", icon: "hline", name: "Pullback setting up", description: "A Runners or Ross stock's dip fixes its trigger and stop, then when the trigger is crossed. Most do not follow through." },
+      { key: "pullback", icon: "hline", name: "Pullback setting up", description: "The first dip that fixes a trigger and stop within 30 min of a stock's Runners alert (or on a Ross stock), then its crossing. Most do not follow through." },
       { key: "shelf", icon: "levels", name: "Volume shelf entry", description: "Price came into a volume shelf. About 1 in 3 hold, 1 in 2 fail." },
     ],
   },

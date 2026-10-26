@@ -2917,7 +2917,7 @@ impl Market {
             if let Some(w) = rocket.take_watch()
                 && let Some(cx) = context.as_mut()
             {
-                cx.set_watched(w);
+                cx.set_watched(w, clock.now.0);
             }
             let log = core.rocket.take_log();
             // Taken whatever the market, so a replay's never pile up.

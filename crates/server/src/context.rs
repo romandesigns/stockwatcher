@@ -642,9 +642,10 @@ impl ContextBoard {
 
     /// The Runners' flagged symbols (`crate::rocket`): the engine also runs the micro-pullback
     /// (MP5) for them, as for Ross members, so their rows get the same levels.
-    pub(crate) fn set_watched(&mut self, symbols: Vec<String>) {
-        // The pullback notices' context too (crate::cue_notices, "Pullback").
-        self.cue.set_watched(&symbols);
+    pub(crate) fn set_watched(&mut self, symbols: Vec<String>, now_ns: i64) {
+        // The pullback notices' context too (crate::cue_notices, "Pullback"), with the time each
+        // stock was first flagged.
+        self.cue.set_watched(&symbols, now_ns);
         self.engine.set_watched(symbols);
     }
 

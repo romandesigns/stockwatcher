@@ -41,15 +41,23 @@
 //! what the owner trusts. Research only ever measured it as an entry, where it did not beat buying
 //! at the alert (research/pullback-after-alert), so the text describes, it never says "buy".
 //!
-//! - **Setting up** ([`NoticeKind::Pullback`]): the `armed` transition, Runners stocks and Ross
-//!   members alike (it is new for both).
+//! - **Setting up** ([`NoticeKind::Pullback`]): the `armed` transition, and only the FIRST one per
+//!   stock and trading day: for a Runners stock within [`PULLBACK_WINDOW_NS`] of the first time it
+//!   was flagged that day, for a Ross member at any time. Every arming on a context stock would be
+//!   ~367 notices a day (research/pullback-context, EXPLORE, 147 days); the first one within 30
+//!   minutes of the alert is ~37, and the setups it keeps went on to continue a little more often
+//!   after crossing (39 % vs 34 %, descriptive, not a validated edge).
 //! - **Crossing** of that episode: a Ross member's stays [`NoticeKind::RossCrossing`] (already
-//!   announced, never twice); a Runners stock that is not a member gets
+//!   announced, never twice); a setup this module announced on a non-member gets
 //!   [`NoticeKind::PullbackCrossing`], which stands for the Signals crossing too when the Detection
 //!   Panel is on (`also_signals`), exactly as the Ross kind does. Invalidated or expired episodes
 //!   push nothing (the row's levels show it).
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, HashSet};
+
+use chrono::NaiveDate;
+use market_events::UnixNanos;
+use market_events::session::trading_date;
 
 use stock_context::{
     CueState, DetectionSnapshot, DetectionTransition, Engine, Family, MicroAnchors, PanelSnapshot,
@@ -63,14 +71,21 @@ use crate::rocket::{CueNotice, Notice, NoticeDetail, NoticeKind, PullbackNotice}
 const SEEN_MAX: usize = 50_000;
 /// Notices held while nobody takes them (a board ticked without a market, a test).
 const OUT_MAX: usize = 256;
+/// How long after a stock is first flagged that day its first setup still notifies (module docs,
+/// "Pullback").
+pub const PULLBACK_WINDOW_NS: i64 = 30 * 60 * 1_000_000_000;
 
 #[derive(Debug, Default)]
 pub struct CueNotices {
     out: Vec<Notice>,
     seen: HashSet<(NoticeKind, String)>,
-    /// Today's Runners symbols (`crate::rocket`'s flagged rows, the engine's watched set): the
-    /// pullback notices' context, beside Ross membership.
-    watched: BTreeSet<String>,
+    /// Today's Runners symbols (`crate::rocket`'s flagged rows, the engine's watched set) and when
+    /// each was first flagged: the pullback notices' context, beside Ross membership.
+    watched: BTreeMap<String, i64>,
+    /// Stocks whose setting-up notice went out, per trading day: one each (module docs).
+    setup_days: HashSet<(String, NaiveDate)>,
+    /// Episodes announced as setting up: only their crossing is the pullback follow-up.
+    setup_episodes: HashSet<String>,
 }
 
 fn dollars(micros: i64) -> f64 {
@@ -90,10 +105,15 @@ impl CueNotices {
         std::mem::take(&mut self.out)
     }
 
-    /// Today's Runners symbols, replacing the previous set (the market hands the engine the same
-    /// list, `crate::context::ContextBoard::set_watched`).
-    pub fn set_watched(&mut self, symbols: &[String]) {
-        self.watched = symbols.iter().cloned().collect();
+    /// Today's Runners symbols at `now_ns`, replacing the previous set (the market hands the engine
+    /// the same list, `crate::context::ContextBoard::set_watched`). A symbol keeps the time it was
+    /// first seen while it stays listed; one that leaves and comes back starts again.
+    pub fn set_watched(&mut self, symbols: &[String], now_ns: i64) {
+        let old = std::mem::take(&mut self.watched);
+        self.watched = symbols
+            .iter()
+            .map(|s| (s.clone(), old.get(s).copied().unwrap_or(now_ns)))
+            .collect();
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -160,21 +180,21 @@ impl CueNotices {
             ts,
             signals,
             |s| member(engine, s),
-            |s| watched.contains(s),
+            |s| watched.get(s).copied(),
             // An arming happens at a barrier, without a print of its own: the price is the cue's
             // latest fresh one, as the Runners row shows it.
             |s, tau| engine.watched_cue(s, tau).and_then(|c| c.price),
         );
     }
 
-    /// [`CueNotices::transitions`] with the Signals panel's state, the membership, the Runners
-    /// set and the latest price given.
+    /// [`CueNotices::transitions`] with the Signals panel's state, the membership, when each
+    /// Runners stock was first flagged and the latest price given.
     pub fn transitions_with(
         &mut self,
         ts: &[DetectionTransition],
         signals: bool,
         member: impl Fn(&str) -> bool,
-        watched: impl Fn(&str) -> bool,
+        watched_since: impl Fn(&str) -> Option<i64>,
         latest_price: impl Fn(&str, i64) -> Option<i64>,
     ) {
         for t in ts {
@@ -182,7 +202,18 @@ impl CueNotices {
                 continue;
             }
             match t.to {
-                State::Armed if member(&t.symbol) || watched(&t.symbol) => {
+                State::Armed => {
+                    let fresh = watched_since(&t.symbol).is_some_and(|since| {
+                        t.observed_at >= since && t.observed_at - since <= PULLBACK_WINDOW_NS
+                    });
+                    if !(fresh || member(&t.symbol)) {
+                        continue;
+                    }
+                    let day = trading_date(UnixNanos(t.observed_at));
+                    if !self.setup_days.insert((t.symbol.clone(), day)) {
+                        continue;
+                    }
+                    self.setup_episodes.insert(t.episode_id.clone());
                     let price = latest_price(&t.symbol, t.observed_at);
                     let detail = NoticeDetail::Pullback(pullback_facts(t, false));
                     self.emit(
@@ -195,19 +226,13 @@ impl CueNotices {
                         detail,
                     );
                 }
-                State::CrossingProvisional => self.crossing(t, signals, &member, &watched),
+                State::CrossingProvisional => self.crossing(t, signals, &member),
                 _ => {}
             }
         }
     }
 
-    fn crossing(
-        &mut self,
-        t: &DetectionTransition,
-        signals: bool,
-        member: &impl Fn(&str) -> bool,
-        watched: &impl Fn(&str) -> bool,
-    ) {
+    fn crossing(&mut self, t: &DetectionTransition, signals: bool, member: &impl Fn(&str) -> bool) {
         let is_member = member(&t.symbol);
         let price = t.trade.as_ref().map(|x| x.price);
         let at = t
@@ -215,8 +240,8 @@ impl CueNotices {
             .as_ref()
             .map_or(t.observed_at, |x| x.admit.max(t.observed_at));
         let exec = t.trade.as_ref().map(|x| x.exec);
-        if !is_member && watched(&t.symbol) {
-            // A Runners stock's setup reaching its trigger: the setting-up notice's follow-up,
+        if !is_member && self.setup_episodes.contains(&t.episode_id) {
+            // A setup this module announced reaching its trigger: the setting-up notice's follow-up,
             // standing for the Signals crossing too (one episode, one notice).
             let detail = NoticeDetail::Pullback(pullback_facts(t, signals));
             self.emit(
@@ -375,7 +400,7 @@ mod tests {
         let mut c = CueNotices::default();
         let member = |s: &str| s == "ROSS";
         // No Runners rows here: the crossings behave exactly as before the pullback notices.
-        let none = |_: &str| false;
+        let none = |_: &str| None;
         let no_price = |_: &str, _: i64| None;
         let ross = tr("e1", "ROSS", State::Armed, State::CrossingProvisional);
         let sig = tr("e2", "SIG", State::Armed, State::CrossingProvisional);
@@ -439,27 +464,40 @@ mod tests {
         t
     }
 
-    /// Setting up: only stocks with context (a Runners row today, or a Ross member), once per
-    /// episode, never for a warm-up arming; the facts are the episode's own.
+    /// When the test transitions happen (`tr`'s `observed_at`).
+    const AT: i64 = 1_761_200_000_000_000_000;
+    const MIN: i64 = 60 * 1_000_000_000;
+
+    /// Setting up: only stocks with context (a Runners stock within 30 minutes of being flagged,
+    /// or a Ross member), the first setup per stock and day only, never a warm-up arming; the facts
+    /// are the episode's own.
     #[test]
     fn pullback_setting_up_needs_context_and_fires_once() {
         let mut c = CueNotices::default();
         let member = |s: &str| s == "ROSS";
-        let watched = |s: &str| s == "RUNR";
+        // RUNR was flagged 5 minutes before the arming, LATE 40 minutes before.
+        let since = |s: &str| match s {
+            "RUNR" => Some(AT - 5 * MIN),
+            "LATE" => Some(AT - 40 * MIN),
+            _ => None,
+        };
         let price = |_: &str, _: i64| Some(3_300_000);
         let runr = armed("p1", "RUNR");
         let ross = armed("p2", "ROSS");
         let bare = armed("p3", "BARE");
         let mut warm = armed("p4", "RUNR");
         warm.warmup = true;
+        let late = armed("p5", "LATE");
         c.transitions_with(
-            &[runr.clone(), ross, bare, warm],
+            &[warm, runr.clone(), ross, bare, late],
             true,
             member,
-            watched,
+            since,
             price,
         );
-        c.transitions_with(&[runr], true, member, watched, price);
+        // The same arming again, and a second setup on RUNR the same day: nothing more.
+        let again = armed("p6", "RUNR");
+        c.transitions_with(&[runr, again], true, member, since, price);
         let n = c.take();
         assert_eq!(n.len(), 2, "{n:?}");
         assert!(n.iter().all(|x| x.kind == NoticeKind::Pullback));
@@ -476,21 +514,61 @@ mod tests {
         assert_eq!(f.dip_volume_ratio, Some(0.4));
     }
 
-    /// The crossing of a setup: a Ross member's stays the Ross notice (never also a pullback
-    /// one); a Runners stock's is the pullback follow-up, standing for the Signals crossing too.
+    /// The flag time survives a refreshed list, and a stock that leaves and comes back starts again.
+    #[test]
+    fn watched_keeps_the_first_flag_time() {
+        let mut c = CueNotices::default();
+        c.set_watched(&["A".into()], 10);
+        c.set_watched(&["A".into(), "B".into()], 20);
+        assert_eq!(
+            (c.watched.get("A"), c.watched.get("B")),
+            (Some(&10), Some(&20))
+        );
+        c.set_watched(&["B".into()], 30);
+        c.set_watched(&["A".into(), "B".into()], 40);
+        assert_eq!(
+            (c.watched.get("A"), c.watched.get("B")),
+            (Some(&40), Some(&20))
+        );
+    }
+
+    fn crossed(t: DetectionTransition) -> DetectionTransition {
+        DetectionTransition {
+            from: Some(State::Armed),
+            to: State::CrossingProvisional,
+            ..t
+        }
+    }
+
+    /// The crossing of an announced setup: a Ross member's stays the Ross notice (never also a
+    /// pullback one); a Runners stock's is the pullback follow-up, standing for the Signals crossing
+    /// too. A crossing whose setup was not announced is the plain Signals one.
     #[test]
     fn pullback_crossing_follows_up_without_doubling_ross_or_signals() {
         let mut c = CueNotices::default();
         let member = |s: &str| s == "ROSS";
-        let watched = |s: &str| s == "RUNR" || s == "ROSS";
+        let since = |s: &str| (s == "RUNR" || s == "ROSS" || s == "OLD").then_some(AT - MIN);
         let price = |_: &str, _: i64| None;
-        let mut runr = armed("p1", "RUNR");
-        runr.from = Some(State::Armed);
-        runr.to = State::CrossingProvisional;
-        let mut ross = armed("p2", "ROSS");
-        ross.from = Some(State::Armed);
-        ross.to = State::CrossingProvisional;
-        c.transitions_with(&[runr, ross], true, member, watched, price);
+        c.transitions_with(
+            &[armed("p1", "RUNR"), armed("p2", "ROSS")],
+            true,
+            member,
+            since,
+            price,
+        );
+        c.take();
+        let unannounced = crossed(armed("p9", "OLD"));
+        c.transitions_with(
+            &[
+                crossed(armed("p1", "RUNR")),
+                crossed(armed("p2", "ROSS")),
+                unannounced,
+            ],
+            true,
+            member,
+            since,
+            price,
+        );
         let n = c.take();
         let kinds: Vec<_> = n.iter().map(|x| (x.symbol.as_str(), x.kind)).collect();
         assert_eq!(
@@ -498,22 +576,22 @@ mod tests {
             vec![
                 ("RUNR", NoticeKind::PullbackCrossing),
                 ("ROSS", NoticeKind::RossCrossing),
+                ("OLD", NoticeKind::SignalsCrossing),
             ]
         );
         assert!(matches!(&n[0].detail, Some(NoticeDetail::Pullback(f)) if f.also_signals));
         // Detection Panel off: the follow-up stands for nothing else.
         let mut off = CueNotices::default();
-        let mut x = armed("p3", "RUNR");
-        x.from = Some(State::Armed);
-        x.to = State::CrossingProvisional;
-        off.transitions_with(&[x], false, member, watched, price);
+        off.transitions_with(&[armed("p3", "RUNR")], false, member, since, price);
+        off.take();
+        off.transitions_with(&[crossed(armed("p3", "RUNR"))], false, member, since, price);
         let n = off.take();
         assert!(matches!(&n[0].detail, Some(NoticeDetail::Pullback(f)) if !f.also_signals));
         // An invalidated setup pushes nothing.
-        let mut gone = armed("p4", "RUNR");
+        let mut gone = armed("p3", "RUNR");
         gone.from = Some(State::Armed);
         gone.to = State::Invalidated;
-        off.transitions_with(&[gone], false, member, watched, price);
+        off.transitions_with(&[gone], false, member, since, price);
         assert!(off.take().is_empty());
     }
 }
