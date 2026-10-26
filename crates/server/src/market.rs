@@ -1008,9 +1008,6 @@ impl Market {
         });
     }
 
-    /// Live: opens the forward log in `dir` (`ARCHIVE_ROOT/rocket-watch`), prunes it to the
-    /// archive's retention window and restores today's alerts and the record into the board.
-    /// Reads a few small files once, before the ingest starts.
     /// Starts the day's cue-transition log under `dir` (`crate::oplog`): the micro-pullback
     /// transitions the context engine drains (Ross members, Runners rows, favorites) were counted
     /// and dropped before, so a missed or late cue could not be traced afterwards. Live only; a
@@ -1027,6 +1024,9 @@ impl Market {
         ));
     }
 
+    /// Live: opens the forward log in `dir` (`ARCHIVE_ROOT/rocket-watch`), prunes it to the
+    /// archive's retention window and restores today's alerts and the record into the board.
+    /// Reads a few small files once, before the ingest starts.
     pub fn init_rocket_log(&self, dir: std::path::PathBuf, retention_days: u32, now: UnixNanos) {
         if !self.0.rocket_on.load(Ordering::Relaxed) {
             return;
