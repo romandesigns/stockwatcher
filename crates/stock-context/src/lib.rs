@@ -42,7 +42,7 @@ pub use detect::{
 };
 pub use engine::{
     Adoption, Decision, Engine, Fidelity, MissingPillar, PanelRow, PanelSnapshot, RestoreTelemetry,
-    RunInfo, SPARK_BARS, Timeline, Verdict, VolumeFacts,
+    RunInfo, SPARK_BARS, SetupInputs, Timeline, Verdict, VolumeFacts,
 };
 pub use evaluate::{Coverage, Integrity, NewsSummary, RvolDiagnostics};
 pub use evidence::{

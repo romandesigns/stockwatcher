@@ -142,6 +142,23 @@ pub struct RunInfo {
     pub numerator_coverage: Coverage,
 }
 
+/// A symbol's `bull_flag_v0` inputs as the engine holds them ([`Engine::setup_inputs`]).
+pub struct SetupInputs<'a> {
+    /// The trading date the symbol's facts are for.
+    pub date: Option<NaiveDate>,
+    /// Completed setup bars of that date (the latest [`crate::setup::BARS_KEPT`]).
+    pub bars: &'a VecDeque<Bar>,
+    pub last_price: Option<(i64, i64)>,
+    pub halted: bool,
+    /// Volume-counted shares today.
+    pub day_volume: u64,
+    /// End of the bar holding today's first volume-counted print.
+    pub first_bar: Option<i64>,
+    /// `publish_panel`'s rule: bars or day high unprovable, or history pending.
+    pub untrusted: bool,
+    pub history_pending: bool,
+}
+
 /// The chart engine's verdict on a print, as the run's conditions policy decided it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Verdict {
@@ -913,6 +930,28 @@ impl Engine {
 
     pub fn history_pending(&self, symbol: &str) -> bool {
         self.syms.get(symbol).is_some_and(|s| s.history_pending)
+    }
+
+    /// Read-only: what [`Engine::publish_panel`] hands `bull_flag_v0` for `symbol`, so an
+    /// offline research harness (`crates/setup-research`) can step its own
+    /// [`crate::setup::BullFlag`] on symbols that are not panel members, with the engine's own
+    /// bars and barriers rather than a reimplementation. Changes nothing; the server never calls
+    /// it.
+    pub fn setup_inputs(&self, symbol: &str) -> Option<SetupInputs<'_>> {
+        let s = self.syms.get(symbol)?;
+        Some(SetupInputs {
+            date: s.date,
+            bars: &s.bars,
+            last_price: s.last_price,
+            halted: s.halted,
+            day_volume: s.cum,
+            first_bar: s.first_bar,
+            untrusted: s.integrity.window_untrusted
+                || s.integrity.high_untrusted
+                || s.integrity.volume_untrusted
+                || s.history_pending,
+            history_pending: s.history_pending,
+        })
     }
 
     /// This symbol's own coverage, when something is known about it.
