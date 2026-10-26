@@ -1,0 +1,572 @@
+{
+ "helps": [
+  {
+   "day": "2025-10-08",
+   "sym": "NXL",
+   "path": "fast",
+   "segment": "late_pre",
+   "alert_et": "08:30:05",
+   "p0": 1.3,
+   "B0": {
+    "entry": 1.3,
+    "half_spread_pct": 1.56,
+    "outcome": "loss",
+    "exit_et": "08:30:12",
+    "net_pct": -28.46
+   },
+   "D8": {
+    "entry_et": "08:38:06",
+    "entry": 1.26,
+    "half_spread_pct": 0.4,
+    "outcome": "win",
+    "exit_et": "08:39:02",
+    "net_pct": 25.4
+   },
+   "S2_0.5": "no entry"
+  },
+  {
+   "day": "2025-12-12",
+   "sym": "VIVO",
+   "path": "run",
+   "segment": "late_pre",
+   "alert_et": "09:00:03",
+   "p0": 4.2,
+   "B0": {
+    "entry": 4.0,
+    "half_spread_pct": 13.8,
+    "outcome": "loss",
+    "exit_et": "09:00:07",
+    "net_pct": -25.5
+   },
+   "D8": {
+    "entry_et": "09:08:04",
+    "entry": 2.95,
+    "half_spread_pct": 0.68,
+    "outcome": "win",
+    "exit_et": "09:12:32",
+    "net_pct": 11.86
+   },
+   "S2_0.5": {
+    "entry_et": "09:01:02",
+    "entry": 3.18,
+    "outcome": "loss",
+    "net_pct": -5.66
+   }
+  },
+  {
+   "day": "2026-01-30",
+   "sym": "PMN",
+   "path": "fast",
+   "segment": "late_pre",
+   "alert_et": "08:00:08",
+   "p0": 15.0,
+   "B0": {
+    "entry": 17.25,
+    "half_spread_pct": 8.29,
+    "outcome": "loss",
+    "exit_et": "08:00:15",
+    "net_pct": -27.54
+   },
+   "D8": {
+    "entry_et": "08:08:09",
+    "entry": 14.61,
+    "half_spread_pct": 2.06,
+    "outcome": "win",
+    "exit_et": "08:08:54",
+    "net_pct": 9.31
+   },
+   "S2_0.5": {
+    "entry_et": "08:01:35",
+    "entry": 18.74,
+    "outcome": "loss",
+    "net_pct": -8.64
+   }
+  },
+  {
+   "day": "2026-01-08",
+   "sym": "ASPC",
+   "path": "fast",
+   "segment": "early_pre",
+   "alert_et": "04:52:13",
+   "p0": 20.38,
+   "B0": {
+    "entry": 22.5,
+    "half_spread_pct": 6.89,
+    "outcome": "loss",
+    "exit_et": "04:52:31",
+    "net_pct": -17.78
+   },
+   "D8": {
+    "entry_et": "05:00:14",
+    "entry": 22.16,
+    "half_spread_pct": 0.82,
+    "outcome": "win",
+    "exit_et": "05:02:38",
+    "net_pct": 17.37
+   },
+   "S2_0.5": {
+    "entry_et": "04:53:20",
+    "entry": 20.5,
+    "outcome": "win",
+    "net_pct": 8.73
+   }
+  },
+  {
+   "day": "2026-02-12",
+   "sym": "OPNW",
+   "path": "run",
+   "segment": "late_pre",
+   "alert_et": "08:05:03",
+   "p0": 1.4503,
+   "B0": {
+    "entry": 1.75,
+    "half_spread_pct": 2.94,
+    "outcome": "loss",
+    "exit_et": "08:05:07",
+    "net_pct": -26.29
+   },
+   "D8": {
+    "entry_et": "08:13:04",
+    "entry": 1.27,
+    "half_spread_pct": 0.4,
+    "outcome": "win",
+    "exit_et": "08:17:57",
+    "net_pct": 8.66
+   },
+   "S2_0.5": {
+    "entry_et": "08:06:14",
+    "entry": 1.28,
+    "outcome": "loss",
+    "net_pct": -3.91
+   }
+  }
+ ],
+ "hurts": [
+  {
+   "day": "2025-10-06",
+   "sym": "CYPH",
+   "path": "fast",
+   "segment": "late_pre",
+   "alert_et": "09:02:02",
+   "p0": 0.6,
+   "B0": {
+    "entry": 0.599,
+    "half_spread_pct": 0.13,
+    "outcome": "win",
+    "exit_et": "09:02:06",
+    "net_pct": 105.34
+   },
+   "D8": {
+    "entry_et": "09:10:03",
+    "entry": 0.9171,
+    "half_spread_pct": 0.01,
+    "outcome": "loss",
+    "exit_et": "09:10:42",
+    "net_pct": -7.32
+   },
+   "S2_0.5": "no entry"
+  },
+  {
+   "day": "2026-03-06",
+   "sym": "VMET",
+   "path": "burst",
+   "segment": "early_pre",
+   "alert_et": "04:08:36",
+   "p0": 17.9,
+   "B0": {
+    "entry": 21.0,
+    "half_spread_pct": 10.53,
+    "outcome": "win",
+    "exit_et": "04:11:02",
+    "net_pct": 15.48
+   },
+   "D8": {
+    "entry_et": "04:16:37",
+    "entry": 20.33,
+    "half_spread_pct": 3.38,
+    "outcome": "loss",
+    "exit_et": "04:16:43",
+    "net_pct": -26.22
+   },
+   "S2_0.5": {
+    "entry_et": "04:09:56",
+    "entry": 22.0,
+    "outcome": "win",
+    "net_pct": 10.23
+   }
+  },
+  {
+   "day": "2025-12-17",
+   "sym": "PCSA",
+   "path": "fast",
+   "segment": "late_pre",
+   "alert_et": "09:00:47",
+   "p0": 5.45,
+   "B0": {
+    "entry": 5.11,
+    "half_spread_pct": 2.51,
+    "outcome": "win",
+    "exit_et": "09:00:51",
+    "net_pct": 28.77
+   },
+   "D8": {
+    "entry_et": "09:08:48",
+    "entry": 3.75,
+    "half_spread_pct": 1.08,
+    "outcome": "loss",
+    "exit_et": "09:10:56",
+    "net_pct": -5.6
+   },
+   "S2_0.5": {
+    "entry_et": "09:06:50",
+    "entry": 3.81,
+    "outcome": "loss",
+    "net_pct": -5.51
+   }
+  },
+  {
+   "day": "2025-10-09",
+   "sym": "MRM",
+   "path": "fast",
+   "segment": "late_pre",
+   "alert_et": "08:00:14",
+   "p0": 2.15,
+   "B0": {
+    "entry": 2.15,
+    "half_spread_pct": 0.23,
+    "outcome": "win",
+    "exit_et": "08:00:20",
+    "net_pct": 25.58
+   },
+   "D8": {
+    "entry_et": "08:08:15",
+    "entry": 2.7,
+    "half_spread_pct": 0.19,
+    "outcome": "loss",
+    "exit_et": "08:10:11",
+    "net_pct": -5.93
+   },
+   "S2_0.5": "no entry"
+  },
+  {
+   "day": "2026-02-20",
+   "sym": "EDHL",
+   "path": "fast",
+   "segment": "late_pre",
+   "alert_et": "08:06:40",
+   "p0": 4.35,
+   "B0": {
+    "entry": 4.35,
+    "half_spread_pct": 0.46,
+    "outcome": "win",
+    "exit_et": "08:07:00",
+    "net_pct": 21.15
+   },
+   "D8": {
+    "entry_et": "08:14:41",
+    "entry": 3.51,
+    "half_spread_pct": 0.43,
+    "outcome": "loss",
+    "exit_et": "08:17:11",
+    "net_pct": -8.83
+   },
+   "S2_0.5": {
+    "entry_et": "08:07:23",
+    "entry": 4.51,
+    "outcome": "loss",
+    "net_pct": -3.99
+   }
+  }
+ ],
+ "missed_breakout": [
+  {
+   "day": "2026-03-06",
+   "sym": "VMET",
+   "path": "burst",
+   "segment": "early_pre",
+   "alert_et": "04:08:36",
+   "p0": 17.9,
+   "B0": {
+    "entry": 21.0,
+    "half_spread_pct": 10.53,
+    "outcome": "win",
+    "exit_et": "04:11:02",
+    "net_pct": 15.48
+   },
+   "D8": {
+    "entry_et": "04:16:37",
+    "entry": 20.33,
+    "half_spread_pct": 3.38,
+    "outcome": "loss",
+    "exit_et": "04:16:43",
+    "net_pct": -26.22
+   },
+   "S2_0.5": {
+    "entry_et": "04:09:56",
+    "entry": 22.0,
+    "outcome": "win",
+    "net_pct": 10.23
+   }
+  },
+  {
+   "day": "2025-11-24",
+   "sym": "OPENZ",
+   "path": "run",
+   "segment": "mkt_open",
+   "alert_et": "09:36:38",
+   "p0": 1.0999,
+   "B0": {
+    "entry": 1.1,
+    "half_spread_pct": 3.77,
+    "outcome": "win",
+    "exit_et": "09:36:48",
+    "net_pct": 0.0
+   },
+   "D8": {
+    "entry_et": "09:44:39",
+    "entry": 2.25,
+    "half_spread_pct": 10.84,
+    "outcome": "loss",
+    "exit_et": "09:44:42",
+    "net_pct": -19.56
+   },
+   "S2_0.5": {
+    "entry_et": "09:46:39",
+    "entry": 2.0,
+    "outcome": "win",
+    "net_pct": 0.0
+   }
+  },
+  {
+   "day": "2025-11-06",
+   "sym": "LKSPR",
+   "path": "run",
+   "segment": "mkt_open",
+   "alert_et": "09:47:13",
+   "p0": 2.78,
+   "B0": {
+    "entry": 3.0,
+    "half_spread_pct": 5.26,
+    "outcome": "win",
+    "exit_et": "09:47:23",
+    "net_pct": 3.33
+   },
+   "D8": {
+    "entry_et": "09:55:14",
+    "entry": 1.9,
+    "half_spread_pct": 7.34,
+    "outcome": "loss",
+    "exit_et": "09:56:17",
+    "net_pct": -15.79
+   },
+   "S2_0.5": {
+    "entry_et": "09:53:31",
+    "entry": 1.9,
+    "outcome": "loss",
+    "net_pct": -15.79
+   }
+  },
+  {
+   "day": "2025-11-21",
+   "sym": "FOXX",
+   "path": "run",
+   "segment": "rth",
+   "alert_et": "10:28:50",
+   "p0": 3.063,
+   "B0": {
+    "entry": 3.09,
+    "half_spread_pct": 0.32,
+    "outcome": "win",
+    "exit_et": "10:34:07",
+    "net_pct": 8.41
+   },
+   "D8": {
+    "entry_et": "10:36:51",
+    "entry": 3.12,
+    "half_spread_pct": 1.46,
+    "outcome": "loss",
+    "exit_et": "10:37:40",
+    "net_pct": -12.5
+   },
+   "S2_0.5": {
+    "entry_et": "10:29:02",
+    "entry": 3.09,
+    "outcome": "win",
+    "net_pct": 8.41
+   }
+  },
+  {
+   "day": "2026-01-29",
+   "sym": "ZSTK",
+   "path": "fast",
+   "segment": "early_pre",
+   "alert_et": "04:07:56",
+   "p0": 13.2,
+   "B0": {
+    "entry": 13.2,
+    "half_spread_pct": 0.38,
+    "outcome": "win",
+    "exit_et": "04:09:05",
+    "net_pct": 6.06
+   },
+   "D8": {
+    "entry_et": "04:15:57",
+    "entry": 17.51,
+    "half_spread_pct": 1.48,
+    "outcome": "loss",
+    "exit_et": "04:16:21",
+    "net_pct": -12.05
+   },
+   "S2_0.5": "no entry"
+  }
+ ],
+ "before_reversal": [
+  {
+   "day": "2026-03-06",
+   "sym": "VMET",
+   "path": "burst",
+   "segment": "early_pre",
+   "alert_et": "04:08:36",
+   "p0": 17.9,
+   "B0": {
+    "entry": 21.0,
+    "half_spread_pct": 10.53,
+    "outcome": "win",
+    "exit_et": "04:11:02",
+    "net_pct": 15.48
+   },
+   "D8": {
+    "entry_et": "04:16:37",
+    "entry": 20.33,
+    "half_spread_pct": 3.38,
+    "outcome": "loss",
+    "exit_et": "04:16:43",
+    "net_pct": -26.22
+   },
+   "S2_0.5": {
+    "entry_et": "04:09:56",
+    "entry": 22.0,
+    "outcome": "win",
+    "net_pct": 10.23
+   }
+  },
+  {
+   "day": "2026-01-20",
+   "sym": "TOPP",
+   "path": "run",
+   "segment": "rth",
+   "alert_et": "15:09:27",
+   "p0": 0.91,
+   "B0": {
+    "entry": 1.0,
+    "half_spread_pct": 6.95,
+    "outcome": "loss",
+    "exit_et": "15:09:51",
+    "net_pct": -13.0
+   },
+   "D8": {
+    "entry_et": "15:17:28",
+    "entry": 1.0,
+    "half_spread_pct": 9.59,
+    "outcome": "loss",
+    "exit_et": "15:19:49",
+    "net_pct": -22.0
+   },
+   "S2_0.5": {
+    "entry_et": "15:20:02",
+    "entry": 0.8217,
+    "outcome": "loss",
+    "net_pct": -9.89
+   }
+  },
+  {
+   "day": "2025-11-24",
+   "sym": "OPENZ",
+   "path": "run",
+   "segment": "mkt_open",
+   "alert_et": "09:36:38",
+   "p0": 1.0999,
+   "B0": {
+    "entry": 1.1,
+    "half_spread_pct": 3.77,
+    "outcome": "win",
+    "exit_et": "09:36:48",
+    "net_pct": 0.0
+   },
+   "D8": {
+    "entry_et": "09:44:39",
+    "entry": 2.25,
+    "half_spread_pct": 10.84,
+    "outcome": "loss",
+    "exit_et": "09:44:42",
+    "net_pct": -19.56
+   },
+   "S2_0.5": {
+    "entry_et": "09:46:39",
+    "entry": 2.0,
+    "outcome": "win",
+    "net_pct": 0.0
+   }
+  },
+  {
+   "day": "2026-02-25",
+   "sym": "WSHP",
+   "path": "fast",
+   "segment": "mkt_open",
+   "alert_et": "09:36:08",
+   "p0": 20.8,
+   "B0": {
+    "entry": 21.0,
+    "half_spread_pct": 7.69,
+    "outcome": "loss",
+    "exit_et": "09:41:58",
+    "net_pct": -13.14
+   },
+   "D8": {
+    "entry_et": "09:44:09",
+    "entry": 22.0,
+    "half_spread_pct": 10.0,
+    "outcome": "loss",
+    "exit_et": "09:44:26",
+    "net_pct": -18.18
+   },
+   "S2_0.5": {
+    "entry_et": "09:37:02",
+    "entry": 22.0,
+    "outcome": "loss",
+    "net_pct": -17.09
+   }
+  },
+  {
+   "day": "2026-02-13",
+   "sym": "APUS",
+   "path": "fast",
+   "segment": "rth",
+   "alert_et": "11:17:36",
+   "p0": 1.33,
+   "B0": {
+    "entry": 1.34,
+    "half_spread_pct": 0.37,
+    "outcome": "loss",
+    "exit_et": "11:22:50",
+    "net_pct": -8.21
+   },
+   "D8": {
+    "entry_et": "11:25:37",
+    "entry": 1.31,
+    "half_spread_pct": 1.55,
+    "outcome": "loss",
+    "exit_et": "11:26:12",
+    "net_pct": -17.56
+   },
+   "S2_0.5": "no entry"
+  }
+ ],
+ "frequency": {
+  "alerts": 11038,
+  "D8_better_than_B0": 6787,
+  "B0_win_within_8min": 1325,
+  "of_which_D8_loss": 670,
+  "D8_stopped_within_3min": 1854
+ }
+}
