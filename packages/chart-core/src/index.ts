@@ -9,6 +9,7 @@ export * from "./scale.ts";
 export * from "./profile.ts";
 export * from "./displayList.ts";
 export * from "./layout.ts";
+export * from "./autoZones.ts";
 export * from "./timeline.ts";
 export * from "./inspect.ts";
 export * from "./gestures.ts";

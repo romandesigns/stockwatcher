@@ -1,3 +1,4 @@
+import { layoutAutoZones, type AutoZone } from "./autoZones.ts";
 import type { ChartTheme, DisplayList } from "./displayList.ts";
 import { tToIndex } from "./drawings.ts";
 import { formatPrice } from "./format.ts";
@@ -33,9 +34,9 @@ import type { Halt, LuldPoint, SessionRef } from "./types.ts";
 // chart only (the bands, their "Volume shelf" label and the shelf caption above a chart); Runners
 // rows and shelf notifications have their own switches.
 
-export type LayerId = "profile" | "halts" | "luld" | "premarket" | "dayRange" | "open" | "openingRange" | "shelves" | "prevClose" | "fills";
+export type LayerId = "profile" | "halts" | "luld" | "premarket" | "dayRange" | "open" | "openingRange" | "shelves" | "autoZones" | "prevClose" | "fills";
 
-export const LAYER_IDS: readonly LayerId[] = ["profile", "halts", "luld", "premarket", "dayRange", "open", "openingRange", "shelves", "prevClose", "fills"];
+export const LAYER_IDS: readonly LayerId[] = ["profile", "halts", "luld", "premarket", "dayRange", "open", "openingRange", "shelves", "autoZones", "prevClose", "fills"];
 
 /**
  * The layers a chart can show. "profile" is the session profile drawn inside
@@ -55,6 +56,7 @@ export const LAYER_INFO: Readonly<Record<LayerId, { name: string; description: s
   open: { name: "Open", description: "First regular-session price" },
   openingRange: { name: "Opening range", description: "First candle's high–low, to the close" },
   shelves: { name: "Volume shelves", description: "Price bands where heavy volume traded" },
+  autoZones: { name: "Supply / demand zones", description: "Auto-found bases before sharp moves, per timeframe (untested)" },
   prevClose: { name: "Previous close", description: "The prior trading day's close" },
   fills: { name: "My fills", description: "Your simulated buys and sells" },
 };
@@ -98,6 +100,12 @@ export const LAYER_SWATCHES: Readonly<Record<LayerId, IconDef>> = {
     { d: "M2 5h20v6H2z", paint: "fill", role: "secondary" },
     { d: "M4 7h8M4 9h5", role: "primary" },
   ]),
+  // A supply band above and a demand band below (their hues are the meaning), price between them.
+  autoZones: swatch([
+    { d: "M2 2h20v4H2z", paint: "fill", role: "primary", hue: "critical" },
+    { d: "M2 10h20v4H2z", paint: "fill", role: "primary", hue: "good" },
+    PRICE("M3 11 8 8l4 1 5-4 4 1"),
+  ]),
   prevClose: swatch([PRICE("M2 8 6 7l3-3 4 2 4-2.5 5 1"), { d: "M2 11h20", role: "primary", dash: [2, 2.5] }]),
   fills: swatch([
     PRICE("M2 12 8 9l5 2 9-6"),
@@ -114,7 +122,7 @@ export type ChartLayers = Readonly<Record<LayerId, boolean>>;
  * active"): a box over the whole session is too much to impose on everyone.
  * A stored set from before a layer existed falls back to these (parseLayers).
  */
-export const DEFAULT_LAYERS: ChartLayers = { profile: true, halts: true, luld: true, premarket: true, dayRange: true, open: false, openingRange: false, shelves: true, prevClose: true, fills: true };
+export const DEFAULT_LAYERS: ChartLayers = { profile: true, halts: true, luld: true, premarket: true, dayRange: true, open: false, openingRange: false, shelves: true, autoZones: false, prevClose: true, fills: true };
 
 export function parseLayers(raw: unknown): ChartLayers {
   const out: Record<LayerId, boolean> = { ...DEFAULT_LAYERS };
@@ -266,6 +274,8 @@ export interface ContextLayer {
   fills: readonly FillMark[];
   /** Volume shelves from the server's latest Runners frame (layoutVolumeShelves); absent or empty when none. */
   shelves?: readonly VolumeShelf[];
+  /** Automatic supply/demand zones (autoZones.ts); absent or empty when the layer is off. */
+  autoZones?: readonly AutoZone[];
   /** The clock, for an ongoing halt's length and the right end of open spans. */
   now: number | null;
 }
@@ -505,7 +515,7 @@ export function layoutFills(model: ChartModel, fills: readonly FillMark[], theme
 }
 
 export function layoutContext(model: ChartModel, ctx: ContextLayer, theme: ChartTheme): DisplayList {
-  return [...layoutOpeningRanges(model, ctx.openingRanges ?? [], theme), ...layoutVolumeShelves(model, ctx.shelves ?? [], theme), ...layoutHalts(model, ctx.halts, ctx.now, theme), ...layoutKeyLevels(model, ctx.levels, theme), ...layoutLuld(model, ctx.luld, theme), ...layoutFills(model, ctx.fills, theme)];
+  return [...layoutOpeningRanges(model, ctx.openingRanges ?? [], theme), ...layoutVolumeShelves(model, ctx.shelves ?? [], theme), ...layoutAutoZones(model, ctx.autoZones ?? [], theme), ...layoutHalts(model, ctx.halts, ctx.now, theme), ...layoutKeyLevels(model, ctx.levels, theme), ...layoutLuld(model, ctx.luld, theme), ...layoutFills(model, ctx.fills, theme)];
 }
 
 /** Today's trading-day key of a time, for grouping fills in a trade list. */
