@@ -99,6 +99,16 @@ export function formatEtMillis(t: number): string {
   return `${pad(p.hour)}:${pad(p.minute)}:${pad(p.second)}.${pad(p.millisecond, 3)}`;
 }
 
+/**
+ * "9:30 AM" or "9:30:15 AM" in ET, the 12-hour clock the owner reads (2026-10-26: the time axis
+ * matches the crosshair tag). No leading zero on the hour, as a wall clock writes it.
+ */
+export function formatEtTime12(t: number, withSeconds = false): string {
+  const p = etParts(t);
+  const h12 = p.hour % 12 || 12;
+  return `${h12}:${pad(p.minute)}${withSeconds ? `:${pad(p.second)}` : ""} ${p.hour < 12 ? "AM" : "PM"}`;
+}
+
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 /**
@@ -110,8 +120,7 @@ const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "
  */
 export function formatCrosshairTime(t: number, withSeconds: boolean, length: "full" | "date" | "time" = "full"): string {
   const p = etParts(t);
-  const h12 = p.hour % 12 || 12;
-  const clock = `${h12}:${pad(p.minute)}${withSeconds ? `:${pad(p.second)}` : ""} ${p.hour < 12 ? "AM" : "PM"}`;
+  const clock = formatEtTime12(t, withSeconds);
   if (length === "time") return clock;
   const date = `${p.day} ${MONTHS[p.month - 1]}`;
   return length === "date" ? `${date}  ${clock}` : `${p.weekday} ${date} '${pad(p.year % 100)}  ${clock}`;

@@ -92,7 +92,7 @@ describe("timeTicks", () => {
     const ticks = timeTicks(slots, s, 15_000, 64);
     expect(ticks.length).toBeGreaterThan(3);
     for (const t of ticks) expect((t.t - T0) % 120_000).toBe(0);
-    expect(ticks.map((t) => t.label)).toContain("10:20");
+    expect(ticks.map((t) => t.label)).toContain("10:20 AM");
   });
 
   test("labels stay at least minSpacing apart", () => {

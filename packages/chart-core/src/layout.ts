@@ -627,7 +627,10 @@ export function layoutChart(model: ChartModel, state: ChartState, theme: ChartTh
   }
 
   // time axis
-  for (const tick of timeTicks(slots, ix, model.timeframeMs, o.timeLabelSpacing)) {
+  // 12-hour labels ("10:30:15 AM", 11 characters at most) need room whatever spacing a host asked
+  // for, or neighbours would overlap on the narrow phone and dashboard-cell charts.
+  const tickSpacing = Math.max(o.timeLabelSpacing, Math.ceil(fs * 0.62 * 11) + 12);
+  for (const tick of timeTicks(slots, ix, model.timeframeMs, tickSpacing)) {
     const x = slotX(ix, tick.index);
     if (x < g.timeAxis.x + 24 || x > g.timeAxis.x + g.timeAxis.w - 24) continue;
     out.push({ kind: "text", x, y: g.timeAxis.y + 5, text: tick.label, fill: theme.axisText, fontSize: fs, fontFamily: mono, fontWeight: 400, align: "center", baseline: "top", layer: "axes" });

@@ -1,6 +1,6 @@
 import { formatPrice } from "./format.ts";
 import { lowerBound } from "./store.ts";
-import { etParts, formatEtDate, formatEtTime, tradingDayOf } from "./time.ts";
+import { etParts, formatEtDate, formatEtTime12, tradingDayOf } from "./time.ts";
 import type { Candle, Gap } from "./types.ts";
 
 // The time axis is INDEX-based: every candle and every gap entry takes one
@@ -515,7 +515,7 @@ export function timeTicks(slots: readonly Slot[], s: IndexScale, timeframeMs: nu
     const d = tradingDayOf(slot.t);
     const dayKey = `${d.year}-${d.month}-${d.day}`;
     const newDay = lastDay !== "" && dayKey !== lastDay;
-    const label = newDay ? formatEtDate(slot.t) : formatEtTime(slot.t, step < 60_000 || slot.t % 60_000 !== 0);
+    const label = newDay ? formatEtDate(slot.t) : formatEtTime12(slot.t, step < 60_000 || slot.t % 60_000 !== 0);
     ticks.push({ index: i, t: slot.t, label });
     lastX = x;
     lastDay = dayKey;
