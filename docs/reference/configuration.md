@@ -73,7 +73,7 @@ Production (`~/apps/stockwatcher/.env` on the VPS, shared by the `server`, `arch
 | `ROCKET_ALERTS_PER_DAY` | `10` | Rocket watch's daily budget: the adaptive threshold aims for it and never exceeds it (1–200) |
 | `ROCKET_THRESHOLD` | unset | a fixed Rocket watch threshold in the scorer's own units (overrides its frozen one; capped at max(5 × budget, 50) alerts a day), or `budget` to force the adaptive one. Unset: the scorer's frozen threshold if it has one, else the budget |
 | `RUNNERS_SCORER` | `r0` | which strategy flags Runners (`crates/server/src/rocket/scorer.rs` `ScorerChoice`): `r0` = `precursors-R0`, the bake-off's round-1 rule (frozen B10 threshold); `r2` = `precursors-R2`, the round-2 LightGBM model (300 trees on 26 research features, frozen B10 raw-score threshold 3.0595, embedded as `rocket/r2_model.txt` and evaluated in Rust bit-identically to LightGBM; ~10 ms per barrier for 7,000 symbols in release; `pdh`/`rvol` are not wired yet and take their training medians); `placeholder` = `placeholder-b2`, the volume-acceleration baseline (adaptive budget). Anything else refuses to start. Every alert and log line carries the strategy id and version, so switching never mixes track records |
-| `BURST_ALERTS` | `1` | with `ROCKET_WATCH`, LIVE market only: **buying bursts** (`crates/server/src/rocket/burst/`), the burst-onset research's frozen detector `V3-5` (branch `research/burst-onset`, `d0d2156`). Per print O(1) (~110 ns measured on whole-market TEST days in release); every 5 s boundary is checked 1 s after it for the symbols that printed in the last 15 s; only a gate pass (≥ 5 prints, ≥ $5k and ≥ +1.5 % in 15 s, dollar rate ≥ 3× its 30-minute base, $0.15–$25, pre/regular/after) computes the 34 features and scores the 300 LightGBM trees (pure Rust, bit-identical to LightGBM, missing values handled natively). An alert when the score ≥ the threshold and the stock had none in 10 minutes. It confirms heavy buying about 5–9 minutes into a move (roughly halfway), it does not call the first print: on 35 unseen days at 20 a day, 23 % reached +20 % before −5 % within 30 minutes (37 % +10 %), median 30-minute max gain +13 %, median drawdown before it −2.8 %. Each alert is a "Buying burst" row at the top of the Runners panel, tracked like a flag (momentum state, day line, later outcomes), with its own strict outcome (CONT10/20/30, MFE/MAE over 30 minutes) in the forward log (`burst` and `burst_outcome` lines). ADV30 is read from the archive's raw daily bars once a day in the background (`radv30`/`rvol` are missing until then). Replay parity: three whole-market TEST days replayed through the live detector match the research's gate passes, every feature and its alert files exactly (`rocket::burst::replay_parity`, needs the research disk). A replay never runs it. `0`: off |
+| `BURST_ALERTS` | `1` | with `ROCKET_WATCH`, LIVE market only: **buying bursts** (`crates/server/src/rocket/burst/`), the burst-onset research's frozen detector `V3-5` (branch `research/burst-onset`, `d0d2156`). Per print O(1) (~110 ns measured on whole-market TEST days in release); every 5 s boundary is checked 1 s after it for the symbols that printed in the last 15 s; only a gate pass (≥ 5 prints, ≥ $5k and ≥ +1.5 % in 15 s, dollar rate ≥ 3× its 30-minute base, $0.10–$25, pre/regular/after) computes the 34 features and scores the 300 LightGBM trees (pure Rust, bit-identical to LightGBM, missing values handled natively). An alert when the score ≥ the threshold and the stock had none in 10 minutes. It confirms heavy buying about 5–9 minutes into a move (roughly halfway), it does not call the first print: in the original $0.15–$25 study, on 35 unseen days at 20 a day, 23 % reached +20 % before −5 % within 30 minutes (37 % +10 %), median 30-minute max gain +13 %, median drawdown before it −2.8 %. Each alert is a "Buying burst" row at the top of the Runners panel, tracked like a flag (momentum state, day line, later outcomes), with its own strict outcome (CONT10/20/30, MFE/MAE over 30 minutes) in the forward log (`burst` and `burst_outcome` lines). ADV30 is read from the archive's raw daily bars once a day in the background (`radv30`/`rvol` are missing until then). Replay parity: three whole-market TEST days replayed through the live detector match the research's gate passes, every feature and its alert files exactly (`rocket::burst::replay_parity`, needs the research disk). A replay never runs it. `0`: off |
 | `BURST_ALERTS_PER_DAY` | `20` | the frozen threshold to alert at: `10` (0.2618), `20` (0.2334) or `40` (0.2028), the scores that gave that many alerts a day on the research's DEV days. A runaway guard caps a day at max(5 × it, 50) |
 | `BURST_THRESHOLD` | unset | a model probability in (0, 1) to alert at instead (overrides `BURST_ALERTS_PER_DAY`'s) |
 | (no variable) Runners phone push | on | the LIVE market's Runners board sends an Expo push (the price alerts' pipeline, `crates/server/src/alerts/runners.rs`) for each new flag ("Runners: CJMB $2.45", the top two reasons) and, for phones that turned it on, each flagged row turning *breaking out* ("CJMB breaking out $3.10", % from the flag). Buying bursts (`BURST_ALERTS`) push too, "CJMB buying burst $2.10", body "+18.2% in 6 min · $ rate 6.4× base" (gain since the burst started, its age, the top reason). Data `{symbol, kind: "runners.new" \| "runners.breakout" \| "runners.burst", alert_id}`: a tap opens that ticker's chart. Opt-in per phone, sent in `push.register` (`runnersNew`, default on; `runnersBreakout`, default off; `runnersBurst`, default on; Settings → Runners on the phone). Limits: at most one Runners push per stock per 10 minutes (either kind), 30 a day (ET; kept across restarts, separate from the price alerts' phone budget), the price alerts' quiet hours, nothing older than 3 minutes. Off the ingest path (a bounded `try_send` after the core lock); a failed push is logged and costs nothing else. A replay never pushes. Needs `ROCKET_WATCH` and a registered phone; tune by editing the constants, not the environment |
@@ -156,3 +156,30 @@ off, and the start line says `NOT SET`. Also reads `PRICE_BAND_*` (its watch uni
 
 The clients never hold provider credentials. The access token is typed into the sign-in screen and
 kept in `localStorage` (web) or the keystore (phone, `expo-secure-store`).
+
+
+### Current entry price minimum (owner, 2026-10-26)
+
+All current live entry paths use an inclusive **$0.10–$25** band: precursor
+scoring (R0/R2/placeholder), Buying bursts, volume shelves, Running, Run +20%,
+Fast and stock-context discovery. Discovery uses `pillars-v3`; `pillars-v1` and
+`pillars-v2` remain unchanged historical policies. MP5's active band was already
+$0.10–$25, so no pullback geometry or wick filter changed.
+
+Precursor, burst and shelf eligibility use `market_events::PriceBand::DEFAULT`.
+Their liquidity, history/readiness, model, score, cooldown and budget rules still
+apply; eligibility alone does not produce an alert. The precursor, Fast and burst
+tapes still admit prices from $0.05 to retain pre-crossing context.
+
+Existing research protocols and the canonical precursor rocket outcome retain
+their original $0.15–$25 definitions. The added $0.10–<$0.15 range has not been
+validated by those studies. Burst pushes omit the historical odds below $0.15;
+the shared web/desktop/mobile section labels the original study's range. New
+precursor/burst alert logs and shelf run logs record `entry_band_micros` to make
+the active eligibility explicit alongside the unchanged model identity.
+
+MP5 now also records the frozen impulse candle's experimental `mp5-wick-v1`
+observation, including in held notification ledger decisions. This is not a
+blocking filter or a new alert gate. Its contract and exploratory assessment
+are in `docs/stock-context/mp5-wick-diagnostic.md` and
+`docs/research/mp5-wick-v1-results.md`.

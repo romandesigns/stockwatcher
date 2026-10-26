@@ -192,6 +192,39 @@ fn outside_the_band_or_idle_is_not_a_unit() {
     );
 }
 
+#[test]
+fn precursor_scoring_starts_at_ten_cents_and_keeps_earlier_sub_dime_history() {
+    let mut tape = Tape::default();
+    for (sym, price) in [
+        ("LOW", 0.0999),
+        ("TEN", 0.10),
+        ("MID", 0.12),
+        ("OLD", 0.1499),
+        ("TOP", 25.0),
+        ("OVER", 25.0001),
+    ] {
+        tape.apply_trade(&tr(sym, at(9, 0, 1), price, 100), BOTH);
+    }
+    let (t0, _) = tape.day(day());
+    let k = (at(9, 0, 1) - t0) / features::BAR_NS;
+    for sym in ["TEN", "MID", "OLD", "TOP"] {
+        assert!(
+            features_at(&mut tape, sym, k).is_some(),
+            "{sym} is eligible"
+        );
+    }
+    for sym in ["LOW", "OVER"] {
+        assert!(features_at(&mut tape, sym, k).is_none(), "{sym} is outside");
+    }
+
+    // The first in-band score must still see the earlier sub-dime move.
+    tape.apply_trade(&tr("CROSS", at(9, 0, 1), 0.08, 100), BOTH);
+    assert!(features_at(&mut tape, "CROSS", k).is_none());
+    tape.apply_trade(&tr("CROSS", at(9, 0, 16), 0.10, 100), BOTH);
+    let f = features_at(&mut tape, "CROSS", k + 1).unwrap();
+    assert!((f.x[ix::RANGE60] - (0.10 / 0.08 - 1.0)).abs() < 1e-6);
+}
+
 /// The budget is a cap; at most one alert per symbol per 30 minutes.
 #[test]
 fn budget_caps_and_one_alert_per_symbol_per_30_minutes() {

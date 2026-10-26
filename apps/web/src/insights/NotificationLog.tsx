@@ -136,7 +136,7 @@ export function NoticeRow({ item }: { item: NoticeItemWire }) {
   const sent = noticeStatus(item) === "sent";
   const reason = noticeHeldReason(item);
   const latency = latencyText(item);
-  const text = item.body ? `${item.title ?? ""} · ${item.body}` : (item.title ?? "");
+  const text = item.body ? `${item.title ?? ""} · ${item.body.replace(/[\r\n]+/g, " · ")}` : (item.title ?? "");
   return (
     <button
       type="button"

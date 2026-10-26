@@ -1,0 +1,46 @@
+{
+  "schema": 1,
+  "id": "pillars-v3",
+  "note": "pillars-v2 with discovery eligibility lowered from $0.15 to $0.10 (owner decision 2026-10-26), matching the existing $0.10-$25 price pillar and current live entry floors. All other rules are unchanged. pillars-v1 and pillars-v2 remain frozen historical policies.",
+  "reference_profile": {
+    "id": "stockwatcher_band_v1",
+    "price_min_micros": 100000,
+    "price_max_micros": 25000000,
+    "gain_min_bp": 1000,
+    "rvol_daily_min_milli": 5000,
+    "rvol_daily_sessions": 30,
+    "float_max_exclusive_shares": 20000000,
+    "news_freshness_secs": 86400
+  },
+  "discovery_band": {
+    "min_micros": 100000,
+    "max_micros": 25000000,
+    "source": "current discovery eligibility ($0.10-$25 inclusive, owner decision 2026-10-26); historical research definitions are unchanged"
+  },
+  "grid": {
+    "bar_secs": 15,
+    "settle_ms": 2000
+  },
+  "price_staleness": {
+    "regular_secs": 600,
+    "extended_secs": 1800,
+    "source": "eligibility-research-v1 (research/foundation)"
+  },
+  "volume": {
+    "day_start": "04:00 America/New_York",
+    "exclude_overnight_boats": true,
+    "counted": "chart engine volume verdict (conditions policy of the run)"
+  },
+  "diagnostics": {
+    "validated": false,
+    "same_time_min_sessions": 10,
+    "recent_window_secs": 300,
+    "recent_min_sessions": 10
+  },
+  "float": {
+    "stale_after_secs": 86400
+  },
+  "news": {
+    "coverage_max_lag_secs": 120
+  }
+}

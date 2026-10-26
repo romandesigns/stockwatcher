@@ -1637,7 +1637,7 @@ mod tests {
         trade(&mut cx, t(9, 30, 0), t(9, 32, 0));
 
         let d = cx.decision(SYM).unwrap();
-        assert!(d.policy.starts_with("pillars-v2@"), "{}", d.policy);
+        assert!(d.policy.starts_with("pillars-v3@"), "{}", d.policy);
         for p in [
             PillarId::Price,
             PillarId::Gain,
@@ -1668,7 +1668,7 @@ mod tests {
             frame["pillarPolicy"]
                 .as_str()
                 .unwrap()
-                .starts_with("pillars-v2@")
+                .starts_with("pillars-v3@")
         );
         let panel = &frame["panel"];
         assert!(

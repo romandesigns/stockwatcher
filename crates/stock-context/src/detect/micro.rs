@@ -12,7 +12,7 @@ use super::features::{bar_at, bps};
 use super::math::milli;
 use super::{
     Barrier, Certainty, Change, Check, Detector, Ep, Extra, Family, LevelVersion, MicroAnchors,
-    Seg, State, SymDetect, TradeEvidence, emit, open,
+    MicroWick, Seg, State, SymDetect, TradeEvidence, emit, open,
 };
 use crate::pillar::Tri;
 use market_events::TradeId;
@@ -130,6 +130,11 @@ pub(crate) fn search(det: &mut Detector, sd: &mut SymDetect, x: &Barrier, seg: S
         })),
     );
     ep.view.anchors = Some(MicroAnchors {
+        wick: Some(MicroWick::measure(
+            Some([w[j].1.open, w[j].1.high, w[j].1.low, w[j].1.close]),
+            h0_end,
+            x.tau,
+        )),
         l0,
         l0_bar_end: l0_end,
         h0,

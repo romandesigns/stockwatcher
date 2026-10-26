@@ -200,7 +200,7 @@ pub struct Decision {
     pub pillars: Vec<PillarResult>,
     pub qualification: Qualification,
     pub counts: Counts,
-    /// Price fresh and inside the discovery band (research default $0.15–$25).
+    /// Price fresh and inside the policy's discovery band (current default $0.10–$25).
     pub in_discovery_band: Option<bool>,
     /// Gain against the close as stored, whatever its basis: a named diagnostic only.
     pub gain_vs_stored_close_bp: Option<i64>,

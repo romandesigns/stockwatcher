@@ -541,6 +541,33 @@ fn gate_fires_on_a_burst_and_not_on_a_quiet_tape() {
 }
 
 #[test]
+fn the_gate_admits_ten_cent_bursts_with_the_same_liquidity_requirements() {
+    assert!(!in_band(0.0999));
+    assert!(in_band(0.10));
+    assert!(in_band(0.1499));
+    assert!(in_band(25.0));
+    assert!(!in_band(25.0001));
+
+    let start = t0() + 3600 * SEC;
+    for (sym, expected) in [("LIQUID", true), ("THIN", false)] {
+        let tape: Vec<Trade> = burst_tape(sym, start)
+            .into_iter()
+            .map(|mut t| {
+                t.price = Price::from_micros(t.price.micros() / 10);
+                t.size = if expected { t.size * 10 } else { t.size / 10 };
+                t
+            })
+            .collect();
+        let mut d = BurstDetector::new(BurstPolicy::default());
+        d.capture();
+        drive(&mut d, &tape, tape.last().unwrap().event_ts.0 + 20 * SEC);
+        let passes = d.take_captured();
+        assert_eq!(!passes.is_empty(), expected, "{sym}");
+        assert!(passes.iter().all(|p| (0.10..0.15).contains(&p.last)));
+    }
+}
+
+#[test]
 fn features_only_see_boundaries_before_the_check() {
     // Causality: prints executed after the boundary (but before the check at w + 1 s) change
     // nothing the boundary scores; the same tape with a wild print added at w + 0.5 s gives the

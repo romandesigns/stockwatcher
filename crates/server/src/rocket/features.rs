@@ -31,8 +31,10 @@
 //! totals as soon as it arrives: it is in the past by then, so a later barrier may see it, an
 //! earlier one never did. `rocket::tests::features_are_causal` pins this.
 //!
-//! # Differences from the research (all small, documented for whoever plugs a model in)
+//! # Differences from the research
 //!
+//! - Live scoring admits `$0.10–$25` (owner, 2026-10-26). The frozen research used
+//!   `$0.15–$25`; its outcomes do not validate the added price range.
 //! - The tick rule (`upt3`) runs in arrival order, the research's in execution order.
 //! - `pdh`, `rvol` and the four news counts (`n15`…`nday`) are `NaN`: the previous day's high, the
 //!   30-day average volume and the symbol's news times are not wired into this module yet. A
@@ -55,6 +57,12 @@ pub const NSLOT: i64 = 3840;
 pub const RING: usize = 256;
 /// The research band (rocket start price), micro-dollars: `$0.15–$25`.
 pub const BAND_MICROS: (i64, i64) = (150_000, 25_000_000);
+/// Live precursor eligibility (owner, 2026-10-26): `$0.10–$25`. The historical
+/// outcome definition above stays separate from the prices admitted for scoring.
+pub const SCORING_BAND_MICROS: (i64, i64) = (
+    market_events::PriceBand::DEFAULT.min.micros(),
+    market_events::PriceBand::DEFAULT.max.micros(),
+);
 /// A symbol whose prints are all outside this (dollars) never gets a ring.
 const WIDE_BAND: (f64, f64) = (0.05, 30.0);
 
@@ -546,7 +554,8 @@ fn ln_ratio(a: f64, b: f64) -> f64 {
 }
 
 /// The features at barrier `b`, or `None` when it is not a unit barrier for the symbol (the
-/// research's §5: last OHLC print within 30 minutes, price in the `$0.15–$25` band).
+/// research's §5 freshness rule: last OHLC print within 30 minutes), with live
+/// price eligibility widened to `$0.10–$25` (owner, 2026-10-26).
 /// Call [`settle`] first.
 pub(crate) fn features(
     s: &Sym,
@@ -559,7 +568,7 @@ pub(crate) fn features(
     }
     let price = f64::from(s.bar(s.last_traded)?.close);
     let pm = (price * 1e6).round() as i64;
-    if !(BAND_MICROS.0..=BAND_MICROS.1).contains(&pm) {
+    if !(SCORING_BAND_MICROS.0..=SCORING_BAND_MICROS.1).contains(&pm) {
         return None;
     }
     let prev_close = prev_close();

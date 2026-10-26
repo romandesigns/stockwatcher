@@ -17,6 +17,16 @@ const frame = {
 };
 
 describe("runners notices", () => {
+  test("frozen candle observations survive parsing and do not create another notice", () => {
+    const data = { ...frame.data, kind: "runners.pullback", mp5_wick: { rule: "mp5-wick-v1", status: "flagged", known_at: 32, upper_wick_milli: 600, close_location_milli: 400 } };
+    const original = parseRunnersNotice({ ...frame, kind: "runners.pullback", data })!;
+    expect(original.data?.mp5_wick).toEqual(data.mp5_wick);
+    const seen = createNoticeDedupe();
+    expect(shouldShowNotice(original, DEFAULT_RUNNERS_NOTIFY, seen)).toBe(true);
+    const repeated = parseRunnersNotice({ ...frame, kind: "runners.pullback", data: { ...data, mp5_wick: { ...data.mp5_wick, status: "clear" } } })!;
+    expect(shouldShowNotice(repeated, DEFAULT_RUNNERS_NOTIFY, seen)).toBe(false);
+  });
+
   test("the defaults are the phone's: every evidence kind on; breakouts, at-trigger and the Halt watcher off", () => {
     expect(DEFAULT_RUNNERS_NOTIFY).toEqual({ new: true, breakout: false, burst: true, running: true, run: true, fast: true, shelf: true, followUp: true, rossCrossing: true, signalsCrossing: true, rossTrigger: false, signalsTrigger: false, halt: false, pullback: true });
     expect(runnersNotifyKinds(undefined)).toEqual({ ...DEFAULT_RUNNERS_NOTIFY });

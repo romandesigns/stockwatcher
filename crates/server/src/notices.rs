@@ -83,7 +83,7 @@ pub fn group(text: &str) -> (Vec<Value>, bool) {
         };
         match kind {
             "decision" => {
-                for k in ["symbol", "price", "notice", "title", "body"] {
+                for k in ["symbol", "price", "notice", "title", "body", "mp5_wick"] {
                     set_if_absent(item, k, v.get(k).cloned());
                 }
                 if let Some(at) = num(&v, "decided_at") {
@@ -240,5 +240,21 @@ mod tests {
             read_day(dir.path(), "2026-10-20".parse().unwrap()).0.len(),
             0
         );
+    }
+
+    #[test]
+    fn frozen_wick_observations_reach_the_read_api_unchanged() {
+        let wick = serde_json::to_value(stock_context::MicroWick::measure(
+            Some([105, 120, 100, 108]),
+            15,
+            32,
+        ))
+        .unwrap();
+        let text = line(json!({"kind":"decision","event_id":"w","decided_at":1000,
+            "symbol":"WFF","notice":"runners.pullback","path":"phone","decision":"held",
+            "held":"symbol_limit","mp5_wick":wick}));
+        let (items, _) = group(&text);
+        assert_eq!(items[0]["mp5_wick"], wick);
+        assert_eq!(items[0]["phone"]["decision"], "held");
     }
 }

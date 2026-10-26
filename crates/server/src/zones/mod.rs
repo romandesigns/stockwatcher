@@ -22,16 +22,14 @@
 //!   volume ([`Counted`], the "updates OHLC" / "updates volume" verdicts, as the candles).
 //! - **Run (the causal trigger)**, the live equivalent of the `events-g20` label: a traded slot
 //!   `j` whose close is ≥ 1.2 × `L`, `L` = the min close of the traded slots `i < j` ending within
-//!   the 15 minutes before `j`'s end; start = the LATEST such slot at `L`; `L` in `$0.15–$25`; at
+//!   the 15 minutes before `j`'s end; start = the LATEST such slot at `L`; `L` in `$0.10–$25`; at
 //!   least 25 volume-counted trades and $25,000 from the start slot through `j`; no mark slot
 //!   ending within 30 minutes of the previous mark counts. Confirmed at `j`'s END (`plus20_ns`),
 //!   which is when the slot is complete: nothing later is read.
 //! - **The same trigger feeds the Runners "Run +20%" entry** (`crate::rocket`, owner
-//!   2026-10-22), with the start-price band widened to `$0.10–$25` ([`RUN_BAND_MICROS`]) and
-//!   its own refractory, so a `$0.10–$0.15` run never suppresses or creates a shelf: the shelves
-//!   keep the labels' `$0.15` floor ([`BAND_MICROS`]) and stay exactly the frozen definition.
-//!   For a start price of `$0.15` or more the two agree unless a `$0.10–$0.15` run came in the
-//!   30 minutes before. Each such run is queued for the Runners board ([`ZoneBoard::take_entries`])
+//!   2026-10-22), with its own refractory. Both entry bands are now `$0.10–$25`
+//!   (owner, 2026-10-26); the frozen shelf research used a `$0.15` floor and does
+//!   not evaluate the added range. Each run is queued for Runners ([`ZoneBoard::take_entries`])
 //!   when its mark slot is decided; one rule, computed once.
 //! - **Early fire** (owner, 2026-10-22: "many of these events happen within 15 seconds, 30
 //!   seconds and 1 min"; [`ZoneBoard::set_early`], on in the market): the Runners entry does not
@@ -140,12 +138,14 @@ pub const GAIN_PCT: f64 = 20.0;
 const LEG_SLOTS: i64 = 60;
 /// After a mark at T no mark slot ending before T + 30 min counts.
 const REFRACTORY_NS: i64 = 30 * MIN_NS;
-/// The research band on the run's start price (micro-dollars), `in_band` of the labels: the
-/// shelves' runs.
-pub const BAND_MICROS: (i64, i64) = (150_000, 25_000_000);
+/// Current shelf-entry band on the run's start price (owner, 2026-10-26), micro-dollars.
+pub const BAND_MICROS: (i64, i64) = (
+    market_events::PriceBand::DEFAULT.min.micros(),
+    market_events::PriceBand::DEFAULT.max.micros(),
+);
 /// The Runners "Run +20%" entry's band on the start price (micro-dollars, owner 2026-10-22):
 /// the same trigger as the shelves' runs with a `$0.10` floor (module docs).
-pub const RUN_BAND_MICROS: (i64, i64) = (100_000, 25_000_000);
+pub const RUN_BAND_MICROS: (i64, i64) = BAND_MICROS;
 /// Runs queued for the Runners board and not taken yet are dropped past this (a board ticked
 /// without one: tests, a rebuild).
 const MAX_ENTRIES: usize = 4096;
@@ -493,8 +493,7 @@ struct Sym {
     /// (slot, trades, dollars) of the decided slots of the last 61.
     liq: VecDeque<(i64, f64, f64)>,
     refr: Option<i64>,
-    /// The Runners entry's refractory ([`RUN_BAND_MICROS`]): its own, so the shelves' runs stay
-    /// the frozen definition.
+    /// The Runners entry's refractory ([`RUN_BAND_MICROS`]), independent of shelf decisions.
     run_refr: Option<i64>,
     /// The early fire's own refractory (its last fire), and since when its condition has held
     /// without the 2-print guard passing ([`Sym::early`]).
@@ -684,8 +683,8 @@ impl Sym {
         let Some(close) = close else {
             return changed;
         };
-        // The run trigger (`rockets(d, 20)`), on the traded slots: once for the shelves (the
-        // labels' band), once for the Runners entry (its wider band, its own refractory).
+        // The run trigger on traded slots: shelves and Runners share the current band,
+        // with independent refractories.
         while self.mins.front().is_some_and(|&(i, _)| i <= k - LEG_SLOTS) {
             self.mins.pop_front();
         }
@@ -1177,6 +1176,7 @@ impl ZoneBoard {
             "kind": "run", "v": 1, "date": self.date.map(|d| d.to_string()),
             "symbol": &*sym, "start_ns": r.start_ns, "start_price": r.start_price,
             "plus20_ns": r.plus20_ns,
+            "entry_band_micros": [BAND_MICROS.0, BAND_MICROS.1],
         });
         self.log_line(key("run", &sym, r.plus20_ns), line);
     }

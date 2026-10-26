@@ -368,6 +368,7 @@ fn pullback_facts(t: &DetectionTransition, also_signals: bool) -> PullbackNotice
         dip_volume_ratio: a
             .and_then(|a| a.dv_rate_ratio_milli)
             .map(|m| m as f64 / 1000.0),
+        wick: a.and_then(|a| a.wick.clone()),
         also_signals,
     }
 }
@@ -457,6 +458,7 @@ mod tests {
         t.event = "armed";
         t.reason = "levels_fixed";
         t.anchors = Some(MicroAnchors {
+            wick: None,
             l0: 3_000_000,
             l0_bar_end: 0,
             h0: 3_420_000,

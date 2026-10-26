@@ -544,6 +544,7 @@ fn panel_message(n: &Notice) -> (String, String, Value) {
         // volume first and the levels last.
         (NoticeKind::Pullback, Some(NoticeDetail::Pullback(f))) => {
             data["stage"] = json!("setup");
+            data["mp5_wick"] = json!(f.wick);
             let mut parts = Vec::new();
             if let Some(t) = f.trigger {
                 parts.push(format!("Trigger {}", dollars(on_tick(t))));
@@ -563,6 +564,7 @@ fn panel_message(n: &Notice) -> (String, String, Value) {
         }
         (NoticeKind::PullbackCrossing, Some(NoticeDetail::Pullback(f))) => {
             data["stage"] = json!("crossing");
+            data["mp5_wick"] = json!(f.wick);
             data["also_signals"] = json!(f.also_signals);
             let body = match f.trigger {
                 Some(t) => format!(
@@ -630,7 +632,11 @@ fn runner_message(n: &Notice) -> (String, String, Value) {
                 (Some(x), None) => format!("{x:+.1}% in the burst"),
                 _ => "Heavy buying on the tape".into(),
             };
-            format!("{mv} · {}", burst_odds())
+            if n.price >= 0.15 {
+                format!("{mv} · {}", burst_odds())
+            } else {
+                format!("{mv} · historical odds unavailable at this price")
+            }
         }
         // "+22.0% in 5 min off $1.00 · 25+ trades and $25k+": the leg and its liquidity.
         NoticeKind::Run => {
@@ -1032,6 +1038,19 @@ Alert $2.41 · +5% = $2.53"
     }
 
     #[test]
+    fn sub_fifteen_cent_bursts_do_not_claim_the_historical_odds() {
+        let mut n = Notice::test(NoticeKind::Burst, "PENY");
+        n.price = 0.12;
+        let (_, body, _) = message(&n);
+        assert!(body.contains("historical odds unavailable at this price"));
+        assert!(!body.contains("typ. "));
+        n.price = 0.15;
+        let (_, body, _) = message(&n);
+        assert!(body.contains("typ. "));
+        assert!(!body.contains("odds unavailable"));
+    }
+
+    #[test]
     fn the_reference_line_is_on_tick() {
         // The YMAT case (owner, 2026-10-23).
         assert_eq!(price_line(2.41), "Alert $2.41 · +5% = $2.53");
@@ -1124,6 +1143,7 @@ Alert $2.41 · +5% = $2.53"
                     dip_pct: Some(6.14),
                     retraced_pct: Some(31.0),
                     dip_volume_ratio: Some(0.4),
+                    wick: None,
                     also_signals: kind == NoticeKind::PullbackCrossing,
                 }))
             }
@@ -1265,6 +1285,31 @@ Alert $2.41 · +5% = $2.53"
             serde_json::from_str(&desk_frame(&sample(NoticeKind::RossCrossing))).unwrap();
         assert_eq!(f["alsoSignals"], true);
         assert_eq!(f["data"]["also_signals"], true);
+    }
+
+    #[test]
+    fn pullback_wick_data_is_observational_and_identical_on_phone_and_desk() {
+        for kind in [NoticeKind::Pullback, NoticeKind::PullbackCrossing] {
+            let mut n = sample(kind);
+            let (_, original_body, _) = message(&n);
+            let Some(NoticeDetail::Pullback(p)) = &mut n.detail else {
+                panic!("pullback facts")
+            };
+            p.wick = Some(stock_context::MicroWick::measure(
+                Some([105, 120, 100, 108]),
+                15,
+                32,
+            ));
+            let (_, body, data) = message(&n);
+            assert_eq!(
+                body, original_body,
+                "observation does not change the notice"
+            );
+            assert_eq!(data["mp5_wick"]["status"], "flagged");
+            assert_eq!(data["mp5_wick"]["known_at"], 32);
+            let desk: Value = serde_json::from_str(&desk_frame(&n)).unwrap();
+            assert_eq!(desk["data"], data);
+        }
     }
 
     /// The gaps (owner, 2026-10-23): the same kind on a stock at most once per 10 minutes; new

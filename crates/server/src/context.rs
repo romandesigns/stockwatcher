@@ -8,7 +8,7 @@
 //! not lose it, and must not count it again when it is applied later). The admission time is the
 //! print's receive time when the feed knows it (live, recorded live), else its execution time.
 //!
-//! Policies: `pillars-v2` ([`Policy::current`]: the price pillar on the app's own $0.10–$25 band,
+//! Policies: `pillars-v3` ([`Policy::current`]: discovery and price on the app's own $0.10–$25 band,
 //! 120 s news coverage lag), `ross-panel-v1`, and the EXPERIMENTAL `detection-v2` whose
 //! micro-pullback (variant MP5) is each row's `setup` cue (`stock_context::cue`, owner decision
 //! 2026-10-21: one pullback detector, so the Ross and Detection panels cannot disagree). With

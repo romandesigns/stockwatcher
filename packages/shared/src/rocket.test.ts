@@ -279,7 +279,7 @@ describe("buying bursts (2026-10-22)", () => {
     expect(v.bursts?.head).toEqual({
       count: "3 today",
       what: "Heavy buying confirmed, typically 5–9 min into a move (about halfway)",
-      typical: "Typical from here: +13% max in 30 min (median), 1 in 4 reach +20% before −5%",
+        typical: "Research ($0.15–$25): +13% max in 30 min (median), 1 in 4 reach +20% before −5%",
     });
     expect(rocketHeaderView(p).record).toBe("4 of 9 rocketed today");
   });

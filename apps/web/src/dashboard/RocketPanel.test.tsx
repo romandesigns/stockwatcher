@@ -153,7 +153,7 @@ describe("Buying bursts (2026-10-22)", () => {
     expect(html).toContain("Bursts");
     expect(html).toContain("2 today");
     expect(html).toContain("typically 5–9 min into a move (about halfway)");
-    expect(html).toContain("Typical from here: +13% max in 30 min (median), 1 in 4 reach +20% before −5%");
+    expect(html).toContain("Research ($0.15–$25): +13% max in 30 min (median), 1 in 4 reach +20% before −5%");
     expect(html.indexOf("NEWB")).toBeLessThan(html.indexOf("OLDB"));
     expect(html.indexOf("OLDB")).toBeLessThan(html.indexOf("Flags"));
     expect(html.indexOf("Flags")).toBeLessThan(html.indexOf("FLAG<"));

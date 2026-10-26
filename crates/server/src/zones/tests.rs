@@ -256,7 +256,7 @@ fn a_run_is_confirmed_only_after_its_mark_slot_ends() {
 /// The liquidity floor (25 trades and $25k from the start slot through the mark), the band on
 /// the start price and the 30-minute refractory all hold.
 #[test]
-fn the_trigger_keeps_the_labels_floor_band_and_refractory() {
+fn the_trigger_keeps_liquidity_the_ten_cent_band_and_refractory() {
     let t0 = day_t0();
     // 1 trade a slot from slot 19 to the mark at 33: 15 trades < 25.
     let b = run_board(&leg("THIN", t0, 1.30, 1, 10_000));
@@ -264,7 +264,7 @@ fn the_trigger_keeps_the_labels_floor_band_and_refractory() {
     // 3 trades of 50 shares at ~$1.1: ~45 x $55 < $25k.
     let b = run_board(&leg("POOR", t0, 1.30, 3, 50));
     assert!(b.shelf("POOR").is_none(), "under $25k");
-    // Liquid but $0.12 start: under the band.
+    // A liquid $0.12 start is now eligible for shelves too.
     let ts: Vec<Trade> = leg("PENNY", t0, 1.30, 3, 1_000_000)
         .into_iter()
         .map(|t| {
@@ -273,7 +273,18 @@ fn the_trigger_keeps_the_labels_floor_band_and_refractory() {
         })
         .collect();
     let b = run_board(&ts);
-    assert!(b.shelf("PENNY").is_none(), "start under $0.15");
+    assert!(b.shelf("PENNY").is_some(), "$0.12 start is eligible");
+    for (sym, base, eligible) in [("TEN", 0.10, true), ("LOW", 0.0999, false)] {
+        // Establish state before the leg so its below-band base is retained too.
+        let mut ts = vec![trade(sym, t0 + 21_600 * SEC_NS, 0.10, 100)];
+        ts.extend(
+            leg(sym, t0, 1.30, 3, 1_000_000)
+                .into_iter()
+                .map(|t| trade(sym, t.event_ts.0, t.price.to_f64() * base, t.size)),
+        );
+        let b = run_board(&ts);
+        assert_eq!(b.shelf(sym).is_some(), eligible, "{sym}");
+    }
     // Two legs 20 minutes apart: the second is inside the refractory.
     let mut ts = leg("TWICE", t0, 1.30, 3, 1_000);
     let later: Vec<Trade> = leg("TWICE", t0, 1.30, 3, 1_000)
@@ -511,7 +522,7 @@ fn cost() {
 
 /// The Runners "Run +20%" entry (`crate::rocket::run`) is this trigger with a `$0.10` floor and
 /// its own refractory: on the research DEV day its runs are exactly the shelves' runs (every
-/// start there is over `$0.15`), a `$0.12` start gets an entry but no shelf, and a second leg
+/// start there is over `$0.15`), a `$0.12` start now gets both, and a second leg
 /// inside 30 minutes gets neither.
 #[test]
 fn the_runners_entry_is_the_same_trigger_with_a_ten_cent_floor() {
@@ -548,7 +559,7 @@ fn the_runners_entry_is_the_same_trigger_with_a_ten_cent_floor() {
     let end = ts.last().unwrap().event_ts.0;
     let mut b = run_board(&ts);
     b.tick(end + MIN_NS);
-    assert!(b.shelf("PENNY").is_none(), "no shelf under $0.15");
+    assert!(b.shelf("PENNY").is_some(), "$0.12 shelf start is eligible");
     let e = b.take_entries();
     assert_eq!(e.len(), 1, "{e:?}");
     let r = e[0].1;

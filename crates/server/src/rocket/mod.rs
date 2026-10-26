@@ -300,6 +300,8 @@ pub struct PullbackNotice {
     /// Dollar volume per bar in the dip over the impulse's (0.4 = the dip traded 40% of the
     /// impulse's rate). Measured, never required (the MP5 rule's `volume_condition`).
     pub dip_volume_ratio: Option<f64>,
+    /// Frozen H0 candle observation; never a notification gate.
+    pub wick: Option<stock_context::MicroWick>,
     /// The Signals panel lists this episode too (the Detection Panel is on, a non-member): the
     /// crossing then stands for the Signals one, so a device with only that switch still gets it.
     pub also_signals: bool,
@@ -652,6 +654,7 @@ impl Alert {
             "symbol": &*self.symbol, "alert_ns": self.at_ns, "price": self.price,
             "score": self.score, "threshold": finite(self.threshold), "mode": mode,
             "reasons": self.reasons, "strategy": self.strategy, "version": self.version,
+            "entry_band_micros": [features::SCORING_BAND_MICROS.0, features::SCORING_BAND_MICROS.1],
         })
         .to_string()
     }
@@ -755,6 +758,7 @@ impl Alert {
             "symbol": &*self.symbol, "alert_ns": self.at_ns,
             "boundary_ns": b.map(|b| b.boundary_ns), "price": self.price,
             "score": self.score, "threshold": self.threshold, "per_day": per_day,
+            "entry_band_micros": [burst::BAND.0, burst::BAND.1],
             "start_ns": b.map(|b| b.start_ns), "start_price": b.and_then(|b| finite(b.start_price)),
             "gain_pct": b.and_then(|b| b.gain_pct).map(round2),
             "move_pct": b.and_then(|b| b.move_pct).map(round2),
@@ -2668,6 +2672,7 @@ impl RocketBoard {
             "strategy": {
                 "id": self.scorer.id(), "version": self.scorer.version(),
                 "placeholder": self.scorer.placeholder(),
+                "entry_band_micros": [features::SCORING_BAND_MICROS.0, features::SCORING_BAND_MICROS.1],
             },
             "mode": mode,
             "budget": self.policy.budget,

@@ -655,7 +655,7 @@ export interface RocketBurstSectionView {
   count: string;
   /** "Heavy buying confirmed, typically 5–9 min into a move (about halfway)". */
   what: string;
-  /** "Typical from here: +13% max in 30 min (median), 1 in 4 reach +20% before −5%"; "" unknown. */
+  /** Historical outcomes labelled with the study's $0.15–$25 range; "" unknown. */
   typical: string;
 }
 
@@ -671,7 +671,7 @@ export function rocketBurstSectionView(b: RocketBurstPanelWire | undefined, rows
   return {
     count: `${b?.today ?? rows} today`,
     what: `Heavy buying confirmed, typically ${lo}–${hi} min into a move (about halfway)`,
-    typical: t ? `Typical from here: +${Math.round(t.mfe30_med_pct)}% max in 30 min (median), ${oneIn(t.cont20_pct)} reach +20% before −5%` : "",
+    typical: t ? `Research ($0.15–$25): +${Math.round(t.mfe30_med_pct)}% max in 30 min (median), ${oneIn(t.cont20_pct)} reach +20% before −5%` : "",
   };
 }
 

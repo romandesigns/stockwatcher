@@ -566,6 +566,25 @@ fn a_42_cent_stock_passes_price_under_v2_and_fails_under_v1() {
 }
 
 #[test]
+fn current_discovery_eligibility_starts_at_ten_cents() {
+    for (price, eligible) in [
+        (99_900, false),
+        (100_000, true),
+        (149_900, true),
+        (25_000_000, true),
+        (25_000_100, false),
+    ] {
+        let mut e = engine(Policy::current());
+        evidence(&mut e, "PENY", 80_000);
+        print(&mut e, "PENY", t(9, 30, 1), price, 1_000);
+        let ds = e.advance_to(UnixNanos(t(9, 30, 18)));
+        let d = ds.iter().rfind(|d| d.symbol == "PENY").unwrap();
+        assert_eq!(d.in_discovery_band, Some(eligible), "price {price}");
+        assert!(d.policy.starts_with("pillars-v3@"));
+    }
+}
+
+#[test]
 fn a_watched_symbol_runs_the_micro_pullback_without_membership() {
     // The server's Runners rows (owner, 2026-10-22): OUTS has no evidence and is never a Ross
     // member, but once watched it gets the same micro-pullback, the same levels a member would.

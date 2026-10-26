@@ -4,8 +4,9 @@
 //!
 //! - `pillars-v1`: the documented public reference (`ross_public_reference_v1`, price $2–$20).
 //! - `pillars-v2`: StockWatcher's own price band (`stockwatcher_band_v1`, price $0.10–$25
-//!   inclusive, owner decision 2026-10-20), every other field equal to v1. [`Policy::current`]
-//!   returns it; the engine uses whichever policy its caller constructs it with.
+//!   inclusive, owner decision 2026-10-20), with 120 s news coverage tolerance.
+//! - `pillars-v3`: v2 with discovery eligible from $0.10 (owner, 2026-10-26).
+//!   [`Policy::current`] returns v3; callers can still select a frozen historical policy.
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -15,6 +16,8 @@ pub const PILLARS_V1: &str = include_str!("../policy/pillars-v1.json");
 
 /// The v2 policy file (price pillar on the app's own $0.10–$25 band), byte for byte.
 pub const PILLARS_V2: &str = include_str!("../policy/pillars-v2.json");
+/// v3 lowers discovery eligibility to $0.10; v1 and v2 remain frozen.
+pub const PILLARS_V3: &str = include_str!("../policy/pillars-v3.json");
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct ReferenceProfile {
@@ -149,10 +152,15 @@ impl Policy {
         Policy::parse(PILLARS_V2).expect("embedded pillars-v2.json parses")
     }
 
-    /// The policy the product runs today (v2). v1 stays parseable and taggable as the documented
+    /// The embedded v3 policy: v2 with discovery eligible from $0.10.
+    pub fn v3() -> Policy {
+        Policy::parse(PILLARS_V3).expect("embedded pillars-v3.json parses")
+    }
+
+    /// The policy the product runs today (v3). v1 stays parseable and taggable as the documented
     /// public reference ($2–$20); decisions made under it keep naming it.
     pub fn current() -> Policy {
-        Policy::v2()
+        Policy::v3()
     }
 
     /// `pillars-v1@<first 12 hex of the hash>`, the tag every decision carries.
@@ -204,7 +212,23 @@ mod tests {
         assert_eq!(same, v1.body);
         assert_ne!(v1.hash, v2.hash);
         assert!(v2.tag().starts_with("pillars-v2@"));
-        assert_eq!(Policy::current(), v2);
+        assert_eq!(v2.body.discovery_band.min_micros, 150_000);
+    }
+
+    #[test]
+    fn v3_only_lowers_discovery_eligibility_to_ten_cents() {
+        let v2 = Policy::v2();
+        let v3 = Policy::v3();
+        let mut same = v3.body.clone();
+        same.id = v2.body.id.clone();
+        same.note = v2.body.note.clone();
+        same.discovery_band.source = v2.body.discovery_band.source.clone();
+        assert_eq!(same.discovery_band.min_micros, 100_000);
+        same.discovery_band.min_micros = 150_000;
+        assert_eq!(same, v2.body);
+        assert_ne!(v2.hash, v3.hash);
+        assert!(v3.tag().starts_with("pillars-v3@"));
+        assert_eq!(Policy::current(), v3);
     }
 
     #[test]

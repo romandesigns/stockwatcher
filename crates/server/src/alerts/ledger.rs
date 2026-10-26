@@ -153,12 +153,17 @@ fn decision_line(
         Decision::Send => ("sent", None),
         Decision::Held(h) => ("held", Some(h.code())),
     };
-    json!({
+    let mut line = json!({
         "kind": "decision", "v": 1, "decided_at": now_ms, "event_id": event_id,
         "notice": runners::data_kind(n.kind), "symbol": n.symbol, "price": n.price,
         "at_ns": n.at_ns, "exec_ns": n.exec_ns, "path": path, "decision": word, "held": held,
         "devices": devices, "title": title, "body": body,
-    })
+    });
+    if let Some(crate::rocket::NoticeDetail::Pullback(p)) = &n.detail {
+        // Persist the frozen observation even when delivery was held. None remains unknown.
+        line["mp5_wick"] = json!(p.wick);
+    }
+    line
 }
 
 #[cfg(test)]
@@ -245,5 +250,34 @@ mod tests {
         assert!(lines[0].contains("\"decision\":\"sent\""));
         assert!(!lines[1].contains("secret"), "{}", lines[1]);
         assert!(lines[1].contains("[push token]"));
+    }
+
+    #[test]
+    fn pullback_diagnostics_survive_sent_held_and_unknown_decisions() {
+        for (candle, expected) in [
+            (Some([105, 120, 100, 108]), "flagged"),
+            (Some([100, 120, 100, 120]), "clear"),
+            (None, "unknown"),
+        ] {
+            let wick = stock_context::MicroWick::measure(candle, 15, 32);
+            let mut n = notice();
+            n.detail = Some(crate::rocket::NoticeDetail::Pullback(
+                crate::rocket::PullbackNotice {
+                    episode_id: "e1".into(),
+                    trigger: Some(0.12),
+                    stop: Some(0.11),
+                    dip_pct: None,
+                    retraced_pct: None,
+                    dip_volume_ratio: None,
+                    wick: Some(wick.clone()),
+                    also_signals: false,
+                },
+            ));
+            for decision in [Decision::Send, Decision::Held(runners::Hold::SymbolLimit)] {
+                let v = decision_line(&n, "ev-1", "phone", &decision, 1, "t", "b", 0);
+                assert_eq!(v["mp5_wick"]["status"], expected);
+                assert_eq!(v["mp5_wick"], serde_json::to_value(&wick).unwrap());
+            }
+        }
     }
 }

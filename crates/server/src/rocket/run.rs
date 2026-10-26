@@ -11,8 +11,8 @@
 //!   minutes before it (the start: the latest slot at that min);
 //! - at least 25 volume-counted trades and $25,000 from the start slot through the mark slot;
 //! - 30-minute refractory per symbol;
-//! - the start price in `$0.10–$25` ([`crate::zones::RUN_BAND_MICROS`]; the shelves keep the
-//!   labels' `$0.15` floor, with their own refractory).
+//! - the start price in `$0.10–$25` ([`crate::zones::RUN_BAND_MICROS`]; shelves use the
+//!   same band, with their own refractory).
 //!
 //! Live, the row does not wait for the mark slot's close (owner, 2026-10-22: "many of these
 //! events happen within 15 seconds, 30 seconds and 1 min"): the same trigger is read every

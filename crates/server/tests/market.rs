@@ -2107,7 +2107,7 @@ async fn ross_panel_says_disabled_when_stock_context_is_off() {
 
 /// Stock context on, replaying the fixture day from an archive with no stored evidence (no daily
 /// bars, corporate-action checks, floats or news): every traded symbol gets decisions with the
-/// five pillars under pillars-v2, the gain pillar UNKNOWN (no checked previous close), and the
+/// five pillars under the current policy, the gain pillar UNKNOWN (no checked previous close), and the
 /// Ross Panel enabled but empty (nothing can pass five pillars without that evidence; the server
 /// test with it is `evidence::tests`). A bystander that did not subscribe sees no `ross.*` frame.
 #[tokio::test]
@@ -2134,7 +2134,7 @@ async fn stock_context_decides_every_traded_symbol_and_the_panel_stays_honestly_
         snap["pillarPolicy"]
             .as_str()
             .unwrap()
-            .starts_with("pillars-v2@")
+            .starts_with("pillars-v3@")
     );
     // Let the replay run a few decision barriers.
     next(&mut ws, |m| {

@@ -26,7 +26,7 @@
 //!   pass over the rings, never second by second.
 //! - **Every 5 s boundary `w`** (checked at `w + 1 s`, from the quotes task's once-a-second tick,
 //!   never on the ingest path): only symbols that printed in the last 15 s are looked at; for
-//!   each, the **gate**: last price in `$0.15–$25`, session pre/regular/after, ≥ 5 volume-counted
+//!   each, the **gate**: last price in `$0.10–$25`, session pre/regular/after, ≥ 5 volume-counted
 //!   prints and ≥ $5,000 in the 15 s before `w`, `ret15 ≥ ln 1.015`, and the 15 s dollar rate ≥ 3×
 //!   the base rate (the 120 completed 15 s bars ending ≤ `w − 30 s`, from 04:00).
 //! - **Only on a gate pass**: the 34 features ([`FEATS`]), scored by the 300 trees
@@ -40,8 +40,10 @@
 //! (integers as integers) and read as `float32`. The live detector feeds the model exactly that
 //! ([`model_input`]), so a live score equals the research score for the same tape.
 //!
-//! # Differences from the research (live only; a replay of a recorded day has none)
+//! # Differences from the research
 //!
+//! - Entry eligibility is `$0.10–$25` (owner, 2026-10-26). The frozen study used
+//!   `$0.15–$25`; its historical outcomes do not evaluate the added price range.
 //! - Prints are taken in arrival order; a print stamped in a second already closed (late) is
 //!   counted in the open second. The research sorted by execution time.
 //! - A boundary is scored at `w + 1 s` with the prints that ARRIVED by then; a print executed
@@ -141,8 +143,11 @@ const IDLE_FREE_S: i64 = 35 * 60;
 /// A check that falls this far behind skips to the newest boundary (a stall's catch-up would
 /// alert on the past).
 const MAX_LAG_S: i64 = 15;
-/// The band, micro-dollars.
-const BAND: (i64, i64) = (150_000, 25_000_000);
+/// Current entry band, micro-dollars (owner, 2026-10-26).
+pub const BAND: (i64, i64) = (
+    market_events::PriceBand::DEFAULT.min.micros(),
+    market_events::PriceBand::DEFAULT.max.micros(),
+);
 /// Rings are kept only for symbols printing in this wider band (micro-dollars); every symbol
 /// keeps its small day state, as the research kept every symbol it did not prefilter.
 const WIDE_BAND: (i64, i64) = (50_000, 30_000_000);

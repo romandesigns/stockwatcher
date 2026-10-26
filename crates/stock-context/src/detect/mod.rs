@@ -23,6 +23,9 @@ pub mod fixture;
 pub mod math;
 pub(crate) mod micro;
 pub mod policy;
+mod wick;
+
+pub use wick::{MP5_WICK_RULE, MicroWick, WickStatus};
 
 pub use features::{
     BaselineStats, BodyStats, FeatureSnapshot, RangeRelation, RangeStats, ReturnClass, WindowStats,
@@ -251,6 +254,8 @@ pub struct LevelVersion {
 /// The micro-pullback's causal impulse anchors and evolving pullback measurements.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct MicroAnchors {
+    /// Observational only, frozen with the actual H0 candle. None means unavailable.
+    pub wick: Option<MicroWick>,
     pub l0: i64,
     pub l0_bar_end: i64,
     pub h0: i64,
