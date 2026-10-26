@@ -1,0 +1,520 @@
+{
+ "explore/u1/15s": {
+  "auto": {
+   "zones": 159934,
+   "tested": 145706,
+   "tested_share": 0.9110383033001113,
+   "hold": 0.5881981524439625,
+   "brk": 0.4113420174872689,
+   "unresolved": 0.00045983006876861623,
+   "wait_min_median": 3.5,
+   "bounce_atr_median": 1.276767393717738
+  },
+  "random": {
+   "zones": 159934,
+   "tested": 133464,
+   "tested_share": 0.8344942288694086,
+   "hold": 0.469325061439789,
+   "brk": 0.5296034885811904,
+   "unresolved": 0.0010714499790205599,
+   "wait_min_median": 7.0,
+   "bounce_atr_median": 1.0804140983030237
+  },
+  "delta": {
+   "point": 0.11887309100417343,
+   "lo": 0.11499842469777258,
+   "hi": 0.12291072156619799,
+   "days": 149,
+   "auto_tested": 145706,
+   "random_tested": 133464
+  },
+  "verdict": "SUPPORTED",
+  "zones_per_symbol_day": 13.81719222462203
+ },
+ "explore/u1/30s": {
+  "auto": {
+   "zones": 112164,
+   "tested": 99310,
+   "tested_share": 0.8853999500731072,
+   "hold": 0.5982579800624308,
+   "brk": 0.40115799013191017,
+   "unresolved": 0.0005840298056590474,
+   "wait_min_median": 6.0,
+   "bounce_atr_median": 1.2573588558224178
+  },
+  "random": {
+   "zones": 112164,
+   "tested": 88725,
+   "tested_share": 0.791029207232267,
+   "hold": 0.4833136094674556,
+   "brk": 0.5153564384333615,
+   "unresolved": 0.0013299520991828684,
+   "wait_min_median": 10.5,
+   "bounce_atr_median": 1.054461181923514
+  },
+  "delta": {
+   "point": 0.1149443705949752,
+   "lo": 0.11035564981575396,
+   "hi": 0.1195455498864393,
+   "days": 149,
+   "auto_tested": 99310,
+   "random_tested": 88725
+  },
+  "verdict": "SUPPORTED",
+  "zones_per_symbol_day": 9.690194384449244
+ },
+ "explore/u1/1m": {
+  "auto": {
+   "zones": 71389,
+   "tested": 60480,
+   "tested_share": 0.8471893428959644,
+   "hold": 0.616848544973545,
+   "brk": 0.38227513227513227,
+   "unresolved": 0.0008763227513227513,
+   "wait_min_median": 11.0,
+   "bounce_atr_median": 1.270417422867511
+  },
+  "random": {
+   "zones": 71389,
+   "tested": 52504,
+   "tested_share": 0.7354634467494993,
+   "hold": 0.5073518208136523,
+   "brk": 0.4912387627609325,
+   "unresolved": 0.0014094164254152065,
+   "wait_min_median": 16.0,
+   "bounce_atr_median": 1.038805970149261
+  },
+  "delta": {
+   "point": 0.10949672415989276,
+   "lo": 0.1030453535920198,
+   "hi": 0.11592618711606019,
+   "days": 149,
+   "auto_tested": 60480,
+   "random_tested": 52504
+  },
+  "verdict": "SUPPORTED",
+  "zones_per_symbol_day": 6.167516198704104
+ },
+ "explore/u1/5m": {
+  "auto": {
+   "zones": 17997,
+   "tested": 12307,
+   "tested_share": 0.6838361949213758,
+   "hold": 0.6597058584545381,
+   "brk": 0.33476883074672953,
+   "unresolved": 0.005525310798732429,
+   "wait_min_median": 30.0,
+   "bounce_atr_median": 1.3808165134383028
+  },
+  "random": {
+   "zones": 17997,
+   "tested": 9463,
+   "tested_share": 0.525809857198422,
+   "hold": 0.5739194758533235,
+   "brk": 0.4210081369544542,
+   "unresolved": 0.00507238719222234,
+   "wait_min_median": 35.0,
+   "bounce_atr_median": 0.9647323000245112
+  },
+  "delta": {
+   "point": 0.08578638260121463,
+   "lo": 0.0735322977850711,
+   "hi": 0.09773329427488074,
+   "days": 149,
+   "auto_tested": 12307,
+   "random_tested": 9463
+  },
+  "verdict": "SUPPORTED",
+  "zones_per_symbol_day": 1.554816414686825
+ },
+ "explore/u2/15s": {
+  "auto": {
+   "zones": 3588,
+   "tested": 3208,
+   "tested_share": 0.8940914158305463,
+   "hold": 0.5617206982543641,
+   "brk": 0.4373441396508728,
+   "unresolved": 0.0009351620947630922,
+   "wait_min_median": 3.75,
+   "bounce_atr_median": 1.0323979224865254
+  },
+  "random": {
+   "zones": 3588,
+   "tested": 3062,
+   "tested_share": 0.8534002229654404,
+   "hold": 0.46146309601567603,
+   "brk": 0.5365774003919007,
+   "unresolved": 0.001959503592423253,
+   "wait_min_median": 7.25,
+   "bounce_atr_median": 0.8777796962457416
+  },
+  "delta": {
+   "point": 0.10025760223868807,
+   "lo": 0.07819057551782795,
+   "hi": 0.12234004422963683,
+   "days": 147,
+   "auto_tested": 3208,
+   "random_tested": 3062
+  },
+  "verdict": "SUPPORTED",
+  "zones_per_symbol_day": 5.155172413793103
+ },
+ "explore/u2/30s": {
+  "auto": {
+   "zones": 3374,
+   "tested": 2901,
+   "tested_share": 0.8598103141671607,
+   "hold": 0.5680799724233023,
+   "brk": 0.4298517752499138,
+   "unresolved": 0.002068252326783868,
+   "wait_min_median": 6.5,
+   "bounce_atr_median": 1.0440310077519845
+  },
+  "random": {
+   "zones": 3374,
+   "tested": 2689,
+   "tested_share": 0.7969768820391228,
+   "hold": 0.4626255113425065,
+   "brk": 0.5355150613611008,
+   "unresolved": 0.001859427296392711,
+   "wait_min_median": 10.5,
+   "bounce_atr_median": 0.8449763180028348
+  },
+  "delta": {
+   "point": 0.10545446108079581,
+   "lo": 0.08082242209576025,
+   "hi": 0.1314451934957297,
+   "days": 146,
+   "auto_tested": 2901,
+   "random_tested": 2689
+  },
+  "verdict": "SUPPORTED",
+  "zones_per_symbol_day": 4.847701149425287
+ },
+ "explore/u2/1m": {
+  "auto": {
+   "zones": 2864,
+   "tested": 2388,
+   "tested_share": 0.8337988826815642,
+   "hold": 0.5749581239530989,
+   "brk": 0.42294807370184256,
+   "unresolved": 0.0020938023450586263,
+   "wait_min_median": 12.0,
+   "bounce_atr_median": 1.0787336174220876
+  },
+  "random": {
+   "zones": 2864,
+   "tested": 2132,
+   "tested_share": 0.744413407821229,
+   "hold": 0.49437148217636023,
+   "brk": 0.5032833020637899,
+   "unresolved": 0.0023452157598499064,
+   "wait_min_median": 17.0,
+   "bounce_atr_median": 0.873726413444299
+  },
+  "delta": {
+   "point": 0.08058664177673863,
+   "lo": 0.04798259274197754,
+   "hi": 0.1141032381397296,
+   "days": 147,
+   "auto_tested": 2388,
+   "random_tested": 2132
+  },
+  "verdict": "SUPPORTED",
+  "zones_per_symbol_day": 4.114942528735632
+ },
+ "explore/u2/5m": {
+  "auto": {
+   "zones": 949,
+   "tested": 611,
+   "tested_share": 0.6438356164383562,
+   "hold": 0.55810147299509,
+   "brk": 0.4337152209492635,
+   "unresolved": 0.008183306055646482,
+   "wait_min_median": 35.0,
+   "bounce_atr_median": 1.1164274322168937
+  },
+  "random": {
+   "zones": 949,
+   "tested": 501,
+   "tested_share": 0.5279241306638567,
+   "hold": 0.5229540918163673,
+   "brk": 0.4630738522954092,
+   "unresolved": 0.013972055888223553,
+   "wait_min_median": 50.0,
+   "bounce_atr_median": 0.9470939270849077
+  },
+  "delta": {
+   "point": 0.035147381178722736,
+   "lo": -0.0182834632088903,
+   "hi": 0.09011530917578398,
+   "days": 144,
+   "auto_tested": 611,
+   "random_tested": 501
+  },
+  "verdict": "NO EDGE OVER RANDOM",
+  "zones_per_symbol_day": 1.3635057471264367
+ },
+ "confirm/u1/15s": {
+  "auto": {
+   "zones": 130544,
+   "tested": 118996,
+   "tested_share": 0.911539404338767,
+   "hold": 0.585801203401795,
+   "brk": 0.41355171602406804,
+   "unresolved": 0.0006470805741369457,
+   "wait_min_median": 3.75,
+   "bounce_atr_median": 1.2464727252786254
+  },
+  "random": {
+   "zones": 130544,
+   "tested": 109312,
+   "tested_share": 0.8373575193038363,
+   "hold": 0.4721713992974239,
+   "brk": 0.5266576405152225,
+   "unresolved": 0.00117096018735363,
+   "wait_min_median": 6.75,
+   "bounce_atr_median": 1.0395011806035241
+  },
+  "delta": {
+   "point": 0.11362980410437107,
+   "lo": 0.11005751293578556,
+   "hi": 0.11735925917868933,
+   "days": 118,
+   "auto_tested": 118996,
+   "random_tested": 109312
+  },
+  "verdict": "SUPPORTED",
+  "zones_per_symbol_day": 12.808477237048665
+ },
+ "confirm/u1/30s": {
+  "auto": {
+   "zones": 94927,
+   "tested": 83903,
+   "tested_share": 0.8838686569679859,
+   "hold": 0.5976186787123225,
+   "brk": 0.40167812831483973,
+   "unresolved": 0.0007031929728376816,
+   "wait_min_median": 6.5,
+   "bounce_atr_median": 1.2389380530973237
+  },
+  "random": {
+   "zones": 94927,
+   "tested": 75357,
+   "tested_share": 0.7938415835326093,
+   "hold": 0.4961980970580039,
+   "brk": 0.5025014265429887,
+   "unresolved": 0.0013004763990073914,
+   "wait_min_median": 10.5,
+   "bounce_atr_median": 1.0233919275887973
+  },
+  "delta": {
+   "point": 0.10142058165431866,
+   "lo": 0.09619839375922418,
+   "hi": 0.10665115452334603,
+   "days": 118,
+   "auto_tested": 83903,
+   "random_tested": 75357
+  },
+  "verdict": "SUPPORTED",
+  "zones_per_symbol_day": 9.313873626373626
+ },
+ "confirm/u1/1m": {
+  "auto": {
+   "zones": 62501,
+   "tested": 52984,
+   "tested_share": 0.847730436313019,
+   "hold": 0.6159595349539484,
+   "brk": 0.38302128944587044,
+   "unresolved": 0.0010191756001811869,
+   "wait_min_median": 11.0,
+   "bounce_atr_median": 1.243891603731675
+  },
+  "random": {
+   "zones": 62501,
+   "tested": 46437,
+   "tested_share": 0.7429801123182029,
+   "hold": 0.5147619355255507,
+   "brk": 0.4838383185821651,
+   "unresolved": 0.00139974589228417,
+   "wait_min_median": 16.0,
+   "bounce_atr_median": 1.0116947942891983
+  },
+  "delta": {
+   "point": 0.10119759942839768,
+   "lo": 0.09535128998286928,
+   "hi": 0.10714958201265466,
+   "days": 118,
+   "auto_tested": 52984,
+   "random_tested": 46437
+  },
+  "verdict": "SUPPORTED",
+  "zones_per_symbol_day": 6.132358712715855
+ },
+ "confirm/u1/5m": {
+  "auto": {
+   "zones": 16064,
+   "tested": 10952,
+   "tested_share": 0.6817729083665338,
+   "hold": 0.6712016070124178,
+   "brk": 0.32331994156318483,
+   "unresolved": 0.00547845142439737,
+   "wait_min_median": 35.0,
+   "bounce_atr_median": 1.3474865461416474
+  },
+  "random": {
+   "zones": 16064,
+   "tested": 8677,
+   "tested_share": 0.5401518924302788,
+   "hold": 0.5851100610810188,
+   "brk": 0.41039529791402557,
+   "unresolved": 0.004494641004955629,
+   "wait_min_median": 35.0,
+   "bounce_atr_median": 0.9868796424941492
+  },
+  "delta": {
+   "point": 0.086091545931399,
+   "lo": 0.07077652618470158,
+   "hi": 0.10099867289716304,
+   "days": 118,
+   "auto_tested": 10952,
+   "random_tested": 8677
+  },
+  "verdict": "SUPPORTED",
+  "zones_per_symbol_day": 1.576138147566719
+ },
+ "confirm/u2/15s": {
+  "auto": {
+   "zones": 2818,
+   "tested": 2519,
+   "tested_share": 0.8938963804116394,
+   "hold": 0.5478364430329495,
+   "brk": 0.45097260817784834,
+   "unresolved": 0.0011909487892020642,
+   "wait_min_median": 4.25,
+   "bounce_atr_median": 0.9874301675978254
+  },
+  "random": {
+   "zones": 2818,
+   "tested": 2389,
+   "tested_share": 0.847764371894961,
+   "hold": 0.45249058183340307,
+   "brk": 0.5466722478024278,
+   "unresolved": 0.0008371703641691084,
+   "wait_min_median": 6.75,
+   "bounce_atr_median": 0.8177283136740661
+  },
+  "delta": {
+   "point": 0.09534586119954647,
+   "lo": 0.0708746464145542,
+   "hi": 0.1204533841639312,
+   "days": 117,
+   "auto_tested": 2519,
+   "random_tested": 2389
+  },
+  "verdict": "SUPPORTED",
+  "zones_per_symbol_day": 5.059245960502693
+ },
+ "confirm/u2/30s": {
+  "auto": {
+   "zones": 2732,
+   "tested": 2344,
+   "tested_share": 0.8579795021961932,
+   "hold": 0.5571672354948806,
+   "brk": 0.44197952218430037,
+   "unresolved": 0.0008532423208191126,
+   "wait_min_median": 7.0,
+   "bounce_atr_median": 1.036977953340804
+  },
+  "random": {
+   "zones": 2732,
+   "tested": 2197,
+   "tested_share": 0.8041727672035139,
+   "hold": 0.47883477469276287,
+   "brk": 0.5197997269003186,
+   "unresolved": 0.0013654984069185253,
+   "wait_min_median": 10.0,
+   "bounce_atr_median": 0.8495240843150234
+  },
+  "delta": {
+   "point": 0.0783324608021177,
+   "lo": 0.05003383184714005,
+   "hi": 0.1079545467728913,
+   "days": 118,
+   "auto_tested": 2344,
+   "random_tested": 2197
+  },
+  "verdict": "SUPPORTED",
+  "zones_per_symbol_day": 4.904847396768402
+ },
+ "confirm/u2/1m": {
+  "auto": {
+   "zones": 2298,
+   "tested": 1877,
+   "tested_share": 0.8167972149695387,
+   "hold": 0.5641981885988279,
+   "brk": 0.43420351624933406,
+   "unresolved": 0.0015982951518380393,
+   "wait_min_median": 12.0,
+   "bounce_atr_median": 1.0181818181818405
+  },
+  "random": {
+   "zones": 2298,
+   "tested": 1726,
+   "tested_share": 0.7510879025239339,
+   "hold": 0.5092699884125145,
+   "brk": 0.48899188876013905,
+   "unresolved": 0.0017381228273464658,
+   "wait_min_median": 15.0,
+   "bounce_atr_median": 0.9133378695129863
+  },
+  "delta": {
+   "point": 0.05492820018631339,
+   "lo": 0.0212379478353053,
+   "hi": 0.08775103310442942,
+   "days": 118,
+   "auto_tested": 1877,
+   "random_tested": 1726
+  },
+  "verdict": "SUPPORTED",
+  "zones_per_symbol_day": 4.125673249551167
+ },
+ "confirm/u2/5m": {
+  "auto": {
+   "zones": 724,
+   "tested": 458,
+   "tested_share": 0.6325966850828729,
+   "hold": 0.6048034934497817,
+   "brk": 0.38209606986899564,
+   "unresolved": 0.013100436681222707,
+   "wait_min_median": 40.0,
+   "bounce_atr_median": 1.0448762171283599
+  },
+  "random": {
+   "zones": 724,
+   "tested": 368,
+   "tested_share": 0.5082872928176796,
+   "hold": 0.5570652173913043,
+   "brk": 0.43478260869565216,
+   "unresolved": 0.008152173913043478,
+   "wait_min_median": 40.0,
+   "bounce_atr_median": 0.7740843577858175
+  },
+  "delta": {
+   "point": 0.04773827605847736,
+   "lo": -0.013018137893770603,
+   "hi": 0.10626522952932564,
+   "days": 115,
+   "auto_tested": 458,
+   "random_tested": 368
+  },
+  "verdict": "NO EDGE OVER RANDOM",
+  "zones_per_symbol_day": 1.2998204667863555
+ },
+ "menu_text_confirm_u1": {
+  "15s": "Held about 1 in 2 times (random zones: 1 in 2)",
+  "30s": "Held about 1 in 2 times (random zones: 1 in 2)",
+  "1m": "Held about 1 in 2 times (random zones: 1 in 2)",
+  "5m": "Held about 1 in 1 times (random zones: 1 in 2)"
+ }
+}
