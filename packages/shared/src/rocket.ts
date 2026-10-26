@@ -59,6 +59,15 @@ export interface RocketOutcomeWire {
 export type RocketMomentumState = "watching" | "building" | "breaking_out" | "running" | "pullback" | "fading" | "halted";
 
 /** The micro-pullback (MP5) levels of the stock-context engine, as on a Ross row (prices in micros). */
+/** A Runners row's demand zone (`RocketRowWire.zone`): edges in dollars, formed at epoch ms. */
+export interface RocketZoneWire {
+  lo: number;
+  hi: number;
+  /** Price came back into it after the move away. */
+  tested: boolean;
+  formed_t: number;
+}
+
 export interface RocketLevelsWire {
   state: string;
   trigger: number | null;
@@ -151,6 +160,12 @@ export interface RocketRowWire {
   move_1m_pct?: number | null;
   pullback_depth_pct?: number | null;
   levels?: RocketLevelsWire | null;
+  /**
+   * The live automatic DEMAND zone the row's `last` is inside (crates/server/src/auto_zones.rs),
+   * from today's completed 1-minute candles; absent when the price is in none (or an older
+   * server). Context only: it never notifies.
+   */
+  zone?: RocketZoneWire | null;
   /** The day line (crates/server/src/day_line.rs): 30 s closes in micros from `day_line_from`. */
   day_line_start?: number;
   day_line_step_s?: number;

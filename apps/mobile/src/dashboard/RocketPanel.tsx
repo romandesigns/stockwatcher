@@ -26,7 +26,7 @@ const TONE: Record<RocketTone, string> = {
 /** The row chart's box (dp), the Ross row's: fits the Fold's ~360 dp cover screen beside the text. */
 export const DAY_LINE_W = 72;
 export const DAY_LINE_H = 28;
-const NO_MARKS: RowMarks = { flame: null, pillars: null, rvol: null, news: null, path: null, stage: null, tail: null };
+const NO_MARKS: RowMarks = { flame: null, pillars: null, rvol: null, news: null, path: null, zone: null, stage: null, tail: null };
 /** The card's gap between its blocks, which a closed section must cancel (Collapse). */
 const CARD_GAP = 6;
 /** A row's gap between its lines, which a closed volume-shelf note must cancel (Collapse). */

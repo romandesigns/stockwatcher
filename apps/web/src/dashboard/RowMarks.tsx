@@ -40,11 +40,12 @@ export function Flame({ flame }: { flame: FlameMark | null }) {
 
 /**
  * The row's second line: pillar dots, relative-volume bars, news, the Runners path with its age,
- * then the setup's stage, meter and trigger on the right. Only the marks a row has are drawn.
+ * the demand zone the price is in (Runners rows), then the setup's stage, meter and trigger on the
+ * right. Only the marks a row has are drawn.
  */
 export function MarksLine({ marks: m, className, extra }: { marks: RowMarks; className?: string; extra?: ReactNode }) {
-  const { pillars, rvol, news, path, stage } = m;
-  if (!pillars && !rvol && !news && !path && !stage && !extra) return null;
+  const { pillars, rvol, news, path, zone, stage } = m;
+  if (!pillars && !rvol && !news && !path && !zone && !stage && !extra) return null;
   return (
     <span className={cn("flex min-w-0 items-center gap-3", className)} data-testid="row-marks">
       {pillars && (
@@ -77,6 +78,15 @@ export function MarksLine({ marks: m, className, extra }: { marks: RowMarks; cla
           <span className="inline-flex shrink-0 items-center gap-1 text-muted-foreground" role="img" aria-label={path.label} data-testid="mark-path" data-kind={path.kind}>
             <Icon name={PATH_ICON[path.kind]} width={13} height={13} />
             <span className="font-mono text-[11px] text-text-faint tabular-nums">{path.age}</span>
+          </span>
+        </Tip>
+      )}
+      {zone && (
+        // The Demand zone tool's own icon (the band in the demand hue): the same mark the chart
+        // uses for a demand zone. Fainter once price has been back in it, as the chart's layer is.
+        <Tip label={zone.label}>
+          <span className={cn("inline-flex shrink-0 text-muted-foreground", zone.tested && "opacity-60")} role="img" aria-label={zone.label} data-testid="mark-zone" data-tested={zone.tested || undefined}>
+            <Icon name="demand" width={14} height={14} />
           </span>
         </Tip>
       )}

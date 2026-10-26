@@ -77,10 +77,13 @@ export function Flame({ flame }: { flame: FlameMark | null }) {
   );
 }
 
-/** The row's second line: pillars, relative volume, news, the Runners path, then the setup. */
+/**
+ * The row's second line: pillars, relative volume, news, the Runners path, the demand zone the
+ * price is in (Runners rows), then the setup.
+ */
 export function MarksLine({ marks: m, extra }: { marks: RowMarks; extra?: ReactNode }) {
-  const { pillars, rvol, news, path, stage } = m;
-  if (!pillars && !rvol && !news && !path && !stage && !extra) return null;
+  const { pillars, rvol, news, path, zone, stage } = m;
+  if (!pillars && !rvol && !news && !path && !zone && !stage && !extra) return null;
   return (
     <View style={styles.line} testID="row-marks">
       {pillars && (
@@ -109,6 +112,12 @@ export function MarksLine({ marks: m, extra }: { marks: RowMarks; extra?: ReactN
         <View accessible accessibilityRole="image" accessibilityLabel={path.label} style={styles.path} testID="mark-path">
           <Icon name={PATH_ICON[path.kind]} color={UI.textDim} size={13} />
           <Text style={styles.age}>{path.age}</Text>
+        </View>
+      )}
+      {zone && (
+        // The Demand zone tool's icon, as on the web; fainter once price has been back in it.
+        <View accessible accessibilityRole="image" accessibilityLabel={zone.label} style={zone.tested ? styles.tested : undefined} testID="mark-zone">
+          <Icon name="demand" color={UI.textDim} size={14} />
         </View>
       )}
       {extra}
@@ -161,6 +170,7 @@ export function RowLine({ line, tail, trigger, width, height = 26, color }: { li
 const styles = StyleSheet.create({
   line: { flexDirection: "row", alignItems: "center", gap: 11, minHeight: 16 },
   path: { flexDirection: "row", alignItems: "center", gap: 4 },
+  tested: { opacity: 0.6 },
   age: { color: UI.textFaint, fontSize: 11, fontVariant: ["tabular-nums"], fontFamily: fonts.regular },
   stage: { marginLeft: "auto", flexDirection: "row", alignItems: "center", gap: 6 },
   meter: { width: 48, height: 6, borderRadius: 3, backgroundColor: UI.raised, justifyContent: "center" },

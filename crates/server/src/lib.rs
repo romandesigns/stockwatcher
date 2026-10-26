@@ -2,6 +2,7 @@ pub mod admit;
 pub mod alerts;
 pub mod api;
 pub mod auth;
+pub mod auto_zones;
 pub mod config;
 pub mod context;
 pub mod cue_notices;

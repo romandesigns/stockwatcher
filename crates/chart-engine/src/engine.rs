@@ -1673,6 +1673,36 @@ impl ChartEngine {
     }
 }
 
+impl ChartEngine {
+    /// The symbol's COMPLETED `tf` candles over the same trading date as
+    /// [`ChartEngine::day_line`] (pre, regular and after hours; overnight left out), oldest
+    /// first, as the chart receives them. The forming candle is left out, so the result changes
+    /// only when an interval completes: the Runners rows' demand-zone mark
+    /// (crates/server/src/auto_zones.rs) caches on it. Read at publish time for a few dozen
+    /// symbols, never per trade.
+    pub fn day_candles(&self, symbol: &str, tf: Timeframe) -> Option<Vec<CandleWire>> {
+        let st = self.symbols.get(symbol)?;
+        let series = st.series.iter().find(|s| s.tf == tf)?;
+        let wm = st.own_wm.max(self.clock)?;
+        let date = series
+            .buckets
+            .iter()
+            .rev()
+            .find(|b| b.session.kind != SessionKind::Overnight && b.ohlc.is_some())?
+            .session
+            .date;
+        Some(
+            series
+                .buckets
+                .iter()
+                .filter(|b| b.session.date == date && b.session.kind != SessionKind::Overnight)
+                .filter(|b| b.end <= wm)
+                .filter_map(|b| b.candle(Some(wm)))
+                .collect(),
+        )
+    }
+}
+
 /// A symbol's extremes over its latest trading date ([`ChartEngine::day_extremes`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DayExtremes {

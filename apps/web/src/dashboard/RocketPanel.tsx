@@ -127,7 +127,7 @@ export function RocketPanelView({ state, wallNow, onPick }: { state: RocketState
 /** A row's marks and its setup's trigger (micros), by the row's key (its wire id). */
 type MarksById = ReadonlyMap<string, { marks: RowMarks; trigger: number | null }>;
 
-const NO_MARKS: RowMarks = { flame: null, pillars: null, rvol: null, news: null, path: null, stage: null, tail: null };
+const NO_MARKS: RowMarks = { flame: null, pillars: null, rvol: null, news: null, path: null, zone: null, stage: null, tail: null };
 
 function RowList({ rows, marks, onPick }: { rows: RocketRowView[]; marks: MarksById; onPick: (symbol: string) => void }) {
   return (

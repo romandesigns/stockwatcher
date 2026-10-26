@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { RocketRowWire } from "./rocket.ts";
 import { rossDemoPanel } from "./ross.ts";
-import { burstOf, FLAME_MS, flameMark, favoriteRowMarks, marksReadout, newsMark, pathMark, pillarsFromCount, pillarsFromMissing, rocketRowMarks, rossRowMarks, rowLineOverlay, rvolMark, stageMark, tailMark } from "./rowMarks.ts";
+import { burstOf, FLAME_MS, flameMark, favoriteRowMarks, marksReadout, newsMark, pathMark, pillarsFromCount, pillarsFromMissing, rocketRowMarks, rossRowMarks, rowLineOverlay, rvolMark, stageMark, tailMark, zoneMark } from "./rowMarks.ts";
 
 const fmt = (ms: number) => `@${ms}`;
 const T = 1_793_000_000_000;
@@ -101,6 +101,31 @@ describe("flame (look now)", () => {
     expect(burstOf(rocketRow())).toEqual({ at: T - 2 * MIN, p: 0.61 });
     expect(burstOf(rocketRow({ kind: "fast" }))).toBeNull();
     expect(burstOf(rocketRow({ kind: undefined }))).toBeNull();
+  });
+});
+
+describe("demand zone (Runners rows)", () => {
+  test("named with its edges and the measured hold rate; tested is kept; nonsense draws nothing", () => {
+    const z = zoneMark({ lo: 3.1, hi: 3.21, tested: false });
+    expect(z!.label).toBe("In demand zone $3.10–$3.21 · zones held about 6 in 10 retests (5 in 10 at random levels)");
+    expect(z!.tested).toBe(false);
+    expect(zoneMark({ lo: 0.4512, hi: 0.4733, tested: true })!.label).toContain("$0.4512–$0.4733");
+    expect(zoneMark({ lo: 0.4512, hi: 0.4733, tested: true })!.tested).toBe(true);
+    for (const bad of [null, undefined, { lo: 3, hi: 3, tested: false }, { lo: 3.2, hi: 3.1, tested: false }, { lo: 0, hi: 1, tested: false }, { lo: Number.NaN, hi: 1, tested: false }]) {
+      expect(zoneMark(bad)).toBeNull();
+    }
+  });
+
+  test("a Runners row carries it from its wire; Ross and Favorites rows never do", () => {
+    const m = rocketRowMarks(rocketRow({ zone: { lo: 0.6, hi: 0.63, tested: false, formed_t: T - 20 * MIN } }), T, fmt);
+    expect(m.zone!.label).toContain("$0.6000–$0.6300");
+    expect(rocketRowMarks(rocketRow(), T, fmt).zone).toBeNull();
+    // A Ross row joined to that same Runners row does not borrow it (computed for Runners rows only).
+    const zoned = rocketRow({ zone: { lo: 0.6, hi: 0.63, tested: false, formed_t: T - 20 * MIN } });
+    expect(rossRowMarks(rossDemoPanel(T * 1_000_000).rows[0]!, zoned, T, fmt).zone).toBeNull();
+    // Read out between the path and the setup, as the row draws it.
+    const out = marksReadout(m).split("\n");
+    expect(out.indexOf(m.zone!.label)).toBe(out.indexOf(m.path!.label) + 1);
   });
 });
 

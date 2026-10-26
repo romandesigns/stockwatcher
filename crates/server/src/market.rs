@@ -568,6 +568,9 @@ pub(crate) struct Inner {
     rocket_published: Mutex<Option<serde_json::Value>>,
     /// The Runners rows' day lines the last `rocket.update` carried (`crate::day_line`).
     rocket_lines: Mutex<crate::day_line::Published>,
+    /// The Runners rows' automatic zones, recomputed once a minute per symbol
+    /// (`crate::auto_zones`, the demand-zone mark).
+    rocket_auto_zones: Mutex<crate::auto_zones::ZoneCache>,
     /// Live: the forward log (`crate::rocket::log`), set once at start.
     rocket_log: std::sync::OnceLock<Arc<crate::rocket::RocketLog>>,
     /// `VOLUME_SHELVES` (with `ROCKET_WATCH`): every `Core` gets an enabled `crate::zones` board.
@@ -796,6 +799,7 @@ impl Market {
             rocket_subs: AtomicUsize::new(0),
             rocket_published: Mutex::new(None),
             rocket_lines: Mutex::new(crate::day_line::Published::default()),
+            rocket_auto_zones: Mutex::new(crate::auto_zones::ZoneCache::default()),
             rocket_log: std::sync::OnceLock::new(),
             zones_on: AtomicBool::new(true),
             zones_log: std::sync::OnceLock::new(),
@@ -2874,6 +2878,7 @@ impl Market {
             self.rocket_levels(&core, s, tau)
         });
         Self::add_zones(&core, &mut body, tau);
+        self.add_demand_zones(&core, &mut body);
         let mut v = serde_json::json!({"type": "rocket.snapshot", "t": t});
         if let (Some(m), serde_json::Value::Object(b)) = (v.as_object_mut(), body) {
             m.extend(b);
@@ -2894,6 +2899,16 @@ impl Market {
         {
             m.insert("zones".into(), core.zones.json(now));
         }
+    }
+
+    /// The demand-zone mark on Runners rows (`crate::auto_zones`): in the body, so a row entering
+    /// or leaving a zone sends an update like any other row change.
+    fn add_demand_zones(&self, core: &Core, body: &mut serde_json::Value) {
+        self.0
+            .rocket_auto_zones
+            .lock()
+            .expect("rocket auto zones")
+            .decorate(&core.engine, body);
     }
 
     fn rocket_quote(core: &Core, symbol: &str) -> crate::rocket::Quote {
@@ -2964,6 +2979,7 @@ impl Market {
                     self.rocket_levels(&core, s, clock.now.0)
                 });
                 Self::add_zones(&core, &mut body, clock.now.0);
+                self.add_demand_zones(&core, &mut body);
                 let mut v = serde_json::json!({"type": "rocket.update", "t": clock.now.millis()});
                 if let (Some(m), serde_json::Value::Object(b)) = (v.as_object_mut(), body.clone()) {
                     m.extend(b);

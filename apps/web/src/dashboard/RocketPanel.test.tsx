@@ -211,4 +211,14 @@ describe("Volume shelves on a row (2026-10-22)", () => {
     expect(render({ enabled: true, panel, receivedAt: 5, connected: true })).not.toContain("data-zone");
     expect(render({ enabled: true, panel: { ...panel, zones: { ROCK: 7 } as never }, receivedAt: 5, connected: true })).not.toContain("data-zone");
   });
+
+  test("a row whose price is in a demand zone shows the zone mark, named with its edges and hold rate", () => {
+    const rows = panel.rows.map((r) => (r.s === "ROCK" ? { ...r, zone: { lo: 1.31, hi: 1.42, tested: true, formed_t: T - 20 * 60_000 } } : r));
+    const html = render({ enabled: true, panel: { ...panel, rows }, receivedAt: 5, connected: true });
+    expect(html.match(/data-testid="mark-zone"/g)?.length).toBe(1);
+    expect(html).toContain('aria-label="In demand zone $1.31–$1.42 · zones held about 6 in 10 retests (5 in 10 at random levels)"');
+    // Fainter once price has been back in it; no zone, no mark.
+    expect(html).toMatch(/opacity-60[^>]*data-testid="mark-zone"[^>]*data-tested="true"/);
+    expect(render({ enabled: true, panel, receivedAt: 5, connected: true })).not.toContain('data-testid="mark-zone"');
+  });
 });

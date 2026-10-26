@@ -224,6 +224,26 @@ export function rowLineOverlay(line: RossLineView, w: number, h: number, trigger
   return { tail, triggerY: t === null ? null : Math.round(Math.max(0, Math.min(h, y(t))) * 10) / 10 };
 }
 
+export interface ZoneMark {
+  /** Price came back into the zone before (drawn fainter, like the chart's tested zones). */
+  tested: boolean;
+  label: string;
+}
+
+/** The zone's dollar price in the row's style: four places under $1, two above. */
+const dollars = (p: number) => (p < 1 ? p.toFixed(4) : p.toFixed(2));
+
+/**
+ * The Runners row's demand-zone mark: the price sits inside a live automatic demand zone. The
+ * label carries the measured hold rate (research/auto-zones-hold, 118 never-read days, Runners
+ * stocks: retested zones held 59–67% vs 47–59% for random levels), so it reads as context, never
+ * as a call. Null without a zone or with nonsense edges.
+ */
+export function zoneMark(zone: { lo: number; hi: number; tested: boolean } | null | undefined): ZoneMark | null {
+  if (!zone || !Number.isFinite(zone.lo) || !Number.isFinite(zone.hi) || !(zone.hi > zone.lo) || !(zone.lo > 0)) return null;
+  return { tested: zone.tested === true, label: `In demand zone $${dollars(zone.lo)}–$${dollars(zone.hi)} · zones held about 6 in 10 retests (5 in 10 at random levels)` };
+}
+
 /** Every mark one row can show; each is null when the row has no data for it. */
 export interface RowMarks {
   flame: FlameMark | null;
@@ -231,6 +251,8 @@ export interface RowMarks {
   rvol: RvolMark | null;
   news: NewsMark | null;
   path: PathMark | null;
+  /** Runners rows only (the server computes it for them). */
+  zone: ZoneMark | null;
   stage: StageMark | null;
   tail: TailMark | null;
 }
@@ -240,7 +262,7 @@ export interface RowMarks {
  * the order the row draws them.
  */
 export function marksReadout(m: RowMarks): string {
-  return [m.flame?.label, m.pillars?.label, m.rvol?.label, m.news?.label, m.path?.label, m.stage?.label, m.tail?.label].filter(Boolean).join("\n");
+  return [m.flame?.label, m.pillars?.label, m.rvol?.label, m.news?.label, m.path?.label, m.zone?.label, m.stage?.label, m.tail?.label].filter(Boolean).join("\n");
 }
 
 /** A Ross member's marks, joined to its Runners row (`runner`) when it has one today. */
@@ -255,6 +277,7 @@ export function rossRowMarks(r: RossRowWire, runner: RocketRowWire | null | unde
     rvol: rvolMark(typeof r.rvol_milli === "number" ? r.rvol_milli / 1000 : null),
     news: newsMark(!newsMissing && r.news_first_seen != null, r.news_kind),
     path: runner ? pathMark(runner.kind ?? "runner", runner.at, nowMs, formatTime) : null,
+    zone: null,
     stage: s ? stageMark(s.state, s.trigger?.price, s.invalidation?.price, s.meter_milli) : null,
     tail: tailMark(typeof m1 === "number" ? m1 / 100 : null),
   };
@@ -279,6 +302,7 @@ export function rocketRowMarks(r: RocketRowWire, nowMs: number, formatTime: (epo
     rvol: null,
     news: null,
     path: pathMark(r.kind ?? "runner", r.at, nowMs, formatTime, extra.join(" · ")),
+    zone: zoneMark(r.zone),
     stage: lv ? stageMark(lv.state, lv.trigger, lv.invalidation, lv.meter_milli) : null,
     tail: tailMark(r.move_1m_pct),
   };
@@ -304,6 +328,7 @@ export function favoriteRowMarks(r: FavoriteRowWire, runner: RocketRowWire | nul
     rvol: rvolMark(p?.rvol),
     news: p ? newsMark(p.news === "pass", p.news_kind) : null,
     path: runner ? pathMark(runner.kind ?? "runner", runner.at, nowMs, formatTime) : fromWire,
+    zone: null,
     stage: lv ? stageMark(lvState, lv.trigger, lv.invalidation, lv.meter_milli) : null,
     tail: price !== null && back ? tailMark((price / back - 1) * 100) : null,
   };

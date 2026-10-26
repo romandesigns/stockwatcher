@@ -32,6 +32,14 @@ test("every row reads its marks out on press and hold, keeping tap and tap-then-
   expect(marks).toContain("showToast(readout, { ms: 6000, lines: 8 })");
 });
 
+test("the demand-zone mark: the Demand zone icon, its label, fainter once tested, read out on hold", () => {
+  const marks = read("RowMarks.tsx");
+  expect(marks).toContain('accessibilityLabel={zone.label} style={zone.tested ? styles.tested : undefined} testID="mark-zone"');
+  expect(marks).toContain('<Icon name="demand"');
+  // The read-out (marksReadout, shared) includes it; the Runners row builds it from its wire.
+  expect(read("../../../../packages/shared/src/rowMarks.ts")).toContain("zone: zoneMark(r.zone)");
+});
+
 test("marks are SVG and filled views: no borders, the flame in its own token, a ticking clock", () => {
   const marks = read("RowMarks.tsx");
   expect(marks).not.toMatch(/border(Width|Color|Top|Bottom|Left|Right)/);
