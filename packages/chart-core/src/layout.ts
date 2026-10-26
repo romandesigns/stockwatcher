@@ -7,7 +7,7 @@ import { layoutTrading, type TradingLayer } from "./trading.ts";
 import { layoutAlerts, type AlertLayer } from "./alerts.ts";
 import { layoutDetections, type DetectionOverlay } from "./detection.ts";
 import { formatPrice } from "./format.ts";
-import { sessionOf } from "./time.ts";
+import { formatCrosshairTime, sessionOf } from "./time.ts";
 import { heikinAshi, hollowStyle, isCloseOnly, prevCloseAt, sessionSlots, startsTradingDay, type ChartType, type Ohlc } from "./chartTypes.ts";
 import {
   buildSlots,
@@ -632,8 +632,40 @@ export function layoutChart(model: ChartModel, state: ChartState, theme: ChartTh
     if (x < g.timeAxis.x + 24 || x > g.timeAxis.x + g.timeAxis.w - 24) continue;
     out.push({ kind: "text", x, y: g.timeAxis.y + 5, text: tick.label, fill: theme.axisText, fontSize: fs, fontFamily: mono, fontWeight: 400, align: "center", baseline: "top", layer: "axes" });
   }
+  out.push(...crosshairTimeTag(model, state, theme));
 
   return sortByLayer(out);
+}
+
+/**
+ * The crosshair's time tag on the time axis (owner, 2026-10-25, after TradingView): the inspected
+ * candle's start time, centred on the inspection line, over the tick labels. Only while a candle
+ * is actually inspected (pointer, touch or keyboard), never for the resting latest-candle line.
+ * The longest form that fits: the full date, then the short date, then the time alone.
+ */
+function crosshairTimeTag(model: ChartModel, state: ChartState, theme: ChartTheme): DisplayList {
+  const i = model.inspected;
+  const ix = model.index;
+  if (state.inspectT === null || i === null || i < ix.from || i > ix.to) return [];
+  const slot = model.slots[i];
+  if (!slot) return [];
+  const g = model.geometry;
+  const fs = model.options.fontSize;
+  const withSeconds = model.timeframeMs < 60_000;
+  const widthOf = (text: string) => Math.ceil(text.length * fs * 0.62) + 14;
+  const fits = (text: string) => widthOf(text) <= g.timeAxis.w * 0.6;
+  const full = formatCrosshairTime(slot.t, withSeconds, "full");
+  const text = fits(full) ? full : fits(formatCrosshairTime(slot.t, withSeconds, "date")) ? formatCrosshairTime(slot.t, withSeconds, "date") : formatCrosshairTime(slot.t, withSeconds, "time");
+  const w = widthOf(text);
+  const h = 18;
+  // Centred on the line, pulled back inside the axis at either end.
+  const cx = Math.round(slotX(ix, i));
+  const x = clamp(cx - w / 2, g.timeAxis.x, g.timeAxis.x + g.timeAxis.w - w);
+  const y = g.timeAxis.y + 2;
+  return [
+    { kind: "rect", x, y, w, h, radius: 3, fill: theme.crosshairLabelBg, layer: "crosshair" },
+    { kind: "text", x: x + w / 2, y: y + h / 2, text, fill: theme.crosshairLabelText, fontSize: fs, fontFamily: theme.fontMono, fontWeight: 500, align: "center", baseline: "middle", layer: "crosshair" },
+  ];
 }
 
 /** layout(state, viewport, theme, size) → DisplayList: the one-call form. */

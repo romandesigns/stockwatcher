@@ -226,3 +226,29 @@ test("an indicator hidden from the legend keeps its line but loses its legend en
   const off = { ...state, slots, indicators: ind, chartStyle: { indicatorLegend: false } };
   expect(computeChartModel(all, defaultViewport(), size).price!.hi).toBe(computeChartModel(off, defaultViewport(), size).price!.hi);
 });
+
+describe("crosshair time tag", () => {
+  const tags = (list: DisplayList) => list.filter((p) => p.kind === "text" && p.layer === "crosshair" && /AM|PM/.test(p.text));
+
+  test("shows the inspected candle's 12-hour ET time on the time axis, only while inspecting", () => {
+    expect(tags(layout(state, vp, theme, size))).toEqual([]);
+    const t = snap.candles[snap.candles.length - 3]!.t;
+    const wide = { width: 900, height: 300 };
+    const list = layout({ ...state, inspectT: t }, vp, theme, wide);
+    const tag = tags(list);
+    expect(tag.length).toBe(1);
+    const m = computeChartModel({ ...state, inspectT: t }, vp, wide);
+    const text = tag[0]!;
+    expect(text.kind === "text" ? text.text : "").toMatch(/^\w{3} \d{1,2} \w{3} '\d{2} {2}\d{1,2}:\d{2} (AM|PM)$/);
+    // Centred on the inspection line, inside the time axis.
+    expect(text.kind === "text" ? Math.abs(text.x - slotX(m.index, m.inspected!)) < 1 : false).toBe(true);
+    expect(text.kind === "text" ? text.y > m.geometry.timeAxis.y : false).toBe(true);
+  });
+
+  test("a narrow axis gets the short form instead of overflowing", () => {
+    const t = snap.candles[snap.candles.length - 3]!.t;
+    const narrow = layout({ ...state, inspectT: t }, vp, theme, { width: 220, height: 300 });
+    const text = tags(narrow)[0];
+    expect(text && text.kind === "text" ? text.text.includes("'") : true).toBe(false);
+  });
+});

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { etParts, etToUtc, formatEtDate, formatEtMillis, formatEtTime, sessionBands, sessionOf, tradingDayOf } from "./time.ts";
+import { etParts, etToUtc, formatCrosshairTime, formatEtDate, formatEtMillis, formatEtTime, sessionBands, sessionOf, tradingDayOf } from "./time.ts";
 
 const utc = (y: number, mo: number, d: number, h: number, mi = 0, s = 0) => Date.UTC(y, mo - 1, d, h, mi, s);
 
@@ -62,5 +62,23 @@ describe("Eastern Time", () => {
       process.env.TZ = saved;
     }
     expect(before).toEqual(["10:42", "10:42:07", "10:42:07.005", "Oct 15"]);
+  });
+});
+
+describe("formatCrosshairTime (12-hour ET, after TradingView's crosshair label)", () => {
+  test("full, short-date and time-only forms; seconds only when asked", () => {
+    const t = etToUtc(2026, 10, 26, 10, 41, 15); // Monday, EDT
+    expect(formatCrosshairTime(t, true)).toBe("Mon 26 Oct '26  10:41:15 AM");
+    expect(formatCrosshairTime(t, false)).toBe("Mon 26 Oct '26  10:41 AM");
+    expect(formatCrosshairTime(t, true, "date")).toBe("26 Oct  10:41:15 AM");
+    expect(formatCrosshairTime(t, false, "time")).toBe("10:41 AM");
+  });
+
+  test("noon, midnight and afternoon on the 12-hour clock, in EST too", () => {
+    expect(formatCrosshairTime(etToUtc(2026, 10, 26, 12, 0), false, "time")).toBe("12:00 PM");
+    expect(formatCrosshairTime(etToUtc(2026, 10, 26, 0, 5), false, "time")).toBe("12:05 AM");
+    expect(formatCrosshairTime(etToUtc(2026, 10, 26, 16, 0), false, "time")).toBe("4:00 PM");
+    // After the November DST change the same wall-clock time still reads the same.
+    expect(formatCrosshairTime(etToUtc(2026, 12, 4, 9, 30), false)).toBe("Fri 4 Dec '26  9:30 AM");
   });
 });

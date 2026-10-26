@@ -99,6 +99,24 @@ export function formatEtMillis(t: number): string {
   return `${pad(p.hour)}:${pad(p.minute)}:${pad(p.second)}.${pad(p.millisecond, 3)}`;
 }
 
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/**
+ * The crosshair's time-axis tag, in ET on a 12-hour clock (owner, 2026-10-25: East Coast, 12-hour).
+ * Modelled on TradingView's crosshair label: weekday, date and the candle's start time, with
+ * seconds on seconds timeframes. `length` drops the weekday and year ("date") or the whole date
+ * ("time") when the axis is too narrow for the full form.
+ *   full: "Mon 26 Oct '26  10:41:15 AM"   date: "26 Oct  10:41:15 AM"   time: "10:41:15 AM"
+ */
+export function formatCrosshairTime(t: number, withSeconds: boolean, length: "full" | "date" | "time" = "full"): string {
+  const p = etParts(t);
+  const h12 = p.hour % 12 || 12;
+  const clock = `${h12}:${pad(p.minute)}${withSeconds ? `:${pad(p.second)}` : ""} ${p.hour < 12 ? "AM" : "PM"}`;
+  if (length === "time") return clock;
+  const date = `${p.day} ${MONTHS[p.month - 1]}`;
+  return length === "date" ? `${date}  ${clock}` : `${p.weekday} ${date} '${pad(p.year % 100)}  ${clock}`;
+}
+
 /** "Oct 15" in ET. */
 export function formatEtDate(t: number): string {
   return dateFormat.format(new Date(t));
