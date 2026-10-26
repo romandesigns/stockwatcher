@@ -1623,30 +1623,38 @@ fn the_row_limit_keeps_active_rows_then_the_newest() {
 /// The fast-move state's memory per symbol (reported with the integration).
 #[test]
 fn fast_state_memory_per_symbol() {
-    // The map entry (key + value inline) plus the ring on the heap and the symbol's name.
-    let per = std::mem::size_of::<(Arc<str>, FastSym)>() + fast::FastTape::heap_bytes() + 16 + 8;
+    // The map entry (key + value inline, the filtered tape's struct included) plus both rings on
+    // the heap (the second one only with FAST_BATCH_FILTER shadow or on) and the symbol's name.
+    let per =
+        std::mem::size_of::<(Arc<str>, FastSym)>() + 2 * fast::FastTape::heap_bytes() + 16 + 8;
     eprintln!(
-        "fast tape: ~{per} B per symbol, ~{:.1} MB for 13k symbols",
+        "fast tapes: ~{per} B per symbol, ~{:.1} MB for 13k symbols",
         (per * 13_000) as f64 / 1e6
     );
-    assert!(per < 5_000, "{per}");
+    assert!(per < 10_000, "{per}");
 }
 
 /// The fast-move CPU cost at whole-market scale: 13,000 symbols printing twice every second
 /// (far busier than any real second). Reports the cost per print and per tick.
 #[test]
 fn fast_cost_at_market_scale() {
-    for fast in [false, true] {
-        fast_cost(fast);
+    // Off, the fast rule alone, and the rule with the batch filter's second tape (shadow).
+    for (fast, batch) in [
+        (false, FastBatch::Off),
+        (true, FastBatch::Off),
+        (true, FastBatch::Shadow),
+    ] {
+        fast_cost(fast, batch);
     }
 }
 
-fn fast_cost(fast: bool) {
+fn fast_cost(fast: bool, fast_batch: FastBatch) {
     const N: usize = 13_000;
     let mut b = board(
         vec![],
         Policy {
             fast,
+            fast_batch,
             ..fixed(0.5, 10)
         },
     );
@@ -1681,10 +1689,156 @@ fn fast_cost(fast: bool) {
         ticks += 1;
     }
     eprintln!(
-        "fast={fast}: {:.0} ns per print (the whole board), tick {:?} mean / {:?} worst with {N} symbols printing",
+        "fast={fast} batch={fast_batch:?}: {:.0} ns per print (the whole board), tick {:?} mean / {:?} worst with {N} symbols printing",
         apply.as_nanos() as f64 / f64::from(prints),
         tick / ticks,
         worst
     );
     assert!(worst < Duration::from_secs(1), "{worst:?}");
+}
+
+/// A venue-D Form T print (a TRF report in extended hours).
+fn trf(sym: &str, ts: i64, dollars: f64, size: u64) -> Trade {
+    let mut t = tr(sym, ts, dollars, size);
+    t.exchange = "D".into();
+    t.conditions = vec!["@".into(), "T".into()];
+    t
+}
+
+/// The old 08:00 regime replayed through the board: exchange trading from 07:50 with the TRF
+/// silent, then its opening batch (2,000 reports a second market-wide for 30 s) in which SPK's
+/// reports span $2.30–$2.40 against a $2.00 exchange price, then a genuine exchange spike at
+/// 09:00 on ZAP. Returns the board's fast rows and its log lines.
+fn trf_day(mode: FastBatch) -> (Vec<Alert>, Vec<serde_json::Value>) {
+    let mut b = board(
+        vec![],
+        Policy {
+            fast_batch: mode,
+            ..fixed(0.5, 10)
+        },
+    );
+    b.tick(at(7, 0, 1), |_| None);
+    let mut tape = Vec::new();
+    for k in 0..(16 * 60) {
+        tape.push(tr("SPK", at(7, 50, 0) + k * S + 100_000_000, 2.00, 100));
+        tape.push(tr("BG", at(7, 50, 0) + k * S + 200_000_000, 5.00, 100));
+    }
+    for k in 0..30i64 {
+        for j in 0..2_000i64 {
+            tape.push(trf("BG", at(8, 0, 0) + k * S + j * 400_000, 5.00, 100));
+        }
+        if k < 3 {
+            for j in 0..60i64 {
+                let p = 2.30 + 0.10 * (j as f64 / 60.0);
+                tape.push(trf(
+                    "SPK",
+                    at(8, 0, 0) + k * S + 1_000_000 + j * 10_000_000,
+                    p,
+                    1_000,
+                ));
+            }
+        }
+    }
+    play_secs(&mut b, tape, at(7, 50, 0), at(8, 6, 0));
+    // A genuine move on an exchange: +10 % in 50 s on two prints a second.
+    let mut spike = Vec::new();
+    for k in 0..60 {
+        spike.push(tr("ZAP", at(8, 59, 0) + k * S + 100_000_000, 2.00, 100));
+    }
+    for k in 0..120i64 {
+        let p = 2.00 + 0.004 * (k.min(50) as f64);
+        for off in [100_000_000, 600_000_000] {
+            spike.push(tr("ZAP", at(9, 0, 0) + k * S + off, p, 1_000));
+        }
+    }
+    play_secs(&mut b, spike, at(8, 59, 0), at(9, 2, 0));
+    let rows = b
+        .alerts()
+        .iter()
+        .filter(|a| a.kind == AlertKind::Fast)
+        .cloned()
+        .collect();
+    let lines = b
+        .take_log()
+        .into_iter()
+        .map(|(_, l)| serde_json::from_str(&l).unwrap())
+        .collect();
+    (rows, lines)
+}
+
+fn log_kind<'a>(lines: &'a [serde_json::Value], kind: &str) -> Vec<&'a serde_json::Value> {
+    lines.iter().filter(|l| l["kind"] == kind).collect()
+}
+
+/// `FAST_BATCH_FILTER=shadow` (the default): alerts exactly as before, the batch fire on SPK
+/// included, while the filtered tape's verdict is logged beside it: no SPK fire, the same ZAP
+/// fire. The batch window is logged once.
+#[test]
+fn the_trf_batch_filter_in_shadow_alerts_as_before_and_logs_both_tapes() {
+    let (rows, lines) = trf_day(FastBatch::Shadow);
+    let syms: Vec<&str> = rows.iter().map(|a| &*a.symbol).collect();
+    assert_eq!(syms, ["SPK", "ZAP"], "unchanged alerting");
+    let shadow = log_kind(&lines, "fast_shadow");
+    let got: Vec<(String, String, bool, bool)> = shadow
+        .iter()
+        .map(|l| {
+            (
+                l["symbol"].as_str().unwrap().to_string(),
+                l["variant"].as_str().unwrap().to_string(),
+                l["alerting"].as_bool().unwrap(),
+                l["in_batch"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    let want: Vec<(String, String, bool, bool)> = vec![
+        ("SPK".into(), "unfiltered".into(), true, true),
+        ("ZAP".into(), "unfiltered".into(), true, false),
+        ("ZAP".into(), "filtered".into(), false, false),
+    ];
+    assert_eq!(got, want, "{shadow:?}");
+    // The two ZAP fires are one move: the filtered line points at the unfiltered fire.
+    assert_eq!(shadow[2]["other_fired_sec"], shadow[1]["sec"]);
+    let batches = log_kind(&lines, "trf_batch");
+    assert_eq!(batches.len(), 1, "{batches:?}");
+    assert_eq!(batches[0]["start_ns"], at(8, 0, 0));
+    assert_eq!(batches[0]["reason"], "rate");
+    assert!(batches[0]["form_t_prints"].as_u64().unwrap() >= 60_000);
+}
+
+/// `on`: the filtered tape alerts, so the batch makes no row; the genuine move still does.
+#[test]
+fn the_trf_batch_filter_on_drops_the_batch_fire_only() {
+    let (rows, lines) = trf_day(FastBatch::On);
+    let syms: Vec<&str> = rows.iter().map(|a| &*a.symbol).collect();
+    assert_eq!(syms, ["ZAP"]);
+    let spk = log_kind(&lines, "fast_shadow")
+        .into_iter()
+        .find(|l| l["symbol"] == "SPK")
+        .unwrap();
+    assert_eq!(spk["variant"], "unfiltered");
+    assert_eq!(spk["alerting"], false);
+}
+
+/// `off`: the rule as before, no second tape, nothing extra logged.
+#[test]
+fn the_trf_batch_filter_off_is_the_old_rule() {
+    let (rows, lines) = trf_day(FastBatch::Off);
+    assert_eq!(rows.len(), 2);
+    assert!(log_kind(&lines, "fast_shadow").is_empty());
+    assert!(log_kind(&lines, "trf_batch").is_empty());
+}
+
+#[test]
+fn the_trf_batch_filter_switch() {
+    let get = |v: &'static str| move |k: &str| (k == "FAST_BATCH_FILTER").then(|| v.to_string());
+    assert_eq!(Policy::default().fast_batch, FastBatch::Shadow);
+    assert_eq!(
+        Policy::from_lookup(get("ON")).unwrap().fast_batch,
+        FastBatch::On
+    );
+    assert_eq!(
+        Policy::from_lookup(get("off")).unwrap().fast_batch,
+        FastBatch::Off
+    );
+    assert!(Policy::from_lookup(get("maybe")).is_err());
 }

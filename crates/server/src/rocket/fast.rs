@@ -39,6 +39,18 @@
 //! so a symbol can fire again about a minute after the process is back, and nothing older is
 //! worth rebuilding.
 //!
+//! # The trade-report batch filter
+//!
+//! FINRA's TRF reports the off-exchange trades it took while closed in one batch at its opening
+//! (04:00 ET since 2026-03-30, 08:00 before), and the rule above fires on it: about a fifth of
+//! Fast first alerts, at a 7.6 % hit rate (research/fast-0800). [`batch::BatchDetector`] finds
+//! those windows from the tape, and the board keeps a second, filtered tape per symbol that
+//! leaves their venue-`D` Form T prints out. `FAST_BATCH_FILTER` decides which tape alerts:
+//! `shadow` (default) alerts from the unfiltered one as before and logs what the filtered one
+//! would have done, so live sessions test it; `on` alerts from the filtered one; `off` keeps no
+//! second tape. Both variants' fires and every window are written to the Runners log
+//! (`fast_shadow`, `trf_batch` lines) for scoring.
+//!
 //! # Calibration
 //!
 //! `fast::calib` (ignored, run by hand) replays archive days through the production chart engine
@@ -412,6 +424,8 @@ pub fn decide(x: &FastInputs) -> Option<FastEntry> {
     }
     None
 }
+
+pub mod batch;
 
 #[cfg(test)]
 mod calib;

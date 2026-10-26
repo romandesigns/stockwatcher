@@ -455,7 +455,20 @@ pub enum Threshold {
     Fixed(f64),
 }
 
-/// `ROCKET_ALERTS_PER_DAY`, `ROCKET_THRESHOLD`, `RUNNERS_SCORER`, `RUNNERS_FAST`.
+/// Which Fast-move tape alerts (`FAST_BATCH_FILTER`, [`fast`] "The trade-report batch filter").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FastBatch {
+    /// No second tape, no detector: the rule as before.
+    Off,
+    /// Alerts from the unfiltered tape as before; the filtered one is read and logged only.
+    #[default]
+    Shadow,
+    /// Alerts from the filtered tape (batch prints left out); the unfiltered one is logged.
+    On,
+}
+
+/// `ROCKET_ALERTS_PER_DAY`, `ROCKET_THRESHOLD`, `RUNNERS_SCORER`, `RUNNERS_FAST`,
+/// `FAST_BATCH_FILTER`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Policy {
     pub budget: u32,
@@ -466,6 +479,8 @@ pub struct Policy {
     /// `RUNNERS_FAST` (default `1`): the "Fast move" entry ([`fast`]); `0` takes no prints into
     /// its tapes and makes no fast rows.
     pub fast: bool,
+    /// `FAST_BATCH_FILTER` (default `shadow`): which Fast tape alerts ([`FastBatch`]).
+    pub fast_batch: FastBatch,
 }
 
 impl Default for Policy {
@@ -475,6 +490,7 @@ impl Default for Policy {
             threshold: None,
             scorer: ScorerChoice::default(),
             fast: true,
+            fast_batch: FastBatch::default(),
         }
     }
 }
@@ -513,6 +529,18 @@ impl Policy {
                 "1" => true,
                 "0" => false,
                 _ => return Err(format!("RUNNERS_FAST must be 0 or 1: {v:?}")),
+            };
+        }
+        if let Some(v) = var("FAST_BATCH_FILTER") {
+            p.fast_batch = match v.to_ascii_lowercase().as_str() {
+                "off" => FastBatch::Off,
+                "shadow" => FastBatch::Shadow,
+                "on" => FastBatch::On,
+                _ => {
+                    return Err(format!(
+                        "FAST_BATCH_FILTER must be off, shadow or on: {v:?}"
+                    ));
+                }
             };
         }
         Ok(p)
@@ -835,6 +863,9 @@ pub struct RocketBoard {
     fast_touched: VecDeque<(i64, Arc<str>)>,
     /// The last second the fast rule was read for.
     fast_read: i64,
+    /// The market-wide trade-report batch detector ([`fast::batch`]); unused with
+    /// `FAST_BATCH_FILTER=off`.
+    trf: fast::batch::BatchDetector,
 }
 
 /// A symbol's fast-move state ([`fast`]).
@@ -842,10 +873,50 @@ pub struct RocketBoard {
 struct FastSym {
     name: Arc<str>,
     tape: fast::FastTape,
-    /// The second of its newest print, the last second read, the last fire (epoch ns).
+    /// The same tape without the trade-report batch prints ([`fast::batch`]); `None` with
+    /// `FAST_BATCH_FILTER=off`.
+    filtered: Option<fast::FastTape>,
+    /// The second of its newest print, the last second read, and the last fire (epoch ns) of
+    /// the unfiltered and the filtered tape (each variant keeps its own refractory).
     printed: i64,
     read: i64,
     fired_ns: Option<i64>,
+    filtered_fired_ns: Option<i64>,
+}
+
+/// The `fast_shadow` log line (`FAST_BATCH_FILTER` shadow or on): one variant's fast fire, so the
+/// filter can be scored on live sessions. `alerting`: this variant's fire is the one that made the
+/// row or follow-up; `in_batch`: a trade-report batch window was open; `other_fired_sec`: the
+/// second the other variant last fired for this symbol (within the refractory it is the same move,
+/// later lines of the other variant point back here).
+#[allow(clippy::too_many_arguments)]
+fn fast_shadow_line(
+    date: NaiveDate,
+    symbol: &str,
+    sec: i64,
+    variant: &str,
+    alerting: bool,
+    in_batch: bool,
+    e: &fast::FastEntry,
+    other_fired_sec: Option<i64>,
+) -> String {
+    json!({
+        "kind": "fast_shadow", "v": 1, "date": date.to_string(), "symbol": symbol,
+        "sec": sec, "variant": variant, "alerting": alerting, "in_batch": in_batch,
+        "price": e.price, "secs": e.secs, "held": e.held, "low": e.low, "gain": e.gain,
+        "trades": e.trades, "dollars": e.dollars, "other_fired_sec": other_fired_sec,
+    })
+    .to_string()
+}
+
+/// The `trf_batch` log line: one closed trade-report batch window ([`fast::batch`]), once.
+fn trf_batch_line(date: NaiveDate, w: &fast::batch::Window) -> String {
+    json!({
+        "kind": "trf_batch", "v": 1, "date": date.to_string(),
+        "start_ns": w.start_sec * SEC_NS, "end_ns": w.end_sec * SEC_NS,
+        "form_t_prints": w.form_t, "d_prints": w.all_d, "reason": w.reason,
+    })
+    .to_string()
 }
 
 /// Prices a fast-move tape starts at (wider than the rule's band, like the 15 s tape's, so a
@@ -902,6 +973,7 @@ impl RocketBoard {
             fast: HashMap::new(),
             fast_touched: VecDeque::new(),
             fast_read: i64::MIN,
+            trf: fast::batch::BatchDetector::default(),
         }
     }
 
@@ -1094,7 +1166,14 @@ impl RocketBoard {
     /// One print into its symbol's fast-move tape ([`fast`]). O(1): two map lookups, a ring
     /// slot, and a queue push on the symbol's first print of a second.
     fn fast_apply(&mut self, t: &market_events::Trade, counted: crate::quotes::Counted) {
-        if !self.policy.fast || (!counted.ohlc && !counted.volume) {
+        if !self.policy.fast {
+            return;
+        }
+        // Every print, whatever its session, band or verdict: the detector reads the market's
+        // venue-D traffic as a whole.
+        let filtered = self.policy.fast_batch != FastBatch::Off;
+        let batch_print = filtered && self.trf.observe(t.event_ts.0, &t.exchange, &t.conditions);
+        if !counted.ohlc && !counted.volume {
             return;
         }
         let Some(session) = t.session else { return };
@@ -1112,9 +1191,11 @@ impl RocketBoard {
                 FastSym {
                     name,
                     tape: fast::FastTape::default(),
+                    filtered: filtered.then(fast::FastTape::default),
                     printed: i64::MIN,
                     read: i64::MIN,
                     fired_ns: None,
+                    filtered_fired_ns: None,
                 },
             );
         }
@@ -1124,6 +1205,9 @@ impl RocketBoard {
         let ts = t.event_ts.0;
         s.tape
             .apply(ts, price, t.size, counted.ohlc, counted.volume);
+        if !batch_print && let Some(f) = s.filtered.as_mut() {
+            f.apply(ts, price, t.size, counted.ohlc, counted.volume);
+        }
         let sec = ts.div_euclid(SEC_NS);
         if sec > s.printed {
             s.printed = sec;
@@ -1399,6 +1483,7 @@ impl RocketBoard {
         self.fast.clear();
         self.fast_touched.clear();
         self.fast_read = i64::MIN;
+        // The batch detector is kept: the silence before a TRF opening spans the night.
         self.revision += 1;
         if self.running_facts_date != Some(date) {
             self.running_facts.clear();
@@ -1839,7 +1924,17 @@ impl RocketBoard {
         if end < self.fast_read.saturating_sub(5) {
             // The clock went back (a replay restarted): read from now on.
             self.fast_read = i64::MIN;
+            self.trf.reset();
         }
+        let mode = self.policy.fast_batch;
+        if mode != FastBatch::Off {
+            self.trf.tick(end);
+            for w in self.trf.take_closed() {
+                self.pending.push((date, trf_batch_line(date, &w)));
+            }
+        }
+        let in_batch = self.trf.in_batch();
+        let mut shadow: Vec<String> = Vec::new();
         let from = self.fast_read.saturating_add(1).max(end - 2);
         let (day0, day1) = (self.t0, self.t0 + NSLOT * BAR_NS);
         let mut fires: Vec<(Arc<str>, i64, fast::FastEntry)> = Vec::new();
@@ -1858,18 +1953,60 @@ impl RocketBoard {
                     continue;
                 }
                 s.read = sec;
-                let Some(e) = s.tape.inputs_settled(sec).and_then(|x| fast::decide(&x)) else {
-                    continue;
-                };
                 let at = sec * SEC_NS;
-                if s.fired_ns.is_some_and(|f| at - f < fast::REFRACTORY_NS) {
-                    continue;
+                // Each tape's rule with its own refractory ([`FastSym`]).
+                let fire = |tape: &mut fast::FastTape, fired: &mut Option<i64>| {
+                    let e = tape.inputs_settled(sec).and_then(|x| fast::decide(&x))?;
+                    if fired.is_some_and(|f| at - f < fast::REFRACTORY_NS) {
+                        return None;
+                    }
+                    *fired = Some(at);
+                    Some(e)
+                };
+                let unfiltered = fire(&mut s.tape, &mut s.fired_ns);
+                let filtered = match s.filtered.as_mut() {
+                    Some(f) => fire(f, &mut s.filtered_fired_ns),
+                    None => None,
+                };
+                if mode != FastBatch::Off {
+                    let variants = [
+                        (
+                            "unfiltered",
+                            unfiltered,
+                            mode == FastBatch::Shadow,
+                            s.filtered_fired_ns,
+                        ),
+                        ("filtered", filtered, mode == FastBatch::On, s.fired_ns),
+                    ];
+                    for (variant, e, alerting, other) in variants {
+                        if let Some(e) = e {
+                            shadow.push(fast_shadow_line(
+                                date,
+                                &s.name,
+                                sec,
+                                variant,
+                                alerting,
+                                in_batch,
+                                &e,
+                                other.map(|f| f.div_euclid(SEC_NS)),
+                            ));
+                        }
+                    }
                 }
-                s.fired_ns = Some(at);
-                fires.push((s.name.clone(), sec, e));
+                let alerting = if mode == FastBatch::On {
+                    filtered
+                } else {
+                    unfiltered
+                };
+                if let Some(e) = alerting {
+                    fires.push((s.name.clone(), sec, e));
+                }
             }
         }
         self.fast_read = self.fast_read.max(end);
+        for line in shadow {
+            self.pending.push((date, line));
+        }
         self.fast_entries(date, fires);
     }
 
