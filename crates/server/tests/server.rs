@@ -431,3 +431,18 @@ async fn updates_never_list_fall_back_or_escape() {
         .unwrap();
     assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
 }
+
+/// One server per DATA_DIR: while one holds the lock a second is refused, and once it is gone
+/// (the process exited) the next one starts.
+#[test]
+fn a_second_server_cannot_take_the_data_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = stockwatcher_server::lock_data_dir(dir.path()).unwrap();
+    let err = stockwatcher_server::lock_data_dir(dir.path()).unwrap_err();
+    assert!(
+        err.to_string().contains("another stockwatcher server"),
+        "{err}"
+    );
+    drop(first);
+    assert!(stockwatcher_server::lock_data_dir(dir.path()).is_ok());
+}

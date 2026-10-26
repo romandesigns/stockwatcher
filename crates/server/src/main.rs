@@ -28,6 +28,26 @@ fn main() -> ExitCode {
     if std::env::args().any(|a| a == "--healthcheck") {
         return healthcheck();
     }
+    // Any other argument is a mistake, never a reason to start: on 2026-10-26 a `--help` typed
+    // into the live container started a second full server against the same data volume.
+    if let Some(arg) = std::env::args().nth(1) {
+        eprintln!(
+            "stockwatcher-server takes no arguments (got {arg:?}); configuration is by environment \
+             (crates/server/src/config.rs). --healthcheck probes a running server."
+        );
+        return ExitCode::from(2);
+    }
+
+    // One server per DATA_DIR, taken before anything opens a file there (logs included). The lock
+    // goes with the process, so a deploy's stop-then-start is unaffected.
+    let data = std::env::var("DATA_DIR").unwrap_or_else(|_| "./data".into());
+    let _data_lock = match stockwatcher_server::lock_data_dir(std::path::Path::new(&data)) {
+        Ok(lock) => lock,
+        Err(e) => {
+            eprintln!("stockwatcher-server: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
 
     init_tracing();
     let config = match Config::from_env() {

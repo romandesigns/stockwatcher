@@ -225,6 +225,37 @@ fn desktop_cors() -> CorsLayer {
         .allow_headers([header::AUTHORIZATION])
 }
 
+/// The file whose exclusive lock marks a `DATA_DIR` as in use by a running server.
+pub const DATA_LOCK_FILE: &str = ".server.lock";
+
+/// Takes the exclusive lock on `dir/.server.lock`, creating the directory and file as needed, and
+/// returns the open file: the lock lasts as long as it does (the server keeps it for its whole
+/// life; the OS releases it when the process exits, however it exits).
+///
+/// Why (2026-10-26): a second server started by mistake inside the live container wrote the same
+/// day's live recordings as the running one for about two minutes, and seven symbols' recordings
+/// came back with corrupt frames. With this lock a second server against the same data refuses to
+/// start before it opens anything. Advisory (flock / LockFileEx): it binds servers, not the
+/// archiver or evidence jobs, which write their own files.
+pub fn lock_data_dir(dir: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::create_dir_all(dir)?;
+    let path = dir.join(DATA_LOCK_FILE);
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(std::fs::TryLockError::WouldBlock) => Err(std::io::Error::other(format!(
+            "another stockwatcher server is using {} (lock held on {}); not starting a second one",
+            dir.display(),
+            path.display()
+        ))),
+        Err(std::fs::TryLockError::Error(e)) => Err(e),
+    }
+}
+
 /// `static_dir` holds the built web app; `data_dir` is the persistent
 /// volume, whose `updates/` subtree publish-updates.sh fills.
 pub fn router(state: AppState, static_dir: &Path, data_dir: &Path) -> Router {
