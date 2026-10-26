@@ -52,8 +52,12 @@
 //!   [`NoticeKind::PullbackCrossing`], which stands for the Signals crossing too when the Detection
 //!   Panel is on (`also_signals`), exactly as the Ross kind does. Invalidated or expired episodes
 //!   push nothing (the row's levels show it).
+//! - **One push for a setup that crosses at once:** a crossing within [`CROSSING_MERGE_NS`] of its
+//!   own setting-up notice is not pushed again (Ross or pullback kind alike): it is the same event,
+//!   and the setup notice already carries the trigger. XTND 2026-10-26: setup at 10:28:02 ET, its
+//!   crossing at 10:28:04, two pushes 2 s apart. The row chip still shows the crossing.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use chrono::NaiveDate;
 use market_events::UnixNanos;
@@ -74,6 +78,8 @@ const OUT_MAX: usize = 256;
 /// How long after a stock is first flagged that day its first setup still notifies (module docs,
 /// "Pullback").
 pub const PULLBACK_WINDOW_NS: i64 = 30 * 60 * 1_000_000_000;
+/// A crossing this soon after its own setting-up notice is that notice's event, not a new one.
+pub const CROSSING_MERGE_NS: i64 = 30 * 1_000_000_000;
 
 #[derive(Debug, Default)]
 pub struct CueNotices {
@@ -84,8 +90,9 @@ pub struct CueNotices {
     watched: BTreeMap<String, i64>,
     /// Stocks whose setting-up notice went out, per trading day: one each (module docs).
     setup_days: HashSet<(String, NaiveDate)>,
-    /// Episodes announced as setting up: only their crossing is the pullback follow-up.
-    setup_episodes: HashSet<String>,
+    /// Episodes announced as setting up, and when: only their crossing is the pullback follow-up,
+    /// and not at all when it comes within [`CROSSING_MERGE_NS`].
+    setup_episodes: HashMap<String, i64>,
 }
 
 fn dollars(micros: i64) -> f64 {
@@ -213,7 +220,8 @@ impl CueNotices {
                     if !self.setup_days.insert((t.symbol.clone(), day)) {
                         continue;
                     }
-                    self.setup_episodes.insert(t.episode_id.clone());
+                    self.setup_episodes
+                        .insert(t.episode_id.clone(), t.observed_at);
                     let price = latest_price(&t.symbol, t.observed_at);
                     let detail = NoticeDetail::Pullback(pullback_facts(t, false));
                     self.emit(
@@ -240,7 +248,12 @@ impl CueNotices {
             .as_ref()
             .map_or(t.observed_at, |x| x.admit.max(t.observed_at));
         let exec = t.trade.as_ref().map(|x| x.exec);
-        if !is_member && self.setup_episodes.contains(&t.episode_id) {
+        let setup_at = self.setup_episodes.get(&t.episode_id).copied();
+        if setup_at.is_some_and(|s| at - s < CROSSING_MERGE_NS) {
+            // Crossed right as it set up: one event, already pushed (module docs).
+            return;
+        }
+        if !is_member && setup_at.is_some() {
             // A setup this module announced reaching its trigger: the setting-up notice's follow-up,
             // standing for the Signals crossing too (one episode, one notice).
             let detail = NoticeDetail::Pullback(pullback_facts(t, signals));
@@ -532,12 +545,52 @@ mod tests {
         );
     }
 
+    /// The episode crossing its trigger five minutes after it armed (a separate event).
     fn crossed(t: DetectionTransition) -> DetectionTransition {
         DetectionTransition {
             from: Some(State::Armed),
             to: State::CrossingProvisional,
+            observed_at: t.observed_at + 5 * MIN,
             ..t
         }
+    }
+
+    /// XTND 2026-10-26: a setup that crosses 2 s after its notice is one push, for a Runners stock
+    /// and a Ross member alike; 31 s later it is a follow-up again.
+    #[test]
+    fn a_crossing_right_after_its_setup_is_not_pushed_again() {
+        let mut c = CueNotices::default();
+        let member = |s: &str| s == "ROSS";
+        let since = |s: &str| (s == "XTND" || s == "ROSS" || s == "SLOW").then_some(AT - MIN);
+        let price = |_: &str, _: i64| None;
+        let soon = |t: DetectionTransition, ns: i64| DetectionTransition {
+            from: Some(State::Armed),
+            to: State::CrossingProvisional,
+            observed_at: t.observed_at + ns,
+            ..t
+        };
+        let setups = [
+            armed("x1", "XTND"),
+            armed("r1", "ROSS"),
+            armed("s1", "SLOW"),
+        ];
+        c.transitions_with(&setups, true, member, since, price);
+        assert_eq!(c.take().len(), 3);
+        let s = 1_000_000_000;
+        c.transitions_with(
+            &[
+                soon(armed("x1", "XTND"), 2 * s),
+                soon(armed("r1", "ROSS"), 2 * s),
+                soon(armed("s1", "SLOW"), 31 * s),
+            ],
+            true,
+            member,
+            since,
+            price,
+        );
+        let n = c.take();
+        let kinds: Vec<_> = n.iter().map(|x| (x.symbol.as_str(), x.kind)).collect();
+        assert_eq!(kinds, vec![("SLOW", NoticeKind::PullbackCrossing)]);
     }
 
     /// The crossing of an announced setup: a Ross member's stays the Ross notice (never also a
