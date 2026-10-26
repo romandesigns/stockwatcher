@@ -42,7 +42,7 @@ export function HaltWatcher({ channel, onPick }: { channel: PressureChannel; onP
       <section aria-labelledby="halt-watcher-title" className="@container/hw flex flex-col gap-2">
         <div className="flex flex-wrap items-center gap-2">
           <Icon name="gauge" className="size-4 text-muted-foreground" />
-          <h2 id="halt-watcher-title" className="m-0 text-sm font-semibold">
+          <h2 id="halt-watcher-title" className="panel-title">
             Halt watcher
           </h2>
           <span role={freshness ? "status" : undefined} className="text-xs text-text-faint">{freshness || "Pressure building toward a LULD band"}</span>

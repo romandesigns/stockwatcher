@@ -52,7 +52,7 @@ export function RossPanelView({ state, onPick, detection, onEpisodePick }: { sta
   return (
     <aside aria-labelledby="ross-title" className="flex min-h-0 min-w-0 flex-col gap-2 rounded-xl bg-card p-2.5">
       <div className="flex items-center gap-2 px-1">
-        <h2 id="ross-title" className="m-0 text-sm font-semibold">
+        <h2 id="ross-title" className="panel-title">
           Ross Panel
         </h2>
         <span className="font-mono text-[11px] text-text-faint">$0.10–$25</span>

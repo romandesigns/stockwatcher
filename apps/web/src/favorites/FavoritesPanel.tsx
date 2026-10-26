@@ -36,7 +36,7 @@ export function FavoritesPanelView({ list, state, onPick }: { list: readonly str
   return (
     <aside aria-labelledby="favorites-title" className="@container/fav flex min-h-0 min-w-0 flex-col gap-2 rounded-xl bg-card p-2.5">
       <div className="flex items-center gap-2 px-1">
-        <h2 id="favorites-title" className="m-0 text-sm font-semibold">
+        <h2 id="favorites-title" className="panel-title">
           Favorites
         </h2>
         <span className="font-mono text-[11px] text-text-faint">{list.length}</span>

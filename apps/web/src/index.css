@@ -29,6 +29,10 @@
   --text-faint: #66707c;
 
   --accent: #8b9cff;
+  /* Panel titles (owner, 2026-10-26: "make the headings text more noticeable, change their
+     color"): the accent mixed toward the text colour. Noticeable, yet distinct from the accent
+     itself, which keeps meaning "active / act here" (60/30/10). */
+  --heading: color-mix(in srgb, var(--accent) 62%, var(--text));
   --accent-fg: #0f1216;
 
   --good: #3fb97a;
@@ -87,6 +91,7 @@
   --color-popover: var(--bg-row);
   --color-popover-foreground: var(--text);
   --color-primary: var(--accent);
+  --color-heading: var(--heading);
   --color-primary-foreground: var(--accent-fg);
   --color-secondary: var(--bg-row);
   --color-secondary-foreground: var(--text);
@@ -199,4 +204,14 @@ input::-ms-clear {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/* Every panel's title, one style (owner, 2026-10-26): larger and bolder, in the heading tint. */
+@utility panel-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.25;
+  letter-spacing: -0.005em;
+  color: var(--heading);
 }

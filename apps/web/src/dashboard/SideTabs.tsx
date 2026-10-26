@@ -50,8 +50,11 @@ function useSettledTabs(live: SideTab[], settled: boolean): SideTab[] {
 const NONE: SideTab[] = [];
 
 /**
- * The right-hand column's tabs (owner, 2026-10-21): **Ross | Runners | Signals**, segmented and
- * compact, the choice remembered on this device. All three stay subscribed whatever tab is open,
+ * The right-hand column (owner, 2026-10-21; Ross split out 2026-10-26: "I want the ross panel to
+ * be in its own panel"): the **Ross Panel** as its own card on top, always in view while it has
+ * members, and under it the tabs **Runners | Signals | Favorites**, segmented and compact, the
+ * choice remembered on this device. Ross takes its rows' height up to about half the column and
+ * scrolls inside beyond that, so the tabs below always keep room. All three stay subscribed whatever tab is open,
  * so a tab can show a count without being opened: Runners its fresh flags, Signals (design canvas
  * "Detection Panel", 2026-10-22) the rows at the trigger or crossing it, with a pulsing dot.
  *
@@ -79,7 +82,11 @@ export function SideTabs({ ross, rocket, detection, favorites, onPick, onEpisode
     favorites: favorites ? favoriteList.length : 0,
   });
   const settled = panelsSettled([ross && rossState.enabled, rocket && rocketState.enabled, detection && detected.enabled]);
-  const visible = useSettledTabs(live, settled);
+  // Settled together, so neither Ross nor a tab appears before every channel has answered; then
+  // Ross is its own card and the rest are the tabs.
+  const shownPanels = useSettledTabs(live, settled);
+  const rossShown = shownPanels.includes("ross");
+  const visible = useMemo<SideTab[]>(() => shownPanels.filter((t) => t !== "ross"), [shownPanels]);
   const tab = pickSideTab(visible, picked);
   // The open tab emptied: the fallback stays open when the first one refills, so nothing switches
   // under the reader. Not written to storage: the device's choice is the user's, not the market's.
@@ -93,9 +100,7 @@ export function SideTabs({ ross, rocket, detection, favorites, onPick, onEpisode
     }
   };
   const content = (t: SideTab | undefined): ReactNode =>
-    t === "ross" ? (
-      <RossPanelView state={rossState} detection={detection} onPick={onPick} onEpisodePick={onEpisodePick} />
-    ) : t === "rocket" ? (
+    t === "rocket" ? (
       <RocketPanelView state={rocketState} wallNow={wall} onPick={onPick} />
     ) : t === "signals" ? (
       <DetectionPanelView state={detected} onPick={onEpisodePick} onClear={onEpisodeClear} />
@@ -106,7 +111,7 @@ export function SideTabs({ ross, rocket, detection, favorites, onPick, onEpisode
   // Only from current data: while reconnecting the rows are last known, so nothing claims attention.
   const attention = detected.enabled === true && detected.connected && !detected.resyncing ? detectionAttention(detected.snapshot) : 0;
   const fresh = tab !== "rocket" ? rocketFreshCount(rocketState, wall) : 0;
-  const open = visible.length > 0;
+  const open = visible.length > 0 || rossShown;
   return (
     // The column: beside the charts on a wide panel (its width animates to 0 when closed, the
     // charts' grid growing into it), under them on a narrow one (its height does). Its content
@@ -121,13 +126,12 @@ export function SideTabs({ ross, rocket, detection, favorites, onPick, onEpisode
       )}
     >
       <div className="flex min-h-0 min-w-0 flex-col @4xl/panel:w-[400px]">
+        <Reveal show={rossShown} className="max-h-[48%] shrink-0" innerClassName={cn("flex min-h-0 flex-col", visible.length > 0 && "pb-2")}>
+          <RossPanelView state={rossState} detection={detection} onPick={onPick} onEpisodePick={onEpisodePick} />
+        </Reveal>
         <Reveal show={visible.length > 1} innerClassName="pb-2">
           <div role="tablist" aria-label="Side panel" className="inline-flex rounded-[9px] bg-card p-0.5">
-            <TabReveal show={has("ross")}>
-              <TabButton id="ross" active={tab === "ross"} onClick={() => pick("ross")}>
-                Ross
-              </TabButton>
-            </TabReveal>
+            
             <TabReveal show={has("rocket")}>
               <TabButton id="rocket" active={tab === "rocket"} onClick={() => pick("rocket")}>
                 Runners

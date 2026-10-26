@@ -282,7 +282,7 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
         </section>
         <section aria-label="Time and sales" className="flex flex-col gap-1.5 rounded-xl bg-card p-3">
           <div className="flex items-baseline">
-            <h2 className="m-0 flex-1 text-xs font-medium text-muted-foreground">Time &amp; sales</h2>
+            <h2 className="panel-title flex-1">Time &amp; sales</h2>
             <span className="text-[10px] text-text-faint">{tapeNote}</span>
           </div>
           <Tape trades={tape} variant="compact" maxRows={8} />
@@ -337,7 +337,7 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
             <VolumeProfile className="h-[210px]" profile={series?.profile} actions={binSelector} />
           </section>
           <section aria-label="Time and sales" className="flex min-h-0 flex-1 flex-col gap-1.5 rounded-xl bg-card p-3">
-            <h2 className="m-0 text-xs font-medium text-muted-foreground">Time &amp; sales</h2>
+            <h2 className="panel-title">Time &amp; sales</h2>
             <Tape trades={tape} maxRows={12} />
           </section>
         </aside>

@@ -47,21 +47,25 @@ const render = (r: RossState | undefined, k: RocketState | undefined, d: Detecti
       onEpisodePick={() => {}}
     />,
   );
-const tabState = (html: string, id: string) => html.match(new RegExp(`data-reveal="(open|closed)"[^>]*>(?:<[^>]*>){1,2}<button[^>]*id="side-tab-${id}"`))?.[1] ?? "absent";
 
 describe("side column: a panel with 0 items is hidden (owner, 2026-10-22)", () => {
-  test("every panel has rows: three tabs, the first open", () => {
+  test("every panel has rows: Ross is its own card on top, the others are tabs, the first open", () => {
     const html = render(ross(["AAAA"]), rocket(["BBBB"]), detection(["CCCC"]));
     expect(html).toContain('data-side-column="open"');
-    for (const s of ["Ross", "Runners", "Signals"]) expect(html).toContain(`>${s}`);
-    expect(html).toContain('id="side-panel-ross"');
+    // Ross split out (owner, 2026-10-26): its own panel, never a tab.
+    expect(html).not.toContain('id="side-tab-ross"');
     expect(html).toContain("Ross Panel");
+    expect(html.indexOf("Ross Panel")).toBeLessThan(html.indexOf('role="tablist"'));
+    for (const s of ["Runners", "Signals"]) expect(html).toContain(`>${s}`);
+    expect(html).toContain('id="side-panel-rocket"');
   });
 
   test("a tab whose panel is empty, off or not offered is not drawn", () => {
     const html = render(ross(["AAAA"]), rocket([]), detection(["CCCC"]));
     expect(html).not.toContain('id="side-tab-rocket"');
-    expect(html).toContain('id="side-tab-signals"');
+    // Signals is the only tab left: shown alone, with no tab strip, under Ross.
+    expect(html).toContain('aria-label="Signals"');
+    expect(html).toContain("Ross Panel");
     const off = render(ross(["AAAA"]), { ...EMPTY_ROCKET, enabled: false }, { ...EMPTY_DETECTION, enabled: false });
     expect(off).not.toContain('id="side-tab-rocket"');
     expect(off).not.toContain('id="side-tab-signals"');
@@ -122,6 +126,7 @@ describe("side column: a panel with 0 items is hidden (owner, 2026-10-22)", () =
     expect(html).toContain("motion-reduce:transition-none");
     expect(html).not.toMatch(/class="[^"]*\bborder/);
     expect(html).not.toMatch(/<select|<details|<dialog/);
-    expect(tabState(html, "ross")).toBe("open");
+    // The Ross card opens and closes by real size too.
+    expect(html).toMatch(/data-reveal="open"[^>]*>(?:<[^>]*>){1,2}<aside aria-labelledby="ross-title"/);
   });
 });
