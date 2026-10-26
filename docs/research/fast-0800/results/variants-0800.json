@@ -1,0 +1,76 @@
+{
+ "window": "08:00 +120s",
+ "days": 252,
+ "before 2026-03-30": {
+  "symbol_days": 4330,
+  "base_fast_win": [
+   0.04133949191685912,
+   0.03459715639810427,
+   0.047802446760308114
+  ],
+  "drop_d_t": {
+   "same_fire": 59,
+   "later_fire": 1222,
+   "median_delay_min": 9.233333333333333,
+   "no_fast_fire": 3049,
+   "lost_fires_that_were_wins": 89,
+   "lost_wins_not_caught_by_another_path_within_30min": 63,
+   "variant_fast_win": [
+    0.15378610460577674,
+    0.13096139288417866,
+    0.17893106119287375
+   ],
+   "variant_fast_fires": 1281
+  },
+  "blackout": {
+   "same_fire": 3,
+   "later_fire": 1428,
+   "median_delay_min": 2.95,
+   "no_fast_fire": 2899,
+   "lost_fires_that_were_wins": 90,
+   "lost_wins_not_caught_by_another_path_within_30min": 63,
+   "variant_fast_win": [
+    0.12368972746331237,
+    0.10368956743002544,
+    0.14684813753581663
+   ],
+   "variant_fast_fires": 1431
+  }
+ },
+ "from 2026-03-30": {
+  "symbol_days": 235,
+  "base_fast_win": [
+   0.2936170212765957,
+   0.23577235772357724,
+   0.35443037974683544
+  ],
+  "drop_d_t": {
+   "same_fire": 101,
+   "later_fire": 109,
+   "median_delay_min": 0.18333333333333332,
+   "no_fast_fire": 25,
+   "lost_fires_that_were_wins": 1,
+   "lost_wins_not_caught_by_another_path_within_30min": 0,
+   "variant_fast_win": [
+    0.34285714285714286,
+    0.27184466019417475,
+    0.42105263157894735
+   ],
+   "variant_fast_fires": 210
+  },
+  "blackout": {
+   "same_fire": 0,
+   "later_fire": 151,
+   "median_delay_min": 1.8,
+   "no_fast_fire": 84,
+   "lost_fires_that_were_wins": 11,
+   "lost_wins_not_caught_by_another_path_within_30min": 1,
+   "variant_fast_win": [
+    0.31125827814569534,
+    0.2361111111111111,
+    0.38666666666666666
+   ],
+   "variant_fast_fires": 151
+  }
+ }
+}

@@ -1,0 +1,40 @@
+{
+ "window": "04:00 +180s",
+ "days": 144,
+ "from 2026-03-30": {
+  "symbol_days": 1961,
+  "base_fast_win": [
+   0.07598164201937786,
+   0.06470858191831115,
+   0.08864864864864865
+  ],
+  "drop_d_t": {
+   "same_fire": 255,
+   "later_fire": 1084,
+   "median_delay_min": 4.116666666666666,
+   "no_fast_fire": 622,
+   "lost_fires_that_were_wins": 6,
+   "lost_wins_not_caught_by_another_path_within_30min": 5,
+   "variant_fast_win": [
+    0.22180731889469754,
+    0.198429693076374,
+    0.24433656957928804
+   ],
+   "variant_fast_fires": 1339
+  },
+  "blackout": {
+   "same_fire": 2,
+   "later_fire": 1311,
+   "median_delay_min": 4.816666666666666,
+   "no_fast_fire": 648,
+   "lost_fires_that_were_wins": 11,
+   "lost_wins_not_caught_by_another_path_within_30min": 8,
+   "variant_fast_win": [
+    0.16984006092916984,
+    0.14650638617580766,
+    0.1931196247068022
+   ],
+   "variant_fast_fires": 1313
+  }
+ }
+}
