@@ -119,9 +119,16 @@ async fn favorites_subscribe_gets_rows_with_lines_then_only_changes() {
     assert_eq!(snap["symbols"], json!([]), "{snap}");
     assert_eq!(snap["rows"], json!([]));
 
+    // A periodic tick may publish the initial empty board after the snapshot and before the
+    // list edit. Exercise that ordering explicitly, then wait for the edit's update rather
+    // than assuming the next Favorites frame belongs to it.
+    s.replay.publish_favorites();
     s.replay.set_favorites(vec!["SMPL".into(), "NOPE".into()]);
     s.replay.publish_favorites();
-    let up = next(&mut ws, |m| m["type"] == "favorites.update").await;
+    let up = next(&mut ws, |m| {
+        m["type"] == "favorites.update" && m["symbols"] == json!(["SMPL", "NOPE"])
+    })
+    .await;
     assert_eq!(up["symbols"], json!(["SMPL", "NOPE"]));
     let rows = up["rows"].as_array().unwrap();
     assert_eq!(rows.len(), 2);
