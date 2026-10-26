@@ -1,0 +1,7 @@
+{
+  "gate": "g1",
+  "rule": "higher stage-A budget-20 continuation rate on EXPLORE with >= 5 notices/day; ties -> g1",
+  "explore": {"g1_rate_A_b20": 0.10306122448979592, "g2_rate_A_b20": 0.10306122448979592, "g1_per_day": 367.02, "g2_per_day": 151.56},
+  "note": "Exact tie at budget 20 (303/2940 each); g1 by the tie rule. Frozen before any CONFIRM-PAST export.",
+  "code": "c4e2b6a"
+}
