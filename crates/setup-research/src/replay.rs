@@ -144,13 +144,23 @@ pub struct SymDay {
     pub signals: Vec<RawSignal>,
     /// Transitions or entries the bounded journals dropped (must be 0).
     pub dropped: u64,
+    /// The first micro variant's episodes (pullback-context study).
+    pub micro_tracks: Vec<(String, Track)>,
 }
 
-#[derive(Default)]
-struct Track {
-    armed: Option<i64>,
-    cue: Option<i64>,
-    trig: Option<(i64, i64)>,
+#[derive(Default, Clone, Debug)]
+pub struct Track {
+    pub armed: Option<i64>,
+    pub cue: Option<i64>,
+    pub trig: Option<(i64, i64)>,
+    // Pullback-context study (docs/research/pullback-context): the armed levels, the crossing
+    // itself (not the near cue), and the counted day volume at arming (completed bars).
+    pub trigger: Option<i64>,
+    pub stop: Option<i64>,
+    pub impulse_bp: Option<i64>,
+    pub depth_milli: Option<i64>,
+    pub armed_vol: Option<u128>,
+    pub cross: Option<(i64, i64)>,
 }
 
 struct Pipeline<'a> {
@@ -190,9 +200,8 @@ fn new_engine(day: NaiveDate, det: Option<&DetectionPolicy>) -> Engine {
         fidelity: Fidelity::ReconstructedHistory,
         numerator_coverage: Coverage::Unverified,
     };
-    let e = Engine::new(Policy::current(), run)
-        .with_panel_policy(PanelPolicy::v1())
-        .with_setup_policy(SetupPolicy::v0());
+    // Main has one pullback detector (614ffe0): no separate setup policy any more.
+    let e = Engine::new(Policy::current(), run).with_panel_policy(PanelPolicy::v1());
     match det {
         Some(p) => e.with_detection_policy(p.clone()),
         None => e,
@@ -298,10 +307,23 @@ impl Pipeline<'_> {
                 match t.to {
                     State::Armed => {
                         ep.armed.get_or_insert(t.observed_at);
+                        if let Some(a) = t.anchors.as_ref()
+                            && ep.trigger.is_none()
+                        {
+                            ep.trigger = Some(a.h0);
+                            ep.stop = Some(a.pullback_low);
+                            ep.impulse_bp = Some(a.impulse_bp);
+                            ep.depth_milli = Some(a.depth_milli);
+                        }
+                        ep.armed_vol.get_or_insert(self.b0_vol);
                         self.micro_live[k].insert(t.episode_id.clone());
                     }
                     State::CrossingProvisional => {
                         ep.cue.get_or_insert(t.observed_at);
+                        if ep.cross.is_none() {
+                            let px = t.trade.as_ref().map_or(0, |x| x.price);
+                            ep.cross = Some((t.observed_at, px));
+                        }
                     }
                     State::TriggerObserved => {
                         ep.trig
@@ -699,7 +721,13 @@ pub fn run_symbol_day(
     }
     let mut prints = std::mem::take(&mut p.prints);
     prints.sort_by_key(|x| x.exec);
+    let micro_tracks = p
+        .micro_eps
+        .first()
+        .map(|m| m.iter().map(|(k, t)| (k.clone(), t.clone())).collect())
+        .unwrap_or_default();
     Ok(SymDay {
+        micro_tracks,
         events: p.events,
         trades: p.trades,
         eligible: p.eligible,

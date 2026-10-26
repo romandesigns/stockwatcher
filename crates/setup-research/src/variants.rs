@@ -73,6 +73,10 @@ pub fn bull(ids: &[String]) -> Vec<(String, SetupPolicy)> {
 }
 
 pub fn micro(ids: &[String]) -> Vec<(String, DetectionPolicy)> {
+    // "V2": the production policy, detection-v2 (micro_pullback_mp5), unpatched.
+    if ids.iter().any(|x| x == "V2") {
+        return vec![("V2".to_string(), DetectionPolicy::v2())];
+    }
     MICRO
         .iter()
         .filter(|(id, _)| ids.is_empty() || ids.iter().any(|x| x == id))

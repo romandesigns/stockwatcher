@@ -83,4 +83,18 @@ stage B results; price bands; continuation by path of the preceding Runners entr
 
 ## Amendments
 
-(none)
+**A1** (2026-10-25, before any EXPLORE outcome is read; implementation details):
+1. Harness: `crates/setup-research` (from research/setup-compare) with a `PBC=1` mode
+   (`src/pbc.rs`). Main has one pullback detector (614ffe0), so the engine is built without a
+   separate setup policy; MP5 = `DetectionPolicy::v2()` unpatched (variant id `V2`). The crate and
+   its read-only engine accessor were staged by the checkout and landed in the protocol commit
+   106773e: code only, nothing was run before it.
+2. Trigger `T` and stop `I` are the armed transition's anchors (`H0`, pullback low). The crossing
+   time is the `crossing_provisional` transition's observation (admission) time; the outcome reads
+   prints admitted after it, in execution order, executed within 15 minutes of it.
+3. `armed_vol` = counted shares of the completed pre/regular 15 s bars at arming (lags the arming
+   by at most one bar).
+4. Stage B's G1 uses Runners entries at or before the crossing; G2 is decided at arming.
+5. G2's gain uses the raw previous official close (`daily-closes.json`), not split-adjusted.
+6. CONFIRM-PAST is exported only after `frozen.json` is committed (the export computes outcomes).
+7. Analysis: `docs/research/pullback-context/py/pbc.py` (`select`, then `confirm`).

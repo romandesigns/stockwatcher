@@ -10,6 +10,7 @@
 //! ```
 
 mod outcome;
+mod pbc;
 mod replay;
 mod score;
 mod variants;
@@ -181,6 +182,8 @@ fn run_day(
     ));
     let stats = Mutex::new((0u64, 0u64, 0u64, 0u64, 0u64, Vec::<String>::new())); // (events, trades, eligible, dropped, ohlc prints, errors)
     let dstr = day.to_string();
+    // PBC=1: write the pullback-context rows instead of the setup-compare signals.
+    let pbc_mode = std::env::var("PBC").is_ok();
     std::thread::scope(|sc| {
         for _ in 0..threads {
             sc.spawn(|| {
@@ -207,7 +210,13 @@ fn run_day(
                             }
                             let run = outcome::first_run(&sd.bars);
                             let mut lines = String::new();
-                            for s in &sd.signals {
+                            if pbc_mode {
+                                for r in pbc::rows(&dstr, sym, &sd.micro_tracks, &sd.prints) {
+                                    lines.push_str(&serde_json::to_string(&r).unwrap());
+                                    lines.push_str("\n");
+                                }
+                            }
+                            for s in sd.signals.iter().filter(|_| !pbc_mode) {
                                 let sc = outcome::score(&sd.prints, &sd.bars, s, &dstr, sym);
                                 lines.push_str(&serde_json::to_string(&sc).unwrap());
                                 lines.push('\n');
