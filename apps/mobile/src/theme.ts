@@ -29,6 +29,8 @@ export const colors = {
   goodBg: "rgba(63, 185, 122, 0.14)",
   warning: "#e0a63a",
   warningBg: "rgba(224, 166, 58, 0.14)",
+  /** "Look now" (owner, 2026-10-26): a row's flame; the web's --flame. */
+  flame: "#ff8a3d",
   critical: "#f0645c",
   criticalBg: "rgba(240, 100, 92, 0.14)",
 } as const;

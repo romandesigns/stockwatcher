@@ -353,6 +353,8 @@ export interface RossRowWire {
   rvol_milli?: number | null;
   float_shares?: number | null;
   news_first_seen?: number | null;
+  /** That story's headline class (`financing` = offering / dilution; stock-context `NewsItem::event_type`). */
+  news_kind?: string | null;
   /** Closes (micros) of the last ≤20 completed 15 s bars that traded, oldest first; no timestamps. */
   spark?: number[];
   /**

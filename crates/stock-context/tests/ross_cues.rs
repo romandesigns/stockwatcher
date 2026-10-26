@@ -503,6 +503,9 @@ fn rows_carry_spark_and_pillar_context() {
     assert_eq!(r.spark.len(), 20);
     assert_eq!(r.float_shares, Some(5_000_000));
     assert_eq!(r.news_first_seen, Some(t(7, 0, 1)));
+    // The same story's headline class rides along, for the row's news mark.
+    assert_eq!(r.news_kind.as_deref(), Some("other"));
+    assert_eq!(e.news_kind("PULL"), Some("other"));
     assert!(r.rvol_milli.unwrap() >= 5_000);
     assert!(r.missing.is_empty());
     assert_eq!(r.move_1m_bp, r.momentum.r_primary_bp);

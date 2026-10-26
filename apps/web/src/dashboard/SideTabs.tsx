@@ -105,7 +105,7 @@ export function SideTabs({ ross, rocket, detection, favorites, onPick, onEpisode
     ) : t === "signals" ? (
       <DetectionPanelView state={detected} onPick={onEpisodePick} onClear={onEpisodeClear} />
     ) : t === "favorites" ? (
-      <FavoritesPanelView list={favoriteList} state={favoritesState} onPick={onPick} />
+      <FavoritesPanelView list={favoriteList} state={favoritesState} onPick={onPick} runners={rocket ? rocketState : undefined} wallNow={wall} />
     ) : null;
   const has = (t: SideTab) => visible.includes(t);
   // Only from current data: while reconnecting the rows are last known, so nothing claims attention.
@@ -127,7 +127,7 @@ export function SideTabs({ ross, rocket, detection, favorites, onPick, onEpisode
     >
       <div className="flex min-h-0 min-w-0 flex-col @4xl/panel:w-[400px]">
         <Reveal show={rossShown} className="max-h-[48%] shrink-0" innerClassName={cn("flex min-h-0 flex-col", visible.length > 0 && "pb-2")}>
-          <RossPanelView state={rossState} detection={detection} onPick={onPick} onEpisodePick={onEpisodePick} />
+          <RossPanelView state={rossState} detection={detection} onPick={onPick} onEpisodePick={onEpisodePick} runners={rocket ? rocketState : undefined} wallNow={wall} />
         </Reveal>
         <Reveal show={visible.length > 1} innerClassName="pb-2">
           <div role="tablist" aria-label="Side panel" className="inline-flex rounded-[9px] bg-card p-0.5">

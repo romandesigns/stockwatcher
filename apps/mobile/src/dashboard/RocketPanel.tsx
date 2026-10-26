@@ -1,10 +1,11 @@
 import { Icon, UI } from "@stockwatcher/chart-native";
-import { newRocketFlags, rocketHeaderView, rocketLinePaths, rocketNow, rocketSectionCounts, rocketSectionsView, type RocketChannel, type RocketRowView, type RocketSectionsView, type RocketTone, withZoneSections } from "@stockwatcher/shared";
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { formatEtTime } from "@stockwatcher/chart-core";
+import { newRocketFlags, rocketHeaderView, rocketNow, rocketRowMarks, rocketSectionCounts, rocketSectionsView, type RocketChannel, type RocketRowView, type RocketSectionsView, type RocketTone, type RowMarks, withZoneSections } from "@stockwatcher/shared";
+import { memo, useEffect, useRef, useState } from "react";
 import { Animated, Pressable, StyleSheet, Text, View } from "react-native";
-import Svg, { Circle, Line, Path, Rect } from "react-native-svg";
 
 import { useRocket } from "../feed/hooks";
+import { Flame, MarksLine, RowLine, useReadoutPress } from "./RowMarks";
 import { notifyRocketFlags } from "../notifications/rocket";
 import { Collapse } from "../motion/Collapse";
 import { ZoneNote } from "./ZoneNote";
@@ -25,6 +26,7 @@ const TONE: Record<RocketTone, string> = {
 /** The row chart's box (dp), the Ross row's: fits the Fold's ~360 dp cover screen beside the text. */
 export const DAY_LINE_W = 72;
 export const DAY_LINE_H = 28;
+const NO_MARKS: RowMarks = { flame: null, pillars: null, rvol: null, news: null, path: null, stage: null, tail: null };
 /** The card's gap between its blocks, which a closed section must cancel (Collapse). */
 const CARD_GAP = 6;
 /** A row's gap between its lines, which a closed volume-shelf note must cancel (Collapse). */
@@ -79,6 +81,8 @@ export function RocketPanel({ channel, onPick, reducedMotion, gap = 0 }: { chann
   const now = rocketNow(state, wall);
   const { bursts, runners: rows }: RocketSectionsView = panel ? withZoneSections(rocketSectionsView(panel, now), panel.zones) : { bursts: null, runners: [] };
   const head = panel ? rocketHeaderView(panel, state.connected) : null;
+  // The lighter rows' marks (shared rowMarks.ts), by row key (the wire id).
+  const marks = new Map((panel?.rows ?? []).map((w) => [w.id, { marks: rocketRowMarks(w, now, formatEtTime), trigger: w.levels?.trigger ?? null }]));
   const counts = rocketSectionCounts(state);
   const burstCount = bursts ? bursts.rows.length : 0;
   // No rows, no card (owner, 2026-10-22): off, not yet known and empty all hide it. It stays
@@ -129,7 +133,7 @@ export function RocketPanel({ channel, onPick, reducedMotion, gap = 0 }: { chann
             <Text style={styles.sub}>{[bursts.head.what, bursts.head.typical].filter(Boolean).join(". ")}</Text>
             <View style={[styles.rows, !state.connected && styles.dimmed]}>
               {bursts.rows.map((r) => (
-                <Row key={r.key} row={r} onPick={onPick} reducedMotion={reducedMotion} />
+                <Row key={r.key} row={r} marks={marks.get(r.key)?.marks ?? NO_MARKS} trigger={marks.get(r.key)?.trigger ?? null} onPick={onPick} reducedMotion={reducedMotion} />
               ))}
             </View>
           </View>
@@ -145,7 +149,7 @@ export function RocketPanel({ channel, onPick, reducedMotion, gap = 0 }: { chann
           </Collapse>
           <View style={[styles.rows, !state.connected && styles.dimmed]}>
             {rows.map((r) => (
-              <Row key={r.key} row={r} onPick={onPick} reducedMotion={reducedMotion} />
+              <Row key={r.key} row={r} marks={marks.get(r.key)?.marks ?? NO_MARKS} trigger={marks.get(r.key)?.trigger ?? null} onPick={onPick} reducedMotion={reducedMotion} />
             ))}
           </View>
         </View>
@@ -173,8 +177,15 @@ function useCrossfade(key: string, reducedMotion: boolean): Animated.Value {
   return o;
 }
 
-const Row = memo(function Row({ row: r, onPick, reducedMotion }: { row: RocketRowView; onPick: (symbol: string) => void; reducedMotion: boolean }) {
-  const press = useTickerPress(r.symbol, () => onPick(r.symbol));
+/**
+ * One Runners row as a lighter row (owner, 2026-10-26, design canvas "StockWatcher lighter rows",
+ * phone artboard): ticker, price and day gain with the day line, then the marks line (the path
+ * with its age, the momentum word, the outcome tag, the setup's stage). Press and hold reads every
+ * mark out, the old sentences included (the path's label carries the move since the flag, the
+ * later paths and the reasons). The flame lights on a fresh burst that holds its alert price.
+ */
+const Row = memo(function Row({ row: r, marks, trigger, onPick, reducedMotion }: { row: RocketRowView; marks: RowMarks; trigger: number | null; onPick: (symbol: string) => void; reducedMotion: boolean }) {
+  const press = useReadoutPress(useTickerPress(r.symbol, () => onPick(r.symbol)), marks);
   const m = r.momentum;
   const b = r.burst;
   // A live burst takes the accent edge; once it settles the row falls back to its momentum edge
@@ -182,33 +193,21 @@ const Row = memo(function Row({ row: r, onPick, reducedMotion }: { row: RocketRo
   const fade = useCrossfade(`${m.state}${b?.live ? ":live" : ""}`, reducedMotion);
   const edgeTone = b?.live ? "accent" : m.edge;
   const edge = edgeTone ? TONE[edgeTone] : null;
+  // Everything the old state and burst lines spelled out, spoken with the momentum word.
+  const stateLabel = [b ? [b.headline, b.since, b.move].filter(Boolean).join(" · ") : "", m.label, m.provisional ? "provisional" : "", m.since, m.note].filter(Boolean).join(" · ");
   return (
-    <Pressable accessibilityRole="button" accessibilityLabel={r.aria} accessibilityHint="Opens its chart. Tap, then press and hold to copy" {...press} style={({ pressed }) => [styles.row, m.dimmed && { opacity: 0.6 }, pressed && { backgroundColor: UI.raised }]}>
+    <Pressable accessibilityRole="button" accessibilityLabel={r.aria} accessibilityHint="Opens its chart. Press and hold to read its marks; tap, then press and hold to copy" {...press} style={({ pressed }) => [styles.row, marks.flame?.lit && { backgroundColor: UI.raised }, m.dimmed && { opacity: 0.6 }, pressed && { backgroundColor: UI.raised }]}>
       {/* The state's wash and inset edge: filled views, never borders, crossfading in on a change. */}
       {m.state === "breaking_out" && <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, styles.wash, { opacity: fade }]} />}
       {edge && <Animated.View pointerEvents="none" style={[styles.edge, { backgroundColor: edge, opacity: fade }]} />}
       <View style={styles.line}>
+        <Flame flame={marks.flame} />
         <Text style={styles.symbol}>{r.symbol}</Text>
         <Text style={styles.price}>{r.price}</Text>
         {r.gain ? <Text style={[styles.small, { color: UI.textDim }]}>{r.gain}</Text> : null}
-        {/* Where the row came from ("R2 flag", "Burst", "Running", "Run +20%", "Fast move"): quiet, never accent. */}
-        <View style={styles.source} testID="rocket-source">
-          <Text numberOfLines={1} style={styles.sourceText}>
-            {r.source.label}
-          </Text>
-        </View>
-        {/* Later paths on the same stock (follow-ups, "+ Run +20%"): secondary, no fill, shrinks first on the cover screen. */}
-        {r.also.map((a) => (
-          <Text key={a.kind} numberOfLines={1} style={styles.alsoText} testID="rocket-also">
-            + {a.label}
-          </Text>
-        ))}
-        {/* The armed MP5 setup ("Pullback · trigger $3.42"): quiet like the source chip, never accent. */}
-        {r.setup && (
-          <View style={styles.source} testID="rocket-setup">
-            <Text numberOfLines={1} style={[styles.sourceText, { color: UI.text }]}>
-              {r.setup.label}
-            </Text>
+        {r.fresh && (
+          <View accessible accessibilityLabel="Flagged under a minute ago">
+            <Pulse color={UI.accent} size={6} reducedMotion={reducedMotion} />
           </View>
         )}
         {r.halted && (
@@ -216,96 +215,33 @@ const Row = memo(function Row({ row: r, onPick, reducedMotion }: { row: RocketRo
             <Text style={styles.badgeText}>HALTED</Text>
           </View>
         )}
-        <View style={styles.age}>
-          {r.fresh && <Pulse color={UI.accent} size={6} reducedMotion={reducedMotion} />}
-          <Text style={[styles.small, r.fresh ? { color: UI.accent, fontFamily: fonts.semibold } : { color: UI.textFaint }]}>{r.age}</Text>
+        {/* Neutral (green belongs to the strict outcome here); its tail still says the last minute. */}
+        <View style={styles.chartSlot}>
+          <RowLine line={r.line} tail={marks.tail} trigger={marks.stage ? trigger : null} width={DAY_LINE_W} height={DAY_LINE_H} color={UI.textDim} />
         </View>
         <StarToggle symbol={r.symbol} size={14} />
       </View>
-      {/* The state and metrics on the left, the day line on their right (the Ross row's layout):
-          the chart's box is always reserved, so a line arriving never moves the text. */}
-      <View style={styles.top}>
-        <View style={styles.lines}>
-          {b && (
-            <Animated.View style={[styles.line, { opacity: fade }]}>
-              {b.live && <Pulse color={UI.accent} size={6} reducedMotion={reducedMotion} />}
-              <Text numberOfLines={1} style={[styles.state, { color: b.live ? UI.accent : UI.text, fontFamily: fonts.semibold }]}>
-                {b.headline}
-                <Text style={styles.note}>{` ${b.since}`}</Text>
+      <MarksLine
+        marks={marks}
+        extra={
+          <>
+            {/* The momentum word (the row's verdict; a live burst says its headline), crossfading
+                on a change. The rest of the old sentences is in the press-and-hold read-out. */}
+            <Animated.View style={[styles.stateBox, { opacity: fade }]} accessible accessibilityLabel={stateLabel}>
+              {(m.pulse || b?.live) && <Pulse color={b?.live ? UI.accent : TONE[m.tone]} size={6} reducedMotion={reducedMotion} />}
+              <Text numberOfLines={1} style={[styles.state, { color: b ? (b.live ? UI.accent : UI.text) : TONE[m.tone], fontFamily: m.attention || b?.live ? fonts.semibold : fonts.regular }]}>
+                {b?.live ? b.headline : m.label}
               </Text>
             </Animated.View>
-          )}
-          <Animated.View style={[styles.line, { opacity: fade }]}>
-            {m.pulse && <Pulse color={TONE[m.tone]} size={6} reducedMotion={reducedMotion} />}
-            <Text numberOfLines={1} style={[styles.state, { color: TONE[m.tone], fontFamily: m.attention ? fonts.semibold : fonts.regular }]}>
-              {m.label}
-              {m.provisional ? <Text style={styles.faint}> provisional</Text> : null}
-              {m.since ? <Text style={styles.faint}>{` ${m.since}`}</Text> : null}
-              {m.note ? <Text style={styles.note}>{` ${m.note}`}</Text> : null}
-            </Text>
-          </Animated.View>
-          <View style={styles.line} accessibilityLabel={b ? "last 30 s before the alert, from the alert, from high, last minute" : `from ${r.fromWhat}, from high, last minute`}>
-            {b?.move ? <Text style={[styles.metric, { color: UI.text }]}>{b.move}</Text> : null}
-            <Text style={[styles.metric, { color: TONE[r.fromFlagTone] }]}>{r.fromFlag}</Text>
-            <Text style={[styles.metric, { color: TONE[r.fromHighTone] }]}>{r.fromHigh}</Text>
-            <Text style={[styles.metric, { color: TONE[r.move1mTone] }]}>{r.move1m}</Text>
-          </View>
-        </View>
-        <DayLine line={r.line} />
-      </View>
-      {r.meter !== null && <Meter value={r.meter} color={TONE[m.tone]} />}
+            {r.outcome && <Text style={[styles.outcome, { color: TONE[r.outcome.tone] }]}>{r.outcome.label}</Text>}
+          </>
+        }
+      />
       {/* The row's whole width (the Fold's cover screen needs it for the range and base rate). */}
       <ZoneNote note={r.zone ?? null} reducedMotion={reducedMotion} gap={ROW_GAP} />
-      <View style={styles.line}>
-        <View style={styles.chips}>
-          {r.reasons.map((x) => (
-            <View key={x} style={styles.reason}>
-              <Text numberOfLines={1} style={styles.reasonText}>
-                {x}
-              </Text>
-            </View>
-          ))}
-        </View>
-        {r.outcome && <Text style={[styles.outcome, { color: TONE[r.outcome.tone] }]}>{r.outcome.label}</Text>}
-        {r.score ? <Text style={styles.score}>{r.score}</Text> : null}
-      </View>
     </Pressable>
   );
 });
-
-/**
- * The day's price line: every 30 s close from 04:00 ET and the live price as its end
- * (`rocketLinePaths`, shared with the web row), in the neutral dim tone (green belongs to the
- * strict outcome), with a faint dotted previous-close baseline when it is near the line.
- */
-function DayLine({ line }: { line: RocketRowView["line"] }) {
-  const paths = useMemo(() => (line ? rocketLinePaths(line, DAY_LINE_W, DAY_LINE_H) : null), [line]);
-  return (
-    <View style={styles.chart} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" testID="rocket-day-line">
-      {paths && (
-        <Svg width={DAY_LINE_W} height={DAY_LINE_H} viewBox={`0 0 ${DAY_LINE_W} ${DAY_LINE_H}`}>
-          {paths.baseY !== null && <Line x1={0} x2={DAY_LINE_W} y1={paths.baseY} y2={paths.baseY} stroke={UI.textFaint} strokeWidth={1} strokeDasharray="1.5 2.5" />}
-          <Path d={paths.area} fill={UI.textDim} fillOpacity={0.14} />
-          <Path d={paths.line} fill="none" stroke={UI.textDim} strokeWidth={1.5} strokeLinejoin="round" />
-        </Svg>
-      )}
-    </View>
-  );
-}
-
-/** Pullback low (left, red: the failure level) to trigger (right, neutral), the price as a dot: the Ross row's meter. */
-function Meter({ value, color }: { value: number; color: string }) {
-  const v = Math.max(0, Math.min(1, value));
-  return (
-    <Svg width="100%" height={8} viewBox="0 0 160 8" preserveAspectRatio="none" accessibilityLabel={`price ${Math.round(v * 100)}% of the way from the pullback low to the trigger`}>
-      <Rect x={0} y={3} width={160} height={2} rx={1} fill={UI.raised} />
-      <Rect x={0} y={0} width={2} height={8} fill={UI.critical} />
-      <Rect x={158} y={0} width={2} height={8} fill={UI.textDim} />
-      <Rect x={0} y={3} width={v * 156} height={2} rx={1} fill={color} />
-      <Circle cx={2 + v * 154} cy={4} r={3} fill={color} />
-    </Svg>
-  );
-}
 
 /** A dot that breathes on a fresh flag or a breakout; still with reduced motion. */
 function Pulse({ color, size, reducedMotion }: { color: string; size: number; reducedMotion: boolean }) {
@@ -347,6 +283,8 @@ const styles = StyleSheet.create({
   top: { flexDirection: "row", alignItems: "center", gap: 8 },
   lines: { flex: 1, minWidth: 0, gap: 4 },
   chart: { width: DAY_LINE_W, height: DAY_LINE_H },
+  chartSlot: { marginLeft: "auto" },
+  stateBox: { flexDirection: "row", alignItems: "center", gap: 5, flexShrink: 1, minWidth: 0 },
   line: { flexDirection: "row", alignItems: "center", gap: 7 },
   symbol: { color: UI.text, fontSize: 14, fontFamily: fonts.semibold },
   price: { color: UI.text, fontSize: 13, fontVariant: ["tabular-nums"] },

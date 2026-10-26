@@ -40,7 +40,7 @@ export function Toaster() {
           style={[styles.pill, toast.action && styles.withAction]}
         >
           <Icon name={toast.icon ?? "check"} color={colors.accent} size={14} />
-          <Text style={styles.text} numberOfLines={2}>
+          <Text style={styles.text} numberOfLines={toast.lines ?? 2}>
             {toast.text}
           </Text>
           {toast.action && (

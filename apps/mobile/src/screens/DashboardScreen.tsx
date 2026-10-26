@@ -74,8 +74,8 @@ function DashboardView({ feed, token, source }: { feed: MobileFeed; token: strin
       {/* The Ross Panel card (owner, 2026-10-20): a tapped row opens the chart modal like a gauge. */}
       <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 8, gap: GAP }}>
         {/* The owner's own list first (owner, 2026-10-26): hidden while it is empty, like every card. */}
-        <FavoritesPanel channel={feed.favorites} onPick={open} reducedMotion={reducedMotion} gap={GAP} />
-        <RossPanel channel={feed.ross} detection={feed.detection} onPick={open} reducedMotion={reducedMotion} gap={GAP} />
+        <FavoritesPanel channel={feed.favorites} runners={feed.rocket} onPick={open} reducedMotion={reducedMotion} gap={GAP} />
+        <RossPanel channel={feed.ross} detection={feed.detection} runners={feed.rocket} onPick={open} reducedMotion={reducedMotion} gap={GAP} />
         {/* Signals (design canvas "Detection Panel", phone): its card under Ross, only while the
             server's detector is on; a tapped row opens the chart modal with the episode drawn. */}
         <DetectionPanel channel={feed.detection} onPick={open} reducedMotion={reducedMotion} gap={GAP} />

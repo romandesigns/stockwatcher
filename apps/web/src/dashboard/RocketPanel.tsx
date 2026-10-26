@@ -1,10 +1,12 @@
 import { Icon } from "@stockwatcher/chart-web";
 import { cn, ScrollArea, Tip } from "@stockwatcher/chart-web/ui";
-import { rocketHeaderView, rocketLinePaths, rocketNow, rocketSectionsView, type RocketRowView, type RocketSectionsView, type RocketState, type RocketTone, withZoneSections } from "@stockwatcher/shared";
+import { formatEtTime } from "@stockwatcher/chart-core";
+import { rocketHeaderView, rocketNow, rocketRowMarks, rocketSectionsView, type RocketRowView, type RocketSectionsView, type RocketState, type RocketTone, type RowMarks, withZoneSections } from "@stockwatcher/shared";
 import { memo } from "react";
 import { useTickerPress } from "../lib/useTickerPress.ts";
 import { StarButton } from "../favorites/StarButton.tsx";
 import { Reveal } from "./Reveal.tsx";
+import { Flame, MarksLine, RowLine } from "./RowMarks.tsx";
 import { ZoneNote } from "./ZoneNote.tsx";
 
 const TONE: Record<RocketTone, string> = {
@@ -64,6 +66,8 @@ export function RocketPanelView({ state, wallNow, onPick }: { state: RocketState
   const { enabled, panel } = state;
   const now = rocketNow(state, wallNow);
   const { bursts, runners: rows }: RocketSectionsView = panel ? withZoneSections(rocketSectionsView(panel, now), panel.zones) : { bursts: null, runners: [] };
+  // The lighter rows' marks (rowMarks.ts), by row key (the wire id).
+  const marks: MarksById = new Map((panel?.rows ?? []).map((w) => [w.id, { marks: rocketRowMarks(w, now, formatEtTime), trigger: w.levels?.trigger ?? null }]));
   const head = panel ? rocketHeaderView(panel, state.connected) : null;
   return (
     <aside aria-labelledby="rocket-title" className="flex min-h-0 min-w-0 flex-col gap-2 rounded-xl bg-card p-2.5">
@@ -101,7 +105,7 @@ export function RocketPanelView({ state, wallNow, onPick }: { state: RocketState
                   <span className="ml-auto font-mono text-[11px] text-muted-foreground tabular-nums">{bursts.head.count}</span>
                 </div>
                 <p className="m-0 px-1 text-[10px] leading-snug text-text-faint">{[bursts.head.what, bursts.head.typical].filter(Boolean).join(". ")}</p>
-                <RowList rows={bursts.rows} onPick={onPick} />
+                <RowList rows={bursts.rows} marks={marks} onPick={onPick} />
               </section>
             )}
           </Reveal>
@@ -111,7 +115,7 @@ export function RocketPanelView({ state, wallNow, onPick }: { state: RocketState
               <Reveal show={(bursts?.rows.length ?? 0) > 0}>
                 <h3 className="m-0 px-1 pb-1 text-xs font-semibold">Flags &amp; running</h3>
               </Reveal>
-              <RowList rows={rows} onPick={onPick} />
+              <RowList rows={rows} marks={marks} onPick={onPick} />
             </section>
           </Reveal>
         </ScrollArea>
@@ -120,12 +124,17 @@ export function RocketPanelView({ state, wallNow, onPick }: { state: RocketState
   );
 }
 
-function RowList({ rows, onPick }: { rows: RocketRowView[]; onPick: (symbol: string) => void }) {
+/** A row's marks and its setup's trigger (micros), by the row's key (its wire id). */
+type MarksById = ReadonlyMap<string, { marks: RowMarks; trigger: number | null }>;
+
+const NO_MARKS: RowMarks = { flame: null, pillars: null, rvol: null, news: null, path: null, stage: null, tail: null };
+
+function RowList({ rows, marks, onPick }: { rows: RocketRowView[]; marks: MarksById; onPick: (symbol: string) => void }) {
   return (
     <ul className="m-0 flex list-none flex-col gap-1 p-0">
       {rows.map((r) => (
-        <li key={r.key} className="relative">
-          <RocketRow row={r} onPick={onPick} />
+        <li key={r.key} className="@container/row relative">
+          <RocketRow row={r} marks={marks.get(r.key)?.marks ?? NO_MARKS} trigger={marks.get(r.key)?.trigger ?? null} onPick={onPick} />
           {/* Beside the row, not in it (a button cannot hold a button). */}
           <StarButton symbol={r.symbol} className="absolute top-1 right-1" />
         </li>
@@ -134,12 +143,20 @@ function RowList({ rows, onPick }: { rows: RocketRowView[]; onPick: (symbol: str
   );
 }
 
-const RocketRow = memo(function RocketRow({ row: r, onPick }: { row: RocketRowView; onPick: (symbol: string) => void }) {
+/**
+ * One Runners row as a lighter row (owner, 2026-10-26, design canvas "StockWatcher lighter rows"):
+ * ticker, price and day gain as text with the day line; the second line is the Runners path (its
+ * age, later paths, the move since the flag and the reasons in its tooltip), the momentum word,
+ * the outcome tag and the setup's stage and meter. The flame lights on a fresh burst that holds.
+ */
+const RocketRow = memo(function RocketRow({ row: r, marks, trigger, onPick }: { row: RocketRowView; marks: RowMarks; trigger: number | null; onPick: (symbol: string) => void }) {
   const press = useTickerPress(r.symbol, () => onPick(r.symbol));
   const m = r.momentum;
   const b = r.burst;
   // A live burst takes the accent edge; once it settles the row falls back to its momentum edge.
   const edge = b?.live ? "accent" : m.edge;
+  // Everything the old state line and burst line spelled out, for the momentum word's tooltip.
+  const stateLabel = [b ? [b.headline, b.since, b.move].filter(Boolean).join(" · ") : "", m.label, m.provisional ? "provisional" : "", m.since, m.note].filter(Boolean).join(" · ");
   return (
     <button
       type="button"
@@ -155,104 +172,36 @@ const RocketRow = memo(function RocketRow({ row: r, onPick }: { row: RocketRowVi
         m.dimmed && "opacity-60",
       )}
     >
-      <span className="flex items-baseline gap-1.5 pr-7">
+      <span className="flex items-center gap-1.5 pr-7">
+        <Flame flame={marks.flame} />
         <span className="text-sm font-semibold">{r.symbol}</span>
-        <span className="text-[13px] tabular-nums">{r.price}</span>
+        <span className="text-sm tabular-nums">{r.price}</span>
         {r.gain && <span className="text-xs text-muted-foreground tabular-nums">{r.gain}</span>}
-        <span className="self-center rounded bg-bg-raised px-1 py-px font-sans text-[9px] font-medium whitespace-nowrap text-muted-foreground" data-testid="rocket-source">
-          {r.source.label}
-        </span>
-        {/* Later paths on the same stock (follow-ups): secondary, quieter than the source chip. */}
-        {r.also.map((a) => (
-          <Tip key={a.kind} label={`${a.label} ${a.age === "now" ? "just now" : `${a.age} ago`}, after the row`}>
-            <span className="self-center truncate font-sans text-[9px] whitespace-nowrap text-text-faint" data-testid="rocket-also">
-              + {a.label}
-            </span>
-          </Tip>
-        ))}
-        {/* The armed MP5 setup ("Pullback · trigger $3.42"): a fact on the row, quiet like the source chip, never accent. */}
-        {r.setup && (
-          <span className="self-center truncate rounded bg-bg-raised px-1 py-px font-sans text-[9px] font-medium whitespace-nowrap text-foreground" data-testid="rocket-setup">
-            {r.setup.label}
-          </span>
-        )}
+        {r.fresh && <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-primary motion-reduce:animate-none" aria-label="Flagged under a minute ago" role="img" />}
         {r.halted && <span className="rounded bg-warning px-1 py-px font-sans text-[9px] font-semibold text-background">HALTED</span>}
-        <span className={cn("ml-auto inline-flex items-center gap-1 text-[11px] tabular-nums", r.fresh ? "font-semibold text-primary" : "text-text-faint")}>
-          {r.fresh && <span className="size-1.5 animate-pulse rounded-full bg-primary motion-reduce:animate-none" aria-hidden />}
-          {r.age}
-        </span>
+        {/* Neutral (green belongs to the strict outcome here); the tail still says the last minute. */}
+        <RowLine line={r.line} tail={marks.tail} trigger={marks.stage ? trigger : null} tone="text-muted-foreground" stretch className="ml-auto w-18 @xs/row:w-26" />
       </span>
-      <span className="grid grid-cols-[minmax(0,1fr)_72px] items-center gap-2">
-        <span className="flex min-w-0 flex-col gap-1">
-          {b && (
-            <span className="flex items-center gap-1.5 overflow-hidden font-sans text-xs whitespace-nowrap">
-              {b.live && <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-primary motion-reduce:animate-none" aria-hidden />}
-              <span className={cn("font-semibold transition-colors duration-300 motion-reduce:transition-none", b.live ? "text-primary" : "text-foreground")}>{b.headline}</span>
-              <span className="truncate font-mono text-muted-foreground tabular-nums">{b.since}</span>
-            </span>
-          )}
-          <span className={cn("flex items-center gap-1.5 overflow-hidden font-sans text-xs whitespace-nowrap transition-colors duration-300 motion-reduce:transition-none", TONE[m.tone], m.attention && "font-semibold")}>
-            {m.pulse && <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-current motion-reduce:animate-none" aria-hidden />}
-            {m.label}
-            {m.provisional && <span className="font-normal text-text-faint">provisional</span>}
-            {m.since && <span className="font-mono font-normal text-text-faint">{m.since}</span>}
-            {m.note && <span className="truncate font-mono font-normal text-muted-foreground">{m.note}</span>}
-          </span>
-          <span className="flex gap-2 text-[11px] whitespace-nowrap tabular-nums" aria-label={b ? "last 30 s before the alert, from the alert, from high, last minute" : `from ${r.fromWhat}, from high, last minute`}>
-            {b?.move && <Tip label="The 30 s before the alert"><span className="text-foreground">{b.move}</span></Tip>}
-            <Tip label={`From the ${r.fromWhat} price`}><span className={TONE[r.fromFlagTone]}>{r.fromFlag}</span></Tip>
-            <Tip label={`Off the high since the ${r.fromWhat}`}><span className={TONE[r.fromHighTone]}>{r.fromHigh}</span></Tip>
-            <Tip label="Last minute"><span className={TONE[r.move1mTone]}>{r.move1m}</span></Tip>
-          </span>
-        </span>
-        <DayLine line={r.line} />
-      </span>
-      {r.meter !== null && <TriggerMeter value={r.meter} tone={m.tone} />}
+      <MarksLine
+        marks={marks}
+        extra={
+          <>
+            {/* The momentum state stays a word (it is the row's verdict, not a fact a mark can
+                hold); a live burst says its own headline. The rest of the old sentence is in the
+                path's tooltip. */}
+            <Tip label={stateLabel}>
+              <span className={cn("inline-flex min-w-0 items-center gap-1.5 truncate font-sans text-xs transition-colors duration-300 motion-reduce:transition-none", TONE[b?.live ? "accent" : m.tone], (m.attention || b?.live) && "font-semibold")} role="img" aria-label={stateLabel} data-testid="rocket-state">
+                {(m.pulse || b?.live) && <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-current motion-reduce:animate-none" aria-hidden />}
+                <span className="truncate">{b?.live ? b.headline : m.label}</span>
+              </span>
+            </Tip>
+            {r.outcome && <span className={cn("shrink-0 font-sans text-[11px] font-semibold", TONE[r.outcome.tone])}>{r.outcome.label}</span>}
+          </>
+        }
+      />
       {/* The row's whole width (the shelf range and base rate need it on a narrow column); while
-          closed it cancels the row's gap-1 so an absent note costs no space. */}
-      <ZoneNote note={r.zone ?? null} closedClassName="-mt-1" />
-      <span className="flex items-center gap-1.5 overflow-hidden whitespace-nowrap">
-        {r.reasons.map((x) => (
-          <span key={x} className="truncate rounded bg-bg-raised px-1.5 py-px font-sans text-[11px] text-muted-foreground">
-            {x}
-          </span>
-        ))}
-        <span className="ml-auto flex shrink-0 items-center gap-2">
-          {r.outcome && <span className={cn("font-sans text-[11px] font-semibold", TONE[r.outcome.tone])}>{r.outcome.label}</span>}
-          {r.score && <Tip label={b ? "Burst model score" : r.source.kind === "running" ? "Move over its requirement" : r.source.kind === "run" ? "Leg gain over the +20% it needed" : r.source.kind === "fast" ? "Held move over the % it needed" : "Strategy score"}><span className="text-[10px] text-text-faint tabular-nums">{r.score}</span></Tip>}
-        </span>
-      </span>
+          closed it cancels the row's gap so an absent note costs no space. */}
+      <ZoneNote note={r.zone ?? null} closedClassName="-mt-1.5" />
     </button>
   );
 });
-
-/**
- * The row chart (the Ross row's size): the day's 30 s closes from 04:00 ET with the live price as
- * its end, drawn in the neutral text tone (green belongs to the strict outcome here), with the
- * previous close as a faint dotted baseline when it is near enough to draw.
- */
-function DayLine({ line }: { line: RocketRowView["line"] }) {
-  if (!line) return <span className="h-7 w-[72px]" aria-hidden />;
-  const p = rocketLinePaths(line, 72, 28);
-  return (
-    <svg viewBox="0 0 72 28" className="h-7 w-[72px] animate-line-in text-muted-foreground" aria-hidden data-testid="rocket-day-line">
-      {p.baseY !== null && <line x1={0} x2={72} y1={p.baseY} y2={p.baseY} stroke="currentColor" strokeOpacity={0.35} strokeWidth={1} strokeDasharray="1.5 2.5" />}
-      <path d={p.area} fill="currentColor" fillOpacity={0.12} />
-      <path d={p.line} fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-/** Pullback low (left, red: the failure level) to trigger (right, neutral), the price as a dot: the Ross row's meter. */
-function TriggerMeter({ value, tone }: { value: number; tone: RocketTone }) {
-  const v = Math.max(0, Math.min(1, value));
-  return (
-    <svg viewBox="0 0 160 8" preserveAspectRatio="none" className={cn("block h-2 w-full", TONE[tone])} role="img" aria-label={`price ${Math.round(v * 100)}% of the way from the pullback low to the trigger`}>
-      <rect x="0" y="3" width="160" height="2" rx="1" className="fill-bg-raised" />
-      <rect x="0" y="0" width="2" height="8" className="fill-critical" />
-      <rect x="158" y="0" width="2" height="8" className="fill-muted-foreground" />
-      <rect x="0" y="3" width={v * 156} height="2" rx="1" fill="currentColor" />
-      <circle cx={2 + v * 154} cy="4" r="3" fill="currentColor" />
-    </svg>
-  );
-}

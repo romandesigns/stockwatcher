@@ -1,11 +1,11 @@
 import { formatEtTime } from "@stockwatcher/chart-core";
 import { UI } from "@stockwatcher/chart-native";
-import { detectionFamilyLabel, detectionStateLabel, groupDetections, rossAttention, rossFreshness, rossItemCount, rossLinePaths, rossRowView, type DetectionChannel, type DetectionEpisode, type RossChannel, type RossRowView, type RossTone } from "@stockwatcher/shared";
-import { memo, useEffect, useMemo, useState } from "react";
+import { detectionFamilyLabel, detectionStateLabel, groupDetections, rocketNow, rossAttention, rossFreshness, rossItemCount, rossRowMarks, rossRowView, runnersBySymbol, type DetectionChannel, type DetectionEpisode, type RocketChannel, type RossChannel, type RossRowView, type RossTone, type RowMarks, type TailMark } from "@stockwatcher/shared";
+import { memo, useEffect, useState } from "react";
 import { Animated, Pressable, StyleSheet, Text, View } from "react-native";
-import Svg, { Circle, Line, Path, Rect } from "react-native-svg";
 
-import { useDetection, useRoss } from "../feed/hooks";
+import { useDetection, useRocket, useRoss } from "../feed/hooks";
+import { Flame, MarksLine, RowLine, useReadoutPress, useWall } from "./RowMarks";
 import { Collapse } from "../motion/Collapse";
 import { fonts } from "../theme";
 import { useTickerPress } from "../ui/useTickerPress";
@@ -32,13 +32,18 @@ const hhmm = (ns: number) => formatEtTime(Math.round(ns / 1_000_000));
  * card (owner, 2026-10-22): it opens and closes by its real height (Collapse), `gap` being the
  * list's gap it sits in.
  */
-export function RossPanel({ channel, detection, onPick, reducedMotion, gap = 0 }: { channel: RossChannel; detection: DetectionChannel; onPick: (symbol: string, episodeId?: string, runEpoch?: string) => void; reducedMotion: boolean; gap?: number }) {
+export function RossPanel({ channel, detection, runners, onPick, reducedMotion, gap = 0 }: { channel: RossChannel; detection: DetectionChannel; runners: RocketChannel; onPick: (symbol: string, episodeId?: string, runEpoch?: string) => void; reducedMotion: boolean; gap?: number }) {
   const state = useRoss(channel);
   const detections = useDetection(detection);
   const detectionEpoch = detections.frame?.runEpoch;
   const bySymbol = new Map(groupDetections(detections.snapshot).map((g) => [g.symbol, g.selected]));
   const { enabled, panel } = state;
-  const rows = panel?.rows.map((r) => rossRowView(r, panel.cutoff, hhmm)) ?? [];
+  // Today's Runners row per member: its path and the burst behind the flame (shared rowMarks.ts).
+  const rocket = useRocket(runners);
+  const wall = useWall();
+  const byRunner = runnersBySymbol(rocket);
+  const nowMs = rocketNow(rocket, wall);
+  const rows = panel?.rows.map((w) => ({ ...rossRowView(w, panel.cutoff, hhmm), marks: rossRowMarks(w, byRunner.get(w.symbol), nowMs, formatEtTime), trigger: w.setup?.trigger?.price ?? null })) ?? [];
   const attention = panel ? rossAttention(panel) : 0;
   // A dropped socket keeps the last rows and says so: they are the last known state, not now.
   const fresh = rossFreshness(state, hhmm);
@@ -77,17 +82,25 @@ export function RossPanel({ channel, detection, onPick, reducedMotion, gap = 0 }
 /** Only a crossing in progress (accent) and a price at the trigger (amber) earn an edge: a broke-trigger is a past stage, never a green "go". */
 const EDGE: Partial<Record<RossRowView["setup"]["state"], string>> = { crossing: UI.accent, near: UI.warning };
 
-const Row = memo(function Row({ row: r, episode, detectionCurrent, onPick, reducedMotion }: { row: RossRowView; episode?: DetectionEpisode; detectionCurrent: boolean; onPick: (symbol: string) => void; reducedMotion: boolean }) {
-  const press = useTickerPress(r.symbol, () => onPick(r.symbol));
+/**
+ * One member as a lighter row (owner, 2026-10-26, design canvas "StockWatcher lighter rows";
+ * phone artboard): ticker, price and day gain as text with the day line (the last minute its
+ * thick tail, the trigger a dotted level), then the marks line. Press and hold reads every mark
+ * out; the flame lights on a fresh Buying burst that holds its alert price. The cue edges stay.
+ */
+const Row = memo(function Row({ row: r, episode, detectionCurrent, onPick, reducedMotion }: { row: RossRowView & { marks: RowMarks; trigger: number | null }; episode?: DetectionEpisode; detectionCurrent: boolean; onPick: (symbol: string) => void; reducedMotion: boolean }) {
+  const press = useReadoutPress(useTickerPress(r.symbol, () => onPick(r.symbol)), r.marks);
   const edge = EDGE[r.setup.state];
+  const m = r.marks;
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={r.aria}
-      accessibilityHint="Opens its chart. Tap, then press and hold to copy"
+      accessibilityHint="Opens its chart. Press and hold to read its marks; tap, then press and hold to copy"
       {...press}
       style={({ pressed }) => [
         styles.row,
+        m.flame?.lit && { backgroundColor: UI.raised },
         r.setup.state === "crossing" && { backgroundColor: "rgba(139,156,255,0.10)" },
         r.dimmed && { opacity: 0.6 },
         pressed && { backgroundColor: UI.raised },
@@ -95,34 +108,22 @@ const Row = memo(function Row({ row: r, episode, detectionCurrent, onPick, reduc
     >
       {/* The cue's edge: a filled bar, not a border (house rule: no borders). */}
       {edge && <View style={[styles.edge, { backgroundColor: edge }]} />}
-      {/* The two text lines on the left, the day's line chart on their right (like the web row):
-          the chart's box is always reserved, so a line arriving never moves the text. */}
-      <View style={styles.top}>
-        <View style={styles.lines}>
-          <View style={styles.line}>
-            <Text style={styles.symbol}>{r.symbol}</Text>
-            <Text style={styles.price}>{r.price}</Text>
-            <Text style={[styles.small, { color: UI.good }]}>{r.gain}</Text>
-            {r.badge && (
-              <View style={[styles.badge, { backgroundColor: r.badge.label === "NEW" ? UI.accent : UI.warning }]}>
-                <Text style={styles.badgeText}>{r.badge.label}</Text>
-              </View>
-            )}
-            <Text style={[styles.m1, { color: TONE[r.m1Tone] }]}>{r.m1}</Text>
-            <StarToggle symbol={r.symbol} size={14} />
+      <View style={styles.line}>
+        <Flame flame={m.flame} />
+        <Text style={styles.symbol}>{r.symbol}</Text>
+        <Text style={styles.price}>{r.price}</Text>
+        <Text style={[styles.small, { color: UI.good }]}>{r.gain}</Text>
+        {r.badge && (
+          <View style={[styles.badge, { backgroundColor: r.badge.label === "NEW" ? UI.accent : UI.warning }]}>
+            <Text style={styles.badgeText}>{r.badge.label}</Text>
           </View>
-          <View style={styles.line}>
-            {r.setup.pulse && <Pulse color={TONE[r.setup.tone]} size={6} reducedMotion={reducedMotion} />}
-            <Text numberOfLines={1} style={[styles.setup, { color: TONE[r.setup.tone], fontFamily: r.setup.attention ? fonts.semibold : fonts.regular }]}>
-              {r.setup.label}
-              {r.setup.note ? <Text style={styles.note}>{` ${r.setup.note}`}</Text> : null}
-            </Text>
-            {r.tag ? <Text style={[styles.tag, { color: TONE[r.tagTone] }]}>{r.tag}</Text> : null}
-          </View>
+        )}
+        <View style={styles.chartSlot}>
+          <DayLine line={r.line} tail={m.tail} trigger={m.stage ? r.trigger : null} reducedMotion={reducedMotion} />
         </View>
-        <DayLine line={r.line} reducedMotion={reducedMotion} />
+        <StarToggle symbol={r.symbol} size={14} />
       </View>
-      {r.setup.meter !== null && <Meter value={r.setup.meter} color={TONE[r.setup.tone]} />}
+      <MarksLine marks={m} />
       {episode && <Text style={styles.note}>Detection: {detectionFamilyLabel(episode.family)} · {detectionStateLabel(episode.state)} · experimental{detectionCurrent ? "" : " · last received"}</Text>}
     </Pressable>
   );
@@ -137,10 +138,11 @@ export const DAY_LINE_H = 28;
  * developing before I actually click on the ticker"): every 30 s close from 04:00 ET and the
  * live price as its end (an older server: the last 15 s closes), good when it ends at or above
  * the day's first price, critical below, with a faint dotted previous-close baseline when it is
- * near the line (`rossLinePaths`, shared with the web row). It fades in when its line first
- * arrives; with reduced motion it simply appears. The box is reserved either way.
+ * near the line (`rossLinePaths`, shared with the web row). Lighter rows (2026-10-26): the last
+ * minute is its thick tail and a setup's trigger a dotted level (RowLine). It fades in when its
+ * line first arrives; with reduced motion it simply appears. The box is reserved either way.
  */
-export function DayLine({ line, reducedMotion }: { line: RossRowView["line"]; reducedMotion: boolean }) {
+export function DayLine({ line, tail = null, trigger = null, reducedMotion }: { line: RossRowView["line"]; tail?: TailMark | null; trigger?: number | null; reducedMotion: boolean }) {
   const has = line !== null;
   const [o] = useState(() => new Animated.Value(has ? (reducedMotion ? 1 : 0) : 0));
   useEffect(() => {
@@ -156,32 +158,11 @@ export function DayLine({ line, reducedMotion }: { line: RossRowView["line"]; re
     a.start();
     return () => a.stop();
   }, [o, has, reducedMotion]);
-  const paths = useMemo(() => (line ? rossLinePaths(line, DAY_LINE_W, DAY_LINE_H) : null), [line]);
   const color = line?.tone === "critical" ? UI.critical : UI.good;
   return (
-    <Animated.View style={[styles.chart, { opacity: o }]} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" testID="ross-day-line">
-      {paths && (
-        <Svg width={DAY_LINE_W} height={DAY_LINE_H} viewBox={`0 0 ${DAY_LINE_W} ${DAY_LINE_H}`}>
-          {paths.baseY !== null && <Line x1={0} x2={DAY_LINE_W} y1={paths.baseY} y2={paths.baseY} stroke={UI.textFaint} strokeWidth={1} strokeDasharray="1.5 2.5" />}
-          <Path d={paths.area} fill={color} fillOpacity={0.14} />
-          <Path d={paths.line} fill="none" stroke={color} strokeWidth={1.5} strokeLinejoin="round" />
-        </Svg>
-      )}
+    <Animated.View style={[styles.chart, { opacity: o }]} testID="ross-day-line">
+      <RowLine line={line} tail={tail} trigger={trigger} width={DAY_LINE_W} height={DAY_LINE_H} color={color} />
     </Animated.View>
-  );
-}
-
-/** Pullback low (left, red: the failure level) to trigger (right, neutral: a level, not a "go"), the price as a dot. */
-function Meter({ value, color }: { value: number; color: string }) {
-  const v = Math.max(0, Math.min(1, value));
-  return (
-    <Svg width="100%" height={8} viewBox="0 0 160 8" preserveAspectRatio="none">
-      <Rect x={0} y={3} width={160} height={2} rx={1} fill={UI.raised} />
-      <Rect x={0} y={0} width={2} height={8} fill={UI.critical} />
-      <Rect x={158} y={0} width={2} height={8} fill={UI.textDim} />
-      <Rect x={0} y={3} width={v * 156} height={2} rx={1} fill={color} />
-      <Circle cx={2 + v * 154} cy={4} r={3} fill={color} />
-    </Svg>
   );
 }
 
@@ -216,6 +197,8 @@ const styles = StyleSheet.create({
   top: { flexDirection: "row", alignItems: "center", gap: 8 },
   lines: { flex: 1, minWidth: 0, gap: 4 },
   chart: { width: DAY_LINE_W, height: DAY_LINE_H },
+  // The day line takes the first line's free space's right end, before the star.
+  chartSlot: { marginLeft: "auto" },
   line: { flexDirection: "row", alignItems: "center", gap: 7 },
   symbol: { color: UI.text, fontSize: 14, fontFamily: fonts.semibold },
   price: { color: UI.text, fontSize: 13, fontVariant: ["tabular-nums"] },

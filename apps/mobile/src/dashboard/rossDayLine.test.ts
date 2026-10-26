@@ -14,14 +14,14 @@ test("the chart is a compact box that fits beside the row on the Fold's cover sc
   expect(num("DAY_LINE_W")).toBeGreaterThan(0);
   expect(num("DAY_LINE_W")).toBeLessThanOrEqual(80);
   expect(num("DAY_LINE_H")).toBeLessThanOrEqual(28);
-  expect(src).toContain("<DayLine line={r.line} reducedMotion={reducedMotion} />");
+  expect(src).toContain("<DayLine line={r.line} tail={m.tail} trigger={m.stage ? r.trigger : null} reducedMotion={reducedMotion} />");
 });
 
 test("the row container gets no layout transition and the chart fades by opacity, honouring reduced motion", () => {
   const row = src.slice(src.indexOf("<Pressable"), src.indexOf(">", src.indexOf("<Pressable")));
   expect(row).not.toContain("layout=");
   expect(src).not.toContain("LinearTransition");
-  const day = src.slice(src.indexOf("export function DayLine"), src.indexOf("function Meter"));
+  const day = src.slice(src.indexOf("export function DayLine"), src.indexOf("function Pulse"));
   expect(day).toContain("useNativeDriver: true");
   expect(day).toContain("if (reducedMotion)");
 });

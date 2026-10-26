@@ -13,6 +13,8 @@ export interface Toast {
   icon?: "check" | "bell";
   action?: ToastAction;
   ms?: number;
+  /** Lines the text may take (default 2): a row's press-and-hold read-out of its marks needs more. */
+  lines?: number;
 }
 
 /** The design's "Toast → Undo (5 s)". */

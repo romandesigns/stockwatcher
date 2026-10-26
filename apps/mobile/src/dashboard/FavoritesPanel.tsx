@@ -1,11 +1,11 @@
 import { formatEtTime } from "@stockwatcher/chart-core";
 import { Icon, UI } from "@stockwatcher/chart-native";
-import { favoriteRows, rossLinePaths, type FavoriteRowView, type FavoritesChannel, type RossTone } from "@stockwatcher/shared";
+import { favoriteRowMarks, favoriteRows, rocketNow, runnersBySymbol, type FavoriteRowView, type FavoritesChannel, type RocketChannel, type RossTone, type RowMarks } from "@stockwatcher/shared";
 import { memo, useMemo, useState } from "react";
 import { Pressable, StyleSheet, Text, View, type LayoutChangeEvent } from "react-native";
-import Svg, { Line, Path } from "react-native-svg";
 
-import { useFavorites } from "../feed/hooks";
+import { useFavorites, useRocket } from "../feed/hooks";
+import { Flame, MarksLine, RowLine, useReadoutPress, useWall } from "./RowMarks";
 import { Collapse } from "../motion/Collapse";
 import { appActions, useApp } from "../state/store";
 import { fonts } from "../theme";
@@ -33,10 +33,24 @@ const hhmm = (ms: number) => formatEtTime(ms);
  * arrows move it. No favorites, no card (the dashboard's rule): stars on the chart, the search,
  * Runners and Ross rows add them. The row chart's width follows the row (Fold cover to unfolded).
  */
-export function FavoritesPanel({ channel, onPick, reducedMotion, gap = 0 }: { channel: FavoritesChannel; onPick: (symbol: string) => void; reducedMotion: boolean; gap?: number }) {
+export function FavoritesPanel({ channel, runners, onPick, reducedMotion, gap = 0 }: { channel: FavoritesChannel; runners: RocketChannel; onPick: (symbol: string) => void; reducedMotion: boolean; gap?: number }) {
   const list = useApp((s) => s.favorites);
   const state = useFavorites(channel);
   const rows = useMemo(() => favoriteRows(list, state, hhmm), [list, state]);
+  // The lighter rows' marks (shared rowMarks.ts), joined to today's Runners row for the flame.
+  const rocket = useRocket(runners);
+  const wall = useWall();
+  const nowMs = rocketNow(rocket, wall);
+  const marks = useMemo(() => {
+    const byRunner = runnersBySymbol(rocket);
+    const bySymbol = new Map(state.rows?.map((r) => [r.symbol, r]) ?? []);
+    return new Map(
+      list.flatMap((s) => {
+        const w = bySymbol.get(s);
+        return w ? [[s, { marks: favoriteRowMarks(w, byRunner.get(s), nowMs, hhmm), trigger: w.levels?.trigger ?? null }] as const] : [];
+      }),
+    );
+  }, [list, state, rocket, nowMs]);
   const reconnecting = !state.connected && state.rows !== null;
   return (
     <Collapse open={list.length > 0} reducedMotion={reducedMotion} gap={gap}>
@@ -54,7 +68,7 @@ export function FavoritesPanel({ channel, onPick, reducedMotion, gap = 0 }: { ch
         )}
         <View style={[styles.rows, reconnecting && styles.dimmed]}>
           {rows.map((r, i) => (
-            <Row key={r.symbol} symbol={r.symbol} row={r.view} first={i === 0} last={i === rows.length - 1} onPick={onPick} />
+            <Row key={r.symbol} symbol={r.symbol} row={r.view} marks={marks.get(r.symbol)?.marks ?? null} trigger={marks.get(r.symbol)?.trigger ?? null} first={i === 0} last={i === rows.length - 1} onPick={onPick} />
           ))}
         </View>
       </View>
@@ -62,24 +76,35 @@ export function FavoritesPanel({ channel, onPick, reducedMotion, gap = 0 }: { ch
   );
 }
 
-const Row = memo(function Row({ symbol, row: r, first, last, onPick }: { symbol: string; row: FavoriteRowView | null; first: boolean; last: boolean; onPick: (symbol: string) => void }) {
-  const press = useTickerPress(symbol, () => onPick(symbol));
+/**
+ * One favorite as a lighter row (owner, 2026-10-26, design canvas "StockWatcher lighter rows"):
+ * ticker, price and change with the day line, then the marks line; press and hold reads every mark
+ * out, with the volume, distance from the high and premarket high the row used to spell out. On
+ * the narrowest rows (the Fold's cover screen) the line moves to the end of the marks line, so the
+ * move and star controls keep their room. A stale row says how long ago it last traded.
+ */
+const Row = memo(function Row({ symbol, row: r, marks: m, trigger, first, last, onPick }: { symbol: string; row: FavoriteRowView | null; marks: RowMarks | null; trigger: number | null; first: boolean; last: boolean; onPick: (symbol: string) => void }) {
+  const facts = r ? [r.volume && `${r.volume} volume`, r.fromHigh, r.pmHigh].filter(Boolean).join(" · ") : "";
+  // The read-out adds the facts the row stopped spelling out to the marks' labels.
+  const readMarks = useMemo(() => (m && facts ? { ...m, tail: { tone: m.tail?.tone ?? "muted", label: [m.tail?.label, facts].filter(Boolean).join(" · ") } } : m), [m, facts]);
+  const press = useReadoutPress(useTickerPress(symbol, () => onPick(symbol)), readMarks);
   // The row chart takes about a quarter of the row: 72 dp on the Fold's cover screen, wider unfolded.
   const [width, setWidth] = useState(0);
   const onLayout = (e: LayoutChangeEvent) => setWidth(e.nativeEvent.layout.width);
   const chartW = Math.max(72, Math.min(160, Math.round(width * 0.26)));
-  const facts = r ? [r.volume && `${r.volume} vol`, r.rvol, r.fromHigh, r.pmHigh].filter(Boolean).join("  ·  ") : "";
-  const chips = r ? r.chips.filter((c) => c.label !== "Halted") : [];
+  const narrow = width > 0 && width < 340;
+  const chart = r && !r.empty ? <RowLine line={r.line} tail={m?.tail ?? null} trigger={m?.stage ? trigger : null} width={chartW} color={r.line?.tone === "critical" ? UI.critical : UI.good} /> : null;
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={r?.aria || symbol}
-      accessibilityHint="Opens its chart. Tap, then press and hold to copy"
+      accessibilityHint="Opens its chart. Press and hold to read its marks; tap, then press and hold to copy"
       {...press}
       onLayout={onLayout}
-      style={({ pressed }) => [styles.row, r?.stale && styles.dimmed, pressed && { backgroundColor: UI.raised }]}
+      style={({ pressed }) => [styles.row, m?.flame?.lit && { backgroundColor: UI.raised }, r?.stale && styles.dimmed, pressed && { backgroundColor: UI.raised }]}
     >
       <View style={styles.line}>
+        <Flame flame={m?.flame ?? null} />
         <Text style={styles.symbol}>{symbol}</Text>
         {r && !r.empty && <Text style={styles.price}>{r.price}</Text>}
         {r?.change ? <Text style={[styles.small, { color: TONE[r.changeTone] }]}>{r.change}</Text> : null}
@@ -89,6 +114,7 @@ const Row = memo(function Row({ symbol, row: r, first, last, onPick }: { symbol:
           </View>
         )}
         <View style={styles.controls}>
+          {!narrow && chart}
           {!first && <Move symbol={symbol} up />}
           {!last && <Move symbol={symbol} />}
           <StarToggle symbol={symbol} quiet />
@@ -100,20 +126,8 @@ const Row = memo(function Row({ symbol, row: r, first, last, onPick }: { symbol:
         <Text style={styles.note}>No trades today yet</Text>
       ) : (
         <View style={styles.body}>
-          <View style={styles.lines}>
-            {facts ? <Text style={styles.facts}>{facts}</Text> : null}
-            {chips.length > 0 && (
-              <View style={styles.chips}>
-                {chips.map((c) => (
-                  <View key={c.label} style={styles.chip}>
-                    <Text style={[styles.chipText, { color: TONE[c.tone] }]}>{c.label}</Text>
-                  </View>
-                ))}
-              </View>
-            )}
-            {r.stale ? <Text style={styles.note}>{r.stale}</Text> : null}
-          </View>
-          <DayLine line={r.line} width={chartW} />
+          <View style={styles.lines}>{m && <MarksLine marks={m} extra={r.stale ? <Text style={styles.note}>{r.stale}</Text> : undefined} />}</View>
+          {narrow && chart}
         </View>
       )}
     </Pressable>
@@ -131,25 +145,6 @@ function Move({ symbol, up = false }: { symbol: string; up?: boolean }) {
     >
       <Icon name={up ? "chevronUp" : "chevronDown"} color={UI.textFaint} size={12} />
     </Pressable>
-  );
-}
-
-const LINE_H = 32;
-
-/** The day's line ending at the live price, the previous close dotted when near (`rossLinePaths`). */
-function DayLine({ line, width }: { line: FavoriteRowView["line"]; width: number }) {
-  const paths = useMemo(() => (line ? rossLinePaths(line, width, LINE_H) : null), [line, width]);
-  const color = line?.tone === "critical" ? UI.critical : UI.good;
-  return (
-    <View style={{ width, height: LINE_H }} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" testID="favorite-day-line">
-      {paths && (
-        <Svg width={width} height={LINE_H} viewBox={`0 0 ${width} ${LINE_H}`}>
-          {paths.baseY !== null && <Line x1={0} x2={width} y1={paths.baseY} y2={paths.baseY} stroke={UI.textFaint} strokeWidth={1} strokeDasharray="1.5 2.5" />}
-          <Path d={paths.area} fill={color} fillOpacity={0.14} />
-          <Path d={paths.line} fill="none" stroke={color} strokeWidth={1.5} strokeLinejoin="round" />
-        </Svg>
-      )}
-    </View>
   );
 }
 

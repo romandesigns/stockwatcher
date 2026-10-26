@@ -131,7 +131,14 @@ export type IconName =
   | "bell"
   | "plus"
   | "more"
-  | "calendar";
+  | "calendar"
+  | "flame"
+  | "news"
+  | "pathRunner"
+  | "pathBurst"
+  | "pathFast"
+  | "pathRun"
+  | "pathRunning";
 
 export const ICONS: Readonly<Record<IconName, IconDef>> = {
   // Drawing tools: the drawn object is primary, its handles and fills secondary.
@@ -259,6 +266,21 @@ export const ICONS: Readonly<Record<IconName, IconDef>> = {
   more: icon([S(circlePath(3, 8, 1.4), { paint: "fill" }), P(circlePath(8, 8, 1.4), { paint: "fill" }), S(circlePath(13, 8, 1.4), { paint: "fill" })]),
   // The replay bar's day picker (2026-10-24, the approved two-tier design): the page soft; its frame, header rule and rings crisp.
   calendar: icon([S("M2.5 4.5h11v9h-11z", { paint: "fill" }), P("M3.5 3.5h9a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-8a1 1 0 0 1 1-1zM2.5 6.5h11M5.5 2v3M10.5 2v3")]),
+  // Lighter rows (owner, 2026-10-26, design canvas "StockWatcher lighter rows"). "Look now": the
+  // outer flame soft, its core full; drawn in the flame token (rowMarks.ts flameMark).
+  flame: icon([
+    S("M8 1.2c.6 2.3 2.8 3.4 3.6 5.6.9 2.5-.2 5.9-3.6 6.9-3.4-1-4.5-4.4-3.6-6.9.4-1.2 1.2-1.9 1.7-2.9.3 1 .9 1.7 1.7 2-.3-1.8-.2-3.3.2-4.7z", { paint: "fill" }),
+    P("M8 7.6c.9 1.1 1.8 1.9 1.8 3.1 0 1.1-.8 2-1.8 2.3-1-.3-1.8-1.2-1.8-2.3 0-1 .7-1.8 1.8-3.1z", { paint: "fill" }),
+  ]),
+  // A story today: the page soft, its column and lines full.
+  news: icon([S("M2.5 2.5h9v11h-8a1 1 0 0 1-1-1z", { paint: "fill" }), P("M11.5 5.5h2v7a1 1 0 0 1-2 0zM4.5 5h5M4.5 7.5h5M4.5 10h3")]),
+  // The five Runners paths, one mark each: the strategy's flag, a buying burst (a bolt), a fast
+  // move (double chevron), a +20 % run (arrow up-right) and a running stock (a rising trend).
+  pathRunner: icon([S("M4.5 3h8l-2 3 2 3h-8z", { paint: "fill" }), P("M4.5 14V2.5M4.5 3h8l-2 3 2 3h-8")]),
+  pathBurst: icon([S("M9 1.5 3.5 9H8l-1 5.5L12.5 7H8z", { paint: "fill" }), P("M9 1.5 3.5 9H8l-1 5.5L12.5 7H8z")]),
+  pathFast: icon([S("M3.5 13 8 8.5 12.5 13"), P("M3.5 9 8 4.5 12.5 9")]),
+  pathRun: icon([S("M3 13 13 3"), P("M6 3h7v7M13 3 8.5 7.5")]),
+  pathRunning: icon([S("M1.5 13h13"), P("M1.5 11l4-4.5 3 2.5 6-6.5M11 2.5h3.5V6")]),
 };
 
 export const ICON_NAMES = Object.keys(ICONS) as IconName[];

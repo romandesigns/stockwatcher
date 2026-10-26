@@ -33,6 +33,8 @@ export interface FavoritePillarsWire {
   passes: number;
   of: number;
   news?: "pass" | "fail" | "unknown" | null;
+  /** The qualifying story's headline class (`financing` = offering / dilution), when any. */
+  news_kind?: string | null;
   /** Daily-denominator relative volume (×). */
   rvol?: number | null;
   member: boolean;

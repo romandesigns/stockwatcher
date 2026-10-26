@@ -1,11 +1,12 @@
 import { formatEtTime } from "@stockwatcher/chart-core";
 import { cn, ScrollArea, Tip } from "@stockwatcher/chart-web/ui";
-import { detectionFamilyLabel, detectionStateLabel, groupDetections, rossAttention, rossFreshness, rossLinePaths, rossRowView, type DetectionChannel, type RossLineView, type RossRowView, type RossTone } from "@stockwatcher/shared";
+import { detectionFamilyLabel, detectionStateLabel, groupDetections, rocketNow, rossAttention, rossFreshness, rossRowMarks, rossRowView, runnersBySymbol, type DetectionChannel, type RocketState, type RossRowView, type RossTone, type RowMarks } from "@stockwatcher/shared";
 import { memo } from "react";
 import type { RossDemoState } from "../feed/useRossState.ts";
 import { useDetection } from "../feed/useDetection.ts";
 import { useTickerPress } from "../lib/useTickerPress.ts";
 import { StarButton } from "../favorites/StarButton.tsx";
+import { Flame, MarksLine, RowLine } from "./RowMarks.tsx";
 
 const TONE: Record<RossTone, string> = {
   good: "text-good",
@@ -41,11 +42,15 @@ const hhmm = (ns: number) => formatEtTime(Math.round(ns / 1_000_000));
  * known and empty all hide its tab (SideTabs), so it has no "Connecting…" or quiet line of its
  * own. While a socket reconnects it keeps the last rows, dimmed and labelled.
  */
-export function RossPanelView({ state, onPick, detection, onEpisodePick }: { state: RossDemoState; onPick: (symbol: string) => void; detection?: DetectionChannel; onEpisodePick?: (symbol: string, episodeId: string, runEpoch: string) => void }) {
+export function RossPanelView({ state, onPick, detection, onEpisodePick, runners, wallNow }: { state: RossDemoState; onPick: (symbol: string) => void; detection?: DetectionChannel; onEpisodePick?: (symbol: string, episodeId: string, runEpoch: string) => void; runners?: RocketState; wallNow?: number }) {
   const detected = useDetection(detection);
   const joined = new Map(groupDetections(detected.snapshot).map((g) => [g.symbol, g.selected]));
   const { enabled, panel, demo } = state;
-  const rows = panel?.rows.map((r) => rossRowView(r, panel.cutoff, hhmm)) ?? [];
+  // Today's Runners row per member: its path and age, and the burst behind the flame (rowMarks.ts).
+  const byRunner = runnersBySymbol(runners);
+  // The Runners market clock (a replay's own day); without Runners there is no path or flame to age.
+  const nowMs = runners ? rocketNow(runners, wallNow) : (wallNow ?? 0);
+  const rows = panel?.rows.map((w) => ({ ...rossRowView(w, panel.cutoff, hhmm), marks: rossRowMarks(w, byRunner.get(w.symbol), nowMs, formatEtTime), trigger: w.setup?.trigger?.price ?? null })) ?? [];
   const attention = panel ? rossAttention(panel) : 0;
   // A dropped socket keeps the last rows and says so: they are the last known state, not now.
   const fresh = rossFreshness(state, hhmm);
@@ -73,7 +78,7 @@ export function RossPanelView({ state, onPick, detection, onEpisodePick }: { sta
       <ScrollArea className={cn("transition-opacity duration-200 motion-reduce:transition-none", fresh.stale && "opacity-60")}>
       <ul className="m-0 flex list-none flex-col gap-1 p-0">
         {rows.map((r) => (
-          <li key={r.symbol} className="relative">
+          <li key={r.symbol} className="@container/row relative">
             <RossRow row={r} onPick={onPick} />
             {/* Beside the row, not in it (a button cannot hold a button). */}
             <StarButton symbol={r.symbol} className="absolute top-1 right-1" />
@@ -89,64 +94,41 @@ export function RossPanelView({ state, onPick, detection, onEpisodePick }: { sta
   );
 }
 
-const RossRow = memo(function RossRow({ row: r, onPick }: { row: RossRowView; onPick: (symbol: string) => void }) {
+/**
+ * One member as a lighter row (owner, 2026-10-26, design canvas "StockWatcher lighter rows"): the
+ * ticker, price and day's gain as text, then the day line; the second line is marks (pillars,
+ * relative volume, news, Runners path, the setup's stage and meter), each named on hover. The
+ * last minute is the line's tail, the trigger a dotted level on it. A fresh Buying burst that holds
+ * its alert price lights the flame. The cue edges (crossing, at the trigger) stay.
+ */
+const RossRow = memo(function RossRow({ row: r, onPick }: { row: RossRowView & { marks: RowMarks; trigger: number | null }; onPick: (symbol: string) => void }) {
   const press = useTickerPress(r.symbol, () => onPick(r.symbol));
+  const m = r.marks;
   return (
     <button
       type="button"
       {...press}
       aria-label={`${r.aria}. Load into the selected chart`}
+      data-flame={m.flame?.lit || undefined}
       className={cn(
-        "flex w-full cursor-pointer touch-manipulation flex-col gap-1 rounded-lg bg-bg-row px-2.5 py-2 text-left font-mono outline-none select-none transition-colors duration-150 hover:bg-bg-raised focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none",
+        "flex w-full cursor-pointer touch-manipulation flex-col gap-1.5 rounded-lg bg-bg-row px-2.5 py-2 text-left font-mono outline-none select-none transition-colors duration-150 hover:bg-bg-raised focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none",
+        m.flame?.lit && "bg-bg-raised/60",
         EDGE[r.setup.state],
         r.dimmed && "opacity-60",
       )}
     >
-      <span className="flex items-baseline gap-1.5 pr-7">
-        <span className={cn("w-2 text-[10px]", TONE[r.moveTone])}>{r.move}</span>
+      <span className="flex items-center gap-1.5 pr-7">
+        <Flame flame={m.flame} />
         <span className="text-sm font-semibold">{r.symbol}</span>
-        <span className="text-[13px] tabular-nums">{r.price}</span>
+        <span className="text-sm tabular-nums">{r.price}</span>
         <span className="text-xs tabular-nums text-good">{r.gain}</span>
         {r.badge && <span className={cn("rounded px-1 py-px font-sans text-[9px] font-semibold text-background", r.badge.label === "NEW" ? "bg-primary" : "bg-warning")}>{r.badge.label}</span>}
-        <span className={cn("ml-auto text-[13px] font-semibold tabular-nums", TONE[r.m1Tone])}>{r.m1}</span>
+        <RowLine line={r.line} tail={m.tail} trigger={m.stage ? r.trigger : null} tone={r.line?.tone === "critical" ? "text-critical" : "text-good"} stretch className="ml-auto w-18 @xs/row:w-26" />
       </span>
-      <span className="grid grid-cols-[minmax(0,1fr)_72px] items-center gap-2 pl-3.5">
-        <span className="flex min-w-0 flex-col gap-1">
-          <span className="flex gap-2 text-[11px] whitespace-nowrap text-muted-foreground tabular-nums">
-            <span className={TONE[r.fromHighTone]}>{r.fromHigh}</span>
-            <span>{r.rvol}</span>
-            {r.tag && <span className={cn("font-sans", TONE[r.tagTone])}>{r.tag}</span>}
-          </span>
-          <span className={cn("flex items-center gap-1.5 overflow-hidden font-sans text-xs whitespace-nowrap", TONE[r.setup.tone], r.setup.attention && "font-semibold")}>
-            {r.setup.pulse && <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-current motion-reduce:animate-none" aria-hidden />}
-            {r.setup.label}
-            {r.setup.note && <span className="truncate font-mono font-normal text-muted-foreground">{r.setup.note}</span>}
-          </span>
-        </span>
-        <Sparkline line={r.line} />
-      </span>
-      {r.setup.meter !== null && <TriggerMeter value={r.setup.meter} tone={r.setup.tone} />}
+      <MarksLine marks={m} />
     </button>
   );
 });
-
-/**
- * The row chart (owner, 2026-10-21): the day's 30 s closes from 04:00 ET with the live price as
- * the end, or an older server's last 15 s closes, as an area sparkline (the shadcn area-chart
- * look, inline SVG). Good when the line ends at or above the day's first price; the previous
- * close is a faint dotted baseline when it is near enough to draw (`rossLinePaths`).
- */
-function Sparkline({ line }: { line: RossLineView | null }) {
-  if (!line) return <span className="h-7 w-[72px]" aria-hidden />;
-  const p = rossLinePaths(line, 72, 28);
-  return (
-    <svg viewBox="0 0 72 28" className={cn("h-7 w-[72px] animate-line-in", line.tone === "good" ? "text-good" : "text-critical")} aria-hidden>
-      {p.baseY !== null && <line x1={0} x2={72} y1={p.baseY} y2={p.baseY} stroke="currentColor" strokeOpacity={0.35} strokeWidth={1} strokeDasharray="1.5 2.5" />}
-      <path d={p.area} fill="currentColor" fillOpacity={0.12} />
-      <path d={p.line} fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinejoin="round" />
-    </svg>
-  );
-}
 
 /** Pullback low (left, red: the failure level) to trigger (right, neutral: a level, not a "go"), the price as a dot. */
 export function TriggerMeter({ value, tone, inset = true }: { value: number; tone: RossTone; inset?: boolean }) {

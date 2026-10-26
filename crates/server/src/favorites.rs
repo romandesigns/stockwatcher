@@ -22,7 +22,8 @@
 //! (`RocketBoard::symbol_context`) and halt state; the micro-pullback levels (favorites join the
 //! stock-context engine's watched set, `ContextBoard::set_favorites`, exactly as Runners rows do);
 //! and the five-pillar decision (passes, news, RVOL, Ross membership) when the context engine
-//! runs. Dollar volume and news headlines are not kept anywhere server-side, so a row has none.
+//! runs. Dollar volume and news headlines are not kept anywhere server-side, so a row has none;
+//! the qualifying story's headline CLASS is (`pillars.news_kind`, `financing` marks dilution).
 //!
 //! # Wire (after `welcome`; additive, an older client never subscribes)
 //!
@@ -89,6 +90,9 @@ pub struct Pillars {
     pub passes: usize,
     pub of: usize,
     pub news: Option<Tri>,
+    /// The qualifying story's headline class (`stock_context::NewsItem::event_type`), when any:
+    /// lets a row mark dilution news (`financing`) without the headline text.
+    pub news_kind: Option<String>,
     /// Daily-denominator relative volume, thousandths (the RVOL pillar's value).
     pub rvol_milli: Option<i64>,
     pub member: bool,
@@ -155,6 +159,7 @@ pub fn row(f: &RowFacts, now_ns: i64) -> Value {
                 "passes": p.passes,
                 "of": p.of,
                 "news": p.news.map(tri),
+                "news_kind": p.news_kind,
                 "rvol": p.rvol_milli.map(|r| (r as f64 / 10.0).round() / 100.0),
                 "member": p.member,
             })
@@ -285,6 +290,7 @@ mod tests {
                     passes: 4,
                     of: 5,
                     news: Some(Tri::Pass),
+                    news_kind: Some("financing".into()),
                     rvol_milli: Some(7_412),
                     member: false,
                 }),
@@ -302,7 +308,7 @@ mod tests {
         assert!(full.get("levels").is_none());
         assert_eq!(
             full["pillars"],
-            json!({"passes": 4, "of": 5, "news": "pass", "rvol": 7.41, "member": false})
+            json!({"passes": 4, "of": 5, "news": "pass", "news_kind": "financing", "rvol": 7.41, "member": false})
         );
         assert_eq!(full["halted"], true);
         assert_eq!(full["runners"]["kind"], "burst");

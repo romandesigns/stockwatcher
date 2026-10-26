@@ -21,6 +21,12 @@ const panel: RocketPanelWire = {
 };
 
 const render = (state: RocketState) => renderToStaticMarkup(<RocketPanelView state={state} wallNow={state.receivedAt} onPick={() => {}} />);
+/**
+ * Green outside the day line's last-minute tail. The lighter rows (owner-approved design,
+ * 2026-10-26) colour that tail by its direction on every row; elsewhere green is still only the
+ * strict outcome tag.
+ */
+const green = (html: string) => html.replace(/<path[^>]*data-testid="row-line-tail"[^>]*><\/path>/g, "").match(/text-good/g)?.length ?? 0;
 
 describe("Runners panel", () => {
   test("a disconnected header does not claim building or breakout attention", () => {
@@ -43,9 +49,11 @@ describe("Runners panel", () => {
     expect(html).toContain("30m");
     // Two reason chips at most.
     expect(html).not.toContain("third");
-    // The accent only on the fresh row's age; green only on the outcome.
-    expect(html.match(/text-primary/g)?.length).toBe(1);
-    expect(html.match(/text-good/g)?.length).toBe(1);
+    // The accent only on the fresh row's pulsing dot; green only on the outcome.
+    expect(html.match(/text-primary/g)).toBeNull();
+    expect(html.match(/bg-primary/g)?.length).toBe(1);
+    expect(html).toContain('aria-label="Flagged under a minute ago"');
+    expect(green(html)).toBe(1);
   });
   test("running entries (2026-10-22): a quiet source chip on every row, strongest first, measured from the entry", () => {
     const running = { id: "r", s: "TANH", kind: "running" as const, at: T - 5 * 60_000, p: 10.4, last: 11.2, pc: 8.8, score: 1.3, reasons: ["+30% off the 60-min low (needs 22%)"], outcome: { state: "pending" as const, gain: null, drawdown: null, partial: false }, state: "running" as const, from_flag_pct: 7.7 };
@@ -53,29 +61,29 @@ describe("Runners panel", () => {
     // Running (accent state) is listed above the watched flags.
     expect(html.indexOf("TANH")).toBeLessThan(html.indexOf("FRSH"));
     expect(html).toContain('data-kind="running"');
-    expect(html).toContain(">Running</span>");
-    expect(html).toContain(">R2 flag</span>");
-    expect(html).toContain("+7.7% from entry");
-    expect(html).toContain("from entry, from high, last minute");
+    // Lighter rows (2026-10-26): the source is the path mark, named with its age and move in its label.
+    expect(html).toContain('aria-label="Runners: Running at');
+    expect(html).toContain('aria-label="Runners: R2 flag at');
+    expect(html).toContain("+7.7% since");
+    expect(html).not.toContain("from entry, from high, last minute");
   });
   test("Run +20% entries (2026-10-22): their own quiet chip beside the others, never accent, measured from the entry", () => {
     const run = { id: "g", s: "LEGS", kind: "run" as const, at: T - 5 * 60_000, p: 1.22, last: 1.3, pc: 0.9, score: 1.1, reasons: ["+22% in 5 min off $1.00"], outcome: { state: "pending" as const, gain: null, drawdown: null, partial: false }, state: "watching" as const, from_flag_pct: 6.6 };
     const html = render({ enabled: true, panel: { ...panel, strategy: { id: "precursors-R2", version: "1", placeholder: false }, rows: [...panel.rows, run] }, receivedAt: 5, connected: true });
     expect(html).toContain('data-kind="run"');
-    const chip = /<span class="([^"]*)" data-testid="rocket-source">Run \+20%<\/span>/.exec(html);
-    expect(chip).not.toBeNull();
-    expect(chip?.[1]).not.toMatch(/primary|accent/);
-    expect(html).toContain(">R2 flag</span>");
-    expect(html).toContain("from entry, from high, last minute");
+    const mark = /<span class="([^"]*)" role="img" aria-label="Runners: Run \+20% at[^"]*" data-testid="mark-path" data-kind="run"/.exec(html);
+    expect(mark).not.toBeNull();
+    expect(mark?.[1]).not.toMatch(/primary|accent/);
+    expect(html).toContain("+6.6% since");
   });
   test("Fast move entries (2026-10-22): their own quiet chip, never accent, measured from the entry", () => {
     const fast = { id: "z", s: "ZAP", kind: "fast" as const, at: T - 60_000, p: 2.41, last: 2.5, pc: 2.0, score: 1.05, reasons: ["+8% in 60 s (held)", "52 trades, $71k in 60 s"], outcome: { state: "pending" as const, gain: null, drawdown: null, partial: false }, state: "watching" as const, from_flag_pct: 3.7 };
     const html = render({ enabled: true, panel: { ...panel, strategy: { id: "precursors-R2", version: "1", placeholder: false }, rows: [...panel.rows, fast] }, receivedAt: 5, connected: true });
     expect(html).toContain('data-kind="fast"');
-    const chip = /<span class="([^"]*)" data-testid="rocket-source">Fast move<\/span>/.exec(html);
-    expect(chip).not.toBeNull();
-    expect(chip?.[1]).not.toMatch(/primary|accent/);
-    expect(html).toContain("from entry, from high, last minute");
+    const mark = /<span class="([^"]*)" role="img" aria-label="Runners: Fast move at[^"]*" data-testid="mark-path" data-kind="fast"/.exec(html);
+    expect(mark).not.toBeNull();
+    expect(mark?.[1]).not.toMatch(/primary|accent/);
+    expect(html).toContain("+3.7% since");
   });
   test("no quiet, off or connecting lines (the tab is hidden then); reconnecting keeps the rows, dimmed", () => {
     const empty = render({ enabled: true, panel: { ...panel, rows: [] }, receivedAt: 0, connected: true });
@@ -107,13 +115,16 @@ describe("Runners momentum rows (2026-10-22)", () => {
     expect(html).toContain("inset_3px_0_0_var(--accent)");
     expect(html).toContain("HALTED");
     expect(html).toContain("−4.0% off high · trigger 1.15");
-    expect(html).toContain("of the way from the pullback low to the trigger");
-    expect(html).toContain('data-testid="rocket-day-line"');
+    // The setup as a stage mark (its meter and trigger), named in its label.
+    expect(html).toContain('data-stage="armed"');
+    expect(html).toContain('aria-label="Setup armed · trigger 1.15 · stop 1.05"');
+    expect(html).toContain('data-testid="row-line"');
+    expect(html).toContain('data-testid="row-line-tail"');
     expect(html).toContain("ran later +43%");
     expect(html).toContain("1 ran ≥ +15% later");
     expect(html).toContain("1 building or breaking out");
     // Still no green but the strict outcome tag (none here), and the pulse stills with reduced motion.
-    expect(html).not.toContain("text-good");
+    expect(green(html)).toBe(0);
     expect(html).toContain("motion-reduce:animate-none");
   });
 });
@@ -152,7 +163,7 @@ describe("Buying bursts (2026-10-22)", () => {
     expect(html).toContain("−5% first");
     expect(html).toContain("text-critical");
     // Green only on the runner's strict tag; no "buy" advice anywhere.
-    expect(html.match(/text-good/g)?.length).toBe(1);
+    expect(green(html)).toBe(1);
     expect(html).not.toMatch(/\bBuy\b|\bbuy\b/);
     // The live burst (NEWB) has the accent headline and edge; the stopped one does not.
     const newb = html.slice(html.indexOf("NEWB"), html.indexOf("OLDB"));

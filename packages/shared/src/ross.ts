@@ -253,11 +253,15 @@ export interface RossLinePaths {
  * line's range (plus 10 % of it) joins the vertical scale; one far below — a member up 40 % on
  * the day — would flatten the shape the chart exists to show, so it is left out.
  */
-export function rossLinePaths(line: RossLineView, w: number, h: number, pad = 2): RossLinePaths {
-  const v = line.values;
+/**
+ * The vertical scale a row chart draws with: the line's range, widened to the previous close when
+ * it lies within 10 % of that range (`base`, else null). Exposed so a mark drawn over the line (the
+ * trigger, the last-minute tail: rowMarks.ts) sits on the same scale.
+ */
+export function rossLineScale(line: RossLineView, h: number, pad = 2): { y: (p: number) => number; lo: number; hi: number; base: number | null; slack: number } {
   let lo = Infinity;
   let hi = -Infinity;
-  for (const x of v) {
+  for (const x of line.values) {
     if (x < lo) lo = x;
     if (x > hi) hi = x;
   }
@@ -269,7 +273,12 @@ export function rossLinePaths(line: RossLineView, w: number, h: number, pad = 2)
     hi = Math.max(hi, base);
   }
   const span = hi - lo || 1;
-  const y = (p: number) => pad + (1 - (p - lo) / span) * (h - 2 * pad);
+  return { y: (p: number) => pad + (1 - (p - lo) / span) * (h - 2 * pad), lo, hi, base, slack };
+}
+
+export function rossLinePaths(line: RossLineView, w: number, h: number, pad = 2): RossLinePaths {
+  const v = line.values;
+  const { y, base } = rossLineScale(line, h, pad);
   const n = v.length;
   const xAt = (i: number) => (i / (n - 1)) * w;
   const pts: [number, number][] = [];

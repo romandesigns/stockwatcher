@@ -1,7 +1,8 @@
 import { formatEtTime } from "@stockwatcher/chart-core";
 import { Icon } from "@stockwatcher/chart-web";
 import { cn, ScrollArea, Tip, TOUCH_HIT } from "@stockwatcher/chart-web/ui";
-import { favoriteRows, rossLinePaths, type FavoriteRowView, type FavoritesState, type RossLineView, type RossTone } from "@stockwatcher/shared";
+import { favoriteRowMarks, favoriteRows, rocketNow, runnersBySymbol, type FavoriteRowView, type FavoritesState, type RocketState, type RossTone, type RowMarks } from "@stockwatcher/shared";
+import { Flame, MarksLine, RowLine } from "../dashboard/RowMarks.tsx";
 import { memo, useMemo, type KeyboardEvent } from "react";
 import { useTickerPress } from "../lib/useTickerPress.ts";
 import { getAppStore } from "../state/store.ts";
@@ -30,8 +31,19 @@ const hhmm = (ms: number) => formatEtTime(ms);
  * then hold copies it, as on every panel). The star takes it off; the arrows (or Alt+↑/↓ on the
  * row) move it. The list is synced, so another device's change lands here live.
  */
-export function FavoritesPanelView({ list, state, onPick }: { list: readonly string[]; state: FavoritesState; onPick: (symbol: string) => void }) {
+export function FavoritesPanelView({ list, state, onPick, runners, wallNow }: { list: readonly string[]; state: FavoritesState; onPick: (symbol: string) => void; runners?: RocketState; wallNow?: number }) {
   const rows = useMemo(() => favoriteRows(list, state, hhmm).map((r) => r.view), [list, state]);
+  // The lighter rows' marks (rowMarks.ts), joined to today's Runners row for the path and flame.
+  // The Runners market clock (a replay's own day), else this panel's frame clock.
+  const nowMs = runners ? rocketNow(runners, wallNow) : (state.t ?? wallNow ?? 0);
+  const marks = useMemo(() => {
+    const byRunner = runnersBySymbol(runners);
+    const bySymbol = new Map(state.rows?.map((r) => [r.symbol, r]) ?? []);
+    return list.map((s) => {
+      const w = bySymbol.get(s);
+      return w ? { marks: favoriteRowMarks(w, byRunner.get(s), nowMs, hhmm), trigger: w.levels?.trigger ?? null } : null;
+    });
+  }, [list, state, runners, nowMs]);
   const reconnecting = !state.connected && state.rows !== null;
   return (
     <aside aria-labelledby="favorites-title" className="@container/fav flex min-h-0 min-w-0 flex-col gap-2 rounded-xl bg-card p-2.5">
@@ -51,7 +63,7 @@ export function FavoritesPanelView({ list, state, onPick }: { list: readonly str
         <ul className="m-0 flex list-none flex-col gap-1 p-0">
           {list.map((symbol, i) => (
             <li key={symbol} className="group relative">
-              <FavoriteRow symbol={symbol} row={rows[i] ?? null} onPick={onPick} />
+              <FavoriteRow symbol={symbol} row={rows[i] ?? null} marks={marks[i]?.marks ?? null} trigger={marks[i]?.trigger ?? null} onPick={onPick} />
               <RowControls symbol={symbol} first={i === 0} last={i === list.length - 1} />
             </li>
           ))}
@@ -95,80 +107,48 @@ function MoveButton({ label, icon, disabled, onClick, className }: { label: stri
   );
 }
 
-const FavoriteRow = memo(function FavoriteRow({ symbol, row: r, onPick }: { symbol: string; row: FavoriteRowView | null; onPick: (symbol: string) => void }) {
+/**
+ * One favorite as a lighter row (owner, 2026-10-26, design canvas "StockWatcher lighter rows"):
+ * ticker, price and day change as text with the day line (its tooltip adds the volume, the
+ * distance from the high and the premarket high), then the marks line. A stale row dims and says
+ * how long ago it last traded; that stays text, it is a warning, not a fact a mark can hold.
+ */
+const FavoriteRow = memo(function FavoriteRow({ symbol, row: r, marks: m, trigger, onPick }: { symbol: string; row: FavoriteRowView | null; marks: RowMarks | null; trigger: number | null; onPick: (symbol: string) => void }) {
   const press = useTickerPress(symbol, () => onPick(symbol));
   const onKeyDown = (e: KeyboardEvent) => {
     if (!e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
     e.preventDefault();
     move(symbol, e.key === "ArrowUp" ? -1 : 1);
   };
-  const facts = r ? [r.volume && `${r.volume} vol`, r.rvol, r.fromHigh, r.pmHigh].filter(Boolean) : [];
+  const facts = r ? [r.volume && `${r.volume} volume`, r.fromHigh, r.pmHigh].filter(Boolean).join(" · ") : "";
   return (
     <button
       type="button"
       {...press}
       onKeyDown={onKeyDown}
       aria-label={`${r?.aria || symbol}. Load into the selected chart. Alt and arrow keys move it`}
+      data-flame={m?.flame?.lit || undefined}
       className={cn(
-        "flex w-full cursor-pointer touch-manipulation flex-col gap-1 rounded-lg bg-bg-row py-2 pr-2.5 pl-2.5 text-left font-mono outline-none select-none transition-[background-color,opacity] duration-150 hover:bg-bg-raised focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none",
+        "flex w-full cursor-pointer touch-manipulation flex-col gap-1.5 rounded-lg bg-bg-row py-2 pr-2.5 pl-2.5 text-left font-mono outline-none select-none transition-[background-color,opacity] duration-150 hover:bg-bg-raised focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none",
+        m?.flame?.lit && "bg-bg-raised/60",
         r?.stale && "opacity-60",
       )}
     >
-      <span className="flex items-baseline gap-1.5 pr-22">
+      <span className="flex items-center gap-1.5 pr-22">
+        <Flame flame={m?.flame ?? null} />
         <span className="text-sm font-semibold">{symbol}</span>
-        {r && !r.empty && <span className="text-[13px] tabular-nums">{r.price}</span>}
+        {r && !r.empty && <span className="text-sm tabular-nums">{r.price}</span>}
         {r?.change && <span className={cn("text-xs tabular-nums", TONE[r.changeTone])}>{r.change}</span>}
-        {r?.halted && <span className="self-center rounded bg-warning px-1 py-px font-sans text-[9px] font-semibold text-background">HALTED</span>}
+        {r?.halted && <span className="rounded bg-warning px-1 py-px font-sans text-[9px] font-semibold text-background">HALTED</span>}
+        {r && !r.empty && <RowLine line={r.line} tail={m?.tail ?? null} trigger={m?.stage ? trigger : null} label={facts} tone={r.line?.tone === "critical" ? "text-critical" : "text-good"} stretch className="ml-auto w-18 @sm/fav:w-28" />}
       </span>
       {!r ? (
         <span className="font-sans text-xs text-text-faint">Loading…</span>
       ) : r.empty ? (
         <span className="font-sans text-xs text-text-faint">No trades today yet</span>
       ) : (
-        <span className="grid grid-cols-[minmax(0,1fr)_88px] items-center gap-2 @sm/fav:grid-cols-[minmax(0,1fr)_132px]">
-          <span className="flex min-w-0 flex-col gap-1">
-            {facts.length > 0 && (
-              <span className="flex flex-wrap gap-x-2 text-[11px] text-muted-foreground tabular-nums">
-                {facts.map((f) => (
-                  <span key={f as string} className={cn("whitespace-nowrap", f === r.fromHigh && TONE[r.fromHighTone])}>
-                    {f}
-                  </span>
-                ))}
-              </span>
-            )}
-            {r.chips.filter((c) => c.label !== "Halted").length > 0 && (
-              <span className="flex flex-wrap gap-1 font-sans">
-                {r.chips
-                  .filter((c) => c.label !== "Halted")
-                  .map((c) => (
-                    <span key={c.label} className={cn("rounded bg-bg-raised px-1 py-px text-[10px] font-medium whitespace-nowrap", TONE[c.tone])}>
-                      {c.label}
-                    </span>
-                  ))}
-              </span>
-            )}
-            {r.stale && <span className="font-sans text-[11px] text-text-faint">{r.stale}</span>}
-          </span>
-          <DayLine line={r.line} />
-        </span>
+        m && <MarksLine marks={m} extra={r.stale ? <span className="shrink-0 font-sans text-[11px] text-text-faint">{r.stale}</span> : undefined} />
       )}
     </button>
   );
 });
-
-/**
- * The row's chart: the day's 30 s closes from 04:00 ET ending at the live price, the previous
- * close dotted when it is near enough to draw (the Ross row chart, `rossLinePaths`), stretched to
- * the column's width with strokes that keep their weight.
- */
-function DayLine({ line }: { line: RossLineView | null }) {
-  if (!line) return <span className="h-9 w-full" aria-hidden />;
-  const p = rossLinePaths(line, 132, 36);
-  return (
-    <svg viewBox="0 0 132 36" preserveAspectRatio="none" className={cn("h-9 w-full animate-line-in", line.tone === "good" ? "text-good" : "text-critical")} aria-hidden>
-      {p.baseY !== null && <line x1={0} x2={132} y1={p.baseY} y2={p.baseY} stroke="currentColor" strokeOpacity={0.35} strokeWidth={1} strokeDasharray="1.5 2.5" vectorEffect="non-scaling-stroke" />}
-      <path d={p.area} fill="currentColor" fillOpacity={0.12} />
-      <path d={p.line} fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
-    </svg>
-  );
-}

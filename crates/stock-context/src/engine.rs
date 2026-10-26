@@ -319,6 +319,9 @@ struct Sym {
     first_bar: Option<i64>,
     /// First time StockWatcher saw any of the qualifying news at the latest decision.
     news_first_seen: Option<i64>,
+    /// That earliest qualifying story's headline class (`NewsItem::event_type`: `financing`,
+    /// `regulatory_decision`, …), so a row can mark dilution news without the headline text.
+    news_kind: Option<String>,
     /// How completely this symbol's own prints were collected today, when something is known
     /// about it that the run-wide figure does not say.
     ///
@@ -381,6 +384,7 @@ impl Sym {
             bars: VecDeque::new(),
             first_bar: None,
             news_first_seen: None,
+            news_kind: None,
             coverage: None,
             integrity: Integrity::default(),
             quarantine_through: None,
@@ -514,6 +518,8 @@ pub struct PanelRow {
     pub float_shares: Option<u64>,
     /// When StockWatcher first saw a currently qualifying news item (its `observed_at`).
     pub news_first_seen: Option<i64>,
+    /// That item's headline class (`NewsItem::event_type`), so a row can mark dilution news.
+    pub news_kind: Option<String>,
     /// The pillars not passing at the latest decision.
     pub missing: Vec<MissingPillar>,
     /// Closes (micros) of the last 20 completed 15 s setup bars that had an OHLC print, oldest
@@ -1034,6 +1040,7 @@ impl Engine {
                 sym.timeline = Timeline::default();
                 sym.last = None;
                 sym.news_first_seen = None;
+                sym.news_kind = None;
                 sym.det = SymDetect {
                     returns: std::mem::take(&mut sym.det.returns),
                     last_seen: sym.det.last_seen,
@@ -1112,6 +1119,12 @@ impl Engine {
     }
 
     /// The micro-pullback cue for a watched symbol (or a member) at `tau`, read exactly as a Ross
+    /// The headline class of the earliest news story that qualifies `symbol`'s news pillar at its
+    /// latest decision (`NewsItem::event_type`), if any.
+    pub fn news_kind(&self, symbol: &str) -> Option<&str> {
+        self.syms.get(symbol).and_then(|s| s.news_kind.as_deref())
+    }
+
     /// row's is ([`crate::cue::cue`]); `None` for a symbol the engine has not seen today.
     pub fn watched_cue(&self, symbol: &str, tau: i64) -> Option<RossCue> {
         let s = self.syms.get(symbol)?;
@@ -1858,6 +1871,7 @@ impl Engine {
                     .and_then(|p| p.value)
                     .map(|v| v as u64),
                 news_first_seen: s.news_first_seen,
+                news_kind: s.news_kind.clone(),
                 missing: s
                     .member
                     .nonpassing
@@ -1940,6 +1954,7 @@ impl Engine {
             s.bars.clear();
             s.first_bar = None;
             s.news_first_seen = None;
+            s.news_kind = None;
             // The ledger is deliberately **not** cleared here. Clearing it after a date's first
             // prints had already been queued is what lost their identities, so a later
             // redelivery of one counted twice; its entries carry their own session date and the
@@ -2087,12 +2102,13 @@ impl Engine {
         let (rvol_r, rvol_d) = evaluate::rvol(policy, ev, &s.inst, date, tau, vol);
         let float_r = evaluate::float(policy, ev, &s.inst, tau);
         let (news_r, news_s) = evaluate::news(policy, ev, &s.inst, tau);
-        s.news_first_seen = ev
+        let first = ev
             .news_current(&s.inst, tau)
             .into_iter()
             .filter(|n| news_s.items.contains(&format!("{}@{}", n.id, n.version)))
-            .map(|n| n.observed_at)
-            .min();
+            .min_by_key(|n| n.observed_at);
+        s.news_first_seen = first.map(|n| n.observed_at);
+        s.news_kind = first.map(|n| n.event_type.clone());
         let pillars = vec![price_r, g.pillar, rvol_r, float_r, news_r];
         let (qualification, counts) = aggregate(pillars.iter().map(|p| p.state));
 

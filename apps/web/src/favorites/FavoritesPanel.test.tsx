@@ -29,17 +29,20 @@ const state = (patch: Partial<FavoritesState> = {}): FavoritesState => ({
 const render = (list: string[], s: FavoritesState) => renderToStaticMarkup(<FavoritesPanelView list={list} state={s} onPick={() => {}} />);
 
 describe("Favorites panel", () => {
-  test("rows in the list's order with price, change, line, volume, context chips and controls", () => {
+  test("rows in the list's order with price, change, line, marks and controls", () => {
     const html = render(["OLD", "SMPL", "NEW"], state());
     expect(html.indexOf(">OLD<")).toBeLessThan(html.indexOf(">SMPL<"));
     expect(html).toContain("3.45");
     expect(html).toContain("+9.52%");
-    expect(html).toContain("1.25M vol");
-    expect(html).toContain("7.4× RVOL");
+    // Lighter rows (2026-10-26): the facts are marks, each named in its label (and tooltip).
+    expect(html).toContain("1.25M volume");
     expect(html).toContain("PM high 3.18");
-    expect(html).toContain("Pullback · trigger 3.42 · stop 3.21");
-    expect(html).toContain("Ross 5/5");
-    expect(html).toContain("<path"); // the day line
+    expect(html).toContain('aria-label="Relative volume 7.4×"');
+    expect(html).toContain('aria-label="Setup armed · trigger 3.42 · stop 3.21"');
+    expect(html).toContain('aria-label="Five pillars · 5 of 5 pass"');
+    expect(html).toContain('aria-label="News today"');
+    expect(html).toContain('data-testid="mark-path" data-kind="burst"');
+    expect(html).toContain('data-testid="row-line"');
     expect(html).toContain('aria-label="Move SMPL up"');
     expect(html).toContain('aria-label="Add SMPL to favorites"');
     // The down move is gone on the last row, the up move on the first.

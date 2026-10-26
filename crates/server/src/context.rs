@@ -714,6 +714,7 @@ impl ContextBoard {
                 .count(),
             of: d.pillars.len(),
             news: state(stock_context::PillarId::News).map(|(s, _)| s),
+            news_kind: self.engine.news_kind(symbol).map(str::to_owned),
             rvol_milli: state(stock_context::PillarId::Rvol).and_then(|(_, v)| v),
             member: d.membership.active().is_some(),
         })
