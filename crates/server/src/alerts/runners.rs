@@ -658,7 +658,10 @@ fn runner_message(n: &Notice) -> (String, String, Value) {
                 None => mv,
             }
         }
-        // "+15.3% in 60 min · $120k in 5 min": the move off the hour's low and its money.
+        // "+15.3% in 60 min · $120k in 5 min · late in the move": the move off the hour's low,
+        // its money, and an honest qualifier (owner, 2026-10-26): a Running entry fires after
+        // about 80% of the hour's move with about 10% follow-through, against Burst's ~50% and
+        // ~40% (research/post-alert-timing, lateness on 267 days).
         NoticeKind::Running => {
             let mut parts: Vec<String> = Vec::new();
             match n.from_flag_pct {
@@ -669,6 +672,7 @@ fn runner_message(n: &Notice) -> (String, String, Value) {
             if parts.is_empty() {
                 parts.push("Running on the tape".into());
             }
+            parts.push("late in the move".into());
             parts.join(" · ")
         }
         _ => String::new(),
@@ -997,7 +1001,7 @@ Alert $1.22 · +5% = $1.28"
         assert_eq!(t, "CJMB · Running · $11.49");
         assert_eq!(
             b,
-            "+15.3% in 60 min · $120k in 5 min
+            "+15.3% in 60 min · $120k in 5 min · late in the move
 Alert $11.49 · +5% = $12.06"
         );
         assert_eq!(data["kind"], "runners.running");
