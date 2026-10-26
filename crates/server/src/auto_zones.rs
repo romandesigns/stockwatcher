@@ -257,18 +257,22 @@ type CacheKey = (usize, i64, u64);
 
 impl ZoneCache {
     fn zones(&mut self, engine: &ChartEngine, symbol: &str) -> Vec<AutoZone> {
-        let Some(cs) = engine.day_candles(symbol, Timeframe::M1) else {
+        // The key first, without copying the day (this runs under the core lock every frame); the
+        // candles only when they changed, about once a minute per symbol.
+        let Some(key) = engine.day_candles_key(symbol, Timeframe::M1) else {
             self.by_symbol.remove(symbol);
             return Vec::new();
         };
-        let key = cs
-            .last()
-            .map_or((0, 0, 0), |c| (cs.len(), c.t, c.c.to_bits()));
+        let key = if key.0 == 0 { (0, 0, 0) } else { key };
         if let Some((k, z)) = self.by_symbol.get(symbol)
             && *k == key
         {
             return z.clone();
         }
+        let Some(cs) = engine.day_candles(symbol, Timeframe::M1) else {
+            self.by_symbol.remove(symbol);
+            return Vec::new();
+        };
         let z = auto_zones(&cs);
         self.by_symbol.insert(symbol.to_owned(), (key, z.clone()));
         z

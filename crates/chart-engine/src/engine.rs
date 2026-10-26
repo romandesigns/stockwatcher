@@ -1701,6 +1701,36 @@ impl ChartEngine {
                 .collect(),
         )
     }
+
+    /// What [`ChartEngine::day_candles`] would return, summarised without collecting it: the
+    /// candle count and the last candle's start and close. A cache keyed on this recomputes only
+    /// when the day's completed candles change (the server's auto zones, once a minute per symbol),
+    /// instead of copying the whole day under the core lock on every frame.
+    pub fn day_candles_key(&self, symbol: &str, tf: Timeframe) -> Option<(usize, i64, u64)> {
+        let st = self.symbols.get(symbol)?;
+        let series = st.series.iter().find(|s| s.tf == tf)?;
+        let wm = st.own_wm.max(self.clock)?;
+        let date = series
+            .buckets
+            .iter()
+            .rev()
+            .find(|b| b.session.kind != SessionKind::Overnight && b.ohlc.is_some())?
+            .session
+            .date;
+        let mut n = 0;
+        let mut last = (0, 0);
+        for c in series
+            .buckets
+            .iter()
+            .filter(|b| b.session.date == date && b.session.kind != SessionKind::Overnight)
+            .filter(|b| b.end <= wm)
+            .filter_map(|b| b.candle(Some(wm)))
+        {
+            n += 1;
+            last = (c.t, c.c.to_bits());
+        }
+        Some((n, last.0, last.1))
+    }
 }
 
 /// A symbol's extremes over its latest trading date ([`ChartEngine::day_extremes`]).
