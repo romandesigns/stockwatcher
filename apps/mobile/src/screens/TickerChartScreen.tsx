@@ -1,6 +1,6 @@
-import { buildSlots, changeReference, formatChange, formatPrice, lastCandle, type Timeframe } from "@stockwatcher/chart-core";
+import { buildSlots, changeReference, formatChange, formatEtTime12, formatPrice, lastCandle, type Timeframe } from "@stockwatcher/chart-core";
 import { CandleChart } from "@stockwatcher/chart-native";
-import { detectionFamilyLabel, detectionOverlays, detectionPrice, detectionStateLabel, groupDetections } from "@stockwatcher/shared";
+import { BREAKOUT_LABEL, bindNoticeContext, breakoutClockText, breakoutOverlays, breakoutSummary, detectionFamilyLabel, detectionOverlays, detectionPrice, detectionStateLabel, groupDetections, type NoticeChartContext } from "@stockwatcher/shared";
 import { useNavigation, type RouteProp } from "@react-navigation/native";
 import { useMemo, useState, useSyncExternalStore } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
@@ -51,6 +51,7 @@ export function TickerChartScreen({ route }: Props) {
   // this same route (navigation/openTicker.ts), and the chart below is keyed by the ticker, so its
   // data subscription, drawings, readout and detection marks start over for the new one.
   const { symbol, detectionEpisodeId, detectionRunEpoch } = route.params;
+  const { noticeContext } = route.params;
   const reducedMotion = useReducedMotion();
   return (
     <View style={[styles.screen, { paddingTop: insets.top + 4, paddingBottom: insets.bottom + 4 }]} accessibilityViewIsModal onAccessibilityEscape={() => navigation.goBack()}>
@@ -59,7 +60,7 @@ export function TickerChartScreen({ route }: Props) {
       <LayoutAnimationConfig skipEntering>
         <Animated.View key={symbol} style={styles.swap} entering={FadeIn.duration(chartSwapTiming.duration).easing(chartSwapTiming.easing).reduceMotion(reducedMotion ? ReduceMotion.Always : ReduceMotion.System)}>
           {feed ? (
-            <ModalChart feed={feed} symbol={symbol} detectionEpisodeId={detectionEpisodeId} detectionRunEpoch={detectionRunEpoch} />
+            <ModalChart feed={feed} symbol={symbol} detectionEpisodeId={detectionEpisodeId} detectionRunEpoch={detectionRunEpoch} noticeContext={noticeContext} />
           ) : (
             <Header symbol={symbol} price="—" change="" />
           )}
@@ -98,8 +99,15 @@ function Header({ symbol, price, change }: { symbol: string; price: string; chan
   );
 }
 
-function ModalChart({ feed, symbol, detectionEpisodeId, detectionRunEpoch }: { feed: MobileFeed; symbol: string; detectionEpisodeId?: string; detectionRunEpoch?: string }) {
+function ModalChart({ feed, symbol, detectionEpisodeId, detectionRunEpoch, noticeContext }: { feed: MobileFeed; symbol: string; detectionEpisodeId?: string; detectionRunEpoch?: string; noticeContext?: NoticeChartContext }) {
   const [app] = useState(appActions);
+  const source = useApp((s) => s.dashboard.source);
+  // A context is tied to the live feed it first inspects. Switching source/connection invalidates
+  // it permanently for this route; switching back cannot resurrect another source's geometry.
+  const [bound, setBound] = useState(() => bindNoticeContext(null, feed, source, noticeContext));
+  const currentBinding = bindNoticeContext(bound, feed, source, noticeContext);
+  if (currentBinding !== bound) setBound(currentBinding);
+  const eventContext = !currentBinding.invalidated && noticeContext?.symbol === symbol ? noticeContext : undefined;
   const firstSlotTf = useApp((s) => s.dashboard.slots[0]?.timeframe);
   const [timeframe, setTimeframe] = useState<Timeframe>(() => lastTimeframe ?? firstSlotTf ?? "5m");
   const bin = useApp((s) => s.bin);
@@ -123,7 +131,7 @@ function ModalChart({ feed, symbol, detectionEpisodeId, detectionRunEpoch }: { f
   const episode = detectionEpisodeId
     ? matchingRun ? detection.snapshot?.episodes.find((e) => e.episode_id === detectionEpisodeId && e.symbol === symbol) : undefined
     : groupDetections(detection.snapshot).find((g) => g.symbol === symbol)?.selected;
-  const annotations = episode ? detectionOverlays(detection.snapshot, symbol, episode.episode_id).map((item) => detection.connected && !detection.resyncing ? item : { ...item, stale: true, label: `Last known · ${item.label}` }) : [];
+  const annotations = eventContext ? breakoutOverlays(eventContext, symbol) : episode ? detectionOverlays(detection.snapshot, symbol, episode.episode_id).map((item) => detection.connected && !detection.resyncing ? item : { ...item, stale: true, label: `Last known · ${item.label}` }) : [];
 
   const slots = useMemo(() => (series ? buildSlots(series.candles, series.gaps) : []), [series]);
   const last = lastCandle(slots);
@@ -136,6 +144,12 @@ function ModalChart({ feed, symbol, detectionEpisodeId, detectionRunEpoch }: { f
   return (
     <>
       <Header symbol={symbol} price={last ? formatPrice(last.c) : "—"} change={change} />
+      {eventContext && <View style={styles.detectionSummary}>
+        <Text style={styles.detectionState}>{BREAKOUT_LABEL} · frozen event</Text>
+        <Text style={styles.detectionMeta}>{breakoutSummary(eventContext.breakout)}</Text>
+        <Text style={styles.detectionMeta}>{breakoutClockText(eventContext.breakout, (ms) => formatEtTime12(ms, true))}</Text>
+        <Text style={styles.detectionMeta}>{eventContext.breakout.exact_state === "restored" ? "Original event measurements restored from complete history." : "Original event measurements captured at evaluation."}</Text>
+      </View>}
       <ZoneNote note={layers.shelves ? zones.note : null} reducedMotion={reducedMotion} gap={6} style={styles.zone} />
       {/* Only with the detector on and an episode for this ticker (or one the user picked): an
           "off" caption would take chart height on the cover screen for nothing. */}

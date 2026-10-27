@@ -131,7 +131,7 @@ function NotificationLog() {
           accessibilityLabel={r.a11y}
           accessibilityHint="Opens the chart; long-press for the details"
           disabled={!r.symbol}
-          onPress={() => r.symbol && openTickerChart(r.symbol)}
+          onPress={() => r.symbol && openTickerChart(r.symbol, undefined, undefined, r.noticeContext)}
           onLongPress={() => setReadout(r)}
           style={({ pressed }) => [styles.row, pressed && { backgroundColor: UI.row }]}
         >
@@ -151,6 +151,7 @@ function NotificationLog() {
           <Text style={[styles.detail, !r.sent && { color: colors.warning }]} numberOfLines={1}>
             {r.detail}
           </Text>
+          {r.evidence && <Text style={styles.small}>{r.evidence}</Text>}
         </Pressable>
       ))}
       {log?.truncated && <Text style={styles.small}>Showing the newest 2,000 of the day.</Text>}

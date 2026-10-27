@@ -5,6 +5,7 @@ import { APP_NS, createAppStore, shownTicker } from "@stockwatcher/app-state";
 import { createSettingsSync } from "@stockwatcher/shared";
 import { followCandidates } from "../feed/source.ts";
 import { openTickerIn } from "./openTicker.ts";
+import { breakoutTestFixture } from "../../../../packages/shared/src/breakoutTestFixture.ts";
 
 /** The page's store on a real (offline) sync engine, a hash, and a way to play other devices' writes. */
 function rig(hash = "#/") {
@@ -21,6 +22,36 @@ function rig(hash = "#/") {
 const visible = (r: ReturnType<typeof rig>, i: number, candidates: string[]) => followCandidates(r.s().dashboard.slots[i]!.symbol ?? candidates[0]!, candidates, r.s().picked);
 
 describe("openTickerIn: every web/desktop entry point's one action", () => {
+  test("an event click retains frozen context and the selected chart timeframe", () => {
+    const r = rig();
+    r.s().setDashboardCount(2);
+    r.s().selectDashboardChart(1);
+    r.s().setDashboardTimeframe(1, "5m");
+    const context = { event_id: "runners-breakout-fixture", symbol: "CJMB", breakout: breakoutTestFixture };
+    Reflect.apply(openTickerIn, null, [r.env, "CJMB", context]);
+    expect((r.s() as unknown as Record<string, unknown>).noticeSelection).toEqual({ index: 1, source: "live", context });
+    expect(r.s().dashboard.slots[1]!.timeframe).toBe("5m");
+    expect(r.s().dashboard.slots[0]!.symbol).toBeNull();
+  });
+  test("context is ephemeral, survives timeframe changes, and clears on another ticker or source", () => {
+    const r = rig();
+    const context = { event_id: "runners-breakout-fixture", symbol: "CJMB", breakout: breakoutTestFixture };
+    openTickerIn(r.env, "CJMB", context);
+    for (const tf of ["15s", "1m", "5m"] as const) {
+      r.s().setDashboardTimeframe(0, tf);
+      expect(r.s().noticeSelection?.context).toEqual(context);
+    }
+    expect(r.sync.get(APP_NS.dashboard)).not.toHaveProperty("noticeSelection");
+    r.s().setDashboardSource("replay");
+    expect(r.s().noticeSelection).toBeNull();
+    r.s().setDashboardSource("live");
+    expect(r.s().noticeSelection).toBeNull();
+    openTickerIn(r.env, "CJMB", context);
+    openTickerIn(r.env, "AAPL");
+    expect(r.s().noticeSelection).toBeNull();
+    openTickerIn(r.env, "AAPL", context);
+    expect(r.s().noticeSelection).toBeNull();
+  });
   test("a notification click while the selected slot holds another ticker replaces it", () => {
     const r = rig();
     r.s().setDashboardSymbol(0, "AAL");

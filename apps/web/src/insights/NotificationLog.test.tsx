@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { NAV_ITEMS, pageOf } from "../nav/routes.ts";
 import { InsightsPage } from "./InsightsPage.tsx";
 import { NoticeRow } from "./NotificationLog.tsx";
+import { breakoutTestFixture } from "../../../../packages/shared/src/breakoutTestFixture.ts";
 
 const row = (item: NoticeItemWire) =>
   renderToStaticMarkup(
@@ -16,6 +17,21 @@ const row = (item: NoticeItemWire) =>
 const AT = Date.UTC(2026, 9, 26, 12, 23, 47); // 08:23:47 ET
 
 describe("Insights: notification log", () => {
+  test("new evidence names the bar high, clocks and original entry context; legacy preserves stored words and unknown geometry", () => {
+    const item = { event_id: "runners-breakout-fixture", at: AT, symbol: "CJMB", notice: "runners.breakout", title: "immutable title", body: "immutable body", breakout: breakoutTestFixture, entry_context: ["Run +20% at original admission"] };
+    const html = row(item);
+    expect(html).toContain("15s new high since alert");
+    expect(html).toContain("15s bar high $2.040001");
+    expect(html).toContain("evaluated");
+    expect(html).toContain("+250 ms");
+    expect(html).toContain("Decision 8:23:47 AM");
+    expect(html).toContain("Entry context (original alert): Run +20% at original admission");
+    expect(html).toContain("immutable title · immutable body");
+    const legacy = row({ ...item, breakout: undefined, entry_context: undefined });
+    expect(legacy).toContain("immutable title · immutable body");
+    expect(legacy).toContain("Event time and comparison unavailable");
+    expect(legacy).not.toContain("15s new high since alert");
+  });
   test("Insights is a page in the main nav, routed by its hash", () => {
     expect(NAV_ITEMS.map((i) => i.id)).toContain("insights");
     expect(pageOf("#/insights")).toBe("insights");

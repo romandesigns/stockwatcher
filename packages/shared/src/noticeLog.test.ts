@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { filterNotices, heldText, latencyText, noticeKind, noticeStatus, noticeSummary, parseNoticeLog, pathText } from "./noticeLog.ts";
+import { breakoutTestFixture } from "./breakoutTestFixture.ts";
 
 const body = {
   day: "2026-10-26",
@@ -14,6 +15,14 @@ const body = {
 };
 
 describe("notice log", () => {
+  test("new Breakout evidence survives history parsing without replacing decision chronology or stored text", () => {
+    const input = { event_id: "runners-breakout-fixture", at: 1793017427000, notice: "runners.breakout", title: "stored title", body: "stored body", breakout: breakoutTestFixture };
+    const item = parseNoticeLog({ day: "2026-10-26", items: [input] })!.items[0]!;
+    expect((item as unknown as Record<string, unknown>).breakout).toEqual(breakoutTestFixture);
+    expect(item.at).toBe(input.at);
+    expect(item.title).toBe("stored title");
+    expect(item.body).toBe("stored body");
+  });
   test("parses, drops malformed items, groups kinds", () => {
     const log = parseNoticeLog(body)!;
     expect(log.items.map((i) => i.event_id)).toEqual(["a", "b", "c"]);

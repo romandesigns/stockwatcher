@@ -46,7 +46,7 @@ export function deviceInfo(): { platform: string; name: string } {
 
 /** Where a tap goes: a ticker's notification opens THAT ticker's chart (route.ts), anything else the Alerts tab. */
 export function goToTarget(target: NotificationTarget): void {
-  if (target.to === "chart") openTickerChart(target.symbol);
+  if (target.to === "chart") openTickerChart(target.symbol, undefined, undefined, target.noticeContext);
   else navigateToAlerts();
 }
 

@@ -163,6 +163,10 @@ fn decision_line(
         // Persist the frozen observation even when delivery was held. None remains unknown.
         line["mp5_wick"] = json!(p.wick);
     }
+    if let Some(evidence) = n.source_evidence() {
+        line["breakout"] = evidence;
+        line["entry_context"] = json!(n.reasons);
+    }
     line
 }
 
@@ -170,6 +174,24 @@ fn decision_line(
 mod tests {
     use super::*;
     use crate::rocket::NoticeKind;
+
+    #[test]
+    fn sent_and_held_breakouts_keep_the_same_frozen_cause_and_entry_context() {
+        let mut n = notice();
+        n.kind = NoticeKind::Breakout;
+        n.reasons = vec!["Earlier Run +20% context".into()];
+        n.detail = Some(crate::rocket::NoticeDetail::Breakout(
+            serde_json::from_str(include_str!("../../tests/fixtures/breakout-notice-v1.json"))
+                .unwrap(),
+        ));
+        for decision in [Decision::Send, Decision::Held(runners::Hold::SymbolLimit)] {
+            let line = decision_line(&n, "b1", "phone", &decision, 1, "t", "b", 1_793_055_061_000);
+            assert_eq!(line["breakout"], n.source_evidence().unwrap());
+            assert_eq!(line["entry_context"], json!(n.reasons));
+            assert_eq!(line["at_ns"], n.at_ns);
+            assert_eq!(line["decided_at"], 1_793_055_061_000i64);
+        }
+    }
 
     fn notice() -> Notice {
         Notice {

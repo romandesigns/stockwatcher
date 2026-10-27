@@ -21,7 +21,7 @@
 //
 // Closed-tab Web Push (a service worker + VAPID, RFC 8030/8292) is not built: see the commit.
 
-import { createNoticeDedupe, DEFAULT_RUNNERS_NOTIFY, runnersNotifyKinds, shouldShowNotice, type RunnersNoticeMessage, type RunnersNotifyKinds, type RunnersNotifyMessage } from "@stockwatcher/shared";
+import { createNoticeDedupe, DEFAULT_RUNNERS_NOTIFY, runnersNoticeChartContext, runnersNotifyKinds, shouldShowNotice, type NoticeChartContext, type RunnersNoticeMessage, type RunnersNotifyKinds, type RunnersNotifyMessage } from "@stockwatcher/shared";
 import { openTickerChart } from "../nav/openTicker.ts";
 
 const PREFS_KEY = "sw-runners-notify";
@@ -43,7 +43,7 @@ export interface NotifyEnv {
   /** The browser's Notification constructor, when there is one. */
   Notification: typeof Notification | null;
   focus: () => void;
-  openChart: (symbol: string) => void;
+  openChart: (symbol: string, noticeContext?: NoticeChartContext) => void;
 }
 
 type Tauri = { invoke: (cmd: string, args: Record<string, unknown>) => Promise<unknown> };
@@ -75,7 +75,7 @@ export { openTickerChart };
 /** The desktop shell's click target (notify.rs runs `window.__stockwatcherOpenChart(symbol)`). */
 export function installOpenChartHook(): void {
   if (typeof window === "undefined") return;
-  (window as Window & { __stockwatcherOpenChart?: (s: string) => void }).__stockwatcherOpenChart = openTickerChart;
+  (window as Window & { __stockwatcherOpenChart?: (s: string, context?: NoticeChartContext) => void }).__stockwatcherOpenChart = openTickerChart;
 }
 
 export interface RunnersNotifier {
@@ -131,8 +131,9 @@ export function createRunnersNotifier(env: NotifyEnv = browserEnv()): RunnersNot
   };
 
   const show = (m: RunnersNoticeMessage) => {
+    const noticeContext = runnersNoticeChartContext(m);
     if (env.invoke) {
-      void env.invoke("runners_notify", { id: m.id, title: m.title, body: m.body, symbol: m.symbol }).catch(() => {});
+      void env.invoke("runners_notify", { id: m.id, title: m.title, body: m.body, symbol: m.symbol, ...(noticeContext ? { noticeContext } : {}) }).catch(() => {});
       return;
     }
     const N = env.Notification;
@@ -142,7 +143,8 @@ export function createRunnersNotifier(env: NotifyEnv = browserEnv()): RunnersNot
       n.onclick = (e) => {
         e.preventDefault();
         env.focus();
-        env.openChart(m.symbol);
+        if (noticeContext) env.openChart(m.symbol, noticeContext);
+        else env.openChart(m.symbol);
         n.close();
       };
     } catch {

@@ -38,6 +38,17 @@ function panel(over: Partial<RocketPanelWire> = {}): RocketPanelWire {
   };
 }
 
+test("legacy and unknown exact breakout tracking remain visible without fabricated capability", () => {
+  const legacy = rocketRowView(row(), T);
+  expect(legacy.breakoutTracking).toContain("Exact breakout history unavailable");
+  expect(legacy.aria).toContain("Exact breakout history unavailable");
+  const unknown = rocketRowView(row({ breakout_tracking: { status: "unknown", policy_id: "rocket-momentum-15s-exact-after-v1", reason: "missing_creation_suffix" } }), T);
+  expect(unknown.breakoutTracking).toContain("missing creation suffix");
+  expect(unknown.symbol).toBe(legacy.symbol);
+  expect(rocketRowView(row({ breakout_tracking: { status: "complete", policy_id: "rocket-momentum-15s-exact-after-v1", reason: null } }), T).breakoutTracking).toBeNull();
+  expect(rocketRowView(row({ breakout_tracking: { status: "restored", policy_id: "rocket-momentum-15s-exact-after-v1", reason: null } }), T).breakoutTracking).toBeNull();
+});
+
 describe("rocket row view", () => {
   test("price, day gain, age, two reasons, subtle score, no outcome while pending", () => {
     const v = rocketRowView(row(), T);

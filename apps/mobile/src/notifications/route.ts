@@ -17,7 +17,9 @@
 // A Galaxy Watch's "Open on phone" fires the phone notification's own tap, so it arrives here as
 // the same response.
 
-export type NotificationTarget = { to: "chart"; symbol: string } | { to: "alerts" };
+import { runnersNoticeChartContext, type NoticeChartContext } from "@stockwatcher/shared";
+
+export type NotificationTarget = { to: "chart"; symbol: string; noticeContext?: NoticeChartContext } | { to: "alerts" };
 
 /** A ticker as the wire spells it (app-state parseSymbol's rule). */
 const SYMBOL = /^[A-Z][A-Z0-9.-]{0,11}$/;
@@ -26,7 +28,10 @@ export function notificationTarget(data: unknown): NotificationTarget {
   if (data && typeof data === "object") {
     const d = data as Record<string, unknown>;
     const symbol = typeof d.symbol === "string" ? d.symbol.trim().toUpperCase() : "";
-    if (SYMBOL.test(symbol)) return { to: "chart", symbol };
+    if (SYMBOL.test(symbol)) {
+      const noticeContext = runnersNoticeChartContext({ id: typeof d.event_id === "string" ? d.event_id : "", symbol, kind: typeof d.kind === "string" ? d.kind : "", data: d });
+      return { to: "chart", symbol, ...(noticeContext ? { noticeContext } : {}) };
+    }
   }
   return { to: "alerts" };
 }

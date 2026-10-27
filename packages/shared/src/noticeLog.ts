@@ -3,6 +3,8 @@
 // into the page's filter groups and put in plain words. Shared by the web and the phone so both
 // say the same thing about the same notice.
 
+import { parseBreakoutNotice, type BreakoutNotice } from "./breakout.ts";
+
 /** One path's outcome: the desk (desktop and web) or the phones. */
 export interface NoticePathWire {
   /** `sent` | `held` (Runners notices); a price alert's phone: `sent` | `off` | `held`. */
@@ -14,7 +16,7 @@ export interface NoticePathWire {
 
 export interface NoticeItemWire {
   event_id: string;
-  /** Epoch ms of the first decision. */
+  /** Epoch ms of the first decision, or recorded pushed/failed fallback when no decision exists. */
   at?: number;
   symbol?: string;
   price?: number;
@@ -22,6 +24,9 @@ export interface NoticeItemWire {
   notice?: string;
   title?: string;
   body?: string;
+  breakout?: BreakoutNotice;
+  /** Frozen reasons from the original alert; never current-bar cause measurements. */
+  entry_context?: string[];
   desk?: NoticePathWire;
   phone?: NoticePathWire;
   latency?: { trade_to_board_ms?: number; board_to_queue_ms?: number; queue_to_expo_ms?: number; trade_to_expo_ms?: number };
@@ -60,6 +65,8 @@ export function parseNoticeLog(raw: unknown): NoticeLogWire | null {
       notice: str(r.notice),
       title: str(r.title),
       body: str(r.body),
+      breakout: r.notice === "runners.breakout" ? parseBreakoutNotice(r.breakout) : undefined,
+      entry_context: Array.isArray(r.entry_context) ? r.entry_context.filter((x): x is string => typeof x === "string").slice(0, 32) : undefined,
       desk: path(r.desk),
       phone: path(r.phone),
       latency: lat && {

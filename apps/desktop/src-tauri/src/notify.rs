@@ -41,11 +41,12 @@ const MAX_TITLE: usize = 120;
 const MAX_BODY: usize = 300;
 /// Notifications whose click is still awaited, by notification id (the oldest go first).
 const KEEP: usize = 200;
+const MAX_CONTEXT_BYTES: usize = 16 * 1024;
 
 /// The ticker of each shown notification, by its id: the click handler's fallback when the
 /// platform does not hand the notification's extras back.
 #[derive(Default)]
-pub struct Shown(Mutex<Vec<(i32, String)>>);
+pub struct Shown(Mutex<Vec<(i32, String, Option<Value>)>>);
 
 /// A ticker as the wire spells it (the phone's `route.ts` rule): `^[A-Z][A-Z0-9.-]{0,11}$`.
 pub fn valid_symbol(s: &str) -> bool {
@@ -74,6 +75,30 @@ pub fn open_chart_script(symbol: &str) -> Option<String> {
     })
 }
 
+/// Optional event evidence is encoded as JSON, never executable script text. The page validates
+/// its geometry and symbol again; older notices retain the ticker-only route.
+fn open_chart_script_with_context(symbol: &str, context: Option<&Value>) -> Option<String> {
+    let Some(context) = context.filter(|c| valid_context(symbol, c)) else {
+        return open_chart_script(symbol);
+    };
+    valid_symbol(symbol).then(|| {
+        format!(
+            "window.__stockwatcherOpenChart && window.__stockwatcherOpenChart({}, {})",
+            Value::from(symbol),
+            context
+        )
+    })
+}
+
+fn valid_context(symbol: &str, context: &Value) -> bool {
+    context.is_object()
+        && context["symbol"].as_str() == Some(symbol)
+        && context["event_id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty() && id.len() <= 256)
+        && context.to_string().len() <= MAX_CONTEXT_BYTES
+}
+
 /// A stable notification id from the notice id (the plugin wants an i32).
 fn notification_id(id: &str) -> i32 {
     // FNV-1a, folded into the positive i32 range.
@@ -94,30 +119,35 @@ pub fn runners_notify<R: Runtime>(
     title: String,
     body: String,
     symbol: String,
+    notice_context: Option<Value>,
 ) -> Result<(), String> {
     if !valid_symbol(&symbol) {
         return Err("not a ticker".into());
     }
     let nid = notification_id(&id);
+    let context = notice_context.filter(|c| valid_context(&symbol, c));
     {
         let mut list = shown.0.lock().unwrap_or_else(|e| e.into_inner());
-        list.retain(|(n, _)| *n != nid);
-        list.push((nid, symbol.clone()));
+        list.retain(|(n, _, _)| *n != nid);
+        list.push((nid, symbol.clone(), context.clone()));
         let over = list.len().saturating_sub(KEEP);
         list.drain(..over);
     }
-    app.notification()
+    let mut notification = app
+        .notification()
         .builder()
         .id(nid)
         .title(clip(&title, MAX_TITLE))
         .body(clip(&body, MAX_BODY))
         .extra("symbol", &symbol)
-        .action_type_id(ACTION_TYPE)
-        .show()
-        .map_err(|e| {
-            log::warn!("runners notification not shown: {e}");
-            e.to_string()
-        })
+        .action_type_id(ACTION_TYPE);
+    if let Some(context) = context {
+        notification = notification.extra("noticeContext", context);
+    }
+    notification.show().map_err(|e| {
+        log::warn!("runners notification not shown: {e}");
+        e.to_string()
+    })
 }
 
 /// The ticker a performed action is about: the notification's `symbol` extra, else the one
@@ -130,8 +160,23 @@ fn symbol_of(p: &tauri_plugin_notification::ActionPerformed, shown: &Shown) -> O
     let list = shown.0.lock().unwrap_or_else(|e| e.into_inner());
     list.iter()
         .rev()
-        .find(|(id, _)| *id == n.id())
-        .map(|(_, s)| s.clone())
+        .find(|(id, _, _)| *id == n.id())
+        .map(|(_, s, _)| s.clone())
+}
+
+fn context_of(p: &tauri_plugin_notification::ActionPerformed, shown: &Shown) -> Option<Value> {
+    let n = p.notification()?;
+    n.extra()
+        .get("noticeContext")
+        .filter(|c| c.is_object())
+        .cloned()
+        .or_else(|| {
+            let list = shown.0.lock().unwrap_or_else(|e| e.into_inner());
+            list.iter()
+                .rev()
+                .find(|(id, _, _)| *id == n.id())
+                .and_then(|(_, _, c)| c.clone())
+        })
 }
 
 /// What a performed action does: the "Copy" button copies the ticker; anything else (a click on
@@ -183,7 +228,11 @@ pub fn listen<R: Runtime>(app: &AppHandle<R>) {
         let _ = window.show();
         let _ = window.set_focus();
         let shown = handle.state::<Shown>();
-        match symbol_of(p, &shown).as_deref().and_then(open_chart_script) {
+        let context = context_of(p, &shown);
+        match symbol_of(p, &shown)
+            .as_deref()
+            .and_then(|symbol| open_chart_script_with_context(symbol, context.as_ref()))
+        {
             Some(script) => {
                 if let Err(e) = window.eval(script) {
                     log::warn!("runners notification click: chart not opened: {e}");
@@ -200,6 +249,31 @@ pub fn listen<R: Runtime>(app: &AppHandle<R>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn optional_context_is_json_encoded_bounded_and_bound_to_the_ticker() {
+        let context = serde_json::json!({"event_id":"runners-breakout-1","symbol":"CJMB","breakout":{"rule":"x\");evil();//","bar_end_ms":1000}});
+        let script = open_chart_script_with_context("CJMB", Some(&context)).unwrap();
+        assert!(script.ends_with(&format!(", {context})")));
+        assert!(script.contains("\\\""));
+        assert_eq!(
+            open_chart_script_with_context("INVALID!", Some(&context)),
+            None
+        );
+        assert_eq!(
+            open_chart_script_with_context("TDIC", Some(&context)),
+            open_chart_script("TDIC")
+        );
+        let oversize = serde_json::json!({"event_id":"a","symbol":"CJMB","junk":"x".repeat(MAX_CONTEXT_BYTES)});
+        assert_eq!(
+            open_chart_script_with_context("CJMB", Some(&oversize)),
+            open_chart_script("CJMB")
+        );
+        assert_eq!(
+            open_chart_script_with_context("CJMB", None),
+            open_chart_script("CJMB")
+        );
+    }
 
     #[test]
     fn only_tickers_reach_the_page() {

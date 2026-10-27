@@ -83,7 +83,16 @@ pub fn group(text: &str) -> (Vec<Value>, bool) {
         };
         match kind {
             "decision" => {
-                for k in ["symbol", "price", "notice", "title", "body", "mp5_wick"] {
+                for k in [
+                    "symbol",
+                    "price",
+                    "notice",
+                    "title",
+                    "body",
+                    "mp5_wick",
+                    "breakout",
+                    "entry_context",
+                ] {
                     set_if_absent(item, k, v.get(k).cloned());
                 }
                 if let Some(at) = num(&v, "decided_at") {

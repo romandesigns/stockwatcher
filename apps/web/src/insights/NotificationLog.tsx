@@ -4,6 +4,7 @@ import { cn, Input, OptionSelect, ScrollArea, Tip } from "@stockwatcher/chart-we
 import { filterNotices, latencyText, NOTICE_GROUPS, noticeHeldReason, heldText, noticeKind, noticeStatus, noticeSummary, pathText, type NoticeGroup, type NoticeItemWire, type NoticePathWire, type NoticeStatus } from "@stockwatcher/shared";
 import { useMemo, useState } from "react";
 import { openTickerChart } from "../nav/openTicker.ts";
+import { BREAKOUT_LABEL, breakoutClockText, breakoutSummary, noticeChartContext } from "@stockwatcher/shared";
 import { useNoticeLog } from "./useNoticeLog.ts";
 
 const KIND_ICON: Record<string, IconName> = {
@@ -133,6 +134,9 @@ function SummaryLine({ sent, held, reasons }: { sent: number; held: number; reas
 /** One notice: time, ticker and kind, its text, and what happened on each path. */
 export function NoticeRow({ item }: { item: NoticeItemWire }) {
   const kind = noticeKind(item.notice);
+  const context = noticeChartContext(item);
+  const label = context ? BREAKOUT_LABEL : kind.label;
+  const evidence = context ? `${breakoutSummary(context.breakout)} · ${breakoutClockText(context.breakout, (ms) => formatEtTime12(ms, true))} · Rule ${context.breakout.rule} · ${context.breakout.source} / ${context.breakout.exact_state}` : item.notice === "runners.breakout" ? "Event time and comparison unavailable" : null;
   const sent = noticeStatus(item) === "sent";
   const reason = noticeHeldReason(item);
   const latency = latencyText(item);
@@ -140,22 +144,27 @@ export function NoticeRow({ item }: { item: NoticeItemWire }) {
   return (
     <button
       type="button"
-      onClick={() => item.symbol && openTickerChart(item.symbol)}
+      onClick={() => item.symbol && openTickerChart(item.symbol, context)}
       disabled={!item.symbol}
-      aria-label={`${item.symbol ?? "Notice"}: ${kind.label}, ${sent ? "sent" : `held, ${heldText(reason)}`}. Open the chart.`}
+      aria-label={`${item.symbol ?? "Notice"}: ${label}, ${sent ? "sent" : `held, ${heldText(reason)}`}. ${evidence ?? ""}. ${text}. Open the chart.`}
       className="grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 rounded-lg bg-card px-3 py-2 text-left outline-none transition-colors duration-150 hover:bg-bg-row focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none @2xl/log:grid-cols-[6.5rem_minmax(8rem,12rem)_minmax(0,1fr)_auto]"
     >
-      <span className="font-mono text-xs text-muted-foreground">{item.at ? formatEtTime12(item.at, true) : "—"}</span>
+      <Tip label={context ? "History decision time" : "History time: first decision or recorded fallback"}><span className="font-mono text-xs text-muted-foreground">{item.at ? formatEtTime12(item.at, true) : "—"}</span></Tip>
       <span className="flex min-w-0 items-center gap-2">
         <span className="font-mono text-[13px] font-bold">{item.symbol ?? "—"}</span>
-        <Tip label={kind.label}>
+        <Tip label={label}>
           <span className="inline-flex items-center gap-1 text-xs text-muted-foreground [&_svg]:size-3.5">
             <Icon name={kindIcon(item.notice)} />
-            <span className="truncate">{kind.label}</span>
+            <span className="truncate">{label}</span>
           </span>
         </Tip>
       </span>
-      <span className="col-span-3 row-start-2 truncate text-xs text-text-faint @2xl/log:col-span-1 @2xl/log:col-start-3 @2xl/log:row-start-1">{item.failed ? `${text} · push service refused it` : text}</span>
+      <span className="col-span-3 row-start-2 min-w-0 text-xs text-text-faint @2xl/log:col-span-1 @2xl/log:col-start-3 @2xl/log:row-start-1">
+        <span className="block truncate">{item.failed ? `${text} · push service refused it` : text}</span>
+        {evidence && <span className="mt-1 block text-[10px]">{evidence}</span>}
+        {context && <span className="block text-[10px]">Decision {item.at ? formatEtTime12(item.at, true) : "unavailable"}</span>}
+        {item.entry_context?.length ? <span className="block text-[10px]">Entry context (original alert): {item.entry_context.join(" · ")}</span> : null}
+      </span>
       <span className="col-start-3 row-start-1 flex items-center gap-2 justify-self-end @2xl/log:col-start-4">
         <PathMark icon="screen" name="Desktop and web" path={item.desk} />
         <PathMark icon="phone" name="Phones" path={item.phone} extra={latency} />

@@ -5,6 +5,14 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { notificationTarget, ringRunnersLocally } from "./route";
+import { breakoutTestFixture } from "../../../../packages/shared/src/breakoutTestFixture.ts";
+
+test("a measured Breakout tap retains producer event identity and unsafe optional evidence falls back to ticker-only", () => {
+  const data = { symbol: "CJMB", kind: "runners.breakout", event_id: "runners-breakout-fixture", breakout: breakoutTestFixture };
+  expect(notificationTarget(data)).toEqual({ to: "chart", symbol: "CJMB", noticeContext: { event_id: data.event_id, symbol: "CJMB", breakout: breakoutTestFixture } });
+  expect(notificationTarget({ ...data, event_id: undefined })).toEqual({ to: "chart", symbol: "CJMB" });
+  expect(notificationTarget({ ...data, breakout: { ...breakoutTestFixture, high_price_micros: Infinity } })).toEqual({ to: "chart", symbol: "CJMB" });
+});
 
 const read = (p: string) => readFileSync(join(import.meta.dir, p), "utf8");
 
@@ -31,7 +39,7 @@ test("taps route through notificationTarget, including the one that launched the
   const push = read("push.ts");
   expect(push).toContain("addNotificationResponseReceivedListener(openFrom)");
   expect(push).toContain("openFrom(Notifications.getLastNotificationResponse())");
-  expect(push).toContain('if (target.to === "chart") openTickerChart(target.symbol);');
+  expect(push).toContain('if (target.to === "chart") openTickerChart(target.symbol, undefined, undefined, target.noticeContext);');
   expect(push).toContain("clearLast: () => Notifications.clearLastNotificationResponse()");
   // Before the navigation exists, the tap waits for the container's onReady (ref.ts).
   expect(read("../navigation/ref.ts")).toContain("whenNavigationReady(() => navigationRef.dispatch(openChartAction(params)))");

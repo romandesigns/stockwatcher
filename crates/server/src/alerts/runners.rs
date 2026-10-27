@@ -608,6 +608,31 @@ fn panel_message(n: &Notice) -> (String, String, Value) {
 fn runner_message(n: &Notice) -> (String, String, Value) {
     let p = dollars(on_tick(n.price));
     let s = &n.symbol;
+    if let (NoticeKind::Breakout, Some(NoticeDetail::Breakout(e))) = (n.kind, &n.detail) {
+        let price = |micros: i64| {
+            let mut text = format!("${}.{:06}", micros / 1_000_000, micros % 1_000_000);
+            while text.ends_with('0') && text.len() - text.find('.').expect("decimal") > 3 {
+                text.pop();
+            }
+            text
+        };
+        let pace = match e.volume_ratio {
+            Some(ratio) => format!("{ratio:.1}× prior pace"),
+            None => "prior pace unavailable".into(),
+        };
+        let measured = format!(
+            "High {} > {} · {:.0} shares/15s · {pace}",
+            price(e.high_price_micros),
+            price(e.reference_price_micros),
+            e.volume
+        );
+        return (
+            format!("{s} · 15s new high since alert · {p}"),
+            with_price_line(measured, n.price),
+            json!({"symbol":s,"kind":data_kind(n.kind),"alert_id":n.alert_id,
+                "event_id":n.event_id(),"breakout":e,"entry_context":n.reasons}),
+        );
+    }
     let title = match n.kind {
         NoticeKind::New => format!("Runners: {s} {p}"),
         NoticeKind::Breakout => format!("{s} breaking out {p}"),

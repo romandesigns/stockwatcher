@@ -164,6 +164,9 @@ struct Bar {
     high: f32,
     low: f32,
     close: f32,
+    // Detector-only originals. Never used by frozen features, scores, or outcomes.
+    exact_close: i64,
+    exact_high: i64,
     vol: f32,
     dollars: f32,
     trades: f32,
@@ -177,6 +180,7 @@ struct Bar {
 #[derive(Clone, Debug)]
 pub(crate) struct Sym {
     pub(crate) symbol: Arc<str>,
+    pub(crate) latest_ohlc_exec_ns: i64,
     /// The live prefix has not yet been atomically adopted from history.
     pub(crate) unrestored: bool,
     /// This date's rebuilt prefix was adopted, but was structurally incomplete. Runners only.
@@ -217,6 +221,7 @@ impl Sym {
     fn new(symbol: Arc<str>) -> Self {
         Sym {
             symbol,
+            latest_ohlc_exec_ns: 0,
             unrestored: false,
             unavailable: false,
             unavailable_day: 0,
@@ -414,6 +419,9 @@ impl Tape {
         }
         let p = price as f32;
         if counted.ohlc {
+            s.latest_ohlc_exec_ns = s.latest_ohlc_exec_ns.max(t.event_ts.0);
+            b.exact_close = t.price.micros();
+            b.exact_high = b.exact_high.max(t.price.micros());
             if b.has_ohlc {
                 b.high = b.high.max(p);
                 b.low = b.low.min(p);
@@ -913,6 +921,43 @@ pub(crate) fn bars_between(s: &Sym, after: u32, through: u32) -> Vec<(u32, f64, 
     }
     out.sort_by_key(|b| b.0);
     out
+}
+
+/// Original source prices alongside the frozen model tape. No reverse conversion from f32.
+pub(crate) fn exact_close(s: &Sym, through: u32) -> Option<i64> {
+    let b = s
+        .ring
+        .as_ref()?
+        .iter()
+        .filter(|b| b.has_ohlc && b.key <= through)
+        .max_by_key(|b| b.key)?;
+    (b.exact_close > 0).then_some(b.exact_close)
+}
+
+#[cfg(test)]
+pub(crate) fn exact_bar_close(s: &Sym, key: u32) -> Option<i64> {
+    s.bar(key)
+        .filter(|b| b.has_ohlc)
+        .map(|b| b.exact_close)
+        .filter(|p| *p > 0)
+}
+
+pub(crate) fn exact_highs(s: &Sym, after: u32, through: u32) -> Vec<(u32, i64)> {
+    let mut bars: Vec<_> = s
+        .ring
+        .iter()
+        .flat_map(|r| r.iter())
+        .filter(|b| b.has_ohlc && b.key > after && b.key <= through && b.exact_high > 0)
+        .map(|b| (b.key, b.exact_high))
+        .collect();
+    bars.sort_by_key(|b| b.0);
+    bars
+}
+
+/// The actual source head, rather than the (possibly clock-capped) evaluation barrier,
+/// determines which gap bars could already have been overwritten in the ring.
+pub(crate) fn retains_exact_after(s: &Sym, after: u32) -> bool {
+    s.newest.saturating_sub(after) < RING as u32
 }
 
 /// The canonical ROCKET mark test at bar `j` (`reports/rockets/definition.json`): `L` = the min

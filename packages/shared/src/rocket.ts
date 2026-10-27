@@ -147,6 +147,8 @@ export interface RocketRowWire {
   pc: number | null;
   score: number;
   reasons: string[];
+  /** Exact accumulator capability; absent on legacy producers. */
+  breakout_tracking?: { status: "complete" | "restored" | "unknown"; reason: string | null; policy_id: string };
   outcome: RocketOutcomeWire;
   /** Momentum (newer servers; absent = watching). */
   state?: RocketMomentumState;
@@ -375,6 +377,7 @@ export interface RocketRowView {
   fresh: boolean;
   /** One or two reason chips. */
   reasons: string[];
+  breakoutTracking?: string | null;
   /** The score, shown subtly ("2.31"). */
   score: string;
   /** The outcome tag once known ("+34% ✓", "ran later +43%", "faded"), else null. */
@@ -584,6 +587,9 @@ export function rocketRowView(r: RocketRowWire, nowMs: number, strategyId?: stri
   const b = isBurstRow(r) ? r.burst : null;
   const outcome = b ? burstOutcomeTag(b.outcome) : outcomeTag(r.outcome);
   const reasons = r.reasons.slice(0, 2);
+  const tracking = r.breakout_tracking;
+  const knownPolicy = tracking?.policy_id === "rocket-momentum-15s-exact-after-v1";
+  const breakoutTracking = knownPolicy && (tracking?.status === "complete" || tracking?.status === "restored") ? null : `Exact breakout history unavailable${knownPolicy && typeof tracking?.reason === "string" && tracking.reason ? ` · ${tracking.reason.replace(/_/g, " ")}` : " · legacy or unsupported evidence"}`;
   const age = rocketAge(ageMs);
   const state = momentumOf(r);
   const look = ROCKET_STATES[state];
@@ -607,6 +613,7 @@ export function rocketRowView(r: RocketRowWire, nowMs: number, strategyId?: stri
     age,
     fresh: ageMs < 60_000,
     reasons,
+    breakoutTracking,
     score: Number.isFinite(r.score) ? r.score.toFixed(2) : "",
     outcome,
     momentum: { ...look, state, since, provisional: r.provisional ?? false, note },
@@ -626,7 +633,7 @@ export function rocketRowView(r: RocketRowWire, nowMs: number, strategyId?: stri
     fromWhat: b ? "alert" : isEntryRow(r) ? "entry" : "flag",
     aria: "",
   };
-  const alsoAria = (view.also.length ? `. Then ${view.also.map((a) => `${a.label} ${a.age === "now" ? "just now" : `${a.age} ago`}`).join(", ")}` : "") + (view.setup ? `. ${view.setup.label}` : "");
+  const alsoAria = (view.also.length ? `. Then ${view.also.map((a) => `${a.label} ${a.age === "now" ? "just now" : `${a.age} ago`}`).join(", ")}` : "") + (view.setup ? `. ${view.setup.label}` : "") + (breakoutTracking ? `. ${breakoutTracking}` : "");
   if (view.burst) {
     const bv = view.burst;
     view.aria = `${r.s} ${money(last)}${gain ? ` ${gain} on the day` : ""}. ${bv.headline} alerted ${age === "now" ? "just now" : `${age} ago`}, ${bv.since}, ${bv.move}, ${look.label}${note ? ` ${note}` : ""}${reasons.length ? `: ${reasons.join(", ")}` : ""}${outcome ? `. Outcome ${outcome.label}` : ""}${alsoAria}`;

@@ -116,6 +116,7 @@
 //! rows remain visible; the precursor's windows may still span the halt. Open halts survive a
 //! date roll and end only on a matching official resume, never on an invented timeout.
 
+pub mod breakout;
 pub mod burst;
 pub mod fast;
 pub mod features;
@@ -135,6 +136,7 @@ use chrono::NaiveDate;
 use market_events::UnixNanos;
 use serde_json::{Value, json};
 
+pub use breakout::BreakoutNotice;
 pub use features::{FEATS, Features, NF, ix};
 pub use log::{DaySummary, Loaded, RocketLog};
 pub use scorer::{PlaceholderB2, RocketScorer, ScorerChoice, production_scorer, standard_reasons};
@@ -266,6 +268,8 @@ impl NoticeKind {
 /// What a notice beyond a row's own entry carries for its text (`crate::alerts::runners::message`).
 #[derive(Clone, Debug, PartialEq)]
 pub enum NoticeDetail {
+    /// Exact source measurements frozen before the new high is folded into the reference.
+    Breakout(Box<BreakoutNotice>),
     /// [`NoticeKind::FollowUp`]: the path that fired now, and the row's first source with when
     /// the row appeared (epoch ns).
     FollowUp {
@@ -410,7 +414,9 @@ pub struct Notice {
     pub symbol: String,
     /// The barrier it happened at (epoch ns).
     pub at_ns: i64,
-    /// The price then (the flag price for a new alert).
+    /// The price for this notice (the flag price for a new alert).
+    /// Breakout retains its legacy feature-bar last-arrival reference: neither the measured
+    /// candidate high nor a current quote, and no chronological candle close is implied.
     pub price: f64,
     /// % from the flag price (0 for a new alert); for a burst, % since the burst started.
     pub from_flag_pct: Option<f64>,
@@ -427,6 +433,13 @@ pub struct Notice {
 }
 
 impl Notice {
+    /// Optional immutable detector evidence. Older notice literals retain their shape.
+    pub fn source_evidence(&self) -> Option<Value> {
+        match &self.detail {
+            Some(NoticeDetail::Breakout(b)) => serde_json::to_value(b).ok(),
+            _ => None,
+        }
+    }
     /// The event's identity: what every surface dedupes on (one push per event, ever). A row's
     /// flag and its breakout share `alert_id`, so the kind is part of it.
     pub fn event_id(&self) -> String {
@@ -655,6 +668,7 @@ impl Alert {
             "score": self.score, "threshold": finite(self.threshold), "mode": mode,
             "reasons": self.reasons, "strategy": self.strategy, "version": self.version,
             "entry_band_micros": [features::SCORING_BAND_MICROS.0, features::SCORING_BAND_MICROS.1],
+            "breakout_track": self.track.snapshot(),
         })
         .to_string()
     }
@@ -667,6 +681,7 @@ impl Alert {
             "score": self.score, "reasons": self.reasons, "strategy": self.strategy,
             "version": self.version, "base_low": e.base_low, "gain": e.gain, "req": e.req,
             "dollars5": e.dollars5, "rvol30": e.rvol30,
+            "breakout_track": self.track.snapshot(),
         })
         .to_string()
     }
@@ -679,6 +694,7 @@ impl Alert {
             "score": self.score, "reasons": self.reasons, "strategy": self.strategy,
             "version": self.version, "start_ns": r.start_ns, "start_price": r.start_price,
             "plus20_ns": r.plus20_ns, "early": r.early, "exec_ns": r.exec_ns,
+            "breakout_track": self.track.snapshot(),
         })
         .to_string()
     }
@@ -691,6 +707,7 @@ impl Alert {
             "score": self.score, "reasons": self.reasons, "strategy": self.strategy,
             "version": self.version, "sec": sec, "secs": e.secs, "held": e.held, "low": e.low,
             "gain": e.gain, "trades": e.trades, "dollars": e.dollars,
+            "breakout_track": self.track.snapshot(),
         })
         .to_string()
     }
@@ -766,6 +783,7 @@ impl Alert {
             "sweeps": b.map(|b| b.sweeps), "buy_pct": b.map(|b| round2(b.buy_pct)),
             "reasons": self.reasons, "features": feats,
             "strategy": self.strategy, "version": self.version,
+            "breakout_track": self.track.snapshot(),
         })
         .to_string()
     }
@@ -828,6 +846,11 @@ pub struct RocketBoard {
     ord: u32,
     processed: u32,
     alerts: Vec<Alert>,
+    /// Lookup only the rows of a printing symbol; ingestion never scans all alerts.
+    track_symbols: HashMap<Arc<str>, Vec<usize>>,
+    admission: u64,
+    /// Actual caller clock at this decision, distinct from an advanced barrier label.
+    decision_ns: i64,
     last_alert: HashMap<Arc<str>, i64>,
     block: Option<i64>,
     block_max: HashMap<Arc<str>, f64>,
@@ -942,6 +965,57 @@ fn row_rank(state: MState) -> u8 {
 }
 
 impl RocketBoard {
+    fn push_alert(&mut self, alert: Alert) {
+        self.track_symbols
+            .entry(alert.symbol.clone())
+            .or_default()
+            .push(self.alerts.len());
+        self.alerts.push(alert);
+    }
+
+    fn new_track(&self, symbol: &str, at: i64, price: f64, original: Option<i64>) -> Track {
+        let slot = (self.decision_ns - self.t0)
+            .div_euclid(BAR_NS)
+            .clamp(0, NSLOT - 1);
+        let checked = features::key_of(self.ord, slot).saturating_sub(1);
+        Track::new(at, price).with_exact(
+            original,
+            self.decision_ns,
+            self.admission,
+            checked,
+            self.tape
+                .sym(symbol)
+                .is_some_and(|s| s.latest_ohlc_exec_ns > self.decision_ns),
+        )
+    }
+
+    fn track_trade(&mut self, t: &market_events::Trade, counted: crate::quotes::Counted) {
+        if !counted.ohlc {
+            return;
+        }
+        self.admission = self.admission.saturating_add(1);
+        let Some(session) = t.session else {
+            return;
+        };
+        if Some(session.date) != self.date
+            || session.kind == market_events::session::SessionKind::Overnight
+        {
+            return;
+        }
+        let slot = (t.event_ts.0 - self.t0).div_euclid(BAR_NS);
+        if !(0..NSLOT).contains(&slot) {
+            return;
+        }
+        let key = features::key_of(self.ord, slot);
+        if let Some(indices) = self.track_symbols.get(t.symbol.as_str()) {
+            for &i in indices {
+                if let Some(exact) = &mut self.alerts[i].track.exact {
+                    exact.observe(key, breakout::Print::from_trade(t, self.admission));
+                }
+            }
+        }
+    }
+
     pub fn new(enabled: bool, scorer: Arc<dyn RocketScorer>, policy: Policy) -> Self {
         RocketBoard {
             enabled,
@@ -953,6 +1027,9 @@ impl RocketBoard {
             ord: 0,
             processed: 0,
             alerts: Vec::new(),
+            track_symbols: HashMap::new(),
+            admission: 0,
+            decision_ns: 0,
             last_alert: HashMap::new(),
             block: None,
             block_max: HashMap::new(),
@@ -1061,6 +1138,19 @@ impl RocketBoard {
         date: NaiveDate,
     ) {
         self.tape.adopt(symbol, other, unavailable.then_some(date));
+        if let Some(indices) = self.track_symbols.get(symbol) {
+            for &i in indices {
+                if let Some(e) = &mut self.alerts[i].track.exact
+                    && e.restored
+                    && !e.complete
+                {
+                    e.rebuild_ready = !unavailable;
+                    if unavailable {
+                        e.unknown_reason = Some("authoritative_history_incomplete".into());
+                    }
+                }
+            }
+        }
         // No provisional score may survive to become a later adaptive block maximum.
         self.block_max.remove(symbol);
     }
@@ -1160,6 +1250,7 @@ impl RocketBoard {
     pub fn apply_trade(&mut self, t: &market_events::Trade, counted: crate::quotes::Counted) {
         if self.enabled {
             self.tape.apply_trade(t, counted);
+            self.track_trade(t, counted);
             if let Some(b) = self.burst.as_mut() {
                 b.apply_trade(t, counted);
             }
@@ -1231,6 +1322,7 @@ impl RocketBoard {
     ) {
         if self.enabled {
             self.tape.apply_unrestored_trade(t, counted);
+            self.track_trade(t, counted);
             if let Some(b) = self.burst.as_mut() {
                 b.apply_trade_unrestored(t, counted);
             }
@@ -1475,6 +1567,7 @@ impl RocketBoard {
         self.ord = ord;
         self.processed = 0;
         self.alerts.clear();
+        self.track_symbols.clear();
         self.last_alert.clear();
         // Official open halts can cross dates. Only the pressure board's matching resume ends one.
         self.block = None;
@@ -1505,6 +1598,7 @@ impl RocketBoard {
         }
         let rev = self.revision;
         let clock = now;
+        self.decision_ns = clock;
         // The tape may already hold prints a little past the clock (a replay at speed, a clock
         // frame behind the feed). The barrier is the slot before the one the newest print is in,
         // so a print past the barrier is always in the slot in progress, never in a finished
@@ -1587,7 +1681,13 @@ impl RocketBoard {
                     settled: true,
                     partial: false,
                 },
-                track: Track::new(a.at_ns, a.price),
+                // Burst's live `s.last` is built directly from integer Price, not model input.
+                track: self.new_track(
+                    &p.symbol,
+                    a.at_ns,
+                    a.price,
+                    breakout::original_micros(a.price),
+                ),
                 kind: AlertKind::Burst,
                 burst: Some(Box::new(row)),
                 also: Vec::new(),
@@ -1607,7 +1707,7 @@ impl RocketBoard {
                 detail: None,
             });
             if self.alerts.len() < 2 * MAX_ALERTS_PER_DAY {
-                self.alerts.push(alert);
+                self.push_alert(alert);
             }
             self.revision += 1;
         }
@@ -1727,7 +1827,14 @@ impl RocketBoard {
                     settled: false,
                     partial: false,
                 },
-                track: Track::new(b.at_ns, f.price),
+                track: self.new_track(
+                    &f.symbol,
+                    b.at_ns,
+                    f.price,
+                    self.tape
+                        .sym(&f.symbol)
+                        .and_then(|s| features::exact_close(s, b.key)),
+                ),
                 kind: AlertKind::Runner,
                 burst: None,
                 also: Vec::new(),
@@ -1746,7 +1853,7 @@ impl RocketBoard {
                 exec_ns: None,
                 detail: None,
             });
-            self.alerts.push(a);
+            self.push_alert(a);
             self.revision += 1;
         }
         self.running_entries(b, date, running);
@@ -1814,7 +1921,14 @@ impl RocketBoard {
                     settled: true,
                     partial: false,
                 },
-                track: Track::new(b.at_ns, e.price),
+                track: self.new_track(
+                    &symbol,
+                    b.at_ns,
+                    e.price,
+                    self.tape
+                        .sym(&symbol)
+                        .and_then(|s| features::exact_close(s, b.key)),
+                ),
                 kind: AlertKind::Running,
                 burst: None,
                 also: Vec::new(),
@@ -1832,7 +1946,7 @@ impl RocketBoard {
                 exec_ns: None,
                 detail: None,
             });
-            self.alerts.push(a);
+            self.push_alert(a);
             self.revision += 1;
         }
     }
@@ -1895,7 +2009,13 @@ impl RocketBoard {
                     settled: true,
                     partial: false,
                 },
-                track: Track::new(r.plus20_ns, r.close),
+                // ZoneBoard Run.close is the original normalized source price.
+                track: self.new_track(
+                    &symbol,
+                    r.plus20_ns,
+                    r.close,
+                    breakout::original_micros(r.close),
+                ),
                 kind: AlertKind::Run,
                 burst: None,
                 also: Vec::new(),
@@ -1913,7 +2033,7 @@ impl RocketBoard {
                 exec_ns: Some(r.exec_ns),
                 detail: None,
             });
-            self.alerts.push(a);
+            self.push_alert(a);
             self.revision += 1;
         }
     }
@@ -2067,7 +2187,8 @@ impl RocketBoard {
                     settled: true,
                     partial: false,
                 },
-                track: Track::new(at_ns, e.price),
+                // FastTape stores source Price::to_f64 without feature narrowing.
+                track: self.new_track(&symbol, at_ns, e.price, breakout::original_micros(e.price)),
                 kind: AlertKind::Fast,
                 burst: None,
                 also: Vec::new(),
@@ -2086,7 +2207,7 @@ impl RocketBoard {
                 exec_ns: Some(sec * SEC_NS),
                 detail: None,
             });
-            self.alerts.push(a);
+            self.push_alert(a);
             self.revision += 1;
         }
     }
@@ -2238,6 +2359,15 @@ impl RocketBoard {
             }
             let strict = self.alerts[i].outcome.mark;
             let a = &mut self.alerts[i];
+            let previous_exact_high = a.track.exact.as_ref().map(|e| {
+                (
+                    e.high_price_micros,
+                    e.complete,
+                    e.checked_key >= e.creation_key,
+                )
+            });
+            a.track.reconcile(s, b.key, self.decision_ns, t0, ord);
+            a.track.clock_boundary(b.at_ns, self.decision_ns);
             a.track.bars(&new, |key, end| {
                 // The strict mark is the first mark after the alert too.
                 if let Some(m) = strict.filter(|m| m.mark_ns <= end) {
@@ -2249,6 +2379,7 @@ impl RocketBoard {
                     start_price: l,
                 })
             });
+            a.track.exact_bars(b.key, self.decision_ns);
             let w = features::window(s, b.key, base);
             let x = track::Inputs {
                 key: b.key,
@@ -2270,19 +2401,47 @@ impl RocketBoard {
                     let line = a.state_line(date, &tr);
                     self.pending.push((date, line));
                 }
-                let breakout = (tr.to == MState::BreakingOut && tr.from != MState::BreakingOut)
-                    .then(|| Notice {
-                        kind: NoticeKind::Breakout,
-                        alert_id: a.id.clone(),
-                        symbol: a.symbol.to_string(),
-                        at_ns: tr.at_ns,
-                        price: tr.price,
-                        from_flag_pct: a.track.pct(tr.price).map(round2),
-                        reasons: a.reasons.clone(),
-                        since_start_min: None,
-                        exec_ns: None,
-                        detail: None,
-                    });
+                let breakout = (tr.to == MState::BreakingOut
+                    && tr.from != MState::BreakingOut
+                    && a.track.fresh_breakout(&x))
+                .then(|| Notice {
+                    kind: NoticeKind::Breakout,
+                    alert_id: a.id.clone(),
+                    symbol: a.symbol.to_string(),
+                    at_ns: tr.at_ns,
+                    price: tr.price,
+                    from_flag_pct: a.track.pct(tr.price).map(round2),
+                    reasons: a.reasons.clone(),
+                    since_start_min: None,
+                    exec_ns: a
+                        .track
+                        .exact
+                        .as_ref()
+                        .and_then(|e| e.fresh.map(|f| f.high.exec_ns)),
+                    detail: a
+                        .track
+                        .exact
+                        .as_ref()
+                        .and_then(|e| {
+                            e.notice(
+                                breakout::BarContext {
+                                    key: b.key,
+                                    end_ns: b.at_ns,
+                                    // Feature bars close in arrival order. Until chronological
+                                    // source close provenance is retained, leave it unknown.
+                                    close_price_micros: None,
+                                    volume: x.bar_vol,
+                                    pace_slot: x.pace_slot,
+                                },
+                                breakout::DecisionContext {
+                                    evaluated_ns: self.decision_ns,
+                                    flag_at_ns: a.at_ns,
+                                    admission: self.admission,
+                                },
+                            )
+                        })
+                        .map(|evidence| NoticeDetail::Breakout(Box::new(evidence))),
+                });
                 if let Some(n) = breakout {
                     self.notice(n);
                 }
@@ -2290,6 +2449,32 @@ impl RocketBoard {
             }
             let a = &mut self.alerts[i];
             a.outcome.checked = b.key;
+            let exact_changed = previous_exact_high
+                != a.track.exact.as_ref().map(|e| {
+                    (
+                        e.high_price_micros,
+                        e.complete,
+                        e.checked_key >= e.creation_key,
+                    )
+                });
+            if a.track.exact.is_some()
+                && (exact_changed || self.decision_ns - a.track.checkpoint_ns >= 15 * MIN_NS)
+            {
+                if let Some(e) = &mut a.track.exact {
+                    // Persist the whole board's decision cutoff, including admissions for
+                    // other symbols, so a restored counter exceeds every persisted decision.
+                    e.admission_cutoff = e.admission_cutoff.max(self.admission);
+                }
+                a.track.checkpoint_ns = self.decision_ns;
+                self.pending.push((
+                    date,
+                    json!({
+                        "kind": "breakout_track", "v": 1, "id": a.id,
+                        "date": date.to_string(), "breakout_track": a.track.snapshot(),
+                    })
+                    .to_string(),
+                ));
+            }
             if !settled && b.at_ns >= at + SETTLE_NS {
                 a.outcome.settled = true;
                 let line = a.outcome_line(date, b.at_ns);
@@ -2451,6 +2636,11 @@ impl RocketBoard {
                 }
                 a.track.transitions = n;
             }
+            if let Some(snapshot) = v.get("breakout_track")
+                && let Some(admission) = a.track.restore_exact(snapshot)
+            {
+                self.admission = self.admission.max(admission);
+            }
             if matches!(kind, AlertKind::Running | AlertKind::Run | AlertKind::Fast) {
                 // Its strict outcome never applies (`running_entries`, `run_entries`,
                 // `fast_entries`).
@@ -2475,6 +2665,13 @@ impl RocketBoard {
             }
         }
         self.alerts.sort_by_key(|a| a.at_ns);
+        self.track_symbols.clear();
+        for (i, a) in self.alerts.iter().enumerate() {
+            self.track_symbols
+                .entry(a.symbol.clone())
+                .or_default()
+                .push(i);
+        }
         // The rows' follow-ups (`also` lines): their chips come back, and the same path firing
         // again after the restart finds itself on the row and announces nothing.
         for a in &mut self.alerts {
@@ -2629,6 +2826,7 @@ impl RocketBoard {
                         "rocket_later": t.later.is_some(),
                     },
                     "state": state.as_str(),
+                    "breakout_tracking": t.tracking_status(),
                     "state_since": t.since_ns / 1_000_000,
                     "provisional": provisional,
                     "from_flag_pct": t.pct(now).map(round2),

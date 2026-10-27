@@ -20,6 +20,7 @@
 // write arriving after the click cannot put the previous ticker back.
 
 import { parseSymbol, type AppStore } from "@stockwatcher/app-state";
+import { parseNoticeChartContext, type NoticeChartContext } from "@stockwatcher/shared";
 import { getAppStore } from "../state/store.ts";
 import { pageOf } from "./routes.ts";
 
@@ -30,11 +31,12 @@ export interface OpenTickerEnv {
 }
 
 /** Opens `raw` in `env`; returns the ticker opened, or null when `raw` is not a ticker. */
-export function openTickerIn(env: OpenTickerEnv, raw: string): string | null {
+export function openTickerIn(env: OpenTickerEnv, raw: string, noticeContext?: NoticeChartContext): string | null {
   const symbol = parseSymbol(raw);
   if (!symbol) return null;
   const app = env.store.getState();
   app.loadIntoSelected(symbol);
+  app.selectNotice(parseNoticeChartContext(noticeContext, symbol));
   if (app.searchOpen) app.setSearchOpen(false);
   if (pageOf(env.hash.get()) !== "dashboard") env.hash.set("#/");
   return symbol;
@@ -53,6 +55,6 @@ function browserEnv(): OpenTickerEnv {
 }
 
 /** The page's "open this ticker": see the file comment. */
-export function openTickerChart(raw: string): void {
-  openTickerIn(browserEnv(), raw);
+export function openTickerChart(raw: string, noticeContext?: NoticeChartContext): void {
+  openTickerIn(browserEnv(), raw, noticeContext);
 }

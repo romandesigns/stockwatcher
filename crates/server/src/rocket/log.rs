@@ -68,6 +68,7 @@
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use chrono::NaiveDate;
 use serde_json::Value;
@@ -76,6 +77,9 @@ use serde_json::Value;
 pub const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 /// Days of track record kept in memory and sent to the panel.
 pub const HISTORY_DAYS: usize = 20;
+/// Exact tracking is replaceable state, separate from the capped append-only event journal.
+const MAX_CHECKPOINT_BYTES: u64 = 64 * 1024;
+const CHECKPOINT_PREFIX: &str = "breakout-state-";
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct DaySummary {
@@ -115,6 +119,7 @@ pub struct Loaded {
 pub struct RocketLog {
     dir: PathBuf,
     retention_days: u32,
+    checkpoint_writer: Mutex<()>,
 }
 
 fn date_of(path: &Path) -> Option<NaiveDate> {
@@ -123,11 +128,45 @@ fn date_of(path: &Path) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(stem, "%Y-%m-%d").ok()
 }
 
+fn checkpoint_date(path: &Path) -> Option<NaiveDate> {
+    let name = path.file_name()?.to_str()?;
+    let name = name.strip_prefix(".pending-").unwrap_or(name);
+    let rest = name
+        .strip_prefix(CHECKPOINT_PREFIX)?
+        .strip_suffix(".json")?;
+    if rest.as_bytes().get(10) != Some(&b'-') {
+        return None;
+    }
+    NaiveDate::parse_from_str(rest.get(..10)?, "%Y-%m-%d").ok()
+}
+
+fn checkpoint_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id.as_bytes()[0].is_ascii_alphanumeric()
+        && id
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.'))
+}
+
+fn checkpoint_order(v: &Value) -> (i64, u64, u64) {
+    let s = &v["breakout_track"];
+    let e = s.get("exact").unwrap_or(s);
+    (
+        s.get("checkpoint_ns").and_then(Value::as_i64).unwrap_or(0),
+        e.get("checked_key").and_then(Value::as_u64).unwrap_or(0),
+        e.get("admission_cutoff")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+    )
+}
+
 impl RocketLog {
     pub fn new(dir: PathBuf, retention_days: u32) -> Self {
         RocketLog {
             dir,
             retention_days,
+            checkpoint_writer: Mutex::new(()),
         }
     }
 
@@ -139,10 +178,91 @@ impl RocketLog {
         self.dir.join(format!("{date}.jsonl"))
     }
 
+    fn checkpoint_file(&self, date: NaiveDate, id: &str) -> Option<PathBuf> {
+        checkpoint_id(id).then(|| {
+            self.dir
+                .join(format!("{CHECKPOINT_PREFIX}{date}-{id}.json"))
+        })
+    }
+
+    fn read_checkpoint(&self, date: NaiveDate, id: &str) -> Option<Value> {
+        let path = self.checkpoint_file(date, id)?;
+        if std::fs::metadata(&path).ok()?.len() > MAX_CHECKPOINT_BYTES {
+            return None;
+        }
+        let v: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+        (v["kind"] == "breakout_track"
+            && v["id"] == id
+            && v["date"] == date.to_string()
+            && v["breakout_track"].is_object())
+        .then_some(v)
+    }
+
+    fn write_checkpoint(&self, date: NaiveDate, v: &Value) -> std::io::Result<()> {
+        let id = v["id"].as_str().unwrap_or_default();
+        let path = self
+            .checkpoint_file(date, id)
+            .ok_or_else(|| std::io::Error::other("invalid checkpoint id"))?;
+        if v["date"] != date.to_string() || !v["breakout_track"].is_object() {
+            return Err(std::io::Error::other("missing exact tracking checkpoint"));
+        }
+        let bytes = serde_json::to_vec(v)?;
+        if bytes.len() as u64 > MAX_CHECKPOINT_BYTES {
+            return Err(std::io::Error::other(
+                "exact tracking checkpoint at its size cap",
+            ));
+        }
+        let _writer = self
+            .checkpoint_writer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        std::fs::create_dir_all(&self.dir)?;
+        if self
+            .read_checkpoint(date, id)
+            .is_some_and(|old| checkpoint_order(&old) > checkpoint_order(v))
+        {
+            return Ok(());
+        }
+        let tmp = self.dir.join(format!(
+            ".pending-{}",
+            path.file_name().expect("checkpoint name").to_string_lossy()
+        ));
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(&bytes)?;
+        f.sync_all()?;
+        drop(f);
+        std::fs::rename(tmp, path)
+    }
+
     /// Appends lines to `date`'s file (creating the directory). Errors are logged, not returned:
     /// a full disk must not stop the panel.
     pub fn append(&self, date: NaiveDate, lines: &[String]) {
         if lines.is_empty() {
+            return;
+        }
+        // Replaceable per-row state must not spend the event journal's 2 MiB budget.
+        let mut event_lines = Vec::new();
+        let mut checkpoints: BTreeMap<String, Value> = BTreeMap::new();
+        for line in lines {
+            match serde_json::from_str::<Value>(line) {
+                Ok(v) if v["kind"] == "breakout_track" => {
+                    let id = v["id"].as_str().unwrap_or_default().to_owned();
+                    if checkpoints
+                        .get(&id)
+                        .is_none_or(|old| checkpoint_order(&v) >= checkpoint_order(old))
+                    {
+                        checkpoints.insert(id, v);
+                    }
+                }
+                _ => event_lines.push(line),
+            }
+        }
+        for v in checkpoints.values() {
+            if let Err(e) = self.write_checkpoint(date, v) {
+                tracing::warn!(date = %date, error = %e, "rocket watch: exact tracking checkpoint failed");
+            }
+        }
+        if event_lines.is_empty() {
             return;
         }
         let path = self.file(date);
@@ -157,7 +277,7 @@ impl RocketLog {
                 .append(true)
                 .open(&path)?;
             let mut buf = String::new();
-            for l in lines {
+            for l in event_lines {
                 buf.push_str(l);
                 buf.push('\n');
             }
@@ -186,6 +306,8 @@ impl RocketLog {
                 && std::fs::remove_file(&p).is_ok()
             {
                 gone.push(d);
+            } else if checkpoint_date(&p).is_some_and(|d| d < cutoff) {
+                let _ = std::fs::remove_file(&p);
             }
         }
         gone.sort();
@@ -255,6 +377,7 @@ impl RocketLog {
         if let Some((_, path)) = files.iter().find(|(d, _)| *d == today) {
             let lines = Self::read_lines(path);
             let mut outcomes: BTreeMap<String, Value> = BTreeMap::new();
+            let mut checkpoints: BTreeMap<String, Value> = BTreeMap::new();
             for v in &lines {
                 let Some(id) = v.get("id").and_then(Value::as_str) else {
                     continue;
@@ -273,11 +396,27 @@ impl RocketLog {
                     Some("also") => {
                         out.also.entry(id.to_string()).or_default().push(v.clone());
                     }
+                    Some("breakout_track") if v["breakout_track"].is_object() => {
+                        checkpoints.insert(id.to_owned(), v["breakout_track"].clone());
+                    }
                     _ => {}
                 }
             }
-            for v in lines {
+            for mut v in lines {
                 let kind = v.get("kind").and_then(Value::as_str).map(str::to_string);
+                if matches!(
+                    kind.as_deref(),
+                    Some("alert" | "burst" | "running" | "run" | "fast")
+                ) {
+                    let id = v["id"].as_str().unwrap_or_default();
+                    if let Some(snapshot) = self
+                        .read_checkpoint(today, id)
+                        .map(|c| c["breakout_track"].clone())
+                        .or_else(|| checkpoints.get(id).cloned())
+                    {
+                        v["breakout_track"] = snapshot;
+                    }
+                }
                 if kind.as_deref() == Some("running") {
                     out.running.push(v);
                     continue;
@@ -303,5 +442,104 @@ impl RocketLog {
             }
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod checkpoint_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn checkpoint(day: NaiveDate, id: &str, time: i64) -> String {
+        json!({"kind":"breakout_track","v":1,"date":day,"id":id,
+            "breakout_track":{"v":1,"checkpoint_ns":time,"exact":{"checked_key":time,"admission_cutoff":time}}}).to_string()
+    }
+
+    #[test]
+    fn replaceable_exact_state_survives_the_event_journal_cap_and_stale_writers() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = RocketLog::new(dir.path().to_owned(), 30);
+        let day = NaiveDate::from_ymd_opt(2026, 10, 26).unwrap();
+        log.append(
+            day,
+            &[
+                json!({"kind":"run","id":"2026-10-26-TDIC-run","price":1.83}).to_string(),
+                checkpoint(day, "2026-10-26-TDIC-run", 1),
+            ],
+        );
+        let path = log.file(day);
+        let mut event_text = std::fs::read_to_string(&path).unwrap();
+        assert!(!event_text.contains("breakout_track"));
+        event_text.extend(std::iter::repeat_n(
+            '\n',
+            MAX_FILE_BYTES as usize - event_text.len(),
+        ));
+        std::fs::write(&path, event_text).unwrap();
+        log.append(day, &[checkpoint(day, "2026-10-26-TDIC-run", 3)]);
+        log.append(day, &[checkpoint(day, "2026-10-26-TDIC-run", 2)]);
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), MAX_FILE_BYTES);
+        let loaded = log.load(day);
+        assert_eq!(loaded.runs.len(), 1);
+        assert_eq!(loaded.runs[0]["breakout_track"]["checkpoint_ns"], 3);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn all_entry_paths_receive_exact_state_and_legacy_entries_stay_readable() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = RocketLog::new(dir.path().to_owned(), 30);
+        let day = NaiveDate::from_ymd_opt(2026, 10, 26).unwrap();
+        for (i, kind) in ["alert", "burst", "running", "run", "fast"]
+            .iter()
+            .enumerate()
+        {
+            let id = format!("row-{i}");
+            log.append(
+                day,
+                &[
+                    json!({"kind":kind,"id":id}).to_string(),
+                    checkpoint(day, &id, 1),
+                ],
+            );
+        }
+        log.append(day, &[json!({"kind":"run","id":"legacy"}).to_string()]);
+        let loaded = log.load(day);
+        let rows = [
+            &loaded.today[0].0,
+            &loaded.bursts[0].0,
+            &loaded.running[0],
+            &loaded.runs[0],
+            &loaded.fasts[0],
+        ];
+        assert!(
+            rows.iter()
+                .all(|v| v["breakout_track"]["checkpoint_ns"] == 1)
+        );
+        assert!(loaded.runs[1].get("breakout_track").is_none());
+        std::fs::write(log.checkpoint_file(day, "row-3").unwrap(), "torn").unwrap();
+        assert!(log.load(day).runs[0].get("breakout_track").is_none());
+    }
+
+    #[test]
+    fn checkpoint_paths_are_bounded_and_expire_without_recursive_pruning() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = RocketLog::new(dir.path().to_owned(), 1);
+        let day = NaiveDate::from_ymd_opt(2026, 10, 26).unwrap();
+        let old = day - chrono::Duration::days(3);
+        for bad in ["../escape", "/escape", "..", "bad/name", ""] {
+            assert!(log.checkpoint_file(day, bad).is_none());
+        }
+        log.append(old, &[checkpoint(old, "old-row", 1)]);
+        let old_path = log.checkpoint_file(old, "old-row").unwrap();
+        let pending = dir.path().join(format!(
+            ".pending-{}",
+            old_path.file_name().unwrap().to_string_lossy()
+        ));
+        std::fs::write(&pending, "interrupted").unwrap();
+        log.append(day, &[checkpoint(day, "current-row", 1)]);
+        log.prune(day);
+        assert!(!old_path.exists());
+        assert!(!pending.exists());
+        assert!(log.checkpoint_file(day, "current-row").unwrap().exists());
     }
 }

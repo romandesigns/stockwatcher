@@ -3,6 +3,7 @@ import { DEFAULT_RUNNERS_NOTIFY, type RunnersNoticeMessage } from "@stockwatcher
 
 import { toastStandsDown } from "../dashboard/runnersToasts.ts";
 import { createRunnersNotifier, NOTIFY_ICON, type NotifyEnv } from "./runnersNotify.ts";
+import { breakoutTestFixture } from "../../../../packages/shared/src/breakoutTestFixture.ts";
 
 // The server's frame (crates/server/src/alerts/runners.rs desk_frame): the phone push's text.
 const notice: RunnersNoticeMessage = {
@@ -92,6 +93,24 @@ test("web: the server's text as is, once per id, and a click opens that chart", 
   shown.onclick?.({ preventDefault() {} });
   expect(calls).toEqual(["focus", "chart CJMB"]);
   expect(shown.closed).toBe(true);
+});
+
+test("browser and native commands carry optional frozen event context; legacy stays ticker-only", async () => {
+  const opened: unknown[][] = [];
+  const { env } = webEnv({ openChart: (...args) => opened.push(args) });
+  const n = createRunnersNotifier(env);
+  await n.enable();
+  n.setPrefs({ ...n.prefs(), kinds: { ...n.prefs().kinds, breakout: true } });
+  const frame: RunnersNoticeMessage = { ...notice, id: "runners-breakout-fixture", kind: "runners.breakout", data: { breakout: breakoutTestFixture } };
+  const context = { event_id: frame.id, symbol: frame.symbol, breakout: breakoutTestFixture };
+  expect(n.handle(frame)).toBe(true);
+  FakeNotification.shown[0]!.onclick?.({ preventDefault() {} });
+  expect(opened).toEqual([["CJMB", context]]);
+  const commands: Record<string, unknown>[] = [];
+  const desktop = createRunnersNotifier(webEnv({ invoke: async (_cmd, args) => void commands.push(args) }).env);
+  desktop.setPrefs({ ...desktop.prefs(), kinds: { ...desktop.prefs().kinds, breakout: true } });
+  expect(desktop.handle(frame)).toBe(true);
+  expect(commands[0]?.noticeContext).toEqual(context);
 });
 
 test("a kind switched off is not shown, and its toast keeps toasting", async () => {

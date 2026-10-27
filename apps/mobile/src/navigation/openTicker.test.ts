@@ -9,6 +9,12 @@ import { join } from "node:path";
 
 import { createResponseRouter, SAME_TAP_MS, type NotificationTarget, type ResponseLike } from "../notifications/route";
 import { alertsAction, chartParams, createReadyQueue, openChartAction } from "./openTicker";
+import { breakoutTestFixture } from "../../../../packages/shared/src/breakoutTestFixture.ts";
+
+test("event chart params carry frozen context independently of a detection episode", () => {
+  const noticeContext = { event_id: "runners-breakout-fixture", symbol: "CJMB", breakout: breakoutTestFixture };
+  expect(Reflect.apply(chartParams, null, ["cjmb", undefined, undefined, noticeContext])).toEqual({ symbol: "CJMB", noticeContext });
+});
 
 // @react-navigation/routers is @react-navigation/native's own dependency (not this app's): resolve
 // it the way native does, so the test runs the exact router the app ships.

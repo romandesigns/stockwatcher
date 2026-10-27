@@ -1,4 +1,5 @@
 import { createNavigationContainerRef } from "@react-navigation/native";
+import type { NoticeChartContext } from "@stockwatcher/shared";
 
 import { appActions } from "../state/store";
 import { alertsAction, chartParams, createReadyQueue, openChartAction } from "./openTicker";
@@ -23,8 +24,8 @@ const openListeners = new Set<(symbol: string) => void>();
  * reused with the new ticker (openTicker.ts), never left on the old one. Before the navigation
  * exists (a cold start from a notification) it waits for the container's onReady.
  */
-export function openTickerChart(symbol: string, detectionEpisodeId?: string, detectionRunEpoch?: string): void {
-  const params = chartParams(symbol, detectionEpisodeId, detectionRunEpoch);
+export function openTickerChart(symbol: string, detectionEpisodeId?: string, detectionRunEpoch?: string, noticeContext?: NoticeChartContext): void {
+  const params = chartParams(symbol, detectionEpisodeId, detectionRunEpoch, noticeContext);
   if (!params) return;
   try {
     appActions().rememberTicker(params.symbol);

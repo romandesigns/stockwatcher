@@ -1,10 +1,10 @@
 //! What happens to a Runners row after its flag, from the flag to 20:00 ET: the **later-move
 //! outcomes** and the live **momentum state** (owner, 2026-10-22).
 //!
-//! Both are advanced at every completed 15 s barrier for every alert of the day (at most
-//! [`super::MAX_ALERTS_PER_DAY`], a few dozen in practice), from the same 15 s bars as the
-//! features, only bars that completed after the flag: causal, deterministic, and nothing on the
-//! ingest path. The cost is one pass over the alert's symbol ring per barrier (≤ 256 slots).
+//! Both advance at completed 15 s barriers. Later outcomes retain the frozen feature bars;
+//! momentum highs use a separate exact integer accumulator, fed only for rows of the printing
+//! symbol. An eligible high must be admitted after row creation and execute strictly after the
+//! actual creation decision. A bar's later end label alone does not make its preflag high eligible.
 //!
 //! # Later-move outcomes
 //!
@@ -33,7 +33,7 @@
 //! | state | rule |
 //! |---|---|
 //! | `halted` | the chart engine reports a trading halt / LULD pause in force (`chart.halt`) |
-//! | `breaking_out` | this barrier's bar made a new high since the flag on volume ≥ [`BREAK_PACE`]× pace; held [`BREAKOUT_HOLD_SLOTS`] more slots while `P` stays within [`BREAKOUT_HOLD_PCT`] of `H` |
+//! | `breaking_out` | this barrier's eligible source prints made a new exact high since creation, on whole-bar volume ≥ [`BREAK_PACE`]× pace (positive volume suffices with zero baseline); held [`BREAKOUT_HOLD_SLOTS`] more slots while `P` stays within [`BREAKOUT_HOLD_PCT`] of `H` |
 //! | `running` | `P ≥ P0·(1 + RUN_MIN_PCT)`, ≥ [`RUN_HIGHS`] new-high bars in the last 3 minutes, `P ≥ VWAP` |
 //! | `fading` | `P < VWAP`, or `P ≤ P0·(1 − FADE_BELOW_FLAG_PCT)` |
 //! | `pullback` | `H ≥ P0·(1 + PULLBACK_MOVE_PCT)` (there was a move), `P ≤ H·(1 − PULLBACK_MIN_PCT)`, `P ≥ VWAP`, and `P ≥` the last higher low |
@@ -53,7 +53,9 @@
 //! [`MAX_TRANSITIONS`] per alert a day, so a choppy symbol cannot flood it), so the owner can
 //! check later whether a state preceded a run.
 
+use super::breakout::{self, Exact};
 use super::{MIN_NS, Mark};
+use serde_json::{Value, json};
 
 /// The later-move window after the flag.
 pub const LATER_WINDOW_NS: i64 = 120 * MIN_NS;
@@ -166,6 +168,8 @@ pub struct Transition {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Track {
+    pub(crate) exact: Option<Exact>,
+    pub(crate) checkpoint_ns: i64,
     /// The flag: time and price.
     pub at_ns: i64,
     pub p0: f64,
@@ -217,6 +221,8 @@ fn up(x: &mut f64, v: f64, max: bool) {
 impl Track {
     pub fn new(at_ns: i64, p0: f64) -> Track {
         Track {
+            exact: None,
+            checkpoint_ns: at_ns,
             at_ns,
             p0,
             high_2h: f64::NAN,
@@ -242,6 +248,9 @@ impl Track {
     /// The high the momentum rules compare against: the highest bar high since the flag, at
     /// least the flag price.
     pub fn high(&self) -> f64 {
+        if let Some(e) = &self.exact {
+            return e.high_price_micros as f64 / 1_000_000.0;
+        }
         if self.high_day.is_nan() {
             self.p0
         } else {
@@ -253,8 +262,9 @@ impl Track {
         (x.is_finite() && self.p0 > 0.0).then(|| (x / self.p0 - 1.0) * 100.0)
     }
 
-    /// Folds the bars that completed since the last barrier (oldest first): the later-move
-    /// extremes and the new highs. `mark` tests a bar for a canonical ROCKET mark while
+    /// Folds frozen feature bars for later-move outcomes. Exact momentum highs are advanced
+    /// separately by `exact_bars`; model floats never establish a strict new-high claim.
+    /// `mark` tests a bar for a canonical ROCKET mark while
     /// `rocket_later` is still open.
     pub fn bars(&mut self, bars: &[NewBar], mut mark: impl FnMut(u32, i64) -> Option<Mark>) {
         for &(key, end, _close, high, low) in bars {
@@ -264,9 +274,6 @@ impl Track {
             if end <= self.at_ns + LATER_WINDOW_NS {
                 up(&mut self.high_2h, high, true);
                 up(&mut self.low_2h, low, false);
-            }
-            if high > self.high() {
-                self.highs.push(key);
             }
             up(&mut self.high_day, high, true);
             if self.later.is_none() {
@@ -321,8 +328,11 @@ impl Track {
 
     /// This barrier's bar made a new high since the flag on volume ≥ [`BREAK_PACE`]× pace (what
     /// starts a breakout; the hold after it does not restart it).
-    fn fresh_breakout(&self, x: &Inputs) -> bool {
-        x.bar_traded
+    pub(crate) fn fresh_breakout(&self, x: &Inputs) -> bool {
+        self.exact
+            .as_ref()
+            .is_some_and(|e| e.complete && e.fresh.is_some_and(|f| f.key == x.key))
+            && x.bar_traded
             && self.highs.last() == Some(&x.key)
             && pace_ok(x.bar_vol, x.pace_slot, BREAK_PACE)
     }
@@ -383,7 +393,14 @@ impl Track {
             return (MState::Halted, self.state != MState::Halted);
         }
         if let Some(p) = last
-            && p > self.high()
+            && self.exact.as_ref().is_some_and(|e| {
+                e.complete
+                    && e.live.is_some_and(|(key, source)| {
+                        key > e.checked_key
+                            && source.micros > e.high_price_micros
+                            && source.micros as f64 / 1_000_000.0 == p
+                    })
+            })
             && !matches!(
                 self.state,
                 MState::BreakingOut | MState::Halted | MState::Fading
@@ -392,6 +409,182 @@ impl Track {
             return (MState::BreakingOut, true);
         }
         (self.state, false)
+    }
+
+    pub(crate) fn with_exact(
+        mut self,
+        price: Option<i64>,
+        known: i64,
+        admission: u64,
+        checked: u32,
+        ahead: bool,
+    ) -> Self {
+        self.exact = price
+            .filter(|p| *p > 0)
+            .map(|p| Exact::new(known, admission, checked, p, ahead));
+        self.checkpoint_ns = known;
+        self
+    }
+
+    pub(crate) fn exact_bars(&mut self, key: u32, evaluated: i64) {
+        if let Some(e) = &mut self.exact {
+            self.highs.extend(e.fold(key, evaluated));
+        }
+    }
+
+    pub(crate) fn clock_boundary(&mut self, end: i64, evaluated: i64) {
+        if let Some(e) = &mut self.exact {
+            let pending =
+                e.unknown_reason.as_deref() == Some("future_barrier_ahead_of_decision_clock");
+            if end > evaluated && (e.complete || pending) {
+                e.complete = false;
+                e.unknown_reason = Some("future_barrier_ahead_of_decision_clock".into());
+            } else if end <= evaluated && pending {
+                // Every source admission was still accumulated while the source clock was
+                // ahead. Catch-up folds its floor without announcing an older bar anew.
+                e.complete = true;
+                e.unknown_reason = None;
+            }
+        }
+    }
+
+    /// Only an explicitly complete history adoption can close a restart gap. Full bars after
+    /// the creation bar can be reconciled from original integer highs. A missing creation-bar
+    /// suffix or an older-than-ring gap remains unknown rather than inheriting a preflag peak.
+    pub(crate) fn reconcile(
+        &mut self,
+        s: &super::features::Sym,
+        key: u32,
+        evaluated: i64,
+        t0: i64,
+        ord: u32,
+    ) {
+        let Some(e) = &mut self.exact else {
+            return;
+        };
+        if e.complete || !e.restored || !e.rebuild_ready || s.unrestored || s.unavailable {
+            return;
+        }
+        let base = super::features::key_of(ord, 0);
+        let end = t0 + (i64::from(key.saturating_sub(base)) + 1) * super::features::BAR_NS;
+        if end > evaluated {
+            e.unknown_reason = Some("history_barrier_ahead_of_decision_clock".into());
+            return;
+        }
+        let creation_key = super::features::key_of(
+            ord,
+            (e.flag_known_ns - t0)
+                .div_euclid(super::features::BAR_NS)
+                .clamp(0, super::features::NSLOT - 1),
+        );
+        let reason = if e.creation_had_ahead {
+            Some("precreation_future_admissions_unreconciled")
+        } else if e.checked_key < creation_key {
+            Some("creation_bar_suffix_unavailable")
+        } else if key.saturating_sub(e.checked_key) >= super::features::RING as u32 {
+            Some("restart_gap_exceeds_source_ring")
+        } else if !super::features::retains_exact_after(s, e.checked_key) {
+            Some("source_ring_advanced_past_checkpoint")
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            e.unknown_reason = Some(reason.into());
+            return;
+        }
+        for (k, high) in super::features::exact_highs(s, e.checked_key, key) {
+            if high > e.high_price_micros {
+                e.high_price_micros = high;
+                e.reference_known_ns = evaluated;
+                e.reference_bar_key = Some(k);
+                self.highs.push(k);
+            }
+        }
+        e.pending.retain(|k, _| *k > key);
+        e.checked_key = e.checked_key.max(key);
+        e.complete = true;
+        e.unknown_reason = None;
+        e.fresh = None;
+    }
+
+    pub(crate) fn snapshot(&self) -> Value {
+        json!({
+            "v": 1, "policy_id": breakout::POLICY_ID, "exact": self.exact,
+            "checkpoint_ns": self.checkpoint_ns,
+            "highs": self.highs, "breakout_key": self.breakout_key,
+            "candidate": self.candidate.map(|(s,n)| (s.as_str(), n)),
+            "state": self.state.as_str(), "since_ns": self.since_ns,
+            "higher_low": self.higher_low.is_finite().then_some(self.higher_low),
+        })
+    }
+
+    /// Restored source state is a checkpoint, not proof that the downtime was observed.
+    pub(crate) fn restore_exact(&mut self, v: &Value) -> Option<u64> {
+        if v["v"] != 1 || v["policy_id"] != breakout::POLICY_ID {
+            return None;
+        }
+        let mut e: Exact = serde_json::from_value(v.get("exact")?.clone()).ok()?;
+        if e.flag_price_micros <= 0
+            || e.high_price_micros < e.flag_price_micros
+            || e.admission_cutoff < e.creation_admission
+            || e.reference_known_ns < e.flag_known_ns
+            || e.pending.len() > super::features::RING
+            || e.pending.values().any(|p| {
+                p.micros <= 0
+                    || p.exec_ns <= e.flag_known_ns
+                    || p.admission <= e.creation_admission
+                    || p.admission > e.admission_cutoff
+            })
+        {
+            return None;
+        }
+        let admission = e.admission_cutoff;
+        e.complete = false;
+        e.restored = true;
+        e.rebuild_ready = false;
+        e.fresh = None;
+        e.live = None;
+        e.unknown_reason = Some("awaiting_authoritative_history".into());
+        self.highs = v["highs"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_u64().and_then(|k| u32::try_from(k).ok()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.breakout_key = v["breakout_key"]
+            .as_u64()
+            .and_then(|k| u32::try_from(k).ok());
+        if v["since_ns"]
+            .as_i64()
+            .is_some_and(|since| since >= self.since_ns)
+        {
+            self.candidate = v["candidate"].as_array().and_then(|a| {
+                Some((
+                    MState::parse(a.first()?.as_str()?)?,
+                    u8::try_from(a.get(1)?.as_u64()?).ok()?,
+                ))
+            });
+            if let Some(state) = v["state"].as_str().and_then(MState::parse) {
+                self.state = state;
+            }
+            if let Some(since) = v["since_ns"].as_i64() {
+                self.since_ns = since;
+            }
+        }
+        self.higher_low = v["higher_low"].as_f64().unwrap_or(f64::NAN);
+        self.exact = Some(e);
+        Some(admission)
+    }
+
+    pub(crate) fn tracking_status(&self) -> Value {
+        let complete = self.exact.as_ref().is_some_and(|e| e.complete);
+        json!({"status": if complete {
+            if self.exact.as_ref().is_some_and(|e| e.restored) { "restored" } else { "complete" }
+        } else { "unknown" },
+        "reason": self.exact.as_ref().and_then(|e| e.unknown_reason.as_deref()).or((self.exact.is_none()).then_some("legacy_exact_state_unavailable")),
+        "policy_id": breakout::POLICY_ID})
     }
 }
 
@@ -425,6 +618,19 @@ mod tests {
 
     /// One barrier with its bar.
     fn go(t: &mut Track, x: Inputs, low: f64) -> Option<Transition> {
+        if t.exact.is_none() {
+            *t = t.clone().with_exact(Some(1_000_000), 0, 0, 100, false);
+        }
+        t.exact.as_mut().unwrap().observe(
+            x.key,
+            breakout::Print {
+                micros: breakout::original_micros(x.bar_high).unwrap(),
+                exec_ns: x.at_ns - S + 1,
+                receive_ns: None,
+                admission: u64::from(x.key),
+            },
+        );
+        t.exact_bars(x.key, x.at_ns);
         t.bars(&[bar(x.key - 100, x.price, x.bar_high, low)], |_, _| None);
         t.step(&x)
     }
@@ -554,7 +760,17 @@ mod tests {
 
     #[test]
     fn shown_state_is_provisional_above_the_high_and_halts_live() {
-        let mut t = Track::new(0, 1.0);
+        let mut t = Track::new(0, 1.0).with_exact(Some(1_000_000), 0, 0, 100, false);
+        t.exact.as_mut().unwrap().high_price_micros = 1_100_000;
+        t.exact.as_mut().unwrap().observe(
+            101,
+            breakout::Print {
+                micros: 1_110_000,
+                exec_ns: 1,
+                receive_ns: None,
+                admission: 1,
+            },
+        );
         t.high_day = 1.10;
         assert_eq!(t.shown(Some(1.11), false), (MState::BreakingOut, true));
         assert_eq!(t.shown(Some(1.09), false), (MState::Watching, false));
@@ -566,5 +782,273 @@ mod tests {
             MState::parse(MState::Pullback.as_str()),
             Some(MState::Pullback)
         );
+    }
+
+    #[test]
+    fn legacy_unknown_does_not_invent_a_source_high_or_provisional_claim() {
+        let mut t = Track::new(0, f64::from(1.83f32));
+        t.high_day = 1.84;
+        assert_eq!(t.shown(Some(2.0), false), (MState::Watching, false));
+        assert_eq!(t.tracking_status()["status"], "unknown");
+        let mut x = inputs(1, 2.0, 1.0);
+        x.bar_vol = 1_000.0;
+        t.bars(&[bar(1, 2.0, 2.0, 1.8)], |_, _| None);
+        assert!(!t.fresh_breakout(&x));
+    }
+
+    #[test]
+    fn provisional_quotes_require_the_latest_eligible_source_admission_and_execution() {
+        let mut t = Track::new(0, 1.0).with_exact(Some(1_000_000), 10, 7, 100, true);
+        assert_eq!(t.shown(Some(1.2), false), (MState::Watching, false));
+        for (exec_ns, admission) in [(11, 7), (9, 8), (10, 9)] {
+            t.exact.as_mut().unwrap().observe(
+                101,
+                breakout::Print {
+                    micros: 1_200_000,
+                    exec_ns,
+                    receive_ns: None,
+                    admission,
+                },
+            );
+            assert_eq!(t.shown(Some(1.2), false), (MState::Watching, false));
+        }
+        t.exact.as_mut().unwrap().observe(
+            101,
+            breakout::Print {
+                micros: 1_200_000,
+                exec_ns: 11,
+                receive_ns: None,
+                admission: 10,
+            },
+        );
+        assert_eq!(t.shown(Some(1.2), false), (MState::BreakingOut, true));
+        assert_eq!(
+            t.shown(Some(1.3), false),
+            (MState::Watching, false),
+            "a different raw quote is not evidence"
+        );
+        assert_eq!(t.shown(Some(1.2), true), (MState::Halted, true));
+        t.exact_bars(101, S);
+        assert_eq!(t.shown(Some(1.2), false), (MState::Watching, false));
+        t.exact.as_mut().unwrap().observe(
+            101,
+            breakout::Print {
+                micros: 1_300_000,
+                exec_ns: 12,
+                receive_ns: None,
+                admission: 11,
+            },
+        );
+        assert_eq!(
+            t.shown(Some(1.3), false),
+            (MState::Watching, false),
+            "late source bar is no longer provisional"
+        );
+    }
+
+    #[test]
+    fn future_source_clock_withholds_notice_and_catchup_preserves_observed_floor() {
+        let mut t = Track::new(0, 1.0).with_exact(Some(1_000_000), 0, 7, 100, false);
+        t.exact.as_mut().unwrap().observe(
+            101,
+            breakout::Print {
+                micros: 1_100_000,
+                exec_ns: 1,
+                receive_ns: None,
+                admission: 8,
+            },
+        );
+        t.clock_boundary(S, S - 1);
+        t.exact_bars(101, S - 1);
+        assert_eq!(t.tracking_status()["status"], "unknown");
+        assert!(!t.fresh_breakout(&inputs(1, 1.1, 1.0)));
+        t.exact.as_mut().unwrap().observe(
+            101,
+            breakout::Print {
+                micros: 1_200_000,
+                exec_ns: 2,
+                receive_ns: None,
+                admission: 9,
+            },
+        );
+        t.clock_boundary(2 * S, 2 * S);
+        t.exact_bars(102, 2 * S);
+        assert_eq!(t.high(), 1.2);
+        assert_eq!(t.tracking_status()["status"], "complete");
+        assert!(
+            !t.fresh_breakout(&inputs(2, 1.0, 1.0)),
+            "old skewed candle never reannounces"
+        );
+    }
+
+    #[test]
+    fn source_checkpoints_need_authoritative_full_gap_before_future_strict_claims() {
+        use crate::quotes::Counted;
+        use market_events::{Price, Trade, UnixNanos};
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 10, 26).unwrap();
+        let mut tape = super::super::features::Tape::default();
+        let (t0, ord) = tape.day(date);
+        let base = super::super::features::key_of(ord, 0);
+        let known = t0 + 1_000_000_000;
+        let mut initial =
+            Track::new(known, 16.0).with_exact(Some(16_000_000), known, 7, base - 1, false);
+        initial.exact.as_mut().unwrap().observe(
+            base,
+            breakout::Print {
+                micros: 16_000_001,
+                exec_ns: known + 1,
+                receive_ns: None,
+                admission: 8,
+            },
+        );
+        initial.exact_bars(base, t0 + S);
+        let mut restored = Track::new(known, 16.0);
+        assert_eq!(restored.restore_exact(&initial.snapshot()), Some(8));
+        assert_eq!(restored.high(), 16.000001);
+        assert_eq!(restored.tracking_status()["status"], "unknown");
+        let trade = Trade::new(
+            "X",
+            UnixNanos(t0 + S + 1),
+            Price::from_micros(16_000_002),
+            100,
+            1,
+        );
+        tape.apply_trade(
+            &trade,
+            Counted {
+                ohlc: true,
+                volume: true,
+            },
+        );
+        let s = tape.sym("X").unwrap();
+        restored.reconcile(s, base + 1, t0 + 2 * S, t0, ord);
+        assert_eq!(
+            restored.tracking_status()["status"],
+            "unknown",
+            "ordinary prints are not a complete history adoption"
+        );
+        restored.exact.as_mut().unwrap().rebuild_ready = true;
+        restored.reconcile(s, base + 1, t0 + 2 * S, t0, ord);
+        assert_eq!(restored.tracking_status()["status"], "restored");
+        assert_eq!(restored.high(), 16.000002);
+        assert!(!restored.fresh_breakout(&inputs(2, 16.000002, 16.0)));
+        restored.exact.as_mut().unwrap().observe(
+            base + 2,
+            breakout::Print {
+                micros: 16_000_003,
+                exec_ns: t0 + 2 * S + 1,
+                receive_ns: None,
+                admission: 9,
+            },
+        );
+        restored.exact_bars(base + 2, t0 + 3 * S);
+        assert_eq!(
+            restored.exact.as_ref().unwrap().fresh.unwrap().reference,
+            16_000_002
+        );
+    }
+
+    #[test]
+    fn unavailable_creation_suffix_ahead_admissions_and_long_gaps_remain_unknown() {
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 10, 26).unwrap();
+        let mut tape = super::super::features::Tape::default();
+        let (t0, ord) = tape.day(date);
+        let base = super::super::features::key_of(ord, 0);
+        tape.apply_trade(
+            &market_events::Trade::new(
+                "X",
+                market_events::UnixNanos(t0 + S + 1),
+                market_events::Price::from_micros(2_000_000),
+                100,
+                1,
+            ),
+            crate::quotes::Counted {
+                ohlc: true,
+                volume: true,
+            },
+        );
+        for (ahead, checked, key, reason) in [
+            (false, base - 1, base + 1, "creation_bar_suffix_unavailable"),
+            (
+                true,
+                base,
+                base + 1,
+                "precreation_future_admissions_unreconciled",
+            ),
+            (
+                false,
+                base,
+                base + super::super::features::RING as u32,
+                "restart_gap_exceeds_source_ring",
+            ),
+        ] {
+            let original =
+                Track::new(t0 + 1, 1.0).with_exact(Some(1_000_000), t0 + 1, 7, base - 1, ahead);
+            let mut restored = Track::new(t0 + 1, 1.0);
+            restored.restore_exact(&original.snapshot()).unwrap();
+            let e = restored.exact.as_mut().unwrap();
+            e.checked_key = checked;
+            e.rebuild_ready = true;
+            let evaluated = t0 + i64::from(key - base + 1) * S;
+            restored.reconcile(tape.sym("X").unwrap(), key, evaluated, t0, ord);
+            assert_eq!(restored.tracking_status()["status"], "unknown");
+            assert_eq!(restored.tracking_status()["reason"], reason);
+        }
+    }
+
+    #[test]
+    fn a_future_source_head_cannot_launder_an_overwritten_restart_gap() {
+        use crate::quotes::Counted;
+        use market_events::{Price, Trade, UnixNanos};
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 10, 26).unwrap();
+        let mut tape = super::super::features::Tape::default();
+        let (t0, ord) = tape.day(date);
+        let base = super::super::features::key_of(ord, 0);
+        let known = t0 + 1;
+        let mut original =
+            Track::new(known, 1.0).with_exact(Some(1_000_000), known, 7, base - 1, false);
+        original.exact_bars(base, t0 + S);
+        let mut restored = Track::new(known, 1.0);
+        restored.restore_exact(&original.snapshot()).unwrap();
+        restored.exact.as_mut().unwrap().rebuild_ready = true;
+        let both = Counted {
+            ohlc: true,
+            volume: true,
+        };
+        tape.apply_trade(
+            &Trade::new(
+                "X",
+                UnixNanos(t0 + S + 1),
+                Price::from_micros(2_000_000),
+                100,
+                1,
+            ),
+            both,
+        );
+        // The same ring index, 512 source slots later, overwrites the unseen $2 high.
+        tape.apply_trade(
+            &Trade::new(
+                "X",
+                UnixNanos(t0 + 513 * S + 1),
+                Price::from_micros(1_100_000),
+                100,
+                2,
+            ),
+            both,
+        );
+        for key in [base + 1, base + 2, base + 3] {
+            let end = t0 + i64::from(key - base + 1) * S;
+            // Capped feature barriers can be ahead of the actual caller clock.
+            restored.reconcile(tape.sym("X").unwrap(), key, end - 1, t0, ord);
+            assert!(!restored.exact.as_ref().unwrap().complete);
+            assert_eq!(restored.exact.as_ref().unwrap().checked_key, base);
+            // Actual clock catchup still cannot turn missing bars into a complete prefix.
+            restored.reconcile(tape.sym("X").unwrap(), key, end, t0, ord);
+            assert_eq!(
+                restored.tracking_status()["reason"],
+                "source_ring_advanced_past_checkpoint"
+            );
+            assert_eq!(restored.exact.as_ref().unwrap().checked_key, base);
+        }
     }
 }

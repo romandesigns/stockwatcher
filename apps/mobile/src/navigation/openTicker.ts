@@ -13,14 +13,16 @@
 // - no modal: one is pushed.
 
 import { parseSymbol } from "@stockwatcher/app-state";
+import { parseNoticeChartContext, type NoticeChartContext } from "@stockwatcher/shared";
 
-export type ChartParams = { symbol: string; detectionEpisodeId?: string; detectionRunEpoch?: string };
+export type ChartParams = { symbol: string; detectionEpisodeId?: string; detectionRunEpoch?: string; noticeContext?: NoticeChartContext };
 
 /** The chart modal's params for `raw`, or null when it is not a ticker. */
-export function chartParams(raw: string, detectionEpisodeId?: string, detectionRunEpoch?: string): ChartParams | null {
+export function chartParams(raw: string, detectionEpisodeId?: string, detectionRunEpoch?: string, rawContext?: NoticeChartContext): ChartParams | null {
   const symbol = parseSymbol(raw);
   if (!symbol) return null;
-  return { symbol, ...(detectionEpisodeId ? { detectionEpisodeId } : {}), ...(detectionRunEpoch ? { detectionRunEpoch } : {}) };
+  const noticeContext = parseNoticeChartContext(rawContext, symbol);
+  return { symbol, ...(noticeContext ? { noticeContext } : { ...(detectionEpisodeId ? { detectionEpisodeId } : {}), ...(detectionRunEpoch ? { detectionRunEpoch } : {}) }) };
 }
 
 export function openChartAction(params: ChartParams) {

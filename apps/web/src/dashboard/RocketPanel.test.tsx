@@ -29,6 +29,12 @@ const render = (state: RocketState) => renderToStaticMarkup(<RocketPanelView sta
 const green = (html: string) => html.replace(/<path[^>]*data-testid="row-line-tail"[^>]*><\/path>/g, "").match(/text-good/g)?.length ?? 0;
 
 describe("Runners panel", () => {
+  test("an unknown exact accumulator remains a visible row with its capability reason", () => {
+    const rows = [{ ...panel.rows[0]!, breakout_tracking: { status: "unknown" as const, reason: "missing_creation_suffix", policy_id: "rocket-momentum-15s-exact-after-v1" } }];
+    const html = render({ enabled: true, panel: { ...panel, rows }, receivedAt: 5, connected: true });
+    expect(html).toContain("FRSH");
+    expect(html).toContain("Exact breakout history unavailable · missing creation suffix");
+  });
   test("a disconnected header does not claim building or breakout attention", () => {
     const p = { ...panel, rows: panel.rows.map((r) => ({ ...r, state: "building" as const })) };
     expect(render({ enabled: true, panel: p, receivedAt: 5, connected: true })).toContain("2 building or breaking out");

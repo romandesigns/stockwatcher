@@ -9,7 +9,8 @@ import { useChartFeed } from "../feed/useChartFeed.ts";
 import { useChartAlerts } from "../alerts/useChartAlerts.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { getAppStore, useApp } from "../state/store.ts";
-import { detectionOverlays } from "@stockwatcher/shared";
+import { BREAKOUT_LABEL, bindNoticeContext, breakoutClockText, breakoutOverlays, breakoutSummary, detectionOverlays } from "@stockwatcher/shared";
+import { formatEtTime12 } from "@stockwatcher/chart-core";
 import { useDetection } from "../feed/useDetection.ts";
 import { useZones } from "../feed/useZones.ts";
 import { ZoneNote } from "./ZoneNote.tsx";
@@ -53,14 +54,24 @@ export function ChartCell({ index, slot, symbol, feed, trading, selected, showSe
   const phone = useMediaQuery("(max-width: 600px)");
   const { series, clock } = useChartFeed(feed, symbol, slot.timeframe, bin, `d${index}`);
   const discovery = useDetection(feed.detection);
+  const noticeSelection = useApp((s) => s.noticeSelection);
+  const pickedContext = !fixture && noticeSelection?.index === index && noticeSelection.context.symbol === symbol && noticeSelection.source === "live" ? noticeSelection.context : undefined;
+  const [bound, setBound] = useState(() => bindNoticeContext(null, feed, fixture ? "fixture" : "live", pickedContext));
+  const currentBinding = bindNoticeContext(bound, feed, fixture ? "fixture" : "live", pickedContext);
+  if (currentBinding !== bound) setBound(currentBinding);
+  const noticeContext = !currentBinding.invalidated ? pickedContext : undefined;
+  useEffect(() => {
+    if (currentBinding.invalidated && pickedContext) app.selectNotice();
+  }, [app, currentBinding.invalidated, pickedContext]);
   const annotations = useMemo(() => {
+    if (noticeContext) return breakoutOverlays(noticeContext, symbol);
     // Only a picked Signals (or Ross) row's episode is drawn (design canvas, 2026-10-22): no row
     // selected, no marks, so deselecting the row clears the chart. A resolved episode yields none
     // (detectionOverlays), so the marks also leave the moment it resolves.
     const id = detectionSelection && detectionSelection.runEpoch === discovery.frame?.runEpoch ? detectionSelection.episodeId : undefined;
     if (!id) return [];
     return detectionOverlays(discovery.snapshot, symbol, id).map((x) => discovery.connected && !discovery.resyncing ? x : { ...x, stale: true, label: `Last known · ${x.label}` });
-  }, [discovery, symbol, detectionSelection]);
+  }, [discovery, symbol, detectionSelection, noticeContext]);
   // Volume shelves for this symbol from the Runners channel (subscribed here too, so the bands and
   // the caption show with the Runners tab closed); one object per change, not per frame.
   const zones = useZones(feed.rocket, symbol);
@@ -122,7 +133,10 @@ export function ChartCell({ index, slot, symbol, feed, trading, selected, showSe
         showRing && "after:shadow-[inset_0_0_0_1px_var(--color-primary)]",
       )}
     >
-      {detectionSelection && detectionSelection.runEpoch !== discovery.frame?.runEpoch ? <p role="status" className="m-0 px-2 py-1 text-[10px] text-warning">Selected detection belongs to an earlier run; its chart references are unavailable.</p> : annotations.length > 0 && <Tip label={annotations[0]!.episodeId}><p role="status" className="m-0 truncate px-2 py-1 text-[10px] text-text-faint">{annotations[0]!.label} · experimental · {discovery.frame?.source} / {discovery.snapshot?.fidelity}</p></Tip>}
+      {noticeContext && <Tip label={`${noticeContext.event_id} · ${noticeContext.breakout.policy_id}`}><p role="status" className="m-0 px-2 py-1 text-[10px] text-text-faint">
+        {BREAKOUT_LABEL} · frozen event · {breakoutSummary(noticeContext.breakout)} · {breakoutClockText(noticeContext.breakout, (ms) => formatEtTime12(ms, true))}
+      </p></Tip>}
+      {!noticeContext && (detectionSelection && detectionSelection.runEpoch !== discovery.frame?.runEpoch ? <p role="status" className="m-0 px-2 py-1 text-[10px] text-warning">Selected detection belongs to an earlier run; its chart references are unavailable.</p> : annotations.length > 0 && <Tip label={annotations[0]!.episodeId}><p role="status" className="m-0 truncate px-2 py-1 text-[10px] text-text-faint">{annotations[0]!.label} · experimental · {discovery.frame?.source} / {discovery.snapshot?.fidelity}</p></Tip>)}
       {/* The shelf caption goes with the bands: both follow the "Volume shelves" layer (levels.ts). */}
       <ZoneNote note={ownLayers.shelves ? zones.note : null} className="px-2 py-1" />
       <CandleChart

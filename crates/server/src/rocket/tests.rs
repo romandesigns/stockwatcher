@@ -94,6 +94,62 @@ fn features_at(tape: &mut Tape, sym: &str, slot: i64) -> Option<Features> {
     features(s, &b, || Some(1.0))
 }
 
+#[test]
+fn accepted_older_execution_keeps_legacy_feature_price_but_candidate_close_unknown() {
+    use chart_engine::{ChartEngine, Timeframe, wire::ChartUpdate};
+    use market_events::MarketEvent;
+
+    let symbol = "LATECLOSE";
+    let base = at(10, 0, 0);
+    let mut chart = ChartEngine::default();
+    let mut b = board(vec![(symbol, 1.0)], fixed(0.5, 10));
+    let mut admit = |board: &mut RocketBoard, mut trade: Trade, arrival: i64| {
+        trade.receive_ts = Some(UnixNanos(arrival));
+        chart.advance_clock(UnixNanos(arrival));
+        let updates = chart.apply(&MarketEvent::Trade(trade.clone()));
+        let Some(ChartUpdate::Tape(row)) = updates.first() else {
+            panic!("trade admission");
+        };
+        let counted = Counted::from_tape(&row.counted);
+        assert_eq!(counted, BOTH);
+        board.apply_trade(&trade, counted);
+    };
+    admit(&mut b, tr(symbol, base + S, 1.0, 100), base + S);
+    b.tick(base + 15 * S, |_| None);
+    b.take_notices();
+    let mut high = tr(symbol, base + 25 * S, 1.2, 1_000);
+    high.source_seq = 2;
+    admit(&mut b, high, base + 25 * S);
+    let mut late = tr(symbol, base + 24 * S, 1.1, 1_000);
+    late.source_seq = 3;
+    admit(&mut b, late, base + 25 * S + S / 2);
+    b.tick(base + 30 * S, |_| None);
+    let notice = b
+        .take_notices()
+        .into_iter()
+        .find(|n| n.kind == NoticeKind::Breakout)
+        .unwrap();
+    let Some(NoticeDetail::Breakout(evidence)) = notice.detail else {
+        panic!("source evidence");
+    };
+    assert_eq!(evidence.high_price_micros, 1_200_000);
+    assert_eq!(evidence.high_exec_ns, (base + 25 * S).to_string());
+    assert_eq!(evidence.close_price_micros, None);
+    let legacy_price = f64::from(1.1f32);
+    assert_eq!(notice.price.to_bits(), legacy_price.to_bits());
+    let slot = (base - b.t0).div_euclid(features::BAR_NS) + 1;
+    let f = features_at(&mut b.tape, symbol, slot).unwrap();
+    assert_eq!(f.price.to_bits(), legacy_price.to_bits());
+    assert_eq!(f.x[ix::LOGP].to_bits(), legacy_price.ln().to_bits());
+    assert_eq!(
+        features::exact_bar_close(b.tape.sym(symbol).unwrap(), features::key_of(b.ord, slot)),
+        Some(1_100_000)
+    );
+    // The accepted chronological chart close differs from the preserved feature close.
+    let snapshot = chart.snapshot(symbol, Timeframe::S15, None).unwrap();
+    assert_eq!(snapshot.candles.last().unwrap().c, 1.2);
+}
+
 fn same(a: &Features, b: &Features) -> bool {
     a.price == b.price
         && a.x
@@ -406,6 +462,8 @@ fn the_panel_frame() {
         at(10, 0, 5),
     );
     let levels = json!({"state": "forming", "trigger": 1_050_000, "invalidation": 950_000, "meter_milli": 500});
+    // A provisional high needs an eligible post-creation source print, not an injected quote.
+    b.apply_trade(&tr("ROCK", at(10, 0, 2), 1.1, 100), BOTH);
     let f: Value = serde_json::from_str(&b.frame(
         "rocket.snapshot",
         Some(5),

@@ -15,7 +15,7 @@ import {
   type Timeframe,
   type ToolboxPlacement,
 } from "@stockwatcher/chart-core";
-import { pushRecentTicker, type AlertEventWire, type AlertsServerMessage, type AlertsStatusWire, type SettingsSync } from "@stockwatcher/shared";
+import { parseNoticeChartContext, pushRecentTicker, type NoticeChartContext, type AlertEventWire, type AlertsServerMessage, type AlertsStatusWire, type SettingsSync } from "@stockwatcher/shared";
 import { createStore, type StoreApi } from "zustand/vanilla";
 import { ALERTS_NS, editedAlert, mergeActivity, parseAlertPrefs, parseAlertRules, parseAlertStates, type AlertPrefs, type AlertRule, type AlertStateWire } from "./alerts.ts";
 import {
@@ -106,6 +106,8 @@ export interface AppState {
   daysOpen: boolean;
   /** The dashboard chart a picked ticker loads into (0-based; always below `dashboard.count`). Per device. */
   dashboardSelected: number;
+  /** One bounded, local event inspection; never synced or persisted with the dashboard. */
+  noticeSelection: { index: number; source: DashboardSource; context: NoticeChartContext } | null;
   /**
    * Tickers this device explicitly opened this session (a click, a tap, a search pick, a
    * notification), newest first. A host's "the ticker left the price band, show the first
@@ -139,6 +141,7 @@ export interface AppState {
   setDashboardLayers(slot: number, next: ChartLayers): void;
   /** Loads a ticker into the selected dashboard chart. */
   loadIntoSelected(symbol: string): void;
+  selectNotice(context?: NoticeChartContext): void;
   /** Puts a ticker at the top of the search recents only (the phone's chart modal: it opens a ticker without loading it into any chart). */
   rememberTicker(symbol: string): void;
   /** Adds a ticker to the end of the favorites, or removes it when it is there (the star toggles). */
@@ -271,6 +274,7 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
     tapeOpen: false,
     daysOpen: false,
     dashboardSelected: 0,
+    noticeSelection: null,
     picked: [],
     alertActivity: [],
     alertStatus: null,
@@ -315,7 +319,7 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
       if (!symbol) return;
       sync.set(APP_NS.searchRecents, pushRecentTicker(get().searchRecents, symbol));
       writeSlot(slot, { symbol });
-      set({ picked: pushPicked(get().picked, symbol) });
+      set({ picked: pushPicked(get().picked, symbol), ...(get().noticeSelection?.index === slot ? { noticeSelection: null } : {}) });
     },
     // Read from the engine, not the slice, so two quick toggles both land.
     toggleFavorite: (symbol) => sync.set(APP_NS.favorites, toggledFavorites(parseFavorites(sync.get(APP_NS.favorites)), symbol)),
@@ -324,6 +328,11 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
     setDashboardIndicators: (slot, next) => writeSlot(slot, { indicators: parseIndicators(next) }),
     setDashboardLayers: (slot, next) => writeSlot(slot, { layers: parseLayers(next) }),
     loadIntoSelected: (symbol) => get().setDashboardSymbol(get().dashboardSelected, symbol),
+    selectNotice: (raw) => {
+      const s = get();
+      const context = parseNoticeChartContext(raw, s.dashboard.slots[s.dashboardSelected]?.symbol ?? undefined);
+      set({ noticeSelection: context && s.dashboard.source === "live" ? { index: s.dashboardSelected, source: s.dashboard.source, context } : null });
+    },
     saveAlert: (rule) => {
       sync.patch(ALERTS_NS.rules, { [rule.id]: rule });
       const prefs = get().alertPrefs;
@@ -422,7 +431,9 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
       case APP_NS.dashboard: {
         const dashboard = parseDashboard(sync.get(ns));
         // Fewer charts (from any device): the selection stays on a chart that is still shown.
-        return store.setState({ dashboard, dashboardSelected: Math.min(s.dashboardSelected, dashboard.count - 1) });
+        const n = s.noticeSelection;
+        const keepNotice = n && n.index < dashboard.count && n.source === dashboard.source && dashboard.slots[n.index]?.symbol === n.context.symbol;
+        return store.setState({ dashboard, dashboardSelected: Math.min(s.dashboardSelected, dashboard.count - 1), ...(n && !keepNotice ? { noticeSelection: null } : {}) });
       }
       case APP_NS.view: {
         const v = parseView(sync.get(ns));

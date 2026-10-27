@@ -5,6 +5,8 @@
 // phone push's own title and body; a client that sent `runners.notify` shows it when its switch
 // for that kind is on, once per `id`.
 
+import { parseBreakoutNotice } from "./breakout.ts";
+
 /**
  * The kinds a notice can be about (the phone push's `data.kind`). Since 2026-10-23 every panel
  * event backed by evidence notifies, not only Runners: Ross and Signals crossings and at-trigger,
@@ -44,7 +46,7 @@ export interface RunnersNoticeMessage {
   body: string;
   /** The phone push's data `{symbol, kind, alert_id}`. */
   data?: Record<string, unknown>;
-  /** When it happened, epoch ms. */
+  /** Per-kind source/event clock, epoch ms (Breakout: scheduled bar end; never decision time). */
   at: number;
   /**
    * A Ross notice (`ross.crossing` / `ross.trigger`) about a stock the Signals panel shows too.
@@ -161,7 +163,12 @@ export function parseRunnersNotice(v: unknown): RunnersNoticeMessage | null {
   const symbol = str("symbol").trim().toUpperCase();
   const id = str("id");
   if (!id || !SYMBOL.test(symbol) || !RUNNERS_NOTICE_KINDS.includes(kind) || !str("title")) return null;
-  const data = m.data && typeof m.data === "object" ? (m.data as Record<string, unknown>) : undefined;
+  const data = m.data && typeof m.data === "object" && !Array.isArray(m.data) ? { ...(m.data as Record<string, unknown>) } : undefined;
+  if (data && "breakout" in data) {
+    const breakout = kind === "runners.breakout" ? parseBreakoutNotice(data.breakout) : undefined;
+    if (breakout) data.breakout = breakout;
+    else delete data.breakout;
+  }
   const out: RunnersNoticeMessage = { type: "runners.notice", id, alertId: str("alertId"), symbol, kind, title: str("title"), body: str("body"), data, at: typeof m.at === "number" ? m.at : 0 };
   if (m.alsoSignals === true || data?.also_signals === true) out.alsoSignals = true;
   return out;
