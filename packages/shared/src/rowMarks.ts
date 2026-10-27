@@ -7,7 +7,7 @@
 
 import type { FavoriteRowWire } from "./favorites.ts";
 import type { RossRowWire } from "./protocol.ts";
-import type { RocketRowWire, RocketState } from "./rocket.ts";
+import { rocketBreakoutTracking, type RocketRowWire, type RocketState } from "./rocket.ts";
 import { rossLineScale, rossPrice, type RossLineView, type RossTone } from "./ross.ts";
 
 /** The five pillars in their fixed order (stock-context PillarId). */
@@ -295,6 +295,8 @@ export function rocketRowMarks(r: RocketRowWire, nowMs: number, formatTime: (epo
   for (const a of r.also ?? []) if (a && Number.isFinite(a.at)) extra.push(`then ${PATH_NAME[a.kind as PathKind] ?? a.kind} at ${formatTime(a.at)}`);
   // Two reasons at most, as the row's chips always showed (rocketRowView).
   if (r.reasons?.length) extra.push(r.reasons.slice(0, 2).join(", "));
+  const tracking = rocketBreakoutTracking(r);
+  if (tracking) extra.push(tracking);
   const lv = r.levels ?? null;
   return {
     flame: flameMark(burstOf(r), r.last, nowMs),

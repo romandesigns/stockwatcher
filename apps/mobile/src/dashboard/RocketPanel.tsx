@@ -237,7 +237,6 @@ const Row = memo(function Row({ row: r, marks, trigger, onPick, reducedMotion }:
           </>
         }
       />
-      {r.breakoutTracking && <Text style={[styles.small, { color: UI.textFaint }]}>{r.breakoutTracking}</Text>}
       {/* The row's whole width (the Fold's cover screen needs it for the range and base rate). */}
       <ZoneNote note={r.zone ?? null} reducedMotion={reducedMotion} gap={ROW_GAP} />
     </Pressable>

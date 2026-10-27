@@ -576,6 +576,13 @@ function burstView(b: RocketBurstWire, at: number, nowMs: number): RocketBurstVi
   };
 }
 
+/** Exact-history capability belongs in the row's existing inspection details. */
+export function rocketBreakoutTracking(r: Pick<RocketRowWire, "breakout_tracking">): string | null {
+  const tracking = r.breakout_tracking;
+  const knownPolicy = tracking?.policy_id === "rocket-momentum-15s-exact-after-v1";
+  return knownPolicy && (tracking?.status === "complete" || tracking?.status === "restored") ? null : `Exact breakout history unavailable${knownPolicy && typeof tracking?.reason === "string" && tracking.reason ? ` · ${tracking.reason.replace(/_/g, " ")}` : " · legacy or unsupported evidence"}`;
+}
+
 /**
  * One row. `nowMs` is the market clock now: the frame's `t` plus the wall time since it arrived
  * ({@link rocketNow}), so an age keeps ticking between frames.
@@ -587,9 +594,7 @@ export function rocketRowView(r: RocketRowWire, nowMs: number, strategyId?: stri
   const b = isBurstRow(r) ? r.burst : null;
   const outcome = b ? burstOutcomeTag(b.outcome) : outcomeTag(r.outcome);
   const reasons = r.reasons.slice(0, 2);
-  const tracking = r.breakout_tracking;
-  const knownPolicy = tracking?.policy_id === "rocket-momentum-15s-exact-after-v1";
-  const breakoutTracking = knownPolicy && (tracking?.status === "complete" || tracking?.status === "restored") ? null : `Exact breakout history unavailable${knownPolicy && typeof tracking?.reason === "string" && tracking.reason ? ` · ${tracking.reason.replace(/_/g, " ")}` : " · legacy or unsupported evidence"}`;
+  const breakoutTracking = rocketBreakoutTracking(r);
   const age = rocketAge(ageMs);
   const state = momentumOf(r);
   const look = ROCKET_STATES[state];

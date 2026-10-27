@@ -167,12 +167,13 @@ describe("per panel", () => {
   });
 
   test("a Runners row: no pillars or news, its own source as the path with the extras in the label", () => {
-    const m = rocketRowMarks(rocketRow({ kind: "run", from_flag_pct: 12.3, move_1m_pct: -0.4, also: [{ kind: "fast", at: T - MIN }], levels: { state: "near", trigger: 700_000, invalidation: 620_000, meter_milli: 900 } }), T, fmt);
+    const m = rocketRowMarks(rocketRow({ kind: "run", from_flag_pct: 12.3, move_1m_pct: -0.4, also: [{ kind: "fast", at: T - MIN }], levels: { state: "near", trigger: 700_000, invalidation: 620_000, meter_milli: 900 }, breakout_tracking: { status: "unknown", reason: "missing_creation_suffix", policy_id: "rocket-momentum-15s-exact-after-v1" } }), T, fmt);
     expect(m.pillars).toBeNull();
     expect(m.news).toBeNull();
     expect(m.path!.label).toContain("Run +20%");
     expect(m.path!.label).toContain("+12.3% since");
     expect(m.path!.label).toContain("then Fast move");
+    expect(marksReadout(m)).toContain("Exact breakout history unavailable · missing creation suffix");
     expect(m.stage!.stage).toBe("near");
     expect(m.tail!.tone).toBe("critical");
     expect(m.flame).toBeNull();

@@ -199,7 +199,6 @@ const RocketRow = memo(function RocketRow({ row: r, marks, trigger, onPick }: { 
           </>
         }
       />
-      {r.breakoutTracking && <span className="text-[10px] text-text-faint">{r.breakoutTracking}</span>}
       {/* The row's whole width (the shelf range and base rate need it on a narrow column); while
           closed it cancels the row's gap so an absent note costs no space. */}
       <ZoneNote note={r.zone ?? null} closedClassName="-mt-1.5" />
