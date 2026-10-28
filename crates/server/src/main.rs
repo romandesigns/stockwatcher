@@ -20,7 +20,69 @@ use tracing_subscriber::EnvFilter;
 /// thread's arena. Measured live heap and production RSS are compared in the commit that added
 /// this; `crates/server/tests/memory_bench.rs` reproduces the heap side.
 #[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static GLOBAL: Counted = Counted;
+
+/// mimalloc, counting the bytes the program holds (`live_heap_mb` in the `memory` line).
+///
+/// Why (2026-10-28): RSS grew 1–3 GB an hour all day and all night until the kernel killed the
+/// process (twice in 24 h), while every structure `memory_report` names stayed flat and the
+/// benches' live heap stayed bounded. mimalloc's commit cannot tell a leak from memory the
+/// allocator keeps, so production had no way to say which one it was. The count is sharded so
+/// the dozen threads allocating at the open do not all bounce one cache line.
+struct Counted;
+
+#[repr(align(128))]
+struct Shard(std::sync::atomic::AtomicIsize);
+
+const SHARDS: usize = 32;
+static HELD: [Shard; SHARDS] = [const { Shard(std::sync::atomic::AtomicIsize::new(0)) }; SHARDS];
+static NEXT_SHARD: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+thread_local! {
+    // `const`: initializing it must not allocate (this runs inside the allocator).
+    static SHARD: std::cell::Cell<usize> = const { std::cell::Cell::new(usize::MAX) };
+}
+
+fn count(delta: isize) {
+    use std::sync::atomic::Ordering::Relaxed;
+    let i = SHARD
+        .try_with(|s| {
+            if s.get() == usize::MAX {
+                s.set(NEXT_SHARD.fetch_add(1, Relaxed) % SHARDS);
+            }
+            s.get()
+        })
+        // A thread being torn down has no thread-locals left; shard 0 still counts it.
+        .unwrap_or(0);
+    HELD[i].0.fetch_add(delta, Relaxed);
+}
+
+/// Bytes the program holds right now (allocated and not yet freed), across every thread.
+fn live_heap() -> isize {
+    HELD.iter()
+        .map(|s| s.0.load(std::sync::atomic::Ordering::Relaxed))
+        .sum()
+}
+
+// SAFETY: every call is forwarded unchanged to mimalloc; the counting only reads the layout.
+unsafe impl std::alloc::GlobalAlloc for Counted {
+    unsafe fn alloc(&self, l: std::alloc::Layout) -> *mut u8 {
+        count(l.size() as isize);
+        unsafe { mimalloc::MiMalloc.alloc(l) }
+    }
+    unsafe fn alloc_zeroed(&self, l: std::alloc::Layout) -> *mut u8 {
+        count(l.size() as isize);
+        unsafe { mimalloc::MiMalloc.alloc_zeroed(l) }
+    }
+    unsafe fn dealloc(&self, p: *mut u8, l: std::alloc::Layout) {
+        count(-(l.size() as isize));
+        unsafe { mimalloc::MiMalloc.dealloc(p, l) }
+    }
+    unsafe fn realloc(&self, p: *mut u8, l: std::alloc::Layout, new: usize) -> *mut u8 {
+        count(new as isize - l.size() as isize);
+        unsafe { mimalloc::MiMalloc.realloc(p, l, new) }
+    }
+}
 
 fn main() -> ExitCode {
     // The runtime image is distroless (no shell, no curl), so the Docker
@@ -247,6 +309,9 @@ fn spawn_memory_stats(markets: &Markets) {
     }
     let live = markets.live.clone();
     let guard = MemoryGuard::from_env();
+    // The replay market shares the process (and the owner practises on it): growth there would
+    // otherwise be invisible in a line that only described the live one.
+    let replay = markets.replay.clone();
     let spawned = std::thread::Builder::new()
         .name("memory-stats".into())
         .spawn(move || {
@@ -280,13 +345,22 @@ fn spawn_memory_stats(markets: &Markets) {
                     );
                     memory_restart().notify_one();
                 }
+                // The kernel's current resident set (mimalloc's `rss` is its commit on Linux, and
+                // `peak_rss` only ever rises): the second field of statm, in pages.
+                let vm_rss_mb = std::fs::read_to_string("/proc/self/statm")
+                    .ok()
+                    .and_then(|s| s.split_whitespace().nth(1)?.parse::<u64>().ok())
+                    .map(|pages| pages * 4096 / 1_000_000);
                 tracing::info!(
+                    live_heap_mb = live_heap() / 1_000_000,
+                    vm_rss_mb,
                     rss_mb = rss / 1_000_000,
                     peak_rss_mb = peak_rss / 1_000_000,
                     commit_mb = commit / 1_000_000,
                     peak_commit_mb = peak_commit / 1_000_000,
                     anon_huge_mb = huge_kb.map(|k| k / 1000),
                     live = %live.memory_report(),
+                    replay = %replay.memory_report(),
                     "memory"
                 );
                 std::thread::sleep(Duration::from_secs(secs));

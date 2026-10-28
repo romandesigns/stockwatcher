@@ -44,6 +44,11 @@ impl TickProfile {
         self.ticks.is_empty()
     }
 
+    /// Distinct prices held (one map entry each).
+    pub fn len(&self) -> usize {
+        self.ticks.len()
+    }
+
     /// Exact volume of the bin of width `bin` containing `price`.
     pub fn bin_total(&self, bin: Price, price: Price) -> u64 {
         let lo = price.floor_to(bin).micros();

@@ -938,6 +938,7 @@ impl Market {
         let held: usize = core.unloaded.values().map(|u| u.held_len()).sum();
         serde_json::json!({
             "engine_symbols": core.engine.symbols().count(),
+            "engine": core.engine.cost(),
             "tape_symbols": core.tape.len(),
             "last_price": core.last_price.len(),
             "unloaded": core.unloaded.len(),
@@ -2033,6 +2034,26 @@ impl Market {
             finished: false,
             events: 0,
         });
+    }
+
+    /// Benches only: what the live provider's once-a-wall-second idle tick delivers, the mark
+    /// (`Advance`) and the `Clock`, through the real ingest. [`Market::bench_set_clock`] only
+    /// sets the clock, so the engine's interval sweep and stock context's advance never ran in a
+    /// bench, and growth paced by them went unmeasured.
+    #[doc(hidden)]
+    pub fn bench_tick(&self, now: UnixNanos) {
+        self.apply(FeedItem::Advance(now));
+        self.apply(FeedItem::Clock(ClockState {
+            mode: self.0.mode,
+            now,
+            speed: market_providers::Speed::Times(1),
+            playing: true,
+            day: None,
+            start: None,
+            end: None,
+            finished: false,
+            events: 0,
+        }));
     }
 
     pub fn clock(&self) -> Option<ClockState> {

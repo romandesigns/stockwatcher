@@ -23,6 +23,24 @@ pub const VALUE_AREA_PERCENT: u32 = 70;
 /// without re-deriving the rules: which print left, which one (if any) took its place, what each
 /// counted for, and the newest price-qualifying print of that trading date afterwards.
 ///
+/// What [`ChartEngine::cost`] counts, summed over every symbol.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+pub struct EngineCost {
+    pub trades: usize,
+    pub index: usize,
+    pub index_capacity: usize,
+    pub buckets: usize,
+    pub bucket_capacity: usize,
+    pub profiles: usize,
+    pub profile_ticks: usize,
+    pub halts: usize,
+    pub pending: usize,
+    /// Prints the engine kept no record of, by why (summed [`DataQuality`] counters).
+    pub excluded_late: u64,
+    pub excluded_outside_session: u64,
+    pub duplicates: u64,
+}
+
 /// Only for a revision the engine **applied** (its target was in retention). An unapplied one
 /// changes no candle, so there is nothing to follow and [`ChartEngine::apply_revising`] returns
 /// `None`, exactly as the candles ignore it.
@@ -1561,6 +1579,35 @@ impl ChartEngine {
     /// Number of trade records currently retained for a symbol (for memory-bound tests/metrics).
     pub fn retained_trades(&self, symbol: &str) -> usize {
         self.symbols.get(symbol).map_or(0, |s| s.trades.len())
+    }
+
+    /// What the engine holds across every symbol, by structure (the server's `memory` log line).
+    /// Counts, not bytes: each is a structure that grows with the tape or the day.
+    pub fn cost(&self) -> EngineCost {
+        let mut c = EngineCost {
+            pending: self.pending.len(),
+            ..EngineCost::default()
+        };
+        for st in self.symbols.values() {
+            c.trades += st.trades.len();
+            c.index += st.index.len();
+            c.index_capacity += st.index.capacity();
+            c.buckets += st.series.iter().map(|s| s.buckets.len()).sum::<usize>();
+            c.bucket_capacity += st
+                .series
+                .iter()
+                .map(|s| s.buckets.capacity())
+                .sum::<usize>();
+            c.profiles += st.profiles.len();
+            c.profile_ticks += st.profiles.values().map(TickProfile::len).sum::<usize>();
+            c.halts += st.halts.len();
+            for q in st.quality.values() {
+                c.excluded_late += q.late_excluded;
+                c.excluded_outside_session += q.outside_session;
+                c.duplicates += q.duplicates;
+            }
+        }
+        c
     }
 
     /// The symbol's **day line** at `tf`: one close per completed interval of its latest trading

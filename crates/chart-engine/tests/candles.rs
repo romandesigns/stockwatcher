@@ -429,6 +429,10 @@ fn ring_buffer_and_retention_are_bounded() {
     // 10 min retention aligned down to 5 min: at most 15 min of 1 trade/s.
     assert!(e.retained_trades(SYM) <= 900, "{}", e.retained_trades(SYM));
     assert!(e.retained_trades(SYM) >= 600);
+    let cost = e.cost();
+    assert_eq!(cost.trades, e.retained_trades(SYM));
+    // An hour of 15 s, 30 s, 1 m and 5 m intervals.
+    assert_eq!(cost.buckets, 240 + 120 + 60 + 12);
 }
 
 #[test]
