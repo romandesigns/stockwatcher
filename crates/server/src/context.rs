@@ -200,6 +200,17 @@ impl ContextBoard {
         })
     }
 
+    /// What the board and its engine hold (entry counts, for the `memory` log line).
+    pub(crate) fn cost(&self) -> serde_json::Value {
+        serde_json::json!({
+            "engine": self.engine.cost(),
+            "closes_offered": self.closes_offered.len(),
+            "setup_out": self.setup_out.len(),
+            "runners_watched": self.runners_watched.len(),
+            "favorites": self.favorites.len(),
+        })
+    }
+
     /// The same board with other engine output bounds (tests; production keeps the defaults).
     #[cfg(test)]
     pub(crate) fn with_output_bounds(self, panels: usize, setup_entries: usize) -> Self {

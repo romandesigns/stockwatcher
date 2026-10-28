@@ -1177,6 +1177,40 @@ impl Engine {
         &self.run
     }
 
+    /// What this engine holds, by structure: entry counts for the server's `memory` log line
+    /// (2026-10-28: production grew 1-5 GB an hour and no counter covered stock context).
+    pub fn cost(&self) -> serde_json::Value {
+        let (mut ledger, mut ids, mut ids_cap, mut cums, mut ticks, mut bars) = (0, 0, 0, 0, 0, 0);
+        for s in self.syms.values() {
+            ledger += s.ledger.len();
+            ids += s.ids.len();
+            ids_cap += s.ids.capacity();
+            cums += s.cums.len();
+            ticks += s.ticks.len();
+            bars += s.bars.len();
+        }
+        let d = &self.detector;
+        serde_json::json!({
+            "symbols": self.syms.len(),
+            "ledger": ledger,
+            "ids": ids,
+            "ids_capacity": ids_cap,
+            "cums": cums,
+            "ticks": ticks,
+            "bars": bars,
+            "evidence": self.evidence.len(),
+            "panel_log": self.panel_log.len(),
+            "watched": self.watched.len(),
+            "detector": {
+                "log": d.log.len(),
+                "recent": d.recent.len(),
+                "refs": d.refs.values().map(Vec::len).sum::<usize>(),
+                "gaps": d.gaps.len(),
+                "cited": d.cited.len(),
+            },
+        })
+    }
+
     fn bar(&self) -> i64 {
         self.policy.body.grid.bar_secs * SEC
     }

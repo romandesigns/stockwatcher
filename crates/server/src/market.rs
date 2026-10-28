@@ -939,6 +939,10 @@ impl Market {
         serde_json::json!({
             "engine_symbols": core.engine.symbols().count(),
             "engine": core.engine.cost(),
+            "context": core.context.as_ref().map(|c| c.cost()),
+            // Frames still in the broadcast ring: a slot is released only once every receiver
+            // has read it, so one stalled session keeps the whole ring full.
+            "broadcast": {"held": self.0.tx.len(), "receivers": self.0.tx.receiver_count()},
             "tape_symbols": core.tape.len(),
             "last_price": core.last_price.len(),
             "unloaded": core.unloaded.len(),

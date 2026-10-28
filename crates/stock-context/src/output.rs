@@ -78,6 +78,15 @@ impl<T> BoundedLog<T> {
         }
     }
 
+    /// Rows held now (the server's `memory` log line).
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
     pub fn push(&mut self, row: T) {
         self.logged += 1;
         while self.rows.len() >= self.max {
