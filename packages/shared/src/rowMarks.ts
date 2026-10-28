@@ -297,6 +297,9 @@ export function rocketRowMarks(r: RocketRowWire, nowMs: number, formatTime: (epo
   if (r.reasons?.length) extra.push(r.reasons.slice(0, 2).join(", "));
   const tracking = rocketBreakoutTracking(r);
   if (tracking) extra.push(tracking);
+  // What the tape saw below the $0.10 floor, when the row's entry came right after it rose
+  // through it (server rocket/crossing.rs): the same line its notification carried.
+  if (typeof r.crossing === "string" && r.crossing) extra.push(r.crossing);
   const lv = r.levels ?? null;
   return {
     flame: flameMark(burstOf(r), r.last, nowMs),

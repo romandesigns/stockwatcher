@@ -179,6 +179,14 @@ describe("per panel", () => {
     expect(m.flame).toBeNull();
   });
 
+  test("a Runners row that entered right after crossing $0.10 shows the crossing line in its details", () => {
+    const line = "Crossed $0.10 2 min ago · 60-min low $0.0755 at 1:00 PM (+35.0%) · $242k traded below $0.10";
+    const m = rocketRowMarks(rocketRow({ kind: "running", crossing: line }), T, fmt);
+    expect(m.path!.label).toContain(line);
+    expect(marksReadout(m)).toContain(line);
+    expect(rocketRowMarks(rocketRow({ kind: "running" }), T, fmt).path!.label).not.toContain("Crossed");
+  });
+
   test("a favorite: counted pillars, news class, tail from its own day line, flame from the joined burst", () => {
     const fav = { symbol: "SRTM", price: 680_000, day_line: [600_000, 640_000, 650_000], pillars: { passes: 4, of: 5, news: "pass" as const, news_kind: "regulatory_decision", rvol: 3.1, member: false } };
     const m = favoriteRowMarks(fav, rocketRow(), T, fmt);

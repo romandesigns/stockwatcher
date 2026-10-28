@@ -722,7 +722,11 @@ fn runner_message(n: &Notice) -> (String, String, Value) {
         _ => String::new(),
     };
     if !body.is_empty() {
-        return (title, with_price_line(body, n.price), data);
+        return (
+            title,
+            with_crossing(with_price_line(body, n.price), n),
+            data,
+        );
     }
     let mut parts: Vec<String> = Vec::new();
     if n.kind == NoticeKind::Breakout
@@ -734,7 +738,25 @@ fn runner_message(n: &Notice) -> (String, String, Value) {
     if parts.is_empty() {
         parts.push("Flagged (experimental)".into());
     }
-    (title, with_price_line(parts.join(" · "), n.price), data)
+    (
+        title,
+        with_crossing(with_price_line(parts.join(" · "), n.price), n),
+        data,
+    )
+}
+
+/// A first entry right after the stock rose through the entry floor carries what the tape saw
+/// below it (`crate::rocket::crossing`) on its own line, before the reference line: the line
+/// that says where the move came from (WFF, 2026-10-26: four paths fired the moment it crossed
+/// $0.10 and none could say). Outside [`MAX_BODY_CHARS`]: the evidence keeps its own room.
+fn with_crossing(body: String, n: &Notice) -> String {
+    let Some(NoticeDetail::Crossing(line)) = &n.detail else {
+        return body;
+    };
+    match body.rsplit_once('\n') {
+        Some((evidence, reference)) => format!("{evidence}\n{line}\n{reference}"),
+        None => format!("{body}\n{line}"),
+    }
 }
 
 /// The `runners.notice` frame for desktop and web (owner, 2026-10-23: the phone's notifications

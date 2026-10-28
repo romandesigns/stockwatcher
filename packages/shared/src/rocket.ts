@@ -149,6 +149,12 @@ export interface RocketRowWire {
   reasons: string[];
   /** Exact accumulator capability; absent on legacy producers. */
   breakout_tracking?: { status: "complete" | "restored" | "unknown"; reason: string | null; policy_id: string };
+  /**
+   * The row's first entry came right after the stock rose through the $0.10 entry floor: what the
+   * tape saw below it, one line, as its notification said (server rocket/crossing.rs). Absent
+   * otherwise and from older servers.
+   */
+  crossing?: string;
   outcome: RocketOutcomeWire;
   /** Momentum (newer servers; absent = watching). */
   state?: RocketMomentumState;
@@ -638,7 +644,7 @@ export function rocketRowView(r: RocketRowWire, nowMs: number, strategyId?: stri
     fromWhat: b ? "alert" : isEntryRow(r) ? "entry" : "flag",
     aria: "",
   };
-  const alsoAria = (view.also.length ? `. Then ${view.also.map((a) => `${a.label} ${a.age === "now" ? "just now" : `${a.age} ago`}`).join(", ")}` : "") + (view.setup ? `. ${view.setup.label}` : "") + (breakoutTracking ? `. ${breakoutTracking}` : "");
+  const alsoAria = (view.also.length ? `. Then ${view.also.map((a) => `${a.label} ${a.age === "now" ? "just now" : `${a.age} ago`}`).join(", ")}` : "") + (view.setup ? `. ${view.setup.label}` : "") + (breakoutTracking ? `. ${breakoutTracking}` : "") + (r.crossing ? `. ${r.crossing}` : "");
   if (view.burst) {
     const bv = view.burst;
     view.aria = `${r.s} ${money(last)}${gain ? ` ${gain} on the day` : ""}. ${bv.headline} alerted ${age === "now" ? "just now" : `${age} ago`}, ${bv.since}, ${bv.move}, ${look.label}${note ? ` ${note}` : ""}${reasons.length ? `: ${reasons.join(", ")}` : ""}${outcome ? `. Outcome ${outcome.label}` : ""}${alsoAria}`;

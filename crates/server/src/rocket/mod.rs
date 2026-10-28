@@ -118,6 +118,7 @@
 
 pub mod breakout;
 pub mod burst;
+pub mod crossing;
 pub mod fast;
 pub mod features;
 pub mod log;
@@ -286,6 +287,9 @@ pub enum NoticeDetail {
     Halt { bull: bool, risk: u8, band: f64 },
     /// [`NoticeKind::Pullback`] / [`NoticeKind::PullbackCrossing`].
     Pullback(PullbackNotice),
+    /// A stock's first Runners entry right after it rose through the entry floor: what the tape
+    /// saw below it, one line ([`crossing`]).
+    Crossing(String),
 }
 
 /// A pullback setup's facts, read off the MP5 episode's own anchors at arming (never invented:
@@ -841,6 +845,9 @@ pub struct Cost {
 pub struct RocketBoard {
     enabled: bool,
     pub(crate) tape: Tape,
+    /// Today's crossing lines ([`crossing`]) by symbol: decided once, on the stock's first row
+    /// entry (`None` = it had none), shown on its row and restored from the forward log.
+    crossings: HashMap<Arc<str>, Option<String>>,
     scorer: Arc<dyn RocketScorer>,
     policy: Policy,
     date: Option<NaiveDate>,
@@ -1022,6 +1029,7 @@ impl RocketBoard {
         RocketBoard {
             enabled,
             tape: Tape::default(),
+            crossings: HashMap::new(),
             scorer,
             policy,
             date: None,
@@ -1424,10 +1432,44 @@ impl RocketBoard {
         self.notice(n);
     }
 
-    fn notice(&mut self, n: Notice) {
+    fn notice(&mut self, mut n: Notice) {
+        self.add_crossing(&mut n);
         if self.notices.len() < MAX_NOTICES {
             self.notices.push(n);
         }
+    }
+
+    /// A row's own entry notice gets the stock's crossing line ([`crossing`]), decided once per
+    /// stock and day: the first entry is the only one that can be "just crossed", and a later
+    /// path on the same row is a follow-up. Logged, so a restart keeps the row's line.
+    fn add_crossing(&mut self, n: &mut Notice) {
+        let entry = matches!(
+            n.kind,
+            NoticeKind::New
+                | NoticeKind::Burst
+                | NoticeKind::Running
+                | NoticeKind::Run
+                | NoticeKind::Fast
+        );
+        if !entry || n.detail.is_some() || self.crossings.contains_key(n.symbol.as_str()) {
+            return;
+        }
+        let text = self
+            .tape
+            .sym(&n.symbol)
+            .and_then(|s| crossing::line(s, n.at_ns, n.price, self.t0, self.ord));
+        self.crossings
+            .insert(Arc::from(n.symbol.as_str()), text.clone());
+        let Some(text) = text else { return };
+        if let Some(date) = self.date {
+            self.pending.push((
+                date,
+                json!({"kind": "crossing", "v": 1, "date": date.to_string(), "id": n.alert_id,
+                    "symbol": n.symbol, "text": text})
+                .to_string(),
+            ));
+        }
+        n.detail = Some(NoticeDetail::Crossing(text));
     }
 
     /// The median of the last five days' ideal thresholds for this scorer.
@@ -1569,6 +1611,7 @@ impl RocketBoard {
         self.ord = ord;
         self.processed = 0;
         self.alerts.clear();
+        self.crossings.clear();
         self.track_symbols.clear();
         self.last_alert.clear();
         // Official open halts can cross dates. Only the pressure board's matching resume ends one.
@@ -2695,6 +2738,15 @@ impl RocketBoard {
                 }
             }
         }
+        // The rows' crossing lines as logged; a restored row without one stays without (its
+        // first entry was decided before the restart, never again from a shorter tape).
+        for (symbol, text) in loaded.crossings {
+            self.crossings
+                .insert(Arc::from(symbol.as_str()), Some(text));
+        }
+        for a in &self.alerts {
+            self.crossings.entry(a.symbol.clone()).or_insert(None);
+        }
         self.revision += 1;
     }
 
@@ -2840,6 +2892,7 @@ impl RocketBoard {
                     "levels": levels(&a.symbol),
                     "kind": a.kind.as_str(),
                     "burst": a.burst.as_deref().map(burst_json),
+                    "crossing": self.crossings.get(&a.symbol).cloned().flatten(),
                     "also": a.also.iter().map(|x| json!({
                         "kind": x.kind.as_str(), "at": x.at_ns / 1_000_000,
                     })).collect::<Vec<_>>(),
@@ -2857,6 +2910,12 @@ impl RocketBoard {
                 && m.get("burst").is_some_and(Value::is_null)
             {
                 m.remove("burst");
+            }
+            // A row without a crossing line carries no `crossing` (older clients never saw it).
+            if let Some(m) = r.as_object_mut()
+                && m.get("crossing").is_some_and(Value::is_null)
+            {
+                m.remove("crossing");
             }
             // Likewise a row without follow-ups carries no `also`.
             if let Some(m) = r.as_object_mut()

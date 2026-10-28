@@ -1933,3 +1933,71 @@ fn the_trf_batch_filter_switch() {
     );
     assert!(Policy::from_lookup(get("maybe")).is_err());
 }
+
+/// WFF, 2026-10-26: a stock that spent the hour below the $0.10 floor and rose through it. Its
+/// first Runners entry carries the crossing line (notice, forward log, restore); a later path
+/// on the same stock does not, and neither does a second entry notice.
+#[test]
+fn the_first_entry_after_rising_through_the_floor_carries_the_crossing_line() {
+    let mut r = board(vec![], fixed(0.5, 10));
+    let mut seq = 0;
+    let mut print = |r: &mut RocketBoard, ts: i64, px: f64| {
+        seq += 1;
+        let mut t = tr("WFF", ts, px, 50_000);
+        t.source_seq = seq;
+        r.apply_trade(&t, BOTH);
+    };
+    for m in 0..56 {
+        print(&mut r, at(13, m, 0), 0.0755 + f64::from(m) * 0.0004);
+    }
+    print(&mut r, at(13, 58, 0), 0.1005);
+    print(&mut r, at(13, 59, 0), 0.1019);
+    r.tick(at(14, 0, 1), |_| None);
+    let _ = r.take_notices();
+    let _ = r.take_log();
+    let entry = Notice {
+        at_ns: at(14, 0, 0),
+        price: 0.1019,
+        ..Notice::test(NoticeKind::Running, "WFF")
+    };
+    r.inject_notice(entry.clone());
+    r.inject_notice(Notice {
+        alert_id: "WFF-2".into(),
+        ..entry.clone()
+    });
+    r.inject_notice(Notice::test(NoticeKind::FollowUp, "WFF"));
+    let n = r.take_notices();
+    let line = "Crossed $0.10 2 min ago · 60-min low $0.0755 at 1:00 PM (+35.0%) · $242k traded below $0.10";
+    assert!(
+        matches!(&n[0].detail, Some(NoticeDetail::Crossing(t)) if t == line),
+        "{:?}",
+        n[0].detail
+    );
+    assert!(n[1].detail.is_none(), "decided once per stock and day");
+    assert!(n[2].detail.is_none(), "a follow-up never carries it");
+    let body = crate::alerts::runners::message(&n[0]).1;
+    assert_eq!(body.lines().nth(1), Some(line), "{body}");
+    assert!(
+        body.lines().nth(2).unwrap().starts_with("Alert $0.1019"),
+        "{body}"
+    );
+
+    // Logged once, and a restart keeps it.
+    let logged: Vec<String> = r.take_log().into_iter().map(|(_, l)| l).collect();
+    assert_eq!(
+        logged.iter().filter(|l| l.contains("\"crossing\"")).count(),
+        1
+    );
+    let tmp = tempfile::tempdir().unwrap();
+    let log = RocketLog::new(tmp.path().join("rocket-watch"), 30);
+    log.append(day(), &logged);
+    let loaded = log.load(day());
+    assert_eq!(loaded.crossings.get("WFF").map(String::as_str), Some(line));
+    let mut back = board(vec![], fixed(0.5, 10));
+    back.restore(day(), loaded);
+    back.inject_notice(entry);
+    assert!(
+        back.take_notices()[0].detail.is_none(),
+        "the restored decision stands"
+    );
+}

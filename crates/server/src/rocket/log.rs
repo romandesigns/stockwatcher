@@ -113,6 +113,8 @@ pub struct Loaded {
     /// Today's `also` lines (a row's follow-ups, `super::RocketBoard` "Follow-ups") per alert id,
     /// oldest first.
     pub also: BTreeMap<String, Vec<Value>>,
+    /// Today's `crossing` lines (`super::crossing`): symbol → the row's crossing text.
+    pub crossings: BTreeMap<String, String>,
 }
 
 #[derive(Debug)]
@@ -395,6 +397,14 @@ impl RocketLog {
                     }
                     Some("also") => {
                         out.also.entry(id.to_string()).or_default().push(v.clone());
+                    }
+                    Some("crossing") => {
+                        if let (Some(s), Some(t)) = (
+                            v.get("symbol").and_then(Value::as_str),
+                            v.get("text").and_then(Value::as_str),
+                        ) {
+                            out.crossings.insert(s.to_string(), t.to_string());
+                        }
                     }
                     Some("breakout_track") if v["breakout_track"].is_object() => {
                         checkpoints.insert(id.to_owned(), v["breakout_track"].clone());

@@ -1000,3 +1000,53 @@ impl Tape {
         self.index.get(symbol).map(|&i| &self.syms[i])
     }
 }
+
+/// What the 15 s tape saw of a symbol below the live entry floor before an entry at `through`
+/// (the entry's slot key): the facts the first Runners notice of a stock that rose through the
+/// floor carries (`super::crossing`). Read only from bars that exist; empty slots are no trading.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct BelowFloor {
+    /// The lowest OHLC low in the window (dollars) and its bar's key.
+    pub(crate) low: f64,
+    pub(crate) low_key: u32,
+    /// The first bar with a print at or above the floor after the last bar wholly below it.
+    pub(crate) crossed_key: u32,
+    /// Dollars traded in the window's bars that stayed wholly below the floor.
+    pub(crate) dollars_below: f64,
+}
+
+/// [`BelowFloor`] over the `span` slots up to and including `through`, or `None` when no bar in
+/// it traded wholly below `floor` (the stock was not below the floor in that time).
+pub(crate) fn below_floor(s: &Sym, through: u32, span: u32, floor: f64) -> Option<BelowFloor> {
+    let start = through.saturating_sub(span.saturating_sub(1));
+    let mut low = f64::INFINITY;
+    let mut low_key = 0;
+    let mut last_below = None;
+    let mut dollars_below = 0.0;
+    for key in start..=through {
+        let Some(b) = s.bar(key) else { continue };
+        if !b.has_ohlc {
+            continue;
+        }
+        let (hi, lo) = (f64::from(b.high), f64::from(b.low));
+        if lo < low {
+            low = lo;
+            low_key = key;
+        }
+        if hi < floor {
+            last_below = Some(key);
+            dollars_below += f64::from(b.dollars);
+        }
+    }
+    let last_below = last_below?;
+    let crossed_key = (last_below + 1..=through).find(|&k| {
+        s.bar(k)
+            .is_some_and(|b| b.has_ohlc && f64::from(b.high) >= floor)
+    })?;
+    Some(BelowFloor {
+        low,
+        low_key,
+        crossed_key,
+        dollars_below,
+    })
+}
