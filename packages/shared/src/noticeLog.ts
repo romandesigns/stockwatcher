@@ -9,9 +9,25 @@ import { parseBreakoutNotice, type BreakoutNotice } from "./breakout.ts";
 export interface NoticePathWire {
   /** `sent` | `held` (Runners notices); a price alert's phone: `sent` | `off` | `held`. */
   decision: string | null;
-  /** The limit's code when held: no_device, quiet_hours, stale, symbol_limit, duplicate. */
+  /** The limit's code when held: no_device, quiet_hours, stale, symbol_limit, duplicate, merged. */
   held: string | null;
   devices: number | null;
+  /**
+   * What it was folded into when several Runners paths fired on one stock within half a minute
+   * (server alerts/runners.rs, "Merging"): present on a merged decision, and on a send that only
+   * reached the devices the first push missed.
+   */
+  merged_into?: NoticeMergedWire | null;
+  /** Devices that already had that first push. */
+  merged_devices?: number | null;
+}
+
+export interface NoticeMergedWire {
+  event_id: string;
+  /** The first push's data kind (`runners.running`). */
+  notice: string;
+  /** Seconds between the first push and this one. */
+  secs: number;
 }
 
 export interface NoticeItemWire {
@@ -127,6 +143,13 @@ export function noticeStatus(item: NoticeItemWire): NoticeStatus {
   return p?.decision === "sent" ? "sent" : "held";
 }
 
+/** What the held path's notice was merged into (the phone's if held, else the desk's), or null. */
+export function noticeMergedInto(item: NoticeItemWire): NoticeMergedWire | null {
+  if (item.phone?.decision === "held") return item.phone.merged_into ?? null;
+  if (item.desk?.decision === "held") return item.desk.merged_into ?? null;
+  return null;
+}
+
 /** The hold reason that matters: the phone's if held, else the desk's. */
 export function noticeHeldReason(item: NoticeItemWire): string | null {
   if (item.phone?.decision === "held" || item.phone?.decision === "off") return item.phone.held ?? (item.phone.decision === "off" ? "off" : null);
@@ -141,18 +164,29 @@ const HELD: Record<string, string> = {
   stale: "too old by the time it was decided",
   duplicate: "already sent",
   off: "phone alerts off for it",
+  merged: "merged into an earlier alert",
 };
 
-/** A hold reason in plain words ("same stock notified moments earlier"). */
-export function heldText(reason: string | null): string {
+/**
+ * A hold reason in plain words ("same stock notified moments earlier"). A merged one names what it
+ * was folded into when known: "merged into the Running alert 1 s earlier".
+ */
+export function heldText(reason: string | null, merged?: NoticeMergedWire | null): string {
+  if (reason === "merged" && merged) return `merged into the ${noticeKind(merged.notice).label} alert ${mergedAgo(merged.secs)}`;
   return reason ? (HELD[reason] ?? reason.replace(/_/g, " ")) : "held";
 }
+
+const mergedAgo = (secs: number) => (Number.isFinite(secs) && secs >= 1 ? `${Math.round(secs)} s earlier` : "moments earlier");
 
 /** Short status for a path's indicator: "sent", "held: quiet hours", or null when the path never saw it. */
 export function pathText(p: NoticePathWire | undefined): string | null {
   if (!p || !p.decision) return null;
-  if (p.decision === "sent") return `sent${p.devices ? ` to ${p.devices} device${p.devices === 1 ? "" : "s"}` : ""}`;
-  return `${p.decision === "off" ? "not sent" : "held"}: ${heldText(p.held ?? (p.decision === "off" ? "off" : null))}`;
+  if (p.decision === "sent") {
+    const to = `sent${p.devices ? ` to ${p.devices} device${p.devices === 1 ? "" : "s"}` : ""}`;
+    // A send that only reached the devices the stock's first push missed.
+    return p.merged_into && p.merged_devices ? `${to} · ${p.merged_devices} already had the ${noticeKind(p.merged_into.notice).label} alert` : to;
+  }
+  return `${p.decision === "off" ? "not sent" : "held"}: ${heldText(p.held ?? (p.decision === "off" ? "off" : null), p.merged_into)}`;
 }
 
 /** The latency line for a tooltip ("trade → phone 1.04 s · board 0.10 s · queue 0.84 s · Expo 0.11 s"), or null. */

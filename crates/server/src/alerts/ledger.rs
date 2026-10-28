@@ -66,14 +66,20 @@ impl Ledger {
         path: &'static str,
         decision: &Decision,
         devices: usize,
+        merged: Option<&runners::Merged>,
         title: &str,
         body: &str,
         now_ms: i64,
     ) {
-        self.put(
-            now_ms,
-            decision_line(n, event_id, path, decision, devices, title, body, now_ms),
-        );
+        let mut line = decision_line(n, event_id, path, decision, devices, title, body, now_ms);
+        if let Some(m) = merged {
+            // What it was folded into, for the Insights log's "merged into the Running alert 1 s
+            // earlier" (super::runners, "Merging"); `merged_devices` had that one already.
+            line["merged_into"] =
+                json!({"event_id": m.into_event, "notice": m.into_notice, "secs": m.secs});
+            line["merged_devices"] = json!(m.covered);
+        }
+        self.put(now_ms, line);
     }
 
     /// A fired price alert and its phone decision (module docs, `alert`).
@@ -246,9 +252,27 @@ mod tests {
             "desk",
             &Decision::Send,
             1,
+            None,
             "t",
             "b",
             1_793_017_427_256,
+        );
+        // A merged one says what it was folded into (runners, "Merging").
+        ledger.decision(
+            &notice(),
+            "ev-3",
+            "phone",
+            &Decision::Held(runners::Hold::Merged),
+            2,
+            Some(&runners::Merged {
+                into_event: "runners-running-WFF-1".into(),
+                into_notice: "runners.running".into(),
+                secs: 1.2,
+                covered: 2,
+            }),
+            "t",
+            "b",
+            1_793_017_427_300,
         );
         ledger.failed(
             "ev-2",
@@ -263,15 +287,20 @@ mod tests {
                 .lines()
                 .map(str::to_owned)
                 .collect();
-            if lines.len() >= 2 {
+            if lines.len() >= 3 {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert_eq!(lines.len(), 3, "{lines:?}");
         assert!(lines[0].contains("\"decision\":\"sent\""));
-        assert!(!lines[1].contains("secret"), "{}", lines[1]);
-        assert!(lines[1].contains("[push token]"));
+        assert!(!lines[0].contains("merged_into"), "{}", lines[0]);
+        let merged: Value = serde_json::from_str(&lines[1]).unwrap();
+        assert_eq!(merged["held"], "merged");
+        assert_eq!(merged["merged_into"]["notice"], "runners.running");
+        assert_eq!(merged["merged_devices"], 2);
+        assert!(!lines[2].contains("secret"), "{}", lines[2]);
+        assert!(lines[2].contains("[push token]"));
     }
 
     #[test]

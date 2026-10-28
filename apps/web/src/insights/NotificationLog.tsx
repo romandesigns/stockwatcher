@@ -1,7 +1,7 @@
 import { formatEtTime12, type IconName } from "@stockwatcher/chart-core";
 import { Icon } from "@stockwatcher/chart-web";
 import { cn, Input, OptionSelect, ScrollArea, Tip } from "@stockwatcher/chart-web/ui";
-import { filterNotices, latencyText, NOTICE_GROUPS, noticeHeldReason, heldText, noticeKind, noticeStatus, noticeSummary, pathText, type NoticeGroup, type NoticeItemWire, type NoticePathWire, type NoticeStatus } from "@stockwatcher/shared";
+import { filterNotices, latencyText, NOTICE_GROUPS, noticeHeldReason, noticeMergedInto, heldText, noticeKind, noticeStatus, noticeSummary, pathText, type NoticeGroup, type NoticeItemWire, type NoticePathWire, type NoticeStatus } from "@stockwatcher/shared";
 import { useMemo, useState } from "react";
 import { openTickerChart } from "../nav/openTicker.ts";
 import { BREAKOUT_LABEL, breakoutClockText, breakoutSummary, noticeChartContext } from "@stockwatcher/shared";
@@ -138,7 +138,8 @@ export function NoticeRow({ item }: { item: NoticeItemWire }) {
   const label = context ? BREAKOUT_LABEL : kind.label;
   const evidence = context ? `${breakoutSummary(context.breakout)} · ${breakoutClockText(context.breakout, (ms) => formatEtTime12(ms, true))} · Rule ${context.breakout.rule} · ${context.breakout.source} / ${context.breakout.exact_state}` : item.notice === "runners.breakout" ? "Event time and comparison unavailable" : null;
   const sent = noticeStatus(item) === "sent";
-  const reason = noticeHeldReason(item);
+  // "merged into the Running alert 1 s earlier" when several paths fired at once (shared noticeLog).
+  const held = heldText(noticeHeldReason(item), noticeMergedInto(item));
   const latency = latencyText(item);
   const text = item.body ? `${item.title ?? ""} · ${item.body.replace(/[\r\n]+/g, " · ")}` : (item.title ?? "");
   return (
@@ -146,7 +147,7 @@ export function NoticeRow({ item }: { item: NoticeItemWire }) {
       type="button"
       onClick={() => item.symbol && openTickerChart(item.symbol, context)}
       disabled={!item.symbol}
-      aria-label={`${item.symbol ?? "Notice"}: ${label}, ${sent ? "sent" : `held, ${heldText(reason)}`}. ${evidence ?? ""}. ${text}. Open the chart.`}
+      aria-label={`${item.symbol ?? "Notice"}: ${label}, ${sent ? "sent" : `held, ${held}`}. ${evidence ?? ""}. ${text}. Open the chart.`}
       className="grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 rounded-lg bg-card px-3 py-2 text-left outline-none transition-colors duration-150 hover:bg-bg-row focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none @2xl/log:grid-cols-[6.5rem_minmax(8rem,12rem)_minmax(0,1fr)_auto]"
     >
       <Tip label={context ? "History decision time" : "History time: first decision or recorded fallback"}><span className="font-mono text-xs text-muted-foreground">{item.at ? formatEtTime12(item.at, true) : "—"}</span></Tip>
@@ -168,13 +169,13 @@ export function NoticeRow({ item }: { item: NoticeItemWire }) {
       <span className="col-start-3 row-start-1 flex items-center gap-2 justify-self-end @2xl/log:col-start-4">
         <PathMark icon="screen" name="Desktop and web" path={item.desk} />
         <PathMark icon="phone" name="Phones" path={item.phone} extra={latency} />
-        <Tip label={latency && sent ? latency : sent ? "Sent" : `Held: ${heldText(reason)}`}>
+        <Tip label={latency && sent ? latency : sent ? "Sent" : `Held: ${held}`}>
           <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-medium whitespace-nowrap", sent ? "bg-bg-row text-muted-foreground" : "bg-warning/15 text-warning")}>
             {sent ? (
               "Sent"
             ) : (
               <>
-                Held<span className="hidden @3xl/log:inline"> · {heldText(reason)}</span>
+                Held<span className="hidden @3xl/log:inline"> · {held}</span>
               </>
             )}
           </span>

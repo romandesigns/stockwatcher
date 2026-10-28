@@ -1,5 +1,5 @@
 import { formatEtTime12, type IconName } from "@stockwatcher/chart-core";
-import { heldText, latencyText, noticeHeldReason, noticeKind, noticeStatus, pathText, type NoticeGroup, type NoticeItemWire } from "@stockwatcher/shared";
+import { heldText, latencyText, noticeHeldReason, noticeKind, noticeMergedInto, noticeStatus, pathText, type NoticeGroup, type NoticeItemWire } from "@stockwatcher/shared";
 import { BREAKOUT_LABEL, breakoutClockText, breakoutSummary, noticeChartContext, type NoticeChartContext } from "@stockwatcher/shared";
 
 // One notification-log row on the phone (the web's NoticeRow, apps/web/src/insights): what the
@@ -51,7 +51,7 @@ export function noticeRowView(item: NoticeItemWire): NoticeRowView {
   const phone = path("Phones", item.phone);
   const desk = path("Desktop and web", item.desk);
   const latency = latencyText(item);
-  const detail = sent ? (item.failed ? `${text} · push service refused it` : text) : `Held: ${heldText(reason)}`;
+  const detail = sent ? (item.failed ? `${text} · push service refused it` : text) : `Held: ${heldText(reason, noticeMergedInto(item))}`;
   return {
     key: item.event_id,
     time: item.at ? formatEtTime12(item.at, true) : "—",
@@ -65,6 +65,6 @@ export function noticeRowView(item: NoticeItemWire): NoticeRowView {
     desk,
     evidence,
     noticeContext: context,
-    a11y: [`${item.symbol ?? "Notice"}, ${label}`, sent ? "sent" : `held, ${heldText(reason)}`, phone?.label, desk?.label, latency && sent ? latency : null, text, evidence].filter(Boolean).join(". "),
+    a11y: [`${item.symbol ?? "Notice"}, ${label}`, sent ? "sent" : `held, ${heldText(reason, noticeMergedInto(item))}`, phone?.label, desk?.label, latency && sent ? latency : null, text, evidence].filter(Boolean).join(". "),
   };
 }

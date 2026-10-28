@@ -105,14 +105,18 @@ pub fn group(text: &str) -> (Vec<Value>, bool) {
                     }
                 }
                 if let Some(path @ ("desk" | "phone")) = v.get("path").and_then(Value::as_str) {
-                    item.insert(
-                        path.into(),
-                        json!({
-                            "decision": v.get("decision").cloned().unwrap_or(Value::Null),
-                            "held": v.get("held").cloned().unwrap_or(Value::Null),
-                            "devices": v.get("devices").cloned().unwrap_or(Value::Null),
-                        }),
-                    );
+                    let mut outcome = json!({
+                        "decision": v.get("decision").cloned().unwrap_or(Value::Null),
+                        "held": v.get("held").cloned().unwrap_or(Value::Null),
+                        "devices": v.get("devices").cloned().unwrap_or(Value::Null),
+                    });
+                    // A merged Runners path (alerts::runners, "Merging"): what it was folded into.
+                    for k in ["merged_into", "merged_devices"] {
+                        if let Some(x) = v.get(k) {
+                            outcome[k] = x.clone();
+                        }
+                    }
+                    item.insert(path.into(), outcome);
                 }
             }
             "alert" => {
@@ -217,6 +221,25 @@ mod tests {
         assert_eq!(items[1]["desk"]["decision"], "sent");
         assert_eq!(items[1]["phone"]["held"], "symbol_limit");
         assert_eq!(items[1]["latency"]["trade_to_expo_ms"], 1044.6);
+    }
+
+    /// A merged Runners path keeps what it was folded into (alerts::runners, "Merging").
+    #[test]
+    fn a_merged_path_says_what_it_was_folded_into() {
+        let text = line(
+            json!({"kind":"decision","v":1,"decided_at":3000,"event_id":"f",
+            "notice":"runners.fast","symbol":"WFF","path":"phone","decision":"held","held":"merged",
+            "devices":2,"merged_into":{"event_id":"r","notice":"runners.running","secs":1.0},
+            "merged_devices":2}),
+        );
+        let (items, _) = group(&text);
+        assert_eq!(items[0]["phone"]["held"], "merged");
+        assert_eq!(
+            items[0]["phone"]["merged_into"]["notice"],
+            "runners.running"
+        );
+        assert_eq!(items[0]["phone"]["merged_devices"], 2);
+        assert!(items[0].get("desk").is_none());
     }
 
     #[test]

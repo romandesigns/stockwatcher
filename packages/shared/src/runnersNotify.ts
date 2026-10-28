@@ -54,6 +54,30 @@ export interface RunnersNoticeMessage {
    * with only the Signals switch on still shows it ([`wantsNotice`]).
    */
   alsoSignals?: boolean;
+  /**
+   * Several Runners paths fired on this stock within half a minute (server alerts/runners.rs,
+   * "Merging"): the id of its first notice of that window. A client that showed it updates that
+   * notification with {@link mergeLine} instead of showing a second one ({@link mergedNotice}).
+   */
+  mergeInto?: string;
+  /** "+ Fast move 1 s later · $0.1057": the line a client that showed the first notice appends. */
+  mergeLine?: string;
+  /** Every desk that wants this kind already showed the first notice: never shown on its own. */
+  mergeOnly?: boolean;
+}
+
+/** What a client does with a `runners.notice` given whether it showed the notice it merges into. */
+export type MergedNotice = { action: "update"; into: string; line: string } | { action: "show" } | { action: "ignore" };
+
+/**
+ * A merged notice (module docs of server alerts/runners.rs, "Merging"): update the first
+ * notification when this client showed it, show it alone when this client did not show the first
+ * and the server says others missed it too, else nothing. A notice with no merge is shown.
+ */
+export function mergedNotice(m: RunnersNoticeMessage, shown: (id: string) => boolean): MergedNotice {
+  if (!m.mergeInto) return { action: "show" };
+  if (shown(m.mergeInto)) return { action: "update", into: m.mergeInto, line: m.mergeLine ?? "" };
+  return m.mergeOnly ? { action: "ignore" } : { action: "show" };
 }
 
 /** One client's switches (the phone's Settings → Alerts names). */
@@ -171,6 +195,9 @@ export function parseRunnersNotice(v: unknown): RunnersNoticeMessage | null {
   }
   const out: RunnersNoticeMessage = { type: "runners.notice", id, alertId: str("alertId"), symbol, kind, title: str("title"), body: str("body"), data, at: typeof m.at === "number" ? m.at : 0 };
   if (m.alsoSignals === true || data?.also_signals === true) out.alsoSignals = true;
+  if (typeof m.mergeInto === "string" && m.mergeInto) out.mergeInto = m.mergeInto;
+  if (typeof m.mergeLine === "string") out.mergeLine = m.mergeLine;
+  if (m.mergeOnly === true) out.mergeOnly = true;
   return out;
 }
 

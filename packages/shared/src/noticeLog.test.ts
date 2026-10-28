@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { filterNotices, heldText, latencyText, noticeKind, noticeStatus, noticeSummary, parseNoticeLog, pathText } from "./noticeLog.ts";
+import { filterNotices, heldText, noticeMergedInto, latencyText, noticeKind, noticeStatus, noticeSummary, parseNoticeLog, pathText } from "./noticeLog.ts";
 import { breakoutTestFixture } from "./breakoutTestFixture.ts";
 
 const body = {
@@ -15,6 +15,18 @@ const body = {
 };
 
 describe("notice log", () => {
+  test("a merged notice says what it was folded into", () => {
+    const into = { event_id: "runners-running-WFF-1", notice: "runners.running", secs: 1.2 };
+    const item = { event_id: "runners-fast-WFF-1", notice: "runners.fast", phone: { decision: "held", held: "merged", devices: 2, merged_into: into, merged_devices: 2 } };
+    expect(noticeMergedInto(item)).toEqual(into);
+    expect(heldText("merged", noticeMergedInto(item))).toBe("merged into the Running alert 1 s earlier");
+    expect(heldText("merged", { ...into, secs: 0.4 })).toBe("merged into the Running alert moments earlier");
+    expect(heldText("merged")).toBe("merged into an earlier alert");
+    expect(pathText(item.phone)).toBe("held: merged into the Running alert 1 s earlier");
+    // Sent only to the device the first push missed.
+    expect(pathText({ decision: "sent", held: null, devices: 1, merged_into: into, merged_devices: 1 })).toBe("sent to 1 device · 1 already had the Running alert");
+  });
+
   test("new Breakout evidence survives history parsing without replacing decision chronology or stored text", () => {
     const input = { event_id: "runners-breakout-fixture", at: 1793017427000, notice: "runners.breakout", title: "stored title", body: "stored body", breakout: breakoutTestFixture };
     const item = parseNoticeLog({ day: "2026-10-26", items: [input] })!.items[0]!;

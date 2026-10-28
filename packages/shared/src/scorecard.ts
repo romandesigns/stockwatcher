@@ -114,6 +114,7 @@ export const HOLD_LABELS: Readonly<Record<string, string>> = {
   quiet_hours: "held: quiet hours",
   stale: "held: too old",
   duplicate: "held: already sent",
+  merged: "held: merged into an earlier alert",
   no_device: "no device wanted it",
   unknown: "not in the ledger",
 };

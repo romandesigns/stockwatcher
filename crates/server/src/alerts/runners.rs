@@ -53,6 +53,16 @@
 //!      08:20:04, burst 08:23:02, then its setup at 08:23:47, 50 s before the leg to $0.74, was
 //!      held as `symbol_limit`.
 //!
+//! - **Merging** (owner, 2026-10-26, WFF: Running, Fast move and Breakout within 14 s): a
+//!   stock's Runners entries, follow-ups and breakouts ([`mergeable`]) within [`MERGE_WINDOW_MS`]
+//!   of its first push of the window are one event. A recipient (phone token or desk connection)
+//!   that got that first push gets nothing more: the decision is held as `merged`, written to the
+//!   notification ledger with what it was merged into, and the row keeps every path ("then Fast
+//!   move at 1:45 PM"). A recipient that did NOT get it (its switch for that path is off) gets
+//!   this one, outside the stock gap. Expo's push API cannot replace a delivered notification, so
+//!   the phone holds; the web, whose browser notifications replace by tag, updates the first
+//!   notification with the later path's line (`runners.notice` with `mergeInto`).
+//!
 //!   There is NO daily cap (owner, 2026-10-23: "always send out notifications as long as the
 //!   evidence of such events supports it"). A shared cap of 120 had held back 3 fast-move and 5
 //!   Run +20% pushes that day once a phone with breakouts on spent it. Volume is bounded by the
@@ -118,6 +128,60 @@ pub enum Hold {
     SymbolLimit,
     /// This event was already sent (its [`crate::rocket::Notice::event_id`]).
     Duplicate,
+    /// Folded into the stock's first Runners push of the last [`MERGE_WINDOW_MS`] (module docs,
+    /// "Merging"): every recipient of this one already got that one.
+    Merged,
+}
+
+/// Runners paths on one stock this close together are one event to the trader (owner,
+/// 2026-10-26, WFF: Running 13:45:01, Fast move 13:45:02, Breakout 13:45:15). Half a minute
+/// covers the cascade a single move sets off across the paths (they read the same prints at
+/// 1 s, 5 s and 15 s cadences) without folding a genuinely later leg into an old alert.
+pub const MERGE_WINDOW_MS: i64 = 30_000;
+
+/// The kinds that merge: a stock's Runners entries, their follow-ups and breakouts. Pullback,
+/// shelf, Ross/Signals and Halt notices are other evidence with their own rules.
+pub fn mergeable(kind: NoticeKind) -> bool {
+    matches!(
+        kind,
+        NoticeKind::New
+            | NoticeKind::Burst
+            | NoticeKind::Running
+            | NoticeKind::Run
+            | NoticeKind::Fast
+            | NoticeKind::FollowUp
+            | NoticeKind::Breakout
+    )
+}
+
+/// What a notice was folded into ([`Hold::Merged`], or a send to only the recipients the first
+/// push missed): the ledger and the Insights log say "merged into the Running alert 1 s earlier".
+#[derive(Clone, Debug, PartialEq)]
+pub struct Merged {
+    pub into_event: String,
+    /// The first push's data kind ([`data_kind`]).
+    pub into_notice: String,
+    pub secs: f64,
+    /// Recipients that already had the first push (and so got nothing more).
+    pub covered: usize,
+}
+
+/// [`RunnersDelivery::decide_runner`]'s answer: the decision, who to send to, and the merge.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RunnerDecision {
+    pub decision: Decision,
+    pub send_to: Vec<String>,
+    pub merged: Option<Merged>,
+}
+
+/// A stock's first mergeable push of its current window ([`MERGE_WINDOW_MS`]).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct FirstPush {
+    at: i64,
+    event_id: String,
+    notice: String,
+    /// Who got it (push tokens, or desk connection ids): only they are covered by it.
+    recipients: Vec<String>,
 }
 
 impl Hold {
@@ -128,6 +192,7 @@ impl Hold {
             Hold::Stale => "stale",
             Hold::SymbolLimit => "symbol_limit",
             Hold::Duplicate => "duplicate",
+            Hold::Merged => "merged",
         }
     }
 }
@@ -147,6 +212,10 @@ struct Saved {
     /// Today's events already sent ([`crate::rocket::Notice::event_id`]): never twice.
     #[serde(default)]
     sent_ids: HashSet<String>,
+    /// Each stock's first mergeable push of its window (module docs, "Merging"); persisted so a
+    /// redeploy in the middle of a cascade does not push the rest of it.
+    #[serde(default)]
+    first_push: HashMap<String, FirstPush>,
 }
 
 /// The Runners side's memory: today's count and each stock's last push, persisted.
@@ -221,6 +290,37 @@ impl RunnersDelivery {
         today: NaiveDate,
         et_minute: u32,
     ) -> Decision {
+        // Recipients without identity: the count alone (every one of them is "the same" device
+        // set, so a merge covers them all).
+        let ids: Vec<String> = (0..devices).map(|i| format!("#{i}")).collect();
+        self.decide_runner(
+            kind, symbol, event_id, &ids, prefs, at, now, today, et_minute,
+        )
+        .decision
+    }
+
+    /// [`RunnersDelivery::decide`] with the recipients named (push tokens, desk connections), so
+    /// near-simultaneous Runners paths merge per recipient (module docs, "Merging"): a recipient
+    /// that already got this stock's first push of the window gets nothing more; one that did not
+    /// (its switch for that path was off) gets this one, outside the stock gap.
+    #[allow(clippy::too_many_arguments)]
+    pub fn decide_runner(
+        &mut self,
+        kind: NoticeKind,
+        symbol: &str,
+        event_id: &str,
+        recipients: &[String],
+        prefs: &Prefs,
+        at: i64,
+        now: i64,
+        today: NaiveDate,
+        et_minute: u32,
+    ) -> RunnerDecision {
+        let held = |h| RunnerDecision {
+            decision: Decision::Held(h),
+            send_to: Vec::new(),
+            merged: None,
+        };
         let day = today.to_string();
         if self.s.day != day {
             self.s.day = day;
@@ -230,19 +330,118 @@ impl RunnersDelivery {
             self.s.last_by_symbol.clear();
             self.s.last_by_kind.clear();
             self.s.sent_ids.clear();
+            self.s.first_push.clear();
         }
         if self.s.sent_ids.contains(event_id) {
-            return Decision::Held(Hold::Duplicate);
+            return held(Hold::Duplicate);
         }
-        if devices == 0 {
-            return Decision::Held(Hold::NoDevice);
+        if recipients.is_empty() {
+            return held(Hold::NoDevice);
         }
         if prefs.quiet.is_some_and(|q| q.contains(et_minute)) {
-            return Decision::Held(Hold::QuietHours);
+            return held(Hold::QuietHours);
         }
         if now - at > MAX_AGE_MS {
-            return Decision::Held(Hold::Stale);
+            return held(Hold::Stale);
         }
+        if let Some(r) = self.merge(kind, symbol, event_id, recipients, now) {
+            return r;
+        }
+        let decision = self.decide_gaps(kind, symbol, event_id, now);
+        if decision == Decision::Send && mergeable(kind) {
+            self.s.first_push.insert(
+                symbol.to_owned(),
+                FirstPush {
+                    at: now,
+                    event_id: event_id.to_owned(),
+                    notice: data_kind(kind).to_owned(),
+                    recipients: recipients.to_vec(),
+                },
+            );
+            self.save();
+        }
+        RunnerDecision {
+            decision,
+            send_to: if decision == Decision::Send {
+                recipients.to_vec()
+            } else {
+                Vec::new()
+            },
+            merged: None,
+        }
+    }
+
+    /// Module docs, "Merging": `None` when this notice does not fall in a stock's merge window.
+    fn merge(
+        &mut self,
+        kind: NoticeKind,
+        symbol: &str,
+        event_id: &str,
+        recipients: &[String],
+        now: i64,
+    ) -> Option<RunnerDecision> {
+        if !mergeable(kind) {
+            return None;
+        }
+        let first = self.s.first_push.get(symbol)?;
+        if now - first.at >= MERGE_WINDOW_MS || first.event_id == event_id {
+            return None;
+        }
+        let uncovered: Vec<String> = recipients
+            .iter()
+            .filter(|r| !first.recipients.contains(r))
+            .cloned()
+            .collect();
+        let merged = Merged {
+            into_event: first.event_id.clone(),
+            into_notice: first.notice.clone(),
+            secs: (now - first.at) as f64 / 1000.0,
+            covered: recipients.len() - uncovered.len(),
+        };
+        if uncovered.is_empty() {
+            return Some(RunnerDecision {
+                decision: Decision::Held(Hold::Merged),
+                send_to: Vec::new(),
+                merged: Some(merged),
+            });
+        }
+        // Recipients that never heard about this stock in the window: theirs is a first push,
+        // so the any-kind stock gap does not apply (the same-kind gap and dedupe still do).
+        let key = format!("{symbol} {}", kind.as_str());
+        if self
+            .s
+            .last_by_kind
+            .get(&key)
+            .is_some_and(|t| now - t < SYMBOL_GAP_MS)
+        {
+            return Some(RunnerDecision {
+                decision: Decision::Held(Hold::SymbolLimit),
+                send_to: Vec::new(),
+                merged: None,
+            });
+        }
+        self.s.sent += 1;
+        self.s.last_by_kind.insert(key, now);
+        self.s.sent_ids.insert(event_id.to_owned());
+        if let Some(f) = self.s.first_push.get_mut(symbol) {
+            f.recipients.extend(uncovered.iter().cloned());
+        }
+        self.save();
+        Some(RunnerDecision {
+            decision: Decision::Send,
+            send_to: uncovered,
+            merged: Some(merged),
+        })
+    }
+
+    /// The stock and kind gaps (module docs, "Limits" 4), recording a send.
+    fn decide_gaps(
+        &mut self,
+        kind: NoticeKind,
+        symbol: &str,
+        event_id: &str,
+        now: i64,
+    ) -> Decision {
         let key = format!("{symbol} {}", kind.as_str());
         let gap = if kind.is_new_evidence() {
             BURST_GAP_MS
@@ -784,6 +983,40 @@ pub fn desk_frame(n: &Notice) -> String {
         "at": n.at_ns.div_euclid(1_000_000),
     })
     .to_string()
+}
+
+/// A Runners path's name as the notices say it.
+pub fn path_label(kind: NoticeKind) -> &'static str {
+    match kind {
+        NoticeKind::New => "Runners flag",
+        NoticeKind::Burst => "Buying burst",
+        NoticeKind::Running => "Running",
+        NoticeKind::Run => "Run +20%",
+        NoticeKind::Fast => "Fast move",
+        NoticeKind::FollowUp => "Follow-up",
+        NoticeKind::Breakout => "Breakout",
+        _ => "Runners",
+    }
+}
+
+/// [`desk_frame`] for a merged notice (module docs, "Merging"): `mergeInto` names the first
+/// notice, `mergeLine` is what a client that showed it appends ("+ Fast move 1 s later ·
+/// $0.1057"), and `mergeOnly` says every desk that wants this kind already showed the first, so
+/// a client that did not show it ignores the frame. Without a merge it is [`desk_frame`].
+pub fn desk_frame_merged(n: &Notice, merged: Option<&Merged>, merge_only: bool) -> String {
+    let Some(m) = merged else {
+        return desk_frame(n);
+    };
+    let mut v: Value = serde_json::from_str(&desk_frame(n)).expect("desk frame is JSON");
+    v["mergeInto"] = Value::from(m.into_event.clone());
+    v["mergeLine"] = Value::from(format!(
+        "+ {} {:.0} s later · {}",
+        path_label(n.kind),
+        m.secs,
+        dollars(on_tick(n.price))
+    ));
+    v["mergeOnly"] = Value::from(merge_only);
+    v.to_string()
 }
 
 #[cfg(test)]
@@ -1382,6 +1615,62 @@ Alert $2.41 · +5% = $2.53"
             let desk: Value = serde_json::from_str(&desk_frame(&n)).unwrap();
             assert_eq!(desk["data"], data);
         }
+    }
+
+    /// WFF 2026-10-26 (Running 13:45:01, Fast move 13:45:02, Breakout 13:45:15): one push per
+    /// recipient. The phones that got Running are merged for the rest; a phone that only wants
+    /// breakouts never heard of WFF, so the breakout is its first. A pullback is not merged, a
+    /// path after the window is not either, and the merge survives a restart.
+    #[test]
+    fn a_cascade_on_one_stock_is_one_push_per_recipient() {
+        let dir = tempfile::tempdir().unwrap();
+        let prefs = Prefs::default();
+        let s = 1_000;
+        let t0 = 10 * MIN;
+        let go = |d: &mut RunnersDelivery, k: NoticeKind, id: &str, who: &[&str], now: i64| {
+            let who: Vec<String> = who.iter().map(|w| (*w).to_string()).collect();
+            d.decide_runner(k, "WFF", id, &who, &prefs, now, now, day(26), 825)
+        };
+        let mut d = RunnersDelivery::open(dir.path());
+        let first = go(&mut d, NoticeKind::Running, "r1", &["fold", "s25"], t0);
+        assert_eq!(first.decision, Decision::Send);
+        assert_eq!(first.send_to, vec!["fold", "s25"]);
+        assert!(first.merged.is_none());
+        let fast = go(&mut d, NoticeKind::Fast, "f1", &["fold", "s25"], t0 + s);
+        assert_eq!(fast.decision, Decision::Held(Hold::Merged));
+        let m = fast.merged.unwrap();
+        assert_eq!(
+            (m.into_event.as_str(), m.into_notice.as_str(), m.covered),
+            ("r1", "runners.running", 2)
+        );
+        assert!((m.secs - 1.0).abs() < 1e-9);
+        // The tablet wants breakouts only: it never got Running, so this is its first.
+        let brk = go(
+            &mut d,
+            NoticeKind::Breakout,
+            "b1",
+            &["fold", "tab"],
+            t0 + 14 * s,
+        );
+        assert_eq!(brk.decision, Decision::Send);
+        assert_eq!(brk.send_to, vec!["tab"]);
+        assert_eq!(brk.merged.unwrap().covered, 1);
+        // Now covered too: a later path in the window reaches nobody new.
+        let run = go(&mut d, NoticeKind::Run, "u1", &["fold", "tab"], t0 + 20 * s);
+        assert_eq!(run.decision, Decision::Held(Hold::Merged));
+        // A pullback keeps its own rules (not merged, outside the stock gap).
+        let pb = go(&mut d, NoticeKind::Pullback, "p1", &["fold"], t0 + 25 * s);
+        assert_eq!((pb.decision, pb.merged), (Decision::Send, None));
+        // A restart in the middle of the window still merges.
+        let mut back = RunnersDelivery::open(dir.path());
+        let late = go(&mut back, NoticeKind::FollowUp, "x1", &["s25"], t0 + 29 * s);
+        assert_eq!(late.decision, Decision::Held(Hold::Merged));
+        // After the window: the ordinary stock gap again (no merge).
+        let after = go(&mut back, NoticeKind::FollowUp, "x2", &["s25"], t0 + 31 * s);
+        assert_eq!(
+            (after.decision, after.merged),
+            (Decision::Held(Hold::SymbolLimit), None)
+        );
     }
 
     /// The gaps (owner, 2026-10-23): the same kind on a stock at most once per 10 minutes; new

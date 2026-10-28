@@ -33,6 +33,13 @@ describe("Insights row on the phone", () => {
     expect(r.a11y).toContain("SRTM, Pullback");
   });
 
+  test("a merged notice names the alert it was folded into", () => {
+    const into = { event_id: "runners-running-WFF-1", notice: "runners.running", secs: 1 };
+    const r = noticeRowView({ event_id: "f", at: AT, symbol: "WFF", notice: "runners.fast", title: "WFF · Fast move", phone: { decision: "held", held: "merged", devices: 1, merged_into: into, merged_devices: 1 } });
+    expect(r.detail).toBe("Held: merged into the Running alert 1 s earlier");
+    expect(r.a11y).toContain("held, merged into the Running alert 1 s earlier");
+  });
+
   test("a sent notice shows its text; the latency reaches the read-out", () => {
     const r = noticeRowView({ event_id: "b", at: AT, symbol: "PLAG", notice: "runners.burst", title: "PLAG · Buying burst", body: "Alert $2.41", phone: { decision: "sent", held: null, devices: 1 }, latency: { trade_to_expo_ms: 1040 } });
     expect(r.status).toBe("Sent");
