@@ -15,7 +15,7 @@ owner would get anyway.
 
 ## Data
 
-- Trades: `C:\research\stockwatcher\archive-hist` and `archive-vps`, read through
+- Trades: `C:/research/stockwatcher/archive-hist` and `archive-vps`, read through
   `market-archive` exactly as the earlier harnesses. Only days from **2026-03-30** (FINRA's TRF
   opening moved from 08:00 to 04:00 that day, `research/fast-0800`).
 - **DEV** = 2026-03-30..2026-07-31. **TEST** = 2026-08-03..2026-10-23 (10-21 absent), scored once
@@ -87,7 +87,7 @@ A ship recommendation follows only from **Supported**.
 existing archives were imported by **that day's close in $0.10–$25**
 (`market-providers/src/import/batch.rs`), so a stock that traded below $0.10 is present only on days
 it closed at or above $0.10: the sub-dime population would be winners only. A second root,
-`C:esearch\stockwatcherrchive-sd`, is imported with the same importer for every symbol-day of
+`C:/research/stockwatcher/archive-sd`, is imported with the same importer for every symbol-day of
 2026-03-30..2026-10-23 whose close was in [$0.02, $0.0999] (plan: 13,346 symbol-days, 290 symbols).
 Both runs (PROD, SUB) replay every day on both roots; together they hold every symbol-day that closed
 at or above $0.02, so neither population is chosen by its outcome. Known remaining bias: the
