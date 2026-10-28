@@ -246,6 +246,7 @@ fn spawn_memory_stats(markets: &Markets) {
         return;
     }
     let live = markets.live.clone();
+    let guard = MemoryGuard::from_env();
     let spawned = std::thread::Builder::new()
         .name("memory-stats".into())
         .spawn(move || {
@@ -271,6 +272,14 @@ fn spawn_memory_stats(markets: &Markets) {
                             .find(|l| l.starts_with("AnonHugePages:"))
                             .and_then(|l| l.split_whitespace().nth(1)?.parse::<u64>().ok())
                     });
+                if let Some(reason) = memory_guard(rss / 1_000_000, et_minute_now(), &guard) {
+                    tracing::warn!(
+                        rss_mb = rss / 1_000_000,
+                        reason,
+                        "memory guard: restarting cleanly"
+                    );
+                    memory_restart().notify_one();
+                }
                 tracing::info!(
                     rss_mb = rss / 1_000_000,
                     peak_rss_mb = peak_rss / 1_000_000,
@@ -286,6 +295,68 @@ fn spawn_memory_stats(markets: &Markets) {
     if let Err(e) = spawned {
         tracing::warn!(error = %e, "MEM_STATS_SECS: could not start the stats thread");
     }
+}
+
+/// The live server's memory grows without bound until the cause is found (2026-10-28: ~7.5 GB after
+/// start, +1–5 GB/h, killed at 38.7 GB on the 31 GB host twice, the second time at 10:51 ET in
+/// session, dropping 22,945 events). Until then the server restarts itself cleanly rather than be
+/// killed: the same graceful path as a deploy (sessions drained, recording written), and compose's
+/// `restart: unless-stopped` brings it straight back.
+///
+/// - Before the pre-market (03:30–03:55 ET) above `MEM_GUARD_PREOPEN_MB` (default 16,000): a fresh
+///   process for the session, at the quietest time of the day.
+/// - At any time above `MEM_GUARD_HARD_MB` (default 30,000): a clean stop beats an OOM kill.
+///
+/// `MEM_GUARD=0` turns both off. It rides the `MEM_STATS_SECS` thread, so it runs only where the
+/// memory line is on (production). Remove once the growth is fixed.
+#[derive(Clone, Copy, Debug)]
+struct MemoryGuard {
+    on: bool,
+    preopen_mb: usize,
+    hard_mb: usize,
+}
+
+impl MemoryGuard {
+    fn from_env() -> Self {
+        let mb = |k: &str, d: usize| {
+            std::env::var(k)
+                .ok()
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(d)
+        };
+        Self {
+            on: std::env::var("MEM_GUARD").as_deref() != Ok("0"),
+            preopen_mb: mb("MEM_GUARD_PREOPEN_MB", 16_000),
+            hard_mb: mb("MEM_GUARD_HARD_MB", 30_000),
+        }
+    }
+}
+
+/// Minutes after ET midnight.
+fn et_minute_now() -> u32 {
+    use chrono::Timelike;
+    let t = chrono::Utc::now().with_timezone(&chrono_tz::America::New_York);
+    t.hour() * 60 + t.minute()
+}
+
+/// Why the process should restart now, if it should (see [`MemoryGuard`]).
+fn memory_guard(rss_mb: usize, et_minute: u32, g: &MemoryGuard) -> Option<&'static str> {
+    const PREOPEN: std::ops::Range<u32> = (3 * 60 + 30)..(3 * 60 + 55);
+    if !g.on {
+        return None;
+    }
+    if rss_mb >= g.hard_mb {
+        return Some("hard_limit");
+    }
+    if PREOPEN.contains(&et_minute) && rss_mb >= g.preopen_mb {
+        return Some("before_premarket");
+    }
+    None
+}
+
+fn memory_restart() -> &'static tokio::sync::Notify {
+    static N: std::sync::OnceLock<tokio::sync::Notify> = std::sync::OnceLock::new();
+    N.get_or_init(tokio::sync::Notify::new)
 }
 
 async fn shutdown_requested() {
@@ -306,6 +377,7 @@ async fn shutdown_requested() {
     tokio::select! {
         _ = ctrl_c => {}
         _ = term => {}
+        _ = memory_restart().notified() => {}
     }
 }
 
@@ -328,5 +400,31 @@ fn healthcheck() -> ExitCode {
     match check() {
         Ok(true) => ExitCode::SUCCESS,
         _ => ExitCode::FAILURE,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const G: MemoryGuard = MemoryGuard {
+        on: true,
+        preopen_mb: 16_000,
+        hard_mb: 30_000,
+    };
+
+    #[test]
+    fn memory_guard_restarts_before_the_premarket_or_at_the_hard_limit() {
+        let at = |h: u32, m: u32| h * 60 + m;
+        assert_eq!(
+            memory_guard(17_000, at(3, 40), &G),
+            Some("before_premarket")
+        );
+        assert_eq!(memory_guard(15_000, at(3, 40), &G), None);
+        assert_eq!(memory_guard(17_000, at(3, 55), &G), None);
+        assert_eq!(memory_guard(25_000, at(11, 0), &G), None);
+        assert_eq!(memory_guard(30_000, at(11, 0), &G), Some("hard_limit"));
+        let off = MemoryGuard { on: false, ..G };
+        assert_eq!(memory_guard(40_000, at(3, 40), &off), None);
     }
 }
