@@ -139,10 +139,14 @@ const LEG_SLOTS: i64 = 60;
 /// After a mark at T no mark slot ending before T + 30 min counts.
 const REFRACTORY_NS: i64 = 30 * MIN_NS;
 /// Current shelf-entry band on the run's start price (owner, 2026-10-26), micro-dollars.
+#[cfg(not(feature = "subdime"))]
 pub const BAND_MICROS: (i64, i64) = (
     market_events::PriceBand::DEFAULT.min.micros(),
     market_events::PriceBand::DEFAULT.max.micros(),
 );
+/// research/subdime-headsup only: the floor at $0.05.
+#[cfg(feature = "subdime")]
+pub const BAND_MICROS: (i64, i64) = (50_000, market_events::PriceBand::DEFAULT.max.micros());
 /// The Runners "Run +20%" entry's band on the start price (micro-dollars, owner 2026-10-22):
 /// the same trigger as the shelves' runs with a `$0.10` floor (module docs).
 pub const RUN_BAND_MICROS: (i64, i64) = BAND_MICROS;
@@ -158,7 +162,10 @@ pub const ADOPT_FRESH_NS: i64 = 2 * MIN_NS;
 pub const EARLY_PRINTS: usize = 2;
 pub const EARLY_HOLD_NS: i64 = 2 * SEC_NS;
 /// Only symbols printing in this wider band get a state (micro-dollars).
+#[cfg(not(feature = "subdime"))]
 const WIDE_MICROS: (i64, i64) = (100_000, 40_000_000);
+#[cfg(feature = "subdime")]
+const WIDE_MICROS: (i64, i64) = (50_000, 40_000_000);
 const MIN_TRADES: f64 = 25.0;
 const MIN_DOLLARS: f64 = 25_000.0;
 /// A slot is decided this long after it ends (the Runners board's 15 s barriers' rule).

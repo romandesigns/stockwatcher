@@ -144,10 +144,14 @@ const IDLE_FREE_S: i64 = 35 * 60;
 /// alert on the past).
 const MAX_LAG_S: i64 = 15;
 /// Current entry band, micro-dollars (owner, 2026-10-26).
+#[cfg(not(feature = "subdime"))]
 pub const BAND: (i64, i64) = (
     market_events::PriceBand::DEFAULT.min.micros(),
     market_events::PriceBand::DEFAULT.max.micros(),
 );
+/// research/subdime-headsup only: the floor at $0.05.
+#[cfg(feature = "subdime")]
+pub const BAND: (i64, i64) = (50_000, market_events::PriceBand::DEFAULT.max.micros());
 /// Rings are kept only for symbols printing in this wider band (micro-dollars); every symbol
 /// keeps its small day state, as the research kept every symbol it did not prefilter.
 const WIDE_BAND: (i64, i64) = (50_000, 30_000_000);

@@ -70,7 +70,11 @@ pub const STRATEGY: &str = "running";
 pub const VERSION: &str = "v2";
 
 /// Band, dollars.
+#[cfg(not(feature = "subdime"))]
 pub const BAND: (f64, f64) = (0.10, 25.0);
+/// research/subdime-headsup only: the floor at $0.05.
+#[cfg(feature = "subdime")]
+pub const BAND: (f64, f64) = (0.05, 25.0);
 /// `req = clamp(K × vol, FLOOR, CAP)` (calibration: module docs).
 pub const K: f64 = 2.5;
 pub const FLOOR: f64 = 0.10;
@@ -220,6 +224,8 @@ pub fn facts(archive: &Archive, day: NaiveDate) -> HashMap<String, Fact> {
 mod calib;
 #[cfg(test)]
 mod movers;
+#[cfg(test)]
+mod subdime;
 
 #[cfg(test)]
 mod tests {

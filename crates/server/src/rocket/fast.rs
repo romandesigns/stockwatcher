@@ -100,7 +100,11 @@ pub const VERSION: &str = "v1";
 pub const MAX_PER_DAY: usize = 200;
 
 /// Band, dollars (the running entry's).
+#[cfg(not(feature = "subdime"))]
 pub const BAND: (f64, f64) = (0.10, 25.0);
+/// research/subdime-headsup only: the floor at $0.05.
+#[cfg(feature = "subdime")]
+pub const BAND: (f64, f64) = (0.05, 25.0);
 /// Window lengths, seconds.
 pub const WINDOWS: [usize; 3] = [15, 30, 60];
 /// Prints a move must hold for (or [`HOLD_S`] seconds).

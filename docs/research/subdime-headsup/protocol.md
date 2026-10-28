@@ -83,4 +83,14 @@ A ship recommendation follows only from **Supported**.
 
 ## Amendments
 
-(none)
+**A1 (2026-10-28, before any outcome; reason: data gap found in the pipeline smoke test).** The
+existing archives were imported by **that day's close in $0.10–$25**
+(`market-providers/src/import/batch.rs`), so a stock that traded below $0.10 is present only on days
+it closed at or above $0.10: the sub-dime population would be winners only. A second root,
+`C:esearch\stockwatcherrchive-sd`, is imported with the same importer for every symbol-day of
+2026-03-30..2026-10-23 whose close was in [$0.02, $0.0999] (plan: 13,346 symbol-days, 290 symbols).
+Both runs (PROD, SUB) replay every day on both roots; together they hold every symbol-day that closed
+at or above $0.02, so neither population is chosen by its outcome. Known remaining bias: the
+importer plans from currently active assets (delisted sub-dime names are missing), and a symbol-day
+closing below $0.02 is absent. The smoke-test day 2026-05-01 (DEV) was run once on archive-hist for
+the pipeline check only; its sub-dime fire count (0) is what exposed the gap.
