@@ -944,6 +944,8 @@ impl Market {
             // has read it, so one stalled session keeps the whole ring full.
             "broadcast": {"held": self.0.tx.len(), "receivers": self.0.tx.receiver_count()},
             "tape_symbols": core.tape.len(),
+            "tape_rows": core.tape.values().map(VecDeque::len).sum::<usize>(),
+            "tape_bytes": core.tape.values().flatten().map(String::capacity).sum::<usize>(),
             "last_price": core.last_price.len(),
             "unloaded": core.unloaded.len(),
             "unloaded_held_events": held,

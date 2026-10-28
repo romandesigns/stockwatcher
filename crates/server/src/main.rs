@@ -43,9 +43,39 @@ thread_local! {
     static SHARD: std::cell::Cell<usize> = const { std::cell::Cell::new(usize::MAX) };
 }
 
-fn count(delta: isize) {
+/// Live bytes by allocation size class, per shard (`heap_by_size` in the `memory` line).
+///
+/// Why (2026-10-28): with the new counters production's live heap grew ~2 GB an hour after
+/// the preload while every structure the line names grew by tens of MB. The size of what
+/// accumulates narrows down the type that holds it (a 48-byte node, a 4 KiB buffer, ...)
+/// without a profiler in the distroless image.
+const CLASSES: usize = 128;
+static BY_SIZE: [[std::sync::atomic::AtomicIsize; CLASSES]; SHARDS] =
+    [const { [const { std::sync::atomic::AtomicIsize::new(0) }; CLASSES] }; SHARDS];
+
+/// 16-byte steps up to 512 bytes, then four steps per power of two.
+fn size_class(n: usize) -> usize {
+    if n <= 512 {
+        return n.div_ceil(16);
+    }
+    let p = (usize::BITS - 1 - n.leading_zeros()) as usize;
+    let sub = (n >> (p - 2)) & 3;
+    (33 + (p - 9) * 4 + sub).min(CLASSES - 1)
+}
+
+/// The smallest size in a class (the label `heap_by_size` reports it under).
+fn class_floor(c: usize) -> usize {
+    if c <= 32 {
+        return c.saturating_sub(1) * 16 + 1;
+    }
+    let p = (c - 33) / 4 + 9;
+    // 512 itself is the last 16-byte class.
+    ((1 << p) + ((c - 33) % 4) * (1 << (p - 2))).max(513)
+}
+
+fn shard() -> usize {
     use std::sync::atomic::Ordering::Relaxed;
-    let i = SHARD
+    SHARD
         .try_with(|s| {
             if s.get() == usize::MAX {
                 s.set(NEXT_SHARD.fetch_add(1, Relaxed) % SHARDS);
@@ -53,8 +83,14 @@ fn count(delta: isize) {
             s.get()
         })
         // A thread being torn down has no thread-locals left; shard 0 still counts it.
-        .unwrap_or(0);
-    HELD[i].0.fetch_add(delta, Relaxed);
+        .unwrap_or(0)
+}
+
+fn count(size: usize, sign: isize) {
+    use std::sync::atomic::Ordering::Relaxed;
+    let i = shard();
+    HELD[i].0.fetch_add(sign * size as isize, Relaxed);
+    BY_SIZE[i][size_class(size)].fetch_add(sign * size as isize, Relaxed);
 }
 
 /// Bytes the program holds right now (allocated and not yet freed), across every thread.
@@ -64,22 +100,39 @@ fn live_heap() -> isize {
         .sum()
 }
 
+/// The size classes holding the most, largest first: `[smallest size in class, MB held]`.
+fn heap_by_size(top: usize) -> Vec<(usize, isize)> {
+    let mut held: Vec<(usize, isize)> = (0..CLASSES)
+        .map(|c| {
+            let bytes: isize = BY_SIZE
+                .iter()
+                .map(|s| s[c].load(std::sync::atomic::Ordering::Relaxed))
+                .sum();
+            (class_floor(c), bytes / 1_000_000)
+        })
+        .collect();
+    held.sort_by_key(|&(_, mb)| std::cmp::Reverse(mb));
+    held.truncate(top);
+    held
+}
+
 // SAFETY: every call is forwarded unchanged to mimalloc; the counting only reads the layout.
 unsafe impl std::alloc::GlobalAlloc for Counted {
     unsafe fn alloc(&self, l: std::alloc::Layout) -> *mut u8 {
-        count(l.size() as isize);
+        count(l.size(), 1);
         unsafe { mimalloc::MiMalloc.alloc(l) }
     }
     unsafe fn alloc_zeroed(&self, l: std::alloc::Layout) -> *mut u8 {
-        count(l.size() as isize);
+        count(l.size(), 1);
         unsafe { mimalloc::MiMalloc.alloc_zeroed(l) }
     }
     unsafe fn dealloc(&self, p: *mut u8, l: std::alloc::Layout) {
-        count(-(l.size() as isize));
+        count(l.size(), -1);
         unsafe { mimalloc::MiMalloc.dealloc(p, l) }
     }
     unsafe fn realloc(&self, p: *mut u8, l: std::alloc::Layout, new: usize) -> *mut u8 {
-        count(new as isize - l.size() as isize);
+        count(l.size(), -1);
+        count(new, 1);
         unsafe { mimalloc::MiMalloc.realloc(p, l, new) }
     }
 }
@@ -353,6 +406,7 @@ fn spawn_memory_stats(markets: &Markets) {
                     .map(|pages| pages * 4096 / 1_000_000);
                 tracing::info!(
                     live_heap_mb = live_heap() / 1_000_000,
+                    heap_by_size = ?heap_by_size(12),
                     vm_rss_mb,
                     rss_mb = rss / 1_000_000,
                     peak_rss_mb = peak_rss / 1_000_000,
@@ -480,6 +534,25 @@ fn healthcheck() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_size_lands_in_the_class_its_floor_names() {
+        for n in (1..5000).chain([1 << 20, (1 << 20) + 1, 3 << 20, 1 << 30]) {
+            let c = size_class(n);
+            assert!(
+                class_floor(c) <= n,
+                "{n}: class {c} floor {}",
+                class_floor(c)
+            );
+            if c + 1 < CLASSES {
+                assert!(
+                    class_floor(c + 1) > n,
+                    "{n}: next class {}",
+                    class_floor(c + 1)
+                );
+            }
+        }
+    }
 
     const G: MemoryGuard = MemoryGuard {
         on: true,
