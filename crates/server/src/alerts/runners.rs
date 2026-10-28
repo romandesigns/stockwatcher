@@ -434,6 +434,10 @@ fn range(lo: f64, hi: f64) -> String {
     format!("${}–{}", fmt(lo), fmt(hi))
 }
 
+/// The lowest shelf price the shelf research measured ($0.15–$25): below it no historical odds
+/// are quoted (review of 75d6418, 2026-10-28).
+const SHELF_ODDS_MIN: f64 = 0.15;
+
 /// The volume shelves' honest base rate (`crate::zones::HELD_PCT` / `LOST_PCT`): "about 1 in 3
 /// hold, 1 in 2 fail". The bake-off's rate over all entries, never a forecast for this one.
 pub fn shelf_odds() -> String {
@@ -493,10 +497,19 @@ fn panel_message(n: &Notice) -> (String, String, Value) {
             );
             (title, body)
         }
-        // "In volume shelf $0.38–0.42 · about 1 in 3 hold, 1 in 2 fail".
+        // "In volume shelf $0.38–0.42 · about 1 in 3 hold, 1 in 2 fail". The odds come from the
+        // shelf research on $0.15+ shelves; the floor moved to $0.10 (75d6418) without measuring
+        // the added range, so below $0.15 the push says so instead, as Bursts already do.
         (NoticeKind::Shelf, Some(NoticeDetail::Shelf { lo, hi })) => (
             format!("{s} · Volume shelf{p}"),
-            format!("In volume shelf {} · {}", range(*lo, *hi), shelf_odds()),
+            if *lo >= SHELF_ODDS_MIN {
+                format!("In volume shelf {} · {}", range(*lo, *hi), shelf_odds())
+            } else {
+                format!(
+                    "In volume shelf {} · historical odds unavailable at this price",
+                    range(*lo, *hi)
+                )
+            },
         ),
         (
             NoticeKind::RossCrossing
@@ -1210,6 +1223,18 @@ Alert $2.41 · +5% = $2.53"
             go(&mut d, NoticeKind::Pullback, "p1", 3 * MIN),
             Decision::Held(Hold::Duplicate)
         );
+    }
+
+    /// Review of 75d6418: a shelf under $0.15 (outside the shelf research) quotes no odds.
+    #[test]
+    fn shelf_odds_only_where_they_were_measured() {
+        let mut n = sample(NoticeKind::Shelf);
+        n.detail = Some(NoticeDetail::Shelf { lo: 0.12, hi: 0.13 });
+        let (_, body, _) = message(&n);
+        assert!(body.contains("historical odds unavailable"), "{body}");
+        n.detail = Some(NoticeDetail::Shelf { lo: 0.38, hi: 0.42 });
+        let (_, body, _) = message(&n);
+        assert!(body.contains("1 in 3"), "{body}");
     }
 
     #[test]

@@ -668,6 +668,7 @@ impl Alert {
             "score": self.score, "threshold": finite(self.threshold), "mode": mode,
             "reasons": self.reasons, "strategy": self.strategy, "version": self.version,
             "entry_band_micros": [features::SCORING_BAND_MICROS.0, features::SCORING_BAND_MICROS.1],
+            "below_training_range": below_training_range(self.price),
             "breakout_track": self.track.snapshot(),
         })
         .to_string()
@@ -776,6 +777,7 @@ impl Alert {
             "boundary_ns": b.map(|b| b.boundary_ns), "price": self.price,
             "score": self.score, "threshold": self.threshold, "per_day": per_day,
             "entry_band_micros": [burst::BAND.0, burst::BAND.1],
+            "below_training_range": below_training_range(self.price),
             "start_ns": b.map(|b| b.start_ns), "start_price": b.and_then(|b| finite(b.start_price)),
             "gain_pct": b.and_then(|b| b.gain_pct).map(round2),
             "move_pct": b.and_then(|b| b.move_pct).map(round2),
@@ -2944,6 +2946,17 @@ pub fn disabled_frame(kind: &str) -> String {
         "days": [], "rows": [],
     })
     .to_string()
+}
+
+/// The lowest price the precursor (R2) and Burst models were trained on: both studies used
+/// $0.15–$25 and both take log price as a feature. The live floor is $0.10 since 75d6418, so an
+/// alert below this scores an input outside the training data (a tree model treats it like the
+/// lowest price it saw). Recorded on every alert line, so the scorecard and later studies can
+/// separate these alerts instead of mixing them into the validated range (review, 2026-10-28).
+pub const MODEL_TRAINING_MIN_PRICE: f64 = 0.15;
+
+fn below_training_range(price: f64) -> bool {
+    price.is_finite() && price < MODEL_TRAINING_MIN_PRICE
 }
 
 #[cfg(test)]

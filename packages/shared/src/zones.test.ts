@@ -140,3 +140,12 @@ describe("Runners rows carry the note", () => {
     expect(withZoneSections(rocketSectionsView(panel, T), panel.zones).runners[0]!.zone?.label).toBe("Shelf lost");
   });
 });
+
+describe("shelf odds below the studied range (review of 75d6418)", () => {
+  test("a shelf under $0.15 quotes no historical odds; at $0.15 it does", () => {
+    const at = (lo: number) => zoneNoteView({ s: "LOW", bands: [], event: { state: "in_shelf", lo, hi: lo + 0.01, entry: lo, at: 0, resolved: null } } as unknown as ZoneSymbolWire);
+    expect(at(0.12)?.baseRate).toBe("");
+    expect(at(0.12)?.aria).toContain("no historical odds");
+    expect(at(0.15)?.baseRate).toBe(ZONE_BASE_RATE);
+  });
+});

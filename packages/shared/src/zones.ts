@@ -122,12 +122,18 @@ export interface ZoneNoteView {
 }
 
 /** The note for a symbol's event; null with no event, or an expired one (nothing to say). */
+/** The lowest shelf price the shelf research measured; below it {@link ZONE_BASE_RATE} is not shown. */
+export const ZONE_ODDS_MIN = 0.15;
+
 export function zoneNoteView(z: ZoneSymbolWire | null | undefined): ZoneNoteView | null {
   const e = z?.event;
   if (!e) return null;
   switch (e.state) {
     case "in_shelf": {
       const label = `In volume shelf ${dollars(e.lo)}–${dollars(e.hi)}`;
+      // The base rate was measured on $0.15+ shelves; the entry floor is now $0.10 (75d6418), so
+      // a cheaper shelf quotes no odds rather than borrowing them (the server's push does the same).
+      if (e.lo < ZONE_ODDS_MIN) return { state: "in_shelf", label, baseRate: "", tone: "text", aria: `${label}; no historical odds at this price` };
       return { state: "in_shelf", label, baseRate: ZONE_BASE_RATE, tone: "text", aria: `${label}; historically ${ZONE_BASE_RATE}` };
     }
     case "held":
