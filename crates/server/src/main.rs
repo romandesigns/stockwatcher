@@ -86,11 +86,38 @@ fn shard() -> usize {
         .unwrap_or(0)
 }
 
+/// Live allocations by **exact** size from 4 KiB to 64 KiB (`heap_exact` in the `memory` line).
+///
+/// Why (2026-10-29): `heap_by_size` put all of production's post-preload growth (~16 MB a
+/// minute, ~800 allocations never freed) in the 12-32 KiB classes. A Vec or VecDeque buffer is
+/// capacity x element size, so the exact sizes that pile up give the element size, and that
+/// names the type. The image has no symbols for a sampled backtrace.
+const EXACT_MIN: usize = 4096;
+const EXACT_MAX: usize = 65536;
+static EXACT: [std::sync::atomic::AtomicI32; EXACT_MAX - EXACT_MIN] =
+    [const { std::sync::atomic::AtomicI32::new(0) }; EXACT_MAX - EXACT_MIN];
+
 fn count(size: usize, sign: isize) {
     use std::sync::atomic::Ordering::Relaxed;
     let i = shard();
     HELD[i].0.fetch_add(sign * size as isize, Relaxed);
     BY_SIZE[i][size_class(size)].fetch_add(sign * size as isize, Relaxed);
+    if (EXACT_MIN..EXACT_MAX).contains(&size) {
+        EXACT[size - EXACT_MIN].fetch_add(sign as i32, Relaxed);
+    }
+}
+
+/// The exact sizes (4-64 KiB) with the most live allocations: `[size, count]`, most first.
+fn heap_exact(top: usize) -> Vec<(usize, i32)> {
+    let mut held: Vec<(usize, i32)> = EXACT
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (i + EXACT_MIN, n.load(std::sync::atomic::Ordering::Relaxed)))
+        .filter(|&(_, n)| n > 0)
+        .collect();
+    held.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
+    held.truncate(top);
+    held
 }
 
 /// Bytes the program holds right now (allocated and not yet freed), across every thread.
@@ -407,6 +434,7 @@ fn spawn_memory_stats(markets: &Markets) {
                 tracing::info!(
                     live_heap_mb = live_heap() / 1_000_000,
                     heap_by_size = ?heap_by_size(12),
+                    heap_exact = ?heap_exact(20),
                     vm_rss_mb,
                     rss_mb = rss / 1_000_000,
                     peak_rss_mb = peak_rss / 1_000_000,
