@@ -107,6 +107,131 @@ fn count(size: usize, sign: isize) {
     }
 }
 
+/// Who holds the 12-32 KiB allocations (`memory sites` log line).
+///
+/// Why (2026-10-29): production's growth after the preload is all in those sizes, about 800
+/// blocks a minute, spread over many exact sizes (`heap_exact` stayed flat). So these are
+/// exact-length copies of variable payloads, and their size cannot name the owner. Every
+/// `MEM_SITES_EVERY`-th allocation in the range (default 256; 0 = off) records its call stack
+/// until it is freed. Every 10th `memory` line then names the stacks whose samples have lived
+/// longest. The table is capped, so a leak cannot make the profiler itself grow without limit.
+/// The server binary keeps its symbol table (`[profile.release.package.stockwatcher-server]`)
+/// so the stacks resolve in the distroless image.
+mod sites {
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+    use std::sync::{Arc, Mutex};
+    use std::time::Instant;
+
+    pub const SIZES: std::ops::Range<usize> = 12_288..32_768;
+    const CAP: usize = 16_384;
+    pub static EVERY: AtomicUsize = AtomicUsize::new(0);
+    static TICK: AtomicUsize = AtomicUsize::new(0);
+    static LIVE: AtomicUsize = AtomicUsize::new(0);
+    type Table = HashMap<usize, (Instant, usize, Arc<std::backtrace::Backtrace>)>;
+    static SAMPLED: Mutex<Option<Table>> = Mutex::new(None);
+
+    thread_local! {
+        static BUSY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// Runs `f` unless this thread is already inside the profiler (its own allocations).
+    fn guarded(f: impl FnOnce()) {
+        if BUSY.try_with(|b| b.replace(true)).unwrap_or(true) {
+            return;
+        }
+        f();
+        let _ = BUSY.try_with(|b| b.set(false));
+    }
+
+    pub fn on_alloc(p: *mut u8, size: usize) {
+        let every = EVERY.load(Relaxed);
+        if every == 0
+            || !SIZES.contains(&size)
+            || !TICK.fetch_add(1, Relaxed).is_multiple_of(every)
+            || LIVE.load(Relaxed) >= CAP
+        {
+            return;
+        }
+        guarded(|| {
+            let bt = Arc::new(std::backtrace::Backtrace::force_capture());
+            if let Ok(mut t) = SAMPLED.lock() {
+                t.get_or_insert_with(HashMap::new)
+                    .insert(p as usize, (Instant::now(), size, bt));
+                LIVE.store(t.as_ref().map_or(0, HashMap::len), Relaxed);
+            }
+        });
+    }
+
+    pub fn on_free(p: *mut u8, size: usize) {
+        if LIVE.load(Relaxed) == 0 || !SIZES.contains(&size) {
+            return;
+        }
+        guarded(|| {
+            if let Ok(mut t) = SAMPLED.lock()
+                && let Some(m) = t.as_mut()
+            {
+                m.remove(&(p as usize));
+                LIVE.store(m.len(), Relaxed);
+            }
+        });
+    }
+
+    /// The `top` call stacks holding the most sampled allocations older than `age`:
+    /// `(samples, bytes, frames)`, the frames cut to this workspace's own functions.
+    pub fn report(age: std::time::Duration, top: usize) -> (usize, Vec<(usize, usize, String)>) {
+        let mut out = (0, Vec::new());
+        guarded(|| {
+            let held: Vec<(usize, Arc<std::backtrace::Backtrace>)> = SAMPLED
+                .lock()
+                .ok()
+                .and_then(|t| {
+                    t.as_ref().map(|m| {
+                        m.values()
+                            .filter(|(at, _, _)| at.elapsed() >= age)
+                            .map(|(_, size, bt)| (*size, bt.clone()))
+                            .collect()
+                    })
+                })
+                .unwrap_or_default();
+            out.0 = LIVE.load(Relaxed);
+            let mut by: HashMap<String, (usize, usize)> = HashMap::new();
+            for (size, bt) in held {
+                let frames = bt
+                    .to_string()
+                    .lines()
+                    .map(str::trim)
+                    .filter(|l| !l.starts_with("at "))
+                    .filter_map(|l| l.split_once(": ").map(|(_, f)| f))
+                    .filter(|f| {
+                        [
+                            "stockwatcher",
+                            "chart_engine",
+                            "stock_context",
+                            "market_",
+                            "provider_sim",
+                        ]
+                        .iter()
+                        .any(|c| f.contains(c))
+                            && !f.contains("::sites::")
+                            && !f.contains("Counted")
+                    })
+                    .take(8)
+                    .collect::<Vec<_>>()
+                    .join(" < ");
+                let e = by.entry(frames).or_default();
+                e.0 += 1;
+                e.1 += size;
+            }
+            let mut v: Vec<_> = by.into_iter().map(|(f, (n, b))| (n, b, f)).collect();
+            v.sort_by_key(|&(n, _, _)| std::cmp::Reverse(n));
+            v.truncate(top);
+            out.1 = v;
+        });
+        out
+    }
+}
+
 /// The exact sizes (4-64 KiB) with the most live allocations: `[size, count]`, most first.
 fn heap_exact(top: usize) -> Vec<(usize, i32)> {
     let mut held: Vec<(usize, i32)> = EXACT
@@ -147,20 +272,28 @@ fn heap_by_size(top: usize) -> Vec<(usize, isize)> {
 unsafe impl std::alloc::GlobalAlloc for Counted {
     unsafe fn alloc(&self, l: std::alloc::Layout) -> *mut u8 {
         count(l.size(), 1);
-        unsafe { mimalloc::MiMalloc.alloc(l) }
+        let p = unsafe { mimalloc::MiMalloc.alloc(l) };
+        sites::on_alloc(p, l.size());
+        p
     }
     unsafe fn alloc_zeroed(&self, l: std::alloc::Layout) -> *mut u8 {
         count(l.size(), 1);
-        unsafe { mimalloc::MiMalloc.alloc_zeroed(l) }
+        let p = unsafe { mimalloc::MiMalloc.alloc_zeroed(l) };
+        sites::on_alloc(p, l.size());
+        p
     }
     unsafe fn dealloc(&self, p: *mut u8, l: std::alloc::Layout) {
         count(l.size(), -1);
+        sites::on_free(p, l.size());
         unsafe { mimalloc::MiMalloc.dealloc(p, l) }
     }
     unsafe fn realloc(&self, p: *mut u8, l: std::alloc::Layout, new: usize) -> *mut u8 {
         count(l.size(), -1);
         count(new, 1);
-        unsafe { mimalloc::MiMalloc.realloc(p, l, new) }
+        sites::on_free(p, l.size());
+        let q = unsafe { mimalloc::MiMalloc.realloc(p, l, new) };
+        sites::on_alloc(q, new);
+        q
     }
 }
 
@@ -392,10 +525,25 @@ fn spawn_memory_stats(markets: &Markets) {
     // The replay market shares the process (and the owner practises on it): growth there would
     // otherwise be invisible in a line that only described the live one.
     let replay = markets.replay.clone();
+    sites::EVERY.store(
+        std::env::var("MEM_SITES_EVERY")
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(256),
+        std::sync::atomic::Ordering::Relaxed,
+    );
     let spawned = std::thread::Builder::new()
         .name("memory-stats".into())
         .spawn(move || {
+            let mut lines = 0u64;
             loop {
+                lines += 1;
+                if lines.is_multiple_of(10) && sites::EVERY.load(std::sync::atomic::Ordering::Relaxed) > 0 {
+                    let (sampled, top) = sites::report(Duration::from_secs(600), 5);
+                    for (n, bytes, frames) in top {
+                        tracing::info!(sampled, samples = n, bytes, frames = %frames, "memory sites");
+                    }
+                }
                 let (mut rss, mut peak_rss, mut commit, mut peak_commit) = (0, 0, 0, 0);
                 // SAFETY: every out-pointer is a valid, writable usize or null.
                 unsafe {
@@ -562,6 +710,29 @@ fn healthcheck() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sampled_sites_name_who_holds_memory_until_it_is_freed() {
+        sites::EVERY.store(1, std::sync::atomic::Ordering::Relaxed);
+        #[inline(never)]
+        fn hold_buffers() -> Vec<Vec<u8>> {
+            (0..20).map(|i| vec![1u8; 16_000 + i]).collect()
+        }
+        let held = hold_buffers();
+        let (_, top) = sites::report(Duration::ZERO, 5);
+        assert!(top.iter().map(|t| t.0).sum::<usize>() >= 20, "{top:?}");
+        // Unoptimized, the frames resolve to the holder itself (under LTO this test inlines
+        // into the harness; the server's real call chains keep their names).
+        if cfg!(debug_assertions) {
+            let mine = top.iter().find(|(_, _, f)| f.contains("hold_buffers"));
+            assert!(mine.is_some_and(|m| m.0 >= 20), "{top:?}");
+        }
+        drop(held);
+        let (sampled, top) = sites::report(Duration::ZERO, 5);
+        assert_eq!(top.iter().map(|t| t.0).sum::<usize>(), sampled, "{top:?}");
+        assert!(sampled < 20, "freed samples leave the table: {sampled}");
+        sites::EVERY.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
 
     #[test]
     fn a_size_lands_in_the_class_its_floor_names() {

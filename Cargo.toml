@@ -15,3 +15,8 @@ authors = ["Roman <wavystackmedia@gmail.com>"]
 lto = "thin"
 codegen-units = 1
 strip = "symbols"
+
+# The server keeps its symbol table (debug info is still stripped), so the `memory sites`
+# log line can name the functions holding memory in the distroless image (2026-10-29).
+[profile.release.package.stockwatcher-server]
+strip = "debuginfo"
