@@ -32,9 +32,9 @@ const EDGE: Partial<Record<RocketTone, string>> = {
 /**
  * Runners (owner, 2026-10-21/22; EXPERIMENTAL): symbols the server's strategy flags as likely to
  * start a +30 % leg soon, each then watched for bullish momentum until 20:00 ET. Rows are ordered
- * by their momentum state (breaking out first, fading last) and colour-coded in the Ross row
+ * by their momentum state (breaking out first; fading rows are left out) and colour-coded in the Ross row
  * language: accent for a breakout (pulsing) or a run, amber while building and on a halt, a
- * pullback muted with its depth and the micro-pullback trigger meter, a fade dimmed. Green only
+ * pullback muted with its depth and the micro-pullback trigger meter. Green only
  * for the strict outcome tag. The header counts what is building or breaking out. Pressing a row
  * loads it into the selected chart; tap, then hold copies the ticker. Server feed only.
  *

@@ -43,6 +43,14 @@ describe("hide-when-empty item counts (owner, 2026-10-22)", () => {
     expect(rocketItemCount({ ...EMPTY_ROCKET, enabled: false })).toBe(0);
   });
 
+  test("Runners: fading rows are not counted, so a panel of fades is hidden", () => {
+    const s = rocket(1, 2);
+    const rows = s.panel!.rows.map((r, i) => (i === 0 ? r : { ...r, state: "fading" as const }));
+    expect(rocketSectionCounts({ ...s, panel: { ...s.panel!, rows } })).toEqual({ bursts: 1, flags: 0 });
+    const allFading = s.panel!.rows.map((r) => ({ ...r, state: "fading" as const }));
+    expect(rocketItemCount({ ...s, panel: { ...s.panel!, rows: allFading } })).toBe(0);
+  });
+
   test("Signals: Active and Recent counted apart; off is 0", () => {
     const s = detection([episode("AAA", "armed")], [episode("BBB", "invalidated", true)]);
     const c = detectionViewCounts(s);

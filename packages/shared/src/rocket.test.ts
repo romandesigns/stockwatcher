@@ -212,10 +212,10 @@ describe("runners momentum and later moves (2026-10-22)", () => {
     expect(r.line?.values).toEqual([1_000_000, 1_050_000, 1_120_000]);
     expect(rocketRowView(row(), T).line).toBeNull();
   });
-  test("sort: breaking out, running, halted, building, pullback, watching, fading; header attention and ran later", () => {
+  test("sort: breaking out, running, halted, building, pullback, watching; fading left out; header attention and ran later", () => {
     const states = ["fading", "watching", "pullback", "building", "running", "breaking_out", "halted"] as const;
     const p = panel({ rows: states.map((s, i) => row({ id: String(i), s: s.toUpperCase(), state: s })), today: { date: "2026-10-15", alerts: 7, hits: 1, hits30: 1, known: 7, ran_later: 2 } });
-    expect(rocketRowsView(p, T).map((v) => v.momentum.state)).toEqual(["breaking_out", "running", "halted", "building", "pullback", "watching", "fading"]);
+    expect(rocketRowsView(p, T).map((v) => v.momentum.state)).toEqual(["breaking_out", "running", "halted", "building", "pullback", "watching"]);
     expect(rocketAttention(p)).toBe(2);
     const h = rocketHeaderView(p);
     expect(h.ranLater).toBe("2 ran ≥ +15% later");
@@ -345,7 +345,6 @@ describe("Run +20% entries (2026-10-22)", () => {
     expect(v.map((x) => [x.symbol, x.source.kind, x.source.label])).toEqual([
       ["LEGS", "run", "Run +20%"],
       ["FLAG", "runner", "R2 flag"],
-      ["TANH", "running", "Running"],
     ]);
     expect(v[0]?.fromWhat).toBe("entry");
     expect(v[0]?.momentum.note).toBe("+6.4% from entry");

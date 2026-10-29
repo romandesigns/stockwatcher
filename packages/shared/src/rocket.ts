@@ -366,6 +366,15 @@ function momentumOf(r: RocketRowWire): RocketMomentumState {
   return r.state && r.state in ROCKET_STATES ? r.state : "watching";
 }
 
+/**
+ * Whether the panel lists a row: every row except a fading one (owner, 2026-10-29: "filter out
+ * the ones labeled fading"). A fade is below VWAP or 5 % under its flag price; the row returns
+ * as soon as its state recovers, and every transition stays in the forward log for review.
+ */
+export function isShownRocketRow(r: RocketRowWire): boolean {
+  return momentumOf(r) !== "fading";
+}
+
 export interface RocketRowView {
   key: string;
   symbol: string;
@@ -656,13 +665,14 @@ export function rocketRowView(r: RocketRowWire, nowMs: number, strategyId?: stri
 }
 
 /**
- * The rows in panel order, strongest first: by momentum state (breaking out and running first,
- * fading last, dimmed), newest first within one. Flags, running entries and +20 % runs share
- * the order.
+ * The rows in panel order, strongest first: by momentum state (breaking out and running first),
+ * newest first within one. Fading rows are left out ({@link isShownRocketRow}). Flags, running
+ * entries and +20 % runs share the order.
  */
 export function rocketRowsView(p: RocketPanelWire, nowMs: number): RocketRowView[] {
   const rank = (s: RocketMomentumState) => ROCKET_STATE_ORDER.indexOf(s);
   return p.rows
+    .filter(isShownRocketRow)
     .map((r, i) => ({ v: rocketRowView(r, nowMs, p.strategy?.id), i }))
     .sort((a, b) => rank(a.v.momentum.state) - rank(b.v.momentum.state) || a.i - b.i)
     .map((x) => x.v);
@@ -702,7 +712,7 @@ export interface RocketSectionsView {
 
 /** The panel split in two: buying bursts first (newest alert first), then the Runners flags. */
 export function rocketSectionsView(p: RocketPanelWire, nowMs: number): RocketSectionsView {
-  const burstRows = p.rows.filter(isBurstRow);
+  const burstRows = p.rows.filter((r) => isBurstRow(r) && isShownRocketRow(r));
   const runners = rocketRowsView({ ...p, rows: p.rows.filter((r) => !isBurstRow(r)) }, nowMs);
   if (burstRows.length === 0 && p.burst?.enabled !== true) return { bursts: null, runners };
   const rows = burstRows

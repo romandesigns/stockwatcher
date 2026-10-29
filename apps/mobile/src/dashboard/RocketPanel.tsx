@@ -39,7 +39,7 @@ const ROW_GAP = 4;
  * row is watched for bullish momentum: rows are ordered by state (breaking out first, fading
  * last) and colour-coded in the Ross row language: accent for a breakout (pulsing) or a run with
  * an inset edge bar, amber while building (edge) and on a halt (badge), a pullback muted with its
- * depth and trigger meter, a fade dimmed. Green only for the strict outcome tag. A state change
+ * depth and trigger meter (fading rows are left out). Green only for the strict outcome tag. A state change
  * crossfades the edge and wash (opacity, native driver); with reduced motion it simply changes.
  * Tapping a row opens its chart (the chart modal); tap, then hold copies the ticker. New flags
  * reach the phone as a server push (Settings → Runners); only while this phone has no push token

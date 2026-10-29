@@ -8,7 +8,7 @@
 // "Connecting…" or quiet line.
 
 import { groupDetections, type DetectionState } from "./detection.ts";
-import { isBurstRow, type RocketState } from "./rocket.ts";
+import { isBurstRow, isShownRocketRow, type RocketState } from "./rocket.ts";
 import type { RossState } from "./ross.ts";
 
 /** The Ross Panel's rows (its five-pillar members). */
@@ -19,8 +19,9 @@ export function rossItemCount(s: RossState): number {
 /** Runners' two sections: buying bursts and the strategy's flags. Each is hidden at 0. */
 export function rocketSectionCounts(s: RocketState): { bursts: number; flags: number } {
   if (s.enabled !== true || !s.panel) return { bursts: 0, flags: 0 };
-  const bursts = s.panel.rows.filter(isBurstRow).length;
-  return { bursts, flags: s.panel.rows.length - bursts };
+  const rows = s.panel.rows.filter(isShownRocketRow);
+  const bursts = rows.filter(isBurstRow).length;
+  return { bursts, flags: rows.length - bursts };
 }
 
 export function rocketItemCount(s: RocketState): number {
