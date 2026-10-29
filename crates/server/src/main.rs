@@ -86,163 +86,11 @@ fn shard() -> usize {
         .unwrap_or(0)
 }
 
-/// Live allocations by **exact** size from 4 KiB to 64 KiB (`heap_exact` in the `memory` line).
-///
-/// Why (2026-10-29): `heap_by_size` put all of production's post-preload growth (~16 MB a
-/// minute, ~800 allocations never freed) in the 12-32 KiB classes. A Vec or VecDeque buffer is
-/// capacity x element size, so the exact sizes that pile up give the element size, and that
-/// names the type. The image has no symbols for a sampled backtrace.
-const EXACT_MIN: usize = 4096;
-const EXACT_MAX: usize = 65536;
-static EXACT: [std::sync::atomic::AtomicI32; EXACT_MAX - EXACT_MIN] =
-    [const { std::sync::atomic::AtomicI32::new(0) }; EXACT_MAX - EXACT_MIN];
-
 fn count(size: usize, sign: isize) {
     use std::sync::atomic::Ordering::Relaxed;
     let i = shard();
     HELD[i].0.fetch_add(sign * size as isize, Relaxed);
     BY_SIZE[i][size_class(size)].fetch_add(sign * size as isize, Relaxed);
-    if (EXACT_MIN..EXACT_MAX).contains(&size) {
-        EXACT[size - EXACT_MIN].fetch_add(sign as i32, Relaxed);
-    }
-}
-
-/// Who holds the 12-32 KiB allocations (`memory sites` log line).
-///
-/// Why (2026-10-29): production's growth after the preload is all in those sizes, about 800
-/// blocks a minute, spread over many exact sizes (`heap_exact` stayed flat). So these are
-/// exact-length copies of variable payloads, and their size cannot name the owner. Every
-/// `MEM_SITES_EVERY`-th allocation in the range (default 256; 0 = off) records its call stack
-/// until it is freed. Every 10th `memory` line then names the stacks whose samples have lived
-/// longest. The table is capped, so a leak cannot make the profiler itself grow without limit.
-/// The server binary keeps its symbol table (`[profile.release.package.stockwatcher-server]`)
-/// so the stacks resolve in the distroless image.
-mod sites {
-    use std::collections::HashMap;
-    use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
-    use std::sync::{Arc, Mutex};
-    use std::time::Instant;
-
-    pub const SIZES: std::ops::Range<usize> = 12_288..32_768;
-    const CAP: usize = 16_384;
-    pub static EVERY: AtomicUsize = AtomicUsize::new(0);
-    static TICK: AtomicUsize = AtomicUsize::new(0);
-    static LIVE: AtomicUsize = AtomicUsize::new(0);
-    type Table = HashMap<usize, (Instant, usize, Arc<std::backtrace::Backtrace>)>;
-    static SAMPLED: Mutex<Option<Table>> = Mutex::new(None);
-
-    thread_local! {
-        static BUSY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    }
-
-    /// Runs `f` unless this thread is already inside the profiler (its own allocations).
-    fn guarded(f: impl FnOnce()) {
-        if BUSY.try_with(|b| b.replace(true)).unwrap_or(true) {
-            return;
-        }
-        f();
-        let _ = BUSY.try_with(|b| b.set(false));
-    }
-
-    pub fn on_alloc(p: *mut u8, size: usize) {
-        let every = EVERY.load(Relaxed);
-        if every == 0
-            || !SIZES.contains(&size)
-            || !TICK.fetch_add(1, Relaxed).is_multiple_of(every)
-            || LIVE.load(Relaxed) >= CAP
-        {
-            return;
-        }
-        guarded(|| {
-            let bt = Arc::new(std::backtrace::Backtrace::force_capture());
-            if let Ok(mut t) = SAMPLED.lock() {
-                t.get_or_insert_with(HashMap::new)
-                    .insert(p as usize, (Instant::now(), size, bt));
-                LIVE.store(t.as_ref().map_or(0, HashMap::len), Relaxed);
-            }
-        });
-    }
-
-    pub fn on_free(p: *mut u8, size: usize) {
-        if LIVE.load(Relaxed) == 0 || !SIZES.contains(&size) {
-            return;
-        }
-        guarded(|| {
-            if let Ok(mut t) = SAMPLED.lock()
-                && let Some(m) = t.as_mut()
-            {
-                m.remove(&(p as usize));
-                LIVE.store(m.len(), Relaxed);
-            }
-        });
-    }
-
-    /// The `top` call stacks holding the most sampled allocations older than `age`:
-    /// `(samples, bytes, frames)`, the frames cut to this workspace's own functions.
-    pub fn report(age: std::time::Duration, top: usize) -> (usize, Vec<(usize, usize, String)>) {
-        let mut out = (0, Vec::new());
-        guarded(|| {
-            let held: Vec<(usize, Arc<std::backtrace::Backtrace>)> = SAMPLED
-                .lock()
-                .ok()
-                .and_then(|t| {
-                    t.as_ref().map(|m| {
-                        m.values()
-                            .filter(|(at, _, _)| at.elapsed() >= age)
-                            .map(|(_, size, bt)| (*size, bt.clone()))
-                            .collect()
-                    })
-                })
-                .unwrap_or_default();
-            out.0 = LIVE.load(Relaxed);
-            let mut by: HashMap<String, (usize, usize)> = HashMap::new();
-            for (size, bt) in held {
-                let frames = bt
-                    .to_string()
-                    .lines()
-                    .map(str::trim)
-                    .filter(|l| !l.starts_with("at "))
-                    .filter_map(|l| l.split_once(": ").map(|(_, f)| f))
-                    .filter(|f| {
-                        [
-                            "stockwatcher",
-                            "chart_engine",
-                            "stock_context",
-                            "market_",
-                            "provider_sim",
-                        ]
-                        .iter()
-                        .any(|c| f.contains(c))
-                            && !f.contains("::sites::")
-                            && !f.contains("Counted")
-                    })
-                    .take(8)
-                    .collect::<Vec<_>>()
-                    .join(" < ");
-                let e = by.entry(frames).or_default();
-                e.0 += 1;
-                e.1 += size;
-            }
-            let mut v: Vec<_> = by.into_iter().map(|(f, (n, b))| (n, b, f)).collect();
-            v.sort_by_key(|&(n, _, _)| std::cmp::Reverse(n));
-            v.truncate(top);
-            out.1 = v;
-        });
-        out
-    }
-}
-
-/// The exact sizes (4-64 KiB) with the most live allocations: `[size, count]`, most first.
-fn heap_exact(top: usize) -> Vec<(usize, i32)> {
-    let mut held: Vec<(usize, i32)> = EXACT
-        .iter()
-        .enumerate()
-        .map(|(i, n)| (i + EXACT_MIN, n.load(std::sync::atomic::Ordering::Relaxed)))
-        .filter(|&(_, n)| n > 0)
-        .collect();
-    held.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
-    held.truncate(top);
-    held
 }
 
 /// Bytes the program holds right now (allocated and not yet freed), across every thread.
@@ -272,28 +120,20 @@ fn heap_by_size(top: usize) -> Vec<(usize, isize)> {
 unsafe impl std::alloc::GlobalAlloc for Counted {
     unsafe fn alloc(&self, l: std::alloc::Layout) -> *mut u8 {
         count(l.size(), 1);
-        let p = unsafe { mimalloc::MiMalloc.alloc(l) };
-        sites::on_alloc(p, l.size());
-        p
+        unsafe { mimalloc::MiMalloc.alloc(l) }
     }
     unsafe fn alloc_zeroed(&self, l: std::alloc::Layout) -> *mut u8 {
         count(l.size(), 1);
-        let p = unsafe { mimalloc::MiMalloc.alloc_zeroed(l) };
-        sites::on_alloc(p, l.size());
-        p
+        unsafe { mimalloc::MiMalloc.alloc_zeroed(l) }
     }
     unsafe fn dealloc(&self, p: *mut u8, l: std::alloc::Layout) {
         count(l.size(), -1);
-        sites::on_free(p, l.size());
         unsafe { mimalloc::MiMalloc.dealloc(p, l) }
     }
     unsafe fn realloc(&self, p: *mut u8, l: std::alloc::Layout, new: usize) -> *mut u8 {
         count(l.size(), -1);
         count(new, 1);
-        sites::on_free(p, l.size());
-        let q = unsafe { mimalloc::MiMalloc.realloc(p, l, new) };
-        sites::on_alloc(q, new);
-        q
+        unsafe { mimalloc::MiMalloc.realloc(p, l, new) }
     }
 }
 
@@ -521,29 +361,13 @@ fn spawn_memory_stats(markets: &Markets) {
         return;
     }
     let live = markets.live.clone();
-    let guard = MemoryGuard::from_env();
     // The replay market shares the process (and the owner practises on it): growth there would
     // otherwise be invisible in a line that only described the live one.
     let replay = markets.replay.clone();
-    sites::EVERY.store(
-        std::env::var("MEM_SITES_EVERY")
-            .ok()
-            .and_then(|v| v.trim().parse().ok())
-            .unwrap_or(256),
-        std::sync::atomic::Ordering::Relaxed,
-    );
     let spawned = std::thread::Builder::new()
         .name("memory-stats".into())
         .spawn(move || {
-            let mut lines = 0u64;
             loop {
-                lines += 1;
-                if lines.is_multiple_of(10) && sites::EVERY.load(std::sync::atomic::Ordering::Relaxed) > 0 {
-                    let (sampled, top) = sites::report(Duration::from_secs(600), 5);
-                    for (n, bytes, frames) in top {
-                        tracing::info!(sampled, samples = n, bytes, frames = %frames, "memory sites");
-                    }
-                }
                 let (mut rss, mut peak_rss, mut commit, mut peak_commit) = (0, 0, 0, 0);
                 // SAFETY: every out-pointer is a valid, writable usize or null.
                 unsafe {
@@ -565,14 +389,6 @@ fn spawn_memory_stats(markets: &Markets) {
                             .find(|l| l.starts_with("AnonHugePages:"))
                             .and_then(|l| l.split_whitespace().nth(1)?.parse::<u64>().ok())
                     });
-                if let Some(reason) = memory_guard(rss / 1_000_000, et_minute_now(), &guard) {
-                    tracing::warn!(
-                        rss_mb = rss / 1_000_000,
-                        reason,
-                        "memory guard: restarting cleanly"
-                    );
-                    memory_restart().notify_one();
-                }
                 // The kernel's current resident set (mimalloc's `rss` is its commit on Linux, and
                 // `peak_rss` only ever rises): the second field of statm, in pages.
                 let vm_rss_mb = std::fs::read_to_string("/proc/self/statm")
@@ -582,7 +398,6 @@ fn spawn_memory_stats(markets: &Markets) {
                 tracing::info!(
                     live_heap_mb = live_heap() / 1_000_000,
                     heap_by_size = ?heap_by_size(12),
-                    heap_exact = ?heap_exact(20),
                     vm_rss_mb,
                     rss_mb = rss / 1_000_000,
                     peak_rss_mb = peak_rss / 1_000_000,
@@ -599,68 +414,6 @@ fn spawn_memory_stats(markets: &Markets) {
     if let Err(e) = spawned {
         tracing::warn!(error = %e, "MEM_STATS_SECS: could not start the stats thread");
     }
-}
-
-/// The live server's memory grows without bound until the cause is found (2026-10-28: ~7.5 GB after
-/// start, +1–5 GB/h, killed at 38.7 GB on the 31 GB host twice, the second time at 10:51 ET in
-/// session, dropping 22,945 events). Until then the server restarts itself cleanly rather than be
-/// killed: the same graceful path as a deploy (sessions drained, recording written), and compose's
-/// `restart: unless-stopped` brings it straight back.
-///
-/// - Before the pre-market (03:30–03:55 ET) above `MEM_GUARD_PREOPEN_MB` (default 16,000): a fresh
-///   process for the session, at the quietest time of the day.
-/// - At any time above `MEM_GUARD_HARD_MB` (default 30,000): a clean stop beats an OOM kill.
-///
-/// `MEM_GUARD=0` turns both off. It rides the `MEM_STATS_SECS` thread, so it runs only where the
-/// memory line is on (production). Remove once the growth is fixed.
-#[derive(Clone, Copy, Debug)]
-struct MemoryGuard {
-    on: bool,
-    preopen_mb: usize,
-    hard_mb: usize,
-}
-
-impl MemoryGuard {
-    fn from_env() -> Self {
-        let mb = |k: &str, d: usize| {
-            std::env::var(k)
-                .ok()
-                .and_then(|v| v.trim().parse().ok())
-                .unwrap_or(d)
-        };
-        Self {
-            on: std::env::var("MEM_GUARD").as_deref() != Ok("0"),
-            preopen_mb: mb("MEM_GUARD_PREOPEN_MB", 16_000),
-            hard_mb: mb("MEM_GUARD_HARD_MB", 30_000),
-        }
-    }
-}
-
-/// Minutes after ET midnight.
-fn et_minute_now() -> u32 {
-    use chrono::Timelike;
-    let t = chrono::Utc::now().with_timezone(&chrono_tz::America::New_York);
-    t.hour() * 60 + t.minute()
-}
-
-/// Why the process should restart now, if it should (see [`MemoryGuard`]).
-fn memory_guard(rss_mb: usize, et_minute: u32, g: &MemoryGuard) -> Option<&'static str> {
-    const PREOPEN: std::ops::Range<u32> = (3 * 60 + 30)..(3 * 60 + 55);
-    if !g.on {
-        return None;
-    }
-    if rss_mb >= g.hard_mb {
-        return Some("hard_limit");
-    }
-    if PREOPEN.contains(&et_minute) && rss_mb >= g.preopen_mb {
-        return Some("before_premarket");
-    }
-    None
-}
-
-fn memory_restart() -> &'static tokio::sync::Notify {
-    static N: std::sync::OnceLock<tokio::sync::Notify> = std::sync::OnceLock::new();
-    N.get_or_init(tokio::sync::Notify::new)
 }
 
 async fn shutdown_requested() {
@@ -681,7 +434,6 @@ async fn shutdown_requested() {
     tokio::select! {
         _ = ctrl_c => {}
         _ = term => {}
-        _ = memory_restart().notified() => {}
     }
 }
 
@@ -712,29 +464,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sampled_sites_name_who_holds_memory_until_it_is_freed() {
-        sites::EVERY.store(1, std::sync::atomic::Ordering::Relaxed);
-        #[inline(never)]
-        fn hold_buffers() -> Vec<Vec<u8>> {
-            (0..20).map(|i| vec![1u8; 16_000 + i]).collect()
-        }
-        let held = hold_buffers();
-        let (_, top) = sites::report(Duration::ZERO, 5);
-        assert!(top.iter().map(|t| t.0).sum::<usize>() >= 20, "{top:?}");
-        // Unoptimized, the frames resolve to the holder itself (under LTO this test inlines
-        // into the harness; the server's real call chains keep their names).
-        if cfg!(debug_assertions) {
-            let mine = top.iter().find(|(_, _, f)| f.contains("hold_buffers"));
-            assert!(mine.is_some_and(|m| m.0 >= 20), "{top:?}");
-        }
-        drop(held);
-        let (sampled, top) = sites::report(Duration::ZERO, 5);
-        assert_eq!(top.iter().map(|t| t.0).sum::<usize>(), sampled, "{top:?}");
-        assert!(sampled < 20, "freed samples leave the table: {sampled}");
-        sites::EVERY.store(0, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    #[test]
     fn a_size_lands_in_the_class_its_floor_names() {
         for n in (1..5000).chain([1 << 20, (1 << 20) + 1, 3 << 20, 1 << 30]) {
             let c = size_class(n);
@@ -751,26 +480,5 @@ mod tests {
                 );
             }
         }
-    }
-
-    const G: MemoryGuard = MemoryGuard {
-        on: true,
-        preopen_mb: 16_000,
-        hard_mb: 30_000,
-    };
-
-    #[test]
-    fn memory_guard_restarts_before_the_premarket_or_at_the_hard_limit() {
-        let at = |h: u32, m: u32| h * 60 + m;
-        assert_eq!(
-            memory_guard(17_000, at(3, 40), &G),
-            Some("before_premarket")
-        );
-        assert_eq!(memory_guard(15_000, at(3, 40), &G), None);
-        assert_eq!(memory_guard(17_000, at(3, 55), &G), None);
-        assert_eq!(memory_guard(25_000, at(11, 0), &G), None);
-        assert_eq!(memory_guard(30_000, at(11, 0), &G), Some("hard_limit"));
-        let off = MemoryGuard { on: false, ..G };
-        assert_eq!(memory_guard(40_000, at(3, 40), &off), None);
     }
 }
