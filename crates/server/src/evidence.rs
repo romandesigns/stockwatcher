@@ -103,7 +103,16 @@ pub struct EvidenceLog {
     day: Option<NaiveDate>,
     seq: u64,
     floats: Vec<(u64, FloatObservation)>,
-    intraday: Vec<(u64, IntradayBaseline)>,
+    /// The latest diagnostic intraday baseline per record id, like `closes` and `baselines`.
+    ///
+    /// It was a Vec appended on every read (2026-10-29), and every decided symbol is re-read
+    /// every [`INTRADAY_RETRY_SECS`] (up to [`INTRADAY_SCAN_MAX`] a tick). So each market
+    /// appended up to ~400 identical copies of a ~12-32 KiB curve a minute, kept to the end of
+    /// the session date. Production grew ~16 MB a minute, all day and all night, until the
+    /// kernel killed the process. `len` left this field out, so the log's "held" never showed it.
+    /// The engine already ignored the copies (`EvidenceStore` keeps one of each record), so
+    /// keeping one per id changes nothing a board decides.
+    intraday: HashMap<String, (u64, IntradayBaseline)>,
     news: Vec<(u64, NewsItem)>,
     coverage: Vec<(u64, NewsCoverage)>,
     /// The latest per record id: every announcement check re-issues every symbol's records, and
@@ -181,6 +190,7 @@ impl EvidenceLog {
     /// Records held (logs and tests).
     pub fn len(&self) -> usize {
         self.floats.len()
+            + self.intraday.len()
             + self.news.len()
             + self.coverage.len()
             + self.closes.len()
@@ -212,7 +222,7 @@ impl EvidenceLog {
             generation: self.generation,
             through: self.seq,
             floats: pick(self.floats.iter(), after),
-            intraday: pick(self.intraday.iter(), after),
+            intraday: pick(self.intraday.values(), after),
             news: pick(self.news.iter(), after),
             coverage: pick(self.coverage.iter(), after),
             closes: pick(self.closes.values(), after),
@@ -223,6 +233,18 @@ impl EvidenceLog {
     fn next(&mut self) -> u64 {
         self.seq += 1;
         self.seq
+    }
+
+    /// Keeps each record id's latest intraday baseline. A re-read that found the same record
+    /// is not news: it takes no sequence, so no board is sent it again.
+    fn add_intraday(&mut self, records: Vec<IntradayBaseline>) {
+        for r in records {
+            if self.intraday.get(&r.id).is_some_and(|(_, held)| *held == r) {
+                continue;
+            }
+            let s = self.next();
+            self.intraday.insert(r.id.clone(), (s, r));
+        }
     }
 
     /// Everything one symbol's decisions can read: its own records, and the market-wide news
@@ -247,7 +269,7 @@ impl EvidenceLog {
                 .collect(),
             intraday: self
                 .intraday
-                .iter()
+                .values()
                 .filter(|(_, r)| mine(&r.instrument))
                 .map(|(_, r)| r.clone())
                 .collect(),
@@ -1072,13 +1094,10 @@ impl Market {
             return;
         }
         let n = records.len();
-        {
-            let mut log = ev.log.lock().expect("evidence log lock");
-            for r in records {
-                let s = log.next();
-                log.intraday.push((s, r));
-            }
-        }
+        ev.log
+            .lock()
+            .expect("evidence log lock")
+            .add_intraday(records);
         tracing::debug!(
             day = %day,
             baselines = n,
@@ -2461,13 +2480,7 @@ mod tests {
         assert_eq!(records.len(), 1, "{rep:?}");
         assert_eq!(records[0].sessions.len(), 10);
         assert!(records[0].sessions.iter().all(|s| s.complete));
-        {
-            let mut lg = log.lock().unwrap();
-            for r in records {
-                let s = lg.next();
-                lg.intraday.push((s, r));
-            }
-        }
+        log.lock().unwrap().add_intraday(records);
         if let Some(b) = log.lock().unwrap().since(cx.evidence_cursor()) {
             cx.add_evidence(b);
         }
@@ -2558,11 +2571,9 @@ mod tests {
         let log = Mutex::new(EvidenceLog::default());
         let mut cx = board();
         deliver(&mut loader(&a), &log, &mut cx, utc(t(9, 29, 0)));
-        {
-            let mut lg = log.lock().unwrap();
-            let s = lg.next();
-            lg.intraday.push((s, asm.baseline.expect("a baseline")));
-        }
+        log.lock()
+            .unwrap()
+            .add_intraday(vec![asm.baseline.expect("a baseline")]);
         if let Some(b) = log.lock().unwrap().since(cx.evidence_cursor()) {
             cx.add_evidence(b);
         }
@@ -2731,6 +2742,59 @@ mod tests {
             syms,
             "the backstop brings it back"
         );
+    }
+
+    /// Re-reading a symbol's unchanged curves every backstop interval leaves the log the size it
+    /// was, and no board is sent the same record again.
+    ///
+    /// The log appended every read (2026-10-29): production re-read every decided symbol every
+    /// five minutes and kept every ~12-32 KiB copy until the session date ended. The live and
+    /// replay markets together grew ~16 MB a minute, around the clock, until the kernel killed
+    /// the process.
+    #[test]
+    fn rereading_unchanged_intraday_curves_does_not_grow_the_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = archive(dir.path());
+        let mut d = dd();
+        for _ in 0..10 {
+            d = previous_trading_day(d);
+            write_curve(&a, d, SYM, 10_000, t(4, 0, 0));
+        }
+        let mut l = loader(&a);
+        let mut log = EvidenceLog::default();
+        let syms = vec![SYM.to_string()];
+        let g = l.intraday_generation(dd());
+        let mut at = utc(t(9, 30, 0));
+        let mut rep = RefreshReport::default();
+        log.add_intraday(l.intraday(dd(), &syms, g, at, &mut rep));
+        assert_eq!(log.intraday.len(), 1, "{rep:?}");
+        let held = log.len();
+        let cursor = log.since(None).map(|b| (b.generation, b.through));
+        for _ in 0..100 {
+            at += Duration::seconds(INTRADAY_RETRY_SECS);
+            assert_eq!(l.intraday_pending(&syms, INTRADAY_SCAN_MAX, g, at), syms);
+            log.add_intraday(l.intraday(dd(), &syms, g, at, &mut rep));
+        }
+        assert_eq!(
+            log.intraday.len(),
+            1,
+            "100 re-reads of the same curves hold one record"
+        );
+        assert_eq!(log.len(), held);
+        assert!(
+            log.since(cursor).is_none(),
+            "a board that has the record is not sent it again"
+        );
+
+        // A changed record replaces it, and is news.
+        let mut changed = log.intraday[&log.intraday.keys().next().unwrap().clone()]
+            .1
+            .clone();
+        changed.observed_at += 1;
+        log.add_intraday(vec![changed.clone()]);
+        assert_eq!(log.len(), held);
+        let b = log.since(cursor).expect("the changed record is delivered");
+        assert_eq!(b.intraday, vec![changed]);
     }
 
     /// A cancel reaches the scanner on **both** paths: with a chart loaded and without one.
