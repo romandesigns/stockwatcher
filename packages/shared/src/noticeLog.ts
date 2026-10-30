@@ -3,19 +3,24 @@
 // into the page's filter groups and put in plain words. Shared by the web and the phone so both
 // say the same thing about the same notice.
 
-import { parseBreakoutNotice, type BreakoutNotice } from "./breakout.ts";
+import { breakoutClockText, breakoutPlainLine, breakoutSummary, noticeChartContext, parseBreakoutNotice, type BreakoutNotice } from "./breakout.ts";
+import { RUNNERS_NOTICE_KINDS, runnersNoticeIcon, type AlertIcon, type RunnersNoticeKind } from "./runnersNotify.ts";
 
 /** One path's outcome: the desk (desktop and web) or the phones. */
 export interface NoticePathWire {
   /** `sent` | `held` (Runners notices); a price alert's phone: `sent` | `off` | `held`. */
   decision: string | null;
-  /** The limit's code when held: no_device, quiet_hours, stale, symbol_limit, duplicate, merged. */
+  /**
+   * The limit's code when held: no_device, quiet_hours, stale, duplicate. Days before 2026-10-30
+   * also have symbol_limit and merged (the per-stock gap and merge since removed: server
+   * alerts/runners.rs, "Every distinct event is delivered"); they are still worded.
+   */
   held: string | null;
   devices: number | null;
   /**
    * What it was folded into when several Runners paths fired on one stock within half a minute
-   * (server alerts/runners.rs, "Merging"): present on a merged decision, and on a send that only
-   * reached the devices the first push missed.
+   * (the server's merge, removed 2026-10-30): present on old days' merged decisions, and on a send
+   * that only reached the devices the first push missed.
    */
   merged_into?: NoticeMergedWire | null;
   /** Devices that already had that first push. */
@@ -97,15 +102,15 @@ export function parseNoticeLog(raw: unknown): NoticeLogWire | null {
   return { day: raw.day, days: Array.isArray(raw.days) ? raw.days.filter((d): d is string => typeof d === "string") : [], items, truncated: raw.truncated === true };
 }
 
-/** The page's kind filters, in chip order. */
+/** The page's kind filters, in chip order, each with its icon (a group's chip, and the icon of a kind the log does not know). */
 export type NoticeGroup = "runners" | "pullback" | "ross" | "shelf" | "halt" | "price";
-export const NOTICE_GROUPS: readonly { id: NoticeGroup; label: string }[] = [
-  { id: "runners", label: "Runners" },
-  { id: "pullback", label: "Pullback" },
-  { id: "ross", label: "Ross / Signals" },
-  { id: "shelf", label: "Shelf / Follow-ups" },
-  { id: "halt", label: "Halt" },
-  { id: "price", label: "Price alerts" },
+export const NOTICE_GROUPS: readonly { id: NoticeGroup; label: string; icon: AlertIcon }[] = [
+  { id: "runners", label: "Runners", icon: "pathRunner" },
+  { id: "pullback", label: "Pullback", icon: runnersNoticeIcon("runners.pullback") },
+  { id: "ross", label: "Ross / Signals", icon: "star" },
+  { id: "shelf", label: "Shelf / Follow-ups", icon: runnersNoticeIcon("runners.shelf") },
+  { id: "halt", label: "Halt", icon: runnersNoticeIcon("halt.watch") },
+  { id: "price", label: "Price alerts", icon: "bell" },
 ];
 
 const KIND: Record<string, { group: NoticeGroup; label: string }> = {
@@ -125,6 +130,19 @@ const KIND: Record<string, { group: NoticeGroup; label: string }> = {
   "halt.watch": { group: "halt", label: "Halt watcher" },
   "price.alert": { group: "price", label: "Price alert" },
 };
+
+const isRunnersKind = (n: string): n is RunnersNoticeKind => (RUNNERS_NOTICE_KINDS as readonly string[]).includes(n);
+
+/**
+ * A notice's icon in the log: exactly its Settings → Alerts switch's (`ALERT_SWITCH_ICON` in
+ * runnersNotify.ts, one table for both screens on web and phone); a price alert's bell; an
+ * unknown kind its group's.
+ */
+export function noticeIcon(notice: string | undefined): AlertIcon {
+  if (notice && isRunnersKind(notice)) return runnersNoticeIcon(notice);
+  const group = noticeKind(notice).group;
+  return NOTICE_GROUPS.find((g) => g.id === group)?.icon ?? "bell";
+}
 
 /** The notice's filter group and its name ("Buying burst"); an unknown kind is a Runners one by its raw name. */
 export function noticeKind(notice: string | undefined): { group: NoticeGroup; label: string } {
@@ -187,6 +205,28 @@ export function pathText(p: NoticePathWire | undefined): string | null {
     return p.merged_into && p.merged_devices ? `${to} · ${p.merged_devices} already had the ${noticeKind(p.merged_into.notice).label} alert` : to;
   }
   return `${p.decision === "off" ? "not sent" : "held"}: ${heldText(p.held ?? (p.decision === "off" ? "off" : null), p.merged_into)}`;
+}
+
+/**
+ * What a log row says beyond its notice text (owner, 2026-10-30: no debug walls): `line` is one
+ * plain line with the key numbers ("New high $8.81 above alert $8.68 · volume 80× normal"), or
+ * null; `details` is the full technical record (measured bar, every clock, rule and source,
+ * the original alert's reasons), shown only behind "Details" (web) or a press (phone). Display
+ * only: the ledger keeps every field as it was written. `time` formats epoch ms.
+ */
+export function noticeEvidence(item: NoticeItemWire, time: (ms: number) => string): { line: string | null; details: string[] } {
+  const details: string[] = [];
+  let line: string | null = null;
+  const context = noticeChartContext(item);
+  if (context) {
+    const b = context.breakout;
+    line = breakoutPlainLine(b);
+    details.push(breakoutSummary(b), breakoutClockText(b, time), `Decision ${item.at ? time(item.at) : "unavailable"}`, `Rule ${b.rule} · ${b.source} / ${b.exact_state}`);
+  } else if (item.notice === "runners.breakout") {
+    details.push("Event time and comparison unavailable");
+  }
+  if (item.entry_context?.length) details.push(`Entry context (original alert): ${item.entry_context.join(" · ")}`);
+  return { line, details };
 }
 
 /** The latency line for a tooltip ("trade → phone 1.04 s · board 0.10 s · queue 0.84 s · Expo 0.11 s"), or null. */

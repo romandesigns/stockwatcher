@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
+import { ALERT_SWITCH_SECTIONS, RUNNERS_NOTICE_KINDS, runnersNotifyKey } from "@stockwatcher/shared";
+
 import { noticeRowView } from "./model";
 import { breakoutTestFixture } from "../../../../packages/shared/src/breakoutTestFixture.ts";
 
@@ -12,14 +14,18 @@ describe("Insights row on the phone", () => {
     expect(r.time).toBe("8:23:47 AM");
     expect(r.kind).toBe("15s new high since alert");
     expect(r.detail).toBe("Held: quiet hours");
-    expect(r.evidence).toContain("15s bar high $2.040001");
-    expect(r.evidence).toContain("+250 ms");
-    expect(r.evidence).toContain("Entry context (original alert): original +20% reason");
+    // One plain line on the row; the measured record only in the Details sheet.
+    expect(r.line).toBe("New high $2.04 above alert $2.03 · volume 2.7× normal");
+    expect(r.details.join(" ")).toContain("15s bar high $2.040001");
+    expect(r.details.join(" ")).toContain("+250 ms");
+    expect(r.details).toContain("Entry context (original alert): original +20% reason");
+    expect(r.a11y).not.toContain("+250 ms");
     expect(r.a11y).toContain("immutable title · immutable body");
     expect(r.noticeContext?.event_id).toBe(item.event_id);
     const legacy = noticeRowView({ ...item, breakout: undefined });
     expect(legacy.kind).toBe("Breakout");
-    expect(legacy.evidence).toContain("Event time and comparison unavailable");
+    expect(legacy.line).toBeNull();
+    expect(legacy.details).toContain("Event time and comparison unavailable");
     expect(legacy.noticeContext).toBeUndefined();
   });
   test("a held notice leads with the plain reason and marks the phone path", () => {
@@ -29,7 +35,9 @@ describe("Insights row on the phone", () => {
     expect(r.detail).toBe("Held: same stock notified moments earlier");
     expect(r.phone).toEqual({ label: "Phones: held: same stock notified moments earlier", sent: false });
     expect(r.desk?.sent).toBe(true);
-    expect(r.icon).toBe("trend");
+    // Settings → Alerts gives "Pullback setting up" the —•— line (owner, 2026-10-30).
+    expect(r.icon).toBe("hline");
+    expect(r.details).toEqual([]);
     expect(r.a11y).toContain("SRTM, Pullback");
   });
 
@@ -47,5 +55,14 @@ describe("Insights row on the phone", () => {
     expect(r.icon).toBe("pathBurst");
     expect(r.desk).toBeNull();
     expect(r.a11y).toContain("trade → push 1.04 s");
+  });
+
+  test("every notice kind's row icon is its Settings → Alerts switch's icon", () => {
+    const settings = new Map(ALERT_SWITCH_SECTIONS.flatMap((sec) => sec.items.map((i) => [i.key, i.icon] as const)));
+    for (const notice of RUNNERS_NOTICE_KINDS) {
+      const r = noticeRowView({ event_id: notice, at: AT, symbol: "TNMG", notice, title: "t" });
+      expect([notice, r.icon]).toEqual([notice, settings.get(runnersNotifyKey(notice))!]);
+    }
+    expect(noticeRowView({ event_id: "f", notice: "runners.followup" }).icon).toBe("plus");
   });
 });

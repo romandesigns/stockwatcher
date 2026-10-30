@@ -17,20 +17,26 @@ const row = (item: NoticeItemWire) =>
 const AT = Date.UTC(2026, 9, 26, 12, 23, 47); // 08:23:47 ET
 
 describe("Insights: notification log", () => {
-  test("new evidence names the bar high, clocks and original entry context; legacy preserves stored words and unknown geometry", () => {
+  test("a breakout row is one plain line; the measured record is behind Details; legacy keeps stored words", () => {
     const item = { event_id: "runners-breakout-fixture", at: AT, symbol: "CJMB", notice: "runners.breakout", title: "immutable title", body: "immutable body", breakout: breakoutTestFixture, entry_context: ["Run +20% at original admission"] };
     const html = row(item);
     expect(html).toContain("15s new high since alert");
-    expect(html).toContain("15s bar high $2.040001");
-    expect(html).toContain("evaluated");
-    expect(html).toContain("+250 ms");
-    expect(html).toContain("Decision 8:23:47 AM");
-    expect(html).toContain("Entry context (original alert): Run +20% at original admission");
     expect(html).toContain("immutable title · immutable body");
+    expect(html).toContain("New high $2.04 above alert $2.03 · volume 2.7× normal");
+    // The open-the-chart button holds no technical record (owner, 2026-10-30: no debug walls).
+    const button = html.slice(html.indexOf("<button"), html.indexOf("</button>"));
+    expect(button).not.toContain("15s bar high $2.040001");
+    expect(button).not.toContain("+250 ms");
+    expect(button).not.toContain("post_flag_exact_high_v1");
+    // A Details disclosure (Base UI Collapsible: a real button, aria-expanded) carries it all.
+    expect(html).toContain(">Details<");
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).toMatch(/^<div class="rounded-lg bg-card">/);
+    expect(html).not.toMatch(/class="[^"]*\bborder/);
     const legacy = row({ ...item, breakout: undefined, entry_context: undefined });
     expect(legacy).toContain("immutable title · immutable body");
-    expect(legacy).toContain("Event time and comparison unavailable");
     expect(legacy).not.toContain("15s new high since alert");
+    expect(legacy).toContain(">Details<");
   });
   test("Insights is a page in the main nav, routed by its hash", () => {
     expect(NAV_ITEMS.map((i) => i.id)).toContain("insights");

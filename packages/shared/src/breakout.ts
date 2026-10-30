@@ -93,6 +93,22 @@ export function breakoutSummary(b: BreakoutNotice): string {
   return `15s bar high ${price(b.high_price_micros)} > ${b.reference_basis === "flag_price" ? "alert price" : "earlier eligible high"} ${price(b.reference_price_micros)} · ${b.zero_base_fallback ? "positive-volume fallback (zero prior pace)" : `${b.volume_ratio!.toFixed(2)}× prior pace (required ${b.required_multiple}×)`} · volume uses whole 15s bar`;
 }
 
+/**
+ * The breakout in one plain line, as the other log rows read (owner, 2026-10-30: no debug walls
+ * in the Insights log): "New high $8.81 above alert $8.68 · volume 80× normal". The measured
+ * detail stays in {@link breakoutSummary} / {@link breakoutClockText}, behind Details.
+ */
+export function breakoutPlainLine(b: BreakoutNotice): string {
+  const cents = (p: number) => { const d = p / 1_000_000; return `$${d >= 1 ? d.toFixed(2) : d.toFixed(4)}`; };
+  // Rounded to the quote's tick the two can read the same ($2.040001 vs $2.04): then sub-cent.
+  const fine = cents(b.high_price_micros) === cents(b.reference_price_micros);
+  const show = (p: number) => (fine ? `$${(p / 1_000_000).toFixed(4)}` : cents(p));
+  const ref = b.reference_basis === "flag_price" ? "alert" : "earlier high";
+  const r = b.volume_ratio;
+  const volume = b.zero_base_fallback || r === null ? "volume after a quiet stretch" : `volume ${r >= 10 ? Math.round(r) : Number(r.toFixed(1))}× normal`;
+  return `New high ${show(b.high_price_micros)} above ${ref} ${show(b.reference_price_micros)} · ${volume}`;
+}
+
 /** Distinct clocks; no scheduled endpoint is described as detection or knowledge time. */
 export function breakoutClockText(b: BreakoutNotice, format: (ms: number) => string): string {
   const clock = (ms: number) => `${format(ms)} +${String(ms % 1000).padStart(3, "0")} ms`;

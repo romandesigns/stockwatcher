@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { GROUP_ICON, noticeRowView, type NoticeRowView } from "../insights/model";
+import { noticeRowView, type NoticeRowView } from "../insights/model";
 import { ScorecardView } from "../insights/ScorecardView";
 import { useNoticeLog } from "../insights/useNoticeLog";
 import { useReducedMotion } from "../motion/useReducedMotion";
@@ -100,7 +100,7 @@ function NotificationLog() {
           const on = groups.has(g.id);
           return (
             <Pressable key={g.id} accessibilityRole="button" accessibilityState={{ selected: on }} accessibilityLabel={`${g.label} only`} onPress={() => toggle(g.id)} style={[styles.chip, on && { backgroundColor: UI.raised }]}>
-              <Icon name={GROUP_ICON[g.id]} color={on ? colors.text : colors.textDim} size={14} />
+              <Icon name={g.icon} color={on ? colors.text : colors.textDim} size={14} />
               <Text style={[styles.chipText, on && { color: colors.text }]}>{g.label}</Text>
             </Pressable>
           );
@@ -129,7 +129,7 @@ function NotificationLog() {
           key={r.key}
           accessibilityRole="button"
           accessibilityLabel={r.a11y}
-          accessibilityHint="Opens the chart; long-press for the details"
+          accessibilityHint="Opens the chart; long-press to read it all"
           disabled={!r.symbol}
           onPress={() => r.symbol && openTickerChart(r.symbol, undefined, undefined, r.noticeContext)}
           onLongPress={() => setReadout(r)}
@@ -151,7 +151,19 @@ function NotificationLog() {
           <Text style={[styles.detail, !r.sent && { color: colors.warning }]} numberOfLines={1}>
             {r.detail}
           </Text>
-          {r.evidence && <Text style={styles.small}>{r.evidence}</Text>}
+          {r.line && (
+            <Text style={styles.line} numberOfLines={1}>
+              {r.line}
+            </Text>
+          )}
+          {r.details.length > 0 && (
+            // Its own button inside the row (the row itself opens the chart): the measured record,
+            // every clock and rule, only on request (owner, 2026-10-30: no debug walls).
+            <Pressable accessibilityRole="button" accessibilityLabel={`Details for ${r.symbol ?? "this notice"}`} onPress={() => setReadout(r)} style={({ pressed }) => [styles.details, pressed && { backgroundColor: UI.raised }]}>
+              <Icon name="chevronRight" color={colors.textDim} size={12} />
+              <Text style={styles.detailsText}>Details</Text>
+            </Pressable>
+          )}
         </Pressable>
       ))}
       {log?.truncated && <Text style={styles.small}>Showing the newest 2,000 of the day.</Text>}
@@ -175,7 +187,12 @@ function NotificationLog() {
         </View>
       </Sheet>
       <Sheet open={readout !== null} onClose={() => setReadout(null)} title={readout ? `${readout.symbol ?? "Notice"} · ${readout.kind}` : ""} reducedMotion={reducedMotion}>
-        {readout && <Text style={styles.readout}>{readout.a11y.split(". ").join("\n")}</Text>}
+        {readout && (
+          <View style={{ gap: 10 }}>
+            <Text style={styles.readout}>{readout.a11y.split(". ").join("\n")}</Text>
+            {readout.details.length > 0 && <Text style={styles.readoutDetails}>{readout.details.join("\n")}</Text>}
+          </View>
+        )}
       </Sheet>
     </ScrollView>
   );
@@ -210,4 +227,8 @@ const styles = StyleSheet.create({
   action: { minHeight: 48, justifyContent: "center", paddingHorizontal: 14, borderRadius: 12, backgroundColor: UI.row },
   actionText: { color: UI.text, fontSize: 14 },
   readout: { color: colors.text, fontSize: 14, lineHeight: 21 },
+  readoutDetails: { color: colors.textDim, fontSize: 12, lineHeight: 18 },
+  line: { color: colors.textDim, fontSize: 12 },
+  details: { alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 4, minHeight: 44, paddingHorizontal: 8, marginLeft: -8, borderRadius: 10 },
+  detailsText: { color: colors.textDim, fontSize: 12 },
 });
