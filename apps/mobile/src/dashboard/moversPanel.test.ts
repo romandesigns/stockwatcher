@@ -21,7 +21,7 @@ test("the feed carries the movers channel: opted in on demand, told about the so
 
 test("the panels read the movers channel, never the quote board, and reuse shared sorting and lines", () => {
   expect(panel).toContain("useMovers(channel)");
-  expect(panel).not.toMatch(/useQuoteBoard|QuoteChannel|.quotesb/);
+  expect(panel).not.toMatch(/useQuoteBoard|QuoteChannel|\.quotes\b/);
   for (const fn of ["sortMovers(", "moversRows(", "nextMoverSort(", "parseMoverSort(", "moverLine(", "moverRowMarks(", "moversCount("]) expect(panel).toContain(fn);
   // The app's segmented control and storage helper, the other cards' row chart.
   expect(panel).toContain("<Segmented");
