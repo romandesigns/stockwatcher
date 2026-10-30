@@ -8,6 +8,7 @@
 //! notifications), which validates what it shows.
 
 mod notify;
+mod titlebar;
 mod updater;
 
 use tauri::Manager;
@@ -52,6 +53,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![notify::runners_notify])
         .setup(|app| {
             notify::listen(app.handle());
+            if let Some(window) = app.get_webview_window("main") {
+                titlebar::apply(&window);
+            }
             log::info!(
                 "stockwatcher {} starting ({} {})",
                 app.package_info().version,
