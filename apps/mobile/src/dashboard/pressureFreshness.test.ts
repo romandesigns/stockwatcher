@@ -6,11 +6,16 @@ const read = (p: string) => readFileSync(join(import.meta.dir, p), "utf8");
 
 test("both Halt watchers subscribe to status, preserve hide-empty and announce last-known cards", () => {
   const web = read("../../../web/src/dashboard/HaltWatcher.tsx");
+  // Since the web dashboard's panel layout (2026-10-30) the web watcher is a panel: the
+  // subscription and the hide-when-empty count live in DashboardPanels, which hands it the board.
+  const webPanels = read("../../../web/src/dashboard/DashboardPanels.tsx");
   const mobile = read("HaltWatcher.tsx");
+  expect(mobile).toContain("usePressureStatus(channel)");
+  expect(mobile).toContain("board.length > 0");
+  expect(webPanels).toContain("usePressureStatus(pressure)");
+  expect(webPanels).toContain("halt: pressure ? pressureBoard.length : 0");
   for (const src of [web, mobile]) {
-    expect(src).toContain("usePressureStatus(channel)");
     expect(src).toContain("pressureFreshnessLine(status, hhmm)");
-    expect(src).toContain("board.length > 0");
     expect(src).toContain("stale={!status.connected}");
     expect(src).toContain("stale ? `${freshness}. Last known: `");
   }
