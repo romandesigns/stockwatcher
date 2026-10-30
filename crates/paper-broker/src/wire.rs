@@ -13,6 +13,9 @@ use crate::{
 use market_events::{PRICE_SCALE, Price};
 use serde::{Deserialize, Serialize};
 
+/// The `broker` of every frame from this crate.
+pub const SIMULATOR: &str = "simulator";
+
 /// `order.place` as sent by a client (the `type` tag is handled by the caller's enum).
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -197,6 +200,9 @@ pub struct PaperState {
     #[serde(rename = "type")]
     pub kind: &'static str,
     pub simulated: bool,
+    /// `"simulator"`; the server's Alpaca paper route sends `"alpaca_paper"` with
+    /// `simulated: false` (docs/architecture/alpaca-paper.md).
+    pub broker: &'static str,
     pub seq: u64,
     pub account: AccountWire,
     pub orders: Vec<OrderWire>,
@@ -242,6 +248,7 @@ pub struct PaperFill {
     #[serde(rename = "type")]
     pub kind: &'static str,
     pub simulated: bool,
+    pub broker: &'static str,
     pub order_id: String,
     pub symbol: String,
     pub side: Side,
@@ -255,6 +262,7 @@ impl From<&Fill> for PaperFill {
         PaperFill {
             kind: "paper.fill",
             simulated: true,
+            broker: SIMULATOR,
             order_id: format!("o-{}", f.order_num),
             symbol: f.symbol.clone(),
             side: f.side,
@@ -270,6 +278,7 @@ impl Broker {
         PaperState {
             kind: "paper.state",
             simulated: true,
+            broker: SIMULATOR,
             seq: self.seq(),
             account: AccountWire {
                 starting_cash: dollars(crate::STARTING_CASH_MICROS),

@@ -314,6 +314,32 @@ fn entry_price(t: OrderType, limit: Option<Price>, stop: Option<Price>) -> Optio
     }
 }
 
+/// The checks [`Broker::place`] runs on a new order, minus the symbol list (which only this
+/// simulator has): `bad_qty`, `missing_price`, `bad_price` / `sub_penny`, then the bracket rule,
+/// first failure wins. Public for a broker route that is not this simulator (the server's Alpaca
+/// paper route), so a real-routed order meets exactly the same tick grid and bracket rules.
+pub fn check_new_order(req: &NewOrder) -> Result<(), RejectReason> {
+    let limit = req.limit_price.filter(|_| req.order_type.takes_limit());
+    let stop = req.stop_price.filter(|_| req.order_type.takes_stop());
+    Broker::validate(req, limit, stop, &|_: &str| true)?;
+    if let Some(b) = req.bracket {
+        Broker::validate_bracket(req.side, entry_price(req.order_type, limit, stop), b)?;
+    }
+    Ok(())
+}
+
+/// The value checks of [`Broker::modify`] for a broker route that is not this simulator: each
+/// present field must be a valid qty or an on-grid positive price.
+pub fn check_modify(m: &Modify) -> Result<(), RejectReason> {
+    if let Some(q) = m.qty {
+        check_qty(q)?;
+    }
+    for p in [m.limit_price, m.stop_price].into_iter().flatten() {
+        check_price(p)?;
+    }
+    Ok(())
+}
+
 /// Parses a wire id `o-<n>`.
 fn parse_id(id: &str) -> Option<u64> {
     id.strip_prefix("o-")?.parse().ok()

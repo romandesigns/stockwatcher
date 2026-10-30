@@ -33,6 +33,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "alpaca-paper"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "chrono-tz",
+ "futures-util",
+ "market-events",
+ "paper-broker",
+ "reqwest",
+ "rustls",
+ "rustls-platform-verifier",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite 0.30.0",
+ "tracing",
+]
+
+[[package]]
 name = "android_log-sys"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

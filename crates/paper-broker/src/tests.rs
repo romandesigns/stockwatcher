@@ -605,7 +605,7 @@ fn state_json_matches_the_contract() {
     assert_eq!(
         v,
         json!({
-            "type": "paper.state", "simulated": true, "seq": 1,
+            "type": "paper.state", "simulated": true, "broker": "simulator", "seq": 1,
             "account": {"startingCash": 100000.0, "cash": 100000.0, "realizedPnl": 0.0},
             "orders": [{
                 "id": "o-1", "clientOrderId": "c-1697", "symbol": "SMPL", "side": "buy",
@@ -622,7 +622,7 @@ fn state_json_matches_the_contract() {
     let fill = serde_json::to_value(wire::PaperFill::from(&out.fills[0])).unwrap();
     assert_eq!(
         fill,
-        json!({"type": "paper.fill", "simulated": true, "orderId": "o-1", "symbol": "SMPL",
+        json!({"type": "paper.fill", "simulated": true, "broker": "simulator", "orderId": "o-1", "symbol": "SMPL",
                "side": "buy", "qty": 100, "price": 3.38, "t": T0 + 12_345})
     );
     let v = serde_json::to_value(b.state()).unwrap();
