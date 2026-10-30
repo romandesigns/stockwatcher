@@ -21,6 +21,8 @@ export interface TickerQuote {
   changePct: number;
   volume: number;
   trades: number;
+  /** How `prevClose` was arrived at: `split` (split-adjusted) or `guard` (withheld: the day trades on another share basis), absent when plain. */
+  closeBasis?: "split" | "guard";
   /** No print at/after 09:30 yet. Describes `open`, so it only matters while there is no `prevClose`. */
   preOpen: boolean;
   /** From the server's asset metadata; absent when it has none (show the symbol). */
@@ -39,8 +41,9 @@ export function quoteChangePct(price: number, prevClose: number | undefined, ope
 }
 
 function fromWire(r: QuoteRowWire, prev: TickerQuote | undefined): TickerQuote {
-  // Updates leave `pc` out unless it changed: keep the one the row already has.
-  const prevClose = r.pc ?? prev?.prevClose;
+  // Updates leave `pc` out unless it changed: keep the one the row already has, unless the
+  // server now withholds it (`pcb: "guard"`, a split it could not confirm).
+  const prevClose = r.pcb === "guard" ? undefined : (r.pc ?? prev?.prevClose);
   return {
     price: r.p,
     prevClose,
@@ -49,6 +52,7 @@ function fromWire(r: QuoteRowWire, prev: TickerQuote | undefined): TickerQuote {
     volume: r.v,
     trades: r.n,
     preOpen: r.pre === true,
+    closeBasis: r.pcb,
     // Updates leave names out (they never change); keep the snapshot's.
     name: r.name ?? prev?.name,
     exchange: r.x ?? prev?.exchange,

@@ -176,7 +176,7 @@ export function Dashboard({ choice, feed }: Connection) {
           stocks), each panel shown only while it has items; stacked under the charts on a narrow
           panel (DashboardPanels). The panel scrolls when the charts' minimum height does not fit. */}
       <ScrollArea className="flex-1" viewportClassName="@container/panel flex flex-col">
-        <DashboardPanels ross={feed.ross} rocket={feed.rocket} detection={feed.detection} favorites={feed.favorites} pressure={feed.pressure} quotes={feed.quotes} onPick={openTickerChart} onEpisodePick={pickDetection} onEpisodeClear={clearDetection}>
+        <DashboardPanels ross={feed.ross} rocket={feed.rocket} detection={feed.detection} favorites={feed.favorites} pressure={feed.pressure} movers={feed.movers} onPick={openTickerChart} onEpisodePick={pickDetection} onEpisodeClear={clearDetection}>
           {liveEmpty ? (
             // The live market lists nothing before a session's first trade, and all weekend.
             <div className="flex flex-1 flex-col items-center justify-center gap-1 text-center">

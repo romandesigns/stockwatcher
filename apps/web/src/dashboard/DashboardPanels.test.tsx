@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { detectionSnapshotView, EMPTY_DETECTION, EMPTY_PRESSURE_STATUS, EMPTY_QUOTE_BOARD, EMPTY_ROCKET, EMPTY_ROSS, type DetectionChannel, type DetectionCoreEpisode, type DetectionMessage, type DetectionState, type PressureCard, type PressureChannel, type PressureStatus, type QuoteBoard, type QuoteChannel, type RocketChannel, type RocketPanelWire, type RocketState, type RossChannel, type RossState, rossDemoPanel, type TickerQuote } from "@stockwatcher/shared";
+import { detectionSnapshotView, EMPTY_DETECTION, EMPTY_MOVERS, EMPTY_PRESSURE_STATUS, EMPTY_ROCKET, EMPTY_ROSS, type DetectionChannel, type DetectionCoreEpisode, type DetectionMessage, type DetectionState, type PressureCard, type PressureChannel, type MoverRowWire, type MoversChannel, type MoversState, type PressureStatus, type RocketChannel, type RocketPanelWire, type RocketState, type RossChannel, type RossState, rossDemoPanel } from "@stockwatcher/shared";
 import { renderToStaticMarkup } from "react-dom/server";
 import { DashboardPanels } from "./DashboardPanels.tsx";
 
@@ -38,28 +38,35 @@ const detection = (symbols: string[], patch: Partial<DetectionState> = {}): Dete
 };
 const card = (symbol: string): PressureCard => ({ symbol, price: 3.1, changePct: 24, risk: 70, side: "bull", rise: 40, riseSecs: 30, band: 3.3, toBand: 1.2, pressure: 80, buyShare: 0.8, pace: 3 });
 const pressureChannel = (cards: PressureCard[], status: PressureStatus = { connected: true, asOf: 1 }): PressureChannel => ({ get: () => cards, status: () => status, subscribe: () => () => {} });
-const quote = (price: number, changePct: number, volume: number, trades = 500): TickerQuote => ({ price, open: price, changePct, volume, trades, preOpen: false });
-const board = (rows: Record<string, TickerQuote>): QuoteBoard => new Map(Object.entries(rows));
-const quotesChannel = (b: QuoteBoard): QuoteChannel => ({ get: () => b, subscribe: () => () => {} });
+const mover = (symbol: string, price: number, chg: number, dv: number): MoverRowWire => ({ symbol, price: price * 1_000_000, ref: price * 1_000_000, chg, dv, volume: Math.round(dv / price), trades: 500 });
+// The server ranks (crates/server/src/movers.rs); the panels show its lists as they come.
+const moversState = (lists: { gainers?: MoverRowWire[]; bull?: MoverRowWire[]; bear?: MoverRowWire[] }): MoversState => {
+  const all = [...(lists.gainers ?? []), ...(lists.bull ?? []), ...(lists.bear ?? [])];
+  return { gainers: (lists.gainers ?? []).map((r) => r.symbol), bull: (lists.bull ?? []).map((r) => r.symbol), bear: (lists.bear ?? []).map((r) => r.symbol), rows: new Map(all.map((r) => [r.symbol, r])), t: 1, connected: true };
+};
+const moversChannel = (s: MoversState): MoversChannel => ({ get: () => s, subscribe: () => () => {} });
 
 interface Channels {
   r?: RossState;
   k?: RocketState;
   d?: DetectionState;
   p?: PressureChannel;
-  q?: QuoteChannel;
+  q?: MoversChannel;
 }
 const render = ({ r, k, d, p, q }: Channels) =>
   renderToStaticMarkup(
-    <DashboardPanels ross={r && (channel(r) as RossChannel)} rocket={k && (channel(k) as RocketChannel)} detection={d && (channel(d) as DetectionChannel)} pressure={p} quotes={q} onPick={() => {}} onEpisodePick={() => {}}>
+    <DashboardPanels ross={r && (channel(r) as RossChannel)} rocket={k && (channel(k) as RocketChannel)} detection={d && (channel(d) as DetectionChannel)} pressure={p} movers={q} onPick={() => {}} onEpisodePick={() => {}}>
       <div data-testid="charts" />
     </DashboardPanels>,
   );
 const group = (html: string, g: "side" | "bottom") => html.match(new RegExp(`data-panel-group="${g}" data-open="(open|closed)"`))?.[1];
 const slots = (html: string) => [...html.matchAll(/data-slot-panel="(\w+)"/g)].map((m) => m[1]);
 
-// GAIN: +40% on $3M; HOTL: +1% on $9M (both lists); THIN: +90% on 20 prints (neither).
-const movers = quotesChannel(board({ GAIN: quote(3, 40, 1_000_000), HOTL: quote(10, 1, 900_000), THIN: quote(1, 90, 1_000_000, 20) }));
+// GAIN: +40% on $3M; HOTL: +1% on $9M (a gainer and a bull); DUMP: -20% on $5M (bear).
+const GAIN = mover("GAIN", 3, 40, 3_000_000);
+const HOTL = mover("HOTL", 10, 1, 9_000_000);
+const DUMP = mover("DUMP", 2, -20, 5_000_000);
+const movers = moversChannel(moversState({ gainers: [GAIN, HOTL], bull: [HOTL, GAIN], bear: [DUMP] }));
 const everything = (): Channels => ({ r: ross(["AAAA"]), k: rocket(["BBBB"]), d: detection(["CCCC"]), p: pressureChannel([card("HALT")]), q: movers });
 
 describe("dashboard layout: right column and bottom row (owner, 2026-10-30)", () => {
@@ -77,18 +84,31 @@ describe("dashboard layout: right column and bottom row (owner, 2026-10-30)", ()
     expect(html).not.toContain('role="tab"');
   });
 
-  test("Top Gainers and Hot stocks rank the quote board; a thin print never lists", () => {
+  test("Top Gainers shows the server's list; Hot stocks splits into Bull and Bear, each with its count", () => {
     const html = render(everything());
     const gainers = html.slice(html.indexOf('data-panel="gainers"'), html.indexOf('data-slot-panel="ross"'));
     expect(gainers).toContain("GAIN");
-    expect(gainers.indexOf("GAIN")).toBeLessThan(gainers.indexOf("HOTL"));
     expect(gainers).toContain("+40.0%");
     expect(gainers).toContain("$3M");
-    expect(html).not.toContain("THIN");
+    expect(gainers).not.toContain("DUMP");
     const hot = html.slice(html.indexOf('data-panel="hot"'));
-    // $9M before $3M.
-    expect(hot.indexOf("HOTL")).toBeLessThan(hot.indexOf("GAIN"));
-    expect(hot).toContain("$9M");
+    const bull = hot.slice(hot.indexOf('data-section="bull"'), hot.indexOf('data-section="bear"'));
+    const bear = hot.slice(hot.indexOf('data-section="bear"'));
+    // Sorted by dollar volume by default: $9M before $3M.
+    expect(bull.indexOf("HOTL")).toBeLessThan(bull.indexOf("GAIN"));
+    expect(bull).not.toContain("DUMP");
+    expect(bear).toContain("DUMP");
+    expect(bear).toContain("−20.0%");
+    // The sort is a segmented control, never a native select.
+    expect(hot).toContain('aria-label="Sort Hot stocks"');
+  });
+
+  test("an empty section closes; an empty Hot stocks hides", () => {
+    const html = render({ ...everything(), q: moversChannel(moversState({ gainers: [GAIN], bull: [GAIN] })) });
+    const hot = html.slice(html.indexOf('data-panel="hot"'));
+    expect(hot).toContain('data-reveal="closed"');
+    expect(hot).not.toContain('data-section="bear"');
+    expect(slots(render({ ...everything(), q: moversChannel(moversState({ gainers: [GAIN] })) }))).not.toContain("hot");
   });
 
   test("a panel with 0 items is not drawn; the others share the space", () => {
@@ -107,7 +127,7 @@ describe("dashboard layout: right column and bottom row (owner, 2026-10-30)", ()
   });
 
   test("every right-column panel empty: the column closes and the charts take its width", () => {
-    const html = render({ ...everything(), d: detection([]), q: quotesChannel(board({ HOTL: quote(10, 1, 20_000) })) });
+    const html = render({ ...everything(), d: detection([]), q: moversChannel(moversState({ bull: [HOTL] })) });
     expect(group(html, "side")).toBe("closed");
     expect(html).toContain("--side-w:0px");
     expect(group(html, "bottom")).toBe("open");
@@ -115,10 +135,10 @@ describe("dashboard layout: right column and bottom row (owner, 2026-10-30)", ()
   });
 
   test("every bottom panel empty: the row closes", () => {
-    const html = render({ d: detection(["CCCC"]), r: ross([]), k: rocket([]), p: pressureChannel([]), q: quotesChannel(new Map()) });
+    const html = render({ d: detection(["CCCC"]), r: ross([]), k: rocket([]), p: pressureChannel([]), q: moversChannel(moversState({})) });
     expect(group(html, "bottom")).toBe("closed");
     expect(html).toContain("--bottom-h:0px");
-    expect(html).not.toContain('role="separator"');
+    expect(html).not.toContain('aria-label="Resize the bottom panels"');
     expect(slots(html)).toEqual(["signals"]);
   });
 
@@ -132,9 +152,9 @@ describe("dashboard layout: right column and bottom row (owner, 2026-10-30)", ()
   });
 
   test("first snapshots still loading: nothing opens a panel at a time", () => {
-    // Runners has not said whether it is on; the quote board and the Halt watcher have no frame yet.
+    // Runners has not said whether it is on; the movers and the Halt watcher have no frame yet.
     expect(slots(render({ ...everything(), k: { ...EMPTY_ROCKET } }))).toEqual([]);
-    expect(slots(render({ ...everything(), q: quotesChannel(EMPTY_QUOTE_BOARD) }))).toEqual([]);
+    expect(slots(render({ ...everything(), q: moversChannel(EMPTY_MOVERS) }))).toEqual([]);
     expect(slots(render({ ...everything(), p: pressureChannel([], EMPTY_PRESSURE_STATUS) }))).toEqual([]);
   });
 
@@ -155,5 +175,10 @@ describe("dashboard layout: right column and bottom row (owner, 2026-10-30)", ()
     expect(html).not.toMatch(/<select|<details|<dialog/);
     // The bottom row's top edge resizes it, reachable by keyboard.
     expect(html).toMatch(/role="separator"[^>]*aria-orientation="horizontal"[^>]*tabindex="0"/);
+    // The right column's left edge resizes its width (280–640px), and the boundary between two
+    // of its panels their split; the first panel has no boundary above it.
+    expect(html).toMatch(/role="separator" aria-orientation="vertical" aria-label="Resize the right column" aria-valuenow="400" aria-valuemin="280" aria-valuemax="640"/);
+    expect(html).toContain('aria-label="Resize Top Gainers against the panel above"');
+    expect(html).not.toContain('aria-label="Resize Signals against the panel above"');
   });
 });

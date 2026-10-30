@@ -121,6 +121,13 @@ export interface QuoteRowWire {
    * trading date moved on); a client keeps the last one it got for the row.
    */
   pc?: number;
+  /**
+   * How `pc` relates to the closes file (crates/server/src/quotes.rs `PcBasis`): `split` = put on
+   * today's share basis by a known split; `guard` = withheld because the day's first print is a
+   * split factor away from it and no split is known (measure against `o`, and drop any `pc` held
+   * for the row). Absent for a plain close.
+   */
+  pcb?: "split" | "guard";
   /** Fallback change reference when there is no `pc`: the regular open, or the day's first price while `pre` is set. */
   o: number;
   /** Day volume (shares) and prints counted, by the candles' volume rule. */
@@ -148,6 +155,62 @@ export interface QuotesUpdateMessage {
 }
 
 export type QuotesMessage = QuotesSnapshotMessage | QuotesUpdateMessage;
+
+/**
+ * One movers row (crates/server/src/movers.rs): Top Gainers, Hot stocks Bull and Bear are ranked
+ * on the server once a tick and pushed as these. Prices are micros.
+ */
+export interface MoverRowWire {
+  symbol: string;
+  /** Last price (micros), the quote board's. */
+  price: number;
+  /** Previous close (micros), on today's share basis; absent when unknown or withheld (`pcb`). */
+  pc?: number;
+  /** `split`: `pc` was split-adjusted; `guard`: the close was withheld (the day trades on another basis). */
+  pcb?: "split" | "guard";
+  /** The fallback reference (micros): the regular open, else the day's first price. */
+  ref: number;
+  /** Change %, against `pc`, else `ref` (3 decimals). */
+  chg: number;
+  /** Dollar volume (last price × day volume), whole dollars. */
+  dv: number;
+  volume: number;
+  trades: number;
+  halted?: boolean;
+  /** The day line, as `ross.*` rows carry it (crates/server/src/day_line.rs): whole in a snapshot, a slice in an update. */
+  day_line_start?: number;
+  day_line_step_s?: number;
+  day_line_from?: number;
+  day_line?: number[];
+  prev_close?: number;
+}
+
+export interface MoversSnapshotMessage {
+  type: "movers.snapshot";
+  /** The market clock, epoch ms. */
+  t: number | null;
+  /** Symbols in rank order, at most 25 each. */
+  gainers: string[];
+  bull: string[];
+  bear: string[];
+  /** One row per symbol in any list. */
+  rows: MoverRowWire[];
+}
+
+/** Only what changed: a list only when it changed (whole), rows that changed, entered or gained day-line points, `gone` symbols in no list. */
+export interface MoversUpdateMessage {
+  type: "movers.update";
+  t: number | null;
+  gainers?: string[];
+  bull?: string[];
+  bear?: string[];
+  rows: MoverRowWire[];
+  gone?: string[];
+}
+
+export type MoversMessage = MoversSnapshotMessage | MoversUpdateMessage;
+
+export type MoversClientMessage = { type: "movers.subscribe" } | { type: "movers.unsubscribe" };
 
 export interface QuotesSubscribeMessage {
   type: "quotes.subscribe";
@@ -630,8 +693,8 @@ export interface PushUnregisterMessage {
   token: string;
 }
 
-export type ClientMessage = HelloMessage | PingMessage | PongMessage | QuotesSubscribeMessage | QuotesUnsubscribeMessage | PressureSubscribeMessage | PressureUnsubscribeMessage | RossSubscribeMessage | RossUnsubscribeMessage | import("./favorites.ts").FavoritesClientMessage | { type: "detection.subscribe" | "detection.unsubscribe" } | import("./rocket.ts").RocketClientMessage | SettingsClientMessage | PushRegisterMessage | PushUnregisterMessage | import("./runnersNotify.ts").RunnersNotifyMessage;
-export type ServerMessage = WelcomeMessage | PingMessage | PongMessage | ErrorMessage | QuotesMessage | PressureMessage | RossMessage | import("./favorites.ts").FavoritesMessage | import("./detection.ts").DetectionMessage | import("./rocket.ts").RocketMessage | SettingsServerMessage | AlertsServerMessage | import("./runnersNotify.ts").RunnersNoticeMessage;
+export type ClientMessage = HelloMessage | PingMessage | PongMessage | QuotesSubscribeMessage | QuotesUnsubscribeMessage | PressureSubscribeMessage | PressureUnsubscribeMessage | RossSubscribeMessage | RossUnsubscribeMessage | import("./favorites.ts").FavoritesClientMessage | MoversClientMessage | { type: "detection.subscribe" | "detection.unsubscribe" } | import("./rocket.ts").RocketClientMessage | SettingsClientMessage | PushRegisterMessage | PushUnregisterMessage | import("./runnersNotify.ts").RunnersNotifyMessage;
+export type ServerMessage = WelcomeMessage | PingMessage | PongMessage | ErrorMessage | QuotesMessage | PressureMessage | RossMessage | import("./favorites.ts").FavoritesMessage | MoversMessage | import("./detection.ts").DetectionMessage | import("./rocket.ts").RocketMessage | SettingsServerMessage | AlertsServerMessage | import("./runnersNotify.ts").RunnersNoticeMessage;
 
 const ALERT_TYPES = new Set(["alerts.history", "alert.fired", "alert.held", "alert.updated", "alerts.status"]);
 
@@ -640,7 +703,7 @@ export function isAlertsMessage(m: ServerMessage): m is AlertsServerMessage {
   return ALERT_TYPES.has(m.type);
 }
 
-const SERVER_TYPES = new Set(["welcome", "ping", "pong", "error", "quotes.snapshot", "quotes.update", "pressure.snapshot", "pressure.update", "ross.snapshot", "ross.update", "favorites.snapshot", "favorites.update", "detection.snapshot", "detection.update", "rocket.snapshot", "rocket.update", "settings.snapshot", "settings.changed", "settings.rejected", ...ALERT_TYPES]);
+const SERVER_TYPES = new Set(["welcome", "ping", "pong", "error", "quotes.snapshot", "quotes.update", "pressure.snapshot", "pressure.update", "ross.snapshot", "ross.update", "favorites.snapshot", "favorites.update", "movers.snapshot", "movers.update", "detection.snapshot", "detection.update", "rocket.snapshot", "rocket.update", "settings.snapshot", "settings.changed", "settings.rejected", ...ALERT_TYPES]);
 
 /** Parses one server frame; returns null for anything malformed or unknown. */
 export function parseServerMessage(raw: unknown): ServerMessage | null {

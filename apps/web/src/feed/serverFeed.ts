@@ -1,5 +1,5 @@
 import { createChartRouter, parseChartMessage, parsePaperMessage, type ChartSubscribe, type ChartUnsubscribe, type PaperMessage, type PaperState, type ReplayControl } from "@stockwatcher/chart-core";
-import { createDetectionChannel, createFavoritesChannel, createPressureChannel, createQuoteChannel, createRocketChannel, createRossChannel, createWsClient, serverWsUrl, type AlertsServerMessage, type ConnectionStatus, type MarketSource, type SettingsSync, type WebSocketLike } from "@stockwatcher/shared";
+import { createDetectionChannel, createFavoritesChannel, createMoversChannel, createPressureChannel, createQuoteChannel, createRocketChannel, createRossChannel, createWsClient, serverWsUrl, type AlertsServerMessage, type ConnectionStatus, type MarketSource, type SettingsSync, type WebSocketLike } from "@stockwatcher/shared";
 import type { RunnersNotifier } from "../notify/runnersNotify.ts";
 import type { ChartFeed, PaperCommand, ReplayCommand } from "./types.ts";
 
@@ -46,6 +46,9 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
   const ross = createRossChannel({ subscribe: () => client.subscribeRoss(), unsubscribe: () => client.unsubscribeRoss() });
   // The Favorites panel's rows (the list itself is a synced setting), opted in while it is mounted.
   const favorites = createFavoritesChannel({ subscribe: () => client.subscribeFavorites(), unsubscribe: () => client.unsubscribeFavorites() });
+  // Top Gainers and Hot stocks Bull / Bear, ranked on the server (movers.*), opted in while the
+  // dashboard shows them. This replaced holding the whole quote board open for them.
+  const movers = createMoversChannel({ subscribe: () => client.subscribeMovers(), unsubscribe: () => client.unsubscribeMovers() });
   // Rocket watch (experimental), opted in while its tab is open.
   const rocket = createRocketChannel({ subscribe: () => client.subscribeRocket(), unsubscribe: () => client.unsubscribeRocket() });
   const detection = createDetectionChannel({ source: opts.source, subscribe: () => client.subscribeDetection(), unsubscribe: () => client.unsubscribeDetection(), resync: () => client.subscribeDetection() });
@@ -70,6 +73,7 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
       // panel nobody is updating must not read as live (shared/ross.ts `rossFreshness`).
       ross.setConnected(s === "open");
       favorites.setConnected(s === "open");
+      movers.setConnected(s === "open");
       pressure.setConnected(s === "open");
       rocket.setConnected(s === "open");
       detection.setConnected(s === "open");
@@ -79,6 +83,7 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
     onPressure: (m) => pressure.apply(m),
     onRoss: (m) => ross.apply(m),
     onFavorites: (m) => favorites.apply(m),
+    onMovers: (m) => movers.apply(m),
     onRocket: (m) => rocket.apply(m),
     onDetection: (m) => detection.apply(m),
     onDetectionError: (reason) => detection.reject(reason),
@@ -96,7 +101,7 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
         // A quotes.snapshot is hundreds of KB: hand it to shared's parser without first
         // parsing it twice as a chart or paper frame. The server writes `type` first. The
         // settings.*, pressure.* and alert frames (shared's own too) take the same shortcut.
-        if (typeof ev.data === "string" && (ev.data.startsWith('{"type":"quotes.') || ev.data.startsWith('{"type":"settings.') || ev.data.startsWith('{"type":"pressure.') || ev.data.startsWith('{"type":"ross.') || ev.data.startsWith('{"type":"favorites.') || ev.data.startsWith('{"type":"rocket.') || ev.data.startsWith('{"type":"alert') || ev.data.startsWith('{"type":"runners.') || /"type"\s*:\s*"detection\.(snapshot|update)"/.test(ev.data))) {
+        if (typeof ev.data === "string" && (ev.data.startsWith('{"type":"quotes.') || ev.data.startsWith('{"type":"settings.') || ev.data.startsWith('{"type":"pressure.') || ev.data.startsWith('{"type":"ross.') || ev.data.startsWith('{"type":"favorites.') || ev.data.startsWith('{"type":"movers.') || ev.data.startsWith('{"type":"rocket.') || ev.data.startsWith('{"type":"alert') || ev.data.startsWith('{"type":"runners.') || /"type"\s*:\s*"detection\.(snapshot|update)"/.test(ev.data))) {
           inner?.({ data: ev.data });
           return;
         }
@@ -154,6 +159,7 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
     pressure,
     ross,
     favorites,
+    movers,
     rocket,
     detection,
     close() {

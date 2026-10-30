@@ -96,3 +96,18 @@ test("updates leave pc out unless it changed; a later snapshot is the whole trut
   expect(fresh.get("AAA")!.prevClose).toBeUndefined();
   expect(fresh.get("AAA")!.changePct).toBeCloseTo(10, 9);
 });
+
+test("a guarded close is dropped, even one the row already held (reverse split, owner 2026-10-30)", () => {
+  // ATYR closed at $0.128 and trades at $5.17 after a 1-for-40 reverse split.
+  let b = applyQuotesMessage(new Map(), { type: "quotes.snapshot", t: 0, quotes: [{ s: "ATYR", p: 5.17, pc: 0.128, o: 5, v: 1_000, n: 200 }] });
+  expect(Math.round(b.get("ATYR")!.changePct)).toBe(3939);
+  b = applyQuotesMessage(b, { type: "quotes.update", t: 1, quotes: [{ s: "ATYR", p: 5.2, pcb: "guard", o: 5, v: 1_100, n: 210 }] });
+  const q = b.get("ATYR")!;
+  expect(q.prevClose).toBeUndefined();
+  expect(q.closeBasis).toBe("guard");
+  expect(q.changePct).toBeCloseTo(4, 5);
+  // A split-adjusted close is used as is and says so.
+  b = applyQuotesMessage(b, { type: "quotes.snapshot", t: 2, quotes: [{ s: "ATYR", p: 5.17, pc: 5.12, pcb: "split", o: 5, v: 1_000, n: 200 }] });
+  expect(b.get("ATYR")!.closeBasis).toBe("split");
+  expect(b.get("ATYR")!.changePct).toBeCloseTo(0.9766, 3);
+});

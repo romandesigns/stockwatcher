@@ -37,6 +37,8 @@ export interface WsClientOptions {
   onRocket?: (message: RocketMessage) => void;
   /** `favorites.snapshot` / `favorites.update` frames, while subscribed (see `subscribeFavorites`). */
   onFavorites?: (message: import("./favorites.ts").FavoritesMessage) => void;
+  /** `movers.snapshot` / `movers.update` frames, while subscribed (see `subscribeMovers`). */
+  onMovers?: (message: import("./protocol.ts").MoversMessage) => void;
   onDetection?: (message: DetectionMessage) => void;
   onDetectionError?: (reason: string) => void;
   /** The price alerts' frames (`alerts.history`, `alert.fired`, …): every connection gets them. */
@@ -81,6 +83,9 @@ export interface WsClient {
   /** The Favorites panel (`favorites.*`), remembered across reconnects like the Ross opt-in. */
   subscribeFavorites(): void;
   unsubscribeFavorites(): void;
+  /** Top Gainers and Hot stocks Bull / Bear (`movers.*`), remembered across reconnects like the Favorites opt-in. */
+  subscribeMovers(): void;
+  unsubscribeMovers(): void;
   subscribeDetection(): void;
   unsubscribeDetection(): void;
   /** Sends `runnersNotify()` now (or `enabled: false` when it is null): the switches changed. */
@@ -126,6 +131,7 @@ export function createWsClient(opts: WsClientOptions): WsClient {
   let rossWanted = false;
   let rocketWanted = false;
   let favoritesWanted = false;
+  let moversWanted = false;
   let detectionWanted = false;
 
   const setStatus = (s: ConnectionStatus) => opts.onStatus?.(s);
@@ -179,6 +185,7 @@ export function createWsClient(opts: WsClientOptions): WsClient {
         if (rossWanted) send({ type: "ross.subscribe" });
         if (rocketWanted) send({ type: "rocket.subscribe" });
         if (favoritesWanted) send({ type: "favorites.subscribe" });
+        if (moversWanted) send({ type: "movers.subscribe" });
         if (detectionWanted) send({ type: "detection.subscribe" });
         const notify = opts.runnersNotify?.();
         if (notify) send(notify);
@@ -198,6 +205,8 @@ export function createWsClient(opts: WsClientOptions): WsClient {
         opts.onRocket?.(msg);
       } else if ((msg.type === "favorites.snapshot" || msg.type === "favorites.update") && favoritesWanted) {
         opts.onFavorites?.(msg);
+      } else if ((msg.type === "movers.snapshot" || msg.type === "movers.update") && moversWanted) {
+        opts.onMovers?.(msg);
       } else if ((msg.type === "detection.snapshot" || msg.type === "detection.update") && detectionWanted) {
         opts.onDetection?.(msg);
       } else if (msg.type === "settings.snapshot" || msg.type === "settings.changed" || msg.type === "settings.rejected") {
@@ -266,6 +275,14 @@ export function createWsClient(opts: WsClientOptions): WsClient {
     unsubscribeFavorites() {
       favoritesWanted = false;
       send({ type: "favorites.unsubscribe" });
+    },
+    subscribeMovers() {
+      moversWanted = true;
+      send({ type: "movers.subscribe" });
+    },
+    unsubscribeMovers() {
+      moversWanted = false;
+      send({ type: "movers.unsubscribe" });
     },
     subscribeDetection() {
       detectionWanted = true;

@@ -214,4 +214,11 @@ describe("Top Gainers / Hot stocks rows", () => {
     expect(none.flame).toBeNull();
     expect(none.path).toBeNull();
   });
+
+  test("the last minute's tail is read off the row's day line", () => {
+    // Two 30 s points back was -e.60; the live price is -e.68: +13.3 % in the last minute.
+    const m = moverRowMarks(0.68, undefined, T, fmt, [550_000, 600_000, 650_000]);
+    expect(m.tail).toEqual(tailMark((0.68 / 0.6 - 1) * 100));
+    expect(moverRowMarks(0.68, undefined, T, fmt, [600_000]).tail).toBeNull();
+  });
 });

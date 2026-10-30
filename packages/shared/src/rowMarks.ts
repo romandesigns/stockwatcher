@@ -340,12 +340,15 @@ export function favoriteRowMarks(r: FavoriteRowWire, runner: RocketRowWire | nul
 }
 
 /**
- * A Top Gainers or Hot stocks row's marks (owner, 2026-10-30). A quote-board row carries only a
- * price, change and volume, so it can mark only what joining today's Runners row adds: the flame
- * (a fresh Buying burst still holding, at the row's last price) and the Runners path. Everything
- * else stays null and is not drawn.
+ * A Top Gainers or Hot stocks (Bull / Bear) row's marks (owner, 2026-10-30). A movers row carries a
+ * price, change, volume and its day line, so it marks what joining today's Runners row adds (the
+ * flame: a fresh Buying burst still holding, at the row's last price; the Runners path) and, given
+ * `dayLine` (micros), the last minute's tail. Everything else stays null and is not drawn.
  */
-export function moverRowMarks(price: number, runner: RocketRowWire | null | undefined, nowMs: number, formatTime: (epochMs: number) => string): RowMarks {
+export function moverRowMarks(price: number, runner: RocketRowWire | null | undefined, nowMs: number, formatTime: (epochMs: number) => string, dayLine?: readonly number[]): RowMarks {
+  // The last minute, off the row's own day line (the close two 30 s points back against the live
+  // price, in micros), as a favorite's tail is read: the movers rows carry the line since 2026-10-30.
+  const back = dayLine && dayLine.length >= 2 ? dayLine[dayLine.length - 2]! : null;
   return {
     flame: flameMark(burstOf(runner), price, nowMs),
     pillars: null,
@@ -354,6 +357,6 @@ export function moverRowMarks(price: number, runner: RocketRowWire | null | unde
     path: runner ? pathMark(runner.kind ?? "runner", runner.at, nowMs, formatTime) : null,
     zone: null,
     stage: null,
-    tail: null,
+    tail: back ? tailMark((price * 1_000_000 / back - 1) * 100) : null,
   };
 }
