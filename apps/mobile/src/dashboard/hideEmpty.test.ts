@@ -13,10 +13,18 @@ test("every dashboard card and the Halt watcher row collapse at 0 items", () => 
   expect(read("RocketPanel.tsx")).toContain("<Collapse open={counts.bursts + counts.flags > 0} reducedMotion={reducedMotion} gap={gap}>");
   expect(read("DetectionPanel.tsx")).toContain("<Collapse open={counts.active + counts.recent > 0} reducedMotion={reducedMotion} gap={gap}>");
   expect(read("HaltWatcher.tsx")).toContain("<Collapse open={board.length > 0} reducedMotion={reducedMotion} gap={gap}>");
+  // Top Gainers and Hot stocks: the shared count (Bull and Bear together for Hot stocks).
+  expect(read("MoversPanel.tsx")).toContain("<Collapse open={moversCount(state, kind) > 0} reducedMotion={reducedMotion} gap={gap}>");
+});
+
+test("Hot stocks: Bull and Bear each collapse at 0", () => {
+  const src = read("MoversPanel.tsx");
+  expect(src).toContain("<Collapse open={rows.length > 0} reducedMotion={reducedMotion} gap={CARD_GAP}>");
+  expect(src.indexOf('list="bull"')).toBeLessThan(src.indexOf('list="bear"'));
 });
 
 test("no quiet, off or connecting lines left to draw", () => {
-  const all = ["RossPanel.tsx", "RocketPanel.tsx", "DetectionPanel.tsx", "HaltWatcher.tsx"].map(read).join("\n");
+  const all = ["RossPanel.tsx", "RocketPanel.tsx", "DetectionPanel.tsx", "HaltWatcher.tsx", "MoversPanel.tsx"].map(read).join("\n");
   for (const s of ["Connecting…", "Off on this server", "No stock at 5/5", "Nothing flagged right now", "No buying bursts yet today", "NO_BUILDUPS", "Nothing developing right now"]) expect(all).not.toContain(s);
 });
 
@@ -32,7 +40,7 @@ test("Runners: the Bursts section and the Flags section each collapse at 0; the 
 
 test("the dashboard passes its gap so a closed card takes no space; cards stay mounted (subscriptions, banners)", () => {
   const screen = read("../screens/DashboardScreen.tsx");
-  for (const c of ["<HaltWatcher ", "<RossPanel ", "<DetectionPanel ", "<RocketPanel "]) {
+  for (const c of ["<HaltWatcher ", "<RossPanel ", "<DetectionPanel ", "<RocketPanel ", '<MoversPanel kind="gainers" ', '<MoversPanel kind="hot" ']) {
     const at = screen.indexOf(c);
     expect(at).toBeGreaterThan(0);
     expect(screen.slice(at, screen.indexOf("/>", at))).toContain("gap={GAP}");

@@ -13,7 +13,7 @@ import {
   type ReplayControl,
   type Timeframe,
 } from "@stockwatcher/chart-core";
-import { createDetectionChannel, createFavoritesChannel, createPressureChannel, createQuoteChannel, createRocketChannel, createRossChannel, createWsClient, type AlertsServerMessage, type ConnectionStatus, type DetectionChannel, type FavoritesChannel, type MarketSource, type PressureChannel, type QuoteChannel, type RocketChannel, type RossChannel, type SettingsSync, type WebSocketLike } from "@stockwatcher/shared";
+import { createDetectionChannel, createFavoritesChannel, createMoversChannel, createPressureChannel, createQuoteChannel, createRocketChannel, createRossChannel, createWsClient, type AlertsServerMessage, type ConnectionStatus, type DetectionChannel, type FavoritesChannel, type MarketSource, type MoversChannel, type PressureChannel, type QuoteChannel, type RocketChannel, type RossChannel, type SettingsSync, type WebSocketLike } from "@stockwatcher/shared";
 
 import { deviceInfo, pushToken, subscribePushToken } from "../notifications/push";
 import { runnersRegisterFields, subscribeRunnersPush } from "../notifications/runnersPush";
@@ -42,6 +42,11 @@ export interface MobileFeed {
   ross: RossChannel;
   /** The Favorites card's rows (the list is the synced `favorites` setting); subscribing opts in. */
   favorites: FavoritesChannel;
+  /**
+   * Top Gainers and Hot stocks Bull / Bear, ranked on the server once a tick (`movers.*`,
+   * crates/server/src/movers.rs); subscribing opts in. Never the whole quote board for them.
+   */
+  movers: MoversChannel;
   /** Rocket watch (experimental): flags of a likely +30 % leg; subscribing opts the connection in. */
   rocket: RocketChannel;
   /** Independent authoritative event discovery; it does not subscribe to chart bars. */
@@ -69,6 +74,7 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
   const pressure = createPressureChannel({ subscribe: () => client.subscribePressure(), unsubscribe: () => client.unsubscribePressure() });
   const ross = createRossChannel({ subscribe: () => client.subscribeRoss(), unsubscribe: () => client.unsubscribeRoss() });
   const favorites = createFavoritesChannel({ subscribe: () => client.subscribeFavorites(), unsubscribe: () => client.unsubscribeFavorites() });
+  const movers = createMoversChannel({ subscribe: () => client.subscribeMovers(), unsubscribe: () => client.unsubscribeMovers() });
   const rocket = createRocketChannel({ subscribe: () => client.subscribeRocket(), unsubscribe: () => client.unsubscribeRocket() });
   const detection = createDetectionChannel({ subscribe: () => client.subscribeDetection(), unsubscribe: () => client.unsubscribeDetection(), resync: () => client.subscribeDetection(), source });
 
@@ -102,6 +108,7 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
       // panel nobody is updating must not read as live (shared/ross.ts `rossFreshness`).
       ross.setConnected(s === "open");
       favorites.setConnected(s === "open");
+      movers.setConnected(s === "open");
       pressure.setConnected(s === "open");
       rocket.setConnected(s === "open");
       detection.setConnected(s === "open");
@@ -116,6 +123,7 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
     onPressure: (m) => pressure.apply(m),
     onRoss: (m) => ross.apply(m),
     onFavorites: (m) => favorites.apply(m),
+    onMovers: (m) => movers.apply(m),
     onRocket: (m) => rocket.apply(m),
     onDetection: (m) => detection.apply(m),
     onDetectionError: (reason) => detection.reject(reason),
@@ -130,7 +138,7 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
         // A quotes.snapshot is hundreds of KB: skip the chart/paper parsers (the server writes
         // `type` first), which would each JSON.parse it again on the phone's JS thread. The
         // settings.* and pressure.* frames are shared's own too and take the same shortcut.
-        if (typeof ev.data === "string" && (ev.data.startsWith('{"type":"quotes.') || ev.data.startsWith('{"type":"settings.') || ev.data.startsWith('{"type":"pressure.') || ev.data.startsWith('{"type":"ross.') || ev.data.startsWith('{"type":"favorites.') || ev.data.startsWith('{"type":"rocket.') || ev.data.startsWith('{"type":"detection.') || ev.data.startsWith('{"type":"alert'))) {
+        if (typeof ev.data === "string" && (ev.data.startsWith('{"type":"quotes.') || ev.data.startsWith('{"type":"settings.') || ev.data.startsWith('{"type":"pressure.') || ev.data.startsWith('{"type":"ross.') || ev.data.startsWith('{"type":"favorites.') || ev.data.startsWith('{"type":"movers.') || ev.data.startsWith('{"type":"rocket.') || ev.data.startsWith('{"type":"detection.') || ev.data.startsWith('{"type":"alert'))) {
           inner?.({ data: ev.data });
           return;
         }
@@ -183,6 +191,7 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
     pressure,
     ross,
     favorites,
+    movers,
     rocket,
     detection,
     close() {

@@ -1,6 +1,6 @@
 import { ChartStore, parseReplayAlerts, parseReplayDayState, type ChartMessage, type Clock, type PaperState, type ReplayAlert, type ReplayDayState, type Series, type TapeTrade, type Timeframe } from "@stockwatcher/chart-core";
 import type { ChartTrading } from "@stockwatcher/chart-native";
-import { authenticatedFetch, EMPTY_QUOTE_BOARD, parseLiveSession, withMarketSource, type DetectionChannel, type DetectionState, type FavoritesChannel, type FavoritesState, type LiveSession, type MarketSource, type PressureBoard, type PressureChannel, type PressureStatus, type QuoteBoard, type QuoteChannel, type RocketChannel, type RocketState, type RossChannel, type RossState, zoneSelector, type ZoneView } from "@stockwatcher/shared";
+import { authenticatedFetch, EMPTY_QUOTE_BOARD, parseLiveSession, withMarketSource, type DetectionChannel, type DetectionState, type FavoritesChannel, type FavoritesState, type LiveSession, type MarketSource, type MoversChannel, type MoversState, type PressureBoard, type PressureChannel, type PressureStatus, type QuoteBoard, type QuoteChannel, type RocketChannel, type RocketState, type RossChannel, type RossState, zoneSelector, type ZoneView } from "@stockwatcher/shared";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { SERVER_URL } from "./server";
@@ -84,6 +84,15 @@ export function useRoss(channel: RossChannel): RossState {
 
 /** The Favorites card's rows while mounted (the web's useFavorites). */
 export function useFavorites(channel: FavoritesChannel): FavoritesState {
+  const subscribe = useCallback((cb: () => void) => channel.subscribe(cb), [channel]);
+  return useSyncExternalStore(subscribe, useCallback(() => channel.get(), [channel]));
+}
+
+/**
+ * Top Gainers and Hot stocks Bull / Bear while the dashboard shows them (the web's useMovers):
+ * the first listener opts the connection in to movers.* frames, the last opts it out.
+ */
+export function useMovers(channel: MoversChannel): MoversState {
   const subscribe = useCallback((cb: () => void) => channel.subscribe(cb), [channel]);
   return useSyncExternalStore(subscribe, useCallback(() => channel.get(), [channel]));
 }

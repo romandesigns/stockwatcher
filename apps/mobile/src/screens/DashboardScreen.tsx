@@ -8,6 +8,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { HaltWatcher } from "../dashboard/HaltWatcher";
 import { DetectionPanel } from "../dashboard/DetectionPanel";
 import { FavoritesPanel } from "../dashboard/FavoritesPanel";
+import { MoversPanel } from "../dashboard/MoversPanel";
 import { RossPanel } from "../dashboard/RossPanel";
 import { RocketPanel } from "../dashboard/RocketPanel";
 import { setDashboardFeed } from "../feed/dashboardFeed";
@@ -71,16 +72,25 @@ function DashboardView({ feed, token, source }: { feed: MobileFeed; token: strin
 
       {/* One row of six mini gauges, all in view (owner, 2026-10-19); a tap opens the ticker's chart. */}
       <HaltWatcher channel={feed.pressure} onPick={open} reducedMotion={reducedMotion} gap={GAP} />
-      {/* The Ross Panel card (owner, 2026-10-20): a tapped row opens the chart modal like a gauge. */}
+      {/* The cards, one scroll under the gauges. */}
       <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 8, gap: GAP }}>
-        {/* The owner's own list first (owner, 2026-10-26): hidden while it is empty, like every card. */}
+        {/* The web's panel order (owner, 2026-10-30 wireframe; shared panels.ts SIDE_PANELS then
+            BOTTOM_PANELS), stacked for the phone: its right column (Favorites, Signals, Top
+            Gainers), then its bottom row (Ross, Runners, Hot stocks). The Halt watcher keeps its
+            row of gauges above the scroll (owner, 2026-10-19). Every card hides while it has 0
+            items and opens or closes by its real height; a tapped row opens the chart modal. */}
+        {/* The owner's own list first (owner, 2026-10-26). */}
         <FavoritesPanel channel={feed.favorites} runners={feed.rocket} onPick={open} reducedMotion={reducedMotion} gap={GAP} />
-        <RossPanel channel={feed.ross} detection={feed.detection} runners={feed.rocket} onPick={open} reducedMotion={reducedMotion} gap={GAP} />
-        {/* Signals (design canvas "Detection Panel", phone): its card under Ross, only while the
-            server's detector is on; a tapped row opens the chart modal with the episode drawn. */}
+        {/* Signals (design canvas "Detection Panel", phone): only while the server's detector is
+            on; a tapped row opens the chart modal with the episode drawn. */}
         <DetectionPanel channel={feed.detection} onPick={open} reducedMotion={reducedMotion} gap={GAP} />
-        {/* Rocket watch (owner, 2026-10-21; experimental): under the Ross card, same row gestures. */}
+        {/* Top Gainers (owner, 2026-10-30): ranked on the server, the movers channel. */}
+        <MoversPanel kind="gainers" channel={feed.movers} runners={feed.rocket} onPick={open} reducedMotion={reducedMotion} gap={GAP} />
+        <RossPanel channel={feed.ross} detection={feed.detection} runners={feed.rocket} onPick={open} reducedMotion={reducedMotion} gap={GAP} />
+        {/* Rocket watch (owner, 2026-10-21; experimental): same row gestures. */}
         <RocketPanel channel={feed.rocket} onPick={open} reducedMotion={reducedMotion} gap={GAP} />
+        {/* Hot stocks, Bull and Bear (owner, 2026-10-30): the movers channel too. */}
+        <MoversPanel kind="hot" channel={feed.movers} runners={feed.rocket} onPick={open} reducedMotion={reducedMotion} gap={GAP} />
       </ScrollView>
       {candidates.length === 0 && !fixture && (
         // The dashboard reads the LIVE market: an empty list means nothing has traded yet this
