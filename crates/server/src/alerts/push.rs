@@ -609,8 +609,14 @@ fn expo_message(job: &Job, token: &str) -> Value {
     // A Runners push gets the phone's "Copy ticker" button (super::runners::CATEGORY_ID). Expo
     // forwards `categoryId` to Android in the FCM data (expo-notifications NotificationData reads
     // `categoryId`) and to iOS as the APNs category. A price alert's push has no button.
-    if job.runner.is_some() {
+    if let Some(r) = &job.runner {
         m["categoryId"] = Value::from(super::runners::CATEGORY_ID);
+        // Every distinct event is its own push (super::runners, "Every distinct event is
+        // delivered"), so a burst of them on one stock stacks under that stock instead of
+        // scattering: `threadId` (iOS, APNs `thread-id`) groups them, never replaces one. Expo's
+        // push API has no Android group field (Android bundles an app's notifications itself);
+        // `tag` and `collapseId` are deliberately NOT set: both replace an earlier notification.
+        m["threadId"] = Value::from(format!("runners-{}", r.symbol));
     }
     m
 }
@@ -1076,6 +1082,9 @@ mod tests {
         };
         let m = expo_message(&job, "ExponentPushToken[a]");
         assert_eq!(m["categoryId"], "runners");
+        // Grouped by stock on iOS; nothing that would replace an earlier notification.
+        assert_eq!(m["threadId"], "runners-YMAT");
+        assert!(m.get("tag").is_none() && m.get("collapseId").is_none());
         assert_eq!(m["channelId"], "alerts");
         assert_eq!(m["data"]["symbol"], "YMAT");
         assert!(
@@ -1086,11 +1095,8 @@ mod tests {
         );
         // A price alert's push: no button.
         job.runner = None;
-        assert!(
-            expo_message(&job, "ExponentPushToken[a]")
-                .get("categoryId")
-                .is_none()
-        );
+        let m = expo_message(&job, "ExponentPushToken[a]");
+        assert!(m.get("categoryId").is_none() && m.get("threadId").is_none());
     }
 
     #[tokio::test]

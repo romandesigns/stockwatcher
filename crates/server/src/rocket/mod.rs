@@ -245,25 +245,6 @@ impl NoticeKind {
         NoticeKind::Pullback,
         NoticeKind::PullbackCrossing,
     ];
-
-    /// New evidence on a stock (owner, 2026-10-23): a burst, a crossing, a shelf entry or a
-    /// follow-up. Its per-stock gap after an unrelated push is the burst's 2 minutes, so it is
-    /// never swallowed by a push about something else minutes earlier
-    /// (`crate::alerts::runners`, "Limits").
-    pub fn is_new_evidence(self) -> bool {
-        matches!(
-            self,
-            NoticeKind::Burst
-                | NoticeKind::Shelf
-                | NoticeKind::FollowUp
-                | NoticeKind::RossCrossing
-                | NoticeKind::SignalsCrossing
-                // A setup almost always arms within minutes of the Runners push that put the
-                // stock in context: as new evidence it waits 2 minutes after it, not 10.
-                | NoticeKind::Pullback
-                | NoticeKind::PullbackCrossing
-        )
-    }
 }
 
 /// What a notice beyond a row's own entry carries for its text (`crate::alerts::runners::message`).
@@ -447,7 +428,18 @@ impl Notice {
     /// The event's identity: what every surface dedupes on (one push per event, ever). A row's
     /// flag and its breakout share `alert_id`, so the kind is part of it.
     pub fn event_id(&self) -> String {
-        format!("runners-{}-{}", self.kind.as_str(), self.alert_id)
+        match self.kind {
+            // A row can turn `breaking_out` again on a later new high (it left the state in
+            // between): each is its own event, so the delivery's dedupe must not take the second
+            // for the first (owner, 2026-10-30: every distinct event is delivered). The second
+            // of the barrier that decided it tells them apart.
+            NoticeKind::Breakout => format!(
+                "runners-breakout-{}-{}",
+                self.alert_id,
+                self.at_ns.div_euclid(1_000_000_000)
+            ),
+            _ => format!("runners-{}-{}", self.kind.as_str(), self.alert_id),
+        }
     }
 
     /// Tests: a plain notice of `kind` for `symbol` at time 0.

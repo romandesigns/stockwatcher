@@ -10,8 +10,10 @@
 //!   follow-ups, shelf, Ross/Signals crossing and trigger, pullback, halt), once for the desktop
 //!   and web clients (`path: "desk"`) and once for the phones (`path: "phone"`). `notice` is the
 //!   data kind the clients see (`runners.burst`, `ross.crossing`, …), `decision` `sent` | `held`,
-//!   `held` the limit's code (`no_device`, `quiet_hours`, `stale`, `symbol_limit`, `duplicate`)
-//!   or `null`, `devices` how many devices or open clients wanted the kind.
+//!   `held` the limit's code (`no_device`, `quiet_hours`, `stale`, `duplicate`) or `null`,
+//!   `devices` how many devices or open clients wanted the kind. Lines before 2026-10-30 may also
+//!   hold `symbol_limit` or `merged` (with `merged_into` and `merged_devices`), the per-stock gap
+//!   and merge since removed (`super::runners`, "Every distinct event is delivered").
 //! - `alert` — `{kind, v, decided_at, event_id, alert_id, symbol, price, text, phone, held,
 //!   devices}`: a price alert that fired, with its phone decision (`sent`, `off`, `held`).
 //! - `pushed` — `{kind, v, event_id, notice, symbol, exec_ns, decided_ns, queued_ns, expo_ns,
@@ -66,19 +68,11 @@ impl Ledger {
         path: &'static str,
         decision: &Decision,
         devices: usize,
-        merged: Option<&runners::Merged>,
         title: &str,
         body: &str,
         now_ms: i64,
     ) {
-        let mut line = decision_line(n, event_id, path, decision, devices, title, body, now_ms);
-        if let Some(m) = merged {
-            // What it was folded into, for the Insights log's "merged into the Running alert 1 s
-            // earlier" (super::runners, "Merging"); `merged_devices` had that one already.
-            line["merged_into"] =
-                json!({"event_id": m.into_event, "notice": m.into_notice, "secs": m.secs});
-            line["merged_devices"] = json!(m.covered);
-        }
+        let line = decision_line(n, event_id, path, decision, devices, title, body, now_ms);
         self.put(now_ms, line);
     }
 
@@ -190,7 +184,7 @@ mod tests {
             serde_json::from_str(include_str!("../../tests/fixtures/breakout-notice-v1.json"))
                 .unwrap(),
         ));
-        for decision in [Decision::Send, Decision::Held(runners::Hold::SymbolLimit)] {
+        for decision in [Decision::Send, Decision::Held(runners::Hold::QuietHours)] {
             let line = decision_line(&n, "b1", "phone", &decision, 1, "t", "b", 1_793_055_061_000);
             assert_eq!(line["breakout"], n.source_evidence().unwrap());
             assert_eq!(line["entry_context"], json!(n.reasons));
@@ -216,7 +210,7 @@ mod tests {
 
     #[test]
     fn a_decision_line_names_the_limit_and_carries_no_token() {
-        let held = Decision::Held(runners::Hold::SymbolLimit);
+        let held = Decision::Held(runners::Hold::QuietHours);
         let v = decision_line(
             &notice(),
             "ev-1",
@@ -231,7 +225,7 @@ mod tests {
         assert_eq!(v["v"], 1);
         assert_eq!(v["notice"], "runners.pullback");
         assert_eq!(v["decision"], "held");
-        assert_eq!(v["held"], "symbol_limit");
+        assert_eq!(v["held"], "quiet_hours");
         assert_eq!(v["devices"], 2);
         assert_eq!(v["path"], "phone");
         let sent = decision_line(&notice(), "ev-1", "desk", &Decision::Send, 1, "t", "b", 0);
@@ -252,24 +246,16 @@ mod tests {
             "desk",
             &Decision::Send,
             1,
-            None,
             "t",
             "b",
             1_793_017_427_256,
         );
-        // A merged one says what it was folded into (runners, "Merging").
         ledger.decision(
             &notice(),
             "ev-3",
             "phone",
-            &Decision::Held(runners::Hold::Merged),
+            &Decision::Held(runners::Hold::QuietHours),
             2,
-            Some(&runners::Merged {
-                into_event: "runners-running-WFF-1".into(),
-                into_notice: "runners.running".into(),
-                secs: 1.2,
-                covered: 2,
-            }),
             "t",
             "b",
             1_793_017_427_300,
@@ -294,11 +280,9 @@ mod tests {
         }
         assert_eq!(lines.len(), 3, "{lines:?}");
         assert!(lines[0].contains("\"decision\":\"sent\""));
-        assert!(!lines[0].contains("merged_into"), "{}", lines[0]);
-        let merged: Value = serde_json::from_str(&lines[1]).unwrap();
-        assert_eq!(merged["held"], "merged");
-        assert_eq!(merged["merged_into"]["notice"], "runners.running");
-        assert_eq!(merged["merged_devices"], 2);
+        let held: Value = serde_json::from_str(&lines[1]).unwrap();
+        assert_eq!(held["held"], "quiet_hours");
+        assert_eq!(held["devices"], 2);
         assert!(!lines[2].contains("secret"), "{}", lines[2]);
         assert!(lines[2].contains("[push token]"));
     }
@@ -324,7 +308,7 @@ mod tests {
                     also_signals: false,
                 },
             ));
-            for decision in [Decision::Send, Decision::Held(runners::Hold::SymbolLimit)] {
+            for decision in [Decision::Send, Decision::Held(runners::Hold::QuietHours)] {
                 let v = decision_line(&n, "ev-1", "phone", &decision, 1, "t", "b", 0);
                 assert_eq!(v["mp5_wick"]["status"], expected);
                 assert_eq!(v["mp5_wick"], serde_json::to_value(&wick).unwrap());

@@ -1536,17 +1536,8 @@ fn a_fast_spike_gets_one_fast_row_and_one_push() {
         .iter()
         .filter(|x| {
             let ms = x.at_ns / 1_000_000;
-            delivery.decide(
-                x.kind,
-                &x.symbol,
-                &x.event_id(),
-                1,
-                &prefs,
-                ms,
-                ms,
-                day(),
-                600,
-            ) == crate::alerts::runners::Decision::Send
+            delivery.decide(&x.event_id(), 1, &prefs, ms, ms, day(), 600)
+                == crate::alerts::runners::Decision::Send
         })
         .count();
     assert_eq!(sent, 1);

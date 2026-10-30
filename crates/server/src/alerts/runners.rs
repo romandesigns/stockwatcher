@@ -35,47 +35,43 @@
 //!   switch) and a Halt watcher gauge appearing ([`NoticeKind::Halt`], off). The data's `kind`
 //!   is [`data_kind`] (`ross.crossing`, `signals.trigger`, `halt.watch`, …), every push the
 //!   same "runners" category.
+//! - **Every distinct event is delivered** (owner, 2026-10-30: "I don't want to keep missing
+//!   alerts because they weren't delivered to my phone"). Each notice with an
+//!   [`crate::rocket::Notice::event_id`] not sent before goes to every recipient whose switch for
+//!   its kind is on. There is no per-stock gap and no merging. TNMG 2026-10-30 lost two: a
+//!   Follow-up at 7:49:45 held as `symbol_limit` ("same stock notified moments earlier") 13 s
+//!   after its pullback notice, and a breakout ("15s new high since alert") at 7:19:30 held as
+//!   `merged`, within 30 s of its flag. This reverses, for phone delivery, the 2026-10-26 WFF
+//!   decision (Running, Fast move and Breakout within 14 s merged into one push) and drops the
+//!   per-stock gaps of 2026-10-23 (10 minutes, 2 for new evidence). A burst on one stock stacks on
+//!   the phone instead: iOS groups a stock's pushes by `threadId` (`super::push`); Android groups
+//!   an app's notifications itself (Expo's push API has no Android group field, and its `tag` and
+//!   `collapseId` REPLACE a notification, which is exactly the loss this rule forbids).
 //! - **Limits**, checked in this order (the first that applies holds it back; logged, never
-//!   sent later):
-//!   0. this event ([`crate::rocket::Notice::event_id`]) was sent already (persisted) → `duplicate`;
-//!   1. no phone opted in for this kind → `no_device`;
-//!   2. the price alerts' quiet hours (`alerts.prefs`, ET wall time) → `quiet_hours`;
-//!   3. the notice is over [`MAX_AGE_MS`] old (a catch-up after a stall) → `stale`;
-//!   4. the same stock got a push of the SAME kind less than [`SYMBOL_GAP_MS`] ago, or a push
-//!      of any kind less than [`SYMBOL_GAP_MS`] ago, except that new evidence (a burst, a
-//!      crossing, a shelf entry, a follow-up: [`NoticeKind::is_new_evidence`]) only waits
-//!      [`BURST_GAP_MS`] after an unrelated push, so it is never swallowed by a push about
-//!      something else minutes earlier → `symbol_limit`. The pullback notices
-//!      ([`NoticeKind::Pullback`], [`NoticeKind::PullbackCrossing`]) skip the any-kind gap and do
-//!      not start one: they are bounded upstream (one setup per stock per day, one crossing per
-//!      announced setup, `crate::cue_notices`) and only exist minutes after a Runners push on the
-//!      same stock, so the gap held back exactly the ones that matter. SRTM 2026-10-26: Run +20%
-//!      08:20:04, burst 08:23:02, then its setup at 08:23:47, 50 s before the leg to $0.74, was
-//!      held as `symbol_limit`.
+//!   sent later). These are the only ones:
+//!   0. this event was sent already (persisted, so a restart cannot repeat one) → `duplicate`;
+//!   1. no recipient opted in for this kind → `no_device`;
+//!   2. the price alerts' quiet hours (`alerts.prefs`, ET wall time, the owner's own setting) →
+//!      `quiet_hours`;
+//!   3. the notice is over [`MAX_AGE_MS`] (3 minutes) old, i.e. a catch-up after a stall →
+//!      `stale`.
 //!
-//! - **Merging** (owner, 2026-10-26, WFF: Running, Fast move and Breakout within 14 s): a
-//!   stock's Runners entries, follow-ups and breakouts ([`mergeable`]) within [`MERGE_WINDOW_MS`]
-//!   of its first push of the window are one event. A recipient (phone token or desk connection)
-//!   that got that first push gets nothing more: the decision is held as `merged`, written to the
-//!   notification ledger with what it was merged into, and the row keeps every path ("then Fast
-//!   move at 1:45 PM"). A recipient that did NOT get it (its switch for that path is off) gets
-//!   this one, outside the stock gap. Expo's push API cannot replace a delivered notification, so
-//!   the phone holds; the web, whose browser notifications replace by tag, updates the first
-//!   notification with the later path's line (`runners.notice` with `mergeInto`).
+//!   Ledger lines written before 2026-10-30 may also say `symbol_limit` or `merged`; the
+//!   Insights log still words them.
 //!
 //!   There is NO daily cap (owner, 2026-10-23: "always send out notifications as long as the
-//!   evidence of such events supports it"). A shared cap of 120 had held back 3 fast-move and 5
-//!   Run +20% pushes that day once a phone with breakouts on spent it. Volume is bounded by the
-//!   detectors themselves (one row per stock per day per path) and by the per-stock gap above;
-//!   the day's count is still kept (`sent_today`) for the logs and the scorecard.
+//!   evidence of such events supports it"). Volume is bounded by the detectors themselves (one
+//!   row per stock per day per path, one follow-up per path per row, one pullback setup per stock
+//!   per day); the day's count is still kept (`sent_today`) for the logs and the scorecard.
 //!
 //! - **Desktop and web** (owner, 2026-10-23: the phone's notifications there too): every notice
 //!   is decided a second time for the open desktop and web clients ([`desk_frame`]), with the
-//!   same limits but its own count and gaps (`runners-desk.json`). Their "devices" are the
-//!   connections that sent `runners.notify` with this kind on (`super::DeskKinds`, the phone's
-//!   defaults); a Send goes to every socket as a `runners.notice` frame carrying [`message`]'s
-//!   title and body, and each client shows it as a system notification if its own switch is on.
-//!   Separate counts so that a kind only the phone wants never spends a desk gap, and the reverse.
+//!   same limits but its own memory (`runners-desk.json`). Their "devices" are the connections
+//!   that sent `runners.notify` with this kind on (`super::DeskKinds`, the phone's defaults); a
+//!   Send goes to every socket as a `runners.notice` frame carrying [`message`]'s title and body,
+//!   and each client shows it as a system notification if its own switch is on. Each event is its
+//!   own notification there too (the frame's `id` is its tag); nothing updates or replaces an
+//!   earlier one.
 //!
 //! - **Latency** (target: under 5 s from the triggering trade to Expo): a Runners push skips the
 //!   push task's batch window ([`super::push`]) and, once Expo took it, logs `runners push:
@@ -86,11 +82,11 @@
 //!   at 5 s boundaries checked 1 s after (up to ~6 s after the print), a running entry and an R2
 //!   flag at 15 s barriers (up to ~15 s after the print, plus the ≤ 1 s tick).
 //!
-//!   The count and each stock's last push are kept in `runners-push.json` beside the devices, so
-//!   a redeploy at 09:00 does not hand out a fresh cap. They are separate from the price alerts'
-//!   phone budget: a busy Runners morning must not silence a price alert the owner set himself.
+//!   The count and the events already sent are kept in `runners-push.json` beside the devices,
+//!   so a redeploy cannot send an event twice. They are separate from the price alerts' phone
+//!   budget: a busy Runners morning must not silence a price alert the owner set himself.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use chrono::NaiveDate;
@@ -100,18 +96,17 @@ use serde_json::{Value, json};
 use super::model::Prefs;
 use crate::rocket::{AlertKind, Notice, NoticeDetail, NoticeKind};
 
-/// At most one Runners push per stock per 10 minutes (every kind but a burst).
-pub const SYMBOL_GAP_MS: i64 = 10 * 60_000;
-/// A burst's gap after the same stock's last Runners push: shorter, so heavy buying confirmed
-/// minutes after a run or running push still reaches the phone.
-pub const BURST_GAP_MS: i64 = 2 * 60_000;
-/// A notice older than this when it reaches the task is not pushed: news about a move minutes
-/// ago is noise on a lock screen.
+/// A notice older than this when it reaches the task is not pushed (`stale`): it can only be a
+/// catch-up after a stall (a blocked task, a restart replaying a queue), and news about a move
+/// minutes ago is noise on a lock screen. The slowest normal path decides well inside it: a
+/// running entry, an R2 flag or a breakout at a 15 s barrier (up to ~16 s after the print), a
+/// burst ~6 s, a Run +20% row ~2 s, a pullback or crossing at its transition (module docs,
+/// "Latency").
 pub const MAX_AGE_MS: i64 = 3 * 60_000;
 const FILE: &str = "runners-push.json";
-/// The desktop and web notifications' own count and gaps ([`desk_frame`]): kept apart from the
-/// phones' so a notice the phones held (none opted in) still reaches an open desktop, and the
-/// reverse; the limits themselves are the same.
+/// The desktop and web notifications' own memory ([`desk_frame`]): kept apart from the phones'
+/// so a notice the phones held (none opted in) still reaches an open desktop, and the reverse;
+/// the limits themselves are the same.
 pub const DESK_FILE: &str = "runners-desk.json";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -120,68 +115,16 @@ pub enum Decision {
     Held(Hold),
 }
 
+/// Why a notice was not sent (module docs, "Limits"). Older ledger lines also carry
+/// `symbol_limit` and `merged`, the per-stock gap and merge removed on 2026-10-30; the Insights
+/// log still words them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Hold {
     NoDevice,
     QuietHours,
     Stale,
-    SymbolLimit,
     /// This event was already sent (its [`crate::rocket::Notice::event_id`]).
     Duplicate,
-    /// Folded into the stock's first Runners push of the last [`MERGE_WINDOW_MS`] (module docs,
-    /// "Merging"): every recipient of this one already got that one.
-    Merged,
-}
-
-/// Runners paths on one stock this close together are one event to the trader (owner,
-/// 2026-10-26, WFF: Running 13:45:01, Fast move 13:45:02, Breakout 13:45:15). Half a minute
-/// covers the cascade a single move sets off across the paths (they read the same prints at
-/// 1 s, 5 s and 15 s cadences) without folding a genuinely later leg into an old alert.
-pub const MERGE_WINDOW_MS: i64 = 30_000;
-
-/// The kinds that merge: a stock's Runners entries, their follow-ups and breakouts. Pullback,
-/// shelf, Ross/Signals and Halt notices are other evidence with their own rules.
-pub fn mergeable(kind: NoticeKind) -> bool {
-    matches!(
-        kind,
-        NoticeKind::New
-            | NoticeKind::Burst
-            | NoticeKind::Running
-            | NoticeKind::Run
-            | NoticeKind::Fast
-            | NoticeKind::FollowUp
-            | NoticeKind::Breakout
-    )
-}
-
-/// What a notice was folded into ([`Hold::Merged`], or a send to only the recipients the first
-/// push missed): the ledger and the Insights log say "merged into the Running alert 1 s earlier".
-#[derive(Clone, Debug, PartialEq)]
-pub struct Merged {
-    pub into_event: String,
-    /// The first push's data kind ([`data_kind`]).
-    pub into_notice: String,
-    pub secs: f64,
-    /// Recipients that already had the first push (and so got nothing more).
-    pub covered: usize,
-}
-
-/// [`RunnersDelivery::decide_runner`]'s answer: the decision, who to send to, and the merge.
-#[derive(Clone, Debug, PartialEq)]
-pub struct RunnerDecision {
-    pub decision: Decision,
-    pub send_to: Vec<String>,
-    pub merged: Option<Merged>,
-}
-
-/// A stock's first mergeable push of its current window ([`MERGE_WINDOW_MS`]).
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct FirstPush {
-    at: i64,
-    event_id: String,
-    notice: String,
-    /// Who got it (push tokens, or desk connection ids): only they are covered by it.
-    recipients: Vec<String>,
 }
 
 impl Hold {
@@ -190,9 +133,7 @@ impl Hold {
             Hold::NoDevice => "no_device",
             Hold::QuietHours => "quiet_hours",
             Hold::Stale => "stale",
-            Hold::SymbolLimit => "symbol_limit",
             Hold::Duplicate => "duplicate",
-            Hold::Merged => "merged",
         }
     }
 }
@@ -204,21 +145,14 @@ struct Saved {
     day: String,
     #[serde(default)]
     sent: u32,
-    #[serde(default)]
-    last_by_symbol: HashMap<String, i64>,
-    /// Each stock's last push of each kind, keyed `SYMBOL kind`: the same-kind gap.
-    #[serde(default)]
-    last_by_kind: HashMap<String, i64>,
-    /// Today's events already sent ([`crate::rocket::Notice::event_id`]): never twice.
+    /// Today's events already sent ([`crate::rocket::Notice::event_id`]): never twice. (A file
+    /// written before 2026-10-30 also has the gaps' `last_by_symbol`, `last_by_kind` and the
+    /// merge's `first_push`; serde skips them.)
     #[serde(default)]
     sent_ids: HashSet<String>,
-    /// Each stock's first mergeable push of its window (module docs, "Merging"); persisted so a
-    /// redeploy in the middle of a cascade does not push the rest of it.
-    #[serde(default)]
-    first_push: HashMap<String, FirstPush>,
 }
 
-/// The Runners side's memory: today's count and each stock's last push, persisted.
+/// The Runners side's memory: today's count and the events already sent, persisted.
 #[derive(Debug, Default)]
 pub struct RunnersDelivery {
     dir: Option<PathBuf>,
@@ -274,14 +208,12 @@ impl RunnersDelivery {
         }
     }
 
-    /// The decision for one notice of `kind` (module docs, "Limits"). `devices` = phones opted in
-    /// for its kind; `at` = when it happened, `now` = now (epoch ms); `today` / `et_minute` = the
-    /// ET day and minute of the day at `now`.
+    /// The decision for one notice (module docs, "Limits"). `devices` = recipients that want its
+    /// kind; `at` = when it happened, `now` = now (epoch ms); `today` / `et_minute` = the ET day
+    /// and minute of the day at `now`. A Send goes to every one of the `devices`.
     #[allow(clippy::too_many_arguments)]
     pub fn decide(
         &mut self,
-        kind: NoticeKind,
-        symbol: &str,
         event_id: &str,
         devices: usize,
         prefs: &Prefs,
@@ -290,177 +222,26 @@ impl RunnersDelivery {
         today: NaiveDate,
         et_minute: u32,
     ) -> Decision {
-        // Recipients without identity: the count alone (every one of them is "the same" device
-        // set, so a merge covers them all).
-        let ids: Vec<String> = (0..devices).map(|i| format!("#{i}")).collect();
-        self.decide_runner(
-            kind, symbol, event_id, &ids, prefs, at, now, today, et_minute,
-        )
-        .decision
-    }
-
-    /// [`RunnersDelivery::decide`] with the recipients named (push tokens, desk connections), so
-    /// near-simultaneous Runners paths merge per recipient (module docs, "Merging"): a recipient
-    /// that already got this stock's first push of the window gets nothing more; one that did not
-    /// (its switch for that path was off) gets this one, outside the stock gap.
-    #[allow(clippy::too_many_arguments)]
-    pub fn decide_runner(
-        &mut self,
-        kind: NoticeKind,
-        symbol: &str,
-        event_id: &str,
-        recipients: &[String],
-        prefs: &Prefs,
-        at: i64,
-        now: i64,
-        today: NaiveDate,
-        et_minute: u32,
-    ) -> RunnerDecision {
-        let held = |h| RunnerDecision {
-            decision: Decision::Held(h),
-            send_to: Vec::new(),
-            merged: None,
-        };
         let day = today.to_string();
         if self.s.day != day {
             self.s.day = day;
             self.s.sent = 0;
-            // Yesterday's stocks cannot hold anything back today (10 minutes < a night), and
-            // an event belongs to its day.
-            self.s.last_by_symbol.clear();
-            self.s.last_by_kind.clear();
+            // An event belongs to its day.
             self.s.sent_ids.clear();
-            self.s.first_push.clear();
         }
         if self.s.sent_ids.contains(event_id) {
-            return held(Hold::Duplicate);
+            return Decision::Held(Hold::Duplicate);
         }
-        if recipients.is_empty() {
-            return held(Hold::NoDevice);
+        if devices == 0 {
+            return Decision::Held(Hold::NoDevice);
         }
         if prefs.quiet.is_some_and(|q| q.contains(et_minute)) {
-            return held(Hold::QuietHours);
+            return Decision::Held(Hold::QuietHours);
         }
         if now - at > MAX_AGE_MS {
-            return held(Hold::Stale);
-        }
-        if let Some(r) = self.merge(kind, symbol, event_id, recipients, now) {
-            return r;
-        }
-        let decision = self.decide_gaps(kind, symbol, event_id, now);
-        if decision == Decision::Send && mergeable(kind) {
-            self.s.first_push.insert(
-                symbol.to_owned(),
-                FirstPush {
-                    at: now,
-                    event_id: event_id.to_owned(),
-                    notice: data_kind(kind).to_owned(),
-                    recipients: recipients.to_vec(),
-                },
-            );
-            self.save();
-        }
-        RunnerDecision {
-            decision,
-            send_to: if decision == Decision::Send {
-                recipients.to_vec()
-            } else {
-                Vec::new()
-            },
-            merged: None,
-        }
-    }
-
-    /// Module docs, "Merging": `None` when this notice does not fall in a stock's merge window.
-    fn merge(
-        &mut self,
-        kind: NoticeKind,
-        symbol: &str,
-        event_id: &str,
-        recipients: &[String],
-        now: i64,
-    ) -> Option<RunnerDecision> {
-        if !mergeable(kind) {
-            return None;
-        }
-        let first = self.s.first_push.get(symbol)?;
-        if now - first.at >= MERGE_WINDOW_MS || first.event_id == event_id {
-            return None;
-        }
-        let uncovered: Vec<String> = recipients
-            .iter()
-            .filter(|r| !first.recipients.contains(r))
-            .cloned()
-            .collect();
-        let merged = Merged {
-            into_event: first.event_id.clone(),
-            into_notice: first.notice.clone(),
-            secs: (now - first.at) as f64 / 1000.0,
-            covered: recipients.len() - uncovered.len(),
-        };
-        if uncovered.is_empty() {
-            return Some(RunnerDecision {
-                decision: Decision::Held(Hold::Merged),
-                send_to: Vec::new(),
-                merged: Some(merged),
-            });
-        }
-        // Recipients that never heard about this stock in the window: theirs is a first push,
-        // so the any-kind stock gap does not apply (the same-kind gap and dedupe still do).
-        let key = format!("{symbol} {}", kind.as_str());
-        if self
-            .s
-            .last_by_kind
-            .get(&key)
-            .is_some_and(|t| now - t < SYMBOL_GAP_MS)
-        {
-            return Some(RunnerDecision {
-                decision: Decision::Held(Hold::SymbolLimit),
-                send_to: Vec::new(),
-                merged: None,
-            });
+            return Decision::Held(Hold::Stale);
         }
         self.s.sent += 1;
-        self.s.last_by_kind.insert(key, now);
-        self.s.sent_ids.insert(event_id.to_owned());
-        if let Some(f) = self.s.first_push.get_mut(symbol) {
-            f.recipients.extend(uncovered.iter().cloned());
-        }
-        self.save();
-        Some(RunnerDecision {
-            decision: Decision::Send,
-            send_to: uncovered,
-            merged: Some(merged),
-        })
-    }
-
-    /// The stock and kind gaps (module docs, "Limits" 4), recording a send.
-    fn decide_gaps(
-        &mut self,
-        kind: NoticeKind,
-        symbol: &str,
-        event_id: &str,
-        now: i64,
-    ) -> Decision {
-        let key = format!("{symbol} {}", kind.as_str());
-        let gap = if kind.is_new_evidence() {
-            BURST_GAP_MS
-        } else {
-            SYMBOL_GAP_MS
-        };
-        let recent = |t: Option<&i64>, gap: i64| t.is_some_and(|t| now - t < gap);
-        // Module docs, "Limits" 4: the pullback notices neither wait for nor start the stock's gap.
-        let pullback = matches!(kind, NoticeKind::Pullback | NoticeKind::PullbackCrossing);
-        if recent(self.s.last_by_kind.get(&key), SYMBOL_GAP_MS)
-            || (!pullback && recent(self.s.last_by_symbol.get(symbol), gap))
-        {
-            return Decision::Held(Hold::SymbolLimit);
-        }
-        self.s.sent += 1;
-        if !pullback {
-            self.s.last_by_symbol.insert(symbol.to_owned(), now);
-        }
-        self.s.last_by_kind.insert(key, now);
         self.s.sent_ids.insert(event_id.to_owned());
         self.save();
         Decision::Send
@@ -985,40 +766,6 @@ pub fn desk_frame(n: &Notice) -> String {
     .to_string()
 }
 
-/// A Runners path's name as the notices say it.
-pub fn path_label(kind: NoticeKind) -> &'static str {
-    match kind {
-        NoticeKind::New => "Runners flag",
-        NoticeKind::Burst => "Buying burst",
-        NoticeKind::Running => "Running",
-        NoticeKind::Run => "Run +20%",
-        NoticeKind::Fast => "Fast move",
-        NoticeKind::FollowUp => "Follow-up",
-        NoticeKind::Breakout => "Breakout",
-        _ => "Runners",
-    }
-}
-
-/// [`desk_frame`] for a merged notice (module docs, "Merging"): `mergeInto` names the first
-/// notice, `mergeLine` is what a client that showed it appends ("+ Fast move 1 s later ·
-/// $0.1057"), and `mergeOnly` says every desk that wants this kind already showed the first, so
-/// a client that did not show it ignores the frame. Without a merge it is [`desk_frame`].
-pub fn desk_frame_merged(n: &Notice, merged: Option<&Merged>, merge_only: bool) -> String {
-    let Some(m) = merged else {
-        return desk_frame(n);
-    };
-    let mut v: Value = serde_json::from_str(&desk_frame(n)).expect("desk frame is JSON");
-    v["mergeInto"] = Value::from(m.into_event.clone());
-    v["mergeLine"] = Value::from(format!(
-        "+ {} {:.0} s later · {}",
-        path_label(n.kind),
-        m.secs,
-        dollars(on_tick(n.price))
-    ));
-    v["mergeOnly"] = Value::from(merge_only);
-    v.to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1054,10 +801,13 @@ mod tests {
             assert_eq!(f["kind"], data_kind(kind));
             assert_eq!(f["symbol"], "CJMB");
             assert_eq!(f["alertId"], "2026-10-23-CJMB-7");
-            assert_eq!(
-                f["id"],
+            let id = if kind == NoticeKind::Breakout {
+                // One row can break out more than once: the barrier's second is in the id.
+                "runners-breakout-2026-10-23-CJMB-7-1761200000".to_string()
+            } else {
                 format!("runners-{}-2026-10-23-CJMB-7", kind.as_str())
-            );
+            };
+            assert_eq!(f["id"], id);
             assert_eq!(f["at"], 1_761_200_000_123_i64);
         }
     }
@@ -1069,7 +819,7 @@ mod tests {
 
     const MIN: i64 = 60_000;
 
-    /// A fresh event id per decision (these tests are about the gaps, not the dedupe).
+    /// A fresh event id per decision (for tests about the other limits, not the dedupe).
     fn uid() -> String {
         use std::sync::atomic::{AtomicU64, Ordering};
         static N: AtomicU64 = AtomicU64::new(0);
@@ -1077,89 +827,32 @@ mod tests {
     }
 
     #[test]
-    fn cooldown_cap_quiet_hours_and_staleness() {
+    fn the_only_limits_are_dedupe_devices_quiet_hours_and_staleness() {
         let mut d = RunnersDelivery::in_memory();
         let prefs = Prefs::default();
-        let run = NoticeKind::Run;
-        let go = |d: &mut RunnersDelivery, s: &str, now: i64| {
-            d.decide(run, s, &uid(), 1, &prefs, now, now, day(22), 8 * 60)
+        let go = |d: &mut RunnersDelivery, at: i64, now: i64| {
+            d.decide(&uid(), 1, &prefs, at, now, day(22), 8 * 60)
         };
         assert_eq!(
-            d.decide(run, "CJMB", &uid(), 0, &prefs, 0, 0, day(22), 480),
+            d.decide(&uid(), 0, &prefs, 0, 0, day(22), 480),
             Decision::Held(Hold::NoDevice)
         );
-        assert_eq!(go(&mut d, "CJMB", 0), Decision::Send);
-        // The same stock within 10 minutes (a breakout right after its flag): held.
-        assert_eq!(
-            go(&mut d, "CJMB", 9 * MIN),
-            Decision::Held(Hold::SymbolLimit)
-        );
-        assert_eq!(go(&mut d, "CJMB", 10 * MIN), Decision::Send);
-        // A burst 2 minutes after the same stock's run push still goes out; 1 minute does not.
-        let burst = |d: &mut RunnersDelivery, s: &str, now: i64| {
-            d.decide(
-                NoticeKind::Burst,
-                s,
-                &uid(),
-                1,
-                &prefs,
-                now,
-                now,
-                day(22),
-                8 * 60,
-            )
-        };
-        assert_eq!(
-            burst(&mut d, "CJMB", 11 * MIN),
-            Decision::Held(Hold::SymbolLimit)
-        );
-        assert_eq!(burst(&mut d, "CJMB", 12 * MIN), Decision::Send);
-        // Old news is not pushed.
-        assert_eq!(
-            d.decide(run, "OLD", &uid(), 1, &prefs, 0, 4 * MIN, day(22), 480),
-            Decision::Held(Hold::Stale)
-        );
-        // No daily cap: every kind still goes out after hundreds of pushes in a day.
-        for i in 0..400 {
-            assert_eq!(go(&mut d, &format!("S{i}"), 13 * MIN), Decision::Send);
-        }
-        for kind in [
-            NoticeKind::Running,
-            NoticeKind::Breakout,
-            NoticeKind::Fast,
-            NoticeKind::Burst,
-            NoticeKind::New,
-        ] {
-            let sym = format!("{kind:?}");
-            assert_eq!(
-                d.decide(
-                    kind,
-                    &sym,
-                    &uid(),
-                    1,
-                    &prefs,
-                    14 * MIN,
-                    14 * MIN,
-                    day(22),
-                    480
-                ),
-                Decision::Send
-            );
+        assert_eq!(go(&mut d, 0, 0), Decision::Send);
+        // Old news is not pushed: over 3 minutes is a catch-up after a stall. A notice decided at
+        // a 15 s barrier and queued behind a busy task (here 2 min 59 s) still goes out.
+        assert_eq!(MAX_AGE_MS, 3 * MIN);
+        assert_eq!(go(&mut d, 0, 4 * MIN), Decision::Held(Hold::Stale));
+        assert_eq!(go(&mut d, 0, MAX_AGE_MS + 1), Decision::Held(Hold::Stale));
+        assert_eq!(go(&mut d, MIN, MIN + MAX_AGE_MS), Decision::Send);
+        assert_eq!(go(&mut d, 0, 2 * MIN + 59_000), Decision::Send);
+        // No daily cap and no per-stock gap: hundreds of events in the same second all go out.
+        for _ in 0..400 {
+            assert_eq!(go(&mut d, 13 * MIN, 13 * MIN), Decision::Send);
         }
         assert!(d.sent_today(day(22)) > 400, "still counted for the logs");
         // A new ET day.
         assert_eq!(
-            d.decide(
-                run,
-                "LATE",
-                &uid(),
-                1,
-                &prefs,
-                15 * MIN,
-                15 * MIN,
-                day(23),
-                480
-            ),
+            d.decide(&uid(), 1, &prefs, 15 * MIN, 15 * MIN, day(23), 480),
             Decision::Send
         );
         assert_eq!(d.sent_today(day(22)), 0);
@@ -1172,37 +865,65 @@ mod tests {
             ..Prefs::default()
         };
         assert_eq!(
-            d.decide(
-                run,
-                "Q",
-                &uid(),
-                1,
-                &quiet,
-                20 * MIN,
-                20 * MIN,
-                day(23),
-                6 * 60
-            ),
+            d.decide(&uid(), 1, &quiet, 20 * MIN, 20 * MIN, day(23), 6 * 60),
             Decision::Held(Hold::QuietHours)
         );
     }
 
     #[test]
-    fn the_count_survives_a_restart() {
+    fn an_event_is_never_sent_twice_even_after_a_restart() {
         let dir = tempfile::tempdir().unwrap();
         let prefs = Prefs::default();
         let mut d = RunnersDelivery::open(dir.path());
-        let k = NoticeKind::New;
+        let id = "runners-new-2026-10-22-A-1";
+        assert_eq!(d.decide(id, 1, &prefs, 0, 0, day(22), 480), Decision::Send);
         assert_eq!(
-            d.decide(k, "A", &uid(), 1, &prefs, 0, 0, day(22), 480),
-            Decision::Send
+            d.decide(id, 1, &prefs, MIN, MIN, day(22), 481),
+            Decision::Held(Hold::Duplicate)
         );
         let mut back = RunnersDelivery::open(dir.path());
         assert_eq!(back.sent_today(day(22)), 1);
         assert_eq!(
-            back.decide(k, "A", &uid(), 1, &prefs, MIN, MIN, day(22), 481),
-            Decision::Held(Hold::SymbolLimit),
-            "a redeploy does not forget the cooldown"
+            back.decide(id, 1, &prefs, MIN, MIN, day(22), 481),
+            Decision::Held(Hold::Duplicate),
+            "a redeploy does not forget what was sent"
+        );
+        // Another event on the same stock a second later is sent.
+        assert_eq!(
+            back.decide(
+                "runners-breakout-2026-10-22-A-1",
+                1,
+                &prefs,
+                MIN,
+                MIN,
+                day(22),
+                481
+            ),
+            Decision::Send
+        );
+    }
+
+    /// A file written before 2026-10-30 (with the removed gaps' and merge's memory) still opens
+    /// and keeps its dedupe.
+    #[test]
+    fn an_old_memory_file_still_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(FILE),
+            r##"{"day":"2026-10-30","sent":2,"last_by_symbol":{"TNMG":1},"last_by_kind":{"TNMG new":1},
+                "sent_ids":["runners-new-TNMG-1"],"first_push":{"TNMG":{"at":1,"event_id":"runners-new-TNMG-1","notice":"runners.new","recipients":["#0"]}}}"##,
+        )
+        .unwrap();
+        let mut d = RunnersDelivery::open(dir.path());
+        assert_eq!(d.sent_today(day(30)), 2);
+        let prefs = Prefs::default();
+        assert_eq!(
+            d.decide("runners-new-TNMG-1", 1, &prefs, 0, 0, day(30), 470),
+            Decision::Held(Hold::Duplicate)
+        );
+        assert_eq!(
+            d.decide("runners-breakout-TNMG-1", 1, &prefs, 0, 0, day(30), 470),
+            Decision::Send
         );
     }
 
@@ -1445,41 +1166,6 @@ Alert $2.41 · +5% = $2.53"
         n
     }
 
-    /// Desktop and web carry exactly the phone text for every kind, with the event id, the
-    /// copy-ticker data and the reference line; nothing is worded as advice.
-    /// SRTM 2026-10-26: a pullback setup 45 s after a burst push is sent, its crossing 20 s later
-    /// too, and neither holds back the stock's next Runners push.
-    #[test]
-    fn pullback_notices_skip_the_stock_gap() {
-        let dir = tempfile::tempdir().unwrap();
-        let prefs = Prefs::default();
-        let mut d = RunnersDelivery::open(dir.path());
-        let go = |d: &mut RunnersDelivery, k: NoticeKind, id: &str, now: i64| {
-            d.decide(k, "SRTM", id, 1, &prefs, now, now, day(26), 500)
-        };
-        let s = 1_000;
-        assert_eq!(go(&mut d, NoticeKind::Burst, "b1", 0), Decision::Send);
-        assert_eq!(
-            go(&mut d, NoticeKind::Pullback, "p1", 45 * s),
-            Decision::Send
-        );
-        assert_eq!(
-            go(&mut d, NoticeKind::PullbackCrossing, "x1", 65 * s),
-            Decision::Send
-        );
-        // The burst's own gap still governs the next unrelated push, not the pullback's.
-        assert_eq!(
-            go(&mut d, NoticeKind::Shelf, "z1", 100 * s),
-            Decision::Held(Hold::SymbolLimit)
-        );
-        assert_eq!(go(&mut d, NoticeKind::Shelf, "z1", 2 * MIN), Decision::Send);
-        // Still never the same event twice.
-        assert_eq!(
-            go(&mut d, NoticeKind::Pullback, "p1", 3 * MIN),
-            Decision::Held(Hold::Duplicate)
-        );
-    }
-
     /// Review of 75d6418: a shelf under $0.15 (outside the shelf research) quotes no odds.
     #[test]
     fn shelf_odds_only_where_they_were_measured() {
@@ -1492,6 +1178,8 @@ Alert $2.41 · +5% = $2.53"
         assert!(body.contains("1 in 3"), "{body}");
     }
 
+    /// Desktop and web carry exactly the phone text for every kind, with the event id, the
+    /// copy-ticker data and the reference line; nothing is worded as advice.
     #[test]
     fn every_kind_has_one_text_on_every_surface() {
         for kind in NoticeKind::ALL {
@@ -1617,141 +1305,62 @@ Alert $2.41 · +5% = $2.53"
         }
     }
 
-    /// WFF 2026-10-26 (Running 13:45:01, Fast move 13:45:02, Breakout 13:45:15): one push per
-    /// recipient. The phones that got Running are merged for the rest; a phone that only wants
-    /// breakouts never heard of WFF, so the breakout is its first. A pullback is not merged, a
-    /// path after the window is not either, and the merge survives a restart.
+    /// Owner, 2026-10-30 ("I don't want to keep missing alerts because they weren't delivered to
+    /// my phone"): every distinct event on one stock is sent, however close together. These are
+    /// the sequences the per-stock gap and the merge used to hold back.
     #[test]
-    fn a_cascade_on_one_stock_is_one_push_per_recipient() {
+    fn every_distinct_event_on_one_stock_is_sent() {
         let dir = tempfile::tempdir().unwrap();
         let prefs = Prefs::default();
         let s = 1_000;
         let t0 = 10 * MIN;
-        let go = |d: &mut RunnersDelivery, k: NoticeKind, id: &str, who: &[&str], now: i64| {
-            let who: Vec<String> = who.iter().map(|w| (*w).to_string()).collect();
-            d.decide_runner(k, "WFF", id, &who, &prefs, now, now, day(26), 825)
-        };
         let mut d = RunnersDelivery::open(dir.path());
-        let first = go(&mut d, NoticeKind::Running, "r1", &["fold", "s25"], t0);
-        assert_eq!(first.decision, Decision::Send);
-        assert_eq!(first.send_to, vec!["fold", "s25"]);
-        assert!(first.merged.is_none());
-        let fast = go(&mut d, NoticeKind::Fast, "f1", &["fold", "s25"], t0 + s);
-        assert_eq!(fast.decision, Decision::Held(Hold::Merged));
-        let m = fast.merged.unwrap();
-        assert_eq!(
-            (m.into_event.as_str(), m.into_notice.as_str(), m.covered),
-            ("r1", "runners.running", 2)
-        );
-        assert!((m.secs - 1.0).abs() < 1e-9);
-        // The tablet wants breakouts only: it never got Running, so this is its first.
-        let brk = go(
-            &mut d,
-            NoticeKind::Breakout,
-            "b1",
-            &["fold", "tab"],
-            t0 + 14 * s,
-        );
-        assert_eq!(brk.decision, Decision::Send);
-        assert_eq!(brk.send_to, vec!["tab"]);
-        assert_eq!(brk.merged.unwrap().covered, 1);
-        // Now covered too: a later path in the window reaches nobody new.
-        let run = go(&mut d, NoticeKind::Run, "u1", &["fold", "tab"], t0 + 20 * s);
-        assert_eq!(run.decision, Decision::Held(Hold::Merged));
-        // A pullback keeps its own rules (not merged, outside the stock gap).
-        let pb = go(&mut d, NoticeKind::Pullback, "p1", &["fold"], t0 + 25 * s);
-        assert_eq!((pb.decision, pb.merged), (Decision::Send, None));
-        // A restart in the middle of the window still merges.
-        let mut back = RunnersDelivery::open(dir.path());
-        let late = go(&mut back, NoticeKind::FollowUp, "x1", &["s25"], t0 + 29 * s);
-        assert_eq!(late.decision, Decision::Held(Hold::Merged));
-        // After the window: the ordinary stock gap again (no merge).
-        let after = go(&mut back, NoticeKind::FollowUp, "x2", &["s25"], t0 + 31 * s);
-        assert_eq!(
-            (after.decision, after.merged),
-            (Decision::Held(Hold::SymbolLimit), None)
-        );
-    }
-
-    /// The gaps (owner, 2026-10-23): the same kind on a stock at most once per 10 minutes; new
-    /// evidence (crossing, shelf entry, follow-up, burst) 2 minutes after an unrelated push;
-    /// the other kinds 10 minutes after any; one event never twice, even after a restart.
-    #[test]
-    fn gaps_and_event_dedupe() {
-        let dir = tempfile::tempdir().unwrap();
-        let prefs = Prefs::default();
-        let mut d = RunnersDelivery::open(dir.path());
-        let go = |d: &mut RunnersDelivery, k: NoticeKind, id: &str, now: i64| {
-            d.decide(k, "YMAT", id, 1, &prefs, now, now, day(23), 600)
+        let mut go = |kind: NoticeKind, alert_id: &str, now: i64| {
+            let mut n = Notice::test(kind, "TNMG");
+            n.alert_id = alert_id.into();
+            d.decide(&n.event_id(), 1, &prefs, now, now, day(30), 7 * 60 + 49)
         };
-        assert_eq!(go(&mut d, NoticeKind::Fast, "f1", 0), Decision::Send);
-        // New evidence 1 minute after a fast-move push: held; at 2 minutes: sent.
+        // TNMG: a pullback notice, then a follow-up 13 s later (7:49:45, held as symbol_limit).
+        assert_eq!(go(NoticeKind::Pullback, "ep-7", t0), Decision::Send);
+        assert_eq!(
+            go(NoticeKind::FollowUp, "2026-10-30-TNMG-1-run", t0 + 13 * s),
+            Decision::Send
+        );
+        // TNMG 7:19: a flag, then its "15s new high since alert" breakout inside 30 s (held as
+        // merged that day).
+        let t1 = t0 + 5 * MIN;
+        assert_eq!(go(NoticeKind::New, "2026-10-30-TNMG-2", t1), Decision::Send);
+        assert_eq!(
+            go(NoticeKind::Breakout, "2026-10-30-TNMG-2", t1 + 20 * s),
+            Decision::Send
+        );
+        // WFF 2026-10-26: Running, Fast move and Breakout within 14 s: all three.
+        let t2 = t1 + 5 * MIN;
+        assert_eq!(
+            go(NoticeKind::Running, "2026-10-30-TNMG-3", t2),
+            Decision::Send
+        );
+        assert_eq!(
+            go(NoticeKind::Fast, "2026-10-30-TNMG-4", t2 + s),
+            Decision::Send
+        );
+        assert_eq!(
+            go(NoticeKind::Breakout, "2026-10-30-TNMG-3", t2 + 14 * s),
+            Decision::Send
+        );
+        // New evidence of every kind straight after: a shelf entry, crossings, a halt gauge.
         for (k, id) in [
-            (NoticeKind::RossCrossing, "c1"),
-            (NoticeKind::Shelf, "z1"),
-            (NoticeKind::FollowUp, "u1"),
+            (NoticeKind::Shelf, "2026-10-30-TNMG-3-z1"),
+            (NoticeKind::RossCrossing, "ep-8"),
+            (NoticeKind::PullbackCrossing, "ep-7"),
+            (NoticeKind::Halt, "TNMG-h1"),
         ] {
-            assert_eq!(go(&mut d, k, id, MIN), Decision::Held(Hold::SymbolLimit));
+            assert_eq!(go(k, id, t2 + 15 * s), Decision::Send, "{k:?}");
         }
+        // The same event again is still a duplicate.
         assert_eq!(
-            go(&mut d, NoticeKind::FollowUp, "u1", 2 * MIN),
-            Decision::Send
-        );
-        assert_eq!(
-            go(&mut d, NoticeKind::RossCrossing, "c1", 4 * MIN),
-            Decision::Send
-        );
-        assert_eq!(go(&mut d, NoticeKind::Shelf, "z1", 6 * MIN), Decision::Send);
-        // A second crossing (another episode) 3 minutes after the first: same kind, held
-        // until 10 minutes have passed.
-        assert_eq!(
-            go(&mut d, NoticeKind::RossCrossing, "c2", 7 * MIN),
-            Decision::Held(Hold::SymbolLimit)
-        );
-        assert_eq!(
-            go(&mut d, NoticeKind::RossCrossing, "c2", 14 * MIN),
-            Decision::Send
-        );
-        // A plain kind (Halt watcher, At trigger) 10 minutes after any push of the stock.
-        assert_eq!(
-            go(&mut d, NoticeKind::Halt, "h1", 20 * MIN),
-            Decision::Held(Hold::SymbolLimit)
-        );
-        assert_eq!(go(&mut d, NoticeKind::Halt, "h1", 24 * MIN), Decision::Send);
-        // The identical event never twice, also after a restart.
-        assert_eq!(
-            go(&mut d, NoticeKind::Shelf, "z1", 60 * MIN),
+            go(NoticeKind::Breakout, "2026-10-30-TNMG-3", t2 + 16 * s),
             Decision::Held(Hold::Duplicate)
-        );
-        let mut back = RunnersDelivery::open(dir.path());
-        assert_eq!(
-            back.decide(
-                NoticeKind::FollowUp,
-                "YMAT",
-                "u1",
-                1,
-                &prefs,
-                90 * MIN,
-                90 * MIN,
-                day(23),
-                700
-            ),
-            Decision::Held(Hold::Duplicate)
-        );
-        // Stale and quiet hours apply to the new kinds as to every other.
-        assert_eq!(
-            back.decide(
-                NoticeKind::RossCrossing,
-                "B",
-                "c9",
-                1,
-                &prefs,
-                0,
-                4 * MIN,
-                day(23),
-                700
-            ),
-            Decision::Held(Hold::Stale)
         );
     }
 }

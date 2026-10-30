@@ -152,22 +152,20 @@ struct Shared {
     /// Desktop and web connections that show Runners system notifications, by connection, with
     /// their switches (`runners.notify`; [`DeskGuard`] removes one when its socket ends). Read
     /// by the task as the desk side's "devices" ([`runners`]): a kind no open client wants is
-    /// held as `no_device` and costs no stock gap, exactly as a phone's switch does.
+    /// held as `no_device`, exactly as a phone's switch does.
     desks: Mutex<HashMap<u64, DeskKinds>>,
     next_desk: AtomicU64,
 }
 
 impl Shared {
-    /// The desk connections that want `n`, by id: the desk side's recipients (merging needs to
-    /// know which of them already got a stock's first push, `runners` "Merging").
-    fn desks_wanting(&self, n: &crate::rocket::Notice) -> Vec<String> {
+    /// How many desk connections want `n`: the desk side's recipients.
+    fn desks_wanting(&self, n: &crate::rocket::Notice) -> usize {
         self.desks
             .lock()
             .expect("desks lock")
-            .iter()
-            .filter(|(_, k)| k.wants(n))
-            .map(|(id, _)| format!("desk-{id}"))
-            .collect()
+            .values()
+            .filter(|k| k.wants(n))
+            .count()
     }
 }
 
@@ -754,49 +752,28 @@ impl Task {
         // Rendered once: the ledger keeps the text with both decisions, the phones get it.
         let (title, body, data) = runners::message(&n);
         let desks = self.shared.desks_wanting(&n);
-        let desk = self.desk_runners.decide_runner(
-            n.kind,
-            &n.symbol,
+        let desk = self.desk_runners.decide(
             &event_id,
-            &desks,
+            desks,
             &self.prefs,
             n.at_ns.div_euclid(1_000_000),
             now,
             now_et.date_naive(),
             now_et.hour() * 60 + now_et.minute(),
         );
-        self.ledger.decision(
-            &n,
-            &event_id,
-            "desk",
-            &desk.decision,
-            desks.len(),
-            desk.merged.as_ref(),
-            &title,
-            &body,
-            now,
-        );
-        match (desk.decision, &desk.merged) {
-            // A merge still reaches the desks: a client that showed the first notice updates it
-            // with this path's line (the browser replaces by tag); one that did not shows it.
-            (runners::Decision::Send, m)
-            | (runners::Decision::Held(runners::Hold::Merged), m @ Some(_)) => {
-                self.broadcast(runners::desk_frame_merged(
-                    &n,
-                    m.as_ref(),
-                    desk.decision != runners::Decision::Send,
-                ));
-            }
-            (runners::Decision::Held(h), _) => {
+        self.ledger
+            .decision(&n, &event_id, "desk", &desk, desks, &title, &body, now);
+        match desk {
+            runners::Decision::Send => self.broadcast(runners::desk_frame(&n)),
+            runners::Decision::Held(h) => {
                 tracing::debug!(symbol = %n.symbol, kind = n.kind.as_str(), held = h.code(), "runners desk notice: held back");
             }
         }
-        let all_tokens = self.devices.runner_tokens(&n);
-        let phone = self.runners.decide_runner(
-            n.kind,
-            &n.symbol,
+        // Every phone that wants this kind (runners, "Every distinct event is delivered").
+        let tokens = self.devices.runner_tokens(&n);
+        let phone = self.runners.decide(
             &event_id,
-            &all_tokens,
+            tokens.len(),
             &self.prefs,
             n.at_ns.div_euclid(1_000_000),
             now,
@@ -808,19 +785,16 @@ impl Task {
             &n,
             &event_id,
             "phone",
-            &phone.decision,
-            all_tokens.len(),
-            phone.merged.as_ref(),
+            &phone,
+            tokens.len(),
             &title,
             &body,
             now,
         );
-        if let runners::Decision::Held(h) = phone.decision {
+        if let runners::Decision::Held(h) = phone {
             tracing::info!(symbol = %n.symbol, kind, held = h.code(), "runners push: held back");
             return;
         }
-        // Only the phones the merge did not cover (all of them when nothing merged).
-        let tokens = phone.send_to;
         let job = Job {
             // Not an Activity event: a failure later is only logged (history.update finds nothing).
             event_id,
@@ -1229,9 +1203,9 @@ mod tests {
         assert_eq!(j.title, "Runners: CJMB $2.50");
         assert_eq!(j.data["symbol"], "CJMB");
         assert_eq!(j.data["kind"], "runners.new");
-        // A breakout of the same stock right after: merged for the phone that had the flag; the
-        // tablet never heard of CJMB (its new-flag switch is off), so the breakout is its first
-        // (runners, "Merging").
+        // A breakout of the same stock right after: sent to every phone that wants breakouts
+        // (only the tablet), and a Run +20% a moment later to every phone that wants that (both
+        // default on): no per-stock gap, no merge (runners, "Every distinct event is delivered").
         sink.offer_runner(notice(NoticeKind::Breakout, "CJMB", now_ms()));
         let j = tokio::time::timeout(Duration::from_secs(5), jobs.recv())
             .await
@@ -1239,6 +1213,15 @@ mod tests {
             .unwrap();
         assert_eq!(j.data["symbol"], "CJMB");
         assert_eq!(j.tokens, vec!["ExponentPushToken[tab]".to_string()]);
+        sink.offer_runner(notice(NoticeKind::Run, "CJMB", now_ms()));
+        let j = tokio::time::timeout(Duration::from_secs(5), jobs.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(j.data["kind"], "runners.run");
+        let mut t = j.tokens.clone();
+        t.sort();
+        assert_eq!(t, vec!["ExponentPushToken[fold]", "ExponentPushToken[tab]"]);
         // Another stock's breakout: only the tablet opted in.
         sink.offer_runner(notice(NoticeKind::Breakout, "BBB", now_ms()));
         let j = tokio::time::timeout(Duration::from_secs(5), jobs.recv())
@@ -1277,8 +1260,8 @@ mod tests {
     }
 
     /// Desktop and web notices (runners::desk_frame) through the real task: none while no client
-    /// listens (and that costs no gap), the phone's text once one does, its switches respected,
-    /// the 10-minute gap applied, and a closed socket's guard takes it off the list.
+    /// listens, the phone's text once one does, every distinct event on a stock, its switches
+    /// respected, and a closed socket's guard takes it off the list.
     #[tokio::test]
     async fn desk_notices_follow_the_open_clients_and_limits() {
         use crate::rocket::NoticeKind;
@@ -1305,7 +1288,7 @@ mod tests {
                 _ => break None,
             }
         };
-        // Nobody listening: held (no_device) and the stock's gap is not spent.
+        // Nobody listening: held (no_device).
         sink.offer_runner(notice(NoticeKind::New, "CJMB", now_ms()));
         assert!(next_notice(&mut frames).await.is_none());
         let desk = alerts.desk(DeskKinds::from_opt_in(RunnersOptIn::default()));
@@ -1316,16 +1299,11 @@ mod tests {
         assert_eq!(f["body"], body.as_str());
         assert_eq!(f["kind"], "runners.new");
         assert_eq!(f["id"], "runners-new-2026-10-22-CJMB-1");
-        // Same stock within the merge window: merged into the flag. The frame still goes out so
-        // a client that showed the flag can add the line, but no client shows it on its own.
+        // The same stock a moment later: its own notification, nothing merged or replaced.
         sink.offer_runner(notice(NoticeKind::Run, "CJMB", now_ms()));
-        let f = next_notice(&mut frames).await.expect("a merge update");
-        assert_eq!(f["mergeInto"], "runners-new-2026-10-22-CJMB-1");
-        assert_eq!(f["mergeOnly"], true);
-        assert!(
-            f["mergeLine"].as_str().unwrap().starts_with("+ Run +20% "),
-            "{f}"
-        );
+        let f = next_notice(&mut frames).await.expect("the run");
+        assert_eq!(f["kind"], "runners.run");
+        assert!(f.get("mergeInto").is_none(), "{f}");
         // Breakouts are off by default.
         sink.offer_runner(notice(NoticeKind::Breakout, "BBB", now_ms()));
         assert!(next_notice(&mut frames).await.is_none());
