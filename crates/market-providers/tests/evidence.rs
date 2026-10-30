@@ -860,6 +860,57 @@ fn a_float_plan_refusal_pauses_float_for_the_day() {
     let _ = day;
 }
 
+/// A restart must not fetch and store today's floats again. Production's collector restarts with
+/// every deploy, reopening with the day's refresh "not run", and the bulk pass stored the whole
+/// universe again each time: 66,369 rows on 2026-10-22 for a ~6,600-symbol universe, a 132 MB
+/// month file, and that many redundant versions in the server's float window.
+#[test]
+fn a_restart_does_not_store_the_days_bulk_floats_again() {
+    let (_d, a) = archive();
+    let mut closes = market_archive::DailyCloses::new();
+    closes.insert(
+        d("2026-10-14"),
+        [("A".to_string(), 5.0), ("AA".to_string(), 6.0)].into(),
+    );
+    a.write_daily_closes(&closes).unwrap();
+    let cfg = || EvidenceConfig {
+        float_mode: FloatMode::Bulk,
+        ..test_cfg()
+    };
+    let clock = Cell::new(utc(t("2026-10-15", 7, 5, 0)));
+    let bulk = || {
+        Script::default()
+            .ok(fixture("fmp-shares-float-all-p0.json"))
+            .json(serde_json::json!([]))
+    };
+
+    let mut c = Collector::open(cfg(), &a, clock.get()).unwrap();
+    let r = float_tick(&mut c, &a, &mut bulk(), &clock);
+    assert_eq!(r.errors, Vec::<String>::new());
+    assert_eq!((r.float_requests, r.float_records), (2, 2), "{r:?}");
+    assert_eq!(a.read_float().unwrap().len(), 2);
+
+    // A deploy an hour later: a new collector over the same archive.
+    clock.set(clock.get() + chrono::Duration::hours(1));
+    let mut c = Collector::open(cfg(), &a, clock.get()).unwrap();
+    let mut http = Script::default();
+    let r = float_tick(&mut c, &a, &mut http, &clock);
+    assert_eq!(
+        (r.float_requests, r.float_records),
+        (0, 0),
+        "the day's floats are stored already: {:?}",
+        http.urls
+    );
+    assert_eq!(a.read_float().unwrap().len(), 2, "no copies appended");
+
+    // The next trading day is a new refresh, restarts or not.
+    clock.set(utc(t("2026-10-16", 7, 5, 0)));
+    let mut c = Collector::open(cfg(), &a, clock.get()).unwrap();
+    let r = float_tick(&mut c, &a, &mut bulk(), &clock);
+    assert_eq!((r.float_requests, r.float_records), (2, 2), "{r:?}");
+    assert_eq!(a.read_float().unwrap().len(), 4);
+}
+
 // --- float completion and transient retry -----------------------------------------------------
 
 /// `AAAA` in the watch universe, nothing else.

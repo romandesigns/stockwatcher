@@ -690,9 +690,17 @@ impl Collector {
                     .push("no daily-closes.json: watch universe empty".into()),
                 Err(e) => report.errors.push(format!("daily closes: {e}")),
             }
+            // Only what today has not settled yet. A restart reopens with `float_refreshed`
+            // unset, so the refresh is due again; without this the bulk pass fetched and
+            // **stored** the whole universe again on every deploy (6,500 rows a time, ten times
+            // on 2026-10-22), growing the month file to 132 MB and the server's float window
+            // with copies it then has to version and prune. The per-symbol queue below already
+            // skipped them; the bulk pass did not.
+            let settled = universe.iter().filter(|s| self.known_float(s)).count();
+            universe.retain(|s| !self.known_float(s));
             log(&format!(
-                "float refresh for {day}: {} symbols in the watch universe",
-                universe.len()
+                "float refresh for {day}: {} symbols in the watch universe, {settled} already stored today",
+                universe.len() + settled
             ));
             if self.cfg.float_mode == FloatMode::Bulk && !universe.is_empty() {
                 let want = |s: &str| universe.contains(s);
