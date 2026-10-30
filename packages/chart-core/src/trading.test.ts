@@ -3,7 +3,7 @@ import { computeChartModel, type ChartState } from "./layout.ts";
 import { defaultViewport, priceY } from "./scale.ts";
 import { DEFAULT_CHART_THEME } from "./theme.ts";
 import { fixtureSnapshot } from "./testFixture.ts";
-import { hitTrading, layoutTrading, orderLinePrice, orderTypeAt, parsePaperMessage, snapPrice, type PaperOrder } from "./trading.ts";
+import { brokerLabel, brokerOf, buyingPower, freshNotice, hitTrading, layoutTrading, orderLinePrice, orderTypeAt, parsePaperMessage, snapPrice, type PaperOrder } from "./trading.ts";
 
 const snap = fixtureSnapshot("1m", 20);
 const state: ChartState = { timeframe: "1m", candles: snap.candles, gaps: snap.gaps, profile: snap.profile, inspectT: null, pointer: null };
@@ -102,5 +102,30 @@ describe("bracket orders", () => {
     expect(both.some((p) => p.kind === "text" && p.text === "OCO")).toBe(true);
     const one = layoutTrading(model, { orders: [{ ...tp, status: "open" }, { ...sl, status: "cancelled" }], position: null, last: null }, DEFAULT_CHART_THEME);
     expect(one.some((p) => p.kind === "text" && p.text === "OCO")).toBe(false);
+  });
+});
+
+describe("account (simulator vs Alpaca paper)", () => {
+  const base = { type: "paper.state" as const, seq: 1, account: { startingCash: 1, cash: 1, realizedPnl: 0 }, orders: [], positions: [] };
+
+  test("brokerOf trusts alpaca_paper only with simulated false", () => {
+    expect(brokerOf(null)).toBe("simulator");
+    expect(brokerOf({ ...base, simulated: true })).toBe("simulator");
+    expect(brokerOf({ ...base, simulated: true, broker: "alpaca_paper" })).toBe("simulator");
+    expect(brokerOf({ ...base, simulated: false, broker: "alpaca_paper" })).toBe("alpaca_paper");
+    expect(brokerLabel("alpaca_paper")).toBe("Alpaca paper");
+    expect(brokerLabel("simulator")).toBe("Simulator");
+  });
+
+  test("buying power only for Alpaca paper", () => {
+    expect(buyingPower({ ...base, simulated: true, account: { ...base.account, buyingPower: 5 } })).toBeNull();
+    expect(buyingPower({ ...base, simulated: false, broker: "alpaca_paper", account: { ...base.account, buyingPower: 5 } })).toBe(5);
+  });
+
+  test("a notice shows once and only while fresh", () => {
+    const s = { ...base, simulated: false, broker: "alpaca_paper" as const, notice: { at: 1000, text: "no", orderId: null } };
+    expect(freshNotice(s, 0, 2000)?.text).toBe("no");
+    expect(freshNotice(s, 1000, 2000)).toBeNull();
+    expect(freshNotice(s, 0, 1000 + 16000)).toBeNull();
   });
 });

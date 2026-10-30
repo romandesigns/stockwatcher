@@ -17,6 +17,7 @@ import {
 } from "@stockwatcher/chart-core";
 import { parseNoticeChartContext, pushRecentTicker, type NoticeChartContext, type AlertEventWire, type AlertsServerMessage, type AlertsStatusWire, type SettingsSync } from "@stockwatcher/shared";
 import { createStore, type StoreApi } from "zustand/vanilla";
+import { parseBrokerStatus, parseTradingAccount, TRADING_NS, type BrokerStatus, type LiveAccount, type TradingAccount } from "./trading.ts";
 import { ALERTS_NS, editedAlert, mergeActivity, parseAlertPrefs, parseAlertRules, parseAlertStates, type AlertPrefs, type AlertRule, type AlertStateWire } from "./alerts.ts";
 import {
   APP_NS,
@@ -84,6 +85,9 @@ export interface AppState {
   alerts: AlertRule[];
   alertStates: Record<string, AlertStateWire>;
   alertPrefs: AlertPrefs;
+  /** Which account the live market's orders go to (Settings → Trading), and the server's word on Alpaca paper. */
+  tradingAccount: TradingAccount;
+  brokerStatus: BrokerStatus;
 
   // Server-pushed (the alerts service; not synced, not persisted: every connection gets it again).
   /** Activity, newest first (fires and hold-backs). */
@@ -133,6 +137,8 @@ export interface AppState {
   setDashboardCount(count: number): void;
   /** Which market the dashboard reads (Settings → Data). */
   setDashboardSource(source: DashboardSource): void;
+  /** Which account the live market's chart orders go to (Settings → Trading). */
+  setLiveAccount(account: LiveAccount): void;
   /** Loads a ticker into one dashboard chart (and the search recents). */
   setDashboardSymbol(slot: number, symbol: string): void;
   setDashboardTimeframe(slot: number, tf: Timeframe): void;
@@ -222,6 +228,8 @@ function syncedFrom(sync: SettingsSync, shownSymbol: string) {
     alerts: parseAlertRules(sync.get(ALERTS_NS.rules)),
     alertStates: parseAlertStates(sync.get(ALERTS_NS.state)),
     alertPrefs: parseAlertPrefs(sync.get(ALERTS_NS.prefs)),
+    tradingAccount: parseTradingAccount(sync.get(TRADING_NS.account)),
+    brokerStatus: parseBrokerStatus(sync.get(TRADING_NS.status)),
   };
 }
 
@@ -313,6 +321,9 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
     },
     setDashboardSource: (source) => {
       sync.set(APP_NS.dashboard, { ...parseDashboard(sync.get(APP_NS.dashboard)), source: source === "replay" ? "replay" : "live" });
+    },
+    setLiveAccount: (account) => {
+      sync.set(TRADING_NS.account, { live: account === "alpaca_paper" ? "alpaca_paper" : "simulator" });
     },
     setDashboardSymbol: (slot, raw) => {
       const symbol = parseSymbol(raw);

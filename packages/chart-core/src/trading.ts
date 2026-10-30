@@ -11,6 +11,9 @@ import type { FillMark } from "./levels.ts";
 // hit testing. The chart never sends anything: it emits intents (place,
 // modify, cancel) and the host app forwards them. Owner decision 2026-10-17:
 // simulator only; every state carries `simulated: true` and the UI says so.
+// Since 2026-10-29 the live market can instead route to the owner's Alpaca
+// PAPER account (docs/architecture/alpaca-paper.md): the same frames with
+// `simulated: false` and `broker: "alpaca_paper"`, shown by the account badge.
 
 export type OrderSide = "buy" | "sell";
 export type OrderType = "market" | "limit" | "stop" | "stop_limit";
@@ -32,6 +35,8 @@ export interface PaperOrder {
   stopPrice: number | null;
   status: OrderStatus;
   rejectReason: string | null;
+  /** Alpaca paper only: the rejection in words (Alpaca's own text or ours). */
+  rejectMessage?: string | null;
   createdAt: number;
   updatedAt: number;
   /** Bracket fields (null outside a bracket): the exits' entry, the order's role, and the group shared by all three. */
@@ -52,22 +57,47 @@ export interface PaperAccount {
   startingCash: number;
   cash: number;
   realizedPnl: number;
+  /** Alpaca paper only (absent from the simulator, which does not enforce buying power). */
+  buyingPower?: number | null;
+  equity?: number | null;
+}
+
+/** Which account a state comes from. Absent on servers that predate it: the simulator. */
+export type BrokerId = "simulator" | "alpaca_paper";
+
+/** Alpaca paper's trade stream: `live`, or why not (`connecting`, `down`, `unauthorized`, `not_configured`). */
+export interface BrokerLink {
+  state: string;
+  message: string;
+}
+
+/** The last refusal from Alpaca paper (place, modify or cancel), for a one-time toast. */
+export interface BrokerNotice {
+  at: number;
+  text: string;
+  orderId: string | null;
 }
 
 export interface PaperState {
   type: "paper.state";
-  simulated: true;
+  /** True for the simulator; false for a real (paper) brokerage account. */
+  simulated: boolean;
+  broker?: BrokerId;
   seq: number;
   account: PaperAccount;
   orders: PaperOrder[];
   positions: PaperPosition[];
   /** The last 200 fills, oldest first (absent from servers that predate it). */
   fills?: FillMark[];
+  /** Alpaca paper only. */
+  link?: BrokerLink;
+  notice?: BrokerNotice | null;
 }
 
 export interface PaperFill {
   type: "paper.fill";
-  simulated: true;
+  simulated: boolean;
+  broker?: BrokerId;
   orderId: string;
   symbol: string;
   side: OrderSide;
@@ -103,6 +133,33 @@ export interface OrderCancel {
 }
 
 export type PaperMessage = PaperState | PaperFill;
+
+/** The account a state belongs to; the simulator when unknown (no state yet, or an older server). */
+export function brokerOf(state: Pick<PaperState, "broker" | "simulated"> | null | undefined): BrokerId {
+  return state?.broker === "alpaca_paper" && state.simulated === false ? "alpaca_paper" : "simulator";
+}
+
+/** The account badge's words, the same on every client. */
+export function brokerLabel(b: BrokerId): string {
+  return b === "alpaca_paper" ? "Alpaca paper" : "Simulator";
+}
+
+/** Buying power to show, or null (the simulator has none). */
+export function buyingPower(state: PaperState | null | undefined): number | null {
+  if (brokerOf(state) !== "alpaca_paper") return null;
+  const v = state?.account.buyingPower;
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
+/**
+ * The refusal to show now: the state's notice if it is newer than `seenAt` and at most `maxAgeMs`
+ * old at `now`. Clients remember the `at` they showed so a notice toasts once.
+ */
+export function freshNotice(state: PaperState | null | undefined, seenAt: number, now: number, maxAgeMs = 15000): BrokerNotice | null {
+  const n = state?.notice;
+  if (!n || typeof n.at !== "number" || typeof n.text !== "string") return null;
+  return n.at > seenAt && now - n.at <= maxAgeMs ? n : null;
+}
 
 /** Parses a paper broker frame, or null when it is not one. */
 export function parsePaperMessage(raw: unknown): PaperMessage | null {
