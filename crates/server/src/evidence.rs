@@ -2305,6 +2305,67 @@ mod tests {
         assert!(bare["readiness"].is_null());
     }
 
+    /// The 2026-10-30 misreading: the readiness line led with `float:no_float_evidence x7795`
+    /// and was taken for a broken float feed, when almost all of those symbols were outside the
+    /// band — already FAILING price, so no float figure could ever have put them on the panel.
+    /// Only a symbol nothing has ruled out yet is blocked by missing evidence.
+    #[test]
+    fn a_symbol_another_pillar_fails_is_not_counted_as_blocked() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = archive(dir.path());
+        let log = Mutex::new(EvidenceLog::default());
+        let mut cx = board();
+        load(&a, &log, &mut cx);
+        // Out of the band ($0.10–$25) in numbers: price FAILS, and the evidence pillars are as
+        // unknown for them as for the in-band pair.
+        let closes = PrevCloses::default();
+        let counted = Counted {
+            ohlc: true,
+            volume: true,
+        };
+        for (i, s) in ["BIG1", "BIG2", "BIG3"].into_iter().enumerate() {
+            let tr = Trade::new(
+                s,
+                UnixNanos(t(9, 30, 1)),
+                Price::from_cents(4000),
+                1_000,
+                900 + i as u64,
+            );
+            cx.apply_trade(&tr, counted, &closes);
+        }
+        trade(&mut cx, t(9, 30, 0), t(9, 32, 0));
+
+        let r = cx.readiness(t(9, 32, 5));
+        assert_eq!(r.symbols, 5, "{r:?}");
+        let price = r.pillars.iter().find(|p| p.pillar == "price").unwrap();
+        assert_eq!(price.fail, 3, "the three are outside the band: {r:?}");
+        assert_eq!(
+            r.contenders, 2,
+            "only the in-band pair can still qualify: {r:?}"
+        );
+        for b in &r.blocking {
+            assert!(
+                b.symbols <= 2,
+                "{}:{} counts a symbol price already rules out: {:?}",
+                b.pillar,
+                b.reason,
+                r.blocking
+            );
+        }
+        assert!(
+            r.blocking
+                .iter()
+                .any(|b| b.pillar == "float" && b.reason == "no_float_evidence" && b.symbols == 2),
+            "the in-band pair's missing float is still named: {:?}",
+            r.blocking
+        );
+        assert!(
+            r.summary_line().contains("2 awaiting evidence"),
+            "{}",
+            r.summary_line()
+        );
+    }
+
     /// With the evidence in place the same summary says so, so a reader can tell "nothing
     /// qualifies" from "nothing could be decided".
     #[test]

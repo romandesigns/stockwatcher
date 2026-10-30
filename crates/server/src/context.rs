@@ -304,6 +304,14 @@ impl ContextBoard {
             if d.membership.active().is_some() {
                 r.members += 1;
             }
+            // A reason blocks only a symbol that nothing has ruled out yet. One that already
+            // FAILS a pillar cannot reach five whatever arrives, so its UNKNOWNs stop nothing:
+            // counted, they buried the real blockers under the whole market. On 2026-10-30 the
+            // line led with `float:no_float_evidence x7795`, read as "the float feed is broken",
+            // when ~7,400 of those were stocks outside the band (price FAIL) and ETFs, warrants
+            // and units FMP publishes no float for; every in-band +10% mover had its float.
+            let contender = !d.pillars.iter().any(|p| p.state == Tri::Fail);
+            let mut undecided = false;
             for p in &d.pillars {
                 let Some(slot) = pillars.iter_mut().find(|x| x.pillar == p.pillar.as_str()) else {
                     continue;
@@ -313,9 +321,15 @@ impl ContextBoard {
                     Tri::Fail => slot.fail += 1,
                     Tri::Unknown => {
                         slot.unknown += 1;
-                        *reasons.entry((p.pillar.as_str(), p.reason)).or_default() += 1;
+                        if contender {
+                            undecided = true;
+                            *reasons.entry((p.pillar.as_str(), p.reason)).or_default() += 1;
+                        }
                     }
                 }
+            }
+            if undecided {
+                r.contenders += 1;
             }
         }
         let mut blocking: Vec<ReasonCount> = reasons
@@ -1073,7 +1087,12 @@ pub(crate) struct Readiness {
     /// Ross Panel members now (five to enter, four to stay).
     pub(crate) members: u32,
     pub(crate) pillars: Vec<PillarReadiness>,
-    /// The commonest reasons a pillar could not decide, most symbols first.
+    /// Symbols no pillar FAILS that still have a pillar UNKNOWN: the ones evidence could still
+    /// put on the panel, and the only ones [`Readiness::blocking`] counts.
+    pub(crate) contenders: u32,
+    /// The commonest reasons a pillar could not decide, most symbols first, over the
+    /// [`Readiness::contenders`] only (a symbol another pillar already fails is not blocked by
+    /// missing evidence).
     pub(crate) blocking: Vec<ReasonCount>,
     /// Evidence records the engine holds.
     pub(crate) evidence_records: usize,
@@ -1113,11 +1132,12 @@ impl Readiness {
         };
         let rev = self.revisions;
         format!(
-            "{} symbols, {} qualified, {} members, {} restored; {blocking}; revisions {} applied, {} duplicates dropped{}",
+            "{} symbols, {} qualified, {} members, {} restored; {} awaiting evidence: {blocking}; revisions {} applied, {} duplicates dropped{}",
             self.symbols,
             self.qualified,
             self.members,
             self.restores.adopted,
+            self.contenders,
             rev.applied,
             rev.duplicates_dropped,
             if rev.complete() {

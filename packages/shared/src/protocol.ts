@@ -479,7 +479,15 @@ export interface RossReadinessWire {
   qualified: number;
   members: number;
   pillars: RossPillarReadinessWire[];
-  /** The commonest reasons a pillar could not decide, most symbols first, bounded. */
+  /**
+   * Symbols no pillar FAILS that still have a pillar UNKNOWN: the ones evidence could still put
+   * on the panel. Absent from servers before 2026-10-30.
+   */
+  contenders?: number;
+  /**
+   * The commonest reasons a pillar could not decide, most symbols first, bounded. Counted over
+   * the contenders only: a symbol another pillar already fails is not blocked by evidence.
+   */
   blocking: RossReasonCountWire[];
   evidence_records: number;
   warmups?: {
