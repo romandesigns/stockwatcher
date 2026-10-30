@@ -16,6 +16,7 @@ stock-context = { path = "../stock-context" }
 market-events = { path = "../market-events" }
 market-providers = { path = "../market-providers" }
 paper-broker = { path = "../paper-broker" }
+alpaca-paper = { path = "../alpaca-paper" }
 provider-sim = { path = "../provider-sim" }
 chrono = { version = "0.4.45", default-features = false, features = ["std", "clock"] }
 chrono-tz = "0.10.4"

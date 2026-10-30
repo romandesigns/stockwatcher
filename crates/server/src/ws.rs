@@ -50,6 +50,12 @@
 //!   `paper.state` too, since it may have missed one.
 //! - client `order.place`, `order.modify`, `order.cancel`, `paper.reset`.
 //!   Success has no direct reply; the broadcast `paper.state` is the answer.
+//! - Live market with the `tradingAccount` setting on `alpaca_paper` (crate::trading,
+//!   docs/architecture/alpaca-paper.md): the same commands go to the owner's Alpaca PAPER
+//!   account, and `paper.state` / `paper.fill` carry `simulated: false`, `broker:
+//!   "alpaca_paper"`. A refused modify/cancel gets `error` with Alpaca's text (`not_open`,
+//!   `broker_rejected`, `rate_limited`, `not_configured`); `paper.reset` gets `error
+//!   not_supported`. The replay market is always the simulator (`broker: "simulator"`).
 //!   A malformed or unknown `order.*`/`paper.*` command gets `error bad_order`;
 //!   a refused modify/cancel gets `error` with the broker's code (`not_open`, ...).
 //!
@@ -182,6 +188,8 @@
 //!   `too_large`, `store_full`, `not_a_map` (drop the edit) or `settings_unavailable` (the disk
 //!   write failed: keep it and resend after the next reconnect). Nothing changed.
 //! - Values are opaque JSON: the clients own the schemas and validate what they read.
+//! - `broker.status` is server-written too (crate::trading::STATUS_NS): the Alpaca paper route's
+//!   health, refused with `bad_request` like `alerts.state`.
 //! - `alerts.state` is the one namespace only the server writes (crate::alerts::model::STATE_NS):
 //!   a client `settings.set`/`settings.patch` on it is refused with `bad_request`.
 //!
@@ -414,7 +422,7 @@ async fn apply_setting(
 ) -> bool {
     // The alerts' runtime state is the evaluator's alone (crate::alerts::model): a client that
     // could write it could re-arm or silence an alert behind the evaluator's back.
-    if crate::alerts::server_owned(ns) {
+    if crate::alerts::server_owned(ns) || crate::trading::server_owned(ns) {
         return send_text(
             socket,
             settings_rejected(
@@ -696,6 +704,11 @@ pub async fn upgrade(ws: WebSocketUpgrade, State(state): State<AppState>) -> Res
         .on_upgrade(move |socket| session(socket, state))
 }
 
+/// An `error` frame with a message built at run time (Alpaca's own rejection text).
+fn error_frame(code: &str, message: &str) -> String {
+    serde_json::json!({"type": "error", "code": code, "message": message}).to_string()
+}
+
 async fn send(socket: &mut WebSocket, msg: &ServerMessage<'_>) -> bool {
     let text = serde_json::to_string(msg).expect("server messages always serialize");
     socket.send(Message::Text(text.into())).await.is_ok()
@@ -823,10 +836,18 @@ async fn session(mut socket: WebSocket, state: AppState) {
     // Listed among the Runners notification desks while held (`runners.notify`).
     let mut desk: Option<crate::alerts::DeskGuard> = None;
 
+    // Frames for this connection alone from spawned work (a refused Alpaca paper modify/cancel).
+    let (direct_tx, mut direct_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+
     let mut heartbeat = interval_at(Instant::now() + HEARTBEAT, HEARTBEAT);
     let mut last_seen = Instant::now();
     loop {
         tokio::select! {
+            Some(frame) = direct_rx.recv() => {
+                if !send_text(&mut socket, frame).await {
+                    break;
+                }
+            }
             _ = heartbeat.tick() => {
                 if last_seen.elapsed() > HEARTBEAT * 3 {
                     tracing::debug!("ws client silent for 3 heartbeats, closing");
@@ -1118,21 +1139,60 @@ async fn session(mut socket: WebSocket, state: AppState) {
                             }),
                         }
                     }
+                    // The live market routed to Alpaca paper (crate::trading): the HTTP call runs
+                    // in its own task so this socket keeps flowing; a place answers through the
+                    // broadcast state, a refused modify/cancel through `direct`.
                     Ok(ClientMessage::OrderPlace(cmd)) => {
-                        market.paper_place(cmd);
+                        match market.paper_route() {
+                            Some(route) => {
+                                tokio::spawn(async move { route.place(cmd).await });
+                            }
+                            None => {
+                                market.paper_place(cmd);
+                            }
+                        }
                         None
                     }
-                    Ok(ClientMessage::OrderModify(cmd)) => match market.paper_modify(cmd) {
-                        Ok(()) => None,
-                        Err(e) => Some(ServerMessage::Error { code: e.code(), message: e.message() }),
+                    Ok(ClientMessage::OrderModify(cmd)) => match market.paper_route() {
+                        Some(route) => {
+                            let tx = direct_tx.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) = route.modify(cmd).await {
+                                    let _ = tx.send(error_frame(e.code, &e.message));
+                                }
+                            });
+                            None
+                        }
+                        None => match market.paper_modify(cmd) {
+                            Ok(()) => None,
+                            Err(e) => Some(ServerMessage::Error { code: e.code(), message: e.message() }),
+                        },
                     },
-                    Ok(ClientMessage::OrderCancel(cmd)) => match market.paper_cancel(&cmd.id) {
-                        Ok(()) => None,
-                        Err(e) => Some(ServerMessage::Error { code: e.code(), message: e.message() }),
+                    Ok(ClientMessage::OrderCancel(cmd)) => match market.paper_route() {
+                        Some(route) => {
+                            let tx = direct_tx.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) = route.cancel(&cmd.id).await {
+                                    let _ = tx.send(error_frame(e.code, &e.message));
+                                }
+                            });
+                            None
+                        }
+                        None => match market.paper_cancel(&cmd.id) {
+                            Ok(()) => None,
+                            Err(e) => Some(ServerMessage::Error { code: e.code(), message: e.message() }),
+                        },
                     },
                     Ok(ClientMessage::PaperReset) => {
-                        market.paper_reset();
-                        None
+                        if market.paper_route().is_some() {
+                            Some(ServerMessage::Error {
+                                code: "not_supported",
+                                message: "reset is for the simulator only; an Alpaca paper account is reset from Alpaca's dashboard",
+                            })
+                        } else {
+                            market.paper_reset();
+                            None
+                        }
                     }
                     Ok(ClientMessage::QuotesSubscribe) => {
                         let q = quotes.get_or_insert_with(|| QuotesSub {

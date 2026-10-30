@@ -526,6 +526,12 @@ pub(crate) struct Inner {
     /// The one paper account (single-user app). Never locked while `core` is held, or the other
     /// way round, so the two locks cannot deadlock.
     paper: Mutex<Broker>,
+    /// The live market's order route when the owner picked his Alpaca paper account
+    /// (crate::trading, docs/architecture/alpaca-paper.md). While set, chart orders go to Alpaca
+    /// paper and this market's `paper.state` is Alpaca's; the simulator keeps matching silently
+    /// and comes back as it was when the route is cleared. Never set on the replay market
+    /// ([`Market::set_paper_route`] refuses): replay orders are never routed to a broker.
+    paper_route: std::sync::RwLock<Option<alpaca_paper::Service>>,
     /// `assets.json` (name, exchange); empty when the file is missing. Replaced whole when the
     /// file changes ([`Market::refresh_archive_meta`]); readers clone the `Arc` and let go.
     assets: Mutex<Arc<HashMap<String, AssetMeta>>>,
@@ -793,6 +799,7 @@ impl Market {
             bin: ChartEngine::default().config().profile_bin,
             band,
             paper: Mutex::new(Broker::new()),
+            paper_route: std::sync::RwLock::new(None),
             assets: Mutex::new(Arc::new(assets)),
             closes: Mutex::new(closes),
             meta_files: files,
@@ -2626,6 +2633,10 @@ impl Market {
     /// Broadcasts the current `paper.state`, then one `paper.fill` per fill. Called with the
     /// paper lock held, so frames from the ingest task and from commands go out in `seq` order.
     fn publish_paper(&self, paper: &Broker, fills: &[Fill]) {
+        // Routed to Alpaca paper: the simulator's frames would replace the clients' Alpaca state.
+        if self.paper_route().is_some() {
+            return;
+        }
         let mut frames =
             vec![serde_json::to_string(&paper.state()).expect("paper state serializes")];
         frames.extend(
@@ -2643,8 +2654,57 @@ impl Market {
 
     /// The current `paper.state` frame (sent to a connection right after `welcome`).
     pub fn paper_state_frame(&self) -> String {
+        if let Some(route) = self.paper_route() {
+            return route.state_frame();
+        }
         let paper = self.0.paper.lock().expect("paper lock");
         serde_json::to_string(&paper.state()).expect("paper state serializes")
+    }
+
+    /// The order route, when this (live) market sends chart orders to Alpaca paper.
+    pub fn paper_route(&self) -> Option<alpaca_paper::Service> {
+        self.0.paper_route.read().expect("route lock").clone()
+    }
+
+    /// Switches where chart orders go, then sends every connection the now-current
+    /// `paper.state` (clients replace their copy). Refused (false) on any market that is not
+    /// live: replay orders never reach a broker.
+    pub fn set_paper_route(&self, route: Option<alpaca_paper::Service>) -> bool {
+        if route.is_some() && self.mode() != ClockMode::Live {
+            tracing::error!(
+                "refused to route a {:?} market's orders to Alpaca paper",
+                self.mode()
+            );
+            return false;
+        }
+        {
+            let mut r = self.0.paper_route.write().expect("route lock");
+            if r.is_none() && route.is_none() {
+                return true;
+            }
+            *r = route;
+        }
+        // The write lock is released first: the route's own publisher reads it.
+        let frame = self.paper_state_frame();
+        let _ = self.0.tx.send(Arc::new(Outbound {
+            seq: 0,
+            kind: OutKind::Paper(frame),
+        }));
+        true
+    }
+
+    /// Frames from the Alpaca paper route; dropped unless it is this market's current route
+    /// (the owner switched back to the simulator).
+    pub fn publish_route_frames(&self, frames: Vec<String>) {
+        if self.paper_route().is_none() {
+            return;
+        }
+        for frame in frames {
+            let _ = self.0.tx.send(Arc::new(Outbound {
+                seq: 0,
+                kind: OutKind::Paper(frame),
+            }));
+        }
     }
 
     /// The broker's notion of "now" for commands: the virtual (replay) or wall (live) clock the

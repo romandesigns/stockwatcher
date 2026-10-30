@@ -258,6 +258,11 @@ async fn serve(config: Config) -> std::io::Result<()> {
         settings.clone(),
         vec![markets.live.clone(), markets.replay.clone()],
     );
+    // Chart orders on the live market can go to the owner's Alpaca PAPER account (synced
+    // setting `tradingAccount`; crate::trading). Paper host only, keys from this environment.
+    stockwatcher_server::trading::start(settings.clone(), markets.live.clone(), |k| {
+        std::env::var(k).ok()
+    });
     // The finished days of every operational log, copied to the Pi beside the preserved
     // originals (crate::oplog, "Durable copy").
     {

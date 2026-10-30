@@ -4297,6 +4297,7 @@ dependencies = [
 name = "stockwatcher-server"
 version = "0.1.0"
 dependencies = [
+ "alpaca-paper",
  "axum",
  "chart-engine",
  "chrono",
