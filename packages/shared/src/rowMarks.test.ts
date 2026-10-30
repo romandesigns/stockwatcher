@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { RocketRowWire } from "./rocket.ts";
 import { rossDemoPanel } from "./ross.ts";
-import { burstOf, FLAME_MS, flameMark, favoriteRowMarks, marksReadout, newsMark, pathMark, pillarsFromCount, pillarsFromMissing, rocketRowMarks, rossRowMarks, rowLineOverlay, rvolMark, stageMark, tailMark, zoneMark } from "./rowMarks.ts";
+import { burstOf, FLAME_MS, flameMark, favoriteRowMarks, marksReadout, moverRowMarks, newsMark, pathMark, pillarsFromCount, pillarsFromMissing, rocketRowMarks, rossRowMarks, rowLineOverlay, rvolMark, stageMark, tailMark, zoneMark } from "./rowMarks.ts";
 
 const fmt = (ms: number) => `@${ms}`;
 const T = 1_793_000_000_000;
@@ -199,5 +199,19 @@ describe("per panel", () => {
     expect(Object.values(bare).every((v) => v === null)).toBe(true);
     expect(marksReadout(bare)).toBe("");
     expect(marksReadout(m).split("\n")[0]).toStartWith("Look now");
+  });
+});
+
+describe("Top Gainers / Hot stocks rows", () => {
+  test("the flame and the path come from today's Runners row; nothing else is guessed", () => {
+    const m = moverRowMarks(0.68, rocketRow(), T, fmt);
+    expect(m.flame?.lit).toBe(true);
+    expect(m.path?.kind).toBe("burst");
+    expect([m.pillars, m.rvol, m.news, m.zone, m.stage, m.tail]).toEqual([null, null, null, null, null, null]);
+    // Under the burst's alert price: no flame, the path stays.
+    expect(moverRowMarks(0.6, rocketRow(), T, fmt).flame).toBeNull();
+    const none = moverRowMarks(0.68, undefined, T, fmt);
+    expect(none.flame).toBeNull();
+    expect(none.path).toBeNull();
   });
 });

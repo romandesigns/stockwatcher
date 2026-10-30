@@ -338,3 +338,22 @@ export function favoriteRowMarks(r: FavoriteRowWire, runner: RocketRowWire | nul
     tail: price !== null && back ? tailMark((price / back - 1) * 100) : null,
   };
 }
+
+/**
+ * A Top Gainers or Hot stocks row's marks (owner, 2026-10-30). A quote-board row carries only a
+ * price, change and volume, so it can mark only what joining today's Runners row adds: the flame
+ * (a fresh Buying burst still holding, at the row's last price) and the Runners path. Everything
+ * else stays null and is not drawn.
+ */
+export function moverRowMarks(price: number, runner: RocketRowWire | null | undefined, nowMs: number, formatTime: (epochMs: number) => string): RowMarks {
+  return {
+    flame: flameMark(burstOf(runner), price, nowMs),
+    pillars: null,
+    rvol: null,
+    news: null,
+    path: runner ? pathMark(runner.kind ?? "runner", runner.at, nowMs, formatTime) : null,
+    zone: null,
+    stage: null,
+    tail: null,
+  };
+}
