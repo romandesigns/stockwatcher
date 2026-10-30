@@ -34,7 +34,8 @@ describe("applyMoversMessage", () => {
     expect(state.rows!.has("CCC")).toBe(false);
     expect(state.gainers).toEqual(["AAA"]);
     expect(state.bear).toEqual(["CCC"]);
-    expect(moversRows(state, "bear")).toEqual([], "a list member without a row is skipped");
+    // A list member without a row is skipped.
+    expect(moversRows(state, "bear")).toEqual([]);
     expect(moversRows(state, "bull").map((r) => r.symbol)).toEqual(["BBB", "AAA", "DDD"]);
   });
 
