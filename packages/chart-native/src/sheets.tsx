@@ -7,6 +7,9 @@ import {
   type LayerId,
   type ChartLayers,
   type FillMark,
+  type PaperState,
+  brokerLabel,
+  brokerOf,
   canAddIndicator,
   DEFAULT_CHART_THEME,
   INDICATOR_GLYPHS,
@@ -32,6 +35,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Icon, Segmented, ToolButton, UI } from "./ui.tsx";
+import { AccountBadge, BuyingPower } from "./AccountBadge.tsx";
 
 /**
  * A bottom sheet on a dimmed backdrop. Tapping the backdrop or the system
@@ -284,7 +288,7 @@ export function AxisSheet({
 
 export type TicketOrder = Omit<OrderPlace, "type" | "clientOrderId">;
 
-/** The simulated order ticket (see chart-web's OrderTicket for the rules; same behaviour). */
+/** The order ticket (see chart-web's OrderTicket for the rules; same behaviour), with the account badge. */
 export function OrderTicketSheet({
   open,
   onClose,
@@ -295,6 +299,7 @@ export function OrderTicketSheet({
   reducedMotion,
   fills,
   realized = 0,
+  account,
 }: {
   open: boolean;
   onClose: () => void;
@@ -306,7 +311,10 @@ export function OrderTicketSheet({
   /** This symbol's fills and realized P&L: the history under the action buttons. */
   fills?: readonly FillMark[];
   realized?: number;
+  /** The account's state: its badge and (Alpaca paper) buying power. */
+  account?: PaperState | null;
 }) {
+  const alpaca = brokerOf(account) === "alpaca_paper";
   const [side, setSide] = useState<OrderSide>("buy");
   const [type, setType] = useState<Exclude<OrderType, "stop_limit">>("market");
   const [byHand, setByHand] = useState(false);
@@ -351,7 +359,7 @@ export function OrderTicketSheet({
       open={open}
       onClose={onClose}
       title={`${side === "buy" ? "Buy" : "Sell"} ${symbol}`}
-      badge={<Text style={s.simChip}>SIMULATED</Text>}
+      badge={<AccountBadge state={account} />}
       reducedMotion={reducedMotion}
     >
       <View style={{ gap: 12 }}>
@@ -410,11 +418,12 @@ export function OrderTicketSheet({
           <Text style={s.small}>{side === "buy" ? "Est. cost" : "Est. proceeds"}</Text>
           <Text style={[s.small, { color: UI.text, fontVariant: ["tabular-nums"] }]}>{est !== null && qtyOk ? `$${(est * n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}</Text>
         </View>
+        <BuyingPower state={account} />
         <View style={{ gap: 6 }}>
-          <ToolButton primary label="Place simulated order" disabled={!qtyOk || !priceOk} onPress={submit} style={s.cta}>
+          <ToolButton primary label={alpaca ? "Place Alpaca paper order" : "Place simulated order"} disabled={!qtyOk || !priceOk} onPress={submit} style={s.cta}>
             <Text style={s.ctaText}>{`${side === "buy" ? "Buy" : "Sell"} ${qtyOk ? n.toLocaleString("en-US") : ""} ${symbol} · ${type === "market" ? "Market" : `${type === "limit" ? "Limit" : "Stop"} ${snapped !== null ? formatPrice(snapped) : ""}`}`}</Text>
           </ToolButton>
-          <Text style={[s.note, { textAlign: "center" }]}>Fills against the replay tape · no money, no broker</Text>
+          <Text style={[s.note, { textAlign: "center" }]}>{alpaca ? `${brokerLabel("alpaca_paper")} account · paper money, real market rules` : "Simulated fills · no money, no broker"}</Text>
         </View>
         {fills && <TradeHistory fills={fills} realized={realized} />}
       </View>
@@ -439,7 +448,6 @@ const s = StyleSheet.create({
   titleAction: { marginLeft: "auto", paddingHorizontal: 4, paddingVertical: 2 },
   titleActionText: { color: UI.textDim, fontSize: 13 },
   title: { color: UI.text, fontSize: 15, fontWeight: "600" },
-  simChip: { color: UI.warning, fontSize: 9, fontWeight: "600", letterSpacing: 0.6, backgroundColor: "rgba(224,166,58,0.14)", borderRadius: 4, paddingHorizontal: 6, paddingVertical: 2, overflow: "hidden" },
   track: { backgroundColor: UI.bg, borderRadius: 10, padding: 3 },
   fieldLabel: { color: UI.textDim, fontSize: 11, fontWeight: "500" },
   preset: { width: 48, height: 42, borderRadius: 10, backgroundColor: UI.row },
@@ -616,6 +624,7 @@ export function QuickTradeSheet({
   onTicket,
   onPosition,
   reducedMotion,
+  account,
 }: {
   open: boolean;
   onClose: () => void;
@@ -628,6 +637,7 @@ export function QuickTradeSheet({
   onTicket: () => void;
   onPosition: (kind: "long" | "short") => void;
   reducedMotion?: boolean;
+  account?: PaperState | null;
 }) {
   const buyType = last === null ? "limit" : orderTypeAt("buy", price, last);
   const sellType = last === null ? "limit" : orderTypeAt("sell", price, last);
@@ -646,7 +656,7 @@ export function QuickTradeSheet({
       badge={
         <>
           <Text style={s.priceChip}>{p}</Text>
-          <Text style={s.simChip}>SIMULATED</Text>
+          <AccountBadge state={account} />
         </>
       }
       reducedMotion={reducedMotion}

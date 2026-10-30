@@ -108,6 +108,7 @@ import { recordPicture } from "./drawSkia.ts";
 import { CandleInspector } from "./CandleInspector.tsx";
 import { DrawingToolbox } from "./DrawingToolbox.tsx";
 import { PositionPlanPanel } from "./PositionPlanPanel.tsx";
+import { BrokerNotice } from "./AccountBadge.tsx";
 import { AxisSheet, IndicatorSheet, LayersSheet, OrderTicketSheet, QUICK_TRADE_SIZES, QuickTradeSheet, SCALE_LABELS } from "./sheets.tsx";
 import { useTween } from "./useTween.ts";
 import { QuickAlertSheet, type QuickAlertDraft } from "./QuickAlertSheet.tsx";
@@ -1033,6 +1034,7 @@ export function CandleChart({
           drawing={selectedPosition}
           onChange={(d) => setDrawings(drawings.map((x) => (x.id === d.id ? d : x)))}
           onPlace={trading ? () => placeBracket(selectedPosition) : undefined}
+          account={trading?.state}
         />
       )}
 
@@ -1089,6 +1091,7 @@ export function CandleChart({
             if (haptics) playHaptic("medium");
           }}
           onTicket={() => sheet.kind === "quick" && setTimeout(() => setSheet({ kind: "ticket", price: sheet.price }), 0)}
+          account={trading.state}
           onPosition={(kind) => {
             if (sheet.kind !== "quick") return;
             const d = newPosition(model, newId("d"), kind, { x: sheet.x, y: sheet.y });
@@ -1108,9 +1111,11 @@ export function CandleChart({
           reducedMotion={reducedMotion}
           fills={fills}
           realized={trading.state?.account.realizedPnl ?? 0}
+          account={trading.state}
         />
         </>
       )}
+      {trading && <BrokerNotice state={trading.state} />}
     </View>
   );
 }

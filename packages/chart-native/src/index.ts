@@ -20,3 +20,4 @@ export { TimeframeWheel } from "./TimeframeWheel.tsx";
 export { ReplayDaySheet } from "./ReplayDaySheet.tsx";
 export { SettingsSheet, type SettingsSheetSection } from "./SettingsSheet.tsx";
 export { DrawingSettingsPanel, DrawingSettingsReset, drawingSettingsSection } from "./DrawingSettingsPanel.tsx";
+export { AccountBadge, BrokerNotice, BuyingPower } from "./AccountBadge.tsx";

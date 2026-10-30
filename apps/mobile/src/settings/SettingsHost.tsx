@@ -5,6 +5,7 @@ import { useReducedMotion } from "../motion/useReducedMotion";
 import { appActions, useApp } from "../state/store";
 import { dataSourceSection } from "./dataSource";
 import { rocketSection } from "./rocketWatch";
+import { tradingAccountSection } from "./tradingAccount";
 
 /**
  * The app's one Settings sheet, opened by the Settings tab (owner, 2026-10-19: the tab bar was
@@ -20,12 +21,14 @@ export function SettingsHost() {
   const drawingSettings = useApp((s) => s.drawingSettings);
   // The shared indicator set, for the per-indicator legend switches (ids are the same on every chart).
   const indicators = useApp((s) => s.indicators);
+  const liveAccount = useApp((s) => s.tradingAccount.live);
+  const brokerStatus = useApp((s) => s.brokerStatus);
   const reducedMotion = useReducedMotion();
   return (
     <SettingsSheet
       open={open}
       onClose={() => app.setSettingsOpen(false)}
-      sections={[dataSourceSection(dashboardSource, app.setDashboardSource), chartSettingsSection(chartSettings, app.setChartSettings, indicators), drawingSettingsSection(drawingSettings, app.setDrawingSettings, reducedMotion), rocketSection()]}
+      sections={[dataSourceSection(dashboardSource, app.setDashboardSource), tradingAccountSection(liveAccount, brokerStatus, app.setLiveAccount), chartSettingsSection(chartSettings, app.setChartSettings, indicators), drawingSettingsSection(drawingSettings, app.setDrawingSettings, reducedMotion), rocketSection()]}
       reducedMotion={reducedMotion}
     />
   );
