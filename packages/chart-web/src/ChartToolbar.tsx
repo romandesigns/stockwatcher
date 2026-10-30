@@ -13,6 +13,7 @@ import {
   INDICATOR_PRESETS,
   toggleIndicator,
   unrealizedPnl,
+  type BrokerId,
   type DrawingKind,
   type IndicatorSpec,
   type PaperPosition,
@@ -71,7 +72,7 @@ export interface ChartToolbarProps {
   canDelete: boolean;
   onDelete: () => void;
   /** Simulated trading summary, the trade list and the ticket button; absent hides them. */
-  trading?: { position: PaperPosition | null; last: number | null; onTrade: () => void; fills?: readonly FillMark[]; realized?: number } | null;
+  trading?: { position: PaperPosition | null; last: number | null; onTrade: () => void; fills?: readonly FillMark[]; realized?: number; broker?: BrokerId } | null;
   /** The context layers switch (halts, LULD, key levels, fills); absent hides the Levels menu. */
   layers?: ChartLayers;
   /** Which layers the menu lists (default all). */
@@ -127,7 +128,7 @@ export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChang
       {/* One group on the right, kept on one line: position, timeframes, drawing tools, indicators, levels, Trade. */}
       <div className="ml-auto flex flex-nowrap items-center gap-1.5">
         {pos && (
-          <Tip label="Simulated position and unrealized P&L">
+          <Tip label={trading?.broker === "alpaca_paper" ? "Alpaca paper position and unrealized P&L" : "Simulated position and unrealized P&L"}>
             <span className="font-mono text-[11px] text-muted-foreground tabular-nums">
               {pos.qty > 0 ? "+" : ""}
               {formatSize(pos.qty)} @ {formatPrice(pos.avgPrice)}
@@ -161,8 +162,8 @@ export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChang
         {layers && onLayersChange && <LayersMenu layers={layers} ids={layerIds} onChange={onLayersChange} />}
         {trading && (
           <>
-            <Tip label="Simulated order (fills against the replay tape)">
-              <Button size="icon" aria-label="Trade (simulated order)" className="ml-0.5 size-7 rounded-md [&_svg]:size-4" onClick={trading.onTrade}>
+            <Tip label={trading.broker === "alpaca_paper" ? "Order to your Alpaca paper account" : "Simulated order (fills against the tape)"}>
+              <Button size="icon" aria-label={trading.broker === "alpaca_paper" ? "Trade (Alpaca paper order)" : "Trade (simulated order)"} className="ml-0.5 size-7 rounded-md [&_svg]:size-4" onClick={trading.onTrade}>
                 <Icon name="trade" />
               </Button>
             </Tip>

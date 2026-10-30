@@ -1,4 +1,5 @@
-import { formatPrice, formatSize, orderTypeAt, priceDecimals, TRADE_SIZES, type OrderSide } from "@stockwatcher/chart-core";
+import { formatPrice, formatSize, orderTypeAt, priceDecimals, TRADE_SIZES, type OrderSide, type PaperState } from "@stockwatcher/chart-core";
+import { AccountBadge } from "./AccountBadge.tsx";
 import { useMemo, type RefObject } from "react";
 import {
   DropdownMenu,
@@ -33,6 +34,8 @@ export interface TradeMenuProps {
   onTicket: () => void;
   /** Drop a long or short position plan with its entry at this point. */
   onPosition: (kind: "long" | "short") => void;
+  /** The account's state, for its badge. */
+  account?: PaperState | null;
   finalFocus?: RefObject<HTMLElement | null>;
 }
 
@@ -47,7 +50,7 @@ const TYPE_LABEL = { limit: "limit", stop: "stop", market: "market" } as const;
  * market order; the share size is picked once and remembered. It also
  * opens the full ticket, or drops a position plan, at the same point.
  */
-export function TradeMenu({ open, onOpenChange, anchor, symbol, price, last, qty, onQtyChange, onOrder, onTicket, onPosition, finalFocus }: TradeMenuProps) {
+export function TradeMenu({ open, onOpenChange, anchor, symbol, price, last, qty, onQtyChange, onOrder, onTicket, onPosition, finalFocus, account }: TradeMenuProps) {
   const virtual = useMemo(() => {
     if (!anchor) return null;
     const { x, y } = anchor;
@@ -65,7 +68,7 @@ export function TradeMenu({ open, onOpenChange, anchor, symbol, price, last, qty
         <div className="flex items-center gap-1.5 px-1.5 pt-1 pb-1.5">
           <span className="text-[13px] font-semibold">Trade {symbol}</span>
           <span className="rounded bg-background px-1.5 py-0.5 font-mono text-[11px]">{p}</span>
-          <span className="rounded bg-warning-bg px-1.5 py-0.5 text-[9px] font-semibold tracking-wider text-warning">SIMULATED</span>
+          <AccountBadge state={account} className="ml-auto" />
         </div>
         {vs && (
           <p className="m-0 px-1.5 pb-1.5 text-[11px] text-text-faint">

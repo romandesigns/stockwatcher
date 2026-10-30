@@ -1,4 +1,5 @@
-import { flipPosition, formatPrice, formatSize, positionPlan, type Drawing } from "@stockwatcher/chart-core";
+import { flipPosition, formatPrice, formatSize, positionPlan, type Drawing, type PaperState } from "@stockwatcher/chart-core";
+import { AccountBadge } from "./AccountBadge.tsx";
 import { useEffect, useState } from "react";
 import { Button } from "./ui/button.tsx";
 import { Input } from "./ui/input.tsx";
@@ -11,6 +12,8 @@ export interface PositionPlanCardProps {
   onChange: (d: Drawing) => void;
   /** Place the plan as a simulated bracket; absent = planning only (no trading on this chart). */
   onPlace?: () => void;
+  /** The account's state, for its badge (shown with onPlace). */
+  account?: PaperState | null;
   className?: string;
 }
 
@@ -27,7 +30,7 @@ const short = (v: number) => `$${Math.abs(v) >= 100 ? Math.round(Math.abs(v)).to
  * Edits write straight back into the drawing, so the zones on the chart and
  * this card are always the same plan.
  */
-export function PositionPlanCard({ drawing, onChange, onPlace, className }: PositionPlanCardProps) {
+export function PositionPlanCard({ drawing, onChange, onPlace, account, className }: PositionPlanCardProps) {
   const plan = positionPlan(drawing);
   const long = plan.side === "long";
   // Inputs keep what is being typed; the drawing gets a value only when it parses.
@@ -46,7 +49,7 @@ export function PositionPlanCard({ drawing, onChange, onPlace, className }: Posi
     <section aria-label="Position plan" className={cn("flex w-64 flex-col gap-2.5 rounded-xl bg-card p-3 text-card-foreground shadow-lg transition-[opacity,translate] duration-150 starting:-translate-y-1 starting:opacity-0", className)}>
       <div className="flex items-baseline justify-between">
         <h2 className="m-0 text-xs font-medium text-muted-foreground">Position plan</h2>
-        <span className="text-[10px] font-medium tracking-wide text-warning">SIMULATED</span>
+        {onPlace ? <AccountBadge state={account} /> : <span className="text-[10px] font-medium tracking-wide text-text-faint">Planning only</span>}
       </div>
       <ToggleGroup aria-label="Side" size="sm" spacing={0.5} variant="segmented" className="w-full" value={[plan.side]} onValueChange={(v) => v[0] && v[0] !== plan.side && onChange(flipPosition(drawing))}>
         <ToggleGroupItem value="long" className="flex-1 aria-pressed:text-good">

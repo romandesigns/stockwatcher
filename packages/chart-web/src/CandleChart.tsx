@@ -105,6 +105,7 @@ import {
   parseDrawingSettings,
   toolAllowed,
   type DrawingSettings,
+  brokerOf,
 } from "@stockwatcher/chart-core";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type MouseEvent, type PointerEvent } from "react";
 import { createPortal } from "react-dom";
@@ -115,6 +116,7 @@ import { drawDisplayList } from "./draw.ts";
 import { DrawingToolbox } from "./DrawingToolbox.tsx";
 import { Icon } from "./Icon.tsx";
 import { OrderTicket } from "./OrderTicket.tsx";
+import { BrokerNotice } from "./AccountBadge.tsx";
 import { HoldRing } from "./HoldRing.tsx";
 import { QuickAlertCard, type QuickAlertDraft } from "./QuickAlertCard.tsx";
 import { PositionPlanCard } from "./PositionPlanCard.tsx";
@@ -259,7 +261,7 @@ export interface ChartAlerts {
   defaultsText?: string;
 }
 
-/** What the host wires for simulated trading (the chart never talks to a server). */
+/** What the host wires for chart trading: the simulator or the Alpaca paper route, whichever the state says (the chart never talks to a server). */
 export interface ChartTrading {
   state: PaperState | null;
   onPlace: (order: Omit<OrderPlace, "type">) => void;
@@ -1263,7 +1265,7 @@ export function CandleChart({
         drawingTools={false}
         canDelete={selected?.kind === "drawing"}
         onDelete={deleteSelected}
-        trading={trading ? { position, last, onTrade: () => openTicket(null, null), fills, realized: trading.state?.account.realizedPnl ?? 0 } : null}
+        trading={trading ? { position, last, onTrade: () => openTicket(null, null), fills, realized: trading.state?.account.realizedPnl ?? 0, broker: brokerOf(trading.state) } : null}
         layers={layers}
         layerIds={layerIdsFor(inChartProfile)}
         onLayersChange={setLayers}
@@ -1482,6 +1484,7 @@ export function CandleChart({
           onQtyChange={changeTradeQty}
           onOrder={orderFromMenu}
           onTicket={() => tradeMenu.at && openTicket(tradeMenu.price, tradeMenu.at.y, tradeMenu.at.x)}
+          account={trading.state}
           onPosition={(kind) => {
             const d = newPosition(model, newId("d"), kind, tradeMenu.local);
             if (!d) return;
@@ -1498,6 +1501,7 @@ export function CandleChart({
           drawing={selectedPosition}
           onChange={(d) => setDrawings(drawings.map((x) => (x.id === d.id ? d : x)))}
           onPlace={trading ? () => placeBracket(selectedPosition) : undefined}
+          account={trading?.state}
         />
       )}
       {trading && (
@@ -1512,8 +1516,10 @@ export function CandleChart({
           finalFocus={canvasRef}
           fills={fills}
           realized={trading.state?.account.realizedPnl ?? 0}
+          account={trading.state}
         />
       )}
+      {trading && <BrokerNotice state={trading.state} className="absolute bottom-3 left-1/2 z-20 -translate-x-1/2" />}
     </div>
   );
 

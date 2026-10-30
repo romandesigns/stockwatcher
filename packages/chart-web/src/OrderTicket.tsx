@@ -1,4 +1,5 @@
-import { formatPrice, orderTypeAt, snapPrice, tickSize, type FillMark, type OrderPlace, type OrderSide, type OrderType } from "@stockwatcher/chart-core";
+import { brokerLabel, brokerOf, formatPrice, orderTypeAt, snapPrice, tickSize, type FillMark, type OrderPlace, type OrderSide, type OrderType, type PaperState } from "@stockwatcher/chart-core";
+import { AccountBadge, BuyingPower } from "./AccountBadge.tsx";
 import { TradeHistory } from "./ContextMenus.tsx";
 import { useEffect, useMemo, useState, type RefObject } from "react";
 import { Button } from "./ui/button.tsx";
@@ -24,6 +25,8 @@ export interface OrderTicketProps {
   /** This symbol's simulated fills and realized P&L: the history at the bottom of the widget. */
   fills?: readonly FillMark[];
   realized?: number;
+  /** The account's state, for its badge ("Simulator" / "Alpaca paper") and buying power. */
+  account?: PaperState | null;
 }
 
 const TYPES: readonly { v: Exclude<OrderType, "stop_limit">; label: string }[] = [
@@ -45,7 +48,7 @@ const inputClass = "h-8 w-full rounded-md bg-bg-row px-2 font-mono text-sm tabul
  * grid the broker accepts. Nothing here talks to a server: it hands the order
  * to onSubmit.
  */
-export function OrderTicket({ open, onOpenChange, anchor, symbol, last, price, onSubmit, finalFocus, fills, realized = 0 }: OrderTicketProps) {
+export function OrderTicket({ open, onOpenChange, anchor, symbol, last, price, onSubmit, finalFocus, fills, realized = 0, account }: OrderTicketProps) {
   const [side, setSide] = useState<OrderSide>("buy");
   const [type, setType] = useState<Exclude<OrderType, "stop_limit">>("market");
   const [typeByHand, setTypeByHand] = useState(false);
@@ -96,7 +99,7 @@ export function OrderTicket({ open, onOpenChange, anchor, symbol, last, price, o
 
   return (
     <Popover open={open && virtual !== null} onOpenChange={(o) => onOpenChange(o)}>
-      <PopoverContent anchor={virtual} finalFocus={finalFocus} aria-label={`Simulated order, ${symbol}`}>
+      <PopoverContent anchor={virtual} finalFocus={finalFocus} aria-label={`${brokerLabel(brokerOf(account))} order, ${symbol}`}>
         <form
           className="flex flex-col gap-2.5"
           onSubmit={(e) => {
@@ -104,12 +107,12 @@ export function OrderTicket({ open, onOpenChange, anchor, symbol, last, price, o
             submit();
           }}
         >
-          {/* Same layout as the phone's ticket: "Buy SMPL" with a simulated chip, recessed controls, one shares row. */}
+          {/* Same layout as the phone's ticket: "Buy SMPL" with the account badge, recessed controls, one shares row. */}
           <div className="flex items-center gap-2">
             <span className="text-sm font-semibold">
               {side === "buy" ? "Buy" : "Sell"} {symbol}
             </span>
-            <span className="rounded bg-warning-bg px-1.5 py-0.5 text-[9px] font-semibold tracking-wider text-warning">SIMULATED</span>
+            <AccountBadge state={account} />
           </div>
           <ToggleGroup aria-label="Side" size="sm" spacing={0.5} variant="segmented" className="w-full bg-background p-0.5" value={[side]} onValueChange={(v) => v[0] && changeSide(v[0] as OrderSide)}>
             <ToggleGroupItem value="buy" className="flex-1 aria-pressed:bg-good-bg aria-pressed:text-good">
@@ -177,6 +180,7 @@ export function OrderTicket({ open, onOpenChange, anchor, symbol, last, price, o
             <span>{side === "buy" ? "Est. cost" : "Est. proceeds"}</span>
             <span className="font-mono text-foreground tabular-nums">{est !== null && qtyOk ? `$${(est * n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}</span>
           </div>
+          <BuyingPower state={account} />
           <Button type="submit" className={cn("h-9 w-full rounded-lg text-[13px] font-semibold")} disabled={!qtyOk || !priceOk}>
             {side === "buy" ? "Buy" : "Sell"} {qtyOk ? n.toLocaleString("en-US") : ""} {symbol} · {type === "market" ? "Market" : `${type === "limit" ? "Limit" : "Stop"} ${snapped !== null ? formatPrice(snapped) : ""}`}
           </Button>

@@ -33,3 +33,4 @@ export { TradeMenu, TRADE_MENU_SIZES, type TradeMenuProps } from "./TradeMenu.ts
 export { ChartSettingsPanel, ChartSettingsReset, chartSettingsSection, type ChartSettingsPanelProps } from "./ChartSettingsPanel.tsx";
 export { SettingsDialog, type SettingsDialogProps, type SettingsDialogSection } from "./SettingsDialog.tsx";
 export { DrawingSettingsPanel, DrawingSettingsReset, drawingSettingsSection, type DrawingSettingsPanelProps } from "./DrawingSettingsPanel.tsx";
+export { AccountBadge, BrokerNotice, BuyingPower } from "./AccountBadge.tsx";
