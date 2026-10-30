@@ -8,6 +8,6 @@ const NOOP = () => {};
 export function useRoss(channel: RossChannel | undefined): RossState {
   const subscribe = useCallback((cb: () => void) => (channel ? channel.subscribe(cb) : NOOP), [channel]);
   const get = useCallback(() => (channel ? channel.get() : EMPTY_ROSS), [channel]);
-  // The same snapshot server-side, so the side column also renders in tests (renderToStaticMarkup).
+  // The same snapshot server-side, so the dashboard layout also renders in tests (renderToStaticMarkup).
   return useSyncExternalStore(subscribe, get, get);
 }

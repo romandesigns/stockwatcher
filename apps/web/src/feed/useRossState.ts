@@ -6,7 +6,7 @@ import { useRoss } from "./useRoss.ts";
 export type RossDemoState = RossState & { demo?: boolean };
 
 /**
- * The Ross Panel's state as the side column reads it (to decide whether the panel has rows), with
+ * The Ross Panel's state as the dashboard layout reads it (to decide whether the panel has rows), with
  * the labelled demo mode (dev builds only, `?rossDemo`): synthetic members to see the cues before
  * the evidence sources admit real ones. Never in a production build.
  */

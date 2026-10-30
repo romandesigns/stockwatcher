@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { detectionSnapshotView, EMPTY_DETECTION, type DetectionCoreEpisode, type DetectionMessage, type DetectionState } from "./detection.ts";
-import { detectionItemCount, detectionView, detectionViewCounts, panelsSettled, pickSideTab, rocketItemCount, rocketSectionCounts, rossItemCount, visibleSideTabs } from "./panels.ts";
+import { detectionItemCount, detectionView, detectionViewCounts, BOTTOM_PANELS, panelsSettled, rocketItemCount, rocketSectionCounts, rossItemCount, SIDE_PANELS, spansPair, visiblePanels } from "./panels.ts";
 import { EMPTY_ROCKET, type RocketPanelWire, type RocketState } from "./rocket.ts";
 import { EMPTY_ROSS, type RossState } from "./ross.ts";
 import type { RossPanelWire } from "./protocol.ts";
@@ -69,18 +69,19 @@ describe("hide-when-empty item counts (owner, 2026-10-22)", () => {
   });
 });
 
-describe("side tabs (web)", () => {
-  test("a tab with 0 items is not offered; order is fixed", () => {
-    expect(visibleSideTabs({ ross: 0, rocket: 2, signals: 1, favorites: 0 })).toEqual(["rocket", "signals"]);
-    expect(visibleSideTabs({ ross: 1, rocket: 0, signals: 0, favorites: 3 })).toEqual(["ross", "favorites"]);
-    expect(visibleSideTabs({ ross: 0, rocket: 0, signals: 0, favorites: 0 })).toEqual([]);
+describe("dashboard panels (web)", () => {
+  test("a panel with 0 items is not shown; each group keeps its fixed order", () => {
+    expect(visiblePanels(SIDE_PANELS, { favorites: 0, signals: 2, gainers: 5 })).toEqual(["signals", "gainers"]);
+    expect(visiblePanels(SIDE_PANELS, { favorites: 3 })).toEqual(["favorites"]);
+    expect(visiblePanels(BOTTOM_PANELS, { hot: 1, ross: 2, rocket: 0, halt: 1 })).toEqual(["ross", "halt", "hot"]);
+    expect(visiblePanels(BOTTOM_PANELS, {})).toEqual([]);
   });
 
-  test("the picked tab while it has items, else the first non-empty one, else none", () => {
-    expect(pickSideTab(["ross", "rocket", "signals"], "signals")).toBe("signals");
-    expect(pickSideTab(["ross", "rocket"], "signals")).toBe("ross");
-    expect(pickSideTab(["rocket", "signals"], "ross")).toBe("rocket");
-    expect(pickSideTab([], "ross")).toBeUndefined();
+  test("the lone last item of an odd group (a single panel too) spans the pair; never in an even group", () => {
+    expect(spansPair(2, 3)).toBe(true);
+    expect(spansPair(1, 3)).toBe(false);
+    expect(spansPair(0, 1)).toBe(true);
+    expect(spansPair(3, 4)).toBe(false);
   });
 
   test("settled once every present channel has said whether it is on", () => {

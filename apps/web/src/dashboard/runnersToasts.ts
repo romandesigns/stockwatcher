@@ -1,6 +1,6 @@
 // Runners in-app toasts on the web dashboard (owner, 2026-10-22): the phone gets a push for each
 // new flag and, opted in, each breakout (crates/server/src/alerts/runners.rs); the web shows the
-// same moments as a toast whatever side tab is open, the price alerts' toast with a Chart action.
+// same moments as a toast whether or not the Runners panel is on screen, the price alerts' toast with a Chart action.
 //
 // Only news: the first frame primes (no burst on open), and a flag or breakout older than
 // FRESH_MS by the wall clock is not shown, so a reconnect or a replay's own day (its times are

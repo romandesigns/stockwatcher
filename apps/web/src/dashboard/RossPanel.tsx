@@ -39,7 +39,7 @@ const hhmm = (ns: number) => formatEtTime(Math.round(ns / 1_000_000));
  * tap, then hold copies it (the Halt watcher's gesture). Server feed only.
  *
  * Shown only while it has rows (owner, 2026-10-22: a panel with 0 items is hidden). Off, not yet
- * known and empty all hide its tab (SideTabs), so it has no "Connecting…" or quiet line of its
+ * known and empty all hide the panel (DashboardPanels), so it has no "Connecting…" or quiet line of its
  * own. While a socket reconnects it keeps the last rows, dimmed and labelled.
  */
 export function RossPanelView({ state, onPick, detection, onEpisodePick, runners, wallNow }: { state: RossDemoState; onPick: (symbol: string) => void; detection?: DetectionChannel; onEpisodePick?: (symbol: string, episodeId: string, runEpoch: string) => void; runners?: RocketState; wallNow?: number }) {

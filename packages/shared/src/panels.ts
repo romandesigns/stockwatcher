@@ -55,26 +55,34 @@ export function detectionView(pickedRecent: boolean, c: { active: number; recent
 }
 
 /**
- * The side column's tabs, in order. Favorites (owner, 2026-10-26) is the owner's own list, last
- * so the detectors keep their places; like every tab it shows only while it has items (a favorite
- * counts as soon as it is in the synced list, before its row arrives).
+ * The dashboard's panels (owner, 2026-10-30 wireframe, web and desktop): a right column beside the
+ * charts with **Favorites, Signals, Top Gainers** stacked (no tabs), and a full-width bottom row
+ * under both with **Ross Panel, Runners, Halt watcher, Hot stocks** side by side. Each group keeps
+ * this fixed order; a panel shows only while it has items, and a group with none closes.
  */
-export type SideTab = "ross" | "rocket" | "signals" | "favorites";
-export const SIDE_TABS: readonly SideTab[] = ["ross", "rocket", "signals", "favorites"];
+export type SidePanel = "favorites" | "signals" | "gainers";
+export type BottomPanel = "ross" | "rocket" | "halt" | "hot";
+export type DashboardPanel = SidePanel | BottomPanel;
+export const SIDE_PANELS: readonly SidePanel[] = ["favorites", "signals", "gainers"];
+export const BOTTOM_PANELS: readonly BottomPanel[] = ["ross", "rocket", "halt", "hot"];
 
-/** The web side column's tabs with items, in their fixed order. */
-export function visibleSideTabs(counts: Readonly<Record<SideTab, number>>): SideTab[] {
-  return SIDE_TABS.filter((t) => counts[t] > 0);
+/** The panels of one group that have items, in the group's fixed order. */
+export function visiblePanels<P extends DashboardPanel>(order: readonly P[], counts: Readonly<Partial<Record<DashboardPanel, number>>>): P[] {
+  return order.filter((p) => (counts[p] ?? 0) > 0);
 }
 
-/** The tab shown: the picked one while it has items, else the first that has (undefined: none). */
-export function pickSideTab(visible: readonly SideTab[], picked: SideTab): SideTab | undefined {
-  return visible.includes(picked) ? picked : visible[0];
+/**
+ * Whether the item at `index` of `count` spans both columns of a two-column grid: the lone last
+ * one of an odd count (a single panel included), so a stacked group never ends on an orphan
+ * beside a gap.
+ */
+export function spansPair(index: number, count: number): boolean {
+  return count % 2 === 1 && index === count - 1;
 }
 
 /**
  * Whether every channel present has said whether it is on (`enabled` no longer null). Until then
- * the side column keeps its previous shape rather than growing a tab per channel as each first
+ * the dashboard keeps its previous shape rather than growing a panel per channel as each first
  * snapshot lands (or collapsing and reopening when a feed switch resets the channels).
  */
 export function panelsSettled(enabled: readonly (boolean | null | undefined)[]): boolean {

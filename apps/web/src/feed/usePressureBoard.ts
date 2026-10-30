@@ -8,12 +8,14 @@ const NOOP = () => {};
 export function usePressureBoard(channel: PressureChannel | undefined): PressureBoard {
   const subscribe = useCallback((cb: () => void) => (channel ? channel.subscribe(cb) : NOOP), [channel]);
   const get = useCallback(() => (channel ? channel.get() : EMPTY_PRESSURE_BOARD), [channel]);
-  return useSyncExternalStore(subscribe, get);
+  // The same snapshot server-side, so the dashboard layout also renders in tests (renderToStaticMarkup).
+  return useSyncExternalStore(subscribe, get, get);
 }
 
 /** A separate stable snapshot wakes the panel even when only connection status changes. */
 export function usePressureStatus(channel: PressureChannel | undefined): PressureStatus {
   const subscribe = useCallback((cb: () => void) => (channel ? channel.subscribe(cb) : NOOP), [channel]);
   const get = useCallback(() => (channel ? channel.status() : EMPTY_PRESSURE_STATUS), [channel]);
-  return useSyncExternalStore(subscribe, get);
+  // The same snapshot server-side, so the dashboard layout also renders in tests (renderToStaticMarkup).
+  return useSyncExternalStore(subscribe, get, get);
 }

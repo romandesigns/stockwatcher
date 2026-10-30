@@ -59,7 +59,7 @@ const measured = (c: DetectionEvidence): string => {
 
 /**
  * Signals (design canvas "Detection Panel", approved 2026-10-21/22): the Detection Panel as the
- * side column's third tab, beside Ross and Runners. One compact row per instrument: ticker,
+ * dashboard's right column, under Favorites (DashboardPanels, owner 2026-10-30). One compact row per instrument: ticker,
  * price, age, Ross/news marks, then family · stage · level note, and the trigger meter while a
  * pullback is live. The stage labels are the Ross cue's (shared `detectionRowView`); a row's
  * colour is spent only at the trigger (amber) or crossing it (accent, pulsing). The day's gain
@@ -69,11 +69,11 @@ const measured = (c: DetectionEvidence): string => {
  * evidence below it; pressing it again clears both. Tap, then hold copies the ticker. Filters fold away under one disclosure. All state and checks come from Rust:
  * filters, pages and the selection never change what is monitored.
  *
- * Its tab is hidden while the detector is off or not yet known (owner review 2026-10-21; the
+ * The panel is hidden while the detector is off or not yet known (owner review 2026-10-21; the
  * canvas's "off" state) and while neither view has rows (owner, 2026-10-22: a panel with 0 items
  * is hidden), so there is no quiet "Nothing developing" state. The Active / Recent toggle shows
- * only while both views have rows; with one, that one is shown. It takes its state: the side
- * column subscribes (useDetection) to decide the tab and passes it down; tests need no socket.
+ * only while both views have rows; with one, that one is shown. It takes its state: the dashboard
+ * layout subscribes (useDetection) to decide whether it shows and passes it down; tests need no socket.
  */
 export function DetectionPanelView({ state, onPick, onClear }: { state: DetectionState; onPick: (symbol: string, episodeId: string, runEpoch: string) => void; onClear?: () => void }) {
   const [filter, setFilter] = useState<DetectionFilter>("all");
@@ -86,7 +86,7 @@ export function DetectionPanelView({ state, onPick, onClear }: { state: Detectio
   const snapshot = state.snapshot;
   const epoch = state.frame?.runEpoch ?? "";
   // A view with no rows is not offered (owner, 2026-10-22): the toggle only while both have rows,
-  // and the panel itself only while either has (its tab is hidden otherwise, SideTabs).
+  // and the panel itself only while either has (DashboardPanels hides it otherwise).
   const counts = useMemo(() => detectionViewCounts(state), [state]);
   const { recent: history, showToggle } = detectionView(pickedRecent, counts);
   const groups = useMemo(() => source === "all" || source === snapshot?.source ? groupDetections(snapshot, filter, history, segment).filter((g) => catalyst === "all" || g.episodes.some((e) => e.catalyst === catalyst)) : [], [snapshot, filter, history, segment, source, catalyst]);
@@ -112,8 +112,12 @@ export function DetectionPanelView({ state, onPick, onClear }: { state: Detectio
     setPage(0);
   };
   return (
-    <aside aria-label="Signals" className="flex min-h-0 min-w-0 flex-col gap-2 rounded-xl bg-card p-2.5">
+    <aside aria-labelledby="signals-title" className="flex min-h-0 min-w-0 flex-col gap-2 rounded-xl bg-card p-2.5">
       <div className="flex items-center gap-2 px-1">
+        {/* Its own title since the tabs went (2026-10-30): the tab used to name it. */}
+        <h2 id="signals-title" className="panel-title">
+          Signals
+        </h2>
         <span className="rounded bg-bg-raised px-1.5 py-px text-[10px] font-medium text-muted-foreground">Experimental</span>
         {snapshot && snapshot.source !== "live" && <span className={cn("rounded px-1.5 py-px text-[10px] font-semibold", snapshot.source === "fixture" ? "bg-warning/15 text-warning" : "bg-bg-raised text-muted-foreground")}>{snapshot.source === "fixture" ? "FIXTURE / DEMO" : snapshot.source.toUpperCase()}</span>}
         <Reveal show={showToggle} axis="x" className="ml-auto">

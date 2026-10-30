@@ -126,9 +126,9 @@ describe("wiring: every web/desktop entry point goes through openTickerChart", (
     const dash = read("../dashboard/Dashboard.tsx");
     expect(dash).not.toContain("app.loadIntoSelected");
     expect(dash).toContain("useRunnersToasts(feed.rocket, openTickerChart)");
-    expect(dash).toContain("<HaltWatcher channel={feed.pressure} onPick={openTickerChart} />");
-    expect(dash).toContain("onSelect={openTickerChart}");
-    expect(dash.match(/<SideTabs [^>]*onPick=\{openTickerChart\}/g)).toHaveLength(2);
+        expect(dash).toContain("onSelect={openTickerChart}");
+    // Every panel (Halt watcher, Top Gainers and Hot stocks included) gets its onPick here.
+    expect(dash.match(/<DashboardPanels [^>]*pressure=\{feed.pressure\}[^>]*onPick=\{openTickerChart\}/g)).toHaveLength(1);
     expect(read("../alerts/AlertsPage.tsx")).toContain('{ label: "Open chart", onSelect: () => openTickerChart(r.symbol) }');
     expect(read("../Shell.tsx")).toContain('action: { label: "Chart", run: () => openTickerChart(e.symbol) }');
     expect(read("../notify/runnersNotify.ts")).toContain("__stockwatcherOpenChart = openTickerChart");

@@ -15,8 +15,7 @@ import { useHasRail } from "../nav/navRail.ts";
 import { SettingsButton } from "../nav/settings.tsx";
 import { getAppStore, useApp } from "../state/store.ts";
 import { ChartCell } from "./ChartCell.tsx";
-import { HaltWatcher } from "./HaltWatcher.tsx";
-import { SideTabs } from "./SideTabs.tsx";
+import { DashboardPanels } from "./DashboardPanels.tsx";
 import { useRunnersToasts } from "./runnersToasts.ts";
 import { MultiViewMenu } from "./MultiViewMenu.tsx";
 
@@ -69,7 +68,7 @@ export function Dashboard({ choice, feed }: Connection) {
   }, [feed, selected]);
   // Deselecting the Signals row takes its marks off the chart (the chart loaded stays).
   const clearDetection = useCallback(() => setDetectionSelection(null), []);
-  // Runners' new flags and breakouts as toasts with "Chart", whatever side tab is open.
+  // Runners' new flags and breakouts as toasts with "Chart", whether or not its panel is on screen.
   useRunnersToasts(feed.rocket, openTickerChart);
 
   // What each chart shows: its ticker, or (empty slot) a different candidate per chart. A ticker
@@ -172,32 +171,23 @@ export function Dashboard({ choice, feed }: Connection) {
         </header>
       )}
 
-      {/* The panel takes the full width (the "Most active" side list was removed, owner 2026-10-18):
-          tickers come from the search above. */}
-      {liveEmpty ? (
-        <ScrollArea className="flex-1" viewportClassName="@container/panel flex flex-col @4xl/panel:flex-row">
-        <div className="flex flex-1 flex-col items-center justify-center gap-1 text-center">
-          <p className="m-0 text-sm font-medium">{liveStatus === "not_configured" ? "Live market data is not configured" : "No live trades yet"}</p>
-          <p className="m-0 max-w-sm text-xs text-text-faint">
-            {liveStatus === "not_configured"
-              ? "The server has no Alpaca credentials, so it cannot stream the live market."
-              : "The dashboard shows the live market (Settings → Data). Charts appear with the session's first trades: overnight from 20:00 ET Sunday to Thursday, then 4:00 to 20:00 ET."}
-          </p>
-        </div>
-        <SideTabs ross={feed.ross} rocket={feed.rocket} detection={feed.detection} favorites={feed.favorites} onPick={openTickerChart} onEpisodePick={pickDetection} onEpisodeClear={clearDetection} />
-        </ScrollArea>
-      ) : (
-      <ScrollArea className="flex-1" viewportClassName="@container/panel flex flex-col gap-3">
-        {/* The Halt watcher strip above the charts (owner, 2026-10-19); server feed only (the
-            fixture has no pressure board). It scrolls with the panel, so its cards never squeeze
-            the charts below their minimum height; on a phone it is one sideways-scrolling row,
-            so a single chart fills the rest of the screen above the tab bar. */}
-        {feed.pressure && <HaltWatcher channel={feed.pressure} onPick={openTickerChart} />}
-        {/* The Ross Panel beside the charts (owner, 2026-10-20: "a side panel adjacent to the chart
-            wrapper"); below them when the panel is narrow. Server feed only. No gap here: the side
-            column brings its own margin, so when every side panel is empty and it closes, the
-            charts take the whole width (SideTabs). */}
-        <div className="flex min-h-0 flex-1 flex-col @4xl/panel:flex-row">
+      {/* The charts with the panels around them (owner, 2026-10-30 wireframe): a right column
+          (Favorites, Signals, Top Gainers) and a bottom row (Ross Panel, Runners, Halt watcher, Hot
+          stocks), each panel shown only while it has items; stacked under the charts on a narrow
+          panel (DashboardPanels). The panel scrolls when the charts' minimum height does not fit. */}
+      <ScrollArea className="flex-1" viewportClassName="@container/panel flex flex-col">
+        <DashboardPanels ross={feed.ross} rocket={feed.rocket} detection={feed.detection} favorites={feed.favorites} pressure={feed.pressure} quotes={feed.quotes} onPick={openTickerChart} onEpisodePick={pickDetection} onEpisodeClear={clearDetection}>
+          {liveEmpty ? (
+            // The live market lists nothing before a session's first trade, and all weekend.
+            <div className="flex flex-1 flex-col items-center justify-center gap-1 text-center">
+              <p className="m-0 text-sm font-medium">{liveStatus === "not_configured" ? "Live market data is not configured" : "No live trades yet"}</p>
+              <p className="m-0 max-w-sm text-xs text-text-faint">
+                {liveStatus === "not_configured"
+                  ? "The server has no Alpaca credentials, so it cannot stream the live market."
+                  : "The dashboard shows the live market (Settings → Data). Charts appear with the session's first trades: overnight from 20:00 ET Sunday to Thursday, then 4:00 to 20:00 ET."}
+              </p>
+            </div>
+          ) : (
         <div role="group" aria-label="Charts" className={cn("grid min-w-0 flex-1 auto-rows-[minmax(18rem,1fr)] gap-2", GRID[dashboard.count])}>
           {shown.map((symbol, i) => (
             <div key={i} className={cn("flex min-h-0 min-w-0 flex-col", dashboard.count === 3 && i === 2 && SPAN_THIRD)}>
@@ -219,10 +209,9 @@ export function Dashboard({ choice, feed }: Connection) {
             </div>
           ))}
         </div>
-        <SideTabs ross={feed.ross} rocket={feed.rocket} detection={feed.detection} favorites={feed.favorites} onPick={openTickerChart} onEpisodePick={pickDetection} onEpisodeClear={clearDetection} />
-        </div>
+          )}
+        </DashboardPanels>
       </ScrollArea>
-      )}
 
       <TickerSearch open={searchOpen} onOpenChange={app.setSearchOpen} symbols={candidates.symbols} quotes={feed.quotes} mock={current.fixtureData} current={shown[selected] ?? ""} recents={recents} onSelect={openTickerChart} anchor={hasRail ? pillRef : undefined} />
     </div>

@@ -52,11 +52,11 @@ const EDGE: Partial<Record<RocketTone, string>> = {
  * or +12 % in 15 s, held, with real trading) the fifth.
  *
  * Nothing empty is drawn (owner, 2026-10-22): no Bursts section without bursts, no Flags without
- * flags, and no panel at all (its tab is hidden) while off, not yet known or empty. While a socket
+ * flags, and no panel at all (DashboardPanels hides it) while off, not yet known or empty. While a socket
  * reconnects the last rows stay, dimmed and labelled.
  *
- * It takes its state, not the channel: the side column subscribes (useRocket) to decide whether
- * the tab is offered and passes the same state down, and tests render it without a socket.
+ * It takes its state, not the channel: the dashboard layout subscribes (useRocket) to decide whether
+ * the panel shows and passes the same state down, and tests render it without a socket.
  *
  * A row whose symbol came down into a volume shelf (the frame's `zones`, shared zones.ts) says so
  * on its own full-width line, with the research base rate muted beside it, then "Shelf held" /
@@ -85,13 +85,13 @@ export function RocketPanelView({ state, wallNow, onPick }: { state: RocketState
         {head && <span className="ml-auto truncate font-mono text-[11px] text-muted-foreground tabular-nums">{head.record}</span>}
       </div>
       {head && (head.strategy || head.history || head.ranLater) && (
-        <p className="m-0 truncate px-1 font-mono text-[10px] text-text-faint">
+        <p className="m-0 shrink-0 truncate px-1 font-mono text-[10px] text-text-faint">
           {[head.ranLater, head.placeholder ? `${head.strategy} (placeholder)` : head.strategy, head.history].filter(Boolean).join(" · ")}
         </p>
       )}
       {panel && !state.connected && <p role="status" className="m-0 px-1 text-[11px] text-warning">Reconnecting · last known flags</p>}
       {/* Each section only while it has rows (owner, 2026-10-22), its heading included; the whole
-          panel is hidden by its tab at 0 (SideTabs). Sections open and close by their real height. */}
+          panel is hidden at 0 (DashboardPanels). Sections open and close by their real height. */}
       {enabled === true && (
         <ScrollArea className={cn("transition-opacity duration-200 motion-reduce:transition-none", panel && !state.connected && "opacity-60")} viewportClassName="flex flex-col">
           <Reveal show={(bursts?.rows.length ?? 0) > 0}>
