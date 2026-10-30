@@ -5,6 +5,11 @@ fill inside our own server against the replay (or live) tape. No broker, no keys
 leaves the process. Every message carries `"simulated": true` so no client can mistake it for a real
 account. Real routing can later sit behind the same messages.
 
+**Since 2026-10-30 it does:** the live market can route these same messages to the owner's Alpaca
+PAPER account instead (Settings → Trading). Frames then carry `simulated: false`,
+`broker: "alpaca_paper"`; the simulator's carry `broker: "simulator"`. Contract and safety rules:
+[alpaca-paper.md](alpaca-paper.md). Replay is always the simulator.
+
 ## Where things live
 
 | Piece | Location | Notes |
