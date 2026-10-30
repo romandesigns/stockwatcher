@@ -36,7 +36,7 @@ export type RunnersNoticeKind = (typeof RUNNERS_NOTICE_KINDS)[number];
 /** server `runners.notice`: one notice the desk limits let through. */
 export interface RunnersNoticeMessage {
   type: "runners.notice";
-  /** `<kind>-<alertId>`: what a client dedupes on (a row's flag and its breakout share `alertId`). */
+  /** The server's event id (`runners-<kind>-<alertId>`; a breakout adds its barrier second): what a client dedupes on. */
   id: string;
   alertId: string;
   symbol: string;
@@ -54,30 +54,6 @@ export interface RunnersNoticeMessage {
    * with only the Signals switch on still shows it ([`wantsNotice`]).
    */
   alsoSignals?: boolean;
-  /**
-   * Several Runners paths fired on this stock within half a minute (server alerts/runners.rs,
-   * "Merging"): the id of its first notice of that window. A client that showed it updates that
-   * notification with {@link mergeLine} instead of showing a second one ({@link mergedNotice}).
-   */
-  mergeInto?: string;
-  /** "+ Fast move 1 s later · $0.1057": the line a client that showed the first notice appends. */
-  mergeLine?: string;
-  /** Every desk that wants this kind already showed the first notice: never shown on its own. */
-  mergeOnly?: boolean;
-}
-
-/** What a client does with a `runners.notice` given whether it showed the notice it merges into. */
-export type MergedNotice = { action: "update"; into: string; line: string } | { action: "show" } | { action: "ignore" };
-
-/**
- * A merged notice (module docs of server alerts/runners.rs, "Merging"): update the first
- * notification when this client showed it, show it alone when this client did not show the first
- * and the server says others missed it too, else nothing. A notice with no merge is shown.
- */
-export function mergedNotice(m: RunnersNoticeMessage, shown: (id: string) => boolean): MergedNotice {
-  if (!m.mergeInto) return { action: "show" };
-  if (shown(m.mergeInto)) return { action: "update", into: m.mergeInto, line: m.mergeLine ?? "" };
-  return m.mergeOnly ? { action: "ignore" } : { action: "show" };
 }
 
 /** One client's switches (the phone's Settings → Alerts names). */
@@ -195,9 +171,6 @@ export function parseRunnersNotice(v: unknown): RunnersNoticeMessage | null {
   }
   const out: RunnersNoticeMessage = { type: "runners.notice", id, alertId: str("alertId"), symbol, kind, title: str("title"), body: str("body"), data, at: typeof m.at === "number" ? m.at : 0 };
   if (m.alsoSignals === true || data?.also_signals === true) out.alsoSignals = true;
-  if (typeof m.mergeInto === "string" && m.mergeInto) out.mergeInto = m.mergeInto;
-  if (typeof m.mergeLine === "string") out.mergeLine = m.mergeLine;
-  if (m.mergeOnly === true) out.mergeOnly = true;
   return out;
 }
 
@@ -245,9 +218,46 @@ export function shouldShowNotice(notice: RunnersNoticeMessage, kinds: RunnersNot
 }
 
 /** One notification switch as every client shows it (icons are chart-core icon names). */
+/**
+ * The icons a notice kind can carry: a subset of chart-core's two-tone `IconName` (this package
+ * does not depend on chart-core; the web and the phone pass these to their `Icon`, so tsc there
+ * rejects a name chart-core lacks).
+ */
+export type AlertIcon = "bell" | "gauge" | "trend" | "hline" | "levels" | "plus" | "star" | "pathRunner" | "pathBurst" | "pathFast" | "pathRun" | "pathRunning";
+
+/**
+ * THE icon of each kind of notice, by the switch it answers to (owner, 2026-10-30: the
+ * Insights log showed Follow-ups with the volume shelf's stacked lines and Pullback with the
+ * crossings' slanted line, while Settings → Alerts gave them ⊕ and —•—). Settings → Alerts
+ * ({@link ALERT_SWITCH_SECTIONS}) and the notification log ({@link noticeIcon}) both read this
+ * one table on the web and the phone, so they cannot diverge again. The Runners paths use the
+ * board's own path marks (RowMarks), so a log row, its switch and its board chip match.
+ */
+export const ALERT_SWITCH_ICON: Readonly<Record<keyof RunnersNotifyKinds, AlertIcon>> = Object.freeze({
+  new: "pathRunner",
+  breakout: "gauge",
+  burst: "pathBurst",
+  running: "pathRunning",
+  run: "pathRun",
+  fast: "pathFast",
+  followUp: "plus",
+  pullback: "hline",
+  shelf: "levels",
+  rossCrossing: "trend",
+  rossTrigger: "hline",
+  signalsCrossing: "trend",
+  signalsTrigger: "hline",
+  halt: "gauge",
+});
+
+/** A Runners-pipeline notice kind's icon: its switch's ({@link ALERT_SWITCH_ICON}). */
+export function runnersNoticeIcon(kind: RunnersNoticeKind): AlertIcon {
+  return ALERT_SWITCH_ICON[runnersNotifyKey(kind)];
+}
+
 export interface AlertSwitch {
   key: keyof RunnersNotifyKinds;
-  icon: "bell" | "gauge" | "trend" | "live" | "levels" | "hline" | "plus";
+  icon: AlertIcon;
   name: string;
   description: string;
 }
@@ -262,36 +272,36 @@ export const ALERT_SWITCH_SECTIONS: readonly { id: "runners" | "ross" | "signals
     id: "runners",
     label: "Runners",
     items: [
-      { key: "new", icon: "bell", name: "New flags", description: "Ticker, price and the top reasons as soon as Runners flags it." },
-      { key: "breakout", icon: "gauge", name: "Breakouts", description: "When a flagged stock turns breaking out, with its % from the flag." },
-      { key: "burst", icon: "trend", name: "Buying bursts", description: "When heavy buying is confirmed on the tape, with how far the burst already went." },
-      { key: "running", icon: "gauge", name: "Running entries", description: "Every stock that starts running by its own range, with its move and money." },
-      { key: "run", icon: "trend", name: "Run +20%", description: "A +20% leg within 15 minutes on real trades, with its window and start price." },
-      { key: "fast", icon: "live", name: "Fast move", description: "+8% in a minute or +12% in 15 s on real trades, with the move and its money." },
-      { key: "followUp", icon: "plus", name: "Follow-ups", description: "A later Runners path fires on a stock already listed, e.g. Run +20% after a fast move." },
-      { key: "pullback", icon: "hline", name: "Pullback setting up", description: "The first dip that fixes a trigger and stop within 30 min of a stock's Runners alert (or on a Ross stock), then its crossing. Most do not follow through." },
-      { key: "shelf", icon: "levels", name: "Volume shelf entry", description: "Price came into a volume shelf. About 1 in 3 hold, 1 in 2 fail." },
+      { key: "new", icon: ALERT_SWITCH_ICON.new, name: "New flags", description: "Ticker, price and the top reasons as soon as Runners flags it." },
+      { key: "breakout", icon: ALERT_SWITCH_ICON.breakout, name: "Breakouts", description: "When a flagged stock turns breaking out, with its % from the flag." },
+      { key: "burst", icon: ALERT_SWITCH_ICON.burst, name: "Buying bursts", description: "When heavy buying is confirmed on the tape, with how far the burst already went." },
+      { key: "running", icon: ALERT_SWITCH_ICON.running, name: "Running entries", description: "Every stock that starts running by its own range, with its move and money." },
+      { key: "run", icon: ALERT_SWITCH_ICON.run, name: "Run +20%", description: "A +20% leg within 15 minutes on real trades, with its window and start price." },
+      { key: "fast", icon: ALERT_SWITCH_ICON.fast, name: "Fast move", description: "+8% in a minute or +12% in 15 s on real trades, with the move and its money." },
+      { key: "followUp", icon: ALERT_SWITCH_ICON.followUp, name: "Follow-ups", description: "A later Runners path fires on a stock already listed, e.g. Run +20% after a fast move." },
+      { key: "pullback", icon: ALERT_SWITCH_ICON.pullback, name: "Pullback setting up", description: "The first dip that fixes a trigger and stop within 30 min of a stock's Runners alert (or on a Ross stock), then its crossing. Most do not follow through." },
+      { key: "shelf", icon: ALERT_SWITCH_ICON.shelf, name: "Volume shelf entry", description: "Price came into a volume shelf. About 1 in 3 hold, 1 in 2 fail." },
     ],
   },
   {
     id: "ross",
     label: "Ross",
     items: [
-      { key: "rossCrossing", icon: "trend", name: "Crossing", description: "The pullback's trigger is being crossed (close pending). Most do not follow through." },
-      { key: "rossTrigger", icon: "hline", name: "At trigger", description: "Price is just under the pullback's trigger." },
+      { key: "rossCrossing", icon: ALERT_SWITCH_ICON.rossCrossing, name: "Crossing", description: "The pullback's trigger is being crossed (close pending). Most do not follow through." },
+      { key: "rossTrigger", icon: ALERT_SWITCH_ICON.rossTrigger, name: "At trigger", description: "Price is just under the pullback's trigger." },
     ],
   },
   {
     id: "signals",
     label: "Signals",
     items: [
-      { key: "signalsCrossing", icon: "trend", name: "Crossing", description: "A Signals pullback's trigger is being crossed (close pending). Sent once if Ross has it too." },
-      { key: "signalsTrigger", icon: "hline", name: "At trigger", description: "Price is just under a Signals pullback's trigger." },
+      { key: "signalsCrossing", icon: ALERT_SWITCH_ICON.signalsCrossing, name: "Crossing", description: "A Signals pullback's trigger is being crossed (close pending). Sent once if Ross has it too." },
+      { key: "signalsTrigger", icon: ALERT_SWITCH_ICON.signalsTrigger, name: "At trigger", description: "Price is just under a Signals pullback's trigger." },
     ],
   },
   {
     id: "halt",
     label: "Halt watcher",
-    items: [{ key: "halt", icon: "gauge", name: "Gauge appears", description: "Pressure building fast near the LULD band. A possible halt, not a forecast." }],
+    items: [{ key: "halt", icon: ALERT_SWITCH_ICON.halt, name: "Gauge appears", description: "Pressure building fast near the LULD band. A possible halt, not a forecast." }],
   },
 ];

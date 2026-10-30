@@ -21,7 +21,7 @@
 //
 // Closed-tab Web Push (a service worker + VAPID, RFC 8030/8292) is not built: see the commit.
 
-import { createNoticeDedupe, DEFAULT_RUNNERS_NOTIFY, mergedNotice, runnersNoticeChartContext, runnersNotifyKinds, shouldShowNotice, type NoticeChartContext, type RunnersNoticeMessage, type RunnersNotifyKinds, type RunnersNotifyMessage } from "@stockwatcher/shared";
+import { createNoticeDedupe, DEFAULT_RUNNERS_NOTIFY, runnersNoticeChartContext, runnersNotifyKinds, shouldShowNotice, type NoticeChartContext, type RunnersNoticeMessage, type RunnersNotifyKinds, type RunnersNotifyMessage } from "@stockwatcher/shared";
 import { openTickerChart } from "../nav/openTicker.ts";
 
 const PREFS_KEY = "sw-runners-notify";
@@ -130,41 +130,9 @@ export function createRunnersNotifier(env: NotifyEnv = browserEnv()): RunnersNot
     for (const r of refreshers) r();
   };
 
-  // What this client showed, by id (bounded): a merged notice updates its first notification.
-  const shown = new Map<string, { title: string; body: string; symbol: string }>();
-  const remember = (m: RunnersNoticeMessage) => {
-    shown.set(m.id, { title: m.title, body: m.body, symbol: m.symbol });
-    if (shown.size > 200) shown.delete(shown.keys().next().value as string);
-  };
-
-  /**
-   * A merged notice for a notification this client showed (server alerts/runners.rs, "Merging"):
-   * the browser replaces a notification that has the same tag, so the first one gains the later
-   * path's line. The desktop shell's Windows toasts cannot be replaced (notify.rs), so there it
-   * stays the first notice alone; the Runners row lists every path either way.
-   */
-  const update = (into: string, line: string): boolean => {
-    const first = shown.get(into);
-    const N = env.Notification;
-    if (!first || env.invoke || !N || !line) return false;
-    const body = `${first.body}\n${line}`;
-    try {
-      const n = new N(first.title, { body, icon: NOTIFY_ICON, badge: NOTIFY_ICON, tag: into, renotify: false, data: { symbol: first.symbol } } as NotificationOptions);
-      n.onclick = (e) => {
-        e.preventDefault();
-        env.focus();
-        env.openChart(first.symbol);
-        n.close();
-      };
-      shown.set(into, { ...first, body });
-      return true;
-    } catch {
-      return false;
-    }
-  };
-
+  // Every notice is its own notification, tagged by its own id: nothing replaces an earlier one
+  // (server alerts/runners.rs, "Every distinct event is delivered").
   const show = (m: RunnersNoticeMessage) => {
-    remember(m);
     const noticeContext = runnersNoticeChartContext(m);
     if (env.invoke) {
       void env.invoke("runners_notify", { id: m.id, title: m.title, body: m.body, symbol: m.symbol, ...(noticeContext ? { noticeContext } : {}) }).catch(() => {});
@@ -217,9 +185,6 @@ export function createRunnersNotifier(env: NotifyEnv = browserEnv()): RunnersNot
     notifyMessage: () => (active() ? { type: "runners.notify", enabled: true, ...prefs.kinds } : null),
     handle(m) {
       if (!active()) return false;
-      const merged = mergedNotice(m, (id) => shown.has(id));
-      if (merged.action === "ignore") return false;
-      if (merged.action === "update") return dedupe.claim(m.id) && update(merged.into, merged.line);
       if (!shouldShowNotice(m, prefs.kinds, dedupe)) return false;
       show(m);
       return true;

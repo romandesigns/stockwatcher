@@ -169,38 +169,27 @@ test("desktop shell: on by default, shown through its command, switches resent t
 });
 
 /**
- * WFF 2026-10-26 (server alerts/runners.rs, "Merging"): Running, then Fast move 1 s later. The
- * browser that showed Running updates that notification (same tag) with the Fast move line; a
- * merge-only frame for a notice this browser never showed is ignored; the desktop shell, whose
- * toasts cannot be replaced, shows nothing more.
+ * WFF 2026-10-26: Running, then Fast move 1 s later. Since 2026-10-30 every distinct event is its
+ * own notification (server alerts/runners.rs): two notifications, each tagged by its own id, on
+ * the browser and the desktop shell alike.
  */
-test("a merged notice updates the first notification instead of showing a second", async () => {
+test("two notices on one stock moments apart are two notifications", async () => {
   const running: RunnersNoticeMessage = { ...notice, id: "runners-running-WFF-1", kind: "runners.running", symbol: "WFF", title: "WFF · Running · $0.1019", body: "+32.2% in 60 min\nAlert $0.1019 · +5% = $0.1070" };
-  const fast: RunnersNoticeMessage = { ...notice, id: "runners-fast-WFF-1", kind: "runners.fast", symbol: "WFF", title: "WFF · Fast move · $0.1057", body: "b", mergeInto: running.id, mergeLine: "+ Fast move 1 s later · $0.1057", mergeOnly: true };
+  const fast: RunnersNoticeMessage = { ...notice, id: "runners-fast-WFF-1", kind: "runners.fast", symbol: "WFF", title: "WFF · Fast move · $0.1057", body: "b" };
   const { env } = webEnv();
   const n = createRunnersNotifier(env);
   await n.enable();
   expect(n.handle(running)).toBe(true);
   expect(n.handle(fast)).toBe(true);
-  expect(FakeNotification.shown).toHaveLength(2);
-  const updated = FakeNotification.shown[1]!;
-  expect(updated.title).toBe(running.title);
-  expect(updated.opts.tag).toBe(running.id);
-  expect(updated.opts.body).toBe(`${running.body}\n+ Fast move 1 s later · $0.1057`);
+  expect(FakeNotification.shown.map((x) => x.opts.tag)).toEqual([running.id, fast.id]);
+  expect(FakeNotification.shown[1]!.title).toBe(fast.title);
   // Delivered again (a reconnect): once only.
   expect(n.handle(fast)).toBe(false);
-  // Merge-only for a notice this browser never showed: nothing.
-  const other = createRunnersNotifier(webEnv().env);
-  await other.enable();
-  expect(other.handle({ ...fast, id: "runners-fast-WFF-2", mergeInto: "runners-running-ELSE-1" })).toBe(false);
-  // Not merge-only (others missed the first too): shown on its own when its switch is on.
-  expect(other.handle({ ...fast, id: "runners-fast-WFF-3", mergeInto: "runners-running-ELSE-1", mergeOnly: false })).toBe(true);
-  // The desktop shell: the first toast stays as it was.
   const invoked: unknown[] = [];
   const desk = createRunnersNotifier(webEnv({ Notification: null, invoke: async (cmd, args) => void invoked.push([cmd, args]) }).env);
   expect(desk.handle(running)).toBe(true);
-  expect(desk.handle({ ...fast, id: "runners-fast-WFF-4" })).toBe(false);
-  expect(invoked).toHaveLength(1);
+  expect(desk.handle(fast)).toBe(true);
+  expect(invoked).toHaveLength(2);
 });
 
 test("storage that throws (private mode) never breaks it", async () => {

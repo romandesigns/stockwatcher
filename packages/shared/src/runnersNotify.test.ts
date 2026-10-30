@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { parseServerMessage } from "./protocol.ts";
-import { ALERT_SWITCH_SECTIONS, createNoticeDedupe, mergedNotice, DEFAULT_RUNNERS_NOTIFY, parseRunnersNotice, RUNNERS_NOTICE_KINDS, runnersNotifyKey, runnersNotifyKinds, shouldShowNotice, wantsNotice, type RunnersNoticeMessage } from "./runnersNotify.ts";
+import { ALERT_SWITCH_SECTIONS, createNoticeDedupe, DEFAULT_RUNNERS_NOTIFY, parseRunnersNotice, RUNNERS_NOTICE_KINDS, runnersNotifyKey, runnersNotifyKinds, shouldShowNotice, wantsNotice, type RunnersNoticeMessage } from "./runnersNotify.ts";
 import { createWsClient, type WebSocketLike } from "./ws.ts";
 
 // The frame the server sends (crates/server/src/alerts/runners.rs desk_frame test).
@@ -17,15 +17,10 @@ const frame = {
 };
 
 describe("runners notices", () => {
-  test("a merged notice keeps its merge through parsing; update when shown, else show or ignore", () => {
+  test("every notice is its own: no merge fields survive parsing (every distinct event is delivered)", () => {
     const m = parseRunnersNotice({ type: "runners.notice", id: "runners-fast-WFF-1", alertId: "WFF-1", symbol: "WFF", kind: "runners.fast", title: "WFF · Fast move · $0.1057", body: "b", at: 1, mergeInto: "runners-running-WFF-1", mergeLine: "+ Fast move 1 s later · $0.1057", mergeOnly: true })!;
-    expect([m.mergeInto, m.mergeLine, m.mergeOnly]).toEqual(["runners-running-WFF-1", "+ Fast move 1 s later · $0.1057", true]);
-    expect(mergedNotice(m, (id) => id === "runners-running-WFF-1")).toEqual({ action: "update", into: "runners-running-WFF-1", line: "+ Fast move 1 s later · $0.1057" });
-    expect(mergedNotice(m, () => false)).toEqual({ action: "ignore" });
-    expect(mergedNotice({ ...m, mergeOnly: undefined }, () => false)).toEqual({ action: "show" });
-    const plain = parseRunnersNotice({ type: "runners.notice", id: "x", alertId: "WFF-1", symbol: "WFF", kind: "runners.fast", title: "t", body: "b", at: 1 })!;
-    expect(plain.mergeInto).toBeUndefined();
-    expect(mergedNotice(plain, () => true)).toEqual({ action: "show" });
+    expect(m.id).toBe("runners-fast-WFF-1");
+    expect("mergeInto" in m || "mergeOnly" in m || "mergeLine" in m).toBe(false);
   });
 
   test("frozen candle observations survive parsing and do not create another notice", () => {
