@@ -59,8 +59,12 @@
 //!   gone?: [symbol]}` with only the rows that changed, at most once per second of wall time
 //!   (crate::market::QUOTES_INTERVAL; nothing is sent when nothing changed). `gone` lists symbols
 //!   that left the price band. `t` is the replay/live clock (epoch ms) at the take.
-//! - Row: `{s, p, pc?, o, v, n, pre?, name?, x?}`: symbol, last price, previous close (the
-//!   change-% reference whenever present; from the archive's daily-closes.json), the fallback
+//! - Row: `{s, p, pc?, pcb?, o, v, n, pre?, name?, x?}`: symbol, last price, previous close (the
+//!   change-% reference whenever present; from the archive's daily-closes.json, put on today's
+//!   share basis when the corporate-actions ledger knows a split since: `pcb: "split"`; withheld
+//!   when the day's first print is a typical split factor away from it and no split is known:
+//!   `pcb: "guard"`, and the client must then measure against `o` even if it holds an older
+//!   `pc`; crate::quotes::PcBasis), the fallback
 //!   reference (the regular open, or the day's first price while `pre` is true), day volume,
 //!   prints counted; `name`/`x` (exchange) only in snapshots and for rows entering the band, and
 //!   only when the archive's assets.json has them. Prices are JSON numbers in dollars. Change % is
@@ -112,6 +116,18 @@
 //!   `favorites.update` (same shape; day lines as slices, as in `ross.update`) when a row or the
 //!   list changed, at most once per second. The row fields are in that module's docs.
 //! - client `favorites.unsubscribe` stops the updates; a seek or a lag sends a fresh snapshot.
+//!
+//! Movers: Top Gainers and Hot stocks Bull / Bear (crates/server/src/movers.rs, after `welcome`;
+//! ranked once a tick on the server for every client, so a dashboard no longer holds the whole
+//! quote board):
+//! - client `movers.subscribe` -> server `movers.snapshot {t, gainers, bull, bear, rows}` at once
+//!   (the lists as symbol arrays in rank order, at most 25 each; one row per symbol in any list,
+//!   with its whole day line), then `movers.update {t, rows, gainers?, bull?, bear?, gone?}` when
+//!   anything changed, at most once per second of wall time: only the lists that changed (whole),
+//!   only the rows that changed, entered or gained day-line points (lines as slices, as in
+//!   `ross.update`), and `gone` for symbols in no list any more. The row fields are in that
+//!   module's docs.
+//! - client `movers.unsubscribe` stops the updates; a seek or a lag sends a fresh snapshot.
 //!
 //! Rocket watch (EXPERIMENTAL, `ROCKET_WATCH`, on by default; crates/server/src/rocket/, after
 //! `welcome`):
@@ -203,8 +219,8 @@ use serde::{Deserialize, Serialize};
 use tokio::time::{Instant, interval_at, timeout};
 
 use crate::market::{
-    ControlError, DetectionGuard, FavoritesGuard, Market, OutKind, PressureGuard, QuotesGuard,
-    RocketGuard, RossGuard, SnapshotError,
+    ControlError, DetectionGuard, FavoritesGuard, Market, MoversGuard, OutKind, PressureGuard,
+    QuotesGuard, RocketGuard, RossGuard, SnapshotError,
 };
 use crate::settings::{SettingsError, SettingsOp, rejected_frame as settings_rejected};
 use crate::{AppState, COMMIT, Settings, VERSION, api, auth};
@@ -280,6 +296,10 @@ enum ClientMessage {
     FavoritesSubscribe,
     #[serde(rename = "favorites.unsubscribe")]
     FavoritesUnsubscribe,
+    #[serde(rename = "movers.subscribe")]
+    MoversSubscribe,
+    #[serde(rename = "movers.unsubscribe")]
+    MoversUnsubscribe,
     #[serde(rename = "rocket.subscribe")]
     RocketSubscribe,
     #[serde(rename = "rocket.unsubscribe")]
@@ -479,6 +499,20 @@ async fn send_favorites_snapshot(
     q: &mut FavoritesSub,
 ) -> bool {
     let (seq, json) = market.favorites_snapshot();
+    q.seq = seq;
+    send_text(socket, json).await
+}
+
+/// The connection's movers opt-in (Top Gainers, Bull, Bear; `crate::movers`).
+struct MoversSub {
+    _guard: MoversGuard,
+    /// `movers.update`s with `seq` <= this are not newer than the snapshot.
+    seq: u64,
+}
+
+/// Sends a fresh `movers.snapshot` and records its generation.
+async fn send_movers_snapshot(socket: &mut WebSocket, market: &Market, q: &mut MoversSub) -> bool {
+    let (seq, json) = market.movers_snapshot();
     q.seq = seq;
     send_text(socket, json).await
 }
@@ -783,6 +817,7 @@ async fn session(mut socket: WebSocket, state: AppState) {
     let mut pressure: Option<PressureSub> = None;
     let mut ross: Option<RossSub> = None;
     let mut favorites: Option<FavoritesSub> = None;
+    let mut movers: Option<MoversSub> = None;
     let mut rocket: Option<RocketSub> = None;
     let mut detection: Option<DetectionSub> = None;
     // Listed among the Runners notification desks while held (`runners.notify`).
@@ -824,6 +859,10 @@ async fn session(mut socket: WebSocket, state: AppState) {
                             Some(q) if o.seq > q.seq => send_text(&mut socket, frame.clone()).await,
                             _ => true,
                         },
+                        OutKind::Movers(frame) => match movers.as_ref() {
+                            Some(q) if o.seq > q.seq => send_text(&mut socket, frame.clone()).await,
+                            _ => true,
+                        },
                         OutKind::Rocket(frame) => match rocket.as_ref() {
                             Some(q) if o.seq > q.seq => send_text(&mut socket, frame.clone()).await,
                             _ => true,
@@ -848,6 +887,9 @@ async fn session(mut socket: WebSocket, state: AppState) {
                                 None => true,
                             }) && (match favorites.as_mut() {
                                 Some(q) => send_favorites_snapshot(&mut socket, &market, q).await,
+                                None => true,
+                            }) && (match movers.as_mut() {
+                                Some(q) => send_movers_snapshot(&mut socket, &market, q).await,
                                 None => true,
                             }) && (match rocket.as_mut() {
                                 Some(q) => send_rocket_snapshot(&mut socket, &market, q).await,
@@ -928,6 +970,10 @@ async fn session(mut socket: WebSocket, state: AppState) {
                             }
                             && match favorites.as_mut() {
                                 Some(q) => send_favorites_snapshot(&mut socket, &market, q).await,
+                                None => true,
+                            }
+                            && match movers.as_mut() {
+                                Some(q) => send_movers_snapshot(&mut socket, &market, q).await,
                                 None => true,
                             }
                             && match rocket.as_mut() {
@@ -1142,6 +1188,20 @@ async fn session(mut socket: WebSocket, state: AppState) {
                     }
                     Ok(ClientMessage::FavoritesUnsubscribe) => {
                         favorites = None;
+                        None
+                    }
+                    Ok(ClientMessage::MoversSubscribe) => {
+                        let q = movers.get_or_insert_with(|| MoversSub {
+                            _guard: market.movers_subscribe(),
+                            seq: 0,
+                        });
+                        if !send_movers_snapshot(&mut socket, &market, q).await {
+                            break;
+                        }
+                        None
+                    }
+                    Ok(ClientMessage::MoversUnsubscribe) => {
+                        movers = None;
                         None
                     }
                     Ok(ClientMessage::RocketSubscribe) => {

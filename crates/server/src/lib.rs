@@ -13,6 +13,7 @@ pub mod evidence;
 pub mod favorites;
 pub mod history;
 pub mod market;
+pub mod movers;
 pub mod notices;
 pub mod observe;
 pub mod oplog;

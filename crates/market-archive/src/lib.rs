@@ -111,7 +111,10 @@ mod lifecycle;
 pub use archive::{Archive, VerifyReport, VerifySymbol};
 pub use assets::{ASSETS_FILE, AssetMap, AssetMeta};
 pub use bars::{Bar, BarDataset, BarEntry};
-pub use closes::{DAILY_CLOSES_FILE, DailyCloses, PrevCloses, merge_daily_closes};
+pub use closes::{
+    CloseRef, DAILY_CLOSES_FILE, DailyCloses, PrevCloses, SplitFact, merge_daily_closes,
+    splits_from_ledger,
+};
 pub use config::ArchiveConfig;
 pub use corporate_actions::{
     ACTIONS_SCHEMA, ActionKind, ActionLedger, ActionRetrieval, CORPORATE_ACTIONS_DIR, ChunkOutcome,

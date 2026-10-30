@@ -77,8 +77,9 @@ struct Entry {
     last_ts: UnixNanos,
     first: Option<Price>,
     open: Option<Price>,
-    /// The previous close for `day` (module docs); fixed until `day` moves on.
-    prev_close: Option<Price>,
+    /// The previous close for `day` (module docs) on `day`'s share basis, and whether a known
+    /// split had to be applied for that; fixed until `day` moves on or the closes reload.
+    prev_close: Option<(Price, bool)>,
     /// `prev_close` was (re)looked up and the clients' row may not have it yet: the next update
     /// that sends the row carries `pc` even though the row is not entering (see [`QuoteRow`]).
     prev_close_changed: bool,
@@ -100,7 +101,13 @@ pub struct QuoteRow {
     /// True for the regular-session open, false while `reference` is the premarket first price.
     pub regular_open: bool,
     /// The previous trading day's official close, when the closes file has one (module docs).
+    ///
+    /// `None` also when the day plainly trades on another share basis than that close
+    /// ([`PcBasis::Guard`]): then the change is measured against `reference`, never against a
+    /// close the stock no longer trades near.
     pub prev_close: Option<Price>,
+    /// How `prev_close` relates to the closes file ([`PcBasis`]).
+    pub basis: PcBasis,
     /// `prev_close` changed since the clients last got this row (its trading date moved on), so an
     /// update must carry it or the client would keep measuring against the old day's close. It
     /// never changes to `None`: a later date sees every close an earlier one did. Always false in
@@ -111,6 +118,91 @@ pub struct QuoteRow {
     /// The row was not in the clients' view before this take (it just entered the band), so it
     /// must carry its name and exchange, which updates otherwise leave out.
     pub entering: bool,
+}
+
+/// How a row's previous close was arrived at (owner, 2026-10-30: reverse splits read as
+/// +3,900 % gainers against the raw closes file).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PcBasis {
+    /// The file's close as is (or no close at all).
+    #[default]
+    Raw,
+    /// A split the corporate-actions ledger knows took effect after the close: the close was put
+    /// on today's basis (`market_archive::PrevCloses::lookup`).
+    Split,
+    /// No split is known, but the day's FIRST print is a typical split factor away from the
+    /// close ([`split_guard`]): the close is withheld and change % falls back to the open / first
+    /// price. Marked so a client can say why.
+    Guard,
+}
+
+impl PcBasis {
+    /// The wire tag (`pcb`), absent for `Raw`.
+    pub fn tag(self) -> Option<&'static str> {
+        match self {
+            PcBasis::Raw => None,
+            PcBasis::Split => Some("split"),
+            PcBasis::Guard => Some("guard"),
+        }
+    }
+}
+
+/// The day opened this many times above (or below) the previous close, or more: no stock does
+/// that on news at its first print; a share-basis change does.
+pub const SPLIT_GUARD_ALWAYS: f64 = 10.0;
+/// From this factor up to [`SPLIT_GUARD_ALWAYS`], a gap within [`SPLIT_GUARD_TOLERANCE`] of a
+/// whole number (1-for-3 … 1-for-9 and their forward twins) reads as a split. Below it (2×) a
+/// real gap is likelier than a 1-for-2, so the raw close stands.
+pub const SPLIT_GUARD_MIN: f64 = 3.0;
+pub const SPLIT_GUARD_TOLERANCE: f64 = 0.04;
+
+/// Whether a day whose FIRST counted print is `first` plainly trades on another share basis than
+/// `prev_close` (no split known for it). The first print, not the last: a genuine runner starts
+/// near its close and climbs during the day (that is the "supporting intraday move"), while a
+/// split stock is already at the new basis when it first trades. Measured either way, so a
+/// forward split (1/4 of the close) is caught like a reverse one.
+///
+/// A real +900 % gap at the day's first print would be withheld too; it then shows its move from
+/// that first print, flagged, which is the honest reading when nothing says which it was.
+pub fn split_guard(first: Price, prev_close: Price) -> bool {
+    let (f, p) = (first.micros() as f64, prev_close.micros() as f64);
+    if f <= 0.0 || p <= 0.0 {
+        return false;
+    }
+    let factor = if f >= p { f / p } else { p / f };
+    if factor >= SPLIT_GUARD_ALWAYS {
+        return true;
+    }
+    factor >= SPLIT_GUARD_MIN && (factor - factor.round()).abs() / factor <= SPLIT_GUARD_TOLERANCE
+}
+
+/// A closes lookup as the board keeps it.
+fn pc_ref(c: market_archive::CloseRef) -> (Price, bool) {
+    (c.price, c.split_adjusted)
+}
+
+/// The previous close a row may use, its basis, given the day's first print.
+fn effective_pc(prev: Option<(Price, bool)>, first: Option<Price>) -> (Option<Price>, PcBasis) {
+    match prev {
+        None => (None, PcBasis::Raw),
+        Some((p, true)) => (Some(p), PcBasis::Split),
+        Some((p, false)) if first.is_some_and(|f| split_guard(f, p)) => (None, PcBasis::Guard),
+        Some((p, false)) => (Some(p), PcBasis::Raw),
+    }
+}
+
+/// One priced row borrowed from the board ([`QuoteBoard::scan`]): the fields of a [`QuoteRow`]
+/// a ranking needs, without cloning the symbol.
+#[derive(Clone, Copy, Debug)]
+pub struct ScanRow<'a> {
+    pub symbol: &'a Arc<str>,
+    pub last: Price,
+    pub reference: Price,
+    /// As [`QuoteRow::prev_close`]: split-adjusted, or withheld by the guard.
+    pub prev_close: Option<Price>,
+    pub basis: PcBasis,
+    pub volume: u64,
+    pub trades: u64,
 }
 
 /// What changed since the previous take.
@@ -241,7 +333,7 @@ impl QuoteBoard {
             }
             if e.day.is_none_or(|d| s.date > d) {
                 e.day = Some(s.date);
-                let pc = self.closes.before(&e.symbol, s.date).map(|(_, p)| p);
+                let pc = self.closes.lookup(&e.symbol, s.date).map(pc_ref);
                 // Only a real change needs resending (a first day has no client row yet; the
                 // entering row carries it).
                 e.prev_close_changed |= pc != e.prev_close;
@@ -312,12 +404,14 @@ impl QuoteBoard {
 
     fn row(e: &Entry, entering: bool) -> Option<QuoteRow> {
         let last = e.last?;
+        let (pc, basis) = effective_pc(e.prev_close, e.first);
         Some(QuoteRow {
             symbol: e.symbol.clone(),
             last,
             reference: e.open.or(e.first).unwrap_or(last),
             regular_open: e.open.is_some(),
-            prev_close: e.prev_close,
+            prev_close: pc,
+            basis,
             prev_close_changed: e.prev_close_changed && !entering,
             volume: e.volume,
             trades: e.trades,
@@ -388,7 +482,7 @@ impl QuoteBoard {
         self.closes = closes;
         for (i, e) in self.entries.iter_mut().enumerate() {
             let Some(day) = e.day else { continue };
-            let pc = self.closes.before(&e.symbol, day).map(|(_, p)| p);
+            let pc = self.closes.lookup(&e.symbol, day).map(pc_ref);
             if pc != e.prev_close {
                 e.prev_close = pc;
                 e.prev_close_changed = true;
@@ -397,6 +491,19 @@ impl QuoteBoard {
                     self.dirty.push(i);
                 }
             }
+        }
+    }
+
+    /// `symbol`'s previous close for trading date `day` as the board's rows use it: split-adjusted
+    /// when a split is known, and `None` when the row for that day is held by the guard
+    /// ([`PcBasis::Guard`]). For a day the board has no row for, the closes lookup alone. The
+    /// chart header's `prevClose` reads this, so it never disagrees with the search row.
+    pub fn prev_close_on(&self, symbol: &str, day: NaiveDate) -> Option<Price> {
+        let c = self.closes.lookup(symbol, day)?;
+        let e = self.index.get(symbol).map(|&i| &self.entries[i]);
+        match e {
+            Some(e) if e.day == Some(day) => effective_pc(Some(pc_ref(c)), e.first).0,
+            _ => Some(c.price),
         }
     }
 
@@ -417,6 +524,24 @@ impl QuoteBoard {
     pub fn last_trade_ns(&self, symbol: &str) -> Option<i64> {
         let e = &self.entries[*self.index.get(symbol)?];
         e.last.map(|_| e.last_ts.0)
+    }
+
+    /// Every row that has a price, without copying it: the movers ranking's once-a-tick pass
+    /// (`crate::movers`). No allocation, no symbol clone; under the core lock, so it only reads.
+    pub fn scan(&self) -> impl Iterator<Item = ScanRow<'_>> {
+        self.entries.iter().filter_map(|e| {
+            let last = e.last?;
+            let (pc, basis) = effective_pc(e.prev_close, e.first);
+            Some(ScanRow {
+                symbol: &e.symbol,
+                last,
+                reference: e.open.or(e.first).unwrap_or(last),
+                prev_close: pc,
+                basis,
+                volume: e.volume,
+                trades: e.trades,
+            })
+        })
     }
 
     /// The index of `symbol`'s entry, created empty when missing.
@@ -482,7 +607,7 @@ impl QuoteBoard {
             if e.day.is_some_and(|d| d > r.day) {
                 continue;
             }
-            let pc = self.closes.before(&e.symbol, r.day).map(|(_, p)| p);
+            let pc = self.closes.lookup(&e.symbol, r.day).map(pc_ref);
             e.prev_close_changed |= pc != e.prev_close;
             e.prev_close = pc;
             e.day = Some(r.day);
@@ -507,7 +632,7 @@ impl QuoteBoard {
         let e = &mut self.entries[i];
         let pc = src
             .day
-            .and_then(|d| self.closes.before(&e.symbol, d).map(|(_, p)| p));
+            .and_then(|d| self.closes.lookup(&e.symbol, d).map(pc_ref));
         e.prev_close_changed |= pc != e.prev_close;
         e.prev_close = pc;
         e.day = src.day;
@@ -939,5 +1064,94 @@ mod tests {
         let c = b.take_changes(band);
         assert!(!c.rows[0].entering, "the snapshot after the rebuild had it");
         assert_eq!(b.snapshot(band).len(), 1, "ZZZ is out of band");
+    }
+
+    /// The owner's case (2026-10-30): ATYR closed at $0.128 and a 1-for-40 reverse split took
+    /// effect, so today it trades at $5.17. Against the raw close that is +3,939 %.
+    #[test]
+    fn a_known_reverse_split_puts_the_previous_close_on_todays_basis() {
+        let (idx, _) = PrevCloses::new(&{
+            let mut m = market_archive::DailyCloses::new();
+            m.entry(NaiveDate::from_ymd_opt(2026, 10, 15).unwrap())
+                .or_default()
+                .insert("ATYR".into(), 0.128);
+            m
+        });
+        let idx = idx.with_splits([market_archive::SplitFact {
+            symbol: "ATYR".into(),
+            effective: day(),
+            factor: 40.0,
+        }]);
+        let mut b = QuoteBoard::with_closes(Arc::new(idx));
+        apply(&mut b, trade("ATYR", at(8, 0), 500, 100));
+        apply(&mut b, trade("ATYR", at(10, 0), 517, 100));
+        let r = b.get("ATYR").unwrap();
+        assert_eq!(r.prev_close, Some(Price::from_cents(512)));
+        assert_eq!(r.basis, PcBasis::Split);
+        let pct = (r.last.to_f64() / r.prev_close.unwrap().to_f64() - 1.0) * 100.0;
+        assert!((pct - 0.98).abs() < 0.01, "{pct}");
+        assert_eq!(b.prev_close_on("ATYR", day()), Some(Price::from_cents(512)));
+    }
+
+    /// The same day with no split on record (the ledger had not seen it): the first print is
+    /// ~39× the close, so the close is withheld and change % falls back to the day's first price,
+    /// flagged `guard`. A real runner that starts near its close and climbs keeps its close.
+    #[test]
+    fn an_unknown_split_is_caught_by_the_guard_and_a_real_runner_is_not() {
+        let mut b = QuoteBoard::with_closes(closes(&[
+            ("2026-10-15", "ATYR", 0.128),
+            ("2026-10-15", "RUN", 0.50),
+            ("2026-10-15", "FWD", 80.0),
+            ("2026-10-15", "GAP", 1.00),
+        ]));
+        apply(&mut b, trade("ATYR", at(8, 0), 500, 100));
+        apply(&mut b, trade("ATYR", at(10, 0), 517, 100));
+        let r = b.get("ATYR").unwrap();
+        assert_eq!((r.prev_close, r.basis), (None, PcBasis::Guard));
+        assert_eq!(
+            r.reference,
+            Price::from_cents(517),
+            "the regular open, not the old close"
+        );
+        assert_eq!(
+            b.prev_close_on("ATYR", day()),
+            None,
+            "the chart header agrees"
+        );
+        let s = b.scan().find(|s| &**s.symbol == "ATYR").unwrap();
+        assert_eq!((s.prev_close, s.basis), (None, PcBasis::Guard));
+
+        // +1,000 % over the day from a first print near the close: real, never guarded.
+        apply(&mut b, trade("RUN", at(7, 0), 52, 100));
+        apply(&mut b, trade("RUN", at(11, 0), 550, 100));
+        let r = b.get("RUN").unwrap();
+        assert_eq!(
+            (r.prev_close, r.basis),
+            (Some(Price::from_cents(50)), PcBasis::Raw)
+        );
+
+        // A 4-for-1 forward split: a quarter of the close at the first print.
+        apply(&mut b, trade("FWD", at(9, 30), 2_010, 100));
+        assert_eq!(b.get("FWD").unwrap().basis, PcBasis::Guard);
+
+        // A 2.6× gap on news is not a split factor: the close stands.
+        apply(&mut b, trade("GAP", at(4, 0), 260, 100));
+        assert_eq!(b.get("GAP").unwrap().basis, PcBasis::Raw);
+    }
+
+    #[test]
+    fn the_guard_reads_whole_split_factors_and_any_tenfold_gap() {
+        let p = |c: i64| Price::from_cents(c);
+        assert!(split_guard(p(517), Price::from_micros(128_000)), "1-for-40");
+        assert!(split_guard(p(1_250), p(116)), "ENHA: 10.8×");
+        assert!(
+            split_guard(p(300), p(100)) && split_guard(p(510), p(100)),
+            "1-for-3, 1-for-5"
+        );
+        assert!(split_guard(p(100), p(400)), "4-for-1 forward");
+        assert!(!split_guard(p(250), p(100)), "2.5×: a gap, not a split");
+        assert!(!split_guard(p(350), p(100)), "3.5×: between factors");
+        assert!(!split_guard(p(200), p(100)), "below 3×: left alone");
+        assert!(!split_guard(p(105), p(100)));
     }
 }

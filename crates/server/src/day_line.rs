@@ -75,16 +75,33 @@ pub(crate) struct Line {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Published(HashMap<String, Line>);
 
+impl Published {
+    /// How many lines are held: at most one frame's rows (the memory bound).
+    pub(crate) fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
 /// A symbol's current line, or `None` before its first price.
 pub(crate) fn line(src: Source<'_>, symbol: &str) -> Option<Line> {
     let l = src.engine.day_line(symbol, STEP)?;
+    // On the day's share basis (a known split applied), and left out when the day plainly
+    // trades on another basis with no split known: the quote board's guard, read off the line's
+    // own first close (crate::quotes::split_guard), so the dotted baseline never sits 40× away.
+    let pc = src
+        .closes
+        .lookup(symbol, l.session.date)
+        .filter(|c| {
+            c.split_adjusted
+                || l.closes
+                    .first()
+                    .is_none_or(|f| !crate::quotes::split_guard(*f, c.price))
+        })
+        .map(|c| c.price.micros());
     Some(Line {
         start: l.start.0,
         closes: l.closes.iter().map(|p| p.micros()).collect(),
-        prev_close: src
-            .closes
-            .before(symbol, l.session.date)
-            .map(|(_, p)| p.micros()),
+        prev_close: pc,
     })
 }
 

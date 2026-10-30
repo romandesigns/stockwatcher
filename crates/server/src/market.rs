@@ -59,6 +59,16 @@
 //! connections that sent `pressure.subscribe` (the quote board's opt-in pattern and `seq` rule).
 //! The ranking runs whether or not anyone listens, so its hysteresis does not restart with the
 //! first subscriber; only the frame is skipped.
+//!
+//! The movers (Top Gainers, Hot stocks Bull / Bear, [`crate::movers`]) are ranked from the same
+//! quote board on the same tick, once for every client, and go out as ONE pre-serialized
+//! `movers.update` with only the changed rows and day-line slices (`Outbound::seq` = the movers
+//! generation). This replaced every dashboard holding a whole-board `quotes` subscription.
+//!
+//! Previous closes are put on the trading day's share basis with the splits the
+//! corporate-actions ledger knows (`market_archive::PrevCloses::with_splits`, the ledger watched
+//! like the closes file), and the quote board withholds a close the day plainly no longer trades
+//! near (`crate::quotes::split_guard`), so a reverse split never reads as a +3,900 % gainer.
 
 use crate::context::ContextBoard;
 use crate::days::{DayCatalog, DayEntry};
@@ -418,6 +428,9 @@ pub enum OutKind {
     /// A pre-serialized `favorites.update` (`crate::favorites`) for the connections that sent
     /// `favorites.subscribe`. `Outbound::seq` is the favorites generation, not the engine seq.
     Favorites(String),
+    /// A pre-serialized `movers.update` (`crate::movers`) for the connections that sent
+    /// `movers.subscribe`. `Outbound::seq` is the movers generation, not the engine seq.
+    Movers(String),
     /// Full bounded replacement; its cursor is independent of the chart engine sequence.
     Detection {
         epoch: String,
@@ -559,6 +572,11 @@ pub(crate) struct Inner {
     favorites: Mutex<crate::favorites::Board>,
     /// Connections that sent `favorites.subscribe`.
     favorites_subs: AtomicUsize,
+    /// Top Gainers and Hot stocks Bull / Bear (`crate::movers`): the last ranking, the day lines the
+    /// last update carried, the frames' generation. Locked after the core lock, never before it.
+    movers: Mutex<crate::movers::Board>,
+    /// Connections that sent `movers.subscribe`.
+    movers_subs: AtomicUsize,
     /// `ROCKET_WATCH` and its policy: every `Core` this market makes gets a board built from them.
     rocket_on: AtomicBool,
     rocket_policy: Mutex<crate::rocket::Policy>,
@@ -633,13 +651,14 @@ fn file_stamp(path: &std::path::Path) -> FileStamp {
         .unwrap_or((0, None))
 }
 
-/// The archive root's `assets.json` and `daily-closes.json` as last read. The archive maintainer
+/// The archive root's `assets.json`, `daily-closes.json` and the corporate-actions ledger (the
+/// splits the previous closes are adjusted by) as last read. The archive maintainer
 /// (`swimport maintain`, a separate process) rewrites them after every session; checking costs
 /// two `stat`s, and a file is re-read only when its stamp moved.
 struct MetaFiles {
     archive: Archive,
-    /// `[assets, closes]`.
-    stamps: Mutex<[FileStamp; 2]>,
+    /// `[assets, closes, corporate-actions ledger]`.
+    stamps: Mutex<[FileStamp; 3]>,
 }
 
 impl MetaFiles {
@@ -649,6 +668,7 @@ impl MetaFiles {
         let stamps = [
             file_stamp(&archive.assets_path()),
             file_stamp(&archive.daily_closes_path()),
+            file_stamp(&ledger_path(&archive)),
         ];
         MetaFiles {
             archive,
@@ -656,14 +676,15 @@ impl MetaFiles {
         }
     }
 
-    /// Which files changed since the last call: `[assets, closes]`.
-    fn changed(&self) -> [bool; 2] {
+    /// Which files changed since the last call: `[assets, closes, ledger]`.
+    fn changed(&self) -> [bool; 3] {
         let now = [
             file_stamp(&self.archive.assets_path()),
             file_stamp(&self.archive.daily_closes_path()),
+            file_stamp(&ledger_path(&self.archive)),
         ];
         let mut last = self.stamps.lock().expect("meta stamps lock");
-        let out = [now[0] != last[0], now[1] != last[1]];
+        let out = [now[0] != last[0], now[1] != last[1], now[2] != last[2]];
         *last = now;
         out
     }
@@ -794,6 +815,8 @@ impl Market {
             ross_subs: AtomicUsize::new(0),
             favorites: Mutex::new(crate::favorites::Board::default()),
             favorites_subs: AtomicUsize::new(0),
+            movers: Mutex::new(crate::movers::Board::default()),
+            movers_subs: AtomicUsize::new(0),
             rocket_on: AtomicBool::new(true),
             rocket_policy: Mutex::new(crate::rocket::Policy::default()),
             rocket_subs: AtomicUsize::new(0),
@@ -951,6 +974,7 @@ impl Market {
             "unloaded_held_events": held,
             "rocket": core.rocket.cost(),
             "zones": {"symbols": zone_syms, "confirmed": zone_confirmed, "bytes": zone_bytes},
+            "movers": self.movers_cost(),
         })
     }
 
@@ -1861,6 +1885,7 @@ impl Market {
                 market.drain_context();
                 market.publish_context();
                 market.publish_favorites();
+                market.publish_movers();
                 n += 1;
                 // Live: the quote rows go into the archive's recording now and then, the
                 // startup summary of the next restart (`crate::history`).
@@ -1927,7 +1952,9 @@ impl Market {
         let Some(files) = &self.0.meta_files else {
             return false;
         };
-        let [assets_changed, closes_changed] = files.changed();
+        let [assets_changed, closes_file_changed, ledger_changed] = files.changed();
+        // A new split in the ledger moves a previous close exactly like a new close does.
+        let closes_changed = closes_file_changed || ledger_changed;
         let archive = &files.archive;
         if assets_changed {
             match archive.read_assets() {
@@ -1946,6 +1973,7 @@ impl Market {
                 Ok(m) => {
                     let m = m.unwrap_or_default();
                     let (idx, dropped) = PrevCloses::new(&m);
+                    let idx = idx.with_splits(load_splits(archive));
                     tracing::info!(
                         days = m.len(),
                         first = ?m.keys().next(),
@@ -2733,10 +2761,7 @@ impl Market {
             .and_then(|s| s.id.parse::<SessionId>().ok())
             .map(|s| s.date)
             .or_else(|| self.info().and_then(|i| i.day))?;
-        core.quotes
-            .closes()
-            .before(&snap.symbol, day)
-            .map(|(_, p)| p)
+        core.quotes.prev_close_on(&snap.symbol, day)
     }
 
     /// The increment's JSON at another profile bin width: the touched bins re-binned, with
@@ -3150,6 +3175,7 @@ impl Market {
                             .and_then(|q| q.prev_close)
                             .map(|p| p.micros()),
                         reference: quote.as_ref().map(|q| q.reference.micros()),
+                        basis: quote.as_ref().map(|q| q.basis).unwrap_or_default(),
                         volume: quote.as_ref().map(|q| q.volume),
                         trades: quote.as_ref().map(|q| q.trades),
                         last_trade_ns: core.quotes.last_trade_ns(s),
@@ -3233,6 +3259,89 @@ impl Market {
             seq,
             kind: OutKind::Favorites(frame),
         }));
+    }
+
+    /// Registers a `movers.subscribe` (the favorites guard's twin).
+    pub fn movers_subscribe(&self) -> MoversGuard {
+        self.0.movers_subs.fetch_add(1, Ordering::Relaxed);
+        MoversGuard(self.0.clone())
+    }
+
+    /// Connections currently subscribed to the movers.
+    pub fn movers_subscribers(&self) -> usize {
+        self.0.movers_subs.load(Ordering::Relaxed)
+    }
+
+    /// What the movers board holds (the memory report): rows of the last ranking and day lines
+    /// of the last update, both bounded by the lists (`crate::movers`, "Cost and memory").
+    fn movers_cost(&self) -> Value {
+        let b = self.0.movers.lock().expect("movers lock");
+        json!({"rows": b.last.rows.len(), "lines": b.lines.len()})
+    }
+
+    /// The last ranking as a `movers.snapshot` with whole day lines, and the movers generation it
+    /// is consistent with: an update with a larger one is newer than it.
+    pub fn movers_snapshot(&self) -> (u64, String) {
+        let t = self.clock().map(|c| c.now.millis());
+        let core = self.0.core.lock().expect("core lock");
+        let board = self.0.movers.lock().expect("movers lock");
+        let mut v = crate::movers::snapshot_frame(t, &board.last);
+        let src = crate::day_line::Source {
+            engine: &core.engine,
+            closes: core.quotes.closes(),
+        };
+        crate::day_line::decorate(&mut v, src, None);
+        (board.generation, v.to_string())
+    }
+
+    /// One movers tick (`crate::movers`): ranks the quote board once for every client, and when
+    /// anyone is subscribed and something changed, broadcasts ONE `movers.update` with only the
+    /// changed rows and day-line slices. Ranks with no subscriber too, so a new subscriber's
+    /// snapshot is cut from a current ranking; the day lines are read only for subscribers.
+    /// Throttled to one ranking per [`crate::movers::MIN_GAP`] of wall time. Returns whether it
+    /// broadcast.
+    pub fn publish_movers(&self) -> bool {
+        self.publish_movers_at(std::time::Instant::now())
+    }
+
+    /// [`Market::publish_movers`] at a given wall instant (tests step it past the throttle).
+    pub fn publish_movers_at(&self, now: std::time::Instant) -> bool {
+        let t = self.clock().map(|c| c.now.millis());
+        let (generation, frame) = {
+            let core = self.0.core.lock().expect("core lock");
+            if core.rebuilding {
+                return false;
+            }
+            let mut board = self.0.movers.lock().expect("movers lock");
+            if !board.throttle.ready(now) {
+                return false;
+            }
+            let next = crate::movers::rank(&core.quotes, |s| core.rocket.is_halted(s));
+            let d = crate::movers::diff(&board.last, &next);
+            let mut frame = None;
+            if self.movers_subscribers() > 0 {
+                let mut all = crate::movers::member_rows(&next);
+                let src = crate::day_line::Source {
+                    engine: &core.engine,
+                    closes: core.quotes.closes(),
+                };
+                crate::day_line::decorate(&mut all, src, Some(&mut board.lines));
+                frame = crate::movers::update_frame(t, &d, all).map(|v| v.to_string());
+            }
+            if !d.is_empty() || frame.is_some() {
+                board.generation += 1;
+            }
+            board.last = next;
+            (board.generation, frame)
+        };
+        let Some(frame) = frame else {
+            return false;
+        };
+        let _ = self.0.tx.send(Arc::new(Outbound {
+            seq: generation,
+            kind: OutKind::Movers(frame),
+        }));
+        true
     }
 
     pub fn detection_subscribe(&self) -> DetectionGuard {
@@ -3778,6 +3887,7 @@ impl Market {
                         .then_some(r.prev_close)
                         .flatten()
                         .map(Price::to_f64),
+                    pcb: r.basis.tag(),
                     v: r.volume,
                     n: r.trades,
                     pre: (!r.regular_open).then_some(true),
@@ -3907,6 +4017,15 @@ pub struct FavoritesGuard(Arc<Inner>);
 impl Drop for FavoritesGuard {
     fn drop(&mut self) {
         self.0.favorites_subs.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// Decrements the movers subscriber count when dropped.
+pub struct MoversGuard(Arc<Inner>);
+
+impl Drop for MoversGuard {
+    fn drop(&mut self) {
+        self.0.movers_subs.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -4061,6 +4180,11 @@ struct WireQuote<'a> {
     o: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pc: Option<f64>,
+    /// `split` when `pc` was put on today's basis by a known split, `guard` when the close was
+    /// withheld because the day trades on another basis (crate::quotes::PcBasis); absent for a
+    /// plain close. On every row that has one, so a client never keeps a stale `pc` beside it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pcb: Option<&'static str>,
     v: u64,
     n: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -4098,6 +4222,7 @@ fn load_closes(archive: &Archive) -> PrevCloses {
     match archive.read_daily_closes() {
         Ok(Some(m)) => {
             let (idx, dropped) = PrevCloses::new(&m);
+            let idx = idx.with_splits(load_splits(archive));
             tracing::info!(
                 days = m.len(),
                 first = ?m.keys().next(),
@@ -4116,6 +4241,35 @@ fn load_closes(archive: &Archive) -> PrevCloses {
         Err(e) => {
             tracing::warn!(error = %e, "daily-closes.json unreadable: change % falls back to the open");
             PrevCloses::default()
+        }
+    }
+}
+
+/// The corporate-actions ledger (`$ARCHIVE_ROOT/corporate-actions/ledger.json`, kept by
+/// `swimport maintain` from the provider's announcements).
+fn ledger_path(archive: &Archive) -> std::path::PathBuf {
+    archive.corporate_actions_root().join("ledger.json")
+}
+
+/// The splits the ledger knows, for putting raw previous closes on a later day's share basis
+/// (`market_archive::PrevCloses::with_splits`; owner 2026-10-30: reverse splits topped Top
+/// Gainers at +3,900 %). Optional: a missing ledger is none known, an unreadable one is logged
+/// and treated the same; either way the quote board's split guard still holds a day that plainly
+/// trades on another basis (`crate::quotes::split_guard`).
+fn load_splits(archive: &Archive) -> Vec<market_archive::SplitFact> {
+    match archive.read_action_ledger() {
+        Ok(l) => {
+            let s = market_archive::splits_from_ledger(&l);
+            tracing::info!(
+                actions = l.len(),
+                splits = s.len(),
+                "corporate-actions ledger read: previous closes split-adjusted"
+            );
+            s
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "corporate-actions ledger unreadable: previous closes are raw (the split guard still applies)");
+            Vec::new()
         }
     }
 }

@@ -32,7 +32,7 @@
 //!   `t` is the market clock (epoch ms); `symbols` the list as the server has it.
 //! - A row: `symbol`, and when known `price`, `pc` (previous close), `ref` (the quote board's
 //!   change reference, for when there is no previous close), `volume`, `trades`,
-//!   `last_at` (ms), `stale`, `high`, `low`, `pm_high`, `pm_low` (prices in micros), `runners
+//!   `pcb` (`split` | `guard`: crate::quotes::PcBasis, absent for a plain close), `last_at` (ms), `stale`, `high`, `low`, `pm_high`, `pm_low` (prices in micros), `runners
 //!   {kind, at, latest_kind, latest_at, entries, state}`, `levels` (the Runners row's),
 //!   `pillars {passes, of, news, rvol, member}`, `halted`. Plus the day line fields exactly as
 //!   `ross.*` rows carry them (whole lines in a snapshot, slices in an update).
@@ -107,6 +107,8 @@ pub struct RowFacts {
     /// The quote board's change reference (the regular open, else the day's first price): what
     /// the search and the chart header measure against when there is no previous close.
     pub reference: Option<i64>,
+    /// How `prev_close` was arrived at (`crate::quotes::PcBasis`): `pcb` on the wire when not raw.
+    pub basis: crate::quotes::PcBasis,
     pub volume: Option<u64>,
     pub trades: Option<u64>,
     pub last_trade_ns: Option<i64>,
@@ -137,6 +139,7 @@ pub fn row(f: &RowFacts, now_ns: i64) -> Value {
     put("price", f.price.map(|p| json!(p)));
     put("pc", f.prev_close.map(|p| json!(p)));
     put("ref", f.reference.map(|p| json!(p)));
+    put("pcb", f.basis.tag().map(|t| json!(t)));
     put("volume", f.volume.map(|v| json!(v)));
     put("trades", f.trades.map(|v| json!(v)));
     put("last_at", f.last_trade_ns.map(|t| json!(t / 1_000_000)));
@@ -275,6 +278,7 @@ mod tests {
                 price: Some(3_450_000),
                 prev_close: Some(3_000_000),
                 reference: Some(3_100_000),
+                basis: crate::quotes::PcBasis::Split,
                 volume: Some(1_200_000),
                 trades: Some(4_100),
                 last_trade_ns: Some(now - STALE_NS - 1),
@@ -301,6 +305,7 @@ mod tests {
         assert_eq!(full["price"], 3_450_000);
         assert_eq!(full["pc"], 3_000_000);
         assert_eq!(full["ref"], 3_100_000);
+        assert_eq!(full["pcb"], "split");
         assert_eq!(full["stale"], true);
         assert_eq!(full["high"], 3_540_000);
         assert_eq!(full["pm_high"], 3_180_000);

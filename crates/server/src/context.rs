@@ -521,7 +521,10 @@ impl ContextBoard {
         if let Some(s) = t.session {
             let key = (t.symbol.clone(), s.date);
             if !self.closes_offered.contains(&key) {
-                if let Some((date, close)) = closes.before(&t.symbol, s.date) {
+                // Raw on purpose: this record says `CloseBasis::Raw` with no actions check, and the
+                // engine grades the share basis from its own corporate-action evidence
+                // (crate::evidence). The split-adjusted lookup is for the boards, not for this.
+                if let Some((date, close)) = closes.before_raw(&t.symbol, s.date) {
                     self.engine.add_prev_close(PrevClose {
                         id: format!("daily-closes:{}:{date}", t.symbol),
                         version: 1,
