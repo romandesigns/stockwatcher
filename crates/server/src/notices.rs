@@ -110,7 +110,7 @@ pub fn group(text: &str) -> (Vec<Value>, bool) {
                         "held": v.get("held").cloned().unwrap_or(Value::Null),
                         "devices": v.get("devices").cloned().unwrap_or(Value::Null),
                     });
-                    // A merged Runners path (alerts::runners, "Merging"): what it was folded into.
+                    // A merged Runners path (the merge removed 2026-10-30; old days still have it): what it was folded into.
                     for k in ["merged_into", "merged_devices"] {
                         if let Some(x) = v.get(k) {
                             outcome[k] = x.clone();
@@ -223,7 +223,7 @@ mod tests {
         assert_eq!(items[1]["latency"]["trade_to_expo_ms"], 1044.6);
     }
 
-    /// A merged Runners path keeps what it was folded into (alerts::runners, "Merging").
+    /// A merged Runners path (old days, before the 2026-10-30 removal) keeps what it was folded into.
     #[test]
     fn a_merged_path_says_what_it_was_folded_into() {
         let text = line(
