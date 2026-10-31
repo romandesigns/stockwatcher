@@ -141,8 +141,8 @@ export interface DashboardPanelsProps {
  *   can be dragged (or moved with the arrow keys; double-click resets), each remembered on this
  *   device, never synced (owner, 2026-10-30): the bottom row's top edge (its height), the right
  *   column's left edge (its width, 280–640px, the charts keeping their 18rem), and the boundaries
- *   between the column's panels (their share of its height; a hidden panel's share goes to the
- *   others and comes back with it).
+ *   between the column's panels and between the bottom row's (their share of its height or width;
+ *   a hidden panel's share goes to the others and comes back with it).
  * - **Narrower:** one column: the charts, then the right column's panels, then the bottom row's,
  *   each group two to a row where they fit (one on a phone), the lone last panel of an odd group
  *   spanning the pair so no group ends on a gap.
@@ -270,7 +270,8 @@ export function DashboardPanels({
   const layoutRef = useRef<HTMLDivElement>(null);
   const resize = useBottomResize(layoutRef);
   const sideResize = useSideResize(layoutRef);
-  const splits = useSideSplits(layoutRef);
+  const splits = useSplits(layoutRef, SPLITS_KEY, SIDE_PANELS, "y");
+  const bottomSplits = useSplits(layoutRef, BOTTOM_SPLITS_KEY, BOTTOM_PANELS, "x");
   const sideW = sideResize.width ?? SIDE_DEFAULT;
   const style = {
     // The column's track is its content plus the 8px gap to the charts; its content keeps that
@@ -285,13 +286,14 @@ export function DashboardPanels({
   } as CSSProperties;
   // The first visible side panel has no boundary above it to drag.
   const firstSide = sideSlots.find((s) => s.show)?.id;
+  const firstBottom = bottomSlots.find((s) => s.show)?.id;
 
   return (
     <div
       ref={layoutRef}
       data-dashboard-layout
       data-resizing={
-        resize.dragging || sideResize.dragging || splits.dragging || undefined
+        resize.dragging || sideResize.dragging || splits.dragging || bottomSplits.dragging || undefined
       }
       style={style}
       className={cn(
@@ -302,9 +304,9 @@ export function DashboardPanels({
         "transition-[grid-template-columns,grid-template-rows] duration-300 ease-out motion-reduce:transition-none data-resizing:transition-none",
       )}
     >
-      {/* The charts keep their own minimum height (18rem a row), so with too little room the panel
-          scrolls rather than squeezing them; on a narrow panel they take most of the screen and
-          the panels follow below. */}
+      {/* Narrow: the charts take most of the screen (18rem a row at least) and the panels follow
+          below, so the panel scrolls. Wide: the chart rows shrink to fit (Dashboard's GRID), so
+          nothing scrolls but each panel's own list. */}
       <div className="flex min-h-[max(18rem,70svh)] min-w-0 flex-1 flex-col @4xl/panel:col-start-1 @4xl/panel:row-start-1 @4xl/panel:min-h-auto">
         {children}
       </div>
@@ -375,6 +377,23 @@ export function DashboardPanels({
             axis="bottom"
             show={show || !bottomOpen}
             span={spansPair(i, bottomSlots.length)}
+            grow={bottomSplits.weight(id)}
+            handle={
+              show &&
+              bottomOpen &&
+              id !== firstBottom && (
+                <Separator
+                  orientation="vertical"
+                  label={`Resize ${BOTTOM_LABEL[id]} against the panel on its left`}
+                  value={bottomSplits.share(bottomSlots, id)}
+                  min={0}
+                  max={100}
+                  handlers={bottomSplits.handlers(id, bottomSlots)}
+                  // In the slot's leading 8px gap, over its full height.
+                  className="@4xl/panel:absolute @4xl/panel:inset-y-0 @4xl/panel:left-0"
+                />
+              )
+            }
           >
             {content(id)}
           </PanelSlot>
@@ -388,6 +407,13 @@ const SIDE_LABEL: Record<SidePanel, string> = {
   favorites: "Favorites",
   signals: "Signals",
   gainers: "Top Gainers",
+};
+
+const BOTTOM_LABEL: Record<BottomPanel, string> = {
+  ross: "Ross Panel",
+  rocket: "Runners",
+  halt: "Halt watcher",
+  hot: "Hot stocks",
 };
 
 /** What a drag hook hands its separator. */
@@ -524,10 +550,11 @@ function PanelGroup({
  * flex-grow (its neighbours sliding to share the space), narrow by its height. While leaving it
  * keeps drawing its last rows. Narrow, a panel is capped in height and scrolls inside.
  *
- * `grow` is its share of the right column (the owner's dragged splits): a hidden panel grows to 0
+ * `grow` is its share of its group (the owner's dragged splits): a hidden panel grows to 0
  * and the others share its space by their own weights, and its weight applies again when it
  * returns. Flex-grow means nothing in the narrow grid, so it only acts wide. `handle` is the
- * draggable boundary above it (in its leading gap), drawn only while it is shown.
+ * draggable boundary before it (in its leading gap: above it in the column, on its left in the
+ * bottom row), drawn only while it is shown.
  */
 function PanelSlot({
   panel,
@@ -597,7 +624,9 @@ const CHARTS_MIN = 288;
 const SIDE_KEY = "stockwatcher.sideColumnWidth";
 /** The right column's panels' weights (`{favorites: 1.4, …}`); absent = equal. */
 const SPLITS_KEY = "stockwatcher.sideColumnSplits";
-/** A side panel keeps at least this much height (its title and a couple of rows) when dragged. */
+/** The bottom row's panels' weights, the same way. */
+const BOTTOM_SPLITS_KEY = "stockwatcher.bottomRowSplits";
+/** A panel keeps at least this much of its group's axis (its title and a couple of rows) when dragged. */
 const SPLIT_MIN = 96;
 
 /** A remembered number (px), or null when absent, unreadable or under `min`. */
@@ -760,15 +789,15 @@ function useSideResize(layoutRef: RefObject<HTMLDivElement | null>) {
   return { ...l, width };
 }
 
-type Weights = Partial<Record<SidePanel, number>>;
+type Weights<P extends string> = Partial<Record<P, number>>;
 
-function readWeights(): Weights {
+function readWeights<P extends string>(key: string, panels: readonly P[]): Weights<P> {
   try {
     const raw = JSON.parse(
-      window.localStorage.getItem(SPLITS_KEY) ?? "{}",
+      window.localStorage.getItem(key) ?? "{}",
     ) as Record<string, unknown>;
-    const out: Weights = {};
-    for (const p of SIDE_PANELS) {
+    const out: Weights<P> = {};
+    for (const p of panels) {
       const v = raw[p];
       if (typeof v === "number" && Number.isFinite(v) && v > 0.05 && v < 20)
         out[p] = v;
@@ -779,89 +808,97 @@ function readWeights(): Weights {
   }
 }
 
-function writeWeights(w: Weights): void {
+function writeWeights<P extends string>(key: string, w: Weights<P>): void {
   try {
-    if (Object.keys(w).length === 0) window.localStorage.removeItem(SPLITS_KEY);
-    else window.localStorage.setItem(SPLITS_KEY, JSON.stringify(w));
+    if (Object.keys(w).length === 0) window.localStorage.removeItem(key);
+    else window.localStorage.setItem(key, JSON.stringify(w));
   } catch {
     // A private window: the splits last this session.
   }
 }
 
 /**
- * The splits between the right column's stacked panels. Each panel has a weight (its flex-grow;
- * 1 by default): dragging the boundary above a panel moves height between it and the visible
- * panel above, keeping their combined weight, so the third panel never moves. Hidden panels keep
- * their weights, so the stored proportions return with them. Arrow keys move 16px; double-click
- * makes every panel equal again. Kept on this device.
+ * The splits between the panels of one group: the right column's stacked panels (`axis: "y"`,
+ * heights) or the bottom row's side-by-side ones (`axis: "x"`, widths; owner, 2026-10-31: "allow
+ * resizing between the panels sharing the same parent container"). Each panel has a weight (its
+ * flex-grow; 1 by default): dragging the boundary before a panel moves space between it and the
+ * visible panel before it, keeping their combined weight, so the others never move. Hidden panels
+ * keep their weights, so the stored proportions return with them. Arrow keys move 16px;
+ * double-click makes every panel equal again. Kept on this device under `key`.
  */
-function useSideSplits(layoutRef: RefObject<HTMLDivElement | null>) {
-  const [weights, setWeights] = useState<Weights>(() =>
-    typeof window === "undefined" ? {} : readWeights(),
+function useSplits<P extends string>(
+  layoutRef: RefObject<HTMLDivElement | null>,
+  key: string,
+  panels: readonly P[],
+  axis: "x" | "y",
+) {
+  const [weights, setWeights] = useState<Weights<P>>(() =>
+    typeof window === "undefined" ? {} : readWeights(key, panels),
   );
   const [dragging, setDragging] = useState(false);
   const drag = useRef<{
-    y: number;
-    above: SidePanel;
-    below: SidePanel;
-    hA: number;
-    hB: number;
+    at: number;
+    before: P;
+    after: P;
+    sA: number;
+    sB: number;
     sum: number;
     frame: number;
-    next: Weights;
+    next: Weights<P>;
   } | null>(null);
-  const weight = (p: SidePanel) => weights[p] ?? 1;
-  const slotContent = (p: SidePanel) => {
-    // The panel itself, not its slot: the slot's leading gap is not the panel's height.
-    const el = layoutRef.current?.querySelector<HTMLElement>(
-      `[data-slot-panel="${p}"] > div:last-child`,
-    );
-    return el?.getBoundingClientRect().height ?? 0;
+  const pos = (e: { clientX: number; clientY: number }) =>
+    axis === "x" ? e.clientX : e.clientY;
+  const [more, less] =
+    axis === "x" ? ["ArrowRight", "ArrowLeft"] : ["ArrowDown", "ArrowUp"];
+  const weight = (p: P) => weights[p] ?? 1;
+  const slotContent = (p: P) => {
+    // The panel itself, not its slot: the slot's leading gap is not the panel's size.
+    const r = layoutRef.current
+      ?.querySelector<HTMLElement>(`[data-slot-panel="${p}"] > div:last-child`)
+      ?.getBoundingClientRect();
+    return (axis === "x" ? r?.width : r?.height) ?? 0;
   };
-  const aboveOf = (
-    p: SidePanel,
-    slots: readonly { id: SidePanel; show: boolean }[],
-  ) => {
+  const beforeOf = (p: P, slots: readonly { id: P; show: boolean }[]) => {
     const shown = slots.filter((s) => s.show).map((s) => s.id);
     const i = shown.indexOf(p);
     return i > 0 ? shown[i - 1]! : null;
   };
-  /** The weights after moving `dy` px from `below` to `above` (positive: `below` shrinks). */
+  /** The weights after moving `d` px from `after` to `before` (positive: `after` shrinks). */
   const moved = (
-    above: SidePanel,
-    below: SidePanel,
-    hA: number,
-    hB: number,
+    before: P,
+    after: P,
+    sA: number,
+    sB: number,
     sum: number,
-    dy: number,
-    base: Weights,
-  ): Weights => {
-    const total = hA + hB;
+    d: number,
+    base: Weights<P>,
+  ): Weights<P> => {
+    const total = sA + sB;
     if (total <= 0) return base;
     const min = Math.min(SPLIT_MIN, total / 2);
-    const a = Math.min(total - min, Math.max(min, hA + dy));
+    const a = Math.min(total - min, Math.max(min, sA + d));
     return {
       ...base,
-      [above]: (sum * a) / total,
-      [below]: (sum * (total - a)) / total,
+      [before]: (sum * a) / total,
+      [after]: (sum * (total - a)) / total,
     };
   };
   const handlers = (
-    p: SidePanel,
-    slots: readonly { id: SidePanel; show: boolean }[],
+    p: P,
+    slots: readonly { id: P; show: boolean }[],
   ): DragHandlers => ({
     dragging,
     onPointerDown(e) {
-      const above = aboveOf(p, slots);
-      if (e.button !== 0 || !above) return;
+      const before = beforeOf(p, slots);
+      if (e.button !== 0 || !before) return;
       e.currentTarget.setPointerCapture(e.pointerId);
       drag.current = {
-        y: e.clientY,
-        above,
-        below: p,
-        hA: slotContent(above),
-        hB: slotContent(p),
-        sum: weight(above) + weight(p),
+        at: pos(e),
+        before,
+        after: p,
+        sA: slotContent(before),
+        sB: slotContent(p),
+        sum: weight(before) + weight(p),
         frame: 0,
         next: weights,
       };
@@ -870,15 +907,7 @@ function useSideSplits(layoutRef: RefObject<HTMLDivElement | null>) {
     onPointerMove(e) {
       const d = drag.current;
       if (!d) return;
-      d.next = moved(
-        d.above,
-        d.below,
-        d.hA,
-        d.hB,
-        d.sum,
-        e.clientY - d.y,
-        weights,
-      );
+      d.next = moved(d.before, d.after, d.sA, d.sB, d.sum, pos(e) - d.at, weights);
       if (d.frame) return;
       d.frame = requestAnimationFrame(() => {
         d.frame = 0;
@@ -892,38 +921,35 @@ function useSideSplits(layoutRef: RefObject<HTMLDivElement | null>) {
       drag.current = null;
       e.currentTarget.releasePointerCapture?.(e.pointerId);
       setWeights(d.next);
-      writeWeights(d.next);
+      writeWeights(key, d.next);
       setDragging(false);
     },
     onKeyDown(e) {
-      const above = aboveOf(p, slots);
-      if (!above || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
+      const before = beforeOf(p, slots);
+      if (!before || (e.key !== more && e.key !== less)) return;
       e.preventDefault();
       const next = moved(
-        above,
+        before,
         p,
-        slotContent(above),
+        slotContent(before),
         slotContent(p),
-        weight(above) + weight(p),
-        e.key === "ArrowDown" ? 16 : -16,
+        weight(before) + weight(p),
+        e.key === more ? 16 : -16,
         weights,
       );
       setWeights(next);
-      writeWeights(next);
+      writeWeights(key, next);
     },
     reset() {
       setWeights({});
-      writeWeights({});
+      writeWeights(key, {});
     },
   });
-  /** The panel above's share of the pair, percent (the separator's value). */
-  const share = (
-    slots: readonly { id: SidePanel; show: boolean }[],
-    p: SidePanel,
-  ) => {
-    const above = aboveOf(p, slots);
-    if (!above) return 50;
-    return Math.round((100 * weight(above)) / (weight(above) + weight(p)));
+  /** The panel before's share of the pair, percent (the separator's value). */
+  const share = (slots: readonly { id: P; show: boolean }[], p: P) => {
+    const before = beforeOf(p, slots);
+    if (!before) return 50;
+    return Math.round((100 * weight(before)) / (weight(before) + weight(p)));
   };
   return { weight, handlers, share, dragging };
 }

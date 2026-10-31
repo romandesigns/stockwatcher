@@ -151,13 +151,15 @@ export function ChartCell({ index, slot, symbol, feed, trading, selected, showSe
         headingInToolbar
         timeframeControl={multi || phone ? "wheel" : "segments"}
         heading={
-          <div className="flex items-baseline gap-2">
-            <Tip label="Change ticker · tap, then hold to copy">
-              <TickerLabel symbol={symbol} onTap={() => onPickTicker(index)} aria-label={`${symbol}, change ticker`} className="text-sm" />
-            </Tip>
-            <span className="font-mono text-sm tabular-nums">{last ? formatPrice(last.c) : "—"}</span>
-            <span className={cn("font-mono text-[11px]", change.startsWith("-") ? "text-critical" : "text-good")}>{change}</span>
-            {symbol && <StarButton symbol={symbol} className="pointer-events-auto self-center" />}
+          <div className="flex items-center gap-1">
+            <div className="flex shrink-0 items-baseline gap-2">
+              <Tip label="Change ticker · tap, then hold to copy">
+                <TickerLabel symbol={symbol} onTap={() => onPickTicker(index)} aria-label={`${symbol}, change ticker`} className="text-sm" />
+              </Tip>
+              <span className="font-mono text-sm tabular-nums">{last ? formatPrice(last.c) : "—"}</span>
+              <span className={cn("font-mono text-[11px]", change.startsWith("-") ? "text-critical" : "text-good")}>{change}</span>
+            </div>
+            {symbol && <StarButton symbol={symbol} className="pointer-events-auto" />}
           </div>
         }
         symbol={symbol}

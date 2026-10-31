@@ -262,11 +262,13 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
       // min-h-full: the Shell's page area already stops above the tab bar (a dvh here overshot it).
       <div className="flex min-h-full flex-col gap-2.5 bg-background p-3 text-foreground">
         <header className="flex items-center gap-2">
-          <div className="flex min-w-0 items-baseline gap-2">
-            {tickerButton("text-base")}
-            <span className="font-mono text-base tabular-nums">{price}</span>
-            <span className={cn("font-mono text-[11px]", changeColor)}>{change}</span>
-            {symbol && <StarButton symbol={symbol} className="self-center" />}
+          <div className="flex min-w-0 items-center gap-1">
+            <div className="flex shrink-0 items-baseline gap-2">
+              {tickerButton("text-base")}
+              <span className="font-mono text-base tabular-nums">{price}</span>
+              <span className={cn("font-mono text-[11px]", changeColor)}>{change}</span>
+            </div>
+            {symbol && <StarButton symbol={symbol} />}
           </div>
           <SourceChip className="ml-auto" choice={current} mode={mode} />
           <SettingsButton />
@@ -320,13 +322,15 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
               headingInToolbar={coarse}
               defaultToolsVisible={!coarse}
               heading={
-                <div className="flex items-baseline gap-2">
-                  {tickerButton("text-[15px]")}
-                  <span className="font-mono text-[15px] tabular-nums">{price}</span>
-                  <Tip label="Change since the session's first candle">
-                    <span className={cn("pointer-events-auto font-mono text-[11px]", changeColor)}>{change}</span>
-                  </Tip>
-                  {symbol && <StarButton symbol={symbol} className="pointer-events-auto self-center" />}
+                <div className="flex items-center gap-1">
+                  <div className="flex shrink-0 items-baseline gap-2">
+                    {tickerButton("text-[15px]")}
+                    <span className="font-mono text-[15px] tabular-nums">{price}</span>
+                    <Tip label="Change since the session's first candle">
+                      <span className={cn("pointer-events-auto font-mono text-[11px]", changeColor)}>{change}</span>
+                    </Tip>
+                  </div>
+                  {symbol && <StarButton symbol={symbol} className="pointer-events-auto" />}
                 </div>
               } symbol={symbol} persistKey={CHART_KEY} {...synced} trading={trading} now={clock?.now ?? null} onTimeframeChange={app.setTimeframe} series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={app.setInspectT} options={DESKTOP_CHART} label={chartLabel} />
           </div>

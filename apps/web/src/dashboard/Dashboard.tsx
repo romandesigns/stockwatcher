@@ -23,8 +23,9 @@ import { MultiViewMenu } from "./MultiViewMenu.tsx";
  * The panel's grid by chart count, laid out by the PANEL's own width (container queries, so the
  * nav rail and the window both count): below 48rem every count stacks, one chart
  * per row; from 48rem two columns (three charts: two over one wide); from 72rem three charts sit
- * side by side. Rows share the height on a wide screen and never shrink below 18rem; past that
- * the panel scrolls.
+ * side by side. Rows share the height. Where the side panels stack below, a row never shrinks
+ * below 18rem and the panel scrolls on to them; in the wide layout rows shrink to 8rem instead,
+ * so the dashboard fits the window and never scrolls as a whole.
  */
 const GRID: Readonly<Record<number, string>> = {
   1: "",
@@ -188,7 +189,10 @@ export function Dashboard({ choice, feed }: Connection) {
               </p>
             </div>
           ) : (
-        <div role="group" aria-label="Charts" className={cn("grid min-w-0 flex-1 auto-rows-[minmax(18rem,1fr)] gap-2", GRID[dashboard.count])}>
+        // A chart row keeps 18rem where the panels stack (the page scrolls on to them), but beside
+        // the right column and over the bottom row it shrinks to fit the window: a short window
+        // must not make the whole dashboard scroll (owner, 2026-10-31).
+        <div role="group" aria-label="Charts" className={cn("grid min-w-0 flex-1 auto-rows-[minmax(18rem,1fr)] gap-2 @4xl/panel:auto-rows-[minmax(8rem,1fr)]", GRID[dashboard.count])}>
           {shown.map((symbol, i) => (
             <div key={i} className={cn("flex min-h-0 min-w-0 flex-col", dashboard.count === 3 && i === 2 && SPAN_THIRD)}>
               <ChartCell
