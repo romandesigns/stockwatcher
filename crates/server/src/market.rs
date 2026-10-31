@@ -4385,10 +4385,13 @@ impl Market {
     /// instead), except before anything was ever published: a subscribe during the startup
     /// catch-up must still get the meta (mode, status, day). `session` is read again only when
     /// `read_session` (it reads the archive); otherwise the last one.
-    /// Lock order: the list's lock, then core (inside `session_json`); never core first.
+    /// Lock order: the list's lock, then core (`symbol_parts`, `session_json`); never core first.
+    /// The list is read under the list's lock, not before it: the 1 Hz tick and a subscribe can
+    /// refresh at once, and a list read first could be published after a newer one, so a stock
+    /// would leave and come back (a spurious remove/add pair) until the next tick.
     fn refresh_symbols(&self, read_session: bool) {
-        let (rebuilding, symbols, total) = self.symbol_parts();
         let mut p = self.0.symbols.lock().expect("symbols lock");
+        let (rebuilding, symbols, total) = self.symbol_parts();
         if rebuilding && !p.meta.is_null() {
             return;
         }
