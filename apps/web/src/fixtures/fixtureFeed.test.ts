@@ -123,19 +123,26 @@ describe("fixture feed", () => {
   });
 });
 
-/** Field names of a Rust wire struct (serde camelCase + explicit renames). */
+/**
+ * Field names of a Rust wire struct (serde camelCase + explicit renames). A `#[serde(flatten …)]`
+ * field is skipped: the one there (`derived` on the increments, the profile's figures) is optional
+ * and only the server sets it, never the engine whose output the fixture feed copies.
+ */
 function rustFields(src: string, name: string): string[] {
   const m = new RegExp(`pub struct ${name} \\{([\\s\\S]*?)\\n\\}`).exec(src);
   if (!m) throw new Error(`struct ${name} not found`);
   const out: string[] = [];
   let rename: string | null = null;
+  let flatten = false;
   for (const line of m[1]!.split("\n")) {
     const r = /#\[serde\(rename = "([^"]+)"\)\]/.exec(line);
     if (r) rename = r[1]!;
+    if (/#\[serde\(flatten\b/.test(line)) flatten = true;
     const f = /^\s*pub (\w+):/.exec(line);
     if (f) {
-      out.push(rename ?? f[1]!.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase()));
+      if (!flatten) out.push(rename ?? f[1]!.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase()));
       rename = null;
+      flatten = false;
     }
   }
   return out.sort();
