@@ -12,7 +12,10 @@ authors.workspace = true
 [dependencies]
 market-events = { path = "../market-events" }
 serde = { version = "1.0.229", features = ["derive"] }
-
-[dev-dependencies]
+# indicators: the VWAP day (a session date) and the clients' spec lists, parsed as loosely as
+# packages/chart-core/src/syncedSettings.ts parses them.
 chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 serde_json = "1.0.154"
+
+[dev-dependencies]
+market-archive = { path = "../market-archive" }

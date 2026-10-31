@@ -78,6 +78,31 @@ export function indicatorLabel(s: IndicatorSpec): string {
   }
 }
 
+/**
+ * The canonical key the server's indicator frames carry for a spec (`chart.indicators`,
+ * `chart.indicator`; crates/chart-engine/src/indicators.rs `IndicatorSpec::key`): the kind and
+ * its RESOLVED parameters, so two specs that compute the same values share one server
+ * computation whatever ids the clients gave them. Both sides are tested against the same
+ * vectors (crates/chart-engine/tests/fixtures/indicator_spec_keys.json); change one only with
+ * the other.
+ */
+export function specKey(s: IndicatorSpec): string {
+  switch (s.kind) {
+    case "sma":
+      return `sma:${s.period ?? 20}`;
+    case "ema":
+      return `ema:${s.period ?? 9}`;
+    case "vwap":
+      return "vwap";
+    case "bb":
+      return `bb:${s.period ?? 20}:${String(s.mult ?? 2)}`;
+    case "rsi":
+      return `rsi:${s.period ?? 14}`;
+    case "macd":
+      return `macd:${s.fast ?? 12}:${s.slow ?? 26}:${s.signal ?? 9}`;
+  }
+}
+
 /** One drawn series, aligned to the slots (NaN = nothing at that slot). */
 export interface IndicatorLine {
   name: string;

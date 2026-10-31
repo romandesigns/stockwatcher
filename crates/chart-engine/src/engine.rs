@@ -1721,6 +1721,37 @@ impl ChartEngine {
 }
 
 impl ChartEngine {
+    /// Every retained `tf` candle of the symbol as the indicators read it (oldest first, the
+    /// forming candle included), regular session only with `rth`. A bucket without a price
+    /// (volume-only prints) is a gap to the indicators, as it is to the chart. Read when a chart
+    /// first asks for a study (crates/server/src/indicators.rs), never per trade.
+    pub fn indicator_bars(
+        &self,
+        symbol: &str,
+        tf: Timeframe,
+        rth: bool,
+    ) -> Option<Vec<crate::indicators::Bar>> {
+        let st = self.symbols.get(symbol)?;
+        let series = st.series.iter().find(|s| s.tf == tf)?;
+        let wm = st.own_wm.max(self.clock);
+        Some(
+            series
+                .buckets
+                .iter()
+                .filter(|b| crate::indicators::Bar::keep(b.session, rth))
+                .filter_map(|b| Some(crate::indicators::Bar::new(&b.candle(wm)?, b.session)))
+                .collect(),
+        )
+    }
+
+    /// The start (epoch ms) of the oldest retained `tf` interval of the symbol: an indicator
+    /// series drops what lies before it, as the engine's ring did.
+    pub fn first_interval_ms(&self, symbol: &str, tf: Timeframe) -> Option<i64> {
+        let st = self.symbols.get(symbol)?;
+        let series = st.series.iter().find(|s| s.tf == tf)?;
+        series.buckets.front().map(|b| ms(b.start))
+    }
+
     /// The symbol's COMPLETED `tf` candles over the same trading date as
     /// [`ChartEngine::day_line`] (pre, regular and after hours; overnight left out), oldest
     /// first, as the chart receives them. The forming candle is left out, so the result changes
