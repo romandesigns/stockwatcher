@@ -42,7 +42,9 @@
 //!    re-seed when the front is trimmed ([`IndicatorSeries::trim_before`]); a client recomputed
 //!    from whatever its own ring still held (3000 bars on the phone), so the warm-up of EMA, RSI
 //!    and MACD at its left edge moved as bars dropped. Values here never move once computed
-//!    unless a candle they depend on changed.
+//!    unless a candle they depend on changed. One exception: SMA and Bollinger read back from
+//!    the bars, so a change to one of the oldest retained bars after a trim re-anchors those
+//!    two at the current front ([`IndicatorSeries`] `restart_at`).
 //! 3. **A candle that became volume-only** (a cancel or correction took its last price-qualifying
 //!    print) is removed here ([`IndicatorSeries::remove`] on its `chart.gap`); the client's store
 //!    kept the stale candle until its next snapshot.
@@ -768,6 +770,10 @@ pub struct IndicatorSeries {
     /// Most bars kept: the engine's ring (`max_intervals_per_timeframe`). Past it the oldest are
     /// dropped without recomputing anything ([`IndicatorSeries::trim_before`]).
     cap: usize,
+    /// Bars were dropped from the front (the cap or [`IndicatorSeries::trim_before`]), so the
+    /// first [`IndicatorSeries::lookback`] bars can no longer be recomputed from their
+    /// checkpoints: see [`IndicatorSeries::restart_at`].
+    trimmed: bool,
 }
 
 /// Bars past `cap` that are tolerated before the front is drained, so a series at its cap
@@ -783,6 +789,7 @@ impl IndicatorSeries {
             out: Vec::with_capacity(bars.len()),
             bars,
             cap: cap.max(1),
+            trimmed: false,
         };
         s.recompute(0);
         s.enforce_cap();
@@ -837,6 +844,32 @@ impl IndicatorSeries {
         }
     }
 
+    /// How many bars before bar `i` its step reads back from `bars` (not from the checkpoint):
+    /// SMA reads the value leaving its window, `bars[i - period]`; Bollinger re-sums
+    /// `bars[i + 1 - period..=i]`. The other studies carry everything in the checkpoint.
+    fn lookback(&self) -> usize {
+        match self.spec {
+            IndicatorSpec::Sma { period } => period as usize,
+            IndicatorSpec::Bb { period, .. } => (period as usize).saturating_sub(1),
+            _ => 0,
+        }
+    }
+
+    /// Where a change at bar `k` has to recompute from. Normally `k`. But once the front was
+    /// dropped, a change within the first [`IndicatorSeries::lookback`] bars needs bars that are
+    /// gone: SMA's step would index `bars[k - period]` below 0 (a panic, under the market core
+    /// lock, which poisons it and takes the whole server down), and Bollinger would quietly turn
+    /// those points into NaN next to untouched neighbours. So such a change recomputes the whole
+    /// series from the bars it still holds (a re-anchor at the current front, the same values a
+    /// fresh build over these bars gives). Rare: a revision of one of the oldest retained bars.
+    fn restart_at(&self, k: usize) -> usize {
+        if self.trimmed && k < self.lookback() {
+            0
+        } else {
+            k
+        }
+    }
+
     fn enforce_cap(&mut self) -> usize {
         if self.bars.len() <= self.cap + DRAIN_SLACK {
             return 0;
@@ -847,6 +880,7 @@ impl IndicatorSeries {
     }
 
     fn drain_front(&mut self, n: usize) {
+        self.trimmed = true;
         self.bars.drain(..n);
         self.ckpt.drain(..n);
         self.out.drain(..n);
@@ -863,6 +897,7 @@ impl IndicatorSeries {
                     return None;
                 }
                 self.bars[k] = bar;
+                let k = self.restart_at(k);
                 let old: Vec<[f64; 3]> = self.out[k..].to_vec();
                 self.recompute(k);
                 // Values that came out bit-identical are not news.
@@ -876,6 +911,7 @@ impl IndicatorSeries {
             }
             Err(k) => {
                 self.bars.insert(k, bar);
+                let k = self.restart_at(k);
                 self.recompute(k);
                 let dropped = self.enforce_cap();
                 Some(k.saturating_sub(dropped)..self.bars.len())
@@ -888,6 +924,7 @@ impl IndicatorSeries {
     pub fn remove(&mut self, t_ms: i64) -> Option<Range<usize>> {
         let k = self.find(t_ms).ok()?;
         self.bars.remove(k);
+        let k = self.restart_at(k);
         self.recompute(k);
         Some(k..self.bars.len())
     }
@@ -997,6 +1034,64 @@ mod tests {
         // A new bar continues from the old anchor, not from a re-seed.
         let r = s.upsert(bar(300, 11.0)).unwrap();
         assert_eq!(r, 200..201);
+    }
+
+    /// A revision of one of the oldest retained bars after the front was dropped. SMA used to
+    /// index below 0 here (a panic under the market core lock); Bollinger turned points NaN.
+    /// Studies that read back from the bars re-anchor at the current front (= a fresh build);
+    /// the others keep their anchor (= the batch over the whole history, dropped part included).
+    #[test]
+    fn a_revision_at_the_trimmed_front_never_reads_dropped_bars() {
+        let specs = [
+            IndicatorSpec::Sma { period: 20 },
+            IndicatorSpec::Bb {
+                period: 20,
+                mult: 2.0,
+            },
+            IndicatorSpec::Ema { period: 20 },
+            IndicatorSpec::Rsi { period: 14 },
+            IndicatorSpec::Vwap,
+            IndicatorSpec::Macd {
+                fast: 12,
+                slow: 26,
+                signal: 9,
+            },
+        ];
+        for spec in specs {
+            let mut full: Vec<Bar> = (0..200)
+                .map(|i| bar(i, 10.0 + (i % 13) as f64 * 0.07))
+                .collect();
+            let mut s = IndicatorSeries::build(spec, full.clone(), 4000);
+            assert_eq!(s.trim_before(100 * 60_000), 100);
+            let reads_back = s.lookback() > 0;
+            // An edit, an insert-free removal and a re-add, each within the lookback.
+            let edits = [
+                BarEdit::Upsert(bar(103, 42.0)),
+                BarEdit::Remove(101 * 60_000),
+                BarEdit::Upsert(bar(101, 9.0)),
+            ];
+            for e in edits {
+                s.apply(e);
+                match e {
+                    BarEdit::Upsert(b) => match full.binary_search_by_key(&b.t_ms, |x| x.t_ms) {
+                        Ok(i) => full[i] = b,
+                        Err(i) => full.insert(i, b),
+                    },
+                    BarEdit::Remove(t) => full.retain(|x| x.t_ms != t),
+                }
+                let want = if reads_back {
+                    batch(&spec, s.bars())
+                } else {
+                    batch(&spec, &full)[full.len() - s.len()..].to_vec()
+                };
+                for (i, w) in want.iter().enumerate() {
+                    let got = s.values(i);
+                    for j in 0..got.len() {
+                        assert_eq!(got[j].to_bits(), w[j].to_bits(), "{} bar {i}", spec.key());
+                    }
+                }
+            }
+        }
     }
 
     #[test]
