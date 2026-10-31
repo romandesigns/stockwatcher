@@ -561,7 +561,10 @@ export function layoutChart(model: ChartModel, state: ChartState, theme: ChartTh
     }
   }
   // the price series, in the chosen chart type
-  if (price) out.push(...seriesMarks(model, state, theme));
+  // Kept inside the price pane: on a manual price range (the axis dragged, "A" to return to auto)
+  // candles off the range used to draw over the indicator panes and the time axis (owner,
+  // 2026-10-31). The line types already clip their paths.
+  if (price) out.push(...clipToPlot(seriesMarks(model, state, theme), model.geometry.plot));
   if (price && style.highLow) out.push(...highLowLabels(model, theme));
 
   // indicators: overlays on the plot, oscillators in their panes
@@ -1089,6 +1092,36 @@ function seriesMarks(model: ChartModel, state: ChartState, theme: ChartTheme): D
     }
     if (!outlined) out.push({ kind: "rect", x: cx - half, y: top, w: bw, h, fill: color, layer: "candles" });
     else out.push({ kind: "rect", x: cx - half + 0.5, y: top + 0.5, w: Math.max(0, bw - 1), h: Math.max(0, h - 1), stroke: color, lineWidth: 1, ...(dash ? { dash } : {}), layer: "candles" });
+  }
+  return out;
+}
+
+/**
+ * Cuts candle and bar marks to `r` by geometry: a body to its part inside, a wick to its stretch
+ * inside, and a mark wholly outside dropped. Geometry rather than a renderer clip, so thousands of
+ * candles cost no save/clip/restore each, on the web canvas and on Skia alike. Anything else
+ * (a slanted line, a path) gets `clip` and the renderer cuts it.
+ */
+export function clipToPlot(list: DisplayList, r: Rect): DisplayList {
+  const top = r.y;
+  const bottom = r.y + r.h;
+  const out: DisplayList = [];
+  for (const p of list) {
+    if (p.kind === "rect") {
+      const y0 = Math.max(top, p.y);
+      const y1 = Math.min(bottom, p.y + p.h);
+      if (y1 <= y0) continue;
+      out.push(y0 === p.y && y1 === p.y + p.h ? p : { ...p, y: y0, h: y1 - y0 });
+    } else if (p.kind === "line" && p.x1 === p.x2) {
+      const y0 = Math.max(top, Math.min(p.y1, p.y2));
+      const y1 = Math.min(bottom, Math.max(p.y1, p.y2));
+      if (y1 <= y0) continue;
+      out.push({ ...p, y1: y0, y2: y1 });
+    } else if (p.kind === "line" && p.y1 === p.y2) {
+      if (p.y1 >= top && p.y1 <= bottom) out.push(p);
+    } else if (p.kind === "line" || p.kind === "path") {
+      out.push({ ...p, clip: p.clip ?? r });
+    } else out.push(p);
   }
   return out;
 }

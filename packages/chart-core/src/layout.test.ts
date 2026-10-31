@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { type ChartTheme, type DisplayList, type LinePrim, LAYER_ORDER, sortByLayer } from "./displayList.ts";
 import { describeCounted, describeSlot } from "./inspect.ts";
-import { candleCountdown, computeChartModel, formatCountdown, hitTest, layout, layoutProfile, stepInspection, type ChartState } from "./layout.ts";
-import { buildSlots, defaultViewport, slotX } from "./scale.ts";
+import { candleCountdown, computeChartModel, layoutChart, formatCountdown, hitTest, layout, layoutProfile, stepInspection, type ChartState } from "./layout.ts";
+import { buildSlots, defaultViewport, manualPrice, slotX } from "./scale.ts";
 import { computeIndicators } from "./indicators.ts";
 import { DEFAULT_CHART_THEME } from "./theme.ts";
 import { etToUtc } from "./time.ts";
@@ -251,4 +251,30 @@ describe("crosshair time tag", () => {
     const text = tags(narrow)[0];
     expect(text && text.kind === "text" ? text.text.includes("'") : true).toBe(false);
   });
+});
+
+describe("candles stay in the price pane", () => {
+  // Owner, 2026-10-31: on a dragged (manual) price range, candles below it drew over the
+  // indicator panes and the time axis. A range well above the fixture's prices puts most of them
+  // off-scale; every candle mark must still end inside the plot, for every candle-like type.
+  for (const chartType of ["candles", "hollow", "bars", "heikinAshi"] as const) {
+    test(chartType, () => {
+      const snap = fixtureSnapshot("1m", 60, [5]);
+      const st: ChartState = { timeframe: "1m", candles: snap.candles, gaps: snap.gaps, profile: snap.profile, inspectT: null, pointer: null, chartType };
+      const mid = snap.candles[snap.candles.length - 1]!.c;
+      const vp = manualPrice(defaultViewport(60), { lo: mid * 1.002, hi: mid * 1.05 });
+      const model = computeChartModel(st, vp, { width: 400, height: 300 });
+      const plot = model.geometry.plot;
+      const marks = layoutChart(model, st, DEFAULT_CHART_THEME).filter((p) => p.layer === "candles");
+      for (const p of marks) {
+        if (p.kind === "rect") {
+          expect(p.y).toBeGreaterThanOrEqual(plot.y);
+          expect(p.y + p.h).toBeLessThanOrEqual(plot.y + plot.h);
+        } else if (p.kind === "line") {
+          expect(Math.min(p.y1, p.y2)).toBeGreaterThanOrEqual(plot.y);
+          expect(Math.max(p.y1, p.y2)).toBeLessThanOrEqual(plot.y + plot.h);
+        }
+      }
+    });
+  }
 });
