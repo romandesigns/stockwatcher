@@ -31,13 +31,26 @@ use crate::rocket::Notice;
 
 use super::runners::{self, Decision};
 
-/// The ledger, or nothing (tests, a replay-only server).
+/// The ledger, or nothing (tests, a replay-only server), and the pushed notification log that
+/// every line also goes to (`crate::notices::NoticeFeed`, `notices.v1`).
 #[derive(Clone, Debug, Default)]
-pub struct Ledger(Option<DailyLog>);
+pub struct Ledger {
+    log: Option<DailyLog>,
+    feed: Option<crate::notices::NoticeFeed>,
+}
 
 impl Ledger {
     pub fn new(log: DailyLog) -> Self {
-        Ledger(Some(log))
+        Ledger {
+            log: Some(log),
+            feed: None,
+        }
+    }
+
+    /// Every line written also goes to `feed`, the Insights log's pushed copy.
+    pub fn with_feed(mut self, feed: crate::notices::NoticeFeed) -> Self {
+        self.feed = Some(feed);
+        self
     }
 
     /// The ledger under `archive_root` (module docs).
@@ -54,8 +67,14 @@ impl Ledger {
     }
 
     fn put(&self, at_ms: i64, line: Value) {
-        if let Some(log) = &self.0 {
-            log.send(oplog::et_date_ms(at_ms), move || line.to_string());
+        let day = oplog::et_date_ms(at_ms);
+        // The feed first: it regroups and pushes now, while the file write is queued for the
+        // log's own thread (the feed's snapshots read its memory, never this file, for today).
+        if let Some(feed) = &self.feed {
+            feed.push(day, &line);
+        }
+        if let Some(log) = &self.log {
+            log.send(day, move || line.to_string());
         }
     }
 
@@ -285,6 +304,33 @@ mod tests {
         assert_eq!(held["devices"], 2);
         assert!(!lines[2].contains("secret"), "{}", lines[2]);
         assert!(lines[2].contains("[push token]"));
+    }
+
+    /// Every line also reaches the pushed log at once, token-redacted like the file.
+    #[test]
+    fn the_ledger_feeds_the_pushed_log() {
+        let day = oplog::et_date_ms(1_793_017_427_256);
+        let feed = crate::notices::NoticeFeed::open(None, day);
+        let mut rx = feed.subscribe();
+        let ledger = Ledger::default().with_feed(feed.clone());
+        ledger.decision(
+            &notice(),
+            "ev-1",
+            "desk",
+            &Decision::Send,
+            1,
+            "t",
+            "b",
+            1_793_017_427_256,
+        );
+        ledger.failed("ev-1", "ExponentPushToken[secret]", 1_793_017_427_300);
+        let a = rx.try_recv().unwrap();
+        assert_eq!(a.day, day);
+        let b = rx.try_recv().unwrap();
+        assert!(b.seq > a.seq);
+        let v: Value = serde_json::from_str(&b.frame).unwrap();
+        assert_eq!(v["items"][0]["desk"]["decision"], "sent");
+        assert!(!b.frame.contains("secret"));
     }
 
     #[test]

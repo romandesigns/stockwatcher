@@ -5,6 +5,7 @@ import type { DetectionMessage } from "./detection.ts";
 import type { RocketMessage } from "./rocket.ts";
 import type { RunnersNoticeMessage, RunnersNotifyMessage } from "./runnersNotify.ts";
 import { SYMBOLS_FEATURE, type SymbolsMessage } from "./symbols.ts";
+import { NOTICES_FEATURE, type NoticesMessage } from "./noticeFeed.ts";
 
 export type ConnectionStatus = "connecting" | "open" | "reconnecting" | "unauthorized" | "closed";
 
@@ -42,6 +43,8 @@ export interface WsClientOptions {
   onMovers?: (message: import("./protocol.ts").MoversMessage) => void;
   /** `symbols.snapshot` / `symbols.update` frames, while subscribed (see `subscribeSymbols`). */
   onSymbols?: (message: SymbolsMessage) => void;
+  /** `notices.snapshot` / `notices.append` frames, while subscribed (see `subscribeNotices`). */
+  onNotices?: (message: NoticesMessage) => void;
   onDetection?: (message: DetectionMessage) => void;
   onDetectionError?: (reason: string) => void;
   /** The price alerts' frames (`alerts.history`, `alert.fired`, …): every connection gets them. */
@@ -96,6 +99,9 @@ export interface WsClient {
    */
   subscribeSymbols(): void;
   unsubscribeSymbols(): void;
+  /** Today's notification log (`notices.*`), gated on `notices.v1` like `subscribeSymbols`. */
+  subscribeNotices(): void;
+  unsubscribeNotices(): void;
   subscribeDetection(): void;
   unsubscribeDetection(): void;
   /** Sends `runnersNotify()` now (or `enabled: false` when it is null): the switches changed. */
@@ -143,6 +149,7 @@ export function createWsClient(opts: WsClientOptions): WsClient {
   let favoritesWanted = false;
   let moversWanted = false;
   let symbolsWanted = false;
+  let noticesWanted = false;
   // The current connection's welcome.features (empty before a welcome and for older servers).
   let features: readonly string[] = [];
   let detectionWanted = false;
@@ -203,6 +210,7 @@ export function createWsClient(opts: WsClientOptions): WsClient {
         if (favoritesWanted) send({ type: "favorites.subscribe" });
         if (moversWanted) send({ type: "movers.subscribe" });
         if (symbolsWanted && features.includes(SYMBOLS_FEATURE)) send({ type: "symbols.subscribe" });
+        if (noticesWanted && features.includes(NOTICES_FEATURE)) send({ type: "notices.subscribe" });
         if (detectionWanted) send({ type: "detection.subscribe" });
         const notify = opts.runnersNotify?.();
         if (notify) send(notify);
@@ -226,6 +234,8 @@ export function createWsClient(opts: WsClientOptions): WsClient {
         opts.onMovers?.(msg);
       } else if ((msg.type === "symbols.snapshot" || msg.type === "symbols.update") && symbolsWanted) {
         opts.onSymbols?.(msg);
+      } else if ((msg.type === "notices.snapshot" || msg.type === "notices.append") && noticesWanted) {
+        opts.onNotices?.(msg);
       } else if ((msg.type === "detection.snapshot" || msg.type === "detection.update") && detectionWanted) {
         opts.onDetection?.(msg);
       } else if (msg.type === "settings.snapshot" || msg.type === "settings.changed" || msg.type === "settings.rejected") {
@@ -312,6 +322,14 @@ export function createWsClient(opts: WsClientOptions): WsClient {
     unsubscribeSymbols() {
       symbolsWanted = false;
       if (features.includes(SYMBOLS_FEATURE)) send({ type: "symbols.unsubscribe" });
+    },
+    subscribeNotices() {
+      noticesWanted = true;
+      if (features.includes(NOTICES_FEATURE)) send({ type: "notices.subscribe" });
+    },
+    unsubscribeNotices() {
+      noticesWanted = false;
+      if (features.includes(NOTICES_FEATURE)) send({ type: "notices.unsubscribe" });
     },
     subscribeDetection() {
       detectionWanted = true;

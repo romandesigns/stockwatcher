@@ -16,12 +16,38 @@
 //! append-only and capped by its writer (32 MB), and a crash can leave a torn last line, which is
 //! skipped like any malformed line. A day without a file (before the ledger existed on
 //! 2026-10-26, a day the live server was down) is an empty list, not an error.
+//!
+//! **Pushed** (`notices.v1`, [`NoticeFeed`]; owner rule: realtime is pushed, clients only
+//! render). The open log used to refetch the whole day every 15 s on every client. Now:
+//!
+//! - client `notices.subscribe {day?}` (absent = today, the server's ET date) -> server
+//!   `notices.snapshot {day, days, items, truncated}`: the same body as `GET /api/notices`.
+//! - Then, for today, `notices.append {day, items: [item]}` each time the ledger writes a line:
+//!   that notice's item regrouped from all of its lines so far (a desk decision, then the phone
+//!   one, then `pushed` with its latency), which the client upserts by `event_id` (new ones go
+//!   on top). Subscribed to today without a `day`, the subscription follows the date: the first
+//!   line of the next ET day answers with that day's snapshot.
+//! - A past day gets its snapshot and nothing else (its file no longer changes). A lag resends
+//!   the snapshot. `notices.unsubscribe` stops it.
+//!
+//! The feed keeps today's lines in memory, primed from today's file at start, so a snapshot of
+//! today never races the ledger's background writer (a line can be broadcast before it is on
+//! disk) and a restart mid-day still regroups an event whose first lines came before it. Bounded
+//! like the file: past [`crate::oplog::NOTICES_CAP`] bytes in a day, lines stop being kept (the
+//! writer stops writing them too). Every append carries a `seq` taken under the same lock as the
+//! snapshot, so a connection forwards only appends newer than its snapshot and an item never goes
+//! back to an older state.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use chrono::NaiveDate;
 use serde_json::{Map, Value, json};
+use tokio::sync::broadcast;
+
+/// The feature a client must see in `welcome.features` before it sends `notices.subscribe`.
+pub const FEATURE: &str = "notices.v1";
 
 /// Rows returned for one day at most (the newest kept).
 pub const MAX_ITEMS: usize = 2_000;
@@ -191,6 +217,196 @@ pub fn group(text: &str) -> (Vec<Value>, bool) {
     (out.into_iter().map(|(_, _, v)| v).collect(), truncated)
 }
 
+/// One `notices.append` on the feed's channel.
+#[derive(Debug)]
+pub struct Append {
+    pub day: NaiveDate,
+    /// Taken under the feed's lock: compare with [`Snapshot::seq`].
+    pub seq: u64,
+    pub frame: String,
+}
+
+/// A `notices.snapshot` and the append `seq` it already includes.
+#[derive(Debug)]
+pub struct Snapshot {
+    pub day: NaiveDate,
+    pub seq: u64,
+    pub frame: String,
+}
+
+/// Today's ledger lines in memory, per event, in file order (module docs, "Pushed").
+#[derive(Default)]
+struct DayLines {
+    day: Option<NaiveDate>,
+    /// Event ids in order of first appearance, and each event's lines in order.
+    order: Vec<String>,
+    events: HashMap<String, Vec<String>>,
+    bytes: u64,
+    seq: u64,
+}
+
+impl DayLines {
+    /// Starts `day` empty. `seq` keeps counting: a connection compares it across days.
+    fn reset(&mut self, day: NaiveDate) {
+        let seq = self.seq;
+        *self = DayLines {
+            day: Some(day),
+            seq,
+            ..Default::default()
+        };
+    }
+
+    /// Keeps `line` under `id`; false once the day's cap is reached.
+    fn keep(&mut self, id: &str, line: String) -> bool {
+        if self.bytes + line.len() as u64 > crate::oplog::NOTICES_CAP {
+            return false;
+        }
+        self.bytes += line.len() as u64 + 1;
+        match self.events.get_mut(id) {
+            Some(v) => v.push(line),
+            None => {
+                self.order.push(id.to_string());
+                self.events.insert(id.to_string(), vec![line]);
+            }
+        }
+        true
+    }
+
+    /// The whole day as ledger text, grouped per event. [`group`] reads it exactly as it reads
+    /// the file: its result depends only on each event's line order and the order in which
+    /// events first appear, both kept here.
+    fn text(&self) -> String {
+        let mut out = String::with_capacity(self.bytes as usize);
+        for id in &self.order {
+            for l in &self.events[id] {
+                out.push_str(l);
+                out.push('\n');
+            }
+        }
+        out
+    }
+}
+
+struct FeedInner {
+    dir: Option<PathBuf>,
+    lines: Mutex<DayLines>,
+    tx: broadcast::Sender<Arc<Append>>,
+}
+
+/// The pushed notification log (module docs, "Pushed"). Cheap to clone. The ledger feeds it
+/// every line it writes (`crate::alerts::ledger`); `/ws` sessions subscribe to it.
+#[derive(Clone)]
+pub struct NoticeFeed(Arc<FeedInner>);
+
+impl std::fmt::Debug for NoticeFeed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NoticeFeed")
+            .field("dir", &self.0.dir)
+            .finish()
+    }
+}
+
+impl NoticeFeed {
+    /// No ledger (tests, a replay-only server): empty snapshots, never an append.
+    pub fn idle() -> Self {
+        Self::open(None, crate::oplog::et_date_ms(crate::oplog::now_ms()))
+    }
+
+    /// The feed over the ledger directory `dir`, primed with `today`'s file if there is one.
+    pub fn open(dir: Option<PathBuf>, today: NaiveDate) -> Self {
+        let mut lines = DayLines::default();
+        lines.reset(today);
+        if let Some(d) = &dir {
+            let file = d.join(format!("{}.jsonl", today.format("%Y-%m-%d")));
+            for line in std::fs::read_to_string(file).unwrap_or_default().lines() {
+                // A torn or malformed line is skipped, as `group` skips it.
+                if let Some(id) = event_id(line) {
+                    lines.keep(&id, line.to_string());
+                }
+            }
+        }
+        NoticeFeed(Arc::new(FeedInner {
+            dir,
+            lines: Mutex::new(lines),
+            tx: broadcast::channel(256).0,
+        }))
+    }
+
+    pub fn dir(&self) -> Option<&Path> {
+        self.0.dir.as_deref()
+    }
+
+    /// Subscribe BEFORE taking [`NoticeFeed::snapshot`].
+    pub fn subscribe(&self) -> broadcast::Receiver<Arc<Append>> {
+        self.0.tx.subscribe()
+    }
+
+    /// A ledger line, written for ET date `day`: kept, and its notice's regrouped item broadcast.
+    /// A line for an earlier day than the one held (a `pushed` stamped just before midnight,
+    /// arriving after it) is in that day's file only; a later day starts a new day.
+    pub fn push(&self, day: NaiveDate, line: &Value) {
+        let Some(id) = line.get("event_id").and_then(Value::as_str) else {
+            return;
+        };
+        let mut l = self.0.lines.lock().expect("notice feed lock");
+        match l.day {
+            Some(d) if day < d => return,
+            Some(d) if day == d => {}
+            _ => l.reset(day),
+        }
+        if !l.keep(id, line.to_string()) {
+            return;
+        }
+        let (items, _) = group(&l.events[id].join("\n"));
+        l.seq += 1;
+        let frame = json!({
+            "type": "notices.append",
+            "day": day.format("%Y-%m-%d").to_string(),
+            "items": items,
+        })
+        .to_string();
+        // Under the lock, so appends reach the channel in `seq` order.
+        let _ = self.0.tx.send(Arc::new(Append {
+            day,
+            seq: l.seq,
+            frame,
+        }));
+    }
+
+    /// The `notices.snapshot` of `day` (None = today in ET). Reads files (the day list, and a
+    /// day not held in memory), so call it off the async workers.
+    pub fn snapshot(&self, day: Option<NaiveDate>) -> Snapshot {
+        let day = day.unwrap_or_else(|| crate::oplog::et_date_ms(crate::oplog::now_ms()));
+        let days = self.0.dir.as_deref().map(days).unwrap_or_default();
+        let (held, seq) = {
+            let l = self.0.lines.lock().expect("notice feed lock");
+            ((l.day == Some(day)).then(|| l.text()), l.seq)
+        };
+        let (items, truncated) = match (held, &self.0.dir) {
+            (Some(text), _) => group(&text),
+            (None, Some(dir)) => read_day(dir, day),
+            (None, None) => (Vec::new(), false),
+        };
+        let frame = json!({
+            "type": "notices.snapshot",
+            "day": day.format("%Y-%m-%d").to_string(),
+            "days": days.iter().map(|d| d.format("%Y-%m-%d").to_string()).collect::<Vec<_>>(),
+            "items": items,
+            "truncated": truncated,
+        })
+        .to_string();
+        Snapshot { day, seq, frame }
+    }
+}
+
+fn event_id(line: &str) -> Option<String> {
+    serde_json::from_str::<Value>(line)
+        .ok()?
+        .get("event_id")?
+        .as_str()
+        .map(str::to_string)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -288,5 +504,87 @@ mod tests {
         let (items, _) = group(&text);
         assert_eq!(items[0]["mp5_wick"], wick);
         assert_eq!(items[0]["phone"]["decision"], "held");
+    }
+
+    fn d(s: &str) -> NaiveDate {
+        s.parse().unwrap()
+    }
+
+    fn take(rx: &mut broadcast::Receiver<Arc<Append>>) -> Vec<Value> {
+        let mut out = Vec::new();
+        while let Ok(a) = rx.try_recv() {
+            out.push(serde_json::from_str(&a.frame).unwrap());
+        }
+        out
+    }
+
+    /// The pushed log: each ledger line re-sends its notice's whole item; the snapshot of today
+    /// comes from memory (primed from the file at start) and groups as the file does.
+    #[test]
+    fn the_feed_appends_regrouped_items_and_snapshots_today_from_memory() {
+        let dir = tempfile::tempdir().unwrap();
+        let before = line(
+            json!({"kind":"decision","decided_at":100,"event_id":"old","notice":"runners.fast",
+            "symbol":"AAA","path":"desk","decision":"sent"}),
+        );
+        std::fs::write(dir.path().join("2026-10-30.jsonl"), format!("{before}\n")).unwrap();
+        let feed = NoticeFeed::open(Some(dir.path().to_path_buf()), d("2026-10-30"));
+        let mut rx = feed.subscribe();
+        let snap = feed.snapshot(Some(d("2026-10-30")));
+        let v: Value = serde_json::from_str(&snap.frame).unwrap();
+        assert_eq!(v["type"], "notices.snapshot");
+        assert_eq!(v["items"][0]["event_id"], "old", "primed from today's file");
+        assert_eq!(v["days"], json!(["2026-10-30"]));
+
+        // The restart's earlier event gets its phone decision now: the append carries both paths.
+        feed.push(
+            d("2026-10-30"),
+            &json!({"kind":"decision","decided_at":101,"event_id":"old","notice":"runners.fast",
+            "symbol":"AAA","path":"phone","decision":"held","held":"quiet_hours"}),
+        );
+        feed.push(
+            d("2026-10-30"),
+            &json!({"kind":"decision","decided_at":200,"event_id":"new","notice":"runners.burst",
+            "symbol":"BBB","path":"desk","decision":"sent"}),
+        );
+        feed.push(d("2026-10-30"), &json!({"no_event_id": true}));
+        let got = take(&mut rx);
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0]["type"], "notices.append");
+        assert_eq!(got[0]["items"][0]["desk"]["decision"], "sent");
+        assert_eq!(got[0]["items"][0]["phone"]["held"], "quiet_hours");
+        assert_eq!(got[1]["items"][0]["symbol"], "BBB");
+        let snap2 = feed.snapshot(Some(d("2026-10-30")));
+        assert!(snap2.seq > snap.seq);
+        let v: Value = serde_json::from_str(&snap2.frame).unwrap();
+        assert_eq!(v["items"][0]["event_id"], "new", "newest first");
+        assert_eq!(v["items"][1]["phone"]["decision"], "held");
+
+        // A line for the day before is that day's file's business; the next day starts afresh.
+        feed.push(
+            d("2026-10-29"),
+            &json!({"kind":"failed","at":5,"event_id":"x","detail":"d"}),
+        );
+        assert!(take(&mut rx).is_empty());
+        feed.push(
+            d("2026-10-31"),
+            &json!({"kind":"decision","decided_at":300,"event_id":"n2","path":"desk","decision":"sent"}),
+        );
+        assert_eq!(take(&mut rx)[0]["day"], "2026-10-31");
+        let v: Value = serde_json::from_str(&feed.snapshot(Some(d("2026-10-31"))).frame).unwrap();
+        assert_eq!(v["items"].as_array().unwrap().len(), 1);
+        // A day no longer held is read from its file.
+        let v: Value = serde_json::from_str(&feed.snapshot(Some(d("2026-10-30"))).frame).unwrap();
+        assert_eq!(v["items"][0]["event_id"], "old");
+    }
+
+    #[test]
+    fn an_idle_feed_is_empty() {
+        let feed = NoticeFeed::idle();
+        let v: Value = serde_json::from_str(&feed.snapshot(Some(d("2026-10-30"))).frame).unwrap();
+        assert_eq!(
+            (v["items"].clone(), v["days"].clone()),
+            (json!([]), json!([]))
+        );
     }
 }

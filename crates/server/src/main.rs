@@ -243,6 +243,18 @@ async fn serve(config: Config) -> std::io::Result<()> {
     // Live and replay side by side (the dashboard reads live, the chart page practises on replay).
     let (markets, sim) = Markets::start(&config.market);
     spawn_memory_stats(&markets);
+    // The Insights log's pushed copy of the ledger (crate::notices, `notices.v1`), primed with
+    // today's file so a restart mid-day still shows the whole day.
+    let notices_dir = config
+        .market
+        .provider
+        .archive
+        .root
+        .join(stockwatcher_server::oplog::NOTICES_DIR);
+    let notice_feed = stockwatcher_server::notices::NoticeFeed::open(
+        Some(notices_dir.clone()),
+        stockwatcher_server::oplog::et_date_ms(stockwatcher_server::oplog::now_ms()),
+    );
     // Price alerts watch the live market (never replay), with their rules in the same store and
     // Activity + the registered phones under DATA_DIR/alerts.
     let alerts = stockwatcher_server::alerts::Alerts::start(
@@ -251,7 +263,8 @@ async fn serve(config: Config) -> std::io::Result<()> {
         Some(config.data_dir.join("alerts")),
         stockwatcher_server::alerts::push::PushConfig::from_lookup(|k| std::env::var(k).ok()),
         // Every decided notice, beside rocket-watch on the archive (alerts::ledger).
-        stockwatcher_server::alerts::ledger::Ledger::start(&config.market.provider.archive.root),
+        stockwatcher_server::alerts::ledger::Ledger::start(&config.market.provider.archive.root)
+            .with_feed(notice_feed.clone()),
     );
     // The Favorites panel's list is a synced setting the server also reads (crate::favorites).
     stockwatcher_server::favorites::follow(
@@ -297,14 +310,8 @@ async fn serve(config: Config) -> std::io::Result<()> {
     }
     let state = AppState::with_alerts(config.api_token.clone(), markets, settings, alerts);
     // The Insights page reads the same ledger back (GET /api/notices, crate::notices).
-    state.set_notices_dir(
-        config
-            .market
-            .provider
-            .archive
-            .root
-            .join(stockwatcher_server::oplog::NOTICES_DIR),
-    );
+    state.set_notices_dir(notices_dir);
+    state.set_notice_feed(notice_feed);
     if let Some(sim) = sim {
         // The provider-compatible simulator on its own port (loopback by default), so Alpaca/FMP
         // base URLs can point at it by configuration. Dummy credentials only.

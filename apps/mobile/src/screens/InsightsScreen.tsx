@@ -7,6 +7,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { noticeRowView, type NoticeRowView } from "../insights/model";
 import { ScorecardView } from "../insights/ScorecardView";
 import { useNoticeLog } from "../insights/useNoticeLog";
+import { useDashboardFeed } from "../feed/dashboardFeed";
 import { useReducedMotion } from "../motion/useReducedMotion";
 import { openTickerChart } from "../navigation/ref";
 import { colors, fonts } from "../theme";
@@ -17,7 +18,8 @@ type Tab = "notifications" | "scorecard";
  * Insights (owner, 2026-10-26: "create an insight page where we can display a notification log"),
  * the web's Insights page on the phone: the notification log (every notice the server decided,
  * sent or held and why) and the scorecard. Its own tab, so it is one tap away on the Fold's cover
- * screen too; it reads the server over HTTP, not the dashboard's socket.
+ * screen too. Today's log is pushed over the dashboard's socket when the server has `notices.v1`;
+ * past days, and older servers, are read over HTTP.
  */
 export function InsightsScreen() {
   const insets = useSafeAreaInsets();
@@ -67,7 +69,10 @@ function NotificationLog() {
   const [status, setStatus] = useState<"all" | NoticeStatus>("all");
   const [ticker, setTicker] = useState("");
   const [readout, setReadout] = useState<NoticeRowView | null>(null);
-  const load = useNoticeLog(day);
+  // Today's log rides the dashboard's socket when it is up (the tab stays mounted); without it, or
+  // against an older server, the hook polls /api/notices.
+  const feed = useDashboardFeed();
+  const load = useNoticeLog(day, feed?.notices);
   const log = load.state === "ok" ? load.log : null;
   const rows = useMemo(() => (log ? filterNotices(log.items, { groups, status: status === "all" ? null : status, ticker }).map(noticeRowView) : []), [log, groups, status, ticker]);
   const summary = useMemo(() => noticeSummary(log?.items ?? []), [log]);

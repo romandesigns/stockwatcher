@@ -1,7 +1,7 @@
 import { formatEtTime12, type IconName } from "@stockwatcher/chart-core";
 import { Icon } from "@stockwatcher/chart-web";
 import { cn, Collapsible, CollapsibleContent, CollapsibleTrigger, Input, OptionSelect, ScrollArea, Tip } from "@stockwatcher/chart-web/ui";
-import { filterNotices, noticeDayOptions, latencyText, NOTICE_GROUPS, noticeEvidence, noticeHeldReason, noticeMergedInto, heldText, noticeIcon, noticeKind, noticeStatus, noticeSummary, pathText, type NoticeGroup, type NoticeItemWire, type NoticePathWire, type NoticeStatus } from "@stockwatcher/shared";
+import { filterNotices, noticeDayOptions, latencyText, NOTICE_GROUPS, noticeEvidence, noticeHeldReason, noticeMergedInto, heldText, noticeIcon, noticeKind, noticeStatus, noticeSummary, pathText, type NoticeGroup, type NoticeItemWire, type NoticePathWire, type NoticesChannel, type NoticeStatus } from "@stockwatcher/shared";
 import { useMemo, useState } from "react";
 import { openTickerChart } from "../nav/openTicker.ts";
 import { BREAKOUT_LABEL, noticeChartContext } from "@stockwatcher/shared";
@@ -19,14 +19,14 @@ const STATUS: readonly { id: NoticeStatus | null; label: string; icon: "menu" | 
  * with what happened on the phones and on desktop/web, and why when it was held. A row opens the
  * stock's chart. Read from the ledger (crates/server/src/notices.rs), written since 2026-10-26.
  */
-export function NotificationLog() {
+export function NotificationLog({ notices }: { notices?: NoticesChannel } = {}) {
   const [day, setDay] = useState<string | null>(null);
   // The server's today, kept from the default load for when another day is open.
   const [today, setToday] = useState<string | null>(null);
   const [groups, setGroups] = useState<ReadonlySet<NoticeGroup>>(new Set());
   const [status, setStatus] = useState<NoticeStatus | null>(null);
   const [ticker, setTicker] = useState("");
-  const load = useNoticeLog(day);
+  const load = useNoticeLog(day, notices);
   const log = load.state === "ok" ? load.log : null;
   const items = useMemo(() => (log ? filterNotices(log.items, { groups, status, ticker }) : []), [log, groups, status, ticker]);
   const summary = useMemo(() => noticeSummary(log?.items ?? []), [log]);

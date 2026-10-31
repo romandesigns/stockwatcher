@@ -588,6 +588,17 @@ client `packages/shared/src/symbols.ts`):
   polling otherwise; older phone builds never send it and keep polling.
 - After a seek, a day switch or a lag, a subscribed client gets a fresh snapshot.
 
+**Notification log** (the Insights page; 2026-10-31, `notices.v1` in `welcome.features`;
+`crates/server/src/notices.rs` "Pushed", client `packages/shared/src/noticeFeed.ts`):
+- client `notices.subscribe {day?}` (absent = today in ET) → server `notices.snapshot {day, days,
+  items, truncated}` (the body of `GET /api/notices`), then for that day `notices.append {day,
+  items: [item]}` per ledger line: the notice's whole item so far, which the client upserts by
+  `event_id`. Without `day` the subscription follows today into the next date. Today's lines are
+  held in memory (primed from the day's file at start), so a snapshot never races the ledger's
+  file writer.
+- It replaced the web and phone 15 s refetch of today's whole log. Past days stay one-shot
+  `GET /api/notices?day=` fetches. Older servers and older phone builds keep polling.
+
 **Quote board** (the ticker search's live rows; `crates/server/src/quotes.rs`, wire in
 `packages/shared/src/protocol.ts` `QuoteRowWire`):
 - client `quotes.subscribe` (no payload) → server `quotes.snapshot {t, quotes: [row]}` with every

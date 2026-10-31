@@ -1,4 +1,5 @@
 import { cn } from "@stockwatcher/chart-web/ui";
+import type { NoticesChannel } from "@stockwatcher/shared";
 import { useState } from "react";
 import { ConnectionGate } from "../ConnectionGate.tsx";
 import { NavToggle } from "../nav/NavToggle.tsx";
@@ -14,7 +15,7 @@ import { ScorecardView } from "./ScorecardView.tsx";
  * sign-in when the server needs a token.
  */
 export function InsightsPage() {
-  return <ConnectionGate source="live">{() => <Insights />}</ConnectionGate>;
+  return <ConnectionGate source="live">{(c) => <Insights notices={c.feed.notices} />}</ConnectionGate>;
 }
 
 type Tab = "notifications" | "scorecard";
@@ -23,7 +24,7 @@ const TABS: readonly { id: Tab; label: string }[] = [
   { id: "scorecard", label: "Scorecard" },
 ];
 
-function Insights() {
+function Insights({ notices }: { notices?: NoticesChannel }) {
   const hasRail = useHasRail();
   const [tab, setTab] = useState<Tab>("notifications");
   return (
@@ -57,7 +58,7 @@ function Insights() {
         )}
       </header>
       <div role="tabpanel" id={`insights-panel-${tab}`} aria-labelledby={`insights-tab-${tab}`} className="flex min-h-0 flex-1 flex-col">
-        {tab === "notifications" ? <NotificationLog /> : <ScorecardView />}
+        {tab === "notifications" ? <NotificationLog notices={notices} /> : <ScorecardView />}
       </div>
     </div>
   );

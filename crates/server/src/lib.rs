@@ -70,6 +70,9 @@ struct Inner {
     /// Where the notification ledger's day files are (`crate::notices`, `GET /api/notices`);
     /// unset = no ledger (tests, a replay-only server).
     notices_dir: std::sync::OnceLock<std::path::PathBuf>,
+    /// The pushed notification log (`crate::notices::NoticeFeed`, `notices.v1`): set at start
+    /// with the ledger that feeds it; idle (empty, silent) when never set.
+    notice_feed: std::sync::OnceLock<notices::NoticeFeed>,
 }
 
 impl AppState {
@@ -111,6 +114,7 @@ impl AppState {
             alerts,
             shutdown: watch::Sender::new(false),
             notices_dir: std::sync::OnceLock::new(),
+            notice_feed: std::sync::OnceLock::new(),
         }))
     }
 
@@ -122,6 +126,17 @@ impl AppState {
 
     pub fn notices_dir(&self) -> Option<&std::path::Path> {
         self.0.notices_dir.get().map(|p| p.as_path())
+    }
+
+    /// The pushed notification log, fed by the ledger (`crate::alerts::ledger::Ledger::with_feed`).
+    /// Set once at start, before any connection reads it: after a read it is ignored (the idle
+    /// feed that read installed stays).
+    pub fn set_notice_feed(&self, feed: notices::NoticeFeed) {
+        let _ = self.0.notice_feed.set(feed);
+    }
+
+    pub fn notice_feed(&self) -> &notices::NoticeFeed {
+        self.0.notice_feed.get_or_init(notices::NoticeFeed::idle)
     }
 
     pub fn alerts(&self) -> &alerts::Alerts {

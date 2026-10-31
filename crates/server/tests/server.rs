@@ -495,3 +495,89 @@ async fn notices_reads_the_ledger_day() {
         StatusCode::BAD_REQUEST
     );
 }
+
+/// The pushed Insights log (`notices.v1`, crate::notices): the welcome lists it; a subscribe
+/// gets today's snapshot, then each ledger line as an append of its whole item; a past day is a
+/// snapshot only; a malformed day is refused.
+#[tokio::test]
+async fn ws_pushes_the_notification_log() {
+    use stockwatcher_server::notices::NoticeFeed;
+    use stockwatcher_server::oplog::{et_date_ms, now_ms};
+    let dir = site();
+    let notices = dir.path().join("notices");
+    std::fs::create_dir_all(&notices).unwrap();
+    std::fs::write(
+        notices.join("2026-10-26.jsonl"),
+        concat!(
+            r#"{"kind":"decision","v":1,"decided_at":5,"event_id":"past","notice":"runners.fast","symbol":"SRTM","path":"phone","decision":"sent","held":null,"devices":1,"title":"t","body":"b"}"#,
+            "\n"
+        ),
+    )
+    .unwrap();
+    let today = et_date_ms(now_ms());
+    let feed = NoticeFeed::open(Some(notices.clone()), today);
+    let state = AppState::new(None);
+    state.set_notices_dir(notices);
+    state.set_notice_feed(feed.clone());
+    let a = router(state, &dir.path().join("static"), &dir.path().join("data"));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, a).await.unwrap() });
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws"))
+        .await
+        .unwrap();
+    send(&mut ws, json!({ "type": "hello" })).await;
+    let welcome = recv(&mut ws).await;
+    assert!(
+        welcome["features"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("notices.v1")),
+        "{welcome}"
+    );
+    async fn until(ws: &mut Ws, t: &str) -> Value {
+        loop {
+            let m = recv(ws).await;
+            if m["type"] == t {
+                return m;
+            }
+        }
+    }
+
+    send(&mut ws, json!({ "type": "notices.subscribe" })).await;
+    let snap = until(&mut ws, "notices.snapshot").await;
+    assert_eq!(snap["day"], today.format("%Y-%m-%d").to_string());
+    assert_eq!(snap["items"], json!([]));
+    assert_eq!(snap["days"][0], "2026-10-26");
+    feed.push(
+        today,
+        &json!({"kind":"decision","v":1,"decided_at":7,"event_id":"now","notice":"runners.burst",
+               "symbol":"WFF","path":"desk","decision":"sent","held":null,"devices":1}),
+    );
+    let append = until(&mut ws, "notices.append").await;
+    assert_eq!(append["items"][0]["event_id"], "now");
+    assert_eq!(append["items"][0]["desk"]["decision"], "sent");
+
+    send(
+        &mut ws,
+        json!({ "type": "notices.subscribe", "day": "2026-10-26" }),
+    )
+    .await;
+    let past = until(&mut ws, "notices.snapshot").await;
+    assert_eq!(past["items"][0]["event_id"], "past");
+    // Today's lines no longer reach a connection showing a past day.
+    feed.push(
+        today,
+        &json!({"kind":"decision","v":1,"decided_at":8,"event_id":"later","path":"desk","decision":"sent"}),
+    );
+    send(
+        &mut ws,
+        json!({ "type": "notices.subscribe", "day": "../x" }),
+    )
+    .await;
+    let err = recv(&mut ws).await;
+    assert_eq!(
+        (err["type"].as_str(), err["code"].as_str()),
+        (Some("error"), Some("bad_request"))
+    );
+}

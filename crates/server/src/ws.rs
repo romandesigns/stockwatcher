@@ -75,6 +75,14 @@
 //!   missed frame: subscribe again. `symbols.unsubscribe` stops it; a seek or a lag resends the
 //!   snapshot. Clients that never subscribe (older builds) keep polling `/api/symbols`.
 //!
+//! Notification log (`notices.v1` in `welcome.features`; crate::notices, after `welcome`):
+//! - client `notices.subscribe {day?}` ("YYYY-MM-DD"; absent = today in ET) -> server
+//!   `notices.snapshot {day, days, items, truncated}` (the body of `GET /api/notices`), then for
+//!   that day `notices.append {day, items: [item]}` per ledger line: the notice's whole item so
+//!   far, upserted by `event_id`. Without `day` it follows today into the next date (a fresh
+//!   snapshot). A past day gets the snapshot only. A malformed day gets `error bad_request`.
+//!   `notices.unsubscribe` stops it; a lag resends the snapshot. Older clients keep polling.
+//!
 //! Simulated trading (docs/architecture/chart-trading-sim.md, after `welcome`):
 //! - server `paper.state` once right after `welcome`, then to every connection
 //!   on any change, with a `paper.fill` per fill. A lagged client gets a fresh
@@ -359,6 +367,14 @@ enum ClientMessage {
     SymbolsSubscribe,
     #[serde(rename = "symbols.unsubscribe")]
     SymbolsUnsubscribe,
+    /// The Insights log (`notices.v1`, crate::notices): `day` "YYYY-MM-DD", absent = today.
+    #[serde(rename = "notices.subscribe")]
+    NoticesSubscribe {
+        #[serde(default)]
+        day: Option<String>,
+    },
+    #[serde(rename = "notices.unsubscribe")]
+    NoticesUnsubscribe,
     #[serde(rename = "rocket.subscribe")]
     RocketSubscribe,
     #[serde(rename = "rocket.unsubscribe")]
@@ -592,6 +608,35 @@ async fn send_symbols_snapshot(
     let (rev, json) = market.symbols_snapshot();
     q.rev = rev;
     send_text(socket, json).await
+}
+
+/// The connection's notification-log opt-in (`notices.v1`, crate::notices).
+struct NoticesSub {
+    /// The day shown; appends for any other day are dropped.
+    day: chrono::NaiveDate,
+    /// Subscribed without a day: follows today into the next ET date.
+    follow: bool,
+    /// Appends with a `seq` <= this are already in the snapshot.
+    seq: u64,
+}
+
+/// Sends a fresh `notices.snapshot` of `day` (None = today) and returns what it covers. The
+/// snapshot may read files (a past day, the day list), so it is taken off the async workers.
+async fn send_notices_snapshot(
+    socket: &mut WebSocket,
+    feed: &crate::notices::NoticeFeed,
+    day: Option<chrono::NaiveDate>,
+    follow: bool,
+) -> Option<NoticesSub> {
+    let feed = feed.clone();
+    let snap = tokio::task::spawn_blocking(move || feed.snapshot(day))
+        .await
+        .ok()?;
+    send_text(socket, snap.frame).await.then_some(NoticesSub {
+        day: snap.day,
+        follow,
+        seq: snap.seq,
+    })
 }
 
 /// The connection's Rocket watch opt-in (the Ross opt-in's twin).
@@ -969,7 +1014,11 @@ async fn session(mut socket: WebSocket, state: AppState) {
         version: VERSION,
         commit: COMMIT,
         heartbeat_secs: HEARTBEAT.as_secs(),
-        features: &[crate::indicators::FEATURE, crate::symbols::FEATURE],
+        features: &[
+            crate::indicators::FEATURE,
+            crate::symbols::FEATURE,
+            crate::notices::FEATURE,
+        ],
     };
     // Subscribed before the paper snapshot below, so no change can fall between the two (at
     // worst the client gets the same state twice, which is harmless: it replaces, never merges).
@@ -1005,6 +1054,11 @@ async fn session(mut socket: WebSocket, state: AppState) {
     let mut favorites: Option<FavoritesSub> = None;
     let mut movers: Option<MoversSub> = None;
     let mut symbols: Option<SymbolsSub> = None;
+    // The Insights log: subscribed to the feed for the whole session (it is quiet), opted in by
+    // `notices.subscribe`.
+    let notice_feed = state.notice_feed().clone();
+    let mut notices_feed = notice_feed.subscribe();
+    let mut notices: Option<NoticesSub> = None;
     let mut rocket: Option<RocketSub> = None;
     let mut detection: Option<DetectionSub> = None;
     // Listed among the Runners notification desks while held (`runners.notify`).
@@ -1219,6 +1273,43 @@ async fn session(mut socket: WebSocket, state: AppState) {
                     // The store (and its sender) lives as long as the AppState; if it ever went,
                     // recv would return at once forever, so end the session rather than spin.
                     Err(RecvError::Closed) => false,
+                };
+                if !ok {
+                    break;
+                }
+            }
+            append = notices_feed.recv() => {
+                let ok = match (append, notices.as_mut()) {
+                    (_, None) => true,
+                    (Ok(a), Some(n)) if a.seq <= n.seq => true,
+                    (Ok(a), Some(n)) if a.day == n.day => {
+                        n.seq = a.seq;
+                        send_text(&mut socket, a.frame.clone()).await
+                    }
+                    // Today rolled over: a following subscription moves to the new day with its
+                    // snapshot (which holds this line); a fixed day ignores other days.
+                    (Ok(a), Some(n)) if n.follow && a.day > n.day => {
+                        match send_notices_snapshot(&mut socket, &notice_feed, Some(a.day), true).await {
+                            Some(sub) => {
+                                notices = Some(sub);
+                                true
+                            }
+                            None => false,
+                        }
+                    }
+                    (Ok(_), Some(_)) => true,
+                    (Err(RecvError::Lagged(_)), Some(n)) => {
+                        let (day, follow) = (n.day, n.follow);
+                        match send_notices_snapshot(&mut socket, &notice_feed, Some(day), follow).await {
+                            Some(sub) => {
+                                notices = Some(sub);
+                                true
+                            }
+                            None => false,
+                        }
+                    }
+                    // The feed lives as long as the state; if it ever went, end rather than spin.
+                    (Err(RecvError::Closed), Some(_)) => false,
                 };
                 if !ok {
                     break;
@@ -1529,6 +1620,30 @@ async fn session(mut socket: WebSocket, state: AppState) {
                     }
                     Ok(ClientMessage::SymbolsUnsubscribe) => {
                         symbols = None;
+                        None
+                    }
+                    Ok(ClientMessage::NoticesSubscribe { day }) => {
+                        // Parsed into a date before it names a file, as in GET /api/notices.
+                        let parsed = match day.as_deref().filter(|d| !d.is_empty()) {
+                            Some(d) => chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").map(Some),
+                            None => Ok(None),
+                        };
+                        match parsed {
+                            Ok(day) => {
+                                match send_notices_snapshot(&mut socket, &notice_feed, day, day.is_none()).await {
+                                    Some(sub) => notices = Some(sub),
+                                    None => break,
+                                }
+                                None
+                            }
+                            Err(_) => Some(ServerMessage::Error {
+                                code: "bad_request",
+                                message: "day must be YYYY-MM-DD",
+                            }),
+                        }
+                    }
+                    Ok(ClientMessage::NoticesUnsubscribe) => {
+                        notices = None;
                         None
                     }
                     Ok(ClientMessage::RocketSubscribe) => {
