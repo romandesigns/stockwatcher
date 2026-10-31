@@ -1,7 +1,7 @@
 import { formatEtTime12, type IconName } from "@stockwatcher/chart-core";
 import { Icon } from "@stockwatcher/chart-web";
 import { cn, Collapsible, CollapsibleContent, CollapsibleTrigger, Input, OptionSelect, ScrollArea, Tip } from "@stockwatcher/chart-web/ui";
-import { filterNotices, latencyText, NOTICE_GROUPS, noticeEvidence, noticeHeldReason, noticeMergedInto, heldText, noticeIcon, noticeKind, noticeStatus, noticeSummary, pathText, type NoticeGroup, type NoticeItemWire, type NoticePathWire, type NoticeStatus } from "@stockwatcher/shared";
+import { filterNotices, noticeDayOptions, latencyText, NOTICE_GROUPS, noticeEvidence, noticeHeldReason, noticeMergedInto, heldText, noticeIcon, noticeKind, noticeStatus, noticeSummary, pathText, type NoticeGroup, type NoticeItemWire, type NoticePathWire, type NoticeStatus } from "@stockwatcher/shared";
 import { useMemo, useState } from "react";
 import { openTickerChart } from "../nav/openTicker.ts";
 import { BREAKOUT_LABEL, noticeChartContext } from "@stockwatcher/shared";
@@ -20,6 +20,8 @@ const STATUS: readonly { id: NoticeStatus | null; label: string }[] = [
  */
 export function NotificationLog() {
   const [day, setDay] = useState<string | null>(null);
+  // The server's today, kept from the default load for when another day is open.
+  const [today, setToday] = useState<string | null>(null);
   const [groups, setGroups] = useState<ReadonlySet<NoticeGroup>>(new Set());
   const [status, setStatus] = useState<NoticeStatus | null>(null);
   const [ticker, setTicker] = useState("");
@@ -34,10 +36,12 @@ export function NotificationLog() {
       else next.add(g);
       return next;
     });
-  const dayOptions = useMemo(() => {
-    const days = log?.days.length ? log.days : log ? [log.day] : [];
-    return days.map((d, i) => ({ value: d, label: i === 0 && d === log?.day && day === null ? `Today · ${d}` : d }));
-  }, [log, day]);
+  const todayDay = day === null ? (log?.day ?? null) : today;
+  const dayOptions = useMemo(() => noticeDayOptions(log?.days ?? [], todayDay), [log, todayDay]);
+  const pickDay = (d: string) => {
+    if (day === null && log) setToday(log.day);
+    setDay(d === todayDay ? null : d);
+  };
 
   return (
     <section aria-labelledby="notification-log-title" className="@container/log flex min-h-0 flex-1 flex-col gap-3">
@@ -45,7 +49,7 @@ export function NotificationLog() {
         <h2 id="notification-log-title" className="panel-title">
           Notification log
         </h2>
-        {log && dayOptions.length > 0 && <OptionSelect aria-label="Day" options={dayOptions} value={day ?? log.day} onValueChange={(d) => setDay(d === log.days[0] ? null : d)} size="sm" className="w-auto" />}
+        {log && dayOptions.length > 0 && <OptionSelect aria-label="Day" options={dayOptions} value={day ?? log.day} onValueChange={pickDay} size="sm" className="w-auto" />}
         <p className="m-0 text-xs text-muted-foreground" aria-live="polite">
           {log ? <SummaryLine sent={summary.sent} held={summary.held} reasons={summary.reasons} /> : null}
         </p>

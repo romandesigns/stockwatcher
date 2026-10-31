@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { filterNotices, heldText, noticeEvidence, noticeIcon, noticeMergedInto, latencyText, noticeKind, noticeStatus, noticeSummary, parseNoticeLog, pathText } from "./noticeLog.ts";
+import { filterNotices, noticeDayOptions, heldText, noticeEvidence, noticeIcon, noticeMergedInto, latencyText, noticeKind, noticeStatus, noticeSummary, parseNoticeLog, pathText } from "./noticeLog.ts";
 import { breakoutTestFixture } from "./breakoutTestFixture.ts";
 import { ALERT_SWITCH_SECTIONS, RUNNERS_NOTICE_KINDS, runnersNotifyKey } from "./runnersNotify.ts";
 
@@ -103,5 +103,18 @@ describe("notice log", () => {
     // Legacy rows: no plain line, the gap is a detail; other kinds have neither.
     expect(noticeEvidence({ ...item, breakout: undefined, entry_context: undefined }, String)).toEqual({ line: null, details: ["Event time and comparison unavailable"] });
     expect(noticeEvidence({ event_id: "p", notice: "runners.pullback" }, String)).toEqual({ line: null, details: [] });
+  });
+});
+
+describe("notice day menu", () => {
+  test("today comes first even with no file, and the newest file stays its own day", () => {
+    // Saturday 10-31 with Friday's file the newest (owner, 2026-10-31: INO on the 30th).
+    expect(noticeDayOptions(["2026-10-30", "2026-10-29"], "2026-10-31")).toEqual([
+      { value: "2026-10-31", label: "Today · 2026-10-31" },
+      { value: "2026-10-30", label: "2026-10-30" },
+      { value: "2026-10-29", label: "2026-10-29" },
+    ]);
+    expect(noticeDayOptions(["2026-10-30", "2026-10-29"], "2026-10-30").map((o) => o.label)).toEqual(["Today · 2026-10-30", "2026-10-29"]);
+    expect(noticeDayOptions(["2026-10-30"], null).map((o) => o.label)).toEqual(["2026-10-30"]);
   });
 });

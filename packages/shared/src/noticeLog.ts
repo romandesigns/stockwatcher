@@ -62,6 +62,18 @@ export interface NoticeLogWire {
   truncated: boolean;
 }
 
+/**
+ * The day menu: `today` first (the server's ET date, which has no ledger file yet on a weekend or
+ * before the first notice), then every day with a file, newest first. Picking `today` means "no
+ * day" (`null`, so the log follows the date when it turns); any other entry is that day. The
+ * newest file is NOT today: treating it so on Saturday turned a pick of Friday back into Saturday's
+ * empty log, and Friday could not be opened at all (owner, 2026-10-31, INO on the 30th).
+ */
+export function noticeDayOptions(days: readonly string[], today: string | null): { value: string; label: string }[] {
+  const all = today ? [today, ...days.filter((d) => d !== today)] : [...days];
+  return all.map((d) => ({ value: d, label: d === today ? `Today · ${d}` : d }));
+}
+
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
 const num = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);

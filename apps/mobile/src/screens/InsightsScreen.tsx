@@ -1,5 +1,5 @@
 import { Icon, Segmented, Sheet, UI } from "@stockwatcher/chart-native";
-import { filterNotices, NOTICE_GROUPS, noticeSummary, type NoticeGroup, type NoticeStatus } from "@stockwatcher/shared";
+import { filterNotices, noticeDayOptions, NOTICE_GROUPS, noticeSummary, type NoticeGroup, type NoticeStatus } from "@stockwatcher/shared";
 import { useMemo, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -59,6 +59,8 @@ const STATUS: readonly { value: "all" | NoticeStatus; label: string }[] = [
 function NotificationLog() {
   const reducedMotion = useReducedMotion();
   const [day, setDay] = useState<string | null>(null);
+  // The server's today, kept from the default load for when another day is open.
+  const [today, setToday] = useState<string | null>(null);
   const [dayOpen, setDayOpen] = useState(false);
   const [groups, setGroups] = useState<ReadonlySet<NoticeGroup>>(new Set());
   const [status, setStatus] = useState<"all" | NoticeStatus>("all");
@@ -170,18 +172,20 @@ function NotificationLog() {
 
       <Sheet open={dayOpen} onClose={() => setDayOpen(false)} title="Day" reducedMotion={reducedMotion}>
         <View style={{ gap: 6 }}>
-          {(log?.days.length ? log.days : log ? [log.day] : []).map((d, i) => (
+          {noticeDayOptions(log?.days ?? [], day === null ? (log?.day ?? null) : today).map(({ value: d, label }) => (
             <Pressable
               key={d}
               accessibilityRole="button"
               accessibilityState={{ selected: (day ?? log?.day) === d }}
               onPress={() => {
-                setDay(i === 0 ? null : d);
+                const todayDay = day === null ? (log?.day ?? null) : today;
+                if (day === null && log) setToday(log.day);
+                setDay(d === todayDay ? null : d);
                 setDayOpen(false);
               }}
               style={({ pressed }) => [styles.action, ((day ?? log?.day) === d || pressed) && { backgroundColor: UI.raised }]}
             >
-              <Text style={styles.actionText}>{i === 0 ? `Today · ${d}` : d}</Text>
+              <Text style={styles.actionText}>{label}</Text>
             </Pressable>
           ))}
         </View>
