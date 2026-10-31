@@ -365,6 +365,17 @@ export class ChartStore {
     return true;
   }
 
+  /**
+   * Forgets (symbol, timeframe, rth)'s values until its next `chart.indicators`. For a chart that
+   * just asked for that rth again: the set held for it stopped updating when the chart last left
+   * it (the server sends a key only while a slot asks for it), so drawn meanwhile it would show
+   * lines frozen at that moment and blank after, for as long as the answer takes (seconds for a
+   * 4000-bar snapshot on cellular). Dropped, the chart draws nothing until then.
+   */
+  dropIndicators(symbol: string, timeframe: Timeframe, rth: boolean): void {
+    if (this.indicators.delete(indicatorsKey(symbol, timeframe, rth))) this.emit();
+  }
+
   getClock(): Clock | null {
     return this.clock;
   }

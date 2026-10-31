@@ -80,9 +80,12 @@ export function useChartFeed(feed: ChartFeed, symbol: string, timeframe: Timefra
 
   useEffect(() => {
     if (!demand || (sent.current && sameIndicatorDemand(sent.current, demand))) return;
+    // Extended hours flipped: the store's values for the other rth are the ones frozen when this
+    // chart last showed them (ChartStore `dropIndicators`); draw nothing until the answer instead.
+    if (sent.current && sent.current.rth !== demand.rth) store.dropIndicators(symbol, timeframe, demand.rth);
     sent.current = demand;
     feed.indicators?.set(slot, demand);
-  }, [feed, slot, demand]);
+  }, [feed, store, symbol, timeframe, slot, demand]);
 
   const indicatorsOn = useSyncExternalStore(
     useCallback((cb: () => void) => feed.indicators?.subscribe(cb) ?? (() => {}), [feed]),

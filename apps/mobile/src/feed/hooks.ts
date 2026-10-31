@@ -62,9 +62,12 @@ export function useChartFeed(feed: MobileFeed, symbol: string, timeframe: Timefr
   }, [feed, store, symbol, timeframe, profileBin, slot]);
   useEffect(() => {
     if (!demand || (sent.current && sameIndicatorDemand(sent.current, demand))) return;
+    // Extended hours flipped: the other rth's values are frozen from when this chart last showed
+    // them (ChartStore `dropIndicators`); no lines until the answer, which on cellular takes a while.
+    if (sent.current && sent.current.rth !== demand.rth) store.dropIndicators(symbol, timeframe, demand.rth);
     sent.current = demand;
     feed.indicators.set(slot, demand);
-  }, [feed, slot, demand]);
+  }, [feed, store, symbol, timeframe, slot, demand]);
   const indicatorsOn = useSyncExternalStore(
     useCallback((cb: () => void) => feed.indicators.subscribe(cb), [feed]),
     useCallback(() => feed.indicators.available(), [feed]),

@@ -167,3 +167,20 @@ test("the feed side sends nothing until the server offers the feature, then carr
   // Hidden indicators: an empty list (the server computes nothing nobody sees).
   expect(indicatorDemand(ALL, { extendedHours: true, visibility: { indicators: false } })).toEqual({ indicators: [], rth: false });
 });
+
+test("dropIndicators forgets one rth's frozen values until its next snapshot", () => {
+  const store = new ChartStore();
+  const slots = buildSlots(candles(20), []);
+  store.applyIndicators(serverSnapshot(slots, [INDICATOR_PRESETS[1]!], false));
+  store.applyIndicators(serverSnapshot(slots, [INDICATOR_PRESETS[1]!], true));
+  let emits = 0;
+  store.subscribe(() => emits++);
+  store.dropIndicators("SMPL", "1m", false);
+  expect(store.getIndicators("SMPL", "1m", false)).toBeUndefined();
+  expect(store.getIndicators("SMPL", "1m", true)).toBeDefined();
+  // Nothing held: no change, no render.
+  store.dropIndicators("SMPL", "1m", false);
+  expect(emits).toBe(1);
+  // Increments for it wait for the snapshot again.
+  expect(store.applyIndicatorIncrement({ type: "chart.indicator", symbol: "SMPL", timeframe: "1m", rth: false, points: [] })).toBe(false);
+});

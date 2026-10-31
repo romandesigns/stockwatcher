@@ -562,7 +562,15 @@ export function CandleChart({
       console.info("[indicatorParity]", sym, tf, report);
     }, Math.max(0, 500 - (performance.now() - p.at)));
   }, [indicatorParity, serverIndicators, indicatorResults, slots, indicatorSpecs, symbol, timeframe]);
-  useEffect(() => () => window.clearTimeout(parity.current.timer), []);
+  // Zeroed too: StrictMode's dev remount runs this cleanup and keeps the ref, and a stale id
+  // would make the effect above think a check is still pending and never schedule another.
+  useEffect(
+    () => () => {
+      window.clearTimeout(parity.current.timer);
+      parity.current.timer = 0;
+    },
+    [],
+  );
 
   const last = useMemo(() => lastCandle(slots)?.c ?? null, [slots]);
   // The server's official previous close wins over one read off the candles (levels.ts).
