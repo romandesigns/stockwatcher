@@ -359,12 +359,13 @@ impl NoticeFeed {
         }
         let (items, _) = group(&l.events[id].join("\n"));
         l.seq += 1;
-        let frame = json!({
-            "type": "notices.append",
-            "day": day.format("%Y-%m-%d").to_string(),
-            "items": items,
-        })
-        .to_string();
+        let frame = typed_frame(
+            "notices.append",
+            json!({
+                "day": day.format("%Y-%m-%d").to_string(),
+                "items": items,
+            }),
+        );
         // Under the lock, so appends reach the channel in `seq` order.
         let _ = self.0.tx.send(Arc::new(Append {
             day,
@@ -387,16 +388,30 @@ impl NoticeFeed {
             (None, Some(dir)) => read_day(dir, day),
             (None, None) => (Vec::new(), false),
         };
-        let frame = json!({
-            "type": "notices.snapshot",
-            "day": day.format("%Y-%m-%d").to_string(),
-            "days": days.iter().map(|d| d.format("%Y-%m-%d").to_string()).collect::<Vec<_>>(),
-            "items": items,
-            "truncated": truncated,
-        })
-        .to_string();
+        let frame = typed_frame(
+            "notices.snapshot",
+            json!({
+                "day": day.format("%Y-%m-%d").to_string(),
+                "days": days.iter().map(|d| d.format("%Y-%m-%d").to_string()).collect::<Vec<_>>(),
+                "items": items,
+                "truncated": truncated,
+            }),
+        );
         Snapshot { day, seq, frame }
     }
+}
+
+/// `rest` (an object) as a frame with `type` first. The web and phone feeds route a frame by its
+/// leading `{"type":"notices.` without parsing it (apps/*/src/feed/serverFeed.ts); serde_json's
+/// map sorts keys, so `json!` would put `type` after `day`, and a snapshot of a whole day (MBs on
+/// a busy one) would be parsed twice more as a chart and a paper frame before reaching its handler.
+fn typed_frame(kind: &str, rest: Value) -> String {
+    let rest = rest.to_string();
+    debug_assert!(
+        rest.len() > 2 && rest.starts_with('{'),
+        "a non-empty object"
+    );
+    format!("{{\"type\":{},{}", json!(kind), &rest[1..])
 }
 
 fn event_id(line: &str) -> Option<String> {
@@ -513,6 +528,8 @@ mod tests {
     fn take(rx: &mut broadcast::Receiver<Arc<Append>>) -> Vec<Value> {
         let mut out = Vec::new();
         while let Ok(a) = rx.try_recv() {
+            // `type` first: the clients route on the frame's prefix (`typed_frame`).
+            assert!(a.frame.starts_with(r#"{"type":"notices.append","#));
             out.push(serde_json::from_str(&a.frame).unwrap());
         }
         out
@@ -531,6 +548,7 @@ mod tests {
         let feed = NoticeFeed::open(Some(dir.path().to_path_buf()), d("2026-10-30"));
         let mut rx = feed.subscribe();
         let snap = feed.snapshot(Some(d("2026-10-30")));
+        assert!(snap.frame.starts_with(r#"{"type":"notices.snapshot","#));
         let v: Value = serde_json::from_str(&snap.frame).unwrap();
         assert_eq!(v["type"], "notices.snapshot");
         assert_eq!(v["items"][0]["event_id"], "old", "primed from today's file");

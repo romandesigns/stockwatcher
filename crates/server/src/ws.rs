@@ -1299,8 +1299,12 @@ async fn session(mut socket: WebSocket, state: AppState) {
                     }
                     (Ok(_), Some(_)) => true,
                     (Err(RecvError::Lagged(_)), Some(n)) => {
-                        let (day, follow) = (n.day, n.follow);
-                        match send_notices_snapshot(&mut socket, &notice_feed, Some(day), follow).await {
+                        // A following subscription resyncs to today, not to the day it held: the
+                        // lines it skipped may have been the next day's first, which is what would
+                        // have moved it there, and no later line of the old day would ever do it.
+                        let follow = n.follow;
+                        let day = if follow { None } else { Some(n.day) };
+                        match send_notices_snapshot(&mut socket, &notice_feed, day, follow).await {
                             Some(sub) => {
                                 notices = Some(sub);
                                 true
