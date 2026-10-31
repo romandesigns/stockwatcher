@@ -1530,6 +1530,89 @@ const DAYS: &[(&str, &[&str])] = &[
     ("2026-10-15", &["SMPL", "FXLO"]),
 ];
 
+/// Folds `symbols.snapshot` / `symbols.update` frames as a client does, checking `rev` continuity.
+fn fold_symbols(list: &mut Vec<String>, rev: &mut u64, m: &Value) {
+    let strs = |v: &Value| -> Vec<String> {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s.as_str().unwrap().to_string())
+            .collect()
+    };
+    if m["type"] == "symbols.snapshot" {
+        *list = strs(&m["symbols"]);
+    } else {
+        assert_eq!(
+            m["rev"].as_u64().unwrap(),
+            *rev + 1,
+            "an update applies to rev - 1"
+        );
+        list.retain(|s| !strs(&m["removed"]).contains(s));
+        list.extend(strs(&m["added"]));
+        list.sort();
+    }
+    *rev = m["rev"].as_u64().unwrap();
+}
+
+/// The candidate list over the socket (`symbols.v1`, crate::symbols): a snapshot with the same
+/// fields as `/api/symbols`, and after a day switch a fresh snapshot (then any updates) until the
+/// new day's list is in. Replaces the clients' 10 s `/api/symbols` polling. Updates for stocks
+/// crossing the band: the unit test in market.rs (the fixture's stocks never leave it).
+#[tokio::test]
+async fn the_candidate_list_is_pushed_and_follows_a_day_switch() {
+    let s = stack_with_days(&[], DAYS, &[]).await;
+    let mut ws = connect(&s.url).await;
+    send(&mut ws, json!({"type": "symbols.subscribe"})).await;
+    let snap = next(&mut ws, is("symbols.snapshot")).await;
+    for k in ["mode", "status", "day", "fixture", "priceBand", "screened"] {
+        assert!(snap.get(k).is_some(), "snapshot has {k}");
+    }
+    let (mut list, mut rev) = (Vec::new(), 0);
+    fold_symbols(&mut list, &mut rev, &snap);
+    while list != ["FXLO", "SMPL"] {
+        let m = next(&mut ws, is("symbols.update")).await;
+        fold_symbols(&mut list, &mut rev, &m);
+    }
+    let (_, http) = get(&s.app, "/api/symbols").await;
+    assert_eq!(http["symbols"], json!(list));
+
+    send(
+        &mut ws,
+        json!({"type":"replay.control","action":"day","value":"2026-10-14"}),
+    )
+    .await;
+    // The rebuild's resync sends a fresh snapshot, then updates follow until the new day's list
+    // and meta are in (the snapshot may be taken before all of its candidates have traded).
+    let mut kinds = Vec::new();
+    loop {
+        let m = next(&mut ws, |m| {
+            m["type"] == "symbols.update" || m["type"] == "symbols.snapshot"
+        })
+        .await;
+        kinds.push(m["type"].as_str().unwrap().to_string());
+        fold_symbols(&mut list, &mut rev, &m);
+        // FXHI trades above $25 (only_price_band_candidates_are_let_through): never a candidate.
+        if list == ["SMPL"] && m["day"] == "2026-10-14" {
+            break;
+        }
+    }
+    assert!(kinds.contains(&"symbols.snapshot".to_string()), "{kinds:?}");
+
+    // Unsubscribed: nothing more, even across another switch.
+    send(&mut ws, json!({"type": "symbols.unsubscribe"})).await;
+    // Frames sent before the server handled it may still be in flight (a day switch resyncs
+    // more than once); everything after the pong to this ping postdates it.
+    send(&mut ws, json!({"type":"ping","ts":9})).await;
+    next(&mut ws, |m| m["type"] == "pong" && m["ts"] == 9).await;
+    send(
+        &mut ws,
+        json!({"type":"replay.control","action":"day","value":"2026-10-13"}),
+    )
+    .await;
+    let t = types_for(&mut ws, Duration::from_secs(3)).await;
+    assert!(!t.iter().any(|t| t.starts_with("symbols.")), "{t:?}");
+}
+
 #[tokio::test]
 async fn replay_state_lists_the_archive_days() {
     let s = stack_with_days(&[("REPLAY_AUTOPLAY", "0")], DAYS, &[]).await;

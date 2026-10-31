@@ -49,7 +49,8 @@ export interface WelcomeMessage {
   heartbeatSecs: number;
   /**
    * What the server does beyond the base protocol, for the client to opt into. Absent from
-   * servers older than the field: treat that as empty. Known: {@link INDICATORS_FEATURE}.
+   * servers older than the field: treat that as empty. Known: {@link INDICATORS_FEATURE},
+   * `SYMBOLS_FEATURE` (symbols.ts).
    */
   features?: string[];
 }
@@ -721,8 +722,8 @@ export interface PushUnregisterMessage {
   token: string;
 }
 
-export type ClientMessage = HelloMessage | PingMessage | PongMessage | QuotesSubscribeMessage | QuotesUnsubscribeMessage | PressureSubscribeMessage | PressureUnsubscribeMessage | RossSubscribeMessage | RossUnsubscribeMessage | import("./favorites.ts").FavoritesClientMessage | MoversClientMessage | { type: "detection.subscribe" | "detection.unsubscribe" } | import("./rocket.ts").RocketClientMessage | SettingsClientMessage | PushRegisterMessage | PushUnregisterMessage | import("./runnersNotify.ts").RunnersNotifyMessage;
-export type ServerMessage = WelcomeMessage | PingMessage | PongMessage | ErrorMessage | QuotesMessage | PressureMessage | RossMessage | import("./favorites.ts").FavoritesMessage | MoversMessage | import("./detection.ts").DetectionMessage | import("./rocket.ts").RocketMessage | SettingsServerMessage | AlertsServerMessage | import("./runnersNotify.ts").RunnersNoticeMessage;
+export type ClientMessage = HelloMessage | PingMessage | PongMessage | QuotesSubscribeMessage | QuotesUnsubscribeMessage | PressureSubscribeMessage | PressureUnsubscribeMessage | RossSubscribeMessage | RossUnsubscribeMessage | import("./favorites.ts").FavoritesClientMessage | MoversClientMessage | import("./symbols.ts").SymbolsClientMessage | { type: "detection.subscribe" | "detection.unsubscribe" } | import("./rocket.ts").RocketClientMessage | SettingsClientMessage | PushRegisterMessage | PushUnregisterMessage | import("./runnersNotify.ts").RunnersNotifyMessage;
+export type ServerMessage = WelcomeMessage | PingMessage | PongMessage | ErrorMessage | QuotesMessage | PressureMessage | RossMessage | import("./favorites.ts").FavoritesMessage | MoversMessage | import("./symbols.ts").SymbolsMessage | import("./detection.ts").DetectionMessage | import("./rocket.ts").RocketMessage | SettingsServerMessage | AlertsServerMessage | import("./runnersNotify.ts").RunnersNoticeMessage;
 
 const ALERT_TYPES = new Set(["alerts.history", "alert.fired", "alert.held", "alert.updated", "alerts.status"]);
 
@@ -731,7 +732,7 @@ export function isAlertsMessage(m: ServerMessage): m is AlertsServerMessage {
   return ALERT_TYPES.has(m.type);
 }
 
-const SERVER_TYPES = new Set(["welcome", "ping", "pong", "error", "quotes.snapshot", "quotes.update", "pressure.snapshot", "pressure.update", "ross.snapshot", "ross.update", "favorites.snapshot", "favorites.update", "movers.snapshot", "movers.update", "detection.snapshot", "detection.update", "rocket.snapshot", "rocket.update", "settings.snapshot", "settings.changed", "settings.rejected", ...ALERT_TYPES]);
+const SERVER_TYPES = new Set(["welcome", "ping", "pong", "error", "quotes.snapshot", "quotes.update", "pressure.snapshot", "pressure.update", "ross.snapshot", "ross.update", "favorites.snapshot", "favorites.update", "movers.snapshot", "movers.update", "symbols.snapshot", "symbols.update", "detection.snapshot", "detection.update", "rocket.snapshot", "rocket.update", "settings.snapshot", "settings.changed", "settings.rejected", ...ALERT_TYPES]);
 
 /** Parses one server frame; returns null for anything malformed or unknown. */
 export function parseServerMessage(raw: unknown): ServerMessage | null {

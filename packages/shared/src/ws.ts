@@ -4,6 +4,7 @@ import type { SettingsSync } from "./settingsSync.ts";
 import type { DetectionMessage } from "./detection.ts";
 import type { RocketMessage } from "./rocket.ts";
 import type { RunnersNoticeMessage, RunnersNotifyMessage } from "./runnersNotify.ts";
+import { SYMBOLS_FEATURE, type SymbolsMessage } from "./symbols.ts";
 
 export type ConnectionStatus = "connecting" | "open" | "reconnecting" | "unauthorized" | "closed";
 
@@ -39,6 +40,8 @@ export interface WsClientOptions {
   onFavorites?: (message: import("./favorites.ts").FavoritesMessage) => void;
   /** `movers.snapshot` / `movers.update` frames, while subscribed (see `subscribeMovers`). */
   onMovers?: (message: import("./protocol.ts").MoversMessage) => void;
+  /** `symbols.snapshot` / `symbols.update` frames, while subscribed (see `subscribeSymbols`). */
+  onSymbols?: (message: SymbolsMessage) => void;
   onDetection?: (message: DetectionMessage) => void;
   onDetectionError?: (reason: string) => void;
   /** The price alerts' frames (`alerts.history`, `alert.fired`, …): every connection gets them. */
@@ -86,6 +89,13 @@ export interface WsClient {
   /** Top Gainers and Hot stocks Bull / Bear (`movers.*`), remembered across reconnects like the Favorites opt-in. */
   subscribeMovers(): void;
   unsubscribeMovers(): void;
+  /**
+   * The price-band candidate list (`symbols.*`), remembered across reconnects like the movers
+   * opt-in, but sent only to a server whose welcome lists `symbols.v1`: an older one would
+   * answer the unknown frame with an error. Without it nothing is sent; the caller polls.
+   */
+  subscribeSymbols(): void;
+  unsubscribeSymbols(): void;
   subscribeDetection(): void;
   unsubscribeDetection(): void;
   /** Sends `runnersNotify()` now (or `enabled: false` when it is null): the switches changed. */
@@ -132,6 +142,9 @@ export function createWsClient(opts: WsClientOptions): WsClient {
   let rocketWanted = false;
   let favoritesWanted = false;
   let moversWanted = false;
+  let symbolsWanted = false;
+  // The current connection's welcome.features (empty before a welcome and for older servers).
+  let features: readonly string[] = [];
   let detectionWanted = false;
 
   const setStatus = (s: ConnectionStatus) => opts.onStatus?.(s);
@@ -177,6 +190,7 @@ export function createWsClient(opts: WsClientOptions): WsClient {
       if (msg.type === "welcome") {
         attempt = 0;
         heartbeatMs = msg.heartbeatSecs * 1000;
+        features = Array.isArray(msg.features) ? msg.features : [];
         // Before "open": the chart feeds resubscribe on "open" and read the welcome's `features`
         // (indicators.v1) to decide what their chart.subscribe carries.
         opts.onWelcome?.(msg);
@@ -188,6 +202,7 @@ export function createWsClient(opts: WsClientOptions): WsClient {
         if (rocketWanted) send({ type: "rocket.subscribe" });
         if (favoritesWanted) send({ type: "favorites.subscribe" });
         if (moversWanted) send({ type: "movers.subscribe" });
+        if (symbolsWanted && features.includes(SYMBOLS_FEATURE)) send({ type: "symbols.subscribe" });
         if (detectionWanted) send({ type: "detection.subscribe" });
         const notify = opts.runnersNotify?.();
         if (notify) send(notify);
@@ -209,6 +224,8 @@ export function createWsClient(opts: WsClientOptions): WsClient {
         opts.onFavorites?.(msg);
       } else if ((msg.type === "movers.snapshot" || msg.type === "movers.update") && moversWanted) {
         opts.onMovers?.(msg);
+      } else if ((msg.type === "symbols.snapshot" || msg.type === "symbols.update") && symbolsWanted) {
+        opts.onSymbols?.(msg);
       } else if ((msg.type === "detection.snapshot" || msg.type === "detection.update") && detectionWanted) {
         opts.onDetection?.(msg);
       } else if (msg.type === "settings.snapshot" || msg.type === "settings.changed" || msg.type === "settings.rejected") {
@@ -225,6 +242,7 @@ export function createWsClient(opts: WsClientOptions): WsClient {
       if (livenessTimer) clearTimeout(livenessTimer);
       if (socket === ws) {
         socket = null;
+        features = [];
         opts.settings?.detach();
       }
       if (stopped) return setStatus("closed");
@@ -285,6 +303,15 @@ export function createWsClient(opts: WsClientOptions): WsClient {
     unsubscribeMovers() {
       moversWanted = false;
       send({ type: "movers.unsubscribe" });
+    },
+    subscribeSymbols() {
+      symbolsWanted = true;
+      // Not open yet: the welcome handler sends it, if the server has the feature.
+      if (features.includes(SYMBOLS_FEATURE)) send({ type: "symbols.subscribe" });
+    },
+    unsubscribeSymbols() {
+      symbolsWanted = false;
+      if (features.includes(SYMBOLS_FEATURE)) send({ type: "symbols.unsubscribe" });
     },
     subscribeDetection() {
       detectionWanted = true;

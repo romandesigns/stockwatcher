@@ -570,11 +570,23 @@ stamped on it. The increments are serialized to JSON once and broadcast on a bou
   live mode). Per-day facts come from the manifests, cached per manifest length and mtime, so the
   route stays cheap with real days of thousands of symbols. The clients' day menu fetches this
   when it opens; the list is not pushed on the socket because it changes a few times a month;
-- `GET /api/symbols` returns mode, status, source, day, `fixture` and symbols;
+- `GET /api/symbols` returns mode, status, source, day, `fixture` and symbols (the clients'
+  first probe; the list itself is then pushed, below);
 - `GET /api/quotes` returns the quote board once (the same rows as `quotes.snapshot`, below);
 - `GET /api/settings` returns the synced-settings snapshot, for debugging (`settings-sync.md`).
 
 `/api/health` is unchanged and stays healthy when no provider runs.
+
+**Candidate list** (2026-10-31, `symbols.v1` in `welcome.features`; `crates/server/src/symbols.rs`,
+client `packages/shared/src/symbols.ts`):
+- client `symbols.subscribe` → server `symbols.snapshot {rev, symbols, ...}` with every field of
+  `/api/symbols`, then `symbols.update {rev, added, removed, ...}` (the other fields whole) when
+  the set or those fields changed, checked once per wall-clock second. An update applies to the
+  list at `rev − 1`; a gap means a missed frame, and the client subscribes again.
+- It replaced the web and phone 10 s `/api/symbols` polling: a stock entering the band reaches the
+  picker within about a second. Clients send it only to a server that lists the feature, and keep
+  polling otherwise; older phone builds never send it and keep polling.
+- After a seek, a day switch or a lag, a subscribed client gets a fresh snapshot.
 
 **Quote board** (the ticker search's live rows; `crates/server/src/quotes.rs`, wire in
 `packages/shared/src/protocol.ts` `QuoteRowWire`):

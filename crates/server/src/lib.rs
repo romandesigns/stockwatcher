@@ -25,6 +25,7 @@ pub mod replay_alerts;
 pub mod rocket;
 pub mod settings;
 pub mod shadow;
+pub mod symbols;
 pub mod trading;
 pub mod ws;
 pub mod zones;

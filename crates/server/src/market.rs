@@ -474,6 +474,9 @@ pub enum OutKind {
     /// A pre-serialized `movers.update` (`crate::movers`) for the connections that sent
     /// `movers.subscribe`. `Outbound::seq` is the movers generation, not the engine seq.
     Movers(String),
+    /// A pre-serialized `symbols.update` (`crate::symbols`) for the connections that sent
+    /// `symbols.subscribe`. `Outbound::seq` is the list's `rev`, not the engine seq.
+    Symbols(String),
     /// Full bounded replacement; its cursor is independent of the chart engine sequence.
     Detection {
         epoch: String,
@@ -631,6 +634,11 @@ pub(crate) struct Inner {
     movers: Mutex<crate::movers::Board>,
     /// Connections that sent `movers.subscribe`.
     movers_subs: AtomicUsize,
+    /// The price-band candidate list the last `symbols.*` frame published (`crate::symbols`).
+    /// Locked before core (inside `refresh_symbols`), never after it.
+    symbols: Mutex<crate::symbols::Published>,
+    /// Connections that sent `symbols.subscribe`.
+    symbols_subs: AtomicUsize,
     /// `ROCKET_WATCH` and its policy: every `Core` this market makes gets a board built from them.
     rocket_on: AtomicBool,
     rocket_policy: Mutex<crate::rocket::Policy>,
@@ -888,6 +896,8 @@ impl Market {
             favorites_subs: AtomicUsize::new(0),
             movers: Mutex::new(crate::movers::Board::default()),
             movers_subs: AtomicUsize::new(0),
+            symbols: Mutex::new(crate::symbols::Published::default()),
+            symbols_subs: AtomicUsize::new(0),
             rocket_on: AtomicBool::new(true),
             rocket_policy: Mutex::new(crate::rocket::Policy::default()),
             rocket_subs: AtomicUsize::new(0),
@@ -1962,6 +1972,8 @@ impl Market {
                 market.publish_context();
                 market.publish_favorites();
                 market.publish_movers();
+                // The candidate list, pushed when it changes (crate::symbols).
+                market.publish_symbols(n);
                 n += 1;
                 // Live: the quote rows go into the archive's recording now and then, the
                 // startup summary of the next restart (`crate::history`).
@@ -4328,8 +4340,30 @@ impl Market {
 
     /// `GET /api/symbols`. Live: `session` names the trading day the board and charts show
     /// (`{day, current, provisional}`; `current: false` is the last session, shown while the
-    /// market is closed), or null before any.
+    /// market is closed), or null before any. The same fields as a `symbols.snapshot`
+    /// (crate::symbols), which is what a client subscribed over the socket gets instead.
     pub fn symbols_json(&self) -> Value {
+        let (_, symbols, total) = self.symbol_parts();
+        let mut v = self.symbols_meta(total, symbols.len(), crate::history::session_json(self));
+        v["symbols"] = json!(symbols);
+        v
+    }
+
+    /// Whether a rebuild is under way, the candidates (sorted) and how many symbols are known,
+    /// from one pass under the core lock.
+    fn symbol_parts(&self) -> (bool, Vec<String>, usize) {
+        let core = self.0.core.lock().expect("core lock");
+        let all = self.all_symbols(&core);
+        let total = all.len();
+        let candidates = all
+            .into_iter()
+            .filter(|s| Self::candidate_in(&core, self.0.band, s))
+            .collect();
+        (core.rebuilding, candidates, total)
+    }
+
+    /// `/api/symbols` without `symbols` (crate::symbols, the "meta").
+    fn symbols_meta(&self, total: usize, candidates: usize, session: Value) -> Value {
         let info = self.info();
         let info = info.as_deref();
         json!({
@@ -4338,22 +4372,62 @@ impl Market {
             "source": info.map(|i| i.label.clone()),
             "day": info.and_then(|i| i.day).map(|d| d.to_string()),
             "fixture": info.is_some_and(|i| i.fixture),
-            "symbols": self.symbols(),
             "priceBand": {"min": self.0.band.min.to_string(), "max": self.0.band.max.to_string()},
-            "screened": self.screened(),
-            "session": crate::history::session_json(self),
+            "screened": {"total": total, "candidates": candidates},
+            "session": session,
         })
     }
 
-    /// How many known symbols were screened and how many are candidates.
-    fn screened(&self) -> Value {
-        let core = self.0.core.lock().expect("core lock");
-        let all = self.all_symbols(&core);
-        let candidates = all
-            .iter()
-            .filter(|s| Self::candidate_in(&core, self.0.band, s))
-            .count();
-        json!({"total": all.len(), "candidates": candidates})
+    /// Brings the published candidate list up to date (crate::symbols) and broadcasts the
+    /// `symbols.update` when it changed, under the list's lock so updates reach the channel in
+    /// `rev` order. Skipped during a rebuild (a seek's or day switch's empty-then-growing list
+    /// would go out as thousands of adds and removes; the rebuild's resync sends the snapshot
+    /// instead), except before anything was ever published: a subscribe during the startup
+    /// catch-up must still get the meta (mode, status, day). `session` is read again only when
+    /// `read_session` (it reads the archive); otherwise the last one.
+    /// Lock order: the list's lock, then core (inside `session_json`); never core first.
+    fn refresh_symbols(&self, read_session: bool) {
+        let (rebuilding, symbols, total) = self.symbol_parts();
+        let mut p = self.0.symbols.lock().expect("symbols lock");
+        if rebuilding && !p.meta.is_null() {
+            return;
+        }
+        let session = if read_session || p.meta.is_null() {
+            crate::history::session_json(self)
+        } else {
+            p.meta["session"].clone()
+        };
+        let meta = self.symbols_meta(total, symbols.len(), session);
+        if let Some(frame) = crate::symbols::advance(&mut p, symbols, meta) {
+            let _ = self.0.tx.send(Arc::new(Outbound {
+                seq: p.rev,
+                kind: OutKind::Symbols(frame),
+            }));
+        }
+    }
+
+    /// The 1 Hz tick's part (`n` = the tick count): nothing while nobody subscribes, so an idle
+    /// server never walks the symbol list. A first subscribe catches the baseline up itself.
+    pub fn publish_symbols(&self, n: u64) {
+        if self.0.symbols_subs.load(Ordering::Relaxed) == 0 {
+            return;
+        }
+        self.refresh_symbols(n.is_multiple_of(crate::symbols::SESSION_EVERY_TICKS));
+    }
+
+    /// The list now as a `symbols.snapshot`, with the `rev` it is at: a connection forwards only
+    /// updates with a larger one. Refreshes first, so the snapshot is current and is the very
+    /// baseline later updates are diffed against.
+    pub fn symbols_snapshot(&self) -> (u64, String) {
+        self.refresh_symbols(true);
+        let p = self.0.symbols.lock().expect("symbols lock");
+        (p.rev, crate::symbols::snapshot_frame(&p))
+    }
+
+    /// Registers a `symbols.subscribe`; the count drops with the guard.
+    pub fn symbols_subscribe(&self) -> SymbolsGuard {
+        self.0.symbols_subs.fetch_add(1, Ordering::Relaxed);
+        SymbolsGuard(self.0.clone())
     }
 }
 
@@ -4376,6 +4450,15 @@ impl Drop for IndicatorLease {
         if let Ok(mut core) = self.inner.core.lock() {
             core.indicators.release(&self.studies);
         }
+    }
+}
+
+/// Decrements the `symbols.subscribe` count when dropped.
+pub struct SymbolsGuard(Arc<Inner>);
+
+impl Drop for SymbolsGuard {
+    fn drop(&mut self) {
+        self.0.symbols_subs.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -5514,6 +5597,68 @@ pub(crate) fn transition_line(t: &stock_context::DetectionTransition) -> String 
         o.insert("v".into(), 1.into());
     }
     v.to_string()
+}
+
+#[cfg(test)]
+mod symbols_tests {
+    use super::*;
+
+    fn frames(rx: &mut broadcast::Receiver<Arc<Outbound>>) -> Vec<(u64, Value)> {
+        let mut out = Vec::new();
+        while let Ok(o) = rx.try_recv() {
+            if let OutKind::Symbols(f) = &o.kind {
+                out.push((o.seq, serde_json::from_str(f).unwrap()));
+            }
+        }
+        out
+    }
+
+    /// crate::symbols: nothing is walked or sent without a subscriber; a stock entering and
+    /// leaving the band is one update each, numbered after the snapshot's `rev`.
+    #[test]
+    fn the_band_set_is_pushed_only_when_it_changes() {
+        let market = Market::idle(ClockMode::Live, "test", None);
+        let mut rx = market.subscribe();
+        let day = NaiveDate::from_ymd_opt(2026, 10, 15).unwrap();
+        let at = |s| market_events::session::et(day, 10, 0, s, 0).unwrap();
+        let trade = |sym: &str, s, cents| {
+            FeedItem::Event(MarketEvent::Trade(market_events::Trade::new(
+                sym,
+                at(s),
+                Price::from_cents(cents),
+                100,
+                s as u64,
+            )))
+        };
+        market.apply(trade("AAA", 1, 200));
+        market.publish_symbols(1);
+        assert!(frames(&mut rx).is_empty(), "no subscriber, no work");
+
+        let _guard = market.symbols_subscribe();
+        let (rev, snap) = market.symbols_snapshot();
+        let snap: Value = serde_json::from_str(&snap).unwrap();
+        assert_eq!(snap["symbols"], json!(["AAA"]));
+        assert_eq!(snap["mode"], "live");
+        // Bringing the baseline up to date on subscribe may itself publish (rev <= the snapshot's).
+        assert!(frames(&mut rx).iter().all(|(r, _)| *r <= rev));
+
+        market.publish_symbols(2);
+        assert!(frames(&mut rx).is_empty(), "unchanged: nothing sent");
+
+        market.apply(trade("BBB", 2, 500));
+        market.apply(trade("AAA", 3, 3000)); // $30: out of the default $0.10–$25 band
+        market.publish_symbols(3);
+        let got = frames(&mut rx);
+        assert_eq!(got.len(), 1);
+        let (seq, f) = &got[0];
+        assert_eq!(*seq, rev + 1);
+        assert_eq!(f["type"], "symbols.update");
+        assert_eq!(f["rev"].as_u64(), Some(rev + 1));
+        assert_eq!(f["added"], json!(["BBB"]));
+        assert_eq!(f["removed"], json!(["AAA"]));
+        assert_eq!(f["screened"], json!({"total": 2, "candidates": 1}));
+        assert_eq!(market.symbols_json()["symbols"], json!(["BBB"]));
+    }
 }
 
 #[cfg(test)]

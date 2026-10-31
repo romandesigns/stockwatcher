@@ -46,7 +46,7 @@ function DashboardView({ feed, token, source }: { feed: MobileFeed; token: strin
   const insets = useSafeAreaInsets();
   const reducedMotion = useReducedMotion();
   const recents = useApp((s) => s.searchRecents);
-  const { symbols: candidates, fixture, session } = useCandidates(token, null, source);
+  const { symbols: candidates, fixture, session } = useCandidates(token, null, source, feed.symbols);
   // A closed market shows its last session from the archive (owner, 2026-10-18): say which day.
   const sessionLabel = source === "live" ? lastSessionLabel(session) : null;
   const [searchOpen, setSearchOpen] = useState(false);

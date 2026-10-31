@@ -106,7 +106,7 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
   const inspectT = useApp((s) => s.inspectT);
   // The trading day the replay clock is on; it changes on a day switch (and once a night while playing).
   const [clockDay, setClockDay] = useState<string | null>(null);
-  const candidates = useCandidates(choice, clockDay);
+  const candidates = useCandidates(choice, clockDay, feed.symbols);
   // What is playing now (the day can be switched under a running page): drives the source chip,
   // the tape note, the chart's label and the search's mock rows. `choice` stays the startup
   // decision (server or fixture), which never changes.

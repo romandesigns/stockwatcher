@@ -58,7 +58,7 @@ export function Dashboard({ choice, feed }: Connection) {
   const [detectionSelection, setDetectionSelection] = useState<{ index: number; symbol: string; episodeId: string; runEpoch: string } | null>(null);
   // The trading day the charts' clock is on: the candidates follow it (a day switch, a new session).
   const [clockDay, setClockDay] = useState<string | null>(null);
-  const candidates = useCandidates(choice, clockDay);
+  const candidates = useCandidates(choice, clockDay, feed.symbols);
   const current = useMemo(() => followServer(choice, candidates.server), [choice, candidates.server]);
   const trading = usePaperTrading(feed);
   // A Signals row always opens its ticker (owner, 2026-10-23: a pick is never ignored); only its

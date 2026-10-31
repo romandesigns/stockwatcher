@@ -1,6 +1,6 @@
 import { ChartStore, parseReplayAlerts, parseReplayDayState, sameIndicatorDemand, type ChartMessage, type Clock, type IndicatorDemand, type IndicatorValues, type PaperState, type ReplayAlert, type ReplayDayState, type Series, type TapeTrade, type Timeframe } from "@stockwatcher/chart-core";
 import type { ChartTrading } from "@stockwatcher/chart-native";
-import { authenticatedFetch, EMPTY_QUOTE_BOARD, parseLiveSession, withMarketSource, type DetectionChannel, type DetectionState, type FavoritesChannel, type FavoritesState, type LiveSession, type MarketSource, type MoversChannel, type MoversState, type PressureBoard, type PressureChannel, type PressureStatus, type QuoteBoard, type QuoteChannel, type RocketChannel, type RocketState, type RossChannel, type RossState, zoneSelector, type ZoneView } from "@stockwatcher/shared";
+import { authenticatedFetch, EMPTY_QUOTE_BOARD, EMPTY_SYMBOLS, parseLiveSession, withMarketSource, type DetectionChannel, type DetectionState, type FavoritesChannel, type FavoritesState, type LiveSession, type MarketSource, type MoversChannel, type MoversState, type PressureBoard, type PressureChannel, type PressureStatus, type QuoteBoard, type QuoteChannel, type RocketChannel, type RocketState, type RossChannel, type RossState, type SymbolsChannel, type SymbolsState, zoneSelector, type ZoneView } from "@stockwatcher/shared";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { SERVER_URL } from "./server";
@@ -178,32 +178,54 @@ export interface Candidates {
 }
 
 /**
- * The server's price-band candidates, refreshed every 10 s (they change as prices move), and at
- * once when the replay's trading day (`day`, "YYYY-MM-DD") changes: after a day switch a symbol the
- * new day lacks is replaced right away instead of leaving the old day's chart up.
+ * The server's price-band candidates (they change as prices move): fetched once, and at once when
+ * the replay's trading day (`day`, "YYYY-MM-DD") changes, so after a day switch a symbol the new
+ * day lacks is replaced right away instead of leaving the old day's chart up.
+ *
+ * Then, with `channel` (the feed's `symbols`) on a server that pushes the list (`symbols.v1`,
+ * crates/server/src/symbols.rs), the pushed list is the answer and nothing polls; on an older
+ * server it refetches every 10 s as before.
  */
-export function useCandidates(token: string | null, day: string | null = null, source?: MarketSource): Candidates {
+export function useCandidates(token: string | null, day: string | null = null, source?: MarketSource, channel?: SymbolsChannel): Candidates {
   const [state, setState] = useState<Candidates>({ symbols: [], fixture: false, session: null });
-  useEffect(() => {
-    let alive = true;
-    const refresh = async () => {
+  const subscribe = useCallback((cb: () => void) => (channel ? channel.subscribe(cb) : NOOP), [channel]);
+  const get = useCallback((): SymbolsState => (channel ? channel.get() : EMPTY_SYMBOLS), [channel]);
+  const pushed = useSyncExternalStore(subscribe, get);
+  const live = pushed.available === true;
+  const refresh = useCallback(
+    async (alive: () => boolean) => {
       try {
         const res = await authenticatedFetch(`${SERVER_URL}${withMarketSource("/api/symbols", source)}`, token);
         if (!res.ok) return;
         const d = (await res.json()) as { symbols?: unknown; fixture?: unknown; session?: unknown };
-        if (alive && Array.isArray(d.symbols)) setState({ symbols: d.symbols.filter((x): x is string => typeof x === "string"), fixture: d.fixture === true, session: parseLiveSession(d.session) });
+        if (alive() && Array.isArray(d.symbols)) setState({ symbols: d.symbols.filter((x): x is string => typeof x === "string"), fixture: d.fixture === true, session: parseLiveSession(d.session) });
       } catch {
         // Offline or server down: keep the last list; the socket status says so.
       }
+    },
+    [token, source],
+  );
+  // The first fetch, and again on a day change: always, pushed or not.
+  useEffect(() => {
+    let alive = true;
+    void refresh(() => alive);
+    return () => {
+      alive = false;
     };
-    void refresh();
-    const id = setInterval(() => void refresh(), 10_000);
+  }, [refresh, day]);
+  // The poll, only while the list is not pushed.
+  useEffect(() => {
+    if (live) return;
+    let alive = true;
+    const id = setInterval(() => void refresh(() => alive), 10_000);
     return () => {
       alive = false;
       clearInterval(id);
     };
-  }, [token, day, source]);
-  return state;
+  }, [refresh, live]);
+  const latest = live ? pushed.latest : null;
+  const fromPush = useMemo<Candidates | null>(() => (latest ? { symbols: latest.symbols, fixture: latest.fixture === true, session: parseLiveSession(latest.session) } : null), [latest]);
+  return fromPush ?? state;
 }
 
 /**

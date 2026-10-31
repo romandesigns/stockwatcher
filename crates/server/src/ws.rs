@@ -67,6 +67,14 @@
 //!   the header of crate::indicators. A lag, a seek or a day switch resends `chart.indicators`
 //!   with the snapshot, as for the candles.
 //!
+//! Price-band candidates (`symbols.v1` in `welcome.features`; crate::symbols, after `welcome`):
+//! - client `symbols.subscribe` -> server `symbols.snapshot {rev, symbols, mode, status, source,
+//!   day, fixture, priceBand, screened, session}` (the fields of `GET /api/symbols`), then
+//!   `symbols.update {rev, added, removed, ...the same meta}` when the set or the meta changed,
+//!   checked once per wall second. An update applies to the list at `rev - 1`; a gap means a
+//!   missed frame: subscribe again. `symbols.unsubscribe` stops it; a seek or a lag resends the
+//!   snapshot. Clients that never subscribe (older builds) keep polling `/api/symbols`.
+//!
 //! Simulated trading (docs/architecture/chart-trading-sim.md, after `welcome`):
 //! - server `paper.state` once right after `welcome`, then to every connection
 //!   on any change, with a `paper.fill` per fill. A lagged client gets a fresh
@@ -252,7 +260,7 @@ use tokio::time::{Instant, interval_at, timeout};
 use crate::indicators::{ChartKey, Studies};
 use crate::market::{
     ControlError, DetectionGuard, FavoritesGuard, IndicatorLease, Market, MoversGuard, OutKind,
-    PressureGuard, QuotesGuard, RocketGuard, RossGuard, SnapshotError,
+    PressureGuard, QuotesGuard, RocketGuard, RossGuard, SnapshotError, SymbolsGuard,
 };
 use crate::settings::{SettingsError, SettingsOp, rejected_frame as settings_rejected};
 use crate::{AppState, COMMIT, Settings, VERSION, api, auth};
@@ -347,6 +355,10 @@ enum ClientMessage {
     MoversSubscribe,
     #[serde(rename = "movers.unsubscribe")]
     MoversUnsubscribe,
+    #[serde(rename = "symbols.subscribe")]
+    SymbolsSubscribe,
+    #[serde(rename = "symbols.unsubscribe")]
+    SymbolsUnsubscribe,
     #[serde(rename = "rocket.subscribe")]
     RocketSubscribe,
     #[serde(rename = "rocket.unsubscribe")]
@@ -561,6 +573,24 @@ struct MoversSub {
 async fn send_movers_snapshot(socket: &mut WebSocket, market: &Market, q: &mut MoversSub) -> bool {
     let (seq, json) = market.movers_snapshot();
     q.seq = seq;
+    send_text(socket, json).await
+}
+
+/// The connection's candidate-list opt-in (`symbols.v1`, crate::symbols).
+struct SymbolsSub {
+    _guard: SymbolsGuard,
+    /// `symbols.update`s with a `rev` <= this are already in the snapshot.
+    rev: u64,
+}
+
+/// Sends a fresh `symbols.snapshot` and records its `rev`.
+async fn send_symbols_snapshot(
+    socket: &mut WebSocket,
+    market: &Market,
+    q: &mut SymbolsSub,
+) -> bool {
+    let (rev, json) = market.symbols_snapshot();
+    q.rev = rev;
     send_text(socket, json).await
 }
 
@@ -939,7 +969,7 @@ async fn session(mut socket: WebSocket, state: AppState) {
         version: VERSION,
         commit: COMMIT,
         heartbeat_secs: HEARTBEAT.as_secs(),
-        features: &[crate::indicators::FEATURE],
+        features: &[crate::indicators::FEATURE, crate::symbols::FEATURE],
     };
     // Subscribed before the paper snapshot below, so no change can fall between the two (at
     // worst the client gets the same state twice, which is harmless: it replaces, never merges).
@@ -974,6 +1004,7 @@ async fn session(mut socket: WebSocket, state: AppState) {
     let mut ross: Option<RossSub> = None;
     let mut favorites: Option<FavoritesSub> = None;
     let mut movers: Option<MoversSub> = None;
+    let mut symbols: Option<SymbolsSub> = None;
     let mut rocket: Option<RocketSub> = None;
     let mut detection: Option<DetectionSub> = None;
     // Listed among the Runners notification desks while held (`runners.notify`).
@@ -1027,6 +1058,10 @@ async fn session(mut socket: WebSocket, state: AppState) {
                             Some(q) if o.seq > q.seq => send_text(&mut socket, frame.clone()).await,
                             _ => true,
                         },
+                        OutKind::Symbols(frame) => match symbols.as_ref() {
+                            Some(q) if o.seq > q.rev => send_text(&mut socket, frame.clone()).await,
+                            _ => true,
+                        },
                         OutKind::Rocket(frame) => match rocket.as_ref() {
                             Some(q) if o.seq > q.seq => send_text(&mut socket, frame.clone()).await,
                             _ => true,
@@ -1054,6 +1089,9 @@ async fn session(mut socket: WebSocket, state: AppState) {
                                 None => true,
                             }) && (match movers.as_mut() {
                                 Some(q) => send_movers_snapshot(&mut socket, &market, q).await,
+                                None => true,
+                            }) && (match symbols.as_mut() {
+                                Some(q) => send_symbols_snapshot(&mut socket, &market, q).await,
                                 None => true,
                             }) && (match rocket.as_mut() {
                                 Some(q) => send_rocket_snapshot(&mut socket, &market, q).await,
@@ -1149,6 +1187,10 @@ async fn session(mut socket: WebSocket, state: AppState) {
                             }
                             && match movers.as_mut() {
                                 Some(q) => send_movers_snapshot(&mut socket, &market, q).await,
+                                None => true,
+                            }
+                            && match symbols.as_mut() {
+                                Some(q) => send_symbols_snapshot(&mut socket, &market, q).await,
                                 None => true,
                             }
                             && match rocket.as_mut() {
@@ -1473,6 +1515,20 @@ async fn session(mut socket: WebSocket, state: AppState) {
                     }
                     Ok(ClientMessage::MoversUnsubscribe) => {
                         movers = None;
+                        None
+                    }
+                    Ok(ClientMessage::SymbolsSubscribe) => {
+                        let q = symbols.get_or_insert_with(|| SymbolsSub {
+                            _guard: market.symbols_subscribe(),
+                            rev: 0,
+                        });
+                        if !send_symbols_snapshot(&mut socket, &market, q).await {
+                            break;
+                        }
+                        None
+                    }
+                    Ok(ClientMessage::SymbolsUnsubscribe) => {
+                        symbols = None;
                         None
                     }
                     Ok(ClientMessage::RocketSubscribe) => {

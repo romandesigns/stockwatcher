@@ -1,5 +1,5 @@
 import type { ChartMessage, IndicatorDemand, OrderCancel, ServerIndicatorsChannel, OrderModify, OrderPlace, PaperMessage, PaperState, ReplayControl, Timeframe } from "@stockwatcher/chart-core";
-import type { DetectionChannel, FavoritesChannel, MoversChannel, PressureChannel, QuoteChannel, RocketChannel, RossChannel } from "@stockwatcher/shared";
+import type { DetectionChannel, FavoritesChannel, MoversChannel, PressureChannel, QuoteChannel, RocketChannel, RossChannel, SymbolsChannel } from "@stockwatcher/shared";
 
 export interface ChartSubscription {
   symbol: string;
@@ -42,6 +42,8 @@ export interface ChartFeed {
   readonly favorites?: FavoritesChannel;
   /** Top Gainers and Hot stocks Bull / Bear, ranked on the server (server feed only); subscribing opts the connection in. */
   readonly movers?: MoversChannel;
+  /** The price-band candidate list, pushed (server feed with `symbols.v1` only; see useCandidates). */
+  readonly symbols?: SymbolsChannel;
   /** The server's Rocket watch (experimental; server feed only); subscribing opts the connection in. */
   readonly rocket?: RocketChannel;
   /** Independent Rust event discovery; subscribing never changes its monitored universe. */

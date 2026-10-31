@@ -65,7 +65,7 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
   const [clockDay, setClockDay] = useState<string | null>(null);
   const [detectionDetail, setDetectionDetail] = useState<{ id: string; epoch: string } | null>(null);
   const detection = useDetection(feed.detection);
-  const { symbols: candidates, fixture } = useCandidates(token, clockDay, "replay");
+  const { symbols: candidates, fixture } = useCandidates(token, clockDay, "replay", feed.symbols);
   const replayDays = useReplayDays(token, clockDay);
   const dayOptions = useMemo(() => replayDayOptions(replayDays.state?.days ?? []), [replayDays.state]);
   const daysOpen = useApp((s) => s.daysOpen);
