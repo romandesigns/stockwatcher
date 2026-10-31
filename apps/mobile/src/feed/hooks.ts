@@ -1,7 +1,7 @@
-import { ChartStore, parseReplayAlerts, parseReplayDayState, type ChartMessage, type Clock, type PaperState, type ReplayAlert, type ReplayDayState, type Series, type TapeTrade, type Timeframe } from "@stockwatcher/chart-core";
+import { ChartStore, parseReplayAlerts, parseReplayDayState, sameIndicatorDemand, type ChartMessage, type Clock, type IndicatorDemand, type IndicatorValues, type PaperState, type ReplayAlert, type ReplayDayState, type Series, type TapeTrade, type Timeframe } from "@stockwatcher/chart-core";
 import type { ChartTrading } from "@stockwatcher/chart-native";
 import { authenticatedFetch, EMPTY_QUOTE_BOARD, parseLiveSession, withMarketSource, type DetectionChannel, type DetectionState, type FavoritesChannel, type FavoritesState, type LiveSession, type MarketSource, type MoversChannel, type MoversState, type PressureBoard, type PressureChannel, type PressureStatus, type QuoteBoard, type QuoteChannel, type RocketChannel, type RocketState, type RossChannel, type RossState, zoneSelector, type ZoneView } from "@stockwatcher/shared";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { SERVER_URL } from "./server";
 import type { MobileFeed } from "./serverFeed";
@@ -9,10 +9,25 @@ import type { MobileFeed } from "./serverFeed";
 const TAPE_MAX = 50;
 
 /** Feed subscription → ChartStore + a short tape (the web's useChartFeed, trimmed for the phone). */
-/** `slot`: the chart's slot on a connection carrying several (the dashboard); omitted = the default slot. */
-export function useChartFeed(feed: MobileFeed, symbol: string, timeframe: Timeframe, profileBin = 0.01, slot?: string) {
+/**
+ * `slot`: the chart's slot on a connection carrying several (the dashboard); omitted = the default slot.
+ *
+ * `demand`: what the chart shows of its indicators (chart-core `indicatorDemand`). As on the web
+ * (apps/web/src/feed/useChartFeed.ts): with a server that computes them (`indicators.v1`) it goes
+ * on the subscription, a change goes out as `chart.indicators.set`, and `indicators` is the
+ * server's values for the chart to draw; otherwise `indicators` is undefined and the chart
+ * computes its own.
+ */
+export function useChartFeed(feed: MobileFeed, symbol: string, timeframe: Timeframe, profileBin = 0.01, slot?: string, demand?: IndicatorDemand) {
   const store = useMemo(() => new ChartStore({ maxCandles: 3000 }), []);
   const [tape, setTape] = useState<TapeTrade[]>([]);
+  // Read at subscribe time without re-subscribing on a toggle; `sent` is what the server last heard.
+  const demandRef = useRef(demand);
+  // A layout effect runs before every passive effect of the commit, so the subscribe below reads this render's demand.
+  useLayoutEffect(() => {
+    demandRef.current = demand;
+  });
+  const sent = useRef<IndicatorDemand | undefined>(undefined);
   useEffect(() => {
     let pending: TapeTrade[] = [];
     let frame = 0;
@@ -31,21 +46,37 @@ export function useChartFeed(feed: MobileFeed, symbol: string, timeframe: Timefr
       } else if (m.type === "chart.update" || m.type === "chart.remove" || m.type === "chart.gap") store.applyIncrement(m);
       else if (m.type === "replay.clock") store.applyClock(m.clock);
       else if (m.type === "chart.halt" || m.type === "chart.luld") store.applySymbolEvent(m);
+      else if (m.type === "chart.indicators") store.applyIndicators(m);
+      else if (m.type === "chart.indicator") store.applyIndicatorIncrement(m);
       else if (m.symbol === symbol) {
         pending.push(m);
         if (!frame) frame = requestAnimationFrame(flush);
       }
     };
-    const off = feed.subscribe({ symbol, timeframe, profileBin, ...(slot ? { id: slot } : {}) }, onMessage);
+    sent.current = demandRef.current;
+    const off = feed.subscribe({ symbol, timeframe, profileBin, ...(slot ? { id: slot } : {}), ...(demandRef.current ? { indicators: demandRef.current } : {}) }, onMessage);
     return () => {
       off();
       cancelAnimationFrame(frame);
     };
   }, [feed, store, symbol, timeframe, profileBin, slot]);
+  useEffect(() => {
+    if (!demand || (sent.current && sameIndicatorDemand(sent.current, demand))) return;
+    sent.current = demand;
+    feed.indicators.set(slot, demand);
+  }, [feed, slot, demand]);
+  const indicatorsOn = useSyncExternalStore(
+    useCallback((cb: () => void) => feed.indicators.subscribe(cb), [feed]),
+    useCallback(() => feed.indicators.available(), [feed]),
+  );
   const subscribe = useCallback((cb: () => void) => store.subscribe(cb), [store]);
   const series = useSyncExternalStore(subscribe, useCallback((): Series | undefined => store.getSeries(symbol, timeframe), [store, symbol, timeframe]));
   const clock = useSyncExternalStore(subscribe, useCallback((): Clock | null => store.getClock(), [store]));
-  return { series, tape, clock };
+  const rth = demand?.rth ?? false;
+  const serverValues = useSyncExternalStore(subscribe, useCallback((): IndicatorValues | undefined => store.getIndicators(symbol, timeframe, rth), [store, symbol, timeframe, rth]));
+  // null while the server computes them but has not answered yet: no lines, not a flash of local ones.
+  const indicators = demand && indicatorsOn ? (serverValues ?? null) : undefined;
+  return { series, tape, clock, indicators };
 }
 
 /** The feed's paper broker as the chart's `trading` prop. */

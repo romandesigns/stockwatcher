@@ -35,6 +35,7 @@ import {
   buildSlots,
   computeChartModel,
   computeIndicators,
+  serverIndicatorResults,
   DEFAULT_CHART_THEME,
   defaultViewport,
   describeSlot,
@@ -73,6 +74,7 @@ import {
   type GestureContext,
   type GestureInput,
   type IndicatorSpec,
+  type IndicatorValuesLike,
   type ObjectHit,
   type OrderModify,
   type OrderPlace,
@@ -167,6 +169,12 @@ export interface CandleChartProps {
   toolbar?: boolean;
   indicators?: IndicatorSpec[];
   onIndicatorsChange?: (specs: IndicatorSpec[]) => void;
+  /**
+   * The server's values for `indicators` (`indicators.v1`), as on the web chart: present, they
+   * are drawn and nothing is computed here (null = asked, not answered yet: no lines); absent
+   * (an older server), the chart computes them from its candles. Needs controlled `indicators`.
+   */
+  serverIndicators?: IndicatorValuesLike | null;
   drawings?: Drawing[];
   onDrawingsChange?: (drawings: Drawing[]) => void;
   trading?: ChartTrading | null;
@@ -262,6 +270,7 @@ export function CandleChart({
   inspector = false,
   indicators: indicatorsProp,
   onIndicatorsChange,
+  serverIndicators,
   drawings: drawingsProp,
   onDrawingsChange,
   trading,
@@ -383,7 +392,10 @@ export function CandleChart({
   const allSlots = useMemo(() => (series ? buildSlots(series.candles, series.gaps) : []), [series]);
   const slots = useMemo(() => sessionSlots(allSlots, settings.extendedHours), [allSlots, settings.extendedHours]);
   const visibility = settings.visibility;
-  const indicatorResults = useMemo(() => (visibility.indicators ? computeIndicators(slots, indicatorSpecs) : []), [slots, indicatorSpecs, visibility.indicators]);
+  const indicatorResults = useMemo(
+    () => (!visibility.indicators ? [] : serverIndicators !== undefined ? serverIndicatorResults(slots, indicatorSpecs, serverIndicators) : computeIndicators(slots, indicatorSpecs)),
+    [slots, indicatorSpecs, visibility.indicators, serverIndicators],
+  );
   const last = useMemo(() => lastCandle(slots)?.c ?? null, [slots]);
   // Pane heights: drag a pane's top edge, double-tap a pane to expand it. A drag is shown live and
   // reported to the host once, when the finger lifts.

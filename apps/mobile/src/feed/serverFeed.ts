@@ -1,19 +1,23 @@
 import {
   createChartRouter,
+  createServerIndicators,
   parseChartMessage,
   parsePaperMessage,
+  type ChartIndicatorsSet,
   type ChartMessage,
   type ChartSubscribe,
   type ChartUnsubscribe,
+  type IndicatorDemand,
   type OrderCancel,
   type OrderModify,
   type OrderPlace,
   type PaperMessage,
   type PaperState,
   type ReplayControl,
+  type ServerIndicatorsChannel,
   type Timeframe,
 } from "@stockwatcher/chart-core";
-import { createDetectionChannel, createFavoritesChannel, createMoversChannel, createPressureChannel, createQuoteChannel, createRocketChannel, createRossChannel, createWsClient, type AlertsServerMessage, type ConnectionStatus, type DetectionChannel, type FavoritesChannel, type MarketSource, type MoversChannel, type PressureChannel, type QuoteChannel, type RocketChannel, type RossChannel, type SettingsSync, type WebSocketLike } from "@stockwatcher/shared";
+import { createDetectionChannel, createFavoritesChannel, createMoversChannel, createPressureChannel, createQuoteChannel, createRocketChannel, createRossChannel, createWsClient, hasFeature, INDICATORS_FEATURE, type AlertsServerMessage, type ConnectionStatus, type DetectionChannel, type FavoritesChannel, type MarketSource, type MoversChannel, type PressureChannel, type QuoteChannel, type RocketChannel, type RossChannel, type SettingsSync, type WebSocketLike } from "@stockwatcher/shared";
 
 import { deviceInfo, pushToken, subscribePushToken } from "../notifications/push";
 import { runnersRegisterFields, subscribeRunnersPush } from "../notifications/runnersPush";
@@ -25,6 +29,12 @@ export interface ChartSubscription {
   profileBin: number;
   /** The chart slot (the dashboard's panel, up to 4 per connection); absent = the default slot. */
   id?: string;
+  /**
+   * What the chart wants the server to compute (`indicators.v1`; chart-core `indicatorDemand`),
+   * sent on `chart.subscribe` only when the server advertised it. Pure JS on purpose: it reaches
+   * phones as an OTA update, so it must need no native module.
+   */
+  indicators?: IndicatorDemand;
 }
 
 export type PaperCommand = OrderPlace | OrderModify | OrderCancel | { type: "paper.reset" };
@@ -51,6 +61,11 @@ export interface MobileFeed {
   rocket: RocketChannel;
   /** Independent authoritative event discovery; it does not subscribe to chart bars. */
   detection: DetectionChannel;
+  /**
+   * Chart indicators computed by the server (`indicators.v1`). Against a server without it the
+   * chart keeps computing them itself, as every APK installed before it still does.
+   */
+  indicators: ServerIndicatorsChannel;
   close(): void;
 }
 
@@ -78,11 +93,13 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
   const rocket = createRocketChannel({ subscribe: () => client.subscribeRocket(), unsubscribe: () => client.unsubscribeRocket() });
   const detection = createDetectionChannel({ subscribe: () => client.subscribeDetection(), unsubscribe: () => client.unsubscribeDetection(), resync: () => client.subscribeDetection(), source });
 
-  const sendRaw = (msg: ChartSubscribe | ChartUnsubscribe | ReplayControl | PaperCommand) => {
+  const sendRaw = (msg: ChartSubscribe | ChartUnsubscribe | ChartIndicatorsSet | ReplayControl | PaperCommand) => {
     if (raw && raw.readyState === 1) raw.send(JSON.stringify(msg));
   };
+  // Server-computed indicators (indicators.v1): chart-core serverIndicators.ts, as on the web.
+  const serverIndicators = createServerIndicators(sendRaw, (id) => current.has(id));
   // The default slot ("") goes without an id: exactly the single-chart protocol.
-  const subscribeFrame = (id: string, s: Omit<ChartSubscription, "id">): ChartSubscribe => ({ type: "chart.subscribe", symbol: s.symbol, timeframe: s.timeframe, profileBin: s.profileBin, ...(id ? { id } : {}) });
+  const subscribeFrame = (id: string, s: Pick<ChartSubscription, "symbol" | "timeframe" | "profileBin">): ChartSubscribe => ({ type: "chart.subscribe", symbol: s.symbol, timeframe: s.timeframe, profileBin: s.profileBin, ...(id ? { id } : {}), ...serverIndicators.subscribeFields(id) });
 
   // This phone's push token and its Runners opt-ins (src/notifications/runnersPush.ts): on every
   // connection, and again when either changes while connected (a switch in Settings → Runners,
@@ -101,6 +118,8 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
     client: clientName,
     // Which server market: the dashboard tab reads live, the chart tab replay.
     source,
+    // Runs before onStatus("open") and its resubscribe, so those carry the indicators or not.
+    onWelcome: (w) => serverIndicators.setAvailable(hasFeature(w, INDICATORS_FEATURE)),
     onStatus: (s) => {
       onStatus?.(s);
       open = s === "open";
@@ -170,11 +189,13 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
       const token = (m: ChartMessage) => emit(m);
       router.add(id, sub, token);
       current.set(id, token);
+      serverIndicators.held(id, sub.indicators);
       sendRaw(subscribeFrame(id, sub));
       return () => {
         if (current.get(id) !== token) return;
         current.delete(id);
         router.remove(id);
+        serverIndicators.released(id);
         if (id) sendRaw({ type: "chart.unsubscribe", id });
       };
     },
@@ -194,11 +215,13 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
     movers,
     rocket,
     detection,
+    indicators: serverIndicators.channel,
     close() {
       for (const u of unsubPush) u();
       client.close();
       router.clear();
       current.clear();
+      serverIndicators.clear();
       paperListeners.clear();
     },
   };

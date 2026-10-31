@@ -206,3 +206,30 @@ test("actual Rust synthetic server snapshots reach the mobile channel without lo
   }
   expect(alerts).toBe(0);
 });
+
+test("indicators go on chart.subscribe only to a server that offers indicators.v1, and toggles go as chart.indicators.set", async () => {
+  globalThis.WebSocket = Socket as unknown as typeof WebSocket;
+  const feed = createMobileFeed(null, undefined, undefined, "mobile", "replay");
+  cleanup = () => feed.close();
+  const demand = { indicators: [{ id: "ema-9", kind: "ema" as const, period: 9 }], rth: true };
+  const chartFrames = (s: Socket) => s.sent.filter((m) => (m as { type: string }).type.startsWith("chart."));
+  // An older server (no features): the phone keeps its local math, nothing new on the wire.
+  const old = Socket.instances[0]!;
+  old.open();
+  old.receive(welcome);
+  feed.subscribe({ symbol: "SMPL", timeframe: "1m", profileBin: 0.01, id: "m0", indicators: demand }, () => {});
+  feed.indicators.set("m0", { ...demand, rth: false });
+  expect(feed.indicators.available()).toBe(false);
+  expect(chartFrames(old)).toEqual([{ type: "chart.subscribe", symbol: "SMPL", timeframe: "1m", profileBin: 0.01, id: "m0" }]);
+  // Reconnected to a server with the feature: the resubscribe carries the LATEST demand.
+  old.close();
+  await new Promise((resolve) => setTimeout(resolve, 550));
+  const next = Socket.instances.at(-1)!;
+  expect(next).not.toBe(old);
+  next.open();
+  next.receive({ ...welcome, features: ["indicators.v1"] });
+  expect(feed.indicators.available()).toBe(true);
+  expect(chartFrames(next)).toEqual([{ type: "chart.subscribe", symbol: "SMPL", timeframe: "1m", profileBin: 0.01, id: "m0", indicators: demand.indicators, rth: false }]);
+  feed.indicators.set("m0", { indicators: [], rth: false });
+  expect(chartFrames(next).at(-1)).toEqual({ type: "chart.indicators.set", id: "m0", indicators: [], rth: false });
+});

@@ -1,4 +1,4 @@
-import { buildSlots, changeReference, formatChange, formatEtTime12, formatPrice, lastCandle, type Timeframe } from "@stockwatcher/chart-core";
+import { buildSlots, changeReference, formatChange, formatEtTime12, formatPrice, indicatorDemand, lastCandle, type Timeframe } from "@stockwatcher/chart-core";
 import { CandleChart } from "@stockwatcher/chart-native";
 import { BREAKOUT_LABEL, bindNoticeContext, breakoutClockText, breakoutOverlays, breakoutSummary, detectionFamilyLabel, detectionOverlays, detectionPrice, detectionStateLabel, groupDetections, type NoticeChartContext } from "@stockwatcher/shared";
 import { useNavigation, type RouteProp } from "@react-navigation/native";
@@ -111,11 +111,13 @@ function ModalChart({ feed, symbol, detectionEpisodeId, detectionRunEpoch, notic
   const firstSlotTf = useApp((s) => s.dashboard.slots[0]?.timeframe);
   const [timeframe, setTimeframe] = useState<Timeframe>(() => lastTimeframe ?? firstSlotTf ?? "5m");
   const bin = useApp((s) => s.bin);
-  const { series, clock } = useChartFeed(feed, symbol, timeframe, bin, SLOT);
-  const trading = usePaperTrading(feed);
   const indicators = useApp((s) => s.indicators);
-  const layers = useApp((s) => s.layers);
   const chartSettings = useApp((s) => s.chartSettings);
+  // What the chart shows of its indicators, for the server to compute (indicators.v1).
+  const demand = useMemo(() => indicatorDemand(indicators, chartSettings), [indicators, chartSettings]);
+  const { series, clock, indicators: serverIndicators } = useChartFeed(feed, symbol, timeframe, bin, SLOT, demand);
+  const trading = usePaperTrading(feed);
+  const layers = useApp((s) => s.layers);
   const fromRemote = useApp((s) => s.chartSettingsFromRemote);
   const drawingSettings = useApp((s) => s.drawingSettings);
   const tradeQty = useApp((s) => s.tradeQty);
@@ -181,6 +183,7 @@ function ModalChart({ feed, symbol, detectionEpisodeId, detectionRunEpoch, notic
           drawingSettings={drawingSettings}
           indicators={indicators}
           onIndicatorsChange={app.setIndicators}
+          serverIndicators={serverIndicators}
           drawings={drawings}
           onDrawingsChange={drawingsHandle.set}
           trading={trading}
