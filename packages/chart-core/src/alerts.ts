@@ -3,7 +3,7 @@ import type { ChartTheme } from "./displayList.ts";
 import { formatPrice } from "./format.ts";
 import type { ChartModel, Point } from "./layout.ts";
 import { formatAxisTag, priceY, yPrice } from "./scale.ts";
-import { snapPrice, tickSize } from "./trading.ts";
+import { placeButtonX, snapPrice, tickSize } from "./trading.ts";
 
 // Price alerts on the chart (owner-approved design 2026-10-19, docs/architecture/chart-packages.md
 // "Alerts"): the geometry, drawing and hit testing every renderer shares. The chart never talks
@@ -36,7 +36,7 @@ export interface AlertLayer {
   dragging?: { id: string; price: number; deleting?: boolean } | null;
   /** y of the bell (the hover crosshair's, mouse only), or null to hide it. */
   bellY?: number | null;
-  /** The "+" place button shows at the same y: the bell sits just left of it. */
+  /** The "+" place button shows at the same y: the bell sits just right of it. */
   besidePlace?: boolean;
   /** The last price, for the drag label's %. */
   last: number | null;
@@ -121,11 +121,10 @@ function placed(model: ChartModel, layer: AlertLayer): Placed[] {
   return out;
 }
 
-/** The bell's centre x: the "+" button's place, or just left of it when both show. */
+/** The bell's centre x: the "+" button's place (the plot's left edge), or just right of it when both show. */
 function bellX(model: ChartModel, beside: boolean): number {
-  const plot = model.geometry.plot;
-  const plusX = plot.x + plot.w - BUTTON_R - 3;
-  return beside ? plusX - BUTTON_R * 2 - 4 : plusX;
+  const plusX = placeButtonX(model.geometry.plot);
+  return beside ? plusX + BUTTON_R * 2 + 4 : plusX;
 }
 
 /** A small bell, as one closed path around (cx, cy), `r` = its half height. */

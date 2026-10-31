@@ -348,12 +348,20 @@ export function layoutTrading(model: ChartModel, layer: TradingLayer, theme: Cha
   }
 
   if (layer.placeY !== null && layer.placeY !== undefined && inPlot(layer.placeY)) {
-    const cx = plot.x + plot.w - PLACE_R - 3;
+    const cx = placeButtonX(plot);
     const cy = layer.placeY;
     out.push({ kind: "rect", x: cx - PLACE_R, y: cy - PLACE_R, w: PLACE_R * 2, h: PLACE_R * 2, radius: PLACE_R, fill: theme.crosshairLabelBg, layer: "crosshair" });
     out.push({ kind: "text", x: cx, y: cy + 0.5, text: "+", fill: theme.crosshairLabelText, fontSize: fs + 3, fontFamily: mono, fontWeight: 500, align: "center", baseline: "middle", layer: "crosshair" });
   }
   return out;
+}
+
+/**
+ * The "+" place button's centre x: at the plot's left edge, the far side from the price axis
+ * (owner, 2026-10-31), so it and the bell stay clear of the axis tags and the last price.
+ */
+export function placeButtonX(plot: { x: number }): number {
+  return plot.x + PLACE_R + 3;
 }
 
 /**
@@ -365,7 +373,7 @@ export function hitTrading(model: ChartModel, layer: TradingLayer, x: number, y:
   if (!price) return null;
   const plot = model.geometry.plot;
   if (layer.placeY !== null && layer.placeY !== undefined) {
-    const cx = plot.x + plot.w - PLACE_R - 3;
+    const cx = placeButtonX(plot);
     if (Math.hypot(x - cx, y - layer.placeY) <= PLACE_R + 2) return { kind: "place", y: layer.placeY };
   }
   const ps = pills(model, layer);

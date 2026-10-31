@@ -45,10 +45,12 @@ describe("alert geometry", () => {
     expect(hitAlert(model, layer(), 372, y + 20, 6, true)).toEqual({ kind: "alert", id: "a", part: "tag" });
     expect(hitAlert(model, layer(), 100, y + 4, 6, false)).toEqual({ kind: "alert", id: "a", part: "line" });
     expect(hitAlert(model, layer(), 335, y, 6, false)).toEqual({ kind: "alert", id: "a", part: "tag" });
-    expect(hitAlert(model, layer({ bellY: 50 }), 346, 50, 6, false)).toEqual({ kind: "placeAlert", y: 50 });
-    // Beside the "+", the bell moves left of it.
-    expect(hitAlert(model, layer({ bellY: 50, besidePlace: true }), 346, 50, 6, false)).toBeNull();
-    expect(hitAlert(model, layer({ bellY: 50, besidePlace: true }), 324, 50, 6, false)).toEqual({ kind: "placeAlert", y: 50 });
+    // At the plot's left edge, the far side from the price axis (owner, 2026-10-31).
+    expect(hitAlert(model, layer({ bellY: 50 }), 12, 50, 6, false)).toEqual({ kind: "placeAlert", y: 50 });
+    expect(hitAlert(model, layer({ bellY: 50 }), 346, 50, 6, false)).toBeNull();
+    // Beside the "+", the bell moves right of it.
+    expect(hitAlert(model, layer({ bellY: 50, besidePlace: true }), 12, 50, 6, false)).toBeNull();
+    expect(hitAlert(model, layer({ bellY: 50, besidePlace: true }), 34, 50, 6, false)).toEqual({ kind: "placeAlert", y: 50 });
   });
 
   test("drawn as a dashed accent line, a label and an axis tag; dragging shows old → new", () => {
@@ -129,8 +131,8 @@ describe("alert gestures", () => {
   test("the bell opens an alert at its y; lifting a touch scrub offers the chip", () => {
     const g = new GestureController();
     const bell = (x: number, yy: number): ObjectHit | null => hitAlert(model, layer({ bellY: 50 }), x, yy, 6, false);
-    g.handle(ev("down", 346, 50, 0), ctx({ hitObject: bell }));
-    expect(g.handle(ev("up", 346, 50, 50), ctx({ hitObject: bell }))).toEqual([{ kind: "placeAlert", y: 50 }]);
+    g.handle(ev("down", 12, 50, 0), ctx({ hitObject: bell }));
+    expect(g.handle(ev("up", 12, 50, 50), ctx({ hitObject: bell }))).toEqual([{ kind: "placeAlert", y: 50 }]);
     const t = new GestureController();
     const tctx = ctx({ liftChip: true });
     t.handle(ev("down", 100, 40, 0, { pointerType: "touch" }), tctx);

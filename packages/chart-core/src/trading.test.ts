@@ -73,7 +73,8 @@ describe("order lines", () => {
 
   test("the place button is hit where it is drawn", () => {
     const plot = model.geometry.plot;
-    expect(hitTrading(model, { ...layer, placeY: 50 }, plot.x + plot.w - 12, 50, 6)).toEqual({ kind: "place", y: 50 });
+    expect(hitTrading(model, { ...layer, placeY: 50 }, plot.x + 12, 50, 6)).toEqual({ kind: "place", y: 50 });
+    expect(hitTrading(model, { ...layer, placeY: 50 }, plot.x + plot.w - 12, 50, 6)).not.toEqual({ kind: "place", y: 50 });
   });
 });
 
