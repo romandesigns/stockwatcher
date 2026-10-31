@@ -158,12 +158,22 @@ The clients never hold provider credentials. The access token is typed into the 
 kept in `localStorage` (web) or the keystore (phone, `expo-secure-store`).
 
 
+### Float window (owner, 2026-10-31)
+
+`pillars-v4` uses a float record for **4 days** after it was retrieved (v1–v3:
+24 h). Float barely changes from day to day, and a late or missed daily refresh
+had made the float pillar UNKNOWN and dropped otherwise qualifying symbols from
+the Ross Panel. The server keeps float records from 5 days before the session
+(`FLOAT_LOOKBACK` in `crates/server/src/evidence.rs`), and a Ross row whose
+figure is a day old or more shows its age (`Float 3.1M · 2d old`).
+
 ### Current entry price minimum (owner, 2026-10-26)
 
 All current live entry paths use an inclusive **$0.10–$25** band: precursor
 scoring (R0/R2/placeholder), Buying bursts, volume shelves, Running, Run +20%,
-Fast and stock-context discovery. Discovery uses `pillars-v3`; `pillars-v1` and
-`pillars-v2` remain unchanged historical policies. MP5's active band was already
+Fast and stock-context discovery. Discovery uses `pillars-v4` (`pillars-v3` with
+the float window below); `pillars-v1` to `pillars-v3` remain unchanged historical
+policies. MP5's active band was already
 $0.10–$25, so no pullback geometry or wick filter changed.
 
 Precursor, burst and shelf eligibility use `market_events::PriceBand::DEFAULT`.

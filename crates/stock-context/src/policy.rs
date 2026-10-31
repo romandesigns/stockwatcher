@@ -6,7 +6,8 @@
 //! - `pillars-v2`: StockWatcher's own price band (`stockwatcher_band_v1`, price $0.10–$25
 //!   inclusive, owner decision 2026-10-20), with 120 s news coverage tolerance.
 //! - `pillars-v3`: v2 with discovery eligible from $0.10 (owner, 2026-10-26).
-//!   [`Policy::current`] returns v3; callers can still select a frozen historical policy.
+//! - `pillars-v4`: v3 with a float record usable for 4 days instead of 1 (owner, 2026-10-31).
+//!   [`Policy::current`] returns v4; callers can still select a frozen historical policy.
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -18,6 +19,8 @@ pub const PILLARS_V1: &str = include_str!("../policy/pillars-v1.json");
 pub const PILLARS_V2: &str = include_str!("../policy/pillars-v2.json");
 /// v3 lowers discovery eligibility to $0.10; v1 and v2 remain frozen.
 pub const PILLARS_V3: &str = include_str!("../policy/pillars-v3.json");
+/// v4 keeps a float record for 4 days; v1, v2 and v3 remain frozen.
+pub const PILLARS_V4: &str = include_str!("../policy/pillars-v4.json");
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct ReferenceProfile {
@@ -157,10 +160,15 @@ impl Policy {
         Policy::parse(PILLARS_V3).expect("embedded pillars-v3.json parses")
     }
 
-    /// The policy the product runs today (v3). v1 stays parseable and taggable as the documented
+    /// The embedded v4 policy: v3 with a float record usable for 4 days.
+    pub fn v4() -> Policy {
+        Policy::parse(PILLARS_V4).expect("embedded pillars-v4.json parses")
+    }
+
+    /// The policy the product runs today (v4). v1 stays parseable and taggable as the documented
     /// public reference ($2–$20); decisions made under it keep naming it.
     pub fn current() -> Policy {
-        Policy::v3()
+        Policy::v4()
     }
 
     /// `pillars-v1@<first 12 hex of the hash>`, the tag every decision carries.
@@ -228,7 +236,22 @@ mod tests {
         assert_eq!(same, v2.body);
         assert_ne!(v2.hash, v3.hash);
         assert!(v3.tag().starts_with("pillars-v3@"));
-        assert_eq!(Policy::current(), v3);
+        assert_eq!(v3.body.float.stale_after_secs, 86_400);
+    }
+
+    #[test]
+    fn v4_only_keeps_a_float_for_four_days() {
+        let v3 = Policy::v3();
+        let v4 = Policy::v4();
+        let mut same = v4.body.clone();
+        same.id = v3.body.id.clone();
+        same.note = v3.body.note.clone();
+        assert_eq!(same.float.stale_after_secs, 4 * 86_400);
+        same.float.stale_after_secs = 86_400;
+        assert_eq!(same, v3.body);
+        assert_ne!(v3.hash, v4.hash);
+        assert!(v4.tag().starts_with("pillars-v4@"));
+        assert_eq!(Policy::current(), v4);
     }
 
     #[test]

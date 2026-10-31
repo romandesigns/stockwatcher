@@ -323,6 +323,14 @@ function shares(n: number): string {
   return n >= 1_000_000 ? `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M` : n >= 1_000 ? `${Math.round(n / 1_000)}K` : String(n);
 }
 
+const DAY_NS = 86_400 * 1_000_000_000;
+
+/** `Float 3.1M`, plus its age once the figure is a day old or more (pillars-v4 keeps it 4 days). */
+function floatTag(r: RossRowWire, cutoff: number): string {
+  const days = r.float_as_of ? Math.floor((cutoff - r.float_as_of) / DAY_NS) : 0;
+  return `Float ${shares(r.float_shares ?? 0)}${days >= 1 ? ` · ${days}d old` : ""}`;
+}
+
 const PILLAR_LABEL: Record<string, string> = { price: "Price", gain: "Gain", rvol: "Volume", float: "Float", news: "News" };
 
 /**
@@ -362,14 +370,14 @@ export function rossRowView(r: RossRowWire, cutoff: number, formatTime: (epochNs
     const [pillar, st] = missing;
     const name = PILLAR_LABEL[pillar] ?? pillar;
     if (st === "FAIL") {
-      tag = pillar === "float" && r.float_shares ? `Float ${shares(r.float_shares)} ✗` : `${name} ✗`;
+      tag = pillar === "float" && r.float_shares ? `${floatTag(r, cutoff)} ✗` : `${name} ✗`;
       tagTone = "critical";
     } else {
       tag = `${name} ?`;
       tagTone = "warning";
     }
   } else if (r.float_shares) {
-    tag = `Float ${shares(r.float_shares)}`;
+    tag = floatTag(r, cutoff);
   }
   const trigger = setupWire?.trigger?.price ?? null;
   const inval = setupWire?.invalidation?.price ?? null;

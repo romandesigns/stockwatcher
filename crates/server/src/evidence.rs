@@ -51,8 +51,8 @@
 //! # Bounded memory
 //!
 //! Only the current session date is held: records observed from two days before its first
-//! session on (a float is stale after a day, news after 24 h, and a coverage run must reach a
-//! full freshness window back), up to the day's end for a replay. A replay day switch reads the
+//! session on (news is stale after 24 h, and a coverage run must reach a full freshness window
+//! back), floats from five days before (pillars-v4 keeps a float for 4 days), up to the day's end for a replay. A replay day switch reads the
 //! files again for the new window; live only trims as its date moves forward. Baselines are built only for symbols whose previous close
 //! was at or below the band's top (above it a stock can only reach the band by falling, which
 //! fails the gain pillar), and the log keeps only the latest previous close and baseline per id.
@@ -92,6 +92,11 @@ pub const DEFAULT_CHECK_SECS: u64 = 15;
 
 /// How far before the session date's first session records are kept.
 const LOOKBACK: Duration = Duration::days(2);
+
+/// How far back float records are kept: pillars-v4 uses a float for 4 days (owner, 2026-10-31),
+/// so a decision at the session's first second can need one from 4 days earlier. One day of
+/// margin; `float_lookback_covers_the_policy` keeps it at least the policy's window.
+const FLOAT_LOOKBACK: Duration = Duration::days(5);
 
 /// The session date's evidence as delivered so far, each record stamped with a delivery
 /// sequence so a board can take only what it has not got ([`EvidenceLog::since`]).
@@ -341,6 +346,8 @@ pub struct EvidenceLoader {
     day: Option<NaiveDate>,
     /// `[from, through]` (UTC ns) of the records kept for `day`.
     window: (i64, i64),
+    /// The first `retrieved_at` a float record is kept from ([`FLOAT_LOOKBACK`]).
+    float_from: i64,
     floats_raw: Vec<FloatRecord>,
     news_raw: Vec<NewsVersionRecord>,
     coverage_raw: Vec<NewsCoverageRecord>,
@@ -438,6 +445,7 @@ impl EvidenceLoader {
             tail: EvidenceTail::default(),
             day: None,
             window: (0, 0),
+            float_from: 0,
             floats_raw: Vec::new(),
             news_raw: Vec::new(),
             coverage_raw: Vec::new(),
@@ -471,6 +479,7 @@ impl EvidenceLoader {
         if new_day {
             let (start, end) = day_bounds(day);
             let from = ns(start_minus(start));
+            let float_from = ns(DateTime::from_timestamp_nanos(start) - FLOAT_LOOKBACK);
             if self.day.is_some() && (!self.live || from < self.window.0) {
                 // A replay day switch: the records the new day needs were read under the old
                 // window and dropped (the tail never hands a line out twice), so read the files
@@ -482,8 +491,9 @@ impl EvidenceLoader {
                 self.coverage_raw.clear();
             }
             self.window = (from, end);
+            self.float_from = float_from;
             self.day = Some(day);
-            self.floats_raw.retain(|r| r.retrieved_at >= from);
+            self.floats_raw.retain(|r| r.retrieved_at >= float_from);
             self.news_raw.retain(|r| r.first_observed_at >= from);
             self.coverage_raw.retain(|r| r.observed_at >= from);
             self.baseline_stamp = None;
@@ -507,9 +517,11 @@ impl EvidenceLoader {
         let (from, through) = self.window;
         let live = self.live;
         let inside = |t: i64| t >= from && (live || t <= through);
+        let float_from = self.float_from;
+        let float_inside = |t: i64| t >= float_from && (live || t <= through);
 
         // Append-only files: only what was appended since the last call.
-        let f = self.tail.float(&self.archive, Some(from));
+        let f = self.tail.float(&self.archive, Some(float_from));
         let n = self.tail.news(&self.archive, Some(from));
         let c = self.tail.news_coverage(&self.archive, Some(from));
         rep.errors.extend(
@@ -521,7 +533,7 @@ impl EvidenceLoader {
         );
         let (mut new_f, mut new_n, mut new_c) = (new_day, new_day, new_day);
         for r in f.records {
-            if inside(r.retrieved_at) {
+            if float_inside(r.retrieved_at) {
                 self.floats_raw.push(r);
                 new_f = true;
             }
@@ -1656,7 +1668,7 @@ mod tests {
         trade(&mut cx, t(9, 30, 0), t(9, 32, 0));
 
         let d = cx.decision(SYM).unwrap();
-        assert!(d.policy.starts_with("pillars-v3@"), "{}", d.policy);
+        assert!(d.policy.starts_with("pillars-v4@"), "{}", d.policy);
         for p in [
             PillarId::Price,
             PillarId::Gain,
@@ -1687,7 +1699,7 @@ mod tests {
             frame["pillarPolicy"]
                 .as_str()
                 .unwrap()
-                .starts_with("pillars-v3@")
+                .starts_with("pillars-v4@")
         );
         let panel = &frame["panel"];
         assert!(
@@ -1757,6 +1769,32 @@ mod tests {
         assert_eq!(state(&cx, SYM, PillarId::Float).0, Tri::Pass);
         assert_eq!(after.counts.pass, 5);
         assert_eq!(after.membership.status, Some(MemberStatus::Qualified));
+    }
+
+    #[test]
+    fn float_lookback_covers_the_policy() {
+        let window = stock_context::Policy::current().body.float.stale_after_secs;
+        assert!(FLOAT_LOOKBACK.num_seconds() >= window);
+    }
+
+    /// pillars-v4 keeps a float for 4 days, so the loader must hand the board one retrieved 3
+    /// days before the session (the 2-day [`LOOKBACK`] used to drop it), but not one from 6.
+    #[test]
+    fn a_three_day_old_float_reaches_the_board() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = archive(dir.path());
+        const DAY: i64 = 86_400 * SEC;
+        a.append_float(&[
+            float("OLD", 4_000_000, t(8, 0, 0) - 6 * DAY),
+            float(SYM, 5_000_000, t(8, 0, 0) - 3 * DAY),
+        ])
+        .unwrap();
+        let log = Mutex::new(EvidenceLog::default());
+        let mut loader = EvidenceLoader::new(a.clone(), Price::from_cents(2500), false);
+        loader.refresh(dd(), utc(t(23, 0, 0)), &log);
+        let all = log.lock().unwrap().since(None).unwrap();
+        let got: Vec<_> = all.floats.iter().map(|f| &f.instrument).collect();
+        assert_eq!(got, [&stock_context::InstrumentId::symbol(SYM)]);
     }
 
     #[test]

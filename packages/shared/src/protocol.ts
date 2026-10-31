@@ -415,6 +415,8 @@ export interface RossRowWire {
   from_high_bp?: number | null;
   rvol_milli?: number | null;
   float_shares?: number | null;
+  /** When that float figure was observed (epoch ns); pillars-v4 keeps one for 4 days. */
+  float_as_of?: number | null;
   news_first_seen?: number | null;
   /** That story's headline class (`financing` = offering / dilution; stock-context `NewsItem::event_type`). */
   news_kind?: string | null;

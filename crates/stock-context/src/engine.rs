@@ -516,6 +516,9 @@ pub struct PanelRow {
     pub rvol_milli: Option<i64>,
     /// The float pillar's shares, when a float record is visible (even stale).
     pub float_shares: Option<u64>,
+    /// That float record's `observed_at` (ns), so a row can say how old the figure is (pillars-v4
+    /// keeps one for 4 days).
+    pub float_as_of: Option<i64>,
     /// When StockWatcher first saw a currently qualifying news item (its `observed_at`).
     pub news_first_seen: Option<i64>,
     /// That item's headline class (`NewsItem::event_type`), so a row can mark dilution news.
@@ -1904,6 +1907,9 @@ impl Engine {
                 float_shares: pillar(PillarId::Float)
                     .and_then(|p| p.value)
                     .map(|v| v as u64),
+                float_as_of: pillar(PillarId::Float)
+                    .filter(|p| p.value.is_some())
+                    .and_then(|p| p.as_of),
                 news_first_seen: s.news_first_seen,
                 news_kind: s.news_kind.clone(),
                 missing: s

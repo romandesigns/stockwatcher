@@ -38,6 +38,10 @@ describe("ross row view", () => {
     expect(near.setup.note).toBe("2.49 · 0.8% away");
     expect(near.badge?.label).toBe("NEW");
     expect(near.tag).toBe("Float 3.1M");
+    // pillars-v4 keeps a float for 4 days: a figure a day old or more says how old.
+    const DAY = 86_400 * 1_000_000_000;
+    const aged = (age: number) => rossRowView(row({ membership: { status: "qualified", episodes: [], nonpassing: [] }, float_shares: 3_100_000, float_as_of: cutoff - age }), cutoff, hhmm).tag;
+    expect([aged(2 * DAY + MIN), aged(DAY - MIN)]).toEqual(["Float 3.1M · 2d old", "Float 3.1M"]);
     const unknown = rossRowView(row({ membership: { status: "retained", episodes: [], nonpassing: [["news", "UNKNOWN", "news_coverage_unknown"]] } }), cutoff, hhmm);
     expect([unknown.tag, unknown.tagTone]).toEqual(["News ?", "warning"]);
     const warm = rossRowView(row({ momentum: { status: "unavailable", reason: "no_one_minute_endpoint", r_short_bp: null, r_primary_bp: null, r_context_bp: null, accel_bp: null, below_high_bp: null }, rank: null }), cutoff, hhmm);

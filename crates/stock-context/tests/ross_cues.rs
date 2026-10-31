@@ -57,6 +57,11 @@ fn print(e: &mut Engine, sym: &str, exec: i64, micros: i64, size: u64) {
 
 /// Evidence for a pass on every pillar: 30 sessions of 100 shares (5x RVOL = 500 shares).
 fn evidence(e: &mut Engine, sym: &str, close: i64) {
+    evidence_float_at(e, sym, close, t(4, 0, 0));
+}
+
+/// [`evidence`] with the float observed at `float_at`, to age it.
+fn evidence_float_at(e: &mut Engine, sym: &str, close: i64, float_at: i64) {
     e.add_prev_close(PrevClose {
         id: format!("close:{sym}"),
         version: 1,
@@ -96,7 +101,7 @@ fn evidence(e: &mut Engine, sym: &str, close: i64) {
         shares: 5_000_000,
         provider: "fixture".into(),
         effective_as_of: None,
-        observed_at: t(4, 0, 0),
+        observed_at: float_at,
         quality: vec![],
     });
     e.add_news(NewsItem {
@@ -502,6 +507,7 @@ fn rows_carry_spark_and_pillar_context() {
     let r = at(&panels, end(29), "PULL").unwrap();
     assert_eq!(r.spark.len(), 20);
     assert_eq!(r.float_shares, Some(5_000_000));
+    assert_eq!(r.float_as_of, Some(t(4, 0, 0)));
     assert_eq!(r.news_first_seen, Some(t(7, 0, 1)));
     // The same story's headline class rides along, for the row's news mark.
     assert_eq!(r.news_kind.as_deref(), Some("other"));
@@ -580,7 +586,32 @@ fn current_discovery_eligibility_starts_at_ten_cents() {
         let ds = e.advance_to(UnixNanos(t(9, 30, 18)));
         let d = ds.iter().rfind(|d| d.symbol == "PENY").unwrap();
         assert_eq!(d.in_discovery_band, Some(eligible), "price {price}");
-        assert!(d.policy.starts_with("pillars-v3@"));
+        assert!(d.policy.starts_with("pillars-v4@"));
+    }
+}
+
+#[test]
+fn the_current_policy_keeps_a_float_for_four_days() {
+    // Owner, 2026-10-31: a late or missed daily refresh must not drop a symbol whose float is a
+    // few days old (pillars-v4). v3 still calls a 25 h old figure stale.
+    const H: i64 = 3_600 * S;
+    for (policy, age_h, want) in [
+        (Policy::v3(), 25, "float_stale"),
+        (Policy::current(), 25, "below_max"),
+        (Policy::current(), 95, "below_max"),
+        (Policy::current(), 97, "float_stale"),
+    ] {
+        let mut e = engine(policy);
+        evidence_float_at(&mut e, "OLDF", 3_000_000, t(9, 30, 1) - age_h * H);
+        print(&mut e, "OLDF", t(9, 30, 1), 3_500_000, 1_000);
+        let ds = e.advance_to(UnixNanos(t(9, 30, 18)));
+        let d = ds.iter().rfind(|d| d.symbol == "OLDF").unwrap();
+        let f = d
+            .pillars
+            .iter()
+            .find(|p| p.pillar == PillarId::Float)
+            .unwrap();
+        assert_eq!(f.reason, want, "{} at {age_h} h", d.policy);
     }
 }
 
