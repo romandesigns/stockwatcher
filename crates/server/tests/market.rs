@@ -2168,3 +2168,349 @@ async fn stock_context_decides_every_traded_symbol_and_the_panel_stays_honestly_
     let seen = types_for(&mut bystander, Duration::from_millis(500)).await;
     assert!(!seen.iter().any(|t| t.starts_with("ross.")), "{seen:?}");
 }
+
+// --- Server-computed indicators (`indicators.v1`, crate::indicators) -----------------------------
+
+/// A client's model of its indicator values: per (spec key, line), value by bar time (warm-up
+/// nulls are not held). Folded exactly as a client folds the frames.
+#[derive(Debug, Default, PartialEq)]
+struct IndicatorModel(
+    std::collections::BTreeMap<(String, usize), std::collections::BTreeMap<i64, Value>>,
+);
+
+impl IndicatorModel {
+    fn from_snapshot(f: &Value) -> Self {
+        let mut m = IndicatorModel::default();
+        m.apply_snapshot(f);
+        m
+    }
+
+    /// `chart.indicators` replaces the keys it carries.
+    fn apply_snapshot(&mut self, f: &Value) {
+        assert_eq!(f["type"], "chart.indicators");
+        let t: Vec<i64> = f["t"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_i64().unwrap())
+            .collect();
+        for st in f["studies"].as_array().unwrap() {
+            let key = st["key"].as_str().unwrap().to_string();
+            for (j, line) in st["lines"].as_array().unwrap().iter().enumerate() {
+                let from = line["from"].as_u64().unwrap() as usize;
+                let col = self.0.entry((key.clone(), j)).or_default();
+                col.clear();
+                for (i, v) in line["values"].as_array().unwrap().iter().enumerate() {
+                    if !v.is_null() {
+                        col.insert(t[from + i], v.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    /// `chart.indicator`: removals first, then each point's values per key (only keys held).
+    fn apply_increment(&mut self, f: &Value) {
+        assert_eq!(f["type"], "chart.indicator");
+        for t in f["removed"].as_array().into_iter().flatten() {
+            for col in self.0.values_mut() {
+                col.remove(&t.as_i64().unwrap());
+            }
+        }
+        for p in f["points"].as_array().unwrap() {
+            let t = p["t"].as_i64().unwrap();
+            for (key, vals) in p["v"].as_object().unwrap() {
+                for (j, v) in vals.as_array().unwrap().iter().enumerate() {
+                    let Some(col) = self.0.get_mut(&(key.clone(), j)) else {
+                        continue;
+                    };
+                    if v.is_null() {
+                        col.remove(&t);
+                    } else {
+                        col.insert(t, v.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    fn apply(&mut self, f: &Value) {
+        if f["type"] == "chart.indicators" {
+            self.apply_snapshot(f);
+        } else {
+            self.apply_increment(f);
+        }
+    }
+}
+
+fn studies_list() -> Value {
+    json!([
+        {"id": "vwap", "kind": "vwap"},
+        {"id": "ema-9", "kind": "ema", "period": 9},
+        {"id": "bb-20", "kind": "bb", "period": 20, "mult": 2},
+        {"id": "rsi-14", "kind": "rsi", "period": 14},
+        {"id": "macd", "kind": "macd", "fast": 12, "slow": 26, "signal": 9}
+    ])
+}
+
+fn is_indicator(m: &Value) -> bool {
+    m["type"] == "chart.indicator" || m["type"] == "chart.indicators"
+}
+
+/// The welcome advertises the feature; a slot that sends its list gets `chart.indicators` right
+/// after its `chart.snapshot`, then increments that, folded on a client model while the replay
+/// plays, give exactly the values a fresh snapshot of the same chart holds once it is paused.
+/// On 15 s candles, through the fixture day's 11:00 correction (published 30 s late, so it
+/// revises a bar two back): the increments carry older bars too, not only the forming one.
+#[tokio::test]
+async fn indicator_increments_fold_to_the_snapshot() {
+    let s = stack(&[("REPLAY_SPEED", "300")]).await;
+    let (mut ws, _) = tokio_tungstenite::connect_async(&s.url).await.unwrap();
+    send(&mut ws, json!({"type": "hello", "client": "test"})).await;
+    let w = next(&mut ws, is("welcome")).await;
+    assert!(
+        w["features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f == "indicators.v1"),
+        "{w}"
+    );
+    wait_for_replay(&mut ws).await;
+    send(
+        &mut ws,
+        json!({"type": "chart.subscribe", "id": "a", "symbol": "SMPL", "timeframe": "15s",
+               "profileBin": 0.01, "indicators": studies_list(), "rth": false}),
+    )
+    .await;
+    next(&mut ws, is("chart.snapshot")).await;
+    // The very next frame: same core lock, same seq.
+    let first = next(&mut ws, |m| m["type"] != "replay.clock").await;
+    assert_eq!(first["type"], "chart.indicators", "{first}");
+    assert_eq!(
+        (
+            first["symbol"].as_str(),
+            first["timeframe"].as_str(),
+            first["rth"].as_bool()
+        ),
+        (Some("SMPL"), Some("15s"), Some(false))
+    );
+    let keys: Vec<&str> = first["studies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["key"].as_str().unwrap())
+        .collect();
+    assert_eq!(keys, ["vwap", "ema:9", "bb:20:2", "rsi:14", "macd:12:26:9"]);
+    assert!(first["t"].as_array().unwrap().len() > 100, "the day so far");
+    let macd = first["studies"][4]["lines"].as_array().unwrap();
+    let names: Vec<&str> = macd.iter().map(|l| l["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["Hist", "MACD", "Signal"]);
+    assert_eq!(macd[0]["style"], "histogram");
+    let mut model = IndicatorModel::from_snapshot(&first);
+    let vwap_len = |m: &IndicatorModel| m.0.get(&("vwap".to_string(), 0)).map_or(0, |c| c.len());
+    let start_len = vwap_len(&model);
+
+    // Fold increments while the replay plays (300x), until past 11:01:30.
+    let (mut increments, mut older) = (0, 0);
+    loop {
+        let m = next(&mut ws, |m| is_indicator(m) || m["type"] == "replay.clock").await;
+        if m["type"] == "replay.clock" {
+            if m["clock"]["now"].as_i64().unwrap() >= T1040 + 21 * 60_000 + 30_000 {
+                break;
+            }
+            continue;
+        }
+        assert_eq!(
+            (m["symbol"].as_str(), m["timeframe"].as_str()),
+            (Some("SMPL"), Some("15s"))
+        );
+        let newest = model
+            .0
+            .get(&("vwap".to_string(), 0))
+            .and_then(|c| c.keys().next_back().copied())
+            .unwrap_or(0);
+        if m["type"] == "chart.indicator"
+            && m["points"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p["t"].as_i64().unwrap() < newest)
+        {
+            older += 1;
+        }
+        model.apply(&m);
+        increments += 1;
+    }
+    assert!(increments > 100, "increments: {increments}");
+    assert!(
+        vwap_len(&model) > start_len,
+        "the replay ran across new bars"
+    );
+    assert!(older > 0, "a revision of an older bar came as an increment");
+    send(
+        &mut ws,
+        json!({"type": "replay.control", "action": "pause"}),
+    )
+    .await;
+    // Paused: fold the tail until the indicator stream has been quiet for a while.
+    while let Ok(m) =
+        tokio::time::timeout(Duration::from_millis(1500), next(&mut ws, is_indicator)).await
+    {
+        model.apply(&m);
+    }
+    // A second connection's snapshot of the same chart key: the shared series, now.
+    let mut other = connect(&s.url).await;
+    send(
+        &mut other,
+        json!({"type": "chart.subscribe", "symbol": "SMPL", "timeframe": "15s", "profileBin": 0.01,
+               "indicators": studies_list()}),
+    )
+    .await;
+    let fresh = IndicatorModel::from_snapshot(&next(&mut other, is("chart.indicators")).await);
+    assert_eq!(fresh.0.len(), 1 + 1 + 3 + 1 + 3);
+    for (k, col) in &fresh.0 {
+        assert_eq!(
+            model.0.get(k),
+            Some(col),
+            "{k:?}: folded increments != snapshot"
+        );
+    }
+    assert_eq!(model, fresh);
+}
+
+/// Old phone builds send no list: they get exactly the frames they got before and no indicator
+/// frame. A list that is not a list is refused for its slot; `rth` keeps the regular session;
+/// `chart.indicators.set` changes a slot's studies and `[]` turns them off.
+#[tokio::test]
+async fn indicators_are_opt_in_per_slot() {
+    let s = stack(&[]).await;
+    let mut old = connect(&s.url).await;
+    let mut new = connect(&s.url).await;
+    wait_for_replay(&mut old).await;
+    wait_for_replay(&mut new).await;
+    send(&mut old, sub("", "SMPL", "1m")).await;
+    next(&mut old, is("chart.snapshot")).await;
+    let seen = types_for(&mut old, Duration::from_millis(2500)).await;
+    assert!(seen.iter().any(|t| t == "chart.update"), "{seen:?}");
+    assert!(
+        !seen.iter().any(|t| t.starts_with("chart.indicator")),
+        "{seen:?}"
+    );
+
+    send(
+        &mut new,
+        json!({"type": "chart.subscribe", "id": "x", "symbol": "SMPL", "timeframe": "1m",
+               "indicators": {"id": "e"}}),
+    )
+    .await;
+    let e = next(&mut new, is("error")).await;
+    assert_eq!(
+        (e["code"].as_str(), e["id"].as_str(), e["symbol"].as_str()),
+        (Some("bad_request"), Some("x"), Some("SMPL"))
+    );
+
+    send(
+        &mut new,
+        json!({"type": "chart.subscribe", "id": "x", "symbol": "SMPL", "timeframe": "5m",
+               "indicators": [{"id": "e", "kind": "ema", "period": 9}], "rth": true}),
+    )
+    .await;
+    let snap = next(&mut new, is("chart.snapshot")).await;
+    let ind = next(&mut new, is("chart.indicators")).await;
+    assert_eq!(ind["rth"], true);
+    // 2026-10-15 09:30 ET.
+    let regular_open = 1_792_071_000_000;
+    let t: Vec<i64> = ind["t"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x.as_i64().unwrap())
+        .collect();
+    assert!(
+        !t.is_empty() && t.iter().all(|&x| x >= regular_open),
+        "regular session only"
+    );
+    assert!(
+        snap["candles"].as_array().unwrap().len() > t.len(),
+        "the chart itself still shows every session"
+    );
+    let inc = next(&mut new, is("chart.indicator")).await;
+    assert_eq!(
+        (inc["timeframe"].as_str(), inc["rth"].as_bool()),
+        (Some("5m"), Some(true))
+    );
+
+    // Other studies, without a new candle snapshot.
+    send(
+        &mut new,
+        json!({"type": "chart.indicators.set", "id": "x", "indicators": [{"id": "r", "kind": "rsi"}], "rth": true}),
+    )
+    .await;
+    let set = next(&mut new, is("chart.indicators")).await;
+    assert_eq!(set["studies"][0]["key"], "rsi:14");
+    // All off: an empty frame, then no more increments.
+    send(
+        &mut new,
+        json!({"type": "chart.indicators.set", "id": "x", "indicators": []}),
+    )
+    .await;
+    let off = next(&mut new, is("chart.indicators")).await;
+    assert!(off["studies"].as_array().unwrap().is_empty());
+    send(&mut new, json!({"type": "ping", "ts": 9})).await;
+    next(&mut new, |m| m["type"] == "pong" && m["ts"] == 9).await;
+    let seen = types_for(&mut new, Duration::from_millis(2000)).await;
+    assert!(seen.iter().any(|t| t == "chart.update"), "{seen:?}");
+    assert!(!seen.iter().any(|t| t == "chart.indicator"), "{seen:?}");
+    // An id no slot holds.
+    send(
+        &mut new,
+        json!({"type": "chart.indicators.set", "id": "nope", "indicators": []}),
+    )
+    .await;
+    let e = next(&mut new, is("error")).await;
+    assert_eq!(
+        (e["code"].as_str(), e["id"].as_str()),
+        (Some("bad_request"), Some("nope"))
+    );
+}
+
+/// A seek rebuilds the engine: a slot with studies gets a fresh `chart.indicators` over the
+/// rebuilt chart with its resync snapshot.
+#[tokio::test]
+async fn a_seek_resends_the_indicators() {
+    let s = stack(&[]).await;
+    let mut ws = connect(&s.url).await;
+    wait_for_replay(&mut ws).await;
+    send(
+        &mut ws,
+        json!({"type": "chart.subscribe", "symbol": "SMPL", "timeframe": "1m",
+               "indicators": studies_list()}),
+    )
+    .await;
+    let before = next(&mut ws, is("chart.indicators")).await;
+    let n_before = before["t"].as_array().unwrap().len();
+    // Back to 10:00: about 40 fewer one-minute bars.
+    send(
+        &mut ws,
+        json!({"type": "replay.control", "action": "seek", "value": T1040 - 40 * 60_000}),
+    )
+    .await;
+    let after = loop {
+        let m = next(&mut ws, is("chart.indicators")).await;
+        if m["t"].as_array().unwrap().len() < n_before {
+            break m;
+        }
+    };
+    let last = after["t"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .as_i64()
+        .unwrap();
+    assert!(
+        last < T1040 - 30 * 60_000,
+        "the rebuilt chart ends near the seek target: {last}"
+    );
+}

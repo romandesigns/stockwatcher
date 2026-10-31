@@ -679,6 +679,9 @@ impl Market {
                 ..
             } = b;
             core.engine.adopt_symbol(&mut engine, symbol);
+            // Any indicator series of the symbol was built from the partial chart; the `Loaded`
+            // snapshots below rebuild it from the adopted day.
+            core.indicators.invalidate_symbol(symbol);
             core.quotes.replace_from(symbol, &board);
             core.pressure.replace_from(symbol, &pressure);
             if core.rocket.enabled() {

@@ -12,6 +12,7 @@ pub mod detection;
 pub mod evidence;
 pub mod favorites;
 pub mod history;
+pub mod indicators;
 pub mod market;
 pub mod movers;
 pub mod notices;

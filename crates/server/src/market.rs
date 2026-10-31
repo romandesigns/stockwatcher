@@ -73,6 +73,7 @@
 use crate::context::ContextBoard;
 use crate::days::{DayCatalog, DayEntry};
 use crate::history::{History, Unloaded};
+use crate::indicators::{IndicatorRegistry, Studies};
 use crate::pressure::{Card, HaltInfo, PressureBoard};
 use crate::quotes::{Counted, QuoteBoard, QuoteChanges, QuoteRow};
 use chart_engine::wire::{ChartSnapshot, ChartUpdate, ClockInfo};
@@ -402,6 +403,16 @@ pub enum OutKind {
         update: Box<ChartUpdate>,
         json: String,
     },
+    /// A `chart.indicator` increment (or, after a deep revision, a `chart.indicators` snapshot)
+    /// for one chart key (crate::indicators), published right after the chart frames of the
+    /// apply that moved it, with the same seq. Forwarded once per connection that has a slot
+    /// holding studies on that (symbol, timeframe, rth), whatever its profile bin.
+    Indicator {
+        symbol: String,
+        timeframe: Timeframe,
+        rth: bool,
+        json: String,
+    },
     /// A `replay.clock` frame.
     Clock(String),
     /// A rebuild (seek) finished: every subscriber must take a fresh snapshot.
@@ -465,6 +476,10 @@ pub(crate) struct Core {
     /// Volume shelves (`VOLUME_SHELVES`, `crate::zones`): fed the same prints as `rocket`,
     /// ticked just before it, published in its frame.
     pub(crate) zones: crate::zones::ZoneBoard,
+    /// The chart indicators the connected charts asked for (crate::indicators), fed every
+    /// engine increment under this lock. Unlike the boards above it survives a `Reset` (the
+    /// slots' demand does), with its series cleared.
+    pub(crate) indicators: IndicatorRegistry,
 }
 
 impl Core {
@@ -483,6 +498,7 @@ impl Core {
             context: None,
             rocket: crate::rocket::RocketBoard::disabled(),
             zones: crate::zones::ZoneBoard::disabled(),
+            indicators: IndicatorRegistry::default(),
         }
     }
 
@@ -739,6 +755,8 @@ pub struct SnapshotOut {
     pub seq: u64,
     pub json: String,
     pub tape: Vec<String>,
+    /// The slot's `chart.indicators` at the same seq, when it asked for studies.
+    pub indicators: Option<String>,
 }
 
 fn mode_of(cfg: &ProviderConfig) -> ClockMode {
@@ -2446,7 +2464,12 @@ impl Market {
                     let rocket = self.new_rocket_board();
                     let mut core = self.0.core.lock().expect("core lock");
                     let seq = core.seq + 1;
+                    // The slots keep their studies across the rebuild; only the values go (they
+                    // were computed over the old engine), and the resync snapshots rebuild them.
+                    let mut indicators = std::mem::take(&mut core.indicators);
+                    indicators.clear_computed();
                     *core = Core::new(closes);
+                    core.indicators = indicators;
                     core.context = board;
                     core.rocket = rocket;
                     core.zones = self.new_zone_board();
@@ -2590,8 +2613,21 @@ impl Market {
     /// cheaper (a seek, a day switch, and above all the live journal's restore of a whole-market
     /// day, where serializing every increment was about a third of the time).
     fn serialize_unless_rebuilding(core: &mut Core, ups: Vec<ChartUpdate>) -> Vec<OutKind> {
+        // The indicators follow every increment, also during a rebuild: a series built by a
+        // snapshot taken mid-rebuild has to stay in step with the engine until the resync.
+        // A symbol with no chart is one hash lookup; no studies at all, nothing.
+        let indicators = core.indicators.on_updates(&ups);
         if !core.rebuilding {
-            return Self::serialize(core, ups);
+            let mut out = Self::serialize(core, ups);
+            // After the candle frames of the same apply, so a client has the bar before its
+            // values (it joins them by `t`).
+            out.extend(indicators.into_iter().map(|(k, json)| OutKind::Indicator {
+                symbol: k.symbol,
+                timeframe: k.timeframe,
+                rth: k.rth,
+                json,
+            }));
+            return out;
         }
         for u in &ups {
             if let ChartUpdate::Tape(t) = u {
@@ -2763,17 +2799,31 @@ impl Market {
         tf: Timeframe,
         bin: Price,
     ) -> Result<SnapshotOut, SnapshotError> {
+        self.snapshot_with(symbol, tf, bin, None)
+    }
+
+    /// [`Market::snapshot`] plus, for a slot holding `studies`, its `chart.indicators` taken under
+    /// the same core lock: one seq for both, so every `chart.indicator` with a larger seq applies
+    /// on top of it, exactly as `chart.update`s do on the candles.
+    pub fn snapshot_with(
+        &self,
+        symbol: &str,
+        tf: Timeframe,
+        bin: Price,
+        studies: Option<&Studies>,
+    ) -> Result<SnapshotOut, SnapshotError> {
         let clock = self.clock().map(|c| clock_info(&c));
-        let mut core = self.0.core.lock().expect("core lock");
-        if self.known(&core, symbol) && !Self::candidate_in(&core, self.0.band, symbol) {
+        let mut guard = self.0.core.lock().expect("core lock");
+        let core = &mut *guard;
+        if self.known(core, symbol) && !Self::candidate_in(core, self.0.band, symbol) {
             return Err(SnapshotError::OutsidePriceBand);
         }
         // Live: a symbol whose history is still in the archive gets an empty chart now and its
         // load jumps the queue; the `Loaded` broadcast then sends this connection the real one.
-        crate::history::request_load(self, &mut core, symbol);
+        crate::history::request_load(self, core, symbol);
         let mut snap = match core.engine.snapshot(symbol, tf, Some(bin)) {
             Some(s) => s,
-            None if !self.known(&core, symbol) => {
+            None if !self.known(core, symbol) => {
                 return Err(SnapshotError::UnknownSymbol);
             }
             None => ChartSnapshot {
@@ -2792,7 +2842,8 @@ impl Market {
             },
         };
         snap.clock = clock;
-        snap.prev_close = self.prev_close_for(&core, &snap).map(Price::to_f64);
+        snap.prev_close = self.prev_close_for(core, &snap).map(Price::to_f64);
+        let indicators = studies.map(|s| core.indicators.snapshot(&core.engine, s));
         Ok(SnapshotOut {
             seq: core.seq,
             json: serde_json::to_string(&snap).expect("snapshot serializes"),
@@ -2801,7 +2852,31 @@ impl Market {
                 .get(symbol)
                 .map(|r| r.iter().cloned().collect())
                 .unwrap_or_default(),
+            indicators,
         })
+    }
+
+    /// Counts a slot's `studies` in the indicator registry's demand until the lease is dropped
+    /// (the slot changes its studies, unsubscribes, or the connection ends, however it ends).
+    pub fn indicators_acquire(&self, studies: Studies) -> IndicatorLease {
+        self.0
+            .core
+            .lock()
+            .expect("core lock")
+            .indicators
+            .acquire(&studies);
+        IndicatorLease {
+            inner: self.0.clone(),
+            studies,
+        }
+    }
+
+    /// A `chart.indicators` frame alone (`chart.indicators.set`, or a slot whose candles shared
+    /// another slot's snapshot), with the engine seq it is consistent with.
+    pub fn indicators_snapshot(&self, studies: &Studies) -> (u64, String) {
+        let mut guard = self.0.core.lock().expect("core lock");
+        let core = &mut *guard;
+        (core.seq, core.indicators.snapshot(&core.engine, studies))
     }
 
     /// The previous close for a chart snapshot: the closes file's latest date before the symbol's
@@ -4033,6 +4108,28 @@ impl Market {
             .filter(|s| Self::candidate_in(&core, self.0.band, s))
             .count();
         json!({"total": all.len(), "candidates": candidates})
+    }
+}
+
+/// A slot's hold on its indicator studies (crate::indicators): released when dropped. Takes the
+/// core lock in `drop`, so it must never be dropped while that lock is held (only connections
+/// hold one).
+pub struct IndicatorLease {
+    inner: Arc<Inner>,
+    studies: Studies,
+}
+
+impl IndicatorLease {
+    pub fn studies(&self) -> &Studies {
+        &self.studies
+    }
+}
+
+impl Drop for IndicatorLease {
+    fn drop(&mut self) {
+        if let Ok(mut core) = self.inner.core.lock() {
+            core.indicators.release(&self.studies);
+        }
     }
 }
 

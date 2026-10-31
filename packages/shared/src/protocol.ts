@@ -47,6 +47,24 @@ export interface WelcomeMessage {
   version: string;
   commit: string;
   heartbeatSecs: number;
+  /**
+   * What the server does beyond the base protocol, for the client to opt into. Absent from
+   * servers older than the field: treat that as empty. Known: {@link INDICATORS_FEATURE}.
+   */
+  features?: string[];
+}
+
+/**
+ * The server computes chart indicators (crates/server/src/indicators.rs): a client that sees it
+ * may send its slot's `indicators` and `rth` on `chart.subscribe` (and `chart.indicators.set`
+ * when they change) and draw the pushed values (chart-core types.ts `ChartIndicatorsSnapshot`,
+ * `ChartIndicatorIncrement`) instead of computing them. Without it, keep the local math.
+ */
+export const INDICATORS_FEATURE = "indicators.v1";
+
+/** Whether a welcome advertises `feature` (false for a server older than `features`). */
+export function hasFeature(welcome: Pick<WelcomeMessage, "features">, feature: string): boolean {
+  return Array.isArray(welcome.features) && welcome.features.includes(feature);
 }
 
 /** Either side may ping; the other answers with a pong echoing `ts`. */

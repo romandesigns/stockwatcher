@@ -12,6 +12,8 @@
 // JSON numbers, for display only; the engine keeps exact micro-dollars.
 // Sessions and labels are computed in America/New_York by time.ts.
 
+import type { IndicatorSpec } from "./indicators.ts";
+
 export type Timeframe = "15s" | "30s" | "1m" | "5m";
 
 export const TIMEFRAMES: readonly Timeframe[] = ["15s", "30s", "1m", "5m"];
@@ -287,6 +289,65 @@ export interface ChartSubscribe {
   profileBin: number;
   /** The chart slot (≤ 32 chars). */
   id?: string;
+  /**
+   * The slot's effective indicator list, sent ONLY when the welcome advertised `indicators.v1`
+   * (shared `INDICATORS_FEATURE`): the server then pushes `chart.indicators` /
+   * `chart.indicator` for it. Absent = no indicator frames (the client computes its own).
+   */
+  indicators?: IndicatorSpec[];
+  /** Extended hours off: the server computes the indicators over the regular session only. */
+  rth?: boolean;
+}
+
+/**
+ * Client → server (`indicators.v1`): change a held slot's studies without a new candle snapshot
+ * (a study toggled, extended hours flipped, indicators hidden = `[]`). The answer is a
+ * `chart.indicators`.
+ */
+export interface ChartIndicatorsSet {
+  type: "chart.indicators.set";
+  id?: string;
+  indicators: IndicatorSpec[];
+  rth?: boolean;
+}
+
+/** One server-computed line: `values[i]` belongs to the snapshot's `t[from + i]`; null = no value. */
+export interface IndicatorLineWire {
+  /** As `IndicatorLine.name` ("EMA", "Basis", "Hist", …), in `computeIndicators`' order. */
+  name: string;
+  style: "line" | "histogram";
+  from: number;
+  values: (number | null)[];
+}
+
+/**
+ * Server → client (`indicators.v1`, crates/server/src/indicators.rs): the values of the studies
+ * it names (by `specKey`, never by client id) over every input bar `t` of the chart key (symbol,
+ * timeframe, rth). Replaces the client's values of those keys. Follows the slot's
+ * `chart.snapshot` at the same seq; also answers `chart.indicators.set`, comes again on every
+ * resync, and replaces an increment that would have been too large.
+ */
+export interface ChartIndicatorsSnapshot {
+  type: "chart.indicators";
+  symbol: string;
+  timeframe: Timeframe;
+  rth: boolean;
+  t: number[];
+  studies: { key: string; lines: IndicatorLineWire[] }[];
+}
+
+/**
+ * Server → client (`indicators.v1`): what one engine apply moved. Drop the bars in `removed`
+ * first, then upsert each point's values per key (one value per line; a point names only the
+ * keys that moved there; ignore keys the slot did not ask for).
+ */
+export interface ChartIndicatorIncrement {
+  type: "chart.indicator";
+  symbol: string;
+  timeframe: Timeframe;
+  rth: boolean;
+  points: { t: number; v: Record<string, (number | null)[]> }[];
+  removed?: number[];
 }
 
 /** Client → server: free a chart slot (`id` absent = the default slot). */

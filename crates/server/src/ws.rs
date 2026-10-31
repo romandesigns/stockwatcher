@@ -44,6 +44,26 @@
 //!   `outside_price_band`), and the client picks a symbol from `/api/symbols`,
 //!   which already lists the new day's candidates.
 //!
+//! Chart indicators computed on the server (`indicators.v1`, crates/server/src/indicators.rs,
+//! the math in crates/chart-engine/src/indicators.rs):
+//! - `welcome.features` lists `"indicators.v1"`. A client sends indicators only when it sees it,
+//!   so a new client on an old server keeps its local math.
+//! - `chart.subscribe` takes two optional fields: `indicators` (the slot's effective list, the
+//!   `IndicatorSpec` shape of packages/chart-core: `{id, kind, period?, mult?, fast?, slow?,
+//!   signal?}`, parsed like the client's `parseIndicators`, overlays past 3 and panes past 2
+//!   dropped in order) and `rth` (true = extended hours off: regular session only). Without
+//!   `indicators` (every phone build installed before `indicators.v1`) nothing below is sent.
+//!   With it, `chart.indicators` follows the `chart.snapshot` (same seq) and `chart.indicator`
+//!   increments follow the candle frames. A list that is not a list gets `error bad_request`
+//!   with the slot's `symbol` and `id`.
+//! - client `chart.indicators.set {id?, indicators, rth?}` changes a held slot's studies without
+//!   a new candle snapshot (a study toggled, extended hours flipped, indicators hidden = `[]`);
+//!   the answer is a `chart.indicators`. An `id` no slot holds gets `error bad_request`.
+//! - Frames carry canonical spec keys (`ema:9`, `bb:20:2`, `macd:12:26:9`), never client ids;
+//!   the client maps its specs to keys (chart-core `specKey`). Shapes and the apply rules are in
+//!   the header of crate::indicators. A lag, a seek or a day switch resends `chart.indicators`
+//!   with the snapshot, as for the candles.
+//!
 //! Simulated trading (docs/architecture/chart-trading-sim.md, after `welcome`):
 //! - server `paper.state` once right after `welcome`, then to every connection
 //!   on any change, with a `paper.fill` per fill. A lagged client gets a fresh
@@ -227,8 +247,8 @@ use serde::{Deserialize, Serialize};
 use tokio::time::{Instant, interval_at, timeout};
 
 use crate::market::{
-    ControlError, DetectionGuard, FavoritesGuard, Market, MoversGuard, OutKind, PressureGuard,
-    QuotesGuard, RocketGuard, RossGuard, SnapshotError,
+    ControlError, DetectionGuard, FavoritesGuard, IndicatorLease, Market, MoversGuard, OutKind,
+    PressureGuard, QuotesGuard, RocketGuard, RossGuard, SnapshotError,
 };
 use crate::settings::{SettingsError, SettingsOp, rejected_frame as settings_rejected};
 use crate::{AppState, COMMIT, Settings, VERSION, api, auth};
@@ -268,6 +288,21 @@ enum ClientMessage {
         /// The chart slot; absent = the single default slot.
         #[serde(default)]
         id: Option<String>,
+        /// The slot's indicator list (`indicators.v1`); absent = the client computes its own.
+        /// Raw JSON: parsed as leniently as the client's own `parseIndicators`.
+        #[serde(default)]
+        indicators: Option<serde_json::Value>,
+        /// Extended hours off: the indicators run over the regular session only.
+        #[serde(default)]
+        rth: Option<bool>,
+    },
+    #[serde(rename = "chart.indicators.set")]
+    ChartIndicatorsSet {
+        #[serde(default)]
+        id: Option<String>,
+        indicators: serde_json::Value,
+        #[serde(default)]
+        rth: Option<bool>,
     },
     #[serde(rename = "chart.unsubscribe")]
     ChartUnsubscribe {
@@ -580,6 +615,13 @@ struct Sub {
     bin: Price,
     /// Increments with `seq` <= this are already in the snapshot.
     seq: u64,
+    /// The slot's server-computed indicators (`indicators.v1`); `None` for a client that sent
+    /// no list (it computes its own) and gets no indicator frames.
+    studies: Option<IndicatorLease>,
+    /// `chart.indicator` frames with `seq` <= this are already in the slot's last
+    /// `chart.indicators`. Separate from `seq`: `chart.indicators.set` renews the indicator
+    /// snapshot without a candle snapshot.
+    ind_seq: u64,
 }
 
 impl Sub {
@@ -587,6 +629,27 @@ impl Sub {
     fn same_chart(&self, other: &Sub) -> bool {
         self.symbol == other.symbol && self.timeframe == other.timeframe && self.bin == other.bin
     }
+
+    /// Whether this slot wants the indicator frames of (symbol, timeframe, rth).
+    fn wants_indicators(&self, symbol: &str, tf: Timeframe, rth: bool) -> bool {
+        self.studies.as_ref().is_some_and(|l| {
+            let s = l.studies();
+            !s.specs.is_empty()
+                && s.chart.rth == rth
+                && self.timeframe == tf
+                && self.symbol == symbol
+        })
+    }
+}
+
+/// The slot's `chart.indicators` alone (no candle snapshot), when it holds studies.
+async fn send_indicators(socket: &mut WebSocket, market: &Market, sub: &mut Sub) -> bool {
+    let Some(lease) = sub.studies.as_ref() else {
+        return true;
+    };
+    let (seq, json) = market.indicators_snapshot(lease.studies());
+    sub.ind_seq = seq;
+    send_text(socket, json).await
 }
 
 async fn send_text(socket: &mut WebSocket, text: String) -> bool {
@@ -605,12 +668,20 @@ fn chart_error(code: &str, message: &str, symbol: &str, id: &str) -> String {
     v.to_string()
 }
 
-/// Sends a snapshot and the recent tape for `sub`, and records its sequence.
+/// Sends a snapshot (with the slot's `chart.indicators`, same seq) and the recent tape for
+/// `sub`, and records its sequence.
 async fn send_snapshot(socket: &mut WebSocket, market: &Market, sub: &mut Sub) -> bool {
-    match market.snapshot(&sub.symbol, sub.timeframe, sub.bin) {
+    let studies = sub.studies.as_ref().map(IndicatorLease::studies);
+    match market.snapshot_with(&sub.symbol, sub.timeframe, sub.bin, studies) {
         Ok(s) => {
             sub.seq = s.seq;
+            sub.ind_seq = s.seq;
             if !send_text(socket, s.json).await {
+                return false;
+            }
+            if let Some(json) = s.indicators
+                && !send_text(socket, json).await
+            {
                 return false;
             }
             for row in s.tape {
@@ -642,11 +713,15 @@ async fn send_snapshot(socket: &mut WebSocket, market: &Market, sub: &mut Sub) -
 }
 
 /// A fresh snapshot for every chart held (after a rebuild or a lag), once per distinct chart:
-/// slots sharing a chart take the first one's sequence.
+/// slots sharing a chart take the first one's sequence. Each slot holding studies gets its own
+/// `chart.indicators` (two slots on one candle chart may ask for different studies or rth).
 async fn send_snapshots(socket: &mut WebSocket, market: &Market, subs: &mut [Sub]) -> bool {
     for i in 0..subs.len() {
         if let Some(j) = (0..i).find(|&j| subs[j].same_chart(&subs[i])) {
             subs[i].seq = subs[j].seq;
+            if !send_indicators(socket, market, &mut subs[i]).await {
+                return false;
+            }
             continue;
         }
         if !send_snapshot(socket, market, &mut subs[i]).await {
@@ -669,6 +744,9 @@ async fn send_snapshots_of(
         }
         if let Some(j) = (0..i).find(|&j| subs[j].same_chart(&subs[i])) {
             subs[i].seq = subs[j].seq;
+            if !send_indicators(socket, market, &mut subs[i]).await {
+                return false;
+            }
             continue;
         }
         if !send_snapshot(socket, market, &mut subs[i]).await {
@@ -686,6 +764,9 @@ enum ServerMessage<'a> {
         commit: &'a str,
         #[serde(rename = "heartbeatSecs")]
         heartbeat_secs: u64,
+        /// What this server does beyond the base protocol, for a client to opt into
+        /// (`indicators.v1`). An older server sends none; a client must treat that as empty.
+        features: &'a [&'a str],
     },
     Ping {
         ts: u64,
@@ -797,6 +878,7 @@ async fn session(mut socket: WebSocket, state: AppState) {
         version: VERSION,
         commit: COMMIT,
         heartbeat_secs: HEARTBEAT.as_secs(),
+        features: &[crate::indicators::FEATURE],
     };
     // Subscribed before the paper snapshot below, so no change can fall between the two (at
     // worst the client gets the same state twice, which is harmless: it replaces, never merges).
@@ -924,6 +1006,16 @@ async fn session(mut socket: WebSocket, state: AppState) {
                         // showing it had an empty chart (crate::history).
                         OutKind::Loaded(symbol) => {
                             send_snapshots_of(&mut socket, &market, &mut subs, symbol).await
+                        }
+                        // Indicator values: once per connection, if any slot on this chart key holds
+                        // studies and has not already got them in its `chart.indicators`. Keys a
+                        // slot did not ask for ride along; the client ignores them.
+                        OutKind::Indicator { symbol, timeframe, rth, json } => {
+                            if subs.iter().any(|s| s.wants_indicators(symbol, *timeframe, *rth) && o.seq > s.ind_seq) {
+                                send_text(&mut socket, json.clone()).await
+                            } else {
+                                true
+                            }
                         }
                         // Most frames are for symbols no slot shows: dropped here untouched.
                         OutKind::Chart { symbol, .. } if !subs.iter().any(|s| s.symbol == *symbol) => true,
@@ -1056,9 +1148,11 @@ async fn session(mut socket: WebSocket, state: AppState) {
                 let reply = match serde_json::from_str::<ClientMessage>(&text) {
                     Ok(ClientMessage::Ping { ts }) => Some(ServerMessage::Pong { ts }),
                     Ok(ClientMessage::Pong { .. }) => None,
-                    Ok(ClientMessage::ChartSubscribe { symbol, timeframe, profile_bin, id }) => {
+                    Ok(ClientMessage::ChartSubscribe { symbol, timeframe, profile_bin, id, indicators, rth }) => {
                         let id = id.unwrap_or_default();
                         let held = subs.iter().position(|s| s.id == id);
+                        let symbol = symbol.trim().to_ascii_uppercase();
+                        let studies = crate::indicators::parse_request(&symbol, timeframe, indicators.as_ref(), rth);
                         if id.chars().count() > MAX_CHART_ID {
                             Some(ServerMessage::Error {
                                 code: "bad_request",
@@ -1069,15 +1163,25 @@ async fn session(mut socket: WebSocket, state: AppState) {
                                 code: "too_many_charts",
                                 message: "at most 4 charts per connection; unsubscribe one first",
                             })
+                        } else if studies.is_err() {
+                            let frame = chart_error("bad_request", "indicators must be a list", &symbol, &id);
+                            if !send_text(&mut socket, frame).await {
+                                break;
+                            }
+                            None
                         } else {
                             match api::parse_bin(profile_bin, market.default_bin()) {
                                 Ok(bin) => {
                                     let mut s = Sub {
                                         id,
-                                        symbol: symbol.trim().to_ascii_uppercase(),
+                                        symbol,
                                         timeframe,
                                         bin,
                                         seq: 0,
+                                        // Counted before the snapshot builds the series, so a
+                                        // concurrent release elsewhere cannot drop them between.
+                                        studies: studies.ok().flatten().map(|st| market.indicators_acquire(st)),
+                                        ind_seq: 0,
                                     };
                                     if !send_snapshot(&mut socket, &market, &mut s).await {
                                         break;
@@ -1099,6 +1203,38 @@ async fn session(mut socket: WebSocket, state: AppState) {
                                 }),
                             }
                         }
+                    }
+                    Ok(ClientMessage::ChartIndicatorsSet { id, indicators, rth }) => {
+                        let id = id.unwrap_or_default();
+                        match subs.iter().position(|s| s.id == id) {
+                            None => {
+                                let frame = chart_error("bad_request", "no chart in this slot", "", &id);
+                                if !send_text(&mut socket, frame).await {
+                                    break;
+                                }
+                            }
+                            Some(i) => {
+                                let s = &mut subs[i];
+                                match crate::indicators::parse_request(&s.symbol, s.timeframe, Some(&indicators), rth) {
+                                    Ok(st) => {
+                                        // The new lease is taken before the old one goes, so the
+                                        // studies both lists share keep their series.
+                                        let lease = st.map(|st| market.indicators_acquire(st));
+                                        s.studies = lease;
+                                        if !send_indicators(&mut socket, &market, s).await {
+                                            break;
+                                        }
+                                    }
+                                    Err(m) => {
+                                        let frame = chart_error("bad_request", m, &s.symbol, &id);
+                                        if !send_text(&mut socket, frame).await {
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        None
                     }
                     Ok(ClientMessage::ChartUnsubscribe { id }) => {
                         let id = id.unwrap_or_default();
