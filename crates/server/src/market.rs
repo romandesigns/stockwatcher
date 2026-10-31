@@ -185,8 +185,17 @@ pub const TICK_PHASE: Duration = Duration::from_millis(250);
 /// `Market::spawn_rocket_task`). Every Runners path decides on whole seconds (a fast move at the
 /// end of its second, a 15 s barrier, a burst boundary 1 s after it, a shelf slot 1 s after it),
 /// so nothing can be decided before the second is over; this is only the grace for that second's
-/// last prints to arrive from the SIP feed and be applied (tens of ms). It replaces the 250 ms
+/// last prints to arrive from the SIP feed and be applied. It replaces the 250 ms
 /// [`TICK_PHASE`] the decision used to share with the broadcasts.
+///
+/// What the shorter grace costs, measured on the 2026-10-22 live recording (`receive_ts`
+/// against the end of each print's second, that day's busiest Runners symbols): a print
+/// arrives 50–250 ms after its second ended in 0.06–0.29 % of prints, so 0.14–0.88 % of the
+/// seconds a symbol traded in (SHFS 0.88 %, POM 0.35 %, TANH 0.26 %) are now read without one
+/// print the 250 ms tick would have had (100 ms: 0.20–0.57 %; 200 ms: 0.06–0.12 %). Both miss
+/// the 0.4–3.7 % of prints that arrive over 250 ms late. The fast rule reads the second once
+/// (`FastSym::read`), so a late print can at most delay a fire to a later second or, rarely,
+/// change one; the 15 s barriers, bursts and shelves wait a second or more and are unaffected.
 pub const ROCKET_SETTLE: Duration = Duration::from_millis(50);
 /// The least wall time between two Runners decision passes. Live they run once a second anyway;
 /// this bounds a replay at speed (a new market second every 10 ms at 100×), so a pass takes the
@@ -200,6 +209,11 @@ const ROCKET_IDLE_POLL: Duration = Duration::from_millis(250);
 /// carries it forward by at most this much (`Market::decision_now`), so a provider that stopped
 /// ticking does not keep that clock running on its own for long.
 const CLOCK_EXTRAPOLATION_MAX: Duration = Duration::from_secs(2);
+/// Replay: a print at most this many seconds behind the newest print's second is a late
+/// arrival and leaves the rocket task's "now" alone (`Market::wake_rocket`). A minute, the
+/// tolerance the Runners board already applies to a print stamped ahead of its clock
+/// (`RocketBoard::tick`).
+const LATE_PRINT_WINDOW_S: i64 = 60;
 
 /// The wait until the next tick: the first `k·QUOTES_INTERVAL + TICK_PHASE` (wall clock) that is
 /// still ahead, at least 1 ms away.
@@ -637,8 +651,8 @@ pub(crate) struct Inner {
     rocket_wake: Arc<tokio::sync::Notify>,
     /// The market second (epoch s) of the newest applied print: the wake fires when it changes,
     /// once a second rather than once a print; a replay's rocket task also reads it as the
-    /// market's "now" between clock frames. Stored, not maxed, so a replay sent back in time
-    /// follows it down.
+    /// market's "now" between clock frames. Not a plain running max: a seek resets it, and a
+    /// replay print further back than a late arrival is followed down (`Market::wake_rocket`).
     rocket_print_sec: AtomicI64,
     /// When `clock` was last set, for `Market::decision_now` (live extrapolation).
     clock_set: Mutex<Option<std::time::Instant>>,
@@ -1997,10 +2011,19 @@ impl Market {
                             if let Some(since) = since.filter(|e| *e < ROCKET_FLOOR) {
                                 ROCKET_FLOOR - since
                             } else {
-                                decided = Some(due);
                                 last_pass = Some(tokio::time::Instant::now());
-                                market.decide_rocket();
-                                continue;
+                                if market.decide_rocket() {
+                                    decided = Some(due);
+                                    continue;
+                                }
+                                // Not decided (a replay rebuilding after a seek, the board off):
+                                // the second stays due. Marking it decided here left a seek
+                                // into a paused replay with an undecided board until the clock
+                                // moved: the rebuild's own prints wake this task while every
+                                // pass is refused, and the closing clock lands on the same
+                                // second. Look again at the next wake (the closing clock wakes
+                                // it) or poll; ROCKET_FLOOR still spaces the attempts.
+                                ROCKET_IDLE_POLL
                             }
                         }
                         Some((_, wait)) => wait,
@@ -2018,12 +2041,36 @@ impl Market {
     /// A print at `ts` (epoch ns) was applied: wakes the rocket task when it opens a new market
     /// second. One atomic load per print; a store and a wake about once a second. Called under
     /// the core lock (`Notify::notify_one` never waits).
+    ///
+    /// Prints do not arrive in time order: on the live feed about 9 % land after their second
+    /// ended, some 10+ s late (2026-10-22 recording, SPCX/SOXL: `receive_ts - event_ts` p99
+    /// ~10 s), and a replay of a recorded day plays them at the same arrival positions. Taken
+    /// at face value each late print stepped this back and the next fresh one forward again,
+    /// two stores and two wakes per late print instead of one a second, and in a replay a pass
+    /// in between decided at the older second. So:
+    ///
+    /// - **Live** stores every print's second (the stalled-clock fallback in
+    ///   [`Market::rocket_schedule`] wants a value a bogus far-future stamp cannot pin; the next
+    ///   print overwrites it) but never wakes the task: it is paced by the wall, and a wake can
+    ///   only make it look at the same schedule again.
+    /// - **Replay** ignores a print up to [`LATE_PRINT_WINDOW_S`] behind the newest second (a
+    ///   late arrival, not a move in time); one further back is followed down. A seek resets
+    ///   the value anyway (`FeedItem::Reset`).
     fn wake_rocket(&self, ts: i64) {
         let sec = ts.div_euclid(1_000_000_000);
-        if self.0.rocket_print_sec.load(Ordering::Relaxed) != sec {
-            self.0.rocket_print_sec.store(sec, Ordering::Relaxed);
-            self.0.rocket_wake.notify_one();
+        let cur = self.0.rocket_print_sec.load(Ordering::Relaxed);
+        if cur == sec {
+            return;
         }
+        if self.0.mode == ClockMode::Live {
+            self.0.rocket_print_sec.store(sec, Ordering::Relaxed);
+            return;
+        }
+        if cur != i64::MIN && sec < cur && cur - sec <= LATE_PRINT_WINDOW_S {
+            return;
+        }
+        self.0.rocket_print_sec.store(sec, Ordering::Relaxed);
+        self.0.rocket_wake.notify_one();
     }
 
     /// The market clock a Runners decision runs at (epoch ns). Live: the provider's clock is a
@@ -2669,6 +2716,9 @@ impl Market {
                 };
                 if resync {
                     self.refresh_detection(true);
+                    // The rebuild is over: the rocket task, whose passes it refused, decides at
+                    // the target time now rather than at its next idle poll.
+                    self.0.rocket_wake.notify_one();
                 }
                 let _ = self.0.tx.send(Arc::new(Outbound {
                     seq,
@@ -3296,16 +3346,18 @@ impl Market {
     /// subscriber too: the alerts, the momentum states and the forward log must not depend on a
     /// panel being open. The board's new flags and breakouts go to the phone push
     /// (`crate::alerts::runners`) on the LIVE market only, offered after the lock is released and
-    /// never waited on; a replay's are dropped. Public so tests can decide without a frame.
-    pub fn decide_rocket(&self) {
+    /// never waited on; a replay's are dropped. Returns whether it decided (false with no clock
+    /// yet, during a replay's rebuild, or with the board off): the rocket task keeps a second it
+    /// could not decide due. Public so tests can decide without a frame.
+    pub fn decide_rocket(&self) -> bool {
         let Some(clock) = self.clock() else {
-            return;
+            return false;
         };
         let now = self.decision_now(&clock);
         let (log, notices, adv_wanted, facts_wanted, zones_log) = {
             let mut core = self.0.core.lock().expect("core lock");
             if core.rebuilding || !core.rocket.enabled() {
-                return;
+                return false;
             }
             // The shelves first, so their +20 % runs become Runners rows at this tick
             // (crate::rocket::run).
@@ -3369,6 +3421,7 @@ impl Market {
                 l.append(d, &lines);
             }
         }
+        true
     }
 
     /// One `rocket.update` when the panel or a row's day line changed since the last one and

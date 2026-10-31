@@ -1229,6 +1229,13 @@ impl RocketBoard {
         self.revision
     }
 
+    /// The market clock of the last [`RocketBoard::tick`] (0 before the first), for the market's
+    /// tests of when the board decides.
+    #[cfg(test)]
+    pub(crate) fn decision_ns(&self) -> i64 {
+        self.decision_ns
+    }
+
     /// The effective threshold mode.
     pub fn mode(&self) -> Threshold {
         match self.policy.threshold {

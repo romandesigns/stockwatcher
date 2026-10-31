@@ -202,3 +202,85 @@ async fn replay_fast_move_is_decided_just_after_its_second() {
     assert!(median < 200.0, "median {median:.0} ms");
     assert!(max < 600.0, "max {max:.0} ms");
 }
+
+fn paused(mut c: ClockState) -> ClockState {
+    c.playing = false;
+    c
+}
+
+/// Spins until `f` holds or `within` passes; returns whether it held.
+async fn eventually(within: Duration, mut f: impl FnMut() -> bool) -> bool {
+    let until = tokio::time::Instant::now() + within;
+    while tokio::time::Instant::now() < until {
+        if f() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    f()
+}
+
+/// A seek into a paused replay: the rebuild's prints wake the rocket task while every pass is
+/// refused (`core.rebuilding`), and the closing clock lands on the second those prints already
+/// made due. The board must still decide at the target time once the rebuild is over, as the
+/// 1 Hz tick did; it used to stay undecided until the replay was stepped or played, because a
+/// refused pass marked its second decided.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_seek_into_a_paused_replay_still_decides_the_board() {
+    let market = Market::idle(ClockMode::Replay, "test", None);
+    market.set_rocket_watch(true, crate::rocket::Policy::default());
+    let day = NaiveDate::from_ymd_opt(2026, 10, 15).unwrap();
+    let at = |h, m, s, ms| market_events::session::et(day, h, m, s, ms).unwrap().0;
+    let trade = |sym: &str, ts: i64, seq: u64| {
+        FeedItem::Event(MarketEvent::Trade(market_events::Trade::new(
+            sym,
+            UnixNanos(ts),
+            Price::from_micros(5_000_000),
+            100,
+            seq,
+        )))
+    };
+    market.apply(FeedItem::Clock(clock(ClockMode::Replay, at(10, 0, 0, 500))));
+    market.spawn_quotes_task();
+    let decision = |m: &Market| m.0.core.lock().expect("core lock").rocket.decision_ns();
+    assert!(
+        eventually(Duration::from_secs(2), || decision(&market) > 0).await,
+        "the board decides before the seek"
+    );
+
+    let target = at(10, 5, 1, 700);
+    market.apply(FeedItem::Reset(paused(clock(ClockMode::Replay, target))));
+    market.apply(trade("HBT", at(10, 5, 0, 200), 1));
+    market.apply(trade("HBT", at(10, 5, 1, 100), 2));
+    // Long enough for the task to wake on those prints and have its passes refused.
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(decision(&market), 0, "nothing decided mid-rebuild");
+    market.apply(FeedItem::Clock(paused(clock(ClockMode::Replay, target))));
+    assert!(
+        eventually(Duration::from_secs(1), || decision(&market) == target).await,
+        "decided at the target time after the rebuild: {}",
+        decision(&market)
+    );
+}
+
+/// A replay plays a recorded day's late prints at their arrival positions (about 9 % of live
+/// prints land after their second ended). A late print must not move the rocket task's "now"
+/// back, or a pass in between decides at the older second; one far back (over a minute) is a
+/// move in time and is followed.
+#[test]
+fn a_late_replay_print_does_not_move_the_decision_clock_back() {
+    let market = Market::idle(ClockMode::Replay, "test", None);
+    let sec = |s: i64| s * SEC;
+    market.wake_rocket(sec(1_000));
+    market.wake_rocket(sec(997) + 5);
+    assert_eq!(market.0.rocket_print_sec.load(Ordering::Relaxed), 1_000);
+    market.wake_rocket(sec(1_001));
+    assert_eq!(market.0.rocket_print_sec.load(Ordering::Relaxed), 1_001);
+    market.wake_rocket(sec(900));
+    assert_eq!(market.0.rocket_print_sec.load(Ordering::Relaxed), 900);
+    // Live keeps every print's second (the stalled-clock fallback), but never wakes the task.
+    let live = Market::idle(ClockMode::Live, "test", None);
+    live.wake_rocket(sec(1_000));
+    live.wake_rocket(sec(999));
+    assert_eq!(live.0.rocket_print_sec.load(Ordering::Relaxed), 999);
+}
