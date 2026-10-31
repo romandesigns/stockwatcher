@@ -7,10 +7,11 @@ import { openTickerChart } from "../nav/openTicker.ts";
 import { BREAKOUT_LABEL, noticeChartContext } from "@stockwatcher/shared";
 import { useNoticeLog } from "./useNoticeLog.ts";
 
-const STATUS: readonly { id: NoticeStatus | null; label: string }[] = [
-  { id: null, label: "All" },
-  { id: "sent", label: "Sent" },
-  { id: "held", label: "Held" },
+// The filters are icons, their names in tooltips and for screen readers (owner, 2026-10-31).
+const STATUS: readonly { id: NoticeStatus | null; label: string; icon: "menu" | "check" | "pause" }[] = [
+  { id: null, label: "All", icon: "menu" },
+  { id: "sent", label: "Sent", icon: "check" },
+  { id: "held", label: "Held", icon: "pause" },
 ];
 
 /**
@@ -58,33 +59,36 @@ export function NotificationLog() {
       <div className="flex flex-wrap items-center gap-2">
         <div role="group" aria-label="Kinds" className="flex flex-wrap gap-1">
           {NOTICE_GROUPS.map((g) => (
-            <button
-              key={g.id}
-              type="button"
-              aria-pressed={groups.has(g.id)}
-              onClick={() => toggleGroup(g.id)}
-              className={cn(
-                "inline-flex h-7 items-center gap-1.5 rounded-full px-2.5 text-xs outline-none transition-colors duration-150 pointer-coarse:h-11 focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none [&_svg]:size-3.5",
-                groups.has(g.id) ? "bg-bg-raised text-foreground" : "bg-card text-muted-foreground hover:text-foreground",
-              )}
-            >
-              <Icon name={g.icon} />
-              {g.label}
-            </button>
+            <Tip key={g.id} label={`${g.label} only`}>
+              <button
+                type="button"
+                aria-label={`${g.label} only`}
+                aria-pressed={groups.has(g.id)}
+                onClick={() => toggleGroup(g.id)}
+                className={cn(
+                  "inline-grid size-7 place-items-center rounded-full outline-none transition-colors duration-150 pointer-coarse:size-11 focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none [&_svg]:size-3.5",
+                  groups.has(g.id) ? "bg-bg-raised text-foreground" : "bg-card text-muted-foreground hover:text-foreground",
+                )}
+              >
+                <Icon name={g.icon} />
+              </button>
+            </Tip>
           ))}
         </div>
         <div role="radiogroup" aria-label="Status" className="inline-flex rounded-[9px] bg-card p-0.5">
           {STATUS.map((s) => (
-            <button
-              key={s.label}
-              type="button"
-              role="radio"
-              aria-checked={status === s.id}
-              onClick={() => setStatus(s.id)}
-              className={cn("h-6 rounded-[7px] px-2.5 text-xs outline-none pointer-coarse:h-10 focus-visible:ring-2 focus-visible:ring-ring", status === s.id ? "bg-bg-raised text-foreground" : "text-muted-foreground hover:text-foreground")}
-            >
-              {s.label}
-            </button>
+            <Tip key={s.label} label={s.label}>
+              <button
+                type="button"
+                role="radio"
+                aria-label={s.label}
+                aria-checked={status === s.id}
+                onClick={() => setStatus(s.id)}
+                className={cn("inline-grid h-6 w-8 place-items-center rounded-[7px] outline-none pointer-coarse:h-10 pointer-coarse:w-11 focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-3.5", status === s.id ? "bg-bg-raised text-foreground" : "text-muted-foreground hover:text-foreground")}
+              >
+                <Icon name={s.icon} />
+              </button>
+            </Tip>
           ))}
         </div>
         <Input aria-label="Filter by ticker" placeholder="Ticker" value={ticker} onChange={(e) => setTicker(e.target.value.toUpperCase())} className="h-8 w-28 font-mono uppercase pointer-coarse:h-11" />

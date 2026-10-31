@@ -12,6 +12,7 @@ import {
   formatChangePct,
   formatDollarVolume,
   MOVER_SORT_KEYS,
+  MOVER_SORT_ICON,
   MOVER_SORT_LABEL,
   moverLine,
   moverRowMarks,
@@ -124,24 +125,25 @@ function SortControl({
         const on = sort.key === k;
         const words = DIR_WORDS[k][sort.dir === 1 ? 0 : 1];
         return (
-          <ToggleGroupItem
-            key={k}
-            value={k}
-            aria-label={
-              on
-                ? `Sorted by ${MOVER_SORT_LABEL[k]}, ${words}. Press to reverse`
-                : `Sort by ${MOVER_SORT_LABEL[k]}`
-            }
-            className="h-6 gap-0.5 px-1.5 font-mono text-[11px]"
-          >
-            {MOVER_SORT_LABEL[k]}
-            {on && (
-              <Icon
-                name={sort.dir === 1 ? "chevronDown" : "chevronUp"}
-                className="size-2.5!"
-              />
-            )}
-          </ToggleGroupItem>
+          <Tip key={k} label={on ? `${MOVER_SORT_LABEL[k]}, ${words}` : `Sort by ${MOVER_SORT_LABEL[k]}`}>
+            <ToggleGroupItem
+              value={k}
+              aria-label={
+                on
+                  ? `Sorted by ${MOVER_SORT_LABEL[k]}, ${words}. Press to reverse`
+                  : `Sort by ${MOVER_SORT_LABEL[k]}`
+              }
+              className="h-6 gap-0.5 px-1.5 [&_svg]:size-3.5"
+            >
+              <Icon name={MOVER_SORT_ICON[k]} />
+              {on && (
+                <Icon
+                  name={sort.dir === 1 ? "chevronDown" : "chevronUp"}
+                  className="size-2.5!"
+                />
+              )}
+            </ToggleGroupItem>
+          </Tip>
         );
       })}
     </ToggleGroup>

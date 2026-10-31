@@ -169,7 +169,13 @@ export function moverLine(r: MoverRowWire): RossLineView | null {
 }
 
 /** A short label for each sort key (the segmented control). */
-export const MOVER_SORT_LABEL: Record<MoverSortKey, string> = { dv: "$ Vol", chg: "%", price: "Price", symbol: "Ticker" };
+export const MOVER_SORT_LABEL: Record<MoverSortKey, string> = { dv: "$ volume", chg: "% change", price: "Price", symbol: "Ticker" };
+
+/**
+ * Each sort key's icon (chart-core icons.ts): the segmented control shows icons, not words (owner,
+ * 2026-10-31); MOVER_SORT_LABEL stays the name for tooltips and screen readers.
+ */
+export const MOVER_SORT_ICON: Record<MoverSortKey, "sortDollar" | "sortPercent" | "sortPrice" | "sortAlpha"> = { dv: "sortDollar", chg: "sortPercent", price: "sortPrice", symbol: "sortAlpha" };
 
 /** The rows a dashboard panel shows, for its count (a panel hides at 0): Top Gainers, or Hot stocks' Bull and Bear together. */
 export function moversCount(state: MoversState, panel: "gainers" | "hot"): number {

@@ -5,6 +5,7 @@ import {
   formatChangePct,
   formatDollarVolume,
   MOVER_SORT_KEYS,
+  MOVER_SORT_ICON,
   MOVER_SORT_LABEL,
   moverLine,
   moverRowMarks,
@@ -104,8 +105,12 @@ function SortControl({ kind, sort, onPress, fill }: { kind: MoversKind; sort: Mo
         const on = sort.key === k;
         return {
           value: k,
-          label: MOVER_SORT_LABEL[k],
-          icon: on ? <Icon name={sort.dir === 1 ? "chevronDown" : "chevronUp"} color={UI.text} size={10} /> : undefined,
+          icon: (
+            <>
+              <Icon name={MOVER_SORT_ICON[k]} color={on ? UI.text : UI.textDim} size={15} />
+              {on && <Icon name={sort.dir === 1 ? "chevronDown" : "chevronUp"} color={UI.text} size={10} />}
+            </>
+          ),
           a11y: on ? `${TITLE[kind]} sorted by ${MOVER_SORT_LABEL[k]}, ${DIR_WORDS[k][sort.dir === 1 ? 0 : 1]}. Press to reverse` : `Sort ${TITLE[kind]} by ${MOVER_SORT_LABEL[k]}`,
         };
       })}

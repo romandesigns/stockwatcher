@@ -50,10 +50,11 @@ export function InsightsScreen() {
   );
 }
 
-const STATUS: readonly { value: "all" | NoticeStatus; label: string }[] = [
-  { value: "all", label: "All" },
-  { value: "sent", label: "Sent" },
-  { value: "held", label: "Held" },
+// The filters are icons, their names for screen readers (owner, 2026-10-31).
+const STATUS: readonly { value: "all" | NoticeStatus; label: string; icon: "menu" | "check" | "pause" }[] = [
+  { value: "all", label: "All", icon: "menu" },
+  { value: "sent", label: "Sent", icon: "check" },
+  { value: "held", label: "Held", icon: "pause" },
 ];
 
 function NotificationLog() {
@@ -102,14 +103,13 @@ function NotificationLog() {
           const on = groups.has(g.id);
           return (
             <Pressable key={g.id} accessibilityRole="button" accessibilityState={{ selected: on }} accessibilityLabel={`${g.label} only`} onPress={() => toggle(g.id)} style={[styles.chip, on && { backgroundColor: UI.raised }]}>
-              <Icon name={g.icon} color={on ? colors.text : colors.textDim} size={14} />
-              <Text style={[styles.chipText, on && { color: colors.text }]}>{g.label}</Text>
+              <Icon name={g.icon} color={on ? colors.text : colors.textDim} size={16} />
             </Pressable>
           );
         })}
       </View>
       <View style={styles.filterRow}>
-        <Segmented value={status} onChange={setStatus} options={STATUS.map((s) => ({ value: s.value, label: s.label, a11y: s.label }))} />
+        <Segmented value={status} onChange={setStatus} options={STATUS.map((s) => ({ value: s.value, icon: <Icon name={s.icon} color={status === s.value ? colors.text : colors.textDim} size={15} />, a11y: s.label }))} />
         <TextInput
           value={ticker}
           onChangeText={(t) => setTicker(t.toUpperCase())}
@@ -213,8 +213,8 @@ const styles = StyleSheet.create({
   small: { color: colors.textFaint, fontSize: 12 },
   count: { color: colors.text, fontVariant: ["tabular-nums"] },
   chips: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
-  chip: { flexDirection: "row", alignItems: "center", gap: 5, minHeight: 36, paddingHorizontal: 11, borderRadius: 18, backgroundColor: colors.bgPanel },
-  chipText: { color: colors.textDim, fontSize: 12 },
+  // An icon-only chip (owner, 2026-10-31): a 44 px circle, the touch minimum.
+  chip: { alignItems: "center", justifyContent: "center", width: 44, height: 44, borderRadius: 22, backgroundColor: colors.bgPanel },
   filterRow: { flexDirection: "row", alignItems: "center", gap: 8 },
   input: { flex: 1, minHeight: 40, paddingHorizontal: 10, borderRadius: 10, backgroundColor: colors.bgPanel, color: colors.text, fontSize: 13 },
   empty: { color: colors.textFaint, fontSize: 13, paddingVertical: 8 },

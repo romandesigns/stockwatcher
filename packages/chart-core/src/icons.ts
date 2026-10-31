@@ -139,6 +139,10 @@ export type IconName =
   | "pathFast"
   | "pathRun"
   | "pathRunning"
+  | "sortDollar"
+  | "sortPercent"
+  | "sortPrice"
+  | "sortAlpha"
   | "insights"
   | "phone";
 
@@ -288,6 +292,13 @@ export const ICONS: Readonly<Record<IconName, IconDef>> = {
   pathFast: icon([S("M3.5 13 8 8.5 12.5 13"), P("M3.5 9 8 4.5 12.5 9")]),
   pathRun: icon([S("M3 13 13 3"), P("M6 3h7v7M13 3 8.5 7.5")]),
   pathRunning: icon([S("M1.5 13h13"), P("M1.5 11l4-4.5 3 2.5 6-6.5M11 2.5h3.5V6")]),
+  // The movers' sort keys (owner, 2026-10-31: icons, not words): dollar volume (a coin, its face
+  // soft, the dollar sign crisp), % change (the two dots soft, the slash crisp), price (a tag, its
+  // body soft, outline and hole crisp) and ticker (A over Z crisp, the arrow between soft).
+  sortDollar: icon([S(circlePath(8, 8, 6), { paint: "fill" }), P("M10 5.9c-.4-.6-1.1-.9-2-.9-1.1 0-2 .6-2 1.5s.9 1.2 2 1.5 2 .6 2 1.5-.9 1.5-2 1.5c-.9 0-1.6-.3-2-.9M8 3.8V5M8 11v1.2")]),
+  sortPercent: icon([S(circlePath(4.5, 4.5, 1.9), { paint: "fill" }), S(circlePath(11.5, 11.5, 1.9), { paint: "fill" }), P("M12.5 3.5 3.5 12.5")]),
+  sortPrice: icon([S("M2.5 2.5h5.3l5.7 5.7-5.3 5.3-5.7-5.7z", { paint: "fill" }), P("M2.5 2.5h5.3l5.7 5.7-5.3 5.3-5.7-5.7z"), P(circlePath(5.4, 5.4, 1), { paint: "fill" })]),
+  sortAlpha: icon([P("M2 7.5 4 2l2 5.5M2.7 5.6h2.6M9.5 8.5h4l-4 5h4"), S("M4 9.5v4.5M2.5 12.5 4 14l1.5-1.5")]),
 };
 
 export const ICON_NAMES = Object.keys(ICONS) as IconName[];
