@@ -80,7 +80,10 @@
 //!   three legs in ms. Where the sources decide: a "Run +20%" row within about a second of the
 //!   print that makes it (`crate::zones`, "Early fire"; 1–2 s with the 2-print guard), a burst
 //!   at 5 s boundaries checked 1 s after (up to ~6 s after the print), a running entry and an R2
-//!   flag at 15 s barriers (up to ~15 s after the print, plus the ≤ 1 s tick).
+//!   flag at 15 s barriers (up to ~15 s after the print), a fast move at the end of its second.
+//!   The board decides each ~50 ms after that moment (`crate::market::ROCKET_SETTLE`, the
+//!   rocket task; it was 250 ms to 1.25 s on the 1 Hz broadcast tick), so `board_to_queue` is
+//!   that plus the alerts task.
 //!
 //!   The count and the events already sent are kept in `runners-push.json` beside the devices,
 //!   so a redeploy cannot send an event twice. They are separate from the price alerts' phone

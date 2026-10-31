@@ -36,8 +36,9 @@
 //!   Not in the day record, but the `day` line counts each source's rows (`rows`).
 //! - [`fast`]: the "Fast move" entry, a stock in `$0.10–$25` that jumps +8 % in 60 s or +12 % in
 //!   15 s at a held price with real trading behind it, read every second. Every counted print
-//!   feeds a per-symbol 1 s tape ([`fast::FastTape`]) beside the 15 s tape; the once-a-second
-//!   tick reads the second that just ended, only for symbols that printed in the 2 s before it.
+//!   feeds a per-symbol 1 s tape ([`fast::FastTape`]) beside the 15 s tape; each tick (the
+//!   market's rocket task, just after every second) reads the second that just ended, only for
+//!   symbols that printed in the 2 s before it.
 //!   Its rows ([`AlertKind::Fast`]) are tracked like the run rows, logged as `fast` lines,
 //!   restored after a restart (the 1 s tapes start empty then: 64 s of history is all they
 //!   need), one per symbol a day and none for a symbol that already has a row. Push

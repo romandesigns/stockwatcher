@@ -93,7 +93,7 @@ use provider_sim::{Sim, SimConfig};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 use tokio::sync::{broadcast, mpsc};
@@ -178,10 +178,28 @@ pub const BROADCAST_CAPACITY: usize = 16_384;
 /// replay time: at 10× a row may change many times a second, and a client wants a steady,
 /// bounded frame rate rather than one that scales with the replay speed.
 pub const QUOTES_INTERVAL: Duration = Duration::from_secs(1);
-/// How far past each wall-second boundary the once-a-second tick runs: long enough for that
-/// second's last prints to arrive from the SIP feed and be applied (tens of ms), short enough that
-/// a decision on the finished second reaches the phone without waiting most of another second.
+/// How far past each wall-second boundary the once-a-second broadcast tick runs (quotes, panels,
+/// the Runners frame). The Runners *decision* no longer waits for it ([`ROCKET_SETTLE`]).
 pub const TICK_PHASE: Duration = Duration::from_millis(250);
+/// Live: how long after a second ends the Runners decision for it runs (the rocket task,
+/// `Market::spawn_rocket_task`). Every Runners path decides on whole seconds (a fast move at the
+/// end of its second, a 15 s barrier, a burst boundary 1 s after it, a shelf slot 1 s after it),
+/// so nothing can be decided before the second is over; this is only the grace for that second's
+/// last prints to arrive from the SIP feed and be applied (tens of ms). It replaces the 250 ms
+/// [`TICK_PHASE`] the decision used to share with the broadcasts.
+pub const ROCKET_SETTLE: Duration = Duration::from_millis(50);
+/// The least wall time between two Runners decision passes. Live they run once a second anyway;
+/// this bounds a replay at speed (a new market second every 10 ms at 100×), so a pass takes the
+/// core lock at most ~13 times a second.
+pub const ROCKET_FLOOR: Duration = Duration::from_millis(75);
+/// Replay, with no print to wake the rocket task: how often it looks at the virtual clock (a
+/// paused replay stepped by `stepInterval`, a quiet stretch at speed). The 1 Hz tick it replaces
+/// looked once a second.
+const ROCKET_IDLE_POLL: Duration = Duration::from_millis(250);
+/// Live: the provider's clock is a wall sample taken once a second; the Runners board's clock
+/// carries it forward by at most this much (`Market::decision_now`), so a provider that stopped
+/// ticking does not keep that clock running on its own for long.
+const CLOCK_EXTRAPOLATION_MAX: Duration = Duration::from_secs(2);
 
 /// The wait until the next tick: the first `k·QUOTES_INTERVAL + TICK_PHASE` (wall clock) that is
 /// still ahead, at least 1 ms away.
@@ -613,6 +631,17 @@ pub(crate) struct Inner {
     rocket_auto_zones: Mutex<crate::auto_zones::ZoneCache>,
     /// Live: the forward log (`crate::rocket::log`), set once at start.
     rocket_log: std::sync::OnceLock<Arc<crate::rocket::RocketLog>>,
+    /// Wakes the rocket task (`Market::spawn_rocket_task`) when a print opens a new market
+    /// second. Its own `Arc` so the task can wait on it holding only a weak reference to the
+    /// market.
+    rocket_wake: Arc<tokio::sync::Notify>,
+    /// The market second (epoch s) of the newest applied print: the wake fires when it changes,
+    /// once a second rather than once a print; a replay's rocket task also reads it as the
+    /// market's "now" between clock frames. Stored, not maxed, so a replay sent back in time
+    /// follows it down.
+    rocket_print_sec: AtomicI64,
+    /// When `clock` was last set, for `Market::decision_now` (live extrapolation).
+    clock_set: Mutex<Option<std::time::Instant>>,
     /// `VOLUME_SHELVES` (with `ROCKET_WATCH`): every `Core` gets an enabled `crate::zones` board.
     zones_on: AtomicBool,
     /// Live: the volume shelves' forward log (`ARCHIVE_ROOT/zones`), set once at start.
@@ -849,6 +878,9 @@ impl Market {
             rocket_lines: Mutex::new(crate::day_line::Published::default()),
             rocket_auto_zones: Mutex::new(crate::auto_zones::ZoneCache::default()),
             rocket_log: std::sync::OnceLock::new(),
+            rocket_wake: Arc::new(tokio::sync::Notify::new()),
+            rocket_print_sec: AtomicI64::new(i64::MIN),
+            clock_set: Mutex::new(None),
             zones_on: AtomicBool::new(true),
             zones_log: std::sync::OnceLock::new(),
             burst_archive: std::sync::OnceLock::new(),
@@ -1888,23 +1920,24 @@ impl Market {
     /// the market instead of keeping it alive.
     fn spawn_quotes_task(&self) {
         self.spawn_detection_task();
+        self.spawn_rocket_task();
         let weak: Weak<Inner> = Arc::downgrade(&self.0);
         tokio::spawn(async move {
             let mut n = 0u64;
             loop {
                 // Phase-locked to the wall clock: TICK_PHASE after each second boundary, not
-                // whenever the server happened to start. The Runners board decides a second's
-                // fast moves, run marks and bursts on this tick, so a free-running interval added
-                // a random 0–1 s (measured 861 ms live, 2026-10-23) between a move qualifying and
-                // its phone push. Each tick waits for a later boundary than the last, so it still
-                // fires at most once per wall second (the ws protocol's promise); a tick that
-                // overruns a second skips that boundary instead of firing twice.
+                // whenever the server happened to start, so a frame carries the second that just
+                // ended. Each tick waits for a later boundary than the last, so it still fires at
+                // most once per wall second (the ws protocol's promise); a tick that overruns a
+                // second skips that boundary instead of firing twice. The Runners decision is not
+                // here any more: it runs on its own task as soon as a second is over
+                // (`spawn_rocket_task`); this tick only sends the panel the clients see.
                 tokio::time::sleep(until_next_tick()).await;
                 let Some(inner) = weak.upgrade() else { break };
                 let market = Market(inner);
                 market.publish_quotes();
                 market.publish_pressure();
-                market.publish_rocket();
+                market.broadcast_rocket();
                 // Before the broadcast, and whether or not anyone is subscribed: the context
                 // engine's output journals are drained so an unattended run stays bounded.
                 market.drain_context();
@@ -1922,6 +1955,131 @@ impl Market {
                 }
             }
         });
+    }
+
+    /// The Runners decision task: the shelves' and the Runners board's ticks, their logs and
+    /// phone notices (`Market::decide_rocket`), as soon as a second can be decided rather than on
+    /// the 1 Hz broadcast tick.
+    ///
+    /// Why its own task (owner: heavy and realtime work runs in Rust and is pushed as fast as the
+    /// evidence allows). The decision used to ride the broadcast tick, [`TICK_PHASE`] past each
+    /// wall second, reading the live provider's clock: a wall sample taken on a free-running
+    /// one-second timer. A fast move or a 15 s barrier was decided 250 ms after its second ended
+    /// (the newest print's time carried the board past the stale clock); a burst boundary or a
+    /// shelf slot, which go by that clock alone, 0.25–1.25 s after it was due. Now:
+    ///
+    /// - **Live** it wakes [`ROCKET_SETTLE`] past each wall second (the earliest a whole-second
+    ///   rule can decide, plus the grace for that second's late prints) and decides at
+    ///   [`Market::decision_now`], the provider's clock carried forward to this instant.
+    /// - **Replay** has no late prints and no wall pacing: a print that opens a new market
+    ///   second wakes it at once (`rocket_wake`), so a replay at speed decides every second
+    ///   instead of only the last three of each wall second (`RocketBoard::fast_tick` reads at
+    ///   most three back); otherwise it looks every [`ROCKET_IDLE_POLL`].
+    ///
+    /// A pass runs only when the decidable second changed, and at least [`ROCKET_FLOOR`] after
+    /// the last, so live this is still one pass a second and the board's cost is unchanged. The
+    /// frame stays on the broadcast tick (1 Hz to clients). Weak like the other tasks: the wake
+    /// has its own `Arc`, so waiting on it does not keep the market alive.
+    fn spawn_rocket_task(&self) {
+        let weak: Weak<Inner> = Arc::downgrade(&self.0);
+        let wake = self.0.rocket_wake.clone();
+        tokio::spawn(async move {
+            let mut decided: Option<i64> = None;
+            let mut last_pass: Option<tokio::time::Instant> = None;
+            loop {
+                let wait = {
+                    let Some(inner) = weak.upgrade() else { break };
+                    let market = Market(inner);
+                    match market.rocket_schedule() {
+                        // Any change, back too: a replay sent back in time decides again.
+                        Some((due, _)) if decided != Some(due) => {
+                            let since = last_pass.map(|t| t.elapsed());
+                            if let Some(since) = since.filter(|e| *e < ROCKET_FLOOR) {
+                                ROCKET_FLOOR - since
+                            } else {
+                                decided = Some(due);
+                                last_pass = Some(tokio::time::Instant::now());
+                                market.decide_rocket();
+                                continue;
+                            }
+                        }
+                        Some((_, wait)) => wait,
+                        None => ROCKET_IDLE_POLL,
+                    }
+                };
+                tokio::select! {
+                    _ = wake.notified() => {}
+                    _ = tokio::time::sleep(wait) => {}
+                }
+            }
+        });
+    }
+
+    /// A print at `ts` (epoch ns) was applied: wakes the rocket task when it opens a new market
+    /// second. One atomic load per print; a store and a wake about once a second. Called under
+    /// the core lock (`Notify::notify_one` never waits).
+    fn wake_rocket(&self, ts: i64) {
+        let sec = ts.div_euclid(1_000_000_000);
+        if self.0.rocket_print_sec.load(Ordering::Relaxed) != sec {
+            self.0.rocket_print_sec.store(sec, Ordering::Relaxed);
+            self.0.rocket_wake.notify_one();
+        }
+    }
+
+    /// The market clock a Runners decision runs at (epoch ns). Live: the provider's clock is a
+    /// wall sample taken once a second on a free-running timer, so it lags the wall by 0–1 s;
+    /// it is carried forward by the wall time since it was set (at most
+    /// [`CLOCK_EXTRAPOLATION_MAX`]), which is what the provider would read now. A burst boundary
+    /// or a shelf slot (decided by this clock alone) is then decided when due, not up to a second
+    /// later. Replay: the virtual clock (speed, pauses and steps are the driver's), or the start
+    /// of the newest print's second when that is later: the driver sends its clock every 250 ms
+    /// of wall time, and a print of the next second already proves this one over (a replay has
+    /// no late prints). Without it the rocket task, woken by that print, would see the second
+    /// still open (the Runners tape's newest print counts only in-band symbols) and decide it a
+    /// second later.
+    fn decision_now(&self, clock: &ClockState) -> i64 {
+        if self.0.mode != ClockMode::Live {
+            let printed = self
+                .0
+                .rocket_print_sec
+                .load(Ordering::Relaxed)
+                .saturating_mul(1_000_000_000);
+            return clock.now.0.max(printed);
+        }
+        let since = self
+            .0
+            .clock_set
+            .lock()
+            .expect("clock stamp")
+            .map_or(Duration::ZERO, |t| t.elapsed())
+            .min(CLOCK_EXTRAPOLATION_MAX);
+        clock.now.0.saturating_add(since.as_nanos() as i64)
+    }
+
+    /// The rocket task's schedule: the newest market second (epoch s) whose Runners decision is
+    /// due, and how long to sleep before looking again once it is decided. Live, a second is due
+    /// [`ROCKET_SETTLE`] after it ends by [`Market::decision_now`], and the sleep runs to the next
+    /// such instant (live market time runs at wall speed). Replay, a second is due once the
+    /// virtual clock or a print has moved past it (both in [`Market::decision_now`]); the sleep
+    /// is the idle poll (the next print's wake usually comes first). `None` before the first
+    /// clock.
+    fn rocket_schedule(&self) -> Option<(i64, Duration)> {
+        const SEC: i64 = 1_000_000_000;
+        let clock = self.clock()?;
+        let now = self.decision_now(&clock);
+        if self.0.mode == ClockMode::Live {
+            let settle = ROCKET_SETTLE.as_nanos() as i64;
+            let due = (now - settle).div_euclid(SEC) - 1;
+            let next = (due + 2) * SEC + settle;
+            let wait = Duration::from_nanos((next - now).clamp(1_000_000, SEC) as u64);
+            // A provider clock that stopped (past CLOCK_EXTRAPOLATION_MAX) while prints still
+            // flow must not stop the board: a print of second P proves P - 2 over by a whole
+            // second, so the board keeps deciding, a second late, off the prints alone (as the
+            // 1 Hz tick did through the Runners tape's newest print).
+            let printed = self.0.rocket_print_sec.load(Ordering::Relaxed);
+            return Some((due.max(printed.saturating_sub(2)), wait));
+        }
+        Some((now.div_euclid(SEC) - 1, ROCKET_IDLE_POLL))
     }
 
     fn spawn_detection_task(&self) {
@@ -2082,6 +2240,7 @@ impl Market {
     /// held every print they were given, and their bounds went unmeasured.
     #[doc(hidden)]
     pub fn bench_set_clock(&self, now: UnixNanos) {
+        *self.0.clock_set.lock().expect("clock stamp") = Some(std::time::Instant::now());
         *self.0.clock.lock().expect("clock lock") = Some(ClockState {
             mode: self.0.mode,
             now,
@@ -2355,6 +2514,7 @@ impl Market {
                             core.pressure.apply_trade(t, counted);
                             core.rocket.apply_trade(t, counted);
                             core.zones.apply_trade(t, counted);
+                            self.wake_rocket(t.event_ts.0);
                             if let (Some(closes), Some(cx)) =
                                 (context_closes.as_ref(), core.context.as_mut())
                             {
@@ -2475,6 +2635,9 @@ impl Market {
                     core.zones = self.new_zone_board();
                     core.seq = seq;
                     core.rebuilding = true;
+                    // The replay went elsewhere in time: its newest print is no longer "now"
+                    // (`Market::decision_now`); the rebuild's prints set it again.
+                    self.0.rocket_print_sec.store(i64::MIN, Ordering::Relaxed);
                 }
                 self.refresh_detection(true);
                 // Time travel resets the account (contract). Announced now rather than at the
@@ -2487,6 +2650,7 @@ impl Market {
             FeedItem::Clock(c) => {
                 let frame = clock_frame(&c);
                 let now = c.now;
+                *self.0.clock_set.lock().expect("clock stamp") = Some(std::time::Instant::now());
                 *self.0.clock.lock().expect("clock lock") = Some(c);
                 let (seq, resync) = {
                     let mut core = self.0.core.lock().expect("core lock");
@@ -3116,26 +3280,36 @@ impl Market {
             .and_then(|cx| cx.runner_levels(symbol, tau))
     }
 
-    /// One Rocket watch step at the market clock (`crate::rocket::RocketBoard::tick`: at most one
-    /// 15 s barrier, scored only once it completed), the forward-log appends it produced (live,
-    /// after the core lock is released), and one `rocket.update` when the panel or a row's day
-    /// line changed and anyone is subscribed. Runs with no subscriber too: the alerts, the
-    /// momentum states and the forward log must not depend on a panel being open. The board's
-    /// new flags and breakouts go to the phone push (`crate::alerts::runners`) on the LIVE market
-    /// only, offered after the lock is released and never waited on; a replay's are dropped.
-    /// Returns whether it broadcast. Public so tests can tick.
+    /// One Rocket watch decision and, when it changed what the panel shows, one `rocket.update`
+    /// ([`Market::decide_rocket`] then [`Market::broadcast_rocket`]). Returns whether it
+    /// broadcast. Public so tests can tick; the server runs the two halves on their own tasks
+    /// (`spawn_rocket_task`, `spawn_quotes_task`).
     pub fn publish_rocket(&self) -> bool {
+        self.decide_rocket();
+        self.broadcast_rocket()
+    }
+
+    /// One Rocket watch step at the market clock ([`Market::decision_now`];
+    /// `crate::rocket::RocketBoard::tick`: at most one 15 s barrier, scored only once it
+    /// completed, the second that just ended for fast moves, the due burst boundaries) and the
+    /// forward-log appends it produced (live, after the core lock is released). Runs with no
+    /// subscriber too: the alerts, the momentum states and the forward log must not depend on a
+    /// panel being open. The board's new flags and breakouts go to the phone push
+    /// (`crate::alerts::runners`) on the LIVE market only, offered after the lock is released and
+    /// never waited on; a replay's are dropped. Public so tests can decide without a frame.
+    pub fn decide_rocket(&self) {
         let Some(clock) = self.clock() else {
-            return false;
+            return;
         };
-        let (seq, frame, log, notices, adv_wanted, facts_wanted, zones_log) = {
+        let now = self.decision_now(&clock);
+        let (log, notices, adv_wanted, facts_wanted, zones_log) = {
             let mut core = self.0.core.lock().expect("core lock");
             if core.rebuilding || !core.rocket.enabled() {
-                return false;
+                return;
             }
-            // The shelves first, so this frame carries the slot just decided; and their +20 %
-            // runs become Runners rows at this tick (crate::rocket::run).
-            core.zones.tick(clock.now.0);
+            // The shelves first, so their +20 % runs become Runners rows at this tick
+            // (crate::rocket::run).
+            core.zones.tick(now);
             let zones_log = core.zones.take_log();
             let Core {
                 rocket,
@@ -3146,57 +3320,25 @@ impl Market {
             } = &mut *core;
             rocket.add_runs(zones.take_entries());
             rocket.add_shelf_entries(zones.take_shelf_entries());
-            rocket.tick(clock.now.0, |s| {
+            rocket.tick(now, |s| {
                 quotes.get(s).and_then(|r| r.prev_close).map(|p| p.to_f64())
             });
             // The flagged symbols get the micro-pullback too (a few dozen at most a day).
             if let Some(w) = rocket.take_watch()
                 && let Some(cx) = context.as_mut()
             {
-                cx.set_watched(w, clock.now.0);
+                cx.set_watched(w, now);
             }
             let log = core.rocket.take_log();
             // Taken whatever the market, so a replay's never pile up.
             let notices = core.rocket.take_notices();
             let adv_wanted = core.rocket.take_burst_adv_request();
             let facts_wanted = core.rocket.take_running_facts_request();
-            let mut frame = None;
-            if self.rocket_subscribers() > 0 {
-                let mut body = core.rocket.body(&|s| Self::rocket_quote(&core, s), &|s| {
-                    self.rocket_levels(&core, s, clock.now.0)
-                });
-                Self::add_zones(&core, &mut body, clock.now.0);
-                self.add_demand_zones(&core, &mut body);
-                let mut v = serde_json::json!({"type": "rocket.update", "t": clock.now.millis()});
-                if let (Some(m), serde_json::Value::Object(b)) = (v.as_object_mut(), body.clone()) {
-                    m.extend(b);
-                }
-                // Day lines as slices against the last update's (crate::day_line); committed
-                // only when this update is sent.
-                let mut lines = self.0.rocket_lines.lock().expect("rocket lines");
-                let mut next = lines.clone();
-                let src = crate::day_line::Source {
-                    engine: &core.engine,
-                    closes: core.quotes.closes(),
-                };
-                crate::day_line::decorate_by(&mut v, "s", src, Some(&mut next));
-                let mut last = self.0.rocket_published.lock().expect("rocket published");
-                if last.as_ref() != Some(&body) || *lines != next {
-                    *last = Some(body);
-                    *lines = next;
-                    frame = Some(v.to_string());
-                }
-            }
-            (
-                core.seq,
-                frame,
-                log,
-                notices,
-                adv_wanted,
-                facts_wanted,
-                zones_log,
-            )
+            (log, notices, adv_wanted, facts_wanted, zones_log)
         };
+        // First, before the file appends and the once-a-day archive reads: seconds matter on a
+        // +20 % leg.
+        self.offer_notices(notices);
         if let Some(l) = self.0.zones_log.get() {
             let mut by_date: Vec<(NaiveDate, Vec<String>)> = Vec::new();
             for (d, line) in zones_log {
@@ -3215,7 +3357,6 @@ impl Market {
         if let Some(date) = facts_wanted {
             self.load_running_facts(date);
         }
-        self.offer_notices(notices);
         if let Some(l) = self.0.rocket_log.get() {
             let mut by_date: Vec<(NaiveDate, Vec<String>)> = Vec::new();
             for (d, line) in log {
@@ -3228,6 +3369,50 @@ impl Market {
                 l.append(d, &lines);
             }
         }
+    }
+
+    /// One `rocket.update` when the panel or a row's day line changed since the last one and
+    /// anyone is subscribed: what [`Market::decide_rocket`] last decided, at the clients' 1 Hz
+    /// (the broadcast tick). Decides nothing. Returns whether it broadcast.
+    pub fn broadcast_rocket(&self) -> bool {
+        if self.rocket_subscribers() == 0 {
+            return false;
+        }
+        let Some(clock) = self.clock() else {
+            return false;
+        };
+        let (seq, frame) = {
+            let core = self.0.core.lock().expect("core lock");
+            if core.rebuilding || !core.rocket.enabled() {
+                return false;
+            }
+            let mut frame = None;
+            let mut body = core.rocket.body(&|s| Self::rocket_quote(&core, s), &|s| {
+                self.rocket_levels(&core, s, clock.now.0)
+            });
+            Self::add_zones(&core, &mut body, clock.now.0);
+            self.add_demand_zones(&core, &mut body);
+            let mut v = serde_json::json!({"type": "rocket.update", "t": clock.now.millis()});
+            if let (Some(m), serde_json::Value::Object(b)) = (v.as_object_mut(), body.clone()) {
+                m.extend(b);
+            }
+            // Day lines as slices against the last update's (crate::day_line); committed
+            // only when this update is sent.
+            let mut lines = self.0.rocket_lines.lock().expect("rocket lines");
+            let mut next = lines.clone();
+            let src = crate::day_line::Source {
+                engine: &core.engine,
+                closes: core.quotes.closes(),
+            };
+            crate::day_line::decorate_by(&mut v, "s", src, Some(&mut next));
+            let mut last = self.0.rocket_published.lock().expect("rocket published");
+            if last.as_ref() != Some(&body) || *lines != next {
+                *last = Some(body);
+                *lines = next;
+                frame = Some(v.to_string());
+            }
+            (core.seq, frame)
+        };
         let Some(frame) = frame else {
             return false;
         };
@@ -4523,6 +4708,10 @@ async fn ingest(mut items: mpsc::Receiver<FeedItem>, market: Market, sim: Option
         };
     }
 }
+
+#[cfg(test)]
+#[path = "market_latency_tests.rs"]
+mod latency_tests;
 
 #[cfg(test)]
 mod tests {

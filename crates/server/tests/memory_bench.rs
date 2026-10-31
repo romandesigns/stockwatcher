@@ -145,7 +145,8 @@ async fn measure_live_market_heap() {
         for s in 0..60 {
             let sec_ts = t0 + (minute * 60 + s) * SEC;
             // The market clock follows the synthetic day (the provider's own clock is the
-            // wall's), so the once-a-wall-second tick decides slots and reads fast moves.
+            // wall's), so the rocket task decides slots and reads fast moves (woken by the
+            // first print of each synthetic second, at most every ROCKET_FLOOR of wall time).
             m.bench_set_clock(UnixNanos(sec_ts));
             for k in 0..per_sec {
                 let u = rng.unit() * acc;

@@ -31,9 +31,9 @@
 //! The fifth way into the Runners panel ([`super::RocketBoard`], `AlertKind::Fast`, chip "Fast
 //! move"): the board feeds every print the chart engine counted into a per-symbol tape (the
 //! live path and the provisional one for a symbol whose history is still loading, exactly where
-//! the 15 s tape and the burst detector are fed) and reads the rule at the once-a-second rocket
-//! tick for the second that just ended ([`FastTape::inputs_settled`]: a print of the next second
-//! may already be in). One row per symbol a day, none for a symbol that already has a row, at
+//! the 15 s tape and the burst detector are fed) and reads the rule for the second that just
+//! ended at the market's rocket task, 50 ms after that second live (`crate::market::ROCKET_SETTLE`,
+//! [`FastTape::inputs_settled`]: a print of the next second may already be in). One row per symbol a day, none for a symbol that already has a row, at
 //! most [`MAX_PER_DAY`]; logged as a `fast` line, restored after a restart, pushed per phone
 //! (on by default). **After a restart the tapes start empty**: the rule reads 64 s of history,
 //! so a symbol can fire again about a minute after the process is back, and nothing older is
