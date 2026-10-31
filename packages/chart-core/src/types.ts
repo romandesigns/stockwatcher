@@ -170,12 +170,26 @@ export interface ChartSnapshot {
 }
 
 /**
+ * The whole session profile's figures at the increment's `profileBin`
+ * (chart_engine::wire::ProfileDerivedWire): sent by servers since the
+ * profile-figures change on every increment whose `profile` rows are
+ * non-empty. `total` present = take all three as sent, as from a snapshot
+ * (`poc`/`valueArea` null once cancels emptied the profile); absent (an
+ * older server, or a frame that changed no rows) = recompute from the rows.
+ */
+export interface ProfileFigures {
+  total?: number;
+  poc?: number | null;
+  valueArea?: ValueArea | null;
+}
+
+/**
  * Upserts the candle at candle.t. It may be an older, already-final candle
  * revised by a late trade, correction or cancel. A candle at t supersedes any
  * gap covering t. `profile` holds the bins this event touched, as ABSOLUTE
  * totals in `session`'s profile (replace, never add).
  */
-export interface ChartUpdate {
+export interface ChartUpdate extends ProfileFigures {
   type: "chart.update";
   symbol: string;
   timeframe: Timeframe;
@@ -186,7 +200,7 @@ export interface ChartUpdate {
 }
 
 /** A cancel or correction emptied the interval at t: delete whatever is there. */
-export interface ChartRemove {
+export interface ChartRemove extends ProfileFigures {
   type: "chart.remove";
   symbol: string;
   timeframe: Timeframe;
@@ -197,7 +211,7 @@ export interface ChartRemove {
 }
 
 /** A gap opened. */
-export interface ChartGap {
+export interface ChartGap extends ProfileFigures {
   type: "chart.gap";
   symbol: string;
   timeframe: Timeframe;

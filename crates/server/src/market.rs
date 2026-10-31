@@ -654,6 +654,9 @@ pub(crate) struct Inner {
     /// market's "now" between clock frames. Not a plain running max: a seek resets it, and a
     /// replay print further back than a late arrival is followed down (`Market::wake_rocket`).
     rocket_print_sec: AtomicI64,
+    /// Profile reads and finished candle frames shared by the connections watching a chart
+    /// (crate::profile_frames). Locked on its own, never while core is held.
+    frame_cache: Mutex<crate::profile_frames::FrameCache>,
     /// When `clock` was last set, for `Market::decision_now` (live extrapolation).
     clock_set: Mutex<Option<std::time::Instant>>,
     /// `VOLUME_SHELVES` (with `ROCKET_WATCH`): every `Core` gets an enabled `crate::zones` board.
@@ -894,6 +897,7 @@ impl Market {
             rocket_log: std::sync::OnceLock::new(),
             rocket_wake: Arc::new(tokio::sync::Notify::new()),
             rocket_print_sec: AtomicI64::new(i64::MIN),
+            frame_cache: Mutex::new(crate::profile_frames::FrameCache::default()),
             clock_set: Mutex::new(None),
             zones_on: AtomicBool::new(true),
             zones_log: std::sync::OnceLock::new(),
@@ -3113,60 +3117,64 @@ impl Market {
         core.quotes.prev_close_on(&snap.symbol, day)
     }
 
-    /// The increment's JSON at another profile bin width: the touched bins re-binned, with
-    /// absolute totals read from the engine now.
-    pub fn rebin(&self, update: &ChartUpdate, json: &str, bin: Price) -> String {
-        if bin == self.0.bin {
+    /// The candle increment `item` (whose `update` and `json` are passed in) as a connection
+    /// watching it at profile bin `bin` must get it: the touched bins re-binned with absolute
+    /// totals, plus the whole profile's `total`, `poc` and `valueArea` whenever rows changed
+    /// (crate::profile_frames, which says why this happens here and how the reads are shared).
+    /// A frame that changes no rows at the default bin goes out exactly as serialized.
+    pub fn chart_frame(
+        &self,
+        item: &Arc<Outbound>,
+        update: &ChartUpdate,
+        json: &str,
+        bin: Price,
+    ) -> String {
+        let Some((session, rows)) = crate::profile_frames::profile_of(update) else {
+            return json.to_string();
+        };
+        if rows.is_empty() && bin == self.0.bin {
             return json.to_string();
         }
-        let (session, rows) = match update {
-            ChartUpdate::Candle(c) => (&c.session, &c.profile),
-            ChartUpdate::Remove(c) => (&c.session, &c.profile),
-            ChartUpdate::Gap(c) => (&c.session, &c.profile),
-            ChartUpdate::Tape(_) | ChartUpdate::Halt(_) | ChartUpdate::Luld(_) => {
-                return json.to_string();
-            }
-        };
-        let mut touched: Vec<Price> = rows
-            .iter()
-            .filter_map(|r| Price::from_f64_rounded(r.p))
-            .map(|p| p.floor_to(bin))
-            .collect();
-        touched.sort();
-        touched.dedup();
-        let symbol = update.symbol();
-        let all = session
-            .parse::<SessionId>()
-            .ok()
-            .and_then(|s| {
-                let core = self.0.core.lock().expect("core lock");
-                core.engine.profile_rows(symbol, s, bin)
-            })
-            .unwrap_or_default();
-        let new_rows: Vec<chart_engine::wire::ProfileRow> = touched
-            .iter()
-            .map(|b| chart_engine::wire::ProfileRow {
-                p: b.to_f64(),
-                v: all.iter().find(|(p, _)| p == b).map_or(0, |(_, v)| *v),
-            })
-            .collect();
-        let mut u = update.clone();
-        match &mut u {
-            ChartUpdate::Candle(c) => {
-                c.profile_bin = bin.to_f64();
-                c.profile = new_rows;
-            }
-            ChartUpdate::Remove(c) => {
-                c.profile_bin = bin.to_f64();
-                c.profile = new_rows;
-            }
-            ChartUpdate::Gap(c) => {
-                c.profile_bin = bin.to_f64();
-                c.profile = new_rows;
-            }
-            ChartUpdate::Tape(_) | ChartUpdate::Halt(_) | ChartUpdate::Luld(_) => {}
+        if let Some(hit) = self.frames().frame(item, bin) {
+            return hit;
         }
-        serde_json::to_string(&u).expect("wire types serialize")
+        let read = match session.parse::<SessionId>() {
+            Ok(s) if !rows.is_empty() => self.profile_read(update.symbol(), s, bin, item.seq),
+            _ => None,
+        };
+        let u = crate::profile_frames::build(update, bin, read.as_ref());
+        let out = serde_json::to_string(&u).expect("wire types serialize");
+        self.frames().put_frame(item, bin, out.clone());
+        out
+    }
+
+    fn frames(&self) -> std::sync::MutexGuard<'_, crate::profile_frames::FrameCache> {
+        self.0.frame_cache.lock().expect("frame cache lock")
+    }
+
+    /// The whole profile of (symbol, session) at `bin`, current for a frame at `seq`: from the
+    /// cache, else read under the core lock (the cache lock is never held across it).
+    fn profile_read(
+        &self,
+        symbol: &str,
+        session: SessionId,
+        bin: Price,
+        seq: u64,
+    ) -> Option<crate::profile_frames::ProfileRead> {
+        if let Some(hit) = self.frames().read(symbol, session, bin, seq) {
+            return Some(hit);
+        }
+        let (core_seq, rows) = {
+            let core = self.0.core.lock().expect("core lock");
+            (core.seq, core.engine.profile_rows(symbol, session, bin)?)
+        };
+        let read = crate::profile_frames::ProfileRead {
+            seq: core_seq,
+            derived: chart_engine::profile::derive(&rows, chart_engine::VALUE_AREA_PERCENT),
+            rows: Arc::new(rows),
+        };
+        self.frames().put_read(symbol, session, bin, read.clone());
+        Some(read)
     }
 
     /// Applies a `replay.control` action. Replay mode only.

@@ -72,6 +72,27 @@ impl TickProfile {
     }
 }
 
+/// What a client draws besides the rows: the session total, the POC and the value area, all from
+/// one set of rows at one bin width. The snapshot and every increment that changes rows carry it
+/// (the server fills increments in, per bin: `crates/server/src/market.rs` `chart_frame`), so a
+/// client never recomputes them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Derived {
+    /// Sum of every row: equal to [`TickProfile::total`], since the rows partition its ticks.
+    pub total: u64,
+    pub poc: Option<Price>,
+    pub value_area: Option<(Price, Price, u64)>,
+}
+
+/// [`Derived`] of `rows` (non-empty bins, ascending, as [`TickProfile::rows`] gives them).
+pub fn derive(rows: &[(Price, u64)], value_area_percent: u32) -> Derived {
+    Derived {
+        total: rows.iter().map(|(_, v)| *v).sum(),
+        poc: poc(rows),
+        value_area: value_area(rows, value_area_percent),
+    }
+}
+
 /// Point of control: the bin with the most volume; the lowest price wins a tie.
 pub fn poc(rows: &[(Price, u64)]) -> Option<Price> {
     poc_index(rows).map(|i| rows[i].0)
@@ -175,5 +196,21 @@ mod tests {
         assert_eq!(poc(&[(c(1), 5), (c(2), 5)]), Some(c(1)));
         assert_eq!(value_area(&[], 70), None);
         assert_eq!(value_area(&[(c(5), 9)], 70), Some((c(5), c(5), 9)));
+        assert_eq!(
+            derive(&rows, 70),
+            Derived {
+                total: 100,
+                poc: Some(c(102)),
+                value_area: Some((c(101), c(102), 70))
+            }
+        );
+        assert_eq!(
+            derive(&[], 70),
+            Derived {
+                total: 0,
+                poc: None,
+                value_area: None
+            }
+        );
     }
 }

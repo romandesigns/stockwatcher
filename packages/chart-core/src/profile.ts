@@ -2,9 +2,10 @@ import type { ProfileRow, ValueArea } from "./types.ts";
 
 // Session volume profile helpers. Rows come from the server (actual traded
 // volume per price bin). POC and value area replicate
-// crates/chart-engine/src/profile.rs exactly, because the client has to
-// recompute them after incremental updates (only snapshots carry them) and
-// every client must agree with the server.
+// crates/chart-engine/src/profile.rs exactly. The server sends them on the
+// snapshot and on every row-changing increment (store.ts takes those as sent);
+// this copy is only for an older server's increments, which carry rows alone,
+// and goes when no such server is left.
 
 const keyOf = (p: number, bin: number) => Math.round(p / bin);
 

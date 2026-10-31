@@ -105,6 +105,22 @@ describe("snapshot and increments", () => {
     expect(s.quality).toEqual(snap.quality);
   });
 
+  test("an increment carrying the server's figures is taken as sent; rows still merge", () => {
+    let s = applySnapshot(undefined, fixtureSnapshot());
+    const last = s.candles.at(-1)!;
+    // Deliberately not what the rows would give: the client must not recompute them.
+    const figures = { total: 123, poc: 3.19, valueArea: { low: 3.19, high: 3.24, v: 100 } };
+    s = applyIncrement(s, { ...update(last, [{ p: 3.21, v: 9000 }]), ...figures });
+    expect(s.profile!.rows.find((r) => r.p === 3.21)!.v).toBe(9000);
+    expect(s.profile).toMatchObject(figures);
+    // Cancels emptied the profile: null POC and value area, sent as such.
+    s = applyIncrement(s, { ...update(last, [{ p: 3.21, v: 0 }]), total: 0, poc: null, valueArea: null });
+    expect(s.profile).toMatchObject({ total: 0, poc: null, valueArea: null });
+    // An older server's frame (no total) falls back to the local rules.
+    s = applyIncrement(s, update(last, [{ p: 3.21, v: 9000 }]));
+    expect(s.profile!.poc).toBe(3.21);
+  });
+
   test("ring buffer drops the oldest candles and their gaps", () => {
     const s = applySnapshot(undefined, fixtureSnapshot("1m", 20, [2, 15]), { maxCandles: 10 });
     expect(s.candles).toHaveLength(10);

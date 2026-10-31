@@ -449,6 +449,7 @@ impl Ctx<'_> {
                 candle,
                 profile_bin: self.bin.to_f64(),
                 profile: self.rows.to_vec(),
+                derived: None,
             })),
             None => out.push(ChartUpdate::Gap(GapUpdate {
                 symbol: self.symbol.to_string(),
@@ -457,6 +458,7 @@ impl Ctx<'_> {
                 gap: b.volume_gap(tf),
                 profile_bin: self.bin.to_f64(),
                 profile: self.rows.to_vec(),
+                derived: None,
             })),
         }
     }
@@ -475,6 +477,7 @@ impl Ctx<'_> {
             t: ms(start),
             profile_bin: self.bin.to_f64(),
             profile: self.rows.to_vec(),
+            derived: None,
         }));
     }
 }
@@ -549,6 +552,7 @@ impl Series {
                         },
                         profile_bin: ctx.bin.to_f64(),
                         profile: Vec::new(),
+                        derived: None,
                     }));
                 }
                 match self.insert(

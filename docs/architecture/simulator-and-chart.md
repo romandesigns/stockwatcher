@@ -535,6 +535,11 @@ stamped on it. The increments are serialized to JSON once and broadcast on a bou
   the same chart share one stream and the client routes by the frame's own symbol, timeframe
   and `profileBin`. Chart errors carry `symbol` and the slot's `id`;
 - other bin widths are re-binned from the engine's exact per-price volume, with absolute totals;
+- an increment whose `profile` rows are non-empty also carries the whole session profile's
+  `total`, `poc` and `valueArea` at the frame's bin (2026-10-31, additive; `null` POC and value
+  area once cancels emptied it). Clients take them as sent and only merge rows; without `total`
+  (an older server) they recompute. Filled in per bin as the frame goes out, with one profile
+  read per chart change shared by every connection (`crates/server/src/profile_frames.rs`);
 - indicators computed on the server (2026-10-31, `indicators.v1` in `welcome.features`):
   `chart.subscribe` may carry `indicators` (the slot's spec list) and `rth` (extended hours off);
   the slot then gets `chart.indicators` right after its `chart.snapshot` (same seq) and

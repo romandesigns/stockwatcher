@@ -24,6 +24,9 @@
 //!   once per distinct (symbol, timeframe, bin) held, a tape, halt or LULD row once per symbol.
 //!   Two slots showing the same chart share one stream; the client routes frames by the symbol,
 //!   timeframe and `profileBin` they already carry, not by slot.
+//! - A candle frame whose `profile` rows are non-empty also carries the whole profile's `total`,
+//!   `poc` and `valueArea` at that frame's bin (chart_engine::wire::ProfileDerivedWire; additive,
+//!   older clients ignore it): crate::profile_frames.
 //! - Chart errors (`unknown_symbol`, `outside_price_band`) carry the `symbol` and, for a named
 //!   slot, its `id`, so a client with several charts knows which one was refused.
 //! - server `replay.clock {clock}` to every client, on change and ~4 Hz while
@@ -1106,7 +1109,8 @@ async fn session(mut socket: WebSocket, state: AppState) {
                             }
                         }
                         // A candle frame: once per distinct bin among the slots on this chart
-                        // that have not already got it in their snapshot.
+                        // that have not already got it in their snapshot, with the profile's
+                        // figures for that bin (Market::chart_frame).
                         OutKind::Chart { symbol, timeframe: Some(tf), update, json } => {
                             let mut bins: Vec<Price> = Vec::new();
                             for s in subs.iter().filter(|s| s.symbol == *symbol && s.timeframe == *tf && o.seq > s.seq) {
@@ -1116,7 +1120,7 @@ async fn session(mut socket: WebSocket, state: AppState) {
                             }
                             let mut ok = true;
                             for bin in bins {
-                                if !send_text(&mut socket, market.rebin(update, json, bin)).await {
+                                if !send_text(&mut socket, market.chart_frame(&o, update, json, bin)).await {
                                     ok = false;
                                     break;
                                 }

@@ -395,6 +395,103 @@ async fn other_profile_bins_are_rebinned() {
     assert_eq!(cents % 5, 0);
 }
 
+/// Folds an increment's touched rows into `rows` (bin key = cents / bin cents), as a client does.
+fn fold_rows(rows: &mut std::collections::BTreeMap<i64, u64>, frame: &Value) {
+    for r in frame["profile"].as_array().unwrap() {
+        let k = (r["p"].as_f64().unwrap() * 100.0).round() as i64;
+        match r["v"].as_u64().unwrap() {
+            0 => rows.remove(&k),
+            v => rows.insert(k, v),
+        };
+    }
+}
+
+fn snapshot_rows(snap: &Value) -> std::collections::BTreeMap<i64, u64> {
+    snap["profile"]["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| {
+            (
+                (r["p"].as_f64().unwrap() * 100.0).round() as i64,
+                r["v"].as_u64().unwrap(),
+            )
+        })
+        .collect()
+}
+
+/// Increments that change profile rows carry the whole profile's `total`, `poc` and `valueArea`
+/// at the frame's bin (crate::profile_frames), at the default bin as at any other, and a client
+/// that folds the rows and takes the figures as sent ends exactly where a fresh snapshot is.
+#[tokio::test]
+async fn increments_carry_the_profiles_figures_at_every_bin() {
+    let s = stack(&[]).await;
+    let mut ws = connect(&s.url).await;
+    wait_for_replay(&mut ws).await;
+    let at = |id: &str, bin: f64| json!({"type":"chart.subscribe","id":id,"symbol":"SMPL","timeframe":"1m","profileBin":bin});
+    send(&mut ws, at("a", 0.01)).await;
+    let snap_a = next(&mut ws, is("chart.snapshot")).await;
+    send(&mut ws, at("b", 0.05)).await;
+    let snap_b = next(&mut ws, is("chart.snapshot")).await;
+    assert_eq!(snap_b["profile"]["bin"], 0.05);
+    let mut rows = [snapshot_rows(&snap_a), snapshot_rows(&snap_b)];
+    let mut last: [Option<Value>; 2] = [None, None];
+    let mut seen = [0, 0];
+    // Play on until both bins have had a good number of row-changing frames, then pause.
+    while seen[0] < 40 || seen[1] < 40 {
+        let m = next(&mut ws, |m| m["type"] == "chart.update").await;
+        let i = if m["profileBin"] == 0.01 { 0 } else { 1 };
+        assert_eq!(
+            m.get("total").is_some(),
+            !m["profile"].as_array().unwrap().is_empty()
+        );
+        if m["profile"].as_array().unwrap().is_empty() {
+            continue;
+        }
+        let poc = m["poc"].as_f64().unwrap();
+        let (lo, hi) = (
+            m["valueArea"]["low"].as_f64().unwrap(),
+            m["valueArea"]["high"].as_f64().unwrap(),
+        );
+        assert!(lo <= poc && poc <= hi, "{m}");
+        let bin_cents = if i == 0 { 1 } else { 5 };
+        assert_eq!(((poc * 100.0).round() as i64) % bin_cents, 0);
+        fold_rows(&mut rows[i], &m);
+        last[i] = Some(m);
+        seen[i] += 1;
+    }
+    send(&mut ws, json!({"type":"replay.control","action":"pause"})).await;
+    // Every increment before the pause is on the socket ahead of the paused clock; keep folding.
+    loop {
+        let m = next(&mut ws, |m| {
+            m["type"] == "chart.update"
+                || m["type"] == "chart.remove"
+                || m["type"] == "chart.gap"
+                || (m["type"] == "replay.clock" && m["clock"]["playing"] == false)
+        })
+        .await;
+        if m["type"] == "replay.clock" {
+            break;
+        }
+        if m["profile"].as_array().unwrap().is_empty() {
+            continue;
+        }
+        let i = if m["profileBin"] == 0.01 { 0 } else { 1 };
+        fold_rows(&mut rows[i], &m);
+        last[i] = Some(m);
+    }
+    // Fresh snapshots of the paused engine: the folded rows and the last figures sent match.
+    for (i, (id, bin)) in [("c", 0.01), ("d", 0.05)].into_iter().enumerate() {
+        send(&mut ws, at(id, bin)).await;
+        let snap = next(&mut ws, is("chart.snapshot")).await;
+        assert_eq!(rows[i], snapshot_rows(&snap), "bin {bin}");
+        let l = last[i].as_ref().unwrap();
+        assert_eq!(l["total"], snap["profile"]["total"], "bin {bin}");
+        assert_eq!(l["poc"], snap["profile"]["poc"], "bin {bin}");
+        assert_eq!(l["valueArea"], snap["profile"]["valueArea"], "bin {bin}");
+    }
+}
+
 #[tokio::test]
 async fn rest_routes() {
     let s = stack(&[("REPLAY_AUTOPLAY", "0")]).await;

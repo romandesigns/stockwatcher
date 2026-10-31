@@ -15,19 +15,27 @@ import { parseChartMessage, type ChartUpdate, type TapeTrade } from "./types.ts"
 const crate = join(import.meta.dir, "../../../crates/chart-engine");
 const read = (p: string) => readFileSync(join(crate, p), "utf8");
 
-/** Field names of `pub struct Name { … }` after serde camelCase and explicit renames. */
+/**
+ * Field names of `pub struct Name { … }` after serde camelCase and explicit renames. A
+ * `#[serde(flatten …)]` field contributes its own struct's fields (`derived:
+ * Option<ProfileDerivedWire>` puts `total`, `poc`, `valueArea` on the increments).
+ */
 function rustFields(src: string, name: string): string[] {
   const m = new RegExp(`pub struct ${name} \\{([\\s\\S]*?)\\n\\}`).exec(src);
   if (!m) throw new Error(`struct ${name} not found`);
   const out: string[] = [];
   let rename: string | null = null;
+  let flatten = false;
   for (const line of m[1]!.split("\n")) {
     const r = /#\[serde\(rename = "([^"]+)"\)\]/.exec(line);
     if (r) rename = r[1]!;
-    const f = /^\s*pub (\w+):/.exec(line);
+    if (/#\[serde\(flatten\b/.test(line)) flatten = true;
+    const f = /^\s*pub (\w+):\s*(?:Option<)?(\w+)/.exec(line);
     if (f) {
-      out.push(rename ?? f[1]!.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase()));
+      if (flatten) out.push(...rustFields(src, f[2]!));
+      else out.push(rename ?? f[1]!.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase()));
       rename = null;
+      flatten = false;
     }
   }
   return out.sort();
@@ -43,9 +51,11 @@ const TS_FIELDS: Record<string, string[]> = {
   SessionInfo: ["id", "start", "end"],
   ClockInfo: ["mode", "now", "speed", "playing"],
   ChartSnapshot: ["type", "symbol", "timeframe", "session", "candles", "gaps", "profile", "quality", "clock", "halts", "luld", "prevClose"],
-  CandleUpdate: ["symbol", "timeframe", "session", "candle", "profileBin", "profile"],
-  CandleRemove: ["symbol", "timeframe", "session", "t", "profileBin", "profile"],
-  GapUpdate: ["symbol", "timeframe", "session", "gap", "profileBin", "profile"],
+  ProfileDerivedWire: ["total", "poc", "valueArea"],
+  // The increments: their own fields plus ProfileDerivedWire's, flattened (types.ts ProfileFigures).
+  CandleUpdate: ["symbol", "timeframe", "session", "candle", "profileBin", "profile", "total", "poc", "valueArea"],
+  CandleRemove: ["symbol", "timeframe", "session", "t", "profileBin", "profile", "total", "poc", "valueArea"],
+  GapUpdate: ["symbol", "timeframe", "session", "gap", "profileBin", "profile", "total", "poc", "valueArea"],
   TapeTrade: ["symbol", "t", "tsNs", "p", "s", "exchange", "seq", "conditions", "counted", "reason", "session"],
 };
 

@@ -590,6 +590,7 @@ mod tests {
             candle,
             profile_bin: 0.01,
             profile: Vec::new(),
+            derived: None,
         });
         let frames = reg.on_updates(&[u]);
         let f: Value = serde_json::from_str(&frames[0].1).unwrap();

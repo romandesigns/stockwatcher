@@ -11,6 +11,10 @@
 //!   a late trade, correction or cancel revised); a candle at `t` supersedes any gap covering `t`;
 //! - `chart.remove` deletes whatever is at `t` (a cancel/correction emptied that interval);
 //! - `chart.gap` adds a gap marker; `profile` rows carry **absolute** bin totals, not deltas;
+//! - an increment whose `profile` rows are non-empty may also carry `total`, `poc` and
+//!   `valueArea` ([`ProfileDerivedWire`]): the whole session profile's, at the frame's
+//!   `profileBin`, read when the frame was sent. Present = take them as sent (as from a snapshot);
+//!   absent (the engine never sets them, an older server) = recompute from the rows;
 //! - `chart.halt` and `chart.luld` do not depend on the timeframe (docs/architecture/
 //!   halts-luld-fills.md): a client upserts a halt by `start` and a LULD point by `t`.
 
@@ -77,6 +81,16 @@ pub struct ValueArea {
     /// Highest bin start inside the value area.
     pub high: f64,
     pub v: u64,
+}
+
+/// The profile's derived figures on an increment (module docs). `total` is always there when the
+/// struct is; `poc` and `valueArea` are `null` once cancels have emptied the session's profile.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileDerivedWire {
+    pub total: u64,
+    pub poc: Option<f64>,
+    pub value_area: Option<ValueArea>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -199,6 +213,9 @@ pub struct CandleUpdate {
     pub profile_bin: f64,
     /// Profile bins this event changed (absolute totals), in `session`'s profile.
     pub profile: Vec<ProfileRow>,
+    /// Set by the server (never the engine) when `profile` is non-empty: module docs.
+    #[serde(flatten, default, skip_serializing_if = "Option::is_none")]
+    pub derived: Option<ProfileDerivedWire>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -211,6 +228,9 @@ pub struct CandleRemove {
     pub t: i64,
     pub profile_bin: f64,
     pub profile: Vec<ProfileRow>,
+    /// Set by the server (never the engine) when `profile` is non-empty: module docs.
+    #[serde(flatten, default, skip_serializing_if = "Option::is_none")]
+    pub derived: Option<ProfileDerivedWire>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -222,6 +242,9 @@ pub struct GapUpdate {
     pub gap: GapWire,
     pub profile_bin: f64,
     pub profile: Vec<ProfileRow>,
+    /// Set by the server (never the engine) when `profile` is non-empty: module docs.
+    #[serde(flatten, default, skip_serializing_if = "Option::is_none")]
+    pub derived: Option<ProfileDerivedWire>,
 }
 
 /// One row of the trade tape, showing how the engine counted the print.

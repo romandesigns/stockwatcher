@@ -14,6 +14,7 @@ import {
   type Gap,
   type Halt,
   type LuldPoint,
+  type ProfileFigures,
   type ProfileRow,
   type ProfileWire,
   type SessionRef,
@@ -35,7 +36,11 @@ export interface Series {
   candles: Candle[];
   /** Sorted by t, non-overlapping. */
   gaps: Gap[];
-  /** Current session's profile; total/poc/valueArea recomputed after every increment. */
+  /**
+   * Current session's profile. total/poc/valueArea are the server's (snapshot, and every
+   * row-changing increment from a server that sends them); recomputed here only for an older
+   * server's increments.
+   */
   profile: ProfileWire | null;
   /** From the last snapshot (increments do not carry counters). */
   quality: DataQuality | null;
@@ -116,8 +121,14 @@ function supersedeGaps(gaps: Gap[], t: number, tfMs: number): void {
   gaps.splice(i, 1, ...pieces);
 }
 
-function withDerived(p: Omit<ProfileWire, "total" | "poc" | "valueArea">): ProfileWire {
+/**
+ * The profile after a change. `figures` are the server's (an increment with `total`): taken as
+ * sent, so the client only merges rows. Without them (an older server) total, POC and value area
+ * are recomputed here, the same rules as crates/chart-engine/src/profile.rs.
+ */
+function withDerived(p: Omit<ProfileWire, "total" | "poc" | "valueArea">, figures?: ProfileFigures): ProfileWire {
   const rows = normalizeRows(p.rows, p.bin);
+  if (figures && typeof figures.total === "number") return { bin: p.bin, anchor: p.anchor, rows, total: figures.total, poc: figures.poc ?? null, valueArea: figures.valueArea ?? null };
   return { bin: p.bin, anchor: p.anchor, rows, total: profileTotal(rows), poc: pointOfControl(rows), valueArea: valueArea(rows, p.bin) };
 }
 
@@ -148,7 +159,7 @@ export function applySnapshot(prev: Series | undefined, snap: ChartSnapshot, opt
  * (e.g. a late print from premarket arriving just after the open); rows for a
  * newer session start that session's profile.
  */
-function mergeProfile(s: Series, session: string, bin: number, rows: readonly ProfileRow[]): void {
+function mergeProfile(s: Series, session: string, bin: number, rows: readonly ProfileRow[], figures?: ProfileFigures): void {
   const current = s.profile;
   if (current && !sameBin(current.bin, bin)) return; // a stale subscription's bin
   if (!current || current.anchor !== session) {
@@ -163,7 +174,7 @@ function mergeProfile(s: Series, session: string, bin: number, rows: readonly Pr
   const byKey = new Map<number, ProfileRow>();
   for (const r of s.profile!.rows) byKey.set(Math.round(r.p / bin), r);
   for (const r of rows) byKey.set(Math.round(r.p / bin), { p: r.p, v: r.v });
-  s.profile = withDerived({ bin, anchor: session, rows: [...byKey.values()] });
+  s.profile = withDerived({ bin, anchor: session, rows: [...byKey.values()] }, figures);
 }
 
 /** Applies one increment, returning a new Series object. */
@@ -179,7 +190,7 @@ export function applyIncrement(prev: Series, inc: ChartIncrement, opts: StoreOpt
   } else {
     upsert(next.gaps, inc.gap);
   }
-  mergeProfile(next, inc.session, inc.profileBin, inc.profile);
+  mergeProfile(next, inc.session, inc.profileBin, inc.profile, inc);
   trim(next, opts.maxCandles ?? DEFAULT_MAX);
   return next;
 }
