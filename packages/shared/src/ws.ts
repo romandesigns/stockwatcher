@@ -177,8 +177,10 @@ export function createWsClient(opts: WsClientOptions): WsClient {
       if (msg.type === "welcome") {
         attempt = 0;
         heartbeatMs = msg.heartbeatSecs * 1000;
-        setStatus("open");
+        // Before "open": the chart feeds resubscribe on "open" and read the welcome's `features`
+        // (indicators.v1) to decide what their chart.subscribe carries.
         opts.onWelcome?.(msg);
+        setStatus("open");
         opts.settings?.attach(send);
         if (quotesWanted) send({ type: "quotes.subscribe" });
         if (pressureWanted) send({ type: "pressure.subscribe" });

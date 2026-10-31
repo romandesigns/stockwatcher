@@ -15,6 +15,8 @@ import {
   buildSlots,
   computeChartModel,
   computeIndicators,
+  indicatorParity as measureIndicatorParity,
+  serverIndicatorResults,
   emptyHistory,
   record,
   redo,
@@ -72,6 +74,7 @@ import {
   type DrawingDraft,
   type DrawingKind,
   type IndicatorSpec,
+  type IndicatorValuesLike,
   type ObjectHit,
   type OrderModify,
   type OrderPlace,
@@ -197,6 +200,21 @@ export interface CandleChartProps {
   /** Indicators on the chart. Controlled when onIndicatorsChange is set. */
   indicators?: IndicatorSpec[];
   onIndicatorsChange?: (specs: IndicatorSpec[]) => void;
+  /**
+   * The server's values for `indicators` (`indicators.v1`: the feed's `indicators`, the store's
+   * set for this chart's extended-hours setting). Present, the chart draws them and computes
+   * nothing (null = asked, not answered yet: no lines); absent (an older server, the fixture
+   * feed), it computes them itself from the candles. Needs controlled `indicators`: the host
+   * sends the same list to the server.
+   */
+  serverIndicators?: IndicatorValuesLike | null;
+  /**
+   * Dev shadow (`?indicatorParity=1` on the web pages): with `serverIndicators`, also compute
+   * the indicators locally and log the largest |server − local| per spec to the console and to
+   * `window.__indicatorParity` (read through CDP on replay). Expect 0 except the divergences
+   * documented in crates/chart-engine/src/indicators.rs.
+   */
+  indicatorParity?: boolean;
   /** This symbol's drawings. Controlled when onDrawingsChange is set. */
   drawings?: Drawing[];
   onDrawingsChange?: (drawings: Drawing[]) => void;
@@ -339,6 +357,8 @@ export function CandleChart({
   toolbar = false,
   indicators: indicatorsProp,
   onIndicatorsChange,
+  serverIndicators,
+  indicatorParity = false,
   drawings: drawingsProp,
   onDrawingsChange,
   persistKey,
@@ -520,7 +540,29 @@ export function CandleChart({
   const allSlots = useMemo(() => (series ? buildSlots(series.candles, series.gaps) : []), [series]);
   const slots = useMemo(() => sessionSlots(allSlots, settings.extendedHours), [allSlots, settings.extendedHours]);
   const visibility = settings.visibility;
-  const indicatorResults = useMemo(() => (visibility.indicators ? computeIndicators(slots, indicatorSpecs) : []), [slots, indicatorSpecs, visibility.indicators]);
+  const indicatorResults = useMemo(
+    () => (!visibility.indicators ? [] : serverIndicators !== undefined ? serverIndicatorResults(slots, indicatorSpecs, serverIndicators) : computeIndicators(slots, indicatorSpecs)),
+    [slots, indicatorSpecs, visibility.indicators, serverIndicators],
+  );
+  // The parity shadow, at most twice a second (a 10x replay updates far faster), always ending on
+  // the latest values: a candle frame and its indicator frame are separate messages, so between
+  // them the forming bar differs for a moment (`fromEnd` 0); a paused replay must read 0.
+  const parity = useRef({ at: 0, timer: 0, input: { server: indicatorResults, slots, specs: indicatorSpecs, symbol, timeframe } });
+  useEffect(() => {
+    if (!indicatorParity || !serverIndicators) return;
+    const p = parity.current;
+    p.input = { server: indicatorResults, slots, specs: indicatorSpecs, symbol, timeframe };
+    if (p.timer) return;
+    p.timer = window.setTimeout(() => {
+      p.timer = 0;
+      p.at = performance.now();
+      const { server, slots: shown, specs, symbol: sym, timeframe: tf } = p.input;
+      const report = measureIndicatorParity(server, computeIndicators(shown, specs));
+      (window as unknown as { __indicatorParity?: unknown }).__indicatorParity = { symbol: sym, timeframe: tf, at: Date.now(), report };
+      console.info("[indicatorParity]", sym, tf, report);
+    }, Math.max(0, 500 - (performance.now() - p.at)));
+  }, [indicatorParity, serverIndicators, indicatorResults, slots, indicatorSpecs, symbol, timeframe]);
+  useEffect(() => () => window.clearTimeout(parity.current.timer), []);
 
   const last = useMemo(() => lastCandle(slots)?.c ?? null, [slots]);
   // The server's official previous close wins over one read off the candles (levels.ts).

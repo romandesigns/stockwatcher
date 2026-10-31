@@ -1,4 +1,4 @@
-import type { ChartMessage, OrderCancel, OrderModify, OrderPlace, PaperMessage, PaperState, ReplayControl, Timeframe } from "@stockwatcher/chart-core";
+import type { ChartMessage, IndicatorDemand, OrderCancel, ServerIndicatorsChannel, OrderModify, OrderPlace, PaperMessage, PaperState, ReplayControl, Timeframe } from "@stockwatcher/chart-core";
 import type { DetectionChannel, FavoritesChannel, MoversChannel, PressureChannel, QuoteChannel, RocketChannel, RossChannel } from "@stockwatcher/shared";
 
 export interface ChartSubscription {
@@ -11,6 +11,11 @@ export interface ChartSubscription {
    * MAX_CHARTS_PER_CONNECTION). Absent = the single default slot (the chart page).
    */
   id?: string;
+  /**
+   * What the chart wants the server to compute (`indicators.v1`; chart-core `indicatorDemand`).
+   * Sent on `chart.subscribe` only when the server advertised it; ignored by the fixture feed.
+   */
+  indicators?: IndicatorDemand;
 }
 
 export type ReplayCommand = Omit<ReplayControl, "type">;
@@ -41,6 +46,8 @@ export interface ChartFeed {
   readonly rocket?: RocketChannel;
   /** Independent Rust event discovery; subscribing never changes its monitored universe. */
   readonly detection?: DetectionChannel;
+  /** Server-computed chart indicators (server feed only; the fixture computes none). */
+  readonly indicators?: ServerIndicatorsChannel;
   close(): void;
 }
 

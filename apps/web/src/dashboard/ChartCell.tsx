@@ -1,11 +1,11 @@
 import type { DashboardSlot } from "@stockwatcher/app-state";
-import { buildSlots, changeReference, formatChange, formatEtDateKey, formatPrice, lastCandle, tradingDayOf, type ChartLayers, type ChartOptions, type IndicatorSpec } from "@stockwatcher/chart-core";
+import { buildSlots, changeReference, formatChange, formatEtDateKey, formatPrice, indicatorDemand, lastCandle, tradingDayOf, type ChartLayers, type ChartOptions, type IndicatorSpec } from "@stockwatcher/chart-core";
 import { CandleChart, type ChartTrading } from "@stockwatcher/chart-web";
 import { cn, Tip } from "@stockwatcher/chart-web/ui";
 import { TickerLabel } from "../lib/TickerLabel.tsx";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import type { ChartFeed } from "../feed/types.ts";
-import { useChartFeed } from "../feed/useChartFeed.ts";
+import { INDICATOR_PARITY, useChartFeed } from "../feed/useChartFeed.ts";
 import { useChartAlerts } from "../alerts/useChartAlerts.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { getAppStore, useApp } from "../state/store.ts";
@@ -52,7 +52,16 @@ export function ChartCell({ index, slot, symbol, feed, trading, selected, showSe
   const bin = useApp((s) => s.bin);
   // A phone-width cell has no room for four touch-size segments beside the ticker either.
   const phone = useMediaQuery("(max-width: 600px)");
-  const { series, clock } = useChartFeed(feed, symbol, slot.timeframe, bin, `d${index}`);
+  const indicators = useApp((s) => s.indicators);
+  const chartSettings = useApp((s) => s.chartSettings);
+  // Settings → Chart → "Same indicators and levels on every chart" (owner, 2026-10-18): linked, every
+  // chart shows and edits the shared set; unlinked, this chart has its own (app-state slot), which
+  // starts as the shared one and is written back to the slot only.
+  const linked = chartSettings.visibility.linkStudies;
+  const ownIndicators = linked ? indicators : (slot.indicators ?? indicators);
+  // This cell's effective list goes to the server, which computes it (indicators.v1).
+  const demand = useMemo(() => indicatorDemand(ownIndicators, chartSettings), [ownIndicators, chartSettings]);
+  const { series, clock, indicators: serverIndicators } = useChartFeed(feed, symbol, slot.timeframe, bin, `d${index}`, demand);
   const discovery = useDetection(feed.detection);
   const noticeSelection = useApp((s) => s.noticeSelection);
   const pickedContext = !fixture && noticeSelection?.index === index && noticeSelection.context.symbol === symbol && noticeSelection.source === "live" ? noticeSelection.context : undefined;
@@ -76,15 +85,8 @@ export function ChartCell({ index, slot, symbol, feed, trading, selected, showSe
   // the caption show with the Runners tab closed); one object per change, not per frame.
   const zones = useZones(feed.rocket, symbol);
 
-  const indicators = useApp((s) => s.indicators);
   const layers = useApp((s) => s.layers);
-  const chartSettings = useApp((s) => s.chartSettings);
   const fromRemote = useApp((s) => s.chartSettingsFromRemote);
-  // Settings → Chart → "Same indicators and levels on every chart" (owner, 2026-10-18): linked, every
-  // chart shows and edits the shared set; unlinked, this chart has its own (app-state slot), which
-  // starts as the shared one and is written back to the slot only.
-  const linked = chartSettings.visibility.linkStudies;
-  const ownIndicators = linked ? indicators : (slot.indicators ?? indicators);
   const ownLayers = linked ? layers : (slot.layers ?? layers);
   const onIndicatorsChange = linked ? app.setIndicators : (next: IndicatorSpec[]) => app.setDashboardIndicators(index, next);
   const onLayersChange = linked ? app.setLayers : (next: ChartLayers) => app.setDashboardLayers(index, next);
@@ -169,6 +171,8 @@ export function ChartCell({ index, slot, symbol, feed, trading, selected, showSe
         defaultToolsVisible={false}
         indicators={ownIndicators}
         onIndicatorsChange={onIndicatorsChange}
+        serverIndicators={serverIndicators}
+        indicatorParity={INDICATOR_PARITY}
         layers={ownLayers}
         onLayersChange={onLayersChange}
         settings={chartSettings}

@@ -3,6 +3,8 @@ import { sessionRefFromId } from "./time.ts";
 import {
   TIMEFRAME_MS,
   type Candle,
+  type ChartIndicatorIncrement,
+  type ChartIndicatorsSnapshot,
   type ChartHalt,
   type ChartIncrement,
   type ChartLuld,
@@ -211,6 +213,115 @@ function trim(s: Series, max: number): void {
   }
 }
 
+/**
+ * The server's indicator values for one chart key (symbol, timeframe, rth), `indicators.v1`:
+ * exactly what `chart.indicators` and `chart.indicator` said, kept sorted by bar time. Like
+ * Series, every change produces a NEW object (what renderers key on) while the arrays inside
+ * are reused and mutated in place, so a forming-bar update is O(lines), not a copy.
+ */
+export interface IndicatorValues {
+  symbol: string;
+  timeframe: Timeframe;
+  rth: boolean;
+  /** Bar times, ascending, unique. */
+  t: number[];
+  /** By canonical spec key (indicators.ts `specKey`); each line's values parallel to `t`, NaN = none. */
+  studies: Map<string, { lines: { name: string; style: "line" | "histogram"; values: number[] }[] }>;
+  version: number;
+}
+
+export function indicatorsKey(symbol: string, timeframe: Timeframe, rth: boolean): string {
+  return `${symbol}|${timeframe}|${rth ? "rth" : "eth"}`;
+}
+
+/**
+ * A `chart.indicators` replaces everything held for its chart key, not only the keys it names:
+ * the server always sends a socket the union of its slots' studies on that chart key
+ * (crates/server/src/indicators.rs `Studies::union`), so a key it leaves out is one no slot
+ * asks for any more, and the `t` it carries is the whole series (a seek or day switch must not
+ * leave the old day's bars behind).
+ */
+export function applyIndicatorsSnapshot(prev: IndicatorValues | undefined, snap: ChartIndicatorsSnapshot, max = DEFAULT_MAX): IndicatorValues {
+  const n = snap.t.length;
+  const studies: IndicatorValues["studies"] = new Map();
+  for (const st of snap.studies) {
+    studies.set(st.key, {
+      lines: st.lines.map((l) => {
+        const values = Array.from({ length: n }, () => Number.NaN);
+        l.values.forEach((v, i) => {
+          if (v !== null) values[l.from + i] = v;
+        });
+        return { name: l.name, style: l.style, values };
+      }),
+    });
+  }
+  const next: IndicatorValues = { symbol: snap.symbol, timeframe: snap.timeframe, rth: snap.rth, t: [...snap.t], studies, version: (prev?.version ?? 0) + 1 };
+  trimIndicators(next, max);
+  return next;
+}
+
+/**
+ * Applies one `chart.indicator`: the bars in `removed` go first, then each point upserts its
+ * keys' values (a new bar gets NaN for the keys the point does not name: they have no value
+ * there yet). A key no snapshot introduced is ignored, as the server's increments carry every
+ * computed key of the chart, including ones only another socket asked for.
+ */
+export function applyIndicatorIncrement(prev: IndicatorValues, inc: ChartIndicatorIncrement, max = DEFAULT_MAX): IndicatorValues {
+  const next: IndicatorValues = { ...prev, version: prev.version + 1 };
+  const all = [...next.studies.values()].flatMap((s) => s.lines);
+  for (const t of inc.removed ?? []) {
+    const i = lowerBoundT(next.t, t);
+    if (next.t[i] !== t) continue;
+    next.t.splice(i, 1);
+    for (const l of all) l.values.splice(i, 1);
+  }
+  for (const p of inc.points) {
+    // A revision older than this ring's first bar (the phone keeps fewer bars than the server):
+    // nothing shows it, and inserting it would only push out a newer bar.
+    if (next.t.length >= max && p.t < next.t[0]!) continue;
+    const last = next.t.length - 1;
+    // Fast paths: the forming bar (same t as the last) or a new one after it.
+    let i = last >= 0 && next.t[last] === p.t ? last : last < 0 || p.t > next.t[last]! ? -1 : lowerBoundT(next.t, p.t);
+    if (i === -1) {
+      next.t.push(p.t);
+      for (const l of all) l.values.push(Number.NaN);
+      i = next.t.length - 1;
+    } else if (next.t[i] !== p.t) {
+      next.t.splice(i, 0, p.t);
+      for (const l of all) l.values.splice(i, 0, Number.NaN);
+    }
+    for (const key in p.v) {
+      const study = next.studies.get(key);
+      if (!study) continue;
+      p.v[key]!.forEach((v, k) => {
+        const line = study.lines[k];
+        if (line) line.values[i] = v === null ? Number.NaN : v;
+      });
+    }
+  }
+  trimIndicators(next, max);
+  return next;
+}
+
+function lowerBoundT(list: readonly number[], target: number): number {
+  let lo = 0;
+  let hi = list.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (list[mid]! < target) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/** The same ring bound as the candles: a live day appends bars the server pops from its front without telling. */
+function trimIndicators(v: IndicatorValues, max: number): void {
+  const extra = v.t.length - max;
+  if (extra <= 0) return;
+  v.t.splice(0, extra);
+  for (const s of v.studies.values()) for (const l of s.lines) l.values.splice(0, extra);
+}
+
 type Listener = () => void;
 
 /**
@@ -221,6 +332,7 @@ type Listener = () => void;
  */
 export class ChartStore {
   private series = new Map<string, Series>();
+  private indicators = new Map<string, IndicatorValues>();
   private listeners = new Set<Listener>();
   private clock: Clock | null = null;
   private readonly opts: StoreOptions;
@@ -230,6 +342,27 @@ export class ChartStore {
 
   getSeries(symbol: string, timeframe: Timeframe): Series | undefined {
     return this.series.get(seriesKey(symbol, timeframe));
+  }
+
+  /** The server's indicator values for (symbol, timeframe, rth), `indicators.v1`; undefined until its first `chart.indicators`. */
+  getIndicators(symbol: string, timeframe: Timeframe, rth: boolean): IndicatorValues | undefined {
+    return this.indicators.get(indicatorsKey(symbol, timeframe, rth));
+  }
+
+  applyIndicators(snap: ChartIndicatorsSnapshot): void {
+    const key = indicatorsKey(snap.symbol, snap.timeframe, snap.rth);
+    this.indicators.set(key, applyIndicatorsSnapshot(this.indicators.get(key), snap, this.opts.maxCandles));
+    this.emit();
+  }
+
+  /** Increments before the chart key's first snapshot are dropped (the snapshot always comes first, then carries them). */
+  applyIndicatorIncrement(inc: ChartIndicatorIncrement): boolean {
+    const key = indicatorsKey(inc.symbol, inc.timeframe, inc.rth);
+    const prev = this.indicators.get(key);
+    if (!prev) return false;
+    this.indicators.set(key, applyIndicatorIncrement(prev, inc, this.opts.maxCandles));
+    this.emit();
+    return true;
   }
 
   getClock(): Clock | null {
@@ -270,8 +403,13 @@ export class ChartStore {
   }
 
   clear(symbol?: string, timeframe?: Timeframe): void {
-    if (symbol && timeframe) this.series.delete(seriesKey(symbol, timeframe));
-    else this.series.clear();
+    if (symbol && timeframe) {
+      this.series.delete(seriesKey(symbol, timeframe));
+      for (const rth of [true, false]) this.indicators.delete(indicatorsKey(symbol, timeframe, rth));
+    } else {
+      this.series.clear();
+      this.indicators.clear();
+    }
     this.emit();
   }
 

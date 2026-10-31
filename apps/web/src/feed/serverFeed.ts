@@ -1,5 +1,5 @@
-import { createChartRouter, parseChartMessage, parsePaperMessage, type ChartSubscribe, type ChartUnsubscribe, type PaperMessage, type PaperState, type ReplayControl } from "@stockwatcher/chart-core";
-import { createDetectionChannel, createFavoritesChannel, createMoversChannel, createPressureChannel, createQuoteChannel, createRocketChannel, createRossChannel, createWsClient, serverWsUrl, type AlertsServerMessage, type ConnectionStatus, type MarketSource, type SettingsSync, type WebSocketLike } from "@stockwatcher/shared";
+import { createChartRouter, parseChartMessage, parsePaperMessage, createServerIndicators, type ChartIndicatorsSet, type ChartSubscribe, type ChartUnsubscribe, type PaperMessage, type PaperState, type ReplayControl } from "@stockwatcher/chart-core";
+import { createDetectionChannel, createFavoritesChannel, createMoversChannel, createPressureChannel, createQuoteChannel, createRocketChannel, createRossChannel, createWsClient, hasFeature, INDICATORS_FEATURE, serverWsUrl, type AlertsServerMessage, type ConnectionStatus, type MarketSource, type SettingsSync, type WebSocketLike } from "@stockwatcher/shared";
 import type { RunnersNotifier } from "../notify/runnersNotify.ts";
 import type { ChartFeed, PaperCommand, ReplayCommand } from "./types.ts";
 
@@ -53,11 +53,13 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
   const rocket = createRocketChannel({ subscribe: () => client.subscribeRocket(), unsubscribe: () => client.unsubscribeRocket() });
   const detection = createDetectionChannel({ source: opts.source, subscribe: () => client.subscribeDetection(), unsubscribe: () => client.unsubscribeDetection(), resync: () => client.subscribeDetection() });
 
-  const sendRaw = (msg: ChartSubscribe | ChartUnsubscribe | ReplayControl | PaperCommand) => {
+  const sendRaw = (msg: ChartSubscribe | ChartUnsubscribe | ChartIndicatorsSet | ReplayControl | PaperCommand) => {
     if (raw && raw.readyState === 1) raw.send(JSON.stringify(msg));
   };
+  // Server-computed indicators (indicators.v1): chart-core serverIndicators.ts.
+  const serverIndicators = createServerIndicators(sendRaw, (id) => current.has(id));
   // The default slot ("") is sent without an id: exactly the single-chart protocol.
-  const subscribeFrame = (id: string, s: { symbol: string; timeframe: ChartSubscribe["timeframe"]; profileBin: number }): ChartSubscribe => ({ type: "chart.subscribe", symbol: s.symbol, timeframe: s.timeframe, profileBin: s.profileBin, ...(id ? { id } : {}) });
+  const subscribeFrame = (id: string, s: { symbol: string; timeframe: ChartSubscribe["timeframe"]; profileBin: number }): ChartSubscribe => ({ type: "chart.subscribe", symbol: s.symbol, timeframe: s.timeframe, profileBin: s.profileBin, ...(id ? { id } : {}), ...serverIndicators.subscribeFields(id) });
   const resubscribe = () => {
     for (const [id, s] of router.entries()) sendRaw(subscribeFrame(id, s));
   };
@@ -67,6 +69,8 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
     token: opts.token ?? null,
     client: "web",
     source: opts.source,
+    // Runs before onStatus("open") and its resubscribe, so those carry the indicators or not.
+    onWelcome: (w) => serverIndicators.setAvailable(hasFeature(w, INDICATORS_FEATURE)),
     onStatus: (s) => {
       opts.onStatus?.(s);
       // The Ross Panel keeps its last rows while the socket is down, so it has to be told: a
@@ -135,11 +139,13 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
       const token = (m: Parameters<typeof emit>[0]) => emit(m);
       router.add(id, sub, token);
       current.set(id, token);
+      serverIndicators.held(id, sub.indicators);
       sendRaw(subscribeFrame(id, sub));
       return () => {
         if (current.get(id) !== token) return;
         current.delete(id);
         router.remove(id);
+        serverIndicators.released(id);
         // A named slot is freed on the server; the default slot is simply replaced by the next subscribe.
         if (id) sendRaw({ type: "chart.unsubscribe", id });
       };
@@ -162,11 +168,13 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
     movers,
     rocket,
     detection,
+    indicators: serverIndicators.channel,
     close() {
       detachNotifier?.();
       client.close();
       router.clear();
       current.clear();
+      serverIndicators.clear();
       paperListeners.clear();
     },
   };

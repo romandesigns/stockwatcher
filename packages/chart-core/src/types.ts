@@ -257,9 +257,10 @@ export interface ChartLuld {
 }
 
 export type ChartIncrement = ChartUpdate | ChartRemove | ChartGap;
-export type ChartMessage = ChartSnapshot | ChartIncrement | TapeTrade | ClockMessage | ChartHalt | ChartLuld;
+export type ChartMessage = ChartSnapshot | ChartIncrement | TapeTrade | ClockMessage | ChartHalt | ChartLuld | ChartIndicatorsSnapshot | ChartIndicatorIncrement;
 
-const CHART_TYPES = new Set(["chart.snapshot", "chart.update", "chart.remove", "chart.gap", "tape.trade", "replay.clock", "chart.halt", "chart.luld"]);
+// chart.indicators / chart.indicator come only to a client that sent `indicators` (indicators.v1).
+const CHART_TYPES = new Set(["chart.snapshot", "chart.update", "chart.remove", "chart.gap", "tape.trade", "replay.clock", "chart.halt", "chart.luld", "chart.indicators", "chart.indicator"]);
 
 /** Parses one frame (string or already-parsed object); null if it is not a chart message. */
 export function parseChartMessage(raw: unknown): ChartMessage | null {

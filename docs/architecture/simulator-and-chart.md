@@ -540,7 +540,9 @@ stamped on it. The increments are serialized to JSON once and broadcast on a bou
   the slot then gets `chart.indicators` right after its `chart.snapshot` (same seq) and
   `chart.indicator` increments after the candle frames, keyed by canonical spec keys (`ema:9`).
   `chart.indicators.set {id, indicators, rth}` changes a slot's studies. Without `indicators`
-  (phone builds from before) nothing changes. Shapes and rules: the headers of
+  (phone builds from before) nothing changes. The web and phone charts use it when the welcome
+  lists the feature and keep their local math otherwise (chart-core `serverIndicators.ts`; the
+  web's `?indicatorParity=1` logs server vs local per spec). Shapes and rules: the headers of
   `crates/server/src/indicators.rs` and `ws.rs`; the math and its parity with chart-core:
   `crates/chart-engine/src/indicators.rs`;
 - server `replay.clock {clock:{mode,now,speed,playing}}` goes to every client after `welcome`, on

@@ -280,13 +280,38 @@ export function macd(values: Float64Array, fast: number, slow: number, signal: n
   return [line, sig, hist];
 }
 
+/** The line names and styles of a spec, in drawing order (the server's frames use the same names). */
+export function indicatorLineNames(kind: IndicatorKind): readonly { name: string; style: IndicatorLine["style"] }[] {
+  return LINE_NAMES[kind];
+}
+
+const LINE: IndicatorLine["style"] = "line";
+const LINE_NAMES: Readonly<Record<IndicatorKind, readonly { name: string; style: IndicatorLine["style"] }[]>> = {
+  sma: [{ name: "SMA", style: LINE }],
+  ema: [{ name: "EMA", style: LINE }],
+  vwap: [{ name: "VWAP", style: LINE }],
+  bb: [
+    { name: "Basis", style: LINE },
+    { name: "Upper", style: LINE },
+    { name: "Lower", style: LINE },
+  ],
+  rsi: [{ name: "RSI", style: LINE }],
+  macd: [
+    { name: "Hist", style: "histogram" },
+    { name: "MACD", style: LINE },
+    { name: "Signal", style: LINE },
+  ],
+};
+
 /**
- * Computes every spec over the slots. Overlays beyond MAX_OVERLAYS and panes
- * beyond MAX_PANES are dropped (the menus never offer more), so the colour
- * slots stay inside the validated set.
+ * The results for `specs`, values from `valuesOf` (one array per line, in indicatorLineNames
+ * order) and everything else (placement, colour slot, band, RSI range and guides) decided here
+ * once, so the local math (computeIndicators) and the server's values (serverIndicatorResults)
+ * draw identically. Overlays beyond MAX_OVERLAYS and panes beyond MAX_PANES are dropped (the
+ * menus never offer more; the server drops the same ones), so the colour slots stay inside the
+ * validated set.
  */
-export function computeIndicators(slots: readonly Slot[], specs: readonly IndicatorSpec[]): IndicatorResult[] {
-  const c = closes(slots);
+function assembleIndicators(specs: readonly IndicatorSpec[], valuesOf: (spec: IndicatorSpec) => Float64Array[]): IndicatorResult[] {
   const out: IndicatorResult[] = [];
   let overlays = 0;
   let panes = 0;
@@ -294,33 +319,135 @@ export function computeIndicators(slots: readonly Slot[], specs: readonly Indica
     const placement = INDICATOR_PLACEMENT[spec.kind];
     if (placement === "overlay" ? overlays >= MAX_OVERLAYS : panes >= MAX_PANES) continue;
     const colorSlot = placement === "overlay" ? overlays++ : (panes++, 0);
-    const line = (name: string, values: Float64Array): IndicatorLine => ({ name, values, style: "line" });
-    switch (spec.kind) {
-      case "sma":
-        out.push({ spec, placement, colorSlot, lines: [line("SMA", sma(c, spec.period ?? 20))] });
-        break;
-      case "ema":
-        out.push({ spec, placement, colorSlot, lines: [line("EMA", ema(c, spec.period ?? 9))] });
-        break;
-      case "vwap":
-        out.push({ spec, placement, colorSlot, lines: [line("VWAP", vwap(slots))] });
-        break;
-      case "bb": {
-        const [mid, up, lo] = bollinger(c, spec.period ?? 20, spec.mult ?? 2);
-        out.push({ spec, placement, colorSlot, lines: [line("Basis", mid), line("Upper", up), line("Lower", lo)], band: [1, 2] });
-        break;
-      }
-      case "rsi":
-        out.push({ spec, placement, colorSlot, lines: [line("RSI", rsi(c, spec.period ?? 14))], fixedRange: { lo: 0, hi: 100 }, guides: [30, 70], zone: { lo: 30, hi: 70 }, midline: 50 });
-        break;
-      case "macd": {
-        const [l, s, h] = macd(c, spec.fast ?? 12, spec.slow ?? 26, spec.signal ?? 9);
-        out.push({ spec, placement, colorSlot, lines: [{ name: "Hist", values: h, style: "histogram" }, line("MACD", l), line("Signal", s)], guides: [0] });
-        break;
-      }
-    }
+    const values = valuesOf(spec);
+    const lines = LINE_NAMES[spec.kind].map((l, k): IndicatorLine => ({ name: l.name, style: l.style, values: values[k]! }));
+    const r: IndicatorResult = { spec, placement, colorSlot, lines };
+    if (spec.kind === "bb") r.band = [1, 2];
+    if (spec.kind === "rsi") Object.assign(r, { fixedRange: { lo: 0, hi: 100 }, guides: [30, 70], zone: { lo: 30, hi: 70 }, midline: 50 });
+    if (spec.kind === "macd") r.guides = [0];
+    out.push(r);
   }
   return out;
+}
+
+/**
+ * Computes every spec over the slots, here on the client: the fallback for a server without
+ * `indicators.v1` (and the dev parity shadow). With it, the server computes them
+ * (serverIndicatorResults).
+ */
+export function computeIndicators(slots: readonly Slot[], specs: readonly IndicatorSpec[]): IndicatorResult[] {
+  const c = closes(slots);
+  return assembleIndicators(specs, (spec) => {
+    switch (spec.kind) {
+      case "sma":
+        return [sma(c, spec.period ?? 20)];
+      case "ema":
+        return [ema(c, spec.period ?? 9)];
+      case "vwap":
+        return [vwap(slots)];
+      case "bb":
+        return bollinger(c, spec.period ?? 20, spec.mult ?? 2);
+      case "rsi":
+        return [rsi(c, spec.period ?? 14)];
+      case "macd": {
+        const [l, s, h] = macd(c, spec.fast ?? 12, spec.slow ?? 26, spec.signal ?? 9);
+        return [h, l, s];
+      }
+    }
+  });
+}
+
+/**
+ * The server's values (ChartStore `getIndicators`, `indicators.v1`) as results over the shown
+ * slots: each line joined onto the slots by bar time (both ascending, one merge pass), NaN on
+ * gap slots and wherever the server has no value. A spec whose key the server has not sent yet
+ * (just toggled on: the `chart.indicators` answer is on its way) draws nothing rather than
+ * falling back to local math, so a line never jumps between two sources.
+ */
+export function serverIndicatorResults(slots: readonly Slot[], specs: readonly IndicatorSpec[], server: IndicatorValuesLike | null): IndicatorResult[] {
+  // Slot i's index in server.t, -1 = none.
+  const at = new Int32Array(slots.length).fill(-1);
+  if (server) {
+    const t = server.t;
+    let j = 0;
+    for (let i = 0; i < slots.length; i++) {
+      const s = slots[i]!;
+      if (s.kind !== "candle") continue;
+      while (j < t.length && t[j]! < s.t) j++;
+      if (j < t.length && t[j] === s.t) at[i] = j;
+    }
+  }
+  return assembleIndicators(specs, (spec) => {
+    const study = server?.studies.get(specKey(spec));
+    return LINE_NAMES[spec.kind].map((l) => {
+      const out = nanArray(slots.length);
+      const src = study?.lines.find((x) => x.name === l.name)?.values;
+      if (src) for (let i = 0; i < at.length; i++) if (at[i]! >= 0) out[i] = src[at[i]!]!;
+      return out;
+    });
+  });
+}
+
+/** What serverIndicatorResults reads: ChartStore's `IndicatorValues` (store.ts). */
+export interface IndicatorValuesLike {
+  /** Bar times, ascending. */
+  readonly t: readonly number[];
+  /** By spec key; each line's values parallel to `t`, NaN = none. */
+  readonly studies: ReadonlyMap<string, { readonly lines: readonly { readonly name: string; readonly values: ArrayLike<number> }[] }>;
+}
+
+/**
+ * The largest |server − local| per spec over the slots where both have a value, where it is
+ * (`fromEnd`: slots before the last, so 0 = the forming bar), and the slots where only one has
+ * a value (the `?indicatorParity=1` shadow, docs in chart-web CandleChart). Expect 0 / 0 except
+ * for the documented divergences (crates/chart-engine/src/indicators.rs): RTH on an early-close
+ * day and the warm-up at the history's left edge.
+ */
+export function indicatorParity(server: readonly IndicatorResult[], local: readonly IndicatorResult[]): Record<string, { maxAbs: number; fromEnd: number; onlyOne: number; compared: number }> {
+  const out: Record<string, { maxAbs: number; fromEnd: number; onlyOne: number; compared: number }> = {};
+  for (const r of server) {
+    const l = local.find((x) => x.spec.id === r.spec.id);
+    if (!l) continue;
+    const acc = { maxAbs: 0, fromEnd: -1, onlyOne: 0, compared: 0 };
+    r.lines.forEach((line, k) => {
+      const other = l.lines[k]!.values;
+      for (let i = 0; i < line.values.length; i++) {
+        const a = line.values[i]!;
+        const b = other[i]!;
+        if (Number.isNaN(a) !== Number.isNaN(b)) acc.onlyOne++;
+        else if (!Number.isNaN(a)) {
+          acc.compared++;
+          const d = Math.abs(a - b);
+          if (d > acc.maxAbs) {
+            acc.maxAbs = d;
+            acc.fromEnd = line.values.length - 1 - i;
+          }
+        }
+      }
+    });
+    out[`${r.spec.id} (${specKey(r.spec)})`] = acc;
+  }
+  return out;
+}
+
+/**
+ * What a chart asks the server for (`indicators.v1`): its effective spec list (none while the
+ * indicators layer is hidden, so the server computes nothing nobody sees) and whether it shows
+ * the regular session only (extended hours off). The host sends it on `chart.subscribe` and
+ * `chart.indicators.set`, and the same `rth` picks the values to draw (ChartStore `getIndicators`).
+ */
+export interface IndicatorDemand {
+  indicators: IndicatorSpec[];
+  rth: boolean;
+}
+
+export function indicatorDemand(specs: readonly IndicatorSpec[], settings: { extendedHours: boolean; visibility: { indicators: boolean } }): IndicatorDemand {
+  return { indicators: settings.visibility.indicators ? [...specs] : [], rth: !settings.extendedHours };
+}
+
+/** Same demand (to skip a `chart.indicators.set` that would change nothing)? */
+export function sameIndicatorDemand(a: IndicatorDemand, b: IndicatorDemand): boolean {
+  return a.rth === b.rth && a.indicators.length === b.indicators.length && a.indicators.every((s, i) => s.id === b.indicators[i]!.id && specKey(s) === specKey(b.indicators[i]!));
 }
 
 /** Colour of a result's k-th line: its slot plus k, for pane indicators; overlays use one colour for all their lines. */

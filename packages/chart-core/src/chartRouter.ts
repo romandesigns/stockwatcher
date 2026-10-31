@@ -7,6 +7,9 @@ import type { ChartMessage, Timeframe } from "./types.ts";
 // already say.
 // - chart.snapshot / chart.update / chart.remove / chart.gap: by (symbol, timeframe, bin);
 // - tape.trade / chart.halt / chart.luld: by symbol, whatever the slot's timeframe;
+// - chart.indicators / chart.indicator (indicators.v1): by (symbol, timeframe), whatever the bin
+//   (they do not depend on it); the frame's `rth` keys the values in the slot's store, and the
+//   chart draws the set matching its own extended-hours setting;
 // - replay.clock: to every slot.
 // Two slots showing the same chart both get every frame, from the one copy the server sent.
 // Shared by the web and phone feeds so both route alike.
@@ -67,5 +70,8 @@ function wants(sub: RoutedSubscription, m: ChartMessage): boolean {
     case "chart.remove":
     case "chart.gap":
       return m.symbol === sub.symbol && m.timeframe === sub.timeframe && sameBin(m.profileBin, sub.profileBin);
+    case "chart.indicators":
+    case "chart.indicator":
+      return m.symbol === sub.symbol && m.timeframe === sub.timeframe;
   }
 }
