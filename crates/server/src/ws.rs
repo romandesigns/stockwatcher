@@ -246,6 +246,7 @@ use axum::response::Response;
 use serde::{Deserialize, Serialize};
 use tokio::time::{Instant, interval_at, timeout};
 
+use crate::indicators::{ChartKey, Studies};
 use crate::market::{
     ControlError, DetectionGuard, FavoritesGuard, IndicatorLease, Market, MoversGuard, OutKind,
     PressureGuard, QuotesGuard, RocketGuard, RossGuard, SnapshotError,
@@ -620,7 +621,11 @@ struct Sub {
     studies: Option<IndicatorLease>,
     /// `chart.indicator` frames with `seq` <= this are already in the slot's last
     /// `chart.indicators`. Separate from `seq`: `chart.indicators.set` renews the indicator
-    /// snapshot without a candle snapshot.
+    /// snapshot without a candle snapshot. Every slot of one chart key (symbol, timeframe, rth)
+    /// on the socket holds the same value: their snapshot is one frame carrying the union of
+    /// their studies (`send_indicators`). Were they apart, a frame queued between two slots'
+    /// snapshots would go out for the older slot and, carrying every key of the chart, overwrite
+    /// the newer slot's values with older ones (frames carry no seq for the client to check).
     ind_seq: u64,
 }
 
@@ -642,13 +647,45 @@ impl Sub {
     }
 }
 
-/// The slot's `chart.indicators` alone (no candle snapshot), when it holds studies.
-async fn send_indicators(socket: &mut WebSocket, market: &Market, sub: &mut Sub) -> bool {
-    let Some(lease) = sub.studies.as_ref() else {
-        return true;
-    };
-    let (seq, json) = market.indicators_snapshot(lease.studies());
-    sub.ind_seq = seq;
+impl Sub {
+    /// The chart key of the slot's studies (also for an empty list, which still gets its empty
+    /// `chart.indicators`); `None` for a slot that computes its own.
+    fn indicator_chart(&self) -> Option<&ChartKey> {
+        self.studies.as_ref().map(|l| &l.studies().chart)
+    }
+}
+
+/// The union of the studies the slots `subs` hold on `chart` (see `Sub::ind_seq`).
+fn chart_studies<'a>(subs: impl IntoIterator<Item = &'a Sub>, chart: &ChartKey) -> Studies {
+    Studies::union(
+        chart.clone(),
+        subs.into_iter()
+            .filter_map(|s| s.studies.as_ref().map(IndicatorLease::studies))
+            .filter(|st| st.chart == *chart),
+    )
+}
+
+/// Every slot on `chart` is now current to the `chart.indicators` taken at `seq`.
+fn mark_indicators(subs: &mut [Sub], chart: &ChartKey, seq: u64) {
+    for s in subs
+        .iter_mut()
+        .filter(|s| s.indicator_chart() == Some(chart))
+    {
+        s.ind_seq = seq;
+    }
+}
+
+/// One `chart.indicators` (no candle snapshot) for `chart`, carrying the studies of every slot
+/// on it, which all become current to it.
+async fn send_indicators(
+    socket: &mut WebSocket,
+    market: &Market,
+    subs: &mut [Sub],
+    chart: &ChartKey,
+) -> bool {
+    let union = chart_studies(subs.iter(), chart);
+    let (seq, json) = market.indicators_snapshot(&union);
+    mark_indicators(subs, chart, seq);
     send_text(socket, json).await
 }
 
@@ -668,14 +705,22 @@ fn chart_error(code: &str, message: &str, symbol: &str, id: &str) -> String {
     v.to_string()
 }
 
-/// Sends a snapshot (with the slot's `chart.indicators`, same seq) and the recent tape for
-/// `sub`, and records its sequence.
-async fn send_snapshot(socket: &mut WebSocket, market: &Market, sub: &mut Sub) -> bool {
-    let studies = sub.studies.as_ref().map(IndicatorLease::studies);
+/// Sends a snapshot and the recent tape for `sub`, and records its sequence. With `studies`
+/// (the union for the slot's chart key, `chart_studies`), their `chart.indicators` goes right
+/// after the candles at the same seq; the caller then marks the chart key's other slots
+/// (`mark_indicators`) with the slot's `ind_seq`.
+async fn send_snapshot(
+    socket: &mut WebSocket,
+    market: &Market,
+    sub: &mut Sub,
+    studies: Option<&Studies>,
+) -> bool {
     match market.snapshot_with(&sub.symbol, sub.timeframe, sub.bin, studies) {
         Ok(s) => {
             sub.seq = s.seq;
-            sub.ind_seq = s.seq;
+            if s.indicators.is_some() {
+                sub.ind_seq = s.seq;
+            }
             if !send_text(socket, s.json).await {
                 return false;
             }
@@ -713,22 +758,11 @@ async fn send_snapshot(socket: &mut WebSocket, market: &Market, sub: &mut Sub) -
 }
 
 /// A fresh snapshot for every chart held (after a rebuild or a lag), once per distinct chart:
-/// slots sharing a chart take the first one's sequence. Each slot holding studies gets its own
-/// `chart.indicators` (two slots on one candle chart may ask for different studies or rth).
+/// slots sharing a chart take the first one's sequence. Likewise one `chart.indicators` per
+/// chart key, carrying every slot's studies on it (`Sub::ind_seq`), with the first candle
+/// snapshot of that key when there is one.
 async fn send_snapshots(socket: &mut WebSocket, market: &Market, subs: &mut [Sub]) -> bool {
-    for i in 0..subs.len() {
-        if let Some(j) = (0..i).find(|&j| subs[j].same_chart(&subs[i])) {
-            subs[i].seq = subs[j].seq;
-            if !send_indicators(socket, market, &mut subs[i]).await {
-                return false;
-            }
-            continue;
-        }
-        if !send_snapshot(socket, market, &mut subs[i]).await {
-            return false;
-        }
-    }
-    true
+    resnapshot(socket, market, subs, None).await
 }
 
 /// [`send_snapshots`] for the slots showing `symbol` only.
@@ -738,19 +772,43 @@ async fn send_snapshots_of(
     subs: &mut [Sub],
     symbol: &str,
 ) -> bool {
+    resnapshot(socket, market, subs, Some(symbol)).await
+}
+
+async fn resnapshot(
+    socket: &mut WebSocket,
+    market: &Market,
+    subs: &mut [Sub],
+    only: Option<&str>,
+) -> bool {
+    let mut done: Vec<ChartKey> = Vec::new();
     for i in 0..subs.len() {
-        if subs[i].symbol != symbol {
+        if only.is_some_and(|sym| subs[i].symbol != sym) {
             continue;
         }
+        // This slot's chart key, unless an earlier slot's snapshot already covered it.
+        let chart = subs[i]
+            .indicator_chart()
+            .filter(|c| !done.contains(c))
+            .cloned();
         if let Some(j) = (0..i).find(|&j| subs[j].same_chart(&subs[i])) {
             subs[i].seq = subs[j].seq;
-            if !send_indicators(socket, market, &mut subs[i]).await {
-                return false;
+            if let Some(c) = chart {
+                if !send_indicators(socket, market, subs, &c).await {
+                    return false;
+                }
+                done.push(c);
             }
             continue;
         }
-        if !send_snapshot(socket, market, &mut subs[i]).await {
+        let union = chart.as_ref().map(|c| chart_studies(subs.iter(), c));
+        if !send_snapshot(socket, market, &mut subs[i], union.as_ref()).await {
             return false;
+        }
+        if let Some(c) = chart {
+            let seq = subs[i].ind_seq;
+            mark_indicators(subs, &c, seq);
+            done.push(c);
         }
     }
     true
@@ -1183,8 +1241,18 @@ async fn session(mut socket: WebSocket, state: AppState) {
                                         studies: studies.ok().flatten().map(|st| market.indicators_acquire(st)),
                                         ind_seq: 0,
                                     };
-                                    if !send_snapshot(&mut socket, &market, &mut s).await {
+                                    // With the other slots' studies on the same chart key (not
+                                    // the one this replaces): see `Sub::ind_seq`.
+                                    let chart = s.indicator_chart().cloned();
+                                    let union = chart.as_ref().map(|c| {
+                                        let others = subs.iter().enumerate().filter(|(i, _)| Some(*i) != held).map(|(_, o)| o);
+                                        chart_studies(others.chain([&s]), c)
+                                    });
+                                    if !send_snapshot(&mut socket, &market, &mut s, union.as_ref()).await {
                                         break;
+                                    }
+                                    if let Some(c) = &chart {
+                                        mark_indicators(&mut subs, c, s.ind_seq);
                                     }
                                     // The client replaced its copy of this chart with the new
                                     // snapshot, so every slot sharing it is current to its seq.
@@ -1221,7 +1289,10 @@ async fn session(mut socket: WebSocket, state: AppState) {
                                         // studies both lists share keep their series.
                                         let lease = st.map(|st| market.indicators_acquire(st));
                                         s.studies = lease;
-                                        if !send_indicators(&mut socket, &market, s).await {
+                                        let chart = s.indicator_chart().cloned();
+                                        if let Some(c) = chart
+                                            && !send_indicators(&mut socket, &market, &mut subs, &c).await
+                                        {
                                             break;
                                         }
                                     }

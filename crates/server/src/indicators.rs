@@ -31,8 +31,11 @@
 //!   from, values}]}]}`: a snapshot of the studies it names. `t` is every input bar of this chart
 //!   key (rth-filtered), ascending; a line's `values[i]` belongs to `t[from + i]` (the warm-up
 //!   nulls before `from` are cut). It replaces the client's values of the keys it carries. Sent
-//!   to one slot right after its `chart.snapshot` (same core lock, same seq), on
-//!   `chart.indicators.set`, and on every resync; broadcast to all, carrying every computed key
+//!   to a socket right after a `chart.snapshot` (same core lock, same seq), on
+//!   `chart.indicators.set`, and on every resync, always carrying the studies of EVERY slot of
+//!   that socket on the chart key, not just the slot's own ([`Studies::union`]: frames carry no
+//!   seq, so the slots of one chart key must be current to one snapshot, or a frame queued
+//!   between two slots' snapshots would overwrite newer values); broadcast to all, carrying every computed key
 //!   of the chart, instead of an increment that would move more than
 //!   [`MAX_INCREMENT_POINTS`] points (a revision deep in the history).
 //! - `chart.indicator {symbol, timeframe, rth, points: [{t, v: {key: [values]}}], removed?: [t]}`:
@@ -84,6 +87,23 @@ impl Studies {
         for (_, s) in parsed {
             if !specs.iter().any(|x| x.key() == s.key()) {
                 specs.push(s);
+            }
+        }
+        Studies { chart, specs }
+    }
+
+    /// Every study of `of` (lists on one chart key), one per key, first-seen order. A socket's
+    /// `chart.indicators` for a chart key carries this union of its slots' studies, never one
+    /// slot's alone: frames carry no seq, so the server must keep a frame older than a snapshot
+    /// from reaching the client after it, and that only works if every slot of the chart key on
+    /// the socket is current to the same snapshot (crates/server/src/ws.rs `Sub::ind_seq`).
+    pub fn union<'a>(chart: ChartKey, of: impl IntoIterator<Item = &'a Studies>) -> Self {
+        let mut specs: Vec<IndicatorSpec> = Vec::new();
+        for st in of {
+            for s in &st.specs {
+                if !specs.iter().any(|x| x.key() == s.key()) {
+                    specs.push(*s);
+                }
             }
         }
         Studies { chart, specs }

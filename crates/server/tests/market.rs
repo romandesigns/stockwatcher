@@ -2514,3 +2514,90 @@ async fn a_seek_resends_the_indicators() {
         "the rebuilt chart ends near the seek target: {last}"
     );
 }
+
+/// Two slots of one socket on one chart key with different studies (here on two profile bins,
+/// so two candle charts): each `chart.indicators` carries the studies of BOTH slots, and both
+/// slots are current to it. Frames carry no seq; with one snapshot per slot, a frame queued
+/// between the two snapshots went out for the older slot and overwrote the newer slot's keys
+/// with older values. Folding everything on one client model must still end equal to a fresh
+/// snapshot.
+#[tokio::test]
+async fn slots_on_one_chart_key_share_one_indicator_snapshot() {
+    let s = stack(&[("REPLAY_SPEED", "300")]).await;
+    let mut ws = connect(&s.url).await;
+    wait_for_replay(&mut ws).await;
+    let keys = |m: &Value| -> Vec<String> {
+        m["studies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["key"].as_str().unwrap().to_string())
+            .collect()
+    };
+    send(
+        &mut ws,
+        json!({"type": "chart.subscribe", "id": "a", "symbol": "SMPL", "timeframe": "15s",
+               "profileBin": 0.01, "indicators": [{"id": "e", "kind": "ema", "period": 9}]}),
+    )
+    .await;
+    let first = next(&mut ws, is("chart.indicators")).await;
+    assert_eq!(keys(&first), ["ema:9"]);
+    let mut model = IndicatorModel::from_snapshot(&first);
+    send(
+        &mut ws,
+        json!({"type": "chart.subscribe", "id": "b", "symbol": "SMPL", "timeframe": "15s",
+               "profileBin": 0.05, "indicators": [{"id": "r", "kind": "rsi"}]}),
+    )
+    .await;
+    // Increments of slot a's key may come first; then the union snapshot.
+    let union = loop {
+        let m = next(&mut ws, is_indicator).await;
+        if m["type"] == "chart.indicators" {
+            break m;
+        }
+        model.apply(&m);
+    };
+    assert_eq!(keys(&union), ["ema:9", "rsi:14"]);
+    model.apply(&union);
+    // Slot a changes its studies: the answer still carries slot b's.
+    send(
+        &mut ws,
+        json!({"type": "chart.indicators.set", "id": "a",
+               "indicators": [{"id": "v", "kind": "vwap"}]}),
+    )
+    .await;
+    let set = loop {
+        let m = next(&mut ws, is_indicator).await;
+        if m["type"] == "chart.indicators" {
+            break m;
+        }
+        model.apply(&m);
+    };
+    assert_eq!(keys(&set), ["vwap", "rsi:14"]);
+    model.apply(&set);
+    for _ in 0..200 {
+        let m = next(&mut ws, is_indicator).await;
+        model.apply(&m);
+    }
+    send(
+        &mut ws,
+        json!({"type": "replay.control", "action": "pause"}),
+    )
+    .await;
+    while let Ok(m) =
+        tokio::time::timeout(Duration::from_millis(1500), next(&mut ws, is_indicator)).await
+    {
+        model.apply(&m);
+    }
+    let mut other = connect(&s.url).await;
+    send(
+        &mut other,
+        json!({"type": "chart.subscribe", "symbol": "SMPL", "timeframe": "15s", "profileBin": 0.01,
+               "indicators": [{"id": "v", "kind": "vwap"}, {"id": "r", "kind": "rsi"}]}),
+    )
+    .await;
+    let fresh = IndicatorModel::from_snapshot(&next(&mut other, is("chart.indicators")).await);
+    for (k, col) in &fresh.0 {
+        assert_eq!(model.0.get(k), Some(col), "{k:?}: folded != snapshot");
+    }
+}
