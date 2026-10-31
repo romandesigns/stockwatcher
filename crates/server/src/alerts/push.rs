@@ -15,7 +15,9 @@
 //!   ([`RunnersOptIn`], `super::runners`): new flags, bursts, running, run and fast-move entries
 //!   on by default, breakouts off.
 //! - **Batching:** jobs queued within [`BATCH_WINDOW`] go out in one request of up to
-//!   [`MAX_BATCH`] messages (Expo's limit is 100 per request).
+//!   [`MAX_BATCH`] messages (Expo's limit is 100 per request). A Runners push never waits for
+//!   the window: it goes at once with whatever is already queued, and one that arrives while a
+//!   price alert's window is open ends that window.
 //! - **Retries:** a network error, a 429 or a 5xx is retried after 2, 4 and 8 s; then the
 //!   event is marked failed.
 //! - **Tickets and receipts:** a ticket error `DeviceNotRegistered` removes that token at once;
@@ -545,8 +547,11 @@ async fn run(
                 let Some(first) = job else { break };
                 // Batch: whatever else arrives within the window, up to the request limit. A
                 // Runners push does not wait for the window (seconds matter on a +20 % leg): it
-                // goes with whatever is already queued.
-                let urgent = first.runner.is_some();
+                // goes with whatever is already queued, so a single urgent push leaves at once
+                // and a burst of them (queued together by one board pass) still shares one
+                // request. A Runners push that arrives while a price alert's window is open ends
+                // the window: it would otherwise wait up to BATCH_WINDOW behind that alert.
+                let mut urgent = first.runner.is_some();
                 let mut jobs = vec![first];
                 let deadline = tokio::time::Instant::now() + BATCH_WINDOW;
                 while jobs.iter().map(|j| j.tokens.len()).sum::<usize>() < MAX_BATCH {
@@ -558,7 +563,10 @@ async fn run(
                         continue;
                     }
                     match tokio::time::timeout_at(deadline, rx.recv()).await {
-                        Ok(Some(j)) => jobs.push(j),
+                        Ok(Some(j)) => {
+                            urgent = j.runner.is_some();
+                            jobs.push(j);
+                        }
                         _ => break,
                     }
                 }
@@ -1048,6 +1056,88 @@ mod tests {
         );
         assert_eq!(batches[0].as_array().unwrap().len(), 6);
         assert_eq!(batches[0][0]["channelId"], "alerts");
+    }
+
+    /// A Runners push never sits in the batch window: alone it leaves at once, and one that
+    /// arrives while a price alert's window is open takes that alert with it right away instead
+    /// of waiting out the window behind it.
+    #[tokio::test]
+    async fn a_runners_push_does_not_wait_for_the_batch_window() {
+        let seen: Arc<Mutex<Vec<(std::time::Instant, usize)>>> = Arc::default();
+        let s2 = seen.clone();
+        let app = Router::new().route(
+            "/push/send",
+            axum_post(move |Json(body): Json<Value>| {
+                let s2 = s2.clone();
+                async move {
+                    let msgs = body.as_array().cloned().unwrap_or_default();
+                    s2.lock()
+                        .unwrap()
+                        .push((std::time::Instant::now(), msgs.len()));
+                    let data: Vec<Value> = (0..msgs.len())
+                        .map(|i| json!({"status": "ok", "id": format!("t{i}")}))
+                        .collect();
+                    Json(json!({ "data": data }))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let (rtx, _rrx) = mpsc::channel(8);
+        let tx = spawn(
+            PushConfig {
+                base: format!("http://{addr}"),
+                access_token: None,
+            },
+            rtx,
+            super::super::ledger::Ledger::default(),
+        );
+        let job = |id: &str, runner: bool| Job {
+            event_id: id.into(),
+            tokens: vec!["ExponentPushToken[ok]".into()],
+            title: "XLAB".into(),
+            body: "b".into(),
+            data: json!({}),
+            runner: runner.then(|| RunnerLatency {
+                symbol: "XLAB".into(),
+                kind: "fast",
+                notice: "fast",
+                exec_ns: None,
+                decided_ns: 0,
+                queued_ns: 0,
+            }),
+        };
+        let wait_for = |n: usize| {
+            let seen = seen.clone();
+            async move {
+                for _ in 0..500 {
+                    if seen.lock().unwrap().len() >= n {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                }
+                panic!("no request {n}");
+            }
+        };
+        // Alone.
+        let t0 = std::time::Instant::now();
+        tx.send(job("r1", true)).await.unwrap();
+        wait_for(1).await;
+        let alone = seen.lock().unwrap()[0].0 - t0;
+        // Behind a price alert, 30 ms into its window.
+        let t1 = std::time::Instant::now();
+        tx.send(job("p1", false)).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        tx.send(job("r2", true)).await.unwrap();
+        wait_for(2).await;
+        let (at, n) = seen.lock().unwrap()[1];
+        let behind = at - t1;
+        assert_eq!(n, 2, "the price alert goes with it, one request");
+        // The window is 300 ms; local HTTP to the stub takes a few.
+        let bound = BATCH_WINDOW / 2;
+        assert!(alone < bound, "alone: {alone:?}");
+        assert!(behind < bound, "behind a price alert: {behind:?}");
     }
 
     #[test]
