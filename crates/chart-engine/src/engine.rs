@@ -420,6 +420,38 @@ impl Bucket {
     }
 }
 
+/// The schedule a snapshot carries ([`ChartSnapshot::sessions`]): every session of each trading
+/// date in `dates` (the retained buckets' session dates, ascending) and of `current`'s date, then
+/// of the next trading date after the latest of them. Bounded by the retention: a few dates.
+pub fn session_schedule(
+    dates: impl Iterator<Item = NaiveDate>,
+    current: Option<SessionId>,
+) -> Vec<SessionInfo> {
+    let mut days: Vec<NaiveDate> = dates.chain(current.map(|s| s.date)).collect();
+    days.sort_unstable();
+    days.dedup();
+    let Some(&last) = days.last() else {
+        return Vec::new();
+    };
+    // The next trading date: no market closes for more than four days in a row.
+    if let Some(next) = (1..=10)
+        .map(|n| last + chrono::Duration::days(n))
+        .find(|d| market_events::session::is_trading_day(*d))
+    {
+        days.push(next);
+    }
+    days.into_iter()
+        .flat_map(market_events::session::sessions_for)
+        .map(|(id, a, e)| SessionInfo {
+            id: id.to_string(),
+            start: a.millis(),
+            start_ns: a.0,
+            end: e.millis(),
+            end_ns: e.0,
+        })
+        .collect()
+}
+
 fn ms(ns: i64) -> i64 {
     UnixNanos(ns).millis()
 }
@@ -1576,6 +1608,7 @@ impl ChartEngine {
                 .map(|l| l.points.iter().map(luld_wire).collect())
                 .unwrap_or_default(),
             prev_close: None,
+            sessions: session_schedule(series.buckets.iter().map(|b| b.session.date), session),
         })
     }
 

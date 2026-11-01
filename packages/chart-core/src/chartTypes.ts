@@ -1,6 +1,6 @@
 import type { IconName } from "./icons.ts";
 import type { Slot } from "./scale.ts";
-import { sessionOf, tradingDayOf } from "./time.ts";
+import { sessionAt, tradingDayOf, type SessionSchedule } from "./time.ts";
 import type { Candle } from "./types.ts";
 
 // Chart types (owner request 2026-10-18: "the same chart settings just like
@@ -109,11 +109,12 @@ export function prevCloseAt(slots: readonly Slot[], i: number): number | null {
   return null;
 }
 
-const sessionCache = new WeakMap<readonly Slot[], Slot[]>();
+const sessionCache = new WeakMap<readonly Slot[], { schedule: SessionSchedule | null; out: Slot[] }>();
 
 /**
  * The slots the chart shows. With extended hours on, all of them. With them
- * off, only regular-session slots (09:30–16:00 ET): pre-market, after-hours
+ * off, only regular-session slots (by the server's `schedule` when it sent
+ * one, so 09:30–13:00 on an early close; else 09:30–16:00 ET): pre-market, after-hours
  * and overnight candles AND gaps are dropped, so on the index-based time axis
  * one day's close sits right next to the next day's open with no empty
  * stretch (Robinhood's "Show extended hours" off, TradingView's RTH). The
@@ -121,12 +122,15 @@ const sessionCache = new WeakMap<readonly Slot[], Slot[]>();
  * levels (the premarket high/low is a regular-session level traders watch)
  * and the opening range still read the full list.
  */
-export function sessionSlots(slots: Slot[], extendedHours: boolean): Slot[] {
+export function sessionSlots(slots: Slot[], extendedHours: boolean, schedule?: SessionSchedule | null): Slot[] {
   if (extendedHours) return slots;
+  const key = schedule?.length ? schedule : null;
   const hit = sessionCache.get(slots);
-  if (hit) return hit;
-  const out = slots.filter((s) => sessionOf(s.t) === "regular");
-  sessionCache.set(slots, out);
+  if (hit && hit.schedule === key) return hit.out;
+  // The server's schedule when it sent one (`sessions.v1`: an early close's 13:00-16:00 is after
+  // hours), else the fixed 09:30-16:00 ET one.
+  const out = slots.filter((s) => sessionAt(s.t, key) === "regular");
+  sessionCache.set(slots, { schedule: key, out });
   return out;
 }
 

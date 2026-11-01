@@ -97,6 +97,7 @@ import {
   openView,
   presetViewport,
   sessionSlots,
+  type SessionSchedule,
   SETTINGS_MOTION_MS,
   viewKey,
   type ChartSettings,
@@ -132,6 +133,8 @@ export interface ChartSeriesLike {
   prevClose?: number | null;
   /** The symbol's current session (Series.session): its end is the opening range's right edge on an early close. */
   session?: SessionRef | null;
+  /** The server's session schedule (Series.sessions, `sessions.v1`): regular hours and the shading follow it; absent = the fixed ET schedule. */
+  sessions?: SessionSchedule;
 }
 
 /** What the host wires for simulated trading (the chart never talks to a server). */
@@ -432,7 +435,7 @@ export function CandleChart({
 
   // All slots, and the shown ones (extended hours off: the regular session only); see chart-web.
   const allSlots = useMemo(() => (series ? buildSlots(series.candles, series.gaps) : []), [series]);
-  const slots = useMemo(() => sessionSlots(allSlots, settings.extendedHours), [allSlots, settings.extendedHours]);
+  const slots = useMemo(() => sessionSlots(allSlots, settings.extendedHours, series?.sessions), [allSlots, settings.extendedHours, series?.sessions]);
   const visibility = settings.visibility;
   // The server's values only (indicators.v1); a server without the feature gets no lines and a
   // note (`indicatorsNeedUpdate`), as on the web.
@@ -531,6 +534,7 @@ export function CandleChart({
       chartStyle,
       baselinePrice,
       extendedHours: settings.extendedHours,
+      ...(series?.sessions ? { sessions: series.sessions } : {}),
     }),
     [timeframe, series, slots, inspectT, pointer, options, volumeHeight, layers.profile, scaleType, indicatorResults, shownDrawings, selectedDrawing, draft, showTrading, orders, position, last, drag, alertLayer, detection, eventMarkers, context, clockNow, paneHeights, inspector, settings.chartType, chartStyle, baselinePrice, settings.extendedHours],
   );

@@ -104,6 +104,7 @@ import {
   parseChartSettings,
   presetViewport,
   sessionSlots,
+  type SessionSchedule,
   viewKey,
   easeOut,
   SETTINGS_MOTION_MS,
@@ -149,6 +150,8 @@ export interface ChartSeriesLike {
   prevClose?: number | null;
   /** The symbol's current session (Series.session): its end is the opening range's right edge on an early close. */
   session?: SessionRef | null;
+  /** The server's session schedule (Series.sessions, `sessions.v1`): regular hours and the shading follow it; absent = the fixed ET schedule. */
+  sessions?: SessionSchedule;
 }
 
 export interface CandleChartProps {
@@ -562,7 +565,7 @@ export function CandleChart({
   // between days). Indicators are computed on the shown list so they line up by index; key levels
   // and the opening range read every slot, so the premarket high/low survives hiding the premarket.
   const allSlots = useMemo(() => (series ? buildSlots(series.candles, series.gaps) : []), [series]);
-  const slots = useMemo(() => sessionSlots(allSlots, settings.extendedHours), [allSlots, settings.extendedHours]);
+  const slots = useMemo(() => sessionSlots(allSlots, settings.extendedHours, series?.sessions), [allSlots, settings.extendedHours, series?.sessions]);
   const visibility = settings.visibility;
   // The server's values only (indicators.v1). A server without the feature draws no lines and
   // says why (`indicatorsNeedUpdate`), rather than the chart computing its own.
@@ -671,6 +674,7 @@ export function CandleChart({
       chartStyle,
       baselinePrice,
       extendedHours: settings.extendedHours,
+      ...(series?.sessions ? { sessions: series.sessions } : {}),
     }),
     [timeframe, series, slots, inspectT, pointer, tradeMenuOpen, tradeMenuAt, chartOptions, scaleType, indicatorResults, shownDrawings, selectedDrawing, draft, showTrading, orders, position, last, drag, placeY, alertLayer, detection, eventMarkers, context, now, paneHeights, settings.chartType, chartStyle, baselinePrice, settings.extendedHours],
   );

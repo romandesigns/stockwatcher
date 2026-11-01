@@ -1,5 +1,5 @@
 import { normalizeRows, pointOfControl, profileTotal, valueArea } from "./profile.ts";
-import { sessionRefFromId } from "./time.ts";
+import { sessionRefFromId, type SessionSchedule } from "./time.ts";
 import {
   TIMEFRAME_MS,
   type Candle,
@@ -55,6 +55,12 @@ export interface Series {
    * for the day, so increments do not carry it); null when the server has none.
    */
   prevClose: number | null;
+  /**
+   * The server's session schedule from the last snapshot (`sessions.v1`; time.ts
+   * `SessionSchedule`): what the chart filters regular hours and shades sessions by. Absent or
+   * empty from an older server (the fixed ET schedule then).
+   */
+  sessions?: SessionSchedule;
   version: number;
 }
 
@@ -212,6 +218,7 @@ export function applySnapshot(prev: Series | undefined, snap: ChartSnapshot, opt
     halts: [...(snap.halts ?? [])].sort((a, b) => a.start - b.start),
     luld: [...(snap.luld ?? [])].sort((a, b) => a.t - b.t),
     prevClose: snap.prevClose ?? null,
+    ...(snap.sessions?.length ? { sessions: [...snap.sessions].sort((a, b) => a.start - b.start) } : {}),
     version: (prev?.version ?? 0) + 1,
   };
   trim(series, opts.maxCandles ?? DEFAULT_MAX);
@@ -228,7 +235,7 @@ function mergeProfile(s: Series, session: string, bin: number, rows: readonly Pr
   const current = s.profile;
   if (current && !sameBin(current.bin, bin)) return; // a stale subscription's bin
   if (!current || current.anchor !== session) {
-    const next = sessionRefFromId(session);
+    const next = sessionRefFromId(session, s.sessions);
     const curStart = s.session?.start ?? -Infinity;
     if (current && (!next || next.start <= curStart)) return;
     if (rows.length === 0 && current) return;

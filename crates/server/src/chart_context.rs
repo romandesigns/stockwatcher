@@ -75,6 +75,11 @@ use crate::indicators::ChartKey;
 /// The `welcome.features` entry for `chart.levels`. A client asks (`levels: true` on
 /// `chart.subscribe`) only when it sees it, so a new client on an old server computes its own.
 pub const LEVELS_FEATURE: &str = "levels.v1";
+/// The `welcome.features` entry for the snapshot's session schedule (`chart.snapshot.sessions`,
+/// chart_engine::wire::ChartSnapshot::sessions): clients filter and shade sessions by it, early
+/// closes included. The field is additive, so a client reads it whenever it is present; the flag
+/// says this server sends it.
+pub const SESSIONS_FEATURE: &str = "sessions.v1";
 /// The `welcome.features` entry for `chart.zones` (`zones: true` on `chart.subscribe` /
 /// `chart.indicators.set`).
 pub const ZONES_FEATURE: &str = "zones.v1";

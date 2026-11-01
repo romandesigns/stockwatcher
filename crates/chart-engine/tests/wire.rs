@@ -134,6 +134,55 @@ fn snapshot_json_shape() {
     );
 }
 
+/// The snapshot carries the engine's own session schedule (`sessions.v1`): the trading date it
+/// traded on, then the next trading date, from the NYSE calendar. On the day after Thanksgiving
+/// (an early close) regular ends at 13:00 and after-hours at 17:00, which the clients' fixed
+/// 09:30-16:00 schedule could not know.
+#[test]
+fn snapshot_carries_the_session_schedule_with_early_closes() {
+    let mut e = ChartEngine::default();
+    apply_all(&mut e, &[ev(trade(at(10, 0, 1, 0), "3.18", 100, 1))]);
+    let v = serde_json::to_value(e.snapshot(SYM, Timeframe::M1, None).unwrap()).unwrap();
+    let ids: Vec<&str> = v["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            "2026-10-15/overnight",
+            "2026-10-15/pre",
+            "2026-10-15/regular",
+            "2026-10-15/after",
+            "2026-10-16/overnight",
+            "2026-10-16/pre",
+            "2026-10-16/regular",
+            "2026-10-16/after",
+        ]
+    );
+    assert_eq!(v["sessions"][2]["end"], ms(at(16, 0, 0, 0)));
+    assert_eq!(v["sessions"][2]["endNs"], at(16, 0, 0, 0).nanos());
+
+    // Friday 2026-11-27: regular 09:30-13:00, after 13:00-17:00; the next trading date is Monday.
+    let friday = chrono::NaiveDate::from_ymd_opt(2026, 11, 27).unwrap();
+    let et = |h, m| market_events::session::et(friday, h, m, 0, 0).unwrap();
+    let mut e = ChartEngine::default();
+    apply_all(&mut e, &[ev(trade(et(10, 0), "3.18", 100, 1))]);
+    let v = serde_json::to_value(e.snapshot(SYM, Timeframe::M1, None).unwrap()).unwrap();
+    let s = v["sessions"].as_array().unwrap();
+    let find = |id: &str| s.iter().find(|x| x["id"] == id).unwrap().clone();
+    assert_eq!(find("2026-11-27/regular")["end"], ms(et(13, 0)));
+    assert_eq!(find("2026-11-27/after")["start"], ms(et(13, 0)));
+    assert_eq!(find("2026-11-27/after")["end"], ms(et(17, 0)));
+    assert!(s.iter().any(|x| x["id"] == "2026-11-30/regular"));
+    assert!(
+        !s.iter()
+            .any(|x| x["id"].as_str().unwrap().starts_with("2026-11-28"))
+    );
+}
+
 /// Every ms time has its exchange-ns twin, and the ms is that instant floored (wire module docs):
 /// a halt inside a millisecond keeps its nanoseconds in the twin.
 #[test]

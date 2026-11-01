@@ -92,6 +92,12 @@
 //!   the header of crate::indicators. A lag, a seek or a day switch resends `chart.indicators`
 //!   with the snapshot, as for the candles.
 //!
+//! Session schedule (`sessions.v1`; chart_engine::wire::ChartSnapshot::sessions): every
+//! `chart.snapshot` carries `sessions`, the NYSE calendar's sessions for each trading date its
+//! candles span plus the next one (early closes: regular to 13:00, after-hours to 17:00).
+//! Clients filter regular hours and shade by it; an older server's snapshot lacks it and the
+//! client keeps the fixed 09:30-16:00 schedule.
+//!
 //! Key levels, opening ranges and supply/demand zones computed on the server (`levels.v1`,
 //! `zones.v1`; crate::chart_context, the levels math in crates/chart-engine/src/levels.rs):
 //! - `chart.subscribe` takes `levels: true` (sent only when the welcome lists `levels.v1`) and
@@ -1302,6 +1308,7 @@ async fn session(mut socket: WebSocket, state: AppState) {
             crate::indicators::LIMIT_FEATURE,
             crate::chart_context::LEVELS_FEATURE,
             crate::chart_context::ZONES_FEATURE,
+            crate::chart_context::SESSIONS_FEATURE,
             crate::symbols::FEATURE,
             crate::notices::FEATURE,
             crate::notices::FEATURE_ROWS,

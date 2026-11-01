@@ -187,6 +187,13 @@ export interface ChartSnapshot {
    * change-% reference brokers use, and the "Prev close" level.
    */
   prevClose?: number;
+  /**
+   * The server's session schedule (`sessions.v1`, chart_engine::wire::ChartSnapshot::sessions):
+   * every session of each trading date the candles span plus the next one, ascending, from the
+   * NYSE calendar the engine aggregates by (early closes included). Absent from older servers:
+   * the client then uses the fixed 09:30-16:00 ET schedule (time.ts `sessionOf`).
+   */
+  sessions?: SessionRef[];
 }
 
 /**

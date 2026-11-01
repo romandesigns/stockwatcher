@@ -3246,6 +3246,7 @@ impl Market {
                 halts: Vec::new(),
                 luld: Vec::new(),
                 prev_close: None,
+                sessions: Vec::new(),
             },
         };
         snap.clock = clock;

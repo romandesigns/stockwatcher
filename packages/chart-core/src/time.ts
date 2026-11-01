@@ -1,4 +1,4 @@
-import type { SessionKind } from "./types.ts";
+import type { SessionKind, SessionRef } from "./types.ts";
 
 // Eastern Time helpers. Everything goes through Intl with an explicit
 // America/New_York zone: the machine's zone is never consulted (on the
@@ -203,12 +203,52 @@ export function sessionBands(day: EtDate): SessionBand[] {
 }
 
 /**
- * Bounds of a session id like "2026-10-15/regular", from the standard ET
- * schedule. APPROXIMATE on early-close days (the engine's NYSE calendar ends
- * regular at 13:00 there); only used when an update rolls into a session the
- * client has no snapshot for yet. Null for an unparseable id.
+ * The server's session schedule (chart.snapshot `sessions`, `sessions.v1`): ascending,
+ * non-overlapping sessions from the engine's NYSE calendar. Empty or absent = an older server.
  */
-export function sessionRefFromId(id: string): { id: string; start: number; end: number } | null {
+export type SessionSchedule = readonly SessionRef[];
+
+/** The kind of a session id like "2026-11-27/after"; null for anything else. */
+export function sessionIdKind(id: string): SessionKind | null {
+  const m = /\/(overnight|pre|regular|after)$/.exec(id);
+  return m ? (m[1] as SessionKind) : null;
+}
+
+/** The schedule's session holding `t` (binary search), or null outside every one of them. */
+export function scheduledSession(t: number, schedule: SessionSchedule | null | undefined): SessionRef | null {
+  if (!schedule || schedule.length === 0) return null;
+  let lo = 0;
+  let hi = schedule.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const s = schedule[mid]!;
+    if (t < s.start) hi = mid - 1;
+    else if (t >= s.end) lo = mid + 1;
+    else return s;
+  }
+  return null;
+}
+
+/**
+ * Which session an instant falls in: the server's schedule when it covers `t` (an early close
+ * ends regular at 13:00 there), else the fixed ET schedule ({@link sessionOf}). Between an early
+ * close's 17:00 after-hours end and 20:00 no session is open; the fixed schedule's "after" stands
+ * in, as nothing trades there.
+ */
+export function sessionAt(t: number, schedule?: SessionSchedule | null): SessionKind {
+  const s = scheduledSession(t, schedule);
+  return (s && sessionIdKind(s.id)) ?? sessionOf(t);
+}
+
+/**
+ * Bounds of a session id like "2026-10-15/regular": the server's schedule's when it lists the
+ * id (exact on early closes), else the standard ET schedule, APPROXIMATE on early-close days (an
+ * older server: the engine's calendar ends regular at 13:00 there). Only used when an update
+ * rolls into a session the client has no snapshot for yet. Null for an unparseable id.
+ */
+export function sessionRefFromId(id: string, schedule?: SessionSchedule | null): { id: string; start: number; end: number } | null {
+  const listed = schedule?.find((s) => s.id === id);
+  if (listed) return { id, start: listed.start, end: listed.end };
   const m = /^(\d{4})-(\d{2})-(\d{2})\/(overnight|pre|regular|after)$/.exec(id);
   if (!m) return null;
   const band = sessionBands({ year: Number(m[1]), month: Number(m[2]), day: Number(m[3]) }).find((b) => b.kind === m[4]);

@@ -191,6 +191,15 @@ pub struct ChartSnapshot {
     /// Clients measure change % against it and draw it as the "Prev close" level.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prev_close: Option<f64>,
+    /// The session schedule (`sessions.v1`): every session of every trading date the retained
+    /// candles span, through the current session's date and the next trading date (so a live
+    /// rollover at 20:00 ET finds its overnight session), ascending, from the NYSE calendar the
+    /// engine aggregates by ([`market_events::session::sessions_for`]). Clients filter regular
+    /// hours and shade the extended sessions by it instead of a fixed 09:30-16:00 ET schedule, so
+    /// an early close (regular ends 13:00, after-hours 17:00) reads right. Omitted when empty;
+    /// absent from older servers, whose clients keep the fixed schedule.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sessions: Vec<SessionInfo>,
 }
 
 /// A trading halt. `end` is `None` while the halt is still on.

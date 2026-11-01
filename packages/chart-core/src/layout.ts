@@ -8,7 +8,7 @@ import { layoutAlerts, type AlertLayer } from "./alerts.ts";
 import { layoutDetections, type DetectionOverlay } from "./detection.ts";
 import { layoutEventMarkers, type EventMarker } from "./eventMarkers.ts";
 import { formatPrice } from "./format.ts";
-import { formatCrosshairTime, sessionOf } from "./time.ts";
+import { formatCrosshairTime, sessionAt, type SessionSchedule } from "./time.ts";
 import { heikinAshi, hollowStyle, isCloseOnly, prevCloseAt, sessionSlots, startsTradingDay, type ChartType, type Ohlc } from "./chartTypes.ts";
 import {
   buildSlots,
@@ -129,6 +129,12 @@ export interface ChartState {
    * indicators must be computed on the same list to line up by index.
    */
   extendedHours?: boolean;
+  /**
+   * The server's session schedule (Series.sessions, `sessions.v1`): the extended-hours shading
+   * and the regular-hours filter follow it (an early close shades from 13:00). Absent = the
+   * fixed ET schedule.
+   */
+  sessions?: SessionSchedule;
 }
 
 /** Display switches from the chart settings panel. Absent = on for grid and session shading, off for the rest (today's look). */
@@ -324,7 +330,7 @@ export function computeChartModel(state: ChartState, viewport: Viewport, size: S
   const options = { ...DEFAULT_CHART_OPTIONS, ...state.options };
   const paneIds = state.indicators?.filter((r) => r.placement === "pane").map((r) => r.spec.id) ?? [];
   const geometry = chartGeometry(size, options, paneIds.map((id) => state.paneHeights?.[id] ?? options.indicatorPaneHeight));
-  const slots = state.slots ?? sessionSlots(buildSlots(state.candles, state.gaps), state.extendedHours !== false);
+  const slots = state.slots ?? sessionSlots(buildSlots(state.candles, state.gaps), state.extendedHours !== false, state.sessions);
   const index = indexScale(viewport, slots, geometry.plot.x, geometry.plot.x + geometry.plot.w);
   const type = state.priceScaleType ?? "linear";
   const chartType = state.chartType ?? "candles";
@@ -499,7 +505,7 @@ export function layoutChart(model: ChartModel, state: ChartState, theme: ChartTh
       if (x1 > x0) out.push({ kind: "rect", x: x0, y: g.plot.y, w: x1 - x0, h: bottom - g.plot.y, fill: shade[runKind], layer: "background" });
     };
     for (let i = ix.from; i <= ix.to; i++) {
-      const s = sessionOf(slots[i]!.t);
+      const s = sessionAt(slots[i]!.t, state.sessions);
       const kind = s === "regular" ? null : s;
       if (kind !== runKind) {
         flush(i - 1);

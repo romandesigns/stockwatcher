@@ -72,6 +72,10 @@ export function preferNsTimes(m: ChartMessage): ChartMessage {
         m.session.start = wireMs(m.session.start, m.session.startNs);
         m.session.end = wireMs(m.session.end, m.session.endNs);
       }
+      for (const s of m.sessions ?? []) {
+        s.start = wireMs(s.start, s.startNs);
+        s.end = wireMs(s.end, s.endNs);
+      }
       for (const c of m.candles) atT(c);
       for (const g of m.gaps) span(g);
       for (const h of m.halts ?? []) halt(h);

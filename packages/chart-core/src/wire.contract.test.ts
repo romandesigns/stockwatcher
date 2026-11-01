@@ -52,7 +52,7 @@ const TS_FIELDS: Record<string, string[]> = {
   HaltWire: ["start", "startNs", "end", "endNs", "reason", "code"],
   LuldWire: ["t", "tNs", "ref", "up", "down"],
   ClockInfo: ["mode", "now", "nowNs", "speed", "playing"],
-  ChartSnapshot: ["type", "symbol", "timeframe", "session", "candles", "gaps", "profile", "quality", "clock", "halts", "luld", "prevClose"],
+  ChartSnapshot: ["type", "symbol", "timeframe", "session", "candles", "gaps", "profile", "quality", "clock", "halts", "luld", "prevClose", "sessions"],
   ProfileDerivedWire: ["total", "poc", "valueArea"],
   // The increments: their own fields plus ProfileDerivedWire's, flattened (types.ts ProfileFigures).
   CandleUpdate: ["symbol", "timeframe", "session", "candle", "profileBin", "profile", "total", "poc", "valueArea"],
