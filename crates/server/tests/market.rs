@@ -2911,3 +2911,189 @@ async fn slots_on_one_chart_key_share_one_indicator_snapshot() {
         assert_eq!(model.0.get(k), Some(col), "{k:?}: folded != snapshot");
     }
 }
+
+// --- Server-computed levels and zones (`levels.v1`, `zones.v1`, crate::chart_context) -----------
+
+fn is_context(m: &Value) -> bool {
+    m["type"] == "chart.levels" || m["type"] == "chart.zones"
+}
+
+/// The welcome advertises both features; a slot asking for them gets `chart.levels` and
+/// `chart.zones` after its snapshot, then whole-state frames when they change. On 15 s candles,
+/// where the fixture day forms and breaks zones in its first hour. Folded (the latest
+/// of each wins), they equal what a fresh snapshot of the same chart says once the replay is
+/// paused and the forming bar's throttled zones have been flushed.
+#[tokio::test]
+async fn levels_and_zones_follow_the_replay_and_match_a_fresh_snapshot() {
+    let s = stack(&[("REPLAY_SPEED", "300")]).await;
+    let (mut ws, _) = tokio_tungstenite::connect_async(&s.url).await.unwrap();
+    send(&mut ws, json!({"type": "hello", "client": "test"})).await;
+    let w = next(&mut ws, is("welcome")).await;
+    let features: Vec<&str> = w["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(
+        features.contains(&"levels.v1") && features.contains(&"zones.v1"),
+        "{w}"
+    );
+    wait_for_replay(&mut ws).await;
+    send(
+        &mut ws,
+        json!({"type": "chart.subscribe", "id": "a", "symbol": "SMPL", "timeframe": "15s",
+               "profileBin": 0.01, "levels": true, "zones": true, "rth": false}),
+    )
+    .await;
+    next(&mut ws, is("chart.snapshot")).await;
+    let mut levels = next(&mut ws, is("chart.levels")).await;
+    let mut zones = next(&mut ws, is("chart.zones")).await;
+    assert_eq!(
+        (levels["symbol"].as_str(), levels["timeframe"].as_str()),
+        (Some("SMPL"), Some("15s"))
+    );
+    assert_eq!(levels["day"], "2026-10-15");
+    for k in ["pmHigh", "pmLow", "hod", "lod", "open"] {
+        assert!(levels[k].is_f64(), "{k}: {levels}");
+    }
+    assert!(levels["hod"].as_f64() >= levels["lod"].as_f64());
+    let r = &levels["openingRanges"][0];
+    // 2026-10-15 09:30 ET, final long ago, ending at 16:00.
+    assert_eq!(r["t"], 1_792_071_000_000i64);
+    assert_eq!(r["end"], 1_792_094_400_000i64);
+    assert_eq!(r["forming"], false);
+    assert_eq!(zones["rth"], false);
+    assert!(zones["zones"].is_array());
+
+    // After 10:40 the fixture day makes no new extreme; from just after the open it does, and
+    // the opening range stops forming. The seek's resync resends both whole states.
+    let open = 1_792_071_000_000i64;
+    send(
+        &mut ws,
+        json!({"type": "replay.control", "action": "seek", "value": open + 5_000}),
+    )
+    .await;
+    loop {
+        let m = next(&mut ws, is("chart.levels")).await;
+        if m["openingRanges"][0]["forming"] == true {
+            levels = m;
+            break;
+        }
+    }
+    zones = next(&mut ws, is("chart.zones")).await;
+    let (mut n_levels, mut n_zones) = (0, 0);
+    loop {
+        let m = next(&mut ws, |m| is_context(m) || m["type"] == "replay.clock").await;
+        match m["type"].as_str() {
+            Some("replay.clock") => {
+                if m["clock"]["now"].as_i64().unwrap() >= open + 70 * 60_000 {
+                    break;
+                }
+            }
+            Some("chart.levels") => {
+                assert_ne!(m, levels, "only a change is sent");
+                levels = m;
+                n_levels += 1;
+            }
+            _ => {
+                assert_ne!(m, zones, "only a change is sent");
+                zones = m;
+                n_zones += 1;
+            }
+        }
+    }
+    assert!(n_levels > 0, "70 minutes after the open moved no level?");
+    assert_eq!(levels["openingRanges"][0]["forming"], false);
+    send(
+        &mut ws,
+        json!({"type": "replay.control", "action": "pause"}),
+    )
+    .await;
+    // Paused: take the tail, including the forming bar's flush (at most a second behind).
+    while let Ok(m) =
+        tokio::time::timeout(Duration::from_millis(2500), next(&mut ws, is_context)).await
+    {
+        if m["type"] == "chart.levels" {
+            levels = m;
+        } else {
+            zones = m;
+            n_zones += 1;
+        }
+    }
+    let mut other = connect(&s.url).await;
+    send(
+        &mut other,
+        json!({"type": "chart.subscribe", "symbol": "SMPL", "timeframe": "15s", "profileBin": 0.01,
+               "levels": true, "zones": true}),
+    )
+    .await;
+    assert_eq!(next(&mut other, is("chart.levels")).await, levels);
+    assert_eq!(next(&mut other, is("chart.zones")).await, zones);
+    assert!(n_zones > 0, "the first hour forms and breaks 15 s zones");
+    eprintln!("levels frames: {n_levels}, zones frames: {n_zones}");
+}
+
+/// A client from before sends no flag and gets no frame; levels and zones are asked separately;
+/// `chart.indicators.set {zones}` turns the zones on (over the regular session with `rth`) and
+/// off; a seek resends both with the resync snapshot.
+#[tokio::test]
+async fn levels_and_zones_are_opt_in_per_slot() {
+    let s = stack(&[]).await;
+    let mut old = connect(&s.url).await;
+    let mut new = connect(&s.url).await;
+    wait_for_replay(&mut old).await;
+    wait_for_replay(&mut new).await;
+    send(&mut old, sub("", "SMPL", "1m")).await;
+    next(&mut old, is("chart.snapshot")).await;
+    let seen = types_for(&mut old, Duration::from_millis(2500)).await;
+    assert!(seen.iter().any(|t| t == "chart.update"), "{seen:?}");
+    assert!(
+        !seen
+            .iter()
+            .any(|t| t == "chart.levels" || t == "chart.zones"),
+        "{seen:?}"
+    );
+
+    send(
+        &mut new,
+        json!({"type": "chart.subscribe", "id": "x", "symbol": "SMPL", "timeframe": "5m",
+               "profileBin": 0.01, "levels": true}),
+    )
+    .await;
+    next(&mut new, is("chart.snapshot")).await;
+    let lv = next(&mut new, is("chart.levels")).await;
+    assert_eq!(lv["timeframe"], "5m");
+    // The 5m opening range is the 09:30-09:35 candle.
+    assert_eq!(lv["openingRanges"][0]["t"], 1_792_071_000_000i64);
+    // Zones on, regular session only.
+    send(
+        &mut new,
+        json!({"type": "chart.indicators.set", "id": "x", "indicators": [], "rth": true, "zones": true}),
+    )
+    .await;
+    let z = next(&mut new, is("chart.zones")).await;
+    assert_eq!(
+        (z["timeframe"].as_str(), z["rth"].as_bool()),
+        (Some("5m"), Some(true))
+    );
+    // A seek: both come again with the resync.
+    send(
+        &mut new,
+        json!({"type": "replay.control", "action": "seek", "value": T1040 - 40 * 60_000}),
+    )
+    .await;
+    next(&mut new, is("chart.snapshot")).await;
+    let after = next(&mut new, is_context).await;
+    assert_eq!(after["type"], "chart.levels");
+    assert_eq!(next(&mut new, is_context).await["type"], "chart.zones");
+    // Zones off: no more zone frames, levels still come.
+    send(
+        &mut new,
+        json!({"type": "chart.indicators.set", "id": "x", "indicators": [], "rth": true, "zones": false}),
+    )
+    .await;
+    next(&mut new, is("chart.indicators")).await;
+    let seen = types_for(&mut new, Duration::from_millis(2500)).await;
+    assert!(!seen.iter().any(|t| t == "chart.zones"), "{seen:?}");
+}

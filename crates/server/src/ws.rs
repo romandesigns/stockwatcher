@@ -80,6 +80,17 @@
 //!   the header of crate::indicators. A lag, a seek or a day switch resends `chart.indicators`
 //!   with the snapshot, as for the candles.
 //!
+//! Key levels, opening ranges and supply/demand zones computed on the server (`levels.v1`,
+//! `zones.v1`; crate::chart_context, the levels math in crates/chart-engine/src/levels.rs):
+//! - `chart.subscribe` takes `levels: true` (sent only when the welcome lists `levels.v1`) and
+//!   `zones: true` (only with `zones.v1`, and only while the chart shows the zones layer; the
+//!   zones are over the regular session with `rth`). Without them (every client from before) no
+//!   frame below is sent and the client keeps computing its own.
+//! - `chart.levels` follows the slot's `chart.snapshot`, and `chart.zones` when asked; both are
+//!   whole states (shapes in crate::chart_context), broadcast again whenever their content
+//!   changes and resent on every resync. `chart.indicators.set` takes `zones?` too: turning the
+//!   layer on (or flipping `rth` with it on) answers with a `chart.zones`; absent = unchanged.
+//!
 //! Price-band candidates (`symbols.v1` in `welcome.features`; crate::symbols, after `welcome`):
 //! - client `symbols.subscribe` -> server `symbols.snapshot {rev, symbols, mode, status, source,
 //!   day, fixture, priceBand, screened, session}` (the fields of `GET /api/symbols`), then
@@ -301,10 +312,12 @@ use axum::response::Response;
 use serde::{Deserialize, Serialize};
 use tokio::time::{Instant, interval_at, timeout};
 
+use crate::chart_context::{ContextKey, LevelsKey};
 use crate::indicators::{ChartKey, Studies};
 use crate::market::{
-    ControlError, DetectionGuard, FavoritesGuard, IndicatorLease, Market, MoversGuard, OutKind,
-    PressureGuard, QuotesGuard, RocketGuard, RossGuard, SnapshotError, SymbolsGuard,
+    ContextLease, ControlError, DetectionGuard, FavoritesGuard, IndicatorLease, Market,
+    MoversGuard, OutKind, PressureGuard, QuotesGuard, RocketGuard, RossGuard, SnapshotError,
+    SymbolsGuard,
 };
 use crate::settings::{SettingsError, SettingsOp, rejected_frame as settings_rejected};
 use crate::{AppState, COMMIT, Settings, VERSION, api, auth};
@@ -348,9 +361,16 @@ enum ClientMessage {
         /// Raw JSON: parsed as leniently as the client's own `parseIndicators`.
         #[serde(default)]
         indicators: Option<serde_json::Value>,
-        /// Extended hours off: the indicators run over the regular session only.
+        /// Extended hours off: the indicators (and the zones) run over the regular session only.
         #[serde(default)]
         rth: Option<bool>,
+        /// `chart.levels` for this slot (`levels.v1`); absent = the client computes its own.
+        #[serde(default)]
+        levels: Option<bool>,
+        /// `chart.zones` for this slot (`zones.v1`); absent = none (the layer is off, or the
+        /// client computes its own).
+        #[serde(default)]
+        zones: Option<bool>,
     },
     #[serde(rename = "chart.indicators.set")]
     ChartIndicatorsSet {
@@ -359,6 +379,9 @@ enum ClientMessage {
         indicators: serde_json::Value,
         #[serde(default)]
         rth: Option<bool>,
+        /// The zones layer turned on or off (`zones.v1`); absent = as it was.
+        #[serde(default)]
+        zones: Option<bool>,
     },
     #[serde(rename = "chart.unsubscribe")]
     ChartUnsubscribe {
@@ -843,6 +866,99 @@ struct Sub {
     /// snapshots would go out for the older slot and, carrying every key of the chart, overwrite
     /// the newer slot's values with older ones (frames carry no seq for the client to check).
     ind_seq: u64,
+    /// The slot's `chart.levels` demand (`levels.v1`); `None` for a client computing its own.
+    levels: Option<ContextLease>,
+    /// The slot's `chart.zones` demand (`zones.v1`), on (symbol, timeframe, rth).
+    zones: Option<ContextLease>,
+    /// Broadcast `chart.levels` / `chart.zones` with a seq <= these are already in the slot's
+    /// last levels / zones frame. Every slot of one levels chart (or zones key) on the socket holds
+    /// the same value, for the reason `ind_seq` gives: the client routes these frames to every
+    /// slot of the chart, so a frame queued before one slot's snapshot must not go out for
+    /// another slot after it.
+    lvl_seq: u64,
+    zone_seq: u64,
+}
+
+impl Sub {
+    fn levels_key(&self) -> Option<&LevelsKey> {
+        match self.levels.as_ref().map(ContextLease::key) {
+            Some(ContextKey::Levels(k)) => Some(k),
+            _ => None,
+        }
+    }
+
+    fn zones_key(&self) -> Option<&ChartKey> {
+        match self.zones.as_ref().map(ContextLease::key) {
+            Some(ContextKey::Zones(k)) => Some(k),
+            _ => None,
+        }
+    }
+}
+
+/// One `chart.levels` for `key`; every slot of the socket on it becomes current to it.
+async fn send_levels(
+    socket: &mut WebSocket,
+    market: &Market,
+    subs: &mut [Sub],
+    key: &LevelsKey,
+) -> bool {
+    let (seq, json) = market.levels_snapshot(key);
+    for s in subs.iter_mut().filter(|s| s.levels_key() == Some(key)) {
+        s.lvl_seq = seq;
+    }
+    send_text(socket, json).await
+}
+
+/// One `chart.zones` for `key`; every slot of the socket on it becomes current to it.
+async fn send_zones(
+    socket: &mut WebSocket,
+    market: &Market,
+    subs: &mut [Sub],
+    key: &ChartKey,
+) -> bool {
+    let (seq, json) = market.zones_snapshot(key);
+    for s in subs.iter_mut().filter(|s| s.zones_key() == Some(key)) {
+        s.zone_seq = seq;
+    }
+    send_text(socket, json).await
+}
+
+/// The levels and zones of the slots in `subs` (showing `only`, when given), once per distinct
+/// key: after a resync or a load, beside the candle snapshots.
+async fn resend_context(
+    socket: &mut WebSocket,
+    market: &Market,
+    subs: &mut [Sub],
+    only: Option<&str>,
+) -> bool {
+    let mut levels: Vec<LevelsKey> = Vec::new();
+    let mut zones: Vec<ChartKey> = Vec::new();
+    for s in subs
+        .iter()
+        .filter(|s| only.is_none_or(|sym| s.symbol == sym))
+    {
+        if let Some(k) = s.levels_key()
+            && !levels.contains(k)
+        {
+            levels.push(k.clone());
+        }
+        if let Some(k) = s.zones_key()
+            && !zones.contains(k)
+        {
+            zones.push(k.clone());
+        }
+    }
+    for k in &levels {
+        if !send_levels(socket, market, subs, k).await {
+            return false;
+        }
+    }
+    for k in &zones {
+        if !send_zones(socket, market, subs, k).await {
+            return false;
+        }
+    }
+    true
 }
 
 impl Sub {
@@ -1036,7 +1152,7 @@ async fn resnapshot(
             done.push(c);
         }
     }
-    true
+    resend_context(socket, market, subs, only).await
 }
 
 #[derive(Debug, Serialize)]
@@ -1163,6 +1279,8 @@ async fn session(mut socket: WebSocket, state: AppState) {
         heartbeat_secs: HEARTBEAT.as_secs(),
         features: &[
             crate::indicators::FEATURE,
+            crate::chart_context::LEVELS_FEATURE,
+            crate::chart_context::ZONES_FEATURE,
             crate::symbols::FEATURE,
             crate::notices::FEATURE,
             crate::notices::FEATURE_ROWS,
@@ -1332,6 +1450,22 @@ async fn session(mut socket: WebSocket, state: AppState) {
                         // slot did not ask for ride along; the client ignores them.
                         OutKind::Indicator { symbol, timeframe, rth, json } => {
                             if subs.iter().any(|s| s.wants_indicators(symbol, *timeframe, *rth) && o.seq > s.ind_seq) {
+                                send_text(&mut socket, json.clone()).await
+                            } else {
+                                true
+                            }
+                        }
+                        // Levels and zones: once per connection, if a slot on that chart asked and
+                        // has not already got this state in its own snapshot.
+                        OutKind::Levels { key, json } => {
+                            if subs.iter().any(|s| s.levels_key() == Some(key) && o.seq > s.lvl_seq) {
+                                send_text(&mut socket, json.clone()).await
+                            } else {
+                                true
+                            }
+                        }
+                        OutKind::Zones { key, json } => {
+                            if subs.iter().any(|s| s.zones_key() == Some(key) && o.seq > s.zone_seq) {
                                 send_text(&mut socket, json.clone()).await
                             } else {
                                 true
@@ -1537,7 +1671,7 @@ async fn session(mut socket: WebSocket, state: AppState) {
                 let reply = match serde_json::from_str::<ClientMessage>(&text) {
                     Ok(ClientMessage::Ping { ts }) => Some(ServerMessage::Pong { ts }),
                     Ok(ClientMessage::Pong { .. }) => None,
-                    Ok(ClientMessage::ChartSubscribe { symbol, timeframe, profile_bin, id, indicators, rth }) => {
+                    Ok(ClientMessage::ChartSubscribe { symbol, timeframe, profile_bin, id, indicators, rth, levels, zones }) => {
                         let id = id.unwrap_or_default();
                         let held = subs.iter().position(|s| s.id == id);
                         let symbol = symbol.trim().to_ascii_uppercase();
@@ -1563,7 +1697,7 @@ async fn session(mut socket: WebSocket, state: AppState) {
                                 Ok(bin) => {
                                     let mut s = Sub {
                                         id,
-                                        symbol,
+                                        symbol: symbol.clone(),
                                         timeframe,
                                         bin,
                                         seq: 0,
@@ -1571,6 +1705,10 @@ async fn session(mut socket: WebSocket, state: AppState) {
                                         // concurrent release elsewhere cannot drop them between.
                                         studies: studies.ok().flatten().map(|st| market.indicators_acquire(st)),
                                         ind_seq: 0,
+                                        levels: (levels == Some(true)).then(|| market.context_acquire(ContextKey::Levels(LevelsKey { symbol: symbol.clone(), timeframe }))),
+                                        zones: (zones == Some(true)).then(|| market.context_acquire(ContextKey::Zones(ChartKey { symbol: symbol.clone(), timeframe, rth: rth.unwrap_or(false) }))),
+                                        lvl_seq: 0,
+                                        zone_seq: 0,
                                     };
                                     // With the other slots' studies on the same chart key (not
                                     // the one this replaces): see `Sub::ind_seq`.
@@ -1590,9 +1728,27 @@ async fn session(mut socket: WebSocket, state: AppState) {
                                     for other in subs.iter_mut().filter(|o| o.same_chart(&s)) {
                                         other.seq = s.seq;
                                     }
-                                    match held {
-                                        Some(i) => subs[i] = s,
-                                        None => subs.push(s),
+                                    let i = match held {
+                                        Some(i) => {
+                                            subs[i] = s;
+                                            i
+                                        }
+                                        None => {
+                                            subs.push(s);
+                                            subs.len() - 1
+                                        }
+                                    };
+                                    // After the candles: the levels and zones of this chart, which
+                                    // every other slot on the same key takes too (`Sub::lvl_seq`).
+                                    if let Some(k) = subs[i].levels_key().cloned()
+                                        && !send_levels(&mut socket, &market, &mut subs, &k).await
+                                    {
+                                        break;
+                                    }
+                                    if let Some(k) = subs[i].zones_key().cloned()
+                                        && !send_zones(&mut socket, &market, &mut subs, &k).await
+                                    {
+                                        break;
                                     }
                                     None
                                 }
@@ -1603,7 +1759,7 @@ async fn session(mut socket: WebSocket, state: AppState) {
                             }
                         }
                     }
-                    Ok(ClientMessage::ChartIndicatorsSet { id, indicators, rth }) => {
+                    Ok(ClientMessage::ChartIndicatorsSet { id, indicators, rth, zones }) => {
                         let id = id.unwrap_or_default();
                         match subs.iter().position(|s| s.id == id) {
                             None => {
@@ -1620,9 +1776,24 @@ async fn session(mut socket: WebSocket, state: AppState) {
                                         // studies both lists share keep their series.
                                         let lease = st.map(|st| market.indicators_acquire(st));
                                         s.studies = lease;
+                                        // The zones follow the layer (`zones`, absent = as it was)
+                                        // and the slot's rth: a new key takes a new lease (taken
+                                        // before the old one goes) and answers with its zones.
+                                        let on = zones.unwrap_or(s.zones.is_some());
+                                        let want = on.then(|| ChartKey { symbol: s.symbol.clone(), timeframe: s.timeframe, rth: rth.unwrap_or(false) });
+                                        let zones_changed = want.as_ref() != s.zones_key();
+                                        if zones_changed {
+                                            s.zones = want.map(|k| market.context_acquire(ContextKey::Zones(k)));
+                                        }
+                                        let zkey = s.zones_key().cloned().filter(|_| zones_changed);
                                         let chart = s.indicator_chart().cloned();
                                         if let Some(c) = chart
                                             && !send_indicators(&mut socket, &market, &mut subs, &c).await
+                                        {
+                                            break;
+                                        }
+                                        if let Some(k) = zkey
+                                            && !send_zones(&mut socket, &market, &mut subs, &k).await
                                         {
                                             break;
                                         }

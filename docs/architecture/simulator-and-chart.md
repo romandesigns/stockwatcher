@@ -550,6 +550,17 @@ stamped on it. The increments are serialized to JSON once and broadcast on a bou
   web's `?indicatorParity=1` logs server vs local per spec). Shapes and rules: the headers of
   `crates/server/src/indicators.rs` and `ws.rs`; the math and its parity with chart-core:
   `crates/chart-engine/src/indicators.rs`;
+- key levels, opening ranges and supply/demand zones computed on the server (2026-10-31,
+  `levels.v1` and `zones.v1` in `welcome.features`): `chart.subscribe` may carry `levels: true`
+  and `zones: true` (with `rth`); the slot then gets `chart.levels {symbol, timeframe, day, pmHigh,
+  pmLow, hod, lod, open, prevClose, openingRanges}` and `chart.zones {symbol, timeframe, rth,
+  zones}` after its snapshot, again whenever their content changes and on every resync (whole
+  states, not increments). `chart.indicators.set` takes `zones` for the Levels menu's zones
+  layer. The levels follow the engine's NYSE calendar, so an early close ends the regular session
+  at 13:00 (the clients' own code used 16:00); otherwise they equal the clients' former
+  `keyLevels` / `openingRanges` / `autoZones` bit for bit (fixtures from the TS). Shapes,
+  timing (zones on bar finalization, the forming bar at most once a second) and cost: the header
+  of `crates/server/src/chart_context.rs`; the levels math: `crates/chart-engine/src/levels.rs`;
 - server `replay.clock {clock:{mode,now,speed,playing}}` goes to every client after `welcome`, on
   every change, and about 4 Hz while playing;
 - client `replay.control {action, value}`: `play`, `pause`, `step`, `stepInterval` (`"15s"`…`"5m"`,

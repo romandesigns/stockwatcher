@@ -70,10 +70,11 @@
 //! like the closes file), and the quote board withholds a close the day plainly no longer trades
 //! near (`crate::quotes::split_guard`), so a reverse split never reads as a +3,900 % gainer.
 
+use crate::chart_context::{ContextFrame, ContextKey, ContextRegistry, LevelsKey};
 use crate::context::ContextBoard;
 use crate::days::{DayCatalog, DayEntry};
 use crate::history::{History, Unloaded};
-use crate::indicators::{IndicatorRegistry, Studies};
+use crate::indicators::{ChartKey, IndicatorRegistry, Studies};
 use crate::pressure::{Card, HaltInfo, PressureBoard};
 use crate::quotes::{Counted, QuoteBoard, QuoteChanges, QuoteRow};
 use chart_engine::luld::{LuldInputs, LuldParams, venue_code};
@@ -446,6 +447,17 @@ pub enum OutKind {
         rth: bool,
         json: String,
     },
+    /// A `chart.levels` frame (crate::chart_context, `levels.v1`) for one chart (symbol,
+    /// timeframe): the whole state, broadcast when it changed, after the chart frames of the apply
+    /// that changed it. Forwarded once per connection with a slot on that chart that asked for
+    /// levels and has not already got this state in its own levels snapshot.
+    Levels {
+        key: crate::chart_context::LevelsKey,
+        json: String,
+    },
+    /// A `chart.zones` frame (crate::chart_context, `zones.v1`) for one chart key: the whole set,
+    /// broadcast when it changed. Forwarded like `Levels`, to slots that asked for zones.
+    Zones { key: ChartKey, json: String },
     /// A `replay.clock` frame.
     Clock(String),
     /// A rebuild (seek) finished: every subscriber must take a fresh snapshot.
@@ -520,6 +532,9 @@ pub(crate) struct Core {
     /// engine increment under this lock. Unlike the boards above it survives a `Reset` (the
     /// slots' demand does), with its series cleared.
     pub(crate) indicators: IndicatorRegistry,
+    /// The key levels, opening ranges and zones the connected charts (and the Runners mark) asked
+    /// for (crate::chart_context). Survives a `Reset` like `indicators`, its values cleared.
+    pub(crate) chart_context: ContextRegistry,
 }
 
 /// The LULD model's inputs from the archive metadata (`chart_engine::luld`): the previous
@@ -593,6 +608,7 @@ impl Core {
             rocket: crate::rocket::RocketBoard::disabled(),
             zones: crate::zones::ZoneBoard::disabled(),
             indicators: IndicatorRegistry::default(),
+            chart_context: ContextRegistry::default(),
         }
     }
 
@@ -2085,6 +2101,8 @@ impl Market {
                 let Some(inner) = weak.upgrade() else { break };
                 let market = Market(inner);
                 market.publish_quotes();
+                // Before the Runners frame, whose demand-zone mark reads the same zones.
+                market.flush_chart_zones();
                 market.publish_pressure();
                 market.broadcast_rocket();
                 // Before the broadcast, and whether or not anyone is subscribed: the context
@@ -2828,8 +2846,11 @@ impl Market {
                     // were computed over the old engine), and the resync snapshots rebuild them.
                     let mut indicators = std::mem::take(&mut core.indicators);
                     indicators.clear_computed();
+                    let mut chart_context = std::mem::take(&mut core.chart_context);
+                    chart_context.clear_computed();
                     *core = Core::new(closes, self.luld_inputs());
                     core.indicators = indicators;
+                    core.chart_context = chart_context;
                     core.context = board;
                     core.rocket = rocket;
                     core.zones = self.new_zone_board();
@@ -2985,6 +3006,18 @@ impl Market {
         // A symbol with no chart is one hash lookup; no studies at all, nothing.
         let indicators = core.indicators.on_updates(&ups);
         if !core.rebuilding {
+            // Levels and zones are recomputed from the engine, never folded, so a rebuild does not
+            // need them in step: its resync snapshots compute them afresh.
+            let context = {
+                let Core {
+                    engine,
+                    quotes,
+                    chart_context,
+                    ..
+                } = &mut *core;
+                let pc = |s: &str, d: NaiveDate| quotes.prev_close_on(s, d).map(Price::to_f64);
+                chart_context.on_updates(engine, &pc, &ups, std::time::Instant::now())
+            };
             let mut out = Self::serialize(core, ups);
             // After the candle frames of the same apply, so a client has the bar before its
             // values (it joins them by `t`).
@@ -2994,6 +3027,7 @@ impl Market {
                 rth: k.rth,
                 json,
             }));
+            out.extend(context.into_iter().map(OutKind::from));
             return out;
         }
         for u in &ups {
@@ -3246,6 +3280,62 @@ impl Market {
         (core.seq, core.indicators.snapshot(&core.engine, studies))
     }
 
+    /// Counts a slot's levels or zones demand (crate::chart_context) until the lease is dropped.
+    pub fn context_acquire(&self, key: ContextKey) -> ContextLease {
+        self.0
+            .core
+            .lock()
+            .expect("core lock")
+            .chart_context
+            .acquire(&key);
+        ContextLease {
+            inner: self.0.clone(),
+            key,
+        }
+    }
+
+    /// A `chart.levels` frame for `key`, computed afresh, with the engine seq it is current to: a
+    /// broadcast `Levels` with a larger seq is newer.
+    pub fn levels_snapshot(&self, key: &LevelsKey) -> (u64, String) {
+        let mut guard = self.0.core.lock().expect("core lock");
+        let Core {
+            engine,
+            quotes,
+            chart_context,
+            seq,
+            ..
+        } = &mut *guard;
+        let pc = |s: &str, d: NaiveDate| quotes.prev_close_on(s, d).map(Price::to_f64);
+        (*seq, chart_context.levels_frame(engine, &pc, key))
+    }
+
+    /// A `chart.zones` frame for `key`, computed afresh, with the engine seq it is current to.
+    pub fn zones_snapshot(&self, key: &ChartKey) -> (u64, String) {
+        let mut guard = self.0.core.lock().expect("core lock");
+        let core = &mut *guard;
+        let json = core
+            .chart_context
+            .zones_frame(&core.engine, key, std::time::Instant::now());
+        (core.seq, json)
+    }
+
+    /// The zones whose forming bar moved since their last computation (crate::chart_context,
+    /// at most once a second each): from the 1 Hz broadcast tick. Public so tests can tick.
+    pub fn flush_chart_zones(&self) {
+        let (seq, frames) = {
+            let mut guard = self.0.core.lock().expect("core lock");
+            let core = &mut *guard;
+            if core.rebuilding {
+                return;
+            }
+            let frames = core
+                .chart_context
+                .flush(&core.engine, std::time::Instant::now());
+            (core.seq, frames)
+        };
+        self.send_all(seq, frames.into_iter().map(OutKind::from).collect());
+    }
+
     /// The previous close for a chart snapshot: the closes file's latest date before the symbol's
     /// current session date, the quote board's rule and input (its row's trading date is the date
     /// of the latest session the symbol traded in, which is the engine's current session), so the
@@ -3428,7 +3518,7 @@ impl Market {
         let clock = self.clock();
         let t = clock.as_ref().map(|c| c.now.millis());
         let tau = clock.as_ref().map_or(0, |c| c.now.0);
-        let core = self.0.core.lock().expect("core lock");
+        let mut core = self.0.core.lock().expect("core lock");
         if !core.rocket.enabled() {
             return (core.seq, crate::rocket::disabled_frame("rocket.snapshot"));
         }
@@ -3436,7 +3526,7 @@ impl Market {
             self.rocket_levels(&core, s, tau)
         });
         Self::add_zones(&core, &mut body, tau);
-        self.add_demand_zones(&core, &mut body);
+        self.add_demand_zones(&mut core, &mut body);
         crate::time_marks::stamp_rows(&mut body, tau);
         let mut v = serde_json::json!({"type": "rocket.snapshot", "t": t});
         if let (Some(m), serde_json::Value::Object(b)) = (v.as_object_mut(), body) {
@@ -3462,12 +3552,17 @@ impl Market {
 
     /// The demand-zone mark on Runners rows (`crate::auto_zones`): in the body, so a row entering
     /// or leaving a zone sends an update like any other row change.
-    fn add_demand_zones(&self, core: &Core, body: &mut serde_json::Value) {
+    fn add_demand_zones(&self, core: &mut Core, body: &mut serde_json::Value) {
+        let Core {
+            engine,
+            chart_context,
+            ..
+        } = core;
         self.0
             .rocket_auto_zones
             .lock()
             .expect("rocket auto zones")
-            .decorate(&core.engine, body);
+            .decorate(chart_context, engine, body, std::time::Instant::now());
     }
 
     fn rocket_quote(core: &Core, symbol: &str) -> crate::rocket::Quote {
@@ -3594,7 +3689,7 @@ impl Market {
             return false;
         };
         let (seq, frame, events) = {
-            let core = self.0.core.lock().expect("core lock");
+            let mut core = self.0.core.lock().expect("core lock");
             if core.rebuilding || !core.rocket.enabled() {
                 // The rows are being rebuilt from the tape: their appearance is not news.
                 self.0.runner_events.lock().expect("runner events").reset();
@@ -3605,7 +3700,7 @@ impl Market {
                 self.rocket_levels(&core, s, clock.now.0)
             });
             Self::add_zones(&core, &mut body, clock.now.0);
-            self.add_demand_zones(&core, &mut body);
+            self.add_demand_zones(&mut core, &mut body);
             crate::time_marks::stamp_rows(&mut body, clock.now.0);
             // Toasts only from the live market (a replay never pushes, crate::time_marks).
             let events = self.0.runner_events.lock().expect("runner events").take(
@@ -4639,6 +4734,36 @@ impl Drop for IndicatorLease {
     fn drop(&mut self) {
         if let Ok(mut core) = self.inner.core.lock() {
             core.indicators.release(&self.studies);
+        }
+    }
+}
+
+/// A slot's hold on its levels or zones (crate::chart_context): released when dropped. Takes the
+/// core lock in `drop`, like [`IndicatorLease`], so it must never be dropped under that lock.
+pub struct ContextLease {
+    inner: Arc<Inner>,
+    key: ContextKey,
+}
+
+impl ContextLease {
+    pub fn key(&self) -> &ContextKey {
+        &self.key
+    }
+}
+
+impl Drop for ContextLease {
+    fn drop(&mut self) {
+        if let Ok(mut core) = self.inner.core.lock() {
+            core.chart_context.release(&self.key);
+        }
+    }
+}
+
+impl From<ContextFrame> for OutKind {
+    fn from(f: ContextFrame) -> Self {
+        match f {
+            ContextFrame::Levels(key, json) => OutKind::Levels { key, json },
+            ContextFrame::Zones(key, json) => OutKind::Zones { key, json },
         }
     }
 }
