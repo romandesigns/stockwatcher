@@ -598,6 +598,28 @@ client `packages/shared/src/symbols.ts`):
   file writer.
 - It replaced the web and phone 15 s refetch of today's whole log. Past days stay one-shot
   `GET /api/notices?day=` fetches. Older servers and older phone builds keep polling.
+- **Rows assembled by the server** (2026-10-31, `notices.rows.v1` in `welcome.features`; owner
+  rule: Rust computes, clients render): every item carries `status` (`sent` | `held`, the phone's
+  decision when the phones saw it, else the desk's), `reason` (the hold's code) and `reason_text`
+  (plain words); every body (`GET /api/notices`, `notices.snapshot`, each `notices.append`)
+  carries `summary {sent, held, reasons: [{reason, text, n}]}` over the whole day. Additive: a
+  client without the feature keeps deriving them (`noticeLog.ts`). Filtering the delivered rows
+  by ticker or kind stays on the client (presentation, no counting).
+
+**Insights ticker page** (2026-10-31, `insights.ticker.v1` in `welcome.features`;
+`crates/server/src/insights/`): everything about one symbol on one trading day, computed by the
+server: day stats, 1-minute bars and markers, the notification history with each alert's outcome
+(best price after, +5 % reached, stop hit), the scorecard, halts and LULD, and the missed setups
+(the production micro-pullback detector re-run over the day's tape, each armed setup that did not
+notify with the rule that held it).
+- `GET /api/insights/ticker?symbol=&day=` (day absent = today's trading date). A day without data
+  is `available: false` with `unavailable_reason` (`not_a_trading_day`, `not_archived`,
+  `retention_expired`, `in_the_future`) and still names `prev_day` / `next_day`.
+- client `insights.ticker.subscribe {symbol, day?}` → server `insights.ticker.snapshot {symbol,
+  day, …}`; for a day still running (until 20:00 ET), `insights.ticker.update {…}` (the whole
+  package, replacing) when it changes (a notice for the symbol, or prices moving its outcomes; at
+  most every 15 s). `insights.ticker.unsubscribe` stops it. A finished day is cached on disk
+  (`DATA_DIR/insights/`).
 
 **Quote board** (the ticker search's live rows; `crates/server/src/quotes.rs`, wire in
 `packages/shared/src/protocol.ts` `QuoteRowWire`):

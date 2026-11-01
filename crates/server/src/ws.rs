@@ -82,6 +82,16 @@
 //!   far, upserted by `event_id`. Without `day` it follows today into the next date (a fresh
 //!   snapshot). A past day gets the snapshot only. A malformed day gets `error bad_request`.
 //!   `notices.unsubscribe` stops it; a lag resends the snapshot. Older clients keep polling.
+//!   With `notices.rows.v1` also listed, every item carries `status`/`reason`/`reason_text` and
+//!   every body a `summary` (crate::notices::FEATURE_ROWS); additive.
+//!
+//! Insights ticker page (`insights.ticker.v1` in `welcome.features`; crate::insights):
+//! - client `insights.ticker.subscribe {symbol, day?}` (day absent = today's trading date) ->
+//!   server `insights.ticker.snapshot {symbol, day, …}` (the body of `GET /api/insights/ticker`);
+//!   for today then `insights.ticker.update {…}` (the whole package, replacing) whenever it
+//!   changes. A new subscribe replaces the old one; a past day's snapshot is built off this
+//!   session and may arrive after a later subscribe, so a client matches `symbol` and `day`.
+//!   `insights.ticker.unsubscribe` stops it. A malformed request gets `error bad_request`.
 //!
 //! Simulated trading (docs/architecture/chart-trading-sim.md, after `welcome`):
 //! - server `paper.state` once right after `welcome`, then to every connection
@@ -375,6 +385,15 @@ enum ClientMessage {
     },
     #[serde(rename = "notices.unsubscribe")]
     NoticesUnsubscribe,
+    /// The Insights ticker page (`insights.ticker.v1`, crate::insights).
+    #[serde(rename = "insights.ticker.subscribe")]
+    InsightsTickerSubscribe {
+        symbol: String,
+        #[serde(default)]
+        day: Option<String>,
+    },
+    #[serde(rename = "insights.ticker.unsubscribe")]
+    InsightsTickerUnsubscribe,
     #[serde(rename = "rocket.subscribe")]
     RocketSubscribe,
     #[serde(rename = "rocket.unsubscribe")]
@@ -637,6 +656,32 @@ async fn send_notices_snapshot(
         follow,
         seq: snap.seq,
     })
+}
+
+/// The connection's ticker-page opt-in (`insights.ticker.v1`, crate::insights). Only today's has
+/// a receiver: a past day is one snapshot.
+struct TickerSub {
+    rx: Option<tokio::sync::watch::Receiver<Option<std::sync::Arc<String>>>>,
+    /// The snapshot went out; later packages are updates.
+    sent: bool,
+}
+
+/// Sends the followed package as a snapshot (first) or an update.
+async fn send_ticker(socket: &mut WebSocket, t: &mut TickerSub) -> bool {
+    let body = match t.rx.as_mut() {
+        Some(rx) => rx.borrow_and_update().clone(),
+        None => None,
+    };
+    let Some(body) = body else {
+        return true;
+    };
+    let kind = if t.sent {
+        "insights.ticker.update"
+    } else {
+        "insights.ticker.snapshot"
+    };
+    t.sent = true;
+    send_text(socket, crate::insights::frame(kind, &body)).await
 }
 
 /// The connection's Rocket watch opt-in (the Ross opt-in's twin).
@@ -1018,6 +1063,8 @@ async fn session(mut socket: WebSocket, state: AppState) {
             crate::indicators::FEATURE,
             crate::symbols::FEATURE,
             crate::notices::FEATURE,
+            crate::notices::FEATURE_ROWS,
+            crate::insights::FEATURE,
         ],
     };
     // Subscribed before the paper snapshot below, so no change can fall between the two (at
@@ -1059,6 +1106,7 @@ async fn session(mut socket: WebSocket, state: AppState) {
     let notice_feed = state.notice_feed().clone();
     let mut notices_feed = notice_feed.subscribe();
     let mut notices: Option<NoticesSub> = None;
+    let mut ticker: Option<TickerSub> = None;
     let mut rocket: Option<RocketSub> = None;
     let mut detection: Option<DetectionSub> = None;
     // Listed among the Runners notification desks while held (`runners.notify`).
@@ -1273,6 +1321,23 @@ async fn session(mut socket: WebSocket, state: AppState) {
                     // The store (and its sender) lives as long as the AppState; if it ever went,
                     // recv would return at once forever, so end the session rather than spin.
                     Err(RecvError::Closed) => false,
+                };
+                if !ok {
+                    break;
+                }
+            }
+            alive = async {
+                match ticker.as_mut().and_then(|t| t.rx.as_mut()) {
+                    Some(rx) => rx.changed().await.is_ok(),
+                    None => std::future::pending().await,
+                }
+            } => {
+                let ok = match ticker.as_mut() {
+                    Some(t) if alive => send_ticker(&mut socket, t).await,
+                    _ => {
+                        ticker = None;
+                        true
+                    }
                 };
                 if !ok {
                     break;
@@ -1648,6 +1713,47 @@ async fn session(mut socket: WebSocket, state: AppState) {
                     }
                     Ok(ClientMessage::NoticesUnsubscribe) => {
                         notices = None;
+                        None
+                    }
+                    Ok(ClientMessage::InsightsTickerSubscribe { symbol, day }) => {
+                        match crate::insights::parse_request(&symbol, day.as_deref()) {
+                            Ok((symbol, day)) => {
+                                let insights = state.insights().clone();
+                                let now = now_ms() as i64 * 1_000_000;
+                                if crate::insights::is_running(day, now) {
+                                    // Shared with every connection on the same symbol-day; its
+                                    // current package (if built) goes out now, later ones as
+                                    // they change.
+                                    let mut t = TickerSub {
+                                        rx: Some(insights.follow(symbol, day)),
+                                        sent: false,
+                                    };
+                                    let ready = t.rx.as_ref().is_some_and(|rx| rx.borrow().is_some());
+                                    if ready && !send_ticker(&mut socket, &mut t).await {
+                                        break;
+                                    }
+                                    ticker = Some(t);
+                                } else {
+                                    ticker = Some(TickerSub { rx: None, sent: true });
+                                    let tx = direct_tx.clone();
+                                    tokio::spawn(async move {
+                                        let v = insights.package(symbol, day).await;
+                                        let _ = tx.send(crate::insights::frame(
+                                            "insights.ticker.snapshot",
+                                            &v.to_string(),
+                                        ));
+                                    });
+                                }
+                                None
+                            }
+                            Err(why) => Some(ServerMessage::Error {
+                                code: "bad_request",
+                                message: why,
+                            }),
+                        }
+                    }
+                    Ok(ClientMessage::InsightsTickerUnsubscribe) => {
+                        ticker = None;
                         None
                     }
                     Ok(ClientMessage::RocketSubscribe) => {

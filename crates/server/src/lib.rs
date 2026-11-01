@@ -13,6 +13,7 @@ pub mod evidence;
 pub mod favorites;
 pub mod history;
 pub mod indicators;
+pub mod insights;
 pub mod market;
 pub mod movers;
 pub mod notices;
@@ -73,6 +74,7 @@ struct Inner {
     /// The pushed notification log (`crate::notices::NoticeFeed`, `notices.v1`): set at start
     /// with the ledger that feeds it; idle (empty, silent) when never set.
     notice_feed: std::sync::OnceLock<notices::NoticeFeed>,
+    insights: std::sync::OnceLock<insights::Insights>,
 }
 
 impl AppState {
@@ -115,6 +117,7 @@ impl AppState {
             shutdown: watch::Sender::new(false),
             notices_dir: std::sync::OnceLock::new(),
             notice_feed: std::sync::OnceLock::new(),
+            insights: std::sync::OnceLock::new(),
         }))
     }
 
@@ -137,6 +140,15 @@ impl AppState {
 
     pub fn notice_feed(&self) -> &notices::NoticeFeed {
         self.0.notice_feed.get_or_init(notices::NoticeFeed::idle)
+    }
+
+    /// The Insights ticker page (crate::insights). Without one set, every day is unavailable.
+    pub fn set_insights(&self, insights: insights::Insights) {
+        let _ = self.0.insights.set(insights);
+    }
+
+    pub fn insights(&self) -> &insights::Insights {
+        self.0.insights.get_or_init(insights::Insights::idle)
     }
 
     pub fn alerts(&self) -> &alerts::Alerts {
@@ -307,6 +319,7 @@ pub fn router(state: AppState, static_dir: &Path, data_dir: &Path) -> Router {
         .route("/quotes", get(api::quotes))
         .route("/settings", get(api::settings))
         .route("/notices", get(api::notices))
+        .route("/insights/ticker", get(api::insights_ticker))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_bearer,

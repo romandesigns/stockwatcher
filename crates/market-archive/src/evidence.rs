@@ -216,6 +216,38 @@ impl Archive {
         read_all(&self.evidence_dir().join(FLOAT_DIR), None)
     }
 
+    /// The newest float record for `symbol` that carries a float and was retrieved at or before
+    /// `at` (UTC ns): what the server held for it then. Reads month files newest first, from
+    /// `at`'s month back, and stops at the first month that has one, so a past day costs one or
+    /// two month files rather than the whole history; lines not naming the symbol are skipped
+    /// before they are parsed. Unreadable lines are skipped (a lookup, not an audit).
+    pub fn float_as_of(&self, symbol: &str, at: i64) -> Option<FloatRecord> {
+        let dir = self.evidence_dir().join(FLOAT_DIR);
+        let last = month_of(at);
+        let mut files = month_files(&dir, None).ok()?;
+        files.retain(|p| {
+            p.file_stem()
+                .and_then(|s| s.to_str())
+                .is_some_and(|m| m <= last.as_str())
+        });
+        let needle = format!("\"symbol\":{}", serde_json::to_string(symbol).ok()?);
+        for path in files.iter().rev() {
+            let Ok(text) = std::fs::read_to_string(path) else {
+                continue;
+            };
+            let best = text
+                .lines()
+                .filter(|l| l.contains(&needle))
+                .filter_map(|l| parse_line::<FloatRecord>(l).ok())
+                .filter(|r| r.symbol == symbol && r.retrieved_at <= at && r.float_shares.is_some())
+                .max_by_key(|r| r.retrieved_at);
+            if best.is_some() {
+                return best;
+            }
+        }
+        None
+    }
+
     /// News versions, optionally only from files for months at or after `since` (UTC ns).
     pub fn read_news(&self, since: Option<i64>) -> Result<Vec<NewsVersionRecord>, ArchiveError> {
         read_all(&self.evidence_dir().join(NEWS_DIR), since)

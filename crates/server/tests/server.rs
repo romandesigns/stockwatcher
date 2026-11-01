@@ -489,6 +489,10 @@ async fn notices_reads_the_ledger_day() {
     let v: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(v["items"][0]["symbol"], "SRTM");
     assert_eq!(v["items"][0]["phone"]["decision"], "sent");
+    // Rows assembled by the server (`notices.rows.v1`).
+    assert_eq!(v["items"][0]["status"], "sent");
+    assert_eq!(v["items"][0]["reason"], Value::Null);
+    assert_eq!(v["summary"], json!({"sent": 1, "held": 0, "reasons": []}));
     assert_eq!(v["days"][0], "2026-10-26");
     assert_eq!(
         get(a, "/api/notices?day=../x", Some(TOKEN)).await.0,
@@ -557,6 +561,21 @@ async fn ws_pushes_the_notification_log() {
     let append = until(&mut ws, "notices.append").await;
     assert_eq!(append["items"][0]["event_id"], "now");
     assert_eq!(append["items"][0]["desk"]["decision"], "sent");
+    assert_eq!(append["items"][0]["status"], "sent");
+    assert_eq!(append["summary"]["sent"], 1);
+    feed.push(
+        today,
+        &json!({"kind":"decision","v":1,"decided_at":7,"event_id":"now","notice":"runners.burst",
+               "symbol":"WFF","path":"phone","decision":"held","held":"no_device","devices":0}),
+    );
+    // The phone's hold decides the row, and the day's summary moves with it.
+    let append = until(&mut ws, "notices.append").await;
+    assert_eq!(append["items"][0]["status"], "held");
+    assert_eq!(append["items"][0]["reason_text"], "no device wanted it");
+    assert_eq!(
+        append["summary"],
+        json!({"sent": 0, "held": 1, "reasons": [{"reason": "no_device", "text": "no device wanted it", "n": 1}]})
+    );
 
     send(
         &mut ws,
@@ -580,4 +599,97 @@ async fn ws_pushes_the_notification_log() {
         (err["type"].as_str(), err["code"].as_str()),
         (Some("error"), Some("bad_request"))
     );
+}
+
+/// The Insights ticker page (`insights.ticker.v1`, crate::insights): listed in the welcome, served
+/// over HTTP behind auth with a bad request refused, and over the socket as a snapshot (today's
+/// through the shared follower). A server without an archive says every day is unavailable.
+#[tokio::test]
+async fn insights_ticker_over_http_and_ws() {
+    let dir = site();
+    let state = AppState::new(Some(TOKEN.to_owned()));
+    let a = router(state, &dir.path().join("static"), &dir.path().join("data"));
+    assert_eq!(
+        get(
+            a.clone(),
+            "/api/insights/ticker?symbol=INO&day=2026-10-30",
+            None
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (status, body, _) = get(
+        a.clone(),
+        "/api/insights/ticker?symbol=ino&day=2026-10-30",
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let v: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        (
+            v["symbol"].as_str(),
+            v["available"].as_bool(),
+            v["unavailable_reason"].as_str()
+        ),
+        (Some("INO"), Some(false), Some("not_archived"))
+    );
+    assert_eq!(v["prev_day"]["day"], "2026-10-29");
+    for bad in [
+        "/api/insights/ticker?symbol=../x",
+        "/api/insights/ticker?symbol=INO&day=10-30",
+    ] {
+        assert_eq!(
+            get(a.clone(), bad, Some(TOKEN)).await.0,
+            StatusCode::BAD_REQUEST,
+            "{bad}"
+        );
+    }
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, a).await.unwrap() });
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws"))
+        .await
+        .unwrap();
+    send(&mut ws, json!({ "type": "hello", "token": TOKEN })).await;
+    let welcome = recv(&mut ws).await;
+    let features = welcome["features"].as_array().unwrap();
+    assert!(features.contains(&json!("insights.ticker.v1")), "{welcome}");
+    assert!(features.contains(&json!("notices.rows.v1")), "{welcome}");
+    async fn until(ws: &mut Ws, t: &str) -> Value {
+        loop {
+            let m = recv(ws).await;
+            if m["type"] == t {
+                return m;
+            }
+        }
+    }
+    send(
+        &mut ws,
+        json!({ "type": "insights.ticker.subscribe", "symbol": "INO", "day": "2026-10-30" }),
+    )
+    .await;
+    let snap = until(&mut ws, "insights.ticker.snapshot").await;
+    assert_eq!(
+        (snap["symbol"].as_str(), snap["day"].as_str()),
+        (Some("INO"), Some("2026-10-30"))
+    );
+    // No day: the latest trading day (followed while it runs, else one snapshot).
+    send(
+        &mut ws,
+        json!({ "type": "insights.ticker.subscribe", "symbol": "INO" }),
+    )
+    .await;
+    let snap = until(&mut ws, "insights.ticker.snapshot").await;
+    assert_eq!(snap["symbol"], "INO", "{snap}");
+    send(&mut ws, json!({ "type": "insights.ticker.unsubscribe" })).await;
+    send(
+        &mut ws,
+        json!({ "type": "insights.ticker.subscribe", "symbol": "a/b" }),
+    )
+    .await;
+    let err = until(&mut ws, "error").await;
+    assert_eq!(err["code"], "bad_request");
 }

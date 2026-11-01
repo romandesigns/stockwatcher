@@ -518,6 +518,28 @@ pub fn next_epoch(dir: &Path) -> u64 {
     segments(dir).last().map(|(e, _)| e + 1).unwrap_or(1)
 }
 
+/// When each boot of the day started admitting (its header's `started_at`, UTC ns), ascending.
+/// Reads only each segment's first line, so it is cheap on a whole day's journal. A segment whose
+/// header cannot be read is skipped: this answers "when did the server restart", not whether the
+/// journal proves anything ([`read`] does that).
+pub fn boots(dir: &Path) -> Vec<i64> {
+    use std::io::BufRead;
+    let mut out: Vec<i64> = segments(dir)
+        .into_iter()
+        .filter_map(|(_, p)| {
+            let f = std::fs::File::open(p).ok()?;
+            let mut first = String::new();
+            std::io::BufReader::new(f).read_line(&mut first).ok()?;
+            match serde_json::from_str::<Line>(first.trim_end()).ok()? {
+                Line::Header(h) => Some(h.started_at),
+                _ => None,
+            }
+        })
+        .collect();
+    out.sort_unstable();
+    out
+}
+
 /// Segment files in `dir`, ascending by epoch.
 fn segments(dir: &Path) -> Vec<(u64, PathBuf)> {
     let Ok(rd) = std::fs::read_dir(dir) else {

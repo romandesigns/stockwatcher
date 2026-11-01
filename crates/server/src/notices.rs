@@ -38,7 +38,7 @@
 //! snapshot, so a connection forwards only appends newer than its snapshot and an item never goes
 //! back to an older state.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -48,6 +48,16 @@ use tokio::sync::broadcast;
 
 /// The feature a client must see in `welcome.features` before it sends `notices.subscribe`.
 pub const FEATURE: &str = "notices.v1";
+
+/// Rows assembled here (owner rule: Rust computes, clients only render). With this feature in
+/// `welcome.features` every item carries `status` (`sent` | `held`), `reason` (the hold's code or
+/// null) and `reason_text` (the same in plain words), and every body (`GET /api/notices`,
+/// `notices.snapshot`, each `notices.append`) carries `summary` `{sent, held, reasons: [{reason,
+/// text, n}]}` over the WHOLE day (also past [`MAX_ITEMS`]). The fields are additive, so a client
+/// that predates them reads the same body as before and keeps deriving them itself
+/// (packages/shared noticeLog.ts `noticeStatus` / `noticeSummary`). Filtering the delivered rows
+/// by ticker or kind stays on the client: it is presentation over rows already sent, no counting.
+pub const FEATURE_ROWS: &str = "notices.rows.v1";
 
 /// Rows returned for one day at most (the newest kept).
 pub const MAX_ITEMS: usize = 2_000;
@@ -73,9 +83,19 @@ pub fn days(dir: &Path) -> Vec<NaiveDate> {
 
 /// One day's items, grouped and newest first, plus whether older ones were cut.
 pub fn read_day(dir: &Path, day: NaiveDate) -> (Vec<Value>, bool) {
-    let path = dir.join(format!("{}.jsonl", day.format("%Y-%m-%d")));
-    let text = std::fs::read_to_string(path).unwrap_or_default();
-    group(&text)
+    let (items, truncated, _) = read_day_summarized(dir, day);
+    (items, truncated)
+}
+
+/// [`read_day`] plus the day's [`summary`].
+pub fn read_day_summarized(dir: &Path, day: NaiveDate) -> (Vec<Value>, bool, Value) {
+    let text = std::fs::read_to_string(day_file(dir, day)).unwrap_or_default();
+    group_summarized(&text)
+}
+
+/// The ledger file of `day` under `dir`.
+pub fn day_file(dir: &Path, day: NaiveDate) -> PathBuf {
+    dir.join(format!("{}.jsonl", day.format("%Y-%m-%d")))
 }
 
 fn num(v: &Value, k: &str) -> Option<f64> {
@@ -84,6 +104,12 @@ fn num(v: &Value, k: &str) -> Option<f64> {
 
 /// Groups ledger lines into items (module docs). Pure, so it is tested without files.
 pub fn group(text: &str) -> (Vec<Value>, bool) {
+    let (items, truncated, _) = group_summarized(text);
+    (items, truncated)
+}
+
+/// [`group`] plus the day's [`summary`] over every item, the ones past [`MAX_ITEMS`] included.
+pub fn group_summarized(text: &str) -> (Vec<Value>, bool, Value) {
     let mut order: Vec<String> = Vec::new();
     let mut items: HashMap<String, Map<String, Value>> = HashMap::new();
     for line in text.lines() {
@@ -118,6 +144,9 @@ pub fn group(text: &str) -> (Vec<Value>, bool) {
                     "mp5_wick",
                     "breakout",
                     "entry_context",
+                    // The event's own clocks (the ticker page measures outcomes from them).
+                    "exec_ns",
+                    "at_ns",
                 ] {
                     set_if_absent(item, k, v.get(k).cloned());
                 }
@@ -212,9 +241,192 @@ pub fn group(text: &str) -> (Vec<Value>, bool) {
         .collect();
     // Newest first; ties keep file order reversed (the later line first).
     out.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
+    let mut tally = Tally::default();
+    for (_, _, v) in &mut out {
+        if let Value::Object(m) = v {
+            let s = annotate(m);
+            tally.add(&s, 1);
+        }
+    }
     let truncated = out.len() > MAX_ITEMS;
     out.truncate(MAX_ITEMS);
-    (out.into_iter().map(|(_, _, v)| v).collect(), truncated)
+    (
+        out.into_iter().map(|(_, _, v)| v).collect(),
+        truncated,
+        tally.summary(),
+    )
+}
+
+/// A row's delivery as the page shows it ([`FEATURE_ROWS`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RowStatus {
+    pub sent: bool,
+    /// The hold's code (`no_device`, `quiet_hours`, …; `off` for a price alert the phone had
+    /// switched off); `None` when sent, or held without a code.
+    pub reason: Option<String>,
+}
+
+impl RowStatus {
+    /// The summary's bucket: the code, or `held` when there is none; `None` when sent.
+    fn bucket(&self) -> Option<&str> {
+        (!self.sent).then(|| self.reason.as_deref().unwrap_or("held"))
+    }
+}
+
+fn decision(p: Option<&Value>) -> Option<&str> {
+    p?.get("decision")?.as_str().filter(|d| !d.is_empty())
+}
+
+/// The overall status of a notice: the phone's when the phones saw it (the question the log
+/// answers is "why didn't my phone buzz?": SRTM's pullback on 2026-10-26 reached the desktop but
+/// was held for the phone), else the desk's. The hold reason that matters is the phone's if held
+/// (or switched off), else the desk's. Moved here from packages/shared noticeLog.ts
+/// (`noticeStatus`, `noticeHeldReason`), which clients without [`FEATURE_ROWS`] still run.
+pub fn row_status(item: &Map<String, Value>) -> RowStatus {
+    let phone = item.get("phone");
+    let desk = item.get("desk");
+    let main = if decision(phone).is_some() {
+        phone
+    } else {
+        desk
+    };
+    let sent = decision(main) == Some("sent");
+    let held = |p: Option<&Value>| {
+        p.and_then(|p| p.get("held"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
+    let reason = match (decision(phone), decision(desk)) {
+        (Some("held"), _) => held(phone),
+        (Some("off"), _) => held(phone).or(Some("off".into())),
+        (_, Some("held")) => held(desk),
+        _ => None,
+    };
+    RowStatus {
+        sent,
+        reason: if sent { None } else { reason },
+    }
+}
+
+/// What the held path's notice was merged into (the phone's if held, else the desk's).
+fn merged_into(item: &Map<String, Value>) -> Option<&Value> {
+    for k in ["phone", "desk"] {
+        let p = item.get(k);
+        if decision(p) == Some("held") {
+            return p?.get("merged_into").filter(|m| m.is_object());
+        }
+    }
+    None
+}
+
+/// Writes `status`, `reason` and `reason_text` into a grouped item and returns its status.
+fn annotate(m: &mut Map<String, Value>) -> RowStatus {
+    let s = row_status(m);
+    let text = (!s.sent).then(|| held_text(s.reason.as_deref(), merged_into(m)));
+    m.insert("status".into(), json!(if s.sent { "sent" } else { "held" }));
+    m.insert("reason".into(), json!(s.reason));
+    m.insert("reason_text".into(), json!(text));
+    s
+}
+
+/// A notice kind's name in the log ("Buying burst"); an unknown kind is its raw name.
+pub fn kind_label(notice: &str) -> &str {
+    match notice {
+        "runners.new" => "Runners flag",
+        "runners.burst" => "Buying burst",
+        "runners.fast" => "Fast move",
+        "runners.run" => "Run +20%",
+        "runners.running" => "Running",
+        "runners.breakout" => "Breakout",
+        "runners.pullback" => "Pullback",
+        "ross.crossing" => "Ross crossing",
+        "ross.trigger" => "Ross at trigger",
+        "signals.crossing" => "Signals crossing",
+        "signals.trigger" => "Signals at trigger",
+        "runners.shelf" => "Volume shelf",
+        "runners.followup" => "Follow-up",
+        "halt.watch" => "Halt watcher",
+        "price.alert" => "Price alert",
+        other => other,
+    }
+}
+
+/// A hold reason in plain words ("no device wanted it"). A merged one names what it was folded
+/// into when known: "merged into the Running alert 1 s earlier". Old days keep their old codes
+/// (`symbol_limit`, `merged`: the per-stock gap and merge removed on 2026-10-30), still worded.
+pub fn held_text(reason: Option<&str>, merged: Option<&Value>) -> String {
+    let Some(reason) = reason else {
+        return "held".into();
+    };
+    if reason == "merged"
+        && let Some(m) = merged
+    {
+        let kind = m.get("notice").and_then(Value::as_str).unwrap_or("");
+        let ago = match m.get("secs").and_then(Value::as_f64) {
+            Some(s) if s.is_finite() && s >= 1.0 => format!("{} s earlier", s.round() as i64),
+            _ => "moments earlier".into(),
+        };
+        return format!("merged into the {} alert {ago}", kind_label(kind));
+    }
+    match reason {
+        "symbol_limit" => "same stock notified moments earlier".into(),
+        "no_device" => "no device wanted it".into(),
+        "quiet_hours" => "quiet hours".into(),
+        "stale" => "too old by the time it was decided".into(),
+        "duplicate" => "already sent".into(),
+        "off" => "phone alerts off for it".into(),
+        "merged" => "merged into an earlier alert".into(),
+        other => other.replace('_', " "),
+    }
+}
+
+/// Sent / held counts and the held ones by reason (the feed keeps one incrementally).
+#[derive(Clone, Debug, Default)]
+struct Tally {
+    sent: i64,
+    held: BTreeMap<String, i64>,
+}
+
+impl Tally {
+    /// Counts `s` `n` times (`n = -1` takes back a row's previous status).
+    fn add(&mut self, s: &RowStatus, n: i64) {
+        match s.bucket() {
+            None => self.sent += n,
+            Some(r) => {
+                let e = self.held.entry(r.to_string()).or_default();
+                *e += n;
+                if *e <= 0 {
+                    self.held.remove(r);
+                }
+            }
+        }
+    }
+
+    /// `{sent, held, reasons: [{reason, text, n}]}`, most common reason first (ties by code).
+    fn summary(&self) -> Value {
+        let mut reasons: Vec<(&String, &i64)> = self.held.iter().collect();
+        reasons.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+        json!({
+            "sent": self.sent,
+            "held": reasons.iter().map(|(_, n)| **n).sum::<i64>(),
+            "reasons": reasons.iter().map(|(r, n)| json!({
+                "reason": r,
+                "text": held_text(Some(r.as_str()), None),
+                "n": n,
+            })).collect::<Vec<_>>(),
+        })
+    }
+}
+
+/// The summary line over `items` (grouped rows).
+pub fn summary(items: &[Value]) -> Value {
+    let mut t = Tally::default();
+    for i in items {
+        if let Value::Object(m) = i {
+            t.add(&row_status(m), 1);
+        }
+    }
+    t.summary()
 }
 
 /// One `notices.append` on the feed's channel.
@@ -223,6 +435,8 @@ pub struct Append {
     pub day: NaiveDate,
     /// Taken under the feed's lock: compare with [`Snapshot::seq`].
     pub seq: u64,
+    /// The notice's symbol, when its lines name one (the ticker page follows its own).
+    pub symbol: Option<String>,
     pub frame: String,
 }
 
@@ -241,6 +455,10 @@ struct DayLines {
     /// Event ids in order of first appearance, and each event's lines in order.
     order: Vec<String>,
     events: HashMap<String, Vec<String>>,
+    /// Each event's current row status and the day's tally of them ([`FEATURE_ROWS`]): kept
+    /// as lines arrive, so an append carries the day's summary without regrouping the day.
+    statuses: HashMap<String, RowStatus>,
+    tally: Tally,
     bytes: u64,
     seq: u64,
 }
@@ -270,6 +488,20 @@ impl DayLines {
             }
         }
         true
+    }
+
+    /// Regroups event `id` from its lines so far, recounting its status in the tally. Returns
+    /// its item (one, or none when its lines do not make one).
+    fn regroup(&mut self, id: &str) -> Vec<Value> {
+        let (items, _) = group(&self.events[id].join("\n"));
+        if let Some(Value::Object(m)) = items.first() {
+            let now = row_status(m);
+            if let Some(old) = self.statuses.insert(id.to_string(), now.clone()) {
+                self.tally.add(&old, -1);
+            }
+            self.tally.add(&now, 1);
+        }
+        items
     }
 
     /// The whole day as ledger text, grouped per event. [`group`] reads it exactly as it reads
@@ -324,6 +556,9 @@ impl NoticeFeed {
                     lines.keep(&id, line.to_string());
                 }
             }
+            for id in lines.order.clone() {
+                lines.regroup(&id);
+            }
         }
         NoticeFeed(Arc::new(FeedInner {
             dir,
@@ -357,21 +592,43 @@ impl NoticeFeed {
         if !l.keep(id, line.to_string()) {
             return;
         }
-        let (items, _) = group(&l.events[id].join("\n"));
+        let items = l.regroup(id);
         l.seq += 1;
+        let symbol = items
+            .first()
+            .and_then(|i| i.get("symbol"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
         let frame = typed_frame(
             "notices.append",
             json!({
                 "day": day.format("%Y-%m-%d").to_string(),
                 "items": items,
+                "summary": l.tally.summary(),
             }),
         );
         // Under the lock, so appends reach the channel in `seq` order.
         let _ = self.0.tx.send(Arc::new(Append {
             day,
             seq: l.seq,
+            symbol,
             frame,
         }));
+    }
+
+    /// One day's grouped items, whether older ones were cut, and the day's summary: today's
+    /// from memory (what [`NoticeFeed::snapshot`] serves), any other day's from its file. Reads
+    /// files, so call it off the async workers.
+    pub fn items(&self, day: NaiveDate) -> (Vec<Value>, bool, Value) {
+        let held = {
+            let l = self.0.lines.lock().expect("notice feed lock");
+            (l.day == Some(day)).then(|| l.text())
+        };
+        match (held, &self.0.dir) {
+            (Some(text), _) => group_summarized(&text),
+            (None, Some(dir)) => read_day_summarized(dir, day),
+            (None, None) => (Vec::new(), false, summary(&[])),
+        }
     }
 
     /// The `notices.snapshot` of `day` (None = today in ET). Reads files (the day list, and a
@@ -383,10 +640,10 @@ impl NoticeFeed {
             let l = self.0.lines.lock().expect("notice feed lock");
             ((l.day == Some(day)).then(|| l.text()), l.seq)
         };
-        let (items, truncated) = match (held, &self.0.dir) {
-            (Some(text), _) => group(&text),
-            (None, Some(dir)) => read_day(dir, day),
-            (None, None) => (Vec::new(), false),
+        let (items, truncated, summary) = match (held, &self.0.dir) {
+            (Some(text), _) => group_summarized(&text),
+            (None, Some(dir)) => read_day_summarized(dir, day),
+            (None, None) => (Vec::new(), false, summary(&[])),
         };
         let frame = typed_frame(
             "notices.snapshot",
@@ -395,6 +652,7 @@ impl NoticeFeed {
                 "days": days.iter().map(|d| d.format("%Y-%m-%d").to_string()).collect::<Vec<_>>(),
                 "items": items,
                 "truncated": truncated,
+                "summary": summary,
             }),
         );
         Snapshot { day, seq, frame }
@@ -594,6 +852,72 @@ mod tests {
         // A day no longer held is read from its file.
         let v: Value = serde_json::from_str(&feed.snapshot(Some(d("2026-10-30"))).frame).unwrap();
         assert_eq!(v["items"][0]["event_id"], "old");
+    }
+
+    /// The rows the server assembles (`notices.rows.v1`): the phone's decision wins over the
+    /// desk's, a switched-off price alert is held as `off`, a merged path names what it joined,
+    /// and the summary counts the whole day by reason (also past the item cap).
+    #[test]
+    fn rows_carry_status_reason_and_the_day_summary() {
+        let text = [
+            line(json!({"kind":"decision","decided_at":1,"event_id":"a","path":"desk","decision":"sent"})),
+            line(json!({"kind":"decision","decided_at":1,"event_id":"a","path":"phone","decision":"held","held":"no_device"})),
+            line(json!({"kind":"decision","decided_at":2,"event_id":"b","path":"desk","decision":"sent"})),
+            line(json!({"kind":"alert","decided_at":3,"event_id":"c","phone":"off","held":null})),
+            line(json!({"kind":"decision","decided_at":4,"event_id":"d","path":"phone","decision":"held",
+                "held":"merged","merged_into":{"event_id":"r","notice":"runners.running","secs":1.2}})),
+            line(json!({"kind":"decision","decided_at":5,"event_id":"e","path":"phone","decision":"held","held":"no_device"})),
+        ]
+        .join("\n");
+        let (items, _, summary) = group_summarized(&text);
+        let by: HashMap<&str, &Value> = items
+            .iter()
+            .map(|i| (i["event_id"].as_str().unwrap(), i))
+            .collect();
+        assert_eq!(by["a"]["status"], "held");
+        assert_eq!(by["a"]["reason"], "no_device");
+        assert_eq!(by["b"]["status"], "sent");
+        assert_eq!(by["b"]["reason_text"], Value::Null);
+        assert_eq!(by["c"]["reason"], "off");
+        assert_eq!(by["c"]["reason_text"], "phone alerts off for it");
+        assert_eq!(
+            by["d"]["reason_text"],
+            "merged into the Running alert 1 s earlier"
+        );
+        assert_eq!(
+            summary,
+            json!({"sent": 1, "held": 4, "reasons": [
+                {"reason": "no_device", "text": "no device wanted it", "n": 2},
+                {"reason": "merged", "text": "merged into an earlier alert", "n": 1},
+                {"reason": "off", "text": "phone alerts off for it", "n": 1},
+            ]})
+        );
+        assert_eq!(summary, super::summary(&items));
+    }
+
+    /// The feed keeps the summary as lines change a row's status, and tags appends by symbol.
+    #[test]
+    fn the_feed_keeps_the_summary_and_names_the_symbol() {
+        let feed = NoticeFeed::open(None, d("2026-10-30"));
+        let mut rx = feed.subscribe();
+        feed.push(
+            d("2026-10-30"),
+            &json!({"kind":"decision","decided_at":1,"event_id":"a","symbol":"INO","path":"desk","decision":"sent"}),
+        );
+        feed.push(
+            d("2026-10-30"),
+            &json!({"kind":"decision","decided_at":1,"event_id":"a","symbol":"INO","path":"phone","decision":"held","held":"quiet_hours"}),
+        );
+        let a1 = rx.try_recv().unwrap();
+        let a2 = rx.try_recv().unwrap();
+        assert_eq!(a1.symbol.as_deref(), Some("INO"));
+        let v1: Value = serde_json::from_str(&a1.frame).unwrap();
+        let v2: Value = serde_json::from_str(&a2.frame).unwrap();
+        assert_eq!(v1["summary"]["sent"], 1);
+        assert_eq!(v2["summary"]["sent"], 0);
+        assert_eq!(v2["summary"]["reasons"][0]["reason"], "quiet_hours");
+        let (_, _, s) = feed.items(d("2026-10-30"));
+        assert_eq!(s, v2["summary"]);
     }
 
     #[test]

@@ -311,6 +311,14 @@ async fn serve(config: Config) -> std::io::Result<()> {
     let state = AppState::with_alerts(config.api_token.clone(), markets, settings, alerts);
     // The Insights page reads the same ledger back (GET /api/notices, crate::notices).
     state.set_notices_dir(notices_dir);
+    // The Insights ticker page (crate::insights): the archive, the logs, its cache under DATA_DIR.
+    state.set_insights(stockwatcher_server::insights::Insights::new(
+        stockwatcher_server::insights::Sources::standard(
+            config.market.provider.archive.clone(),
+            &config.data_dir,
+        ),
+        notice_feed.clone(),
+    ));
     state.set_notice_feed(notice_feed);
     if let Some(sim) = sim {
         // The provider-compatible simulator on its own port (loopback by default), so Alpaca/FMP

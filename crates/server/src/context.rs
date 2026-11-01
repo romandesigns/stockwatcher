@@ -106,6 +106,15 @@ pub(crate) struct ContextBoard {
     favorites: Vec<String>,
 }
 
+/// The context engine exactly as the live board builds it: the pillar policy, the Ross Panel's
+/// policy and the micro-pullback (setup) detector. One constructor, so the ticker page's replay of
+/// a past day (`crate::insights`) runs the detector the live market ran, never a lookalike.
+pub(crate) fn production_engine(policy: Policy, panel: PanelPolicy, run: RunInfo) -> Engine {
+    Engine::new(policy, run)
+        .with_panel_policy(panel)
+        .with_setup_policy(stock_context::DetectionPolicy::current())
+}
+
 impl ContextBoard {
     /// `None` when the pillar policy's price band or the panel policy's platform band is not the
     /// server's price band: the price pillar and membership would then judge by a band the rest
@@ -181,9 +190,7 @@ impl ContextBoard {
             },
         };
         Some(ContextBoard {
-            engine: Engine::new(policy, run)
-                .with_panel_policy(panel)
-                .with_setup_policy(stock_context::DetectionPolicy::current()),
+            engine: production_engine(policy, panel, run),
             closes_offered: HashSet::new(),
             published: None,
             published_readiness: None,

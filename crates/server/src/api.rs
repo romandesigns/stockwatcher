@@ -113,22 +113,46 @@ pub async fn notices(State(state): State<AppState>, Query(q): Query<NoticesQuery
     };
     let dir = state.notices_dir().map(|p| p.to_path_buf());
     // Up to the ledger's daily cap: file IO and parsing off the async workers.
-    let (days, items, truncated) = match dir {
+    let (days, items, truncated, summary) = match dir {
         Some(dir) => tokio::task::spawn_blocking(move || {
-            let (items, truncated) = crate::notices::read_day(&dir, day);
-            (crate::notices::days(&dir), items, truncated)
+            let (items, truncated, summary) = crate::notices::read_day_summarized(&dir, day);
+            (crate::notices::days(&dir), items, truncated, summary)
         })
         .await
-        .unwrap_or_default(),
-        None => (Vec::new(), Vec::new(), false),
+        .unwrap_or_else(|_| (Vec::new(), Vec::new(), false, crate::notices::summary(&[]))),
+        None => (Vec::new(), Vec::new(), false, crate::notices::summary(&[])),
     };
+    // `summary` and each item's `status`/`reason`/`reason_text` are the rows the server
+    // assembles (`notices.rows.v1`, crate::notices); additive, so older clients read it as before.
     Json(json!({
         "day": day.format("%Y-%m-%d").to_string(),
         "days": days.iter().map(|d| d.format("%Y-%m-%d").to_string()).collect::<Vec<_>>(),
         "items": items,
         "truncated": truncated,
+        "summary": summary,
     }))
     .into_response()
+}
+
+#[derive(Deserialize)]
+pub struct TickerQuery {
+    symbol: Option<String>,
+    day: Option<String>,
+}
+
+/// `GET /api/insights/ticker?symbol=INO&day=YYYY-MM-DD` (day absent = today's trading date): the
+/// ticker page's whole package (crate::insights). A day without data is a 200 with
+/// `available: false` and the reason, so the page still has its day switcher.
+pub async fn insights_ticker(
+    State(state): State<AppState>,
+    Query(q): Query<TickerQuery>,
+) -> Response {
+    let (symbol, day) =
+        match crate::insights::parse_request(q.symbol.as_deref().unwrap_or(""), q.day.as_deref()) {
+            Ok(r) => r,
+            Err(why) => return bad(why.into()),
+        };
+    Json(state.insights().package(symbol, day).await).into_response()
 }
 
 #[derive(Deserialize)]

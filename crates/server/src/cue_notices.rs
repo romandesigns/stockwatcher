@@ -81,6 +81,46 @@ const OUT_MAX: usize = 256;
 /// "Pullback").
 pub const PULLBACK_WINDOW_NS: i64 = 30 * 60 * 1_000_000_000;
 
+/// Why an armed micro-pullback setup did or did not get its "setting up" notice: the reasons
+/// [`CueNotices::transitions_with`] decides by, recorded where it decides them, so the ticker
+/// page's missed setups (`crate::insights`) never re-implement the rules.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SetupVerdict {
+    /// Announced.
+    Notified,
+    /// Its recognition read a window reaching into a restored prefix (a restart): warm-up
+    /// transitions never notify.
+    Warmup,
+    /// Neither a Runners row that day nor a Ross member.
+    NoContext,
+    /// A Runners row, but armed more than [`PULLBACK_WINDOW_NS`] after the stock was first
+    /// flagged (by this process) that day; not a Ross member.
+    WindowClosed { since: i64 },
+    /// The stock already had its one setting-up notice that trading day.
+    OnePerDay,
+}
+
+impl SetupVerdict {
+    pub fn code(self) -> &'static str {
+        match self {
+            SetupVerdict::Notified => "notified",
+            SetupVerdict::Warmup => "warmup",
+            SetupVerdict::NoContext => "no_context",
+            SetupVerdict::WindowClosed { .. } => "window_closed",
+            SetupVerdict::OnePerDay => "one_per_day",
+        }
+    }
+}
+
+/// One armed episode's [`SetupVerdict`], at the arming.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SetupDecision {
+    pub episode_id: String,
+    pub symbol: String,
+    pub at: i64,
+    pub verdict: SetupVerdict,
+}
+
 #[derive(Debug, Default)]
 pub struct CueNotices {
     out: Vec<Notice>,
@@ -92,13 +132,16 @@ pub struct CueNotices {
     setup_days: HashSet<(String, NaiveDate)>,
     /// Episodes announced as setting up: only their crossing is the pullback follow-up.
     setup_episodes: HashSet<String>,
+    /// The first arming of each episode and its verdict, when recording ([`CueNotices::recording`]:
+    /// the ticker page's replay; the live market never records).
+    decisions: Option<(Vec<SetupDecision>, HashSet<String>)>,
 }
 
 fn dollars(micros: i64) -> f64 {
     micros as f64 / 1_000_000.0
 }
 
-fn member(engine: &Engine, symbol: &str) -> bool {
+pub(crate) fn member(engine: &Engine, symbol: &str) -> bool {
     engine
         .current()
         .find(|d| d.symbol == symbol)
@@ -106,6 +149,37 @@ fn member(engine: &Engine, symbol: &str) -> bool {
 }
 
 impl CueNotices {
+    /// A decider that also records each setup's [`SetupVerdict`] (`crate::insights`).
+    pub fn recording() -> Self {
+        CueNotices {
+            decisions: Some((Vec::new(), HashSet::new())),
+            ..Default::default()
+        }
+    }
+
+    /// The verdicts recorded since the last call (empty unless [`CueNotices::recording`]).
+    pub fn take_setup_decisions(&mut self) -> Vec<SetupDecision> {
+        self.decisions
+            .as_mut()
+            .map(|(d, _)| std::mem::take(d))
+            .unwrap_or_default()
+    }
+
+    /// Records the FIRST arming of an episode (a re-arm after a failed crossing is the same
+    /// setup, decided again by the same rules, and never notifies twice).
+    fn record(&mut self, t: &DetectionTransition, verdict: SetupVerdict) {
+        if let Some((out, seen)) = self.decisions.as_mut()
+            && seen.insert(t.episode_id.clone())
+        {
+            out.push(SetupDecision {
+                episode_id: t.episode_id.clone(),
+                symbol: t.symbol.clone(),
+                at: t.observed_at,
+                verdict,
+            });
+        }
+    }
+
     /// The notices decided since the last call, oldest first.
     pub fn take(&mut self) -> Vec<Notice> {
         std::mem::take(&mut self.out)
@@ -204,21 +278,35 @@ impl CueNotices {
         latest_price: impl Fn(&str, i64) -> Option<i64>,
     ) {
         for t in ts {
-            if t.family != Family::MicroPullback || t.warmup || t.from == Some(t.to) {
+            if t.family != Family::MicroPullback || t.from == Some(t.to) {
+                continue;
+            }
+            if t.warmup {
+                if t.to == State::Armed {
+                    self.record(t, SetupVerdict::Warmup);
+                }
                 continue;
             }
             match t.to {
                 State::Armed => {
-                    let fresh = watched_since(&t.symbol).is_some_and(|since| {
+                    let since = watched_since(&t.symbol);
+                    let fresh = since.is_some_and(|since| {
                         t.observed_at >= since && t.observed_at - since <= PULLBACK_WINDOW_NS
                     });
                     if !(fresh || member(&t.symbol)) {
+                        let verdict = match since {
+                            Some(since) => SetupVerdict::WindowClosed { since },
+                            None => SetupVerdict::NoContext,
+                        };
+                        self.record(t, verdict);
                         continue;
                     }
                     let day = trading_date(UnixNanos(t.observed_at));
                     if !self.setup_days.insert((t.symbol.clone(), day)) {
+                        self.record(t, SetupVerdict::OnePerDay);
                         continue;
                     }
+                    self.record(t, SetupVerdict::Notified);
                     self.setup_episodes.insert(t.episode_id.clone());
                     let price = latest_price(&t.symbol, t.observed_at);
                     let detail = NoticeDetail::Pullback(pullback_facts(t, false));
