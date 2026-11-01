@@ -21,9 +21,9 @@
 //!   the 30-minute window counts from the boot and the one-per-day rule forgets earlier notices),
 //!   and a restored prefix marked the symbol `restored_through` its last recorded delivery
 //!   before the boot (warm-up). Both are reproduced here, as the server of THAT day restarted
-//!   ([`RestartModel`]): until 2026-11-01 a micro-pullback whose impulse began inside the
-//!   restored prefix was warm-up however live its arming, and a new process forgot the day's
-//!   notices; from then on the arming moment decides warm-up (`stock_context::detect::micro`) and
+//!   ([`RestartModel`]): on a day before [`RestartModel::REMEMBERING_FROM`] a micro-pullback
+//!   whose impulse began inside the restored prefix was warm-up however live its arming, and a
+//!   new process forgot the day's notices; from that day on the arming moment decides warm-up (`stock_context::detect::micro`) and
 //!   the notice memory (`crate::notice_memory`) carries the one-per-day rule and the Runners
 //!   window across the restart. A replay judging an old day by today's rules would call a setup
 //!   that day's server really did mute "notified", and the ledger would contradict it.
