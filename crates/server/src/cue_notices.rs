@@ -187,15 +187,23 @@ impl CueNotices {
         std::mem::take(&mut self.out)
     }
 
-    /// Today's Runners symbols at `now_ns`, replacing the previous set (the market hands the engine
-    /// the same list, `crate::context::ContextBoard::set_watched`). A symbol keeps the time it was
-    /// first seen while it stays listed; one that leaves and comes back starts again.
-    pub fn set_watched(&mut self, symbols: &[String], now_ns: i64) {
-        let old = std::mem::take(&mut self.watched);
-        self.watched = symbols
-            .iter()
-            .map(|s| (s.clone(), old.get(s).copied().unwrap_or(now_ns)))
-            .collect();
+    /// Today's Runners symbols with the time each was first flagged (its first row today,
+    /// `crate::rocket::RocketBoard::take_watch`), replacing the previous set (the market hands the
+    /// engine the same list, `crate::context::ContextBoard::set_watched`). The time is the row's,
+    /// not this process's first sight of it: the rows come back from the forward log after a
+    /// restart, so the 30-minute window does not start over at a deploy.
+    pub fn set_watched(&mut self, flagged: &[(String, i64)]) {
+        self.watched = flagged.iter().cloned().collect();
+    }
+
+    /// What a previous process of the same run already announced today
+    /// ([`crate::notice_memory`]): its episodes are not announced again and its setting-up notices
+    /// still count as each stock's one for the day, so a restart never sends a second "first of
+    /// the day".
+    pub fn restore(&mut self, m: &crate::notice_memory::NoticeMemory) {
+        self.seen.extend(m.seen.iter().cloned());
+        self.setup_days.extend(m.setup_days.iter().cloned());
+        self.setup_episodes.extend(m.setup_episodes.iter().cloned());
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -612,22 +620,66 @@ mod tests {
         assert_eq!(f.dip_volume_ratio, Some(0.4));
     }
 
-    /// The flag time survives a refreshed list, and a stock that leaves and comes back starts again.
+    /// The window starts at the stock's first row, not when this process first saw the list: a
+    /// restart 20 minutes after the flag (the rows restored from the forward log) leaves 10.
     #[test]
-    fn watched_keeps_the_first_flag_time() {
+    fn the_window_starts_at_the_flag_even_after_a_restart() {
+        let member = |_: &str| false;
+        let price = |_: &str, _: i64| None;
+        // A fresh process at AT: the list arrives with each row's own flag time.
         let mut c = CueNotices::default();
-        c.set_watched(&["A".into()], 10);
-        c.set_watched(&["A".into(), "B".into()], 20);
-        assert_eq!(
-            (c.watched.get("A"), c.watched.get("B")),
-            (Some(&10), Some(&20))
+        c.set_watched(&[("LATE".into(), AT - 20 * MIN), ("NEW".into(), AT)]);
+        let watched = c.watched.clone();
+        let since = |s: &str| watched.get(s).copied();
+        let late = DetectionTransition {
+            observed_at: AT + 15 * MIN,
+            ..armed("l1", "LATE")
+        };
+        let new = DetectionTransition {
+            observed_at: AT + 15 * MIN,
+            ..armed("n1", "NEW")
+        };
+        c.transitions_with(&[late, new], false, member, since, price);
+        let n = c.take();
+        // 35 minutes after its flag: outside the window, though only 15 after the restart.
+        assert_eq!(n.len(), 1, "{n:?}");
+        assert_eq!(n[0].symbol, "NEW");
+    }
+
+    /// A restart mid-day: the new process restores what the old one announced
+    /// ([`crate::notice_memory`]), so the stock's second setup of the day stays quiet and an
+    /// announced episode is not announced again.
+    #[test]
+    fn a_restart_restores_the_first_setup_of_the_day() {
+        let member = |s: &str| s == "ROSS";
+        let since = |_: &str| Some(AT - MIN);
+        let price = |_: &str, _: i64| None;
+        let first = "live:d:INO:micro_pullback:1";
+        let mut before = CueNotices::default();
+        before.transitions_with(&[armed(first, "INO")], false, member, since, price);
+        assert_eq!(before.take().len(), 1);
+        // What the ledger recorded, read back by the next process.
+        let memory = crate::notice_memory::NoticeMemory {
+            seen: vec![(NoticeKind::Pullback, first.into())],
+            setup_days: vec![("INO".into(), trading_date(UnixNanos(AT)))],
+            setup_episodes: vec![first.into()],
+            ..Default::default()
+        };
+        let mut after = CueNotices::default();
+        after.restore(&memory);
+        let second = DetectionTransition {
+            observed_at: AT + 5 * MIN,
+            ..armed("live:d:INO:micro_pullback:2", "INO")
+        };
+        after.transitions_with(&[second], false, member, since, price);
+        assert!(
+            after.take().is_empty(),
+            "the day's first setup already went out"
         );
-        c.set_watched(&["B".into()], 30);
-        c.set_watched(&["A".into(), "B".into()], 40);
-        assert_eq!(
-            (c.watched.get("A"), c.watched.get("B")),
-            (Some(&40), Some(&20))
-        );
+        // Another stock is unaffected.
+        let other = armed("live:d:OTHR:micro_pullback:1", "OTHR");
+        after.transitions_with(&[other], false, member, since, price);
+        assert_eq!(after.take().len(), 1);
     }
 
     /// The episode crossing its trigger five minutes after it armed (a separate event).

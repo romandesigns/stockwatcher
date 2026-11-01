@@ -734,6 +734,9 @@ pub(crate) struct Inner {
     running_archive: std::sync::OnceLock<Archive>,
     /// The day's cue transitions on the archive (`crate::oplog`, "Cue transitions"); live only.
     transition_log: std::sync::OnceLock<crate::oplog::DailyLog>,
+    /// Live: the archive root whose notice ledger and journals a new context board reads back
+    /// (`crate::notice_memory`, [`Market::init_notice_memory`]).
+    notice_memory_root: std::sync::OnceLock<std::path::PathBuf>,
     /// Baseline observation/latency capture for the context panel (`crate::observe`): a bounded
     /// queue filled under the core lock and absorbed off it, with counted drops. Measurement
     /// scaffolding, not a latency claim.
@@ -971,6 +974,7 @@ impl Market {
             burst_archive: std::sync::OnceLock::new(),
             running_archive: std::sync::OnceLock::new(),
             transition_log: std::sync::OnceLock::new(),
+            notice_memory_root: std::sync::OnceLock::new(),
             observations: crate::observe::ObservationSink::new(crate::observe::QUEUE_CAPACITY),
             admissions: std::sync::OnceLock::new(),
             shadow: std::sync::OnceLock::new(),
@@ -1202,6 +1206,50 @@ impl Market {
         ));
     }
 
+    /// Live: what a previous process of this run already announced and numbered today, read back
+    /// from the logs under `archive_root` (`crate::notice_memory`) into the current context board,
+    /// and into every board built later in this process (a Detection Panel toggle rebuilds the
+    /// engine, which would otherwise restart its episode numbers too). Before the ingest starts;
+    /// a second call is ignored.
+    pub fn init_notice_memory(&self, archive_root: std::path::PathBuf) {
+        if self.0.mode != ClockMode::Live || self.0.notice_memory_root.set(archive_root).is_err() {
+            return;
+        }
+        let run = {
+            let core = self.0.core.lock().expect("core lock");
+            core.context.as_ref().map(|c| c.run_id().to_string())
+        };
+        let Some(run) = run else {
+            return;
+        };
+        let Some(m) = self.notice_memory(&run) else {
+            return;
+        };
+        let mut core = self.0.core.lock().expect("core lock");
+        if let Some(cx) = core.context.as_mut().filter(|c| c.run_id() == run) {
+            cx.restore_notice_memory(&m);
+        }
+    }
+
+    /// Reads today's notice memory of run `run` (off the core lock), when this market has a
+    /// notice-memory root.
+    fn notice_memory(&self, run: &str) -> Option<crate::notice_memory::NoticeMemory> {
+        let root = self.0.notice_memory_root.get()?;
+        let now = crate::history::wall_now().0;
+        let t = std::time::Instant::now();
+        let m = crate::notice_memory::read(root, run, now);
+        tracing::info!(
+            run,
+            date = ?m.date,
+            episode_floors = m.floors.len(),
+            announced = m.seen.len(),
+            setups_today = m.setup_days.len(),
+            ms = t.elapsed().as_millis() as u64,
+            "notice memory: restored what earlier processes announced today"
+        );
+        Some(m)
+    }
+
     /// Live: opens the forward log in `dir` (`ARCHIVE_ROOT/rocket-watch`), prunes it to the
     /// archive's retention window and restores today's alerts and the record into the board.
     /// Reads a few small files once, before the ingest starts.
@@ -1280,6 +1328,11 @@ impl Market {
             .collect();
         for symbol in pending {
             board.set_history_pending(&symbol, true);
+        }
+        // A board built after startup (a Detection Panel toggle) starts with fresh episode
+        // counters and notice memory: give it what this run already announced today.
+        if let Some(m) = self.notice_memory(board.run_id()) {
+            board.restore_notice_memory(&m);
         }
         if let Some(ev) = self.0.evidence.get()
             && let Some(batch) = ev.log.lock().expect("evidence log lock").since(None)
@@ -1907,6 +1960,8 @@ impl Market {
         }
         if mode == ClockMode::Live && (cfg.stock_context || cfg.detection_panel) {
             market.init_transition_log(archive.root().join(crate::oplog::TRANSITIONS_DIR));
+            // Before the ingest: a restart must not re-announce or renumber today's episodes.
+            market.init_notice_memory(archive.root().to_path_buf());
         }
         if cfg.stock_context || cfg.detection_panel {
             // Before the ingest starts: a replay's first load runs here (the feed waits on disk,
@@ -3472,7 +3527,7 @@ impl Market {
             if let Some(w) = rocket.take_watch()
                 && let Some(cx) = context.as_mut()
             {
-                cx.set_watched(w, now);
+                cx.set_watched(w);
             }
             let log = core.rocket.take_log();
             // Taken whatever the market, so a replay's never pile up.

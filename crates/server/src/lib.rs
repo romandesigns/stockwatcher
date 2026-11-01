@@ -16,6 +16,7 @@ pub mod indicators;
 pub mod insights;
 pub mod market;
 pub mod movers;
+pub mod notice_memory;
 pub mod notices;
 pub mod observe;
 pub mod oplog;

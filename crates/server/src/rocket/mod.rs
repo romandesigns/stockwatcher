@@ -868,8 +868,9 @@ pub struct RocketBoard {
     /// Symbols with a trading halt in force (`chart.halt`, [`RocketBoard::set_halted`]).
     halted: HashSet<String>,
     resumed_at: HashMap<String, i64>,
-    /// The flagged symbols last handed to the stock-context engine ([`RocketBoard::take_watch`]).
-    watch_sent: Vec<String>,
+    /// The flagged symbols (with their first flag time) last handed to the stock-context engine
+    /// ([`RocketBoard::take_watch`]).
+    watch_sent: Vec<(String, i64)>,
     /// New flags and breakouts since the last [`RocketBoard::take_notices`].
     notices: Vec<Notice>,
     /// Buying bursts ([`burst`]): live market only (`RocketBoard::enable_burst`).
@@ -1403,12 +1404,19 @@ impl RocketBoard {
                 .is_none_or(|resume| b.at_ns - BAR_NS >= *resume)
     }
 
-    /// Today's flagged symbols when they changed since the last call (sorted, deduplicated):
-    /// what the stock-context engine runs the micro-pullback for (`stock_context::Engine::set_watched`).
-    pub fn take_watch(&mut self) -> Option<Vec<String>> {
-        let mut v: Vec<String> = self.alerts.iter().map(|a| a.symbol.to_string()).collect();
-        v.sort();
-        v.dedup();
+    /// Today's flagged symbols when they changed since the last call (sorted, deduplicated), each
+    /// with the time of its first row today: what the stock-context engine runs the micro-pullback
+    /// for (`stock_context::Engine::set_watched`), and when the pullback notices' 30-minute window
+    /// starts (`crate::cue_notices`). The time is the row's own, which the forward log restores
+    /// after a restart; stamping it with the clock of the tick that first saw the row (as before)
+    /// restarted every window at the deploy.
+    pub fn take_watch(&mut self) -> Option<Vec<(String, i64)>> {
+        let mut first: std::collections::BTreeMap<&str, i64> = std::collections::BTreeMap::new();
+        for a in &self.alerts {
+            let t = first.entry(&a.symbol).or_insert(a.at_ns);
+            *t = (*t).min(a.at_ns);
+        }
+        let v: Vec<(String, i64)> = first.into_iter().map(|(s, t)| (s.to_string(), t)).collect();
         if v == self.watch_sent {
             return None;
         }

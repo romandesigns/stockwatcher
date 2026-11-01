@@ -667,7 +667,9 @@ impl Engine {
     /// disabled with a reason in the snapshot (and every cue is `watching`).
     pub fn with_detection_policy(mut self, p: DetectionPolicy) -> Self {
         let g = &self.policy.body.grid;
+        let floors = self.detector.floors.take();
         self.detector = Detector::new(p, g.bar_secs, g.settle_ms, Scope::All);
+        self.detector.floors = floors;
         self
     }
 
@@ -828,8 +830,23 @@ impl Engine {
     pub fn with_setup_policy(mut self, p: DetectionPolicy) -> Self {
         let g = &self.policy.body.grid;
         let scope = self.detector.scope;
+        let floors = self.detector.floors.take();
         self.detector = Detector::new(p, g.bar_secs, g.settle_ms, scope);
+        self.detector.floors = floors;
         self
+    }
+
+    /// Episode numbers a previous process of this run already used on `date`, as
+    /// `(symbol, family, highest n)`: episodes opened on that date are numbered past them, so ids
+    /// stay unique across a restart (`<run>:<date>:<symbol>:<family>:<n>`). The server derives
+    /// them from today's journals and notice ledger at startup. Another date is unaffected, and a
+    /// replay (its own run id per day, rebuilt from scratch) never calls this.
+    pub fn set_episode_floors(
+        &mut self,
+        date: NaiveDate,
+        used: impl IntoIterator<Item = (String, crate::detect::Family, u32)>,
+    ) {
+        self.detector.add_floors(date, used);
     }
 
     /// The detection policy the Ross rows' cues come from, whether or not the Detection Panel

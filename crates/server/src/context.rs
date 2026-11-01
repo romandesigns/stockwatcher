@@ -702,12 +702,29 @@ impl ContextBoard {
 
     /// The Runners' flagged symbols (`crate::rocket`): the engine also runs the micro-pullback
     /// (MP5) for them, as for Ross members, so their rows get the same levels.
-    pub(crate) fn set_watched(&mut self, symbols: Vec<String>, now_ns: i64) {
+    pub(crate) fn set_watched(&mut self, flagged: Vec<(String, i64)>) {
         // The pullback notices' context too (crate::cue_notices, "Pullback"), with the time each
-        // stock was first flagged.
-        self.cue.set_watched(&symbols, now_ns);
-        self.runners_watched = symbols;
+        // stock was first flagged (its first row today, restored with the rows after a restart).
+        self.cue.set_watched(&flagged);
+        self.runners_watched = flagged.into_iter().map(|(s, _)| s).collect();
         self.sync_watched();
+    }
+
+    /// The run id this board's episodes are numbered under (`live` on every boot of the live
+    /// market): what [`crate::notice_memory::read`] looks for in the logs.
+    pub(crate) fn run_id(&self) -> &str {
+        &self.engine.run_info().run_id
+    }
+
+    /// What a previous process of this run announced and numbered today
+    /// ([`crate::notice_memory`]): the pullback notices' memory, and the episode numbers the
+    /// engine must continue past so a restart never reissues an id the delivery ledger has sent.
+    pub(crate) fn restore_notice_memory(&mut self, m: &crate::notice_memory::NoticeMemory) {
+        self.cue.restore(m);
+        if let Some(date) = m.date {
+            self.engine
+                .set_episode_floors(date, m.floors.iter().cloned());
+        }
     }
 
     /// The owner's favorites (`crate::favorites`): watched by the engine like Runners rows, so a

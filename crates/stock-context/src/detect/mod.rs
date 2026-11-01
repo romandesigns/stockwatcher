@@ -80,6 +80,11 @@ impl Family {
         }
     }
 
+    /// The family named by [`Family::as_str`] (journals and ledgers read back after a restart).
+    pub fn parse(s: &str) -> Option<Family> {
+        Family::ALL.into_iter().find(|f| f.as_str() == s)
+    }
+
     fn index(self) -> usize {
         self as usize
     }
@@ -608,6 +613,12 @@ pub(crate) struct Detector {
     /// Terminal episodes whose outcome cites one print `(id, exec, transition)`, bounded, so a
     /// later revision of that print appends a correction notice.
     pub cited: VecDeque<(TradeId, i64, String, Ep)>,
+    /// Episode numbers a previous process of the same run already used today, per symbol and
+    /// family ([`crate::Engine::set_episode_floors`]): `open` numbers past them. The run id of the
+    /// live market is `live` on every boot and the per-symbol counters start at 0, so without
+    /// this a restart reissued `live:<day>:<SYM>:micro_pullback:1`, an id the delivery ledger had
+    /// already sent and so refused (INO 2026-10-30).
+    pub floors: Option<(NaiveDate, HashMap<String, [u32; 6]>)>,
 }
 
 impl Detector {
@@ -644,6 +655,31 @@ impl Detector {
             corrections: 0,
             disabled,
             cited: VecDeque::new(),
+            floors: None,
+        }
+    }
+
+    /// The highest episode number already used for `symbol`'s `family` on `date` (0: none).
+    fn floor(&self, date: NaiveDate, symbol: &str, family: Family) -> u32 {
+        match &self.floors {
+            Some((d, m)) if *d == date => m.get(symbol).map_or(0, |a| a[family.index()]),
+            _ => 0,
+        }
+    }
+
+    /// Records numbers a previous process used on `date` ([`Detector::floors`]); the highest wins.
+    pub fn add_floors(
+        &mut self,
+        date: NaiveDate,
+        used: impl IntoIterator<Item = (String, Family, u32)>,
+    ) {
+        if self.floors.as_ref().is_none_or(|(d, _)| *d != date) {
+            self.floors = Some((date, HashMap::new()));
+        }
+        let (_, m) = self.floors.as_mut().expect("just set");
+        for (sym, fam, n) in used {
+            let a = m.entry(sym).or_default();
+            a[fam.index()] = a[fam.index()].max(n);
         }
     }
 
@@ -926,9 +962,12 @@ pub(crate) fn open(
     warmup: bool,
     extra: Extra,
 ) -> Ep {
-    sd.counters[family.index()] += 1;
+    // Past any number a previous process of this run used today ([`Detector::floors`]).
+    let floor = det.floor(x.date, x.symbol, family);
+    let c = &mut sd.counters[family.index()];
+    *c = (*c).max(floor) + 1;
+    let n = *c;
     det.episodes_opened += 1;
-    let n = sd.counters[family.index()];
     Ep {
         view: Episode {
             episode_id: format!(

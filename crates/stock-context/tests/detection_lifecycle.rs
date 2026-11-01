@@ -338,6 +338,47 @@ fn a_micro_pullback_is_warmup_by_its_arming_moment_not_its_start() {
     assert!(!armed.warmup);
 }
 
+/// A restart keeps the run id (`live`), so a new process must number its episodes past the ones
+/// the previous process already used today, or it reissues an id the delivery ledger has sent.
+#[test]
+fn episode_numbers_continue_past_a_previous_process() {
+    let mut s = Script::new();
+    micro_at(&mut s, "FLRX", 0);
+    s.advance(cutoff(11));
+    let mut e = fixture::engine("live");
+    e.set_episode_floors(
+        fixture::day(),
+        [
+            ("FLRX".to_string(), Family::MicroPullback, 3),
+            // Lower numbers recorded later never lower the floor; another family is its own.
+            ("FLRX".to_string(), Family::MicroPullback, 1),
+            ("FLRX".to_string(), Family::Ignition, 9),
+        ],
+    );
+    let ts = fixture::drive(&mut e, &s.steps);
+    let micro = ts
+        .iter()
+        .find(|t| t.family == Family::MicroPullback)
+        .unwrap();
+    assert_eq!(
+        micro.episode_id,
+        format!("live:{}:FLRX:micro_pullback:4", fixture::day())
+    );
+    // Floors recorded for another date do not apply to this one.
+    let mut other = fixture::engine("live");
+    other.set_episode_floors(
+        fixture::day().pred_opt().unwrap(),
+        [("FLRX".to_string(), Family::MicroPullback, 3)],
+    );
+    let ts = fixture::drive(&mut other, &s.steps);
+    assert!(
+        ts.iter()
+            .any(|t| t.episode_id.ends_with("FLRX:micro_pullback:1"))
+    );
+    assert_eq!(Family::parse("micro_pullback"), Some(Family::MicroPullback));
+    assert_eq!(Family::parse("nope"), None);
+}
+
 #[test]
 fn the_snapshot_names_one_dominant_episode_and_proximity_never_moves_seq() {
     let mut s = Script::new();
