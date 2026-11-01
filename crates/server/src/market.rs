@@ -76,6 +76,7 @@ use crate::history::{History, Unloaded};
 use crate::indicators::{IndicatorRegistry, Studies};
 use crate::pressure::{Card, HaltInfo, PressureBoard};
 use crate::quotes::{Counted, QuoteBoard, QuoteChanges, QuoteRow};
+use chart_engine::luld::{LuldInputs, LuldParams, venue_code};
 use chart_engine::wire::{ChartSnapshot, ChartUpdate, ClockInfo};
 use chart_engine::{ChartEngine, DataQuality, Timeframe};
 use chrono::{NaiveDate, Utc};
@@ -517,10 +518,61 @@ pub(crate) struct Core {
     pub(crate) indicators: IndicatorRegistry,
 }
 
+/// The LULD model's inputs from the archive metadata (`chart_engine::luld`): the previous
+/// close, which picks the band percentage for the whole day under the Plan (`daily-closes.json`,
+/// on the day's share basis), and the listing venue, whose opening print is the first reference
+/// (`assets.json`). A snapshot of both files; [`Market::refresh_archive_meta`] hands the engine a
+/// new one when either changes (it applies from the next session a symbol starts).
+pub(crate) struct LuldMeta {
+    assets: Arc<HashMap<String, AssetMeta>>,
+    closes: Arc<PrevCloses>,
+}
+
+/// A close older than this is not "the previous trading day" (a symbol that stopped trading and
+/// came back): the model falls back to the session's first reference instead.
+const LULD_PREV_CLOSE_MAX_AGE_DAYS: i64 = 10;
+
+impl LuldMeta {
+    pub(crate) fn shared(
+        assets: Arc<HashMap<String, AssetMeta>>,
+        closes: Arc<PrevCloses>,
+    ) -> Arc<dyn LuldInputs> {
+        Arc::new(LuldMeta { assets, closes })
+    }
+}
+
+impl std::fmt::Debug for LuldMeta {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LuldMeta")
+            .field("assets", &self.assets.len())
+            .field("closes", &self.closes.symbols())
+            .finish()
+    }
+}
+
+impl LuldInputs for LuldMeta {
+    fn params(&self, symbol: &str, date: NaiveDate) -> LuldParams {
+        LuldParams {
+            prev_close: self
+                .closes
+                .before(symbol, date)
+                .filter(|(d, _)| (date - *d).num_days() <= LULD_PREV_CLOSE_MAX_AGE_DAYS)
+                .map(|(_, p)| p),
+            listing_venue: self
+                .assets
+                .get(symbol)
+                .and_then(|a| venue_code(&a.exchange))
+                .map(str::to_string),
+        }
+    }
+}
+
 impl Core {
-    fn new(closes: Arc<PrevCloses>) -> Self {
+    fn new(closes: Arc<PrevCloses>, luld: Arc<dyn LuldInputs>) -> Self {
+        let mut engine = ChartEngine::default();
+        engine.set_luld_inputs(Some(luld));
         Core {
-            engine: ChartEngine::default(),
+            engine,
             seq: 0,
             tape: HashMap::new(),
             last_price: HashMap::new(),
@@ -859,12 +911,14 @@ impl Market {
             .as_ref()
             .filter(|_| follow_latest)
             .and_then(|d| d.list().last().map(|e| e.day));
+        let assets = Arc::new(assets);
+        let luld = LuldMeta::shared(assets.clone(), closes.clone());
         let market = Market(Arc::new(Inner {
             mode,
             info: Mutex::new(info.map(Arc::new)),
             days,
             status: Mutex::new(status),
-            core: Mutex::new(Core::new(closes.clone())),
+            core: Mutex::new(Core::new(closes.clone(), luld)),
             clock: Mutex::new(None),
             tx: broadcast::channel(BROADCAST_CAPACITY).0,
             control,
@@ -872,7 +926,7 @@ impl Market {
             band,
             paper: Mutex::new(Broker::new()),
             paper_route: std::sync::RwLock::new(None),
-            assets: Mutex::new(Arc::new(assets)),
+            assets: Mutex::new(assets),
             closes: Mutex::new(closes),
             meta_files: files,
             follow_latest,
@@ -2244,6 +2298,15 @@ impl Market {
                 }
             }
         }
+        if assets_changed || closes_changed {
+            let luld = self.luld_inputs();
+            self.0
+                .core
+                .lock()
+                .expect("core lock")
+                .engine
+                .set_luld_inputs(Some(luld));
+        }
         assets_changed || closes_changed
     }
 
@@ -2282,6 +2345,12 @@ impl Market {
 
     pub(crate) fn current_closes(&self) -> Arc<PrevCloses> {
         self.0.closes.lock().expect("closes lock").clone()
+    }
+
+    /// The LULD model's inputs from the current `assets.json` and `daily-closes.json`.
+    pub(crate) fn luld_inputs(&self) -> Arc<dyn LuldInputs> {
+        let assets = self.0.assets.lock().expect("assets lock").clone();
+        LuldMeta::shared(assets, self.current_closes())
     }
 
     pub fn mode(&self) -> ClockMode {
@@ -2652,7 +2721,8 @@ impl Market {
                         j.record_clock(t, crate::observe::wall_now());
                     }
                     let ups = core.engine.advance_clock(t);
-                    // The clock moves the bands too (the doubling windows, the close).
+                    // The clock moves the bands too (the closing doubling window, the close, the
+                    // end of a reference's 30 s hold, 09:35 without an opening print).
                     for u in &ups {
                         if let ChartUpdate::Luld(l) = u {
                             core.pressure.apply_luld(&l.symbol, &l.point);
@@ -2691,7 +2761,7 @@ impl Market {
                     // were computed over the old engine), and the resync snapshots rebuild them.
                     let mut indicators = std::mem::take(&mut core.indicators);
                     indicators.clear_computed();
-                    *core = Core::new(closes);
+                    *core = Core::new(closes, self.luld_inputs());
                     core.indicators = indicators;
                     core.context = board;
                     core.rocket = rocket;

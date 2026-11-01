@@ -530,6 +530,9 @@ impl Market {
             )
         };
         let mut b = Builder::new(self.current_closes()).with_burst(burst);
+        // The same LULD inputs as the live engine this symbol is adopted into, or the bands it
+        // rebuilds would differ from the ones the live engine would have drawn.
+        b.engine.set_luld_inputs(Some(self.luld_inputs()));
         b.zones = zones;
         if let Some(mut re) = restore {
             // The evidence this symbol's decisions join, as the market's loader has it. Only the
@@ -1294,8 +1297,9 @@ impl Builder {
             return;
         }
         self.mark = Some(m);
-        // The clock moves the LULD bands too (doubling windows, the close): the Halt watcher
-        // needs them, the rest of the increments are re-snapshotted.
+        // The clock moves the LULD bands too (the closing doubling window, the close, the end of a
+        // reference's 30 s hold, 09:35 without an opening print): the Halt watcher needs them,
+        // the rest of the increments are re-snapshotted.
         for u in self.engine.advance_clock(UnixNanos(m)) {
             if let ChartUpdate::Luld(l) = &u {
                 self.pressure.apply_luld(&l.symbol, &l.point);
