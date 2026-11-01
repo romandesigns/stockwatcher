@@ -29,9 +29,11 @@
 //! (`tNs`, `removedNs`; `times.ns.v1`, chart_engine::wire module docs), NaN sent as `null`):
 //!
 //! - `chart.indicators {symbol, timeframe, rth, t: [ms], tNs: [ns], studies: [{key, lines:
-//!   [{name, style, from, values}]}]}`: a snapshot of the studies it names. `t` is every input bar of this chart
-//!   key (rth-filtered), ascending; a line's `values[i]` belongs to `t[from + i]` (the warm-up
-//!   nulls before `from` are cut). It replaces the client's values of the keys it carries. Sent
+//!   [{name, style, from, values}]}], truncated?}`: a snapshot of the studies it names. `t` is
+//!   every input bar of this chart key (rth-filtered), ascending, or only the newest `limit` of
+//!   them when the socket's slots asked for a limit ([`Studies::limit`]; then `truncated: true`
+//!   and the client ignores increments for older bars); a line's `values[i]` belongs to
+//!   `t[from + i]` (the warm-up nulls before `from` are cut). It replaces the client's values of the keys it carries. Sent
 //!   to a socket right after a `chart.snapshot` (same core lock, same seq), on
 //!   `chart.indicators.set`, and on every resync, always carrying the studies of EVERY slot of
 //!   that socket on the chart key, not just the slot's own ([`Studies::union`]: frames carry no
@@ -58,12 +60,20 @@ use serde_json::Value;
 /// keeps computing its own.
 pub const FEATURE: &str = "indicators.v1";
 
+/// The `welcome.features` entry for `limit` on `chart.subscribe` / `chart.indicators.set`
+/// ([`Studies::limit`]). A client sends `limit` only when it sees it; an older server would
+/// ignore the field and send every bar, which is still correct, just larger.
+pub const LIMIT_FEATURE: &str = "indicators.limit.v1";
+
 /// How long a chart nobody watches keeps its series.
 pub const IDLE_DROP: Duration = Duration::from_secs(60);
 
 /// Points one `chart.indicator` may carry; past it the chart's snapshot goes out instead (a
 /// revision near the start of a 4000-bar series would otherwise send it all as points).
 pub const MAX_INCREMENT_POINTS: usize = 256;
+
+/// The fewest bars a limited `chart.indicators` carries ([`Studies::with_limit`]).
+pub const MIN_LIMIT: usize = 100;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ChartKey {
@@ -78,6 +88,12 @@ pub struct ChartKey {
 pub struct Studies {
     pub chart: ChartKey,
     pub specs: Vec<IndicatorSpec>,
+    /// The most bars its `chart.indicators` may carry (the newest; `limit` on `chart.subscribe` /
+    /// `chart.indicators.set`); `None` = every bar. The phone asks for fewer than the 4000 the
+    /// engine keeps, on cellular, until it is zoomed out past them. It only shortens the frame:
+    /// the series are still built over every retained bar, so each value is exactly the one an
+    /// unlimited snapshot carries (an EMA cut at the frame's edge would otherwise re-seed there).
+    pub limit: Option<usize>,
 }
 
 impl Studies {
@@ -90,7 +106,18 @@ impl Studies {
                 specs.push(s);
             }
         }
-        Studies { chart, specs }
+        Studies {
+            chart,
+            specs,
+            limit: None,
+        }
+    }
+
+    /// The slot's bar limit ([`Studies::limit`]). Below [`MIN_LIMIT`] it is raised to it: a frame
+    /// of a handful of bars would only make the client ask again at once.
+    pub fn with_limit(mut self, limit: Option<u32>) -> Self {
+        self.limit = limit.map(|n| (n as usize).max(MIN_LIMIT));
+        self
     }
 
     /// Every study of `of` (lists on one chart key), one per key, first-seen order. A socket's
@@ -98,16 +125,27 @@ impl Studies {
     /// slot's alone: frames carry no seq, so the server must keep a frame older than a snapshot
     /// from reaching the client after it, and that only works if every slot of the chart key on
     /// the socket is current to the same snapshot (crates/server/src/ws.rs `Sub::ind_seq`).
+    ///
+    /// The union's limit is the largest of theirs, `None` if any slot has none: the client keeps
+    /// one set of values per chart key for all of its slots, so the frame must reach as far back
+    /// as the slot that wants the most.
     pub fn union<'a>(chart: ChartKey, of: impl IntoIterator<Item = &'a Studies>) -> Self {
         let mut specs: Vec<IndicatorSpec> = Vec::new();
+        let mut limit = Some(0);
         for st in of {
             for s in &st.specs {
                 if !specs.iter().any(|x| x.key() == s.key()) {
                     specs.push(*s);
                 }
             }
+            limit = limit.zip(st.limit).map(|(a, b)| a.max(b));
         }
-        Studies { chart, specs }
+        Studies {
+            chart,
+            specs,
+            // No slot at all: nothing to limit.
+            limit: limit.filter(|&n| n > 0),
+        }
     }
 }
 
@@ -160,6 +198,10 @@ struct SnapshotWire<'a> {
     #[serde(rename = "tNs")]
     t_ns: Vec<i64>,
     studies: Vec<StudyWire<'a>>,
+    /// Older bars were left out ([`Studies::limit`]): the client must ignore increments for bars
+    /// before `t[0]` rather than insert them (a revision of a bar it was never sent).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    truncated: bool,
 }
 
 #[derive(Serialize)]
@@ -194,15 +236,20 @@ fn opt(x: f64) -> Option<f64> {
     (!x.is_nan()).then_some(x)
 }
 
-/// A `chart.indicators` frame for `keys` of one chart (all of its series hold the same bars).
+/// A `chart.indicators` frame for `keys` of one chart (all of its series hold the same bars),
+/// carrying at most the newest `limit` bars.
 fn snapshot_json<'a>(
     chart: &ChartKey,
     series: impl Iterator<Item = (&'a String, &'a IndicatorSeries)>,
+    limit: Option<usize>,
 ) -> String {
     let series: Vec<(&String, &IndicatorSeries)> = series.collect();
+    let len = series.first().map_or(0, |(_, s)| s.len());
+    // The first bar sent; `from` and `values` below count from it.
+    let skip = limit.map_or(0, |n| len.saturating_sub(n));
     let t: Vec<i64> = series
         .first()
-        .map(|(_, s)| s.bars().iter().map(|b| b.t_ms).collect())
+        .map(|(_, s)| s.bars()[skip..].iter().map(|b| b.t_ms).collect())
         .unwrap_or_default();
     // Per line: the values from its first non-null on.
     let columns: Vec<Vec<(usize, Vec<Option<f64>>)>> = series
@@ -210,10 +257,13 @@ fn snapshot_json<'a>(
         .map(|(_, s)| {
             (0..s.spec().lines().len())
                 .map(|j| {
-                    let from = (0..s.len())
+                    let from = (skip..s.len())
                         .find(|&i| !s.values(i)[j].is_nan())
                         .unwrap_or(s.len());
-                    (from, (from..s.len()).map(|i| opt(s.values(i)[j])).collect())
+                    (
+                        from - skip,
+                        (from..s.len()).map(|i| opt(s.values(i)[j])).collect(),
+                    )
                 })
                 .collect()
         })
@@ -245,6 +295,7 @@ fn snapshot_json<'a>(
         t_ns: t.iter().map(|&t| bar_ns(t)).collect(),
         t,
         studies,
+        truncated: skip > 0,
     })
     .expect("indicator frames serialize")
 }
@@ -341,7 +392,7 @@ impl IndicatorRegistry {
         if studies.specs.is_empty() {
             // A slot with every study off: an empty frame, and no chart entry nobody would
             // ever release.
-            return snapshot_json(key, std::iter::empty());
+            return snapshot_json(key, std::iter::empty(), None);
         }
         let chart = self.charts.entry(key.clone()).or_default();
         self.symbols.insert(key.symbol.clone());
@@ -372,6 +423,7 @@ impl IndicatorRegistry {
                 .specs
                 .iter()
                 .filter_map(|s| series.get_key_value(&s.key())),
+            studies.limit,
         )
     }
 
@@ -453,7 +505,9 @@ impl IndicatorRegistry {
                 continue;
             }
             let json = if points.len() > MAX_INCREMENT_POINTS {
-                snapshot_json(&key, chart.series.iter())
+                // Every bar: it goes to every socket on the chart key. A socket whose slots
+                // asked for fewer gets its own limited snapshot instead (crate::ws).
+                snapshot_json(&key, chart.series.iter(), None)
             } else {
                 serde_json::to_string(&IncrementWire {
                     kind: "chart.indicator",
@@ -639,6 +693,93 @@ mod tests {
             300
         );
         assert_eq!(f["rth"], true);
+    }
+
+    /// `limit` shortens the frame and nothing else: the bars it carries hold exactly the values
+    /// of an unlimited snapshot (the series still run over every retained bar), `from` counts
+    /// from the first bar sent, and `truncated` says bars were left out.
+    #[test]
+    fn a_limited_snapshot_is_the_tail_of_the_full_one() {
+        let mut engine = ChartEngine::default();
+        let mut reg = IndicatorRegistry::default();
+        for i in 0..300u32 {
+            engine.apply(&trade(
+                9 + (30 + i) / 60,
+                (30 + i) % 60,
+                1,
+                300 + (i % 13) as i64,
+                i as u64 + 1,
+            ));
+        }
+        let list = json!([{"id": "e", "kind": "ema", "period": 100}, {"id": "m", "kind": "macd"}]);
+        let full_st = studies(list.clone(), false);
+        reg.acquire(&full_st);
+        let full: Value = serde_json::from_str(&reg.snapshot(&engine, &full_st)).unwrap();
+        assert!(
+            full.get("truncated").is_none(),
+            "an unlimited frame says nothing"
+        );
+        let lim_st = studies(list, false).with_limit(Some(120));
+        let lim: Value = serde_json::from_str(&reg.snapshot(&engine, &lim_st)).unwrap();
+        assert_eq!(lim["truncated"], true);
+        let t = |v: &Value| -> Vec<i64> {
+            v["t"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|x| x.as_i64().unwrap())
+                .collect()
+        };
+        let (ft, lt) = (t(&full), t(&lim));
+        assert_eq!(lt.len(), 120);
+        assert_eq!(lt[..], ft[ft.len() - 120..]);
+        assert_eq!(lim["tNs"].as_array().unwrap().len(), 120);
+        // Every line, value by value, against the full frame's at the same bar.
+        let at = |v: &Value, study: usize, line: usize, bar: i64, ts: &[i64]| -> Value {
+            let l = &v["studies"][study]["lines"][line];
+            let i = ts.iter().position(|&x| x == bar).unwrap();
+            let from = l["from"].as_u64().unwrap() as usize;
+            if i < from {
+                Value::Null
+            } else {
+                l["values"][i - from].clone()
+            }
+        };
+        for study in 0..2 {
+            for line in 0..full["studies"][study]["lines"].as_array().unwrap().len() {
+                for &bar in &lt {
+                    assert_eq!(
+                        at(&lim, study, line, bar, &lt),
+                        at(&full, study, line, bar, &ft)
+                    );
+                }
+            }
+        }
+        // EMA 100 warmed up at bar 99, before the limited frame's first bar (180): it starts with a
+        // value, the one the full history gives, not a fresh seed.
+        assert_eq!(lim["studies"][0]["lines"][0]["from"], 0);
+        // A limit past the bars held, or a tiny one: every bar, or MIN_LIMIT of them.
+        let all: Value = serde_json::from_str(&reg.snapshot(
+            &engine,
+            &studies(json!([{"id": "e", "kind": "ema"}]), false).with_limit(Some(4000)),
+        ))
+        .unwrap();
+        assert_eq!((t(&all).len(), all.get("truncated")), (300, None));
+        let tiny = studies(json!([{"id": "e", "kind": "ema"}]), false).with_limit(Some(3));
+        assert_eq!(tiny.limit, Some(MIN_LIMIT));
+    }
+
+    /// One frame serves every slot of a chart key on a socket: it reaches as far back as the
+    /// slot that wants the most, and a slot with no limit means every bar.
+    #[test]
+    fn a_union_takes_the_largest_limit() {
+        let st = |limit| studies(json!([{"id": "e", "kind": "ema"}]), false).with_limit(limit);
+        let (a, b, c) = (st(Some(150)), st(Some(1500)), st(None));
+        let chart = a.chart.clone();
+        assert_eq!(Studies::union(chart.clone(), [&a, &b]).limit, Some(1500));
+        assert_eq!(Studies::union(chart.clone(), [&a, &c]).limit, None);
+        assert_eq!(Studies::union(chart.clone(), [&a]).limit, Some(150));
+        assert_eq!(Studies::union(chart, std::iter::empty()).limit, None);
     }
 
     #[test]

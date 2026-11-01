@@ -2804,6 +2804,75 @@ async fn indicators_are_opt_in_per_slot() {
     );
 }
 
+/// `limit` (`indicators.limit.v1`): the slot's `chart.indicators` carries only the newest bars,
+/// says so with `truncated`, and holds exactly the values the unlimited frame has at those bars;
+/// `chart.indicators.set` without it sends every bar again.
+#[tokio::test]
+async fn a_limit_shortens_the_indicator_snapshot_only() {
+    let s = stack(&[]).await;
+    let (mut ws, _) = tokio_tungstenite::connect_async(&s.url).await.unwrap();
+    send(&mut ws, json!({"type": "hello", "client": "test"})).await;
+    let w = next(&mut ws, is("welcome")).await;
+    assert!(
+        w["features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f == "indicators.limit.v1"),
+        "{w}"
+    );
+    wait_for_replay(&mut ws).await;
+    // Paused, so both frames see the same bars.
+    send(
+        &mut ws,
+        json!({"type": "replay.control", "action": "pause"}),
+    )
+    .await;
+    send(&mut ws, json!({"type": "ping", "ts": 1})).await;
+    next(&mut ws, |m| m["type"] == "pong" && m["ts"] == 1).await;
+    send(
+        &mut ws,
+        json!({"type": "chart.subscribe", "id": "a", "symbol": "SMPL", "timeframe": "15s",
+               "profileBin": 0.01, "indicators": studies_list(), "rth": false, "limit": 120}),
+    )
+    .await;
+    next(&mut ws, is("chart.snapshot")).await;
+    let lim = next(&mut ws, is("chart.indicators")).await;
+    send(
+        &mut ws,
+        json!({"type": "chart.indicators.set", "id": "a", "indicators": studies_list(), "rth": false}),
+    )
+    .await;
+    let full = next(&mut ws, is("chart.indicators")).await;
+    let t = |v: &Value| -> Vec<i64> {
+        v["t"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_i64().unwrap())
+            .collect()
+    };
+    let (lt, ft) = (t(&lim), t(&full));
+    assert!(ft.len() > 120, "the day so far: {} bars", ft.len());
+    assert_eq!(lt.len(), 120);
+    assert_eq!(lt[..], ft[ft.len() - 120..]);
+    assert_eq!(lim["truncated"], true);
+    assert!(full.get("truncated").is_none(), "{}", full["truncated"]);
+    let (lm, fm) = (
+        IndicatorModel::from_snapshot(&lim),
+        IndicatorModel::from_snapshot(&full),
+    );
+    for (k, col) in &lm.0 {
+        let whole = &fm.0[k];
+        for (bar, v) in col {
+            assert_eq!(whole.get(bar), Some(v), "{k:?} at {bar}");
+        }
+        // Nothing of the full frame's tail is missing from the limited one.
+        let tail = whole.range(lt[0]..).count();
+        assert_eq!(col.len(), tail, "{k:?}");
+    }
+}
+
 /// A seek rebuilds the engine: a slot with studies gets a fresh `chart.indicators` over the
 /// rebuilt chart with its resync snapshot.
 #[tokio::test]

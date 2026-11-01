@@ -103,4 +103,12 @@ fn cost_and_size_over_the_fixture_day() {
         snap15.len()
     );
     println!("snapshot 1m rth: {} bytes", snap_m1.len());
+    // The phone's ask (`limit`, indicators.limit.v1): the newest 1500 bars, same values.
+    let lim15 = reg.snapshot(&engine, &s15.clone().with_limit(Some(1500)));
+    println!(
+        "snapshot 15s limited to 1500 bars: {} bytes ({:.0} % of the full {})",
+        lim15.len(),
+        100.0 * lim15.len() as f64 / snap15.len() as f64,
+        snap15.len()
+    );
 }

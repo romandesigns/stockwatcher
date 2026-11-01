@@ -79,6 +79,14 @@
 //! - client `chart.indicators.set {id?, indicators, rth?}` changes a held slot's studies without
 //!   a new candle snapshot (a study toggled, extended hours flipped, indicators hidden = `[]`);
 //!   the answer is a `chart.indicators`. An `id` no slot holds gets `error bad_request`.
+//! - `limit` (a bar count, `indicators.limit.v1` in `welcome.features`) on `chart.subscribe` and
+//!   `chart.indicators.set`: the slot's `chart.indicators` carries only the newest `limit` bars
+//!   (at least crate::indicators::MIN_LIMIT), with `truncated: true` when bars were left out.
+//!   The values are the same as without it (the series run over every retained bar); the phone
+//!   asks for fewer on cellular until it is zoomed out past them. Absent = every bar. A socket's
+//!   slots on one chart key share one frame, so the largest limit wins (none if any has none),
+//!   and the snapshot a deep revision broadcasts (every bar) reaches a limited socket as its own
+//!   limited snapshot instead.
 //! - Frames carry canonical spec keys (`ema:9`, `bb:20:2`, `macd:12:26:9`), never client ids;
 //!   the client maps its specs to keys (chart-core `specKey`). Shapes and the apply rules are in
 //!   the header of crate::indicators. A lag, a seek or a day switch resends `chart.indicators`
@@ -375,6 +383,10 @@ enum ClientMessage {
         /// client computes its own).
         #[serde(default)]
         zones: Option<bool>,
+        /// The most bars the slot's `chart.indicators` may carry (`indicators.limit.v1`);
+        /// absent = every bar.
+        #[serde(default)]
+        limit: Option<u32>,
     },
     #[serde(rename = "chart.indicators.set")]
     ChartIndicatorsSet {
@@ -386,6 +398,10 @@ enum ClientMessage {
         /// The zones layer turned on or off (`zones.v1`); absent = as it was.
         #[serde(default)]
         zones: Option<bool>,
+        /// As on `chart.subscribe`; absent = every bar (not "as it was": the set is the slot's
+        /// whole demand).
+        #[serde(default)]
+        limit: Option<u32>,
     },
     #[serde(rename = "chart.unsubscribe")]
     ChartUnsubscribe {
@@ -1025,6 +1041,10 @@ async fn send_indicators(
     send_text(socket, json).await
 }
 
+/// How a broadcast `chart.indicators` (a deep revision's, every bar) starts: the frames lead with
+/// `type` (crate::indicators `SnapshotWire`).
+const INDICATORS_SNAPSHOT_PREFIX: &str = r#"{"type":"chart.indicators","#;
+
 async fn send_text(socket: &mut WebSocket, text: String) -> bool {
     socket.send(Message::Text(text.into())).await.is_ok()
 }
@@ -1283,6 +1303,7 @@ async fn session(mut socket: WebSocket, state: AppState) {
         heartbeat_secs: HEARTBEAT.as_secs(),
         features: &[
             crate::indicators::FEATURE,
+            crate::indicators::LIMIT_FEATURE,
             crate::chart_context::LEVELS_FEATURE,
             crate::chart_context::ZONES_FEATURE,
             crate::symbols::FEATURE,
@@ -1454,10 +1475,17 @@ async fn session(mut socket: WebSocket, state: AppState) {
                         // studies and has not already got them in its `chart.indicators`. Keys a
                         // slot did not ask for ride along; the client ignores them.
                         OutKind::Indicator { symbol, timeframe, rth, json } => {
-                            if subs.iter().any(|s| s.wants_indicators(symbol, *timeframe, *rth) && o.seq > s.ind_seq) {
-                                send_text(&mut socket, json.clone()).await
-                            } else {
+                            if !subs.iter().any(|s| s.wants_indicators(symbol, *timeframe, *rth) && o.seq > s.ind_seq) {
                                 true
+                            } else if json.starts_with(INDICATORS_SNAPSHOT_PREFIX)
+                                && let chart = (ChartKey { symbol: symbol.clone(), timeframe: *timeframe, rth: *rth })
+                                && chart_studies(subs.iter(), &chart).limit.is_some()
+                            {
+                                // A deep revision's snapshot carries every bar; this socket asked
+                                // for fewer (`limit`), so it gets its own, as on a resync.
+                                send_indicators(&mut socket, &market, &mut subs, &chart).await
+                            } else {
+                                send_text(&mut socket, json.clone()).await
                             }
                         }
                         // Levels and zones: once per connection, if a slot on that chart asked and
@@ -1679,11 +1707,12 @@ async fn session(mut socket: WebSocket, state: AppState) {
                 let reply = match serde_json::from_str::<ClientMessage>(&text) {
                     Ok(ClientMessage::Ping { ts }) => Some(ServerMessage::Pong { ts }),
                     Ok(ClientMessage::Pong { .. }) => None,
-                    Ok(ClientMessage::ChartSubscribe { symbol, timeframe, profile_bin, id, indicators, rth, levels, zones }) => {
+                    Ok(ClientMessage::ChartSubscribe { symbol, timeframe, profile_bin, id, indicators, rth, levels, zones, limit }) => {
                         let id = id.unwrap_or_default();
                         let held = subs.iter().position(|s| s.id == id);
                         let symbol = symbol.trim().to_ascii_uppercase();
-                        let studies = crate::indicators::parse_request(&symbol, timeframe, indicators.as_ref(), rth);
+                        let studies = crate::indicators::parse_request(&symbol, timeframe, indicators.as_ref(), rth)
+                            .map(|st| st.map(|st| st.with_limit(limit)));
                         if id.chars().count() > MAX_CHART_ID {
                             Some(ServerMessage::Error {
                                 code: "bad_request",
@@ -1767,7 +1796,7 @@ async fn session(mut socket: WebSocket, state: AppState) {
                             }
                         }
                     }
-                    Ok(ClientMessage::ChartIndicatorsSet { id, indicators, rth, zones }) => {
+                    Ok(ClientMessage::ChartIndicatorsSet { id, indicators, rth, zones, limit }) => {
                         let id = id.unwrap_or_default();
                         match subs.iter().position(|s| s.id == id) {
                             None => {
@@ -1780,6 +1809,7 @@ async fn session(mut socket: WebSocket, state: AppState) {
                                 let s = &mut subs[i];
                                 match crate::indicators::parse_request(&s.symbol, s.timeframe, Some(&indicators), rth) {
                                     Ok(st) => {
+                                        let st = st.map(|st| st.with_limit(limit));
                                         // The new lease is taken before the old one goes, so the
                                         // studies both lists share keep their series.
                                         let lease = st.map(|st| market.indicators_acquire(st));
