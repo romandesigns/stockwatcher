@@ -30,7 +30,20 @@
 //! - Chart errors (`unknown_symbol`, `outside_price_band`) carry the `symbol` and, for a named
 //!   slot, its `id`, so a client with several charts knows which one was refused.
 //! - server `replay.clock {clock}` to every client, on change and ~4 Hz while
-//!   playing.
+//!   playing; in live mode once a second (the live provider's tick). `clock.nowNs` (exchange
+//!   time, ns) rides beside `clock.now` (ms).
+//!
+//! Server clock (`clock.v1` in `welcome.features`; crate::time_marks): Rust is the only clock.
+//! - `rocket.*` rows carry `fresh` / `fresh_until_ns`, and a burst row `burst_live` /
+//!   `burst_live_until_ns` and `flame {lit, until_ns}`, decided at the market clock; a flip sends
+//!   a `rocket.update` on the next tick. Clients show them as sent and measure ages against the
+//!   last `replay.clock`, without extrapolating it.
+//! - server `runners.event {kind: new_flag | breakout, id, symbol, at_ns, path, price,
+//!   from_flag_pct?, reason?}` to `rocket.subscribe`d connections, live market only, at most 3 a
+//!   tick, judged fresh on the market clock: the web dashboard's Runners toasts. Older clients
+//!   ignore the unknown type and keep diffing panels.
+//! - `alerts.state` entries carry `snoozed`, with expiry and the cooling gap decided on the
+//!   evaluator's 1 s tick; `paper.state.notice.fresh` (Alpaca paper) is judged when rendered.
 //! - client `replay.control {action, value}` (play, pause, step, stepInterval,
 //!   seek, speed, day): honoured in replay mode, `error not_replay` in live mode.
 //!   Success has no direct reply; the resulting `replay.clock` is the answer.
@@ -1155,6 +1168,7 @@ async fn session(mut socket: WebSocket, state: AppState) {
             crate::notices::FEATURE_ROWS,
             crate::insights::FEATURE,
             crate::quote_search::FEATURE,
+            crate::time_marks::FEATURE,
         ],
     };
     // Subscribed before the paper snapshot below, so no change can fall between the two (at
@@ -1267,6 +1281,10 @@ async fn session(mut socket: WebSocket, state: AppState) {
                         OutKind::Rocket(frame) => match rocket.as_ref() {
                             Some(q) if o.seq > q.seq => send_text(&mut socket, frame.clone()).await,
                             _ => true,
+                        },
+                        OutKind::RunnersEvent(frame) => match rocket.as_ref() {
+                            Some(_) => send_text(&mut socket, frame.clone()).await,
+                            None => true,
                         },
                         OutKind::Detection { epoch, cursor, frame } => match detection.as_mut() {
                             Some(q) if market.detection_epoch_is_current(epoch)

@@ -108,8 +108,22 @@ pub struct StateOut<'a> {
     pub positions: &'a [PositionOut],
     pub fills: Vec<&'a FillOut>,
     pub link: &'a LinkOut,
-    pub notice: Option<&'a Notice>,
+    pub notice: Option<NoticeOut<'a>>,
 }
+
+/// A notice as sent: with `fresh`, decided when the frame is rendered on the server's clock, so
+/// a client never judges the toast's age against its own clock (stockwatcher `clock.v1`).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct NoticeOut<'a> {
+    #[serde(flatten)]
+    pub notice: &'a Notice,
+    /// At most [`NOTICE_FRESH_MS`] old when the frame was rendered: a client toasts it (once per
+    /// `at`). A connection's first frame can carry an old refusal: `false`, no toast.
+    pub fresh: bool,
+}
+
+/// How long a refusal is worth a toast (the clients' old `freshNotice` default).
+pub const NOTICE_FRESH_MS: i64 = 15_000;
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -490,13 +504,14 @@ impl Book {
     }
 
     /// The `paper.state` frame; bumps `seq`.
-    pub fn state_frame(&mut self) -> String {
+    pub fn state_frame(&mut self, now_ms: i64) -> String {
         self.seq += 1;
-        self.render()
+        self.render(now_ms)
     }
 
-    /// The current state without a new `seq` (a connection's first frame).
-    pub fn render(&self) -> String {
+    /// The current state without a new `seq` (a connection's first frame), its notice judged
+    /// fresh or not at `now_ms`.
+    pub fn render(&self, now_ms: i64) -> String {
         let mut orders: Vec<&OrderOut> = self.working.iter().chain(self.finished.iter()).collect();
         orders.sort_by(|a, b| {
             a.created_at
@@ -513,7 +528,10 @@ impl Book {
             positions: &self.positions,
             fills: self.fills.iter().collect(),
             link: &self.link,
-            notice: self.notice.as_ref(),
+            notice: self.notice.as_ref().map(|n| NoticeOut {
+                notice: n,
+                fresh: (0..=NOTICE_FRESH_MS).contains(&(now_ms - n.at)),
+            }),
         })
         .expect("state serializes")
     }
@@ -563,7 +581,7 @@ mod tests {
     }
 
     fn state(b: &mut Book) -> Value {
-        serde_json::from_str(&b.state_frame()).unwrap()
+        serde_json::from_str(&b.state_frame(0)).unwrap()
     }
 
     #[test]
@@ -732,6 +750,14 @@ mod tests {
         assert_eq!(s["orders"][0]["status"], "rejected");
         assert_eq!(s["orders"][0]["rejectReason"], "extended_hours_limit_only");
         assert_eq!(s["notice"]["text"], "only limits now");
+        // Rendered at its own time (state() renders at 0): the server judged it fresh then.
+        let at7: Value = serde_json::from_str(&b.render(7)).unwrap();
+        assert_eq!(at7["notice"]["fresh"], true);
+        let later: Value = serde_json::from_str(&b.render(7 + NOTICE_FRESH_MS + 1)).unwrap();
+        assert_eq!(
+            later["notice"]["fresh"], false,
+            "an old refusal never toasts"
+        );
         let acct: AlpacaAccount = serde_json::from_value(json!({"status":"ACTIVE"})).unwrap();
         b.replace_all(&acct, &[], &[order(base("aaaaaaaa-1", "new"))], &[]);
         assert!(b.order(&id).is_some());

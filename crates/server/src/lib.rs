@@ -29,6 +29,7 @@ pub mod rocket;
 pub mod settings;
 pub mod shadow;
 pub mod symbols;
+pub mod time_marks;
 pub mod trading;
 pub mod ws;
 pub mod zones;

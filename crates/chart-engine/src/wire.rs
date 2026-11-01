@@ -121,7 +121,13 @@ pub struct SessionInfo {
 #[serde(rename_all = "camelCase")]
 pub struct ClockInfo {
     pub mode: String,
+    /// Epoch ms (what every client read before `nowNs`).
     pub now: i64,
+    /// The same instant in exchange-time ns, the server's own resolution: the clock clients
+    /// measure ages against (crates/server/src/time_marks.rs). Additive; absent from older
+    /// servers' frames.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub now_ns: Option<i64>,
     pub speed: f64,
     pub playing: bool,
 }

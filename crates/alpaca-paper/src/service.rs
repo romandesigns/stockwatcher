@@ -159,13 +159,13 @@ impl Service {
 
     /// The current `paper.state` (a connection's first frame, or a mode switch).
     pub fn state_frame(&self) -> String {
-        self.0.book.lock().expect("book lock").render()
+        self.0.book.lock().expect("book lock").render(now_ms())
     }
 
     /// Broadcasts the state (new `seq`), then `fills`. Under the book lock, so frames go out in
     /// order whichever task changed the book.
     fn publish(&self, book: &mut Book, fills: &[crate::book::FillOut]) {
-        let mut frames = vec![book.state_frame()];
+        let mut frames = vec![book.state_frame(now_ms())];
         frames.extend(fills.iter().map(Book::fill_frame));
         (self.0.publish)(frames);
     }

@@ -469,6 +469,10 @@ pub enum OutKind {
     /// A pre-serialized `rocket.update` (the Rocket watch panel, `crate::rocket`) for the
     /// connections that sent `rocket.subscribe`. `Outbound::seq` is the engine seq when taken.
     Rocket(String),
+    /// A pre-serialized `runners.event` (crate::time_marks) for the connections that sent
+    /// `rocket.subscribe`, whatever their snapshot's seq: a toast is a moment, never contained in
+    /// a snapshot, and the events memory is primed afresh for a first subscriber.
+    RunnersEvent(String),
     /// A pre-serialized `favorites.update` (`crate::favorites`) for the connections that sent
     /// `favorites.subscribe`. `Outbound::seq` is the favorites generation, not the engine seq.
     Favorites(String),
@@ -703,6 +707,9 @@ pub(crate) struct Inner {
     rocket_published: Mutex<Option<serde_json::Value>>,
     /// The Runners rows' day lines the last `rocket.update` carried (`crate::day_line`).
     rocket_lines: Mutex<crate::day_line::Published>,
+    /// The Runners toasts' memory (`runners.event`, crate::time_marks): primed again whenever
+    /// nobody is subscribed, so a first subscriber never gets the day's earlier rows.
+    runner_events: Mutex<crate::time_marks::Events>,
     /// The Runners rows' automatic zones, recomputed once a minute per symbol
     /// (`crate::auto_zones`, the demand-zone mark).
     rocket_auto_zones: Mutex<crate::auto_zones::ZoneCache>,
@@ -840,6 +847,7 @@ pub fn clock_info(c: &ClockState) -> ClockInfo {
     ClockInfo {
         mode: c.mode.as_str().to_string(),
         now: c.now.millis(),
+        now_ns: Some(c.now.0),
         speed: c.speed.as_wire(),
         playing: c.playing,
     }
@@ -963,6 +971,7 @@ impl Market {
             rocket_subs: AtomicUsize::new(0),
             rocket_published: Mutex::new(None),
             rocket_lines: Mutex::new(crate::day_line::Published::default()),
+            runner_events: Mutex::new(crate::time_marks::Events::default()),
             rocket_auto_zones: Mutex::new(crate::auto_zones::ZoneCache::default()),
             rocket_log: std::sync::OnceLock::new(),
             rocket_wake: Arc::new(tokio::sync::Notify::new()),
@@ -3428,6 +3437,7 @@ impl Market {
         });
         Self::add_zones(&core, &mut body, tau);
         self.add_demand_zones(&core, &mut body);
+        crate::time_marks::stamp_rows(&mut body, tau);
         let mut v = serde_json::json!({"type": "rocket.snapshot", "t": t});
         if let (Some(m), serde_json::Value::Object(b)) = (v.as_object_mut(), body) {
             m.extend(b);
@@ -3577,14 +3587,17 @@ impl Market {
     /// (the broadcast tick). Decides nothing. Returns whether it broadcast.
     pub fn broadcast_rocket(&self) -> bool {
         if self.rocket_subscribers() == 0 {
+            self.0.runner_events.lock().expect("runner events").reset();
             return false;
         }
         let Some(clock) = self.clock() else {
             return false;
         };
-        let (seq, frame) = {
+        let (seq, frame, events) = {
             let core = self.0.core.lock().expect("core lock");
             if core.rebuilding || !core.rocket.enabled() {
+                // The rows are being rebuilt from the tape: their appearance is not news.
+                self.0.runner_events.lock().expect("runner events").reset();
                 return false;
             }
             let mut frame = None;
@@ -3593,6 +3606,13 @@ impl Market {
             });
             Self::add_zones(&core, &mut body, clock.now.0);
             self.add_demand_zones(&core, &mut body);
+            crate::time_marks::stamp_rows(&mut body, clock.now.0);
+            // Toasts only from the live market (a replay never pushes, crate::time_marks).
+            let events = self.0.runner_events.lock().expect("runner events").take(
+                &body,
+                clock.now.0,
+                self.0.mode == ClockMode::Live,
+            );
             let mut v = serde_json::json!({"type": "rocket.update", "t": clock.now.millis()});
             if let (Some(m), serde_json::Value::Object(b)) = (v.as_object_mut(), body.clone()) {
                 m.extend(b);
@@ -3612,16 +3632,25 @@ impl Market {
                 *lines = next;
                 frame = Some(v.to_string());
             }
-            (core.seq, frame)
+            (core.seq, frame, events)
         };
-        let Some(frame) = frame else {
-            return false;
+        // The panel first, so a toast's row is already on the client's panel.
+        let sent = if let Some(frame) = frame {
+            let _ = self.0.tx.send(Arc::new(Outbound {
+                seq,
+                kind: OutKind::Rocket(frame),
+            }));
+            true
+        } else {
+            false
         };
-        let _ = self.0.tx.send(Arc::new(Outbound {
-            seq,
-            kind: OutKind::Rocket(frame),
-        }));
-        true
+        for e in events {
+            let _ = self.0.tx.send(Arc::new(Outbound {
+                seq,
+                kind: OutKind::RunnersEvent(e),
+            }));
+        }
+        sent
     }
 
     /// Push notices (Runners, Ross, Signals, Halt watcher) to the alerts task

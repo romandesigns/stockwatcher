@@ -429,8 +429,11 @@ impl Evaluator {
         }
     }
 
-    /// Wall-clock housekeeping: expiry, and re-arming a cooling alert whose price already moved
-    /// back once its gap ends (no print needed). Call it every few seconds.
+    /// Wall-clock housekeeping: expiry, the snooze flag, and re-arming a cooling alert whose
+    /// price already moved back once its gap ends (no print needed). The alerts task calls it
+    /// once a second and right after the rules change, so each flip reaches the clients' copy of
+    /// `alerts.state` within a second: they show what it says and never decide these by their own
+    /// clock (crate::time_marks).
     pub fn tick(&mut self, now: i64) {
         let ids: Vec<String> = self.rules.keys().cloned().collect();
         for id in ids {
@@ -439,6 +442,15 @@ impl Evaluator {
                 continue;
             };
             if matches!(st.status, Status::Done | Status::Expired) {
+                if st.snoozed != Some(false) {
+                    self.set_state(
+                        &id,
+                        AlertState {
+                            snoozed: Some(false),
+                            ..st
+                        },
+                    );
+                }
                 continue;
             }
             if rule.expires_at.is_some_and(|e| now >= e) {
@@ -448,14 +460,27 @@ impl Evaluator {
                         status: Status::Expired,
                         until: None,
                         moved_back: false,
+                        snoozed: Some(false),
                         ..st
                     },
                 );
                 continue;
             }
+            let snoozed = rule.snooze_until.is_some_and(|u| now < u);
+            let rearms_on_gap = rule.condition.rearms_on_gap();
+            let st = if st.snoozed == Some(snoozed) {
+                st
+            } else {
+                let next = AlertState {
+                    snoozed: Some(snoozed),
+                    ..st
+                };
+                self.set_state(&id, next.clone());
+                next
+            };
             if st.status == Status::Cooling
                 && st.until.is_some_and(|u| now >= u)
-                && (st.moved_back || rule.condition.rearms_on_gap())
+                && (st.moved_back || rearms_on_gap)
             {
                 self.rearm(&id, st);
             }
@@ -907,6 +932,8 @@ impl Evaluator {
                 fired_price: price,
                 fired_up: Some(up),
                 count: st.count + 1,
+                // A snoozed alert never fires (`live`).
+                snoozed: Some(false),
             },
         );
         if let Some(rt) = self.runtime.get_mut(id) {
@@ -1381,8 +1408,18 @@ mod tests {
         let mut e = ev(vec![r, s]);
         e.tick(t0);
         assert_eq!(e.state("a").unwrap().status, Status::Armed);
+        // The snooze is the evaluator's verdict too, so no client judges it by its own clock.
+        assert_eq!(e.state("a").unwrap().snoozed, Some(false));
+        assert_eq!(e.state("s").unwrap().snoozed, Some(true));
         e.tick(t0 + MIN_MS);
         assert_eq!(e.state("a").unwrap().status, Status::Expired);
+        assert_eq!(e.state("a").unwrap().snoozed, Some(false));
+        e.tick(t0 + 30 * MIN_MS);
+        assert_eq!(
+            e.state("s").unwrap().snoozed,
+            Some(false),
+            "the snooze ran out"
+        );
         let o = feed(&mut e, &[(2.40, t0 + 2 * MIN_MS), (2.60, t0 + 3 * MIN_MS)]);
         assert!(o.is_empty(), "expired and snoozed alerts stay silent");
         assert_eq!(e.state("s").unwrap().status, Status::Armed);

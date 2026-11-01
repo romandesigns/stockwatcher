@@ -63,7 +63,9 @@ pub const INPUT_CAPACITY: usize = 8192;
 /// Runners notices waiting for the task (a handful a day; a full queue drops and counts).
 pub const RUNNERS_CAPACITY: usize = 64;
 /// Expiry, re-arming by the clock and the dropped-input report.
-const TICK: Duration = Duration::from_secs(5);
+/// Expiry, snooze and cooling flips are decided on this tick (crate::alerts::eval `tick`) and
+/// shown by the clients as written, so it is the latency of those flips on every screen.
+const TICK: Duration = Duration::from_secs(1);
 
 /// The market's end of the channel: [`Market::apply`] offers each input with `try_send`.
 pub struct AlertSink {
@@ -676,6 +678,8 @@ impl Task {
                         let ours = |ns: &str| f.starts_with(&format!("{{\"type\":\"settings.changed\",\"ns\":\"{ns}\""));
                         if ours(RULES_NS) || ours(PREFS_NS) {
                             self.reload(false).await;
+                            // A snooze set or an edit shows at once, not on the next tick.
+                            self.eval.tick(now_ms());
                             changed = true;
                         }
                     }

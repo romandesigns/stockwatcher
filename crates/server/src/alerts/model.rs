@@ -406,6 +406,13 @@ pub struct AlertState {
     pub fired_up: Option<bool>,
     #[serde(default)]
     pub count: u32,
+    /// The rule's snooze is running at the evaluator's clock (crate::alerts::eval `tick`). This
+    /// server writes it on every entry, `false` included, so its presence tells a client that
+    /// expiry, snooze and the cooling gap are decided here on the server's clock (`clock.v1`,
+    /// crate::time_marks) and that it must not judge them against its own `Date.now()`. Absent
+    /// in entries an older server wrote (the client then falls back to its own clock).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snoozed: Option<bool>,
 }
 
 impl AlertState {
@@ -419,6 +426,7 @@ impl AlertState {
             fired_price: None,
             fired_up: None,
             count: 0,
+            snoozed: None,
         }
     }
 }
