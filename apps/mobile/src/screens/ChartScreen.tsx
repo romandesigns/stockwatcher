@@ -116,8 +116,9 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
   const bands = useMemo(() => {
     if (!dayKey) return [];
     const [year, month, day] = dayKey.split("-").map(Number) as [number, number, number];
-    return sessionBands({ year, month, day });
-  }, [dayKey]);
+    // The server's schedule for the day when the chart has one (an early close ends at 13:00).
+    return sessionBands({ year, month, day }, series?.sessions);
+  }, [dayKey, series?.sessions]);
   const trading = usePaperTrading(feed);
   // Volume shelves for the shown ticker from this connection's Runners channel (zones.ts).
   const zones = useZones(feed.rocket, active ?? "");

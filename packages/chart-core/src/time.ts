@@ -182,12 +182,17 @@ export interface SessionBand {
 }
 
 /**
- * The four bands of one trading day, as epoch ms, each boundary converted
+ * The bands of one trading day, as epoch ms: the server's `schedule` for it when given (exact on
+ * early closes), else the standard four, each boundary converted
  * from ET separately. US DST shifts happen Sunday 02:00, inside the band of a
  * non-trading "Sunday" day, so weekday bands keep their nominal lengths; the
  * UTC instants still move by an hour across the change (tested).
  */
-export function sessionBands(day: EtDate): SessionBand[] {
+export function sessionBands(day: EtDate, schedule?: SessionSchedule | null): SessionBand[] {
+  // The server's schedule when it lists the day (`sessions.v1`: an early close's 13:00/17:00).
+  const key = `${formatEtDateKey(day)}/`;
+  const listed = schedule?.filter((s) => s.id.startsWith(key)) ?? [];
+  if (listed.length) return listed.map((s) => ({ kind: sessionIdKind(s.id) ?? "regular", start: s.start, end: s.end }));
   const prev = addDays(day, -1);
   const overnightStart = etToUtc(prev.year, prev.month, prev.day, 20, 0);
   const pre = etToUtc(day.year, day.month, day.day, 4, 0);

@@ -199,8 +199,9 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
   const bands = useMemo(() => {
     if (!dayKey) return [];
     const [year, month, day] = dayKey.split("-").map(Number) as [number, number, number];
-    return sessionBands({ year, month, day });
-  }, [dayKey]);
+    // The server's schedule for the day when the chart has one (an early close ends at 13:00).
+    return sessionBands({ year, month, day }, series?.sessions);
+  }, [dayKey, series?.sessions]);
 
   // A day picked here that the server is still switching to (ReplayBar `pendingDay`). Cleared
   // during render once the replay names it (the clock's new trading day refetches the day state),
