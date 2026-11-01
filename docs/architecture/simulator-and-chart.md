@@ -612,6 +612,13 @@ server: day stats, 1-minute bars and markers, the notification history with each
 (best price after, +5 % reached, stop hit), the scorecard, halts and LULD, and the missed setups
 (the production micro-pullback detector re-run over the day's tape, each armed setup that did not
 notify with the rule that held it).
+- `focus {from, to, reason}` (epoch ms) is the window the chart OPENS on: 30 min before the first
+  alert / armed setup / the move's base to 40 min after the last sent alert (or the day's high when
+  it came within an hour of it), clamped to the bars (`package::focus_window`). chart-core's
+  `openView(…, focus)` / `focusViewport` fit it, and both charts take it as `initialFocus`: the
+  initial view only (refitted on resize until the owner zooms or pans), so the whole day is one
+  zoom-out away. Event markers that would overlap (two alerts in one 1-minute bar) are lifted with
+  a leader to their true point.
 - `GET /api/insights/ticker?symbol=&day=` (day absent = today's trading date). A day without data
   is `available: false` with `unavailable_reason` (`not_a_trading_day`, `not_archived`,
   `retention_expired`, `in_the_future`) and still names `prev_day` / `next_day`.

@@ -135,6 +135,8 @@ export interface TickerPackageWire {
   unavailable_reason: string | null;
   stats: TickerStatsWire | null;
   bars: TickerCandleWire[];
+  /** The window the chart opens on (epoch ms; the server's `focus_window`): the move, not the whole day. Null = open as usual. */
+  focus: { from: number; to: number } | null;
   alerts: TickerAlertWire[];
   markers: TickerMarkerWire[];
   scorecard: TickerScorecardWire | null;
@@ -166,6 +168,7 @@ export function parseTickerPackage(raw: unknown): TickerPackageWire | null {
     unavailable_reason: typeof raw.unavailable_reason === "string" ? raw.unavailable_reason : null,
     stats: available && isObj(raw.stats) ? (raw.stats as unknown as TickerStatsWire) : null,
     bars: arr<TickerCandleWire>(raw.bars, (b) => isObj(b) && finite(b.t) && finite(b.o) && finite(b.h) && finite(b.l) && finite(b.c)),
+    focus: isObj(raw.focus) && finite(raw.focus.from) && finite(raw.focus.to) && (raw.focus.to as number) >= (raw.focus.from as number) ? { from: raw.focus.from as number, to: raw.focus.to as number } : null,
     alerts: arr<TickerAlertWire>(raw.alerts, (a) => isObj(a) && typeof a.event_id === "string"),
     markers: arr<TickerMarkerWire>(raw.markers, (m) => isObj(m) && (m.kind === "alert" || m.kind === "missed") && finite(m.at) && finite(m.price)),
     scorecard: available && isObj(raw.scorecard) ? { ...(raw.scorecard as unknown as TickerScorecardWire), by_kind: arr(raw.scorecard.by_kind, isObj) } : null,

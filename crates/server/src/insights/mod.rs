@@ -22,7 +22,9 @@
 //!   day, with when it was retrieved: FMP gives no as-of date of its own) or `available: false`;
 //!   short interest is never collected, so it is always `available: false` (never invented).
 //! - **Chart**: `bars` (1-minute, the chart engine's own), `markers` (each SENT alert numbered
-//!   oldest first, at its reference price; each missed setup at its arming).
+//!   oldest first, at its reference price; each missed setup at its arming), and `focus`
+//!   (`{from, to, reason}`, epoch ms): the window the chart opens on, the move the alerts were
+//!   about rather than the whole day ([`package::focus_window`]); null only without bars.
 //! - **Notification history** (`alerts`, oldest first): the ledger's rows for the symbol with
 //!   their status ([`crate::notices::FEATURE_ROWS`]), `label`, `marker` and `outcome`: best price
 //!   after (and when, before any stop), when +5% over the alert price was first reached, the stop

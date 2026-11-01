@@ -48,6 +48,11 @@ describe("parseTickerPackage", () => {
     expect(p.bars).toHaveLength(1);
     expect(p.markers.map((m) => m.kind)).toEqual(["alert", "missed"]);
     expect(p.next_day).toBeNull();
+    expect(p.focus).toBeNull();
+    // The chart's opening window passes through as the server sent it; a malformed one is dropped.
+    expect(parseTickerPackage({ ...PKG, focus: { from: T0 - 1_800_000, to: T0 + 2_400_000, reason: "alerts" } })!.focus).toEqual({ from: T0 - 1_800_000, to: T0 + 2_400_000 });
+    expect(parseTickerPackage({ ...PKG, focus: { from: T0, to: T0 - 1 } })!.focus).toBeNull();
+    expect(parseTickerPackage({ ...PKG, focus: { from: "x", to: T0 } })!.focus).toBeNull();
     expect(parseTickerPackage({ day: "2026-10-30" })).toBeNull();
     const off = parseTickerPackage({ symbol: "ZZTK", day: "2026-10-29", available: false, unavailable_reason: "not_archived" })!;
     expect(off.available).toBe(false);

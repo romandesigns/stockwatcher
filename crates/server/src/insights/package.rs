@@ -9,6 +9,8 @@ use market_events::session::SessionKind;
 use serde_json::{Map, Value, json};
 use stock_context::{DetectionTransition, State};
 
+use chart_engine::wire::CandleWire;
+
 use super::replay::{Print, ReplayOut};
 use crate::cue_notices::{SetupDecision, SetupVerdict};
 
@@ -359,6 +361,74 @@ fn alert_ref(
     })
 }
 
+const MINUTE_MS: i64 = 60_000;
+/// How far before the move the chart opens: enough flat tape to see where it started from.
+pub const FOCUS_LEAD_MS: i64 = 30 * MINUTE_MS;
+/// How far after the last alert: enough to see how the last one played out.
+pub const FOCUS_TAIL_MS: i64 = 40 * MINUTE_MS;
+/// How far back from the first alert the move's base (its lowest bar) is looked for.
+const BASE_LOOKBACK_MS: i64 = 60 * MINUTE_MS;
+/// With no alert and no setup: how far back from the day's high its base is looked for.
+const HIGH_LOOKBACK_MS: i64 = 120 * MINUTE_MS;
+/// The day's high extends the window only when it came this soon after the last alert: a peak
+/// hours later is another move, and pulling it in would shrink the one the alerts were about.
+const HIGH_REACH_MS: i64 = 60 * MINUTE_MS;
+
+/// The window the chart OPENS on (epoch ms, both ends bar starts inside the day's bars), so a
+/// day whose move came after hours does not open as a whole 4 AM to 8 PM day with every marker
+/// bunched at one edge. Clients use it for the initial view only; zooming out shows the day.
+///
+/// From [`FOCUS_LEAD_MS`] before the earliest of the first sent alert, the first armed setup
+/// and the move's base (the lowest bar in the hour before the first of them), to
+/// [`FOCUS_TAIL_MS`] after the last sent alert (the last setup when nothing was sent: the late
+/// missed setups the page folds away would otherwise stretch it), or after the day's high when
+/// that came within [`HIGH_REACH_MS`] of it. With neither alerts nor setups: the day's biggest
+/// run, its base (lowest bar in the two hours before the high) to the high, padded the same.
+/// Clamped to the bars; `None` only without bars.
+pub fn focus_window(
+    bars: &[CandleWire],
+    sent: &[i64],
+    setups: &[i64],
+) -> Option<(i64, i64, &'static str)> {
+    let first_t = bars.first()?.t;
+    let last_t = bars.last()?.t;
+    let high = bars
+        .iter()
+        .max_by(|a, b| a.h.total_cmp(&b.h).then(b.t.cmp(&a.t)))?;
+    let lowest_in = |from: i64, to: i64| {
+        bars.iter()
+            .filter(|b| b.t >= from && b.t <= to)
+            .min_by(|a, b| a.l.total_cmp(&b.l).then(b.t.cmp(&a.t)))
+            .map(|b| b.t)
+    };
+    let first = sent.iter().chain(setups).copied().min();
+    let (start, end, reason) = match first {
+        Some(first) => {
+            let base = lowest_in(first - BASE_LOOKBACK_MS, first).unwrap_or(first);
+            let tail = sent
+                .iter()
+                .copied()
+                .max()
+                .or_else(|| setups.iter().copied().max())
+                .unwrap_or(first);
+            let peak = if high.t > first && high.t <= tail + HIGH_REACH_MS {
+                high.t
+            } else {
+                tail
+            };
+            let reason = if sent.is_empty() { "setups" } else { "alerts" };
+            (base.min(first), tail.max(peak), reason)
+        }
+        None => {
+            let base = lowest_in(high.t - HIGH_LOOKBACK_MS, high.t).unwrap_or(high.t);
+            (base, high.t, "move")
+        }
+    };
+    let from = (start - FOCUS_LEAD_MS).clamp(first_t, last_t);
+    let to = (end + FOCUS_TAIL_MS).clamp(from, last_t);
+    Some((from, to, reason))
+}
+
 /// The ticker-day package (module docs of `crate::insights`).
 pub fn build(r: &DayRecords, out: &ReplayOut) -> Value {
     let prints = ohlc_prints(&out.prints);
@@ -552,10 +622,21 @@ pub fn build(r: &DayRecords, out: &ReplayOut) -> Value {
     let high = out.prints.iter().filter(|p| p.ohlc).max_by_key(|p| p.price);
     let outside = high.is_some_and(|h| h.session != Some(SessionKind::Regular));
 
+    let at_of = |kind: &str| -> Vec<i64> {
+        markers
+            .iter()
+            .filter(|m| m["kind"] == kind)
+            .filter_map(|m| m["at"].as_i64())
+            .collect()
+    };
+    let focus = focus_window(&out.bars, &at_of("alert"), &at_of("missed"))
+        .map(|(from, to, reason)| json!({"from": from, "to": to, "reason": reason}));
+
     json!({
         "available": true,
         "stats": stats(r, &out.prints),
         "bars": out.bars,
+        "focus": focus,
         "alerts": rows,
         "markers": markers,
         "scorecard": {

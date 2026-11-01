@@ -133,6 +133,31 @@ export function panSlots(vp: Viewport, slots: readonly Slot[], dxSlots: number):
   return withEdge(vp, slots, rightEdge(vp, slots) - dxSlots);
 }
 
+/** A time window to open on: epoch ms, both ends inclusive (slot starts). */
+export interface TimeFocus {
+  from: number;
+  to: number;
+}
+
+/**
+ * A viewport showing exactly the slots that start inside `focus` (half a slot of air either
+ * side), at whatever spacing fits them into `plotWidth`, clamped to the zoom limits. It is an
+ * ordinary viewport: the owner zooms and pans out of it as from any other (the Insights ticker
+ * page opens on the server's focus window, the move, not the whole day). Null when no shown
+ * slot starts inside the window (extended hours hidden and the window after the close, say),
+ * so the caller falls back to its usual opening.
+ */
+export function focusViewport(vp: Viewport, slots: readonly Slot[], focus: TimeFocus, plotWidth: number): Viewport | null {
+  const i0 = lowerBound(slots, focus.from);
+  const i1 = lowerBound(slots, focus.to + 1) - 1;
+  if (i0 >= slots.length || i1 < i0 || !(plotWidth > 0)) return null;
+  const n = i1 - i0 + 1;
+  const barSpacing = Math.min(MAX_BAR_SPACING, Math.max(MIN_BAR_SPACING, plotWidth / (n + 1)));
+  // Centre the window when the spacing limit leaves room either side of it.
+  const edge = (i0 + i1 + 1) / 2 + plotWidth / barSpacing / 2;
+  return withEdge({ ...vp, barSpacing }, slots, edge);
+}
+
 /** Zooms by `factor` keeping the slot under `anchorX` (px from plot left) fixed. */
 export function zoom(vp: Viewport, slots: readonly Slot[], factor: number, anchorX: number, plotWidth: number): Viewport {
   const bs = Math.min(MAX_BAR_SPACING, Math.max(MIN_BAR_SPACING, vp.barSpacing * factor));

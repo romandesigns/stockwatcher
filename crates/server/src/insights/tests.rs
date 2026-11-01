@@ -123,6 +123,17 @@ fn ino_2026_10_30_reproduces_the_replay() {
         assert_eq!(v["halts"]["move_session"], "after");
     };
     check(&v, "journal");
+    // The chart opens on the after-hours move, not on 4 AM: from 30 min before its base (the
+    // close's $0.5961 bar at 15:59, the low of the hour before the first alert) to 40 min after
+    // the last sent alert (17:04:15, the shelf): about the design's 3:30-5:40 PM.
+    let et_ms = |h, m, s| market_events::session::et(day, h, m, s, 0).unwrap().0 / 1_000_000;
+    assert_eq!(v["focus"]["from"], et_ms(15, 29, 0), "{}", v["focus"]);
+    let to = v["focus"]["to"].as_i64().unwrap();
+    assert!(
+        (et_ms(17, 44, 0)..et_ms(17, 45, 0)).contains(&to),
+        "{}",
+        v["focus"]
+    );
 
     // Without the journal, the restart itself (the server log's boot at 16:38:05 ET) makes the
     // same two setups warm: the replay models what the live run did.
@@ -418,6 +429,36 @@ fn the_package_lists_alerts_outcomes_and_missed_setups() {
     assert_eq!(v["prev_day"]["day"], "2026-10-15");
     assert_eq!(v["next_day"]["day"], "2026-10-19");
     assert_eq!(v["source"]["boots"].as_array().unwrap().len(), 1);
+    // The chart opens on the move: a window inside the day's bars that holds every marker the
+    // window is anchored on (the sent alert), and is not the whole day.
+    let bars = v["bars"].as_array().unwrap();
+    let (b0, b1) = (
+        bars[0]["t"].as_i64().unwrap(),
+        bars[bars.len() - 1]["t"].as_i64().unwrap(),
+    );
+    let (f0, f1) = (
+        v["focus"]["from"].as_i64().unwrap(),
+        v["focus"]["to"].as_i64().unwrap(),
+    );
+    assert!(
+        b0 <= f0 && f0 < f1 && f1 <= b1,
+        "{} in {b0}..{b1}",
+        v["focus"]
+    );
+    assert_eq!(v["focus"]["reason"], "alerts");
+    for m in v["markers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["kind"] == "alert")
+    {
+        let at = m["at"].as_i64().unwrap();
+        assert!(
+            f0 <= at && at <= f1 + 60_000,
+            "marker {at} outside {}",
+            v["focus"]
+        );
+    }
 
     // Two rows, oldest first; only the sent one is a marker.
     let alerts = v["alerts"].as_array().unwrap();
@@ -528,6 +569,79 @@ fn the_package_lists_alerts_outcomes_and_missed_setups() {
         "{}",
         v2["missed"]
     );
+}
+
+fn candle(t_min: i64, l: f64, h: f64) -> chart_engine::wire::CandleWire {
+    chart_engine::wire::CandleWire {
+        t: t_min * 60_000,
+        o: l,
+        h,
+        l,
+        c: h,
+        v: 100,
+        n: 1,
+        is_final: true,
+    }
+}
+
+/// A 4 AM to 8 PM day (minutes 0..960), flat at $1 except for a run at minutes 750..800 off
+/// a base at minute 745, peaking at minute 790 (INO's shape: the move after hours).
+fn run_day() -> Vec<chart_engine::wire::CandleWire> {
+    (0..960)
+        .map(|m| match m {
+            745 => candle(m, 0.59, 0.62),
+            750..800 => {
+                let up = (40 - (m - 790).abs()) as f64 * 0.04;
+                candle(m, 0.7 + up, 0.8 + up)
+            }
+            _ => candle(m, 0.95, 1.0),
+        })
+        .collect()
+}
+
+#[test]
+fn the_chart_opens_on_the_move_not_the_whole_day() {
+    use package::{FOCUS_LEAD_MS, FOCUS_TAIL_MS, focus_window};
+    const M: i64 = 60_000;
+    let bars = run_day();
+
+    // Alerts at 752 and 784, a muted setup at 760 and late missed setups up to 900: from the
+    // base (745, before the first alert) less the lead, to the high (790, within reach of the
+    // last alert) plus the tail. The late setups do not stretch it.
+    let (from, to, why) =
+        focus_window(&bars, &[752 * M, 784 * M], &[760 * M, 880 * M, 900 * M]).unwrap();
+    assert_eq!(why, "alerts");
+    assert_eq!(from, 745 * M - FOCUS_LEAD_MS);
+    assert_eq!(to, 790 * M + FOCUS_TAIL_MS);
+
+    // A setup armed before the first alert opens it earlier still.
+    let (from, _, _) = focus_window(&bars, &[752 * M], &[700 * M]).unwrap();
+    assert_eq!(from, 700 * M - FOCUS_LEAD_MS);
+
+    // Only setups (nothing sent): anchored on them, the last one ends it.
+    let (from, to, why) = focus_window(&bars, &[], &[755 * M, 770 * M]).unwrap();
+    assert_eq!(why, "setups");
+    assert_eq!(from, 745 * M - FOCUS_LEAD_MS);
+    assert_eq!(to, 790 * M + FOCUS_TAIL_MS);
+
+    // A day high hours after the last alert is another move: the window ends after the alert.
+    let mut late = run_day();
+    late[950] = candle(950, 0.95, 9.0);
+    let (_, to, _) = focus_window(&late, &[752 * M], &[]).unwrap();
+    assert_eq!(to, 752 * M + FOCUS_TAIL_MS);
+
+    // No alert and no setup: the day's run, base to high.
+    let (from, to, why) = focus_window(&bars, &[], &[]).unwrap();
+    assert_eq!(why, "move");
+    assert_eq!(
+        (from, to),
+        (745 * M - FOCUS_LEAD_MS, 790 * M + FOCUS_TAIL_MS)
+    );
+
+    // Clamped to the bars at both ends.
+    let (from, to, _) = focus_window(&bars, &[5 * M, 955 * M], &[]).unwrap();
+    assert_eq!((from, to), (0, 959 * M));
+    assert!(focus_window(&[], &[M], &[]).is_none());
 }
 
 #[test]

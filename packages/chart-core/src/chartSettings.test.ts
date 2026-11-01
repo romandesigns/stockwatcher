@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { DEFAULT_CHART_SETTINGS, daySlotCount, easeOut, openView, parseChartSettings, presetBarSpacing, presetSlots, presetViewport, viewKey } from "./chartSettings.ts";
 import { GestureController, applyGesture } from "./gestures.ts";
 import { autoFitRange, computeChartModel, type ChartState } from "./layout.ts";
-import { buildSlots, defaultViewport, isAutoPrice, MIN_BAR_SPACING, MAX_BAR_SPACING, panSlots, RIGHT_MARGIN_PX, slotX } from "./scale.ts";
+import { buildSlots, defaultViewport, focusViewport, isAutoPrice, zoom, MIN_BAR_SPACING, MAX_BAR_SPACING, panSlots, RIGHT_MARGIN_PX, slotX } from "./scale.ts";
 import { sessionSlots } from "./chartTypes.ts";
 import { etToUtc } from "./time.ts";
 import { fixtureCandles } from "./testFixture.ts";
@@ -196,6 +196,38 @@ describe("horizontal presets", () => {
 describe("opening a view, and the manual override lifecycle", () => {
   const d = day(390);
   const st = stateOf(d);
+
+  test("a focus window opens on exactly its slots, and zooming out still reaches the whole day", () => {
+    // Slots 200..259 (an hour of a 390-slot day): shown alone, half a slot of air either side.
+    const focus = { from: d.slots[200]!.t, to: d.slots[259]!.t };
+    const vp = openView(st, { autoStretch: true, zoom: 100, extendedHours: true }, size, defaultViewport(9), focus);
+    const m = computeChartModel(st, vp, size);
+    expect(isAutoPrice(vp)).toBe(true);
+    expect(vp.anchorT).not.toBeNull();
+    expect(m.index.from).toBe(199);
+    expect(m.index.to).toBe(260);
+    expect(slotX(m.index, 200)).toBeGreaterThan(m.geometry.plot.x);
+    expect(slotX(m.index, 259)).toBeLessThan(m.geometry.plot.x + m.geometry.plot.w);
+    // An ordinary viewport: zoomed all the way out it shows the first slot again.
+    let out = vp;
+    for (let i = 0; i < 40; i++) out = zoom(out, d.slots, 0.7, m.geometry.plot.w / 2, m.geometry.plot.w);
+    expect(computeChartModel(st, out, size).index.from).toBe(0);
+  });
+
+  test("a focus window with no shown slot falls back to the preset; a tiny one is centred", () => {
+    const after = { from: d.slots[389]!.t + 3_600_000, to: d.slots[389]!.t + 7_200_000 };
+    const vp = openView(st, { autoStretch: true, zoom: 100, extendedHours: true }, size, defaultViewport(9), after);
+    expect(vp.anchorT).toBeNull();
+    expect(computeChartModel(st, vp, size).index.from).toBe(0);
+    // Two slots cannot fill 744 px at the widest spacing: centred, not pinned to an edge.
+    const w = 744;
+    const two = focusViewport(defaultViewport(9), d.slots, { from: d.slots[100]!.t, to: d.slots[101]!.t }, w)!;
+    expect(two.barSpacing).toBe(MAX_BAR_SPACING);
+    const m = computeChartModel(st, two, size);
+    const mid = (slotX(m.index, 100) + slotX(m.index, 101)) / 2;
+    expect(Math.abs(mid - (m.index.plotLeft + m.index.plotRight) / 2)).toBeLessThan(MAX_BAR_SPACING);
+    expect(focusViewport(defaultViewport(9), d.slots, after, w)).toBeNull();
+  });
 
   test("auto stretch on: the new view is auto and shows the whole day at 100 %", () => {
     const vp = openView(st, { autoStretch: true, zoom: 100, extendedHours: true }, size, defaultViewport(9));

@@ -1,6 +1,6 @@
 import { CHART_TYPES, type ChartType } from "./chartTypes.ts";
 import { computeChartModel, type ChartState, type Size } from "./layout.ts";
-import { MAX_BAR_SPACING, MIN_BAR_SPACING, manualPrice, RIGHT_MARGIN_PX, type PriceScaleType, type Slot, type Viewport } from "./scale.ts";
+import { focusViewport, MAX_BAR_SPACING, MIN_BAR_SPACING, manualPrice, RIGHT_MARGIN_PX, type PriceScaleType, type Slot, type TimeFocus, type Viewport } from "./scale.ts";
 import { sessionOf, tradingDayOf } from "./time.ts";
 import { TIMEFRAME_MS, type Timeframe } from "./types.ts";
 
@@ -211,11 +211,13 @@ export function presetViewport(vp: Viewport, slots: readonly Slot[], timeframe: 
  * comes from a model of `state` (the price column is fitted to its labels, so
  * it is not simply size − options.priceAxisWidth). Auto stretch on: the price
  * range is auto. Off: fitted once at the new zoom, then held as manual.
+ * `focus` (the Insights ticker page's server window) opens on that window
+ * instead of the zoom preset, when any shown slot falls inside it.
  */
-export function openView(state: ChartState, settings: Pick<ChartSettings, "autoStretch" | "zoom" | "extendedHours">, size: Size, base: Viewport): Viewport {
+export function openView(state: ChartState, settings: Pick<ChartSettings, "autoStretch" | "zoom" | "extendedHours">, size: Size, base: Viewport, focus?: TimeFocus | null): Viewport {
   const auto: Viewport = { ...base, price: { mode: "auto" } };
   const m0 = computeChartModel(state, auto, size);
-  const vp = presetViewport(auto, m0.slots, state.timeframe, settings.extendedHours, settings.zoom, m0.geometry.plot.w);
+  const vp = (focus && focusViewport(auto, m0.slots, focus, m0.geometry.plot.w)) || presetViewport(auto, m0.slots, state.timeframe, settings.extendedHours, settings.zoom, m0.geometry.plot.w);
   if (settings.autoStretch) return vp;
   const m1 = computeChartModel(state, vp, size);
   return m1.price ? manualPrice(vp, { lo: m1.price.lo, hi: m1.price.hi }) : vp;

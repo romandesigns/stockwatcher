@@ -85,6 +85,7 @@ import {
   type ProfileWire,
   type Size,
   type Timeframe,
+  type TimeFocus,
   type Viewport,
   DEFAULT_CHART_OPTIONS,
   DEFAULT_CHART_SETTINGS,
@@ -212,6 +213,12 @@ export interface CandleChartProps {
   detection?: readonly DetectionOverlay[];
   /** Server-placed markers (the Insights ticker page: numbered sent alerts, missed-setup rings); read-only, absent = none. */
   eventMarkers?: readonly EventMarker[];
+  /**
+   * The window a fresh view opens on (epoch ms) instead of the zoom preset: the Insights ticker
+   * page's server focus, the move rather than the whole day. Read once per view; the owner zooms
+   * and pans out of it freely. Remount (a React key) to reopen on a new one.
+   */
+  initialFocus?: TimeFocus | null;
   /** Volume shelves from the server's latest Runners frame (chart-core layoutVolumeShelves); read-only, absent = none. */
   volumeShelves?: readonly VolumeShelf[];
 }
@@ -299,6 +306,7 @@ export function CandleChart({
   alerts = null,
   detection,
   eventMarkers,
+  initialFocus,
   volumeShelves,
 }: CandleChartProps) {
   // Price alerts: a line being dragged by its handle (drawn at its new price until the lift), and
@@ -347,13 +355,18 @@ export function CandleChart({
   // One view per symbol + timeframe, opened from the saved settings (zoom preset, auto stretch)
   // once candles and a size exist: see chart-web's CandleChart for the rule, which this mirrors.
   const key = viewKey(symbol, timeframe);
-  const [view, setView] = useState<{ key: string; vp: Viewport; opened: boolean }>(() => ({ key, vp: defaultViewport(barSpacing), opened: false }));
-  const fresh = useCallback(() => ({ key, vp: defaultViewport(barSpacing), opened: false }), [key, barSpacing]);
+  // `fitFor`: the size a focus-opened view was fitted to, until the owner moves it (any setVp).
+  // The first measured size is not always the settled one (a container query or a scroll bar
+  // lands a frame later), and a resize keeps the spacing and right edge, which would cut the
+  // start of the focus window off; so an untouched focus view is refitted to the new size.
+  type View = { key: string; vp: Viewport; opened: boolean; fitFor: Size | null };
+  const [view, setView] = useState<View>(() => ({ key, vp: defaultViewport(barSpacing), opened: false, fitFor: null }));
+  const fresh = useCallback((): View => ({ key, vp: defaultViewport(barSpacing), opened: false, fitFor: null }), [key, barSpacing]);
   const current = view.key === key ? view : fresh();
   const vp = current.vp;
   const setVp = useCallback((f: (vp: Viewport) => Viewport) => setView((v) => {
     const b = v.key === key ? v : fresh();
-    return { ...b, vp: f(b.vp) };
+    return { ...b, vp: f(b.vp), fitFor: null };
   }), [key, fresh]);
 
   const [pointer, setPointer] = useState<Point | null>(null);
@@ -499,8 +512,10 @@ export function CandleChart({
 
   // Open a fresh view from the saved settings once its candles and the size exist (chart-web does the same).
   useLayoutEffect(() => {
-    if (current.opened || !slots.length || size.width <= 0) return;
-    setView({ key, vp: openView(state, settings, size, defaultViewport(barSpacing)), opened: true });
+    if (!slots.length || size.width <= 0) return;
+    const refit = current.opened && initialFocus && current.fitFor && (current.fitFor.width !== size.width || current.fitFor.height !== size.height);
+    if (current.opened && !refit) return;
+    setView({ key, vp: openView(state, settings, size, defaultViewport(barSpacing), initialFocus), opened: true, fitFor: initialFocus ? { width: size.width, height: size.height } : null });
   });
   const stateRef = useRef(state);
   stateRef.current = state;
