@@ -321,6 +321,9 @@
 //!   connection when the desk limits let a Runners notice through
 //!   (crate::alerts::runners::desk_frame): the phone push's own text. A client shows it only if
 //!   its switch for `kind` is on, once per `id`. Older clients ignore the unknown type.
+//!   `runners.notice.v1` in `welcome.features` (crate::alerts::runners::NOTICE_FEATURE) says so:
+//!   a phone without a push token then opts in and rings from these frames rather than diffing
+//!   Runners panels itself.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -1309,6 +1312,7 @@ async fn session(mut socket: WebSocket, state: AppState) {
             crate::chart_context::LEVELS_FEATURE,
             crate::chart_context::ZONES_FEATURE,
             crate::chart_context::SESSIONS_FEATURE,
+            crate::alerts::runners::NOTICE_FEATURE,
             crate::symbols::FEATURE,
             crate::notices::FEATURE,
             crate::notices::FEATURE_ROWS,

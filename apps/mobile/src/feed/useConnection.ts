@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { loadSettingsSync } from "../settings/sync";
 import { appActions, loadAppStore } from "../state/store";
 import { getAccessToken, setAccessToken } from "../storage/secure";
+import type { PhoneNotices } from "../notifications/runnersNoticeModel";
 import { createMobileFeed, type MobileFeed } from "./serverFeed";
 
 export interface MobileConnection {
@@ -20,9 +21,10 @@ export interface MobileConnection {
  * connects) and a feed on its own socket. Each tab that shows market data owns one: the chart
  * tab's default slot plus the dashboard's 4 slots would exceed the server's 4 per connection,
  * and both tabs stay mounted. `source` is the server market the tab reads: `live` for the
- * dashboard, `replay` for the chart tab (the practice feature).
+ * dashboard, `replay` for the chart tab (the practice feature). `notices` (the dashboard's only)
+ * takes the server's Runners notices for this phone's local banners (runnersNotices.ts).
  */
-export function useConnection(client: string, source: MarketSource): MobileConnection {
+export function useConnection(client: string, source: MarketSource, notices?: PhoneNotices): MobileConnection {
   const [ready, setReady] = useState<(NonNullable<MobileConnection["ready"]> & { source: MarketSource; client: string; attempt: number }) | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
   // Each sign-in restarts the connection with the new token.
@@ -32,14 +34,14 @@ export function useConnection(client: string, source: MarketSource): MobileConne
     let alive = true;
     void Promise.all([getAccessToken().catch(() => null), loadSettingsSync(), loadAppStore()]).then(([token, sync]) => {
       if (!alive) return;
-      feed = createMobileFeed(token, setStatus, sync, client, source, (m) => appActions().applyAlertsMessage(m));
+      feed = createMobileFeed(token, setStatus, sync, client, source, (m) => appActions().applyAlertsMessage(m), notices);
       setReady({ feed, token, source, client, attempt });
     });
     return () => {
       alive = false;
       feed?.close();
     };
-  }, [attempt, client, source]);
+  }, [attempt, client, source, notices]);
   return {
     // Effects load asynchronously. Never label the previous source's socket with the newly
     // selected source while its replacement is loading (the chart modal shares this feed).

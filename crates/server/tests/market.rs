@@ -216,6 +216,16 @@ async fn subscribe_gets_snapshot_then_live_updates_while_playing() {
     assert!(snap["candles"].as_array().unwrap().len() > 100);
     assert_eq!(snap["clock"]["mode"], "replay");
     assert_eq!(snap["profile"]["anchor"], "2026-10-15/regular");
+    // The engine's own session schedule (sessions.v1): the replay day's four sessions and the
+    // next trading day's, so a client filters and shades by the server's calendar.
+    let ids: Vec<&str> = snap["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["id"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&"2026-10-15/regular"), "{ids:?}");
+    assert!(ids.contains(&"2026-10-16/overnight"), "{ids:?}");
     // Recent tape follows the snapshot, then live increments for this symbol and timeframe.
     let tape = next(&mut ws, is("tape.trade")).await;
     assert_eq!(tape["symbol"], "SMPL");
@@ -1354,6 +1364,13 @@ async fn quotes_search_ranks_the_board_on_the_server_and_pushes_the_top_n() {
             .contains(&json!("times.ns.v1")),
         "{welcome}"
     );
+    // The session schedule on snapshots and the Runners notices a phone may ring from.
+    for f in ["sessions.v1", "runners.notice.v1"] {
+        assert!(
+            welcome["features"].as_array().unwrap().contains(&json!(f)),
+            "{f}: {welcome}"
+        );
+    }
     wait_for_replay(&mut ws).await;
     // Paused, so the whole board and the search see the same prints.
     send(

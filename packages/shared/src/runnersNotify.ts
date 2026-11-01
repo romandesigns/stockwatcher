@@ -8,6 +8,15 @@
 import { parseBreakoutNotice } from "./breakout.ts";
 
 /**
+ * `welcome.features` entry (crates/server/src/alerts/runners.rs `NOTICE_FEATURE`): this server
+ * sends `runners.notice` to a connection that opted in with `runners.notify`. The phone rings its
+ * local banner (no push token) from these frames when it sees it, and diffs Runners panels itself
+ * only against an older server. The desktop and web always listen: servers sent the frames
+ * before the flag existed.
+ */
+export const RUNNERS_NOTICE_FEATURE = "runners.notice.v1";
+
+/**
  * The kinds a notice can be about (the phone push's `data.kind`). Since 2026-10-23 every panel
  * event backed by evidence notifies, not only Runners: Ross and Signals crossings and at-trigger,
  * a Runners stock entering a volume shelf, a later path on a stock already in Runners, and the

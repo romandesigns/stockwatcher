@@ -750,6 +750,14 @@ fn with_crossing(body: String, n: &Notice) -> String {
     }
 }
 
+/// The `welcome.features` entry saying this server sends [`desk_frame`]s to every connection that
+/// opted in with `runners.notify`. A phone without a push token then rings its local banner from
+/// these frames, the same notices the desktop and web show, instead of diffing Runners panels
+/// itself (apps/mobile/src/notifications/runnersNotices.ts); without the flag (an older server) it
+/// keeps diffing. Servers sent the frames before the flag existed, so its absence never means
+/// "no frames" to the desktop or web, which always listen.
+pub const NOTICE_FEATURE: &str = "runners.notice.v1";
+
 /// The `runners.notice` frame for desktop and web (owner, 2026-10-23: the phone's notifications
 /// on the desktop and web too). Title, body and data are the phone push's own ([`message`]), so
 /// the clients cannot drift from the phone. Sent to every connection once the desk decision

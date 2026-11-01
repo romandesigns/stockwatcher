@@ -7,12 +7,14 @@ import { ringRunnersLocally } from "./route";
 import { runnersPushPrefs } from "./runnersPush";
 import { ALERTS_CHANNEL_ID } from "./setup";
 
-// Runners' local banner, now only the stand-in for the server's push (owner, 2026-10-21; push
-// 2026-10-22). With a push token the server rings this phone for each new flag even with the app
-// closed (src/notifications/runnersPush.ts, Settings → Runners), so the dashboard stays quiet:
-// two banners for one flag would be noise. Without one (permission refused, a build without FCM)
-// the dashboard rings a local banner for each new flag while it is open, under the same "new
-// flags" switch. A local notification, not a push: nothing reaches the server.
+// Runners' local banner from diffing panels: only the stand-in for a server OLDER than
+// `runners.notice.v1` (owner, 2026-10-21; push 2026-10-22). With a push token the server rings
+// this phone for each new flag even with the app closed (src/notifications/runnersPush.ts,
+// Settings → Runners), so the dashboard stays quiet: two banners for one flag would be noise.
+// Without one (permission refused, a build without FCM) a current server sends the notices
+// themselves, which runnersNotices.ts rings with the push's own text, the same as the desktop
+// and web; only against an older server does the dashboard ring a banner here for each new row it
+// sees. A local notification, not a push: nothing reaches the server. Delete with the old servers.
 
 /**
  * One banner (with the channel's sound) per new flag or buying burst, when this phone has no

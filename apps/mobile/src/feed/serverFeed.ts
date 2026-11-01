@@ -17,9 +17,10 @@ import {
   type ServerIndicatorsChannel,
   type Timeframe,
 } from "@stockwatcher/chart-core";
-import { createDetectionChannel, createFavoritesChannel, createMoversChannel, createPressureChannel, createQuoteChannel, createQuoteSearchChannel, createRocketChannel, createRossChannel, createNoticesChannel, createSymbolsChannel, createTickerChannel, createWsClient, hasFeature, CLOCK_FEATURE, INDICATORS_FEATURE, INSIGHTS_TICKER_FEATURE, INDICATORS_LIMIT_FEATURE, LEVELS_FEATURE, NOTICES_FEATURE, QUOTE_SEARCH_FEATURE, SYMBOLS_FEATURE, ZONES_FEATURE, type AlertsServerMessage, type ConnectionStatus, type DetectionChannel, type FavoritesChannel, type MarketSource, type MoversChannel, type PressureChannel, type QuoteChannel, type QuoteSearchChannel, type RocketChannel, type RossChannel, type NoticesChannel, type SettingsSync, type SymbolsChannel, type TickerChannel, type WebSocketLike } from "@stockwatcher/shared";
+import { createDetectionChannel, createFavoritesChannel, createMoversChannel, createPressureChannel, createQuoteChannel, createQuoteSearchChannel, createRocketChannel, createRossChannel, createNoticesChannel, createSymbolsChannel, createTickerChannel, createWsClient, hasFeature, CLOCK_FEATURE, INDICATORS_FEATURE, INSIGHTS_TICKER_FEATURE, INDICATORS_LIMIT_FEATURE, LEVELS_FEATURE, NOTICES_FEATURE, QUOTE_SEARCH_FEATURE, RUNNERS_NOTICE_FEATURE, SYMBOLS_FEATURE, ZONES_FEATURE, type AlertsServerMessage, type ConnectionStatus, type DetectionChannel, type FavoritesChannel, type MarketSource, type MoversChannel, type PressureChannel, type QuoteChannel, type QuoteSearchChannel, type RocketChannel, type RossChannel, type NoticesChannel, type SettingsSync, type SymbolsChannel, type TickerChannel, type WebSocketLike } from "@stockwatcher/shared";
 
 import { deviceInfo, pushToken, subscribePushToken } from "../notifications/push";
+import type { PhoneNotices } from "../notifications/runnersNoticeModel";
 import { runnersRegisterFields, subscribeRunnersPush } from "../notifications/runnersPush";
 import { wsUrl } from "./server";
 
@@ -97,7 +98,7 @@ export interface MobileFeed {
  * raw socket because shared's parser only knows the handshake messages;
  * quotes.* frames are shared's own and pass straight through to it.
  */
-export function createMobileFeed(token: string | null, onStatus?: (s: ConnectionStatus) => void, settings?: SettingsSync, clientName = "mobile", source?: MarketSource, onAlerts?: (m: AlertsServerMessage) => void): MobileFeed {
+export function createMobileFeed(token: string | null, onStatus?: (s: ConnectionStatus) => void, settings?: SettingsSync, clientName = "mobile", source?: MarketSource, onAlerts?: (m: AlertsServerMessage) => void, runnersNotices?: PhoneNotices): MobileFeed {
   // Chart frames go only to the slots they belong to (chart-core chartRouter.ts), as on the web.
   const router = createChartRouter();
   const current = new Map<string, (m: ChartMessage) => void>();
@@ -133,6 +134,10 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
   const registerPush = () => {
     const t = pushToken();
     if (open && t) client.send({ type: "push.register", token: t, ...deviceInfo(), ...runnersRegisterFields() });
+    // The Runners notice opt-in follows the same changes: a token gained stops it (the push
+    // rings instead), a switch changed resends the kinds (runnersNoticeModel.ts). Only to a server
+    // that sends notices: an older one would not know the message.
+    if (open && runnersNotices?.serverSends()) client.refreshRunnersNotify();
   };
   const unsubPush = [subscribePushToken(registerPush), subscribeRunnersPush(registerPush)];
 
@@ -156,6 +161,14 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
       // The server decides time (clock.v1): the Runners panel's ages follow its clock frames and
       // its toasts come as `runners.event`.
       rocket.setServerClock(hasFeature(w, CLOCK_FEATURE));
+      // The server rings this phone's Runners banners as `runners.notice` (runners.notice.v1),
+      // read before the welcome's opt-in below is sent; older servers leave the card diffing.
+      runnersNotices?.setServerSends(hasFeature(w, RUNNERS_NOTICE_FEATURE));
+    },
+    // Asked on every welcome and by refreshRunnersNotify (null: a push token, or an older server).
+    runnersNotify: () => runnersNotices?.notifyMessage() ?? null,
+    onRunnersNotice: (m) => {
+      runnersNotices?.handle(m);
     },
     onStatus: (s) => {
       onStatus?.(s);
@@ -270,6 +283,7 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
     indicators: serverIndicators.channel,
     close() {
       for (const u of unsubPush) u();
+      runnersNotices?.setServerSends(false);
       client.close();
       router.clear();
       current.clear();

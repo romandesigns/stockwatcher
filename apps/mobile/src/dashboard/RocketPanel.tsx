@@ -7,6 +7,7 @@ import { Animated, Pressable, StyleSheet, Text, View } from "react-native";
 import { useRocket } from "../feed/hooks";
 import { Flame, MarksLine, RowLine, useReadoutPress } from "./RowMarks";
 import { notifyRocketFlags } from "../notifications/rocket";
+import { phoneNotices } from "../notifications/runnersNotices";
 import { Collapse } from "../motion/Collapse";
 import { ZoneNote } from "./ZoneNote";
 import { fonts } from "../theme";
@@ -42,8 +43,10 @@ const ROW_GAP = 4;
  * depth and trigger meter (fading rows are left out). Green only for the strict outcome tag. A state change
  * crossfades the edge and wash (opacity, native driver); with reduced motion it simply changes.
  * Tapping a row opens its chart (the chart modal); tap, then hold copies the ticker. New flags
- * reach the phone as a server push (Settings → Runners); only while this phone has no push token
- * does the card ring a local banner for them instead (notifications/rocket.ts). No layout
+ * reach the phone as a server push (Settings → Runners); while this phone has no push token the
+ * server's `runners.notice` frames ring a local banner instead (notifications/runnersNotices.ts),
+ * and only against a server older than those does the card diff its rows for banners itself
+ * (notifications/rocket.ts). No layout
  * animation on the rows: a moving Pressable takes stale taps on Android.
  *
  * Buying bursts (2026-10-22) get their own section at the top, newest first (the shared
@@ -68,14 +71,17 @@ export function RocketPanel({ channel, onPick, reducedMotion, gap = 0 }: { chann
     const id = setInterval(() => setWall(Date.now()), 15_000);
     return () => clearInterval(id);
   }, []);
-  // New flags since this card mounted (the first frame only primes: no burst on open).
+  // New flags since this card mounted (the first frame only primes: no burst on open), rung only
+  // against a server without `runners.notice.v1`: a newer one sends the notices themselves
+  // (notifications/runnersNotices.ts). The seen set keeps following either way, so a reconnect to
+  // an older server does not announce the rows already shown.
   const seen = useRef(new Set<string>());
   const primed = useRef(false);
   useEffect(() => {
     if (!state.panel) return;
     const fresh = newRocketFlags(state, seen.current, primed.current);
     primed.current = true;
-    if (fresh.length) notifyRocketFlags(fresh);
+    if (fresh.length && !phoneNotices.serverSends()) notifyRocketFlags(fresh);
   }, [state]);
   const { panel } = state;
   const now = rocketNow(state, wall);

@@ -15,6 +15,7 @@ import { setDashboardFeed } from "../feed/dashboardFeed";
 import { useCandidates } from "../feed/hooks";
 import type { MobileFeed } from "../feed/serverFeed";
 import { useConnection } from "../feed/useConnection";
+import { phoneNotices } from "../notifications/runnersNotices";
 import { useReducedMotion } from "../motion/useReducedMotion";
 import { openTickerChart } from "../navigation/ref";
 import { TickerSearchSheet } from "../search/TickerSearchSheet";
@@ -36,7 +37,8 @@ import { SignInScreen } from "./SignInScreen";
 export function DashboardScreen() {
   // Settings → Data (synced): the live market unless replay was chosen; a change reconnects.
   const source = useApp((s) => s.dashboard.source);
-  const { ready, status, signIn } = useConnection("mobile-dashboard", source);
+  // Its connection also carries the Runners notices this phone rings without a push token.
+  const { ready, status, signIn } = useConnection("mobile-dashboard", source, phoneNotices);
   if (!ready) return <View style={styles.screen} />;
   if (status === "unauthorized") return <SignInScreen rejected={ready.token !== null} onSubmit={signIn} />;
   return <DashboardView feed={ready.feed} token={ready.token} source={source} />;

@@ -254,3 +254,47 @@ test("a demand's limit goes out only to a server that offers indicators.limit.v1
   feed.indicators.set("m0", demand);
   expect(chartFrames(socket).at(-1)).toEqual({ type: "chart.indicators.set", id: "m0", indicators: demand.indicators, rth: false, limit: 1500 });
 });
+
+test("without a push token the dashboard opts in to runners.notice on a server with runners.notice.v1 and rings each notice once", async () => {
+  globalThis.WebSocket = Socket as unknown as typeof WebSocket;
+  const { createPhoneNotices } = await import("../notifications/runnersNoticeModel");
+  const { RUNNERS_PUSH_DEFAULTS } = await import("../notifications/runnersPushModel");
+  const rung: string[] = [];
+  const notices = createPhoneNotices({ prefs: () => RUNNERS_PUSH_DEFAULTS, token: () => token, ring: (m) => rung.push(m.id) });
+  const feed = createMobileFeed(null, undefined, undefined, "mobile-dashboard", "live", undefined, notices);
+  cleanup = () => {
+    feed.close();
+    token = null;
+  };
+  const socket = Socket.instances[0]!;
+  socket.open();
+  socket.receive({ ...welcome, features: ["runners.notice.v1"] });
+  expect(notices.serverSends()).toBe(true);
+  expect(socket.sent.find((m) => (m as { type: string }).type === "runners.notify")).toMatchObject({ type: "runners.notify", enabled: true, new: true, breakout: false });
+  const notice = { type: "runners.notice", id: "runners-new-TNMG-1", alertId: "1", symbol: "TNMG", kind: "runners.new", title: "Runners: TNMG $1.23", body: "why", at: 1 };
+  socket.receive(notice);
+  socket.receive(notice);
+  expect(rung).toEqual(["runners-new-TNMG-1"]);
+  // A push token arrives: the opt-in is withdrawn and the push rings instead.
+  token = "ExponentPushToken[fold]";
+  for (const l of runnersListeners) l();
+  expect(socket.sent.at(-1)).toEqual({ type: "runners.notify", enabled: false });
+  socket.receive({ ...notice, id: "runners-new-TNMG-2" });
+  expect(rung).toEqual(["runners-new-TNMG-1"]);
+  feed.close();
+  expect(notices.serverSends()).toBe(false);
+});
+
+test("an older server (no runners.notice.v1): no opt-in, and the Runners card keeps diffing", async () => {
+  globalThis.WebSocket = Socket as unknown as typeof WebSocket;
+  const { createPhoneNotices } = await import("../notifications/runnersNoticeModel");
+  const { RUNNERS_PUSH_DEFAULTS } = await import("../notifications/runnersPushModel");
+  const notices = createPhoneNotices({ prefs: () => RUNNERS_PUSH_DEFAULTS, token: () => null, ring: () => {} });
+  const feed = createMobileFeed(null, undefined, undefined, "mobile-dashboard", "live", undefined, notices);
+  cleanup = () => feed.close();
+  const socket = Socket.instances[0]!;
+  socket.open();
+  socket.receive(welcome);
+  expect(notices.serverSends()).toBe(false);
+  expect(socket.sent.some((m) => (m as { type: string }).type === "runners.notify")).toBe(false);
+});
