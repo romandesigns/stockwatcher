@@ -2885,6 +2885,12 @@ impl Market {
                         // them all in the next update.
                         let band = self.0.band;
                         core.quotes.mark_all_sent(band);
+                        // Likewise every chart.levels / chart.zones goes out fresh with the
+                        // resync snapshots. What a snapshot taken mid-rebuild left behind (the
+                        // values the skip rules compare with, the "last sent" a later change is
+                        // compared with) belongs to a partial engine that the rebuild's
+                        // increments, which the study does not follow, have since moved past.
+                        core.chart_context.clear_computed();
                     }
                     (core.seq, resync)
                 };
@@ -3320,18 +3326,25 @@ impl Market {
     }
 
     /// The zones whose forming bar moved since their last computation (crate::chart_context,
-    /// at most once a second each): from the 1 Hz broadcast tick. Public so tests can tick.
+    /// at most once a second each), and the levels a slot's snapshot found ahead of what the
+    /// other slots hold: from the 1 Hz broadcast tick. Public so tests can tick.
     pub fn flush_chart_zones(&self) {
         let (seq, frames) = {
             let mut guard = self.0.core.lock().expect("core lock");
-            let core = &mut *guard;
-            if core.rebuilding {
+            let Core {
+                engine,
+                quotes,
+                chart_context,
+                rebuilding,
+                seq,
+                ..
+            } = &mut *guard;
+            if *rebuilding {
                 return;
             }
-            let frames = core
-                .chart_context
-                .flush(&core.engine, std::time::Instant::now());
-            (core.seq, frames)
+            let pc = |s: &str, d: NaiveDate| quotes.prev_close_on(s, d).map(Price::to_f64);
+            let frames = chart_context.flush(engine, &pc, std::time::Instant::now());
+            (*seq, frames)
         };
         self.send_all(seq, frames.into_iter().map(OutKind::from).collect());
     }

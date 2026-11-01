@@ -34,6 +34,14 @@
 //!   broadcast tick's [`ContextRegistry::flush`]). The limit is wall time on purpose: it budgets
 //!   CPU under the core lock, and a replay at 10x must not cost 10x. It decides nothing about the
 //!   market, so it is not the market clock's business.
+//! - **"Changed" means changed from the last BROADCAST**, which every holder of the key has. A
+//!   slot's own snapshot (subscribe, layer on) is computed afresh and may be ahead of it: a
+//!   forming-bar change still inside the throttle, or a state no increment announced (the closes
+//!   file reloaded, old days pruned). It then leaves the broadcast baseline alone and marks the
+//!   key due, and the 1 Hz flush sends the others the new state; the snapshot's slot, already
+//!   current to that seq, skips it (crates/server/src/ws.rs `Sub::lvl_seq`). Resetting the
+//!   baseline to the snapshot instead (the first version) left the other connections on the old
+//!   zones until the next change. A resync clears it outright, every slot getting a fresh frame.
 //!
 //! # Frames (JSON, times in epoch ms like `CandleWire.t`; absent values `null`)
 //!
@@ -102,8 +110,14 @@ pub enum ContextFrame {
 struct LevelsChart {
     demand: u32,
     ranges: Vec<OpeningRange>,
-    /// The last frame sent for this chart (snapshot or broadcast): an unchanged one is not resent.
+    /// The last frame BROADCAST for this chart, what every holder has (or the first snapshot's,
+    /// when nobody had one): an unchanged one is not resent. A later slot's own snapshot does not
+    /// move it, or a change that slot's snapshot already carried would never reach the others.
     sent: Option<String>,
+    /// A slot's snapshot found a state other than `sent` with no increment to say so (the closes
+    /// file reloaded, the engine pruned old days): the next [`ContextRegistry::flush`] broadcasts
+    /// it.
+    stale: bool,
 }
 
 #[derive(Debug, Default)]
@@ -117,6 +131,8 @@ struct ZonesChart {
     /// The forming bar changed since `computed_at`.
     dirty: bool,
     computed_at: Option<Instant>,
+    /// The last frame broadcast to the slots, as `LevelsChart::sent` (same rule: once set, a
+    /// slot's own snapshot never moves it; one that differs marks the key `dirty` instead).
     sent: Option<String>,
 }
 
@@ -322,6 +338,7 @@ impl ContextRegistry {
         for c in self.charts.values_mut() {
             c.ranges.clear();
             c.sent = None;
+            c.stale = false;
         }
         for z in self.zones.values_mut() {
             z.zones = None;
@@ -368,7 +385,12 @@ impl ContextRegistry {
         // asked just before its lease, would otherwise leave an entry nobody releases).
         if let Some(c) = self.charts.get_mut(key) {
             c.ranges = ranges;
-            c.sent = Some(json.clone());
+            match &c.sent {
+                None => c.sent = Some(json.clone()),
+                // The other holders still have `sent`: the flush brings them up to this.
+                Some(s) if *s != json => c.stale = true,
+                Some(_) => {}
+            }
             if let Some(l) = self.levels.get_mut(&key.symbol) {
                 *l = levels;
             }
@@ -376,15 +398,24 @@ impl ContextRegistry {
         json
     }
 
-    /// A `chart.zones` frame for `key`, computed afresh from the engine.
+    /// A `chart.zones` frame for `key`, computed afresh from the engine. Like
+    /// [`ContextRegistry::levels_frame`] it leaves what the other slots were sent alone: a set
+    /// that differs from it (a forming-bar change still inside the throttle) stays due for the
+    /// flush, which broadcasts it to them.
     pub fn zones_frame(&mut self, engine: &ChartEngine, key: &ChartKey, now: Instant) -> String {
         let zones = compute_zones(engine, key);
         let json = zones_json(key, &zones);
         if let Some(z) = self.zones.get_mut(key) {
-            z.zones = Some(zones);
-            z.dirty = false;
-            z.computed_at = Some(now);
-            z.sent = Some(json.clone());
+            match &z.sent {
+                None => {
+                    z.zones = Some(zones);
+                    z.dirty = false;
+                    z.computed_at = Some(now);
+                    z.sent = Some(json.clone());
+                }
+                Some(s) if *s != json => z.dirty = true,
+                Some(_) => {}
+            }
         }
         json
     }
@@ -503,17 +534,7 @@ impl ContextRegistry {
             }
         }
         for key in ranges_due {
-            let ranges = engine.opening_ranges(&key.symbol, key.timeframe);
-            let levels = self.levels.get(&key.symbol).and_then(|l| l.as_ref());
-            let json = levels_json(&key, levels, &ranges, prev_close);
-            let Some(c) = self.charts.get_mut(&key) else {
-                continue;
-            };
-            c.ranges = ranges;
-            if c.sent.as_deref() != Some(json.as_str()) {
-                c.sent = Some(json.clone());
-                out.push(ContextFrame::Levels(key, json));
-            }
+            out.extend(self.recompute_levels(engine, prev_close, key));
         }
         for key in zones_due {
             out.extend(self.recompute_zones(engine, key, now));
@@ -521,9 +542,25 @@ impl ContextRegistry {
         out
     }
 
-    /// The zones whose forming bar changed and whose last computation is at least
-    /// [`ZONE_FORMING_EVERY`] old: from the 1 Hz broadcast tick.
-    pub fn flush(&mut self, engine: &ChartEngine, now: Instant) -> Vec<ContextFrame> {
+    /// From the 1 Hz broadcast tick: the zones whose forming bar changed and whose last
+    /// computation is at least [`ZONE_FORMING_EVERY`] old, and the levels charts a slot's snapshot
+    /// found [`LevelsChart::stale`].
+    pub fn flush(
+        &mut self,
+        engine: &ChartEngine,
+        prev_close: PrevCloseFn,
+        now: Instant,
+    ) -> Vec<ContextFrame> {
+        let stale: Vec<LevelsKey> = self
+            .charts
+            .iter()
+            .filter(|(_, c)| c.stale)
+            .map(|(k, _)| k.clone())
+            .collect();
+        let mut out: Vec<ContextFrame> = stale
+            .into_iter()
+            .filter_map(|k| self.recompute_levels(engine, prev_close, k))
+            .collect();
         let due: Vec<ChartKey> = self
             .zones
             .iter()
@@ -534,9 +571,32 @@ impl ContextRegistry {
             })
             .map(|(k, _)| k.clone())
             .collect();
-        due.into_iter()
-            .filter_map(|k| self.recompute_zones(engine, k, now))
-            .collect()
+        out.extend(
+            due.into_iter()
+                .filter_map(|k| self.recompute_zones(engine, k, now)),
+        );
+        out
+    }
+
+    /// `key`'s opening ranges afresh, with the symbol's kept levels: a frame when the content
+    /// differs from the last one broadcast.
+    fn recompute_levels(
+        &mut self,
+        engine: &ChartEngine,
+        prev_close: PrevCloseFn,
+        key: LevelsKey,
+    ) -> Option<ContextFrame> {
+        let ranges = engine.opening_ranges(&key.symbol, key.timeframe);
+        let levels = self.levels.get(&key.symbol).and_then(|l| l.as_ref());
+        let json = levels_json(&key, levels, &ranges, prev_close);
+        let c = self.charts.get_mut(&key)?;
+        c.ranges = ranges;
+        c.stale = false;
+        if c.sent.as_deref() == Some(json.as_str()) {
+            return None;
+        }
+        c.sent = Some(json.clone());
+        Some(ContextFrame::Levels(key, json))
     }
 
     fn recompute_zones(
@@ -549,11 +609,10 @@ impl ContextRegistry {
         let z = self.zones.get_mut(&key)?;
         z.dirty = false;
         z.computed_at = Some(now);
-        if z.zones.as_ref() == Some(&zones) && z.sent.is_some() {
-            return None;
-        }
         z.zones = Some(zones);
-        // Only slots get frames; the Runners mark reads `zones` directly.
+        // Only slots get frames; the Runners mark reads `zones` directly. Compared with what the
+        // slots were sent, not with the kept set: a slot's snapshot may have moved past `sent`
+        // (ContextRegistry::zones_frame) with the kept set unchanged since.
         if z.slots == 0 {
             return None;
         }
@@ -741,10 +800,13 @@ mod tests {
         let ups = e.apply(&trade(10, 17, 55, 549, 900));
         assert!(ctx.on_updates(&e, &no_close, &ups, t0).is_empty());
         assert!(ctx.zones[&key].dirty);
-        assert!(ctx.flush(&e, t0 + Duration::from_millis(500)).is_empty());
+        assert!(
+            ctx.flush(&e, &no_close, t0 + Duration::from_millis(500))
+                .is_empty()
+        );
         assert!(ctx.zones[&key].dirty, "still waiting");
         // A second later the flush computes it; the set did not change, so no frame.
-        assert!(ctx.flush(&e, t0 + ZONE_FORMING_EVERY).is_empty());
+        assert!(ctx.flush(&e, &no_close, t0 + ZONE_FORMING_EVERY).is_empty());
         assert!(!ctx.zones[&key].dirty);
         // 10:18 opens (10:17 final: recomputed at once, unchanged, so no frame), then its forming
         // candle closes below the base, which breaks the zone: throttled, then the flush says so.
@@ -757,7 +819,7 @@ mod tests {
             ctx.on_updates(&e, &no_close, &ups, later).is_empty(),
             "throttled"
         );
-        let frames = ctx.flush(&e, t1 + ZONE_FORMING_EVERY);
+        let frames = ctx.flush(&e, &no_close, t1 + ZONE_FORMING_EVERY);
         let Some(ContextFrame::Zones(_, j)) = frames.first() else {
             panic!("{frames:?}")
         };
@@ -769,6 +831,73 @@ mod tests {
         );
         // rth=true for the same chart is its own key: nobody asked, nothing computed.
         assert!(!ctx.zones.contains_key(&zkey(Timeframe::M1, true)));
+    }
+
+    /// A snapshot for one slot must not swallow a change the other holders of the key have not
+    /// had: a throttled forming-bar change, then a second slot subscribing (its own fresh
+    /// `chart.zones`), and the flush still broadcasts the change for the first slot.
+    #[test]
+    fn a_snapshot_does_not_swallow_a_pending_broadcast() {
+        let mut e = ChartEngine::default();
+        let mut ctx = ContextRegistry::default();
+        let key = zkey(Timeframe::M1, false);
+        ctx.acquire(&ContextKey::Zones(key.clone()));
+        let t0 = Instant::now();
+        ctx.zones_frame(&e, &key, t0);
+        let mut seq = 0;
+        let mut minute = |e: &mut ChartEngine, m: u32, o: i64, h: i64, l: i64, c: i64| {
+            let mut ups = Vec::new();
+            for (s, p) in [(1, o), (10, h), (20, l), (50, c)] {
+                seq += 1;
+                ups.extend(e.apply(&MarketEvent::Trade(Trade::new(
+                    "SMPL",
+                    et(day(), 10, m, s, 0).unwrap(),
+                    Price::from_cents(p),
+                    100,
+                    seq,
+                ))));
+            }
+            ups
+        };
+        let mut all = Vec::new();
+        for m in 0..14 {
+            all.extend(minute(
+                &mut e,
+                m,
+                500,
+                506,
+                496,
+                if m % 2 == 1 { 504 } else { 498 },
+            ));
+        }
+        all.extend(minute(&mut e, 14, 500, 504, 496, 501));
+        all.extend(minute(&mut e, 15, 501, 505, 498, 500));
+        all.extend(minute(&mut e, 16, 500, 540, 499, 538));
+        all.extend(minute(&mut e, 17, 538, 550, 536, 548));
+        let frames = ctx.on_updates(&e, &no_close, &all, t0);
+        assert_eq!(frames.len(), 1, "the demand zone, to slot A");
+        // The forming 10:18 candle breaks the zone, within the throttle: pending for slot A.
+        let t1 = t0 + 2 * ZONE_FORMING_EVERY;
+        let ups = e.apply(&trade(10, 18, 5, 549, 901));
+        ctx.on_updates(&e, &no_close, &ups, t1);
+        let ups = e.apply(&trade(10, 18, 30, 480, 902));
+        assert!(
+            ctx.on_updates(&e, &no_close, &ups, t1 + Duration::from_millis(100))
+                .is_empty()
+        );
+        // Slot B subscribes: its snapshot already has the broken zone.
+        ctx.acquire(&ContextKey::Zones(key.clone()));
+        let b: Value =
+            serde_json::from_str(&ctx.zones_frame(&e, &key, t1 + Duration::from_millis(200)))
+                .unwrap();
+        assert_eq!(b["zones"], serde_json::json!([]));
+        // Slot A still has the zone: the flush must broadcast the empty set.
+        let frames = ctx.flush(&e, &no_close, t1 + ZONE_FORMING_EVERY);
+        let Some(ContextFrame::Zones(_, j)) = frames.first() else {
+            panic!("the change was swallowed by slot B's snapshot: {frames:?}")
+        };
+        let v: Value = serde_json::from_str(j).unwrap();
+        assert_eq!(v["zones"], serde_json::json!([]));
     }
 
     /// The Runners mark's demand keeps zones computed but never broadcasts them.
