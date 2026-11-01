@@ -5,7 +5,7 @@ import { ReplayBar } from "@stockwatcher/chart-web";
 import { createSettingsSync } from "@stockwatcher/shared";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createServerFeed } from "./serverFeed.ts";
-import { chooseSource, followCandidates, initialSymbol, type ServerSymbols } from "./source.ts";
+import { followCandidates, initialSymbol, serverChoice, type ServerSymbols } from "./source.ts";
 
 // Owner, 2026-10-23: "The replay feature appears to be broken. I cannot select a date nor a ticker
 // so I can practice placing trades."
@@ -13,9 +13,10 @@ import { chooseSource, followCandidates, initialSymbol, type ServerSymbols } fro
 // Root cause: the chart page decides its source once, from GET /api/symbols?source=replay. While
 // the replay market is still building its start (one to two minutes on the VPS after every
 // deploy, and again on every day switch or seek), that answer is `status: "running"` with an
-// archived `day` but no candidates yet. chooseSource read that as "server has no data" and put
-// the page on the in-browser fixture for the rest of the session: no day menu (the fixture has no
-// days) and only fixture tickers in the search. These tests walk both selections through the
+// archived `day` but no candidates yet. The source choice read that as "server has no data" and
+// put the page on the in-browser fixture for the rest of the session: no day menu (the fixture had
+// no days) and only fixture tickers in the search. The fixture is gone since (the server is the
+// only source), and these tests keep the page on the server. They walk both selections through the
 // pieces the chart page (App.tsx) wires together: source choice, the socket, the day state, the
 // replay bar and the ticker the chart shows.
 
@@ -102,13 +103,12 @@ function replayBar(clock: Clock | null, pendingDay: string | null = null, state 
 }
 
 describe("replay practice: a page opened while the replay builds (owner, 2026-10-23)", () => {
-  test("stays on the server instead of falling back to the in-browser fixture for good", () => {
-    const c = chooseSource(undefined, { ok: true, data: building }, "SMPL", "replay");
-    expect(c).toMatchObject({ kind: "server", symbols: [], fixtureData: false, label: "Server replay · 2026-10-23", market: "replay" });
-    // Still the fixture when the server really has nothing to replay, or no day at all.
-    expect(chooseSource(undefined, { ok: true, data: { ...building, status: "no_data" } }, "SMPL", "replay").kind).toBe("fixture");
-    expect(chooseSource(undefined, { ok: true, data: { ...building, status: "idle", day: null } }, "SMPL", "replay").kind).toBe("fixture");
-    expect(chooseSource(undefined, { ok: true, data: { ...building, day: null } }, "SMPL", "replay").kind).toBe("fixture");
+  test("stays on the server, whatever it has to replay so far", () => {
+    const c = serverChoice(building, "replay");
+    expect(c).toMatchObject({ symbols: [], fixtureData: false, label: "Server replay · 2026-10-23", market: "replay" });
+    // Nothing to replay, or no day at all: still the server, labelled with what it says.
+    expect(serverChoice({ ...building, status: "no_data" }, "replay").label).toBe("Server replay · 2026-10-23");
+    expect(serverChoice({ ...building, status: "idle", day: null }, "replay")).toMatchObject({ symbols: [], label: "Server replay" });
   });
 
   test("date: the day menu appears when the rebuild's clock arrives, and a pick goes to the server", () => {
@@ -145,13 +145,13 @@ describe("replay practice: a page opened while the replay builds (owner, 2026-10
   });
 
   test("ticker: the search's list fills from the server and a pick is the chart's ticker", () => {
-    const choice = chooseSource(undefined, { ok: true, data: building }, "SMPL", "replay");
+    const choice = serverChoice(building, "replay");
     // The candidates the ticker search offers (App.tsx: useCandidates, starting from the choice).
-    // The fixture's single ticker is never offered for a real replay day.
+    // The preferred dev ticker (DEFAULT_SYMBOL) is never offered for a real replay day.
     let candidates = choice.symbols;
     expect(candidates).not.toContain("SMPL");
     // useCandidates' next poll, after the rebuild.
-    candidates = chooseSource(undefined, { ok: true, data: built }, "SMPL", "replay").symbols;
+    candidates = serverChoice(built, "replay").symbols;
     expect(candidates).toEqual(["AAL", "ACHR", "CJMB"]);
 
     // The chart page's ticker (App.tsx): the synced ticker through followCandidates.

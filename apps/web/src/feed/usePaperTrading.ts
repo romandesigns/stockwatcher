@@ -6,7 +6,7 @@ import type { ChartFeed } from "./types.ts";
 /**
  * Binds the feed's paper broker to the chart's `trading` prop: the latest
  * broadcast state in, order intents out. Null when the feed has no broker
- * (the in-browser fixture), which turns chart trading off.
+ * (a test fake), which turns chart trading off.
  */
 export function usePaperTrading(feed: ChartFeed): ChartTrading | null {
   const paper = feed.paper;

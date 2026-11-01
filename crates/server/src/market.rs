@@ -100,7 +100,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 use tokio::sync::{broadcast, mpsc};
 
-/// Recent tape rows kept per symbol and sent after a snapshot (same as the browser fixture).
+/// Recent tape rows kept per symbol and sent after a snapshot.
 /// Which market a client reads (owner, 2026-10-18: the dashboard consumes live market data). The
 /// server runs both side by side, see [`Markets`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]

@@ -216,8 +216,9 @@ Readers refuse another format or contract version, and any oversized length.
 Importing real history is `swimport`'s job (Appendix F); `swarchive` never reads credentials and never
 calls the network.
 
-**Fixture day.** A port of the in-browser fixture: mulberry32, the same constants and draw order,
-and the first prints identical (tested), so the screens look alike. Real condition codes are used:
+**Fixture day.** A port of the web app's former in-browser fixture (deleted 2026-10-31; this is now
+the only fixture): mulberry32, the same constants and draw order, the first prints pinned by a
+test. Real condition codes are used:
 - `I` odd lot, `W` average price, `Q`/`M` official open/close, `T` extended hours;
 - late prints executed 20 s before their arrival position, carrying `receive_ts`;
 - out-of-order prints inside the settle window, and duplicates;
@@ -268,7 +269,7 @@ batches of 2048 events keep commands responsive. A seek over a whole fixture day
 **Providers.** `MarketDataProvider::start() → ProviderSession { info, items, clock, control }`.
 - `MARKET_DATA_MODE=replay|live` (default `replay`).
 - Replay settings: `REPLAY_DAY` (default: the latest **ready** archived day, so a day still being
-  imported is skipped), `REPLAY_START` (ET `HH:MM[:SS]`, default 10:40, matching the browser fixture;
+  imported is skipped), `REPLAY_START` (ET `HH:MM[:SS]`, default 10:40, the fixture day's busy mid-morning;
   production sets 09:30), `REPLAY_SPEED` (default 10), `REPLAY_AUTOPLAY` (default 1),
   `REPLAY_FOLLOW_LATEST` (default 0: switch the running replay to a newly imported latest day). The
   full list of settings is in `../reference/configuration.md`.
@@ -668,15 +669,17 @@ notify with the rule that held it).
 **Synced settings** ride the same socket (`settings.*`); see `settings-sync.md`.
 
 **Web.**
-- `VITE_CHART_SOURCE` unset or `server` (the default): the app probes `GET /api/symbols` and uses
-  the server.
-- It falls back to the in-browser fixture **only** if the server is unreachable, refuses, or
-  reports no symbols.
-- The header always shows which source is active, with SERVER/BROWSER and FIXTURE badges and the
-  reason.
+- The server is the only source. The app probes `GET /api/symbols`; a 401 shows the sign-in card,
+  any other failure a "Server unreachable" card with the reason, probed again every 5 s
+  (`apps/web/src/ConnectionGate.tsx`). An empty answer (a replay still building, a live market
+  before its first trade) is still the server.
+- The in-browser fixture (`apps/web/src/fixtures/fixtureFeed.ts`, which aggregated its own
+  candles) was deleted on 2026-10-31: every computation runs in Rust. For offline development run
+  the server's replay over its fixture day (below).
+- The header shows the source (replay or live), with a warning tone when the server replays a
+  fixture archive, and the reason.
 - The play, pause, step and speed buttons send `replay.control`, and the displayed clock is the
   server's.
-- `VITE_CHART_SOURCE=fixture` forces the in-browser fixture.
 
 **Run it locally.**
 

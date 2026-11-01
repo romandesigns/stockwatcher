@@ -142,7 +142,7 @@ describe("dashboard layout: right column and bottom row (owner, 2026-10-30)", ()
     expect(slots(html)).toEqual(["signals"]);
   });
 
-  test("nothing anywhere (the fixture feed): both groups closed, only the charts", () => {
+  test("nothing anywhere (a feed with no channels): both groups closed, only the charts", () => {
     const html = render({});
     expect(group(html, "side")).toBe("closed");
     expect(group(html, "bottom")).toBe("closed");

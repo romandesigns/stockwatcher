@@ -4,10 +4,12 @@
 //! event marked [`Source::Fixture`]. It exists to drive software tests and the simulator before
 //! real archives exist, and must never be presented as market evidence.
 //!
-//! The price walk, timing and print mix are a port of the in-browser fixture
+//! The price walk, timing and print mix are a port of the web app's former in-browser fixture
 //! (`apps/web/src/fixtures/fixtureFeed.ts`, mulberry32, same constants, same order of random
-//! draws), so a server-driven chart looks like the fixture screens for the first symbol (seed 7,
-//! scale 1). Differences, because this feeds the real engine rather than imitating it:
+//! draws; deleted 2026-10-31, in git history). This is now the ONLY fixture: the web app has no
+//! offline stand-in, and development runs the server's replay over a day written here
+//! (`SIM_AUTOFIXTURE=1`). Differences from the old browser copy, because this feeds the real
+//! engine rather than imitating it:
 //!
 //! - restricted prints carry real SIP condition codes, and the engine decides how they count:
 //!   odd lots get `I`, average-price prints `W`, the official open/close `Q`/`M`, extended-hours
@@ -15,7 +17,7 @@
 //! - a "late" print is a real late arrival: its `event_ts` is 20 s before the print it follows,
 //!   it carries `receive_ts`, and it sits at its arrival position in the stream, so the engine's
 //!   settle-window rule excludes it;
-//! - extras the browser fixture does not model, drawn from a **separate** generator so the main
+//! - extras the browser fixture did not model, drawn from a **separate** generator so the main
 //!   walk is unchanged: quotes, prints that arrive out of order inside the settle window, a trading
 //!   halt/resume around the 10:05–10:06:30 silence, one correction (first regular print at or after
 //!   11:00, published 30 s later) and one cancel (12:00, published 20 s later);
@@ -425,7 +427,8 @@ mod tests {
 
     #[test]
     fn mulberry32_matches_the_typescript_generator() {
-        // rng(7) in apps/web/src/fixtures/fixtureFeed.ts, first three draws (computed with Bun).
+        // rng(7) in the former apps/web/src/fixtures/fixtureFeed.ts, first three draws (computed
+        // with Bun). Kept as constants: the generator must not drift now that it is the only one.
         let mut r = Mulberry32::new(7);
         assert_eq!(r.next(), 0.011704753153026104);
         assert_eq!(r.next(), 0.06195825757458806);

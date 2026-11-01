@@ -17,7 +17,7 @@ import { CandleChart, Icon, ReplayBar, Tape, VolumeProfile } from "@stockwatcher
 import { Tip, ToggleGroup, ToggleGroupItem, cn } from "@stockwatcher/chart-web/ui";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ConnectionGate } from "./ConnectionGate.tsx";
-import { followCandidates, followServer, initialSymbol, type SourceChoice } from "./feed/source.ts";
+import { DEFAULT_SYMBOL, followCandidates, followServer, initialSymbol, type SourceChoice } from "./feed/source.ts";
 import { useCandidates } from "./feed/useCandidates.ts";
 import type { ChartFeed } from "./feed/types.ts";
 import { INDICATOR_PARITY, useChartFeed } from "./feed/useChartFeed.ts";
@@ -27,7 +27,6 @@ import { SettingsButton } from "./nav/settings.tsx";
 import { usePaperTrading } from "./feed/usePaperTrading.ts";
 import { useReplayDays } from "./feed/useReplayDays.ts";
 import { useReplayAlerts } from "./feed/useReplayAlerts.ts";
-import { FIXTURE_SYMBOL } from "./fixtures/fixtureFeed.ts";
 import { useMediaQuery } from "./lib/useMediaQuery.ts";
 import { SearchPill } from "./search/SearchPill.tsx";
 import { TickerSearch } from "./search/TickerSearch.tsx";
@@ -42,7 +41,6 @@ const DESKTOP_CHART: Partial<ChartOptions> = {};
 
 /** One line saying where the chart's data comes from, and whether it is fixture data. */
 function sourceText(choice: SourceChoice): string {
-  if (choice.kind === "fixture") return `In-browser fixture — not market data (${choice.reason})`;
   return choice.fixtureData ? `${choice.label} · fixture archive — not market data` : `${choice.label} · ${choice.reason}`;
 }
 
@@ -69,7 +67,7 @@ const LiveIcon = <Icon name="live" />;
  * readers.
  */
 function SourceChip({ choice, mode, className }: { choice: SourceChoice; mode: "replay" | "live"; className?: string }) {
-  const fixture = choice.kind === "fixture" || choice.fixtureData;
+  const fixture = choice.fixtureData;
   return (
     <Tip label={`${mode === "live" ? "Live market" : "Replay"}${fixture ? " · fixture data" : ""}: ${sourceText(choice)}`}>
       <span
@@ -117,7 +115,7 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
   // momentarily stale candidate list must not move every other device's chart.
   // A ticker this device opened is never swapped for a candidate (app-state `picked`).
   const picked = useApp((s) => s.picked);
-  const symbol = followCandidates(syncedSymbol ?? initialSymbol(choice, FIXTURE_SYMBOL), candidates.symbols, picked);
+  const symbol = followCandidates(syncedSymbol ?? initialSymbol(choice, DEFAULT_SYMBOL), candidates.symbols, picked);
   // Drawings follow the shown symbol; before paint, so a ticker switch never flashes the old marks.
   useLayoutEffect(() => app.showSymbol(symbol), [app, symbol]);
   // The chart is controlled with the synced values (CandleChart keeps only this screen's layout).
@@ -129,7 +127,7 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
   const demand = useMemo(() => indicatorDemand(indicators, chartSettings, layers), [indicators, chartSettings, layers]);
   const { series, tape, clock, indicators: serverIndicators, levels: serverLevels, zones: serverZones } = useChartFeed(feed, symbol, timeframe, bin, undefined, demand);
   const trading = usePaperTrading(feed);
-  const replayDays = useReplayDays(choice, clockDay);
+  const replayDays = useReplayDays(clockDay);
   const dayOptions = useMemo(() => replayDayOptions(replayDays.state?.days ?? []), [replayDays.state]);
 
   const phone = useMediaQuery("(max-width: 600px)");
@@ -217,7 +215,7 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
     return () => clearTimeout(id);
   }, [pendingDay]);
   // The day's Runners entries: the scrubber's alert dots and the Prev/Next alert jumps.
-  const replayAlerts = useReplayAlerts(current, replayDay ?? clockDay);
+  const replayAlerts = useReplayAlerts(replayDay ?? clockDay);
   const replay = {
     clock,
     onPlayPause: (play: boolean) => feed.control({ action: play ? "play" : "pause" }),
@@ -248,7 +246,7 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
   const price = last ? formatPrice(last.c) : "—";
   const change = last && reference ? formatChange(reference.price, last.c) : "";
   const changeColor = change.startsWith("-") ? "text-critical" : "text-good";
-  const chartLabel = `${symbol} ${timeframe} candles, ${current.fixtureData ? "fixture data" : "market data"} from ${current.kind === "server" ? "the server" : "the in-browser fixture"}`;
+  const chartLabel = `${symbol} ${timeframe} candles, ${current.fixtureData ? "fixture data" : "market data"} from the server`;
   const tapeNote = current.fixtureData ? "Fixture data" : current.label;
   const mode = clock?.mode === "live" ? "live" : "replay";
 

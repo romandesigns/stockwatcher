@@ -138,7 +138,8 @@ Per namespace the client keeps what the server last **confirmed** and a queue of
 - **Offline:** edits made with no connection are coalesced (one per namespace), persisted, and
   sent after the next snapshot, last writer wins. Edits in flight when the socket drops are sent
   again after the reconnect; every operation is idempotent, so a duplicate costs one rev, never
-  data. The in-browser fixture (no server) never attaches the engine: everything stays local.
+  data. While the server is unreachable the page shows "Server unreachable" and edits wait in the
+  cache.
 - **Never trusts remote JSON:** every value, local or remote, goes through the app's own parser
   (`parseIndicators`, `parseLayers`, `parseChartSettings`, `parseDrawingSettings`,
   `drawingsFromDoc`), so junk from an older or newer build falls back to defaults field by field.

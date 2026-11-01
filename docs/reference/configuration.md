@@ -151,7 +151,6 @@ off, and the start line says `NOT SET`. Also reads `PRICE_BAND_*` (its watch uni
 | Variable | Where | Meaning |
 |---|---|---|
 | `STOCKWATCHER_DEV_SERVER` | `apps/web/vite.config.ts` (dev only) | where Vite proxies `/api`, `/ws`, `/updates`; default `http://127.0.0.1:8790`. `https://stockwatcher.wavystyle.io` runs the local web app against production (sign in with the production token) |
-| `VITE_CHART_SOURCE` | `apps/web` | unset/`server`: use the server, falling back to the in-browser fixture only when it is unreachable or empty; `fixture` forces the fixture |
 | `EXPO_PUBLIC_SERVER_URL` | `apps/mobile/src/feed/server.ts` | the server the phone talks to; default `http://10.0.2.2:8790` (Android emulator → host) in dev builds, production otherwise |
 
 The clients never hold provider credentials. The access token is typed into the sign-in screen and

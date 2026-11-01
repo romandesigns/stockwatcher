@@ -18,7 +18,7 @@ pub enum MarketDataMode {
 /// | `MARKET_DATA_MODE` | `replay` | `replay` or `live` |
 /// | `ARCHIVE_ROOT`, `ARCHIVE_RETENTION_DAYS`, `ARCHIVE_MIN_FREE_MB` | see `market-archive` | |
 /// | `REPLAY_DAY` | latest ready archived day | trading date to replay, `YYYY-MM-DD` (unset on the VPS, so a restart lands on the newest day; a day still being imported is skipped) |
-/// | `REPLAY_START` | `10:40` | ET wall time the clock starts at, `HH:MM[:SS]` (same as the browser fixture) |
+/// | `REPLAY_START` | `10:40` | ET wall time the clock starts at, `HH:MM[:SS]` (the fixture day's busy mid-morning) |
 /// | `REPLAY_SPEED` | `10` | `1`, `2`, `10`, `60`, … or `max` |
 /// | `REPLAY_AUTOPLAY` | `1` | start playing immediately |
 /// | `ALPACA_API_KEY` / `ALPACA_API_SECRET` | unset | live only; Alpaca's `APCA_API_KEY_ID` / `APCA_API_SECRET_KEY` also work (the importer reads the same names). Without them live mode is "not configured" |

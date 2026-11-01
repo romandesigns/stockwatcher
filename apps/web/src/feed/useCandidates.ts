@@ -34,7 +34,7 @@ export function useCandidates(choice: SourceChoice, day: string | null = null, c
   const subscribe = useCallback((cb: () => void) => (channel ? channel.subscribe(cb) : NOOP), [channel]);
   const get = useCallback((): SymbolsState => (channel ? channel.get() : EMPTY_SYMBOLS), [channel]);
   const pushed = useSyncExternalStore(subscribe, get, get);
-  const live = choice.kind === "server" && pushed.available === true;
+  const live = pushed.available === true;
 
   const refresh = useCallback(
     async (alive: () => boolean) => {
@@ -47,23 +47,22 @@ export function useCandidates(choice: SourceChoice, day: string | null = null, c
   );
   // The first probe, and again on a day change: always, pushed or not.
   useEffect(() => {
-    if (choice.kind !== "server") return;
     let alive = true;
     void refresh(() => alive);
     return () => {
       alive = false;
     };
-  }, [choice.kind, refresh, day]);
+  }, [refresh, day]);
   // The poll, only while the list is not pushed.
   useEffect(() => {
-    if (choice.kind !== "server" || live) return;
+    if (live) return;
     let alive = true;
     const id = setInterval(() => void refresh(() => alive), CANDIDATE_REFRESH_MS);
     return () => {
       alive = false;
       clearInterval(id);
     };
-  }, [choice.kind, refresh, live]);
+  }, [refresh, live]);
 
   const latest = live ? pushed.latest : null;
   const fromPush = useMemo<Candidates | null>(() => (latest ? { symbols: latest.symbols, band: latest.priceBand, screened: latest.screened, server: latest } : null), [latest]);

@@ -2,18 +2,18 @@ import { Input } from "@stockwatcher/chart-web/ui";
 import type { MarketSource } from "@stockwatcher/shared";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { createServerFeed } from "./feed/serverFeed.ts";
-import { chooseSource, probeServer, type SourceChoice } from "./feed/source.ts";
+import { probeServer, serverChoice, type SourceChoice } from "./feed/source.ts";
 import { clearToken, getToken, setToken } from "./feed/token.ts";
 import type { ChartFeed } from "./feed/types.ts";
-import { createFixtureFeed, FIXTURE_SYMBOL } from "./fixtures/fixtureFeed.ts";
 import { getSettingsSync } from "./settings/sync.ts";
 import { getAppStore } from "./state/store.ts";
 import { getRunnersNotifier } from "./notify/runnersNotify.ts";
 
-// Data source: the Rust server by default, the in-browser fixture only when the
-// server is unreachable or has no data (feed/source.ts), or when forced with
-// VITE_CHART_SOURCE=fixture. The active source is always labelled.
-const ENV_SOURCE = import.meta.env.VITE_CHART_SOURCE;
+// Data source: the Rust server, always (feed/source.ts). A server that cannot be reached is shown
+// as exactly that, and retried, never replaced by data made up in the browser.
+
+/** How long an unreachable server waits before the next probe (a deploy restarts it in seconds). */
+const RETRY_MS = 5000;
 
 export interface Connection {
   choice: SourceChoice;
@@ -31,31 +31,42 @@ export interface Connection {
  */
 export function ConnectionGate({ source, children }: { source: MarketSource; children: (c: Connection) => ReactNode }) {
   const [ready, setReady] = useState<(Connection & { marketSource: MarketSource; attempt: number }) | null>(null);
-  // The server wants an access token (production): show the sign-in card instead of falling back to the fixture.
+  // The server wants an access token (production): show the sign-in card.
   const [signIn, setSignIn] = useState<{ rejected: boolean } | null>(null);
+  // The server did not answer (or refused): say so and probe again every RETRY_MS.
+  const [unreachable, setUnreachable] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
-  // One engine for the page, whatever the feed: the fixture never connects it (local only).
+  // One engine for the page, connected by the server feed.
   const sync = useMemo(() => getSettingsSync(), []);
   useEffect(() => {
     let alive = true;
     let feed: ChartFeed | null = null;
+    let retry: ReturnType<typeof setTimeout> | undefined;
     const token = getToken();
-    void (ENV_SOURCE === "fixture" ? Promise.resolve(null) : probeServer(fetch, 2500, token, source)).then((probe) => {
+    void probeServer(fetch, 2500, token, source).then((probe) => {
       if (!alive) return;
-      if (probe && !probe.ok && probe.unauthorized) {
+      if (!probe.ok && probe.unauthorized) {
         if (token) clearToken();
+        setUnreachable(null);
         setSignIn({ rejected: !!token });
         return;
       }
+      if (!probe.ok) {
+        setUnreachable(probe.reason);
+        retry = setTimeout(() => setAttempt((n) => n + 1), RETRY_MS);
+        return;
+      }
       setSignIn(null);
-      const choice = chooseSource(ENV_SOURCE, probe, FIXTURE_SYMBOL, source);
+      setUnreachable(null);
+      const choice = serverChoice(probe.data, source);
       // Alert frames (Activity, fires) reach the app store whatever page is open (state/store.ts).
       // Runners notices too (notify/runnersNotify.ts): a system notification on any page.
-      feed = choice.kind === "server" ? createServerFeed({ token, settings: sync, source, onAlerts: (m) => getAppStore().getState().applyAlertsMessage(m), notifier: getRunnersNotifier() }) : createFixtureFeed();
+      feed = createServerFeed({ token, settings: sync, source, onAlerts: (m) => getAppStore().getState().applyAlertsMessage(m), notifier: getRunnersNotifier() });
       setReady({ choice, feed, marketSource: source, attempt });
     });
     return () => {
       alive = false;
+      if (retry) clearTimeout(retry);
       feed?.close();
     };
   }, [attempt, sync, source]);
@@ -70,10 +81,33 @@ export function ConnectionGate({ source, children }: { source: MarketSource; chi
       />
     );
   }
+  if (unreachable !== null) return <Unreachable reason={unreachable} onRetry={() => setAttempt((n) => n + 1)} />;
   if (!ready || ready.marketSource !== source || ready.attempt !== attempt) {
     return <div className="flex min-h-full items-center justify-center bg-background text-sm text-muted-foreground">Connecting to the server…</div>;
   }
   return <>{children(ready)}</>;
+}
+
+/**
+ * The server could not be reached or refused (not an auth problem): what happened, and that it is
+ * being retried. Nothing else is shown, because nothing else would be real. Polite live region, so
+ * a screen reader hears the state without the retries repeating it.
+ */
+function Unreachable({ reason, onRetry }: { reason: string; onRetry: () => void }) {
+  return (
+    <div className="flex min-h-full items-center justify-center bg-background p-4 text-foreground">
+      <div role="status" aria-live="polite" className="flex w-full max-w-sm flex-col gap-3 rounded-2xl bg-card p-5">
+        <div className="flex flex-col gap-1">
+          <h1 className="m-0 text-base font-semibold">Server unreachable</h1>
+          <p className="m-0 text-xs text-muted-foreground">StockWatcher shows only what its server sends. Trying again every {RETRY_MS / 1000} seconds.</p>
+          <p className="m-0 break-words font-mono text-xs text-text-faint">{reason}</p>
+        </div>
+        <button type="button" onClick={onRetry} className="h-10 rounded-lg bg-bg-row text-sm font-semibold text-foreground hover:bg-bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:h-11">
+          Retry now
+        </button>
+      </div>
+    </div>
+  );
 }
 
 /** The one-field sign-in for a server that requires its access token. */

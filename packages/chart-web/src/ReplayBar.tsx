@@ -159,7 +159,7 @@ function DayButton({ day, days, onDayChange, onOpenChange, pendingDay, clock, cl
   const loading = pendingDay && pendingDay !== day ? pendingDay : null;
   const live = clock?.mode === "live";
   if (!clock || live || !day || !days?.length || !onDayChange) {
-    // Nothing to pick (live, the in-browser fixture, an older server): the date as a quiet chip.
+    // Nothing to pick (live, an older server): the date as a quiet chip.
     const text = day ? (current?.label ?? formatDayKey(day)) : clock ? formatEtDate(clock.now) : "—";
     return (
       <span className={cn(chip, "text-muted-foreground")} aria-label={`Replay date ${current?.longLabel ?? text}`}>

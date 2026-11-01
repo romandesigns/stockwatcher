@@ -25,7 +25,7 @@ export const INDICATOR_PARITY = typeof location !== "undefined" && new URLSearch
  * server computes them (`indicators.v1`) it goes on the subscription and a change goes out as
  * `chart.indicators.set` (no new candle snapshot), and `indicators` is the server's values for
  * the chart to draw. Otherwise `indicators` is undefined and the chart computes its own: the
- * fallback for a server from before the feature, and the fixture feed.
+ * fallback for a server from before the feature.
  *
  * `levels` and `zones` follow the same rule (`levels.v1`, `zones.v1`): the server's `chart.levels`
  * and, while `demand.zones` (the zones layer) is on, its `chart.zones` for the demand's rth; null

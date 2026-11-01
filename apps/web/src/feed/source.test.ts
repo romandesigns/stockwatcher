@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chooseSource, initialSymbol, probeServer, followCandidates, followServer, type ServerSymbols } from "./source.ts";
+import { DEFAULT_SYMBOL, followCandidates, followServer, initialSymbol, probeServer, serverChoice, type ServerSymbols } from "./source.ts";
 
 const data = (over: Partial<ServerSymbols> = {}): ServerSymbols => ({ mode: "replay", status: "running", source: "archive 2026-10-15 (fixture)", day: "2026-10-15", fixture: true, symbols: ["FXLO", "SMPL"], ...over });
 
@@ -10,29 +10,24 @@ const fakeFetch = (res: { status?: number; body?: unknown; type?: string } | Err
   }) as unknown as typeof fetch;
 
 describe("chart source", () => {
-  test("server is the default when it has symbols, and says if its data is fixture data", () => {
-    const c = chooseSource(undefined, { ok: true, data: data() }, "SMPL");
-    expect(c).toMatchObject({ kind: "server", fixtureData: true, mode: "replay", symbols: ["FXLO", "SMPL"], label: "Server replay · 2026-10-15" });
-    expect(chooseSource("server", { ok: true, data: data({ fixture: false }) }, "SMPL").fixtureData).toBe(false);
-    expect(initialSymbol(c, "SMPL")).toBe("SMPL");
-    expect(initialSymbol({ ...c, symbols: ["ABC"] }, "SMPL")).toBe("ABC");
+  test("the server's answer, labelled, saying whether its data is fixture data", () => {
+    const c = serverChoice(data());
+    expect(c).toMatchObject({ fixtureData: true, mode: "replay", symbols: ["FXLO", "SMPL"], label: "Server replay · 2026-10-15", market: "replay" });
+    expect(serverChoice(data({ fixture: false })).fixtureData).toBe(false);
+    expect(initialSymbol(c, DEFAULT_SYMBOL)).toBe("SMPL");
+    expect(initialSymbol({ ...c, symbols: ["ABC"] }, DEFAULT_SYMBOL)).toBe("ABC");
   });
 
-  test("falls back to the in-browser fixture only when the server is unusable, with the reason", () => {
-    expect(chooseSource(undefined, { ok: false, reason: "server unreachable (x)" }, "SMPL")).toMatchObject({ kind: "fixture", reason: "server unreachable (x)", fixtureData: true, symbols: ["SMPL"] });
-    expect(chooseSource(undefined, { ok: true, data: data({ symbols: [], status: "no_data" }) }, "SMPL")).toMatchObject({ kind: "fixture", reason: "server has no data (no_data, replay mode)" });
-    expect(chooseSource(undefined, { ok: true, data: data({ symbols: [], status: "not_configured", mode: "live" }) }, "SMPL").reason).toBe("server has no data (not_configured, live mode)");
-    expect(chooseSource("fixture", { ok: true, data: data() }, "SMPL")).toMatchObject({ kind: "fixture", reason: "VITE_CHART_SOURCE=fixture" });
-    // A live page never falls back for an empty list: an empty live market (closed, or before the
-    // first trade) is real, and fixture prices would pass for it.
-    expect(chooseSource(undefined, { ok: true, data: data({ symbols: [], status: "running", mode: "live" }) }, "SMPL", "live")).toMatchObject({ kind: "server", symbols: [], market: "live" });
-    // An unreachable server still falls back, labelled, whatever the page.
-    expect(chooseSource(undefined, { ok: false, reason: "server unreachable (x)" }, "SMPL", "live")).toMatchObject({ kind: "fixture", market: "live" });
+  test("an empty server is still the server: never an invented stand-in", () => {
+    // An empty live market (closed, or before the first trade) is real, and so is a replay with
+    // nothing to play yet; the page shows that rather than made-up prices.
+    expect(serverChoice(data({ symbols: [], status: "running", mode: "live" }), "live")).toMatchObject({ symbols: [], market: "live", label: "Server live · 2026-10-15" });
+    expect(serverChoice(data({ symbols: [], status: "no_data" }))).toMatchObject({ symbols: [], reason: "archive 2026-10-15 (fixture)" });
   });
 
   test("probe maps HTTP, non-JSON and network failures to reasons", async () => {
     expect(await probeServer(fakeFetch({ body: data() }))).toEqual({ ok: true, data: data() });
-    // 401 means the server wants an access token: the app shows its sign-in card instead of the fixture.
+    // 401 means the server wants an access token: the app shows its sign-in card (any other failure: "Server unreachable").
     expect(await probeServer(fakeFetch({ status: 401 }))).toEqual({ ok: false, reason: "the server needs an access token", unauthorized: true });
     expect(await probeServer(fakeFetch({ status: 500 }))).toEqual({ ok: false, reason: "server answered HTTP 500" });
     expect(await probeServer(fakeFetch({ type: "text/html" }))).toMatchObject({ ok: false });
@@ -54,15 +49,10 @@ describe("followCandidates", () => {
 
 describe("followServer", () => {
   test("the source description follows a replay day switch", () => {
-    const c = chooseSource(undefined, { ok: true, data: data() }, "SMPL");
+    const c = serverChoice(data());
     const after = followServer(c, data({ day: "2026-10-14", source: "archive 2026-10-14", fixture: false }));
-    expect(after).toMatchObject({ kind: "server", label: "Server replay · 2026-10-14", reason: "archive 2026-10-14", fixtureData: false });
+    expect(after).toMatchObject({ label: "Server replay · 2026-10-14", reason: "archive 2026-10-14", fixtureData: false });
     // No answer yet (or a failed refresh): the last known description stays.
     expect(followServer(c, undefined)).toBe(c);
-  });
-
-  test("the in-browser fixture never follows the server", () => {
-    const f = chooseSource("fixture", { ok: true, data: data() }, "SMPL");
-    expect(followServer(f, data({ day: "2026-10-14" }))).toBe(f);
   });
 });

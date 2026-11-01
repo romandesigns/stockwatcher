@@ -17,8 +17,8 @@
 //   apart from a migration seed) and are persisted with the cache, so they survive a restart
 //   and are sent after the next `settings.snapshot` (last writer wins, like any other write);
 // - offline cache: the confirmed values are persisted too, so the app starts with the last
-//   known settings before the socket connects and works with no server at all (the in-browser
-//   fixture never attaches a transport; everything stays local).
+//   known settings before the socket connects and keeps working with no server (no transport
+//   attached: everything stays local until one is).
 //
 // Migration. The first time a client runs this code it has settings in the old per-app keys
 // (`sw-chart:*` on the web, `chart.*` preferences on the phone). The app passes them to `seed`,

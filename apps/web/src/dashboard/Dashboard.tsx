@@ -3,10 +3,9 @@ import { cn, ScrollArea, TOUCH_HIT } from "@stockwatcher/chart-web/ui";
 import { lastSessionLabel, parseLiveSession } from "@stockwatcher/shared";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Connection } from "../ConnectionGate.tsx";
-import { followCandidates, followServer } from "../feed/source.ts";
+import { DEFAULT_SYMBOL, followCandidates, followServer } from "../feed/source.ts";
 import { useCandidates } from "../feed/useCandidates.ts";
 import { usePaperTrading } from "../feed/usePaperTrading.ts";
-import { FIXTURE_SYMBOL } from "../fixtures/fixtureFeed.ts";
 import { SearchPill } from "../search/SearchPill.tsx";
 import { TickerSearch } from "../search/TickerSearch.tsx";
 import { NavToggle } from "../nav/NavToggle.tsx";
@@ -79,7 +78,7 @@ export function Dashboard({ choice, feed }: Connection) {
   // app-state `picked` (owner, 2026-10-23).
   const picked = useApp((s) => s.picked);
   const shown = dashboard.slots.slice(0, dashboard.count).map((slot, i) => {
-    const fallback = candidates.symbols[i] ?? candidates.symbols[0] ?? FIXTURE_SYMBOL;
+    const fallback = candidates.symbols[i] ?? candidates.symbols[0] ?? DEFAULT_SYMBOL;
     return followCandidates(slot.symbol ?? fallback, candidates.symbols, picked);
   });
 
@@ -128,7 +127,7 @@ export function Dashboard({ choice, feed }: Connection) {
 
   // The live market lists nothing before a session's first trade, and all weekend: say so instead
   // of four charts waiting on symbols that cannot load.
-  const liveEmpty = choice.kind === "server" && choice.market === "live" && candidates.symbols.length === 0;
+  const liveEmpty = choice.market === "live" && candidates.symbols.length === 0;
   const liveStatus = candidates.server?.status;
   // A closed market shows its last session from the archive (owner, 2026-10-18): say which day.
   const sessionLabel = choice.market === "live" ? lastSessionLabel(parseLiveSession(candidates.server?.session)) : null;

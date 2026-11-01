@@ -5,15 +5,14 @@
 import { parseReplayAlerts, type ReplayAlert } from "@stockwatcher/chart-core";
 import { serverUrl } from "@stockwatcher/shared";
 import { useEffect, useState } from "react";
-import type { SourceChoice } from "./source.ts";
 import { getToken } from "./token.ts";
 
 const NONE: readonly ReplayAlert[] = [];
 
-export function useReplayAlerts(choice: SourceChoice, day: string | null): readonly ReplayAlert[] {
+export function useReplayAlerts(day: string | null): readonly ReplayAlert[] {
   const [got, setGot] = useState<{ day: string; alerts: readonly ReplayAlert[] } | null>(null);
   useEffect(() => {
-    if (choice.kind !== "server" || !day) return;
+    if (!day) return;
     let live = true;
     const token = getToken();
     void fetch(serverUrl(`/api/replay/alerts?day=${encodeURIComponent(day)}`), { headers: token ? { Authorization: `Bearer ${token}` } : {} })
@@ -28,7 +27,7 @@ export function useReplayAlerts(choice: SourceChoice, day: string | null): reado
     return () => {
       live = false;
     };
-  }, [choice.kind, day]);
+  }, [day]);
   // Another day's answer never shows on this one.
   return got && got.day === day ? got.alerts : NONE;
 }

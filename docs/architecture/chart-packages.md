@@ -261,8 +261,10 @@ server /ws ──► ChartFeed.subscribe({symbol, timeframe, profileBin}, emit) 
                { series, tape, clock }  →  <CandleChart series={series} … />
 ```
 
-- `ChartFeed` (`apps/web/src/feed/types.ts`) has two implementations, the server feed and the
-  in-browser fixture, so nothing above it knows which is active. The same feed also carries the paper
+- `ChartFeed` (`apps/web/src/feed/types.ts`) is the server feed (tests use fakes). There is no
+  in-browser fixture since 2026-10-31: an unreachable server shows "Server unreachable" and is
+  retried every 5 s (`ConnectionGate`), and development runs the server's replay over its fixture
+  day (`SIM_AUTOFIXTURE=1 bun dev`). The same feed also carries the paper
   broker (`feed.paper`, wrapped by `usePaperTrading`) and the quote board (`feed.quotes`, all
   price-band candidates' last price, change reference and volume, at most once a second; see
   `simulator-and-chart.md` "Quote board").

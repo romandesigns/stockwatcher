@@ -7,22 +7,20 @@
 import { parseReplayDayState, type ReplayDayState } from "@stockwatcher/chart-core";
 import { serverUrl } from "@stockwatcher/shared";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { SourceChoice } from "./source.ts";
 import { getToken } from "./token.ts";
 
 export interface ReplayDays {
-  /** null until the server has answered (and always for the in-browser fixture). */
+  /** null until the server has answered. */
   state: ReplayDayState | null;
   refresh: () => void;
 }
 
-export function useReplayDays(choice: SourceChoice, clockDay: string | null): ReplayDays {
+export function useReplayDays(clockDay: string | null): ReplayDays {
   const [state, setState] = useState<ReplayDayState | null>(null);
   // Answers can come back out of order (a slow one, then a fast one): only the latest request
   // may set the state, or the menu could flash back to a stale day.
   const latest = useRef(0);
   const refresh = useCallback(() => {
-    if (choice.kind !== "server") return;
     const id = ++latest.current;
     const token = getToken();
     // The replay market's days: only the practice page (replay) has a day menu.
@@ -34,7 +32,7 @@ export function useReplayDays(choice: SourceChoice, clockDay: string | null): Re
       .catch(() => {
         // Offline: keep the last list; the connection status says so.
       });
-  }, [choice.kind]);
+  }, []);
   useEffect(() => refresh(), [refresh, clockDay]);
   return { state, refresh };
 }

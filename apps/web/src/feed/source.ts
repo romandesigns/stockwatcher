@@ -1,12 +1,12 @@
-// Which chart source is active, decided once at startup.
+// Which server market a page reads, decided once at startup.
 //
-// The server is the default (VITE_CHART_SOURCE unset or "server"). The app
-// asks GET /api/symbols first; it falls back to the in-browser fixture ONLY if
-// the server is unreachable, refuses, or has no data to replay (an empty list
-// from a replay that is still building is not that: `replayBuilding`), and it always
-// says which source is active and why. VITE_CHART_SOURCE=fixture forces the
-// in-browser fixture. A live page (the dashboard) never falls back for an empty list: an empty
-// live market is real (see chooseSource).
+// The Rust server is the only source. The app asks GET /api/symbols first; when the server is
+// unreachable or refuses, the page says so ("Server unreachable", ConnectionGate) and retries
+// rather than inventing data. There is no in-browser stand-in any more (owner rule: every heavy
+// computation runs in Rust and is pushed; the browser fixture aggregated its own candles).
+// Development runs the server's replay over its fixture day instead (`SIM_AUTOFIXTURE=1 bun dev`,
+// crates/market-archive/src/fixture.rs). A server with no candidates (a replay still building,
+// a live market before its first trade) is still the server: the lists fill as it pushes.
 
 import { shownTicker } from "@stockwatcher/app-state";
 import { serverUrl, withMarketSource, type MarketSource } from "@stockwatcher/shared";
@@ -34,11 +34,10 @@ export interface ServerSymbols {
 export type Probe = { ok: true; data: ServerSymbols } | { ok: false; reason: string; unauthorized?: boolean };
 
 export interface SourceChoice {
-  kind: "server" | "fixture";
-  /** Why this source; shown in the UI. */
+  /** What the server is playing (its `source`); shown in the UI. */
   reason: string;
   symbols: string[];
-  /** The data itself is fixture data (in-browser fixture, or a server fixture archive). */
+  /** The server replays a fixture archive (never market evidence). */
   fixtureData: boolean;
   mode: string;
   label: string;
@@ -64,44 +63,23 @@ export async function probeServer(fetchImpl: typeof fetch = fetch, timeoutMs = 2
   }
 }
 
-/** Pure decision, so it is unit-tested without a network. */
-export function chooseSource(env: string | undefined, probe: Probe | null, fixtureSymbol: string, market: MarketSource = "replay"): SourceChoice {
-  const fixture = (reason: string): SourceChoice => ({ kind: "fixture", reason, symbols: [fixtureSymbol], fixtureData: true, mode: "replay", label: "In-browser fixture", market });
-  if (env === "fixture") return fixture("VITE_CHART_SOURCE=fixture");
-  if (!probe) return fixture("server not checked");
-  if (!probe.ok) return fixture(probe.reason);
-  const d = probe.data;
-  const symbols = Array.isArray(d.symbols) ? d.symbols : [];
-  // An empty live market is the market, not a missing server: before a session's first trade (and
-  // all weekend) nothing has traded. The live page shows that, never made-up fixture prices.
-  // A replay that is still building is not a missing server either (owner, 2026-10-23: "I cannot
-  // select a date nor a ticker"): see `replayBuilding`.
-  if (symbols.length === 0 && market !== "live" && !replayBuilding(d)) return fixture(`server has no data (${d.status}${d.mode ? `, ${d.mode} mode` : ""})`);
+/**
+ * The symbol a page prefers before the candidates say otherwise: the first symbol of the server's
+ * fixture day (crates/market-archive/src/fixture.rs), so a dev replay opens on it. Only a
+ * preference: `initialSymbol` takes it only when the server lists it.
+ */
+export const DEFAULT_SYMBOL = "SMPL";
+
+/** The page's source from a successful probe. Pure, so it is unit-tested without a network. */
+export function serverChoice(d: ServerSymbols, market: MarketSource = "replay"): SourceChoice {
   return {
-    kind: "server",
     reason: d.source ?? "server",
-    symbols,
+    symbols: Array.isArray(d.symbols) ? d.symbols : [],
     fixtureData: !!d.fixture,
     mode: d.mode,
     label: serverLabel(d),
     market,
   };
-}
-
-/**
- * The replay market is up but has not reached its start time yet: its provider runs on an archived
- * day, but the rebuild to `REPLAY_START` (or to a seek, or onto a newly picked day) has not got to
- * the first in-band trade, so `/api/symbols` lists no candidates for now. On a whole-market day
- * that takes one to two minutes on the VPS, longer while the live market loads its history after
- * a restart. The chart page used to read that as "server has no data" and fall back to the
- * in-browser fixture for the rest of the session (the choice is made once): no day menu (the
- * fixture has no days) and only fixture tickers in the search, i.e. replay looked broken after
- * every deploy and to any page opened during a day switch. It stays on the server instead: the
- * candidate list fills on its next poll and the clock (with the day menu) arrives on the socket
- * when the rebuild ends.
- */
-export function replayBuilding(d: ServerSymbols): boolean {
-  return (d.status === "running" || d.status === "starting") && !!d.day;
 }
 
 /** The label for a server source: "Server replay · 2026-10-15". */
@@ -111,15 +89,15 @@ const serverLabel = (d: ServerSymbols) => `Server ${d.mode}${d.day ? ` · ${d.da
  * The startup choice brought up to date with a later GET /api/symbols. The replay day can change
  * under a running page (replay.control `day`, from this client or another), and with it the
  * source label, the day and whether the data is fixture data; the source chip and the tape note
- * must say what is playing now, not what played when the page loaded. The in-browser fixture
- * never changes, and a failed refresh (no `latest`) keeps the last known description.
+ * must say what is playing now, not what played when the page loaded. A failed refresh (no
+ * `latest`) keeps the last known description.
  */
 export function followServer(choice: SourceChoice, latest: ServerSymbols | undefined): SourceChoice {
-  if (choice.kind !== "server" || !latest) return choice;
+  if (!latest) return choice;
   return { ...choice, reason: latest.source ?? choice.reason, fixtureData: !!latest.fixture, mode: latest.mode, label: serverLabel(latest) };
 }
 
-/** The symbol to show first: the fixture's symbol if the server has it, else the first one. */
+/** The symbol to show first: `preferred` (DEFAULT_SYMBOL) if the server lists it, else its first candidate. */
 export function initialSymbol(choice: SourceChoice, preferred: string): string {
   return choice.symbols.includes(preferred) ? preferred : (choice.symbols[0] ?? preferred);
 }

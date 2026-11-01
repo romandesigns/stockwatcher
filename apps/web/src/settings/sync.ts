@@ -1,7 +1,7 @@
 // The web app's (and the desktop shell's) synced settings: one engine for the page
 // (@stockwatcher/shared settingsSync.ts), cached in localStorage so the chart starts with the
-// last known settings before the socket connects, and works with no server at all (the
-// in-browser fixture never attaches it). docs/architecture/settings-sync.md.
+// last known settings before the socket connects, and keeps working while the server is
+// unreachable (edits wait in the cache). docs/architecture/settings-sync.md.
 
 import { migrateLegacySettings } from "@stockwatcher/chart-core";
 import { createSettingsSync, type SettingsSync } from "@stockwatcher/shared";

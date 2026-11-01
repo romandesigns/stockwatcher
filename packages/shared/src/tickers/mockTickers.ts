@@ -1,7 +1,7 @@
 // MOCK DATA, NOT MARKET DATA. Made-up small-cap tickers (none is meant to
 // be a real company) so the quick-open search has a realistic list to
-// filter when the data is a fixture (the in-browser fixture, or a server
-// replaying a fixture archive). Next to a real replayed or live day they
+// filter when the data is a fixture (a server replaying a fixture
+// archive). Next to a real replayed or live day they
 // are noise, so tickerUniverse only appends them on request. Prices sit
 // in the $0.10–$25 band the server screens for. Every mock row is
 // labelled "mock" in the UI and cannot be opened: there is no data behind it.
