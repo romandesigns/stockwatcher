@@ -1,5 +1,5 @@
 use crate::config::EngineConfig;
-use crate::luld::{LuldPoint, LuldState};
+use crate::luld::{LuldInputs, LuldPoint, LuldState, Print};
 use crate::profile::{TickProfile, poc, value_area};
 use crate::quality::DataQuality;
 use crate::timeframe::Timeframe;
@@ -14,6 +14,7 @@ use market_events::{
 };
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, HashMap, VecDeque};
+use std::sync::Arc;
 
 /// Percent of session volume inside the value area.
 pub const VALUE_AREA_PERCENT: u32 = 70;
@@ -841,20 +842,38 @@ impl SymbolState {
         self.halts.last().is_some_and(|h| h.end.is_none())
     }
 
-    /// LULD for one accepted trade: a price-qualifying regular-session print while not halted
-    /// feeds the reference; any other print only moves LULD time forward (so a print after the
-    /// close ends the bands even if the clock has not got there yet).
-    fn luld_trade(&mut self, ts: i64, rec: &TradeRec) -> Vec<LuldPoint> {
+    /// LULD for one accepted trade: a regular-session print while not halted goes to the model
+    /// (a price-qualifying one feeds the reference; the listing venue's opening print, eligible
+    /// or not, can set it); any other print only moves LULD time forward (so a print after the
+    /// close ends the bands even if the clock has not got there yet). A new regular session's
+    /// state asks `inputs` for the previous close and listing venue once.
+    fn luld_trade(
+        &mut self,
+        t: &Trade,
+        rec: &TradeRec,
+        inputs: Option<&dyn LuldInputs>,
+    ) -> Vec<LuldPoint> {
         let mut pts = Vec::new();
+        let ts = t.event_ts.0;
         let regular = rec.session.kind == SessionKind::Regular;
-        if regular && rec.ohlc && !self.halted() {
+        if regular && !self.halted() {
             if self.luld.as_ref().is_none_or(|l| l.session < rec.session)
                 && let Some((open, close)) = rec.session.bounds()
             {
-                self.luld = Some(LuldState::new(rec.session, open.0, close.0));
+                let params = inputs
+                    .map(|i| i.params(&self.symbol, rec.session.date))
+                    .unwrap_or_default();
+                self.luld = Some(LuldState::new(rec.session, open.0, close.0, params));
             }
             if let Some(l) = self.luld.as_mut().filter(|l| l.session == rec.session) {
-                l.on_trade(ts, rec.price, &mut pts);
+                let print = Print {
+                    ts,
+                    price: rec.price,
+                    eligible: rec.ohlc,
+                    exchange: &t.exchange,
+                    conditions: &t.conditions,
+                };
+                l.on_print(print, &mut pts);
                 return pts;
             }
         }
@@ -892,6 +911,9 @@ pub struct ChartEngine {
     /// Min-heap of (interval end, symbol) so `advance_clock` touches only symbols with an
     /// interval to finalize, never every symbol.
     pending: BinaryHeap<Reverse<(i64, String)>>,
+    /// The previous closes and listing venues the LULD model needs (`None`: the model falls back
+    /// to the first reference and any venue's official open; see [`crate::luld`]).
+    luld_inputs: Option<Arc<dyn LuldInputs>>,
 }
 
 impl Default for ChartEngine {
@@ -915,7 +937,16 @@ impl ChartEngine {
             clock: None,
             symbols: HashMap::new(),
             pending: BinaryHeap::new(),
+            luld_inputs: None,
         })
+    }
+
+    /// Sets where the LULD model gets each symbol's previous close and listing venue. Read when a
+    /// symbol's regular session first trades, so it applies from the next session a symbol
+    /// starts; set it before feeding. An engine whose symbols are adopted into another
+    /// ([`Self::adopt_symbol`]) needs the same inputs, or the adopted bands differ.
+    pub fn set_luld_inputs(&mut self, inputs: Option<Arc<dyn LuldInputs>>) {
+        self.luld_inputs = inputs;
     }
 
     pub fn config(&self) -> &EngineConfig {
@@ -1133,6 +1164,7 @@ impl ChartEngine {
         let (cap, bin) = (self.cfg.max_intervals_per_timeframe, self.cfg.profile_bin);
         let (retention, max_tf, keep) = (self.retention, self.max_tf, self.cfg.sessions_retained);
         let drop_prior = self.cfg.drop_prior_dates_at_open;
+        let luld_inputs = self.luld_inputs.as_deref();
         let st = Self::state(&mut self.symbols, &self.cfg, &t.symbol);
         let mut out = Vec::new();
         let reason = effect.reason_code();
@@ -1241,7 +1273,7 @@ impl ChartEngine {
                 s.apply(&key, &rec, &st.trades, &ctx, &mut out);
             }
         }
-        let pts = st.luld_trade(ts, &rec);
+        let pts = st.luld_trade(t, &rec, luld_inputs);
         luld_updates(&t.symbol, pts, &mut out);
         Self::reschedule(&mut self.pending, st);
         Self::prune(st, wm, retention, max_tf, keep, drop_prior);

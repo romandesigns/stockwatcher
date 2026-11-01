@@ -56,9 +56,10 @@
 //!
 //! # Halt risk (the build-up)
 //!
-//! A LULD pause is what the watcher anticipates: the price reaches its band (the 5-minute mean
-//! ± 10 % from $3, 20 % from $0.75, the lesser of $0.15 or 75 % below, doubled in the first 15
-//! minutes; `chart_engine::luld`) and stays there for 15 seconds. The level of the pressure does not anticipate it: a stock can sell 90/10 all
+//! A LULD pause is what the watcher anticipates: the price reaches its band (the 5-minute mean,
+//! held at least 30 s, ± 10 % above a $3 previous close, 20 % from $0.75 to $3, the lesser of $0.15
+//! or 75 % below, doubled in the last 25 minutes at or below $3; `chart_engine::luld`) and stays
+//! there for 15 seconds. The level of the pressure does not anticipate it: a stock can sell 90/10 all
 //! afternoon and drift. What comes before a pause is the pressure **rising** while the price runs
 //! **at** the band on the same side. Per symbol, at the clock `t`, with `H` = [`HORIZON`]:
 //!
@@ -68,8 +69,8 @@
 //! - **Rise** `Δ = P(t) − P(t − H)`, −100…100: the build-up. A steady 90 has `Δ ≈ 0`; 30 → 80 in
 //!   the horizon has `Δ = 50`.
 //! - **Band** on that side, `L` (the modelled upper band for bull, lower for bear), its
-//!   **half-width** `h = |L − ref| / ref` (the band's own percentage: 10 % above $3, 20 % from
-//!   $0.75, up to 75 % below, doubled at the open), and the **distance** `d = max(0, ±(L − p) / p)`
+//!   **half-width** `h = |L − ref| / ref` (the band's own percentage: 10 % above a $3 previous
+//!   close, 20 % from $0.75, up to 75 % below, doubled before the close), and the **distance** `d = max(0, ±(L − p) / p)`
 //!   from the last price `p`. Distances are compared with `h`, not in absolute percent, so one set
 //!   of constants serves a $0.40 stock with a 37 % band and a $12 one with 10 %.
 //! - **Move** `m = ±(p − p(t − H)) / p(t − H)` toward the band, `p(t − H)` the last print at or
@@ -150,7 +151,8 @@
 //!   pressure swings by tens of points all day. Hence [`ENTER_RISE`] = 30 (the top ~6 %) and
 //!   [`RISE_FULL`] = 50 (where it becomes rare), and the band gates do the rest.
 //! - A first cut without the closeness gate (time to band within 300 s, risk 40) showed MDXH
-//!   twice at 09:31–09:33 (28 s and 23 s), its doubled opening band 75 % away: a 7.5 % move in
+//!   twice at 09:31–09:33 (28 s and 23 s), its then doubled opening band 75 % away (the LULD
+//!   model doubled the first 15 minutes until 2026-10-31; the Plan does not): a 7.5 % move in
 //!   30 s projected that band within 300 s. A fast stock is not a halt candidate on its own,
 //!   hence [`ENTER_CLOSE`] (past half-way to the band), [`T_ENTER`] = 180 s and
 //!   [`ENTER_RISK`] = 50. The fixture showed SMPL twice the same way (12:17, 12:19), 8 % of the

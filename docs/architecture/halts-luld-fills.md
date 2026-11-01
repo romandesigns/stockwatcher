@@ -29,24 +29,53 @@ nothing here.
 ## 2. LULD bands (chart-engine → wire)
 
 Limit Up–Limit Down price bands, computed by the engine from the same price-qualifying trades as OHLC.
-We **model** them as follows. This is our reading of the LULD Plan for Tier 2 NMS stocks, which is
-where every $0.10–$25 small cap sits. Treat it as a guide on the chart, not as the exchange's numbers.
-Verify against the official bands before any real use.
+We **model** them as follows. This is our reading of the LULD Plan (consolidated text through
+Amendment 20, `cdn.luldplan.com/plans/LULD-Plan-Amendment-20.pdf`; the proposed 23rd Amendment
+leaves Section V and the percentages unchanged) for Tier 2 NMS stocks, which is where nearly every
+$0.10–$25 small cap sits; Tier 1 is not modelled. Treat it as a guide on the chart, not as the
+exchange's numbers. Verify against the official bands before any real use. Section numbers are the
+Plan's. Revised 2026-10-31 to follow the Plan (the first version re-tested on every print, opened on
+the first trade, bracketed by the moving reference and doubled at the open); see "Why" below.
 
-- **Active window:** only 09:30–16:00 ET. Outside it there are no bands.
-- **Reference price:** the arithmetic mean of price-qualifying trade prices in the preceding
-  5 minutes. The first one is the first regular-session trade. It is published only when it moves
-  by at least 1% from the current reference. Otherwise the current reference stays.
-- **Percentage by reference price P:**
-  - P ≥ $3.00: 10%;
-  - $0.75 ≤ P < $3.00: 20%;
-  - P < $0.75: the lesser of $0.15 or 75%.
-- **Doubling:** the percentage is doubled 09:30–09:45 for all prices, and 15:35–16:00 for P < $3.00.
-- **Bands:** `up = P + P·pct` and `down = P − P·pct` (`P ± $0.15` for that tier). Both are rounded to the
+- **Active window:** only 09:30–16:00 ET (§V(A)(1)). Outside it there are no bands.
+- **Percentage bracket**, fixed for the day by the **previous close** on the primary listing
+  exchange (Appendix A §II(2)–(4), (6)), applied to the current reference P:
+  - previous close more than $3.00: 10%;
+  - $0.75 up to and including $3.00: 20%;
+  - less than $0.75: the lesser of $0.15 or 75%.
+  The previous close comes from `daily-closes.json` (split-adjusted, at most 10 days old). Without
+  one the session's first reference stands in.
+- **Doubling** (§V(A)(1)): only 15:35–16:00 (the last 25 minutes before an early close), when the
+  previous close is at or below $3.00. **No doubling at the open.**
+- **Reference price** (§V(A)(2)): the arithmetic mean of price-qualifying trade prices in the preceding
+  5 minutes. It replaces the reference in effect only when it moved at least 1% **and** that
+  reference has been in effect at least **30 seconds**. At the end of a hold the mean as of that
+  instant is tested (by the clock if no print comes), then every print after it. With no trade in
+  5 minutes the reference in effect stays.
+- **First reference** (§V(B)): the primary listing exchange's opening print (a print from the
+  listing venue in `assets.json` with condition `O`, `Q` or `5`; with the venue unknown, any `Q`
+  print) if it comes before 09:35. The mean restarts from it. Otherwise the 5-minute mean at 09:35,
+  or the first trade after 09:35 if nothing traded. No bands before that.
+- **Bands:** `up = P + P·pct` and `down = P − P·pct` (`P ± $0.15` for that bracket). Both are rounded to the
   tick grid ($0.01 at or above $1, $0.0001 below), the upper band down and the lower band up, so a
-  band is never wider than the rule. `down` never goes below one tick.
-- **Halts:** while a symbol is halted its bands are not published. After a resume they continue from
-  the next trade.
+  band is never wider than the rule (the Plan text does not say how to round). `down` never goes
+  below one tick.
+- **Halts** (§V(C)): while a symbol is halted its bands are not published. After a resume the
+  reopening print (the first eligible print, or the listing venue's `5`/`O`/`Q` print) is the new
+  reference, with a fresh 30-second hold.
+
+Not modelled, because trades alone cannot show them: an open or reopening on a quote (the Plan then
+uses the previous close or the quote midpoint), the Limit State freeze of reference updates
+(§VI(B)(2)), and Tier 1 membership.
+
+**Why (2026-10-31).** Five years of tape against the official halt list
+(`J:/research/stockwatcher/luld-halts`) showed the first version's bands chasing fast spikes so the
+stock never reached them (NNDM 2022-11-03 paused at 2.97 with our band at 3.27; the Plan's 2.96).
+Rerun on every 4th trading day of that history (104,581 symbol-days, 5,372 official LULD pauses in
+session): a tape-inferred pause (5 minutes of silence after a print in the outer 10% of the band)
+matched **23.3%** of official pauses with the first version and **58.0%** with these rules, at
+similar precision (74.4% vs 72.4% of inferred pauses confirmed by an official halt). In the first
+15 minutes it went from 0.3% to 50.8%: the first version doubled bands the Plan does not double.
 
 ```jsonc
 // LuldWire: the bands in effect from t until the next point; up/down null = no bands from t
@@ -94,25 +123,26 @@ Decisions where the contract was silent:
 - **Halt retention:** a halt is dropped once it ended before the oldest interval still retained by
   every timeframe. An open halt is never dropped.
 - **Reference price:** the 5-minute window is `(t − 5 min, t]`. Only price-qualifying (OHLC) prints of
-  the regular session count, and only while not halted. The mean is evaluated on each such trade
-  (not on clock ticks), using exact `i128` sums. When it moves at least 1%, the published
-  reference is the mean rounded half up to the micro-dollar (not to the tick), so `ref` can carry up
-  to six decimals.
-- **After a resume** the reference and the window restart: the first trade after the resume is the
-  new reference, as the reopening print is under the Plan. During the halt nothing is averaged.
+  the regular session count, and only while not halted (plus the listing venue's opening print,
+  which counts once even when it is a non-qualifying `Q`). The mean is tested on each such trade
+  once the 30-second hold has passed, and once by the clock at the hold's end, using exact `i128`
+  sums. When it moves at least 1%, the published reference is the mean rounded half up to the
+  micro-dollar (not to the tick), so `ref` can carry up to six decimals.
+- **After a resume** the reference and the window restart: the reopening print is the new reference
+  (§V(C)). During the halt nothing is averaged.
 - **Doubled percentages:** `P < $0.75` doubles to the lesser of $0.30 or 150%, and the lower band then
   floors at $0.0001. On an early-close day the active window is 09:30–13:00, the closing doubling is
   the last 25 minutes (12:35–13:00), and the null point is at 13:00.
 - **Tick for rounding** is chosen by the unrounded band's own price ($0.01 at or above $1.00, else
   $0.0001). For example, `$1.01 · 0.8 = $0.808` stays `0.808`.
-- **When a point is published:** on a trade that moves the reference, at the 09:45 and 15:35 regime
-  changes (a point stamped at exactly that time, published by the clock or by the first later
+- **When a point is published:** on a trade that moves the reference, at a hold's end when the mean
+  moved, at 09:35 when no opening print came, at the 15:35 regime change (a point stamped at exactly that time, published by the clock or by the first later
   print, whichever comes first), at a halt (a null point at the halt time) and at the close (a null
   point at 16:00). A point is published only when `ref`, `up` or `down` changes, and a null point
   only if bands were in effect. A null point also nulls `ref`.
 - **Ordering:** points have strictly increasing `t`. A late print inside the settle window is stamped
   at the latest evaluation time, never in the past. If two changes fall on the same `t` (for
-  example, the clock crosses 09:45 and then a print at exactly 09:45:00.000 moves the reference),
+  example, the clock crosses 15:35 and then a print at exactly 15:35:00.000 moves the reference),
   the second replaces the first in the list, and **both are sent**. Clients upsert LULD points by
   `t`, as they upsert halts by `start`.
 - **Arrival order:** candles stay independent of arrival order inside the settle window, but the
@@ -127,8 +157,11 @@ Decisions where the contract was silent:
   order that has aged out of `orders`.
 
 Tests:
-- `luld.rs` unit tests cover each tier boundary, the $0.15 rule, the doubling windows (including
-  15:35 only below $3), the 1% threshold, rounding direction, halt suppression and the 16:00 null.
+- `luld.rs` unit tests cover each bracket boundary (including $3.00 in the 20% bracket), the bracket
+  following the previous close, the $0.15 rule, the doubling window (15:35 only at or below $3,
+  none at the open, early close), the 30-second hold (by the clock and by prints), the opening
+  print (another venue's, the 09:35 mean, nothing by 09:35, unknown venue), the 1% threshold,
+  rounding direction, halts and the reopening print, and the 16:00 null.
 - `tests/halts_luld.rs` covers start and resume, unmatched statuses, a double halt, retention, the
   current-date filter, and the rebuild under two clock patterns.
 - `tests/wire.rs` holds the golden JSON for both messages and the snapshot fields.

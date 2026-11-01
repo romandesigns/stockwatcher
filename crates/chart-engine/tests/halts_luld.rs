@@ -2,10 +2,12 @@
 //! band arithmetic itself is unit-tested next to `luld_bands` (src/luld.rs).
 mod common;
 
+use chart_engine::luld::{LuldInputs, LuldParams};
 use chart_engine::wire::{ChartUpdate, HaltWire, LuldWire};
 use chart_engine::{ChartEngine, Timeframe};
 use common::*;
 use market_events::{MarketEvent, Source, Status, StatusKind, Tape, UnixNanos};
+use std::sync::Arc;
 
 fn status(ts: UnixNanos, kind: StatusKind) -> MarketEvent {
     MarketEvent::Status(Status {
@@ -110,43 +112,72 @@ fn unmatched_statuses_are_ignored_and_counted() {
     assert_eq!(unmatched(&e), 2);
 }
 
+/// Previous close $2.00 (the 20% bracket all day, doubled at the close) and Nasdaq listing.
+#[derive(Debug)]
+struct Inputs;
+
+impl LuldInputs for Inputs {
+    fn params(&self, _symbol: &str, _date: chrono::NaiveDate) -> LuldParams {
+        LuldParams {
+            prev_close: Some("2.00".parse().unwrap()),
+            listing_venue: Some("Q".into()),
+        }
+    }
+}
+
 #[test]
 fn luld_bands_follow_the_session_and_stop_at_a_halt_and_the_close() {
     let mut e = ChartEngine::default();
+    e.set_luld_inputs(Some(Arc::new(Inputs)));
     // Pre-market: no bands.
     let ups = e.apply(&ev(trade(at(9, 0, 0, 0), "3.00", 100, 1)));
     assert!(lulds(&ups).is_empty());
-    // The first regular-session trade is the reference; 09:30–09:45 doubles 10% to 20%.
-    let ups = e.apply(&ev(trade(at(9, 30, 5, 0), "3.38", 100, 2)));
+    // Another venue trades before Nasdaq opens: still no bands.
+    let ups = e.apply(&ev(
+        trade(at(9, 30, 2, 0), "3.50", 100, 2).with_exchange("V")
+    ));
+    assert!(lulds(&ups).is_empty());
+    // Nasdaq's official open is the first reference; the previous close ($2.00) picks 20%, and
+    // nothing doubles at the open.
+    let ups = e.apply(&ev(trade(at(9, 30, 5, 0), "3.38", 0, 3)
+        .with_exchange("Q")
+        .with_conditions(["Q"])));
     assert_eq!(lulds(&ups), vec![band(at(9, 30, 5, 0), 3.38, 4.05, 2.71)]);
     // A volume-only print (odd lot) never moves the reference.
     let ups = e.apply(&ev(
-        trade(at(9, 31, 0, 0), "9.00", 50, 3).with_conditions(["@", "I"])
+        trade(at(9, 31, 0, 0), "9.00", 50, 4).with_conditions(["@", "I"])
     ));
     assert!(lulds(&ups).is_empty());
-    // The clock crosses 09:45: same reference, 10%.
+    // 09:45 changes nothing any more.
     let ups = e.advance_clock(at(9, 46, 0, 0));
-    assert_eq!(lulds(&ups), vec![band(at(9, 45, 0, 0), 3.38, 3.71, 3.05)]);
+    assert!(lulds(&ups).is_empty());
     // Halt: a null point, and nothing while halted.
     let ups = e.apply(&status(at(10, 5, 0, 0), StatusKind::Halt));
     assert_eq!(lulds(&ups), vec![null(at(10, 5, 0, 0))]);
-    let ups = e.apply(&ev(trade(at(10, 5, 10, 0), "3.50", 100, 4)));
+    let ups = e.apply(&ev(trade(at(10, 5, 10, 0), "3.50", 100, 5)));
     assert!(lulds(&ups).is_empty());
     e.apply(&status(at(10, 6, 30, 0), StatusKind::Resume));
-    // The first trade after the resume restarts the bands from its own price.
-    let ups = e.apply(&ev(trade(at(10, 6, 31, 0), "3.60", 100, 5)));
-    assert_eq!(lulds(&ups), vec![band(at(10, 6, 31, 0), 3.60, 3.96, 3.24)]);
-    // 16:00 ends the bands (3.60 ≥ $3: no closing doubling).
+    // The first trade after the resume (the reopening print) restarts the bands from its own
+    // price, still in the 20% bracket.
+    let ups = e.apply(&ev(trade(at(10, 6, 31, 0), "3.60", 100, 6)));
+    assert_eq!(lulds(&ups), vec![band(at(10, 6, 31, 0), 3.60, 4.32, 2.88)]);
+    // 15:35 doubles (previous close ≤ $3) and 16:00 ends the bands.
     let ups = e.advance_clock(at(16, 0, 0, 0));
-    assert_eq!(lulds(&ups), vec![null(at(16, 0, 0, 0))]);
+    assert_eq!(
+        lulds(&ups),
+        vec![
+            band(at(15, 35, 0, 0), 3.60, 5.04, 2.16),
+            null(at(16, 0, 0, 0))
+        ]
+    );
     let snap = e.snapshot(SYM, Timeframe::S15, None).unwrap();
     assert_eq!(
         snap.luld,
         vec![
             band(at(9, 30, 5, 0), 3.38, 4.05, 2.71),
-            band(at(9, 45, 0, 0), 3.38, 3.71, 3.05),
             null(at(10, 5, 0, 0)),
-            band(at(10, 6, 31, 0), 3.60, 3.96, 3.24),
+            band(at(10, 6, 31, 0), 3.60, 4.32, 2.88),
+            band(at(15, 35, 0, 0), 3.60, 5.04, 2.16),
             null(at(16, 0, 0, 0)),
         ]
     );
@@ -155,8 +186,19 @@ fn luld_bands_follow_the_session_and_stop_at_a_halt_and_the_close() {
         assert_eq!(e.snapshot(SYM, tf, None).unwrap().luld, snap.luld);
     }
     // After-hours trades change nothing.
-    let ups = e.apply(&ev(trade(at(16, 30, 0, 0), "4.50", 100, 6)));
+    let ups = e.apply(&ev(trade(at(16, 30, 0, 0), "4.50", 100, 7)));
     assert!(lulds(&ups).is_empty());
+}
+
+#[test]
+fn without_inputs_the_0935_mean_opens_and_the_first_reference_picks_the_bracket() {
+    let mut e = ChartEngine::default();
+    let ups = e.apply(&ev(trade(at(9, 31, 0, 0), "3.00", 100, 1)));
+    assert!(lulds(&ups).is_empty());
+    e.apply(&ev(trade(at(9, 32, 0, 0), "3.20", 100, 2)));
+    // 09:35: the mean 3.10 (> $3: 10%).
+    let ups = e.advance_clock(at(9, 36, 0, 0));
+    assert_eq!(lulds(&ups), vec![band(at(9, 35, 0, 0), 3.10, 3.41, 2.79)]);
 }
 
 #[test]

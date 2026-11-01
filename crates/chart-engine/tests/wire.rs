@@ -33,8 +33,8 @@ fn increment_json_shapes() {
         ups.iter().filter_map(|u| u.timeframe()).collect::<Vec<_>>(),
         Timeframe::ALL.to_vec()
     );
-    // The first regular-session trade publishes LULD bands (09:30–09:45 not involved: 10% of
-    // $3.18 is 3.498 → 3.49 and 2.862 → 2.87), sent to every timeframe.
+    // The first trade of a session after 09:35 (no previous close known) publishes LULD bands
+    // (10% of $3.18: 3.498 → 3.49 and 2.862 → 2.87), sent to every timeframe.
     assert_eq!(
         json[5],
         format!(

@@ -277,7 +277,10 @@ fn forming_then_final_by_trade_and_by_clock() {
             (Timeframe::S30, ms(at(10, 0, 0, 0)))
         ]
     );
-    assert!(e.advance_clock(at(10, 0, 59, 999)).is_empty());
+    // No candle is due before 10:01 (the LULD hold of the 10:00:05 reference does expire at
+    // 10:00:35 and moves it to the 3.05 mean: that is the bands, not a candle).
+    let quiet = e.advance_clock(at(10, 0, 59, 999));
+    assert!(quiet.iter().all(|u| u.as_candle().is_none()), "{quiet:?}");
     let u4 = e.advance_clock(at(10, 5, 0, 0));
     let f4: Vec<_> = u4
         .iter()

@@ -99,9 +99,11 @@
 //! they ended before every retained interval.
 //!
 //! **LULD bands.** Modelled, not the exchange's numbers: see [`luld`] for the model and the
-//! pure band function. Points are stamped at the time of the change (a doubling boundary, the
-//! close, a halt, or the trade that moved the reference), whoever notices it first (the clock or
-//! a trade), so play, step and a seek rebuild give the same list. Being published as trades
+//! pure band function. Points are stamped at the time of the change (the closing doubling
+//! boundary, the close, a halt, 09:35 without an opening print, the end of a reference's
+//! 30-second hold, or the print that moved the reference), whoever notices it first (the clock or
+//! a trade), so play, step and a seek rebuild give the same list. The previous close and listing
+//! venue the Plan needs come from [`ChartEngine::set_luld_inputs`]. Being published as trades
 //! arrive, the bands (unlike candles) depend on arrival order inside the settle window.
 //!
 //! **Memory.** Per symbol: a ring buffer of `max_intervals_per_timeframe` intervals per timeframe,
