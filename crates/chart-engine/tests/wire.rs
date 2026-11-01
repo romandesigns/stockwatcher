@@ -23,10 +23,11 @@ fn increment_json_shapes() {
         )
     );
     let start = ms(at(10, 0, 0, 0));
+    let start_ns = at(10, 0, 0, 0).nanos();
     assert_eq!(
         json[1],
         format!(
-            r#"{{"type":"chart.update","symbol":"SMPL","timeframe":"15s","session":"2026-10-15/regular","candle":{{"t":{start},"o":3.18,"h":3.18,"l":3.18,"c":3.18,"v":100,"n":1,"final":false}},"profileBin":0.01,"profile":[{{"p":3.18,"v":100}}]}}"#
+            r#"{{"type":"chart.update","symbol":"SMPL","timeframe":"15s","session":"2026-10-15/regular","candle":{{"t":{start},"tNs":{start_ns},"o":3.18,"h":3.18,"l":3.18,"c":3.18,"v":100,"n":1,"final":false}},"profileBin":0.01,"profile":[{{"p":3.18,"v":100}}]}}"#
         )
     );
     assert_eq!(
@@ -38,7 +39,7 @@ fn increment_json_shapes() {
     assert_eq!(
         json[5],
         format!(
-            r#"{{"type":"chart.luld","symbol":"SMPL","point":{{"t":{t},"ref":3.18,"up":3.49,"down":2.87}}}}"#
+            r#"{{"type":"chart.luld","symbol":"SMPL","point":{{"t":{t},"tNs":{ns},"ref":3.18,"up":3.49,"down":2.87}}}}"#
         )
     );
     assert_eq!(ups.len(), 6);
@@ -68,10 +69,11 @@ fn halt_json_shapes() {
     };
     let ups = e.apply(&halt(market_events::StatusKind::Halt, "H"));
     let t = ms(at(10, 0, 1, 250));
+    let ns = at(10, 0, 1, 250).nanos();
     assert_eq!(
         serde_json::to_string(&ups[0]).unwrap(),
         format!(
-            r#"{{"type":"chart.halt","symbol":"SMPL","halt":{{"start":{t},"end":null,"reason":"LUDP","code":"H"}}}}"#
+            r#"{{"type":"chart.halt","symbol":"SMPL","halt":{{"start":{t},"startNs":{ns},"end":null,"endNs":null,"reason":"LUDP","code":"H"}}}}"#
         )
     );
     let ups = e.apply(&halt(market_events::StatusKind::Resume, "T"));
@@ -79,7 +81,7 @@ fn halt_json_shapes() {
     assert_eq!(
         serde_json::to_string(&ups[0]).unwrap(),
         format!(
-            r#"{{"type":"chart.halt","symbol":"SMPL","halt":{{"start":{t},"end":{t},"reason":"LUDP","code":"H"}}}}"#
+            r#"{{"type":"chart.halt","symbol":"SMPL","halt":{{"start":{t},"startNs":{ns},"end":{t},"endNs":{ns},"reason":"LUDP","code":"H"}}}}"#
         )
     );
     for u in &ups {
@@ -107,11 +109,14 @@ fn snapshot_json_shape() {
     assert_eq!(v["session"]["id"], "2026-10-15/regular");
     assert_eq!(v["session"]["start"], ms(at(9, 30, 0, 0)));
     assert_eq!(v["session"]["end"], ms(at(16, 0, 0, 0)));
+    assert_eq!(v["session"]["startNs"], at(9, 30, 0, 0).nanos());
+    assert_eq!(v["session"]["endNs"], at(16, 0, 0, 0).nanos());
+    assert_eq!(v["candles"][0]["tNs"], at(10, 0, 0, 0).nanos());
     assert_eq!(v["candles"][0]["final"], true);
     assert_eq!(v["candles"][1]["final"], false);
     assert_eq!(
         v["gaps"][0],
-        serde_json::json!({"t": ms(at(10, 1, 0, 0)), "end": ms(at(10, 3, 0, 0)), "reason": "no_trades", "v": 0, "intervals": 2})
+        serde_json::json!({"t": ms(at(10, 1, 0, 0)), "tNs": at(10, 1, 0, 0).nanos(), "end": ms(at(10, 3, 0, 0)), "endNs": at(10, 3, 0, 0).nanos(), "reason": "no_trades", "v": 0, "intervals": 2})
     );
     assert_eq!(v["profile"]["anchor"], "2026-10-15/regular");
     assert_eq!(v["profile"]["poc"], 3.18);
@@ -125,6 +130,34 @@ fn snapshot_json_shape() {
     assert_eq!(v["halts"], serde_json::json!([]));
     assert_eq!(
         v["luld"],
-        serde_json::json!([{"t": ms(at(10, 0, 1, 0)), "ref": 3.18, "up": 3.49, "down": 2.87}])
+        serde_json::json!([{"t": ms(at(10, 0, 1, 0)), "tNs": at(10, 0, 1, 0).nanos(), "ref": 3.18, "up": 3.49, "down": 2.87}])
     );
+}
+
+/// Every ms time has its exchange-ns twin, and the ms is that instant floored (wire module docs):
+/// a halt inside a millisecond keeps its nanoseconds in the twin.
+#[test]
+fn ns_twins_floor_to_the_ms_fields() {
+    let mut e = ChartEngine::default();
+    let inside = market_events::UnixNanos(at(10, 0, 1, 250).nanos() + 999_999);
+    let ups = e.apply(&market_events::MarketEvent::Status(market_events::Status {
+        symbol: Some(SYM.into()),
+        event_ts: inside,
+        receive_ts: None,
+        source: market_events::Source::Fixture,
+        kind: market_events::StatusKind::Halt,
+        code: "H".into(),
+        reason: "LUDP".into(),
+        tape: market_events::Tape::C,
+    }));
+    let h = ups[0].as_halt().unwrap();
+    assert_eq!(h.start_ns, inside.nanos());
+    assert_eq!(h.start, ms(at(10, 0, 1, 250)));
+    // JSON from before the twins (a recording, an older golden file) still reads, twins zeroed.
+    let old: chart_engine::wire::ChartUpdate = serde_json::from_str(
+        r#"{"type":"chart.halt","symbol":"SMPL","halt":{"start":5,"end":null,"reason":"LUDP","code":"H"}}"#,
+    )
+    .unwrap();
+    assert_eq!(old.as_halt().unwrap().start_ns, 0);
+    assert_eq!(old.as_halt().unwrap().end_ns, None);
 }

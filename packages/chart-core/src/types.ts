@@ -28,6 +28,8 @@ export const TIMEFRAME_MS: Readonly<Record<Timeframe, number>> = {
 /** One candle over the half-open interval [t, t + timeframe). Built by the server only. */
 export interface Candle {
   t: number;
+  /** `t` in exchange-time ns (newer servers; crates/chart-engine/src/wire.rs). */
+  tNs?: number;
   o: number;
   h: number;
   l: number;
@@ -55,7 +57,10 @@ export type GapReason = "no_trades" | "volume_only_trades";
  */
 export interface Gap {
   t: number;
+  /** `t` and `end` in exchange-time ns (newer servers; crates/chart-engine/src/wire.rs). */
+  tNs?: number;
   end: number;
+  endNs?: number;
   reason: GapReason;
   v: number;
   intervals: number;
@@ -67,7 +72,10 @@ export interface SessionRef {
   /** e.g. "2026-10-15/regular" */
   id: string;
   start: number;
+  /** `start` and `end` in exchange-time ns (newer servers; crates/chart-engine/src/wire.rs). */
+  startNs?: number;
   end: number;
+  endNs?: number;
 }
 
 /** One profile bin: bin start `p` = floor(price / bin) * bin, absolute volume `v`. */
@@ -134,7 +142,10 @@ export interface Clock {
 /** A trading halt (docs/architecture/halts-luld-fills.md). end null = still halted. */
 export interface Halt {
   start: number;
+  /** `start` and `end` in exchange-time ns (newer servers; crates/chart-engine/src/wire.rs); may fall inside a ms. */
+  startNs?: number;
   end: number | null;
+  endNs?: number | null;
   reason: string;
   code: string;
 }
@@ -142,6 +153,8 @@ export interface Halt {
 /** LULD bands in effect from t until the next point; up/down null = no bands from t. */
 export interface LuldPoint {
   t: number;
+  /** `t` in exchange-time ns (newer servers; crates/chart-engine/src/wire.rs). */
+  tNs?: number;
   ref: number | null;
   up: number | null;
   down: number | null;
@@ -209,6 +222,8 @@ export interface ChartRemove extends ProfileFigures {
   timeframe: Timeframe;
   session: string;
   t: number;
+  /** `t` in exchange-time ns (newer servers; crates/chart-engine/src/wire.rs). */
+  tNs?: number;
   profileBin: number;
   profile: ProfileRow[];
 }
@@ -358,6 +373,8 @@ export interface ChartIndicatorsSnapshot {
   timeframe: Timeframe;
   rth: boolean;
   t: number[];
+  /** `t` in exchange-time ns, index for index (newer servers; crates/chart-engine/src/wire.rs). */
+  tNs?: number[];
   studies: { key: string; lines: IndicatorLineWire[] }[];
 }
 
@@ -371,8 +388,10 @@ export interface ChartIndicatorIncrement {
   symbol: string;
   timeframe: Timeframe;
   rth: boolean;
-  points: { t: number; v: Record<string, (number | null)[]> }[];
+  points: { t: number; tNs?: number; v: Record<string, (number | null)[]> }[];
   removed?: number[];
+  /** `removed` in exchange-time ns, index for index (newer servers). */
+  removedNs?: number[];
 }
 
 /**
@@ -395,7 +414,8 @@ export interface ChartLevels {
   open: number | null;
   /** The official previous close when the server has it, else the latest earlier regular close. */
   prevClose: number | null;
-  openingRanges: { day: string; t: number; end: number; high: number; low: number; forming: boolean }[];
+  /** `tNs` / `endNs`: the exchange-time ns twins (newer servers; crates/chart-engine/src/wire.rs). */
+  openingRanges: { day: string; t: number; tNs?: number; end: number; endNs?: number; high: number; low: number; forming: boolean }[];
 }
 
 /**
@@ -408,7 +428,7 @@ export interface ChartZones {
   symbol: string;
   timeframe: Timeframe;
   rth: boolean;
-  zones: { kind: "supply" | "demand"; lo: number; hi: number; t: number; tested: boolean }[];
+  zones: { kind: "supply" | "demand"; lo: number; hi: number; t: number; tNs?: number; tested: boolean }[];
 }
 
 /** Client → server: free a chart slot (`id` absent = the default slot). */

@@ -118,6 +118,12 @@ async fn favorites_subscribe_gets_rows_with_lines_then_only_changes() {
     let snap = next(&mut ws, |m| m["type"] == "favorites.snapshot").await;
     assert_eq!(snap["symbols"], json!([]), "{snap}");
     assert_eq!(snap["rows"], json!([]));
+    // The frame's market clock in exchange ns beside the ms `t` (`times.ns.v1`).
+    assert_eq!(
+        snap["tNs"].as_i64().map(|n| n.div_euclid(1_000_000)),
+        snap["t"].as_i64(),
+        "{snap}"
+    );
 
     // A periodic tick may publish the initial empty board after the snapshot and before the
     // list edit. Exercise that ordering explicitly, then wait for the edit's update rather

@@ -621,6 +621,7 @@ fn the_package_lists_alerts_outcomes_and_missed_setups() {
 fn candle(t_min: i64, l: f64, h: f64) -> chart_engine::wire::CandleWire {
     chart_engine::wire::CandleWire {
         t: t_min * 60_000,
+        t_ns: t_min * 60_000_000_000,
         o: l,
         h,
         l,

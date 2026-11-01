@@ -1052,6 +1052,7 @@ mod tests {
     fn luld(t: i64, reference: f64, up: f64, down: f64) -> LuldWire {
         LuldWire {
             t: t / 1_000_000,
+            t_ns: t,
             reference: Some(reference),
             up: Some(up),
             down: Some(down),
@@ -1061,6 +1062,7 @@ mod tests {
     fn null_luld(t: i64) -> LuldWire {
         LuldWire {
             t: t / 1_000_000,
+            t_ns: t,
             reference: None,
             up: None,
             down: None,
@@ -1070,7 +1072,9 @@ mod tests {
     fn halt(start: i64, end: Option<i64>) -> HaltWire {
         HaltWire {
             start: start / 1_000_000,
+            start_ns: start,
             end: end.map(|e| e / 1_000_000),
+            end_ns: end,
             reason: "LUDP".into(),
             code: "H".into(),
         }

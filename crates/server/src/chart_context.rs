@@ -43,16 +43,17 @@
 //!   baseline to the snapshot instead (the first version) left the other connections on the old
 //!   zones until the next change. A resync clears it outright, every slot getting a fresh frame.
 //!
-//! # Frames (JSON, times in epoch ms like `CandleWire.t`; absent values `null`)
+//! # Frames (JSON, times in epoch ms like `CandleWire.t`, each with its exchange-ns twin `tNs` /
+//! `endNs` beside it (`times.ns.v1`, chart_engine::wire module docs); absent values `null`)
 //!
 //! - `chart.levels {symbol, timeframe, day, pmHigh, pmLow, hod, lod, open, prevClose,
-//!   openingRanges: [{day, t, end, high, low, forming}]}`: the whole state, replacing the
+//!   openingRanges: [{day, t, tNs, end, endNs, high, low, forming}]}`: the whole state, replacing the
 //!   client's. One per chart (symbol, timeframe), although the levels are the symbol's: the
 //!   client keys everything by chart and routes by it, and a frame per symbol would need its own
 //!   ordering across timeframes. Sent after a slot's `chart.snapshot`, on every resync, and
 //!   broadcast when its content changes. `day` is null (and everything empty) for a symbol with
 //!   no candle yet.
-//! - `chart.zones {symbol, timeframe, rth, zones: [{kind, lo, hi, t, tested}]}`: the whole set,
+//! - `chart.zones {symbol, timeframe, rth, zones: [{kind, lo, hi, t, tNs, tested}]}`: the whole set,
 //!   nearest first per side then by `t` as autoZones gave them. Only to a slot that asked
 //!   (`zones: true`, the Levels menu layer on); sent when it asks, on every resync, and broadcast
 //!   when the set changes.
@@ -151,7 +152,10 @@ pub struct ContextRegistry {
 struct RangeWire {
     day: String,
     t: i64,
+    /// `t` and `end` in exchange-time ns (`times.ns.v1`, chart_engine::wire module docs).
+    t_ns: i64,
     end: i64,
+    end_ns: i64,
     high: f64,
     low: f64,
     forming: bool,
@@ -180,7 +184,16 @@ struct ZoneWire {
     lo: f64,
     hi: f64,
     t: i64,
+    /// `t` in exchange-time ns (`times.ns.v1`).
+    #[serde(rename = "tNs")]
+    t_ns: i64,
     tested: bool,
+}
+
+/// A bar start or session end in exchange ns. Both are whole seconds on the NYSE calendar, so the
+/// ms value the level and zone math keeps loses nothing and the product is the engine's own ns.
+fn bar_ns(ms: i64) -> i64 {
+    market_events::UnixNanos::from_millis(ms).nanos()
 }
 
 #[derive(Serialize)]
@@ -220,7 +233,9 @@ fn levels_json(
             .map(|r| RangeWire {
                 day: r.day.to_string(),
                 t: r.t,
+                t_ns: bar_ns(r.t),
                 end: r.end,
+                end_ns: bar_ns(r.end),
                 high: r.high,
                 low: r.low,
                 forming: r.forming,
@@ -246,6 +261,7 @@ fn zones_json(key: &ChartKey, zones: &[AutoZone]) -> String {
                 lo: z.lo,
                 hi: z.hi,
                 t: z.t,
+                t_ns: bar_ns(z.t),
                 tested: z.tested,
             })
             .collect(),
@@ -715,6 +731,9 @@ mod tests {
         );
         assert_eq!(r["forming"], true);
         assert_eq!(r["end"], et(day(), 16, 0, 0, 0).unwrap().millis());
+        // The exchange-ns twins (`times.ns.v1`).
+        assert_eq!(r["endNs"], et(day(), 16, 0, 0, 0).unwrap().nanos());
+        assert_eq!(r["tNs"], et(day(), 9, 30, 0, 0).unwrap().nanos());
         ctx.levels_frame(&e, &official, &lkey(Timeframe::M5));
 
         // The 09:31 trade finalizes the 1m opening candle: only that chart's range flips.
@@ -796,6 +815,10 @@ mod tests {
         assert_eq!(zones.len(), 1, "one frame per apply that changed it");
         assert_eq!(zones[0]["zones"][0]["kind"], "demand");
         assert_eq!(zones[0]["zones"][0]["lo"], 4.96);
+        assert_eq!(
+            zones[0]["zones"][0]["tNs"].as_i64(),
+            zones[0]["zones"][0]["t"].as_i64().map(|t| t * 1_000_000)
+        );
         // Forming-bar trades within the second: marked, not computed.
         let ups = e.apply(&trade(10, 17, 55, 549, 900));
         assert!(ctx.on_updates(&e, &no_close, &ups, t0).is_empty());
@@ -942,6 +965,7 @@ mod tests {
                     let t = r[0].as_i64().unwrap();
                     let c = CandleWire {
                         t,
+                        t_ns: t * 1_000_000,
                         o: r[1].as_f64().unwrap(),
                         h: r[2].as_f64().unwrap(),
                         l: r[3].as_f64().unwrap(),

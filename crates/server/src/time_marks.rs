@@ -27,6 +27,16 @@
 //! which the server pushes at least once a second in live mode (the live provider's 1 s tick) and
 //! ~4 times a second while a replay plays, with `nowNs` beside `now`. A paused replay sends none:
 //! its clock stands still, and so do the ages.
+//!
+//! **Exchange-ns times on the wire** ([`NS_FEATURE`], `times.ns.v1`): every time the server sends
+//! in epoch ms also goes out in its own resolution beside it, so a client never has to mix the two
+//! clocks. Chart frames carry the twins in chart_engine::wire (`tNs`, `startNs`, `endNs`; module
+//! docs there), the indicator, level and zone frames likewise (crate::indicators,
+//! crate::chart_context), and every board frame stamped with the market clock (`rocket.*`,
+//! `movers.*`, `favorites.*`, `quotes.*`, `quotes.search.*`, `pressure.*`) carries `tNs` beside
+//! its `t` ([`stamp_frame_ns`]). The ms fields stay: every phone build installed before the twins
+//! reads only them. The Ross panel's frames already speak ns (`bar_end`, `cutoff` and the rows'
+//! times come from stock-context in ns) and have no ms clock to twin.
 
 use std::collections::HashMap;
 
@@ -35,6 +45,12 @@ use serde_json::{Value, json};
 /// The feature a client must see in `welcome.features` before it trusts these states over its
 /// own clock (an older server sends none of them, and the client keeps its fallbacks).
 pub const FEATURE: &str = "clock.v1";
+
+/// Advertised in `welcome.features` once every ms time on the wire has its exchange-ns twin
+/// (module docs). The twins are additive (an older client ignores them), so they are always sent;
+/// the feature tells a client it can expect them rather than gating them per connection, which
+/// would mean serializing every broadcast frame twice.
+pub const NS_FEATURE: &str = "times.ns.v1";
 
 const MS: i64 = 1_000_000;
 /// A row flagged this recently is "fresh" (packages/shared rocket.ts: `ageMs < 60_000`).
@@ -50,6 +66,14 @@ pub const MAX_EVENTS_PER_TICK: usize = 3;
 
 fn ms_to_ns(v: &Value) -> Option<i64> {
     v.as_i64().map(|ms| ms.saturating_mul(MS))
+}
+
+/// Puts `tNs`, the market clock the frame was cut at in exchange ns, beside a board frame's `t`
+/// (module docs); `null` with a `null` `t` (no clock yet).
+pub fn stamp_frame_ns(frame: &mut Value, now_ns: Option<i64>) {
+    if let Some(m) = frame.as_object_mut() {
+        m.insert("tNs".into(), json!(now_ns));
+    }
 }
 
 /// Stamps every row of a Runners body (`{rows: [...]}`) with its server-decided time states at

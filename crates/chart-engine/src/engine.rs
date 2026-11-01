@@ -396,6 +396,7 @@ impl Bucket {
         let x = self.ohlc?;
         Some(CandleWire {
             t: ms(self.start),
+            t_ns: self.start,
             o: x.o.to_f64(),
             h: x.h.to_f64(),
             l: x.l.to_f64(),
@@ -409,7 +410,9 @@ impl Bucket {
     fn volume_gap(&self, tf: Timeframe) -> GapWire {
         GapWire {
             t: ms(self.start),
+            t_ns: self.start,
             end: ms(self.end),
+            end_ns: self.end,
             reason: GapReason::VolumeOnlyTrades,
             v: self.volume,
             intervals: ((self.end - self.start) / tf.nanos()) as u64,
@@ -477,6 +480,7 @@ impl Ctx<'_> {
             timeframe: tf,
             session: session.to_string(),
             t: ms(start),
+            t_ns: start,
             profile_bin: self.bin.to_f64(),
             profile: self.rows.to_vec(),
             derived: None,
@@ -547,7 +551,9 @@ impl Series {
                         session: rec.session.to_string(),
                         gap: GapWire {
                             t: ms(prev.end),
+                            t_ns: prev.end,
                             end: ms(start),
+                            end_ns: start,
                             reason: GapReason::NoTrades,
                             v: 0,
                             intervals: ((start - prev.end) / tf.nanos()) as u64,
@@ -633,7 +639,9 @@ impl HaltRec {
     fn wire(&self) -> HaltWire {
         HaltWire {
             start: ms(self.start),
+            start_ns: self.start,
             end: self.end.map(ms),
+            end_ns: self.end,
             reason: self.reason.clone(),
             code: self.code.clone(),
         }
@@ -643,6 +651,7 @@ impl HaltRec {
 fn luld_wire(p: &LuldPoint) -> LuldWire {
     LuldWire {
         t: ms(p.t),
+        t_ns: p.t,
         reference: p.reference.map(Price::to_f64),
         up: p.up.map(Price::to_f64),
         down: p.down.map(Price::to_f64),
@@ -1524,7 +1533,9 @@ impl ChartEngine {
             {
                 gaps.push(GapWire {
                     t: ms(p.end),
+                    t_ns: p.end,
                     end: ms(b.start),
+                    end_ns: b.start,
                     reason: GapReason::NoTrades,
                     v: 0,
                     intervals: ((b.start - p.end) / tf.nanos()) as u64,
@@ -1545,7 +1556,9 @@ impl ChartEngine {
                 s.bounds().map(|(a, e)| SessionInfo {
                     id: s.to_string(),
                     start: a.millis(),
+                    start_ns: a.0,
                     end: e.millis(),
+                    end_ns: e.0,
                 })
             }),
             candles,

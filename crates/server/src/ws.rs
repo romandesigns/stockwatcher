@@ -33,6 +33,10 @@
 //!   playing; in live mode once a second (the live provider's tick). `clock.nowNs` (exchange
 //!   time, ns) rides beside `clock.now` (ms).
 //!
+//! Exchange-ns times (`times.ns.v1` in `welcome.features`; crate::time_marks, chart_engine::wire):
+//! every ms time on the wire has its ns twin beside it (`tNs`, `startNs`, `endNs`), additive and
+//! always sent; clients prefer it, older ones read the ms field as before.
+//!
 //! Server clock (`clock.v1` in `welcome.features`; crate::time_marks): Rust is the only clock.
 //! - `rocket.*` rows carry `fresh` / `fresh_until_ns`, and a burst row `burst_live` /
 //!   `burst_live_until_ns` and `flame {lit, until_ns}`, decided at the market clock; a flip sends
@@ -1287,6 +1291,7 @@ async fn session(mut socket: WebSocket, state: AppState) {
             crate::insights::FEATURE,
             crate::quote_search::FEATURE,
             crate::time_marks::FEATURE,
+            crate::time_marks::NS_FEATURE,
         ],
     };
     // Subscribed before the paper snapshot below, so no change can fall between the two (at

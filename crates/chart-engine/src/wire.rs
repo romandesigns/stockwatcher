@@ -17,6 +17,17 @@
 //!   absent (the engine never sets them, an older server) = recompute from the rows;
 //! - `chart.halt` and `chart.luld` do not depend on the timeframe (docs/architecture/
 //!   halts-luld-fills.md): a client upserts a halt by `start` and a LULD point by `t`.
+//!
+//! **Exchange-time ns twins** (`times.ns.v1` in the server's `welcome.features`): every time
+//! below also goes out in the engine's own resolution, as `tNs` beside `t`, `endNs` beside `end`,
+//! `startNs` beside `start` (and `nowNs` on [`ClockInfo`]). Rust is the only clock and it counts
+//! exchange ns; the ms field is that instant floored (`UnixNanos::millis`), kept because every
+//! phone build installed before the twins reads only it. A client prefers the twin when present
+//! and falls back to the ms field when absent (an older server). The twin is an exact integer in
+//! Rust but **not in JS** (an epoch-ns number is past 2^53, so JSON.parse rounds it to the
+//! nearest 256 ns): clients turn it back into ms with a slack that absorbs that rounding
+//! (chart-core `wireMs`), never key on the raw number. Deserializing JSON without the twins
+//! (an older golden file) gives 0 / `None`.
 
 use crate::quality::DataQuality;
 use crate::timeframe::Timeframe;
@@ -27,6 +38,9 @@ use serde::{Deserialize, Serialize};
 pub struct CandleWire {
     /// Interval start, epoch ms.
     pub t: i64,
+    /// Interval start, exchange-time ns (module docs).
+    #[serde(default)]
+    pub t_ns: i64,
     pub o: f64,
     pub h: f64,
     pub l: f64,
@@ -55,8 +69,14 @@ pub enum GapReason {
 pub struct GapWire {
     /// First missing interval start, epoch ms.
     pub t: i64,
+    /// `t` in exchange-time ns (module docs).
+    #[serde(default)]
+    pub t_ns: i64,
     /// Exclusive end (start of the next interval that has data), epoch ms.
     pub end: i64,
+    /// `end` in exchange-time ns.
+    #[serde(default)]
+    pub end_ns: i64,
     pub reason: GapReason,
     /// Volume inside the gap (non-zero only for `volume_only_trades`).
     pub v: u64,
@@ -112,8 +132,16 @@ pub struct ProfileWire {
 #[serde(rename_all = "camelCase")]
 pub struct SessionInfo {
     pub id: String,
+    /// Epoch ms.
     pub start: i64,
+    /// `start` in exchange-time ns (module docs).
+    #[serde(default)]
+    pub start_ns: i64,
+    /// Epoch ms.
     pub end: i64,
+    /// `end` in exchange-time ns.
+    #[serde(default)]
+    pub end_ns: i64,
 }
 
 /// Replay/live clock, filled in by the server (the engine does not know the mode).
@@ -171,8 +199,15 @@ pub struct ChartSnapshot {
 pub struct HaltWire {
     /// The halt's `event_ts`, epoch ms.
     pub start: i64,
+    /// The halt's `event_ts` as received, exchange-time ns (module docs): unlike a bar time it
+    /// may fall inside a millisecond.
+    #[serde(default)]
+    pub start_ns: i64,
     /// The resume's `event_ts`, epoch ms.
     pub end: Option<i64>,
+    /// The resume's `event_ts`, exchange-time ns; `null` with `end`.
+    #[serde(default)]
+    pub end_ns: Option<i64>,
     /// Provider reason (Alpaca `rc`), e.g. `"LUDP"`.
     pub reason: String,
     /// Provider status code of the halt (Alpaca `sc`), e.g. `"H"`.
@@ -186,6 +221,9 @@ pub struct HaltWire {
 pub struct LuldWire {
     /// Epoch ms.
     pub t: i64,
+    /// `t` in exchange-time ns (module docs).
+    #[serde(default)]
+    pub t_ns: i64,
     /// The reference price (5-minute mean), dollars.
     #[serde(rename = "ref")]
     pub reference: Option<f64>,
@@ -232,6 +270,9 @@ pub struct CandleRemove {
     pub session: String,
     /// Interval start, epoch ms.
     pub t: i64,
+    /// `t` in exchange-time ns (module docs).
+    #[serde(default)]
+    pub t_ns: i64,
     pub profile_bin: f64,
     pub profile: Vec<ProfileRow>,
     /// Set by the server (never the engine) when `profile` is non-empty: module docs.

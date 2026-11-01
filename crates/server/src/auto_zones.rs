@@ -316,6 +316,7 @@ mod tests {
     fn c(t: i64, o: f64, h: f64, l: f64, cl: f64) -> CandleWire {
         CandleWire {
             t,
+            t_ns: t * 1_000_000,
             o,
             h,
             l,

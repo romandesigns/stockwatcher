@@ -25,10 +25,11 @@
 //!   built mid-rebuild stays in step; the frames are then dropped). A symbol with no chart costs
 //!   one hash lookup. A forming-bar trade is O(studies); see the chart-engine docs for the rest.
 //!
-//! Frames (JSON, times in epoch ms like `CandleWire.t`, NaN sent as `null`):
+//! Frames (JSON, times in epoch ms like `CandleWire.t`, each with its exchange-ns twin beside it
+//! (`tNs`, `removedNs`; `times.ns.v1`, chart_engine::wire module docs), NaN sent as `null`):
 //!
-//! - `chart.indicators {symbol, timeframe, rth, t: [ms], studies: [{key, lines: [{name, style,
-//!   from, values}]}]}`: a snapshot of the studies it names. `t` is every input bar of this chart
+//! - `chart.indicators {symbol, timeframe, rth, t: [ms], tNs: [ns], studies: [{key, lines:
+//!   [{name, style, from, values}]}]}`: a snapshot of the studies it names. `t` is every input bar of this chart
 //!   key (rth-filtered), ascending; a line's `values[i]` belongs to `t[from + i]` (the warm-up
 //!   nulls before `from` are cut). It replaces the client's values of the keys it carries. Sent
 //!   to a socket right after a `chart.snapshot` (same core lock, same seq), on
@@ -38,8 +39,8 @@
 //!   between two slots' snapshots would overwrite newer values); broadcast to all, carrying every computed key
 //!   of the chart, instead of an increment that would move more than
 //!   [`MAX_INCREMENT_POINTS`] points (a revision deep in the history).
-//! - `chart.indicator {symbol, timeframe, rth, points: [{t, v: {key: [values]}}], removed?: [t]}`:
-//!   one per chart key per engine apply that moved anything. A client drops the bars in `removed`
+//! - `chart.indicator {symbol, timeframe, rth, points: [{t, tNs, v: {key: [values]}}],
+//!   removed?: [t], removedNs?: [ns]}`: one per chart key per engine apply that moved anything. A client drops the bars in `removed`
 //!   first, then upserts each point's values per key (a point names only the keys that moved
 //!   there; keys a slot did not ask for are ignored).
 
@@ -155,12 +156,17 @@ struct SnapshotWire<'a> {
     timeframe: Timeframe,
     rth: bool,
     t: Vec<i64>,
+    /// `t` in exchange-time ns (`times.ns.v1`): [`bar_ns`].
+    #[serde(rename = "tNs")]
+    t_ns: Vec<i64>,
     studies: Vec<StudyWire<'a>>,
 }
 
 #[derive(Serialize)]
 struct PointWire {
     t: i64,
+    #[serde(rename = "tNs")]
+    t_ns: i64,
     v: BTreeMap<String, Vec<Option<f64>>>,
 }
 
@@ -174,6 +180,14 @@ struct IncrementWire<'a> {
     points: Vec<PointWire>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     removed: Vec<i64>,
+    #[serde(rename = "removedNs", skip_serializing_if = "Vec::is_empty")]
+    removed_ns: Vec<i64>,
+}
+
+/// A bar time in exchange ns. Indicator bars are candles, which start on whole seconds, so the
+/// ms the series keys on loses nothing and the product is the engine's own ns.
+fn bar_ns(t_ms: i64) -> i64 {
+    market_events::UnixNanos::from_millis(t_ms).nanos()
 }
 
 fn opt(x: f64) -> Option<f64> {
@@ -228,6 +242,7 @@ fn snapshot_json<'a>(
         symbol: &chart.symbol,
         timeframe: chart.timeframe,
         rth: chart.rth,
+        t_ns: t.iter().map(|&t| bar_ns(t)).collect(),
         t,
         studies,
     })
@@ -447,8 +462,13 @@ impl IndicatorRegistry {
                     rth: key.rth,
                     points: points
                         .into_iter()
-                        .map(|(t, v)| PointWire { t, v })
+                        .map(|(t, v)| PointWire {
+                            t,
+                            t_ns: bar_ns(t),
+                            v,
+                        })
                         .collect(),
+                    removed_ns: removed.iter().map(|&t| bar_ns(t)).collect(),
                     removed,
                 })
                 .expect("indicator frames serialize")
@@ -529,6 +549,20 @@ mod tests {
         let snap: Value = serde_json::from_str(&reg.snapshot(&engine, &st)).unwrap();
         assert_eq!(snap["type"], "chart.indicators");
         assert_eq!(snap["t"].as_array().unwrap().len(), 30);
+        // Each bar time with its exchange-ns twin (`times.ns.v1`).
+        let twins: Vec<i64> = snap["tNs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_i64().unwrap())
+            .collect();
+        let ms: Vec<i64> = snap["t"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_i64().unwrap())
+            .collect();
+        assert_eq!(twins, ms.iter().map(|t| t * 1_000_000).collect::<Vec<_>>());
         assert_eq!(snap["studies"][0]["key"], "ema:3");
         assert_eq!(snap["studies"][0]["lines"][0]["from"], 2);
         // A trade at the same price in the forming bar: EMA unchanged, VWAP's volume moved.
@@ -538,6 +572,10 @@ mod tests {
         let f: Value = serde_json::from_str(&frames[0].1).unwrap();
         assert_eq!(f["type"], "chart.indicator");
         assert_eq!(f["points"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            f["points"][0]["tNs"].as_i64(),
+            f["points"][0]["t"].as_i64().map(|t| t * 1_000_000)
+        );
         let v = f["points"][0]["v"].as_object().unwrap();
         assert!(v.contains_key("vwap") && !v.contains_key("ema:3"), "{f}");
         // Nobody watches 5m or rth: no frames for those.
@@ -575,6 +613,7 @@ mod tests {
         // Pretend the engine revised the first bar: the fold sees a chart.update for it.
         let candle = chart_engine::wire::CandleWire {
             t: b.t_ms,
+            t_ns: b.t_ms * 1_000_000,
             o: b.c,
             h: b.h.max(b.c),
             l: b.l,

@@ -37,6 +37,7 @@ fn unmatched(e: &ChartEngine) -> u64 {
 fn band(t: UnixNanos, r: f64, up: f64, down: f64) -> LuldWire {
     LuldWire {
         t: ms(t),
+        t_ns: t.0,
         reference: Some(r),
         up: Some(up),
         down: Some(down),
@@ -46,6 +47,7 @@ fn band(t: UnixNanos, r: f64, up: f64, down: f64) -> LuldWire {
 fn null(t: UnixNanos) -> LuldWire {
     LuldWire {
         t: ms(t),
+        t_ns: t.0,
         reference: None,
         up: None,
         down: None,
@@ -59,7 +61,9 @@ fn halt_and_resume_emit_chart_halt_and_land_in_every_snapshot() {
     let start = e.apply(&status(at(10, 5, 0, 0), StatusKind::Halt));
     let open = HaltWire {
         start: ms(at(10, 5, 0, 0)),
+        start_ns: at(10, 5, 0, 0).0,
         end: None,
+        end_ns: None,
         reason: "LUDP".into(),
         code: "H".into(),
     };
@@ -68,6 +72,7 @@ fn halt_and_resume_emit_chart_halt_and_land_in_every_snapshot() {
     let end = e.apply(&status(at(10, 6, 30, 0), StatusKind::Resume));
     let closed = HaltWire {
         end: Some(ms(at(10, 6, 30, 0))),
+        end_ns: Some(at(10, 6, 30, 0).0),
         ..open
     };
     assert_eq!(halts(&end), vec![closed.clone()]);

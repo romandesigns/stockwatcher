@@ -29,6 +29,7 @@ fn candles(f: &Value) -> Vec<(SessionId, CandleWire)> {
             let t = r[0].as_i64().expect("t");
             let c = CandleWire {
                 t,
+                t_ns: t * 1_000_000,
                 o: r[1].as_f64().expect("o"),
                 h: r[2].as_f64().expect("h"),
                 l: r[3].as_f64().expect("l"),

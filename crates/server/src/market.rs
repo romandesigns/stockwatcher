@@ -3477,7 +3477,7 @@ impl Market {
     /// consistent with (a connection then forwards only `quotes.update`s with a larger seq).
     /// The rows are copied under the core lock; the JSON is built after it is released.
     pub fn quotes_snapshot(&self) -> (u64, String) {
-        let t = self.clock().map(|c| c.now.millis());
+        let t = self.clock().map(|c| c.now);
         let (seq, rows) = {
             let core = self.0.core.lock().expect("core lock");
             (core.seq, core.quotes.snapshot(self.0.band))
@@ -3493,7 +3493,7 @@ impl Market {
     /// record of which rows the clients hold must follow every take, or the first update a later
     /// subscriber gets could miss a `gone`.
     pub fn publish_quotes(&self) -> bool {
-        let t = self.clock().map(|c| c.now.millis());
+        let t = self.clock().map(|c| c.now);
         let (seq, changes) = {
             let mut core = self.0.core.lock().expect("core lock");
             if core.rebuilding {
@@ -3542,6 +3542,7 @@ impl Market {
         self.add_demand_zones(&mut core, &mut body);
         crate::time_marks::stamp_rows(&mut body, tau);
         let mut v = serde_json::json!({"type": "rocket.snapshot", "t": t});
+        crate::time_marks::stamp_frame_ns(&mut v, clock.as_ref().map(|c| c.now.0));
         if let (Some(m), serde_json::Value::Object(b)) = (v.as_object_mut(), body) {
             m.extend(b);
         }
@@ -3722,6 +3723,7 @@ impl Market {
                 self.0.mode == ClockMode::Live,
             );
             let mut v = serde_json::json!({"type": "rocket.update", "t": clock.now.millis()});
+            crate::time_marks::stamp_frame_ns(&mut v, Some(clock.now.0));
             if let (Some(m), serde_json::Value::Object(b)) = (v.as_object_mut(), body.clone()) {
                 m.extend(b);
             }
@@ -3863,6 +3865,7 @@ impl Market {
         let mut v = json!({
             "type": "favorites.snapshot",
             "t": clock.as_ref().map(|c| c.now.millis()),
+            "tNs": clock.as_ref().map(|c| c.now.0),
             "symbols": list,
             "rows": rows,
         });
@@ -3897,6 +3900,7 @@ impl Market {
             let mut v = json!({
                 "type": "favorites.update",
                 "t": clock.as_ref().map(|c| c.now.millis()),
+                "tNs": clock.as_ref().map(|c| c.now.0),
                 "symbols": list,
                 "rows": rows.clone(),
             });
@@ -3938,14 +3942,14 @@ impl Market {
     }
 
     /// One ticker search over the quote board (`quotes.search.v1`, crate::quote_search), with
-    /// the market clock (epoch ms) it was taken at. `None` during a rebuild: the board is being
+    /// the market clock it was taken at. `None` during a rebuild: the board is being
     /// refilled and a result cut from it would flicker; the `Resync` at its end resends every
     /// search's snapshot.
     pub fn quote_search(
         &self,
         q: &crate::quote_search::Query,
-    ) -> Option<(Option<i64>, crate::quote_search::Results)> {
-        let t = self.clock().map(|c| c.now.millis());
+    ) -> Option<(Option<UnixNanos>, crate::quote_search::Results)> {
+        let t = self.clock().map(|c| c.now);
         let assets = self.assets();
         let core = self.0.core.lock().expect("core lock");
         if core.rebuilding {
@@ -3970,10 +3974,11 @@ impl Market {
     /// The last ranking as a `movers.snapshot` with whole day lines, and the movers generation it
     /// is consistent with: an update with a larger one is newer than it.
     pub fn movers_snapshot(&self) -> (u64, String) {
-        let t = self.clock().map(|c| c.now.millis());
+        let now = self.clock().map(|c| c.now);
         let core = self.0.core.lock().expect("core lock");
         let board = self.0.movers.lock().expect("movers lock");
-        let mut v = crate::movers::snapshot_frame(t, &board.last);
+        let mut v = crate::movers::snapshot_frame(now.map(UnixNanos::millis), &board.last);
+        crate::time_marks::stamp_frame_ns(&mut v, now.map(UnixNanos::nanos));
         let src = crate::day_line::Source {
             engine: &core.engine,
             closes: core.quotes.closes(),
@@ -3994,7 +3999,8 @@ impl Market {
 
     /// [`Market::publish_movers`] at a given wall instant (tests step it past the throttle).
     pub fn publish_movers_at(&self, now: std::time::Instant) -> bool {
-        let t = self.clock().map(|c| c.now.millis());
+        let clock_now = self.clock().map(|c| c.now);
+        let t = clock_now.map(UnixNanos::millis);
         let (generation, frame) = {
             let core = self.0.core.lock().expect("core lock");
             if core.rebuilding {
@@ -4014,7 +4020,10 @@ impl Market {
                     closes: core.quotes.closes(),
                 };
                 crate::day_line::decorate(&mut all, src, Some(&mut board.lines));
-                frame = crate::movers::update_frame(t, &d, all).map(|v| v.to_string());
+                frame = crate::movers::update_frame(t, &d, all).map(|mut v| {
+                    crate::time_marks::stamp_frame_ns(&mut v, clock_now.map(UnixNanos::nanos));
+                    v.to_string()
+                });
             }
             if !d.is_empty() || frame.is_some() {
                 board.generation += 1;
@@ -4464,7 +4473,7 @@ impl Market {
     /// The last ranked board as a `pressure.snapshot` frame, with the engine seq it is consistent
     /// with. Empty until the first ranking (at most a second after start or a rebuild).
     pub fn pressure_snapshot(&self) -> (u64, String) {
-        let t = self.clock().map(|c| c.now.millis());
+        let t = self.clock().map(|c| c.now);
         let (seq, cards) = {
             let core = self.0.core.lock().expect("core lock");
             (core.seq, core.pressure_cards.clone())
@@ -4537,7 +4546,7 @@ impl Market {
         if self.pressure_subscribers() == 0 {
             return false;
         }
-        let frame = pressure_frame("pressure.update", Some(clock.now.millis()), &cards);
+        let frame = pressure_frame("pressure.update", Some(clock.now), &cards);
         let _ = self.0.tx.send(Arc::new(Outbound {
             seq,
             kind: OutKind::Pressure(frame),
@@ -4545,11 +4554,12 @@ impl Market {
         true
     }
 
-    /// `{"type", "t", "quotes": [row...], "gone"?: [symbol...]}`; the row shape is [`WireQuote`].
+    /// `{"type", "t", "tNs", "quotes": [row...], "gone"?: [symbol...]}`; the row shape is
+    /// [`WireQuote`].
     fn quotes_frame(
         &self,
         kind: &'static str,
-        t: Option<i64>,
+        now: Option<UnixNanos>,
         rows: &[QuoteRow],
         gone: &[Arc<str>],
     ) -> String {
@@ -4587,7 +4597,8 @@ impl Market {
         let gone: Vec<&str> = gone.iter().map(|s| &**s).collect();
         serde_json::to_string(&QuotesMessage {
             kind,
-            t,
+            t: now.map(UnixNanos::millis),
+            t_ns: now.map(UnixNanos::nanos),
             quotes,
             gone,
         })
@@ -4942,19 +4953,28 @@ impl PressureCardWire {
     }
 }
 
-/// `pressure.snapshot` / `pressure.update`: `{"type", "t", "board": [card...]}`, the whole board
-/// in display order either way (six cards at most, so an update replaces rather than patches).
-fn pressure_frame(kind: &'static str, t: Option<i64>, cards: &[PressureCardWire]) -> String {
+/// `pressure.snapshot` / `pressure.update`: `{"type", "t", "tNs", "board": [card...]}`, the whole
+/// board in display order either way (six cards at most, so an update replaces rather than
+/// patches).
+fn pressure_frame(
+    kind: &'static str,
+    now: Option<UnixNanos>,
+    cards: &[PressureCardWire],
+) -> String {
     #[derive(Serialize)]
     struct PressureMessage<'a> {
         #[serde(rename = "type")]
         kind: &'static str,
         t: Option<i64>,
+        /// `t` in exchange-time ns (`times.ns.v1`, crate::time_marks).
+        #[serde(rename = "tNs")]
+        t_ns: Option<i64>,
         board: &'a [PressureCardWire],
     }
     serde_json::to_string(&PressureMessage {
         kind,
-        t,
+        t: now.map(UnixNanos::millis),
+        t_ns: now.map(UnixNanos::nanos),
         board: cards,
     })
     .expect("pressure serializes")
@@ -4967,6 +4987,9 @@ struct QuotesMessage<'a> {
     kind: &'static str,
     /// The replay (or live) clock in epoch ms when the rows were taken; null before any clock.
     t: Option<i64>,
+    /// `t` in exchange-time ns (`times.ns.v1`, crate::time_marks).
+    #[serde(rename = "tNs")]
+    t_ns: Option<i64>,
     quotes: Vec<WireQuote<'a>>,
     /// Update only: symbols that left the price band (the client drops them).
     #[serde(skip_serializing_if = "Vec::is_empty")]

@@ -179,6 +179,7 @@ mod tests {
             session: "2026-10-15/regular".into(),
             candle: CandleWire {
                 t: 0,
+                t_ns: 0,
                 o: 1.0,
                 h: 1.0,
                 l: 1.0,

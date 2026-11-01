@@ -122,6 +122,12 @@ async fn rocket_subscribe_gets_a_snapshot_then_whole_panel_updates() {
     send(&mut ws, json!({"type": "rocket.subscribe"})).await;
     let snap = next(&mut ws, is("rocket.snapshot")).await;
     assert_eq!(snap["enabled"], true, "{snap}");
+    // The frame's market clock in exchange ns beside the ms `t` (`times.ns.v1`).
+    assert_eq!(
+        snap["tNs"].as_i64().map(|n| n.div_euclid(1_000_000)),
+        snap["t"].as_i64(),
+        "{snap}"
+    );
     // The production scorer since 2026-10-22: the bake-off's frozen precursors-R0, with its
     // frozen threshold (fixed mode).
     assert_eq!(snap["strategy"]["id"], "precursors-R0");

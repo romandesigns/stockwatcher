@@ -43,18 +43,20 @@ function rustFields(src: string, name: string): string[] {
 
 // The TS side of each struct (keep in step with types.ts).
 const TS_FIELDS: Record<string, string[]> = {
-  CandleWire: ["t", "o", "h", "l", "c", "v", "n", "final"],
-  GapWire: ["t", "end", "reason", "v", "intervals"],
+  CandleWire: ["t", "tNs", "o", "h", "l", "c", "v", "n", "final"],
+  GapWire: ["t", "tNs", "end", "endNs", "reason", "v", "intervals"],
   ProfileRow: ["p", "v"],
   ValueArea: ["low", "high", "v"],
   ProfileWire: ["bin", "anchor", "rows", "total", "poc", "valueArea"],
-  SessionInfo: ["id", "start", "end"],
+  SessionInfo: ["id", "start", "startNs", "end", "endNs"],
+  HaltWire: ["start", "startNs", "end", "endNs", "reason", "code"],
+  LuldWire: ["t", "tNs", "ref", "up", "down"],
   ClockInfo: ["mode", "now", "nowNs", "speed", "playing"],
   ChartSnapshot: ["type", "symbol", "timeframe", "session", "candles", "gaps", "profile", "quality", "clock", "halts", "luld", "prevClose"],
   ProfileDerivedWire: ["total", "poc", "valueArea"],
   // The increments: their own fields plus ProfileDerivedWire's, flattened (types.ts ProfileFigures).
   CandleUpdate: ["symbol", "timeframe", "session", "candle", "profileBin", "profile", "total", "poc", "valueArea"],
-  CandleRemove: ["symbol", "timeframe", "session", "t", "profileBin", "profile", "total", "poc", "valueArea"],
+  CandleRemove: ["symbol", "timeframe", "session", "t", "tNs", "profileBin", "profile", "total", "poc", "valueArea"],
   GapUpdate: ["symbol", "timeframe", "session", "gap", "profileBin", "profile", "total", "poc", "valueArea"],
   TapeTrade: ["symbol", "t", "tsNs", "p", "s", "exchange", "seq", "conditions", "counted", "reason", "session"],
 };
@@ -79,7 +81,8 @@ describe("wire contract with crates/chart-engine", () => {
     const golden = read("tests/wire.rs");
     // at(10, 0, 1, 250) on 2026-10-15 (EDT) and its 15 s interval start.
     const t = Date.UTC(2026, 9, 15, 14, 0, 1, 250);
-    const vars: Record<string, string> = { t: String(t), ns: (BigInt(t) * 1_000_000n).toString(), start: String(Date.UTC(2026, 9, 15, 14, 0, 0)) };
+    const start = Date.UTC(2026, 9, 15, 14, 0, 0);
+    const vars: Record<string, string> = { t: String(t), ns: (BigInt(t) * 1_000_000n).toString(), start: String(start), start_ns: (BigInt(start) * 1_000_000n).toString() };
     const templates = [...golden.matchAll(/r#"(\{\{"type":[\s\S]*?\}\})"#/g)].map((m) => m[1]!);
     expect(templates.length).toBeGreaterThanOrEqual(2);
     const msgs = templates.map((tpl) => parseChartMessage(tpl.replace(/\{(\w+)\}/g, (all, k: string) => vars[k] ?? all).replaceAll("{{", "{").replaceAll("}}", "}")));
@@ -88,6 +91,12 @@ describe("wire contract with crates/chart-engine", () => {
     expect(tape).toMatchObject({ symbol: "SMPL", t, p: 3.18, s: 100, exchange: "V", seq: 7, counted: "ohlc_and_volume", reason: null, session: "2026-10-15/regular" });
     expect(describeCounted(tape).label).toBe("Regular sale");
     expect(up).toMatchObject({ timeframe: "15s", session: "2026-10-15/regular", profileBin: 0.01, profile: [{ p: 3.18, v: 100 }] });
+    // The exchange-ns twins are in the golden frames and come back as the very ms the engine sent.
+    expect(up.candle.tNs).toBeGreaterThan(0);
+    expect(up.candle.t).toBe(start);
+    const halts = msgs.filter((m) => m?.type === "chart.halt");
+    expect(halts.length).toBe(2);
+    for (const h of halts) if (h?.type === "chart.halt") expect(h.halt.start).toBe(t);
 
     const store = new ChartStore();
     store.applySnapshot({ ...fixtureSnapshot("15s", 0, []), candles: [], gaps: [], profile: null });

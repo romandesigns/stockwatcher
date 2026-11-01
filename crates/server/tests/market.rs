@@ -1173,13 +1173,16 @@ async fn fixture_halt_and_luld_bands_reach_subscribers_and_snapshots() {
             }
         }
     }
-    let start = json!({"start": T1005, "end": null, "reason": "LUDP", "code": "H"});
-    let end = json!({"start": T1005, "end": T100630, "reason": "LUDP", "code": "H"});
+    // Each ms time with its exchange-ns twin (`times.ns.v1`); the fixture's times are whole ms.
+    let ns = |ms: i64| ms * 1_000_000;
+    let start = json!({"start": T1005, "startNs": ns(T1005), "end": null, "endNs": null, "reason": "LUDP", "code": "H"});
+    let end = json!({"start": T1005, "startNs": ns(T1005), "end": T100630, "endNs": ns(T100630), "reason": "LUDP", "code": "H"});
     assert_eq!(halt_frames, vec![start, end.clone()]);
     assert!(
         luld_frames
             .iter()
-            .any(|p| *p == json!({"t": T1005, "ref": null, "up": null, "down": null})),
+            .any(|p| *p
+                == json!({"t": T1005, "tNs": ns(T1005), "ref": null, "up": null, "down": null})),
         "{luld_frames:?}"
     );
     let first_after = luld_frames.last().unwrap().clone();
@@ -1198,7 +1201,11 @@ async fn fixture_halt_and_luld_bands_reach_subscribers_and_snapshots() {
     let snap = next(&mut ws, is("chart.snapshot")).await;
     assert_eq!(snap["halts"], json!([end]));
     let bands = snap["luld"].as_array().unwrap();
-    assert!(bands.contains(&json!({"t": T1005, "ref": null, "up": null, "down": null})));
+    assert!(
+        bands.contains(
+            &json!({"t": T1005, "tNs": ns(T1005), "ref": null, "up": null, "down": null})
+        )
+    );
     assert!(bands.contains(&first_after), "{bands:?}");
     // No bands are published while halted.
     assert!(
@@ -1257,6 +1264,11 @@ async fn quotes_subscribe_gets_a_snapshot_then_changed_rows_about_once_a_second(
         "candidates only (FXHI is above $25), sorted"
     );
     assert!(snap["t"].as_i64().unwrap() >= T1040);
+    // The market clock's exchange-ns twin (`times.ns.v1`), floored to the ms `t`.
+    assert_eq!(
+        snap["tNs"].as_i64().unwrap().div_euclid(1_000_000),
+        snap["t"].as_i64().unwrap()
+    );
     let smpl = quote(&snap, "SMPL").unwrap().clone();
     assert!(smpl["p"].as_f64().unwrap() > 0.0);
     assert!(smpl["o"].as_f64().unwrap() > 0.0);
@@ -1333,6 +1345,13 @@ async fn quotes_search_ranks_the_board_on_the_server_and_pushes_the_top_n() {
             .as_array()
             .unwrap()
             .contains(&json!("quotes.search.v1")),
+        "{welcome}"
+    );
+    assert!(
+        welcome["features"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("times.ns.v1")),
         "{welcome}"
     );
     wait_for_replay(&mut ws).await;

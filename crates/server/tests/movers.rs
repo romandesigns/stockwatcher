@@ -113,6 +113,12 @@ async fn movers_subscribe_gets_the_lists_with_lines_then_updates() {
     for k in ["gainers", "bull", "bear", "rows"] {
         assert!(snap[k].is_array(), "{k}: {snap}");
     }
+    // The frame's market clock in exchange ns beside the ms `t` (`times.ns.v1`).
+    assert_eq!(
+        snap["tNs"].as_i64().map(|n| n.div_euclid(1_000_000)),
+        snap["t"].as_i64(),
+        "{snap}"
+    );
     // The fixture replay plays at 60×: within a few ticks some name is up or down on the day.
     let up = next(&mut ws, |m| {
         m["type"] == "movers.update" && m["rows"].as_array().is_some_and(|r| !r.is_empty())

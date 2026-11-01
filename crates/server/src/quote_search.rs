@@ -52,7 +52,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use market_archive::AssetMeta;
-use market_events::PriceBand;
+use market_events::{PriceBand, UnixNanos};
 use serde::{Deserialize, Serialize};
 
 use crate::quotes::{QuoteBoard, ScanRow};
@@ -329,6 +329,9 @@ struct Snapshot<'a> {
     kind: &'static str,
     id: &'a str,
     t: Option<i64>,
+    /// `t` in exchange-time ns (`times.ns.v1`, crate::time_marks).
+    #[serde(rename = "tNs")]
+    t_ns: Option<i64>,
     total: usize,
     rank: Vec<&'a str>,
     rows: Vec<WireRow<'a>>,
@@ -340,6 +343,8 @@ struct Update<'a> {
     kind: &'static str,
     id: &'a str,
     t: Option<i64>,
+    #[serde(rename = "tNs")]
+    t_ns: Option<i64>,
     rows: Vec<WireRow<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     total: Option<usize>,
@@ -358,14 +363,15 @@ fn sorted(rows: &HashMap<Arc<str>, Row>) -> Vec<(&Arc<str>, &Row)> {
 
 pub fn snapshot_frame(
     id: &str,
-    t: Option<i64>,
+    t: Option<UnixNanos>,
     r: &Results,
     assets: &HashMap<String, AssetMeta>,
 ) -> String {
     serde_json::to_string(&Snapshot {
         kind: "quotes.search.snapshot",
         id,
-        t,
+        t: t.map(UnixNanos::millis),
+        t_ns: t.map(UnixNanos::nanos),
         total: r.total,
         rank: r.rank.iter().map(|s| &**s).collect(),
         rows: sorted(&r.rows)
@@ -380,7 +386,7 @@ pub fn snapshot_frame(
 /// equal (nothing is sent: the 1 Hz tick costs the client nothing on a quiet board).
 pub fn update_frame(
     id: &str,
-    t: Option<i64>,
+    t: Option<UnixNanos>,
     prev: &Results,
     next: &Results,
     assets: &HashMap<String, AssetMeta>,
@@ -406,7 +412,8 @@ pub fn update_frame(
         serde_json::to_string(&Update {
             kind: "quotes.search.update",
             id,
-            t,
+            t: t.map(UnixNanos::millis),
+            t_ns: t.map(UnixNanos::nanos),
             rows,
             total,
             rank,
@@ -590,18 +597,22 @@ mod tests {
         let mut rows: Vec<&str> = r1.rows.keys().map(|s| &**s).collect();
         rows.sort();
         assert_eq!(rows, ["BIG", "SMALL"], "a pin without a quote has no row");
-        let snap = snapshot_frame("s", Some(1), &r1, &a);
+        let snap = snapshot_frame("s", Some(UnixNanos::from_millis(1)), &r1, &a);
         assert!(
             snap.starts_with(r#"{"type":"quotes.search.snapshot","id":"s""#),
             "{snap}"
         );
         assert!(snap.contains(r#""name":"Small Co","x":"NYSE""#), "{snap}");
-        assert_eq!(update_frame("s", Some(2), &r1, &r1, &a), None);
+        assert!(snap.contains(r#""t":1,"tNs":1000000,"#), "{snap}");
+        assert_eq!(
+            update_frame("s", Some(UnixNanos::from_millis(2)), &r1, &r1, &a),
+            None
+        );
         // SMALL trades past BIG: the rank flips and both rows changed volume or not.
         put(&mut b, "SMALL", 200, 100, 20);
         let r2 = search(&b, PriceBand::DEFAULT, &a, &query);
         assert_eq!(syms(&r2), ["SMALL"]);
-        let up = update_frame("s", Some(2), &r1, &r2, &a).unwrap();
+        let up = update_frame("s", Some(UnixNanos::from_millis(2)), &r1, &r2, &a).unwrap();
         let v: serde_json::Value = serde_json::from_str(&up).unwrap();
         assert_eq!(v["type"], "quotes.search.update");
         assert_eq!(v["rank"], serde_json::json!(["SMALL"]));
