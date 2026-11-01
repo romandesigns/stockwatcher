@@ -7,12 +7,16 @@
 // only chart consumers need them and chart-core must stay dependency-free;
 // shared can re-export them once the server forwards them.
 //
-// Times are epoch ms UTC (`tsNs` is epoch ns, and LOSES PRECISION as a JS
-// number: use it for display only, never as a key). Prices are dollars as
+// Times are epoch ms UTC. Newer servers send each one's exchange-ns twin beside it
+// (`tNs`, `startNs`, `endNs`, `nowNs`, `tsNs`; `times.ns.v1`): parseChartMessage
+// rewrites the ms fields from them (wireTime.ts), so the rest of the client reads
+// `t` as before. An epoch-ns number LOSES PRECISION in JS: never key on a twin
+// directly, only through `wireMs`. Prices are dollars as
 // JSON numbers, for display only; the engine keeps exact micro-dollars.
 // Sessions and labels are computed in America/New_York by time.ts.
 
 import type { IndicatorSpec } from "./indicators.ts";
+import { preferNsTimes } from "./wireTime.ts";
 
 export type Timeframe = "15s" | "30s" | "1m" | "5m";
 
@@ -251,7 +255,7 @@ export interface TapeTrade {
   symbol: string;
   /** Execution time, epoch ms. */
   t: number;
-  /** Execution time, epoch ns. Lossy as a JS number: display only. */
+  /** Execution time, epoch ns. Lossy as a JS number: never a key (parseChartMessage turns it into `t` with wireTime.ts `wireMs`). */
   tsNs: number;
   p: number;
   s: number;
@@ -307,7 +311,8 @@ export function parseChartMessage(raw: unknown): ChartMessage | null {
   }
   if (typeof value !== "object" || value === null) return null;
   const type = (value as { type?: unknown }).type;
-  return typeof type === "string" && CHART_TYPES.has(type) ? (value as ChartMessage) : null;
+  // The exchange-ns twins win over the ms fields when present (wireTime.ts).
+  return typeof type === "string" && CHART_TYPES.has(type) ? preferNsTimes(value as ChartMessage) : null;
 }
 
 /**

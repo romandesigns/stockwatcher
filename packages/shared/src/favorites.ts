@@ -74,6 +74,8 @@ export interface FavoritesMessage {
   type: "favorites.snapshot" | "favorites.update";
   /** The market clock, epoch ms. */
   t: number | null;
+  /** `t` in exchange-time ns (newer servers; `parseServerMessage` has already taken `t` from it, wireTime.ts). */
+  tNs?: number | null;
   symbols: string[];
   rows: FavoriteRowWire[];
 }

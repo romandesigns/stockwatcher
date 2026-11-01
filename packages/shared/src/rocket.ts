@@ -239,6 +239,8 @@ export interface RocketDayWire {
 export interface RocketPanelWire {
   /** The market clock at the frame, epoch ms. */
   t: number | null;
+  /** `t` in exchange-time ns (newer servers; `parseServerMessage` has already taken `t` from it, wireTime.ts). */
+  tNs?: number | null;
   enabled: boolean;
   strategy: RocketStrategyWire | null;
   mode: "budget" | "fixed";

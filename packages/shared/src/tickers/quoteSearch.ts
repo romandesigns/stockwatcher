@@ -42,6 +42,8 @@ export interface QuoteSearchSnapshotMessage {
   type: "quotes.search.snapshot";
   id: string;
   t: number | null;
+  /** `t` in exchange-time ns (newer servers; `parseServerMessage` has already taken `t` from it, wireTime.ts). */
+  tNs?: number | null;
   total: number;
   rank: string[];
   rows: QuoteSearchRowWire[];
@@ -51,6 +53,8 @@ export interface QuoteSearchUpdateMessage {
   type: "quotes.search.update";
   id: string;
   t: number | null;
+  /** `t` in exchange-time ns (newer servers; `parseServerMessage` has already taken `t` from it, wireTime.ts). */
+  tNs?: number | null;
   rows: QuoteSearchRowWire[];
   total?: number;
   rank?: string[];

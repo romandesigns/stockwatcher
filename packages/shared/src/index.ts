@@ -26,3 +26,4 @@ export * from "./noticeLog.ts";
 export * from "./noticeFeed.ts";
 export * from "./insightsTicker.ts";
 export * from "./breakout.ts";
+export * from "./wireTime.ts";

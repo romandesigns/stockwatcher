@@ -2,6 +2,7 @@
 // in crates/server/src/{api,ws,market}.rs; change both together.
 import { isDetectionMessage } from "./detection.ts";
 import { parseRunnersNotice } from "./runnersNotify.ts";
+import { preferNsClock } from "./wireTime.ts";
 
 /** GET /api/health (never requires auth). */
 export interface Health {
@@ -178,12 +179,16 @@ export interface QuotesSnapshotMessage {
   type: "quotes.snapshot";
   /** Replay/live clock (epoch ms) when the rows were taken; null before any clock. */
   t: number | null;
+  /** `t` in exchange-time ns (newer servers; `parseServerMessage` has already taken `t` from it, wireTime.ts). */
+  tNs?: number | null;
   quotes: QuoteRowWire[];
 }
 
 export interface QuotesUpdateMessage {
   type: "quotes.update";
   t: number | null;
+  /** `t` in exchange-time ns (newer servers; `parseServerMessage` has already taken `t` from it, wireTime.ts). */
+  tNs?: number | null;
   quotes: QuoteRowWire[];
   gone?: string[];
 }
@@ -223,6 +228,8 @@ export interface MoversSnapshotMessage {
   type: "movers.snapshot";
   /** The market clock, epoch ms. */
   t: number | null;
+  /** `t` in exchange-time ns (newer servers; `parseServerMessage` has already taken `t` from it, wireTime.ts). */
+  tNs?: number | null;
   /** Symbols in rank order, at most 25 each. */
   gainers: string[];
   bull: string[];
@@ -235,6 +242,8 @@ export interface MoversSnapshotMessage {
 export interface MoversUpdateMessage {
   type: "movers.update";
   t: number | null;
+  /** `t` in exchange-time ns (newer servers; `parseServerMessage` has already taken `t` from it, wireTime.ts). */
+  tNs?: number | null;
   gainers?: string[];
   bull?: string[];
   bear?: string[];
@@ -310,12 +319,16 @@ export interface PressureSnapshotMessage {
   type: "pressure.snapshot";
   /** Market clock (epoch ms) at the ranking; null before any clock. */
   t: number | null;
+  /** `t` in exchange-time ns (newer servers; `parseServerMessage` has already taken `t` from it, wireTime.ts). */
+  tNs?: number | null;
   board: PressureCardWire[];
 }
 
 export interface PressureUpdateMessage {
   type: "pressure.update";
   t: number | null;
+  /** `t` in exchange-time ns (newer servers; `parseServerMessage` has already taken `t` from it, wireTime.ts). */
+  tNs?: number | null;
   board: PressureCardWire[];
 }
 
@@ -762,5 +775,6 @@ export function parseServerMessage(raw: unknown): ServerMessage | null {
   const type = (value as { type?: unknown }).type;
   if (type === "detection.snapshot" || type === "detection.update") return isDetectionMessage(value) ? value : null;
   if (type === "runners.notice") return parseRunnersNotice(value);
-  return typeof type === "string" && SERVER_TYPES.has(type) ? (value as ServerMessage) : null;
+  // A board frame's market clock from its exchange-ns twin when the server sent one (wireTime.ts).
+  return typeof type === "string" && SERVER_TYPES.has(type) ? preferNsClock(value as ServerMessage) : null;
 }

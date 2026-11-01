@@ -64,7 +64,19 @@ makes the chart reusable: `ChartData` (from the server) + `ChartView` (timeframe
 {"type":"tape.trade","symbol":"SMPL","t":…,"p":3.47,"s":37,"conditions":["I"],"counted":"volume_only"}
 ```
 
-Times are epoch ms UTC; sessions and labels are computed in ET. `counted` is `ohlc_and_volume`, `volume_only`
+Times are epoch ms UTC; sessions and labels are computed in ET. Since 2026-10-31 (`times.ns.v1` in
+`welcome.features`) every ms time also goes out as its exchange-time ns twin beside it: `tNs` by `t`,
+`startNs`/`endNs` by `start`/`end`, `nowNs` on the clock, `tsNs` on the tape. That covers candles, gaps,
+halts, LULD points, the session, `chart.remove`, the indicator, level and zone frames, and the board
+frames' market clock (`rocket.*`, `movers.*`, `favorites.*`, `quotes.*`, `quotes.search.*`,
+`pressure.*`; the Ross panel already speaks ns). Rust is the only clock and counts ns; the ms field is
+that instant floored, kept for every phone build installed before the twins. Clients prefer the twin
+(chart-core and shared `wireMs`, applied once at parse time) and fall back to the ms field for an older
+server. An epoch-ns number is past 2^53, so JS rounds it to 256 ns: `wireMs` floors with a 512 ns
+slack, which gives back every whole-ms time exactly (all bar times) and reads a time inside a
+millisecond 1 ms late only within 512 ns of the next one. The twins add about a third to a candle
+snapshot's JSON (measured: 1,560 15 s candles 149 KB → 199 KB, 390 1 m candles 53 KB → 73 KB, before
+compression) and 26 bytes to a `chart.update`. `counted` is `ohlc_and_volume`, `volume_only`
 or `excluded:<reason>`. Every client shows the same reason the engine applied, and the tape in design C
 displays it.
 

@@ -2,6 +2,7 @@
 // no React: the same code feeds the web (Canvas 2D) and, later, React
 // Native (Skia) renderers through the display list.
 export * from "./types.ts";
+export * from "./wireTime.ts";
 export * from "./store.ts";
 export * from "./serverIndicators.ts";
 export * from "./time.ts";
