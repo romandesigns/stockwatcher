@@ -6,11 +6,14 @@
 //
 // The twin is exact in Rust but not here: an epoch-ns number is past 2^53, so JSON.parse rounds
 // it to the nearest 256 ns, and a plain floor of a bar start (a whole second, so a whole ms)
-// would land a millisecond early whenever the rounding went down. `wireMs` floors with a slack
-// that absorbs the rounding and the division, so a whole-ms time comes back exactly as the ms
-// field the server floored it to. The price: a time within SLACK_NS of the NEXT millisecond (a
-// halt's event time can fall anywhere in one) reads 1 ms late, about 1 in 2000 of those and
-// never a bar time. Keys stay consistent because every frame goes through the same function.
+// would land a millisecond early whenever the rounding went down. So `wireMs` keeps the ms field
+// whenever it agrees with the twin to within that rounding: the server floors the same exact ns
+// to that ms (`UnixNanos::millis`), so the field IS the twin, floored without loss. Only a twin
+// that disagrees (or an absent/null ms field) is turned into ms by flooring with a slack that
+// absorbs the rounding and the division: exact for whole-ms times, and 1 ms late for a time
+// within SLACK_NS of the next millisecond. Without the agreement check that lateness hit real
+// frames: a tape print at 14:00:59.9999997 (the tape sent `tsNs` before the twins existed) read
+// 14:01:00.000, the next second, and a halt's sub-ms event time likewise (review, 2026-10-31).
 //
 // Mirrored in packages/shared/src/wireTime.ts for the board frames (chart-core stays free of
 // dependencies, and shared does not depend on chart-core).
@@ -27,12 +30,16 @@ export const WIRE_NS_SLACK = 512;
  * JSON from before the twins) counts as absent.
  */
 export function wireMs(ms: number, ns: unknown): number {
-  return typeof ns === "number" && Number.isFinite(ns) && ns > 0 ? Math.floor((ns + WIRE_NS_SLACK) / NS_PER_MS) : ms;
+  if (typeof ns !== "number" || !Number.isFinite(ns) || ns <= 0) return ms;
+  // The field the server floored from this same ns: ms*1e6 <= ns < (ms+1)*1e6, give or take the
+  // double's rounding (module docs). Then it is exact and the twin adds nothing JS can hold.
+  if (Number.isFinite(ms) && ns >= ms * NS_PER_MS - WIRE_NS_SLACK && ns < (ms + 1) * NS_PER_MS + WIRE_NS_SLACK) return ms;
+  return Math.floor((ns + WIRE_NS_SLACK) / NS_PER_MS);
 }
 
 /** As `wireMs` for a field that may be null (a halt's `end`, a board frame's `t` before any clock). */
 export function wireMsOrNull(ms: number | null, ns: unknown): number | null {
-  return typeof ns === "number" && Number.isFinite(ns) && ns > 0 ? wireMs(0, ns) : ms;
+  return typeof ns === "number" && Number.isFinite(ns) && ns > 0 ? wireMs(ms ?? Number.NaN, ns) : ms;
 }
 
 type Timed = { t: number; tNs?: unknown };

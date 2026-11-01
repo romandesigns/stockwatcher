@@ -15,14 +15,16 @@ export const TIMES_NS_FEATURE = "times.ns.v1";
 const NS_PER_MS = 1_000_000;
 const WIRE_NS_SLACK = 512;
 
-/** Epoch ms of a wire time: from its exchange-ns twin when it is a positive finite number, else the ms field. */
+/** Epoch ms of a wire time: the ms field when it agrees with its twin (the server floored the same ns to it, so it is exact), else the twin floored with the slack; the ms field alone without a twin. */
 export function wireMs(ms: number, ns: unknown): number {
-  return typeof ns === "number" && Number.isFinite(ns) && ns > 0 ? Math.floor((ns + WIRE_NS_SLACK) / NS_PER_MS) : ms;
+  if (typeof ns !== "number" || !Number.isFinite(ns) || ns <= 0) return ms;
+  if (Number.isFinite(ms) && ns >= ms * NS_PER_MS - WIRE_NS_SLACK && ns < (ms + 1) * NS_PER_MS + WIRE_NS_SLACK) return ms;
+  return Math.floor((ns + WIRE_NS_SLACK) / NS_PER_MS);
 }
 
 /** As `wireMs` for a nullable field (a board frame's `t` before any clock). */
 export function wireMsOrNull(ms: number | null, ns: unknown): number | null {
-  return typeof ns === "number" && Number.isFinite(ns) && ns > 0 ? wireMs(0, ns) : ms;
+  return typeof ns === "number" && Number.isFinite(ns) && ns > 0 ? wireMs(ms ?? Number.NaN, ns) : ms;
 }
 
 /** A parsed frame's top-level `t` from its `tNs` twin, in place (no-op without one). */

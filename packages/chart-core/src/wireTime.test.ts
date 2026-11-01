@@ -25,6 +25,20 @@ describe("wireMs", () => {
     for (const extra of [1n, 250_000n, 500_000n, 998_000n]) expect(wireMs(-1, parsedNs(ms, extra))).toBe(ms);
   });
 
+  test("a time just under the next millisecond keeps the server's ms (a tape print at :59.9999997)", () => {
+    // The server floors the exact ns; the twin, rounded by JSON.parse and floored with the slack
+    // alone, would read the NEXT ms (and here the next second). The agreeing ms field wins.
+    const ms = Date.UTC(2026, 9, 15, 14, 0, 59, 999);
+    for (const extra of [999_500n, 999_700n, 999_900n, 999_999n]) {
+      expect(wireMs(ms, parsedNs(ms, extra))).toBe(ms);
+      expect(wireMsOrNull(ms, parsedNs(ms, extra))).toBe(ms);
+    }
+    const tape = parseChartMessage(`{"type":"tape.trade","symbol":"S","t":${ms},"tsNs":${nsJson(ms, 999_700n)},"p":1,"s":1,"exchange":"V","seq":1,"conditions":[],"counted":"ohlc_and_volume","reason":null,"session":null}`) as unknown as { t: number };
+    expect(tape.t).toBe(ms);
+    // Every ms of a second, at every sub-ms offset step, keeps its own ms.
+    for (let m = ms - 999; m <= ms; m++) for (const extra of [0n, 1n, 333_333n, 999_999n]) expect(wireMs(m, parsedNs(m, extra))).toBe(m);
+  });
+
   test("absent, null, zero or junk twins fall back to the ms field", () => {
     for (const ns of [undefined, null, 0, -5, Number.NaN, "1793017380000000000"]) expect(wireMs(42, ns)).toBe(42);
     expect(wireMsOrNull(null, undefined)).toBeNull();
