@@ -92,10 +92,11 @@ pub fn stamp_rows(body: &mut Value, now_ns: i64) {
     }
 }
 
-/// The Runners toasts' memory: each row's settled state when last seen. One per market.
+/// The Runners toasts' memory: each row's settled state when last seen, with its flag time (ns).
+/// One per market.
 #[derive(Debug, Default)]
 pub struct Events {
-    seen: HashMap<String, Option<String>>,
+    seen: HashMap<String, (Option<String>, Option<i64>)>,
     primed: bool,
 }
 
@@ -111,6 +112,8 @@ impl Events {
     /// restart or a reconnect never announces the day's earlier rows. `announce` false (a replay)
     /// keeps the memory current without producing anything.
     pub fn take(&mut self, body: &Value, now_ns: i64, announce: bool) -> Vec<String> {
+        let fresh =
+            |t: Option<i64>| t.is_some_and(|t| (0..=EVENT_FRESH_NS).contains(&(now_ns - t)));
         let mut out = Vec::new();
         let rows = body.get("rows").and_then(Value::as_array);
         for r in rows.into_iter().flatten() {
@@ -119,22 +122,20 @@ impl Events {
             };
             let state = r.get("state").and_then(Value::as_str).map(str::to_owned);
             let provisional = r.get("provisional").and_then(Value::as_bool) == Some(true);
+            let at = r.get("at").and_then(ms_to_ns);
             let had = self.seen.contains_key(id);
-            let before = self.seen.get(id).cloned().flatten();
+            let before = self.seen.get(id).and_then(|(s, _)| s.clone());
             // A provisional state (a breakout seen in the forming bar) is not a transition yet.
             let settled = if provisional { before.clone() } else { state };
-            self.seen.insert(id.to_owned(), settled.clone());
+            self.seen.insert(id.to_owned(), (settled.clone(), at));
             if !self.primed || !announce {
                 continue;
             }
-            let fresh =
-                |t: Option<i64>| t.is_some_and(|t| (0..=EVENT_FRESH_NS).contains(&(now_ns - t)));
             let symbol = r.get("s").and_then(Value::as_str).unwrap_or("");
             let kind = r.get("kind").and_then(Value::as_str).unwrap_or("runner");
             if !had {
                 // Running, "Run +20%" and "Fast move" entries never toast (owner, 2026-10-22): many
                 // a day, and a move under way rather than a forecast.
-                let at = r.get("at").and_then(ms_to_ns);
                 if fresh(at) && !matches!(kind, "running" | "run" | "fast") {
                     out.push(event_frame("new_flag", id, symbol, at.unwrap_or(now_ns), r));
                 }
@@ -154,12 +155,17 @@ impl Events {
             }
         }
         self.primed = true;
-        // Rows no longer on the panel are forgotten, so the memory stays the panel's size.
-        if let Some(rows) = rows {
-            let live: std::collections::HashSet<&str> =
-                rows.iter().filter_map(|r| r.get("id")?.as_str()).collect();
-            self.seen.retain(|id, _| live.contains(id.as_str()));
-        }
+        // Rows no longer on the panel are forgotten once their flag is too old to toast as new,
+        // so the memory stays about the panel's size. Not at once: a row that drops off the panel
+        // for a tick (crowded out, a filter edge) and comes back while still fresh would otherwise
+        // be "new" again and toast twice (the web's own diff never forgot a row).
+        let live: std::collections::HashSet<&str> = rows
+            .into_iter()
+            .flatten()
+            .filter_map(|r| r.get("id")?.as_str())
+            .collect();
+        self.seen
+            .retain(|id, (_, at)| live.contains(id.as_str()) || fresh(*at));
         out.truncate(MAX_EVENTS_PER_TICK);
         out
     }
@@ -286,6 +292,15 @@ mod tests {
         assert_eq!(got.len(), 1);
         assert!(got[0].contains(r#""kind":"breakout""#), "{}", got[0]);
         assert!(e.take(&json!({"rows": [a]}), now, true).is_empty());
+
+        // A fresh row that drops off the panel for a pass and comes back is not new again.
+        let g = row("g", "runner", at, "watching");
+        assert_eq!(e.take(&json!({"rows": [g.clone()]}), now, true).len(), 1);
+        assert!(e.take(&json!({"rows": []}), now, true).is_empty());
+        assert!(
+            e.take(&json!({"rows": [g]}), now, true).is_empty(),
+            "announced once"
+        );
 
         // Stale on the market clock: not news. A replay keeps the memory without announcing.
         let old = row("d", "runner", at - 10 * 60_000, "watching");

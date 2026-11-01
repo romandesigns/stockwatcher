@@ -685,6 +685,9 @@ impl Task {
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => {
                         self.reload(false).await;
+                        // As above: a re-armed entry gets its `snoozed` before it is saved, so no
+                        // client falls back to its own clock for a tick.
+                        self.eval.tick(now_ms());
                         changed = true;
                     }
                     Err(broadcast::error::RecvError::Closed) => break,

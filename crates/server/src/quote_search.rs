@@ -240,6 +240,7 @@ pub fn search(
         chg: f64,
     }
     let pins: HashSet<&str> = q.pins.iter().map(String::as_str).collect();
+    let by_exchange = !q.groups[Chip::Nasdaq.group()].is_empty();
     let mut pinned: Vec<Cand<'_>> = Vec::new();
     let mut cands: Vec<Cand<'_>> = Vec::new();
     for row in board.scan().filter(|r| band.contains(r.last)) {
@@ -251,9 +252,14 @@ pub fn search(
         if pins.contains(&**row.symbol) {
             pinned.push(c);
         }
-        let exchange = assets
-            .get(&**row.symbol)
-            .map_or("", |m| m.exchange.as_str());
+        // Under the core lock, once per row: the name lookup only when an exchange chip asks.
+        let exchange = if by_exchange {
+            assets
+                .get(&**row.symbol)
+                .map_or("", |m| m.exchange.as_str())
+        } else {
+            ""
+        };
         if q.passes(c.price, c.chg, exchange) {
             cands.push(c);
         }
