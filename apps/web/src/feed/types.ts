@@ -1,5 +1,5 @@
 import type { ChartMessage, IndicatorDemand, OrderCancel, ServerIndicatorsChannel, OrderModify, OrderPlace, PaperMessage, PaperState, ReplayControl, Timeframe } from "@stockwatcher/chart-core";
-import type { DetectionChannel, FavoritesChannel, MoversChannel, PressureChannel, QuoteChannel, RocketChannel, RossChannel, NoticesChannel, SymbolsChannel, TickerChannel } from "@stockwatcher/shared";
+import type { DetectionChannel, FavoritesChannel, MoversChannel, PressureChannel, QuoteChannel, QuoteSearchChannel, RocketChannel, RossChannel, NoticesChannel, SymbolsChannel, TickerChannel } from "@stockwatcher/shared";
 
 export interface ChartSubscription {
   symbol: string;
@@ -34,6 +34,9 @@ export interface ChartFeed {
   /** The server's live quote board for the ticker search (server feed only; the fixture has
    *  none, so its rows show no quote). Subscribing opts the connection in. */
   readonly quotes?: QuoteChannel;
+  /** Searches ranked on the server (`quotes.search.v1`; server feed only). While `meta().available`
+   *  the ticker search uses it instead of opening the whole `quotes` board. */
+  readonly quoteSearch?: QuoteSearchChannel;
   /** The server's Halt watcher board (server feed only); subscribing opts the connection in. */
   readonly pressure?: PressureChannel;
   /** The server's Ross Panel (server feed only); subscribing opts the connection in. */

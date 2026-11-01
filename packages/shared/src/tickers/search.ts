@@ -89,7 +89,7 @@ function byMove(a: TickerInfo, b: TickerInfo): number {
  * "Most active" (or, with filters on, "Matching the filters"); a ranked list keeps one title,
  * over the first mock row, so a not-openable row is never unannounced.
  */
-function withSections(rows: readonly TickerRow[], titled: boolean, filtered = false): TickerRow[] {
+export function withTickerSections(rows: readonly TickerRow[], titled: boolean, filtered = false): TickerRow[] {
   let firstMock = true;
   return rows.map((r, i) => {
     const prev = rows[i - 1];
@@ -125,7 +125,7 @@ export function searchTickers(
   const on = activeTickerFilters(tickers, filters);
   const pool = on.size ? tickers.filter((t) => passesTickerFilters(t, on)) : tickers;
   const plain = (item: TickerInfo): TickerRow => ({ item, score: 0, symbolIdx: [], nameIdx: [] });
-  if (query.trim()) return withSections(rankTickers(pool, query), false);
+  if (query.trim()) return withTickerSections(rankTickers(pool, query), false);
   const bySym = new Map(tickers.map((t) => [t.symbol, t]));
   const recent = recents
     .map((s) => bySym.get(s))
@@ -137,7 +137,7 @@ export function searchTickers(
   const mover = on.has("gainers") || on.has("losers");
   const rest = pool.filter((t) => !taken.has(t.symbol)).sort(mover ? byMove : byActivity).map(plain);
   const recentRows: TickerRow[] = shownRecent.map((item, i) => ({ ...plain(item), recent: true, ...(hidden > 0 && i === shownRecent.length - 1 ? { moreRecents: hidden } : {}) }));
-  return withSections([...recentRows, ...rest], true, on.size > 0);
+  return withTickerSections([...recentRows, ...rest], true, on.size > 0);
 }
 
 /**
@@ -156,7 +156,7 @@ export function refreshTickerRows(rows: readonly TickerRow[], tickers: readonly 
     // touches a few hundred of thousands of rows.
     if (item) out.push(sameTicker(item, r.item) ? r : { ...r, item });
   }
-  return out.length === rows.length ? out : withSections(out, grouped, filtered);
+  return out.length === rows.length ? out : withTickerSections(out, grouped, filtered);
 }
 
 function sameTicker(a: TickerInfo, b: TickerInfo): boolean {

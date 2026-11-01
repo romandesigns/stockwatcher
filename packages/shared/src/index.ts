@@ -17,6 +17,7 @@ export * from "./zones.ts";
 export * from "./detection.ts";
 export * from "./panels.ts";
 export * from "./tickers/search.ts";
+export * from "./tickers/quoteSearch.ts";
 export * from "./tapHold.ts";
 export * from "./session.ts";
 export * from "./runnersNotify.ts";

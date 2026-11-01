@@ -2,20 +2,30 @@ import { formatPrice, formatVolume } from "@stockwatcher/chart-core";
 import { Icon, playHaptic } from "@stockwatcher/chart-native";
 import {
   activeTickerFilters,
+  directoryStale,
+  directoryUniverse,
+  MOCK_TICKERS,
+  quoteSearchQuery,
   refreshTickerRows,
   searchTickers,
+  serverTickerRows,
   TICKER_SECTION_TITLES,
   tickerUniverse,
   visibleTickerFilterGroups,
+  withSearchQuotes,
   type QuoteChannel,
+  type QuoteSearchChannel,
   type TickerFilterId,
   type TickerRow,
 } from "@stockwatcher/shared";
-import { Fragment, memo, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { FlatList, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { useQuoteBoard } from "../feed/hooks";
+import { useQuoteBoard, useQuoteSearch, useQuoteSearchMeta } from "../feed/hooks";
+
+/** Rows asked of a server-ranked search at a time; reaching the end of the list asks for more. */
+const PAGE = 200;
 import { colors, fonts } from "../theme";
 import { StarToggle } from "../ui/StarToggle";
 
@@ -94,8 +104,10 @@ export interface TickerSearchSheetProps {
   onClose: () => void;
   /** The server's candidates (openable symbols). */
   symbols: readonly string[];
-  /** The feed's live quote board; subscribed only while the sheet is open. */
+  /** The feed's live quote board; subscribed only while the sheet is open, and only when the server cannot rank searches itself (`search`). */
   quotes: QuoteChannel;
+  /** Searches ranked on the server (`quotes.search.v1`): the top rows and the query's matches come down instead of the whole board. */
+  search: QuoteSearchChannel;
   /** Append the mock universe (fixture data only: noise next to a real day). */
   mock: boolean;
   current: string;
@@ -116,42 +128,62 @@ export interface TickerSearchSheetProps {
  * Mock rows (fixture sources only) are shown, labelled, and not openable.
  * The FlatList virtualizes, so thousands of rows cost only what is on screen.
  */
-export function TickerSearchSheet({ open, onClose, symbols, quotes, mock, current, recents, onSelect, reducedMotion }: TickerSearchSheetProps) {
+export function TickerSearchSheet({ open, onClose, symbols, quotes, search, mock, current, recents, onSelect, reducedMotion }: TickerSearchSheetProps) {
   const insets = useSafeAreaInsets();
-  const board = useQuoteBoard(quotes, open);
-  const tickers = useMemo(() => tickerUniverse(symbols, board, { mock }), [symbols, board, mock]);
-  const groups = useMemo(() => visibleTickerFilterGroups(tickers), [tickers]);
+  // A server that ranks searches (quotes.search.v1) sends the top rows and the query's matches;
+  // only an older one still needs the whole board, filtered and sorted here (as on the web).
+  const meta = useQuoteSearchMeta(search);
+  const server = meta.available;
+  const board = useQuoteBoard(quotes, open && !server);
   const [query, setQuery] = useState("");
   // Recently opened shows RECENTS_COLLAPSED tickers until "See more" (owner, 2026-10-19).
   const [recentsExpanded, setRecentsExpanded] = useState(false);
   const more = useCallback(() => setRecentsExpanded(true), []);
   // Filters persist between openings (unlike the query), as on the web.
   const [filters, setFilters] = useState<ReadonlySet<TickerFilterId>>(new Set());
+  const [limit, setLimit] = useState(PAGE);
+  const universe = useMemo(() => (server ? directoryUniverse(symbols, meta.directory, mock ? MOCK_TICKERS : []) : tickerUniverse(symbols, board, { mock })), [server, symbols, meta.directory, board, mock]);
+  // Asked when it turns stale while open (an opening, a candidate entering), not per candidate.
+  const directoryMissing = server && directoryStale(meta.directory, symbols);
+  useEffect(() => {
+    if (open && directoryMissing) search.requestDirectory();
+  }, [open, directoryMissing, search]);
+  const searchQuery = useMemo(() => quoteSearchQuery(universe, query, filters, recents, limit), [universe, query, filters, recents, limit]);
+  const results = useQuoteSearch(search, open && server, "search", searchQuery);
+  const tickers = useMemo(() => (server ? withSearchQuotes(universe, results) : universe), [server, universe, results]);
+  const groups = useMemo(() => visibleTickerFilterGroups(tickers), [tickers]);
 
   // Every opening starts with an empty field, like the web: clear it on the way out.
   const close = () => {
     setQuery("");
     setRecentsExpanded(false);
+    setLimit(PAGE);
     onClose();
   };
   // Ranked only when the query, filters or recents change, and once more when the first quote
   // snapshot lands (most-active order needs volumes); other updates refresh values in place, so
   // the list does not reshuffle under the thumb once a second (the web panel does the same).
   // React's "adjust state while rendering" pattern: re-rank when the key changes, else keep.
-  const rankKey = [query, [...filters].sort().join(","), recents.join(","), board.size > 0, recentsExpanded].join("|");
+  // Ranked by the server: once more per snapshot (the answer to a new query, filter or page),
+  // never on its once-a-second updates.
+  const rankKey = [query, [...filters].sort().join(","), recents.join(","), server ? `s${results.snapshots}` : board.size > 0, recentsExpanded].join("|");
   const [rank, setRank] = useState<{ key: string; rows: TickerRow[] }>({ key: "", rows: [] });
   let ranked = rank.rows;
   if (rank.key !== rankKey) {
-    ranked = searchTickers(tickers, query, filters, recents, { recentsExpanded });
+    ranked = server ? serverTickerRows(tickers, results, query, filters, recents, { recentsExpanded }) : searchTickers(tickers, query, filters, recents, { recentsExpanded });
     setRank({ key: rankKey, rows: ranked });
   }
   // Titles whenever there is no query: Recently opened stays on top with filters on.
   const grouped = !query.trim();
   const filtered = activeTickerFilters(tickers, filters).size > 0;
   const rows = useMemo(() => refreshTickerRows(ranked, tickers, grouped, filtered), [ranked, tickers, grouped, filtered]);
+  // The server holds more ranked rows than it sent: the end of the list asks for the next page.
+  const moreOnServer = server && !query.trim() && results.rank.length < results.total;
+  const count = server && !query.trim() ? Math.max(rows.length, results.total) : rows.length;
 
   const toggle = (id: TickerFilterId) => {
     playHaptic("selection");
+    setLimit(PAGE);
     setFilters((f) => {
       const next = new Set(f);
       if (next.has(id)) next.delete(id);
@@ -230,7 +262,7 @@ export function TickerSearchSheet({ open, onClose, symbols, quotes, mock, curren
         </ScrollView>
         <View style={s.countRow}>
           <Text style={s.count}>
-            {rows.length} {rows.length === 1 ? "ticker" : "tickers"}
+            {count} {count === 1 ? "ticker" : "tickers"}
           </Text>
           {filters.size > 0 && (
             <Pressable accessibilityRole="button" accessibilityLabel="Clear filters" hitSlop={8} onPress={() => setFilters(new Set())}>
@@ -246,6 +278,8 @@ export function TickerSearchSheet({ open, onClose, symbols, quotes, mock, curren
           keyboardDismissMode="on-drag"
           contentContainerStyle={{ paddingBottom: insets.bottom + 16 }}
           ListEmptyComponent={<Text style={s.empty}>{query ? `No ticker matches “${query}”.` : "No ticker matches these filters."}</Text>}
+          onEndReached={moreOnServer ? () => setLimit((l) => l + PAGE) : undefined}
+          onEndReachedThreshold={1.5}
           initialNumToRender={16}
           maxToRenderPerBatch={24}
           windowSize={7}

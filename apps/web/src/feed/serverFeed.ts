@@ -1,5 +1,5 @@
 import { createChartRouter, parseChartMessage, parsePaperMessage, createServerIndicators, type ChartIndicatorsSet, type ChartSubscribe, type ChartUnsubscribe, type PaperMessage, type PaperState, type ReplayControl } from "@stockwatcher/chart-core";
-import { createDetectionChannel, createFavoritesChannel, createMoversChannel, createPressureChannel, createQuoteChannel, createRocketChannel, createRossChannel, createNoticesChannel, createSymbolsChannel, createTickerChannel, createWsClient, hasFeature, INDICATORS_FEATURE, INSIGHTS_TICKER_FEATURE, NOTICES_FEATURE, serverWsUrl, SYMBOLS_FEATURE, type AlertsServerMessage, type ConnectionStatus, type MarketSource, type SettingsSync, type WebSocketLike } from "@stockwatcher/shared";
+import { createDetectionChannel, createFavoritesChannel, createMoversChannel, createPressureChannel, createQuoteChannel, createQuoteSearchChannel, createRocketChannel, createRossChannel, createNoticesChannel, createSymbolsChannel, createTickerChannel, createWsClient, hasFeature, INDICATORS_FEATURE, INSIGHTS_TICKER_FEATURE, NOTICES_FEATURE, QUOTE_SEARCH_FEATURE, serverWsUrl, SYMBOLS_FEATURE, type AlertsServerMessage, type ConnectionStatus, type MarketSource, type SettingsSync, type WebSocketLike } from "@stockwatcher/shared";
 import type { RunnersNotifier } from "../notify/runnersNotify.ts";
 import type { ChartFeed, PaperCommand, ReplayCommand } from "./types.ts";
 
@@ -41,6 +41,9 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
 
   // Late-bound: the channel is built before the client it drives.
   const quotes = createQuoteChannel({ subscribe: () => client.subscribeQuotes(), unsubscribe: () => client.unsubscribeQuotes() });
+  // The ticker search ranked on the server (quotes.search.v1): only the top rows and the pinned
+  // matches come down, instead of the whole board above (still used with an older server).
+  const quoteSearch = createQuoteSearchChannel({ send: (m) => client.send(m) });
   // The dashboard's Halt watcher, opted in while its panel is mounted.
   const pressure = createPressureChannel({ subscribe: () => client.subscribePressure(), unsubscribe: () => client.unsubscribePressure() });
   const ross = createRossChannel({ subscribe: () => client.subscribeRoss(), unsubscribe: () => client.unsubscribeRoss() });
@@ -81,6 +84,7 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
       symbols.setAvailable(hasFeature(w, SYMBOLS_FEATURE));
       notices.setAvailable(hasFeature(w, NOTICES_FEATURE));
       ticker.setAvailable(hasFeature(w, INSIGHTS_TICKER_FEATURE));
+      quoteSearch.setAvailable(hasFeature(w, QUOTE_SEARCH_FEATURE));
     },
     onStatus: (s) => {
       opts.onStatus?.(s);
@@ -94,9 +98,15 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
       pressure.setConnected(s === "open");
       rocket.setConnected(s === "open");
       detection.setConnected(s === "open");
-      if (s === "open") resubscribe(); // subscriptions do not survive a reconnect
+      if (s === "open") {
+        resubscribe(); // subscriptions do not survive a reconnect
+        quoteSearch.resend();
+      }
     },
     onQuotes: (m) => quotes.apply(m),
+    onMessage: (m) => {
+      if (m.type === "quotes.search.snapshot" || m.type === "quotes.search.update" || m.type === "quotes.directory") quoteSearch.apply(m);
+    },
     onPressure: (m) => pressure.apply(m),
     onRoss: (m) => ross.apply(m),
     onFavorites: (m) => favorites.apply(m),
@@ -178,6 +188,7 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
       send: (cmd) => sendRaw(cmd),
     },
     quotes,
+    quoteSearch,
     pressure,
     ross,
     favorites,

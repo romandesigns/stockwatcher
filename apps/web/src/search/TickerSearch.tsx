@@ -4,16 +4,24 @@ import { cn, Dialog, DialogContent, DialogTitle, Input, ScrollArea } from "@stoc
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import {
   activeTickerFilters,
+  directoryStale,
+  directoryUniverse,
+  MOCK_TICKERS,
+  quoteSearchQuery,
   refreshTickerRows,
   searchTickers,
+  serverTickerRows,
   TICKER_SECTION_TITLES,
   tickerUniverse,
   visibleTickerFilterGroups,
+  withSearchQuotes,
   type QuoteChannel,
+  type QuoteSearchChannel,
   type TickerFilterId,
   type TickerRow,
 } from "@stockwatcher/shared";
 import { useQuoteBoard } from "../feed/useQuoteBoard.ts";
+import { useQuoteSearch, useQuoteSearchMeta } from "../feed/useQuoteSearch.ts";
 import { StarButton } from "../favorites/StarButton.tsx";
 
 /** Text with the matched characters emphasised (accent), as VS Code's quick open does. */
@@ -108,8 +116,10 @@ export interface TickerSearchProps {
   onOpenChange: (open: boolean) => void;
   /** The server's candidates (openable symbols). */
   symbols: readonly string[];
-  /** The feed's live quote board; subscribed only while the panel is open. */
+  /** The feed's live quote board; subscribed only while the panel is open, and only when the server cannot rank searches itself (`search`). */
   quotes?: QuoteChannel;
+  /** Searches ranked on the server (`quotes.search.v1`): the top rows and the query's matches come down instead of the whole board. */
+  search?: QuoteSearchChannel;
   /** Append the mock universe (fixture data only: noise next to a real day). */
   mock: boolean;
   current: string;
@@ -135,7 +145,7 @@ export interface TickerSearchProps {
  * mock universe, fixture sources only) are shown, labelled, and cannot be
  * opened.
  */
-export function TickerSearch({ open, onOpenChange, symbols, quotes, mock, current, recents, onSelect, anchor }: TickerSearchProps) {
+export function TickerSearch({ open, onOpenChange, symbols, quotes, search, mock, current, recents, onSelect, anchor }: TickerSearchProps) {
   // Where the pill is on screen when the panel opens (null: not anchored, or not measured yet).
   const [box, setBox] = useState<{ left: number; top: number; width: number } | null>(null);
   useLayoutEffect(() => {
@@ -150,11 +160,25 @@ export function TickerSearch({ open, onOpenChange, symbols, quotes, mock, curren
   const [limit, setLimit] = useState(PAGE);
   // Recently opened shows RECENTS_COLLAPSED tickers until "See more" (owner, 2026-10-19).
   const [recentsExpanded, setRecentsExpanded] = useState(false);
-  const board = useQuoteBoard(quotes, open);
-  const tickers = useMemo(() => tickerUniverse(symbols, board, { mock }), [symbols, board, mock]);
-  const groups = useMemo(() => visibleTickerFilterGroups(tickers), [tickers]);
+  // A server that ranks searches (quotes.search.v1) sends the top rows and the query's matches;
+  // only an older one still needs the whole board, filtered and sorted here.
+  const meta = useQuoteSearchMeta(search);
+  const server = meta.available;
+  const board = useQuoteBoard(quotes, open && !server);
   // Filters persist between openings (unlike the query): they are a way of working, not a search.
   const [filters, setFilters] = useState<ReadonlySet<TickerFilterId>>(new Set());
+  // The fuzzy pool: the candidates named from the server's directory (asked for at an opening
+  // when a candidate is missing from it), or the whole board's rows.
+  const universe = useMemo(() => (server ? directoryUniverse(symbols, meta.directory, mock ? MOCK_TICKERS : []) : tickerUniverse(symbols, board, { mock })), [server, symbols, meta.directory, board, mock]);
+  // Asked when it turns stale while open (an opening, a candidate entering), not per candidate.
+  const directoryMissing = server && directoryStale(meta.directory, symbols);
+  useEffect(() => {
+    if (open && directoryMissing) search?.requestDirectory();
+  }, [open, directoryMissing, search]);
+  const searchQuery = useMemo(() => quoteSearchQuery(universe, query, filters, recents, limit), [universe, query, filters, recents, limit]);
+  const results = useQuoteSearch(search, open && server, "search", searchQuery);
+  const tickers = useMemo(() => (server ? withSearchQuotes(universe, results) : universe), [server, universe, results]);
+  const groups = useMemo(() => visibleTickerFilterGroups(tickers), [tickers]);
   const toggleFilter = (id: TickerFilterId) => {
     setFilters((f) => {
       const next = new Set(f);
@@ -186,11 +210,13 @@ export function TickerSearch({ open, onOpenChange, symbols, quotes, mock, curren
   // pointer while the user reads it.
   // React's "adjust state while rendering" pattern: re-rank when the key changes, else keep.
   // `open` is in the key so each opening picks up the recents (another device may have changed them).
-  const rankKey = [open, query, [...filters].sort().join(","), board.size > 0, recentsExpanded].join("|");
+  // Ranked by the server: once more per snapshot (the answer to a new query, filter or limit),
+  // never on its once-a-second updates.
+  const rankKey = [open, query, [...filters].sort().join(","), server ? `s${results.snapshots}` : board.size > 0, recentsExpanded].join("|");
   const [rank, setRank] = useState<{ key: string; rows: TickerRow[] }>({ key: "", rows: [] });
   let ranked = rank.rows;
   if (rank.key !== rankKey) {
-    ranked = searchTickers(tickers, query, filters, recents, { recentsExpanded });
+    ranked = server ? serverTickerRows(tickers, results, query, filters, recents, { recentsExpanded }) : searchTickers(tickers, query, filters, recents, { recentsExpanded });
     setRank({ key: rankKey, rows: ranked });
   }
   // Titles whenever there is no query: Recently opened stays on top with filters on.
@@ -198,6 +224,9 @@ export function TickerSearch({ open, onOpenChange, symbols, quotes, mock, curren
   const filtered = activeTickerFilters(tickers, filters).size > 0;
   const rows = useMemo(() => refreshTickerRows(ranked, tickers, grouped, filtered), [ranked, tickers, grouped, filtered]);
   const shown = rows.length > limit ? rows.slice(0, limit) : rows;
+  // The server holds more ranked rows than it sent: scrolling to the end asks for the next page.
+  const moreOnServer = server && !query.trim() && results.rank.length < results.total;
+  const count = server && !query.trim() ? Math.max(rows.length, results.total) : rows.length;
   const found = activeSym ? rows.findIndex((r) => r.item.symbol === activeSym) : 0;
   const active = Math.max(0, found);
 
@@ -325,7 +354,7 @@ export function TickerSearch({ open, onOpenChange, symbols, quotes, mock, curren
               ) : null}
             </Fragment>
           ))}
-          {shown.length < rows.length && (
+          {(shown.length < rows.length || moreOnServer) && (
             <li ref={sentinel} role="presentation" className="px-3 py-2 text-center text-[10px] text-text-faint">
               Scroll for more, or keep typing to narrow
             </li>
@@ -343,7 +372,7 @@ export function TickerSearch({ open, onOpenChange, symbols, quotes, mock, curren
             <kbd className="font-mono">Esc</kbd> close
           </span>
           <span className="ml-auto tabular-nums">
-            {rows.length} {rows.length === 1 ? "ticker" : "tickers"}
+            {count} {count === 1 ? "ticker" : "tickers"}
             {filters.size > 0 && (
               <button
                 type="button"

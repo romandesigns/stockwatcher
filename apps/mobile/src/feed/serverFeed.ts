@@ -17,7 +17,7 @@ import {
   type ServerIndicatorsChannel,
   type Timeframe,
 } from "@stockwatcher/chart-core";
-import { createDetectionChannel, createFavoritesChannel, createMoversChannel, createPressureChannel, createQuoteChannel, createRocketChannel, createRossChannel, createNoticesChannel, createSymbolsChannel, createTickerChannel, createWsClient, hasFeature, INDICATORS_FEATURE, INSIGHTS_TICKER_FEATURE, NOTICES_FEATURE, SYMBOLS_FEATURE, type AlertsServerMessage, type ConnectionStatus, type DetectionChannel, type FavoritesChannel, type MarketSource, type MoversChannel, type PressureChannel, type QuoteChannel, type RocketChannel, type RossChannel, type NoticesChannel, type SettingsSync, type SymbolsChannel, type TickerChannel, type WebSocketLike } from "@stockwatcher/shared";
+import { createDetectionChannel, createFavoritesChannel, createMoversChannel, createPressureChannel, createQuoteChannel, createQuoteSearchChannel, createRocketChannel, createRossChannel, createNoticesChannel, createSymbolsChannel, createTickerChannel, createWsClient, hasFeature, INDICATORS_FEATURE, INSIGHTS_TICKER_FEATURE, NOTICES_FEATURE, QUOTE_SEARCH_FEATURE, SYMBOLS_FEATURE, type AlertsServerMessage, type ConnectionStatus, type DetectionChannel, type FavoritesChannel, type MarketSource, type MoversChannel, type PressureChannel, type QuoteChannel, type QuoteSearchChannel, type RocketChannel, type RossChannel, type NoticesChannel, type SettingsSync, type SymbolsChannel, type TickerChannel, type WebSocketLike } from "@stockwatcher/shared";
 
 import { deviceInfo, pushToken, subscribePushToken } from "../notifications/push";
 import { runnersRegisterFields, subscribeRunnersPush } from "../notifications/runnersPush";
@@ -47,6 +47,12 @@ export interface MobileFeed {
   sendPaper(cmd: PaperCommand): void;
   /** The server's live quote board for the ticker search; subscribing opts the connection in. */
   quotes: QuoteChannel;
+  /**
+   * Searches ranked on the server (`quotes.search.v1`, crates/server/src/quote_search.rs): while
+   * `meta().available` the search sheet uses it instead of opening the whole `quotes` board
+   * (which every older server still needs).
+   */
+  quoteSearch: QuoteSearchChannel;
   /** The server's Halt watcher board (the dashboard's gauges); subscribing opts the connection in. */
   pressure: PressureChannel;
   ross: RossChannel;
@@ -101,6 +107,7 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
 
   // Late-bound: the channel is built before the client it drives.
   const quotes = createQuoteChannel({ subscribe: () => client.subscribeQuotes(), unsubscribe: () => client.unsubscribeQuotes() });
+  const quoteSearch = createQuoteSearchChannel({ send: (m) => client.send(m) });
   const pressure = createPressureChannel({ subscribe: () => client.subscribePressure(), unsubscribe: () => client.unsubscribePressure() });
   const ross = createRossChannel({ subscribe: () => client.subscribeRoss(), unsubscribe: () => client.unsubscribeRoss() });
   const favorites = createFavoritesChannel({ subscribe: () => client.subscribeFavorites(), unsubscribe: () => client.unsubscribeFavorites() });
@@ -142,6 +149,7 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
       symbols.setAvailable(hasFeature(w, SYMBOLS_FEATURE));
       notices.setAvailable(hasFeature(w, NOTICES_FEATURE));
       ticker.setAvailable(hasFeature(w, INSIGHTS_TICKER_FEATURE));
+      quoteSearch.setAvailable(hasFeature(w, QUOTE_SEARCH_FEATURE));
     },
     onStatus: (s) => {
       onStatus?.(s);
@@ -159,11 +167,15 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
       // Subscriptions do not survive a reconnect.
       if (s === "open") {
         for (const [id, a] of router.entries()) sendRaw(subscribeFrame(id, a));
+        quoteSearch.resend();
         // This phone's push token, on every connection (idempotent; heals a lost or rotated one).
         registerPush();
       }
     },
     onQuotes: (m) => quotes.apply(m),
+    onMessage: (m) => {
+      if (m.type === "quotes.search.snapshot" || m.type === "quotes.search.update" || m.type === "quotes.directory") quoteSearch.apply(m);
+    },
     onPressure: (m) => pressure.apply(m),
     onRoss: (m) => ross.apply(m),
     onFavorites: (m) => favorites.apply(m),
@@ -237,6 +249,7 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
     },
     sendPaper: (cmd) => sendRaw(cmd),
     quotes,
+    quoteSearch,
     pressure,
     ross,
     favorites,

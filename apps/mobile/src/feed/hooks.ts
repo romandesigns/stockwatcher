@@ -1,6 +1,6 @@
 import { ChartStore, parseReplayAlerts, parseReplayDayState, sameIndicatorDemand, type ChartMessage, type Clock, type IndicatorDemand, type IndicatorValues, type PaperState, type ReplayAlert, type ReplayDayState, type Series, type TapeTrade, type Timeframe } from "@stockwatcher/chart-core";
 import type { ChartTrading } from "@stockwatcher/chart-native";
-import { authenticatedFetch, EMPTY_QUOTE_BOARD, EMPTY_SYMBOLS, parseLiveSession, withMarketSource, type DetectionChannel, type DetectionState, type FavoritesChannel, type FavoritesState, type LiveSession, type MarketSource, type MoversChannel, type MoversState, type PressureBoard, type PressureChannel, type PressureStatus, type QuoteBoard, type QuoteChannel, type RocketChannel, type RocketState, type RossChannel, type RossState, type SymbolsChannel, type SymbolsState, zoneSelector, type ZoneView } from "@stockwatcher/shared";
+import { authenticatedFetch, EMPTY_QUOTE_BOARD, EMPTY_SEARCH_STATE, EMPTY_SYMBOLS, parseLiveSession, withMarketSource, type DetectionChannel, type DetectionState, type FavoritesChannel, type FavoritesState, type LiveSession, type MarketSource, type MoversChannel, type MoversState, type PressureBoard, type PressureChannel, type PressureStatus, type QuoteBoard, type QuoteChannel, type QuoteSearchChannel, type QuoteSearchHandle, type QuoteSearchMeta, type QuoteSearchQuery, type QuoteSearchState, type RocketChannel, type RocketState, type RossChannel, type RossState, type SymbolsChannel, type SymbolsState, zoneSelector, type ZoneView } from "@stockwatcher/shared";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { SERVER_URL } from "./server";
@@ -108,6 +108,36 @@ export function useQuoteBoard(channel: QuoteChannel, enabled: boolean): QuoteBoa
   const subscribe = useCallback((cb: () => void) => (enabled ? channel.subscribe(cb) : NOOP), [channel, enabled]);
   const get = useCallback(() => (enabled ? channel.get() : EMPTY_QUOTE_BOARD), [channel, enabled]);
   return useSyncExternalStore(subscribe, get);
+}
+
+/** Whether the connected server ranks ticker searches (`quotes.search.v1`), and its directory. */
+export function useQuoteSearchMeta(channel: QuoteSearchChannel): QuoteSearchMeta {
+  const subscribe = useCallback((cb: () => void) => channel.watch(cb), [channel]);
+  return useSyncExternalStore(subscribe, useCallback(() => channel.meta(), [channel]));
+}
+
+/**
+ * One server-ranked search while `enabled` (the web's useQuoteSearch): opening sends
+ * `quotes.search`, closing `quotes.search.stop`; `query` may change freely.
+ */
+export function useQuoteSearch(channel: QuoteSearchChannel, enabled: boolean, id: string, query: QuoteSearchQuery): QuoteSearchState {
+  const [handle, setHandle] = useState<QuoteSearchHandle | null>(null);
+  const latest = useRef(query);
+  useEffect(() => {
+    latest.current = query;
+    handle?.set(query);
+  }, [handle, query]);
+  useEffect(() => {
+    if (!enabled) return;
+    const h = channel.open(id, latest.current);
+    setHandle(h);
+    return () => {
+      h.close();
+      setHandle(null);
+    };
+  }, [channel, enabled, id]);
+  const subscribe = useCallback((cb: () => void) => (handle ? handle.subscribe(cb) : NOOP), [handle]);
+  return useSyncExternalStore(subscribe, useCallback(() => handle?.get() ?? EMPTY_SEARCH_STATE, [handle]));
 }
 
 /** The server's Ross Panel while mounted (the web's useRoss). */

@@ -298,6 +298,7 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
         onClose={() => app.setSearchOpen(false)}
         symbols={candidates}
         quotes={feed.quotes}
+        search={feed.quoteSearch}
         mock={fixture}
         current={active ?? ""}
         recents={recents}

@@ -177,7 +177,7 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
   // On the desktop the panel drops down right under the header's search pill, at its width.
   // The header pill the quick-open panel drops into (wider layouts).
   const pillRef = useRef<HTMLButtonElement>(null);
-  const search = <TickerSearch open={searchOpen} onOpenChange={app.setSearchOpen} symbols={candidates.symbols} quotes={feed.quotes} mock={current.fixtureData} current={symbol} recents={recents} onSelect={app.openTicker} anchor={phone ? undefined : pillRef} />;
+  const search = <TickerSearch open={searchOpen} onOpenChange={app.setSearchOpen} symbols={candidates.symbols} quotes={feed.quotes} search={feed.quoteSearch} mock={current.fixtureData} current={symbol} recents={recents} onSelect={app.openTicker} anchor={phone ? undefined : pillRef} />;
   const tickerButton = (size: string) => (
     <Tip label={`Search tickers (${isMac ? "⌘" : "Ctrl+"}P) · tap, then hold to copy`}>
       <TickerLabel symbol={symbol} onTap={() => app.setSearchOpen(true)} className={size} />

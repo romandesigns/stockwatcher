@@ -103,6 +103,7 @@ function DashboardView({ feed, token, source }: { feed: MobileFeed; token: strin
         onClose={() => setSearchOpen(false)}
         symbols={candidates}
         quotes={feed.quotes}
+        search={feed.quoteSearch}
         mock={fixture}
         current=""
         recents={recents}
