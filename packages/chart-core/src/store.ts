@@ -80,18 +80,51 @@ export interface StoreOptions {
  * the phone. A hidden page gets no animation frames at all, so there it falls back to a timer
  * (which the browser throttles to about once a second): the store still settles, and whatever
  * reads it (the clock's trading day, for one) still moves, at no drawing cost.
+ *
+ * In a browser the frame also races a timer (FRAME_BACKSTOP_MS), because the page can be hidden
+ * AFTER the frame was asked for: a tab switched away during a live session almost always leaves
+ * one pending, the browser then never runs it until the tab comes back, and while one is pending
+ * the store schedules nothing else, so it would stop notifying entirely (the visibility check
+ * below only sees the state at scheduling time). Whichever fires first flushes and cancels the
+ * other. Not on the phone (no `document`): there a backgrounded app draws nothing and reads
+ * nothing, and a timer per frame would cost the JS thread for no one.
  */
 export function frameScheduler(flush: () => void): () => void {
   // chart-core has no DOM types (it runs on the phone too): read the host's globals untyped.
   const g = globalThis as { requestAnimationFrame?: (cb: () => void) => number; cancelAnimationFrame?: (id: number) => void; document?: { visibilityState?: string } };
   const raf = g.requestAnimationFrame;
   if (raf && g.document?.visibilityState !== "hidden") {
-    const id = raf(() => flush());
-    return () => g.cancelAnimationFrame?.(id);
+    if (!g.document) {
+      const id = raf(() => flush());
+      return () => g.cancelAnimationFrame?.(id);
+    }
+    let done = false;
+    let frame = 0;
+    let backstop: ReturnType<typeof setTimeout> | undefined;
+    const cancel = () => {
+      done = true;
+      g.cancelAnimationFrame?.(frame);
+      clearTimeout(backstop);
+    };
+    const run = () => {
+      if (done) return;
+      cancel();
+      flush();
+    };
+    frame = raf(run);
+    backstop = setTimeout(run, FRAME_BACKSTOP_MS);
+    return cancel;
   }
   const id = setTimeout(flush, 16);
   return () => clearTimeout(id);
 }
+
+/**
+ * How long a browser flush waits for its animation frame before a timer runs it instead
+ * (`frameScheduler`): well past a visible page's frame (16 ms at 60 Hz, 33 at 30), so it does not
+ * fire while frames come, yet a page hidden mid-wait keeps settling (throttled to ~1 Hz there).
+ */
+const FRAME_BACKSTOP_MS = 250;
 
 const DEFAULT_MAX = 5000;
 

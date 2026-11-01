@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { applyIncrement, applySnapshot, ChartStore } from "./store.ts";
+import { applyIncrement, applySnapshot, ChartStore, frameScheduler } from "./store.ts";
 import { fixtureSnapshot, T0 } from "./testFixture.ts";
 import type { Candle, ChartGap, ChartRemove, ChartUpdate, ProfileRow } from "./types.ts";
 
@@ -229,5 +229,40 @@ describe("ChartStore notifications", () => {
     plain.applySnapshot(fixtureSnapshot("1m", 3, []));
     plain.applyClock({ mode: "replay", now: T0, speed: 1, playing: true });
     expect(k).toBe(2);
+  });
+});
+
+describe("frameScheduler", () => {
+  // A browser page whose animation frames never come: hidden after the frame was asked for.
+  test("a page hidden while a frame is pending still flushes, on the backstop timer, once", async () => {
+    const g = globalThis as Record<string, unknown>;
+    const saved = { raf: g.requestAnimationFrame, caf: g.cancelAnimationFrame, doc: g.document };
+    const frames = new Map<number, () => void>();
+    let next = 1;
+    g.requestAnimationFrame = (cb: () => void) => (frames.set(next, cb), next++);
+    g.cancelAnimationFrame = (id: number) => frames.delete(id);
+    g.document = { visibilityState: "visible" };
+    try {
+      const store = new ChartStore({ schedule: frameScheduler });
+      let n = 0;
+      store.subscribe(() => n++);
+      store.applySnapshot(fixtureSnapshot("1m", 3, []));
+      g.document = { visibilityState: "hidden" };
+      await Bun.sleep(300);
+      expect(n).toBe(1);
+      // The timer won the race and cancelled the frame: it never runs a second flush.
+      expect(frames.size).toBe(0);
+      // A visible page's frame wins instead, and the timer it cancels never flushes again.
+      g.document = { visibilityState: "visible" };
+      store.applyClock({ mode: "replay", now: T0, speed: 1, playing: true });
+      for (const [, cb] of frames) cb();
+      expect(n).toBe(2);
+      await Bun.sleep(300);
+      expect(n).toBe(2);
+    } finally {
+      g.requestAnimationFrame = saved.raf;
+      g.cancelAnimationFrame = saved.caf;
+      g.document = saved.doc;
+    }
   });
 });
