@@ -5,7 +5,7 @@ import { cn, Tip } from "@stockwatcher/chart-web/ui";
 import { TickerLabel } from "../lib/TickerLabel.tsx";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import type { ChartFeed } from "../feed/types.ts";
-import { INDICATOR_PARITY, useChartFeed } from "../feed/useChartFeed.ts";
+import { useChartFeed } from "../feed/useChartFeed.ts";
 import { useChartAlerts } from "../alerts/useChartAlerts.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { getAppStore, useApp } from "../state/store.ts";
@@ -175,7 +175,6 @@ export function ChartCell({ index, slot, symbol, feed, trading, selected, showSe
         serverIndicators={serverIndicators}
         serverLevels={serverLevels}
         serverZones={serverZones}
-        indicatorParity={INDICATOR_PARITY}
         layers={ownLayers}
         onLayersChange={onLayersChange}
         settings={chartSettings}

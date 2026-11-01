@@ -5,14 +5,6 @@ import type { ChartFeed } from "./types.ts";
 const TAPE_MAX = 200;
 
 /**
- * `?indicatorParity=1`: the charts also compute their indicators locally and log how far the
- * server's values are from them (chart-web CandleChart `indicatorParity`). For checking the
- * server's math on replay, in any build (it is how the served bundle gets checked); costs
- * nothing without the parameter.
- */
-export const INDICATOR_PARITY = typeof location !== "undefined" && new URLSearchParams(location.search).get("indicatorParity") === "1";
-
-/**
  * Binds a feed subscription to a chart-core ChartStore and a tape buffer.
  * Changing the timeframe or bin re-subscribes; each timeframe keeps its own
  * series in the store, so switching never mixes candle sets.
@@ -24,8 +16,9 @@ export const INDICATOR_PARITY = typeof location !== "undefined" && new URLSearch
  * `demand` is what the chart shows of its indicators (chart-core `indicatorDemand`). When the
  * server computes them (`indicators.v1`) it goes on the subscription and a change goes out as
  * `chart.indicators.set` (no new candle snapshot), and `indicators` is the server's values for
- * the chart to draw. Otherwise `indicators` is undefined and the chart computes its own: the
- * fallback for a server from before the feature.
+ * the chart to draw. Against a server from before the feature `indicators` is undefined: the chart
+ * draws no lines and says the server needs an update (the client's own math is gone). Before the
+ * first welcome it is null, like a pending answer, so the note never flashes while connecting.
  *
  * `levels` and `zones` follow the same rule (`levels.v1`, `zones.v1`): the server's `chart.levels`
  * and, while `demand.zones` (the zones layer) is on, its `chart.zones` for the demand's rth; null
@@ -105,6 +98,10 @@ export function useChartFeed(feed: ChartFeed, symbol: string, timeframe: Timefra
     useCallback((cb: () => void) => feed.indicators?.subscribe(cb) ?? (() => {}), [feed]),
     useCallback(() => feed.indicators?.available() ?? false, [feed]),
   );
+  const indicatorsKnown = useSyncExternalStore(
+    useCallback((cb: () => void) => feed.indicators?.subscribe(cb) ?? (() => {}), [feed]),
+    useCallback(() => feed.indicators?.known() ?? true, [feed]),
+  );
 
   const subscribe = useCallback((cb: () => void) => store.subscribe(cb), [store]);
   const getSeries = useCallback((): Series | undefined => store.getSeries(symbol, timeframe), [store, symbol, timeframe]);
@@ -115,9 +112,9 @@ export function useChartFeed(feed: ChartFeed, symbol: string, timeframe: Timefra
   const clock = useSyncExternalStore(subscribe, useCallback((): Clock | null => store.getClock(), [store]));
   const rth = demand?.rth ?? false;
   const serverValues = useSyncExternalStore(subscribe, useCallback((): IndicatorValues | undefined => store.getIndicators(symbol, timeframe, rth), [store, symbol, timeframe, rth]));
-  // null (not undefined) while the server computes them but has not answered yet: draw nothing
-  // rather than flash the local lines.
-  const indicators = demand && indicatorsOn ? (serverValues ?? null) : undefined;
+  // null (not undefined) while the server computes them but has not answered yet, or before the
+  // first welcome says whether it does: no lines and no note. undefined = it computes none.
+  const indicators = !demand ? undefined : indicatorsOn ? (serverValues ?? null) : indicatorsKnown ? undefined : null;
   const levelsOn = useSyncExternalStore(
     useCallback((cb: () => void) => feed.indicators?.subscribe(cb) ?? (() => {}), [feed]),
     useCallback(() => feed.indicators?.levels() ?? false, [feed]),

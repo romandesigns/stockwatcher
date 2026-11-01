@@ -3,7 +3,7 @@ import { type ChartTheme, type DisplayList, type LinePrim, LAYER_ORDER, sortByLa
 import { describeCounted, describeSlot } from "./inspect.ts";
 import { candleCountdown, computeChartModel, layoutChart, formatCountdown, hitTest, layout, layoutProfile, stepInspection, type ChartState } from "./layout.ts";
 import { buildSlots, defaultViewport, manualPrice, slotX } from "./scale.ts";
-import { computeIndicators } from "./indicators.ts";
+import { computeIndicators } from "./indicatorMath.ts";
 import { DEFAULT_CHART_THEME } from "./theme.ts";
 import { etToUtc } from "./time.ts";
 import { fixtureSnapshot, T0 } from "./testFixture.ts";

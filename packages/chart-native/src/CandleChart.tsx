@@ -35,7 +35,6 @@ import {
   autoScalePrice,
   buildSlots,
   computeChartModel,
-  computeIndicators,
   serverIndicatorResults,
   needsIndicatorHistory,
   DEFAULT_CHART_THEME,
@@ -176,9 +175,10 @@ export interface CandleChartProps {
   indicators?: IndicatorSpec[];
   onIndicatorsChange?: (specs: IndicatorSpec[]) => void;
   /**
-   * The server's values for `indicators` (`indicators.v1`), as on the web chart: present, they
-   * are drawn and nothing is computed here (null = asked, not answered yet: no lines); absent
-   * (an older server), the chart computes them from its candles. Needs controlled `indicators`.
+   * The server's values for `indicators` (`indicators.v1`), as on the web chart: drawn as sent,
+   * nothing computed here (null = asked, not answered yet: no lines). Absent = the server
+   * computes none (older than indicators.v1): no lines, and a note that indicators need a server
+   * update. Needs controlled `indicators`.
    */
   serverIndicators?: IndicatorValuesLike | null;
   /**
@@ -434,10 +434,10 @@ export function CandleChart({
   const allSlots = useMemo(() => (series ? buildSlots(series.candles, series.gaps) : []), [series]);
   const slots = useMemo(() => sessionSlots(allSlots, settings.extendedHours), [allSlots, settings.extendedHours]);
   const visibility = settings.visibility;
-  const indicatorResults = useMemo(
-    () => (!visibility.indicators ? [] : serverIndicators !== undefined ? serverIndicatorResults(slots, indicatorSpecs, serverIndicators) : computeIndicators(slots, indicatorSpecs)),
-    [slots, indicatorSpecs, visibility.indicators, serverIndicators],
-  );
+  // The server's values only (indicators.v1); a server without the feature gets no lines and a
+  // note (`indicatorsNeedUpdate`), as on the web.
+  const indicatorResults = useMemo(() => (!visibility.indicators || serverIndicators === undefined ? [] : serverIndicatorResults(slots, indicatorSpecs, serverIndicators)), [slots, indicatorSpecs, visibility.indicators, serverIndicators]);
+  const indicatorsNeedUpdate = visibility.indicators && serverIndicators === undefined && indicatorSpecs.length > 0;
   const last = useMemo(() => lastCandle(slots)?.c ?? null, [slots]);
   // Pane heights: drag a pane's top edge, double-tap a pane to expand it. A drag is shown live and
   // reported to the host once, when the finger lifts.
@@ -1077,6 +1077,13 @@ export function CandleChart({
             </Pressable>
           </Animated.View>
         )}
+        {indicatorsNeedUpdate && (
+          // Quiet text on the plot's bottom-left (the web chart's twin): a fact about the server,
+          // not a control, so it takes no touches.
+          <Text pointerEvents="none" accessibilityRole="text" numberOfLines={1} style={[s.indicatorNote, { left: model.geometry.plot.x + 6, top: model.geometry.plot.y + model.geometry.plot.h - 24, maxWidth: Math.max(0, model.geometry.plot.w - 64) }]}>
+            Indicators need a server update
+          </Text>
+        )}
         {isPannedBack(vp) && (
           <Animated.View
             entering={FadeIn.duration(150).reduceMotion(ReduceMotion.System)}
@@ -1185,6 +1192,7 @@ export function CandleChart({
 
 const s = StyleSheet.create({
   root: { minHeight: 0, gap: 6 },
+  indicatorNote: { position: "absolute", fontSize: 11, color: UI.textDim, backgroundColor: UI.bg, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, overflow: "hidden" },
   toolbar: { flexDirection: "row", alignItems: "center", gap: 4, flexWrap: "wrap" },
   trade: { marginLeft: "auto", flexDirection: "row", alignItems: "center", gap: 8 },
   pos: { color: UI.textDim, fontSize: 11, fontVariant: ["tabular-nums"] },

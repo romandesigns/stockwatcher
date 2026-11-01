@@ -95,7 +95,7 @@ export interface ChartState {
   /** Price axis scale type; default "linear". Whether the range is auto or manual lives in the Viewport. */
   priceScaleType?: PriceScaleType;
   options?: Partial<ChartOptions>;
-  /** computeIndicators(slots, specs): overlays on the plot, oscillators in panes. */
+  /** serverIndicatorResults(slots, specs, values): overlays on the plot, oscillators in panes. */
   indicators?: readonly IndicatorResult[];
   drawings?: readonly Drawing[];
   /** Id of the selected drawing (handles shown), or null. */

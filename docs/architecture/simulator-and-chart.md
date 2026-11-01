@@ -561,9 +561,11 @@ stamped on it. The increments are serialized to JSON once and broadcast on a bou
   (2026-10-31, `indicators.limit.v1`): the snapshot then carries only the newest `limit` bars
   (`truncated: true`), with the same values (the server still computes over every bar it keeps);
   the phone asks for 1500 on cellular until it is zoomed out past them. Without `indicators`
-  (phone builds from before) nothing changes. The web and phone charts use it when the welcome
-  lists the feature and keep their local math otherwise (chart-core `serverIndicators.ts`; the
-  web's `?indicatorParity=1` logs server vs local per spec). Shapes and rules: the headers of
+  (phone builds from before) nothing changes. The web and phone charts draw only the server's
+  values; their own math left the runtime once every client and server spoke the feature
+  (2026-10-31), so against an older server they draw no indicator lines and say the server needs
+  an update (chart-core `serverIndicators.ts`; the formulas stay in `indicatorMath.ts` for the
+  parity fixtures). Shapes and rules: the headers of
   `crates/server/src/indicators.rs` and `ws.rs`; the math and its parity with chart-core:
   `crates/chart-engine/src/indicators.rs`;
 - key levels, opening ranges and supply/demand zones computed on the server (2026-10-31,

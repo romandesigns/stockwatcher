@@ -28,8 +28,9 @@ export const INDICATOR_BAR_LIMIT = 1500;
  * `demand`: what the chart shows of its indicators (chart-core `indicatorDemand`). As on the web
  * (apps/web/src/feed/useChartFeed.ts): with a server that computes them (`indicators.v1`) it goes
  * on the subscription, a change goes out as `chart.indicators.set`, and `indicators` is the
- * server's values for the chart to draw; otherwise `indicators` is undefined and the chart
- * computes its own. `levels` and `zones` likewise (`levels.v1`, `zones.v1`; the web's hook says how).
+ * server's values for the chart to draw; against an older server `indicators` is undefined (the
+ * chart draws none and notes that the server needs an update), and null before the first welcome.
+ * `levels` and `zones` likewise (`levels.v1`, `zones.v1`; the web's hook says how).
  */
 export function useChartFeed(feed: MobileFeed, symbol: string, timeframe: Timeframe, profileBin = 0.01, slot?: string, wanted?: IndicatorDemand) {
   // One notification per display frame (chart-core `frameScheduler`): a candle frame and the
@@ -98,13 +99,18 @@ export function useChartFeed(feed: MobileFeed, symbol: string, timeframe: Timefr
     useCallback((cb: () => void) => feed.indicators.subscribe(cb), [feed]),
     useCallback(() => feed.indicators.available(), [feed]),
   );
+  const indicatorsKnown = useSyncExternalStore(
+    useCallback((cb: () => void) => feed.indicators.subscribe(cb), [feed]),
+    useCallback(() => feed.indicators.known(), [feed]),
+  );
   const subscribe = useCallback((cb: () => void) => store.subscribe(cb), [store]);
   const series = useSyncExternalStore(subscribe, useCallback((): Series | undefined => store.getSeries(symbol, timeframe), [store, symbol, timeframe]));
   const clock = useSyncExternalStore(subscribe, useCallback((): Clock | null => store.getClock(), [store]));
   const rth = demand?.rth ?? false;
   const serverValues = useSyncExternalStore(subscribe, useCallback((): IndicatorValues | undefined => store.getIndicators(symbol, timeframe, rth), [store, symbol, timeframe, rth]));
-  // null while the server computes them but has not answered yet: no lines, not a flash of local ones.
-  const indicators = demand && indicatorsOn ? (serverValues ?? null) : undefined;
+  // null while the server computes them but has not answered yet, or before the first welcome:
+  // no lines and no note. undefined = this server computes none (the chart says it needs an update).
+  const indicators = !demand ? undefined : indicatorsOn ? (serverValues ?? null) : indicatorsKnown ? undefined : null;
   const levelsOn = useSyncExternalStore(
     useCallback((cb: () => void) => feed.indicators.subscribe(cb), [feed]),
     useCallback(() => feed.indicators.levels(), [feed]),

@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { createChartRouter } from "./chartRouter.ts";
-import { computeIndicators, indicatorDemand, INDICATOR_PRESETS, indicatorParity, needsIndicatorHistory, serverIndicatorResults, specKey, type IndicatorSpec } from "./indicators.ts";
+import { indicatorDemand, INDICATOR_PRESETS, needsIndicatorHistory, serverIndicatorResults, specKey, type IndicatorSpec } from "./indicators.ts";
+import { computeIndicators, indicatorParity } from "./indicatorMath.ts";
 import { buildSlots, type Slot } from "./scale.ts";
 import { createServerIndicators } from "./serverIndicators.ts";
 import { applyIndicatorIncrement, applyIndicatorsSnapshot, ChartStore } from "./store.ts";
@@ -202,6 +203,22 @@ test("the feed side sends nothing until the server offers the feature, then carr
   expect(sent.at(-1)).toEqual({ type: "chart.indicators.set", indicators: demand.indicators, rth: true });
   // Hidden indicators: an empty list (the server computes nothing nobody sees).
   expect(indicatorDemand(ALL, { extendedHours: true, visibility: { indicators: false } })).toEqual({ indicators: [], rth: false, zones: false });
+});
+
+test("known() tells \"no welcome yet\" from \"this server computes none\"", () => {
+  const si = createServerIndicators(() => {}, () => true);
+  let changes = 0;
+  si.channel.subscribe(() => changes++);
+  // Connecting: nothing known, so a chart draws nothing and notes nothing.
+  expect([si.channel.available(), si.channel.known()]).toEqual([false, false]);
+  // An older server's welcome (no indicators.v1): known, and not available (the chart notes that
+  // the server needs an update). That is a change even though available() stayed false.
+  si.setAvailable(false);
+  expect([si.channel.available(), si.channel.known(), changes]).toEqual([false, true, 1]);
+  si.setAvailable(false);
+  expect(changes).toBe(1);
+  si.setAvailable(true);
+  expect([si.channel.available(), si.channel.known(), changes]).toEqual([true, true, 2]);
 });
 
 test("dropIndicators forgets one rth's frozen values until its next snapshot", () => {

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { canAddIndicator, computeIndicators, ema, INDICATOR_PRESETS, macd, MAX_OVERLAYS, rsi, sma, toggleIndicator, vwap, bollinger, type IndicatorSpec } from "./indicators.ts";
+import { canAddIndicator, INDICATOR_PRESETS, MAX_OVERLAYS, toggleIndicator, type IndicatorSpec } from "./indicators.ts";
+import { bollinger, computeIndicators, ema, macd, rsi, sma, vwap } from "./indicatorMath.ts";
 import { buildSlots, type Slot } from "./scale.ts";
 import { fixtureCandles, T0 } from "./testFixture.ts";
 import type { Candle } from "./types.ts";

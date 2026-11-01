@@ -5,8 +5,9 @@ import type { ChartIndicatorsSet, ChartSubscribe } from "./types.ts";
 // shared by the web and phone feeds so both speak it alike. It holds each slot's latest demand
 // whether or not the server offers the feature, so a resubscribe (a reconnect, maybe to a newer
 // server) carries it; only a welcome that lists the feature lets it onto the wire. An older
-// server would ignore the fields anyway, but then the client must keep drawing its own lines,
-// which `available()` false tells the chart.
+// server would ignore the fields anyway; `available()` false after a welcome (`known()`) tells the
+// chart that this server computes no indicators, so it draws none and says the server needs an
+// update (the clients' own math left the runtime once every client and server spoke the feature).
 //
 // Key levels and zones (`levels.v1`, `zones.v1`, crates/server/src/chart_context.rs) ride the same
 // channel: levels are asked on every subscription when the server offers them (they are on by
@@ -19,11 +20,13 @@ import type { ChartIndicatorsSet, ChartSubscribe } from "./types.ts";
 export interface ServerIndicatorsChannel {
   /** Whether the server of the latest welcome computes them (false before the first welcome). */
   available(): boolean;
+  /** Whether any welcome came yet: before it, `available()` false means "not known", not "no". */
+  known(): boolean;
   /** Whether the server of the latest welcome pushes `chart.levels` (`levels.v1`). */
   levels(): boolean;
   /** Whether it pushes `chart.zones` (`zones.v1`). */
   zones(): boolean;
-  /** Called when `available()`, `levels()` or `zones()` changes (a reconnect may meet another server version). */
+  /** Called when `available()`, `known()`, `levels()` or `zones()` changes (a reconnect may meet another server version). */
   subscribe(fn: () => void): () => void;
   /** A held slot's demand changed: `chart.indicators.set` when available; kept for the next resubscribe either way. */
   set(id: string | undefined, demand: IndicatorDemand): void;
@@ -48,6 +51,7 @@ export interface ServerIndicators {
 /** `send` writes a frame when the socket is open (and drops it otherwise: the resubscribe heals it); `isHeld` says whether slot `id` is subscribed. */
 export function createServerIndicators(send: (frame: ChartIndicatorsSet) => void, isHeld: (id: string) => boolean): ServerIndicators {
   let on = false;
+  let welcomed = false;
   let levelsOn = false;
   let zonesOn = false;
   let limitOn = false;
@@ -60,6 +64,7 @@ export function createServerIndicators(send: (frame: ChartIndicatorsSet) => void
   return {
     channel: {
       available: () => on,
+      known: () => welcomed,
       levels: () => levelsOn,
       zones: () => zonesOn,
       subscribe(fn) {
@@ -79,8 +84,9 @@ export function createServerIndicators(send: (frame: ChartIndicatorsSet) => void
       },
     },
     setAvailable(next) {
-      if (next === on) return;
+      if (next === on && welcomed) return;
       on = next;
+      welcomed = true;
       notify();
     },
     setContext(levels, zones) {

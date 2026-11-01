@@ -15,8 +15,6 @@ import {
   autoScalePrice,
   buildSlots,
   computeChartModel,
-  computeIndicators,
-  indicatorParity as measureIndicatorParity,
   serverIndicatorResults,
   emptyHistory,
   record,
@@ -215,10 +213,10 @@ export interface CandleChartProps {
   onIndicatorsChange?: (specs: IndicatorSpec[]) => void;
   /**
    * The server's values for `indicators` (`indicators.v1`: the feed's `indicators`, the store's
-   * set for this chart's extended-hours setting). Present, the chart draws them and computes
-   * nothing (null = asked, not answered yet: no lines); absent (an older server, the fixture
-   * feed), it computes them itself from the candles. Needs controlled `indicators`: the host
-   * sends the same list to the server.
+   * set for this chart's extended-hours setting), drawn as sent; the chart computes none itself.
+   * null = asked, not answered yet (or no welcome yet): no lines. Absent = the server computes
+   * none (older than indicators.v1): no lines, and a note that indicators need a server update.
+   * Needs controlled `indicators`: the host sends the same list to the server.
    */
   serverIndicators?: IndicatorValuesLike | null;
   /**
@@ -233,13 +231,6 @@ export interface CandleChartProps {
    * yet); absent, the chart finds them itself (`autoZones`).
    */
   serverZones?: readonly AutoZone[] | null;
-  /**
-   * Dev shadow (`?indicatorParity=1` on the web pages): with `serverIndicators`, also compute
-   * the indicators locally and log the largest |server − local| per spec to the console and to
-   * `window.__indicatorParity` (read through CDP on replay). Expect 0 except the divergences
-   * documented in crates/chart-engine/src/indicators.rs.
-   */
-  indicatorParity?: boolean;
   /** This symbol's drawings. Controlled when onDrawingsChange is set. */
   drawings?: Drawing[];
   onDrawingsChange?: (drawings: Drawing[]) => void;
@@ -385,7 +376,6 @@ export function CandleChart({
   serverIndicators,
   serverLevels,
   serverZones,
-  indicatorParity = false,
   drawings: drawingsProp,
   onDrawingsChange,
   persistKey,
@@ -574,37 +564,10 @@ export function CandleChart({
   const allSlots = useMemo(() => (series ? buildSlots(series.candles, series.gaps) : []), [series]);
   const slots = useMemo(() => sessionSlots(allSlots, settings.extendedHours), [allSlots, settings.extendedHours]);
   const visibility = settings.visibility;
-  const indicatorResults = useMemo(
-    () => (!visibility.indicators ? [] : serverIndicators !== undefined ? serverIndicatorResults(slots, indicatorSpecs, serverIndicators) : computeIndicators(slots, indicatorSpecs)),
-    [slots, indicatorSpecs, visibility.indicators, serverIndicators],
-  );
-  // The parity shadow, at most twice a second (a 10x replay updates far faster), always ending on
-  // the latest values: a candle frame and its indicator frame are separate messages, so between
-  // them the forming bar differs for a moment (`fromEnd` 0); a paused replay must read 0.
-  const parity = useRef({ at: 0, timer: 0, input: { server: indicatorResults, slots, specs: indicatorSpecs, symbol, timeframe } });
-  useEffect(() => {
-    if (!indicatorParity || !serverIndicators) return;
-    const p = parity.current;
-    p.input = { server: indicatorResults, slots, specs: indicatorSpecs, symbol, timeframe };
-    if (p.timer) return;
-    p.timer = window.setTimeout(() => {
-      p.timer = 0;
-      p.at = performance.now();
-      const { server, slots: shown, specs, symbol: sym, timeframe: tf } = p.input;
-      const report = measureIndicatorParity(server, computeIndicators(shown, specs));
-      (window as unknown as { __indicatorParity?: unknown }).__indicatorParity = { symbol: sym, timeframe: tf, at: Date.now(), report };
-      console.info("[indicatorParity]", sym, tf, report);
-    }, Math.max(0, 500 - (performance.now() - p.at)));
-  }, [indicatorParity, serverIndicators, indicatorResults, slots, indicatorSpecs, symbol, timeframe]);
-  // Zeroed too: StrictMode's dev remount runs this cleanup and keeps the ref, and a stale id
-  // would make the effect above think a check is still pending and never schedule another.
-  useEffect(
-    () => () => {
-      window.clearTimeout(parity.current.timer);
-      parity.current.timer = 0;
-    },
-    [],
-  );
+  // The server's values only (indicators.v1). A server without the feature draws no lines and
+  // says why (`indicatorsNeedUpdate`), rather than the chart computing its own.
+  const indicatorResults = useMemo(() => (!visibility.indicators || serverIndicators === undefined ? [] : serverIndicatorResults(slots, indicatorSpecs, serverIndicators)), [slots, indicatorSpecs, visibility.indicators, serverIndicators]);
+  const indicatorsNeedUpdate = visibility.indicators && serverIndicators === undefined && indicatorSpecs.length > 0;
 
   const last = useMemo(() => lastCandle(slots)?.c ?? null, [slots]);
   // The server's official previous close wins over one read off the candles (levels.ts).
@@ -1609,6 +1572,14 @@ export function CandleChart({
         />
       )}
       {trading && <BrokerNotice state={trading.state} className="absolute bottom-3 left-1/2 z-20 -translate-x-1/2" />}
+      {indicatorsNeedUpdate && (
+        // Quiet text on the plot's bottom-left, where nothing else sits: a fact about the server,
+        // not an action (the web and the server ship together, so only a phone build or a
+        // desktop app newer than its server meets it). Does not take pointer events.
+        <p role="status" className="pointer-events-none absolute z-[5] max-w-[calc(100%-6rem)] truncate rounded bg-background/80 px-1.5 py-0.5 text-[11px] text-muted-foreground" style={{ left: model.geometry.plot.x + 6, top: model.geometry.plot.y + model.geometry.plot.h - 24 }}>
+          Indicators need a server update
+        </p>
+      )}
     </div>
   );
 

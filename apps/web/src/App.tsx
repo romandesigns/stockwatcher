@@ -20,7 +20,7 @@ import { ConnectionGate } from "./ConnectionGate.tsx";
 import { DEFAULT_SYMBOL, followCandidates, followServer, initialSymbol, type SourceChoice } from "./feed/source.ts";
 import { useCandidates } from "./feed/useCandidates.ts";
 import type { ChartFeed } from "./feed/types.ts";
-import { INDICATOR_PARITY, useChartFeed } from "./feed/useChartFeed.ts";
+import { useChartFeed } from "./feed/useChartFeed.ts";
 import { TickerLabel } from "./lib/TickerLabel.tsx";
 import { NavToggle } from "./nav/NavToggle.tsx";
 import { SettingsButton } from "./nav/settings.tsx";
@@ -147,7 +147,6 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
     serverIndicators,
     serverLevels,
     serverZones,
-    indicatorParity: INDICATOR_PARITY,
     layers,
     onLayersChange: app.setLayers,
     settings: chartSettings,

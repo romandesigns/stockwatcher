@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { GestureController, type GestureAction, type GestureInput } from "./gestures.ts";
-import { computeIndicators } from "./indicators.ts";
+import { computeIndicators } from "./indicatorMath.ts";
 import { applyPaneGesture, chartGeometry, formatSignificant, computeChartModel, DEFAULT_CHART_OPTIONS, expandedPaneHeight, hitTest, layoutChart, MAX_PANES_SHARE, MIN_PANE_HEIGHT, paneIdsOf, type ChartState } from "./layout.ts";
 import { buildSlots } from "./scale.ts";
 import { defaultViewport } from "./scale.ts";

@@ -17,7 +17,8 @@
 // Hex rather than decimal so no float formatting or parsing can get between the two sides.
 
 import { sessionSlots } from "./chartTypes.ts";
-import { computeIndicators, specKey, type IndicatorSpec } from "./indicators.ts";
+import { specKey, type IndicatorSpec } from "./indicators.ts";
+import { computeIndicators } from "./indicatorMath.ts";
 import { buildSlots } from "./scale.ts";
 import { formatEtDateKey, tradingDayOf } from "./time.ts";
 import type { Candle } from "./types.ts";
