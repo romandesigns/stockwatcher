@@ -27,9 +27,12 @@ const TABS: readonly { id: Tab; label: string }[] = [
   { id: "scorecard", label: "Scorecard" },
 ];
 
-// The ticker page was opened from the log in this tab: Back is the browser's back (the log's
-// entry is right behind it). Opened from a shared link instead, Back replaces the page with the log.
-let openedFromLog = false;
+// The ticker page's history entry says it was opened from the log (history.state, so it holds
+// per entry: it survives the day switcher, and a later shared link or a visit after leaving by the
+// nav never inherits it): then Back is the browser's back (the log's entry is right behind it).
+// Opened from a shared link instead, Back replaces the page with the log.
+const FROM_LOG = "insightsTickerFromLog";
+const openedFromLog = () => (window.history.state as Record<string, unknown> | null)?.[FROM_LOG] === true;
 
 function Insights({ notices, ticker }: { notices?: NoticesChannel; ticker?: TickerChannel }) {
   const hasRail = useHasRail();
@@ -42,9 +45,8 @@ function Insights({ notices, ticker }: { notices?: NoticesChannel; ticker?: Tick
   const page = tickerPageOf(useHash());
   if (page) {
     const back = () => {
-      if (openedFromLog) window.history.back();
+      if (openedFromLog()) window.history.back();
       else window.location.replace("#/insights");
-      openedFromLog = false;
     };
     return (
       <div className="@container/insights flex h-full min-h-0 flex-col gap-3 p-3 text-foreground @3xl/insights:px-6 @3xl/insights:py-4">
@@ -53,8 +55,9 @@ function Insights({ notices, ticker }: { notices?: NoticesChannel; ticker?: Tick
     );
   }
   const openTicker = (symbol: string, d: string) => {
-    openedFromLog = true;
     window.location.hash = tickerPageHash(symbol, d);
+    // The hash assignment has already made the page's entry current; mark that entry.
+    window.history.replaceState({ ...((window.history.state as object | null) ?? {}), [FROM_LOG]: true }, "");
   };
   return (
     <div className="@container/insights flex h-full min-h-0 flex-col gap-4 p-3 text-foreground @3xl/insights:px-6 @3xl/insights:py-4">

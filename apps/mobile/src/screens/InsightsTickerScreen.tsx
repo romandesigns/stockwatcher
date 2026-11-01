@@ -1,6 +1,6 @@
 import { DEFAULT_CHART_SETTINGS, formatEtTime12, type ChartSettings, type EventMarker } from "@stockwatcher/chart-core";
 import { CandleChart, Icon, UI } from "@stockwatcher/chart-native";
-import { EMPTY_TICKER, tickerPageView, type TickerAlertView, type TickerMissedView, type TickerPackageWire, type TickerPageView, type TickerState, type Tone } from "@stockwatcher/shared";
+import { NO_TICKER, tickerPageView, type TickerAlertView, type TickerMissedView, type TickerPackageWire, type TickerPageView, type TickerState, type Tone } from "@stockwatcher/shared";
 import { useNavigation, type RouteProp } from "@react-navigation/native";
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View, type LayoutChangeEvent } from "react-native";
@@ -37,7 +37,7 @@ export function InsightsTickerScreen({ route }: Props) {
   // The day switcher changes the route's own params (no new history entry): back still returns to the log.
   const day = route.params.day;
   const subscribe = useCallback((cb: () => void) => (channel ? channel.subscribe(cb) : NOOP()), [channel]);
-  const get = useCallback((): TickerState => (channel ? channel.get() : EMPTY_TICKER), [channel]);
+  const get = useCallback((): TickerState => (channel ? channel.get() : NO_TICKER), [channel]);
   const state = useSyncExternalStore(subscribe, get, get);
   useEffect(() => (channel ? channel.open({ symbol, day }) : undefined), [channel, symbol, day]);
   const pkg = state.pkg && state.pkg.symbol === symbol && state.pkg.day === day ? state.pkg : null;

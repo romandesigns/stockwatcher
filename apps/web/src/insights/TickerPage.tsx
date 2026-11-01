@@ -22,8 +22,12 @@ export function TickerPage({ channel, want, onBack }: { channel: TickerChannel |
   const pkg = state.pkg && state.pkg.symbol === want.symbol && state.pkg.day === want.day ? state.pkg : null;
   const view = useMemo(() => (pkg ? tickerPageView(pkg, time) : null), [pkg]);
   const go = (day: string | null) => {
-    // The day switcher replaces the entry: Back still returns to the notification log.
-    if (day) window.location.replace(tickerPageHash(want.symbol, day));
+    // The day switcher replaces the entry, keeping its state (whether it was opened from the
+    // log): Back still returns to the notification log. replaceState fires no hashchange, so
+    // the hash's followers (nav/routes useHash) are told here.
+    if (!day) return;
+    window.history.replaceState(window.history.state, "", tickerPageHash(want.symbol, day));
+    window.dispatchEvent(new Event("hashchange"));
   };
   return (
     <ScrollArea className="min-h-0 flex-1" viewportClassName="@container/ticker">

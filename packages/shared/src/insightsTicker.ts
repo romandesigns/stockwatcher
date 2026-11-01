@@ -200,6 +200,13 @@ export interface TickerState {
 
 export const EMPTY_TICKER: TickerState = { available: null, want: null, pkg: null };
 
+/**
+ * The state of a feed with no ticker channel at all (a local or demo feed): it will never build a
+ * page, so the screens say so instead of showing "Building…" forever (EMPTY_TICKER's `null`
+ * means "no welcome yet", which a channel-less feed never gets).
+ */
+export const NO_TICKER: TickerState = { available: false, want: null, pkg: null };
+
 export interface TickerChannel {
   get(): TickerState;
   subscribe(fn: () => void): () => void;
@@ -308,6 +315,14 @@ export function compact(n: number | null | undefined): string {
 const DAY_FMT = new Intl.DateTimeFormat("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
 const SHORT_FMT = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
 const dayDate = (day: string) => new Date(`${day}T12:00:00Z`);
+// An instant's ET calendar date ("Oct 30"): the server's float `as_of` is when it was retrieved.
+// A UTC date would say "Oct 31" for an evening retrieval on Oct 30, which reads as look-ahead.
+const ET_SHORT_FMT = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", timeZone: "America/New_York" });
+
+/** "Oct 30" for an epoch-ms instant, in ET. */
+export function etDayShort(ms: number): string {
+  return ET_SHORT_FMT.format(new Date(ms));
+}
 
 /** "Fri, Oct 30, 2026" for "2026-10-30". */
 export function dayLabel(day: string): string {
@@ -432,7 +447,7 @@ export function tickerPageView(p: TickerPackageWire, time: (ms: number, seconds?
           id: "float",
           label: "Float (est.)",
           value: s.float.available && s.float.shares !== undefined ? compact(s.float.shares) : "—",
-          note: s.float.available && s.float.as_of !== undefined ? `as of ${dayShort(new Date(s.float.as_of).toISOString().slice(0, 10))}` : "no float record by that day",
+          note: s.float.available && s.float.as_of !== undefined ? `as of ${etDayShort(s.float.as_of)}` : "no float record by that day",
           tone: s.float.available ? "neutral" : "dim",
         },
         { id: "short", label: "Short interest", value: "—", note: s.short_interest.available ? "" : "not collected", tone: "dim" },

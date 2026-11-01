@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { alertKind, createTickerChannel, INSIGHTS_TICKER_FEATURE, money, parseTickerPackage, signedPct, tickerPageHash, tickerPageOf, tickerPageView, type TickerSnapshotMessage } from "./insightsTicker.ts";
+import { alertKind, createTickerChannel, etDayShort, NO_TICKER, INSIGHTS_TICKER_FEATURE, money, parseTickerPackage, signedPct, tickerPageHash, tickerPageOf, tickerPageView, type TickerSnapshotMessage } from "./insightsTicker.ts";
 import { applyNoticesMessage } from "./noticeFeed.ts";
 import { logSummary, rowHeldText, rowStatus } from "./noticeLog.ts";
 import { createWsClient, type WebSocketLike } from "./ws.ts";
@@ -52,6 +52,19 @@ describe("parseTickerPackage", () => {
     const off = parseTickerPackage({ symbol: "ZZTK", day: "2026-10-29", available: false, unavailable_reason: "not_archived" })!;
     expect(off.available).toBe(false);
     expect(off.stats).toBeNull();
+  });
+});
+
+describe("point-in-time wording", () => {
+  test("a float retrieved on an ET evening is dated that ET day, not the next UTC one", () => {
+    const eve = Date.UTC(2026, 9, 31, 1, 30); // Fri Oct 30, 9:30 PM ET = Oct 31 UTC
+    expect(etDayShort(eve)).toBe("Oct 30");
+    const st = { ...PKG.stats, float: { available: true, shares: 12_000_000, as_of: eve, provider: "fmp" } };
+    const v = tickerPageView(parseTickerPackage({ ...PKG, stats: st })!, fmt);
+    expect(v.stats.find((x) => x.id === "float")!.note).toBe("as of Oct 30");
+  });
+  test("a feed without a ticker channel never builds a page (not 'no welcome yet')", () => {
+    expect(NO_TICKER.available).toBe(false);
   });
 });
 
