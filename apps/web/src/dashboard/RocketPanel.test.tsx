@@ -20,7 +20,7 @@ const panel: RocketPanelWire = {
   ],
 };
 
-const render = (state: RocketState) => renderToStaticMarkup(<RocketPanelView state={state} wallNow={state.receivedAt} onPick={() => {}} />);
+const render = (state: RocketState) => renderToStaticMarkup(<RocketPanelView state={state} onPick={() => {}} />);
 /**
  * Green outside the day line's last-minute tail. The lighter rows (owner-approved design,
  * 2026-10-26) colour that tail by its direction on every row; elsewhere green is still only the

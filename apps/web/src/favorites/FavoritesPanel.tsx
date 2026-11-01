@@ -1,7 +1,7 @@
 import { formatEtTime } from "@stockwatcher/chart-core";
 import { Icon } from "@stockwatcher/chart-web";
 import { cn, ScrollArea, Tip, TOUCH_HIT } from "@stockwatcher/chart-web/ui";
-import { favoriteRowMarks, favoriteRows, rocketNow, runnersBySymbol, type FavoriteRowView, type FavoritesState, type RocketState, type RossTone, type RowMarks } from "@stockwatcher/shared";
+import { favoriteRowMarks, favoriteRows, rocketServerNow, runnersBySymbol, type FavoriteRowView, type FavoritesState, type RocketState, type RossTone, type RowMarks } from "@stockwatcher/shared";
 import { Flame, MarksLine, RowLine } from "../dashboard/RowMarks.tsx";
 import { memo, useMemo, type KeyboardEvent } from "react";
 import { useTickerPress } from "../lib/useTickerPress.ts";
@@ -31,11 +31,11 @@ const hhmm = (ms: number) => formatEtTime(ms);
  * then hold copies it, as on every panel). The star takes it off; the arrows (or Alt+↑/↓ on the
  * row) move it. The list is synced, so another device's change lands here live.
  */
-export function FavoritesPanelView({ list, state, onPick, runners, wallNow }: { list: readonly string[]; state: FavoritesState; onPick: (symbol: string) => void; runners?: RocketState; wallNow?: number }) {
+export function FavoritesPanelView({ list, state, onPick, runners }: { list: readonly string[]; state: FavoritesState; onPick: (symbol: string) => void; runners?: RocketState }) {
   const rows = useMemo(() => favoriteRows(list, state, hhmm).map((r) => r.view), [list, state]);
   // The lighter rows' marks (rowMarks.ts), joined to today's Runners row for the path and flame.
   // The Runners market clock (a replay's own day), else this panel's frame clock.
-  const nowMs = runners ? rocketNow(runners, wallNow) : (state.t ?? wallNow ?? 0);
+  const nowMs = rocketServerNow(runners) ?? state.t ?? 0;
   const marks = useMemo(() => {
     const byRunner = runnersBySymbol(runners);
     const bySymbol = new Map(state.rows?.map((r) => [r.symbol, r]) ?? []);

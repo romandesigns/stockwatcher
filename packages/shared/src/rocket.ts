@@ -828,6 +828,18 @@ export function rocketNow(state: RocketState, wallNow: number = Date.now()): num
   return t + Math.max(0, Math.min(wallNow - state.receivedAt, 5 * 60_000));
 }
 
+/**
+ * The market clock as the server last stated it, never advanced by this device's clock: the last
+ * `replay.clock` (clock.v1), else the panel frame's own `t`, else null. For a client that always
+ * ships with its server (the web): the rocket channel re-renders on the server's clock frames, so
+ * no wall-clock tick is needed. The phone keeps {@link rocketNow} for installed builds on an
+ * older server.
+ */
+export function rocketServerNow(state: RocketState | null | undefined): number | null {
+  if (typeof state?.clock === "number") return state.clock;
+  return state?.panel?.t ?? null;
+}
+
 export interface RocketHeaderView {
   /** "4 of 9 rocketed today", "Nothing flagged today". */
   record: string;

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { rocketSectionCounts } from "./panels.ts";
 import { parseServerMessage } from "./protocol.ts";
-import { createRocketChannel, mergeRocketDayLines, newRocketFlags, rocketAge, rocketAttention, rocketFreshCount, rocketHeaderView, rocketNow, rocketRowsView, rocketRowView, rocketSectionsView, rocketSetupView, type RocketPanelWire, type RocketRowWire, type RocketSnapshotMessage } from "./rocket.ts";
+import { createRocketChannel, mergeRocketDayLines, newRocketFlags, rocketAge, rocketAttention, rocketFreshCount, rocketHeaderView, rocketNow, rocketRowsView, rocketServerNow, rocketRowView, rocketSectionsView, rocketSetupView, type RocketPanelWire, type RocketRowWire, type RocketSnapshotMessage } from "./rocket.ts";
 
 const T = 1_792_075_200_000;
 
@@ -146,12 +146,16 @@ describe("rocket channel", () => {
     ch.apply({ type: "rocket.snapshot", ...panel({ rows: [row({ id: "a", at: T - 10_000, fresh: false }), row({ id: "b", at: T - 90_000, fresh: true })] }) });
     // Older servers (no clock.v1): the frame's `t` extrapolated by the wall time since it came.
     expect(rocketNow(ch.get(), 31_000)).toBe(T + 31_000);
+    // The web's clock never extrapolates: the frame's own `t` until the server's clock speaks.
+    expect(rocketServerNow(ch.get())).toBe(T);
+    expect(rocketServerNow(undefined)).toBeNull();
     ch.setServerClock(true);
     expect(ch.get().serverEvents).toBe(true);
     ch.applyClock(T + 5_000);
     expect(ch.get().clock).toBe(T + 5_000);
     // Never advanced by this device's clock, however much wall time passed.
     expect(rocketNow(ch.get(), 10 * 60_000)).toBe(T + 5_000);
+    expect(rocketServerNow(ch.get())).toBe(T + 5_000);
     const before = renders;
     ch.applyClock(T + 5_000);
     expect(renders).toBe(before);

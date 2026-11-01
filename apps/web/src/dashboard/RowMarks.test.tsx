@@ -30,7 +30,7 @@ const runners = (burstAt: number, alertPrice: number): RocketState => ({
   },
 });
 
-const render = (r?: RocketState) => renderToStaticMarkup(<RossPanelView state={ross} onPick={() => {}} runners={r} wallNow={T_MS} />);
+const render = (r?: RocketState) => renderToStaticMarkup(<RossPanelView state={ross} onPick={() => {}} runners={r} />);
 
 describe("Ross rows as lighter rows", () => {
   test("two lines of marks, each named; the old sentences are gone", () => {

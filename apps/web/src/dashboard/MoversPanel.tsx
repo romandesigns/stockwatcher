@@ -19,7 +19,7 @@ import {
   moversRows,
   nextMoverSort,
   parseMoverSort,
-  rocketNow,
+  rocketServerNow,
   runnersBySymbol,
   sortMovers,
   type MoverRowWire,
@@ -174,18 +174,18 @@ export function MoversPanelView({
   kind,
   state,
   runners,
-  wallNow,
   onPick,
 }: {
   kind: MoversKind;
   state: MoversState;
   runners?: RocketState;
-  wallNow: number;
   onPick: (symbol: string) => void;
 }) {
   const id = `movers-${kind}-title`;
   const [sort, pressSort] = useMoverSort(kind);
-  const nowMs = runners ? rocketNow(runners, wallNow) : wallNow;
+  // The server's market clock (it re-renders this panel on each clock frame); without Runners
+  // there is no path or flame to age.
+  const nowMs = rocketServerNow(runners) ?? 0;
   const byRunner = useMemo(() => runnersBySymbol(runners), [runners]);
   const reconnecting = !state.connected && state.rows !== null;
   const section = (list: MoversList) =>

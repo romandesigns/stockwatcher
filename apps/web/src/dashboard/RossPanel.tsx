@@ -1,6 +1,6 @@
 import { formatEtTime } from "@stockwatcher/chart-core";
 import { cn, ScrollArea, Tip } from "@stockwatcher/chart-web/ui";
-import { detectionFamilyLabel, detectionStateLabel, groupDetections, rocketNow, rossAttention, rossFreshness, rossRowMarks, rossRowView, runnersBySymbol, type DetectionChannel, type RocketState, type RossRowView, type RossTone, type RowMarks } from "@stockwatcher/shared";
+import { detectionFamilyLabel, detectionStateLabel, groupDetections, rocketServerNow, rossAttention, rossFreshness, rossRowMarks, rossRowView, runnersBySymbol, type DetectionChannel, type RocketState, type RossRowView, type RossTone, type RowMarks } from "@stockwatcher/shared";
 import { memo } from "react";
 import type { RossDemoState } from "../feed/useRossState.ts";
 import { useDetection } from "../feed/useDetection.ts";
@@ -42,14 +42,14 @@ const hhmm = (ns: number) => formatEtTime(Math.round(ns / 1_000_000));
  * known and empty all hide the panel (DashboardPanels), so it has no "Connecting…" or quiet line of its
  * own. While a socket reconnects it keeps the last rows, dimmed and labelled.
  */
-export function RossPanelView({ state, onPick, detection, onEpisodePick, runners, wallNow }: { state: RossDemoState; onPick: (symbol: string) => void; detection?: DetectionChannel; onEpisodePick?: (symbol: string, episodeId: string, runEpoch: string) => void; runners?: RocketState; wallNow?: number }) {
+export function RossPanelView({ state, onPick, detection, onEpisodePick, runners }: { state: RossDemoState; onPick: (symbol: string) => void; detection?: DetectionChannel; onEpisodePick?: (symbol: string, episodeId: string, runEpoch: string) => void; runners?: RocketState }) {
   const detected = useDetection(detection);
   const joined = new Map(groupDetections(detected.snapshot).map((g) => [g.symbol, g.selected]));
   const { enabled, panel, demo } = state;
   // Today's Runners row per member: its path and age, and the burst behind the flame (rowMarks.ts).
   const byRunner = runnersBySymbol(runners);
   // The Runners market clock (a replay's own day); without Runners there is no path or flame to age.
-  const nowMs = runners ? rocketNow(runners, wallNow) : (wallNow ?? 0);
+  const nowMs = rocketServerNow(runners) ?? 0;
   const rows = panel?.rows.map((w) => ({ ...rossRowView(w, panel.cutoff, hhmm), marks: rossRowMarks(w, byRunner.get(w.symbol), nowMs, formatEtTime), trigger: w.setup?.trigger?.price ?? null })) ?? [];
   const attention = panel ? rossAttention(panel) : 0;
   // A dropped socket keeps the last rows and says so: they are the last known state, not now.

@@ -43,7 +43,6 @@ import { useMovers } from "../feed/useMovers.ts";
 import { useRocket } from "../feed/useRocket.ts";
 import { useRossState } from "../feed/useRossState.ts";
 import { useHeld } from "../lib/useHeld.ts";
-import { useTick } from "../lib/useTick.ts";
 import { DetectionPanelView } from "./DetectionPanel.tsx";
 import { HaltWatcherView } from "./HaltWatcher.tsx";
 import { MoversPanelView } from "./MoversPanel.tsx";
@@ -179,7 +178,8 @@ export function DashboardPanels({
   const pressureBoard = usePressureBoard(pressure);
   const pressureStatus = usePressureStatus(pressure);
   const moversState = useMovers(movers);
-  const wall = useTick(15_000);
+  // No wall-clock tick: the ages are market ages, and useRocket re-renders on each of the
+  // server's clock frames (clock.v1, rocket.ts CLOCK_RENDER_STEP_MS), which the panels read.
   const runners = rocket ? rocketState : undefined;
 
   const counts: Record<DashboardPanel, number> = {
@@ -224,7 +224,6 @@ export function DashboardPanels({
         state={favoritesState}
         onPick={onPick}
         runners={runners}
-        wallNow={wall}
       />
     ) : p === "signals" ? (
       <DetectionPanelView
@@ -237,7 +236,6 @@ export function DashboardPanels({
         kind="gainers"
         state={moversState}
         runners={runners}
-        wallNow={wall}
         onPick={onPick}
       />
     ) : p === "ross" ? (
@@ -247,10 +245,9 @@ export function DashboardPanels({
         onPick={onPick}
         onEpisodePick={onEpisodePick}
         runners={runners}
-        wallNow={wall}
       />
     ) : p === "rocket" ? (
-      <RocketPanelView state={rocketState} wallNow={wall} onPick={onPick} />
+      <RocketPanelView state={rocketState} onPick={onPick} />
     ) : p === "halt" ? (
       <HaltWatcherView
         board={pressureBoard}
@@ -262,7 +259,6 @@ export function DashboardPanels({
         kind="hot"
         state={moversState}
         runners={runners}
-        wallNow={wall}
         onPick={onPick}
       />
     );

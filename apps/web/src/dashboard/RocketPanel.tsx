@@ -1,7 +1,7 @@
 import { Icon } from "@stockwatcher/chart-web";
 import { cn, ScrollArea, Tip } from "@stockwatcher/chart-web/ui";
 import { formatEtTime } from "@stockwatcher/chart-core";
-import { rocketHeaderView, rocketNow, rocketRowMarks, rocketSectionsView, type RocketRowView, type RocketSectionsView, type RocketState, type RocketTone, type RowMarks, withZoneSections } from "@stockwatcher/shared";
+import { rocketHeaderView, rocketServerNow, rocketRowMarks, rocketSectionsView, type RocketRowView, type RocketSectionsView, type RocketState, type RocketTone, type RowMarks, withZoneSections } from "@stockwatcher/shared";
 import { memo } from "react";
 import { useTickerPress } from "../lib/useTickerPress.ts";
 import { StarButton } from "../favorites/StarButton.tsx";
@@ -62,9 +62,10 @@ const EDGE: Partial<Record<RocketTone, string>> = {
  * on its own full-width line, with the research base rate muted beside it, then "Shelf held" /
  * "Shelf lost" once resolved (ZoneNote): plain text, never green, never the accent.
  */
-export function RocketPanelView({ state, wallNow, onPick }: { state: RocketState; wallNow: number; onPick: (symbol: string) => void }) {
+export function RocketPanelView({ state, onPick }: { state: RocketState; onPick: (symbol: string) => void }) {
   const { enabled, panel } = state;
-  const now = rocketNow(state, wallNow);
+  // The server's market clock: the channel re-renders on its clock frames, so ages move with it.
+  const now = rocketServerNow(state) ?? 0;
   const { bursts, runners: rows }: RocketSectionsView = panel ? withZoneSections(rocketSectionsView(panel, now), panel.zones) : { bursts: null, runners: [] };
   // The lighter rows' marks (rowMarks.ts), by row key (the wire id).
   const marks: MarksById = new Map((panel?.rows ?? []).map((w) => [w.id, { marks: rocketRowMarks(w, now, formatEtTime), trigger: w.levels?.trigger ?? null }]));
