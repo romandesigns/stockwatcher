@@ -1,5 +1,5 @@
 import type { ChartMessage, IndicatorDemand, OrderCancel, ServerIndicatorsChannel, OrderModify, OrderPlace, PaperMessage, PaperState, ReplayControl, Timeframe } from "@stockwatcher/chart-core";
-import type { DetectionChannel, FavoritesChannel, MoversChannel, PressureChannel, QuoteChannel, RocketChannel, RossChannel, NoticesChannel, SymbolsChannel } from "@stockwatcher/shared";
+import type { DetectionChannel, FavoritesChannel, MoversChannel, PressureChannel, QuoteChannel, RocketChannel, RossChannel, NoticesChannel, SymbolsChannel, TickerChannel } from "@stockwatcher/shared";
 
 export interface ChartSubscription {
   symbol: string;
@@ -46,6 +46,8 @@ export interface ChartFeed {
   readonly symbols?: SymbolsChannel;
   /** Today's notification log, pushed (server feed with `notices.v1` only; see useNoticeLog). */
   readonly notices?: NoticesChannel;
+  /** The Insights ticker page's package (server feed with `insights.ticker.v1` only). */
+  readonly ticker?: TickerChannel;
   /** The server's Rocket watch (experimental; server feed only); subscribing opts the connection in. */
   readonly rocket?: RocketChannel;
   /** Independent Rust event discovery; subscribing never changes its monitored universe. */

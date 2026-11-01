@@ -23,4 +23,5 @@ export * from "./runnersNotify.ts";
 export * from "./scorecard.ts";
 export * from "./noticeLog.ts";
 export * from "./noticeFeed.ts";
+export * from "./insightsTicker.ts";
 export * from "./breakout.ts";

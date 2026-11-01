@@ -100,6 +100,7 @@ import {
   toolAllowed,
   type DrawingSettings,
   type DetectionOverlay,
+  type EventMarker,
   type VolumeShelf,
 } from "@stockwatcher/chart-core";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -209,6 +210,8 @@ export interface CandleChartProps {
   alerts?: ChartAlerts | null;
   /** Authoritative detector annotations. Read-only and separate from editable user drawings. */
   detection?: readonly DetectionOverlay[];
+  /** Server-placed markers (the Insights ticker page: numbered sent alerts, missed-setup rings); read-only, absent = none. */
+  eventMarkers?: readonly EventMarker[];
   /** Volume shelves from the server's latest Runners frame (chart-core layoutVolumeShelves); read-only, absent = none. */
   volumeShelves?: readonly VolumeShelf[];
 }
@@ -295,6 +298,7 @@ export function CandleChart({
   style,
   alerts = null,
   detection,
+  eventMarkers,
   volumeShelves,
 }: CandleChartProps) {
   // Price alerts: a line being dragged by its handle (drawn at its new price until the lift), and
@@ -480,6 +484,7 @@ export function CandleChart({
       trading: showTrading ? { orders, position, last, dragging: drag?.order ?? null, placeY: null } : null,
       alerts: alertLayer,
       detection,
+      eventMarkers,
       context,
       now: clockNow,
       paneHeights,
@@ -488,7 +493,7 @@ export function CandleChart({
       baselinePrice,
       extendedHours: settings.extendedHours,
     }),
-    [timeframe, series, slots, inspectT, pointer, options, volumeHeight, layers.profile, scaleType, indicatorResults, shownDrawings, selectedDrawing, draft, showTrading, orders, position, last, drag, alertLayer, detection, context, clockNow, paneHeights, inspector, settings.chartType, chartStyle, baselinePrice, settings.extendedHours],
+    [timeframe, series, slots, inspectT, pointer, options, volumeHeight, layers.profile, scaleType, indicatorResults, shownDrawings, selectedDrawing, draft, showTrading, orders, position, last, drag, alertLayer, detection, eventMarkers, context, clockNow, paneHeights, inspector, settings.chartType, chartStyle, baselinePrice, settings.extendedHours],
   );
   const model = useMemo(() => computeChartModel(state, vp, size), [state, vp, size]);
 

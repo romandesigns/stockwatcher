@@ -8,6 +8,12 @@ import { breakoutTestFixture } from "../../../../packages/shared/src/breakoutTes
 const AT = Date.UTC(2026, 9, 26, 12, 23, 47); // 08:23:47 ET
 
 describe("Insights row on the phone", () => {
+  test("a row the server assembled (notices.rows.v1) is shown as the server says", () => {
+    const r = noticeRowView({ event_id: "e", at: AT, symbol: "ZZTK", notice: "runners.fast", title: "t", phone: { decision: "sent", held: null, devices: 1 }, status: "held", reason: "stale", reason_text: "too old by the time it was decided" });
+    expect(r.sent).toBe(false);
+    expect(r.detail).toBe("Held: too old by the time it was decided");
+  });
+
   test("measured cause and event context remain separate from history clock and old entry reasons", () => {
     const item = { event_id: "runners-breakout-fixture", at: AT, symbol: "CJMB", notice: "runners.breakout", title: "immutable title", body: "immutable body", breakout: breakoutTestFixture, entry_context: ["original +20% reason"], phone: { decision: "held", held: "quiet_hours", devices: 1 } };
     const r = noticeRowView(item);

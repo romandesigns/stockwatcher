@@ -6,6 +6,7 @@ import type { RocketMessage } from "./rocket.ts";
 import type { RunnersNoticeMessage, RunnersNotifyMessage } from "./runnersNotify.ts";
 import { SYMBOLS_FEATURE, type SymbolsMessage } from "./symbols.ts";
 import { NOTICES_FEATURE, type NoticesMessage } from "./noticeFeed.ts";
+import { INSIGHTS_TICKER_FEATURE, type TickerRequest, type TickerSnapshotMessage } from "./insightsTicker.ts";
 
 export type ConnectionStatus = "connecting" | "open" | "reconnecting" | "unauthorized" | "closed";
 
@@ -45,6 +46,8 @@ export interface WsClientOptions {
   onSymbols?: (message: SymbolsMessage) => void;
   /** `notices.snapshot` / `notices.append` frames, while subscribed (see `subscribeNotices`). */
   onNotices?: (message: NoticesMessage) => void;
+  /** `insights.ticker.snapshot` / `.update` frames, while a ticker page is open (see `subscribeTicker`). */
+  onTicker?: (message: TickerSnapshotMessage) => void;
   onDetection?: (message: DetectionMessage) => void;
   onDetectionError?: (reason: string) => void;
   /** The price alerts' frames (`alerts.history`, `alert.fired`, …): every connection gets them. */
@@ -102,6 +105,13 @@ export interface WsClient {
   /** Today's notification log (`notices.*`), gated on `notices.v1` like `subscribeSymbols`. */
   subscribeNotices(): void;
   unsubscribeNotices(): void;
+  /**
+   * The Insights ticker page's package for one symbol-day (`insights.ticker.*`), gated on
+   * `insights.ticker.v1` like `subscribeNotices` and sent again after every reconnect. A new call
+   * replaces the open one (the server keeps one per connection).
+   */
+  subscribeTicker(want: TickerRequest): void;
+  unsubscribeTicker(): void;
   subscribeDetection(): void;
   unsubscribeDetection(): void;
   /** Sends `runnersNotify()` now (or `enabled: false` when it is null): the switches changed. */
@@ -150,6 +160,7 @@ export function createWsClient(opts: WsClientOptions): WsClient {
   let moversWanted = false;
   let symbolsWanted = false;
   let noticesWanted = false;
+  let tickerWanted: TickerRequest | null = null;
   // The current connection's welcome.features (empty before a welcome and for older servers).
   let features: readonly string[] = [];
   let detectionWanted = false;
@@ -211,6 +222,7 @@ export function createWsClient(opts: WsClientOptions): WsClient {
         if (moversWanted) send({ type: "movers.subscribe" });
         if (symbolsWanted && features.includes(SYMBOLS_FEATURE)) send({ type: "symbols.subscribe" });
         if (noticesWanted && features.includes(NOTICES_FEATURE)) send({ type: "notices.subscribe" });
+        if (tickerWanted && features.includes(INSIGHTS_TICKER_FEATURE)) send({ type: "insights.ticker.subscribe", ...tickerWanted });
         if (detectionWanted) send({ type: "detection.subscribe" });
         const notify = opts.runnersNotify?.();
         if (notify) send(notify);
@@ -236,6 +248,8 @@ export function createWsClient(opts: WsClientOptions): WsClient {
         opts.onSymbols?.(msg);
       } else if ((msg.type === "notices.snapshot" || msg.type === "notices.append") && noticesWanted) {
         opts.onNotices?.(msg);
+      } else if ((msg.type === "insights.ticker.snapshot" || msg.type === "insights.ticker.update") && tickerWanted) {
+        opts.onTicker?.(msg);
       } else if ((msg.type === "detection.snapshot" || msg.type === "detection.update") && detectionWanted) {
         opts.onDetection?.(msg);
       } else if (msg.type === "settings.snapshot" || msg.type === "settings.changed" || msg.type === "settings.rejected") {
@@ -330,6 +344,15 @@ export function createWsClient(opts: WsClientOptions): WsClient {
     unsubscribeNotices() {
       noticesWanted = false;
       if (features.includes(NOTICES_FEATURE)) send({ type: "notices.unsubscribe" });
+    },
+    subscribeTicker(want) {
+      tickerWanted = { symbol: want.symbol, day: want.day };
+      if (features.includes(INSIGHTS_TICKER_FEATURE)) send({ type: "insights.ticker.subscribe", ...tickerWanted });
+    },
+    unsubscribeTicker() {
+      if (!tickerWanted) return;
+      tickerWanted = null;
+      if (features.includes(INSIGHTS_TICKER_FEATURE)) send({ type: "insights.ticker.unsubscribe" });
     },
     subscribeDetection() {
       detectionWanted = true;

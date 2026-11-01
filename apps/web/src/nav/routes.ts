@@ -42,3 +42,8 @@ const subscribe = (cb: () => void) => {
 export function usePage(): PageId {
   return useSyncExternalStore(subscribe, () => pageOf(window.location.hash), () => "dashboard");
 }
+
+/** The whole hash, following it (a page's own sub-route: the Insights ticker page). */
+export function useHash(): string {
+  return useSyncExternalStore(subscribe, () => window.location.hash, () => "");
+}

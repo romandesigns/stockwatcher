@@ -10,6 +10,7 @@ import {
   type AlertLayer,
   type ChartAlert,
   type DetectionOverlay,
+  type EventMarker,
   type VolumeShelf,
   autoScalePrice,
   buildSlots,
@@ -153,6 +154,8 @@ export interface CandleChartProps {
   timeframe: Timeframe;
   /** Rust-authored episode/level references; display timeframe never changes their meaning. */
   detection?: readonly DetectionOverlay[];
+  /** Server-placed markers (the Insights ticker page: numbered sent alerts, missed-setup rings); read-only, absent = none. */
+  eventMarkers?: readonly EventMarker[];
   /** Volume shelves from the server's latest Runners frame (chart-core layoutVolumeShelves); read-only, absent = none. */
   volumeShelves?: readonly VolumeShelf[];
   /** t of the inspected slot; null = latest. Controlled when onInspectChange is set. */
@@ -380,6 +383,7 @@ export function CandleChart({
   timeframeControl = "segments",
   alerts = null,
   detection,
+  eventMarkers,
   volumeShelves,
 }: CandleChartProps) {
   const theme = useChartTheme(themeProp);
@@ -664,6 +668,7 @@ export function CandleChart({
       trading: showTrading ? { orders, position, last, dragging: drag?.order ? { id: drag.order.id, price: drag.order.price } : null, placeY } : null,
       alerts: alertLayer,
       detection,
+      eventMarkers,
       context,
       now,
       paneHeights,
@@ -672,7 +677,7 @@ export function CandleChart({
       baselinePrice,
       extendedHours: settings.extendedHours,
     }),
-    [timeframe, series, slots, inspectT, pointer, tradeMenuOpen, tradeMenuAt, chartOptions, scaleType, indicatorResults, shownDrawings, selectedDrawing, draft, showTrading, orders, position, last, drag, placeY, alertLayer, detection, context, now, paneHeights, settings.chartType, chartStyle, baselinePrice, settings.extendedHours],
+    [timeframe, series, slots, inspectT, pointer, tradeMenuOpen, tradeMenuAt, chartOptions, scaleType, indicatorResults, shownDrawings, selectedDrawing, draft, showTrading, orders, position, last, drag, placeY, alertLayer, detection, eventMarkers, context, now, paneHeights, settings.chartType, chartStyle, baselinePrice, settings.extendedHours],
   );
 
   const paint = useCallback((ctx: CanvasRenderingContext2D, size: Size) => drawDisplayList(ctx, layoutChart(computeChartModel(state, vp, size), state, theme)), [state, vp, theme]);

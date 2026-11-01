@@ -17,7 +17,7 @@ import {
   type ServerIndicatorsChannel,
   type Timeframe,
 } from "@stockwatcher/chart-core";
-import { createDetectionChannel, createFavoritesChannel, createMoversChannel, createPressureChannel, createQuoteChannel, createRocketChannel, createRossChannel, createNoticesChannel, createSymbolsChannel, createWsClient, hasFeature, INDICATORS_FEATURE, NOTICES_FEATURE, SYMBOLS_FEATURE, type AlertsServerMessage, type ConnectionStatus, type DetectionChannel, type FavoritesChannel, type MarketSource, type MoversChannel, type PressureChannel, type QuoteChannel, type RocketChannel, type RossChannel, type NoticesChannel, type SettingsSync, type SymbolsChannel, type WebSocketLike } from "@stockwatcher/shared";
+import { createDetectionChannel, createFavoritesChannel, createMoversChannel, createPressureChannel, createQuoteChannel, createRocketChannel, createRossChannel, createNoticesChannel, createSymbolsChannel, createTickerChannel, createWsClient, hasFeature, INDICATORS_FEATURE, INSIGHTS_TICKER_FEATURE, NOTICES_FEATURE, SYMBOLS_FEATURE, type AlertsServerMessage, type ConnectionStatus, type DetectionChannel, type FavoritesChannel, type MarketSource, type MoversChannel, type PressureChannel, type QuoteChannel, type RocketChannel, type RossChannel, type NoticesChannel, type SettingsSync, type SymbolsChannel, type TickerChannel, type WebSocketLike } from "@stockwatcher/shared";
 
 import { deviceInfo, pushToken, subscribePushToken } from "../notifications/push";
 import { runnersRegisterFields, subscribeRunnersPush } from "../notifications/runnersPush";
@@ -67,6 +67,11 @@ export interface MobileFeed {
    * the Insights tab polls `/api/notices` without it, as every older APK does.
    */
   notices: NoticesChannel;
+  /**
+   * The Insights ticker page's package, one symbol-day while that screen is open, from a server
+   * with `insights.ticker.v1` (crates/server/src/insights); without it the screen is never offered.
+   */
+  ticker: TickerChannel;
   /** Rocket watch (experimental): flags of a likely +30 % leg; subscribing opts the connection in. */
   rocket: RocketChannel;
   /** Independent authoritative event discovery; it does not subscribe to chart bars. */
@@ -102,6 +107,7 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
   const movers = createMoversChannel({ subscribe: () => client.subscribeMovers(), unsubscribe: () => client.unsubscribeMovers() });
   const symbols = createSymbolsChannel({ subscribe: () => client.subscribeSymbols(), unsubscribe: () => client.unsubscribeSymbols() });
   const notices = createNoticesChannel({ subscribe: () => client.subscribeNotices(), unsubscribe: () => client.unsubscribeNotices() });
+  const ticker = createTickerChannel({ subscribe: (w) => client.subscribeTicker(w), unsubscribe: () => client.unsubscribeTicker() });
   const rocket = createRocketChannel({ subscribe: () => client.subscribeRocket(), unsubscribe: () => client.unsubscribeRocket() });
   const detection = createDetectionChannel({ subscribe: () => client.subscribeDetection(), unsubscribe: () => client.unsubscribeDetection(), resync: () => client.subscribeDetection(), source });
 
@@ -135,6 +141,7 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
       serverIndicators.setAvailable(hasFeature(w, INDICATORS_FEATURE));
       symbols.setAvailable(hasFeature(w, SYMBOLS_FEATURE));
       notices.setAvailable(hasFeature(w, NOTICES_FEATURE));
+      ticker.setAvailable(hasFeature(w, INSIGHTS_TICKER_FEATURE));
     },
     onStatus: (s) => {
       onStatus?.(s);
@@ -163,6 +170,7 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
     onMovers: (m) => movers.apply(m),
     onSymbols: (m) => symbols.apply(m),
     onNotices: (m) => notices.apply(m),
+    onTicker: (m) => ticker.apply(m),
     onRocket: (m) => rocket.apply(m),
     onDetection: (m) => detection.apply(m),
     onDetectionError: (reason) => detection.reject(reason),
@@ -177,7 +185,7 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
         // A quotes.snapshot is hundreds of KB: skip the chart/paper parsers (the server writes
         // `type` first), which would each JSON.parse it again on the phone's JS thread. The
         // settings.* and pressure.* frames are shared's own too and take the same shortcut.
-        if (typeof ev.data === "string" && (ev.data.startsWith('{"type":"quotes.') || ev.data.startsWith('{"type":"settings.') || ev.data.startsWith('{"type":"pressure.') || ev.data.startsWith('{"type":"ross.') || ev.data.startsWith('{"type":"favorites.') || ev.data.startsWith('{"type":"movers.') || ev.data.startsWith('{"type":"symbols.') || ev.data.startsWith('{"type":"notices.') || ev.data.startsWith('{"type":"rocket.') || ev.data.startsWith('{"type":"detection.') || ev.data.startsWith('{"type":"alert'))) {
+        if (typeof ev.data === "string" && (ev.data.startsWith('{"type":"quotes.') || ev.data.startsWith('{"type":"settings.') || ev.data.startsWith('{"type":"pressure.') || ev.data.startsWith('{"type":"ross.') || ev.data.startsWith('{"type":"favorites.') || ev.data.startsWith('{"type":"movers.') || ev.data.startsWith('{"type":"symbols.') || ev.data.startsWith('{"type":"notices.') || ev.data.startsWith('{"type":"insights.') || ev.data.startsWith('{"type":"rocket.') || ev.data.startsWith('{"type":"detection.') || ev.data.startsWith('{"type":"alert'))) {
           inner?.({ data: ev.data });
           return;
         }
@@ -235,6 +243,7 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
     movers,
     symbols,
     notices,
+    ticker,
     rocket,
     detection,
     indicators: serverIndicators.channel,

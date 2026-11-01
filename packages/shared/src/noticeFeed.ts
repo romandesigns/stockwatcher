@@ -5,10 +5,17 @@
 // A past day stays a one-shot fetch (its file no longer changes), and against a server without the
 // feature the hooks keep polling as before.
 
-import { parseNoticeLog, type NoticeItemWire, type NoticeLogWire } from "./noticeLog.ts";
+import { parseNoticeLog, parseNoticeSummary, type NoticeItemWire, type NoticeLogWire } from "./noticeLog.ts";
 
 /** The server pushes today's notification log (`notices.subscribe`); see the module comment. */
 export const NOTICES_FEATURE = "notices.v1";
+
+/**
+ * The server assembles the rows (crates/server/src/notices.rs `FEATURE_ROWS`): each item's
+ * `status` / `reason` / `reason_text` and each body's day `summary`. The fields are additive and
+ * the clients read them whenever present, so this only documents the contract.
+ */
+export const NOTICES_ROWS_FEATURE = "notices.rows.v1";
 
 /** The rows a day holds at most, as the server caps them (notices.rs MAX_ITEMS). */
 export const NOTICE_LOG_MAX_ITEMS = 2000;
@@ -19,6 +26,8 @@ export interface NoticesSnapshotMessage {
   days: string[];
   items: unknown[];
   truncated: boolean;
+  /** The day's summary (`notices.rows.v1`). */
+  summary?: unknown;
 }
 
 /** One ledger line's notice, regrouped from all its lines so far: replaces the item with its event_id. */
@@ -26,6 +35,8 @@ export interface NoticesAppendMessage {
   type: "notices.append";
   day: string;
   items: unknown[];
+  /** The day's summary after this line (`notices.rows.v1`). */
+  summary?: unknown;
 }
 
 export type NoticesMessage = NoticesSnapshotMessage | NoticesAppendMessage;
@@ -55,7 +66,9 @@ export function applyNoticesMessage(log: NoticeLogWire | null, m: NoticesMessage
   if (m.type === "notices.snapshot") return parseNoticeLog(m) ?? log;
   if (!log || m.day !== log.day) return log;
   const incoming = parseNoticeLog({ day: m.day, items: m.items })?.items ?? [];
-  if (incoming.length === 0) return log;
+  // The server's tally after this line covers the whole day: it replaces, never adds up here.
+  const summary = parseNoticeSummary(m.summary) ?? log.summary;
+  if (incoming.length === 0) return summary === log.summary ? log : { ...log, summary };
   const items = [...log.items];
   let truncated = log.truncated;
   for (const it of incoming) {
@@ -73,7 +86,7 @@ export function applyNoticesMessage(log: NoticeLogWire | null, m: NoticesMessage
       truncated = true;
     }
   }
-  return { ...log, items, truncated };
+  return { ...log, items, truncated, ...(summary ? { summary } : {}) };
 }
 
 /**

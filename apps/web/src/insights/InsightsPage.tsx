@@ -1,12 +1,15 @@
 import { cn } from "@stockwatcher/chart-web/ui";
-import type { NoticesChannel } from "@stockwatcher/shared";
+import { tickerPageHash, tickerPageOf, type NoticesChannel, type TickerChannel } from "@stockwatcher/shared";
 import { useState } from "react";
 import { ConnectionGate } from "../ConnectionGate.tsx";
 import { NavToggle } from "../nav/NavToggle.tsx";
 import { useHasRail } from "../nav/navRail.ts";
 import { SettingsButton } from "../nav/settings.tsx";
+import { useHash } from "../nav/routes.ts";
 import { NotificationLog } from "./NotificationLog.tsx";
 import { ScorecardView } from "./ScorecardView.tsx";
+import { TickerPage } from "./TickerPage.tsx";
+import { useTickerAvailable } from "./useTickerPage.ts";
 
 /**
  * Insights (owner, 2026-10-26: "create an insight page where we can display a notification
@@ -15,7 +18,7 @@ import { ScorecardView } from "./ScorecardView.tsx";
  * sign-in when the server needs a token.
  */
 export function InsightsPage() {
-  return <ConnectionGate source="live">{(c) => <Insights notices={c.feed.notices} />}</ConnectionGate>;
+  return <ConnectionGate source="live">{(c) => <Insights notices={c.feed.notices} ticker={c.feed.ticker} />}</ConnectionGate>;
 }
 
 type Tab = "notifications" | "scorecard";
@@ -24,9 +27,35 @@ const TABS: readonly { id: Tab; label: string }[] = [
   { id: "scorecard", label: "Scorecard" },
 ];
 
-function Insights({ notices }: { notices?: NoticesChannel }) {
+// The ticker page was opened from the log in this tab: Back is the browser's back (the log's
+// entry is right behind it). Opened from a shared link instead, Back replaces the page with the log.
+let openedFromLog = false;
+
+function Insights({ notices, ticker }: { notices?: NoticesChannel; ticker?: TickerChannel }) {
   const hasRail = useHasRail();
   const [tab, setTab] = useState<Tab>("notifications");
+  // The log's day outlives the log, which unmounts while the ticker page shows (its ticker filter
+  // does not: back from the ticker page clears it, as designed).
+  const [day, setDay] = useState<string | null>(null);
+  const [today, setToday] = useState<string | null>(null);
+  const tickerPages = useTickerAvailable(ticker) === true;
+  const page = tickerPageOf(useHash());
+  if (page) {
+    const back = () => {
+      if (openedFromLog) window.history.back();
+      else window.location.replace("#/insights");
+      openedFromLog = false;
+    };
+    return (
+      <div className="@container/insights flex h-full min-h-0 flex-col gap-3 p-3 text-foreground @3xl/insights:px-6 @3xl/insights:py-4">
+        <TickerPage channel={ticker} want={page} onBack={back} />
+      </div>
+    );
+  }
+  const openTicker = (symbol: string, d: string) => {
+    openedFromLog = true;
+    window.location.hash = tickerPageHash(symbol, d);
+  };
   return (
     <div className="@container/insights flex h-full min-h-0 flex-col gap-4 p-3 text-foreground @3xl/insights:px-6 @3xl/insights:py-4">
       <header className="flex flex-wrap items-center gap-x-3 gap-y-2">
@@ -58,7 +87,7 @@ function Insights({ notices }: { notices?: NoticesChannel }) {
         )}
       </header>
       <div role="tabpanel" id={`insights-panel-${tab}`} aria-labelledby={`insights-tab-${tab}`} className="flex min-h-0 flex-1 flex-col">
-        {tab === "notifications" ? <NotificationLog notices={notices} /> : <ScorecardView />}
+        {tab === "notifications" ? <NotificationLog notices={notices} dayState={{ day, setDay, today, setToday }} tickerPages={tickerPages} onOpenTicker={openTicker} /> : <ScorecardView />}
       </div>
     </div>
   );

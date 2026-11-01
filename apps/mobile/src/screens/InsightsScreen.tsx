@@ -1,6 +1,7 @@
 import { Icon, Segmented, Sheet, UI } from "@stockwatcher/chart-native";
-import { filterNotices, noticeDayOptions, NOTICE_GROUPS, noticeSummary, type NoticeGroup, type NoticeStatus } from "@stockwatcher/shared";
-import { useMemo, useState } from "react";
+import { dayLabel, filterNotices, logSummary, noticeDayOptions, NOTICE_GROUPS, tickerSymbol, type NoticeGroup, type NoticeStatus, type TickerState } from "@stockwatcher/shared";
+import { useFocusEffect } from "@react-navigation/native";
+import { useCallback, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -8,8 +9,9 @@ import { noticeRowView, type NoticeRowView } from "../insights/model";
 import { ScorecardView } from "../insights/ScorecardView";
 import { useNoticeLog } from "../insights/useNoticeLog";
 import { useDashboardFeed } from "../feed/dashboardFeed";
+import { Collapse } from "../motion/Collapse";
 import { useReducedMotion } from "../motion/useReducedMotion";
-import { openTickerChart } from "../navigation/ref";
+import { openInsightsTicker, openTickerChart } from "../navigation/ref";
 import { colors, fonts } from "../theme";
 
 type Tab = "notifications" | "scorecard";
@@ -75,7 +77,30 @@ function NotificationLog() {
   const load = useNoticeLog(day, feed?.notices);
   const log = load.state === "ok" ? load.log : null;
   const rows = useMemo(() => (log ? filterNotices(log.items, { groups, status: status === "all" ? null : status, ticker }).map(noticeRowView) : []), [log, groups, status, ticker]);
-  const summary = useMemo(() => noticeSummary(log?.items ?? []), [log]);
+  // The server's day summary (notices.rows.v1), else counted from the rows (older servers).
+  const summary = useMemo(() => logSummary(log), [log]);
+  // The ticker page is offered only by a server that builds it (insights.ticker.v1).
+  const tickerChannel = feed?.ticker;
+  const tickerSub = useCallback((cb: () => void) => (tickerChannel ? tickerChannel.subscribe(cb) : () => {}), [tickerChannel]);
+  const tickerGet = useCallback((): TickerState["available"] => (tickerChannel ? tickerChannel.get().available : false), [tickerChannel]);
+  const tickerPages = useSyncExternalStore(tickerSub, tickerGet, tickerGet) === true;
+  const cardSymbol = tickerPages && log ? tickerSymbol(ticker) : null;
+  // Back from the ticker page returns here with the ticker filter cleared (approved design). This
+  // tab stays mounted under the pushed page, so it is cleared on the way back, not on the way out
+  // (the log would visibly change under the push).
+  const openedTicker = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      if (!openedTicker.current) return;
+      openedTicker.current = false;
+      setTicker("");
+    }, []),
+  );
+  const openTicker = () => {
+    if (!cardSymbol || !log) return;
+    openedTicker.current = true;
+    openInsightsTicker(cardSymbol, log.day);
+  };
   const toggle = (g: NoticeGroup) =>
     setGroups((prev) => {
       const next = new Set(prev);
@@ -123,9 +148,23 @@ function NotificationLog() {
           autoCapitalize="characters"
           autoCorrect={false}
           accessibilityLabel="Filter by ticker"
+          returnKeyType={cardSymbol ? "go" : "done"}
+          onSubmitEditing={openTicker}
           style={styles.input}
         />
       </View>
+      <Collapse open={!!cardSymbol} reducedMotion={reducedMotion} gap={8}>
+        {cardSymbol && log ? (
+          <Pressable accessibilityRole="button" accessibilityLabel={`Open the ticker page for ${cardSymbol} on ${dayLabel(log.day)}`} onPress={openTicker} style={({ pressed }) => [styles.tickerCard, pressed && { backgroundColor: UI.raised }]}>
+            <Text style={styles.tickerCardSymbol}>{cardSymbol}</Text>
+            <Text style={styles.small}>{dayLabel(log.day)}</Text>
+            <View style={styles.tickerCardAction}>
+              <Text style={styles.tickerCardActionText}>Open ticker page</Text>
+              <Icon name="chevronRight" color={colors.accentFg} size={14} />
+            </View>
+          </Pressable>
+        ) : null}
+      </Collapse>
 
       {load.state === "loading" && <Text style={styles.empty}>Loading…</Text>}
       {load.state === "error" && <Text style={[styles.empty, { color: colors.warning }]}>{load.message}</Text>}
@@ -240,4 +279,9 @@ const styles = StyleSheet.create({
   line: { color: colors.textDim, fontSize: 12 },
   details: { alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 4, minHeight: 44, paddingHorizontal: 8, marginLeft: -8, borderRadius: 10 },
   detailsText: { color: colors.textDim, fontSize: 12 },
+  tickerCard: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 10, padding: 12, borderRadius: 14, backgroundColor: colors.bgRow },
+  tickerCardSymbol: { color: colors.text, fontFamily: fonts.semibold, fontSize: 18 },
+  // The view's one accent-filled action.
+  tickerCardAction: { marginLeft: "auto", flexDirection: "row", alignItems: "center", gap: 6, minHeight: 44, paddingHorizontal: 14, borderRadius: 10, backgroundColor: colors.accent },
+  tickerCardActionText: { color: colors.accentFg, fontFamily: fonts.semibold, fontSize: 13 },
 });

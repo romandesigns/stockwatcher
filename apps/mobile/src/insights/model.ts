@@ -1,5 +1,5 @@
 import { formatEtTime12, type IconName } from "@stockwatcher/chart-core";
-import { heldText, latencyText, noticeEvidence, noticeHeldReason, noticeIcon, noticeKind, noticeMergedInto, noticeStatus, pathText, type NoticeItemWire } from "@stockwatcher/shared";
+import { latencyText, noticeEvidence, noticeIcon, noticeKind, pathText, rowHeldText, rowStatus, type NoticeItemWire } from "@stockwatcher/shared";
 import { BREAKOUT_LABEL, noticeChartContext, type NoticeChartContext } from "@stockwatcher/shared";
 
 // One notification-log row on the phone (the web's NoticeRow, apps/web/src/insights): what the
@@ -34,8 +34,9 @@ export function noticeRowView(item: NoticeItemWire): NoticeRowView {
   const label = context ? BREAKOUT_LABEL : kind.label;
   // Shared with the web row (packages/shared noticeEvidence): one plain line, the rest as details.
   const { line, details } = noticeEvidence(item, (ms) => formatEtTime12(ms, true));
-  const sent = noticeStatus(item) === "sent";
-  const reason = noticeHeldReason(item);
+  // The server's row (notices.rows.v1) when it sent one, else derived as before (older servers).
+  const sent = rowStatus(item) === "sent";
+  const held = rowHeldText(item);
   const text = item.body ? `${item.title ?? ""} · ${item.body}` : (item.title ?? "");
   const path = (name: string, p: NoticeItemWire["phone"]) => {
     const t = pathText(p);
@@ -44,7 +45,7 @@ export function noticeRowView(item: NoticeItemWire): NoticeRowView {
   const phone = path("Phones", item.phone);
   const desk = path("Desktop and web", item.desk);
   const latency = latencyText(item);
-  const detail = sent ? (item.failed ? `${text} · push service refused it` : text) : `Held: ${heldText(reason, noticeMergedInto(item))}`;
+  const detail = sent ? (item.failed ? `${text} · push service refused it` : text) : `Held: ${held}`;
   return {
     key: item.event_id,
     time: item.at ? formatEtTime12(item.at, true) : "—",
@@ -60,6 +61,6 @@ export function noticeRowView(item: NoticeItemWire): NoticeRowView {
     line,
     details,
     noticeContext: context,
-    a11y: [`${item.symbol ?? "Notice"}, ${label}`, sent ? "sent" : `held, ${heldText(reason, noticeMergedInto(item))}`, phone?.label, desk?.label, latency && sent ? latency : null, text, line].filter(Boolean).join(". "),
+    a11y: [`${item.symbol ?? "Notice"}, ${label}`, sent ? "sent" : `held, ${held}`, phone?.label, desk?.label, latency && sent ? latency : null, text, line].filter(Boolean).join(". "),
   };
 }

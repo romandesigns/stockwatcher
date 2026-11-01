@@ -132,8 +132,10 @@ export function motion(reducedMotion: boolean): MotionVocabulary {
       screenStyleInterpolator: slideFromRight,
       transitionSpec: navSpring,
       // iOS interactive edge-swipe back. Android back (hardware/gesture)
-      // pops through the same spec; predictive back is off until a pushed
-      // screen exists (app.config.ts).
+      // pops through the same spec. The Insights ticker page (2026-10-31) is
+      // the first pushed screen; predictive back is still off (app.config.ts)
+      // because the library has no integration for it and turning it on is a
+      // native change (a new APK): until then Android 14+ shows no preview.
       gestureEnabled: true,
       gestureDirection: { gesture: "horizontal", area: "edge" },
     },

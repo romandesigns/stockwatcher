@@ -1,5 +1,5 @@
 import { createChartRouter, parseChartMessage, parsePaperMessage, createServerIndicators, type ChartIndicatorsSet, type ChartSubscribe, type ChartUnsubscribe, type PaperMessage, type PaperState, type ReplayControl } from "@stockwatcher/chart-core";
-import { createDetectionChannel, createFavoritesChannel, createMoversChannel, createPressureChannel, createQuoteChannel, createRocketChannel, createRossChannel, createNoticesChannel, createSymbolsChannel, createWsClient, hasFeature, INDICATORS_FEATURE, NOTICES_FEATURE, serverWsUrl, SYMBOLS_FEATURE, type AlertsServerMessage, type ConnectionStatus, type MarketSource, type SettingsSync, type WebSocketLike } from "@stockwatcher/shared";
+import { createDetectionChannel, createFavoritesChannel, createMoversChannel, createPressureChannel, createQuoteChannel, createRocketChannel, createRossChannel, createNoticesChannel, createSymbolsChannel, createTickerChannel, createWsClient, hasFeature, INDICATORS_FEATURE, INSIGHTS_TICKER_FEATURE, NOTICES_FEATURE, serverWsUrl, SYMBOLS_FEATURE, type AlertsServerMessage, type ConnectionStatus, type MarketSource, type SettingsSync, type WebSocketLike } from "@stockwatcher/shared";
 import type { RunnersNotifier } from "../notify/runnersNotify.ts";
 import type { ChartFeed, PaperCommand, ReplayCommand } from "./types.ts";
 
@@ -53,6 +53,8 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
   const symbols = createSymbolsChannel({ subscribe: () => client.subscribeSymbols(), unsubscribe: () => client.unsubscribeSymbols() });
   // Today's notification log, pushed by servers with notices.v1 (useNoticeLog polls otherwise).
   const notices = createNoticesChannel({ subscribe: () => client.subscribeNotices(), unsubscribe: () => client.unsubscribeNotices() });
+  // The Insights ticker page's package (insights.ticker.v1), one symbol-day while the page is open.
+  const ticker = createTickerChannel({ subscribe: (w) => client.subscribeTicker(w), unsubscribe: () => client.unsubscribeTicker() });
   // Rocket watch (experimental), opted in while its tab is open.
   const rocket = createRocketChannel({ subscribe: () => client.subscribeRocket(), unsubscribe: () => client.unsubscribeRocket() });
   const detection = createDetectionChannel({ source: opts.source, subscribe: () => client.subscribeDetection(), unsubscribe: () => client.unsubscribeDetection(), resync: () => client.subscribeDetection() });
@@ -78,6 +80,7 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
       serverIndicators.setAvailable(hasFeature(w, INDICATORS_FEATURE));
       symbols.setAvailable(hasFeature(w, SYMBOLS_FEATURE));
       notices.setAvailable(hasFeature(w, NOTICES_FEATURE));
+      ticker.setAvailable(hasFeature(w, INSIGHTS_TICKER_FEATURE));
     },
     onStatus: (s) => {
       opts.onStatus?.(s);
@@ -100,6 +103,7 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
     onMovers: (m) => movers.apply(m),
     onSymbols: (m) => symbols.apply(m),
     onNotices: (m) => notices.apply(m),
+    onTicker: (m) => ticker.apply(m),
     onRocket: (m) => rocket.apply(m),
     onDetection: (m) => detection.apply(m),
     onDetectionError: (reason) => detection.reject(reason),
@@ -117,7 +121,7 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
         // A quotes.snapshot is hundreds of KB: hand it to shared's parser without first
         // parsing it twice as a chart or paper frame. The server writes `type` first. The
         // settings.*, pressure.* and alert frames (shared's own too) take the same shortcut.
-        if (typeof ev.data === "string" && (ev.data.startsWith('{"type":"quotes.') || ev.data.startsWith('{"type":"settings.') || ev.data.startsWith('{"type":"pressure.') || ev.data.startsWith('{"type":"ross.') || ev.data.startsWith('{"type":"favorites.') || ev.data.startsWith('{"type":"movers.') || ev.data.startsWith('{"type":"symbols.') || ev.data.startsWith('{"type":"notices.') || ev.data.startsWith('{"type":"rocket.') || ev.data.startsWith('{"type":"alert') || ev.data.startsWith('{"type":"runners.') || /"type"\s*:\s*"detection\.(snapshot|update)"/.test(ev.data))) {
+        if (typeof ev.data === "string" && (ev.data.startsWith('{"type":"quotes.') || ev.data.startsWith('{"type":"settings.') || ev.data.startsWith('{"type":"pressure.') || ev.data.startsWith('{"type":"ross.') || ev.data.startsWith('{"type":"favorites.') || ev.data.startsWith('{"type":"movers.') || ev.data.startsWith('{"type":"symbols.') || ev.data.startsWith('{"type":"notices.') || ev.data.startsWith('{"type":"insights.') || ev.data.startsWith('{"type":"rocket.') || ev.data.startsWith('{"type":"alert') || ev.data.startsWith('{"type":"runners.') || /"type"\s*:\s*"detection\.(snapshot|update)"/.test(ev.data))) {
           inner?.({ data: ev.data });
           return;
         }
@@ -180,6 +184,7 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
     movers,
     symbols,
     notices,
+    ticker,
     rocket,
     detection,
     indicators: serverIndicators.channel,

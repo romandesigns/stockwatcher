@@ -53,6 +53,21 @@ export interface NoticeItemWire {
   latency?: { trade_to_board_ms?: number; board_to_queue_ms?: number; queue_to_expo_ms?: number; trade_to_expo_ms?: number };
   /** Expo refused it (token-redacted detail). */
   failed?: string | null;
+  /**
+   * The row as the server assembled it (`notices.rows.v1`, crates/server/src/notices.rs): sent or
+   * held, the hold's code and the same in plain words. Absent from older servers, whose rows the
+   * clients still derive (`noticeStatus`, `noticeHeldReason`, `heldText`).
+   */
+  status?: NoticeStatus;
+  reason?: string | null;
+  reason_text?: string | null;
+}
+
+/** The day's sent / held counts and the held ones by plain reason, most common first. */
+export interface NoticeSummary {
+  sent: number;
+  held: number;
+  reasons: { reason: string; text: string; n: number }[];
 }
 
 export interface NoticeLogWire {
@@ -60,6 +75,8 @@ export interface NoticeLogWire {
   days: string[];
   items: NoticeItemWire[];
   truncated: boolean;
+  /** The server's summary over the WHOLE day (`notices.rows.v1`); absent from older servers. */
+  summary?: NoticeSummary;
 }
 
 /**
@@ -109,9 +126,34 @@ export function parseNoticeLog(raw: unknown): NoticeLogWire | null {
         trade_to_expo_ms: num(lat.trade_to_expo_ms),
       },
       failed: str(r.failed) ?? null,
+      ...(r.status === "sent" || r.status === "held" ? { status: r.status, reason: str(r.reason) ?? null, reason_text: str(r.reason_text) ?? null } : {}),
     });
   }
-  return { day: raw.day, days: Array.isArray(raw.days) ? raw.days.filter((d): d is string => typeof d === "string") : [], items, truncated: raw.truncated === true };
+  const summary = parseNoticeSummary(raw.summary);
+  return { day: raw.day, days: Array.isArray(raw.days) ? raw.days.filter((d): d is string => typeof d === "string") : [], items, truncated: raw.truncated === true, ...(summary ? { summary } : {}) };
+}
+
+/** A server `summary` (`notices.rows.v1`), or undefined when absent or malformed. */
+export function parseNoticeSummary(v: unknown): NoticeSummary | undefined {
+  if (!isObj(v) || num(v.sent) === undefined || num(v.held) === undefined || !Array.isArray(v.reasons)) return undefined;
+  const reasons = v.reasons.filter(isObj).flatMap((r) => (typeof r.reason === "string" && num(r.n) !== undefined ? [{ reason: r.reason, text: str(r.text) ?? r.reason.replace(/_/g, " "), n: num(r.n)! }] : []));
+  return { sent: num(v.sent)!, held: num(v.held)!, reasons };
+}
+
+/** A row's status: the server's when it assembled the row, else derived as before (older servers). */
+export function rowStatus(item: NoticeItemWire): NoticeStatus {
+  return item.status ?? noticeStatus(item);
+}
+
+/** A held row's reason in plain words: the server's when it sent one, else derived (older servers). */
+export function rowHeldText(item: NoticeItemWire): string {
+  if (item.status) return item.reason_text ?? "held";
+  return heldText(noticeHeldReason(item), noticeMergedInto(item));
+}
+
+/** The log's summary line: the server's (the whole day), else counted here from the rows an older server sent. */
+export function logSummary(log: Pick<NoticeLogWire, "items" | "summary"> | null): NoticeSummary {
+  return log?.summary ?? noticeSummary(log?.items ?? []);
 }
 
 /** The page's kind filters, in chip order, each with its icon (a group's chip, and the icon of a kind the log does not know). */
@@ -261,11 +303,14 @@ export interface NoticeFilter {
 /** The items that pass the page's filters (empty group set = every group). */
 export function filterNotices(items: readonly NoticeItemWire[], f: NoticeFilter): NoticeItemWire[] {
   const t = f.ticker.trim().toUpperCase();
-  return items.filter((i) => (f.groups.size === 0 || f.groups.has(noticeKind(i.notice).group)) && (f.status === null || noticeStatus(i) === f.status) && (!t || (i.symbol ?? "").toUpperCase().startsWith(t)));
+  return items.filter((i) => (f.groups.size === 0 || f.groups.has(noticeKind(i.notice).group)) && (f.status === null || rowStatus(i) === f.status) && (!t || (i.symbol ?? "").toUpperCase().startsWith(t)));
 }
 
-/** The summary line's counts: sent, held, and held by plain reason, most common first. */
-export function noticeSummary(items: readonly NoticeItemWire[]): { sent: number; held: number; reasons: { reason: string; text: string; n: number }[] } {
+/**
+ * The summary line's counts: sent, held, and held by plain reason, most common first. Only for an
+ * older server: one with `notices.rows.v1` sends the day's summary itself (`logSummary`).
+ */
+export function noticeSummary(items: readonly NoticeItemWire[]): NoticeSummary {
   let sent = 0;
   const by = new Map<string, number>();
   for (const i of items) {

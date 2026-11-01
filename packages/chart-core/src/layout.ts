@@ -6,6 +6,7 @@ import { layoutContext, type ContextLayer } from "./levels.ts";
 import { layoutTrading, type TradingLayer } from "./trading.ts";
 import { layoutAlerts, type AlertLayer } from "./alerts.ts";
 import { layoutDetections, type DetectionOverlay } from "./detection.ts";
+import { layoutEventMarkers, type EventMarker } from "./eventMarkers.ts";
 import { formatPrice } from "./format.ts";
 import { formatCrosshairTime, sessionOf } from "./time.ts";
 import { heikinAshi, hollowStyle, isCloseOnly, prevCloseAt, sessionSlots, startsTradingDay, type ChartType, type Ohlc } from "./chartTypes.ts";
@@ -107,6 +108,8 @@ export interface ChartState {
   alerts?: AlertLayer | null;
   /** Authoritative detector annotations. Read-only; not alert or drawing interaction targets. */
   detection?: readonly DetectionOverlay[];
+  /** Server-placed event markers (the Insights ticker page's alerts and missed setups); read-only. */
+  eventMarkers?: readonly EventMarker[];
   /** Halts, LULD bands, key levels and fill markers (each list already filtered by its layer toggle). */
   context?: ContextLayer | null;
   /** The feed clock (ms): drives the countdown to the forming candle's close under the last-price tag. */
@@ -581,6 +584,7 @@ export function layoutChart(model: ChartModel, state: ChartState, theme: ChartTh
   if (state.draft) out.push(...layoutDraft(model, state.draft, theme));
   if (state.context) out.push(...layoutContext(model, state.context, theme));
   if (state.detection?.length) out.push(...layoutDetections(model, state.detection, theme));
+  if (state.eventMarkers?.length) out.push(...layoutEventMarkers(model, state.eventMarkers, theme));
   // Alerts under the orders: an order's pill (what the grab priority favours) is never covered.
   if (state.alerts) out.push(...layoutAlerts(model, state.alerts, theme));
   if (state.trading) out.push(...layoutTrading(model, state.trading, theme));

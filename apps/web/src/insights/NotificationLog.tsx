@@ -1,10 +1,11 @@
 import { formatEtTime12, type IconName } from "@stockwatcher/chart-core";
 import { Icon } from "@stockwatcher/chart-web";
 import { cn, Collapsible, CollapsibleContent, CollapsibleTrigger, Input, OptionSelect, ScrollArea, Tip } from "@stockwatcher/chart-web/ui";
-import { filterNotices, noticeDayOptions, latencyText, NOTICE_GROUPS, noticeEvidence, noticeHeldReason, noticeMergedInto, heldText, noticeIcon, noticeKind, noticeStatus, noticeSummary, pathText, type NoticeGroup, type NoticeItemWire, type NoticePathWire, type NoticesChannel, type NoticeStatus } from "@stockwatcher/shared";
-import { useMemo, useState } from "react";
+import { dayLabel, filterNotices, logSummary, noticeDayOptions, latencyText, NOTICE_GROUPS, noticeEvidence, noticeIcon, noticeKind, pathText, rowHeldText, rowStatus, tickerPageHash, tickerSymbol, type NoticeGroup, type NoticeItemWire, type NoticePathWire, type NoticesChannel, type NoticeStatus } from "@stockwatcher/shared";
+import { useMemo, useState, type Dispatch, type SetStateAction } from "react";
 import { openTickerChart } from "../nav/openTicker.ts";
 import { BREAKOUT_LABEL, noticeChartContext } from "@stockwatcher/shared";
+import { Reveal } from "../dashboard/Reveal.tsx";
 import { useNoticeLog } from "./useNoticeLog.ts";
 
 // The filters are icons, their names in tooltips and for screen readers (owner, 2026-10-31).
@@ -14,22 +15,36 @@ const STATUS: readonly { id: NoticeStatus | null; label: string; icon: "menu" | 
   { id: "held", label: "Held", icon: "pause" },
 ];
 
+/** The log's day (null = today, following the date) and the server's today, kept by the page so they outlive the log. */
+export interface LogDayState {
+  day: string | null;
+  setDay: Dispatch<SetStateAction<string | null>>;
+  today: string | null;
+  setToday: Dispatch<SetStateAction<string | null>>;
+}
+
 /**
  * The notification log: every notice the server decided today (or on a chosen day), newest first,
  * with what happened on the phones and on desktop/web, and why when it was held. A row opens the
  * stock's chart. Read from the ledger (crates/server/src/notices.rs), written since 2026-10-26.
+ *
+ * Rows come assembled by a server with `notices.rows.v1` (status, reason, the day's summary);
+ * against an older one they are derived here as before (`rowStatus`, `logSummary`). With a ticker
+ * typed and a server that builds ticker pages (`tickerPages`), a card at the top opens the ticker
+ * page for that symbol and the log's day (Enter in the ticker box too). The ticker filter lives
+ * here, so coming back from the ticker page (which unmounts the log) clears it, as designed.
  */
-export function NotificationLog({ notices }: { notices?: NoticesChannel } = {}) {
-  const [day, setDay] = useState<string | null>(null);
-  // The server's today, kept from the default load for when another day is open.
-  const [today, setToday] = useState<string | null>(null);
+export function NotificationLog({ notices, dayState, tickerPages = false, onOpenTicker }: { notices?: NoticesChannel; dayState?: LogDayState; tickerPages?: boolean; onOpenTicker?: (symbol: string, day: string) => void } = {}) {
+  const own = useOwnDay();
+  const { day, setDay, today, setToday } = dayState ?? own;
   const [groups, setGroups] = useState<ReadonlySet<NoticeGroup>>(new Set());
   const [status, setStatus] = useState<NoticeStatus | null>(null);
   const [ticker, setTicker] = useState("");
   const load = useNoticeLog(day, notices);
   const log = load.state === "ok" ? load.log : null;
   const items = useMemo(() => (log ? filterNotices(log.items, { groups, status, ticker }) : []), [log, groups, status, ticker]);
-  const summary = useMemo(() => noticeSummary(log?.items ?? []), [log]);
+  const summary = useMemo(() => logSummary(log), [log]);
+  const cardSymbol = tickerPages && log && onOpenTicker ? tickerSymbol(ticker) : null;
   const toggleGroup = (g: NoticeGroup) =>
     setGroups((prev) => {
       const next = new Set(prev);
@@ -91,8 +106,19 @@ export function NotificationLog({ notices }: { notices?: NoticesChannel } = {}) 
             </Tip>
           ))}
         </div>
-        <Input aria-label="Filter by ticker" placeholder="Ticker" value={ticker} onChange={(e) => setTicker(e.target.value.toUpperCase())} className="h-8 w-28 font-mono uppercase pointer-coarse:h-11" />
+        <Input
+          aria-label="Filter by ticker"
+          placeholder="Ticker"
+          value={ticker}
+          onChange={(e) => setTicker(e.target.value.toUpperCase())}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && cardSymbol && log && onOpenTicker) onOpenTicker(cardSymbol, log.day);
+          }}
+          className="h-8 w-28 font-mono uppercase pointer-coarse:h-11"
+        />
       </div>
+
+      <Reveal show={!!cardSymbol}>{cardSymbol && log && onOpenTicker && <TickerCard symbol={cardSymbol} day={log.day} onOpen={onOpenTicker} />}</Reveal>
 
       {load.state === "loading" && <p className="m-0 text-[13px] text-text-faint">Loading…</p>}
       {load.state === "error" && <p className="m-0 text-[13px] text-warning">{load.message}</p>}
@@ -119,6 +145,39 @@ export function NotificationLog({ notices }: { notices?: NoticesChannel } = {}) 
   );
 }
 
+function useOwnDay(): LogDayState {
+  const [day, setDay] = useState<string | null>(null);
+  // The server's today, kept from the default load for when another day is open.
+  const [today, setToday] = useState<string | null>(null);
+  return { day, setDay, today, setToday };
+}
+
+/**
+ * The way into the ticker page (approved design, "Notifications list"): the typed symbol and the
+ * log's day, and the view's one accent-filled action. A real link, so it can open in a new tab
+ * and the page's URL is the shareable one.
+ */
+function TickerCard({ symbol, day, onOpen }: { symbol: string; day: string; onOpen: (symbol: string, day: string) => void }) {
+  return (
+    <a
+      href={tickerPageHash(symbol, day)}
+      onClick={(e) => {
+        if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+        e.preventDefault();
+        onOpen(symbol, day);
+      }}
+      className="group flex flex-wrap items-center gap-x-3.5 gap-y-2 rounded-xl bg-bg-row px-4 py-3 text-foreground no-underline outline-none transition-colors duration-150 hover:bg-bg-raised focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none"
+    >
+      <span className="font-mono text-lg font-bold">{symbol}</span>
+      <span className="text-[13px] text-muted-foreground">{dayLabel(day)}</span>
+      <span className="ml-auto inline-flex h-9 items-center gap-1.5 rounded-lg bg-primary px-3.5 text-[13px] font-semibold text-primary-foreground transition-colors duration-150 group-hover:bg-primary/85 pointer-coarse:h-11 motion-reduce:transition-none [&_svg]:size-4">
+        Open ticker page
+        <Icon name="chevronRight" />
+      </span>
+    </a>
+  );
+}
+
 function SummaryLine({ sent, held, reasons }: { sent: number; held: number; reasons: { reason: string; text: string; n: number }[] }) {
   return (
     <>
@@ -138,9 +197,10 @@ export function NoticeRow({ item }: { item: NoticeItemWire }) {
   const context = noticeChartContext(item);
   const label = context ? BREAKOUT_LABEL : kind.label;
   const { line, details } = noticeEvidence(item, (ms) => formatEtTime12(ms, true));
-  const sent = noticeStatus(item) === "sent";
-  // "merged into the Running alert 1 s earlier" when several paths fired at once (shared noticeLog).
-  const held = heldText(noticeHeldReason(item), noticeMergedInto(item));
+  const sent = rowStatus(item) === "sent";
+  // The server's words for the hold (notices.rows.v1), else derived: "merged into the Running alert
+  // 1 s earlier" when several paths fired at once (shared noticeLog).
+  const held = rowHeldText(item);
   const latency = latencyText(item);
   const text = item.body ? `${item.title ?? ""} · ${item.body.replace(/[\r\n]+/g, " · ")}` : (item.title ?? "");
   const row = (

@@ -44,6 +44,11 @@ export function onOpenTicker(listener: (symbol: string) => void): () => void {
   };
 }
 
+/** The Insights ticker page for one symbol-day, pushed over the tabs (`screenPush`). */
+export function openInsightsTicker(symbol: string, day: string): void {
+  whenNavigationReady(() => navigationRef.navigate("InsightsTicker", { symbol, day }));
+}
+
 export function navigateToAlerts(): void {
   whenNavigationReady(() => navigationRef.dispatch(alertsAction()));
 }
