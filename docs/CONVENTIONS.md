@@ -69,18 +69,22 @@ stockwatcher/
 
 No release branches, no feature PRs (since 2026-10-20, to keep GitHub
 Actions spend under its budget: work is committed straight to `main`, checked
-locally with the same commands as `ci.yml`, and pushed in batches) and no
-manual dispatch. A push to `main` runs one workflow,
-`.github/workflows/release.yml`:
+locally with the same commands as `ci.yml`, and pushed in batches). A push
+to `main` runs one workflow, `.github/workflows/release.yml` (it also runs on
+a schedule after 20:00 ET, and by hand only for the emergency override; see
+"Deploy window" below):
 
 0. `changes` diffs the push against the commit of the **last fully
-   successful** release (not the previous push: a run a billing block
-   stopped leaves its changes unshipped, and the next push picks them up)
-   and decides which parts ship: `server` (crates, the Docker image, the
-   web app it embeds, Rust manifests), `desktop` (the desktop app, the web
-   app, Rust manifests), `mobile` (the phone app and the packages it uses),
-   `web`. A change to a workflow, `package.json` or `bun.lock` ships
-   everything. A docs-only push ships nothing.
+   successful, not deferred** release (not the previous push: a run a
+   billing block stopped leaves its changes unshipped, and the next push
+   picks them up) and decides which parts ship: `server` (crates, the
+   Docker image, the web app it embeds, Rust manifests), `desktop` (the
+   desktop app, the web app, Rust manifests), `mobile` (the phone app and
+   the packages it uses), `web`. The server's diff starts from the commit
+   the live server reports at `/api/health` (what deploy.sh verified),
+   falling back to the last full release when it cannot be reached. A
+   change to a workflow, `scripts/release/`, `package.json` or `bun.lock`
+   ships everything. A docs-only push ships nothing.
 1. `checks`: the tests, lints and builds of the parts that ship (`ci.yml`
    with inputs; the Windows desktop job, billed at twice the Linux rate,
    runs only when desktop ships). Every later job `needs` it. A red check
@@ -120,6 +124,40 @@ manual dispatch. A push to `main` runs one workflow,
 
 Concurrency: group `release-main` with `cancel-in-progress: false`, so a
 newer push waits instead of interrupting a deploy halfway.
+
+### Deploy window: no server restart during the trading day (2026-10-31)
+
+**The live server is never deployed between 04:00 and 20:00
+America/New_York on an NYSE trading day.** A restart mid-session loses
+state a restore cannot rebuild exactly: on 2026-10-30 a 16:38 ET deploy
+restarted the server and two winning INO micro-pullback setups were never
+announced (the warm-up and notice-memory fixes since then make a restart
+safer, but a deploy is still a gap in the live feed).
+
+- `changes` asks `scripts/release/deploy-window.ts` whether now is inside
+  the window. It reads the holidays from the server's own table
+  (`crates/market-events/src/session.rs`, `HOLIDAYS`), so the two never
+  disagree; past the years that table covers, every weekday counts as a
+  trading day (as the server assumes). Early-close days are trading days.
+  Time zones come from Intl (the IANA database), so DST needs no rules of
+  our own: 04:00 ET is 08:00 UTC in summer, 09:00 UTC in winter.
+  `bun test scripts/release` covers both clock changes, holidays, weekends
+  and the boundaries (in `ci.yml`'s web job).
+- **A push inside the window still runs its checks**, but when the server
+  has something to ship, the run **holds**: the server deploy, the desktop
+  release and the phone OTA/APK are all skipped, so no client ships a
+  protocol the live server does not speak yet. A client-only push (the
+  live server already runs the server code) ships at once. A held run ends
+  green with a step named "Deploy deferred until after 20:00 ET"; that step
+  is the marker `changes` uses to never take a held run as the base.
+- **The scheduled run** (`cron: 7 0,1 * * *`: 20:07 and 21:07 EDT, or 19:07
+  and 20:07 EST) deploys whatever is pending once the window has closed. A
+  scheduled run still inside the window (19:07 EST) skips even the checks;
+  one with nothing pending stops after `changes`.
+- **Emergency override:** run the workflow by hand (Actions, Release, Run
+  workflow) with `force` ticked. It ships main now, window or not. Without
+  `force` a manual run behaves like a push.
+- Weekends, NYSE holidays and 20:00–04:00 ET deploy immediately, as before.
 
 ## Mobile (Expo) modules and config plugins
 

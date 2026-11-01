@@ -3,11 +3,30 @@
 # job ships nothing. Diffing against the last *successful* release, not the
 # previous push, matters: a run the billing block stopped (2026-10-20, #61)
 # leaves its changes unshipped, and the next push must pick them up.
+#
+# Deploy window (docs/CONVENTIONS.md, "Deploy window"): the server is never
+# restarted between 04:00 and 20:00 America/New_York on an NYSE trading day
+# (scripts/release/deploy-window.ts). A push inside it still runs its checks,
+# but the server deploy, and the desktop and phone releases that may depend on
+# its protocol, are deferred; the scheduled run after 20:00 ET ships them. A
+# manual run with force=true ignores the window (emergencies only).
 name: Release
 
 on:
   push:
     branches: [main]
+  # After 20:00 ET, deferred releases go out. 00:07 and 01:07 UTC are 20:07
+  # and 21:07 EDT, or 19:07 (still inside: deferred again) and 20:07 EST, so
+  # one of them is after the close in either half of the year. A run with
+  # nothing pending stops after `changes`.
+  schedule:
+    - cron: "7 0,1 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Deploy now even inside the 04:00-20:00 ET trading-day window (emergencies only)"
+        type: boolean
+        default: false
 
 # A newer push waits instead of interrupting a deploy halfway. (GitHub
 # keeps only the newest pending run per group, so a burst of pushes
@@ -32,43 +51,124 @@ jobs:
       server: ${{ steps.diff.outputs.server }}
       mobile: ${{ steps.diff.outputs.mobile }}
       desktop: ${{ steps.diff.outputs.desktop }}
+      # true: the server has something to ship but now is inside the deploy
+      # window; server, desktop and mobile wait for the after-hours run.
+      hold: ${{ steps.diff.outputs.hold }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - name: Diff against the last successful release
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - name: Inside the deploy window?
+        id: window
+        # The holidays come from the server's own NYSE table. A script error
+        # fails this job, so nothing ships rather than deploying blind.
+        env:
+          EVENT: ${{ github.event_name }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = workflow_dispatch ] && [ "$FORCE" = true ]; then
+            printf 'inside=false\nreason=forced by a manual run (force=true)\n' | tee -a "$GITHUB_OUTPUT"
+          else
+            bun scripts/release/deploy-window.ts | tee -a "$GITHUB_OUTPUT"
+          fi
+      - name: Diff against the last full release and the live server
         id: diff
         env:
           GH_TOKEN: ${{ github.token }}
+          INSIDE: ${{ steps.window.outputs.inside }}
+          WHY: ${{ steps.window.outputs.reason }}
+          # Must match the name of the marker step below.
+          DEFERRED_STEP: Deploy deferred until after 20:00 ET
+          HEALTH_URL: https://stockwatcher.wavystyle.io/api/health
         run: |
           set -euo pipefail
-          base="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/release.yml/runs?branch=main&status=success&per_page=1" \
-            -q '.workflow_runs[0].head_sha // empty' || true)"
-          # No successful release yet, or its commit is gone (force push): ship everything.
-          if [ -z "$base" ] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
-            echo "No usable last release (${base:-none}): shipping everything."
-            for k in web server mobile desktop; do echo "$k=true" >> "$GITHUB_OUTPUT"; done
-            exit 0
-          fi
-          files="$(git diff --name-only "$base" "$GITHUB_SHA")"
-          echo "Changed since ${base::7}:"; echo "$files" | sed 's/^/  /'
-          # A workflow or root manifest change can alter how any part is built: ship everything.
-          all='^\.github/workflows/|^package\.json$|^bun\.lock$'
+          # The newest successful release that was not deferred: a deferred run
+          # ends green with nothing shipped, so it must never become the base.
+          # Its marker is the step named $DEFERRED_STEP below. A run whose jobs
+          # cannot be read counts as deferred (an older base ships more, never less).
+          base=""
+          runs="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/release.yml/runs?branch=main&status=success&per_page=30" \
+            -q '.workflow_runs[] | "\(.id) \(.head_sha)"' || true)"
+          while read -r id sha; do
+            [ -n "${id:-}" ] || continue
+            marked="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${id}/jobs?per_page=100" \
+              -q "[.jobs[].steps[]? | select(.name == \"${DEFERRED_STEP}\" and .conclusion == \"success\")] | length" || echo 1)"
+            if [ "$marked" = 0 ]; then base="$sha"; break; fi
+          done <<< "$runs"
+          # A workflow, release script or root manifest change can alter how any
+          # part is built or shipped: ship everything.
+          all='^\.github/workflows/|^scripts/release/|^package\.json$|^bun\.lock$'
           # What each part is built from. The server image embeds the web app
           # (infra/docker/Dockerfile); the desktop app embeds it too and has no
           # path dependency on crates/*, only the shared Cargo.lock.
           web='^apps/web/|^packages/(shared|app-state|chart-core|chart-web)/'
           rust='^Cargo\.(toml|lock)$|^rust-toolchain\.toml$'
-          match() { if echo "$files" | grep -qE "$1|$all"; then echo true; else echo false; fi; }
+          server_paths="^crates/|^infra/docker/|$web|$rust"
+          usable() { [ -n "$1" ] && git cat-file -e "${1}^{commit}" 2>/dev/null; }
+          match() { if echo "$2" | grep -qE "$1|$all"; then echo true; else echo false; fi; }
+          if usable "$base"; then
+            files="$(git diff --name-only "$base" "$GITHUB_SHA")"
+            echo "Changed since ${base::7}:"; echo "$files" | sed 's/^/  /'
+            web_ship="$(match "$web" "$files")"
+            mobile_ship="$(match '^apps/mobile/|^packages/(shared|app-state|chart-core|chart-native)/' "$files")"
+            desktop_ship="$(match "^apps/desktop/|$web|$rust" "$files")"
+          else
+            # No successful release yet, or its commit is gone (force push): ship everything.
+            echo "No usable last release (${base:-none}): shipping everything."
+            web_ship=true mobile_ship=true desktop_ship=true
+          fi
+          # The server ships when the commit it is RUNNING (deploy.sh only
+          # reports success once /api/health says so) lags this one on server
+          # paths. Asking it directly also covers a release whose server job
+          # deployed but whose desktop job failed. Unreachable, or a commit
+          # this history lacks: fall back to the last full release.
+          live="$(curl -fsS --max-time 10 "$HEALTH_URL" | jq -r '.commit // empty' 2>/dev/null || true)"
+          if usable "$live"; then
+            echo "The live server runs ${live::7}."
+            server_ship="$(match "$server_paths" "$(git diff --name-only "$live" "$GITHUB_SHA")")"
+          elif usable "$base"; then
+            echo "The live server's commit is unknown (${live:-no answer}); diffing the server against ${base::7}."
+            server_ship="$(match "$server_paths" "$files")"
+          else
+            server_ship=true
+          fi
+          # Hold: the server has something to ship inside the window. The
+          # desktop app and the phone OTA wait with it, so no client ships a
+          # protocol the live server does not speak yet. A client-only change
+          # (server up to date) ships at once.
+          hold=false
+          if [ "$INSIDE" = true ] && [ "$server_ship" = true ]; then hold=true; fi
           {
-            echo "web=$(match "$web")"
-            echo "server=$(match "^crates/|^infra/docker/|$web|$rust")"
-            echo "mobile=$(match '^apps/mobile/|^packages/(shared|app-state|chart-core|chart-native)/')"
-            echo "desktop=$(match "^apps/desktop/|$web|$rust")"
+            echo "web=$web_ship"
+            echo "server=$server_ship"
+            echo "mobile=$mobile_ship"
+            echo "desktop=$desktop_ship"
+            echo "hold=$hold"
           } | tee -a "$GITHUB_OUTPUT" | sed 's/^/ship /' >> "$GITHUB_STEP_SUMMARY"
+          echo "Deploy window: ${WHY}" >> "$GITHUB_STEP_SUMMARY"
+      - name: Deploy deferred until after 20:00 ET
+        # Runs only on a hold. Its success is the marker the diff above looks
+        # for, so this run never becomes the base of the next one: keep the
+        # name and DEFERRED_STEP identical.
+        if: ${{ steps.diff.outputs.hold == 'true' }}
+        env:
+          WHY: ${{ steps.window.outputs.reason }}
+        run: |
+          {
+            echo
+            echo "**Deferred:** ${WHY}. The checks still run; the server deploy and the desktop and phone"
+            echo "releases go out with the scheduled run after 20:00 ET (or a manual run with force=true)."
+          } >> "$GITHUB_STEP_SUMMARY"
 
   checks:
     needs: changes
+    # A push inside the window still runs its checks; a scheduled run that is
+    # still inside it (19:07 EST) has nothing new to check and stops here.
+    if: ${{ !(needs.changes.outputs.hold == 'true' && github.event_name == 'schedule') }}
     uses: ./.github/workflows/ci.yml
     with:
       web: ${{ needs.changes.outputs.web == 'true' || needs.changes.outputs.server == 'true' || needs.changes.outputs.desktop == 'true' }}
@@ -79,7 +179,7 @@ jobs:
   server:
     name: Server image and VPS deploy
     needs: [changes, checks]
-    if: ${{ needs.changes.outputs.server == 'true' }}
+    if: ${{ needs.changes.outputs.server == 'true' && needs.changes.outputs.hold != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment:
@@ -167,7 +267,7 @@ jobs:
   desktop:
     name: Desktop installers and update publish
     needs: [changes, checks]
-    if: ${{ needs.changes.outputs.desktop == 'true' }}
+    if: ${{ needs.changes.outputs.desktop == 'true' && needs.changes.outputs.hold != 'true' }}
     runs-on: windows-latest
     timeout-minutes: 45
     environment:
@@ -276,7 +376,7 @@ jobs:
     # would produce an identical APK (docs/CONVENTIONS.md, "Release
     # pipeline").
     needs: [changes, checks]
-    if: ${{ needs.changes.outputs.mobile == 'true' }}
+    if: ${{ needs.changes.outputs.mobile == 'true' && needs.changes.outputs.hold != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     outputs:

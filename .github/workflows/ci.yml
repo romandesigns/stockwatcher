@@ -58,6 +58,10 @@ jobs:
           bun run --filter @stockwatcher/web lint
           bun run --filter @stockwatcher/web test
           bun run --filter @stockwatcher/web build
+      # The release pipeline's own scripts (the deploy window, release.yml), with the server's
+      # NYSE holiday table they read. Any change to them ships everything, so this job runs.
+      - name: Release scripts
+        run: bun test scripts/release
 
   server:
     name: Server (fmt, clippy, test)

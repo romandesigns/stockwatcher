@@ -68,7 +68,9 @@ Work is committed straight to `main` (no feature PRs since 2026-10-20) and pushe
 runs `.github/workflows/release.yml`, which ships only the parts changed since the last successful
 release: their checks, then in parallel the server image (deployed to the VPS with health check and
 rollback), the signed Windows desktop installers (installed apps update themselves), and an Expo OTA
-update for Android (a new APK only when native code changed). Details: `docs/CONVENTIONS.md` "Release pipeline"; one-time host
+update for Android (a new APK only when native code changed). The server is never deployed 04:00–20:00 ET
+on a trading day: a push then runs its checks and the deploy goes out with the scheduled run after 20:00 ET
+(`docs/CONVENTIONS.md` "Deploy window"). Details: `docs/CONVENTIONS.md` "Release pipeline"; one-time host
 setup and operations (including switching replay/live): [`infra/vps/SETUP.md`](infra/vps/SETUP.md).
 
 ## Docs
