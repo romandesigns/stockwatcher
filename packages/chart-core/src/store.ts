@@ -61,6 +61,36 @@ export interface Series {
 export interface StoreOptions {
   /** Ring-buffer bound per series; the oldest candles and gaps drop first. */
   maxCandles?: number;
+  /**
+   * Coalesces change notifications: the first change after a notification calls
+   * `schedule(flush)`, and every listener hears once when `flush` runs, however many frames were
+   * applied meanwhile. Returns a cancel function. Absent = listeners hear every change at once
+   * (tests, and anything that reads the store synchronously after applying).
+   *
+   * Why: a candle and its indicator values (and its levels and zones) are separate socket
+   * messages, each its own browser task, so with one notification per apply React rendered the
+   * chart once per message, and between the `chart.update` and its `chart.indicator` it drew the
+   * new candle under the previous values. The hosts pass `frameScheduler`.
+   */
+  schedule?: (flush: () => void) => () => void;
+}
+
+/**
+ * One flush per display frame (requestAnimationFrame), for `StoreOptions.schedule` on the web and
+ * the phone. A hidden page gets no animation frames at all, so there it falls back to a timer
+ * (which the browser throttles to about once a second): the store still settles, and whatever
+ * reads it (the clock's trading day, for one) still moves, at no drawing cost.
+ */
+export function frameScheduler(flush: () => void): () => void {
+  // chart-core has no DOM types (it runs on the phone too): read the host's globals untyped.
+  const g = globalThis as { requestAnimationFrame?: (cb: () => void) => number; cancelAnimationFrame?: (id: number) => void; document?: { visibilityState?: string } };
+  const raf = g.requestAnimationFrame;
+  if (raf && g.document?.visibilityState !== "hidden") {
+    const id = raf(() => flush());
+    return () => g.cancelAnimationFrame?.(id);
+  }
+  const id = setTimeout(flush, 16);
+  return () => clearTimeout(id);
 }
 
 const DEFAULT_MAX = 5000;
@@ -356,6 +386,8 @@ export class ChartStore {
   private listeners = new Set<Listener>();
   private clock: Clock | null = null;
   private readonly opts: StoreOptions;
+  /** The scheduled flush's cancel, while one is pending (`StoreOptions.schedule`). */
+  private pending: (() => void) | null = null;
   constructor(opts: StoreOptions = {}) {
     this.opts = opts;
   }
@@ -485,7 +517,35 @@ export class ChartStore {
     return () => this.listeners.delete(fn);
   }
 
+  /** Notifies now whatever a scheduled flush would have (a host tearing down, or a test). */
+  flush(): void {
+    if (!this.pending) return;
+    this.pending();
+    this.pending = null;
+    this.notify();
+  }
+
+  /** Cancels a scheduled flush (the host is going away; nobody is left to draw it). */
+  dispose(): void {
+    this.pending?.();
+    this.pending = null;
+  }
+
   private emit(): void {
+    const schedule = this.opts.schedule;
+    if (!schedule) return this.notify();
+    if (this.pending) return;
+    // A scheduler may run the flush before returning (a test's): then nothing is pending.
+    let ran = false;
+    const cancel = schedule(() => {
+      ran = true;
+      this.pending = null;
+      this.notify();
+    });
+    if (!ran) this.pending = cancel;
+  }
+
+  private notify(): void {
     for (const fn of this.listeners) fn();
   }
 }

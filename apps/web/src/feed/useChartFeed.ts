@@ -1,4 +1,4 @@
-import { ChartStore, sameIndicatorDemand, type ChartLevels, type ChartMessage, type ChartZones, type Clock, type IndicatorDemand, type IndicatorValues, type Series, type TapeTrade, type Timeframe } from "@stockwatcher/chart-core";
+import { ChartStore, frameScheduler, sameIndicatorDemand, type ChartLevels, type ChartMessage, type ChartZones, type Clock, type IndicatorDemand, type IndicatorValues, type Series, type TapeTrade, type Timeframe } from "@stockwatcher/chart-core";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { ChartFeed } from "./types.ts";
 
@@ -32,7 +32,11 @@ export const INDICATOR_PARITY = typeof location !== "undefined" && new URLSearch
  * while asked and not answered yet; undefined when the chart must read them off its own candles.
  */
 export function useChartFeed(feed: ChartFeed, symbol: string, timeframe: Timeframe, profileBin: number, slot?: string, demand?: IndicatorDemand) {
-  const store = useMemo(() => new ChartStore({ maxCandles: 5000 }), []);
+  // One notification per display frame (chart-core `frameScheduler`): a candle frame and the
+  // indicator, levels and zones frames that follow it render together, once, instead of once per
+  // socket message with the candle drawn over the previous values in between.
+  const store = useMemo(() => new ChartStore({ maxCandles: 5000, schedule: frameScheduler }), []);
+  useEffect(() => () => store.dispose(), [store]);
   const [tape, setTape] = useState<TapeTrade[]>([]);
   // Read by the subscribe effect without re-subscribing on every toggle; `sent` is what the
   // server last heard for this slot, so the demand effect only sends a real change.

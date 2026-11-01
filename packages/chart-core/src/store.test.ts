@@ -157,3 +157,77 @@ describe("ChartStore", () => {
     expect(calls).toBe(1);
   });
 });
+
+describe("ChartStore notifications", () => {
+  // A hand-driven scheduler: `tick()` is the next display frame.
+  function frames() {
+    let queued: (() => void) | null = null;
+    let scheduled = 0;
+    return {
+      schedule: (flush: () => void) => {
+        scheduled++;
+        queued = flush;
+        return () => {
+          queued = null;
+        };
+      },
+      tick: () => {
+        const f = queued;
+        queued = null;
+        f?.();
+      },
+      get scheduled() {
+        return scheduled;
+      },
+    };
+  }
+
+  test("a candle, its indicator values and its levels in one frame notify once, with all three applied", () => {
+    const f = frames();
+    const store = new ChartStore({ schedule: f.schedule });
+    let seen: { candles: number; indicators: boolean; levels: boolean }[] = [];
+    store.subscribe(() => seen.push({ candles: store.getSeries("SMPL", "1m")?.candles.length ?? 0, indicators: !!store.getIndicators("SMPL", "1m", false), levels: !!store.getLevels("SMPL", "1m") }));
+    store.applySnapshot(fixtureSnapshot("1m", 3, []));
+    store.applyIndicators({ type: "chart.indicators", symbol: "SMPL", timeframe: "1m", rth: false, t: [], studies: [] });
+    store.applyLevels({ type: "chart.levels", symbol: "SMPL", timeframe: "1m", day: null, pmHigh: null, pmLow: null, hod: null, lod: null, open: null, prevClose: null, openingRanges: [] });
+    expect(seen).toEqual([]);
+    f.tick();
+    expect(seen).toEqual([{ candles: 3, indicators: true, levels: true }]);
+    expect(f.scheduled).toBe(1);
+    // The next change schedules again; a quiet frame notifies nobody.
+    seen = [];
+    f.tick();
+    store.applyIncrement(update(candle(T0 + 3 * 60_000, 3.3, false)));
+    f.tick();
+    expect(seen).toEqual([{ candles: 4, indicators: true, levels: true }]);
+  });
+
+  test("flush notifies at once, dispose cancels, and no scheduler means every change notifies", () => {
+    const f = frames();
+    const store = new ChartStore({ schedule: f.schedule });
+    let n = 0;
+    store.subscribe(() => n++);
+    store.applySnapshot(fixtureSnapshot("1m", 3, []));
+    store.flush();
+    expect(n).toBe(1);
+    f.tick();
+    expect(n).toBe(1);
+    store.applyClock({ mode: "replay", now: T0, speed: 1, playing: true });
+    store.dispose();
+    f.tick();
+    expect(n).toBe(1);
+    // A scheduler that runs the flush inline leaves nothing pending.
+    const inline = new ChartStore({ schedule: (flush) => (flush(), () => {}) });
+    let m = 0;
+    inline.subscribe(() => m++);
+    inline.applySnapshot(fixtureSnapshot("1m", 3, []));
+    inline.applySnapshot(fixtureSnapshot("1m", 3, []));
+    expect(m).toBe(2);
+    const plain = new ChartStore();
+    let k = 0;
+    plain.subscribe(() => k++);
+    plain.applySnapshot(fixtureSnapshot("1m", 3, []));
+    plain.applyClock({ mode: "replay", now: T0, speed: 1, playing: true });
+    expect(k).toBe(2);
+  });
+});

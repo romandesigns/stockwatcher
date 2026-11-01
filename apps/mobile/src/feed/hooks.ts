@@ -1,4 +1,4 @@
-import { ChartStore, parseReplayAlerts, parseReplayDayState, sameIndicatorDemand, type ChartLevels, type ChartMessage, type ChartZones, type Clock, type IndicatorDemand, type IndicatorValues, type PaperState, type ReplayAlert, type ReplayDayState, type Series, type TapeTrade, type Timeframe } from "@stockwatcher/chart-core";
+import { ChartStore, frameScheduler, parseReplayAlerts, parseReplayDayState, sameIndicatorDemand, type ChartLevels, type ChartMessage, type ChartZones, type Clock, type IndicatorDemand, type IndicatorValues, type PaperState, type ReplayAlert, type ReplayDayState, type Series, type TapeTrade, type Timeframe } from "@stockwatcher/chart-core";
 import type { ChartTrading } from "@stockwatcher/chart-native";
 import { authenticatedFetch, EMPTY_QUOTE_BOARD, EMPTY_SEARCH_STATE, EMPTY_SYMBOLS, parseLiveSession, withMarketSource, type DetectionChannel, type DetectionState, type FavoritesChannel, type FavoritesState, type LiveSession, type MarketSource, type MoversChannel, type MoversState, type PressureBoard, type PressureChannel, type PressureStatus, type QuoteBoard, type QuoteChannel, type QuoteSearchChannel, type QuoteSearchHandle, type QuoteSearchMeta, type QuoteSearchQuery, type QuoteSearchState, type RocketChannel, type RocketState, type RossChannel, type RossState, type SymbolsChannel, type SymbolsState, zoneSelector, type ZoneView } from "@stockwatcher/shared";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
@@ -32,7 +32,11 @@ export const INDICATOR_BAR_LIMIT = 1500;
  * computes its own. `levels` and `zones` likewise (`levels.v1`, `zones.v1`; the web's hook says how).
  */
 export function useChartFeed(feed: MobileFeed, symbol: string, timeframe: Timeframe, profileBin = 0.01, slot?: string, wanted?: IndicatorDemand) {
-  const store = useMemo(() => new ChartStore({ maxCandles: 3000 }), []);
+  // One notification per display frame (chart-core `frameScheduler`): a candle frame and the
+  // indicator, levels and zones frames that follow it render together, once, instead of once per
+  // socket message with the candle drawn over the previous values in between.
+  const store = useMemo(() => new ChartStore({ maxCandles: 3000, schedule: frameScheduler }), []);
+  useEffect(() => () => store.dispose(), [store]);
   // The chart (symbol|timeframe) zoomed out past the limited values: it asks for every bar from
   // then on, whatever its extended-hours setting, until it shows another chart.
   const chartKey = `${symbol}|${timeframe}`;
