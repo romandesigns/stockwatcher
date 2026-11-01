@@ -171,7 +171,7 @@ struct Cand<'a> {
 }
 
 /// Change % by the search's rule (module docs), rounded to 3 decimals.
-fn change_pct(r: &ScanRow<'_>) -> f64 {
+pub(crate) fn change_pct(r: &ScanRow<'_>) -> f64 {
     let base = r
         .prev_close
         .filter(|p| p.micros() > 0)

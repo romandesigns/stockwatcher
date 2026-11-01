@@ -129,6 +129,19 @@
 //! - After a seek (rebuild) and for a lagged connection, a subscribed client gets a fresh
 //!   `quotes.snapshot` (it replaces the client's board); no updates go out during a rebuild.
 //!
+//! Ticker search ranked on the server (`quotes.search.v1` in `welcome.features`;
+//! crate::quote_search, whose header has the shapes):
+//! - client `quotes.search {id?, filters?, sort?, limit?, pins?}` -> server
+//!   `quotes.search.snapshot {id, t, total, rank, rows}`, then `quotes.search.update {id, t, rows,
+//!   total?, rank?, gone?}` at most once per second of wall time when the result changed. Rows
+//!   carry the server's `chg` (change %). A new `quotes.search` with a held id replaces it;
+//!   `quotes.search.stop {id?}` ends it; at most crate::quote_search::MAX_SEARCHES per connection
+//!   (`error too_many_searches`), an unknown chip or sort is `error bad_request` with the `id`.
+//!   A seek or a lag resends each search's snapshot.
+//! - client `quotes.directory` -> server `quotes.directory {rows: [[symbol, name?, exchange?]]}`:
+//!   the candidates' names, for the client's fuzzy matching (which stays on the client).
+//! - A client that uses these no longer sends `quotes.subscribe`; older clients still do.
+//!
 //! Halt watcher (the dashboard's build-up board; crates/server/src/pressure.rs, after `welcome`):
 //! - client `pressure.subscribe` (no payload) -> server `pressure.snapshot {t, board: [card]}` at
 //!   once with the last ranked board (empty for up to a second after start or a rebuild), then
@@ -357,6 +370,17 @@ enum ClientMessage {
     QuotesSubscribe,
     #[serde(rename = "quotes.unsubscribe")]
     QuotesUnsubscribe,
+    /// A ranked ticker search (`quotes.search.v1`, crate::quote_search).
+    #[serde(rename = "quotes.search")]
+    QuotesSearch(crate::quote_search::Request),
+    #[serde(rename = "quotes.search.stop")]
+    QuotesSearchStop {
+        #[serde(default)]
+        id: Option<String>,
+    },
+    /// The candidates' names for the client's fuzzy matching (crate::quote_search).
+    #[serde(rename = "quotes.directory")]
+    QuotesDirectory,
     #[serde(rename = "pressure.subscribe")]
     PressureSubscribe,
     #[serde(rename = "pressure.unsubscribe")]
@@ -545,6 +569,52 @@ async fn send_quotes_snapshot(socket: &mut WebSocket, market: &Market, q: &mut Q
     let (seq, json) = market.quotes_snapshot();
     q.seq = seq;
     send_text(socket, json).await
+}
+
+/// One of the connection's ticker searches (`quotes.search.v1`): the query and what the client
+/// was last sent, which the next tick's result is diffed against.
+struct SearchSub {
+    query: crate::quote_search::Query,
+    last: crate::quote_search::Results,
+}
+
+/// Sends a fresh `quotes.search.snapshot` of `s` and makes it the diff base. During a rebuild
+/// nothing is sent (the `Resync` at its end comes back here).
+async fn send_search_snapshot(socket: &mut WebSocket, market: &Market, s: &mut SearchSub) -> bool {
+    let Some((t, results)) = market.quote_search(&s.query) else {
+        return true;
+    };
+    let frame = crate::quote_search::snapshot_frame(&s.query.id, t, &results, &market.assets());
+    s.last = results;
+    send_text(socket, frame).await
+}
+
+/// One tick of every search on the connection: an update for each whose result changed.
+async fn tick_searches(socket: &mut WebSocket, market: &Market, subs: &mut [SearchSub]) -> bool {
+    for s in subs.iter_mut() {
+        let Some((t, next)) = market.quote_search(&s.query) else {
+            return true;
+        };
+        let frame =
+            crate::quote_search::update_frame(&s.query.id, t, &s.last, &next, &market.assets());
+        s.last = next;
+        if let Some(f) = frame
+            && !send_text(socket, f).await
+        {
+            return false;
+        }
+    }
+    true
+}
+
+/// A fresh snapshot of every search (a seek, a day switch, a lag).
+async fn resend_searches(socket: &mut WebSocket, market: &Market, subs: &mut [SearchSub]) -> bool {
+    for s in subs.iter_mut() {
+        if !send_search_snapshot(socket, market, s).await {
+            return false;
+        }
+    }
+    true
 }
 
 /// The connection's Halt watcher opt-in (the quotes opt-in's twin).
@@ -838,6 +908,15 @@ fn chart_error(code: &str, message: &str, symbol: &str, id: &str) -> String {
     v.to_string()
 }
 
+/// A search's refusal, naming the search `id` (absent for the default search).
+fn search_error(code: &str, message: &str, id: &str) -> String {
+    let mut v = serde_json::json!({ "type": "error", "code": code, "message": message });
+    if !id.is_empty() {
+        v["id"] = id.into();
+    }
+    v.to_string()
+}
+
 /// Sends a snapshot and the recent tape for `sub`, and records its sequence. With `studies`
 /// (the union for the slot's chart key, `chart_studies`), their `chart.indicators` goes right
 /// after the candles at the same seq; the caller then marks the chart key's other slots
@@ -1075,6 +1154,7 @@ async fn session(mut socket: WebSocket, state: AppState) {
             crate::notices::FEATURE,
             crate::notices::FEATURE_ROWS,
             crate::insights::FEATURE,
+            crate::quote_search::FEATURE,
         ],
     };
     // Subscribed before the paper snapshot below, so no change can fall between the two (at
@@ -1106,6 +1186,11 @@ async fn session(mut socket: WebSocket, state: AppState) {
     }
     let mut subs: Vec<Sub> = Vec::new();
     let mut quotes: Option<QuotesSub> = None;
+    // Ticker searches (`quotes.search.v1`), each pushed on the connection's own 1 Hz tick, which
+    // only runs while one is open.
+    let mut searches: Vec<SearchSub> = Vec::new();
+    let mut search_tick = tokio::time::interval(crate::market::QUOTES_INTERVAL);
+    search_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut pressure: Option<PressureSub> = None;
     let mut ross: Option<RossSub> = None;
     let mut favorites: Option<FavoritesSub> = None;
@@ -1131,6 +1216,11 @@ async fn session(mut socket: WebSocket, state: AppState) {
         tokio::select! {
             Some(frame) = direct_rx.recv() => {
                 if !send_text(&mut socket, frame).await {
+                    break;
+                }
+            }
+            _ = search_tick.tick(), if !searches.is_empty() => {
+                if !tick_searches(&mut socket, &market, &mut searches).await {
                     break;
                 }
             }
@@ -1211,7 +1301,8 @@ async fn session(mut socket: WebSocket, state: AppState) {
                             }) && (match detection.as_mut() {
                                 Some(q) => send_detection_snapshot(&mut socket, &market, q).await,
                                 None => true,
-                            }) && send_snapshots(&mut socket, &market, &mut subs).await
+                            }) && resend_searches(&mut socket, &market, &mut searches).await
+                                && send_snapshots(&mut socket, &market, &mut subs).await
                         }
                         // Live: a symbol's archived history just went into the engine; a slot
                         // showing it had an empty chart (crate::history).
@@ -1313,6 +1404,7 @@ async fn session(mut socket: WebSocket, state: AppState) {
                                 Some(q) => send_detection_snapshot(&mut socket, &market, q).await,
                                 None => true,
                             }
+                            && resend_searches(&mut socket, &market, &mut searches).await
                             && send_snapshots(&mut socket, &market, &mut subs).await
                     }
                     Err(RecvError::Closed) => true,
@@ -1634,6 +1726,58 @@ async fn session(mut socket: WebSocket, state: AppState) {
                     }
                     Ok(ClientMessage::QuotesUnsubscribe) => {
                         quotes = None;
+                        None
+                    }
+                    Ok(ClientMessage::QuotesSearch(req)) => {
+                        let id = req.id.clone().unwrap_or_default();
+                        match crate::quote_search::Query::parse(req) {
+                            Err(message) => {
+                                if !send_text(&mut socket, search_error("bad_request", &message, &id)).await {
+                                    break;
+                                }
+                                None
+                            }
+                            Ok(query) => match searches.iter().position(|s| s.query.id == query.id) {
+                                // A new query for a held id replaces it with a fresh snapshot (the
+                                // client re-ranks on a query, filter or limit change).
+                                Some(i) => {
+                                    searches[i].query = query;
+                                    if !send_search_snapshot(&mut socket, &market, &mut searches[i]).await {
+                                        break;
+                                    }
+                                    None
+                                }
+                                None if searches.len() >= crate::quote_search::MAX_SEARCHES => {
+                                    let frame = search_error(
+                                        "too_many_searches",
+                                        "this connection already holds the most searches it may",
+                                        &id,
+                                    );
+                                    if !send_text(&mut socket, frame).await {
+                                        break;
+                                    }
+                                    None
+                                }
+                                None => {
+                                    searches.push(SearchSub { query, last: Default::default() });
+                                    let n = searches.len() - 1;
+                                    if !send_search_snapshot(&mut socket, &market, &mut searches[n]).await {
+                                        break;
+                                    }
+                                    None
+                                }
+                            },
+                        }
+                    }
+                    Ok(ClientMessage::QuotesSearchStop { id }) => {
+                        let id = id.unwrap_or_default();
+                        searches.retain(|s| s.query.id != id);
+                        None
+                    }
+                    Ok(ClientMessage::QuotesDirectory) => {
+                        if !send_text(&mut socket, market.quote_directory()).await {
+                            break;
+                        }
                         None
                     }
                     Ok(ClientMessage::PressureSubscribe) => {

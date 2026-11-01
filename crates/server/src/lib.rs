@@ -22,6 +22,7 @@ pub mod observe;
 pub mod oplog;
 pub mod pressure;
 pub mod profile_frames;
+pub mod quote_search;
 pub mod quotes;
 pub mod replay_alerts;
 pub mod rocket;

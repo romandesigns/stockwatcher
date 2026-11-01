@@ -1314,6 +1314,136 @@ async fn quotes_subscribe_gets_a_snapshot_then_changed_rows_about_once_a_second(
     assert!(!seen.iter().any(|t| t.starts_with("quotes.")), "{seen:?}");
 }
 
+/// `quotes.search.v1`: the server ranks the board for a search and pushes the top N (agreeing
+/// with the whole board's rows), pins get rows whatever their rank, updates come at most once a
+/// second, a seek resends the snapshot, bad chips are refused and the directory names the
+/// candidates.
+#[tokio::test]
+async fn quotes_search_ranks_the_board_on_the_server_and_pushes_the_top_n() {
+    let s = stack_with_assets(
+        &[("SIM_FIXTURE_SYMBOLS", "SMPL,FXLO,FXHI")],
+        Some(json!({"SMPL": {"name": "Sample Inc", "exchange": "NASDAQ"}})),
+    )
+    .await;
+    let (mut ws, _) = tokio_tungstenite::connect_async(&s.url).await.unwrap();
+    send(&mut ws, json!({"type": "hello"})).await;
+    let welcome = next(&mut ws, is("welcome")).await;
+    assert!(
+        welcome["features"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("quotes.search.v1")),
+        "{welcome}"
+    );
+    wait_for_replay(&mut ws).await;
+    // Paused, so the whole board and the search see the same prints.
+    send(
+        &mut ws,
+        json!({"type": "replay.control", "action": "pause"}),
+    )
+    .await;
+    next(&mut ws, |m| {
+        m["type"] == "replay.clock" && m["clock"]["playing"] == false
+    })
+    .await;
+
+    // The whole board, for comparison: the search must rank exactly these rows.
+    send(&mut ws, json!({"type": "quotes.subscribe"})).await;
+    let board = next(&mut ws, is("quotes.snapshot")).await;
+    send(&mut ws, json!({"type": "quotes.unsubscribe"})).await;
+    let mut by_volume: Vec<(u64, String)> = board["quotes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|q| {
+            (
+                q["v"].as_u64().unwrap(),
+                q["s"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    by_volume.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+
+    send(
+        &mut ws,
+        json!({"type": "quotes.search", "id": "a", "limit": 1, "pins": ["FXLO", "SMPL"]}),
+    )
+    .await;
+    let snap = next(&mut ws, is("quotes.search.snapshot")).await;
+    assert_eq!(snap["id"], "a");
+    assert_eq!(snap["total"], 2, "FXHI is above $25: not a candidate");
+    assert_eq!(snap["rank"], json!([by_volume[0].1]), "{snap}");
+    let rows = snap["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 2, "the top 1 plus the other pin: {snap}");
+    let smpl = rows.iter().find(|r| r["s"] == "SMPL").unwrap();
+    assert_eq!(smpl["name"], "Sample Inc");
+    assert_eq!(smpl["x"], "NASDAQ");
+    assert!(smpl["p"].as_f64().unwrap() > 0.0 && smpl["chg"].is_number());
+    let board_smpl = quote(&board, "SMPL").unwrap();
+    assert_eq!(smpl["v"], board_smpl["v"], "the same row the board has");
+
+    // Playing again: updates carry only what changed, spaced by wall time.
+    send(&mut ws, json!({"type": "replay.control", "action": "play"})).await;
+    let first = next(&mut ws, is("quotes.search.update")).await;
+    let t0 = std::time::Instant::now();
+    let _second = next(&mut ws, is("quotes.search.update")).await;
+    assert!(
+        t0.elapsed() >= Duration::from_millis(800),
+        "{:?}",
+        t0.elapsed()
+    );
+    for r in first["rows"].as_array().unwrap() {
+        assert!(r.get("name").is_none(), "names only for new rows: {first}");
+    }
+
+    // A filter the server knows narrows; one it does not is refused with the search's id.
+    send(
+        &mut ws,
+        json!({"type": "quotes.search", "id": "a", "filters": ["nasdaq"]}),
+    )
+    .await;
+    let snap = next(&mut ws, is("quotes.search.snapshot")).await;
+    assert_eq!(snap["rank"], json!(["SMPL"]), "{snap}");
+    send(
+        &mut ws,
+        json!({"type": "quotes.search", "id": "b", "filters": ["bogus"]}),
+    )
+    .await;
+    let err = next(&mut ws, is("error")).await;
+    assert_eq!(
+        (err["code"].as_str(), err["id"].as_str()),
+        (Some("bad_request"), Some("b"))
+    );
+
+    // A seek resends the snapshot.
+    send(
+        &mut ws,
+        json!({"type": "replay.control", "action": "seek", "value": T1040 + 60_000}),
+    )
+    .await;
+    next(&mut ws, is("quotes.search.snapshot")).await;
+
+    // The directory names every candidate it knows.
+    send(&mut ws, json!({"type": "quotes.directory"})).await;
+    let dir = next(&mut ws, is("quotes.directory")).await;
+    let rows = dir["rows"].as_array().unwrap();
+    assert!(
+        rows.contains(&json!(["SMPL", "Sample Inc", "NASDAQ"])),
+        "{dir}"
+    );
+    assert!(rows.contains(&json!(["FXLO"])), "{dir}");
+
+    // Stopped: no more search frames once the server has processed it.
+    send(&mut ws, json!({"type": "quotes.search.stop", "id": "a"})).await;
+    send(&mut ws, json!({"type": "ping", "ts": 7})).await;
+    next(&mut ws, |m| m["type"] == "pong" && m["ts"] == 7).await;
+    let seen = types_for(&mut ws, Duration::from_millis(2500)).await;
+    assert!(
+        !seen.iter().any(|t| t.starts_with("quotes.search")),
+        "{seen:?}"
+    );
+}
+
 #[tokio::test]
 async fn quotes_volume_and_last_match_the_candles_through_seeks_corrections_and_cancels() {
     let s = stack(&[("REPLAY_AUTOPLAY", "0")]).await;

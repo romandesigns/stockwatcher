@@ -3800,6 +3800,36 @@ impl Market {
         json!({"rows": b.last.rows.len(), "lines": b.lines.len()})
     }
 
+    /// One ticker search over the quote board (`quotes.search.v1`, crate::quote_search), with
+    /// the market clock (epoch ms) it was taken at. `None` during a rebuild: the board is being
+    /// refilled and a result cut from it would flicker; the `Resync` at its end resends every
+    /// search's snapshot.
+    pub fn quote_search(
+        &self,
+        q: &crate::quote_search::Query,
+    ) -> Option<(Option<i64>, crate::quote_search::Results)> {
+        let t = self.clock().map(|c| c.now.millis());
+        let assets = self.assets();
+        let core = self.0.core.lock().expect("core lock");
+        if core.rebuilding {
+            return None;
+        }
+        Some((
+            t,
+            crate::quote_search::search(&core.quotes, self.0.band, &assets, q),
+        ))
+    }
+
+    /// `assets.json` as loaded (a cheap `Arc` clone): names and exchanges for search frames.
+    pub fn assets(&self) -> Arc<HashMap<String, AssetMeta>> {
+        self.0.assets.lock().expect("assets lock").clone()
+    }
+
+    /// The `quotes.directory` frame: every candidate with its name and exchange.
+    pub fn quote_directory(&self) -> String {
+        crate::quote_search::directory_frame(&self.symbols(), &self.assets())
+    }
+
     /// The last ranking as a `movers.snapshot` with whole day lines, and the movers generation it
     /// is consistent with: an update with a larger one is newer than it.
     pub fn movers_snapshot(&self) -> (u64, String) {
