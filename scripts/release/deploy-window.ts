@@ -16,6 +16,9 @@
 // trading day, exactly as `session::day_kind` assumes. Early-close days are
 // trading days: their extended hours still run.
 //
+// A release is held from 03:00 ET (LEAD_MIN), so that nothing it starts
+// restarts the server after 04:00.
+//
 // Time zone arithmetic is Intl's (the IANA database), so DST needs no rules
 // of our own: 04:00 ET is 08:00 UTC in summer and 09:00 UTC in winter.
 
@@ -24,6 +27,14 @@ import path from "node:path";
 
 export const OPENS_MIN = 4 * 60;
 export const CLOSES_MIN = 20 * 60;
+// The window is about when the server RESTARTS, but this runs at the start of
+// the release, before the checks (~10-20 min) and the server image build and
+// deploy (job timeout 30 min). A run that started at 03:55 used to restart
+// the server around 04:20, inside the premarket it must not touch. So a run
+// is held from LEAD_MIN before the open: nothing it starts can restart the
+// server after 04:00. The close needs no lead: a run held at 19:59 ships with
+// the scheduled run.
+export const LEAD_MIN = 60;
 
 const SESSION_RS = path.join(import.meta.dir, "..", "..", "crates", "market-events", "src", "session.rs");
 
@@ -75,8 +86,11 @@ export function deployWindow(now: Date, holidays: Set<string>): Window {
   const at = `${ny.date} ${String(Math.floor(ny.minute / 60)).padStart(2, "0")}:${String(ny.minute % 60).padStart(2, "0")} ET`;
   if (ny.weekday === "Sat" || ny.weekday === "Sun") return { inside: false, reason: `${at}: weekend` };
   if (holidays.has(ny.date)) return { inside: false, reason: `${at}: NYSE holiday` };
-  if (ny.minute < OPENS_MIN || ny.minute >= CLOSES_MIN) {
+  if (ny.minute < OPENS_MIN - LEAD_MIN || ny.minute >= CLOSES_MIN) {
     return { inside: false, reason: `${at}: outside 04:00-20:00 ET` };
+  }
+  if (ny.minute < OPENS_MIN) {
+    return { inside: true, reason: `${at}: trading day, a release started now would restart the server after 04:00 ET` };
   }
   return { inside: true, reason: `${at}: trading day, 04:00-20:00 ET` };
 }

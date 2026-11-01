@@ -143,6 +143,10 @@ safer, but a deploy is still a gap in the live feed).
   our own: 04:00 ET is 08:00 UTC in summer, 09:00 UTC in winter.
   `bun test scripts/release` covers both clock changes, holidays, weekends
   and the boundaries (in `ci.yml`'s web job).
+- **The hold starts at 03:00 ET**, an hour before the window: the window is
+  about when the server restarts, but the check runs when the release
+  starts, and checks plus the image build and deploy take up to ~45 minutes.
+  A run started at 03:55 would otherwise restart the server in premarket.
 - **A push inside the window still runs its checks**, but when the server
   has something to ship, the run **holds**: the server deploy, the desktop
   release and the phone OTA/APK are all skipped, so no client ships a
@@ -157,7 +161,7 @@ safer, but a deploy is still a gap in the live feed).
 - **Emergency override:** run the workflow by hand (Actions, Release, Run
   workflow) with `force` ticked. It ships main now, window or not. Without
   `force` a manual run behaves like a push.
-- Weekends, NYSE holidays and 20:00–04:00 ET deploy immediately, as before.
+- Weekends, NYSE holidays and 20:00–03:00 ET deploy immediately, as before.
 
 ## Mobile (Expo) modules and config plugins
 

@@ -23,7 +23,13 @@ describe("deploy window", () => {
 
   test("opens at 04:00 and closes at 20:00 ET on a summer-time trading day", () => {
     // Friday 2026-10-30, EDT (UTC-4): the INO restart was at 16:38 ET.
-    expect(at("2026-10-30T07:59:59Z").inside).toBe(false); // 03:59:59
+    expect(at("2026-10-30T06:59:59Z").inside).toBe(false); // 02:59:59
+    // From 03:00 a release would restart the server after 04:00 (checks + build): held.
+    expect(at("2026-10-30T07:00:00Z")).toEqual({
+      inside: true,
+      reason: "2026-10-30 03:00 ET: trading day, a release started now would restart the server after 04:00 ET",
+    });
+    expect(at("2026-10-30T07:59:59Z").inside).toBe(true); // 03:59:59
     expect(at("2026-10-30T08:00:00Z").inside).toBe(true); // 04:00
     expect(at("2026-10-30T20:38:00Z").inside).toBe(true); // 16:38
     expect(at("2026-10-30T23:59:59Z").inside).toBe(true); // 19:59:59
@@ -32,12 +38,14 @@ describe("deploy window", () => {
 
   test("follows the clock change: 04:00 ET is 09:00 UTC in winter", () => {
     // Sunday 2026-11-01 02:00 EDT -> 01:00 EST; Monday 2026-11-02 is EST (UTC-5).
-    expect(at("2026-11-02T08:30:00Z").inside).toBe(false); // 03:30 EST
+    expect(at("2026-11-02T07:30:00Z").inside).toBe(false); // 02:30 EST
+    expect(at("2026-11-02T08:30:00Z").inside).toBe(true); // 03:30 EST, inside the lead
     expect(at("2026-11-02T09:00:00Z").inside).toBe(true); // 04:00 EST
     expect(at("2026-11-03T00:59:00Z").inside).toBe(true); // 19:59 EST
     expect(at("2026-11-03T01:00:00Z").inside).toBe(false); // 20:00 EST
     // Spring forward: Monday 2026-03-09 is EDT again.
-    expect(at("2026-03-06T08:30:00Z").inside).toBe(false); // Friday 03:30 EST
+    expect(at("2026-03-06T07:30:00Z").inside).toBe(false); // Friday 02:30 EST
+    expect(at("2026-03-09T06:30:00Z").inside).toBe(false); // Monday 02:30 EDT
     expect(at("2026-03-09T08:30:00Z").inside).toBe(true); // Monday 04:30 EDT
     expect(newYork(new Date("2026-03-09T08:30:00Z")).minute).toBe(4 * 60 + 30);
   });
