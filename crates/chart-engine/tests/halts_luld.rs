@@ -120,6 +120,7 @@ impl LuldInputs for Inputs {
     fn params(&self, _symbol: &str, _date: chrono::NaiveDate) -> LuldParams {
         LuldParams {
             prev_close: Some("2.00".parse().unwrap()),
+            prev_close_split_adjusted: false,
             listing_venue: Some("Q".into()),
         }
     }
@@ -310,4 +311,31 @@ fn halts_that_ended_before_the_retained_candles_are_dropped() {
     let snap = e.snapshot(SYM, Timeframe::M5, None).unwrap();
     assert_eq!(snap.halts.len(), 1);
     assert_eq!(snap.halts[0].end, None);
+}
+
+/// A $0.20 close the ledger did not adjust (a 1-for-40 reverse split it missed).
+#[derive(Debug)]
+struct UnadjustedSplit;
+
+impl LuldInputs for UnadjustedSplit {
+    fn params(&self, _symbol: &str, _date: chrono::NaiveDate) -> LuldParams {
+        LuldParams {
+            prev_close: Some("0.20".parse().unwrap()),
+            prev_close_split_adjusted: false,
+            listing_venue: Some("Q".into()),
+        }
+    }
+}
+
+#[test]
+fn the_days_first_print_pre_market_withholds_a_close_on_another_share_basis() {
+    let mut e = ChartEngine::default();
+    e.set_luld_inputs(Some(Arc::new(UnadjustedSplit)));
+    // The day's first print is pre-market, already on the new basis (40× the close).
+    e.apply(&ev(trade(at(8, 0, 0, 0), "8.00", 100, 1)));
+    let ups = e.apply(&ev(trade(at(9, 30, 5, 0), "8.00", 0, 2)
+        .with_exchange("Q")
+        .with_conditions(["Q"])));
+    // The first reference's own 10% bracket, not ±$0.15 from the $0.20 close.
+    assert_eq!(lulds(&ups), vec![band(at(9, 30, 5, 0), 8.00, 8.80, 7.20)]);
 }

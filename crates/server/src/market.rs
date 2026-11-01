@@ -552,12 +552,15 @@ impl std::fmt::Debug for LuldMeta {
 
 impl LuldInputs for LuldMeta {
     fn params(&self, symbol: &str, date: NaiveDate) -> LuldParams {
+        let close = self
+            .closes
+            .lookup(symbol, date)
+            .filter(|c| (date - c.date).num_days() <= LULD_PREV_CLOSE_MAX_AGE_DAYS);
         LuldParams {
-            prev_close: self
-                .closes
-                .before(symbol, date)
-                .filter(|(d, _)| (date - *d).num_days() <= LULD_PREV_CLOSE_MAX_AGE_DAYS)
-                .map(|(_, p)| p),
+            prev_close: close.map(|c| c.price),
+            // Not adjusted: the model checks it against the day's first print, the same guard
+            // change % applies (`crate::quotes::split_guard`).
+            prev_close_split_adjusted: close.is_some_and(|c| c.split_adjusted),
             listing_venue: self
                 .assets
                 .get(symbol)

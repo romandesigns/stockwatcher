@@ -1093,6 +1093,29 @@ mod tests {
         assert_eq!(b.prev_close_on("ATYR", day()), Some(Price::from_cents(512)));
     }
 
+    /// The LULD model withholds an unadjusted close from its bracket on the same test
+    /// (`chart_engine::luld::other_share_basis`, which cannot call this crate): if the two ever
+    /// disagreed, the chart's bands and its change % would read one stock on two share bases.
+    #[test]
+    fn the_luld_basis_check_is_the_split_guard() {
+        let mut checked = 0;
+        for close in [1_000, 12_800, 500_000, 1_000_000, 3_000_000, 80_000_000] {
+            // From 1/50 to 50× the close, on a fine grid around each whole factor.
+            for k in 1..=5_000i64 {
+                for first in [close * k / 100, close * 100 / k] {
+                    let (f, c) = (Price::from_micros(first), Price::from_micros(close));
+                    assert_eq!(
+                        split_guard(f, c),
+                        chart_engine::luld::other_share_basis(f, c),
+                        "first {f} close {c}"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 50_000);
+    }
+
     /// The same day with no split on record (the ledger had not seen it): the first print is
     /// ~39× the close, so the close is withheld and change % falls back to the day's first price,
     /// flagged `guard`. A real runner that starts near its close and climbs keeps its close.

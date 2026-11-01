@@ -8,6 +8,7 @@ use crate::wire::{
     GapWire, HaltUpdate, HaltWire, LuldUpdate, LuldWire, ProfileRow, ProfileWire, SessionInfo,
     TapeTrade, ValueArea,
 };
+use chrono::NaiveDate;
 use market_events::{
     Cancel, Correction, EffectReason, MarketEvent, Price, Resolution, SessionId, SessionKind,
     Source, Status, StatusKind, Trade, TradeId, TradeRef, UnixNanos, classify, trade_effect,
@@ -677,6 +678,10 @@ struct SymbolState {
     halts: Vec<HaltRec>,
     /// LULD bands of the latest regular session the symbol traded in.
     luld: Option<LuldState>,
+    /// The first price-qualifying print of the latest trading date (any session), in arrival
+    /// order like the quotes board's: the LULD model checks the previous close's share basis
+    /// against it ([`crate::luld::other_share_basis`]).
+    day_first: Option<(NaiveDate, Price)>,
     /// The regular open (epoch ns) of a trading date, cached for [`Self::drop_prior_dates`].
     open_of: Option<(SessionId, i64)>,
     /// The trade-retention cutoff up to which buckets' last keys have been released.
@@ -855,6 +860,9 @@ impl SymbolState {
     ) -> Vec<LuldPoint> {
         let mut pts = Vec::new();
         let ts = t.event_ts.0;
+        if rec.ohlc && self.day_first.is_none_or(|(d, _)| rec.session.date > d) {
+            self.day_first = Some((rec.session.date, rec.price));
+        }
         let regular = rec.session.kind == SessionKind::Regular;
         if regular && !self.halted() {
             if self.luld.as_ref().is_none_or(|l| l.session < rec.session)
@@ -863,7 +871,11 @@ impl SymbolState {
                 let params = inputs
                     .map(|i| i.params(&self.symbol, rec.session.date))
                     .unwrap_or_default();
-                self.luld = Some(LuldState::new(rec.session, open.0, close.0, params));
+                let first = self
+                    .day_first
+                    .filter(|(d, _)| *d == rec.session.date)
+                    .map(|(_, p)| p);
+                self.luld = Some(LuldState::new(rec.session, open.0, close.0, params, first));
             }
             if let Some(l) = self.luld.as_mut().filter(|l| l.session == rec.session) {
                 let print = Print {
@@ -1153,6 +1165,7 @@ impl ChartEngine {
                 scheduled: None,
                 halts: Vec::new(),
                 luld: None,
+                day_first: None,
                 open_of: None,
                 released_through: i64::MIN,
             })

@@ -44,7 +44,11 @@ the first trade, bracketed by the moving reference and doubled at the open); see
   - $0.75 up to and including $3.00: 20%;
   - less than $0.75: the lesser of $0.15 or 75%.
   The previous close comes from `daily-closes.json` (split-adjusted, at most 10 days old). Without
-  one the session's first reference stands in.
+  one the session's first reference stands in, and so it does when no known split adjusted the
+  close and the day's first print is a typical split factor away from it (the change-% split
+  guard, `quotes::split_guard`; `luld::other_share_basis` is the same test): a split the ledger
+  missed would otherwise bracket the day on the old share basis (a 1-for-40 reverse split from
+  $0.20 to $8 would get ±$0.15 bands).
 - **Doubling** (§V(A)(1)): only 15:35–16:00 (the last 25 minutes before an early close), when the
   previous close is at or below $3.00. **No doubling at the open.**
 - **Reference price** (§V(A)(2)): the arithmetic mean of price-qualifying trade prices in the preceding

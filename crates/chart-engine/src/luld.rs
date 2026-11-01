@@ -17,6 +17,10 @@
 //!   20% bands all day even after it runs to $8, and one that closed at $0.60 keeps ±$0.15. When
 //!   the previous close is unknown (no closes file, an IPO) the session's first reference stands
 //!   in for it; the Plan's own fallback, the primary's last sale, is not something we can see.
+//!   So it does for a close no known split adjusted that sits a typical split factor away from
+//!   the day's first print ([`other_share_basis`], the server's change-% split guard): the Plan
+//!   uses the exchange's adjusted close, and a split our ledger missed would otherwise bracket the
+//!   whole day on the old share basis.
 //! - **Doubling** (§V(A)(1)): only in the last 25 minutes (15:35–16:00, or the 25 minutes before
 //!   an early close), and for Tier 2 only when the bracket price is **equal to or below** $3.00.
 //!   The Plan has no doubling at the open (an earlier version of this model doubled 09:30–09:45).
@@ -92,6 +96,11 @@ pub struct LuldParams {
     /// basis. Picks the percentage bracket for the whole day and whether the close doubles
     /// (Appendix A §II(6)). `None`: the session's first reference stands in.
     pub prev_close: Option<Price>,
+    /// `prev_close` was put on the day's share basis by a split the corporate-actions ledger
+    /// knows. A close that was not is checked against the day's first print instead
+    /// ([`other_share_basis`]): a split the ledger missed would otherwise pick the bracket from
+    /// the old basis all day (a 1-for-40 reverse split from $0.20 to $8 would get ±$0.15 bands).
+    pub prev_close_split_adjusted: bool,
     /// The primary listing exchange as an Alpaca venue code (`Q` Nasdaq, `N` NYSE, `A` NYSE
     /// American, `P` NYSE Arca, `Z` Cboe BZX; [`venue_code`]). Only its opening/reopening print
     /// is the Plan's Opening Price.
@@ -115,6 +124,26 @@ pub fn venue_code(listing: &str) -> Option<&'static str> {
         "BATS" => "Z",
         _ => return None,
     })
+}
+
+/// Whether a day whose first price-qualifying print (any session of the trading date) is `first`
+/// plainly trades on another share basis than `prev_close`: ten times away or more, or three to
+/// ten times away within 4% of a whole factor (1-for-3 … 1-for-9 and their forward twins). The
+/// same test, on the same first print, as the server's change-% guard (`quotes::split_guard` in
+/// stockwatcher-server; a server test keeps the two in step): when it withholds a close from
+/// change %, the bands do not pick their bracket from it either, and the session's first
+/// reference stands in as for a symbol with no close. A genuine gap of that shape at the first
+/// print is read the same way, by both.
+pub fn other_share_basis(first: Price, prev_close: Price) -> bool {
+    let (f, p) = (first.micros() as f64, prev_close.micros() as f64);
+    if f <= 0.0 || p <= 0.0 {
+        return false;
+    }
+    let factor = if f >= p { f / p } else { p / f };
+    if factor >= 10.0 {
+        return true;
+    }
+    factor >= 3.0 && (factor - factor.round()).abs() / factor <= 0.04
 }
 
 /// Whether the band percentage is doubled at `t` in a regular session ending at `close`
@@ -277,12 +306,25 @@ pub(crate) struct LuldState {
 }
 
 impl LuldState {
-    pub fn new(session: SessionId, open: i64, close: i64, params: LuldParams) -> Self {
+    /// `day_first`: the trading date's first price-qualifying print so far (pre-market included),
+    /// against which a close not known to be split-adjusted is checked ([`other_share_basis`]).
+    pub fn new(
+        session: SessionId,
+        open: i64,
+        close: i64,
+        params: LuldParams,
+        day_first: Option<Price>,
+    ) -> Self {
+        let bracket = params.prev_close.filter(|&pc| {
+            pc.micros() > 0
+                && (params.prev_close_split_adjusted
+                    || !day_first.is_some_and(|f| other_share_basis(f, pc)))
+        });
         LuldState {
             session,
             open,
             close,
-            bracket: params.prev_close.filter(|p| p.micros() > 0),
+            bracket,
             params,
             phase: Phase::Opening,
             grace_done: false,
@@ -684,8 +726,10 @@ mod tests {
             at(16, 0, 0),
             LuldParams {
                 prev_close: prev_close.map(px),
+                prev_close_split_adjusted: false,
                 listing_venue: venue.map(str::to_string),
             },
+            None,
         )
     }
 
@@ -976,6 +1020,39 @@ mod tests {
         assert_eq!(out.len(), 2);
         assert_eq!(out[1].t, at(10, 0, 40));
         assert_eq!(out[1].reference, Some(px("3.20")));
+    }
+
+    #[test]
+    fn a_close_on_another_share_basis_does_not_pick_the_bracket() {
+        let new = |adjusted: bool, first: Option<&str>| {
+            let mut l = LuldState::new(
+                SessionId::new(day(), SessionKind::Regular),
+                at(9, 30, 0),
+                at(16, 0, 0),
+                LuldParams {
+                    prev_close: Some(px("0.20")),
+                    prev_close_split_adjusted: adjusted,
+                    listing_venue: Some("Q".into()),
+                },
+                first.map(px),
+            );
+            let mut out = Vec::new();
+            feed(&mut l, at(9, 30, 1), "8.00", "Q", &["Q"], false, &mut out);
+            up(&out[0])
+        };
+        // A 1-for-40 reverse split the ledger missed: the raw $0.20 close would give an $8 stock
+        // ±$0.15; the first print (40× the close) withholds it and the first reference's 10% rules.
+        assert_eq!(new(false, Some("8.00")), "8.80");
+        // A close the ledger adjusted is trusted whatever the first print.
+        assert_eq!(new(true, Some("8.00")), "8.15");
+        // A first print near the close (a runner that climbed later) keeps the close's bracket.
+        assert_eq!(new(false, Some("0.22")), "8.15");
+        // No first print known: the close stands.
+        assert_eq!(new(false, None), "8.15");
+        assert!(other_share_basis(px("8.00"), px("0.20")));
+        assert!(other_share_basis(px("1.00"), px("4.01"))); // a 4-for-1 forward split
+        assert!(!other_share_basis(px("1.00"), px("2.00"))); // 2×: a real gap is likelier
+        assert!(!other_share_basis(px("3.50"), px("1.00"))); // 3.5× is no whole factor
     }
 
     #[test]
