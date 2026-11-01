@@ -859,6 +859,31 @@ struct ClockMessage<'a> {
     clock: &'a ClockInfo,
 }
 
+/// A snapshot's session schedule (`sessions.v1`) extended to the market clock's trading date
+/// and the next one. The engine's schedule covers the dates its candles span, so a symbol with
+/// none yet today (the empty chart a symbol gets before its first print or history load, or one
+/// whose last candles are from an earlier day) carried no schedule for the day its increments
+/// then fill: an early close there read as the fixed 09:30-16:00 all day, and the regular-hours
+/// candles stopped lining up with the server's indicators. Unchanged when it already reaches
+/// that date (or a later one: a weekend's next trading date).
+pub fn schedule_through(
+    sessions: Vec<chart_engine::wire::SessionInfo>,
+    now: UnixNanos,
+) -> Vec<chart_engine::wire::SessionInfo> {
+    let today = market_events::session::trading_date(now);
+    let date_of = |s: &chart_engine::wire::SessionInfo| {
+        s.id.split('/')
+            .next()
+            .and_then(|d| d.parse::<NaiveDate>().ok())
+    };
+    if sessions.iter().filter_map(date_of).any(|d| d >= today) {
+        return sessions;
+    }
+    let mut dates: Vec<NaiveDate> = sessions.iter().filter_map(date_of).collect();
+    dates.push(today);
+    chart_engine::session_schedule(dates.into_iter(), None)
+}
+
 pub fn clock_info(c: &ClockState) -> ClockInfo {
     ClockInfo {
         mode: c.mode.as_str().to_string(),
@@ -3219,7 +3244,8 @@ impl Market {
         bin: Price,
         studies: Option<&Studies>,
     ) -> Result<SnapshotOut, SnapshotError> {
-        let clock = self.clock().map(|c| clock_info(&c));
+        let clock_state = self.clock();
+        let clock = clock_state.as_ref().map(clock_info);
         let mut guard = self.0.core.lock().expect("core lock");
         let core = &mut *guard;
         if self.known(core, symbol) && !Self::candidate_in(core, self.0.band, symbol) {
@@ -3250,6 +3276,9 @@ impl Market {
             },
         };
         snap.clock = clock;
+        if let Some(c) = &clock_state {
+            snap.sessions = schedule_through(std::mem::take(&mut snap.sessions), c.now);
+        }
         snap.prev_close = self.prev_close_for(core, &snap).map(Price::to_f64);
         let indicators = studies.map(|s| core.indicators.snapshot(&core.engine, s));
         Ok(SnapshotOut {
@@ -5212,6 +5241,41 @@ mod latency_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A snapshot's schedule reaches the market clock's trading date even when the symbol has no
+    /// candles that day: the empty chart before a first print on an early close (2026-11-27,
+    /// regular to 13:00), and history from Thursday seen on Monday. One that already reaches the
+    /// date (or past it: Saturday, with Monday listed) is left as the engine built it.
+    #[test]
+    fn the_snapshot_schedule_reaches_the_market_clocks_date() {
+        let d = |s: &str| s.parse::<NaiveDate>().unwrap();
+        let at = |day: &str, h| market_events::session::et(d(day), h, 0, 0, 0).unwrap();
+        let ids = |v: &[chart_engine::wire::SessionInfo]| -> Vec<String> {
+            v.iter().map(|s| s.id.clone()).collect()
+        };
+
+        let empty = schedule_through(Vec::new(), at("2026-11-27", 8));
+        let regular = empty
+            .iter()
+            .find(|s| s.id == "2026-11-27/regular")
+            .expect("the early close's regular session");
+        assert_eq!(regular.end_ns, at("2026-11-27", 13).0);
+        assert!(ids(&empty).contains(&"2026-11-30/regular".to_string()));
+
+        let thursday = chart_engine::session_schedule([d("2026-10-29")].into_iter(), None);
+        let monday = schedule_through(thursday, at("2026-11-02", 10));
+        assert!(ids(&monday).contains(&"2026-11-02/regular".to_string()));
+        assert!(ids(&monday).contains(&"2026-10-29/regular".to_string()));
+
+        let friday = chart_engine::session_schedule([d("2026-10-30")].into_iter(), None);
+        let saturday = schedule_through(friday.clone(), at("2026-10-31", 12));
+        assert_eq!(ids(&saturday), ids(&friday));
+        // 21:00 on Friday is no session; its trading date is Friday itself: still covered.
+        assert_eq!(
+            ids(&schedule_through(friday.clone(), at("2026-10-30", 21))),
+            ids(&friday)
+        );
+    }
 
     /// Manual synthetic pressure portion of the real Core critical section; no feed or sockets.
     /// Excludes lock acquisition and every other ingest consumer, and is not production latency.

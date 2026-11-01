@@ -94,7 +94,9 @@
 //!
 //! Session schedule (`sessions.v1`; chart_engine::wire::ChartSnapshot::sessions): every
 //! `chart.snapshot` carries `sessions`, the NYSE calendar's sessions for each trading date its
-//! candles span plus the next one (early closes: regular to 13:00, after-hours to 17:00).
+//! candles span plus the next one (early closes: regular to 13:00, after-hours to 17:00),
+//! extended to the market clock's trading date when the candles stop short of it
+//! (crate::market::schedule_through: an empty chart, or only an earlier day's candles).
 //! Clients filter regular hours and shade by it; an older server's snapshot lacks it and the
 //! client keeps the fixed 09:30-16:00 schedule.
 //!
