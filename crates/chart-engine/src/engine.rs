@@ -1858,6 +1858,61 @@ impl ChartEngine {
         }
         Some((n, last.0, last.1))
     }
+
+    /// The symbol's key levels from its `tf` candles, the forming one included
+    /// (crate::levels::key_levels: premarket and regular extremes of the latest trading date, the
+    /// open, the fallback previous close). About one day of buckets per call; the server calls it
+    /// for watched symbols only, when [`crate::levels::KeyLevels::may_change`] says to.
+    pub fn key_levels(&self, symbol: &str, tf: Timeframe) -> Option<crate::levels::KeyLevels> {
+        let st = self.symbols.get(symbol)?;
+        let series = st.series.iter().find(|s| s.tf == tf)?;
+        let wm = st.own_wm.max(self.clock);
+        crate::levels::key_levels(
+            series
+                .buckets
+                .iter()
+                .rev()
+                .filter_map(|b| Some((b.session, b.candle(wm)?))),
+        )
+    }
+
+    /// One opening range per trading date of the symbol's retained `tf` candles
+    /// (crate::levels::opening_ranges); empty when the symbol has none. Reads the whole series:
+    /// the server calls it when [`crate::levels::ranges_may_change`] says to.
+    pub fn opening_ranges(&self, symbol: &str, tf: Timeframe) -> Vec<crate::levels::OpeningRange> {
+        let Some(st) = self.symbols.get(symbol) else {
+            return Vec::new();
+        };
+        let Some(series) = st.series.iter().find(|s| s.tf == tf) else {
+            return Vec::new();
+        };
+        let wm = st.own_wm.max(self.clock);
+        crate::levels::opening_ranges(
+            series
+                .buckets
+                .iter()
+                .filter_map(|b| Some((b.session, b.candle(wm)?))),
+        )
+    }
+
+    /// Every retained `tf` candle of the symbol as the chart holds it (oldest first, the forming
+    /// one included), regular session only with `rth` (the engine's NYSE calendar, like
+    /// [`ChartEngine::indicator_bars`]). The input of the server's automatic supply/demand zones
+    /// (crates/server/src/chart_context.rs), read when a bar finalizes and at most once a second
+    /// for the forming bar, never per trade.
+    pub fn chart_candles(&self, symbol: &str, tf: Timeframe, rth: bool) -> Option<Vec<CandleWire>> {
+        let st = self.symbols.get(symbol)?;
+        let series = st.series.iter().find(|s| s.tf == tf)?;
+        let wm = st.own_wm.max(self.clock);
+        Some(
+            series
+                .buckets
+                .iter()
+                .filter(|b| crate::indicators::Bar::keep(b.session, rth))
+                .filter_map(|b| b.candle(wm))
+                .collect(),
+        )
+    }
 }
 
 /// A symbol's extremes over its latest trading date ([`ChartEngine::day_extremes`]).
