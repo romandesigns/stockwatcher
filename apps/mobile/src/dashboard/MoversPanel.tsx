@@ -143,7 +143,7 @@ function SortControl({ kind, sort, onPress, fill }: { kind: MoversKind; sort: Mo
 export function MoversPanel({ kind, channel, runners, onPick, reducedMotion, gap = 0 }: { kind: MoversKind; channel: MoversChannel; runners: RocketChannel; onPick: (symbol: string) => void; reducedMotion: boolean; gap?: number }) {
   const state = useMovers(channel);
   const rocket = useRocket(runners);
-  const wall = useWall();
+  const wall = useWall(15_000, rocket.serverEvents === true);
   const nowMs = rocketNow(rocket, wall);
   const byRunner = useMemo(() => runnersBySymbol(rocket), [rocket]);
   const [sort, pressSort] = useMoverSort(kind);

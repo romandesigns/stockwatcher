@@ -40,7 +40,7 @@ export function RossPanel({ channel, detection, runners, onPick, reducedMotion, 
   const { enabled, panel } = state;
   // Today's Runners row per member: its path and the burst behind the flame (shared rowMarks.ts).
   const rocket = useRocket(runners);
-  const wall = useWall();
+  const wall = useWall(15_000, rocket.serverEvents === true);
   const byRunner = runnersBySymbol(rocket);
   const nowMs = rocketNow(rocket, wall);
   const rows = panel?.rows.map((w) => ({ ...rossRowView(w, panel.cutoff, hhmm), marks: rossRowMarks(w, byRunner.get(w.symbol), nowMs, formatEtTime), trigger: w.setup?.trigger?.price ?? null })) ?? [];

@@ -31,13 +31,18 @@ const PATH_ICON: Record<PathKind, "pathRunner" | "pathBurst" | "pathFast" | "pat
   running: "pathRunning",
 };
 
-/** A wall clock that ticks every `ms`, so a flame goes out and ages move without a new frame. */
-export function useWall(ms = 15_000): number {
+/**
+ * A wall clock that ticks every `ms`, so a flame goes out and ages move without a new frame: only
+ * against a server without clock.v1. With `serverClock` (the rocket state's `serverEvents`) the
+ * ages are the server's clock frames', which re-render the panel themselves, so no timer runs.
+ */
+export function useWall(ms = 15_000, serverClock = false): number {
   const [wall, setWall] = useState(() => Date.now());
   useEffect(() => {
+    if (serverClock) return;
     const id = setInterval(() => setWall(Date.now()), ms);
     return () => clearInterval(id);
-  }, [ms]);
+  }, [ms, serverClock]);
   return wall;
 }
 

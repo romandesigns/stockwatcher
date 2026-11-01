@@ -5,7 +5,7 @@ import { memo, useEffect, useRef, useState } from "react";
 import { Animated, Pressable, StyleSheet, Text, View } from "react-native";
 
 import { useRocket } from "../feed/hooks";
-import { Flame, MarksLine, RowLine, useReadoutPress } from "./RowMarks";
+import { Flame, MarksLine, RowLine, useReadoutPress, useWall } from "./RowMarks";
 import { notifyRocketFlags } from "../notifications/rocket";
 import { phoneNotices } from "../notifications/runnersNotices";
 import { Collapse } from "../motion/Collapse";
@@ -65,12 +65,9 @@ const ROW_GAP = 4;
  */
 export function RocketPanel({ channel, onPick, reducedMotion, gap = 0 }: { channel: RocketChannel; onPick: (symbol: string) => void; reducedMotion: boolean; gap?: number }) {
   const state = useRocket(channel);
-  // Ages tick between frames.
-  const [wall, setWall] = useState(() => Date.now());
-  useEffect(() => {
-    const id = setInterval(() => setWall(Date.now()), 15_000);
-    return () => clearInterval(id);
-  }, []);
+  // Ages tick between frames, by the wall clock only against a server without clock.v1 (the
+  // server's clock frames re-render the card otherwise).
+  const wall = useWall(15_000, state.serverEvents === true);
   // New flags since this card mounted (the first frame only primes: no burst on open), rung only
   // against a server without `runners.notice.v1`: a newer one sends the notices themselves
   // (notifications/runnersNotices.ts). The seen set keeps following either way, so a reconnect to

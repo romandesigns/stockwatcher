@@ -39,7 +39,7 @@ export function FavoritesPanel({ channel, runners, onPick, reducedMotion, gap = 
   const rows = useMemo(() => favoriteRows(list, state, hhmm), [list, state]);
   // The lighter rows' marks (shared rowMarks.ts), joined to today's Runners row for the flame.
   const rocket = useRocket(runners);
-  const wall = useWall();
+  const wall = useWall(15_000, rocket.serverEvents === true);
   const nowMs = rocketNow(rocket, wall);
   const marks = useMemo(() => {
     const byRunner = runnersBySymbol(rocket);
