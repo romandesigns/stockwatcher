@@ -1,4 +1,4 @@
-import { DEFAULT_CHART_SETTINGS, formatEtTime12, type ChartSettings, type EventMarker } from "@stockwatcher/chart-core";
+import { DEFAULT_CHART_SETTINGS, DEFAULT_LAYERS, formatEtTime12, type ChartLayers, type ChartSettings, type EventMarker } from "@stockwatcher/chart-core";
 import { CandleChart, Icon, UI } from "@stockwatcher/chart-native";
 import { NO_TICKER, tickerPageView, type TickerAlertView, type TickerMissedView, type TickerPackageWire, type TickerPageView, type TickerState, type Tone } from "@stockwatcher/shared";
 import { useNavigation, type RouteProp } from "@react-navigation/native";
@@ -11,6 +11,13 @@ import { Collapse } from "../motion/Collapse";
 import { useReducedMotion } from "../motion/useReducedMotion";
 import type { RootStackParamList } from "../navigation/RootStack";
 import { colors, fonts } from "../theme";
+
+/**
+ * The approved design's chart: candles, the day's high and low, the markers. The key-level lines
+ * (premarket high/low, HOD/LOD, previous close) are off: their labels sat on top of the numbered
+ * markers and the day's own high/low labels, and the page states those levels in its tiles.
+ */
+const TICKER_LAYERS: ChartLayers = { ...DEFAULT_LAYERS, premarket: false, dayRange: false, prevClose: false };
 
 type Props = { route: RouteProp<RootStackParamList, "InsightsTicker"> };
 
@@ -99,6 +106,7 @@ function DayStep({ dir, day, onDay }: { dir: "prev" | "next"; day: string | null
 
 function Body({ pkg, view, wide, reducedMotion }: { pkg: TickerPackageWire; view: TickerPageView; wide: boolean; reducedMotion: boolean }) {
   const [settings, setSettings] = useState<ChartSettings>(() => ({ ...DEFAULT_CHART_SETTINGS, highLow: true }));
+  const [layers, setLayers] = useState<ChartLayers>(TICKER_LAYERS);
   const series = useMemo(() => ({ candles: pkg.bars, gaps: [], profile: null, halts: pkg.halts?.halts ?? [], prevClose: pkg.stats?.prev_close?.price ?? null }), [pkg]);
   const markers = useMemo<EventMarker[]>(() => view.markers.map((m) => ({ kind: m.kind, at: m.at, price: m.price, n: m.n })), [view.markers]);
   const [later, setLater] = useState(false);
@@ -134,7 +142,7 @@ function Body({ pkg, view, wide, reducedMotion }: { pkg: TickerPackageWire; view
           <View style={[styles.dot, styles.ring]} />
           <Text style={styles.note}>Missed</Text>
         </View>
-        <CandleChart style={{ height: wide ? 320 : 260 }} symbol={pkg.symbol} series={series} timeframe="1m" settings={settings} onSettingsChange={setSettings} eventMarkers={markers} inspector options={OPTIONS} label={`${pkg.symbol} 1 minute candles`} />
+        <CandleChart key={pkg.day} style={{ height: wide ? 320 : 260 }} symbol={pkg.symbol} series={series} timeframe="1m" settings={settings} onSettingsChange={setSettings} eventMarkers={markers} initialFocus={pkg.focus} layers={layers} onLayersChange={setLayers} inspector options={OPTIONS} label={`${pkg.symbol} 1 minute candles`} />
       </View>
 
       <Section title="Notification history" note={view.alertSummary}>

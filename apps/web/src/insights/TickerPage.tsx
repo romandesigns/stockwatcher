@@ -1,9 +1,16 @@
-import { DEFAULT_CHART_SETTINGS, formatEtTime12, type ChartSettings, type EventMarker } from "@stockwatcher/chart-core";
+import { DEFAULT_CHART_SETTINGS, DEFAULT_LAYERS, formatEtTime12, type ChartLayers, type ChartSettings, type EventMarker } from "@stockwatcher/chart-core";
 import { CandleChart, Icon } from "@stockwatcher/chart-web";
 import { cn, Collapsible, CollapsibleContent, CollapsibleTrigger, ScrollArea, Tip } from "@stockwatcher/chart-web/ui";
 import { tickerPageHash, tickerPageView, type TickerAlertView, type TickerChannel, type TickerMissedView, type TickerPackageWire, type TickerPageView, type TickerRequest, type Tone } from "@stockwatcher/shared";
 import { useMemo, useState } from "react";
 import { useTickerPackage } from "./useTickerPage.ts";
+
+/**
+ * The approved design's chart: candles, the day's high and low, the markers. The key-level lines
+ * (premarket high/low, HOD/LOD, previous close) are off: their labels sat on top of the numbered
+ * markers and the day's own high/low labels, and the page states those levels in its tiles.
+ */
+const TICKER_LAYERS: ChartLayers = { ...DEFAULT_LAYERS, premarket: false, dayRange: false, prevClose: false };
 
 const time = (ms: number, seconds?: boolean) => formatEtTime12(ms, seconds);
 
@@ -126,7 +133,8 @@ function Stats({ view }: { view: TickerPageView }) {
             <span className="text-xs text-muted-foreground">{s.label}</span>
             {/* Wraps rather than truncates: a price range must read whole on a 320 px phone. */}
             <span className={cn("font-mono text-[15px] font-medium [overflow-wrap:anywhere] tabular-nums", TONE[s.tone])}>{s.value}</span>
-            <span className="truncate text-[11px] text-text-faint">{s.note || " "}</span>
+            {/* The note wraps too: truncated, "no previous close on fi…" and "high 4:5…" lost their point at 320 px. */}
+            <span className="text-[11px] text-text-faint">{s.note || " "}</span>
           </li>
         ))}
       </ul>
@@ -136,6 +144,7 @@ function Stats({ view }: { view: TickerPageView }) {
 
 function DayChart({ pkg, view, focus }: { pkg: TickerPackageWire; view: TickerPageView; focus: number | null }) {
   const [settings, setSettings] = useState<ChartSettings>(() => ({ ...DEFAULT_CHART_SETTINGS, highLow: true }));
+  const [layers, setLayers] = useState<ChartLayers>(TICKER_LAYERS);
   const series = useMemo(() => ({ candles: pkg.bars, gaps: [], profile: null, halts: pkg.halts?.halts ?? [], prevClose: pkg.stats?.prev_close?.price ?? null }), [pkg]);
   const markers = useMemo<EventMarker[]>(() => view.markers.map((m) => ({ kind: m.kind, at: m.at, price: m.price, n: m.n, focused: m.kind === "alert" && m.n === focus })), [view.markers, focus]);
   const sent = view.markers.filter((m) => m.kind === "alert").length;
@@ -155,7 +164,9 @@ function DayChart({ pkg, view, focus }: { pkg: TickerPackageWire; view: TickerPa
         </span>
       </div>
       <div className="h-[clamp(240px,42vh,440px)] min-h-0">
+        {/* Keyed by the day: another day reopens on its own focus window. */}
         <CandleChart
+          key={pkg.day}
           className="h-full"
           series={series}
           timeframe="1m"
@@ -163,6 +174,9 @@ function DayChart({ pkg, view, focus }: { pkg: TickerPackageWire; view: TickerPa
           settings={settings}
           onSettingsChange={setSettings}
           eventMarkers={markers}
+          initialFocus={pkg.focus}
+          layers={layers}
+          onLayersChange={setLayers}
           inspector
           priceAxisMenu={false}
           label={`${pkg.symbol} on ${view.dayLabel}, 1-minute candles, ${sent} sent alert${sent === 1 ? "" : "s"} and ${missed} missed setup${missed === 1 ? "" : "s"} marked`}
@@ -185,7 +199,7 @@ function History({ view, onFocus }: { view: TickerPageView; onFocus: (n: number 
         <p className="m-0 text-[13px] text-text-faint">No notification for {view.symbol} that day.</p>
       ) : (
         <>
-          <div aria-hidden className={cn("hidden gap-3 px-3.5 text-xs text-text-faint @4xl/hist:grid", COLS)}>
+          <div aria-hidden className={cn("hidden gap-3 px-3.5 text-xs text-text-faint @3xl/hist:grid", COLS)}>
             <span>#</span>
             <span>Time</span>
             <span>Alert</span>
@@ -205,7 +219,7 @@ function History({ view, onFocus }: { view: TickerPageView; onFocus: (n: number 
   );
 }
 
-const COLS = "grid-cols-[1.75rem_6.5rem_minmax(9rem,1.4fr)_5.5rem_minmax(8rem,1fr)_6.5rem_6.5rem]";
+const COLS = "grid-cols-[1.75rem_5.5rem_minmax(9rem,1.4fr)_5.5rem_minmax(8rem,1fr)_5.5rem_5.5rem]";
 
 function MarkerDot({ a }: { a: TickerAlertView }) {
   return a.marker ? (
@@ -228,7 +242,7 @@ function AlertRow({ a, onFocus }: { a: TickerAlertView; onFocus: (n: number | nu
   const text = <span className={cn("truncate text-xs", a.held ? "text-warning" : "text-muted-foreground")}>{a.held ?? a.detail}</span>;
   return (
     <li onPointerEnter={() => onFocus(a.marker)} onPointerLeave={() => onFocus(null)} className="rounded-xl bg-card transition-colors duration-150 hover:bg-bg-row motion-reduce:transition-none">
-      <div className={cn("hidden items-center gap-3 px-3.5 py-2.5 @4xl/hist:grid", COLS)}>
+      <div className={cn("hidden items-center gap-3 px-3.5 py-2.5 @3xl/hist:grid", COLS)}>
         <MarkerDot a={a} />
         <span className="font-mono text-[13px] text-muted-foreground tabular-nums">{a.time}</span>
         <span className="flex min-w-0 flex-col gap-0.5">
@@ -242,7 +256,7 @@ function AlertRow({ a, onFocus }: { a: TickerAlertView; onFocus: (n: number | nu
         <span className={cn("font-mono text-[13px] tabular-nums", TONE[a.plus5Tone])}>{a.plus5}</span>
         <span className={cn("text-[13px]", TONE[a.stopTone])}>{a.stop}</span>
       </div>
-      <div className="flex flex-col gap-1 px-3 py-2.5 @4xl/hist:hidden">
+      <div className="flex flex-col gap-1 px-3 py-2.5 @3xl/hist:hidden">
         <div className="flex min-w-0 items-center gap-2">
           <MarkerDot a={a} />
           <span className="shrink-0 font-mono text-xs whitespace-nowrap text-muted-foreground tabular-nums">{a.time}</span>
@@ -279,8 +293,9 @@ function Scorecard({ view }: { view: TickerPageView }) {
         <ul className="m-0 flex list-none flex-col gap-1 p-0">
           {view.byKind.map((b) => (
             <li key={b.key} className="flex flex-wrap items-center gap-x-2.5 gap-y-0.5 rounded-lg bg-bg-panel/60 px-3 py-2 text-[13px]">
-              <span className="min-w-0 flex-1">{b.label}</span>
-              <span className="font-mono text-xs text-muted-foreground tabular-nums">{b.value}</span>
+              {/* Never squeezed: on a 320 px phone the value drops to its own line, right-aligned. */}
+              <span className="flex-[1_0_auto] whitespace-nowrap">{b.label}</span>
+              <span className="ml-auto font-mono text-xs text-muted-foreground tabular-nums">{b.value}</span>
             </li>
           ))}
         </ul>
@@ -357,8 +372,9 @@ function Missed({ view }: { view: TickerPageView }) {
 
 function MissedGrid({ items }: { items: TickerMissedView[] }) {
   return (
-    // 1, 2 or 4 equal columns, so the four shown always fill their rows.
-    <ul className="m-0 grid list-none grid-cols-1 gap-2 p-0 @2xl/missed:grid-cols-2 @6xl/missed:grid-cols-4">
+    // 1, 2 or 4 equal columns, so the four shown always fill their rows; 2 or 4 only when a card still
+    // has the room for its outcome on the header line (a wrapped outcome misaligns the row).
+    <ul className="m-0 grid list-none grid-cols-1 gap-2 p-0 @3xl/missed:grid-cols-2 @7xl/missed:grid-cols-4">
       {items.map((m) => (
         <li key={m.key} className="flex min-w-0 flex-col gap-1.5 rounded-xl bg-card p-3.5">
           <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">

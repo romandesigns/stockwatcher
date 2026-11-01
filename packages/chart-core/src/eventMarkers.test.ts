@@ -35,6 +35,22 @@ describe("server-placed event markers (Insights ticker page)", () => {
     expect(rects[1]?.kind === "rect" && rects[1].fill).toBe(DEFAULT_CHART_THEME.alert);
   });
 
+  test("markers in the same bar never cover each other: the later one is lifted, with a leader to its point", () => {
+    const model = computeChartModel(state, vp, size);
+    const two: EventMarker[] = [{ kind: "alert", at, price: 2.5, n: 1 }, { kind: "alert", at: at + 21_000, price: 2.51, n: 2 }];
+    const list = layoutEventMarkers(model, two, DEFAULT_CHART_THEME);
+    const dots = list.flatMap((p) => (p.kind === "rect" ? [{ x: p.x + p.w / 2, y: p.y + p.h / 2, r: p.w / 2 }] : []));
+    expect(dots).toHaveLength(2);
+    expect(dots[0]!.y).toBeCloseTo(priceY(model.price!, 2.5));
+    expect(Math.hypot(dots[0]!.x - dots[1]!.x, dots[0]!.y - dots[1]!.y)).toBeGreaterThanOrEqual(dots[0]!.r * 2);
+    expect(dots[1]!.y).toBeLessThan(dots[0]!.y);
+    const leader = list.find((p) => p.kind === "line");
+    expect(leader?.kind === "line" && leader.y1).toBeCloseTo(priceY(model.price!, 2.51));
+    // Apart already: nothing moves and no leader is drawn.
+    const apart = layoutEventMarkers(model, [alert, missed], DEFAULT_CHART_THEME);
+    expect(apart.some((p) => p.kind === "line")).toBe(false);
+  });
+
   test("the chart layout draws them from its state", () => {
     const list = layout({ ...state, eventMarkers: [alert] }, vp, DEFAULT_CHART_THEME, size);
     expect(list.some((p) => p.kind === "text" && p.text === "3" && p.layer === "overlay")).toBe(true);
