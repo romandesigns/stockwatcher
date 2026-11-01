@@ -1,5 +1,5 @@
 import type { ChartMessage, IndicatorDemand, OrderCancel, ServerIndicatorsChannel, OrderModify, OrderPlace, PaperMessage, PaperState, ReplayControl, Timeframe } from "@stockwatcher/chart-core";
-import type { DetectionChannel, FavoritesChannel, MoversChannel, PressureChannel, QuoteChannel, QuoteSearchChannel, RocketChannel, RossChannel, NoticesChannel, SymbolsChannel, TickerChannel } from "@stockwatcher/shared";
+import type { DetectionChannel, FavoritesChannel, MoversChannel, PressureChannel, QuoteSearchChannel, RocketChannel, RossChannel, NoticesChannel, SymbolsChannel, TickerChannel } from "@stockwatcher/shared";
 
 export interface ChartSubscription {
   symbol: string;
@@ -32,11 +32,8 @@ export interface ChartFeed {
   control(cmd: ReplayCommand): void;
   /** The simulated paper broker; absent (a test fake), trading stays off. */
   readonly paper?: PaperChannel;
-  /** The server's live quote board for the ticker search; absent, its rows show no quote.
-   *  Subscribing opts the connection in. */
-  readonly quotes?: QuoteChannel;
-  /** Searches ranked on the server (`quotes.search.v1`; server feed only). While `meta().available`
-   *  the ticker search uses it instead of opening the whole `quotes` board. */
+  /** Searches ranked on the server (`quotes.search.v1`; server feed only): the ticker search's
+   *  rows. The web never opens the whole quote board. */
   readonly quoteSearch?: QuoteSearchChannel;
   /** The server's Halt watcher board (server feed only); subscribing opts the connection in. */
   readonly pressure?: PressureChannel;

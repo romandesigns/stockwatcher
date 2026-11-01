@@ -9,18 +9,14 @@ import {
   MOCK_TICKERS,
   quoteSearchQuery,
   refreshTickerRows,
-  searchTickers,
   serverTickerRows,
   TICKER_SECTION_TITLES,
-  tickerUniverse,
   visibleTickerFilterGroups,
   withSearchQuotes,
-  type QuoteChannel,
   type QuoteSearchChannel,
   type TickerFilterId,
   type TickerRow,
 } from "@stockwatcher/shared";
-import { useQuoteBoard } from "../feed/useQuoteBoard.ts";
 import { useQuoteSearch, useQuoteSearchMeta } from "../feed/useQuoteSearch.ts";
 import { StarButton } from "../favorites/StarButton.tsx";
 
@@ -116,8 +112,6 @@ export interface TickerSearchProps {
   onOpenChange: (open: boolean) => void;
   /** The server's candidates (openable symbols). */
   symbols: readonly string[];
-  /** The feed's live quote board; subscribed only while the panel is open, and only when the server cannot rank searches itself (`search`). */
-  quotes?: QuoteChannel;
   /** Searches ranked on the server (`quotes.search.v1`): the top rows and the query's matches come down instead of the whole board. */
   search?: QuoteSearchChannel;
   /** Append the mock universe (fixture data only: noise next to a real day). */
@@ -145,7 +139,7 @@ export interface TickerSearchProps {
  * mock universe, fixture sources only) are shown, labelled, and cannot be
  * opened.
  */
-export function TickerSearch({ open, onOpenChange, symbols, quotes, search, mock, current, recents, onSelect, anchor }: TickerSearchProps) {
+export function TickerSearch({ open, onOpenChange, symbols, search, mock, current, recents, onSelect, anchor }: TickerSearchProps) {
   // Where the pill is on screen when the panel opens (null: not anchored, or not measured yet).
   const [box, setBox] = useState<{ left: number; top: number; width: number } | null>(null);
   useLayoutEffect(() => {
@@ -160,24 +154,24 @@ export function TickerSearch({ open, onOpenChange, symbols, quotes, search, mock
   const [limit, setLimit] = useState(PAGE);
   // Recently opened shows RECENTS_COLLAPSED tickers until "See more" (owner, 2026-10-19).
   const [recentsExpanded, setRecentsExpanded] = useState(false);
-  // A server that ranks searches (quotes.search.v1) sends the top rows and the query's matches;
-  // only an older one still needs the whole board, filtered and sorted here.
+  // The server ranks searches (quotes.search.v1) and sends the top rows and the query's matches.
+  // The web always ships with its server, so the whole-board scan an older one needed is gone
+  // (the phone's search sheet keeps it for installed builds); until the welcome says so the
+  // search is held by the channel and sent on connect.
   const meta = useQuoteSearchMeta(search);
-  const server = meta.available;
-  const board = useQuoteBoard(quotes, open && !server);
   // Filters persist between openings (unlike the query): they are a way of working, not a search.
   const [filters, setFilters] = useState<ReadonlySet<TickerFilterId>>(new Set());
   // The fuzzy pool: the candidates named from the server's directory (asked for at an opening
-  // when a candidate is missing from it), or the whole board's rows.
-  const universe = useMemo(() => (server ? directoryUniverse(symbols, meta.directory, mock ? MOCK_TICKERS : []) : tickerUniverse(symbols, board, { mock })), [server, symbols, meta.directory, board, mock]);
+  // when a candidate is missing from it).
+  const universe = useMemo(() => directoryUniverse(symbols, meta.directory, mock ? MOCK_TICKERS : []), [symbols, meta.directory, mock]);
   // Asked when it turns stale while open (an opening, a candidate entering), not per candidate.
-  const directoryMissing = server && directoryStale(meta.directory, symbols);
+  const directoryMissing = meta.available && directoryStale(meta.directory, symbols);
   useEffect(() => {
     if (open && directoryMissing) search?.requestDirectory();
   }, [open, directoryMissing, search]);
   const searchQuery = useMemo(() => quoteSearchQuery(universe, query, filters, recents, limit), [universe, query, filters, recents, limit]);
-  const results = useQuoteSearch(search, open && server, "search", searchQuery);
-  const tickers = useMemo(() => (server ? withSearchQuotes(universe, results) : universe), [server, universe, results]);
+  const results = useQuoteSearch(search, open, "search", searchQuery);
+  const tickers = useMemo(() => withSearchQuotes(universe, results), [universe, results]);
   const groups = useMemo(() => visibleTickerFilterGroups(tickers), [tickers]);
   const toggleFilter = (id: TickerFilterId) => {
     setFilters((f) => {
@@ -212,11 +206,11 @@ export function TickerSearch({ open, onOpenChange, symbols, quotes, search, mock
   // `open` is in the key so each opening picks up the recents (another device may have changed them).
   // Ranked by the server: once more per snapshot (the answer to a new query, filter or limit),
   // never on its once-a-second updates.
-  const rankKey = [open, query, [...filters].sort().join(","), server ? `s${results.snapshots}` : board.size > 0, recentsExpanded].join("|");
+  const rankKey = [open, query, [...filters].sort().join(","), `s${results.snapshots}`, recentsExpanded].join("|");
   const [rank, setRank] = useState<{ key: string; rows: TickerRow[] }>({ key: "", rows: [] });
   let ranked = rank.rows;
   if (rank.key !== rankKey) {
-    ranked = server ? serverTickerRows(tickers, results, query, filters, recents, { recentsExpanded }) : searchTickers(tickers, query, filters, recents, { recentsExpanded });
+    ranked = serverTickerRows(tickers, results, query, filters, recents, { recentsExpanded });
     setRank({ key: rankKey, rows: ranked });
   }
   // Titles whenever there is no query: Recently opened stays on top with filters on.
@@ -225,8 +219,8 @@ export function TickerSearch({ open, onOpenChange, symbols, quotes, search, mock
   const rows = useMemo(() => refreshTickerRows(ranked, tickers, grouped, filtered), [ranked, tickers, grouped, filtered]);
   const shown = rows.length > limit ? rows.slice(0, limit) : rows;
   // The server holds more ranked rows than it sent: scrolling to the end asks for the next page.
-  const moreOnServer = server && !query.trim() && results.rank.length < results.total;
-  const count = server && !query.trim() ? Math.max(rows.length, results.total) : rows.length;
+  const moreOnServer = !query.trim() && results.rank.length < results.total;
+  const count = !query.trim() ? Math.max(rows.length, results.total) : rows.length;
   const found = activeSym ? rows.findIndex((r) => r.item.symbol === activeSym) : 0;
   const active = Math.max(0, found);
 

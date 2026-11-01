@@ -1,7 +1,7 @@
 // The ticker search ranked on the server (quotes.search.v1, shared tickers/quoteSearch.ts): whether
 // the connected server does it, and one search's live rows while `enabled`. Opening the search
 // sends `quotes.search`; closing it sends `quotes.search.stop`, so the server ranks nothing nobody
-// is looking at (useQuoteBoard's rule for the whole board it replaces).
+// is looking at.
 import { EMPTY_SEARCH_STATE, type QuoteSearchChannel, type QuoteSearchHandle, type QuoteSearchMeta, type QuoteSearchQuery, type QuoteSearchState } from "@stockwatcher/shared";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 

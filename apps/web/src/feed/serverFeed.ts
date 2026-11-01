@@ -1,5 +1,5 @@
 import { createChartRouter, parseChartMessage, parsePaperMessage, createServerIndicators, type ChartIndicatorsSet, type ChartSubscribe, type ChartUnsubscribe, type PaperMessage, type PaperState, type ReplayControl } from "@stockwatcher/chart-core";
-import { createDetectionChannel, createFavoritesChannel, createMoversChannel, createPressureChannel, createQuoteChannel, createQuoteSearchChannel, createRocketChannel, createRossChannel, createNoticesChannel, createSymbolsChannel, createTickerChannel, createWsClient, hasFeature, CLOCK_FEATURE, INDICATORS_FEATURE, INSIGHTS_TICKER_FEATURE, INDICATORS_LIMIT_FEATURE, LEVELS_FEATURE, NOTICES_FEATURE, QUOTE_SEARCH_FEATURE, serverWsUrl, SYMBOLS_FEATURE, ZONES_FEATURE, type AlertsServerMessage, type ConnectionStatus, type MarketSource, type SettingsSync, type WebSocketLike } from "@stockwatcher/shared";
+import { createDetectionChannel, createFavoritesChannel, createMoversChannel, createPressureChannel, createQuoteSearchChannel, createRocketChannel, createRossChannel, createNoticesChannel, createSymbolsChannel, createTickerChannel, createWsClient, hasFeature, CLOCK_FEATURE, INDICATORS_FEATURE, INSIGHTS_TICKER_FEATURE, INDICATORS_LIMIT_FEATURE, LEVELS_FEATURE, NOTICES_FEATURE, QUOTE_SEARCH_FEATURE, serverWsUrl, SYMBOLS_FEATURE, ZONES_FEATURE, type AlertsServerMessage, type ConnectionStatus, type MarketSource, type SettingsSync, type WebSocketLike } from "@stockwatcher/shared";
 import type { RunnersNotifier } from "../notify/runnersNotify.ts";
 import type { ChartFeed, PaperCommand, ReplayCommand } from "./types.ts";
 
@@ -26,9 +26,8 @@ export interface ServerFeedOptions {
  * shared's parseServerMessage only knows hello/welcome/ping/pong/error and
  * drops everything else, so this wraps the socket and tees raw frames to
  * chart-core's parser. When the protocol is frozen, chart.* types belong in
- * shared's ServerMessage union and this tee can go. quotes.* frames are
- * shared's own and go straight through to it (opted in only while a ticker
- * search is open: see `quotes`).
+ * shared's ServerMessage union and this tee can go. quotes.search.* frames
+ * are shared's own and go straight through to it.
  */
 export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
   // Chart frames go only to the slots they belong to (chart-core chartRouter.ts): one socket
@@ -40,9 +39,8 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
   let paperState: PaperState | null = null;
 
   // Late-bound: the channel is built before the client it drives.
-  const quotes = createQuoteChannel({ subscribe: () => client.subscribeQuotes(), unsubscribe: () => client.unsubscribeQuotes() });
   // The ticker search ranked on the server (quotes.search.v1): only the top rows and the pinned
-  // matches come down, instead of the whole board above (still used with an older server).
+  // matches come down. The whole quote board an older server needed is never opened by the web.
   const quoteSearch = createQuoteSearchChannel({ send: (m) => client.send(m) });
   // The dashboard's Halt watcher, opted in while its panel is mounted.
   const pressure = createPressureChannel({ subscribe: () => client.subscribePressure(), unsubscribe: () => client.unsubscribePressure() });
@@ -109,7 +107,6 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
         quoteSearch.resend();
       }
     },
-    onQuotes: (m) => quotes.apply(m),
     onMessage: (m) => {
       if (m.type === "quotes.search.snapshot" || m.type === "quotes.search.update" || m.type === "quotes.directory") quoteSearch.apply(m);
       else if (m.type === "runners.event") rocket.applyEvent(m);
@@ -195,7 +192,6 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
       },
       send: (cmd) => sendRaw(cmd),
     },
-    quotes,
     quoteSearch,
     pressure,
     ross,

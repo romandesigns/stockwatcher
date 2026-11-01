@@ -1,5 +1,5 @@
 // The server's Halt watcher board while the panel is mounted: subscribing opts the connection in
-// to pressure.* frames, the last unsubscribe opts it out (useQuoteBoard's pattern).
+// to pressure.* frames, the last unsubscribe opts it out (the quote board's pattern).
 import { EMPTY_PRESSURE_BOARD, EMPTY_PRESSURE_STATUS, type PressureBoard, type PressureChannel, type PressureStatus } from "@stockwatcher/shared";
 import { useCallback, useSyncExternalStore } from "react";
 

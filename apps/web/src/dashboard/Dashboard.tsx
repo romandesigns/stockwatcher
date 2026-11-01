@@ -216,7 +216,7 @@ export function Dashboard({ choice, feed }: Connection) {
         </DashboardPanels>
       </ScrollArea>
 
-      <TickerSearch open={searchOpen} onOpenChange={app.setSearchOpen} symbols={candidates.symbols} quotes={feed.quotes} search={feed.quoteSearch} mock={current.fixtureData} current={shown[selected] ?? ""} recents={recents} onSelect={openTickerChart} anchor={hasRail ? pillRef : undefined} />
+      <TickerSearch open={searchOpen} onOpenChange={app.setSearchOpen} symbols={candidates.symbols} search={feed.quoteSearch} mock={current.fixtureData} current={shown[selected] ?? ""} recents={recents} onSelect={openTickerChart} anchor={hasRail ? pillRef : undefined} />
     </div>
   );
 }

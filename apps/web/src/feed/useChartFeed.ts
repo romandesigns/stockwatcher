@@ -28,7 +28,7 @@ export function useChartFeed(feed: ChartFeed, symbol: string, timeframe: Timefra
   // One notification per display frame (chart-core `frameScheduler`): a candle frame and the
   // indicator, levels and zones frames that follow it render together, once, instead of once per
   // socket message with the candle drawn over the previous values in between.
-  const store = useMemo(() => new ChartStore({ maxCandles: 5000, schedule: frameScheduler }), []);
+  const store = useMemo(() => new ChartStore({ maxCandles: 5000, schedule: frameScheduler, serverProfileFigures: true }), []);
   useEffect(() => () => store.dispose(), [store]);
   const [tape, setTape] = useState<TapeTrade[]>([]);
   // Read by the subscribe effect without re-subscribing on every toggle; `sent` is what the

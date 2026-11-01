@@ -121,6 +121,19 @@ describe("snapshot and increments", () => {
     expect(s.profile!.poc).toBe(3.21);
   });
 
+  test("serverProfileFigures (the web): no local recompute, a frame without figures keeps the held ones", () => {
+    const opts = { serverProfileFigures: true };
+    let s = applySnapshot(undefined, fixtureSnapshot(), opts);
+    const held = { total: s.profile!.total, poc: s.profile!.poc, valueArea: s.profile!.valueArea };
+    const last = s.candles.at(-1)!;
+    s = applyIncrement(s, update(last, [{ p: 3.21, v: 9000 }]), opts);
+    expect(s.profile!.rows.find((r) => r.p === 3.21)!.v).toBe(9000);
+    expect(s.profile).toMatchObject(held);
+    const figures = { total: 9100, poc: 3.21, valueArea: { low: 3.21, high: 3.21, v: 9000 } };
+    s = applyIncrement(s, { ...update(last, [{ p: 3.21, v: 9000 }]), ...figures }, opts);
+    expect(s.profile).toMatchObject(figures);
+  });
+
   test("ring buffer drops the oldest candles and their gaps", () => {
     const s = applySnapshot(undefined, fixtureSnapshot("1m", 20, [2, 15]), { maxCandles: 10 });
     expect(s.candles).toHaveLength(10);

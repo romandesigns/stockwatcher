@@ -6,9 +6,6 @@ import { EMPTY_SYMBOLS, type SymbolsChannel, type SymbolsState } from "@stockwat
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { probeServer, type ServerSymbols, type SourceChoice } from "./source.ts";
 
-/** The poll period, only for a server that does not push the list (no `symbols.v1`). */
-export const CANDIDATE_REFRESH_MS = 10_000;
-
 export interface Candidates {
   symbols: string[];
   band: ServerSymbols["priceBand"];
@@ -24,10 +21,10 @@ const NOOP = () => {};
  * or another) the list is fetched at once, so a symbol the new day lacks is replaced right away
  * rather than leaving the old day's chart on screen.
  *
- * `channel` is the feed's `symbols` (crates/server/src/symbols.rs): once the server's welcome says
- * it pushes the list, the pushed list is the answer and nothing polls; `/api/symbols` is then only
- * the first probe. Against an older server (or before the first welcome) it polls every 10 s as
- * it always did.
+ * `channel` is the feed's `symbols` (crates/server/src/symbols.rs): the server pushes the list
+ * (`symbols.v1`) and the pushed list is the answer; `/api/symbols` is only the first probe (and a
+ * day change's). Nothing polls: the web always ships with its server, so the 10 s poll an older
+ * server needed is gone (the phone keeps its own for installed builds).
  */
 export function useCandidates(choice: SourceChoice, day: string | null = null, channel?: SymbolsChannel): Candidates {
   const [state, setState] = useState<Candidates>({ symbols: choice.symbols, band: undefined, screened: undefined });
@@ -59,17 +56,6 @@ export function useCandidates(choice: SourceChoice, day: string | null = null, c
       alive = false;
     };
   }, [refresh, day]);
-  // The poll, only while the list is not pushed.
-  useEffect(() => {
-    if (live) return;
-    let alive = true;
-    const id = setInterval(() => refresh(() => alive), CANDIDATE_REFRESH_MS);
-    return () => {
-      alive = false;
-      clearInterval(id);
-    };
-  }, [refresh, live]);
-
   const latest = live ? pushed.latest : null;
   const fromPush = useMemo<Candidates | null>(() => (latest ? { symbols: latest.symbols, band: latest.priceBand, screened: latest.screened, server: latest } : null), [latest]);
   return fromPush ?? state;

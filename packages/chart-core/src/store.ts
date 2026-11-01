@@ -79,6 +79,14 @@ export interface StoreOptions {
    * new candle under the previous values. The hosts pass `frameScheduler`.
    */
   schedule?: (flush: () => void) => () => void;
+  /**
+   * The profile's total, POC and value area come only from the server (every increment with
+   * profile rows carries them since the profile-figures change). The web sets it: it always
+   * ships with its server, so the recompute in `withDerived` only ever ran against servers older
+   * than it. An increment without them keeps the figures held. The phone leaves it off while
+   * installed builds may meet an older server.
+   */
+  serverProfileFigures?: boolean;
 }
 
 /**
@@ -194,12 +202,15 @@ function supersedeGaps(gaps: Gap[], t: number, tfMs: number): void {
 
 /**
  * The profile after a change. `figures` are the server's (an increment with `total`): taken as
- * sent, so the client only merges rows. Without them (an older server) total, POC and value area
- * are recomputed here, the same rules as crates/chart-engine/src/profile.rs.
+ * sent, so the client only merges rows. Without them, `held` (the profile's figures so far) when
+ * the host takes figures from the server only (StoreOptions.serverProfileFigures, the web), else
+ * (a phone that may meet an older server) total, POC and value area are recomputed here, the
+ * same rules as crates/chart-engine/src/profile.rs.
  */
-function withDerived(p: Omit<ProfileWire, "total" | "poc" | "valueArea">, figures?: ProfileFigures): ProfileWire {
+function withDerived(p: Omit<ProfileWire, "total" | "poc" | "valueArea">, figures?: ProfileFigures, held?: Pick<ProfileWire, "total" | "poc" | "valueArea"> | null): ProfileWire {
   const rows = normalizeRows(p.rows, p.bin);
   if (figures && typeof figures.total === "number") return { bin: p.bin, anchor: p.anchor, rows, total: figures.total, poc: figures.poc ?? null, valueArea: figures.valueArea ?? null };
+  if (held !== undefined) return { bin: p.bin, anchor: p.anchor, rows, total: held?.total ?? 0, poc: held?.poc ?? null, valueArea: held?.valueArea ?? null };
   return { bin: p.bin, anchor: p.anchor, rows, total: profileTotal(rows), poc: pointOfControl(rows), valueArea: valueArea(rows, p.bin) };
 }
 
@@ -231,7 +242,7 @@ export function applySnapshot(prev: Series | undefined, snap: ChartSnapshot, opt
  * (e.g. a late print from premarket arriving just after the open); rows for a
  * newer session start that session's profile.
  */
-function mergeProfile(s: Series, session: string, bin: number, rows: readonly ProfileRow[], figures?: ProfileFigures): void {
+function mergeProfile(s: Series, session: string, bin: number, rows: readonly ProfileRow[], figures?: ProfileFigures, serverOnly = false): void {
   const current = s.profile;
   if (current && !sameBin(current.bin, bin)) return; // a stale subscription's bin
   if (!current || current.anchor !== session) {
@@ -239,14 +250,14 @@ function mergeProfile(s: Series, session: string, bin: number, rows: readonly Pr
     const curStart = s.session?.start ?? -Infinity;
     if (current && (!next || next.start <= curStart)) return;
     if (rows.length === 0 && current) return;
-    s.profile = withDerived({ bin, anchor: session, rows: [] });
+    s.profile = withDerived({ bin, anchor: session, rows: [] }, undefined, serverOnly ? null : undefined);
     if (next) s.session = next;
   }
   if (rows.length === 0) return;
   const byKey = new Map<number, ProfileRow>();
   for (const r of s.profile!.rows) byKey.set(Math.round(r.p / bin), r);
   for (const r of rows) byKey.set(Math.round(r.p / bin), { p: r.p, v: r.v });
-  s.profile = withDerived({ bin, anchor: session, rows: [...byKey.values()] }, figures);
+  s.profile = withDerived({ bin, anchor: session, rows: [...byKey.values()] }, figures, serverOnly ? s.profile : undefined);
 }
 
 /** Applies one increment, returning a new Series object. */
@@ -262,7 +273,7 @@ export function applyIncrement(prev: Series, inc: ChartIncrement, opts: StoreOpt
   } else {
     upsert(next.gaps, inc.gap);
   }
-  mergeProfile(next, inc.session, inc.profileBin, inc.profile, inc);
+  mergeProfile(next, inc.session, inc.profileBin, inc.profile, inc, opts.serverProfileFigures === true);
   trim(next, opts.maxCandles ?? DEFAULT_MAX);
   return next;
 }
