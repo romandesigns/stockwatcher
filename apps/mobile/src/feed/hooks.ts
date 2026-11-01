@@ -266,23 +266,30 @@ export function useCandidates(token: string | null, day: string | null = null, s
   const get = useCallback((): SymbolsState => (channel ? channel.get() : EMPTY_SYMBOLS), [channel]);
   const pushed = useSyncExternalStore(subscribe, get);
   const live = pushed.available === true;
+  // The answer, or null (offline, server down, a bad body: keep the last list; the socket status
+  // says so). It sets no state itself: each effect below does, once the answer is in and only if
+  // it is still mounted, so no state is ever set synchronously inside an effect.
+  const load = useCallback(async (): Promise<Candidates | null> => {
+    try {
+      const res = await authenticatedFetch(`${SERVER_URL}${withMarketSource("/api/symbols", source)}`, token);
+      if (!res.ok) return null;
+      const d = (await res.json()) as { symbols?: unknown; fixture?: unknown; session?: unknown };
+      return Array.isArray(d.symbols) ? { symbols: d.symbols.filter((x): x is string => typeof x === "string"), fixture: d.fixture === true, session: parseLiveSession(d.session) } : null;
+    } catch {
+      return null;
+    }
+  }, [token, source]);
   const refresh = useCallback(
-    async (alive: () => boolean) => {
-      try {
-        const res = await authenticatedFetch(`${SERVER_URL}${withMarketSource("/api/symbols", source)}`, token);
-        if (!res.ok) return;
-        const d = (await res.json()) as { symbols?: unknown; fixture?: unknown; session?: unknown };
-        if (alive() && Array.isArray(d.symbols)) setState({ symbols: d.symbols.filter((x): x is string => typeof x === "string"), fixture: d.fixture === true, session: parseLiveSession(d.session) });
-      } catch {
-        // Offline or server down: keep the last list; the socket status says so.
-      }
-    },
-    [token, source],
+    (alive: () => boolean) =>
+      void load().then((c) => {
+        if (c && alive()) setState(c);
+      }),
+    [load],
   );
   // The first fetch, and again on a day change: always, pushed or not.
   useEffect(() => {
     let alive = true;
-    void refresh(() => alive);
+    refresh(() => alive);
     return () => {
       alive = false;
     };
@@ -291,7 +298,7 @@ export function useCandidates(token: string | null, day: string | null = null, s
   useEffect(() => {
     if (live) return;
     let alive = true;
-    const id = setInterval(() => void refresh(() => alive), 10_000);
+    const id = setInterval(() => refresh(() => alive), 10_000);
     return () => {
       alive = false;
       clearInterval(id);

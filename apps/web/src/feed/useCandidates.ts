@@ -36,19 +36,25 @@ export function useCandidates(choice: SourceChoice, day: string | null = null, c
   const pushed = useSyncExternalStore(subscribe, get, get);
   const live = pushed.available === true;
 
+  // The probe's answer, or null; the state is set from the promise below (only while mounted),
+  // never synchronously inside an effect.
+  const load = useCallback(async (): Promise<Candidates | null> => {
+    const probe = await probeServer(fetch, 2500, getToken(), choice.market);
+    if (!probe.ok) return null;
+    const d = probe.data;
+    return { symbols: Array.isArray(d.symbols) ? d.symbols : [], band: d.priceBand, screened: d.screened, server: d };
+  }, [choice.market]);
   const refresh = useCallback(
-    async (alive: () => boolean) => {
-      const probe = await probeServer(fetch, 2500, getToken(), choice.market);
-      if (!alive() || !probe.ok) return;
-      const d = probe.data;
-      setState({ symbols: Array.isArray(d.symbols) ? d.symbols : [], band: d.priceBand, screened: d.screened, server: d });
-    },
-    [choice.market],
+    (alive: () => boolean) =>
+      void load().then((c) => {
+        if (c && alive()) setState(c);
+      }),
+    [load],
   );
   // The first probe, and again on a day change: always, pushed or not.
   useEffect(() => {
     let alive = true;
-    void refresh(() => alive);
+    refresh(() => alive);
     return () => {
       alive = false;
     };
@@ -57,7 +63,7 @@ export function useCandidates(choice: SourceChoice, day: string | null = null, c
   useEffect(() => {
     if (live) return;
     let alive = true;
-    const id = setInterval(() => void refresh(() => alive), CANDIDATE_REFRESH_MS);
+    const id = setInterval(() => refresh(() => alive), CANDIDATE_REFRESH_MS);
     return () => {
       alive = false;
       clearInterval(id);
