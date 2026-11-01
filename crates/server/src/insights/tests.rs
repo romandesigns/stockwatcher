@@ -493,6 +493,25 @@ fn the_package_lists_alerts_outcomes_and_missed_setups() {
         v["focus"]
     );
     assert_eq!(v["focus"]["reason"], "alerts");
+    // The chart's context comes with the bars, by the live chart's rules (the page computes
+    // nothing): the day's levels and opening range, both zone sets and the session schedule.
+    let ctx = &v["chart"];
+    assert_eq!(ctx["levels"]["type"], "chart.levels");
+    assert_eq!(ctx["levels"]["symbol"], SYM);
+    assert_eq!(ctx["levels"]["day"], fday().to_string());
+    assert!(ctx["levels"]["hod"].as_f64().is_some(), "{}", ctx["levels"]);
+    assert_eq!(ctx["zones"]["type"], "chart.zones");
+    assert_eq!(ctx["zones"]["rth"], false);
+    assert_eq!(ctx["zonesRth"]["rth"], true);
+    assert!(
+        ctx["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["id"] == format!("{}/regular", fday())),
+        "{}",
+        ctx["sessions"]
+    );
     for m in v["markers"]
         .as_array()
         .unwrap()

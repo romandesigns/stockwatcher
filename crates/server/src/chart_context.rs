@@ -63,7 +63,7 @@ use std::time::{Duration, Instant};
 
 use chart_engine::indicators::Bar;
 use chart_engine::levels::{KeyLevels, OpeningRange, ranges_may_change};
-use chart_engine::wire::ChartUpdate;
+use chart_engine::wire::{CandleWire, ChartUpdate};
 use chart_engine::{ChartEngine, Timeframe};
 use chrono::NaiveDate;
 use market_events::session::SessionId;
@@ -272,6 +272,55 @@ fn zones_json(key: &ChartKey, zones: &[AutoZone]) -> String {
             .collect(),
     })
     .expect("zone frames serialize")
+}
+
+/// The chart context of candles that are not in the engine (the Insights ticker page's finished
+/// day, crate::insights::package): the `chart.levels` frame, the `chart.zones` frames with
+/// extended hours on and off, and the session schedule, by the live chart's own rules, so that
+/// page draws levels, ranges and zones from the server like every other chart instead of reading
+/// them off its candles. Each bar's session is the NYSE calendar's (`classify`); `prev_close` is
+/// the official close of the day before, when known.
+pub fn day_context(
+    symbol: &str,
+    timeframe: Timeframe,
+    bars: &[CandleWire],
+    prev_close: Option<f64>,
+) -> serde_json::Value {
+    let sessions: Vec<(SessionId, CandleWire)> = bars
+        .iter()
+        .filter_map(|c| {
+            market_events::session::classify(market_events::UnixNanos::from_millis(c.t))
+                .map(|s| (s, c.clone()))
+        })
+        .collect();
+    let levels = chart_engine::levels::key_levels(sessions.iter().rev().cloned());
+    let ranges = chart_engine::levels::opening_ranges(sessions.iter().cloned());
+    let official = move |_: &str, _: NaiveDate| prev_close;
+    let key = LevelsKey {
+        symbol: symbol.to_string(),
+        timeframe,
+    };
+    let zones = |rth: bool| {
+        let cs: Vec<CandleWire> = sessions
+            .iter()
+            .filter(|(s, _)| Bar::keep(*s, rth))
+            .map(|(_, c)| c.clone())
+            .collect();
+        let key = ChartKey {
+            symbol: symbol.to_string(),
+            timeframe,
+            rth,
+        };
+        serde_json::from_str::<serde_json::Value>(&zones_json(&key, &auto_zones(&cs)))
+            .expect("zone frames are JSON")
+    };
+    serde_json::json!({
+        "levels": serde_json::from_str::<serde_json::Value>(&levels_json(&key, levels.as_ref(), &ranges, &official))
+            .expect("level frames are JSON"),
+        "zones": zones(false),
+        "zonesRth": zones(true),
+        "sessions": chart_engine::session_schedule(sessions.iter().map(|(s, _)| s.date), None),
+    })
 }
 
 fn compute_zones(engine: &ChartEngine, key: &ChartKey) -> Vec<AutoZone> {

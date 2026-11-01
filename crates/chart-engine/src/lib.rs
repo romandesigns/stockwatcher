@@ -129,7 +129,7 @@ pub mod wire;
 pub use config::EngineConfig;
 pub use engine::{
     ChartEngine, DayExtremes, DayHigh, DayLine, EngineCost, RevisedPrint, Revision,
-    VALUE_AREA_PERCENT,
+    VALUE_AREA_PERCENT, session_schedule,
 };
 pub use quality::DataQuality;
 pub use timeframe::Timeframe;

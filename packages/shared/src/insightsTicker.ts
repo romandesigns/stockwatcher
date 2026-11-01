@@ -149,6 +149,14 @@ export interface TickerPackageWire {
   scorecard: TickerScorecardWire | null;
   halts: TickerHaltsWire | null;
   missed: TickerMissedWire[];
+  /**
+   * The chart's context over `bars`, by the live chart's rules (crates/server/src/chart_context.rs
+   * `day_context`): `levels` a `chart.levels` frame, `zones` / `zonesRth` `chart.zones` frames
+   * (extended hours on / off), `sessions` the session schedule. The frames stay raw here (this
+   * package does not know chart-core): the screens read them with chart-core `parseChartMessage`.
+   * Null from a server before it, whose page draws no levels or zones.
+   */
+  chart: { levels: unknown; zones: unknown; zonesRth: unknown; sessions: { id: string; start: number; end: number; startNs?: number; endNs?: number }[] } | null;
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -181,6 +189,7 @@ export function parseTickerPackage(raw: unknown): TickerPackageWire | null {
     scorecard: available && isObj(raw.scorecard) ? { ...(raw.scorecard as unknown as TickerScorecardWire), by_kind: arr(raw.scorecard.by_kind, isObj) } : null,
     halts: available && isObj(raw.halts) ? { ...(raw.halts as unknown as TickerHaltsWire), halts: arr(raw.halts.halts, (h) => isObj(h) && finite(h.start)) } : null,
     missed: arr<TickerMissedWire>(raw.missed, (m) => isObj(m) && typeof m.episode_id === "string" && finite(m.armed_at) && isObj(m.outcome)),
+    chart: isObj(raw.chart) ? { levels: raw.chart.levels, zones: raw.chart.zones, zonesRth: raw.chart.zonesRth, sessions: arr(raw.chart.sessions, (s) => isObj(s) && typeof s.id === "string" && finite(s.start) && finite(s.end)) } : null,
   };
 }
 

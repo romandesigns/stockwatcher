@@ -25,6 +25,10 @@
 //!   oldest first, at its reference price; each missed setup at its arming), and `focus`
 //!   (`{from, to, reason}`, epoch ms): the window the chart opens on, the move the alerts were
 //!   about rather than the whole day ([`package::focus_window`]); null only without bars.
+//!   `chart` (crate::chart_context::day_context): over those bars, by the live chart's rules,
+//!   `levels` (a `chart.levels` frame), `zones` / `zonesRth` (`chart.zones` frames, extended
+//!   hours on / off) and `sessions` (the session schedule, `sessions.v1`), so the page draws
+//!   them as sent instead of reading them off its candles.
 //! - **Notification history** (`alerts`, oldest first): the ledger's rows for the symbol with
 //!   their status ([`crate::notices::FEATURE_ROWS`]), `label`, `marker` and `outcome`: best price
 //!   after (and when, before any stop), when +5% over the alert price was first reached, the stop
@@ -81,8 +85,9 @@ use replay::ReplayInput;
 /// `insights.ticker.subscribe` or calls the endpoint.
 pub const FEATURE: &str = "insights.ticker.v1";
 
-/// The package's schema; part of the cache key.
-pub const SCHEMA: u32 = 1;
+/// The package's schema; part of the cache key. 2: `chart` (levels, zones, sessions) added, so
+/// a day cached before it is rebuilt rather than served without them.
+pub const SCHEMA: u32 = 2;
 
 /// Builds running at once (each replays a whole symbol-day).
 pub const MAX_BUILDS: usize = 2;

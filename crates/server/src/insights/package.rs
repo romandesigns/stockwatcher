@@ -683,6 +683,14 @@ pub fn build(r: &DayRecords, out: &ReplayOut) -> Value {
         "available": true,
         "stats": stats(r, &out.prints),
         "bars": out.bars,
+        // Levels, opening ranges, zones and the session schedule over those bars, by the live
+        // chart's rules (crate::chart_context::day_context): the page draws them as sent.
+        "chart": crate::chart_context::day_context(
+            &r.symbol,
+            chart_engine::Timeframe::M1,
+            &out.bars,
+            r.prev_close.map(|(_, c)| dollars(c)),
+        ),
         "focus": focus,
         "alerts": rows,
         "markers": markers,

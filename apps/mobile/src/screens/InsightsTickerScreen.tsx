@@ -1,4 +1,4 @@
-import { DEFAULT_CHART_SETTINGS, DEFAULT_LAYERS, formatEtTime12, type ChartLayers, type ChartSettings, type EventMarker } from "@stockwatcher/chart-core";
+import { dayChartContext, DEFAULT_CHART_SETTINGS, DEFAULT_LAYERS, formatEtTime12, type ChartLayers, type ChartSettings, type EventMarker } from "@stockwatcher/chart-core";
 import { CandleChart, Icon, UI } from "@stockwatcher/chart-native";
 import { NO_TICKER, tickerPageView, type TickerAlertView, type TickerMissedView, type TickerPackageWire, type TickerPageView, type TickerState, type Tone } from "@stockwatcher/shared";
 import { useNavigation, type RouteProp } from "@react-navigation/native";
@@ -107,7 +107,11 @@ function DayStep({ dir, day, onDay }: { dir: "prev" | "next"; day: string | null
 function Body({ pkg, view, wide, reducedMotion }: { pkg: TickerPackageWire; view: TickerPageView; wide: boolean; reducedMotion: boolean }) {
   const [settings, setSettings] = useState<ChartSettings>(() => ({ ...DEFAULT_CHART_SETTINGS, highLow: true }));
   const [layers, setLayers] = useState<ChartLayers>(TICKER_LAYERS);
-  const series = useMemo(() => ({ candles: pkg.bars, gaps: [], profile: null, halts: pkg.halts?.halts ?? [], prevClose: pkg.stats?.prev_close?.price ?? null }), [pkg]);
+  // The server's levels, ranges, zones and session schedule over these bars (the package's
+  // `chart`); a package from an older server has none, and the chart reads them off its candles.
+  const context = useMemo(() => dayChartContext(pkg.chart), [pkg]);
+  const series = useMemo(() => ({ candles: pkg.bars, gaps: [], profile: null, halts: pkg.halts?.halts ?? [], prevClose: pkg.stats?.prev_close?.price ?? null, ...(context.sessions ? { sessions: context.sessions } : {}) }), [pkg, context]);
+  const serverContext = pkg.chart ? { serverLevels: context.levels, serverZones: settings.extendedHours ? context.zones : context.zonesRth } : {};
   const markers = useMemo<EventMarker[]>(() => view.markers.map((m) => ({ kind: m.kind, at: m.at, price: m.price, n: m.n })), [view.markers]);
   const [later, setLater] = useState(false);
   // Tiles: two across on the cover screen, four unfolded (eight stats fill both evenly).
@@ -142,7 +146,7 @@ function Body({ pkg, view, wide, reducedMotion }: { pkg: TickerPackageWire; view
           <View style={[styles.dot, styles.ring]} />
           <Text style={styles.note}>Missed</Text>
         </View>
-        <CandleChart key={pkg.day} style={{ height: wide ? 320 : 260 }} symbol={pkg.symbol} series={series} timeframe="1m" settings={settings} onSettingsChange={setSettings} eventMarkers={markers} initialFocus={pkg.focus} layers={layers} onLayersChange={setLayers} inspector options={OPTIONS} label={`${pkg.symbol} 1 minute candles`} />
+        <CandleChart key={pkg.day} style={{ height: wide ? 320 : 260 }} symbol={pkg.symbol} series={series} timeframe="1m" settings={settings} onSettingsChange={setSettings} eventMarkers={markers} {...serverContext} initialFocus={pkg.focus} layers={layers} onLayersChange={setLayers} inspector options={OPTIONS} label={`${pkg.symbol} 1 minute candles`} />
       </View>
 
       <Section title="Notification history" note={view.alertSummary}>

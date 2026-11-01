@@ -27,11 +27,7 @@ import {
   applyPaneGesture,
   hitTest,
   paneIdsOf,
-  keyLevels,
   serverKeyLevels,
-  openingRanges,
-  autoZones,
-  type SessionRef,
   parseLayers,
   type ChartLayers,
   type Halt,
@@ -146,10 +142,6 @@ export interface ChartSeriesLike {
   /** Halts and LULD band changes (the store keeps them per symbol). */
   halts?: readonly Halt[];
   luld?: readonly LuldPoint[];
-  /** The server's official previous close (Series.prevClose), for the "Prev close" level. */
-  prevClose?: number | null;
-  /** The symbol's current session (Series.session): its end is the opening range's right edge on an early close. */
-  session?: SessionRef | null;
   /** The server's session schedule (Series.sessions, `sessions.v1`): regular hours and the shading follow it; absent = the fixed ET schedule. */
   sessions?: SessionSchedule;
 }
@@ -223,15 +215,13 @@ export interface CandleChartProps {
    */
   serverIndicators?: IndicatorValuesLike | null;
   /**
-   * The server's key levels and opening ranges (`levels.v1`): present, the chart draws them and
-   * reads nothing off its candles (null = asked, not answered yet: none drawn); absent (an older
-   * server, the fixture feed), it reads them off the candles itself (`keyLevels`, `openingRanges`).
+   * The server's key levels and opening ranges (`levels.v1`, or a package's own context): the
+   * only ones drawn. null or absent (not answered yet) = none.
    */
   serverLevels?: ChartLevels | null;
   /**
    * The server's supply/demand zones for this chart's timeframe and extended-hours setting
-   * (`zones.v1`, asked while the zones layer is on): present, drawn as sent (null = not answered
-   * yet); absent, the chart finds them itself (`autoZones`).
+   * (`zones.v1`, asked while the zones layer is on): drawn as sent; null or absent = none.
    */
   serverZones?: readonly AutoZone[] | null;
   /** This symbol's drawings. Controlled when onDrawingsChange is set. */
@@ -573,16 +563,12 @@ export function CandleChart({
   const indicatorsNeedUpdate = visibility.indicators && serverIndicators === undefined && indicatorSpecs.length > 0;
 
   const last = useMemo(() => lastCandle(slots)?.c ?? null, [slots]);
-  // The server's official previous close wins over one read off the candles (levels.ts).
-  const prevClose = series?.prevClose ?? null;
-  // The server computes levels, ranges and zones when it can (levels.v1, zones.v1); reading them
-  // off the candles here is only the fallback for an older server and the fixture feed.
-  const levels = useMemo(() => (serverLevels !== undefined ? (serverLevels ? serverKeyLevels(serverLevels) : []) : keyLevels(allSlots, prevClose)), [serverLevels, allSlots, prevClose]);
-  // Computed only while the layer is on: one pass over the slots per update otherwise wasted.
-  const session = series?.session ?? null;
-  const ranges = useMemo(() => (!layers.openingRange ? [] : serverLevels !== undefined ? (serverLevels?.openingRanges ?? []) : openingRanges(allSlots, session)), [layers.openingRange, serverLevels, allSlots, session]);
-  // Read off the shown timeframe's candles, so switching timeframe re-finds them (autoZones.ts).
-  const zones = useMemo(() => (!layers.autoZones ? [] : serverZones !== undefined ? (serverZones ?? []) : autoZones(slots)), [layers.autoZones, serverZones, slots]);
+  // Levels, ranges and zones are the server's only (levels.v1, zones.v1, or a package's own
+  // context): the web always ships with its server, so it never reads them off its candles (the
+  // phone's chart still does, for installed builds on an older server). None sent, none drawn.
+  const levels = useMemo(() => (serverLevels ? serverKeyLevels(serverLevels) : []), [serverLevels]);
+  const ranges = useMemo(() => (!layers.openingRange ? [] : (serverLevels?.openingRanges ?? [])), [layers.openingRange, serverLevels]);
+  const zones = useMemo(() => (!layers.autoZones ? [] : (serverZones ?? [])), [layers.autoZones, serverZones]);
   // The baseline chart's reference: the previous close (the server's, else the one read off the candles).
   const baselinePrice = useMemo(() => levels.find((l) => l.id === "prevClose")?.price ?? null, [levels]);
   const fills = useMemo(() => (trading?.state?.fills ?? []).filter((f) => f.symbol === symbol), [trading?.state, symbol]);

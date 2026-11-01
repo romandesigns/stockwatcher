@@ -1,4 +1,4 @@
-import { DEFAULT_CHART_SETTINGS, DEFAULT_LAYERS, formatEtTime12, type ChartLayers, type ChartSettings, type EventMarker } from "@stockwatcher/chart-core";
+import { dayChartContext, DEFAULT_CHART_SETTINGS, DEFAULT_LAYERS, formatEtTime12, type ChartLayers, type ChartSettings, type EventMarker } from "@stockwatcher/chart-core";
 import { CandleChart, Icon } from "@stockwatcher/chart-web";
 import { cn, Collapsible, CollapsibleContent, CollapsibleTrigger, ScrollArea, Tip } from "@stockwatcher/chart-web/ui";
 import { tickerPageHash, tickerPageView, type TickerAlertView, type TickerChannel, type TickerMissedView, type TickerPackageWire, type TickerPageView, type TickerRequest, type Tone } from "@stockwatcher/shared";
@@ -145,7 +145,10 @@ function Stats({ view }: { view: TickerPageView }) {
 function DayChart({ pkg, view, focus }: { pkg: TickerPackageWire; view: TickerPageView; focus: number | null }) {
   const [settings, setSettings] = useState<ChartSettings>(() => ({ ...DEFAULT_CHART_SETTINGS, highLow: true }));
   const [layers, setLayers] = useState<ChartLayers>(TICKER_LAYERS);
-  const series = useMemo(() => ({ candles: pkg.bars, gaps: [], profile: null, halts: pkg.halts?.halts ?? [], prevClose: pkg.stats?.prev_close?.price ?? null }), [pkg]);
+  // Levels, ranges, zones and the session schedule are the server's, computed over these bars
+  // (the package's `chart`); the chart reads nothing off its candles.
+  const context = useMemo(() => dayChartContext(pkg.chart), [pkg]);
+  const series = useMemo(() => ({ candles: pkg.bars, gaps: [], profile: null, halts: pkg.halts?.halts ?? [], ...(context.sessions ? { sessions: context.sessions } : {}) }), [pkg, context]);
   const markers = useMemo<EventMarker[]>(() => view.markers.map((m) => ({ kind: m.kind, at: m.at, price: m.price, n: m.n, focused: m.kind === "alert" && m.n === focus })), [view.markers, focus]);
   const sent = view.markers.filter((m) => m.kind === "alert").length;
   const missed = view.markers.length - sent;
@@ -174,6 +177,8 @@ function DayChart({ pkg, view, focus }: { pkg: TickerPackageWire; view: TickerPa
           settings={settings}
           onSettingsChange={setSettings}
           eventMarkers={markers}
+          serverLevels={context.levels}
+          serverZones={settings.extendedHours ? context.zones : context.zonesRth}
           initialFocus={pkg.focus}
           layers={layers}
           onLayersChange={setLayers}
