@@ -17,7 +17,7 @@ import {
   type ServerIndicatorsChannel,
   type Timeframe,
 } from "@stockwatcher/chart-core";
-import { createDetectionChannel, createFavoritesChannel, createMoversChannel, createPressureChannel, createQuoteChannel, createQuoteSearchChannel, createRocketChannel, createRossChannel, createNoticesChannel, createSymbolsChannel, createTickerChannel, createWsClient, hasFeature, CLOCK_FEATURE, INDICATORS_FEATURE, INSIGHTS_TICKER_FEATURE, LEVELS_FEATURE, NOTICES_FEATURE, QUOTE_SEARCH_FEATURE, SYMBOLS_FEATURE, ZONES_FEATURE, type AlertsServerMessage, type ConnectionStatus, type DetectionChannel, type FavoritesChannel, type MarketSource, type MoversChannel, type PressureChannel, type QuoteChannel, type QuoteSearchChannel, type RocketChannel, type RossChannel, type NoticesChannel, type SettingsSync, type SymbolsChannel, type TickerChannel, type WebSocketLike } from "@stockwatcher/shared";
+import { createDetectionChannel, createFavoritesChannel, createMoversChannel, createPressureChannel, createQuoteChannel, createQuoteSearchChannel, createRocketChannel, createRossChannel, createNoticesChannel, createSymbolsChannel, createTickerChannel, createWsClient, hasFeature, CLOCK_FEATURE, INDICATORS_FEATURE, INSIGHTS_TICKER_FEATURE, INDICATORS_LIMIT_FEATURE, LEVELS_FEATURE, NOTICES_FEATURE, QUOTE_SEARCH_FEATURE, SYMBOLS_FEATURE, ZONES_FEATURE, type AlertsServerMessage, type ConnectionStatus, type DetectionChannel, type FavoritesChannel, type MarketSource, type MoversChannel, type PressureChannel, type QuoteChannel, type QuoteSearchChannel, type RocketChannel, type RossChannel, type NoticesChannel, type SettingsSync, type SymbolsChannel, type TickerChannel, type WebSocketLike } from "@stockwatcher/shared";
 
 import { deviceInfo, pushToken, subscribePushToken } from "../notifications/push";
 import { runnersRegisterFields, subscribeRunnersPush } from "../notifications/runnersPush";
@@ -148,6 +148,7 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
       serverIndicators.setAvailable(hasFeature(w, INDICATORS_FEATURE));
       // Key levels and zones computed on the server (levels.v1, zones.v1): asked on the resubscribe.
       serverIndicators.setContext(hasFeature(w, LEVELS_FEATURE), hasFeature(w, ZONES_FEATURE));
+      serverIndicators.setLimitAvailable(hasFeature(w, INDICATORS_LIMIT_FEATURE));
       symbols.setAvailable(hasFeature(w, SYMBOLS_FEATURE));
       notices.setAvailable(hasFeature(w, NOTICES_FEATURE));
       ticker.setAvailable(hasFeature(w, INSIGHTS_TICKER_FEATURE));

@@ -233,3 +233,24 @@ test("indicators go on chart.subscribe only to a server that offers indicators.v
   feed.indicators.set("m0", { indicators: [], rth: false });
   expect(chartFrames(next).at(-1)).toEqual({ type: "chart.indicators.set", id: "m0", indicators: [], rth: false });
 });
+
+test("a demand's limit goes out only to a server that offers indicators.limit.v1", () => {
+  globalThis.WebSocket = Socket as unknown as typeof WebSocket;
+  const feed = createMobileFeed(null, undefined, undefined, "mobile", "replay");
+  cleanup = () => feed.close();
+  const demand = { indicators: [{ id: "ema-9", kind: "ema" as const, period: 9 }], rth: false, limit: 1500 };
+  const chartFrames = (s: Socket) => s.sent.filter((m) => (m as { type: string }).type.startsWith("chart."));
+  const socket = Socket.instances[0]!;
+  socket.open();
+  // indicators.v1 without the limit feature: the list goes, the limit does not (the server would
+  // ignore it; leaving it off keeps the frame what that server expects).
+  socket.receive({ ...welcome, features: ["indicators.v1"] });
+  feed.subscribe({ symbol: "SMPL", timeframe: "15s", profileBin: 0.01, id: "m0", indicators: demand }, () => {});
+  expect(chartFrames(socket).at(-1)).toEqual({ type: "chart.subscribe", symbol: "SMPL", timeframe: "15s", profileBin: 0.01, id: "m0", indicators: demand.indicators, rth: false });
+  socket.receive({ ...welcome, features: ["indicators.v1", "indicators.limit.v1"] });
+  // Zoomed out: the chart asks for every bar, which is a change of demand (`limit` dropped).
+  feed.indicators.set("m0", { ...demand, limit: undefined });
+  expect(chartFrames(socket).at(-1)).toEqual({ type: "chart.indicators.set", id: "m0", indicators: demand.indicators, rth: false });
+  feed.indicators.set("m0", demand);
+  expect(chartFrames(socket).at(-1)).toEqual({ type: "chart.indicators.set", id: "m0", indicators: demand.indicators, rth: false, limit: 1500 });
+});

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createChartRouter } from "./chartRouter.ts";
-import { computeIndicators, indicatorDemand, INDICATOR_PRESETS, indicatorParity, serverIndicatorResults, specKey, type IndicatorSpec } from "./indicators.ts";
+import { computeIndicators, indicatorDemand, INDICATOR_PRESETS, indicatorParity, needsIndicatorHistory, serverIndicatorResults, specKey, type IndicatorSpec } from "./indicators.ts";
 import { buildSlots, type Slot } from "./scale.ts";
 import { createServerIndicators } from "./serverIndicators.ts";
 import { applyIndicatorIncrement, applyIndicatorsSnapshot, ChartStore } from "./store.ts";
@@ -115,6 +115,35 @@ test("the ring bound trims old bars and ignores revisions older than it", () => 
   expect(v.t[0]).toBe(first + MIN);
 });
 
+test("a limited snapshot ignores revisions before its first bar, and says when the chart reaches past it", () => {
+  const slots = buildSlots(candles(50), []);
+  const full = serverSnapshot(slots, [INDICATOR_PRESETS[1]!]);
+  // The newest 30 bars, as the server cuts them for a `limit`.
+  const cut = 20;
+  const limited: ChartIndicatorsSnapshot = {
+    ...full,
+    t: full.t.slice(cut),
+    truncated: true,
+    studies: full.studies.map((st) => ({ ...st, lines: st.lines.map((l) => ({ ...l, from: Math.max(0, l.from - cut), values: l.values.slice(Math.max(0, cut - l.from)) })) })),
+  };
+  let v = applyIndicatorsSnapshot(undefined, limited);
+  expect(v.truncated).toBe(true);
+  expect(v.t).toHaveLength(30);
+  const first = v.t[0]!;
+  // Far below the ring bound (5000), yet a bar before the first is one it was never sent.
+  v = applyIndicatorIncrement(v, { type: "chart.indicator", symbol: "SMPL", timeframe: "1m", rth: false, points: [{ t: first - MIN, v: { "ema:9": [9] } }] });
+  expect(v.t[0]).toBe(first);
+  expect(v.t).toHaveLength(30);
+  // The values it holds are the full frame's at the same bars.
+  const all = applyIndicatorsSnapshot(undefined, full);
+  expect(v.studies.get("ema:9")!.lines[0]!.values).toEqual(all.studies.get("ema:9")!.lines[0]!.values.slice(cut));
+  // Showing from slot 25 on: within the values. From slot 10: past them. An unlimited set never asks.
+  expect(needsIndicatorHistory(slots, 25, v)).toBe(false);
+  expect(needsIndicatorHistory(slots, 10, v)).toBe(true);
+  expect(needsIndicatorHistory(slots, 0, all)).toBe(false);
+  expect(needsIndicatorHistory(slots, 0, null)).toBe(false);
+});
+
 test("the store keys the values by rth, and drops increments before a snapshot", () => {
   const store = new ChartStore();
   const slots = buildSlots(candles(20), []);
@@ -162,6 +191,13 @@ test("the feed side sends nothing until the server offers the feature, then carr
   expect(sent).toHaveLength(1);
   // The default slot goes without an id.
   held.add("");
+  si.channel.set(undefined, demand);
+  expect(sent.at(-1)).toEqual({ type: "chart.indicators.set", indicators: demand.indicators, rth: true });
+  // A limit goes out only once the server lists indicators.limit.v1.
+  si.channel.set(undefined, { ...demand, limit: 1500 });
+  expect(sent.at(-1)).toEqual({ type: "chart.indicators.set", indicators: demand.indicators, rth: true });
+  si.setLimitAvailable(true);
+  expect(si.subscribeFields("")).toEqual({ indicators: demand.indicators, rth: true, limit: 1500 });
   si.channel.set(undefined, demand);
   expect(sent.at(-1)).toEqual({ type: "chart.indicators.set", indicators: demand.indicators, rth: true });
   // Hidden indicators: an empty list (the server computes nothing nobody sees).

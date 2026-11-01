@@ -37,6 +37,7 @@ import {
   computeChartModel,
   computeIndicators,
   serverIndicatorResults,
+  needsIndicatorHistory,
   DEFAULT_CHART_THEME,
   defaultViewport,
   describeSlot,
@@ -181,6 +182,12 @@ export interface CandleChartProps {
    */
   serverIndicators?: IndicatorValuesLike | null;
   /**
+   * The chart is zoomed or panned past the first bar of `serverIndicators`, which the server cut
+   * to the host's `limit` (chart-core `needsIndicatorHistory`): called once when that becomes
+   * true, so the host can ask for every bar (the phone's useChartFeed `loadIndicatorHistory`).
+   */
+  onIndicatorHistory?: () => void;
+  /**
    * The server's key levels and opening ranges (`levels.v1`): present, the chart draws them and
    * reads nothing off its candles (null = asked, not answered yet: none drawn); absent (an older
    * server, the fixture feed), it reads them off the candles itself (`keyLevels`, `openingRanges`).
@@ -296,6 +303,7 @@ export function CandleChart({
   indicators: indicatorsProp,
   onIndicatorsChange,
   serverIndicators,
+  onIndicatorHistory,
   serverLevels,
   serverZones,
   drawings: drawingsProp,
@@ -527,6 +535,11 @@ export function CandleChart({
     [timeframe, series, slots, inspectT, pointer, options, volumeHeight, layers.profile, scaleType, indicatorResults, shownDrawings, selectedDrawing, draft, showTrading, orders, position, last, drag, alertLayer, detection, eventMarkers, context, clockNow, paneHeights, inspector, settings.chartType, chartStyle, baselinePrice, settings.extendedHours],
   );
   const model = useMemo(() => computeChartModel(state, vp, size), [state, vp, size]);
+  // Zoomed out (or panned back) past the server's limited indicator values: the host asks for all.
+  const wantsIndicatorHistory = visibility.indicators && model.index.from <= model.index.to && needsIndicatorHistory(model.slots, model.index.from, serverIndicators);
+  useEffect(() => {
+    if (wantsIndicatorHistory) onIndicatorHistory?.();
+  }, [wantsIndicatorHistory, onIndicatorHistory]);
 
   // Open a fresh view from the saved settings once its candles and the size exist (chart-web does the same).
   useLayoutEffect(() => {

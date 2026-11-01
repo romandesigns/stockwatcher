@@ -8,9 +8,22 @@ import type { MobileFeed } from "./serverFeed";
 
 const TAPE_MAX = 50;
 
+/**
+ * Indicator bars the phone asks the server for (`limit`, `indicators.limit.v1`): the newest
+ * 1500, about 6 hours of 15 s bars or a whole extended day of 1 m, instead of the up to 4000 a
+ * snapshot carries (measured on the fixture day's 15 s chart, 9 lines: 312 KB instead of 814 KB,
+ * on cellular, at every chart open, extended-hours flip and reconnect). The values are the
+ * server's exact ones either way; zoomed out past them, the chart asks for every bar
+ * (`loadIndicatorHistory`).
+ */
+export const INDICATOR_BAR_LIMIT = 1500;
+
 /** Feed subscription → ChartStore + a short tape (the web's useChartFeed, trimmed for the phone). */
 /**
  * `slot`: the chart's slot on a connection carrying several (the dashboard); omitted = the default slot.
+ *
+ * The demand goes out with `limit: INDICATOR_BAR_LIMIT` until the chart calls
+ * `loadIndicatorHistory` (its `onIndicatorHistory`: zoomed out past the bars sent).
  *
  * `demand`: what the chart shows of its indicators (chart-core `indicatorDemand`). As on the web
  * (apps/web/src/feed/useChartFeed.ts): with a server that computes them (`indicators.v1`) it goes
@@ -18,8 +31,14 @@ const TAPE_MAX = 50;
  * server's values for the chart to draw; otherwise `indicators` is undefined and the chart
  * computes its own. `levels` and `zones` likewise (`levels.v1`, `zones.v1`; the web's hook says how).
  */
-export function useChartFeed(feed: MobileFeed, symbol: string, timeframe: Timeframe, profileBin = 0.01, slot?: string, demand?: IndicatorDemand) {
+export function useChartFeed(feed: MobileFeed, symbol: string, timeframe: Timeframe, profileBin = 0.01, slot?: string, wanted?: IndicatorDemand) {
   const store = useMemo(() => new ChartStore({ maxCandles: 3000 }), []);
+  // The chart (symbol|timeframe) zoomed out past the limited values: it asks for every bar from
+  // then on, whatever its extended-hours setting, until it shows another chart.
+  const chartKey = `${symbol}|${timeframe}`;
+  const [fullFor, setFullFor] = useState<string | null>(null);
+  const demand = useMemo(() => (wanted && fullFor !== chartKey ? { ...wanted, limit: INDICATOR_BAR_LIMIT } : wanted), [wanted, fullFor, chartKey]);
+  const loadIndicatorHistory = useCallback(() => setFullFor(chartKey), [chartKey]);
   const [tape, setTape] = useState<TapeTrade[]>([]);
   // Read at subscribe time without re-subscribing on a toggle; `sent` is what the server last heard.
   const demandRef = useRef(demand);
@@ -94,7 +113,7 @@ export function useChartFeed(feed: MobileFeed, symbol: string, timeframe: Timefr
   const serverZones = useSyncExternalStore(subscribe, useCallback((): ChartZones | undefined => store.getZones(symbol, timeframe, rth), [store, symbol, timeframe, rth]));
   const levels = levelsOn ? (serverLevels ?? null) : undefined;
   const zones = zonesOn && demand?.zones ? (serverZones?.zones ?? null) : undefined;
-  return { series, tape, clock, indicators, levels, zones };
+  return { series, tape, clock, indicators, levels, zones, loadIndicatorHistory };
 }
 
 /** The feed's paper broker as the chart's `trading` prop. */

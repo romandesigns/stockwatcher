@@ -64,6 +64,12 @@ export interface WelcomeMessage {
  * `ChartIndicatorIncrement`) instead of computing them. Without it, keep the local math.
  */
 export const INDICATORS_FEATURE = "indicators.v1";
+/**
+ * `limit` on `chart.subscribe` / `chart.indicators.set` (crates/server/src/indicators.rs
+ * `LIMIT_FEATURE`): the indicator snapshot carries only the newest bars. Sent only to a server
+ * that lists it.
+ */
+export const INDICATORS_LIMIT_FEATURE = "indicators.limit.v1";
 
 /**
  * The server computes the chart's key levels and opening ranges (crates/server/src/chart_context.rs):

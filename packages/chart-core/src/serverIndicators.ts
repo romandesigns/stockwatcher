@@ -11,6 +11,9 @@ import type { ChartIndicatorsSet, ChartSubscribe } from "./types.ts";
 // Key levels and zones (`levels.v1`, `zones.v1`, crates/server/src/chart_context.rs) ride the same
 // channel: levels are asked on every subscription when the server offers them (they are on by
 // default and cheap), zones only while the slot's demand says the zones layer is on, over its `rth`.
+//
+// A demand's `limit` (the phone's cellular budget) goes out only to a server that lists
+// `indicators.limit.v1`; an older one gets the request without it and answers with every bar.
 
 /** What a chart host reads and drives. */
 export interface ServerIndicatorsChannel {
@@ -32,8 +35,10 @@ export interface ServerIndicators {
   setAvailable(on: boolean): void;
   /** Likewise, for `levels.v1` and `zones.v1`. */
   setContext(levels: boolean, zones: boolean): void;
+  /** Likewise, for `indicators.limit.v1`. */
+  setLimitAvailable(on: boolean): void;
   /** The optional `chart.subscribe` fields for slot `id` ("" = the default slot). */
-  subscribeFields(id: string): Pick<ChartSubscribe, "indicators" | "rth" | "levels" | "zones">;
+  subscribeFields(id: string): Pick<ChartSubscribe, "indicators" | "rth" | "levels" | "zones" | "limit">;
   /** A slot (re)subscribed with this demand (undefined = the host computes its own). */
   held(id: string, demand: IndicatorDemand | undefined): void;
   released(id: string): void;
@@ -45,6 +50,8 @@ export function createServerIndicators(send: (frame: ChartIndicatorsSet) => void
   let on = false;
   let levelsOn = false;
   let zonesOn = false;
+  let limitOn = false;
+  const limitField = (d: IndicatorDemand) => (limitOn && d.limit !== undefined ? { limit: d.limit } : {});
   const notify = () => {
     for (const l of listeners) l();
   };
@@ -68,7 +75,7 @@ export function createServerIndicators(send: (frame: ChartIndicatorsSet) => void
         if (prev && sameIndicatorDemand(prev, demand)) return;
         // The server answers an id it does not hold with an error: a slot not subscribed yet
         // sends its demand on chart.subscribe instead.
-        if (on && isHeld(key)) send({ type: "chart.indicators.set", ...(key ? { id: key } : {}), indicators: demand.indicators, rth: demand.rth, ...(zonesOn ? { zones: demand.zones ?? false } : {}) });
+        if (on && isHeld(key)) send({ type: "chart.indicators.set", ...(key ? { id: key } : {}), indicators: demand.indicators, rth: demand.rth, ...(zonesOn ? { zones: demand.zones ?? false } : {}), ...limitField(demand) });
       },
     },
     setAvailable(next) {
@@ -82,10 +89,13 @@ export function createServerIndicators(send: (frame: ChartIndicatorsSet) => void
       zonesOn = zones;
       notify();
     },
+    setLimitAvailable(next) {
+      limitOn = next;
+    },
     subscribeFields(id) {
       const d = demands.get(id);
       return {
-        ...(on && d ? { indicators: d.indicators, rth: d.rth } : {}),
+        ...(on && d ? { indicators: d.indicators, rth: d.rth, ...limitField(d) } : {}),
         ...(levelsOn ? { levels: true } : {}),
         ...(zonesOn && d?.zones ? { zones: true, rth: d.rth } : {}),
       };

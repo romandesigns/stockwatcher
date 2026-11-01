@@ -240,6 +240,8 @@ export interface IndicatorValues {
   t: number[];
   /** By canonical spec key (indicators.ts `specKey`); each line's values parallel to `t`, NaN = none. */
   studies: Map<string, { lines: { name: string; style: "line" | "histogram"; values: number[] }[] }>;
+  /** The last snapshot left older bars out (the host asked for a `limit`): see `applyIndicatorIncrement`. */
+  truncated: boolean;
   version: number;
 }
 
@@ -268,7 +270,7 @@ export function applyIndicatorsSnapshot(prev: IndicatorValues | undefined, snap:
       }),
     });
   }
-  const next: IndicatorValues = { symbol: snap.symbol, timeframe: snap.timeframe, rth: snap.rth, t: [...snap.t], studies, version: (prev?.version ?? 0) + 1 };
+  const next: IndicatorValues = { symbol: snap.symbol, timeframe: snap.timeframe, rth: snap.rth, t: [...snap.t], studies, truncated: snap.truncated === true, version: (prev?.version ?? 0) + 1 };
   trimIndicators(next, max);
   return next;
 }
@@ -290,8 +292,10 @@ export function applyIndicatorIncrement(prev: IndicatorValues, inc: ChartIndicat
   }
   for (const p of inc.points) {
     // A revision older than this ring's first bar (the phone keeps fewer bars than the server):
-    // nothing shows it, and inserting it would only push out a newer bar.
-    if (next.t.length >= max && p.t < next.t[0]!) continue;
+    // nothing shows it, and inserting it would only push out a newer bar. Likewise below a
+    // limited snapshot's first bar: a bar this client was never sent, which inserted would sit
+    // alone before the gap with only the moved key's values.
+    if ((next.t.length >= max || next.truncated) && p.t < next.t[0]!) continue;
     const last = next.t.length - 1;
     // Fast paths: the forming bar (same t as the last) or a new one after it.
     let i = last >= 0 && next.t[last] === p.t ? last : last < 0 || p.t > next.t[last]! ? -1 : lowerBoundT(next.t, p.t);

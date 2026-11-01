@@ -340,6 +340,11 @@ export interface ChartSubscribe {
   levels?: boolean;
   /** `chart.zones` for this slot (the zones layer on), sent ONLY with `zones.v1`. */
   zones?: boolean;
+  /**
+   * The most bars the slot's `chart.indicators` may carry (the newest), sent ONLY when the
+   * welcome advertised `indicators.limit.v1` (shared `INDICATORS_LIMIT_FEATURE`). Absent = every bar.
+   */
+  limit?: number;
 }
 
 /**
@@ -354,11 +359,13 @@ export interface ChartIndicatorsSet {
   rth?: boolean;
   /** The zones layer on or off (`zones.v1` only); absent = unchanged. */
   zones?: boolean;
+  /** As on `chart.subscribe` (`indicators.limit.v1` only); absent = every bar. */
+  limit?: number;
 }
 
 /** One server-computed line: `values[i]` belongs to the snapshot's `t[from + i]`; null = no value. */
 export interface IndicatorLineWire {
-  /** As `IndicatorLine.name` ("EMA", "Basis", "Hist", …), in `computeIndicators`' order. */
+  /** As `IndicatorLine.name` ("EMA", "Basis", "Hist", …), in `indicatorLineNames` order. */
   name: string;
   style: "line" | "histogram";
   from: number;
@@ -381,6 +388,11 @@ export interface ChartIndicatorsSnapshot {
   /** `t` in exchange-time ns, index for index (newer servers; crates/chart-engine/src/wire.rs). */
   tNs?: number[];
   studies: { key: string; lines: IndicatorLineWire[] }[];
+  /**
+   * Older bars were left out (the slot asked for a `limit`): `t[0]` is not the series' first bar,
+   * so an increment for a bar before it is one this client was never sent (ChartStore ignores it).
+   */
+  truncated?: boolean;
 }
 
 /**

@@ -388,10 +388,27 @@ export function serverIndicatorResults(slots: readonly Slot[], specs: readonly I
   });
 }
 
+/**
+ * Whether a chart showing slots from index `from` on reaches past the server's values: they were
+ * cut to a `limit` (`truncated`) and the first visible candle is older than their first bar. The
+ * host then asks again without the limit (the lines would otherwise stop short of the screen's
+ * left edge).
+ */
+export function needsIndicatorHistory(slots: readonly Slot[], from: number, server: IndicatorValuesLike | null | undefined): boolean {
+  if (!server?.truncated || server.t.length === 0) return false;
+  for (let i = Math.max(0, from); i < slots.length; i++) {
+    const s = slots[i]!;
+    if (s.kind === "candle") return s.t < server.t[0]!;
+  }
+  return false;
+}
+
 /** What serverIndicatorResults reads: ChartStore's `IndicatorValues` (store.ts). */
 export interface IndicatorValuesLike {
   /** Bar times, ascending. */
   readonly t: readonly number[];
+  /** The server left older bars out (`limit`): its values start at `t[0]`, not at the chart's first candle. */
+  readonly truncated?: boolean;
   /** By spec key; each line's values parallel to `t`, NaN = none. */
   readonly studies: ReadonlyMap<string, { readonly lines: readonly { readonly name: string; readonly values: ArrayLike<number> }[] }>;
 }
@@ -444,6 +461,12 @@ export interface IndicatorDemand {
    * zones over the same `rth` and pushes `chart.zones`. Absent = off.
    */
   zones?: boolean;
+  /**
+   * The most bars the indicator snapshot should carry, the newest (`indicators.limit.v1`): the
+   * phone's cellular budget, dropped once the chart is zoomed out past them
+   * (`needsIndicatorHistory`). Absent = every bar.
+   */
+  limit?: number;
 }
 
 export function indicatorDemand(specs: readonly IndicatorSpec[], settings: { extendedHours: boolean; visibility: { indicators: boolean } }, layers?: { autoZones: boolean }): IndicatorDemand {
@@ -452,7 +475,7 @@ export function indicatorDemand(specs: readonly IndicatorSpec[], settings: { ext
 
 /** Same demand (to skip a `chart.indicators.set` that would change nothing)? */
 export function sameIndicatorDemand(a: IndicatorDemand, b: IndicatorDemand): boolean {
-  return a.rth === b.rth && (a.zones ?? false) === (b.zones ?? false) && a.indicators.length === b.indicators.length && a.indicators.every((s, i) => s.id === b.indicators[i]!.id && specKey(s) === specKey(b.indicators[i]!));
+  return a.rth === b.rth && (a.zones ?? false) === (b.zones ?? false) && a.limit === b.limit && a.indicators.length === b.indicators.length && a.indicators.every((s, i) => s.id === b.indicators[i]!.id && specKey(s) === specKey(b.indicators[i]!));
 }
 
 /** Colour of a result's k-th line: its slot plus k, for pane indicators; overlays use one colour for all their lines. */
