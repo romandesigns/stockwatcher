@@ -34,6 +34,12 @@
 //! it could already have ARMED inside that prefix (`stock_context::detect::micro`), not merely
 //! because its impulse began there.
 //!
+//! Across a restart the memory comes back from the logs (`crate::notice_memory`), and episodes
+//! are numbered past the previous process's, so a setup still open at the restart returns under
+//! a NEW id. It is recognized by its symbol and H0 bar ([`CueNotices::alias`]) and keyed by its
+//! old id, so the panel's "At trigger" or its crossing is not sent twice (the new event id would
+//! get past the delivery ledger), and its crossing stays the follow-up of the setup announced.
+//!
 //! # Pullback (owner, 2026-10-25)
 //!
 //! "Pullback setting up" brings the same MP5 episode forward to the moment it ARMS (trigger and
@@ -61,7 +67,7 @@
 //!   through it, and those are different events; every distinct event is delivered
 //!   (`crate::alerts::runners`). The phone stacks a stock's pushes together.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use chrono::NaiveDate;
 use market_events::UnixNanos;
@@ -137,6 +143,16 @@ pub struct CueNotices {
     /// The first arming of each episode and its verdict, when recording ([`CueNotices::recording`]:
     /// the ticker page's replay; the live market never records).
     decisions: Option<(Vec<SetupDecision>, HashSet<String>)>,
+    /// Setups a previous process of this run announced, by `(symbol, H0 bar end)`, with the id it
+    /// gave them ([`crate::notice_memory::NoticeMemory::inherited`]).
+    inherited: HashMap<(String, i64), String>,
+    /// This process's id for an inherited setup -> the previous process's. A restart restores the
+    /// day's bars, so a setup that was armed (or near its trigger) before it is opened again, and
+    /// the episode floors (`stock_context::Engine::set_episode_floors`) give it a NEW number: its
+    /// "At trigger" or crossing would otherwise be a second notice with a fresh event id that
+    /// neither `seen` nor the delivery ledger recognizes. Every memory below is keyed by the
+    /// canonical (first) id.
+    alias: HashMap<String, String>,
 }
 
 fn dollars(micros: i64) -> f64 {
@@ -204,6 +220,34 @@ impl CueNotices {
         self.seen.extend(m.seen.iter().cloned());
         self.setup_days.extend(m.setup_days.iter().cloned());
         self.setup_episodes.extend(m.setup_episodes.iter().cloned());
+        self.inherited.extend(
+            m.inherited
+                .iter()
+                .map(|(s, h0, id)| ((s.clone(), *h0), id.clone())),
+        );
+    }
+
+    /// Notes that this process's `episode_id` is the setup `(symbol, h0_bar_end)` a previous
+    /// process announced under another id ([`CueNotices::alias`]).
+    fn learn(&mut self, symbol: &str, episode_id: &str, h0_bar_end: Option<i64>) {
+        let Some(h0) = h0_bar_end else {
+            return;
+        };
+        if self.inherited.is_empty() || self.alias.contains_key(episode_id) {
+            return;
+        }
+        if let Some(old) = self.inherited.get(&(symbol.to_string(), h0))
+            && old != episode_id
+        {
+            self.alias.insert(episode_id.to_string(), old.clone());
+        }
+    }
+
+    /// The id the memories key `episode_id` by: the previous process's for an inherited setup.
+    fn canonical<'a>(&'a self, episode_id: &'a str) -> &'a str {
+        self.alias
+            .get(episode_id)
+            .map_or(episode_id, String::as_str)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -237,12 +281,13 @@ impl CueNotices {
         exec_ns: Option<i64>,
         detail: NoticeDetail,
     ) {
-        if !self.seen.insert((kind, episode_id.to_string())) {
+        let key = self.canonical(episode_id).to_string();
+        if !self.seen.insert((kind, key.clone())) {
             return;
         }
         if self.seen.len() > SEEN_MAX {
             self.seen.clear();
-            self.seen.insert((kind, episode_id.to_string()));
+            self.seen.insert((kind, key));
         }
         if self.out.len() >= OUT_MAX {
             return;
@@ -288,7 +333,16 @@ impl CueNotices {
         latest_price: impl Fn(&str, i64) -> Option<i64>,
     ) {
         for t in ts {
-            if t.family != Family::MicroPullback || t.from == Some(t.to) {
+            if t.family != Family::MicroPullback {
+                continue;
+            }
+            // Before the warm-up skip: an inherited setup's first transitions are usually warm-up.
+            self.learn(
+                &t.symbol,
+                &t.episode_id,
+                t.anchors.as_ref().map(|a| a.h0_bar_end),
+            );
+            if t.from == Some(t.to) {
                 continue;
             }
             if t.warmup {
@@ -317,7 +371,8 @@ impl CueNotices {
                         continue;
                     }
                     self.record(t, SetupVerdict::Notified);
-                    self.setup_episodes.insert(t.episode_id.clone());
+                    let key = self.canonical(&t.episode_id).to_string();
+                    self.setup_episodes.insert(key);
                     let price = latest_price(&t.symbol, t.observed_at);
                     let detail = NoticeDetail::Pullback(pullback_facts(t, false));
                     self.emit(
@@ -344,7 +399,7 @@ impl CueNotices {
             .as_ref()
             .map_or(t.observed_at, |x| x.admit.max(t.observed_at));
         let exec = t.trade.as_ref().map(|x| x.exec);
-        if !is_member && self.setup_episodes.contains(&t.episode_id) {
+        if !is_member && self.setup_episodes.contains(self.canonical(&t.episode_id)) {
             // A setup this module announced reaching its trigger: the setting-up notice's follow-up,
             // standing for the Signals crossing too (one episode, one notice).
             let detail = NoticeDetail::Pullback(pullback_facts(t, signals));
@@ -392,6 +447,7 @@ impl CueNotices {
             let Some(ep) = c.episode_id.as_deref() else {
                 continue;
             };
+            self.learn(&r.symbol, ep, c.h0_bar_end);
             if c.stale {
                 continue;
             }
@@ -417,7 +473,15 @@ impl CueNotices {
     /// is the Ross notice).
     pub fn signals_snapshot(&mut self, engine: &Engine, snap: &DetectionSnapshot) {
         for e in &snap.active {
-            if e.family != Family::MicroPullback || e.warmup || e.state != State::Armed {
+            if e.family != Family::MicroPullback {
+                continue;
+            }
+            self.learn(
+                &e.symbol,
+                &e.episode_id,
+                e.anchors.as_ref().map(|a| a.h0_bar_end),
+            );
+            if e.warmup || e.state != State::Armed {
                 continue;
             }
             let Some(a) = e.current.as_ref() else {
@@ -680,6 +744,48 @@ mod tests {
         let other = armed("live:d:OTHR:micro_pullback:1", "OTHR");
         after.transitions_with(&[other], false, member, since, price);
         assert_eq!(after.take().len(), 1);
+    }
+
+    /// A setup a previous process announced comes back under a new id after a restart (the
+    /// episode floors); recognized by its symbol and H0 bar, its crossing is not announced
+    /// again, and a setup at another H0 is a new one.
+    #[test]
+    fn an_inherited_setup_is_not_announced_again_under_its_new_id() {
+        let member = |s: &str| s == "ROSS";
+        let old = "live:d:ROSS:micro_pullback:1";
+        let memory = crate::notice_memory::NoticeMemory {
+            seen: vec![(NoticeKind::RossCrossing, old.into())],
+            inherited: vec![("ROSS".into(), 777, old.into())],
+            ..Default::default()
+        };
+        let mut c = CueNotices::default();
+        c.restore(&memory);
+        let anchored = |ep: &str, h0: i64| {
+            let mut t = tr(ep, "ROSS", State::Armed, State::CrossingProvisional);
+            t.anchors = Some(MicroAnchors {
+                h0_bar_end: h0,
+                ..armed(ep, "ROSS").anchors.unwrap()
+            });
+            t
+        };
+        c.transitions_with(
+            &[anchored("live:d:ROSS:micro_pullback:2", 777)],
+            false,
+            member,
+            |_| None,
+            |_, _| None,
+        );
+        assert!(c.take().is_empty(), "process 1 announced this crossing");
+        c.transitions_with(
+            &[anchored("live:d:ROSS:micro_pullback:3", 888)],
+            false,
+            member,
+            |_| None,
+            |_, _| None,
+        );
+        let n = c.take();
+        assert_eq!(n.len(), 1, "{n:?}");
+        assert_eq!(n[0].alert_id, "live:d:ROSS:micro_pullback:3");
     }
 
     /// The episode crossing its trigger five minutes after it armed (a separate event).

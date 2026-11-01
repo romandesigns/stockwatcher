@@ -28,6 +28,17 @@
 //!   (`stock_context::Engine::set_episode_floors`). The scan matches the id's text, not a record
 //!   shape, so it reads all three formats alike.
 //!
+//! - **Inherited setups** ([`NoticeMemory::inherited`]): for every announced micro-pullback, its
+//!   symbol and H0 bar end, from the transitions in the same two logs. The restart restores the
+//!   day's bars, so a setup that was armed or near its trigger before it is opened again under a
+//!   new number (the floors above); `CueNotices` recognizes it by its H0 bar and keys its memory
+//!   by the old id, so its "At trigger" or crossing is not announced a second time under a fresh
+//!   event id the delivery ledger would not recognize.
+//!
+//! The transition log and the journals are streamed line by line, never read whole: a Detection
+//! journal is one file per boot, and a process that ran for days leaves one holding all of their
+//! transitions (the ledger is one calendar day of notices and is read whole).
+//!
 //! The first-flag times of the 30-minute window need nothing here: they come from the Runners
 //! rows, which the forward log restores (`crate::rocket::RocketBoard::take_watch`).
 //!
@@ -38,6 +49,7 @@
 //! push. A missing or unreadable file contributes nothing; the read never fails the startup.
 
 use std::collections::{HashMap, HashSet};
+use std::io::BufRead;
 use std::path::Path;
 
 use chrono::NaiveDate;
@@ -75,6 +87,9 @@ pub struct NoticeMemory {
     pub setup_days: Vec<(String, NaiveDate)>,
     /// Episodes announced as setting up (their crossing is the pullback follow-up).
     pub setup_episodes: Vec<String>,
+    /// `(symbol, H0 bar end, episode id)` of every announced micro-pullback whose transitions
+    /// were found (module docs, "Inherited setups").
+    pub inherited: Vec<(String, i64, String)>,
 }
 
 impl NoticeMemory {
@@ -164,6 +179,61 @@ pub fn scan_notices(text: &str, m: &mut NoticeMemory) {
     }
 }
 
+/// Calls `f` with each line of `path` (lossy UTF-8), streaming; a missing file is no lines.
+fn each_line(path: &Path, mut f: impl FnMut(&str)) {
+    let Ok(file) = std::fs::File::open(path) else {
+        return;
+    };
+    let mut r = std::io::BufReader::with_capacity(1 << 16, file);
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        match r.read_until(b'\n', &mut buf) {
+            Ok(0) | Err(_) => return,
+            Ok(_) => f(&String::from_utf8_lossy(&buf)),
+        }
+    }
+}
+
+/// The `(symbol, H0 bar end, episode id)` of the micro-pullback transition(s) in one log line, of
+/// any record shape (a transition-log line is the transition itself; a Detection journal's
+/// nests it under `emission.transition`), kept when `announced` holds the id.
+pub fn scan_inherited(
+    line: &str,
+    announced: &HashSet<&str>,
+    out: &mut HashMap<String, (String, i64)>,
+) {
+    // Cheap filters first: almost every journal line is another family or has no anchors.
+    if announced.is_empty() || !line.contains("h0_bar_end") || !line.contains("micro_pullback") {
+        return;
+    }
+    let Ok(v) = serde_json::from_str::<Value>(line) else {
+        return;
+    };
+    let mut stack = vec![&v];
+    while let Some(v) = stack.pop() {
+        match v {
+            Value::Object(o) => {
+                let id = o.get("episode_id").and_then(Value::as_str);
+                let sym = o.get("symbol").and_then(Value::as_str);
+                let h0 = o
+                    .get("anchors")
+                    .and_then(|a| a.get("h0_bar_end"))
+                    .and_then(Value::as_i64);
+                if let (Some(id), Some(sym), Some(h0)) = (id, sym, h0)
+                    && announced.contains(id)
+                {
+                    out.entry(id.to_string())
+                        .or_insert_with(|| (sym.to_string(), h0));
+                }
+                stack.extend(o.values());
+            }
+            Value::Array(a) => stack.extend(a.iter()),
+            _ => {}
+        }
+    }
+}
+
 /// Today's memory of run `run_id` from the logs under `archive_root`, as of `now_ns` (module
 /// docs). Reads a few files once; call it off the core lock.
 pub fn read(archive_root: &Path, run_id: &str, now_ns: i64) -> NoticeMemory {
@@ -190,16 +260,29 @@ pub fn read(archive_root: &Path, run_id: &str, now_ns: i64) -> NoticeMemory {
         ..NoticeMemory::default()
     };
     let mut floors = HashMap::new();
+    let prefix = format!("{run_id}:{date}:");
     for p in day_files(crate::oplog::NOTICES_DIR) {
+        // One calendar day of notices (a few thousand lines at most): read whole, so
+        // `scan_notices` builds its sets once rather than per line.
         if let Ok(text) = std::fs::read_to_string(&p) {
             scan_notices(&text, &mut m);
             scan_episode_ids(&text, run_id, date, &mut floors);
         }
     }
+    // The ledger is read first, so the announced ids are complete before the transitions.
+    let seen = m.seen.clone();
+    let announced: HashSet<&str> = seen.iter().map(|(_, id)| id.as_str()).collect();
+    let mut inherited = HashMap::new();
+    let mut scan_log = |p: &Path| {
+        each_line(p, |line| {
+            if line.contains(&prefix) {
+                scan_episode_ids(line, run_id, date, &mut floors);
+                scan_inherited(line, &announced, &mut inherited);
+            }
+        });
+    };
     for p in day_files(crate::oplog::TRANSITIONS_DIR) {
-        if let Ok(text) = std::fs::read_to_string(&p) {
-            scan_episode_ids(&text, run_id, date, &mut floors);
-        }
+        scan_log(&p);
     }
     let journals = std::fs::read_dir(archive_root.join("detection"))
         .into_iter()
@@ -218,10 +301,14 @@ pub fn read(archive_root: &Path, run_id: &str, now_ns: i64) -> NoticeMemory {
                 .is_some_and(|age| age <= DETECTION_JOURNAL_AGE)
         });
     for e in journals {
-        if let Ok(text) = std::fs::read_to_string(e.path()) {
-            scan_episode_ids(&text, run_id, date, &mut floors);
-        }
+        scan_log(&e.path());
     }
+    let mut inherited: Vec<_> = inherited
+        .into_iter()
+        .map(|(id, (s, h0))| (s, h0, id))
+        .collect();
+    inherited.sort();
+    m.inherited = inherited;
     let mut floors: Vec<_> = floors.into_iter().map(|((s, f), n)| (s, f, n)).collect();
     floors.sort_by(|a, b| (&a.0, a.1.as_str()).cmp(&(&b.0, b.1.as_str())));
     m.floors = floors;
@@ -427,5 +514,114 @@ mod tests {
         assert_eq!(n.len(), 1, "{n:?}");
         assert_eq!(n[0].symbol, "OTHR");
         assert!(n.iter().all(|x| x.event_id() != sent[0].event_id()));
+    }
+
+    /// The H0 bar of announced micro-pullbacks, from a transition-log line and from a Detection
+    /// journal record (nested under `emission.transition`); unannounced episodes, other families
+    /// and lines without anchors contribute nothing.
+    #[test]
+    fn inherited_setups_from_both_log_shapes() {
+        let ep = "live:2026-10-30:INO:micro_pullback:1";
+        let ross = "live:2026-10-30:ROSS:micro_pullback:4";
+        let announced: HashSet<&str> = [ep, ross].into_iter().collect();
+        let mut out = HashMap::new();
+        let log = serde_json::json!({
+            "kind": "transition", "episode_id": ep, "symbol": "INO", "family": "micro_pullback",
+            "anchors": {"h0_bar_end": 111, "l0": 1},
+        });
+        let journal = serde_json::json!({
+            "Transition": {"journal_sequence": 3, "emission": {"transition": {
+                "episode_id": ross, "symbol": "ROSS", "family": "micro_pullback",
+                "anchors": {"h0_bar_end": 222},
+            }}},
+        });
+        let other = serde_json::json!({
+            "episode_id": "live:2026-10-30:OTHR:micro_pullback:1", "symbol": "OTHR",
+            "family": "micro_pullback", "anchors": {"h0_bar_end": 333},
+        });
+        let bare =
+            serde_json::json!({"episode_id": ep, "symbol": "INO", "family": "micro_pullback"});
+        for v in [&log, &journal, &other, &bare] {
+            scan_inherited(&v.to_string(), &announced, &mut out);
+        }
+        assert_eq!(out.len(), 2, "{out:?}");
+        assert_eq!(out[ep], ("INO".to_string(), 111));
+        assert_eq!(out[ross], ("ROSS".to_string(), 222));
+    }
+
+    /// A restart while a setup is armed, end to end: process 1 announces INO's setup; process 2
+    /// restores the day (a proven order, so nothing is warm-up), opens the SAME setup again under
+    /// the next number, and its arming stays quiet. When the price then goes through the
+    /// trigger, the crossing is the follow-up of the setup process 1 announced, sent once,
+    /// rather than lost (the new id was never "announced" in this process).
+    #[test]
+    fn a_setup_open_across_a_restart_is_recognized_by_its_h0() {
+        use stock_context::detect::fixture::{self, Script, cutoff, end};
+        use stock_context::{Adoption, State};
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("notices")).unwrap();
+        std::fs::create_dir_all(root.join("transitions")).unwrap();
+        let file = format!("{}.jsonl", fixture::day());
+        let member = |_: &str| false;
+        let since = |_: &str| Some(fixture::at(9, 30, 0));
+        let price = |_: &str, _: i64| None;
+
+        let mut s = Script::new();
+        micro_at(&mut s, "INO", 0);
+        s.advance(cutoff(11));
+        let upto = s.steps.len();
+        // After the restart: a quiet bar, then one through the trigger.
+        s.bar("INO", 12, [334, 335, 333, 334], 200);
+        s.advance(cutoff(12));
+        s.bar("INO", 13, [334, 346, 334, 345], 400);
+        s.advance(cutoff(13));
+
+        // Process 1, up to the restart.
+        let mut e1 = fixture::engine("live");
+        let ts = fixture::drive(&mut e1, &s.steps[..upto]);
+        let mut c1 = crate::cue_notices::CueNotices::default();
+        c1.transitions_with(&ts, false, member, since, price);
+        let sent = c1.take();
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        let ledger: Vec<String> = sent
+            .iter()
+            .map(|n| decision(&n.event_id(), &n.symbol, n.at_ns))
+            .collect();
+        std::fs::write(root.join("notices").join(&file), ledger.join("\n")).unwrap();
+        let log: Vec<String> = ts.iter().map(crate::market::transition_line).collect();
+        std::fs::write(root.join("transitions").join(&file), log.join("\n")).unwrap();
+
+        // Process 2: the restore replays the day to the restart, the live engine adopts its facts.
+        let m = read(root, "live", end(11));
+        assert_eq!(m.inherited.len(), 1, "{m:?}");
+        let mut restore = fixture::engine("live");
+        fixture::drive(&mut restore, &s.steps[..upto]);
+        let mut e2 = fixture::engine("live");
+        e2.set_episode_floors(m.date.unwrap(), m.floors.iter().cloned());
+        e2.advance_to(UnixNanos(cutoff(11)));
+        assert!(matches!(
+            e2.adopt_facts(&mut restore, "INO"),
+            Adoption::Adopted { .. }
+        ));
+        let mut c2 = crate::cue_notices::CueNotices::default();
+        c2.restore(&m);
+        let ts = fixture::drive(&mut e2, &s.steps[upto..]);
+        let reopened: Vec<_> = ts
+            .iter()
+            .filter(|t| t.family == Family::MicroPullback)
+            .collect();
+        assert!(
+            reopened.iter().all(|t| t.episode_id != sent[0].alert_id),
+            "process 2 numbers past process 1: {reopened:?}"
+        );
+        assert!(
+            reopened.iter().any(|t| t.to == State::CrossingProvisional),
+            "the fixture crosses the trigger after the restart: {reopened:?}"
+        );
+        c2.transitions_with(&ts, false, member, since, price);
+        let n = c2.take();
+        assert_eq!(n.len(), 1, "{n:?}");
+        assert_eq!(n[0].kind, NoticeKind::PullbackCrossing);
     }
 }

@@ -112,6 +112,11 @@ pub struct RossCue {
     pub extended: bool,
     /// The held outcome's resolution (`triggered` / `invalidated` only).
     pub resolution: Option<Resolution>,
+    /// The episode's H0 bar end, never on the wire: what identifies the same setup across a
+    /// restart, whose new process numbers it differently (`crate::Engine::set_episode_floors`),
+    /// so the server's notices can recognize one the previous process already announced.
+    #[serde(skip)]
+    pub h0_bar_end: Option<i64>,
 }
 
 impl RossCue {
@@ -140,6 +145,7 @@ impl RossCue {
             pending: Vec::new(),
             extended: false,
             resolution: None,
+            h0_bar_end: None,
         }
     }
 
@@ -251,6 +257,7 @@ pub(crate) fn cue(
         c.impulse_bp = Some(a.impulse_bp);
         c.depth_milli = Some(a.depth_milli);
         c.pullback_bars = Some(a.pullback_bars);
+        c.h0_bar_end = Some(a.h0_bar_end);
     }
     if state == CueState::Triggered || state == CueState::Invalidated {
         c.resolution = ep.resolution.clone();
