@@ -255,6 +255,8 @@ async fn serve(config: Config) -> std::io::Result<()> {
         Some(notices_dir.clone()),
         stockwatcher_server::oplog::et_date_ms(stockwatcher_server::oplog::now_ms()),
     );
+    // A log open on "today" changes day at ET midnight, not at the next day's first notice.
+    notice_feed.spawn_rollover();
     // Price alerts watch the live market (never replay), with their rules in the same store and
     // Activity + the registered phones under DATA_DIR/alerts.
     let alerts = stockwatcher_server::alerts::Alerts::start(

@@ -1611,12 +1611,15 @@ async fn session(mut socket: WebSocket, state: AppState) {
                 let ok = match (append, notices.as_mut()) {
                     (_, None) => true,
                     (Ok(a), Some(n)) if a.seq <= n.seq => true,
+                    // A rollover to the day shown (subscribed to it by date just before midnight)
+                    // has nothing to add.
                     (Ok(a), Some(n)) if a.day == n.day => {
                         n.seq = a.seq;
-                        send_text(&mut socket, a.frame.clone()).await
+                        a.roll || send_text(&mut socket, a.frame.clone()).await
                     }
-                    // Today rolled over: a following subscription moves to the new day with its
-                    // snapshot (which holds this line); a fixed day ignores other days.
+                    // Today rolled over (midnight, `roll`, or the new day's first line): a
+                    // following subscription moves to the new day with its snapshot (which holds
+                    // that line); a fixed day ignores other days.
                     (Ok(a), Some(n)) if n.follow && a.day > n.day => {
                         match send_notices_snapshot(&mut socket, &notice_feed, Some(a.day), true).await {
                             Some(sub) => {

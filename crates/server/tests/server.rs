@@ -501,8 +501,8 @@ async fn notices_reads_the_ledger_day() {
 }
 
 /// The pushed Insights log (`notices.v1`, crate::notices): the welcome lists it; a subscribe
-/// gets today's snapshot, then each ledger line as an append of its whole item; a past day is a
-/// snapshot only; a malformed day is refused.
+/// gets today's snapshot, then each ledger line as an append of its whole item, and the next
+/// day's snapshot at midnight; a past day is a snapshot only; a malformed day is refused.
 #[tokio::test]
 async fn ws_pushes_the_notification_log() {
     use stockwatcher_server::notices::NoticeFeed;
@@ -575,6 +575,29 @@ async fn ws_pushes_the_notification_log() {
     assert_eq!(
         append["summary"],
         json!({"sent": 0, "held": 1, "reasons": [{"reason": "no_device", "text": "no device wanted it", "n": 1}]})
+    );
+
+    // Midnight: the subscription following today moves to the new day's (empty) log at once,
+    // not when that day's first notice comes.
+    let tomorrow = today.succ_opt().unwrap();
+    feed.roll(tomorrow);
+    let next_day = until(&mut ws, "notices.snapshot").await;
+    assert_eq!(next_day["day"], tomorrow.format("%Y-%m-%d").to_string());
+    assert_eq!(next_day["items"], json!([]));
+    feed.push(
+        tomorrow,
+        &json!({"kind":"decision","v":1,"decided_at":9,"event_id":"after","path":"desk","decision":"sent"}),
+    );
+    let append = until(&mut ws, "notices.append").await;
+    assert_eq!(
+        (
+            append["day"].clone(),
+            append["items"][0]["event_id"].clone()
+        ),
+        (
+            json!(tomorrow.format("%Y-%m-%d").to_string()),
+            json!("after")
+        )
     );
 
     send(

@@ -25,8 +25,11 @@
 //! - Then, for today, `notices.append {day, items: [item]}` each time the ledger writes a line:
 //!   that notice's item regrouped from all of its lines so far (a desk decision, then the phone
 //!   one, then `pushed` with its latency), which the client upserts by `event_id` (new ones go
-//!   on top). Subscribed to today without a `day`, the subscription follows the date: the first
-//!   line of the next ET day answers with that day's snapshot.
+//!   on top). Subscribed to today without a `day`, the subscription follows the date: at ET
+//!   midnight ([`NoticeFeed::spawn_rollover`]) it gets the new day's snapshot (empty), so the
+//!   log changes day when the date does, not when the next day's first notice happens to come
+//!   (on a weekend, days later). A line of the next ET day arriving before the rollover tick
+//!   moves it the same way.
 //! - A past day gets its snapshot and nothing else (its file no longer changes). A lag resends
 //!   the snapshot. `notices.unsubscribe` stops it.
 //!
@@ -429,15 +432,20 @@ pub fn summary(items: &[Value]) -> Value {
     t.summary()
 }
 
-/// One `notices.append` on the feed's channel.
+/// One `notices.append` on the feed's channel, or the start of a new ET day.
 #[derive(Debug)]
 pub struct Append {
     pub day: NaiveDate,
     /// Taken under the feed's lock: compare with [`Snapshot::seq`].
     pub seq: u64,
-    /// The notice's symbol, when its lines name one (the ticker page follows its own).
+    /// The notice's symbol, when its lines name one (the ticker page follows its own); `None`
+    /// for a rollover.
     pub symbol: Option<String>,
+    /// The append frame; empty for a rollover ([`Append::roll`]).
     pub frame: String,
+    /// `day` began ([`NoticeFeed::roll`]): nothing to send as such; a subscription following
+    /// today answers it with `day`'s snapshot, one showing a fixed day ignores it.
+    pub roll: bool,
 }
 
 /// A `notices.snapshot` and the append `seq` it already includes.
@@ -613,6 +621,7 @@ impl NoticeFeed {
             seq: l.seq,
             symbol,
             frame,
+            roll: false,
         }));
     }
 
@@ -629,6 +638,41 @@ impl NoticeFeed {
             (None, Some(dir)) => read_day_summarized(dir, day),
             (None, None) => (Vec::new(), false, summary(&[])),
         }
+    }
+
+    /// ET date `today` has begun: when it is later than the day held, the feed starts it empty
+    /// and tells the subscribers (an [`Append`] with `roll`). Idempotent; an earlier or equal
+    /// date does nothing.
+    pub fn roll(&self, today: NaiveDate) {
+        let mut l = self.0.lines.lock().expect("notice feed lock");
+        if l.day.is_some_and(|d| d >= today) {
+            return;
+        }
+        l.reset(today);
+        l.seq += 1;
+        let _ = self.0.tx.send(Arc::new(Append {
+            day: today,
+            seq: l.seq,
+            symbol: None,
+            frame: String::new(),
+            roll: true,
+        }));
+    }
+
+    /// Rolls the feed over at every ET midnight, on the server's wall clock (the ledger dates
+    /// its lines the same way, `crate::oplog::et_date_ms`). It sleeps until just past the next
+    /// midnight, but never longer than [`ROLL_CHECK`], so a clock change or a suspended host
+    /// costs at most that much lateness. Needs a tokio runtime.
+    pub fn spawn_rollover(&self) {
+        let feed = self.clone();
+        tokio::spawn(async move {
+            loop {
+                let now = crate::oplog::now_ms();
+                let wait = (next_et_midnight_ms(now) - now).max(0) as u64 + ROLL_SLACK_MS;
+                tokio::time::sleep(std::time::Duration::from_millis(wait).min(ROLL_CHECK)).await;
+                feed.roll(crate::oplog::et_date_ms(crate::oplog::now_ms()));
+            }
+        });
     }
 
     /// The `notices.snapshot` of `day` (None = today in ET). Reads files (the day list, and a
@@ -657,6 +701,25 @@ impl NoticeFeed {
         );
         Snapshot { day, seq, frame }
     }
+}
+
+/// The longest the rollover task sleeps between looks at the clock.
+const ROLL_CHECK: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Wakes this far past midnight, so the date it then reads is certainly the new one.
+const ROLL_SLACK_MS: u64 = 50;
+
+/// Epoch ms of the first ET midnight after `now_ms`. Midnight always exists in New York (the
+/// clocks change at 02:00), so DST only changes how far away it is: 23 or 25 hours on those days.
+pub fn next_et_midnight_ms(now_ms: i64) -> i64 {
+    use chrono::TimeZone;
+    let tomorrow = crate::oplog::et_date_ms(now_ms)
+        .succ_opt()
+        .expect("a date after today");
+    chrono_tz::America::New_York
+        .from_local_datetime(&tomorrow.and_time(chrono::NaiveTime::MIN))
+        .earliest()
+        .map_or(now_ms + 86_400_000, |t| t.timestamp_millis())
 }
 
 /// `rest` (an object) as a frame with `type` first. The web and phone feeds route a frame by its
@@ -918,6 +981,62 @@ mod tests {
         assert_eq!(v2["summary"]["reasons"][0]["reason"], "quiet_hours");
         let (_, _, s) = feed.items(d("2026-10-30"));
         assert_eq!(s, v2["summary"]);
+    }
+
+    /// Midnight starts the next day empty and says so once; an older or the same date changes
+    /// nothing; a line for the day before is still that day's file's alone.
+    #[test]
+    fn the_feed_rolls_over_to_an_empty_day() {
+        let feed = NoticeFeed::open(None, d("2026-10-30"));
+        feed.push(
+            d("2026-10-30"),
+            &json!({"kind":"decision","decided_at":1,"event_id":"a","path":"desk","decision":"sent"}),
+        );
+        let mut rx = feed.subscribe();
+        let before = feed.snapshot(Some(d("2026-10-30"))).seq;
+        feed.roll(d("2026-10-30"));
+        feed.roll(d("2026-10-29"));
+        assert!(rx.try_recv().is_err(), "not a new day");
+        feed.roll(d("2026-10-31"));
+        let r = rx.try_recv().unwrap();
+        assert!(r.roll && r.frame.is_empty());
+        assert_eq!((r.day, r.seq > before), (d("2026-10-31"), true));
+        feed.roll(d("2026-10-31"));
+        assert!(rx.try_recv().is_err(), "once");
+        let v: Value = serde_json::from_str(&feed.snapshot(Some(d("2026-10-31"))).frame).unwrap();
+        assert_eq!(v["items"], json!([]));
+        assert!(feed.snapshot(Some(d("2026-10-31"))).seq >= r.seq);
+        feed.push(
+            d("2026-10-30"),
+            &json!({"kind":"failed","at":5,"event_id":"a","detail":"late"}),
+        );
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn the_next_midnight_follows_new_york_across_dst() {
+        use chrono::TimeZone;
+        let utc = |y, mo, d, h, mi| {
+            chrono::Utc
+                .with_ymd_and_hms(y, mo, d, h, mi, 0)
+                .unwrap()
+                .timestamp_millis()
+        };
+        // 2026-10-31 23:59 EDT -> 2026-11-01 00:00 EDT (04:00 UTC), a minute away.
+        assert_eq!(
+            next_et_midnight_ms(utc(2026, 11, 1, 3, 59)),
+            utc(2026, 11, 1, 4, 0)
+        );
+        // The fall-back day is 25 hours long: 2026-11-01 00:00 EDT -> 2026-11-02 00:00 EST.
+        assert_eq!(
+            next_et_midnight_ms(utc(2026, 11, 1, 4, 0)),
+            utc(2026, 11, 2, 5, 0)
+        );
+        // The spring-forward day is 23: 2026-03-08 00:00 EST -> 2026-03-09 00:00 EDT.
+        assert_eq!(
+            next_et_midnight_ms(utc(2026, 3, 8, 5, 0)),
+            utc(2026, 3, 9, 4, 0)
+        );
     }
 
     #[test]

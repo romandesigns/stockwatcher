@@ -617,7 +617,8 @@ client `packages/shared/src/symbols.ts`):
 - client `notices.subscribe {day?}` (absent = today in ET) → server `notices.snapshot {day, days,
   items, truncated}` (the body of `GET /api/notices`), then for that day `notices.append {day,
   items: [item]}` per ledger line: the notice's whole item so far, which the client upserts by
-  `event_id`. Without `day` the subscription follows today into the next date. Today's lines are
+  `event_id`. Without `day` the subscription follows today into the next date: at ET midnight
+  (server wall clock) it gets the new day's empty snapshot, not at that day's first notice. Today's lines are
   held in memory (primed from the day's file at start), so a snapshot never races the ledger's
   file writer.
 - It replaced the web and phone 15 s refetch of today's whole log. Past days stay one-shot
