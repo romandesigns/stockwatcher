@@ -89,6 +89,18 @@ describe("alert model", () => {
     expect(isActiveAlert(a, { status: "expired", basis: now, count: 0 }, now)).toBe(false);
   });
 
+  test("a state the server decided on its clock is shown as written (snoozed present)", () => {
+    const now = at(19, 10);
+    const a = { ...newAlert("XLAB", { kind: "price", dir: "above", price: 2.5 }, DEFAULT_ALERT_PREFS, now, "a1"), expiresAt: now - 1, snoozeUntil: now + 60_000 };
+    // This device's clock says expired and snoozed; the server says armed: armed it is.
+    expect(alertDisplay(a, { status: "armed", basis: now, count: 0, snoozed: false }, now).kind).toBe("armed");
+    expect(alertDisplay(a, { status: "armed", basis: now, count: 0, snoozed: true }, now).kind).toBe("snoozed");
+    expect(alertDisplay(a, { status: "expired", basis: now, count: 0, snoozed: false }, now).kind).toBe("expired");
+    expect(isActiveAlert(a, { status: "armed", basis: now, count: 0, snoozed: false }, now)).toBe(true);
+    expect(parseAlertStates({ a1: { status: "armed", basis: 1, count: 0, snoozed: true } }).a1?.snoozed).toBe(true);
+    expect(parseAlertStates({ a1: { status: "armed", basis: 1, count: 0 } }).a1?.snoozed).toBeUndefined();
+  });
+
   test("activity merges by id, newest first", () => {
     const e = (id: string, at: number): AlertEventWire => ({ id, alertId: "a", symbol: "X", kind: "fired", t: at, at, text: "", app: true, phone: "sent", note: "" });
     const m = mergeActivity([e("1", 1), e("2", 2)], [e("2", 2), e("3", 3)], false);

@@ -91,6 +91,13 @@ describe("flame (look now)", () => {
     expect(flameMark(burst, 0.61, T + 4 * MIN)?.lit).toBe(true);
     expect(flameMark(burst, 0.68, T + 30_000)!.label).toBe("Look now: Buying burst under a minute ago, price 0.6800 still at or above its alert 0.6100");
   });
+  test("a server that decides time lights it or not itself (clock.v1)", () => {
+    // Lit by the server even past the local 5 minutes (the update turning it off is on its way).
+    expect(flameMark({ ...burst, flame: { lit: true } }, 0.6, T + FLAME_MS + 1)?.lit).toBe(true);
+    expect(flameMark({ ...burst, flame: { lit: false } }, 0.68, T + MIN)).toBeNull();
+    const r = { kind: "burst", at: T, p: 0.61, flame: { lit: true, until_ns: 0 } } as unknown as RocketRowWire;
+    expect(burstOf(r)?.flame?.lit).toBe(true);
+  });
   test("goes out by itself at 5 minutes, and as soon as the price falls under the alert", () => {
     expect(flameMark(burst, 0.68, T + FLAME_MS)).toBeNull();
     expect(flameMark(burst, 0.6, T + MIN)).toBeNull();

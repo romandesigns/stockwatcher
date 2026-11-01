@@ -122,7 +122,10 @@ export type ClockMode = "replay" | "live";
 /** Filled in by the server (the engine does not know the mode). */
 export interface Clock {
   mode: ClockMode | (string & {});
+  /** Epoch ms. */
   now: number;
+  /** The same instant in exchange-time ns (newer servers): the server's own clock. */
+  nowNs?: number;
   /** Replay speed multiplier; 0 means "max" (client convention, see ReplayControl). */
   speed: number;
   playing: boolean;

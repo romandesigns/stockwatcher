@@ -128,5 +128,10 @@ describe("account (simulator vs Alpaca paper)", () => {
     expect(freshNotice(s, 0, 2000)?.text).toBe("no");
     expect(freshNotice(s, 1000, 2000)).toBeNull();
     expect(freshNotice(s, 0, 1000 + 16000)).toBeNull();
+    // Judged by the server when it rendered the frame: this device's clock is not asked.
+    const judged = { ...s, notice: { ...s.notice, fresh: true } };
+    expect(freshNotice(judged, 0, 1000 + 60_000)?.text).toBe("no");
+    expect(freshNotice({ ...s, notice: { ...s.notice, fresh: false } }, 0, 1000)).toBeNull();
+    expect(freshNotice(judged, 1000, 0)).toBeNull();
   });
 });

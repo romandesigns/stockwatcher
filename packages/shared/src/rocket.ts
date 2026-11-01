@@ -126,8 +126,41 @@ export interface RocketAlsoWire {
   at: number;
 }
 
+/**
+ * The server's own clock (`clock.v1`, crates/server/src/time_marks.rs): Rust is the only clock,
+ * so a server that advertises it decides the time-based marks itself (`fresh`, `burst_live`,
+ * `flame` on the rows, `runners.event` for the toasts) and the clients measure ages against the
+ * last `replay.clock` frame instead of extrapolating the panel's `t` with their wall clock.
+ */
+export const CLOCK_FEATURE = "clock.v1";
+
+/** `runners.event` (clock.v1): a new Runners row or a settled breakout, decided on the market clock. */
+export interface RunnersEventMessage {
+  type: "runners.event";
+  kind: "new_flag" | "breakout";
+  id: string;
+  symbol: string;
+  /** Exchange time, ns: the flag's time, or the breakout's `state_since`. */
+  at_ns: number;
+  /** The row's source path (`runner`, `burst`, ...). */
+  path: string;
+  /** Dollars: the flag price (new), the last price (breakout). */
+  price: number | null;
+  from_flag_pct?: number;
+  reason?: string;
+}
+
 export interface RocketRowWire {
   id: string;
+  /** Flagged under a minute ago at the server's clock (clock.v1; absent from older servers). */
+  fresh?: boolean;
+  /** When `fresh` turns false, exchange ns (clock.v1). */
+  fresh_until_ns?: number;
+  /** A burst row whose outcome is pending and alerted under 5 minutes ago (clock.v1). */
+  burst_live?: boolean;
+  burst_live_until_ns?: number;
+  /** The "look now" flame on a burst row, decided by the server (clock.v1): rowMarks.ts flameMark. */
+  flame?: { lit: boolean; until_ns: number };
   /** Absent = "runner" (older servers). */
   kind?: "runner" | "burst" | "running" | "run" | "fast";
   /**
@@ -252,14 +285,23 @@ export interface RocketState {
   receivedAt: number;
   /** A frame arrived on the connection that is open now (ross.ts `RossState.connected`). */
   connected: boolean;
+  /**
+   * The market clock (epoch ms) of the last `replay.clock` frame, while the server decides time
+   * (`clock.v1`); null against an older server. Ages are measured against it, unextrapolated.
+   */
+  clock?: number | null;
+  /** The server sends `runners.event` (clock.v1): the toasts come from it, not from diffing panels. */
+  serverEvents?: boolean;
 }
 
-export const EMPTY_ROCKET: RocketState = { enabled: null, panel: null, receivedAt: 0, connected: false };
+export const EMPTY_ROCKET: RocketState = { enabled: null, panel: null, receivedAt: 0, connected: false, clock: null, serverEvents: false };
 
 export interface RocketChannel {
   get(): RocketState;
-  /** `fn` runs after every frame. Returns the unsubscribe. */
+  /** `fn` runs after every frame (and every server clock frame under clock.v1). Returns the unsubscribe. */
   subscribe(fn: () => void): () => void;
+  /** `runners.event` frames (clock.v1), while subscribed. Returns the unsubscribe. */
+  onEvent?(fn: (m: RunnersEventMessage) => void): () => void;
 }
 
 /**
@@ -288,14 +330,42 @@ export function mergeRocketDayLines(prev: RocketPanelWire | null, next: RocketPa
 export function createRocketChannel(
   io: { subscribe(): void; unsubscribe(): void },
   now: () => number = Date.now,
-): RocketChannel & { apply(m: RocketMessage): void; setConnected(open: boolean): void } {
+): RocketChannel & { apply(m: RocketMessage): void; setConnected(open: boolean): void; setServerClock(on: boolean): void; applyClock(nowMs: number): void; applyEvent(m: RunnersEventMessage): void } {
   let state: RocketState = EMPTY_ROCKET;
+  // Whether the connected server decides time (clock.v1), kept across the unsubscribe reset.
+  let serverClock = false;
+  let clock: number | null = null;
   const listeners = new Set<() => void>();
+  const eventListeners = new Set<(m: RunnersEventMessage) => void>();
   const emit = () => {
     for (const l of listeners) l();
   };
+  const withClock = (s: RocketState): RocketState => ({ ...s, clock: serverClock ? clock : null, serverEvents: serverClock });
   return {
     get: () => state,
+    onEvent(fn) {
+      eventListeners.add(fn);
+      return () => eventListeners.delete(fn);
+    },
+    setServerClock(on) {
+      if (on === serverClock) return;
+      serverClock = on;
+      if (!on) clock = null;
+      state = withClock(state);
+      emit();
+    },
+    applyClock(nowMs) {
+      if (!serverClock || nowMs === clock) return;
+      clock = nowMs;
+      // Only a shown panel re-renders for it (its ages move with the server clock).
+      if (listeners.size === 0) return;
+      state = withClock(state);
+      emit();
+    },
+    applyEvent(m) {
+      if (listeners.size === 0) return;
+      for (const l of eventListeners) l(m);
+    },
     subscribe(fn) {
       listeners.add(fn);
       if (listeners.size === 1) io.subscribe();
@@ -303,13 +373,13 @@ export function createRocketChannel(
         if (!listeners.delete(fn)) return;
         if (listeners.size > 0) return;
         io.unsubscribe();
-        state = EMPTY_ROCKET;
+        state = withClock(EMPTY_ROCKET);
       };
     },
     apply(m) {
       const { type: _type, ...next } = m;
       const merged = m.enabled ? mergeRocketDayLines(state.panel, next) : { panel: null, resync: false };
-      state = { enabled: m.enabled, panel: merged.panel, receivedAt: now(), connected: true };
+      state = withClock({ enabled: m.enabled, panel: merged.panel, receivedAt: now(), connected: true });
       // A slice this client cannot place: the server answers every `rocket.subscribe` with a
       // whole snapshot, so ask again rather than draw a broken line.
       if (merged.resync && listeners.size > 0) io.subscribe();
@@ -631,7 +701,7 @@ export function rocketRowView(r: RocketRowWire, nowMs: number, strategyId?: stri
     price: money(last),
     gain,
     age,
-    fresh: ageMs < 60_000,
+    fresh: typeof r.fresh === "boolean" ? r.fresh : ageMs < 60_000,
     reasons,
     breakoutTracking,
     score: Number.isFinite(r.score) ? r.score.toFixed(2) : "",
@@ -646,7 +716,8 @@ export function rocketRowView(r: RocketRowWire, nowMs: number, strategyId?: stri
     move1mTone: moveTone(r.move_1m_pct),
     meter,
     line: rocketLine(r),
-    burst: b ? burstView(b, r.at, nowMs) : null,
+    // The server's verdict when it decides time (clock.v1), else the local rule.
+    burst: b ? { ...burstView(b, r.at, nowMs), ...(typeof r.burst_live === "boolean" ? { live: r.burst_live } : {}) } : null,
     source: b ? { kind: "burst", label: "Burst" } : sourceOf(r, strategyId),
     also: rocketAlsoView(r, nowMs),
     setup: rocketSetupView(lv),
@@ -727,8 +798,13 @@ export function rocketAttention(p: RocketPanelWire, current = true): number {
   return current ? p.rows.filter((r) => ROCKET_STATES[momentumOf(r)].attention).length : 0;
 }
 
-/** The market clock now, for ages: the frame's `t` advanced by the wall time since it arrived. */
+/**
+ * The market clock now, for ages. Against a server that decides time (clock.v1) it is the last
+ * `replay.clock` frame's, as sent: never advanced by this device's clock. Older servers: the
+ * frame's `t` advanced by the wall time since it arrived (at most 5 minutes).
+ */
 export function rocketNow(state: RocketState, wallNow: number = Date.now()): number {
+  if (typeof state.clock === "number") return state.clock;
   const t = state.panel?.t;
   if (t === null || t === undefined) return wallNow;
   return t + Math.max(0, Math.min(wallNow - state.receivedAt, 5 * 60_000));
@@ -765,7 +841,7 @@ export function rocketHeaderView(p: RocketPanelWire, current = true): RocketHead
 export function rocketFreshCount(state: RocketState, wallNow: number = Date.now()): number {
   if (!state.connected) return 0;
   const now = rocketNow(state, wallNow);
-  return state.panel?.rows.filter((r) => now - r.at < 60_000).length ?? 0;
+  return state.panel?.rows.filter((r) => (typeof r.fresh === "boolean" ? r.fresh : now - r.at < 60_000)).length ?? 0;
 }
 
 /**

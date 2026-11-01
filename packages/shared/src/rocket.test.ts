@@ -139,6 +139,36 @@ describe("rocket channel", () => {
     expect(calls).toEqual(["sub", "unsub"]);
     expect(ch.get().panel).toBeNull();
   });
+  test("a server that decides time: ages at its clock frames, its fresh flag, its events", () => {
+    const ch = createRocketChannel({ subscribe() {}, unsubscribe() {} }, () => 0);
+    let renders = 0;
+    ch.subscribe(() => renders++);
+    ch.apply({ type: "rocket.snapshot", ...panel({ rows: [row({ id: "a", at: T - 10_000, fresh: false }), row({ id: "b", at: T - 90_000, fresh: true })] }) });
+    // Older servers (no clock.v1): the frame's `t` extrapolated by the wall time since it came.
+    expect(rocketNow(ch.get(), 31_000)).toBe(T + 31_000);
+    ch.setServerClock(true);
+    expect(ch.get().serverEvents).toBe(true);
+    ch.applyClock(T + 5_000);
+    expect(ch.get().clock).toBe(T + 5_000);
+    // Never advanced by this device's clock, however much wall time passed.
+    expect(rocketNow(ch.get(), 10 * 60_000)).toBe(T + 5_000);
+    const before = renders;
+    ch.applyClock(T + 5_000);
+    expect(renders).toBe(before);
+    ch.applyClock(T + 6_000);
+    expect(renders).toBe(before + 1);
+    // The server's `fresh` wins over the age.
+    expect(rocketFreshCount(ch.get(), 0)).toBe(1);
+    const rv = rocketRowView(row({ id: "b", at: T - 90_000, fresh: true }), T);
+    expect(rv.fresh).toBe(true);
+    const events: string[] = [];
+    ch.onEvent?.((m) => events.push(`${m.kind}:${m.symbol}`));
+    ch.applyEvent({ type: "runners.event", kind: "new_flag", id: "x", symbol: "ABC", at_ns: 1, path: "runner", price: 2 });
+    expect(events).toEqual(["new_flag:ABC"]);
+    ch.setServerClock(false);
+    expect(ch.get().clock).toBeNull();
+    expect(parseServerMessage(JSON.stringify({ type: "runners.event", kind: "breakout", id: "x", symbol: "ABC", at_ns: 1, path: "runner", price: 2 }))?.type).toBe("runners.event");
+  });
   test("off on the server: enabled false, no panel", () => {
     const ch = createRocketChannel({ subscribe() {}, unsubscribe() {} });
     ch.subscribe(() => {});

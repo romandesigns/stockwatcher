@@ -80,6 +80,12 @@ export interface AlertStateWire {
   firedAt?: number;
   firedPrice?: number;
   count: number;
+  /**
+   * The snooze is running, by the server's clock. Present on every entry a server with
+   * `clock.v1` wrote: expiry, snooze and the cooling gap are then decided there (crates/server/
+   * src/alerts/eval.rs `tick`) and shown as written, never judged against this device's clock.
+   */
+  snoozed?: boolean;
 }
 
 export interface AlertPrefs {
@@ -178,6 +184,7 @@ export function parseAlertStates(raw: unknown): Record<string, AlertStateWire> {
       ...(num(v.firedAt) !== null ? { firedAt: num(v.firedAt)! } : {}),
       ...(num(v.firedPrice) !== null ? { firedPrice: num(v.firedPrice)! } : {}),
       count: num(v.count) ?? 0,
+      ...(typeof v.snoozed === "boolean" ? { snoozed: v.snoozed } : {}),
     };
   }
   return out;
@@ -353,6 +360,17 @@ export type AlertDisplayKind = "armed" | "cooling" | "snoozed" | "fired" | "expi
 export function alertDisplay(r: AlertRule, s: AlertStateWire | undefined, now = Date.now()): { kind: AlertDisplayKind; label: string } {
   // A state written for an older version of the rule does not apply: the server re-arms an edit.
   const st = s && s.basis >= r.editedAt ? s : undefined;
+  // Decided by the server's clock: shown as written. `now` only measures the cooling countdown.
+  if (st && typeof st.snoozed === "boolean") {
+    if (st.status === "expired") return { kind: "expired", label: "Expired" };
+    if (st.status === "done") return { kind: "fired", label: st.firedAt ? `Fired ${formatEtTime(st.firedAt)}` : "Fired" };
+    if (st.snoozed) return { kind: "snoozed", label: "Snoozed" };
+    if (st.status === "cooling") {
+      const left = st.until !== undefined ? st.until - now : 0;
+      return { kind: "cooling", label: left > 0 ? `Cooling · ${Math.max(1, Math.ceil(left / 60_000))} min` : "Waiting for a 0.5% move back" };
+    }
+    return { kind: "armed", label: "Armed" };
+  }
   if (st?.status === "expired" || (r.expiresAt !== null && now >= r.expiresAt && st?.status !== "done")) return { kind: "expired", label: "Expired" };
   if (st?.status === "done") return { kind: "fired", label: st.firedAt ? `Fired ${formatEtTime(st.firedAt)}` : "Fired" };
   if (r.snoozeUntil !== null && r.snoozeUntil > now) return { kind: "snoozed", label: "Snoozed" };

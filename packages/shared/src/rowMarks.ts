@@ -188,11 +188,15 @@ export interface FlameMark {
  * evidence there is right now, not a verified trade. Re-evaluated against the clock, so it goes
  * out by itself. Prices in dollars, times in epoch ms (the Runners market clock).
  */
-export function flameMark(burst: { at: number; p: number } | null | undefined, last: number | null | undefined, nowMs: number): FlameMark | null {
+export function flameMark(burst: { at: number; p: number; flame?: { lit: boolean } } | null | undefined, last: number | null | undefined, nowMs: number): FlameMark | null {
   if (!burst || !Number.isFinite(burst.at) || !(burst.p > 0) || typeof last !== "number" || !Number.isFinite(last)) return null;
   const old = nowMs - burst.at;
-  if (old < 0 || old >= FLAME_MS || last < burst.p) return null;
-  const mins = Math.floor(old / 60_000);
+  // A server that decides time (clock.v1) lit it or not at its own clock: shown as sent, the age
+  // in the label only measured.
+  if (burst.flame) {
+    if (!burst.flame.lit) return null;
+  } else if (old < 0 || old >= FLAME_MS || last < burst.p) return null;
+  const mins = Math.floor(Math.max(0, old) / 60_000);
   return { lit: true, label: `Look now: Buying burst ${mins < 1 ? "under a minute" : `${mins}m`} ago, price ${last.toFixed(last < 1 ? 4 : 2)} still at or above its alert ${burst.p.toFixed(burst.p < 1 ? 4 : 2)}` };
 }
 
@@ -204,8 +208,8 @@ export function runnersBySymbol(state: RocketState | null | undefined): Map<stri
 }
 
 /** The burst a Runners row stands for (its own alert time and price), else null. */
-export function burstOf(r: RocketRowWire | null | undefined): { at: number; p: number } | null {
-  return r && r.kind === "burst" && Number.isFinite(r.at) && r.p > 0 ? { at: r.at, p: r.p } : null;
+export function burstOf(r: RocketRowWire | null | undefined): { at: number; p: number; flame?: { lit: boolean } } | null {
+  return r && r.kind === "burst" && Number.isFinite(r.at) && r.p > 0 ? { at: r.at, p: r.p, ...(r.flame ? { flame: r.flame } : {}) } : null;
 }
 
 /**

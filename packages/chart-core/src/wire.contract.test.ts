@@ -49,7 +49,7 @@ const TS_FIELDS: Record<string, string[]> = {
   ValueArea: ["low", "high", "v"],
   ProfileWire: ["bin", "anchor", "rows", "total", "poc", "valueArea"],
   SessionInfo: ["id", "start", "end"],
-  ClockInfo: ["mode", "now", "speed", "playing"],
+  ClockInfo: ["mode", "now", "nowNs", "speed", "playing"],
   ChartSnapshot: ["type", "symbol", "timeframe", "session", "candles", "gaps", "profile", "quality", "clock", "halts", "luld", "prevClose"],
   ProfileDerivedWire: ["total", "poc", "valueArea"],
   // The increments: their own fields plus ProfileDerivedWire's, flattened (types.ts ProfileFigures).

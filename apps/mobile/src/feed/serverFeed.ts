@@ -17,7 +17,7 @@ import {
   type ServerIndicatorsChannel,
   type Timeframe,
 } from "@stockwatcher/chart-core";
-import { createDetectionChannel, createFavoritesChannel, createMoversChannel, createPressureChannel, createQuoteChannel, createQuoteSearchChannel, createRocketChannel, createRossChannel, createNoticesChannel, createSymbolsChannel, createTickerChannel, createWsClient, hasFeature, INDICATORS_FEATURE, INSIGHTS_TICKER_FEATURE, NOTICES_FEATURE, QUOTE_SEARCH_FEATURE, SYMBOLS_FEATURE, type AlertsServerMessage, type ConnectionStatus, type DetectionChannel, type FavoritesChannel, type MarketSource, type MoversChannel, type PressureChannel, type QuoteChannel, type QuoteSearchChannel, type RocketChannel, type RossChannel, type NoticesChannel, type SettingsSync, type SymbolsChannel, type TickerChannel, type WebSocketLike } from "@stockwatcher/shared";
+import { createDetectionChannel, createFavoritesChannel, createMoversChannel, createPressureChannel, createQuoteChannel, createQuoteSearchChannel, createRocketChannel, createRossChannel, createNoticesChannel, createSymbolsChannel, createTickerChannel, createWsClient, hasFeature, CLOCK_FEATURE, INDICATORS_FEATURE, INSIGHTS_TICKER_FEATURE, NOTICES_FEATURE, QUOTE_SEARCH_FEATURE, SYMBOLS_FEATURE, type AlertsServerMessage, type ConnectionStatus, type DetectionChannel, type FavoritesChannel, type MarketSource, type MoversChannel, type PressureChannel, type QuoteChannel, type QuoteSearchChannel, type RocketChannel, type RossChannel, type NoticesChannel, type SettingsSync, type SymbolsChannel, type TickerChannel, type WebSocketLike } from "@stockwatcher/shared";
 
 import { deviceInfo, pushToken, subscribePushToken } from "../notifications/push";
 import { runnersRegisterFields, subscribeRunnersPush } from "../notifications/runnersPush";
@@ -150,6 +150,9 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
       notices.setAvailable(hasFeature(w, NOTICES_FEATURE));
       ticker.setAvailable(hasFeature(w, INSIGHTS_TICKER_FEATURE));
       quoteSearch.setAvailable(hasFeature(w, QUOTE_SEARCH_FEATURE));
+      // The server decides time (clock.v1): the Runners panel's ages follow its clock frames and
+      // its toasts come as `runners.event`.
+      rocket.setServerClock(hasFeature(w, CLOCK_FEATURE));
     },
     onStatus: (s) => {
       onStatus?.(s);
@@ -175,6 +178,7 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
     onQuotes: (m) => quotes.apply(m),
     onMessage: (m) => {
       if (m.type === "quotes.search.snapshot" || m.type === "quotes.search.update" || m.type === "quotes.directory") quoteSearch.apply(m);
+      else if (m.type === "runners.event") rocket.applyEvent(m);
     },
     onPressure: (m) => pressure.apply(m),
     onRoss: (m) => ross.apply(m),
@@ -203,6 +207,7 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
         }
         const chart = parseChartMessage(ev.data);
         if (chart) {
+          if (chart.type === "replay.clock") rocket.applyClock(chart.clock.now);
           router.dispatch(chart);
           return;
         }

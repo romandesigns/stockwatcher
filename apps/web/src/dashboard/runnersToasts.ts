@@ -2,10 +2,12 @@
 // new flag and, opted in, each breakout (crates/server/src/alerts/runners.rs); the web shows the
 // same moments as a toast whether or not the Runners panel is on screen, the price alerts' toast with a Chart action.
 //
-// Only news: the first frame primes (no burst on open), and a flag or breakout older than
-// FRESH_MS by the wall clock is not shown, so a reconnect or a replay's own day (its times are
-// in the past) never toasts, as a replay never pushes.
-import type { RocketChannel, RocketMomentumState, RocketRowWire } from "@stockwatcher/shared";
+// A server that decides time (clock.v1) sends each moment as `runners.event`, decided on the
+// market clock (crates/server/src/time_marks.rs): the toast is shown as sent. Against an older
+// server the rows are diffed here: only news, the first frame primes (no burst on open), and a
+// flag or breakout older than FRESH_MS by the wall clock is not shown, so a reconnect or a
+// replay's own day (its times are in the past) never toasts, as a replay never pushes.
+import type { RocketChannel, RocketMomentumState, RocketRowWire, RunnersEventMessage } from "@stockwatcher/shared";
 import { useEffect, useRef } from "react";
 
 import { showToast } from "../lib/toastStore.ts";
@@ -54,6 +56,17 @@ export function runnersToasts(rows: RocketRowWire[], mem: RunnersToastMemory, wa
   return out.slice(0, MAX_PER_FRAME);
 }
 
+/** A `runners.event` as a toast (the same words the diff below writes). */
+export function runnersEventToast(m: RunnersEventMessage): RunnersToast | null {
+  if (typeof m.symbol !== "string" || !m.symbol) return null;
+  if (m.kind === "new_flag") return { kind: "new", symbol: m.symbol, text: [`Runners: ${m.symbol}${m.price ? ` ${dollars(m.price)}` : ""}`, ...(m.reason ? [m.reason] : [])].join(" · ") };
+  if (m.kind === "breakout") {
+    const pct = m.from_flag_pct;
+    return { kind: "breakout", symbol: m.symbol, text: [`${m.symbol} breaking out${m.price ? ` ${dollars(m.price)}` : ""}`, pct == null ? null : `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}% from flag`].filter(Boolean).join(" · ") };
+  }
+  return null;
+}
+
 /**
  * One event, one signal (owner, 2026-10-23): while this device shows Runners system
  * notifications for the kind (notify/runnersNotify.ts), the toast stands down, focused window
@@ -74,17 +87,28 @@ export function useRunnersToasts(channel: RocketChannel | undefined, onPick: (sy
   useEffect(() => {
     if (!channel) return;
     const mem: RunnersToastMemory = { seen: new Map(), primed: false };
+    const show = (t: RunnersToast) => {
+      if (toastStandsDown(t.kind, getRunnersNotifier())) return;
+      showToast(t.text, { icon: "bell", ms: 8000, action: { label: "Chart", run: () => pick.current(t.symbol) } });
+    };
     // Rows already on the panel (another view subscribed first) are not news.
     const now = channel.get().panel?.rows;
     if (now) runnersToasts(now, mem, Date.now());
-    return channel.subscribe(() => {
+    // Subscribing keeps the connection opted in to rocket.* (and so to `runners.event`).
+    const offRows = channel.subscribe(() => {
+      // The server decides the moments (clock.v1): nothing to diff, and no wall clock to ask.
+      if (channel.get().serverEvents) return;
       const rows = channel.get().panel?.rows;
       if (!rows) return;
-      const notifier = getRunnersNotifier();
-      for (const t of runnersToasts(rows, mem, Date.now())) {
-        if (toastStandsDown(t.kind, notifier)) continue;
-        showToast(t.text, { icon: "bell", ms: 8000, action: { label: "Chart", run: () => pick.current(t.symbol) } });
-      }
+      for (const t of runnersToasts(rows, mem, Date.now())) show(t);
     });
+    const offEvents = channel.onEvent?.((m) => {
+      const t = runnersEventToast(m);
+      if (t) show(t);
+    });
+    return () => {
+      offRows();
+      offEvents?.();
+    };
   }, [channel]);
 }

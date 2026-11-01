@@ -268,7 +268,7 @@ export function createFixtureFeed(opts: FixtureOptions = {}): ChartFeed & { now(
   const subs = new Set<{ sub: ChartSubscription; emit: (m: ChartMessage) => void }>();
   let lastClockEmit = 0;
 
-  const clock = (): Clock => ({ mode: "replay", now, speed, playing });
+  const clock = (): Clock => ({ mode: "replay", now, nowNs: now * 1_000_000, speed, playing });
   const cents = (p: number) => Math.round(p * 100);
   const binCents = (bin: number) => Math.max(1, Math.round(bin * 100));
   const binKey = (c: number, bin: number) => Math.floor(c / binCents(bin));

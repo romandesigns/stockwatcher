@@ -76,6 +76,8 @@ export interface BrokerNotice {
   at: number;
   text: string;
   orderId: string | null;
+  /** Judged fresh by the server when the frame was rendered (newer servers; see freshNotice). */
+  fresh?: boolean;
 }
 
 export interface PaperState {
@@ -152,12 +154,16 @@ export function buyingPower(state: PaperState | null | undefined): number | null
 }
 
 /**
- * The refusal to show now: the state's notice if it is newer than `seenAt` and at most `maxAgeMs`
- * old at `now`. Clients remember the `at` they showed so a notice toasts once.
+ * The refusal to show now: the state's notice if it is newer than `seenAt` and fresh. A server
+ * that decides time sends `fresh`, judged on its own clock when the frame was rendered (so a
+ * connection's first frame never toasts an old refusal); without it, at most `maxAgeMs` old at
+ * `now` (this device's clock: older servers). Clients remember the `at` they showed so a notice
+ * toasts once.
  */
 export function freshNotice(state: PaperState | null | undefined, seenAt: number, now: number, maxAgeMs = 15000): BrokerNotice | null {
   const n = state?.notice;
   if (!n || typeof n.at !== "number" || typeof n.text !== "string") return null;
+  if (typeof n.fresh === "boolean") return n.fresh && n.at > seenAt ? n : null;
   return n.at > seenAt && now - n.at <= maxAgeMs ? n : null;
 }
 

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import type { RocketRowWire } from "@stockwatcher/shared";
 
-import { FRESH_MS, runnersToasts, type RunnersToastMemory } from "./runnersToasts.ts";
+import { FRESH_MS, runnersEventToast, runnersToasts, type RunnersToastMemory } from "./runnersToasts.ts";
 
 const NOW = 1_792_670_400_000;
 const row = (id: string, s: string, extra: Partial<RocketRowWire> = {}): RocketRowWire => ({
@@ -45,4 +45,9 @@ test("old news never toasts (a reconnect, a replay's own day)", () => {
   const mem: RunnersToastMemory = { seen: new Map(), primed: true };
   expect(runnersToasts([row("r", "REPL", { at: NOW - FRESH_MS - 1 })], mem, NOW)).toEqual([]);
   expect(runnersToasts([row("r", "REPL", { state: "breaking_out", state_since: NOW - FRESH_MS - 1 })], mem, NOW)).toEqual([]);
+});
+
+test("a server's runners.event is the toast, in the same words", () => {
+  expect(runnersEventToast({ type: "runners.event", kind: "new_flag", id: "a", symbol: "CJMB", at_ns: 1, path: "runner", price: 2.45, reason: "volume 12x" })).toEqual({ kind: "new", symbol: "CJMB", text: "Runners: CJMB $2.45 · volume 12x" });
+  expect(runnersEventToast({ type: "runners.event", kind: "breakout", id: "a", symbol: "CJMB", at_ns: 1, path: "runner", price: 3.1, from_flag_pct: 26.53 })).toEqual({ kind: "breakout", symbol: "CJMB", text: "CJMB breaking out $3.10 · +26.5% from flag" });
 });
