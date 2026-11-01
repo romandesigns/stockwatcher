@@ -75,6 +75,13 @@ pub const MAX_INCREMENT_POINTS: usize = 256;
 /// The fewest bars a limited `chart.indicators` carries ([`Studies::with_limit`]).
 pub const MIN_LIMIT: usize = 100;
 
+/// How every `chart.indicators` snapshot frame starts (`SnapshotWire` leads with `type`), and no
+/// `chart.indicator` increment does. crate::ws tells a deep revision's broadcast snapshot (every
+/// bar) from an increment by this prefix alone, so that a socket whose slots asked for a `limit`
+/// gets its own limited snapshot instead; a field put before `type` would silently send such a
+/// socket every bar. The tests below pin it on both frame kinds.
+pub const SNAPSHOT_PREFIX: &str = r#"{"type":"chart.indicators","#;
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ChartKey {
     pub symbol: String,
@@ -600,7 +607,9 @@ mod tests {
             false,
         );
         reg.acquire(&st);
-        let snap: Value = serde_json::from_str(&reg.snapshot(&engine, &st)).unwrap();
+        let raw = reg.snapshot(&engine, &st);
+        assert!(raw.starts_with(SNAPSHOT_PREFIX), "{raw}");
+        let snap: Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(snap["type"], "chart.indicators");
         assert_eq!(snap["t"].as_array().unwrap().len(), 30);
         // Each bar time with its exchange-ns twin (`times.ns.v1`).
@@ -623,6 +632,7 @@ mod tests {
         let ups = engine.apply(&trade(10, 29, 30, 300 + 29 % 7, 100));
         let frames = reg.on_updates(&ups);
         assert_eq!(frames.len(), 1);
+        assert!(!frames[0].1.starts_with(SNAPSHOT_PREFIX), "an increment");
         let f: Value = serde_json::from_str(&frames[0].1).unwrap();
         assert_eq!(f["type"], "chart.indicator");
         assert_eq!(f["points"].as_array().unwrap().len(), 1);
@@ -686,7 +696,10 @@ mod tests {
             derived: None,
         });
         let frames = reg.on_updates(&[u]);
+        // What crate::ws recognises it by, to send a limited socket its own snapshot instead.
+        assert!(frames[0].1.starts_with(SNAPSHOT_PREFIX));
         let f: Value = serde_json::from_str(&frames[0].1).unwrap();
+        assert!(f.get("truncated").is_none(), "every bar");
         assert_eq!(
             f["type"], "chart.indicators",
             "{} points would be too many",

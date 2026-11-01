@@ -1041,10 +1041,6 @@ async fn send_indicators(
     send_text(socket, json).await
 }
 
-/// How a broadcast `chart.indicators` (a deep revision's, every bar) starts: the frames lead with
-/// `type` (crate::indicators `SnapshotWire`).
-const INDICATORS_SNAPSHOT_PREFIX: &str = r#"{"type":"chart.indicators","#;
-
 async fn send_text(socket: &mut WebSocket, text: String) -> bool {
     socket.send(Message::Text(text.into())).await.is_ok()
 }
@@ -1477,7 +1473,7 @@ async fn session(mut socket: WebSocket, state: AppState) {
                         OutKind::Indicator { symbol, timeframe, rth, json } => {
                             if !subs.iter().any(|s| s.wants_indicators(symbol, *timeframe, *rth) && o.seq > s.ind_seq) {
                                 true
-                            } else if json.starts_with(INDICATORS_SNAPSHOT_PREFIX)
+                            } else if json.starts_with(crate::indicators::SNAPSHOT_PREFIX)
                                 && let chart = (ChartKey { symbol: symbol.clone(), timeframe: *timeframe, rth: *rth })
                                 && chart_studies(subs.iter(), &chart).limit.is_some()
                             {
