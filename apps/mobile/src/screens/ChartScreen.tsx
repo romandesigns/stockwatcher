@@ -95,9 +95,10 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
   const bin = useApp((s) => s.bin);
   const tradeQty = useApp((s) => s.tradeQty);
   const recents = useApp((s) => s.searchRecents);
-  // What the chart shows of its indicators, for the server to compute (indicators.v1).
-  const demand = useMemo(() => indicatorDemand(indicators, chartSettings), [indicators, chartSettings]);
-  const { series, clock, tape, indicators: serverIndicators } = useChartFeed(feed, active ?? "", timeframe, bin, undefined, demand);
+  // What the chart shows of its indicators (and whether its zones layer is on), for the server to
+  // compute (indicators.v1, zones.v1).
+  const demand = useMemo(() => indicatorDemand(indicators, chartSettings, layers), [indicators, chartSettings, layers]);
+  const { series, clock, tape, indicators: serverIndicators, levels: serverLevels, zones: serverZones } = useChartFeed(feed, active ?? "", timeframe, bin, undefined, demand);
   // This symbol's drawings, synced per drawing (another device's edit of a different drawing is never overwritten).
   const drawings = useApp((s) => s.drawings);
   const tapeOpen = useApp((s) => s.tapeOpen);
@@ -235,6 +236,8 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
         indicators={indicators}
         onIndicatorsChange={app.setIndicators}
         serverIndicators={serverIndicators}
+        serverLevels={serverLevels}
+        serverZones={serverZones}
         drawings={active ? drawings : []}
         onDrawingsChange={app.setDrawings}
         trading={trading}

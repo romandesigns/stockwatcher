@@ -1,4 +1,4 @@
-import { ChartStore, parseReplayAlerts, parseReplayDayState, sameIndicatorDemand, type ChartMessage, type Clock, type IndicatorDemand, type IndicatorValues, type PaperState, type ReplayAlert, type ReplayDayState, type Series, type TapeTrade, type Timeframe } from "@stockwatcher/chart-core";
+import { ChartStore, parseReplayAlerts, parseReplayDayState, sameIndicatorDemand, type ChartLevels, type ChartMessage, type ChartZones, type Clock, type IndicatorDemand, type IndicatorValues, type PaperState, type ReplayAlert, type ReplayDayState, type Series, type TapeTrade, type Timeframe } from "@stockwatcher/chart-core";
 import type { ChartTrading } from "@stockwatcher/chart-native";
 import { authenticatedFetch, EMPTY_QUOTE_BOARD, EMPTY_SEARCH_STATE, EMPTY_SYMBOLS, parseLiveSession, withMarketSource, type DetectionChannel, type DetectionState, type FavoritesChannel, type FavoritesState, type LiveSession, type MarketSource, type MoversChannel, type MoversState, type PressureBoard, type PressureChannel, type PressureStatus, type QuoteBoard, type QuoteChannel, type QuoteSearchChannel, type QuoteSearchHandle, type QuoteSearchMeta, type QuoteSearchQuery, type QuoteSearchState, type RocketChannel, type RocketState, type RossChannel, type RossState, type SymbolsChannel, type SymbolsState, zoneSelector, type ZoneView } from "@stockwatcher/shared";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
@@ -16,7 +16,7 @@ const TAPE_MAX = 50;
  * (apps/web/src/feed/useChartFeed.ts): with a server that computes them (`indicators.v1`) it goes
  * on the subscription, a change goes out as `chart.indicators.set`, and `indicators` is the
  * server's values for the chart to draw; otherwise `indicators` is undefined and the chart
- * computes its own.
+ * computes its own. `levels` and `zones` likewise (`levels.v1`, `zones.v1`; the web's hook says how).
  */
 export function useChartFeed(feed: MobileFeed, symbol: string, timeframe: Timeframe, profileBin = 0.01, slot?: string, demand?: IndicatorDemand) {
   const store = useMemo(() => new ChartStore({ maxCandles: 3000 }), []);
@@ -48,6 +48,8 @@ export function useChartFeed(feed: MobileFeed, symbol: string, timeframe: Timefr
       else if (m.type === "chart.halt" || m.type === "chart.luld") store.applySymbolEvent(m);
       else if (m.type === "chart.indicators") store.applyIndicators(m);
       else if (m.type === "chart.indicator") store.applyIndicatorIncrement(m);
+      else if (m.type === "chart.levels") store.applyLevels(m);
+      else if (m.type === "chart.zones") store.applyZones(m);
       else if (m.symbol === symbol) {
         pending.push(m);
         if (!frame) frame = requestAnimationFrame(flush);
@@ -65,6 +67,7 @@ export function useChartFeed(feed: MobileFeed, symbol: string, timeframe: Timefr
     // Extended hours flipped: the other rth's values are frozen from when this chart last showed
     // them (ChartStore `dropIndicators`); no lines until the answer, which on cellular takes a while.
     if (sent.current && sent.current.rth !== demand.rth) store.dropIndicators(symbol, timeframe, demand.rth);
+    if (demand.zones && sent.current && (!sent.current.zones || sent.current.rth !== demand.rth)) store.dropZones(symbol, timeframe, demand.rth);
     sent.current = demand;
     feed.indicators.set(slot, demand);
   }, [feed, store, symbol, timeframe, slot, demand]);
@@ -79,7 +82,19 @@ export function useChartFeed(feed: MobileFeed, symbol: string, timeframe: Timefr
   const serverValues = useSyncExternalStore(subscribe, useCallback((): IndicatorValues | undefined => store.getIndicators(symbol, timeframe, rth), [store, symbol, timeframe, rth]));
   // null while the server computes them but has not answered yet: no lines, not a flash of local ones.
   const indicators = demand && indicatorsOn ? (serverValues ?? null) : undefined;
-  return { series, tape, clock, indicators };
+  const levelsOn = useSyncExternalStore(
+    useCallback((cb: () => void) => feed.indicators.subscribe(cb), [feed]),
+    useCallback(() => feed.indicators.levels(), [feed]),
+  );
+  const zonesOn = useSyncExternalStore(
+    useCallback((cb: () => void) => feed.indicators.subscribe(cb), [feed]),
+    useCallback(() => feed.indicators.zones(), [feed]),
+  );
+  const serverLevels = useSyncExternalStore(subscribe, useCallback((): ChartLevels | undefined => store.getLevels(symbol, timeframe), [store, symbol, timeframe]));
+  const serverZones = useSyncExternalStore(subscribe, useCallback((): ChartZones | undefined => store.getZones(symbol, timeframe, rth), [store, symbol, timeframe, rth]));
+  const levels = levelsOn ? (serverLevels ?? null) : undefined;
+  const zones = zonesOn && demand?.zones ? (serverZones?.zones ?? null) : undefined;
+  return { series, tape, clock, indicators, levels, zones };
 }
 
 /** The feed's paper broker as the chart's `trading` prop. */

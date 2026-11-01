@@ -123,9 +123,11 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
   // The chart is controlled with the synced values (CandleChart keeps only this screen's layout).
   const indicators = useApp((s) => s.indicators);
   const chartSettings = useApp((s) => s.chartSettings);
-  // What the chart shows of its indicators, for the server to compute (indicators.v1).
-  const demand = useMemo(() => indicatorDemand(indicators, chartSettings), [indicators, chartSettings]);
-  const { series, tape, clock, indicators: serverIndicators } = useChartFeed(feed, symbol, timeframe, bin, undefined, demand);
+  const layers = useApp((s) => s.layers);
+  // What the chart shows of its indicators (and whether its zones layer is on), for the server to
+  // compute (indicators.v1, zones.v1).
+  const demand = useMemo(() => indicatorDemand(indicators, chartSettings, layers), [indicators, chartSettings, layers]);
+  const { series, tape, clock, indicators: serverIndicators, levels: serverLevels, zones: serverZones } = useChartFeed(feed, symbol, timeframe, bin, undefined, demand);
   const trading = usePaperTrading(feed);
   const replayDays = useReplayDays(choice, clockDay);
   const dayOptions = useMemo(() => replayDayOptions(replayDays.state?.days ?? []), [replayDays.state]);
@@ -136,7 +138,6 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
   // kept), and a tablet's toolbar moves out of the chart into its own row with the ticker: at
   // touch size it no longer fits beside the candle readout in the chart's top corners.
   const coarse = useMediaQuery("(pointer: coarse)");
-  const layers = useApp((s) => s.layers);
   const chartSettingsFromRemote = useApp((s) => s.chartSettingsFromRemote);
   // The Settings dialog's Drawing tab: which buttons the chart's drawing toolbox shows.
   const drawingSettings = useApp((s) => s.drawingSettings);
@@ -146,6 +147,8 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
     indicators,
     onIndicatorsChange: app.setIndicators,
     serverIndicators,
+    serverLevels,
+    serverZones,
     indicatorParity: INDICATOR_PARITY,
     layers,
     onLayersChange: app.setLayers,

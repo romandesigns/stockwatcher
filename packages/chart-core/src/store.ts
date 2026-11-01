@@ -5,6 +5,8 @@ import {
   type Candle,
   type ChartIndicatorIncrement,
   type ChartIndicatorsSnapshot,
+  type ChartLevels,
+  type ChartZones,
   type ChartHalt,
   type ChartIncrement,
   type ChartLuld,
@@ -344,6 +346,9 @@ type Listener = () => void;
 export class ChartStore {
   private series = new Map<string, Series>();
   private indicators = new Map<string, IndicatorValues>();
+  /** `chart.levels` by seriesKey, `chart.zones` by indicatorsKey (levels.v1, zones.v1): as sent. */
+  private levels = new Map<string, ChartLevels>();
+  private zones = new Map<string, ChartZones>();
   private listeners = new Set<Listener>();
   private clock: Clock | null = null;
   private readonly opts: StoreOptions;
@@ -387,6 +392,36 @@ export class ChartStore {
     if (this.indicators.delete(indicatorsKey(symbol, timeframe, rth))) this.emit();
   }
 
+  /** The server's levels for (symbol, timeframe), `levels.v1`; undefined until its first `chart.levels`. */
+  getLevels(symbol: string, timeframe: Timeframe): ChartLevels | undefined {
+    return this.levels.get(seriesKey(symbol, timeframe));
+  }
+
+  /** A `chart.levels` is a whole state: it replaces what was held. */
+  applyLevels(m: ChartLevels): void {
+    this.levels.set(seriesKey(m.symbol, m.timeframe), m);
+    this.emit();
+  }
+
+  /** The server's zones for (symbol, timeframe, rth), `zones.v1`; undefined until its first `chart.zones`. */
+  getZones(symbol: string, timeframe: Timeframe, rth: boolean): ChartZones | undefined {
+    return this.zones.get(indicatorsKey(symbol, timeframe, rth));
+  }
+
+  applyZones(m: ChartZones): void {
+    this.zones.set(indicatorsKey(m.symbol, m.timeframe, m.rth), m);
+    this.emit();
+  }
+
+  /**
+   * Forgets (symbol, timeframe, rth)'s zones until the next `chart.zones`: for a chart that just
+   * asked for them again (layer back on, extended hours flipped), whose held set stopped updating
+   * when it last stopped asking. As `dropIndicators`.
+   */
+  dropZones(symbol: string, timeframe: Timeframe, rth: boolean): void {
+    if (this.zones.delete(indicatorsKey(symbol, timeframe, rth))) this.emit();
+  }
+
   getClock(): Clock | null {
     return this.clock;
   }
@@ -427,10 +462,16 @@ export class ChartStore {
   clear(symbol?: string, timeframe?: Timeframe): void {
     if (symbol && timeframe) {
       this.series.delete(seriesKey(symbol, timeframe));
-      for (const rth of [true, false]) this.indicators.delete(indicatorsKey(symbol, timeframe, rth));
+      this.levels.delete(seriesKey(symbol, timeframe));
+      for (const rth of [true, false]) {
+        this.indicators.delete(indicatorsKey(symbol, timeframe, rth));
+        this.zones.delete(indicatorsKey(symbol, timeframe, rth));
+      }
     } else {
       this.series.clear();
       this.indicators.clear();
+      this.levels.clear();
+      this.zones.clear();
     }
     this.emit();
   }

@@ -439,15 +439,20 @@ export function indicatorParity(server: readonly IndicatorResult[], local: reado
 export interface IndicatorDemand {
   indicators: IndicatorSpec[];
   rth: boolean;
+  /**
+   * The Levels menu's zones layer is on (`zones.v1`): the server computes the chart's supply/demand
+   * zones over the same `rth` and pushes `chart.zones`. Absent = off.
+   */
+  zones?: boolean;
 }
 
-export function indicatorDemand(specs: readonly IndicatorSpec[], settings: { extendedHours: boolean; visibility: { indicators: boolean } }): IndicatorDemand {
-  return { indicators: settings.visibility.indicators ? [...specs] : [], rth: !settings.extendedHours };
+export function indicatorDemand(specs: readonly IndicatorSpec[], settings: { extendedHours: boolean; visibility: { indicators: boolean } }, layers?: { autoZones: boolean }): IndicatorDemand {
+  return { indicators: settings.visibility.indicators ? [...specs] : [], rth: !settings.extendedHours, zones: layers?.autoZones ?? false };
 }
 
 /** Same demand (to skip a `chart.indicators.set` that would change nothing)? */
 export function sameIndicatorDemand(a: IndicatorDemand, b: IndicatorDemand): boolean {
-  return a.rth === b.rth && a.indicators.length === b.indicators.length && a.indicators.every((s, i) => s.id === b.indicators[i]!.id && specKey(s) === specKey(b.indicators[i]!));
+  return a.rth === b.rth && (a.zones ?? false) === (b.zones ?? false) && a.indicators.length === b.indicators.length && a.indicators.every((s, i) => s.id === b.indicators[i]!.id && specKey(s) === specKey(b.indicators[i]!));
 }
 
 /** Colour of a result's k-th line: its slot plus k, for pane indicators; overlays use one colour for all their lines. */

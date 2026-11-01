@@ -59,9 +59,12 @@ export function ChartCell({ index, slot, symbol, feed, trading, selected, showSe
   // starts as the shared one and is written back to the slot only.
   const linked = chartSettings.visibility.linkStudies;
   const ownIndicators = linked ? indicators : (slot.indicators ?? indicators);
-  // This cell's effective list goes to the server, which computes it (indicators.v1).
-  const demand = useMemo(() => indicatorDemand(ownIndicators, chartSettings), [ownIndicators, chartSettings]);
-  const { series, clock, indicators: serverIndicators } = useChartFeed(feed, symbol, slot.timeframe, bin, `d${index}`, demand);
+  const layers = useApp((s) => s.layers);
+  const ownLayers = linked ? layers : (slot.layers ?? layers);
+  // This cell's effective list (and its zones layer) goes to the server, which computes them
+  // (indicators.v1, zones.v1).
+  const demand = useMemo(() => indicatorDemand(ownIndicators, chartSettings, ownLayers), [ownIndicators, chartSettings, ownLayers]);
+  const { series, clock, indicators: serverIndicators, levels: serverLevels, zones: serverZones } = useChartFeed(feed, symbol, slot.timeframe, bin, `d${index}`, demand);
   const discovery = useDetection(feed.detection);
   const noticeSelection = useApp((s) => s.noticeSelection);
   const pickedContext = !fixture && noticeSelection?.index === index && noticeSelection.context.symbol === symbol && noticeSelection.source === "live" ? noticeSelection.context : undefined;
@@ -85,9 +88,7 @@ export function ChartCell({ index, slot, symbol, feed, trading, selected, showSe
   // the caption show with the Runners tab closed); one object per change, not per frame.
   const zones = useZones(feed.rocket, symbol);
 
-  const layers = useApp((s) => s.layers);
   const fromRemote = useApp((s) => s.chartSettingsFromRemote);
-  const ownLayers = linked ? layers : (slot.layers ?? layers);
   const onIndicatorsChange = linked ? app.setIndicators : (next: IndicatorSpec[]) => app.setDashboardIndicators(index, next);
   const onLayersChange = linked ? app.setLayers : (next: ChartLayers) => app.setDashboardLayers(index, next);
   const drawingSettings = useApp((s) => s.drawingSettings);
@@ -172,6 +173,8 @@ export function ChartCell({ index, slot, symbol, feed, trading, selected, showSe
         indicators={ownIndicators}
         onIndicatorsChange={onIndicatorsChange}
         serverIndicators={serverIndicators}
+        serverLevels={serverLevels}
+        serverZones={serverZones}
         indicatorParity={INDICATOR_PARITY}
         layers={ownLayers}
         onLayersChange={onLayersChange}

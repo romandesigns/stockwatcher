@@ -1,4 +1,4 @@
-import { ChartStore, sameIndicatorDemand, type ChartMessage, type Clock, type IndicatorDemand, type IndicatorValues, type Series, type TapeTrade, type Timeframe } from "@stockwatcher/chart-core";
+import { ChartStore, sameIndicatorDemand, type ChartLevels, type ChartMessage, type ChartZones, type Clock, type IndicatorDemand, type IndicatorValues, type Series, type TapeTrade, type Timeframe } from "@stockwatcher/chart-core";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { ChartFeed } from "./types.ts";
 
@@ -26,6 +26,10 @@ export const INDICATOR_PARITY = typeof location !== "undefined" && new URLSearch
  * `chart.indicators.set` (no new candle snapshot), and `indicators` is the server's values for
  * the chart to draw. Otherwise `indicators` is undefined and the chart computes its own: the
  * fallback for a server from before the feature, and the fixture feed.
+ *
+ * `levels` and `zones` follow the same rule (`levels.v1`, `zones.v1`): the server's `chart.levels`
+ * and, while `demand.zones` (the zones layer) is on, its `chart.zones` for the demand's rth; null
+ * while asked and not answered yet; undefined when the chart must read them off its own candles.
  */
 export function useChartFeed(feed: ChartFeed, symbol: string, timeframe: Timeframe, profileBin: number, slot?: string, demand?: IndicatorDemand) {
   const store = useMemo(() => new ChartStore({ maxCandles: 5000 }), []);
@@ -65,6 +69,10 @@ export function useChartFeed(feed: ChartFeed, symbol: string, timeframe: Timefra
         store.applyIndicators(m);
       } else if (m.type === "chart.indicator") {
         store.applyIndicatorIncrement(m);
+      } else if (m.type === "chart.levels") {
+        store.applyLevels(m);
+      } else if (m.type === "chart.zones") {
+        store.applyZones(m);
       } else if (m.symbol === symbol) {
         pending.push(m);
         if (!frame) frame = requestAnimationFrame(flush);
@@ -83,6 +91,8 @@ export function useChartFeed(feed: ChartFeed, symbol: string, timeframe: Timefra
     // Extended hours flipped: the store's values for the other rth are the ones frozen when this
     // chart last showed them (ChartStore `dropIndicators`); draw nothing until the answer instead.
     if (sent.current && sent.current.rth !== demand.rth) store.dropIndicators(symbol, timeframe, demand.rth);
+    // Likewise the zones, when the layer comes back on or their rth flips.
+    if (demand.zones && sent.current && (!sent.current.zones || sent.current.rth !== demand.rth)) store.dropZones(symbol, timeframe, demand.rth);
     sent.current = demand;
     feed.indicators?.set(slot, demand);
   }, [feed, store, symbol, timeframe, slot, demand]);
@@ -104,5 +114,17 @@ export function useChartFeed(feed: ChartFeed, symbol: string, timeframe: Timefra
   // null (not undefined) while the server computes them but has not answered yet: draw nothing
   // rather than flash the local lines.
   const indicators = demand && indicatorsOn ? (serverValues ?? null) : undefined;
-  return { series, tape: shownTape, clock, indicators };
+  const levelsOn = useSyncExternalStore(
+    useCallback((cb: () => void) => feed.indicators?.subscribe(cb) ?? (() => {}), [feed]),
+    useCallback(() => feed.indicators?.levels() ?? false, [feed]),
+  );
+  const zonesOn = useSyncExternalStore(
+    useCallback((cb: () => void) => feed.indicators?.subscribe(cb) ?? (() => {}), [feed]),
+    useCallback(() => feed.indicators?.zones() ?? false, [feed]),
+  );
+  const serverLevels = useSyncExternalStore(subscribe, useCallback((): ChartLevels | undefined => store.getLevels(symbol, timeframe), [store, symbol, timeframe]));
+  const serverZones = useSyncExternalStore(subscribe, useCallback((): ChartZones | undefined => store.getZones(symbol, timeframe, rth), [store, symbol, timeframe, rth]));
+  const levels = levelsOn ? (serverLevels ?? null) : undefined;
+  const zones = zonesOn && demand?.zones ? (serverZones?.zones ?? null) : undefined;
+  return { series, tape: shownTape, clock, indicators, levels, zones };
 }

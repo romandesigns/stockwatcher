@@ -50,7 +50,8 @@ export interface WelcomeMessage {
   /**
    * What the server does beyond the base protocol, for the client to opt into. Absent from
    * servers older than the field: treat that as empty. Known: {@link INDICATORS_FEATURE},
-   * `SYMBOLS_FEATURE` (symbols.ts), `NOTICES_FEATURE` (noticeFeed.ts).
+   * {@link LEVELS_FEATURE}, {@link ZONES_FEATURE}, `SYMBOLS_FEATURE` (symbols.ts), `NOTICES_FEATURE`
+   * (noticeFeed.ts).
    */
   features?: string[];
 }
@@ -62,6 +63,20 @@ export interface WelcomeMessage {
  * `ChartIndicatorIncrement`) instead of computing them. Without it, keep the local math.
  */
 export const INDICATORS_FEATURE = "indicators.v1";
+
+/**
+ * The server computes the chart's key levels and opening ranges (crates/server/src/chart_context.rs):
+ * a client that sees it sends `levels: true` on `chart.subscribe` and draws the pushed
+ * `chart.levels` (chart-core types.ts `ChartLevels`) instead of reading them off its candles.
+ */
+export const LEVELS_FEATURE = "levels.v1";
+
+/**
+ * The server computes the automatic supply/demand zones: a client that sees it sends `zones`
+ * (the zones layer on) with `rth` on `chart.subscribe` / `chart.indicators.set` and draws the
+ * pushed `chart.zones` (chart-core types.ts `ChartZones`).
+ */
+export const ZONES_FEATURE = "zones.v1";
 
 /** Whether a welcome advertises `feature` (false for a server older than `features`). */
 export function hasFeature(welcome: Pick<WelcomeMessage, "features">, feature: string): boolean {

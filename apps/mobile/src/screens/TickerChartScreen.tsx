@@ -113,11 +113,12 @@ function ModalChart({ feed, symbol, detectionEpisodeId, detectionRunEpoch, notic
   const bin = useApp((s) => s.bin);
   const indicators = useApp((s) => s.indicators);
   const chartSettings = useApp((s) => s.chartSettings);
-  // What the chart shows of its indicators, for the server to compute (indicators.v1).
-  const demand = useMemo(() => indicatorDemand(indicators, chartSettings), [indicators, chartSettings]);
-  const { series, clock, indicators: serverIndicators } = useChartFeed(feed, symbol, timeframe, bin, SLOT, demand);
-  const trading = usePaperTrading(feed);
   const layers = useApp((s) => s.layers);
+  // What the chart shows of its indicators (and whether its zones layer is on), for the server to
+  // compute (indicators.v1, zones.v1).
+  const demand = useMemo(() => indicatorDemand(indicators, chartSettings, layers), [indicators, chartSettings, layers]);
+  const { series, clock, indicators: serverIndicators, levels: serverLevels, zones: serverZones } = useChartFeed(feed, symbol, timeframe, bin, SLOT, demand);
+  const trading = usePaperTrading(feed);
   const fromRemote = useApp((s) => s.chartSettingsFromRemote);
   const drawingSettings = useApp((s) => s.drawingSettings);
   const tradeQty = useApp((s) => s.tradeQty);
@@ -184,6 +185,8 @@ function ModalChart({ feed, symbol, detectionEpisodeId, detectionRunEpoch, notic
           indicators={indicators}
           onIndicatorsChange={app.setIndicators}
           serverIndicators={serverIndicators}
+          serverLevels={serverLevels}
+          serverZones={serverZones}
           drawings={drawings}
           onDrawingsChange={drawingsHandle.set}
           trading={trading}

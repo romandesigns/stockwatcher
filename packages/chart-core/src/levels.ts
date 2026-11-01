@@ -9,7 +9,7 @@ import { withAlpha } from "./theme.ts";
 import { lowerBound } from "./store.ts";
 import { formatEtDateKey, sessionBands, sessionOf, tradingDayOf, type EtDate } from "./time.ts";
 import type { OrderRole, OrderSide } from "./trading.ts";
-import type { Halt, LuldPoint, SessionRef } from "./types.ts";
+import type { ChartLevels, Halt, LuldPoint, SessionRef } from "./types.ts";
 
 // Context layers for small-cap day trading (owner, 2026-10-17): the levels
 // traders watch (premarket high/low, high/low of day, the open, yesterday's
@@ -189,6 +189,23 @@ export function keyLevels(slots: readonly Slot[], knownPrevClose?: number | null
   if (open !== null) out.push({ id: "open", label: "Open", price: open, layer: "open" });
   if (knownPrevClose != null && knownPrevClose > 0) prevClose = knownPrevClose;
   if (prevClose !== null) out.push({ id: "prevClose", label: "Prev close", price: prevClose, layer: "prevClose" });
+  return out;
+}
+
+/**
+ * The key levels of a server `chart.levels` frame (`levels.v1`, computed by
+ * crates/chart-engine/src/levels.rs with the same rules as `keyLevels`, the NYSE calendar's early
+ * closes included), in `keyLevels`' order and labels, for `layoutKeyLevels`. The server already
+ * chose between the official previous close and the candles' one.
+ */
+export function serverKeyLevels(f: ChartLevels): KeyLevel[] {
+  const out: KeyLevel[] = [];
+  if (f.pmHigh !== null) out.push({ id: "pmHigh", label: "PM H", price: f.pmHigh, layer: "premarket" });
+  if (f.pmLow !== null) out.push({ id: "pmLow", label: "PM L", price: f.pmLow, layer: "premarket" });
+  if (f.hod !== null) out.push({ id: "hod", label: "HOD", price: f.hod, layer: "dayRange" });
+  if (f.lod !== null) out.push({ id: "lod", label: "LOD", price: f.lod, layer: "dayRange" });
+  if (f.open !== null) out.push({ id: "open", label: "Open", price: f.open, layer: "open" });
+  if (f.prevClose !== null && f.prevClose > 0) out.push({ id: "prevClose", label: "Prev close", price: f.prevClose, layer: "prevClose" });
   return out;
 }
 

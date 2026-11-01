@@ -165,7 +165,7 @@ test("the feed side sends nothing until the server offers the feature, then carr
   si.channel.set(undefined, demand);
   expect(sent.at(-1)).toEqual({ type: "chart.indicators.set", indicators: demand.indicators, rth: true });
   // Hidden indicators: an empty list (the server computes nothing nobody sees).
-  expect(indicatorDemand(ALL, { extendedHours: true, visibility: { indicators: false } })).toEqual({ indicators: [], rth: false });
+  expect(indicatorDemand(ALL, { extendedHours: true, visibility: { indicators: false } })).toEqual({ indicators: [], rth: false, zones: false });
 });
 
 test("dropIndicators forgets one rth's frozen values until its next snapshot", () => {

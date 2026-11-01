@@ -30,6 +30,7 @@ import {
   hitTest,
   paneIdsOf,
   keyLevels,
+  serverKeyLevels,
   openingRanges,
   autoZones,
   type SessionRef,
@@ -76,6 +77,8 @@ import {
   type DrawingKind,
   type IndicatorSpec,
   type IndicatorValuesLike,
+  type ChartLevels,
+  type AutoZone,
   type ObjectHit,
   type OrderModify,
   type OrderPlace,
@@ -218,6 +221,18 @@ export interface CandleChartProps {
    * sends the same list to the server.
    */
   serverIndicators?: IndicatorValuesLike | null;
+  /**
+   * The server's key levels and opening ranges (`levels.v1`): present, the chart draws them and
+   * reads nothing off its candles (null = asked, not answered yet: none drawn); absent (an older
+   * server, the fixture feed), it reads them off the candles itself (`keyLevels`, `openingRanges`).
+   */
+  serverLevels?: ChartLevels | null;
+  /**
+   * The server's supply/demand zones for this chart's timeframe and extended-hours setting
+   * (`zones.v1`, asked while the zones layer is on): present, drawn as sent (null = not answered
+   * yet); absent, the chart finds them itself (`autoZones`).
+   */
+  serverZones?: readonly AutoZone[] | null;
   /**
    * Dev shadow (`?indicatorParity=1` on the web pages): with `serverIndicators`, also compute
    * the indicators locally and log the largest |server − local| per spec to the console and to
@@ -368,6 +383,8 @@ export function CandleChart({
   indicators: indicatorsProp,
   onIndicatorsChange,
   serverIndicators,
+  serverLevels,
+  serverZones,
   indicatorParity = false,
   drawings: drawingsProp,
   onDrawingsChange,
@@ -592,12 +609,14 @@ export function CandleChart({
   const last = useMemo(() => lastCandle(slots)?.c ?? null, [slots]);
   // The server's official previous close wins over one read off the candles (levels.ts).
   const prevClose = series?.prevClose ?? null;
-  const levels = useMemo(() => keyLevels(allSlots, prevClose), [allSlots, prevClose]);
+  // The server computes levels, ranges and zones when it can (levels.v1, zones.v1); reading them
+  // off the candles here is only the fallback for an older server and the fixture feed.
+  const levels = useMemo(() => (serverLevels !== undefined ? (serverLevels ? serverKeyLevels(serverLevels) : []) : keyLevels(allSlots, prevClose)), [serverLevels, allSlots, prevClose]);
   // Computed only while the layer is on: one pass over the slots per update otherwise wasted.
   const session = series?.session ?? null;
-  const ranges = useMemo(() => (layers.openingRange ? openingRanges(allSlots, session) : []), [layers.openingRange, allSlots, session]);
+  const ranges = useMemo(() => (!layers.openingRange ? [] : serverLevels !== undefined ? (serverLevels?.openingRanges ?? []) : openingRanges(allSlots, session)), [layers.openingRange, serverLevels, allSlots, session]);
   // Read off the shown timeframe's candles, so switching timeframe re-finds them (autoZones.ts).
-  const zones = useMemo(() => (layers.autoZones ? autoZones(slots) : []), [layers.autoZones, slots]);
+  const zones = useMemo(() => (!layers.autoZones ? [] : serverZones !== undefined ? (serverZones ?? []) : autoZones(slots)), [layers.autoZones, serverZones, slots]);
   // The baseline chart's reference: the previous close (the server's, else the one read off the candles).
   const baselinePrice = useMemo(() => levels.find((l) => l.id === "prevClose")?.price ?? null, [levels]);
   const fills = useMemo(() => (trading?.state?.fills ?? []).filter((f) => f.symbol === symbol), [trading?.state, symbol]);

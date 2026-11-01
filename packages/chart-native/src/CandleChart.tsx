@@ -17,6 +17,7 @@ import {
   applyPaneGesture,
   paneIdsOf,
   keyLevels,
+  serverKeyLevels,
   openingRanges,
   autoZones,
   type SessionRef,
@@ -75,6 +76,8 @@ import {
   type GestureInput,
   type IndicatorSpec,
   type IndicatorValuesLike,
+  type ChartLevels,
+  type AutoZone,
   type ObjectHit,
   type OrderModify,
   type OrderPlace,
@@ -177,6 +180,18 @@ export interface CandleChartProps {
    * (an older server), the chart computes them from its candles. Needs controlled `indicators`.
    */
   serverIndicators?: IndicatorValuesLike | null;
+  /**
+   * The server's key levels and opening ranges (`levels.v1`): present, the chart draws them and
+   * reads nothing off its candles (null = asked, not answered yet: none drawn); absent (an older
+   * server, the fixture feed), it reads them off the candles itself (`keyLevels`, `openingRanges`).
+   */
+  serverLevels?: ChartLevels | null;
+  /**
+   * The server's supply/demand zones for this chart's timeframe and extended-hours setting
+   * (`zones.v1`, asked while the zones layer is on): present, drawn as sent (null = not answered
+   * yet); absent, the chart finds them itself (`autoZones`).
+   */
+  serverZones?: readonly AutoZone[] | null;
   drawings?: Drawing[];
   onDrawingsChange?: (drawings: Drawing[]) => void;
   trading?: ChartTrading | null;
@@ -281,6 +296,8 @@ export function CandleChart({
   indicators: indicatorsProp,
   onIndicatorsChange,
   serverIndicators,
+  serverLevels,
+  serverZones,
   drawings: drawingsProp,
   onDrawingsChange,
   trading,
@@ -437,12 +454,13 @@ export function CandleChart({
   const setLayers = (l: ChartLayers) => (onLayersChange ? onLayersChange(l) : setOwnLayers(l));
   // The server's official previous close wins over one read off the candles (levels.ts).
   const prevClose = series?.prevClose ?? null;
-  const levels = useMemo(() => keyLevels(allSlots, prevClose), [allSlots, prevClose]);
+  // From the server when it computes them (levels.v1, zones.v1); off the candles only for an older server.
+  const levels = useMemo(() => (serverLevels !== undefined ? (serverLevels ? serverKeyLevels(serverLevels) : []) : keyLevels(allSlots, prevClose)), [serverLevels, allSlots, prevClose]);
   // Computed only while the layer is on: one pass over the slots per update otherwise wasted.
   const session = series?.session ?? null;
-  const ranges = useMemo(() => (layers.openingRange ? openingRanges(allSlots, session) : []), [layers.openingRange, allSlots, session]);
+  const ranges = useMemo(() => (!layers.openingRange ? [] : serverLevels !== undefined ? (serverLevels?.openingRanges ?? []) : openingRanges(allSlots, session)), [layers.openingRange, serverLevels, allSlots, session]);
   // Read off the shown timeframe's candles, so switching timeframe re-finds them (autoZones.ts).
-  const zones = useMemo(() => (layers.autoZones ? autoZones(slots) : []), [layers.autoZones, slots]);
+  const zones = useMemo(() => (!layers.autoZones ? [] : serverZones !== undefined ? (serverZones ?? []) : autoZones(slots)), [layers.autoZones, serverZones, slots]);
   const baselinePrice = useMemo(() => levels.find((l) => l.id === "prevClose")?.price ?? null, [levels]);
   const fills = useMemo(() => (trading?.state?.fills ?? []).filter((f) => f.symbol === symbol), [trading?.state, symbol]);
   const context = useMemo(

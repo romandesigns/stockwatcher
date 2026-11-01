@@ -274,10 +274,11 @@ export interface ChartLuld {
 }
 
 export type ChartIncrement = ChartUpdate | ChartRemove | ChartGap;
-export type ChartMessage = ChartSnapshot | ChartIncrement | TapeTrade | ClockMessage | ChartHalt | ChartLuld | ChartIndicatorsSnapshot | ChartIndicatorIncrement;
+export type ChartMessage = ChartSnapshot | ChartIncrement | TapeTrade | ClockMessage | ChartHalt | ChartLuld | ChartIndicatorsSnapshot | ChartIndicatorIncrement | ChartLevels | ChartZones;
 
-// chart.indicators / chart.indicator come only to a client that sent `indicators` (indicators.v1).
-const CHART_TYPES = new Set(["chart.snapshot", "chart.update", "chart.remove", "chart.gap", "tape.trade", "replay.clock", "chart.halt", "chart.luld", "chart.indicators", "chart.indicator"]);
+// chart.indicators / chart.indicator come only to a client that sent `indicators` (indicators.v1),
+// chart.levels / chart.zones only to one that sent `levels` / `zones` (levels.v1, zones.v1).
+const CHART_TYPES = new Set(["chart.snapshot", "chart.update", "chart.remove", "chart.gap", "tape.trade", "replay.clock", "chart.halt", "chart.luld", "chart.indicators", "chart.indicator", "chart.levels", "chart.zones"]);
 
 /** Parses one frame (string or already-parsed object); null if it is not a chart message. */
 export function parseChartMessage(raw: unknown): ChartMessage | null {
@@ -313,8 +314,12 @@ export interface ChartSubscribe {
    * `chart.indicator` for it. Absent = no indicator frames (the client computes its own).
    */
   indicators?: IndicatorSpec[];
-  /** Extended hours off: the server computes the indicators over the regular session only. */
+  /** Extended hours off: the server computes the indicators (and the zones) over the regular session only. */
   rth?: boolean;
+  /** `chart.levels` for this slot, sent ONLY when the welcome advertised `levels.v1`. */
+  levels?: boolean;
+  /** `chart.zones` for this slot (the zones layer on), sent ONLY with `zones.v1`. */
+  zones?: boolean;
 }
 
 /**
@@ -327,6 +332,8 @@ export interface ChartIndicatorsSet {
   id?: string;
   indicators: IndicatorSpec[];
   rth?: boolean;
+  /** The zones layer on or off (`zones.v1` only); absent = unchanged. */
+  zones?: boolean;
 }
 
 /** One server-computed line: `values[i]` belongs to the snapshot's `t[from + i]`; null = no value. */
@@ -366,6 +373,42 @@ export interface ChartIndicatorIncrement {
   rth: boolean;
   points: { t: number; v: Record<string, (number | null)[]> }[];
   removed?: number[];
+}
+
+/**
+ * Server → client (`levels.v1`, crates/server/src/chart_context.rs): the chart's key levels
+ * (the symbol's, repeated per timeframe) and its timeframe's opening ranges, the whole state,
+ * replacing what the client held. Sent after the slot's `chart.snapshot`, on every resync, and
+ * whenever its content changes. `day` is null, and everything empty, before the symbol's first
+ * candle. Same shapes as levels.ts `keyLevels` / `OpeningRange` read off the candles, which stay
+ * only as the fallback for an older server (`serverKeyLevels`).
+ */
+export interface ChartLevels {
+  type: "chart.levels";
+  symbol: string;
+  timeframe: Timeframe;
+  day: string | null;
+  pmHigh: number | null;
+  pmLow: number | null;
+  hod: number | null;
+  lod: number | null;
+  open: number | null;
+  /** The official previous close when the server has it, else the latest earlier regular close. */
+  prevClose: number | null;
+  openingRanges: { day: string; t: number; end: number; high: number; low: number; forming: boolean }[];
+}
+
+/**
+ * Server → client (`zones.v1`): the chart key's automatic supply/demand zones (autoZones.ts
+ * `AutoZone`, the same rule computed by the server), the whole set. Sent when the slot asks
+ * (`zones: true`), on every resync, and whenever the set changes.
+ */
+export interface ChartZones {
+  type: "chart.zones";
+  symbol: string;
+  timeframe: Timeframe;
+  rth: boolean;
+  zones: { kind: "supply" | "demand"; lo: number; hi: number; t: number; tested: boolean }[];
 }
 
 /** Client → server: free a chart slot (`id` absent = the default slot). */
