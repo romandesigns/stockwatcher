@@ -29,6 +29,8 @@ export interface TickerAlertWire {
   n: number;
   at?: number;
   price?: number;
+  /** The price exactly as the notice printed it ("$1.86" for 1.855): the server's, shown verbatim. */
+  price_text?: string;
   notice?: string;
   title?: string;
   body?: string;
@@ -79,6 +81,11 @@ export interface TickerStatsWire {
   close: number | null;
   change: { abs: number; pct: number | null } | null;
   last: number | null;
+  /** When the day's last print was (epoch ms), and in which session. */
+  last_at?: number | null;
+  last_session?: string | null;
+  /** When the regular session was scheduled to end (16:00 ET, 13:00 on an early close). */
+  regular_close_at?: number | null;
   sessions: { pre: TickerSessionWire | null; regular: TickerSessionWire | null; after: TickerSessionWire | null };
   volume: number;
   dollar_volume: number;
@@ -432,9 +439,14 @@ export function tickerPageView(p: TickerPackageWire, time: (ms: number, seconds?
   const pre = s?.sessions.pre ?? null;
   const after = s?.sessions.after ?? null;
   const changeTone: Tone = s?.change?.pct ? (s.change.pct > 0 ? "up" : s.change.pct < 0 ? "down" : "neutral") : "dim";
+  const lastLabel = s?.last_at ? `Last · ${time(s.last_at)}` : "Last";
+  const closeAt = s?.regular_close_at ? ` at ${time(s.regular_close_at)}` : "";
+  const closeNote = s?.close !== null && s?.close !== undefined ? `close ${money(s.close)}${closeAt}` : "no regular-session trades";
   const stats: TickerStatView[] = s
     ? [
-        { id: "close", label: "Close", value: money(s.close), note: s.last !== null && s.last !== s.close ? `last ${money(s.last)}` : "4:00 PM", tone: s.close === null ? "dim" : "neutral" },
+        // The day's last price leads (a move after hours is the price that moved), with its time; the
+        // regular-session close, quoted at the session's scheduled end, is the note.
+        { id: "last", label: lastLabel, value: money(s.last ?? s.close), note: closeNote, tone: s.last === null && s.close === null ? "dim" : "neutral" },
         { id: "change", label: "Change", value: s.change ? signedPct(s.change.pct) : "—", note: s.prev_close ? `vs prev close ${money(s.prev_close.price)}` : "no previous close on file", tone: changeTone },
         { id: "pre", label: "Premarket", value: range(pre), note: pre ? "4:00–9:30 AM" : "no trades", tone: pre ? "neutral" : "dim" },
         { id: "regular", label: "Regular session", value: range(reg), note: reg ? `open ${money(reg.open)} · close ${money(reg.close)}` : "no trades", tone: reg ? "neutral" : "dim" },
@@ -468,7 +480,7 @@ export function tickerPageView(p: TickerPackageWire, time: (ms: number, seconds?
       time: a.at ? time(a.at, true) : "—",
       kind: alertKind(a, p.symbol),
       detail: (a.body ?? "").split(/\r?\n/)[0] ?? "",
-      price: money(o?.ref_price ?? a.price),
+      price: a.price_text ?? money(o?.ref_price ?? a.price),
       best: o?.best_price !== null && o?.best_price !== undefined ? money(o.best_price) : "—",
       bestPct: signedPct(o?.best_pct),
       bestTone: o?.best_pct ? (o.best_pct > 0 ? "up" : "down") : "dim",
@@ -529,7 +541,7 @@ export function tickerPageView(p: TickerPackageWire, time: (ms: number, seconds?
     nextDay: p.next_day?.day ?? null,
     today: p.today,
     unavailable: p.available ? null : (UNAVAILABLE[p.unavailable_reason ?? ""] ?? `Nothing to show for this day${p.unavailable_reason ? ` (${p.unavailable_reason.replace(/_/g, " ")})` : ""}.`),
-    headline: { price: money(s?.close ?? s?.last), change: s?.change ? signedPct(s.change.pct) : "", tone: changeTone, note: s?.last !== null && s?.last !== undefined && s.last !== s.close ? `last ${money(s.last)} after hours` : "" },
+    headline: { price: money(s?.last ?? s?.close), change: s?.change ? signedPct(s.change.pct) : "", tone: changeTone, note: s ? [s.last_at ? time(s.last_at) : null, s.close !== null && s.last !== s.close ? closeNote : null].filter(Boolean).join(" · ") : "" },
     stats,
     alerts,
     alertSummary: sc ? `${sc.sent} sent · ${sc.held} held` : "",

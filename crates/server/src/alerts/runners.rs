@@ -323,6 +323,14 @@ fn dollars(p: f64) -> String {
     }
 }
 
+/// A price as the Runners notices print it ("$1.86" for 1.855: on its tick, half away from
+/// zero, then cents at or above $1 and four places below). The Insights ticker page shows each
+/// row's price this way when the notice's title does not carry one, so a row never disagrees with
+/// the push it stands for.
+pub fn notice_price(p: f64) -> String {
+    dollars(on_tick(p))
+}
+
 /// The `kind` in the push's data (apps/mobile src/notifications/route.ts reads it).
 pub fn data_kind(kind: NoticeKind) -> &'static str {
     match kind {

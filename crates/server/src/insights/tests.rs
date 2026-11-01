@@ -113,6 +113,8 @@ fn ino_2026_10_30_reproduces_the_replay() {
             .find(|a| a["event_id"] == "runners-pullback-live:2026-10-30:INO:micro_pullback:3")
             .unwrap();
         assert_eq!(setup["outcome"]["best_pct"], 46.1);
+        // Its notice said $1.86 (price 1.855); the row says the same.
+        assert_eq!(setup["price_text"], "$1.86");
         assert_eq!(setup["outcome"]["stop"], 1.84);
         assert!(setup["outcome"]["stop_hit_at"].is_null());
         let fast = &alerts[0];
@@ -123,6 +125,13 @@ fn ino_2026_10_30_reproduces_the_replay() {
         assert_eq!(v["halts"]["move_session"], "after");
     };
     check(&v, "journal");
+    // The day's last print leads (the move was after hours); the close is quoted at 16:00.
+    assert_eq!(v["stats"]["last"], 2.06);
+    assert_eq!(v["stats"]["last_session"], "after");
+    assert_eq!(
+        v["stats"]["regular_close_at"],
+        market_events::session::et(day, 16, 0, 0, 0).unwrap().0 / 1_000_000
+    );
     // The chart opens on the after-hours move, not on 4 AM: from 30 min before its base (the
     // close's $0.5961 bar at 15:59, the low of the hour before the first alert) to 40 min after
     // the last sent alert (17:04:15, the shelf): about the design's 3:30-5:40 PM.
@@ -642,6 +651,61 @@ fn the_chart_opens_on_the_move_not_the_whole_day() {
     let (from, to, _) = focus_window(&bars, &[5 * M, 955 * M], &[]).unwrap();
     assert_eq!((from, to), (0, 959 * M));
     assert!(focus_window(&[], &[M], &[]).is_none());
+}
+
+#[test]
+fn row_prices_read_as_their_notice_did() {
+    use package::price_text;
+    let row = |v: Value| v.as_object().unwrap().clone();
+    // The title's own price wins, verbatim.
+    assert_eq!(
+        price_text(&row(
+            json!({"title": "INO · Pullback setting up · $1.86", "price": 1.855})
+        )),
+        Some("$1.86".into())
+    );
+    // No price in the title: the Runners rule, half away from zero on the tick (1.855 is
+    // 1.8549999… as a float, which a plain two-place format reads as $1.85).
+    assert_eq!(
+        price_text(&row(json!({"title": "INO · Volume shelf", "price": 1.855}))),
+        Some("$1.86".into())
+    );
+    assert_eq!(
+        price_text(&row(json!({"price": 0.8636999726295471}))),
+        Some("$0.8637".into())
+    );
+    assert_eq!(
+        price_text(&row(json!({"price": 0.78}))),
+        Some("$0.7800".into())
+    );
+    assert_eq!(
+        price_text(&row(json!({"title": "INO · Fast move · $x", "price": 2.0}))),
+        Some("$2.00".into())
+    );
+    assert_eq!(price_text(&row(json!({"title": "INO · Fast move"}))), None);
+}
+
+#[test]
+fn the_close_is_quoted_at_the_scheduled_end_of_the_regular_session() {
+    let at = |d: &str, h, m| {
+        market_events::session::et(d.parse().unwrap(), h, m, 0, 0)
+            .unwrap()
+            .0
+            / 1_000_000
+    };
+    assert_eq!(
+        package::regular_close_at("2026-10-30".parse().unwrap()),
+        Some(at("2026-10-30", 16, 0))
+    );
+    // The day after Thanksgiving closes early.
+    assert_eq!(
+        package::regular_close_at("2026-11-27".parse().unwrap()),
+        Some(at("2026-11-27", 13, 0))
+    );
+    assert_eq!(
+        package::regular_close_at("2026-10-31".parse().unwrap()),
+        None
+    );
 }
 
 #[test]

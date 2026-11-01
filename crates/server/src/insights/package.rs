@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use chrono::NaiveDate;
-use market_events::session::SessionKind;
+use market_events::session::{SessionId, SessionKind, session_bounds};
 use serde_json::{Map, Value, json};
 use stock_context::{DetectionTransition, State};
 
@@ -254,6 +254,12 @@ impl Acc {
     }
 }
 
+/// When `day`'s regular session was scheduled to end, epoch ms: 16:00 ET, 13:00 on an early
+/// close (the session calendar's table). None on a day the market was closed.
+pub fn regular_close_at(day: NaiveDate) -> Option<i64> {
+    session_bounds(SessionId::new(day, SessionKind::Regular)).map(|(_, e)| ms(e.0))
+}
+
 fn session_name(k: Option<SessionKind>) -> &'static str {
     k.map_or("none", |k| k.as_str())
 }
@@ -281,7 +287,19 @@ fn stats(r: &DayRecords, prints: &[Print]) -> Value {
         _ => Value::Null,
     };
     let sess = |k| by.get(&k).map_or(Value::Null, Acc::json);
+    // The day's last print and when, so a day whose move came after hours leads with the price
+    // that moved rather than the 4 PM close; and when the regular session was scheduled to end
+    // (16:00 ET, 13:00 on an early close), the time the close is quoted at.
+    let last_session = prints
+        .iter()
+        .rev()
+        .find(|p| p.ohlc)
+        .map(|p| session_name(p.session));
+    let regular_end = regular_close_at(r.day);
     json!({
+        "last_at": all.close.map(|(t, _)| ms(t)),
+        "last_session": last_session,
+        "regular_close_at": regular_end,
         "prev_close": r.prev_close.map(|(d, c)| json!({"day": d.to_string(), "price": dollars(c)})),
         "close": regular_close.map(dollars),
         "change": change,
@@ -320,6 +338,32 @@ struct AlertRef {
     ref_price: i64,
     stop: Option<i64>,
     trigger: Option<i64>,
+}
+
+/// A row's alert price exactly as its notice printed it: the title's own price ("INO · Pullback
+/// setting up · $1.86") when it ends with one, else the Runners rule ([`notice_price`]). Not
+/// re-rounded from the float on the client: 1.855 is 1.8549999… in binary, so a plain two-place
+/// format reads "$1.85" beside a notice that said "$1.86".
+///
+/// [`notice_price`]: crate::alerts::runners::notice_price
+pub fn price_text(m: &Map<String, Value>) -> Option<String> {
+    let titled = m
+        .get("title")
+        .and_then(Value::as_str)
+        .and_then(|t| t.rsplit(" · ").next())
+        .map(str::trim)
+        .filter(|t| {
+            t.strip_prefix('$')
+                .and_then(|n| n.parse::<f64>().ok())
+                .is_some_and(|n| n.is_finite() && n > 0.0)
+        });
+    if let Some(t) = titled {
+        return Some(t.to_string());
+    }
+    m.get("price")
+        .and_then(Value::as_f64)
+        .filter(|p| p.is_finite() && *p > 0.0)
+        .map(crate::alerts::runners::notice_price)
 }
 
 fn row_num(m: &Map<String, Value>, k: &str) -> Option<i64> {
@@ -524,6 +568,9 @@ pub fn build(r: &DayRecords, out: &ReplayOut) -> Value {
                     }),
                 ));
             }
+        }
+        if let Some(t) = price_text(m) {
+            m.insert("price_text".into(), json!(t));
         }
         m.insert("n".into(), json!(i + 1));
         m.insert("label".into(), json!(crate::notices::kind_label(&notice)));

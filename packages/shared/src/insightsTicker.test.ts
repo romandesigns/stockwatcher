@@ -22,6 +22,9 @@ const PKG = {
     close: 0.6038,
     change: { abs: -0.17, pct: -21.6 },
     last: 2.06,
+    last_at: T0 + 12_000_000,
+    last_session: "after",
+    regular_close_at: T0 - 1_950_000,
     sessions: { pre: null, regular: { open: 0.86, high: 0.86, high_at: T0 - 9e6, low: 0.59, low_at: T0 - 8e6, close: 0.6038, volume: 1000, dollar_volume: 800 }, after: { open: 0.6, high: 2.71, high_at: T0 + 1_500_000, low: 0.59, low_at: T0 + 200_000, close: 2.06, volume: 63_541_395, dollar_volume: 131_539_613 } },
     volume: 80_501_707,
     dollar_volume: 143_837_011,
@@ -32,7 +35,7 @@ const PKG = {
   bars: [{ t: T0 - 30_000, o: 0.7, h: 0.73, l: 0.69, c: 0.72, v: 100, n: 3, final: true }, { t: "bad" }],
   alerts: [
     { event_id: "runners-fast-x", n: 1, marker: 1, at: T0, price: 0.7264, notice: "runners.fast", label: "Fast move", title: "ZZTK · Fast move · $0.7264", body: "+17.7% in 15 s · 108 trades, $41k\nAlert $0.7264", status: "sent", reason: null, reason_text: null, outcome: outcome() },
-    { event_id: "runners-pullback-x", n: 2, at: T0 + 700_000, price: 1.855, notice: "runners.pullback", label: "Pullback", title: "ZZTK · Pullback setting up · $1.86", body: "Trigger $2.00", status: "held", reason: "quiet_hours", reason_text: "quiet hours", outcome: outcome({ ref_price: 1.855, best_pct: 46.1, stop: 1.84, stop_hit_at: T0 + 900_000 }) },
+    { event_id: "runners-pullback-x", n: 2, at: T0 + 700_000, price: 1.855, price_text: "$1.86", notice: "runners.pullback", label: "Pullback", title: "ZZTK · Pullback setting up · $1.86", body: "Trigger $2.00", status: "held", reason: "quiet_hours", reason_text: "quiet hours", outcome: outcome({ ref_price: 1.855, best_pct: 46.1, stop: 1.84, stop_hit_at: T0 + 900_000 }) },
   ],
   markers: [{ kind: "alert", n: 1, at: T0, price: 0.7264 }, { kind: "missed", at: T0 + 300_000, price: 1.3 }, { kind: "bogus", at: 1, price: 1 }],
   scorecard: { alerts: 2, sent: 1, held: 1, reached_5pct: 2, best_entry: { notice: "runners.fast", marker: 1, best_pct: 273.1 }, setups_armed: 3, missed: 5, by_kind: [{ notice: "runners.fast", label: "Fast move", alerts: 1, sent: 1, reached_5pct: 1, best_pct: 273.1 }] },
@@ -76,15 +79,19 @@ describe("point-in-time wording", () => {
 describe("tickerPageView: words only, every number the server's", () => {
   const v = tickerPageView(parseTickerPackage(PKG)!, fmt);
   test("stats", () => {
-    expect(v.stats.map((s) => s.label)).toEqual(["Close", "Change", "Premarket", "Regular session", "After hours", "Volume", "Float (est.)", "Short interest"]);
+    expect(v.stats.map((s) => s.label)).toEqual(["Last · t12000", "Change", "Premarket", "Regular session", "After hours", "Volume", "Float (est.)", "Short interest"]);
+    // The last print leads, timed; the regular close is the note, quoted at the session's end.
+    expect(v.stats[0]).toMatchObject({ id: "last", value: "$2.06", note: "close $0.6038 at t-1950" });
     expect(v.stats[1]).toMatchObject({ value: "-21.6%", tone: "down", note: "vs prev close $0.7700" });
     expect(v.stats[2]).toMatchObject({ value: "—", note: "no trades" });
     expect(v.stats[5]).toMatchObject({ value: "80.5M", note: "$143.8M" });
     expect(v.stats[7]).toMatchObject({ value: "—", note: "not collected" });
-    expect(v.headline).toMatchObject({ price: "$0.6038", change: "-21.6%", note: "last $2.06 after hours" });
+    expect(v.headline).toMatchObject({ price: "$2.06", change: "-21.6%", note: "t12000 · close $0.6038 at t-1950" });
   });
   test("history rows: the notice's own name, outcomes, and the server's hold reason", () => {
     expect(v.alerts[0]).toMatchObject({ marker: 1, kind: "Fast move", detail: "+17.7% in 15 s · 108 trades, $41k", price: "$0.7264", best: "$2.71", bestPct: "+273.1%", plus5: "t20s", stop: "—", held: null });
+    // The Price column is the notice's own text: $1.86, not a re-rounded 1.855 ("$1.85").
+    expect(v.alerts[1]!.price).toBe("$1.86");
     expect(v.alerts[1]).toMatchObject({ marker: null, sent: false, kind: "Pullback setting up", stop: "hit t900s", stopTone: "down", held: "Quiet hours" });
     expect(v.alertSummary).toBe("1 sent · 1 held");
   });
