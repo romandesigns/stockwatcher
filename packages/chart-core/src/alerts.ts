@@ -156,9 +156,9 @@ export function layoutAlerts(model: ChartModel, layer: AlertLayer, theme: ChartT
   const by = layer.bellY;
   if (by !== null && by !== undefined && by >= plot.y && by <= plot.y + plot.h) {
     const cx = bellX(model, !!layer.besidePlace);
-    out.push({ kind: "rect", x: cx - BUTTON_R, y: by - BUTTON_R, w: BUTTON_R * 2, h: BUTTON_R * 2, radius: BUTTON_R, fill: theme.alert, layer: "crosshair" });
-    out.push({ kind: "path", points: bellPath(cx, by - 0.5, BUTTON_R * 0.72), closed: true, fill: theme.onAlert, layer: "crosshair" });
-    out.push({ kind: "rect", x: cx - 1.5, y: by + 4, w: 3, h: 2.2, radius: 1, fill: theme.onAlert, layer: "crosshair" });
+    out.push({ kind: "rect", x: cx - BUTTON_R, y: by - BUTTON_R, w: BUTTON_R * 2, h: BUTTON_R * 2, radius: BUTTON_R, fill: theme.alert, layer: "controls" });
+    out.push({ kind: "path", points: bellPath(cx, by - 0.5, BUTTON_R * 0.72), closed: true, fill: theme.onAlert, layer: "controls" });
+    out.push({ kind: "rect", x: cx - 1.5, y: by + 4, w: 3, h: 2.2, radius: 1, fill: theme.onAlert, layer: "controls" });
   }
   return out;
 }

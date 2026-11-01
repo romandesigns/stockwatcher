@@ -350,8 +350,8 @@ export function layoutTrading(model: ChartModel, layer: TradingLayer, theme: Cha
   if (layer.placeY !== null && layer.placeY !== undefined && inPlot(layer.placeY)) {
     const cx = placeButtonX(plot);
     const cy = layer.placeY;
-    out.push({ kind: "rect", x: cx - PLACE_R, y: cy - PLACE_R, w: PLACE_R * 2, h: PLACE_R * 2, radius: PLACE_R, fill: theme.crosshairLabelBg, layer: "crosshair" });
-    out.push({ kind: "text", x: cx, y: cy + 0.5, text: "+", fill: theme.crosshairLabelText, fontSize: fs + 3, fontFamily: mono, fontWeight: 500, align: "center", baseline: "middle", layer: "crosshair" });
+    out.push({ kind: "rect", x: cx - PLACE_R, y: cy - PLACE_R, w: PLACE_R * 2, h: PLACE_R * 2, radius: PLACE_R, fill: theme.crosshairLabelBg, layer: "controls" });
+    out.push({ kind: "text", x: cx, y: cy + 0.5, text: "+", fill: theme.crosshairLabelText, fontSize: fs + 3, fontFamily: mono, fontWeight: 500, align: "center", baseline: "middle", layer: "controls" });
   }
   return out;
 }

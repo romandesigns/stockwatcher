@@ -5,10 +5,15 @@
 // gave (any CSS color the platform's renderer accepts). Nothing here may
 // reference a DOM or canvas API.
 
-export type Layer = "background" | "grid" | "gaps" | "profile" | "volume" | "candles" | "overlay" | "axes" | "crosshair";
+export type Layer = "background" | "grid" | "gaps" | "profile" | "volume" | "candles" | "overlay" | "axes" | "crosshair" | "controls";
 
-/** Paint order, back to front. Primitives within a layer keep list order. */
-export const LAYER_ORDER: readonly Layer[] = ["background", "grid", "gaps", "profile", "volume", "candles", "overlay", "axes", "crosshair"];
+/**
+ * Paint order, back to front. Primitives within a layer keep list order.
+ * `controls` is the hover buttons that ride the crosshair (the "+" place button, the alert bell):
+ * above the crosshair lines, which used to cross them because layout emits the lines last
+ * (owner, 2026-11-01: the crosshair passes behind the "+" and the bell).
+ */
+export const LAYER_ORDER: readonly Layer[] = ["background", "grid", "gaps", "profile", "volume", "candles", "overlay", "axes", "crosshair", "controls"];
 
 interface Base {
   layer: Layer;

@@ -31,6 +31,22 @@ describe("layout", () => {
     expect(round(list)).toMatchSnapshot();
   });
 
+  test("the hover '+' and bell paint over the crosshair lines", () => {
+    const pointer = { x: 100, y: 100 };
+    const list = layout(
+      { ...state, pointer, inspectT: snap.candles[10]!.t, trading: { orders: [], position: null, last: null, placeY: 100 }, alerts: { alerts: [], last: null, bellY: 100, besidePlace: true } },
+      vp,
+      theme,
+      size,
+    );
+    const lastLine = list.findLastIndex((p) => p.kind === "line" && p.layer === "crosshair");
+    const plus = list.findIndex((p) => p.kind === "text" && p.text === "+");
+    const bell = list.findIndex((p) => p.kind === "rect" && p.fill === "alert");
+    expect(lastLine).toBeGreaterThan(-1);
+    expect(plus).toBeGreaterThan(lastLine);
+    expect(bell).toBeGreaterThan(lastLine);
+  });
+
   test("primitives come out in paint order", () => {
     const list = layout({ ...state, pointer: { x: 100, y: 100 }, options: { showProfile: true } }, vp, theme, size);
     expect(sortByLayer(list)).toEqual(list);
