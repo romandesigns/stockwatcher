@@ -278,6 +278,66 @@ fn recognitions_reading_a_restored_prefix_are_marked_warmup() {
     assert!(plain.transitions.iter().all(|t| !t.warmup));
 }
 
+/// A restart mid-setup: a restore engine replays the day up to `through` (bars `0..=through`),
+/// the live engine adopts its facts with `restored_through = end(through)` (an unproven order)
+/// and then sees the rest live. Returns the live engine's transitions.
+fn micro_across_a_restart(through: i64) -> Vec<DetectionTransition> {
+    let mut s = Script::new();
+    micro_at(&mut s, "RSTX", 0);
+    // One more retreat bar, so a setup whose formation was all restored can still arm live.
+    s.bar("RSTX", 12, [334, 335, 333, 334], 200);
+    s.advance(cutoff(12));
+    let cut = s
+        .steps
+        .iter()
+        .position(|st| matches!(st, FixtureStep::Print { exec, .. } if *exec >= end(through)))
+        .unwrap();
+    let mut restore = fixture::engine("live");
+    fixture::drive(&mut restore, &s.steps[..cut]);
+    restore.advance_to(UnixNanos(cutoff(through)));
+    let mut live = fixture::engine("live");
+    live.advance_to(UnixNanos(cutoff(through)));
+    assert!(matches!(
+        live.adopt_facts(&mut restore, "RSTX"),
+        Adoption::Adopted { .. }
+    ));
+    live.set_restored_through("RSTX", Some(end(through)));
+    fixture::drive(&mut live, &s.steps[cut..])
+}
+
+/// INO 2026-10-30: warm-up is decided by when a micro-pullback ARMS, not where its impulse
+/// started. An impulse that began inside the restored prefix but peaks, retreats and arms on bars
+/// the process saw live notifies; a setup that could already have armed inside the prefix is
+/// warm-up, even though this process only arms it after the restart.
+#[test]
+fn a_micro_pullback_is_warmup_by_its_arming_moment_not_its_start() {
+    // Restored through bar 8: L0 (bar 5) and the rise's first bars are restored, H0 (bar 9) and
+    // both retreat bars are live. The old rule (L0 inside the prefix) silenced this one.
+    let ts = micro_across_a_restart(8);
+    let armed = ts.iter().find(|t| t.to == State::Armed).expect("arms live");
+    assert_eq!(armed.observed_at, cutoff(11));
+    assert!(!armed.warmup, "it armed on live bars: {armed:?}");
+    assert!(ts.iter().all(|t| !t.warmup));
+    // Restored through bar 11: the second retreat bar, where a continuous run armed, is in the
+    // prefix. This process recognizes and arms it only at bar 12, after the restart, but the
+    // previous process may already have announced it: warm-up.
+    let ts = micro_across_a_restart(11);
+    let armed = ts
+        .iter()
+        .find(|t| t.to == State::Armed)
+        .expect("arms after the restart");
+    assert_eq!(armed.observed_at, cutoff(12));
+    assert!(
+        armed.warmup,
+        "its arming moment fell in the restored prefix"
+    );
+    // The boundary itself: restored through bar 10 leaves the arming bar (11) live.
+    let ts = micro_across_a_restart(10);
+    let armed = ts.iter().find(|t| t.to == State::Armed).expect("arms live");
+    assert_eq!(armed.observed_at, cutoff(11));
+    assert!(!armed.warmup);
+}
+
 #[test]
 fn the_snapshot_names_one_dominant_episode_and_proximity_never_moves_seq() {
     let mut s = Script::new();

@@ -112,7 +112,13 @@ pub(crate) fn search(det: &mut Detector, sd: &mut SymDetect, x: &Barrier, seg: S
     if lp <= l0 || milli(h0 - lp, u) > m.max_depth_milli {
         return;
     }
-    let wu = x.restored_through.is_some_and(|r| r >= l0_end - x.bar_ns);
+    // Warm-up is decided by WHEN the setup would have been announced, not where its impulse
+    // started: a restart restores the day's bars, so an impulse that began before the restart
+    // but retreats and arms on bars this process saw live is a live setup (INO 2026-10-30: a
+    // 16:38 ET deploy silenced two of them because their L0 sat in the restored prefix). The
+    // recognition itself is warm-up only when this barrier is inside the restored prefix;
+    // `try_arm` decides again for the arming, the moment that notifies.
+    let wu = x.restored_through.is_some_and(|r| r >= x.b);
     let mut ep = open(
         det,
         sd,
@@ -241,6 +247,21 @@ fn try_arm(det: &mut Detector, sd: &mut SymDetect, x: &Barrier, ep: &mut Ep) {
         (a.h0_bar_end + x.bar_ns, a.pullback_low_bar_end),
         "pullback_low_at_arming",
     );
+    // The arming's warm-up (see `search`): the earliest barrier a continuous run could have
+    // armed this setup at is the end of its `min_pullback_bars`-th retreat bar. When that moment
+    // is inside the restored prefix, the previous process may already have armed (and announced)
+    // it, so this arming and everything after it is warm-up; otherwise it is this run's own
+    // observation and may notify, however early its impulse began.
+    ep.view.warmup = x.restored_through.is_some_and(|r| {
+        let need = (m.min_pullback_bars as usize).max(1);
+        let could_arm_at = x
+            .bars
+            .iter()
+            .filter(|t| t.end > a.h0_bar_end && t.end <= x.b && t.ohlc.is_some())
+            .nth(need - 1)
+            .map_or(x.b, |t| t.end);
+        r >= could_arm_at
+    });
     ep.view.levels.push(t.clone());
     ep.view.levels.push(i.clone());
     if let Some(an) = ep.view.anchors.as_mut() {

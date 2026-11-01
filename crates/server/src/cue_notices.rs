@@ -30,7 +30,9 @@
 //!
 //! Each `(stage, episode)` is announced at most once per process ([`CueNotices::seen`]); the
 //! delivery side also refuses an event id it already sent, persisted, so a restart cannot repeat
-//! one. Warm-up transitions (a restored prefix) never notify.
+//! one. Warm-up transitions (a restored prefix) never notify; a micro-pullback is warm-up only when
+//! it could already have ARMED inside that prefix (`stock_context::detect::micro`), not merely
+//! because its impulse began there.
 //!
 //! # Pullback (owner, 2026-10-25)
 //!

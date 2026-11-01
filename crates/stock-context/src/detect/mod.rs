@@ -356,7 +356,9 @@ pub struct Episode {
     pub base_secs: i64,
     pub fidelity: Fidelity,
     /// Its recognition read a window reaching into a restored prefix (not this run's own live
-    /// observation): never a fresh notification.
+    /// observation): never a fresh notification. The micro-pullback decides it by its arming
+    /// moment instead (`micro::try_arm`): a setup that arms on bars this run saw live notifies
+    /// even when its impulse began inside the restored prefix.
     pub warmup: bool,
     pub parent_episode_id: Option<String>,
     pub related_episode_ids: Vec<String>,
