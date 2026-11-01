@@ -134,6 +134,13 @@ export interface RocketAlsoWire {
  */
 export const CLOCK_FEATURE = "clock.v1";
 
+/**
+ * Market time between two clock-driven re-renders of the rocket channel's listeners. Under a
+ * second so the live market's once-a-second frames (phase-locked, a few ms of jitter) each
+ * render; a 1x replay's 4 Hz frames render about once a second.
+ */
+export const CLOCK_RENDER_STEP_MS = 750;
+
 /** `runners.event` (clock.v1): a new Runners row or a settled breakout, decided on the market clock. */
 export interface RunnersEventMessage {
   type: "runners.event";
@@ -340,7 +347,15 @@ export function createRocketChannel(
   const emit = () => {
     for (const l of listeners) l();
   };
-  const withClock = (s: RocketState): RocketState => ({ ...s, clock: serverClock ? clock : null, serverEvents: serverClock });
+  // The clock a render last saw. Ages are whole minutes (rocketAge), so a re-render per clock
+  // frame is waste: a playing replay sends ~4 a second (and the phone's JS thread re-runs every
+  // Runners, Ross, Favorites and Movers row for each). One per CLOCK_RENDER_STEP_MS of market
+  // time keeps a label at most that late; a step back (a seek) always renders.
+  let renderedClock: number | null = null;
+  const withClock = (s: RocketState): RocketState => {
+    renderedClock = serverClock ? clock : null;
+    return { ...s, clock: renderedClock, serverEvents: serverClock };
+  };
   return {
     get: () => state,
     onEvent(fn) {
@@ -359,6 +374,7 @@ export function createRocketChannel(
       clock = nowMs;
       // Only a shown panel re-renders for it (its ages move with the server clock).
       if (listeners.size === 0) return;
+      if (renderedClock !== null && nowMs >= renderedClock && nowMs - renderedClock < CLOCK_RENDER_STEP_MS) return;
       state = withClock(state);
       emit();
     },

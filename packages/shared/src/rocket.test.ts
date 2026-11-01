@@ -157,6 +157,20 @@ describe("rocket channel", () => {
     expect(renders).toBe(before);
     ch.applyClock(T + 6_000);
     expect(renders).toBe(before + 1);
+    // A playing replay's 4 Hz frames: re-rendered about once a market second (ages are minutes),
+    // and a seek back always.
+    ch.applyClock(T + 6_250);
+    ch.applyClock(T + 6_500);
+    expect(renders).toBe(before + 1);
+    expect(rocketNow(ch.get(), 0)).toBe(T + 6_000);
+    ch.applyClock(T + 6_750);
+    expect(renders).toBe(before + 2);
+    ch.applyClock(T + 6_800);
+    expect(renders).toBe(before + 2);
+    ch.applyClock(T - 60_000);
+    expect(renders).toBe(before + 3);
+    expect(rocketNow(ch.get(), 0)).toBe(T - 60_000);
+    ch.applyClock(T + 6_000);
     // The server's `fresh` wins over the age.
     expect(rocketFreshCount(ch.get(), 0)).toBe(1);
     const rv = rocketRowView(row({ id: "b", at: T - 90_000, fresh: true }), T);
