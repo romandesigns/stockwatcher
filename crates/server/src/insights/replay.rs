@@ -20,7 +20,13 @@
 //!   server log's `listening` lines) the live process started over: its cue decider was new (so
 //!   the 30-minute window counts from the boot and the one-per-day rule forgets earlier notices),
 //!   and a restored prefix marked the symbol `restored_through` its last recorded delivery
-//!   before the boot (warm-up). Both are reproduced here.
+//!   before the boot (warm-up). Both are reproduced here, as the server of THAT day restarted
+//!   ([`RestartModel`]): until 2026-11-01 a micro-pullback whose impulse began inside the
+//!   restored prefix was warm-up however live its arming, and a new process forgot the day's
+//!   notices; from then on the arming moment decides warm-up (`stock_context::detect::micro`) and
+//!   the notice memory (`crate::notice_memory`) carries the one-per-day rule and the Runners
+//!   window across the restart. A replay judging an old day by today's rules would call a setup
+//!   that day's server really did mute "notified", and the ledger would contradict it.
 //! - **The live journal wins.** Where the day's cue transition log has the episode, its recorded
 //!   `warmup` flag replaces the modelled one: the restore's proof (admission journal) decided
 //!   whether a prefix was warm, and the log is what actually happened.
@@ -62,6 +68,36 @@ pub struct Print {
     pub session: Option<SessionKind>,
 }
 
+/// How the server that ran the day behaved across a restart (module docs, "Restarts").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RestartModel {
+    /// Before the notice memory and the arming warm-up rule: a boot starts a new decider (window
+    /// and one-per-day memory start over) and a micro-pullback whose L0 bar starts inside the
+    /// restored prefix is warm-up (the old `micro::search` rule, `r >= l0_bar_end - bar`).
+    #[default]
+    Forgetful,
+    /// With them: the decider keeps what the previous process announced, the Runners window
+    /// keeps its first flag time, and warm-up is the engine's own (by the arming moment).
+    Remembering,
+}
+
+impl RestartModel {
+    /// The first ET trading day whose server restarts with the notice memory and the arming
+    /// warm-up rule. Releases never restart the server 04:00-20:00 ET on a trading day
+    /// (docs/CONVENTIONS.md, "Deploy window"), so the earliest is the trading day after the
+    /// release. Move this date if that release ships later: it decides how old days are judged.
+    pub const REMEMBERING_FROM: (i32, u32, u32) = (2026, 11, 2);
+
+    /// The model for `day`.
+    pub fn for_day(day: chrono::NaiveDate) -> RestartModel {
+        let (y, m, d) = Self::REMEMBERING_FROM;
+        match chrono::NaiveDate::from_ymd_opt(y, m, d) {
+            Some(from) if day >= from => RestartModel::Remembering,
+            _ => RestartModel::Forgetful,
+        }
+    }
+}
+
 /// What the pass needs besides the events.
 #[derive(Clone, Debug, Default)]
 pub struct ReplayInput {
@@ -76,6 +112,8 @@ pub struct ReplayInput {
     pub ledger_member: bool,
     /// Stop the clock here (UTC ns; today's page: now). `None`: run out the finished day.
     pub until: Option<i64>,
+    /// How that day's server restarted ([`RestartModel::for_day`]).
+    pub restarts: RestartModel,
 }
 
 /// What the pass found.
@@ -105,6 +143,10 @@ struct Pass {
     /// When this process first saw the symbol as a Runners row (the cue window's start).
     since: Option<i64>,
     last_admit_before: Option<i64>,
+    /// The restored prefix's end since the latest boot (the old warm-up rule reads it).
+    restored_through: Option<i64>,
+    /// The detection grid's bar (`Policy::current().body.grid`).
+    bar_ns: i64,
     out: ReplayOut,
     seen_decisions: std::collections::HashSet<String>,
 }
@@ -118,16 +160,20 @@ impl Pass {
             fidelity: Fidelity::RecordedLive,
             numerator_coverage: Coverage::Unverified,
         };
+        let policy = Policy::current();
+        let bar_ns = policy.body.grid.bar_secs * SEC;
         Pass {
             symbol: input.symbol.clone(),
             chart: ChartEngine::default(),
-            ctx: crate::context::production_engine(Policy::current(), PanelPolicy::v1(), run),
+            ctx: crate::context::production_engine(policy, PanelPolicy::v1(), run),
             cue: CueNotices::recording(),
             input,
             next_boot: 0,
             watching: false,
             since: None,
             last_admit_before: None,
+            restored_through: None,
+            bar_ns,
             out: ReplayOut::default(),
             seen_decisions: Default::default(),
         }
@@ -145,15 +191,20 @@ impl Pass {
                 break;
             }
             self.next_boot += 1;
-            // A new process: a new decider (its window and one-per-day memory start over), the
-            // symbol listed again from the boot, and the restored prefix warm.
+            // A new process and the restored prefix warm. Before the notice memory, also a new
+            // decider (its window and one-per-day memory start over) and the symbol listed again
+            // from the boot; with it, the decider restores what the previous one announced and
+            // the Runners row keeps its first flag time ([`RestartModel`]).
             self.drain();
-            self.cue = CueNotices::recording();
-            if self.watching {
-                self.since = Some(boot);
+            if self.input.restarts == RestartModel::Forgetful {
+                self.cue = CueNotices::recording();
+                if self.watching {
+                    self.since = Some(boot);
+                }
             }
             if let Some(rt) = self.last_admit_before {
                 self.ctx.set_restored_through(&self.symbol, Some(rt));
+                self.restored_through = Some(rt);
             }
         }
     }
@@ -202,6 +253,15 @@ impl Pass {
             return;
         }
         for t in &mut ts {
+            // The old rule is wider than the engine's (an arming inside the prefix implies an L0
+            // inside it), so OR-ing it on reproduces it exactly.
+            if self.input.restarts == RestartModel::Forgetful
+                && t.family == stock_context::Family::MicroPullback
+                && let (Some(rt), Some(a)) = (self.restored_through, t.anchors.as_ref())
+                && rt >= a.l0_bar_end - self.bar_ns
+            {
+                t.warmup = true;
+            }
             if let Some(w) = self.input.live_warm.get(&t.episode_id) {
                 t.warmup = *w;
             }

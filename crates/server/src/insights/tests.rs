@@ -324,6 +324,44 @@ fn the_replay_decides_each_setup_by_the_live_rules() {
     assert!(verdicts(&out).iter().all(|(_, v)| *v == "no_context"));
 }
 
+/// A day whose server restarts with the notice memory ([`replay::RestartModel::Remembering`]):
+/// A armed on bars the new process saw live, so it notifies though its impulse began before the
+/// restart (the INO 2026-10-30 fix), and the restored memory keeps B and C to one per day.
+#[test]
+fn a_remembering_server_announces_a_setup_that_arms_after_the_restart() {
+    let (events, flag, boot) = synthetic_day();
+    let out = replay::run(
+        events,
+        ReplayInput {
+            symbol: SYM.into(),
+            watch_from: Some(flag),
+            boots: vec![boot],
+            restarts: replay::RestartModel::Remembering,
+            ..ReplayInput::default()
+        },
+    );
+    assert_eq!(
+        verdicts(&out),
+        vec![
+            ("1".into(), "notified"),
+            ("2".into(), "one_per_day"),
+            ("3".into(), "one_per_day"),
+            ("4".into(), "window_closed"),
+        ],
+        "{:?}",
+        out.decisions
+    );
+    // The model follows the day the server ran.
+    assert_eq!(
+        replay::RestartModel::for_day("2026-10-30".parse().unwrap()),
+        replay::RestartModel::Forgetful
+    );
+    assert_eq!(
+        replay::RestartModel::for_day("2026-11-02".parse().unwrap()),
+        replay::RestartModel::Remembering
+    );
+}
+
 /// The live journal's warm flag wins over the modelled one (module docs of `replay`).
 #[test]
 fn the_live_journal_decides_warm_up() {

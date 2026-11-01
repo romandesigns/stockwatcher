@@ -493,6 +493,7 @@ impl Insights {
             live_warm: live.iter().map(|(k, v)| (k.clone(), v.warm)).collect(),
             ledger_member,
             until: ongoing.then_some(now),
+            restarts: replay::RestartModel::for_day(day),
         };
         let started = std::time::Instant::now();
         let events = read_events(&path);
