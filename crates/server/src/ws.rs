@@ -89,8 +89,8 @@
 //! - client `insights.ticker.subscribe {symbol, day?}` (day absent = today's trading date) ->
 //!   server `insights.ticker.snapshot {symbol, day, …}` (the body of `GET /api/insights/ticker`);
 //!   for today then `insights.ticker.update {…}` (the whole package, replacing) whenever it
-//!   changes. A new subscribe replaces the old one; a past day's snapshot is built off this
-//!   session and may arrive after a later subscribe, so a client matches `symbol` and `day`.
+//!   changes. A new subscribe replaces the old one, and a past day's snapshot still being built
+//!   for the replaced one is dropped, never sent late (clients may still match `symbol`/`day`).
 //!   `insights.ticker.unsubscribe` stops it. A malformed request gets `error bad_request`.
 //!
 //! Simulated trading (docs/architecture/chart-trading-sim.md, after `welcome`):
@@ -662,8 +662,18 @@ async fn send_notices_snapshot(
 /// a receiver: a past day is one snapshot.
 struct TickerSub {
     rx: Option<tokio::sync::watch::Receiver<Option<std::sync::Arc<String>>>>,
+    /// A past day's snapshot being built. Held here rather than sent from the build task, so a
+    /// later subscribe (which replaces this) or an unsubscribe drops it: a slow build for the
+    /// ticker the user just left can never land after the one they switched to.
+    once: Option<tokio::sync::oneshot::Receiver<String>>,
     /// The snapshot went out; later packages are updates.
     sent: bool,
+}
+
+/// What the connection's ticker opt-in woke for.
+enum TickerWake {
+    Changed(bool),
+    Once(Option<String>),
 }
 
 /// Sends the followed package as a snapshot (first) or an update.
@@ -1326,14 +1336,19 @@ async fn session(mut socket: WebSocket, state: AppState) {
                     break;
                 }
             }
-            alive = async {
-                match ticker.as_mut().and_then(|t| t.rx.as_mut()) {
-                    Some(rx) => rx.changed().await.is_ok(),
-                    None => std::future::pending().await,
+            wake = async {
+                match ticker.as_mut() {
+                    Some(TickerSub { once: Some(o), .. }) => TickerWake::Once(o.await.ok()),
+                    Some(TickerSub { rx: Some(rx), .. }) => TickerWake::Changed(rx.changed().await.is_ok()),
+                    _ => std::future::pending().await,
                 }
             } => {
-                let ok = match ticker.as_mut() {
-                    Some(t) if alive => send_ticker(&mut socket, t).await,
+                let ok = match (wake, ticker.as_mut()) {
+                    (TickerWake::Changed(true), Some(t)) => send_ticker(&mut socket, t).await,
+                    (TickerWake::Once(Some(frame)), Some(_)) => {
+                        ticker = None;
+                        send_text(&mut socket, frame).await
+                    }
                     _ => {
                         ticker = None;
                         true
@@ -1726,6 +1741,7 @@ async fn session(mut socket: WebSocket, state: AppState) {
                                     // they change.
                                     let mut t = TickerSub {
                                         rx: Some(insights.follow(symbol, day)),
+                                        once: None,
                                         sent: false,
                                     };
                                     let ready = t.rx.as_ref().is_some_and(|rx| rx.borrow().is_some());
@@ -1734,8 +1750,8 @@ async fn session(mut socket: WebSocket, state: AppState) {
                                     }
                                     ticker = Some(t);
                                 } else {
-                                    ticker = Some(TickerSub { rx: None, sent: true });
-                                    let tx = direct_tx.clone();
+                                    let (tx, once) = tokio::sync::oneshot::channel();
+                                    ticker = Some(TickerSub { rx: None, once: Some(once), sent: true });
                                     tokio::spawn(async move {
                                         let v = insights.package(symbol, day).await;
                                         let _ = tx.send(crate::insights::frame(

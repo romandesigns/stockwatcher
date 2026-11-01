@@ -669,3 +669,21 @@ async fn followers_share_one_build() {
     assert_eq!(v["symbol"], "INO");
     assert_eq!(ins.0.watchers.lock().unwrap().len(), 1);
 }
+
+/// The cache keeps only the days the archive still keeps: older day folders go, the rest (and
+/// anything that is not a day) stay; retention 0 keeps everything.
+#[test]
+fn the_cache_is_pruned_to_the_archive_retention() {
+    let tmp = tempfile::tempdir().unwrap();
+    for d in ["2026-09-01", "2026-10-20", "2026-10-30", "notes"] {
+        std::fs::create_dir_all(tmp.path().join(d)).unwrap();
+    }
+    let today: NaiveDate = "2026-10-31".parse().unwrap();
+    prune_cache(tmp.path(), 0, today);
+    assert!(tmp.path().join("2026-09-01").is_dir());
+    prune_cache(tmp.path(), 30, today);
+    assert!(!tmp.path().join("2026-09-01").exists());
+    for d in ["2026-10-20", "2026-10-30", "notes"] {
+        assert!(tmp.path().join(d).is_dir(), "{d} kept");
+    }
+}

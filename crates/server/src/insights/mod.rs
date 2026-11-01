@@ -125,7 +125,7 @@ struct Inner {
     src: Sources,
     archive: Archive,
     notices: NoticeFeed,
-    permits: Semaphore,
+    permits: Arc<Semaphore>,
     /// Followed today's packages (module docs, "Cost").
     watchers: Mutex<HashMap<Key, watch::Sender<Option<Arc<String>>>>>,
     /// The daily closes and assets, re-read only when their file changes.
@@ -222,11 +222,15 @@ fn tape_path(a: &Archive, day: NaiveDate, symbol: &str) -> Option<(&'static str,
 }
 
 /// Every event of a tape file, in recorded order (a torn last frame ends it, as for any reader).
-fn read_events(path: &Path) -> Vec<MarketEvent> {
-    match market_archive::reader::SymbolReader::open(path) {
-        Ok(r) => r.map_while(|e| e.ok()).map(|e| e.event).collect(),
-        Err(_) => Vec::new(),
-    }
+/// Streamed into the replay rather than collected: a busy day is hundreds of thousands of events,
+/// and two builds at once would otherwise each hold the whole tape in memory.
+fn read_events(path: &Path) -> impl Iterator<Item = MarketEvent> {
+    market_archive::reader::SymbolReader::open(path)
+        .ok()
+        .into_iter()
+        .flatten()
+        .map_while(|e| e.ok())
+        .map(|e| e.event)
 }
 
 /// The boots of `day`: the admission journal's segment headers (written beside the recording),
@@ -327,7 +331,7 @@ impl Insights {
             archive: Archive::new(src.archive.clone()),
             src,
             notices,
-            permits: Semaphore::new(MAX_BUILDS),
+            permits: Arc::new(Semaphore::new(MAX_BUILDS)),
             watchers: Mutex::new(HashMap::new()),
             closes: Mutex::new(None),
             assets: Mutex::new(None),
@@ -437,15 +441,18 @@ impl Insights {
             crate::notices::day_file(self.0.notices.dir().unwrap_or(Path::new("")), day);
         let transitions_file = self.0.src.transitions_dir.join(format!("{day}.jsonl"));
         let boots = boots(a, self.0.src.server_logs.as_deref(), day);
-        // A past day's cache, keyed by every input (module docs, "Cost").
+        // A past day's cache, keyed by every input (module docs, "Cost"). The daily closes file
+        // too: the previous close (and its split adjustment) is in the body, and a day built
+        // before that file had the close would otherwise keep a missing change forever.
         let key = format!(
-            "{SCHEMA}|{}|{}|{}|{tape}:{}|{}|{}|{boots:?}",
+            "{SCHEMA}|{}|{}|{}|{tape}:{}|{}|{}|{}|{boots:?}",
             crate::COMMIT,
             stock_context::Policy::current().tag(),
             stock_context::DetectionPolicy::current().tag(),
             len(&path),
             len(&ledger_file),
             len(&transitions_file),
+            len(&a.daily_closes_path()),
         );
         let cache = (!ongoing)
             .then(|| self.0.src.cache_dir.as_ref())
@@ -536,17 +543,27 @@ impl Insights {
         tracing::debug!(symbol, %day, events = out.events, ms = elapsed.as_millis() as u64, "insights: ticker-day built");
         if let Some(c) = &cache {
             write_cache(c, &key, &body);
+            if let Some(dir) = &self.0.src.cache_dir {
+                prune_cache(dir, self.0.src.archive.retention_days, now_date(now));
+            }
         }
         merge(head, body, now)
     }
 
-    /// [`Insights::package_blocking`] off the async workers, at most [`MAX_BUILDS`] at once.
+    /// [`Insights::package_blocking`] off the async workers, at most [`MAX_BUILDS`] at once. The
+    /// permit moves into the blocking task: a caller that goes away (an HTTP client hanging up
+    /// drops this future) cannot free it while its build is still running, so the bound holds.
     pub async fn package(&self, symbol: String, day: NaiveDate) -> Value {
-        let _permit = self.0.permits.acquire().await;
+        let Ok(permit) = self.0.permits.clone().acquire_owned().await else {
+            return json!({"available": false, "unavailable_reason": "build_failed"});
+        };
         let me = self.clone();
-        tokio::task::spawn_blocking(move || me.package_blocking(&symbol, day, now_ns()))
-            .await
-            .unwrap_or_else(|_| json!({"available": false, "unavailable_reason": "build_failed"}))
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            me.package_blocking(&symbol, day, now_ns())
+        })
+        .await
+        .unwrap_or_else(|_| json!({"available": false, "unavailable_reason": "build_failed"}))
     }
 
     /// Today's package of `symbol`, kept current for as long as anyone holds the receiver
@@ -625,6 +642,31 @@ fn merge(mut head: Value, body: Value, now: i64) -> Value {
         h.insert("as_of".into(), json!(now / 1_000_000));
     }
     head
+}
+
+/// Removes cached days the archive no longer keeps (`retention_days`; 0 keeps everything): their
+/// tape is gone, so the page answers `retention_expired` before it would ever read them, and
+/// without this the cache would outgrow the archive it was made from.
+fn prune_cache(dir: &Path, retention_days: u32, today: NaiveDate) {
+    if retention_days == 0 {
+        return;
+    }
+    let cutoff = today - Days::days(i64::from(retention_days));
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in rd.flatten() {
+        let name = e.file_name();
+        let Some(d) = name
+            .to_str()
+            .and_then(|n| NaiveDate::parse_from_str(n, "%Y-%m-%d").ok())
+        else {
+            continue;
+        };
+        if d < cutoff {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
 }
 
 fn read_cache(path: &Path, key: &str) -> Option<Value> {
