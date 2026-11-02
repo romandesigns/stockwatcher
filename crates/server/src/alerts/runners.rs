@@ -707,7 +707,16 @@ fn runner_message(n: &Notice) -> (String, String, Value) {
             if parts.is_empty() {
                 parts.push("Running on the tape".into());
             }
-            parts.push("late in the move".into());
+            // "Late" is true of a move that has been building for most of the hour; a move off a low
+            // under FRESH_LEG_MIN old is a new leg (INO 2026-10-30: the 4:32 spike faded to $0.59 at
+            // 4:35, and Running at 4:36:45, 1.75 min off that low, came at the start of the run to
+            // $2.71; "late in the move" read as a warning not to take it; owner, 2026-11-01).
+            match n.since_start_min {
+                Some(m) if m < FRESH_LEG_MIN => {
+                    parts.push(format!("fresh leg off the low {} ago", age_text(m)))
+                }
+                _ => parts.push("late in the move".into()),
+            }
             parts.join(" · ")
         }
         _ => String::new(),
@@ -783,6 +792,18 @@ pub fn desk_frame(n: &Notice) -> String {
         "at": n.at_ns.div_euclid(1_000_000),
     })
     .to_string()
+}
+
+/// A Running move whose 60-min low is younger than this is a fresh leg, not late in the move.
+const FRESH_LEG_MIN: f64 = 10.0;
+
+/// "45 s", "2 min".
+fn age_text(min: f64) -> String {
+    if min < 1.0 {
+        format!("{:.0} s", (min * 60.0).max(0.0))
+    } else {
+        format!("{:.0} min", min.floor())
+    }
 }
 
 #[cfg(test)]
@@ -1045,6 +1066,17 @@ Alert $11.49 · +5% = $12.06"
         );
         assert_eq!(data["kind"], "runners.running");
         assert!(t.chars().count() + b.chars().count() < 110, "{t} / {b}");
+        // Off a low under 10 min old it is a fresh leg (INO 2026-10-30, 1.75 min off $0.59), not late.
+        n.since_start_min = Some(1.75);
+        assert_eq!(
+            message(&n).1,
+            "+15.3% in 60 min · $120k in 5 min · fresh leg off the low 1 min ago
+Alert $11.49 · +5% = $12.06"
+        );
+        n.since_start_min = Some(0.5);
+        assert!(message(&n).1.contains("fresh leg off the low 30 s ago"));
+        n.since_start_min = Some(25.0);
+        assert!(message(&n).1.contains("late in the move"));
         // A fast move: the held move, its window, the trading in it.
         n.kind = NoticeKind::Fast;
         n.price = 2.41;

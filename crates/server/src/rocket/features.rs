@@ -765,6 +765,8 @@ pub(crate) struct RunInputs {
     pub(crate) fresh_high60: bool,
     /// The lowest low of the last 60 minutes (240 slots), the barrier bar included.
     pub(crate) base_low: f64,
+    /// Slots from the most recent bar at that low to the barrier (0: the barrier's own bar).
+    pub(crate) base_low_ago: u32,
     /// Dollars over the last 5 minutes (20 slots) and volume over the last 30 (120 slots).
     pub(crate) dollars5: f64,
     pub(crate) vol30: f64,
@@ -783,6 +785,7 @@ pub(crate) fn run_inputs(s: &Sym, b: &Barrier) -> Option<RunInputs> {
     let fresh_high = s.sess_high_prev.is_nan() || high > s.sess_high_prev;
     let base = key_of(b.ord, 0);
     let (mut lo, mut d5, mut v30, mut hi_before) = (f64::NAN, 0.0, 0.0, f64::NAN);
+    let mut lo_d = 0u32;
     for x in ring.iter() {
         if x.key == 0 || x.key > b.key || x.key < base {
             continue;
@@ -796,6 +799,10 @@ pub(crate) fn run_inputs(s: &Sym, b: &Barrier) -> Option<RunInputs> {
         }
         if d < 240 && x.has_ohlc {
             let l = f64::from(x.low);
+            // The most recent bar at the low (ties: the nearer one), for the move's age.
+            if lo.is_nan() || l < lo || (l == lo && d < lo_d) {
+                lo_d = d;
+            }
             lo = if lo.is_nan() { l } else { lo.min(l) };
             if d > 0 {
                 let h = f64::from(x.high);
@@ -812,6 +819,7 @@ pub(crate) fn run_inputs(s: &Sym, b: &Barrier) -> Option<RunInputs> {
         fresh_high,
         fresh_high60: hi_before.is_nan() || high > hi_before,
         base_low: lo,
+        base_low_ago: lo_d,
         dollars5: d5,
         vol30: v30,
     })

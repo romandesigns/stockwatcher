@@ -96,6 +96,8 @@ pub struct Fact {
 pub struct Entry {
     pub price: f64,
     pub base_low: f64,
+    /// Seconds since the most recent bar at the 60-min low (the move's age).
+    pub low_age_s: u32,
     pub gain: f64,
     pub req: f64,
     pub dollars5: f64,
@@ -158,6 +160,7 @@ pub(crate) fn decide(x: &RunInputs, f: Option<&Fact>) -> Option<Entry> {
     Some(Entry {
         price: x.price,
         base_low: x.base_low,
+        low_age_s: x.base_low_ago * 15,
         gain,
         req,
         dollars5: x.dollars5,
@@ -231,6 +234,7 @@ mod tests {
             fresh_high: true,
             fresh_high60: true,
             base_low,
+            base_low_ago: 120,
             dollars5: 200_000.0,
             vol30: 1e6,
         }

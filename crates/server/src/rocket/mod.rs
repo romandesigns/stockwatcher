@@ -1995,7 +1995,8 @@ impl RocketBoard {
                 price: a.price,
                 from_flag_pct: Some(round2(e.gain * 100.0)),
                 reasons: a.reasons.clone(),
-                since_start_min: None,
+                // Minutes since the hour's low: the notice calls a young move a fresh leg.
+                since_start_min: Some(f64::from(e.low_age_s) / 60.0),
                 exec_ns: None,
                 detail: None,
             });
