@@ -286,6 +286,13 @@ fn stats(r: &DayRecords, prints: &[Print]) -> Value {
         (Some(c), Some(p)) => json!({"abs": dollars(c - p), "pct": pct(c, p)}),
         _ => Value::Null,
     };
+    // The day's last print against the previous close: the move a reader means by "change" when
+    // it came after hours (INO 2026-10-30 closed at 4 PM -22.6% and finished after hours +167%;
+    // "Change -22.6%" beside "Last $2.06" read as a fall).
+    let last_change = match (all.close.map(|(_, p)| p), prev) {
+        (Some(c), Some(p)) => json!({"abs": dollars(c - p), "pct": pct(c, p)}),
+        _ => Value::Null,
+    };
     let sess = |k| by.get(&k).map_or(Value::Null, Acc::json);
     // The day's last print and when, so a day whose move came after hours leads with the price
     // that moved rather than the 4 PM close; and when the regular session was scheduled to end
@@ -303,6 +310,7 @@ fn stats(r: &DayRecords, prints: &[Print]) -> Value {
         "prev_close": r.prev_close.map(|(d, c)| json!({"day": d.to_string(), "price": dollars(c)})),
         "close": regular_close.map(dollars),
         "change": change,
+        "last_change": last_change,
         "last": all.close.map(|(_, p)| dollars(p)),
         "sessions": {
             "pre": sess(SessionKind::Pre),

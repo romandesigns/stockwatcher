@@ -88,6 +88,12 @@ describe("tickerPageView: words only, every number the server's", () => {
     expect(v.stats[7]).toMatchObject({ value: "—", note: "not collected" });
     expect(v.headline).toMatchObject({ price: "$2.06", change: "-21.6%", note: "t12000 · close $0.6038 at t-1950" });
   });
+  test("Change leads with the last price's move when the day moved after the close (schema 3)", () => {
+    const pkg = { ...PKG, stats: { ...PKG.stats, last_change: { abs: 1.29, pct: 167.5 } } };
+    const w = tickerPageView(parseTickerPackage(pkg)!, fmt);
+    expect(w.stats[1]).toMatchObject({ value: "+167.5%", tone: "up", note: "4 PM close -21.6% · prev close $0.7700" });
+    expect(w.headline).toMatchObject({ change: "+167.5%", tone: "up" });
+  });
   test("history rows: the notice's own name, outcomes, and the server's hold reason", () => {
     expect(v.alerts[0]).toMatchObject({ marker: 1, kind: "Fast move", detail: "+17.7% in 15 s · 108 trades, $41k", price: "$0.7264", best: "$2.71", bestPct: "+273.1%", plus5: "t20s", stop: "—", held: null });
     // The Price column is the notice's own text: $1.86, not a re-rounded 1.855 ("$1.85").

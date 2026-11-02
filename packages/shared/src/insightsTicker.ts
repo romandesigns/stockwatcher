@@ -80,6 +80,8 @@ export interface TickerStatsWire {
   prev_close: { day: string; price: number } | null;
   close: number | null;
   change: { abs: number; pct: number | null } | null;
+  /** The day's last print against the previous close (schema 3; absent from older servers). */
+  last_change?: { abs: number; pct: number | null } | null;
   last: number | null;
   /** When the day's last print was (epoch ms), and in which session. */
   last_at?: number | null;
@@ -447,7 +449,13 @@ export function tickerPageView(p: TickerPackageWire, time: (ms: number, seconds?
   const reg = s?.sessions.regular ?? null;
   const pre = s?.sessions.pre ?? null;
   const after = s?.sessions.after ?? null;
-  const changeTone: Tone = s?.change?.pct ? (s.change.pct > 0 ? "up" : s.change.pct < 0 ? "down" : "neutral") : "dim";
+  // "Change" is the last price's move when the day moved after the close (owner, 2026-11-01: INO's
+  // "-22.6%" beside "Last $2.06" read as a fall); the 4 PM close's own change becomes the note.
+  const afterClose = !!s?.last_change && s.last !== null && s.close !== null && s.last !== s.close;
+  const shown = afterClose ? s!.last_change! : (s?.change ?? null);
+  const changeTone: Tone = shown?.pct ? (shown.pct > 0 ? "up" : shown.pct < 0 ? "down" : "neutral") : "dim";
+  const prevNote = s?.prev_close ? `prev close ${money(s.prev_close.price)}` : "no previous close on file";
+  const changeNote = afterClose && s?.change ? `4 PM close ${signedPct(s.change.pct)} · ${prevNote}` : s?.prev_close ? `vs ${prevNote}` : prevNote;
   const lastLabel = s?.last_at ? `Last · ${time(s.last_at)}` : "Last";
   const closeAt = s?.regular_close_at ? ` at ${time(s.regular_close_at)}` : "";
   const closeNote = s?.close !== null && s?.close !== undefined ? `close ${money(s.close)}${closeAt}` : "no regular-session trades";
@@ -456,7 +464,7 @@ export function tickerPageView(p: TickerPackageWire, time: (ms: number, seconds?
         // The day's last price leads (a move after hours is the price that moved), with its time; the
         // regular-session close, quoted at the session's scheduled end, is the note.
         { id: "last", label: lastLabel, value: money(s.last ?? s.close), note: closeNote, tone: s.last === null && s.close === null ? "dim" : "neutral" },
-        { id: "change", label: "Change", value: s.change ? signedPct(s.change.pct) : "—", note: s.prev_close ? `vs prev close ${money(s.prev_close.price)}` : "no previous close on file", tone: changeTone },
+        { id: "change", label: "Change", value: shown ? signedPct(shown.pct) : "—", note: changeNote, tone: changeTone },
         { id: "pre", label: "Premarket", value: range(pre), note: pre ? "4:00–9:30 AM" : "no trades", tone: pre ? "neutral" : "dim" },
         { id: "regular", label: "Regular session", value: range(reg), note: reg ? `open ${money(reg.open)} · close ${money(reg.close)}` : "no trades", tone: reg ? "neutral" : "dim" },
         {
@@ -550,7 +558,7 @@ export function tickerPageView(p: TickerPackageWire, time: (ms: number, seconds?
     nextDay: p.next_day?.day ?? null,
     today: p.today,
     unavailable: p.available ? null : (UNAVAILABLE[p.unavailable_reason ?? ""] ?? `Nothing to show for this day${p.unavailable_reason ? ` (${p.unavailable_reason.replace(/_/g, " ")})` : ""}.`),
-    headline: { price: money(s?.last ?? s?.close), change: s?.change ? signedPct(s.change.pct) : "", tone: changeTone, note: s ? [s.last_at ? time(s.last_at) : null, s.close !== null && s.last !== s.close ? closeNote : null].filter(Boolean).join(" · ") : "" },
+    headline: { price: money(s?.last ?? s?.close), change: shown ? signedPct(shown.pct) : "", tone: changeTone, note: s ? [s.last_at ? time(s.last_at) : null, s.close !== null && s.last !== s.close ? closeNote : null].filter(Boolean).join(" · ") : "" },
     stats,
     alerts,
     alertSummary: sc ? `${sc.sent} sent · ${sc.held} held` : "",
