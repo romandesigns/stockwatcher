@@ -629,8 +629,9 @@ export function CandleChart({
       ...(topRight ? { topRightInset: topRight } : {}),
       // The Levels menu's "Volume profile" switch turns the in-chart profile off.
       ...(inChartProfile && !layers.profile ? { showProfile: false } : {}),
+      lastPriceLine: layers.lastPrice,
     }),
-    [options, volumeHeight, overlayTop, topRight, inChartProfile, layers.profile],
+    [options, volumeHeight, overlayTop, topRight, inChartProfile, layers.profile, layers.lastPrice],
   );
   const chartStyle = useMemo(() => ({ grid: settings.grid, sessionShading: settings.sessionShading, sessionBreaks: settings.sessionBreaks, highLow: settings.highLow, indicatorLegend: settings.indicatorLegend, legendHidden: settings.legendHidden }), [settings.grid, settings.sessionShading, settings.sessionBreaks, settings.highLow, settings.indicatorLegend, settings.legendHidden]);
   const state: ChartState = useMemo(

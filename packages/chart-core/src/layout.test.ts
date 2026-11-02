@@ -31,6 +31,15 @@ describe("layout", () => {
     expect(round(list)).toMatchSnapshot();
   });
 
+  test("the last price line runs across the plot to its tag, and the Levels switch turns it off", () => {
+    const dotted = (l: DisplayList) => l.filter((p): p is LinePrim => p.kind === "line" && p.layer === "overlay" && p.dash?.join() === "1,3");
+    const on = dotted(layout({ ...state, options: { showProfile: true } }, vp, theme, size));
+    expect(on).toHaveLength(1);
+    expect(on[0]!.y1).toBe(on[0]!.y2);
+    expect(["up", "down"]).toContain(on[0]!.stroke);
+    expect(dotted(layout({ ...state, options: { showProfile: true, lastPriceLine: false } }, vp, theme, size))).toHaveLength(0);
+  });
+
   test("the hover '+' and bell paint over the crosshair lines", () => {
     const pointer = { x: 100, y: 100 };
     const list = layout(

@@ -41,6 +41,8 @@ export interface ChartOptions {
   paneGap: number;
   /** Draw the session profile inside the price pane, anchored right. */
   showProfile: boolean;
+  /** A dotted line at the last price across the plot (the Levels menu's "Last price line"). */
+  lastPriceLine: boolean;
   /** Profile overlay width as a fraction of the plot width. */
   profileWidth: number;
   fontSize: number;
@@ -61,6 +63,7 @@ export const DEFAULT_CHART_OPTIONS: ChartOptions = {
   volumeHeight: 64,
   paneGap: 6,
   showProfile: false,
+  lastPriceLine: true,
   profileWidth: 0.22,
   fontSize: 10,
   hatchSpacing: 7,
@@ -619,6 +622,9 @@ export function layoutChart(model: ChartModel, state: ChartState, theme: ChartTh
       const ax = g.priceAxis.x + 2;
       const right = g.priceAxis.x + g.priceAxis.w;
       const fill = last.c >= last.o ? theme.up : theme.down;
+      // The last price carried across the plot to its tag (owner, 2026-11-02), dotted in the tag's
+      // hue: over the candles, under the axes and the crosshair.
+      if (model.options.lastPriceLine) out.push({ kind: "line", x1: g.plot.x, y1: lastY, x2: g.priceAxis.x, y2: lastY, stroke: fill, lineWidth: 1, dash: [1, 3], layer: "overlay" });
       out.push({ kind: "path", points: [ax, lastY, ax + 5, lastY - 9, right, lastY - 9, right, lastY + 9, ax + 5, lastY + 9], closed: true, fill, layer: "axes" });
       out.push({ kind: "text", x: (ax + 5 + right) / 2, y: lastY, text: formatAxisTag(model, last.c), fill: theme.onTag, fontSize: fs, fontFamily: mono, fontWeight: 600, align: "center", baseline: "middle", layer: "axes" });
       // Countdown to the forming candle's close, tucked under the tag (above it near the bottom edge).

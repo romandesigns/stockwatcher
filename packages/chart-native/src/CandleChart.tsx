@@ -517,6 +517,8 @@ export function CandleChart({
         // The readout takes the top-left corner; overlay indicator legends start under it.
         ...(inspector ? { legendTop: READOUT_H } : {}),
         ...(options?.showProfile && !layers.profile ? { showProfile: false } : {}),
+        // The Levels sheet's "Last price line" switch.
+        lastPriceLine: layers.lastPrice,
       },
       priceScaleType: scaleType,
       indicators: indicatorResults,
