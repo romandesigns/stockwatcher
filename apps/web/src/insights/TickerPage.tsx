@@ -113,14 +113,22 @@ function Body({ pkg, view }: { pkg: TickerPackageWire; view: TickerPageView }) {
     <>
       <DayChart pkg={pkg} view={view} focus={focus} selected={selected} />
       <Stats view={view} />
-      <div className="flex flex-wrap items-start gap-5">
-        <History view={view} onFocus={setFocus} selected={selected} onSelect={onSelect} />
-        <aside className="flex min-w-0 flex-[1_1_320px] flex-col gap-5">
+      {/* Two columns once there is room: the history with the missed setups under it, beside the
+          scorecard and halts. With the missed setups in their own full-width row, a short history
+          left an empty block beside the taller scorecard (owner, 2026-11-01). One column below
+          that, in reading order: history, scorecard and halts, then the missed setups. */}
+      <div className="grid grid-cols-1 items-start gap-5 [grid-template-areas:'hist'_'side'_'missed'] @5xl/ticker:grid-cols-[minmax(0,1fr)_340px] @5xl/ticker:grid-rows-[auto_1fr] @5xl/ticker:[grid-template-areas:'hist_side'_'missed_side']">
+        <div className="flex min-w-0 [grid-area:hist]">
+          <History view={view} onFocus={setFocus} selected={selected} onSelect={onSelect} />
+        </div>
+        <aside className="flex min-w-0 flex-col gap-5 [grid-area:side]">
           <Scorecard view={view} />
           <Halts view={view} />
         </aside>
+        <div className="min-w-0 [grid-area:missed]">
+          <Missed view={view} />
+        </div>
       </div>
-      <Missed view={view} />
     </>
   );
 }
