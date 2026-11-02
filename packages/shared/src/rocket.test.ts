@@ -335,11 +335,7 @@ describe("buying bursts (2026-10-22)", () => {
     const v = rocketSectionsView(p, T);
     expect(v.bursts?.rows.map((r) => r.symbol)).toEqual(["NEW", "OLD"]);
     expect(v.runners.map((r) => r.symbol)).toEqual(["BRK", "RUN"]);
-    expect(v.bursts?.head).toEqual({
-      count: "3 today",
-      what: "Heavy buying confirmed, typically 5–9 min into a move (about halfway)",
-        typical: "Research ($0.15–$25): +13% max in 30 min (median), 1 in 4 reach +20% before −5%",
-    });
+    expect(v.bursts?.head).toEqual({ count: "3 today" });
     expect(rocketHeaderView(p).record).toBe("4 of 9 rocketed today");
   });
 
@@ -348,8 +344,8 @@ describe("buying bursts (2026-10-22)", () => {
     const empty = rocketSectionsView(panel({ burst: { ...detector, today: 0 } }), T);
     expect(empty.bursts?.rows).toEqual([]);
     expect(empty.bursts?.head.count).toBe("0 today");
-    // An older server's burst rows without the detector block: counted from the rows, no typical line.
-    expect(rocketSectionsView(panel({ rows: [burst()] }), T).bursts?.head).toMatchObject({ count: "1 today", typical: "" });
+    // An older server's burst rows without the detector block: counted from the rows.
+    expect(rocketSectionsView(panel({ rows: [burst()] }), T).bursts?.head).toEqual({ count: "1 today" });
   });
 
   test("the frames parse with the burst fields", () => {

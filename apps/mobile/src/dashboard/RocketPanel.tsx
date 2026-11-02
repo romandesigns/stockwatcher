@@ -133,7 +133,6 @@ export function RocketPanel({ channel, onPick, reducedMotion, gap = 0 }: { chann
               </Text>
               <Text style={styles.record}>{bursts.head.count}</Text>
             </View>
-            <Text style={styles.sub}>{[bursts.head.what, bursts.head.typical].filter(Boolean).join(". ")}</Text>
             <View style={[styles.rows, !state.connected && styles.dimmed]}>
               {bursts.rows.map((r) => (
                 <Row key={r.key} row={r} marks={marks.get(r.key)?.marks ?? NO_MARKS} trigger={marks.get(r.key)?.trigger ?? null} onPick={onPick} reducedMotion={reducedMotion} />

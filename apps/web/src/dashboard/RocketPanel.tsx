@@ -105,7 +105,6 @@ export function RocketPanelView({ state, onPick }: { state: RocketState; onPick:
                   </h3>
                   <span className="ml-auto font-mono text-[11px] text-muted-foreground tabular-nums">{bursts.head.count}</span>
                 </div>
-                <p className="m-0 px-1 text-[10px] leading-snug text-text-faint">{[bursts.head.what, bursts.head.typical].filter(Boolean).join(". ")}</p>
                 <RowList rows={bursts.rows} marks={marks} onPick={onPick} />
               </section>
             )}

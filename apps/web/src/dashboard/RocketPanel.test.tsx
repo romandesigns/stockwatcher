@@ -160,8 +160,9 @@ describe("Buying bursts (2026-10-22)", () => {
     const html = render({ enabled: true, panel: { ...panel, burst: detector, rows }, receivedAt: 5, connected: true });
     expect(html).toContain("Bursts");
     expect(html).toContain("2 today");
-    expect(html).toContain("typically 5–9 min into a move (about halfway)");
-    expect(html).toContain("Research ($0.15–$25): +13% max in 30 min (median), 1 in 4 reach +20% before −5%");
+    // The caption under the header was removed (owner, 2026-11-02).
+    expect(html).not.toContain("Heavy buying confirmed");
+    expect(html).not.toContain("Research ($0.15–$25)");
     expect(html.indexOf("NEWB")).toBeLessThan(html.indexOf("OLDB"));
     expect(html.indexOf("OLDB")).toBeLessThan(html.indexOf("Flags"));
     expect(html.indexOf("Flags")).toBeLessThan(html.indexOf("FLAG<"));

@@ -770,26 +770,16 @@ export function rocketRowsView(p: RocketPanelWire, nowMs: number): RocketRowView
 export interface RocketBurstSectionView {
   /** "3 today". */
   count: string;
-  /** "Heavy buying confirmed, typically 5–9 min into a move (about halfway)". */
-  what: string;
-  /** Historical outcomes labelled with the study's $0.15–$25 range; "" unknown. */
-  typical: string;
 }
 
-/** "1 in 4" for 23 %: the odds in words. */
-function oneIn(p: number): string {
-  return p > 0 ? `1 in ${Math.max(1, Math.round(100 / p))}` : "none";
-}
-
-/** The Bursts section's header, from the panel's detector block (older servers: the row count). */
+/**
+ * The Bursts section's header, from the panel's detector block (older servers: the row count).
+ * Only the count: the caption under it ("Heavy buying confirmed, typically 5–9 min into a move…
+ * 1 in 4 reach +20% before −5%") was removed at the owner's request (2026-11-02). The server still
+ * sends the detector's `typical` block; nothing shows it.
+ */
 export function rocketBurstSectionView(b: RocketBurstPanelWire | undefined, rows: number): RocketBurstSectionView {
-  const t = b?.typical;
-  const [lo, hi] = t?.fires_after_min ?? [5, 9];
-  return {
-    count: `${b?.today ?? rows} today`,
-    what: `Heavy buying confirmed, typically ${lo}–${hi} min into a move (about halfway)`,
-    typical: t ? `Research ($0.15–$25): +${Math.round(t.mfe30_med_pct)}% max in 30 min (median), ${oneIn(t.cont20_pct)} reach +20% before −5%` : "",
-  };
+  return { count: `${b?.today ?? rows} today` };
 }
 
 export interface RocketSectionsView {
