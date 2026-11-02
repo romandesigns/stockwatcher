@@ -86,8 +86,8 @@ use replay::ReplayInput;
 pub const FEATURE: &str = "insights.ticker.v1";
 
 /// The package's schema; part of the cache key. 2: `chart` (levels, zones, sessions) added, so
-/// a day cached before it is rebuilt rather than served without them. 3: `stats.last_change`.
-pub const SCHEMA: u32 = 3;
+/// a day cached before it is rebuilt rather than served without them. 3: `stats.last_change`. 4: outcome `dip_*`.
+pub const SCHEMA: u32 = 4;
 
 /// Builds running at once (each replays a whole symbol-day).
 pub const MAX_BUILDS: usize = 2;

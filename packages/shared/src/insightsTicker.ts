@@ -14,6 +14,10 @@ export interface TickerOutcomeWire {
   best_price: number | null;
   best_at: number | null;
   best_pct: number | null;
+  /** The lowest print between the alert and its best one (absent from older servers). */
+  dip_price?: number | null;
+  dip_at?: number | null;
+  dip_pct?: number | null;
   plus5_price: number | null;
   plus5_at: number | null;
   stop: number | null;
@@ -391,6 +395,9 @@ export interface TickerAlertView {
   best: string;
   bestPct: string;
   bestTone: Tone;
+  /** "dipped -18.8% first" / "no dip first" / "" (an older server sent no dip). */
+  dip: string;
+  dipTone: Tone;
   plus5: string;
   plus5Tone: Tone;
   stop: string;
@@ -435,6 +442,12 @@ export interface TickerPageView {
 
 /** Missed setups shown before the "N later setups" toggle (the design shows four). */
 export const MISSED_SHOWN = 4;
+
+function dipText(o: TickerOutcomeWire | null | undefined): { dip: string; dipTone: Tone } {
+  if (!o || o.dip_pct === undefined || o.best_price === null || o.best_price === undefined) return { dip: "", dipTone: "dim" };
+  if (o.dip_pct === null || o.dip_pct > -1) return { dip: "no dip first", dipTone: "up" };
+  return { dip: `dipped ${signedPct(o.dip_pct)} first`, dipTone: "down" };
+}
 
 const range = (s: TickerSessionWire | null) => (s && s.low !== null && s.high !== null ? `${money(s.low)} – ${money(s.high)}` : "—");
 
@@ -501,6 +514,9 @@ export function tickerPageView(p: TickerPackageWire, time: (ms: number, seconds?
       best: o?.best_price !== null && o?.best_price !== undefined ? money(o.best_price) : "—",
       bestPct: signedPct(o?.best_pct),
       bestTone: o?.best_pct ? (o.best_pct > 0 ? "up" : "down") : "dim",
+      // How far it fell before its best, so "best +273%" is read with what holding it took. Under
+      // 1% is noise around the alert price: "no dip first".
+      ...dipText(o),
       plus5: o?.plus5_at ? time(o.plus5_at, true) : (pending ?? "no"),
       plus5Tone: o?.plus5_at ? "up" : "dim",
       stop: !o || o.stop === null ? "—" : o.stop_hit_at ? `hit ${time(o.stop_hit_at, true)}` : (pending ?? "not hit"),

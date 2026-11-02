@@ -264,6 +264,7 @@ function AlertCard({ a, selected, onSelect }: { a: TickerAlertView; selected: bo
       </Text>
       <View style={styles.outcomes}>
         <Text style={[styles.mono, { color: TONE[a.bestTone] }]}>best {a.bestPct}</Text>
+        {a.dip ? <Text style={[styles.small, { color: TONE[a.dipTone] }]}>{a.dip}</Text> : null}
         <Text style={[styles.small, { color: TONE[a.plus5Tone] }]}>+5% {a.plus5}</Text>
         <Text style={[styles.small, { color: TONE[a.stopTone] }]}>stop {a.stop}</Text>
       </View>

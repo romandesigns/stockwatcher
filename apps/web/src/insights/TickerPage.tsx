@@ -290,8 +290,11 @@ function AlertRow({ a, onFocus, selected, onSelect }: { a: TickerAlertView; onFo
           {text}
         </span>
         <span className="font-mono text-[13px] tabular-nums">{a.price}</span>
-        <span className={cn("truncate font-mono text-[13px] tabular-nums", TONE[a.bestTone])}>
-          {a.best} · {a.bestPct}
+        <span className="flex min-w-0 flex-col gap-0.5">
+          <span className={cn("truncate font-mono text-[13px] tabular-nums", TONE[a.bestTone])}>
+            {a.best} · {a.bestPct}
+          </span>
+          {a.dip ? <span className={cn("truncate text-xs", TONE[a.dipTone])}>{a.dip}</span> : null}
         </span>
         <span className={cn("font-mono text-[13px] tabular-nums", TONE[a.plus5Tone])}>{a.plus5}</span>
         <span className={cn("text-[13px]", TONE[a.stopTone])}>{a.stop}</span>
@@ -306,6 +309,7 @@ function AlertRow({ a, onFocus, selected, onSelect }: { a: TickerAlertView; onFo
         {text}
         <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs">
           <span className={cn("font-mono tabular-nums", TONE[a.bestTone])}>best {a.bestPct}</span>
+          {a.dip ? <span className={TONE[a.dipTone]}>{a.dip}</span> : null}
           <span className={TONE[a.plus5Tone]}>+5% {a.plus5}</span>
           <span className={TONE[a.stopTone]}>stop {a.stop}</span>
         </div>

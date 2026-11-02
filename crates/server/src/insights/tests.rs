@@ -824,12 +824,19 @@ fn outcomes_measure_best_plus5_stop_and_crossing() {
     assert_eq!(o.best, Some((13 * SEC, 2_120_000)));
     assert_eq!(o.plus5_at, Some(13 * SEC));
     assert_eq!(o.stop_hit_at, Some(14 * SEC));
+    assert_eq!(
+        o.dip,
+        Some((11 * SEC, 2_040_000)),
+        "the low between the alert and its best"
+    );
     let c = o.crossing.unwrap();
     assert_eq!((c.at, c.price), (12 * SEC, 2_060_000));
     assert_eq!(c.plus5_at, None, "2.12 < 2.06 × 1.05");
     // No stop: the best is the day's.
     let o = package::measure(&prints, 10 * SEC, 2_000_000, None, None);
     assert_eq!(o.best, Some((15 * SEC, 2_600_000)));
+    // It fell to $1.89 before running to $2.60.
+    assert_eq!(o.dip, Some((14 * SEC, 1_890_000)));
     // Stopped before the trigger: the crossing came after the stop.
     let o = package::measure(
         &prints,

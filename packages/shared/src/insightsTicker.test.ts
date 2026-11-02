@@ -94,6 +94,13 @@ describe("tickerPageView: words only, every number the server's", () => {
     expect(w.stats[1]).toMatchObject({ value: "+167.5%", tone: "up", note: "4 PM close -21.6% · prev close $0.7700" });
     expect(w.headline).toMatchObject({ change: "+167.5%", tone: "up" });
   });
+  test("dipped first: how far it fell before its best (schema 4); nothing from an older server", () => {
+    expect(v.alerts[0]).toMatchObject({ dip: "", dipTone: "dim" });
+    const alerts = [{ ...PKG.alerts[0], outcome: outcome({ dip_price: 0.59, dip_at: T0 + 270_000, dip_pct: -18.8 }) }, { ...PKG.alerts[1], outcome: outcome({ dip_price: null, dip_at: null, dip_pct: null }) }];
+    const w = tickerPageView(parseTickerPackage({ ...PKG, alerts })!, fmt);
+    expect(w.alerts[0]).toMatchObject({ dip: "dipped -18.8% first", dipTone: "down" });
+    expect(w.alerts[1]).toMatchObject({ dip: "no dip first", dipTone: "up" });
+  });
   test("history rows: the notice's own name, outcomes, and the server's hold reason", () => {
     expect(v.alerts[0]).toMatchObject({ marker: 1, kind: "Fast move", detail: "+17.7% in 15 s · 108 trades, $41k", price: "$0.7264", best: "$2.71", bestPct: "+273.1%", plus5: "t20s", stop: "—", held: null });
     // The Price column is the notice's own text: $1.86, not a re-rounded 1.855 ("$1.85").

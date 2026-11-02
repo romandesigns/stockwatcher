@@ -93,6 +93,10 @@ pub struct Outcome {
     pub ref_price: i64,
     pub ref_at: i64,
     pub best: Option<(i64, i64)>,
+    /// The lowest print after the start and before the best one: how far it fell before it ran
+    /// (INO 10-30's Fast move at $0.7264 fell to $0.59 before reaching $2.71; "best +273%" alone
+    /// hid that). `None` when the best print came first.
+    pub dip: Option<(i64, i64)>,
     pub plus5_at: Option<i64>,
     pub stop: Option<i64>,
     pub stop_hit_at: Option<i64>,
@@ -139,10 +143,19 @@ pub fn measure(
         }
         b
     };
+    let best_seg = best(seg);
+    let dip = best_seg.and_then(|(bx, _)| {
+        let before = &seg[..seg.partition_point(|(x, _)| *x < bx)];
+        before
+            .iter()
+            .copied()
+            .reduce(|a, b| if b.1 < a.1 { b } else { a })
+    });
     let mut out = Outcome {
         ref_price,
         ref_at: start,
-        best: best(seg),
+        best: best_seg,
+        dip,
         plus5_at: seg
             .iter()
             .find(|(_, p)| reached_5pct(*p, ref_price))
@@ -181,6 +194,9 @@ fn outcome_json(o: &Outcome) -> Value {
         "best_price": o.best.map(|(_, p)| dollars(p)),
         "best_at": o.best.map(|(x, _)| ms(x)),
         "best_pct": o.best.and_then(|(_, p)| pct(p, o.ref_price)),
+        "dip_price": o.dip.map(|(_, p)| dollars(p)),
+        "dip_at": o.dip.map(|(x, _)| ms(x)),
+        "dip_pct": o.dip.and_then(|(_, p)| pct(p, o.ref_price)),
         "plus5_price": dollars((o.ref_price as i128 * 105 / 100) as i64),
         "plus5_at": o.plus5_at.map(ms),
         "stop": o.stop.map(dollars),
