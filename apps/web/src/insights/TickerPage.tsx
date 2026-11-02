@@ -2,7 +2,7 @@ import { dayChartContext, DEFAULT_CHART_SETTINGS, DEFAULT_LAYERS, formatEtTime12
 import { CandleChart, Icon } from "@stockwatcher/chart-web";
 import { cn, Collapsible, CollapsibleContent, CollapsibleTrigger, ScrollArea, Tip } from "@stockwatcher/chart-web/ui";
 import { tickerPageHash, tickerPageView, type TickerAlertView, type TickerChannel, type TickerMissedView, type TickerPackageWire, type TickerPageView, type TickerRequest, type Tone } from "@stockwatcher/shared";
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactElement } from "react";
 import { useTickerPackage } from "./useTickerPage.ts";
 
 /**
@@ -19,8 +19,8 @@ const TONE: Record<Tone, string> = { neutral: "text-foreground", up: "text-good"
 /**
  * The Insights ticker page (owner, 2026-10-31, approved design): one symbol on one trading day,
  * entirely from the server's package (crates/server/src/insights): the top bar with the day
- * switcher, the stat strip, the day's 1-minute chart with every sent alert numbered and every
- * missed setup ringed, the notification history with each alert's outcome, the scorecard, halts
+ * switcher, the day's 1-minute chart on top (the thing to watch; owner, 2026-11-01) with every sent
+ * alert numbered and every missed setup ringed, the stat strip in one row, the notification history with each alert's outcome, the scorecard, halts
  * and LULD, and the missed setups with the rule that held each. Rendering only: every number is
  * the server's.
  */
@@ -104,14 +104,17 @@ function DayStep({ dir, day, onDay }: { dir: "prev" | "next"; day: string | null
 }
 
 function Body({ pkg, view }: { pkg: TickerPackageWire; view: TickerPageView }) {
-  // The history row under the pointer rings its marker on the chart.
+  // The history row under the pointer rings its marker on the chart; a clicked row turns its
+  // marker orange until it is clicked again or another row is (owner, 2026-11-01).
   const [focus, setFocus] = useState<number | null>(null);
+  const [selected, setSelected] = useState<number | null>(null);
+  const onSelect = (n: number) => setSelected((cur) => (cur === n ? null : n));
   return (
     <>
+      <DayChart pkg={pkg} view={view} focus={focus} selected={selected} />
       <Stats view={view} />
-      <DayChart pkg={pkg} view={view} focus={focus} />
       <div className="flex flex-wrap items-start gap-5">
-        <History view={view} onFocus={setFocus} />
+        <History view={view} onFocus={setFocus} selected={selected} onSelect={onSelect} />
         <aside className="flex min-w-0 flex-[1_1_320px] flex-col gap-5">
           <Scorecard view={view} />
           <Halts view={view} />
@@ -125,31 +128,40 @@ function Body({ pkg, view }: { pkg: TickerPackageWire; view: TickerPageView }) {
 function Stats({ view }: { view: TickerPageView }) {
   return (
     <section aria-label="The day in numbers" className="@container/stats">
-      {/* 2 or 4 equal columns: eight tiles always fill their rows (no orphan). Eight across left a
-          price range too little room even at 1920 px, so four is the widest. */}
-      <ul className="m-0 grid list-none grid-cols-2 gap-2 p-0 @3xl/stats:grid-cols-4">
+      {/* One row of eight compact tiles when there is room (owner, 2026-11-01: "a single row instead
+          of two"; the three price ranges get the extra width so each reads on one line); 4 or 2 equal
+          columns below that, so eight tiles always fill their rows (no orphan).
+          In the single row each note moves into the tile's tooltip; with fewer columns it shows. */}
+      <ul className="m-0 grid list-none grid-cols-2 gap-2 p-0 @3xl/stats:grid-cols-4 @6xl/stats:grid-cols-[1fr_1fr_1.45fr_1.45fr_1.45fr_1fr_1fr_1fr]">
         {view.stats.map((s) => (
-          <li key={s.id} className="flex min-w-0 flex-col gap-0.5 rounded-xl bg-card px-3 py-2.5">
-            <span className="text-xs text-muted-foreground">{s.label}</span>
+          <StatTile key={s.id} note={s.note}>
+          <li className="flex min-w-0 flex-col gap-0.5 rounded-xl bg-card px-3 py-2.5 @6xl/stats:px-2.5 @6xl/stats:py-2">
+            <span className="truncate text-xs text-muted-foreground">{s.label}</span>
             {/* Wraps rather than truncates: a price range must read whole on a 320 px phone. */}
-            <span className={cn("font-mono text-[15px] font-medium [overflow-wrap:anywhere] tabular-nums", TONE[s.tone])}>{s.value}</span>
+            <span className={cn("font-mono text-[15px] font-medium [overflow-wrap:anywhere] tabular-nums @6xl/stats:text-[13px] @6xl/stats:whitespace-nowrap", TONE[s.tone])}>{s.value}</span>
             {/* The note wraps too: truncated, "no previous close on fi…" and "high 4:5…" lost their point at 320 px. */}
-            <span className="text-[11px] text-text-faint">{s.note || " "}</span>
+            <span className="text-[11px] text-text-faint @6xl/stats:hidden">{s.note || " "}</span>
           </li>
+          </StatTile>
         ))}
       </ul>
     </section>
   );
 }
 
-function DayChart({ pkg, view, focus }: { pkg: TickerPackageWire; view: TickerPageView; focus: number | null }) {
+/** A tile's note as its tooltip: in the single row the note line is hidden, so hovering shows it. */
+function StatTile({ note, children }: { note: string; children: ReactElement }) {
+  return note ? <Tip label={note}>{children}</Tip> : children;
+}
+
+function DayChart({ pkg, view, focus, selected }: { pkg: TickerPackageWire; view: TickerPageView; focus: number | null; selected: number | null }) {
   const [settings, setSettings] = useState<ChartSettings>(() => ({ ...DEFAULT_CHART_SETTINGS, highLow: true }));
   const [layers, setLayers] = useState<ChartLayers>(TICKER_LAYERS);
   // Levels, ranges, zones and the session schedule are the server's, computed over these bars
   // (the package's `chart`); the chart reads nothing off its candles.
   const context = useMemo(() => dayChartContext(pkg.chart), [pkg]);
   const series = useMemo(() => ({ candles: pkg.bars, gaps: [], profile: null, halts: pkg.halts?.halts ?? [], ...(context.sessions ? { sessions: context.sessions } : {}) }), [pkg, context]);
-  const markers = useMemo<EventMarker[]>(() => view.markers.map((m) => ({ kind: m.kind, at: m.at, price: m.price, n: m.n, focused: m.kind === "alert" && m.n === focus })), [view.markers, focus]);
+  const markers = useMemo<EventMarker[]>(() => view.markers.map((m) => ({ kind: m.kind, at: m.at, price: m.price, n: m.n, focused: m.kind === "alert" && m.n === focus, selected: m.kind === "alert" && m.n === selected })), [view.markers, focus, selected]);
   const sent = view.markers.filter((m) => m.kind === "alert").length;
   const missed = view.markers.length - sent;
   return (
@@ -191,7 +203,7 @@ function DayChart({ pkg, view, focus }: { pkg: TickerPackageWire; view: TickerPa
   );
 }
 
-function History({ view, onFocus }: { view: TickerPageView; onFocus: (n: number | null) => void }) {
+function History({ view, onFocus, selected, onSelect }: { view: TickerPageView; onFocus: (n: number | null) => void; selected: number | null; onSelect: (n: number) => void }) {
   return (
     <section aria-labelledby="ticker-history" className="@container/hist flex min-w-0 flex-[999_1_640px] flex-col gap-2">
       <div className="flex items-baseline gap-2.5">
@@ -199,6 +211,7 @@ function History({ view, onFocus }: { view: TickerPageView; onFocus: (n: number 
           Notification history
         </h3>
         <span className="text-xs text-muted-foreground">{view.alertSummary}</span>
+        <span className="ml-auto hidden text-xs text-text-faint @2xl/hist:inline">Click an alert to find it on the chart</span>
       </div>
       {view.alerts.length === 0 ? (
         <p className="m-0 text-[13px] text-text-faint">No notification for {view.symbol} that day.</p>
@@ -215,7 +228,7 @@ function History({ view, onFocus }: { view: TickerPageView; onFocus: (n: number 
           </div>
           <ol className="m-0 flex list-none flex-col gap-1 p-0">
             {view.alerts.map((a) => (
-              <AlertRow key={a.key} a={a} onFocus={onFocus} />
+              <AlertRow key={a.key} a={a} onFocus={onFocus} selected={a.marker !== null && a.marker === selected} onSelect={onSelect} />
             ))}
           </ol>
         </>
@@ -226,9 +239,9 @@ function History({ view, onFocus }: { view: TickerPageView; onFocus: (n: number 
 
 const COLS = "grid-cols-[1.75rem_5.5rem_minmax(9rem,1.4fr)_5.5rem_minmax(8rem,1fr)_5.5rem_5.5rem]";
 
-function MarkerDot({ a }: { a: TickerAlertView }) {
+function MarkerDot({ a, selected }: { a: TickerAlertView; selected?: boolean }) {
   return a.marker ? (
-    <span className="inline-grid size-[22px] shrink-0 place-items-center rounded-full bg-primary text-[11px] font-bold text-primary-foreground" aria-label={`Alert ${a.marker}`}>
+    <span className={cn("inline-grid size-[22px] shrink-0 place-items-center rounded-full text-[11px] font-bold text-primary-foreground transition-colors duration-150 motion-reduce:transition-none", selected ? "bg-flame" : "bg-primary")} aria-label={`Alert ${a.marker}`}>
       {a.marker}
     </span>
   ) : (
@@ -243,12 +256,26 @@ function MarkerDot({ a }: { a: TickerAlertView }) {
  * layout), a card with its outcomes on one line when it does not (the approved phone layout).
  * The container decides, not the viewport, so a narrow column beside the scorecard gets cards too.
  */
-function AlertRow({ a, onFocus }: { a: TickerAlertView; onFocus: (n: number | null) => void }) {
+function AlertRow({ a, onFocus, selected, onSelect }: { a: TickerAlertView; onFocus: (n: number | null) => void; selected: boolean; onSelect: (n: number) => void }) {
   const text = <span className={cn("truncate text-xs", a.held ? "text-warning" : "text-muted-foreground")}>{a.held ?? a.detail}</span>;
+  // A held alert has no marker on the chart, so there is nothing to pick out: not clickable.
+  const marker = a.marker || null;
   return (
-    <li onPointerEnter={() => onFocus(a.marker)} onPointerLeave={() => onFocus(null)} className="rounded-xl bg-card transition-colors duration-150 hover:bg-bg-row motion-reduce:transition-none">
+    <li
+      onPointerEnter={() => onFocus(marker)}
+      onPointerLeave={() => onFocus(null)}
+      className={cn("rounded-xl transition-colors duration-150 motion-reduce:transition-none", selected ? "bg-bg-raised" : "bg-card", marker !== null && !selected && "hover:bg-bg-row")}
+    >
+      <button
+        type="button"
+        disabled={marker === null}
+        aria-pressed={marker === null ? undefined : selected}
+        aria-label={marker === null ? undefined : `${selected ? "Unmark" : "Mark"} alert ${marker} on the chart`}
+        onClick={() => marker !== null && onSelect(marker)}
+        className="block w-full cursor-pointer rounded-xl text-left outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default"
+      >
       <div className={cn("hidden items-center gap-3 px-3.5 py-2.5 @3xl/hist:grid", COLS)}>
-        <MarkerDot a={a} />
+        <MarkerDot a={a} selected={selected} />
         <span className="font-mono text-[13px] text-muted-foreground tabular-nums">{a.time}</span>
         <span className="flex min-w-0 flex-col gap-0.5">
           <span className="truncate text-[13px] font-medium">{a.kind}</span>
@@ -263,7 +290,7 @@ function AlertRow({ a, onFocus }: { a: TickerAlertView; onFocus: (n: number | nu
       </div>
       <div className="flex flex-col gap-1 px-3 py-2.5 @3xl/hist:hidden">
         <div className="flex min-w-0 items-center gap-2">
-          <MarkerDot a={a} />
+          <MarkerDot a={a} selected={selected} />
           <span className="shrink-0 font-mono text-xs whitespace-nowrap text-muted-foreground tabular-nums">{a.time}</span>
           <span className="min-w-0 truncate text-[13px] font-medium">{a.kind}</span>
           <span className="ml-auto font-mono text-[13px] tabular-nums">{a.price}</span>
@@ -275,6 +302,7 @@ function AlertRow({ a, onFocus }: { a: TickerAlertView; onFocus: (n: number | nu
           <span className={TONE[a.stopTone]}>stop {a.stop}</span>
         </div>
       </div>
+      </button>
     </li>
   );
 }

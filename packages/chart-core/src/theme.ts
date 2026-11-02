@@ -62,6 +62,9 @@ export const DEFAULT_CHART_THEME: ChartTheme = {
   onAlert: "#0f1216",
   alertLabelBg: "#20263a",
   alertLabelText: "#c4ccff",
+  // The notification the person clicked, picked out among the accent-filled markers: the web
+  // palette's --flame, the one warm hue, so it cannot be mistaken for another alert.
+  markerSelected: "#ff8a3d",
   // Halts and LULD are trading restrictions: the warning (amber) status colour, always with a word.
   halt: "rgba(224, 166, 58, 0.10)",
   haltText: "#e0a63a",

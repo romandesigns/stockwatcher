@@ -193,6 +193,8 @@ export interface ChartTheme {
   onAlert: string;
   alertLabelBg: string;
   alertLabelText: string;
+  /** An event marker the person clicked in the page's notification history. */
+  markerSelected: string;
   /** A trading halt's shading, and its label and badge. */
   halt: string;
   haltText: string;

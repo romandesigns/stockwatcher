@@ -17,6 +17,8 @@ export interface EventMarker {
   n?: number;
   /** Drawn larger with a ring around it (the row the person is pointing at). */
   focused?: boolean;
+  /** Filled orange instead of the accent (the history row the person clicked); drawn last, on top. */
+  selected?: boolean;
 }
 
 /** Marker radius in px: the dot holds a two-digit number at the chart's font size. */
@@ -43,7 +45,9 @@ export function layoutEventMarkers(model: ChartModel, markers: readonly EventMar
   const fs = model.options.fontSize;
   const r = eventMarkerRadius(fs);
   const xAt = (t: number) => slotX(model.index, tToIndex(model.slots, t, model.timeframeMs)) - model.index.barSpacing / 2;
-  const ordered = [...markers].sort((a, b) => (a.kind === b.kind ? a.at - b.at : a.kind === "missed" ? -1 : 1));
+  // Rings, then alerts, then the selected one: whatever overlaps, the clicked alert stays whole.
+  const rank = (m: EventMarker) => (m.selected ? 2 : m.kind === "missed" ? 0 : 1);
+  const ordered = [...markers].sort((a, b) => rank(a) - rank(b) || a.at - b.at);
   const placed: { x: number; y: number; r: number }[] = [];
   const clear = (x: number, y: number, rr: number) => placed.every((p) => Math.hypot(p.x - x, p.y - y) >= p.r + rr + 2);
   for (const m of ordered) {
@@ -51,7 +55,7 @@ export function layoutEventMarkers(model: ChartModel, markers: readonly EventMar
     const x = xAt(m.at);
     const y0 = priceY(model.price, m.price);
     if (x < plot.x - r || x > plot.x + plot.w + r || y0 < plot.y - r || y0 > plot.y + plot.h + r) continue;
-    const rr = m.focused ? r + 2 : r;
+    const rr = m.focused || m.selected ? r + 2 : r;
     let y = y0;
     if (!clear(x, y, rr)) {
       const step = rr + 2;
@@ -64,7 +68,7 @@ export function layoutEventMarkers(model: ChartModel, markers: readonly EventMar
     placed.push({ x, y, r: rr });
     if (y !== y0) {
       const dir = Math.sign(y - y0);
-      out.push({ kind: "line", x1: x, y1: y0, x2: x, y2: y - dir * rr, stroke: m.kind === "alert" ? theme.alert : theme.textDim, lineWidth: 1.5, layer: "overlay" });
+      out.push({ kind: "line", x1: x, y1: y0, x2: x, y2: y - dir * rr, stroke: m.selected ? theme.markerSelected : m.kind === "alert" ? theme.alert : theme.textDim, lineWidth: 1.5, layer: "overlay" });
     }
     if (m.focused) out.push({ kind: "rect", x: x - rr - 3, y: y - rr - 3, w: (rr + 3) * 2, h: (rr + 3) * 2, radius: rr + 3, fill: theme.crosshairLabelBg, layer: "overlay" });
     if (m.kind === "missed") {
@@ -72,7 +76,7 @@ export function layoutEventMarkers(model: ChartModel, markers: readonly EventMar
       out.push({ kind: "rect", x: x - ring, y: y - ring, w: ring * 2, h: ring * 2, radius: ring, fill: theme.handleFill, stroke: theme.textDim, lineWidth: 2, layer: "overlay" });
       continue;
     }
-    out.push({ kind: "rect", x: x - rr, y: y - rr, w: rr * 2, h: rr * 2, radius: rr, fill: theme.alert, layer: "overlay" });
+    out.push({ kind: "rect", x: x - rr, y: y - rr, w: rr * 2, h: rr * 2, radius: rr, fill: m.selected ? theme.markerSelected : theme.alert, layer: "overlay" });
     if (m.n !== undefined) out.push({ kind: "text", x, y: y + 0.5, text: String(m.n), fill: theme.onAlert, fontSize: m.n >= 10 ? fs - 2 : fs - 1, fontFamily: theme.fontSans, fontWeight: 700, align: "center", baseline: "middle", layer: "overlay" });
   }
   return out;

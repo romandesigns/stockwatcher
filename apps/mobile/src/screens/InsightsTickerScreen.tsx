@@ -112,12 +112,27 @@ function Body({ pkg, view, wide, reducedMotion }: { pkg: TickerPackageWire; view
   const context = useMemo(() => dayChartContext(pkg.chart), [pkg]);
   const series = useMemo(() => ({ candles: pkg.bars, gaps: [], profile: null, halts: pkg.halts?.halts ?? [], prevClose: pkg.stats?.prev_close?.price ?? null, ...(context.sessions ? { sessions: context.sessions } : {}) }), [pkg, context]);
   const serverContext = pkg.chart ? { serverLevels: context.levels, serverZones: settings.extendedHours ? context.zones : context.zonesRth } : {};
-  const markers = useMemo<EventMarker[]>(() => view.markers.map((m) => ({ kind: m.kind, at: m.at, price: m.price, n: m.n })), [view.markers]);
+  // A tapped history card turns its marker orange until it is tapped again or another is (owner, 2026-11-01).
+  const [selected, setSelected] = useState<number | null>(null);
+  const onSelect = useCallback((n: number) => setSelected((cur) => (cur === n ? null : n)), []);
+  const markers = useMemo<EventMarker[]>(() => view.markers.map((m) => ({ kind: m.kind, at: m.at, price: m.price, n: m.n, selected: m.kind === "alert" && m.n === selected })), [view.markers, selected]);
   const [later, setLater] = useState(false);
   // Tiles: two across on the cover screen, four unfolded (eight stats fill both evenly).
   const tile = wide ? styles.tile4 : styles.tile2;
   return (
     <>
+      <View style={styles.chartWrap} accessibilityLabel={`${pkg.symbol} on ${view.dayLabel}, 1-minute candles with alerts numbered and missed setups ringed`}>
+        <View style={styles.legend}>
+          <Text style={styles.sectionSmall}>{view.dayShort} · 1-minute</Text>
+          <View style={{ flex: 1 }} />
+          <View style={[styles.dot, { backgroundColor: colors.accent }]} />
+          <Text style={styles.note}>Sent</Text>
+          <View style={[styles.dot, styles.ring]} />
+          <Text style={styles.note}>Missed</Text>
+        </View>
+        <CandleChart key={pkg.day} style={{ height: wide ? 320 : 260 }} symbol={pkg.symbol} series={series} timeframe="1m" settings={settings} onSettingsChange={setSettings} eventMarkers={markers} {...serverContext} initialFocus={pkg.focus} layers={layers} onLayersChange={setLayers} inspector options={OPTIONS} label={`${pkg.symbol} 1 minute candles`} />
+      </View>
+
       <View style={styles.headline}>
         <Text style={styles.price}>{view.headline.price}</Text>
         {view.headline.change ? <Text style={[styles.change, { color: TONE[view.headline.tone] }]}>{view.headline.change}</Text> : null}
@@ -137,20 +152,9 @@ function Body({ pkg, view, wide, reducedMotion }: { pkg: TickerPackageWire; view
         ))}
       </View>
 
-      <View style={styles.chartWrap} accessibilityLabel={`${pkg.symbol} on ${view.dayLabel}, 1-minute candles with alerts numbered and missed setups ringed`}>
-        <View style={styles.legend}>
-          <Text style={styles.sectionSmall}>{view.dayShort} · 1-minute</Text>
-          <View style={{ flex: 1 }} />
-          <View style={[styles.dot, { backgroundColor: colors.accent }]} />
-          <Text style={styles.note}>Sent</Text>
-          <View style={[styles.dot, styles.ring]} />
-          <Text style={styles.note}>Missed</Text>
-        </View>
-        <CandleChart key={pkg.day} style={{ height: wide ? 320 : 260 }} symbol={pkg.symbol} series={series} timeframe="1m" settings={settings} onSettingsChange={setSettings} eventMarkers={markers} {...serverContext} initialFocus={pkg.focus} layers={layers} onLayersChange={setLayers} inspector options={OPTIONS} label={`${pkg.symbol} 1 minute candles`} />
-      </View>
 
       <Section title="Notification history" note={view.alertSummary}>
-        {view.alerts.length === 0 ? <Text style={styles.empty}>No notification for {view.symbol} that day.</Text> : view.alerts.map((a) => <AlertCard key={a.key} a={a} />)}
+        {view.alerts.length === 0 ? <Text style={styles.empty}>No notification for {view.symbol} that day.</Text> : view.alerts.map((a) => <AlertCard key={a.key} a={a} selected={a.marker != null && a.marker === selected} onSelect={onSelect} />)}
       </Section>
 
       <Section title="Scorecard">
@@ -226,12 +230,22 @@ function Section({ title, note, children }: { title: string; note?: string; chil
   );
 }
 
-function AlertCard({ a }: { a: TickerAlertView }) {
+function AlertCard({ a, selected, onSelect }: { a: TickerAlertView; selected: boolean; onSelect: (n: number) => void }) {
+  // A held alert has no marker on the chart, so tapping it picks nothing out.
+  const marker = a.marker || null;
   return (
-    <View style={[styles.card, { gap: 5 }]} accessible accessibilityLabel={`${a.marker ? `Alert ${a.marker}` : "Held"}, ${a.time}, ${a.kind}, ${a.price}. ${a.held ?? a.detail}. Best after ${a.best}, ${a.bestPct}. Plus 5 percent: ${a.plus5}. Stop: ${a.stop}.`}>
+    <Pressable
+      disabled={marker === null}
+      onPress={() => marker !== null && onSelect(marker)}
+      accessibilityRole={marker === null ? undefined : "button"}
+      accessibilityState={marker === null ? undefined : { selected }}
+      accessibilityHint={marker === null ? undefined : "Marks this alert on the chart"}
+      style={({ pressed }) => [styles.card, { gap: 5 }, (selected || pressed) && { backgroundColor: UI.raised }]}
+      accessibilityLabel={`${a.marker ? `Alert ${a.marker}` : "Held"}, ${a.time}, ${a.kind}, ${a.price}. ${a.held ?? a.detail}. Best after ${a.best}, ${a.bestPct}. Plus 5 percent: ${a.plus5}. Stop: ${a.stop}.`}
+    >
       <View style={styles.rowTop}>
         {a.marker ? (
-          <View style={styles.marker}>
+          <View style={[styles.marker, selected && { backgroundColor: colors.flame }]}>
             <Text style={styles.markerText}>{a.marker}</Text>
           </View>
         ) : (
@@ -253,7 +267,7 @@ function AlertCard({ a }: { a: TickerAlertView }) {
         <Text style={[styles.small, { color: TONE[a.plus5Tone] }]}>+5% {a.plus5}</Text>
         <Text style={[styles.small, { color: TONE[a.stopTone] }]}>stop {a.stop}</Text>
       </View>
-    </View>
+    </Pressable>
   );
 }
 
