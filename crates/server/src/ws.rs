@@ -136,6 +136,13 @@
 //!   changes. A new subscribe replaces the old one, and a past day's snapshot still being built
 //!   for the replaced one is dropped, never sent late (clients may still match `symbol`/`day`).
 //!   `insights.ticker.unsubscribe` stops it. A malformed request gets `error bad_request`.
+//! - With `insights.ticker.indicators.v1` also listed (crate::insights::TickerStudies), the
+//!   subscribe may carry `indicators` (the `chart.subscribe` list) and `rth`, and
+//!   `insights.ticker.indicators.set {indicators, rth?}` replaces them. The server then sends
+//!   `insights.ticker.indicators {symbol, day, timeframe, rth, t, tNs, studies}` (the
+//!   `chart.indicators` shape, computed over the package's own bars) after every package frame
+//!   while the list is non-empty, and once in answer to each set (an empty list answers with no
+//!   studies). An older client sends neither field and gets none of it.
 //!
 //! Simulated trading (docs/architecture/chart-trading-sim.md, after `welcome`):
 //! - server `paper.state` once right after `welcome`, then to every connection
@@ -482,6 +489,20 @@ enum ClientMessage {
         symbol: String,
         #[serde(default)]
         day: Option<String>,
+        /// The chart's indicators (`insights.ticker.indicators.v1`, crate::insights::TickerStudies);
+        /// absent = none computed. Raw JSON, parsed like `chart.subscribe`'s.
+        #[serde(default)]
+        indicators: Option<serde_json::Value>,
+        /// Extended hours off: the indicators run over the regular session only.
+        #[serde(default)]
+        rth: Option<bool>,
+    },
+    /// Replaces the open ticker page's indicators (`insights.ticker.indicators.v1`).
+    #[serde(rename = "insights.ticker.indicators.set")]
+    InsightsTickerIndicatorsSet {
+        indicators: serde_json::Value,
+        #[serde(default)]
+        rth: Option<bool>,
     },
     #[serde(rename = "insights.ticker.unsubscribe")]
     InsightsTickerUnsubscribe,
@@ -805,6 +826,26 @@ struct TickerSub {
     once: Option<tokio::sync::oneshot::Receiver<String>>,
     /// The snapshot went out; later packages are updates.
     sent: bool,
+    /// The indicators to compute over each package's bars (crate::insights::TickerStudies).
+    studies: Option<crate::insights::TickerStudies>,
+    /// The last package frame or body sent, for an `insights.ticker.indicators.set` between
+    /// packages (a past day gets no other).
+    last: Option<std::sync::Arc<String>>,
+}
+
+/// After a package went out (or `always`, in answer to a set): its indicators, when the
+/// subscription asks for any.
+async fn send_ticker_indicators(socket: &mut WebSocket, t: &TickerSub, always: bool) -> bool {
+    let (Some(st), Some(last)) = (t.studies.as_ref(), t.last.as_ref()) else {
+        return true;
+    };
+    if st.specs.is_empty() && !always {
+        return true;
+    }
+    match st.frame(last) {
+        Some(frame) => send_text(socket, frame).await,
+        None => true,
+    }
 }
 
 /// What the connection's ticker opt-in woke for.
@@ -828,7 +869,11 @@ async fn send_ticker(socket: &mut WebSocket, t: &mut TickerSub) -> bool {
         "insights.ticker.snapshot"
     };
     t.sent = true;
-    send_text(socket, crate::insights::frame(kind, &body)).await
+    if !send_text(socket, crate::insights::frame(kind, &body)).await {
+        return false;
+    }
+    t.last = Some(body);
+    send_ticker_indicators(socket, t, false).await
 }
 
 /// The connection's Rocket watch opt-in (the Ross opt-in's twin).
@@ -1319,6 +1364,7 @@ async fn session(mut socket: WebSocket, state: AppState) {
             crate::notices::FEATURE,
             crate::notices::FEATURE_ROWS,
             crate::insights::FEATURE,
+            crate::insights::INDICATORS_FEATURE,
             crate::quote_search::FEATURE,
             crate::time_marks::FEATURE,
             crate::time_marks::NS_FEATURE,
@@ -1631,9 +1677,14 @@ async fn session(mut socket: WebSocket, state: AppState) {
             } => {
                 let ok = match (wake, ticker.as_mut()) {
                     (TickerWake::Changed(true), Some(t)) => send_ticker(&mut socket, t).await,
-                    (TickerWake::Once(Some(frame)), Some(_)) => {
-                        ticker = None;
-                        send_text(&mut socket, frame).await
+                    (TickerWake::Once(Some(frame)), Some(t)) => {
+                        // Kept (with nothing left to wait for) so a later indicators set is
+                        // answered from this package.
+                        t.once = None;
+                        let frame = std::sync::Arc::new(frame);
+                        t.last = Some(frame.clone());
+                        send_text(&mut socket, frame.to_string()).await
+                            && send_ticker_indicators(&mut socket, t, false).await
                     }
                     _ => {
                         ticker = None;
@@ -2110,9 +2161,11 @@ async fn session(mut socket: WebSocket, state: AppState) {
                         notices = None;
                         None
                     }
-                    Ok(ClientMessage::InsightsTickerSubscribe { symbol, day }) => {
-                        match crate::insights::parse_request(&symbol, day.as_deref()) {
-                            Ok((symbol, day)) => {
+                    Ok(ClientMessage::InsightsTickerSubscribe { symbol, day, indicators, rth }) => {
+                        let request = crate::insights::parse_request(&symbol, day.as_deref())
+                            .and_then(|r| Ok((r, crate::insights::TickerStudies::parse(indicators.as_ref(), rth)?)));
+                        match request {
+                            Ok(((symbol, day), studies)) => {
                                 let insights = state.insights().clone();
                                 let now = now_ms() as i64 * 1_000_000;
                                 if crate::insights::is_running(day, now) {
@@ -2123,6 +2176,8 @@ async fn session(mut socket: WebSocket, state: AppState) {
                                         rx: Some(insights.follow(symbol, day)),
                                         once: None,
                                         sent: false,
+                                        studies,
+                                        last: None,
                                     };
                                     let ready = t.rx.as_ref().is_some_and(|rx| rx.borrow().is_some());
                                     if ready && !send_ticker(&mut socket, &mut t).await {
@@ -2131,7 +2186,13 @@ async fn session(mut socket: WebSocket, state: AppState) {
                                     ticker = Some(t);
                                 } else {
                                     let (tx, once) = tokio::sync::oneshot::channel();
-                                    ticker = Some(TickerSub { rx: None, once: Some(once), sent: true });
+                                    ticker = Some(TickerSub {
+                                        rx: None,
+                                        once: Some(once),
+                                        sent: true,
+                                        studies,
+                                        last: None,
+                                    });
                                     tokio::spawn(async move {
                                         let v = insights.package(symbol, day).await;
                                         let _ = tx.send(crate::insights::frame(
@@ -2151,6 +2212,25 @@ async fn session(mut socket: WebSocket, state: AppState) {
                     Ok(ClientMessage::InsightsTickerUnsubscribe) => {
                         ticker = None;
                         None
+                    }
+                    Ok(ClientMessage::InsightsTickerIndicatorsSet { indicators, rth }) => {
+                        match crate::insights::TickerStudies::parse(Some(&indicators), rth) {
+                            Ok(studies) => {
+                                // No page open: nothing to compute (the next subscribe carries
+                                // the client's list again).
+                                if let Some(t) = ticker.as_mut() {
+                                    t.studies = studies;
+                                    if !send_ticker_indicators(&mut socket, t, true).await {
+                                        break;
+                                    }
+                                }
+                                None
+                            }
+                            Err(why) => Some(ServerMessage::Error {
+                                code: "bad_request",
+                                message: why,
+                            }),
+                        }
                     }
                     Ok(ClientMessage::RocketSubscribe) => {
                         let q = rocket.get_or_insert_with(|| RocketSub {

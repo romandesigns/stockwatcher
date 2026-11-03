@@ -213,6 +213,71 @@ pub fn frame(kind: &str, rest: &str) -> String {
     format!("{{\"type\":{},{}", json!(kind), &rest[1..])
 }
 
+/// The feature a client must see before it sends `indicators` / `rth` on
+/// `insights.ticker.subscribe` or `insights.ticker.indicators.set` ([`TickerStudies`]). An older
+/// server would ignore both fields and never answer, so a new client checks for it and, without
+/// it, shows the chart without indicators.
+pub const INDICATORS_FEATURE: &str = "insights.ticker.indicators.v1";
+
+/// The indicators a ticker-page subscription asked for, computed here over the package's own
+/// bars (owner rule: Rust computes, clients only render) and pushed as an
+/// `insights.ticker.indicators` frame (crate::indicators::day_snapshot, the `chart.indicators`
+/// shape plus `day`) after every package that subscription receives and in answer to each
+/// `insights.ticker.indicators.set`. Kept per connection, not in the package: the package of
+/// today is shared by everyone following the symbol and a past day's is cached on disk, and
+/// neither should depend on one viewer's toggles. A day's worth of 1-minute bars is under a
+/// thousand, so a frame costs well under a millisecond to compute.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TickerStudies {
+    pub specs: Vec<chart_engine::indicators::IndicatorSpec>,
+    /// Regular session only (the chart's extended hours off).
+    pub rth: bool,
+}
+
+impl TickerStudies {
+    /// From a request's `indicators` and `rth` (the same list `chart.subscribe` takes:
+    /// `IndicatorSpec::parse_list`, capped as the live chart caps it). `Ok(None)` when the client
+    /// sent no list (every client before [`INDICATORS_FEATURE`]).
+    pub fn parse(
+        indicators: Option<&Value>,
+        rth: Option<bool>,
+    ) -> Result<Option<Self>, &'static str> {
+        let Some(raw) = indicators else {
+            return Ok(None);
+        };
+        let mut specs: Vec<chart_engine::indicators::IndicatorSpec> = Vec::new();
+        for (_, s) in chart_engine::indicators::IndicatorSpec::parse_list(raw)? {
+            if !specs.iter().any(|x| x.key() == s.key()) {
+                specs.push(s);
+            }
+        }
+        Ok(Some(TickerStudies {
+            specs,
+            rth: rth.unwrap_or(false),
+        }))
+    }
+
+    /// The `insights.ticker.indicators` frame for a package frame or body (`package`); `None`
+    /// for one without a symbol and day (a failed build), which has no chart to draw on.
+    pub fn frame(&self, package: &str) -> Option<String> {
+        #[derive(serde::Deserialize)]
+        struct Bars {
+            symbol: String,
+            day: String,
+            #[serde(default)]
+            bars: Vec<chart_engine::wire::CandleWire>,
+        }
+        let p: Bars = serde_json::from_str(package).ok()?;
+        Some(crate::indicators::day_snapshot(
+            &p.symbol,
+            &p.day,
+            &p.bars,
+            &self.specs,
+            self.rth,
+        ))
+    }
+}
+
 /// The tape of a symbol-day, preferring the receipt-order recording the live engine saw.
 fn tape_path(a: &Archive, day: NaiveDate, symbol: &str) -> Option<(&'static str, PathBuf)> {
     let ext = market_archive::format::EXT;

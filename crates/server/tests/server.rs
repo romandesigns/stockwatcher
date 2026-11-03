@@ -681,6 +681,10 @@ async fn insights_ticker_over_http_and_ws() {
     let features = welcome["features"].as_array().unwrap();
     assert!(features.contains(&json!("insights.ticker.v1")), "{welcome}");
     assert!(features.contains(&json!("notices.rows.v1")), "{welcome}");
+    assert!(
+        features.contains(&json!("insights.ticker.indicators.v1")),
+        "{welcome}"
+    );
     async fn until(ws: &mut Ws, t: &str) -> Value {
         loop {
             let m = recv(ws).await;
@@ -711,6 +715,58 @@ async fn insights_ticker_over_http_and_ws() {
     send(
         &mut ws,
         json!({ "type": "insights.ticker.subscribe", "symbol": "a/b" }),
+    )
+    .await;
+    let err = until(&mut ws, "error").await;
+    assert_eq!(err["code"], "bad_request");
+
+    // Indicators (`insights.ticker.indicators.v1`): computed over the package's bars and sent
+    // after it, again in answer to a set, and an empty list answers with no studies.
+    send(
+        &mut ws,
+        json!({ "type": "insights.ticker.subscribe", "symbol": "INO", "day": "2026-10-30",
+                "indicators": [{"id": "vwap", "kind": "vwap"}, {"id": "ema-9", "kind": "ema", "period": 9}],
+                "rth": true }),
+    )
+    .await;
+    let snap = until(&mut ws, "insights.ticker.snapshot").await;
+    assert_eq!(snap["day"], "2026-10-30");
+    let ind = recv(&mut ws).await;
+    assert_eq!(ind["type"], "insights.ticker.indicators", "{ind}");
+    assert_eq!(
+        (
+            ind["symbol"].as_str(),
+            ind["day"].as_str(),
+            ind["rth"].as_bool()
+        ),
+        (Some("INO"), Some("2026-10-30"), Some(true))
+    );
+    let keys: Vec<&str> = ind["studies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|s| s["key"].as_str())
+        .collect();
+    assert_eq!(keys, ["vwap", "ema:9"]);
+    send(
+        &mut ws,
+        json!({ "type": "insights.ticker.indicators.set", "indicators": [{"id": "rsi-14", "kind": "rsi", "period": 14}] }),
+    )
+    .await;
+    let ind = recv(&mut ws).await;
+    assert_eq!(ind["type"], "insights.ticker.indicators", "{ind}");
+    assert_eq!(ind["studies"][0]["key"], "rsi:14");
+    assert_eq!(ind["rth"], false, "rth absent = extended hours on");
+    send(
+        &mut ws,
+        json!({ "type": "insights.ticker.indicators.set", "indicators": [] }),
+    )
+    .await;
+    let ind = recv(&mut ws).await;
+    assert_eq!(ind["studies"], json!([]), "{ind}");
+    send(
+        &mut ws,
+        json!({ "type": "insights.ticker.indicators.set", "indicators": "vwap" }),
     )
     .await;
     let err = until(&mut ws, "error").await;

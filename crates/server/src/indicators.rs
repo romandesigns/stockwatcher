@@ -198,6 +198,10 @@ struct SnapshotWire<'a> {
     #[serde(rename = "type")]
     kind: &'static str,
     symbol: &'a str,
+    /// The trading day of an Insights ticker page's frame ([`day_snapshot`]); absent on
+    /// `chart.indicators`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    day: Option<&'a str>,
     timeframe: Timeframe,
     rth: bool,
     t: Vec<i64>,
@@ -250,6 +254,17 @@ fn snapshot_json<'a>(
     series: impl Iterator<Item = (&'a String, &'a IndicatorSeries)>,
     limit: Option<usize>,
 ) -> String {
+    frame_json("chart.indicators", None, chart, series, limit)
+}
+
+/// [`snapshot_json`] under another frame `kind`, with an optional `day`.
+fn frame_json<'a>(
+    kind: &'static str,
+    day: Option<&str>,
+    chart: &ChartKey,
+    series: impl Iterator<Item = (&'a String, &'a IndicatorSeries)>,
+    limit: Option<usize>,
+) -> String {
     let series: Vec<(&String, &IndicatorSeries)> = series.collect();
     let len = series.first().map_or(0, |(_, s)| s.len());
     // The first bar sent; `from` and `values` below count from it.
@@ -295,8 +310,9 @@ fn snapshot_json<'a>(
         })
         .collect();
     serde_json::to_string(&SnapshotWire {
-        kind: "chart.indicators",
+        kind,
         symbol: &chart.symbol,
+        day,
         timeframe: chart.timeframe,
         rth: chart.rth,
         t_ns: t.iter().map(|&t| bar_ns(t)).collect(),
@@ -543,6 +559,53 @@ impl IndicatorRegistry {
     pub fn computed(&self) -> usize {
         self.charts.values().map(|c| c.series.len()).sum()
     }
+}
+
+/// The frame type of [`day_snapshot`].
+pub const DAY_SNAPSHOT_KIND: &str = "insights.ticker.indicators";
+
+/// Indicators over candles that are not in the engine: the Insights ticker page's day
+/// (crate::insights, `insights.ticker.indicators.v1`), whose bars are the package's own. The same
+/// series code and the same frame as `chart.indicators` (`t`, `tNs`, `studies` with `from`), typed
+/// [`DAY_SNAPSHOT_KIND`] and carrying the package's `day`, so the client folds it with the same
+/// code and draws the same lines the live chart would over those bars. Each bar's session is the
+/// NYSE calendar's (`classify`), as `chart_context::day_context` reads it: VWAP resets on it, and
+/// `rth` keeps the regular session only. The series start at the day's first bar (the package
+/// holds one day), so a long EMA warms up within the day rather than from the day before.
+pub fn day_snapshot(
+    symbol: &str,
+    day: &str,
+    bars: &[chart_engine::wire::CandleWire],
+    specs: &[IndicatorSpec],
+    rth: bool,
+) -> String {
+    let chart = ChartKey {
+        symbol: symbol.to_string(),
+        timeframe: Timeframe::M1,
+        rth,
+    };
+    let input: Vec<chart_engine::indicators::Bar> = bars
+        .iter()
+        .filter_map(|c| {
+            let s = market_events::session::classify(market_events::UnixNanos::from_millis(c.t))?;
+            chart_engine::indicators::Bar::keep(s, rth)
+                .then(|| chart_engine::indicators::Bar::new(c, s))
+        })
+        .collect();
+    let mut series: Vec<(String, IndicatorSeries)> = Vec::new();
+    for s in specs {
+        let key = s.key();
+        if !series.iter().any(|(k, _)| *k == key) {
+            series.push((key, IndicatorSeries::build(*s, input.clone(), input.len())));
+        }
+    }
+    frame_json(
+        DAY_SNAPSHOT_KIND,
+        Some(day),
+        &chart,
+        series.iter().map(|(k, s)| (k, s)),
+        None,
+    )
 }
 
 /// `chart.subscribe` / `chart.indicators.set` input: the slot's list (`indicators`) and whether
@@ -840,5 +903,95 @@ mod tests {
         .unwrap();
         assert_eq!(s.specs.len(), 1, "same key, one study");
         assert!(!s.chart.rth);
+    }
+
+    /// The Insights ticker page's day (`day_snapshot`): the package's own bars, the same values
+    /// the reference batch gives over them, extended hours or the regular session only, typed
+    /// and dated for that page.
+    #[test]
+    fn day_snapshot_computes_over_the_package_bars() {
+        use chart_engine::wire::CandleWire;
+        let candle = |h: u32, m: u32, c: f64, v: u64| {
+            let t = et(day(), h, m, 0, 0).unwrap().0 / 1_000_000;
+            CandleWire {
+                t,
+                t_ns: t * 1_000_000,
+                o: c,
+                h: c + 0.05,
+                l: c - 0.05,
+                c,
+                v,
+                n: 1,
+                is_final: true,
+            }
+        };
+        // 09:00 to 10:59 ET: an hour of premarket, then an hour of regular session.
+        let bars: Vec<CandleWire> = (0..120)
+            .map(|i| {
+                candle(
+                    9 + i / 60,
+                    i % 60,
+                    3.0 + (i % 11) as f64 * 0.01,
+                    100 + i as u64,
+                )
+            })
+            .collect();
+        let specs = [
+            IndicatorSpec::Vwap,
+            IndicatorSpec::Ema { period: 9 },
+            IndicatorSpec::Ema { period: 9 },
+        ];
+        for rth in [false, true] {
+            let raw = day_snapshot("SMPL", "2026-10-15", &bars, &specs, rth);
+            let v: Value = serde_json::from_str(&raw).unwrap();
+            assert_eq!(v["type"], DAY_SNAPSHOT_KIND);
+            assert_eq!(
+                (v["symbol"].as_str(), v["day"].as_str()),
+                (Some("SMPL"), Some("2026-10-15"))
+            );
+            assert_eq!(v["rth"], rth);
+            let input: Vec<chart_engine::indicators::Bar> = bars
+                .iter()
+                .filter_map(|c| {
+                    let s = market_events::session::classify(
+                        market_events::UnixNanos::from_millis(c.t),
+                    )?;
+                    chart_engine::indicators::Bar::keep(s, rth)
+                        .then(|| chart_engine::indicators::Bar::new(c, s))
+                })
+                .collect();
+            let t: Vec<i64> = v["t"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|x| x.as_i64().unwrap())
+                .collect();
+            assert_eq!(t.len(), if rth { 90 } else { 120 }, "rth keeps 09:30 on");
+            assert_eq!(t, input.iter().map(|b| b.t_ms).collect::<Vec<_>>());
+            let studies = v["studies"].as_array().unwrap();
+            assert_eq!(studies.len(), 2, "a repeated spec is one study");
+            for (study, spec) in studies.iter().zip(&specs) {
+                assert_eq!(study["key"], spec.key());
+                let want = chart_engine::indicators::batch(spec, &input);
+                let line = &study["lines"][0];
+                let from = line["from"].as_u64().unwrap() as usize;
+                for (i, x) in line["values"].as_array().unwrap().iter().enumerate() {
+                    // Within a ulp or two: serde_json's default float parse is not
+                    // round-trip exact (the client's JSON.parse is).
+                    let (got, want) = (x.as_f64().unwrap(), want[from + i][0]);
+                    assert!(
+                        (got - want).abs() <= want.abs() * 1e-14,
+                        "{} at {}",
+                        spec.key(),
+                        from + i
+                    );
+                }
+            }
+        }
+        // No bars (a day the archive lacks): an empty frame, still dated.
+        let v: Value =
+            serde_json::from_str(&day_snapshot("SMPL", "2026-10-15", &[], &specs, false)).unwrap();
+        assert_eq!(v["t"], json!([]));
+        assert_eq!(v["day"], "2026-10-15");
     }
 }
