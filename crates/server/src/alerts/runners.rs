@@ -362,18 +362,6 @@ fn moved(p: f64, min: f64) -> String {
     }
 }
 
-/// The research's typical outcome from a burst alert, as the panel's Bursts line says it
-/// (packages/shared `rocketBurstSectionView`): "typ. +13% max in 30 min, 1 in 4 reach +20%
-/// before −5%".
-fn burst_odds() -> String {
-    use crate::rocket::burst::{TYPICAL_CONT20_PCT, TYPICAL_MFE30_MED_PCT};
-    format!(
-        "typ. +{:.0}% max in 30 min, 1 in {:.0} reach +20% before −5%",
-        TYPICAL_MFE30_MED_PCT,
-        (100.0 / TYPICAL_CONT20_PCT).round().max(1.0)
-    )
-}
-
 /// Title, body and data of the push for one notice (module docs, "Text"): the ONE place every
 /// surface's text comes from (phone, watch, desktop, web). The data's `symbol` is what a tap or
 /// click opens the chart for.
@@ -679,11 +667,10 @@ fn runner_message(n: &Notice) -> (String, String, Value) {
                 (Some(x), None) => format!("{x:+.1}% in the burst"),
                 _ => "Heavy buying on the tape".into(),
             };
-            if n.price >= 0.15 {
-                format!("{mv} · {}", burst_odds())
-            } else {
-                format!("{mv} · historical odds unavailable at this price")
-            }
+            // The move only. The research odds ("typ. +13% max in 30 min, 1 in 4 reach +20% before
+            // −5%") were dropped with the dashboard's Bursts caption (owner, 2026-11-02/03): older
+            // figures the 5-year strategy test replaces.
+            mv
         }
         // "+22.0% in 5 min off $1.00 · 25+ trades and $25k+": the leg and its liquidity.
         NoticeKind::Run => {
@@ -1039,7 +1026,7 @@ Alert $0.3000 · +5% = $0.3150"
         assert_eq!(t, "CJMB · Buying burst · $2.10");
         assert_eq!(
             b,
-            "+18.2% in 6 min · typ. +13% max in 30 min, 1 in 4 reach +20% before −5%
+            "+18.2% in 6 min
 Alert $2.10 · +5% = $2.21"
         );
         assert_eq!(data["kind"], "runners.burst");
@@ -1121,16 +1108,13 @@ Alert $2.41 · +5% = $2.53"
     }
 
     #[test]
-    fn sub_fifteen_cent_bursts_do_not_claim_the_historical_odds() {
+    fn burst_notices_quote_no_research_odds_at_any_price() {
         let mut n = Notice::test(NoticeKind::Burst, "PENY");
-        n.price = 0.12;
-        let (_, body, _) = message(&n);
-        assert!(body.contains("historical odds unavailable at this price"));
-        assert!(!body.contains("typ. "));
-        n.price = 0.15;
-        let (_, body, _) = message(&n);
-        assert!(body.contains("typ. "));
-        assert!(!body.contains("odds unavailable"));
+        for price in [0.12, 0.15, 2.5] {
+            n.price = price;
+            let (_, body, _) = message(&n);
+            assert!(!body.contains("typ. ") && !body.contains("odds"), "{body}");
+        }
     }
 
     #[test]
