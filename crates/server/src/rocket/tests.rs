@@ -1992,3 +1992,85 @@ fn the_first_entry_after_rising_through_the_floor_carries_the_crossing_line() {
         "the restored decision stands"
     );
 }
+
+/// Scores `symbol` only at the barriers ending at `at_ns` (one alert per time, at known times).
+struct AtTimes(&'static str, Vec<i64>);
+
+impl RocketScorer for AtTimes {
+    fn id(&self) -> &str {
+        "at-times"
+    }
+    fn version(&self) -> &str {
+        "t1"
+    }
+    fn score(&self, f: &Features) -> Option<f64> {
+        (&*f.symbol == self.0 && self.1.contains(&f.at_ns)).then_some(1.0)
+    }
+}
+
+/// CHSN 2026-11-03 (and PARA, RDAC, UFG, CNSY, BIVI the same day): a stock with two rows (here a
+/// flag and a second flag 40 minutes later, live a Fast row and then a Buying-burst row) had
+/// every breakout pushed once per row, same barrier, same price and body, under two event ids
+/// (`...-f1793725140-<s>` and `...-b36070-<s>`), so the delivery's per-event dedupe let both
+/// through. A breakout is the stock's: one notice per stock per barrier, on its newest row.
+#[test]
+fn a_stock_with_two_rows_breaks_out_once_per_barrier() {
+    let first = at(10, 0, 15);
+    let second = at(10, 40, 15);
+    let mut b = RocketBoard::new(
+        true,
+        Arc::new(AtTimes("TWO", vec![first, second])),
+        fixed(0.5, 10),
+    );
+    play(
+        &mut b,
+        flat("TWO", at(9, 0, 0), at(10, 50, 0), 0.21, 20_000),
+        at(9, 0, 0),
+        at(10, 50, 0),
+    );
+    assert_eq!(b.alerts().len(), 2, "two rows on one stock");
+    let newest = b.alerts()[1].id.clone();
+    assert_eq!(b.alerts()[1].at_ns, second);
+    b.take_notices();
+    b.take_log();
+    let (mut run, top) = climb("TWO", at(10, 50, 0), 40, 0.21, 0.0091, 200_000);
+    run.extend(flat("TWO", at(11, 0, 0), at(11, 30, 0), top, 20_000));
+    play(&mut b, run, at(10, 50, 0), at(11, 30, 0));
+    // Both rows' trackers did turn breaking_out at the same barriers (the precondition).
+    let lines: Vec<Value> = b
+        .take_log()
+        .into_iter()
+        .map(|(_, l)| serde_json::from_str(&l).unwrap())
+        .collect();
+    let turns = |id: &str| -> Vec<i64> {
+        lines
+            .iter()
+            .filter(|v| v["kind"] == "state" && v["to"] == "breaking_out" && v["id"] == id)
+            .map(|v| v["at_ns"].as_i64().unwrap())
+            .collect()
+    };
+    let older = b.alerts()[0].id.clone();
+    let shared: Vec<i64> = turns(&older)
+        .into_iter()
+        .filter(|t| turns(&newest).contains(t))
+        .collect();
+    assert!(!shared.is_empty(), "both rows broke out together");
+    let outs: Vec<Notice> = b
+        .take_notices()
+        .into_iter()
+        .filter(|n| n.kind == NoticeKind::Breakout)
+        .collect();
+    assert!(!outs.is_empty());
+    for t in &shared {
+        let at_t: Vec<&Notice> = outs.iter().filter(|n| n.at_ns == *t).collect();
+        assert_eq!(
+            at_t.len(),
+            1,
+            "one breakout per stock per barrier: {at_t:?}"
+        );
+        assert_eq!(at_t[0].alert_id, newest, "on the newest row");
+    }
+    let mut ats: Vec<i64> = outs.iter().map(|n| n.at_ns).collect();
+    ats.dedup();
+    assert_eq!(ats.len(), outs.len(), "{outs:?}");
+}

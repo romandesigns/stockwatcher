@@ -97,7 +97,8 @@
 //! # Phone pushes
 //!
 //! Each new alert, and each flagged row whose momentum state turns `breaking_out`, also leaves a
-//! [`Notice`] ([`RocketBoard::take_notices`]). The live market hands them to the alerts service
+//! [`Notice`] ([`RocketBoard::take_notices`]); a stock with several rows breaking out on one
+//! barrier leaves one breakout, on its newest row. The live market hands them to the alerts service
 //! (`crate::alerts::runners`), which sends the Expo push within its own limits; a replay board's
 //! notices are taken and dropped. A restore from the forward log leaves none: a restart must not
 //! re-announce the morning's flags.
@@ -2374,6 +2375,8 @@ impl RocketBoard {
     fn outcomes(&mut self, b: &Barrier, date: NaiveDate) {
         let (t0, ord) = (self.t0, self.ord);
         let base = features::key_of(ord, 0);
+        // This barrier's breakouts, sent after every row has stepped: one per stock (below).
+        let mut breakouts: Vec<(usize, Notice)> = Vec::new();
         for i in 0..self.alerts.len() {
             if self.alerts[i].track.logged_final {
                 continue;
@@ -2503,7 +2506,7 @@ impl RocketBoard {
                         .map(|evidence| NoticeDetail::Breakout(Box::new(evidence))),
                 });
                 if let Some(n) = breakout {
-                    self.notice(n);
+                    breakouts.push((i, n));
                 }
                 self.revision += 1;
             }
@@ -2547,6 +2550,31 @@ impl RocketBoard {
             }
             if (a.outcome.clone(), a.track.high_day, a.track.later) != before {
                 self.revision += 1;
+            }
+        }
+        // A stock can have several rows (an R2 flag again after 30 minutes, a buying burst on a
+        // stock that already has a row), each with its own tracker over the same bars, so they
+        // turn `breaking_out` on the same barrier. The notice's event id carries the row id, so
+        // the delivery's per-event dedupe saw distinct events and pushed the one breakout once
+        // per row (CHSN 2026-11-03: every breakout twice after its burst row at 14:01:11, PARA
+        // up to seven times). The breakout is the stock's: one per stock per barrier, on its
+        // newest row (the row a follow-up goes to); the rows keep their own state and log lines.
+        let alerts = &self.alerts;
+        let newest = |i: usize| (alerts[i].at_ns, i);
+        let mut keep: HashMap<&str, usize> = HashMap::new();
+        for (i, n) in &breakouts {
+            keep.entry(n.symbol.as_str())
+                .and_modify(|k| {
+                    if newest(*i) > newest(*k) {
+                        *k = *i;
+                    }
+                })
+                .or_insert(*i);
+        }
+        let keep: HashSet<usize> = keep.into_values().collect();
+        for (i, n) in breakouts {
+            if keep.contains(&i) {
+                self.notice(n);
             }
         }
     }
