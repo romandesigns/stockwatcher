@@ -61,5 +61,12 @@
     "expo-doctor": "1.21.5",
     "oxlint": "1.88.0",
     "typescript": "~6.0.3"
+  },
+  "expo": {
+    "install": {
+      "exclude": [
+        "react-native-safe-area-context"
+      ]
+    }
   }
 }
