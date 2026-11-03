@@ -37,10 +37,10 @@ test("rows: no layout transitions, no borders, palette tokens only, 44 dp target
   expect(panel).toContain("minHeight: 44");
 });
 
-test("the dashboard follows the web's order: Favorites, Signals, Top Gainers, then Ross, Runners, Hot stocks", () => {
+test("the phone's order: Ross, Runners, then Favorites, Signals, Top Gainers, Hot stocks (owner, 2026-11-03)", () => {
   const screen = read("../screens/DashboardScreen.tsx");
   const at = (s: string) => screen.indexOf(s);
-  const order = ["<FavoritesPanel ", "<DetectionPanel ", '<MoversPanel kind="gainers" ', "<RossPanel ", "<RocketPanel ", '<MoversPanel kind="hot" '].map(at);
+  const order = ["<RossPanel ", "<RocketPanel ", "<FavoritesPanel ", "<DetectionPanel ", '<MoversPanel kind="gainers" ', '<MoversPanel kind="hot" '].map(at);
   for (const i of order) expect(i).toBeGreaterThan(0);
   expect([...order].sort((a, b) => a - b)).toEqual(order);
 });

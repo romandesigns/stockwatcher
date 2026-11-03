@@ -9,17 +9,17 @@ const read = (p: string) => readFileSync(join(import.meta.dir, p), "utf8");
 const src = read("DetectionPanel.tsx");
 const panel = src.slice(src.indexOf("export function DetectionPanel"), src.indexOf("function FilterStrip"));
 
-// The web's order since its 2026-10-30 layout (Favorites, Signals, Top Gainers, then Ross, Runners,
-// Hot stocks): Signals moved up from under Ross to follow it.
-test("the Signals card sits under Favorites, above Ross and Runners, and opens the chart modal with the episode", () => {
+// The phone's order since 2026-11-03 (owner): Ross and Runners first after the gauges, then
+// Favorites, Signals, Top Gainers, Hot stocks.
+test("the Signals card sits under Ross, Runners and Favorites, and opens the chart modal with the episode", () => {
   const screen = read("../screens/DashboardScreen.tsx");
   const favorites = screen.indexOf("<FavoritesPanel ");
   const ross = screen.indexOf("<RossPanel ");
   const signals = screen.indexOf("<DetectionPanel ");
   const rocket = screen.indexOf("<RocketPanel ");
-  expect(signals).toBeGreaterThan(favorites);
-  expect(ross).toBeGreaterThan(signals);
   expect(rocket).toBeGreaterThan(ross);
+  expect(favorites).toBeGreaterThan(rocket);
+  expect(signals).toBeGreaterThan(favorites);
   expect(panel).toContain("onPick(group.selected.symbol, group.selected.episode_id, epoch)");
 });
 

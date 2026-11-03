@@ -17,13 +17,14 @@ test("the card collapses with no favorites and lists the synced list in order", 
   expect(favoriteRows(["A", "B"], state, String).map((r) => r.symbol)).toEqual(["A", "B"]);
 });
 
-test("a star on the chart header, the search, Runners and Ross rows; the card is first on the dashboard", () => {
+test("a star on the chart header, the search, Runners and Ross rows; the card follows Ross and Runners on the dashboard", () => {
   expect(read("../screens/ChartScreen.tsx")).toContain("<StarToggle symbol={active} />");
   expect(read("../search/TickerSearchSheet.tsx")).toContain("<StarToggle symbol={t.symbol} />");
   expect(read("RocketPanel.tsx")).toContain("<StarToggle symbol={r.symbol} size={14} />");
   expect(read("RossPanel.tsx")).toContain("<StarToggle symbol={r.symbol} size={14} />");
   const dash = read("../screens/DashboardScreen.tsx");
-  expect(dash.indexOf("<FavoritesPanel")).toBeLessThan(dash.indexOf("<RossPanel"));
+  // Ross and Runners first after the gauges (owner, 2026-11-03), then Favorites.
+  expect(dash.indexOf("<FavoritesPanel")).toBeGreaterThan(dash.indexOf("<RocketPanel"));
 });
 
 test("the row chart's width follows the row, within the Fold's cover screen and unfolded", () => {

@@ -76,21 +76,21 @@ function DashboardView({ feed, token, source }: { feed: MobileFeed; token: strin
       <HaltWatcher channel={feed.pressure} onPick={open} reducedMotion={reducedMotion} gap={GAP} />
       {/* The cards, one scroll under the gauges. */}
       <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 8, gap: GAP }}>
-        {/* The web's panel order (owner, 2026-10-30 wireframe; shared panels.ts SIDE_PANELS then
-            BOTTOM_PANELS), stacked for the phone: its right column (Favorites, Signals, Top
-            Gainers), then its bottom row (Ross, Runners, Hot stocks). The Halt watcher keeps its
-            row of gauges above the scroll (owner, 2026-10-19). Every card hides while it has 0
-            items and opens or closes by its real height; a tapped row opens the chart modal. */}
-        {/* The owner's own list first (owner, 2026-10-26). */}
+        {/* The phone's own order (owner, 2026-11-03: "Ross and the runners panel first after the
+            halts row"): Ross, Runners, then Favorites, Signals, Top Gainers, Hot stocks. The web
+            keeps its wireframe order (shared panels.ts). The Halt watcher keeps its row of gauges
+            above the scroll (owner, 2026-10-19). Every card hides while it has 0 items and opens
+            or closes by its real height; a tapped row opens the chart modal. */}
+        <RossPanel channel={feed.ross} detection={feed.detection} runners={feed.rocket} onPick={open} reducedMotion={reducedMotion} gap={GAP} />
+        {/* Rocket watch (owner, 2026-10-21; experimental): same row gestures. */}
+        <RocketPanel channel={feed.rocket} onPick={open} reducedMotion={reducedMotion} gap={GAP} />
+        {/* The owner's own list (owner, 2026-10-26). */}
         <FavoritesPanel channel={feed.favorites} runners={feed.rocket} onPick={open} reducedMotion={reducedMotion} gap={GAP} />
         {/* Signals (design canvas "Detection Panel", phone): only while the server's detector is
             on; a tapped row opens the chart modal with the episode drawn. */}
         <DetectionPanel channel={feed.detection} onPick={open} reducedMotion={reducedMotion} gap={GAP} />
         {/* Top Gainers (owner, 2026-10-30): ranked on the server, the movers channel. */}
         <MoversPanel kind="gainers" channel={feed.movers} runners={feed.rocket} onPick={open} reducedMotion={reducedMotion} gap={GAP} />
-        <RossPanel channel={feed.ross} detection={feed.detection} runners={feed.rocket} onPick={open} reducedMotion={reducedMotion} gap={GAP} />
-        {/* Rocket watch (owner, 2026-10-21; experimental): same row gestures. */}
-        <RocketPanel channel={feed.rocket} onPick={open} reducedMotion={reducedMotion} gap={GAP} />
         {/* Hot stocks, Bull and Bear (owner, 2026-10-30): the movers channel too. */}
         <MoversPanel kind="hot" channel={feed.movers} runners={feed.rocket} onPick={open} reducedMotion={reducedMotion} gap={GAP} />
       </ScrollView>
