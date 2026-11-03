@@ -4,7 +4,7 @@ import { indicatorDemand, INDICATOR_PRESETS, needsIndicatorHistory, serverIndica
 import { computeIndicators, indicatorParity } from "./indicatorMath.ts";
 import { buildSlots, type Slot } from "./scale.ts";
 import { createServerIndicators } from "./serverIndicators.ts";
-import { applyIndicatorIncrement, applyIndicatorsSnapshot, ChartStore } from "./store.ts";
+import { applyIndicatorIncrement, applyIndicatorsSnapshot, ChartStore, tickerIndicatorValues } from "./store.ts";
 import { sessionSlots } from "./chartTypes.ts";
 import type { Candle, ChartIndicatorsSnapshot, ChartMessage, Gap } from "./types.ts";
 
@@ -236,4 +236,19 @@ test("dropIndicators forgets one rth's frozen values until its next snapshot", (
   expect(emits).toBe(1);
   // Increments for it wait for the snapshot again.
   expect(store.applyIndicatorIncrement({ type: "chart.indicator", symbol: "SMPL", timeframe: "1m", rth: false, points: [] })).toBe(false);
+});
+
+test("the Insights ticker page's frame (insights.ticker.indicators) draws through the same values as chart.indicators", () => {
+  const slots = buildSlots(candles(40), []);
+  const specs = [INDICATOR_PRESETS[0]!, INDICATOR_PRESETS[1]!];
+  const snap = serverSnapshot(slots, specs);
+  // What the server sends for the page: the same body, typed for the page and dated.
+  const page = { ...snap, type: "insights.ticker.indicators", day: "2026-10-15" };
+  const values = tickerIndicatorValues(page);
+  expect(values?.timeframe).toBe("1m");
+  const lines = (v: ReturnType<typeof tickerIndicatorValues>) => serverIndicatorResults(slots, specs, v).map((r) => r.lines.map((l) => Array.from(l.values, (x) => (Number.isNaN(x) ? null : x))));
+  const drawn = lines(values);
+  expect(drawn).toEqual(lines(applyIndicatorsSnapshot(undefined, snap)));
+  expect(drawn.flat(2).filter((x) => x !== null).length).toBeGreaterThan(40);
+  expect(tickerIndicatorValues(null)).toBeNull();
 });

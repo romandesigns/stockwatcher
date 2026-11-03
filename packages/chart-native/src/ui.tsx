@@ -159,7 +159,9 @@ export function ToolButton({ onPress, label, children, disabled, primary, style,
             : undefined
         }
         delayLongPress={350}
-        hitSlop={4}
+        // 30 pt tall + 7 above and below = a 44 pt touch target; 4 at the sides, half the
+        // toolbar's 8 pt gap, so neighbours never share a touch.
+        hitSlop={{ top: 7, bottom: 7, left: 4, right: 4 }}
         style={({ pressed }) => [styles.button, primary && styles.primary, pressed && !primary && styles.pressed, disabled && styles.disabled, inner]}
       >
         {typeof children === "string" ? <Text style={[styles.buttonText, primary && { color: UI.accentFg, fontWeight: "600" }]}>{children}</Text> : children}

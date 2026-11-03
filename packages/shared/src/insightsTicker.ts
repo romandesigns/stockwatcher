@@ -8,6 +8,14 @@
 /** The server builds and pushes the page (`insights.ticker.subscribe`); old servers lack it. */
 export const INSIGHTS_TICKER_FEATURE = "insights.ticker.v1";
 
+/**
+ * The server computes the page chart's indicators over the package's bars
+ * (`insights.ticker.indicators.v1`, crates/server/src/insights `TickerStudies`): the subscribe
+ * carries the list, `insights.ticker.indicators.set` changes it, and each package is followed by
+ * an `insights.ticker.indicators` frame. Without it the page's chart draws no indicator lines.
+ */
+export const INSIGHTS_TICKER_INDICATORS_FEATURE = "insights.ticker.indicators.v1";
+
 export interface TickerOutcomeWire {
   ref_price: number;
   ref_at: number;
@@ -207,7 +215,43 @@ export interface TickerSnapshotMessage {
   day: string;
   [k: string]: unknown;
 }
-export type TickerClientMessage = { type: "insights.ticker.subscribe"; symbol: string; day?: string } | { type: "insights.ticker.unsubscribe" };
+export type TickerClientMessage =
+  | { type: "insights.ticker.subscribe"; symbol: string; day?: string; indicators?: TickerIndicatorSpecWire[]; rth?: boolean }
+  | { type: "insights.ticker.unsubscribe" }
+  | { type: "insights.ticker.indicators.set"; indicators: TickerIndicatorSpecWire[]; rth: boolean };
+
+/** One indicator as the client sends it: chart-core `IndicatorSpec` (this package does not know chart-core). */
+export interface TickerIndicatorSpecWire {
+  id: string;
+  kind: string;
+  period?: number;
+  mult?: number;
+  fast?: number;
+  slow?: number;
+  signal?: number;
+}
+
+/** What the page's chart asks the server to compute: its indicator list and whether extended hours are off. */
+export interface TickerIndicatorDemand {
+  indicators: TickerIndicatorSpecWire[];
+  rth: boolean;
+}
+
+/**
+ * Server → client (`insights.ticker.indicators.v1`): the indicators of the open symbol-day, over
+ * the package's bars. The `chart.indicators` shape (chart-core `ChartIndicatorsSnapshot`, which
+ * the screens fold it with) plus the package's `day`.
+ */
+export interface TickerIndicatorsMessage {
+  type: "insights.ticker.indicators";
+  symbol: string;
+  day: string;
+  timeframe: string;
+  rth: boolean;
+  t: number[];
+  tNs?: number[];
+  studies: { key: string; lines: { name: string; style: "line" | "histogram"; from: number; values: (number | null)[] }[] }[];
+}
 
 export interface TickerRequest {
   symbol: string;
@@ -221,23 +265,35 @@ export interface TickerState {
   want: TickerRequest | null;
   /** The package for `want`, null until it arrives (a build takes about a second). */
   pkg: TickerPackageWire | null;
+  /** Whether the server computes the chart's indicators (`insights.ticker.indicators.v1`): null until the first welcome. */
+  indicatorsAvailable: boolean | null;
+  /** The indicators of `want` for the current demand's `rth`, null until they arrive. */
+  indicators: TickerIndicatorsMessage | null;
 }
 
-export const EMPTY_TICKER: TickerState = { available: null, want: null, pkg: null };
+export const EMPTY_TICKER: TickerState = { available: null, want: null, pkg: null, indicatorsAvailable: null, indicators: null };
 
 /**
  * The state of a feed with no ticker channel at all (a local or demo feed): it will never build a
  * page, so the screens say so instead of showing "Building…" forever (EMPTY_TICKER's `null`
  * means "no welcome yet", which a channel-less feed never gets).
  */
-export const NO_TICKER: TickerState = { available: false, want: null, pkg: null };
+export const NO_TICKER: TickerState = { available: false, want: null, pkg: null, indicatorsAvailable: false, indicators: null };
 
 export interface TickerChannel {
   get(): TickerState;
   subscribe(fn: () => void): () => void;
   /** Opens `want` (replacing what was open); the returned function closes it if it is still the one open. */
   open(want: TickerRequest): () => void;
+  /**
+   * What the chart asks the server to compute (`insights.ticker.indicators.v1`); kept across
+   * reopens and reconnects, sent now when it changed. An `rth` change drops the values held,
+   * which were for the other session filter.
+   */
+  setIndicators(demand: TickerIndicatorDemand): void;
 }
+
+const sameDemand = (a: TickerIndicatorDemand | null, b: TickerIndicatorDemand) => !!a && a.rth === b.rth && JSON.stringify(a.indicators) === JSON.stringify(b.indicators);
 
 const same = (a: TickerRequest | null, b: TickerRequest | null) => !!a && !!b && a.symbol === b.symbol && a.day === b.day;
 
@@ -246,8 +302,9 @@ const same = (a: TickerRequest | null, b: TickerRequest | null) => !!a && !!b &&
  * symbol and day is kept: the server drops a replaced subscription's late build, and this
  * check also covers a frame already in flight when the person switched days.
  */
-export function createTickerChannel(io: { subscribe(want: TickerRequest): void; unsubscribe(): void }): TickerChannel & { apply(m: TickerSnapshotMessage): void; setAvailable(on: boolean): void } {
+export function createTickerChannel(io: { subscribe(want: TickerRequest): void; unsubscribe(): void; setIndicators?(demand: TickerIndicatorDemand): void }): TickerChannel & { apply(m: TickerSnapshotMessage): void; applyIndicators(m: TickerIndicatorsMessage): void; setAvailable(on: boolean, indicators?: boolean): void } {
   let state: TickerState = EMPTY_TICKER;
+  let demand: TickerIndicatorDemand | null = null;
   const listeners = new Set<() => void>();
   const set = (next: TickerState) => {
     state = next;
@@ -263,13 +320,28 @@ export function createTickerChannel(io: { subscribe(want: TickerRequest): void; 
     },
     open(want) {
       const w = { symbol: want.symbol.toUpperCase(), day: want.day };
-      if (!same(state.want, w)) set({ ...state, want: w, pkg: null });
+      if (!same(state.want, w)) set({ ...state, want: w, pkg: null, indicators: null });
       io.subscribe(w);
       return () => {
         if (!same(state.want, w)) return;
         io.unsubscribe();
-        set({ ...state, want: null, pkg: null });
+        set({ ...state, want: null, pkg: null, indicators: null });
       };
+    },
+    setIndicators(next) {
+      if (sameDemand(demand, next)) return;
+      const rthChanged = demand !== null && demand.rth !== next.rth;
+      demand = { indicators: [...next.indicators], rth: next.rth };
+      io.setIndicators?.(demand);
+      if (rthChanged && state.indicators) set({ ...state, indicators: null });
+    },
+    applyIndicators(m) {
+      // Only the open symbol-day's, for the session filter asked last (a frame for the previous
+      // one may still be in flight when extended hours are switched).
+      const want = state.want;
+      if (!want || m.symbol !== want.symbol || m.day !== want.day || !Array.isArray(m.t) || !Array.isArray(m.studies)) return;
+      if (demand && m.rth !== demand.rth) return;
+      set({ ...state, indicators: m });
     },
     apply(m) {
       const want = state.want;
@@ -281,8 +353,9 @@ export function createTickerChannel(io: { subscribe(want: TickerRequest): void; 
       const pkg = parseTickerPackage(failed ? { ...m, ...want } : m);
       if (pkg) set({ ...state, pkg });
     },
-    setAvailable(on) {
-      if (state.available !== on) set({ ...state, available: on });
+    setAvailable(on, indicators = false) {
+      const ind = on && indicators;
+      if (state.available !== on || state.indicatorsAvailable !== ind) set({ ...state, available: on, indicatorsAvailable: ind });
     },
   };
 }

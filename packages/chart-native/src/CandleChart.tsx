@@ -214,6 +214,8 @@ export interface CandleChartProps {
   /** Whether the floating drawing tools show. Controlled when onToolsVisibleChange is set (the host persists it). */
   toolsVisible?: boolean;
   onToolsVisibleChange?: (visible: boolean) => void;
+  /** Whether uncontrolled drawing tools start shown (default true), as chart-web's prop: a reading chart (the Insights ticker page) starts with them folded; the pencil shows them. */
+  defaultToolsVisible?: boolean;
   /** Which context layers show (halts, LULD, key levels, fills). Controlled when onLayersChange is set (the host persists it). */
   layers?: ChartLayers;
   onLayersChange?: (layers: ChartLayers) => void;
@@ -321,6 +323,7 @@ export function CandleChart({
   onLayersChange,
   toolsVisible: toolsVisibleProp,
   onToolsVisibleChange,
+  defaultToolsVisible = true,
   // Renamed: this module's now() is the monotonic clock the gestures use.
   now: clockNow = null,
   onTimeframeChange,
@@ -398,7 +401,7 @@ export function CandleChart({
   }), [key, fresh]);
 
   const [pointer, setPointer] = useState<Point | null>(null);
-  const [ownToolsVisible, setOwnToolsVisible] = useState(true);
+  const [ownToolsVisible, setOwnToolsVisible] = useState(defaultToolsVisible);
   const toolsVisible = onToolsVisibleChange ? (toolsVisibleProp ?? true) : ownToolsVisible;
   const changeToolsVisible = (v: boolean) => {
     if (onToolsVisibleChange) onToolsVisibleChange(v);

@@ -1,6 +1,6 @@
-import { dayChartContext, DEFAULT_CHART_SETTINGS, DEFAULT_LAYERS, formatEtTime12, type ChartLayers, type ChartSettings, type EventMarker } from "@stockwatcher/chart-core";
+import { dayChartContext, DEFAULT_CHART_SETTINGS, DEFAULT_LAYERS, formatEtTime12, INDICATOR_PLACEMENT, indicatorDemand, tickerIndicatorValues, type ChartLayers, type ChartSettings, type EventMarker, type IndicatorSpec } from "@stockwatcher/chart-core";
 import { CandleChart, Icon, UI } from "@stockwatcher/chart-native";
-import { NO_TICKER, tickerPageView, type TickerAlertView, type TickerMissedView, type TickerPackageWire, type TickerPageView, type TickerState, type Tone } from "@stockwatcher/shared";
+import { NO_TICKER, tickerPageView, type TickerAlertView, type TickerChannel, type TickerMissedView, type TickerPackageWire, type TickerPageView, type TickerState, type Tone } from "@stockwatcher/shared";
 import { useNavigation, type RouteProp } from "@react-navigation/native";
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View, type LayoutChangeEvent } from "react-native";
@@ -10,6 +10,7 @@ import { useDashboardFeed } from "../feed/dashboardFeed";
 import { Collapse } from "../motion/Collapse";
 import { useReducedMotion } from "../motion/useReducedMotion";
 import type { RootStackParamList } from "../navigation/RootStack";
+import { getPreference, setPreference } from "../storage/preferences";
 import { colors, fonts } from "../theme";
 
 /**
@@ -24,8 +25,24 @@ type Props = { route: RouteProp<RootStackParamList, "InsightsTicker"> };
 const NOOP = () => () => {};
 const time = (ms: number, seconds?: boolean) => formatEtTime12(ms, seconds);
 const TONE: Record<Tone, string> = { neutral: colors.text, up: colors.good, down: colors.critical, dim: colors.textDim };
-/** The chart's metrics: the ticker modal's legible set, with no indicator panes. */
+/** The chart's metrics: the ticker modal's legible set. */
 const OPTIONS = { priceAxisWidth: 52, volumeHeight: 32, timeAxisHeight: 18, paneGap: 4, fontSize: 10, timeLabelSpacing: 64 } as const;
+/**
+ * The page chart's indicators, remembered on this phone (a viewing preference for this page,
+ * apart from the main chart's synced list): kept across days and visits.
+ */
+const INDICATORS_KEY = "insights-ticker:indicators";
+/** The chart's tool row above the plot, and each oscillator pane (RSI, MACD) under it: the chart grows by them rather than squeezing the candles. */
+const TOOLBAR_H = 36;
+const PANE_H = 80;
+
+/** What the page chart's indicators need: the channel to ask the server, its answer, and the list. */
+interface ChartIndicators {
+  channel: TickerChannel | undefined;
+  state: TickerState;
+  indicators: IndicatorSpec[];
+  onIndicatorsChange: (specs: IndicatorSpec[]) => void;
+}
 
 /**
  * The Insights ticker page on the phone (owner, 2026-10-31, approved design "Ticker page ·
@@ -51,6 +68,23 @@ export function InsightsTickerScreen({ route }: Props) {
   const view = useMemo(() => (pkg ? tickerPageView(pkg, time) : null), [pkg]);
   const [width, setWidth] = useState(0);
   const wide = width >= 600;
+  // Held here, not in the chart: the chart remounts with every day, the choice should not.
+  const [indicators, setIndicatorsState] = useState<IndicatorSpec[]>([]);
+  useEffect(() => {
+    let mounted = true;
+    getPreference<IndicatorSpec[]>(INDICATORS_KEY)
+      .then((v) => {
+        if (mounted && Array.isArray(v)) setIndicatorsState(v.filter((s) => typeof s?.id === "string" && typeof s?.kind === "string"));
+      })
+      .catch(() => {});
+    return () => {
+      mounted = false;
+    };
+  }, []);
+  const setIndicators = useCallback((next: IndicatorSpec[]) => {
+    setIndicatorsState(next);
+    void setPreference(INDICATORS_KEY, next).catch(() => {});
+  }, []);
   const setDay = (d: string | null) => {
     if (d) navigation.setParams({ symbol, day: d } as never);
   };
@@ -88,7 +122,7 @@ export function InsightsTickerScreen({ route }: Props) {
         ) : view.unavailable ? (
           <Text style={styles.empty}>{view.unavailable}</Text>
         ) : (
-          <Body pkg={pkg} view={view} wide={wide} reducedMotion={reducedMotion} />
+          <Body pkg={pkg} view={view} wide={wide} reducedMotion={reducedMotion} chart={{ channel, state, indicators, onIndicatorsChange: setIndicators }} />
         )}
       </ScrollView>
     </View>
@@ -104,9 +138,17 @@ function DayStep({ dir, day, onDay }: { dir: "prev" | "next"; day: string | null
   );
 }
 
-function Body({ pkg, view, wide, reducedMotion }: { pkg: TickerPackageWire; view: TickerPageView; wide: boolean; reducedMotion: boolean }) {
+function Body({ pkg, view, wide, reducedMotion, chart }: { pkg: TickerPackageWire; view: TickerPageView; wide: boolean; reducedMotion: boolean; chart: ChartIndicators }) {
   const [settings, setSettings] = useState<ChartSettings>(() => ({ ...DEFAULT_CHART_SETTINGS, highLow: true }));
   const [layers, setLayers] = useState<ChartLayers>(TICKER_LAYERS);
+  // Indicators are computed on the server over this package's bars (`insights.ticker.indicators.v1`),
+  // as on the web page; the chart draws them as sent. Absent (an older server) = no lines and the
+  // chart's "needs a server update" note; null = asked, not answered yet.
+  const { channel, state, indicators, onIndicatorsChange } = chart;
+  const demand = useMemo(() => indicatorDemand(indicators, settings), [indicators, settings]);
+  useEffect(() => channel?.setIndicators({ indicators: demand.indicators, rth: demand.rth }), [channel, demand]);
+  const serverIndicators = useMemo(() => (state.indicatorsAvailable ? tickerIndicatorValues(state.indicators) : undefined), [state.indicatorsAvailable, state.indicators]);
+  const panes = settings.visibility.indicators ? indicators.filter((s) => INDICATOR_PLACEMENT[s.kind] === "pane").length : 0;
   // The server's levels, ranges, zones and session schedule over these bars (the package's
   // `chart`); a package from an older server has none, and the chart reads them off its candles.
   const context = useMemo(() => dayChartContext(pkg.chart), [pkg]);
@@ -130,7 +172,29 @@ function Body({ pkg, view, wide, reducedMotion }: { pkg: TickerPackageWire; view
           <View style={[styles.dot, styles.ring]} />
           <Text style={styles.note}>Missed</Text>
         </View>
-        <CandleChart key={pkg.day} style={{ height: wide ? 320 : 260 }} symbol={pkg.symbol} series={series} timeframe="1m" settings={settings} onSettingsChange={setSettings} eventMarkers={markers} {...serverContext} initialFocus={pkg.focus} layers={layers} onLayersChange={setLayers} inspector options={OPTIONS} label={`${pkg.symbol} 1 minute candles`} />
+        <CandleChart
+          key={pkg.day}
+          style={{ height: (wide ? 320 : 260) + TOOLBAR_H + panes * PANE_H }}
+          symbol={pkg.symbol}
+          series={series}
+          timeframe="1m"
+          settings={settings}
+          onSettingsChange={setSettings}
+          eventMarkers={markers}
+          {...serverContext}
+          initialFocus={pkg.focus}
+          layers={layers}
+          onLayersChange={setLayers}
+          toolbar
+          // The drawing tools stay folded until the pencil asks for them: this chart is for reading the day.
+          defaultToolsVisible={false}
+          indicators={indicators}
+          onIndicatorsChange={onIndicatorsChange}
+          serverIndicators={serverIndicators}
+          inspector
+          options={OPTIONS}
+          label={`${pkg.symbol} 1 minute candles`}
+        />
       </View>
 
       <View style={styles.headline}>

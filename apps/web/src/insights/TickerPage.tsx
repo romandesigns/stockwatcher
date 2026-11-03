@@ -1,8 +1,8 @@
-import { dayChartContext, DEFAULT_CHART_SETTINGS, DEFAULT_LAYERS, formatEtTime12, type ChartLayers, type ChartSettings, type EventMarker } from "@stockwatcher/chart-core";
+import { dayChartContext, DEFAULT_CHART_SETTINGS, DEFAULT_LAYERS, formatEtTime12, indicatorDemand, tickerIndicatorValues, type ChartLayers, type ChartSettings, type EventMarker, type IndicatorSpec } from "@stockwatcher/chart-core";
 import { CandleChart, Icon } from "@stockwatcher/chart-web";
 import { cn, Collapsible, CollapsibleContent, CollapsibleTrigger, ScrollArea, Tip } from "@stockwatcher/chart-web/ui";
-import { tickerPageHash, tickerPageView, type TickerAlertView, type TickerChannel, type TickerMissedView, type TickerPackageWire, type TickerPageView, type TickerRequest, type Tone } from "@stockwatcher/shared";
-import { useMemo, useState, type ReactElement } from "react";
+import { tickerPageHash, tickerPageView, type TickerAlertView, type TickerChannel, type TickerMissedView, type TickerPackageWire, type TickerPageView, type TickerRequest, type TickerState, type Tone } from "@stockwatcher/shared";
+import { useEffect, useMemo, useState, type ReactElement } from "react";
 import { useTickerPackage } from "./useTickerPage.ts";
 
 /**
@@ -13,6 +13,27 @@ import { useTickerPackage } from "./useTickerPage.ts";
 const TICKER_LAYERS: ChartLayers = { ...DEFAULT_LAYERS, premarket: false, dayRange: false, prevClose: false };
 
 const time = (ms: number, seconds?: boolean) => formatEtTime12(ms, seconds);
+
+/**
+ * The page chart's indicators, remembered in this browser (a viewing preference for this page,
+ * apart from the main chart's synced list): kept across days and visits.
+ */
+const INDICATORS_KEY = "stockwatcher:insights-ticker:indicators";
+function loadIndicators(): IndicatorSpec[] {
+  try {
+    const v: unknown = JSON.parse(localStorage.getItem(INDICATORS_KEY) ?? "[]");
+    return Array.isArray(v) ? v.filter((s): s is IndicatorSpec => typeof s === "object" && s !== null && typeof (s as IndicatorSpec).id === "string" && typeof (s as IndicatorSpec).kind === "string") : [];
+  } catch {
+    return [];
+  }
+}
+function saveIndicators(specs: IndicatorSpec[]) {
+  try {
+    localStorage.setItem(INDICATORS_KEY, JSON.stringify(specs));
+  } catch {
+    // Private window or blocked storage: the choice lasts for this visit.
+  }
+}
 
 const TONE: Record<Tone, string> = { neutral: "text-foreground", up: "text-good", down: "text-critical", dim: "text-muted-foreground" };
 
@@ -26,6 +47,12 @@ const TONE: Record<Tone, string> = { neutral: "text-foreground", up: "text-good"
  */
 export function TickerPage({ channel, want, onBack }: { channel: TickerChannel | undefined; want: TickerRequest; onBack: () => void }) {
   const state = useTickerPackage(channel, want);
+  // Held here, not in the chart: the chart remounts with every day, the choice should not.
+  const [indicators, setIndicatorsState] = useState<IndicatorSpec[]>(loadIndicators);
+  const setIndicators = (next: IndicatorSpec[]) => {
+    setIndicatorsState(next);
+    saveIndicators(next);
+  };
   const pkg = state.pkg && state.pkg.symbol === want.symbol && state.pkg.day === want.day ? state.pkg : null;
   const view = useMemo(() => (pkg ? tickerPageView(pkg, time) : null), [pkg]);
   const go = (day: string | null) => {
@@ -49,7 +76,7 @@ export function TickerPage({ channel, want, onBack }: { channel: TickerChannel |
         ) : view.unavailable ? (
           <p className="m-0 max-w-md text-[13px] text-text-faint">{view.unavailable}</p>
         ) : (
-          <Body pkg={pkg} view={view} />
+          <Body pkg={pkg} view={view} chart={{ channel, state, indicators, onIndicatorsChange: setIndicators }} />
         )}
       </div>
     </ScrollArea>
@@ -103,7 +130,15 @@ function DayStep({ dir, day, onDay }: { dir: "prev" | "next"; day: string | null
   );
 }
 
-function Body({ pkg, view }: { pkg: TickerPackageWire; view: TickerPageView }) {
+/** What the page chart's indicators need: the channel to ask the server, its answer, and the list. */
+interface ChartIndicatorsProps {
+  channel: TickerChannel | undefined;
+  state: TickerState;
+  indicators: IndicatorSpec[];
+  onIndicatorsChange: (specs: IndicatorSpec[]) => void;
+}
+
+function Body({ pkg, view, chart }: { pkg: TickerPackageWire; view: TickerPageView; chart: ChartIndicatorsProps }) {
   // The history row under the pointer rings its marker on the chart; a clicked row turns its
   // marker orange until it is clicked again or another row is (owner, 2026-11-01).
   const [focus, setFocus] = useState<number | null>(null);
@@ -111,7 +146,7 @@ function Body({ pkg, view }: { pkg: TickerPackageWire; view: TickerPageView }) {
   const onSelect = (n: number) => setSelected((cur) => (cur === n ? null : n));
   return (
     <>
-      <DayChart pkg={pkg} view={view} focus={focus} selected={selected} />
+      <DayChart pkg={pkg} view={view} focus={focus} selected={selected} chart={chart} />
       <Stats view={view} />
       {/* Two columns once there is room: the history with the missed setups under it, beside the
           scorecard and halts. With the missed setups in their own full-width row, a short history
@@ -162,9 +197,19 @@ function StatTile({ note, children }: { note: string; children: ReactElement }) 
   return note ? <Tip label={note}>{children}</Tip> : children;
 }
 
-function DayChart({ pkg, view, focus, selected }: { pkg: TickerPackageWire; view: TickerPageView; focus: number | null; selected: number | null }) {
+function DayChart({ pkg, view, focus, selected, chart }: { pkg: TickerPackageWire; view: TickerPageView; focus: number | null; selected: number | null; chart: ChartIndicatorsProps }) {
   const [settings, setSettings] = useState<ChartSettings>(() => ({ ...DEFAULT_CHART_SETTINGS, highLow: true }));
   const [layers, setLayers] = useState<ChartLayers>(TICKER_LAYERS);
+  // Indicators are computed on the server over this package's bars (`insights.ticker.indicators.v1`);
+  // the chart draws them as sent. The demand is the main chart's (none while the layer is hidden,
+  // the regular session only with extended hours off).
+  const { channel, state, indicators, onIndicatorsChange } = chart;
+  const demand = useMemo(() => indicatorDemand(indicators, settings), [indicators, settings]);
+  useEffect(() => channel?.setIndicators({ indicators: demand.indicators, rth: demand.rth }), [channel, demand]);
+  // Absent (an older server) = no lines and the chart's "needs a server update" note; null = asked.
+  const serverIndicators = useMemo(() => (state.indicatorsAvailable ? tickerIndicatorValues(state.indicators) : undefined), [state.indicatorsAvailable, state.indicators]);
+  // The chart's tools (indicators, levels, drawing) sit in the heading row, not a row of their own.
+  const [toolbarSlot, setToolbarSlot] = useState<HTMLElement | null>(null);
   // Levels, ranges, zones and the session schedule are the server's, computed over these bars
   // (the package's `chart`); the chart reads nothing off its candles.
   const context = useMemo(() => dayChartContext(pkg.chart), [pkg]);
@@ -185,6 +230,7 @@ function DayChart({ pkg, view, focus, selected }: { pkg: TickerPackageWire; view
           <span className="size-2.5 rounded-full shadow-[inset_0_0_0_2px_var(--text-dim)]" aria-hidden />
           Missed setup
         </span>
+        <div ref={setToolbarSlot} className="flex items-center" />
       </div>
       <div className="h-[clamp(240px,42vh,440px)] min-h-0">
         {/* Keyed by the day: another day reopens on its own focus window. */}
@@ -202,6 +248,13 @@ function DayChart({ pkg, view, focus, selected }: { pkg: TickerPackageWire; view
           initialFocus={pkg.focus}
           layers={layers}
           onLayersChange={setLayers}
+          toolbar
+          toolbarContainer={toolbarSlot}
+          // The drawing tools stay folded until the pencil asks for them: this chart is for reading the day.
+          defaultToolsVisible={false}
+          indicators={indicators}
+          onIndicatorsChange={onIndicatorsChange}
+          serverIndicators={serverIndicators}
           inspector
           priceAxisMenu={false}
           label={`${pkg.symbol} on ${view.dayLabel}, 1-minute candles, ${sent} sent alert${sent === 1 ? "" : "s"} and ${missed} missed setup${missed === 1 ? "" : "s"} marked`}

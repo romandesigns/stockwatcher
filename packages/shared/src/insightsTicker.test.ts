@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { alertKind, createTickerChannel, etDayShort, NO_TICKER, INSIGHTS_TICKER_FEATURE, money, parseTickerPackage, signedPct, tickerPageHash, tickerPageOf, tickerPageView, type TickerSnapshotMessage } from "./insightsTicker.ts";
+import { alertKind, createTickerChannel, etDayShort, NO_TICKER, INSIGHTS_TICKER_FEATURE, INSIGHTS_TICKER_INDICATORS_FEATURE, money, parseTickerPackage, signedPct, tickerPageHash, tickerPageOf, tickerPageView, type TickerIndicatorDemand, type TickerIndicatorsMessage, type TickerSnapshotMessage } from "./insightsTicker.ts";
 import { applyNoticesMessage } from "./noticeFeed.ts";
 import { logSummary, rowHeldText, rowStatus } from "./noticeLog.ts";
 import { createWsClient, type WebSocketLike } from "./ws.ts";
@@ -161,6 +161,36 @@ describe("createTickerChannel", () => {
     close();
     expect(calls).toEqual(["sub ZZTK 2026-10-30", "sub ZZTK 2026-10-29"]);
   });
+
+  test("indicators: the demand goes out once per change, and only the open day's frame for the asked session is kept", () => {
+    const sent: TickerIndicatorDemand[] = [];
+    const ch = createTickerChannel({ subscribe: () => {}, unsubscribe: () => {}, setIndicators: (d) => sent.push(d) });
+    ch.setAvailable(true, true);
+    expect(ch.get().indicatorsAvailable).toBe(true);
+    const vwap = { id: "vwap", kind: "vwap" };
+    ch.setIndicators({ indicators: [vwap], rth: false });
+    ch.setIndicators({ indicators: [{ ...vwap }], rth: false });
+    expect(sent).toHaveLength(1);
+    ch.open({ symbol: "ZZTK", day: "2026-10-30" });
+    const ind = (o: Partial<TickerIndicatorsMessage>): TickerIndicatorsMessage => ({ type: "insights.ticker.indicators", symbol: "ZZTK", day: "2026-10-30", timeframe: "1m", rth: false, t: [1], studies: [{ key: "vwap", lines: [{ name: "VWAP", style: "line", from: 0, values: [2] }] }], ...o });
+    ch.applyIndicators(ind({ day: "2026-10-29" }));
+    expect(ch.get().indicators).toBeNull();
+    ch.applyIndicators(ind({}));
+    expect(ch.get().indicators?.studies[0]?.key).toBe("vwap");
+    // Extended hours off: the held values were for the other filter, and a late frame for it is ignored.
+    ch.setIndicators({ indicators: [vwap], rth: true });
+    expect(ch.get().indicators).toBeNull();
+    ch.applyIndicators(ind({}));
+    expect(ch.get().indicators).toBeNull();
+    ch.applyIndicators(ind({ rth: true }));
+    expect(ch.get().indicators?.rth).toBe(true);
+    // Another day starts empty.
+    ch.open({ symbol: "ZZTK", day: "2026-10-29" });
+    expect(ch.get().indicators).toBeNull();
+    // A server with the page but not the indicators.
+    ch.setAvailable(true, false);
+    expect(ch.get().indicatorsAvailable).toBe(false);
+  });
 });
 
 class FakeSocket implements WebSocketLike {
@@ -197,6 +227,30 @@ test("the ws client asks for a ticker page only from a server with insights.tick
     expect(got).toEqual(["ZZTK"]);
     client.unsubscribeTicker();
     expect(s.sent.some((m) => JSON.parse(m).type === "insights.ticker.unsubscribe")).toBe(expected === 1);
+    client.close();
+  }
+});
+
+test("the ws client carries the ticker indicators only to a server with insights.ticker.indicators.v1: on the subscribe, as a set, after a reconnect", () => {
+  const welcome = { type: "welcome", version: "0.1.0", commit: "abc", heartbeatSecs: 15 };
+  const demand = { indicators: [{ id: "ema-9", kind: "ema", period: 9 }], rth: true };
+  for (const features of [[INSIGHTS_TICKER_FEATURE], [INSIGHTS_TICKER_FEATURE, INSIGHTS_TICKER_INDICATORS_FEATURE]]) {
+    const on = features.length === 2;
+    const sockets: FakeSocket[] = [];
+    const got: string[] = [];
+    const client = createWsClient({ url: "ws://x/ws", createSocket: () => (sockets.push(new FakeSocket()), sockets.at(-1)!), onTickerIndicators: (m) => got.push(m.day), baseDelayMs: 0, maxDelayMs: 0 });
+    client.setTickerIndicators(demand);
+    client.subscribeTicker({ symbol: "ZZTK", day: "2026-10-30" });
+    const s = sockets[0]!;
+    s.readyState = 1;
+    s.onopen?.({});
+    s.onmessage?.({ data: JSON.stringify({ ...welcome, features }) });
+    const of = (x: FakeSocket, type: string) => x.sent.map((m) => JSON.parse(m)).filter((m) => m.type === type);
+    expect(of(s, "insights.ticker.subscribe")[0]).toEqual(on ? { type: "insights.ticker.subscribe", symbol: "ZZTK", day: "2026-10-30", ...demand } : { type: "insights.ticker.subscribe", symbol: "ZZTK", day: "2026-10-30" });
+    client.setTickerIndicators({ indicators: [], rth: false });
+    expect(of(s, "insights.ticker.indicators.set")).toEqual(on ? [{ type: "insights.ticker.indicators.set", indicators: [], rth: false }] : []);
+    s.onmessage?.({ data: JSON.stringify({ type: "insights.ticker.indicators", symbol: "ZZTK", day: "2026-10-30", timeframe: "1m", rth: false, t: [], studies: [] }) });
+    expect(got).toEqual(["2026-10-30"]);
     client.close();
   }
 });

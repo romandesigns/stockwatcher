@@ -17,7 +17,7 @@ import {
   type ServerIndicatorsChannel,
   type Timeframe,
 } from "@stockwatcher/chart-core";
-import { createDetectionChannel, createFavoritesChannel, createMoversChannel, createPressureChannel, createQuoteChannel, createQuoteSearchChannel, createRocketChannel, createRossChannel, createNoticesChannel, createSymbolsChannel, createTickerChannel, createWsClient, hasFeature, CLOCK_FEATURE, INDICATORS_FEATURE, INSIGHTS_TICKER_FEATURE, INDICATORS_LIMIT_FEATURE, LEVELS_FEATURE, NOTICES_FEATURE, QUOTE_SEARCH_FEATURE, RUNNERS_NOTICE_FEATURE, SYMBOLS_FEATURE, ZONES_FEATURE, type AlertsServerMessage, type ConnectionStatus, type DetectionChannel, type FavoritesChannel, type MarketSource, type MoversChannel, type PressureChannel, type QuoteChannel, type QuoteSearchChannel, type RocketChannel, type RossChannel, type NoticesChannel, type SettingsSync, type SymbolsChannel, type TickerChannel, type WebSocketLike } from "@stockwatcher/shared";
+import { createDetectionChannel, createFavoritesChannel, createMoversChannel, createPressureChannel, createQuoteChannel, createQuoteSearchChannel, createRocketChannel, createRossChannel, createNoticesChannel, createSymbolsChannel, createTickerChannel, createWsClient, hasFeature, CLOCK_FEATURE, INDICATORS_FEATURE, INSIGHTS_TICKER_FEATURE, INSIGHTS_TICKER_INDICATORS_FEATURE, INDICATORS_LIMIT_FEATURE, LEVELS_FEATURE, NOTICES_FEATURE, QUOTE_SEARCH_FEATURE, RUNNERS_NOTICE_FEATURE, SYMBOLS_FEATURE, ZONES_FEATURE, type AlertsServerMessage, type ConnectionStatus, type DetectionChannel, type FavoritesChannel, type MarketSource, type MoversChannel, type PressureChannel, type QuoteChannel, type QuoteSearchChannel, type RocketChannel, type RossChannel, type NoticesChannel, type SettingsSync, type SymbolsChannel, type TickerChannel, type WebSocketLike } from "@stockwatcher/shared";
 
 import { deviceInfo, pushToken, subscribePushToken } from "../notifications/push";
 import type { PhoneNotices } from "../notifications/runnersNoticeModel";
@@ -115,7 +115,7 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
   const movers = createMoversChannel({ subscribe: () => client.subscribeMovers(), unsubscribe: () => client.unsubscribeMovers() });
   const symbols = createSymbolsChannel({ subscribe: () => client.subscribeSymbols(), unsubscribe: () => client.unsubscribeSymbols() });
   const notices = createNoticesChannel({ subscribe: () => client.subscribeNotices(), unsubscribe: () => client.unsubscribeNotices() });
-  const ticker = createTickerChannel({ subscribe: (w) => client.subscribeTicker(w), unsubscribe: () => client.unsubscribeTicker() });
+  const ticker = createTickerChannel({ subscribe: (w) => client.subscribeTicker(w), unsubscribe: () => client.unsubscribeTicker(), setIndicators: (d) => client.setTickerIndicators(d) });
   const rocket = createRocketChannel({ subscribe: () => client.subscribeRocket(), unsubscribe: () => client.unsubscribeRocket() });
   const detection = createDetectionChannel({ subscribe: () => client.subscribeDetection(), unsubscribe: () => client.unsubscribeDetection(), resync: () => client.subscribeDetection(), source });
 
@@ -156,7 +156,7 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
       serverIndicators.setLimitAvailable(hasFeature(w, INDICATORS_LIMIT_FEATURE));
       symbols.setAvailable(hasFeature(w, SYMBOLS_FEATURE));
       notices.setAvailable(hasFeature(w, NOTICES_FEATURE));
-      ticker.setAvailable(hasFeature(w, INSIGHTS_TICKER_FEATURE));
+      ticker.setAvailable(hasFeature(w, INSIGHTS_TICKER_FEATURE), hasFeature(w, INSIGHTS_TICKER_INDICATORS_FEATURE));
       quoteSearch.setAvailable(hasFeature(w, QUOTE_SEARCH_FEATURE));
       // The server decides time (clock.v1): the Runners panel's ages follow its clock frames and
       // its toasts come as `runners.event`.
@@ -203,6 +203,7 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
     onSymbols: (m) => symbols.apply(m),
     onNotices: (m) => notices.apply(m),
     onTicker: (m) => ticker.apply(m),
+    onTickerIndicators: (m) => ticker.applyIndicators(m),
     onRocket: (m) => rocket.apply(m),
     onDetection: (m) => detection.apply(m),
     onDetectionError: (reason) => detection.reject(reason),

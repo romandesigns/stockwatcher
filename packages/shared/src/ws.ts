@@ -6,7 +6,7 @@ import type { RocketMessage } from "./rocket.ts";
 import type { RunnersNoticeMessage, RunnersNotifyMessage } from "./runnersNotify.ts";
 import { SYMBOLS_FEATURE, type SymbolsMessage } from "./symbols.ts";
 import { NOTICES_FEATURE, type NoticesMessage } from "./noticeFeed.ts";
-import { INSIGHTS_TICKER_FEATURE, type TickerRequest, type TickerSnapshotMessage } from "./insightsTicker.ts";
+import { INSIGHTS_TICKER_FEATURE, INSIGHTS_TICKER_INDICATORS_FEATURE, type TickerIndicatorDemand, type TickerIndicatorsMessage, type TickerRequest, type TickerSnapshotMessage } from "./insightsTicker.ts";
 
 export type ConnectionStatus = "connecting" | "open" | "reconnecting" | "unauthorized" | "closed";
 
@@ -48,6 +48,8 @@ export interface WsClientOptions {
   onNotices?: (message: NoticesMessage) => void;
   /** `insights.ticker.snapshot` / `.update` frames, while a ticker page is open (see `subscribeTicker`). */
   onTicker?: (message: TickerSnapshotMessage) => void;
+  /** `insights.ticker.indicators` frames (`insights.ticker.indicators.v1`), while a ticker page is open. */
+  onTickerIndicators?: (message: TickerIndicatorsMessage) => void;
   onDetection?: (message: DetectionMessage) => void;
   onDetectionError?: (reason: string) => void;
   /** The price alerts' frames (`alerts.history`, `alert.fired`, …): every connection gets them. */
@@ -112,6 +114,12 @@ export interface WsClient {
    */
   subscribeTicker(want: TickerRequest): void;
   unsubscribeTicker(): void;
+  /**
+   * The ticker page chart's indicators (`insights.ticker.indicators.v1`): kept, carried on every
+   * `insights.ticker.subscribe` (reconnects included), and sent now as
+   * `insights.ticker.indicators.set` while a page is open. Never sent to a server without it.
+   */
+  setTickerIndicators(demand: TickerIndicatorDemand): void;
   subscribeDetection(): void;
   unsubscribeDetection(): void;
   /** Sends `runnersNotify()` now (or `enabled: false` when it is null): the switches changed. */
@@ -161,6 +169,13 @@ export function createWsClient(opts: WsClientOptions): WsClient {
   let symbolsWanted = false;
   let noticesWanted = false;
   let tickerWanted: TickerRequest | null = null;
+  let tickerIndicators: TickerIndicatorDemand | null = null;
+  // The subscribe, with the indicator demand when the server computes it.
+  const tickerSubscribe = (want: TickerRequest) => {
+    if (!features.includes(INSIGHTS_TICKER_FEATURE)) return;
+    const withIndicators = tickerIndicators && features.includes(INSIGHTS_TICKER_INDICATORS_FEATURE) ? tickerIndicators : null;
+    send({ type: "insights.ticker.subscribe", ...want, ...(withIndicators ? { indicators: withIndicators.indicators, rth: withIndicators.rth } : {}) });
+  };
   // The current connection's welcome.features (empty before a welcome and for older servers).
   let features: readonly string[] = [];
   let detectionWanted = false;
@@ -222,7 +237,7 @@ export function createWsClient(opts: WsClientOptions): WsClient {
         if (moversWanted) send({ type: "movers.subscribe" });
         if (symbolsWanted && features.includes(SYMBOLS_FEATURE)) send({ type: "symbols.subscribe" });
         if (noticesWanted && features.includes(NOTICES_FEATURE)) send({ type: "notices.subscribe" });
-        if (tickerWanted && features.includes(INSIGHTS_TICKER_FEATURE)) send({ type: "insights.ticker.subscribe", ...tickerWanted });
+        if (tickerWanted) tickerSubscribe(tickerWanted);
         if (detectionWanted) send({ type: "detection.subscribe" });
         const notify = opts.runnersNotify?.();
         if (notify) send(notify);
@@ -250,6 +265,8 @@ export function createWsClient(opts: WsClientOptions): WsClient {
         opts.onNotices?.(msg);
       } else if ((msg.type === "insights.ticker.snapshot" || msg.type === "insights.ticker.update") && tickerWanted) {
         opts.onTicker?.(msg);
+      } else if (msg.type === "insights.ticker.indicators" && tickerWanted) {
+        opts.onTickerIndicators?.(msg);
       } else if ((msg.type === "detection.snapshot" || msg.type === "detection.update") && detectionWanted) {
         opts.onDetection?.(msg);
       } else if (msg.type === "settings.snapshot" || msg.type === "settings.changed" || msg.type === "settings.rejected") {
@@ -347,7 +364,11 @@ export function createWsClient(opts: WsClientOptions): WsClient {
     },
     subscribeTicker(want) {
       tickerWanted = { symbol: want.symbol, day: want.day };
-      if (features.includes(INSIGHTS_TICKER_FEATURE)) send({ type: "insights.ticker.subscribe", ...tickerWanted });
+      tickerSubscribe(tickerWanted);
+    },
+    setTickerIndicators(demand) {
+      tickerIndicators = { indicators: [...demand.indicators], rth: demand.rth };
+      if (tickerWanted && features.includes(INSIGHTS_TICKER_FEATURE) && features.includes(INSIGHTS_TICKER_INDICATORS_FEATURE)) send({ type: "insights.ticker.indicators.set", ...tickerIndicators });
     },
     unsubscribeTicker() {
       if (!tickerWanted) return;

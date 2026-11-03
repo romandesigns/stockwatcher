@@ -357,6 +357,16 @@ export function applyIndicatorsSnapshot(prev: IndicatorValues | undefined, snap:
 }
 
 /**
+ * Indicators the server computed over candles that are not a live chart's: the Insights ticker
+ * page's `insights.ticker.indicators` (crates/server/src/indicators.rs `day_snapshot`: the
+ * `chart.indicators` shape over the page's 1-minute bars, plus its `day`), as the values
+ * CandleChart's `serverIndicators` draws. Null (none yet) stays null.
+ */
+export function tickerIndicatorValues(frame: Pick<ChartIndicatorsSnapshot, "symbol" | "rth" | "t" | "studies"> | null): IndicatorValues | null {
+  return frame ? applyIndicatorsSnapshot(undefined, { type: "chart.indicators", symbol: frame.symbol, timeframe: "1m", rth: frame.rth, t: frame.t, studies: frame.studies }) : null;
+}
+
+/**
  * Applies one `chart.indicator`: the bars in `removed` go first, then each point upserts its
  * keys' values (a new bar gets NaN for the keys the point does not name: they have no value
  * there yet). A key no snapshot introduced is ignored, as the server's increments carry every

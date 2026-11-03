@@ -1,5 +1,5 @@
 import { createChartRouter, parseChartMessage, parsePaperMessage, createServerIndicators, type ChartIndicatorsSet, type ChartSubscribe, type ChartUnsubscribe, type PaperMessage, type PaperState, type ReplayControl } from "@stockwatcher/chart-core";
-import { createDetectionChannel, createFavoritesChannel, createMoversChannel, createPressureChannel, createQuoteSearchChannel, createRocketChannel, createRossChannel, createNoticesChannel, createSymbolsChannel, createTickerChannel, createWsClient, hasFeature, CLOCK_FEATURE, INDICATORS_FEATURE, INSIGHTS_TICKER_FEATURE, INDICATORS_LIMIT_FEATURE, LEVELS_FEATURE, NOTICES_FEATURE, QUOTE_SEARCH_FEATURE, serverWsUrl, SYMBOLS_FEATURE, ZONES_FEATURE, type AlertsServerMessage, type ConnectionStatus, type MarketSource, type SettingsSync, type WebSocketLike } from "@stockwatcher/shared";
+import { createDetectionChannel, createFavoritesChannel, createMoversChannel, createPressureChannel, createQuoteSearchChannel, createRocketChannel, createRossChannel, createNoticesChannel, createSymbolsChannel, createTickerChannel, createWsClient, hasFeature, CLOCK_FEATURE, INDICATORS_FEATURE, INSIGHTS_TICKER_FEATURE, INSIGHTS_TICKER_INDICATORS_FEATURE, INDICATORS_LIMIT_FEATURE, LEVELS_FEATURE, NOTICES_FEATURE, QUOTE_SEARCH_FEATURE, serverWsUrl, SYMBOLS_FEATURE, ZONES_FEATURE, type AlertsServerMessage, type ConnectionStatus, type MarketSource, type SettingsSync, type WebSocketLike } from "@stockwatcher/shared";
 import type { RunnersNotifier } from "../notify/runnersNotify.ts";
 import type { ChartFeed, PaperCommand, ReplayCommand } from "./types.ts";
 
@@ -55,7 +55,7 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
   // Today's notification log, pushed by servers with notices.v1 (useNoticeLog polls otherwise).
   const notices = createNoticesChannel({ subscribe: () => client.subscribeNotices(), unsubscribe: () => client.unsubscribeNotices() });
   // The Insights ticker page's package (insights.ticker.v1), one symbol-day while the page is open.
-  const ticker = createTickerChannel({ subscribe: (w) => client.subscribeTicker(w), unsubscribe: () => client.unsubscribeTicker() });
+  const ticker = createTickerChannel({ subscribe: (w) => client.subscribeTicker(w), unsubscribe: () => client.unsubscribeTicker(), setIndicators: (d) => client.setTickerIndicators(d) });
   // Rocket watch (experimental), opted in while its tab is open.
   const rocket = createRocketChannel({ subscribe: () => client.subscribeRocket(), unsubscribe: () => client.unsubscribeRocket() });
   const detection = createDetectionChannel({ source: opts.source, subscribe: () => client.subscribeDetection(), unsubscribe: () => client.unsubscribeDetection(), resync: () => client.subscribeDetection() });
@@ -84,7 +84,7 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
       serverIndicators.setLimitAvailable(hasFeature(w, INDICATORS_LIMIT_FEATURE));
       symbols.setAvailable(hasFeature(w, SYMBOLS_FEATURE));
       notices.setAvailable(hasFeature(w, NOTICES_FEATURE));
-      ticker.setAvailable(hasFeature(w, INSIGHTS_TICKER_FEATURE));
+      ticker.setAvailable(hasFeature(w, INSIGHTS_TICKER_FEATURE), hasFeature(w, INSIGHTS_TICKER_INDICATORS_FEATURE));
       quoteSearch.setAvailable(hasFeature(w, QUOTE_SEARCH_FEATURE));
       // The server decides time (clock.v1): the Runners panel's ages follow its clock frames and
       // its toasts come as `runners.event`.
@@ -118,6 +118,7 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
     onSymbols: (m) => symbols.apply(m),
     onNotices: (m) => notices.apply(m),
     onTicker: (m) => ticker.apply(m),
+    onTickerIndicators: (m) => ticker.applyIndicators(m),
     onRocket: (m) => rocket.apply(m),
     onDetection: (m) => detection.apply(m),
     onDetectionError: (reason) => detection.reject(reason),
