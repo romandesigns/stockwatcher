@@ -10,6 +10,9 @@
 //!   changes (a notice for the symbol, or prices moving its outcomes; rebuilt at most every
 //!   [`REFRESH`], and [`DEBOUNCE`] after a notice). The update is the whole package: it replaces.
 //! - `insights.ticker.unsubscribe` stops it. A past day gets its snapshot only.
+//! - Chart indicators (`insights.ticker.indicators.v1`, [`TickerStudies`]): per connection, over
+//!   the package's bars, in a frame of their own after each package (crate::ws). Not part of the
+//!   package, so its shape (and [`SCHEMA`]) is unchanged by them.
 //!
 //! # The package
 //!
