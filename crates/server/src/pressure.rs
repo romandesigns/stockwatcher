@@ -335,6 +335,28 @@ pub struct Risk {
     pub half_width: f64,
 }
 
+/// The welcome capability for [`Risk::eta_secs`] on the cards (`toBandSecs`) and in the
+/// `halt.watch` notice (owner, 2026-11-03: "The halts gauges don't allow me time to react and jump
+/// on the trade before it continues going upwards until halting"). Display only: it changes
+/// nothing about when a symbol enters or leaves the board.
+pub const ETA_FEATURE: &str = "pressure.eta.v1";
+
+/// The projection is shown up to [`T_FAR`] (past it urgency is already zero: the 5-minute
+/// reference moves on and the pace says nothing about when the band is reached).
+const ETA_MAX: f64 = T_FAR;
+
+/// "at the band", "<30 s", "~45 s", "~2 min": [`Risk::eta_secs`] for a person, the same words as
+/// `bandEtaText` in packages/shared/src/pressure.ts (both tested on the same cases). Rounded
+/// coarsely on purpose: the projection is a straight line through the last 30 s, not a clock.
+pub fn eta_text(secs: u32) -> String {
+    match secs {
+        0 => "at the band".into(),
+        1..30 => "<30 s".into(),
+        30..90 => format!("~{} s", (secs + 2) / 5 * 5),
+        _ => format!("~{} min", (secs + 30) / 60),
+    }
+}
+
 impl Risk {
     /// The entry conditions (module docs, "Entry and exit"), all at once.
     pub fn enters(&self) -> bool {
@@ -343,6 +365,20 @@ impl Risk {
             && self.secs_to_band.is_some_and(|s| s <= T_ENTER)
             && self.to_band <= (1.0 - ENTER_CLOSE) * self.half_width
             && self.risk >= ENTER_RISK
+    }
+
+    /// The projected time to the band at the current pace, whole seconds (0 at the band, at
+    /// least 1 off it), for display; `None` when the price is not moving toward the band or would
+    /// take longer than [`T_FAR`] at this pace. The caller drops it while halted (frozen).
+    pub fn eta_secs(&self) -> Option<u32> {
+        let s = self
+            .secs_to_band
+            .filter(|s| s.is_finite() && *s <= ETA_MAX)?;
+        Some(if self.to_band == 0.0 {
+            0
+        } else {
+            (s.ceil() as u32).max(1)
+        })
     }
 
     /// Within [`PIN`] of the half-width from the band: the limit state before a pause.
@@ -1237,6 +1273,44 @@ mod tests {
     };
 
     #[test]
+    fn the_countdown_words() {
+        // The same cases as packages/shared/src/pressure.test.ts `bandEtaText`.
+        let cases = [
+            (0, "at the band"),
+            (1, "<30 s"),
+            (29, "<30 s"),
+            (30, "~30 s"),
+            (44, "~45 s"),
+            (47, "~45 s"),
+            (48, "~50 s"),
+            (89, "~90 s"),
+            (90, "~2 min"),
+            (149, "~2 min"),
+            (150, "~3 min"),
+            (600, "~10 min"),
+        ];
+        for (secs, text) in cases {
+            assert_eq!(eta_text(secs), text, "{secs} s");
+        }
+        // Beyond T_FAR at this pace, or a degenerate projection: none.
+        let mut r = halt_risk(
+            sc(80, true),
+            Some(sc(30, true)),
+            px(530),
+            Some(px(520)),
+            &BAND,
+        );
+        r.secs_to_band = Some(T_FAR + 1.0);
+        assert_eq!(r.eta_secs(), None);
+        r.secs_to_band = Some(0.2);
+        assert_eq!(
+            r.eta_secs(),
+            Some(1),
+            "off the band is never \"at the band\""
+        );
+    }
+
+    #[test]
     fn the_risk_formula() {
         // 30 → 80 in the horizon, $5.20 → $5.30 (1.9 %), 3.8 % (0.2 / 5.3) from the $5.50 band.
         let r = halt_risk(
@@ -1258,6 +1332,9 @@ mod tests {
         let expect = (100.0 * (W_RISE + W_URGENCY * urgency + W_CLOSE * close)).round() as u8;
         assert_eq!(r.risk, expect);
         assert_eq!(r.risk, 78, "the worked example in the module docs");
+        // The countdown the card shows: 59 s at this pace (the worked example).
+        assert_eq!(r.eta_secs(), Some(59));
+        assert_eq!(eta_text(r.eta_secs().unwrap()), "~60 s");
         assert!(r.enters(), "{r:?}");
         // A steady 90 is not a build-up: no rise, and without movement no urgency.
         let r = halt_risk(
@@ -1270,6 +1347,11 @@ mod tests {
         assert_eq!(r.rise, 0);
         assert_eq!(r.secs_to_band, None);
         assert!(!r.enters() && !r.building(), "{r:?}");
+        assert_eq!(
+            r.eta_secs(),
+            None,
+            "not moving toward the band: no countdown"
+        );
         // The earlier minute on the other side counts as no pressure on this one.
         let r = halt_risk(
             sc(60, true),

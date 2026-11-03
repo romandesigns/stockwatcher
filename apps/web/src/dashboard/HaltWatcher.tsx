@@ -1,12 +1,14 @@
 import { formatEtTime, formatPrice } from "@stockwatcher/chart-core";
 import { Icon } from "@stockwatcher/chart-web";
 import { cn, ScrollArea, Tip } from "@stockwatcher/chart-web/ui";
-import { buildupCue, buildupSentence, haltLine, haltSentence, pressureFreshnessLine, riskPhrase, type PressureCard, type PressureStatus } from "@stockwatcher/shared";
+import { bandLine, bandLineShort, buildupCue, buildupWithEta, haltLine, haltSentence, pressureFreshnessLine, riskPhrase, type PressureCard, type PressureStatus } from "@stockwatcher/shared";
 import { memo } from "react";
 import { useTickerPress } from "../lib/useTickerPress.ts";
 import { PressureGauge } from "./PressureGauge.tsx";
 
 const hhmm = (ms: number) => formatEtTime(ms);
+/** "$3.63": the band is an order price, so it reads as one. */
+const dollars = (p: number) => `$${formatPrice(p)}`;
 
 function changeText(pct: number): string {
   return `${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%`;
@@ -22,7 +24,9 @@ function changeText(pct: number): string {
  *
  * A panel in the dashboard's bottom row since 2026-10-30 (it was a strip above the charts): one
  * compact row per build-up, the gauge filled with the halt risk on the left, then the ticker,
- * price and change, and under them the cue "+45 in 30s · 1.2% to LULD up". Laid out by the
+ * price and change, under them the cue "+45 in 30s · 1.2% to LULD up", and under that the band and
+ * the time to it at this pace, "Upper band $3.63 · ~2 min at this pace" (owner, 2026-11-03: time
+ * to place an order ahead of the halt; "↑ $3.63 · ~2 min" on a narrow row). Laid out by the
  * panel's own width (container queries): one column, two once the panel is wide enough for two
  * rows side by side. It scrolls inside the panel. Pressing a row loads its ticker into the
  * selected chart (tap, then hold copies it). A halted row keeps its frozen risk on a grey arc and
@@ -57,7 +61,9 @@ const GaugeRow = memo(function GaugeRow({ card, onPick, stale, freshness }: { ca
   const halted = card.halt !== undefined;
   const right = card.halt ? haltLine(card.halt, hhmm) : changeText(card.changePct);
   const phrase = riskPhrase(card);
-  const buildup = buildupSentence(card, formatPrice);
+  // A stale card's countdown would count from an old pace: the band only.
+  const band = stale ? { ...card, toBandSecs: undefined } : card;
+  const buildup = buildupWithEta(band, formatPrice);
   // The flow behind it: the side's share of the minute's volume by the tick rule, and its pace.
   const share = Math.round((card.side === "bear" ? 1 - card.buyShare : card.buyShare) * 100);
   const flow = `pressure ${Math.round(card.pressure)}: ${share}% ${card.side === "bear" ? "sold on downticks" : "bought on upticks"} in the last minute, ${card.pace.toFixed(1)}× its pace this session`;
@@ -81,6 +87,12 @@ const GaugeRow = memo(function GaugeRow({ card, onPick, stale, freshness }: { ca
             <span className={cn("ml-auto text-xs whitespace-nowrap tabular-nums", stale ? "text-text-faint" : halted ? "text-warning" : card.changePct < 0 ? "text-critical" : "text-good")}>{right}</span>
           </div>
           <span className="truncate text-[11px] text-muted-foreground tabular-nums">{stale ? "Last known" : buildupCue(card)}</span>
+          {/* What to act on: the band price and how soon the price gets there (no time when not
+              moving toward it, halted or stale). */}
+          <span className={cn("truncate text-xs tabular-nums transition-colors duration-200 motion-reduce:transition-none", stale ? "text-text-faint" : "text-foreground")}>
+            <span className="@[15rem]/hwrow:hidden">{bandLineShort(band, dollars)}</span>
+            <span className="hidden @[15rem]/hwrow:inline">{bandLine(band, dollars)}</span>
+          </span>
         </div>
       </button>
     </Tip>

@@ -20,6 +20,11 @@ export interface PressureCard {
   /** The modelled LULD band on that side, dollars, and the distance to it in % of the price. */
   band: number;
   toBand: number;
+  /**
+   * Seconds to `band` at the current pace (the server's projection, 0 at the band); absent when
+   * not moving toward it, too far out, halted, or from an older server.
+   */
+  toBandSecs?: number;
   /** The flow pressure 0–100 and its inputs (tooltip). */
   pressure: number;
   buyShare: number;
@@ -61,6 +66,7 @@ function fromWire(c: PressureCardWire): PressureCard {
     riseSecs: c.riseSecs,
     band: c.band,
     toBand: Math.max(0, c.toBand),
+    ...(!c.halt && typeof c.toBandSecs === "number" && Number.isFinite(c.toBandSecs) && c.toBandSecs >= 0 ? { toBandSecs: Math.round(c.toBandSecs) } : {}),
     pressure: clamp100(c.pressure),
     buyShare: c.buyShare,
     pace: c.pace,
@@ -154,6 +160,74 @@ export function buildupSentence(c: Cue & Pick<PressureCard, "band">, formatPrice
   const band = `the ${c.side === "bear" ? "lower" : "upper"} LULD band at ${formatPrice(c.band)}`;
   const where = c.toBand < 0.005 ? `at ${band}` : `${c.toBand.toFixed(1)}% from ${band}`;
   return `${who} pressure ${c.rise >= 0 ? "up" : "down"} ${Math.abs(Math.round(c.rise))} points in ${c.riseSecs} seconds, ${where}`;
+}
+
+// --- The band and the countdown ------------------------------------------------------------
+// Owner, 2026-11-03: "The halts gauges don't allow me time to react and jump on the trade before it
+// continues going upwards until halting." So the card says where the band is and how long the price
+// takes to get there at its pace, to place an order ahead of the pause. Display only: when a card
+// appears is the server's (crates/server/src/pressure.rs "Entry and exit").
+
+/**
+ * "at the band", "<30 s", "~45 s", "~2 min": the server's projection in words, the same as
+ * crates/server/src/pressure.rs `eta_text` (both tested on the same cases). Coarse on purpose: it is
+ * a straight line through the last 30 s, not a clock.
+ */
+export function bandEtaText(secs: number): string {
+  const s = Math.max(0, Math.round(secs));
+  if (s === 0) return "at the band";
+  if (s < 30) return "<30 s";
+  if (s < 90) return `~${Math.floor((s + 2) / 5) * 5} s`;
+  return `~${Math.floor((s + 30) / 60)} min`;
+}
+
+type BandCard = Pick<PressureCard, "side" | "band" | "toBandSecs" | "halt">;
+
+/** The countdown when there is one to show (not halted, moving toward the band). */
+function eta(c: BandCard): number | null {
+  return c.halt === undefined && c.toBandSecs !== undefined ? c.toBandSecs : null;
+}
+
+function countdown(secs: number): string {
+  return secs === 0 ? "at the band" : `${bandEtaText(secs)} at this pace`;
+}
+
+/** "Upper band $3.63 · ~2 min at this pace" ("… · at the band"; just the band without a countdown). */
+export function bandLine(c: BandCard, formatPrice: (p: number) => string): string {
+  const band = `${c.side === "bear" ? "Lower" : "Upper"} band ${formatPrice(c.band)}`;
+  const s = eta(c);
+  return s === null ? band : `${band} · ${countdown(s)}`;
+}
+
+/** The same for a narrow row: "↑ $3.63 · ~2 min" ("↑ $3.63 · at band"). */
+export function bandLineShort(c: BandCard, formatPrice: (p: number) => string): string {
+  const band = `${c.side === "bear" ? "↓" : "↑"} ${formatPrice(c.band)}`;
+  const s = eta(c);
+  return s === null ? band : `${band} · ${s === 0 ? "at band" : bandEtaText(s)}`;
+}
+
+/** The countdown alone, for the phone's mini cell ("~2 min", "at band"); empty without one. */
+export function bandEtaShort(c: BandCard): string {
+  const s = eta(c);
+  return s === null ? "" : s === 0 ? "at band" : bandEtaText(s);
+}
+
+/**
+ * The countdown for a screen reader or a tooltip, after `buildupSentence` (which names the band):
+ * "about 2 min to the band at this pace", "under 30 s …"; empty without a countdown (at the band,
+ * `buildupSentence` already says so).
+ */
+export function bandEtaSentence(c: BandCard): string {
+  const s = eta(c);
+  if (s === null || s === 0) return "";
+  const t = bandEtaText(s);
+  return `${t.startsWith("<") ? `under ${t.slice(1)}` : `about ${t.slice(1)}`} to the band at this pace`;
+}
+
+/** `buildupSentence` with the countdown when there is one. */
+export function buildupWithEta(c: Cue & BandCard, formatPrice: (p: number) => string): string {
+  const t = bandEtaSentence(c);
+  return t ? `${buildupSentence(c, formatPrice)}, ${t}` : buildupSentence(c, formatPrice);
 }
 
 // --- Halts --------------------------------------------------------------------------------

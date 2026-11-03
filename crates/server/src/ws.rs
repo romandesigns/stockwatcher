@@ -200,12 +200,13 @@
 //!   often none, in display order) whenever it changed, at most once per second of wall time.
 //!   Either frame replaces the client's board. `t` is the market clock (epoch ms) at the ranking.
 //!   A card exists only while a symbol's flow pressure is building up toward its LULD band.
-//! - Card: `{s, p, pc?, o, risk, side, rise, riseSecs, band, toBand, pressure, buyShare, pace,
-//!   halt?}`: symbol; last price, previous close and fallback reference as in a quote row (change
+//! - Card: `{s, p, pc?, o, risk, side, rise, riseSecs, band, toBand, toBandSecs?, pressure,
+//!   buyShare, pace, halt?}`: symbol; last price, previous close and fallback reference as in a quote row (change
 //!   % by the same rule); halt risk 0–100 (the gauge); `bull` | `bear`, the side the build-up
 //!   pushes (toward the upper or the lower band); the rise of that side's pressure over the last
 //!   `riseSecs` seconds; the modelled LULD band on that side and the distance to it (% of the
-//!   price); the flow pressure 0–100 with its buy share (0–1) and pace (× the symbol's average
+//!   price) and, with `pressure.eta.v1`, the projected seconds to it at this pace (absent when not
+//!   moving toward it, over 10 minutes away, or halted); the flow pressure 0–100 with its buy share (0–1) and pace (× the symbol's average
 //!   volume per minute this session); `halt {start, reason}` while halted (everything frozen at
 //!   the halt).
 //! - client `pressure.unsubscribe` stops the updates. Resubscribing after a reconnect is the
@@ -1368,6 +1369,7 @@ async fn session(mut socket: WebSocket, state: AppState) {
             crate::quote_search::FEATURE,
             crate::time_marks::FEATURE,
             crate::time_marks::NS_FEATURE,
+            crate::pressure::ETA_FEATURE,
         ],
     };
     // Subscribed before the paper snapshot below, so no change can fall between the two (at

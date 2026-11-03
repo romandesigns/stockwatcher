@@ -587,18 +587,36 @@ fn panel_message(n: &Notice) -> (String, String, Value) {
                 format!("{body}{both}"),
             )
         }
-        // "Buying pressure at the $2.80 band · halt risk 72/100".
-        (NoticeKind::Halt, Some(NoticeDetail::Halt { bull, risk, band })) => {
-            let side = if *bull { "Buying" } else { "Selling" };
-            let at = if band.is_finite() && *band > 0.0 {
-                format!(" at the {} LULD band", dollars(on_tick(*band)))
+        // "Upper band $2.80 · ~45 s at this pace · buying pressure, halt risk 72/100": the band
+        // price and the countdown first, so the owner can place an order ahead of the halt
+        // (owner, 2026-11-03), and they survive the body's length cap, which drops the last
+        // clauses first. The countdown is left out when the price is not moving toward the band.
+        (
+            NoticeKind::Halt,
+            Some(NoticeDetail::Halt {
+                bull,
+                risk,
+                band,
+                secs,
+            }),
+        ) => {
+            let (edge, who) = if *bull {
+                ("Upper", "buying")
             } else {
-                " at its LULD band".into()
+                ("Lower", "selling")
             };
-            (
-                format!("{s} · Halt watcher{p}"),
-                format!("{side} pressure building{at} · halt risk {risk}/100"),
-            )
+            let mut parts = vec![if band.is_finite() && *band > 0.0 {
+                format!("{edge} band {}", dollars(on_tick(*band)))
+            } else {
+                format!("{edge} LULD band")
+            }];
+            match secs {
+                Some(0) => parts.push("at the band".into()),
+                Some(t) => parts.push(format!("{} at this pace", crate::pressure::eta_text(*t))),
+                None => {}
+            }
+            parts.push(format!("{who} pressure, halt risk {risk}/100"));
+            (format!("{s} · Halt watcher{p}"), parts.join(" · "))
         }
         // A notice without its facts (never expected): its name and price only.
         _ => (
@@ -1199,6 +1217,7 @@ Alert $2.41 · +5% = $2.53"
                 bull: true,
                 risk: 72,
                 band: 2.8,
+                secs: Some(44),
             }),
             NoticeKind::Pullback | NoticeKind::PullbackCrossing => {
                 Some(NoticeDetail::Pullback(crate::rocket::PullbackNotice {
@@ -1296,7 +1315,7 @@ Alert $2.41 · +5% = $2.53"
             t(NoticeKind::Halt),
             (
                 "YMAT · Halt watcher · $2.71".into(),
-                "Buying pressure building at the $2.80 LULD band · halt risk 72/100".into()
+                "Upper band $2.80 · ~45 s at this pace · buying pressure, halt risk 72/100".into()
             )
         );
         assert_eq!(

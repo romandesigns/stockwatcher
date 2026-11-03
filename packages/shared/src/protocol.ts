@@ -85,6 +85,13 @@ export const LEVELS_FEATURE = "levels.v1";
  */
 export const ZONES_FEATURE = "zones.v1";
 
+/**
+ * The Halt watcher's cards carry `toBandSecs`, the projected time to the LULD band at the current
+ * pace (crates/server/src/pressure.rs `ETA_FEATURE`), and the `halt.watch` notice says it. Nothing
+ * to opt into: a client draws the countdown when a card has it.
+ */
+export const PRESSURE_ETA_FEATURE = "pressure.eta.v1";
+
 /** Whether a welcome advertises `feature` (false for a server older than `features`). */
 export function hasFeature(welcome: Pick<WelcomeMessage, "features">, feature: string): boolean {
   return Array.isArray(welcome.features) && welcome.features.includes(feature);
@@ -309,6 +316,12 @@ export interface PressureCardWire {
   band: number;
   /** Distance from the last price to `band`, percent of the price (two decimals; 0 at the band). */
   toBand: number;
+  /**
+   * The projected seconds to `band` at the pace of the last `riseSecs` ({@link PRESSURE_ETA_FEATURE}):
+   * whole seconds, 0 at the band. Absent when the price is not moving toward the band, would take
+   * over 10 minutes, or the symbol is halted, and from servers before the feature. Display only.
+   */
+  toBandSecs?: number;
   /**
    * The one-sided flow pressure itself, 0–100: over the last minute of OHLC-counted prints, sides
    * by the tick rule, `round(100 · |2·buyShare − 1| · (0.4 + 0.6 · min(1, ln(1 + pace) / ln 101)))`.

@@ -264,9 +264,15 @@ pub enum NoticeDetail {
     Shelf { lo: f64, hi: f64 },
     /// Ross / Signals crossing and at-trigger notices.
     Cue(CueNotice),
-    /// [`NoticeKind::Halt`]: the gauge's side, its halt-risk score (0–100) and the LULD band it
-    /// runs at (dollars).
-    Halt { bull: bool, risk: u8, band: f64 },
+    /// [`NoticeKind::Halt`]: the gauge's side, its halt-risk score (0–100), the LULD band it
+    /// runs at (dollars) and the projected seconds to it at this pace
+    /// (`crate::pressure::Risk::eta_secs`; `None` when not moving toward it).
+    Halt {
+        bull: bool,
+        risk: u8,
+        band: f64,
+        secs: Option<u32>,
+    },
     /// [`NoticeKind::Pullback`] / [`NoticeKind::PullbackCrossing`].
     Pullback(PullbackNotice),
     /// A stock's first Runners entry right after it rose through the entry floor: what the tape

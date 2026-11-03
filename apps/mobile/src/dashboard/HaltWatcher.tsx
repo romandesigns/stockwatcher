@@ -1,6 +1,6 @@
 import { formatEtTime, formatPrice } from "@stockwatcher/chart-core";
 import { UI } from "@stockwatcher/chart-native";
-import { buildupCue, buildupCueShort, buildupSentence, haltLine, haltSentence, pressureFreshnessLine, riskPhrase, type PressureCard, type PressureChannel } from "@stockwatcher/shared";
+import { bandEtaShort, bandLineShort, buildupCue, buildupCueShort, buildupWithEta, haltLine, haltSentence, pressureFreshnessLine, riskPhrase, type PressureCard, type PressureChannel } from "@stockwatcher/shared";
 import { memo, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
@@ -11,6 +11,8 @@ import { useTickerPress } from "../ui/useTickerPress";
 import { PressureGauge } from "./PressureGauge";
 
 const hhmm = (ms: number) => formatEtTime(ms);
+/** "$3.63": the band is an order price, so it reads as one. */
+const dollars = (p: number) => `$${formatPrice(p)}`;
 const GAP = 6;
 
 function changeText(pct: number): string {
@@ -23,8 +25,11 @@ function changeText(pct: number): string {
  * price runs at its LULD band (crates/server/src/pressure.rs), at most 6 and usually none, so the
  * row is usually hidden: no cards, no line. The cards are ONE row of mini gauges across the screen (owner,
  * 2026-10-19: "fit them all on a single row"), above the charts. Each cell: the dial filled with
- * the halt risk, the ticker and the short cue ("+45 · 1.2%↑"); on a wide cell (the unfolded
- * Fold) the price, the change and the full cue ("+45 in 30s · 1.2% to LULD up") too. Tap a cell
+ * the halt risk, the ticker, the band price ("↑ $3.63") and the time to it at this pace ("~2 min";
+ * the short cue "+45 · 1.2%↑" when it is not moving toward the band); on a wide cell (the unfolded
+ * Fold) the price, the change, the full cue ("+45 in 30s · 1.2% to LULD up") and "↑ $3.63 · ~2 min".
+ * The band and the countdown are there to place an order ahead of the halt (owner, 2026-11-03).
+ * Tap a cell
  * to open its ticker's chart (the chart modal); tap, then hold copies it.
  */
 export function HaltWatcher({ channel, onPick, reducedMotion, gap = 0 }: { channel: PressureChannel; onPick: (symbol: string) => void; reducedMotion: boolean; gap?: number }) {
@@ -56,10 +61,13 @@ const MiniCard = memo(function MiniCard({ card, width, onPick, reducedMotion, st
   const tone = stale ? UI.textFaint : halted ? UI.warning : card.side === "bear" ? UI.critical : UI.good;
   // Wide cells (the unfolded Fold) have room for the price, the change and the full cue.
   const roomy = width >= 110;
+  // A stale card's countdown would count from an old pace: the band only.
+  const band = stale ? { ...card, toBandSecs: undefined } : card;
+  const eta = bandEtaShort(band);
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`${stale ? `${freshness}. Last known: ` : ""}${card.symbol} ${formatPrice(card.price)}, ${status}, ${phrase}, ${buildupSentence(card, formatPrice)}`}
+      accessibilityLabel={`${stale ? `${freshness}. Last known: ` : ""}${card.symbol} ${formatPrice(card.price)}, ${status}, ${phrase}, ${buildupWithEta(band, formatPrice)}`}
       accessibilityHint="Opens its chart. Tap, then press and hold to copy"
       {...press}
       style={({ pressed }) => [styles.cell, { width }, pressed && { backgroundColor: UI.row }]}
@@ -75,9 +83,20 @@ const MiniCard = memo(function MiniCard({ card, width, onPick, reducedMotion, st
           {card.halt ? haltLine(card.halt, hhmm) : changeText(card.changePct)}
         </Text>
       )}
-      <Text style={[styles.cue, { color: stale ? UI.textFaint : roomy ? UI.textDim : tone }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>
-        {stale ? "Last known" : roomy ? buildupCue(card) : card.halt ? "Halted" : buildupCueShort(card)}
+      {roomy && (
+        <Text style={[styles.cue, { color: stale ? UI.textFaint : UI.textDim }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>
+          {stale ? "Last known" : buildupCue(card)}
+        </Text>
+      )}
+      {/* What to act on: the band price and how soon the price gets there. */}
+      <Text style={[styles.band, stale && { color: UI.textFaint }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>
+        {roomy ? bandLineShort(band, dollars) : bandLineShort({ side: card.side, band: card.band }, dollars)}
       </Text>
+      {!roomy && (
+        <Text style={[styles.cue, { color: stale ? UI.textFaint : tone }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>
+          {stale ? "Last known" : card.halt ? "Halted" : eta || buildupCueShort(card)}
+        </Text>
+      )}
     </Pressable>
   );
 });
@@ -90,4 +109,5 @@ const styles = StyleSheet.create({
   price: { color: UI.text, fontSize: 13, fontVariant: ["tabular-nums"], fontFamily: fonts.regular },
   change: { fontSize: 10, fontVariant: ["tabular-nums"], maxWidth: "100%" },
   cue: { fontSize: 10, fontVariant: ["tabular-nums"], maxWidth: "100%" },
+  band: { color: UI.text, fontSize: 10.5, fontFamily: fonts.semibold, fontVariant: ["tabular-nums"], maxWidth: "100%" },
 });

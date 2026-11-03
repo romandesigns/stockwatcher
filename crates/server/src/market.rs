@@ -4904,6 +4904,10 @@ impl Drop for PressureGuard {
 ///   and `riseSecs` the horizon (`crate::pressure::HORIZON`, 30);
 /// - `band` the modelled LULD band on that side (dollars) and `toBand` the distance to it in
 ///   percent of the price (two decimals; 0 at or past the band);
+/// - `toBandSecs` the projected seconds to that band at the pace of the last horizon
+///   (`crate::pressure::Risk::eta_secs`, `pressure.eta.v1`): whole seconds, 0 at the band;
+///   absent when the price is not moving toward it, would take over 10 minutes, or is halted
+///   (a frozen projection would count down nothing);
 /// - `pressure` 0-100, the flow pressure itself, with `buyShare` (0-1, two decimals) and `pace`
 ///   (multiple of the symbol's average volume per minute so far this session, one decimal), its
 ///   inputs, for a tooltip;
@@ -4926,6 +4930,8 @@ pub struct PressureCardWire {
     band: f64,
     #[serde(rename = "toBand")]
     to_band: f64,
+    #[serde(rename = "toBandSecs", skip_serializing_if = "Option::is_none")]
+    to_band_secs: Option<u32>,
     pressure: u8,
     #[serde(rename = "buyShare")]
     buy_share: f64,
@@ -4952,6 +4958,7 @@ impl PressureCardWire {
                 bull: self.side == "bull",
                 risk: self.risk,
                 band: self.band,
+                secs: self.to_band_secs,
             }),
         }
     }
@@ -4975,6 +4982,7 @@ impl PressureCardWire {
             rise_secs: (crate::pressure::HORIZON / 1_000_000_000) as u8,
             band: c.risk.band.to_f64(),
             to_band: (c.risk.to_band * 10_000.0).round() / 100.0,
+            to_band_secs: c.halt.is_none().then(|| c.risk.eta_secs()).flatten(),
             pressure: c.score.pressure,
             buy_share: (c.score.buy_share * 100.0).round() / 100.0,
             pace: (c.score.pace * 10.0).round() / 10.0,
@@ -5967,10 +5975,30 @@ mod tests {
             json!({
                 "s": "AAA", "p": 5.43, "o": 5.43,
                 "risk": 81, "side": "bull", "rise": 45, "riseSecs": 30,
-                "band": 5.5, "toBand": 1.23,
+                "band": 5.5, "toBand": 1.23, "toBandSecs": 19,
                 "pressure": 72, "buyShare": 0.88, "pace": 4.3
             })
         );
+        // Halted: the frozen projection is not a countdown, so it is left off.
+        let halted = Card {
+            halt: Some(crate::pressure::HaltInfo {
+                start: 1,
+                reason: "LUDP".into(),
+            }),
+            ..card.clone()
+        };
+        let w = PressureCardWire::new(&halted, &QuoteBoard::new(), &last);
+        assert_eq!(serde_json::to_value(&w).unwrap().get("toBandSecs"), None);
+        // Not moving toward the band: none either.
+        let away = Card {
+            risk: Risk {
+                secs_to_band: None,
+                ..card.risk
+            },
+            ..card
+        };
+        let w = PressureCardWire::new(&away, &QuoteBoard::new(), &last);
+        assert_eq!(serde_json::to_value(&w).unwrap().get("toBandSecs"), None);
     }
 
     #[test]

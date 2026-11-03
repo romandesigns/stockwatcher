@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildupCue, buildupCueShort, buildupSentence, createPressureChannel, gaugeCaption, gaugeGeometry, gaugeTone, haltLine, haltSentence, LULD_PAUSE_MS, NO_BUILDUPS, pressureBoardFrom, pressureFreshnessLine, riskPhrase } from "./pressure.ts";
+import { bandEtaShort, bandEtaText, bandLine, bandLineShort, bandEtaSentence, buildupCue, buildupWithEta, buildupCueShort, buildupSentence, createPressureChannel, gaugeCaption, gaugeGeometry, gaugeTone, haltLine, haltSentence, LULD_PAUSE_MS, NO_BUILDUPS, pressureBoardFrom, pressureFreshnessLine, riskPhrase } from "./pressure.ts";
 import { parseServerMessage, type PressureMessage } from "./protocol.ts";
 import { createWsClient, type WebSocketLike } from "./ws.ts";
 
@@ -8,7 +8,7 @@ const update: PressureMessage = {
   type: "pressure.update",
   t: T,
   board: [
-    { s: "SAFX", p: 0.2881, pc: 0.1403, o: 0.15, risk: 83, side: "bull", rise: 52, riseSecs: 30, band: 0.31, toBand: 7.6, pressure: 91, buyShare: 0.84, pace: 9.2 },
+    { s: "SAFX", p: 0.2881, pc: 0.1403, o: 0.15, risk: 83, side: "bull", rise: 52, riseSecs: 30, band: 0.31, toBand: 7.6, toBandSecs: 112, pressure: 91, buyShare: 0.84, pace: 9.2 },
     { s: "ZTG", p: 0.7639, o: 0.623, risk: 100, side: "bull", rise: 40, riseSecs: 30, band: 0.7639, toBand: 0, pressure: 88, buyShare: 0.81, pace: 7.7, halt: { start: 1_792_075_200_000, reason: "LUDP" } },
     { s: "OPENW", p: 0.1196, pc: 0.1364, o: 0.13, risk: 61, side: "bear", rise: 33, riseSecs: 30, band: 0.1101, toBand: 7.94, pressure: 74, buyShare: 0.21, pace: 4.9 },
   ],
@@ -25,6 +25,52 @@ describe("pressure board", () => {
     expect("halt" in b[0]!).toBe(false);
     // The gauge reads the risk; the pressure and its inputs ride along for the tooltip.
     expect([b[0]!.risk, b[0]!.pressure, b[0]!.rise, b[0]!.riseSecs, b[0]!.band, b[0]!.toBand]).toEqual([83, 91, 52, 30, 0.31, 7.6]);
+  });
+
+  test("the countdown rides on the card, never on a halted one", () => {
+    const b = pressureBoardFrom(update);
+    expect(b[0]!.toBandSecs).toBe(112);
+    expect("toBandSecs" in b[2]!).toBe(false); // an older server, or not moving toward the band
+    const halted = pressureBoardFrom({ ...update, board: [{ ...update.board[1]!, toBandSecs: 0 }] });
+    expect("toBandSecs" in halted[0]!).toBe(false);
+  });
+
+  test("the countdown words match the server's (crates/server/src/pressure.rs the_countdown_words)", () => {
+    const cases: [number, string][] = [
+      [0, "at the band"],
+      [1, "<30 s"],
+      [29, "<30 s"],
+      [30, "~30 s"],
+      [44, "~45 s"],
+      [47, "~45 s"],
+      [48, "~50 s"],
+      [89, "~90 s"],
+      [90, "~2 min"],
+      [149, "~2 min"],
+      [150, "~3 min"],
+      [600, "~10 min"],
+    ];
+    for (const [secs, text] of cases) expect(bandEtaText(secs)).toBe(text);
+  });
+
+  test("the band line: the band price and the time to it at this pace", () => {
+    const fmt = (p: number) => `$${p.toFixed(2)}`;
+    const up = { side: "bull" as const, band: 3.63, toBandSecs: 112 };
+    expect(bandLine(up, fmt)).toBe("Upper band $3.63 · ~2 min at this pace");
+    expect(bandLineShort(up, fmt)).toBe("↑ $3.63 · ~2 min");
+    expect(bandEtaShort(up)).toBe("~2 min");
+    expect(bandEtaSentence(up)).toBe("about 2 min to the band at this pace");
+    expect(bandEtaSentence({ ...up, toBandSecs: 12 })).toBe("under 30 s to the band at this pace");
+    expect(bandEtaSentence({ ...up, toBandSecs: 0 })).toBe("");
+    expect(buildupWithEta({ ...up, rise: 45, riseSecs: 30, toBand: 1.2 }, fmt)).toBe("buying pressure up 45 points in 30 seconds, 1.2% from the upper LULD band at $3.63, about 2 min to the band at this pace");
+    expect(bandLine({ ...up, toBandSecs: 0 }, fmt)).toBe("Upper band $3.63 · at the band");
+    expect(bandLineShort({ ...up, toBandSecs: 0 }, fmt)).toBe("↑ $3.63 · at band");
+    // Not moving toward it: the band only, no time.
+    const down = { side: "bear" as const, band: 0.1101 };
+    expect(bandLine(down, (p) => `$${p}`)).toBe("Lower band $0.1101");
+    expect(bandEtaShort(down)).toBe("");
+    // Halted: no countdown even if one were set.
+    expect(bandLine({ ...up, halt: { start: T, reason: "LUDP" } }, fmt)).toBe("Upper band $3.63");
   });
 
   test("parseServerMessage knows the pressure frames", () => {
