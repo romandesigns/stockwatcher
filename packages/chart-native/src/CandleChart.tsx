@@ -36,6 +36,7 @@ import {
   buildSlots,
   computeChartModel,
   serverIndicatorResults,
+  classicMacd,
   needsIndicatorHistory,
   DEFAULT_CHART_THEME,
   defaultViewport,
@@ -184,6 +185,8 @@ export interface CandleChartProps {
    * update. Needs controlled `indicators`.
    */
   serverIndicators?: IndicatorValuesLike | null;
+  /** The server computes the MACD styles (`indicators.macd.v2`), as on the web chart: offered and drawn; off = every MACD draws as classic. */
+  macdStyles?: boolean;
   /**
    * The chart is zoomed or panned past the first bar of `serverIndicators`, which the server cut
    * to the host's `limit` (chart-core `needsIndicatorHistory`): called once when that becomes
@@ -308,6 +311,7 @@ export function CandleChart({
   indicators: indicatorsProp,
   onIndicatorsChange,
   serverIndicators,
+  macdStyles = false,
   onIndicatorHistory,
   serverLevels,
   serverZones,
@@ -442,7 +446,7 @@ export function CandleChart({
   const visibility = settings.visibility;
   // The server's values only (indicators.v1); a server without the feature gets no lines and a
   // note (`indicatorsNeedUpdate`), as on the web.
-  const indicatorResults = useMemo(() => (!visibility.indicators || serverIndicators === undefined ? [] : serverIndicatorResults(slots, indicatorSpecs, serverIndicators)), [slots, indicatorSpecs, visibility.indicators, serverIndicators]);
+  const indicatorResults = useMemo(() => (!visibility.indicators || serverIndicators === undefined ? [] : serverIndicatorResults(slots, macdStyles ? indicatorSpecs : classicMacd(indicatorSpecs), serverIndicators)), [slots, indicatorSpecs, visibility.indicators, serverIndicators, macdStyles]);
   const indicatorsNeedUpdate = visibility.indicators && serverIndicators === undefined && indicatorSpecs.length > 0;
   const last = useMemo(() => lastCandle(slots)?.c ?? null, [slots]);
   // Pane heights: drag a pane's top edge, double-tap a pane to expand it. A drag is shown live and
@@ -1126,7 +1130,7 @@ export function CandleChart({
         profileBin={profileBin}
         onProfileBinChange={onProfileBinChange}
       />
-      <IndicatorSheet open={sheet.kind === "indicators"} onClose={() => setSheet({ kind: "none" })} indicators={indicatorSpecs} onChange={setIndicators} seriesColors={[theme.series1, theme.series2, theme.series3]} reducedMotion={reducedMotion} />
+      <IndicatorSheet open={sheet.kind === "indicators"} onClose={() => setSheet({ kind: "none" })} indicators={indicatorSpecs} onChange={setIndicators} macdStyles={macdStyles} theme={theme} reducedMotion={reducedMotion} />
       {alerts && quickAlert && (
         <QuickAlertSheet
           key={quickAlert.key}

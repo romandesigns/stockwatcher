@@ -72,6 +72,14 @@ export const INDICATORS_FEATURE = "indicators.v1";
 export const INDICATORS_LIMIT_FEATURE = "indicators.limit.v1";
 
 /**
+ * The MACD styles (crates/server/src/indicators.rs `MACD_STYLES_FEATURE`, owner-approved
+ * 2026-11-07): the server computes a MACD spec's `style` (PPO, MACD-V, zero-lag, signal area)
+ * under its own key. A client offers the styles only when it sees this; otherwise it draws every
+ * MACD as classic (chart-core `classicMacd`), which an older server computes whatever the spec says.
+ */
+export const MACD_STYLES_FEATURE = "indicators.macd.v2";
+
+/**
  * The server computes the chart's key levels and opening ranges (crates/server/src/chart_context.rs):
  * a client that sees it sends `levels: true` on `chart.subscribe` and draws the pushed
  * `chart.levels` (chart-core types.ts `ChartLevels`) instead of reading them off its candles.

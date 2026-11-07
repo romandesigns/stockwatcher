@@ -65,6 +65,13 @@ pub const FEATURE: &str = "indicators.v1";
 /// ignore the field and send every bar, which is still correct, just larger.
 pub const LIMIT_FEATURE: &str = "indicators.limit.v1";
 
+/// The `welcome.features` entry for the MACD styles (chart_engine::indicators::MacdStyle: PPO,
+/// MACD-V, zero-lag, signal area; owner-approved 2026-11-07): a MACD spec's `style` is computed
+/// and keyed by it (`macd:12:26:9:ppo`). A client offers the styles only when it sees this; an
+/// older server ignores `style` and sends Classic under `macd:12:26:9`, which such a client
+/// draws as Classic. Applies to `chart.indicators` and the ticker page's day snapshots alike.
+pub const MACD_STYLES_FEATURE: &str = "indicators.macd.v2";
+
 /// How long a chart nobody watches keeps its series.
 pub const IDLE_DROP: Duration = Duration::from_secs(60);
 
@@ -993,5 +1000,87 @@ mod tests {
             serde_json::from_str(&day_snapshot("SMPL", "2026-10-15", &[], &specs, false)).unwrap();
         assert_eq!(v["t"], json!([]));
         assert_eq!(v["day"], "2026-10-15");
+    }
+
+    /// Every MACD style is its own study on the wire (`indicators.macd.v2`), keyed by its style,
+    /// with its own lines, on the ticker page's day snapshot as on the live chart: one parse
+    /// (`parse_request`, the path `chart.subscribe` and `insights.ticker.indicators.set` share),
+    /// and 4-color shares Classic's computation.
+    #[test]
+    fn macd_styles_are_separate_studies_with_their_own_lines() {
+        use chart_engine::wire::CandleWire;
+        let bars: Vec<CandleWire> = (0..90)
+            .map(|i| {
+                let t = et(day(), 9 + (30 + i) / 60, (30 + i) % 60, 0, 0).unwrap().0 / 1_000_000;
+                let c = 3.0 + ((i * 7) % 13) as f64 * 0.02;
+                CandleWire {
+                    t,
+                    t_ns: t * 1_000_000,
+                    o: c,
+                    h: c + 0.04,
+                    l: c - 0.03,
+                    c,
+                    v: 100,
+                    n: 1,
+                    is_final: true,
+                }
+            })
+            .collect();
+        let req = |styles: &[&str]| {
+            let list: Vec<Value> = styles
+                .iter()
+                .enumerate()
+                .map(|(i, s)| json!({"id": format!("m{i}"), "kind": "macd", "style": s}))
+                .collect();
+            studies(Value::Array(list), true).specs
+        };
+        // Two panes per chart, as the client caps them.
+        for pair in [
+            ["classic", "four-color"],
+            ["ppo", "macd-v"],
+            ["zero-lag", "signal-area"],
+        ] {
+            let specs = req(&pair);
+            let v: Value =
+                serde_json::from_str(&day_snapshot("SMPL", "2026-10-15", &bars, &specs, true))
+                    .unwrap();
+            let studies = v["studies"].as_array().unwrap();
+            let summary: Vec<(String, Vec<String>)> = studies
+                .iter()
+                .map(|s| {
+                    let names = s["lines"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|l| l["name"].as_str().unwrap().to_string())
+                        .collect();
+                    (s["key"].as_str().unwrap().to_string(), names)
+                })
+                .collect();
+            let three = || vec!["Hist".to_string(), "MACD".into(), "Signal".into()];
+            let want: Vec<(String, Vec<String>)> = match pair[0] {
+                "classic" => vec![("macd:12:26:9".into(), three())],
+                "ppo" => vec![
+                    ("macd:12:26:9:ppo".into(), three()),
+                    ("macd:12:26:9:macd-v".into(), three()),
+                ],
+                _ => vec![
+                    ("macd:12:26:9:zero-lag".into(), three()),
+                    (
+                        "macd:12:26:9:signal-area".into(),
+                        vec!["MACD".into(), "Signal".into()],
+                    ),
+                ],
+            };
+            assert_eq!(summary, want, "{pair:?}");
+            for s in studies {
+                let line = &s["lines"][0];
+                assert!(
+                    !line["values"].as_array().unwrap().is_empty(),
+                    "{} has values over 90 bars",
+                    s["key"]
+                );
+            }
+        }
     }
 }

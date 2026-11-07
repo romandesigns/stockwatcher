@@ -42,6 +42,15 @@
     { "raw": { "id": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀", "kind": "ema" }, "key": null },
     { "raw": "sma", "key": null },
     { "raw": null, "key": null },
-    { "raw": ["sma"], "key": null }
+    { "raw": ["sma"], "key": null },
+    { "raw": { "id": "m-classic", "kind": "macd", "style": "classic" }, "key": "macd:12:26:9" },
+    { "raw": { "id": "m-four", "kind": "macd", "style": "four-color", "markers": true }, "key": "macd:12:26:9" },
+    { "raw": { "id": "m-ppo", "kind": "macd", "style": "ppo" }, "key": "macd:12:26:9:ppo" },
+    { "raw": { "id": "m-v", "kind": "macd", "fast": 8, "slow": 21, "signal": 5, "style": "macd-v" }, "key": "macd:8:21:5:macd-v" },
+    { "raw": { "id": "m-zl", "kind": "macd", "style": "zero-lag" }, "key": "macd:12:26:9:zero-lag" },
+    { "raw": { "id": "m-area", "kind": "macd", "style": "signal-area", "colors": { "macd": "#00ff00" } }, "key": "macd:12:26:9:signal-area" },
+    { "raw": { "id": "m-future", "kind": "macd", "style": "next-year" }, "key": "macd:12:26:9" },
+    { "raw": { "id": "m-junk", "kind": "macd", "style": 3 }, "key": "macd:12:26:9" },
+    { "raw": { "id": "e-styled", "kind": "ema", "style": "ppo", "colors": { "line": "#ffffff" } }, "key": "ema:9" }
   ]
 }

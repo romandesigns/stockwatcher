@@ -269,6 +269,8 @@ export interface TickerState {
   indicatorsAvailable: boolean | null;
   /** The indicators of `want` for the current demand's `rth`, null until they arrive. */
   indicators: TickerIndicatorsMessage | null;
+  /** Whether the server computes the MACD styles (`indicators.macd.v2`, the same series code as the live chart); absent = no. */
+  macdStyles?: boolean;
 }
 
 export const EMPTY_TICKER: TickerState = { available: null, want: null, pkg: null, indicatorsAvailable: null, indicators: null };
@@ -302,7 +304,7 @@ const same = (a: TickerRequest | null, b: TickerRequest | null) => !!a && !!b &&
  * symbol and day is kept: the server drops a replaced subscription's late build, and this
  * check also covers a frame already in flight when the person switched days.
  */
-export function createTickerChannel(io: { subscribe(want: TickerRequest): void; unsubscribe(): void; setIndicators?(demand: TickerIndicatorDemand): void }): TickerChannel & { apply(m: TickerSnapshotMessage): void; applyIndicators(m: TickerIndicatorsMessage): void; setAvailable(on: boolean, indicators?: boolean): void } {
+export function createTickerChannel(io: { subscribe(want: TickerRequest): void; unsubscribe(): void; setIndicators?(demand: TickerIndicatorDemand): void }): TickerChannel & { apply(m: TickerSnapshotMessage): void; applyIndicators(m: TickerIndicatorsMessage): void; setAvailable(on: boolean, indicators?: boolean, macdStyles?: boolean): void } {
   let state: TickerState = EMPTY_TICKER;
   let demand: TickerIndicatorDemand | null = null;
   const listeners = new Set<() => void>();
@@ -353,9 +355,10 @@ export function createTickerChannel(io: { subscribe(want: TickerRequest): void; 
       const pkg = parseTickerPackage(failed ? { ...m, ...want } : m);
       if (pkg) set({ ...state, pkg });
     },
-    setAvailable(on, indicators = false) {
+    setAvailable(on, indicators = false, macdStyles = false) {
       const ind = on && indicators;
-      if (state.available !== on || state.indicatorsAvailable !== ind) set({ ...state, available: on, indicatorsAvailable: ind });
+      const macd = ind && macdStyles;
+      if (state.available !== on || state.indicatorsAvailable !== ind || (state.macdStyles ?? false) !== macd) set({ ...state, available: on, indicatorsAvailable: ind, macdStyles: macd });
     },
   };
 }

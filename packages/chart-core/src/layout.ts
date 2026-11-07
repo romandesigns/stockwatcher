@@ -1,6 +1,6 @@
 import { hatch, sortByLayer, type ChartTheme, type DisplayList, type Rect } from "./displayList.ts";
 import { layoutDraft, layoutDrawings, type Drawing, type DrawingDraft } from "./drawings.ts";
-import { indicatorColor, indicatorLabel, type IndicatorResult } from "./indicators.ts";
+import { indicatorColor, indicatorLabel, macdMarkersOn, macdStyleOf, roleColor, type IndicatorResult } from "./indicators.ts";
 import { withAlpha } from "./theme.ts";
 import { layoutContext, type ContextLayer } from "./levels.ts";
 import { layoutTrading, type TradingLayer } from "./trading.ts";
@@ -803,7 +803,6 @@ function overlayIndicator(model: ChartModel, r: IndicatorResult, theme: ChartThe
   const out: DisplayList = [];
   const price = model.price!;
   const plot = model.geometry.plot;
-  const color = indicatorColor(theme, r, 0);
   const y = (v: number) => priceY(price, v);
   if (r.band) {
     // Fill between the band lines, run by run, so a gap leaves a hole like the lines do.
@@ -816,7 +815,7 @@ function overlayIndicator(model: ChartModel, r: IndicatorResult, theme: ChartThe
         const pts: number[] = [];
         for (const i of run) pts.push(slotX(model.index, i), y(up[i]!));
         for (const i of [...run].reverse()) pts.push(slotX(model.index, i), y(lo[i]!));
-        out.push({ kind: "path", points: pts, closed: true, fill: withAlpha(color, 0.08), clip: plot, layer: "overlay" });
+        out.push({ kind: "path", points: pts, closed: true, fill: withAlpha(roleColor(theme, r.spec, r.colorSlot, "fill"), 0.08), clip: plot, layer: "overlay" });
       }
       run = [];
     };
@@ -829,7 +828,10 @@ function overlayIndicator(model: ChartModel, r: IndicatorResult, theme: ChartThe
   r.lines.forEach((l, k) => {
     // The basis of a band is the quieter line; its edges carry the identity.
     const width = r.band && k === 0 ? 1 : 1.5;
-    out.push(...polylines(model, l.values, y, r.band && k === 0 ? withAlpha(color, 0.7) : color, width, plot, "overlay"));
+    // A picked colour draws as picked; the default basis is its slot colour, quieter.
+    const color = indicatorColor(theme, r, k);
+    const quiet = r.band && k === 0 && !r.spec.colors?.basis;
+    out.push(...polylines(model, l.values, y, quiet ? withAlpha(color, 0.7) : color, width, plot, "overlay"));
   });
   return out;
 }
@@ -918,7 +920,8 @@ function overlayLegend(model: ChartModel, results: readonly IndicatorResult[], t
   const marks: DisplayList = [];
   for (const r of results) {
     if (r.placement !== "overlay") continue;
-    const color = indicatorColor(theme, r, 0);
+    // A band's swatch is its upper edge (the identity line; the basis is the quiet one).
+    const color = indicatorColor(theme, r, r.band ? 1 : 0);
     const main = r.lines[0]!.values;
     const sample = model.inspected === null ? Number.NaN : main[model.inspected]!;
     const digits = Number.isNaN(sample) ? 2 : sample < 1 ? 4 : 2;
@@ -946,6 +949,79 @@ function overlayLegend(model: ChartModel, results: readonly IndicatorResult[], t
   return out;
 }
 
+/**
+ * The histogram's fill for bar `v` after `prev`, per MACD style:
+ * - classic (and PPO, MACD-V, zero-lag): strong while the bar grows away from zero (momentum
+ *   building), faded while it shrinks;
+ * - 4-color: by direction, as the owner approved it (2026-11-07): above zero and rising = strong
+ *   up, above and falling = soft up, below and falling = strong down, below and rising = soft
+ *   down. The two agree except on the bar that crosses zero.
+ * A picked colour (IndicatorSpec.colors) keeps the default's alpha.
+ */
+function histogramFill(r: IndicatorResult, theme: ChartTheme, v: number, prev: number): string {
+  const c = r.spec.colors ?? {};
+  if (macdStyleOf(r.spec) === "four-color") {
+    const rising = Number.isNaN(prev) || v >= prev;
+    if (v >= 0) return rising ? (c.upStrong ?? theme.up) : c.upSoft ? withAlpha(c.upSoft, 0.38) : theme.histUpSoft;
+    return !rising ? (c.downStrong ?? theme.down) : c.downSoft ? withAlpha(c.downSoft, 0.38) : theme.histDownSoft;
+  }
+  const growing = Number.isNaN(prev) || Math.abs(v) >= Math.abs(prev);
+  if (v >= 0) return c.histUp ? withAlpha(c.histUp, growing ? 0.75 : 0.3) : growing ? theme.histUp : theme.histUpFade;
+  return c.histDown ? withAlpha(c.histDown, growing ? 0.75 : 0.3) : growing ? theme.histDown : theme.histDownFade;
+}
+
+/** A closed polygon approximating a circle (the zero-cross ring), as a path every renderer draws. */
+function ring(cx: number, cy: number, radius: number): number[] {
+  const pts: number[] = [];
+  for (let k = 0; k < 12; k++) {
+    const a = (k / 12) * Math.PI * 2;
+    pts.push(cx + Math.cos(a) * radius, cy + Math.sin(a) * radius);
+  }
+  return pts;
+}
+
+/**
+ * MACD crossover markers (owner-approved 2026-11-07, any style, `macdMarkersOn`): an up-hue
+ * triangle under the MACD line where it crosses above its signal, a down-hue one above it where
+ * it crosses below, and a hollow ring on the zero line where the MACD crosses zero, in the hue of
+ * its direction. A cross is read between consecutive bars that both have values (a gap slot
+ * between them does not hide one). Sized by the bar spacing so a zoomed-out day stays legible.
+ */
+function macdMarkers(model: ChartModel, macd: Float64Array, sig: Float64Array, y: (v: number) => number, rect: Rect, theme: ChartTheme): DisplayList {
+  const out: DisplayList = [];
+  const [from, to] = visibleRange(model);
+  const half = Math.min(4, Math.max(2.5, model.index.barSpacing * 0.6));
+  const zero = y(0);
+  let j = -1;
+  for (let i = Math.max(0, from - 1); i <= to; i++) {
+    const m = macd[i]!;
+    if (Number.isNaN(m)) continue;
+    const p = j;
+    j = i;
+    if (p < 0 || i < from) continue;
+    const cx = slotX(model.index, i);
+    if (cx < rect.x || cx > rect.x + rect.w) continue;
+    const m0 = macd[p]!;
+    const s0 = sig[p]!;
+    const s = sig[i]!;
+    if (!Number.isNaN(s0) && !Number.isNaN(s)) {
+      const d0 = m0 - s0;
+      const d1 = m - s;
+      const my = y(m);
+      if (d0 <= 0 && d1 > 0) out.push({ kind: "path", points: [cx, my + 3, cx - half, my + 3 + half * 1.6, cx + half, my + 3 + half * 1.6], closed: true, fill: theme.up, clip: rect, layer: "overlay" });
+      else if (d0 >= 0 && d1 < 0) out.push({ kind: "path", points: [cx, my - 3, cx - half, my - 3 - half * 1.6, cx + half, my - 3 - half * 1.6], closed: true, fill: theme.down, clip: rect, layer: "overlay" });
+    }
+    if (zero >= rect.y && zero <= rect.y + rect.h) {
+      if (m0 <= 0 && m > 0) out.push({ kind: "path", points: ring(cx, zero, half), closed: true, stroke: theme.up, lineWidth: 1.5, clip: rect, layer: "overlay" });
+      else if (m0 >= 0 && m < 0) out.push({ kind: "path", points: ring(cx, zero, half), closed: true, stroke: theme.down, lineWidth: 1.5, clip: rect, layer: "overlay" });
+    }
+  }
+  return out;
+}
+
+/** MACD-V's level lines are part of the fit once the visible values come near them, so a quiet stretch keeps its own scale. */
+const LEVEL_FIT_FROM = 100;
+
 function paneIndicator(model: ChartModel, r: IndicatorResult, rect: Rect, theme: ChartTheme): DisplayList {
   const out: DisplayList = [];
   const g = model.geometry;
@@ -961,11 +1037,12 @@ function paneIndicator(model: ChartModel, r: IndicatorResult, rect: Rect, theme:
         if (v < lo) lo = v;
         if (v > hi) hi = v;
       }
-    for (const gv of r.guides ?? []) {
+    if (!Number.isFinite(lo)) return out;
+    const fitLevels = Math.max(Math.abs(lo), Math.abs(hi)) >= LEVEL_FIT_FROM ? (r.levels ?? []) : [];
+    for (const gv of [...(r.guides ?? []), ...fitLevels]) {
       lo = Math.min(lo, gv);
       hi = Math.max(hi, gv);
     }
-    if (!Number.isFinite(lo)) return out;
     if (hi === lo) {
       hi += 1;
       lo -= 1;
@@ -975,9 +1052,12 @@ function paneIndicator(model: ChartModel, r: IndicatorResult, rect: Rect, theme:
     lo -= pad;
   }
   const y = (v: number) => rect.y + rect.h - ((v - lo) / (hi - lo)) * rect.h;
-  // RSI reads to one decimal; MACD's scale follows the price (a sub-$1 stock's MACD is ~0.0001), so it
-  // shows three significant digits rather than a fixed four decimals that would read "-0.0000".
-  const digits = r.spec.kind === "rsi" ? 1 : -3;
+  const style = r.spec.kind === "macd" ? macdStyleOf(r.spec) : null;
+  // RSI and MACD-V read to one decimal; PPO is a percentage; MACD's scale follows the price (a
+  // sub-$1 stock's MACD is ~0.0001), so it shows three significant digits rather than a fixed four
+  // decimals that would read "-0.0000".
+  const digits = r.spec.kind === "rsi" || style === "macd-v" ? 1 : -3;
+  const suffix = style === "ppo" ? "%" : "";
 
   if (r.zone) {
     const top = y(r.zone.hi);
@@ -992,26 +1072,55 @@ function paneIndicator(model: ChartModel, r: IndicatorResult, rect: Rect, theme:
     out.push({ kind: "line", x1: rect.x, y1: gy, x2: rect.x + rect.w, y2: gy, stroke: theme.guide, lineWidth: 1, dash: [3, 3], layer: "grid" });
     out.push({ kind: "text", x: g.priceAxis.x + AXIS_LABEL_PAD, y: gy, text: String(gv), fill: theme.axisText, fontSize: fs, fontFamily: theme.fontMono, fontWeight: 400, align: "left", baseline: "middle", layer: "axes" });
   }
-  const bw = bodyWidth(model.index.barSpacing);
-  r.lines.forEach((l, k) => {
-    if (l.style === "histogram") {
-      const zero = y(0);
-      for (let i = from; i <= to; i++) {
-        const v = l.values[i]!;
-        if (Number.isNaN(v)) continue;
-        const vy = y(v);
-        const cx = Math.round(slotX(model.index, i));
-        if (cx < rect.x || cx > rect.x + rect.w) continue;
-        // Four shades: strong while the bar grows away from zero (momentum building), faded while it shrinks.
-        const prev = i > 0 ? l.values[i - 1]! : NaN;
-        const growing = Number.isNaN(prev) || Math.abs(v) >= Math.abs(prev);
-        const fill = v >= 0 ? (growing ? theme.histUp : theme.histUpFade) : growing ? theme.histDown : theme.histDownFade;
-        out.push({ kind: "rect", x: cx - Math.floor(bw / 2), y: Math.min(zero, vy), w: bw, h: Math.max(1, Math.abs(vy - zero)), fill, layer: "volume" });
-      }
-      return;
+  // Dotted reference levels (MACD-V ±150), labelled in the same hue; only while inside the pane.
+  for (const lv of r.levels ?? []) {
+    const ly0 = Math.round(y(lv)) + 0.5;
+    if (ly0 < rect.y || ly0 > rect.y + rect.h) continue;
+    out.push({ kind: "line", x1: rect.x, y1: ly0, x2: rect.x + rect.w, y2: ly0, stroke: theme.oscLevel, lineWidth: 1, dash: [1, 3], layer: "grid" });
+    out.push({ kind: "text", x: g.priceAxis.x + AXIS_LABEL_PAD, y: ly0, text: lv > 0 ? `+${lv}` : String(lv), fill: theme.oscLevelText, fontSize: fs, fontFamily: theme.fontMono, fontWeight: 400, align: "left", baseline: "middle", layer: "axes" });
+  }
+  const macdLine = r.lines.find((l) => l.name === "MACD");
+  const sigLine = r.lines.find((l) => l.name === "Signal");
+  const spacing = model.index.barSpacing;
+  if (style === "signal-area" && macdLine && sigLine) {
+    // Signal area (owner-approved 2026-11-07): the simple signal as solid bars from zero, nearly
+    // the whole slot wide; while the MACD is above it, a 1 px hatch from the signal up to the MACD
+    // on each candle; the MACD line over both. No separate signal line or histogram.
+    const zero = y(0);
+    const areaFill = r.spec.colors?.area ? withAlpha(r.spec.colors.area, 0.85) : theme.signalArea;
+    const lineColor = roleColor(theme, r.spec, r.colorSlot, "macd");
+    const w = Math.max(1, Math.floor(spacing - 1));
+    for (let i = from; i <= to; i++) {
+      const s = sigLine.values[i]!;
+      if (Number.isNaN(s)) continue;
+      const cx = Math.round(slotX(model.index, i));
+      if (cx < rect.x || cx > rect.x + rect.w) continue;
+      const sy = y(s);
+      out.push({ kind: "rect", x: cx - Math.floor(w / 2), y: Math.min(zero, sy), w, h: Math.max(1, Math.abs(sy - zero)), fill: areaFill, layer: "volume" });
+      const m = macdLine.values[i]!;
+      if (!Number.isNaN(m) && m > s) out.push({ kind: "line", x1: cx + 0.5, y1: sy, x2: cx + 0.5, y2: y(m), stroke: withAlpha(lineColor, 0.8), lineWidth: 1, clip: rect, layer: "volume" });
     }
-    out.push(...polylines(model, l.values, y, indicatorColor(theme, r, k), 1.5, rect, "overlay"));
-  });
+    out.push(...polylines(model, macdLine.values, y, lineColor, 1.5, rect, "overlay"));
+  } else {
+    const bw = bodyWidth(spacing);
+    r.lines.forEach((l, k) => {
+      if (l.style === "histogram") {
+        const zero = y(0);
+        for (let i = from; i <= to; i++) {
+          const v = l.values[i]!;
+          if (Number.isNaN(v)) continue;
+          const vy = y(v);
+          const cx = Math.round(slotX(model.index, i));
+          if (cx < rect.x || cx > rect.x + rect.w) continue;
+          const prev = i > 0 ? l.values[i - 1]! : NaN;
+          out.push({ kind: "rect", x: cx - Math.floor(bw / 2), y: Math.min(zero, vy), w: bw, h: Math.max(1, Math.abs(vy - zero)), fill: histogramFill(r, theme, v, prev), layer: "volume" });
+        }
+        return;
+      }
+      out.push(...polylines(model, l.values, y, indicatorColor(theme, r, k), 1.5, rect, "overlay"));
+    });
+  }
+  if (macdLine && sigLine && macdMarkersOn(r.spec)) out.push(...macdMarkers(model, macdLine.values, sigLine.values, y, rect, theme));
 
   // Pane legend: name, then a swatch and value per line (the histogram too), at the inspected candle,
   // on a translucent backing so the lines never run through the text.
@@ -1022,11 +1131,16 @@ function paneIndicator(model: ChartModel, r: IndicatorResult, rect: Rect, theme:
   legend.push({ kind: "text", x, y: ly, text: name, fill: theme.textDim, fontSize: fs, fontFamily: theme.fontSans, fontWeight: 500, align: "left", baseline: "middle", layer: "axes" });
   x += textWidth(name, fs) + 8;
   r.lines.forEach((l, k) => {
-    const text = valueAt(model, l.values, digits);
+    const raw = valueAt(model, l.values, digits);
+    const text = raw === "—" ? raw : raw + suffix;
     if (l.style === "histogram") {
       const v = model.inspected === null ? NaN : l.values[model.inspected]!;
-      legend.push({ kind: "rect", x, y: ly - 3, w: 3, h: 6, fill: !Number.isNaN(v) && v < 0 ? theme.histDown : theme.histUp, layer: "axes" });
-      legend.push({ kind: "rect", x: x + 4, y: ly - 3, w: 3, h: 6, fill: !Number.isNaN(v) && v < 0 ? theme.histDownFade : theme.histUpFade, layer: "axes" });
+      const neg = !Number.isNaN(v) && v < 0;
+      // Strong then faded shade of the side the inspected bar is on.
+      legend.push({ kind: "rect", x, y: ly - 3, w: 3, h: 6, fill: histogramFill(r, theme, neg ? -1 : 1, 0), layer: "axes" });
+      legend.push({ kind: "rect", x: x + 4, y: ly - 3, w: 3, h: 6, fill: histogramFill(r, theme, neg ? -0.5 : 0.5, neg ? -1 : 1), layer: "axes" });
+    } else if (style === "signal-area" && l.name === "Signal") {
+      legend.push({ kind: "rect", x, y: ly - 3, w: 8, h: 6, fill: r.spec.colors?.area ? withAlpha(r.spec.colors.area, 0.85) : theme.signalArea, layer: "axes" });
     } else legend.push({ kind: "rect", x, y: ly - 1, w: 8, h: 2, fill: indicatorColor(theme, r, k), layer: "axes" });
     legend.push({ kind: "text", x: x + 12, y: ly, text, fill: theme.text, fontSize: fs, fontFamily: theme.fontMono, fontWeight: 400, align: "left", baseline: "middle", layer: "axes" });
     x += 12 + textWidth(text, fs) + 10;

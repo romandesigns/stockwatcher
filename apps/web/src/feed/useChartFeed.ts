@@ -123,9 +123,14 @@ export function useChartFeed(feed: ChartFeed, symbol: string, timeframe: Timefra
     useCallback((cb: () => void) => feed.indicators?.subscribe(cb) ?? (() => {}), [feed]),
     useCallback(() => feed.indicators?.zones() ?? false, [feed]),
   );
+  // The server computes the MACD styles (`indicators.macd.v2`): the chart offers them and draws them.
+  const macdStyles = useSyncExternalStore(
+    useCallback((cb: () => void) => feed.indicators?.subscribe(cb) ?? (() => {}), [feed]),
+    useCallback(() => feed.indicators?.macdStyles() ?? false, [feed]),
+  );
   const serverLevels = useSyncExternalStore(subscribe, useCallback((): ChartLevels | undefined => store.getLevels(symbol, timeframe), [store, symbol, timeframe]));
   const serverZones = useSyncExternalStore(subscribe, useCallback((): ChartZones | undefined => store.getZones(symbol, timeframe, rth), [store, symbol, timeframe, rth]));
   const levels = levelsOn ? (serverLevels ?? null) : undefined;
   const zones = zonesOn && demand?.zones ? (serverZones?.zones ?? null) : undefined;
-  return { series, tape: shownTape, clock, indicators, levels, zones };
+  return { series, tape: shownTape, clock, indicators, levels, zones, macdStyles };
 }

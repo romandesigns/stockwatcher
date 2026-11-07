@@ -44,6 +44,7 @@ fn cost_of_the_presets_at_the_engine_cap() {
             fast: 12,
             slow: 26,
             signal: 9,
+            style: chart_engine::indicators::MacdStyle::Classic,
         },
     ];
     let n = 4000;

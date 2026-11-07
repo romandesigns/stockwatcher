@@ -148,6 +148,14 @@ export interface ChartTheme {
   histUpFade: string;
   histDown: string;
   histDownFade: string;
+  /** The 4-color MACD histogram's fading bars: the up / down hue at 38 % (its building bars are `up` / `down`). */
+  histUpSoft: string;
+  histDownSoft: string;
+  /** The signal-area MACD's signal bars: the down hue at 85 %. */
+  signalArea: string;
+  /** Dotted reference levels in an oscillator pane (MACD-V +/-150) and their labels: the warning hue. */
+  oscLevel: string;
+  oscLevelText: string;
   paneLegendBg: string;
   profileOverlayBar: string;
   profileOverlayPoc: string;

@@ -1,7 +1,7 @@
 import { parseChartSettings } from "./chartSettings.ts";
 import { parseDrawingSettings } from "./drawingSettings.ts";
 import { DRAWING_KINDS, type Anchor, type Drawing, type DrawingKind } from "./drawings.ts";
-import { INDICATOR_PLACEMENT, type IndicatorKind, type IndicatorSpec } from "./indicators.ts";
+import { INDICATOR_PLACEMENT, isColorRole, isHexColor, isMacdStyle, type ColorRole, type IndicatorKind, type IndicatorSpec } from "./indicators.ts";
 import { parseLayers } from "./levels.ts";
 
 // What the clients sync through the server (owner request 2026-10-18: "any setting change takes
@@ -65,6 +65,16 @@ export function parseIndicators(raw: unknown): IndicatorSpec[] {
     for (const k of ["fast", "slow", "signal"] as const) {
       const v = intIn(r[k], 1, PERIOD_MAX);
       if (v !== undefined) spec[k] = v;
+    }
+    if (spec.kind === "macd") {
+      // A style this build does not know (a newer device's) is dropped: the MACD draws as classic.
+      if (isMacdStyle(r.style) && r.style !== "classic") spec.style = r.style;
+      if (typeof r.markers === "boolean") spec.markers = r.markers;
+    }
+    if (isObj(r.colors)) {
+      const colors: Partial<Record<ColorRole, string>> = {};
+      for (const [role, c] of Object.entries(r.colors)) if (isColorRole(role) && isHexColor(c)) colors[role] = c.toLowerCase();
+      if (Object.keys(colors).length) spec.colors = colors;
     }
     ids.add(r.id);
     out.push(spec);

@@ -1364,8 +1364,9 @@ async fn quotes_search_ranks_the_board_on_the_server_and_pushes_the_top_n() {
             .contains(&json!("times.ns.v1")),
         "{welcome}"
     );
-    // The session schedule on snapshots and the Runners notices a phone may ring from.
-    for f in ["sessions.v1", "runners.notice.v1"] {
+    // The session schedule on snapshots, the Runners notices a phone may ring from, and the
+    // MACD styles.
+    for f in ["sessions.v1", "runners.notice.v1", "indicators.macd.v2"] {
         assert!(
             welcome["features"].as_array().unwrap().contains(&json!(f)),
             "{f}: {welcome}"

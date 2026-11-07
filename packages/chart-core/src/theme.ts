@@ -30,6 +30,12 @@ export const DEFAULT_CHART_THEME: ChartTheme = {
   histUpFade: "rgba(63, 185, 122, 0.3)",
   histDown: "rgba(240, 100, 92, 0.75)",
   histDownFade: "rgba(240, 100, 92, 0.3)",
+  histUpSoft: "rgba(63, 185, 122, 0.38)",
+  histDownSoft: "rgba(240, 100, 92, 0.38)",
+  signalArea: "rgba(240, 100, 92, 0.85)",
+  // The warning status hue (as LULD): a stretched MACD-V is a caution, not a signal.
+  oscLevel: "rgba(224, 166, 58, 0.7)",
+  oscLevelText: "#e0a63a",
   paneLegendBg: "rgba(15, 18, 22, 0.72)",
   profileOverlayBar: "rgba(152, 162, 174, 0.2)",
   profileOverlayPoc: "rgba(139, 156, 255, 0.55)",

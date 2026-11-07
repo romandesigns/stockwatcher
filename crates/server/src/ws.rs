@@ -70,8 +70,8 @@
 //!   so a new client on an old server keeps its local math.
 //! - `chart.subscribe` takes two optional fields: `indicators` (the slot's effective list, the
 //!   `IndicatorSpec` shape of packages/chart-core: `{id, kind, period?, mult?, fast?, slow?,
-//!   signal?}`, parsed like the client's `parseIndicators`, overlays past 3 and panes past 2
-//!   dropped in order) and `rth` (true = extended hours off: regular session only). Without
+//!   signal?, style?}`, `style` being a MACD's (`indicators.macd.v2`), parsed like the client's
+//!   `parseIndicators`, overlays past 3 and panes past 2 dropped in order) and `rth` (true = extended hours off: regular session only). Without
 //!   `indicators` (every phone build installed before `indicators.v1`) nothing below is sent.
 //!   With it, `chart.indicators` follows the `chart.snapshot` (same seq) and `chart.indicator`
 //!   increments follow the candle frames. A list that is not a list gets `error bad_request`
@@ -1357,6 +1357,7 @@ async fn session(mut socket: WebSocket, state: AppState) {
         features: &[
             crate::indicators::FEATURE,
             crate::indicators::LIMIT_FEATURE,
+            crate::indicators::MACD_STYLES_FEATURE,
             crate::chart_context::LEVELS_FEATURE,
             crate::chart_context::ZONES_FEATURE,
             crate::chart_context::SESSIONS_FEATURE,

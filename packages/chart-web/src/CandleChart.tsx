@@ -16,6 +16,7 @@ import {
   buildSlots,
   computeChartModel,
   serverIndicatorResults,
+  classicMacd,
   emptyHistory,
   record,
   redo,
@@ -215,6 +216,12 @@ export interface CandleChartProps {
    */
   serverIndicators?: IndicatorValuesLike | null;
   /**
+   * The server computes the MACD styles (`indicators.macd.v2`; the feed's `macdStyles`): the
+   * MACD settings offer them and they draw as chosen. Off, every MACD draws as classic
+   * (`classicMacd`), which an older server sends whatever the spec says.
+   */
+  macdStyles?: boolean;
+  /**
    * The server's key levels and opening ranges (`levels.v1`, or a package's own context): the
    * only ones drawn. null or absent (not answered yet) = none.
    */
@@ -367,6 +374,7 @@ export function CandleChart({
   indicators: indicatorsProp,
   onIndicatorsChange,
   serverIndicators,
+  macdStyles = false,
   serverLevels,
   serverZones,
   drawings: drawingsProp,
@@ -559,7 +567,7 @@ export function CandleChart({
   const visibility = settings.visibility;
   // The server's values only (indicators.v1). A server without the feature draws no lines and
   // says why (`indicatorsNeedUpdate`), rather than the chart computing its own.
-  const indicatorResults = useMemo(() => (!visibility.indicators || serverIndicators === undefined ? [] : serverIndicatorResults(slots, indicatorSpecs, serverIndicators)), [slots, indicatorSpecs, visibility.indicators, serverIndicators]);
+  const indicatorResults = useMemo(() => (!visibility.indicators || serverIndicators === undefined ? [] : serverIndicatorResults(slots, macdStyles ? indicatorSpecs : classicMacd(indicatorSpecs), serverIndicators)), [slots, indicatorSpecs, visibility.indicators, serverIndicators, macdStyles]);
   const indicatorsNeedUpdate = visibility.indicators && serverIndicators === undefined && indicatorSpecs.length > 0;
 
   const last = useMemo(() => lastCandle(slots)?.c ?? null, [slots]);
@@ -1304,6 +1312,8 @@ export function CandleChart({
         onToolChange={changeTool}
         indicators={indicatorSpecs}
         onIndicatorsChange={setIndicators}
+        macdStyles={macdStyles}
+        theme={theme}
         seriesColors={[theme.series1, theme.series2, theme.series3]}
         drawingTools={false}
         canDelete={selected?.kind === "drawing"}

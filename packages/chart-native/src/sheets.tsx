@@ -14,6 +14,10 @@ import {
   DEFAULT_CHART_THEME,
   INDICATOR_GLYPHS,
   indicatorInfo,
+  indicatorLabel,
+  indicatorMenuColor,
+  replaceIndicator,
+  type ChartTheme,
   MAX_OVERLAYS,
   MAX_PANES,
   formatPrice,
@@ -36,6 +40,7 @@ import { Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Icon, Segmented, ToolButton, UI } from "./ui.tsx";
 import { AccountBadge, BuyingPower } from "./AccountBadge.tsx";
+import { IndicatorSettings } from "./IndicatorSettings.tsx";
 
 /**
  * A bottom sheet on a dimmed backdrop. Tapping the backdrop or the system
@@ -111,17 +116,28 @@ export function IndicatorSheet({
   onClose,
   indicators,
   onChange,
-  seriesColors = [DEFAULT_CHART_THEME.series1, DEFAULT_CHART_THEME.series2, DEFAULT_CHART_THEME.series3],
+  theme = DEFAULT_CHART_THEME,
+  macdStyles = false,
   reducedMotion,
 }: {
   open: boolean;
   onClose: () => void;
   indicators: readonly IndicatorSpec[];
   onChange: (s: IndicatorSpec[]) => void;
-  seriesColors?: readonly string[];
+  /** The chart's theme: the glyph tints (series1..3) and each indicator's default colours. */
+  theme?: ChartTheme;
+  /** The server computes the MACD styles (`indicators.macd.v2`): the MACD settings offer them. */
+  macdStyles?: boolean;
   reducedMotion?: boolean;
 }) {
+  const seriesColors = [theme.series1, theme.series2, theme.series3];
   const on = new Set(indicators.map((x) => x.id));
+  // The indicator whose settings show in the sheet (by id), else the list; back returns to the list.
+  const [editing, setEditing] = useState<string | null>(null);
+  const edited = indicators.find((x) => x.id === editing) ?? null;
+  useEffect(() => {
+    if (!open) setEditing(null);
+  }, [open]);
   const active = (placement: "overlay" | "pane") => indicators.filter((x) => INDICATOR_PLACEMENT[x.kind] === placement);
   const group = (placement: "overlay" | "pane") => INDICATOR_PRESETS.filter((p) => INDICATOR_PLACEMENT[p.kind] === placement);
   const colorOf = (p: IndicatorSpec) => {
@@ -133,34 +149,47 @@ export function IndicatorSheet({
   const row = (p: IndicatorSpec) => {
     const checked = on.has(p.id);
     const allowed = canAddIndicator(indicators, p);
-    const info = indicatorInfo(p);
+    // An indicator that is on shows its own settings (a MACD style, picked colours), not the preset's.
+    const spec = indicators.find((x) => x.id === p.id) ?? p;
+    const info = indicatorInfo(spec);
     return (
-      <Pressable
-        key={p.id}
-        accessibilityRole="checkbox"
-        accessibilityState={{ checked, disabled: !allowed }}
-        accessibilityLabel={`${info.name} ${info.params}`}
-        accessibilityHint={info.description}
-        disabled={!allowed}
-        onPress={() => onChange(toggleIndicator(indicators, p))}
-        // No fill for a checked row (owner, 2026-10-18): the check, the tinted glyph and its raised
-        // tile already say "on", so every row shares the sheet's background; only a press lights one.
-        style={({ pressed }) => [s.indRow, pressed && { backgroundColor: UI.raised }, !allowed && { opacity: 0.45 }]}
-      >
-        <View style={[s.tile, { backgroundColor: checked ? UI.raised : UI.row }]}>
-          <Glyph kind={p.kind} color={checked ? colorOf(p) : UI.textDim} />
-        </View>
-        <View style={{ flex: 1, gap: 2 }}>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-            <Text style={s.indName}>{info.name}</Text>
-            {info.params ? <Text style={s.chip}>{info.params}</Text> : null}
+      <View key={p.id} style={{ flexDirection: "row", alignItems: "center" }}>
+        <Pressable
+          accessibilityRole="checkbox"
+          accessibilityState={{ checked, disabled: !allowed }}
+          accessibilityLabel={`${info.name} ${info.params}`}
+          accessibilityHint={info.description}
+          disabled={!allowed}
+          onPress={() => onChange(toggleIndicator(indicators, p))}
+          // No fill for a checked row (owner, 2026-10-18): the check, the tinted glyph and its raised
+          // tile already say "on", so every row shares the sheet's background; only a press lights one.
+          style={({ pressed }) => [s.indRow, { flex: 1 }, pressed && { backgroundColor: UI.raised }, !allowed && { opacity: 0.45 }]}
+        >
+          <View style={[s.tile, { backgroundColor: checked ? UI.raised : UI.row }]}>
+            <Glyph kind={p.kind} color={checked ? indicatorMenuColor(spec, colorOf(p)) : UI.textDim} />
           </View>
-          <Text style={s.indDesc} numberOfLines={1}>
-            {allowed ? info.description : "Section full: turn one off first"}
-          </Text>
-        </View>
-        <Check on={checked} />
-      </Pressable>
+          <View style={{ flex: 1, gap: 2 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+              <Text style={s.indName}>{info.name}</Text>
+              {info.params ? <Text style={s.chip}>{info.params}</Text> : null}
+            </View>
+            <Text style={s.indDesc} numberOfLines={1}>
+              {allowed ? info.description : "Section full: turn one off first"}
+            </Text>
+          </View>
+          <Check on={checked} />
+        </Pressable>
+        {/* Its settings (colours; a MACD's style), only while it is on; the space is kept so rows never reflow. */}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`${indicatorLabel(spec)} settings`}
+          disabled={!checked}
+          onPress={() => setEditing(p.id)}
+          style={({ pressed }) => [s.gear, { opacity: checked ? 1 : 0 }, pressed && { backgroundColor: UI.raised }]}
+        >
+          <Icon name="settings" color={UI.textDim} size={16} />
+        </Pressable>
+      </View>
     );
   };
   const header = (label: string, used: number, cap: number) => (
@@ -169,6 +198,26 @@ export function IndicatorSheet({
       <Text style={[s.label, { color: used >= cap ? UI.text : UI.textFaint, fontVariant: ["tabular-nums"] }]}>{`${used}/${cap}`}</Text>
     </View>
   );
+  if (edited) {
+    const slot = INDICATOR_PLACEMENT[edited.kind] === "pane" ? 0 : Math.max(0, active("overlay").findIndex((x) => x.id === edited.id));
+    return (
+      <Sheet
+        open={open}
+        onClose={onClose}
+        // Android back (and the Done button) returns to the list rather than closing the sheet.
+        onBack={() => setEditing(null)}
+        title={indicatorLabel(edited)}
+        reducedMotion={reducedMotion}
+        badge={
+          <Pressable accessibilityRole="button" onPress={() => setEditing(null)} hitSlop={8} style={({ pressed }) => [s.titleAction, { minHeight: 44, justifyContent: "center" }, pressed && { opacity: 0.6 }]}>
+            <Text style={s.titleActionText}>Done</Text>
+          </Pressable>
+        }
+      >
+        <IndicatorSettings spec={edited} colorSlot={slot} theme={theme} macdStyles={macdStyles} reducedMotion={reducedMotion} onChange={(next) => onChange(replaceIndicator(indicators, next))} />
+      </Sheet>
+    );
+  }
   return (
     <Sheet
       open={open}
@@ -465,6 +514,7 @@ const s = StyleSheet.create({
   // A translucent chip reads on a row at rest (panel) and while it is pressed (raised colour).
   chip: { color: UI.textDim, fontSize: 10, backgroundColor: "rgba(228,232,237,0.08)", borderRadius: 4, paddingHorizontal: 4, paddingVertical: 1, overflow: "hidden", fontVariant: ["tabular-nums"] },
   indDesc: { color: UI.textFaint, fontSize: 11 },
+  gear: { width: 44, height: 44, borderRadius: 10, alignItems: "center", justifyContent: "center" },
   profile: { gap: 6, paddingBottom: 6 },
   profileRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 8 },
   history: { gap: 2, marginTop: 2, padding: 12, borderRadius: 12, backgroundColor: UI.bg },

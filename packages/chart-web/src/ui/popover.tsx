@@ -23,13 +23,17 @@ function PopoverContent({
   sideOffset = 8,
   anchor,
   className,
+  positionerClassName,
   children,
   ...props
 }: PopoverPrimitive.Popup.Props &
-  Pick<PopoverPrimitive.Positioner.Props, "align" | "side" | "sideOffset" | "anchor">) {
+  Pick<PopoverPrimitive.Positioner.Props, "align" | "side" | "sideOffset" | "anchor"> & {
+    /** Extra positioner classes: a popover opened from inside a dialog (the indicator colour picker) stacks above it with z-[60]. */
+    positionerClassName?: string
+  }) {
   return (
     <PopoverPrimitive.Portal>
-      <PopoverPrimitive.Positioner className="isolate z-50 outline-none" align={align} side={side} sideOffset={sideOffset} anchor={anchor}>
+      <PopoverPrimitive.Positioner className={cn("isolate z-50 outline-none", positionerClassName)} align={align} side={side} sideOffset={sideOffset} anchor={anchor}>
         <PopoverPrimitive.Popup
           data-slot="popover-content"
           className={cn("z-50 flex max-h-(--available-height) w-64 origin-(--transform-origin) flex-col overflow-hidden rounded-xl bg-card text-card-foreground shadow-lg outline-none transition-[opacity,scale] duration-100 data-ending-style:scale-95 data-ending-style:opacity-0 data-starting-style:scale-95 data-starting-style:opacity-0", className)}

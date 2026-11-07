@@ -29,6 +29,30 @@
 //! - MACD: EMA(fast) − EMA(slow) where both exist, the signal EMA over that line skipping the
 //!   warm-up, histogram = line − signal.
 //!
+//! # MACD styles (`indicators.macd.v2`, owner-approved 2026-11-07)
+//!
+//! A MACD spec carries a `style` ([`MacdStyle`]). Classic is the formula above, unchanged and
+//! still under the parity fixtures. The client's "4-color histogram" draws Classic's values in
+//! other shades, so it parses to Classic here and shares its key and computation. The other
+//! four are new (no client code ever computed them, so there is nothing to be bit-identical
+//! to; `tests` below pin each with small hand-checked series):
+//!
+//! - **PPO**: `(EMA(fast) − EMA(slow)) / EMA(slow) × 100` (MACD as a percentage of price), the
+//!   signal EMA over it, histogram = line − signal.
+//! - **MACD-V** (Spiroglou): `(EMA(fast) − EMA(slow)) / ATR(26) × 100`, ATR with Wilder
+//!   smoothing: true range `max(h − l, |h − c₋₁|, |l − c₋₁|)` (`h − l` on the first bar), seeded
+//!   by the mean of the first 26 ranges, then `(atr × 25 + tr) / 26`. No value while ATR is 0
+//!   (a flat stretch: the ratio is undefined, not infinite). ATR's period is fixed at
+//!   [`MACD_V_ATR`].
+//! - **Zero-lag**: MACD over zero-lag EMAs. `ZLEMA(n)` is the EMA of period `n` over the
+//!   de-lagged price `2·cᵢ − cᵢ₋ₗ`, `lag = floor((n − 1) / 2)`: adding back the difference to the
+//!   price `lag` bars ago cancels most of the EMA's own delay, so it turns sooner and crosses
+//!   more often. The first `lag` bars have no de-lagged price and are skipped; then line =
+//!   ZLEMA(fast) − ZLEMA(slow), the signal is a plain EMA of that line, histogram = line − signal.
+//! - **Signal area**: Classic's line, with the signal a SIMPLE average of the last `signal` line
+//!   values (the client draws it as bars from zero, the line over them); lines `[MACD, Signal]`,
+//!   no histogram.
+//!
 //! Gaps hold no candle and are skipped, not counted, with the running state carried across, as
 //! the TS does with its NaN gap slots. So a [`Bar`] list (candles only) gives the same values as
 //! the client's slot list.
@@ -119,6 +143,55 @@ impl IndicatorKind {
     }
 }
 
+/// MACD-V's ATR period (fixed: the published indicator pairs it with the slow EMA's 26).
+pub const MACD_V_ATR: u32 = 26;
+
+/// What a MACD spec computes (module docs, "MACD styles"). Absent on the wire = Classic, and so
+/// is every name this server does not know (a newer client's style draws as Classic here rather
+/// than dropping the study).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum MacdStyle {
+    #[default]
+    Classic,
+    Ppo,
+    MacdV,
+    ZeroLag,
+    SignalArea,
+}
+
+impl MacdStyle {
+    /// Every style the server computes (tests walk it).
+    pub const ALL: [MacdStyle; 5] = [
+        MacdStyle::Classic,
+        MacdStyle::Ppo,
+        MacdStyle::MacdV,
+        MacdStyle::ZeroLag,
+        MacdStyle::SignalArea,
+    ];
+
+    /// The client's `style` field (chart-core `MacdStyle`). "four-color" is Classic's values in
+    /// other shades, a drawing choice only, so it computes (and keys) as Classic.
+    pub fn parse(s: &str) -> MacdStyle {
+        match s {
+            "ppo" => MacdStyle::Ppo,
+            "macd-v" => MacdStyle::MacdV,
+            "zero-lag" => MacdStyle::ZeroLag,
+            "signal-area" => MacdStyle::SignalArea,
+            _ => MacdStyle::Classic,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MacdStyle::Classic => "classic",
+            MacdStyle::Ppo => "ppo",
+            MacdStyle::MacdV => "macd-v",
+            MacdStyle::ZeroLag => "zero-lag",
+            MacdStyle::SignalArea => "signal-area",
+        }
+    }
+}
+
 /// How a line is drawn (`IndicatorLine.style`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LineStyle {
@@ -160,6 +233,7 @@ pub enum IndicatorSpec {
         fast: u32,
         slow: u32,
         signal: u32,
+        style: MacdStyle,
     },
 }
 
@@ -220,6 +294,11 @@ impl IndicatorSpec {
                 fast: fast.unwrap_or(12),
                 slow: slow.unwrap_or(26),
                 signal: signal.unwrap_or(9),
+                style: o
+                    .get("style")
+                    .and_then(Value::as_str)
+                    .map(MacdStyle::parse)
+                    .unwrap_or_default(),
             },
         };
         Some((id.to_string(), spec))
@@ -264,8 +343,9 @@ impl IndicatorSpec {
 
     /// The canonical key frames carry (`specKey` in indicators.ts, tested against the same
     /// vectors: `tests/fixtures/indicator_spec_keys.json`): `"sma:20"`, `"ema:9"`, `"vwap"`,
-    /// `"bb:20:2"`, `"rsi:14"`, `"macd:12:26:9"`. `mult` is printed as JavaScript's
-    /// `String(number)` prints it.
+    /// `"bb:20:2"`, `"rsi:14"`, `"macd:12:26:9"`, and a non-Classic MACD style appended
+    /// (`"macd:12:26:9:ppo"`), so Classic keeps the key every older client looks up. `mult` is
+    /// printed as JavaScript's `String(number)` prints it.
     pub fn key(&self) -> String {
         match *self {
             IndicatorSpec::Sma { period } => format!("sma:{period}"),
@@ -273,7 +353,18 @@ impl IndicatorSpec {
             IndicatorSpec::Vwap => "vwap".into(),
             IndicatorSpec::Bb { period, mult } => format!("bb:{period}:{}", js_number(mult)),
             IndicatorSpec::Rsi { period } => format!("rsi:{period}"),
-            IndicatorSpec::Macd { fast, slow, signal } => format!("macd:{fast}:{slow}:{signal}"),
+            IndicatorSpec::Macd {
+                fast,
+                slow,
+                signal,
+                style: MacdStyle::Classic,
+            } => format!("macd:{fast}:{slow}:{signal}"),
+            IndicatorSpec::Macd {
+                fast,
+                slow,
+                signal,
+                style,
+            } => format!("macd:{fast}:{slow}:{signal}:{}", style.as_str()),
         }
     }
 
@@ -287,6 +378,11 @@ impl IndicatorSpec {
             IndicatorSpec::Vwap => &[("VWAP", L)],
             IndicatorSpec::Bb { .. } => &[("Basis", L), ("Upper", L), ("Lower", L)],
             IndicatorSpec::Rsi { .. } => &[("RSI", L)],
+            // Signal area draws its signal as bars from zero and has no histogram.
+            IndicatorSpec::Macd {
+                style: MacdStyle::SignalArea,
+                ..
+            } => &[("MACD", L), ("Signal", L)],
             IndicatorSpec::Macd { .. } => {
                 &[("Hist", LineStyle::Histogram), ("MACD", L), ("Signal", L)]
             }
@@ -495,6 +591,110 @@ pub fn macd(values: &[f64], fast: u32, slow: u32, signal: u32) -> [Vec<f64>; 3] 
     [line, sig, hist]
 }
 
+/// The signal EMA and histogram over a finished line (`[line, signal, histogram]`).
+fn with_signal(line: Vec<f64>, signal: u32) -> [Vec<f64>; 3] {
+    let sig = ema(&line, signal);
+    let hist = (0..line.len())
+        .map(|i| {
+            if sig[i].is_nan() {
+                f64::NAN
+            } else {
+                line[i] - sig[i]
+            }
+        })
+        .collect();
+    [line, sig, hist]
+}
+
+/// PPO: `[line, signal, histogram]`, line = `(EMA(fast) − EMA(slow)) / EMA(slow) × 100`.
+pub fn ppo(values: &[f64], fast: u32, slow: u32, signal: u32) -> [Vec<f64>; 3] {
+    let f = ema(values, fast);
+    let s = ema(values, slow);
+    let line = (0..values.len())
+        .map(|i| ppo_point(f[i], s[i]))
+        .collect::<Vec<_>>();
+    with_signal(line, signal)
+}
+
+fn ppo_point(f: f64, s: f64) -> f64 {
+    if f.is_nan() || s.is_nan() || s == 0.0 {
+        f64::NAN
+    } else {
+        (f - s) / s * 100.0
+    }
+}
+
+/// Wilder's ATR over `bars` (module docs, MACD-V).
+pub fn atr(bars: &[Bar], period: u32) -> Vec<f64> {
+    let mut st = AtrState::default();
+    bars.iter().map(|b| st.push(b, period)).collect()
+}
+
+/// MACD-V: `[line, signal, histogram]`, line = `(EMA(fast) − EMA(slow)) / ATR(26) × 100`.
+pub fn macd_v(bars: &[Bar], fast: u32, slow: u32, signal: u32) -> [Vec<f64>; 3] {
+    let closes: Vec<f64> = bars.iter().map(|b| b.c).collect();
+    let f = ema(&closes, fast);
+    let s = ema(&closes, slow);
+    let a = atr(bars, MACD_V_ATR);
+    let line = (0..bars.len())
+        .map(|i| macd_v_point(f[i], s[i], a[i]))
+        .collect::<Vec<_>>();
+    with_signal(line, signal)
+}
+
+fn macd_v_point(f: f64, s: f64, atr: f64) -> f64 {
+    // `!(atr > 0)` is also true for a NaN ATR (not seeded yet).
+    if f.is_nan() || s.is_nan() || atr.is_nan() || atr <= 0.0 {
+        f64::NAN
+    } else {
+        (f - s) / atr * 100.0
+    }
+}
+
+/// How far back a zero-lag EMA of period `n` reads the price: `floor((n − 1) / 2)`.
+pub fn zero_lag_lag(n: u32) -> usize {
+    (n.saturating_sub(1) / 2) as usize
+}
+
+/// The zero-lag EMA (module docs): the EMA of `2·vᵢ − vᵢ₋ₗ` over dense values (one per bar).
+pub fn zlema(values: &[f64], period: u32) -> Vec<f64> {
+    let lag = zero_lag_lag(period);
+    let x: Vec<f64> = (0..values.len())
+        .map(|i| {
+            if i >= lag {
+                2.0 * values[i] - values[i - lag]
+            } else {
+                f64::NAN
+            }
+        })
+        .collect();
+    ema(&x, period)
+}
+
+/// Zero-lag MACD: `[line, signal, histogram]`, line = ZLEMA(fast) − ZLEMA(slow), signal a plain
+/// EMA of it.
+pub fn zero_lag_macd(values: &[f64], fast: u32, slow: u32, signal: u32) -> [Vec<f64>; 3] {
+    let f = zlema(values, fast);
+    let s = zlema(values, slow);
+    let line = (0..values.len())
+        .map(|i| {
+            if f[i].is_nan() || s[i].is_nan() {
+                f64::NAN
+            } else {
+                f[i] - s[i]
+            }
+        })
+        .collect::<Vec<_>>();
+    with_signal(line, signal)
+}
+
+/// Signal area: `[line, signal]`, Classic's line and a SIMPLE `signal`-bar average of it.
+pub fn macd_sma_signal(values: &[f64], fast: u32, slow: u32, signal: u32) -> [Vec<f64>; 2] {
+    let [line, _, _] = macd(values, fast, slow, signal);
+    let sig = sma(&line, signal);
+    [line, sig]
+}
+
 /// Every line of `spec` over `bars`, per bar in [`IndicatorSpec::lines`] order (unused slots
 /// NaN), through the batch functions above.
 pub fn batch(spec: &IndicatorSpec, bars: &[Bar]) -> Vec<[f64; 3]> {
@@ -511,8 +711,22 @@ pub fn batch(spec: &IndicatorSpec, bars: &[Bar]) -> Vec<[f64; 3]> {
             three(m, u, l)
         }
         IndicatorSpec::Rsi { period } => one(rsi(&closes, period)),
-        IndicatorSpec::Macd { fast, slow, signal } => {
-            let [line, sig, hist] = macd(&closes, fast, slow, signal);
+        IndicatorSpec::Macd {
+            fast,
+            slow,
+            signal,
+            style,
+        } => {
+            let [line, sig, hist] = match style {
+                MacdStyle::Classic => macd(&closes, fast, slow, signal),
+                MacdStyle::Ppo => ppo(&closes, fast, slow, signal),
+                MacdStyle::MacdV => macd_v(bars, fast, slow, signal),
+                MacdStyle::ZeroLag => zero_lag_macd(&closes, fast, slow, signal),
+                MacdStyle::SignalArea => {
+                    let [line, sig] = macd_sma_signal(&closes, fast, slow, signal);
+                    return three(line, sig, nan_vec(bars.len()));
+                }
+            };
             three(hist, line, sig)
         }
     }
@@ -635,6 +849,51 @@ impl RsiState {
     }
 }
 
+/// Wilder's average true range (MACD-V).
+#[derive(Clone, Copy, Debug)]
+struct AtrState {
+    prev_c: f64,
+    sum: f64,
+    n: u32,
+    atr: f64,
+}
+
+impl Default for AtrState {
+    fn default() -> Self {
+        AtrState {
+            prev_c: f64::NAN,
+            sum: 0.0,
+            n: 0,
+            atr: f64::NAN,
+        }
+    }
+}
+
+impl AtrState {
+    fn push(&mut self, b: &Bar, period: u32) -> f64 {
+        let tr = if self.prev_c.is_nan() {
+            b.h - b.l
+        } else {
+            (b.h - b.l)
+                .max((b.h - self.prev_c).abs())
+                .max((b.l - self.prev_c).abs())
+        };
+        self.prev_c = b.c;
+        let p = period as f64;
+        if self.n < period {
+            self.sum += tr;
+            self.n += 1;
+            if self.n < period {
+                return f64::NAN;
+            }
+            self.atr = self.sum / p;
+        } else {
+            self.atr = (self.atr * (p - 1.0) + tr) / p;
+        }
+        self.atr
+    }
+}
+
 /// One Bollinger point from a full window, oldest first (walked twice, as the TS does).
 fn bb_window(win: impl Iterator<Item = f64> + Clone, period: u32, mult: f64) -> [f64; 3] {
     let p = period as f64;
@@ -665,10 +924,25 @@ enum State {
     /// Stateless: every point re-sums its window from the bars.
     Bb,
     Rsi(RsiState),
+    /// Classic, PPO and zero-lag (the zero-lag EMAs read their lagged price back from the bars).
     Macd {
         fast: EmaState,
         slow: EmaState,
         signal: EmaState,
+    },
+    MacdV {
+        fast: EmaState,
+        slow: EmaState,
+        atr: AtrState,
+        signal: EmaState,
+    },
+    /// The simple signal's running sum and window length; the line value leaving the window is
+    /// read back from the outputs.
+    SignalArea {
+        fast: EmaState,
+        slow: EmaState,
+        sum: f64,
+        count: u32,
     },
 }
 
@@ -680,6 +954,24 @@ impl State {
             IndicatorSpec::Vwap => State::Vwap(VwapState::default()),
             IndicatorSpec::Bb { .. } => State::Bb,
             IndicatorSpec::Rsi { .. } => State::Rsi(RsiState::default()),
+            IndicatorSpec::Macd {
+                style: MacdStyle::MacdV,
+                ..
+            } => State::MacdV {
+                fast: EmaState::default(),
+                slow: EmaState::default(),
+                atr: AtrState::default(),
+                signal: EmaState::default(),
+            },
+            IndicatorSpec::Macd {
+                style: MacdStyle::SignalArea,
+                ..
+            } => State::SignalArea {
+                fast: EmaState::default(),
+                slow: EmaState::default(),
+                sum: 0.0,
+                count: 0,
+            },
             IndicatorSpec::Macd { .. } => State::Macd {
                 fast: EmaState::default(),
                 slow: EmaState::default(),
@@ -689,8 +981,15 @@ impl State {
     }
 }
 
-/// Bar `i`'s point from the checkpoint before it.
-fn step(spec: &IndicatorSpec, prev: State, bars: &[Bar], i: usize) -> (State, [f64; 3]) {
+/// Bar `i`'s point from the checkpoint before it. `out` is the points of bars `..i` (signal
+/// area reads the line value leaving its window there).
+fn step(
+    spec: &IndicatorSpec,
+    prev: State,
+    bars: &[Bar],
+    out: &[[f64; 3]],
+    i: usize,
+) -> (State, [f64; 3]) {
     const N: f64 = f64::NAN;
     let c = bars[i].c;
     match (*spec, prev) {
@@ -730,20 +1029,123 @@ fn step(spec: &IndicatorSpec, prev: State, bars: &[Bar], i: usize) -> (State, [f
             (State::Rsi(r), [v, N, N])
         }
         (
-            IndicatorSpec::Macd { fast, slow, signal },
-            State::Macd {
+            IndicatorSpec::Macd {
+                fast,
+                slow,
+                signal,
+                style: MacdStyle::MacdV,
+            },
+            State::MacdV {
                 fast: mut f,
                 slow: mut s,
+                atr: mut a,
                 signal: mut g,
+            },
+        ) => {
+            let fv = f.push(c, fast);
+            let sv = s.push(c, slow);
+            let av = a.push(&bars[i], MACD_V_ATR);
+            let line = macd_v_point(fv, sv, av);
+            let sig = if line.is_nan() {
+                N
+            } else {
+                g.push(line, signal)
+            };
+            let hist = if sig.is_nan() { N } else { line - sig };
+            (
+                State::MacdV {
+                    fast: f,
+                    slow: s,
+                    atr: a,
+                    signal: g,
+                },
+                [hist, line, sig],
+            )
+        }
+        (
+            IndicatorSpec::Macd {
+                fast,
+                slow,
+                signal,
+                style: MacdStyle::SignalArea,
+            },
+            State::SignalArea {
+                fast: mut f,
+                slow: mut s,
+                mut sum,
+                mut count,
             },
         ) => {
             let fv = f.push(c, fast);
             let sv = s.push(c, slow);
             let (line, sig) = if !fv.is_nan() && !sv.is_nan() {
                 let line = fv - sv;
-                (line, g.push(line, signal))
+                // `sma`'s order: add first, then drop the value leaving the window (the line is
+                // defined on every bar from its first, so that value is `signal` bars back).
+                sum += line;
+                count += 1;
+                if count > signal {
+                    sum -= out[i - signal as usize][0];
+                    count = signal;
+                }
+                let sig = if count == signal {
+                    sum / signal as f64
+                } else {
+                    N
+                };
+                (line, sig)
             } else {
                 (N, N)
+            };
+            (
+                State::SignalArea {
+                    fast: f,
+                    slow: s,
+                    sum,
+                    count,
+                },
+                [line, sig, N],
+            )
+        }
+        (
+            IndicatorSpec::Macd {
+                fast,
+                slow,
+                signal,
+                style,
+            },
+            State::Macd {
+                fast: mut f,
+                slow: mut s,
+                signal: mut g,
+            },
+        ) => {
+            let (fv, sv) = match style {
+                MacdStyle::ZeroLag => {
+                    let (lf, ls) = (zero_lag_lag(fast), zero_lag_lag(slow));
+                    let fv = if i >= lf {
+                        f.push(2.0 * c - bars[i - lf].c, fast)
+                    } else {
+                        N
+                    };
+                    let sv = if i >= ls {
+                        s.push(2.0 * c - bars[i - ls].c, slow)
+                    } else {
+                        N
+                    };
+                    (fv, sv)
+                }
+                _ => (f.push(c, fast), s.push(c, slow)),
+            };
+            let line = match style {
+                MacdStyle::Ppo => ppo_point(fv, sv),
+                _ if !fv.is_nan() && !sv.is_nan() => fv - sv,
+                _ => N,
+            };
+            let sig = if line.is_nan() {
+                N
+            } else {
+                g.push(line, signal)
             };
             let hist = if sig.is_nan() { N } else { line - sig };
             (
@@ -837,7 +1239,7 @@ impl IndicatorSeries {
             self.ckpt[k - 1]
         };
         for i in k..self.bars.len() {
-            let (next, v) = step(&self.spec, st, &self.bars, i);
+            let (next, v) = step(&self.spec, st, &self.bars, &self.out, i);
             self.ckpt.push(next);
             self.out.push(v);
             st = next;
@@ -846,11 +1248,24 @@ impl IndicatorSeries {
 
     /// How many bars before bar `i` its step reads back from `bars` (not from the checkpoint):
     /// SMA reads the value leaving its window, `bars[i - period]`; Bollinger re-sums
-    /// `bars[i + 1 - period..=i]`. The other studies carry everything in the checkpoint.
+    /// `bars[i + 1 - period..=i]`; zero-lag MACD reads each EMA's lagged price
+    /// `bars[i - lag]`; signal area reads the line value leaving its window, `out[i - signal]`.
+    /// The other studies carry everything in the checkpoint.
     fn lookback(&self) -> usize {
         match self.spec {
             IndicatorSpec::Sma { period } => period as usize,
             IndicatorSpec::Bb { period, .. } => (period as usize).saturating_sub(1),
+            IndicatorSpec::Macd {
+                fast,
+                slow,
+                style: MacdStyle::ZeroLag,
+                ..
+            } => zero_lag_lag(fast).max(zero_lag_lag(slow)),
+            IndicatorSpec::Macd {
+                signal,
+                style: MacdStyle::SignalArea,
+                ..
+            } => signal as usize,
             _ => 0,
         }
     }
@@ -1051,12 +1466,14 @@ mod tests {
             IndicatorSpec::Ema { period: 20 },
             IndicatorSpec::Rsi { period: 14 },
             IndicatorSpec::Vwap,
-            IndicatorSpec::Macd {
-                fast: 12,
-                slow: 26,
-                signal: 9,
-            },
-        ];
+        ]
+        .into_iter()
+        .chain(MacdStyle::ALL.map(|style| IndicatorSpec::Macd {
+            fast: 12,
+            slow: 26,
+            signal: 9,
+            style,
+        }));
         for spec in specs {
             let mut full: Vec<Bar> = (0..200)
                 .map(|i| bar(i, 10.0 + (i % 13) as f64 * 0.07))
@@ -1105,5 +1522,195 @@ mod tests {
         let r = s.upsert(bar(10 + DRAIN_SLACK as i64, 10.0)).unwrap();
         assert_eq!(s.len(), 10);
         assert_eq!(r, 9..10);
+    }
+
+    // --- MACD styles: small synthetic series with values worked out by hand -------------------
+
+    fn macd_spec(fast: u32, slow: u32, signal: u32, style: MacdStyle) -> IndicatorSpec {
+        IndicatorSpec::Macd {
+            fast,
+            slow,
+            signal,
+            style,
+        }
+    }
+
+    fn close_to(a: f64, b: f64) -> bool {
+        (a - b).abs() <= 1e-9 * b.abs().max(1.0)
+    }
+
+    /// The values of `spec` over `bars`, built incrementally (the server's path), by line.
+    fn built(spec: IndicatorSpec, bars: &[Bar]) -> Vec<Vec<f64>> {
+        let s = IndicatorSeries::build(spec, bars.to_vec(), 4000);
+        (0..spec.lines().len())
+            .map(|j| (0..s.len()).map(|i| s.values(i)[j]).collect())
+            .collect()
+    }
+
+    #[test]
+    fn macd_styles_parse_key_and_name_their_lines() {
+        let key = |style: Value| {
+            IndicatorSpec::parse(&json!({"id": "m", "kind": "macd", "style": style}))
+                .map(|(_, s)| s.key())
+                .unwrap()
+        };
+        // Classic keeps the key every older client looks up; 4-color is Classic's values.
+        assert_eq!(key(json!("classic")), "macd:12:26:9");
+        assert_eq!(key(json!("four-color")), "macd:12:26:9");
+        assert_eq!(key(json!("ppo")), "macd:12:26:9:ppo");
+        assert_eq!(key(json!("macd-v")), "macd:12:26:9:macd-v");
+        assert_eq!(key(json!("zero-lag")), "macd:12:26:9:zero-lag");
+        assert_eq!(key(json!("signal-area")), "macd:12:26:9:signal-area");
+        // A style from a newer client, or junk, is Classic rather than a dropped study.
+        assert_eq!(key(json!("next-year")), "macd:12:26:9");
+        assert_eq!(key(json!(7)), "macd:12:26:9");
+        let lines = |s: MacdStyle| -> Vec<&str> {
+            macd_spec(12, 26, 9, s)
+                .lines()
+                .iter()
+                .map(|l| l.0)
+                .collect()
+        };
+        assert_eq!(lines(MacdStyle::Ppo), ["Hist", "MACD", "Signal"]);
+        assert_eq!(lines(MacdStyle::SignalArea), ["MACD", "Signal"]);
+    }
+
+    #[test]
+    fn ppo_is_the_macd_as_a_percentage_of_the_slow_average() {
+        // EMA(1) = the close; EMA(2) seeds at bar 1 with (10 + 30) / 2 = 20.
+        let bars: Vec<Bar> = [10.0, 30.0, 30.0]
+            .iter()
+            .enumerate()
+            .map(|(i, &c)| bar(i as i64, c))
+            .collect();
+        let v = built(macd_spec(1, 2, 1, MacdStyle::Ppo), &bars);
+        let (hist, line, sig) = (&v[0], &v[1], &v[2]);
+        assert!(line[0].is_nan());
+        assert_eq!(line[1], 50.0, "(30 - 20) / 20 x 100");
+        // Bar 2: EMA(2) = 30*2/3 + 20/3 = 80/3, so (30 - 80/3) / (80/3) x 100 = 12.5.
+        assert!(close_to(line[2], 12.5), "{}", line[2]);
+        assert_eq!(sig[1], line[1], "a 1-bar signal is the line");
+        assert_eq!(hist[2], 0.0);
+        // The same move on a stock ten times the price reads the same, unlike Classic's.
+        let tenfold: Vec<Bar> = bars
+            .iter()
+            .map(|b| bar(b.t_ms / 60_000, b.c * 10.0))
+            .collect();
+        let p10 = built(macd_spec(1, 2, 1, MacdStyle::Ppo), &tenfold);
+        assert!(close_to(p10[1][2], line[2]));
+    }
+
+    #[test]
+    fn macd_v_divides_by_wilder_atr_26() {
+        let b = |i: i64, c: f64| Bar {
+            h: c + 0.5,
+            l: c - 0.5,
+            ..bar(i, c)
+        };
+        // 26 calm bars: every true range is 1, so ATR seeds at 1 on bar 25.
+        let mut bars: Vec<Bar> = (0..26).map(|i| b(i, 10.0)).collect();
+        // Bar 26 jumps to 12: TR = max(1, |12.5 - 10|, |11.5 - 10|) = 2.5,
+        // ATR = (1*25 + 2.5) / 26; EMA(1) = 12, EMA(2) = 12*2/3 + 10/3 = 34/3.
+        bars.push(b(26, 12.0));
+        let a = atr(&bars, MACD_V_ATR);
+        assert!(a[24].is_nan());
+        assert_eq!(a[25], 1.0);
+        assert!(close_to(a[26], 27.5 / 26.0));
+        let v = built(macd_spec(1, 2, 1, MacdStyle::MacdV), &bars);
+        let line = &v[1];
+        assert!(line[24].is_nan(), "no value before ATR is seeded");
+        assert_eq!(line[25], 0.0);
+        let want = (12.0 - 34.0 / 3.0) / (27.5 / 26.0) * 100.0;
+        assert!(close_to(line[26], want), "{} vs {want}", line[26]);
+        // A flat tape (ATR 0) has no MACD-V at all rather than an infinite one.
+        let flat: Vec<Bar> = (0..40)
+            .map(|i| Bar {
+                h: 10.0,
+                l: 10.0,
+                ..bar(i, 10.0)
+            })
+            .collect();
+        let v = built(macd_spec(12, 26, 9, MacdStyle::MacdV), &flat);
+        assert!(v.iter().flatten().all(|x| x.is_nan()));
+    }
+
+    #[test]
+    fn zero_lag_emas_have_no_lag_on_a_ramp() {
+        // On a straight ramp an EMA(n) seeded by its SMA trails by exactly (n - 1) / 2 bars; the
+        // zero-lag EMA's de-lagged input (2*c[i] - c[i - lag], lag = (n - 1) / 2) cancels that
+        // exactly for odd n. So ZLEMA(5) of a ramp is the ramp, and the zero-lag MACD(3, 5) is 0
+        // where Classic's EMA(3) - EMA(5) is a constant (5 - 3) / 2 = 1.
+        let ramp: Vec<f64> = (0..60).map(|i| 10.0 + i as f64).collect();
+        let z = zlema(&ramp, 5);
+        assert!(z[5].is_nan(), "lag 2 + 5 values before the seed");
+        for i in 6..60 {
+            assert!(close_to(z[i], ramp[i]), "bar {i}: {}", z[i]);
+        }
+        let bars: Vec<Bar> = ramp
+            .iter()
+            .enumerate()
+            .map(|(i, &c)| bar(i as i64, c))
+            .collect();
+        let zl = built(macd_spec(3, 5, 4, MacdStyle::ZeroLag), &bars);
+        let cl = built(macd_spec(3, 5, 4, MacdStyle::Classic), &bars);
+        for i in 20..60 {
+            assert!(zl[1][i].abs() < 1e-9, "zero-lag line at {i}: {}", zl[1][i]);
+            assert!(close_to(cl[1][i], 1.0), "classic line at {i}: {}", cl[1][i]);
+        }
+        assert_eq!(zero_lag_lag(1), 0);
+        assert_eq!(zero_lag_lag(12), 5);
+        assert_eq!(zero_lag_lag(26), 12);
+    }
+
+    #[test]
+    fn signal_area_signal_is_a_simple_average_of_the_line() {
+        let bars: Vec<Bar> = (0..80)
+            .map(|i| bar(i, 10.0 + ((i * 7) % 11) as f64 * 0.13))
+            .collect();
+        let v = built(macd_spec(12, 26, 9, MacdStyle::SignalArea), &bars);
+        let (line, sig) = (&v[0], &v[1]);
+        let closes: Vec<f64> = bars.iter().map(|b| b.c).collect();
+        let [classic, _, _] = macd(&closes, 12, 26, 9);
+        // The line is Classic's; the signal waits for 9 line values (bar 25 + 8).
+        for i in 0..80 {
+            assert_eq!(line[i].to_bits(), classic[i].to_bits(), "bar {i}");
+        }
+        assert!(sig[32].is_nan());
+        for i in 33..80 {
+            let mean = line[i - 8..=i].iter().sum::<f64>() / 9.0;
+            assert!(close_to(sig[i], mean), "bar {i}: {} vs {mean}", sig[i]);
+        }
+    }
+
+    #[test]
+    fn every_macd_style_builds_incrementally_as_its_batch() {
+        let bars: Vec<Bar> = (0..120)
+            .map(|i| {
+                let c = 10.0 + ((i * 13) % 17) as f64 * 0.09;
+                Bar {
+                    h: c + 0.05 + (i % 3) as f64 * 0.04,
+                    l: c - 0.07,
+                    ..bar(i, c)
+                }
+            })
+            .collect();
+        for style in MacdStyle::ALL {
+            let spec = macd_spec(5, 11, 4, style);
+            let want = batch(&spec, &bars);
+            let mut s = IndicatorSeries::build(spec, bars[..60].to_vec(), 4000);
+            for b in &bars[60..] {
+                s.upsert(*b);
+            }
+            for (i, w) in want.iter().enumerate() {
+                for (j, got) in s.values(i).iter().enumerate() {
+                    assert_eq!(
+                        got.to_bits(),
+                        w[j].to_bits(),
+                        "{} bar {i} line {j}",
+                        spec.key()
+                    );
+                }
+            }
+        }
     }
 }

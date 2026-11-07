@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use chart_engine::indicators::{Bar, BarEdit, IndicatorSeries, IndicatorSpec, batch};
+use chart_engine::indicators::{Bar, BarEdit, IndicatorSeries, IndicatorSpec, MacdStyle, batch};
 use chart_engine::{ChartEngine, Timeframe};
 use chrono::NaiveDate;
 use market_archive::fixture::{DEFAULT_SEED, fixture_symbol, symbol_params};
@@ -60,18 +60,33 @@ fn specs() -> Vec<IndicatorSpec> {
             fast: 3,
             slow: 5,
             signal: 2,
+            style: MacdStyle::Classic,
         },
         Macd {
             fast: 12,
             slow: 26,
             signal: 9,
+            style: MacdStyle::Classic,
         },
         Macd {
             fast: 26,
             slow: 12,
             signal: 9,
+            style: MacdStyle::Classic,
         },
     ]
+    .into_iter()
+    // Every MACD style at the defaults and at short periods (the zero-lag lag and the simple
+    // signal's window both read back past a revision).
+    .chain(MacdStyle::ALL.into_iter().flat_map(|style| {
+        [(12, 26, 9), (3, 5, 2), (1, 1, 1)].map(|(fast, slow, signal)| Macd {
+            fast,
+            slow,
+            signal,
+            style,
+        })
+    }))
+    .collect()
 }
 
 fn day(n: i64) -> NaiveDate {
@@ -235,6 +250,7 @@ fn engine_increments_keep_every_series_equal_to_the_engine() {
             fast: 12,
             slow: 26,
             signal: 9,
+            style: MacdStyle::Classic,
         },
     ];
     let mut revisions = 0usize;

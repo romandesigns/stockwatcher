@@ -26,7 +26,9 @@ export interface ServerIndicatorsChannel {
   levels(): boolean;
   /** Whether it pushes `chart.zones` (`zones.v1`). */
   zones(): boolean;
-  /** Called when `available()`, `known()`, `levels()` or `zones()` changes (a reconnect may meet another server version). */
+  /** Whether it computes the MACD styles (`indicators.macd.v2`): without it every MACD draws as classic (`classicMacd`) and the settings offer no style. */
+  macdStyles(): boolean;
+  /** Called when `available()`, `known()`, `levels()`, `zones()` or `macdStyles()` changes (a reconnect may meet another server version). */
   subscribe(fn: () => void): () => void;
   /** A held slot's demand changed: `chart.indicators.set` when available; kept for the next resubscribe either way. */
   set(id: string | undefined, demand: IndicatorDemand): void;
@@ -40,6 +42,8 @@ export interface ServerIndicators {
   setContext(levels: boolean, zones: boolean): void;
   /** Likewise, for `indicators.limit.v1`. */
   setLimitAvailable(on: boolean): void;
+  /** Likewise, for `indicators.macd.v2`. */
+  setMacdStyles(on: boolean): void;
   /** The optional `chart.subscribe` fields for slot `id` ("" = the default slot). */
   subscribeFields(id: string): Pick<ChartSubscribe, "indicators" | "rth" | "levels" | "zones" | "limit">;
   /** A slot (re)subscribed with this demand (undefined = the host computes its own). */
@@ -55,6 +59,7 @@ export function createServerIndicators(send: (frame: ChartIndicatorsSet) => void
   let levelsOn = false;
   let zonesOn = false;
   let limitOn = false;
+  let macdOn = false;
   const limitField = (d: IndicatorDemand) => (limitOn && d.limit !== undefined ? { limit: d.limit } : {});
   const notify = () => {
     for (const l of listeners) l();
@@ -67,6 +72,7 @@ export function createServerIndicators(send: (frame: ChartIndicatorsSet) => void
       known: () => welcomed,
       levels: () => levelsOn,
       zones: () => zonesOn,
+      macdStyles: () => macdOn,
       subscribe(fn) {
         listeners.add(fn);
         return () => {
@@ -97,6 +103,11 @@ export function createServerIndicators(send: (frame: ChartIndicatorsSet) => void
     },
     setLimitAvailable(next) {
       limitOn = next;
+    },
+    setMacdStyles(next) {
+      if (next === macdOn) return;
+      macdOn = next;
+      notify();
     },
     subscribeFields(id) {
       const d = demands.get(id);

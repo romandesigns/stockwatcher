@@ -98,7 +98,7 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
   // What the chart shows of its indicators (and whether its zones layer is on), for the server to
   // compute (indicators.v1, zones.v1).
   const demand = useMemo(() => indicatorDemand(indicators, chartSettings, layers), [indicators, chartSettings, layers]);
-  const { series, clock, tape, indicators: serverIndicators, loadIndicatorHistory, levels: serverLevels, zones: serverZones } = useChartFeed(feed, active ?? "", timeframe, bin, undefined, demand);
+  const { series, clock, tape, indicators: serverIndicators, loadIndicatorHistory, levels: serverLevels, zones: serverZones, macdStyles } = useChartFeed(feed, active ?? "", timeframe, bin, undefined, demand);
   // This symbol's drawings, synced per drawing (another device's edit of a different drawing is never overwritten).
   const drawings = useApp((s) => s.drawings);
   const tapeOpen = useApp((s) => s.tapeOpen);
@@ -237,6 +237,7 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
         indicators={indicators}
         onIndicatorsChange={app.setIndicators}
         serverIndicators={serverIndicators}
+        macdStyles={macdStyles}
         onIndicatorHistory={loadIndicatorHistory}
         serverLevels={serverLevels}
         serverZones={serverZones}

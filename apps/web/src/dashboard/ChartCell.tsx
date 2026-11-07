@@ -64,7 +64,7 @@ export function ChartCell({ index, slot, symbol, feed, trading, selected, showSe
   // This cell's effective list (and its zones layer) goes to the server, which computes them
   // (indicators.v1, zones.v1).
   const demand = useMemo(() => indicatorDemand(ownIndicators, chartSettings, ownLayers), [ownIndicators, chartSettings, ownLayers]);
-  const { series, clock, indicators: serverIndicators, levels: serverLevels, zones: serverZones } = useChartFeed(feed, symbol, slot.timeframe, bin, `d${index}`, demand);
+  const { series, clock, indicators: serverIndicators, levels: serverLevels, zones: serverZones, macdStyles } = useChartFeed(feed, symbol, slot.timeframe, bin, `d${index}`, demand);
   const discovery = useDetection(feed.detection);
   const noticeSelection = useApp((s) => s.noticeSelection);
   const pickedContext = !fixture && noticeSelection?.index === index && noticeSelection.context.symbol === symbol && noticeSelection.source === "live" ? noticeSelection.context : undefined;
@@ -173,6 +173,7 @@ export function ChartCell({ index, slot, symbol, feed, trading, selected, showSe
         indicators={ownIndicators}
         onIndicatorsChange={onIndicatorsChange}
         serverIndicators={serverIndicators}
+        macdStyles={macdStyles}
         serverLevels={serverLevels}
         serverZones={serverZones}
         layers={ownLayers}

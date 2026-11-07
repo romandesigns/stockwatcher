@@ -191,6 +191,7 @@ function Body({ pkg, view, wide, reducedMotion, chart }: { pkg: TickerPackageWir
           indicators={indicators}
           onIndicatorsChange={onIndicatorsChange}
           serverIndicators={serverIndicators}
+          macdStyles={state.macdStyles ?? false}
           inspector
           options={OPTIONS}
           label={`${pkg.symbol} 1 minute candles`}

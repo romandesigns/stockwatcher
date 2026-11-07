@@ -119,11 +119,16 @@ export function useChartFeed(feed: MobileFeed, symbol: string, timeframe: Timefr
     useCallback((cb: () => void) => feed.indicators.subscribe(cb), [feed]),
     useCallback(() => feed.indicators.zones(), [feed]),
   );
+  // The server computes the MACD styles (`indicators.macd.v2`): the chart offers them and draws them.
+  const macdStyles = useSyncExternalStore(
+    useCallback((cb: () => void) => feed.indicators.subscribe(cb), [feed]),
+    useCallback(() => feed.indicators.macdStyles(), [feed]),
+  );
   const serverLevels = useSyncExternalStore(subscribe, useCallback((): ChartLevels | undefined => store.getLevels(symbol, timeframe), [store, symbol, timeframe]));
   const serverZones = useSyncExternalStore(subscribe, useCallback((): ChartZones | undefined => store.getZones(symbol, timeframe, rth), [store, symbol, timeframe, rth]));
   const levels = levelsOn ? (serverLevels ?? null) : undefined;
   const zones = zonesOn && demand?.zones ? (serverZones?.zones ?? null) : undefined;
-  return { series, tape, clock, indicators, levels, zones, loadIndicatorHistory };
+  return { series, tape, clock, indicators, levels, zones, loadIndicatorHistory, macdStyles };
 }
 
 /** The feed's paper broker as the chart's `trading` prop. */

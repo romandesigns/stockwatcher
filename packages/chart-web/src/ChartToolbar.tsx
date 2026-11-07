@@ -11,10 +11,14 @@ import {
   formatSize,
   INDICATOR_PLACEMENT,
   INDICATOR_PRESETS,
+  indicatorLabel,
+  indicatorMenuColor,
+  replaceIndicator,
   toggleIndicator,
   unrealizedPnl,
   type BrokerId,
   type DrawingKind,
+  type ChartTheme,
   type IndicatorSpec,
   type PaperPosition,
   type Timeframe,
@@ -22,8 +26,9 @@ import {
   type LayerId,
   type FillMark,
 } from "@stockwatcher/chart-core";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { LayersMenu } from "./ContextMenus.tsx";
+import { IndicatorSettingsDialog } from "./IndicatorSettingsDialog.tsx";
 import { glyphDef, Icon } from "./Icon.tsx";
 import { TimeframeSelector } from "./TimeframeSelector.tsx";
 import { TimeframeWheel } from "./TimeframeWheel.tsx";
@@ -66,6 +71,10 @@ export interface ChartToolbarProps {
   onIndicatorsChange: (specs: IndicatorSpec[]) => void;
   /** The chart's indicator colours (theme series1..3), so the menu's icons match the lines. */
   seriesColors?: readonly string[];
+  /** The chart's theme, for each indicator's default colours in its settings (default chart-core's). */
+  theme?: ChartTheme;
+  /** The server computes the MACD styles (`indicators.macd.v2`): the MACD settings offer them. */
+  macdStyles?: boolean;
   /** Show the drawing tools and delete in this row (default true). CandleChart turns this off and floats them in a DrawingToolbox instead. */
   drawingTools?: boolean;
   /** A drawing is selected, so Delete applies to it. */
@@ -98,7 +107,7 @@ export interface ChartToolbarProps {
  * One compact row; selection is a raised segment, and the accent is spent
  * only on the Trade button (the primary action).
  */
-export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChange, seriesColors, drawingTools = true, canDelete, onDelete, trading, layers, layerIds, onLayersChange, toolsVisible, onToolsVisibleChange, timeframe, onTimeframeChange, timeframeControl = "segments", start, className }: ChartToolbarProps) {
+export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChange, seriesColors, theme = DEFAULT_CHART_THEME, macdStyles = false, drawingTools = true, canDelete, onDelete, trading, layers, layerIds, onLayersChange, toolsVisible, onToolsVisibleChange, timeframe, onTimeframeChange, timeframeControl = "segments", start, className }: ChartToolbarProps) {
   const pos = trading?.position && trading.position.qty !== 0 ? trading.position : null;
   const pnl = pos && trading?.last !== null && trading?.last !== undefined ? unrealizedPnl(pos, trading.last) : null;
   return (
@@ -159,7 +168,7 @@ export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChang
           </Tip>
         )}
         {/* No Chart button here: the chart settings live in the Settings dialog's Chart tab (owner, 2026-10-18). */}
-        <IndicatorMenu indicators={indicators} onChange={onIndicatorsChange} seriesColors={seriesColors ?? DEFAULT_SERIES} />
+        <IndicatorMenu indicators={indicators} onChange={onIndicatorsChange} seriesColors={seriesColors ?? DEFAULT_SERIES} theme={theme} macdStyles={macdStyles} />
         {layers && onLayersChange && <LayersMenu layers={layers} ids={layerIds} onChange={onLayersChange} />}
         {trading && (
           <>
@@ -188,8 +197,12 @@ function Glyph({ kind, color }: { kind: IndicatorSpec["kind"]; color: string }) 
  * against the caps (3 on the chart, 2 below), and a full section says so
  * on its rows instead of just greying them out.
  */
-function IndicatorMenu({ indicators, onChange, seriesColors }: { indicators: readonly IndicatorSpec[]; onChange: (s: IndicatorSpec[]) => void; seriesColors: readonly string[] }) {
+function IndicatorMenu({ indicators, onChange, seriesColors, theme, macdStyles }: { indicators: readonly IndicatorSpec[]; onChange: (s: IndicatorSpec[]) => void; seriesColors: readonly string[]; theme: ChartTheme; macdStyles: boolean }) {
   const on = new Set(indicators.map((s) => s.id));
+  // The indicator whose settings are open (by id): a dialog beside the menu, so it outlives the menu closing.
+  const [editing, setEditing] = useState<string | null>(null);
+  const edited = indicators.find((s) => s.id === editing) ?? null;
+  const slotOf = (s: IndicatorSpec) => (INDICATOR_PLACEMENT[s.kind] === "pane" ? 0 : Math.max(0, active("overlay").findIndex((x) => x.id === s.id)));
   const active = (placement: "overlay" | "pane") => indicators.filter((s) => INDICATOR_PLACEMENT[s.kind] === placement);
   const group = (placement: "overlay" | "pane") => INDICATOR_PRESETS.filter((p) => INDICATOR_PLACEMENT[p.kind] === placement);
   // An overlay's colour is its position among the active overlays (the next free slot when off);
@@ -203,20 +216,29 @@ function IndicatorMenu({ indicators, onChange, seriesColors }: { indicators: rea
   const item = (p: IndicatorSpec) => {
     const checked = on.has(p.id);
     const allowed = canAddIndicator(indicators, p);
-    const info = indicatorInfo(p);
+    // An indicator that is on shows its own settings (a MACD style, picked colours), not the preset's.
+    const spec = indicators.find((s) => s.id === p.id) ?? p;
+    const info = indicatorInfo(spec);
     return (
-      <DropdownMenuCheckboxItem key={p.id} checked={checked} disabled={!allowed} onCheckedChange={() => onChange(toggleIndicator(indicators, p))} closeOnClick={false} className="gap-2.5 py-1.5 pr-9">
-        <span className={cn("grid size-8 shrink-0 place-items-center rounded-lg", checked ? "bg-bg-raised" : "bg-bg-row")}>
-          <Glyph kind={p.kind} color={checked ? colorOf(p) : "var(--color-muted-foreground)"} />
-        </span>
-        <span className="flex min-w-0 flex-col gap-0.5">
-          <span className="flex items-center gap-1.5">
-            <span className={cn("text-[13px] font-medium", checked ? "text-foreground" : "text-foreground/90")}>{info.name}</span>
-            {info.params && <span className="rounded bg-bg-row px-1 font-mono text-[10px] text-muted-foreground">{info.params}</span>}
+      <div key={p.id} className="flex items-center gap-0.5">
+        <DropdownMenuCheckboxItem checked={checked} disabled={!allowed} onCheckedChange={() => onChange(toggleIndicator(indicators, p))} closeOnClick={false} className="min-w-0 flex-1 gap-2.5 py-1.5 pr-9">
+          <span className={cn("grid size-8 shrink-0 place-items-center rounded-lg", checked ? "bg-bg-raised" : "bg-bg-row")}>
+            <Glyph kind={p.kind} color={checked ? indicatorMenuColor(spec, colorOf(p)) : "var(--color-muted-foreground)"} />
           </span>
-          <span className="truncate text-[11px] text-text-faint">{allowed ? info.description : "Section full: turn one off first"}</span>
-        </span>
-      </DropdownMenuCheckboxItem>
+          <span className="flex min-w-0 flex-col gap-0.5">
+            <span className="flex items-center gap-1.5">
+              <span className={cn("text-[13px] font-medium", checked ? "text-foreground" : "text-foreground/90")}>{info.name}</span>
+              {info.params && <span className="rounded bg-bg-row px-1 font-mono text-[10px] text-muted-foreground">{info.params}</span>}
+            </span>
+            <span className="truncate text-[11px] text-text-faint">{allowed ? info.description : "Section full: turn one off first"}</span>
+          </span>
+        </DropdownMenuCheckboxItem>
+        {checked && (
+          <DropdownMenuItem aria-label={`${indicatorLabel(spec)} settings`} onClick={() => setEditing(p.id)} className="size-9 shrink-0 justify-center p-0 text-muted-foreground [&_svg]:size-3.5">
+            <Icon name="settings" />
+          </DropdownMenuItem>
+        )}
+      </div>
     );
   };
   const header = (label: string, used: number, cap: number) => (
@@ -228,35 +250,38 @@ function IndicatorMenu({ indicators, onChange, seriesColors }: { indicators: rea
     </DropdownMenuLabel>
   );
   return (
-    <DropdownMenu>
-      <Tip label="Indicators">
-        <DropdownMenuTrigger
-          aria-label={indicators.length ? `Indicators, ${indicators.length} on` : "Indicators"}
-          render={<Button variant="ghost" size="sm" className="h-7 min-w-7 gap-1 rounded-md px-1.5 text-xs text-muted-foreground [&_svg]:size-3.5" />}
-        >
-          <Icon name="indicators" />
-          {indicators.length ? <span className="font-mono text-[11px] text-foreground">{indicators.length}</span> : null}
-        </DropdownMenuTrigger>
-      </Tip>
-      <DropdownMenuContent align="end" aria-label="Indicators" className="w-80 p-1.5">
-        <DropdownMenuGroup>
-          {header("On the chart", active("overlay").length, MAX_OVERLAYS)}
-          {group("overlay").map(item)}
-        </DropdownMenuGroup>
-        <DropdownMenuSeparator />
-        <DropdownMenuGroup>
-          {header("Below the chart", active("pane").length, MAX_PANES)}
-          {group("pane").map(item)}
-        </DropdownMenuGroup>
-        {indicators.length > 0 && (
-          <>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => onChange([])} className="justify-center text-xs text-muted-foreground">
-              Turn all off
-            </DropdownMenuItem>
-          </>
-        )}
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <>
+      <DropdownMenu>
+        <Tip label="Indicators">
+          <DropdownMenuTrigger
+            aria-label={indicators.length ? `Indicators, ${indicators.length} on` : "Indicators"}
+            render={<Button variant="ghost" size="sm" className="h-7 min-w-7 gap-1 rounded-md px-1.5 text-xs text-muted-foreground [&_svg]:size-3.5" />}
+          >
+            <Icon name="indicators" />
+            {indicators.length ? <span className="font-mono text-[11px] text-foreground">{indicators.length}</span> : null}
+          </DropdownMenuTrigger>
+        </Tip>
+        <DropdownMenuContent align="end" aria-label="Indicators" className="w-80 p-1.5">
+          <DropdownMenuGroup>
+            {header("On the chart", active("overlay").length, MAX_OVERLAYS)}
+            {group("overlay").map(item)}
+          </DropdownMenuGroup>
+          <DropdownMenuSeparator />
+          <DropdownMenuGroup>
+            {header("Below the chart", active("pane").length, MAX_PANES)}
+            {group("pane").map(item)}
+          </DropdownMenuGroup>
+          {indicators.length > 0 && (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => onChange([])} className="justify-center text-xs text-muted-foreground">
+                Turn all off
+              </DropdownMenuItem>
+            </>
+          )}
+        </DropdownMenuContent>
+      </DropdownMenu>
+      <IndicatorSettingsDialog spec={edited} colorSlot={edited ? slotOf(edited) : 0} theme={theme} macdStyles={macdStyles} onChange={(next) => onChange(replaceIndicator(indicators, next))} onClose={() => setEditing(null)} />
+    </>
   );
 }

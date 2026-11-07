@@ -255,6 +255,7 @@ function DayChart({ pkg, view, focus, selected, chart }: { pkg: TickerPackageWir
           indicators={indicators}
           onIndicatorsChange={onIndicatorsChange}
           serverIndicators={serverIndicators}
+          macdStyles={state.macdStyles ?? false}
           inspector
           priceAxisMenu={false}
           label={`${pkg.symbol} on ${view.dayLabel}, 1-minute candles, ${sent} sent alert${sent === 1 ? "" : "s"} and ${missed} missed setup${missed === 1 ? "" : "s"} marked`}

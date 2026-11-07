@@ -125,7 +125,7 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
   // What the chart shows of its indicators (and whether its zones layer is on), for the server to
   // compute (indicators.v1, zones.v1).
   const demand = useMemo(() => indicatorDemand(indicators, chartSettings, layers), [indicators, chartSettings, layers]);
-  const { series, tape, clock, indicators: serverIndicators, levels: serverLevels, zones: serverZones } = useChartFeed(feed, symbol, timeframe, bin, undefined, demand);
+  const { series, tape, clock, indicators: serverIndicators, levels: serverLevels, zones: serverZones, macdStyles } = useChartFeed(feed, symbol, timeframe, bin, undefined, demand);
   const trading = usePaperTrading(feed);
   const replayDays = useReplayDays(clockDay);
   const dayOptions = useMemo(() => replayDayOptions(replayDays.state?.days ?? []), [replayDays.state]);
@@ -145,6 +145,7 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
     indicators,
     onIndicatorsChange: app.setIndicators,
     serverIndicators,
+    macdStyles,
     serverLevels,
     serverZones,
     layers,
