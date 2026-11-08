@@ -19,6 +19,7 @@ import {
   type BrokerId,
   type DrawingKind,
   type ChartTheme,
+  type IndicatorColorActions,
   type IndicatorSpec,
   type PaperPosition,
   type Timeframe,
@@ -69,6 +70,12 @@ export interface ChartToolbarProps {
   onToolChange: (tool: DrawingKind | null) => void;
   indicators: readonly IndicatorSpec[];
   onIndicatorsChange: (specs: IndicatorSpec[]) => void;
+  /**
+   * Indicator line colours are global (owner, 2026-11-07): the app store's indicatorColorActions,
+   * so a colour picked here recolours that line on every chart and device. Absent: a colour is
+   * written onto this chart's own spec, as before.
+   */
+  indicatorColorActions?: IndicatorColorActions;
   /** The chart's indicator colours (theme series1..3), so the menu's icons match the lines. */
   seriesColors?: readonly string[];
   /** The chart's theme, for each indicator's default colours in its settings (default chart-core's). */
@@ -107,7 +114,7 @@ export interface ChartToolbarProps {
  * One compact row; selection is a raised segment, and the accent is spent
  * only on the Trade button (the primary action).
  */
-export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChange, seriesColors, theme = DEFAULT_CHART_THEME, macdStyles = false, drawingTools = true, canDelete, onDelete, trading, layers, layerIds, onLayersChange, toolsVisible, onToolsVisibleChange, timeframe, onTimeframeChange, timeframeControl = "segments", start, className }: ChartToolbarProps) {
+export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChange, indicatorColorActions, seriesColors, theme = DEFAULT_CHART_THEME, macdStyles = false, drawingTools = true, canDelete, onDelete, trading, layers, layerIds, onLayersChange, toolsVisible, onToolsVisibleChange, timeframe, onTimeframeChange, timeframeControl = "segments", start, className }: ChartToolbarProps) {
   const pos = trading?.position && trading.position.qty !== 0 ? trading.position : null;
   const pnl = pos && trading?.last !== null && trading?.last !== undefined ? unrealizedPnl(pos, trading.last) : null;
   return (
@@ -168,7 +175,7 @@ export function ChartToolbar({ tool, onToolChange, indicators, onIndicatorsChang
           </Tip>
         )}
         {/* No Chart button here: the chart settings live in the Settings dialog's Chart tab (owner, 2026-10-18). */}
-        <IndicatorMenu indicators={indicators} onChange={onIndicatorsChange} seriesColors={seriesColors ?? DEFAULT_SERIES} theme={theme} macdStyles={macdStyles} />
+        <IndicatorMenu indicators={indicators} onChange={onIndicatorsChange} colorActions={indicatorColorActions} seriesColors={seriesColors ?? DEFAULT_SERIES} theme={theme} macdStyles={macdStyles} />
         {layers && onLayersChange && <LayersMenu layers={layers} ids={layerIds} onChange={onLayersChange} />}
         {trading && (
           <>
@@ -197,7 +204,7 @@ function Glyph({ kind, color }: { kind: IndicatorSpec["kind"]; color: string }) 
  * against the caps (3 on the chart, 2 below), and a full section says so
  * on its rows instead of just greying them out.
  */
-function IndicatorMenu({ indicators, onChange, seriesColors, theme, macdStyles }: { indicators: readonly IndicatorSpec[]; onChange: (s: IndicatorSpec[]) => void; seriesColors: readonly string[]; theme: ChartTheme; macdStyles: boolean }) {
+function IndicatorMenu({ indicators, onChange, colorActions, seriesColors, theme, macdStyles }: { indicators: readonly IndicatorSpec[]; onChange: (s: IndicatorSpec[]) => void; colorActions?: IndicatorColorActions; seriesColors: readonly string[]; theme: ChartTheme; macdStyles: boolean }) {
   const on = new Set(indicators.map((s) => s.id));
   // The indicator whose settings are open (by id): a dialog beside the menu, so it outlives the menu closing.
   const [editing, setEditing] = useState<string | null>(null);
@@ -281,7 +288,7 @@ function IndicatorMenu({ indicators, onChange, seriesColors, theme, macdStyles }
           )}
         </DropdownMenuContent>
       </DropdownMenu>
-      <IndicatorSettingsDialog spec={edited} colorSlot={edited ? slotOf(edited) : 0} theme={theme} macdStyles={macdStyles} onChange={(next) => onChange(replaceIndicator(indicators, next))} onClose={() => setEditing(null)} />
+      <IndicatorSettingsDialog spec={edited} colorSlot={edited ? slotOf(edited) : 0} theme={theme} macdStyles={macdStyles} onChange={(next) => onChange(replaceIndicator(indicators, next))} onColor={colorActions?.set} onResetColors={colorActions?.reset} onClose={() => setEditing(null)} />
     </>
   );
 }

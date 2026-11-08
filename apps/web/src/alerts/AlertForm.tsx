@@ -100,9 +100,9 @@ export function AlertForm() {
   const close = () => alertForm.set({ open: false });
   return (
     <Dialog open={state.open} onOpenChange={(o) => !o && close()}>
-      <DialogContent className="top-1/2 left-1/2 flex max-h-[calc(100dvh-2rem)] w-[min(400px,calc(100vw-1.5rem))] -translate-x-1/2 -translate-y-1/2 flex-col bg-bg-row p-0">
+      <DialogContent className="w-[min(400px,calc(100vw-2rem))] bg-bg-row p-0">
         {/* A tall form on a short screen scrolls with the shadcn scrollbar, not the browser's. */}
-        <ScrollArea viewportClassName="p-4">
+        <ScrollArea className="min-h-0 flex-1" viewportClassName="p-4">
           {/* Keyed by the opening: each one starts from its own draft (state initialised from it). */}
           {state.draft && <FormBody key={state.seq} state={state} d={state.draft} close={close} />}
         </ScrollArea>

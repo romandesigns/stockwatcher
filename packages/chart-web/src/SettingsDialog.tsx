@@ -177,7 +177,7 @@ function TwoColumnSettings({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent initialFocus={() => (tab === null ? true : (tabRefs.current.get(tab) ?? true))} className="inset-0 m-auto h-[min(600px,85dvh)] w-[min(880px,92vw)] overflow-hidden p-0">
+      <DialogContent initialFocus={() => (tab === null ? true : (tabRefs.current.get(tab) ?? true))} className="h-[min(600px,85dvh)] w-[min(880px,92vw)] max-w-none overflow-hidden p-0">
         <DialogTitle>Settings</DialogTitle>
         <Tabs orientation="vertical" value={tab} onValueChange={(v) => typeof v === "string" && onTab(v)} className="size-full flex-row gap-0">
           {/* No padding on the panel side (right), so the active tab meets the panel. */}
@@ -322,7 +322,8 @@ function SingleColumnSettings({ open, onOpenChange, sections, onVisit }: { open:
     >
       <DialogContent
         initialFocus={() => (sections[0] ? (rowRefs.current.get(sections[0].id) ?? true) : true)}
-        className="inset-x-0 top-auto bottom-0 flex h-[92dvh] w-full flex-col overflow-hidden rounded-t-xl rounded-b-none p-0 duration-250 ease-out data-ending-style:translate-y-full data-ending-style:opacity-100 data-starting-style:translate-y-full data-starting-style:opacity-100"
+        // bottom-sheet-ok: the phone-width web twin of the phone's SettingsSheet, a sheet on purpose (listed for the owner, 2026-11-07).
+        className="inset-x-0 top-auto bottom-0 m-0 flex h-[92dvh] max-h-none w-full max-w-none flex-col overflow-hidden rounded-t-xl rounded-b-none p-0 duration-250 ease-out data-ending-style:translate-y-full data-ending-style:opacity-100 data-starting-style:translate-y-full data-starting-style:opacity-100"
       >
         <div className="relative min-h-0 flex-1 overflow-hidden">
           {/* Root: the list of sections. */}

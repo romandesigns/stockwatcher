@@ -415,9 +415,10 @@ function twoDevices() {
 
 describe("app store: indicator settings persist and sync live", () => {
   const preset = (id: string) => INDICATOR_PRESETS.find((p) => p.id === id)!;
-  const styled: IndicatorSpec = { ...preset("macd"), style: "ppo", markers: false, fast: 8, colors: { macd: "#112233" } };
+  // Per-chart settings only: colours are global since 2026-11-07 (the describe below).
+  const styled: IndicatorSpec = { ...preset("macd"), style: "ppo", markers: false, fast: 8 };
 
-  test("off then on restores style, colours and periods; the memory is synced as its own namespace", () => {
+  test("off then on restores style, markers and periods; the memory is synced as its own namespace", () => {
     const r = rig();
     r.s().setIndicators([styled]);
     r.s().setIndicators(toggleIndicator(r.s().indicators, preset("macd")));
@@ -471,7 +472,7 @@ describe("app store: indicator settings persist and sync live", () => {
     expect(r.s().tickerIndicators).toEqual([preset("vwap")]);
   });
 
-  test("a change on one device reaches the other's store live: colour, MACD style, and the remembered settings", async () => {
+  test("a change on one device reaches the other's store live: MACD style, a colour, and the remembered settings", async () => {
     const { phone, web, settle } = twoDevices();
     const seen: IndicatorSpec[][] = [];
     web.store.subscribe((s, p) => s.indicators !== p.indicators && seen.push(s.indicators));
@@ -481,14 +482,14 @@ describe("app store: indicator settings persist and sync live", () => {
     // The phone picks a style and a colour: the open web chart follows without a reload.
     phone.store.getState().setIndicators([{ ...preset("macd"), style: "ppo" }]);
     await settle();
-    phone.store.getState().setIndicators([{ ...preset("macd"), style: "ppo", colors: { macd: "#112233" } }]);
+    phone.store.getState().setIndicatorColor(phone.store.getState().indicators[0]!, "macd", "#112233");
     await settle();
     expect(web.store.getState().indicators).toEqual([{ ...preset("macd"), style: "ppo", colors: { macd: "#112233" } }]);
     expect(seen.length).toBeGreaterThanOrEqual(3);
     // Turned off on the phone, on again on the web: the web restores the phone's settings.
     phone.store.getState().setIndicators([]);
     await settle();
-    expect(web.store.getState().indicatorMemory.macd).toEqual({ ...preset("macd"), style: "ppo", colors: { macd: "#112233" } });
+    expect(web.store.getState().indicatorMemory.macd).toEqual({ ...preset("macd"), style: "ppo" });
     web.store.getState().setIndicators(toggleIndicator(web.store.getState().indicators, preset("macd")));
     await settle();
     expect(phone.store.getState().indicators).toEqual([{ ...preset("macd"), style: "ppo", colors: { macd: "#112233" } }]);
@@ -496,5 +497,114 @@ describe("app store: indicator settings persist and sync live", () => {
     web.store.getState().setTickerIndicators([preset("rsi-14")]);
     await settle();
     expect(phone.store.getState().tickerIndicators).toEqual([preset("rsi-14")]);
+  });
+});
+
+describe("app store: indicator colours are global (owner, 2026-11-07)", () => {
+  const preset = (id: string) => INDICATOR_PRESETS.find((p) => p.id === id)!;
+  const lineOf = (list: readonly IndicatorSpec[], id: string) => list.find((s) => s.id === id)?.colors;
+
+  test("one colour applies to every chart, whatever else each chart shows", () => {
+    const r = rig();
+    // Main chart: VWAP + EMA 9. A dashboard chart with its own list: EMA 9 + EMA 20 + MACD. Ticker page: EMA 9 + RSI.
+    r.s().setIndicators([preset("vwap"), preset("ema-9")]);
+    r.s().setDashboardIndicators(2, [preset("ema-9"), preset("ema-20"), preset("macd")]);
+    r.s().setTickerIndicators([preset("rsi-14"), preset("ema-9")]);
+    r.s().indicatorColorActions.set(preset("ema-9"), "line", "#AA00FF");
+    expect(r.sync.get(SYNC_NS.indicatorColors)).toEqual({ "ema:9/line": "#aa00ff" });
+    expect(lineOf(r.s().indicators, "ema-9")).toEqual({ line: "#aa00ff" });
+    expect(lineOf(r.s().dashboard.slots[2]!.indicators!, "ema-9")).toEqual({ line: "#aa00ff" });
+    expect(lineOf(r.s().tickerIndicators, "ema-9")).toEqual({ line: "#aa00ff" });
+    // EMA 20 is another line (its period defines it), and VWAP is untouched.
+    expect(lineOf(r.s().dashboard.slots[2]!.indicators!, "ema-20")).toBeUndefined();
+    expect(lineOf(r.s().indicators, "vwap")).toBeUndefined();
+    // MACD's parts: one role at a time, all charts.
+    r.s().setIndicatorColor(preset("macd"), "histUp", "#00ff00");
+    r.s().setIndicatorColor(preset("macd"), "signal", "#ff00ff");
+    expect(lineOf(r.s().dashboard.slots[2]!.indicators!, "macd")).toEqual({ histUp: "#00ff00", signal: "#ff00ff" });
+    // The lists themselves never store a colour.
+    expect(JSON.stringify(r.sync.get(SYNC_NS.indicators))).not.toContain("colors");
+    expect(JSON.stringify(r.sync.get(APP_NS.dashboard))).not.toContain("colors");
+    // Turning EMA 9 off and on keeps its (global) colour; null puts it back to the default everywhere.
+    r.s().setIndicators([preset("vwap")]);
+    r.s().setIndicators([preset("vwap"), preset("ema-9")]);
+    expect(lineOf(r.s().indicators, "ema-9")).toEqual({ line: "#aa00ff" });
+    r.s().setIndicatorColor(preset("ema-9"), "line", null);
+    expect(lineOf(r.s().tickerIndicators, "ema-9")).toBeUndefined();
+  });
+
+  test("Reset to default clears every colour of that indicator only, everywhere", () => {
+    const r = rig();
+    r.s().setIndicators([preset("macd"), preset("ema-9")]);
+    r.s().setIndicatorColor(preset("macd"), "macd", "#111111");
+    r.s().setIndicatorColor({ ...preset("macd"), style: "four-color" }, "upSoft", "#222222");
+    r.s().setIndicatorColor(preset("ema-9"), "line", "#333333");
+    r.s().resetIndicatorColors(preset("macd"));
+    expect(r.sync.get(SYNC_NS.indicatorColors)).toEqual({ "ema:9/line": "#333333" });
+    expect(lineOf(r.s().indicators, "macd")).toBeUndefined();
+  });
+
+  test("migration: the per-spec colours become the global ones once (main chart wins), then per-spec ones are ignored", async () => {
+    const r = rig();
+    // What an older build stored: colours on the specs of several lists.
+    const sent = r.connect([
+      { ns: SYNC_NS.indicators, value: [{ id: "ema-9", kind: "ema", period: 9, colors: { line: "#ff0000" } }, { id: "bb-20", kind: "bb", period: 20, mult: 2, colors: { fill: "#00ff00" } }] },
+      { ns: SYNC_NS.tickerIndicators, value: [{ id: "ema-9", kind: "ema", period: 9, colors: { line: "#0000ff" } }, { id: "rsi-14", kind: "rsi", period: 14, colors: { line: "#123456" } }] },
+      { ns: APP_NS.dashboard, value: { count: 2, slots: [{ symbol: null, timeframe: "1m", indicators: null, layers: null }, { symbol: null, timeframe: "1m", indicators: [{ id: "ema-9", kind: "ema", period: 9, colors: { line: "#00ffff" } }], layers: null }] } },
+    ]);
+    await Promise.resolve();
+    const seed = sent.find((m) => m.type === "settings.set" && m.ns === SYNC_NS.indicatorColors);
+    expect(seed).toMatchObject({ ifAbsent: true, value: { "ema:9/line": "#ff0000", "bb/fill": "#00ff00", "rsi/line": "#123456" } });
+    // Every chart now shows the one colour, the ticker page and the dashboard included.
+    expect(lineOf(r.s().tickerIndicators, "ema-9")).toEqual({ line: "#ff0000" });
+    expect(lineOf(r.s().dashboard.slots[1]!.indicators!, "ema-9")).toEqual({ line: "#ff0000" });
+    // An older device writes a per-spec colour afterwards: ignored, the global one stands.
+    r.remote(SYNC_NS.indicatorColors, { "ema:9/line": "#ff0000", "bb/fill": "#00ff00", "rsi/line": "#123456" });
+    r.remote(SYNC_NS.indicators, [{ id: "ema-9", kind: "ema", period: 9, colors: { line: "#999999" } }]);
+    expect(lineOf(r.s().indicators, "ema-9")).toEqual({ line: "#ff0000" });
+    // The next write of a list drops the per-spec colours (the old namespaces keep their shapes).
+    r.s().setIndicators(r.s().indicators);
+    expect(r.sync.get(SYNC_NS.indicators)).toEqual([{ id: "ema-9", kind: "ema", period: 9 }]);
+  });
+
+  test("migration: a server that already has global colours wins over this device's per-spec ones", async () => {
+    const r = rig();
+    const sent = r.connect([
+      { ns: SYNC_NS.indicators, value: [{ id: "ema-9", kind: "ema", period: 9, colors: { line: "#ff0000" } }] },
+      { ns: SYNC_NS.indicatorColors, value: { "ema:9/line": "#abcdef" } },
+    ]);
+    await Promise.resolve();
+    expect(sent.some((m) => m.ns === SYNC_NS.indicatorColors)).toBe(false);
+    expect(lineOf(r.s().indicators, "ema-9")).toEqual({ line: "#abcdef" });
+  });
+
+  test("old settings with no colour namespace load unchanged, per-spec colours shown until a map exists", () => {
+    const r = rig();
+    r.connect([{ ns: SYNC_NS.indicators, value: [{ id: "vwap", kind: "vwap" }, { id: "ema-20", kind: "ema", period: 20 }] }]);
+    expect(r.s().indicatorColors).toBeNull();
+    expect(r.s().indicators).toEqual([preset("vwap"), preset("ema-20")]);
+    expect(r.sync.get(SYNC_NS.indicatorColors)).toBeUndefined();
+    // Junk in the map is dropped entry by entry.
+    r.remote(SYNC_NS.indicatorColors, { "ema:20/line": "#ABCDEF", "ema:20/nope": "#000000", "vwap/line": "red", junk: 1 });
+    expect(r.s().indicatorColors).toEqual({ "ema:20/line": "#abcdef" });
+  });
+
+  test("live: a colour picked on the phone recolours the web's main chart and its dashboard chart", async () => {
+    const { phone, web, settle } = twoDevices();
+    web.store.getState().setIndicators([preset("vwap"), preset("ema-9")]);
+    web.store.getState().setDashboardIndicators(1, [preset("ema-9"), preset("sma-50")]);
+    await settle();
+    phone.store.getState().indicatorColorActions.set(preset("ema-9"), "line", "#ff8800");
+    // Meanwhile the web turns SMA 50's colour (another entry): both land.
+    web.store.getState().indicatorColorActions.set(preset("sma-50"), "line", "#0088ff");
+    await settle();
+    expect(lineOf(web.store.getState().indicators, "ema-9")).toEqual({ line: "#ff8800" });
+    expect(lineOf(web.store.getState().dashboard.slots[1]!.indicators!, "ema-9")).toEqual({ line: "#ff8800" });
+    expect(lineOf(web.store.getState().dashboard.slots[1]!.indicators!, "sma-50")).toEqual({ line: "#0088ff" });
+    expect(phone.store.getState().indicatorColors).toEqual({ "ema:9/line": "#ff8800", "sma:50/line": "#0088ff" });
+    // Reset on the web: gone on the phone too.
+    web.store.getState().indicatorColorActions.reset(preset("ema-9"));
+    await settle();
+    expect(lineOf(phone.store.getState().indicators, "ema-9")).toBeUndefined();
   });
 });

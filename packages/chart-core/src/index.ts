@@ -17,6 +17,8 @@ export * from "./inspect.ts";
 export * from "./gestures.ts";
 export * from "./theme.ts";
 export * from "./indicators.ts";
+export * from "./indicatorColors.ts";
+export * from "./oklch.ts";
 export * from "./drawings.ts";
 export * from "./trading.ts";
 export * from "./alerts.ts";

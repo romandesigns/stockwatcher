@@ -31,7 +31,8 @@ search recents (`searchRecents`) sync too. Each client reads all of it through i
 | Setting | Before (web / phone key) | Now | Why |
 |---|---|---|---|
 | Indicators, their parameters (colours follow their order) | `sw-chart:indicators` / `chart.indicators` | **synced** `indicators` | a preference of the person |
-| The settings of indicators turned off (style, colours, periods, markers), restored when turned back on; "Reset to default" clears them (2026-11-07) | none (new) | **synced** `indicatorMemory` (map id → spec, entry patches) | a preference of the person |
+| The settings of indicators turned off (style, periods, markers), restored when turned back on; "Reset to default" clears them (2026-11-07) | none (new) | **synced** `indicatorMemory` (map id → spec, entry patches) | a preference of the person |
+| Indicator line colours, **global**: one colour per line on every chart (main, dashboard cells, ticker page) and device (2026-11-07) | on each spec (`colors`, 2026-11-07 only; migrated once) | **synced** `indicatorColors` (flat map `"<identity>/<role>"` → `#rrggbb`, one entry per role, entry patches) | owner: "the colors change should propagate globally and not independently per chart"; see *Indicator colours* below |
 | The Insights ticker page chart's own indicators | `stockwatcher:insights-ticker:indicators` / `insights-ticker:indicators` (seeded once) | **synced** `tickerIndicators` | a preference of the person |
 | Levels / context layers (halts, LULD, key levels, opening range, fills, profile) | `sw-chart:layers` / `chart.layers` | **synced** `layers` | same |
 | Chart settings (type, price scale, sessions, volume, grid, shading, breaks, high/low, auto stretch, zoom preset, visibility) | `sw-chart:settings` / `chart.settings` | **synced** `chartSettings` | same; a remote change does not re-zoom this device's view (below) |
@@ -59,6 +60,35 @@ A remote `chartSettings` change applies at once (chart type, grid, …) but does
 re-fit the current view on the other devices (`settingsFromRemote` on both `CandleChart`s): a
 zoom preset chosen on the phone must not throw away the desktop's current zoom and pan. The next
 ticker or timeframe opened there uses the new preset.
+
+## Indicator colours
+
+Owner, 2026-11-07: an indicator line's colour is one preference, not a per-chart setting. Code:
+`packages/chart-core/src/indicatorColors.ts` (model, keys, migration rule), applied in
+`packages/app-state/src/store.ts`; the pickers call the store's `indicatorColorActions` through
+each chart's `indicatorColorActions` prop.
+
+- **Key:** `"<identity>/<role>"`. The identity is the indicator type, plus the period where the
+  period makes a different line: `ema:9`, `ema:20`, `sma:50`. VWAP has no period, and Bollinger,
+  RSI and MACD are one study each in the catalogue (their periods tune the same study), so they key
+  as `vwap`, `bb`, `rsi`, `macd`. The role is chart-core's `ColorRole` (`line`, `upper`, `fill`,
+  `macd`, `signal`, `histUp`, `upSoft`, `area`, …). Example: `{"ema:9/line": "#aa00ff",
+  "macd/histUp": "#3fb97a"}`.
+- **Writes:** `settings.patch`, one entry per role, so two devices recolouring different lines (or
+  different parts of one MACD) both land; a role set back to its default is removed. "Reset to
+  default" in an indicator's settings removes every role of that identity (also those of MACD
+  styles not shown) and, as before, resets style, markers and periods of that chart's spec.
+- **Reads:** the store applies the map to every list it hands out (`indicators`,
+  `tickerIndicators`, each dashboard slot's own list), replacing the per-spec `colors`, so the
+  charts and menus keep reading `spec.colors` and need no knowledge of the map. Lists are written
+  without colours.
+- **Migration:** until the namespace exists the per-spec colours still show. The first build that
+  knows it seeds it once (`ifAbsent`) from every per-spec colour it holds (memory, dashboard
+  slots, ticker page, main chart; later wins, the main chart last since there are no per-spec
+  timestamps); the first device to connect wins, the others adopt the server's map. Afterwards
+  per-spec colours are ignored and dropped the next time each list is written. Nothing about the
+  older namespaces' shapes changed, so an older build still loads everything; it shows its own
+  per-spec colours until it updates.
 
 ## Server store
 

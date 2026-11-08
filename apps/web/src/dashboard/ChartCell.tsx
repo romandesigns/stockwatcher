@@ -172,6 +172,7 @@ export function ChartCell({ index, slot, symbol, feed, trading, selected, showSe
         defaultToolsVisible={false}
         indicators={ownIndicators}
         onIndicatorsChange={onIndicatorsChange}
+        indicatorColorActions={app.indicatorColorActions}
         serverIndicators={serverIndicators}
         macdStyles={macdStyles}
         serverLevels={serverLevels}

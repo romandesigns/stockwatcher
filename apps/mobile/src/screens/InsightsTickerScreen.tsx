@@ -174,6 +174,8 @@ function Body({ pkg, view, wide, reducedMotion, chart }: { pkg: TickerPackageWir
           defaultToolsVisible={false}
           indicators={indicators}
           onIndicatorsChange={onIndicatorsChange}
+          // Line colours are global: a colour picked here recolours every chart (indicatorColors.ts).
+          indicatorColorActions={appActions().indicatorColorActions}
           serverIndicators={serverIndicators}
           macdStyles={state.macdStyles ?? false}
           inspector

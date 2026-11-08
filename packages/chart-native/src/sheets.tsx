@@ -28,6 +28,7 @@ import {
   snapPrice,
   toggleIndicator,
   TRADE_SIZES,
+  type IndicatorColorActions,
   type IndicatorSpec,
   type OrderPlace,
   type OrderSide,
@@ -116,6 +117,7 @@ export function IndicatorSheet({
   onClose,
   indicators,
   onChange,
+  colorActions,
   theme = DEFAULT_CHART_THEME,
   macdStyles = false,
   reducedMotion,
@@ -124,6 +126,8 @@ export function IndicatorSheet({
   onClose: () => void;
   indicators: readonly IndicatorSpec[];
   onChange: (s: IndicatorSpec[]) => void;
+  /** Global line colours (the app store's indicatorColorActions); absent = written onto the spec. */
+  colorActions?: IndicatorColorActions;
   /** The chart's theme: the glyph tints (series1..3) and each indicator's default colours. */
   theme?: ChartTheme;
   /** The server computes the MACD styles (`indicators.macd.v2`): the MACD settings offer them. */
@@ -214,7 +218,7 @@ export function IndicatorSheet({
           </Pressable>
         }
       >
-        <IndicatorSettings spec={edited} colorSlot={slot} theme={theme} macdStyles={macdStyles} reducedMotion={reducedMotion} onChange={(next) => onChange(replaceIndicator(indicators, next))} />
+        <IndicatorSettings spec={edited} colorSlot={slot} theme={theme} macdStyles={macdStyles} reducedMotion={reducedMotion} onChange={(next) => onChange(replaceIndicator(indicators, next))} onColor={colorActions?.set} onResetColors={colorActions?.reset} />
       </Sheet>
     );
   }

@@ -1,5 +1,8 @@
 import {
   defaultRoleColor,
+  familyColor,
+  familyGradient,
+  hueOf,
   indicatorColorRoles,
   indicatorLabel,
   indicatorSwatches,
@@ -10,18 +13,21 @@ import {
   isPresetSpec,
   resetIndicator,
   roleColor,
+  swatchFamily,
   withIndicatorColor,
   type ChartTheme,
   type ColorRole,
   type IndicatorSpec,
+  type ToneFamily,
 } from "@stockwatcher/chart-core";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Icon } from "./Icon.tsx";
 import { Button } from "./ui/button.tsx";
 import { Dialog, DialogClose, DialogContent, DialogTitle } from "./ui/dialog.tsx";
 import { Input } from "./ui/input.tsx";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover.tsx";
 import { ScrollArea } from "./ui/scroll-area.tsx";
+import { Slider } from "./ui/slider.tsx";
 import { Switch } from "./ui/switch.tsx";
 import { cn } from "./ui/utils.ts";
 
@@ -30,10 +36,14 @@ import { cn } from "./ui/utils.ts";
  * - MACD: the style (computed on the server, `indicators.macd.v2`; offered only when the server
  *   computes them), the crossover markers, and the periods;
  * - every indicator: its line colours by role, each a swatch that opens a picker (the palette's
- *   indicator hues plus a hex field), and "Reset to default", which puts the whole indicator
- *   (style, markers, periods, colours) back to its preset.
- * Every change is a new spec for the chart's list, so it is saved and synced with the indicator
- * like the rest of its settings. Colours are display only (no server round trip).
+ *   indicator hues, a hue strip at the palette's own lightness and chroma, and a hex field), and
+ *   "Reset to default", which puts the indicator (style, markers, periods) back to its preset and
+ *   its colours back to the theme's.
+ * Style, markers and periods are a new spec for this chart's list (`onChange`). Colours are GLOBAL
+ * (owner, 2026-11-07: "should propagate globally and not independently per chart"): with `onColor`
+ * a pick goes to the app's synced `indicatorColors` and recolours that line on every chart and
+ * device, and `onResetColors` clears them; without them (a chart with no app store) a colour is
+ * still written onto the spec as before. Colours are display only (no server round trip).
  */
 export function IndicatorSettingsDialog({
   spec,
@@ -41,6 +51,8 @@ export function IndicatorSettingsDialog({
   theme,
   macdStyles,
   onChange,
+  onColor,
+  onResetColors,
   onClose,
 }: {
   /** The spec being edited; null = closed. */
@@ -51,21 +63,49 @@ export function IndicatorSettingsDialog({
   /** The server computes the MACD styles: show the Style list. */
   macdStyles: boolean;
   onChange: (next: IndicatorSpec) => void;
+  /** A line colour, global (the app store's setIndicatorColor); absent = written onto the spec. */
+  onColor?: (spec: IndicatorSpec, role: ColorRole, color: string | null) => void;
+  /** "Reset to default" for the global colours of this indicator (the app store's resetIndicatorColors). */
+  onResetColors?: (spec: IndicatorSpec) => void;
   onClose: () => void;
 }) {
   return (
     <Dialog open={spec !== null} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="inset-x-4 top-[8vh] mx-auto flex max-h-[84vh] w-auto max-w-sm flex-col">
-        {spec && <Body spec={spec} colorSlot={colorSlot} theme={theme} macdStyles={macdStyles} onChange={onChange} />}
+      {/* Centred (ui/dialog.tsx); the body scrolls inside it on a short screen. */}
+      <DialogContent className="max-w-sm">
+        {spec && <Body spec={spec} colorSlot={colorSlot} theme={theme} macdStyles={macdStyles} onChange={onChange} onColor={onColor} onResetColors={onResetColors} />}
       </DialogContent>
     </Dialog>
   );
 }
 
-function Body({ spec, colorSlot, theme, macdStyles, onChange }: { spec: IndicatorSpec; colorSlot: number; theme: ChartTheme; macdStyles: boolean; onChange: (next: IndicatorSpec) => void }) {
+function Body({
+  spec,
+  colorSlot,
+  theme,
+  macdStyles,
+  onChange,
+  onColor,
+  onResetColors,
+}: {
+  spec: IndicatorSpec;
+  colorSlot: number;
+  theme: ChartTheme;
+  macdStyles: boolean;
+  onChange: (next: IndicatorSpec) => void;
+  onColor?: (spec: IndicatorSpec, role: ColorRole, color: string | null) => void;
+  onResetColors?: (spec: IndicatorSpec) => void;
+}) {
   const isMacd = spec.kind === "macd";
   const style = macdStyleOf(spec);
   const swatches = indicatorSwatches(theme);
+  const swatchKey = swatches.join();
+  const family = useMemo(() => swatchFamily(swatchKey.split(",")), [swatchKey]);
+  const pickColor = (role: ColorRole, c: string | null) => (onColor ? onColor(spec, role, c) : onChange(withIndicatorColor(spec, role, c)));
+  const reset = () => {
+    onChange(resetIndicator(spec));
+    onResetColors?.(spec);
+  };
   // "Reset to default" puts the whole indicator back to its preset (style, markers, periods,
   // colours): an indicator turned off and on keeps its settings, so this is the way back.
   const custom = !isPresetSpec(spec);
@@ -77,7 +117,7 @@ function Body({ spec, colorSlot, theme, macdStyles, onChange }: { spec: Indicato
           <Icon name="clear" />
         </DialogClose>
       </div>
-      <ScrollArea className="flex min-h-0 flex-col" viewportClassName="max-h-[calc(84vh-56px)] px-4 pb-4">
+      <ScrollArea className="min-h-0 flex-1" viewportClassName="px-4 pb-4">
         <div className="flex flex-col gap-4">
           {isMacd && macdStyles && (
             <section aria-labelledby="ind-style" className="flex flex-col gap-1">
@@ -126,7 +166,7 @@ function Body({ spec, colorSlot, theme, macdStyles, onChange }: { spec: Indicato
               <h3 id="ind-colors" className="text-[11px] font-medium text-muted-foreground">
                 Colors
               </h3>
-              <Button variant="ghost" size="sm" disabled={!custom} onClick={() => onChange(resetIndicator(spec))} className="h-7 px-2 text-xs text-muted-foreground">
+              <Button variant="ghost" size="sm" disabled={!custom} onClick={reset} className="h-7 px-2 text-xs text-muted-foreground">
                 Reset to default
               </Button>
             </div>
@@ -138,7 +178,8 @@ function Body({ spec, colorSlot, theme, macdStyles, onChange }: { spec: Indicato
                 fallback={defaultRoleColor(theme, spec, colorSlot, role)}
                 picked={!!spec.colors?.[role]}
                 swatches={swatches}
-                onPick={(c) => onChange(withIndicatorColor(spec, role as ColorRole, c))}
+                family={family}
+                onPick={(c) => pickColor(role, c)}
               />
             ))}
           </section>
@@ -193,13 +234,32 @@ function PeriodField({ label, value, onValue }: { label: string; value: number; 
 }
 
 /**
- * One colour role: a swatch row that opens the picker (the palette's indicator hues as a swatch
- * row, plus a hex field). The swatch itself is the data colour; the picked one is ringed.
+ * One colour role: a swatch row that opens the picker: the palette's indicator hues as a swatch
+ * row, a hue strip at the swatches' lightness and chroma (HueStrip), and a hex field for exact
+ * values. The swatch itself is the data colour; the picked one is ringed. The popover flips and
+ * shifts to stay inside the viewport around the centred dialog and scrolls if it must.
  */
-function ColorField({ name, value, fallback, picked, swatches, onPick }: { name: string; value: string; fallback: string; picked: boolean; swatches: readonly string[]; onPick: (c: string | null) => void }) {
+function ColorField({
+  name,
+  value,
+  fallback,
+  picked,
+  swatches,
+  family,
+  onPick,
+}: {
+  name: string;
+  value: string;
+  fallback: string;
+  picked: boolean;
+  swatches: readonly string[];
+  family: ToneFamily | null;
+  onPick: (c: string | null) => void;
+}) {
   const [open, setOpen] = useState(false);
   const [hex, setHex] = useState(value);
   useEffect(() => setHex(value), [value, open]);
+  const pick = (c: string) => onPick(c.toLowerCase() === fallback.toLowerCase() ? null : c);
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger
@@ -215,7 +275,7 @@ function ColorField({ name, value, fallback, picked, swatches, onPick }: { name:
         <span className="flex-1 text-[13px]">{name}</span>
         <span className="font-mono text-[11px] text-text-faint">{picked ? value : "Default"}</span>
       </PopoverTrigger>
-      <PopoverContent side="bottom" align="start" className="w-64" positionerClassName="z-[60]">
+      <PopoverContent side="bottom" align="start" collisionPadding={12} className="w-72 max-w-[calc(100vw-1.5rem)]" positionerClassName="z-[60]">
         <div className="flex flex-col gap-3">
           <div role="group" aria-label={`${name} presets`} className="grid grid-cols-5 gap-2">
             {swatches.map((c) => {
@@ -226,13 +286,14 @@ function ColorField({ name, value, fallback, picked, swatches, onPick }: { name:
                   type="button"
                   aria-label={c}
                   aria-pressed={on}
-                  onClick={() => onPick(c.toLowerCase() === fallback.toLowerCase() ? null : c)}
+                  onClick={() => pick(c)}
                   className={cn("size-9 rounded-lg transition-[box-shadow,scale] duration-150 focus-visible:outline-none active:scale-95", on ? "shadow-[0_0_0_2px_var(--color-card),0_0_0_4px_var(--color-foreground)]" : "focus-visible:shadow-[0_0_0_2px_var(--color-ring)]")}
                   style={{ background: c }}
                 />
               );
             })}
           </div>
+          {family && <HueStrip name={name} value={value} family={family} onPick={pick} />}
           <div className="flex items-center gap-2">
             <span className="size-8 shrink-0 rounded-lg" style={{ background: isHexColor(hex) ? hex : value }} aria-hidden />
             <Input
@@ -245,7 +306,7 @@ function ColorField({ name, value, fallback, picked, swatches, onPick }: { name:
                 const raw = e.currentTarget.value.trim();
                 const next = raw.startsWith("#") ? raw : `#${raw}`;
                 setHex(raw);
-                if (isHexColor(next)) onPick(next.toLowerCase() === fallback.toLowerCase() ? null : next);
+                if (isHexColor(next)) pick(next);
               }}
             />
           </div>
@@ -257,5 +318,47 @@ function ColorField({ name, value, fallback, picked, swatches, onPick }: { name:
         </div>
       </PopoverContent>
     </Popover>
+  );
+}
+
+/**
+ * Any hue in the palette's tonal family (owner, 2026-11-07: "a color picker with the same
+ * brightness/saturation as the color samples"): a Base UI slider over 0-359 degrees whose track is
+ * the family's L and C at every hue (chart-core swatchFamily / familyGradient, OKLCH,
+ * gamut-mapped), so whatever hue is picked sits beside the swatches as one of them. The thumb
+ * shows the colour it will pick; the hex field below shows the result. Arrows step 1 degree,
+ * Page Up/Down and Shift+arrows 15. A neutral current colour (no hue) starts the thumb at 0.
+ */
+function HueStrip({ name, value, family, onPick }: { name: string; value: string; family: ToneFamily; onPick: (c: string) => void }) {
+  const [hue, setHue] = useState(() => Math.round(hueOf(value) ?? 0) % 360);
+  // Follow a colour picked elsewhere (a swatch, the hex field, another device), but not the one this
+  // strip just produced: its hue read back can differ by a degree after rounding to sRGB.
+  useEffect(() => {
+    if (value.toLowerCase() === familyColor(family, hue)) return;
+    const h = hueOf(value);
+    if (h !== null) setHue(Math.round(h) % 360);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `hue` is the strip's own echo, not a trigger
+  }, [value, family]);
+  const gradient = useMemo(() => `linear-gradient(to right, ${familyGradient(family).map((s) => `${s.color} ${(s.offset * 100).toFixed(2)}%`).join(", ")})`, [family]);
+  const current = familyColor(family, hue);
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="text-[11px] text-text-faint">Any hue, same tone as the swatches</span>
+      <Slider
+        aria-label={`${name} hue`}
+        min={0}
+        max={359}
+        step={1}
+        largeStep={15}
+        value={hue}
+        onValueChange={(h) => {
+          setHue(h);
+          onPick(familyColor(family, h));
+        }}
+        getAriaValueText={(_, h) => `${Math.round(h)} degrees, ${familyColor(family, h)}`}
+        trackStyle={{ background: gradient }}
+        thumbStyle={{ background: current }}
+      />
+    </div>
   );
 }

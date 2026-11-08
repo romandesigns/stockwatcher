@@ -1,5 +1,8 @@
 import {
   defaultRoleColor,
+  familyColor,
+  familyGradient,
+  hueOf,
   indicatorColorRoles,
   indicatorSwatches,
   isHexColor,
@@ -9,26 +12,51 @@ import {
   isPresetSpec,
   resetIndicator,
   roleColor,
+  swatchFamily,
   withIndicatorColor,
   type ChartTheme,
   type ColorRole,
   type IndicatorSpec,
+  type ToneFamily,
 } from "@stockwatcher/chart-core";
-import { useEffect, useState } from "react";
-import { LayoutAnimation, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { LayoutAnimation, PanResponder, Pressable, ScrollView, StyleSheet, Text, TextInput, View, type AccessibilityActionEvent } from "react-native";
+import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 import { Icon, UI } from "./ui.tsx";
 
 /**
  * One indicator's settings inside the phone's indicator sheet (chart-web's IndicatorSettingsDialog,
  * owner 2026-11-07): for a MACD its style (when the server computes them), crossover markers and
  * periods; for every indicator its line colours, each a row that opens a swatch row (the palette's
- * indicator hues, 44 px targets) and a hex field, and "Reset to default". Every change is a new
- * spec for the chart's list, saved and synced with the indicator.
+ * indicator hues, 44 px targets), a hue strip at the swatches' own lightness and chroma (HueStrip)
+ * and a hex field, and "Reset to default". Style, markers and periods are a new spec for this
+ * chart's list; colours are GLOBAL through `onColor` / `onResetColors` (the app store's
+ * indicatorColorActions: every chart, every device), or written onto the spec without them.
  */
-export function IndicatorSettings({ spec, colorSlot, theme, macdStyles, onChange, reducedMotion }: { spec: IndicatorSpec; colorSlot: number; theme: ChartTheme; macdStyles: boolean; onChange: (next: IndicatorSpec) => void; reducedMotion?: boolean }) {
+export function IndicatorSettings({
+  spec,
+  colorSlot,
+  theme,
+  macdStyles,
+  onChange,
+  onColor,
+  onResetColors,
+  reducedMotion,
+}: {
+  spec: IndicatorSpec;
+  colorSlot: number;
+  theme: ChartTheme;
+  macdStyles: boolean;
+  onChange: (next: IndicatorSpec) => void;
+  onColor?: (spec: IndicatorSpec, role: ColorRole, color: string | null) => void;
+  onResetColors?: (spec: IndicatorSpec) => void;
+  reducedMotion?: boolean;
+}) {
   const [open, setOpen] = useState<ColorRole | null>(null);
   const style = macdStyleOf(spec);
   const swatches = indicatorSwatches(theme);
+  const swatchKey = swatches.join();
+  const family = useMemo(() => swatchFamily(swatchKey.split(",")), [swatchKey]);
   // "Reset to default" puts the whole indicator back to its preset (style, markers, periods,
   // colours): an indicator turned off and on keeps its settings, so this is the way back.
   const custom = !isPresetSpec(spec);
@@ -90,7 +118,11 @@ export function IndicatorSettings({ spec, colorSlot, theme, macdStyles, onChange
       )}
       <View style={s.colorsHeader}>
         <Text style={[s.label, { marginTop: 0 }]}>Colors</Text>
-        <Pressable accessibilityRole="button" disabled={!custom} onPress={() => onChange(resetIndicator(spec))} hitSlop={8} style={({ pressed }) => [s.reset, pressed && { opacity: 0.6 }, !custom && { opacity: 0.4 }]}>
+        <Pressable accessibilityRole="button" disabled={!custom} onPress={() => {
+            onChange(resetIndicator(spec));
+            onResetColors?.(spec);
+          }}
+          hitSlop={8} style={({ pressed }) => [s.reset, pressed && { opacity: 0.6 }, !custom && { opacity: 0.4 }]}>
           <Text style={s.resetText}>Reset to default</Text>
         </Pressable>
       </View>
@@ -98,7 +130,11 @@ export function IndicatorSettings({ spec, colorSlot, theme, macdStyles, onChange
         const value = roleColor(theme, spec, colorSlot, role);
         const fallback = defaultRoleColor(theme, spec, colorSlot, role);
         const picked = !!spec.colors?.[role];
-        const pick = (c: string | null) => onChange(withIndicatorColor(spec, role, c && c.toLowerCase() === fallback.toLowerCase() ? null : c));
+        const pick = (raw: string | null) => {
+          const c = raw && raw.toLowerCase() === fallback.toLowerCase() ? null : raw;
+          if (onColor) onColor(spec, role, c);
+          else onChange(withIndicatorColor(spec, role, c));
+        };
         return (
           <View key={role}>
             <Pressable accessibilityRole="button" accessibilityState={{ expanded: open === role }} accessibilityLabel={`${name} color, ${picked ? value : "default"}`} onPress={() => toggle(role)} style={({ pressed }) => [s.row, pressed && { backgroundColor: UI.raised }]}>
@@ -106,7 +142,7 @@ export function IndicatorSettings({ spec, colorSlot, theme, macdStyles, onChange
               <Text style={[s.name, { flex: 1 }]}>{name}</Text>
               <Text style={s.hex}>{picked ? value : "Default"}</Text>
             </Pressable>
-            {open === role && <Picker value={value} swatches={swatches} onPick={pick} name={name} />}
+            {open === role && <Picker value={value} swatches={swatches} family={family} onPick={pick} name={name} />}
           </View>
         );
       })}
@@ -119,8 +155,8 @@ function withoutStyle(spec: IndicatorSpec): IndicatorSpec {
   return rest;
 }
 
-/** The phone's colour picker: the preset swatches (44 px, wrapping to fill the row evenly) and a hex field. */
-function Picker({ value, swatches, onPick, name }: { value: string; swatches: readonly string[]; onPick: (c: string | null) => void; name: string }) {
+/** The phone's colour picker: the preset swatches (44 px, wrapping to fill the row evenly), the hue strip and a hex field. */
+function Picker({ value, swatches, family, onPick, name }: { value: string; swatches: readonly string[]; family: ToneFamily | null; onPick: (c: string | null) => void; name: string }) {
   const [hex, setHex] = useState(value);
   useEffect(() => setHex(value), [value]);
   return (
@@ -137,6 +173,7 @@ function Picker({ value, swatches, onPick, name }: { value: string; swatches: re
           );
         })}
       </View>
+      {family && <HueStrip name={name} value={value} family={family} onPick={onPick} />}
       <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
         <View style={[s.dot, { width: 32, height: 32, borderRadius: 8, backgroundColor: isHexColor(hex) ? hex : value }]} />
         <TextInput
@@ -155,6 +192,94 @@ function Picker({ value, swatches, onPick, name }: { value: string; swatches: re
             if (isHexColor(next)) onPick(next);
           }}
         />
+      </View>
+    </View>
+  );
+}
+
+/**
+ * Any hue in the swatches' tonal family (chart-web's HueStrip, same chart-core OKLCH maths, so a
+ * hue gives the same hex on both): a gradient strip drawn with react-native-svg at the family's L
+ * and C, and a thumb dragged with RN core's PanResponder (no native module: the app's native
+ * fingerprint, and so its OTA updates, stay as they are). 48 px tall, a tap anywhere jumps there.
+ * Screen readers get an adjustable control: swipe up/down moves 15 degrees.
+ */
+function HueStrip({ name, value, family, onPick }: { name: string; value: string; family: ToneFamily; onPick: (c: string) => void }) {
+  const [hue, setHue] = useState(() => Math.round(hueOf(value) ?? 0) % 360);
+  const [width, setWidth] = useState(0);
+  const widthRef = useRef(0);
+  const pickRef = useRef(onPick);
+  pickRef.current = onPick;
+  // Follow a colour picked elsewhere, not this strip's own echo (its hue read back may differ by a degree).
+  useEffect(() => {
+    if (value.toLowerCase() === familyColor(family, hue)) return;
+    const h = hueOf(value);
+    if (h !== null) setHue(Math.round(h) % 360);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `hue` is the strip's own echo, not a trigger
+  }, [value, family]);
+  const familyRef = useRef(family);
+  familyRef.current = family;
+  const choose = (h: number) => {
+    const next = Math.min(359, Math.max(0, Math.round(h)));
+    setHue(next);
+    pickRef.current(familyColor(familyRef.current, next));
+  };
+  const chooseRef = useRef(choose);
+  chooseRef.current = choose;
+  const responder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: () => true,
+        // The sheet's scroll view must not take a horizontal drag away mid-pick.
+        onPanResponderTerminationRequest: () => false,
+        onPanResponderGrant: (e) => widthRef.current > 0 && chooseRef.current((e.nativeEvent.locationX / widthRef.current) * 359),
+        onPanResponderMove: (e) => widthRef.current > 0 && chooseRef.current((e.nativeEvent.locationX / widthRef.current) * 359),
+      }),
+    [],
+  );
+  const stops = useMemo(() => familyGradient(family), [family]);
+  const current = familyColor(family, hue);
+  const THUMB = 30;
+  const x = width > 0 ? (hue / 359) * width : 0;
+  const onAction = (e: AccessibilityActionEvent) => {
+    if (e.nativeEvent.actionName === "increment") choose(Math.min(359, hue + 15));
+    if (e.nativeEvent.actionName === "decrement") choose(Math.max(0, hue - 15));
+  };
+  return (
+    <View style={{ gap: 4 }}>
+      <Text style={s.hint}>Any hue, same tone as the swatches</Text>
+      <View
+        accessible
+        accessibilityRole="adjustable"
+        accessibilityLabel={`${name} hue`}
+        accessibilityValue={{ min: 0, max: 359, now: hue, text: `${hue} degrees, ${current}` }}
+        accessibilityActions={[{ name: "increment" }, { name: "decrement" }]}
+        onAccessibilityAction={onAction}
+        onLayout={(e) => {
+          widthRef.current = e.nativeEvent.layout.width;
+          setWidth(e.nativeEvent.layout.width);
+        }}
+        style={s.strip}
+        {...responder.panHandlers}
+      >
+        <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+          <Svg width="100%" height="100%">
+            <Defs>
+              <LinearGradient id="hue" x1="0" y1="0" x2="1" y2="0">
+                {stops.map((st) => (
+                  <Stop key={st.offset} offset={st.offset} stopColor={st.color} />
+                ))}
+              </LinearGradient>
+            </Defs>
+            <Rect x="0" y="12" width="100%" height="24" rx="12" fill="url(#hue)" />
+          </Svg>
+        </View>
+        {width > 0 && (
+          <View pointerEvents="none" style={[s.thumbRing, { left: x - THUMB / 2 - 3 }]}>
+            <View style={[s.thumbFill, { backgroundColor: current }]} />
+          </View>
+        )}
       </View>
     </View>
   );
@@ -207,4 +332,8 @@ const s = StyleSheet.create({
   // The picked swatch's ring is a fill behind it, not a border (owner rule).
   ring: { width: 40, height: 40, borderRadius: 11, alignItems: "center", justifyContent: "center" },
   swatch: { width: 34, height: 34, borderRadius: 9 },
+  // The hue strip: 48 px of touch height around a 24 px gradient; the thumb's ring is a fill behind it (no border).
+  strip: { height: 48, justifyContent: "center", marginHorizontal: 15 },
+  thumbRing: { position: "absolute", top: 6, width: 36, height: 36, borderRadius: 18, backgroundColor: UI.text, alignItems: "center", justifyContent: "center" },
+  thumbFill: { width: 30, height: 30, borderRadius: 15 },
 });

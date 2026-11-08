@@ -184,6 +184,7 @@ function ModalChart({ feed, symbol, detectionEpisodeId, detectionRunEpoch, notic
           drawingSettings={drawingSettings}
           indicators={indicators}
           onIndicatorsChange={app.setIndicators}
+          indicatorColorActions={app.indicatorColorActions}
           serverIndicators={serverIndicators}
           macdStyles={macdStyles}
           onIndicatorHistory={loadIndicatorHistory}

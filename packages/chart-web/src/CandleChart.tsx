@@ -70,6 +70,7 @@ import {
   type Drawing,
   type DrawingDraft,
   type DrawingKind,
+  type IndicatorColorActions,
   type IndicatorSpec,
   type IndicatorValuesLike,
   type ChartLevels,
@@ -207,6 +208,12 @@ export interface CandleChartProps {
   /** Indicators on the chart. Controlled when onIndicatorsChange is set. */
   indicators?: IndicatorSpec[];
   onIndicatorsChange?: (specs: IndicatorSpec[]) => void;
+  /**
+   * Indicator line colours are global (owner, 2026-11-07): the app store's indicatorColorActions,
+   * so a colour picked here recolours that line on every chart and device. Absent: a colour is
+   * written onto this chart's own spec, as before.
+   */
+  indicatorColorActions?: IndicatorColorActions;
   /**
    * The server's values for `indicators` (`indicators.v1`: the feed's `indicators`, the store's
    * set for this chart's extended-hours setting), drawn as sent; the chart computes none itself.
@@ -373,6 +380,7 @@ export function CandleChart({
   toolbar = false,
   indicators: indicatorsProp,
   onIndicatorsChange,
+  indicatorColorActions,
   serverIndicators,
   macdStyles = false,
   serverLevels,
@@ -1312,6 +1320,7 @@ export function CandleChart({
         onToolChange={changeTool}
         indicators={indicatorSpecs}
         onIndicatorsChange={setIndicators}
+        indicatorColorActions={indicatorColorActions}
         macdStyles={macdStyles}
         theme={theme}
         seriesColors={[theme.series1, theme.series2, theme.series3]}

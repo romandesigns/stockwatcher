@@ -245,6 +245,8 @@ function DayChart({ pkg, view, focus, selected, chart }: { pkg: TickerPackageWir
           defaultToolsVisible={false}
           indicators={indicators}
           onIndicatorsChange={onIndicatorsChange}
+          // Line colours are global: a colour picked here recolours every chart (indicatorColors.ts).
+          indicatorColorActions={HAS_WINDOW ? getAppStore().getState().indicatorColorActions : undefined}
           serverIndicators={serverIndicators}
           macdStyles={state.macdStyles ?? false}
           inspector

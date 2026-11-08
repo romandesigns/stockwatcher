@@ -27,6 +27,7 @@ export { Popover, PopoverContent, PopoverTrigger } from "./popover.tsx";
 export { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./tooltip.tsx";
 export { Dialog, DialogClose, DialogContent, DialogTitle } from "./dialog.tsx";
 export { Switch } from "./switch.tsx";
+export { Slider } from "./slider.tsx";
 export { Tabs, TabsContent, TabsIndicator, TabsList, TabsTrigger } from "./tabs.tsx";
 export { ScrollArea, ScrollBar } from "./scroll-area.tsx";
 export {

@@ -75,6 +75,7 @@ import {
   type GestureAction,
   type GestureContext,
   type GestureInput,
+  type IndicatorColorActions,
   type IndicatorSpec,
   type IndicatorValuesLike,
   type ChartLevels,
@@ -178,6 +179,12 @@ export interface CandleChartProps {
   toolbar?: boolean;
   indicators?: IndicatorSpec[];
   onIndicatorsChange?: (specs: IndicatorSpec[]) => void;
+  /**
+   * Indicator line colours are global (owner, 2026-11-07): the app store's indicatorColorActions,
+   * so a colour picked here recolours that line on every chart and device. Absent: a colour is
+   * written onto this chart's own spec, as before.
+   */
+  indicatorColorActions?: IndicatorColorActions;
   /**
    * The server's values for `indicators` (`indicators.v1`), as on the web chart: drawn as sent,
    * nothing computed here (null = asked, not answered yet: no lines). Absent = the server
@@ -310,6 +317,7 @@ export function CandleChart({
   inspector = false,
   indicators: indicatorsProp,
   onIndicatorsChange,
+  indicatorColorActions,
   serverIndicators,
   macdStyles = false,
   onIndicatorHistory,
@@ -1130,7 +1138,7 @@ export function CandleChart({
         profileBin={profileBin}
         onProfileBinChange={onProfileBinChange}
       />
-      <IndicatorSheet open={sheet.kind === "indicators"} onClose={() => setSheet({ kind: "none" })} indicators={indicatorSpecs} onChange={setIndicators} macdStyles={macdStyles} theme={theme} reducedMotion={reducedMotion} />
+      <IndicatorSheet open={sheet.kind === "indicators"} onClose={() => setSheet({ kind: "none" })} indicators={indicatorSpecs} onChange={setIndicators} colorActions={indicatorColorActions} macdStyles={macdStyles} theme={theme} reducedMotion={reducedMotion} />
       {alerts && quickAlert && (
         <QuickAlertSheet
           key={quickAlert.key}

@@ -1,7 +1,7 @@
 import { formatPrice, formatVolume } from "@stockwatcher/chart-core";
 import { Icon } from "@stockwatcher/chart-web";
 import { cn, Dialog, DialogContent, DialogTitle, Input, ScrollArea } from "@stockwatcher/chart-web/ui";
-import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   activeTickerFilters,
   directoryStale,
@@ -120,17 +120,11 @@ export interface TickerSearchProps {
   /** Recently opened tickers, newest first: synced across devices by the app's store, which also records an opening (openTicker). */
   recents: readonly string[];
   onSelect: (symbol: string) => void;
-  /**
-   * The header's search pill (SearchPill): the panel opens over its exact position and width, like
-   * VS Code's quick open. Measured at each opening, so the nav rail's width and the window size
-   * are always right. Absent (phone layout): a centred panel lower down.
-   */
-  anchor?: RefObject<HTMLElement | null>;
 }
 
 /**
- * Quick-open for tickers, modelled on VS Code's Ctrl+P: a panel near the
- * top of the screen with one input and a list under it. Letters match in
+ * Quick-open for tickers, modelled on VS Code's Ctrl+P: a centred panel
+ * (like every modal) with one input and a list under it. Letters match in
  * order (fuzzy), tickers rank above names, matched letters are
  * highlighted; ↑/↓ move, Enter opens, Esc closes. With an empty query the
  * recently opened tickers come first, then the most active. Every row shows
@@ -139,14 +133,7 @@ export interface TickerSearchProps {
  * mock universe, fixture sources only) are shown, labelled, and cannot be
  * opened.
  */
-export function TickerSearch({ open, onOpenChange, symbols, search, mock, current, recents, onSelect, anchor }: TickerSearchProps) {
-  // Where the pill is on screen when the panel opens (null: not anchored, or not measured yet).
-  const [box, setBox] = useState<{ left: number; top: number; width: number } | null>(null);
-  useLayoutEffect(() => {
-    if (!open) return;
-    const r = anchor?.current?.getBoundingClientRect();
-    setBox(r ? { left: r.left, top: r.top, width: r.width } : null);
-  }, [open, anchor]);
+export function TickerSearch({ open, onOpenChange, symbols, search, mock, current, recents, onSelect }: TickerSearchProps) {
   const [query, setQuery] = useState("");
   // The active row is a symbol, not an index: rows refresh every second and an index would
   // silently point at another stock once the list changes under it.
@@ -272,8 +259,10 @@ export function TickerSearch({ open, onOpenChange, symbols, search, mock, curren
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         initialFocus={inputRef}
-        className={cn("overflow-hidden p-0", !box && "top-16 left-1/2 w-[min(560px,calc(100vw-32px))] -translate-x-1/2")}
-        style={box ? { left: box.left, top: box.top, width: box.width, transform: "none" } : undefined}
+        // Centred like every modal (owner, 2026-11-07; ui/dialog.tsx), no longer laid over the
+        // header's search pill. A fixed height, so the panel does not move while typing changes
+        // how many rows match: the list scrolls inside it.
+        className="h-[min(560px,calc(100dvh-2rem-env(safe-area-inset-top)-env(safe-area-inset-bottom)))] w-[min(560px,calc(100vw-2rem))] max-w-none overflow-hidden p-0"
       >
         <DialogTitle>Go to ticker</DialogTitle>
         <div className="flex items-center gap-2 px-3 pt-3 pb-2">
@@ -327,7 +316,7 @@ export function TickerSearch({ open, onOpenChange, symbols, search, mock, curren
             </div>
           ))}
         </div>
-        <ScrollArea viewportRef={listRef} viewportClassName="max-h-[min(420px,55vh)]">
+        <ScrollArea viewportRef={listRef} className="min-h-0 flex-1">
         <ul id="ticker-search-list" role="listbox" aria-label="Tickers" className="m-0 list-none p-1.5 pt-0 pr-2.5">
           {rows.length === 0 && <li className="px-3 py-6 text-center text-xs text-text-faint">{query ? `No ticker matches “${query}”` : "No ticker matches these filters"}.</li>}
           {shown.map((r, i) => (

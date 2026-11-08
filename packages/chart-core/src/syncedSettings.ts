@@ -18,6 +18,9 @@ import { parseLayers } from "./levels.ts";
 //                     never wipes it, and its absence just means nothing is remembered.
 // - `tickerIndicators` the Insights ticker page chart's own IndicatorSpec[] (until 2026-11-07 a
 //                     per-device preference; seeded once from it), apart from the main list.
+// - `indicatorColors` every indicator line's colour, GLOBAL across charts and devices, as a flat
+//                     MAP "<identity>/<role>" → "#rrggbb" (indicatorColors.ts), entry patches;
+//                     seeded once from the per-spec colours, which are ignored from then on.
 // - `layers`          ChartLayers (levels.ts parseLayers)
 // - `chartSettings`   ChartSettings (chartSettings.ts parseChartSettings)
 // - `drawingSettings` DrawingSettings (drawingSettings.ts parseDrawingSettings)
@@ -38,6 +41,7 @@ export const SYNC_NS = {
   drawingSettings: "drawingSettings",
   indicatorMemory: "indicatorMemory",
   tickerIndicators: "tickerIndicators",
+  indicatorColors: "indicatorColors",
 } as const;
 
 const DRAWINGS_PREFIX = "drawings:";

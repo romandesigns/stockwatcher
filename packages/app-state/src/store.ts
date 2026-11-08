@@ -1,18 +1,27 @@
 import {
+  applyIndicatorColors,
   diffDrawings,
   drawingsFromDoc,
   drawingsNs,
+  indicatorColorPatch,
+  migrateSpecColors,
   parseChartSettings,
   parseDrawingSettings,
+  parseIndicatorColors,
   parseIndicatorMemory,
   parseIndicators,
   parseLayers,
   rememberIndicators,
+  resetIndicatorColorsPatch,
+  stripIndicatorColors,
   SYNC_NS,
   type ChartLayers,
   type ChartSettings,
+  type ColorRole,
   type Drawing,
   type DrawingSettings,
+  type IndicatorColorActions,
+  type IndicatorColors,
   type IndicatorSpec,
   type Timeframe,
   type ToolboxPlacement,
@@ -65,7 +74,18 @@ export interface DevicePrefs {
 
 export interface AppState {
   // Synced.
+  /**
+   * The main chart's indicators. This list, `tickerIndicators` and every dashboard slot's own list
+   * are shown with the GLOBAL line colours applied (`indicatorColors`, chart-core
+   * applyIndicatorColors), so every chart draws a line in the same colour; their stored per-spec
+   * colours are ignored once the global map exists and dropped when the list is next written.
+   */
   indicators: IndicatorSpec[];
+  /**
+   * Every indicator line's colour, by identity and role (SYNC_NS.indicatorColors, chart-core
+   * indicatorColors.ts); null until the namespace exists (until then per-spec colours apply).
+   */
+  indicatorColors: IndicatorColors | null;
   /**
    * The settings of indicators turned off, by id (SYNC_NS.indicatorMemory): turning one back on
    * restores them (rememberIndicators). Shared by the main chart, the dashboard charts and the
@@ -135,6 +155,12 @@ export interface AppState {
   /** Every indicator setter remembers what is turned off and restores what is turned back on (rememberIndicators). */
   setIndicators(next: IndicatorSpec[]): void;
   setTickerIndicators(next: IndicatorSpec[]): void;
+  /** One line colour of an indicator, on every chart and device (null = back to the theme default). An entry patch. */
+  setIndicatorColor(spec: IndicatorSpec, role: ColorRole, color: string | null): void;
+  /** "Reset to default" for an indicator's colours: every stored role of its identity, everywhere. */
+  resetIndicatorColors(spec: IndicatorSpec): void;
+  /** The two above as one stable object, for every chart's `indicatorColorActions` prop. */
+  indicatorColorActions: IndicatorColorActions;
   setLayers(next: ChartLayers): void;
   setChartSettings(next: ChartSettings): void;
   setDrawingSettings(next: DrawingSettings): void;
@@ -223,10 +249,12 @@ export type AppStore = StoreApi<AppState> & {
 /** The synced slices, read from the engine. */
 function syncedFrom(sync: SettingsSync, shownSymbol: string) {
   const view = parseView(sync.get(APP_NS.view));
+  const colors = parseIndicatorColors(sync.get(SYNC_NS.indicatorColors));
   return {
-    indicators: parseIndicators(sync.get(SYNC_NS.indicators)),
+    indicators: applyIndicatorColors(parseIndicators(sync.get(SYNC_NS.indicators)), colors),
+    indicatorColors: colors,
     indicatorMemory: parseIndicatorMemory(sync.get(SYNC_NS.indicatorMemory)),
-    tickerIndicators: parseIndicators(sync.get(SYNC_NS.tickerIndicators)),
+    tickerIndicators: applyIndicatorColors(parseIndicators(sync.get(SYNC_NS.tickerIndicators)), colors),
     layers: parseLayers(sync.get(SYNC_NS.layers)),
     chartSettings: parseChartSettings(sync.get(SYNC_NS.chartSettings)),
     chartSettingsFromRemote: sync.origin(SYNC_NS.chartSettings) === "remote",
@@ -238,13 +266,38 @@ function syncedFrom(sync: SettingsSync, shownSymbol: string) {
     searchRecents: parseSearchRecents(sync.get(APP_NS.searchRecents)),
     favorites: parseFavorites(sync.get(APP_NS.favorites)),
     drawings: shownSymbol ? drawingsFromDoc(sync.get(drawingsNs(shownSymbol))) : [],
-    dashboard: parseDashboard(sync.get(APP_NS.dashboard)),
+    dashboard: coloredDashboard(parseDashboard(sync.get(APP_NS.dashboard)), colors),
     alerts: parseAlertRules(sync.get(ALERTS_NS.rules)),
     alertStates: parseAlertStates(sync.get(ALERTS_NS.state)),
     alertPrefs: parseAlertPrefs(sync.get(ALERTS_NS.prefs)),
     tradingAccount: parseTradingAccount(sync.get(TRADING_NS.account)),
     brokerStatus: parseBrokerStatus(sync.get(TRADING_NS.status)),
   };
+}
+
+/** The dashboard with the global colours applied to each slot's own indicator list. */
+function coloredDashboard(d: DashboardState, colors: IndicatorColors | null): DashboardState {
+  if (!colors || !d.slots.some((s) => s.indicators?.length)) return d;
+  return { ...d, slots: d.slots.map((s) => (s.indicators ? { ...s, indicators: applyIndicatorColors(s.indicators, colors) } : s)) };
+}
+
+/**
+ * The one-time migration of per-spec colours into `indicatorColors` (chart-core
+ * migrateSpecColors): while this device knows no global map, every per-spec colour it holds is
+ * queued as an `ifAbsent` seed. The first device to connect makes its colours the global ones; on
+ * the others the server's map wins and the seed is dropped. Nothing to migrate, nothing seeded.
+ * Run at start, whenever a list arrives before the map does, and before every indicator or colour
+ * write (with the list being written, latest of all), so a write that drops per-spec colours can
+ * never get ahead of their seed.
+ */
+function seedIndicatorColors(sync: SettingsSync, incoming: readonly IndicatorSpec[] = []): void {
+  if (sync.get(SYNC_NS.indicatorColors) !== undefined) return;
+  const slots = parseDashboard(sync.get(APP_NS.dashboard)).slots.map((s) => s.indicators ?? []);
+  const memory = Object.values(parseIndicatorMemory(sync.get(SYNC_NS.indicatorMemory)));
+  // Oldest first, the main chart last: there are no per-spec timestamps, so the main list, the
+  // one most likely edited most recently, wins a conflict (indicatorColors.ts).
+  const map = migrateSpecColors([memory, ...slots, parseIndicators(sync.get(SYNC_NS.tickerIndicators)), parseIndicators(sync.get(SYNC_NS.indicators)), incoming]);
+  if (Object.keys(map).length) sync.seed(SYNC_NS.indicatorColors, map);
 }
 
 /** How many explicit picks are remembered (`AppState.picked`). */
@@ -290,7 +343,12 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
     if (Object.keys(r.set).length || r.remove.length) sync.patch(SYNC_NS.indicatorMemory, r.set, r.remove);
     return r.specs;
   };
-  const writeIndicators = (ns: string, next: readonly IndicatorSpec[]) => sync.set(ns, withMemory(parseIndicators(sync.get(ns)), next));
+  // Lists are written without per-spec colours (they are global now), after the migration seed.
+  const writeIndicators = (ns: string, next: readonly IndicatorSpec[]) => {
+    seedIndicatorColors(sync, next);
+    sync.set(ns, stripIndicatorColors(withMemory(stripIndicatorColors(parseIndicators(sync.get(ns))), stripIndicatorColors(next))));
+  };
+  seedIndicatorColors(sync);
 
   const currentView = (): ViewState => parseView(sync.get(APP_NS.view));
   const writeView = (patch: Partial<ViewState>) => sync.set(APP_NS.view, { ...currentView(), ...patch });
@@ -318,6 +376,19 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
 
     setIndicators: (next) => writeIndicators(SYNC_NS.indicators, next),
     setTickerIndicators: (next) => writeIndicators(SYNC_NS.tickerIndicators, next),
+    setIndicatorColor: (spec, role, color) => {
+      seedIndicatorColors(sync);
+      const p = indicatorColorPatch(spec, role, color);
+      sync.patch(SYNC_NS.indicatorColors, p.set, p.remove);
+    },
+    resetIndicatorColors: (spec) => {
+      seedIndicatorColors(sync);
+      sync.patch(SYNC_NS.indicatorColors, {}, resetIndicatorColorsPatch(spec, parseIndicatorColors(sync.get(SYNC_NS.indicatorColors))));
+    },
+    indicatorColorActions: {
+      set: (spec, role, color) => get().setIndicatorColor(spec, role, color),
+      reset: (spec) => get().resetIndicatorColors(spec),
+    },
     setLayers: (next) => sync.set(SYNC_NS.layers, next),
     setChartSettings: (next) => sync.set(SYNC_NS.chartSettings, next),
     setDrawingSettings: (next) => sync.set(SYNC_NS.drawingSettings, next),
@@ -368,7 +439,8 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
     setDashboardIndicators: (slot, next) => {
       // An unlinked chart starts from the shared list (DashboardSlot.indicators null).
       const own = parseDashboard(sync.get(APP_NS.dashboard)).slots[slot]?.indicators;
-      writeSlot(slot, { indicators: withMemory(own ?? parseIndicators(sync.get(SYNC_NS.indicators)), next) });
+      seedIndicatorColors(sync, next);
+      writeSlot(slot, { indicators: stripIndicatorColors(withMemory(stripIndicatorColors(own ?? parseIndicators(sync.get(SYNC_NS.indicators))), stripIndicatorColors(next))) });
     },
     setDashboardLayers: (slot, next) => writeSlot(slot, { layers: parseLayers(next) }),
     loadIntoSelected: (symbol) => get().setDashboardSymbol(get().dashboardSelected, symbol),
@@ -449,15 +521,30 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
   // Follow the engine: a local edit (optimistic) and another device's edit both arrive here.
   // Only the slice whose namespace changed is re-read, so an unrelated namespace (another
   // symbol's drawings) never re-renders anything.
+  const colorsNow = () => store.getState().indicatorColors;
   const unsubscribe = sync.subscribe((ns) => {
     const s = store.getState();
+    // A list (or the memory) arriving before any global map may carry per-spec colours to migrate.
+    // After a microtask: a snapshot announces its namespaces one by one, and the seed must see all
+    // of them (a write in between seeds synchronously itself, so it cannot run ahead of it).
+    if (s.indicatorColors === null && (ns === SYNC_NS.indicators || ns === SYNC_NS.tickerIndicators || ns === SYNC_NS.indicatorMemory || ns === APP_NS.dashboard)) queueMicrotask(() => seedIndicatorColors(sync));
     switch (ns) {
       case SYNC_NS.indicators:
-        return store.setState({ indicators: parseIndicators(sync.get(ns)) });
+        return store.setState({ indicators: applyIndicatorColors(parseIndicators(sync.get(ns)), colorsNow()) });
       case SYNC_NS.indicatorMemory:
         return store.setState({ indicatorMemory: parseIndicatorMemory(sync.get(ns)) });
       case SYNC_NS.tickerIndicators:
-        return store.setState({ tickerIndicators: parseIndicators(sync.get(ns)) });
+        return store.setState({ tickerIndicators: applyIndicatorColors(parseIndicators(sync.get(ns)), colorsNow()) });
+      case SYNC_NS.indicatorColors: {
+        // A colour changed (on this device or another): every chart's list is re-coloured.
+        const colors = parseIndicatorColors(sync.get(ns));
+        return store.setState({
+          indicatorColors: colors,
+          indicators: applyIndicatorColors(parseIndicators(sync.get(SYNC_NS.indicators)), colors),
+          tickerIndicators: applyIndicatorColors(parseIndicators(sync.get(SYNC_NS.tickerIndicators)), colors),
+          dashboard: coloredDashboard(parseDashboard(sync.get(APP_NS.dashboard)), colors),
+        });
+      }
       case SYNC_NS.layers:
         return store.setState({ layers: parseLayers(sync.get(ns)) });
       case SYNC_NS.chartSettings:
@@ -477,7 +564,7 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
       case ALERTS_NS.prefs:
         return store.setState({ alertPrefs: parseAlertPrefs(sync.get(ns)) });
       case APP_NS.dashboard: {
-        const dashboard = parseDashboard(sync.get(ns));
+        const dashboard = coloredDashboard(parseDashboard(sync.get(ns)), colorsNow());
         // Fewer charts (from any device): the selection stays on a chart that is still shown.
         const n = s.noticeSelection;
         const keepNotice = n && n.index < dashboard.count && n.source === dashboard.source && dashboard.slots[n.index]?.symbol === n.context.symbol;

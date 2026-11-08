@@ -236,6 +236,7 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
         drawingSettings={drawingSettings}
         indicators={indicators}
         onIndicatorsChange={app.setIndicators}
+        indicatorColorActions={app.indicatorColorActions}
         serverIndicators={serverIndicators}
         macdStyles={macdStyles}
         onIndicatorHistory={loadIndicatorHistory}
