@@ -4,8 +4,10 @@ import {
   drawingsNs,
   parseChartSettings,
   parseDrawingSettings,
+  parseIndicatorMemory,
   parseIndicators,
   parseLayers,
+  rememberIndicators,
   SYNC_NS,
   type ChartLayers,
   type ChartSettings,
@@ -64,6 +66,14 @@ export interface DevicePrefs {
 export interface AppState {
   // Synced.
   indicators: IndicatorSpec[];
+  /**
+   * The settings of indicators turned off, by id (SYNC_NS.indicatorMemory): turning one back on
+   * restores them (rememberIndicators). Shared by the main chart, the dashboard charts and the
+   * ticker page: an indicator's settings are the person's, whichever chart turned it off.
+   */
+  indicatorMemory: Record<string, IndicatorSpec>;
+  /** The Insights ticker page chart's own indicators (SYNC_NS.tickerIndicators). */
+  tickerIndicators: IndicatorSpec[];
   layers: ChartLayers;
   chartSettings: ChartSettings;
   /** The last chart settings change came from another device: the chart applies it without re-zooming (settings-sync.md). */
@@ -122,7 +132,9 @@ export interface AppState {
   picked: readonly string[];
 
   // Synced setters.
+  /** Every indicator setter remembers what is turned off and restores what is turned back on (rememberIndicators). */
   setIndicators(next: IndicatorSpec[]): void;
+  setTickerIndicators(next: IndicatorSpec[]): void;
   setLayers(next: ChartLayers): void;
   setChartSettings(next: ChartSettings): void;
   setDrawingSettings(next: DrawingSettings): void;
@@ -198,7 +210,7 @@ export interface AppStoreOptions {
    * `ifAbsent` once, only while the engine knows nothing for that namespace: the first device to
    * connect makes its value the shared one, as chart-core's migrateLegacySettings does.
    */
-  legacy?: { searchRecents?: unknown; tradeQty?: unknown };
+  legacy?: { searchRecents?: unknown; tradeQty?: unknown; tickerIndicators?: unknown };
 }
 
 export type AppStore = StoreApi<AppState> & {
@@ -213,6 +225,8 @@ function syncedFrom(sync: SettingsSync, shownSymbol: string) {
   const view = parseView(sync.get(APP_NS.view));
   return {
     indicators: parseIndicators(sync.get(SYNC_NS.indicators)),
+    indicatorMemory: parseIndicatorMemory(sync.get(SYNC_NS.indicatorMemory)),
+    tickerIndicators: parseIndicators(sync.get(SYNC_NS.tickerIndicators)),
     layers: parseLayers(sync.get(SYNC_NS.layers)),
     chartSettings: parseChartSettings(sync.get(SYNC_NS.chartSettings)),
     chartSettingsFromRemote: sync.origin(SYNC_NS.chartSettings) === "remote",
@@ -262,7 +276,21 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
     if (sync.get(APP_NS.tradeQty) === undefined && legacy.tradeQty !== undefined && legacy.tradeQty !== null) {
       sync.seed(APP_NS.tradeQty, parseTradeQty(legacy.tradeQty));
     }
+    if (sync.get(SYNC_NS.tickerIndicators) === undefined && Array.isArray(legacy.tickerIndicators)) {
+      const specs = parseIndicators(legacy.tickerIndicators);
+      if (specs.length) sync.seed(SYNC_NS.tickerIndicators, specs);
+    }
   }
+
+  // An indicator list change, with the turned-off settings remembered and the turned-on ones
+  // restored. Read from the engine, not the slices, so two quick toggles both land; the memory is
+  // written as an entry patch, so two devices turning off different indicators keep both.
+  const withMemory = (prev: readonly IndicatorSpec[], next: readonly IndicatorSpec[]): IndicatorSpec[] => {
+    const r = rememberIndicators(prev, parseIndicators(next), parseIndicatorMemory(sync.get(SYNC_NS.indicatorMemory)));
+    if (Object.keys(r.set).length || r.remove.length) sync.patch(SYNC_NS.indicatorMemory, r.set, r.remove);
+    return r.specs;
+  };
+  const writeIndicators = (ns: string, next: readonly IndicatorSpec[]) => sync.set(ns, withMemory(parseIndicators(sync.get(ns)), next));
 
   const currentView = (): ViewState => parseView(sync.get(APP_NS.view));
   const writeView = (patch: Partial<ViewState>) => sync.set(APP_NS.view, { ...currentView(), ...patch });
@@ -288,7 +316,8 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
     alertStatus: null,
     lastFired: null,
 
-    setIndicators: (next) => sync.set(SYNC_NS.indicators, next),
+    setIndicators: (next) => writeIndicators(SYNC_NS.indicators, next),
+    setTickerIndicators: (next) => writeIndicators(SYNC_NS.tickerIndicators, next),
     setLayers: (next) => sync.set(SYNC_NS.layers, next),
     setChartSettings: (next) => sync.set(SYNC_NS.chartSettings, next),
     setDrawingSettings: (next) => sync.set(SYNC_NS.drawingSettings, next),
@@ -336,7 +365,11 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
     toggleFavorite: (symbol) => sync.set(APP_NS.favorites, toggledFavorites(parseFavorites(sync.get(APP_NS.favorites)), symbol)),
     moveFavorite: (symbol, delta) => sync.set(APP_NS.favorites, movedFavorite(parseFavorites(sync.get(APP_NS.favorites)), symbol, delta)),
     setDashboardTimeframe: (slot, timeframe) => writeSlot(slot, { timeframe }),
-    setDashboardIndicators: (slot, next) => writeSlot(slot, { indicators: parseIndicators(next) }),
+    setDashboardIndicators: (slot, next) => {
+      // An unlinked chart starts from the shared list (DashboardSlot.indicators null).
+      const own = parseDashboard(sync.get(APP_NS.dashboard)).slots[slot]?.indicators;
+      writeSlot(slot, { indicators: withMemory(own ?? parseIndicators(sync.get(SYNC_NS.indicators)), next) });
+    },
     setDashboardLayers: (slot, next) => writeSlot(slot, { layers: parseLayers(next) }),
     loadIntoSelected: (symbol) => get().setDashboardSymbol(get().dashboardSelected, symbol),
     selectNotice: (raw) => {
@@ -421,6 +454,10 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
     switch (ns) {
       case SYNC_NS.indicators:
         return store.setState({ indicators: parseIndicators(sync.get(ns)) });
+      case SYNC_NS.indicatorMemory:
+        return store.setState({ indicatorMemory: parseIndicatorMemory(sync.get(ns)) });
+      case SYNC_NS.tickerIndicators:
+        return store.setState({ tickerIndicators: parseIndicators(sync.get(ns)) });
       case SYNC_NS.layers:
         return store.setState({ layers: parseLayers(sync.get(ns)) });
       case SYNC_NS.chartSettings:

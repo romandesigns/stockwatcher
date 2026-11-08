@@ -3,6 +3,7 @@ import { CandleChart, Icon } from "@stockwatcher/chart-web";
 import { cn, Collapsible, CollapsibleContent, CollapsibleTrigger, ScrollArea, Tip } from "@stockwatcher/chart-web/ui";
 import { tickerPageHash, tickerPageView, type TickerAlertView, type TickerChannel, type TickerMissedView, type TickerPackageWire, type TickerPageView, type TickerRequest, type TickerState, type Tone } from "@stockwatcher/shared";
 import { useEffect, useMemo, useState, type ReactElement } from "react";
+import { getAppStore, useApp } from "../state/store.ts";
 import { useTickerPackage } from "./useTickerPage.ts";
 
 /**
@@ -14,26 +15,20 @@ const TICKER_LAYERS: ChartLayers = { ...DEFAULT_LAYERS, premarket: false, dayRan
 
 const time = (ms: number, seconds?: boolean) => formatEtTime12(ms, seconds);
 
+// The page's store needs `window` (its settings engine reads localStorage); the page is also
+// rendered to static markup in tests, where there is none: there it starts with no indicators
+// and keeps its own. Fixed per environment, so the hook order never changes between renders.
+const HAS_WINDOW = typeof window !== "undefined";
+
 /**
- * The page chart's indicators, remembered in this browser (a viewing preference for this page,
- * apart from the main chart's synced list): kept across days and visits.
+ * The page chart's indicators: synced (SYNC_NS.tickerIndicators, owner 2026-11-07: indicator
+ * settings follow the person to every device, live), apart from the main chart's list, kept
+ * across days and visits. Before that they were this browser's own (TICKER_INDICATORS_LEGACY_KEY,
+ * seeded once by the store). Turning one off and on keeps its settings (app-state withMemory).
  */
-const INDICATORS_KEY = "stockwatcher:insights-ticker:indicators";
-function loadIndicators(): IndicatorSpec[] {
-  try {
-    const v: unknown = JSON.parse(localStorage.getItem(INDICATORS_KEY) ?? "[]");
-    return Array.isArray(v) ? v.filter((s): s is IndicatorSpec => typeof s === "object" && s !== null && typeof (s as IndicatorSpec).id === "string" && typeof (s as IndicatorSpec).kind === "string") : [];
-  } catch {
-    return [];
-  }
-}
-function saveIndicators(specs: IndicatorSpec[]) {
-  try {
-    localStorage.setItem(INDICATORS_KEY, JSON.stringify(specs));
-  } catch {
-    // Private window or blocked storage: the choice lasts for this visit.
-  }
-}
+const useTickerIndicators: () => [IndicatorSpec[], (next: IndicatorSpec[]) => void] = HAS_WINDOW
+  ? () => [useApp((s) => s.tickerIndicators), getAppStore().getState().setTickerIndicators]
+  : () => useState<IndicatorSpec[]>([]);
 
 const TONE: Record<Tone, string> = { neutral: "text-foreground", up: "text-good", down: "text-critical", dim: "text-muted-foreground" };
 
@@ -48,11 +43,7 @@ const TONE: Record<Tone, string> = { neutral: "text-foreground", up: "text-good"
 export function TickerPage({ channel, want, onBack }: { channel: TickerChannel | undefined; want: TickerRequest; onBack: () => void }) {
   const state = useTickerPackage(channel, want);
   // Held here, not in the chart: the chart remounts with every day, the choice should not.
-  const [indicators, setIndicatorsState] = useState<IndicatorSpec[]>(loadIndicators);
-  const setIndicators = (next: IndicatorSpec[]) => {
-    setIndicatorsState(next);
-    saveIndicators(next);
-  };
+  const [indicators, setIndicators] = useTickerIndicators();
   const pkg = state.pkg && state.pkg.symbol === want.symbol && state.pkg.day === want.day ? state.pkg : null;
   const view = useMemo(() => (pkg ? tickerPageView(pkg, time) : null), [pkg]);
   const go = (day: string | null) => {

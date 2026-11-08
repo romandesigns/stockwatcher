@@ -7,7 +7,8 @@ import {
   MACD_STYLES,
   macdMarkersOn,
   macdStyleOf,
-  resetIndicatorColors,
+  isPresetSpec,
+  resetIndicator,
   roleColor,
   withIndicatorColor,
   type ChartTheme,
@@ -29,7 +30,8 @@ import { cn } from "./ui/utils.ts";
  * - MACD: the style (computed on the server, `indicators.macd.v2`; offered only when the server
  *   computes them), the crossover markers, and the periods;
  * - every indicator: its line colours by role, each a swatch that opens a picker (the palette's
- *   indicator hues plus a hex field), and "Reset to default" for them all.
+ *   indicator hues plus a hex field), and "Reset to default", which puts the whole indicator
+ *   (style, markers, periods, colours) back to its preset.
  * Every change is a new spec for the chart's list, so it is saved and synced with the indicator
  * like the rest of its settings. Colours are display only (no server round trip).
  */
@@ -64,7 +66,9 @@ function Body({ spec, colorSlot, theme, macdStyles, onChange }: { spec: Indicato
   const isMacd = spec.kind === "macd";
   const style = macdStyleOf(spec);
   const swatches = indicatorSwatches(theme);
-  const custom = !!spec.colors && Object.keys(spec.colors).length > 0;
+  // "Reset to default" puts the whole indicator back to its preset (style, markers, periods,
+  // colours): an indicator turned off and on keeps its settings, so this is the way back.
+  const custom = !isPresetSpec(spec);
   return (
     <>
       <div className="flex items-center gap-2 px-4 pt-3 pb-2">
@@ -122,7 +126,7 @@ function Body({ spec, colorSlot, theme, macdStyles, onChange }: { spec: Indicato
               <h3 id="ind-colors" className="text-[11px] font-medium text-muted-foreground">
                 Colors
               </h3>
-              <Button variant="ghost" size="sm" disabled={!custom} onClick={() => onChange(resetIndicatorColors(spec))} className="h-7 px-2 text-xs text-muted-foreground">
+              <Button variant="ghost" size="sm" disabled={!custom} onClick={() => onChange(resetIndicator(spec))} className="h-7 px-2 text-xs text-muted-foreground">
                 Reset to default
               </Button>
             </div>

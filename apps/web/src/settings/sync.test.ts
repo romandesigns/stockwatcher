@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { DEFAULT_CHART_SETTINGS, drawingsFromDoc } from "@stockwatcher/chart-core";
+import { createAppStore } from "@stockwatcher/app-state";
+import { DEFAULT_CHART_SETTINGS, drawingsFromDoc, parseIndicators } from "@stockwatcher/chart-core";
 import { createSettingsSync, type SettingsClientMessage } from "@stockwatcher/shared";
 import { LEGACY_KEYS, migrateLegacy } from "./sync.ts";
 
@@ -42,5 +43,25 @@ describe("migrating this browser's pre-sync settings", () => {
     const fresh = createSettingsSync({ initial: null });
     migrateLegacy(fresh, store({}));
     expect(fresh.namespaces()).toEqual([]);
+  });
+});
+
+describe("a cache written by a build from before the indicator memory", () => {
+  test("loads, toggles and starts remembering without touching the indicators shape", () => {
+    // What an older build left in localStorage: the engine's cache with an `indicators` doc only.
+    const older = createSettingsSync({ initial: null, newOpId: () => "old-1" });
+    older.set("indicators", [{ id: "macd", kind: "macd", fast: 12, slow: 26, signal: 9, style: "ppo" }]);
+    let raw = "";
+    const sync = createSettingsSync({ initial: null, save: (r) => (raw = r) });
+    sync.set("indicators", older.get("indicators"));
+    const reloaded = createSettingsSync({ initial: raw });
+    const app = createAppStore({ sync: reloaded });
+    expect(app.getState().indicators).toEqual([{ id: "macd", kind: "macd", fast: 12, slow: 26, signal: 9, style: "ppo" }]);
+    expect(app.getState().indicatorMemory).toEqual({});
+    app.getState().setIndicators([]);
+    app.getState().setIndicators([{ id: "macd", kind: "macd", fast: 12, slow: 26, signal: 9 }]);
+    expect(app.getState().indicators).toEqual([{ id: "macd", kind: "macd", fast: 12, slow: 26, signal: 9, style: "ppo" }]);
+    // The list is still the plain IndicatorSpec[] an older build reads.
+    expect(parseIndicators(reloaded.get("indicators"))).toEqual(app.getState().indicators);
   });
 });

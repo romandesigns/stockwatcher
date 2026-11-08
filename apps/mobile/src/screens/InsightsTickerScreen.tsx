@@ -10,7 +10,7 @@ import { useDashboardFeed } from "../feed/dashboardFeed";
 import { Collapse } from "../motion/Collapse";
 import { useReducedMotion } from "../motion/useReducedMotion";
 import type { RootStackParamList } from "../navigation/RootStack";
-import { getPreference, setPreference } from "../storage/preferences";
+import { appActions, useApp } from "../state/store";
 import { colors, fonts } from "../theme";
 
 /**
@@ -27,11 +27,6 @@ const time = (ms: number, seconds?: boolean) => formatEtTime12(ms, seconds);
 const TONE: Record<Tone, string> = { neutral: colors.text, up: colors.good, down: colors.critical, dim: colors.textDim };
 /** The chart's metrics: the ticker modal's legible set. */
 const OPTIONS = { priceAxisWidth: 52, volumeHeight: 32, timeAxisHeight: 18, paneGap: 4, fontSize: 10, timeLabelSpacing: 64 } as const;
-/**
- * The page chart's indicators, remembered on this phone (a viewing preference for this page,
- * apart from the main chart's synced list): kept across days and visits.
- */
-const INDICATORS_KEY = "insights-ticker:indicators";
 /** The chart's tool row above the plot, and each oscillator pane (RSI, MACD) under it: the chart grows by them rather than squeezing the candles. */
 const TOOLBAR_H = 36;
 const PANE_H = 80;
@@ -68,23 +63,12 @@ export function InsightsTickerScreen({ route }: Props) {
   const view = useMemo(() => (pkg ? tickerPageView(pkg, time) : null), [pkg]);
   const [width, setWidth] = useState(0);
   const wide = width >= 600;
-  // Held here, not in the chart: the chart remounts with every day, the choice should not.
-  const [indicators, setIndicatorsState] = useState<IndicatorSpec[]>([]);
-  useEffect(() => {
-    let mounted = true;
-    getPreference<IndicatorSpec[]>(INDICATORS_KEY)
-      .then((v) => {
-        if (mounted && Array.isArray(v)) setIndicatorsState(v.filter((s) => typeof s?.id === "string" && typeof s?.kind === "string"));
-      })
-      .catch(() => {});
-    return () => {
-      mounted = false;
-    };
-  }, []);
-  const setIndicators = useCallback((next: IndicatorSpec[]) => {
-    setIndicatorsState(next);
-    void setPreference(INDICATORS_KEY, next).catch(() => {});
-  }, []);
+  // Held in the app store, not the chart (it remounts with every day): synced
+  // (SYNC_NS.tickerIndicators, owner 2026-11-07: indicator settings follow the person to every
+  // device, live), apart from the main chart's list. Before that this phone's own preference
+  // (TICKER_INDICATORS_LEGACY_KEY), seeded once by the store. Off and on keeps an indicator's settings.
+  const indicators = useApp((st) => st.tickerIndicators);
+  const [setIndicators] = useState(() => appActions().setTickerIndicators);
   const setDay = (d: string | null) => {
     if (d) navigation.setParams({ symbol, day: d } as never);
   };

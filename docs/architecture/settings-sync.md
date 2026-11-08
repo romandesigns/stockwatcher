@@ -31,6 +31,8 @@ search recents (`searchRecents`) sync too. Each client reads all of it through i
 | Setting | Before (web / phone key) | Now | Why |
 |---|---|---|---|
 | Indicators, their parameters (colours follow their order) | `sw-chart:indicators` / `chart.indicators` | **synced** `indicators` | a preference of the person |
+| The settings of indicators turned off (style, colours, periods, markers), restored when turned back on; "Reset to default" clears them (2026-11-07) | none (new) | **synced** `indicatorMemory` (map id → spec, entry patches) | a preference of the person |
+| The Insights ticker page chart's own indicators | `stockwatcher:insights-ticker:indicators` / `insights-ticker:indicators` (seeded once) | **synced** `tickerIndicators` | a preference of the person |
 | Levels / context layers (halts, LULD, key levels, opening range, fills, profile) | `sw-chart:layers` / `chart.layers` | **synced** `layers` | same |
 | Chart settings (type, price scale, sessions, volume, grid, shading, breaks, high/low, auto stretch, zoom preset, visibility) | `sw-chart:settings` / `chart.settings` | **synced** `chartSettings` | same; a remote change does not re-zoom this device's view (below) |
 | Drawing toolbox contents (Settings → Drawing) | `sw-chart:drawing` / `chart.drawing` | **synced** `drawingSettings` | same |

@@ -6,7 +6,8 @@ import {
   MACD_STYLES,
   macdMarkersOn,
   macdStyleOf,
-  resetIndicatorColors,
+  isPresetSpec,
+  resetIndicator,
   roleColor,
   withIndicatorColor,
   type ChartTheme,
@@ -28,7 +29,9 @@ export function IndicatorSettings({ spec, colorSlot, theme, macdStyles, onChange
   const [open, setOpen] = useState<ColorRole | null>(null);
   const style = macdStyleOf(spec);
   const swatches = indicatorSwatches(theme);
-  const custom = !!spec.colors && Object.keys(spec.colors).length > 0;
+  // "Reset to default" puts the whole indicator back to its preset (style, markers, periods,
+  // colours): an indicator turned off and on keeps its settings, so this is the way back.
+  const custom = !isPresetSpec(spec);
   const toggle = (role: ColorRole) => {
     // Smooth motion: the picker row opens and closes rather than jumping (owner rule); cut with reduced motion.
     if (!reducedMotion) LayoutAnimation.configureNext(LayoutAnimation.create(160, "easeInEaseOut", "opacity"));
@@ -87,7 +90,7 @@ export function IndicatorSettings({ spec, colorSlot, theme, macdStyles, onChange
       )}
       <View style={s.colorsHeader}>
         <Text style={[s.label, { marginTop: 0 }]}>Colors</Text>
-        <Pressable accessibilityRole="button" disabled={!custom} onPress={() => onChange(resetIndicatorColors(spec))} hitSlop={8} style={({ pressed }) => [s.reset, pressed && { opacity: 0.6 }, !custom && { opacity: 0.4 }]}>
+        <Pressable accessibilityRole="button" disabled={!custom} onPress={() => onChange(resetIndicator(spec))} hitSlop={8} style={({ pressed }) => [s.reset, pressed && { opacity: 0.6 }, !custom && { opacity: 0.4 }]}>
           <Text style={s.resetText}>Reset to default</Text>
         </Pressable>
       </View>

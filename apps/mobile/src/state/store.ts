@@ -16,6 +16,8 @@ const DEVICE_KEYS: Readonly<Record<keyof DevicePrefs, string>> = {
 };
 /** The recents before they synced: seeded once into an empty namespace, then left alone. */
 const LEGACY_RECENTS = "search.recent";
+/** The Insights ticker page chart's indicators before they synced (2026-11-07), this phone's own. */
+export const TICKER_INDICATORS_LEGACY_KEY = "insights-ticker:indicators";
 
 const read = (key: string) => getPreference<unknown>(key).catch(() => null);
 
@@ -25,12 +27,13 @@ let loaded: AppStore | null = null;
 /** The app's store, loaded once (sign-in retries reuse it) with the synced cache and this phone's layout. Never rejects. */
 export function loadAppStore(): Promise<AppStore> {
   loading ??= (async () => {
-    const [sync, toolbox, paneHeights, toolsVisible, recents] = await Promise.all([
+    const [sync, toolbox, paneHeights, toolsVisible, recents, tickerIndicators] = await Promise.all([
       loadSettingsSync(),
       read(DEVICE_KEYS.toolbox),
       read(DEVICE_KEYS.paneHeights),
       read(DEVICE_KEYS.toolsVisible),
       read(LEGACY_RECENTS),
+      read(TICKER_INDICATORS_LEGACY_KEY),
     ]);
     const initial: DevicePrefs = {
       toolbox: toolbox ? parseToolboxPlacement(toolbox, DEFAULT_TOOLBOX_PHONE) : DEFAULT_TOOLBOX_PHONE,
@@ -40,7 +43,7 @@ export function loadAppStore(): Promise<AppStore> {
     loaded = createAppStore({
       sync,
       device: { initial, save: (key, value) => void setPreference(DEVICE_KEYS[key], value).catch(() => {}) },
-      legacy: { searchRecents: recents },
+      legacy: { searchRecents: recents, tickerIndicators },
     });
     return loaded;
   })();

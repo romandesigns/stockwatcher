@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { DEFAULT_TOOLBOX_PHONE, drawingsNs, drawingsToDoc, SYNC_NS, type Drawing } from "@stockwatcher/chart-core";
-import { createSettingsSync, type SettingsClientMessage } from "@stockwatcher/shared";
+import { DEFAULT_TOOLBOX_PHONE, drawingsNs, drawingsToDoc, INDICATOR_PRESETS, replaceIndicator, resetIndicator, SYNC_NS, toggleIndicator, type Drawing, type IndicatorSpec } from "@stockwatcher/chart-core";
+import { applyPatch, createSettingsSync, type SettingsClientMessage } from "@stockwatcher/shared";
 import { APP_NS, DEFAULT_VIEW, parseFavorites, parseSearchRecents, parseSymbol, parseTradeQty, parseView } from "./namespaces.ts";
 import { createAppStore, shownTicker, type DevicePrefs } from "./store.ts";
 
 /** A store on a real (offline) sync engine, plus a way to play another device's write. */
-function rig(opts: { legacy?: { searchRecents?: unknown; tradeQty?: unknown }; device?: boolean } = {}) {
+function rig(opts: { legacy?: { searchRecents?: unknown; tradeQty?: unknown; tickerIndicators?: unknown }; device?: boolean } = {}) {
   let n = 0;
   const sync = createSettingsSync({ initial: null, newOpId: () => `op-${++n}`, setTimer: () => 0, clearTimer: () => {} });
   const saved: [keyof DevicePrefs, unknown][] = [];
@@ -374,5 +374,127 @@ describe("favorites", () => {
     const other = rig();
     other.remote(APP_NS.favorites, ["TSLA", "junk!", "SMPL"]);
     expect(other.s().favorites).toEqual(["TSLA", "SMPL"]);
+  });
+});
+
+/**
+ * Two devices on one in-memory server that stores and pushes like crates/server/src/settings.rs:
+ * every set or patch is applied, its rev bumped, and the result broadcast to every connection as
+ * `settings.changed` (the writer recognises its own opId as the echo).
+ */
+function twoDevices() {
+  const docs = new Map<string, { rev: number; value: unknown }>();
+  const engines: ReturnType<typeof createSettingsSync>[] = [];
+  const make = (name: string) => {
+    let n = 0;
+    const sync = createSettingsSync({ initial: null, newOpId: () => `${name}-${++n}`, setTimer: () => 0, clearTimer: () => {} });
+    engines.push(sync);
+    sync.attach((m) => {
+      if (m.type !== "settings.set" && m.type !== "settings.patch") return true;
+      const cur = docs.get(m.ns);
+      const value = m.type === "settings.set" ? m.value : applyPatch(cur?.value, m.set ?? {}, m.remove ?? []);
+      const doc = { rev: (cur?.rev ?? 0) + 1, value };
+      docs.set(m.ns, doc);
+      // Pushed after the send returns, as a socket frame would be.
+      queueMicrotask(() => {
+        for (const e of engines) e.handle({ type: "settings.changed", ns: m.ns, rev: doc.rev, value: doc.value, opId: m.opId, updatedAt: 1 });
+      });
+      return true;
+    });
+    sync.handle({ type: "settings.snapshot", docs: [...docs].map(([ns, d]) => ({ ns, ...d, updatedAt: 1 })) });
+    return { sync, store: createAppStore({ sync }) };
+  };
+  const settle = async () => {
+    for (let i = 0; i < 4; i++) {
+      for (const e of engines) e.flush();
+      await Promise.resolve();
+    }
+  };
+  return { phone: make("phone"), web: make("web"), docs, settle };
+}
+
+describe("app store: indicator settings persist and sync live", () => {
+  const preset = (id: string) => INDICATOR_PRESETS.find((p) => p.id === id)!;
+  const styled: IndicatorSpec = { ...preset("macd"), style: "ppo", markers: false, fast: 8, colors: { macd: "#112233" } };
+
+  test("off then on restores style, colours and periods; the memory is synced as its own namespace", () => {
+    const r = rig();
+    r.s().setIndicators([styled]);
+    r.s().setIndicators(toggleIndicator(r.s().indicators, preset("macd")));
+    expect(r.s().indicators).toEqual([]);
+    expect(r.sync.get(SYNC_NS.indicatorMemory)).toEqual({ macd: styled });
+    expect(r.s().indicatorMemory).toEqual({ macd: styled });
+    r.s().setIndicators(toggleIndicator(r.s().indicators, preset("macd")));
+    expect(r.s().indicators).toEqual([styled]);
+  });
+
+  test("Reset to default clears the remembered settings", () => {
+    const r = rig();
+    r.s().setIndicators([styled]);
+    r.s().setIndicators([]);
+    r.s().setIndicators([preset("macd")]);
+    expect(r.s().indicators).toEqual([styled]);
+    r.s().setIndicators(replaceIndicator(r.s().indicators, resetIndicator(styled)));
+    expect(r.s().indicatorMemory).toEqual({});
+    r.s().setIndicators([]);
+    r.s().setIndicators([preset("macd")]);
+    expect(r.s().indicators).toEqual([preset("macd")]);
+  });
+
+  test("an older build's stored settings (no memory namespace) load and toggle as before", () => {
+    const r = rig();
+    r.connect([{ ns: SYNC_NS.indicators, value: [{ id: "macd", kind: "macd", fast: 12, slow: 26, signal: 9 }] }]);
+    expect(r.s().indicators).toEqual([preset("macd")]);
+    expect(r.s().indicatorMemory).toEqual({});
+    r.s().setIndicators([]);
+    r.s().setIndicators([preset("macd")]);
+    expect(r.s().indicators).toEqual([preset("macd")]);
+    // An older device rewriting the list whole never touches the memory.
+    r.s().setIndicators([styled]);
+    r.s().setIndicators([]);
+    r.remote(SYNC_NS.indicators, [{ id: "vwap", kind: "vwap", junk: 1 }]);
+    expect(r.s().indicatorMemory).toEqual({ macd: styled });
+  });
+
+  test("a dashboard chart's own set and the ticker page's set remember too (one memory)", () => {
+    const r = rig();
+    r.s().setDashboardIndicators(1, [styled]);
+    r.s().setDashboardIndicators(1, []);
+    r.s().setTickerIndicators([preset("macd")]);
+    expect(r.s().tickerIndicators).toEqual([styled]);
+    r.s().setDashboardIndicators(1, [preset("macd")]);
+    expect(r.s().dashboard.slots[1]?.indicators).toEqual([styled]);
+  });
+
+  test("the ticker page's old per-device list is seeded once into the synced namespace", () => {
+    const r = rig({ legacy: { tickerIndicators: [{ id: "vwap", kind: "vwap" }, { junk: true }] } });
+    expect(r.s().tickerIndicators).toEqual([preset("vwap")]);
+  });
+
+  test("a change on one device reaches the other's store live: colour, MACD style, and the remembered settings", async () => {
+    const { phone, web, settle } = twoDevices();
+    const seen: IndicatorSpec[][] = [];
+    web.store.subscribe((s, p) => s.indicators !== p.indicators && seen.push(s.indicators));
+    phone.store.getState().setIndicators([preset("macd")]);
+    await settle();
+    expect(web.store.getState().indicators).toEqual([preset("macd")]);
+    // The phone picks a style and a colour: the open web chart follows without a reload.
+    phone.store.getState().setIndicators([{ ...preset("macd"), style: "ppo" }]);
+    await settle();
+    phone.store.getState().setIndicators([{ ...preset("macd"), style: "ppo", colors: { macd: "#112233" } }]);
+    await settle();
+    expect(web.store.getState().indicators).toEqual([{ ...preset("macd"), style: "ppo", colors: { macd: "#112233" } }]);
+    expect(seen.length).toBeGreaterThanOrEqual(3);
+    // Turned off on the phone, on again on the web: the web restores the phone's settings.
+    phone.store.getState().setIndicators([]);
+    await settle();
+    expect(web.store.getState().indicatorMemory.macd).toEqual({ ...preset("macd"), style: "ppo", colors: { macd: "#112233" } });
+    web.store.getState().setIndicators(toggleIndicator(web.store.getState().indicators, preset("macd")));
+    await settle();
+    expect(phone.store.getState().indicators).toEqual([{ ...preset("macd"), style: "ppo", colors: { macd: "#112233" } }]);
+    // The ticker page's list syncs the same way, web to phone.
+    web.store.getState().setTickerIndicators([preset("rsi-14")]);
+    await settle();
+    expect(phone.store.getState().tickerIndicators).toEqual([preset("rsi-14")]);
   });
 });

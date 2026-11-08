@@ -1,7 +1,7 @@
 import { parseChartSettings } from "./chartSettings.ts";
 import { parseDrawingSettings } from "./drawingSettings.ts";
 import { DRAWING_KINDS, type Anchor, type Drawing, type DrawingKind } from "./drawings.ts";
-import { INDICATOR_PLACEMENT, isColorRole, isHexColor, isMacdStyle, type ColorRole, type IndicatorKind, type IndicatorSpec } from "./indicators.ts";
+import { INDICATOR_PLACEMENT, isColorRole, isHexColor, isMacdStyle, isPresetSpec, presetOf, sameIndicatorSettings, type ColorRole, type IndicatorKind, type IndicatorSpec } from "./indicators.ts";
 import { parseLayers } from "./levels.ts";
 
 // What the clients sync through the server (owner request 2026-10-18: "any setting change takes
@@ -11,6 +11,13 @@ import { parseLayers } from "./levels.ts";
 //
 // Synced (the same person's preferences, whatever the screen):
 // - `indicators`      IndicatorSpec[] (parseIndicators)
+// - `indicatorMemory` the settings of indicators turned OFF, as a MAP of id → IndicatorSpec
+//                     (parseIndicatorMemory, rememberIndicators), written with entry-level
+//                     patches. Its own namespace, not a field of `indicators`, so a build from
+//                     before it (which rewrites `indicators` whole and drops unknown fields)
+//                     never wipes it, and its absence just means nothing is remembered.
+// - `tickerIndicators` the Insights ticker page chart's own IndicatorSpec[] (until 2026-11-07 a
+//                     per-device preference; seeded once from it), apart from the main list.
 // - `layers`          ChartLayers (levels.ts parseLayers)
 // - `chartSettings`   ChartSettings (chartSettings.ts parseChartSettings)
 // - `drawingSettings` DrawingSettings (drawingSettings.ts parseDrawingSettings)
@@ -29,6 +36,8 @@ export const SYNC_NS = {
   layers: "layers",
   chartSettings: "chartSettings",
   drawingSettings: "drawingSettings",
+  indicatorMemory: "indicatorMemory",
+  tickerIndicators: "tickerIndicators",
 } as const;
 
 const DRAWINGS_PREFIX = "drawings:";
@@ -81,6 +90,70 @@ export function parseIndicators(raw: unknown): IndicatorSpec[] {
     if (out.length >= 16) break;
   }
   return out;
+}
+
+/** How many turned-off indicators are remembered (well above the catalogue). */
+const MEMORY_MAX = 32;
+
+/**
+ * The stored `indicatorMemory` map → id → valid spec. Each entry goes through parseIndicators, and
+ * one whose spec claims another id than its key is dropped (the key is the identity, as with
+ * drawings). Anything else (absent, a list, junk) is an empty memory.
+ */
+export function parseIndicatorMemory(raw: unknown): Record<string, IndicatorSpec> {
+  const out: Record<string, IndicatorSpec> = {};
+  if (!isObj(raw)) return out;
+  let n = 0;
+  for (const [id, e] of Object.entries(raw)) {
+    if (!isObj(e) || (e.id !== undefined && e.id !== id)) continue;
+    const [spec] = parseIndicators([{ ...e, id }]);
+    if (!spec) continue;
+    out[id] = spec;
+    if (++n >= MEMORY_MAX) break;
+  }
+  return out;
+}
+
+/**
+ * What an indicator list change does to the remembered settings (owner, 2026-11-07: turning an
+ * indicator off and on lost its style, colours, periods and markers; "the state should persist").
+ * `prev` is the stored list, `next` the one a menu produced, `memory` the stored map:
+ * - an indicator turned OFF is remembered with every setting it had (`set`), unless it was still
+ *   its preset, which needs no memory (`remove`);
+ * - an indicator turned ON as its bare preset (the menus add the preset) comes back with its
+ *   remembered settings (`specs`); one added with settings of its own keeps them;
+ * - an indicator that is ON and equal to its preset ("Reset to default", resetIndicator) clears
+ *   what was remembered for it, so a later off and on does not bring the old settings back.
+ * The entry of an indicator restored stays until it is turned off again (and overwritten), so two
+ * devices toggling at once still restore the same settings. `set`/`remove` are a patch for the
+ * memory namespace; both empty when nothing changes there.
+ */
+export function rememberIndicators(
+  prev: readonly IndicatorSpec[],
+  next: readonly IndicatorSpec[],
+  memory: Readonly<Record<string, IndicatorSpec>>,
+): { specs: IndicatorSpec[]; set: Record<string, IndicatorSpec>; remove: string[] } {
+  const was = new Map(prev.map((s) => [s.id, s]));
+  const now = new Set(next.map((s) => s.id));
+  const set: Record<string, IndicatorSpec> = {};
+  const remove = new Set<string>();
+  const specs = next.map((s) => {
+    if (was.has(s.id)) {
+      if (memory[s.id] && isPresetSpec(s)) remove.add(s.id);
+      return s;
+    }
+    const kept = memory[s.id];
+    const preset = presetOf(s.id);
+    if (kept && kept.kind === s.kind && preset && sameIndicatorSettings(s, preset)) return { ...kept, id: s.id };
+    return s;
+  });
+  for (const [id, s] of was) {
+    if (now.has(id)) continue;
+    if (isPresetSpec(s)) {
+      if (memory[id]) remove.add(id);
+    } else if (!memory[id] || !sameIndicatorSettings(memory[id]!, s)) set[id] = s;
+  }
+  return { specs, set, remove: [...remove] };
 }
 
 const KIND_SET = new Set<string>(DRAWING_KINDS);

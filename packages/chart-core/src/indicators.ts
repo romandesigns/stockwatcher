@@ -489,6 +489,41 @@ export function resetIndicatorColors(spec: IndicatorSpec): IndicatorSpec {
   return rest;
 }
 
+/** The catalogue preset an indicator id comes from (INDICATOR_PRESETS), else null. */
+export function presetOf(id: string): IndicatorSpec | null {
+  return INDICATOR_PRESETS.find((p) => p.id === id) ?? null;
+}
+
+/**
+ * Same settings? Compared by meaning, not by shape: a MACD style "classic" and no style are the
+ * same, markers compare as drawn (macdMarkersOn), colours as a set of roles, key order never.
+ */
+export function sameIndicatorSettings(a: IndicatorSpec, b: IndicatorSpec): boolean {
+  if (a.id !== b.id || a.kind !== b.kind) return false;
+  for (const k of ["period", "mult", "fast", "slow", "signal"] as const) if (a[k] !== b[k]) return false;
+  if (a.kind === "macd" && (macdStyleOf(a) !== macdStyleOf(b) || macdMarkersOn(a) !== macdMarkersOn(b))) return false;
+  const ca = Object.entries(a.colors ?? {}).filter(([, c]) => !!c);
+  const cb = b.colors ?? {};
+  return ca.length === Object.values(cb).filter((c) => !!c).length && ca.every(([role, c]) => cb[role as ColorRole]?.toLowerCase() === c!.toLowerCase());
+}
+
+/** Whether a spec is still exactly its preset (nothing to reset, nothing worth remembering). */
+export function isPresetSpec(spec: IndicatorSpec): boolean {
+  const p = presetOf(spec.id);
+  return !!p && sameIndicatorSettings(spec, p);
+}
+
+/**
+ * "Reset to default" in an indicator's settings: the whole spec back to its preset (style,
+ * markers, periods and colours), the one way back now that an indicator turned off and on keeps
+ * its settings (owner, 2026-11-07: "the state should persist"; rememberIndicators). An id with
+ * no preset keeps its parameters and loses its colours, as before.
+ */
+export function resetIndicator(spec: IndicatorSpec): IndicatorSpec {
+  const p = presetOf(spec.id);
+  return p && p.kind === spec.kind ? { ...p } : resetIndicatorColors(spec);
+}
+
 /** Replaces the spec with `id` in a list (a settings change), keeping its place. */
 export function replaceIndicator(specs: readonly IndicatorSpec[], next: IndicatorSpec): IndicatorSpec[] {
   return specs.map((s) => (s.id === next.id ? next : s));
