@@ -223,7 +223,7 @@ slots.
   candle where it fired, kept until the person acknowledges it (the toast's or banner's "Got it",
   or "Acknowledge fire" on the Alerts page/tab). Unacknowledged fires are session state
   (`drawingFires`), not synced: another device's or an old fire is in Activity, not re-flashed.
-- **Watched, not touching:** a small bell at the plot's right end of the level.
+- **Watched, not touching:** a small bell at the middle of the level. The touching pill sits at the middle too: beside the axis it covered the newest candles, at the left end the drawing toolbox hid it (both seen on screen).
 - **The toolbox bell** (an action like Delete, hideable in the Drawing tab) is enabled on a selected
   line, ray or position and opens the app's alert form for it (an existing alert opens for
   editing). The form: the level (a position's stop / target / entry), the tolerance in ticks or %,

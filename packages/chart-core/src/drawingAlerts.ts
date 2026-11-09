@@ -169,7 +169,7 @@ const TAG_H = 18;
 /**
  * The cue, drawn over the drawings: a glow and a "touching" pill on the axis for each live alert
  * whose level the last price touches; a ring (and, just after a fire, an expanding flash) on the
- * candle of each fire not yet acknowledged; a small bell at the plot's right end of every other
+ * candle of each fire not yet acknowledged; a small bell at the middle of every other
  * watched level, so a watched drawing reads as watched.
  */
 export function layoutDrawingCues(model: ChartModel, drawings: readonly Drawing[], layer: DrawingCueLayer, theme: ChartTheme): DisplayList {
@@ -195,18 +195,21 @@ export function layoutDrawingCues(model: ChartModel, drawings: readonly Drawing[
         out.push({ kind: "line", x1: p.x, y1: p.y, x2: q.x, y2: q.y, stroke: hue, lineWidth: 2, clip: plot, layer: "overlay" });
       }
       if (inPlot && st.level !== null) {
-        // The axis tag at the level, and the pill on its left: what the eye looks for.
+        // The axis tag at the level, and the pill at the middle of the line. Seen on screen
+        // (2026-11-09): beside the axis it covered the newest candles, the very thing being
+        // watched; at the left end the drawing toolbox (default there) hid it.
         out.push({ kind: "rect", x: g.priceAxis.x + 2, y: levelY - TAG_H / 2, w: g.priceAxis.w - 2, h: TAG_H, radius: 4, fill: hue, layer: "crosshair" });
         out.push({ kind: "text", x: g.priceAxis.x + 1 + g.priceAxis.w / 2, y: levelY, text: formatAxisTag(model, st.level), fill: theme.onAlert, fontSize: fs, fontFamily: theme.fontMono, fontWeight: 600, align: "center", baseline: "middle", layer: "crosshair" });
         const text = w.part === "stop" ? "touching stop" : "touching";
         const pw = Math.ceil(text.length * fs * 0.6) + 14;
-        const px = g.priceAxis.x - pw - 4;
+        const px = plot.x + (plot.w - pw) / 2;
         out.push({ kind: "rect", x: px, y: levelY - 10, w: pw, h: 20, radius: 10, fill: hue, layer: "crosshair" });
         out.push({ kind: "text", x: px + pw / 2, y: levelY, text, fill: theme.onAlert, fontSize: fs, fontFamily: theme.fontMono, fontWeight: 600, align: "center", baseline: "middle", layer: "crosshair" });
       }
     } else if (inPlot && !w.fired) {
-      // Watched, not touching: a small bell at the plot's right end of the level.
-      const cx = plot.x + plot.w - 12;
+      // Watched, not touching: a small bell at the middle of the level (the right end holds the key
+      // levels' labels and the newest candles, the left end the drawing toolbox).
+      const cx = plot.x + plot.w / 2;
       out.push({ kind: "rect", x: cx - 8, y: levelY - 8, w: 16, h: 16, radius: 8, fill: w.muted ? theme.alertMuted : withAlpha(hue, 0.85), layer: "overlay" });
       out.push({ kind: "path", points: bellShape(cx, levelY - 0.5, 5.6), closed: true, fill: theme.onAlert, layer: "overlay" });
     }
