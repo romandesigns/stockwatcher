@@ -141,6 +141,142 @@ row menu: Edit, Snooze, Re-arm, Delete) and Activity by day, the phone budget an
 Phone: the third tab (bell, the same tab-switch spec), the list, Activity, "Turn on phone alerts",
 a banner on each fire.
 
+## Drawing alerts (2026-11-09)
+
+Owner request: "If the price line merges with the drawing line, I want some visual cue to indicate
+exactly that and even an alert sound I can manage for this behavior. I want to use this strategy
+whenever trading after regular market hours where stop loss is disabled. Take into consideration
+the other drawing shapes and reproduce the behavior for them." A drawing alert is a price alert
+whose level is one of your drawings, evaluated on the server (so it works with the app closed and
+in extended hours) by the same evaluator, with the same rules.
+
+**What can be watched (v1).** A horizontal line; a trend line (active only between its two
+anchors); a ray (from anchor a, through b, and on into candles not printed yet; a ray pointing
+back in time never reaches a new candle); a long or short position's entry, target and stop, each
+its own alert (the stop is the after-hours mental stop the feature exists for, so the form offers
+it first). Rectangles, supply/demand zones and vertical lines are the second pass (below).
+
+**Trigger: touch with tolerance.** An eligible trade (the price alerts' rule:
+`Trade::effect().updates_ohlc`) within the tolerance of the drawing's level at that trade's candle:
+`|price - level(t)| <= tol`. The tolerance is whole ticks of the level's grid ($0.0001 under $1,
+$0.01 at and above; default 1, 0 = exactly, at most 100) or a % of the level (at most 10). A
+print that jumped clean through the level since the previous eligible print also counts ("Crossed
+through"): an illiquid after-hours stock can skip a one-tick band entirely, and a skipped stop is
+exactly the one that must not stay silent. It is an edge like the other level conditions (fires
+when it becomes met), so a price sitting on the line fires once, not on every print.
+
+**Same rules as price alerts** (`crates/server/src/alerts/eval.rs`, each pinned by a test):
+sessions filter silently (a new drawing alert gets the sessions picked last plus After; Overnight
+is a chip away); while halted it is held (`halted`); a stale comparison is held (`stale`); once →
+done; every time → cooling for the gap, and re-armed once the price has moved 0.5% away from where
+it fired, **either way** (a touch has no side to come back from; this is the one deliberate
+difference); the phone budget, the per-stock 5 min limit and quiet hours apply to its push;
+expiry and snooze as for any alert. A new drawing alert never expires by default: a stop that
+silently expired is worse than one that was never set. Late and corrected prints do not fire it
+(only price alerts take late prints).
+
+**The geometry lives in the drawings, not in the alert.** The rule names the drawing
+(`drawingId`) and the level (`part`); the server reads the drawing from the synced
+`drawings:<SYMBOL>` namespace (the same document the charts edit) and follows every change:
+
+- **Edited** (dragged, re-angled, a position's stop moved): the alert follows the new geometry and,
+  like dragging a price alert's line, a finished or cooling alert starts over armed. The new level
+  is learned before it fires, so a line dropped right onto the price does not fire on the next
+  print; it fires when the price comes back to it.
+- **Deleted**: the alert stays, orphaned (`alerts.state` entry `orphaned: true`, "Drawing deleted"
+  on every client), and watches nothing. An undo that brings the drawing back resumes it. Deleting
+  the alert is the person's call.
+
+**Sloped lines and the slot axis (the approximation, stated).** The chart's x axis is a slot
+index (`scale.ts`): every candle and every gap run takes one slot, however long the gap, and the
+time between sessions takes none. A trend line or ray is straight in slots, so its price at a
+candle is interpolated in slots, never on the clock: `level(t) = a.p + (b.p - a.p) × (i - ia) /
+(ib - ia)` with `i`, `ia`, `ib` the fractional slot indexes (`tToIndex`, including its off-the-end
+rule of one slot per timeframe interval). The level at a trade is the level at the centre of the
+trade's candle, which is where the person sees the price meet the line. The slots depend on the
+timeframe, so the alert records the chart it was set on (`tf`, the chart's timeframe when the bell
+was pressed) and the server builds that timeframe's slots from the engine's candles and gap runs
+(`Market::alert_slots`, chart-core `buildSlots` ported; extended hours shown), once per new candle.
+Exact while both anchors lie within the engine's retained sessions (four per timeframe); an older
+anchor is placed by the off-the-end rule, which is also what a chart without that history loaded
+does, but a chart with older history loaded can draw that line slightly differently. With extended
+hours hidden, the chart's own slots skip the extended sessions and the line is drawn differently
+from what the server evaluates; the after-hours use this exists for has them shown. Horizontal
+lines and position levels are flat and exact.
+
+One rule, two languages: `crates/server/src/alerts/geometry.rs` (`level_at`, `t_to_index`,
+`build_slots`, `Tolerance`) and `packages/chart-core/src/drawingAlerts.ts` (`drawingLevelAt`,
+`tToIndex`, `parseDrawingTolerance`) read the same golden cases,
+`crates/server/src/alerts/drawing_alert_fixtures.json` (trend across a gap, ray past b and into the
+future, reversed and vertical lines, position parts, an anchor older than the slots).
+
+**The cue (chart-core `drawingAlerts.ts`, one display list for both renderers).** The host passes
+`drawingAlerts={watched, onAlert}`; the chart computes everything against its own drawings and
+slots.
+
+- **Touching:** a live (armed) drawing alert whose level the last price is within the tolerance of
+  glows: the level's segment drawn again wide and translucent, breathing on a 1.6 s cycle (a steady
+  glow under reduced motion), with an axis tag at the level and a "touching" pill beside it
+  ("touching stop" for a stop). Accent; a stop uses the down hue (a status colour that means
+  something). The renderers tick the clock (20 fps) only while something is touching or flashing.
+- **Fired:** a flash that expands and fades (1.4 s, none under reduced motion) and a ring on the
+  candle where it fired, kept until the person acknowledges it (the toast's or banner's "Got it",
+  or "Acknowledge fire" on the Alerts page/tab). Unacknowledged fires are session state
+  (`drawingFires`), not synced: another device's or an old fire is in Activity, not re-flashed.
+- **Watched, not touching:** a small bell at the plot's right end of the level.
+- **The toolbox bell** (an action like Delete, hideable in the Drawing tab) is enabled on a selected
+  line, ray or position and opens the app's alert form for it (an existing alert opens for
+  editing). The form: the level (a position's stop / target / entry), the tolerance in ticks or %,
+  once / every, sessions, expiry, In app / Phone / Sound.
+
+**Sound.** One tone per fire event, distinct by how it was met: up (the price came up into the
+drawing: a rising two-note), down (falling two-note), stop (a position's stop, either way: a low
+triple). The score is `ALERT_TONES` in app-state, used by both clients.
+
+- Which fires sound: app-state `alertSoundFor`: a drawing fire (it carries a `tone`), the alert's
+  own Sound chip, the global switch (`alerts.prefs.sound.on`, synced: mute once, muted everywhere),
+  outside quiet hours.
+- Web: generated with WebAudio (no audio files), at the global volume (`alerts.prefs.sound.volume`,
+  a perceptual curve). Browsers keep audio locked until the page has had a press or a key; the
+  first one anywhere unlocks it (and turning sounds on or a Test button does); a fire while still
+  locked says so in its toast. Settings: the speaker button on the Alerts page (switch, volume,
+  a test of each tone).
+- Phone (Android): three notification channels, `drawing-up`, `drawing-down`, `drawing-stop`, each
+  with its own bundled WAV (`apps/mobile/assets/sounds`, rendered by `scripts/tones.ts` from the same
+  score; a test pins the files to it). A channel's sound is fixed when it is created, so the tone is
+  the channel: the server sends a sounding drawing alert's push on its tone's channel, a muted one
+  (chip or global switch) on the plain `alerts` channel. A fire heard in the open app plays the tone
+  as a local notification on that channel when no push brought it to this phone. Volume is the
+  phone's notification volume (the volume slider is the web's); the budget sheet has the switch and
+  test buttons. Changing a tone on phones that already have the channel needs new channel ids.
+
+**Second pass (designed, not built).** Each is a new `part` or `kind` on the same rule and the same
+evaluator, with its geometry in `geometry.rs` and `drawingAlerts.ts` against the same fixtures:
+
+- **Range (rect):** active only between its two anchors' times (slot space, like a trend line).
+  `part: "enter"` fires when an eligible trade lands inside the box (between its two prices, with
+  the tolerance) after one outside it; `part: "break"` fires on the first trade beyond the top or
+  bottom edge after one inside, its tone up or down by the edge. A turned range (`angle`) is a
+  screen angle with no data meaning (drawings.ts), so the alert uses the unturned box and the form
+  says so.
+- **Supply / demand zone:** open to the right from its earlier anchor, so always active once
+  started. `enter`: a trade inside the band after one outside (supply from below, demand from
+  above, the side it is approached from). `break`: a CANDLE CLOSE beyond the far edge (above
+  supply, below demand) on the alert's timeframe, decided when the engine finalizes the bar, not on
+  a print (a wick through a zone is the zone working). Tones: enter = toward, break = the stop tone.
+- **Vertical line:** a time alarm, not a price condition: fires once when the market clock reaches
+  its time (the slot's time on the alert's timeframe; a time inside a gap run fires at the first
+  print or the clock reaching it), in the alert's sessions, with no price. Re-arming makes no
+  sense for it, so it is Once only.
+
+**Wire.** The rule (`alerts` namespace, per entry):
+`{…the price alert fields…, rule: {kind: "drawing", drawingId, part: "line"|"entry"|"target"|"stop",
+tol: {unit: "ticks"|"pct", value}, tf: "15s"|"30s"|"1m"|"5m"}, sound: bool}` (`sound` defaults to
+true; older clients ignore the unknown kind and skip the rule, as their parsers do). `alerts.state`
+entries may carry `orphaned: true`. `alerts.prefs` gains `sound: {on, volume}`. An Activity event
+(`alert.fired`, `alerts.history`) of a drawing alert carries `tone: "up"|"down"|"stop"`; its push's
+data carries `tone` and goes out on the tone's channel.
+
 ## The rule
 
 **Everything chart-related lives in the chart packages; an app passes data in and wires callbacks
