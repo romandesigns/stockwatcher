@@ -7,7 +7,7 @@ import { getPreference, setPreference } from "../storage/preferences";
 import { copyTicker } from "../ui/useTickerPress";
 import { handleCopyTickerResponse } from "./copyTickerAction";
 import { createResponseRouter, type NotificationTarget } from "./route";
-import { configureForegroundPresentation, registerForPushNotifications } from "./setup";
+import { configureForegroundPresentation, drawingTonesSupported, registerForPushNotifications } from "./setup";
 
 // Phone alerts (crates/server/src/alerts/push.rs): this phone's Expo push token, registered with
 // the server so it can reach the phone while the app is closed. The token is per device and never
@@ -39,9 +39,13 @@ function setToken(t: string | null) {
   listeners.forEach((l) => l(t));
 }
 
-/** What `push.register` carries besides the token: a name for the server's log and list. */
-export function deviceInfo(): { platform: string; name: string } {
-  return { platform: Platform.OS, name: Device.modelName ?? Device.deviceName ?? Platform.OS };
+/**
+ * What `push.register` carries besides the token: a name for the server's log and list, and
+ * whether this binary has the drawing tone channels (the server sends a drawing alert's push on a
+ * tone channel only to a phone that says true; setup.ts drawingTonesSupported).
+ */
+export function deviceInfo(): { platform: string; name: string; drawingTones: boolean } {
+  return { platform: Platform.OS, name: Device.modelName ?? Device.deviceName ?? Platform.OS, drawingTones: drawingTonesSupported() };
 }
 
 /** Where a tap goes: a ticker's notification opens THAT ticker's chart (route.ts), anything else the Alerts tab. */

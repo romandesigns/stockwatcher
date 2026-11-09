@@ -561,7 +561,8 @@ enum ClientMessage {
         #[serde(default, rename = "runnersFast")]
         runners_fast: Option<bool>,
         /// `runnersShelf`, `runnersFollowUp`, `rossCrossing`, `signalsCrossing`, `rossTrigger`,
-        /// `signalsTrigger`, `haltWatch` (crate::alerts::push::MoreOptIn).
+        /// `signalsTrigger`, `haltWatch`, and the phone's `drawingTones` capability
+        /// (crate::alerts::push::MoreOptIn).
         #[serde(flatten)]
         more: crate::alerts::push::MoreOptIn,
     },

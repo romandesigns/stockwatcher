@@ -976,17 +976,18 @@ impl Task {
                     } else {
                         text.clone()
                     };
-                    let job = Job {
+                    let job = |tokens: Vec<String>, channel: Option<&'static str>| Job {
                         event_id: id.clone(),
-                        tokens: self.devices.tokens(),
+                        tokens,
                         title: symbol.clone(),
-                        body,
+                        body: body.clone(),
                         // The app opens its Alerts tab on a tap (apps/mobile src/notifications).
                         data: json!({ "alertId": alert_id, "symbol": symbol, "eventId": id, "url": "stockwatcher://alerts", "tone": tone.map(|t| t.as_str()) }),
                         runner: None,
                         channel,
                     };
-                    if self.pusher.try_send(job).is_err() {
+                    let jobs = phone_jobs(&self.devices, channel, job);
+                    if jobs.into_iter().any(|j| self.pusher.try_send(j).is_err()) {
                         event.phone = "failed".into();
                         event.reason = Some("push_failed".into());
                         event.note = format!(
@@ -1075,12 +1076,37 @@ fn changed_drawings(frame: &str) -> Option<String> {
     model::parse_symbol(Some(&Value::from(&rest[..end])))
 }
 
-/// The Android channel a sounding drawing alert's push goes out on (push::Job `channel`).
+/// One alert's phone pushes: a sounding drawing alert's tone channel only for the phones that
+/// reported having it (push::Device::drawing_tones), the plain alerts channel for the rest, so a
+/// phone on an older APK never gets a channel it does not have. One job per channel that has
+/// phones (both carry the same event id: a failure on either marks the event).
+fn phone_jobs(
+    devices: &Devices,
+    channel: Option<&'static str>,
+    job: impl Fn(Vec<String>, Option<&'static str>) -> Job,
+) -> Vec<Job> {
+    let Some(ch) = channel else {
+        return vec![job(devices.tokens(), None)];
+    };
+    let (with, without) = devices.tokens_by_drawing_tones();
+    let mut out = Vec::new();
+    if !with.is_empty() {
+        out.push(job(with, Some(ch)));
+    }
+    if !without.is_empty() {
+        out.push(job(without, None));
+    }
+    out
+}
+
+/// The Android channel a sounding drawing alert's push goes out on (push::Job `channel`). The
+/// `-v1` suffix is the tone's version: a channel's sound is fixed when a phone creates it, so a
+/// new tone needs new ids here and in apps/mobile src/notifications/setup.ts DRAWING_CHANNELS.
 fn drawing_channel(tone: eval::Tone) -> &'static str {
     match tone {
-        eval::Tone::Up => "drawing-up",
-        eval::Tone::Down => "drawing-down",
-        eval::Tone::Stop => "drawing-stop",
+        eval::Tone::Up => "drawing-up-v1",
+        eval::Tone::Down => "drawing-down-v1",
+        eval::Tone::Stop => "drawing-stop-v1",
     }
 }
 
@@ -1510,7 +1536,66 @@ mod tests {
             changed_drawings("{\"type\":\"settings.changed\",\"ns\":\"alerts\"}"),
             None
         );
-        assert_eq!(drawing_channel(eval::Tone::Stop), "drawing-stop");
+        assert_eq!(drawing_channel(eval::Tone::Stop), "drawing-stop-v1");
+    }
+
+    /// A sounding drawing alert's push: the tone channel only for phones that reported it, the
+    /// plain channel for the rest (an older APK, or a record from before the capability).
+    #[test]
+    fn tone_channels_only_for_phones_that_have_them() {
+        let mut d = Devices::in_memory();
+        let opt = |tones: Option<bool>| RunnersOptIn {
+            drawing_tones: tones,
+            ..RunnersOptIn::default()
+        };
+        assert!(d.register(
+            "ExponentPushToken[new]",
+            "android",
+            "Fold",
+            1,
+            opt(Some(true))
+        ));
+        assert!(d.register("ExponentPushToken[old]", "android", "Tab", 1, opt(None)));
+        let mk = |tokens: Vec<String>, channel: Option<&'static str>| Job {
+            event_id: "e".into(),
+            tokens,
+            title: "XLAB".into(),
+            body: "b".into(),
+            data: json!({}),
+            runner: None,
+            channel,
+        };
+        let jobs = phone_jobs(&d, Some("drawing-stop-v1"), mk);
+        assert_eq!(jobs.len(), 2);
+        assert_eq!(jobs[0].tokens, vec!["ExponentPushToken[new]".to_string()]);
+        assert_eq!(jobs[0].channel, Some("drawing-stop-v1"));
+        assert_eq!(jobs[1].tokens, vec!["ExponentPushToken[old]".to_string()]);
+        assert_eq!(jobs[1].channel, None, "the plain alerts channel");
+        // Muted (no channel): one job, every phone, the plain channel.
+        let jobs = phone_jobs(&d, None, mk);
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].tokens.len(), 2);
+        // A re-register without the field keeps what the phone said; an explicit false clears it.
+        assert!(d.register("ExponentPushToken[new]", "android", "Fold", 2, opt(None)));
+        assert!(d.get("ExponentPushToken[new]").unwrap().drawing_tones);
+        assert!(d.register(
+            "ExponentPushToken[new]",
+            "android",
+            "Fold",
+            3,
+            opt(Some(false))
+        ));
+        let jobs = phone_jobs(&d, Some("drawing-up-v1"), mk);
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].channel, None);
+        // A stored record from before the field reads as without.
+        let old: push::Device =
+            serde_json::from_value(json!({"token": "ExponentPushToken[x]", "registeredAt": 1}))
+                .unwrap();
+        assert!(!old.drawing_tones);
+        // The wire: `drawingTones` on push.register.
+        let more: push::MoreOptIn = serde_json::from_value(json!({"drawingTones": true})).unwrap();
+        assert_eq!(more.with(RunnersOptIn::default()).drawing_tones, Some(true));
     }
 
     #[test]

@@ -113,6 +113,13 @@ pub struct Device {
     /// existed included.
     #[serde(default = "yes")]
     pub runners_pullback: bool,
+    /// The phone's app has the drawing alerts' tone channels (`drawingTones` in `push.register`;
+    /// apps/mobile src/notifications/setup.ts `drawingTonesSupported`: a native build that bundles
+    /// the tones). Only such a phone gets a drawing alert's push on a `drawing-*` channel; every
+    /// other one (an older APK, even one running newer JS) gets the plain `alerts` channel, which
+    /// it has. Absent (older records and apps) = false.
+    #[serde(default)]
+    pub drawing_tones: bool,
 }
 
 impl Device {
@@ -159,6 +166,8 @@ pub struct RunnersOptIn {
     pub signals_trigger: Option<bool>,
     pub halt: Option<bool>,
     pub pullback: Option<bool>,
+    /// The phone has the drawing tone channels (Device::drawing_tones); None = unchanged.
+    pub drawing_tones: Option<bool>,
 }
 
 /// The newer switches as `push.register` and `runners.notify` spell them (owner, 2026-10-23),
@@ -185,6 +194,9 @@ pub struct MoreOptIn {
     /// "Pullback setting up" (the phone spells it `runnersPullback`, the desk `pullback`).
     #[serde(default, alias = "runnersPullback")]
     pub pullback: Option<bool>,
+    /// A phone's `drawingTones` capability (Device::drawing_tones); ignored for a desk.
+    #[serde(default)]
+    pub drawing_tones: Option<bool>,
 }
 
 impl MoreOptIn {
@@ -199,6 +211,7 @@ impl MoreOptIn {
             signals_trigger: self.signals_trigger,
             halt: self.halt,
             pullback: self.pullback,
+            drawing_tones: self.drawing_tones,
             ..o
         }
     }
@@ -242,6 +255,14 @@ impl Devices {
 
     pub fn tokens(&self) -> Vec<String> {
         self.list.iter().map(|d| d.token.clone()).collect()
+    }
+
+    /// Every phone's token, split by whether it has the drawing tone channels: (with, without).
+    pub fn tokens_by_drawing_tones(&self) -> (Vec<String>, Vec<String>) {
+        let (with, without): (Vec<&Device>, Vec<&Device>) =
+            self.list.iter().partition(|d| d.drawing_tones);
+        let tok = |v: Vec<&Device>| v.into_iter().map(|d| d.token.clone()).collect();
+        (tok(with), tok(without))
     }
 
     /// The phones that opted in to this kind of Runners push.
@@ -327,6 +348,7 @@ impl Devices {
         );
         let halt_watch = pick(runners.halt, |d| d.halt_watch, def.halt);
         let runners_pullback = pick(runners.pullback, |d| d.runners_pullback, def.pullback);
+        let drawing_tones = pick(runners.drawing_tones, |d| d.drawing_tones, false);
         self.list.retain(|d| d.token != token);
         let clip = |s: &str| {
             s.chars()
@@ -353,6 +375,7 @@ impl Devices {
             signals_trigger,
             halt_watch,
             runners_pullback,
+            drawing_tones,
         });
         while self.list.len() > MAX_DEVICES {
             self.list.remove(0);

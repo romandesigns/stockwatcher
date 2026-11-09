@@ -744,6 +744,8 @@ export interface PushRegisterMessage {
   token: string;
   platform?: string;
   name?: string;
+  /** This phone's binary has the drawing alerts' tone channels (drawing-*-v1); absent = unchanged, a new phone false. */
+  drawingTones?: boolean;
   /** Runners pushes for new flags on this phone (server default on; absent = unchanged). */
   runnersNew?: boolean;
   /** Runners pushes for breakouts on this phone (server default off; absent = unchanged). */

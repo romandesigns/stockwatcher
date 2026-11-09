@@ -25,7 +25,9 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   owner: "creativecoder87",
   // The store version. EAS keeps versionCode/buildNumber remotely
   // (eas.json appVersionSource: "remote"), so they are not set here.
-  version: "0.1.0",
+  // 0.2.0: the first binary with the drawing alerts' tones (src/notifications/toneSupport.ts gates
+  // the tone channels on this native version, which an OTA update cannot change).
+  version: "0.2.0",
   scheme: "stockwatcher",
   platforms: ["android", "ios"],
   orientation: "portrait",

@@ -20,7 +20,7 @@ import { deleteAlert, openAlertSheet } from "../alerts/actions";
 import { useReducedMotion } from "../motion/useReducedMotion";
 import { openTickerChart } from "../navigation/ref";
 import { enablePush, pushToken, subscribePushToken } from "../notifications/push";
-import { playDrawingTone, type DrawingTone } from "../notifications/setup";
+import { drawingTonesSupported, playDrawingTone, type DrawingTone } from "../notifications/setup";
 import { appActions, loadAppStore, useApp } from "../state/store";
 import { colors, fonts } from "../theme";
 
@@ -161,7 +161,8 @@ function Alerts() {
             <Text style={styles.actionText}>Alert sounds</Text>
             <Text style={[styles.small, prefs.sound.on && { color: colors.accent }]}>{prefs.sound.on ? "On" : "Off"}</Text>
           </Pressable>
-          {prefs.sound.on && (
+          {prefs.sound.on && !drawingTonesSupported() && <Text style={styles.small}>Update the app to hear drawing alert tones on this phone. Until then they arrive as ordinary alerts.</Text>}
+          {prefs.sound.on && drawingTonesSupported() && (
             <View style={{ flexDirection: "row", gap: 6 }}>
               {(["up", "down", "stop"] as const satisfies readonly DrawingTone[]).map((t) => (
                 <Pressable key={t} accessibilityRole="button" accessibilityLabel={`Test the ${t} tone`} onPress={() => void playDrawingTone(t, "Test tone", t === "stop" ? "Stop touched" : t === "up" ? "Price came up into a drawing" : "Price came down into a drawing")} style={({ pressed }) => [styles.action, { flex: 1, justifyContent: "center" }, pressed && { backgroundColor: UI.raised }]}>

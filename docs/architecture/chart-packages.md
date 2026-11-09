@@ -241,14 +241,27 @@ triple). The score is `ALERT_TONES` in app-state, used by both clients.
   first one anywhere unlocks it (and turning sounds on or a Test button does); a fire while still
   locked says so in its toast. Settings: the speaker button on the Alerts page (switch, volume,
   a test of each tone).
-- Phone (Android): three notification channels, `drawing-up`, `drawing-down`, `drawing-stop`, each
-  with its own bundled WAV (`apps/mobile/assets/sounds`, rendered by `scripts/tones.ts` from the same
-  score; a test pins the files to it). A channel's sound is fixed when it is created, so the tone is
-  the channel: the server sends a sounding drawing alert's push on its tone's channel, a muted one
-  (chip or global switch) on the plain `alerts` channel. A fire heard in the open app plays the tone
-  as a local notification on that channel when no push brought it to this phone. Volume is the
-  phone's notification volume (the volume slider is the web's); the budget sheet has the switch and
-  test buttons. Changing a tone on phones that already have the channel needs new channel ids.
+- Phone (Android): three notification channels, `drawing-up-v1`, `drawing-down-v1`,
+  `drawing-stop-v1`, each with its own bundled WAV (`apps/mobile/assets/sounds`, rendered by
+  `scripts/tones.ts` from the same score; a test pins the files to it). A channel's sound is fixed
+  when it is created, so the tone is the channel, and the `-v1` suffix is the tone's version: a new
+  tone needs new ids on both sides. A fire heard in the open app plays the tone as a local
+  notification on that channel when no push brought it to this phone. Volume is the phone's
+  notification volume (the volume slider is the web's); the budget sheet has the switch and test
+  buttons.
+- **Old binaries are never given a tone channel.** The JS can reach a phone before the APK that
+  bundles the WAVs (an over-the-air update), and a channel created without its sound resource would
+  keep the wrong sound for good. So `apps/mobile/src/notifications/toneSupport.ts` gates every tone
+  path on the installed binary's native app version (expo-application's
+  `nativeApplicationVersion`, Android versionName; an OTA update cannot change it): the APK that
+  adds the sounds is version 0.2.0 (`app.config.ts`), and below it no drawing channel is created, no
+  tone is played, and the budget sheet says to update the app. The phone reports the result in
+  `push.register` (`drawingTones: true|false`); the server sends a sounding drawing alert's push on
+  the tone channel only to phones that reported true (`push::Device::drawing_tones`, absent in old
+  records = false) and on the plain `alerts` channel to every other phone, including a muted alert
+  (chip or global switch). The fingerprint runtime version already keeps this JS off older
+  binaries (the plugin's `sounds` are part of the fingerprint); the version gate holds even if that
+  policy changes.
 
 **Second pass (designed, not built).** Each is a new `part` or `kind` on the same rule and the same
 evaluator, with its geometry in `geometry.rs` and `drawingAlerts.ts` against the same fixtures:
@@ -275,7 +288,8 @@ tol: {unit: "ticks"|"pct", value}, tf: "15s"|"30s"|"1m"|"5m"}, sound: bool}` (`s
 true; older clients ignore the unknown kind and skip the rule, as their parsers do). `alerts.state`
 entries may carry `orphaned: true`. `alerts.prefs` gains `sound: {on, volume}`. An Activity event
 (`alert.fired`, `alerts.history`) of a drawing alert carries `tone: "up"|"down"|"stop"`; its push's
-data carries `tone` and goes out on the tone's channel.
+data carries `tone` and goes out on the tone's channel (phones with `drawingTones` only).
+`push.register` gains `drawingTones?: boolean` (absent = unchanged; a new phone without it = false).
 
 ## The rule
 
