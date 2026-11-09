@@ -6,7 +6,7 @@ import { TickerLabel } from "../lib/TickerLabel.tsx";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import type { ChartFeed } from "../feed/types.ts";
 import { useChartFeed } from "../feed/useChartFeed.ts";
-import { useChartAlerts } from "../alerts/useChartAlerts.ts";
+import { useChartAlerts, useChartDrawingAlerts } from "../alerts/useChartAlerts.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { getAppStore, useApp } from "../state/store.ts";
 import { BREAKOUT_LABEL, bindNoticeContext, breakoutClockText, breakoutOverlays, breakoutSummary, detectionOverlays } from "@stockwatcher/shared";
@@ -118,6 +118,8 @@ export function ChartCell({ index, slot, symbol, feed, trading, selected, showSe
   const change = last && reference ? formatChange(reference.price, last.c) : "";
   // This symbol's price alerts: lines, the bell, hold to create, drag to move (alerts/useChartAlerts.ts).
   const chartAlerts = useChartAlerts(symbol, last?.c ?? null);
+  // Its drawing alerts: the touching cue, fire markers, the toolbox's bell.
+  const drawingAlerts = useChartDrawingAlerts(symbol, last?.c ?? null);
   const showRing = showSelection && selected;
 
   return (
@@ -196,6 +198,7 @@ export function ChartCell({ index, slot, symbol, feed, trading, selected, showSe
         onInspectChange={setInspectT}
         options={CELL_CHART}
         alerts={chartAlerts}
+        drawingAlerts={drawingAlerts}
         detection={annotations}
         volumeShelves={zones.bands}
         label={`Chart ${index + 1}: ${symbol} ${slot.timeframe} candles${fixture ? ", fixture data" : ""}`}

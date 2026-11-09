@@ -20,7 +20,7 @@ export function useDrawingCue(watched: readonly WatchedDrawing[] | undefined, dr
   useEffect(() => {
     const t = Date.now();
     for (const k of keys) if (!heard.current.has(k)) heard.current.set(k, t);
-    for (const k of [...heard.current.keys()]) if (!keys.includes(k)) heard.current.delete(k);
+    for (const k of heard.current.keys()) if (!keys.includes(k)) heard.current.delete(k);
     setNow(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `keySig` is `keys` as a value
   }, [keySig]);

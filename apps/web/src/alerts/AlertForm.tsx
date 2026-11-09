@@ -14,17 +14,20 @@ import {
   type AlertSession,
   type MoveWindow,
 } from "@stockwatcher/app-state";
-import { formatPrice, snapPrice } from "@stockwatcher/chart-core";
+import { DRAWING_PART_LABELS, MAX_TOLERANCE_PCT, MAX_TOLERANCE_TICKS, formatPrice, snapPrice, type DrawingAlertPart } from "@stockwatcher/chart-core";
 import { Icon } from "@stockwatcher/chart-web";
 import { Dialog, DialogContent, DialogTitle, Input, OptionSelect, ScrollArea, cn } from "@stockwatcher/chart-web/ui";
 import { useState, useSyncExternalStore, type ReactNode } from "react";
 import { getAppStore } from "../state/store.ts";
 import { alertForm, createAlert, type AlertFormState } from "./actions.ts";
 
-type Tab = "price" | "move" | "signal";
+type Tab = "price" | "move" | "signal" | "drawing";
 type Signal = "halt" | "luld" | "hod" | "pressure";
 
-const tabOf = (c: AlertCondition): Tab => (c.kind === "price" ? "price" : c.kind === "move" ? "move" : "signal");
+const tabOf = (c: AlertCondition): Tab => (c.kind === "price" ? "price" : c.kind === "move" ? "move" : c.kind === "drawing" ? "drawing" : "signal");
+
+/** A position's levels, the stop first (the after-hours mental stop is why drawing alerts exist). */
+const POSITION_PARTS: readonly { v: Exclude<DrawingAlertPart, "line">; label: string }[] = (["stop", "target", "entry"] as const).map((v) => ({ v, label: DRAWING_PART_LABELS[v] }));
 
 // 44 px fields and 16 px text on touch: a finger target, and no zoom-on-focus on phones.
 const fieldClass = "h-[34px] w-full rounded-lg bg-background px-2.5 text-[13px] text-foreground outline-none pointer-coarse:h-11 pointer-coarse:text-base focus-visible:ring-2 focus-visible:ring-ring";
@@ -131,9 +134,18 @@ function FormBody({ state, d, close }: { state: AlertFormState; d: AlertRule; cl
   const [sessions, setSessions] = useState<AlertSession[]>(d.sessions);
   const [expiry, setExpiry] = useState<AlertExpiry>(d.expiry);
   const [notify, setNotify] = useState(d.notify);
+  const [sound, setSound] = useState(d.sound);
+  const [part, setPart] = useState<DrawingAlertPart>(r.kind === "drawing" ? r.part : "line");
+  const [tolUnit, setTolUnit] = useState<"ticks" | "pct">(r.kind === "drawing" ? r.tol.unit : "ticks");
+  const [tolValue, setTolValue] = useState(r.kind === "drawing" ? String(r.tol.value) : "1");
 
   const sym = parseSymbol(symbol);
   const condition = ((): AlertCondition | null => {
+    if (r.kind === "drawing") {
+      const n = Number(tolValue);
+      const ok = tolUnit === "ticks" ? Number.isInteger(n) && n >= 0 && n <= MAX_TOLERANCE_TICKS : Number.isFinite(n) && n > 0 && n <= MAX_TOLERANCE_PCT;
+      return ok ? { kind: "drawing", drawingId: r.drawingId, part, tol: { unit: tolUnit, value: n }, tf: r.tf } : null;
+    }
     if (tab === "price") {
       const p = Number(price);
       return Number.isFinite(p) && p > 0 ? { kind: "price", dir, price: snapPrice(p) } : null;
@@ -159,7 +171,7 @@ function FormBody({ state, d, close }: { state: AlertFormState; d: AlertRule; cl
   const submit = () => {
     if (!valid || !d || !condition || !sym) return;
     const now = Date.now();
-    const patch = { symbol: sym, rule: condition, fire, gapMin: gap, sessions, expiry, expiresAt: expiresAtFor(expiry, now), notify };
+    const patch = { symbol: sym, rule: condition, fire, gapMin: gap, sessions, expiry, expiresAt: expiresAtFor(expiry, now), notify, sound };
     const app = getAppStore().getState();
     if (state.editId) app.saveAlert(editedAlert(d, patch, now));
     else createAlert({ ...d, ...patch, createdAt: now, editedAt: now });
@@ -176,20 +188,37 @@ function FormBody({ state, d, close }: { state: AlertFormState; d: AlertRule; cl
     >
       <div className="flex items-center gap-2">
         <DialogTitle className="not-sr-only m-0 text-sm font-semibold">
-          {state.editId ? "Edit alert" : "New alert"}
+          {state.editId ? "Edit alert" : tab === "drawing" ? "Alert on this drawing" : "New alert"}
           {sym && !state.editId ? <> · <span className="font-mono">{sym}</span></> : null}
         </DialogTitle>
         <button type="button" aria-label="Close" onClick={close} className="ml-auto inline-grid size-7 place-items-center rounded-md pointer-coarse:size-11 text-muted-foreground outline-none hover:bg-bg-raised hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-3.5">
           <Icon name="clear" />
         </button>
       </div>
-      {(!d?.symbol || state.editId) && (
+      {(!d?.symbol || (state.editId && tab !== "drawing")) && (
         <label className={labelClass}>
           Ticker
           <Input value={symbol} onChange={(e) => setSymbol(e.target.value.toUpperCase())} placeholder="XLAB" autoComplete="off" spellCheck={false} className={cn(fieldClass, "font-mono uppercase")} />
         </label>
       )}
-      <Segmented label="Alert type" value={tab} onChange={setTab} options={[{ v: "price", label: "Price" }, { v: "move", label: "% move" }, { v: "signal", label: "Signal" }]} />
+      {tab !== "drawing" && <Segmented label="Alert type" value={tab} onChange={setTab} options={[{ v: "price", label: "Price" }, { v: "move", label: "% move" }, { v: "signal", label: "Signal" }]} />}
+      {tab === "drawing" && r.kind === "drawing" && (
+        <>
+          {part !== "line" && <Segmented label="Level" value={part as Exclude<DrawingAlertPart, "line">} onChange={setPart} options={POSITION_PARTS} />}
+          <div className="grid grid-cols-2 gap-2.5">
+            <Fieldset legend="Touching within">
+              <Segmented label="Tolerance unit" value={tolUnit} onChange={(u) => { setTolUnit(u); setTolValue(u === "ticks" ? "1" : "0.5"); }} options={[{ v: "ticks", label: "Ticks" }, { v: "pct", label: "%" }]} />
+            </Fieldset>
+            <label className={labelClass}>
+              {tolUnit === "ticks" ? "Ticks" : "Percent"}
+              <Input value={tolValue} onChange={(e) => setTolValue(e.target.value)} inputMode="decimal" className={cn(fieldClass, "font-mono")} />
+            </label>
+          </div>
+          <span className="-mt-1 text-[11.5px] text-text-faint">
+            A tick is $0.0001 under $1, $0.01 above. A print that jumps clean through the {part === "line" ? "line" : part} counts too. Follows the drawing as drawn on the {r.tf} chart: move it and the alert moves with it.
+          </span>
+        </>
+      )}
       {tab === "price" && (
         <>
           <div className="grid grid-cols-2 gap-2.5">
@@ -267,13 +296,18 @@ function FormBody({ state, d, close }: { state: AlertFormState; d: AlertRule; cl
       <div className="grid grid-cols-2 gap-2.5">
         <OptionSelect label="Expires" labelClassName={labelClass} className={selectClass} options={EXPIRY_OPTIONS} value={expiry} onValueChange={setExpiry} />
         <Fieldset legend="Notify">
-          <div className="flex gap-1.5">
+          <div className="flex flex-wrap gap-1.5">
             <Chip pressed={notify.app} onClick={() => setNotify((n) => ({ ...n, app: !n.app }))}>
               In app
             </Chip>
             <Chip pressed={notify.phone} onClick={() => setNotify((n) => ({ ...n, phone: !n.phone }))}>
               Phone
             </Chip>
+            {tab === "drawing" && (
+              <Chip pressed={sound} onClick={() => setSound((v) => !v)}>
+                Sound
+              </Chip>
+            )}
           </div>
         </Fieldset>
       </div>

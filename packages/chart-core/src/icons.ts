@@ -129,6 +129,8 @@ export type IconName =
   | "screen"
   | "gauge"
   | "bell"
+  | "sound"
+  | "soundOff"
   | "plus"
   | "more"
   | "calendar"
@@ -266,6 +268,10 @@ export const ICONS: Readonly<Record<IconName, IconDef>> = {
   gauge: icon([S("M2.5 11.5a5.5 5.5 0 0 1 11 0"), P("M8 11.5 11 6.5", { width: 1.6 }), P(circlePath(8, 11.5, 1.3), { paint: "fill" })]),
   // Price alerts (2026-10-19, the approved design's bell): its body soft, outline and clapper crisp.
   bell: icon([S("M4 11.5V7.5a4 4 0 0 1 8 0v4l1 1.5H3z", { paint: "fill" }), P("M4 11.5V7.5a4 4 0 0 1 8 0v4l1 1.5H3z"), P("M6.5 14.5h3")], 1.4),
+  // Alert sounds (2026-11-09, drawing alerts' tones): the speaker's cone soft, its outline and the
+  // waves crisp; off swaps the waves for a cross.
+  sound: icon([S("M2.5 6h2.5l3.5-3v10L5 10H2.5z", { paint: "fill" }), P("M2.5 6h2.5l3.5-3v10L5 10H2.5z"), P("M10.5 6a2.5 2.5 0 0 1 0 4M12 4a5 5 0 0 1 0 8")]),
+  soundOff: icon([S("M2.5 6h2.5l3.5-3v10L5 10H2.5z", { paint: "fill" }), P("M2.5 6h2.5l3.5-3v10L5 10H2.5z"), P("M10.5 6l3.5 4M14 6l-3.5 4")]),
   // Insights (owner, 2026-10-26: the notification log and the scorecard): three bars soft, the
   // baseline and the trend over them crisp.
   insights: icon([S("M3 13V9h2.5v4zM6.75 13V6.5h2.5V13zM10.5 13V4h2.5v9z", { paint: "fill" }), P("M2 13.5h12M2.5 8 6 5l3 1.5 4.5-4")]),

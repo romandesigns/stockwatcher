@@ -16,6 +16,8 @@ const CHIP: Readonly<Record<AlertDisplayKind, string>> = {
   snoozed: "bg-bg-raised text-text-faint",
   fired: "bg-good-bg text-good",
   expired: "bg-bg-raised text-text-faint",
+  // The drawing is gone: a warning status (the alert silently watches nothing), worded.
+  orphaned: "bg-warning-bg text-warning",
 };
 
 export interface AlertRowAction {

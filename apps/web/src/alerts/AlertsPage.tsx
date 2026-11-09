@@ -11,7 +11,8 @@ import {
 } from "@stockwatcher/app-state";
 import { etToUtc, etParts, formatEtDate } from "@stockwatcher/chart-core";
 import { Icon } from "@stockwatcher/chart-web";
-import { Popover, PopoverContent, PopoverTrigger, ScrollArea, Switch, cn } from "@stockwatcher/chart-web/ui";
+import { Popover, PopoverContent, PopoverTrigger, ScrollArea, Slider, Switch, cn } from "@stockwatcher/chart-web/ui";
+import type { DrawingTone } from "@stockwatcher/chart-core";
 import { useEffect, useMemo, useState } from "react";
 import { ConnectionGate } from "../ConnectionGate.tsx";
 import { TimeSelect } from "../lib/TimeSelect.tsx";
@@ -23,6 +24,7 @@ import { getAppStore, useApp } from "../state/store.ts";
 import { deleteAlert, openAlertForm } from "./actions.ts";
 import { ActivityRow, AlertRow, type AlertRowAction } from "./rows.tsx";
 import { markAlertsSeen } from "./seen.ts";
+import { playAlertTone, unlockAlertSound } from "./sound.ts";
 
 /**
  * The Alerts page (approved design, "Alerts manager"): every alert with its state, and Activity,
@@ -82,6 +84,7 @@ function Alerts() {
   const actionsFor = (r: AlertRule): (AlertRowAction | "separator")[] => {
     const d = alertDisplay(r, states[r.id], now);
     const out: (AlertRowAction | "separator")[] = [{ label: "Open chart", onSelect: () => openTickerChart(r.symbol) }, { label: "Edit…", onSelect: () => openAlertForm(r, { editId: r.id }) }];
+    if (app.drawingFires[r.id]) out.push({ label: "Acknowledge fire", onSelect: () => app.acknowledgeDrawingFire(r.id) });
     if (d.kind === "fired" || d.kind === "expired") out.push({ label: "Re-arm", onSelect: () => app.updateAlert(r.id, { expiry: r.expiry }) });
     if (d.kind === "snoozed") out.push({ label: "Unsnooze", onSelect: () => app.snoozeAlert(r.id, null) });
     else if (d.kind !== "fired" && d.kind !== "expired") {
@@ -103,6 +106,7 @@ function Alerts() {
         <h1 className="m-0 text-base font-semibold tracking-tight">Alerts</h1>
         <span className="text-xs text-text-faint">{active} active · synced on every device</span>
         <div className="ml-auto flex items-center gap-2.5">
+          <SoundPrefs prefs={prefs} onPrefs={app.setAlertPrefs} />
           <PhoneBudget today={phoneToday} budget={budget} devices={status?.devices ?? 0} prefs={prefs} onPrefs={app.setAlertPrefs} />
           <button type="button" onClick={newOne} className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-primary pointer-coarse:h-11 px-3 text-[12.5px] font-semibold text-primary-foreground outline-none hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-3.5">
             <Icon name="plus" />
@@ -141,6 +145,70 @@ function Alerts() {
         </section>
       </ScrollArea>
     </div>
+  );
+}
+
+const TEST_TONES: readonly { tone: DrawingTone; label: string }[] = [
+  { tone: "up", label: "Up" },
+  { tone: "down", label: "Down" },
+  { tone: "stop", label: "Stop" },
+];
+
+/**
+ * Alert sounds (drawing alerts' tones; owner decision 2026-11-09): the global switch, the volume
+ * and a test of each tone. Synced with the alert preferences, so muting here mutes every device
+ * (a phone's push then arrives on the plain alerts channel). Turning it on or testing is the user
+ * gesture that lets the browser play sound.
+ */
+function SoundPrefs({ prefs, onPrefs }: { prefs: AlertPrefs; onPrefs: (p: AlertPrefs) => void }) {
+  const { on, volume } = prefs.sound;
+  const test = (tone: DrawingTone) => {
+    unlockAlertSound();
+    // The context resumes asynchronously on the first gesture: try again a beat later.
+    if (!playAlertTone(tone, volume)) setTimeout(() => playAlertTone(tone, volume), 60);
+  };
+  return (
+    <Popover>
+      <PopoverTrigger aria-label={on ? "Alert sounds on" : "Alert sounds off"} className="inline-grid size-8 place-items-center rounded-lg text-muted-foreground outline-none pointer-coarse:size-11 hover:bg-bg-row hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-4">
+        <Icon name={on ? "sound" : "soundOff"} />
+      </PopoverTrigger>
+      <PopoverContent side="bottom" align="end" className="w-72">
+        <div className="flex flex-col gap-3 text-[12.5px]">
+          <label className="flex items-center justify-between gap-3">
+            <span>Alert sounds</span>
+            <Switch
+              checked={on}
+              onCheckedChange={(v) => {
+                if (v) unlockAlertSound();
+                onPrefs({ ...prefs, sound: { ...prefs.sound, on: v } });
+              }}
+            />
+          </label>
+          <div className={cn("flex flex-col gap-0.5 transition-opacity", !on && "pointer-events-none opacity-50")}>
+            <span className="text-muted-foreground">Volume · {Math.round(volume * 100)}%</span>
+            <Slider
+              aria-label="Alert volume"
+              min={0}
+              max={100}
+              step={5}
+              value={Math.round(volume * 100)}
+              onValueChange={(v) => onPrefs({ ...prefs, sound: { ...prefs.sound, volume: (Array.isArray(v) ? (v[0] ?? 0) : v) / 100 } })}
+              getAriaValueText={(_, v) => `${v}%`}
+              trackStyle={{ background: `linear-gradient(to right, var(--color-muted-foreground) ${volume * 100}%, var(--color-bg-row) ${volume * 100}%)` }}
+              thumbStyle={{ background: "var(--color-foreground)" }}
+            />
+            <div role="group" aria-label="Test a tone" className="flex gap-1.5">
+              {TEST_TONES.map((t) => (
+                <button key={t.tone} type="button" onClick={() => test(t.tone)} className="h-7 flex-1 rounded-md bg-bg-row text-xs text-muted-foreground outline-none pointer-coarse:h-11 hover:bg-bg-raised hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring">
+                  {t.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <span className="text-[11px] text-text-faint">Drawing alerts play a tone once when they fire: rising when the price comes up into a drawing, falling when it comes down, a low triple for a stop. Each alert has its own Sound chip; quiet hours silence them.</span>
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }
 

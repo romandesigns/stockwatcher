@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { ScrollArea } from "@stockwatcher/chart-web/ui";
 import { AlertForm } from "./alerts/AlertForm.tsx";
 import { AlertsPage } from "./alerts/AlertsPage.tsx";
+import { alertSoundUnlocked, installAlertSoundUnlock, playAlertTone } from "./alerts/sound.ts";
+import { alertSoundFor } from "@stockwatcher/app-state";
 import { showToast } from "./lib/toastStore.ts";
 import App from "./App.tsx";
 import { Toaster } from "./lib/toast.tsx";
@@ -100,15 +102,30 @@ export function Shell() {
  * live (a reconnect's Activity snapshot is history, not news) and only when the alert's "In app"
  * chip is on. Its action opens the alert's ticker (owner, 2026-10-23: whatever presents a ticker,
  * acting on it opens THAT chart; it used to open the Alerts page), like a Runners toast's "Chart".
+ *
+ * A drawing alert's fire (it carries a tone) also plays its tone once (alerts/sound.ts; app-state
+ * alertSoundFor decides: the alert's Sound chip, the global switch, quiet hours), and its toast's
+ * action acknowledges it: the chart keeps the fire ringed on its candle until then.
  */
 function useFiredToasts() {
-  useEffect(
-    () =>
-      getAppStore().subscribe((s, prev) => {
-        const e = s.lastFired;
-        if (!e || e === prev.lastFired || !e.app) return;
-        showToast(`${e.symbol} · ${e.text}`, { icon: "bell", ms: 6000, action: { label: "Chart", run: () => openTickerChart(e.symbol) } });
-      }),
-    [],
-  );
+  useEffect(() => installAlertSoundUnlock(), []);
+  useEffect(() => {
+    // Once per event, whatever re-sends it.
+    const played = new Set<string>();
+    return getAppStore().subscribe((s, prev) => {
+      const e = s.lastFired;
+      if (!e || e === prev.lastFired) return;
+      const rule = s.alerts.find((r) => r.id === e.alertId);
+      const tone = played.has(e.id) ? null : alertSoundFor(e, rule, s.alertPrefs);
+      const sounded = tone ? playAlertTone(tone, s.alertPrefs.sound.volume) : false;
+      if (tone) played.add(e.id);
+      if (!e.app) return;
+      if (e.tone) {
+        const locked = tone !== null && !sounded && !alertSoundUnlocked();
+        showToast(`${e.symbol} · ${e.text}${locked ? " · click anywhere to allow alert sounds" : ""}`, { icon: "bell", ms: 10_000, action: { label: "Got it", run: () => getAppStore().getState().acknowledgeDrawingFire(e.alertId) } });
+        return;
+      }
+      showToast(`${e.symbol} · ${e.text}`, { icon: "bell", ms: 6000, action: { label: "Chart", run: () => openTickerChart(e.symbol) } });
+    });
+  }, []);
 }
