@@ -107,7 +107,7 @@ export type DrawingPart = "body" | "a" | "b" | "c" | "end" | "rotate";
 export const DRAWING_HIT_PX = { mouse: 6, touch: 14 } as const;
 
 /** Fractional slot index of time t (see the header for between-slot and off-end times). */
-export function tToIndex(slots: readonly Slot[], t: number, timeframeMs: number): number {
+export function tToIndex(slots: readonly { t: number }[], t: number, timeframeMs: number): number {
   const n = slots.length;
   if (n === 0) return 0;
   const first = slots[0]!.t;
@@ -403,6 +403,11 @@ function geometryOf(model: ChartModel, d: Drawing): { segments: [Point, Point][]
       return { segments: [], box: x1 > x0 && y1 > y0 ? { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } : null, a, b };
     }
   }
+}
+
+/** A drawing's pixel segments, clipped to the plot (the line kinds; a box kind has none). The drawing alerts' glow follows them (drawingAlerts.ts). */
+export function drawingSegments(model: ChartModel, d: Drawing): [Point, Point][] {
+  return geometryOf(model, d).segments;
 }
 
 function distToSegment(p: Point, [a, b]: [Point, Point]): number {

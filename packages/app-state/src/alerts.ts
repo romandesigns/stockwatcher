@@ -1,4 +1,4 @@
-import { etParts, etToUtc, formatEtTime, formatPrice } from "@stockwatcher/chart-core";
+import { DRAWING_PART_LABELS, etParts, etToUtc, formatEtTime, formatPrice, parseDrawingTolerance, toleranceText, TIMEFRAMES, type Drawing, type DrawingAlertPart, type DrawingTolerance, type DrawingTone, type Timeframe } from "@stockwatcher/chart-core";
 import type { AlertEventWire } from "@stockwatcher/shared";
 import { parseSymbol } from "./namespaces.ts";
 
@@ -38,7 +38,13 @@ export type AlertCondition =
   | { kind: "luld"; side: "up" | "down" | "either"; pct: number }
   | { kind: "hod" }
   /** The Halt watcher's pressure (0–100) reaches `min` on the buy side, the sell side, or either. */
-  | { kind: "pressure"; side: "buy" | "sell" | "either"; min: number };
+  | { kind: "pressure"; side: "buy" | "sell" | "either"; min: number }
+  /**
+   * A drawing alert (2026-11-09): an eligible trade within `tol` of level `part` of drawing
+   * `drawingId` (this symbol's synced drawings), on the `tf` chart's slots. The server reads the
+   * drawing live, so editing the drawing moves the alert; deleting it orphans the alert.
+   */
+  | { kind: "drawing"; drawingId: string; part: DrawingAlertPart; tol: DrawingTolerance; tf: Timeframe };
 
 export type AlertExpiry = "day" | "week" | "never";
 export const EXPIRY_LABELS: Readonly<Record<AlertExpiry, string>> = { week: "End of week", day: "End of day", never: "Never" };
@@ -62,6 +68,8 @@ export interface AlertRule {
   /** Epoch ms, computed here from `expiry` when the alert is created or edited, so every device (and the server) agrees; null = never. */
   expiresAt: number | null;
   notify: { app: boolean; phone: boolean };
+  /** The in-app tone for this alert (drawing alerts; default on). Off also sends its phone push without the tone. */
+  sound: boolean;
   /** Epoch ms; while in the future the alert neither fires nor records anything. */
   snoozeUntil: number | null;
   createdAt: number;
@@ -86,6 +94,8 @@ export interface AlertStateWire {
    * src/alerts/eval.rs `tick`) and shown as written, never judged against this device's clock.
    */
   snoozed?: boolean;
+  /** A drawing alert whose drawing is gone (deleted on some device): it watches nothing until the drawing comes back. */
+  orphaned?: true;
 }
 
 export interface AlertPrefs {
@@ -93,9 +103,15 @@ export interface AlertPrefs {
   quietHours: { on: boolean; start: string; end: string };
   /** The sessions picked last: a new alert starts with them ("the sessions you picked last time"). */
   sessions: AlertSession[];
+  /**
+   * Alert sounds, everywhere (drawing alerts' tones): the global switch and the in-app volume
+   * (0–1). Off also sends the phone's push on the plain alerts channel. Quiet hours silence them too.
+   */
+  sound: { on: boolean; volume: number };
 }
 
-export const DEFAULT_ALERT_PREFS: AlertPrefs = { phoneBudget: DEFAULT_PHONE_BUDGET, quietHours: { on: false, start: "22:00", end: "07:00" }, sessions: [...DEFAULT_ALERT_SESSIONS] };
+export const DEFAULT_SOUND_VOLUME = 0.6;
+export const DEFAULT_ALERT_PREFS: AlertPrefs = { phoneBudget: DEFAULT_PHONE_BUDGET, quietHours: { on: false, start: "22:00", end: "07:00" }, sessions: [...DEFAULT_ALERT_SESSIONS], sound: { on: true, volume: DEFAULT_SOUND_VOLUME } };
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
@@ -130,6 +146,11 @@ export function parseCondition(v: unknown): AlertCondition | null {
       const min = num(v.min);
       return min !== null && Number.isInteger(min) && min >= 1 && min <= 100 ? { kind: "pressure", side: pick(v.side, ["buy", "sell", "either"] as const, "buy"), min } : null;
     }
+    case "drawing": {
+      const id = typeof v.drawingId === "string" && v.drawingId.length > 0 && v.drawingId.length <= 128 ? v.drawingId : null;
+      if (!id) return null;
+      return { kind: "drawing", drawingId: id, part: pick(v.part, ["line", "entry", "target", "stop"] as const, "line"), tol: parseDrawingTolerance(v.tol), tf: pick(v.tf, TIMEFRAMES, "1m") };
+    }
     default:
       return null;
   }
@@ -153,6 +174,7 @@ export function parseAlertRule(id: string, raw: unknown): AlertRule | null {
     expiry,
     expiresAt: expiry === "never" ? null : num(raw.expiresAt),
     notify: { app: notify.app !== false, phone: notify.phone !== false },
+    sound: raw.sound !== false,
     snoozeUntil: num(raw.snoozeUntil),
     createdAt,
     editedAt: num(raw.editedAt) ?? createdAt,
@@ -185,6 +207,7 @@ export function parseAlertStates(raw: unknown): Record<string, AlertStateWire> {
       ...(num(v.firedPrice) !== null ? { firedPrice: num(v.firedPrice)! } : {}),
       count: num(v.count) ?? 0,
       ...(typeof v.snoozed === "boolean" ? { snoozed: v.snoozed } : {}),
+      ...(v.orphaned === true ? { orphaned: true as const } : {}),
     };
   }
   return out;
@@ -198,12 +221,64 @@ export function parseAlertPrefs(raw: unknown): AlertPrefs {
   const start = typeof q.start === "string" && HHMM.test(q.start) ? q.start : DEFAULT_ALERT_PREFS.quietHours.start;
   const end = typeof q.end === "string" && HHMM.test(q.end) ? q.end : DEFAULT_ALERT_PREFS.quietHours.end;
   const sessions = Array.isArray(raw.sessions) ? parseSessions(raw.sessions) : [...DEFAULT_ALERT_SESSIONS];
+  const snd = isObj(raw.sound) ? raw.sound : {};
+  const vol = num(snd.volume);
   return {
     phoneBudget: (PHONE_BUDGETS as readonly unknown[]).includes(raw.phoneBudget) ? (raw.phoneBudget as number) : DEFAULT_PHONE_BUDGET,
     quietHours: { on: q.on === true, start, end },
     sessions: sessions.length ? sessions : [...DEFAULT_ALERT_SESSIONS],
+    sound: { on: snd.on !== false, volume: vol === null ? DEFAULT_SOUND_VOLUME : Math.min(1, Math.max(0, vol)) },
   };
 }
+
+/** Whether `now` falls in the quiet hours (ET wall time; start > end wraps midnight), as the server's QuietHours::contains. */
+export function inQuietHours(prefs: Pick<AlertPrefs, "quietHours">, now = Date.now()): boolean {
+  const q = prefs.quietHours;
+  if (!q.on || !HHMM.test(q.start) || !HHMM.test(q.end)) return false;
+  const m = (s: string) => Number(s.slice(0, 2)) * 60 + Number(s.slice(3, 5));
+  const start = m(q.start);
+  const end = m(q.end);
+  if (start === end) return false;
+  const p = etParts(now);
+  const cur = p.hour * 60 + p.minute;
+  return start < end ? cur >= start && cur < end : cur >= start || cur < end;
+}
+
+/**
+ * The tone a fire should play in the app, or null for silence: only a drawing alert's fire (it
+ * carries a tone), with its own sound chip on, the global switch on, and outside quiet hours.
+ * Played once per event (hosts key it by the event id).
+ */
+export function alertSoundFor(event: Pick<AlertEventWire, "tone" | "alertId">, rule: Pick<AlertRule, "sound"> | undefined, prefs: AlertPrefs, now = Date.now()): DrawingTone | null {
+  if (!event.tone || !rule?.sound || !prefs.sound.on || prefs.sound.volume <= 0) return null;
+  if (inQuietHours(prefs, now)) return null;
+  return event.tone;
+}
+
+/**
+ * The three tones, one score for every client (owner decision 2026-11-09: distinct for up-touch,
+ * down-touch and stop). Web plays them with WebAudio; the phone's channels use WAV files rendered
+ * from the same notes (apps/mobile/scripts/tones.ts). Each note: frequency Hz, length ms.
+ * Rising for up, falling for down, a repeated low pair for the stop, so they are told apart
+ * without looking.
+ */
+export const ALERT_TONES: Readonly<Record<DrawingTone, readonly { hz: number; ms: number }[]>> = {
+  up: [
+    { hz: 660, ms: 110 },
+    { hz: 880, ms: 160 },
+  ],
+  down: [
+    { hz: 880, ms: 110 },
+    { hz: 660, ms: 160 },
+  ],
+  stop: [
+    { hz: 440, ms: 120 },
+    { hz: 0, ms: 60 },
+    { hz: 440, ms: 120 },
+    { hz: 0, ms: 60 },
+    { hz: 330, ms: 220 },
+  ],
+};
 
 /** Activity, newest first, without duplicate ids (a resent snapshot replaces, an update replaces in place). */
 export function mergeActivity(current: readonly AlertEventWire[], incoming: readonly AlertEventWire[], replace: boolean): AlertEventWire[] {
@@ -274,10 +349,29 @@ export function newAlert(symbol: string, rule: AlertCondition, prefs: AlertPrefs
     expiry: "week",
     expiresAt: expiresAtFor("week", now),
     notify: { app: true, phone: true },
+    sound: true,
     snoozeUntil: null,
     createdAt: now,
     editedAt: now,
   };
+}
+
+/**
+ * A new drawing alert with its defaults (owner decisions 2026-11-09): touch within one tick,
+ * Once, the sessions picked last plus After (the after-hours mental stop is the reason it exists;
+ * Overnight stays a choice), never expiring (a stop that silently expired is worse than one
+ * that was never set), in app + phone, with its sound. `tf` is the chart the alert was set on:
+ * its slots place a sloped line.
+ */
+export function newDrawingAlert(symbol: string, drawing: Pick<Drawing, "id">, part: DrawingAlertPart, tf: Timeframe, prefs: AlertPrefs, now = Date.now(), id = newAlertId(now)): AlertRule {
+  const base = newAlert(symbol, { kind: "drawing", drawingId: drawing.id, part, tol: { unit: "ticks", value: 1 }, tf }, prefs, now, id);
+  const sessions = ALERT_SESSIONS.filter((s) => s === "after" || base.sessions.includes(s));
+  return { ...base, sessions, expiry: "never", expiresAt: null };
+}
+
+/** The alerts watching a drawing (any of its levels). */
+export function alertsOnDrawing(rules: readonly AlertRule[], symbol: string, drawingId: string): AlertRule[] {
+  return rules.filter((r) => r.symbol === symbol && r.rule.kind === "drawing" && r.rule.drawingId === drawingId);
 }
 
 /** A rule after an edit: `editedAt` moves on (the server re-arms it) and the expiry is recomputed from now. */
@@ -310,6 +404,8 @@ export function conditionText(c: AlertCondition): string {
       return "New high of day";
     case "pressure":
       return `${c.side === "buy" ? "Buy pressure" : c.side === "sell" ? "Sell pressure" : "Pressure"} ${c.min} or more (Halt watcher)`;
+    case "drawing":
+      return `Touches the drawing's ${c.part === "line" ? "line" : DRAWING_PART_LABELS[c.part].toLowerCase()} (${toleranceText(c.tol)}, ${c.tf} chart)`;
   }
 }
 
@@ -331,6 +427,8 @@ export function shortConditionText(c: AlertCondition): string {
       return "New high of day";
     case "pressure":
       return `Pressure ${c.min}+`;
+    case "drawing":
+      return c.part === "line" ? "Touches drawing" : `Touches ${c.part}`;
   }
 }
 
@@ -343,6 +441,7 @@ export function metaText(r: AlertRule, now = Date.now()): string {
   const sessions = r.sessions.length === ALERT_SESSIONS.length ? "all sessions" : r.sessions.length ? r.sessions.join(", ") : "no sessions";
   const parts = [fireText(r), sessions];
   if (r.rule.kind === "luld") parts.push("modelled band");
+  if (r.rule.kind === "drawing" && !r.sound) parts.push("sound off");
   if (r.snoozeUntil !== null && r.snoozeUntil > now) parts.push(`snoozed until ${expiryText(r.snoozeUntil, now)}`);
   else if (r.expiresAt !== null) parts.push(`expires ${expiryText(r.expiresAt, now)}`);
   return parts.join(" · ");
@@ -354,12 +453,14 @@ export function lineLabel(r: AlertRule): string {
   return `${r.rule.dir} ${p(r.rule.price)} · ${r.fire === "once" ? "once" : "every time"}`;
 }
 
-export type AlertDisplayKind = "armed" | "cooling" | "snoozed" | "fired" | "expired";
+export type AlertDisplayKind = "armed" | "cooling" | "snoozed" | "fired" | "expired" | "orphaned";
 
 /** The state chip: "Armed", "Cooling · 9 min", "Snoozed", "Fired 10:42", "Expired". */
 export function alertDisplay(r: AlertRule, s: AlertStateWire | undefined, now = Date.now()): { kind: AlertDisplayKind; label: string } {
   // A state written for an older version of the rule does not apply: the server re-arms an edit.
   const st = s && s.basis >= r.editedAt ? s : undefined;
+  // The server says the drawing is gone: whatever else holds, it watches nothing.
+  if (st?.orphaned && st.status !== "expired") return { kind: "orphaned", label: "Drawing deleted" };
   // Decided by the server's clock: shown as written. `now` only measures the cooling countdown.
   if (st && typeof st.snoozed === "boolean") {
     if (st.status === "expired") return { kind: "expired", label: "Expired" };
@@ -385,7 +486,7 @@ export function alertDisplay(r: AlertRule, s: AlertStateWire | undefined, now = 
 /** Still watching (armed or cooling, snoozed included): drawn on the chart, counted as active. */
 export function isActiveAlert(r: AlertRule, s: AlertStateWire | undefined, now = Date.now()): boolean {
   const k = alertDisplay(r, s, now).kind;
-  return k !== "fired" && k !== "expired";
+  return k !== "fired" && k !== "expired" && k !== "orphaned";
 }
 
 /** Phone budget text: "7 / 20". */

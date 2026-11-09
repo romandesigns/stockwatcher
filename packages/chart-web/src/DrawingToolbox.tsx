@@ -37,6 +37,12 @@ export interface DrawingToolboxProps {
   onColorChange: (color: string) => void;
   canDelete: boolean;
   onDelete: () => void;
+  /** The selected drawing can carry a drawing alert (a line, ray, level or position; chart-core drawingAlerts.ts). */
+  canAlert?: boolean;
+  /** Opens the host's drawing alert form for the selected drawing. */
+  onAlert?: () => void;
+  /** The selected drawing already has a live alert: the bell shows pressed. */
+  alerted?: boolean;
   canUndo: boolean;
   canRedo: boolean;
   onUndo: () => void;
@@ -98,7 +104,7 @@ function Slot({ shown, vertical, pad = true, children }: { shown: boolean; verti
  * nothing, and the soft separator only shows when an action follows it.
  * The cursor always shows.
  */
-export function DrawingToolbox({ placement, onPlacementChange, container, tool, onToolChange, color, canColor, onColorChange, canDelete, onDelete, canUndo, canRedo, onUndo, onRedo, settings = DEFAULT_DRAWING_SETTINGS, preview = false }: DrawingToolboxProps) {
+export function DrawingToolbox({ placement, onPlacementChange, container, tool, onToolChange, color, canColor, onColorChange, canDelete, onDelete, canAlert = false, onAlert, alerted = false, canUndo, canRedo, onUndo, onRedo, settings = DEFAULT_DRAWING_SETTINGS, preview = false }: DrawingToolboxProps) {
   const ref = useRef<HTMLDivElement>(null);
   const colorRef = useRef<HTMLButtonElement>(null);
   const [box, setBox] = useState<Size>({ width: 40, height: 300 });
@@ -152,6 +158,14 @@ export function DrawingToolbox({ placement, onPlacementChange, container, tool, 
   const side = vertical ? "right" : "bottom";
   const editButton = (id: (typeof TOOLBOX_EDIT)[number]): ReactNode => {
     switch (id) {
+      case "alert":
+        return (
+          <Tip label={alerted ? "Alerts on this drawing" : "Alert when the price touches this drawing"} side={side}>
+            <Button variant="ghost" size="icon" className={cn(iconButton, alerted && canAlert && "text-primary")} aria-label="Alert on this drawing" aria-pressed={alerted && canAlert} disabled={!canAlert} onClick={onAlert}>
+              <Icon name="bell" />
+            </Button>
+          </Tip>
+        );
       case "delete":
         return (
           <Tip label={"Delete selected drawing (Del)"} side={side}>

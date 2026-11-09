@@ -35,7 +35,7 @@ import type { IconName } from "./icons.ts";
 // `chart.drawing` preference, read once to migrate.
 
 export type ToolboxToolId = "cursor" | DrawingKind;
-export type ToolboxActionId = "color" | "delete" | "undo" | "redo" | "rotate" | "grip";
+export type ToolboxActionId = "color" | "alert" | "delete" | "undo" | "redo" | "rotate" | "grip";
 export type ToolboxItemId = ToolboxToolId | ToolboxActionId;
 export type ToolboxGroup = "tools" | "actions";
 
@@ -67,6 +67,7 @@ export const TOOLBOX_ITEMS: readonly ToolboxItemInfo[] = [
   { id: "short", group: "tools", name: DRAWING_LABELS.short, description: "Entry, target and stop for a sell (S)", icon: "short" },
   { id: "measure", group: "tools", name: DRAWING_LABELS.measure, description: "Price, percent and time between two points", icon: "measure" },
   { id: "color", group: "actions", name: "Colour", description: "Recolour the selected drawing", icon: "color" },
+  { id: "alert", group: "actions", name: "Alert", description: "Alert when the price touches the selected line or position level", icon: "bell" },
   { id: "delete", group: "actions", name: "Delete", description: "Remove the selected drawing (Del still works)", icon: "trash" },
   { id: "undo", group: "actions", name: "Undo", description: "Step back one drawing change (Ctrl+Z still works)", icon: "undo" },
   { id: "redo", group: "actions", name: "Redo", description: "Step forward again (Ctrl+Shift+Z still works)", icon: "redo" },
@@ -81,7 +82,7 @@ const LOCKED = new Set<ToolboxItemId>(TOOLBOX_ITEMS.filter((i) => i.locked).map(
 /** The tool buttons in toolbox order (cursor, the drawing kinds, measure). */
 export const TOOLBOX_TOOLS: readonly ToolboxToolId[] = ["cursor", ...DRAWING_KINDS, "measure"];
 /** The edit pill's buttons, in order (the toolbox draws them touching, on one dimmed surface). */
-export const TOOLBOX_EDIT: readonly Exclude<ToolboxActionId, "color" | "grip">[] = ["delete", "undo", "redo", "rotate"];
+export const TOOLBOX_EDIT: readonly Exclude<ToolboxActionId, "color" | "grip">[] = ["alert", "delete", "undo", "redo", "rotate"];
 
 export interface DrawingSettings {
   /** Bumped when the shape changes; parseDrawingSettings migrates older saves. */

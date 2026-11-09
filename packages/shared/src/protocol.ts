@@ -695,6 +695,8 @@ export interface AlertEventWire {
   reason?: string;
   /** The row's second line ("Phone + in app · cooling until 10:46"). */
   note: string;
+  /** A drawing alert's fire: which way the price met the drawing (`up` / `down`) or a position's `stop`; the in-app tone. */
+  tone?: "up" | "down" | "stop";
 }
 
 export interface AlertsStatusWire {

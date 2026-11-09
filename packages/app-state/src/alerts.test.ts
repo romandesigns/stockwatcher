@@ -3,17 +3,22 @@ import { etToUtc } from "@stockwatcher/chart-core";
 import { createSettingsSync, type AlertEventWire, type SettingsClientMessage } from "@stockwatcher/shared";
 import {
   alertDisplay,
+  ALERT_TONES,
+  alertsOnDrawing,
+  alertSoundFor,
   ALERTS_NS,
   conditionText,
   crossDirFor,
   DEFAULT_ALERT_PREFS,
   editedAlert,
   expiresAtFor,
+  inQuietHours,
   isActiveAlert,
   lineLabel,
   mergeActivity,
   metaText,
   newAlert,
+  newDrawingAlert,
   parseAlertPrefs,
   parseAlertRules,
   parseAlertStates,
@@ -47,7 +52,51 @@ describe("alert model", () => {
       phoneBudget: 50,
       quietHours: { on: true, start: "23:00", end: "07:00" },
       sessions: ["pre", "regular", "after"],
+      sound: { on: true, volume: 0.6 },
     });
+    expect(parseAlertPrefs({ sound: { on: false, volume: 3 } }).sound).toEqual({ on: false, volume: 1 });
+  });
+
+  test("drawing alerts: parse, defaults, text, orphaned, sounds", () => {
+    const rules = parseAlertRules({
+      d: { symbol: "XLAB", rule: { kind: "drawing", drawingId: "dr-1", part: "stop", tol: { unit: "pct", value: 0.5 }, tf: "5m" }, sound: false, createdAt: 1 },
+      e: { symbol: "XLAB", rule: { kind: "drawing", drawingId: "dr-2", part: "nope", tol: "junk", tf: "1h" }, createdAt: 2 },
+      bad: { symbol: "XLAB", rule: { kind: "drawing", drawingId: "" } },
+    });
+    expect(rules.map((r) => r.id)).toEqual(["d", "e"]);
+    expect(rules[0]!.rule).toEqual({ kind: "drawing", drawingId: "dr-1", part: "stop", tol: { unit: "pct", value: 0.5 }, tf: "5m" });
+    expect(rules[0]!.sound).toBe(false);
+    expect(rules[1]!.rule).toEqual({ kind: "drawing", drawingId: "dr-2", part: "line", tol: { unit: "ticks", value: 1 }, tf: "1m" });
+    expect(rules[1]!.sound).toBe(true);
+    expect(conditionText(rules[0]!.rule)).toBe("Touches the drawing's stop (±0.5%, 5m chart)");
+    expect(shortConditionText(rules[1]!.rule)).toBe("Touches drawing");
+    expect(metaText(rules[0]!, at(19, 10))).toContain("sound off");
+
+    // Defaults: one tick, once, never expiring, After added to the sessions picked last.
+    const prefs = { ...DEFAULT_ALERT_PREFS, sessions: ["regular" as const] };
+    const n = newDrawingAlert("xlab", { id: "dr-9" }, "stop", "1m", prefs, at(19, 17), "n1");
+    expect(n).toMatchObject({ id: "n1", symbol: "XLAB", fire: "once", expiry: "never", expiresAt: null, sessions: ["regular", "after"], sound: true, notify: { app: true, phone: true } });
+    expect(n.rule).toEqual({ kind: "drawing", drawingId: "dr-9", part: "stop", tol: { unit: "ticks", value: 1 }, tf: "1m" });
+    expect(alertsOnDrawing([n, ...rules], "XLAB", "dr-9").map((r) => r.id)).toEqual(["n1"]);
+
+    // A deleted drawing: the server's word, shown as such, no longer active.
+    const st = parseAlertStates({ n1: { status: "armed", basis: at(19, 17), count: 0, snoozed: false, orphaned: true } });
+    expect(st.n1!.orphaned).toBe(true);
+    expect(alertDisplay(n, st.n1, at(19, 18))).toEqual({ kind: "orphaned", label: "Drawing deleted" });
+    expect(isActiveAlert(n, st.n1, at(19, 18))).toBe(false);
+
+    // Sounds: drawing fires only, the alert's chip, the global switch, quiet hours.
+    const fire = { tone: "stop" as const, alertId: "n1" };
+    expect(alertSoundFor(fire, n, DEFAULT_ALERT_PREFS, at(19, 17))).toBe("stop");
+    expect(alertSoundFor({ alertId: "x" }, n, DEFAULT_ALERT_PREFS, at(19, 17))).toBeNull();
+    expect(alertSoundFor(fire, { sound: false }, DEFAULT_ALERT_PREFS, at(19, 17))).toBeNull();
+    expect(alertSoundFor(fire, n, { ...DEFAULT_ALERT_PREFS, sound: { on: false, volume: 0.6 } }, at(19, 17))).toBeNull();
+    const quiet = { ...DEFAULT_ALERT_PREFS, quietHours: { on: true, start: "22:00", end: "07:00" } };
+    expect(inQuietHours(quiet, at(19, 23))).toBe(true);
+    expect(inQuietHours(quiet, at(19, 6))).toBe(true);
+    expect(inQuietHours(quiet, at(19, 17))).toBe(false);
+    expect(alertSoundFor(fire, n, quiet, at(19, 23))).toBeNull();
+    expect(ALERT_TONES.up.map((x) => x.hz)).toEqual([660, 880]);
   });
 
   test("expiry: end of day is 20:00 ET (next weekday after it), end of week Friday 20:00", () => {
@@ -143,5 +192,12 @@ describe("alerts in the store", () => {
     expect(s().alertStatus?.phoneToday).toBe(4);
     s().applyAlertsMessage({ type: "alert.updated", event: { ...ev, id: "h2", at: 2, phone: "failed" } });
     expect(s().alertActivity[0]!.phone).toBe("failed");
+    // A price alert's fire marks no drawing.
+    expect(s().drawingFires).toEqual({});
+    // A drawing alert's fire stays marked until acknowledged.
+    s().applyAlertsMessage({ type: "alert.fired", event: { ...ev, id: "h3", alertId: "d1", at: 3, t: 30, price: 1.85, tone: "stop" }, phoneToday: 4 });
+    expect(s().drawingFires).toEqual({ d1: { t: 30, price: 1.85, tone: "stop", eventId: "h3" } });
+    s().acknowledgeDrawingFire("d1");
+    expect(s().drawingFires).toEqual({});
   });
 });

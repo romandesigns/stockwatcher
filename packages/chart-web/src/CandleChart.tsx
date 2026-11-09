@@ -68,6 +68,9 @@ import {
   type Candle,
   type ChartModel,
   type Drawing,
+  type WatchedDrawing,
+  canAlertOnDrawing,
+  TIMEFRAME_MS,
   type DrawingDraft,
   type DrawingKind,
   type IndicatorColorActions,
@@ -131,6 +134,7 @@ import { PRICE_SCALE_LABELS, PriceAxisMenu } from "./PriceAxisMenu.tsx";
 import { cn, TOUCH_HIT } from "./ui/utils.ts";
 import { useCanvas, useChartTheme } from "./useCanvas.ts";
 import { prefersReducedMotion, useTween } from "./useTween.ts";
+import { useDrawingCue } from "./useDrawingCue.ts";
 
 /**
  * What the chart draws; chart-core's Series satisfies it. Pass a NEW object
@@ -279,6 +283,20 @@ export interface CandleChartProps {
   timeframeControl?: "segments" | "wheel";
   /** Price alerts on this symbol: lines, the bell, hold to create, drag to move. Absent = off. */
   alerts?: ChartAlerts | null;
+  /** Drawing alerts on this symbol: the touching cue, fire markers and the toolbox's bell. Absent = off. */
+  drawingAlerts?: ChartDrawingAlerts | null;
+}
+
+/**
+ * What the host wires for drawing alerts (chart-core drawingAlerts.ts; the server evaluates them).
+ * The chart draws the cue from `watched` and its own drawings and slots; the toolbox's bell asks
+ * the host to open its form for the selected drawing.
+ */
+export interface ChartDrawingAlerts {
+  /** This symbol's drawing alerts, with any fire not yet acknowledged. */
+  watched: readonly WatchedDrawing[];
+  /** "Alert on this drawing" (the toolbox's bell), with the chart's timeframe (its slots place a sloped line). */
+  onAlert: (drawing: Drawing, timeframe: Timeframe) => void;
 }
 
 /**
@@ -405,6 +423,7 @@ export function CandleChart({
   headingInToolbar = false,
   timeframeControl = "segments",
   alerts = null,
+  drawingAlerts = null,
   detection,
   eventMarkers,
   initialFocus,
@@ -614,6 +633,9 @@ export function CandleChart({
     return measurement ? [...list, measurement] : list;
   }, [drawings, drag, measurement, visibility.drawings]);
   const showTrading = !!trading && visibility.trading;
+  // Drawing alerts' cue (chart-core drawingAlerts.ts): computed against the drawings as shown, so
+  // a hidden drawing has no glow either.
+  const drawingCues = useDrawingCue(drawingAlerts?.watched, shownDrawings, slots, TIMEFRAME_MS[timeframe], last);
   const selectedDrawing = selected?.kind === "drawing" ? selected.id : null;
   const alertLines = alerts?.lines;
   const alertLayer: AlertLayer | null = useMemo(
@@ -668,6 +690,7 @@ export function CandleChart({
       draft,
       trading: showTrading ? { orders, position, last, dragging: drag?.order ? { id: drag.order.id, price: drag.order.price } : null, placeY } : null,
       alerts: alertLayer,
+      drawingCues,
       detection,
       eventMarkers,
       context,
@@ -679,7 +702,7 @@ export function CandleChart({
       extendedHours: settings.extendedHours,
       ...(series?.sessions ? { sessions: series.sessions } : {}),
     }),
-    [timeframe, series, slots, inspectT, pointer, tradeMenuOpen, tradeMenuAt, chartOptions, scaleType, indicatorResults, shownDrawings, selectedDrawing, draft, showTrading, orders, position, last, drag, placeY, alertLayer, detection, eventMarkers, context, now, paneHeights, settings.chartType, chartStyle, baselinePrice, settings.extendedHours],
+    [timeframe, series, slots, inspectT, pointer, tradeMenuOpen, tradeMenuAt, chartOptions, scaleType, indicatorResults, shownDrawings, selectedDrawing, draft, showTrading, orders, position, last, drag, placeY, alertLayer, detection, eventMarkers, context, now, paneHeights, settings.chartType, chartStyle, baselinePrice, settings.extendedHours, drawingCues],
   );
 
   const paint = useCallback((ctx: CanvasRenderingContext2D, size: Size) => drawDisplayList(ctx, layoutChart(computeChartModel(state, vp, size), state, theme)), [state, vp, theme]);
@@ -1524,6 +1547,9 @@ export function CandleChart({
           onColorChange={(color) => selectedDrawingObj && setDrawings(drawings.map((d) => (d.id === selectedDrawingObj.id ? { ...d, color } : d)))}
           canDelete={selected?.kind === "drawing"}
           onDelete={deleteSelected}
+          canAlert={!!drawingAlerts && !!selectedDrawingObj && canAlertOnDrawing(selectedDrawingObj)}
+          alerted={!!selectedDrawingObj && !!drawingAlerts?.watched.some((w) => w.drawingId === selectedDrawingObj.id)}
+          onAlert={() => selectedDrawingObj && drawingAlerts?.onAlert(selectedDrawingObj, timeframe)}
           canUndo={history.past.length > 0}
           canRedo={history.future.length > 0}
           onUndo={() => stepHistory("undo")}

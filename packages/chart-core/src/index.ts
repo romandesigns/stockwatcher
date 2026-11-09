@@ -22,6 +22,7 @@ export * from "./oklch.ts";
 export * from "./drawings.ts";
 export * from "./trading.ts";
 export * from "./alerts.ts";
+export * from "./drawingAlerts.ts";
 export * from "./detection.ts";
 export * from "./eventMarkers.ts";
 export * from "./position.ts";

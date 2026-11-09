@@ -69,6 +69,9 @@ import {
   type ChartState,
   type ChartTheme,
   type Drawing,
+  type WatchedDrawing,
+  canAlertOnDrawing,
+  TIMEFRAME_MS,
   type DrawingDraft,
   type DrawingKind,
   type Gap,
@@ -121,6 +124,7 @@ import { PositionPlanPanel } from "./PositionPlanPanel.tsx";
 import { BrokerNotice } from "./AccountBadge.tsx";
 import { AxisSheet, IndicatorSheet, LayersSheet, OrderTicketSheet, QUICK_TRADE_SIZES, QuickTradeSheet, SCALE_LABELS } from "./sheets.tsx";
 import { useTween } from "./useTween.ts";
+import { useDrawingCue } from "./useDrawingCue.ts";
 import { QuickAlertSheet, type QuickAlertDraft } from "./QuickAlertSheet.tsx";
 import { TimeframeWheel } from "./TimeframeWheel.tsx";
 import { Icon, playHaptic, ToolButton, ToolIcon, UI } from "./ui.tsx";
@@ -246,6 +250,8 @@ export interface CandleChartProps {
   style?: StyleProp<ViewStyle>;
   /** Price alerts on this symbol (lines with 44 pt handles, the lift chip, the axis sheet's "Alert at"). Absent = off. */
   alerts?: ChartAlerts | null;
+  /** Drawing alerts on this symbol: the touching cue, fire markers and the toolbox's bell. Absent = off. */
+  drawingAlerts?: ChartDrawingAlerts | null;
   /** Authoritative detector annotations. Read-only and separate from editable user drawings. */
   detection?: readonly DetectionOverlay[];
   /** Server-placed markers (the Insights ticker page: numbered sent alerts, missed-setup rings); read-only, absent = none. */
@@ -270,6 +276,14 @@ export interface ChartAlerts {
   onMove: (id: string, price: number, from: number) => void;
   /** The handle dragged off the right edge. */
   onDelete: (id: string) => void;
+}
+
+/** What the host wires for drawing alerts (chart-web's ChartDrawingAlerts; chart-core drawingAlerts.ts). */
+export interface ChartDrawingAlerts {
+  /** This symbol's drawing alerts, with any fire not yet acknowledged. */
+  watched: readonly WatchedDrawing[];
+  /** "Alert on this drawing" (the toolbox's bell), with the chart's timeframe (its slots place a sloped line). */
+  onAlert: (drawing: Drawing, timeframe: Timeframe) => void;
 }
 
 /** Height the top-left readout takes, which overlay legends start below. */
@@ -347,6 +361,7 @@ export function CandleChart({
   label,
   style,
   alerts = null,
+  drawingAlerts = null,
   detection,
   eventMarkers,
   initialFocus,
@@ -511,6 +526,8 @@ export function CandleChart({
   }, [drawings, drag, measurement, visibility.drawings]);
   const selectedDrawing = selected?.kind === "drawing" ? selected.id : null;
   const showTrading = !!trading && visibility.trading;
+  // Drawing alerts' cue, against the drawings as shown (a hidden drawing has no glow either).
+  const drawingCues = useDrawingCue(drawingAlerts?.watched, shownDrawings, slots, TIMEFRAME_MS[timeframe], last, reducedMotion);
   const alertLines = alerts?.lines;
   const alertLayer: AlertLayer | null = useMemo(() => (alertLines ? { alerts: alertLines, dragging: alertDrag, bellY: null, last } : null), [alertLines, alertDrag, last]);
   const volumeHeight = Math.round(useTween(settings.volume ? (options?.volumeHeight ?? DEFAULT_CHART_OPTIONS.volumeHeight) : 0, reducedMotion));
@@ -542,6 +559,7 @@ export function CandleChart({
       draft,
       trading: showTrading ? { orders, position, last, dragging: drag?.order ?? null, placeY: null } : null,
       alerts: alertLayer,
+      drawingCues,
       detection,
       eventMarkers,
       context,
@@ -553,7 +571,7 @@ export function CandleChart({
       extendedHours: settings.extendedHours,
       ...(series?.sessions ? { sessions: series.sessions } : {}),
     }),
-    [timeframe, series, slots, inspectT, pointer, options, volumeHeight, layers.profile, scaleType, indicatorResults, shownDrawings, selectedDrawing, draft, showTrading, orders, position, last, drag, alertLayer, detection, eventMarkers, context, clockNow, paneHeights, inspector, settings.chartType, chartStyle, baselinePrice, settings.extendedHours],
+    [timeframe, series, slots, inspectT, pointer, options, volumeHeight, layers.profile, scaleType, indicatorResults, shownDrawings, selectedDrawing, draft, showTrading, orders, position, last, drag, alertLayer, detection, eventMarkers, context, clockNow, paneHeights, inspector, settings.chartType, chartStyle, baselinePrice, settings.extendedHours, drawingCues],
   );
   const model = useMemo(() => computeChartModel(state, vp, size), [state, vp, size]);
   // Zoomed out (or panned back) past the server's limited indicator values: the host asks for all.
@@ -1022,6 +1040,9 @@ export function CandleChart({
             onColorChange={(color) => selectedDrawingObj && setDrawings(drawings.map((d) => (d.id === selectedDrawingObj.id ? { ...d, color } : d)))}
             canDelete={selected?.kind === "drawing"}
             onDelete={deleteSelected}
+            canAlert={!!drawingAlerts && !!selectedDrawingObj && canAlertOnDrawing(selectedDrawingObj)}
+            alerted={!!selectedDrawingObj && !!drawingAlerts?.watched.some((w) => w.drawingId === selectedDrawingObj.id)}
+            onAlert={() => selectedDrawingObj && drawingAlerts?.onAlert(selectedDrawingObj, timeframe)}
             canUndo={history.past.length > 0}
             canRedo={history.future.length > 0}
             onUndo={() => stepHistory("undo")}

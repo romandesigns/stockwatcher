@@ -16,6 +16,12 @@ export interface DrawingToolboxProps {
   onColorChange: (color: string) => void;
   canDelete: boolean;
   onDelete: () => void;
+  /** The selected drawing can carry a drawing alert (chart-core drawingAlerts.ts). */
+  canAlert?: boolean;
+  /** Opens the host's drawing alert sheet for the selected drawing. */
+  onAlert?: () => void;
+  /** The selected drawing already has an alert: the bell shows in the accent. */
+  alerted?: boolean;
   canUndo: boolean;
   canRedo: boolean;
   onUndo: () => void;
@@ -65,7 +71,7 @@ const lineLength = (n: number, grip: boolean, separator: boolean) => PAD * 2 + (
  * rows left stale touch targets on Android before (see the workspace's
  * motion notes).
  */
-export function DrawingToolbox({ placement, onPlacementChange, container, tool, onToolChange, color, canColor, onColorChange, canDelete, onDelete, canUndo, canRedo, onUndo, onRedo, haptics = true, settings = DEFAULT_DRAWING_SETTINGS, preview = false }: DrawingToolboxProps) {
+export function DrawingToolbox({ placement, onPlacementChange, container, tool, onToolChange, color, canColor, onColorChange, canDelete, onDelete, canAlert = false, onAlert, alerted = false, canUndo, canRedo, onUndo, onRedo, haptics = true, settings = DEFAULT_DRAWING_SETTINGS, preview = false }: DrawingToolboxProps) {
   const [box, setBox] = useState<Size>({ width: 300, height: 40 });
   const [colorsOpen, setColorsOpen] = useState(false);
   const start = useRef<{ left: number; top: number } | null>(null);
@@ -116,6 +122,11 @@ export function DrawingToolbox({ placement, onPlacementChange, container, tool, 
     </View>
   );
   const editButtons: Record<(typeof layout.edit)[number], ReactNode> = {
+    alert: (
+      <Pressable key="alert" accessibilityRole="button" accessibilityLabel="Alert on this drawing" accessibilityState={{ disabled: !canAlert, selected: alerted && canAlert }} disabled={!canAlert} onPress={onAlert} style={[s.btn, !canAlert && { opacity: 0.4 }]}>
+        <Icon name="bell" color={alerted && canAlert ? UI.accent : UI.textDim} />
+      </Pressable>
+    ),
     delete: (
       <Pressable key="delete" accessibilityRole="button" accessibilityLabel="Delete selected drawing" disabled={!canDelete} onPress={onDelete} style={[s.btn, !canDelete && { opacity: 0.4 }]}>
         <ToolIcon kind="trash" color={UI.textDim} />

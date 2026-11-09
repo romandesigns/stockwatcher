@@ -126,6 +126,13 @@ export interface AppState {
   alertStatus: AlertsStatusWire | null;
   /** The last fire this client heard about live (not from a snapshot): hosts toast it. */
   lastFired: AlertEventWire | null;
+  /**
+   * Drawing alerts' fires heard live and not yet acknowledged, by alert id: the chart keeps each
+   * one marked on its candle (chart-core drawingAlerts.ts) until the person acknowledges it
+   * (`acknowledgeDrawingFire`). Session state on purpose: a fire seen on another device or before
+   * a reload is in Activity, not re-flashed.
+   */
+  drawingFires: Record<string, { t: number; price: number; tone: "up" | "down" | "stop"; eventId: string }>;
 
   // Device.
   device: DevicePrefs | null;
@@ -202,6 +209,8 @@ export interface AppState {
   setAlertPrefs(next: AlertPrefs): void;
   /** A frame from the alerts service (the feed routes them here, whatever page is open). */
   applyAlertsMessage(m: AlertsServerMessage): void;
+  /** Clears a drawing alert's fire marker (the toast's or banner's acknowledge, the alerts list). */
+  acknowledgeDrawingFire(alertId: string): void;
 
   // Device setters (a no-op on a store without a device slice).
   setToolbox(p: ToolboxPlacement): void;
@@ -373,6 +382,7 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
     alertActivity: [],
     alertStatus: null,
     lastFired: null,
+    drawingFires: {},
 
     setIndicators: (next) => writeIndicators(SYNC_NS.indicators, next),
     setTickerIndicators: (next) => writeIndicators(SYNC_NS.tickerIndicators, next),
@@ -479,10 +489,13 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
         }
         case "alert.fired": {
           const s = get().alertStatus;
+          const e = m.event;
+          const tone = e.tone === "up" || e.tone === "down" || e.tone === "stop" ? e.tone : null;
           set({
-            alertActivity: mergeActivity(get().alertActivity, [m.event], false),
-            lastFired: m.event,
+            alertActivity: mergeActivity(get().alertActivity, [e], false),
+            lastFired: e,
             ...(s && typeof m.phoneToday === "number" ? { alertStatus: { ...s, phoneToday: m.phoneToday } } : {}),
+            ...(tone && typeof e.price === "number" ? { drawingFires: { ...get().drawingFires, [e.alertId]: { t: e.t, price: e.price, tone, eventId: e.id } } } : {}),
           });
           return;
         }
@@ -491,6 +504,13 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
           set({ alertActivity: mergeActivity(get().alertActivity, [m.event], false) });
           return;
       }
+    },
+
+    acknowledgeDrawingFire: (alertId) => {
+      const cur = get().drawingFires;
+      if (!(alertId in cur)) return;
+      const { [alertId]: _gone, ...rest } = cur;
+      set({ drawingFires: rest });
     },
 
     setToolbox: (toolbox) => updateDevice("toolbox", toolbox),

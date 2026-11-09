@@ -5,6 +5,7 @@ import { withAlpha } from "./theme.ts";
 import { layoutContext, type ContextLayer } from "./levels.ts";
 import { layoutTrading, type TradingLayer } from "./trading.ts";
 import { layoutAlerts, type AlertLayer } from "./alerts.ts";
+import { layoutDrawingCues, type DrawingCueLayer } from "./drawingAlerts.ts";
 import { layoutDetections, type DetectionOverlay } from "./detection.ts";
 import { layoutEventMarkers, type EventMarker } from "./eventMarkers.ts";
 import { formatPrice } from "./format.ts";
@@ -109,6 +110,8 @@ export interface ChartState {
   trading?: TradingLayer | null;
   /** This symbol's price alert lines and the hover bell (alerts.ts); absent hides them. */
   alerts?: AlertLayer | null;
+  /** Drawing alerts' cue (drawingAlerts.ts): the glow while the price touches a watched drawing, fire markers; absent hides it. */
+  drawingCues?: DrawingCueLayer | null;
   /** Authoritative detector annotations. Read-only; not alert or drawing interaction targets. */
   detection?: readonly DetectionOverlay[];
   /** Server-placed event markers (the Insights ticker page's alerts and missed setups); read-only. */
@@ -590,6 +593,7 @@ export function layoutChart(model: ChartModel, state: ChartState, theme: ChartTh
 
   // drawings, a drawing being placed, then simulated orders on top
   if (state.drawings?.length) out.push(...layoutDrawings(model, state.drawings, state.selectedDrawing ?? null, theme));
+  if (state.drawingCues && state.drawings?.length) out.push(...layoutDrawingCues(model, state.drawings, state.drawingCues, theme));
   if (state.draft) out.push(...layoutDraft(model, state.draft, theme));
   if (state.context) out.push(...layoutContext(model, state.context, theme));
   if (state.detection?.length) out.push(...layoutDetections(model, state.detection, theme));

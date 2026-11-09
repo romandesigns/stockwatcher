@@ -74,7 +74,7 @@ describe("show and hide", () => {
 
   test("a group switch leaves the other group alone", () => {
     const s = setToolboxGroupVisible(hide("trend"), "actions", false);
-    expect(s.hidden).toEqual(["trend", "color", "delete", "undo", "redo", "rotate", "grip"]);
+    expect(s.hidden).toEqual(["trend", "color", "alert", "delete", "undo", "redo", "rotate", "grip"]);
     expect(setToolboxGroupVisible(s, "actions", true).hidden).toEqual(["trend"]);
   });
 });
@@ -101,12 +101,13 @@ describe("toolbox layout for fewer items", () => {
   test("hidden tools drop out in order; the cursor stays first", () => {
     const l = toolboxLayout(hide("trend", "vline", "measure"));
     expect(l.tools).toEqual(["cursor", "ray", "hline", "rect", "supply", "demand", "long", "short"]);
-    expect(l.buttons).toBe(8 + 5);
+    // Five actions plus the drawing alert's bell (2026-11-09).
+    expect(l.buttons).toBe(8 + 6);
   });
 
   test("the edit pill holds only what shows, and disappears when empty (no empty dimmed surface)", () => {
-    expect(toolboxLayout(hide("undo", "redo")).edit).toEqual(["delete", "rotate"]);
-    const l = toolboxLayout(hide("delete", "undo", "redo", "rotate"));
+    expect(toolboxLayout(hide("undo", "redo")).edit).toEqual(["alert", "delete", "rotate"]);
+    const l = toolboxLayout(hide("alert", "delete", "undo", "redo", "rotate"));
     expect(l.edit).toEqual([]);
     expect(l.color).toBe(true);
     expect(l.separator).toBe(true);
