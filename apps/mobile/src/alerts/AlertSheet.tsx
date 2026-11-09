@@ -14,7 +14,7 @@ import {
   type AlertSession,
   type MoveWindow,
 } from "@stockwatcher/app-state";
-import { formatPrice, snapPrice } from "@stockwatcher/chart-core";
+import { DRAWING_PART_LABELS, MAX_TOLERANCE_PCT, MAX_TOLERANCE_TICKS, formatPrice, snapPrice, type DrawingAlertPart } from "@stockwatcher/chart-core";
 import { Segmented, Sheet, UI } from "@stockwatcher/chart-native";
 import { useState, useSyncExternalStore, type ReactNode } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
@@ -24,7 +24,7 @@ import { appActions } from "../state/store";
 import { fonts } from "../theme";
 import { alertSheet, createAlert, type AlertSheetState } from "./actions";
 
-type Tab = "price" | "move" | "signal";
+type Tab = "price" | "move" | "signal" | "drawing";
 type Signal = "halt" | "luld" | "hod" | "pressure";
 
 /** A toggle chip (sessions, notify, choices that wrap): pressed = raised, never accent; 40 pt tall. */
@@ -55,7 +55,7 @@ export function AlertSheet() {
   const reducedMotion = useReducedMotion();
   const close = () => alertSheet.set({ open: false });
   return (
-    <Sheet open={s.open} onClose={close} title={s.editId ? "Edit alert" : s.draft?.symbol ? `New alert · ${s.draft.symbol}` : "New alert"} reducedMotion={reducedMotion} tall>
+    <Sheet open={s.open} onClose={close} title={s.editId ? "Edit alert" : s.draft?.rule.kind === "drawing" ? `Alert on this drawing · ${s.draft.symbol}` : s.draft?.symbol ? `New alert · ${s.draft.symbol}` : "New alert"} reducedMotion={reducedMotion} tall>
       {s.draft && <Body key={s.seq} s={s} d={s.draft} close={close} />}
     </Sheet>
   );
@@ -64,7 +64,7 @@ export function AlertSheet() {
 function Body({ s, d, close }: { s: AlertSheetState; d: AlertRule; close: () => void }) {
   const r = d.rule;
   const [symbol, setSymbol] = useState(d.symbol);
-  const [tab, setTab] = useState<Tab>(r.kind === "price" ? "price" : r.kind === "move" ? "move" : "signal");
+  const [tab, setTab] = useState<Tab>(r.kind === "price" ? "price" : r.kind === "move" ? "move" : r.kind === "drawing" ? "drawing" : "signal");
   const [dir, setDir] = useState<"above" | "below">(r.kind === "price" ? r.dir : "above");
   const [price, setPrice] = useState(r.kind === "price" && d.symbol ? formatPrice(r.price) : "");
   const [moveDir, setMoveDir] = useState<"up" | "down" | "either">(r.kind === "move" ? r.dir : "up");
@@ -78,9 +78,18 @@ function Body({ s, d, close }: { s: AlertSheetState; d: AlertRule; close: () => 
   const [sessions, setSessions] = useState<AlertSession[]>(d.sessions);
   const [expiry, setExpiry] = useState<AlertExpiry>(d.expiry);
   const [notify, setNotify] = useState(d.notify);
+  const [sound, setSound] = useState(d.sound);
+  const [part, setPart] = useState<DrawingAlertPart>(r.kind === "drawing" ? r.part : "line");
+  const [tolUnit, setTolUnit] = useState<"ticks" | "pct">(r.kind === "drawing" ? r.tol.unit : "ticks");
+  const [tolValue, setTolValue] = useState(r.kind === "drawing" ? String(r.tol.value) : "1");
 
   const sym = parseSymbol(symbol);
   const condition = ((): AlertCondition | null => {
+    if (r.kind === "drawing") {
+      const n = Number(tolValue.replace("%", ""));
+      const ok = tolUnit === "ticks" ? Number.isInteger(n) && n >= 0 && n <= MAX_TOLERANCE_TICKS : Number.isFinite(n) && n > 0 && n <= MAX_TOLERANCE_PCT;
+      return ok ? { kind: "drawing", drawingId: r.drawingId, part, tol: { unit: tolUnit, value: n }, tf: r.tf } : null;
+    }
     if (tab === "price") {
       const p = Number(price);
       return Number.isFinite(p) && p > 0 ? { kind: "price", dir, price: snapPrice(p) } : null;
@@ -104,7 +113,7 @@ function Body({ s, d, close }: { s: AlertSheetState; d: AlertRule; close: () => 
   const submit = () => {
     if (!valid || !condition || !sym) return;
     const now = Date.now();
-    const patch = { symbol: sym, rule: condition, fire, gapMin: gap, sessions, expiry, expiresAt: expiresAtFor(expiry, now), notify };
+    const patch = { symbol: sym, rule: condition, fire, gapMin: gap, sessions, expiry, expiresAt: expiresAtFor(expiry, now), notify, sound };
     if (s.editId) appActions().saveAlert(editedAlert(d, patch, now));
     else createAlert({ ...d, ...patch, createdAt: now, editedAt: now });
     close();
@@ -112,12 +121,35 @@ function Body({ s, d, close }: { s: AlertSheetState; d: AlertRule; close: () => 
 
   return (
     <ScrollView showsVerticalScrollIndicator={false} showsHorizontalScrollIndicator={false} style={{ flex: 1 }} contentContainerStyle={{ gap: 14, paddingBottom: 12 }} keyboardShouldPersistTaps="handled">
-      {(!d.symbol || s.editId) && (
+      {(!d.symbol || (s.editId && tab !== "drawing")) && (
         <Field label="Ticker">
           <TextInput value={symbol} onChangeText={(t) => setSymbol(t.toUpperCase())} autoCapitalize="characters" autoCorrect={false} placeholder="XLAB" placeholderTextColor={UI.textFaint} style={st.input} accessibilityLabel="Ticker" />
         </Field>
       )}
-      <Seg value={tab} onChange={setTab} options={[{ value: "price", label: "Price" }, { value: "move", label: "% move" }, { value: "signal", label: "Signal" }]} />
+      {tab !== "drawing" && <Seg value={tab} onChange={setTab} options={[{ value: "price", label: "Price" }, { value: "move", label: "% move" }, { value: "signal", label: "Signal" }]} />}
+      {tab === "drawing" && r.kind === "drawing" && (
+        <>
+          {part !== "line" && (
+            <Field label="Level">
+              <Seg value={part} onChange={setPart} options={(["stop", "target", "entry"] as const).map((v) => ({ value: v, label: DRAWING_PART_LABELS[v] }))} />
+            </Field>
+          )}
+          <Field label="Touching within">
+            <Seg
+              value={tolUnit}
+              onChange={(u) => {
+                setTolUnit(u);
+                setTolValue(u === "ticks" ? "1" : "0.5");
+              }}
+              options={[{ value: "ticks", label: "Ticks" }, { value: "pct", label: "Percent" }]}
+            />
+            <TextInput value={tolValue} onChangeText={setTolValue} keyboardType="decimal-pad" style={st.input} accessibilityLabel={tolUnit === "ticks" ? "Ticks" : "Percent"} />
+          </Field>
+          <Text style={st.hint}>
+            A tick is $0.0001 under $1, $0.01 above. A print that jumps clean through the {part === "line" ? "line" : part} counts too. Follows the drawing as drawn on the {r.tf} chart: move it and the alert moves with it.
+          </Text>
+        </>
+      )}
       {tab === "price" && (
         <>
           <Seg value={dir} onChange={setDir} options={[{ value: "above", label: "Crosses above" }, { value: "below", label: "Crosses below" }]} />
@@ -185,6 +217,7 @@ function Body({ s, d, close }: { s: AlertSheetState; d: AlertRule; close: () => 
         <View style={st.wrap}>
           <Chip on={notify.app} label="In app" onPress={() => setNotify((n) => ({ ...n, app: !n.app }))} />
           <Chip on={notify.phone} label="Phone" onPress={() => setNotify((n) => ({ ...n, phone: !n.phone }))} />
+          {tab === "drawing" && <Chip on={sound} label="Sound" onPress={() => setSound((v) => !v)} />}
         </View>
       </Field>
       <Pressable accessibilityRole="button" accessibilityState={{ disabled: !valid }} disabled={!valid} onPress={submit} style={({ pressed }) => [st.cta, !valid && { opacity: 0.5 }, pressed && { opacity: 0.85 }]}>
@@ -196,6 +229,7 @@ function Body({ s, d, close }: { s: AlertSheetState; d: AlertRule; close: () => 
 
 const st = StyleSheet.create({
   label: { color: UI.textDim, fontSize: 12 },
+  hint: { color: UI.textFaint, fontSize: 12, lineHeight: 17 },
   input: { height: 44, backgroundColor: UI.row, borderRadius: 10, paddingHorizontal: 12, color: UI.text, fontSize: 15, fontVariant: ["tabular-nums"] },
   wrap: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
   chip: { minHeight: 40, paddingHorizontal: 14, borderRadius: 20, backgroundColor: UI.row, alignItems: "center", justifyContent: "center" },

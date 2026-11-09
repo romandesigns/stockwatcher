@@ -7,7 +7,7 @@ import { Pressable, StyleSheet, Text, View } from "react-native";
 import Animated, { FadeIn, FadeOut, LayoutAnimationConfig, LinearTransition, ReduceMotion } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { useChartAlerts } from "../alerts/useChartAlerts";
+import { useChartAlerts, useChartDrawingAlerts } from "../alerts/useChartAlerts";
 import { DetectionEpisodeDetails } from "../dashboard/DetectionPanel";
 import { useDashboardFeed } from "../feed/dashboardFeed";
 import { useChartFeed, useDetection, usePaperTrading, useZones } from "../feed/hooks";
@@ -141,6 +141,8 @@ function ModalChart({ feed, symbol, detectionEpisodeId, detectionRunEpoch, notic
   const reference = useMemo(() => changeReference(series), [series]);
   const change = last && reference ? formatChange(reference.price, last.c) : "";
   const alerts = useChartAlerts(symbol, last?.c ?? null);
+  // Its drawing alerts: the touching cue, fire markers, the toolbox's bell.
+  const drawingAlerts = useChartDrawingAlerts(symbol, last?.c ?? null);
   // Volume shelves from the Runners channel (subscribed here too, whether or not the card is shown).
   const zones = useZones(feed.rocket, symbol);
 
@@ -210,6 +212,7 @@ function ModalChart({ feed, symbol, detectionEpisodeId, detectionRunEpoch, notic
           options={OPTIONS}
           barSpacing={8}
           alerts={alerts}
+          drawingAlerts={drawingAlerts}
           detection={annotations}
           volumeShelves={zones.bands}
           label={`${symbol} ${timeframe} candles`}

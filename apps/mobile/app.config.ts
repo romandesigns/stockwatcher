@@ -117,6 +117,9 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
         icon: "./assets/android-icon-monochrome.png",
         color: "#8b9cff",
         defaultChannel: "alerts",
+        // Drawing alerts' tones, one per channel (src/notifications/setup.ts DRAWING_CHANNELS),
+        // rendered by scripts/tones.ts. Bundled: a channel's sound must be a file in the app.
+        sounds: ["./assets/sounds/drawing_up.wav", "./assets/sounds/drawing_down.wav", "./assets/sounds/drawing_stop.wav"],
       },
     ],
     [

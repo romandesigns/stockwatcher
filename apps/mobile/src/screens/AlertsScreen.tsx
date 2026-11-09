@@ -20,6 +20,7 @@ import { deleteAlert, openAlertSheet } from "../alerts/actions";
 import { useReducedMotion } from "../motion/useReducedMotion";
 import { openTickerChart } from "../navigation/ref";
 import { enablePush, pushToken, subscribePushToken } from "../notifications/push";
+import { playDrawingTone, type DrawingTone } from "../notifications/setup";
 import { appActions, loadAppStore, useApp } from "../state/store";
 import { colors, fonts } from "../theme";
 
@@ -32,6 +33,8 @@ const CHIP: Readonly<Record<AlertDisplayKind, { bg: string; fg: string }>> = {
   snoozed: { bg: colors.bgRow, fg: colors.textFaint },
   fired: { bg: colors.goodBg, fg: colors.good },
   expired: { bg: colors.bgRow, fg: colors.textFaint },
+  // The drawing is gone: the warning status (the alert silently watches nothing), worded.
+  orphaned: { bg: colors.warningBg, fg: colors.warning },
 };
 
 /**
@@ -153,6 +156,21 @@ function Alerts() {
             <Text style={styles.actionText}>{`Quiet hours ${prefs.quietHours.start}–${prefs.quietHours.end} ET`}</Text>
             <Text style={[styles.small, prefs.quietHours.on && { color: colors.accent }]}>{prefs.quietHours.on ? "On" : "Off"}</Text>
           </Pressable>
+          {/* Drawing alerts' tones (synced: muting here mutes every device; the server then sends their pushes on the plain alerts channel). */}
+          <Pressable accessibilityRole="switch" accessibilityState={{ checked: prefs.sound.on }} onPress={() => app.setAlertPrefs({ ...prefs, sound: { ...prefs.sound, on: !prefs.sound.on } })} style={({ pressed }) => [styles.action, pressed && { backgroundColor: UI.raised }]}>
+            <Text style={styles.actionText}>Alert sounds</Text>
+            <Text style={[styles.small, prefs.sound.on && { color: colors.accent }]}>{prefs.sound.on ? "On" : "Off"}</Text>
+          </Pressable>
+          {prefs.sound.on && (
+            <View style={{ flexDirection: "row", gap: 6 }}>
+              {(["up", "down", "stop"] as const satisfies readonly DrawingTone[]).map((t) => (
+                <Pressable key={t} accessibilityRole="button" accessibilityLabel={`Test the ${t} tone`} onPress={() => void playDrawingTone(t, "Test tone", t === "stop" ? "Stop touched" : t === "up" ? "Price came up into a drawing" : "Price came down into a drawing")} style={({ pressed }) => [styles.action, { flex: 1, justifyContent: "center" }, pressed && { backgroundColor: UI.raised }]}>
+                  <Text style={styles.actionText}>{t === "up" ? "Up" : t === "down" ? "Down" : "Stop"}</Text>
+                </Pressable>
+              ))}
+            </View>
+          )}
+          <Text style={styles.small}>Drawing alerts ring once when they fire: rising when the price comes up into a drawing, falling when it comes down, a low triple for a stop. On the phone they use its notification volume.</Text>
         </View>
       </Sheet>
     </View>
@@ -178,6 +196,7 @@ function RowActions({ r, now, close }: { r: AlertRule; now: number; close: () =>
     { label: "Open chart", run: () => openTickerChart(r.symbol) },
     { label: "Edit", run: () => setTimeout(() => openAlertSheet(r, { editId: r.id }), 0) },
   ];
+  if (app.drawingFires[r.id]) items.push({ label: "Acknowledge fire", run: () => app.acknowledgeDrawingFire(r.id) });
   if (d.kind === "fired" || d.kind === "expired") items.push({ label: "Re-arm", run: () => app.updateAlert(r.id, { expiry: r.expiry }) });
   else if (d.kind === "snoozed") items.push({ label: "Unsnooze", run: () => app.snoozeAlert(r.id, null) });
   else {

@@ -47,6 +47,14 @@ export function showFired(symbol: string, text: string): void {
   showToast(`${symbol} · ${text}`, { icon: "bell", ms: 6000, action: { label: "Chart", run: () => openTickerChart(symbol) } });
 }
 
+/**
+ * A drawing alert's fire: its banner acknowledges ("Got it"), which clears the ring the chart keeps
+ * on the fire's candle until then (chart-core drawingAlerts.ts).
+ */
+export function showDrawingFired(symbol: string, text: string, alertId: string): void {
+  showToast(`${symbol} · ${text}`, { icon: "bell", ms: 10_000, action: { label: "Got it", run: () => appActions().acknowledgeDrawingFire(alertId) } });
+}
+
 // --- the full sheet's open state ---------------------------------------------------------------
 
 export interface AlertSheetState {
