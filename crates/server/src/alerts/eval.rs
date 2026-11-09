@@ -45,6 +45,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use chrono::NaiveDate;
 use market_events::SessionKind;
 
+use super::geometry::{self, Shape};
 use super::model::{
     AlertState, Condition, CrossDir, Fire, MoveDir, MoveWindow, Rule, Session, Status,
 };
@@ -142,6 +143,33 @@ pub trait MarketView {
     fn prev_close(&self, symbol: &str, date: NaiveDate) -> Option<f64>;
     /// What the engine already holds for `symbol` (None: nothing yet).
     fn seed(&self, symbol: &str) -> Option<Seed>;
+    /// The chart's slot times for `symbol` at the timeframe `tf_ms`, extended hours shown
+    /// (super::geometry::build_slots over the engine's candles and gap runs, the forming candle
+    /// included). Only asked for sloped drawing alerts, once per new candle. None: not known
+    /// (the line is then not evaluated).
+    fn slots(&self, _symbol: &str, _tf_ms: i64) -> Option<Vec<i64>> {
+        None
+    }
+}
+
+/// How a drawing alert was met, for its sound (distinct tones, owner decision 2026-11-09) and
+/// the phone's notification channel: the price came up into the drawing, came down into it, or
+/// met a position's stop (the after-hours mental stop, whichever way).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tone {
+    Up,
+    Down,
+    Stop,
+}
+
+impl Tone {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Tone::Up => "up",
+            Tone::Down => "down",
+            Tone::Stop => "stop",
+        }
+    }
 }
 
 /// Why a met condition was not fired.
@@ -176,6 +204,9 @@ pub enum Outcome {
         /// The state after the fire (cooling or done).
         status: Status,
         until: Option<i64>,
+        /// A drawing alert's tone (which way the price met the drawing, or its stop); None for
+        /// every other kind.
+        tone: Option<Tone>,
     },
     Held {
         alert_id: String,
@@ -276,6 +307,14 @@ struct Runtime {
     halt_noted: bool,
 }
 
+/// A drawing alert's view of its drawing this print: whether it is met and how.
+struct Touch {
+    met: bool,
+    up: bool,
+    text: String,
+    tone: Tone,
+}
+
 pub struct Evaluator {
     rules: HashMap<String, Rule>,
     by_symbol: HashMap<String, Vec<String>>,
@@ -285,6 +324,13 @@ pub struct Evaluator {
     /// States changed since the last [`Evaluator::take_changes`] (to persist), and removed ids.
     dirty: HashSet<String>,
     removed: HashSet<String>,
+    /// Drawing alerts: each watched symbol's watchable drawings (`drawings:<SYMBOL>`, set by
+    /// [`Evaluator::set_drawings`]); a symbol absent here has not been read yet.
+    drawings: HashMap<String, HashMap<String, Shape>>,
+    /// The geometry each drawing alert last saw, to tell an edit of its drawing.
+    seen_shape: HashMap<String, Shape>,
+    /// Slot times per (symbol, timeframe ms), with the candle start they were fetched for.
+    slot_cache: HashMap<(String, i64), (i64, Vec<i64>)>,
 }
 
 impl Default for Evaluator {
@@ -331,6 +377,9 @@ impl Evaluator {
             syms: HashMap::new(),
             dirty: HashSet::new(),
             removed: HashSet::new(),
+            drawings: HashMap::new(),
+            seen_shape: HashMap::new(),
+            slot_cache: HashMap::new(),
         }
     }
 
@@ -410,6 +459,81 @@ impl Evaluator {
         }
         self.rules = map;
         self.by_symbol = by_symbol;
+        let wanted: HashSet<String> = self.drawing_symbols().into_iter().collect();
+        self.drawings.retain(|s, _| wanted.contains(s));
+        self.slot_cache.retain(|(s, _), _| wanted.contains(s));
+        self.seen_shape.retain(|id, _| ids.contains(id));
+        self.sync_drawing_states();
+    }
+
+    /// Symbols with a drawing alert: the alerts task reads (and follows) their
+    /// `drawings:<SYMBOL>` namespaces for [`Evaluator::set_drawings`].
+    pub fn drawing_symbols(&self) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .rules
+            .values()
+            .filter(|r| r.condition.is_drawing())
+            .map(|r| r.symbol.clone())
+            .collect();
+        v.sort();
+        v.dedup();
+        v
+    }
+
+    /// One symbol's drawings document (`drawings:<SYMBOL>`; None = the namespace is empty or
+    /// gone, so every drawing alert on it is orphaned).
+    pub fn set_drawings(&mut self, symbol: &str, doc: Option<&serde_json::Value>) {
+        self.drawings
+            .insert(symbol.to_owned(), geometry::parse_drawings(doc));
+        self.sync_drawing_states();
+    }
+
+    /// Drawing alerts against their drawings (docs: chart-packages.md "Drawing alerts"):
+    /// - **Deleted** → orphaned: the alert stays (an undo brings the drawing back and it carries
+    ///   on) but watches nothing, and its state says so for the clients.
+    /// - **Edited** (moved, re-angled, a position's stop dragged) → the alert follows the new
+    ///   geometry, the same as dragging a price alert's line: a finished or cooling alert starts
+    ///   over armed, and the level is learned before it fires (a line dropped onto the current
+    ///   price does not fire on the next print; it fires when the price comes back to it).
+    fn sync_drawing_states(&mut self) {
+        let mut ids: Vec<String> = self
+            .rules
+            .values()
+            .filter(|r| r.condition.is_drawing())
+            .map(|r| r.id.clone())
+            .collect();
+        ids.sort();
+        for id in ids {
+            let rule = &self.rules[&id];
+            let Condition::Drawing { drawing_id, .. } = &rule.condition else {
+                continue;
+            };
+            // Not read yet: nothing is known, nothing changes.
+            let Some(map) = self.drawings.get(&rule.symbol) else {
+                continue;
+            };
+            let shape = map.get(drawing_id).cloned();
+            let Some(st) = self.states.get(&id).cloned() else {
+                continue;
+            };
+            let orphaned = shape.is_none();
+            if st.orphaned != orphaned {
+                self.set_state(&id, AlertState { orphaned, ..st });
+            }
+            let Some(shape) = shape else { continue };
+            let edited = self.seen_shape.get(&id).is_some_and(|old| *old != shape);
+            self.seen_shape.insert(id.clone(), shape);
+            if edited {
+                let st = self.states[&id].clone();
+                if matches!(st.status, Status::Done | Status::Cooling) {
+                    self.rearm(&id, st);
+                }
+                if let Some(rt) = self.runtime.get_mut(&id) {
+                    rt.was = None;
+                    rt.gap_noted = false;
+                }
+            }
+        }
     }
 
     /// States to write to `alerts.state` (set) and ids to remove from it, since the last call.
@@ -600,7 +724,7 @@ impl Evaluator {
                 if bull { "Buy" } else { "Sell" }
             );
             self.decide(
-                &id, &rule, st, ts, None, bull, text, false, halted, false, now, out,
+                &id, &rule, st, ts, None, bull, text, false, halted, false, None, now, out,
             );
         }
     }
@@ -685,7 +809,11 @@ impl Evaluator {
             // Cooling: watch for the move back, and re-arm once the gap has passed too.
             if st.status == Status::Cooling {
                 if let (Some(fp), Some(up)) = (st.fired_price, st.fired_up) {
-                    let back = if up {
+                    // A touch has no side to come back from: a drawing alert re-arms once the
+                    // price has moved 0.5% away from where it fired, either way.
+                    let back = if rule.condition.is_drawing() {
+                        (price - fp).abs() >= fp * REARM_MOVE - EPS
+                    } else if up {
                         price <= fp * (1.0 - REARM_MOVE) + EPS
                     } else {
                         price >= fp * (1.0 + REARM_MOVE) - EPS
@@ -700,11 +828,17 @@ impl Evaluator {
                     st = self.states[&id].clone();
                 }
             }
-            let (met, up, text) =
-                match self.condition(&rule, &snapshot, prev, prev_high, prev_close, price, ts) {
-                    Some(m) => m,
+            let (met, up, text, tone) = if rule.condition.is_drawing() {
+                match self.drawing_touch(&rule, prev, price, ts, view) {
+                    Some(t) => (t.met, t.up, t.text, Some(t.tone)),
                     None => continue,
-                };
+                }
+            } else {
+                match self.condition(&rule, &snapshot, prev, prev_high, prev_close, price, ts) {
+                    Some((m, u, t)) => (m, u, t, None),
+                    None => continue,
+                }
+            };
             if !met {
                 continue;
             }
@@ -722,12 +856,105 @@ impl Evaluator {
                 stale,
                 halted,
                 false,
+                tone,
                 now,
                 out,
             );
         }
         let sym = self.syms.get_mut(symbol).expect("watched");
         sym.last = Some((ts, price));
+    }
+
+    /// The chart's slots for a sloped drawing alert, fetched once per new candle per
+    /// (symbol, timeframe). `bucket` is the start of the trade's candle.
+    fn slots(
+        &mut self,
+        symbol: &str,
+        tf_ms: i64,
+        bucket: i64,
+        view: &dyn MarketView,
+    ) -> Option<&[i64]> {
+        let key = (symbol.to_owned(), tf_ms);
+        let fresh = self.slot_cache.get(&key).is_some_and(|(b, _)| *b == bucket);
+        if !fresh {
+            let slots = view.slots(symbol, tf_ms)?;
+            self.slot_cache.insert(key.clone(), (bucket, slots));
+        }
+        self.slot_cache.get(&key).map(|(_, s)| s.as_slice())
+    }
+
+    /// A drawing alert against this print: touching = within the tolerance of the drawing's level
+    /// at the trade's candle (super::geometry), or jumped clean through it since the previous
+    /// eligible print (an illiquid after-hours stock can skip the band entirely, and a stop it
+    /// skipped is exactly the one that must not stay silent). An edge, like the other level
+    /// conditions: it fires when it becomes met. None = nothing to evaluate (the drawing is gone,
+    /// the slots unknown); a level that is not there now (a trend line outside its anchors)
+    /// counts as not met.
+    fn drawing_touch(
+        &mut self,
+        rule: &Rule,
+        prev: Option<(i64, f64)>,
+        price: f64,
+        ts: i64,
+        view: &dyn MarketView,
+    ) -> Option<Touch> {
+        let Condition::Drawing {
+            drawing_id,
+            part,
+            tolerance,
+            tf_ms,
+        } = &rule.condition
+        else {
+            return None;
+        };
+        let shape = self.drawings.get(&rule.symbol)?.get(drawing_id)?.clone();
+        let bucket = ts.div_euclid(*tf_ms) * tf_ms;
+        let level = if shape.sloped() {
+            let slots = self.slots(&rule.symbol, *tf_ms, bucket, view)?;
+            geometry::level_at(&shape, *part, slots, bucket as f64, *tf_ms)
+        } else {
+            geometry::level_at(&shape, *part, &[], bucket as f64, *tf_ms)
+        };
+        let Some(level) = level else {
+            self.edge(&rule.id, false);
+            return Some(Touch {
+                met: false,
+                up: true,
+                text: String::new(),
+                tone: Tone::Up,
+            });
+        };
+        let touch = geometry::touching(price, level, *tolerance);
+        let before = prev.map(|(_, p)| p);
+        let through = before.is_some_and(|b| {
+            (b < level - EPS && price > level + EPS) || (b > level + EPS && price < level - EPS)
+        });
+        let met = self.edge(&rule.id, touch || through);
+        let reference = before.unwrap_or(price);
+        let up = if (reference - level).abs() <= EPS {
+            price >= level
+        } else {
+            reference < level
+        };
+        let tone = match part {
+            geometry::Part::Stop => Tone::Stop,
+            _ if up => Tone::Up,
+            _ => Tone::Down,
+        };
+        let verb = if touch { "Touched" } else { "Crossed through" };
+        let text = format!(
+            "{verb} {} {} at {} from {}",
+            shape.label(*part),
+            fmt_price(level),
+            fmt_price(price),
+            if up { "below" } else { "above" }
+        );
+        Some(Touch {
+            met,
+            up,
+            text,
+            tone,
+        })
     }
 
     /// Whether `rule`'s condition is met by this print, which way it fired (up = true) and the
@@ -844,7 +1071,7 @@ impl Evaluator {
                 };
                 Some((edge, up_met, text))
             }
-            Condition::Halt | Condition::Pressure { .. } => None,
+            Condition::Halt | Condition::Pressure { .. } | Condition::Drawing { .. } => None,
         }
     }
 
@@ -869,6 +1096,7 @@ impl Evaluator {
         stale: bool,
         halted: bool,
         late: bool,
+        tone: Option<Tone>,
         now: i64,
         out: &mut Vec<Outcome>,
     ) {
@@ -934,6 +1162,7 @@ impl Evaluator {
                 count: st.count + 1,
                 // A snoozed alert never fires (`live`).
                 snoozed: Some(false),
+                orphaned: st.orphaned,
             },
         );
         if let Some(rt) = self.runtime.get_mut(id) {
@@ -948,6 +1177,7 @@ impl Evaluator {
             late,
             status,
             until,
+            tone,
         });
     }
 
@@ -1005,6 +1235,7 @@ impl Evaluator {
                 false,
                 halted,
                 true,
+                None,
                 now,
                 out,
             );
@@ -1057,7 +1288,7 @@ impl Evaluator {
                 "Resumed trading".to_string()
             };
             self.decide(
-                &id, &rule, st, ts, None, halted, text, false, false, false, now, out,
+                &id, &rule, st, ts, None, halted, text, false, false, false, None, now, out,
             );
         }
     }
@@ -1122,6 +1353,7 @@ mod tests {
             expires_at: None,
             notify_app: true,
             notify_phone: true,
+            sound: true,
             snooze_until: None,
             created_at: 1,
             edited_at: 1,
@@ -1679,5 +1911,376 @@ mod tests {
         assert!(!e.syms.contains_key("OTHER"));
         assert_eq!(fmt_price(0.1904), "0.1904");
         assert_eq!(fmt_price(2.5), "2.50");
+    }
+
+    // ---- Drawing alerts ------------------------------------------------------------------
+
+    use crate::alerts::geometry::{Part, Tolerance};
+    use serde_json::json;
+
+    /// A market view that knows the chart's slots (sloped lines).
+    struct Slots(Vec<i64>);
+    impl MarketView for Slots {
+        fn prev_close(&self, _: &str, _: NaiveDate) -> Option<f64> {
+            None
+        }
+        fn seed(&self, _: &str) -> Option<Seed> {
+            None
+        }
+        fn slots(&self, _: &str, _: i64) -> Option<Vec<i64>> {
+            Some(self.0.clone())
+        }
+    }
+
+    fn on_drawing(id: &str, drawing: &str, part: Part, fire: Fire) -> Rule {
+        rule(
+            id,
+            Condition::Drawing {
+                drawing_id: drawing.into(),
+                part,
+                tolerance: Tolerance::Ticks(1),
+                tf_ms: MIN_MS,
+            },
+            fire,
+        )
+    }
+
+    fn hline(id: &str, p: f64) -> (String, serde_json::Value) {
+        (
+            id.to_string(),
+            json!({"z": 0, "d": {"id": id, "kind": "hline", "a": {"t": 0, "p": p}, "b": {"t": 0, "p": p}}}),
+        )
+    }
+
+    fn doc(entries: Vec<(String, serde_json::Value)>) -> serde_json::Value {
+        serde_json::Value::Object(entries.into_iter().collect())
+    }
+
+    /// An evaluator with these rules and XLAB's drawings.
+    fn drawn(rules: Vec<Rule>, drawings: serde_json::Value) -> Evaluator {
+        let mut e = ev(rules);
+        e.set_drawings("XLAB", Some(&drawings));
+        e
+    }
+
+    fn fired_tones(o: &[Outcome]) -> Vec<(String, Option<Tone>)> {
+        o.iter()
+            .filter_map(|x| match x {
+                Outcome::Fired { alert_id, tone, .. } => Some((alert_id.clone(), *tone)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_touch_within_the_tolerance_fires_outside_it_does_not() {
+        // The owner's screenshot: a line at 1.85 after hours, one tick ($0.01) of tolerance.
+        let t0 = et(17, 0, 0);
+        let mut e = drawn(
+            vec![on_drawing("d", "h", Part::Line, Fire::Once)],
+            doc(vec![hline("h", 1.85)]),
+        );
+        let o = feed(&mut e, &[(1.90, t0), (1.87, t0 + 1000)]);
+        assert!(o.is_empty(), "two ticks away is not a touch");
+        let o = feed(&mut e, &[(1.86, t0 + 2000)]);
+        assert_eq!(fired_tones(&o), vec![("d".into(), Some(Tone::Down))]);
+        match &o[0] {
+            Outcome::Fired {
+                text,
+                price,
+                status,
+                ..
+            } => {
+                assert_eq!(text, "Touched line 1.85 at 1.86 from above");
+                assert_eq!(*price, Some(1.86));
+                assert_eq!(*status, Status::Done);
+            }
+            x => panic!("{x:?}"),
+        }
+        // Coming up into it from below is the up tone.
+        let mut e = drawn(
+            vec![on_drawing("u", "h", Part::Line, Fire::Once)],
+            doc(vec![hline("h", 1.85)]),
+        );
+        let o = feed(&mut e, &[(1.80, t0), (1.85, t0 + 1000)]);
+        assert_eq!(fired_tones(&o), vec![("u".into(), Some(Tone::Up))]);
+        // A percentage tolerance: 1% of 1.85 is 0.0185.
+        let mut r = on_drawing("p", "h", Part::Line, Fire::Once);
+        r.condition = Condition::Drawing {
+            drawing_id: "h".into(),
+            part: Part::Line,
+            tolerance: Tolerance::Pct(1.0),
+            tf_ms: MIN_MS,
+        };
+        let mut e = drawn(vec![r], doc(vec![hline("h", 1.85)]));
+        assert!(feed(&mut e, &[(1.90, t0), (1.87, t0 + 1000)]).is_empty());
+        assert_eq!(fired(&feed(&mut e, &[(1.868, t0 + 2000)])), 1);
+    }
+
+    #[test]
+    fn a_jump_clean_through_the_line_counts() {
+        // An illiquid after-hours print skipping the band entirely must not stay silent.
+        let t0 = et(18, 30, 0);
+        let mut e = drawn(
+            vec![on_drawing("d", "h", Part::Line, Fire::Once)],
+            doc(vec![hline("h", 1.85)]),
+        );
+        let o = feed(&mut e, &[(1.95, t0), (1.70, t0 + 1000)]);
+        assert!(
+            matches!(&o[..], [Outcome::Fired { text, tone: Some(Tone::Down), .. }] if text == "Crossed through line 1.85 at 1.70 from above")
+        );
+    }
+
+    #[test]
+    fn a_ray_follows_the_slots_past_b_and_a_trend_stops_at_its_anchors() {
+        let t0 = et(17, 0, 0);
+        let m = MIN_MS;
+        // 17:00, :01, :02, a gap run from :03 to :10 (one slot), :10, :11.
+        let view = Slots(vec![
+            t0,
+            t0 + m,
+            t0 + 2 * m,
+            t0 + 3 * m,
+            t0 + 10 * m,
+            t0 + 11 * m,
+        ]);
+        let shapes = doc(vec![
+            (
+                "r".into(),
+                json!({"z": 0, "d": {"id": "r", "kind": "ray", "a": {"t": t0, "p": 1.00}, "b": {"t": t0 + 2 * m, "p": 1.10}}}),
+            ),
+            (
+                "t".into(),
+                json!({"z": 1, "d": {"id": "t", "kind": "trend", "a": {"t": t0, "p": 1.00}, "b": {"t": t0 + 2 * m, "p": 1.10}}}),
+            ),
+        ]);
+        let mut e = Evaluator::new();
+        e.set_rules(
+            vec![
+                on_drawing("ray", "r", Part::Line, Fire::Once),
+                on_drawing("trend", "t", Part::Line, Fire::Once),
+            ],
+            false,
+            &view,
+        );
+        e.set_drawings("XLAB", Some(&shapes));
+        let mut run = |p: f64, t: i64| e.on_input(trade(p, t), t, &view);
+        // At 17:11 the ray is 5 slots from a: 1.25 (in time it would be 11 minutes: 1.55).
+        assert!(run(1.40, t0 + 11 * m).is_empty());
+        let o = run(1.25, t0 + 11 * m + 5000);
+        assert_eq!(
+            fired_tones(&o),
+            vec![("ray".into(), Some(Tone::Down))],
+            "the ray, beyond b; the trend line ended at b"
+        );
+        // Into candles not printed yet: one slot per minute past the last (17:13 → 1.35).
+        let mut e2 = Evaluator::new();
+        e2.set_rules(
+            vec![on_drawing("ray", "r", Part::Line, Fire::Once)],
+            false,
+            &view,
+        );
+        e2.set_drawings("XLAB", Some(&shapes));
+        assert!(
+            e2.on_input(trade(1.20, t0 + 13 * m), t0 + 13 * m, &view)
+                .is_empty()
+        );
+        let o = e2.on_input(trade(1.35, t0 + 13 * m + 1), t0 + 13 * m + 1, &view);
+        assert_eq!(fired(&o), 1);
+        // The trend line inside its anchors: 17:01 is 1.05.
+        let mut e3 = Evaluator::new();
+        e3.set_rules(
+            vec![on_drawing("trend", "t", Part::Line, Fire::Once)],
+            false,
+            &view,
+        );
+        e3.set_drawings("XLAB", Some(&shapes));
+        let o = e3.on_input(trade(1.05, t0 + m + 1), t0 + m + 1, &view);
+        assert_eq!(fired(&o), 1, "touching inside the anchors");
+        // No slots known: a sloped line is not evaluated (never guessed on the clock).
+        let mut e4 = ev(vec![on_drawing("ray", "r", Part::Line, Fire::Once)]);
+        e4.set_drawings("XLAB", Some(&shapes));
+        assert!(feed(&mut e4, &[(1.20, t0 + 11 * m), (1.25, t0 + 11 * m + 1)]).is_empty());
+    }
+
+    #[test]
+    fn a_positions_entry_target_and_stop_are_each_watchable() {
+        let t0 = et(19, 0, 0);
+        let pos = doc(vec![(
+            "p".into(),
+            json!({"z": 0, "d": {"id": "p", "kind": "long", "a": {"t": 0, "p": 2.00}, "b": {"t": 1, "p": 2.40}, "c": {"t": 1, "p": 1.85}}}),
+        )]);
+        let mut e = drawn(
+            vec![
+                on_drawing("stop", "p", Part::Stop, Fire::Once),
+                on_drawing("target", "p", Part::Target, Fire::Once),
+                on_drawing("entry", "p", Part::Entry, Fire::Once),
+            ],
+            pos,
+        );
+        let o = feed(&mut e, &[(2.10, t0), (2.00, t0 + 1000)]);
+        assert_eq!(fired_tones(&o), vec![("entry".into(), Some(Tone::Down))]);
+        let o = feed(&mut e, &[(1.90, t0 + 2000), (1.85, t0 + 3000)]);
+        assert_eq!(
+            fired_tones(&o),
+            vec![("stop".into(), Some(Tone::Stop))],
+            "the stop has its own tone whichever way"
+        );
+        assert!(
+            matches!(&o[0], Outcome::Fired { text, .. } if text == "Touched long stop 1.85 at 1.85 from above")
+        );
+        let o = feed(&mut e, &[(2.39, t0 + 4000)]);
+        assert_eq!(fired_tones(&o), vec![("target".into(), Some(Tone::Up))]);
+    }
+
+    #[test]
+    fn drawing_alerts_keep_the_sessions_halts_and_staleness_rules() {
+        let mut r = on_drawing("d", "h", Part::Line, Fire::Once);
+        r.sessions = vec![Session::After, Session::Overnight];
+        let mut e = drawn(vec![r], doc(vec![hline("h", 1.85)]));
+        let reg = et(15, 0, 0);
+        assert!(
+            feed(&mut e, &[(1.90, reg), (1.85, reg + 1000)]).is_empty(),
+            "a regular-session touch is ignored silently"
+        );
+        let night = et(21, 0, 0);
+        assert_eq!(
+            fired(&feed(&mut e, &[(1.90, night), (1.85, night + 1000)])),
+            1,
+            "overnight is selectable"
+        );
+        // Halted: held, once.
+        let t0 = et(17, 0, 0);
+        let mut e = drawn(
+            vec![on_drawing("d", "h", Part::Line, Fire::Once)],
+            doc(vec![hline("h", 1.85)]),
+        );
+        feed(&mut e, &[(1.90, t0)]);
+        e.on_input(
+            Input::Status {
+                symbol: "XLAB".into(),
+                halted: true,
+                ts: t0 + 500,
+                session: sess(t0 + 500),
+                reason: "LUDP".into(),
+            },
+            t0 + 500,
+            &NO_VIEW,
+        );
+        let o = feed(&mut e, &[(1.85, t0 + 1000)]);
+        assert_eq!(held(&o), vec![HoldReason::Halted]);
+        assert_eq!(e.state("d").unwrap().status, Status::Armed);
+        // Stale: 31 minutes since the last after-hours print.
+        let mut e = drawn(
+            vec![on_drawing("d", "h", Part::Line, Fire::Once)],
+            doc(vec![hline("h", 1.85)]),
+        );
+        let o = feed(&mut e, &[(1.90, t0), (1.85, t0 + 31 * MIN_MS)]);
+        assert_eq!(held(&o), vec![HoldReason::Stale]);
+    }
+
+    #[test]
+    fn every_time_rearms_after_the_gap_and_a_half_percent_away_either_way() {
+        // At 4.00 one tick (0.01) is a quarter of 0.5% (0.02): room to leave the band and come
+        // back without having moved away enough to re-arm.
+        let t0 = et(17, 0, 0);
+        let mut e = drawn(
+            vec![on_drawing("d", "h", Part::Line, Fire::Every { gap_min: 5 })],
+            doc(vec![hline("h", 4.00)]),
+        );
+        assert_eq!(fired(&feed(&mut e, &[(4.10, t0), (4.00, t0 + 1000)])), 1);
+        assert_eq!(e.state("d").unwrap().status, Status::Cooling);
+        // Off the band and back inside the gap: held once.
+        let o = feed(
+            &mut e,
+            &[
+                (4.015, t0 + 2000),
+                (4.00, t0 + 3000),
+                (4.015, t0 + 4000),
+                (4.005, t0 + 5000),
+            ],
+        );
+        assert_eq!(held(&o), vec![HoldReason::Gap]);
+        assert!(!e.state("d").unwrap().moved_back);
+        // The gap passes while the price sits on the line: still cooling (it never moved away).
+        let t1 = t0 + 6 * MIN_MS;
+        assert!(feed(&mut e, &[(4.009, t1)]).is_empty());
+        assert_eq!(e.state("d").unwrap().status, Status::Cooling);
+        // 0.5% away ABOVE the fire price (it fired coming down): a touch has no side, so this
+        // re-arms it, and the next touch fires.
+        feed(&mut e, &[(4.021, t1 + 1000)]);
+        assert_eq!(e.state("d").unwrap().status, Status::Armed);
+        assert_eq!(fired(&feed(&mut e, &[(4.00, t1 + 2000)])), 1);
+        assert_eq!(e.state("d").unwrap().count, 2);
+    }
+
+    #[test]
+    fn a_deleted_drawing_orphans_the_alert_and_an_undo_brings_it_back() {
+        let t0 = et(17, 0, 0);
+        let mut e = drawn(
+            vec![on_drawing("d", "h", Part::Line, Fire::Once)],
+            doc(vec![hline("h", 1.85)]),
+        );
+        assert!(!e.state("d").unwrap().orphaned);
+        e.set_drawings("XLAB", Some(&doc(vec![hline("other", 1.0)])));
+        assert!(e.state("d").unwrap().orphaned);
+        assert!(
+            e.take_changes()
+                .0
+                .iter()
+                .any(|(id, s)| id == "d" && s.orphaned)
+        );
+        assert!(
+            feed(&mut e, &[(1.90, t0), (1.85, t0 + 1000)]).is_empty(),
+            "a deleted drawing watches nothing"
+        );
+        e.set_drawings("XLAB", None);
+        assert!(
+            e.state("d").unwrap().orphaned,
+            "the namespace gone: still orphaned"
+        );
+        e.set_drawings("XLAB", Some(&doc(vec![hline("h", 1.85)])));
+        assert!(!e.state("d").unwrap().orphaned);
+        assert_eq!(
+            fired(&feed(&mut e, &[(1.90, t0 + 2000), (1.85, t0 + 3000)])),
+            1
+        );
+    }
+
+    #[test]
+    fn an_edited_drawing_moves_the_alert_and_rearms_it() {
+        let t0 = et(17, 0, 0);
+        let mut e = drawn(
+            vec![on_drawing("d", "h", Part::Line, Fire::Once)],
+            doc(vec![hline("h", 1.85)]),
+        );
+        assert_eq!(fired(&feed(&mut e, &[(1.90, t0), (1.85, t0 + 1000)])), 1);
+        assert_eq!(e.state("d").unwrap().status, Status::Done);
+        // Dragged to 1.95 (the price is at 1.85): armed again, following the new level.
+        e.set_drawings("XLAB", Some(&doc(vec![hline("h", 1.95)])));
+        assert_eq!(e.state("d").unwrap().status, Status::Armed);
+        assert!(feed(&mut e, &[(1.85, t0 + 2000)]).is_empty());
+        let o = feed(&mut e, &[(1.95, t0 + 3000)]);
+        assert!(
+            matches!(&o[..], [Outcome::Fired { text, .. }] if text == "Touched line 1.95 at 1.95 from below")
+        );
+        // Dropped right onto the price: learned first, so it does not fire on the next print.
+        e.set_drawings("XLAB", Some(&doc(vec![hline("h", 1.96)])));
+        assert!(feed(&mut e, &[(1.96, t0 + 4000)]).is_empty());
+        assert!(feed(&mut e, &[(1.90, t0 + 5000)]).is_empty());
+        assert_eq!(fired(&feed(&mut e, &[(1.96, t0 + 6000)])), 1);
+        // An unchanged document changes nothing.
+        let before = e.state("d").cloned();
+        e.set_drawings("XLAB", Some(&doc(vec![hline("h", 1.96)])));
+        assert_eq!(e.state("d").cloned(), before);
+    }
+
+    #[test]
+    fn price_alerts_are_untouched_by_drawings() {
+        let t0 = et(17, 0, 0);
+        let mut e = drawn(vec![above(2.50, Fire::Once)], doc(vec![hline("h", 2.50)]));
+        let o = feed(&mut e, &[(2.49, t0), (2.50, t0 + 1000)]);
+        assert!(matches!(&o[..], [Outcome::Fired { tone: None, .. }]));
+        assert!(e.drawing_symbols().is_empty());
     }
 }

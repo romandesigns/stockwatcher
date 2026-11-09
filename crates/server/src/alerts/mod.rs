@@ -29,6 +29,7 @@
 
 pub mod delivery;
 pub mod eval;
+pub mod geometry;
 pub mod history;
 pub mod ledger;
 pub mod model;
@@ -532,6 +533,10 @@ impl MarketView for Market {
     fn seed(&self, symbol: &str) -> Option<Seed> {
         self.alert_seed(symbol)
     }
+
+    fn slots(&self, symbol: &str, tf_ms: i64) -> Option<Vec<i64>> {
+        self.alert_slots(symbol, tf_ms)
+    }
 }
 
 struct Task {
@@ -592,6 +597,21 @@ impl Task {
             .pressure_watch
             .lock()
             .expect("pressure watch lock") = Arc::from(self.eval.pressure_symbols());
+        // Drawing alerts read their drawings from the same store, every reload (a rule may
+        // have moved to another drawing or symbol).
+        for symbol in self.eval.drawing_symbols() {
+            self.reload_drawings(&symbol).await;
+        }
+    }
+
+    /// One symbol's `drawings:<SYMBOL>` for its drawing alerts (eval `set_drawings`).
+    async fn reload_drawings(&mut self, symbol: &str) {
+        let doc = self
+            .settings
+            .get(&format!("{DRAWINGS_PREFIX}{symbol}"))
+            .await
+            .map(|(_, v)| v);
+        self.eval.set_drawings(symbol, doc.as_ref());
     }
 
     /// Writes changed states to `alerts.state` (one patch), so every device shows them.
@@ -680,6 +700,12 @@ impl Task {
                             self.reload(false).await;
                             // A snooze set or an edit shows at once, not on the next tick.
                             self.eval.tick(now_ms());
+                            changed = true;
+                        } else if let Some(symbol) = changed_drawings(&f)
+                            && self.eval.drawing_symbols().contains(&symbol)
+                        {
+                            // A watched drawing moved or was deleted: the alert follows it.
+                            self.reload_drawings(&symbol).await;
                             changed = true;
                         }
                     }
@@ -818,6 +844,7 @@ impl Task {
                 decided_ns: n.at_ns,
                 queued_ns: now.saturating_mul(1_000_000),
             }),
+            channel: None,
         };
         if self.pusher.try_send(job).is_err() {
             tracing::warn!(symbol = %n.symbol, kind, "runners push: push queue full or closed; not sent");
@@ -842,11 +869,17 @@ impl Task {
                 late,
                 status,
                 until,
+                tone,
             } => {
-                let (app, wants_phone) = self
-                    .eval
-                    .rule(&alert_id)
-                    .map_or((true, false), |r| (r.notify_app, r.notify_phone));
+                let (app, wants_phone, sound) =
+                    self.eval.rule(&alert_id).map_or((true, false, false), |r| {
+                        (r.notify_app, r.notify_phone, r.sound)
+                    });
+                // A sounding drawing alert rings on its tone's channel; muted (the alert's chip
+                // or the global switch), it is an ordinary alerts notification.
+                let channel = tone
+                    .filter(|_| sound && self.prefs.sound_on)
+                    .map(drawing_channel);
                 let now_et = et(now);
                 let phone = self.delivery.decide(
                     &symbol,
@@ -924,6 +957,7 @@ impl Task {
                     phone: phone_word.into(),
                     reason,
                     note,
+                    tone: tone.map(|t| t.as_str().to_owned()),
                 };
                 self.ledger.alert(
                     &id,
@@ -948,8 +982,9 @@ impl Task {
                         title: symbol.clone(),
                         body,
                         // The app opens its Alerts tab on a tap (apps/mobile src/notifications).
-                        data: json!({ "alertId": alert_id, "symbol": symbol, "eventId": id, "url": "stockwatcher://alerts" }),
+                        data: json!({ "alertId": alert_id, "symbol": symbol, "eventId": id, "url": "stockwatcher://alerts", "tone": tone.map(|t| t.as_str()) }),
                         runner: None,
+                        channel,
                     };
                     if self.pusher.try_send(job).is_err() {
                         event.phone = "failed".into();
@@ -1019,11 +1054,33 @@ impl Task {
                     phone: "none".into(),
                     reason: Some(reason.code().into()),
                     note,
+                    tone: None,
                 };
                 self.broadcast(event_frame("alert.held", &event, None));
                 self.history.push(event);
             }
         }
+    }
+}
+
+/// The synced namespace prefix of one symbol's drawings (chart-core syncedSettings.ts `drawingsNs`).
+pub const DRAWINGS_PREFIX: &str = "drawings:";
+
+/// The symbol whose drawings a `settings.changed` frame is about, if it is one (a prefix test
+/// first, so the other namespaces' frames cost nothing).
+fn changed_drawings(frame: &str) -> Option<String> {
+    const HEAD: &str = "{\"type\":\"settings.changed\",\"ns\":\"drawings:";
+    let rest = frame.strip_prefix(HEAD)?;
+    let end = rest.find('"')?;
+    model::parse_symbol(Some(&Value::from(&rest[..end])))
+}
+
+/// The Android channel a sounding drawing alert's push goes out on (push::Job `channel`).
+fn drawing_channel(tone: eval::Tone) -> &'static str {
+    match tone {
+        eval::Tone::Up => "drawing-up",
+        eval::Tone::Down => "drawing-down",
+        eval::Tone::Stop => "drawing-stop",
     }
 }
 
@@ -1345,6 +1402,115 @@ mod tests {
         drop(desk);
         sink.offer_runner(notice(NoticeKind::Fast, "FFF", now_ms()));
         assert!(next_notice(&mut frames).await.is_none());
+    }
+
+    /// A drawing alert through the real task: the drawing is read from its synced namespace,
+    /// a touch fires with its tone (and a sounding phone push would ring on the tone's channel),
+    /// and deleting the drawing on some device orphans the alert within the settings feed.
+    #[tokio::test]
+    async fn a_drawing_alert_follows_its_synced_drawing() {
+        let settings = Settings::in_memory();
+        let live = Market::idle(market_providers::ClockMode::Live, "idle", None);
+        let (job_tx, _jobs) = mpsc::channel(16);
+        let (_res_tx, res_rx) = mpsc::channel(4);
+        let alerts = Alerts::start_with(
+            settings.clone(),
+            live.clone(),
+            None,
+            job_tx,
+            res_rx,
+            ledger::Ledger::default(),
+        );
+        let mut frames = alerts.subscribe();
+        let now = now_ms();
+        settings
+            .apply("drawings:XLAB", "op0", SettingsOp::Patch {
+                set: json!({"h1": {"z": 0, "d": {"id": "h1", "kind": "hline", "a": {"t": now, "p": 1.85}, "b": {"t": now, "p": 1.85}}}}).as_object().unwrap().clone(),
+                remove: vec![],
+            })
+            .await
+            .unwrap();
+        settings
+            .apply(RULES_NS, "op1", SettingsOp::Patch {
+                set: json!({"d1": {"symbol": "XLAB", "rule": {"kind": "drawing", "drawingId": "h1", "part": "line", "tol": {"unit": "ticks", "value": 1}, "tf": "1m"}, "fire": "once", "sessions": ["pre", "regular", "after", "overnight"], "expiry": "never", "createdAt": now, "editedAt": now}}).as_object().unwrap().clone(),
+                remove: vec![],
+            })
+            .await
+            .unwrap();
+        let state =
+            async |settings: &Settings| settings.get(STATE_NS).await.map(|(_, v)| v["d1"].clone());
+        let mut armed = false;
+        for _ in 0..50 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            if state(&settings)
+                .await
+                .is_some_and(|s| s["status"] == "armed")
+            {
+                armed = true;
+                break;
+            }
+        }
+        assert!(armed, "state written");
+        let t = now_ms();
+        let sess = Some((et(t).date_naive(), market_events::SessionKind::After));
+        let sink = live.alert_sink().expect("attached");
+        for (p, ts) in [(1.90, t - 1000), (1.86, t)] {
+            sink.offer(Input::Trade {
+                symbol: "XLAB".into(),
+                price: p,
+                ts,
+                session: sess,
+            });
+        }
+        let frame = loop {
+            let f = tokio::time::timeout(Duration::from_secs(5), frames.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if f.starts_with("{\"type\":\"alert.") {
+                break f;
+            }
+        };
+        let v: Value = serde_json::from_str(&frame).unwrap();
+        assert_eq!(v["type"], "alert.fired");
+        assert_eq!(v["event"]["text"], "Touched line 1.85 at 1.86 from above");
+        assert_eq!(v["event"]["tone"], "down");
+        // Deleted on another device: orphaned.
+        settings
+            .apply(
+                "drawings:XLAB",
+                "op2",
+                SettingsOp::Patch {
+                    set: serde_json::Map::new(),
+                    remove: vec!["h1".into()],
+                },
+            )
+            .await
+            .unwrap();
+        for _ in 0..50 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            if state(&settings)
+                .await
+                .is_some_and(|s| s["orphaned"] == true)
+            {
+                return;
+            }
+        }
+        panic!("not orphaned: {:?}", state(&settings).await);
+    }
+
+    #[test]
+    fn drawing_namespaces_and_channels() {
+        assert_eq!(
+            changed_drawings("{\"type\":\"settings.changed\",\"ns\":\"drawings:XLAB\",\"rev\":3}")
+                .as_deref(),
+            Some("XLAB")
+        );
+        assert_eq!(
+            changed_drawings("{\"type\":\"settings.changed\",\"ns\":\"alerts\"}"),
+            None
+        );
+        assert_eq!(drawing_channel(eval::Tone::Stop), "drawing-stop");
     }
 
     #[test]

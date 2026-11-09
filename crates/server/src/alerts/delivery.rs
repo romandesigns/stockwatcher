@@ -141,6 +141,7 @@ mod tests {
         let prefs = Prefs {
             phone_budget: 5,
             quiet: None,
+            ..Prefs::default()
         };
         let at = |min: i64| min * 60_000;
         assert_eq!(d.decide("A", false, &prefs, 1, 0, day(15), 600), Phone::Off);
@@ -190,6 +191,7 @@ mod tests {
                 start_min: 22 * 60,
                 end_min: 7 * 60,
             }),
+            ..Prefs::default()
         };
         assert_eq!(
             d.decide("Q", true, &quiet, 1, at(100), day(16), 23 * 60),

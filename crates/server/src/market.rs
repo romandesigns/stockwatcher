@@ -1800,6 +1800,24 @@ impl Market {
         Some(seed)
     }
 
+    /// The chart's slot times for a sloped drawing alert (crate::alerts::geometry): the engine's
+    /// candles and gap runs of `symbol` at the timeframe of `tf_ms`, merged as chart-core
+    /// `buildSlots` merges the snapshot a chart opens with, extended hours shown. None for an
+    /// unknown timeframe or a symbol not in the engine. Called by the alerts task at most once
+    /// per new candle per (symbol, timeframe) a sloped drawing alert watches.
+    pub(crate) fn alert_slots(&self, symbol: &str, tf_ms: i64) -> Option<Vec<i64>> {
+        let tf = Timeframe::ALL
+            .into_iter()
+            .find(|t| t.secs() * 1000 == tf_ms)?;
+        let snap = {
+            let core = self.0.core.lock().expect("core lock");
+            core.engine.snapshot(symbol, tf, Some(self.0.bin))?
+        };
+        let candles: Vec<i64> = snap.candles.iter().map(|c| c.t).collect();
+        let gaps: Vec<i64> = snap.gaps.iter().map(|g| g.t).collect();
+        Some(crate::alerts::geometry::build_slots(&candles, &gaps))
+    }
+
     /// Hands this event to the price alerts, if attached (the live market). Eligible prints only,
     /// by the same rule as the candles and the last price (`Trade::effect().updates_ohlc`), so an
     /// alert can only fire on a price the chart shows. `ups` are the engine's increments for it

@@ -60,6 +60,10 @@ pub struct Event {
     pub reason: Option<String>,
     /// The Activity row's second line, e.g. "Phone + in app · cooling until 10:46".
     pub note: String,
+    /// A drawing alert's fire: `up` / `down` (which way the price came into the drawing) or
+    /// `stop` (a position's stop). The clients pick the in-app tone by it. Absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tone: Option<String>,
 }
 
 pub struct History {
@@ -197,6 +201,7 @@ mod tests {
             phone: "sent".into(),
             reason: None,
             note: String::new(),
+            tone: None,
         }
     }
 

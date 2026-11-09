@@ -18,6 +18,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use super::geometry::{Part, Tolerance};
+
 pub const RULES_NS: &str = "alerts";
 pub const PREFS_NS: &str = "alerts.prefs";
 /// Written only by the server (ws.rs refuses client writes to it).
@@ -114,6 +116,17 @@ pub enum Condition {
     /// The Halt watcher's pressure (crate::pressure, 0–100) reaches `min` on the buy side, the
     /// sell side, or either. Scored once a second for the symbols such an alert watches.
     Pressure { side: MoveDir, min: u8 },
+    /// An eligible trade touches a user drawing (a drawing alert, 2026-11-09): within
+    /// `tolerance` of the level `part` of drawing `drawing_id` in the symbol's synced
+    /// `drawings:<SYMBOL>` namespace, at the trade's candle, on the chart of timeframe `tf_ms`
+    /// (super::geometry). The geometry is read live from the drawings, never copied here: an
+    /// edited drawing moves the alert with it, a deleted one leaves it orphaned (eval.rs).
+    Drawing {
+        drawing_id: String,
+        part: Part,
+        tolerance: Tolerance,
+        tf_ms: i64,
+    },
 }
 
 impl Condition {
@@ -125,6 +138,21 @@ impl Condition {
     /// pressure reading).
     pub fn rearms_on_gap(&self) -> bool {
         matches!(self, Condition::Halt | Condition::Pressure { .. })
+    }
+
+    pub fn is_drawing(&self) -> bool {
+        matches!(self, Condition::Drawing { .. })
+    }
+}
+
+/// A drawing alert's timeframe (`tf`): the chart it was set on, whose slots place a sloped line
+/// (super::geometry). 1 minute when absent or unknown.
+fn tf_ms(v: Option<&Value>) -> i64 {
+    match v.and_then(Value::as_str) {
+        Some("15s") => 15_000,
+        Some("30s") => 30_000,
+        Some("5m") => 300_000,
+        _ => 60_000,
     }
 }
 
@@ -157,6 +185,10 @@ pub struct Rule {
     pub expires_at: Option<i64>,
     pub notify_app: bool,
     pub notify_phone: bool,
+    /// The alert's sound chip (drawing alerts; default on). The server only uses it to pick the
+    /// phone's notification channel (a sounding drawing channel or the plain alerts one); the
+    /// clients play the in-app tone.
+    pub sound: bool,
     /// Epoch ms; while in the future the alert neither fires nor records anything.
     pub snooze_until: Option<i64>,
     pub created_at: i64,
@@ -239,6 +271,19 @@ fn parse_condition(v: &Value) -> Option<Condition> {
             };
             Some(Condition::Pressure { side, min })
         }
+        "drawing" => {
+            let drawing_id = o
+                .get("drawingId")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty() && s.len() <= 128)?
+                .to_owned();
+            Some(Condition::Drawing {
+                drawing_id,
+                part: Part::parse(o.get("part")),
+                tolerance: Tolerance::parse(o.get("tol")),
+                tf_ms: tf_ms(o.get("tf")),
+            })
+        }
         _ => None,
     }
 }
@@ -291,6 +336,7 @@ pub fn parse_rule(id: &str, v: &Value) -> Option<Rule> {
         },
         notify_app: flag("app", true),
         notify_phone: flag("phone", true),
+        sound: o.get("sound").and_then(Value::as_bool).unwrap_or(true),
         snooze_until: int(o.get("snoozeUntil")),
         created_at,
         edited_at: int(o.get("editedAt")).unwrap_or(created_at),
@@ -331,6 +377,9 @@ impl QuietHours {
 pub struct Prefs {
     pub phone_budget: u32,
     pub quiet: Option<QuietHours>,
+    /// The global sound switch (`sound.on`, default on): off sends drawing alerts' pushes on the
+    /// plain alerts channel instead of a sounding drawing channel. The volume is the clients'.
+    pub sound_on: bool,
 }
 
 impl Default for Prefs {
@@ -338,6 +387,7 @@ impl Default for Prefs {
         Prefs {
             phone_budget: DEFAULT_PHONE_BUDGET,
             quiet: None,
+            sound_on: true,
         }
     }
 }
@@ -368,9 +418,16 @@ pub fn parse_prefs(v: Option<&Value>) -> Prefs {
                 end_min: hhmm(q.get("end"))?,
             })
         });
+    let sound_on = o
+        .get("sound")
+        .and_then(Value::as_object)
+        .and_then(|s| s.get("on"))
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
     Prefs {
         phone_budget,
         quiet,
+        sound_on,
     }
 }
 
@@ -413,6 +470,10 @@ pub struct AlertState {
     /// in entries an older server wrote (the client then falls back to its own clock).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snoozed: Option<bool>,
+    /// A drawing alert whose drawing is gone (deleted on some device): it watches nothing until
+    /// the drawing comes back (an undo), and the clients say so. Absent = false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub orphaned: bool,
 }
 
 impl AlertState {
@@ -427,6 +488,7 @@ impl AlertState {
             fired_up: None,
             count: 0,
             snoozed: None,
+            orphaned: false,
         }
     }
 }
@@ -499,6 +561,41 @@ mod tests {
     }
 
     #[test]
+    fn drawing_rules_parse_with_defaults() {
+        let v = json!({
+            "d1": {"symbol": "XLAB", "rule": {"kind": "drawing", "drawingId": "dr-1", "part": "stop", "tol": {"unit": "pct", "value": 0.5}, "tf": "5m"}, "sound": false},
+            "d2": {"symbol": "XLAB", "rule": {"kind": "drawing", "drawingId": "dr-2"}},
+            "bad": {"symbol": "XLAB", "rule": {"kind": "drawing", "drawingId": ""}},
+        });
+        let rules = parse_rules(Some(&v));
+        assert_eq!(rules.len(), 2);
+        assert_eq!(
+            rules[0].condition,
+            Condition::Drawing {
+                drawing_id: "dr-1".into(),
+                part: Part::Stop,
+                tolerance: Tolerance::Pct(0.5),
+                tf_ms: 300_000
+            }
+        );
+        assert!(!rules[0].sound);
+        assert_eq!(
+            rules[1].condition,
+            Condition::Drawing {
+                drawing_id: "dr-2".into(),
+                part: Part::Line,
+                tolerance: Tolerance::Ticks(1),
+                tf_ms: 60_000
+            },
+            "a line, one tick, the 1 minute chart"
+        );
+        assert!(rules[1].sound, "sound defaults on");
+        let p = parse_prefs(Some(&json!({"sound": {"on": false, "volume": 0.3}})));
+        assert!(!p.sound_on);
+        assert!(Prefs::default().sound_on);
+    }
+
+    #[test]
     fn prefs_and_quiet_hours() {
         assert_eq!(parse_prefs(None), Prefs::default());
         let p = parse_prefs(Some(
@@ -525,7 +622,10 @@ mod tests {
         let v = state_value(&s);
         assert_eq!(v["status"], "cooling");
         assert_eq!(v["until"], 99);
+        assert!(v.get("orphaned").is_none(), "absent while false");
         let back = parse_states(Some(&json!({"x": v, "y": "junk"})));
-        assert_eq!(back, vec![("x".to_string(), s)]);
+        assert_eq!(back, vec![("x".to_string(), s.clone())]);
+        s.orphaned = true;
+        assert_eq!(state_value(&s)["orphaned"], true);
     }
 }

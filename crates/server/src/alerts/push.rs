@@ -383,6 +383,11 @@ pub struct Job {
     /// A Runners push (`super::runners`): sent at once, never held for the batch window, and its
     /// latency logged once Expo took it.
     pub runner: Option<RunnerLatency>,
+    /// The Android notification channel when not the plain alerts one: a sounding drawing
+    /// alert's `drawing-up` / `drawing-down` / `drawing-stop` (apps/mobile src/notifications
+    /// setup.ts creates them, each with its own bundled tone; a channel's sound is fixed on
+    /// Android, so the tone IS the channel).
+    pub channel: Option<&'static str>,
 }
 
 /// A Runners push's clock (`super::runners`, "Latency"): epoch ns.
@@ -611,8 +616,9 @@ fn expo_message(job: &Job, token: &str) -> Value {
         "data": job.data,
         "sound": "default",
         "priority": "high",
-        // The channel the app creates (apps/mobile/src/notifications/setup.ts ALERTS_CHANNEL_ID).
-        "channelId": "alerts",
+        // The channel the app creates (apps/mobile/src/notifications/setup.ts ALERTS_CHANNEL_ID,
+        // or a drawing alert's tone channel).
+        "channelId": job.channel.unwrap_or("alerts"),
     });
     // A Runners push gets the phone's "Copy ticker" button (super::runners::CATEGORY_ID). Expo
     // forwards `categoryId` to Android in the FCM data (expo-notifications NotificationData reads
@@ -1034,6 +1040,7 @@ mod tests {
                 body: "Crossed".into(),
                 data: json!({}),
                 runner: None,
+                channel: None,
             })
             .await
             .unwrap();
@@ -1107,6 +1114,7 @@ mod tests {
                 decided_ns: 0,
                 queued_ns: 0,
             }),
+            channel: None,
         };
         let wait_for = |n: usize| {
             let seen = seen.clone();
@@ -1169,6 +1177,7 @@ mod tests {
                 decided_ns: 0,
                 queued_ns: 0,
             }),
+            channel: None,
         };
         let m = expo_message(&job, "ExponentPushToken[a]");
         assert_eq!(m["categoryId"], "runners");
@@ -1187,6 +1196,12 @@ mod tests {
         job.runner = None;
         let m = expo_message(&job, "ExponentPushToken[a]");
         assert!(m.get("categoryId").is_none() && m.get("threadId").is_none());
+        // A sounding drawing alert's push goes out on its tone's channel.
+        job.channel = Some("drawing-stop");
+        assert_eq!(
+            expo_message(&job, "ExponentPushToken[a]")["channelId"],
+            "drawing-stop"
+        );
     }
 
     #[tokio::test]
@@ -1209,6 +1224,7 @@ mod tests {
             body: "b".into(),
             data: json!({}),
             runner: None,
+            channel: None,
         })
         .await
         .unwrap();
