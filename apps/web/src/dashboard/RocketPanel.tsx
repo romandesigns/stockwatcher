@@ -166,7 +166,7 @@ const RocketRow = memo(function RocketRow({ row: r, marks, trigger, onPick }: { 
       data-kind={r.source.kind}
       className={cn(
         // State changes crossfade (colours, edge, wash); reduced motion: instant.
-        "flex w-full cursor-pointer touch-manipulation flex-col gap-1 rounded-lg bg-bg-row px-2.5 py-2 text-left font-mono outline-none select-none transition-[background-color,box-shadow,opacity,color] duration-300 hover:bg-bg-raised focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none",
+        "flex w-full cursor-pointer touch-manipulation flex-col gap-1 bg-bg-row px-2.5 py-2 text-left font-mono outline-none select-none transition-[background-color,box-shadow,opacity,color] duration-300 hover:bg-bg-raised focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none",
         edge && EDGE[edge],
         m.state === "breaking_out" && "bg-primary/10",
         m.dimmed && "opacity-60",

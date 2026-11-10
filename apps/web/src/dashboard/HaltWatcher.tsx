@@ -73,7 +73,7 @@ const GaugeRow = memo(function GaugeRow({ card, onPick, stale, freshness }: { ca
         type="button"
         {...press}
         aria-label={`${stale ? `${freshness}. Last known: ` : ""}${card.symbol} ${formatPrice(card.price)}, ${card.halt ? haltSentence(card.halt, hhmm) : `${changeText(card.changePct)} today`}, ${phrase}, ${buildup}. Load into the selected chart`}
-        className="flex w-full cursor-pointer touch-manipulation items-center gap-2.5 rounded-lg bg-bg-row px-2 py-1.5 text-left outline-none select-none transition-colors duration-150 ease-out hover:bg-bg-raised focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:min-h-11 motion-reduce:transition-none"
+        className="flex w-full cursor-pointer touch-manipulation items-center gap-2.5 bg-bg-row px-2 py-1.5 text-left outline-none select-none transition-colors duration-150 ease-out hover:bg-bg-raised focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:min-h-11 motion-reduce:transition-none"
       >
         <div className="w-14 shrink-0">
           <PressureGauge compact value={card.risk} side={card.side} halted={halted} stale={stale} label={`${stale ? `${freshness}. Last known: ` : halted ? "Halted. " : ""}${phrase}`} />

@@ -129,7 +129,7 @@ const FavoriteRow = memo(function FavoriteRow({ symbol, row: r, marks: m, trigge
       aria-label={`${r?.aria || symbol}. Load into the selected chart. Alt and arrow keys move it`}
       data-flame={m?.flame?.lit || undefined}
       className={cn(
-        "flex w-full cursor-pointer touch-manipulation flex-col gap-1.5 rounded-lg bg-bg-row py-2 pr-2.5 pl-2.5 text-left font-mono outline-none select-none transition-[background-color,opacity] duration-150 hover:bg-bg-raised focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none",
+        "flex w-full cursor-pointer touch-manipulation flex-col gap-1.5 bg-bg-row py-2 pr-2.5 pl-2.5 text-left font-mono outline-none select-none transition-[background-color,opacity] duration-150 hover:bg-bg-raised focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none",
         m?.flame?.lit && "bg-bg-raised/60",
         r?.stale && "opacity-60",
       )}

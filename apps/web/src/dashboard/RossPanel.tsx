@@ -111,7 +111,7 @@ const RossRow = memo(function RossRow({ row: r, onPick }: { row: RossRowView & {
       aria-label={`${r.aria}. Load into the selected chart`}
       data-flame={m.flame?.lit || undefined}
       className={cn(
-        "flex w-full cursor-pointer touch-manipulation flex-col gap-1.5 rounded-lg bg-bg-row px-2.5 py-2 text-left font-mono outline-none select-none transition-colors duration-150 hover:bg-bg-raised focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none",
+        "flex w-full cursor-pointer touch-manipulation flex-col gap-1.5 bg-bg-row px-2.5 py-2 text-left font-mono outline-none select-none transition-colors duration-150 hover:bg-bg-raised focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none",
         m.flame?.lit && "bg-bg-raised/60",
         EDGE[r.setup.state],
         r.dimmed && "opacity-60",

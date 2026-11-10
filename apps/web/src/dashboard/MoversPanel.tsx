@@ -404,7 +404,7 @@ const MoverRowButton = memo(function MoverRowButton({
       aria-label={`${r.symbol} ${shown}, ${change} today${basis ? ` ${basis}` : ""}, ${dollars} traded${r.halted ? ", halted" : ""}. Load into the selected chart`}
       data-flame={m.flame?.lit || undefined}
       className={cn(
-        "flex w-full cursor-pointer touch-manipulation flex-col justify-center gap-1 rounded-lg bg-bg-row py-1.5 pr-9 pl-2.5 text-left font-mono outline-none select-none transition-colors duration-150 hover:bg-bg-raised focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:min-h-11 motion-reduce:transition-none",
+        "flex w-full cursor-pointer touch-manipulation flex-col justify-center gap-1 bg-bg-row py-1.5 pr-9 pl-2.5 text-left font-mono outline-none select-none transition-colors duration-150 hover:bg-bg-raised focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:min-h-11 motion-reduce:transition-none",
         m.flame?.lit && "bg-bg-raised/60",
       )}
     >

@@ -197,7 +197,7 @@ const SignalRow = memo(function SignalRow({ group, row: r, selected, onSelect }:
       aria-pressed={selected}
       aria-label={`${r.aria}. ${selected ? "Shown on the chart; press to clear" : "Shows it on the chart"}`}
       className={cn(
-        "flex w-full cursor-pointer touch-manipulation flex-col gap-1 rounded-lg bg-bg-row px-2.5 py-2 text-left font-mono outline-none select-none transition-[background-color,box-shadow,opacity] duration-200 hover:bg-bg-raised focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none",
+        "flex w-full cursor-pointer touch-manipulation flex-col gap-1 bg-bg-row px-2.5 py-2 text-left font-mono outline-none select-none transition-[background-color,box-shadow,opacity] duration-200 hover:bg-bg-raised focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none",
         EDGE[r.stage],
         selected && "bg-bg-raised",
         r.dimmed && "opacity-60",
@@ -231,7 +231,7 @@ function DetectionDetails({ episode: e, developments, onRelated, availableIds }:
   const context = measures.filter((x) => /quiet_context|window\.(context|a_milli|n_base|dv_base|q_ppm|d_ppm|quiet_reference)|baseline\.(returns_n|status|floor_binding)|range\.(e_|floor_binding)|body\.e_milli|log_return_ppm|z_milli|upper_wick|close_location_milli|prior_range_relation|anchors\./.test(x.name));
   const diagnostics = measures.filter((x) => /(?:range|body)_expansion_15pct$/.test(x.name));
   return (
-    <Collapsible className="rounded-lg bg-bg-row px-2.5 py-1.5">
+    <Collapsible className="bg-bg-row px-2.5 py-1.5">
       <CollapsibleTrigger className={DISCLOSURE}>Evidence & timeline</CollapsibleTrigger>
       <CollapsibleContent>
         <ScrollArea viewportClassName="max-h-[55vh]">
