@@ -83,7 +83,7 @@ async function step(config,state) {
     const args=['exec','--ignore-user-config','--ephemeral','--skip-git-repo-check','--sandbox','read-only','-c','approval_policy="never"','--json','--output-schema',path.join(R,'recipe-schema.json'),'-o',path.join(R,'recipe.json')];
     for(const f of disable)args.push('--disable',f); args.push('-');
     const out=await invoke(config,'codex',args,prompt,'codex');
-    for(const line of out.trim().split('\n')) {const x=JSON.parse(line);if(x.item)assert(['agent_message','reasoning'].includes(x.item.type),'unexpected Codex tool use');}
+    for(const line of out.trim().split('\n')) {const x=JSON.parse(line);if(x.item) { const disabledCodeMode=x.item.type==='error' && x.item.message==='Code Mode is unavailable because code-mode host is disabled. Code mode will fail closed; enable `features.code_mode_host` and install `codex-code-mode-host`.'; assert(disabledCodeMode || ['agent_message','reasoning'].includes(x.item.type),'unexpected Codex tool event or error'); }}
     validateRecipe(json('recipe.json')); const result=CASES.map(x=>evaluate(json('recipe.json'),x));assert.deepEqual(result,EXPECTED);
     write('implementation-check.json',{task_id:TASK,case_results:result,passed:6});
     return event(state,'claude-review','claude-reviewer','Review exact implementation independently.',{recipe:digest(path.join(R,'recipe.json'))});
