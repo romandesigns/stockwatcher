@@ -1,0 +1,42 @@
+{
+  "snapshot_sha256": "98ab8760ab097346a8753cd939a1714b4253b6e8a5c7705ad64baab40559db9c",
+  "verdict": "READY_FOR_SUPERVISED_READ_ONLY",
+  "findings": [
+    {
+      "severity": "medium",
+      "file": "control.cjs",
+      "finding": "Without --until-idle, the worker loops forever after the task finishes (sleeping P.LIMITS.pollMs between passes). Every pass calls gh.identity() (2 GETs) and gh.flush(), which does one GET per saved receipt. With about 10 events that is roughly 8,600 calls an hour, above GitHub's 5,000-per-hour limit. It is also an indefinitely running worker, which is outside the authorized single supervised run. It fails closed when rate-limited, but that is still unattended operation.",
+      "required_fix": "For this run, make --until-idle mandatory alongside --supervised (assert it in start/restart), or stop the worker once all tasks are completed or blocked. Do not run the open-ended polling mode."
+    },
+    {
+      "severity": "medium",
+      "file": "ARCHITECTURE.md",
+      "finding": "ARCHITECTURE.md says 'Agent tools never receive GitHub credentials or a gh command capability.' But mcp.cjs, the executor's tool server and a child of the executor Claude process, builds a GitHub object and calls identity(), source() and flush(). Through H.execute those use env(c,true), which sets GH_CONFIG_DIR, and flush() can POST issue comments. The model cannot choose routes, so this is not an escalation path, but the documented isolation claim is false.",
+      "required_fix": "Remove gh.identity(), gh.source() and gh.flush() from mcp.cjs; Engine.tick already checks identity and source and flushes all events before the executing tick launches the executor. Alternatively, correct the document to say the trusted tool server uses fixed-route GitHub access with the owner credential."
+    },
+    {
+      "severity": "low",
+      "file": "mcp.cjs",
+      "finding": "Inside s.tx (BEGIN IMMEDIATE), the server calls check(), which runs H.source(): four synchronous git commands with up to 15 s each, plus statfs and s.verify(). It does this twice, around the intent write and around the receipt write, holding the SQLite write lock the whole time. The worker's heartbeat waits only busy_timeout (5000 ms). If it fails, the sticky 'lost' flag makes the worker abort, killing the executor's process tree. The outcome fails closed (blocked, or recovery from a committed receipt), but a slow git call can cause a spurious abort mid-read.",
+      "required_fix": "Do the source and git checks before BEGIN IMMEDIATE. Inside the transaction, do only the fence check, the STOP/enabled check, the state assertion and the artifact writes."
+    },
+    {
+      "severity": "low",
+      "file": "engine.cjs",
+      "finding": "When the 20-minute deadline (or grant expiry) passes, Engine.check throws on every tick, but the task never moves to 'blocked'. It stays in its current state, and each restart fails the same way, so the operator only sees last_error.",
+      "required_fix": "Optional: after an expired deadline or grant, record a terminal 'blocked' transition ('Deadline exceeded; not re-executed') that is still fenced and journaled, so the state matches the outcome."
+    },
+    {
+      "severity": "low",
+      "file": "github.cjs",
+      "finding": "Reconciling a lost POST depends on the comment-list endpoint already showing the new comment. If the list lags after a dropped reply, ensure() posts a second comment, and later runs then fail permanently with 'duplicate GitHub receipts'. This fails closed but needs an operator to clean up.",
+      "required_fix": "Before re-posting after an ambiguous POST, wait and repeat the listing with a bounded retry. Alternatively, record a 'post-intent' marker so a failure after an ambiguous POST blocks for the operator instead of posting again."
+    },
+    {
+      "severity": "info",
+      "file": "coordinator.test.cjs",
+      "finding": "The 23 passing tests cover store, engine and github.cjs using stand-in GitHub and agent objects. They do not exercise mcp.cjs (intent-read-action, fencing, receipt transaction), inventory.cjs, the CLI flags in agents.cjs, the STOP/taskkill monitor in host.cjs, or the start/restart lease checks in control.cjs. 'STOP prevents launch' is tested only through a stubbed check.",
+      "required_fix": "Before any wider use, add an integration test that runs mcp.cjs against a temporary store with stub binaries. During the supervised run, the operator should confirm by hand the receipt hashes, the GitHub receipt comments, and that no CLI produced unexpected tool events. Do not extrapolate to unattended readiness."
+    }
+  ]
+}

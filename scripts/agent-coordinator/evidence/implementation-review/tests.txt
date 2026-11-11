@@ -1,0 +1,37 @@
+✔ default disabled and duplicate deliveries are idempotent (47.7295ms)
+✔ malformed/high-risk requests and arbitrary fields rejected (43.9207ms)
+✔ approval binds task, scope, issuer and expiry (63.9834ms)
+✔ safe end-to-end state machine persists and executes once (94.4665ms)
+✔ restart from idle queued state preserves queue (117.5269ms)
+✔ live worker blocks duplicate worker even after lease expiry (46.3236ms)
+✔ expired dead lease can recover, stale token cannot write (69.9551ms)
+✔ unexpired dead lease does not allow immediate takeover (51.3119ms)
+✔ journal corruption fails closed (41.0691ms)
+✔ materialized task drift fails closed (42.1592ms)
+✔ artifact changed hash fails closed (50.2387ms)
+✔ missing GitHub acknowledgement prevents progression (40.1403ms)
+✔ stale remote source prevents progression (39.4698ms)
+✔ STOP or resource failure prevents agent launch (40.7517ms)
+✔ ambiguous plan is not repeated after process restart (57.9983ms)
+✔ ambiguous execution is not repeated after process restart (76.7565ms)
+✔ durable execution receipt recovers without duplicate tool call (76.3516ms)
+✔ review rejection loops at most twice then blocks (98.4643ms)
+✔ wrong review binding cannot authorize execution (53.7792ms)
+✔ lost GitHub POST reply is reconciled without duplicate comment (43.6192ms)
+✔ edited or deleted receipt blocks replay (43.5476ms)
+✔ duplicate or foreign-author GitHub receipt rejected (45.753ms)
+✔ GitHub adapter rejects arbitrary repository and mutation endpoints (0.4342ms)
+✔ ambiguous POST with delayed list visibility never posts a second comment (42.4117ms)
+✔ actual process exit with receipt preserves crash-safe execution (170.2702ms)
+✔ actual process exit with ambiguous preserves crash-safe execution (158.7344ms)
+✔ actual process exit with uncommitted preserves crash-safe execution (164.2192ms)
+✔ real child process is stopped by the STOP monitor before its delayed write (934.6964ms)
+✔ real subprocess timeout is enforced (584.4533ms)
+ℹ tests 29
+ℹ suites 0
+ℹ pass 29
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1676.1332

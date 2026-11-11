@@ -1,0 +1,30 @@
+{
+  "snapshot_sha256": "1e48001097f5c915bf32f5efcf386cc7a951b2bb569111ee46ecbd12c37ad1da",
+  "verdict": "READY_FOR_SUPERVISED_READ_ONLY",
+  "findings": [
+    {
+      "severity": "low",
+      "file": "inventory.cjs",
+      "finding": "remote_verification.pi is a hard-coded string ('bounded SSH preflight exited 255') that is returned inside a current-observation object, but collect() never runs SSH. This blurs the documented separation between current observations and dated assertions.",
+      "required_fix": "Reword it as a dated prior observation, e.g. 'NOT_LIVE_VERIFIED: prior host SSH preflight on 2026-11-11 exited 255; not re-run by this tool', or move it under a dated_assertions key."
+    },
+    {
+      "severity": "low",
+      "file": "README.md",
+      "finding": "The validation command runs only coordinator.test.cjs and crash.test.cjs and leaves out host.test.cjs, which holds the real child-process STOP and timeout tests. The reported 29 tests is 24+3+2, so it only adds up with host.test.cjs included.",
+      "required_fix": "Change the command to: node --test coordinator.test.cjs crash.test.cjs host.test.cjs"
+    },
+    {
+      "severity": "low",
+      "file": "README.md",
+      "finding": "A persisted post-intent-<seq> meta key blocks progress forever after any POST failure, including a definite failure where nothing was sent. This is correctly fail-closed, but no operator reconciliation procedure is documented.",
+      "required_fix": "Document a manual reconciliation step: verify on GitHub that no comment with the marker exists, then clear the key (or record the found comment id), with the operator recording the decision."
+    },
+    {
+      "severity": "low",
+      "file": "engine.cjs",
+      "finding": "The task deadline counts from t.created, which is set at enqueue, not at worker start. If enqueue and start are more than 20 minutes apart, start passes its checks but the worker halts at once on 'task deadline', and the task can never run (a new task id is needed).",
+      "required_fix": "No code change needed for this run: run enqueue and start --supervised --until-idle back to back, and note this in the README."
+    }
+  ]
+}

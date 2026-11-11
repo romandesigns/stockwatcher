@@ -1,0 +1,61 @@
+{
+  "snapshot_sha256": "c7cd5554877011a69109e2bdaea0a2c1faab9346207b44f2d264d2d23213e6f6",
+  "files": [
+    {
+      "file": "ARCHITECTURE.md",
+      "sha256": "b680dee29972e39371e2c9b138a0e078d39243064841cccd2134cb30f6f6023a"
+    },
+    {
+      "file": "README.md",
+      "sha256": "d473f4a85a359cc00f2debbb7e925efd59916829a5712fbe846c4a42199cfb8a"
+    },
+    {
+      "file": "agents.cjs",
+      "sha256": "8894857d1901524b03feb4661ec1818e76a2b900566e490a98842b641e3df22a"
+    },
+    {
+      "file": "control.cjs",
+      "sha256": "df0731fe2ea30be3095861a9728ad9c07f88e6aa2ae086e0290780f691d749c5"
+    },
+    {
+      "file": "coordinator.test.cjs",
+      "sha256": "a7c79410b633f9e8d1da4f91974fb0e2ecf6a730945e9ce975591c66a4be99d7"
+    },
+    {
+      "file": "crash.test.cjs",
+      "sha256": "cf756201b267ebbcf799d0125c3c1050e42de6b95fccb5db59823350634bc75b"
+    },
+    {
+      "file": "engine.cjs",
+      "sha256": "a2166b797223cf777ecb101b5d0e43b75af07d12e64cd509c4ca862cf52a92f9"
+    },
+    {
+      "file": "github.cjs",
+      "sha256": "b9925bccc18481080ae9fa137f5bc22d0ded4247adef26fa94fd9d91531e8ad9"
+    },
+    {
+      "file": "host.cjs",
+      "sha256": "f12279c822263fa5d7ca961d81ddfd464295df985f9b9cd01099961d48107617"
+    },
+    {
+      "file": "host.test.cjs",
+      "sha256": "edc28bbc9ebb5733a39b7f81c2d33fbfeddd4e0e05be64156f50302e8c1cfd84"
+    },
+    {
+      "file": "inventory.cjs",
+      "sha256": "c511394d97084625d66bd63fce277f9945db01a6180c4162879c0ed04f96eba2"
+    },
+    {
+      "file": "mcp.cjs",
+      "sha256": "f2f45dee9c21dbbeeb2760733cfe57a4dfdc15537ff08e84cf372716609e4ce2"
+    },
+    {
+      "file": "policy.cjs",
+      "sha256": "ddf573d84c4ef798353909e6f2880727407732a31c60ffab59b18f5c576d3fc9"
+    },
+    {
+      "file": "store.cjs",
+      "sha256": "b2d28cfb0a39448d8b9787816b597f7fe5a390a29532462755b327a7e224ee1e"
+    }
+  ]
+}

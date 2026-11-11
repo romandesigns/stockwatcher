@@ -1,0 +1,41 @@
+{
+  "observed_at": "2026-11-11T07:11:32.677Z",
+  "pi": {
+    "transport": "existing Git OpenSSH, strict host checking, no config changes",
+    "metadata": {
+      "code": 0,
+      "stdout": "{\"day\": \"2026-11-09\", \"sealed\": null, \"copied_at\": \"2026-11-11T01:58:07Z\", \"source\": \"live-original/2026-11-09\", \"oct26_present\": false}\n",
+      "stderr": ""
+    },
+    "manifest": {
+      "code": 0,
+      "stdout": "{\"day\": \"2026-11-09\", \"live\": {\"sealed\": true}}\n",
+      "stderr": ""
+    },
+    "known_days": 14,
+    "g_backup_days": 13,
+    "nov9_g_tar_present": false
+  },
+  "vps": {
+    "containers": {
+      "code": 0,
+      "stdout": "stockwatcher-server-1\nstockwatcher-archiver-1\nstockwatcher-evidence-1\n",
+      "stderr": ""
+    },
+    "mount": {
+      "code": 0,
+      "stdout": "/var/lib/docker/volumes/stockwatcher_data/_data\n",
+      "stderr": ""
+    },
+    "originals": {
+      "code": 2,
+      "stdout": "",
+      "stderr": "ls: cannot access '/var/lib/docker/volumes/stockwatcher_data/_data/archive/live-original': Permission denied\n"
+    }
+  },
+  "recorder": {
+    "last_result": 0,
+    "next_run_utc": "2026-11-11T09:00:00Z"
+  },
+  "note": "Read-only host preflight; no raw market-data reads, transfers, modifications or remote process changes."
+}
