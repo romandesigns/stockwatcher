@@ -1,0 +1,104 @@
+{
+  "verdict": "READY_FOR_SUPERVISED_READ_ONLY",
+  "source_sha": "bee659017ae3bbc140c2c51924742c49b6afb715",
+  "task_id": "sw64-preservation-retry-1794401835761",
+  "state": "completed",
+  "plan_sha256": "2b215003fccf8d3f4d771877fd0c3736181f55477fa4a6d7f19b172d9be31f28",
+  "review": {
+    "value": {
+      "artifact_sha256": "2b215003fccf8d3f4d771877fd0c3736181f55477fa4a6d7f19b172d9be31f28",
+      "findings": [],
+      "task_id": "sw64-preservation-retry-1794401835761",
+      "verdict": "ACCEPT"
+    },
+    "hash": "9b16f715c40be8a504d90aec1ef5a97fb54364c62cf359045b3155ca567cdbe5"
+  },
+  "execution": {
+    "value": {
+      "actor": "claude-fixed-readonly-mcp",
+      "grant_sha256": "780ab80e6705534254a326268707062ded2378ca6e54a26c3d2c1ab9a5b469d5",
+      "inventory_sha256": "ea7cdc466e1e789bf170f8337a70b434e26ab964b84dc9360be7a098abf6ebc5",
+      "plan_sha256": "2b215003fccf8d3f4d771877fd0c3736181f55477fa4a6d7f19b172d9be31f28",
+      "production": false,
+      "restoration": false,
+      "review_sha256": "9b16f715c40be8a504d90aec1ef5a97fb54364c62cf359045b3155ca567cdbe5",
+      "source_sha": "bee659017ae3bbc140c2c51924742c49b6afb715",
+      "task_id": "sw64-preservation-retry-1794401835761",
+      "time": "2026-11-11T12:58:49.925Z",
+      "trading": false
+    },
+    "hash": "d112d149b1fcc34b8a158fef82c49f901eff0e0896654a3d6aac7aba4dcf5074"
+  },
+  "inventory_sha256": "ea7cdc466e1e789bf170f8337a70b434e26ab964b84dc9360be7a098abf6ebc5",
+  "journal_verified": true,
+  "github_receipts": [
+    {
+      "seq": 1,
+      "id": "6789578797",
+      "body_hash": "bceaf0790ba4a32b1681bc02d473f4809acf69591677eb73456b233e23862e08"
+    },
+    {
+      "seq": 2,
+      "id": "6789579727",
+      "body_hash": "8cced90a6aceab2508f72a07b3a17b55c93091da992716cb6f44d42204cde21f"
+    },
+    {
+      "seq": 3,
+      "id": "6796434058",
+      "body_hash": "dfbe20fb3a616963787ed9ae045b6c14b77933c73996d3636cbdc7113630701b"
+    },
+    {
+      "seq": 4,
+      "id": "6796434516",
+      "body_hash": "5021dc153ffd30976764b7260175b9ae78ca96f4878bed965e3e30350d7709f9"
+    },
+    {
+      "seq": 5,
+      "id": "6796436596",
+      "body_hash": "cd8281204d12b9939802e5d33bf6e57dd19850af0bea00c6819d9d4ed0ac2752"
+    },
+    {
+      "seq": 6,
+      "id": "6796442525",
+      "body_hash": "4e9d4a2976e4d4c890a0afe62f210bda2032f91c50dee59bd5e38fe01ee8dac3"
+    },
+    {
+      "seq": 7,
+      "id": "6796446479",
+      "body_hash": "18d0b2b5888cb6f63946d88ec47585d38241f1cf1793363534ef5148b551a01f"
+    },
+    {
+      "seq": 8,
+      "id": "6796453020",
+      "body_hash": "dc1e0f07c6e3f942d98548251b8fef1b219d0507e25952f173793eddc1bb94ff"
+    },
+    {
+      "seq": 9,
+      "id": "6796457930",
+      "body_hash": "897312ac69663f2d9aa552a43d47b0f506b8ace331e714f24a41eeccf875a82d"
+    },
+    {
+      "seq": 10,
+      "id": "6796468293",
+      "body_hash": "01a5df5ab2ade75ab22bb92f5f2502399fc549f17a8b56fe2ba3cb5367b886d3"
+    }
+  ],
+  "shutdown": {
+    "enabled": false,
+    "stop": true,
+    "lease": null
+  },
+  "interruption": {
+    "previous_task_state": "blocked",
+    "prior_intent_retained": true,
+    "prior_task_replayed": false,
+    "owner_requested_new_attempt": true
+  },
+  "limits": [
+    "Supervised fixed read-only inventory only; no unattended mode enabled.",
+    "Archive metadata only; no fresh content hashes.",
+    "Pi/VPS live state not verified by this tool.",
+    "No production, trading, restoration or transfers."
+  ],
+  "recorded_at": "2026-11-11T13:00:00.643Z"
+}
