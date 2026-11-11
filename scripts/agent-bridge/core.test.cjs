@@ -1,0 +1,12 @@
+'use strict';
+const test=require('node:test'); const assert=require('node:assert/strict');
+const {TASK,CASES,EXPECTED,evaluate,verifyReview,sha,redact}=require('./core.cjs');
+const recipe={task_id:TASK,steps:[{op:'filter_positive'},{op:'square'},{op:'sum'}]};
+test('six synthetic cases independently match arithmetic oracle',()=>assert.deepEqual(CASES.map(x=>evaluate(recipe,x)),EXPECTED));
+test('reject arbitrary code or extra path fields',()=>{assert.throws(()=>evaluate({...recipe,path:'H:/data'},[])); assert.throws(()=>evaluate({...recipe,steps:[{op:'shell'},{op:'square'},{op:'sum'}]},[]));});
+test('reject wrong task, duplicate operation and malformed input',()=>{assert.throws(()=>evaluate({...recipe,task_id:'restore'},[])); assert.throws(()=>evaluate({...recipe,steps:[{op:'square'},{op:'square'},{op:'sum'}]},[])); assert.throws(()=>evaluate(recipe,[Infinity])); assert.throws(()=>evaluate(recipe,Array(17).fill(1)));});
+test('wrong operation order fails on mixed signs',()=>assert.notEqual(evaluate({...recipe,steps:[{op:'square'},{op:'filter_positive'},{op:'sum'}]},[-3,1]),1));
+const hash=sha(JSON.stringify(recipe)); const review={task_id:TASK,artifact_sha256:hash,verdict:'ACCEPT',case_results:EXPECTED,findings:[]};
+test('review must bind exact hash and independent results',()=>{verifyReview(review,hash); assert.throws(()=>verifyReview({...review,artifact_sha256:'a'.repeat(64)},hash)); assert.throws(()=>verifyReview({...review,case_results:[21]},hash));});
+test('rejected or unresolved review cannot approve',()=>{assert.throws(()=>verifyReview({...review,verdict:'CHANGES_REQUESTED'},hash)); assert.throws(()=>verifyReview({...review,findings:['bug']},hash));});
+test('common secret formats are redacted',()=>assert(!redact('Bearer abc123 sk-'+ 'x'.repeat(24)).includes('abc123')));
