@@ -1,0 +1,1 @@
+{"task_id":"issue63-positive-squares-v1","steps":[{"op":"filter_positive"},{"op":"square"},{"op":"sum"}]}

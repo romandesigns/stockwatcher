@@ -1,0 +1,11 @@
+{
+  "run_id": "sw63-1794378868173",
+  "seq": 6,
+  "stage": "accepted",
+  "source_sha": "1649287a33c74b9d82ab16425cfaea7b03bfeeee",
+  "code_sha256": {
+    "core.cjs": "1a956375835e59c636cff8e12c7d99f1eb50908761691addf769a70fe6e2095e",
+    "bridge.cjs": "a1cabf2d362c4d43fa4f53fbe7a7b192376255dcdafc2d803e9f60f40ff26510",
+    "fixture-server.cjs": "518d74c43a7b725ff8f069056432454a43080518d34bd8bd948c09d0e7e7741c"
+  }
+}

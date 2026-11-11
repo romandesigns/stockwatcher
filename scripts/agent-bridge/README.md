@@ -44,3 +44,7 @@ This is not isolation against a malicious Windows process running as the same us
 - The original H: Git directory also backs many C: worktrees. A new GitHub clone on C: was used so this pilot does not mutate those shared metadata.
 - gh is installed but not authenticated. Connected GitHub relay is used for this supervised pilot. No polling daemon, scheduled task or persistent background worker is installed.
 - Main pushes trigger release/deployment. This pilot never pushes main or opens a CI-triggering PR.
+
+## Verified outcome
+
+The supervised pilot passed. See [PILOT-RESULT.md](PILOT-RESULT.md) and the sanitized [evidence manifest](evidence/2026-11-11/manifest.json). STOP is set; no unattended runner is active.

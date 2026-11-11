@@ -1,0 +1,13 @@
+{
+  "task_id": "issue63-positive-squares-v1",
+  "run_id": "sw63-1794378868173",
+  "seq": 2,
+  "stage": "codex-working",
+  "actor": "codex",
+  "decision": "Assigned: implement declarative positive-squares recipe; no tools or real data.",
+  "time": "2026-11-11T06:34:52.607Z",
+  "source_sha": "1649287a33c74b9d82ab16425cfaea7b03bfeeee",
+  "base_sha": "3b85ae9ee190edb2bae45860fa7219fe46bf6ae3",
+  "artifact_sha256": {},
+  "previous_event_sha256": "b805b799ea4dbf7f018555315c026effec7ed8b24a244973e53d47ec61c09bc9"
+}

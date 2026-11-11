@@ -1,0 +1,48 @@
+{
+  "run_id": "sw63-1794378868173",
+  "repository": "romandesigns/stockwatcher",
+  "issue": 63,
+  "source_commit": "1649287a33c74b9d82ab16425cfaea7b03bfeeee",
+  "base_commit": "3b85ae9ee190edb2bae45860fa7219fe46bf6ae3",
+  "checks": {
+    "automated_tests": 13,
+    "fixture_cases": 6,
+    "duplicate_run_blocked": true,
+    "stop_verified": true,
+    "github_receipts": 6
+  },
+  "cli_versions": {
+    "codex": "0.167.0-alpha.3.2",
+    "claude": "2.1.322",
+    "git": "2.55.0.windows.5",
+    "node": "24.19.0"
+  },
+  "binary_sha256": {
+    "codex": "4f91ae86895ff124760d70ed1630e2354ca874765c9bb61ae524b600327efc17",
+    "claude": "345996b4bdbae21d817f750fae2f34cbf8d81224a5444c78136091d121beb298",
+    "git": "78211c7ed73988da93a6d8a33d47ec6187f464d7ea2a9a00c182bbd7a1ecf30f",
+    "node": "3602f2bb1a10f2cbab4c36886218a33c1ab3db87290e73b033c46c77147d0237"
+  },
+  "files": {
+    "state.json": "14cd2fc9494ceb252306bf588c112246033985300abdc086b36dcec32e865212",
+    "recipe.json": "38eb86d6bbdcb04d20108634ece5709e399be2b015e0af750654cba3010ca174",
+    "review.json": "db4891d7b64eb02ebfb6ef101071fb5f692e0ba09098a5ead1338cdd69a3353b",
+    "approval.json": "57edad27a67d3a7f9fe3b28b640a37e1d975f8bfb7f42b22fae4a1c68454407d",
+    "execution-receipt.json": "d0ef5cceafdb269634a47d4a64b03d38138bef1dc8f5d93de62705700a3e7765",
+    "implementation-check.json": "3ae5d67da5545fa56bb09f65827f76c6a72f2a2c9e52dcb7bcda2ec1794e453e",
+    "duplicate-run-check.json": "3755a08bf6e900548dc4ad5e23135e59cec6f0f97534b8a3136d6665784f76aa",
+    "stop-check.json": "73e2072e59766cfdbad96dd2cbdd18956e6fc896ecbdf9f56433317410dc4491",
+    "event-1.json": "b805b799ea4dbf7f018555315c026effec7ed8b24a244973e53d47ec61c09bc9",
+    "ack-1.json": "f049ddbc8f660963083a347f0f17e8f61f7ae41ce6e0123acc53dc80610349d8",
+    "event-2.json": "c07a6a4bb5dea5d247df85e635b08e07aaa781c4d1936028f03ed2694a296ad9",
+    "ack-2.json": "ea9290b880b396667bf86de6594e7307357efbfc78a23943fb22f2ac2300334f",
+    "event-3.json": "8dc33ee3eed0f54ad44cf78d753747c03f70bcb6fa8e8c63963ef6b8cfd6beaa",
+    "ack-3.json": "467f631988603f3645e877a55ad3196dd03d36ef1caf19bfe568195b08317aa0",
+    "event-4.json": "4d7d12c79d950311c61292cbf95ec3fb3504eb8eeac4528f3b2a89601df78388",
+    "ack-4.json": "98ca52ab8d08d09a81616a400ec08397154f5c2f0564d7c63db4ae118821baa7",
+    "event-5.json": "593ecbdedf9a55ddb18e2a5ce3f4ae8591226756197482646c1ac79ee9a7842c",
+    "ack-5.json": "3d8da4f96ec9a25934683875f4383668c1bbe2b2754aded6353c4bdeb838067a",
+    "event-6.json": "8595ae77d35566d5ce842d14dff6c0b177e477fa6f419acb76980c481ad9d50e",
+    "ack-6.json": "bdea2ed3b6558e161fd7b586600922e54fc0bc28856e0a2ac830ef527f9059c1"
+  }
+}

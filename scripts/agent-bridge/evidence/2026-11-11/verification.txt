@@ -1,0 +1,21 @@
+✔ six synthetic cases independently match arithmetic oracle (0.9172ms)
+✔ reject arbitrary code or extra path fields (3.0254ms)
+✔ reject wrong task, duplicate operation and malformed input (0.7116ms)
+✔ wrong operation order fails on mixed signs (0.0913ms)
+✔ review must bind exact hash and independent results (0.2397ms)
+✔ rejected or unresolved review cannot approve (0.2012ms)
+✔ common secret formats are redacted (0.138ms)
+✔ approved MCP call executes only fixed fixtures, idempotently (82.6128ms)
+✔ STOP prevents fixture side effects (65.3103ms)
+✔ missing review fails closed (67.3213ms)
+✔ changed approval or artifact prevents execution (63.6154ms)
+✔ unacknowledged GitHub transition prevents execution (64.9772ms)
+✔ wrong stage prevents premature execution (65.3472ms)
+ℹ tests 13
+ℹ suites 0
+ℹ pass 13
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 528.8814

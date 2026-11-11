@@ -1,0 +1,13 @@
+{
+  "task_id": "issue63-positive-squares-v1",
+  "run_id": "sw63-1794378868173",
+  "seq": 1,
+  "stage": "queued",
+  "actor": "coordinator",
+  "decision": "Synthetic task queued; waiting for GitHub relay receipt.",
+  "time": "2026-11-11T06:34:28.213Z",
+  "source_sha": "1649287a33c74b9d82ab16425cfaea7b03bfeeee",
+  "base_sha": "3b85ae9ee190edb2bae45860fa7219fe46bf6ae3",
+  "artifact_sha256": {},
+  "previous_event_sha256": null
+}

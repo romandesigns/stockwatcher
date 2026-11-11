@@ -1,0 +1,8 @@
+{
+  "task_id": "issue63-positive-squares-v1",
+  "artifact_sha256": "38eb86d6bbdcb04d20108634ece5709e399be2b015e0af750654cba3010ca174",
+  "review_sha256": "db4891d7b64eb02ebfb6ef101071fb5f692e0ba09098a5ead1338cdd69a3353b",
+  "scope": "synthetic-fixed-fixture-only",
+  "authority": "User-authorized harmless dry run, conditional on independent ACCEPT",
+  "time": "2026-11-11T06:35:40.112Z"
+}

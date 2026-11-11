@@ -1,0 +1,14 @@
+{
+  "task_id": "issue63-positive-squares-v1",
+  "artifact_sha256": "38eb86d6bbdcb04d20108634ece5709e399be2b015e0af750654cba3010ca174",
+  "verdict": "ACCEPT",
+  "case_results": [
+    0,
+    0,
+    21,
+    50,
+    14,
+    10000
+  ],
+  "findings": []
+}

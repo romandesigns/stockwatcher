@@ -1,0 +1,17 @@
+{
+  "task_id": "issue63-positive-squares-v1",
+  "run_id": "sw63-1794378868173",
+  "seq": 4,
+  "stage": "approved",
+  "actor": "coordinator",
+  "decision": "Independent ACCEPT verified. Authorization limited to six fixed arithmetic fixtures.",
+  "time": "2026-11-11T06:35:40.113Z",
+  "source_sha": "1649287a33c74b9d82ab16425cfaea7b03bfeeee",
+  "base_sha": "3b85ae9ee190edb2bae45860fa7219fe46bf6ae3",
+  "artifact_sha256": {
+    "recipe": "38eb86d6bbdcb04d20108634ece5709e399be2b015e0af750654cba3010ca174",
+    "review": "db4891d7b64eb02ebfb6ef101071fb5f692e0ba09098a5ead1338cdd69a3353b",
+    "approval": "57edad27a67d3a7f9fe3b28b640a37e1d975f8bfb7f42b22fae4a1c68454407d"
+  },
+  "previous_event_sha256": "8dc33ee3eed0f54ad44cf78d753747c03f70bcb6fa8e8c63963ef6b8cfd6beaa"
+}
