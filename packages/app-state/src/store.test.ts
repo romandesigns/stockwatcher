@@ -639,7 +639,7 @@ describe("app store: linking charts and multi-selection (owner, 2026-11-15)", ()
     const r = rig();
     r.s().setDashboardCount(2);
     r.s().setDashboardTimeframe(0, "5m");
-    r.s().setDashboardTimeframe(1, "15m");
+    r.s().setDashboardTimeframe(1, "1m");
     r.s().setDashboardIndicators(1, INDICATOR_PRESETS.slice(0, 1));
     const before = r.s().dashboard.slots[1]!;
     r.s().setDashboardLinked(true);
