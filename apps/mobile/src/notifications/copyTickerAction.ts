@@ -1,7 +1,7 @@
 // The "Copy ticker" button on a Runners notification (owner, 2026-10-23). A Fast-move push for
 // YMAT said $2.41 within 1.4 s of the move; by the time the ticker was typed into the broker and
 // a limit placed, the stock was gone. The button puts the symbol on the clipboard without opening
-// this app, so the next app opened is the broker. StockSpotter never places orders.
+// this app, so the next app opened is the broker. StockWatcher never places orders.
 //
 // Pure (bun tests it without a native runtime); the native wiring is copyTicker.ts.
 //

@@ -61,7 +61,7 @@ stockwatcher/
 - Auth: env `STOCKWATCHER_API_TOKEN` (≥32 chars). When set, `/api/*` (except `/api/health`) and `/ws` require `Authorization: Bearer <token>` (WS: token in the hello message). When unset in dev, auth is off and the server logs a warning. Never put the token in a URL or a public build variable.
 - Web dev server: Vite on 5173, proxying `/api`, `/ws` and `/updates` to 8790 (or to `STOCKWATCHER_DEV_SERVER`). Production web build: `apps/web/dist`.
 - Image: `ghcr.io/romandesigns/stockwatcher-server:<git sha>` (+ `:main`). Container user non-root.
-- VPS: host alias `stockspotter-vps` (srv1170872), user `wavystack` (docker group, no passwordless sudo). App dir `~/apps/stockwatcher` (compose file + `.env` + deploy log). Data volume `stockwatcher_data` → `/app/data`.
+- VPS: host alias `wavystack-vps` (srv1170872), user `wavystack` (docker group, no passwordless sudo). App dir `~/apps/stockwatcher` (compose file + `.env` + deploy log). Data volume `stockwatcher_data` → `/app/data`.
 - Mobile: Expo app slug `stockwatcher`, EAS owner `creativecoder87`, **EAS project id `b43c471a-3d47-4904-bd31-a7f5797ee45a`** (created by the owner; link with `eas init --id`), Android package `io.wavystyle.stockwatcher`, iOS bundle id `io.wavystyle.stockwatcher`. Channels: `preview`, `production`. runtimeVersion policy `fingerprint`.
 - Desktop: Tauri identifier `io.wavystyle.stockwatcher`, product name `stockwatcher`. Windows installers (NSIS + MSI), updater signed with a minisign key held only in GitHub secrets.
 
@@ -204,7 +204,7 @@ does not run in Expo Go.
 - Compact design approach. Use balanced padding and marging just enough to allow breathing room between UI components.
 - Latest stable versions when first added; Bun as package manager; Rust for the backend.
 - Web UI: vendored shadcn/ui **on Base UI primitives — never Radix** (no `@radix-ui/*` package anywhere; owner rule 2026-10-16), 60/30/10 color tokens on `:root` (dominant neutrals / structural / one accent), dark-first, responsive (works at 375 px), every visible layout change animates and respects reduced motion.
-- Layout: the boilerplate stage ("no UI yet", 2026-10-16) ended with the simulator and chart (2026-10-17/18). For new screens the stockspotter layout strategy (fixed-viewport resizable panel grid; rail + workspace; stacked below 1400 px; a Home hub with tabs on phones) is the default proposal. Owner UI rules that apply everywhere: no borders or dividers (surface contrast, fills and gaps instead), light layouts (regions sit on the page background, fills only for stages, samples, code and controls), minimal and compact, duotone icons (accent duotone when active).
+- Layout: the boilerplate stage ("no UI yet", 2026-10-16) ended with the simulator and chart (2026-10-17/18). For new screens the dashboard layout strategy (fixed-viewport resizable panel grid; rail + workspace; stacked below 1400 px; a Home hub with tabs on phones) is the default proposal. Owner UI rules that apply everywhere: no borders or dividers (surface contrast, fills and gaps instead), light layouts (regions sit on the page background, fills only for stages, samples, code and controls), minimal and compact, duotone icons (accent duotone when active).
 - Reusable UI: a new component a second screen could use also goes into `wavykit/` (workspace rule).
 - Mobile motion: one motion vocabulary for iOS and Android (CLAUDE.md "Screen transitions and motion").
 - Open source first; no paid runtime APIs without a reason recorded in the commit message.

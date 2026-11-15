@@ -216,13 +216,13 @@ When finished, report:
 - Trade conditions, corrections, cancels, late and out-of-order events, duplicates.
 - Gaps: no fabricated zero-volume candles and no interpolation; gaps are marked.
 
-**Carried over from stockspotter (lessons, re-verified before use):**
+**Carried over from an earlier trading app (lessons, re-verified before use):**
 - Alpaca's own bars follow a trade-condition table. Odd lots count toward volume but not price; average-price, late/out-of-sequence and similar prints are excluded from OHLC. The chart must apply the same table, or replay will not match reference charts.
 - A late print must never reset a forming candle. Only a strictly newer interval opens a new candle.
 - Market-hours logic must use an explicit America/New_York timezone database. On the owner's Windows machine, Git Bash ignores `TZ=America/New_York`.
 - A research copy's Alpaca keys did serve SIP history on 2026-10-16. Entitlements and history range still have to be re-verified for this project.
 
-**Pi (as found 2026-10-16):** `/storage` md RAID, 7.3 TB, about 6.7 TB free after the stockspotter cleanup. Compute and network are still to be checked before it is assigned archive work.
+**Pi (as found 2026-10-16):** `/storage` md RAID, 7.3 TB, about 6.7 TB free after an earlier cleanup. Compute and network are still to be checked before it is assigned archive work.
 
 **Price universe (decided 2026-10-17, supersedes the brief's $0.15 floor):** only stocks priced **$0.10 through $25.00** (inclusive) are candidates. The Rust server lets nothing else through: `/api/symbols` lists candidates only, snapshots and subscriptions for other stocks are refused (`outside_price_band`), and a live subscription ends when its stock trades out of the band. Membership uses the latest price-qualifying trade at the clock, so stocks enter and leave as they trade; the engine keeps tracking every stock, so a stock entering the band arrives with full chart history. The band is defined once (`market_events::PriceBand`) and is configurable (`PRICE_BAND_MIN` / `PRICE_BAND_MAX`).
 

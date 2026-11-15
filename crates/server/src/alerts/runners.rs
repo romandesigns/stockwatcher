@@ -255,7 +255,7 @@ impl RunnersDelivery {
 /// push for YMAT said $2.41 within 1.4 s of the move; a limit at $2.48 never filled while the
 /// stock ran to $3.55+ in about a minute. The line ("Alert $2.41 · +5% = $2.53") saves working
 /// out, under time pressure, a price that is still marketable a few seconds later. It is a
-/// reference, not advice: the text never says "buy" or "limit", and StockSpotter never places
+/// reference, not advice: the text never says "buy" or "limit", and StockWatcher never places
 /// orders.
 pub const LIMIT_REF_PCT: f64 = 5.0;
 

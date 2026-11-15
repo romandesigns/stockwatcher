@@ -4,7 +4,7 @@ Initial read-only reconciliation, 2026-10-21
 - GitHub read-only check: PRs #50/#51/#52/#53 all MERGED, respectively 486ea3f/86746c4/7827662/d118f9c. Reuse their existing code.
 - Last listed GitHub CI/release runs are failures; no workflows were dispatched. Local branch checks are not CI or deployment proof.
 - Existing stock-context Engine has deterministic cutoff bars, Ross membership and EXPERIMENTAL bull_flag_v0 gated to Ross members. There is no Detection Panel or ignition protocol in tracked docs; original three supplemental handoff files are not locally located. Supplied owner handoff therefore defines the experimental development profile; no original study freeze or extra sensitivity is invented.
-- Research audit outputs/stockwatcher-research/00-baseline-audit.md is dated Oct18 and precedes merged recording, identity, daily evidence and local reliability work. Treat it as historical, not current evidence. No Stockspotter code or baselines will be imported.
+- Research audit outputs/stockwatcher-research/00-baseline-audit.md is dated Oct18 and precedes merged recording, identity, daily evidence and local reliability work. Treat it as historical, not current evidence. No code or baselines from the earlier trading app will be imported.
 - No AGENTS.md found in either checkout. Follow docs/CONVENTIONS.md, existing Rust/TS/UI patterns and H:/wavystack/CLAUDE.md. Main push is production-affecting; all work stays local.
 - Next: exact file ownership and machine-readable policies/interfaces agreed with actual Claude before detector mutation. Codex owns server/transport/shared/UI; Claude owns Rust detector implementation and its policy/tests; each reviews the other's work.
 

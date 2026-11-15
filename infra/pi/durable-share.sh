@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run ONCE on the Pi (stockspotter-pi, tailnet 100.79.110.117) as `pi`; uses sudo.
+# Run ONCE on the Pi (wavystack-pi, tailnet 100.79.110.117) as `pi`; uses sudo.
 #
 # Exports /storage/stockwatcher/durable over NFSv4 to the VPS only (srv1170872,
 # tailnet 100.88.87.41). The VPS recorder copies each sealed preserved original

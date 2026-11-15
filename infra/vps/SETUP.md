@@ -1,9 +1,9 @@
 # VPS setup: one time
 
-Host `stockspotter-vps` (srv1170872), user `wavystack` (docker group, no
+Host `wavystack-vps` (srv1170872), user `wavystack` (docker group, no
 passwordless sudo). The steps marked **sudo** need Roman. Everything else
-runs as `wavystack`. Other tenants on this box (stockspotter, Convex,
-scout-ntfy) are unrelated and are not touched.
+runs as `wavystack`. Other tenants on this box (Axonar, Swagger,
+Enlace Quisqueya, Convex) are unrelated and are not touched.
 
 After this setup a push to `main` deploys with no manual step.
 
@@ -223,7 +223,7 @@ verified copy exists on the Pi: copied, flushed, read back and hash-checked
 there, then re-checked at release. With no copy nothing is deleted, so without
 this step the VPS disk grows by that much every trading day.
 
-The Pi (`stockspotter-pi`) exports `/storage/stockwatcher/durable` over NFSv4,
+The Pi (`wavystack-pi`) exports `/storage/stockwatcher/durable` over NFSv4,
 to this host's tailnet address only. The host mounts it at
 `/mnt/stockwatcher-durable`, the server sees it as `/durable`, and
 `LIVE_ORIGINAL_DURABLE_DIR=/durable/originals` (set in `docker-compose.yml`).
