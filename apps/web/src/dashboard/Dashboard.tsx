@@ -16,6 +16,7 @@ import { getAppStore, useApp } from "../state/store.ts";
 import { ChartCell } from "./ChartCell.tsx";
 import { DashboardPanels } from "./DashboardPanels.tsx";
 import { useRunnersToasts } from "./runnersToasts.ts";
+import { LinkChartsToggle } from "./LinkChartsToggle.tsx";
 import { MultiViewMenu } from "./MultiViewMenu.tsx";
 
 /**
@@ -50,6 +51,8 @@ export function Dashboard({ choice, feed }: Connection) {
   const pillRef = useRef<HTMLButtonElement>(null);
   const dashboard = useApp((s) => s.dashboard);
   const selected = useApp((s) => s.dashboardSelected);
+  // Every chart a picked ticker loads into: one, or more after Shift+click (owner, 2026-11-15).
+  const selection = useApp((s) => s.dashboardSelection);
   const searchOpen = useApp((s) => s.searchOpen);
   const recents = useApp((s) => s.searchRecents);
   // Whether a chart has focus (its ring shows): see the click-away effect below.
@@ -108,9 +111,21 @@ export function Dashboard({ choice, feed }: Connection) {
   // The ring shows only while a chart has focus (owner, 2026-10-18: clicking away drops the
   // border). The selection itself stays, so a ticker picked later still loads where it did. A
   // press in a popup (the search panel, a menu) is not "away": it is how a ticker gets picked.
+  // A plain press selects that chart alone; Shift+press adds it to the selection or takes it out
+  // (owner, 2026-11-15), so one ticker pick then loads into every selected chart. Focus arriving
+  // by keyboard (Tab) selects a chart only when it is not already selected, so tabbing through a
+  // multi-selection keeps it.
   const select = useCallback(
+    (index: number, extend: boolean) => {
+      if (extend) app.toggleDashboardChart(index);
+      else app.selectDashboardChart(index);
+      setFocused(true);
+    },
+    [app],
+  );
+  const focusSelect = useCallback(
     (index: number) => {
-      app.selectDashboardChart(index);
+      if (!getAppStore().getState().dashboardSelection.includes(index)) app.selectDashboardChart(index);
       setFocused(true);
     },
     [app],
@@ -124,6 +139,14 @@ export function Dashboard({ choice, feed }: Connection) {
     document.addEventListener("pointerdown", onDown, true);
     return () => document.removeEventListener("pointerdown", onDown, true);
   }, []);
+
+  // Which charts the next ticker loads into, in words: all of them while linked, else the selection.
+  const chosen = [...selection].filter((i) => i < dashboard.count).sort((a, b) => a - b);
+  const selectionLabel = dashboard.linked
+    ? "All charts linked"
+    : chosen.length > 1
+      ? `Charts ${chosen.map((i) => i + 1).join(", ")} selected`
+      : `Chart ${selected + 1} selected`;
 
   // The live market lists nothing before a session's first trade, and all weekend: say so instead
   // of four charts waiting on symbols that cannot load.
@@ -143,10 +166,11 @@ export function Dashboard({ choice, feed }: Connection) {
             <NavToggle />
             <h1 className="m-0 text-base font-semibold tracking-tight">Dashboard</h1>
             {sessionLabel && <span className="truncate text-xs text-text-faint">{sessionLabel}</span>}
-            {dashboard.count > 1 && <span className="truncate text-xs text-text-faint">Chart {selected + 1} selected</span>}
+            {dashboard.count > 1 && <span className="truncate text-xs text-text-faint">{selectionLabel}</span>}
           </div>
           <SearchPill ref={pillRef} onOpen={() => app.setSearchOpen(true)} />
           <div className="flex items-center gap-2 justify-self-end">
+            <LinkChartsToggle linked={dashboard.linked} onChange={app.setDashboardLinked} />
             <MultiViewMenu count={dashboard.count} onChange={app.setDashboardCount} />
           </div>
         </header>
@@ -155,7 +179,7 @@ export function Dashboard({ choice, feed }: Connection) {
         <header className="flex items-center gap-2">
           <h1 className="m-0 text-base font-semibold tracking-tight">Dashboard</h1>
           {sessionLabel && <span className="truncate text-xs text-text-faint">{sessionLabel}</span>}
-          {dashboard.count > 1 && <span className="truncate text-xs text-text-faint">Chart {selected + 1} selected</span>}
+          {dashboard.count > 1 && <span className="truncate text-xs text-text-faint">{selectionLabel}</span>}
           <div className="ml-auto flex items-center gap-2">
             <button
               type="button"
@@ -165,6 +189,7 @@ export function Dashboard({ choice, feed }: Connection) {
             >
               <Icon name="search" />
             </button>
+            <LinkChartsToggle linked={dashboard.linked} onChange={app.setDashboardLinked} />
             <MultiViewMenu count={dashboard.count} onChange={app.setDashboardCount} />
             <SettingsButton />
           </div>
@@ -200,11 +225,12 @@ export function Dashboard({ choice, feed }: Connection) {
                 symbol={symbol}
                 feed={feed}
                 trading={trading}
-                selected={selected === i}
+                selected={dashboard.linked || selection.includes(i)}
                 showSelection={dashboard.count > 1 && focused}
                 multi={dashboard.count > 1}
                 fixture={current.fixtureData}
                 onSelect={select}
+                onFocusSelect={focusSelect}
                 onPickTicker={pickFor}
                 onDay={onDay}
                 detectionSelection={detectionSelection?.index === i && detectionSelection.symbol === symbol ? detectionSelection : undefined}

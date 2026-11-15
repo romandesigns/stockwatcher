@@ -3,7 +3,7 @@ import { buildSlots, changeReference, formatChange, formatEtDateKey, formatPrice
 import { CandleChart, type ChartTrading } from "@stockwatcher/chart-web";
 import { cn, Tip } from "@stockwatcher/chart-web/ui";
 import { TickerLabel } from "../lib/TickerLabel.tsx";
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { ChartFeed } from "../feed/types.ts";
 import { useChartFeed } from "../feed/useChartFeed.ts";
 import { useChartAlerts, useChartDrawingAlerts } from "../alerts/useChartAlerts.ts";
@@ -32,7 +32,10 @@ export interface ChartCellProps {
   /** The panel shows more than one chart (the timeframe becomes the compact wheel). */
   multi: boolean;
   fixture: boolean;
-  onSelect: (index: number) => void;
+  /** A press on the chart: `extend` is Shift held (add to / remove from the multi-selection). */
+  onSelect: (index: number, extend: boolean) => void;
+  /** Focus reached the chart without a press (Tab): selects it unless it already is. */
+  onFocusSelect: (index: number) => void;
   /** Opens the ticker search for this chart. */
   onPickTicker: (index: number) => void;
   /** Reports the trading day this cell's clock is on (the candidates follow it). */
@@ -47,8 +50,12 @@ export interface ChartCellProps {
  * symbol's drawings. Pressing anywhere in it selects it: the selected chart is ringed with the
  * accent (a 1px inset box shadow on an overlay, never a border: the no-borders rule) and is where a picked ticker loads.
  */
-export function ChartCell({ index, slot, symbol, feed, trading, selected, showSelection, multi, fixture, onSelect, onPickTicker, onDay, detectionSelection }: ChartCellProps) {
+export function ChartCell({ index, slot, symbol, feed, trading, selected, showSelection, multi, fixture, onSelect, onFocusSelect, onPickTicker, onDay, detectionSelection }: ChartCellProps) {
   const [app] = useState(() => getAppStore().getState());
+  // A press also moves focus into the cell; that focus must not count as a second, plain select,
+  // or Shift+click could never take a chart out of the multi-selection. Focus follows the press
+  // within the same event dispatch, before this flag is cleared on the next task.
+  const pressing = useRef(false);
   const bin = useApp((s) => s.bin);
   // A phone-width cell has no room for four touch-size segments beside the ticker either.
   const phone = useMediaQuery("(max-width: 600px)");
@@ -127,8 +134,21 @@ export function ChartCell({ index, slot, symbol, feed, trading, selected, showSe
       aria-label={`Chart ${index + 1}: ${symbol}${showRing ? ", selected" : ""}`}
       data-selected={selected || undefined}
       data-chart-cell=""
-      onPointerDownCapture={() => onSelect(index)}
-      onFocusCapture={() => onSelect(index)}
+      onPointerDownCapture={(e) => {
+        pressing.current = true;
+        // With several charts, Shift+press is the multi-select gesture (owner, 2026-11-15). Inside a
+        // chart Shift+drag also measures (chart-core gestures.ts), and a Shift+click there left a
+        // zero-size measurement behind, so the press stops here and never reaches the chart.
+        // Measuring stays on the toolbox's measure tool; a lone chart still Shift+drags to measure.
+        if (e.shiftKey && multi) e.stopPropagation();
+        onSelect(index, e.shiftKey && multi);
+        setTimeout(() => {
+          pressing.current = false;
+        }, 0);
+      }}
+      onFocusCapture={() => {
+        if (!pressing.current) onFocusSelect(index);
+      }}
       className={cn(
         // The ring is an inset 1px shadow on an overlay above the canvas: an outer shadow was clipped
         // by the scrolling panel to just the corners (owner, 2026-10-18), and an inset one on the
