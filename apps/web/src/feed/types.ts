@@ -29,6 +29,8 @@ export interface ChartFeed {
   readonly kind: "server";
   /** Sends a snapshot first, then updates, until the returned function is called. */
   subscribe(sub: ChartSubscription, emit: (m: ChartMessage) => void): () => void;
+  /** Checks the connection now and replaces a dead one (shared ws.ts `checkConnection`). */
+  checkConnection?(): void;
   control(cmd: ReplayCommand): void;
   /** The simulated paper broker; absent (a test fake), trading stays off. */
   readonly paper?: PaperChannel;

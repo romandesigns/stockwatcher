@@ -1,5 +1,6 @@
 import {
   createChartRouter,
+  createSnapshotWatch,
   createServerIndicators,
   parseChartMessage,
   parsePaperMessage,
@@ -42,6 +43,8 @@ export type PaperCommand = OrderPlace | OrderModify | OrderCancel | { type: "pap
 
 export interface MobileFeed {
   subscribe(sub: ChartSubscription, emit: (m: ChartMessage) => void): () => void;
+  /** Checks the connection now and replaces a dead one (shared ws.ts `checkConnection`). */
+  checkConnection(): void;
   control(cmd: Omit<ReplayControl, "type">): void;
   paperLatest(): PaperState | null;
   onPaper(fn: (m: PaperMessage) => void): () => void;
@@ -98,7 +101,13 @@ export interface MobileFeed {
  * raw socket because shared's parser only knows the handshake messages;
  * quotes.* frames are shared's own and pass straight through to it.
  */
-export function createMobileFeed(token: string | null, onStatus?: (s: ConnectionStatus) => void, settings?: SettingsSync, clientName = "mobile", source?: MarketSource, onAlerts?: (m: AlertsServerMessage) => void, runnersNotices?: PhoneNotices): MobileFeed {
+/** shared ws.ts `PROBE_TIMEOUT_MS` / chart-core `SNAPSHOT_TIMEOUT_MS`, shortened by tests. */
+export interface FeedTimeouts {
+  probeTimeoutMs?: number;
+  snapshotTimeoutMs?: number;
+}
+
+export function createMobileFeed(token: string | null, onStatus?: (s: ConnectionStatus) => void, settings?: SettingsSync, clientName = "mobile", source?: MarketSource, onAlerts?: (m: AlertsServerMessage) => void, runnersNotices?: PhoneNotices, timeouts?: FeedTimeouts): MobileFeed {
   // Chart frames go only to the slots they belong to (chart-core chartRouter.ts), as on the web.
   const router = createChartRouter();
   const current = new Map<string, (m: ChartMessage) => void>();
@@ -141,9 +150,14 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
   };
   const unsubPush = [subscribePushToken(registerPush), subscribeRunnersPush(registerPush)];
 
+  // A chart whose snapshot is overdue was most likely subscribed into a connection that died
+  // without closing (a phone back from the background, a cellular handover): check it
+  // (chart-core snapshotWatch.ts; the empty chart, 2026-11-15).
+  const watch = createSnapshotWatch(() => client.checkConnection(), timeouts?.snapshotTimeoutMs);
   const client = createWsClient({
     url: wsUrl(),
     token,
+    probeTimeoutMs: timeouts?.probeTimeoutMs,
     // Which screen's socket this is, in the server's connect log ("mobile", "mobile-dashboard").
     client: clientName,
     // Which server market: the dashboard tab reads live, the chart tab replay.
@@ -186,7 +200,10 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
       detection.setConnected(s === "open");
       // Subscriptions do not survive a reconnect.
       if (s === "open") {
-        for (const [id, a] of router.entries()) sendRaw(subscribeFrame(id, a));
+        for (const [id, a] of router.entries()) {
+          sendRaw(subscribeFrame(id, a));
+          watch.expect(id);
+        }
         quoteSearch.resend();
         // This phone's push token, on every connection (idempotent; heals a lost or rotated one).
         registerPush();
@@ -249,19 +266,25 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
     subscribe(sub, emit) {
       const id = sub.id ?? "";
       // A token per subscription, so a stale cleanup never removes the slot's newer subscription.
-      const token = (m: ChartMessage) => emit(m);
+      const token = (m: ChartMessage) => {
+        if (m.type === "chart.snapshot") watch.seen(id);
+        emit(m);
+      };
       router.add(id, sub, token);
       current.set(id, token);
       serverIndicators.held(id, sub.indicators);
       sendRaw(subscribeFrame(id, sub));
+      watch.expect(id);
       return () => {
         if (current.get(id) !== token) return;
         current.delete(id);
+        watch.forget(id);
         router.remove(id);
         serverIndicators.released(id);
         if (id) sendRaw({ type: "chart.unsubscribe", id });
       };
     },
+    checkConnection: () => client.checkConnection(),
     control: (cmd) => sendRaw({ type: "replay.control", ...cmd }),
     paperLatest: () => paper,
     onPaper(fn) {
@@ -286,6 +309,7 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
     close() {
       for (const u of unsubPush) u();
       runnersNotices?.setServerSends(false);
+      watch.clear();
       client.close();
       router.clear();
       current.clear();

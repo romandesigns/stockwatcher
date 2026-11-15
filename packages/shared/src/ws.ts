@@ -71,10 +71,35 @@ export interface WsClientOptions {
   baseDelayMs?: number;
   maxDelayMs?: number;
   random?: () => number;
+  /**
+   * How long `checkConnection` waits for any frame after its ping before it gives the connection
+   * up (default PROBE_TIMEOUT_MS). Tests shorten it.
+   */
+  probeTimeoutMs?: number;
 }
+
+/**
+ * `checkConnection`'s wait for an answer. The server answers a ping at once, so a few seconds
+ * covers a slow cellular round trip; past that the connection is treated as dead.
+ */
+export const PROBE_TIMEOUT_MS = 4_000;
 
 export interface WsClient {
   send(message: ClientMessage): boolean;
+  /**
+   * Checks that the connection is really alive, now, and replaces it at once when it is not.
+   * Call it when the app comes back (page visible again, phone back in the foreground, network
+   * back) and when a subscription's first frame is overdue.
+   *
+   * Why (the empty chart, 2026-11-15): a connection that died without a close (sleep, a wifi or
+   * cellular handover, a phone back from the background) keeps `readyState` OPEN, so every
+   * subscribe sent into it is lost, and the liveness timer only notices 2.5 heartbeats (37.5 s)
+   * later, longer on a phone where JS timers stop in the background. Here: a ping, and any frame
+   * within `probeTimeoutMs` keeps the connection; silence drops it without waiting for a close
+   * event (to a dead peer that can take minutes) and reconnects immediately. With no connection
+   * up (between retries), it skips the rest of the backoff.
+   */
+  checkConnection(): void;
   /**
    * Opts in to the quote board: the server answers with a `quotes.snapshot`
    * and then sends `quotes.update`s. The opt-in is remembered and sent again
@@ -182,11 +207,41 @@ export function createWsClient(opts: WsClientOptions): WsClient {
 
   const setStatus = (s: ConnectionStatus) => opts.onStatus?.(s);
 
+  // `checkConnection`'s pending wait for an answer (cleared by any frame from the socket).
+  let probeTimer: ReturnType<typeof setTimeout> | null = null;
+  const probeMs = opts.probeTimeoutMs ?? PROBE_TIMEOUT_MS;
+  const clearProbe = () => {
+    if (probeTimer) clearTimeout(probeTimer);
+    probeTimer = null;
+  };
+
+  // Gives up a connection that has gone silent and reconnects at once. It does not wait for the
+  // socket's close event: closing a socket whose peer is gone leaves it CLOSING until TCP gives up,
+  // which can take minutes, and every subscribe meanwhile would go nowhere. The old socket's
+  // handlers ignore it from here on (`socket !== ws`).
+  const abandon = (ws: WebSocketLike, code: number, reason: string) => {
+    if (stopped || socket !== ws) return;
+    if (livenessTimer) clearTimeout(livenessTimer);
+    clearProbe();
+    socket = null;
+    features = [];
+    opts.settings?.detach();
+    try {
+      ws.close(code, reason);
+    } catch {
+      // Already closing; nothing else to do with it.
+    }
+    connect();
+  };
+
   // A half-open TCP connection never fires onclose. If nothing (not even a
   // heartbeat ping) arrives for 2.5 heartbeats, drop it and reconnect.
   const armLiveness = () => {
     if (livenessTimer) clearTimeout(livenessTimer);
-    livenessTimer = setTimeout(() => socket?.close(4000, "heartbeat timeout"), heartbeatMs * 2.5);
+    const ws = socket;
+    livenessTimer = setTimeout(() => {
+      if (ws) abandon(ws, 4000, "heartbeat timeout");
+    }, heartbeatMs * 2.5);
   };
 
   const send = (message: ClientMessage): boolean => {
@@ -214,6 +269,8 @@ export function createWsClient(opts: WsClientOptions): WsClient {
     ws.onmessage = (ev) => {
       // A callback already queued on a retired socket must not overwrite a new source/epoch.
       if (stopped || socket !== ws) return;
+      // Anything at all from the server answers a pending `checkConnection`.
+      clearProbe();
       const msg = parseServerMessage(ev.data);
       if (!msg) {
         if (detectionWanted && typeof ev.data === "string" && /"type"\s*:\s*"detection\.(snapshot|update)"/.test(ev.data)) opts.onDetectionError?.("invalid_detection_frame");
@@ -281,6 +338,7 @@ export function createWsClient(opts: WsClientOptions): WsClient {
     ws.onclose = () => {
       if (socket !== ws) return;
       if (livenessTimer) clearTimeout(livenessTimer);
+      clearProbe();
       if (socket === ws) {
         socket = null;
         features = [];
@@ -300,6 +358,24 @@ export function createWsClient(opts: WsClientOptions): WsClient {
 
   return {
     send,
+    checkConnection() {
+      if (stopped) return;
+      const ws = socket;
+      if (ws && ws.readyState === OPEN) {
+        if (probeTimer) return; // a check is already waiting for its answer
+        send({ type: "ping", ts: Date.now() });
+        probeTimer = setTimeout(() => {
+          probeTimer = null;
+          abandon(ws, 4001, "no answer to ping");
+        }, probeMs);
+      } else if (!ws && reconnectTimer) {
+        // Between retries (the backoff can be up to 30 s): the app is back, so try now.
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+        connect();
+      }
+      // A socket still connecting will either open or close on its own.
+    },
     subscribeQuotes() {
       quotesWanted = true;
       // Not open yet: the welcome handler sends it.
@@ -395,6 +471,7 @@ export function createWsClient(opts: WsClientOptions): WsClient {
       stopped = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (livenessTimer) clearTimeout(livenessTimer);
+      clearProbe();
       if (socket) socket.close(1000, "client closed");
       else setStatus("closed");
     },

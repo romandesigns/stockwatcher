@@ -1,5 +1,6 @@
 import type { ConnectionStatus, MarketSource } from "@stockwatcher/shared";
 import { useEffect, useState } from "react";
+import { AppState } from "react-native";
 
 import { loadSettingsSync } from "../settings/sync";
 import { appActions, loadAppStore } from "../state/store";
@@ -37,8 +38,16 @@ export function useConnection(client: string, source: MarketSource, notices?: Ph
       feed = createMobileFeed(token, setStatus, sync, client, source, (m) => appActions().applyAlertsMessage(m), notices);
       setReady({ feed, token, source, client, attempt });
     });
+    // Back in the foreground: the socket may have died while the app was away without closing
+    // (Android drops it; JS timers, the liveness check's included, stop in the background), so a
+    // chart opened now would be subscribed into nothing. Check it at once (shared ws.ts
+    // `checkConnection`; the empty chart, 2026-11-15).
+    const appState = AppState.addEventListener("change", (s) => {
+      if (s === "active") feed?.checkConnection();
+    });
     return () => {
       alive = false;
+      appState.remove();
       feed?.close();
     };
   }, [attempt, client, source, notices]);

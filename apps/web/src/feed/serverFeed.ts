@@ -1,4 +1,4 @@
-import { createChartRouter, parseChartMessage, parsePaperMessage, createServerIndicators, type ChartIndicatorsSet, type ChartSubscribe, type ChartUnsubscribe, type PaperMessage, type PaperState, type ReplayControl } from "@stockwatcher/chart-core";
+import { createChartRouter, createSnapshotWatch, parseChartMessage, parsePaperMessage, createServerIndicators, type ChartIndicatorsSet, type ChartSubscribe, type ChartUnsubscribe, type PaperMessage, type PaperState, type ReplayControl } from "@stockwatcher/chart-core";
 import { createDetectionChannel, createFavoritesChannel, createMoversChannel, createPressureChannel, createQuoteSearchChannel, createRocketChannel, createRossChannel, createNoticesChannel, createSymbolsChannel, createTickerChannel, createWsClient, hasFeature, CLOCK_FEATURE, INDICATORS_FEATURE, INSIGHTS_TICKER_FEATURE, INSIGHTS_TICKER_INDICATORS_FEATURE, INDICATORS_LIMIT_FEATURE, LEVELS_FEATURE, MACD_STYLES_FEATURE, NOTICES_FEATURE, QUOTE_SEARCH_FEATURE, serverWsUrl, SYMBOLS_FEATURE, ZONES_FEATURE, type AlertsServerMessage, type ConnectionStatus, type MarketSource, type SettingsSync, type WebSocketLike } from "@stockwatcher/shared";
 import type { RunnersNotifier } from "../notify/runnersNotify.ts";
 import type { ChartFeed, PaperCommand, ReplayCommand } from "./types.ts";
@@ -15,6 +15,9 @@ export interface ServerFeedOptions {
   source?: MarketSource;
   /** Runners system notifications: the opt-in this connection sends, and where notices go. */
   notifier?: Pick<RunnersNotifier, "notifyMessage" | "handle" | "attach">;
+  /** shared ws.ts `PROBE_TIMEOUT_MS` / chart-core `SNAPSHOT_TIMEOUT_MS`, shortened by tests. */
+  probeTimeoutMs?: number;
+  snapshotTimeoutMs?: number;
 }
 
 /**
@@ -67,8 +70,14 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
   const serverIndicators = createServerIndicators(sendRaw, (id) => current.has(id));
   // The default slot ("") is sent without an id: exactly the single-chart protocol.
   const subscribeFrame = (id: string, s: { symbol: string; timeframe: ChartSubscribe["timeframe"]; profileBin: number }): ChartSubscribe => ({ type: "chart.subscribe", symbol: s.symbol, timeframe: s.timeframe, profileBin: s.profileBin, ...(id ? { id } : {}), ...serverIndicators.subscribeFields(id) });
+  // A chart whose snapshot is overdue was most likely subscribed into a connection that died
+  // without closing: check it (chart-core snapshotWatch.ts; the empty chart, 2026-11-15).
+  const watch = createSnapshotWatch(() => client.checkConnection(), opts.snapshotTimeoutMs);
   const resubscribe = () => {
-    for (const [id, s] of router.entries()) sendRaw(subscribeFrame(id, s));
+    for (const [id, s] of router.entries()) {
+      sendRaw(subscribeFrame(id, s));
+      watch.expect(id);
+    }
   };
 
   const client = createWsClient({
@@ -76,6 +85,7 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
     token: opts.token ?? null,
     client: "web",
     source: opts.source,
+    probeTimeoutMs: opts.probeTimeoutMs,
     // Runs before onStatus("open") and its resubscribe, so those carry the indicators or not.
     onWelcome: (w) => {
       serverIndicators.setAvailable(hasFeature(w, INDICATORS_FEATURE));
@@ -164,25 +174,43 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
   // The switches changed (Settings → Runners): tell the server on this connection.
   const detachNotifier = opts.notifier?.attach(() => client.refreshRunnersNotify());
 
+  // Back to the page (tab shown again, laptop awake) or the network back: the connection may have
+  // died meanwhile without closing, so check it now instead of 37.5 s from now (shared ws.ts
+  // `checkConnection`). Otherwise a chart opened then would sit empty until the liveness timeout.
+  const recheck = () => client.checkConnection();
+  const onVisibility = () => {
+    if (document.visibilityState === "visible") recheck();
+  };
+  const hasDocument = typeof document !== "undefined";
+  const hasWindow = typeof window !== "undefined" && typeof window.addEventListener === "function";
+  if (hasDocument) document.addEventListener("visibilitychange", onVisibility);
+  if (hasWindow) window.addEventListener("online", recheck);
+
   return {
     kind: "server",
     subscribe(sub, emit) {
       const id = sub.id ?? "";
       // A token per subscription, so a stale cleanup never removes the slot's newer subscription.
-      const token = (m: Parameters<typeof emit>[0]) => emit(m);
+      const token = (m: Parameters<typeof emit>[0]) => {
+        if (m.type === "chart.snapshot") watch.seen(id);
+        emit(m);
+      };
       router.add(id, sub, token);
       current.set(id, token);
       serverIndicators.held(id, sub.indicators);
       sendRaw(subscribeFrame(id, sub));
+      watch.expect(id);
       return () => {
         if (current.get(id) !== token) return;
         current.delete(id);
+        watch.forget(id);
         router.remove(id);
         serverIndicators.released(id);
         // A named slot is freed on the server; the default slot is simply replaced by the next subscribe.
         if (id) sendRaw({ type: "chart.unsubscribe", id });
       };
     },
+    checkConnection: recheck,
     control(cmd: ReplayCommand) {
       sendRaw({ type: "replay.control", ...cmd });
     },
@@ -207,6 +235,9 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
     indicators: serverIndicators.channel,
     close() {
       detachNotifier?.();
+      if (hasDocument) document.removeEventListener("visibilitychange", onVisibility);
+      if (hasWindow) window.removeEventListener("online", recheck);
+      watch.clear();
       client.close();
       router.clear();
       current.clear();
