@@ -191,7 +191,11 @@ describe("phone: the wiring a bun test cannot render", () => {
 
   test("the modal reads its ticker from the params every render and restarts the chart per ticker", () => {
     const src = read("../screens/TickerChartScreen.tsx");
-    expect(src).toContain("const { symbol, detectionEpisodeId, detectionRunEpoch } = route.params;");
+    // Live from the navigator's state by route key, not the `route` prop: the blank stack can hand
+    // the screen a stale render still holding the first ticker (liveRouteParams.ts, 2026-11-15).
+    expect(src).toContain("const params = useLiveRouteParams(route);");
+    expect(src).toContain("const { symbol, detectionEpisodeId, detectionRunEpoch } = params;");
+    expect(src).not.toContain("= route.params;");
     expect(src).toContain("<Animated.View key={symbol}");
     // The crossfade comes from the motion module, never inline numbers.
     expect(src).toContain("FadeIn.duration(chartSwapTiming.duration)");

@@ -15,6 +15,7 @@ import { ZoneNote } from "../dashboard/ZoneNote";
 import type { MobileFeed } from "../feed/serverFeed";
 import { chartSwapTiming } from "../motion/transitions";
 import { useReducedMotion } from "../motion/useReducedMotion";
+import { useLiveRouteParams } from "../navigation/liveRouteParams";
 import type { RootStackParamList } from "../navigation/RootStack";
 import { appActions, getLoadedStore, useApp } from "../state/store";
 import { colors, fonts } from "../theme";
@@ -50,8 +51,12 @@ export function TickerChartScreen({ route }: Props) {
   // opened while this modal is up (a notification tap, owner 2026-10-23) replaces the params of
   // this same route (navigation/openTicker.ts), and the chart below is keyed by the ticker, so its
   // data subscription, drawings, readout and detection marks start over for the new one.
-  const { symbol, detectionEpisodeId, detectionRunEpoch } = route.params;
-  const { noticeContext } = route.params;
+  // Read live from the navigator's state, not the `route` prop: the blank stack can hand this
+  // screen a stale render whose route still holds the first ticker (navigation/liveRouteParams.ts;
+  // owner, 2026-11-15: a tapped notification left the open chart on the old ticker).
+  const params = useLiveRouteParams(route);
+  const { symbol, detectionEpisodeId, detectionRunEpoch } = params;
+  const { noticeContext } = params;
   const reducedMotion = useReducedMotion();
   return (
     <View style={[styles.screen, { paddingTop: insets.top + 4, paddingBottom: insets.bottom + 4 }]} accessibilityViewIsModal onAccessibilityEscape={() => navigation.goBack()}>
