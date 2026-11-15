@@ -86,11 +86,17 @@ export interface DashboardState {
   /** Always MAX_DASHBOARD_CHARTS slots. */
   slots: DashboardSlot[];
   source: DashboardSource;
+  /**
+   * The paperclip toggle (owner, 2026-11-15): while on, a ticker picked anywhere loads into EVERY
+   * chart shown, not only the selected one(s). Only the ticker changes; each chart keeps its own
+   * timeframe, indicators and drawings. Synced like the rest of the panel.
+   */
+  linked: boolean;
 }
 
 const EMPTY_SLOT: DashboardSlot = { symbol: null, timeframe: "1m", indicators: null, layers: null };
 
-export const DEFAULT_DASHBOARD: DashboardState = { count: 1, slots: Array.from({ length: MAX_DASHBOARD_CHARTS }, () => EMPTY_SLOT), source: "live" };
+export const DEFAULT_DASHBOARD: DashboardState = { count: 1, slots: Array.from({ length: MAX_DASHBOARD_CHARTS }, () => EMPTY_SLOT), source: "live", linked: false };
 
 export function parseDashboard(raw: unknown): DashboardState {
   if (!isObj(raw)) return DEFAULT_DASHBOARD;
@@ -108,7 +114,7 @@ export function parseDashboard(raw: unknown): DashboardState {
   });
   // Anything but "replay" is live: the dashboard is the live page unless asked otherwise.
   const source: DashboardSource = raw.source === "replay" ? "replay" : "live";
-  return { count, slots, source };
+  return { count, slots, source, linked: raw.linked === true };
 }
 
 /** The favorites list: valid tickers, first occurrence kept, in order, at most MAX_FAVORITES. */

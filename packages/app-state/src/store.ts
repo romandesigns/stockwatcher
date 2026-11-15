@@ -147,6 +147,12 @@ export interface AppState {
   daysOpen: boolean;
   /** The dashboard chart a picked ticker loads into (0-based; always below `dashboard.count`). Per device. */
   dashboardSelected: number;
+  /**
+   * Every dashboard chart a picked ticker loads into, in the order they were selected; always
+   * holds `dashboardSelected` (the last one added). One chart unless Shift+click added more
+   * (owner, 2026-11-15). Per device and per session: like the selection itself, not synced.
+   */
+  dashboardSelection: readonly number[];
   /** One bounded, local event inspection; never synced or persisted with the dashboard. */
   noticeSelection: { index: number; source: DashboardSource; context: NoticeChartContext } | null;
   /**
@@ -190,8 +196,14 @@ export interface AppState {
   /** One dashboard chart's own indicators / levels (used while studies are not linked). */
   setDashboardIndicators(slot: number, next: IndicatorSpec[]): void;
   setDashboardLayers(slot: number, next: ChartLayers): void;
-  /** Loads a ticker into the selected dashboard chart. */
+  /**
+   * Loads a ticker into the selected dashboard chart(s): every chart shown while the panel is
+   * linked (`dashboard.linked`), otherwise every chart in `dashboardSelection`. Only the ticker
+   * changes; each chart keeps its timeframe, indicators and drawings.
+   */
   loadIntoSelected(symbol: string): void;
+  /** The paperclip toggle: link every chart to the next ticker picked (synced with the panel). */
+  setDashboardLinked(linked: boolean): void;
   selectNotice(context?: NoticeChartContext): void;
   /** Puts a ticker at the top of the search recents only (the phone's chart modal: it opens a ticker without loading it into any chart). */
   rememberTicker(symbol: string): void;
@@ -224,7 +236,13 @@ export interface AppState {
   setSearchOpen(open: boolean): void;
   setTapeOpen(open: boolean): void;
   setDaysOpen(open: boolean): void;
+  /** Selects one chart: the selection becomes that chart alone (a plain click). */
   selectDashboardChart(slot: number): void;
+  /**
+   * Shift+click: adds the chart to the selection, or takes it out when it is in it (never the last
+   * one: a selection is never empty). An added chart becomes `dashboardSelected`.
+   */
+  toggleDashboardChart(slot: number): void;
 }
 
 /** One symbol's drawings as an external store, for screens that show several symbols at once (the dashboard). */
@@ -366,6 +384,20 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
     const d = parseDashboard(sync.get(APP_NS.dashboard));
     sync.set(APP_NS.dashboard, { ...d, slots: d.slots.map((s, i) => (i === slot ? { ...s, ...patch } : s)) });
   };
+  // One ticker into one or more charts, as ONE write of the panel document (several charts linked or
+  // multi-selected change together, never one by one), one recents entry and one explicit pick.
+  // Only `symbol` is patched: each chart keeps its own timeframe, indicators and layers.
+  const setSymbolIn = (targets: readonly number[], raw: string) => {
+    const symbol = parseSymbol(raw);
+    if (!symbol) return;
+    const slots = new Set(targets.filter((i) => Number.isInteger(i) && i >= 0 && i < MAX_DASHBOARD_CHARTS));
+    if (slots.size === 0) return;
+    sync.set(APP_NS.searchRecents, pushRecentTicker(store.getState().searchRecents, symbol));
+    const d = parseDashboard(sync.get(APP_NS.dashboard));
+    sync.set(APP_NS.dashboard, { ...d, slots: d.slots.map((s, i) => (slots.has(i) ? { ...s, symbol } : s)) });
+    const st = store.getState();
+    store.setState({ picked: pushPicked(st.picked, symbol), ...(st.noticeSelection && slots.has(st.noticeSelection.index) ? { noticeSelection: null } : {}) });
+  };
 
   const store = createStore<AppState>()((set, get) => ({
     ...syncedFrom(sync, ""),
@@ -377,6 +409,7 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
     tapeOpen: false,
     daysOpen: false,
     dashboardSelected: 0,
+    dashboardSelection: [0],
     noticeSelection: null,
     picked: [],
     alertActivity: [],
@@ -435,13 +468,7 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
     setLiveAccount: (account) => {
       sync.set(TRADING_NS.account, { live: account === "alpaca_paper" ? "alpaca_paper" : "simulator" });
     },
-    setDashboardSymbol: (slot, raw) => {
-      const symbol = parseSymbol(raw);
-      if (!symbol) return;
-      sync.set(APP_NS.searchRecents, pushRecentTicker(get().searchRecents, symbol));
-      writeSlot(slot, { symbol });
-      set({ picked: pushPicked(get().picked, symbol), ...(get().noticeSelection?.index === slot ? { noticeSelection: null } : {}) });
-    },
+    setDashboardSymbol: (slot, raw) => setSymbolIn([slot], raw),
     // Read from the engine, not the slice, so two quick toggles both land.
     toggleFavorite: (symbol) => sync.set(APP_NS.favorites, toggledFavorites(parseFavorites(sync.get(APP_NS.favorites)), symbol)),
     moveFavorite: (symbol, delta) => sync.set(APP_NS.favorites, movedFavorite(parseFavorites(sync.get(APP_NS.favorites)), symbol, delta)),
@@ -453,7 +480,13 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
       writeSlot(slot, { indicators: stripIndicatorColors(withMemory(stripIndicatorColors(own ?? parseIndicators(sync.get(SYNC_NS.indicators))), stripIndicatorColors(next))) });
     },
     setDashboardLayers: (slot, next) => writeSlot(slot, { layers: parseLayers(next) }),
-    loadIntoSelected: (symbol) => get().setDashboardSymbol(get().dashboardSelected, symbol),
+    loadIntoSelected: (symbol) => {
+      const s = get();
+      setSymbolIn(s.dashboard.linked ? Array.from({ length: s.dashboard.count }, (_, i) => i) : s.dashboardSelection, symbol);
+    },
+    setDashboardLinked: (linked) => {
+      sync.set(APP_NS.dashboard, { ...parseDashboard(sync.get(APP_NS.dashboard)), linked: linked === true });
+    },
     selectNotice: (raw) => {
       const s = get();
       const context = parseNoticeChartContext(raw, s.dashboard.slots[s.dashboardSelected]?.symbol ?? undefined);
@@ -527,7 +560,15 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
     setTapeOpen: (tapeOpen) => set({ tapeOpen }),
     setDaysOpen: (daysOpen) => set({ daysOpen }),
     selectDashboardChart: (slot) => {
-      if (Number.isInteger(slot) && slot >= 0 && slot < get().dashboard.count) set({ dashboardSelected: slot });
+      if (Number.isInteger(slot) && slot >= 0 && slot < get().dashboard.count) set({ dashboardSelected: slot, dashboardSelection: [slot] });
+    },
+    toggleDashboardChart: (slot) => {
+      const s = get();
+      if (!Number.isInteger(slot) || slot < 0 || slot >= s.dashboard.count) return;
+      if (!s.dashboardSelection.includes(slot)) return set({ dashboardSelected: slot, dashboardSelection: [...s.dashboardSelection, slot] });
+      if (s.dashboardSelection.length === 1) return;
+      const rest = s.dashboardSelection.filter((i) => i !== slot);
+      set({ dashboardSelection: rest, dashboardSelected: s.dashboardSelected === slot ? rest[rest.length - 1]! : s.dashboardSelected });
     },
   }));
 
@@ -588,7 +629,11 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
         // Fewer charts (from any device): the selection stays on a chart that is still shown.
         const n = s.noticeSelection;
         const keepNotice = n && n.index < dashboard.count && n.source === dashboard.source && dashboard.slots[n.index]?.symbol === n.context.symbol;
-        return store.setState({ dashboard, dashboardSelected: Math.min(s.dashboardSelected, dashboard.count - 1), ...(n && !keepNotice ? { noticeSelection: null } : {}) });
+        // Fewer charts: the selection keeps only charts still shown (never empty).
+        const dashboardSelected = Math.min(s.dashboardSelected, dashboard.count - 1);
+        const kept = s.dashboardSelection.filter((i) => i < dashboard.count);
+        const dashboardSelection = kept.includes(dashboardSelected) ? kept : [...kept, dashboardSelected];
+        return store.setState({ dashboard, dashboardSelected, dashboardSelection, ...(n && !keepNotice ? { noticeSelection: null } : {}) });
       }
       case APP_NS.view: {
         const v = parseView(sync.get(ns));

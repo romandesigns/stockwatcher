@@ -608,3 +608,126 @@ describe("app store: indicator colours are global (owner, 2026-11-07)", () => {
     expect(lineOf(phone.store.getState().indicators, "ema-9")).toBeUndefined();
   });
 });
+
+describe("app store: linking charts and multi-selection (owner, 2026-11-15)", () => {
+  const symbols = (r: ReturnType<typeof rig>) => r.s().dashboard.slots.slice(0, r.s().dashboard.count).map((s) => s.symbol);
+
+  test("off by default: a ticker still loads into the selected chart only", () => {
+    const r = rig();
+    r.s().setDashboardCount(3);
+    expect(r.s().dashboard.linked).toBe(false);
+    r.s().selectDashboardChart(1);
+    r.s().loadIntoSelected("aal");
+    expect(symbols(r)).toEqual([null, "AAL", null]);
+  });
+
+  test("the paperclip on: a ticker loads into every chart shown, not the hidden slots", () => {
+    const r = rig();
+    r.s().setDashboardCount(4);
+    r.s().setDashboardSymbol(3, "spy");
+    r.s().setDashboardCount(3);
+    r.s().setDashboardLinked(true);
+    r.s().loadIntoSelected("nvda");
+    expect(symbols(r)).toEqual(["NVDA", "NVDA", "NVDA"]);
+    expect(r.s().dashboard.slots[3]!.symbol).toBe("SPY");
+    // One recents entry and one explicit pick, not one per chart.
+    expect(r.s().searchRecents.filter((s) => s === "NVDA")).toHaveLength(1);
+    expect(r.s().picked.filter((s) => s === "NVDA")).toHaveLength(1);
+  });
+
+  test("only the ticker changes: each chart keeps its timeframe, indicators and levels", () => {
+    const r = rig();
+    r.s().setDashboardCount(2);
+    r.s().setDashboardTimeframe(0, "5m");
+    r.s().setDashboardTimeframe(1, "15m");
+    r.s().setDashboardIndicators(1, INDICATOR_PRESETS.slice(0, 1));
+    const before = r.s().dashboard.slots[1]!;
+    r.s().setDashboardLinked(true);
+    r.s().loadIntoSelected("amd");
+    const [a, b] = r.s().dashboard.slots;
+    expect(a).toMatchObject({ symbol: "AMD", timeframe: "5m" });
+    expect(b).toEqual({ ...before, symbol: "AMD" });
+  });
+
+  test("the linked state syncs with the panel and survives another device's write of other fields", () => {
+    const r = rig();
+    r.s().setDashboardLinked(true);
+    expect(r.sync.get(APP_NS.dashboard)).toMatchObject({ linked: true });
+    r.s().setDashboardCount(2);
+    expect(r.s().dashboard.linked).toBe(true);
+    const other = rig();
+    other.remote(APP_NS.dashboard, { count: 2, slots: [], linked: true });
+    expect(other.s().dashboard.linked).toBe(true);
+    other.remote(APP_NS.dashboard, { count: 2, slots: [], linked: "yes" });
+    expect(other.s().dashboard.linked).toBe(false);
+    r.s().setDashboardLinked(false);
+    expect(r.s().dashboard.linked).toBe(false);
+  });
+
+  test("Shift+click adds charts to the selection and a ticker loads into all of them", () => {
+    const r = rig();
+    r.s().setDashboardCount(4);
+    r.s().selectDashboardChart(0);
+    r.s().toggleDashboardChart(2);
+    r.s().toggleDashboardChart(3);
+    expect(r.s().dashboardSelection).toEqual([0, 2, 3]);
+    expect(r.s().dashboardSelected).toBe(3);
+    r.s().loadIntoSelected("tsla");
+    expect(symbols(r)).toEqual(["TSLA", null, "TSLA", "TSLA"]);
+  });
+
+  test("Shift+click on a selected chart takes it out, but never empties the selection", () => {
+    const r = rig();
+    r.s().setDashboardCount(3);
+    r.s().selectDashboardChart(0);
+    r.s().toggleDashboardChart(1);
+    r.s().toggleDashboardChart(1);
+    expect(r.s().dashboardSelection).toEqual([0]);
+    expect(r.s().dashboardSelected).toBe(0);
+    r.s().toggleDashboardChart(0);
+    expect(r.s().dashboardSelection).toEqual([0]);
+    // Removing the primary hands it to the last one still selected.
+    r.s().toggleDashboardChart(2);
+    r.s().toggleDashboardChart(2);
+    expect(r.s().dashboardSelected).toBe(0);
+    r.s().toggleDashboardChart(2);
+    r.s().toggleDashboardChart(0);
+    expect(r.s().dashboardSelection).toEqual([2]);
+    expect(r.s().dashboardSelected).toBe(2);
+  });
+
+  test("a plain click returns to a single selection", () => {
+    const r = rig();
+    r.s().setDashboardCount(4);
+    r.s().selectDashboardChart(0);
+    r.s().toggleDashboardChart(1);
+    r.s().toggleDashboardChart(2);
+    r.s().selectDashboardChart(3);
+    expect(r.s().dashboardSelection).toEqual([3]);
+    r.s().loadIntoSelected("aapl");
+    expect(symbols(r)).toEqual([null, null, null, "AAPL"]);
+  });
+
+  test("the multi-selection is per device and keeps only charts still shown when the count drops", () => {
+    // The count drops on ANOTHER device: this one has no pending edit of the panel.
+    const r = rig();
+    r.remote(APP_NS.dashboard, { count: 4, slots: [] });
+    r.s().selectDashboardChart(0);
+    r.s().toggleDashboardChart(3);
+    expect(r.sync.get(APP_NS.dashboard)).not.toHaveProperty("selection");
+    r.remote(APP_NS.dashboard, { count: 2, slots: [] });
+    expect(r.s().dashboardSelected).toBe(1);
+    expect(r.s().dashboardSelection).toEqual([0, 1]);
+    r.s().toggleDashboardChart(5);
+    expect(r.s().dashboardSelection).toEqual([0, 1]);
+  });
+
+  test("a notice frozen on one of the charts a linked pick replaces is dropped", () => {
+    const r = rig();
+    r.s().setDashboardCount(2);
+    r.s().selectDashboardChart(1);
+    r.s().setDashboardLinked(true);
+    r.s().loadIntoSelected("aal");
+    expect(r.s().noticeSelection).toBeNull();
+  });
+});
