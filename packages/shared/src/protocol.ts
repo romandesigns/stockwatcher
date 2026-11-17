@@ -774,6 +774,20 @@ export interface PushRegisterMessage {
   haltWatch?: boolean;
   /** Pushes when a Runners or Ross stock's pullback sets up, then crosses its trigger (server default on). */
   runnersPullback?: boolean;
+  /** Pushes when the exchange halts / resumes a covered stock (server default on; absent = unchanged). */
+  halted?: boolean;
+  resumed?: boolean;
+  /** This phone's sound for each (an app-state HALT_SOUND_KEYS key); stored for release 2's halt channels. */
+  haltedSound?: string;
+  resumedSound?: string;
+  /** This phone's binary has the halt sound channels (halt-*-v1, release 2); absent = unchanged, a new phone false. */
+  haltSounds?: boolean;
+}
+
+/** Settings → Alerts → Halts "Send test": the server answers this connection alone with a `runners.notice` for the made-up stock TEST (`data.test` true). */
+export interface HaltsTestMessage {
+  type: "halts.test";
+  event: "halted" | "resumed";
 }
 
 export interface PushUnregisterMessage {
@@ -781,7 +795,7 @@ export interface PushUnregisterMessage {
   token: string;
 }
 
-export type ClientMessage = HelloMessage | PingMessage | PongMessage | QuotesSubscribeMessage | QuotesUnsubscribeMessage | PressureSubscribeMessage | PressureUnsubscribeMessage | RossSubscribeMessage | RossUnsubscribeMessage | import("./favorites.ts").FavoritesClientMessage | MoversClientMessage | import("./symbols.ts").SymbolsClientMessage | import("./noticeFeed.ts").NoticesClientMessage | import("./insightsTicker.ts").TickerClientMessage | { type: "detection.subscribe" | "detection.unsubscribe" } | import("./rocket.ts").RocketClientMessage | SettingsClientMessage | PushRegisterMessage | PushUnregisterMessage | import("./runnersNotify.ts").RunnersNotifyMessage | import("./tickers/quoteSearch.ts").QuoteSearchClientMessage;
+export type ClientMessage = HelloMessage | PingMessage | PongMessage | QuotesSubscribeMessage | QuotesUnsubscribeMessage | PressureSubscribeMessage | PressureUnsubscribeMessage | RossSubscribeMessage | RossUnsubscribeMessage | import("./favorites.ts").FavoritesClientMessage | MoversClientMessage | import("./symbols.ts").SymbolsClientMessage | import("./noticeFeed.ts").NoticesClientMessage | import("./insightsTicker.ts").TickerClientMessage | { type: "detection.subscribe" | "detection.unsubscribe" } | import("./rocket.ts").RocketClientMessage | SettingsClientMessage | PushRegisterMessage | PushUnregisterMessage | HaltsTestMessage | import("./runnersNotify.ts").RunnersNotifyMessage | import("./tickers/quoteSearch.ts").QuoteSearchClientMessage;
 export type ServerMessage = WelcomeMessage | PingMessage | PongMessage | ErrorMessage | QuotesMessage | PressureMessage | RossMessage | import("./favorites.ts").FavoritesMessage | MoversMessage | import("./symbols.ts").SymbolsMessage | import("./noticeFeed.ts").NoticesMessage | import("./insightsTicker.ts").TickerSnapshotMessage | import("./insightsTicker.ts").TickerIndicatorsMessage | import("./detection.ts").DetectionMessage | import("./rocket.ts").RocketMessage | SettingsServerMessage | AlertsServerMessage | import("./runnersNotify.ts").RunnersNoticeMessage | import("./tickers/quoteSearch.ts").QuoteSearchMessage | import("./rocket.ts").RunnersEventMessage;
 
 const ALERT_TYPES = new Set(["alerts.history", "alert.fired", "alert.held", "alert.updated", "alerts.status"]);

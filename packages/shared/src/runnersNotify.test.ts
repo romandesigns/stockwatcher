@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { parseServerMessage } from "./protocol.ts";
-import { ALERT_SWITCH_SECTIONS, createNoticeDedupe, DEFAULT_RUNNERS_NOTIFY, parseRunnersNotice, RUNNERS_NOTICE_KINDS, runnersNotifyKey, runnersNotifyKinds, shouldShowNotice, wantsNotice, type RunnersNoticeMessage } from "./runnersNotify.ts";
+import { ALERT_SWITCH_SECTIONS, createNoticeDedupe, isHaltNotice, DEFAULT_RUNNERS_NOTIFY, parseRunnersNotice, RUNNERS_NOTICE_KINDS, runnersNotifyKey, runnersNotifyKinds, shouldShowNotice, wantsNotice, type RunnersNoticeMessage } from "./runnersNotify.ts";
 import { createWsClient, type WebSocketLike } from "./ws.ts";
 
 // The frame the server sends (crates/server/src/alerts/runners.rs desk_frame test).
@@ -34,11 +34,25 @@ describe("runners notices", () => {
   });
 
   test("the defaults are the phone's: every evidence kind on; breakouts, at-trigger and the Halt watcher off", () => {
-    expect(DEFAULT_RUNNERS_NOTIFY).toEqual({ new: true, breakout: false, burst: true, running: true, run: true, fast: true, shelf: true, followUp: true, rossCrossing: true, signalsCrossing: true, rossTrigger: false, signalsTrigger: false, halt: false, pullback: true });
+    expect(DEFAULT_RUNNERS_NOTIFY).toEqual({ new: true, breakout: false, burst: true, running: true, run: true, fast: true, shelf: true, followUp: true, rossCrossing: true, signalsCrossing: true, rossTrigger: false, signalsTrigger: false, halt: false, pullback: true, halted: true, resumed: true });
     expect(runnersNotifyKinds(undefined)).toEqual({ ...DEFAULT_RUNNERS_NOTIFY });
     // A value stored before the new kinds existed: the new switches take their defaults.
     expect(runnersNotifyKinds({ new: false, breakout: true, burst: true, running: true, run: true, fast: true })).toEqual({ ...DEFAULT_RUNNERS_NOTIFY, new: false, breakout: true });
     expect(runnersNotifyKinds({ fast: false, breakout: true, junk: 1, run: "no" })).toEqual({ ...DEFAULT_RUNNERS_NOTIFY, fast: false, breakout: true });
+  });
+
+  test("exchange halts: their own kinds and switches, on by default, parsed and deduped like the rest", () => {
+    expect(isHaltNotice("halt.halted") && isHaltNotice("halt.resumed")).toBe(true);
+    expect(isHaltNotice("halt.watch")).toBe(false);
+    const raw = { type: "runners.notice", id: "runners-halted-XLAB-halt-1763300000", alertId: "XLAB-halt-1763300000", symbol: "XLAB", kind: "halt.halted", title: "XLAB · Halted · $2.76", body: "LULD pause · +42.3% on the day", data: { symbol: "XLAB", kind: "halt.halted", sound: "siren" }, at: 1 };
+    const n = parseRunnersNotice(raw)!;
+    expect(n.kind).toBe("halt.halted");
+    expect(n.data?.sound).toBe("siren");
+    const d = createNoticeDedupe();
+    expect(shouldShowNotice(n, DEFAULT_RUNNERS_NOTIFY, d)).toBe(true);
+    expect(shouldShowNotice(n, DEFAULT_RUNNERS_NOTIFY, d)).toBe(false);
+    expect(shouldShowNotice({ ...n, id: "other" }, { ...DEFAULT_RUNNERS_NOTIFY, halted: false }, d)).toBe(false);
+    expect(ALERT_SWITCH_SECTIONS.find((s) => s.id === "halts")!.items.map((i) => i.key)).toEqual(["halted", "resumed"]);
   });
 
   test("every kind answers to its own switch", () => {
@@ -57,6 +71,8 @@ describe("runners notices", () => {
       ["signals.trigger", "signalsTrigger"],
       ["halt.watch", "halt"],
       ["runners.pullback", "pullback"],
+      ["halt.halted", "halted"],
+      ["halt.resumed", "resumed"],
     ]);
     for (const k of RUNNERS_NOTICE_KINDS) expect(runnersNotifyKey(k) in DEFAULT_RUNNERS_NOTIFY).toBe(true);
   });

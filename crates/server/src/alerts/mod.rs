@@ -26,10 +26,13 @@
 //!
 //! The same task also pushes the Runners board's new flags and breakouts ([`runners`]): the live
 //! market offers them through [`AlertSink::offer_runner`], as non-blocking as the price inputs.
+//! And it turns the exchange's halts and resumptions of covered stocks into notices ([`halts`]),
+//! from the same inputs, delivered exactly like the Runners ones.
 
 pub mod delivery;
 pub mod eval;
 pub mod geometry;
+pub mod halts;
 pub mod history;
 pub mod ledger;
 pub mod model;
@@ -158,9 +161,22 @@ struct Shared {
     /// held as `no_device`, exactly as a phone's switch does.
     desks: Mutex<HashMap<u64, DeskKinds>>,
     next_desk: AtomicU64,
+    /// The symbols each open live connection has on a chart (its `chart.subscribe` slots, so a
+    /// linked chart counts too), by connection ([`ChartGuard`]): part of the halt notices'
+    /// coverage ([`halts`]).
+    charts: Mutex<HashMap<u64, Vec<String>>>,
 }
 
 impl Shared {
+    /// Whether an open live client has `symbol` on a chart.
+    fn charted(&self, symbol: &str) -> bool {
+        self.charts
+            .lock()
+            .expect("charts lock")
+            .values()
+            .any(|v| v.iter().any(|s| s == symbol))
+    }
+
     /// How many desk connections want `n`: the desk side's recipients.
     fn desks_wanting(&self, n: &crate::rocket::Notice) -> usize {
         self.desks
@@ -199,6 +215,9 @@ pub struct DeskKinds {
     pub halt: bool,
     /// "Pullback setting up" and its crossing (`crate::cue_notices`, "Pullback"; on by default).
     pub pullback: bool,
+    /// The exchange halted / resumed a covered stock ([`halts`]; both on by default).
+    pub halted: bool,
+    pub resumed: bool,
 }
 
 impl Default for DeskKinds {
@@ -227,6 +246,9 @@ impl DeskKinds {
             halt: o.halt.unwrap_or(false),
             // Owner, 2026-10-25: asked to receive it, so on like the other evidence kinds.
             pullback: o.pullback.unwrap_or(true),
+            // Owner-approved plan "halt sounds" (2026-11-16): both on.
+            halted: o.halted.unwrap_or(true),
+            resumed: o.resumed.unwrap_or(true),
         }
     }
 
@@ -257,6 +279,8 @@ impl DeskKinds {
             // A Runners stock's crossing that the Signals panel lists too is the Signals
             // crossing as well (one episode, one notice), as the Ross kind is.
             K::PullbackCrossing => self.pullback || (also_signals && self.signals_crossing),
+            K::Halted => self.halted,
+            K::Resumed => self.resumed,
         }
     }
 }
@@ -283,6 +307,38 @@ impl Drop for DeskGuard {
             .desks
             .lock()
             .expect("desks lock")
+            .remove(&self.id);
+    }
+}
+
+/// A live connection's charted symbols for the halt coverage ([`halts`]); dropping it (the socket
+/// ended) takes them out.
+pub struct ChartGuard {
+    shared: Arc<Shared>,
+    id: u64,
+}
+
+impl ChartGuard {
+    /// The connection's chart slots changed: these are its symbols now.
+    pub fn set<'a>(&self, symbols: impl IntoIterator<Item = &'a str>) {
+        let mut v: Vec<String> = symbols.into_iter().map(str::to_owned).collect();
+        v.sort();
+        v.dedup();
+        let mut charts = self.shared.charts.lock().expect("charts lock");
+        if v.is_empty() {
+            charts.remove(&self.id);
+        } else {
+            charts.insert(self.id, v);
+        }
+    }
+}
+
+impl Drop for ChartGuard {
+    fn drop(&mut self) {
+        self.shared
+            .charts
+            .lock()
+            .expect("charts lock")
             .remove(&self.id);
     }
 }
@@ -377,6 +433,7 @@ impl Alerts {
             cmd: None,
             desks: Mutex::new(HashMap::new()),
             next_desk: AtomicU64::new(0),
+            charts: Mutex::new(HashMap::new()),
         }))
     }
 
@@ -425,6 +482,15 @@ impl Alerts {
         };
         g.set(kinds);
         g
+    }
+
+    /// A live connection's chart slots, for the halt notices' coverage ([`halts`]). The guard
+    /// keeps them listed until the socket ends.
+    pub fn charts(&self) -> ChartGuard {
+        ChartGuard {
+            shared: self.0.clone(),
+            id: self.0.next_desk.fetch_add(1, Ordering::Relaxed),
+        }
     }
 
     pub fn unregister_device(&self, token: &str) {
@@ -497,6 +563,7 @@ impl Alerts {
             cmd: Some(cmd_tx),
             desks: Mutex::new(HashMap::new()),
             next_desk: AtomicU64::new(0),
+            charts: Mutex::new(HashMap::new()),
         }));
         let mut task = Task {
             shared: alerts.0.clone(),
@@ -510,6 +577,7 @@ impl Alerts {
             devices,
             runners,
             desk_runners,
+            halts: halts::HaltTracker::default(),
             pusher,
             ledger,
             seq: 0,
@@ -552,6 +620,8 @@ struct Task {
     runners: RunnersDelivery,
     /// The desktop and web notices' limits (the phones' rules, their own count: [`runners::desk_frame`]).
     desk_runners: RunnersDelivery,
+    /// Every live symbol's halt state, for the Halted / Resumed notices ([`halts`]).
+    halts: halts::HaltTracker,
     pusher: mpsc::Sender<Job>,
     /// Every decided notice, on the data volume (ledger.rs).
     ledger: ledger::Ledger,
@@ -686,9 +756,14 @@ impl Task {
                     let market = self.market.clone();
                     for i in batch {
                         let now = now_ms();
+                        // Before the evaluator, which keeps only the symbols its rules watch.
+                        let halt_notices = self.halt_input(&i, now);
                         for o in self.eval.on_input(i, now, &market) {
                             self.handle(o, now);
                             changed = true;
+                        }
+                        for n in halt_notices {
+                            self.runner(n, now);
                         }
                     }
                 }
@@ -721,6 +796,10 @@ impl Task {
                 _ = tick.tick() => {
                     let now = now_ms();
                     self.eval.tick(now);
+                    // Resumed notices whose reopening print did not come (halts::RESUME_WAIT_MS).
+                    for n in self.halts.tick(now) {
+                        self.runner(n, now);
+                    }
                     let dropped = self.sink.dropped();
                     if dropped > self.dropped_logged {
                         tracing::warn!(dropped, "alerts: the evaluator fell behind the market; inputs were dropped");
@@ -774,8 +853,50 @@ impl Task {
         }
     }
 
+    /// Feeds the halt tracker one input ([`halts`]): the notices it decides now. Coverage is
+    /// checked only at a status (a handful a day), never per print.
+    fn halt_input(&mut self, i: &Input, now: i64) -> Vec<crate::rocket::Notice> {
+        match i {
+            Input::Trade {
+                symbol, price, ts, ..
+            } => self
+                .halts
+                .on_trade(symbol, *price, *ts)
+                .into_iter()
+                .collect(),
+            Input::Status {
+                symbol,
+                halted,
+                ts,
+                session,
+                reason,
+            } => {
+                let covered = self.halt_covered(symbol);
+                let prev_close = if covered && *halted {
+                    session.and_then(|(d, _)| self.market.prev_close(symbol, d))
+                } else {
+                    None
+                };
+                self.halts
+                    .on_status(symbol, *halted, *ts, reason, covered, prev_close, now)
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// Whether a halt or resume of `symbol` is notified ([`halts`], "Coverage"): a per-stock halt
+    /// rule, an open live chart, or today's Runners board.
+    fn halt_covered(&self, symbol: &str) -> bool {
+        self.eval
+            .rules()
+            .any(|r| r.symbol == symbol && r.condition.is_halt())
+            || self.shared.charted(symbol)
+            || self.market.on_runners_board(symbol)
+    }
+
     /// One Runners notice: the push to the phones that opted in, within the limits
     /// ([`runners`]). Logged either way; never touches Activity (that is the price alerts').
+    /// A halt notice ([`halts`]) takes the same path; its phones are grouped by their sound.
     fn runner(&mut self, n: crate::rocket::Notice, now: i64) {
         let now_et = et(now);
         // Desktop and web first (runners::desk_frame): the same limits, decided once here with
@@ -828,12 +949,15 @@ impl Task {
             tracing::info!(symbol = %n.symbol, kind, held = h.code(), "runners push: held back");
             return;
         }
-        let job = Job {
+        let job = |tokens: Vec<String>,
+                   data: Value,
+                   channel: Option<&'static str>,
+                   sound: Option<Option<&'static str>>| Job {
             // Not an Activity event: a failure later is only logged (history.update finds nothing).
-            event_id,
+            event_id: event_id.clone(),
             tokens,
-            title,
-            body,
+            title: title.clone(),
+            body: body.clone(),
             data,
             // Sent at once, latency logged (runners, "Latency").
             runner: Some(push::RunnerLatency {
@@ -844,12 +968,38 @@ impl Task {
                 decided_ns: n.at_ns,
                 queued_ns: now.saturating_mul(1_000_000),
             }),
-            channel: None,
+            channel,
+            sound,
         };
-        if self.pusher.try_send(job).is_err() {
-            tracing::warn!(symbol = %n.symbol, kind, "runners push: push queue full or closed; not sent");
+        // A halt notice: one job per sound, each phone's own key in the data (and, on a phone
+        // with the halt sound channels, its channel and iOS file: push::halt_channel).
+        let jobs: Vec<Job> = if matches!(
+            n.kind,
+            crate::rocket::NoticeKind::Halted | crate::rocket::NoticeKind::Resumed
+        ) {
+            self.devices
+                .halt_groups(&n)
+                .into_iter()
+                .map(|(key, channels, tokens)| {
+                    let mut d = data.clone();
+                    d["sound"] = Value::from(key);
+                    job(
+                        tokens,
+                        d,
+                        channels.then(|| push::halt_channel(key)),
+                        channels.then(|| push::halt_ios_sound(key)),
+                    )
+                })
+                .collect()
         } else {
-            tracing::info!(symbol = %n.symbol, kind, "runners push: sent to the push service");
+            vec![job(tokens, data.clone(), None, None)]
+        };
+        for job in jobs {
+            if self.pusher.try_send(job).is_err() {
+                tracing::warn!(symbol = %n.symbol, kind, "runners push: push queue full or closed; not sent");
+            } else {
+                tracing::info!(symbol = %n.symbol, kind, "runners push: sent to the push service");
+            }
         }
     }
 
@@ -985,6 +1135,7 @@ impl Task {
                         data: json!({ "alertId": alert_id, "symbol": symbol, "eventId": id, "url": "stockwatcher://alerts", "tone": tone.map(|t| t.as_str()) }),
                         runner: None,
                         channel,
+                        sound: None,
                     };
                     let jobs = phone_jobs(&self.devices, channel, job);
                     if jobs.into_iter().any(|j| self.pusher.try_send(j).is_err()) {
@@ -1217,6 +1368,188 @@ mod tests {
             exec_ns: None,
             detail: None,
         }
+    }
+
+    /// Exchange halts through the real task (plan "halt sounds", 2026-11-16): a covered stock's
+    /// halt and resume are exactly one Halted and one Resumed on every surface; an uncovered stock
+    /// gets nothing; a replayed status is a duplicate; quiet hours hold (and log) one; a phone's
+    /// own sound rides in its push's data, on the plain channel with the default sound until its
+    /// app has the halt channels.
+    #[tokio::test]
+    async fn halt_notices_follow_coverage_and_the_runners_limits() {
+        let settings = Settings::in_memory();
+        let live = Market::idle(market_providers::ClockMode::Live, "idle", None);
+        let (job_tx, mut jobs) = mpsc::channel(16);
+        let (_res_tx, res_rx) = mpsc::channel(4);
+        let today = et(now_ms()).date_naive();
+        let feed = crate::notices::NoticeFeed::open(None, today);
+        let alerts = Alerts::start_with(
+            settings.clone(),
+            live.clone(),
+            None,
+            job_tx,
+            res_rx,
+            ledger::Ledger::default().with_feed(feed.clone()),
+        );
+        let mut frames = alerts.subscribe();
+        let sink = live.alert_sink().expect("attached").clone();
+        let next_notice = async |frames: &mut broadcast::Receiver<Arc<str>>| loop {
+            match tokio::time::timeout(Duration::from_millis(400), frames.recv()).await {
+                Ok(Ok(f)) if f.contains("\"runners.notice\"") => {
+                    break Some(serde_json::from_str::<Value>(&f).unwrap());
+                }
+                Ok(Ok(_)) => continue,
+                _ => break None,
+            }
+        };
+        let _desk = alerts.desk(DeskKinds::default());
+        assert!(alerts.register_device(
+            "ExponentPushToken[fold]",
+            "android",
+            "Fold",
+            RunnersOptIn::default()
+        ));
+        let tab = push::MoreOptIn {
+            halted_sound: Some(push::SoundKey("klaxon")),
+            ..Default::default()
+        };
+        assert!(alerts.register_device(
+            "ExponentPushToken[tab]",
+            "android",
+            "Tab",
+            tab.with(RunnersOptIn::default())
+        ));
+        // Each register answers with an alerts.status frame once the task has it.
+        let mut statuses = 0;
+        while statuses < 2 {
+            let f = tokio::time::timeout(Duration::from_secs(5), frames.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if f.starts_with("{\"type\":\"alerts.status\"") {
+                statuses += 1;
+            }
+        }
+        let charts = alerts.charts();
+        charts.set(["XLAB"]);
+        let now = now_ms();
+        let sess = Some((et(now).date_naive(), market_events::SessionKind::Regular));
+        let trade = |s: &str, price: f64, ts: i64| Input::Trade {
+            symbol: s.into(),
+            price,
+            ts,
+            session: sess,
+        };
+        let status = |s: &str, halted: bool, ts: i64, reason: &str| Input::Status {
+            symbol: s.into(),
+            halted,
+            ts,
+            session: sess,
+            reason: reason.into(),
+        };
+        let halt_at = now - 125_000;
+        // An uncovered stock: tracked, never notified.
+        sink.offer(trade("NOPE", 4.0, halt_at - 1_000));
+        sink.offer(status("NOPE", true, halt_at, "T1"));
+        // The charted one.
+        sink.offer(trade("XLAB", 2.76, halt_at - 1_000));
+        sink.offer(status("XLAB", true, halt_at, "LUDP"));
+        let f = next_notice(&mut frames).await.expect("a desk notice");
+        assert_eq!(f["kind"], "halt.halted");
+        assert_eq!(f["title"], "XLAB · Halted · $2.76");
+        assert_eq!(f["body"], "LULD pause");
+        assert_eq!(f["data"]["sound"], "siren");
+        let mut got = Vec::new();
+        for _ in 0..2 {
+            got.push(
+                tokio::time::timeout(Duration::from_secs(5), jobs.recv())
+                    .await
+                    .unwrap()
+                    .unwrap(),
+            );
+        }
+        got.sort_by(|a, b| a.tokens.cmp(&b.tokens));
+        assert_eq!(got[0].tokens, vec!["ExponentPushToken[fold]".to_string()]);
+        assert_eq!(got[0].data["sound"], "siren");
+        assert_eq!(got[1].tokens, vec!["ExponentPushToken[tab]".to_string()]);
+        assert_eq!(got[1].data["sound"], "klaxon");
+        for j in &got {
+            assert_eq!(j.title, "XLAB · Halted · $2.76");
+            assert_eq!(j.data["kind"], "halt.halted");
+            // Release 1: no phone has the halt channels, so the plain channel and default sound.
+            assert_eq!((j.channel, j.sound), (None, None));
+        }
+        // The stream reconnects and replays the status: not news.
+        sink.offer(status("XLAB", true, halt_at, "LUDP"));
+        assert!(next_notice(&mut frames).await.is_none());
+        assert!(jobs.try_recv().is_err());
+        // The resume waits for its reopening print.
+        sink.offer(status("NOPE", false, now - 5_000, ""));
+        sink.offer(status("XLAB", false, now - 5_000, ""));
+        assert!(next_notice(&mut frames).await.is_none());
+        sink.offer(trade("NOPE", 4.4, now - 4_000));
+        sink.offer(trade("XLAB", 3.10, now - 4_000));
+        let f = next_notice(&mut frames).await.expect("the resume");
+        assert_eq!(f["kind"], "halt.resumed");
+        assert_eq!(f["title"], "XLAB · Resumed · $3.10");
+        assert_eq!(f["body"], "Halted 2 min · +12.3% from $2.76");
+        assert_eq!(f["data"]["sound"], "chime");
+        // Both phones keep the default Resumed sound: one push to both.
+        let j = tokio::time::timeout(Duration::from_secs(5), jobs.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(j.data["kind"], "halt.resumed");
+        assert_eq!(j.tokens.len(), 2);
+        // Exactly one of each: nothing for NOPE, nothing more for XLAB.
+        assert!(next_notice(&mut frames).await.is_none());
+        assert!(jobs.try_recv().is_err());
+
+        // Quiet hours (ET wall time) around now: held on both paths, logged, nothing sent.
+        let m = {
+            let t = et(now_ms());
+            t.hour() * 60 + t.minute()
+        };
+        let hm = |m: u32| format!("{:02}:{:02}", (m % 1440) / 60, m % 60);
+        settings
+            .apply(
+                PREFS_NS,
+                "q1",
+                SettingsOp::Patch {
+                    set:
+                        json!({"quietHours": {"on": true, "start": hm(m + 1439), "end": hm(m + 3)}})
+                            .as_object()
+                            .unwrap()
+                            .clone(),
+                    remove: vec![],
+                },
+            )
+            .await
+            .unwrap();
+        // A per-stock halt rule covers its symbol too.
+        settings
+            .apply(RULES_NS, "r1", SettingsOp::Patch {
+                set: json!({"h1": {"symbol": "RULE", "rule": {"kind": "halt"}, "fire": "once", "sessions": ["pre", "regular", "after", "overnight"], "expiry": "never", "createdAt": now, "editedAt": now}}).as_object().unwrap().clone(),
+                remove: vec![],
+            })
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        sink.offer(trade("RULE", 1.2, now_ms() - 2_000));
+        sink.offer(status("RULE", true, now_ms() - 1_000, "T1"));
+        assert!(next_notice(&mut frames).await.is_none());
+        assert!(jobs.try_recv().is_err());
+        let (items, _, _) = feed.items(today);
+        let rule = items
+            .iter()
+            .find(|i| i["symbol"] == "RULE")
+            .expect("the held halt is in the log");
+        assert_eq!(rule["notice"], "halt.halted");
+        assert!(
+            rule.to_string().contains("quiet_hours"),
+            "held for quiet hours: {rule}"
+        );
+        drop(charts);
     }
 
     /// The Runners pushes through the real task with a fake sender (a channel read here; no
@@ -1564,6 +1897,7 @@ mod tests {
             data: json!({}),
             runner: None,
             channel,
+            sound: None,
         };
         let jobs = phone_jobs(&d, Some("drawing-stop-v1"), mk);
         assert_eq!(jobs.len(), 2);

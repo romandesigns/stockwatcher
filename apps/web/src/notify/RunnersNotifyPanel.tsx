@@ -2,13 +2,15 @@ import type { AlertSwitch, RunnersNotifyKinds } from "@stockwatcher/shared";
 import { Icon } from "@stockwatcher/chart-web";
 import { Button, Switch, cn } from "@stockwatcher/chart-web/ui";
 import { useId, useState, useSyncExternalStore } from "react";
+import { HaltRows } from "./HaltRows.tsx";
 import type { RunnersNotifier } from "./runnersNotify.ts";
 import { RUNNERS_SWITCH_SECTIONS } from "./runnersSwitches.ts";
 
 /**
  * Settings → Alerts panel (runnersSection.tsx): the master switch (on the web, the "Turn on
  * desktop alerts" button that asks for permission, from a click only) and the phone's switches,
- * by panel (Runners, Ross, Signals, Halt watcher).
+ * by panel (Runners, Ross, Signals, Halt watcher), then Halts (HaltRows: a sound per event; they
+ * work without the master switch, so that section is never dimmed by it).
  */
 export function RunnersNotifyPanel({ notifier }: { notifier: RunnersNotifier }) {
   const prefs = useSyncExternalStore(notifier.subscribe, notifier.prefs, notifier.prefs);
@@ -54,7 +56,7 @@ export function RunnersNotifyPanel({ notifier }: { notifier: RunnersNotifier }) 
         )}
       </div>
       <div className={cn("flex flex-col gap-3 transition-opacity duration-150", !on && "opacity-50")}>
-        {RUNNERS_SWITCH_SECTIONS.map((section) => (
+        {RUNNERS_SWITCH_SECTIONS.filter((s) => s.id !== "halts").map((section) => (
           <div key={section.id} role="group" aria-label={`${section.label} alerts`} className="flex flex-col gap-0.5">
             <span className="px-2 pb-0.5 text-[11px] font-medium uppercase tracking-wide text-text-faint">{section.label}</span>
             {section.items.map((s) => (
@@ -63,6 +65,12 @@ export function RunnersNotifyPanel({ notifier }: { notifier: RunnersNotifier }) 
           </div>
         ))}
       </div>
+      {RUNNERS_SWITCH_SECTIONS.filter((s) => s.id === "halts").map((section) => (
+        <div key={section.id} role="group" aria-label={`${section.label} alerts`} className="mt-3 flex flex-col gap-0.5">
+          <span className="px-2 pb-0.5 text-[11px] font-medium uppercase tracking-wide text-text-faint">{section.label}</span>
+          <HaltRows items={section.items} prefs={prefs} notifier={notifier} />
+        </div>
+      ))}
     </div>
   );
 }

@@ -291,6 +291,45 @@ entries may carry `orphaned: true`. `alerts.prefs` gains `sound: {on, volume}`. 
 data carries `tone` and goes out on the tone's channel (phones with `drawingTones` only).
 `push.register` gains `drawingTones?: boolean` (absent = unchanged; a new phone without it = false).
 
+## Halt sounds (2026-11-16, release 1)
+
+Owner-approved plan "halt sounds": two notifications per stock, **Halted** and **Resumed**, from the
+exchange's own trading-status feed (not the Halt watcher, which is unchanged), with a sound per event
+chosen on each device.
+
+- **Server** (`crates/server/src/alerts/halts.rs`): covered stocks only (today's Runners board, a
+  symbol an open live client has on a chart, or one with a per-stock halt rule). The events take
+  the Runners notices' delivery and limits (`alerts/runners.rs`): dedupe by symbol and halt start,
+  persisted per day; the devices that want the kind; quiet hours (held, logged in the notice
+  ledger and the Insights log); the 3-minute stale drop; no daily cap. Resumed waits up to 15 s
+  for the reopening print so its "change from the halt price" is real. Text: "SYM · Halted ·
+  $2.76" / "LULD pause · +42.3% on the day"; "SYM · Resumed · $3.10" / "Halted 5 min · +12.3% from
+  $2.76". A tap or click opens the chart. Per-stock halt rules (`Condition::Halt`) still fire as
+  before; a stock with one gets both.
+- **Sounds** (`packages/app-state` `HALT_SOUNDS`): eight synthesized scores (siren, klaxon, triple
+  beep, alarm, chime, ding, rise, blip) and None. Defaults: Siren for Halted, Chime for Resumed.
+  The web and desktop play them with WebAudio (`apps/web/src/alerts/sound.ts` `playNotes`) at the
+  alert sounds' synced volume and mute; `apps/mobile/scripts/tones.ts` renders the same scores to
+  `assets/sounds/halt_<key>.wav` (10–36 KB) for release 2.
+- **Settings → Alerts → Halts** (web and desktop, `apps/web/src/notify/HaltRows.tsx`): per event a
+  switch, a sound picker, ▶ preview and "Send test" (`halts.test`: the server answers that
+  connection with a real `runners.notice` for the stock TEST). Choices are per device (the
+  notifier's localStorage prefs). Halts work without system notifications: the connection opts in
+  to the two kinds, plays the sound and shows an in-app toast; a page that has not had its click
+  says so. The phone gets the two switches (shared `ALERT_SWITCH_SECTIONS`, over the air).
+- **Wire.** `runners.notice` kinds `halt.halted` / `halt.resumed`, `data.sound` the event's default
+  key (a phone push carries the phone's own); `runners.notify` and `push.register` gain `halted?`,
+  `resumed?`; `push.register` also `haltedSound?`, `resumedSound?` and the capability
+  `haltSounds?`; client `halts.test {event}`. Older clients drop the unknown kinds
+  (`parseRunnersNotice`), and an older phone shows the push as usual (default sound, `alerts`
+  channel; a tap with a symbol opens its chart).
+- **Release 2 (phone sounds, needs a new APK):** list the eight WAVs in `app.config.ts`'s
+  expo-notifications `sounds`, create one Android channel per sound (`halt-<key>-v1`, `halt-none-v1`
+  silent; `push.rs` `halt_channel`), send `haltSounds: true` and the phone's picks in
+  `push.register`, and add the picker (with a preview player) to the phone's Settings. The server
+  already routes a phone that says `haltSounds: true` to its sound's channel and names
+  `halt_<key>.wav` for iOS; every other phone keeps the default sound.
+
 ## The rule
 
 **Everything chart-related lives in the chart packages; an app passes data in and wires callbacks

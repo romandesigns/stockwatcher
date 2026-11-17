@@ -39,6 +39,10 @@ export const RUNNERS_NOTICE_KINDS = [
   // "Pullback setting up" and its crossing (owner, 2026-10-25): one switch, `data.stage`
   // "setup" | "crossing" (crates/server/src/cue_notices.rs, "Pullback").
   "runners.pullback",
+  // Exchange halts and resumptions of a covered stock (plan "halt sounds", 2026-11-16;
+  // crates/server/src/alerts/halts.rs): the SIP trading status, not the Halt watcher's forecast.
+  "halt.halted",
+  "halt.resumed",
 ] as const;
 export type RunnersNoticeKind = (typeof RUNNERS_NOTICE_KINDS)[number];
 
@@ -85,6 +89,10 @@ export interface RunnersNotifyKinds {
   halt: boolean;
   /** A Runners stock's first pullback within 30 min of its alert (or a Ross stock's first of the day) armed its trigger and stop, then its trigger crossing. */
   pullback: boolean;
+  /** The exchange halted trading in a covered stock (on the Runners board, on a chart, or with a halt rule). */
+  halted: boolean;
+  /** The same stock's trading resumed. */
+  resumed: boolean;
 }
 
 /**
@@ -107,6 +115,9 @@ export const DEFAULT_RUNNERS_NOTIFY: Readonly<RunnersNotifyKinds> = Object.freez
   halt: false,
   // On: the owner asked to receive it (2026-10-25).
   pullback: true,
+  // On: plan "halt sounds" (2026-11-16).
+  halted: true,
+  resumed: true,
 });
 
 /** client `runners.notify`: this connection shows notifications for these kinds (`enabled: false` stops). */
@@ -139,7 +150,14 @@ export const RUNNERS_NOTIFY_KEY: Readonly<Record<RunnersNoticeKind, keyof Runner
   "signals.trigger": "signalsTrigger",
   "halt.watch": "halt",
   "runners.pullback": "pullback",
+  "halt.halted": "halted",
+  "halt.resumed": "resumed",
 });
+
+/** Whether a notice is an exchange halt or resumption (its own sound on the desktop and web). */
+export function isHaltNotice(kind: string): kind is "halt.halted" | "halt.resumed" {
+  return kind === "halt.halted" || kind === "halt.resumed";
+}
 
 /** The switch a notice's kind answers to. */
 export function runnersNotifyKey(kind: RunnersNoticeKind): keyof RunnersNotifyKinds {
@@ -232,7 +250,7 @@ export function shouldShowNotice(notice: RunnersNoticeMessage, kinds: RunnersNot
  * does not depend on chart-core; the web and the phone pass these to their `Icon`, so tsc there
  * rejects a name chart-core lacks).
  */
-export type AlertIcon = "bell" | "gauge" | "trend" | "hline" | "levels" | "plus" | "star" | "pathRunner" | "pathBurst" | "pathFast" | "pathRun" | "pathRunning";
+export type AlertIcon = "bell" | "gauge" | "trend" | "hline" | "levels" | "plus" | "star" | "pause" | "play" | "pathRunner" | "pathBurst" | "pathFast" | "pathRun" | "pathRunning";
 
 /**
  * THE icon of each kind of notice, by the switch it answers to (owner, 2026-10-30: the
@@ -257,6 +275,8 @@ export const ALERT_SWITCH_ICON: Readonly<Record<keyof RunnersNotifyKinds, AlertI
   signalsCrossing: "trend",
   signalsTrigger: "hline",
   halt: "gauge",
+  halted: "pause",
+  resumed: "play",
 });
 
 /** A Runners-pipeline notice kind's icon: its switch's ({@link ALERT_SWITCH_ICON}). */
@@ -276,7 +296,7 @@ export interface AlertSwitch {
  * notifies on the phone, the watch, the desktop and the web), by panel, in the same order and
  * words so the three clients read the same. Descriptions say what happened, never what to do.
  */
-export const ALERT_SWITCH_SECTIONS: readonly { id: "runners" | "ross" | "signals" | "halt"; label: string; items: readonly AlertSwitch[] }[] = [
+export const ALERT_SWITCH_SECTIONS: readonly { id: "runners" | "ross" | "signals" | "halt" | "halts"; label: string; items: readonly AlertSwitch[] }[] = [
   {
     id: "runners",
     label: "Runners",
@@ -312,5 +332,14 @@ export const ALERT_SWITCH_SECTIONS: readonly { id: "runners" | "ross" | "signals
     id: "halt",
     label: "Halt watcher",
     items: [{ key: "halt", icon: ALERT_SWITCH_ICON.halt, name: "Gauge appears", description: "Pressure building fast near the LULD band. A possible halt, not a forecast." }],
+  },
+  {
+    // The exchange's own halts (the web and desktop add a sound picker per row: notify/HaltsRows).
+    id: "halts",
+    label: "Halts",
+    items: [
+      { key: "halted", icon: ALERT_SWITCH_ICON.halted, name: "Halted", description: "The exchange halts a Runners stock, a charted one or one with a halt alert: reason and day's move." },
+      { key: "resumed", icon: ALERT_SWITCH_ICON.resumed, name: "Resumed", description: "Trading resumes: how long it was halted and the move from the halt price." },
+    ],
   },
 ];

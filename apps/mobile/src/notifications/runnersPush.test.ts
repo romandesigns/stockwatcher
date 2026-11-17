@@ -21,6 +21,8 @@ test("the defaults are the server's and the desk clients': evidence on; breakout
     signalsTrigger: false,
     haltWatch: false,
     runnersPullback: true,
+    halted: true,
+    resumed: true,
   });
 });
 

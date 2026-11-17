@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { ALERT_TONES } from "@stockwatcher/app-state";
-import { RATE, renderTone, wav } from "./tones.ts";
+import { ALERT_TONES, HALT_SOUND_KEYS, HALT_SOUNDS } from "@stockwatcher/app-state";
+import { haltSoundFile, RATE, renderSound, renderTone, wav } from "./tones.ts";
 
 test("the bundled tones are the score, rendered (rerun scripts/tones.ts after changing ALERT_TONES)", () => {
   for (const tone of ["up", "down", "stop"] as const) {
@@ -26,4 +26,21 @@ test("a valid 16-bit mono WAV, the notes' length, never clipping, the three tone
   const down = renderTone(ALERT_TONES.down);
   expect(up.length).toBe(down.length);
   expect(up.some((v, i) => Math.abs(v - down[i]!) > 0.1)).toBe(true);
+});
+
+test("the halt sounds are their scores, rendered: small, never clipping, all distinct (rerun scripts/tones.ts after changing HALT_SOUNDS)", () => {
+  const seen: Float32Array[] = [];
+  for (const key of HALT_SOUND_KEYS) {
+    if (key === "none") continue;
+    const s = renderSound(HALT_SOUNDS[key]);
+    const want = wav(s);
+    const got = new Uint8Array(readFileSync(new URL(`../assets/sounds/${haltSoundFile(key)}`, import.meta.url)));
+    expect(Buffer.from(got).equals(Buffer.from(want))).toBe(true);
+    expect(got.length).toBeLessThan(50_000);
+    expect(Math.max(...s.map(Math.abs))).toBeLessThanOrEqual(0.7 + 1e-6);
+    expect(Math.max(...s.map(Math.abs))).toBeGreaterThan(0.2);
+    for (const other of seen) expect(other.length === s.length && other.every((v, i) => Math.abs(v - s[i]!) < 0.01)).toBe(false);
+    seen.push(s);
+  }
+  expect(seen).toHaveLength(8);
 });

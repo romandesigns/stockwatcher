@@ -14,7 +14,7 @@ export function runnersNotifySection(): SettingsDialogSection {
     id: "runners",
     label: "Alerts",
     icon: "bell",
-    description: notifier.desktop ? "System notifications on this computer for Runners, Ross, Signals and the Halt watcher, as the phone gets them." : "Browser notifications in this tab for Runners, Ross, Signals and the Halt watcher, as the phone gets them.",
+    description: notifier.desktop ? "System notifications on this computer for Runners, Ross, Signals and the Halt watcher, as the phone gets them, and a sound for exchange halts." : "Browser notifications in this tab for Runners, Ross, Signals and the Halt watcher, as the phone gets them, and a sound for exchange halts.",
     render: () => <RunnersNotifyPanel notifier={notifier} />,
   };
 }

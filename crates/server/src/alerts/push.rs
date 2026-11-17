@@ -120,6 +120,25 @@ pub struct Device {
     /// it has. Absent (older records and apps) = false.
     #[serde(default)]
     pub drawing_tones: bool,
+    /// Exchange halts and resumptions in a covered stock (`super::halts`): both on, a record saved
+    /// before they existed included (owner-approved plan "halt sounds", 2026-11-16).
+    #[serde(default = "yes")]
+    pub halted: bool,
+    #[serde(default = "yes")]
+    pub resumed: bool,
+    /// The phone's own sound for each (a `super::halts::SOUNDS` key; None = the event's default).
+    /// Stored now, used on a phone that has the halt sound channels ([`Device::halt_sounds`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub halted_sound: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resumed_sound: Option<String>,
+    /// The phone's app has the halt sound channels (`haltSounds` in `push.register`): release 2's
+    /// native build, which bundles the sounds and creates one Android channel per sound
+    /// ([`halt_channel`]). Only such a phone gets a halt push on a `halt-*` channel with its own
+    /// sound; every other one (every build in release 1) gets the plain `alerts` channel and the
+    /// default sound, which it has. Absent (older records and apps) = false.
+    #[serde(default)]
+    pub halt_sounds: bool,
 }
 
 impl Device {
@@ -140,8 +159,58 @@ impl Device {
             signals_trigger: self.signals_trigger,
             halt: self.halt_watch,
             pullback: self.runners_pullback,
+            halted: self.halted,
+            resumed: self.resumed,
         }
     }
+
+    /// This phone's sound key for a halt notice's kind: its own choice, else the notice's default.
+    pub fn halt_sound(&self, n: &crate::rocket::Notice) -> &'static str {
+        use crate::rocket::{NoticeDetail, NoticeKind};
+        let own = match n.kind {
+            NoticeKind::Halted => self.halted_sound.as_deref(),
+            _ => self.resumed_sound.as_deref(),
+        };
+        own.and_then(super::halts::sound_key)
+            .unwrap_or(match &n.detail {
+                Some(NoticeDetail::Trading(t)) => t.sound,
+                _ if n.kind == NoticeKind::Halted => super::halts::DEFAULT_HALTED_SOUND,
+                _ => super::halts::DEFAULT_RESUMED_SOUND,
+            })
+    }
+}
+
+/// The Android channel of a halt push for a phone with the halt sound channels
+/// ([`Device::halt_sounds`]): one per sound, because a channel's sound is fixed on Android, so the
+/// sound IS the channel (as the drawing tones' `drawing-*` channels). Release 2's app creates them
+/// with these ids; "none" is a silent channel. iOS takes the file name ([`halt_ios_sound`]).
+pub fn halt_channel(key: &str) -> &'static str {
+    match key {
+        "siren" => "halt-siren-v1",
+        "klaxon" => "halt-klaxon-v1",
+        "triple" => "halt-triple-v1",
+        "alarm" => "halt-alarm-v1",
+        "chime" => "halt-chime-v1",
+        "ding" => "halt-ding-v1",
+        "rise" => "halt-rise-v1",
+        "blip" => "halt-blip-v1",
+        _ => "halt-none-v1",
+    }
+}
+
+/// The bundled file iOS plays for a halt sound (release 2), None for "none" (silent).
+pub fn halt_ios_sound(key: &str) -> Option<&'static str> {
+    Some(match key {
+        "siren" => "halt_siren.wav",
+        "klaxon" => "halt_klaxon.wav",
+        "triple" => "halt_triple.wav",
+        "alarm" => "halt_alarm.wav",
+        "chime" => "halt_chime.wav",
+        "ding" => "halt_ding.wav",
+        "rise" => "halt_rise.wav",
+        "blip" => "halt_blip.wav",
+        _ => return None,
+    })
 }
 
 fn yes() -> bool {
@@ -168,6 +237,14 @@ pub struct RunnersOptIn {
     pub pullback: Option<bool>,
     /// The phone has the drawing tone channels (Device::drawing_tones); None = unchanged.
     pub drawing_tones: Option<bool>,
+    /// Exchange halts and resumptions (`super::halts`); None = unchanged / the default (on).
+    pub halted: Option<bool>,
+    pub resumed: Option<bool>,
+    /// The phone's sound for each, a `super::halts::SOUNDS` key (an unknown key reads as None).
+    pub halted_sound: Option<&'static str>,
+    pub resumed_sound: Option<&'static str>,
+    /// The phone has the halt sound channels (Device::halt_sounds); None = unchanged.
+    pub halt_sounds: Option<bool>,
 }
 
 /// The newer switches as `push.register` and `runners.notify` spell them (owner, 2026-10-23),
@@ -197,6 +274,31 @@ pub struct MoreOptIn {
     /// A phone's `drawingTones` capability (Device::drawing_tones); ignored for a desk.
     #[serde(default)]
     pub drawing_tones: Option<bool>,
+    /// Exchange halts and resumptions (`super::halts`), spelled the same by the phone and the
+    /// desk.
+    #[serde(default)]
+    pub halted: Option<bool>,
+    #[serde(default)]
+    pub resumed: Option<bool>,
+    /// A phone's sound for each (`haltedSound`, `resumedSound`; ignored for a desk, which plays its
+    /// own). An unknown key is ignored rather than refusing the whole message.
+    #[serde(default, deserialize_with = "sound_opt")]
+    pub halted_sound: Option<SoundKey>,
+    #[serde(default, deserialize_with = "sound_opt")]
+    pub resumed_sound: Option<SoundKey>,
+    /// A phone's `haltSounds` capability (Device::halt_sounds); ignored for a desk.
+    #[serde(default)]
+    pub halt_sounds: Option<bool>,
+}
+
+/// A known halt sound key (`super::halts::SOUNDS`), read off the wire.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SoundKey(pub &'static str);
+
+/// A sound key from the wire: a known one, else None (never an error).
+fn sound_opt<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<SoundKey>, D::Error> {
+    let v: Option<String> = Option::deserialize(d)?;
+    Ok(v.as_deref().and_then(super::halts::sound_key).map(SoundKey))
 }
 
 impl MoreOptIn {
@@ -212,6 +314,11 @@ impl MoreOptIn {
             halt: self.halt,
             pullback: self.pullback,
             drawing_tones: self.drawing_tones,
+            halted: self.halted,
+            resumed: self.resumed,
+            halted_sound: self.halted_sound.map(|k| k.0),
+            resumed_sound: self.resumed_sound.map(|k| k.0),
+            halt_sounds: self.halt_sounds,
             ..o
         }
     }
@@ -263,6 +370,21 @@ impl Devices {
             self.list.iter().partition(|d| d.drawing_tones);
         let tok = |v: Vec<&Device>| v.into_iter().map(|d| d.token.clone()).collect();
         (tok(with), tok(without))
+    }
+
+    /// The phones that want a halt notice, grouped by how their push sounds: (sound key, has the
+    /// halt sound channels, tokens). In release 1 no phone has the channels, so each group rings
+    /// with the default sound on the `alerts` channel and only its data's `sound` differs.
+    pub fn halt_groups(&self, n: &crate::rocket::Notice) -> Vec<(&'static str, bool, Vec<String>)> {
+        let mut out: Vec<(&'static str, bool, Vec<String>)> = Vec::new();
+        for d in self.list.iter().filter(|d| d.kinds().wants(n)) {
+            let key = (d.halt_sound(n), d.halt_sounds);
+            match out.iter_mut().find(|(k, c, _)| (*k, *c) == key) {
+                Some((_, _, t)) => t.push(d.token.clone()),
+                None => out.push((key.0, key.1, vec![d.token.clone()])),
+            }
+        }
+        out
     }
 
     /// The phones that opted in to this kind of Runners push.
@@ -349,6 +471,14 @@ impl Devices {
         let halt_watch = pick(runners.halt, |d| d.halt_watch, def.halt);
         let runners_pullback = pick(runners.pullback, |d| d.runners_pullback, def.pullback);
         let drawing_tones = pick(runners.drawing_tones, |d| d.drawing_tones, false);
+        let halted = pick(runners.halted, |d| d.halted, def.halted);
+        let resumed = pick(runners.resumed, |d| d.resumed, def.resumed);
+        let halt_sounds = pick(runners.halt_sounds, |d| d.halt_sounds, false);
+        let sound = |v: Option<&'static str>, had_v: fn(&Device) -> Option<String>| {
+            v.map(str::to_owned).or_else(|| had.and_then(had_v))
+        };
+        let halted_sound = sound(runners.halted_sound, |d| d.halted_sound.clone());
+        let resumed_sound = sound(runners.resumed_sound, |d| d.resumed_sound.clone());
         self.list.retain(|d| d.token != token);
         let clip = |s: &str| {
             s.chars()
@@ -376,6 +506,11 @@ impl Devices {
             halt_watch,
             runners_pullback,
             drawing_tones,
+            halted,
+            resumed,
+            halted_sound,
+            resumed_sound,
+            halt_sounds,
         });
         while self.list.len() > MAX_DEVICES {
             self.list.remove(0);
@@ -409,8 +544,11 @@ pub struct Job {
     /// The Android notification channel when not the plain alerts one: a sounding drawing
     /// alert's `drawing-up` / `drawing-down` / `drawing-stop` (apps/mobile src/notifications
     /// setup.ts creates them, each with its own bundled tone; a channel's sound is fixed on
-    /// Android, so the tone IS the channel).
+    /// Android, so the tone IS the channel), or a halt sound's `halt-*` channel ([`halt_channel`]).
     pub channel: Option<&'static str>,
+    /// The push's `sound` when not the platform default: a halt push to a phone with the halt
+    /// sound channels names its bundled file for iOS ([`halt_ios_sound`]); `Some(None)` = silent.
+    pub sound: Option<Option<&'static str>>,
 }
 
 /// A Runners push's clock (`super::runners`, "Latency"): epoch ns.
@@ -637,7 +775,11 @@ fn expo_message(job: &Job, token: &str) -> Value {
         "title": job.title,
         "body": job.body,
         "data": job.data,
-        "sound": "default",
+        "sound": match job.sound {
+            None => Value::from("default"),
+            Some(Some(file)) => Value::from(file),
+            Some(None) => Value::Null,
+        },
         "priority": "high",
         // The channel the app creates (apps/mobile/src/notifications/setup.ts ALERTS_CHANNEL_ID,
         // or a drawing alert's tone channel).
@@ -1064,6 +1206,7 @@ mod tests {
                 data: json!({}),
                 runner: None,
                 channel: None,
+                sound: None,
             })
             .await
             .unwrap();
@@ -1138,6 +1281,7 @@ mod tests {
                 queued_ns: 0,
             }),
             channel: None,
+            sound: None,
         };
         let wait_for = |n: usize| {
             let seen = seen.clone();
@@ -1171,6 +1315,83 @@ mod tests {
         assert!(behind < bound, "behind a price alert: {behind:?}");
     }
 
+    /// Halt pushes (plan "halt sounds", 2026-11-16): on for a new phone and an old record; an
+    /// older app's register keeps the phone's choices; an unknown sound key is ignored; only a
+    /// phone with the halt sound channels (release 2) gets its sound's channel and iOS file.
+    #[test]
+    fn halt_opt_ins_sounds_and_channels() {
+        use crate::rocket::{Notice, NoticeKind as K};
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(FILE),
+            r#"[{"token":"ExponentPushToken[old]","registeredAt":1}]"#,
+        )
+        .unwrap();
+        let mut d = Devices::open(dir.path());
+        for k in [K::Halted, K::Resumed] {
+            assert_eq!(d.runner_tokens(&Notice::test(k, "A")).len(), 1, "{k:?} on");
+        }
+        let fresh = "ExponentPushToken[new]";
+        let more: MoreOptIn = serde_json::from_str(
+            r#"{"resumed":false,"haltedSound":"ding","resumedSound":"bogus","haltSounds":true}"#,
+        )
+        .unwrap();
+        assert_eq!(more.resumed_sound, None, "an unknown key is ignored");
+        assert!(d.register(
+            fresh,
+            "android",
+            "Fold",
+            2,
+            more.with(RunnersOptIn::default())
+        ));
+        // An older app registers again: nothing about halts changes.
+        assert!(d.register(fresh, "android", "Fold", 3, RunnersOptIn::default()));
+        let d = Devices::open(dir.path());
+        let dev = d.get(fresh).unwrap().clone();
+        assert!(dev.halted && !dev.resumed && dev.halt_sounds);
+        assert_eq!(dev.halted_sound.as_deref(), Some("ding"));
+        assert!(d.runner_tokens(&Notice::test(K::Resumed, "A")).len() == 1);
+        let mut groups = d.halt_groups(&Notice::test(K::Halted, "A"));
+        groups.sort_by(|a, b| a.2.cmp(&b.2));
+        assert_eq!(
+            groups,
+            vec![
+                ("ding", true, vec![fresh.to_string()]),
+                ("siren", false, vec!["ExponentPushToken[old]".to_string()]),
+            ]
+        );
+        let job = |channels: bool, key: &'static str| Job {
+            event_id: "runners-halted-A-halt-1".into(),
+            tokens: vec![],
+            title: "A · Halted · $2.00".into(),
+            body: "LULD pause".into(),
+            data: json!({"symbol": "A", "kind": "halt.halted", "sound": key}),
+            runner: None,
+            channel: channels.then(|| halt_channel(key)),
+            sound: channels.then(|| halt_ios_sound(key)),
+        };
+        let m = expo_message(&job(false, "siren"), "ExponentPushToken[old]");
+        assert_eq!(
+            (m["channelId"].clone(), m["sound"].clone()),
+            (json!("alerts"), json!("default"))
+        );
+        assert_eq!(m["data"]["sound"], "siren");
+        let m = expo_message(&job(true, "ding"), fresh);
+        assert_eq!(
+            (m["channelId"].clone(), m["sound"].clone()),
+            (json!("halt-ding-v1"), json!("halt_ding.wav"))
+        );
+        let m = expo_message(&job(true, "none"), fresh);
+        assert_eq!(
+            (m["channelId"].clone(), m["sound"].clone()),
+            (json!("halt-none-v1"), Value::Null)
+        );
+        for k in super::super::halts::SOUNDS {
+            assert!(halt_channel(k).starts_with("halt-"));
+            assert_eq!(halt_ios_sound(k).is_none(), k == "none");
+        }
+    }
+
     #[test]
     fn runners_pushes_carry_the_copy_ticker_category() {
         let n = crate::rocket::Notice {
@@ -1201,6 +1422,7 @@ mod tests {
                 queued_ns: 0,
             }),
             channel: None,
+            sound: None,
         };
         let m = expo_message(&job, "ExponentPushToken[a]");
         assert_eq!(m["categoryId"], "runners");
@@ -1248,6 +1470,7 @@ mod tests {
             data: json!({}),
             runner: None,
             channel: None,
+            sound: None,
         })
         .await
         .unwrap();

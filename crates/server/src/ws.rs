@@ -314,7 +314,7 @@
 //! - server `alert.fired {event, phoneToday}` and `alert.held {event}` as they happen, to EVERY
 //!   connection; `alert.updated {event}` when a recorded event changes (a phone push that failed
 //!   after it was recorded); `alerts.status {phoneToday, phoneBudget, devices, dropped}`.
-//! - client `push.register {token, platform?, name?, runnersNew?, runnersBreakout?, runnersBurst?, runnersRunning?, runnersRun?, runnersFast?, runnersShelf?, runnersFollowUp?, rossCrossing?, signalsCrossing?, rossTrigger?, signalsTrigger?, haltWatch?}`: this
+//! - client `push.register {token, platform?, name?, runnersNew?, runnersBreakout?, runnersBurst?, runnersRunning?, runnersRun?, runnersFast?, runnersShelf?, runnersFollowUp?, rossCrossing?, signalsCrossing?, rossTrigger?, signalsTrigger?, haltWatch?, halted?, resumed?, haltedSound?, resumedSound?, haltSounds?}`: this
 //!   phone's Expo push token, kept by the server for phone notifications and never sent to other
 //!   clients, with its Runners push opt-ins (crate::alerts::runners; an absent one keeps what the
 //!   phone had; for a new phone breakouts off, the rest on); a malformed token gets
@@ -322,11 +322,16 @@
 //!   `alerts.status` frame's `devices` count moves).
 //! - The rules themselves are the synced `alerts` namespace (settings.* above).
 //! - client `runners.notify {enabled?, new?, breakout?, burst?, running?, run?, fast?, shelf?,
-//!   followUp?, rossCrossing?, signalsCrossing?, rossTrigger?, signalsTrigger?, halt?}`: this
-//!   desktop or web connection shows Runners, Ross, Signals and Halt watcher system notifications
-//!   for those kinds (absent = the phone's default: breakouts, "At trigger" and the Halt watcher
-//!   off, the rest on; `enabled: false` stops). Per connection, for
-//!   as long as the socket lives; resend after a reconnect. No reply.
+//!   followUp?, rossCrossing?, signalsCrossing?, rossTrigger?, signalsTrigger?, halt?, halted?,
+//!   resumed?}`: this desktop or web connection shows Runners, Ross, Signals, Halt watcher and
+//!   exchange halt (crate::alerts::halts) notifications for those kinds (absent = the phone's
+//!   default: breakouts, "At trigger" and the Halt watcher off, the rest on; `enabled: false`
+//!   stops). Per connection, for as long as the socket lives; resend after a reconnect. No reply.
+//! - client `halts.test {event: "halted" | "resumed"}` (Settings → Alerts → Halts "Send test"):
+//!   answered on this connection only with a `runners.notice` for the made-up stock `TEST`, its
+//!   `data.test` true (crate::alerts::halts::test_notice). Nothing is decided or logged.
+//! - A live connection's `chart.subscribe` slots are the halt notices' "on a chart" coverage
+//!   (crate::alerts::Alerts::charts), for as long as the socket lives.
 //! - server `runners.notice {id, alertId, symbol, kind, title, body, data, at}` to EVERY
 //!   connection when the desk limits let a Runners notice through
 //!   (crate::alerts::runners::desk_frame): the phone push's own text. A client shows it only if
@@ -589,9 +594,16 @@ enum ClientMessage {
         #[serde(default)]
         fast: Option<bool>,
         /// `shelf`, `followUp`, `rossCrossing`, `signalsCrossing`, `rossTrigger`,
-        /// `signalsTrigger`, `halt` (crate::alerts::push::MoreOptIn).
+        /// `signalsTrigger`, `halt`, `halted`, `resumed` (crate::alerts::push::MoreOptIn).
         #[serde(flatten)]
         more: crate::alerts::push::MoreOptIn,
+    },
+    /// Settings → Alerts → Halts "Send test": answered with a `runners.notice` for a made-up stock
+    /// (`event`: "halted" | "resumed"), to this connection only (crate::alerts::halts::test_notice).
+    #[serde(rename = "halts.test")]
+    HaltsTest {
+        #[serde(default)]
+        event: String,
     },
 }
 
@@ -1423,6 +1435,10 @@ async fn session(mut socket: WebSocket, state: AppState) {
     let mut detection: Option<DetectionSub> = None;
     // Listed among the Runners notification desks while held (`runners.notify`).
     let mut desk: Option<crate::alerts::DeskGuard> = None;
+    // A live connection's chart symbols: part of the halt notices' coverage
+    // (crate::alerts::halts), refreshed after every client message and band drop.
+    let charts =
+        std::sync::Arc::ptr_eq(&market.0, &state.markets().live.0).then(|| alerts.charts());
 
     // Frames for this connection alone from spawned work (a refused Alpaca paper modify/cancel).
     let (direct_tx, mut direct_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -1570,6 +1586,9 @@ async fn session(mut socket: WebSocket, state: AppState) {
                         OutKind::Chart { symbol, .. } if !market.is_candidate(symbol) => {
                             let gone: Vec<String> = subs.iter().filter(|s| s.symbol == *symbol).map(|s| s.id.clone()).collect();
                             subs.retain(|s| s.symbol != *symbol);
+                            if let Some(g) = &charts {
+                                g.set(subs.iter().map(|s| s.symbol.as_str()));
+                            }
                             let mut ok = true;
                             for id in gone {
                                 let frame = chart_error(
@@ -2303,6 +2322,15 @@ async fn session(mut socket: WebSocket, state: AppState) {
                         }
                         None
                     }
+                    Ok(ClientMessage::HaltsTest { event }) => {
+                        // Settings "Send test" (crate::alerts::halts::test_notice): the real
+                        // frame and text, to this connection only.
+                        let n = crate::alerts::halts::test_notice(event == "resumed", chrono::Utc::now().timestamp_millis());
+                        if !send_text(&mut socket, crate::alerts::runners::desk_frame(&n)).await {
+                            break;
+                        }
+                        None
+                    }
                     Err(_) if let Some((ns, op_id)) = settings_frame_ids(&text) => {
                         let frame = settings_rejected(&ns, &op_id, "bad_request", "malformed settings message");
                         if !send_text(&mut socket, frame).await {
@@ -2319,6 +2347,9 @@ async fn session(mut socket: WebSocket, state: AppState) {
                         message: "unexpected message",
                     }),
                 };
+                if let Some(g) = &charts {
+                    g.set(subs.iter().map(|s| s.symbol.as_str()));
+                }
                 if let Some(reply) = reply
                     && !send(&mut socket, &reply).await
                 {

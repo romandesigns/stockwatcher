@@ -59,12 +59,13 @@ test("web: off until the switch asks for permission; the phone's defaults after"
   const { env } = webEnv();
   const n = createRunnersNotifier(env);
   expect(n.desktop).toBe(false);
-  expect(n.prefs()).toEqual({ enabled: false, kinds: { ...DEFAULT_RUNNERS_NOTIFY } });
+  expect(n.prefs()).toEqual({ enabled: false, kinds: { ...DEFAULT_RUNNERS_NOTIFY }, haltSounds: { halted: "siren", resumed: "chime" } });
   expect(n.prefs().kinds.breakout).toBe(false);
-  expect(n.notifyMessage()).toBeNull();
+  // Without system notifications, only the exchange halts (their sound and an in-app toast).
+  expect(n.notifyMessage()).toEqual({ type: "runners.notify", enabled: true, new: false, breakout: false, burst: false, running: false, run: false, fast: false, shelf: false, followUp: false, rossCrossing: false, signalsCrossing: false, rossTrigger: false, signalsTrigger: false, halt: false, pullback: false, halted: true, resumed: true });
   expect(n.handle(notice)).toBe(false);
   expect(await n.enable()).toBe(true);
-  expect(n.notifyMessage()).toEqual({ type: "runners.notify", enabled: true, new: true, breakout: false, burst: true, running: true, run: true, fast: true, shelf: true, followUp: true, rossCrossing: true, signalsCrossing: true, rossTrigger: false, signalsTrigger: false, halt: false, pullback: true });
+  expect(n.notifyMessage()).toEqual({ type: "runners.notify", enabled: true, new: true, breakout: false, burst: true, running: true, run: true, fast: true, shelf: true, followUp: true, rossCrossing: true, signalsCrossing: true, rossTrigger: false, signalsTrigger: false, halt: false, pullback: true, halted: true, resumed: true });
   // Remembered on this device.
   expect(createRunnersNotifier(env).prefs().enabled).toBe(true);
 });
@@ -165,7 +166,64 @@ test("desktop shell: on by default, shown through its command, switches resent t
   detach();
   n.setPrefs({ ...n.prefs(), enabled: false });
   expect(refreshed).toBe(1);
+  expect(n.notifyMessage()).toMatchObject({ new: false, fast: false, halted: true, resumed: true });
+  n.setPrefs({ ...n.prefs(), kinds: { ...n.prefs().kinds, halted: false, resumed: false } });
   expect(n.notifyMessage()).toBeNull();
+});
+
+/** Exchange halts (plan "halt sounds", 2026-11-16): the device's sound, with or without system notifications. */
+test("halts play this device's sound; without notifications they toast, and a locked page says how to allow sound", async () => {
+  const halted: RunnersNoticeMessage = { ...notice, id: "runners-halted-XLAB-halt-1", alertId: "XLAB-halt-1", symbol: "XLAB", kind: "halt.halted", title: "XLAB · Halted · $2.76", body: "LULD pause · +42.3% on the day", data: { symbol: "XLAB", kind: "halt.halted", sound: "siren" } };
+  const resumed: RunnersNoticeMessage = { ...halted, id: "runners-resumed-XLAB-halt-1", kind: "halt.resumed", title: "XLAB · Resumed · $3.10", body: "Halted 2 min · +12.3% from $2.76", data: { symbol: "XLAB", kind: "halt.resumed", sound: "chime" } };
+  const played: string[] = [];
+  const toasts: [string, boolean][] = [];
+  let unlocked = true;
+  const { env } = webEnv({ playHalt: (k) => (unlocked && k !== "none" ? (played.push(k), true) : false), soundUnlocked: () => unlocked, toast: (m, locked) => void toasts.push([m.id, locked]) });
+  const n = createRunnersNotifier(env);
+  // Notifications off: the sound and a toast, once per event.
+  expect(n.handle(halted)).toBe(true);
+  expect(n.handle(halted)).toBe(false);
+  expect(played).toEqual(["siren"]);
+  expect(toasts).toEqual([[halted.id, false]]);
+  expect(FakeNotification.shown).toHaveLength(0);
+  // The device's own pick for Resumed; the page has not had its click: the toast says so.
+  n.setPrefs({ ...n.prefs(), haltSounds: { halted: "siren", resumed: "ding" } });
+  expect(createRunnersNotifier(env).prefs().haltSounds).toEqual({ halted: "siren", resumed: "ding" });
+  unlocked = false;
+  expect(n.handle(resumed)).toBe(true);
+  expect(toasts.at(-1)).toEqual([resumed.id, true]);
+  unlocked = true;
+  // With notifications on: a silent system notification (the sound is ours), no toast.
+  await n.enable();
+  expect(n.handle({ ...halted, id: "runners-halted-XLAB-halt-2" })).toBe(true);
+  expect(played).toEqual(["siren", "siren"]);
+  expect(FakeNotification.shown.at(-1)!.opts.silent).toBe(true);
+  expect(toasts).toHaveLength(2);
+  // "None" plays nothing and is not a locked sound.
+  n.setPrefs({ ...n.prefs(), haltSounds: { halted: "none", resumed: "ding" } });
+  expect(n.handle({ ...halted, id: "runners-halted-XLAB-halt-3" })).toBe(true);
+  expect(played).toEqual(["siren", "siren"]);
+  // A switched-off event is not shown; the Settings test always is, and opens no chart.
+  n.setPrefs({ ...n.prefs(), kinds: { ...n.prefs().kinds, halted: false } });
+  expect(n.handle({ ...halted, id: "runners-halted-XLAB-halt-4" })).toBe(false);
+  const test1: RunnersNoticeMessage = { ...halted, id: "runners-halted-test-1", symbol: "TEST", data: { symbol: "TEST", kind: "halt.halted", sound: "siren", test: true } };
+  expect(n.handle(test1)).toBe(true);
+  FakeNotification.shown.at(-1)!.onclick?.({ preventDefault() {} });
+});
+
+test("Send test goes out on an attached connection", () => {
+  const { env } = webEnv();
+  const n = createRunnersNotifier(env);
+  expect(n.sendHaltTest("halted")).toBe(false);
+  const sent: unknown[] = [];
+  const detach = n.attach(
+    () => {},
+    (m) => (sent.push(m), true),
+  );
+  expect(n.sendHaltTest("resumed")).toBe(true);
+  expect(sent).toEqual([{ type: "halts.test", event: "resumed" }]);
+  detach();
+  expect(n.sendHaltTest("halted")).toBe(false);
 });
 
 /**

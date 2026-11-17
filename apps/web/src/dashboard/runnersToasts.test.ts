@@ -10,7 +10,7 @@ test("a server's runners.event is the toast, in the same words", () => {
 });
 
 test("a system notification for the kind stands the toast down; a kind switched off still toasts", () => {
-  const notifier = (active: boolean, breakout: boolean) => ({ active: () => active, prefs: () => ({ enabled: active, kinds: { breakout, new: true } as never }) });
+  const notifier = (active: boolean, breakout: boolean) => ({ active: () => active, prefs: () => ({ enabled: active, kinds: { breakout, new: true } as never, haltSounds: { halted: "siren" as const, resumed: "chime" as const } }) });
   expect(toastStandsDown("new", notifier(true, false))).toBe(true);
   expect(toastStandsDown("breakout", notifier(true, false))).toBe(false);
   expect(toastStandsDown("new", notifier(false, true))).toBe(false);

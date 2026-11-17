@@ -172,7 +172,10 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
   });
 
   // The switches changed (Settings → Runners): tell the server on this connection.
-  const detachNotifier = opts.notifier?.attach(() => client.refreshRunnersNotify());
+  const detachNotifier = opts.notifier?.attach(
+    () => client.refreshRunnersNotify(),
+    (m) => client.send(m),
+  );
 
   // Back to the page (tab shown again, laptop awake) or the network back: the connection may have
   // died meanwhile without closing, so check it now instead of 37.5 s from now (shared ws.ts

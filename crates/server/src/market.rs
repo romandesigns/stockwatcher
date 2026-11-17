@@ -3573,6 +3573,14 @@ impl Market {
         self.0.rocket_subs.load(Ordering::Relaxed)
     }
 
+    /// Whether `symbol` has a row on today's Runners board (the board clears its rows at the day
+    /// roll): part of the halt notices' coverage (`crate::alerts::halts`). Asked only at a halt or
+    /// resume status, so the core lock is taken a handful of times a day.
+    pub fn on_runners_board(&self, symbol: &str) -> bool {
+        let core = self.0.core.lock().expect("core lock");
+        core.rocket.alerts().iter().any(|a| &*a.symbol == symbol)
+    }
+
     /// The Rocket watch panel as a `rocket.snapshot` frame, with the engine seq it is consistent
     /// with (`enabled: false` with `ROCKET_WATCH=0`). Every row carries its whole day line.
     pub fn rocket_snapshot(&self) -> (u64, String) {

@@ -12,9 +12,18 @@
 //
 // 16-bit mono PCM at 22.05 kHz, a triangle wave with an 8 ms attack and 40 ms release (the web's
 // envelope), 13–27 KB each.
+//
+// It also renders the halt notices' sound library (app-state HALT_SOUNDS, plan "halt sounds",
+// 2026-11-16) to assets/sounds/halt_<key>.wav, with renderSound: the same scores the web plays
+// (sine or triangle, linear glides, chords as equal partials, the flat or bell envelope of
+// apps/web src/alerts/sound.ts `playNotes`), 10–36 KB each. Synthesized from the scores alone, so
+// original and licence-clean. Release 1 only commits them: app.config.ts does not list them yet,
+// so they are not in the build (and the native fingerprint does not move). Release 2 adds them to
+// the expo-notifications plugin's `sounds` and creates one `halt-<key>-v1` channel per sound
+// (crates/server/src/alerts/push.rs `halt_channel`; the push names `halt_<key>.wav` for iOS).
 
 import { writeFileSync } from "node:fs";
-import { ALERT_TONES } from "@stockwatcher/app-state";
+import { ALERT_TONES, HALT_SOUND_KEYS, HALT_SOUNDS, type SoundNote } from "@stockwatcher/app-state";
 
 export const RATE = 22_050;
 const ATTACK = 0.008;
@@ -44,6 +53,40 @@ export function renderTone(notes: readonly { hz: number; ms: number }[]): Float3
   return out;
 }
 
+/** The bell envelope's attack and its decay floor (the web's BELL_ATTACK, BELL_FLOOR). */
+const BELL_ATTACK = 0.005;
+const BELL_FLOOR = 0.001;
+
+/** A score's samples, -1..1: playNotes' sound (apps/web src/alerts/sound.ts) as a file. */
+export function renderSound(notes: readonly SoundNote[]): Float32Array {
+  const lens = notes.map((n) => Math.round((n.ms / 1000) * RATE));
+  const out = new Float32Array(lens.reduce((a, b) => a + b, 0) + Math.round(0.02 * RATE));
+  let at = 0;
+  notes.forEach((n, k) => {
+    const len = lens[k]!;
+    const freqs = (Array.isArray(n.hz) ? n.hz : [n.hz]).filter((f) => f > 0);
+    const dur = len / RATE;
+    const level = (PEAK * (n.gain ?? 1)) / Math.max(1, freqs.length);
+    freqs.forEach((f0) => {
+      // Phase accumulates, so a glide's pitch moves without jumps.
+      let phase = 0;
+      for (let i = 0; i < len; i++) {
+        const t = i / RATE;
+        const f = n.to && freqs.length === 1 ? f0 + ((n.to - f0) * t) / dur : f0;
+        const env = n.env === "bell" ? (t < BELL_ATTACK ? t / BELL_ATTACK : BELL_FLOOR ** ((t - BELL_ATTACK) / (dur - BELL_ATTACK))) : Math.max(0, Math.min(1, t / ATTACK, (dur - t) / RELEASE));
+        const v = n.wave === "sine" ? Math.sin(2 * Math.PI * phase) : tri(phase);
+        out[at + i]! += level * env * v;
+        phase = (phase + f / RATE) % 1;
+      }
+    });
+    at += len;
+  });
+  return out;
+}
+
+/** A halt sound's file name (the server's push.rs `halt_ios_sound`). */
+export const haltSoundFile = (key: string) => `halt_${key}.wav`;
+
 /** A RIFF/WAVE file of 16-bit mono PCM. */
 export function wav(samples: Float32Array, rate = RATE): Uint8Array {
   const data = samples.length * 2;
@@ -70,6 +113,13 @@ if (import.meta.main) {
   for (const tone of ["up", "down", "stop"] as const) {
     const file = new URL(`../assets/sounds/drawing_${tone}.wav`, import.meta.url);
     const bytes = wav(renderTone(ALERT_TONES[tone]));
+    writeFileSync(file, bytes);
+    console.log(`${file.pathname}: ${bytes.length} bytes`);
+  }
+  for (const key of HALT_SOUND_KEYS) {
+    if (key === "none") continue;
+    const file = new URL(`../assets/sounds/${haltSoundFile(key)}`, import.meta.url);
+    const bytes = wav(renderSound(HALT_SOUNDS[key]));
     writeFileSync(file, bytes);
     console.log(`${file.pathname}: ${bytes.length} bytes`);
   }

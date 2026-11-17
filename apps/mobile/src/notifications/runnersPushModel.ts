@@ -18,6 +18,9 @@ export interface RunnersPushPrefs {
   pushSignalsTrigger: boolean;
   pushHalt: boolean;
   pushPullback: boolean;
+  /** Exchange halts / resumptions of a covered stock (plan "halt sounds", 2026-11-16). */
+  pushHalted: boolean;
+  pushResumed: boolean;
 }
 
 export const RUNNERS_PUSH_DEFAULTS: RunnersPushPrefs = {
@@ -36,6 +39,10 @@ export const RUNNERS_PUSH_DEFAULTS: RunnersPushPrefs = {
   pushHalt: false,
   // "Pullback setting up": on, the owner asked for it (2026-10-25); the server's default too.
   pushPullback: true,
+  // Exchange halts: on (the server's default too). Release 1 rings with the phone's default
+  // sound; the picked sound needs release 2's APK (its halt channels).
+  pushHalted: true,
+  pushResumed: true,
 };
 
 /** The phone pref behind each shared switch (packages/shared `ALERT_SWITCH_SECTIONS`). */
@@ -54,6 +61,8 @@ export const PUSH_PREF_OF: Readonly<Record<keyof RunnersNotifyKinds, keyof Runne
   signalsTrigger: "pushSignalsTrigger",
   halt: "pushHalt",
   pullback: "pushPullback",
+  halted: "pushHalted",
+  resumed: "pushResumed",
 };
 
 /**
@@ -83,6 +92,8 @@ export interface RunnersRegisterFields {
   signalsTrigger: boolean;
   haltWatch: boolean;
   runnersPullback: boolean;
+  halted: boolean;
+  resumed: boolean;
 }
 
 export function registerFieldsOf(p: RunnersPushPrefs): RunnersRegisterFields {
@@ -101,5 +112,7 @@ export function registerFieldsOf(p: RunnersPushPrefs): RunnersRegisterFields {
     signalsTrigger: p.pushSignalsTrigger,
     haltWatch: p.pushHalt,
     runnersPullback: p.pushPullback,
+    halted: p.pushHalted,
+    resumed: p.pushResumed,
   };
 }

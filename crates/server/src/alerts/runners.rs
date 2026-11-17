@@ -35,6 +35,10 @@
 //!   switch) and a Halt watcher gauge appearing ([`NoticeKind::Halt`], off). The data's `kind`
 //!   is [`data_kind`] (`ross.crossing`, `signals.trigger`, `halt.watch`, …), every push the
 //!   same "runners" category.
+//! - **Exchange halts** (plan "halt sounds", 2026-11-16): a covered stock's Halted and Resumed
+//!   ([`NoticeKind::Halted`], [`NoticeKind::Resumed`], both on; `halt.halted` / `halt.resumed`)
+//!   come from `super::halts` and take this same delivery and these same limits; their text is
+//!   `trading_message`'s, without the reference line.
 //! - **Every distinct event is delivered** (owner, 2026-10-30: "I don't want to keep missing
 //!   alerts because they weren't delivered to my phone"). Each notice with an
 //!   [`crate::rocket::Notice::event_id`] not sent before goes to every recipient whose switch for
@@ -349,6 +353,9 @@ pub fn data_kind(kind: NoticeKind) -> &'static str {
         NoticeKind::Halt => "halt.watch",
         // One switch for both stages; the data's `stage` tells them apart.
         NoticeKind::Pullback | NoticeKind::PullbackCrossing => "runners.pullback",
+        // Exchange halts (`super::halts`): not a Runners kind, but the same delivery and frame.
+        NoticeKind::Halted => "halt.halted",
+        NoticeKind::Resumed => "halt.resumed",
     }
 }
 
@@ -373,8 +380,78 @@ pub fn message(n: &Notice) -> (String, String, Value) {
         | NoticeKind::Running
         | NoticeKind::Run
         | NoticeKind::Fast => runner_message(n),
+        NoticeKind::Halted | NoticeKind::Resumed => trading_message(n),
         _ => panel_message(n),
     }
+}
+
+/// "5 min", "45 s", "1 h 12 min": a halt's length.
+fn duration(ms: i64) -> String {
+    let s = (ms.max(0) + 500) / 1000;
+    if s < 60 {
+        format!("{s} s")
+    } else if s < 3600 {
+        format!("{} min", (s + 30) / 60)
+    } else {
+        let m = (s + 30) / 60;
+        format!("{} h {} min", m / 60, m % 60)
+    }
+}
+
+/// An exchange halt or resumption (`super::halts`; plan "halt sounds", 2026-11-16):
+/// "XLAB · Halted · $2.76" over "LULD pause · +42.3% on the day", and "XLAB · Resumed · $3.10"
+/// over "Halted 5 min · +12.3% from $2.76". No reference line: there is no entry to price, the
+/// news is the trading state. A fact the server does not know is left out, never guessed. The
+/// data's `sound` is the event's default sound key (a phone's push carries its own choice).
+fn trading_message(n: &Notice) -> (String, String, Value) {
+    let halted = n.kind == NoticeKind::Halted;
+    let title = format!(
+        "{} · {}{}",
+        n.symbol,
+        if halted { "Halted" } else { "Resumed" },
+        title_price(n.price)
+    );
+    let t = match &n.detail {
+        Some(NoticeDetail::Trading(t)) => Some(t),
+        _ => None,
+    };
+    let mut parts: Vec<String> = Vec::new();
+    if halted {
+        parts.push(t.map_or_else(|| "Trading halt".to_owned(), |t| t.reason.clone()));
+        if let Some(p) = t.and_then(|t| t.day_pct).filter(|p| p.is_finite()) {
+            parts.push(format!("{p:+.1}% on the day"));
+        }
+    } else if let Some(t) = t {
+        if let Some(ms) = t.halted_ms {
+            parts.push(format!("Halted {}", duration(ms)));
+        }
+        if t.no_print {
+            parts.push("no print yet".to_owned());
+        } else if let Some(h) = t.halt_price.filter(|h| h.is_finite() && *h > 0.0)
+            && n.price.is_finite()
+            && n.price > 0.0
+        {
+            let h = on_tick(h);
+            parts.push(format!(
+                "{:+.1}% from {}",
+                (on_tick(n.price) / h - 1.0) * 100.0,
+                dollars(h)
+            ));
+        }
+    }
+    if parts.is_empty() {
+        parts.push("Trading resumed".to_owned());
+    }
+    let mut data = json!({
+        "symbol": n.symbol,
+        "kind": data_kind(n.kind),
+        "alert_id": n.alert_id,
+        "sound": t.map_or(if halted { super::halts::DEFAULT_HALTED_SOUND } else { super::halts::DEFAULT_RESUMED_SOUND }, |t| t.sound),
+    });
+    if t.is_some_and(|t| t.test) {
+        data["test"] = Value::Bool(true);
+    }
+    (title, parts.join(" · "), data)
 }
 
 /// " · $2.45", or nothing without a usable price.
@@ -1220,6 +1297,92 @@ Alert $2.41 · +5% = $2.53"
         n
     }
 
+    /// The halt notices' text (plan "halt sounds", 2026-11-16): "SYM · Halted · $price" over the
+    /// reason and the day's move; "SYM · Resumed · $price" over the halt's length and the change
+    /// from the halt price. What the server does not know is left out.
+    #[test]
+    fn halt_texts() {
+        use crate::rocket::TradingNotice;
+        let n = |kind, price: f64, t: TradingNotice| Notice {
+            price,
+            detail: Some(NoticeDetail::Trading(t)),
+            ..Notice::test(kind, "XLAB")
+        };
+        let base = TradingNotice {
+            reason: "LULD pause".into(),
+            day_pct: Some(42.27),
+            halt_price: Some(2.76),
+            halted_ms: None,
+            no_print: false,
+            sound: "siren",
+            test: false,
+        };
+        let (title, body, data) = message(&n(NoticeKind::Halted, 2.76, base.clone()));
+        assert_eq!(title, "XLAB · Halted · $2.76");
+        assert_eq!(body, "LULD pause · +42.3% on the day");
+        assert_eq!(data["kind"], "halt.halted");
+        assert_eq!(data["sound"], "siren");
+        assert!(data.get("test").is_none());
+        // No previous close: no day's move. A sub-dollar stock keeps four places.
+        let (title, body, _) = message(&n(
+            NoticeKind::Halted,
+            0.4321,
+            TradingNotice {
+                reason: "News pending".into(),
+                day_pct: None,
+                ..base.clone()
+            },
+        ));
+        assert_eq!(title, "XLAB · Halted · $0.4321");
+        assert_eq!(body, "News pending");
+        let resumed = TradingNotice {
+            day_pct: None,
+            halted_ms: Some(5 * 60_000 + 10_000),
+            sound: "chime",
+            ..base.clone()
+        };
+        let (title, body, data) = message(&n(NoticeKind::Resumed, 3.10, resumed.clone()));
+        assert_eq!(title, "XLAB · Resumed · $3.10");
+        assert_eq!(body, "Halted 5 min · +12.3% from $2.76");
+        assert_eq!(data["kind"], "halt.resumed");
+        assert_eq!(data["sound"], "chime");
+        let (_, body, _) = message(&n(
+            NoticeKind::Resumed,
+            2.76,
+            TradingNotice {
+                no_print: true,
+                halted_ms: Some(45_000),
+                ..resumed.clone()
+            },
+        ));
+        assert_eq!(body, "Halted 45 s · no print yet");
+        let (_, body, _) = message(&n(
+            NoticeKind::Resumed,
+            1.5,
+            TradingNotice {
+                halted_ms: Some(72 * 60_000),
+                halt_price: Some(2.0),
+                ..resumed
+            },
+        ));
+        assert_eq!(body, "Halted 1 h 12 min · -25.0% from $2.00");
+        // The Settings test: the same frame, flagged so a click opens no chart.
+        let t = crate::alerts::halts::test_notice(false, 1_763_300_000_000);
+        let f: Value = serde_json::from_str(&desk_frame(&t)).unwrap();
+        assert_eq!(f["type"], "runners.notice");
+        assert_eq!(f["kind"], "halt.halted");
+        assert_eq!(f["data"]["test"], true);
+        assert_eq!(f["title"], "TEST · Halted · $2.76");
+        assert_ne!(
+            f["id"],
+            serde_json::from_str::<Value>(&desk_frame(&crate::alerts::halts::test_notice(
+                false,
+                1_763_300_001_000
+            )))
+            .unwrap()["id"]
+        );
+    }
+
     /// Review of 75d6418: a shelf under $0.15 (outside the shelf research) quotes no odds.
     #[test]
     fn shelf_odds_only_where_they_were_measured() {
@@ -1248,8 +1411,10 @@ Alert $2.41 · +5% = $2.53"
             assert_eq!(data["symbol"], "YMAT");
             assert_eq!(data["alert_id"], n.alert_id.as_str());
             assert!(title.contains("YMAT"), "{kind:?}: {title}");
+            // Exchange halts carry no reference line: there is no entry to price (trading_message).
+            let halts = matches!(kind, NoticeKind::Halted | NoticeKind::Resumed);
             assert!(
-                body.ends_with("Alert $2.71 · +5% = $2.85"),
+                halts || body.ends_with("Alert $2.71 · +5% = $2.85"),
                 "{kind:?}: {body}"
             );
             assert!(body.chars().count() <= MAX_BODY_CHARS, "{kind:?}: {body}");

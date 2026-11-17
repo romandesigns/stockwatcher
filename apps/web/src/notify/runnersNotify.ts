@@ -20,9 +20,20 @@
 //   (dashboard/runnersToasts.ts), so one event never shows twice, focused or not.
 //
 // Closed-tab Web Push (a service worker + VAPID, RFC 8030/8292) is not built: see the commit.
+//
+// Exchange halts (plan "halt sounds", 2026-11-16): a `halt.halted` / `halt.resumed` notice also
+// plays the sound this device picked for it (Settings → Alerts → Halts; per device, like the
+// switches; app-state HALT_SOUNDS), at the alert sounds' synced volume, muted by their global
+// switch. Halts do not need system notifications: with them off (or refused by the browser) the
+// connection still opts in to the two halt kinds, and a halt plays its sound and shows an in-app
+// toast. A browser that has not had its click yet cannot play audio: the toast then says so.
 
-import { createNoticeDedupe, DEFAULT_RUNNERS_NOTIFY, runnersNoticeChartContext, runnersNotifyKinds, shouldShowNotice, type NoticeChartContext, type RunnersNoticeMessage, type RunnersNotifyKinds, type RunnersNotifyMessage } from "@stockwatcher/shared";
+import { haltSounds, type HaltEvent, type HaltSoundKey } from "@stockwatcher/app-state";
+import { createNoticeDedupe, DEFAULT_RUNNERS_NOTIFY, isHaltNotice, runnersNoticeChartContext, runnersNotifyKinds, shouldShowNotice, type ClientMessage, type NoticeChartContext, type RunnersNoticeMessage, type RunnersNotifyKinds, type RunnersNotifyMessage } from "@stockwatcher/shared";
+import { alertSoundUnlocked, playHaltSound } from "../alerts/sound.ts";
+import { showToast } from "../lib/toastStore.ts";
 import { openTickerChart } from "../nav/openTicker.ts";
+import { getAppStore } from "../state/store.ts";
 
 const PREFS_KEY = "sw-runners-notify";
 const SEEN_KEY = "sw-runners-notify:seen";
@@ -33,6 +44,8 @@ export interface RunnersNotifyPrefs {
   /** System notifications on for this device. */
   enabled: boolean;
   kinds: RunnersNotifyKinds;
+  /** The sound this device plays for each halt event (absent in older stored prefs: the defaults). */
+  haltSounds: Record<HaltEvent, HaltSoundKey>;
 }
 
 /** The surface the notifier needs from the page, so tests can supply their own. */
@@ -44,6 +57,12 @@ export interface NotifyEnv {
   Notification: typeof Notification | null;
   focus: () => void;
   openChart: (symbol: string, noticeContext?: NoticeChartContext) => void;
+  /** Plays a halt sound at the alert sounds' volume; false when muted, "none", locked or unavailable. */
+  playHalt?: (key: HaltSoundKey) => boolean;
+  /** Whether the page may play audio yet (the browser's one click). */
+  soundUnlocked?: () => boolean;
+  /** An in-app toast for a halt notice shown without a system notification, or whose sound was locked. */
+  toast?: (m: RunnersNoticeMessage, locked: boolean) => void;
 }
 
 type Tauri = { invoke: (cmd: string, args: Record<string, unknown>) => Promise<unknown> };
@@ -63,8 +82,20 @@ function browserEnv(): NotifyEnv {
     Notification: typeof Notification === "undefined" ? null : Notification,
     focus: () => w?.focus(),
     openChart: openTickerChart,
+    playHalt: (key) => {
+      const { on, volume } = getAppStore().getState().alertPrefs.sound;
+      return on && playHaltSound(key, volume);
+    },
+    soundUnlocked: alertSoundUnlocked,
+    toast: (m, locked) => {
+      const test = m.data?.test === true;
+      showToast(`${m.title} · ${m.body}${locked ? " · click anywhere to allow alert sounds" : ""}`, { icon: "bell", ms: 8000, ...(test ? {} : { action: { label: "Chart", run: () => openTickerChart(m.symbol) } }) });
+    },
   };
 }
+
+/** The halt event a notice is about. */
+export const haltEventOf = (kind: string): HaltEvent => (kind === "halt.resumed" ? "resumed" : "halted");
 
 /**
  * A click's destination: the dashboard, with the ticker loaded into its selected chart: the app's
@@ -92,8 +123,10 @@ export interface RunnersNotifier {
   notifyMessage(): RunnersNotifyMessage | null;
   /** One `runners.notice` frame: shown when its switch is on and it is new here. */
   handle(m: RunnersNoticeMessage): boolean;
-  /** Connections to re-send the opt-in to when the switches change. */
-  attach(refresh: () => void): () => void;
+  /** Connections to re-send the opt-in to when the switches change, and to send `halts.test` on. */
+  attach(refresh: () => void, send?: (m: ClientMessage) => boolean): () => void;
+  /** Settings "Send test": asks the server for a real test notice of `event` (false: no connection). */
+  sendHaltTest(event: HaltEvent): boolean;
   readonly desktop: boolean;
 }
 
@@ -110,11 +143,12 @@ export function createRunnersNotifier(env: NotifyEnv = browserEnv()): RunnersNot
     const o = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
     // The desktop shell notifies by default (it needs no permission, like the phone); the browser
     // waits for the switch, because only a click may ask for its permission.
-    return { enabled: typeof o.enabled === "boolean" ? o.enabled : desktop, kinds: runnersNotifyKinds(o.kinds) };
+    return { enabled: typeof o.enabled === "boolean" ? o.enabled : desktop, kinds: runnersNotifyKinds(o.kinds), haltSounds: haltSounds(o.haltSounds) };
   };
   let prefs = read();
   const listeners = new Set<() => void>();
   const refreshers = new Set<() => void>();
+  const senders = new Set<(m: ClientMessage) => boolean>();
   const dedupe = createNoticeDedupe({
     load: () => {
       const s = env.storage?.getItem(SEEN_KEY);
@@ -125,6 +159,8 @@ export function createRunnersNotifier(env: NotifyEnv = browserEnv()): RunnersNot
   });
   const permission = (): NotificationPermission | "unsupported" => (desktop ? "granted" : env.Notification ? env.Notification.permission : "unsupported");
   const active = () => prefs.enabled && permission() === "granted";
+  // Halts reach this device even without system notifications (module docs).
+  const haltsWanted = () => prefs.kinds.halted || prefs.kinds.resumed;
   const changed = () => {
     for (const l of listeners) l();
     for (const r of refreshers) r();
@@ -134,6 +170,8 @@ export function createRunnersNotifier(env: NotifyEnv = browserEnv()): RunnersNot
   // (server alerts/runners.rs, "Every distinct event is delivered").
   const show = (m: RunnersNoticeMessage) => {
     const noticeContext = runnersNoticeChartContext(m);
+    const halt = isHaltNotice(m.kind);
+    const test = m.data?.test === true;
     if (env.invoke) {
       void env.invoke("runners_notify", { id: m.id, title: m.title, body: m.body, symbol: m.symbol, ...(noticeContext ? { noticeContext } : {}) }).catch(() => {});
       return;
@@ -141,12 +179,16 @@ export function createRunnersNotifier(env: NotifyEnv = browserEnv()): RunnersNot
     const N = env.Notification;
     if (!N) return;
     try {
-      const n = new N(m.title, { body: m.body, icon: NOTIFY_ICON, badge: NOTIFY_ICON, tag: m.id, data: { symbol: m.symbol } });
+      // A halt plays its own sound (the device's pick), so the browser's is silenced.
+      const n = new N(m.title, { body: m.body, icon: NOTIFY_ICON, badge: NOTIFY_ICON, tag: m.id, data: { symbol: m.symbol }, ...(halt ? { silent: true } : {}) });
       n.onclick = (e) => {
         e.preventDefault();
         env.focus();
-        if (noticeContext) env.openChart(m.symbol, noticeContext);
-        else env.openChart(m.symbol);
+        // The Settings test is about no real stock.
+        if (!test) {
+          if (noticeContext) env.openChart(m.symbol, noticeContext);
+          else env.openChart(m.symbol);
+        }
         n.close();
       };
     } catch {
@@ -158,7 +200,7 @@ export function createRunnersNotifier(env: NotifyEnv = browserEnv()): RunnersNot
     desktop,
     prefs: () => prefs,
     setPrefs(next) {
-      prefs = { enabled: next.enabled, kinds: { ...next.kinds } };
+      prefs = { enabled: next.enabled, kinds: { ...next.kinds }, haltSounds: { ...(next.haltSounds ?? prefs.haltSounds) } };
       try {
         env.storage?.setItem(PREFS_KEY, JSON.stringify(prefs));
       } catch {
@@ -182,16 +224,46 @@ export function createRunnersNotifier(env: NotifyEnv = browserEnv()): RunnersNot
       return true;
     },
     active,
-    notifyMessage: () => (active() ? { type: "runners.notify", enabled: true, ...prefs.kinds } : null),
+    notifyMessage: () => {
+      if (active()) return { type: "runners.notify", enabled: true, ...prefs.kinds };
+      // System notifications off: only the halts, for their sound and toast.
+      if (!haltsWanted()) return null;
+      const none = Object.fromEntries(Object.keys(prefs.kinds).map((k) => [k, false])) as unknown as RunnersNotifyKinds;
+      return { type: "runners.notify", enabled: true, ...none, halted: prefs.kinds.halted, resumed: prefs.kinds.resumed };
+    },
     handle(m) {
-      if (!active()) return false;
-      if (!shouldShowNotice(m, prefs.kinds, dedupe)) return false;
-      show(m);
+      const halt = isHaltNotice(m.kind);
+      if (!active() && !(halt && haltsWanted())) return false;
+      // A Settings test is shown whatever its switch says (its id is new every time).
+      const test = halt && m.data?.test === true;
+      if (!test && !shouldShowNotice(m, prefs.kinds, dedupe)) return false;
+      if (!halt) {
+        show(m);
+        return true;
+      }
+      const key = prefs.haltSounds[haltEventOf(m.kind)];
+      const played = env.playHalt?.(key) ?? false;
+      // A sound that should have played, but the page has not had its click yet.
+      const locked = !played && key !== "none" && env.soundUnlocked?.() === false;
+      if (active()) {
+        show(m);
+        if (locked) env.toast?.(m, true);
+      } else {
+        env.toast?.(m, locked);
+      }
       return true;
     },
-    attach(refresh) {
+    attach(refresh, send) {
       refreshers.add(refresh);
-      return () => refreshers.delete(refresh);
+      if (send) senders.add(send);
+      return () => {
+        refreshers.delete(refresh);
+        if (send) senders.delete(send);
+      };
+    },
+    sendHaltTest(event) {
+      for (const send of senders) if (send({ type: "halts.test", event })) return true;
+      return false;
     },
   };
 }

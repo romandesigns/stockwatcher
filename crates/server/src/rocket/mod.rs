@@ -207,6 +207,11 @@ pub enum NoticeKind {
     /// [`NoticeKind::Pullback`]. Never for a Ross member, whose crossing is
     /// [`NoticeKind::RossCrossing`] already.
     PullbackCrossing,
+    /// The exchange halted trading in a covered stock (`crate::alerts::halts`: the SIP
+    /// trading-status feed, not the Halt watcher's forecast). On by default.
+    Halted,
+    /// The same stock's trading resumed. On by default.
+    Resumed,
 }
 
 impl NoticeKind {
@@ -227,10 +232,12 @@ impl NoticeKind {
             NoticeKind::Halt => "halt",
             NoticeKind::Pullback => "pullback",
             NoticeKind::PullbackCrossing => "pullback_crossing",
+            NoticeKind::Halted => "halted",
+            NoticeKind::Resumed => "resumed",
         }
     }
 
-    pub const ALL: [NoticeKind; 15] = [
+    pub const ALL: [NoticeKind; 17] = [
         NoticeKind::New,
         NoticeKind::Breakout,
         NoticeKind::Burst,
@@ -246,6 +253,8 @@ impl NoticeKind {
         NoticeKind::Halt,
         NoticeKind::Pullback,
         NoticeKind::PullbackCrossing,
+        NoticeKind::Halted,
+        NoticeKind::Resumed,
     ];
 }
 
@@ -279,6 +288,31 @@ pub enum NoticeDetail {
     /// A stock's first Runners entry right after it rose through the entry floor: what the tape
     /// saw below it, one line ([`crossing`]).
     Crossing(String),
+    /// [`NoticeKind::Halted`] / [`NoticeKind::Resumed`] (`crate::alerts::halts`).
+    Trading(TradingNotice),
+}
+
+/// An exchange halt's or resumption's facts, from the trading-status feed and the stock's own
+/// eligible prints (`crate::alerts::halts`). A value the server does not know stays `None` and
+/// the text leaves it out (a resumption after a restart has no halt price or start).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TradingNotice {
+    /// The halt's reason as the text says it ("LULD pause", "News pending"), never empty.
+    pub reason: String,
+    /// % from the previous close at the halt price (Halted).
+    pub day_pct: Option<f64>,
+    /// The last eligible price before the halt (Resumed: what the change is measured from).
+    pub halt_price: Option<f64>,
+    /// How long trading was halted, ms (Resumed).
+    pub halted_ms: Option<i64>,
+    /// Resumed: no print came within the wait (`crate::alerts::halts::RESUME_WAIT_MS`), so the
+    /// title's price is still the halt price.
+    pub no_print: bool,
+    /// The sound key the clients map to a sound (`crate::alerts::halts::SOUNDS`): the event's
+    /// default here; a phone's own choice replaces it per device in its push.
+    pub sound: &'static str,
+    /// A Settings "Send test" notice: shown, never routed to a chart.
+    pub test: bool,
 }
 
 /// A pullback setup's facts, read off the MP5 episode's own anchors at arming (never invented:
