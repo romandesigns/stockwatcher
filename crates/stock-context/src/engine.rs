@@ -630,6 +630,11 @@ fn ceil_to(t: i64, step: i64) -> i64 {
 }
 
 impl Engine {
+    /// The evidence held (read-only): e.g. the latest float for the ticker search's Float chips.
+    pub fn evidence(&self) -> &EvidenceStore {
+        &self.evidence
+    }
+
     /// An engine with the Detection Panel off. The Ross rows' cues still come from the product
     /// detection policy ([`DetectionPolicy::current`]), run for the panel's members only.
     pub fn new(policy: Policy, run: RunInfo) -> Self {

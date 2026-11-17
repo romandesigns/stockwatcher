@@ -100,7 +100,17 @@ enum Chip {
     Nyse,
     Sim,
     Mock,
+    FloatUnder5m,
+    Float5To10m,
+    Float10To20m,
+    Float20mPlus,
+    Vol100kTo1m,
+    Vol1To10m,
+    Vol10mPlus,
 }
+
+/// Chip groups (packages/shared `TICKER_FILTER_GROUPS`): status, price, movers, exchange, float, volume.
+const GROUPS: usize = 6;
 
 impl Chip {
     fn parse(s: &str) -> Option<Chip> {
@@ -114,6 +124,13 @@ impl Chip {
             "nyse" => Chip::Nyse,
             "sim" => Chip::Sim,
             "mock" => Chip::Mock,
+            "floatUnder5m" => Chip::FloatUnder5m,
+            "float5to10m" => Chip::Float5To10m,
+            "float10to20m" => Chip::Float10To20m,
+            "float20mPlus" => Chip::Float20mPlus,
+            "vol100kTo1m" => Chip::Vol100kTo1m,
+            "vol1to10m" => Chip::Vol1To10m,
+            "vol10mPlus" => Chip::Vol10mPlus,
             _ => return None,
         })
     }
@@ -125,11 +142,16 @@ impl Chip {
             Chip::Under1 | Chip::OneTo5 | Chip::FiveTo25 => 1,
             Chip::Gainers | Chip::Losers => 2,
             Chip::Nasdaq | Chip::Nyse => 3,
+            Chip::FloatUnder5m | Chip::Float5To10m | Chip::Float10To20m | Chip::Float20mPlus => 4,
+            Chip::Vol100kTo1m | Chip::Vol1To10m | Chip::Vol10mPlus => 5,
         }
     }
 
-    /// The chip's test, the client's `TEST` table: `price` in dollars, `chg` in percent.
-    fn test(self, price: f64, chg: f64, exchange: &str) -> bool {
+    /// The chip's test, the client's `TEST` table: `price` in dollars, `chg` in percent, `volume`
+    /// the day's shares, `float` the latest public float in shares (None = unknown: a float chip
+    /// never passes a stock whose float we do not have, rather than guess).
+    fn test(self, price: f64, chg: f64, exchange: &str, volume: u64, float: Option<u64>) -> bool {
+        const M: u64 = 1_000_000;
         match self {
             Chip::Under1 => price < 1.0,
             Chip::OneTo5 => (1.0..5.0).contains(&price),
@@ -141,6 +163,13 @@ impl Chip {
             // Every server row has data in the running market; a mock row is the client's own.
             Chip::Sim => true,
             Chip::Mock => false,
+            Chip::FloatUnder5m => float.is_some_and(|f| f < 5 * M),
+            Chip::Float5To10m => float.is_some_and(|f| (5 * M..10 * M).contains(&f)),
+            Chip::Float10To20m => float.is_some_and(|f| (10 * M..20 * M).contains(&f)),
+            Chip::Float20mPlus => float.is_some_and(|f| f >= 20 * M),
+            Chip::Vol100kTo1m => (100_000..M).contains(&volume),
+            Chip::Vol1To10m => (M..10 * M).contains(&volume),
+            Chip::Vol10mPlus => volume >= 10 * M,
         }
     }
 }
@@ -150,7 +179,7 @@ impl Chip {
 pub struct Query {
     pub id: String,
     /// The active chips per group (empty = the group does not narrow).
-    groups: [Vec<Chip>; 4],
+    groups: [Vec<Chip>; GROUPS],
     pub sort: Sort,
     pub limit: usize,
     pub pins: Vec<String>,
@@ -164,7 +193,7 @@ impl Query {
         if id.chars().count() > MAX_ID {
             return Err(format!("search id longer than {MAX_ID} characters"));
         }
-        let mut groups: [Vec<Chip>; 4] = Default::default();
+        let mut groups: [Vec<Chip>; GROUPS] = Default::default();
         for f in &r.filters {
             let c = Chip::parse(f).ok_or_else(|| format!("unknown filter {f:?}"))?;
             let g = &mut groups[c.group()];
@@ -194,10 +223,19 @@ impl Query {
         })
     }
 
-    fn passes(&self, price: f64, chg: f64, exchange: &str) -> bool {
-        self.groups
-            .iter()
-            .all(|g| g.is_empty() || g.iter().any(|c| c.test(price, chg, exchange)))
+    fn passes(
+        &self,
+        price: f64,
+        chg: f64,
+        exchange: &str,
+        volume: u64,
+        float: Option<u64>,
+    ) -> bool {
+        self.groups.iter().all(|g| {
+            g.is_empty()
+                || g.iter()
+                    .any(|c| c.test(price, chg, exchange, volume, float))
+        })
     }
 }
 
@@ -208,6 +246,8 @@ pub struct Row {
     /// Percent, 3 decimals (crate::movers' rounding: a sub-rounding wobble is not a change).
     pub chg: f64,
     pub volume: u64,
+    /// The latest public float in shares, when the evidence feed has one (the Float chips' basis).
+    pub float: Option<u64>,
 }
 
 /// One search's result at one tick.
@@ -231,6 +271,7 @@ pub fn search(
     board: &QuoteBoard,
     band: PriceBand,
     assets: &HashMap<String, AssetMeta>,
+    float: &dyn Fn(&str) -> Option<u64>,
     q: &Query,
 ) -> Results {
     #[derive(Clone, Copy)]
@@ -241,6 +282,8 @@ pub fn search(
     }
     let pins: HashSet<&str> = q.pins.iter().map(String::as_str).collect();
     let by_exchange = !q.groups[Chip::Nasdaq.group()].is_empty();
+    // The float lookup only when a float chip asks: a hash lookup per board row otherwise wasted.
+    let by_float = !q.groups[Chip::FloatUnder5m.group()].is_empty();
     let mut pinned: Vec<Cand<'_>> = Vec::new();
     let mut cands: Vec<Cand<'_>> = Vec::new();
     for row in board.scan().filter(|r| band.contains(r.last)) {
@@ -260,7 +303,8 @@ pub fn search(
         } else {
             ""
         };
-        if q.passes(c.price, c.chg, exchange) {
+        let f = if by_float { float(row.symbol) } else { None };
+        if q.passes(c.price, c.chg, exchange, row.volume, f) {
             cands.push(c);
         }
     }
@@ -283,10 +327,11 @@ pub fn search(
         rows: HashMap::with_capacity(cands.len() + pinned.len()),
     };
     for c in cands.iter().chain(pinned.iter()) {
-        out.rows.entry(c.row.symbol.clone()).or_insert(Row {
+        out.rows.entry(c.row.symbol.clone()).or_insert_with(|| Row {
             price: c.price,
             chg: c.chg,
             volume: c.row.volume,
+            float: float(c.row.symbol),
         });
     }
     out.rank = cands.into_iter().map(|c| c.row.symbol.clone()).collect();
@@ -299,6 +344,9 @@ struct WireRow<'a> {
     p: f64,
     chg: f64,
     v: u64,
+    /// Float in shares; absent when unknown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    f: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     name: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -317,6 +365,7 @@ fn wire_row<'a>(
         p: r.price,
         chg: r.chg,
         v: r.volume,
+        f: r.float,
         name: meta.map(|m| m.name.as_str()).filter(|n| !n.is_empty()),
         x: meta.map(|m| m.exchange.as_str()).filter(|x| !x.is_empty()),
     }
@@ -526,16 +575,62 @@ mod tests {
         put(&mut b, "CCC", 50, 100, 9); // 900, a tie with BBB
         put(&mut b, "HIGH", 4000, 100, 20); // $40: outside the band
         let a = assets(&[]);
-        let r = search(&b, PriceBand::DEFAULT, &a, &q(&[], None, 10, &[]));
+        let r = search(
+            &b,
+            PriceBand::DEFAULT,
+            &a,
+            &|_| None,
+            &q(&[], None, 10, &[]),
+        );
         assert_eq!(syms(&r), ["BBB", "CCC", "AAA"]);
         assert_eq!(r.total, 3);
-        let r = search(&b, PriceBand::DEFAULT, &a, &q(&[], None, 2, &[]));
+        let r = search(&b, PriceBand::DEFAULT, &a, &|_| None, &q(&[], None, 2, &[]));
         assert_eq!(syms(&r), ["BBB", "CCC"], "the top `limit` only");
         assert_eq!(r.total, 3, "total counts every row that passes");
         assert_eq!(r.rows.len(), 2);
         // Every row opened and closed at its one price: no move, so the move sort is by symbol.
-        let r = search(&b, PriceBand::DEFAULT, &a, &q(&[], Some("move"), 10, &[]));
+        let r = search(
+            &b,
+            PriceBand::DEFAULT,
+            &a,
+            &|_| None,
+            &q(&[], Some("move"), 10, &[]),
+        );
         assert_eq!(syms(&r), ["AAA", "BBB", "CCC"]);
+    }
+
+    #[test]
+    fn float_and_volume_chips_band_the_rows_and_an_unknown_float_never_passes() {
+        let mut b = QuoteBoard::new();
+        put(&mut b, "LOW", 200, 50_000, 3); // 150K shares traded, float 3M
+        put(&mut b, "MIDF", 200, 1_000_000, 3); // 3M traded, float 8M
+        put(&mut b, "BIG", 200, 5_000_000, 3); // 15M traded, float 40M
+        put(&mut b, "NOF", 200, 1_000_000, 3); // 3M traded, float unknown
+        let a = assets(&[]);
+        let float = |s: &str| match s {
+            "LOW" => Some(3_000_000),
+            "MIDF" => Some(8_000_000),
+            "BIG" => Some(40_000_000),
+            _ => None,
+        };
+        let got = |f: &[&str]| {
+            let r = search(&b, PriceBand::DEFAULT, &a, &float, &q(f, None, 10, &[]));
+            let mut v: Vec<String> = r.rank.iter().map(|s| s.to_string()).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(got(&["floatUnder5m"]), ["LOW"]);
+        assert_eq!(got(&["floatUnder5m", "float5to10m"]), ["LOW", "MIDF"]);
+        assert_eq!(got(&["float20mPlus"]), ["BIG"]);
+        assert_eq!(got(&["vol100kTo1m"]), ["LOW"]);
+        assert_eq!(got(&["vol1to10m"]), ["MIDF", "NOF"]);
+        assert_eq!(got(&["vol10mPlus"]), ["BIG"]);
+        // Across groups the chips narrow: 1–10M volume AND float under 10M.
+        assert_eq!(got(&["vol1to10m", "floatUnder5m", "float5to10m"]), ["MIDF"]);
+        // The float rides on the row for the client's own re-filtering.
+        let r = search(&b, PriceBand::DEFAULT, &a, &float, &q(&[], None, 10, &[]));
+        assert_eq!(r.rows[&*"MIDF".to_string()].float, Some(8_000_000));
+        assert_eq!(r.rows.values().filter(|r| r.float.is_none()).count(), 1);
     }
 
     #[test]
@@ -553,6 +648,7 @@ mod tests {
             &b,
             PriceBand::DEFAULT,
             &a,
+            &|_| None,
             &q(&["under1", "5to25"], None, 10, &[]),
         );
         let mut got = syms(&r);
@@ -562,12 +658,25 @@ mod tests {
             &b,
             PriceBand::DEFAULT,
             &a,
+            &|_| None,
             &q(&["under1", "5to25", "nyse"], None, 10, &[]),
         );
         assert!(r.rank.is_empty(), "no NYSE row in those price groups");
-        let r = search(&b, PriceBand::DEFAULT, &a, &q(&["sim"], None, 10, &[]));
+        let r = search(
+            &b,
+            PriceBand::DEFAULT,
+            &a,
+            &|_| None,
+            &q(&["sim"], None, 10, &[]),
+        );
         assert_eq!(r.total, 3, "sim passes every server row");
-        let r = search(&b, PriceBand::DEFAULT, &a, &q(&["mock"], None, 10, &[]));
+        let r = search(
+            &b,
+            PriceBand::DEFAULT,
+            &a,
+            &|_| None,
+            &q(&["mock"], None, 10, &[]),
+        );
         assert_eq!(r.total, 0, "mock rows are the client's own");
         assert!(
             Query::parse(Request {
@@ -592,7 +701,7 @@ mod tests {
         put(&mut b, "SMALL", 200, 100, 1);
         let a = assets(&[("SMALL", "Small Co", "NYSE")]);
         let query = q(&[], None, 1, &["SMALL", "NOPE"]);
-        let r1 = search(&b, PriceBand::DEFAULT, &a, &query);
+        let r1 = search(&b, PriceBand::DEFAULT, &a, &|_| None, &query);
         assert_eq!(syms(&r1), ["BIG"]);
         let mut rows: Vec<&str> = r1.rows.keys().map(|s| &**s).collect();
         rows.sort();
@@ -610,7 +719,7 @@ mod tests {
         );
         // SMALL trades past BIG: the rank flips and both rows changed volume or not.
         put(&mut b, "SMALL", 200, 100, 20);
-        let r2 = search(&b, PriceBand::DEFAULT, &a, &query);
+        let r2 = search(&b, PriceBand::DEFAULT, &a, &|_| None, &query);
         assert_eq!(syms(&r2), ["SMALL"]);
         let up = update_frame("s", Some(UnixNanos::from_millis(2)), &r1, &r2, &a).unwrap();
         let v: serde_json::Value = serde_json::from_str(&up).unwrap();
@@ -659,11 +768,11 @@ mod tests {
         let start = std::time::Instant::now();
         let n = 20;
         for _ in 0..n {
-            std::hint::black_box(search(&b, PriceBand::DEFAULT, &a, &query));
+            std::hint::black_box(search(&b, PriceBand::DEFAULT, &a, &|_| None, &query));
         }
         let all = q(&[], None, 1000, &[]);
         let t_all = std::time::Instant::now();
-        let r = search(&b, PriceBand::DEFAULT, &a, &all);
+        let r = search(&b, PriceBand::DEFAULT, &a, &|_| None, &all);
         println!(
             "quotes.search on 13k rows: {:?} per filtered search, {:?} for the unfiltered top 1000 ({} pass)",
             start.elapsed() / n,

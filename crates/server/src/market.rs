@@ -4071,7 +4071,13 @@ impl Market {
         }
         Some((
             t,
-            crate::quote_search::search(&core.quotes, self.0.band, &assets, q),
+            crate::quote_search::search(
+                &core.quotes,
+                self.0.band,
+                &assets,
+                &|s| core.context.as_ref().and_then(|cx| cx.float_shares(s)),
+                q,
+            ),
         ))
     }
 

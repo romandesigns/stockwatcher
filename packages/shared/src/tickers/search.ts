@@ -10,12 +10,48 @@ import type { TickerInfo } from "./mockTickers.ts";
 // test the live quote (TickerInfo.price / changePct from the server's quote
 // board), so a stock moves in and out of "Gainers" as the replay plays.
 // Rows without a quote yet drop out while a price or mover filter is on.
-export type TickerFilterId = "sim" | "mock" | "under1" | "1to5" | "5to25" | "gainers" | "losers" | "nasdaq" | "nyse";
+export type TickerFilterId =
+  | "sim"
+  | "mock"
+  | "under1"
+  | "1to5"
+  | "5to25"
+  | "gainers"
+  | "losers"
+  | "nasdaq"
+  | "nyse"
+  | "floatUnder5m"
+  | "float5to10m"
+  | "float10to20m"
+  | "float20mPlus"
+  | "vol100kTo1m"
+  | "vol1to10m"
+  | "vol10mPlus";
 export const TICKER_FILTER_GROUPS: readonly { id: string; chips: readonly { id: TickerFilterId; label: string }[] }[] = [
   { id: "status", chips: [{ id: "sim", label: "Simulator" }, { id: "mock", label: "Mock" }] },
   { id: "price", chips: [{ id: "under1", label: "Under $1" }, { id: "1to5", label: "$1–5" }, { id: "5to25", label: "$5–25" }] },
   { id: "movers", chips: [{ id: "gainers", label: "Gainers" }, { id: "losers", label: "Losers" }] },
   { id: "exchange", chips: [{ id: "nasdaq", label: "NASDAQ" }, { id: "nyse", label: "NYSE" }] },
+  // Public float in shares (the server's evidence feed; a stock without a known float never
+  // passes a Float chip). The group's first chip names it, as "Under $1" does the price group.
+  {
+    id: "float",
+    chips: [
+      { id: "floatUnder5m", label: "Float <5M" },
+      { id: "float5to10m", label: "5–10M" },
+      { id: "float10to20m", label: "10–20M" },
+      { id: "float20mPlus", label: "20M+" },
+    ],
+  },
+  // Day volume in shares.
+  {
+    id: "volume",
+    chips: [
+      { id: "vol100kTo1m", label: "Vol 100K–1M" },
+      { id: "vol1to10m", label: "1–10M" },
+      { id: "vol10mPlus", label: "10M+" },
+    ],
+  },
 ];
 const TEST: Record<TickerFilterId, (t: TickerInfo) => boolean> = {
   sim: (t) => t.available,
@@ -27,6 +63,14 @@ const TEST: Record<TickerFilterId, (t: TickerInfo) => boolean> = {
   losers: (t) => (t.changePct ?? 0) < 0,
   nasdaq: (t) => t.exchange === "NASDAQ",
   nyse: (t) => t.exchange === "NYSE",
+  // The server's own bands (crates/server/src/quote_search.rs `Chip::test`): keep them identical.
+  floatUnder5m: (t) => t.float !== undefined && t.float < 5e6,
+  float5to10m: (t) => t.float !== undefined && t.float >= 5e6 && t.float < 10e6,
+  float10to20m: (t) => t.float !== undefined && t.float >= 10e6 && t.float < 20e6,
+  float20mPlus: (t) => t.float !== undefined && t.float >= 20e6,
+  vol100kTo1m: (t) => t.volume !== undefined && t.volume >= 1e5 && t.volume < 1e6,
+  vol1to10m: (t) => t.volume !== undefined && t.volume >= 1e6 && t.volume < 10e6,
+  vol10mPlus: (t) => t.volume !== undefined && t.volume >= 10e6,
 };
 
 /**

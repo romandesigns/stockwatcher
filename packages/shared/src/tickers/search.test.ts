@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { tickerUniverse } from "./mockTickers.ts";
 import { applyQuotesMessage, EMPTY_QUOTE_BOARD } from "./quotes.ts";
-import { activeTickerFilters, MAX_TICKER_RECENTS, mostActiveTickers, pushRecentTicker, RECENTS_COLLAPSED, refreshTickerRows, searchTickers, visibleTickerFilterGroups, type TickerFilterId } from "./search.ts";
+import { activeTickerFilters, passesTickerFilters, MAX_TICKER_RECENTS, mostActiveTickers, pushRecentTicker, RECENTS_COLLAPSED, refreshTickerRows, searchTickers, visibleTickerFilterGroups, type TickerFilterId } from "./search.ts";
 
 // A fixture source: two openable symbols plus the mock universe.
 const universe = tickerUniverse(["SMPL", "FXLO"], EMPTY_QUOTE_BOARD, { mock: true });
@@ -38,7 +38,7 @@ test("real data: live quote fields, real names, no mock rows and no Simulator/Mo
   expect(aal.changePct).toBeCloseTo(4.1667, 3);
   // No metadata: the ticker stands in for the name, and no exchange is invented.
   expect(real.find((t) => t.symbol === "XYZ")).toMatchObject({ name: "XYZ", exchange: "" });
-  expect(visibleTickerFilterGroups(real).map((g) => g.id)).toEqual(["price", "movers", "exchange"]);
+  expect(visibleTickerFilterGroups(real).map((g) => g.id)).toEqual(["price", "movers", "exchange", "float", "volume"]);
   expect(visibleTickerFilterGroups(universe).map((g) => g.id)).toContain("status");
   // A Mock chip remembered from a fixture session does not empty a real list.
   expect([...activeTickerFilters(real, on("mock", "nyse"))]).toEqual(["nyse"]);
@@ -183,4 +183,20 @@ test("recents keep up to 10", () => {
   for (let i = 0; i < 14; i++) r = pushRecentTicker(r, `T${i}`);
   expect(r.length).toBe(MAX_TICKER_RECENTS);
   expect(r[0]).toBe("T13");
+});
+
+test("float and volume chips use the server's bands; an unknown float never passes", () => {
+  const t = (float: number | undefined, volume: number | undefined) => ({ symbol: "X", name: "X", exchange: "", price: 2, changePct: 1, volume, float, available: true, mock: false });
+  const on = (...ids: TickerFilterId[]) => new Set<TickerFilterId>(ids);
+  expect(passesTickerFilters(t(3e6, 2e6), on("floatUnder5m"))).toBe(true);
+  expect(passesTickerFilters(t(5e6, 2e6), on("floatUnder5m"))).toBe(false);
+  expect(passesTickerFilters(t(5e6, 2e6), on("floatUnder5m", "float5to10m"))).toBe(true);
+  expect(passesTickerFilters(t(undefined, 2e6), on("floatUnder5m", "float5to10m", "float10to20m", "float20mPlus"))).toBe(false);
+  expect(passesTickerFilters(t(40e6, 2e6), on("float20mPlus"))).toBe(true);
+  expect(passesTickerFilters(t(3e6, 150e3), on("vol100kTo1m"))).toBe(true);
+  expect(passesTickerFilters(t(3e6, 1e6), on("vol100kTo1m"))).toBe(false);
+  expect(passesTickerFilters(t(3e6, 1e6), on("vol1to10m"))).toBe(true);
+  expect(passesTickerFilters(t(3e6, 12e6), on("vol10mPlus"))).toBe(true);
+  // Across groups the chips narrow.
+  expect(passesTickerFilters(t(3e6, 12e6), on("floatUnder5m", "vol1to10m"))).toBe(false);
 });

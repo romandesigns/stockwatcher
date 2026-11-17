@@ -116,6 +116,16 @@ pub(crate) fn production_engine(policy: Policy, panel: PanelPolicy, run: RunInfo
 }
 
 impl ContextBoard {
+    /// The latest public float held for `symbol`, in shares, whatever its age: the ticker search's
+    /// Float chips sort stocks into bands, where a float a few days old is still the right band
+    /// (the pillar's own freshness rule stays in `stock_context::evaluate`).
+    pub(crate) fn float_shares(&self, symbol: &str) -> Option<u64> {
+        self.engine
+            .evidence()
+            .float(&InstrumentId::symbol(symbol), i64::MAX)
+            .map(|f| f.shares)
+    }
+
     /// `None` when the pillar policy's price band or the panel policy's platform band is not the
     /// server's price band: the price pillar and membership would then judge by a band the rest
     /// of the app (the quote board, the collector's universe) does not use.

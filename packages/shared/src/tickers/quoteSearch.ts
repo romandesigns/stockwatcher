@@ -33,6 +33,8 @@ export interface QuoteSearchRowWire {
   /** Change %, the server's (vs the previous close when known, else the open). */
   chg: number;
   v: number;
+  /** Public float in shares; absent when the server has none. */
+  f?: number;
   /** Only for a row this search had not sent before. */
   name?: string;
   x?: string;
@@ -75,6 +77,7 @@ export interface SearchQuote {
   price: number;
   changePct: number;
   volume: number;
+  float?: number;
   name?: string;
   exchange?: string;
 }
@@ -92,7 +95,7 @@ export interface QuoteSearchState {
 export const EMPTY_SEARCH_STATE: QuoteSearchState = { t: null, total: 0, rank: [], rows: new Map(), snapshots: 0 };
 
 function quoteOf(r: QuoteSearchRowWire, prev: SearchQuote | undefined): SearchQuote {
-  return { price: r.p, changePct: r.chg, volume: r.v, name: r.name ?? prev?.name, exchange: r.x ?? prev?.exchange };
+  return { price: r.p, changePct: r.chg, volume: r.v, float: r.f ?? prev?.float, name: r.name ?? prev?.name, exchange: r.x ?? prev?.exchange };
 }
 
 /** One search frame folded: a snapshot replaces, an update patches. */
@@ -250,12 +253,12 @@ export function withSearchQuotes(universe: readonly TickerInfo[], state: QuoteSe
   const out = universe.map((t) => {
     const q = state.rows.get(t.symbol);
     if (!q || t.mock) return t;
-    return { ...t, name: t.name === t.symbol && q.name ? q.name : t.name, exchange: t.exchange || q.exchange || "", price: q.price, changePct: q.changePct, volume: q.volume };
+    return { ...t, name: t.name === t.symbol && q.name ? q.name : t.name, exchange: t.exchange || q.exchange || "", price: q.price, changePct: q.changePct, volume: q.volume, float: q.float ?? t.float };
   });
   const have = new Set(universe.map((t) => t.symbol));
   for (const [symbol, q] of state.rows) {
     if (have.has(symbol)) continue;
-    out.push({ symbol, name: q.name ?? symbol, exchange: q.exchange ?? "", price: q.price, changePct: q.changePct, volume: q.volume, available: true, mock: false });
+    out.push({ symbol, name: q.name ?? symbol, exchange: q.exchange ?? "", price: q.price, changePct: q.changePct, volume: q.volume, float: q.float, available: true, mock: false });
   }
   return out;
 }
@@ -313,7 +316,7 @@ export function searchRankRows(state: QuoteSearchState, dir: TickerDirectory | n
     const q = state.rows.get(symbol);
     if (!q) continue;
     const n = dir?.names.get(symbol);
-    out.push({ symbol, name: n?.name || q.name || symbol, exchange: n?.exchange || q.exchange || "", price: q.price, changePct: q.changePct, volume: q.volume, available: true, mock: false });
+    out.push({ symbol, name: n?.name || q.name || symbol, exchange: n?.exchange || q.exchange || "", price: q.price, changePct: q.changePct, volume: q.volume, float: q.float, available: true, mock: false });
   }
   return out;
 }

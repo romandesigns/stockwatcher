@@ -18,6 +18,8 @@ export interface TickerInfo {
   price?: number;
   changePct?: number;
   volume?: number;
+  /** Public float in shares, from the server's evidence feed; absent when unknown. */
+  float?: number;
   /** Has data in the running simulator, so it can be opened. */
   available: boolean;
   mock: boolean;
