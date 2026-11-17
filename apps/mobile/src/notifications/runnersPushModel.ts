@@ -45,8 +45,8 @@ export const RUNNERS_PUSH_DEFAULTS: RunnersPushPrefs = {
   // sound; the picked sound needs release 2's APK (its halt channels).
   pushHalted: true,
   pushResumed: true,
-  // The N1 shadow: off, the owner opts in (the server's default too).
-  pushN1: false,
+  // N1: on since T2-c6 was confirmed (2026-11-17; the server's default too).
+  pushN1: true,
 };
 
 /** The phone pref behind each shared switch (packages/shared `ALERT_SWITCH_SECTIONS`). */

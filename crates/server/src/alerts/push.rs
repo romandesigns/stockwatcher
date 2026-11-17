@@ -139,8 +139,8 @@ pub struct Device {
     /// default sound, which it has. Absent (older records and apps) = false.
     #[serde(default)]
     pub halt_sounds: bool,
-    /// The N1 shadow detector's alerts (`crate::n1_live`, owner 2026-11-17): OFF, the owner opts
-    /// in; a record saved before they existed included.
+    /// The N1 detector's alerts (`crate::n1_live`): a record saved before 2026-11-17 has none, so
+    /// it reads false (the device keeps its explicit choice; new devices get the ON default).
     #[serde(default)]
     pub n1_shadow: bool,
 }

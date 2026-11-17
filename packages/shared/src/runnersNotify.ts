@@ -124,8 +124,8 @@ export const DEFAULT_RUNNERS_NOTIFY: Readonly<RunnersNotifyKinds> = Object.freez
   // On: plan "halt sounds" (2026-11-16).
   halted: true,
   resumed: true,
-  // Off: a shadow for measurement, the owner opts in (2026-11-17).
-  n1: false,
+  // On since T2-c6 was confirmed (owner, 2026-11-17: "push live").
+  n1: true,
 });
 
 /** client `runners.notify`: this connection shows notifications for these kinds (`enabled: false` stops). */

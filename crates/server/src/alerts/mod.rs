@@ -218,7 +218,7 @@ pub struct DeskKinds {
     /// The exchange halted / resumed a covered stock ([`halts`]; both on by default).
     pub halted: bool,
     pub resumed: bool,
-    /// The N1 shadow detector's alerts (`crate::n1_live`): OFF by default, the owner opts in.
+    /// The N1 detector's alerts (`crate::n1_live`): ON by default since T2-c6 was confirmed (owner, 2026-11-17).
     pub n1: bool,
 }
 
@@ -251,8 +251,9 @@ impl DeskKinds {
             // Owner-approved plan "halt sounds" (2026-11-16): both on.
             halted: o.halted.unwrap_or(true),
             resumed: o.resumed.unwrap_or(true),
-            // Owner, 2026-11-17: a shadow for measurement; he opts in.
-            n1: o.n1.unwrap_or(false),
+            // Owner, 2026-11-17: on, as Engine A finalist T2-c6 (passed Validation, sealed look 2 and
+            // 234 forward days); still switchable in Settings.
+            n1: o.n1.unwrap_or(true),
         }
     }
 
