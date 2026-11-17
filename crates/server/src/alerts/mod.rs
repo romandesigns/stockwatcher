@@ -218,6 +218,8 @@ pub struct DeskKinds {
     /// The exchange halted / resumed a covered stock ([`halts`]; both on by default).
     pub halted: bool,
     pub resumed: bool,
+    /// The N1 shadow detector's alerts (`crate::n1_live`): OFF by default, the owner opts in.
+    pub n1: bool,
 }
 
 impl Default for DeskKinds {
@@ -249,6 +251,8 @@ impl DeskKinds {
             // Owner-approved plan "halt sounds" (2026-11-16): both on.
             halted: o.halted.unwrap_or(true),
             resumed: o.resumed.unwrap_or(true),
+            // Owner, 2026-11-17: a shadow for measurement; he opts in.
+            n1: o.n1.unwrap_or(false),
         }
     }
 
@@ -281,6 +285,7 @@ impl DeskKinds {
             K::PullbackCrossing => self.pullback || (also_signals && self.signals_crossing),
             K::Halted => self.halted,
             K::Resumed => self.resumed,
+            K::N1 => self.n1,
         }
     }
 }

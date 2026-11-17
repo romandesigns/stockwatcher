@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { rocketSectionCounts } from "./panels.ts";
 import { parseServerMessage } from "./protocol.ts";
-import { createRocketChannel, mergeRocketDayLines, newRocketFlags, rocketAge, rocketAttention, rocketFreshCount, rocketHeaderView, rocketNow, rocketRowsView, rocketServerNow, rocketRowView, rocketSectionsView, rocketSetupView, type RocketPanelWire, type RocketRowWire, type RocketSnapshotMessage } from "./rocket.ts";
+import { createRocketChannel, mergeRocketDayLines, newRocketFlags, rocketAge, rocketAttention, rocketFreshCount, rocketHeaderView, rocketNow, rocketRowsView, rocketServerNow, rocketRowView, rocketSectionsView, rocketSetupView, rocketShadowView, type RocketPanelWire, type RocketRowWire, type RocketSnapshotMessage } from "./rocket.ts";
 
 const T = 1_792_075_200_000;
 
@@ -443,5 +443,25 @@ describe("pullback setup chip", () => {
     expect(v.setup?.label).toBe("Pullback · trigger $3.42");
     expect(v.aria).toContain("Pullback · trigger $3.42");
     expect(rocketRowView(row({}), T).setup).toBeNull();
+  });
+});
+
+describe("the Runners board's Shadow section", () => {
+  const row = { s: "ABCD", at: 1_795_012_262_000, p: 2.12, gain_pct: 6.4, low: 1.99, high: 2.13, dollars: 112_400, rel: 14.2, notified: true };
+  test("today's shadow fires, labelled, with their evidence; null without any", () => {
+    const v = rocketShadowView({ shadow: { n1: { label: "N1 · shadow", config: "X0.06-W3-k10", rows: [row, { ...row, s: "EFGH", p: 0.5123, rel: null, dollars: 1_250_000, notified: false }] } } })!;
+    expect(v.label).toBe("N1 · shadow");
+    expect(v.rows.map((r) => [r.symbol, r.price, r.gain, r.evidence, r.notified])).toEqual([
+      ["ABCD", "$2.12", "+6.4%", "$112K in 3 min · 14× usual", true],
+      ["EFGH", "$0.5123", "+6.4%", "$1.3M in 3 min", false],
+    ]);
+    expect(v.rows[1]?.aria).toContain("not sent");
+    expect(rocketShadowView({})).toBeNull();
+    expect(rocketShadowView(null)).toBeNull();
+    expect(rocketShadowView({ shadow: { n1: { label: "x", config: "", rows: [] } } })).toBeNull();
+  });
+  test("malformed rows are dropped", () => {
+    const bad = [{ ...row, s: "lower" }, { ...row, p: "2" }, null, { ...row, gain_pct: Number.NaN }] as unknown as (typeof row)[];
+    expect(rocketShadowView({ shadow: { n1: { label: "N1 · shadow", config: "", rows: bad } } })).toBeNull();
   });
 });

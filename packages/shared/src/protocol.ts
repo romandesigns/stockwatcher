@@ -782,6 +782,8 @@ export interface PushRegisterMessage {
   resumedSound?: string;
   /** This phone's binary has the halt sound channels (halt-*-v1, release 2); absent = unchanged, a new phone false. */
   haltSounds?: boolean;
+  /** Pushes when the N1 shadow detector fires (crates/server/src/n1_live; server default OFF; absent = unchanged). */
+  n1Shadow?: boolean;
 }
 
 /** Settings → Alerts → Halts "Send test": the server answers this connection alone with a `runners.notice` for the made-up stock TEST (`data.test` true). */

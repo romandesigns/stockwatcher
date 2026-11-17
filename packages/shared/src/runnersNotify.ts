@@ -43,6 +43,10 @@ export const RUNNERS_NOTICE_KINDS = [
   // crates/server/src/alerts/halts.rs): the SIP trading status, not the Halt watcher's forecast.
   "halt.halted",
   "halt.resumed",
+  // The N1 "early leg" SHADOW detector (owner, 2026-11-17; crates/server/src/n1_live): research's
+  // Engine A entrant running beside production to be measured, never instead of it. Its own
+  // switch, off by default. An older client drops the kind (`parseRunnersNotice`).
+  "shadow.n1",
 ] as const;
 export type RunnersNoticeKind = (typeof RUNNERS_NOTICE_KINDS)[number];
 
@@ -93,6 +97,8 @@ export interface RunnersNotifyKinds {
   halted: boolean;
   /** The same stock's trading resumed. */
   resumed: boolean;
+  /** The N1 shadow detector fired: +6% off a 3-minute low on heavy trading, 9:30–11:30 ET (research, measured beside production). */
+  n1: boolean;
 }
 
 /**
@@ -118,6 +124,8 @@ export const DEFAULT_RUNNERS_NOTIFY: Readonly<RunnersNotifyKinds> = Object.freez
   // On: plan "halt sounds" (2026-11-16).
   halted: true,
   resumed: true,
+  // Off: a shadow for measurement, the owner opts in (2026-11-17).
+  n1: false,
 });
 
 /** client `runners.notify`: this connection shows notifications for these kinds (`enabled: false` stops). */
@@ -152,6 +160,7 @@ export const RUNNERS_NOTIFY_KEY: Readonly<Record<RunnersNoticeKind, keyof Runner
   "runners.pullback": "pullback",
   "halt.halted": "halted",
   "halt.resumed": "resumed",
+  "shadow.n1": "n1",
 });
 
 /** Whether a notice is an exchange halt or resumption (its own sound on the desktop and web). */
@@ -250,7 +259,7 @@ export function shouldShowNotice(notice: RunnersNoticeMessage, kinds: RunnersNot
  * does not depend on chart-core; the web and the phone pass these to their `Icon`, so tsc there
  * rejects a name chart-core lacks).
  */
-export type AlertIcon = "bell" | "gauge" | "trend" | "hline" | "levels" | "plus" | "star" | "pause" | "play" | "pathRunner" | "pathBurst" | "pathFast" | "pathRun" | "pathRunning";
+export type AlertIcon = "bell" | "gauge" | "trend" | "hline" | "levels" | "plus" | "star" | "pause" | "play" | "insights" | "pathRunner" | "pathBurst" | "pathFast" | "pathRun" | "pathRunning";
 
 /**
  * THE icon of each kind of notice, by the switch it answers to (owner, 2026-10-30: the
@@ -277,6 +286,7 @@ export const ALERT_SWITCH_ICON: Readonly<Record<keyof RunnersNotifyKinds, AlertI
   halt: "gauge",
   halted: "pause",
   resumed: "play",
+  n1: "insights",
 });
 
 /** A Runners-pipeline notice kind's icon: its switch's ({@link ALERT_SWITCH_ICON}). */
@@ -296,7 +306,7 @@ export interface AlertSwitch {
  * notifies on the phone, the watch, the desktop and the web), by panel, in the same order and
  * words so the three clients read the same. Descriptions say what happened, never what to do.
  */
-export const ALERT_SWITCH_SECTIONS: readonly { id: "runners" | "ross" | "signals" | "halt" | "halts"; label: string; items: readonly AlertSwitch[] }[] = [
+export const ALERT_SWITCH_SECTIONS: readonly { id: "runners" | "ross" | "signals" | "halt" | "halts" | "shadow"; label: string; items: readonly AlertSwitch[] }[] = [
   {
     id: "runners",
     label: "Runners",
@@ -340,6 +350,19 @@ export const ALERT_SWITCH_SECTIONS: readonly { id: "runners" | "ross" | "signals
     items: [
       { key: "halted", icon: ALERT_SWITCH_ICON.halted, name: "Halted", description: "The exchange halts a Runners stock, a charted one or one with a halt alert: reason and day's move." },
       { key: "resumed", icon: ALERT_SWITCH_ICON.resumed, name: "Resumed", description: "Trading resumes: how long it was halted and the move from the halt price." },
+    ],
+  },
+  {
+    // Research detectors measured beside production (judge ruling J8), never instead of it.
+    id: "shadow",
+    label: "Shadow (research)",
+    items: [
+      {
+        key: "n1",
+        icon: ALERT_SWITCH_ICON.n1,
+        name: "N1 · shadow",
+        description: "+6% off a 3-minute low on heavy trading, 9:30–11:30. Being measured beside production; about 1 in 9 reached +10% in research. Off unless you turn it on.",
+      },
     ],
   },
 ];

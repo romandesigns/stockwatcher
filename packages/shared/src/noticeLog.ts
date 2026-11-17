@@ -157,13 +157,14 @@ export function logSummary(log: Pick<NoticeLogWire, "items" | "summary"> | null)
 }
 
 /** The page's kind filters, in chip order, each with its icon (a group's chip, and the icon of a kind the log does not know). */
-export type NoticeGroup = "runners" | "pullback" | "ross" | "shelf" | "halt" | "price";
+export type NoticeGroup = "runners" | "pullback" | "ross" | "shelf" | "halt" | "shadow" | "price";
 export const NOTICE_GROUPS: readonly { id: NoticeGroup; label: string; icon: AlertIcon }[] = [
   { id: "runners", label: "Runners", icon: "pathRunner" },
   { id: "pullback", label: "Pullback", icon: runnersNoticeIcon("runners.pullback") },
   { id: "ross", label: "Ross / Signals", icon: "star" },
   { id: "shelf", label: "Shelf / Follow-ups", icon: runnersNoticeIcon("runners.shelf") },
   { id: "halt", label: "Halt", icon: runnersNoticeIcon("halt.watch") },
+  { id: "shadow", label: "Shadow", icon: runnersNoticeIcon("shadow.n1") },
   { id: "price", label: "Price alerts", icon: "bell" },
 ];
 
@@ -182,6 +183,8 @@ const KIND: Record<string, { group: NoticeGroup; label: string }> = {
   "runners.shelf": { group: "shelf", label: "Volume shelf" },
   "runners.followup": { group: "shelf", label: "Follow-up" },
   "halt.watch": { group: "halt", label: "Halt watcher" },
+  // The N1 shadow detector (crates/server/src/n1_live): labelled a shadow wherever it shows.
+  "shadow.n1": { group: "shadow", label: "N1 · shadow" },
   "price.alert": { group: "price", label: "Price alert" },
 };
 

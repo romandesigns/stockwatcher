@@ -349,6 +349,7 @@ pub fn kind_label(notice: &str) -> &str {
         "runners.shelf" => "Volume shelf",
         "runners.followup" => "Follow-up",
         "halt.watch" => "Halt watcher",
+        "shadow.n1" => "N1 · shadow",
         "price.alert" => "Price alert",
         other => other,
     }

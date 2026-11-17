@@ -258,6 +258,87 @@ export interface RocketPanelWire {
    * `zonesFor`, which drops anything malformed.
    */
   zones?: ZonesWire;
+  /**
+   * Research detectors running as a SHADOW beside production (newer servers, only on a day they
+   * fired; crates/server/src/n1_live). Untrusted wire data: read it through {@link rocketShadowView}.
+   */
+  shadow?: { n1?: RocketShadowWire };
+}
+
+/** One shadow detector's fires today, newest first (crates/server/src/n1_live `N1Live::frame`). */
+export interface RocketShadowWire {
+  /** "N1 · shadow". */
+  label: string;
+  /** The research configuration ("X0.06-W3-k10"). */
+  config: string;
+  rows: RocketShadowRowWire[];
+}
+
+export interface RocketShadowRowWire {
+  s: string;
+  /** The decision instant, epoch ms (the 15 s bar's end + 2 s). */
+  at: number;
+  p: number;
+  /** Gain from the 3-minute window's low, %. */
+  gain_pct: number;
+  low: number;
+  high: number;
+  /** Dollars traded in the window. */
+  dollars: number;
+  /** The window's dollars per minute over the symbol's usual; null without a daily baseline. */
+  rel: number | null;
+  /** Sent as a notice (false on a day the server did not watch from 04:00 ET). */
+  notified: boolean;
+}
+
+export interface RocketShadowRowView {
+  symbol: string;
+  at: number;
+  price: string;
+  gain: string;
+  /** "$112K in 3 min · 14× usual". */
+  evidence: string;
+  notified: boolean;
+  aria: string;
+}
+
+export interface RocketShadowView {
+  label: string;
+  rows: RocketShadowRowView[];
+}
+
+const SHADOW_SYMBOL = /^[A-Z][A-Z0-9.-]{0,11}$/;
+const shadowPrice = (p: number) => "$" + p.toFixed(p >= 1 ? 2 : 4);
+const shadowMoney = (d: number) => (d >= 1e6 ? "$" + (d / 1e6).toFixed(1) + "M" : "$" + Math.round(d / 1e3) + "K");
+
+/**
+ * The Runners board's Shadow section: the N1 shadow detector's fires today, newest first, or null
+ * when the server sent none (an older server, a day without any). Malformed rows are dropped.
+ */
+export function rocketShadowView(p: Pick<RocketPanelWire, "shadow"> | null | undefined): RocketShadowView | null {
+  const n1 = p?.shadow?.n1;
+  if (!n1 || typeof n1 !== "object" || !Array.isArray(n1.rows)) return null;
+  const num = (x: unknown): x is number => typeof x === "number" && Number.isFinite(x);
+  const rows: RocketShadowRowView[] = [];
+  for (const r of n1.rows) {
+    if (!r || typeof r !== "object" || typeof r.s !== "string" || !SHADOW_SYMBOL.test(r.s) || !num(r.at) || !num(r.p) || !num(r.gain_pct) || !num(r.dollars)) continue;
+    const gain = (r.gain_pct >= 0 ? "+" : "") + r.gain_pct.toFixed(1) + "%";
+    const usual = num(r.rel) ? " · " + Math.round(r.rel) + "× usual" : "";
+    const evidence = shadowMoney(r.dollars) + " in 3 min" + usual;
+    const notified = r.notified !== false;
+    const price = shadowPrice(r.p);
+    rows.push({
+      symbol: r.s,
+      at: r.at,
+      price,
+      gain,
+      evidence,
+      notified,
+      aria: r.s + " " + gain + " off its 3-minute low at " + price + ", " + evidence + (notified ? "" : ", not sent (the server restarted during the day)"),
+    });
+  }
+  if (rows.length === 0) return null;
+  return { label: typeof n1.label === "string" && n1.label ? n1.label : "N1 · shadow", rows };
 }
 
 export interface RocketBurstPanelWire {

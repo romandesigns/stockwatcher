@@ -212,6 +212,9 @@ pub enum NoticeKind {
     Halted,
     /// The same stock's trading resumed. On by default.
     Resumed,
+    /// Research detector N1 "early leg", a SHADOW beside production (`crate::n1_live`, owner
+    /// 2026-11-17): its facts in [`NoticeDetail::N1`]. Its own switch (`n1`), OFF by default.
+    N1,
 }
 
 impl NoticeKind {
@@ -234,10 +237,11 @@ impl NoticeKind {
             NoticeKind::PullbackCrossing => "pullback_crossing",
             NoticeKind::Halted => "halted",
             NoticeKind::Resumed => "resumed",
+            NoticeKind::N1 => "n1",
         }
     }
 
-    pub const ALL: [NoticeKind; 17] = [
+    pub const ALL: [NoticeKind; 18] = [
         NoticeKind::New,
         NoticeKind::Breakout,
         NoticeKind::Burst,
@@ -255,6 +259,7 @@ impl NoticeKind {
         NoticeKind::PullbackCrossing,
         NoticeKind::Halted,
         NoticeKind::Resumed,
+        NoticeKind::N1,
     ];
 }
 
@@ -290,6 +295,8 @@ pub enum NoticeDetail {
     Crossing(String),
     /// [`NoticeKind::Halted`] / [`NoticeKind::Resumed`] (`crate::alerts::halts`).
     Trading(TradingNotice),
+    /// [`NoticeKind::N1`]: the 3-minute window behind the fire (`crate::n1_live`).
+    N1(crate::n1_live::N1Notice),
 }
 
 /// An exchange halt's or resumption's facts, from the trading-status feed and the stock's own
@@ -916,6 +923,10 @@ pub struct RocketBoard {
     notices: Vec<Notice>,
     /// Buying bursts ([`burst`]): live market only (`RocketBoard::enable_burst`).
     burst: Option<burst::BurstDetector>,
+    /// N1 "early leg", the SHADOW detector (`crate::n1_live`): live market only
+    /// ([`RocketBoard::enable_n1`], `N1_LIVE`). It reads the board's prints and clock and only
+    /// adds its own notices; nothing on the board depends on it.
+    n1: Option<crate::n1_live::N1Live>,
     /// The running entry's facts for `running_facts_date` ([`running::facts`]), and the date
     /// whose facts the market should load (once per date).
     running_facts: HashMap<String, running::Fact>,
@@ -1091,6 +1102,7 @@ impl RocketBoard {
             watch_sent: Vec::new(),
             notices: Vec::new(),
             burst: None,
+            n1: None,
             running_facts: HashMap::new(),
             running_facts_date: None,
             running_facts_wanted: None,
@@ -1154,6 +1166,7 @@ impl RocketBoard {
             "fast_bytes": fast_bytes,
             "running_facts": self.running_facts.len(),
             "pending_log": self.pending.len(),
+            "n1": self.n1.as_ref().map(|n| n.cost()),
         })
     }
 
@@ -1220,6 +1233,29 @@ impl RocketBoard {
     pub fn set_burst_adv(&mut self, date: NaiveDate, adv: HashMap<String, f64>) {
         if let Some(b) = self.burst.as_mut() {
             b.set_adv(date, adv);
+        }
+    }
+
+    /// Turns on the N1 shadow detector ([`crate::n1_live`]); a no-op on a disabled board. Only
+    /// the live market calls this (`N1_LIVE`, on by default): a replay never alerts on it.
+    pub fn enable_n1(&mut self) {
+        if self.enabled {
+            self.n1 = Some(crate::n1_live::N1Live::new());
+        }
+    }
+
+    pub fn n1(&self) -> Option<&crate::n1_live::N1Live> {
+        self.n1.as_ref()
+    }
+
+    /// The trading date whose N1 facts the market should load (once per date).
+    pub fn take_n1_facts_request(&mut self) -> Option<NaiveDate> {
+        self.n1.as_mut()?.take_facts_request()
+    }
+
+    pub fn set_n1_facts(&mut self, table: crate::n1_live::FactsTable) {
+        if let Some(n) = self.n1.as_mut() {
+            n.set_facts(table);
         }
     }
 
@@ -1307,6 +1343,9 @@ impl RocketBoard {
                 b.apply_trade(t, counted);
             }
             self.fast_apply(t, counted);
+            if let Some(n) = self.n1.as_mut() {
+                n.apply_trade(t, counted);
+            }
         }
     }
 
@@ -1380,6 +1419,10 @@ impl RocketBoard {
             }
             // Provisional like the rest; the fast tape needs no history (module docs, [`fast`]).
             self.fast_apply(t, counted);
+            // N1 too (only after a restart, a day it never notifies: crate::n1_live).
+            if let Some(n) = self.n1.as_mut() {
+                n.apply_trade(t, counted);
+            }
         }
     }
 
@@ -1722,6 +1765,16 @@ impl RocketBoard {
         // Last: the other four paths keep their row when they fire at the same tick.
         if self.policy.fast {
             self.fast_tick(now);
+        }
+        // The N1 shadow decides on the clock itself (each bar 2 s after it ends) and only adds
+        // its own notices: no row, no crossing line, nothing the paths above read.
+        if let Some(n) = self.n1.as_mut() {
+            n.tick(clock);
+            for x in n.take_notices() {
+                if self.notices.len() < MAX_NOTICES {
+                    self.notices.push(x);
+                }
+            }
         }
         if end_of_day {
             self.finish_day(now);
@@ -3024,6 +3077,13 @@ impl RocketBoard {
             "days": self.days,
             "rows": rows,
         });
+        // The N1 shadow's fires today (crate::n1_live): only while there are some, so an older
+        // client, and a day without any, sees the frame it always did.
+        if let Some(shadow) = self.n1.as_ref().and_then(|n| n.frame())
+            && let Some(m) = v.as_object_mut()
+        {
+            m.insert("shadow".into(), shadow);
+        }
         if let Some(b) = self.burst.as_ref()
             && let Some(m) = v.as_object_mut()
         {

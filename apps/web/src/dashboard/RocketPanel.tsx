@@ -1,7 +1,7 @@
 import { Icon } from "@stockwatcher/chart-web";
 import { cn, ScrollArea, Tip } from "@stockwatcher/chart-web/ui";
 import { formatEtTime } from "@stockwatcher/chart-core";
-import { rocketHeaderView, rocketServerNow, rocketRowMarks, rocketSectionsView, type RocketRowView, type RocketSectionsView, type RocketState, type RocketTone, type RowMarks, withZoneSections } from "@stockwatcher/shared";
+import { rocketHeaderView, rocketServerNow, rocketRowMarks, rocketSectionsView, rocketShadowView, type RocketRowView, type RocketSectionsView, type RocketShadowRowView, type RocketShadowView, type RocketState, type RocketTone, type RowMarks, withZoneSections } from "@stockwatcher/shared";
 import { memo } from "react";
 import { useTickerPress } from "../lib/useTickerPress.ts";
 import { StarButton } from "../favorites/StarButton.tsx";
@@ -61,6 +61,11 @@ const EDGE: Partial<Record<RocketTone, string>> = {
  * A row whose symbol came down into a volume shelf (the frame's `zones`, shared zones.ts) says so
  * on its own full-width line, with the research base rate muted beside it, then "Shelf held" /
  * "Shelf lost" once resolved (ZoneNote): plain text, never green, never the accent.
+ *
+ * The Shadow section (2026-11-17) sits last: research detectors measured BESIDE production, never
+ * part of it (crates/server/src/n1_live, the N1 "early leg"). Each row is labelled by its section
+ * and chip, quiet throughout (no accent, no edge, no outcome colour): a shadow fire is something
+ * to measure, not a call. Present only on a day it fired.
  */
 export function RocketPanelView({ state, onPick }: { state: RocketState; onPick: (symbol: string) => void }) {
   const { enabled, panel } = state;
@@ -70,6 +75,7 @@ export function RocketPanelView({ state, onPick }: { state: RocketState; onPick:
   // The lighter rows' marks (rowMarks.ts), by row key (the wire id).
   const marks: MarksById = new Map((panel?.rows ?? []).map((w) => [w.id, { marks: rocketRowMarks(w, now, formatEtTime), trigger: w.levels?.trigger ?? null }]));
   const head = panel ? rocketHeaderView(panel, state.connected) : null;
+  const shadow = panel ? rocketShadowView(panel) : null;
   return (
     <aside aria-labelledby="rocket-title" className="flex min-h-0 min-w-0 flex-col gap-2 rounded-xl bg-card p-2.5">
       <div className="flex items-center gap-2 px-1">
@@ -118,11 +124,62 @@ export function RocketPanelView({ state, onPick }: { state: RocketState; onPick:
               <RowList rows={rows} marks={marks} onPick={onPick} />
             </section>
           </Reveal>
+          <Reveal show={(shadow?.rows.length ?? 0) > 0}>{shadow && <ShadowSection shadow={shadow} onPick={onPick} />}</Reveal>
         </ScrollArea>
       )}
     </aside>
   );
 }
+
+/** The Shadow section: today's shadow fires, newest first (module docs). */
+function ShadowSection({ shadow, onPick }: { shadow: RocketShadowView; onPick: (symbol: string) => void }) {
+  return (
+    <section aria-labelledby="rocket-shadow-title" className="flex flex-col gap-1 pt-3" data-testid="rocket-shadow">
+      <div className="flex items-center gap-1.5 px-1">
+        <Icon name="insights" className="size-3.5 text-muted-foreground" />
+        <h3 id="rocket-shadow-title" className="m-0 text-xs font-semibold">
+          Shadow
+        </h3>
+        <Tip label="Research detector measured beside production. It does not change any Runners alert.">
+          <span className="rounded bg-bg-raised px-1.5 py-px text-[10px] font-medium text-muted-foreground">{shadow.label}</span>
+        </Tip>
+        <span className="ml-auto font-mono text-[11px] text-muted-foreground tabular-nums">{shadow.rows.length} today</span>
+      </div>
+      <ul className="m-0 flex list-none flex-col gap-1 p-0">
+        {shadow.rows.map((r) => (
+          <li key={`${r.symbol}-${r.at}`} className="@container/row relative">
+            <ShadowRow row={r} onPick={onPick} />
+            <StarButton symbol={r.symbol} className="absolute top-1 right-1" />
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+const ShadowRow = memo(function ShadowRow({ row: r, onPick }: { row: RocketShadowRowView; onPick: (symbol: string) => void }) {
+  const press = useTickerPress(r.symbol, () => onPick(r.symbol));
+  return (
+    <button
+      type="button"
+      {...press}
+      aria-label={`${r.aria}. Load into the selected chart`}
+      data-kind="shadow"
+      className="flex w-full cursor-pointer touch-manipulation flex-col gap-1 bg-bg-row px-2.5 py-2 text-left font-mono outline-none select-none transition-colors duration-300 hover:bg-bg-raised focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none pointer-coarse:min-h-11"
+    >
+      <span className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 pr-7">
+        <span className="text-sm font-semibold">{r.symbol}</span>
+        <span className="text-sm tabular-nums">{r.price}</span>
+        <span className="text-xs text-muted-foreground tabular-nums">{r.gain}</span>
+        <span className="ml-auto text-[11px] text-muted-foreground tabular-nums">{formatEtTime(r.at, true)}</span>
+      </span>
+      <span className="flex min-w-0 items-center gap-1.5 font-sans text-xs text-muted-foreground">
+        <span className="truncate">{r.evidence}</span>
+        {!r.notified && <span className="shrink-0 text-text-faint">· not sent</span>}
+      </span>
+    </button>
+  );
+});
 
 /** A row's marks and its setup's trigger (micros), by the row's key (its wire id). */
 type MarksById = ReadonlyMap<string, { marks: RowMarks; trigger: number | null }>;

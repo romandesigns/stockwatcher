@@ -231,3 +231,20 @@ describe("Volume shelves on a row (2026-10-22)", () => {
     expect(render({ enabled: true, panel, receivedAt: 5, connected: true })).not.toContain('data-testid="mark-zone"');
   });
 });
+
+describe("Runners panel: the Shadow section", () => {
+  const shadow = { n1: { label: "N1 · shadow", config: "X0.06-W3-k10", rows: [{ s: "SHDW", at: T - 60_000, p: 2.12, gain_pct: 6.4, low: 1.99, high: 2.13, dollars: 112_400, rel: 14.2, notified: true }] } };
+  test("labelled shadow, last, quiet (no accent, no green), only on a day it fired", () => {
+    const html = render({ enabled: true, panel: { ...panel, shadow }, receivedAt: 5, connected: true });
+    expect(html).toContain('data-testid="rocket-shadow"');
+    expect(html).toContain("Shadow");
+    expect(html).toContain("N1 · shadow");
+    expect(html).toContain("SHDW");
+    expect(html).toContain("$112K in 3 min · 14× usual");
+    expect(html.indexOf("SHDW")).toBeGreaterThan(html.indexOf("ROCK"));
+    const section = html.slice(html.indexOf('data-testid="rocket-shadow"'));
+    expect(section).not.toContain("text-primary");
+    expect(section).not.toContain("text-good");
+    expect(render({ enabled: true, panel, receivedAt: 5, connected: true })).not.toContain("rocket-shadow");
+  });
+});

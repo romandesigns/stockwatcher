@@ -21,6 +21,8 @@ export interface RunnersPushPrefs {
   /** Exchange halts / resumptions of a covered stock (plan "halt sounds", 2026-11-16). */
   pushHalted: boolean;
   pushResumed: boolean;
+  /** The N1 shadow detector (crates/server/src/n1_live, 2026-11-17): research measured beside production. */
+  pushN1: boolean;
 }
 
 export const RUNNERS_PUSH_DEFAULTS: RunnersPushPrefs = {
@@ -43,6 +45,8 @@ export const RUNNERS_PUSH_DEFAULTS: RunnersPushPrefs = {
   // sound; the picked sound needs release 2's APK (its halt channels).
   pushHalted: true,
   pushResumed: true,
+  // The N1 shadow: off, the owner opts in (the server's default too).
+  pushN1: false,
 };
 
 /** The phone pref behind each shared switch (packages/shared `ALERT_SWITCH_SECTIONS`). */
@@ -63,6 +67,7 @@ export const PUSH_PREF_OF: Readonly<Record<keyof RunnersNotifyKinds, keyof Runne
   pullback: "pushPullback",
   halted: "pushHalted",
   resumed: "pushResumed",
+  n1: "pushN1",
 };
 
 /**
@@ -94,6 +99,7 @@ export interface RunnersRegisterFields {
   runnersPullback: boolean;
   halted: boolean;
   resumed: boolean;
+  n1Shadow: boolean;
 }
 
 export function registerFieldsOf(p: RunnersPushPrefs): RunnersRegisterFields {
@@ -114,5 +120,6 @@ export function registerFieldsOf(p: RunnersPushPrefs): RunnersRegisterFields {
     runnersPullback: p.pushPullback,
     halted: p.pushHalted,
     resumed: p.pushResumed,
+    n1Shadow: p.pushN1,
   };
 }

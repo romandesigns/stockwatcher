@@ -356,6 +356,18 @@ pub fn data_kind(kind: NoticeKind) -> &'static str {
         // Exchange halts (`super::halts`): not a Runners kind, but the same delivery and frame.
         NoticeKind::Halted => "halt.halted",
         NoticeKind::Resumed => "halt.resumed",
+        // The N1 shadow (`crate::n1_live`): its own namespace, so nothing reads it as a
+        // production Runners path.
+        NoticeKind::N1 => "shadow.n1",
+    }
+}
+
+/// "$112K", "$1.4M": a window's dollars for a lock screen.
+fn money(d: f64) -> String {
+    if d >= 1e6 {
+        format!("${:.1}M", d / 1e6)
+    } else {
+        format!("${:.0}K", (d / 1e3).round())
     }
 }
 
@@ -682,6 +694,27 @@ fn panel_message(n: &Notice) -> (String, String, Value) {
             }
             parts.push(format!("{who} pressure, halt risk {risk}/100"));
             (format!("{s} · Halt watcher{p}"), parts.join(" · "))
+        }
+        // "YMAT · N1 · shadow · $2.71" / "+6.4% off the 3-min low $2.55 · $112K in 3 min, 14×
+        // usual · research shadow": what the window did, then the reference line. Labelled a
+        // shadow everywhere: research precision was ~11 % (crate::n1_live), never "buy".
+        (NoticeKind::N1, Some(NoticeDetail::N1(x))) => {
+            data["shadow"] = json!(true);
+            data["config"] = json!(crate::n1_live::logic::CONFIG);
+            data["emitted_at"] = json!(x.emitted_ns / 1_000_000);
+            data["gain_pct"] = json!((x.gain * 1000.0).round() / 10.0);
+            data["low"] = json!(x.low);
+            let usual = x.rel.map_or(String::new(), |r| format!(", {r:.0}× usual"));
+            let parts = [
+                format!(
+                    "{:+.1}% off the 3-min low {}",
+                    x.gain * 100.0,
+                    dollars(on_tick(x.low))
+                ),
+                format!("{} in 3 min{usual}", money(x.dollars)),
+                "research shadow".to_owned(),
+            ];
+            (format!("{s} · N1 · shadow{p}"), parts.join(" · "))
         }
         // A notice without its facts (never expected): its name and price only.
         _ => (
@@ -1280,6 +1313,15 @@ Alert $2.41 · +5% = $2.53"
                 band: 2.8,
                 secs: Some(44),
             }),
+            NoticeKind::N1 => Some(NoticeDetail::N1(crate::n1_live::N1Notice {
+                low: 2.55,
+                high: 2.74,
+                gain: 0.0627,
+                dollars: 112_400.0,
+                prints: 140,
+                rel: Some(14.2),
+                emitted_ns: n.at_ns + 60_000_000,
+            })),
             NoticeKind::Pullback | NoticeKind::PullbackCrossing => {
                 Some(NoticeDetail::Pullback(crate::rocket::PullbackNotice {
                     episode_id: "run:2026-10-23:YMAT:micro_pullback:4".into(),

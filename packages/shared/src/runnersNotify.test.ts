@@ -34,7 +34,7 @@ describe("runners notices", () => {
   });
 
   test("the defaults are the phone's: every evidence kind on; breakouts, at-trigger and the Halt watcher off", () => {
-    expect(DEFAULT_RUNNERS_NOTIFY).toEqual({ new: true, breakout: false, burst: true, running: true, run: true, fast: true, shelf: true, followUp: true, rossCrossing: true, signalsCrossing: true, rossTrigger: false, signalsTrigger: false, halt: false, pullback: true, halted: true, resumed: true });
+    expect(DEFAULT_RUNNERS_NOTIFY).toEqual({ new: true, breakout: false, burst: true, running: true, run: true, fast: true, shelf: true, followUp: true, rossCrossing: true, signalsCrossing: true, rossTrigger: false, signalsTrigger: false, halt: false, pullback: true, halted: true, resumed: true, n1: false });
     expect(runnersNotifyKinds(undefined)).toEqual({ ...DEFAULT_RUNNERS_NOTIFY });
     // A value stored before the new kinds existed: the new switches take their defaults.
     expect(runnersNotifyKinds({ new: false, breakout: true, burst: true, running: true, run: true, fast: true })).toEqual({ ...DEFAULT_RUNNERS_NOTIFY, new: false, breakout: true });
@@ -73,6 +73,7 @@ describe("runners notices", () => {
       ["runners.pullback", "pullback"],
       ["halt.halted", "halted"],
       ["halt.resumed", "resumed"],
+      ["shadow.n1", "n1"],
     ]);
     for (const k of RUNNERS_NOTICE_KINDS) expect(runnersNotifyKey(k) in DEFAULT_RUNNERS_NOTIFY).toBe(true);
   });
@@ -189,3 +190,20 @@ class Fake implements WebSocketLike {
     this.onmessage?.({ data: JSON.stringify(msg) });
   }
 }
+
+describe("N1 shadow", () => {
+  test("its own switch, off by default, in the Shadow section; a stored value from before it takes the default", () => {
+    const n = parseRunnersNotice({ type: "runners.notice", id: "runners-n1-2026-11-18-ABCD-n1-1795012262", alertId: "2026-11-18-ABCD-n1-1795012262", symbol: "ABCD", kind: "shadow.n1", title: "ABCD · N1 · shadow · $2.12", body: "+6.4% off the 3-min low $2.00 · $112K in 3 min · research shadow", data: { symbol: "ABCD", kind: "shadow.n1", shadow: true }, at: 1 })!;
+    expect(n.kind).toBe("shadow.n1");
+    expect(runnersNotifyKey(n.kind)).toBe("n1");
+    expect(wantsNotice(n, DEFAULT_RUNNERS_NOTIFY)).toBe(false);
+    expect(wantsNotice(n, { ...DEFAULT_RUNNERS_NOTIFY, n1: true })).toBe(true);
+    expect(runnersNotifyKinds({ halted: false }).n1).toBe(false);
+    const shadow = ALERT_SWITCH_SECTIONS.find((s) => s.id === "shadow")!;
+    expect(shadow.items).toEqual([expect.objectContaining({ key: "n1", icon: "insights", name: "N1 · shadow" })]);
+  });
+
+  test("a kind an older client does not know is dropped, never shown as another kind", () => {
+    expect(parseRunnersNotice({ ...frame, kind: "shadow.n2" })).toBeNull();
+  });
+});

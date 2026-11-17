@@ -139,6 +139,10 @@ pub struct Device {
     /// default sound, which it has. Absent (older records and apps) = false.
     #[serde(default)]
     pub halt_sounds: bool,
+    /// The N1 shadow detector's alerts (`crate::n1_live`, owner 2026-11-17): OFF, the owner opts
+    /// in; a record saved before they existed included.
+    #[serde(default)]
+    pub n1_shadow: bool,
 }
 
 impl Device {
@@ -161,6 +165,7 @@ impl Device {
             pullback: self.runners_pullback,
             halted: self.halted,
             resumed: self.resumed,
+            n1: self.n1_shadow,
         }
     }
 
@@ -245,6 +250,8 @@ pub struct RunnersOptIn {
     pub resumed_sound: Option<&'static str>,
     /// The phone has the halt sound channels (Device::halt_sounds); None = unchanged.
     pub halt_sounds: Option<bool>,
+    /// The N1 shadow alerts (`crate::n1_live`); None = unchanged / the default (off).
+    pub n1: Option<bool>,
 }
 
 /// The newer switches as `push.register` and `runners.notify` spell them (owner, 2026-10-23),
@@ -289,6 +296,9 @@ pub struct MoreOptIn {
     /// A phone's `haltSounds` capability (Device::halt_sounds); ignored for a desk.
     #[serde(default)]
     pub halt_sounds: Option<bool>,
+    /// The N1 shadow alerts (the desk spells it `n1`, the phone `n1Shadow`).
+    #[serde(default, alias = "n1Shadow")]
+    pub n1: Option<bool>,
 }
 
 /// A known halt sound key (`super::halts::SOUNDS`), read off the wire.
@@ -319,6 +329,7 @@ impl MoreOptIn {
             halted_sound: self.halted_sound.map(|k| k.0),
             resumed_sound: self.resumed_sound.map(|k| k.0),
             halt_sounds: self.halt_sounds,
+            n1: self.n1,
             ..o
         }
     }
@@ -474,6 +485,7 @@ impl Devices {
         let halted = pick(runners.halted, |d| d.halted, def.halted);
         let resumed = pick(runners.resumed, |d| d.resumed, def.resumed);
         let halt_sounds = pick(runners.halt_sounds, |d| d.halt_sounds, false);
+        let n1_shadow = pick(runners.n1, |d| d.n1_shadow, def.n1);
         let sound = |v: Option<&'static str>, had_v: fn(&Device) -> Option<String>| {
             v.map(str::to_owned).or_else(|| had.and_then(had_v))
         };
@@ -511,6 +523,7 @@ impl Devices {
             halted_sound,
             resumed_sound,
             halt_sounds,
+            n1_shadow,
         });
         while self.list.len() > MAX_DEVICES {
             self.list.remove(0);

@@ -276,6 +276,7 @@ mod tick_phase_tests {
 /// | `BURST_ALERTS` | `1` | live market with `ROCKET_WATCH`: buying-burst rows in the Runners panel and their phone push (`crate::rocket::burst`, the research's V3-5 detector): O(1) per print, a 5 s check over the symbols that printed in the last 15 s; never on a replay |
 /// | `BURST_ALERTS_PER_DAY` | `20` | the frozen threshold to alert at: `10`, `20` or `40` (the alert counts it gave a day on the research's DEV days) |
 /// | `VOLUME_SHELVES` | `1` | with `ROCKET_WATCH`: volume shelves (`crate::zones`, the zones bake-off's winner) for every symbol with a confirmed +20 % run today, in the Runners frame's `zones` and on the chart; the live market keeps its forward log under `ARCHIVE_ROOT/zones/`. Its run trigger also feeds the Runners "Run +20%" entry (`crate::rocket::run`), so `0` turns that off too |
+/// | `N1_LIVE` | `1` | live market with `ROCKET_WATCH`: the N1 "early leg" SHADOW detector (`crate::n1_live`, Engine A T2-c6's entrant): its own notice kind `shadow.n1` beside production (push/desktop switch `n1`, off by default) and the Runners frame's `shadow` rows; `0` turns it off |
 /// | `BURST_THRESHOLD` | unset | a burst model probability threshold in (0, 1), overriding `BURST_ALERTS_PER_DAY`'s |
 /// | `ADMISSION_JOURNAL` | `0` | live with a recorder: write the admission journal beside the recording (`crate::admit`; ~190–270 B per print, so off for whole-market SIP: see `Market::init_history`) |
 #[derive(Clone, Debug)]
@@ -307,6 +308,9 @@ pub struct MarketConfig {
     pub burst_policy: crate::rocket::burst::BurstPolicy,
     /// `VOLUME_SHELVES` (on by default, needs `ROCKET_WATCH`): `crate::zones`.
     pub volume_shelves: bool,
+    /// `N1_LIVE` (on by default, needs `ROCKET_WATCH`, live market only): the N1 shadow detector
+    /// (`crate::n1_live`); `0` is its kill switch.
+    pub n1_live: bool,
     /// `ADMISSION_JOURNAL` (off by default): the live admission journal (`crate::admit`). Its
     /// size and the reader's record cap make it unusable for a whole-market day; see
     /// `Market::init_history`.
@@ -336,6 +340,7 @@ impl Default for MarketConfig {
             rocket_policy: crate::rocket::Policy::default(),
             burst_policy: crate::rocket::burst::BurstPolicy::default(),
             volume_shelves: true,
+            n1_live: true,
             admission_journal: false,
             detection_quiet_references: None,
             evidence_check: Duration::from_secs(crate::evidence::DEFAULT_CHECK_SECS),
@@ -376,6 +381,9 @@ impl MarketConfig {
         }
         if let Some(v) = var("VOLUME_SHELVES") {
             c.volume_shelves = on(&v);
+        }
+        if let Some(v) = var("N1_LIVE") {
+            c.n1_live = on(&v);
         }
         c.rocket_policy = crate::rocket::Policy::from_lookup(&get)?;
         c.burst_policy = crate::rocket::burst::BurstPolicy::from_lookup(&get)?;
@@ -752,6 +760,8 @@ pub(crate) struct Inner {
     /// Live with bursts on: the archive the burst detector's ADV30 is read from, once a day
     /// (`crate::rocket::burst::facts`).
     burst_archive: std::sync::OnceLock<Archive>,
+    /// The archive the N1 shadow reads its daily facts from (`crate::n1_live::load_facts`).
+    n1_archive: std::sync::OnceLock<Archive>,
     /// The archive the Runners running entry's facts are read from, once a day
     /// (`crate::rocket::running::facts`); live and replay.
     running_archive: std::sync::OnceLock<Archive>,
@@ -1022,6 +1032,7 @@ impl Market {
             zones_on: AtomicBool::new(true),
             zones_log: std::sync::OnceLock::new(),
             burst_archive: std::sync::OnceLock::new(),
+            n1_archive: std::sync::OnceLock::new(),
             running_archive: std::sync::OnceLock::new(),
             transition_log: std::sync::OnceLock::new(),
             notice_memory_root: std::sync::OnceLock::new(),
@@ -1137,6 +1148,44 @@ impl Market {
             .expect("core lock")
             .rocket
             .enable_burst(policy);
+    }
+
+    /// Live: turns on the N1 shadow detector (`crate::n1_live`) with `archive` for its daily
+    /// facts. Call after `set_rocket_watch` (which rebuilds the board). A replay never calls
+    /// this: N1 is a live-market shadow alert.
+    pub fn enable_n1(&self, archive: Option<Archive>) {
+        if !self.0.rocket_on.load(Ordering::Relaxed) || self.0.mode != ClockMode::Live {
+            return;
+        }
+        if let Some(a) = archive {
+            let _ = self.0.n1_archive.set(a);
+        }
+        tracing::info!(
+            config = crate::n1_live::logic::CONFIG,
+            "n1 shadow: detector on (Engine A T2-c6 entrant N1, shadow beside production; N1_LIVE=0 turns it off)"
+        );
+        self.0.core.lock().expect("core lock").rocket.enable_n1();
+    }
+
+    /// Loads a trading date's N1 facts (`crate::n1_live::load_facts`) on a blocking thread, then
+    /// hands them to the board. Never under the core lock.
+    fn load_n1_facts(&self, date: NaiveDate) {
+        let Some(archive) = self.0.n1_archive.get().cloned() else {
+            return;
+        };
+        let market = self.clone();
+        std::thread::spawn(move || {
+            let t = std::time::Instant::now();
+            let table = crate::n1_live::load_facts(&archive, date);
+            tracing::info!(%date, ms = t.elapsed().as_millis() as u64, "n1 shadow: facts read");
+            market
+                .0
+                .core
+                .lock()
+                .expect("core lock")
+                .rocket
+                .set_n1_facts(table);
+        });
     }
 
     /// Live with bursts on: the symbols the burst detector holds and how many of them still wait
@@ -2009,6 +2058,11 @@ impl Market {
         }
         if mode == ClockMode::Live && cfg.rocket_watch {
             market.enable_burst(cfg.burst_policy.clone(), Some(archive.clone()));
+        }
+        if mode == ClockMode::Live && cfg.rocket_watch && cfg.n1_live {
+            market.enable_n1(Some(archive.clone()));
+        } else if mode == ClockMode::Live && !cfg.n1_live {
+            tracing::info!("n1 shadow: off (N1_LIVE=0)");
         }
         if mode == ClockMode::Live && cfg.rocket_watch {
             // Before the ingest: today's alerts and the record come back after a restart.
@@ -3677,7 +3731,7 @@ impl Market {
             return false;
         };
         let now = self.decision_now(&clock);
-        let (log, notices, adv_wanted, facts_wanted, zones_log) = {
+        let (log, notices, adv_wanted, facts_wanted, n1_wanted, zones_log) = {
             let mut core = self.0.core.lock().expect("core lock");
             if core.rebuilding || !core.rocket.enabled() {
                 return false;
@@ -3709,7 +3763,8 @@ impl Market {
             let notices = core.rocket.take_notices();
             let adv_wanted = core.rocket.take_burst_adv_request();
             let facts_wanted = core.rocket.take_running_facts_request();
-            (log, notices, adv_wanted, facts_wanted, zones_log)
+            let n1_wanted = core.rocket.take_n1_facts_request();
+            (log, notices, adv_wanted, facts_wanted, n1_wanted, zones_log)
         };
         // First, before the file appends and the once-a-day archive reads: seconds matter on a
         // +20 % leg.
@@ -3731,6 +3786,9 @@ impl Market {
         }
         if let Some(date) = facts_wanted {
             self.load_running_facts(date);
+        }
+        if let Some(date) = n1_wanted {
+            self.load_n1_facts(date);
         }
         if let Some(l) = self.0.rocket_log.get() {
             let mut by_date: Vec<(NaiveDate, Vec<String>)> = Vec::new();
