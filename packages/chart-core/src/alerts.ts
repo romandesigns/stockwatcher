@@ -10,9 +10,10 @@ import { placeButtonX, snapPrice, tickSize } from "./trading.ts";
 // to the server: the host passes the alerts in (`ChartAlert`, already resolved to a price line)
 // and gets callbacks out; what an alert IS lives in @stockwatcher/app-state alerts.ts.
 //
-// - A price alert is a dashed accent line across the plot, a label on its right end ("above 2.50
-//   · once") and an accent price tag on the axis. The axis tag is also the touch handle: a 44 pt
-//   tall target, dragged directly (no long press).
+// - A price alert is a dashed accent line across the plot, a label on its far LEFT end ("above
+//   2.50 · once", at the same x as the order pills; owner 2026-11-18, it sat on the right end
+//   beside the axis tag before) and an accent price tag on the axis. The axis tag is also the
+//   touch handle: a 44 pt tall target, dragged directly (no long press).
 // - Dragging shows "old → new · % from last"; Shift (mouse) moves a tenth as fast; it snaps to
 //   the tick ($0.0001 under $1, $0.01 above). Dragging the tag off the right edge deletes.
 // - The bell sits beside the hover "+" (place an order) at the same y, mouse only, and opens a
@@ -116,7 +117,7 @@ function placed(model: ChartModel, layer: AlertLayer): Placed[] {
     if (y < plot.y || y > plot.y + plot.h) continue;
     const text = dragging ? (layer.dragging!.deleting ? "Release to delete" : alertDragText(a.price, p, layer.last)) : a.label;
     const w = labelWidth(text, fs);
-    out.push({ a, price: p, y, label: { x: plot.x + plot.w - w - 6, w, text }, dragging });
+    out.push({ a, price: p, y, label: { x: plot.x + 6, w, text }, dragging });
   }
   return out;
 }

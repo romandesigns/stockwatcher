@@ -43,8 +43,10 @@ describe("alert geometry", () => {
     expect(hitAlert(model, layer(), 372, y + 8, 6, false)).toEqual({ kind: "alert", id: "a", part: "tag" });
     expect(hitAlert(model, layer(), 372, y + 20, 6, false)).toBeNull();
     expect(hitAlert(model, layer(), 372, y + 20, 6, true)).toEqual({ kind: "alert", id: "a", part: "tag" });
-    expect(hitAlert(model, layer(), 100, y + 4, 6, false)).toEqual({ kind: "alert", id: "a", part: "line" });
-    expect(hitAlert(model, layer(), 335, y, 6, false)).toEqual({ kind: "alert", id: "a", part: "tag" });
+    expect(hitAlert(model, layer(), 300, y + 4, 6, false)).toEqual({ kind: "alert", id: "a", part: "line" });
+    // The label sits at the plot's far left (owner, 2026-11-18) and grabs like the tag.
+    expect(hitAlert(model, layer(), 20, y, 6, false)).toEqual({ kind: "alert", id: "a", part: "tag" });
+    expect(hitAlert(model, layer(), 335, y, 6, false)).toEqual({ kind: "alert", id: "a", part: "line" });
     // At the plot's left edge, the far side from the price axis (owner, 2026-10-31).
     expect(hitAlert(model, layer({ bellY: 50 }), 12, 50, 6, false)).toEqual({ kind: "placeAlert", y: 50 });
     expect(hitAlert(model, layer({ bellY: 50 }), 346, 50, 6, false)).toBeNull();
