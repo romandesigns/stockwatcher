@@ -160,7 +160,7 @@ export function DrawingSettingsReset({ settings, onChange }: { settings: Drawing
 /** The Drawing tab as a SettingsSheet section: chart-core's label, icon and description, this panel and its reset. */
 export function drawingSettingsSection(settings: DrawingSettings, onChange: (s: DrawingSettings) => void, reducedMotion?: boolean): SettingsSheetSection {
   const info = SETTINGS_SECTIONS.find((x) => x.id === "drawing")!;
-  return { ...info, action: <DrawingSettingsReset settings={settings} onChange={onChange} />, render: () => <DrawingSettingsPanel settings={settings} onChange={onChange} reducedMotion={reducedMotion} /> };
+  return { ...info, scrolls: true, action: <DrawingSettingsReset settings={settings} onChange={onChange} />, render: () => <DrawingSettingsPanel settings={settings} onChange={onChange} reducedMotion={reducedMotion} /> };
 }
 
 const s = StyleSheet.create({

@@ -1,6 +1,6 @@
 import { SETTINGS_NAV_ROOT, settingsBack, settingsNavReduce, type IconName } from "@stockwatcher/chart-core";
 import { useEffect, useReducer, useRef, useState, type ReactNode } from "react";
-import { AccessibilityInfo, Pressable, StyleSheet, Text, View, type HostInstance, type LayoutChangeEvent } from "react-native";
+import { AccessibilityInfo, Pressable, ScrollView, StyleSheet, Text, View, type HostInstance, type LayoutChangeEvent } from "react-native";
 import Animated, { Easing, useAnimatedStyle, useSharedValue, withTiming } from "react-native-reanimated";
 import { Sheet } from "./sheets.tsx";
 import { Icon, UI } from "./ui.tsx";
@@ -15,6 +15,13 @@ export interface SettingsSheetSection {
   /** Beside the section's heading, e.g. "Reset". */
   action?: ReactNode;
   render: () => ReactNode;
+  /**
+   * The panel brings its own ScrollView (ChartSettingsPanel, DrawingSettingsPanel). Otherwise the
+   * sheet wraps it in one: the app's panels (Alerts, Data source, Trading account) are plain Views
+   * and, unwrapped, anything past the sheet's height could not be reached (owner, 2026-11-18: "I
+   * don't think I can scroll on the mobile setting screen").
+   */
+  scrolls?: boolean;
 }
 
 /** The push / pop slide: long enough to read as movement, short enough not to wait on. */
@@ -115,7 +122,9 @@ export function SettingsSheet({ open, onClose, sections, reducedMotion }: { open
           accessibilityElementsHidden={inSection}
           importantForAccessibility={inSection ? "no-hide-descendants" : "auto"}
         >
-          {sections.map((sec) => (
+          {/* Scrolls too: on the Fold's cover screen in landscape the list is taller than the sheet. */}
+          <ScrollView showsVerticalScrollIndicator={false} showsHorizontalScrollIndicator={false} contentContainerStyle={s.list}>
+            {sections.map((sec) => (
             <Pressable
               key={sec.id}
               ref={(el) => {
@@ -141,7 +150,8 @@ export function SettingsSheet({ open, onClose, sections, reducedMotion }: { open
               </View>
               <Icon name="chevronRight" color={UI.textDim} size={14} />
             </Pressable>
-          ))}
+            ))}
+          </ScrollView>
         </Animated.View>
         {/* Section: slides in from the right over the root, on the sheet's own colour so it covers it. */}
         <Animated.View
@@ -162,7 +172,13 @@ export function SettingsSheet({ open, onClose, sections, reducedMotion }: { open
                 {section.action}
               </View>
               {section.description ? <Text style={[s.desc, s.sectionDesc]}>{section.description}</Text> : null}
-              <View style={{ flex: 1 }}>{section.render()}</View>
+              {section.scrolls ? (
+                <View style={{ flex: 1 }}>{section.render()}</View>
+              ) : (
+                <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingBottom: 8 }}>
+                  {section.render()}
+                </ScrollView>
+              )}
             </>
           )}
         </Animated.View>
@@ -175,6 +191,7 @@ const s = StyleSheet.create({
   // Clipped, so the section waiting off to the right never shows past the sheet's edge.
   body: { flex: 1, overflow: "hidden" },
   screen: { ...StyleSheet.absoluteFill, gap: 6 },
+  list: { gap: 6, paddingBottom: 8 },
   section: { backgroundColor: UI.panel, gap: 0 },
   close: { marginLeft: "auto", width: 32, height: 32, borderRadius: 8, alignItems: "center", justifyContent: "center" },
   row: { flexDirection: "row", alignItems: "center", gap: 12, minHeight: 60, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 12, backgroundColor: UI.row },

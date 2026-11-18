@@ -137,7 +137,7 @@ export function ChartSettingsReset({ settings, onChange }: { settings: ChartSett
 /** The Chart tab as a SettingsSheet section: chart-core's label, icon and description, this panel and its reset. */
 export function chartSettingsSection(settings: ChartSettings, onChange: (s: ChartSettings) => void, indicators: readonly IndicatorSpec[] = []): SettingsSheetSection {
   const info = SETTINGS_SECTIONS.find((x) => x.id === "chart")!;
-  return { ...info, action: <ChartSettingsReset settings={settings} onChange={onChange} />, render: () => <ChartSettingsPanel settings={settings} onChange={onChange} indicators={indicators} /> };
+  return { ...info, scrolls: true, action: <ChartSettingsReset settings={settings} onChange={onChange} />, render: () => <ChartSettingsPanel settings={settings} onChange={onChange} indicators={indicators} /> };
 }
 
 function Section({ label, children }: { label: string; children: ReactNode }) {
