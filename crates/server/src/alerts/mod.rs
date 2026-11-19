@@ -220,6 +220,11 @@ pub struct DeskKinds {
     pub resumed: bool,
     /// The N1 detector's alerts (`crate::n1_live`): ON by default since T2-c6 was confirmed (owner, 2026-11-17).
     pub n1: bool,
+    /// T2-c4's F1u "first pullback after ignition" (`crate::c4_live`): ON by default (owner, 2026-11-18).
+    pub f1u: bool,
+    /// T2-c4's HALT add-on, a bull Halt watcher gauge 09:30–11:30 (`crate::c4_live::halt_addon`):
+    /// ON by default (owner, 2026-11-18).
+    pub halt_bull: bool,
 }
 
 impl Default for DeskKinds {
@@ -254,6 +259,10 @@ impl DeskKinds {
             // Owner, 2026-11-17: on, as Engine A finalist T2-c6 (passed Validation, sealed look 2 and
             // 234 forward days); still switchable in Settings.
             n1: o.n1.unwrap_or(true),
+            // Owner, 2026-11-18: on, as Engine A finalist T2-c4 (Validation, BH, and 234 forward
+            // days: +7.9 pp recall with 22 fewer alerts a day); still switchable in Settings.
+            f1u: o.f1u.unwrap_or(true),
+            halt_bull: o.halt_bull.unwrap_or(true),
         }
     }
 
@@ -287,6 +296,10 @@ impl DeskKinds {
             K::Halted => self.halted,
             K::Resumed => self.resumed,
             K::N1 => self.n1,
+            K::F1u => self.f1u,
+            // One event, one notice: with the gauge's own switch on, its Halt watcher notice
+            // already says it (as the Ross/Signals twins do).
+            K::HaltBull => self.halt_bull && !self.halt,
         }
     }
 }

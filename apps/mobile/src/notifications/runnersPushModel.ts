@@ -23,6 +23,9 @@ export interface RunnersPushPrefs {
   pushResumed: boolean;
   /** The N1 shadow detector (crates/server/src/n1_live, 2026-11-17): research measured beside production. */
   pushN1: boolean;
+  /** Engine A T2-c4's F1u and HALT add-on (crates/server/src/c4_live, 2026-11-18). */
+  pushF1u: boolean;
+  pushHaltBull: boolean;
 }
 
 export const RUNNERS_PUSH_DEFAULTS: RunnersPushPrefs = {
@@ -47,6 +50,9 @@ export const RUNNERS_PUSH_DEFAULTS: RunnersPushPrefs = {
   pushResumed: true,
   // N1: on since T2-c6 was confirmed (2026-11-17; the server's default too).
   pushN1: true,
+  // T2-c4's add-ons: on (owner, 2026-11-18; the server's default too).
+  pushF1u: true,
+  pushHaltBull: true,
 };
 
 /** The phone pref behind each shared switch (packages/shared `ALERT_SWITCH_SECTIONS`). */
@@ -68,6 +74,8 @@ export const PUSH_PREF_OF: Readonly<Record<keyof RunnersNotifyKinds, keyof Runne
   halted: "pushHalted",
   resumed: "pushResumed",
   n1: "pushN1",
+  f1u: "pushF1u",
+  haltBull: "pushHaltBull",
 };
 
 /**
@@ -100,6 +108,8 @@ export interface RunnersRegisterFields {
   halted: boolean;
   resumed: boolean;
   n1Shadow: boolean;
+  f1u: boolean;
+  haltBull: boolean;
 }
 
 export function registerFieldsOf(p: RunnersPushPrefs): RunnersRegisterFields {
@@ -121,5 +131,7 @@ export function registerFieldsOf(p: RunnersPushPrefs): RunnersRegisterFields {
     halted: p.pushHalted,
     resumed: p.pushResumed,
     n1Shadow: p.pushN1,
+    f1u: p.pushF1u,
+    haltBull: p.pushHaltBull,
   };
 }

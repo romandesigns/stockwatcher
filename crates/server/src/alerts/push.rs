@@ -143,6 +143,12 @@ pub struct Device {
     /// it reads false (the device keeps its explicit choice; new devices get the ON default).
     #[serde(default)]
     pub n1_shadow: bool,
+    /// T2-c4's F1u and HALT add-on (`crate::c4_live`, 2026-11-18): on, a record saved before they
+    /// existed included (it never chose; every other stored switch keeps its value).
+    #[serde(default = "yes")]
+    pub f1u: bool,
+    #[serde(default = "yes")]
+    pub halt_bull: bool,
 }
 
 impl Device {
@@ -166,6 +172,8 @@ impl Device {
             halted: self.halted,
             resumed: self.resumed,
             n1: self.n1_shadow,
+            f1u: self.f1u,
+            halt_bull: self.halt_bull,
         }
     }
 
@@ -250,8 +258,11 @@ pub struct RunnersOptIn {
     pub resumed_sound: Option<&'static str>,
     /// The phone has the halt sound channels (Device::halt_sounds); None = unchanged.
     pub halt_sounds: Option<bool>,
-    /// The N1 shadow alerts (`crate::n1_live`); None = unchanged / the default (off).
+    /// The N1 alerts (`crate::n1_live`); None = unchanged / the default (on).
     pub n1: Option<bool>,
+    /// T2-c4's F1u and HALT add-on (`crate::c4_live`); None = unchanged / the default (on).
+    pub f1u: Option<bool>,
+    pub halt_bull: Option<bool>,
 }
 
 /// The newer switches as `push.register` and `runners.notify` spell them (owner, 2026-10-23),
@@ -299,6 +310,11 @@ pub struct MoreOptIn {
     /// The N1 shadow alerts (the desk spells it `n1`, the phone `n1Shadow`).
     #[serde(default, alias = "n1Shadow")]
     pub n1: Option<bool>,
+    /// T2-c4's F1u (`f1u`) and HALT add-on (`haltBull`), spelled the same by the phone and the desk.
+    #[serde(default)]
+    pub f1u: Option<bool>,
+    #[serde(default)]
+    pub halt_bull: Option<bool>,
 }
 
 /// A known halt sound key (`super::halts::SOUNDS`), read off the wire.
@@ -330,6 +346,8 @@ impl MoreOptIn {
             resumed_sound: self.resumed_sound.map(|k| k.0),
             halt_sounds: self.halt_sounds,
             n1: self.n1,
+            f1u: self.f1u,
+            halt_bull: self.halt_bull,
             ..o
         }
     }
@@ -486,6 +504,8 @@ impl Devices {
         let resumed = pick(runners.resumed, |d| d.resumed, def.resumed);
         let halt_sounds = pick(runners.halt_sounds, |d| d.halt_sounds, false);
         let n1_shadow = pick(runners.n1, |d| d.n1_shadow, def.n1);
+        let f1u = pick(runners.f1u, |d| d.f1u, def.f1u);
+        let halt_bull = pick(runners.halt_bull, |d| d.halt_bull, def.halt_bull);
         let sound = |v: Option<&'static str>, had_v: fn(&Device) -> Option<String>| {
             v.map(str::to_owned).or_else(|| had.and_then(had_v))
         };
@@ -524,6 +544,8 @@ impl Devices {
             resumed_sound,
             halt_sounds,
             n1_shadow,
+            f1u,
+            halt_bull,
         });
         while self.list.len() > MAX_DEVICES {
             self.list.remove(0);
@@ -1326,6 +1348,46 @@ mod tests {
         let bound = BATCH_WINDOW / 2;
         assert!(alone < bound, "alone: {alone:?}");
         assert!(behind < bound, "behind a price alert: {behind:?}");
+    }
+
+    /// Engine A T2-c4's F1u and buying-side gauge (`crate::c4_live`, 2026-11-18): on for a new
+    /// phone and for a record saved before they existed (its other switches keep their values,
+    /// N1 off included); `f1u` / `haltBull` from the app switch them; a buying-side gauge is not
+    /// sent again to a phone with the gauge's own switch on.
+    #[test]
+    fn t2_c4_opt_ins() {
+        use crate::rocket::{Notice, NoticeKind as K};
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(FILE),
+            r#"[{"token":"ExponentPushToken[old]","registeredAt":1,"runnersNew":false}]"#,
+        )
+        .unwrap();
+        let mut d = Devices::open(dir.path());
+        let old = d.get("ExponentPushToken[old]").unwrap().clone();
+        assert!(old.f1u && old.halt_bull && !old.runners_new && !old.n1_shadow);
+        for k in [K::F1u, K::HaltBull] {
+            assert_eq!(d.runner_tokens(&Notice::test(k, "A")).len(), 1, "{k:?} on");
+        }
+        let fresh = "ExponentPushToken[new]";
+        let more: MoreOptIn =
+            serde_json::from_str(r#"{"f1u":false,"haltBull":true,"haltWatch":true}"#).unwrap();
+        assert!(d.register(
+            fresh,
+            "android",
+            "Fold",
+            2,
+            more.with(RunnersOptIn::default())
+        ));
+        let dev = d.get(fresh).unwrap().clone();
+        assert!(!dev.f1u && dev.halt_bull && dev.halt_watch);
+        assert!(
+            !dev.kinds().wants(&Notice::test(K::HaltBull, "A")),
+            "sent once"
+        );
+        assert!(dev.kinds().wants(&Notice::test(K::Halt, "A")));
+        let def = super::super::DeskKinds::default();
+        assert!(def.f1u && def.halt_bull && def.n1 && !def.halt);
     }
 
     /// Halt pushes (plan "halt sounds", 2026-11-16): on for a new phone and an old record; an

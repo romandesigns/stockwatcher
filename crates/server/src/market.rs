@@ -276,7 +276,8 @@ mod tick_phase_tests {
 /// | `BURST_ALERTS` | `1` | live market with `ROCKET_WATCH`: buying-burst rows in the Runners panel and their phone push (`crate::rocket::burst`, the research's V3-5 detector): O(1) per print, a 5 s check over the symbols that printed in the last 15 s; never on a replay |
 /// | `BURST_ALERTS_PER_DAY` | `20` | the frozen threshold to alert at: `10`, `20` or `40` (the alert counts it gave a day on the research's DEV days) |
 /// | `VOLUME_SHELVES` | `1` | with `ROCKET_WATCH`: volume shelves (`crate::zones`, the zones bake-off's winner) for every symbol with a confirmed +20 % run today, in the Runners frame's `zones` and on the chart; the live market keeps its forward log under `ARCHIVE_ROOT/zones/`. Its run trigger also feeds the Runners "Run +20%" entry (`crate::rocket::run`), so `0` turns that off too |
-/// | `N1_LIVE` | `1` | live market with `ROCKET_WATCH`: the N1 "early leg" SHADOW detector (`crate::n1_live`, Engine A T2-c6's entrant): its own notice kind `shadow.n1` beside production (push/desktop switch `n1`, off by default) and the Runners frame's `shadow` rows; `0` turns it off |
+/// | `N1_LIVE` | `1` | live market with `ROCKET_WATCH`: the N1 "early leg" detector (`crate::n1_live`, Engine A T2-c6's entrant, X 8 % since T2-c4): its own notice kind `shadow.n1` beside production (push/desktop switch `n1`, on by default) and the Runners frame's `shadow` rows; `0` turns it off |
+/// | `C4_LIVE` | `1` | live market with `ROCKET_WATCH`: Engine A T2-c4's additions (`crate::c4_live`): the F1u detector (`shadow.f1u`, switch `f1u`), the HALT add-on (`halt.bull`, switch `haltBull`), both on by default, and the POST<1 prune of Runners notices; `0` turns all three off |
 /// | `BURST_THRESHOLD` | unset | a burst model probability threshold in (0, 1), overriding `BURST_ALERTS_PER_DAY`'s |
 /// | `ADMISSION_JOURNAL` | `0` | live with a recorder: write the admission journal beside the recording (`crate::admit`; ~190–270 B per print, so off for whole-market SIP: see `Market::init_history`) |
 #[derive(Clone, Debug)]
@@ -311,6 +312,9 @@ pub struct MarketConfig {
     /// `N1_LIVE` (on by default, needs `ROCKET_WATCH`, live market only): the N1 shadow detector
     /// (`crate::n1_live`); `0` is its kill switch.
     pub n1_live: bool,
+    /// `C4_LIVE` (on by default, needs `ROCKET_WATCH`, live market only): Engine A T2-c4's F1u,
+    /// HALT add-on and POST<1 prune (`crate::c4_live`); `0` is their kill switch.
+    pub c4_live: bool,
     /// `ADMISSION_JOURNAL` (off by default): the live admission journal (`crate::admit`). Its
     /// size and the reader's record cap make it unusable for a whole-market day; see
     /// `Market::init_history`.
@@ -341,6 +345,7 @@ impl Default for MarketConfig {
             burst_policy: crate::rocket::burst::BurstPolicy::default(),
             volume_shelves: true,
             n1_live: true,
+            c4_live: true,
             admission_journal: false,
             detection_quiet_references: None,
             evidence_check: Duration::from_secs(crate::evidence::DEFAULT_CHECK_SECS),
@@ -384,6 +389,9 @@ impl MarketConfig {
         }
         if let Some(v) = var("N1_LIVE") {
             c.n1_live = on(&v);
+        }
+        if let Some(v) = var("C4_LIVE") {
+            c.c4_live = on(&v);
         }
         c.rocket_policy = crate::rocket::Policy::from_lookup(&get)?;
         c.burst_policy = crate::rocket::burst::BurstPolicy::from_lookup(&get)?;
@@ -1165,6 +1173,22 @@ impl Market {
             "n1 shadow: detector on (Engine A T2-c6 entrant N1, shadow beside production; N1_LIVE=0 turns it off)"
         );
         self.0.core.lock().expect("core lock").rocket.enable_n1();
+    }
+
+    /// Live: turns on Engine A T2-c4's additions (`crate::c4_live`) with `archive` for the daily
+    /// facts F1u shares with N1. Call after `set_rocket_watch`. A replay never calls this.
+    pub fn enable_c4(&self, archive: Option<Archive>) {
+        if !self.0.rocket_on.load(Ordering::Relaxed) || self.0.mode != ClockMode::Live {
+            return;
+        }
+        if let Some(a) = archive {
+            let _ = self.0.n1_archive.set(a);
+        }
+        tracing::info!(
+            config = crate::c4_live::logic::CONFIG,
+            "c4: Engine A T2-c4 on (F1u, HALT add-on 09:30-11:30 ET, POST<1 prune; C4_LIVE=0 turns it off)"
+        );
+        self.0.core.lock().expect("core lock").rocket.enable_c4();
     }
 
     /// Loads a trading date's N1 facts (`crate::n1_live::load_facts`) on a blocking thread, then
@@ -2064,6 +2088,11 @@ impl Market {
         } else if mode == ClockMode::Live && !cfg.n1_live {
             tracing::info!("n1 shadow: off (N1_LIVE=0)");
         }
+        if mode == ClockMode::Live && cfg.rocket_watch && cfg.c4_live {
+            market.enable_c4(Some(archive.clone()));
+        } else if mode == ClockMode::Live && !cfg.c4_live {
+            tracing::info!("c4: off (C4_LIVE=0)");
+        }
         if mode == ClockMode::Live && cfg.rocket_watch {
             // Before the ingest: today's alerts and the record come back after a restart.
             market.init_rocket_log(
@@ -2843,6 +2872,13 @@ impl Market {
                                 }
                                 let (halted, resumed_at) = core.pressure.halt_state(&h.symbol);
                                 core.rocket.set_halted(&h.symbol, halted, resumed_at);
+                                // The exchange-time ns, else the ms stamp (an older wire).
+                                let ns = |n: i64, ms: i64| if n != 0 { n } else { ms * 1_000_000 };
+                                core.rocket.apply_halt_span(
+                                    &h.symbol,
+                                    ns(h.halt.start_ns, h.halt.start),
+                                    h.halt.end.map(|e| ns(h.halt.end_ns.unwrap_or(0), e)),
+                                );
                             }
                             // In order: a halt freezes the readings before the null band point
                             // that follows it clears the band (crate::pressure, "Halts").
@@ -4656,6 +4692,14 @@ impl Market {
             } else {
                 Vec::new()
             };
+            // T2-c4's HALT add-on (crate::c4_live::halt_addon): the bull gauges it keeps, as
+            // their own kind beside the gauge's notice.
+            let addon: Vec<crate::rocket::Notice> = appeared
+                .iter()
+                .filter_map(|n| core.rocket.halt_addon(n))
+                .collect();
+            let mut appeared = appeared;
+            appeared.extend(addon);
             if cards == core.pressure_cards {
                 return false;
             }

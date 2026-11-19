@@ -212,9 +212,16 @@ pub enum NoticeKind {
     Halted,
     /// The same stock's trading resumed. On by default.
     Resumed,
-    /// Research detector N1 "early leg", a SHADOW beside production (`crate::n1_live`, owner
-    /// 2026-11-17): its facts in [`NoticeDetail::N1`]. Its own switch (`n1`), OFF by default.
+    /// Research detector N1 "early leg" (`crate::n1_live`, owner 2026-11-17; X 8 % since T2-c4,
+    /// 2026-11-18): its facts in [`NoticeDetail::N1`]. Its own switch (`n1`), ON by default.
     N1,
+    /// T2-c4's F1u "first pullback after ignition" (`crate::c4_live`, owner 2026-11-18): its
+    /// facts in [`NoticeDetail::F1u`]. Its own switch (`f1u`), ON by default.
+    F1u,
+    /// T2-c4's HALT add-on (`crate::c4_live::halt_addon`): a bull Halt watcher gauge, in
+    /// universe, 09:30–11:30 ET; the gauge's [`NoticeDetail::Halt`]. Its own switch
+    /// (`haltBull`), ON by default; sent once when the gauge's own switch is on too.
+    HaltBull,
 }
 
 impl NoticeKind {
@@ -238,10 +245,12 @@ impl NoticeKind {
             NoticeKind::Halted => "halted",
             NoticeKind::Resumed => "resumed",
             NoticeKind::N1 => "n1",
+            NoticeKind::F1u => "f1u",
+            NoticeKind::HaltBull => "halt_bull",
         }
     }
 
-    pub const ALL: [NoticeKind; 18] = [
+    pub const ALL: [NoticeKind; 20] = [
         NoticeKind::New,
         NoticeKind::Breakout,
         NoticeKind::Burst,
@@ -260,6 +269,8 @@ impl NoticeKind {
         NoticeKind::Halted,
         NoticeKind::Resumed,
         NoticeKind::N1,
+        NoticeKind::F1u,
+        NoticeKind::HaltBull,
     ];
 }
 
@@ -297,6 +308,8 @@ pub enum NoticeDetail {
     Trading(TradingNotice),
     /// [`NoticeKind::N1`]: the 3-minute window behind the fire (`crate::n1_live`).
     N1(crate::n1_live::N1Notice),
+    /// [`NoticeKind::F1u`]: the impulse, pullback and trigger behind the fire (`crate::c4_live`).
+    F1u(crate::c4_live::F1uNotice),
 }
 
 /// An exchange halt's or resumption's facts, from the trading-status feed and the stock's own
@@ -927,6 +940,9 @@ pub struct RocketBoard {
     /// ([`RocketBoard::enable_n1`], `N1_LIVE`). It reads the board's prints and clock and only
     /// adds its own notices; nothing on the board depends on it.
     n1: Option<crate::n1_live::N1Live>,
+    /// Engine A T2-c4's F1u detector, HALT add-on and POST<1 prune (`crate::c4_live`): live
+    /// market only ([`RocketBoard::enable_c4`], `C4_LIVE`).
+    c4: Option<crate::c4_live::F1uLive>,
     /// The running entry's facts for `running_facts_date` ([`running::facts`]), and the date
     /// whose facts the market should load (once per date).
     running_facts: HashMap<String, running::Fact>,
@@ -1103,6 +1119,7 @@ impl RocketBoard {
             notices: Vec::new(),
             burst: None,
             n1: None,
+            c4: None,
             running_facts: HashMap::new(),
             running_facts_date: None,
             running_facts_wanted: None,
@@ -1167,6 +1184,7 @@ impl RocketBoard {
             "running_facts": self.running_facts.len(),
             "pending_log": self.pending.len(),
             "n1": self.n1.as_ref().map(|n| n.cost()),
+            "f1u": self.c4.as_ref().map(|n| n.cost()),
         })
     }
 
@@ -1248,15 +1266,46 @@ impl RocketBoard {
         self.n1.as_ref()
     }
 
-    /// The trading date whose N1 facts the market should load (once per date).
+    /// Turns on Engine A T2-c4's additions ([`crate::c4_live`]); a no-op on a disabled board.
+    /// Only the live market calls this (`C4_LIVE`, on by default).
+    pub fn enable_c4(&mut self) {
+        if self.enabled {
+            self.c4 = Some(crate::c4_live::F1uLive::new());
+        }
+    }
+
+    pub fn c4(&self) -> Option<&crate::c4_live::F1uLive> {
+        self.c4.as_ref()
+    }
+
+    /// The trading date whose N1 / F1u facts the market should load (once per date; the two
+    /// share one table).
     pub fn take_n1_facts_request(&mut self) -> Option<NaiveDate> {
-        self.n1.as_mut()?.take_facts_request()
+        let a = self.n1.as_mut().and_then(|n| n.take_facts_request());
+        let b = self.c4.as_mut().and_then(|n| n.take_facts_request());
+        a.or(b)
     }
 
     pub fn set_n1_facts(&mut self, table: crate::n1_live::FactsTable) {
+        let table = Arc::new(table);
         if let Some(n) = self.n1.as_mut() {
+            n.set_facts_shared(table.clone());
+        }
+        if let Some(n) = self.c4.as_mut() {
             n.set_facts(table);
         }
+    }
+
+    /// A halt started or resumed (`chart.halt`), for F1u's halt rules.
+    pub fn apply_halt_span(&mut self, symbol: &str, start_ns: i64, end_ns: Option<i64>) {
+        if let Some(n) = self.c4.as_mut() {
+            n.apply_halt(symbol, start_ns, end_ns);
+        }
+    }
+
+    /// T2-c4's HALT add-on for a Halt watcher gauge notice (`crate::c4_live::halt_addon`).
+    pub fn halt_addon(&self, n: &Notice) -> Option<Notice> {
+        self.c4.as_ref()?.halt_addon(n)
     }
 
     /// A restart's history load: the detector to rebuild one symbol's day in, when bursts are
@@ -1346,6 +1395,9 @@ impl RocketBoard {
             if let Some(n) = self.n1.as_mut() {
                 n.apply_trade(t, counted);
             }
+            if let Some(n) = self.c4.as_mut() {
+                n.apply_trade(t, counted);
+            }
         }
     }
 
@@ -1421,6 +1473,9 @@ impl RocketBoard {
             self.fast_apply(t, counted);
             // N1 too (only after a restart, a day it never notifies: crate::n1_live).
             if let Some(n) = self.n1.as_mut() {
+                n.apply_trade(t, counted);
+            }
+            if let Some(n) = self.c4.as_mut() {
                 n.apply_trade(t, counted);
             }
         }
@@ -1525,6 +1580,11 @@ impl RocketBoard {
     }
 
     fn notice(&mut self, mut n: Notice) {
+        // T2-c4's prune POST<1 (crate::c4_live::prunes_post1): the notice only; the row stays.
+        if self.c4.is_some() && crate::c4_live::prunes_post1(&n) {
+            tracing::info!(symbol = %n.symbol, kind = n.kind.as_str(), price = n.price, "runners notice pruned (T2-c4 POST<1)");
+            return;
+        }
         self.add_crossing(&mut n);
         if self.notices.len() < MAX_NOTICES {
             self.notices.push(n);
@@ -1769,6 +1829,15 @@ impl RocketBoard {
         // The N1 shadow decides on the clock itself (each bar 2 s after it ends) and only adds
         // its own notices: no row, no crossing line, nothing the paths above read.
         if let Some(n) = self.n1.as_mut() {
+            n.tick(clock);
+            for x in n.take_notices() {
+                if self.notices.len() < MAX_NOTICES {
+                    self.notices.push(x);
+                }
+            }
+        }
+        // T2-c4's F1u, the same way (crate::c4_live).
+        if let Some(n) = self.c4.as_mut() {
             n.tick(clock);
             for x in n.take_notices() {
                 if self.notices.len() < MAX_NOTICES {

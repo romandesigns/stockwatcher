@@ -47,6 +47,11 @@ export const RUNNERS_NOTICE_KINDS = [
   // Engine A entrant running beside production to be measured, never instead of it. Its own
   // switch, off by default. An older client drops the kind (`parseRunnersNotice`).
   "shadow.n1",
+  // Engine A's T2-c4 (owner, 2026-11-18; crates/server/src/c4_live): F1u "first pullback after
+  // ignition", a research detector like N1, and the HALT add-on, a buying-side Halt watcher gauge
+  // 9:30–11:30. Each its own switch, on by default.
+  "shadow.f1u",
+  "halt.bull",
 ] as const;
 export type RunnersNoticeKind = (typeof RUNNERS_NOTICE_KINDS)[number];
 
@@ -97,8 +102,12 @@ export interface RunnersNotifyKinds {
   halted: boolean;
   /** The same stock's trading resumed. */
   resumed: boolean;
-  /** The N1 shadow detector fired: +6% off a 3-minute low on heavy trading, 9:30–11:30 ET (research, measured beside production). */
+  /** The N1 detector fired: +8% off a 3-minute low on heavy trading, 9:30–11:30 ET (Engine A research, beside production). */
   n1: boolean;
+  /** F1u fired: a stock's first pullback after a +10% ignition crossed back up, 9:30–11:30 ET (Engine A T2-c4). */
+  f1u: boolean;
+  /** The Halt watcher's gauge appeared on the buying side, 9:30–11:30 ET (Engine A T2-c4); sent once if `halt` is on too. */
+  haltBull: boolean;
 }
 
 /**
@@ -126,6 +135,9 @@ export const DEFAULT_RUNNERS_NOTIFY: Readonly<RunnersNotifyKinds> = Object.freez
   resumed: true,
   // On since T2-c6 was confirmed (owner, 2026-11-17: "push live").
   n1: true,
+  // On: Engine A T2-c4 (owner, 2026-11-18).
+  f1u: true,
+  haltBull: true,
 });
 
 /** client `runners.notify`: this connection shows notifications for these kinds (`enabled: false` stops). */
@@ -161,6 +173,8 @@ export const RUNNERS_NOTIFY_KEY: Readonly<Record<RunnersNoticeKind, keyof Runner
   "halt.halted": "halted",
   "halt.resumed": "resumed",
   "shadow.n1": "n1",
+  "shadow.f1u": "f1u",
+  "halt.bull": "haltBull",
 });
 
 /** Whether a notice is an exchange halt or resumption (its own sound on the desktop and web). */
@@ -178,6 +192,9 @@ export function runnersNotifyKey(kind: RunnersNoticeKind): keyof RunnersNotifyKi
  * Signals panel shows too (`alsoSignals`), the Signals twin's switch.
  */
 export function wantsNotice(notice: Pick<RunnersNoticeMessage, "kind" | "alsoSignals">, kinds: RunnersNotifyKinds): boolean {
+  // One gauge, one notification: with "Gauge appears" on, its Halt watcher notice already says it
+  // (the server's DeskKinds::wants applies the same rule).
+  if (notice.kind === "halt.bull") return kinds.haltBull && !kinds.halt;
   if (kinds[runnersNotifyKey(notice.kind)]) return true;
   if (!notice.alsoSignals) return false;
   // A Runners stock's pullback crossing stands for the Signals crossing too, as a Ross one does.
@@ -287,6 +304,8 @@ export const ALERT_SWITCH_ICON: Readonly<Record<keyof RunnersNotifyKinds, AlertI
   halted: "pause",
   resumed: "play",
   n1: "insights",
+  f1u: "insights",
+  haltBull: "gauge",
 });
 
 /** A Runners-pipeline notice kind's icon: its switch's ({@link ALERT_SWITCH_ICON}). */
@@ -341,7 +360,15 @@ export const ALERT_SWITCH_SECTIONS: readonly { id: "runners" | "ross" | "signals
   {
     id: "halt",
     label: "Halt watcher",
-    items: [{ key: "halt", icon: ALERT_SWITCH_ICON.halt, name: "Gauge appears", description: "Pressure building fast near the LULD band. A possible halt, not a forecast." }],
+    items: [
+      { key: "halt", icon: ALERT_SWITCH_ICON.halt, name: "Gauge appears", description: "Pressure building fast near the LULD band. A possible halt, not a forecast." },
+      {
+        key: "haltBull",
+        icon: ALERT_SWITCH_ICON.haltBull,
+        name: "Buying-side gauge, 9:30–11:30",
+        description: "The gauge appears on the buying side of a $0.10–$25 stock between 9:30 and 11:30. About 1 in 5 reached +10% before −5% in Engine A's tests. Sent once if Gauge appears is on too.",
+      },
+    ],
   },
   {
     // The exchange's own halts (the web and desktop add a sound picker per row: notify/HaltsRows).
@@ -353,7 +380,7 @@ export const ALERT_SWITCH_SECTIONS: readonly { id: "runners" | "ross" | "signals
     ],
   },
   {
-    // Research detectors measured beside production (judge ruling J8), never instead of it.
+    // Engine A's research detectors, sent beside production (judge ruling J8), never instead of it.
     id: "shadow",
     label: "Shadow (research)",
     items: [
@@ -361,7 +388,13 @@ export const ALERT_SWITCH_SECTIONS: readonly { id: "runners" | "ross" | "signals
         key: "n1",
         icon: ALERT_SWITCH_ICON.n1,
         name: "N1 · shadow",
-        description: "+6% off a 3-minute low on heavy trading, 9:30–11:30. Being measured beside production; about 1 in 9 reached +10% in research. Off unless you turn it on.",
+        description: "+8% off a 3-minute low on heavy trading, 9:30–11:30. An early look at stocks that may run: about 1 in 8 reached +10% before −5% in Engine A's tests. On by default.",
+      },
+      {
+        key: "f1u",
+        icon: ALERT_SWITCH_ICON.f1u,
+        name: "F1 · first pullback",
+        description: "A stock's first dip after a +10% ignition crosses back over the dip's last high, 9:30–11:30, within 20% of the day's low. About 1 in 15 reached +10% before −5% in Engine A's tests. On by default.",
       },
     ],
   },

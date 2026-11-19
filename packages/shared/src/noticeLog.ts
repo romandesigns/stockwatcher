@@ -183,8 +183,10 @@ const KIND: Record<string, { group: NoticeGroup; label: string }> = {
   "runners.shelf": { group: "shelf", label: "Volume shelf" },
   "runners.followup": { group: "shelf", label: "Follow-up" },
   "halt.watch": { group: "halt", label: "Halt watcher" },
+  "halt.bull": { group: "halt", label: "Halt risk · buying" },
   // The N1 shadow detector (crates/server/src/n1_live): labelled a shadow wherever it shows.
   "shadow.n1": { group: "shadow", label: "N1 · shadow" },
+  "shadow.f1u": { group: "shadow", label: "F1 · first pullback" },
   "price.alert": { group: "price", label: "Price alert" },
 };
 

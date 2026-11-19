@@ -359,6 +359,10 @@ pub fn data_kind(kind: NoticeKind) -> &'static str {
         // The N1 shadow (`crate::n1_live`): its own namespace, so nothing reads it as a
         // production Runners path.
         NoticeKind::N1 => "shadow.n1",
+        // T2-c4 (`crate::c4_live`): F1u is a research detector like N1; the HALT add-on is the
+        // Halt watcher's own gauge, so it stays in the halt namespace.
+        NoticeKind::F1u => "shadow.f1u",
+        NoticeKind::HaltBull => "halt.bull",
     }
 }
 
@@ -669,7 +673,7 @@ fn panel_message(n: &Notice) -> (String, String, Value) {
         // (owner, 2026-11-03), and they survive the body's length cap, which drops the last
         // clauses first. The countdown is left out when the price is not moving toward the band.
         (
-            NoticeKind::Halt,
+            NoticeKind::Halt | NoticeKind::HaltBull,
             Some(NoticeDetail::Halt {
                 bull,
                 risk,
@@ -693,7 +697,38 @@ fn panel_message(n: &Notice) -> (String, String, Value) {
                 None => {}
             }
             parts.push(format!("{who} pressure, halt risk {risk}/100"));
-            (format!("{s} · Halt watcher{p}"), parts.join(" · "))
+            // T2-c4's HALT add-on (crate::c4_live): the same gauge, named for its side.
+            let name = if n.kind == NoticeKind::HaltBull {
+                "Halt risk · buying"
+            } else {
+                "Halt watcher"
+            };
+            (format!("{s} · {name}{p}"), parts.join(" · "))
+        }
+        // "ABCD · F1 · first pullback · $2.51" / "+30% leg $2.00→$2.60, pulled back to $2.45 ·
+        // crossed $2.50 · Engine A research": the impulse, the dip and the level it crossed, then
+        // the reference line. Research precision was ~7 % (+10 % before −5 %), never "buy".
+        (NoticeKind::F1u, Some(NoticeDetail::F1u(x))) => {
+            data["config"] = json!(crate::c4_live::logic::CONFIG);
+            data["emitted_at"] = json!(x.emitted_ns / 1_000_000);
+            data["trigger"] = json!(x.trigger);
+            data["low"] = json!(x.l0);
+            let leg = if x.l0 > 0.0 {
+                (x.h0 / x.l0 - 1.0) * 100.0
+            } else {
+                0.0
+            };
+            let parts = [
+                format!(
+                    "{leg:+.0}% leg {}→{}, pulled back to {}",
+                    dollars(on_tick(x.l0)),
+                    dollars(on_tick(x.h0)),
+                    dollars(on_tick(x.lp))
+                ),
+                format!("crossed {}", dollars(on_tick(x.trigger))),
+                "Engine A research".to_owned(),
+            ];
+            (format!("{s} · F1 · first pullback{p}"), parts.join(" · "))
         }
         // "YMAT · N1 · shadow · $2.71" / "+6.4% off the 3-min low $2.55 · $112K in 3 min, 14×
         // usual · research shadow": what the window did, then the reference line. Labelled a
@@ -1307,12 +1342,21 @@ Alert $2.41 · +5% = $2.53"
                 trigger: Some(2.75),
                 also_signals: kind == NoticeKind::RossCrossing,
             })),
-            NoticeKind::Halt => Some(NoticeDetail::Halt {
+            NoticeKind::Halt | NoticeKind::HaltBull => Some(NoticeDetail::Halt {
                 bull: true,
                 risk: 72,
                 band: 2.8,
                 secs: Some(44),
             }),
+            NoticeKind::F1u => Some(NoticeDetail::F1u(crate::c4_live::F1uNotice {
+                l0: 2.0,
+                h0: 2.6,
+                lp: 2.45,
+                trigger: 2.5,
+                ext_base: Some(0.18),
+                ign_end_ns: n.at_ns - 6 * 60_000_000_000,
+                emitted_ns: n.at_ns + 60_000_000,
+            })),
             NoticeKind::N1 => Some(NoticeDetail::N1(crate::n1_live::N1Notice {
                 low: 2.55,
                 high: 2.74,
@@ -1507,6 +1551,21 @@ Alert $2.41 · +5% = $2.53"
             (
                 "YMAT · Halt watcher · $2.71".into(),
                 "Upper band $2.80 · ~45 s at this pace · buying pressure, halt risk 72/100".into()
+            )
+        );
+        assert_eq!(
+            t(NoticeKind::HaltBull),
+            (
+                "YMAT · Halt risk · buying · $2.71".into(),
+                "Upper band $2.80 · ~45 s at this pace · buying pressure, halt risk 72/100".into()
+            )
+        );
+        assert_eq!(
+            t(NoticeKind::F1u),
+            (
+                "YMAT · F1 · first pullback · $2.71".into(),
+                "+30% leg $2.00→$2.60, pulled back to $2.45 · crossed $2.50 · Engine A research"
+                    .into()
             )
         );
         assert_eq!(

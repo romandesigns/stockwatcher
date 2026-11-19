@@ -782,8 +782,12 @@ export interface PushRegisterMessage {
   resumedSound?: string;
   /** This phone's binary has the halt sound channels (halt-*-v1, release 2); absent = unchanged, a new phone false. */
   haltSounds?: boolean;
-  /** Pushes when the N1 shadow detector fires (crates/server/src/n1_live; server default OFF; absent = unchanged). */
+  /** Pushes when the N1 detector fires (crates/server/src/n1_live; server default on; absent = unchanged). */
   n1Shadow?: boolean;
+  /** Pushes when Engine A T2-c4's F1u fires (crates/server/src/c4_live; server default on; absent = unchanged). */
+  f1u?: boolean;
+  /** Pushes when a buying-side Halt watcher gauge appears 9:30–11:30 (T2-c4's HALT add-on; server default on; absent = unchanged). */
+  haltBull?: boolean;
 }
 
 /** Settings → Alerts → Halts "Send test": the server answers this connection alone with a `runners.notice` for the made-up stock TEST (`data.test` true). */

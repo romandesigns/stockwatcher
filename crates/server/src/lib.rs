@@ -3,6 +3,7 @@ pub mod alerts;
 pub mod api;
 pub mod auth;
 pub mod auto_zones;
+pub mod c4_live;
 pub mod chart_context;
 pub mod config;
 pub mod context;

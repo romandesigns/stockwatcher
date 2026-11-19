@@ -350,6 +350,8 @@ pub fn kind_label(notice: &str) -> &str {
         "runners.followup" => "Follow-up",
         "halt.watch" => "Halt watcher",
         "shadow.n1" => "N1 · shadow",
+        "shadow.f1u" => "F1 · first pullback",
+        "halt.bull" => "Halt risk · buying",
         "price.alert" => "Price alert",
         other => other,
     }

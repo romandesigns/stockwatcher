@@ -2074,3 +2074,26 @@ fn a_stock_with_two_rows_breaks_out_once_per_barrier() {
     ats.dedup();
     assert_eq!(ats.len(), outs.len(), "{outs:?}");
 }
+
+/// Engine A T2-c4's prune POST<1 (`crate::c4_live::prunes_post1`): with the additions on, a Run
+/// +20 % notice under $1 is not sent (its row is untouched); at $1 it is, and without the
+/// additions nothing is pruned.
+#[test]
+fn t2_c4_prunes_post_cross_notices_under_a_dollar_only_when_on() {
+    let run = |price: f64| Notice {
+        price,
+        ..Notice::test(NoticeKind::Run, "SUBD")
+    };
+    let mut b = board(vec![], Policy::default());
+    b.inject_notice(run(0.8));
+    assert_eq!(b.take_notices().len(), 1, "off: nothing pruned");
+    b.enable_c4();
+    b.inject_notice(run(0.8));
+    b.inject_notice(run(1.0));
+    b.inject_notice(Notice {
+        price: 0.8,
+        ..Notice::test(NoticeKind::Fast, "SUBD")
+    });
+    let kept: Vec<(NoticeKind, f64)> = b.take_notices().iter().map(|n| (n.kind, n.price)).collect();
+    assert_eq!(kept, vec![(NoticeKind::Run, 1.0), (NoticeKind::Fast, 0.8)]);
+}
