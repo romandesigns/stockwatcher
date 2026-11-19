@@ -267,6 +267,11 @@ async fn serve(config: Config) -> std::io::Result<()> {
         // Every decided notice, beside rocket-watch on the archive (alerts::ledger).
         stockwatcher_server::alerts::ledger::Ledger::start(&config.market.provider.archive.root)
             .with_feed(notice_feed.clone()),
+        // The fire-time bid-ask spread on every Runners notice (crate::spread): Alpaca's quotes for
+        // the live stream's feed, with the same keys; none without keys or with ALERT_SPREAD=0.
+        stockwatcher_server::spread::QuoteSource::from_config(&config.market.provider.live, |k| {
+            std::env::var(k).ok()
+        }),
     );
     // The Favorites panel's list is a synced setting the server also reads (crate::favorites).
     stockwatcher_server::favorites::follow(

@@ -31,6 +31,7 @@ pub mod replay_alerts;
 pub mod rocket;
 pub mod settings;
 pub mod shadow;
+pub mod spread;
 pub mod symbols;
 pub mod time_marks;
 pub mod trading;

@@ -6,12 +6,14 @@
 //! Lines (all `"v": 1`, times epoch ms unless named `_ns`):
 //!
 //! - `decision` — `{kind, v, decided_at, event_id, notice, symbol, price, at_ns, exec_ns, path,
-//!   decision, held, devices, title, body}` for every Runners-pipeline notice (Runners paths,
+//!   decision, held, devices, title, body, spread_bp}` for every Runners-pipeline notice (Runners paths,
 //!   follow-ups, shelf, Ross/Signals crossing and trigger, pullback, halt), once for the desktop
 //!   and web clients (`path: "desk"`) and once for the phones (`path: "phone"`). `notice` is the
 //!   data kind the clients see (`runners.burst`, `ross.crossing`, …), `decision` `sent` | `held`,
 //!   `held` the limit's code (`no_device`, `quiet_hours`, `stale`, `duplicate`) or `null`,
-//!   `devices` how many devices or open clients wanted the kind. Lines before 2026-10-30 may also
+//!   `devices` how many devices or open clients wanted the kind, `spread_bp` the fire-time
+//!   bid-ask spread in bp of the mid (`crate::spread`; `null` when no market quote qualified or
+//!   on lines before 2026-11-19). Lines before 2026-10-30 may also
 //!   hold `symbol_limit` or `merged` (with `merged_into` and `merged_devices`), the per-stock gap
 //!   and merge since removed (`super::runners`, "Every distinct event is delivered").
 //! - `alert` — `{kind, v, decided_at, event_id, alert_id, symbol, price, text, phone, held,
@@ -177,6 +179,10 @@ fn decision_line(
         "notice": runners::data_kind(n.kind), "symbol": n.symbol, "price": n.price,
         "at_ns": n.at_ns, "exec_ns": n.exec_ns, "path": path, "decision": word, "held": held,
         "devices": devices, "title": title, "body": body,
+        // The fire-time spread (`crate::spread`), `null` when none qualified: kept with the
+        // decision so the cost of each alert can be studied later (board rows lose theirs on a
+        // restart; this line does not).
+        "spread_bp": n.spread_bp,
     });
     if let Some(crate::rocket::NoticeDetail::Pullback(p)) = &n.detail {
         // Persist the frozen observation even when delivery was held. None remains unknown.
@@ -214,6 +220,7 @@ mod tests {
 
     fn notice() -> Notice {
         Notice {
+            spread_bp: None,
             kind: NoticeKind::Pullback,
             alert_id: "e1".into(),
             symbol: "SRTM".into(),

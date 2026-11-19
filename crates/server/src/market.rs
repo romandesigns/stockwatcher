@@ -3927,6 +3927,18 @@ impl Market {
         }
     }
 
+    /// A Runners row's fire-time spread (`crate::spread`'s stage, after its notice was priced):
+    /// the row shows it from the next `rocket.update` (the body changed, so one goes out).
+    /// Display only. Takes the core lock briefly, from the stage's task, never from ingest.
+    pub fn set_runner_spread(&self, alert_id: &str, bp: i32) {
+        self.0
+            .core
+            .lock()
+            .expect("core lock")
+            .rocket
+            .set_spread(alert_id, bp);
+    }
+
     /// Registers a `pressure.subscribe` (the quotes guard's twin).
     pub fn pressure_subscribe(&self) -> PressureGuard {
         self.0.pressure_subs.fetch_add(1, Ordering::Relaxed);
@@ -5079,6 +5091,7 @@ impl PressureCardWire {
     /// appearance (`crate::alerts::runners`).
     fn notice(&self, now: i64) -> crate::rocket::Notice {
         crate::rocket::Notice {
+            spread_bp: None,
             kind: crate::rocket::NoticeKind::Halt,
             alert_id: format!("{}-h{}", self.s, now.div_euclid(1_000_000_000)),
             symbol: self.s.clone(),
@@ -5717,6 +5730,7 @@ mod tests {
     #[test]
     fn runners_notices_leave_the_live_market_only() {
         let notice = |s: &str| crate::rocket::Notice {
+            spread_bp: None,
             kind: crate::rocket::NoticeKind::New,
             alert_id: format!("x-{s}"),
             symbol: s.into(),

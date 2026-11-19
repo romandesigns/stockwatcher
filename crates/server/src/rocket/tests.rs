@@ -1388,6 +1388,29 @@ fn a_plus20_run_gets_a_run_row() {
             .all(|n| n.kind != NoticeKind::FollowUp),
         "one follow-up per path per row"
     );
+    // The fire-time spread (crate::spread, display only): absent until the spread stage priced
+    // the row's notice, then on that row alone; an id that is no row of today's board is ignored.
+    let runx_id = b
+        .alerts()
+        .iter()
+        .find(|a| a.kind == AlertKind::Run)
+        .unwrap()
+        .id
+        .clone();
+    let row_of = |b: &RocketBoard, s: &str| {
+        b.body(&|_| (Some(1.22), Some(1.0)), &|_| None)["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["s"] == s)
+            .unwrap()
+            .clone()
+    };
+    assert!(row_of(&b, "RUNX").get("spread_bp").is_none());
+    b.set_spread(&runx_id, 157);
+    b.set_spread("2026-01-01-NOPE-r1", 999);
+    assert_eq!(row_of(&b, "RUNX")["spread_bp"], 157);
+    assert!(row_of(&b, "FLG").get("spread_bp").is_none());
     // Tracked like the others: the climb goes on, the row's momentum follows.
     let more = climb("RUNX", at(10, 5, 0), 20, 1.01f64.powi(20), 0.01, 50_000).0;
     play(&mut b, more, at(10, 5, 0), at(10, 12, 0));
@@ -1947,12 +1970,14 @@ fn the_first_entry_after_rising_through_the_floor_carries_the_crossing_line() {
     let _ = r.take_notices();
     let _ = r.take_log();
     let entry = Notice {
+        spread_bp: None,
         at_ns: at(14, 0, 0),
         price: 0.1019,
         ..Notice::test(NoticeKind::Running, "WFF")
     };
     r.inject_notice(entry.clone());
     r.inject_notice(Notice {
+        spread_bp: None,
         alert_id: "WFF-2".into(),
         ..entry.clone()
     });
@@ -2081,6 +2106,7 @@ fn a_stock_with_two_rows_breaks_out_once_per_barrier() {
 #[test]
 fn t2_c4_prunes_post_cross_notices_under_a_dollar_only_when_on() {
     let run = |price: f64| Notice {
+        spread_bp: None,
         price,
         ..Notice::test(NoticeKind::Run, "SUBD")
     };
@@ -2091,6 +2117,7 @@ fn t2_c4_prunes_post_cross_notices_under_a_dollar_only_when_on() {
     b.inject_notice(run(0.8));
     b.inject_notice(run(1.0));
     b.inject_notice(Notice {
+        spread_bp: None,
         price: 0.8,
         ..Notice::test(NoticeKind::Fast, "SUBD")
     });

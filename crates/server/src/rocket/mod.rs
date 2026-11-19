@@ -477,6 +477,12 @@ pub struct Notice {
     pub exec_ns: Option<i64>,
     /// The newer kinds' facts ([`NoticeDetail`]); `None` for a row's own entry or breakout.
     pub detail: Option<NoticeDetail>,
+    /// The bid-ask spread at fire time, in basis points of the mid (`crate::spread`): what it
+    /// costs to trade this alert. Display only, never an input to any detector or limit. Every
+    /// detector leaves it `None`; the spread stage between the market and the alerts task fills
+    /// it from the latest market NBBO at or before `at_ns`, and it stays `None` when no quote
+    /// qualifies (no fresh quote, a non-market one, no quote source configured), never a guess.
+    pub spread_bp: Option<i32>,
 }
 
 impl Notice {
@@ -508,6 +514,7 @@ impl Notice {
     #[cfg(test)]
     pub fn test(kind: NoticeKind, symbol: &str) -> Notice {
         Notice {
+            spread_bp: None,
             kind,
             alert_id: format!("{symbol}-1"),
             symbol: symbol.into(),
@@ -902,6 +909,11 @@ pub struct RocketBoard {
     /// Today's crossing lines ([`crossing`]) by symbol: decided once, on the stock's first row
     /// entry (`None` = it had none), shown on its row and restored from the forward log.
     crossings: HashMap<Arc<str>, Option<String>>,
+    /// Each row's fire-time bid-ask spread in basis points (`crate::spread`), by row id: set by
+    /// the spread stage after the row's notice fired (`Market::set_runner_spread`), shown as the
+    /// row's `spread_bp`. Display only; no rule reads it. Not restored after a restart (the ledger
+    /// keeps each notice's), so a restored row shows none.
+    spreads: HashMap<String, i32>,
     scorer: Arc<dyn RocketScorer>,
     policy: Policy,
     date: Option<NaiveDate>,
@@ -1092,6 +1104,7 @@ impl RocketBoard {
             enabled,
             tape: Tape::default(),
             crossings: HashMap::new(),
+            spreads: HashMap::new(),
             scorer,
             policy,
             date: None,
@@ -1568,6 +1581,14 @@ impl RocketBoard {
         std::mem::take(&mut self.pending)
     }
 
+    /// Records row `alert_id`'s fire-time spread (`crate::spread`). An id that is not a row of
+    /// today's board is ignored, so a late answer after a day roll cannot attach to anything.
+    pub fn set_spread(&mut self, alert_id: &str, bp: i32) {
+        if self.alerts.iter().any(|a| a.id == alert_id) {
+            self.spreads.insert(alert_id.to_owned(), bp);
+        }
+    }
+
     /// The new flags and breakouts since the last take (module docs, "Phone pushes").
     pub fn take_notices(&mut self) -> Vec<Notice> {
         std::mem::take(&mut self.notices)
@@ -1764,6 +1785,7 @@ impl RocketBoard {
         self.processed = 0;
         self.alerts.clear();
         self.crossings.clear();
+        self.spreads.clear();
         self.track_symbols.clear();
         self.last_alert.clear();
         // Official open halts can cross dates. Only the pressure board's matching resume ends one.
@@ -1911,6 +1933,7 @@ impl RocketBoard {
             self.pending
                 .push((date, alert.burst_line(date, per_day, &p.x)));
             self.notice(Notice {
+                spread_bp: None,
                 kind: NoticeKind::Burst,
                 alert_id: alert.id.clone(),
                 symbol: alert.symbol.to_string(),
@@ -2058,6 +2081,7 @@ impl RocketBoard {
             self.pending.push((date, a.alert_line(date, mode)));
             self.last_alert.insert(f.symbol.clone(), b.at_ns);
             self.notice(Notice {
+                spread_bp: None,
                 kind: NoticeKind::New,
                 alert_id: a.id.clone(),
                 symbol: a.symbol.to_string(),
@@ -2151,6 +2175,7 @@ impl RocketBoard {
             };
             self.pending.push((date, a.running_line(date, &e)));
             self.notice(Notice {
+                spread_bp: None,
                 kind: NoticeKind::Running,
                 alert_id: a.id.clone(),
                 symbol: a.symbol.to_string(),
@@ -2239,6 +2264,7 @@ impl RocketBoard {
             };
             self.pending.push((date, a.run_line(date, &r)));
             self.notice(Notice {
+                spread_bp: None,
                 kind: NoticeKind::Run,
                 alert_id: a.id.clone(),
                 symbol: a.symbol.to_string(),
@@ -2412,6 +2438,7 @@ impl RocketBoard {
             };
             self.pending.push((date, a.fast_line(date, sec, &e)));
             self.notice(Notice {
+                spread_bp: None,
                 kind: NoticeKind::Fast,
                 alert_id: a.id.clone(),
                 symbol: a.symbol.to_string(),
@@ -2446,6 +2473,7 @@ impl RocketBoard {
                 continue;
             };
             let n = Notice {
+                spread_bp: None,
                 kind: NoticeKind::Shelf,
                 alert_id: format!("{}-z{}", a.id, e.t_ns / SEC_NS),
                 symbol: symbol.to_string(),
@@ -2504,6 +2532,7 @@ impl RocketBoard {
         })
         .to_string();
         let n = Notice {
+            spread_bp: None,
             kind: NoticeKind::FollowUp,
             alert_id: format!("{}-{}", a.id, path.as_str()),
             symbol: symbol.to_string(),
@@ -2624,6 +2653,7 @@ impl RocketBoard {
                     && tr.from != MState::BreakingOut
                     && a.track.fresh_breakout(&x))
                 .then(|| Notice {
+                    spread_bp: None,
                     kind: NoticeKind::Breakout,
                     alert_id: a.id.clone(),
                     symbol: a.symbol.to_string(),
@@ -3092,6 +3122,7 @@ impl RocketBoard {
                     "kind": a.kind.as_str(),
                     "burst": a.burst.as_deref().map(burst_json),
                     "crossing": self.crossings.get(&a.symbol).cloned().flatten(),
+                    "spread_bp": self.spreads.get(&a.id),
                     "also": a.also.iter().map(|x| json!({
                         "kind": x.kind.as_str(), "at": x.at_ns / 1_000_000,
                     })).collect::<Vec<_>>(),
@@ -3115,6 +3146,12 @@ impl RocketBoard {
                 && m.get("crossing").is_some_and(Value::is_null)
             {
                 m.remove("crossing");
+            }
+            // A row with no fire-time spread carries no `spread_bp` (older clients never saw it).
+            if let Some(m) = r.as_object_mut()
+                && m.get("spread_bp").is_some_and(Value::is_null)
+            {
+                m.remove("spread_bp");
             }
             // Likewise a row without follow-ups carries no `also`.
             if let Some(m) = r.as_object_mut()

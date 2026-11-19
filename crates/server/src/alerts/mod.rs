@@ -529,14 +529,16 @@ impl Alerts {
         dir: Option<PathBuf>,
         push_cfg: PushConfig,
         ledger: ledger::Ledger,
+        spread: Option<crate::spread::QuoteSource>,
     ) -> Alerts {
         let (res_tx, res_rx) = mpsc::channel(64);
         let pusher = push::spawn(push_cfg, res_tx, ledger.clone());
-        Self::start_with(settings, live, dir, pusher, res_rx, ledger)
+        Self::start_inner(settings, live, dir, pusher, res_rx, ledger, spread)
     }
 
     /// [`Alerts::start`] with the push sender given: tests hand in a channel they read instead
     /// of Expo (no network), and the results channel they feed.
+    #[cfg(test)]
     fn start_with(
         settings: Settings,
         live: Market,
@@ -544,6 +546,21 @@ impl Alerts {
         pusher: mpsc::Sender<Job>,
         res_rx: mpsc::Receiver<PushResult>,
         ledger: ledger::Ledger,
+    ) -> Alerts {
+        Self::start_inner(settings, live, dir, pusher, res_rx, ledger, None)
+    }
+
+    /// The two above, with the fire-time spread's quote source (`crate::spread`): with one,
+    /// the Runners notices pass through the spread stage on their way to the task; without one
+    /// (tests, no Alpaca keys, `ALERT_SPREAD=0`) they go straight to it and carry no spread.
+    fn start_inner(
+        settings: Settings,
+        live: Market,
+        dir: Option<PathBuf>,
+        pusher: mpsc::Sender<Job>,
+        res_rx: mpsc::Receiver<PushResult>,
+        ledger: ledger::Ledger,
+        spread: Option<crate::spread::QuoteSource>,
     ) -> Alerts {
         let now = now_ms();
         let history = match &dir {
@@ -567,6 +584,16 @@ impl Alerts {
             .unwrap_or_else(RunnersDelivery::in_memory);
         let (in_tx, in_rx) = mpsc::channel(INPUT_CAPACITY);
         let (run_tx, run_rx) = mpsc::channel(RUNNERS_CAPACITY);
+        // With a quote source the market's end of the Runners channel feeds the spread stage,
+        // which hands each notice on, priced, through a second channel of the same size.
+        let run_tx = match spread {
+            Some(src) => {
+                let (stage_tx, stage_rx) = mpsc::channel(RUNNERS_CAPACITY);
+                crate::spread::spawn_stage(src, live.clone(), stage_rx, run_tx);
+                stage_tx
+            }
+            None => run_tx,
+        };
         let sink = Arc::new(AlertSink {
             tx: in_tx,
             dropped: AtomicU64::new(0),
@@ -1307,6 +1334,7 @@ mod tests {
                 access_token: None,
             },
             ledger::Ledger::default(),
+            None,
         );
         let mut frames = alerts.subscribe();
         let now = now_ms();
@@ -1376,6 +1404,7 @@ mod tests {
 
     fn notice(kind: crate::rocket::NoticeKind, symbol: &str, at_ms: i64) -> crate::rocket::Notice {
         crate::rocket::Notice {
+            spread_bp: None,
             kind,
             alert_id: format!("2026-10-22-{symbol}-1"),
             symbol: symbol.into(),

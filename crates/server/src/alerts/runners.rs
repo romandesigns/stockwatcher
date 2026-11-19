@@ -297,12 +297,21 @@ pub fn price_line(price: f64) -> String {
 /// The evidence, then the reference line on a line of its own (separate in the expanded
 /// notification on Android, Windows and the browser). Evidence too long for [`MAX_BODY_CHARS`]
 /// loses its last " · " clauses first (a burst's research odds), down to its first.
-fn with_price_line(evidence: String, price: f64) -> String {
+///
+/// The fire-time spread (`crate::spread`, owner 2026-11-19) ends the reference line when it is
+/// known: "Alert $2.41 · +5% = $2.53 · spread 1.6%". It belongs beside the price because it is
+/// what buying at that price costs (about 2.85 pp a round trip on these names, against +0.2 % of
+/// edge); it outranks the evidence's last clauses for the room. Unknown, it is simply absent.
+fn with_price_line(evidence: String, price: f64, spread_bp: Option<i32>) -> String {
     // No price known (never expected from the board): no line rather than "$0.0000".
     if !(price.is_finite() && price > 0.0) {
         return evidence;
     }
-    let line = price_line(price);
+    let mut line = price_line(price);
+    if let Some(bp) = spread_bp {
+        line.push_str(" · spread ");
+        line.push_str(&spread_pct(bp));
+    }
     let room = MAX_BODY_CHARS.saturating_sub(line.chars().count() + 1);
     let mut ev = evidence;
     while ev.chars().count() > room {
@@ -315,6 +324,18 @@ fn with_price_line(evidence: String, price: f64) -> String {
         line
     } else {
         format!("{ev}\n{line}")
+    }
+}
+
+/// A spread in basis points as a percentage, as every client shows it (packages/shared
+/// `spread.ts` `spreadPct`, the same rule): two decimals under 1 % ("0.42%"), where the cost
+/// bands' 100 bp edge sits, one from 1 % ("2.1%").
+pub fn spread_pct(bp: i32) -> String {
+    let p = f64::from(bp) / 100.0;
+    if bp < 100 {
+        format!("{p:.2}%")
+    } else {
+        format!("{p:.1}%")
     }
 }
 
@@ -757,7 +778,7 @@ fn panel_message(n: &Notice) -> (String, String, Value) {
             String::new(),
         ),
     };
-    (title, with_price_line(body, n.price), data)
+    (title, with_price_line(body, n.price, n.spread_bp), data)
 }
 
 fn runner_message(n: &Notice) -> (String, String, Value) {
@@ -783,7 +804,7 @@ fn runner_message(n: &Notice) -> (String, String, Value) {
         );
         return (
             format!("{s} · 15s new high since alert · {p}"),
-            with_price_line(measured, n.price),
+            with_price_line(measured, n.price, n.spread_bp),
             json!({"symbol":s,"kind":data_kind(n.kind),"alert_id":n.alert_id,
                 "event_id":n.event_id(),"breakout":e,"entry_context":n.reasons}),
         );
@@ -874,7 +895,7 @@ fn runner_message(n: &Notice) -> (String, String, Value) {
     if !body.is_empty() {
         return (
             title,
-            with_crossing(with_price_line(body, n.price), n),
+            with_crossing(with_price_line(body, n.price, n.spread_bp), n),
             data,
         );
     }
@@ -890,7 +911,7 @@ fn runner_message(n: &Notice) -> (String, String, Value) {
     }
     (
         title,
-        with_crossing(with_price_line(parts.join(" · "), n.price), n),
+        with_crossing(with_price_line(parts.join(" · "), n.price, n.spread_bp), n),
         data,
     )
 }
@@ -940,6 +961,10 @@ pub fn desk_frame(n: &Notice) -> String {
         "body": body,
         "data": data,
         "at": n.at_ns.div_euclid(1_000_000),
+        // The fire-time spread in bp of the mid (`crate::spread`), `null` when no market quote
+        // qualified: the clients' cost chip (packages/shared spread.ts). Additive; older
+        // clients ignore it.
+        "spreadBp": n.spread_bp,
     })
     .to_string()
 }
@@ -971,6 +996,7 @@ mod tests {
             NoticeKind::Fast,
         ] {
             let n = Notice {
+                spread_bp: None,
                 kind,
                 alert_id: "2026-10-23-CJMB-7".into(),
                 symbol: "CJMB".into(),
@@ -1120,6 +1146,7 @@ mod tests {
     #[test]
     fn messages() {
         let mut n = Notice {
+            spread_bp: None,
             kind: NoticeKind::New,
             alert_id: "2026-10-22-CJMB-260".into(),
             symbol: "CJMB".into(),
@@ -1280,8 +1307,50 @@ Alert $2.41 · +5% = $2.53"
     }
 
     #[test]
+    fn the_spread_ends_the_reference_line_when_known() {
+        assert_eq!(spread_pct(42), "0.42%");
+        assert_eq!(spread_pct(99), "0.99%");
+        assert_eq!(spread_pct(100), "1.0%");
+        assert_eq!(spread_pct(157), "1.6%");
+        assert_eq!(spread_pct(2_100), "21.0%");
+        assert_eq!(spread_pct(0), "0.00%");
+        // Every notice that carries a reference line carries the spread: the Runners paths, a
+        // follow-up and the panel cues.
+        for kind in [
+            NoticeKind::New,
+            NoticeKind::Burst,
+            NoticeKind::Running,
+            NoticeKind::Run,
+            NoticeKind::Fast,
+            NoticeKind::FollowUp,
+            NoticeKind::RossCrossing,
+        ] {
+            let mut n = sample(kind);
+            n.spread_bp = Some(157);
+            let (_, body, _) = message(&n);
+            assert!(
+                body.lines()
+                    .last()
+                    .is_some_and(|l| l.starts_with("Alert ") && l.ends_with(" · spread 1.6%")),
+                "{kind:?}: {body}"
+            );
+            // Unknown: no spread at all, the line as before.
+            n.spread_bp = None;
+            let (_, body, _) = message(&n);
+            assert!(!body.contains("spread"), "{kind:?}: {body}");
+        }
+        // The desk frame carries the number for the clients' chip, null when unknown.
+        let mut n = sample(NoticeKind::Run);
+        let frame = |n: &Notice| serde_json::from_str::<Value>(&desk_frame(n)).unwrap();
+        assert!(frame(&n)["spreadBp"].is_null());
+        n.spread_bp = Some(312);
+        assert_eq!(frame(&n)["spreadBp"], 312);
+    }
+
+    #[test]
     fn a_long_body_drops_evidence_not_the_reference_line() {
         let n = Notice {
+            spread_bp: None,
             kind: NoticeKind::New,
             alert_id: "a".into(),
             symbol: "YMAT".into(),
@@ -1306,6 +1375,7 @@ Alert $2.41 · +5% = $2.53"
             NoticeKind::Fast,
         ] {
             let n = Notice {
+                spread_bp: None,
                 kind,
                 from_flag_pct: Some(8.0),
                 since_start_min: Some(1.0),
@@ -1390,6 +1460,7 @@ Alert $2.41 · +5% = $2.53"
     fn halt_texts() {
         use crate::rocket::TradingNotice;
         let n = |kind, price: f64, t: TradingNotice| Notice {
+            spread_bp: None,
             price,
             detail: Some(NoticeDetail::Trading(t)),
             ..Notice::test(kind, "XLAB")

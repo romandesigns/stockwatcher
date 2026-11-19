@@ -634,6 +634,12 @@ impl PushConfig {
 }
 
 fn client() -> Result<reqwest::Client, String> {
+    https_client(Duration::from_secs(15))
+}
+
+/// An HTTPS client on the platform verifier and the ring provider, with `timeout` per request:
+/// the push sender's, and `crate::spread`'s quote fetches (the same TLS setup for both).
+pub(crate) fn https_client(timeout: Duration) -> Result<reqwest::Client, String> {
     use rustls_platform_verifier::BuilderVerifierExt;
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let tls = rustls::ClientConfig::builder_with_provider(provider)
@@ -644,7 +650,7 @@ fn client() -> Result<reqwest::Client, String> {
         .with_no_client_auth();
     reqwest::Client::builder()
         .use_preconfigured_tls(tls)
-        .timeout(Duration::from_secs(15))
+        .timeout(timeout)
         .connect_timeout(Duration::from_secs(10))
         .user_agent(concat!("stockwatcher-server/", env!("CARGO_PKG_VERSION")))
         .build()
@@ -1470,6 +1476,7 @@ mod tests {
     #[test]
     fn runners_pushes_carry_the_copy_ticker_category() {
         let n = crate::rocket::Notice {
+            spread_bp: None,
             kind: crate::rocket::NoticeKind::Fast,
             alert_id: "2026-10-23-YMAT-1".into(),
             symbol: "YMAT".into(),

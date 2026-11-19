@@ -293,6 +293,7 @@ impl CueNotices {
             return;
         }
         self.out.push(Notice {
+            spread_bp: None,
             kind,
             alert_id: episode_id.to_string(),
             symbol: symbol.to_string(),
