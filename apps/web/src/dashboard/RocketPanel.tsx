@@ -7,6 +7,7 @@ import { useTickerPress } from "../lib/useTickerPress.ts";
 import { StarButton } from "../favorites/StarButton.tsx";
 import { Reveal } from "./Reveal.tsx";
 import { Flame, MarksLine, RowLine } from "./RowMarks.tsx";
+import { SpreadChip } from "./SpreadChip.tsx";
 import { ZoneNote } from "./ZoneNote.tsx";
 
 const TONE: Record<RocketTone, string> = {
@@ -66,6 +67,11 @@ const EDGE: Partial<Record<RocketTone, string>> = {
  * part of it (crates/server/src/n1_live, the N1 "early leg"). Each row is labelled by its section
  * and chip, quiet throughout (no accent, no edge, no outcome colour): a shadow fire is something
  * to measure, not a call. Present only on a day it fired.
+ *
+ * Each row ends its second line with the alert's fire-time spread (owner, 2026-11-19; SpreadChip,
+ * packages/shared spread.ts): "Spread 0.42%" quiet up to 100 bp, amber to 300 bp, red past it. It
+ * is the cost of trading the alert, which the 2026-11-19 diagnostics found decides whether one is
+ * worth taking. No chip when the server had no market quote.
  */
 export function RocketPanelView({ state, onPick }: { state: RocketState; onPick: (symbol: string) => void }) {
   const { enabled, panel } = state;
@@ -253,6 +259,9 @@ const RocketRow = memo(function RocketRow({ row: r, marks, trigger, onPick }: { 
               </span>
             </Tip>
             {r.outcome && <span className={cn("shrink-0 font-sans text-[11px] font-semibold", TONE[r.outcome.tone])}>{r.outcome.label}</span>}
+            {/* What the alert cost to trade when it fired (owner, 2026-11-19): last on the line,
+                so a chip arriving a moment after the row moves nothing before it. */}
+            <SpreadChip spread={r.spread} />
           </>
         }
       />

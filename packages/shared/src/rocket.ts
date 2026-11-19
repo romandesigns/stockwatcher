@@ -34,6 +34,7 @@
 // they sit with the flags, measure from their entry and carry a quiet chip ("Fast move").
 
 import { rossLinePaths, type RossLineView } from "./ross.ts";
+import { spreadView, type SpreadView } from "./spread.ts";
 import type { ZoneNoteView, ZonesWire } from "./zones.ts";
 
 /** `pending` until known; `rocketed` = the bake-off's hit; `late` = started 10–30 min after;
@@ -220,6 +221,13 @@ export interface RocketRowWire {
   day_line_from?: number;
   day_line?: number[];
   prev_close?: number;
+  /**
+   * The bid-ask spread when the row's alert fired, in basis points of the mid (owner, 2026-11-19;
+   * crates/server/src/spread.rs): what the alert cost to trade. Fire time only, not live. Absent
+   * when no market quote qualified, on a replay, on a row restored after a restart and from older
+   * servers. Shown as {@link spreadView}'s cost chip.
+   */
+  spread_bp?: number;
 }
 
 export interface RocketStrategyWire {
@@ -598,6 +606,8 @@ export interface RocketRowView {
   setup: { label: string; crossing: boolean } | null;
   /** What `fromFlag` is measured from: "flag", "alert" (a burst) or "entry" (a running or run row). */
   fromWhat: "flag" | "alert" | "entry";
+  /** The fire-time spread's cost chip (spread.ts), or null when there is none to show. */
+  spread: SpreadView | null;
   aria: string;
 }
 
@@ -821,9 +831,10 @@ export function rocketRowView(r: RocketRowWire, nowMs: number, strategyId?: stri
     also: rocketAlsoView(r, nowMs),
     setup: rocketSetupView(lv),
     fromWhat: b ? "alert" : isEntryRow(r) ? "entry" : "flag",
+    spread: spreadView(r.spread_bp),
     aria: "",
   };
-  const alsoAria = (view.also.length ? `. Then ${view.also.map((a) => `${a.label} ${a.age === "now" ? "just now" : `${a.age} ago`}`).join(", ")}` : "") + (view.setup ? `. ${view.setup.label}` : "") + (breakoutTracking ? `. ${breakoutTracking}` : "") + (r.crossing ? `. ${r.crossing}` : "");
+  const alsoAria = (view.also.length ? `. Then ${view.also.map((a) => `${a.label} ${a.age === "now" ? "just now" : `${a.age} ago`}`).join(", ")}` : "") + (view.setup ? `. ${view.setup.label}` : "") + (breakoutTracking ? `. ${breakoutTracking}` : "") + (r.crossing ? `. ${r.crossing}` : "") + (view.spread ? `. ${view.spread.aria}` : "");
   if (view.burst) {
     const bv = view.burst;
     view.aria = `${r.s} ${money(last)}${gain ? ` ${gain} on the day` : ""}. ${bv.headline} alerted ${age === "now" ? "just now" : `${age} ago`}, ${bv.since}, ${bv.move}, ${look.label}${note ? ` ${note}` : ""}${reasons.length ? `: ${reasons.join(", ")}` : ""}${outcome ? `. Outcome ${outcome.label}` : ""}${alsoAria}`;

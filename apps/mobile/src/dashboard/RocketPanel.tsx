@@ -10,6 +10,7 @@ import { notifyRocketFlags } from "../notifications/rocket";
 import { phoneNotices } from "../notifications/runnersNotices";
 import { Collapse } from "../motion/Collapse";
 import { ZoneNote } from "./ZoneNote";
+import { SpreadChip } from "./SpreadChip";
 import { fonts } from "../theme";
 import { useTickerPress } from "../ui/useTickerPress";
 import { StarToggle } from "../ui/StarToggle";
@@ -236,6 +237,9 @@ const Row = memo(function Row({ row: r, marks, trigger, onPick, reducedMotion }:
               </Text>
             </Animated.View>
             {r.outcome && <Text style={[styles.outcome, { color: TONE[r.outcome.tone] }]}>{r.outcome.label}</Text>}
+            {/* What the alert cost to trade when it fired (owner, 2026-11-19; the web's chip):
+                last on the line, so a chip arriving a moment after the row moves nothing before it. */}
+            <SpreadChip spread={r.spread} reducedMotion={reducedMotion} />
           </>
         }
       />

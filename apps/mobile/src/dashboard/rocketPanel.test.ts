@@ -81,3 +81,15 @@ test("volume shelves: a plain note on rows and both chart screens, bands on both
     expect(src).toContain("volumeShelves={zones.bands}");
   }
 });
+
+test("each row ends its marks line with the fire-time spread chip, in status colours only (2026-11-19)", () => {
+  // The chip's content and band are the shared view model's (packages/shared spread.test.ts).
+  expect(read("RocketPanel.tsx")).toContain("<SpreadChip spread={r.spread} reducedMotion={reducedMotion} />");
+  const chip = read("SpreadChip.tsx");
+  // Never the accent, never a border: fills from the status tokens.
+  expect(chip).not.toMatch(/UI\.accent|colors\.accent|border(Width|Color)/);
+  for (const token of ["UI.warning", "colors.warningBg", "UI.critical", "colors.criticalBg", "UI.raised"]) expect(chip).toContain(token);
+  // It opens by animating its width on the motion module's timing, and snaps with reduced motion.
+  expect(chip).toContain("withTiming(open ? 1 : 0, collapseTiming)");
+  expect(chip).toContain("reducedMotion ? (open ? 1 : 0)");
+});

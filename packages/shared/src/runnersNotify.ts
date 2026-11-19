@@ -76,6 +76,13 @@ export interface RunnersNoticeMessage {
    * with only the Signals switch on still shows it ([`wantsNotice`]).
    */
   alsoSignals?: boolean;
+  /**
+   * The bid-ask spread at fire time in basis points of the mid (owner, 2026-11-19; crates/server/
+   * src/spread.rs), `null` when no market quote qualified, absent from older servers. The body
+   * already says it ("· spread 1.6%"); this is the number for a cost chip (spread.ts
+   * `spreadView`).
+   */
+  spreadBp?: number | null;
 }
 
 /** One client's switches (the phone's Settings → Alerts names). */
@@ -224,6 +231,9 @@ export function parseRunnersNotice(v: unknown): RunnersNoticeMessage | null {
   }
   const out: RunnersNoticeMessage = { type: "runners.notice", id, alertId: str("alertId"), symbol, kind, title: str("title"), body: str("body"), data, at: typeof m.at === "number" ? m.at : 0 };
   if (m.alsoSignals === true || data?.also_signals === true) out.alsoSignals = true;
+  // A number or an explicit null passes through; anything else is treated as absent.
+  if (m.spreadBp === null) out.spreadBp = null;
+  else if (typeof m.spreadBp === "number" && Number.isFinite(m.spreadBp)) out.spreadBp = m.spreadBp;
   return out;
 }
 

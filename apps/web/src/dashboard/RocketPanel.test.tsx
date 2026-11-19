@@ -37,6 +37,25 @@ describe("Runners panel", () => {
     // The original compact row stays intact; hover/accessibility retain the diagnostic.
     expect(html.replace(/<[^>]*>/g, "")).not.toContain("Exact breakout history unavailable");
   });
+  test("the fire-time spread chip: status colours by cost band, never accent, nothing without a quote (2026-11-19)", () => {
+    const at = (bp: number | undefined) => render({ enabled: true, panel: { ...panel, rows: [{ ...panel.rows[1]!, ...(bp === undefined ? {} : { spread_bp: bp }) }] }, receivedAt: 5, connected: true });
+    // The chip's own tag and content (its word "Spread" is a nested span the row's container query shows).
+    const chip = (html: string) => html.match(/<span role="img" aria-label="Spread[^"]*" data-testid="spread-chip"[^>]*>.*?<\/span>[^<]*<\/span>/)?.[0] ?? "";
+    const normal = chip(at(42));
+    expect(normal).toContain("Spread 0.42%");
+    expect(normal).toContain('data-band="normal"');
+    expect(normal).toContain("text-muted-foreground");
+    const warn = chip(at(157));
+    expect(warn).toContain("Spread 1.6%");
+    expect(warn).toContain("text-warning");
+    expect(warn).toContain("costly to trade");
+    const danger = chip(at(420));
+    expect(danger).toContain("text-critical");
+    expect(danger).toContain("very costly to trade");
+    for (const c of [normal, warn, danger]) expect(c).not.toMatch(/text-primary|bg-primary|border/);
+    // No quote: no chip, no "Spread" anywhere on the row.
+    expect(at(undefined)).not.toContain("Spread");
+  });
   test("a disconnected header does not claim building or breakout attention", () => {
     const p = { ...panel, rows: panel.rows.map((r) => ({ ...r, state: "building" as const })) };
     expect(render({ enabled: true, panel: p, receivedAt: 5, connected: true })).toContain("2 building or breaking out");
