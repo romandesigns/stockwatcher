@@ -1,6 +1,7 @@
-//! N1 "early leg", live as a SHADOW detector beside production (owner approval 2026-11-17; judge
-//! ruling J8 of `JUDGE-RULINGS-002.md`: a finalist that passed the sealed holdout is released as
-//! labelled alerts beside production, which it never replaces).
+//! N1 "early leg", live beside production (owner approval 2026-11-17; judge ruling J8 of
+//! `JUDGE-RULINGS-002.md`: a finalist that passed the sealed holdout is released as labelled alerts
+//! beside production, which it never replaces). ON by default since 2026-11-17 (5350cad3); at
+//! X 8 % since 2026-11-18 as part of Engine A's T2-c4 (`crate::c4_live`, [`logic::GAIN_MIN`]).
 //!
 //! # Why it exists
 //!
@@ -19,8 +20,9 @@
 //! follow-up, no budget, and the armed micro-pullback stays exactly as it is (removing it is a
 //! separate owner decision). Every fire goes through the Runners notices' delivery (persisted
 //! dedupe, devices, quiet hours, the 3-minute stale drop), so the ledger records it with the
-//! server's decision time either way; its push and desktop switch `n1` is OFF by default, so the
-//! owner opts in. The Runners board lists today's fires in a "Shadow" section.
+//! server's decision time either way; its push and desktop switch `n1` is ON by default (it was
+//! off while N1 was a shadow, until 5350cad3). The Runners board lists today's fires in a
+//! "Shadow" section.
 //!
 //! The detector itself is [`logic`] (module docs there: every step with the research's
 //! arithmetic). This module feeds it: every print the Runners board counts, with the chart
@@ -153,7 +155,7 @@ pub fn load_facts(archive: &market_archive::Archive, date: NaiveDate) -> FactsTa
 /// One N1 fire's facts (the notice's [`NoticeDetail::N1`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct N1Notice {
-    /// The 3-minute window's low and high (dollars) and its gain to the close (0.064 = +6.4 %).
+    /// The 3-minute window's low and high (dollars) and its gain to the close (0.084 = +8.4 %).
     pub low: f64,
     pub high: f64,
     pub gain: f64,
@@ -448,6 +450,11 @@ impl N1Live {
     }
 
     pub fn set_facts(&mut self, table: FactsTable) {
+        self.set_facts_shared(Arc::new(table));
+    }
+
+    /// [`N1Live::set_facts`] with a table shared with T2-c4's F1u (`crate::c4_live`).
+    pub fn set_facts_shared(&mut self, table: Arc<FactsTable>) {
         tracing::info!(
             date = ?table.date,
             symbols = table.facts.len(),
@@ -456,7 +463,7 @@ impl N1Live {
             newest_raw = ?table.newest_raw,
             "n1 shadow: facts loaded"
         );
-        self.facts = Some(Arc::new(table));
+        self.facts = Some(table);
     }
 
     /// Today's fires, oldest first (the Runners board's Shadow section).

@@ -5,9 +5,10 @@
 //! [`Fire`] into a notice.
 //!
 //! The research definition (branch `research/engine-a`, `crates/engine-a/src/bin/ea_parts/t2.rs`
-//! `n1_candidates` / `cmd_generate_t2`, frozen candidate `research/engine-a/r2/T2/frozen/T2-c6.json`
-//! blob `d2b5aecf…`, configuration `X0.06-W3-k10` of `n1-grid.json`), step by step, with the
-//! research's own arithmetic:
+//! `n1_candidates` / `cmd_generate_t2`), step by step, with the research's own arithmetic. The
+//! configuration is T2-c4's `X0.08-W3-k10` of `n1-grid.json` (frozen candidate
+//! `research/engine-a/r2/T2/frozen/T2-c4.json`, owner approval 2026-11-18); it went live as
+//! T2-c6's `X0.06-W3-k10` on 2026-11-17, and only the gain threshold differs:
 //!
 //! 1. **15 s bars** of the day's counted prints on the 04:00 ET grid (`store.rs::build_symbol`):
 //!    high, low and close in integer micro-dollars from OHLC-counted prints (the close is the print
@@ -20,7 +21,7 @@
 //! 3. **Window** `W = 3` minutes: the 12 slots ending with this bar. High and low over its priced
 //!    bars; at least **20 volume-counted prints** and **$50,000** (the difference of the running
 //!    `f64` dollar sums, exactly as `derive` computes `cum_dollars`); the close at least
-//!    **0.98 × the window high**; the gain close / low − 1 at least **X = 6 %**; and the window's
+//!    **0.98 × the window high**; the gain close / low − 1 at least **X = 8 %**; and the window's
 //!    dollars per minute at least **k = 10 ×** DADV20 / 390 (a missing DADV20 passes).
 //! 4. **Symbol facts** from the day's daily reference: a previous close (C1 > 0) is required, and a
 //!    security type excluded by `universe-v1` never fires ([`sec_type`]).
@@ -34,8 +35,9 @@
 //!    it is a [`Fire`].
 //!
 //! What the research did after this, and live does not: the J3 twin fold (one security under two
-//! tape tickers, an archive artefact) and T2-c6's union rule, which drops an N1 row at a
-//! symbol-second production already used. Both are explained, counted, in the parity report.
+//! tape tickers, an archive artefact) and T2-c4's union rule, which drops an N1 row at a
+//! symbol-second production or an earlier add-on already used. Both are explained, counted, in
+//! the parity reports (`C:/wavystack/outputs/stockwatcher-n1-shadow/`, `…/stockwatcher-c4-live/`).
 
 use std::collections::VecDeque;
 
@@ -50,8 +52,10 @@ pub const SETTLE: i64 = 2 * SEC;
 /// Window length in minutes (`W3`) and in slots.
 pub const WINDOW_MIN: u32 = 3;
 pub const WINDOW_SLOTS: i64 = WINDOW_MIN as i64 * (MIN / SLOT);
-/// Gain from the window low (`X0.06`).
-pub const GAIN_MIN: f64 = 0.06;
+/// Gain from the window low (`X0.08`: T2-c4, 2026-11-18; T2-c6's `X0.06` before). On 234 forward
+/// days X 8 % sent 10.9 a day at 12.9 % precision against X 6 %'s 24.1 at 9.3 %, and inside c4
+/// that bought more recall per alert (07-forward-results.md F3).
+pub const GAIN_MIN: f64 = 0.08;
 /// Window dollars per minute over DADV20 / 390 (`k10`).
 pub const REL_MIN: f64 = 10.0;
 pub const CLOSE_VS_HIGH: f64 = 0.98;
@@ -69,7 +73,7 @@ pub const STALE_NS: i64 = 60 * SEC;
 pub const GATE_FROM: i64 = 330 * MIN;
 pub const GATE_TO: i64 = 450 * MIN;
 /// The research's configuration id, carried on every fire.
-pub const CONFIG: &str = "X0.06-W3-k10";
+pub const CONFIG: &str = "X0.08-W3-k10";
 /// Daily-bar sessions in DADV20 and the minimum needed (`refdata::DailyBars::facts`).
 pub const DADV_SESSIONS: usize = 20;
 pub const DADV_MIN_SESSIONS: usize = 10;
@@ -563,12 +567,12 @@ mod tests {
         }
     }
 
-    /// A 3-minute climb from $2.00 to $2.14 ending in the slot that ends at `end`: 12 bars of
+    /// A 3-minute climb from $2.00 to $2.18 ending in the slot that ends at `end`: 12 bars of
     /// 3 prints of 1,000 shares.
     fn climb(s: &mut Sym, c: &Clock, end: i64) {
         let k_end = (end - c.t0) / SLOT - 1;
         for (i, k) in (k_end - 11..=k_end).enumerate() {
-            let px = 2_000_000 + i as i64 * 12_727;
+            let px = 2_000_000 + i as i64 * 16_500;
             for j in 0..3 {
                 s.apply(&p(c.t0 + k * SLOT + j * SEC, px, 1_000), c);
             }
@@ -586,7 +590,8 @@ mod tests {
         let got = s.decide_due(end + SETTLE, &c, Some(&facts()), SecType::Common);
         let fires: Vec<_> = got.iter().filter(|x| x.fire).collect();
         assert_eq!(fires.len(), 1, "{got:?}");
-        // The 11th bar is already +6.4 % off the low: the first bar that passes fires.
+        // The 11th bar is already +8.25 % off the low (the 10th +7.4 %): the first bar that passes
+        // fires.
         assert_eq!(fires[0].t, end - SLOT + SETTLE);
         assert!(fires[0].gain() >= GAIN_MIN);
         // A later climb inside 20 minutes is refractory.

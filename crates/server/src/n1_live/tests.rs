@@ -44,7 +44,7 @@ fn table(syms: &[&str]) -> FactsTable {
     }
 }
 
-/// A quiet $2.00 print at 09:00, then a 3-minute climb to about $2.14 ending at `end`, ticking
+/// A quiet $2.00 print at 09:00, then a 3-minute climb to about $2.18 ending at `end`, ticking
 /// the detector every second from `from` (the market's rocket task) and returning its notices.
 fn run(n: &mut N1Live, sym: &str, end: i64) -> Vec<Notice> {
     let mut out = Vec::new();
@@ -52,7 +52,7 @@ fn run(n: &mut N1Live, sym: &str, end: i64) -> Vec<Notice> {
     for i in 0..12 {
         let slot_start = end - (12 - i) * logic::SLOT;
         for j in 0..3 {
-            prints.push((slot_start + j * S, 2_000_000 + i * 12_727));
+            prints.push((slot_start + j * S, 2_000_000 + i * 16_500));
         }
     }
     let mut k = 0;
@@ -87,7 +87,7 @@ fn a_whole_day_with_its_facts_sends_one_labelled_notice_at_the_research_instant(
     assert_eq!(got.len(), 1, "{got:?}");
     let x = &got[0];
     assert_eq!(x.kind, NoticeKind::N1);
-    // The first bar that passes (the 11th of the climb is +6.4 %), decided 2 s after its end.
+    // The first bar that passes (the 11th of the climb is +8.25 %), decided 2 s after its end.
     let t = end - logic::SLOT + logic::SETTLE;
     assert_eq!(x.at_ns, t, "the bar end + 2 s");
     assert_eq!(x.alert_id, format!("2026-11-18-ABCD-n1-{}", t / S));
