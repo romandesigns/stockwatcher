@@ -66,6 +66,11 @@ export const RUNNERS_NOTICE_KINDS = [
   // (the synced `detectors` settings).
   "v2.xgap",
   "v2.xctx",
+  // The v2 rework-2 finalists (crates/server/src/rw2_live): rw2-vwapr-1 "VWAP reclaim" and
+  // rw2-level-1 "20-day high break", added to production the same way. Each its own switch, on by
+  // default; the `detectors` settings can hold either for everyone.
+  "v2.vwapr",
+  "v2.level",
   // research v2 b-good-2 "model picks" (owner, 2026-11-22; crates/server/src/bgood): stocks a frozen
   // model scored above its threshold at a minute end, at most 30 a day. Its own switch, on by default.
   "model.pick",
@@ -147,6 +152,10 @@ export interface RunnersNotifyKinds {
   xCtx: boolean;
   /** research v2 b-good-2 picked a stock: a frozen model scored it above its threshold (at most 30 a day). */
   modelPick: boolean;
+  /** v2 rw2-vwapr-1: a stock up 10%+ flushes under VWAP and holds back above it for 30 s. */
+  vwapReclaim: boolean;
+  /** v2 rw2-level-1: a stock up 10%+ breaks its 20-day high on 20x volume and holds it 60 s. */
+  levelBreak: boolean;
 }
 
 /**
@@ -186,6 +195,9 @@ export const DEFAULT_RUNNERS_NOTIFY: Readonly<RunnersNotifyKinds> = Object.freez
   xCtx: true,
   // On: research v2's proven wins go live (owner, 2026-11-22).
   modelPick: true,
+  // On: the v2 rework-2 finalists (owner, 2026-11-22; FINALISTS-v2c).
+  vwapReclaim: true,
+  levelBreak: true,
 });
 
 /** client `runners.notify`: this connection shows notifications for these kinds (`enabled: false` stops). */
@@ -228,6 +240,8 @@ export const RUNNERS_NOTIFY_KEY: Readonly<Record<RunnersNoticeKind, keyof Runner
   "v2.xgap": "xGap",
   "v2.xctx": "xCtx",
   "model.pick": "modelPick",
+  "v2.vwapr": "vwapReclaim",
+  "v2.level": "levelBreak",
 });
 
 /** Whether a notice is an exchange halt or resumption (its own sound on the desktop and web). */
@@ -369,6 +383,8 @@ export const ALERT_SWITCH_ICON: Readonly<Record<keyof RunnersNotifyKinds, AlertI
   xGap: "insights",
   xCtx: "insights",
   modelPick: "insights",
+  vwapReclaim: "insights",
+  levelBreak: "insights",
 });
 
 /** A Runners-pipeline notice kind's icon: its switch's ({@link ALERT_SWITCH_ICON}). */
@@ -497,6 +513,18 @@ export const ALERT_SWITCH_SECTIONS: readonly { id: "runners" | "ross" | "signals
         icon: ALERT_SWITCH_ICON.modelPick,
         name: "Model picks",
         description: "A research model scores every stock each minute and picks the strongest, at most 2 a stock and 30 a day, none right after another alert on it. About 1 in 7 reached +10% before −5% in testing. On by default.",
+      },
+      {
+        key: "vwapReclaim",
+        icon: ALERT_SWITCH_ICON.vwapReclaim,
+        name: "VWAP reclaim",
+        description: "A stock up 10%+ on yesterday's close dips 2% under VWAP and holds back above it for 30 s on rising volume, once a session, pre-market and regular hours. About 1 in 5 reached +10% before −5% in the v2 tests. On by default.",
+      },
+      {
+        key: "levelBreak",
+        icon: ALERT_SWITCH_ICON.levelBreak,
+        name: "20-day high break",
+        description: "A stock up 10%+ crosses its 20-day high on 20x its usual volume and stays above it for 60 s, once a day, any session. About 1 in 5 reached +10% before −5% in the v2 tests. On by default.",
       },
     ],
   },

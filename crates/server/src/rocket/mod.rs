@@ -246,6 +246,15 @@ pub enum NoticeKind {
     /// [`NoticeDetail::BGood`]. Its own switch (`modelPick`), ON by default, and the runtime
     /// detector switch `b-good-2` (`crate::alerts`, "Detector switches").
     BGood,
+    /// Research v2 rework-2 rw2-vwapr-1 "VWAP reclaim" (`crate::rw2_live`, owner 2026-11-22): an
+    /// in-play stock (+10 % on C1) flushed 2 % under VWAP and reclaimed it, held 30 s. Its facts
+    /// in [`NoticeDetail::Rw2`]. Its own switch (`vwapReclaim`), ON by default; `detectors` id
+    /// `rw2-vwapr-1`.
+    VwapReclaim,
+    /// Research v2 rework-2 rw2-level-1 "20-day high break" (`crate::rw2_live`): a +10 % gainer
+    /// crossed its 20-session high on 20× volume and held it 60 s. Switch `levelBreak`, ON by
+    /// default; `detectors` id `rw2-level-1`.
+    LevelBreak,
 }
 
 impl NoticeKind {
@@ -276,10 +285,12 @@ impl NoticeKind {
             NoticeKind::XGap => "x_gap",
             NoticeKind::XCtx => "x_ctx",
             NoticeKind::BGood => "bgood",
+            NoticeKind::VwapReclaim => "vwap_reclaim",
+            NoticeKind::LevelBreak => "level_break",
         }
     }
 
-    pub const ALL: [NoticeKind; 25] = [
+    pub const ALL: [NoticeKind; 27] = [
         NoticeKind::New,
         NoticeKind::Breakout,
         NoticeKind::Burst,
@@ -305,6 +316,8 @@ impl NoticeKind {
         NoticeKind::XGap,
         NoticeKind::XCtx,
         NoticeKind::BGood,
+        NoticeKind::VwapReclaim,
+        NoticeKind::LevelBreak,
     ];
 }
 
@@ -353,6 +366,9 @@ pub enum NoticeDetail {
     GapCtx(crate::gap_ctx::GapCtxNotice),
     /// [`NoticeKind::BGood`]: the model's score behind the pick (`crate::bgood`).
     BGood(crate::bgood::BGoodNotice),
+    /// [`NoticeKind::VwapReclaim`] / [`NoticeKind::LevelBreak`]: the bars behind the fire and the
+    /// detector's id and version (`crate::rw2_live`).
+    Rw2(crate::rw2_live::Rw2Notice),
 }
 
 /// An exchange halt's or resumption's facts, from the trading-status feed and the stock's own
@@ -1031,6 +1047,10 @@ pub struct RocketBoard {
     /// ([`RocketBoard::enable_gap_ctx`], `GAP_CTX_LIVE`). Like N1 it reads the board's prints
     /// and clock and only adds its own notices.
     gap_ctx: Option<crate::gap_ctx::GapCtxLive>,
+    /// The v2 rework-2 finalists rw2-vwapr-1 and rw2-level-1 (`crate::rw2_live`): live market
+    /// only ([`RocketBoard::enable_rw2`], `RW2_LIVE`). Like x-gap-1 it reads the board's prints
+    /// and clock and only adds its own notices.
+    rw2: Option<crate::rw2_live::Rw2Live>,
     /// research v2 b-good (`crate::bgood`): b-good-2's picks (its own notices) and b-good-1's
     /// tags (requests the market hands the confidence stage). Live market only
     /// ([`RocketBoard::enable_bgood`], `BGOOD_LIVE`); nothing on the board depends on it.
@@ -1218,6 +1238,7 @@ impl RocketBoard {
             xhalt: None,
             xfloat: None,
             gap_ctx: None,
+            rw2: None,
             bgood: None,
             running_facts: HashMap::new(),
             running_facts_date: None,
@@ -1287,6 +1308,7 @@ impl RocketBoard {
             "x_halt": self.xhalt.as_ref().map(|n| n.cost()),
             "xfloat": self.xfloat.as_ref().map(|n| n.cost()),
             "gap_ctx": self.gap_ctx.as_ref().map(|n| n.cost()),
+            "rw2": self.rw2.as_ref().map(|n| n.cost()),
             "bgood": self.bgood.as_ref().map(|n| n.cost()),
         })
     }
@@ -1407,6 +1429,34 @@ impl RocketBoard {
     /// The finished session's time-of-day file for the market to write (`crate::gap_ctx`).
     pub fn take_gap_ctx_tod(&mut self) -> Option<(NaiveDate, Value)> {
         self.gap_ctx.as_mut()?.take_tod()
+    }
+
+    /// Turns on the v2 rework-2 finalists rw2-vwapr-1 / rw2-level-1 ([`crate::rw2_live`]); a
+    /// no-op on a disabled board. Only the live market calls this (`RW2_LIVE`, on by default).
+    pub fn enable_rw2(&mut self) {
+        if self.enabled {
+            self.rw2 = Some(crate::rw2_live::Rw2Live::new());
+        }
+    }
+
+    pub fn rw2(&self) -> Option<&crate::rw2_live::Rw2Live> {
+        self.rw2.as_ref()
+    }
+
+    /// The trading date whose rw2 table the market should load (once per date).
+    pub fn take_rw2_request(&mut self) -> Option<NaiveDate> {
+        self.rw2.as_mut()?.take_table_request()
+    }
+
+    pub fn set_rw2_table(&mut self, table: crate::rw2_live::Table) {
+        if let Some(n) = self.rw2.as_mut() {
+            n.set_table(table);
+        }
+    }
+
+    /// The finished session's HI20 presence file for the market to write (`crate::rw2_live`).
+    pub fn take_rw2_member(&mut self) -> Option<(NaiveDate, Value)> {
+        self.rw2.as_mut()?.take_member()
     }
 
     /// Turns on research v2's x-halt-1 ([`crate::xhalt_live`]); a no-op on a disabled board.
@@ -1645,6 +1695,9 @@ impl RocketBoard {
             if let Some(n) = self.gap_ctx.as_mut() {
                 n.apply_trade(t, counted);
             }
+            if let Some(n) = self.rw2.as_mut() {
+                n.apply_trade(t, counted);
+            }
             if let Some(n) = self.bgood.as_mut() {
                 n.apply_trade(t, counted);
             }
@@ -1732,6 +1785,9 @@ impl RocketBoard {
                 n.apply_trade(t, counted);
             }
             if let Some(n) = self.gap_ctx.as_mut() {
+                n.apply_trade(t, counted);
+            }
+            if let Some(n) = self.rw2.as_mut() {
                 n.apply_trade(t, counted);
             }
             // b-good likewise (a day started mid-session never sends: crate::bgood).
@@ -2144,6 +2200,16 @@ impl RocketBoard {
         }
         // The v2 x-gap-1 / x-ctx-1, the same way (crate::gap_ctx: each bar 50 ms after it ends).
         if let Some(n) = self.gap_ctx.as_mut() {
+            n.tick(clock);
+            for x in n.take_notices() {
+                if self.notices.len() < MAX_NOTICES {
+                    self.notices.push(x);
+                }
+            }
+        }
+        // The v2 rework-2 rw2-vwapr-1 / rw2-level-1, the same way (crate::rw2_live: each bar,
+        // and each 30 s hold, 50 ms after it ends).
+        if let Some(n) = self.rw2.as_mut() {
             n.tick(clock);
             for x in n.take_notices() {
                 if self.notices.len() < MAX_NOTICES {

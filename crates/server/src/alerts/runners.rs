@@ -457,6 +457,9 @@ pub fn data_kind(kind: NoticeKind) -> &'static str {
         // them as a production Runners path.
         NoticeKind::XGap => "v2.xgap",
         NoticeKind::XCtx => "v2.xctx",
+        // The v2 rework-2 finalists (`crate::rw2_live`), in the same namespace.
+        NoticeKind::VwapReclaim => "v2.vwapr",
+        NoticeKind::LevelBreak => "v2.level",
         // research v2 b-good-2 (`crate::bgood`): a model's pick, not a Runners path.
         NoticeKind::BGood => "model.pick",
     }
@@ -946,6 +949,40 @@ fn panel_message(n: &Notice) -> (String, String, Value) {
                 parts.join(" · "),
             )
         }
+        // "ABCD · VWAP reclaim · $2.06" / "3.1% flush, VWAP $2.00 reclaimed 30 s · +37% today ·
+        // 5-min 4× usual · v2 research": the flush, the reclaim and the in-play gain behind
+        // it (crate::rw2_live). Research precision ~22 %, never "buy".
+        (NoticeKind::VwapReclaim, Some(NoticeDetail::Rw2(x))) => {
+            rw2_data(&mut data, x);
+            let flush = x
+                .flush_depth
+                .map_or("Flush".to_owned(), |f| format!("{:.1}% flush", f * 100.0));
+            let usual = x
+                .rvol
+                .map_or(String::new(), |r| format!(" · 5-min {r:.0}× usual"));
+            let parts = [
+                format!("{flush}, VWAP {} reclaimed 30 s", dollars(on_tick(x.level))),
+                format!("{:+.0}% today{usual}", x.gain * 100.0),
+                "v2 research".to_owned(),
+            ];
+            (format!("{s} · VWAP reclaim{p}"), parts.join(" · "))
+        }
+        // "ABCD · 20-day high break · $1.31" / "Held 60 s over 20-day high $1.20 · +31% on
+        // $1.00 · 5-min 25× usual · v2 research" (crate::rw2_live). Research precision ~21 %.
+        (NoticeKind::LevelBreak, Some(NoticeDetail::Rw2(x))) => {
+            rw2_data(&mut data, x);
+            let close =
+                x.c1.map_or(String::new(), |c| format!(" on {}", dollars(on_tick(c))));
+            let usual = x
+                .rvol
+                .map_or(String::new(), |r| format!(" · 5-min {r:.0}× usual"));
+            let parts = [
+                format!("Held 60 s over 20-day high {}", dollars(on_tick(x.level))),
+                format!("{:+.0}%{close}{usual}", x.gain * 100.0),
+                "v2 research".to_owned(),
+            ];
+            (format!("{s} · 20-day high break{p}"), parts.join(" · "))
+        }
         // "YMAT · Model pick · $2.71" / "Model score 0.43 · pick 3 today · research v2 model": a
         // stock the b-good-2 model scored above its threshold (`crate::bgood`). The score is the
         // model's probability that the move is GOOD (good-v1), shown as the research reports it;
@@ -979,6 +1016,17 @@ fn gap_ctx_data(data: &mut Value, x: &crate::gap_ctx::GapCtxNotice) {
     data["detector_version"] = json!(x.version);
     data["emitted_at"] = json!(x.emitted_ns / 1_000_000);
     data["gap_pct"] = json!((x.gap * 1000.0).round() / 10.0);
+    data["level"] = json!(x.level);
+    data["session"] = json!(x.session);
+}
+
+/// The data fields of an rw2 push (`crate::rw2_live`): which detector, its version and the
+/// numbers behind the text, for the clients and the ledger.
+fn rw2_data(data: &mut Value, x: &crate::rw2_live::Rw2Notice) {
+    data["detector"] = json!(x.detector);
+    data["detector_version"] = json!(x.version);
+    data["emitted_at"] = json!(x.emitted_ns / 1_000_000);
+    data["gain_pct"] = json!((x.gain * 1000.0).round() / 10.0);
     data["level"] = json!(x.level);
     data["session"] = json!(x.session);
 }
@@ -1769,6 +1817,24 @@ Alert $2.41 · +5% = $2.53"
                     emitted_ns: n.at_ns + 60_000_000,
                 }))
             }
+            NoticeKind::VwapReclaim | NoticeKind::LevelBreak => {
+                let vw = kind == NoticeKind::VwapReclaim;
+                Some(NoticeDetail::Rw2(crate::rw2_live::Rw2Notice {
+                    detector: if vw { "rw2-vwapr-1" } else { "rw2-level-1" },
+                    version: "v",
+                    gain: if vw { 0.372 } else { 0.31 },
+                    cum: 310_400.0,
+                    trail: 64_000.0,
+                    rvol: Some(if vw { 4.2 } else { 25.4 }),
+                    level: if vw { 2.0 } else { 1.20 },
+                    c1: Some(if vw { 1.5 } else { 1.0 }),
+                    flush_depth: vw.then_some(0.0312),
+                    trigger_ns: n.at_ns - 30_000_000_000,
+                    session: "regular",
+                    arrival_ns: Some(n.at_ns - 40_000_000),
+                    emitted_ns: n.at_ns + 60_000_000,
+                }))
+            }
             NoticeKind::BGood => Some(NoticeDetail::BGood(crate::bgood::BGoodNotice {
                 margin: -0.2,
                 prob: 0.45,
@@ -2024,6 +2090,22 @@ Alert $2.41 · +5% = $2.53"
             (
                 "YMAT · Day 2 · above yesterday's high · $2.71".into(),
                 "Ran +45% yesterday · crossed $2.70 · $130K today, 5-min 12× usual · v2 research"
+                    .into()
+            )
+        );
+        assert_eq!(
+            t(NoticeKind::VwapReclaim),
+            (
+                "YMAT · VWAP reclaim · $2.71".into(),
+                "3.1% flush, VWAP $2.00 reclaimed 30 s · +37% today · 5-min 4× usual · v2 research"
+                    .into()
+            )
+        );
+        assert_eq!(
+            t(NoticeKind::LevelBreak),
+            (
+                "YMAT · 20-day high break · $2.71".into(),
+                "Held 60 s over 20-day high $1.20 · +31% on $1.00 · 5-min 25× usual · v2 research"
                     .into()
             )
         );

@@ -41,8 +41,9 @@
 //! its would-be alerts are still counted. It is its own namespace, never inside `alerts.prefs`,
 //! which clients write as one value and would erase it; clients may write it (it is not
 //! server-owned). Ids: `run` (the cut Run +20% kind), `x-halt-1`, `x-float-1`, `x-gap-1`,
-//! `x-ctx-1`, `rw-mp5-1` (the Signals crossing gate), `b-good-1` (the confidence tag) and
-//! `b-good-2` (model picks, kind `model.pick`); [`detectors::ALL`].
+//! `x-ctx-1`, `rw-mp5-1` (the Signals crossing gate), `b-good-1` (the confidence tag),
+//! `b-good-2` (model picks, kind `model.pick`), `rw2-vwapr-1` and `rw2-level-1` (kinds
+//! `v2.vwapr` / `v2.level`, `crate::rw2_live`); [`detectors::ALL`].
 //!
 //! # Confidence (b-good-1)
 //!
@@ -284,6 +285,10 @@ pub struct DeskKinds {
     pub x_ctx: bool,
     /// research v2 b-good-2's model picks (`crate::bgood`): ON by default (owner, 2026-11-22).
     pub model_pick: bool,
+    /// The v2 rework-2 finalists rw2-vwapr-1 "VWAP reclaim" and rw2-level-1 "20-day high break"
+    /// (`crate::rw2_live`): ON by default (owner, 2026-11-22).
+    pub vwap_reclaim: bool,
+    pub level_break: bool,
 }
 
 impl Default for DeskKinds {
@@ -335,6 +340,10 @@ impl DeskKinds {
             // Owner, 2026-11-22 (DEPLOY-PLAN addendum: the proven wins go live, no shadow
             // period); still switchable here and by the runtime detector switch `b-good-2`.
             model_pick: o.model_pick.unwrap_or(true),
+            // Owner, 2026-11-22 (ship every proven win); FINALISTS-v2c, CONFIRMED-TRAIN. Still
+            // switchable here and by the runtime detector switches `rw2-vwapr-1` / `rw2-level-1`.
+            vwap_reclaim: o.vwap_reclaim.unwrap_or(true),
+            level_break: o.level_break.unwrap_or(true),
         }
     }
 
@@ -377,6 +386,8 @@ impl DeskKinds {
             K::XGap => self.x_gap,
             K::XCtx => self.x_ctx,
             K::BGood => self.model_pick,
+            K::VwapReclaim => self.vwap_reclaim,
+            K::LevelBreak => self.level_break,
         }
     }
 }

@@ -281,6 +281,7 @@ mod tick_phase_tests {
 /// | `XHALT_LIVE` | `1` | live market with `ROCKET_WATCH`: research v2's x-halt-1 "resumed up after a halt" (`crate::xhalt_live`): its own notice kind `halt.resumed_up` (device switch `resumedUp`, on by default; detectors switch `x-halt-1`, `crate::alerts::detectors`); `0` turns the detector off |
 /// | `XFLOAT_LIVE` | `1` | live market with `ROCKET_WATCH`: research v2's x-float-1 "rotation ignition" (`crate::xfloat_live`): its own notice kind `v2.xfloat` beside production (push/desktop switch `xFloat`, on by default; runtime switch `detectors."x-float-1"`, no restart). Needs `STOCK_CONTEXT` for the float; `0` turns it off |
 /// | `GAP_CTX_LIVE` | `1` | live market with `ROCKET_WATCH`: the v2 finalists x-gap-1 (`v2.xgap`, switch `xGap`) and x-ctx-1 (`v2.xctx`, switch `xCtx`), both on by default (`crate::gap_ctx`); they also write the per-session time-of-day baselines under `ARCHIVE_ROOT/tod/`. Held without a restart by the synced `detectors` settings (`{"x-gap-1": {"on": false}}`); `0` removes them |
+/// | `RW2_LIVE` | `1` | live market with `ROCKET_WATCH`: the v2 rework-2 finalists rw2-vwapr-1 "VWAP reclaim" (`v2.vwapr`, switch `vwapReclaim`) and rw2-level-1 "20-day high break" (`v2.level`, switch `levelBreak`), both on by default (`crate::rw2_live`); they read x-gap-1's time-of-day files (so need `GAP_CTX_LIVE`) and write the per-session HI20 presence under `ARCHIVE_ROOT/rw2/`. Held without a restart by the synced `detectors` settings (`{"rw2-vwapr-1": {"on": false}}`); `0` removes them |
 /// | `BGOOD_LIVE` | `1` | live market with `ROCKET_WATCH`: research v2 b-good (`crate::bgood`): b-good-2's model picks (`model.pick`, switch `modelPick`, on by default) and b-good-1's high-confidence tag on B0-kind alerts 30 s after them (`runners.confidence`). Each also has a runtime switch in the synced `detectors` settings (`b-good-1`, `b-good-2`; no restart). It sends nothing until its inputs are complete (`crate::bgood` docs: `DAILY_BARS_KEEP_DAYS=0` with ≥ 826 dates, 20 time-of-day sessions). `0` turns it off (a restart) |
 /// | `BURST_THRESHOLD` | unset | a burst model probability threshold in (0, 1), overriding `BURST_ALERTS_PER_DAY`'s |
 /// | `ADMISSION_JOURNAL` | `0` | live with a recorder: write the admission journal beside the recording (`crate::admit`; ~190–270 B per print, so off for whole-market SIP: see `Market::init_history`) |
@@ -331,6 +332,10 @@ pub struct MarketConfig {
     /// x-gap-1 and x-ctx-1 (`crate::gap_ctx`); `0` removes them (the `detectors` settings hold
     /// them without a restart).
     pub gap_ctx_live: bool,
+    /// `RW2_LIVE` (on by default, needs `ROCKET_WATCH`, live market only): the v2 rework-2
+    /// finalists rw2-vwapr-1 and rw2-level-1 (`crate::rw2_live`); `0` removes them (the
+    /// `detectors` settings hold them without a restart).
+    pub rw2_live: bool,
     /// `BGOOD_LIVE` (on by default, needs `ROCKET_WATCH`, live market only): research v2 b-good
     /// (`crate::bgood`); `0` turns it off at the next start (the runtime switches are in the
     /// `detectors` settings, `crate::alerts`).
@@ -369,6 +374,7 @@ impl Default for MarketConfig {
             xhalt_live: true,
             xfloat_live: true,
             gap_ctx_live: true,
+            rw2_live: true,
             bgood_live: true,
             admission_journal: false,
             detection_quiet_references: None,
@@ -425,6 +431,9 @@ impl MarketConfig {
         }
         if let Some(v) = var("GAP_CTX_LIVE") {
             c.gap_ctx_live = on(&v);
+        }
+        if let Some(v) = var("RW2_LIVE") {
+            c.rw2_live = on(&v);
         }
         if let Some(v) = var("BGOOD_LIVE") {
             c.bgood_live = on(&v);
@@ -813,6 +822,9 @@ pub(crate) struct Inner {
     /// The archive x-gap-1 / x-ctx-1 read their facts and ToD files from and write the
     /// session's ToD file to (`crate::gap_ctx`).
     gap_ctx_archive: std::sync::OnceLock<Archive>,
+    /// The archive rw2-vwapr-1 / rw2-level-1 read their facts, ToD and presence files from and
+    /// write the session's presence file to (`crate::rw2_live`).
+    rw2_archive: std::sync::OnceLock<Archive>,
     /// The archive rw-mp5-1 reads its table from and writes its day files under
     /// (`crate::mp5_gate`).
     mp5_archive: std::sync::OnceLock<Archive>,
@@ -1091,6 +1103,7 @@ impl Market {
             burst_archive: std::sync::OnceLock::new(),
             n1_archive: std::sync::OnceLock::new(),
             gap_ctx_archive: std::sync::OnceLock::new(),
+            rw2_archive: std::sync::OnceLock::new(),
             mp5_archive: std::sync::OnceLock::new(),
             bgood_archive: std::sync::OnceLock::new(),
             running_archive: std::sync::OnceLock::new(),
@@ -1333,6 +1346,61 @@ impl Market {
                 }
                 Err(e) => {
                     tracing::warn!(%date, error = %e, "gap/ctx: session ToD file NOT written; the next 20 sessions read this one as absent")
+                }
+            },
+        );
+    }
+
+    /// Live: turns on the v2 rework-2 finalists rw2-vwapr-1 / rw2-level-1 (`crate::rw2_live`)
+    /// with `archive` for their facts, ToD and presence files. Call after `set_rocket_watch`. A
+    /// replay never calls this.
+    pub fn enable_rw2(&self, archive: Archive) {
+        if !self.0.rocket_on.load(Ordering::Relaxed) || self.0.mode != ClockMode::Live {
+            return;
+        }
+        let _ = self.0.rw2_archive.set(archive);
+        tracing::info!(
+            vwapr = crate::rw2_live::logic::VWAPR_CONFIG,
+            level = crate::rw2_live::logic::LEVEL_CONFIG,
+            "rw2: v2 finalists rw2-vwapr-1 and rw2-level-1 on (switch them in the `detectors` settings; RW2_LIVE=0 removes them)"
+        );
+        self.0.core.lock().expect("core lock").rocket.enable_rw2();
+    }
+
+    /// Loads a trading date's rw2 table (`crate::rw2_live::load_table`) on a blocking thread,
+    /// then hands it to the board. Never under the core lock.
+    fn load_rw2(&self, date: NaiveDate) {
+        let Some(archive) = self.0.rw2_archive.get().cloned() else {
+            return;
+        };
+        let market = self.clone();
+        std::thread::spawn(move || {
+            let t = std::time::Instant::now();
+            let table = crate::rw2_live::load_table(&archive, date);
+            tracing::info!(%date, ms = t.elapsed().as_millis() as u64, "rw2: table read");
+            market
+                .0
+                .core
+                .lock()
+                .expect("core lock")
+                .rocket
+                .set_rw2_table(table);
+        });
+    }
+
+    /// Writes a finished session's HI20 presence file (`crate::rw2_live::write_member`) on a
+    /// blocking thread.
+    fn write_rw2_member(&self, date: NaiveDate, v: serde_json::Value) {
+        let Some(archive) = self.0.rw2_archive.get().cloned() else {
+            return;
+        };
+        std::thread::spawn(
+            move || match crate::rw2_live::write_member(archive.root(), date, &v) {
+                Ok(p) => {
+                    tracing::info!(%date, path = %p.display(), "rw2: session presence file written")
+                }
+                Err(e) => {
+                    tracing::warn!(%date, error = %e, "rw2: session presence file NOT written; HI20 reads that session from the daily bar")
                 }
             },
         );
@@ -2402,6 +2470,11 @@ impl Market {
             market.enable_gap_ctx(archive.clone());
         } else if mode == ClockMode::Live && !cfg.gap_ctx_live {
             tracing::info!("gap/ctx: off (GAP_CTX_LIVE=0)");
+        }
+        if mode == ClockMode::Live && cfg.rocket_watch && cfg.rw2_live {
+            market.enable_rw2(archive.clone());
+        } else if mode == ClockMode::Live && !cfg.rw2_live {
+            tracing::info!("rw2: off (RW2_LIVE=0)");
         }
         if mode == ClockMode::Live && cfg.rocket_watch && cfg.bgood_live {
             market.enable_bgood(Some(archive.clone()));
@@ -4130,6 +4203,10 @@ impl Market {
             let n1_wanted = core.rocket.take_n1_facts_request();
             let gap_ctx_wanted = core.rocket.take_gap_ctx_request();
             let gap_ctx_tod = core.rocket.take_gap_ctx_tod();
+            let rw2 = (
+                core.rocket.take_rw2_request(),
+                core.rocket.take_rw2_member(),
+            );
             core.mp5.tick(now);
             let mp5 = (core.mp5.take_table_request(), core.mp5.take_finished());
             let bgood = core.rocket.take_bgood_work();
@@ -4138,7 +4215,7 @@ impl Market {
                 notices,
                 adv_wanted,
                 facts_wanted,
-                (n1_wanted, gap_ctx_wanted, gap_ctx_tod),
+                (n1_wanted, gap_ctx_wanted, gap_ctx_tod, rw2),
                 zones_log,
                 mp5,
                 bgood,
@@ -4165,7 +4242,7 @@ impl Market {
         if let Some(date) = facts_wanted {
             self.load_running_facts(date);
         }
-        let (n1_wanted, gap_ctx_wanted, gap_ctx_tod) = n1_wanted;
+        let (n1_wanted, gap_ctx_wanted, gap_ctx_tod, rw2) = n1_wanted;
         if let Some(date) = n1_wanted {
             self.load_n1_facts(date);
         }
@@ -4174,6 +4251,12 @@ impl Market {
         }
         if let Some((date, v)) = gap_ctx_tod {
             self.write_gap_ctx_tod(date, v);
+        }
+        if let Some(date) = rw2.0 {
+            self.load_rw2(date);
+        }
+        if let Some((date, v)) = rw2.1 {
+            self.write_rw2_member(date, v);
         }
         if let Some(date) = mp5.0 {
             self.load_mp5_table(date);

@@ -31,6 +31,8 @@ export const DETECTOR_SWITCHES: readonly DetectorSwitch[] = [
   { id: "x-float-1", name: "Float rotation", description: `Research v2's x-float-1. ${KEEPS}`, defaultOn: true },
   { id: "x-halt-1", name: "Resumed up after a run", description: `Research v2's x-halt-1. ${KEEPS}`, defaultOn: true },
   { id: "rw-mp5-1", name: "Signals crossings, gated", description: `Research v2's rw-mp5-1: the MP5 Signals crossings that pass its in-play gate. ${KEEPS}`, defaultOn: true },
+  { id: "rw2-vwapr-1", name: "VWAP reclaim", description: `Research v2's rw2-vwapr-1. ${KEEPS}`, defaultOn: true },
+  { id: "rw2-level-1", name: "20-day high break", description: `Research v2's rw2-level-1. ${KEEPS}`, defaultOn: true },
   { id: "b-good-2", name: "Model picks", description: `Research v2's b-good-2. ${KEEPS}`, defaultOn: true },
   { id: "b-good-1", name: "High confidence tag", description: "Research v2's b-good-1. Off hides the tag on every device; it is still scored and logged.", defaultOn: true },
   { id: "run", name: "Run +20% (cut)", description: "Cut by research v2 (no extra movers, lower precision), so off by default and only recorded. On sends it again for every device.", defaultOn: false },

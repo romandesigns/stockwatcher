@@ -34,7 +34,7 @@ describe("runners notices", () => {
   });
 
   test("the defaults are the phone's: every evidence kind on; breakouts, at-trigger and the Halt watcher off", () => {
-    expect(DEFAULT_RUNNERS_NOTIFY).toEqual({ new: true, breakout: false, burst: true, running: true, run: true, fast: true, shelf: true, followUp: true, rossCrossing: true, signalsCrossing: true, rossTrigger: false, signalsTrigger: false, halt: false, pullback: true, halted: true, resumed: true, n1: true, f1u: true, haltBull: true, resumedUp: true, xFloat: true, xGap: true, xCtx: true, modelPick: true });
+    expect(DEFAULT_RUNNERS_NOTIFY).toEqual({ new: true, breakout: false, burst: true, running: true, run: true, fast: true, shelf: true, followUp: true, rossCrossing: true, signalsCrossing: true, rossTrigger: false, signalsTrigger: false, halt: false, pullback: true, halted: true, resumed: true, n1: true, f1u: true, haltBull: true, resumedUp: true, xFloat: true, xGap: true, xCtx: true, modelPick: true, vwapReclaim: true, levelBreak: true });
     expect(runnersNotifyKinds(undefined)).toEqual({ ...DEFAULT_RUNNERS_NOTIFY });
     // A value stored before the new kinds existed: the new switches take their defaults.
     expect(runnersNotifyKinds({ new: false, breakout: true, burst: true, running: true, run: true, fast: true })).toEqual({ ...DEFAULT_RUNNERS_NOTIFY, new: false, breakout: true });
@@ -80,6 +80,8 @@ describe("runners notices", () => {
       ["v2.xfloat", "xFloat"],
       ["v2.xgap", "xGap"],
       ["v2.xctx", "xCtx"],
+      ["v2.vwapr", "vwapReclaim"],
+      ["v2.level", "levelBreak"],
       ["model.pick", "modelPick"],
     ]);
     for (const k of RUNNERS_NOTICE_KINDS) expect(runnersNotifyKey(k) in DEFAULT_RUNNERS_NOTIFY).toBe(true);
@@ -207,7 +209,7 @@ describe("N1 shadow", () => {
     expect(wantsNotice(n, { ...DEFAULT_RUNNERS_NOTIFY, n1: false })).toBe(false);
     expect(runnersNotifyKinds({ halted: false }).n1).toBe(true);
     const shadow = ALERT_SWITCH_SECTIONS.find((s) => s.id === "shadow")!;
-    expect(shadow.items).toEqual([expect.objectContaining({ key: "n1", icon: "insights", name: "N1 · shadow" }), expect.objectContaining({ key: "f1u", icon: "insights", name: "F1 · first pullback" }), expect.objectContaining({ key: "xGap", icon: "insights", name: "Pre-market high" }), expect.objectContaining({ key: "xCtx", icon: "insights", name: "Day 2 · above yesterday's high" }), expect.objectContaining({ key: "modelPick", icon: "insights", name: "Model picks" })]);
+    expect(shadow.items).toEqual([expect.objectContaining({ key: "n1", icon: "insights", name: "N1 · shadow" }), expect.objectContaining({ key: "f1u", icon: "insights", name: "F1 · first pullback" }), expect.objectContaining({ key: "xGap", icon: "insights", name: "Pre-market high" }), expect.objectContaining({ key: "xCtx", icon: "insights", name: "Day 2 · above yesterday's high" }), expect.objectContaining({ key: "modelPick", icon: "insights", name: "Model picks" }), expect.objectContaining({ key: "vwapReclaim", icon: "insights", name: "VWAP reclaim" }), expect.objectContaining({ key: "levelBreak", icon: "insights", name: "20-day high break" })]);
     // Its description says what it is now: X 8 %, on by default (it was "+6%" and "Off unless you turn it on").
     const n1 = shadow.items[0]!.description;
     expect(n1).toContain("+8%");
@@ -294,5 +296,18 @@ describe("research v2 b-good", () => {
     expect(wantsNotice(n, DEFAULT_RUNNERS_NOTIFY)).toBe(true);
     expect(wantsNotice(n, { ...DEFAULT_RUNNERS_NOTIFY, modelPick: false })).toBe(false);
     expect(runnersNotifyKinds({ n1: false }).modelPick).toBe(true);
+  });
+});
+
+describe("v2 rework-2 rw2-vwapr-1 / rw2-level-1", () => {
+  test("their own kinds and switches, on by default, each independent", () => {
+    const mk = (kind: string) => parseRunnersNotice({ type: "runners.notice", id: `runners-x-${kind}`, alertId: "2026-11-30-ABCD-level", symbol: "ABCD", kind, title: "ABCD · 20-day high break · $1.31", body: "Held 60 s over 20-day high $1.20", data: { symbol: "ABCD", kind }, at: 1 })!;
+    expect(mk("v2.vwapr").kind).toBe("v2.vwapr");
+    expect(runnersNotifyKey(mk("v2.vwapr").kind)).toBe("vwapReclaim");
+    expect(runnersNotifyKey(mk("v2.level").kind)).toBe("levelBreak");
+    expect(wantsNotice(mk("v2.level"), DEFAULT_RUNNERS_NOTIFY)).toBe(true);
+    expect(wantsNotice(mk("v2.level"), { ...DEFAULT_RUNNERS_NOTIFY, levelBreak: false })).toBe(false);
+    expect(wantsNotice(mk("v2.vwapr"), { ...DEFAULT_RUNNERS_NOTIFY, levelBreak: false })).toBe(true);
+    expect(runnersNotifyKinds({ xGap: false })).toMatchObject({ xGap: false, vwapReclaim: true, levelBreak: true });
   });
 });

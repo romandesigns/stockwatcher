@@ -373,6 +373,8 @@ pub fn kind_label(notice: &str) -> &str {
         "v2.xfloat" => "Float rotation",
         "v2.xgap" => "Pre-market high",
         "v2.xctx" => "Day 2 · above yesterday's high",
+        "v2.vwapr" => "VWAP reclaim",
+        "v2.level" => "20-day high break",
         "price.alert" => "Price alert",
         other => other,
     }

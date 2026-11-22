@@ -55,6 +55,9 @@
 //!   alerts task asks for it when it releases a parked crossing, and off holds them all.
 //! - **`b-good-1`** ([`B_GOOD_1`]): the confidence tag, no notice of its own; off, the tag is
 //!   ledgered but not shown. **`b-good-2`** ([`B_GOOD_2`]): model picks (`model.pick`).
+//! - **`rw2-vwapr-1`**, **`rw2-level-1`** ([`RW2_VWAPR_1`], [`RW2_LEVEL_1`]): the rework-2
+//!   finalists "VWAP reclaim" and "20-day high break" (`crate::rw2_live`), their own kinds
+//!   (`v2.vwapr`, `v2.level`), on by default.
 
 use serde_json::Value;
 
@@ -149,8 +152,35 @@ pub const B_GOOD_2: Detector = Detector {
     default_on: true,
 };
 
-pub const ALL: [Detector; 8] = [
-    RUN, X_HALT_1, X_FLOAT_1, X_GAP_1, X_CTX_1, RW_MP5_1, B_GOOD_1, B_GOOD_2,
+/// Research v2's rework-2 rw2-vwapr-1, VWAP flush and reclaim held 30 s
+/// ([`NoticeKind::VwapReclaim`], `crate::rw2_live`).
+pub const RW2_VWAPR_1: Detector = Detector {
+    id: crate::rw2_live::logic::VWAPR_ID,
+    version: crate::rw2_live::logic::VWAPR_VERSION,
+    kinds: &[NoticeKind::VwapReclaim],
+    default_on: true,
+};
+
+/// Research v2's rework-2 rw2-level-1, a +10 % gainer's 20-session-high break held 60 s
+/// ([`NoticeKind::LevelBreak`], `crate::rw2_live`).
+pub const RW2_LEVEL_1: Detector = Detector {
+    id: crate::rw2_live::logic::LEVEL_ID,
+    version: crate::rw2_live::logic::LEVEL_VERSION,
+    kinds: &[NoticeKind::LevelBreak],
+    default_on: true,
+};
+
+pub const ALL: [Detector; 10] = [
+    RUN,
+    X_HALT_1,
+    X_FLOAT_1,
+    X_GAP_1,
+    X_CTX_1,
+    RW_MP5_1,
+    B_GOOD_1,
+    B_GOOD_2,
+    RW2_VWAPR_1,
+    RW2_LEVEL_1,
 ];
 
 /// The detector that sends `kind`, if it is switchable.
@@ -216,6 +246,8 @@ mod tests {
             NoticeKind::XGap,
             NoticeKind::XCtx,
             NoticeKind::BGood,
+            NoticeKind::VwapReclaim,
+            NoticeKind::LevelBreak,
         ];
         // Only the listed kinds are switchable: the follow-up a Run path makes is not held, and
         // a Signals crossing is gated by rw-mp5-1 in the alerts task, not here.

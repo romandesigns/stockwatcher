@@ -26,7 +26,9 @@
 //!   `x_float` (`float`, `float_source`, `shares`, `rotation`, `c1`, `gain`, `prior_high`,
 //!   `emitted_ns`); x-gap-1 / x-ctx-1 (`v2.xgap` / `v2.xctx`, `crate::gap_ctx`) add
 //!   `arrival_ns` (`null` when the feed did not stamp it), `emitted_ns` (the server's decision)
-//!   and `facts` (the trigger's numbers).
+//!   and `facts` (the trigger's numbers); rw2-vwapr-1 / rw2-level-1 (`v2.vwapr` / `v2.level`,
+//!   `crate::rw2_live`) add the same three (`facts`: `gain`, `cum`, `trail`, `rvol`, `level`,
+//!   `c1`, `flush_depth`, `trigger_ns`).
 //!   A Signals crossing (rw-mp5-1, `crate::mp5_gate`) has `detector` `rw-mp5-1`, its
 //!   `detector_version`, `decided_ns` (the gate's decision instant), its own `session` (the
 //!   research's `pre` | `regular` | `after` from 04:00 ET) and `gate` (`{chg, rvol_day, runs90,
@@ -305,6 +307,18 @@ fn decision_line(
             "base_kind": x.base_kind, "level": x.level, "c1": x.c1, "prev_run": x.prev_run,
         });
     }
+    if let Some(crate::rocket::NoticeDetail::Rw2(x)) = &n.detail {
+        // The same per-alert fields as x-gap-1's (crate::rw2_live).
+        line["detector"] = json!(x.detector);
+        line["detector_version"] = json!(x.version);
+        line["arrival_ns"] = json!(x.arrival_ns);
+        line["emitted_ns"] = json!(x.emitted_ns);
+        line["session"] = json!(x.session);
+        line["facts"] = json!({
+            "gain": x.gain, "cum": x.cum, "trail": x.trail, "rvol": x.rvol, "level": x.level,
+            "c1": x.c1, "flush_depth": x.flush_depth, "trigger_ns": x.trigger_ns,
+        });
+    }
     if let Some(evidence) = n.source_evidence() {
         line["breakout"] = evidence;
         line["entry_context"] = json!(n.reasons);
@@ -463,6 +477,48 @@ mod tests {
             1,
         );
         assert_eq!(held["held"], "switched_off");
+    }
+
+    /// The rw2 finalists' lines (`crate::rw2_live`) carry the same per-alert fields, and the
+    /// registry's switch state, held or sent.
+    #[test]
+    fn an_rw2_line_names_its_detector_and_facts() {
+        let mut n = notice();
+        n.kind = NoticeKind::LevelBreak;
+        n.detail = Some(crate::rocket::NoticeDetail::Rw2(
+            crate::rw2_live::Rw2Notice {
+                detector: crate::rw2_live::logic::LEVEL_ID,
+                version: crate::rw2_live::logic::LEVEL_VERSION,
+                gain: 0.31,
+                cum: 310_000.0,
+                trail: 64_000.0,
+                rvol: Some(25.0),
+                level: 1.2,
+                c1: Some(1.0),
+                flush_depth: None,
+                trigger_ns: n.at_ns - 60_000_000_000,
+                session: "after",
+                arrival_ns: None,
+                emitted_ns: n.at_ns + 5_000_000,
+            },
+        ));
+        for (d, sw) in [
+            (Decision::Send, "on"),
+            (Decision::Held(runners::Hold::SwitchedOff), "off"),
+        ] {
+            let line = decision_line(&n, "e", "phone", &d, 1, "t", "b", 1);
+            assert_eq!(line["notice"], "v2.level");
+            assert_eq!(line["detector"], "rw2-level-1");
+            assert_eq!(
+                line["detector_version"],
+                crate::rw2_live::logic::LEVEL_VERSION
+            );
+            assert_eq!(line["switch"], sw);
+            assert_eq!(line["session"], "after");
+            assert_eq!(line["arrival_ns"], Value::Null);
+            assert_eq!(line["facts"]["level"], 1.2);
+            assert_eq!(line["facts"]["flush_depth"], Value::Null);
+        }
     }
 
     fn notice() -> Notice {

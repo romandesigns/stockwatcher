@@ -207,6 +207,9 @@ const KIND: Record<string, { group: NoticeGroup; label: string }> = {
   // The v2 finalists (crates/server/src/gap_ctx), research like the shadow kinds.
   "v2.xgap": { group: "shadow", label: "Pre-market high" },
   "v2.xctx": { group: "shadow", label: "Day 2 · above yesterday's high" },
+  // The v2 rework-2 finalists (crates/server/src/rw2_live), grouped with the other v2 streams.
+  "v2.vwapr": { group: "shadow", label: "VWAP reclaim" },
+  "v2.level": { group: "shadow", label: "20-day high break" },
   "model.pick": { group: "shadow", label: "Model pick" },
   "price.alert": { group: "price", label: "Price alert" },
 };

@@ -35,6 +35,9 @@ export interface RunnersPushPrefs {
   pushXFloat: boolean;
   /** research v2 b-good-2's model picks (crates/server/src/bgood, 2026-11-22). */
   pushModelPick: boolean;
+  /** The v2 rework-2 rw2-vwapr-1 / rw2-level-1 (crates/server/src/rw2_live, 2026-11-22). */
+  pushVwapReclaim: boolean;
+  pushLevelBreak: boolean;
 }
 
 export const RUNNERS_PUSH_DEFAULTS: RunnersPushPrefs = {
@@ -70,6 +73,9 @@ export const RUNNERS_PUSH_DEFAULTS: RunnersPushPrefs = {
   pushXFloat: true,
   // research v2's proven wins go live (owner, 2026-11-22; the server's default too).
   pushModelPick: true,
+  // The v2 rework-2 finalists: on (owner, 2026-11-22; the server's default too).
+  pushVwapReclaim: true,
+  pushLevelBreak: true,
 };
 
 /** The phone pref behind each shared switch (packages/shared `ALERT_SWITCH_SECTIONS`). */
@@ -98,6 +104,8 @@ export const PUSH_PREF_OF: Readonly<Record<keyof RunnersNotifyKinds, keyof Runne
   xGap: "pushXGap",
   xCtx: "pushXCtx",
   modelPick: "pushModelPick",
+  vwapReclaim: "pushVwapReclaim",
+  levelBreak: "pushLevelBreak",
 };
 
 /**
@@ -137,6 +145,8 @@ export interface RunnersRegisterFields {
   xGap: boolean;
   xCtx: boolean;
   modelPick: boolean;
+  vwapReclaim: boolean;
+  levelBreak: boolean;
 }
 
 export function registerFieldsOf(p: RunnersPushPrefs): RunnersRegisterFields {
@@ -165,5 +175,7 @@ export function registerFieldsOf(p: RunnersPushPrefs): RunnersRegisterFields {
     xGap: p.pushXGap,
     xCtx: p.pushXCtx,
     modelPick: p.pushModelPick,
+    vwapReclaim: p.pushVwapReclaim,
+    levelBreak: p.pushLevelBreak,
   };
 }

@@ -32,6 +32,7 @@ pub mod quote_search;
 pub mod quotes;
 pub mod replay_alerts;
 pub mod rocket;
+pub mod rw2_live;
 pub mod settings;
 pub mod shadow;
 pub mod spread;

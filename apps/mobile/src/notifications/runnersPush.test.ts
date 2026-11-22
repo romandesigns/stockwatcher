@@ -31,6 +31,8 @@ test("the defaults are the server's and the desk clients': evidence on; breakout
     xGap: true,
     xCtx: true,
     modelPick: true,
+    vwapReclaim: true,
+    levelBreak: true,
   });
 });
 

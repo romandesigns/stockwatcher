@@ -797,6 +797,9 @@ export interface PushRegisterMessage {
   xCtx?: boolean;
   /** Pushes when research v2 b-good-2 picks a stock (crates/server/src/bgood; server default on; absent = unchanged). */
   modelPick?: boolean;
+  /** Pushes when the v2 rw2-vwapr-1 / rw2-level-1 fire (crates/server/src/rw2_live; server default on; absent = unchanged). */
+  vwapReclaim?: boolean;
+  levelBreak?: boolean;
 }
 
 /** Settings → Alerts → Halts "Send test": the server answers this connection alone with a `runners.notice` for the made-up stock TEST (`data.test` true). */

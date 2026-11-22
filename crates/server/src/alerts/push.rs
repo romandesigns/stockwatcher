@@ -167,6 +167,12 @@ pub struct Device {
     /// they existed included.
     #[serde(default = "yes")]
     pub model_pick: bool,
+    /// The v2 rework-2 finalists rw2-vwapr-1 and rw2-level-1 (`crate::rw2_live`, 2026-11-22):
+    /// on, a record saved before they existed included.
+    #[serde(default = "yes")]
+    pub vwap_reclaim: bool,
+    #[serde(default = "yes")]
+    pub level_break: bool,
 }
 
 impl Device {
@@ -197,6 +203,8 @@ impl Device {
             x_gap: self.x_gap,
             x_ctx: self.x_ctx,
             model_pick: self.model_pick,
+            vwap_reclaim: self.vwap_reclaim,
+            level_break: self.level_break,
         }
     }
 
@@ -295,6 +303,10 @@ pub struct RunnersOptIn {
     pub x_ctx: Option<bool>,
     /// research v2 b-good-2's model picks (`crate::bgood`); None = unchanged / the default (on).
     pub model_pick: Option<bool>,
+    /// The v2 rework-2 rw2-vwapr-1 / rw2-level-1 (`crate::rw2_live`); None = unchanged / the
+    /// default (on).
+    pub vwap_reclaim: Option<bool>,
+    pub level_break: Option<bool>,
 }
 
 /// The newer switches as `push.register` and `runners.notify` spell them (owner, 2026-10-23),
@@ -361,6 +373,12 @@ pub struct MoreOptIn {
     /// research v2 b-good-2's model picks (`modelPick`, spelled the same by the phone and the desk).
     #[serde(default)]
     pub model_pick: Option<bool>,
+    /// The v2 rework-2 rw2-vwapr-1 (`vwapReclaim`) and rw2-level-1 (`levelBreak`), spelled the
+    /// same by the phone and the desk.
+    #[serde(default)]
+    pub vwap_reclaim: Option<bool>,
+    #[serde(default)]
+    pub level_break: Option<bool>,
 }
 
 /// A known halt sound key (`super::halts::SOUNDS`), read off the wire.
@@ -399,6 +417,8 @@ impl MoreOptIn {
             x_gap: self.x_gap,
             x_ctx: self.x_ctx,
             model_pick: self.model_pick,
+            vwap_reclaim: self.vwap_reclaim,
+            level_break: self.level_break,
             ..o
         }
     }
@@ -562,6 +582,8 @@ impl Devices {
         let x_gap = pick(runners.x_gap, |d| d.x_gap, def.x_gap);
         let x_ctx = pick(runners.x_ctx, |d| d.x_ctx, def.x_ctx);
         let model_pick = pick(runners.model_pick, |d| d.model_pick, def.model_pick);
+        let vwap_reclaim = pick(runners.vwap_reclaim, |d| d.vwap_reclaim, def.vwap_reclaim);
+        let level_break = pick(runners.level_break, |d| d.level_break, def.level_break);
         let sound = |v: Option<&'static str>, had_v: fn(&Device) -> Option<String>| {
             v.map(str::to_owned).or_else(|| had.and_then(had_v))
         };
@@ -607,6 +629,8 @@ impl Devices {
             x_gap,
             x_ctx,
             model_pick,
+            vwap_reclaim,
+            level_break,
         });
         while self.list.len() > MAX_DEVICES {
             self.list.remove(0);
