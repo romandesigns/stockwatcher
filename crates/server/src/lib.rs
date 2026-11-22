@@ -13,6 +13,7 @@ pub mod days;
 pub mod detection;
 pub mod evidence;
 pub mod favorites;
+pub mod gap_ctx;
 pub mod history;
 pub mod indicators;
 pub mod insights;

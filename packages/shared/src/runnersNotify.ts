@@ -52,6 +52,12 @@ export const RUNNERS_NOTICE_KINDS = [
   // 9:30–11:30. Each its own switch, on by default.
   "shadow.f1u",
   "halt.bull",
+  // The v2 research finalists (owner, 2026-11-22: ship what beat production; crates/server/src/
+  // gap_ctx): x-gap-1 "Pre-market high" and x-ctx-1 "Day 2", added to production, never instead
+  // of it. Each its own switch, on by default; the server can also hold either for everyone
+  // (the synced `detectors` settings).
+  "v2.xgap",
+  "v2.xctx",
 ] as const;
 export type RunnersNoticeKind = (typeof RUNNERS_NOTICE_KINDS)[number];
 
@@ -115,6 +121,10 @@ export interface RunnersNotifyKinds {
   f1u: boolean;
   /** The Halt watcher's gauge appeared on the buying side, 9:30–11:30 ET (Engine A T2-c4); sent once if `halt` is on too. */
   haltBull: boolean;
+  /** v2 x-gap-1: a stock gapping 10%+ makes a new pre-market high on heavy volume. */
+  xGap: boolean;
+  /** v2 x-ctx-1: a stock that ran 30%+ yesterday trades above yesterday's high on heavy volume. */
+  xCtx: boolean;
 }
 
 /**
@@ -145,6 +155,9 @@ export const DEFAULT_RUNNERS_NOTIFY: Readonly<RunnersNotifyKinds> = Object.freez
   // On: Engine A T2-c4 (owner, 2026-11-18).
   f1u: true,
   haltBull: true,
+  // On: the v2 ship set (owner, 2026-11-22).
+  xGap: true,
+  xCtx: true,
 });
 
 /** client `runners.notify`: this connection shows notifications for these kinds (`enabled: false` stops). */
@@ -182,6 +195,8 @@ export const RUNNERS_NOTIFY_KEY: Readonly<Record<RunnersNoticeKind, keyof Runner
   "shadow.n1": "n1",
   "shadow.f1u": "f1u",
   "halt.bull": "haltBull",
+  "v2.xgap": "xGap",
+  "v2.xctx": "xCtx",
 });
 
 /** Whether a notice is an exchange halt or resumption (its own sound on the desktop and web). */
@@ -316,6 +331,8 @@ export const ALERT_SWITCH_ICON: Readonly<Record<keyof RunnersNotifyKinds, AlertI
   n1: "insights",
   f1u: "insights",
   haltBull: "gauge",
+  xGap: "insights",
+  xCtx: "insights",
 });
 
 /** A Runners-pipeline notice kind's icon: its switch's ({@link ALERT_SWITCH_ICON}). */
@@ -405,6 +422,18 @@ export const ALERT_SWITCH_SECTIONS: readonly { id: "runners" | "ross" | "signals
         icon: ALERT_SWITCH_ICON.f1u,
         name: "F1 · first pullback",
         description: "A stock's first dip after a +10% ignition crosses back over the dip's last high, 9:30–11:30, within 20% of the day's low. About 1 in 15 reached +10% before −5% in Engine A's tests. On by default.",
+      },
+      {
+        key: "xGap",
+        icon: ALERT_SWITCH_ICON.xGap,
+        name: "Pre-market high",
+        description: "A stock up 10%+ on yesterday's close makes a new pre-market high on heavy volume, once a day. About 1 in 5 reached +10% before −5% in the v2 tests. On by default.",
+      },
+      {
+        key: "xCtx",
+        icon: ALERT_SWITCH_ICON.xCtx,
+        name: "Day 2 · above yesterday's high",
+        description: "A stock that ran 30%+ yesterday trades above yesterday's high on heavy volume, once a day, any session. About 1 in 4 reached +10% before −5% in the v2 tests. On by default.",
       },
     ],
   },

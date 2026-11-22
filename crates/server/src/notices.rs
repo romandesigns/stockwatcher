@@ -352,6 +352,8 @@ pub fn kind_label(notice: &str) -> &str {
         "shadow.n1" => "N1 · shadow",
         "shadow.f1u" => "F1 · first pullback",
         "halt.bull" => "Halt risk · buying",
+        "v2.xgap" => "Pre-market high",
+        "v2.xctx" => "Day 2 · above yesterday's high",
         "price.alert" => "Price alert",
         other => other,
     }
@@ -378,6 +380,7 @@ pub fn held_text(reason: Option<&str>, merged: Option<&Value>) -> String {
         "symbol_limit" => "same stock notified moments earlier".into(),
         "no_device" => "no device wanted it".into(),
         "quiet_hours" => "quiet hours".into(),
+        "switched_off" => "its detector is switched off".into(),
         "stale" => "too old by the time it was decided".into(),
         "duplicate" => "already sent".into(),
         "off" => "phone alerts off for it".into(),

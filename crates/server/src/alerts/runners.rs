@@ -132,6 +132,10 @@ pub enum Hold {
     Stale,
     /// This event was already sent (its [`crate::rocket::Notice::event_id`]).
     Duplicate,
+    /// Its detector is switched off for everyone in the synced `detectors` settings
+    /// (`super::DETECTORS_NS`, `crate::gap_ctx::switched_off`): the detector still decided, so the
+    /// would-be alert stays on record (deploy plan: kill rules and silent comparisons).
+    SwitchedOff,
 }
 
 impl Hold {
@@ -141,6 +145,7 @@ impl Hold {
             Hold::QuietHours => "quiet_hours",
             Hold::Stale => "stale",
             Hold::Duplicate => "duplicate",
+            Hold::SwitchedOff => "switched_off",
         }
     }
 }
@@ -384,6 +389,10 @@ pub fn data_kind(kind: NoticeKind) -> &'static str {
         // Halt watcher's own gauge, so it stays in the halt namespace.
         NoticeKind::F1u => "shadow.f1u",
         NoticeKind::HaltBull => "halt.bull",
+        // The v2 research finalists (`crate::gap_ctx`): their own namespace, so nothing reads
+        // them as a production Runners path.
+        NoticeKind::XGap => "v2.xgap",
+        NoticeKind::XCtx => "v2.xctx",
     }
 }
 
@@ -772,6 +781,40 @@ fn panel_message(n: &Notice) -> (String, String, Value) {
             ];
             (format!("{s} · N1 · shadow{p}"), parts.join(" · "))
         }
+        // "ABCD · Pre-market high · $1.20" / "+20% gap · new high over $1.05 · $130K since 4:00,
+        // 5-min 12× usual · v2 research": the gap, the level it made, then the volume behind it.
+        // Research precision was ~22 % (+10 % before −5 %), never "buy".
+        (NoticeKind::XGap, Some(NoticeDetail::GapCtx(x))) => {
+            gap_ctx_data(&mut data, x);
+            let parts = [
+                format!(
+                    "{:+.0}% gap · new high over {}",
+                    x.gap * 100.0,
+                    dollars(on_tick(x.level))
+                ),
+                format!("{} since 4:00{}", money(x.cum), usual_5min(x.rvol)),
+                "v2 research".to_owned(),
+            ];
+            (format!("{s} · Pre-market high{p}"), parts.join(" · "))
+        }
+        // "ABCD · Day 2 · above yesterday's high · $3.01" / "Ran +45% yesterday · crossed $3.00 ·
+        // $175K today, 5-min 12× usual · v2 research". Research precision ~23 %.
+        (NoticeKind::XCtx, Some(NoticeDetail::GapCtx(x))) => {
+            gap_ctx_data(&mut data, x);
+            let ran = x.prev_run.map_or("Ran 30%+ yesterday".to_owned(), |r| {
+                format!("Ran {:+.0}% yesterday", r * 100.0)
+            });
+            let parts = [
+                ran,
+                format!("crossed {}", dollars(on_tick(x.level))),
+                format!("{} today{}", money(x.cum), usual_5min(x.rvol)),
+                "v2 research".to_owned(),
+            ];
+            (
+                format!("{s} · Day 2 · above yesterday's high{p}"),
+                parts.join(" · "),
+            )
+        }
         // A notice without its facts (never expected): its name and price only.
         _ => (
             format!("{s} · {}{p}", n.kind.as_str().replace('_', " ")),
@@ -779,6 +822,22 @@ fn panel_message(n: &Notice) -> (String, String, Value) {
         ),
     };
     (title, with_price_line(body, n.price, n.spread_bp), data)
+}
+
+/// The data fields of an x-gap / x-ctx push (`crate::gap_ctx`): which detector, its version and
+/// the numbers behind the text, for the clients and the ledger.
+fn gap_ctx_data(data: &mut Value, x: &crate::gap_ctx::GapCtxNotice) {
+    data["detector"] = json!(x.detector);
+    data["detector_version"] = json!(x.version);
+    data["emitted_at"] = json!(x.emitted_ns / 1_000_000);
+    data["gap_pct"] = json!((x.gap * 1000.0).round() / 10.0);
+    data["level"] = json!(x.level);
+    data["session"] = json!(x.session);
+}
+
+/// ", 5-min 12× usual" (nothing for a bucket with no usual volume: a zero baseline).
+fn usual_5min(rvol: Option<f64>) -> String {
+    rvol.map_or(String::new(), |r| format!(", 5-min {r:.0}× usual"))
 }
 
 fn runner_message(n: &Notice) -> (String, String, Value) {
@@ -1427,6 +1486,31 @@ Alert $2.41 · +5% = $2.53"
                 ign_end_ns: n.at_ns - 6 * 60_000_000_000,
                 emitted_ns: n.at_ns + 60_000_000,
             })),
+            NoticeKind::XGap | NoticeKind::XCtx => {
+                Some(NoticeDetail::GapCtx(crate::gap_ctx::GapCtxNotice {
+                    detector: if kind == NoticeKind::XGap {
+                        "x-gap-1"
+                    } else {
+                        "x-ctx-1"
+                    },
+                    version: "v",
+                    gap: if kind == NoticeKind::XGap {
+                        0.204
+                    } else {
+                        0.0034
+                    },
+                    cum: 130_400.0,
+                    trail: 120_000.0,
+                    rvol: Some(12.2),
+                    base_kind: 20,
+                    level: if kind == NoticeKind::XGap { 2.25 } else { 2.70 },
+                    c1: Some(2.25),
+                    prev_run: Some(0.452),
+                    session: "pre",
+                    arrival_ns: Some(n.at_ns - 40_000_000),
+                    emitted_ns: n.at_ns + 60_000_000,
+                }))
+            }
             NoticeKind::N1 => Some(NoticeDetail::N1(crate::n1_live::N1Notice {
                 low: 2.55,
                 high: 2.74,
@@ -1636,6 +1720,22 @@ Alert $2.41 · +5% = $2.53"
             (
                 "YMAT · F1 · first pullback · $2.71".into(),
                 "+30% leg $2.00→$2.60, pulled back to $2.45 · crossed $2.50 · Engine A research"
+                    .into()
+            )
+        );
+        assert_eq!(
+            t(NoticeKind::XGap),
+            (
+                "YMAT · Pre-market high · $2.71".into(),
+                "+20% gap · new high over $2.25 · $130K since 4:00, 5-min 12× usual · v2 research"
+                    .into()
+            )
+        );
+        assert_eq!(
+            t(NoticeKind::XCtx),
+            (
+                "YMAT · Day 2 · above yesterday's high · $2.71".into(),
+                "Ran +45% yesterday · crossed $2.70 · $130K today, 5-min 12× usual · v2 research"
                     .into()
             )
         );

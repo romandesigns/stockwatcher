@@ -278,6 +278,7 @@ mod tick_phase_tests {
 /// | `VOLUME_SHELVES` | `1` | with `ROCKET_WATCH`: volume shelves (`crate::zones`, the zones bake-off's winner) for every symbol with a confirmed +20 % run today, in the Runners frame's `zones` and on the chart; the live market keeps its forward log under `ARCHIVE_ROOT/zones/`. Its run trigger also feeds the Runners "Run +20%" entry (`crate::rocket::run`), so `0` turns that off too |
 /// | `N1_LIVE` | `1` | live market with `ROCKET_WATCH`: the N1 "early leg" detector (`crate::n1_live`, Engine A T2-c6's entrant, X 8 % since T2-c4): its own notice kind `shadow.n1` beside production (push/desktop switch `n1`, on by default) and the Runners frame's `shadow` rows; `0` turns it off |
 /// | `C4_LIVE` | `1` | live market with `ROCKET_WATCH`: Engine A T2-c4's additions (`crate::c4_live`): the F1u detector (`shadow.f1u`, switch `f1u`), the HALT add-on (`halt.bull`, switch `haltBull`), both on by default, and the POST<1 prune of Runners notices; `0` turns all three off |
+/// | `GAP_CTX_LIVE` | `1` | live market with `ROCKET_WATCH`: the v2 finalists x-gap-1 (`v2.xgap`, switch `xGap`) and x-ctx-1 (`v2.xctx`, switch `xCtx`), both on by default (`crate::gap_ctx`); they also write the per-session time-of-day baselines under `ARCHIVE_ROOT/tod/`. Held without a restart by the synced `detectors` settings (`{"x-gap-1": {"on": false}}`); `0` removes them |
 /// | `BURST_THRESHOLD` | unset | a burst model probability threshold in (0, 1), overriding `BURST_ALERTS_PER_DAY`'s |
 /// | `ADMISSION_JOURNAL` | `0` | live with a recorder: write the admission journal beside the recording (`crate::admit`; ~190–270 B per print, so off for whole-market SIP: see `Market::init_history`) |
 #[derive(Clone, Debug)]
@@ -315,6 +316,10 @@ pub struct MarketConfig {
     /// `C4_LIVE` (on by default, needs `ROCKET_WATCH`, live market only): Engine A T2-c4's F1u,
     /// HALT add-on and POST<1 prune (`crate::c4_live`); `0` is their kill switch.
     pub c4_live: bool,
+    /// `GAP_CTX_LIVE` (on by default, needs `ROCKET_WATCH`, live market only): the v2 finalists
+    /// x-gap-1 and x-ctx-1 (`crate::gap_ctx`); `0` removes them (the `detectors` settings hold
+    /// them without a restart).
+    pub gap_ctx_live: bool,
     /// `ADMISSION_JOURNAL` (off by default): the live admission journal (`crate::admit`). Its
     /// size and the reader's record cap make it unusable for a whole-market day; see
     /// `Market::init_history`.
@@ -346,6 +351,7 @@ impl Default for MarketConfig {
             volume_shelves: true,
             n1_live: true,
             c4_live: true,
+            gap_ctx_live: true,
             admission_journal: false,
             detection_quiet_references: None,
             evidence_check: Duration::from_secs(crate::evidence::DEFAULT_CHECK_SECS),
@@ -392,6 +398,9 @@ impl MarketConfig {
         }
         if let Some(v) = var("C4_LIVE") {
             c.c4_live = on(&v);
+        }
+        if let Some(v) = var("GAP_CTX_LIVE") {
+            c.gap_ctx_live = on(&v);
         }
         c.rocket_policy = crate::rocket::Policy::from_lookup(&get)?;
         c.burst_policy = crate::rocket::burst::BurstPolicy::from_lookup(&get)?;
@@ -770,6 +779,9 @@ pub(crate) struct Inner {
     burst_archive: std::sync::OnceLock<Archive>,
     /// The archive the N1 shadow reads its daily facts from (`crate::n1_live::load_facts`).
     n1_archive: std::sync::OnceLock<Archive>,
+    /// The archive x-gap-1 / x-ctx-1 read their facts and ToD files from and write the
+    /// session's ToD file to (`crate::gap_ctx`).
+    gap_ctx_archive: std::sync::OnceLock<Archive>,
     /// The archive the Runners running entry's facts are read from, once a day
     /// (`crate::rocket::running::facts`); live and replay.
     running_archive: std::sync::OnceLock<Archive>,
@@ -1041,6 +1053,7 @@ impl Market {
             zones_log: std::sync::OnceLock::new(),
             burst_archive: std::sync::OnceLock::new(),
             n1_archive: std::sync::OnceLock::new(),
+            gap_ctx_archive: std::sync::OnceLock::new(),
             running_archive: std::sync::OnceLock::new(),
             transition_log: std::sync::OnceLock::new(),
             notice_memory_root: std::sync::OnceLock::new(),
@@ -1189,6 +1202,64 @@ impl Market {
             "c4: Engine A T2-c4 on (F1u, HALT add-on 09:30-11:30 ET, POST<1 prune; C4_LIVE=0 turns it off)"
         );
         self.0.core.lock().expect("core lock").rocket.enable_c4();
+    }
+
+    /// Live: turns on the v2 finalists x-gap-1 / x-ctx-1 (`crate::gap_ctx`) with `archive` for
+    /// their facts and ToD files. Call after `set_rocket_watch`. A replay never calls this.
+    pub fn enable_gap_ctx(&self, archive: Archive) {
+        if !self.0.rocket_on.load(Ordering::Relaxed) || self.0.mode != ClockMode::Live {
+            return;
+        }
+        let _ = self.0.gap_ctx_archive.set(archive);
+        tracing::info!(
+            x_gap = crate::gap_ctx::logic::XGAP_CONFIG,
+            x_ctx = crate::gap_ctx::logic::XCTX_CONFIG,
+            "gap/ctx: v2 finalists x-gap-1 and x-ctx-1 on (switch them in the `detectors` settings; GAP_CTX_LIVE=0 removes them)"
+        );
+        self.0
+            .core
+            .lock()
+            .expect("core lock")
+            .rocket
+            .enable_gap_ctx();
+    }
+
+    /// Loads a trading date's x-gap / x-ctx table (`crate::gap_ctx::load_table`) on a blocking
+    /// thread, then hands it to the board. Never under the core lock.
+    fn load_gap_ctx(&self, date: NaiveDate) {
+        let Some(archive) = self.0.gap_ctx_archive.get().cloned() else {
+            return;
+        };
+        let market = self.clone();
+        std::thread::spawn(move || {
+            let t = std::time::Instant::now();
+            let table = crate::gap_ctx::load_table(&archive, date);
+            tracing::info!(%date, ms = t.elapsed().as_millis() as u64, "gap/ctx: table read");
+            market
+                .0
+                .core
+                .lock()
+                .expect("core lock")
+                .rocket
+                .set_gap_ctx_table(table);
+        });
+    }
+
+    /// Writes a finished session's ToD file (`crate::gap_ctx::write_tod`) on a blocking thread.
+    fn write_gap_ctx_tod(&self, date: NaiveDate, v: serde_json::Value) {
+        let Some(archive) = self.0.gap_ctx_archive.get().cloned() else {
+            return;
+        };
+        std::thread::spawn(
+            move || match crate::gap_ctx::write_tod(archive.root(), date, &v) {
+                Ok(p) => {
+                    tracing::info!(%date, path = %p.display(), "gap/ctx: session ToD file written")
+                }
+                Err(e) => {
+                    tracing::warn!(%date, error = %e, "gap/ctx: session ToD file NOT written; the next 20 sessions read this one as absent")
+                }
+            },
+        );
     }
 
     /// Loads a trading date's N1 facts (`crate::n1_live::load_facts`) on a blocking thread, then
@@ -2092,6 +2163,11 @@ impl Market {
             market.enable_c4(Some(archive.clone()));
         } else if mode == ClockMode::Live && !cfg.c4_live {
             tracing::info!("c4: off (C4_LIVE=0)");
+        }
+        if mode == ClockMode::Live && cfg.rocket_watch && cfg.gap_ctx_live {
+            market.enable_gap_ctx(archive.clone());
+        } else if mode == ClockMode::Live && !cfg.gap_ctx_live {
+            tracing::info!("gap/ctx: off (GAP_CTX_LIVE=0)");
         }
         if mode == ClockMode::Live && cfg.rocket_watch {
             // Before the ingest: today's alerts and the record come back after a restart.
@@ -3800,7 +3876,16 @@ impl Market {
             let adv_wanted = core.rocket.take_burst_adv_request();
             let facts_wanted = core.rocket.take_running_facts_request();
             let n1_wanted = core.rocket.take_n1_facts_request();
-            (log, notices, adv_wanted, facts_wanted, n1_wanted, zones_log)
+            let gap_ctx_wanted = core.rocket.take_gap_ctx_request();
+            let gap_ctx_tod = core.rocket.take_gap_ctx_tod();
+            (
+                log,
+                notices,
+                adv_wanted,
+                facts_wanted,
+                (n1_wanted, gap_ctx_wanted, gap_ctx_tod),
+                zones_log,
+            )
         };
         // First, before the file appends and the once-a-day archive reads: seconds matter on a
         // +20 % leg.
@@ -3823,8 +3908,15 @@ impl Market {
         if let Some(date) = facts_wanted {
             self.load_running_facts(date);
         }
+        let (n1_wanted, gap_ctx_wanted, gap_ctx_tod) = n1_wanted;
         if let Some(date) = n1_wanted {
             self.load_n1_facts(date);
+        }
+        if let Some(date) = gap_ctx_wanted {
+            self.load_gap_ctx(date);
+        }
+        if let Some((date, v)) = gap_ctx_tod {
+            self.write_gap_ctx_tod(date, v);
         }
         if let Some(l) = self.0.rocket_log.get() {
             let mut by_date: Vec<(NaiveDate, Vec<String>)> = Vec::new();

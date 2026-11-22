@@ -788,6 +788,9 @@ export interface PushRegisterMessage {
   f1u?: boolean;
   /** Pushes when a buying-side Halt watcher gauge appears 9:30–11:30 (T2-c4's HALT add-on; server default on; absent = unchanged). */
   haltBull?: boolean;
+  /** Pushes when the v2 x-gap-1 / x-ctx-1 fire (crates/server/src/gap_ctx; server default on; absent = unchanged). */
+  xGap?: boolean;
+  xCtx?: boolean;
 }
 
 /** Settings → Alerts → Halts "Send test": the server answers this connection alone with a `runners.notice` for the made-up stock TEST (`data.test` true). */

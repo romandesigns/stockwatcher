@@ -222,6 +222,14 @@ pub enum NoticeKind {
     /// universe, 09:30–11:30 ET; the gauge's [`NoticeDetail::Halt`]. Its own switch
     /// (`haltBull`), ON by default; sent once when the gauge's own switch is on too.
     HaltBull,
+    /// v2 finalist x-gap-1, a pre-market gapper's new session high on volume (`crate::gap_ctx`,
+    /// owner 2026-11-22): its facts in [`NoticeDetail::GapCtx`]. Its own switch (`xGap`), ON by
+    /// default; held for everyone by the `detectors` switch `x-gap-1`.
+    XGap,
+    /// v2 finalist x-ctx-1, day 2: yesterday's 30 %+ runner breaks yesterday's high on volume
+    /// (`crate::gap_ctx`, owner 2026-11-22). Switch `xCtx`, ON by default; `detectors` id
+    /// `x-ctx-1`.
+    XCtx,
 }
 
 impl NoticeKind {
@@ -247,10 +255,12 @@ impl NoticeKind {
             NoticeKind::N1 => "n1",
             NoticeKind::F1u => "f1u",
             NoticeKind::HaltBull => "halt_bull",
+            NoticeKind::XGap => "x_gap",
+            NoticeKind::XCtx => "x_ctx",
         }
     }
 
-    pub const ALL: [NoticeKind; 20] = [
+    pub const ALL: [NoticeKind; 22] = [
         NoticeKind::New,
         NoticeKind::Breakout,
         NoticeKind::Burst,
@@ -271,6 +281,8 @@ impl NoticeKind {
         NoticeKind::N1,
         NoticeKind::F1u,
         NoticeKind::HaltBull,
+        NoticeKind::XGap,
+        NoticeKind::XCtx,
     ];
 }
 
@@ -310,6 +322,9 @@ pub enum NoticeDetail {
     N1(crate::n1_live::N1Notice),
     /// [`NoticeKind::F1u`]: the impulse, pullback and trigger behind the fire (`crate::c4_live`).
     F1u(crate::c4_live::F1uNotice),
+    /// [`NoticeKind::XGap`] / [`NoticeKind::XCtx`]: the bar behind the fire and the detector's
+    /// id and version (`crate::gap_ctx`).
+    GapCtx(crate::gap_ctx::GapCtxNotice),
 }
 
 /// An exchange halt's or resumption's facts, from the trading-status feed and the stock's own
@@ -955,6 +970,10 @@ pub struct RocketBoard {
     /// Engine A T2-c4's F1u detector, HALT add-on and POST<1 prune (`crate::c4_live`): live
     /// market only ([`RocketBoard::enable_c4`], `C4_LIVE`).
     c4: Option<crate::c4_live::F1uLive>,
+    /// The v2 finalists x-gap-1 and x-ctx-1 (`crate::gap_ctx`): live market only
+    /// ([`RocketBoard::enable_gap_ctx`], `GAP_CTX_LIVE`). Like N1 it reads the board's prints
+    /// and clock and only adds its own notices.
+    gap_ctx: Option<crate::gap_ctx::GapCtxLive>,
     /// The running entry's facts for `running_facts_date` ([`running::facts`]), and the date
     /// whose facts the market should load (once per date).
     running_facts: HashMap<String, running::Fact>,
@@ -1133,6 +1152,7 @@ impl RocketBoard {
             burst: None,
             n1: None,
             c4: None,
+            gap_ctx: None,
             running_facts: HashMap::new(),
             running_facts_date: None,
             running_facts_wanted: None,
@@ -1198,6 +1218,7 @@ impl RocketBoard {
             "pending_log": self.pending.len(),
             "n1": self.n1.as_ref().map(|n| n.cost()),
             "f1u": self.c4.as_ref().map(|n| n.cost()),
+            "gap_ctx": self.gap_ctx.as_ref().map(|n| n.cost()),
         })
     }
 
@@ -1289,6 +1310,34 @@ impl RocketBoard {
 
     pub fn c4(&self) -> Option<&crate::c4_live::F1uLive> {
         self.c4.as_ref()
+    }
+
+    /// Turns on the v2 finalists x-gap-1 / x-ctx-1 ([`crate::gap_ctx`]); a no-op on a disabled
+    /// board. Only the live market calls this (`GAP_CTX_LIVE`, on by default).
+    pub fn enable_gap_ctx(&mut self) {
+        if self.enabled {
+            self.gap_ctx = Some(crate::gap_ctx::GapCtxLive::new());
+        }
+    }
+
+    pub fn gap_ctx(&self) -> Option<&crate::gap_ctx::GapCtxLive> {
+        self.gap_ctx.as_ref()
+    }
+
+    /// The trading date whose x-gap / x-ctx table the market should load (once per date).
+    pub fn take_gap_ctx_request(&mut self) -> Option<NaiveDate> {
+        self.gap_ctx.as_mut()?.take_table_request()
+    }
+
+    pub fn set_gap_ctx_table(&mut self, table: crate::gap_ctx::Table) {
+        if let Some(n) = self.gap_ctx.as_mut() {
+            n.set_table(table);
+        }
+    }
+
+    /// The finished session's time-of-day file for the market to write (`crate::gap_ctx`).
+    pub fn take_gap_ctx_tod(&mut self) -> Option<(NaiveDate, Value)> {
+        self.gap_ctx.as_mut()?.take_tod()
     }
 
     /// The trading date whose N1 / F1u facts the market should load (once per date; the two
@@ -1411,6 +1460,9 @@ impl RocketBoard {
             if let Some(n) = self.c4.as_mut() {
                 n.apply_trade(t, counted);
             }
+            if let Some(n) = self.gap_ctx.as_mut() {
+                n.apply_trade(t, counted);
+            }
         }
     }
 
@@ -1489,6 +1541,9 @@ impl RocketBoard {
                 n.apply_trade(t, counted);
             }
             if let Some(n) = self.c4.as_mut() {
+                n.apply_trade(t, counted);
+            }
+            if let Some(n) = self.gap_ctx.as_mut() {
                 n.apply_trade(t, counted);
             }
         }
@@ -1860,6 +1915,15 @@ impl RocketBoard {
         }
         // T2-c4's F1u, the same way (crate::c4_live).
         if let Some(n) = self.c4.as_mut() {
+            n.tick(clock);
+            for x in n.take_notices() {
+                if self.notices.len() < MAX_NOTICES {
+                    self.notices.push(x);
+                }
+            }
+        }
+        // The v2 x-gap-1 / x-ctx-1, the same way (crate::gap_ctx: each bar 50 ms after it ends).
+        if let Some(n) = self.gap_ctx.as_mut() {
             n.tick(clock);
             for x in n.take_notices() {
                 if self.notices.len() < MAX_NOTICES {

@@ -149,6 +149,12 @@ pub struct Device {
     pub f1u: bool,
     #[serde(default = "yes")]
     pub halt_bull: bool,
+    /// The v2 finalists x-gap-1 and x-ctx-1 (`crate::gap_ctx`, 2026-11-22): on, a record saved
+    /// before they existed included (every other stored switch keeps its value).
+    #[serde(default = "yes")]
+    pub x_gap: bool,
+    #[serde(default = "yes")]
+    pub x_ctx: bool,
 }
 
 impl Device {
@@ -174,6 +180,8 @@ impl Device {
             n1: self.n1_shadow,
             f1u: self.f1u,
             halt_bull: self.halt_bull,
+            x_gap: self.x_gap,
+            x_ctx: self.x_ctx,
         }
     }
 
@@ -263,6 +271,9 @@ pub struct RunnersOptIn {
     /// T2-c4's F1u and HALT add-on (`crate::c4_live`); None = unchanged / the default (on).
     pub f1u: Option<bool>,
     pub halt_bull: Option<bool>,
+    /// The v2 x-gap-1 / x-ctx-1 (`crate::gap_ctx`); None = unchanged / the default (on).
+    pub x_gap: Option<bool>,
+    pub x_ctx: Option<bool>,
 }
 
 /// The newer switches as `push.register` and `runners.notify` spell them (owner, 2026-10-23),
@@ -315,6 +326,11 @@ pub struct MoreOptIn {
     pub f1u: Option<bool>,
     #[serde(default)]
     pub halt_bull: Option<bool>,
+    /// The v2 x-gap-1 (`xGap`) and x-ctx-1 (`xCtx`), spelled the same by the phone and the desk.
+    #[serde(default)]
+    pub x_gap: Option<bool>,
+    #[serde(default)]
+    pub x_ctx: Option<bool>,
 }
 
 /// A known halt sound key (`super::halts::SOUNDS`), read off the wire.
@@ -348,6 +364,8 @@ impl MoreOptIn {
             n1: self.n1,
             f1u: self.f1u,
             halt_bull: self.halt_bull,
+            x_gap: self.x_gap,
+            x_ctx: self.x_ctx,
             ..o
         }
     }
@@ -506,6 +524,8 @@ impl Devices {
         let n1_shadow = pick(runners.n1, |d| d.n1_shadow, def.n1);
         let f1u = pick(runners.f1u, |d| d.f1u, def.f1u);
         let halt_bull = pick(runners.halt_bull, |d| d.halt_bull, def.halt_bull);
+        let x_gap = pick(runners.x_gap, |d| d.x_gap, def.x_gap);
+        let x_ctx = pick(runners.x_ctx, |d| d.x_ctx, def.x_ctx);
         let sound = |v: Option<&'static str>, had_v: fn(&Device) -> Option<String>| {
             v.map(str::to_owned).or_else(|| had.and_then(had_v))
         };
@@ -546,6 +566,8 @@ impl Devices {
             n1_shadow,
             f1u,
             halt_bull,
+            x_gap,
+            x_ctx,
         });
         while self.list.len() > MAX_DEVICES {
             self.list.remove(0);

@@ -62,10 +62,10 @@ test("web: off until the switch asks for permission; the phone's defaults after"
   expect(n.prefs()).toEqual({ enabled: false, kinds: { ...DEFAULT_RUNNERS_NOTIFY }, haltSounds: { halted: "siren", resumed: "chime" } });
   expect(n.prefs().kinds.breakout).toBe(false);
   // Without system notifications, only the exchange halts (their sound and an in-app toast).
-  expect(n.notifyMessage()).toEqual({ type: "runners.notify", enabled: true, new: false, breakout: false, burst: false, running: false, run: false, fast: false, shelf: false, followUp: false, rossCrossing: false, signalsCrossing: false, rossTrigger: false, signalsTrigger: false, halt: false, pullback: false, halted: true, resumed: true, n1: false, f1u: false, haltBull: false });
+  expect(n.notifyMessage()).toEqual({ type: "runners.notify", enabled: true, new: false, breakout: false, burst: false, running: false, run: false, fast: false, shelf: false, followUp: false, rossCrossing: false, signalsCrossing: false, rossTrigger: false, signalsTrigger: false, halt: false, pullback: false, halted: true, resumed: true, n1: false, f1u: false, haltBull: false, xGap: false, xCtx: false });
   expect(n.handle(notice)).toBe(false);
   expect(await n.enable()).toBe(true);
-  expect(n.notifyMessage()).toEqual({ type: "runners.notify", enabled: true, new: true, breakout: false, burst: true, running: true, run: true, fast: true, shelf: true, followUp: true, rossCrossing: true, signalsCrossing: true, rossTrigger: false, signalsTrigger: false, halt: false, pullback: true, halted: true, resumed: true, n1: true, f1u: true, haltBull: true });
+  expect(n.notifyMessage()).toEqual({ type: "runners.notify", enabled: true, new: true, breakout: false, burst: true, running: true, run: true, fast: true, shelf: true, followUp: true, rossCrossing: true, signalsCrossing: true, rossTrigger: false, signalsTrigger: false, halt: false, pullback: true, halted: true, resumed: true, n1: true, f1u: true, haltBull: true, xGap: true, xCtx: true });
   // Remembered on this device.
   expect(createRunnersNotifier(env).prefs().enabled).toBe(true);
 });
