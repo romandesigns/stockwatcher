@@ -52,6 +52,10 @@ export const RUNNERS_NOTICE_KINDS = [
   // 9:30–11:30. Each its own switch, on by default.
   "shadow.f1u",
   "halt.bull",
+  // Research v2's x-halt-1 "resumed up after a halt" (owner, 2026-11-22; crates/server/src/
+  // xhalt_live): an LULD pause or news halt after a 5 % run-in that reopened at or above its halt
+  // price. Its own switch, on by default.
+  "halt.resumed_up",
 ] as const;
 export type RunnersNoticeKind = (typeof RUNNERS_NOTICE_KINDS)[number];
 
@@ -115,6 +119,8 @@ export interface RunnersNotifyKinds {
   f1u: boolean;
   /** The Halt watcher's gauge appeared on the buying side, 9:30–11:30 ET (Engine A T2-c4); sent once if `halt` is on too. */
   haltBull: boolean;
+  /** An LULD pause or news halt after a 5%+ run reopened at or above its halt price (research v2 x-halt-1). */
+  resumedUp: boolean;
 }
 
 /**
@@ -145,6 +151,8 @@ export const DEFAULT_RUNNERS_NOTIFY: Readonly<RunnersNotifyKinds> = Object.freez
   // On: Engine A T2-c4 (owner, 2026-11-18).
   f1u: true,
   haltBull: true,
+  // On: research v2's proven wins shipped live (owner, 2026-11-22).
+  resumedUp: true,
 });
 
 /** client `runners.notify`: this connection shows notifications for these kinds (`enabled: false` stops). */
@@ -182,6 +190,7 @@ export const RUNNERS_NOTIFY_KEY: Readonly<Record<RunnersNoticeKind, keyof Runner
   "shadow.n1": "n1",
   "shadow.f1u": "f1u",
   "halt.bull": "haltBull",
+  "halt.resumed_up": "resumedUp",
 });
 
 /** Whether a notice is an exchange halt or resumption (its own sound on the desktop and web). */
@@ -316,6 +325,7 @@ export const ALERT_SWITCH_ICON: Readonly<Record<keyof RunnersNotifyKinds, AlertI
   n1: "insights",
   f1u: "insights",
   haltBull: "gauge",
+  resumedUp: "play",
 });
 
 /** A Runners-pipeline notice kind's icon: its switch's ({@link ALERT_SWITCH_ICON}). */
@@ -344,7 +354,14 @@ export const ALERT_SWITCH_SECTIONS: readonly { id: "runners" | "ross" | "signals
       { key: "breakout", icon: ALERT_SWITCH_ICON.breakout, name: "Breakouts", description: "When a flagged stock turns breaking out, with its % from the flag." },
       { key: "burst", icon: ALERT_SWITCH_ICON.burst, name: "Buying bursts", description: "When heavy buying is confirmed on the tape, with how far the burst already went." },
       { key: "running", icon: ALERT_SWITCH_ICON.running, name: "Running entries", description: "Every stock that starts running by its own range, with its move and money." },
-      { key: "run", icon: ALERT_SWITCH_ICON.run, name: "Run +20%", description: "A +20% leg within 15 minutes on real trades, with its window and start price." },
+      {
+        key: "run",
+        icon: ALERT_SWITCH_ICON.run,
+        name: "Run +20%",
+        // The `run` detector is cut (research v2 scorecard, 2026-11-22): the server holds and only
+        // records it while its detectors switch is off, whatever this switch says.
+        description: "A +20% leg within 15 minutes on real trades. Cut since Nov 22 (research v2: no extra movers, lower precision): recorded only, not sent, while the Run detector is off.",
+      },
       { key: "fast", icon: ALERT_SWITCH_ICON.fast, name: "Fast move", description: "+8% in a minute or +12% in 15 s on real trades, with the move and its money." },
       { key: "followUp", icon: ALERT_SWITCH_ICON.followUp, name: "Follow-ups", description: "A later Runners path fires on a stock already listed, e.g. Run +20% after a fast move." },
       { key: "pullback", icon: ALERT_SWITCH_ICON.pullback, name: "Pullback setting up", description: "The first dip that fixes a trigger and stop within 30 min of a stock's Runners alert (or on a Ross stock), then its crossing. Most do not follow through." },
@@ -377,6 +394,14 @@ export const ALERT_SWITCH_SECTIONS: readonly { id: "runners" | "ross" | "signals
         icon: ALERT_SWITCH_ICON.haltBull,
         name: "Buying-side gauge, 9:30–11:30",
         description: "The gauge appears on the buying side of a $0.10–$25 stock between 9:30 and 11:30. About 1 in 5 reached +10% before −5% in Engine A's tests. Sent once if Gauge appears is on too.",
+      },
+      // Research v2's x-halt-1 sits here, not under Halts: the Halts rows each carry a sound
+      // picker (web notify/HaltRows) that only the exchange's own Halted / Resumed have.
+      {
+        key: "resumedUp",
+        icon: ALERT_SWITCH_ICON.resumedUp,
+        name: "Resumed up after a run",
+        description: "An LULD pause or news halt after a 5%+ run reopens at or above its halt price, $0.10–$25. About 1 in 4 were good moves in research v2's tests, against 1 in 5 for all alerts. On by default.",
       },
     ],
   },

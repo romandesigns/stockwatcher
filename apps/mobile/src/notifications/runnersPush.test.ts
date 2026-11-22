@@ -26,6 +26,7 @@ test("the defaults are the server's and the desk clients': evidence on; breakout
     n1Shadow: true,
     f1u: true,
     haltBull: true,
+    resumedUp: true,
   });
 });
 
