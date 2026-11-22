@@ -34,7 +34,7 @@ describe("runners notices", () => {
   });
 
   test("the defaults are the phone's: every evidence kind on; breakouts, at-trigger and the Halt watcher off", () => {
-    expect(DEFAULT_RUNNERS_NOTIFY).toEqual({ new: true, breakout: false, burst: true, running: true, run: true, fast: true, shelf: true, followUp: true, rossCrossing: true, signalsCrossing: true, rossTrigger: false, signalsTrigger: false, halt: false, pullback: true, halted: true, resumed: true, n1: true, f1u: true, haltBull: true });
+    expect(DEFAULT_RUNNERS_NOTIFY).toEqual({ new: true, breakout: false, burst: true, running: true, run: true, fast: true, shelf: true, followUp: true, rossCrossing: true, signalsCrossing: true, rossTrigger: false, signalsTrigger: false, halt: false, pullback: true, halted: true, resumed: true, n1: true, f1u: true, haltBull: true, modelPick: true });
     expect(runnersNotifyKinds(undefined)).toEqual({ ...DEFAULT_RUNNERS_NOTIFY });
     // A value stored before the new kinds existed: the new switches take their defaults.
     expect(runnersNotifyKinds({ new: false, breakout: true, burst: true, running: true, run: true, fast: true })).toEqual({ ...DEFAULT_RUNNERS_NOTIFY, new: false, breakout: true });
@@ -76,6 +76,7 @@ describe("runners notices", () => {
       ["shadow.n1", "n1"],
       ["shadow.f1u", "f1u"],
       ["halt.bull", "haltBull"],
+      ["model.pick", "modelPick"],
     ]);
     for (const k of RUNNERS_NOTICE_KINDS) expect(runnersNotifyKey(k) in DEFAULT_RUNNERS_NOTIFY).toBe(true);
   });
@@ -202,7 +203,7 @@ describe("N1 shadow", () => {
     expect(wantsNotice(n, { ...DEFAULT_RUNNERS_NOTIFY, n1: false })).toBe(false);
     expect(runnersNotifyKinds({ halted: false }).n1).toBe(true);
     const shadow = ALERT_SWITCH_SECTIONS.find((s) => s.id === "shadow")!;
-    expect(shadow.items).toEqual([expect.objectContaining({ key: "n1", icon: "insights", name: "N1 · shadow" }), expect.objectContaining({ key: "f1u", icon: "insights", name: "F1 · first pullback" })]);
+    expect(shadow.items).toEqual([expect.objectContaining({ key: "n1", icon: "insights", name: "N1 · shadow" }), expect.objectContaining({ key: "f1u", icon: "insights", name: "F1 · first pullback" }), expect.objectContaining({ key: "modelPick", icon: "insights", name: "Model picks" })]);
     // Its description says what it is now: X 8 %, on by default (it was "+6%" and "Off unless you turn it on").
     const n1 = shadow.items[0]!.description;
     expect(n1).toContain("+8%");
@@ -232,5 +233,16 @@ describe("Engine A T2-c4", () => {
     expect(wantsNotice(mk("halt.bull"), { ...DEFAULT_RUNNERS_NOTIFY, halt: true })).toBe(false);
     expect(wantsNotice(mk("halt.watch"), { ...DEFAULT_RUNNERS_NOTIFY, halt: true })).toBe(true);
     expect(wantsNotice(mk("halt.bull"), { ...DEFAULT_RUNNERS_NOTIFY, haltBull: false })).toBe(false);
+  });
+});
+
+describe("research v2 b-good", () => {
+  test("model picks: their own kind and switch, on by default; a stored value from before takes it", () => {
+    const n = parseRunnersNotice({ type: "runners.notice", id: "runners-bgood-2026-11-30-ABCD-bg-1796034000", alertId: "2026-11-30-ABCD-bg-1796034000", symbol: "ABCD", kind: "model.pick", title: "ABCD · Model pick · $2.12", body: "Model score 0.43 · pick 3 today · research v2 model", data: { symbol: "ABCD", kind: "model.pick", detector: "b-good-2" }, at: 1 })!;
+    expect(n.kind).toBe("model.pick");
+    expect(runnersNotifyKey(n.kind)).toBe("modelPick");
+    expect(wantsNotice(n, DEFAULT_RUNNERS_NOTIFY)).toBe(true);
+    expect(wantsNotice(n, { ...DEFAULT_RUNNERS_NOTIFY, modelPick: false })).toBe(false);
+    expect(runnersNotifyKinds({ n1: false }).modelPick).toBe(true);
   });
 });

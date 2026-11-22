@@ -2,7 +2,7 @@ import { Icon, UI } from "@stockwatcher/chart-native";
 import { formatEtTime } from "@stockwatcher/chart-core";
 import { newRocketFlags, rocketHeaderView, rocketNow, rocketRowMarks, rocketSectionCounts, rocketSectionsView, type RocketChannel, type RocketRowView, type RocketSectionsView, type RocketTone, type RowMarks, withZoneSections } from "@stockwatcher/shared";
 import { memo, useEffect, useRef, useState } from "react";
-import { Animated, Pressable, StyleSheet, Text, View } from "react-native";
+import { Animated, Pressable, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 
 import { useRocket } from "../feed/hooks";
 import { Flame, MarksLine, RowLine, useReadoutPress, useWall } from "./RowMarks";
@@ -11,6 +11,7 @@ import { phoneNotices } from "../notifications/runnersNotices";
 import { Collapse } from "../motion/Collapse";
 import { ZoneNote } from "./ZoneNote";
 import { SpreadChip } from "./SpreadChip";
+import { ConfidenceChip } from "./ConfidenceChip";
 import { fonts } from "../theme";
 import { useTickerPress } from "../ui/useTickerPress";
 import { StarToggle } from "../ui/StarToggle";
@@ -188,6 +189,9 @@ function useCrossfade(key: string, reducedMotion: boolean): Animated.Value {
  * later paths and the reasons). The flame lights on a fresh burst that holds its alert price.
  */
 const Row = memo(function Row({ row: r, marks, trigger, onPick, reducedMotion }: { row: RocketRowView; marks: RowMarks; trigger: number | null; onPick: (symbol: string) => void; reducedMotion: boolean }) {
+  // A row is the screen's width on a phone: under 400 dp (the Fold's cover screen) the
+  // confidence chip says "High".
+  const narrow = useWindowDimensions().width < 400;
   const press = useReadoutPress(useTickerPress(r.symbol, () => onPick(r.symbol)), marks);
   const m = r.momentum;
   const b = r.burst;
@@ -240,6 +244,10 @@ const Row = memo(function Row({ row: r, marks, trigger, onPick, reducedMotion }:
             {/* What the alert cost to trade when it fired (owner, 2026-11-19; the web's chip):
                 last on the line, so a chip arriving a moment after the row moves nothing before it. */}
             <SpreadChip spread={r.spread} reducedMotion={reducedMotion} />
+            {/* b-good-1's tag, 30 s after the alert (owner, 2026-11-22; the web's chip): after the
+                spread, so its late arrival moves nothing before it. "High" on the Fold's cover
+                screen. */}
+            <ConfidenceChip confidence={r.confidence} reducedMotion={reducedMotion} compact={narrow} />
           </>
         }
       />

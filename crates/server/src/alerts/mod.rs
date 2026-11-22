@@ -28,6 +28,29 @@
 //! market offers them through [`AlertSink::offer_runner`], as non-blocking as the price inputs.
 //! And it turns the exchange's halts and resumptions of covered stocks into notices ([`halts`]),
 //! from the same inputs, delivered exactly like the Runners ones.
+//!
+//! # Detector switches (no restart)
+//!
+//! The research detectors shipped live by the owner's 2026-11-22 decision carry a runtime switch
+//! each, in the synced settings namespace [`DETECTORS_NS`] (`detectors`): `{"b-good-1": {"on":
+//! false}, ...}`. An absent detector or field is ON. The task re-reads it the moment a
+//! `settings.changed` for it arrives, so the owner can switch one off from any client during
+//! market hours (DEPLOY-PLAN.md kill rules: no restart, only switches). A switched-off detector
+//! keeps running: its notices are decided and ledgered as `held: switched_off` on both paths, so
+//! its would-be alerts are still counted. It is its own namespace, never inside `alerts.prefs`,
+//! which clients write as one value and would erase it; clients may write it (it is not
+//! server-owned). Ids: `b-good-1` (the confidence tag) and `b-good-2` (model picks, kind
+//! `model.pick`).
+//!
+//! # Confidence (b-good-1)
+//!
+//! A B0-kind alert's tag is scored 30 s after it by `crate::bgood` (its quotes fetched by
+//! `crate::bgood::stage`) and comes back here as a [`crate::bgood::Confidence`]. Every one is
+//! ledgered (`confidence` line, `ledger.rs`); a tagged one, with its switch on, goes to every
+//! connection as `runners.confidence {eventId, alertId, symbol, notice, tier, score, at}` and
+//! marks its Runners row (`Market::set_runner_confidence`). A tag never sends a push of its own:
+//! the alert it belongs to was already delivered. Clients show a quiet "High confidence" chip on
+//! the alert (packages/shared `confidence.ts`).
 
 pub mod delivery;
 pub mod eval;
@@ -81,9 +104,25 @@ pub struct AlertSink {
     /// The symbols a pressure alert watches: the market scores only these, once a second
     /// (Market::publish_pressure), so alerts do not make the Halt watcher score every symbol.
     pressure_watch: Mutex<Arc<[String]>>,
+    /// b-good-1's tags due for quotes and a score (`crate::bgood::stage`), from the market.
+    tags: Option<mpsc::Sender<crate::bgood::TagRequest>>,
+    tags_dropped: AtomicU64,
 }
 
 impl AlertSink {
+    /// A b-good-1 tag due now (module docs, "Confidence"). Never blocks: a full channel drops it,
+    /// counted and logged; the alert itself was already offered.
+    pub fn offer_tag(&self, r: crate::bgood::TagRequest) {
+        let Some(tx) = &self.tags else { return };
+        if tx.try_send(r).is_err() {
+            let n = self.tags_dropped.fetch_add(1, Ordering::Relaxed) + 1;
+            tracing::warn!(
+                dropped = n,
+                "b-good-1: the confidence stage is not keeping up; a tag was dropped"
+            );
+        }
+    }
+
     pub fn pressure_watch(&self) -> Arc<[String]> {
         self.pressure_watch
             .lock()
@@ -133,6 +172,8 @@ impl AlertSink {
             runners: rtx,
             runners_dropped: AtomicU64::new(0),
             pressure_watch: Mutex::new(Arc::from(Vec::new())),
+            tags: None,
+            tags_dropped: AtomicU64::new(0),
         });
         (sink, rx, rrx)
     }
@@ -225,6 +266,8 @@ pub struct DeskKinds {
     /// T2-c4's HALT add-on, a bull Halt watcher gauge 09:30–11:30 (`crate::c4_live::halt_addon`):
     /// ON by default (owner, 2026-11-18).
     pub halt_bull: bool,
+    /// research v2 b-good-2's model picks (`crate::bgood`): ON by default (owner, 2026-11-22).
+    pub model_pick: bool,
 }
 
 impl Default for DeskKinds {
@@ -263,6 +306,9 @@ impl DeskKinds {
             // days: +7.9 pp recall with 22 fewer alerts a day); still switchable in Settings.
             f1u: o.f1u.unwrap_or(true),
             halt_bull: o.halt_bull.unwrap_or(true),
+            // Owner, 2026-11-22 (DEPLOY-PLAN addendum: the proven wins go live, no shadow
+            // period); still switchable here and by the runtime detector switch `b-good-2`.
+            model_pick: o.model_pick.unwrap_or(true),
         }
     }
 
@@ -300,6 +346,7 @@ impl DeskKinds {
             // One event, one notice: with the gauge's own switch on, its Halt watcher notice
             // already says it (as the Ross/Signals twins do).
             K::HaltBull => self.halt_bull && !self.halt,
+            K::BGood => self.model_pick,
         }
     }
 }
@@ -586,7 +633,7 @@ impl Alerts {
         let (run_tx, run_rx) = mpsc::channel(RUNNERS_CAPACITY);
         // With a quote source the market's end of the Runners channel feeds the spread stage,
         // which hands each notice on, priced, through a second channel of the same size.
-        let run_tx = match spread {
+        let run_tx = match spread.clone() {
             Some(src) => {
                 let (stage_tx, stage_rx) = mpsc::channel(RUNNERS_CAPACITY);
                 crate::spread::spawn_stage(src, live.clone(), stage_rx, run_tx);
@@ -594,12 +641,18 @@ impl Alerts {
             }
             None => run_tx,
         };
+        // b-good-1's tags: market -> confidence stage (quotes, score) -> this task.
+        let (tag_tx, tag_rx) = mpsc::channel(RUNNERS_CAPACITY);
+        let (conf_tx, conf_rx) = mpsc::channel(RUNNERS_CAPACITY);
+        crate::bgood::stage::spawn(spread.clone(), tag_rx, conf_tx);
         let sink = Arc::new(AlertSink {
             tx: in_tx,
             dropped: AtomicU64::new(0),
             runners: run_tx,
             runners_dropped: AtomicU64::new(0),
             pressure_watch: Mutex::new(Arc::from(Vec::new())),
+            tags: Some(tag_tx),
+            tags_dropped: AtomicU64::new(0),
         });
         live.attach_alerts(sink.clone());
         let (cmd_tx, cmd_rx) = mpsc::channel(32);
@@ -629,9 +682,10 @@ impl Alerts {
             seq: 0,
             op: 0,
             dropped_logged: 0,
+            detectors: Detectors::default(),
         };
         task.rebuild_snapshot();
-        tokio::spawn(async move { task.run(in_rx, cmd_rx, res_rx, run_rx).await });
+        tokio::spawn(async move { task.run(in_rx, cmd_rx, res_rx, run_rx, conf_rx).await });
         alerts
     }
 }
@@ -674,6 +728,46 @@ struct Task {
     seq: u64,
     op: u64,
     dropped_logged: u64,
+    /// The detector switches (module docs, "Detector switches").
+    detectors: Detectors,
+}
+
+/// The synced namespace of the research detectors' runtime switches (module docs).
+pub const DETECTORS_NS: &str = "detectors";
+
+/// The detector switches as last read: the ids switched OFF (everything else is on).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Detectors {
+    off: std::collections::BTreeSet<String>,
+}
+
+impl Detectors {
+    /// From the namespace's value: `{id: {"on": bool}}`; an id whose `on` is exactly `false` is
+    /// off, anything else (absent, malformed, `true`) is on.
+    pub fn parse(v: Option<&Value>) -> Detectors {
+        let off = v
+            .and_then(Value::as_object)
+            .map(|m| {
+                m.iter()
+                    .filter(|(_, x)| x.get("on").and_then(Value::as_bool) == Some(false))
+                    .map(|(k, _)| k.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        Detectors { off }
+    }
+
+    pub fn on(&self, id: &str) -> bool {
+        !self.off.contains(id)
+    }
+
+    /// The detector a Runners-pipeline notice belongs to, when it has a switch here.
+    pub fn of(n: &crate::rocket::Notice) -> Option<&'static str> {
+        match n.kind {
+            crate::rocket::NoticeKind::BGood => Some(crate::bgood::PICK_ID),
+            _ => None,
+        }
+    }
 }
 
 impl Task {
@@ -706,6 +800,7 @@ impl Task {
     async fn reload(&mut self, initial: bool) {
         let rules = model::parse_rules(self.settings.get(RULES_NS).await.map(|(_, v)| v).as_ref());
         self.prefs = model::parse_prefs(self.settings.get(PREFS_NS).await.map(|(_, v)| v).as_ref());
+        self.reload_detectors().await;
         let market = self.market.clone();
         self.eval.set_rules(rules, initial, &market);
         *self
@@ -717,6 +812,21 @@ impl Task {
         // have moved to another drawing or symbol).
         for symbol in self.eval.drawing_symbols() {
             self.reload_drawings(&symbol).await;
+        }
+    }
+
+    /// The detector switches (module docs, "Detector switches"); a change is logged.
+    async fn reload_detectors(&mut self) {
+        let d = Detectors::parse(
+            self.settings
+                .get(DETECTORS_NS)
+                .await
+                .map(|(_, v)| v)
+                .as_ref(),
+        );
+        if d != self.detectors {
+            tracing::info!(off = ?d.off, "detector switches read");
+            self.detectors = d;
         }
     }
 
@@ -756,6 +866,7 @@ impl Task {
         mut cmds: mpsc::Receiver<Command>,
         mut results: mpsc::Receiver<PushResult>,
         mut runner_notices: mpsc::Receiver<crate::rocket::Notice>,
+        mut confidence: mpsc::Receiver<crate::bgood::Confidence>,
     ) {
         let mut settings_feed = self.settings.subscribe();
         let stored =
@@ -817,7 +928,9 @@ impl Task {
                     Ok(f) => {
                         // Only our namespaces; the prefix test avoids parsing every drawing change.
                         let ours = |ns: &str| f.starts_with(&format!("{{\"type\":\"settings.changed\",\"ns\":\"{ns}\""));
-                        if ours(RULES_NS) || ours(PREFS_NS) {
+                        if ours(DETECTORS_NS) {
+                            self.reload_detectors().await;
+                        } else if ours(RULES_NS) || ours(PREFS_NS) {
                             self.reload(false).await;
                             // A snooze set or an edit shows at once, not on the next tick.
                             self.eval.tick(now_ms());
@@ -871,6 +984,7 @@ impl Task {
                     changed = true;
                 }
                 Some(n) = runner_notices.recv() => self.runner(n, now_ms()),
+                Some(c) = confidence.recv() => self.confidence(c, now_ms()),
                 r = results.recv() => match r {
                     Some(PushResult::Failed { event_id, detail }) => {
                         tracing::warn!(event = %event_id, detail, "alerts: phone notification failed");
@@ -945,6 +1059,23 @@ impl Task {
     /// A halt notice ([`halts`]) takes the same path; its phones are grouped by their sound.
     fn runner(&mut self, n: crate::rocket::Notice, now: i64) {
         let now_et = et(now);
+        // A detector switched off at runtime (module docs, "Detector switches"): decided and
+        // ledgered on both paths as held, never sent.
+        if let Some(id) = Detectors::of(&n)
+            && !self.detectors.on(id)
+        {
+            let event_id = n.event_id();
+            let (title, body, _) = runners::message(&n);
+            let held = runners::Decision::Held(runners::Hold::SwitchedOff);
+            let desks = self.shared.desks_wanting(&n);
+            self.ledger
+                .decision(&n, &event_id, "desk", &held, desks, &title, &body, now);
+            let phones = self.devices.runner_tokens(&n).len();
+            self.ledger
+                .decision(&n, &event_id, "phone", &held, phones, &title, &body, now);
+            tracing::info!(symbol = %n.symbol, kind = n.kind.as_str(), detector = id, "runners notice: detector switched off; held");
+            return;
+        }
         // Desktop and web first (runners::desk_frame): the same limits, decided once here with
         // the open clients that want this kind as the "devices", and their own count, so the
         // phones' switches and the desks' never hold each other back.
@@ -1047,6 +1178,19 @@ impl Task {
                 tracing::info!(symbol = %n.symbol, kind, "runners push: sent to the push service");
             }
         }
+    }
+
+    /// A scored b-good-1 tag (module docs, "Confidence"): ledgered; a tagged one with its switch
+    /// on is shown on every client and marks its Runners row.
+    fn confidence(&mut self, c: crate::bgood::Confidence, now: i64) {
+        let on = self.detectors.on(crate::bgood::TAG_ID);
+        self.ledger.confidence(&c, on, now);
+        if !(on && c.tagged) {
+            return;
+        }
+        self.market.set_runner_confidence(&c.alert_id);
+        self.broadcast(runners::confidence_frame(&c));
+        tracing::info!(symbol = %c.symbol, kind = c.kind.as_str(), margin = c.margin, "b-good-1: high confidence");
     }
 
     fn next_id(&mut self, at: i64) -> String {

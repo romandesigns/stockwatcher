@@ -278,6 +278,7 @@ mod tick_phase_tests {
 /// | `VOLUME_SHELVES` | `1` | with `ROCKET_WATCH`: volume shelves (`crate::zones`, the zones bake-off's winner) for every symbol with a confirmed +20 % run today, in the Runners frame's `zones` and on the chart; the live market keeps its forward log under `ARCHIVE_ROOT/zones/`. Its run trigger also feeds the Runners "Run +20%" entry (`crate::rocket::run`), so `0` turns that off too |
 /// | `N1_LIVE` | `1` | live market with `ROCKET_WATCH`: the N1 "early leg" detector (`crate::n1_live`, Engine A T2-c6's entrant, X 8 % since T2-c4): its own notice kind `shadow.n1` beside production (push/desktop switch `n1`, on by default) and the Runners frame's `shadow` rows; `0` turns it off |
 /// | `C4_LIVE` | `1` | live market with `ROCKET_WATCH`: Engine A T2-c4's additions (`crate::c4_live`): the F1u detector (`shadow.f1u`, switch `f1u`), the HALT add-on (`halt.bull`, switch `haltBull`), both on by default, and the POST<1 prune of Runners notices; `0` turns all three off |
+/// | `BGOOD_LIVE` | `1` | live market with `ROCKET_WATCH`: research v2 b-good (`crate::bgood`): b-good-2's model picks (`model.pick`, switch `modelPick`, on by default) and b-good-1's high-confidence tag on B0-kind alerts 30 s after them (`runners.confidence`). Each also has a runtime switch in the synced `detectors` settings (`b-good-1`, `b-good-2`; no restart). It sends nothing until its inputs are complete (`crate::bgood` docs: `DAILY_BARS_KEEP_DAYS=0` with ≥ 826 dates, 20 time-of-day sessions). `0` turns it off (a restart) |
 /// | `BURST_THRESHOLD` | unset | a burst model probability threshold in (0, 1), overriding `BURST_ALERTS_PER_DAY`'s |
 /// | `ADMISSION_JOURNAL` | `0` | live with a recorder: write the admission journal beside the recording (`crate::admit`; ~190–270 B per print, so off for whole-market SIP: see `Market::init_history`) |
 #[derive(Clone, Debug)]
@@ -315,6 +316,10 @@ pub struct MarketConfig {
     /// `C4_LIVE` (on by default, needs `ROCKET_WATCH`, live market only): Engine A T2-c4's F1u,
     /// HALT add-on and POST<1 prune (`crate::c4_live`); `0` is their kill switch.
     pub c4_live: bool,
+    /// `BGOOD_LIVE` (on by default, needs `ROCKET_WATCH`, live market only): research v2 b-good
+    /// (`crate::bgood`); `0` turns it off at the next start (the runtime switches are in the
+    /// `detectors` settings, `crate::alerts`).
+    pub bgood_live: bool,
     /// `ADMISSION_JOURNAL` (off by default): the live admission journal (`crate::admit`). Its
     /// size and the reader's record cap make it unusable for a whole-market day; see
     /// `Market::init_history`.
@@ -346,6 +351,7 @@ impl Default for MarketConfig {
             volume_shelves: true,
             n1_live: true,
             c4_live: true,
+            bgood_live: true,
             admission_journal: false,
             detection_quiet_references: None,
             evidence_check: Duration::from_secs(crate::evidence::DEFAULT_CHECK_SECS),
@@ -392,6 +398,9 @@ impl MarketConfig {
         }
         if let Some(v) = var("C4_LIVE") {
             c.c4_live = on(&v);
+        }
+        if let Some(v) = var("BGOOD_LIVE") {
+            c.bgood_live = on(&v);
         }
         c.rocket_policy = crate::rocket::Policy::from_lookup(&get)?;
         c.burst_policy = crate::rocket::burst::BurstPolicy::from_lookup(&get)?;
@@ -770,6 +779,9 @@ pub(crate) struct Inner {
     burst_archive: std::sync::OnceLock<Archive>,
     /// The archive the N1 shadow reads its daily facts from (`crate::n1_live::load_facts`).
     n1_archive: std::sync::OnceLock<Archive>,
+    /// The archive research v2 b-good reads its inputs from and writes its time-of-day files to
+    /// (`crate::bgood::load_inputs`, `crate::bgood::write_tod`).
+    bgood_archive: std::sync::OnceLock<Archive>,
     /// The archive the Runners running entry's facts are read from, once a day
     /// (`crate::rocket::running::facts`); live and replay.
     running_archive: std::sync::OnceLock<Archive>,
@@ -1041,6 +1053,7 @@ impl Market {
             zones_log: std::sync::OnceLock::new(),
             burst_archive: std::sync::OnceLock::new(),
             n1_archive: std::sync::OnceLock::new(),
+            bgood_archive: std::sync::OnceLock::new(),
             running_archive: std::sync::OnceLock::new(),
             transition_log: std::sync::OnceLock::new(),
             notice_memory_root: std::sync::OnceLock::new(),
@@ -1189,6 +1202,72 @@ impl Market {
             "c4: Engine A T2-c4 on (F1u, HALT add-on 09:30-11:30 ET, POST<1 prune; C4_LIVE=0 turns it off)"
         );
         self.0.core.lock().expect("core lock").rocket.enable_c4();
+    }
+
+    /// Live: turns on research v2 b-good (`crate::bgood`) with `archive` for its inputs and its
+    /// time-of-day files. Call after `set_rocket_watch`. A replay never calls this.
+    pub fn enable_bgood(&self, archive: Option<Archive>) {
+        if !self.0.rocket_on.load(Ordering::Relaxed) || self.0.mode != ClockMode::Live {
+            return;
+        }
+        if let Some(a) = archive {
+            let _ = self.0.bgood_archive.set(a);
+        }
+        tracing::info!(
+            tag = crate::bgood::version(crate::bgood::model1()),
+            pick = crate::bgood::version(crate::bgood::model2()),
+            "b-good: on (research v2 b-good-1 confidence tag, b-good-2 model picks; BGOOD_LIVE=0 turns it off, the `detectors` settings switch each at runtime)"
+        );
+        self.0.core.lock().expect("core lock").rocket.enable_bgood();
+    }
+
+    /// b-good's work after a tick (never under the core lock): tags to the confidence stage
+    /// (live only), the day's inputs read on a blocking thread, a finished day's time-of-day file
+    /// written on one.
+    fn bgood_work(
+        &self,
+        tags: Vec<crate::bgood::TagRequest>,
+        inputs: Option<NaiveDate>,
+        tod: Option<crate::bgood::TodDay>,
+    ) {
+        if !tags.is_empty()
+            && self.0.mode == ClockMode::Live
+            && let Some(sink) = self.alert_sink()
+        {
+            for t in tags {
+                sink.offer_tag(t);
+            }
+        }
+        let Some(archive) = self.0.bgood_archive.get().cloned() else {
+            return;
+        };
+        if let Some(day) = tod {
+            let root = archive.root().to_path_buf();
+            std::thread::spawn(move || match crate::bgood::write_tod(&root, &day) {
+                Ok(()) => {
+                    tracing::info!(date = ?day.date, rows = day.rows.len(), present = day.present.len(), "b-good: time-of-day file written")
+                }
+                Err(e) => {
+                    tracing::warn!(date = ?day.date, error = %e, "b-good: time-of-day file not written")
+                }
+            });
+        }
+        if let Some(date) = inputs {
+            let market = self.clone();
+            std::thread::spawn(move || {
+                let t = std::time::Instant::now();
+                let splits = load_splits(&archive);
+                let inputs = crate::bgood::load_inputs(&archive, date, &splits);
+                tracing::info!(%date, ms = t.elapsed().as_millis() as u64, "b-good: inputs read");
+                market
+                    .0
+                    .core
+                    .lock()
+                    .expect("core lock")
+                    .rocket
+                    .set_bgood_inputs(inputs);
+            });
+        }
     }
 
     /// Loads a trading date's N1 facts (`crate::n1_live::load_facts`) on a blocking thread, then
@@ -2092,6 +2171,11 @@ impl Market {
             market.enable_c4(Some(archive.clone()));
         } else if mode == ClockMode::Live && !cfg.c4_live {
             tracing::info!("c4: off (C4_LIVE=0)");
+        }
+        if mode == ClockMode::Live && cfg.rocket_watch && cfg.bgood_live {
+            market.enable_bgood(Some(archive.clone()));
+        } else if mode == ClockMode::Live && !cfg.bgood_live {
+            tracing::info!("b-good: off (BGOOD_LIVE=0)");
         }
         if mode == ClockMode::Live && cfg.rocket_watch {
             // Before the ingest: today's alerts and the record come back after a restart.
@@ -3767,7 +3851,7 @@ impl Market {
             return false;
         };
         let now = self.decision_now(&clock);
-        let (log, notices, adv_wanted, facts_wanted, n1_wanted, zones_log) = {
+        let (log, notices, adv_wanted, facts_wanted, n1_wanted, zones_log, bgood) = {
             let mut core = self.0.core.lock().expect("core lock");
             if core.rebuilding || !core.rocket.enabled() {
                 return false;
@@ -3800,7 +3884,16 @@ impl Market {
             let adv_wanted = core.rocket.take_burst_adv_request();
             let facts_wanted = core.rocket.take_running_facts_request();
             let n1_wanted = core.rocket.take_n1_facts_request();
-            (log, notices, adv_wanted, facts_wanted, n1_wanted, zones_log)
+            let bgood = core.rocket.take_bgood_work();
+            (
+                log,
+                notices,
+                adv_wanted,
+                facts_wanted,
+                n1_wanted,
+                zones_log,
+                bgood,
+            )
         };
         // First, before the file appends and the once-a-day archive reads: seconds matter on a
         // +20 % leg.
@@ -3826,6 +3919,7 @@ impl Market {
         if let Some(date) = n1_wanted {
             self.load_n1_facts(date);
         }
+        self.bgood_work(bgood.0, bgood.1, bgood.2);
         if let Some(l) = self.0.rocket_log.get() {
             let mut by_date: Vec<(NaiveDate, Vec<String>)> = Vec::new();
             for (d, line) in log {
@@ -3920,6 +4014,14 @@ impl Market {
         if notices.is_empty() || self.0.mode != ClockMode::Live {
             return;
         }
+        // research v2 b-good reads every notice offered (all sources): its alert context and
+        // b-good-1's tags (crate::bgood). A brief core lock, as set_runner_spread's.
+        {
+            let mut core = self.0.core.lock().expect("core lock");
+            if core.rocket.bgood().is_some() {
+                core.rocket.bgood_record(&notices);
+            }
+        }
         if let Some(sink) = self.alert_sink() {
             for n in notices {
                 sink.offer_runner(n);
@@ -3937,6 +4039,17 @@ impl Market {
             .expect("core lock")
             .rocket
             .set_spread(alert_id, bp);
+    }
+
+    /// A Runners row b-good-1 tagged high confidence (`crate::alerts`, "Confidence"): the row shows
+    /// it from the next `rocket.update`. Takes the core lock briefly, from the alerts task.
+    pub fn set_runner_confidence(&self, alert_id: &str) {
+        self.0
+            .core
+            .lock()
+            .expect("core lock")
+            .rocket
+            .set_confidence(alert_id);
     }
 
     /// Registers a `pressure.subscribe` (the quotes guard's twin).

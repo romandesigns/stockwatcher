@@ -217,6 +217,19 @@ pub fn group_summarized(text: &str) -> (Vec<Value>, bool, Value) {
                 }
                 item.insert("latency".into(), Value::Object(lat));
             }
+            // b-good-1's tag of this notice (`crate::alerts::ledger`, `confidence`), 30 s after
+            // it: the log shows the chip only when it was tagged and shown (`held` null).
+            "confidence" => {
+                item.insert(
+                    "confidence".into(),
+                    json!({
+                        "tier": v.get("tier").cloned().unwrap_or(Value::Null),
+                        "score": v.get("score").cloned().unwrap_or(Value::Null),
+                        "held": v.get("held").cloned().unwrap_or(Value::Null),
+                        "at": v.get("decided_at").cloned().unwrap_or(Value::Null),
+                    }),
+                );
+            }
             "failed" => {
                 item.insert(
                     "failed".into(),
@@ -351,6 +364,7 @@ pub fn kind_label(notice: &str) -> &str {
         "halt.watch" => "Halt watcher",
         "shadow.n1" => "N1 · shadow",
         "shadow.f1u" => "F1 · first pullback",
+        "model.pick" => "Model pick",
         "halt.bull" => "Halt risk · buying",
         "price.alert" => "Price alert",
         other => other,
@@ -380,6 +394,7 @@ pub fn held_text(reason: Option<&str>, merged: Option<&Value>) -> String {
         "quiet_hours" => "quiet hours".into(),
         "stale" => "too old by the time it was decided".into(),
         "duplicate" => "already sent".into(),
+        "switched_off" => "detector switched off".into(),
         "off" => "phone alerts off for it".into(),
         "merged" => "merged into an earlier alert".into(),
         other => other.replace('_', " "),

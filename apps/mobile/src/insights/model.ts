@@ -1,6 +1,6 @@
 import { formatEtTime12, type IconName } from "@stockwatcher/chart-core";
-import { latencyText, noticeEvidence, noticeIcon, noticeKind, pathText, rowHeldText, rowStatus, type NoticeItemWire } from "@stockwatcher/shared";
-import { BREAKOUT_LABEL, noticeChartContext, type NoticeChartContext } from "@stockwatcher/shared";
+import { confidenceView, latencyText, noticeEvidence, noticeIcon, noticeKind, pathText, rowHeldText, rowStatus, type NoticeItemWire } from "@stockwatcher/shared";
+import { BREAKOUT_LABEL, noticeChartContext, type ConfidenceView, type NoticeChartContext } from "@stockwatcher/shared";
 
 // One notification-log row on the phone (the web's NoticeRow, apps/web/src/insights): what the
 // row shows, derived once so the screen stays layout only and the wording is tested.
@@ -26,6 +26,8 @@ export interface NoticeRowView {
   /** The full technical record, only in the read-out sheet ("Details" or a long press; owner, 2026-10-30: no debug walls). */
   details: string[];
   noticeContext?: NoticeChartContext;
+  /** b-good-1's "High confidence" tag of this notice, 30 s after it (packages/shared confidence.ts), or null. */
+  confidence: ConfidenceView | null;
 }
 
 export function noticeRowView(item: NoticeItemWire): NoticeRowView {
@@ -45,6 +47,7 @@ export function noticeRowView(item: NoticeItemWire): NoticeRowView {
   const phone = path("Phones", item.phone);
   const desk = path("Desktop and web", item.desk);
   const latency = latencyText(item);
+  const confidence = confidenceView(item.confidence?.tier, item.confidence?.held);
   const detail = sent ? (item.failed ? `${text} · push service refused it` : text) : `Held: ${held}`;
   return {
     key: item.event_id,
@@ -61,6 +64,7 @@ export function noticeRowView(item: NoticeItemWire): NoticeRowView {
     line,
     details,
     noticeContext: context,
-    a11y: [`${item.symbol ?? "Notice"}, ${label}`, sent ? "sent" : `held, ${held}`, phone?.label, desk?.label, latency && sent ? latency : null, text, line].filter(Boolean).join(". "),
+    confidence,
+    a11y: [`${item.symbol ?? "Notice"}, ${label}`, sent ? "sent" : `held, ${held}`, confidence?.aria, phone?.label, desk?.label, latency && sent ? latency : null, text, line].filter(Boolean).join(". "),
   };
 }

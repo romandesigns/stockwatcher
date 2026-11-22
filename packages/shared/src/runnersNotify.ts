@@ -52,6 +52,9 @@ export const RUNNERS_NOTICE_KINDS = [
   // 9:30–11:30. Each its own switch, on by default.
   "shadow.f1u",
   "halt.bull",
+  // research v2 b-good-2 "model picks" (owner, 2026-11-22; crates/server/src/bgood): stocks a frozen
+  // model scored above its threshold at a minute end, at most 30 a day. Its own switch, on by default.
+  "model.pick",
 ] as const;
 export type RunnersNoticeKind = (typeof RUNNERS_NOTICE_KINDS)[number];
 
@@ -115,6 +118,8 @@ export interface RunnersNotifyKinds {
   f1u: boolean;
   /** The Halt watcher's gauge appeared on the buying side, 9:30–11:30 ET (Engine A T2-c4); sent once if `halt` is on too. */
   haltBull: boolean;
+  /** research v2 b-good-2 picked a stock: a frozen model scored it above its threshold (at most 30 a day). */
+  modelPick: boolean;
 }
 
 /**
@@ -145,6 +150,8 @@ export const DEFAULT_RUNNERS_NOTIFY: Readonly<RunnersNotifyKinds> = Object.freez
   // On: Engine A T2-c4 (owner, 2026-11-18).
   f1u: true,
   haltBull: true,
+  // On: research v2's proven wins go live (owner, 2026-11-22).
+  modelPick: true,
 });
 
 /** client `runners.notify`: this connection shows notifications for these kinds (`enabled: false` stops). */
@@ -182,6 +189,7 @@ export const RUNNERS_NOTIFY_KEY: Readonly<Record<RunnersNoticeKind, keyof Runner
   "shadow.n1": "n1",
   "shadow.f1u": "f1u",
   "halt.bull": "haltBull",
+  "model.pick": "modelPick",
 });
 
 /** Whether a notice is an exchange halt or resumption (its own sound on the desktop and web). */
@@ -316,6 +324,7 @@ export const ALERT_SWITCH_ICON: Readonly<Record<keyof RunnersNotifyKinds, AlertI
   n1: "insights",
   f1u: "insights",
   haltBull: "gauge",
+  modelPick: "insights",
 });
 
 /** A Runners-pipeline notice kind's icon: its switch's ({@link ALERT_SWITCH_ICON}). */
@@ -405,6 +414,12 @@ export const ALERT_SWITCH_SECTIONS: readonly { id: "runners" | "ross" | "signals
         icon: ALERT_SWITCH_ICON.f1u,
         name: "F1 · first pullback",
         description: "A stock's first dip after a +10% ignition crosses back over the dip's last high, 9:30–11:30, within 20% of the day's low. About 1 in 15 reached +10% before −5% in Engine A's tests. On by default.",
+      },
+      {
+        key: "modelPick",
+        icon: ALERT_SWITCH_ICON.modelPick,
+        name: "Model picks",
+        description: "A research model scores every stock each minute and picks the strongest, at most 2 a stock and 30 a day, none right after another alert on it. About 1 in 7 reached +10% before −5% in testing. On by default.",
       },
     ],
   },

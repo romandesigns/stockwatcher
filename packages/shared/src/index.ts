@@ -28,3 +28,4 @@ export * from "./insightsTicker.ts";
 export * from "./breakout.ts";
 export * from "./wireTime.ts";
 export * from "./spread.ts";
+export * from "./confidence.ts";

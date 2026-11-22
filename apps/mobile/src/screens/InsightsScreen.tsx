@@ -11,6 +11,7 @@ import { useNoticeLog } from "../insights/useNoticeLog";
 import { useDashboardFeed } from "../feed/dashboardFeed";
 import { Collapse } from "../motion/Collapse";
 import { useReducedMotion } from "../motion/useReducedMotion";
+import { ConfidenceChip } from "../dashboard/ConfidenceChip";
 import { openInsightsTicker, openTickerChart } from "../navigation/ref";
 import { colors, fonts } from "../theme";
 
@@ -189,6 +190,8 @@ function NotificationLog() {
               {r.kind}
             </Text>
             <View style={styles.paths}>
+              {/* b-good-1's tag (30 s after the notice): quiet, before the path marks. */}
+              <ConfidenceChip confidence={r.confidence} reducedMotion={reducedMotion} compact />
               {r.desk && <Icon name="screen" color={r.desk.sent ? colors.textDim : colors.warning} size={14} />}
               {r.phone && <Icon name="phone" color={r.phone.sent ? colors.textDim : colors.warning} size={14} />}
               <Text style={[styles.status, r.sent ? styles.statusSent : styles.statusHeld]}>{r.status}</Text>

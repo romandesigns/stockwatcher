@@ -26,6 +26,8 @@ export interface RunnersPushPrefs {
   /** Engine A T2-c4's F1u and HALT add-on (crates/server/src/c4_live, 2026-11-18). */
   pushF1u: boolean;
   pushHaltBull: boolean;
+  /** research v2 b-good-2's model picks (crates/server/src/bgood, 2026-11-22). */
+  pushModelPick: boolean;
 }
 
 export const RUNNERS_PUSH_DEFAULTS: RunnersPushPrefs = {
@@ -53,6 +55,8 @@ export const RUNNERS_PUSH_DEFAULTS: RunnersPushPrefs = {
   // T2-c4's add-ons: on (owner, 2026-11-18; the server's default too).
   pushF1u: true,
   pushHaltBull: true,
+  // research v2's proven wins go live (owner, 2026-11-22; the server's default too).
+  pushModelPick: true,
 };
 
 /** The phone pref behind each shared switch (packages/shared `ALERT_SWITCH_SECTIONS`). */
@@ -76,6 +80,7 @@ export const PUSH_PREF_OF: Readonly<Record<keyof RunnersNotifyKinds, keyof Runne
   n1: "pushN1",
   f1u: "pushF1u",
   haltBull: "pushHaltBull",
+  modelPick: "pushModelPick",
 };
 
 /**
@@ -110,6 +115,7 @@ export interface RunnersRegisterFields {
   n1Shadow: boolean;
   f1u: boolean;
   haltBull: boolean;
+  modelPick: boolean;
 }
 
 export function registerFieldsOf(p: RunnersPushPrefs): RunnersRegisterFields {
@@ -133,5 +139,6 @@ export function registerFieldsOf(p: RunnersPushPrefs): RunnersRegisterFields {
     n1Shadow: p.pushN1,
     f1u: p.pushF1u,
     haltBull: p.pushHaltBull,
+    modelPick: p.pushModelPick,
   };
 }
