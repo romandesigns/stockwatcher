@@ -571,6 +571,9 @@ pub(crate) struct Core {
     /// Volume shelves (`VOLUME_SHELVES`, `crate::zones`): fed the same prints as `rocket`,
     /// ticked just before it, published in its frame.
     pub(crate) zones: crate::zones::ZoneBoard,
+    /// rw-mp5-1's per-bucket shares and its daily table (`crate::mp5_gate`): fed the same
+    /// prints as `rocket`, ticked with it; off unless the live market runs the Detection Panel.
+    pub(crate) mp5: crate::mp5_gate::Mp5Live,
     /// The chart indicators the connected charts asked for (crate::indicators), fed every
     /// engine increment under this lock. Unlike the boards above it survives a `Reset` (the
     /// slots' demand does), with its series cleared.
@@ -650,6 +653,7 @@ impl Core {
             context: None,
             rocket: crate::rocket::RocketBoard::disabled(),
             zones: crate::zones::ZoneBoard::disabled(),
+            mp5: crate::mp5_gate::Mp5Live::new(),
             indicators: IndicatorRegistry::default(),
             chart_context: ContextRegistry::default(),
         }
@@ -800,6 +804,9 @@ pub(crate) struct Inner {
     /// The archive x-gap-1 / x-ctx-1 read their facts and ToD files from and write the
     /// session's ToD file to (`crate::gap_ctx`).
     gap_ctx_archive: std::sync::OnceLock<Archive>,
+    /// The archive rw-mp5-1 reads its table from and writes its day files under
+    /// (`crate::mp5_gate`).
+    mp5_archive: std::sync::OnceLock<Archive>,
     /// The archive the Runners running entry's facts are read from, once a day
     /// (`crate::rocket::running::facts`); live and replay.
     running_archive: std::sync::OnceLock<Archive>,
@@ -1072,6 +1079,7 @@ impl Market {
             burst_archive: std::sync::OnceLock::new(),
             n1_archive: std::sync::OnceLock::new(),
             gap_ctx_archive: std::sync::OnceLock::new(),
+            mp5_archive: std::sync::OnceLock::new(),
             running_archive: std::sync::OnceLock::new(),
             transition_log: std::sync::OnceLock::new(),
             notice_memory_root: std::sync::OnceLock::new(),
@@ -1315,6 +1323,85 @@ impl Market {
                 }
             },
         );
+    }
+
+    /// Live with the Detection Panel: turns on rw-mp5-1's inputs (`crate::mp5_gate`): the
+    /// per-bucket shares from every counted print, the 20:00 ET day file and the 03:30 ET table.
+    /// The gate itself runs in the alerts task. Needs the Runners board's clock (`ROCKET_WATCH`).
+    pub fn enable_mp5(&self, archive: Archive) {
+        if !self.0.rocket_on.load(Ordering::Relaxed) || self.0.mode != ClockMode::Live {
+            return;
+        }
+        let _ = self.0.mp5_archive.set(archive);
+        tracing::info!(
+            detector = crate::mp5_gate::logic::DETECTOR,
+            config = crate::mp5_gate::logic::CONFIG_SHA256,
+            "rw-mp5-1: Signals crossings gated (A-G9 in play or prior runner, 5 s B0 dedup); switch `detectors` -> rw-mp5-1"
+        );
+        self.0.core.lock().expect("core lock").mp5.enable();
+    }
+
+    /// rw-mp5-1's G9 verdict on a crossing of `symbol` at `price` decided at `a_ns`, and the
+    /// day's 04:00 ET (for the ledger's session). Takes the core lock for one lookup (at most
+    /// 192 additions), from the alerts task, never from ingest.
+    pub fn mp5_verdict(
+        &self,
+        symbol: &str,
+        price: f64,
+        a_ns: i64,
+    ) -> (crate::mp5_gate::Verdict, Option<i64>) {
+        let v = self
+            .0
+            .core
+            .lock()
+            .expect("core lock")
+            .mp5
+            .verdict(symbol, price, a_ns);
+        let t0 = crate::mp5_gate::day_of(market_events::session::trading_date(
+            market_events::UnixNanos(a_ns),
+        ))
+        .map(|d| d.t0);
+        (v, t0)
+    }
+
+    /// Reads rw-mp5-1's table for `date` (`crate::mp5_gate::load_table`, which may rebuild
+    /// missing baseline days from the archive's tape: minutes, so never under the lock) on a
+    /// blocking thread, then hands it to the core.
+    fn load_mp5_table(&self, date: NaiveDate) {
+        let Some(archive) = self.0.mp5_archive.get().cloned() else {
+            return;
+        };
+        let market = self.clone();
+        std::thread::spawn(move || {
+            let t = std::time::Instant::now();
+            let table = crate::mp5_gate::load_table(&archive, date);
+            tracing::info!(%date, ms = t.elapsed().as_millis() as u64, "rw-mp5-1: table read");
+            market
+                .0
+                .core
+                .lock()
+                .expect("core lock")
+                .mp5
+                .set_table(std::sync::Arc::new(table));
+        });
+    }
+
+    /// Writes a finished day's bucket figures (`crate::mp5_gate::write_day`) on a blocking thread.
+    fn write_mp5_day(&self, f: crate::mp5_gate::Finished) {
+        let Some(archive) = self.0.mp5_archive.get().cloned() else {
+            return;
+        };
+        std::thread::spawn(move || {
+            let dir = crate::mp5_gate::tod_dir(archive.root());
+            match crate::mp5_gate::write_day(&dir, f.date, f.complete, "live", &f.syms) {
+                Ok(()) => {
+                    tracing::info!(date = %f.date, symbols = f.syms.len(), complete = f.complete, "rw-mp5-1: day file written")
+                }
+                Err(e) => {
+                    tracing::warn!(date = %f.date, error = %e, "rw-mp5-1: day file not written; that session is missing from later baselines")
+                }
+            }
+        });
     }
 
     /// Loads a trading date's N1 facts (`crate::n1_live::load_facts`) on a blocking thread, then
@@ -2214,6 +2301,9 @@ impl Market {
         } else if mode == ClockMode::Live && !cfg.n1_live {
             tracing::info!("n1 shadow: off (N1_LIVE=0)");
         }
+        if mode == ClockMode::Live && cfg.rocket_watch && cfg.detection_panel {
+            market.enable_mp5(archive.clone());
+        }
         if mode == ClockMode::Live && cfg.rocket_watch && cfg.c4_live {
             market.enable_c4(Some(archive.clone()));
         } else if mode == ClockMode::Live && !cfg.c4_live {
@@ -2998,6 +3088,7 @@ impl Market {
                             core.pressure.apply_trade(t, counted);
                             core.rocket.apply_trade(t, counted);
                             core.zones.apply_trade(t, counted);
+                            core.mp5.apply_trade(t, counted);
                             self.wake_rocket(t.event_ts.0);
                             if let (Some(closes), Some(cx)) =
                                 (context_closes.as_ref(), core.context.as_mut())
@@ -3123,7 +3214,10 @@ impl Market {
                     indicators.clear_computed();
                     let mut chart_context = std::mem::take(&mut core.chart_context);
                     chart_context.clear_computed();
+                    // rw-mp5-1's shares are the live day's (a replay never turns it on): kept.
+                    let mp5 = std::mem::take(&mut core.mp5);
                     *core = Core::new(closes, self.luld_inputs());
+                    core.mp5 = mp5;
                     core.indicators = indicators;
                     core.chart_context = chart_context;
                     core.context = board;
@@ -3909,7 +4003,7 @@ impl Market {
             return false;
         };
         let now = self.decision_now(&clock);
-        let (log, notices, adv_wanted, facts_wanted, n1_wanted, zones_log) = {
+        let (log, notices, adv_wanted, facts_wanted, n1_wanted, zones_log, mp5) = {
             let mut core = self.0.core.lock().expect("core lock");
             if core.rebuilding || !core.rocket.enabled() {
                 return false;
@@ -3952,6 +4046,8 @@ impl Market {
             let n1_wanted = core.rocket.take_n1_facts_request();
             let gap_ctx_wanted = core.rocket.take_gap_ctx_request();
             let gap_ctx_tod = core.rocket.take_gap_ctx_tod();
+            core.mp5.tick(now);
+            let mp5 = (core.mp5.take_table_request(), core.mp5.take_finished());
             (
                 log,
                 notices,
@@ -3959,6 +4055,7 @@ impl Market {
                 facts_wanted,
                 (n1_wanted, gap_ctx_wanted, gap_ctx_tod),
                 zones_log,
+                mp5,
             )
         };
         // First, before the file appends and the once-a-day archive reads: seconds matter on a
@@ -3991,6 +4088,12 @@ impl Market {
         }
         if let Some((date, v)) = gap_ctx_tod {
             self.write_gap_ctx_tod(date, v);
+        }
+        if let Some(date) = mp5.0 {
+            self.load_mp5_table(date);
+        }
+        if let Some(f) = mp5.1 {
+            self.write_mp5_day(f);
         }
         if let Some(l) = self.0.rocket_log.get() {
             let mut by_date: Vec<(NaiveDate, Vec<String>)> = Vec::new();

@@ -24,7 +24,12 @@
 //!   `x_float` (`float`, `float_source`, `shares`, `rotation`, `c1`, `gain`, `prior_high`,
 //!   `emitted_ns`); x-gap-1 / x-ctx-1 (`v2.xgap` / `v2.xctx`, `crate::gap_ctx`) add
 //!   `arrival_ns` (`null` when the feed did not stamp it), `emitted_ns` (the server's decision)
-//!   and `facts` (the trigger's numbers). Lines before 2026-10-30 may also
+//!   and `facts` (the trigger's numbers).
+//!   A Signals crossing (rw-mp5-1, `crate::mp5_gate`) has `detector` `rw-mp5-1`, its
+//!   `detector_version`, `decided_ns` (the gate's decision instant), its own `session` (the
+//!   research's `pre` | `regular` | `after` from 04:00 ET) and `gate` (`{chg, rvol_day, runs90,
+//!   completed_buckets, why, pass}`; non-finite numbers as `"inf"` / `"nan"`), sent or held
+//!   (`held`: `mp5_gate`, `mp5_dedup`, `switched_off`). Lines before 2026-10-30 may also
 //!   hold `symbol_limit` or `merged` (with `merged_into` and `merged_devices`), the per-stock gap
 //!   and merge since removed (`super::runners`, "Every distinct event is delivered").
 //! - `alert` — `{kind, v, decided_at, event_id, alert_id, symbol, price, text, phone, held,
@@ -104,7 +109,31 @@ impl Ledger {
         body: &str,
         now_ms: i64,
     ) {
-        let line = decision_line(n, event_id, path, decision, devices, title, body, now_ms);
+        self.decision_ext(
+            n, event_id, path, decision, devices, title, body, now_ms, None,
+        );
+    }
+
+    /// [`Ledger::decision`] with a detector's own fields merged into the line (module docs).
+    #[allow(clippy::too_many_arguments)]
+    pub fn decision_ext(
+        &self,
+        n: &Notice,
+        event_id: &str,
+        path: &'static str,
+        decision: &Decision,
+        devices: usize,
+        title: &str,
+        body: &str,
+        now_ms: i64,
+        extra: Option<&Value>,
+    ) {
+        let mut line = decision_line(n, event_id, path, decision, devices, title, body, now_ms);
+        if let (Some(Value::Object(x)), Value::Object(l)) = (extra, &mut line) {
+            for (k, v) in x {
+                l.insert(k.clone(), v.clone());
+            }
+        }
         self.put(now_ms, line);
     }
 

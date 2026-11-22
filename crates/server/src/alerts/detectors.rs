@@ -111,7 +111,18 @@ pub const X_CTX_1: Detector = Detector {
     default_on: true,
 };
 
-pub const ALL: [Detector; 5] = [RUN, X_HALT_1, X_FLOAT_1, X_GAP_1, X_CTX_1];
+/// Research v2's rw-mp5-1: MP5 Signals crossings gated by A-G9 with the 5 s B0 dedup
+/// (`crate::mp5_gate`). It sends no kind of its own, so [`of`] never names it: the alerts task
+/// asks for it by itself when it releases a parked Signals crossing, and off holds every Signals
+/// crossing `switched_off` (none reached anyone before it shipped: `DETECTION_PANEL` was 0).
+pub const RW_MP5_1: Detector = Detector {
+    id: crate::mp5_gate::logic::DETECTOR,
+    version: "933ca78580fded2c9e18facd24873a48b5e50ac60a1f3b7e4bbe194d1a25bc7e@0294ddac",
+    kinds: &[],
+    default_on: true,
+};
+
+pub const ALL: [Detector; 6] = [RUN, X_HALT_1, X_FLOAT_1, X_GAP_1, X_CTX_1, RW_MP5_1];
 
 /// The detector that sends `kind`, if it is switchable.
 pub fn of(kind: NoticeKind) -> Option<&'static Detector> {

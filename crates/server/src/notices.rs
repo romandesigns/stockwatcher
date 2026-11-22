@@ -385,6 +385,8 @@ pub fn held_text(reason: Option<&str>, merged: Option<&Value>) -> String {
         "stale" => "too old by the time it was decided".into(),
         "duplicate" => "already sent".into(),
         "switched_off" => "detector switched off (recorded only)".into(),
+        "mp5_gate" => "not in play and no prior run (rw-mp5-1 gate)".into(),
+        "mp5_dedup" => "another alert on the stock within 5 s".into(),
         "off" => "phone alerts off for it".into(),
         "merged" => "merged into an earlier alert".into(),
         other => other.replace('_', " "),

@@ -132,9 +132,15 @@ pub enum Hold {
     Stale,
     /// This event was already sent (its [`crate::rocket::Notice::event_id`]).
     Duplicate,
-    /// Its detector is switched off at runtime (`super::detectors`): it ran, it is ledgered,
-    /// nothing is sent.
+    /// Its detector is switched off at runtime (`super::detectors`): it still ran and
+    /// is ledgered as a would-be alert.
     SwitchedOff,
+    /// rw-mp5-1's G9 gate failed on this Signals crossing, or the day was not watched whole
+    /// (`crate::mp5_gate`; the ledger line's `gate` says which).
+    Mp5Gate,
+    /// rw-mp5-1: a B0 alert of the same stock came within 5 s of this Signals crossing
+    /// (`crate::mp5_gate`), the same move already told.
+    Mp5Dedup,
 }
 
 impl Hold {
@@ -145,6 +151,8 @@ impl Hold {
             Hold::Stale => "stale",
             Hold::Duplicate => "duplicate",
             Hold::SwitchedOff => "switched_off",
+            Hold::Mp5Gate => "mp5_gate",
+            Hold::Mp5Dedup => "mp5_dedup",
         }
     }
 }
