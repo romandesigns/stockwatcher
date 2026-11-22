@@ -1,6 +1,6 @@
 import { formatEtTime12, type IconName } from "@stockwatcher/chart-core";
 import { Icon } from "@stockwatcher/chart-web";
-import { cn, Collapsible, CollapsibleContent, CollapsibleTrigger, Input, OptionSelect, ScrollArea, Tip } from "@stockwatcher/chart-web/ui";
+import { cn, Collapsible, CollapsibleContent, CollapsibleTrigger, Input, OptionSelect, ScrollArea, Tip, TOUCH_HIT_Y } from "@stockwatcher/chart-web/ui";
 import { confidenceView, quoteWarningView, dayLabel, filterNotices, logSummary, noticeDayOptions, latencyText, NOTICE_GROUPS, noticeEvidence, noticeIcon, noticeKind, pathText, rowHeldText, rowStatus, tickerPageHash, tickerSymbol, type NoticeGroup, type NoticeItemWire, type NoticePathWire, type NoticesChannel, type NoticeStatus } from "@stockwatcher/shared";
 import { useMemo, useState, type Dispatch, type SetStateAction } from "react";
 import { openTickerChart } from "../nav/openTicker.ts";
@@ -101,7 +101,7 @@ export function NotificationLog({ notices, dayState, tickerPages = false, onOpen
                 aria-label={s.label}
                 aria-checked={status === s.id}
                 onClick={() => setStatus(s.id)}
-                className={cn("inline-grid h-6 w-8 place-items-center rounded-[7px] outline-none pointer-coarse:h-10 pointer-coarse:w-11 focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-3.5", status === s.id ? "bg-bg-raised text-foreground" : "text-muted-foreground hover:text-foreground")}
+                className={cn("relative inline-grid h-6 w-8 place-items-center rounded-[7px] outline-none pointer-coarse:h-10 pointer-coarse:w-11 focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-3.5", TOUCH_HIT_Y, status === s.id ? "bg-bg-raised text-foreground" : "text-muted-foreground hover:text-foreground")}
               >
                 <Icon name={s.icon} />
               </button>
@@ -211,7 +211,7 @@ export function NoticeRow({ item }: { item: NoticeItemWire }) {
       onClick={() => item.symbol && openTickerChart(item.symbol, context)}
       disabled={!item.symbol}
       aria-label={`${item.symbol ?? "Notice"}: ${label}, ${sent ? "sent" : `held, ${held}`}. ${line ?? ""}. ${text}. Open the chart.`}
-      className="grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 rounded-lg bg-card px-3 py-2 text-left outline-none transition-colors duration-150 hover:bg-bg-row focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none @2xl/log:grid-cols-[6.5rem_minmax(8rem,12rem)_minmax(0,1fr)_auto]"
+      className="grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 rounded-lg bg-card px-3 py-2 text-left pointer-coarse:min-h-11 outline-none transition-colors duration-150 hover:bg-bg-row focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none @2xl/log:grid-cols-[6.5rem_minmax(8rem,12rem)_minmax(0,1fr)_auto]"
     >
       <Tip label={context ? "History decision time" : "History time: first decision or recorded fallback"}><span className="font-mono text-xs text-muted-foreground">{item.at ? formatEtTime12(item.at, true) : "—"}</span></Tip>
       <span className="flex min-w-0 items-center gap-2">

@@ -46,6 +46,22 @@ describe("notice log", () => {
     expect(parseNoticeLog({ items: [] })).toBeNull();
   });
 
+  test("keeps the no-quote flag and the confidence tag the server sends", () => {
+    const log = parseNoticeLog({
+      day: "2024-06-11",
+      items: [
+        { event_id: "q", notice: "v2.vwapr", no_quote: true, confidence: { tier: "high", score: 0.71, held: null, at: 5 } },
+        { event_id: "n", notice: "v2.level", no_quote: false },
+      ],
+    })!;
+    expect(log.items[0]!.no_quote).toBe(true);
+    expect(log.items[0]!.confidence).toEqual({ tier: "high", score: 0.71, held: null, at: 5 });
+    expect(log.items[1]!.no_quote).toBeUndefined();
+    expect(log.items[1]!.confidence).toBeUndefined();
+    expect(noticeKind("v2.vwapr")).toEqual({ group: "shadow", label: "VWAP reclaim" });
+    expect(noticeKind("v2.level")).toEqual({ group: "shadow", label: "20-day high break" });
+  });
+
   test("status, hold reason in plain words, latency text", () => {
     const [a, b, c] = parseNoticeLog(body)!.items;
     expect(noticeStatus(a!)).toBe("held");

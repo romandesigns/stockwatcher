@@ -140,6 +140,11 @@ export function parseNoticeLog(raw: unknown): NoticeLogWire | null {
         trade_to_expo_ms: num(lat.trade_to_expo_ms),
       },
       failed: str(r.failed) ?? null,
+      // Copied by name like every field here: without these two lines the log's "No live quote"
+      // and confidence chips never appeared on the web or the phone, although the server sends
+      // both (crates/server/src/notices.rs; found by the integrated UI check, 2026-11-22).
+      ...(r.no_quote === true ? { no_quote: true } : {}),
+      ...(isObj(r.confidence) ? { confidence: { tier: str(r.confidence.tier) ?? null, score: num(r.confidence.score) ?? null, held: str(r.confidence.held) ?? null, at: num(r.confidence.at) ?? null } } : {}),
       ...(r.status === "sent" || r.status === "held" ? { status: r.status, reason: str(r.reason) ?? null, reason_text: str(r.reason_text) ?? null } : {}),
     });
   }

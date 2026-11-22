@@ -190,7 +190,7 @@ function TwoColumnSettings({
               <TabsIndicator className={CONNECTED_SIDE} />
               {sections.map((s) => {
                 const trigger = (
-                  <TabsTrigger key={s.id} ref={refFor(s.id)} value={s.id} aria-label={s.label} className={cn("rounded-l-lg rounded-r-none [&_svg]:size-4", labels ? "h-9 justify-start px-2.5" : "h-11 w-full justify-center px-0")}>
+                  <TabsTrigger key={s.id} ref={refFor(s.id)} value={s.id} aria-label={s.label} className={cn("rounded-l-lg rounded-r-none [&_svg]:size-4", labels ? "h-9 justify-start px-2.5 pointer-coarse:h-11" : "h-11 w-full justify-center px-0")}>
                     <Icon name={s.icon} />
                     {labels && <span className="truncate">{s.label}</span>}
                   </TabsTrigger>
@@ -369,7 +369,7 @@ function SingleColumnSettings({ open, onOpenChange, sections, onVisit }: { open:
                       type="button"
                       aria-label="Back to Settings"
                       onClick={() => dispatch({ type: "pop" })}
-                      className="grid size-10 shrink-0 place-items-center rounded-md text-muted-foreground outline-none transition-colors hover:bg-bg-row hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-4"
+                      className={cn("relative grid size-10 shrink-0 place-items-center rounded-md text-muted-foreground outline-none transition-colors hover:bg-bg-row hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-4", TOUCH_HIT)}
                     >
                       <Icon name="chevronLeft" />
                     </button>
