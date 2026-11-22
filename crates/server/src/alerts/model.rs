@@ -629,3 +629,61 @@ mod tests {
         assert_eq!(state_value(&s)["orphaned"], true);
     }
 }
+
+/// The detectors' runtime switches (`detectors`, client-owned; owner plan 2026-11-21: "a runtime
+/// switch per item that needs no restart", and the kill rules switch an item off at once during
+/// market hours). A map `detectorId → {"on": bool}`, written per entry with `settings.patch`
+/// (`{"set": {"rw-mp5-1": {"on": false}}}`), so two items never overwrite each other. Kept out of
+/// `alerts.prefs` on purpose: clients write that namespace as a whole value and would erase it.
+/// The alerts task re-reads it the moment a `settings.changed` for it arrives. An item switched
+/// off keeps running: its notices are held `switched_off` and still ledgered, so the daily report
+/// can score what it would have sent.
+pub const DETECTORS_NS: &str = "detectors";
+
+/// [`DETECTORS_NS`], parsed: the ids switched on or off. An id not in the map takes the item's
+/// own default ([`Detectors::on`]); a malformed entry is ignored (the default holds).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Detectors(std::collections::BTreeMap<String, bool>);
+
+impl Detectors {
+    /// Whether `id` is on; `default` when the owner never set it.
+    pub fn on(&self, id: &str, default: bool) -> bool {
+        self.0.get(id).copied().unwrap_or(default)
+    }
+}
+
+pub fn parse_detectors(v: Option<&Value>) -> Detectors {
+    let Some(o) = v.and_then(Value::as_object) else {
+        return Detectors::default();
+    };
+    Detectors(
+        o.iter()
+            .filter_map(|(k, e)| {
+                let on = match e {
+                    Value::Bool(b) => *b,
+                    Value::Object(m) => m.get("on")?.as_bool()?,
+                    _ => return None,
+                };
+                Some((k.clone(), on))
+            })
+            .collect(),
+    )
+}
+
+#[cfg(test)]
+mod detector_tests {
+    use super::*;
+
+    #[test]
+    fn detectors_take_their_default_unless_switched_and_ignore_junk() {
+        let d = parse_detectors(Some(&serde_json::json!({
+            "rw-mp5-1": {"on": false}, "x-gap-1": true, "bad": {"on": "no"}, "bad2": 3
+        })));
+        assert!(!d.on("rw-mp5-1", true));
+        assert!(d.on("x-gap-1", false));
+        assert!(d.on("bad", true));
+        assert!(!d.on("bad2", false));
+        assert!(parse_detectors(None).on("rw-mp5-1", true));
+        assert!(parse_detectors(Some(&serde_json::json!([1]))).on("rw-mp5-1", true));
+    }
+}

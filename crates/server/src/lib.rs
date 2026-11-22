@@ -18,6 +18,7 @@ pub mod indicators;
 pub mod insights;
 pub mod market;
 pub mod movers;
+pub mod mp5_gate;
 pub mod n1_live;
 pub mod notice_memory;
 pub mod notices;

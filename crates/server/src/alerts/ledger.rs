@@ -13,7 +13,11 @@
 //!   `held` the limit's code (`no_device`, `quiet_hours`, `stale`, `duplicate`) or `null`,
 //!   `devices` how many devices or open clients wanted the kind, `spread_bp` the fire-time
 //!   bid-ask spread in bp of the mid (`crate::spread`; `null` when no market quote qualified or
-//!   on lines before 2026-11-19). Lines before 2026-10-30 may also
+//!   on lines before 2026-11-19). A Signals crossing (rw-mp5-1, `crate::mp5_gate`) also has
+//!   `detector`, `detector_version`, `decided_ns` (the gate's decision instant), `session`
+//!   (`pre` | `regular` | `after`) and `gate` (`{chg, rvol_day, runs90, completed_buckets, why,
+//!   pass}`; non-finite numbers as `"inf"` / `"nan"`), sent or held (`held`: `mp5_gate`,
+//!   `mp5_dedup`, `switched_off`), from 2026-11-22. Lines before 2026-10-30 may also
 //!   hold `symbol_limit` or `merged` (with `merged_into` and `merged_devices`), the per-stock gap
 //!   and merge since removed (`super::runners`, "Every distinct event is delivered").
 //! - `alert` — `{kind, v, decided_at, event_id, alert_id, symbol, price, text, phone, held,
@@ -93,7 +97,31 @@ impl Ledger {
         body: &str,
         now_ms: i64,
     ) {
-        let line = decision_line(n, event_id, path, decision, devices, title, body, now_ms);
+        self.decision_ext(
+            n, event_id, path, decision, devices, title, body, now_ms, None,
+        );
+    }
+
+    /// [`Ledger::decision`] with a detector's own fields merged into the line (module docs).
+    #[allow(clippy::too_many_arguments)]
+    pub fn decision_ext(
+        &self,
+        n: &Notice,
+        event_id: &str,
+        path: &'static str,
+        decision: &Decision,
+        devices: usize,
+        title: &str,
+        body: &str,
+        now_ms: i64,
+        extra: Option<&Value>,
+    ) {
+        let mut line = decision_line(n, event_id, path, decision, devices, title, body, now_ms);
+        if let (Some(Value::Object(x)), Value::Object(l)) = (extra, &mut line) {
+            for (k, v) in x {
+                l.insert(k.clone(), v.clone());
+            }
+        }
         self.put(now_ms, line);
     }
 

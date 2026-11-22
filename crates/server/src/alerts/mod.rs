@@ -56,7 +56,7 @@ use crate::settings::{Settings, SettingsOp};
 use delivery::{Delivery, Phone};
 use eval::{Evaluator, HoldReason, Input, MarketView, Outcome, Seed};
 use history::{Event, EventKind, History};
-use model::{Fire, PREFS_NS, Prefs, RULES_NS, STATE_NS, Status};
+use model::{DETECTORS_NS, Detectors, Fire, PREFS_NS, Prefs, RULES_NS, STATE_NS, Status};
 use push::{Devices, Job, PushConfig, PushResult, RunnersOptIn};
 use runners::RunnersDelivery;
 
@@ -626,6 +626,8 @@ impl Alerts {
             halts: halts::HaltTracker::default(),
             pusher,
             ledger,
+            detectors: Detectors::default(),
+            mp5: crate::mp5_gate::Mp5Hold::default(),
             seq: 0,
             op: 0,
             dropped_logged: 0,
@@ -671,6 +673,10 @@ struct Task {
     pusher: mpsc::Sender<Job>,
     /// Every decided notice, on the data volume (ledger.rs).
     ledger: ledger::Ledger,
+    /// The detectors' runtime switches (`detectors`, [`model::Detectors`]).
+    detectors: Detectors,
+    /// rw-mp5-1's Signals crossings waiting out the 5 s B0 window (`crate::mp5_gate`).
+    mp5: crate::mp5_gate::Mp5Hold,
     seq: u64,
     op: u64,
     dropped_logged: u64,
@@ -706,6 +712,20 @@ impl Task {
     async fn reload(&mut self, initial: bool) {
         let rules = model::parse_rules(self.settings.get(RULES_NS).await.map(|(_, v)| v).as_ref());
         self.prefs = model::parse_prefs(self.settings.get(PREFS_NS).await.map(|(_, v)| v).as_ref());
+        let detectors = model::parse_detectors(
+            self.settings
+                .get(DETECTORS_NS)
+                .await
+                .map(|(_, v)| v)
+                .as_ref(),
+        );
+        if detectors != self.detectors || initial {
+            tracing::info!(
+                rw_mp5_1 = detectors.on(crate::mp5_gate::SWITCH, true),
+                "alerts: detector switches read"
+            );
+        }
+        self.detectors = detectors;
         let market = self.market.clone();
         self.eval.set_rules(rules, initial, &market);
         *self
@@ -817,7 +837,7 @@ impl Task {
                     Ok(f) => {
                         // Only our namespaces; the prefix test avoids parsing every drawing change.
                         let ours = |ns: &str| f.starts_with(&format!("{{\"type\":\"settings.changed\",\"ns\":\"{ns}\""));
-                        if ours(RULES_NS) || ours(PREFS_NS) {
+                        if ours(RULES_NS) || ours(PREFS_NS) || ours(DETECTORS_NS) {
                             self.reload(false).await;
                             // A snooze set or an edit shows at once, not on the next tick.
                             self.eval.tick(now_ms());
@@ -846,6 +866,8 @@ impl Task {
                     for n in self.halts.tick(now) {
                         self.runner(n, now);
                     }
+                    // rw-mp5-1's crossings whose 5 s window closed.
+                    self.release_mp5(now);
                     let dropped = self.sink.dropped();
                     if dropped > self.dropped_logged {
                         tracing::warn!(dropped, "alerts: the evaluator fell behind the market; inputs were dropped");
@@ -943,7 +965,60 @@ impl Task {
     /// One Runners notice: the push to the phones that opted in, within the limits
     /// ([`runners`]). Logged either way; never touches Activity (that is the price alerts').
     /// A halt notice ([`halts`]) takes the same path; its phones are grouped by their sound.
+    ///
+    /// A Signals crossing first waits 5 s for rw-mp5-1's B0 dedup ([`crate::mp5_gate`]); every
+    /// notice of a B0 kind is remembered for that window on its way through.
     fn runner(&mut self, n: crate::rocket::Notice, now: i64) {
+        self.release_mp5(now);
+        if self.mp5.observe(&n, now.saturating_mul(1_000_000)) {
+            return;
+        }
+        self.deliver(n, now, None, None);
+    }
+
+    /// rw-mp5-1 (`crate::mp5_gate` module docs): every parked Signals crossing whose 5 s window
+    /// closed by `now` is decided (switch, then the B0 dedup, then G9) and delivered or held.
+    /// The gate's facts are ledgered with both decisions whatever the outcome.
+    fn release_mp5(&mut self, now: i64) {
+        use crate::mp5_gate::Outcome;
+        for ((n, a_ns), dup) in self.mp5.release(now.saturating_mul(1_000_000)) {
+            let (v, t0) = self.market.mp5_verdict(&n.symbol, n.price, a_ns);
+            let outcome = if !self.detectors.on(crate::mp5_gate::SWITCH, true) {
+                Outcome::SwitchedOff
+            } else if dup {
+                Outcome::Dedup
+            } else if v.why.pass() {
+                Outcome::Deliver(v)
+            } else {
+                Outcome::Gate(v)
+            };
+            let hold = match outcome {
+                Outcome::Deliver(_) => None,
+                Outcome::Dedup => Some(runners::Hold::Mp5Dedup),
+                Outcome::Gate(_) => Some(runners::Hold::Mp5Gate),
+                Outcome::SwitchedOff => Some(runners::Hold::SwitchedOff),
+            };
+            let mut extra = crate::mp5_gate::ledger_fields(&outcome, a_ns, t0);
+            if matches!(outcome, Outcome::Dedup | Outcome::SwitchedOff) {
+                // The gate's facts anyway, for the report (what G9 would have said).
+                extra["gate_facts"] =
+                    crate::mp5_gate::ledger_fields(&Outcome::Gate(v), a_ns, t0)["gate"].clone();
+            }
+            tracing::info!(symbol = %n.symbol, why = v.why.code(), dup, held = hold.map(|h| h.code()), "rw-mp5-1: signals crossing decided");
+            self.deliver(n, now, hold, Some(extra));
+        }
+    }
+
+    /// [`Task::runner`]'s delivery: `pre` holds the notice on both paths before any limit (a
+    /// detector's own verdict, still ledgered with the device counts), `extra` adds fields to
+    /// both ledger lines.
+    fn deliver(
+        &mut self,
+        n: crate::rocket::Notice,
+        now: i64,
+        pre: Option<runners::Hold>,
+        extra: Option<Value>,
+    ) {
         let now_et = et(now);
         // Desktop and web first (runners::desk_frame): the same limits, decided once here with
         // the open clients that want this kind as the "devices", and their own count, so the
@@ -952,17 +1027,29 @@ impl Task {
         // Rendered once: the ledger keeps the text with both decisions, the phones get it.
         let (title, body, data) = runners::message(&n);
         let desks = self.shared.desks_wanting(&n);
-        let desk = self.desk_runners.decide(
+        let desk = match pre {
+            Some(h) => runners::Decision::Held(h),
+            None => self.desk_runners.decide(
+                &event_id,
+                desks,
+                &self.prefs,
+                n.at_ns.div_euclid(1_000_000),
+                now,
+                now_et.date_naive(),
+                now_et.hour() * 60 + now_et.minute(),
+            ),
+        };
+        self.ledger.decision_ext(
+            &n,
             &event_id,
+            "desk",
+            &desk,
             desks,
-            &self.prefs,
-            n.at_ns.div_euclid(1_000_000),
+            &title,
+            &body,
             now,
-            now_et.date_naive(),
-            now_et.hour() * 60 + now_et.minute(),
+            extra.as_ref(),
         );
-        self.ledger
-            .decision(&n, &event_id, "desk", &desk, desks, &title, &body, now);
         match desk {
             runners::Decision::Send => self.broadcast(runners::desk_frame(&n)),
             runners::Decision::Held(h) => {
@@ -971,17 +1058,20 @@ impl Task {
         }
         // Every phone that wants this kind (runners, "Every distinct event is delivered").
         let tokens = self.devices.runner_tokens(&n);
-        let phone = self.runners.decide(
-            &event_id,
-            tokens.len(),
-            &self.prefs,
-            n.at_ns.div_euclid(1_000_000),
-            now,
-            now_et.date_naive(),
-            now_et.hour() * 60 + now_et.minute(),
-        );
+        let phone = match pre {
+            Some(h) => runners::Decision::Held(h),
+            None => self.runners.decide(
+                &event_id,
+                tokens.len(),
+                &self.prefs,
+                n.at_ns.div_euclid(1_000_000),
+                now,
+                now_et.date_naive(),
+                now_et.hour() * 60 + now_et.minute(),
+            ),
+        };
         let kind = n.kind.as_str();
-        self.ledger.decision(
+        self.ledger.decision_ext(
             &n,
             &event_id,
             "phone",
@@ -990,6 +1080,7 @@ impl Task {
             &title,
             &body,
             now,
+            extra.as_ref(),
         );
         if let runners::Decision::Held(h) = phone {
             tracing::info!(symbol = %n.symbol, kind, held = h.code(), "runners push: held back");
@@ -1809,6 +1900,107 @@ mod tests {
         drop(desk);
         sink.offer_runner(notice(NoticeKind::Fast, "FFF", now_ms()));
         assert!(next_notice(&mut frames).await.is_none());
+    }
+
+    /// rw-mp5-1 (`crate::mp5_gate`) through the real task: a B0 kind goes out at once, a Signals
+    /// crossing waits out the 5 s window and is then held (here `mp5_gate`: the market's inputs are
+    /// off, so the day is not watched whole), both decisions ledgered with the gate's facts; with
+    /// `detectors` → `rw-mp5-1` off it is held `switched_off`, read live from the settings.
+    #[tokio::test]
+    async fn signals_crossings_wait_for_the_gate_and_follow_the_detector_switch() {
+        use crate::rocket::NoticeKind;
+        let dir = tempfile::tempdir().unwrap();
+        let settings = Settings::in_memory();
+        let live = Market::idle(market_providers::ClockMode::Live, "idle", None);
+        let (job_tx, _jobs) = mpsc::channel(16);
+        let (_res_tx, res_rx) = mpsc::channel(4);
+        let alerts = Alerts::start_with(
+            settings.clone(),
+            live.clone(),
+            None,
+            job_tx,
+            res_rx,
+            ledger::Ledger::start(dir.path()),
+        );
+        let mut frames = alerts.subscribe();
+        let sink = live.alert_sink().expect("attached").clone();
+        let _desk = alerts.desk(DeskKinds::from_opt_in(RunnersOptIn::default()));
+        let next_notice = async |frames: &mut broadcast::Receiver<Arc<str>>, ms: u64| loop {
+            match tokio::time::timeout(Duration::from_millis(ms), frames.recv()).await {
+                Ok(Ok(f)) if f.contains("\"runners.notice\"") => {
+                    break Some(serde_json::from_str::<Value>(&f).unwrap());
+                }
+                Ok(Ok(_)) => continue,
+                _ => break None,
+            }
+        };
+        let ledger_lines = |sym: &str| -> Vec<Value> {
+            let Ok(rd) = std::fs::read_dir(dir.path().join(crate::oplog::NOTICES_DIR)) else {
+                return Vec::new();
+            };
+            rd.filter_map(|e| e.ok())
+                .filter_map(|e| std::fs::read_to_string(e.path()).ok())
+                .flat_map(|t| {
+                    t.lines()
+                        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+                        .collect::<Vec<_>>()
+                })
+                .filter(|v| v["symbol"] == sym && v["kind"] == "decision")
+                .collect()
+        };
+        let wait_lines = async |sym: &str| {
+            for _ in 0..100 {
+                let v = ledger_lines(sym);
+                if v.len() >= 2 {
+                    return v;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            panic!("no ledger lines for {sym}");
+        };
+        sink.offer_runner(notice(NoticeKind::SignalsCrossing, "SIG", now_ms()));
+        sink.offer_runner(notice(NoticeKind::New, "NEWS", now_ms()));
+        let f = next_notice(&mut frames, 2000)
+            .await
+            .expect("the B0 kind at once");
+        assert_eq!(f["kind"], "runners.new");
+        assert!(
+            next_notice(&mut frames, 3000).await.is_none(),
+            "the crossing waits 5 s"
+        );
+        let lines = wait_lines("SIG").await;
+        for l in &lines {
+            assert_eq!(l["decision"], "held", "{l}");
+            assert_eq!(l["held"], "mp5_gate", "{l}");
+            assert_eq!(l["detector"], "rw-mp5-1");
+            assert_eq!(l["gate"]["why"], "incomplete");
+            assert!(l["decided_ns"].as_i64().is_some());
+        }
+        assert!(next_notice(&mut frames, 300).await.is_none(), "never sent");
+        // Switched off from any device, no restart: held switched_off, still ledgered.
+        settings
+            .apply(
+                model::DETECTORS_NS,
+                "t-off",
+                crate::settings::SettingsOp::Set {
+                    value: json!({"rw-mp5-1": {"on": false}}),
+                    if_absent: false,
+                },
+            )
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        sink.offer_runner(notice(NoticeKind::SignalsCrossing, "OFF", now_ms()));
+        let lines = wait_lines("OFF").await;
+        for l in &lines {
+            assert_eq!(l["held"], "switched_off", "{l}");
+            assert_eq!(l["gate"]["why"], "switched_off");
+            assert_eq!(l["gate_facts"]["why"], "incomplete");
+        }
+        // Other kinds are untouched by the switch.
+        sink.offer_runner(notice(NoticeKind::Fast, "FAST", now_ms()));
+        let f = next_notice(&mut frames, 2000).await.expect("a fast notice");
+        assert_eq!(f["kind"], "runners.fast");
     }
 
     /// A drawing alert through the real task: the drawing is read from its synced namespace,
