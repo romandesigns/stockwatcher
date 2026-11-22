@@ -28,6 +28,31 @@
 //! market offers them through [`AlertSink::offer_runner`], as non-blocking as the price inputs.
 //! And it turns the exchange's halts and resumptions of covered stocks into notices ([`halts`]),
 //! from the same inputs, delivered exactly like the Runners ones.
+//!
+//! # Detector switches (no restart)
+//!
+//! The research detectors shipped live by the owner's 2026-11-22 decision carry a runtime switch
+//! each, in the synced settings namespace [`DETECTORS_NS`] (`detectors`, parsed once for every
+//! item in [`detectors`]): `{"b-good-1": {"on": false}, ...}`. An absent entry takes the
+//! detector's default: ON for every shipped item, OFF for the cut `run` kind. The task re-reads it the moment a
+//! `settings.changed` for it arrives, so the owner can switch one off from any client during
+//! market hours (DEPLOY-PLAN.md kill rules: no restart, only switches). A switched-off detector
+//! keeps running: its notices are decided and ledgered as `held: switched_off` on both paths, so
+//! its would-be alerts are still counted. It is its own namespace, never inside `alerts.prefs`,
+//! which clients write as one value and would erase it; clients may write it (it is not
+//! server-owned). Ids: `run` (the cut Run +20% kind), `x-halt-1`, `x-float-1`, `x-gap-1`,
+//! `x-ctx-1`, `rw-mp5-1` (the Signals crossing gate), `b-good-1` (the confidence tag) and
+//! `b-good-2` (model picks, kind `model.pick`); [`detectors::ALL`].
+//!
+//! # Confidence (b-good-1)
+//!
+//! A B0-kind alert's tag is scored 30 s after it by `crate::bgood` (its quotes fetched by
+//! `crate::bgood::stage`) and comes back here as a [`crate::bgood::Confidence`]. Every one is
+//! ledgered (`confidence` line, `ledger.rs`); a tagged one, with its switch on, goes to every
+//! connection as `runners.confidence {eventId, alertId, symbol, notice, tier, score, at}` and
+//! marks its Runners row (`Market::set_runner_confidence`). A tag never sends a push of its own:
+//! the alert it belongs to was already delivered. Clients show a quiet "High confidence" chip on
+//! the alert (packages/shared `confidence.ts`).
 
 pub mod delivery;
 pub mod detectors;
@@ -86,9 +111,25 @@ pub struct AlertSink {
     /// The symbols a pressure alert watches: the market scores only these, once a second
     /// (Market::publish_pressure), so alerts do not make the Halt watcher score every symbol.
     pressure_watch: Mutex<Arc<[String]>>,
+    /// b-good-1's tags due for quotes and a score (`crate::bgood::stage`), from the market.
+    tags: Option<mpsc::Sender<crate::bgood::TagRequest>>,
+    tags_dropped: AtomicU64,
 }
 
 impl AlertSink {
+    /// A b-good-1 tag due now (module docs, "Confidence"). Never blocks: a full channel drops it,
+    /// counted and logged; the alert itself was already offered.
+    pub fn offer_tag(&self, r: crate::bgood::TagRequest) {
+        let Some(tx) = &self.tags else { return };
+        if tx.try_send(r).is_err() {
+            let n = self.tags_dropped.fetch_add(1, Ordering::Relaxed) + 1;
+            tracing::warn!(
+                dropped = n,
+                "b-good-1: the confidence stage is not keeping up; a tag was dropped"
+            );
+        }
+    }
+
     pub fn pressure_watch(&self) -> Arc<[String]> {
         self.pressure_watch
             .lock()
@@ -138,6 +179,8 @@ impl AlertSink {
             runners: rtx,
             runners_dropped: AtomicU64::new(0),
             pressure_watch: Mutex::new(Arc::from(Vec::new())),
+            tags: None,
+            tags_dropped: AtomicU64::new(0),
         });
         (sink, rx, rrx)
     }
@@ -239,6 +282,8 @@ pub struct DeskKinds {
     /// The v2 finalists x-gap-1 and x-ctx-1 (`crate::gap_ctx`): ON by default (owner, 2026-11-22).
     pub x_gap: bool,
     pub x_ctx: bool,
+    /// research v2 b-good-2's model picks (`crate::bgood`): ON by default (owner, 2026-11-22).
+    pub model_pick: bool,
 }
 
 impl Default for DeskKinds {
@@ -287,6 +332,9 @@ impl DeskKinds {
             // and for everyone in the `detectors` settings (DETECTORS_NS).
             x_gap: o.x_gap.unwrap_or(true),
             x_ctx: o.x_ctx.unwrap_or(true),
+            // Owner, 2026-11-22 (DEPLOY-PLAN addendum: the proven wins go live, no shadow
+            // period); still switchable here and by the runtime detector switch `b-good-2`.
+            model_pick: o.model_pick.unwrap_or(true),
         }
     }
 
@@ -328,6 +376,7 @@ impl DeskKinds {
             K::XFloat => self.x_float,
             K::XGap => self.x_gap,
             K::XCtx => self.x_ctx,
+            K::BGood => self.model_pick,
         }
     }
 }
@@ -614,7 +663,7 @@ impl Alerts {
         let (run_tx, run_rx) = mpsc::channel(RUNNERS_CAPACITY);
         // With a quote source the market's end of the Runners channel feeds the spread stage,
         // which hands each notice on, priced, through a second channel of the same size.
-        let run_tx = match spread {
+        let run_tx = match spread.clone() {
             Some(src) => {
                 let (stage_tx, stage_rx) = mpsc::channel(RUNNERS_CAPACITY);
                 crate::spread::spawn_stage(src, live.clone(), stage_rx, run_tx);
@@ -622,12 +671,18 @@ impl Alerts {
             }
             None => run_tx,
         };
+        // b-good-1's tags: market -> confidence stage (quotes, score) -> this task.
+        let (tag_tx, tag_rx) = mpsc::channel(RUNNERS_CAPACITY);
+        let (conf_tx, conf_rx) = mpsc::channel(RUNNERS_CAPACITY);
+        crate::bgood::stage::spawn(spread.clone(), tag_rx, conf_tx);
         let sink = Arc::new(AlertSink {
             tx: in_tx,
             dropped: AtomicU64::new(0),
             runners: run_tx,
             runners_dropped: AtomicU64::new(0),
             pressure_watch: Mutex::new(Arc::from(Vec::new())),
+            tags: Some(tag_tx),
+            tags_dropped: AtomicU64::new(0),
         });
         live.attach_alerts(sink.clone());
         let (cmd_tx, cmd_rx) = mpsc::channel(32);
@@ -661,7 +716,7 @@ impl Alerts {
             dropped_logged: 0,
         };
         task.rebuild_snapshot();
-        tokio::spawn(async move { task.run(in_rx, cmd_rx, res_rx, run_rx).await });
+        tokio::spawn(async move { task.run(in_rx, cmd_rx, res_rx, run_rx, conf_rx).await });
         alerts
     }
 }
@@ -816,6 +871,7 @@ impl Task {
         mut cmds: mpsc::Receiver<Command>,
         mut results: mpsc::Receiver<PushResult>,
         mut runner_notices: mpsc::Receiver<crate::rocket::Notice>,
+        mut confidence: mpsc::Receiver<crate::bgood::Confidence>,
     ) {
         let mut settings_feed = self.settings.subscribe();
         let stored =
@@ -936,6 +992,7 @@ impl Task {
                     changed = true;
                 }
                 Some(n) = runner_notices.recv() => self.runner(n, now_ms()),
+                Some(c) = confidence.recv() => self.confidence(c, now_ms()),
                 r = results.recv() => match r {
                     Some(PushResult::Failed { event_id, detail }) => {
                         tracing::warn!(event = %event_id, detail, "alerts: phone notification failed");
@@ -1189,6 +1246,19 @@ impl Task {
                 tracing::info!(symbol = %n.symbol, kind, "runners push: sent to the push service");
             }
         }
+    }
+
+    /// A scored b-good-1 tag (module docs, "Confidence"): ledgered; a tagged one with its switch
+    /// on is shown on every client and marks its Runners row.
+    fn confidence(&mut self, c: crate::bgood::Confidence, now: i64) {
+        let on = self.detectors.on(&detectors::B_GOOD_1);
+        self.ledger.confidence(&c, on, now);
+        if !(on && c.tagged) {
+            return;
+        }
+        self.market.set_runner_confidence(&c.alert_id);
+        self.broadcast(runners::confidence_frame(&c));
+        tracing::info!(symbol = %c.symbol, kind = c.kind.as_str(), margin = c.margin, "b-good-1: high confidence");
     }
 
     fn next_id(&mut self, at: i64) -> String {

@@ -55,6 +55,13 @@ export interface NoticeItemWire {
   /** Expo refused it (token-redacted detail). */
   failed?: string | null;
   /**
+   * b-good-1's tag of this notice, 30 s after it (crates/server/src/bgood; the ledger's
+   * `confidence` line): `tier` `high` | `none`, the model's `score`, `held` `switched_off` when its
+   * runtime switch was off (decided, not shown), `at` epoch ms. Absent: not a B0-kind notice, not
+   * scored yet, or an older server. Drawn with confidence.ts `confidenceView(tier, held)`.
+   */
+  confidence?: { tier: string | null; score: number | null; held: string | null; at: number | null };
+  /**
    * The row as the server assembled it (`notices.rows.v1`, crates/server/src/notices.rs): sent or
    * held, the hold's code and the same in plain words. Absent from older servers, whose rows the
    * clients still derive (`noticeStatus`, `noticeHeldReason`, `heldText`).
@@ -194,6 +201,7 @@ const KIND: Record<string, { group: NoticeGroup; label: string }> = {
   // The v2 finalists (crates/server/src/gap_ctx), research like the shadow kinds.
   "v2.xgap": { group: "shadow", label: "Pre-market high" },
   "v2.xctx": { group: "shadow", label: "Day 2 · above yesterday's high" },
+  "model.pick": { group: "shadow", label: "Model pick" },
   "price.alert": { group: "price", label: "Price alert" },
 };
 
@@ -247,6 +255,7 @@ const HELD: Record<string, string> = {
   quiet_hours: "quiet hours",
   stale: "too old by the time it was decided",
   duplicate: "already sent",
+  switched_off: "detector switched off",
   off: "phone alerts off for it",
   merged: "merged into an earlier alert",
   // A detector switched off at runtime (crates/server/src/alerts/detectors.rs): it ran, and its

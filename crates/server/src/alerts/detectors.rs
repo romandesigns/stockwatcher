@@ -122,7 +122,28 @@ pub const RW_MP5_1: Detector = Detector {
     default_on: true,
 };
 
-pub const ALL: [Detector; 6] = [RUN, X_HALT_1, X_FLOAT_1, X_GAP_1, X_CTX_1, RW_MP5_1];
+/// Research v2's b-good-1 confidence tag (`crate::bgood`): it sends no notice, so [`of`] never
+/// names it; off, a scored tag is still ledgered (`confidence` line, its switch `off`) but is
+/// neither shown nor marks the Runners row. Version: the finalist record's sha256 prefix, the
+/// same 12 digits `crate::bgood::version` reads from the embedded model.
+pub const B_GOOD_1: Detector = Detector {
+    id: crate::bgood::TAG_ID,
+    version: "d8a1f8ff993e",
+    kinds: &[],
+    default_on: true,
+};
+
+/// Research v2's b-good-2 model picks ([`NoticeKind::BGood`], `crate::bgood`).
+pub const B_GOOD_2: Detector = Detector {
+    id: crate::bgood::PICK_ID,
+    version: "e4273799d70e",
+    kinds: &[NoticeKind::BGood],
+    default_on: true,
+};
+
+pub const ALL: [Detector; 8] = [
+    RUN, X_HALT_1, X_FLOAT_1, X_GAP_1, X_CTX_1, RW_MP5_1, B_GOOD_1, B_GOOD_2,
+];
 
 /// The detector that sends `kind`, if it is switchable.
 pub fn of(kind: NoticeKind) -> Option<&'static Detector> {

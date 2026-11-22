@@ -163,6 +163,10 @@ pub struct Device {
     pub x_gap: bool,
     #[serde(default = "yes")]
     pub x_ctx: bool,
+    /// research v2 b-good-2's model picks (`crate::bgood`, 2026-11-22): on, a record saved before
+    /// they existed included.
+    #[serde(default = "yes")]
+    pub model_pick: bool,
 }
 
 impl Device {
@@ -192,6 +196,7 @@ impl Device {
             x_float: self.x_float,
             x_gap: self.x_gap,
             x_ctx: self.x_ctx,
+            model_pick: self.model_pick,
         }
     }
 
@@ -288,6 +293,8 @@ pub struct RunnersOptIn {
     /// The v2 x-gap-1 / x-ctx-1 (`crate::gap_ctx`); None = unchanged / the default (on).
     pub x_gap: Option<bool>,
     pub x_ctx: Option<bool>,
+    /// research v2 b-good-2's model picks (`crate::bgood`); None = unchanged / the default (on).
+    pub model_pick: Option<bool>,
 }
 
 /// The newer switches as `push.register` and `runners.notify` spell them (owner, 2026-10-23),
@@ -351,6 +358,9 @@ pub struct MoreOptIn {
     pub x_gap: Option<bool>,
     #[serde(default)]
     pub x_ctx: Option<bool>,
+    /// research v2 b-good-2's model picks (`modelPick`, spelled the same by the phone and the desk).
+    #[serde(default)]
+    pub model_pick: Option<bool>,
 }
 
 /// A known halt sound key (`super::halts::SOUNDS`), read off the wire.
@@ -388,6 +398,7 @@ impl MoreOptIn {
             x_float: self.x_float,
             x_gap: self.x_gap,
             x_ctx: self.x_ctx,
+            model_pick: self.model_pick,
             ..o
         }
     }
@@ -550,6 +561,7 @@ impl Devices {
         let x_float = pick(runners.x_float, |d| d.x_float, def.x_float);
         let x_gap = pick(runners.x_gap, |d| d.x_gap, def.x_gap);
         let x_ctx = pick(runners.x_ctx, |d| d.x_ctx, def.x_ctx);
+        let model_pick = pick(runners.model_pick, |d| d.model_pick, def.model_pick);
         let sound = |v: Option<&'static str>, had_v: fn(&Device) -> Option<String>| {
             v.map(str::to_owned).or_else(|| had.and_then(had_v))
         };
@@ -594,6 +606,7 @@ impl Devices {
             x_float,
             x_gap,
             x_ctx,
+            model_pick,
         });
         while self.list.len() > MAX_DEVICES {
             self.list.remove(0);

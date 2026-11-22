@@ -406,6 +406,8 @@ pub fn data_kind(kind: NoticeKind) -> &'static str {
         // them as a production Runners path.
         NoticeKind::XGap => "v2.xgap",
         NoticeKind::XCtx => "v2.xctx",
+        // research v2 b-good-2 (`crate::bgood`): a model's pick, not a Runners path.
+        NoticeKind::BGood => "model.pick",
     }
 }
 
@@ -893,6 +895,23 @@ fn panel_message(n: &Notice) -> (String, String, Value) {
                 parts.join(" · "),
             )
         }
+        // "YMAT · Model pick · $2.71" / "Model score 0.43 · pick 3 today · research v2 model": a
+        // stock the b-good-2 model scored above its threshold (`crate::bgood`). The score is the
+        // model's probability that the move is GOOD (good-v1), shown as the research reports it;
+        // about 1 in 7 picks was GOOD on Validation, so the text never calls it a trade.
+        (NoticeKind::BGood, Some(NoticeDetail::BGood(x))) => {
+            data["detector"] = json!(crate::bgood::PICK_ID);
+            data["version"] = json!(x.version);
+            data["score"] = json!((x.prob as f64 * 100.0).round() / 100.0);
+            data["nth"] = json!(x.nth);
+            data["emitted_at"] = json!(x.emitted_ns / 1_000_000);
+            let parts = [
+                format!("Model score {:.2}", x.prob),
+                format!("pick {} today", x.nth),
+                "research v2 model".to_owned(),
+            ];
+            (format!("{s} · Model pick{p}"), parts.join(" · "))
+        }
         // A notice without its facts (never expected): its name and price only.
         _ => (
             format!("{s} · {}{p}", n.kind.as_str().replace('_', " ")),
@@ -1102,6 +1121,25 @@ pub fn desk_frame(n: &Notice) -> String {
         // qualified: the clients' cost chip (packages/shared spread.ts). Additive; older
         // clients ignore it.
         "spreadBp": n.spread_bp,
+    })
+    .to_string()
+}
+
+/// The `runners.confidence` frame for a tagged alert (`super`, "Confidence"): every client finds
+/// the alert it already shows by `eventId` (its `runners.notice` `id`, the notice log's
+/// `event_id`) and its board row by `alertId`, and adds the chip. `score` is the model's
+/// probability (display only), `at` when it was decided (epoch ms). Additive; older clients
+/// ignore it.
+pub fn confidence_frame(c: &crate::bgood::Confidence) -> String {
+    json!({
+        "type": "runners.confidence",
+        "eventId": c.event_id,
+        "alertId": c.alert_id,
+        "symbol": c.symbol,
+        "notice": data_kind(c.kind),
+        "tier": c.tier(),
+        "score": (c.prob as f64 * 1000.0).round() / 1000.0,
+        "at": c.decided_ns.div_euclid(1_000_000),
     })
     .to_string()
 }
@@ -1613,6 +1651,13 @@ Alert $2.41 · +5% = $2.53"
                     emitted_ns: n.at_ns + 60_000_000,
                 }))
             }
+            NoticeKind::BGood => Some(NoticeDetail::BGood(crate::bgood::BGoodNotice {
+                margin: -0.2,
+                prob: 0.45,
+                nth: 3,
+                version: "e4273799d70e".into(),
+                emitted_ns: n.at_ns + 60_000_000,
+            })),
             NoticeKind::N1 => Some(NoticeDetail::N1(crate::n1_live::N1Notice {
                 low: 2.55,
                 high: 2.74,
@@ -1830,6 +1875,13 @@ Alert $2.41 · +5% = $2.53"
             (
                 "YMAT · Float rotation · $2.71".into(),
                 "31% of its 8.2M float traded today · +15% on the $2.36 close · new high".into()
+            )
+        );
+        assert_eq!(
+            t(NoticeKind::BGood),
+            (
+                "YMAT · Model pick · $2.71".into(),
+                "Model score 0.45 · pick 3 today · research v2 model".into()
             )
         );
         assert_eq!(

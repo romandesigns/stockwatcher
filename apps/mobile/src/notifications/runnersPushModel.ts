@@ -33,6 +33,8 @@ export interface RunnersPushPrefs {
   pushResumedUp: boolean;
   /** Research v2's x-float-1 "rotation ignition" (crates/server/src/xfloat_live, 2026-11-22). */
   pushXFloat: boolean;
+  /** research v2 b-good-2's model picks (crates/server/src/bgood, 2026-11-22). */
+  pushModelPick: boolean;
 }
 
 export const RUNNERS_PUSH_DEFAULTS: RunnersPushPrefs = {
@@ -66,6 +68,8 @@ export const RUNNERS_PUSH_DEFAULTS: RunnersPushPrefs = {
   pushResumedUp: true,
   // Research v2 x-float-1: on (owner, 2026-11-22; the server's default too).
   pushXFloat: true,
+  // research v2's proven wins go live (owner, 2026-11-22; the server's default too).
+  pushModelPick: true,
 };
 
 /** The phone pref behind each shared switch (packages/shared `ALERT_SWITCH_SECTIONS`). */
@@ -93,6 +97,7 @@ export const PUSH_PREF_OF: Readonly<Record<keyof RunnersNotifyKinds, keyof Runne
   xFloat: "pushXFloat",
   xGap: "pushXGap",
   xCtx: "pushXCtx",
+  modelPick: "pushModelPick",
 };
 
 /**
@@ -131,6 +136,7 @@ export interface RunnersRegisterFields {
   xFloat: boolean;
   xGap: boolean;
   xCtx: boolean;
+  modelPick: boolean;
 }
 
 export function registerFieldsOf(p: RunnersPushPrefs): RunnersRegisterFields {
@@ -158,5 +164,6 @@ export function registerFieldsOf(p: RunnersPushPrefs): RunnersRegisterFields {
     xFloat: p.pushXFloat,
     xGap: p.pushXGap,
     xCtx: p.pushXCtx,
+    modelPick: p.pushModelPick,
   };
 }

@@ -217,6 +217,19 @@ pub fn group_summarized(text: &str) -> (Vec<Value>, bool, Value) {
                 }
                 item.insert("latency".into(), Value::Object(lat));
             }
+            // b-good-1's tag of this notice (`crate::alerts::ledger`, `confidence`), 30 s after
+            // it: the log shows the chip only when it was tagged and shown (`held` null).
+            "confidence" => {
+                item.insert(
+                    "confidence".into(),
+                    json!({
+                        "tier": v.get("tier").cloned().unwrap_or(Value::Null),
+                        "score": v.get("score").cloned().unwrap_or(Value::Null),
+                        "held": v.get("held").cloned().unwrap_or(Value::Null),
+                        "at": v.get("decided_at").cloned().unwrap_or(Value::Null),
+                    }),
+                );
+            }
             "failed" => {
                 item.insert(
                     "failed".into(),
@@ -351,6 +364,7 @@ pub fn kind_label(notice: &str) -> &str {
         "halt.watch" => "Halt watcher",
         "shadow.n1" => "N1 · shadow",
         "shadow.f1u" => "F1 · first pullback",
+        "model.pick" => "Model pick",
         "halt.bull" => "Halt risk · buying",
         "halt.resumed_up" => "Resumed up",
         "v2.xfloat" => "Float rotation",

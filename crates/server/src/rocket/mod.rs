@@ -241,6 +241,11 @@ pub enum NoticeKind {
     /// (`crate::gap_ctx`, owner 2026-11-22). Switch `xCtx`, ON by default; `detectors` id
     /// `x-ctx-1`.
     XCtx,
+    /// research v2 b-good-2 "model pick" (`crate::bgood`, owner 2026-11-22): a stock the frozen
+    /// U2 model scored above θ at a minute end, by the online pick rule; its facts in
+    /// [`NoticeDetail::BGood`]. Its own switch (`modelPick`), ON by default, and the runtime
+    /// detector switch `b-good-2` (`crate::alerts`, "Detector switches").
+    BGood,
 }
 
 impl NoticeKind {
@@ -270,10 +275,11 @@ impl NoticeKind {
             NoticeKind::XFloat => "x_float",
             NoticeKind::XGap => "x_gap",
             NoticeKind::XCtx => "x_ctx",
+            NoticeKind::BGood => "bgood",
         }
     }
 
-    pub const ALL: [NoticeKind; 24] = [
+    pub const ALL: [NoticeKind; 25] = [
         NoticeKind::New,
         NoticeKind::Breakout,
         NoticeKind::Burst,
@@ -298,6 +304,7 @@ impl NoticeKind {
         NoticeKind::XFloat,
         NoticeKind::XGap,
         NoticeKind::XCtx,
+        NoticeKind::BGood,
     ];
 }
 
@@ -344,6 +351,8 @@ pub enum NoticeDetail {
     /// [`NoticeKind::XGap`] / [`NoticeKind::XCtx`]: the bar behind the fire and the detector's
     /// id and version (`crate::gap_ctx`).
     GapCtx(crate::gap_ctx::GapCtxNotice),
+    /// [`NoticeKind::BGood`]: the model's score behind the pick (`crate::bgood`).
+    BGood(crate::bgood::BGoodNotice),
 }
 
 /// An exchange halt's or resumption's facts, from the trading-status feed and the stock's own
@@ -948,6 +957,11 @@ pub struct RocketBoard {
     /// row's `spread_bp`. Display only; no rule reads it. Not restored after a restart (the ledger
     /// keeps each notice's), so a restored row shows none.
     spreads: HashMap<String, i32>,
+    /// Rows one of whose notices b-good-1 tagged high confidence (`crate::bgood`, 30 s after
+    /// the notice), shown as the row's `confidence: "high"`. Sticky for the day: a later notice
+    /// of the row that was not tagged does not take it back. Display only; not restored after a
+    /// restart (the ledger keeps every tag).
+    confident: HashSet<String>,
     scorer: Arc<dyn RocketScorer>,
     policy: Policy,
     date: Option<NaiveDate>,
@@ -1002,6 +1016,10 @@ pub struct RocketBoard {
     /// ([`RocketBoard::enable_gap_ctx`], `GAP_CTX_LIVE`). Like N1 it reads the board's prints
     /// and clock and only adds its own notices.
     gap_ctx: Option<crate::gap_ctx::GapCtxLive>,
+    /// research v2 b-good (`crate::bgood`): b-good-2's picks (its own notices) and b-good-1's
+    /// tags (requests the market hands the confidence stage). Live market only
+    /// ([`RocketBoard::enable_bgood`], `BGOOD_LIVE`); nothing on the board depends on it.
+    bgood: Option<crate::bgood::BGoodLive>,
     /// The running entry's facts for `running_facts_date` ([`running::facts`]), and the date
     /// whose facts the market should load (once per date).
     running_facts: HashMap<String, running::Fact>,
@@ -1152,6 +1170,7 @@ impl RocketBoard {
             tape: Tape::default(),
             crossings: HashMap::new(),
             spreads: HashMap::new(),
+            confident: HashSet::new(),
             scorer,
             policy,
             date: None,
@@ -1183,6 +1202,7 @@ impl RocketBoard {
             xhalt: None,
             xfloat: None,
             gap_ctx: None,
+            bgood: None,
             running_facts: HashMap::new(),
             running_facts_date: None,
             running_facts_wanted: None,
@@ -1251,6 +1271,7 @@ impl RocketBoard {
             "x_halt": self.xhalt.as_ref().map(|n| n.cost()),
             "xfloat": self.xfloat.as_ref().map(|n| n.cost()),
             "gap_ctx": self.gap_ctx.as_ref().map(|n| n.cost()),
+            "bgood": self.bgood.as_ref().map(|n| n.cost()),
         })
     }
 
@@ -1415,6 +1436,53 @@ impl RocketBoard {
         }
     }
 
+    /// Turns on research v2 b-good ([`crate::bgood`]); a no-op on a disabled board. Only the live
+    /// market calls this (`BGOOD_LIVE`, on by default).
+    pub fn enable_bgood(&mut self) {
+        if self.enabled {
+            self.bgood = Some(crate::bgood::BGoodLive::new());
+        }
+    }
+
+    pub fn bgood(&self) -> Option<&crate::bgood::BGoodLive> {
+        self.bgood.as_ref()
+    }
+
+    /// The notices the market is offering, for b-good's alert context and b-good-1's tags
+    /// ([`crate::bgood::BGoodLive::record_alert`]).
+    pub fn bgood_record(&mut self, notices: &[Notice]) {
+        if let Some(b) = self.bgood.as_mut() {
+            for n in notices {
+                b.record_alert(n);
+            }
+        }
+    }
+
+    /// b-good-1 tags due for their quotes, the date whose b-good inputs to load, and a finished
+    /// day's time-of-day file: what the market takes after each tick.
+    pub fn take_bgood_work(
+        &mut self,
+    ) -> (
+        Vec<crate::bgood::TagRequest>,
+        Option<NaiveDate>,
+        Option<crate::bgood::TodDay>,
+    ) {
+        match self.bgood.as_mut() {
+            Some(b) => (
+                b.take_tag_requests(),
+                b.take_inputs_request(),
+                b.take_tod_day(),
+            ),
+            None => (Vec::new(), None, None),
+        }
+    }
+
+    pub fn set_bgood_inputs(&mut self, inputs: crate::bgood::Inputs) {
+        if let Some(b) = self.bgood.as_mut() {
+            b.set_inputs(inputs);
+        }
+    }
+
     /// The trading date whose N1 / F1u / x-halt-1 / x-float-1 facts the market should load (once
     /// per date; they share one table: x-halt-1 its C1 and types, x-float-1 its types).
     pub fn take_n1_facts_request(&mut self) -> Option<NaiveDate> {
@@ -1562,6 +1630,9 @@ impl RocketBoard {
             if let Some(n) = self.gap_ctx.as_mut() {
                 n.apply_trade(t, counted);
             }
+            if let Some(n) = self.bgood.as_mut() {
+                n.apply_trade(t, counted);
+            }
         }
     }
 
@@ -1646,6 +1717,10 @@ impl RocketBoard {
                 n.apply_trade(t, counted);
             }
             if let Some(n) = self.gap_ctx.as_mut() {
+                n.apply_trade(t, counted);
+            }
+            // b-good likewise (a day started mid-session never sends: crate::bgood).
+            if let Some(n) = self.bgood.as_mut() {
                 n.apply_trade(t, counted);
             }
         }
@@ -1743,6 +1818,14 @@ impl RocketBoard {
     pub fn set_spread(&mut self, alert_id: &str, bp: i32) {
         if self.alerts.iter().any(|a| a.id == alert_id) {
             self.spreads.insert(alert_id.to_owned(), bp);
+        }
+    }
+
+    /// Marks row `alert_id` high confidence (`crate::bgood`). An id that is not a row of today's
+    /// board (a cue's or a shadow detector's notice) is ignored.
+    pub fn set_confidence(&mut self, alert_id: &str) {
+        if self.alerts.iter().any(|a| a.id == alert_id) {
+            self.confident.insert(alert_id.to_owned());
         }
     }
 
@@ -1943,6 +2026,7 @@ impl RocketBoard {
         self.alerts.clear();
         self.crossings.clear();
         self.spreads.clear();
+        self.confident.clear();
         self.track_symbols.clear();
         self.last_alert.clear();
         // Official open halts can cross dates. Only the pressure board's matching resume ends one.
@@ -2036,6 +2120,16 @@ impl RocketBoard {
         }
         // The v2 x-gap-1 / x-ctx-1, the same way (crate::gap_ctx: each bar 50 ms after it ends).
         if let Some(n) = self.gap_ctx.as_mut() {
+            n.tick(clock);
+            for x in n.take_notices() {
+                if self.notices.len() < MAX_NOTICES {
+                    self.notices.push(x);
+                }
+            }
+        }
+        // research v2 b-good-2's picks, the same way (crate::bgood); its b-good-1 tags leave
+        // through take_bgood_work.
+        if let Some(n) = self.bgood.as_mut() {
             n.tick(clock);
             for x in n.take_notices() {
                 if self.notices.len() < MAX_NOTICES {
@@ -3299,6 +3393,7 @@ impl RocketBoard {
                     "burst": a.burst.as_deref().map(burst_json),
                     "crossing": self.crossings.get(&a.symbol).cloned().flatten(),
                     "spread_bp": self.spreads.get(&a.id),
+                    "confidence": self.confident.contains(&a.id).then_some("high"),
                     "also": a.also.iter().map(|x| json!({
                         "kind": x.kind.as_str(), "at": x.at_ns / 1_000_000,
                     })).collect::<Vec<_>>(),

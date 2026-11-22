@@ -66,6 +66,9 @@ export const RUNNERS_NOTICE_KINDS = [
   // (the synced `detectors` settings).
   "v2.xgap",
   "v2.xctx",
+  // research v2 b-good-2 "model picks" (owner, 2026-11-22; crates/server/src/bgood): stocks a frozen
+  // model scored above its threshold at a minute end, at most 30 a day. Its own switch, on by default.
+  "model.pick",
 ] as const;
 export type RunnersNoticeKind = (typeof RUNNERS_NOTICE_KINDS)[number];
 
@@ -137,6 +140,8 @@ export interface RunnersNotifyKinds {
   xGap: boolean;
   /** v2 x-ctx-1: a stock that ran 30%+ yesterday trades above yesterday's high on heavy volume. */
   xCtx: boolean;
+  /** research v2 b-good-2 picked a stock: a frozen model scored it above its threshold (at most 30 a day). */
+  modelPick: boolean;
 }
 
 /**
@@ -174,6 +179,8 @@ export const DEFAULT_RUNNERS_NOTIFY: Readonly<RunnersNotifyKinds> = Object.freez
   // On: the v2 ship set (owner, 2026-11-22).
   xGap: true,
   xCtx: true,
+  // On: research v2's proven wins go live (owner, 2026-11-22).
+  modelPick: true,
 });
 
 /** client `runners.notify`: this connection shows notifications for these kinds (`enabled: false` stops). */
@@ -215,6 +222,7 @@ export const RUNNERS_NOTIFY_KEY: Readonly<Record<RunnersNoticeKind, keyof Runner
   "v2.xfloat": "xFloat",
   "v2.xgap": "xGap",
   "v2.xctx": "xCtx",
+  "model.pick": "modelPick",
 });
 
 /** Whether a notice is an exchange halt or resumption (its own sound on the desktop and web). */
@@ -353,6 +361,7 @@ export const ALERT_SWITCH_ICON: Readonly<Record<keyof RunnersNotifyKinds, AlertI
   xFloat: "pathRunning",
   xGap: "insights",
   xCtx: "insights",
+  modelPick: "insights",
 });
 
 /** A Runners-pipeline notice kind's icon: its switch's ({@link ALERT_SWITCH_ICON}). */
@@ -475,6 +484,10 @@ export const ALERT_SWITCH_SECTIONS: readonly { id: "runners" | "ross" | "signals
         icon: ALERT_SWITCH_ICON.xCtx,
         name: "Day 2 · above yesterday's high",
         description: "A stock that ran 30%+ yesterday trades above yesterday's high on heavy volume, once a day, any session. About 1 in 4 reached +10% before −5% in the v2 tests. On by default.",
+        key: "modelPick",
+        icon: ALERT_SWITCH_ICON.modelPick,
+        name: "Model picks",
+        description: "A research model scores every stock each minute and picks the strongest, at most 2 a stock and 30 a day, none right after another alert on it. About 1 in 7 reached +10% before −5% in testing. On by default.",
       },
     ],
   },

@@ -795,6 +795,8 @@ export interface PushRegisterMessage {
   /** Pushes when the v2 x-gap-1 / x-ctx-1 fire (crates/server/src/gap_ctx; server default on; absent = unchanged). */
   xGap?: boolean;
   xCtx?: boolean;
+  /** Pushes when research v2 b-good-2 picks a stock (crates/server/src/bgood; server default on; absent = unchanged). */
+  modelPick?: boolean;
 }
 
 /** Settings → Alerts → Halts "Send test": the server answers this connection alone with a `runners.notice` for the made-up stock TEST (`data.test` true). */

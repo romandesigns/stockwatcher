@@ -231,8 +231,8 @@ impl QuoteSource {
         })
     }
 
-    /// The request for `symbol`'s quotes in the 60 s up to `fire_ns`, newest first.
-    fn url(&self, symbol: &str, fire_ns: i64) -> String {
+    /// The request for `symbol`'s quotes in the `back_ns` up to `fire_ns`, newest first.
+    fn url(&self, symbol: &str, fire_ns: i64, back_ns: i64) -> String {
         let ts = |ns: i64| {
             DateTime::<Utc>::from_timestamp_nanos(ns).to_rfc3339_opts(SecondsFormat::Nanos, true)
         };
@@ -240,7 +240,7 @@ impl QuoteSource {
             "{}/v2/stocks/{}/quotes?start={}&end={}&limit={QUOTE_LIMIT}&sort=desc&feed={}",
             self.base,
             path_segment(symbol),
-            ts(fire_ns - MAX_AGE_NS),
+            ts(fire_ns - back_ns),
             ts(fire_ns),
             self.feed
         )
@@ -249,9 +249,18 @@ impl QuoteSource {
     /// `symbol`'s fire-time spread, or `None` on any failure (logged at debug: a missing spread
     /// is shown as missing, it is not an incident).
     pub async fn spread_at(&self, symbol: &str, fire_ns: i64) -> Option<i32> {
+        self.quotes_before(symbol, fire_ns, MAX_AGE_NS)
+            .await
+            .and_then(|q| at_fire(q, fire_ns))
+    }
+
+    /// The newest [`QUOTE_LIMIT`] quotes of `symbol` in the `back_ns` up to `at_ns` (any order),
+    /// or `None` on any failure. Also b-good-1's quote source (`crate::bgood::stage`), which looks
+    /// back further so a stale quote is still seen as one.
+    pub async fn quotes_before(&self, symbol: &str, at_ns: i64, back_ns: i64) -> Option<Vec<Nbbo>> {
         let req = self
             .http
-            .get(self.url(symbol, fire_ns))
+            .get(self.url(symbol, at_ns, back_ns))
             .header("APCA-API-KEY-ID", &self.key_id)
             .header("APCA-API-SECRET-KEY", &self.secret);
         let resp = match tokio::time::timeout(FETCH_TIMEOUT, req.send()).await {
@@ -276,7 +285,7 @@ impl QuoteSource {
             return None;
         }
         match parse_quotes(&body) {
-            Ok(q) => at_fire(q, fire_ns),
+            Ok(q) => Some(q),
             Err(e) => {
                 tracing::warn!(symbol, error = %e, "alert spread: unreadable quote response");
                 None
@@ -476,7 +485,7 @@ mod tests {
             .timestamp_nanos_opt()
             .unwrap();
         assert_eq!(
-            src.url("BRK.B", fire),
+            src.url("BRK.B", fire, MAX_AGE_NS),
             "https://data.example/v2/stocks/BRK.B/quotes?start=2026-11-19T14:29:00.500000000Z\
              &end=2026-11-19T14:30:00.500000000Z&limit=50&sort=desc&feed=sip"
         );

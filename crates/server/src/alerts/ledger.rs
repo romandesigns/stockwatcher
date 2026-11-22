@@ -38,6 +38,17 @@
 //!   trade_to_board_ms, board_to_queue_ms, queue_to_expo_ms, trade_to_expo_ms}` when Expo took a
 //!   Runners push (the latency the log line already reported).
 //! - `failed` — `{kind, v, at, event_id, detail}` when Expo refused a push or its receipt failed.
+//! - `confidence` — `{kind, v, decided_at, event_id, alert_id, symbol, notice, detector,
+//!   detector_version, a_ns, t_ns, margin, score, tier, tagged, held, q_a, q_t}`: b-good-1's
+//!   score of a B0-kind alert 30 s after it (`crate::bgood`), for every alert scored, tagged or
+//!   not; `held` is `switched_off` when its runtime switch was off (decided, not shown), else
+//!   `null`; `q_a` / `q_t` are the quotes at the alert and at the scoring instant (`{bid, ask,
+//!   age_ms, flags}`, micro-dollars, the xsim flags), so the score can be recomputed.
+//!
+//! `decision` lines of research detectors also carry `detector` and `detector_version`
+//! (`b-good-2`: the model's `score`, `margin` and the day's pick number `nth`), and every
+//! `decision` line carries `session` (`pre` 04:00–09:30, `regular`, `after` 16:00–20:00 ET, from
+//! `at_ns`; `null` outside them), all additive.
 //!
 //! Never a push token: the ledger only ever gets the device count, and Expo error details pass
 //! through [`crate::oplog::redact_tokens`].
@@ -187,6 +198,24 @@ impl Ledger {
         );
     }
 
+    /// A b-good-1 score (module docs, `confidence`). `on`: the detector's switch was on.
+    pub fn confidence(&self, c: &crate::bgood::Confidence, on: bool, now_ms: i64) {
+        let q = |q: &crate::bgood::logic::QuoteAt| json!({"bid": q.bid_u, "ask": q.ask_u, "age_ms": q.age_ms_f() as i64, "flags": q.flags});
+        self.put(
+            now_ms,
+            json!({
+                "kind": "confidence", "v": 1, "decided_at": now_ms, "event_id": c.event_id,
+                "alert_id": c.alert_id, "symbol": c.symbol, "notice": runners::data_kind(c.kind),
+                "detector": crate::bgood::TAG_ID,
+                "detector_version": crate::bgood::version(crate::bgood::model1()),
+                "a_ns": c.a_ns, "t_ns": c.t_ns, "margin": c.margin, "score": c.prob,
+                "tier": c.tier(), "tagged": c.tagged,
+                "held": if on { Value::Null } else { json!("switched_off") },
+                "q_a": q(&c.q_a), "q_t": q(&c.q_t),
+            }),
+        );
+    }
+
     /// A push Expo refused (module docs, `failed`).
     pub fn failed(&self, event_id: &str, detail: &str, now_ms: i64) {
         self.put(
@@ -246,6 +275,13 @@ fn decision_line(
             "rotation": x.rotation, "c1": x.c1, "gain": x.gain, "prior_high": x.prior_high,
             "emitted_ns": x.emitted_ns,
         });
+    }
+    if let Some(crate::rocket::NoticeDetail::BGood(b)) = &n.detail {
+        line["detector"] = json!(crate::bgood::PICK_ID);
+        line["detector_version"] = json!(b.version);
+        line["score"] = json!(b.prob);
+        line["margin"] = json!(b.margin);
+        line["nth"] = json!(b.nth);
     }
     if let Some(crate::rocket::NoticeDetail::Pullback(p)) = &n.detail {
         // Persist the frozen observation even when delivery was held. None remains unknown.
@@ -466,6 +502,34 @@ mod tests {
         // The fields are fixed: nothing a device credential could ride in.
         let keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
         assert!(!keys.iter().any(|k| k.contains("token")), "{keys:?}");
+    }
+
+    /// research v2 b-good: a pick's decision line names its detector and version; every line
+    /// carries its session; a switched-off detector's hold is ledgered with its code.
+    #[test]
+    fn a_research_detector_line_names_detector_version_and_session() {
+        let mut n = notice();
+        n.kind = NoticeKind::BGood;
+        n.detail = Some(crate::rocket::NoticeDetail::BGood(
+            crate::bgood::BGoodNotice {
+                margin: -0.3,
+                prob: 0.43,
+                nth: 2,
+                version: "e4273799d70e".into(),
+                emitted_ns: n.at_ns,
+            },
+        ));
+        let held = Decision::Held(runners::Hold::SwitchedOff);
+        let v = decision_line(&n, "e", "desk", &held, 1, "t", "b", 0);
+        assert_eq!(v["notice"], "model.pick");
+        assert_eq!(v["held"], "switched_off");
+        assert_eq!(v["detector"], "b-good-2");
+        assert_eq!(v["detector_version"], "e4273799d70e");
+        assert_eq!(v["nth"], 2);
+        // 1_793_017_427 s = 2026-10-26 12:23:47 UTC = 08:23:47 ET (pre-market).
+        assert_eq!(v["session"], "pre");
+        let plain = decision_line(&notice(), "e", "desk", &Decision::Send, 1, "t", "b", 0);
+        assert!(plain.get("detector").is_none());
     }
 
     #[test]
