@@ -278,6 +278,7 @@ mod tick_phase_tests {
 /// | `VOLUME_SHELVES` | `1` | with `ROCKET_WATCH`: volume shelves (`crate::zones`, the zones bake-off's winner) for every symbol with a confirmed +20 % run today, in the Runners frame's `zones` and on the chart; the live market keeps its forward log under `ARCHIVE_ROOT/zones/`. Its run trigger also feeds the Runners "Run +20%" entry (`crate::rocket::run`), so `0` turns that off too |
 /// | `N1_LIVE` | `1` | live market with `ROCKET_WATCH`: the N1 "early leg" detector (`crate::n1_live`, Engine A T2-c6's entrant, X 8 % since T2-c4): its own notice kind `shadow.n1` beside production (push/desktop switch `n1`, on by default) and the Runners frame's `shadow` rows; `0` turns it off |
 /// | `C4_LIVE` | `1` | live market with `ROCKET_WATCH`: Engine A T2-c4's additions (`crate::c4_live`): the F1u detector (`shadow.f1u`, switch `f1u`), the HALT add-on (`halt.bull`, switch `haltBull`), both on by default, and the POST<1 prune of Runners notices; `0` turns all three off |
+/// | `XHALT_LIVE` | `1` | live market with `ROCKET_WATCH`: research v2's x-halt-1 "resumed up after a halt" (`crate::xhalt_live`): its own notice kind `halt.resumed_up` (device switch `resumedUp`, on by default; detectors switch `x-halt-1`, `crate::alerts::detectors`); `0` turns the detector off |
 /// | `BURST_THRESHOLD` | unset | a burst model probability threshold in (0, 1), overriding `BURST_ALERTS_PER_DAY`'s |
 /// | `ADMISSION_JOURNAL` | `0` | live with a recorder: write the admission journal beside the recording (`crate::admit`; ~190–270 B per print, so off for whole-market SIP: see `Market::init_history`) |
 #[derive(Clone, Debug)]
@@ -315,6 +316,10 @@ pub struct MarketConfig {
     /// `C4_LIVE` (on by default, needs `ROCKET_WATCH`, live market only): Engine A T2-c4's F1u,
     /// HALT add-on and POST<1 prune (`crate::c4_live`); `0` is their kill switch.
     pub c4_live: bool,
+    /// `XHALT_LIVE` (on by default, needs `ROCKET_WATCH`, live market only): research v2's
+    /// x-halt-1 (`crate::xhalt_live`); `0` is its kill switch at start. The no-restart switch is
+    /// the detectors namespace (`crate::alerts::detectors`).
+    pub xhalt_live: bool,
     /// `ADMISSION_JOURNAL` (off by default): the live admission journal (`crate::admit`). Its
     /// size and the reader's record cap make it unusable for a whole-market day; see
     /// `Market::init_history`.
@@ -346,6 +351,7 @@ impl Default for MarketConfig {
             volume_shelves: true,
             n1_live: true,
             c4_live: true,
+            xhalt_live: true,
             admission_journal: false,
             detection_quiet_references: None,
             evidence_check: Duration::from_secs(crate::evidence::DEFAULT_CHECK_SECS),
@@ -392,6 +398,9 @@ impl MarketConfig {
         }
         if let Some(v) = var("C4_LIVE") {
             c.c4_live = on(&v);
+        }
+        if let Some(v) = var("XHALT_LIVE") {
+            c.xhalt_live = on(&v);
         }
         c.rocket_policy = crate::rocket::Policy::from_lookup(&get)?;
         c.burst_policy = crate::rocket::burst::BurstPolicy::from_lookup(&get)?;
@@ -1189,6 +1198,23 @@ impl Market {
             "c4: Engine A T2-c4 on (F1u, HALT add-on 09:30-11:30 ET, POST<1 prune; C4_LIVE=0 turns it off)"
         );
         self.0.core.lock().expect("core lock").rocket.enable_c4();
+    }
+
+    /// Live: turns on research v2's x-halt-1 (`crate::xhalt_live`) with `archive` for the daily
+    /// facts it shares with N1. Call after `set_rocket_watch`. A replay never calls this.
+    pub fn enable_xhalt(&self, archive: Option<Archive>) {
+        if !self.0.rocket_on.load(Ordering::Relaxed) || self.0.mode != ClockMode::Live {
+            return;
+        }
+        if let Some(a) = archive {
+            let _ = self.0.n1_archive.set(a);
+        }
+        tracing::info!(
+            config = crate::xhalt_live::logic::CONFIG,
+            version = crate::xhalt_live::logic::VERSION,
+            "x-halt-1: detector on (research v2 resumed-up after a halt; XHALT_LIVE=0 turns it off, the detectors switch holds its notices)"
+        );
+        self.0.core.lock().expect("core lock").rocket.enable_xhalt();
     }
 
     /// Loads a trading date's N1 facts (`crate::n1_live::load_facts`) on a blocking thread, then
@@ -2093,6 +2119,11 @@ impl Market {
         } else if mode == ClockMode::Live && !cfg.c4_live {
             tracing::info!("c4: off (C4_LIVE=0)");
         }
+        if mode == ClockMode::Live && cfg.rocket_watch && cfg.xhalt_live {
+            market.enable_xhalt(Some(archive.clone()));
+        } else if mode == ClockMode::Live && !cfg.xhalt_live {
+            tracing::info!("x-halt-1: off (XHALT_LIVE=0)");
+        }
         if mode == ClockMode::Live && cfg.rocket_watch {
             // Before the ingest: today's alerts and the record come back after a restart.
             market.init_rocket_log(
@@ -2878,6 +2909,7 @@ impl Market {
                                     &h.symbol,
                                     ns(h.halt.start_ns, h.halt.start),
                                     h.halt.end.map(|e| ns(h.halt.end_ns.unwrap_or(0), e)),
+                                    &h.halt.reason,
                                 );
                             }
                             // In order: a halt freezes the readings before the null band point

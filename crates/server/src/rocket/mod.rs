@@ -222,6 +222,11 @@ pub enum NoticeKind {
     /// universe, 09:30–11:30 ET; the gauge's [`NoticeDetail::Halt`]. Its own switch
     /// (`haltBull`), ON by default; sent once when the gauge's own switch is on too.
     HaltBull,
+    /// Research v2 finalist x-halt-1 "resumed up after a halt" (`crate::xhalt_live`, owner
+    /// 2026-11-22): an LULD pause or news halt after a 5 % run-in that reopened at or above its
+    /// halt price; its facts in [`NoticeDetail::ResumedUp`]. Its own switch (`resumedUp`), ON by
+    /// default, and the detectors switch `x-halt-1` (`crate::alerts::detectors`).
+    ResumedUp,
 }
 
 impl NoticeKind {
@@ -247,10 +252,11 @@ impl NoticeKind {
             NoticeKind::N1 => "n1",
             NoticeKind::F1u => "f1u",
             NoticeKind::HaltBull => "halt_bull",
+            NoticeKind::ResumedUp => "resumed_up",
         }
     }
 
-    pub const ALL: [NoticeKind; 20] = [
+    pub const ALL: [NoticeKind; 21] = [
         NoticeKind::New,
         NoticeKind::Breakout,
         NoticeKind::Burst,
@@ -271,6 +277,7 @@ impl NoticeKind {
         NoticeKind::N1,
         NoticeKind::F1u,
         NoticeKind::HaltBull,
+        NoticeKind::ResumedUp,
     ];
 }
 
@@ -310,6 +317,8 @@ pub enum NoticeDetail {
     N1(crate::n1_live::N1Notice),
     /// [`NoticeKind::F1u`]: the impulse, pullback and trigger behind the fire (`crate::c4_live`).
     F1u(crate::c4_live::F1uNotice),
+    /// [`NoticeKind::ResumedUp`]: the halt, its run-in and the reopen (`crate::xhalt_live`).
+    ResumedUp(crate::xhalt_live::ResumedUpNotice),
 }
 
 /// An exchange halt's or resumption's facts, from the trading-status feed and the stock's own
@@ -955,6 +964,10 @@ pub struct RocketBoard {
     /// Engine A T2-c4's F1u detector, HALT add-on and POST<1 prune (`crate::c4_live`): live
     /// market only ([`RocketBoard::enable_c4`], `C4_LIVE`).
     c4: Option<crate::c4_live::F1uLive>,
+    /// Research v2 x-halt-1 "resumed up" (`crate::xhalt_live`): live market only
+    /// ([`RocketBoard::enable_xhalt`], `XHALT_LIVE`). It reads the board's prints, halts and
+    /// clock and only adds its own notices.
+    xhalt: Option<crate::xhalt_live::XHaltLive>,
     /// The running entry's facts for `running_facts_date` ([`running::facts`]), and the date
     /// whose facts the market should load (once per date).
     running_facts: HashMap<String, running::Fact>,
@@ -1133,6 +1146,7 @@ impl RocketBoard {
             burst: None,
             n1: None,
             c4: None,
+            xhalt: None,
             running_facts: HashMap::new(),
             running_facts_date: None,
             running_facts_wanted: None,
@@ -1198,6 +1212,7 @@ impl RocketBoard {
             "pending_log": self.pending.len(),
             "n1": self.n1.as_ref().map(|n| n.cost()),
             "f1u": self.c4.as_ref().map(|n| n.cost()),
+            "x_halt": self.xhalt.as_ref().map(|n| n.cost()),
         })
     }
 
@@ -1291,12 +1306,25 @@ impl RocketBoard {
         self.c4.as_ref()
     }
 
-    /// The trading date whose N1 / F1u facts the market should load (once per date; the two
-    /// share one table).
+    /// Turns on research v2's x-halt-1 ([`crate::xhalt_live`]); a no-op on a disabled board.
+    /// Only the live market calls this (`XHALT_LIVE`, on by default).
+    pub fn enable_xhalt(&mut self) {
+        if self.enabled {
+            self.xhalt = Some(crate::xhalt_live::XHaltLive::new());
+        }
+    }
+
+    pub fn xhalt(&self) -> Option<&crate::xhalt_live::XHaltLive> {
+        self.xhalt.as_ref()
+    }
+
+    /// The trading date whose N1 / F1u / x-halt-1 facts the market should load (once per date;
+    /// the three share one table).
     pub fn take_n1_facts_request(&mut self) -> Option<NaiveDate> {
         let a = self.n1.as_mut().and_then(|n| n.take_facts_request());
         let b = self.c4.as_mut().and_then(|n| n.take_facts_request());
-        a.or(b)
+        let c = self.xhalt.as_mut().and_then(|n| n.take_facts_request());
+        a.or(b).or(c)
     }
 
     pub fn set_n1_facts(&mut self, table: crate::n1_live::FactsTable) {
@@ -1305,14 +1333,27 @@ impl RocketBoard {
             n.set_facts_shared(table.clone());
         }
         if let Some(n) = self.c4.as_mut() {
+            n.set_facts(table.clone());
+        }
+        if let Some(n) = self.xhalt.as_mut() {
             n.set_facts(table);
         }
     }
 
-    /// A halt started or resumed (`chart.halt`), for F1u's halt rules.
-    pub fn apply_halt_span(&mut self, symbol: &str, start_ns: i64, end_ns: Option<i64>) {
+    /// A halt started or resumed (`chart.halt`), for F1u's halt rules and x-halt-1 (which types
+    /// the halt by `reason`, the feed's own code).
+    pub fn apply_halt_span(
+        &mut self,
+        symbol: &str,
+        start_ns: i64,
+        end_ns: Option<i64>,
+        reason: &str,
+    ) {
         if let Some(n) = self.c4.as_mut() {
             n.apply_halt(symbol, start_ns, end_ns);
+        }
+        if let Some(n) = self.xhalt.as_mut() {
+            n.apply_halt(symbol, start_ns, end_ns, reason);
         }
     }
 
@@ -1411,6 +1452,9 @@ impl RocketBoard {
             if let Some(n) = self.c4.as_mut() {
                 n.apply_trade(t, counted);
             }
+            if let Some(n) = self.xhalt.as_mut() {
+                n.apply_trade(t, counted);
+            }
         }
     }
 
@@ -1489,6 +1533,9 @@ impl RocketBoard {
                 n.apply_trade(t, counted);
             }
             if let Some(n) = self.c4.as_mut() {
+                n.apply_trade(t, counted);
+            }
+            if let Some(n) = self.xhalt.as_mut() {
                 n.apply_trade(t, counted);
             }
         }
@@ -1860,6 +1907,16 @@ impl RocketBoard {
         }
         // T2-c4's F1u, the same way (crate::c4_live).
         if let Some(n) = self.c4.as_mut() {
+            n.tick(clock);
+            for x in n.take_notices() {
+                if self.notices.len() < MAX_NOTICES {
+                    self.notices.push(x);
+                }
+            }
+        }
+        // Research v2's x-halt-1, the same way (crate::xhalt_live): only the symbols with a halt
+        // waiting are looked at.
+        if let Some(n) = self.xhalt.as_mut() {
             n.tick(clock);
             for x in n.take_notices() {
                 if self.notices.len() < MAX_NOTICES {

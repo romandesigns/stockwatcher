@@ -10,10 +10,16 @@
 //!   follow-ups, shelf, Ross/Signals crossing and trigger, pullback, halt), once for the desktop
 //!   and web clients (`path: "desk"`) and once for the phones (`path: "phone"`). `notice` is the
 //!   data kind the clients see (`runners.burst`, `ross.crossing`, …), `decision` `sent` | `held`,
-//!   `held` the limit's code (`no_device`, `quiet_hours`, `stale`, `duplicate`) or `null`,
+//!   `held` the limit's code (`no_device`, `quiet_hours`, `stale`, `duplicate`,
+//!   `switched_off`) or `null`,
 //!   `devices` how many devices or open clients wanted the kind, `spread_bp` the fire-time
 //!   bid-ask spread in bp of the mid (`crate::spread`; `null` when no market quote qualified or
-//!   on lines before 2026-11-19). Lines before 2026-10-30 may also
+//!   on lines before 2026-11-19). Since 2026-11-22 (research v2 DEPLOY-PLAN, "Per-alert
+//!   ledger") also `detector` (the switchable detector's id, `super::detectors`, else the
+//!   notice kind), `detector_version` (its frozen definition, `null` for a kind with no
+//!   detectors entry), `switch` (`on` | `off`, `null` likewise) and `session` (`pre` | `regular`
+//!   | `after` | `overnight` of `at_ns`, ET); a switched-off detector's lines are `held:
+//!   "switched_off"`, its would-be alerts. Lines before 2026-10-30 may also
 //!   hold `symbol_limit` or `merged` (with `merged_into` and `merged_devices`), the per-stock gap
 //!   and merge since removed (`super::runners`, "Every distinct event is delivered").
 //! - `alert` — `{kind, v, decided_at, event_id, alert_id, symbol, price, text, phone, held,
@@ -184,6 +190,22 @@ fn decision_line(
         // restart; this line does not).
         "spread_bp": n.spread_bp,
     });
+    // Research v2's per-alert ledger: which frozen definition decided it, whether its switch was
+    // on, and its session (the daily checklist reads these per detector and session).
+    let det = super::detectors::of(n.kind);
+    line["detector"] = json!(det.map_or(n.kind.as_str(), |d| d.id));
+    line["detector_version"] = json!(det.map(|d| d.version));
+    line["switch"] = json!(det.map(|_| {
+        if matches!(decision, Decision::Held(runners::Hold::SwitchedOff)) {
+            "off"
+        } else {
+            "on"
+        }
+    }));
+    line["session"] = json!(
+        market_events::session::classify(market_events::UnixNanos(n.at_ns))
+            .map(|s| s.kind.as_str())
+    );
     if let Some(crate::rocket::NoticeDetail::Pullback(p)) = &n.detail {
         // Persist the frozen observation even when delivery was held. None remains unknown.
         line["mp5_wick"] = json!(p.wick);
@@ -199,6 +221,39 @@ fn decision_line(
 mod tests {
     use super::*;
     use crate::rocket::NoticeKind;
+
+    /// Research v2's per-alert ledger fields: a switched-off detector's would-be alert (the
+    /// `run` cut) is a held line with its detector, version and switch; a kind with no
+    /// detectors entry carries its kind and no version; every line carries its session.
+    #[test]
+    fn decisions_carry_the_detector_switch_and_session() {
+        let mut n = notice();
+        n.kind = NoticeKind::Run;
+        // 2025-10-22 10:00 ET (regular session).
+        n.at_ns = 1_761_141_600_000_000_000;
+        let off = Decision::Held(runners::Hold::SwitchedOff);
+        let line = decision_line(&n, "e", "phone", &off, 1, "t", "b", 1);
+        assert_eq!(line["decision"], "held");
+        assert_eq!(line["held"], "switched_off");
+        assert_eq!(line["detector"], "run");
+        assert_eq!(
+            line["detector_version"],
+            super::super::detectors::RUN.version
+        );
+        assert_eq!(line["switch"], "off");
+        assert_eq!(line["session"], "regular");
+        n.kind = NoticeKind::ResumedUp;
+        let line = decision_line(&n, "e", "desk", &Decision::Send, 1, "t", "b", 1);
+        assert_eq!(line["detector"], "x-halt-1");
+        assert_eq!(line["detector_version"], crate::xhalt_live::logic::VERSION);
+        assert_eq!(line["switch"], "on");
+        n.kind = NoticeKind::FollowUp;
+        n.at_ns = 1_761_120_000_000_000_000; // 04:00 ET: pre-market
+        let line = decision_line(&n, "e", "desk", &Decision::Send, 1, "t", "b", 1);
+        assert_eq!(line["detector"], "followup");
+        assert!(line["detector_version"].is_null() && line["switch"].is_null());
+        assert_eq!(line["session"], "pre");
+    }
 
     #[test]
     fn sent_and_held_breakouts_keep_the_same_frozen_cause_and_entry_context() {

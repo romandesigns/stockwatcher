@@ -132,6 +132,8 @@ pub enum Hold {
     Stale,
     /// This event was already sent (its [`crate::rocket::Notice::event_id`]).
     Duplicate,
+    /// Its detector is switched off (`super::detectors`): it ran, and is only recorded.
+    SwitchedOff,
 }
 
 impl Hold {
@@ -141,6 +143,7 @@ impl Hold {
             Hold::QuietHours => "quiet_hours",
             Hold::Stale => "stale",
             Hold::Duplicate => "duplicate",
+            Hold::SwitchedOff => "switched_off",
         }
     }
 }
@@ -384,6 +387,9 @@ pub fn data_kind(kind: NoticeKind) -> &'static str {
         // Halt watcher's own gauge, so it stays in the halt namespace.
         NoticeKind::F1u => "shadow.f1u",
         NoticeKind::HaltBull => "halt.bull",
+        // Research v2's x-halt-1 (`crate::xhalt_live`): about an exchange halt's reopen, so the
+        // halt namespace, apart from the plain `halt.resumed` status notice.
+        NoticeKind::ResumedUp => "halt.resumed_up",
     }
 }
 
@@ -750,6 +756,37 @@ fn panel_message(n: &Notice) -> (String, String, Value) {
                 "Engine A research".to_owned(),
             ];
             (format!("{s} · F1 · first pullback{p}"), parts.join(" · "))
+        }
+        // "YMAT · Resumed up · $2.71" / "Reopened +3.4% over $2.62 halt price · ran +18% into the
+        // LULD pause · v2 research": what the reopen did against the halt price, the run-in that
+        // qualified it, then the reference line (the length cap drops "v2 research" first). Research precision was 25.5 %
+        // (good-v1) against 20.3 % for the live set (crate::xhalt_live), never "buy".
+        (NoticeKind::ResumedUp, Some(NoticeDetail::ResumedUp(x))) => {
+            data["config"] = json!(crate::xhalt_live::logic::CONFIG);
+            data["version"] = json!(crate::xhalt_live::logic::VERSION);
+            data["emitted_at"] = json!(x.emitted_ns / 1_000_000);
+            data["halt_at"] = json!(x.halt_ns / 1_000_000);
+            data["halt_price"] = json!(x.halt_px);
+            data["run_in"] = json!(x.run_in);
+            let over = if x.halt_px > 0.0 {
+                (n.price / x.halt_px - 1.0) * 100.0
+            } else {
+                0.0
+            };
+            let reason = if x.reason.is_empty() {
+                "halt"
+            } else {
+                x.reason.as_str()
+            };
+            let parts = [
+                format!(
+                    "Reopened {over:+.1}% over {} halt price",
+                    dollars(on_tick(x.halt_px))
+                ),
+                format!("ran {:+.0}% into the {reason}", x.run_in * 100.0),
+                "v2 research".to_owned(),
+            ];
+            (format!("{s} · Resumed up{p}"), parts.join(" · "))
         }
         // "YMAT · N1 · shadow · $2.71" / "+6.4% off the 3-min low $2.55 · $112K in 3 min, 14×
         // usual · research shadow": what the window did, then the reference line. Labelled a
@@ -1427,6 +1464,19 @@ Alert $2.41 · +5% = $2.53"
                 ign_end_ns: n.at_ns - 6 * 60_000_000_000,
                 emitted_ns: n.at_ns + 60_000_000,
             })),
+            NoticeKind::ResumedUp => Some(NoticeDetail::ResumedUp(
+                crate::xhalt_live::ResumedUpNotice {
+                    halt_ns: n.at_ns - 302_000_000_000,
+                    resume_ns: Some(n.at_ns - 2_000_000_000),
+                    reason: "LULD pause".into(),
+                    halt_px: 2.62,
+                    low15: 2.22,
+                    run_in: 0.18,
+                    reopen_start_ns: n.at_ns - 2_000_000_000,
+                    reopen_res_s: 1,
+                    emitted_ns: n.at_ns + 60_000_000,
+                },
+            )),
             NoticeKind::N1 => Some(NoticeDetail::N1(crate::n1_live::N1Notice {
                 low: 2.55,
                 high: 2.74,
@@ -1629,6 +1679,14 @@ Alert $2.41 · +5% = $2.53"
             (
                 "YMAT · Halt risk · buying · $2.71".into(),
                 "Upper band $2.80 · ~45 s at this pace · buying pressure, halt risk 72/100".into()
+            )
+        );
+        assert_eq!(
+            t(NoticeKind::ResumedUp),
+            (
+                "YMAT · Resumed up · $2.71".into(),
+                "Reopened +3.4% over $2.62 halt price · ran +18% into the LULD pause · v2 research"
+                    .into()
             )
         );
         assert_eq!(

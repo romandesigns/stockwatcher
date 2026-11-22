@@ -54,6 +54,7 @@ describe("notice log", () => {
     expect(pathText(c!.phone)).toBe("not sent: phone alerts off for it");
     expect(pathText(undefined)).toBeNull();
     expect(heldText("quiet_hours")).toBe("quiet hours");
+    expect(heldText("switched_off")).toBe("detector switched off (recorded only)");
     expect(latencyText(b!)).toBe("trade → push 1.04 s · detect 0.10 s");
   });
 

@@ -184,6 +184,7 @@ const KIND: Record<string, { group: NoticeGroup; label: string }> = {
   "runners.followup": { group: "shelf", label: "Follow-up" },
   "halt.watch": { group: "halt", label: "Halt watcher" },
   "halt.bull": { group: "halt", label: "Halt risk · buying" },
+  "halt.resumed_up": { group: "halt", label: "Resumed up" },
   // The N1 shadow detector (crates/server/src/n1_live): labelled a shadow wherever it shows.
   "shadow.n1": { group: "shadow", label: "N1 · shadow" },
   "shadow.f1u": { group: "shadow", label: "F1 · first pullback" },
@@ -242,6 +243,9 @@ const HELD: Record<string, string> = {
   duplicate: "already sent",
   off: "phone alerts off for it",
   merged: "merged into an earlier alert",
+  // A detector switched off at runtime (crates/server/src/alerts/detectors.rs): it ran, and its
+  // would-be alert was only recorded (the `run` cut by default).
+  switched_off: "detector switched off (recorded only)",
 };
 
 /**

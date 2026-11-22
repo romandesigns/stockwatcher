@@ -30,6 +30,7 @@
 //! from the same inputs, delivered exactly like the Runners ones.
 
 pub mod delivery;
+pub mod detectors;
 pub mod eval;
 pub mod geometry;
 pub mod halts;
@@ -225,6 +226,9 @@ pub struct DeskKinds {
     /// T2-c4's HALT add-on, a bull Halt watcher gauge 09:30–11:30 (`crate::c4_live::halt_addon`):
     /// ON by default (owner, 2026-11-18).
     pub halt_bull: bool,
+    /// Research v2's x-halt-1 "resumed up after a halt" (`crate::xhalt_live`): ON by default
+    /// (owner, 2026-11-22).
+    pub resumed_up: bool,
 }
 
 impl Default for DeskKinds {
@@ -263,6 +267,9 @@ impl DeskKinds {
             // days: +7.9 pp recall with 22 fewer alerts a day); still switchable in Settings.
             f1u: o.f1u.unwrap_or(true),
             halt_bull: o.halt_bull.unwrap_or(true),
+            // Owner, 2026-11-22: ship the v2 items that proved better than live (x-halt-1:
+            // Validation +0.07 pp recall, +0.10 pp precision); still switchable in Settings.
+            resumed_up: o.resumed_up.unwrap_or(true),
         }
     }
 
@@ -300,6 +307,7 @@ impl DeskKinds {
             // One event, one notice: with the gauge's own switch on, its Halt watcher notice
             // already says it (as the Ross/Signals twins do).
             K::HaltBull => self.halt_bull && !self.halt,
+            K::ResumedUp => self.resumed_up,
         }
     }
 }
@@ -619,6 +627,7 @@ impl Alerts {
             eval: Evaluator::new(),
             delivery: Delivery::default(),
             prefs: Prefs::default(),
+            detectors: detectors::Switches::default(),
             history,
             devices,
             runners,
@@ -661,6 +670,8 @@ struct Task {
     eval: Evaluator,
     delivery: Delivery,
     prefs: Prefs,
+    /// The detectors' no-restart switches ([`detectors`]), read with the rules.
+    detectors: detectors::Switches,
     history: History,
     devices: Devices,
     runners: RunnersDelivery,
@@ -706,6 +717,24 @@ impl Task {
     async fn reload(&mut self, initial: bool) {
         let rules = model::parse_rules(self.settings.get(RULES_NS).await.map(|(_, v)| v).as_ref());
         self.prefs = model::parse_prefs(self.settings.get(PREFS_NS).await.map(|(_, v)| v).as_ref());
+        let switches = detectors::Switches::parse(
+            self.settings
+                .get(detectors::NS)
+                .await
+                .map(|(_, v)| v)
+                .as_ref(),
+        );
+        if switches != self.detectors || initial {
+            for d in detectors::ALL {
+                tracing::info!(
+                    detector = d.id,
+                    version = d.version,
+                    on = switches.on(&d),
+                    "detectors: switch"
+                );
+            }
+        }
+        self.detectors = switches;
         let market = self.market.clone();
         self.eval.set_rules(rules, initial, &market);
         *self
@@ -817,7 +846,7 @@ impl Task {
                     Ok(f) => {
                         // Only our namespaces; the prefix test avoids parsing every drawing change.
                         let ours = |ns: &str| f.starts_with(&format!("{{\"type\":\"settings.changed\",\"ns\":\"{ns}\""));
-                        if ours(RULES_NS) || ours(PREFS_NS) {
+                        if ours(RULES_NS) || ours(PREFS_NS) || ours(detectors::NS) {
                             self.reload(false).await;
                             // A snooze set or an edit shows at once, not on the next tick.
                             self.eval.tick(now_ms());
@@ -951,16 +980,23 @@ impl Task {
         let event_id = n.event_id();
         // Rendered once: the ledger keeps the text with both decisions, the phones get it.
         let (title, body, data) = runners::message(&n);
+        // A detector switched off (detectors, "What off does") is held on both paths before any
+        // other limit, still ledgered, and not marked sent.
+        let off = self.detectors.holds(n.kind);
         let desks = self.shared.desks_wanting(&n);
-        let desk = self.desk_runners.decide(
-            &event_id,
-            desks,
-            &self.prefs,
-            n.at_ns.div_euclid(1_000_000),
-            now,
-            now_et.date_naive(),
-            now_et.hour() * 60 + now_et.minute(),
-        );
+        let desk = if off {
+            runners::Decision::Held(runners::Hold::SwitchedOff)
+        } else {
+            self.desk_runners.decide(
+                &event_id,
+                desks,
+                &self.prefs,
+                n.at_ns.div_euclid(1_000_000),
+                now,
+                now_et.date_naive(),
+                now_et.hour() * 60 + now_et.minute(),
+            )
+        };
         self.ledger
             .decision(&n, &event_id, "desk", &desk, desks, &title, &body, now);
         match desk {
@@ -971,15 +1007,19 @@ impl Task {
         }
         // Every phone that wants this kind (runners, "Every distinct event is delivered").
         let tokens = self.devices.runner_tokens(&n);
-        let phone = self.runners.decide(
-            &event_id,
-            tokens.len(),
-            &self.prefs,
-            n.at_ns.div_euclid(1_000_000),
-            now,
-            now_et.date_naive(),
-            now_et.hour() * 60 + now_et.minute(),
-        );
+        let phone = if off {
+            runners::Decision::Held(runners::Hold::SwitchedOff)
+        } else {
+            self.runners.decide(
+                &event_id,
+                tokens.len(),
+                &self.prefs,
+                n.at_ns.div_euclid(1_000_000),
+                now,
+                now_et.date_naive(),
+                now_et.hour() * 60 + now_et.minute(),
+            )
+        };
         let kind = n.kind.as_str();
         self.ledger.decision(
             &n,
@@ -1612,7 +1652,7 @@ mod tests {
         let (job_tx, mut jobs) = mpsc::channel(16);
         let (_res_tx, res_rx) = mpsc::channel(4);
         let alerts = Alerts::start_with(
-            settings,
+            settings.clone(),
             live.clone(),
             None,
             job_tx,
@@ -1684,7 +1724,26 @@ mod tests {
             .unwrap();
         assert_eq!(j.data["symbol"], "CJMB");
         assert_eq!(j.tokens, vec!["ExponentPushToken[tab]".to_string()]);
+        // The Run +20% notice is cut by default (detectors, `run`): held, nothing queued. Switched
+        // back on from Settings (the synced `detectors` namespace), the next one goes out.
         sink.offer_runner(notice(NoticeKind::Run, "CJMB", now_ms()));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(next_job(&mut jobs).is_none(), "the run cut holds it");
+        settings
+            .apply(
+                detectors::NS,
+                "d1",
+                SettingsOp::Patch {
+                    set: serde_json::from_value(json!({"run": {"on": true}})).unwrap(),
+                    remove: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let mut run = notice(NoticeKind::Run, "CJMB", now_ms());
+        run.alert_id = "2026-10-22-CJMB-2".into();
+        sink.offer_runner(run);
         let j = tokio::time::timeout(Duration::from_secs(5), jobs.recv())
             .await
             .unwrap()
@@ -1770,10 +1829,24 @@ mod tests {
         assert_eq!(f["body"], body.as_str());
         assert_eq!(f["kind"], "runners.new");
         assert_eq!(f["id"], "runners-new-2026-10-22-CJMB-1");
-        // The same stock a moment later: its own notification, nothing merged or replaced.
+        // The same stock a moment later: its own notification, nothing merged or replaced. (A
+        // Run +20% notice is cut by default, detectors `run`; a burst stands in for it here.)
         sink.offer_runner(notice(NoticeKind::Run, "CJMB", now_ms()));
-        let f = next_notice(&mut frames).await.expect("the run");
-        assert_eq!(f["kind"], "runners.run");
+        assert!(next_notice(&mut frames).await.is_none(), "the run cut");
+        // Only the `run` kind is cut: a follow-up whose new (or first) path is Run still goes out
+        // (sc2-1 was leave-one-KIND-out; the board's Run row still makes later paths follow-ups).
+        let mut fu = notice(NoticeKind::FollowUp, "CJMB", now_ms());
+        fu.detail = Some(crate::rocket::NoticeDetail::FollowUp {
+            path: crate::rocket::AlertKind::Run,
+            first: crate::rocket::AlertKind::Run,
+            first_at_ns: now_ms() * 1_000_000 - 60_000_000_000,
+        });
+        sink.offer_runner(fu);
+        let f = next_notice(&mut frames).await.expect("the run follow-up");
+        assert_eq!(f["kind"], "runners.followup");
+        sink.offer_runner(notice(NoticeKind::Burst, "CJMB", now_ms()));
+        let f = next_notice(&mut frames).await.expect("the burst");
+        assert_eq!(f["kind"], "runners.burst");
         assert!(f.get("mergeInto").is_none(), "{f}");
         // Breakouts are off by default.
         sink.offer_runner(notice(NoticeKind::Breakout, "BBB", now_ms()));

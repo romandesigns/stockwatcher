@@ -352,6 +352,7 @@ pub fn kind_label(notice: &str) -> &str {
         "shadow.n1" => "N1 · shadow",
         "shadow.f1u" => "F1 · first pullback",
         "halt.bull" => "Halt risk · buying",
+        "halt.resumed_up" => "Resumed up",
         "price.alert" => "Price alert",
         other => other,
     }
@@ -380,6 +381,7 @@ pub fn held_text(reason: Option<&str>, merged: Option<&Value>) -> String {
         "quiet_hours" => "quiet hours".into(),
         "stale" => "too old by the time it was decided".into(),
         "duplicate" => "already sent".into(),
+        "switched_off" => "detector switched off (recorded only)".into(),
         "off" => "phone alerts off for it".into(),
         "merged" => "merged into an earlier alert".into(),
         other => other.replace('_', " "),
