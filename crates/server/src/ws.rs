@@ -316,6 +316,7 @@
 //!   after it was recorded); `alerts.status {phoneToday, phoneBudget, devices, dropped}`.
 //! - client `push.register {token, platform?, name?, runnersNew?, runnersBreakout?, runnersBurst?, runnersRunning?, runnersRun?, runnersFast?, runnersShelf?, runnersFollowUp?, rossCrossing?, signalsCrossing?, rossTrigger?, signalsTrigger?, haltWatch?, halted?, resumed?, haltedSound?, resumedSound?, haltSounds?, n1Shadow?, f1u?, haltBull?, resumedUp?}`: this
 //! - client `push.register {token, platform?, name?, runnersNew?, runnersBreakout?, runnersBurst?, runnersRunning?, runnersRun?, runnersFast?, runnersShelf?, runnersFollowUp?, rossCrossing?, signalsCrossing?, rossTrigger?, signalsTrigger?, haltWatch?, halted?, resumed?, haltedSound?, resumedSound?, haltSounds?, n1Shadow?, f1u?, haltBull?, xFloat?}`: this
+//! - client `push.register {token, platform?, name?, runnersNew?, runnersBreakout?, runnersBurst?, runnersRunning?, runnersRun?, runnersFast?, runnersShelf?, runnersFollowUp?, rossCrossing?, signalsCrossing?, rossTrigger?, signalsTrigger?, haltWatch?, halted?, resumed?, haltedSound?, resumedSound?, haltSounds?, n1Shadow?, f1u?, haltBull?, xGap?, xCtx?}`: this
 //!   phone's Expo push token, kept by the server for phone notifications and never sent to other
 //!   clients, with its Runners push opt-ins (crate::alerts::runners; an absent one keeps what the
 //!   phone had; for a new phone breakouts off, the rest on); a malformed token gets
@@ -332,6 +333,9 @@
 //!   Signals, Halt watcher, exchange halt (crate::alerts::halts), N1 (crate::n1_live), Engine A
 //!   T2-c4 (crate::c4_live: F1u, the buying-side gauge) and research v2 x-float-1
 //!   (crate::xfloat_live) notifications for those kinds (absent = the
+//!   resumed?, n1?, f1u?, haltBull?, xGap?, xCtx?}`: this desktop or web connection shows Runners, Ross, Signals,
+//!   Halt watcher, exchange halt (crate::alerts::halts), N1 (crate::n1_live) and Engine A T2-c4
+//!   (crate::c4_live: F1u, the buying-side gauge) notifications for those kinds (absent = the
 //!   phone's default: breakouts, "At trigger" and the Halt watcher gauge off, the rest on;
 //!   `enabled: false` stops). Per connection, for as long as the socket lives; resend after a reconnect. No reply.
 //! - client `halts.test {event: "halted" | "resumed"}` (Settings → Alerts → Halts "Send test"):

@@ -63,6 +63,10 @@ use runners::RunnersDelivery;
 
 pub use model::server_owned;
 
+/// The synced settings namespace of the research detectors' no-restart switches, parsed in one
+/// place for every item ([`detectors`], "What off does").
+pub use detectors::NS as DETECTORS_NS;
+
 /// How far the evaluator may fall behind the market before inputs are dropped (and counted).
 pub const INPUT_CAPACITY: usize = 8192;
 /// Runners notices waiting for the task (a handful a day; a full queue drops and counts).
@@ -232,6 +236,9 @@ pub struct DeskKinds {
     /// Research v2's x-float-1 "rotation ignition" (`crate::xfloat_live`): ON by default (owner,
     /// 2026-11-22: ship the research-proven wins live).
     pub x_float: bool,
+    /// The v2 finalists x-gap-1 and x-ctx-1 (`crate::gap_ctx`): ON by default (owner, 2026-11-22).
+    pub x_gap: bool,
+    pub x_ctx: bool,
 }
 
 impl Default for DeskKinds {
@@ -276,6 +283,10 @@ impl DeskKinds {
             // Owner, 2026-11-22: on, as research v2 finalist x-float-1 (Validation +1.1 pp recall,
             // +0.15 pp precision over the live baseline); still switchable in Settings.
             x_float: o.x_float.unwrap_or(true),
+            // Owner, 2026-11-22: ship what beat production ("push it live"); still switchable here
+            // and for everyone in the `detectors` settings (DETECTORS_NS).
+            x_gap: o.x_gap.unwrap_or(true),
+            x_ctx: o.x_ctx.unwrap_or(true),
         }
     }
 
@@ -315,6 +326,8 @@ impl DeskKinds {
             K::HaltBull => self.halt_bull && !self.halt,
             K::ResumedUp => self.resumed_up,
             K::XFloat => self.x_float,
+            K::XGap => self.x_gap,
+            K::XCtx => self.x_ctx,
         }
     }
 }
@@ -1899,6 +1912,91 @@ mod tests {
             }
         }
         assert_eq!(sink.runners_dropped(), 0);
+    }
+
+    /// The v2 deploy plan's runtime switch (`crate::gap_ctx`, DETECTORS_NS): switching x-gap-1
+    /// off in the synced settings holds its next notice for every phone at once, with no restart,
+    /// and ledgers it as `switched_off`; x-ctx-1 is untouched; switching it back on sends again.
+    #[tokio::test]
+    async fn a_detector_switched_off_in_settings_is_held_for_everyone_at_once() {
+        use crate::rocket::NoticeKind;
+        let settings = Settings::in_memory();
+        let live = Market::idle(market_providers::ClockMode::Live, "idle", None);
+        let (job_tx, mut jobs) = mpsc::channel(16);
+        let (_res_tx, res_rx) = mpsc::channel(4);
+        let today = et(now_ms()).date_naive();
+        let feed = crate::notices::NoticeFeed::open(None, today);
+        let alerts = Alerts::start_with(
+            settings.clone(),
+            live.clone(),
+            None,
+            job_tx,
+            res_rx,
+            ledger::Ledger::default().with_feed(feed.clone()),
+        );
+        let mut frames = alerts.subscribe();
+        let sink = live.alert_sink().expect("attached").clone();
+        assert!(alerts.register_device(
+            "ExponentPushToken[fold]",
+            "android",
+            "Fold",
+            RunnersOptIn::default()
+        ));
+        loop {
+            let f = tokio::time::timeout(Duration::from_secs(5), frames.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if f.starts_with("{\"type\":\"alerts.status\"") {
+                break;
+            }
+        }
+        let job = async |jobs: &mut mpsc::Receiver<Job>| {
+            tokio::time::timeout(Duration::from_secs(5), jobs.recv())
+                .await
+                .unwrap()
+                .unwrap()
+        };
+        sink.offer_runner(notice(NoticeKind::XGap, "GAPA", now_ms()));
+        let j = job(&mut jobs).await;
+        assert_eq!(
+            (j.data["kind"].as_str(), j.data["symbol"].as_str()),
+            (Some("v2.xgap"), Some("GAPA"))
+        );
+        let set = |v: Value| SettingsOp::Set {
+            value: v,
+            if_absent: false,
+        };
+        settings
+            .apply(DETECTORS_NS, "d1", set(json!({"x-gap-1": {"on": false}})))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        sink.offer_runner(notice(NoticeKind::XGap, "GAPB", now_ms()));
+        sink.offer_runner(notice(NoticeKind::XCtx, "CTXA", now_ms()));
+        let j = job(&mut jobs).await;
+        assert_eq!(
+            j.data["symbol"], "CTXA",
+            "x-ctx-1 is still on; GAPB was held"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(jobs.try_recv().is_err());
+        let (items, _, _) = feed.items(today);
+        let held = items
+            .iter()
+            .find(|i| i["symbol"] == "GAPB")
+            .expect("the held notice is in the log");
+        assert!(
+            held.to_string().contains("switched_off") || held.to_string().contains("switched off"),
+            "{held}"
+        );
+        settings
+            .apply(DETECTORS_NS, "d2", set(json!({"x-gap-1": {"on": true}})))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        sink.offer_runner(notice(NoticeKind::XGap, "GAPC", now_ms()));
+        assert_eq!(job(&mut jobs).await.data["symbol"], "GAPC");
     }
 
     /// Desktop and web notices (runners::desk_frame) through the real task: none while no client

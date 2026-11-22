@@ -93,7 +93,25 @@ pub const X_FLOAT_1: Detector = Detector {
     default_on: true,
 };
 
-pub const ALL: [Detector; 3] = [RUN, X_HALT_1, X_FLOAT_1];
+/// Research v2's x-gap-1, pre-market new session high on volume ([`NoticeKind::XGap`],
+/// `crate::gap_ctx`).
+pub const X_GAP_1: Detector = Detector {
+    id: crate::gap_ctx::logic::XGAP_ID,
+    version: crate::gap_ctx::logic::XGAP_VERSION,
+    kinds: &[NoticeKind::XGap],
+    default_on: true,
+};
+
+/// Research v2's x-ctx-1, day 2: yesterday's runner breaks yesterday's high
+/// ([`NoticeKind::XCtx`], `crate::gap_ctx`).
+pub const X_CTX_1: Detector = Detector {
+    id: crate::gap_ctx::logic::XCTX_ID,
+    version: crate::gap_ctx::logic::XCTX_VERSION,
+    kinds: &[NoticeKind::XCtx],
+    default_on: true,
+};
+
+pub const ALL: [Detector; 5] = [RUN, X_HALT_1, X_FLOAT_1, X_GAP_1, X_CTX_1];
 
 /// The detector that sends `kind`, if it is switchable.
 pub fn of(kind: NoticeKind) -> Option<&'static Detector> {

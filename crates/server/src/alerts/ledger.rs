@@ -15,19 +15,16 @@
 //!   `devices` how many devices or open clients wanted the kind, `spread_bp` the fire-time
 //!   bid-ask spread in bp of the mid (`crate::spread`; `null` when no market quote qualified or
 //!   on lines before 2026-11-19). Since 2026-11-22 (research v2 DEPLOY-PLAN, "Per-alert
-//!   ledger") also `detector` (the switchable detector's id, `super::detectors`, else the
-//!   notice kind), `detector_version` (its frozen definition, `null` for a kind with no
+//!   ledger") every line also has `detector` (the switchable detector's id, `super::detectors`,
+//!   else the notice kind), `detector_version` (its frozen definition, `null` for a kind with no
 //!   detectors entry), `switch` (`on` | `off`, `null` likewise) and `session` (`pre` | `regular`
-//!   | `after` | `overnight` of `at_ns`, ET); a switched-off detector's lines are `held:
-//!   "switched_off"`, its would-be alerts. Lines before 2026-10-30 may also
-//!   on lines before 2026-11-19). From 2026-11-22 every line also has `session` (`pre` /
-//!   `regular` / `after` / `overnight` of `at_ns`, `null` outside any), and a notice of a
-//!   research-v2 detector shipped behind a runtime switch (`super::detectors`) carries
-//!   `detector` and `detector_version` (the finalist id and its frozen config's sha256 prefix;
-//!   absent for every other kind) and `held: "switched_off"` while that switch is off. x-float-1
-//!   (`v2.xfloat`) adds `arrival_ns` (the close print's arrival at the server) and `x_float`
-//!   (`float`, `float_source`, `shares`, `rotation`, `c1`, `gain`, `prior_high`, `emitted_ns`).
-//!   Lines before 2026-10-30 may also
+//!   | `after` | `overnight` of `at_ns`, ET; `null` outside any). A switched-off detector's lines
+//!   are `held: "switched_off"`, its would-be alerts (the `run` cut by default). Per item:
+//!   x-float-1 (`v2.xfloat`) adds `arrival_ns` (the close print's arrival at the server) and
+//!   `x_float` (`float`, `float_source`, `shares`, `rotation`, `c1`, `gain`, `prior_high`,
+//!   `emitted_ns`); x-gap-1 / x-ctx-1 (`v2.xgap` / `v2.xctx`, `crate::gap_ctx`) add
+//!   `arrival_ns` (`null` when the feed did not stamp it), `emitted_ns` (the server's decision)
+//!   and `facts` (the trigger's numbers). Lines before 2026-10-30 may also
 //!   hold `symbol_limit` or `merged` (with `merged_into` and `merged_devices`), the per-stock gap
 //!   and merge since removed (`super::runners`, "Every distinct event is delivered").
 //! - `alert` — `{kind, v, decided_at, event_id, alert_id, symbol, price, text, phone, held,
@@ -225,6 +222,19 @@ fn decision_line(
         // Persist the frozen observation even when delivery was held. None remains unknown.
         line["mp5_wick"] = json!(p.wick);
     }
+    if let Some(crate::rocket::NoticeDetail::GapCtx(x)) = &n.detail {
+        // The deploy plan's per-alert ledger: who decided it, on what, when it arrived and when
+        // it was decided, whether delivered or held.
+        line["detector"] = json!(x.detector);
+        line["detector_version"] = json!(x.version);
+        line["arrival_ns"] = json!(x.arrival_ns);
+        line["emitted_ns"] = json!(x.emitted_ns);
+        line["session"] = json!(x.session);
+        line["facts"] = json!({
+            "gap": x.gap, "cum": x.cum, "trail": x.trail, "rvol": x.rvol,
+            "base_kind": x.base_kind, "level": x.level, "c1": x.c1, "prev_run": x.prev_run,
+        });
+    }
     if let Some(evidence) = n.source_evidence() {
         line["breakout"] = evidence;
         line["entry_context"] = json!(n.reasons);
@@ -333,6 +343,56 @@ mod tests {
             assert_eq!(line["at_ns"], n.at_ns);
             assert_eq!(line["decided_at"], 1_793_055_061_000i64);
         }
+    }
+
+    /// The deploy plan's per-alert fields on a v2 detector's line (`crate::gap_ctx`), sent or
+    /// held by the `detectors` switch alike.
+    #[test]
+    fn a_v2_detector_line_names_its_detector_arrival_session_and_facts() {
+        let mut n = notice();
+        n.kind = NoticeKind::XGap;
+        n.detail = Some(crate::rocket::NoticeDetail::GapCtx(
+            crate::gap_ctx::GapCtxNotice {
+                detector: "x-gap-1",
+                version: crate::gap_ctx::logic::XGAP_VERSION,
+                gap: 0.2,
+                cum: 130_000.0,
+                trail: 120_000.0,
+                rvol: None,
+                base_kind: 20,
+                level: 1.05,
+                c1: Some(1.0),
+                prev_run: None,
+                session: "pre",
+                arrival_ns: Some(n.at_ns - 30_000_000),
+                emitted_ns: n.at_ns + 10_000_000,
+            },
+        ));
+        for d in [Decision::Send, Decision::Held(runners::Hold::SwitchedOff)] {
+            let line = decision_line(&n, "e", "phone", &d, 1, "t", "b", 1);
+            assert_eq!(line["notice"], "v2.xgap");
+            assert_eq!(line["detector"], "x-gap-1");
+            assert_eq!(
+                line["detector_version"],
+                crate::gap_ctx::logic::XGAP_VERSION
+            );
+            assert_eq!(line["arrival_ns"], n.at_ns - 30_000_000);
+            assert_eq!(line["emitted_ns"], n.at_ns + 10_000_000);
+            assert_eq!(line["session"], "pre");
+            assert_eq!(line["facts"]["rvol"], Value::Null, "a zero baseline");
+            assert_eq!(line["facts"]["cum"], 130_000.0);
+        }
+        let held = decision_line(
+            &n,
+            "e",
+            "desk",
+            &Decision::Held(runners::Hold::SwitchedOff),
+            0,
+            "t",
+            "b",
+            1,
+        );
+        assert_eq!(held["held"], "switched_off");
     }
 
     fn notice() -> Notice {

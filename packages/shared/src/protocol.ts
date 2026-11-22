@@ -792,6 +792,9 @@ export interface PushRegisterMessage {
   haltBull?: boolean;
   /** Pushes when research v2's x-halt-1 fires: resumed up after a halt (crates/server/src/xhalt_live; server default on; absent = unchanged). */
   resumedUp?: boolean;
+  /** Pushes when the v2 x-gap-1 / x-ctx-1 fire (crates/server/src/gap_ctx; server default on; absent = unchanged). */
+  xGap?: boolean;
+  xCtx?: boolean;
 }
 
 /** Settings → Alerts → Halts "Send test": the server answers this connection alone with a `runners.notice` for the made-up stock TEST (`data.test` true). */

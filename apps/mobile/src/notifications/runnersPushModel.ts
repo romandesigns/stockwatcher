@@ -25,6 +25,9 @@ export interface RunnersPushPrefs {
   pushN1: boolean;
   /** Engine A T2-c4's F1u and HALT add-on (crates/server/src/c4_live, 2026-11-18). */
   pushF1u: boolean;
+  /** The v2 x-gap-1 / x-ctx-1 (crates/server/src/gap_ctx, 2026-11-22). */
+  pushXGap: boolean;
+  pushXCtx: boolean;
   pushHaltBull: boolean;
   /** Research v2's x-halt-1, resumed up after a halt (crates/server/src/xhalt_live, 2026-11-22). */
   pushResumedUp: boolean;
@@ -56,6 +59,8 @@ export const RUNNERS_PUSH_DEFAULTS: RunnersPushPrefs = {
   pushN1: true,
   // T2-c4's add-ons: on (owner, 2026-11-18; the server's default too).
   pushF1u: true,
+  pushXGap: true,
+  pushXCtx: true,
   pushHaltBull: true,
   // Research v2's proven wins: on (owner, 2026-11-22; the server's default too).
   pushResumedUp: true,
@@ -86,6 +91,8 @@ export const PUSH_PREF_OF: Readonly<Record<keyof RunnersNotifyKinds, keyof Runne
   haltBull: "pushHaltBull",
   resumedUp: "pushResumedUp",
   xFloat: "pushXFloat",
+  xGap: "pushXGap",
+  xCtx: "pushXCtx",
 };
 
 /**
@@ -122,6 +129,8 @@ export interface RunnersRegisterFields {
   haltBull: boolean;
   resumedUp: boolean;
   xFloat: boolean;
+  xGap: boolean;
+  xCtx: boolean;
 }
 
 export function registerFieldsOf(p: RunnersPushPrefs): RunnersRegisterFields {
@@ -147,5 +156,7 @@ export function registerFieldsOf(p: RunnersPushPrefs): RunnersRegisterFields {
     haltBull: p.pushHaltBull,
     resumedUp: p.pushResumedUp,
     xFloat: p.pushXFloat,
+    xGap: p.pushXGap,
+    xCtx: p.pushXCtx,
   };
 }

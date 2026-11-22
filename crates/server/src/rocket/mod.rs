@@ -233,6 +233,14 @@ pub enum NoticeKind {
     /// (`xFloat`), ON by default, and the runtime detector switch `x-float-1`
     /// (`crate::alerts::detectors`).
     XFloat,
+    /// v2 finalist x-gap-1, a pre-market gapper's new session high on volume (`crate::gap_ctx`,
+    /// owner 2026-11-22): its facts in [`NoticeDetail::GapCtx`]. Its own switch (`xGap`), ON by
+    /// default; held for everyone by the `detectors` switch `x-gap-1`.
+    XGap,
+    /// v2 finalist x-ctx-1, day 2: yesterday's 30 %+ runner breaks yesterday's high on volume
+    /// (`crate::gap_ctx`, owner 2026-11-22). Switch `xCtx`, ON by default; `detectors` id
+    /// `x-ctx-1`.
+    XCtx,
 }
 
 impl NoticeKind {
@@ -260,10 +268,12 @@ impl NoticeKind {
             NoticeKind::HaltBull => "halt_bull",
             NoticeKind::ResumedUp => "resumed_up",
             NoticeKind::XFloat => "x_float",
+            NoticeKind::XGap => "x_gap",
+            NoticeKind::XCtx => "x_ctx",
         }
     }
 
-    pub const ALL: [NoticeKind; 22] = [
+    pub const ALL: [NoticeKind; 24] = [
         NoticeKind::New,
         NoticeKind::Breakout,
         NoticeKind::Burst,
@@ -286,6 +296,8 @@ impl NoticeKind {
         NoticeKind::HaltBull,
         NoticeKind::ResumedUp,
         NoticeKind::XFloat,
+        NoticeKind::XGap,
+        NoticeKind::XCtx,
     ];
 }
 
@@ -329,6 +341,9 @@ pub enum NoticeDetail {
     ResumedUp(crate::xhalt_live::ResumedUpNotice),
     /// [`NoticeKind::XFloat`]: the float, rotation and gain behind the fire (`crate::xfloat_live`).
     XFloat(crate::xfloat_live::XFloatNotice),
+    /// [`NoticeKind::XGap`] / [`NoticeKind::XCtx`]: the bar behind the fire and the detector's
+    /// id and version (`crate::gap_ctx`).
+    GapCtx(crate::gap_ctx::GapCtxNotice),
 }
 
 /// An exchange halt's or resumption's facts, from the trading-status feed and the stock's own
@@ -983,6 +998,10 @@ pub struct RocketBoard {
     /// float and previous close the market hands [`RocketBoard::xfloat_tick`], and only adds its
     /// own notices.
     xfloat: Option<crate::xfloat_live::XFloatLive>,
+    /// The v2 finalists x-gap-1 and x-ctx-1 (`crate::gap_ctx`): live market only
+    /// ([`RocketBoard::enable_gap_ctx`], `GAP_CTX_LIVE`). Like N1 it reads the board's prints
+    /// and clock and only adds its own notices.
+    gap_ctx: Option<crate::gap_ctx::GapCtxLive>,
     /// The running entry's facts for `running_facts_date` ([`running::facts`]), and the date
     /// whose facts the market should load (once per date).
     running_facts: HashMap<String, running::Fact>,
@@ -1163,6 +1182,7 @@ impl RocketBoard {
             c4: None,
             xhalt: None,
             xfloat: None,
+            gap_ctx: None,
             running_facts: HashMap::new(),
             running_facts_date: None,
             running_facts_wanted: None,
@@ -1230,6 +1250,7 @@ impl RocketBoard {
             "f1u": self.c4.as_ref().map(|n| n.cost()),
             "x_halt": self.xhalt.as_ref().map(|n| n.cost()),
             "xfloat": self.xfloat.as_ref().map(|n| n.cost()),
+            "gap_ctx": self.gap_ctx.as_ref().map(|n| n.cost()),
         })
     }
 
@@ -1322,6 +1343,35 @@ impl RocketBoard {
     pub fn c4(&self) -> Option<&crate::c4_live::F1uLive> {
         self.c4.as_ref()
     }
+
+    /// Turns on the v2 finalists x-gap-1 / x-ctx-1 ([`crate::gap_ctx`]); a no-op on a disabled
+    /// board. Only the live market calls this (`GAP_CTX_LIVE`, on by default).
+    pub fn enable_gap_ctx(&mut self) {
+        if self.enabled {
+            self.gap_ctx = Some(crate::gap_ctx::GapCtxLive::new());
+        }
+    }
+
+    pub fn gap_ctx(&self) -> Option<&crate::gap_ctx::GapCtxLive> {
+        self.gap_ctx.as_ref()
+    }
+
+    /// The trading date whose x-gap / x-ctx table the market should load (once per date).
+    pub fn take_gap_ctx_request(&mut self) -> Option<NaiveDate> {
+        self.gap_ctx.as_mut()?.take_table_request()
+    }
+
+    pub fn set_gap_ctx_table(&mut self, table: crate::gap_ctx::Table) {
+        if let Some(n) = self.gap_ctx.as_mut() {
+            n.set_table(table);
+        }
+    }
+
+    /// The finished session's time-of-day file for the market to write (`crate::gap_ctx`).
+    pub fn take_gap_ctx_tod(&mut self) -> Option<(NaiveDate, Value)> {
+        self.gap_ctx.as_mut()?.take_tod()
+    }
+
 
     /// Turns on research v2's x-halt-1 ([`crate::xhalt_live`]); a no-op on a disabled board.
     /// Only the live market calls this (`XHALT_LIVE`, on by default).
@@ -1509,6 +1559,9 @@ impl RocketBoard {
             if let Some(n) = self.xfloat.as_mut() {
                 n.apply_trade(t, counted);
             }
+            if let Some(n) = self.gap_ctx.as_mut() {
+                n.apply_trade(t, counted);
+            }
         }
     }
 
@@ -1590,6 +1643,9 @@ impl RocketBoard {
                 n.apply_trade(t, counted);
             }
             if let Some(n) = self.xhalt.as_mut() {
+                n.apply_trade(t, counted);
+            }
+            if let Some(n) = self.gap_ctx.as_mut() {
                 n.apply_trade(t, counted);
             }
         }
@@ -1971,6 +2027,15 @@ impl RocketBoard {
         // Research v2's x-halt-1, the same way (crate::xhalt_live): only the symbols with a halt
         // waiting are looked at.
         if let Some(n) = self.xhalt.as_mut() {
+            n.tick(clock);
+            for x in n.take_notices() {
+                if self.notices.len() < MAX_NOTICES {
+                    self.notices.push(x);
+                }
+            }
+        }
+        // The v2 x-gap-1 / x-ctx-1, the same way (crate::gap_ctx: each bar 50 ms after it ends).
+        if let Some(n) = self.gap_ctx.as_mut() {
             n.tick(clock);
             for x in n.take_notices() {
                 if self.notices.len() < MAX_NOTICES {

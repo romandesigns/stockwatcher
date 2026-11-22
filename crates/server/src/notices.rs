@@ -354,6 +354,8 @@ pub fn kind_label(notice: &str) -> &str {
         "halt.bull" => "Halt risk · buying",
         "halt.resumed_up" => "Resumed up",
         "v2.xfloat" => "Float rotation",
+        "v2.xgap" => "Pre-market high",
+        "v2.xctx" => "Day 2 · above yesterday's high",
         "price.alert" => "Price alert",
         other => other,
     }

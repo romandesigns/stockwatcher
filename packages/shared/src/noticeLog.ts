@@ -191,6 +191,9 @@ const KIND: Record<string, { group: NoticeGroup; label: string }> = {
   "shadow.f1u": { group: "shadow", label: "F1 · first pullback" },
   // Research v2's x-float-1 (crates/server/src/xfloat_live): a Runners-pipeline stream.
   "v2.xfloat": { group: "runners", label: "Float rotation" },
+  // The v2 finalists (crates/server/src/gap_ctx), research like the shadow kinds.
+  "v2.xgap": { group: "shadow", label: "Pre-market high" },
+  "v2.xctx": { group: "shadow", label: "Day 2 · above yesterday's high" },
   "price.alert": { group: "price", label: "Price alert" },
 };
 
