@@ -528,8 +528,10 @@ mod tests {
         assert_eq!(v["nth"], 2);
         // 1_793_017_427 s = 2026-10-26 12:23:47 UTC = 08:23:47 ET (pre-market).
         assert_eq!(v["session"], "pre");
+        // A kind with no runtime switch names its kind, with no version (the integrated rule).
         let plain = decision_line(&notice(), "e", "desk", &Decision::Send, 1, "t", "b", 0);
-        assert!(plain.get("detector").is_none());
+        assert_eq!(plain["detector"], notice().kind.as_str());
+        assert!(plain["detector_version"].is_null());
     }
 
     #[test]

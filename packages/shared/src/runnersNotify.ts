@@ -484,6 +484,8 @@ export const ALERT_SWITCH_SECTIONS: readonly { id: "runners" | "ross" | "signals
         icon: ALERT_SWITCH_ICON.xCtx,
         name: "Day 2 · above yesterday's high",
         description: "A stock that ran 30%+ yesterday trades above yesterday's high on heavy volume, once a day, any session. About 1 in 4 reached +10% before −5% in the v2 tests. On by default.",
+      },
+      {
         key: "modelPick",
         icon: ALERT_SWITCH_ICON.modelPick,
         name: "Model picks",

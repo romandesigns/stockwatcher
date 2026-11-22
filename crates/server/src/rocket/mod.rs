@@ -1393,7 +1393,6 @@ impl RocketBoard {
         self.gap_ctx.as_mut()?.take_tod()
     }
 
-
     /// Turns on research v2's x-halt-1 ([`crate::xhalt_live`]); a no-op on a disabled board.
     /// Only the live market calls this (`XHALT_LIVE`, on by default).
     pub fn enable_xhalt(&mut self) {

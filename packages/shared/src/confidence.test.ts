@@ -30,7 +30,7 @@ describe("b-good-1 confidence tag", () => {
 
   test("the log names the new kind and the switch hold", () => {
     expect(noticeKind("model.pick")).toEqual({ group: "shadow", label: "Model pick" });
-    expect(heldText("switched_off")).toBe("detector switched off");
+    expect(heldText("switched_off")).toBe("detector switched off (recorded only)");
   });
 });
 

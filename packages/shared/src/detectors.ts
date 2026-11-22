@@ -14,23 +14,34 @@ export interface DetectorSwitch {
   id: string;
   name: string;
   description: string;
+  /** Its state with no entry in the document: the server's `Detector::default_on`. */
+  defaultOn: boolean;
 }
 
-/** The detectors shipped behind a runtime switch, in the order Settings lists them. */
+const KEEPS = "Off stops it for every device at once; it keeps running and the log keeps what it would have sent.";
+
+/**
+ * The detectors shipped behind a runtime switch, in the order Settings lists them: exactly the
+ * server's registry (`detectors::ALL`), ids and defaults included. `run` is the cut Run +20% kind,
+ * off by default (research v2 scorecard): on puts it back for everybody.
+ */
 export const DETECTOR_SWITCHES: readonly DetectorSwitch[] = [
-  {
-    id: "x-float-1",
-    name: "Float rotation",
-    description: "Research v2's x-float-1. Off stops it for every device at once; it keeps running and the log keeps what it would have sent.",
-  },
+  { id: "x-gap-1", name: "Pre-market high", description: `Research v2's x-gap-1. ${KEEPS}`, defaultOn: true },
+  { id: "x-ctx-1", name: "Day 2 · above yesterday's high", description: `Research v2's x-ctx-1. ${KEEPS}`, defaultOn: true },
+  { id: "x-float-1", name: "Float rotation", description: `Research v2's x-float-1. ${KEEPS}`, defaultOn: true },
+  { id: "x-halt-1", name: "Resumed up after a run", description: `Research v2's x-halt-1. ${KEEPS}`, defaultOn: true },
+  { id: "rw-mp5-1", name: "Signals crossings, gated", description: `Research v2's rw-mp5-1: the MP5 Signals crossings that pass its in-play gate. ${KEEPS}`, defaultOn: true },
+  { id: "b-good-2", name: "Model picks", description: `Research v2's b-good-2. ${KEEPS}`, defaultOn: true },
+  { id: "b-good-1", name: "High confidence tag", description: "Research v2's b-good-1. Off hides the tag on every device; it is still scored and logged.", defaultOn: true },
+  { id: "run", name: "Run +20% (cut)", description: "Cut by research v2 (no extra movers, lower precision), so off by default and only recorded. On sends it again for every device.", defaultOn: false },
 ];
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
 /**
- * Each listed detector's state from the stored document: on unless its entry says `on: false`
- * (or is the bare `false`), exactly the server's rule (`Switches::parse`), so a client never
- * shows "on" for a detector the server holds.
+ * Each listed detector's state from the stored document: its entry's `on` (or a bare boolean),
+ * else its default, exactly the server's rule (`Switches::parse`), so a client never shows "on"
+ * for a detector the server holds.
  */
 export function parseDetectorSwitches(raw: unknown): Record<string, boolean> {
   const doc = isObj(raw) ? raw : {};
@@ -38,7 +49,7 @@ export function parseDetectorSwitches(raw: unknown): Record<string, boolean> {
   for (const d of DETECTOR_SWITCHES) {
     const v = doc[d.id];
     const on = typeof v === "boolean" ? v : isObj(v) && typeof v.on === "boolean" ? v.on : undefined;
-    out[d.id] = on !== false;
+    out[d.id] = on ?? d.defaultOn;
   }
   return out;
 }

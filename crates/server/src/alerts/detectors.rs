@@ -35,8 +35,10 @@
 //!
 //! # The detectors
 //!
-//! Only the kinds a v2 item ships or cuts are listed ([`ALL`]); every other kind has no
-//! detectors entry and is never held by this switch.
+//! Only the items research v2 ships or cuts are listed ([`ALL`]); every other kind has no
+//! detectors entry and is never held by this switch. This one registry is the integration of the
+//! five port branches (ship/v2-integrated, 2026-11-22): each port had built its own parser, and
+//! one rule for every item is what makes the kill switch predictable.
 //!
 //! - **`run`** ([`RUN`]): the "Run +20%" Runners notice ([`NoticeKind::Run`]), **off by
 //!   default**: research v2's scorecard (`30-w2/finalists/sc2-1.json`, verdict CUT on Train, own
@@ -47,6 +49,12 @@
 //!   is pruned in `RocketBoard::notice` either (a prune there leaves no ledger line).
 //! - **`x-halt-1`** ([`X_HALT_1`]): research v2's "resumed up after a halt"
 //!   ([`NoticeKind::ResumedUp`], `crate::xhalt_live`), on by default.
+//! - **`x-float-1`**, **`x-gap-1`**, **`x-ctx-1`** ([`X_FLOAT_1`], [`X_GAP_1`], [`X_CTX_1`]):
+//!   their own kinds (`v2.xfloat`, `v2.xgap`, `v2.xctx`), on by default.
+//! - **`rw-mp5-1`** ([`RW_MP5_1`]): the G9 gate on Signals crossings. No kind of its own; the
+//!   alerts task asks for it when it releases a parked crossing, and off holds them all.
+//! - **`b-good-1`** ([`B_GOOD_1`]): the confidence tag, no notice of its own; off, the tag is
+//!   ledgered but not shown. **`b-good-2`** ([`B_GOOD_2`]): model picks (`model.pick`).
 
 use serde_json::Value;
 
@@ -195,16 +203,47 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn defaults_run_cut_and_x_halt_on() {
+    fn defaults_run_cut_and_every_shipped_item_on() {
         let s = Switches::parse(None);
         assert!(s.holds(NoticeKind::Run), "the run cut is the default");
-        assert!(!s.holds(NoticeKind::ResumedUp));
-        // Only the listed kinds are switchable: the follow-up a Run path makes is not held.
+        for d in ALL {
+            assert_eq!(s.on(&d), d.id != "run", "{}", d.id);
+        }
+        let switchable = [
+            NoticeKind::Run,
+            NoticeKind::ResumedUp,
+            NoticeKind::XFloat,
+            NoticeKind::XGap,
+            NoticeKind::XCtx,
+            NoticeKind::BGood,
+        ];
+        // Only the listed kinds are switchable: the follow-up a Run path makes is not held, and
+        // a Signals crossing is gated by rw-mp5-1 in the alerts task, not here.
         for k in NoticeKind::ALL {
-            if !matches!(k, NoticeKind::Run | NoticeKind::ResumedUp) {
+            if switchable.contains(&k) {
+                assert!(of(k).is_some(), "{k:?}");
+            } else {
                 assert!(of(k).is_none() && !s.holds(k), "{k:?}");
             }
         }
+        // Ids are unique, and each switchable kind belongs to exactly one detector.
+        let mut ids: Vec<&str> = ALL.iter().map(|d| d.id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), ALL.len());
+        for k in switchable {
+            assert_eq!(ALL.iter().filter(|d| d.kinds.contains(&k)).count(), 1);
+        }
+        assert!(
+            RW_MP5_1
+                .version
+                .starts_with(crate::mp5_gate::logic::CONFIG_SHA256)
+        );
+        assert!(
+            RW_MP5_1
+                .version
+                .ends_with(&crate::mp5_gate::logic::CODE_COMMIT[..8])
+        );
     }
 
     #[test]

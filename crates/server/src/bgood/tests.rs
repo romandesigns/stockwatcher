@@ -343,7 +343,7 @@ fn confidence_frame_and_log_item() {
     assert_eq!(items[0]["confidence"]["at"], 31_000);
     assert_eq!(
         crate::notices::held_text(Some("switched_off"), None),
-        "detector switched off"
+        "detector switched off (recorded only)"
     );
     assert_eq!(crate::notices::kind_label("model.pick"), "Model pick");
 }

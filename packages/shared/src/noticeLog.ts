@@ -255,7 +255,6 @@ const HELD: Record<string, string> = {
   quiet_hours: "quiet hours",
   stale: "too old by the time it was decided",
   duplicate: "already sent",
-  switched_off: "detector switched off",
   off: "phone alerts off for it",
   merged: "merged into an earlier alert",
   // A detector switched off at runtime (crates/server/src/alerts/detectors.rs): it ran, and its

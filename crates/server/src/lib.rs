@@ -39,8 +39,8 @@ pub mod symbols;
 pub mod time_marks;
 pub mod trading;
 pub mod ws;
-pub mod xhalt_live;
 pub mod xfloat_live;
+pub mod xhalt_live;
 pub mod zones;
 
 use std::path::Path;
