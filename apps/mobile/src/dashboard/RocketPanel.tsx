@@ -12,6 +12,7 @@ import { Collapse } from "../motion/Collapse";
 import { ZoneNote } from "./ZoneNote";
 import { SpreadChip } from "./SpreadChip";
 import { ConfidenceChip } from "./ConfidenceChip";
+import { NoQuoteChip } from "./NoQuoteChip";
 import { fonts } from "../theme";
 import { useTickerPress } from "../ui/useTickerPress";
 import { StarToggle } from "../ui/StarToggle";
@@ -244,6 +245,9 @@ const Row = memo(function Row({ row: r, marks, trigger, onPick, reducedMotion }:
             {/* What the alert cost to trade when it fired (owner, 2026-11-19; the web's chip):
                 last on the line, so a chip arriving a moment after the row moves nothing before it. */}
             <SpreadChip spread={r.spread} reducedMotion={reducedMotion} />
+            {/* No live quote when it fired (owner, 2026-11-22; the web's chip): in the spread
+                chip's place (a row has one or the other). "No quote" on the cover screen. */}
+            <NoQuoteChip warning={r.noQuote} reducedMotion={reducedMotion} compact={narrow} />
             {/* b-good-1's tag, 30 s after the alert (owner, 2026-11-22; the web's chip): after the
                 spread, so its late arrival moves nothing before it. "High" on the Fold's cover
                 screen. */}

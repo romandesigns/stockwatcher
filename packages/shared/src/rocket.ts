@@ -36,6 +36,7 @@
 import { rossLinePaths, type RossLineView } from "./ross.ts";
 import { spreadView, type SpreadView } from "./spread.ts";
 import { confidenceView, type ConfidenceView } from "./confidence.ts";
+import { quoteWarningView, type QuoteWarningView } from "./quoteWarning.ts";
 import type { ZoneNoteView, ZonesWire } from "./zones.ts";
 
 /** `pending` until known; `rocketed` = the bake-off's hit; `late` = started 10–30 min after;
@@ -229,6 +230,12 @@ export interface RocketRowWire {
    * servers. Shown as {@link spreadView}'s cost chip.
    */
   spread_bp?: number;
+  /**
+   * `true` when the row's alert fired with no live quote (crates/server/src/spread.rs
+   * `Priced::NoQuote`: the quote request was answered and no market quote qualified), absent
+   * otherwise. Shown as quoteWarning.ts's "No live quote" chip.
+   */
+  no_quote?: boolean;
   /**
    * `"high"` once b-good-1 tagged one of this row's notices high confidence, 30 s after it
    * (crates/server/src/bgood; sticky for the day), else null or absent (older servers, a row
@@ -615,6 +622,8 @@ export interface RocketRowView {
   fromWhat: "flag" | "alert" | "entry";
   /** The fire-time spread's cost chip (spread.ts), or null when there is none to show. */
   spread: SpreadView | null;
+  /** The "No live quote" warning chip (quoteWarning.ts), or null. */
+  noQuote: QuoteWarningView | null;
   /** b-good-1's "High confidence" chip (confidence.ts), or null. */
   confidence: ConfidenceView | null;
   aria: string;
@@ -841,10 +850,11 @@ export function rocketRowView(r: RocketRowWire, nowMs: number, strategyId?: stri
     setup: rocketSetupView(lv),
     fromWhat: b ? "alert" : isEntryRow(r) ? "entry" : "flag",
     spread: spreadView(r.spread_bp),
+    noQuote: quoteWarningView(r.no_quote),
     confidence: confidenceView(r.confidence),
     aria: "",
   };
-  const alsoAria = (view.also.length ? `. Then ${view.also.map((a) => `${a.label} ${a.age === "now" ? "just now" : `${a.age} ago`}`).join(", ")}` : "") + (view.setup ? `. ${view.setup.label}` : "") + (breakoutTracking ? `. ${breakoutTracking}` : "") + (r.crossing ? `. ${r.crossing}` : "") + (view.spread ? `. ${view.spread.aria}` : "") + (view.confidence ? `. ${view.confidence.aria}` : "");
+  const alsoAria = (view.also.length ? `. Then ${view.also.map((a) => `${a.label} ${a.age === "now" ? "just now" : `${a.age} ago`}`).join(", ")}` : "") + (view.setup ? `. ${view.setup.label}` : "") + (breakoutTracking ? `. ${breakoutTracking}` : "") + (r.crossing ? `. ${r.crossing}` : "") + (view.spread ? `. ${view.spread.aria}` : "") + (view.noQuote ? `. ${view.noQuote.aria}` : "") + (view.confidence ? `. ${view.confidence.aria}` : "");
   if (view.burst) {
     const bv = view.burst;
     view.aria = `${r.s} ${money(last)}${gain ? ` ${gain} on the day` : ""}. ${bv.headline} alerted ${age === "now" ? "just now" : `${age} ago`}, ${bv.since}, ${bv.move}, ${look.label}${note ? ` ${note}` : ""}${reasons.length ? `: ${reasons.join(", ")}` : ""}${outcome ? `. Outcome ${outcome.label}` : ""}${alsoAria}`;

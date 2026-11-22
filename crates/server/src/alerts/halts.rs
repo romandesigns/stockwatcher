@@ -238,6 +238,7 @@ fn halted_notice(symbol: &str, open: &Open, prev_close: Option<f64>) -> Notice {
         .map(|(p, c)| (p / c - 1.0) * 100.0);
     Notice {
         spread_bp: None,
+        no_quote: false,
         kind: NoticeKind::Halted,
         alert_id: halt_id(symbol, open.start_ms),
         symbol: symbol.to_owned(),
@@ -262,6 +263,7 @@ fn halted_notice(symbol: &str, open: &Open, prev_close: Option<f64>) -> Notice {
 fn resumed(symbol: &str, p: &Pending, price: f64, no_print: bool, exec_ms: Option<i64>) -> Notice {
     Notice {
         spread_bp: None,
+        no_quote: false,
         kind: NoticeKind::Resumed,
         alert_id: halt_id(symbol, p.open.start_ms),
         symbol: symbol.to_owned(),

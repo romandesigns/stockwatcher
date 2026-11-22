@@ -13,6 +13,7 @@ fn day() -> NaiveDate {
 fn gauge(bull: bool, at_ns: i64, price: f64) -> Notice {
     Notice {
         spread_bp: None,
+        no_quote: false,
         kind: NoticeKind::Halt,
         alert_id: format!("ABCD-h{}", at_ns / 1_000_000_000),
         symbol: "ABCD".into(),
@@ -62,6 +63,7 @@ fn post1_prunes_post_cross_notices_under_a_dollar_only() {
     let base = gauge(true, et(day(), 10, 0), 0.8);
     let with = |kind, price, detail| Notice {
         spread_bp: None,
+        no_quote: false,
         kind,
         price,
         detail,

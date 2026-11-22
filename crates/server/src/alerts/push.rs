@@ -1538,6 +1538,7 @@ mod tests {
     fn runners_pushes_carry_the_copy_ticker_category() {
         let n = crate::rocket::Notice {
             spread_bp: None,
+            no_quote: false,
             kind: crate::rocket::NoticeKind::Fast,
             alert_id: "2026-10-23-YMAT-1".into(),
             symbol: "YMAT".into(),

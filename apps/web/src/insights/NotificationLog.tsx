@@ -1,12 +1,13 @@
 import { formatEtTime12, type IconName } from "@stockwatcher/chart-core";
 import { Icon } from "@stockwatcher/chart-web";
 import { cn, Collapsible, CollapsibleContent, CollapsibleTrigger, Input, OptionSelect, ScrollArea, Tip } from "@stockwatcher/chart-web/ui";
-import { confidenceView, dayLabel, filterNotices, logSummary, noticeDayOptions, latencyText, NOTICE_GROUPS, noticeEvidence, noticeIcon, noticeKind, pathText, rowHeldText, rowStatus, tickerPageHash, tickerSymbol, type NoticeGroup, type NoticeItemWire, type NoticePathWire, type NoticesChannel, type NoticeStatus } from "@stockwatcher/shared";
+import { confidenceView, quoteWarningView, dayLabel, filterNotices, logSummary, noticeDayOptions, latencyText, NOTICE_GROUPS, noticeEvidence, noticeIcon, noticeKind, pathText, rowHeldText, rowStatus, tickerPageHash, tickerSymbol, type NoticeGroup, type NoticeItemWire, type NoticePathWire, type NoticesChannel, type NoticeStatus } from "@stockwatcher/shared";
 import { useMemo, useState, type Dispatch, type SetStateAction } from "react";
 import { openTickerChart } from "../nav/openTicker.ts";
 import { BREAKOUT_LABEL, noticeChartContext } from "@stockwatcher/shared";
 import { Reveal } from "../dashboard/Reveal.tsx";
 import { ConfidenceChip } from "../dashboard/ConfidenceChip.tsx";
+import { NoQuoteChip } from "../dashboard/NoQuoteChip.tsx";
 import { useNoticeLog } from "./useNoticeLog.ts";
 
 // The filters are icons, their names in tooltips and for screen readers (owner, 2026-10-31).
@@ -229,6 +230,8 @@ export function NoticeRow({ item }: { item: NoticeItemWire }) {
       <span className="col-start-3 row-start-1 flex items-center gap-2 justify-self-end @2xl/log:col-start-4">
         {/* b-good-1's tag of this notice, 30 s after it (the ledger's confidence line). */}
         <ConfidenceChip confidence={confidenceView(item.confidence?.tier, item.confidence?.held)} container="log" />
+        {/* No live quote when it fired (the ledger decision line's no_quote). */}
+        <NoQuoteChip warning={quoteWarningView(item.no_quote)} container="log" />
         <PathMark icon="screen" name="Desktop and web" path={item.desk} />
         <PathMark icon="phone" name="Phones" path={item.phone} extra={latency} />
         <Tip label={latency && sent ? latency : sent ? "Sent" : `Held: ${held}`}>

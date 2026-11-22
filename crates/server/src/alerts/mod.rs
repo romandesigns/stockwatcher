@@ -1135,10 +1135,18 @@ impl Task {
                 .then_some(runners::Hold::SwitchedOff)
         });
         let desks = self.shared.desks_wanting(&n);
+        // "Hide repeat alerts" (runners, "Limits" 4; default off): every notice but an exchange
+        // halt or resumption counts its stock.
+        let repeat_of = (!matches!(
+            n.kind,
+            crate::rocket::NoticeKind::Halted | crate::rocket::NoticeKind::Resumed
+        ))
+        .then_some(n.symbol.as_str());
         let desk = match pre {
             Some(h) => runners::Decision::Held(h),
-            None => self.desk_runners.decide(
+            None => self.desk_runners.decide_for(
                 &event_id,
+                repeat_of,
                 desks,
                 &self.prefs,
                 n.at_ns.div_euclid(1_000_000),
@@ -1168,8 +1176,9 @@ impl Task {
         let tokens = self.devices.runner_tokens(&n);
         let phone = match pre {
             Some(h) => runners::Decision::Held(h),
-            None => self.runners.decide(
+            None => self.runners.decide_for(
                 &event_id,
+                repeat_of,
                 tokens.len(),
                 &self.prefs,
                 n.at_ns.div_euclid(1_000_000),
@@ -1617,6 +1626,7 @@ mod tests {
     fn notice(kind: crate::rocket::NoticeKind, symbol: &str, at_ms: i64) -> crate::rocket::Notice {
         crate::rocket::Notice {
             spread_bp: None,
+            no_quote: false,
             kind,
             alert_id: format!("2026-10-22-{symbol}-1"),
             symbol: symbol.into(),

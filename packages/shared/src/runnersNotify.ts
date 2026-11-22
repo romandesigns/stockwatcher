@@ -100,6 +100,11 @@ export interface RunnersNoticeMessage {
    * `spreadView`).
    */
   spreadBp?: number | null;
+  /**
+   * `true` when the alert fired with no live quote (crates/server/src/spread.rs `Priced::NoQuote`),
+   * else absent: the "No live quote" chip (quoteWarning.ts `quoteWarningView`).
+   */
+  noQuote?: boolean;
 }
 
 /** One client's switches (the phone's Settings → Alerts names). */
@@ -275,6 +280,8 @@ export function parseRunnersNotice(v: unknown): RunnersNoticeMessage | null {
   // A number or an explicit null passes through; anything else is treated as absent.
   if (m.spreadBp === null) out.spreadBp = null;
   else if (typeof m.spreadBp === "number" && Number.isFinite(m.spreadBp)) out.spreadBp = m.spreadBp;
+  // Only an explicit true; the server sends null when there was a quote or the request failed.
+  if (m.noQuote === true) out.noQuote = true;
   return out;
 }
 

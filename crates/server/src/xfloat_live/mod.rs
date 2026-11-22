@@ -351,6 +351,7 @@ impl XFloatLive {
         if self.notices.len() < MAX_NOTICES {
             self.notices.push(Notice {
                 spread_bp: None,
+                no_quote: false,
                 kind: NoticeKind::XFloat,
                 // Once a symbol-day: the date and symbol are the event.
                 alert_id: format!("{}-{key}-xfloat", d.date),

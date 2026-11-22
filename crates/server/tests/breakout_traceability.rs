@@ -10,6 +10,7 @@ fn notice() -> Notice {
         serde_json::from_str(include_str!("fixtures/breakout-notice-v1.json")).unwrap();
     Notice {
         spread_bp: None,
+        no_quote: false,
         kind: NoticeKind::Breakout,
         alert_id: "2026-10-26-AUDIT-1".into(),
         symbol: "AUDIT".into(),

@@ -380,6 +380,12 @@ pub struct Prefs {
     /// The global sound switch (`sound.on`, default on): off sends drawing alerts' pushes on the
     /// plain alerts channel instead of a sounding drawing channel. The volume is the clients'.
     pub sound_on: bool,
+    /// "Hide repeat alerts" (`hideRepeats`, owner 2026-11-22, **default off**): a Runners notice
+    /// for a stock that was already sent on the same path within the last 5 minutes is held
+    /// `repeat` (`super::runners`, "Limits"). A comfort choice, not a quality gain: research v2
+    /// (W2-REPORT §3, Engine A) found it cuts alerts by 38 % but *lowers* precision, because
+    /// repeats land on real runners. So it changes nothing unless the owner turns it on.
+    pub hide_repeats: bool,
 }
 
 impl Default for Prefs {
@@ -388,6 +394,7 @@ impl Default for Prefs {
             phone_budget: DEFAULT_PHONE_BUDGET,
             quiet: None,
             sound_on: true,
+            hide_repeats: false,
         }
     }
 }
@@ -424,10 +431,13 @@ pub fn parse_prefs(v: Option<&Value>) -> Prefs {
         .and_then(|s| s.get("on"))
         .and_then(Value::as_bool)
         .unwrap_or(true);
+    // Only an explicit `true` turns it on (absent, from every client before 2026-11-22: off).
+    let hide_repeats = o.get("hideRepeats").and_then(Value::as_bool) == Some(true);
     Prefs {
         phone_budget,
         quiet,
         sound_on,
+        hide_repeats,
     }
 }
 

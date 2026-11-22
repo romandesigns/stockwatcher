@@ -1,6 +1,6 @@
 import type { SettingsSheetSection } from "@stockwatcher/chart-native";
 import { Icon, playHaptic, UI } from "@stockwatcher/chart-native";
-import { ALERT_SWITCH_SECTIONS, DETECTOR_SWITCHES, type AlertSwitch } from "@stockwatcher/shared";
+import { ALERT_SWITCH_SECTIONS, DETECTOR_SWITCHES, HIDE_REPEATS_SWITCH, type AlertSwitch } from "@stockwatcher/shared";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { AccessibilityInfo, Animated, Easing, Pressable, StyleSheet, Text, View } from "react-native";
 
@@ -39,6 +39,8 @@ function RunnersPushPanel() {
   const [note, setNote] = useState<string | null>(null);
   const detectors = useApp((st) => st.detectors);
   const setDetectorOn = useApp((st) => st.setDetectorOn);
+  const alertPrefs = useApp((st) => st.alertPrefs);
+  const setAlertPrefs = useApp((st) => st.setAlertPrefs);
   const toggle = (key: keyof RunnersPushPrefs) => {
     playHaptic("selection");
     const want = !prefs[key];
@@ -62,6 +64,21 @@ function RunnersPushPanel() {
           })}
         </View>
       ))}
+      <View style={s.section} accessibilityRole="summary" accessibilityLabel="Delivery, every device">
+        <Text style={s.heading} accessibilityRole="header">
+          Delivery · every device
+        </Text>
+        {/* "Hide repeat alerts" (owner, 2026-11-22; default off): synced prefs the server reads. */}
+        <Switch
+          item={{ icon: "bell", name: HIDE_REPEATS_SWITCH.name, description: HIDE_REPEATS_SWITCH.description }}
+          on={alertPrefs.hideRepeats}
+          busy={false}
+          onPress={() => {
+            playHaptic("selection");
+            setAlertPrefs({ ...alertPrefs, hideRepeats: !alertPrefs.hideRepeats });
+          }}
+        />
+      </View>
       <View style={s.section} accessibilityRole="summary" accessibilityLabel="Detectors, every device">
         <Text style={s.heading} accessibilityRole="header">
           Detectors · every device

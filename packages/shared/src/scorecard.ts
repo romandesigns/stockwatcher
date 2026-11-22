@@ -115,6 +115,8 @@ export const HOLD_LABELS: Readonly<Record<string, string>> = {
   stale: "held: too old",
   duplicate: "held: already sent",
   merged: "held: merged into an earlier alert",
+  repeat: "held: repeat (hide repeat alerts)",
+  switched_off: "held: detector switched off",
   no_device: "no device wanted it",
   unknown: "not in the ledger",
 };

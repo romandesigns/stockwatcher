@@ -1411,6 +1411,14 @@ fn a_plus20_run_gets_a_run_row() {
     b.set_spread("2026-01-01-NOPE-r1", 999);
     assert_eq!(row_of(&b, "RUNX")["spread_bp"], 157);
     assert!(row_of(&b, "FLG").get("spread_bp").is_none());
+    // No live quote (crate::spread::Priced::NoQuote): `no_quote: true` on that row only, absent
+    // everywhere else, and an id that is no row of today's board is ignored.
+    // (The stage sets one or the other for a real row; the board just shows what it is told.)
+    assert!(row_of(&b, "RUNX").get("no_quote").is_none());
+    b.set_no_quote(&runx_id);
+    b.set_no_quote("2026-01-01-NOPE-r1");
+    assert_eq!(row_of(&b, "RUNX")["no_quote"], true);
+    assert!(row_of(&b, "FLG").get("no_quote").is_none());
     // Tracked like the others: the climb goes on, the row's momentum follows.
     let more = climb("RUNX", at(10, 5, 0), 20, 1.01f64.powi(20), 0.01, 50_000).0;
     play(&mut b, more, at(10, 5, 0), at(10, 12, 0));
@@ -1971,6 +1979,7 @@ fn the_first_entry_after_rising_through_the_floor_carries_the_crossing_line() {
     let _ = r.take_log();
     let entry = Notice {
         spread_bp: None,
+        no_quote: false,
         at_ns: at(14, 0, 0),
         price: 0.1019,
         ..Notice::test(NoticeKind::Running, "WFF")
@@ -1978,6 +1987,7 @@ fn the_first_entry_after_rising_through_the_floor_carries_the_crossing_line() {
     r.inject_notice(entry.clone());
     r.inject_notice(Notice {
         spread_bp: None,
+        no_quote: false,
         alert_id: "WFF-2".into(),
         ..entry.clone()
     });
@@ -2107,6 +2117,7 @@ fn a_stock_with_two_rows_breaks_out_once_per_barrier() {
 fn t2_c4_prunes_post_cross_notices_under_a_dollar_only_when_on() {
     let run = |price: f64| Notice {
         spread_bp: None,
+        no_quote: false,
         price,
         ..Notice::test(NoticeKind::Run, "SUBD")
     };
@@ -2118,6 +2129,7 @@ fn t2_c4_prunes_post_cross_notices_under_a_dollar_only_when_on() {
     b.inject_notice(run(1.0));
     b.inject_notice(Notice {
         spread_bp: None,
+        no_quote: false,
         price: 0.8,
         ..Notice::test(NoticeKind::Fast, "SUBD")
     });

@@ -9,6 +9,7 @@ import { Reveal } from "./Reveal.tsx";
 import { Flame, MarksLine, RowLine } from "./RowMarks.tsx";
 import { SpreadChip } from "./SpreadChip.tsx";
 import { ConfidenceChip } from "./ConfidenceChip.tsx";
+import { NoQuoteChip } from "./NoQuoteChip.tsx";
 import { ZoneNote } from "./ZoneNote.tsx";
 
 const TONE: Record<RocketTone, string> = {
@@ -263,6 +264,9 @@ const RocketRow = memo(function RocketRow({ row: r, marks, trigger, onPick }: { 
             {/* What the alert cost to trade when it fired (owner, 2026-11-19): last on the line,
                 so a chip arriving a moment after the row moves nothing before it. */}
             <SpreadChip spread={r.spread} />
+            {/* No live quote when it fired (owner, 2026-11-22): in the spread chip's place (a row
+                has one or the other), arriving at the same moment. */}
+            <NoQuoteChip warning={r.noQuote} />
             {/* b-good-1's tag, 30 s after the alert (owner, 2026-11-22): after the spread, so its
                 late arrival moves nothing before it. */}
             <ConfidenceChip confidence={r.confidence} />

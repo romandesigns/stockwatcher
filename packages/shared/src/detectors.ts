@@ -54,6 +54,16 @@ export function parseDetectorSwitches(raw: unknown): Record<string, boolean> {
   return out;
 }
 
+/**
+ * "Hide repeat alerts" (alerts.prefs `hideRepeats`, default off; crates/server/src/alerts/runners.rs
+ * "Limits" 4): the words every client's Settings row uses. Listed with the detectors because it is
+ * the other every-device delivery choice the owner makes from the phone.
+ */
+export const HIDE_REPEATS_SWITCH = {
+  name: "Hide repeat alerts",
+  description: "Off by default. On holds an alert for a stock already sent in the last 5 min, on every device (still in the log). Fewer alerts, but repeats often land on real runners.",
+} as const;
+
 /** The entry patch that switches one detector. */
 export function detectorPatch(id: string, on: boolean): Record<string, { on: boolean }> {
   return { [id]: { on } };

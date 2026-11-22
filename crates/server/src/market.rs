@@ -4303,6 +4303,17 @@ impl Market {
             .set_spread(alert_id, bp);
     }
 
+    /// A Runners row whose notice had no live quote at fire time (`crate::spread::Priced`): the
+    /// row shows the "No live quote" chip from the next `rocket.update`.
+    pub fn set_runner_no_quote(&self, alert_id: &str) {
+        self.0
+            .core
+            .lock()
+            .expect("core lock")
+            .rocket
+            .set_no_quote(alert_id);
+    }
+
     /// A Runners row b-good-1 tagged high confidence (`crate::alerts`, "Confidence"): the row shows
     /// it from the next `rocket.update`. Takes the core lock briefly, from the alerts task.
     pub fn set_runner_confidence(&self, alert_id: &str) {
@@ -5467,6 +5478,7 @@ impl PressureCardWire {
     fn notice(&self, now: i64) -> crate::rocket::Notice {
         crate::rocket::Notice {
             spread_bp: None,
+            no_quote: false,
             kind: crate::rocket::NoticeKind::Halt,
             alert_id: format!("{}-h{}", self.s, now.div_euclid(1_000_000_000)),
             symbol: self.s.clone(),
@@ -6106,6 +6118,7 @@ mod tests {
     fn runners_notices_leave_the_live_market_only() {
         let notice = |s: &str| crate::rocket::Notice {
             spread_bp: None,
+            no_quote: false,
             kind: crate::rocket::NoticeKind::New,
             alert_id: format!("x-{s}"),
             symbol: s.into(),

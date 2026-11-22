@@ -150,6 +150,9 @@ pub fn group_summarized(text: &str) -> (Vec<Value>, bool, Value) {
                     // The event's own clocks (the ticker page measures outcomes from them).
                     "exec_ns",
                     "at_ns",
+                    // No live quote at decision time (`crate::rocket::Notice::no_quote`): the
+                    // clients' "No live quote" chip in the log.
+                    "no_quote",
                 ] {
                     set_if_absent(item, k, v.get(k).cloned());
                 }

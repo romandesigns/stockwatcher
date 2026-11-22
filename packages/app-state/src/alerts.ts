@@ -108,10 +108,18 @@ export interface AlertPrefs {
    * (0–1). Off also sends the phone's push on the plain alerts channel. Quiet hours silence them too.
    */
   sound: { on: boolean; volume: number };
+  /**
+   * "Hide repeat alerts" (owner, 2026-11-22), **default off**: the server holds a Runners alert for
+   * a stock already sent on the same path less than 5 min earlier (crates/server/src/alerts/
+   * runners.rs "Limits" 4, held `repeat`, still in the notification log). For every device (it
+   * lives in the synced prefs, like quiet hours). Research v2 found it cuts alerts by 38 % but
+   * lowers precision, because repeats land on real runners: a comfort choice, not a quality gain.
+   */
+  hideRepeats: boolean;
 }
 
 export const DEFAULT_SOUND_VOLUME = 0.6;
-export const DEFAULT_ALERT_PREFS: AlertPrefs = { phoneBudget: DEFAULT_PHONE_BUDGET, quietHours: { on: false, start: "22:00", end: "07:00" }, sessions: [...DEFAULT_ALERT_SESSIONS], sound: { on: true, volume: DEFAULT_SOUND_VOLUME } };
+export const DEFAULT_ALERT_PREFS: AlertPrefs = { phoneBudget: DEFAULT_PHONE_BUDGET, quietHours: { on: false, start: "22:00", end: "07:00" }, sessions: [...DEFAULT_ALERT_SESSIONS], sound: { on: true, volume: DEFAULT_SOUND_VOLUME }, hideRepeats: false };
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
@@ -228,6 +236,8 @@ export function parseAlertPrefs(raw: unknown): AlertPrefs {
     quietHours: { on: q.on === true, start, end },
     sessions: sessions.length ? sessions : [...DEFAULT_ALERT_SESSIONS],
     sound: { on: snd.on !== false, volume: vol === null ? DEFAULT_SOUND_VOLUME : Math.min(1, Math.max(0, vol)) },
+    // Only an explicit true (the server's rule, model.rs parse_prefs): absent is off.
+    hideRepeats: raw.hideRepeats === true,
   };
 }
 

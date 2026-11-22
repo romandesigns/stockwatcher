@@ -53,8 +53,13 @@ describe("alert model", () => {
       quietHours: { on: true, start: "23:00", end: "07:00" },
       sessions: ["pre", "regular", "after"],
       sound: { on: true, volume: 0.6 },
+      hideRepeats: false,
     });
     expect(parseAlertPrefs({ sound: { on: false, volume: 3 } }).sound).toEqual({ on: false, volume: 1 });
+    // "Hide repeat alerts": off by default, on only from an explicit true (the server's rule).
+    expect(DEFAULT_ALERT_PREFS.hideRepeats).toBe(false);
+    expect(parseAlertPrefs({ hideRepeats: true }).hideRepeats).toBe(true);
+    expect(parseAlertPrefs({ hideRepeats: "yes" }).hideRepeats).toBe(false);
   });
 
   test("drawing alerts: parse, defaults, text, orphaned, sounds", () => {

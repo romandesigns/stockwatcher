@@ -62,6 +62,12 @@ export interface NoticeItemWire {
    */
   confidence?: { tier: string | null; score: number | null; held: string | null; at: number | null };
   /**
+   * `true` when the notice fired with no live quote (the ledger decision line's `no_quote`,
+   * crates/server/src/spread.rs `Priced::NoQuote`); absent or false otherwise and on older days.
+   * Drawn with quoteWarning.ts `quoteWarningView`.
+   */
+  no_quote?: boolean;
+  /**
    * The row as the server assembled it (`notices.rows.v1`, crates/server/src/notices.rs): sent or
    * held, the hold's code and the same in plain words. Absent from older servers, whose rows the
    * clients still derive (`noticeStatus`, `noticeHeldReason`, `heldText`).
@@ -260,6 +266,9 @@ const HELD: Record<string, string> = {
   // A detector switched off at runtime (crates/server/src/alerts/detectors.rs): it ran, and its
   // would-be alert was only recorded (the `run` cut by default).
   switched_off: "detector switched off (recorded only)",
+  // "Hide repeat alerts" (alerts.prefs hideRepeats, default off; crates/server/src/alerts/runners.rs
+  // "Limits" 4): the same stock was sent less than 5 min earlier.
+  repeat: "repeat: same stock sent less than 5 min earlier",
 };
 
 /**

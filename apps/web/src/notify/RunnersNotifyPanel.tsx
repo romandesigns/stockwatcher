@@ -1,4 +1,4 @@
-import { DETECTOR_SWITCHES, type AlertSwitch, type DetectorSwitch, type RunnersNotifyKinds } from "@stockwatcher/shared";
+import { DETECTOR_SWITCHES, HIDE_REPEATS_SWITCH, type AlertSwitch, type DetectorSwitch, type RunnersNotifyKinds } from "@stockwatcher/shared";
 import { Icon } from "@stockwatcher/chart-web";
 import { Button, Switch, cn } from "@stockwatcher/chart-web/ui";
 import { useId, useState, useSyncExternalStore } from "react";
@@ -30,6 +30,9 @@ export function RunnersNotifyPanel({ notifier }: { notifier: RunnersNotifier }) 
   const setKind = (key: keyof RunnersNotifyKinds, v: boolean) => notifier.setPrefs({ ...prefs, kinds: { ...prefs.kinds, [key]: v } });
   const detectors = useApp((s) => s.detectors);
   const setDetectorOn = useApp((s) => s.setDetectorOn);
+  const alertPrefs = useApp((s) => s.alertPrefs);
+  const setAlertPrefs = useApp((s) => s.setAlertPrefs);
+  const repeatsId = useId();
 
   const status =
     permission === "unsupported"
@@ -76,6 +79,22 @@ export function RunnersNotifyPanel({ notifier }: { notifier: RunnersNotifier }) 
           <HaltRows items={section.items} prefs={prefs} notifier={notifier} />
         </div>
       ))}
+      <div role="group" aria-label="Delivery, every device" className="mt-3 flex flex-col gap-0.5">
+        <span className="px-2 pb-0.5 text-[11px] font-medium uppercase tracking-wide text-text-faint">Delivery · every device</span>
+        {/* "Hide repeat alerts" (owner, 2026-11-22; default off): synced prefs the server reads. */}
+        <label className="flex min-h-11 cursor-pointer items-center gap-3 rounded-lg px-2 py-1.5 transition-colors hover:bg-bg-row">
+          <span className={cn("grid size-8 shrink-0 place-items-center rounded-lg bg-bg-row transition-[opacity,color] duration-150 [&_svg]:size-4", alertPrefs.hideRepeats ? "text-foreground" : "text-muted-foreground opacity-50")}>
+            <Icon name="bell" />
+          </span>
+          <span className="flex min-w-0 flex-1 flex-col">
+            <span className={cn("text-[13px] transition-colors", alertPrefs.hideRepeats ? "text-foreground" : "text-foreground/70")}>{HIDE_REPEATS_SWITCH.name}</span>
+            <span id={repeatsId} className="text-[11px] text-text-faint">
+              {HIDE_REPEATS_SWITCH.description}
+            </span>
+          </span>
+          <Switch checked={alertPrefs.hideRepeats} onCheckedChange={(v) => setAlertPrefs({ ...alertPrefs, hideRepeats: v })} aria-label={HIDE_REPEATS_SWITCH.name} aria-describedby={repeatsId} />
+        </label>
+      </div>
       <div role="group" aria-label="Detectors, every device" className="mt-3 flex flex-col gap-0.5">
         <span className="px-2 pb-0.5 text-[11px] font-medium uppercase tracking-wide text-text-faint">Detectors · every device</span>
         {DETECTOR_SWITCHES.map((d) => (

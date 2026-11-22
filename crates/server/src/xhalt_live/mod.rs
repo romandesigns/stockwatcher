@@ -334,6 +334,7 @@ impl XHaltLive {
         if self.notices.len() < MAX_NOTICES {
             self.notices.push(Notice {
                 spread_bp: None,
+                no_quote: false,
                 kind: NoticeKind::ResumedUp,
                 alert_id: format!("{}-{key}-xh{}", d.date, f.halt_ns.div_euclid(logic::SEC)),
                 symbol: key.to_string(),

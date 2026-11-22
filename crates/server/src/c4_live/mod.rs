@@ -342,6 +342,7 @@ impl F1uLive {
         if self.notices.len() < MAX_NOTICES {
             self.notices.push(Notice {
                 spread_bp: None,
+                no_quote: false,
                 kind: NoticeKind::F1u,
                 alert_id: format!("{}-{key}-f1u-{}", d.date, c.t.div_euclid(logic::SEC)),
                 symbol: key.to_string(),
@@ -441,6 +442,7 @@ pub fn halt_addon(
     }
     Some(Notice {
         spread_bp: None,
+        no_quote: false,
         kind: NoticeKind::HaltBull,
         alert_id: format!("{}-{}-hb{}", d.date, n.symbol, t.div_euclid(logic::SEC)),
         ..n.clone()

@@ -426,6 +426,7 @@ impl N1Live {
         if self.notices.len() < MAX_NOTICES {
             self.notices.push(Notice {
                 spread_bp: None,
+                no_quote: false,
                 kind: NoticeKind::N1,
                 alert_id: format!("{}-{key}-n1-{}", d.date, c.t.div_euclid(logic::SEC)),
                 symbol: key.to_string(),

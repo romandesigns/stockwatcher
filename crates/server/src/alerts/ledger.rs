@@ -14,7 +14,9 @@
 //!   `switched_off`) or `null`,
 //!   `devices` how many devices or open clients wanted the kind, `spread_bp` the fire-time
 //!   bid-ask spread in bp of the mid (`crate::spread`; `null` when no market quote qualified or
-//!   on lines before 2026-11-19). Since 2026-11-22 (research v2 DEPLOY-PLAN, "Per-alert
+//!   on lines before 2026-11-19), `no_quote` `true` when the quote request was answered and no
+//!   market quote qualified (the "No live quote" warning, `crate::rocket::Notice::no_quote`;
+//!   absent before 2026-11-22). Since 2026-11-22 (research v2 DEPLOY-PLAN, "Per-alert
 //!   ledger") every line also has `detector` (the switchable detector's id, `super::detectors`,
 //!   else the notice kind), `detector_version` (its frozen definition, `null` for a kind with no
 //!   detectors entry), `switch` (`on` | `off`, `null` likewise) and `session` (`pre` | `regular`
@@ -252,6 +254,9 @@ fn decision_line(
         // decision so the cost of each alert can be studied later (board rows lose theirs on a
         // restart; this line does not).
         "spread_bp": n.spread_bp,
+        // No live quote at decision time (`Notice::no_quote`): the spread stage was answered and
+        // no market quote qualified. `false` also when the request failed (unknown, not "none").
+        "no_quote": n.no_quote,
         "session": session_of(n.at_ns),
     });
     // Research v2's per-alert ledger: which frozen definition decided it, whether its switch was
@@ -463,6 +468,7 @@ mod tests {
     fn notice() -> Notice {
         Notice {
             spread_bp: None,
+            no_quote: false,
             kind: NoticeKind::Pullback,
             alert_id: "e1".into(),
             symbol: "SRTM".into(),

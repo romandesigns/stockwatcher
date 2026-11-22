@@ -58,7 +58,15 @@
 //!   2. the price alerts' quiet hours (`alerts.prefs`, ET wall time, the owner's own setting) →
 //!      `quiet_hours`;
 //!   3. the notice is over [`MAX_AGE_MS`] (3 minutes) old, i.e. a catch-up after a stall →
-//!      `stale`.
+//!      `stale`;
+//!   4. only with "Hide repeat alerts" on (`alerts.prefs` `hideRepeats`, owner 2026-11-22,
+//!      **default off**): the same stock was already sent on this path less than
+//!      [`REPEAT_WINDOW_MS`] (5 minutes) before this notice's event time → `repeat`. Exchange
+//!      halts and resumptions are never repeats (they are safety notices, not alerts). The last
+//!      send per stock is kept whether the setting is on or not, so turning it on mid-session
+//!      applies at once. It measures against what was *sent*, so a held notice never starts a
+//!      window. Research v2 (W2-REPORT §3) found this cuts alerts by 38 % at a loss of
+//!      precision: repeats land on real runners. It is the 2026-10-30 rule's one opt-in exception.
 //!
 //!   Ledger lines written before 2026-10-30 may also say `symbol_limit` or `merged`; the
 //!   Insights log still words them.
@@ -110,6 +118,9 @@ use crate::rocket::{AlertKind, Notice, NoticeDetail, NoticeKind};
 /// burst ~6 s, a Run +20% row ~2 s, a pullback or crossing at its transition (module docs,
 /// "Latency").
 pub const MAX_AGE_MS: i64 = 3 * 60_000;
+/// "Hide repeat alerts" (module docs, "Limits" 4): a notice this soon after the last one sent for
+/// the same stock on the same path is a repeat. Research v2's 5 minutes.
+pub const REPEAT_WINDOW_MS: i64 = 5 * 60_000;
 const FILE: &str = "runners-push.json";
 /// The desktop and web notifications' own memory ([`desk_frame`]): kept apart from the phones'
 /// so a notice the phones held (none opted in) still reaches an open desktop, and the reverse;
@@ -141,6 +152,9 @@ pub enum Hold {
     /// rw-mp5-1: a B0 alert of the same stock came within 5 s of this Signals crossing
     /// (`crate::mp5_gate`), the same move already told.
     Mp5Dedup,
+    /// "Hide repeat alerts" was on and the same stock was sent within [`REPEAT_WINDOW_MS`]
+    /// (module docs, "Limits" 4).
+    Repeat,
 }
 
 impl Hold {
@@ -153,6 +167,7 @@ impl Hold {
             Hold::SwitchedOff => "switched_off",
             Hold::Mp5Gate => "mp5_gate",
             Hold::Mp5Dedup => "mp5_dedup",
+            Hold::Repeat => "repeat",
         }
     }
 }
@@ -169,6 +184,10 @@ struct Saved {
     /// merge's `first_push`; serde skips them.)
     #[serde(default)]
     sent_ids: HashSet<String>,
+    /// Today's last sent event time (epoch ms) per stock, for "Hide repeat alerts". Its own
+    /// name: the pre-2026-10-30 `last_by_symbol` had another shape.
+    #[serde(default)]
+    repeat_last: std::collections::HashMap<String, i64>,
 }
 
 /// The Runners side's memory: today's count and the events already sent, persisted.
@@ -241,12 +260,30 @@ impl RunnersDelivery {
         today: NaiveDate,
         et_minute: u32,
     ) -> Decision {
+        self.decide_for(event_id, None, devices, prefs, at, now, today, et_minute)
+    }
+
+    /// [`RunnersDelivery::decide`] for a notice of stock `repeat_of`, which "Hide repeat alerts"
+    /// may hold (module docs, "Limits" 4); `None` is never a repeat (a halt notice).
+    #[allow(clippy::too_many_arguments)]
+    pub fn decide_for(
+        &mut self,
+        event_id: &str,
+        repeat_of: Option<&str>,
+        devices: usize,
+        prefs: &Prefs,
+        at: i64,
+        now: i64,
+        today: NaiveDate,
+        et_minute: u32,
+    ) -> Decision {
         let day = today.to_string();
         if self.s.day != day {
             self.s.day = day;
             self.s.sent = 0;
             // An event belongs to its day.
             self.s.sent_ids.clear();
+            self.s.repeat_last.clear();
         }
         if self.s.sent_ids.contains(event_id) {
             return Decision::Held(Hold::Duplicate);
@@ -259,6 +296,20 @@ impl RunnersDelivery {
         }
         if now - at > MAX_AGE_MS {
             return Decision::Held(Hold::Stale);
+        }
+        if prefs.hide_repeats
+            && let Some(sym) = repeat_of
+            && self
+                .s
+                .repeat_last
+                .get(sym)
+                .is_some_and(|&last| (0..REPEAT_WINDOW_MS).contains(&(at - last)))
+        {
+            return Decision::Held(Hold::Repeat);
+        }
+        if let Some(sym) = repeat_of {
+            let last = self.s.repeat_last.entry(sym.to_owned()).or_insert(at);
+            *last = (*last).max(at);
         }
         self.s.sent += 1;
         self.s.sent_ids.insert(event_id.to_owned());
@@ -1121,6 +1172,10 @@ pub fn desk_frame(n: &Notice) -> String {
         // qualified: the clients' cost chip (packages/shared spread.ts). Additive; older
         // clients ignore it.
         "spreadBp": n.spread_bp,
+        // No live quote at decision time (`crate::rocket::Notice::no_quote`; research v2: such
+        // alerts were GOOD 11.5 % of the time against 21.5 %): the clients' "No live quote" chip
+        // (packages/shared quoteWarning.ts). Only sent when true; older clients ignore it.
+        "noQuote": n.no_quote.then_some(true),
     })
     .to_string()
 }
@@ -1172,6 +1227,7 @@ mod tests {
         ] {
             let n = Notice {
                 spread_bp: None,
+                no_quote: false,
                 kind,
                 alert_id: "2026-10-23-CJMB-7".into(),
                 symbol: "CJMB".into(),
@@ -1215,6 +1271,60 @@ mod tests {
         use std::sync::atomic::{AtomicU64, Ordering};
         static N: AtomicU64 = AtomicU64::new(0);
         format!("e{}", N.fetch_add(1, Ordering::Relaxed))
+    }
+
+    #[test]
+    fn hide_repeats_is_off_by_default_and_holds_a_stock_sent_within_five_minutes_when_on() {
+        let mut d = RunnersDelivery::in_memory();
+        let off = Prefs::default();
+        assert!(
+            !off.hide_repeats,
+            "default off: nothing changes unless turned on"
+        );
+        let send = |d: &mut RunnersDelivery, id: &str, sym: Option<&str>, p: &Prefs, at: i64| {
+            d.decide_for(id, sym, 1, p, at, at, day(23), 600)
+        };
+        // Off: two alerts on one stock 1 min apart both go out (the 2026-10-30 rule).
+        assert_eq!(
+            send(&mut d, "a", Some("ABC"), &off, 10 * MIN),
+            Decision::Send
+        );
+        assert_eq!(
+            send(&mut d, "b", Some("ABC"), &off, 11 * MIN),
+            Decision::Send
+        );
+        // Turned on mid-session: the window counts from the last send, even one made while off.
+        let on = Prefs {
+            hide_repeats: true,
+            ..Prefs::default()
+        };
+        assert_eq!(
+            send(&mut d, "c", Some("ABC"), &on, 15 * MIN + 59_999),
+            Decision::Held(Hold::Repeat)
+        );
+        // A held repeat starts no window: 5 min after the last SENT one it goes out.
+        assert_eq!(
+            send(&mut d, "d", Some("ABC"), &on, 16 * MIN),
+            Decision::Send
+        );
+        // Another stock, and a halt notice (no stock to repeat), are never repeats.
+        assert_eq!(
+            send(&mut d, "e", Some("XYZ"), &on, 16 * MIN),
+            Decision::Send
+        );
+        assert_eq!(send(&mut d, "f", None, &on, 16 * MIN), Decision::Send);
+        assert_eq!(send(&mut d, "g", None, &on, 16 * MIN), Decision::Send);
+        assert_eq!(Hold::Repeat.code(), "repeat");
+        // A new day forgets the stocks.
+        assert_eq!(
+            d.decide_for("h", Some("ABC"), 1, &on, 16 * MIN, 16 * MIN, day(24), 600),
+            Decision::Send
+        );
+        // Parsed only from an explicit true.
+        use super::super::model::parse_prefs;
+        assert!(parse_prefs(Some(&json!({"hideRepeats": true}))).hide_repeats);
+        assert!(!parse_prefs(Some(&json!({"hideRepeats": "yes"}))).hide_repeats);
+        assert!(!parse_prefs(Some(&json!({}))).hide_repeats);
     }
 
     #[test]
@@ -1322,6 +1432,7 @@ mod tests {
     fn messages() {
         let mut n = Notice {
             spread_bp: None,
+            no_quote: false,
             kind: NoticeKind::New,
             alert_id: "2026-10-22-CJMB-260".into(),
             symbol: "CJMB".into(),
@@ -1520,12 +1631,18 @@ Alert $2.41 · +5% = $2.53"
         assert!(frame(&n)["spreadBp"].is_null());
         n.spread_bp = Some(312);
         assert_eq!(frame(&n)["spreadBp"], 312);
+        // "No live quote" only when the stage was answered with none; null otherwise.
+        assert!(frame(&n)["noQuote"].is_null());
+        n.spread_bp = None;
+        n.no_quote = true;
+        assert_eq!(frame(&n)["noQuote"], true);
     }
 
     #[test]
     fn a_long_body_drops_evidence_not_the_reference_line() {
         let n = Notice {
             spread_bp: None,
+            no_quote: false,
             kind: NoticeKind::New,
             alert_id: "a".into(),
             symbol: "YMAT".into(),
@@ -1551,6 +1668,7 @@ Alert $2.41 · +5% = $2.53"
         ] {
             let n = Notice {
                 spread_bp: None,
+                no_quote: false,
                 kind,
                 from_flag_pct: Some(8.0),
                 since_start_min: Some(1.0),
@@ -1692,6 +1810,7 @@ Alert $2.41 · +5% = $2.53"
         use crate::rocket::TradingNotice;
         let n = |kind, price: f64, t: TradingNotice| Notice {
             spread_bp: None,
+            no_quote: false,
             price,
             detail: Some(NoticeDetail::Trading(t)),
             ..Notice::test(kind, "XLAB")

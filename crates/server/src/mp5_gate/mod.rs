@@ -889,6 +889,7 @@ mod tests {
         use crate::rocket::{Notice, NoticeKind};
         let n = |kind, sym: &str| Notice {
             spread_bp: None,
+            no_quote: false,
             kind,
             alert_id: format!("{sym}-1"),
             symbol: sym.into(),

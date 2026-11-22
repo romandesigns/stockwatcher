@@ -336,12 +336,15 @@
 //!   `data.test` true (crate::alerts::halts::test_notice). Nothing is decided or logged.
 //! - A live connection's `chart.subscribe` slots are the halt notices' "on a chart" coverage
 //!   (crate::alerts::Alerts::charts), for as long as the socket lives.
-//! - server `runners.notice {id, alertId, symbol, kind, title, body, data, at, spreadBp}` to EVERY
+//! - server `runners.notice {id, alertId, symbol, kind, title, body, data, at, spreadBp, noQuote}` to EVERY
 //!   connection when the desk limits let a Runners notice through
 //!   (crate::alerts::runners::desk_frame): the phone push's own text. A client shows it only if
 //!   its switch for `kind` is on, once per `id`. Older clients ignore the unknown type.
 //!   `spreadBp` is the fire-time bid-ask spread in bp of the mid (crate::spread), `null` when no
 //!   market quote qualified; a client shows it as the cost chip (packages/shared spread.ts).
+//!   `noQuote` is `true` when the quote request was answered and none qualified (`null`
+//!   otherwise, a failed request included): the "No live quote" warning chip (packages/shared
+//!   quoteWarning.ts). A Runners row carries the same as `no_quote: true`.
 //!   `runners.notice.v1` in `welcome.features` (crate::alerts::runners::NOTICE_FEATURE) says so:
 //!   a phone without a push token then opts in and rings from these frames rather than diffing
 //!   Runners panels itself.

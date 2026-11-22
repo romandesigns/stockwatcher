@@ -914,6 +914,7 @@ impl BGoodLive {
             self.counts.picks_sent += 1;
             self.notices.push(Notice {
                 spread_bp: None,
+                no_quote: false,
                 kind: NoticeKind::BGood,
                 alert_id: format!("{}-{k}-bg-{}", d.date, ns.div_euclid(logic::SEC)),
                 symbol: k.to_string(),

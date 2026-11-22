@@ -751,6 +751,7 @@ impl GapCtxLive {
             };
             self.notices.push(Notice {
                 spread_bp: None,
+                no_quote: false,
                 kind,
                 // Once a symbol-day per detector, so this is unique (`Notice::event_id`).
                 alert_id: format!("{}-{key}-{tag}", d.date),

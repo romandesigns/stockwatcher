@@ -147,6 +147,7 @@ export type IconName =
   | "sortPrice"
   | "sortAlpha"
   | "insights"
+  | "quoteOff"
   | "phone";
 
 export const ICONS: Readonly<Record<IconName, IconDef>> = {
@@ -279,6 +280,9 @@ export const ICONS: Readonly<Record<IconName, IconDef>> = {
   // Insights (owner, 2026-10-26: the notification log and the scorecard): three bars soft, the
   // baseline and the trend over them crisp.
   insights: icon([S("M3 13V9h2.5v4zM6.75 13V6.5h2.5V13zM10.5 13V4h2.5v9z", { paint: "fill" }), P("M2 13.5h12M2.5 8 6 5l3 1.5 4.5-4")]),
+  // No live quote (an alert that fired with no bid/ask, packages/shared quoteWarning.ts): the
+  // book's bid and ask bars soft, the slash through them crisp.
+  quoteOff: icon([S("M3 8.5h4V13H3zM9 3.5h4V13H9z", { paint: "fill" }), P("M2.5 2.5l11 11")]),
   // A phone, for "sent to the phone" in the notification log: its glass soft, frame and speaker crisp.
   phone: icon([S("M5 2h6v12H5z", { paint: "fill" }), P("M5.5 1.5h5a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1h-5a1 1 0 0 1-1-1v-11a1 1 0 0 1 1-1zM7 12.5h2")]),
   // "New": the cross crisp on a soft disc (the alerts header's add button).

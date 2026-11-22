@@ -526,6 +526,15 @@ pub struct Notice {
     /// it from the latest market NBBO at or before `at_ns`, and it stays `None` when no quote
     /// qualifies (no fresh quote, a non-market one, no quote source configured), never a guess.
     pub spread_bp: Option<i32>,
+    /// No live quote at decision time (owner, 2026-11-22; research v2 W2-REPORT §2 and
+    /// `30-w2/L-x-quote.md` "Coverage": alerts with no usable book at the alert were GOOD 11.5 %
+    /// of the time, against 21.5 % with one). `true` only when the spread stage **asked and was
+    /// answered** and no market quote qualified (`crate::spread::Priced::NoQuote`): the same
+    /// "no usable NBBO at or before `at_ns`, no older than 60 s" the research measured. A failed,
+    /// refused or timed-out request is *unknown*, not "no quote", and stays `false`, as does
+    /// every notice with no quote source at all (tests, replays, `ALERT_SPREAD=0`), so the warning
+    /// is never drawn from a fault of ours. Display and ledger only; no rule reads it.
+    pub no_quote: bool,
 }
 
 impl Notice {
@@ -558,6 +567,7 @@ impl Notice {
     pub fn test(kind: NoticeKind, symbol: &str) -> Notice {
         Notice {
             spread_bp: None,
+            no_quote: false,
             kind,
             alert_id: format!("{symbol}-1"),
             symbol: symbol.into(),
@@ -957,6 +967,11 @@ pub struct RocketBoard {
     /// row's `spread_bp`. Display only; no rule reads it. Not restored after a restart (the ledger
     /// keeps each notice's), so a restored row shows none.
     spreads: HashMap<String, i32>,
+    /// Rows whose notice the spread stage priced and found **no live quote** for
+    /// (`Notice::no_quote`, `crate::spread::Priced::NoQuote`), shown as the row's
+    /// `no_quote: true` ("No live quote" chip; research v2: 11.5 % GOOD against 21.5 % quoted).
+    /// Display only; not restored after a restart, like `spreads`.
+    no_quote: HashSet<String>,
     /// Rows one of whose notices b-good-1 tagged high confidence (`crate::bgood`, 30 s after
     /// the notice), shown as the row's `confidence: "high"`. Sticky for the day: a later notice
     /// of the row that was not tagged does not take it back. Display only; not restored after a
@@ -1170,6 +1185,7 @@ impl RocketBoard {
             tape: Tape::default(),
             crossings: HashMap::new(),
             spreads: HashMap::new(),
+            no_quote: HashSet::new(),
             confident: HashSet::new(),
             scorer,
             policy,
@@ -1820,6 +1836,14 @@ impl RocketBoard {
         }
     }
 
+    /// Marks row `alert_id` as having had no live quote at fire time (`crate::spread`). Same
+    /// rule as [`RocketBoard::set_spread`]: an id not on today's board is ignored.
+    pub fn set_no_quote(&mut self, alert_id: &str) {
+        if self.alerts.iter().any(|a| a.id == alert_id) {
+            self.no_quote.insert(alert_id.to_owned());
+        }
+    }
+
     /// Marks row `alert_id` high confidence (`crate::bgood`). An id that is not a row of today's
     /// board (a cue's or a shadow detector's notice) is ignored.
     pub fn set_confidence(&mut self, alert_id: &str) {
@@ -2025,6 +2049,7 @@ impl RocketBoard {
         self.alerts.clear();
         self.crossings.clear();
         self.spreads.clear();
+        self.no_quote.clear();
         self.confident.clear();
         self.track_symbols.clear();
         self.last_alert.clear();
@@ -2203,6 +2228,7 @@ impl RocketBoard {
                 .push((date, alert.burst_line(date, per_day, &p.x)));
             self.notice(Notice {
                 spread_bp: None,
+                no_quote: false,
                 kind: NoticeKind::Burst,
                 alert_id: alert.id.clone(),
                 symbol: alert.symbol.to_string(),
@@ -2351,6 +2377,7 @@ impl RocketBoard {
             self.last_alert.insert(f.symbol.clone(), b.at_ns);
             self.notice(Notice {
                 spread_bp: None,
+                no_quote: false,
                 kind: NoticeKind::New,
                 alert_id: a.id.clone(),
                 symbol: a.symbol.to_string(),
@@ -2445,6 +2472,7 @@ impl RocketBoard {
             self.pending.push((date, a.running_line(date, &e)));
             self.notice(Notice {
                 spread_bp: None,
+                no_quote: false,
                 kind: NoticeKind::Running,
                 alert_id: a.id.clone(),
                 symbol: a.symbol.to_string(),
@@ -2534,6 +2562,7 @@ impl RocketBoard {
             self.pending.push((date, a.run_line(date, &r)));
             self.notice(Notice {
                 spread_bp: None,
+                no_quote: false,
                 kind: NoticeKind::Run,
                 alert_id: a.id.clone(),
                 symbol: a.symbol.to_string(),
@@ -2708,6 +2737,7 @@ impl RocketBoard {
             self.pending.push((date, a.fast_line(date, sec, &e)));
             self.notice(Notice {
                 spread_bp: None,
+                no_quote: false,
                 kind: NoticeKind::Fast,
                 alert_id: a.id.clone(),
                 symbol: a.symbol.to_string(),
@@ -2743,6 +2773,7 @@ impl RocketBoard {
             };
             let n = Notice {
                 spread_bp: None,
+                no_quote: false,
                 kind: NoticeKind::Shelf,
                 alert_id: format!("{}-z{}", a.id, e.t_ns / SEC_NS),
                 symbol: symbol.to_string(),
@@ -2802,6 +2833,7 @@ impl RocketBoard {
         .to_string();
         let n = Notice {
             spread_bp: None,
+            no_quote: false,
             kind: NoticeKind::FollowUp,
             alert_id: format!("{}-{}", a.id, path.as_str()),
             symbol: symbol.to_string(),
@@ -2923,6 +2955,7 @@ impl RocketBoard {
                     && a.track.fresh_breakout(&x))
                 .then(|| Notice {
                     spread_bp: None,
+                    no_quote: false,
                     kind: NoticeKind::Breakout,
                     alert_id: a.id.clone(),
                     symbol: a.symbol.to_string(),
@@ -3392,6 +3425,7 @@ impl RocketBoard {
                     "burst": a.burst.as_deref().map(burst_json),
                     "crossing": self.crossings.get(&a.symbol).cloned().flatten(),
                     "spread_bp": self.spreads.get(&a.id),
+                    "no_quote": self.no_quote.contains(&a.id).then_some(true),
                     "confidence": self.confident.contains(&a.id).then_some("high"),
                     "also": a.also.iter().map(|x| json!({
                         "kind": x.kind.as_str(), "at": x.at_ns / 1_000_000,
@@ -3422,6 +3456,12 @@ impl RocketBoard {
                 && m.get("spread_bp").is_some_and(Value::is_null)
             {
                 m.remove("spread_bp");
+            }
+            // Only a row with no live quote carries `no_quote` (always `true` when present).
+            if let Some(m) = r.as_object_mut()
+                && m.get("no_quote").is_some_and(Value::is_null)
+            {
+                m.remove("no_quote");
             }
             // Likewise a row without follow-ups carries no `also`.
             if let Some(m) = r.as_object_mut()

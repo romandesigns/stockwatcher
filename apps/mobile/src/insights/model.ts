@@ -1,6 +1,6 @@
 import { formatEtTime12, type IconName } from "@stockwatcher/chart-core";
-import { confidenceView, latencyText, noticeEvidence, noticeIcon, noticeKind, pathText, rowHeldText, rowStatus, type NoticeItemWire } from "@stockwatcher/shared";
-import { BREAKOUT_LABEL, noticeChartContext, type ConfidenceView, type NoticeChartContext } from "@stockwatcher/shared";
+import { confidenceView, quoteWarningView, latencyText, noticeEvidence, noticeIcon, noticeKind, pathText, rowHeldText, rowStatus, type NoticeItemWire } from "@stockwatcher/shared";
+import { BREAKOUT_LABEL, noticeChartContext, type ConfidenceView, type QuoteWarningView, type NoticeChartContext } from "@stockwatcher/shared";
 
 // One notification-log row on the phone (the web's NoticeRow, apps/web/src/insights): what the
 // row shows, derived once so the screen stays layout only and the wording is tested.
@@ -28,6 +28,8 @@ export interface NoticeRowView {
   noticeContext?: NoticeChartContext;
   /** b-good-1's "High confidence" tag of this notice, 30 s after it (packages/shared confidence.ts), or null. */
   confidence: ConfidenceView | null;
+  /** "No live quote" when the notice fired with none (packages/shared quoteWarning.ts), or null. */
+  noQuote: QuoteWarningView | null;
 }
 
 export function noticeRowView(item: NoticeItemWire): NoticeRowView {
@@ -48,6 +50,7 @@ export function noticeRowView(item: NoticeItemWire): NoticeRowView {
   const desk = path("Desktop and web", item.desk);
   const latency = latencyText(item);
   const confidence = confidenceView(item.confidence?.tier, item.confidence?.held);
+  const noQuote = quoteWarningView(item.no_quote);
   const detail = sent ? (item.failed ? `${text} · push service refused it` : text) : `Held: ${held}`;
   return {
     key: item.event_id,
@@ -65,6 +68,7 @@ export function noticeRowView(item: NoticeItemWire): NoticeRowView {
     details,
     noticeContext: context,
     confidence,
-    a11y: [`${item.symbol ?? "Notice"}, ${label}`, sent ? "sent" : `held, ${held}`, confidence?.aria, phone?.label, desk?.label, latency && sent ? latency : null, text, line].filter(Boolean).join(". "),
+    noQuote,
+    a11y: [`${item.symbol ?? "Notice"}, ${label}`, sent ? "sent" : `held, ${held}`, confidence?.aria, noQuote?.aria, phone?.label, desk?.label, latency && sent ? latency : null, text, line].filter(Boolean).join(". "),
   };
 }

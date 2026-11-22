@@ -246,12 +246,14 @@ impl QuoteSource {
         )
     }
 
-    /// `symbol`'s fire-time spread, or `None` on any failure (logged at debug: a missing spread
-    /// is shown as missing, it is not an incident).
-    pub async fn spread_at(&self, symbol: &str, fire_ns: i64) -> Option<i32> {
-        self.quotes_before(symbol, fire_ns, MAX_AGE_NS)
-            .await
-            .and_then(|q| at_fire(q, fire_ns))
+    /// `symbol`'s fire-time spread ([`Priced`]): a request that failed is
+    /// [`Priced::Unknown`] (logged at debug: a missing spread is shown as missing, it is not an
+    /// incident), an answered one with no qualifying quote is [`Priced::NoQuote`].
+    pub async fn spread_at(&self, symbol: &str, fire_ns: i64) -> Priced {
+        priced(
+            self.quotes_before(symbol, fire_ns, MAX_AGE_NS).await,
+            fire_ns,
+        )
     }
 
     /// The newest [`QUOTE_LIMIT`] quotes of `symbol` in the `back_ns` up to `at_ns` (any order),
@@ -291,6 +293,41 @@ impl QuoteSource {
                 None
             }
         }
+    }
+}
+
+/// What the stage learned about one notice's book.
+///
+/// The split between `NoQuote` and `Unknown` is what the "no live quote" warning rests on
+/// (`crate::rocket::Notice::no_quote`, owner 2026-11-22): research v2 found alerts with no usable
+/// book at the alert GOOD 11.5 % of the time against 21.5 % with one (`30-w2/L-x-quote.md`), so the
+/// warning says something true about the market only when the vendor *answered* and nothing in
+/// the minute before the fire qualified. A request that failed or timed out says nothing about
+/// the market, and drawing the warning from it would put our own faults on the alert.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Priced {
+    /// A market quote qualified: its spread in bp.
+    Spread(i32),
+    /// The quotes were fetched and none qualified (none in the minute, or only non-market ones).
+    NoQuote,
+    /// The request failed, was refused, timed out or was unreadable.
+    Unknown,
+}
+
+impl Priced {
+    pub fn bp(self) -> Option<i32> {
+        match self {
+            Priced::Spread(bp) => Some(bp),
+            _ => None,
+        }
+    }
+}
+
+/// [`Priced`] from one answered (`Some`) or failed (`None`) quote request.
+pub fn priced(quotes: Option<Vec<Nbbo>>, fire_ns: i64) -> Priced {
+    match quotes {
+        None => Priced::Unknown,
+        Some(q) => at_fire(q, fire_ns).map_or(Priced::NoQuote, Priced::Spread),
     }
 }
 
@@ -334,14 +371,17 @@ pub fn spawn_stage(
                     set.spawn(async move { (i, src.spread_at(&symbol, at).await) });
                 }
             }
-            while let Some(Ok((i, bp))) = set.join_next().await {
-                batch[i].spread_bp = bp;
+            while let Some(Ok((i, p))) = set.join_next().await {
+                batch[i].spread_bp = p.bp();
+                batch[i].no_quote = p == Priced::NoQuote;
             }
             for n in batch {
-                if let Some(bp) = n.spread_bp
-                    && is_row_entry(n.kind)
-                {
-                    market.set_runner_spread(&n.alert_id, bp);
+                if is_row_entry(n.kind) {
+                    if let Some(bp) = n.spread_bp {
+                        market.set_runner_spread(&n.alert_id, bp);
+                    } else if n.no_quote {
+                        market.set_runner_no_quote(&n.alert_id);
+                    }
                 }
                 if tx.send(n).await.is_err() {
                     return;
@@ -404,6 +444,23 @@ mod tests {
         assert_eq!(at_fire(quotes, fire), Some(100));
         // At exactly the fire time counts.
         assert_eq!(at_fire([q(1_000, 20.0, 20.01)], fire), Some(5));
+    }
+
+    #[test]
+    fn an_answered_request_with_no_market_quote_is_no_quote_and_a_failed_one_is_unknown() {
+        let fire = 1_000 * S;
+        assert_eq!(
+            priced(Some(vec![q(990, 2.0, 2.02)]), fire),
+            Priced::Spread(100)
+        );
+        // Answered: nothing in the minute, or only a stale or stub quote. The warning's case.
+        assert_eq!(priced(Some(vec![]), fire), Priced::NoQuote);
+        assert_eq!(priced(Some(vec![q(900, 2.0, 2.02)]), fire), Priced::NoQuote);
+        assert_eq!(priced(Some(vec![q(990, 1.0, 1.7)]), fire), Priced::NoQuote);
+        // Failed, refused or timed out: says nothing about the market, so no warning.
+        assert_eq!(priced(None, fire), Priced::Unknown);
+        assert_eq!(Priced::NoQuote.bp(), None);
+        assert_eq!(Priced::Unknown.bp(), None);
     }
 
     #[test]
