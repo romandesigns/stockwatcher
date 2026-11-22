@@ -13,7 +13,14 @@
 //!   `held` the limit's code (`no_device`, `quiet_hours`, `stale`, `duplicate`) or `null`,
 //!   `devices` how many devices or open clients wanted the kind, `spread_bp` the fire-time
 //!   bid-ask spread in bp of the mid (`crate::spread`; `null` when no market quote qualified or
-//!   on lines before 2026-11-19). Lines before 2026-10-30 may also
+//!   on lines before 2026-11-19). From 2026-11-22 every line also has `session` (`pre` /
+//!   `regular` / `after` / `overnight` of `at_ns`, `null` outside any), and a notice of a
+//!   research-v2 detector shipped behind a runtime switch (`super::detectors`) carries
+//!   `detector` and `detector_version` (the finalist id and its frozen config's sha256 prefix;
+//!   absent for every other kind) and `held: "switched_off"` while that switch is off. x-float-1
+//!   (`v2.xfloat`) adds `arrival_ns` (the close print's arrival at the server) and `x_float`
+//!   (`float`, `float_source`, `shares`, `rotation`, `c1`, `gain`, `prior_high`, `emitted_ns`).
+//!   Lines before 2026-10-30 may also
 //!   hold `symbol_limit` or `merged` (with `merged_into` and `merged_devices`), the per-stock gap
 //!   and merge since removed (`super::runners`, "Every distinct event is delivered").
 //! - `alert` — `{kind, v, decided_at, event_id, alert_id, symbol, price, text, phone, held,
@@ -183,7 +190,22 @@ fn decision_line(
         // decision so the cost of each alert can be studied later (board rows lose theirs on a
         // restart; this line does not).
         "spread_bp": n.spread_bp,
+        "session": session_of(n.at_ns),
     });
+    if let Some(d) = super::detectors::detector_of(n.kind) {
+        line["detector"] = json!(d.id);
+        line["detector_version"] = json!(d.version);
+    }
+    if let Some(crate::rocket::NoticeDetail::XFloat(x)) = &n.detail {
+        // The facts it was judged on, held or sent: the daily checklist compares them with the
+        // research's (float source and rotation especially; crate::xfloat_live docs).
+        line["arrival_ns"] = json!(x.arrival_ns);
+        line["x_float"] = json!({
+            "float": x.float, "float_source": x.float_source, "shares": x.shares,
+            "rotation": x.rotation, "c1": x.c1, "gain": x.gain, "prior_high": x.prior_high,
+            "emitted_ns": x.emitted_ns,
+        });
+    }
     if let Some(crate::rocket::NoticeDetail::Pullback(p)) = &n.detail {
         // Persist the frozen observation even when delivery was held. None remains unknown.
         line["mp5_wick"] = json!(p.wick);
@@ -195,10 +217,56 @@ fn decision_line(
     line
 }
 
+/// The session `at_ns` falls in (`market_events::session::classify`), as the ledger spells it.
+fn session_of(at_ns: i64) -> Option<&'static str> {
+    use market_events::session::SessionKind as K;
+    market_events::session::classify(market_events::UnixNanos(at_ns)).map(|s| match s.kind {
+        K::Overnight => "overnight",
+        K::Pre => "pre",
+        K::Regular => "regular",
+        K::After => "after",
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::rocket::NoticeKind;
+
+    /// A research-v2 detector's line names the detector and its version, the session, the close
+    /// print's arrival and the facts; a switched-off one is held with its own code.
+    #[test]
+    fn an_x_float_line_carries_the_deploy_plan_fields() {
+        let mut n = notice();
+        n.kind = NoticeKind::XFloat;
+        n.detail = Some(crate::rocket::NoticeDetail::XFloat(
+            crate::xfloat_live::XFloatNotice {
+                float: 8.2e6,
+                float_source: "fmp",
+                shares: 2_570_000,
+                rotation: 0.3134,
+                c1: 2.36,
+                gain: 0.148,
+                prior_high: 2.69,
+                arrival_ns: Some(n.at_ns - 40_000_000),
+                emitted_ns: n.at_ns + 1_000_000,
+            },
+        ));
+        let held = Decision::Held(runners::Hold::SwitchedOff);
+        let v = decision_line(&n, "x1", "phone", &held, 1, "t", "b", 1_793_055_061_000);
+        assert_eq!(v["detector"], "x-float-1");
+        assert_eq!(v["detector_version"], crate::xfloat_live::logic::VERSION);
+        assert_eq!(v["held"], "switched_off");
+        assert_eq!(v["notice"], "v2.xfloat");
+        assert_eq!(v["arrival_ns"], n.at_ns - 40_000_000);
+        assert_eq!(v["x_float"]["shares"], 2_570_000);
+        assert_eq!(v["x_float"]["float_source"], "fmp");
+        // 2026-10-26 08:23:47 ET.
+        assert_eq!(v["session"], "pre");
+        // Every other kind: no detector fields.
+        let p = decision_line(&notice(), "p1", "phone", &held, 1, "t", "b", 0);
+        assert!(p.get("detector").is_none() && p.get("x_float").is_none());
+    }
 
     #[test]
     fn sent_and_held_breakouts_keep_the_same_frozen_cause_and_entry_context() {

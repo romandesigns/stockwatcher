@@ -1,11 +1,12 @@
 import type { SettingsSheetSection } from "@stockwatcher/chart-native";
 import { Icon, playHaptic, UI } from "@stockwatcher/chart-native";
-import { ALERT_SWITCH_SECTIONS, type AlertSwitch } from "@stockwatcher/shared";
+import { ALERT_SWITCH_SECTIONS, DETECTOR_SWITCHES, type AlertSwitch } from "@stockwatcher/shared";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { AccessibilityInfo, Animated, Easing, Pressable, StyleSheet, Text, View } from "react-native";
 
 import { enablePush, pushToken, subscribePushToken } from "../notifications/push";
 import { PUSH_PREF_OF, setRunnersPush, useRunnersPush, type RunnersPushPrefs } from "../notifications/runnersPush";
+import { useApp } from "../state/store";
 import { fonts } from "../theme";
 
 /**
@@ -17,6 +18,8 @@ import { fonts } from "../theme";
  * desktop (packages/shared `ALERT_SWITCH_SECTIONS`). Turning one on when this phone has no push
  * token asks for notification permission and registers it (the Alerts tab's "Turn on phone
  * alerts" does the same). Without push, new flags ring a local banner while the dashboard is open.
+ * Last, Detectors: the shipped research-v2 detectors' runtime switches (packages/shared
+ * detectors.ts), synced and for every device at once: the owner's kill switch during market hours.
  */
 export function rocketSection(): SettingsSheetSection {
   return {
@@ -34,6 +37,8 @@ function RunnersPushPanel() {
   const token = useSyncExternalStore(subscribePushToken, pushToken);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
+  const detectors = useApp((st) => st.detectors);
+  const setDetectorOn = useApp((st) => st.setDetectorOn);
   const toggle = (key: keyof RunnersPushPrefs) => {
     playHaptic("selection");
     const want = !prefs[key];
@@ -57,6 +62,26 @@ function RunnersPushPanel() {
           })}
         </View>
       ))}
+      <View style={s.section} accessibilityRole="summary" accessibilityLabel="Detectors, every device">
+        <Text style={s.heading} accessibilityRole="header">
+          Detectors · every device
+        </Text>
+        {DETECTOR_SWITCHES.map((d) => {
+          const on = detectors[d.id] !== false;
+          return (
+            <Switch
+              key={d.id}
+              item={{ icon: "insights", name: d.name, description: d.description }}
+              on={on}
+              busy={false}
+              onPress={() => {
+                playHaptic("selection");
+                setDetectorOn(d.id, !on);
+              }}
+            />
+          );
+        })}
+      </View>
       <Text style={[s.status, note ? { color: UI.warning } : null]}>
         {note ??
           (token
@@ -67,7 +92,7 @@ function RunnersPushPanel() {
   );
 }
 
-function Switch({ item, on, busy, onPress }: { item: AlertSwitch; on: boolean; busy: boolean; onPress: () => void }) {
+function Switch({ item, on, busy, onPress }: { item: Pick<AlertSwitch, "icon" | "name" | "description">; on: boolean; busy: boolean; onPress: () => void }) {
   // The knob slides (smooth motion), or jumps with reduced motion on.
   const [x] = useState(() => new Animated.Value(on ? 1 : 0));
   useEffect(() => {

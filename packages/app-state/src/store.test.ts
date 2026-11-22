@@ -151,6 +151,25 @@ describe("app store: synced state", () => {
   });
 });
 
+describe("app store: runtime detector switches", () => {
+  test("on until a device switches one off; the flip is an entry patch and another device's arrives", () => {
+    const r = rig();
+    const sent = r.connect([]);
+    expect(r.s().detectors).toEqual({ "x-float-1": true });
+    r.s().setDetectorOn("x-float-1", false);
+    const patch = sent.find((m) => m.type === "settings.patch");
+    expect(patch).toMatchObject({ ns: "detectors", set: { "x-float-1": { on: false } } });
+    expect(r.s().detectors).toEqual({ "x-float-1": false });
+    // Another device (this one has nothing pending): its flips show here.
+    const o = rig();
+    o.connect([]);
+    o.remote("detectors", { "x-float-1": { on: false } });
+    expect(o.s().detectors).toEqual({ "x-float-1": false });
+    o.remote("detectors", { "x-float-1": { on: true } });
+    expect(o.s().detectors).toEqual({ "x-float-1": true });
+  });
+});
+
 describe("app store: drawings follow the shown symbol", () => {
   test("showing a symbol loads its drawings; edits patch only what changed", () => {
     const r = rig();

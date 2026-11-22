@@ -41,6 +41,7 @@ describe("notice log", () => {
     expect(log.items.map((i) => i.event_id)).toEqual(["a", "b", "c"]);
     expect(noticeKind("runners.burst")).toEqual({ group: "runners", label: "Buying burst" });
     expect(noticeKind("ross.crossing").group).toBe("ross");
+    expect(noticeKind("v2.xfloat")).toEqual({ group: "runners", label: "Float rotation" });
     expect(noticeKind("something.new")).toEqual({ group: "runners", label: "something.new" });
     expect(parseNoticeLog({ items: [] })).toBeNull();
   });
@@ -54,6 +55,8 @@ describe("notice log", () => {
     expect(pathText(c!.phone)).toBe("not sent: phone alerts off for it");
     expect(pathText(undefined)).toBeNull();
     expect(heldText("quiet_hours")).toBe("quiet hours");
+    // A research-v2 detector switched off at runtime (crates/server/src/alerts/detectors.rs).
+    expect(heldText("switched_off")).toBe("its detector is switched off");
     expect(latencyText(b!)).toBe("trade → push 1.04 s · detect 0.10 s");
   });
 

@@ -30,6 +30,7 @@
 //! from the same inputs, delivered exactly like the Runners ones.
 
 pub mod delivery;
+pub mod detectors;
 pub mod eval;
 pub mod geometry;
 pub mod halts;
@@ -225,6 +226,9 @@ pub struct DeskKinds {
     /// T2-c4's HALT add-on, a bull Halt watcher gauge 09:30–11:30 (`crate::c4_live::halt_addon`):
     /// ON by default (owner, 2026-11-18).
     pub halt_bull: bool,
+    /// Research v2's x-float-1 "rotation ignition" (`crate::xfloat_live`): ON by default (owner,
+    /// 2026-11-22: ship the research-proven wins live).
+    pub x_float: bool,
 }
 
 impl Default for DeskKinds {
@@ -263,6 +267,9 @@ impl DeskKinds {
             // days: +7.9 pp recall with 22 fewer alerts a day); still switchable in Settings.
             f1u: o.f1u.unwrap_or(true),
             halt_bull: o.halt_bull.unwrap_or(true),
+            // Owner, 2026-11-22: on, as research v2 finalist x-float-1 (Validation +1.1 pp recall,
+            // +0.15 pp precision over the live baseline); still switchable in Settings.
+            x_float: o.x_float.unwrap_or(true),
         }
     }
 
@@ -300,6 +307,7 @@ impl DeskKinds {
             // One event, one notice: with the gauge's own switch on, its Halt watcher notice
             // already says it (as the Ross/Signals twins do).
             K::HaltBull => self.halt_bull && !self.halt,
+            K::XFloat => self.x_float,
         }
     }
 }
@@ -619,6 +627,7 @@ impl Alerts {
             eval: Evaluator::new(),
             delivery: Delivery::default(),
             prefs: Prefs::default(),
+            detectors: detectors::Switches::default(),
             history,
             devices,
             runners,
@@ -661,6 +670,9 @@ struct Task {
     eval: Evaluator,
     delivery: Delivery,
     prefs: Prefs,
+    /// The runtime detector switches (`detectors` namespace, [`detectors`]): re-read on every
+    /// change, no restart.
+    detectors: detectors::Switches,
     history: History,
     devices: Devices,
     runners: RunnersDelivery,
@@ -706,6 +718,7 @@ impl Task {
     async fn reload(&mut self, initial: bool) {
         let rules = model::parse_rules(self.settings.get(RULES_NS).await.map(|(_, v)| v).as_ref());
         self.prefs = model::parse_prefs(self.settings.get(PREFS_NS).await.map(|(_, v)| v).as_ref());
+        self.reload_detectors(initial).await;
         let market = self.market.clone();
         self.eval.set_rules(rules, initial, &market);
         *self
@@ -718,6 +731,21 @@ impl Task {
         for symbol in self.eval.drawing_symbols() {
             self.reload_drawings(&symbol).await;
         }
+    }
+
+    /// The runtime detector switches ([`detectors`]); logged when they change.
+    async fn reload_detectors(&mut self, initial: bool) {
+        let d = detectors::Switches::parse(
+            self.settings
+                .get(detectors::NS)
+                .await
+                .map(|(_, v)| v)
+                .as_ref(),
+        );
+        if initial || d != self.detectors {
+            tracing::info!(off = ?d.off(), "alerts: detector switches");
+        }
+        self.detectors = d;
     }
 
     /// One symbol's `drawings:<SYMBOL>` for its drawing alerts (eval `set_drawings`).
@@ -817,7 +845,10 @@ impl Task {
                     Ok(f) => {
                         // Only our namespaces; the prefix test avoids parsing every drawing change.
                         let ours = |ns: &str| f.starts_with(&format!("{{\"type\":\"settings.changed\",\"ns\":\"{ns}\""));
-                        if ours(RULES_NS) || ours(PREFS_NS) {
+                        if ours(detectors::NS) {
+                            // A detector switched on or off (kill rules): the next notice obeys.
+                            self.reload_detectors(false).await;
+                        } else if ours(RULES_NS) || ours(PREFS_NS) {
                             self.reload(false).await;
                             // A snooze set or an edit shows at once, not on the next tick.
                             self.eval.tick(now_ms());
@@ -952,15 +983,22 @@ impl Task {
         // Rendered once: the ledger keeps the text with both decisions, the phones get it.
         let (title, body, data) = runners::message(&n);
         let desks = self.shared.desks_wanting(&n);
-        let desk = self.desk_runners.decide(
-            &event_id,
-            desks,
-            &self.prefs,
-            n.at_ns.div_euclid(1_000_000),
-            now,
-            now_et.date_naive(),
-            now_et.hour() * 60 + now_et.minute(),
-        );
+        // A detector switched off at runtime ([`detectors`]) is held on both paths before any
+        // limit, so its event is not marked sent and both decision lines are still ledgered.
+        let switched_off = !self.detectors.on(n.kind);
+        let desk = if switched_off {
+            runners::Decision::Held(runners::Hold::SwitchedOff)
+        } else {
+            self.desk_runners.decide(
+                &event_id,
+                desks,
+                &self.prefs,
+                n.at_ns.div_euclid(1_000_000),
+                now,
+                now_et.date_naive(),
+                now_et.hour() * 60 + now_et.minute(),
+            )
+        };
         self.ledger
             .decision(&n, &event_id, "desk", &desk, desks, &title, &body, now);
         match desk {
@@ -971,15 +1009,19 @@ impl Task {
         }
         // Every phone that wants this kind (runners, "Every distinct event is delivered").
         let tokens = self.devices.runner_tokens(&n);
-        let phone = self.runners.decide(
-            &event_id,
-            tokens.len(),
-            &self.prefs,
-            n.at_ns.div_euclid(1_000_000),
-            now,
-            now_et.date_naive(),
-            now_et.hour() * 60 + now_et.minute(),
-        );
+        let phone = if switched_off {
+            runners::Decision::Held(runners::Hold::SwitchedOff)
+        } else {
+            self.runners.decide(
+                &event_id,
+                tokens.len(),
+                &self.prefs,
+                n.at_ns.div_euclid(1_000_000),
+                now,
+                now_et.date_naive(),
+                now_et.hour() * 60 + now_et.minute(),
+            )
+        };
         let kind = n.kind.as_str();
         self.ledger.decision(
             &n,
@@ -1416,6 +1458,100 @@ mod tests {
             exec_ns: None,
             detail: None,
         }
+    }
+
+    /// The runtime detector switch (`detectors`, [`detectors`]) through the real task: an
+    /// x-float-1 notice goes out on both paths; once `detectors."x-float-1".on` is false (a
+    /// settings patch, no restart) the next is held `switched_off` on both, ledgered, and not
+    /// marked sent; switched back on, the next goes out. Another kind is never touched.
+    #[tokio::test]
+    async fn a_detector_switched_off_at_runtime_is_held_and_ledgered() {
+        let settings = Settings::in_memory();
+        let live = Market::idle(market_providers::ClockMode::Live, "idle", None);
+        let (job_tx, mut jobs) = mpsc::channel(16);
+        let (_res_tx, res_rx) = mpsc::channel(4);
+        let today = et(now_ms()).date_naive();
+        let feed = crate::notices::NoticeFeed::open(None, today);
+        let alerts = Alerts::start_with(
+            settings.clone(),
+            live.clone(),
+            None,
+            job_tx,
+            res_rx,
+            ledger::Ledger::default().with_feed(feed.clone()),
+        );
+        let mut frames = alerts.subscribe();
+        let sink = live.alert_sink().expect("attached").clone();
+        let next_notice = async |frames: &mut broadcast::Receiver<Arc<str>>| loop {
+            match tokio::time::timeout(Duration::from_millis(400), frames.recv()).await {
+                Ok(Ok(f)) if f.contains("\"runners.notice\"") => {
+                    break Some(serde_json::from_str::<Value>(&f).unwrap());
+                }
+                Ok(Ok(_)) => continue,
+                _ => break None,
+            }
+        };
+        let _desk = alerts.desk(DeskKinds::default());
+        assert!(alerts.register_device(
+            "ExponentPushToken[fold]",
+            "android",
+            "Fold",
+            RunnersOptIn::default()
+        ));
+        let notice = |kind: crate::rocket::NoticeKind, sym: &str| crate::rocket::Notice {
+            at_ns: now_ms() * 1_000_000,
+            ..crate::rocket::Notice::test(kind, sym)
+        };
+        let set = async |on: bool, op: &str| {
+            settings
+                .apply(
+                    detectors::NS,
+                    op,
+                    SettingsOp::Patch {
+                        set: json!({"x-float-1": {"on": on}})
+                            .as_object()
+                            .unwrap()
+                            .clone(),
+                        remove: vec![],
+                    },
+                )
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        };
+        use crate::rocket::NoticeKind as K;
+        sink.offer_runner(notice(K::XFloat, "AAAA"));
+        let f = next_notice(&mut frames).await.expect("on by default");
+        assert_eq!(f["kind"], "v2.xfloat");
+        let j = tokio::time::timeout(Duration::from_secs(5), jobs.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(j.data["kind"], "v2.xfloat");
+
+        set(false, "d1").await;
+        sink.offer_runner(notice(K::XFloat, "BBBB"));
+        assert!(next_notice(&mut frames).await.is_none(), "held on the desk");
+        assert!(jobs.try_recv().is_err(), "held on the phone");
+        // Other kinds are not this switch's.
+        sink.offer_runner(notice(K::N1, "CCCC"));
+        assert_eq!(
+            next_notice(&mut frames).await.expect("n1")["kind"],
+            "shadow.n1"
+        );
+        let (items, _, _) = feed.items(today);
+        let held = items
+            .iter()
+            .find(|i| i["symbol"] == "BBBB")
+            .expect("the held x-float-1 is in the log");
+        assert!(held.to_string().contains("switched_off"), "{held}");
+
+        set(true, "d2").await;
+        sink.offer_runner(notice(K::XFloat, "DDDD"));
+        assert_eq!(
+            next_notice(&mut frames).await.expect("on again")["data"]["symbol"],
+            "DDDD"
+        );
     }
 
     /// Exchange halts through the real task (plan "halt sounds", 2026-11-16): a covered stock's

@@ -52,6 +52,10 @@ export const RUNNERS_NOTICE_KINDS = [
   // 9:30–11:30. Each its own switch, on by default.
   "shadow.f1u",
   "halt.bull",
+  // Research v2's x-float-1 "rotation ignition" (owner, 2026-11-22: ship the proven wins;
+  // crates/server/src/xfloat_live): a separate stream beside production. Its own switch, on by
+  // default; the server can also switch the detector off for everybody (`detectors` settings).
+  "v2.xfloat",
 ] as const;
 export type RunnersNoticeKind = (typeof RUNNERS_NOTICE_KINDS)[number];
 
@@ -115,6 +119,8 @@ export interface RunnersNotifyKinds {
   f1u: boolean;
   /** The Halt watcher's gauge appeared on the buying side, 9:30–11:30 ET (Engine A T2-c4); sent once if `halt` is on too. */
   haltBull: boolean;
+  /** x-float-1 fired: a float of at most 50M shares, a quarter of it traded today, +10% on the previous close and a new high (research v2). */
+  xFloat: boolean;
 }
 
 /**
@@ -145,6 +151,8 @@ export const DEFAULT_RUNNERS_NOTIFY: Readonly<RunnersNotifyKinds> = Object.freez
   // On: Engine A T2-c4 (owner, 2026-11-18).
   f1u: true,
   haltBull: true,
+  // On: research v2 x-float-1 (owner, 2026-11-22).
+  xFloat: true,
 });
 
 /** client `runners.notify`: this connection shows notifications for these kinds (`enabled: false` stops). */
@@ -182,6 +190,7 @@ export const RUNNERS_NOTIFY_KEY: Readonly<Record<RunnersNoticeKind, keyof Runner
   "shadow.n1": "n1",
   "shadow.f1u": "f1u",
   "halt.bull": "haltBull",
+  "v2.xfloat": "xFloat",
 });
 
 /** Whether a notice is an exchange halt or resumption (its own sound on the desktop and web). */
@@ -316,6 +325,7 @@ export const ALERT_SWITCH_ICON: Readonly<Record<keyof RunnersNotifyKinds, AlertI
   n1: "insights",
   f1u: "insights",
   haltBull: "gauge",
+  xFloat: "pathRunning",
 });
 
 /** A Runners-pipeline notice kind's icon: its switch's ({@link ALERT_SWITCH_ICON}). */
@@ -349,6 +359,12 @@ export const ALERT_SWITCH_SECTIONS: readonly { id: "runners" | "ross" | "signals
       { key: "followUp", icon: ALERT_SWITCH_ICON.followUp, name: "Follow-ups", description: "A later Runners path fires on a stock already listed, e.g. Run +20% after a fast move." },
       { key: "pullback", icon: ALERT_SWITCH_ICON.pullback, name: "Pullback setting up", description: "The first dip that fixes a trigger and stop within 30 min of a stock's Runners alert (or on a Ross stock), then its crossing. Most do not follow through." },
       { key: "shelf", icon: ALERT_SWITCH_ICON.shelf, name: "Volume shelf entry", description: "Price came into a volume shelf. About 1 in 3 hold, 1 in 2 fail." },
+      {
+        key: "xFloat",
+        icon: ALERT_SWITCH_ICON.xFloat,
+        name: "Float rotation",
+        description: "A stock with a float of 50M shares or less has traded a quarter of it today, is up 10% or more and prints a new high. About 1 in 4 reached +10% before −5% in research. On by default.",
+      },
     ],
   },
   {
