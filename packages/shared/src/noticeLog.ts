@@ -11,7 +11,8 @@ export interface NoticePathWire {
   /** `sent` | `held` (Runners notices); a price alert's phone: `sent` | `off` | `held`. */
   decision: string | null;
   /**
-   * The limit's code when held: no_device, quiet_hours, stale, duplicate. Days before 2026-10-30
+   * The limit's code when held: no_device, quiet_hours, stale, duplicate, switched_off (its
+   * detector switched off at runtime, crates/server/src/alerts/detectors.rs). Days before 2026-10-30
    * also have symbol_limit and merged (the per-stock gap and merge since removed: server
    * alerts/runners.rs, "Every distinct event is delivered"); they are still worded.
    */
@@ -188,6 +189,8 @@ const KIND: Record<string, { group: NoticeGroup; label: string }> = {
   // The N1 shadow detector (crates/server/src/n1_live): labelled a shadow wherever it shows.
   "shadow.n1": { group: "shadow", label: "N1 · shadow" },
   "shadow.f1u": { group: "shadow", label: "F1 · first pullback" },
+  // Research v2's x-float-1 (crates/server/src/xfloat_live): a Runners-pipeline stream.
+  "v2.xfloat": { group: "runners", label: "Float rotation" },
   "price.alert": { group: "price", label: "Price alert" },
 };
 

@@ -20,6 +20,14 @@
 //!   detectors entry), `switch` (`on` | `off`, `null` likewise) and `session` (`pre` | `regular`
 //!   | `after` | `overnight` of `at_ns`, ET); a switched-off detector's lines are `held:
 //!   "switched_off"`, its would-be alerts. Lines before 2026-10-30 may also
+//!   on lines before 2026-11-19). From 2026-11-22 every line also has `session` (`pre` /
+//!   `regular` / `after` / `overnight` of `at_ns`, `null` outside any), and a notice of a
+//!   research-v2 detector shipped behind a runtime switch (`super::detectors`) carries
+//!   `detector` and `detector_version` (the finalist id and its frozen config's sha256 prefix;
+//!   absent for every other kind) and `held: "switched_off"` while that switch is off. x-float-1
+//!   (`v2.xfloat`) adds `arrival_ns` (the close print's arrival at the server) and `x_float`
+//!   (`float`, `float_source`, `shares`, `rotation`, `c1`, `gain`, `prior_high`, `emitted_ns`).
+//!   Lines before 2026-10-30 may also
 //!   hold `symbol_limit` or `merged` (with `merged_into` and `merged_devices`), the per-stock gap
 //!   and merge since removed (`super::runners`, "Every distinct event is delivered").
 //! - `alert` — `{kind, v, decided_at, event_id, alert_id, symbol, price, text, phone, held,
@@ -189,6 +197,7 @@ fn decision_line(
         // decision so the cost of each alert can be studied later (board rows lose theirs on a
         // restart; this line does not).
         "spread_bp": n.spread_bp,
+        "session": session_of(n.at_ns),
     });
     // Research v2's per-alert ledger: which frozen definition decided it, whether its switch was
     // on, and its session (the daily checklist reads these per detector and session).
@@ -202,10 +211,16 @@ fn decision_line(
             "on"
         }
     }));
-    line["session"] = json!(
-        market_events::session::classify(market_events::UnixNanos(n.at_ns))
-            .map(|s| s.kind.as_str())
-    );
+    if let Some(crate::rocket::NoticeDetail::XFloat(x)) = &n.detail {
+        // The facts it was judged on, held or sent: the daily checklist compares them with the
+        // research's (float source and rotation especially; crate::xfloat_live docs).
+        line["arrival_ns"] = json!(x.arrival_ns);
+        line["x_float"] = json!({
+            "float": x.float, "float_source": x.float_source, "shares": x.shares,
+            "rotation": x.rotation, "c1": x.c1, "gain": x.gain, "prior_high": x.prior_high,
+            "emitted_ns": x.emitted_ns,
+        });
+    }
     if let Some(crate::rocket::NoticeDetail::Pullback(p)) = &n.detail {
         // Persist the frozen observation even when delivery was held. None remains unknown.
         line["mp5_wick"] = json!(p.wick);
@@ -215,6 +230,17 @@ fn decision_line(
         line["entry_context"] = json!(n.reasons);
     }
     line
+}
+
+/// The session `at_ns` falls in (`market_events::session::classify`), as the ledger spells it.
+fn session_of(at_ns: i64) -> Option<&'static str> {
+    use market_events::session::SessionKind as K;
+    market_events::session::classify(market_events::UnixNanos(at_ns)).map(|s| match s.kind {
+        K::Overnight => "overnight",
+        K::Pre => "pre",
+        K::Regular => "regular",
+        K::After => "after",
+    })
 }
 
 #[cfg(test)]
@@ -253,6 +279,42 @@ mod tests {
         assert_eq!(line["detector"], "followup");
         assert!(line["detector_version"].is_null() && line["switch"].is_null());
         assert_eq!(line["session"], "pre");
+    }
+
+    /// A research-v2 detector's line names the detector and its version, the session, the close
+    /// print's arrival and the facts; a switched-off one is held with its own code.
+    #[test]
+    fn an_x_float_line_carries_the_deploy_plan_fields() {
+        let mut n = notice();
+        n.kind = NoticeKind::XFloat;
+        n.detail = Some(crate::rocket::NoticeDetail::XFloat(
+            crate::xfloat_live::XFloatNotice {
+                float: 8.2e6,
+                float_source: "fmp",
+                shares: 2_570_000,
+                rotation: 0.3134,
+                c1: 2.36,
+                gain: 0.148,
+                prior_high: 2.69,
+                arrival_ns: Some(n.at_ns - 40_000_000),
+                emitted_ns: n.at_ns + 1_000_000,
+            },
+        ));
+        let held = Decision::Held(runners::Hold::SwitchedOff);
+        let v = decision_line(&n, "x1", "phone", &held, 1, "t", "b", 1_793_055_061_000);
+        assert_eq!(v["detector"], "x-float-1");
+        assert_eq!(v["detector_version"], crate::xfloat_live::logic::VERSION);
+        assert_eq!(v["held"], "switched_off");
+        assert_eq!(v["notice"], "v2.xfloat");
+        assert_eq!(v["arrival_ns"], n.at_ns - 40_000_000);
+        assert_eq!(v["x_float"]["shares"], 2_570_000);
+        assert_eq!(v["x_float"]["float_source"], "fmp");
+        // 2026-10-26 08:23:47 ET.
+        assert_eq!(v["session"], "pre");
+        // A kind with no runtime switch: its kind as the detector, no version, no facts.
+        let p = decision_line(&notice(), "p1", "phone", &held, 1, "t", "b", 0);
+        assert_eq!(p["detector"], notice().kind.as_str());
+        assert!(p["detector_version"].is_null() && p.get("x_float").is_none());
     }
 
     #[test]

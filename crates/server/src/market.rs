@@ -279,6 +279,7 @@ mod tick_phase_tests {
 /// | `N1_LIVE` | `1` | live market with `ROCKET_WATCH`: the N1 "early leg" detector (`crate::n1_live`, Engine A T2-c6's entrant, X 8 % since T2-c4): its own notice kind `shadow.n1` beside production (push/desktop switch `n1`, on by default) and the Runners frame's `shadow` rows; `0` turns it off |
 /// | `C4_LIVE` | `1` | live market with `ROCKET_WATCH`: Engine A T2-c4's additions (`crate::c4_live`): the F1u detector (`shadow.f1u`, switch `f1u`), the HALT add-on (`halt.bull`, switch `haltBull`), both on by default, and the POST<1 prune of Runners notices; `0` turns all three off |
 /// | `XHALT_LIVE` | `1` | live market with `ROCKET_WATCH`: research v2's x-halt-1 "resumed up after a halt" (`crate::xhalt_live`): its own notice kind `halt.resumed_up` (device switch `resumedUp`, on by default; detectors switch `x-halt-1`, `crate::alerts::detectors`); `0` turns the detector off |
+/// | `XFLOAT_LIVE` | `1` | live market with `ROCKET_WATCH`: research v2's x-float-1 "rotation ignition" (`crate::xfloat_live`): its own notice kind `v2.xfloat` beside production (push/desktop switch `xFloat`, on by default; runtime switch `detectors."x-float-1"`, no restart). Needs `STOCK_CONTEXT` for the float; `0` turns it off |
 /// | `BURST_THRESHOLD` | unset | a burst model probability threshold in (0, 1), overriding `BURST_ALERTS_PER_DAY`'s |
 /// | `ADMISSION_JOURNAL` | `0` | live with a recorder: write the admission journal beside the recording (`crate::admit`; ~190–270 B per print, so off for whole-market SIP: see `Market::init_history`) |
 #[derive(Clone, Debug)]
@@ -320,6 +321,10 @@ pub struct MarketConfig {
     /// x-halt-1 (`crate::xhalt_live`); `0` is its kill switch at start. The no-restart switch is
     /// the detectors namespace (`crate::alerts::detectors`).
     pub xhalt_live: bool,
+    /// `XFLOAT_LIVE` (on by default, needs `ROCKET_WATCH`, live market only): research v2's
+    /// x-float-1 (`crate::xfloat_live`); `0` is its kill switch at start. The runtime switch
+    /// that needs no restart is the alerts task's (`crate::alerts::detectors`).
+    pub xfloat_live: bool,
     /// `ADMISSION_JOURNAL` (off by default): the live admission journal (`crate::admit`). Its
     /// size and the reader's record cap make it unusable for a whole-market day; see
     /// `Market::init_history`.
@@ -352,6 +357,7 @@ impl Default for MarketConfig {
             n1_live: true,
             c4_live: true,
             xhalt_live: true,
+            xfloat_live: true,
             admission_journal: false,
             detection_quiet_references: None,
             evidence_check: Duration::from_secs(crate::evidence::DEFAULT_CHECK_SECS),
@@ -401,6 +407,9 @@ impl MarketConfig {
         }
         if let Some(v) = var("XHALT_LIVE") {
             c.xhalt_live = on(&v);
+        }
+        if let Some(v) = var("XFLOAT_LIVE") {
+            c.xfloat_live = on(&v);
         }
         c.rocket_policy = crate::rocket::Policy::from_lookup(&get)?;
         c.burst_policy = crate::rocket::burst::BurstPolicy::from_lookup(&get)?;
@@ -1215,6 +1224,26 @@ impl Market {
             "x-halt-1: detector on (research v2 resumed-up after a halt; XHALT_LIVE=0 turns it off, the detectors switch holds its notices)"
         );
         self.0.core.lock().expect("core lock").rocket.enable_xhalt();
+    }
+
+    /// Live: turns on research v2's x-float-1 (`crate::xfloat_live`) with `archive` for the
+    /// security types it reads from N1's facts table. Call after `set_rocket_watch`. A replay
+    /// never calls this.
+    pub fn enable_xfloat(&self, archive: Option<Archive>) {
+        if !self.0.rocket_on.load(Ordering::Relaxed) || self.0.mode != ClockMode::Live {
+            return;
+        }
+        if let Some(a) = archive {
+            let _ = self.0.n1_archive.set(a);
+        }
+        let mut core = self.0.core.lock().expect("core lock");
+        // Without the stock-context engine there is no float, and x-float-1 never fires.
+        tracing::info!(
+            config = crate::xfloat_live::logic::CONFIG,
+            stock_context = core.context.is_some(),
+            "x-float-1: detector on (research v2, beside production; XFLOAT_LIVE=0 turns it off, detectors.x-float-1 switches it at runtime)"
+        );
+        core.rocket.enable_xfloat();
     }
 
     /// Loads a trading date's N1 facts (`crate::n1_live::load_facts`) on a blocking thread, then
@@ -2123,6 +2152,11 @@ impl Market {
             market.enable_xhalt(Some(archive.clone()));
         } else if mode == ClockMode::Live && !cfg.xhalt_live {
             tracing::info!("x-halt-1: off (XHALT_LIVE=0)");
+        }
+        if mode == ClockMode::Live && cfg.rocket_watch && cfg.xfloat_live {
+            market.enable_xfloat(Some(archive.clone()));
+        } else if mode == ClockMode::Live && !cfg.xfloat_live {
+            tracing::info!("x-float-1: off (XFLOAT_LIVE=0)");
         }
         if mode == ClockMode::Live && cfg.rocket_watch {
             // Before the ingest: today's alerts and the record come back after a restart.
@@ -3819,6 +3853,14 @@ impl Market {
             rocket.add_shelf_entries(zones.take_shelf_entries());
             rocket.tick(now, |s| {
                 quotes.get(s).and_then(|r| r.prev_close).map(|p| p.to_f64())
+            });
+            // x-float-1 (crate::xfloat_live): the float from the stock-context engine and the
+            // quote board's split-adjusted previous close, read only for a symbol with a bar due.
+            rocket.xfloat_tick(now, |s| {
+                crate::xfloat_live::inputs(
+                    context.as_ref().and_then(|cx| cx.float_shares(s)),
+                    quotes.get(s).and_then(|r| r.prev_close).map(|p| p.to_f64()),
+                )
             });
             // The flagged symbols get the micro-pullback too (a few dozen at most a day).
             if let Some(w) = rocket.take_watch()

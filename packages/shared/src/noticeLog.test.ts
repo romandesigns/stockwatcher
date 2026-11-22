@@ -41,6 +41,7 @@ describe("notice log", () => {
     expect(log.items.map((i) => i.event_id)).toEqual(["a", "b", "c"]);
     expect(noticeKind("runners.burst")).toEqual({ group: "runners", label: "Buying burst" });
     expect(noticeKind("ross.crossing").group).toBe("ross");
+    expect(noticeKind("v2.xfloat")).toEqual({ group: "runners", label: "Float rotation" });
     expect(noticeKind("something.new")).toEqual({ group: "runners", label: "something.new" });
     expect(parseNoticeLog({ items: [] })).toBeNull();
   });

@@ -786,6 +786,8 @@ export interface PushRegisterMessage {
   n1Shadow?: boolean;
   /** Pushes when Engine A T2-c4's F1u fires (crates/server/src/c4_live; server default on; absent = unchanged). */
   f1u?: boolean;
+  /** Pushes when research v2's x-float-1 fires (crates/server/src/xfloat_live; server default on; absent = unchanged). */
+  xFloat?: boolean;
   /** Pushes when a buying-side Halt watcher gauge appears 9:30–11:30 (T2-c4's HALT add-on; server default on; absent = unchanged). */
   haltBull?: boolean;
   /** Pushes when research v2's x-halt-1 fires: resumed up after a halt (crates/server/src/xhalt_live; server default on; absent = unchanged). */

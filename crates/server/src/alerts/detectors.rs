@@ -85,7 +85,15 @@ pub const X_HALT_1: Detector = Detector {
     default_on: true,
 };
 
-pub const ALL: [Detector; 2] = [RUN, X_HALT_1];
+/// Research v2's x-float-1 "rotation ignition" ([`NoticeKind::XFloat`], `crate::xfloat_live`).
+pub const X_FLOAT_1: Detector = Detector {
+    id: crate::xfloat_live::logic::DETECTOR,
+    version: crate::xfloat_live::logic::VERSION,
+    kinds: &[NoticeKind::XFloat],
+    default_on: true,
+};
+
+pub const ALL: [Detector; 3] = [RUN, X_HALT_1, X_FLOAT_1];
 
 /// The detector that sends `kind`, if it is switchable.
 pub fn of(kind: NoticeKind) -> Option<&'static Detector> {

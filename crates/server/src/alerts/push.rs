@@ -153,6 +153,10 @@ pub struct Device {
     /// existed included.
     #[serde(default = "yes")]
     pub resumed_up: bool,
+    /// Research v2's x-float-1 (`crate::xfloat_live`, 2026-11-22): on, a record saved before it
+    /// existed included (it never chose; every other stored switch keeps its value).
+    #[serde(default = "yes")]
+    pub x_float: bool,
 }
 
 impl Device {
@@ -179,6 +183,7 @@ impl Device {
             f1u: self.f1u,
             halt_bull: self.halt_bull,
             resumed_up: self.resumed_up,
+            x_float: self.x_float,
         }
     }
 
@@ -270,6 +275,8 @@ pub struct RunnersOptIn {
     pub halt_bull: Option<bool>,
     /// Research v2's x-halt-1 (`crate::xhalt_live`); None = unchanged / the default (on).
     pub resumed_up: Option<bool>,
+    /// Research v2's x-float-1 (`crate::xfloat_live`); None = unchanged / the default (on).
+    pub x_float: Option<bool>,
 }
 
 /// The newer switches as `push.register` and `runners.notify` spell them (owner, 2026-10-23),
@@ -325,6 +332,9 @@ pub struct MoreOptIn {
     /// Research v2's x-halt-1 (`resumedUp`), spelled the same by the phone and the desk.
     #[serde(default)]
     pub resumed_up: Option<bool>,
+    /// Research v2's x-float-1 (`xFloat`), spelled the same by the phone and the desk.
+    #[serde(default)]
+    pub x_float: Option<bool>,
 }
 
 /// A known halt sound key (`super::halts::SOUNDS`), read off the wire.
@@ -359,6 +369,7 @@ impl MoreOptIn {
             f1u: self.f1u,
             halt_bull: self.halt_bull,
             resumed_up: self.resumed_up,
+            x_float: self.x_float,
             ..o
         }
     }
@@ -518,6 +529,7 @@ impl Devices {
         let f1u = pick(runners.f1u, |d| d.f1u, def.f1u);
         let halt_bull = pick(runners.halt_bull, |d| d.halt_bull, def.halt_bull);
         let resumed_up = pick(runners.resumed_up, |d| d.resumed_up, def.resumed_up);
+        let x_float = pick(runners.x_float, |d| d.x_float, def.x_float);
         let sound = |v: Option<&'static str>, had_v: fn(&Device) -> Option<String>| {
             v.map(str::to_owned).or_else(|| had.and_then(had_v))
         };
@@ -559,6 +571,7 @@ impl Devices {
             f1u,
             halt_bull,
             resumed_up,
+            x_float,
         });
         while self.list.len() > MAX_DEVICES {
             self.list.remove(0);

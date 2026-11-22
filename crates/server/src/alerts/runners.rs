@@ -132,7 +132,8 @@ pub enum Hold {
     Stale,
     /// This event was already sent (its [`crate::rocket::Notice::event_id`]).
     Duplicate,
-    /// Its detector is switched off (`super::detectors`): it ran, and is only recorded.
+    /// Its detector is switched off at runtime (`super::detectors`): it ran, it is ledgered,
+    /// nothing is sent.
     SwitchedOff,
 }
 
@@ -390,6 +391,9 @@ pub fn data_kind(kind: NoticeKind) -> &'static str {
         // Research v2's x-halt-1 (`crate::xhalt_live`): about an exchange halt's reopen, so the
         // halt namespace, apart from the plain `halt.resumed` status notice.
         NoticeKind::ResumedUp => "halt.resumed_up",
+        // Research v2 (outputs/stockwatcher-research-v2, owner 2026-11-22): its own namespace,
+        // so each shipped finalist is counted apart in the ledger and the Insights log.
+        NoticeKind::XFloat => "v2.xfloat",
     }
 }
 
@@ -399,6 +403,15 @@ fn money(d: f64) -> String {
         format!("${:.1}M", d / 1e6)
     } else {
         format!("${:.0}K", (d / 1e3).round())
+    }
+}
+
+/// "8.2M", "950K": a share count for a lock screen.
+fn share_count(n: f64) -> String {
+    if n >= 1e6 {
+        format!("{:.1}M", n / 1e6)
+    } else {
+        format!("{:.0}K", (n / 1e3).round())
     }
 }
 
@@ -787,6 +800,31 @@ fn panel_message(n: &Notice) -> (String, String, Value) {
                 "v2 research".to_owned(),
             ];
             (format!("{s} · Resumed up{p}"), parts.join(" · "))
+        }
+        // "YMAT · Float rotation · $2.71" / "31% of its 8.2M float traded today · +15% on the
+        // $2.36 close · new high": the three conditions that fired it (crate::xfloat_live), then
+        // the reference line. Research: 25 % of its alerts were GOOD on Train, never "buy".
+        (NoticeKind::XFloat, Some(NoticeDetail::XFloat(x))) => {
+            data["config"] = json!(crate::xfloat_live::logic::CONFIG);
+            data["detector"] = json!(crate::xfloat_live::logic::DETECTOR);
+            data["emitted_at"] = json!(x.emitted_ns / 1_000_000);
+            data["float"] = json!(x.float);
+            data["rotation_pct"] = json!((x.rotation * 1000.0).round() / 10.0);
+            data["gain_pct"] = json!((x.gain * 1000.0).round() / 10.0);
+            let parts = [
+                format!(
+                    "{:.0}% of its {} float traded today",
+                    (x.rotation * 100.0).floor(),
+                    share_count(x.float)
+                ),
+                format!(
+                    "{:+.0}% on the {} close",
+                    x.gain * 100.0,
+                    dollars(on_tick(x.c1))
+                ),
+                "new high".to_owned(),
+            ];
+            (format!("{s} · Float rotation{p}"), parts.join(" · "))
         }
         // "YMAT · N1 · shadow · $2.71" / "+6.4% off the 3-min low $2.55 · $112K in 3 min, 14×
         // usual · research shadow": what the window did, then the reference line. Labelled a
@@ -1477,6 +1515,17 @@ Alert $2.41 · +5% = $2.53"
                     emitted_ns: n.at_ns + 60_000_000,
                 },
             )),
+            NoticeKind::XFloat => Some(NoticeDetail::XFloat(crate::xfloat_live::XFloatNotice {
+                float: 8_200_000.0,
+                float_source: crate::xfloat_live::FLOAT_SOURCE,
+                shares: 2_570_000,
+                rotation: 0.3134,
+                c1: 2.36,
+                gain: 0.148,
+                prior_high: 2.69,
+                arrival_ns: Some(n.at_ns - 40_000_000),
+                emitted_ns: n.at_ns + 1_000_000,
+            })),
             NoticeKind::N1 => Some(NoticeDetail::N1(crate::n1_live::N1Notice {
                 low: 2.55,
                 high: 2.74,
@@ -1687,6 +1736,13 @@ Alert $2.41 · +5% = $2.53"
                 "YMAT · Resumed up · $2.71".into(),
                 "Reopened +3.4% over $2.62 halt price · ran +18% into the LULD pause · v2 research"
                     .into()
+            )
+        );
+        assert_eq!(
+            t(NoticeKind::XFloat),
+            (
+                "YMAT · Float rotation · $2.71".into(),
+                "31% of its 8.2M float traded today · +15% on the $2.36 close · new high".into()
             )
         );
         assert_eq!(

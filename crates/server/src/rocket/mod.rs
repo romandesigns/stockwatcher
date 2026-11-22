@@ -227,6 +227,12 @@ pub enum NoticeKind {
     /// halt price; its facts in [`NoticeDetail::ResumedUp`]. Its own switch (`resumedUp`), ON by
     /// default, and the detectors switch `x-halt-1` (`crate::alerts::detectors`).
     ResumedUp,
+    /// Research v2's x-float-1 "rotation ignition" (`crate::xfloat_live`, owner 2026-11-22): a
+    /// float of at most 50 M shares, a quarter of it traded since 04:00, +10 % on the previous
+    /// close, a new session high. Its facts in [`NoticeDetail::XFloat`]. Its own switch
+    /// (`xFloat`), ON by default, and the runtime detector switch `x-float-1`
+    /// (`crate::alerts::detectors`).
+    XFloat,
 }
 
 impl NoticeKind {
@@ -253,10 +259,11 @@ impl NoticeKind {
             NoticeKind::F1u => "f1u",
             NoticeKind::HaltBull => "halt_bull",
             NoticeKind::ResumedUp => "resumed_up",
+            NoticeKind::XFloat => "x_float",
         }
     }
 
-    pub const ALL: [NoticeKind; 21] = [
+    pub const ALL: [NoticeKind; 22] = [
         NoticeKind::New,
         NoticeKind::Breakout,
         NoticeKind::Burst,
@@ -278,6 +285,7 @@ impl NoticeKind {
         NoticeKind::F1u,
         NoticeKind::HaltBull,
         NoticeKind::ResumedUp,
+        NoticeKind::XFloat,
     ];
 }
 
@@ -319,6 +327,8 @@ pub enum NoticeDetail {
     F1u(crate::c4_live::F1uNotice),
     /// [`NoticeKind::ResumedUp`]: the halt, its run-in and the reopen (`crate::xhalt_live`).
     ResumedUp(crate::xhalt_live::ResumedUpNotice),
+    /// [`NoticeKind::XFloat`]: the float, rotation and gain behind the fire (`crate::xfloat_live`).
+    XFloat(crate::xfloat_live::XFloatNotice),
 }
 
 /// An exchange halt's or resumption's facts, from the trading-status feed and the stock's own
@@ -968,6 +978,11 @@ pub struct RocketBoard {
     /// ([`RocketBoard::enable_xhalt`], `XHALT_LIVE`). It reads the board's prints, halts and
     /// clock and only adds its own notices.
     xhalt: Option<crate::xhalt_live::XHaltLive>,
+    /// Research v2's x-float-1 (`crate::xfloat_live`): live market only
+    /// ([`RocketBoard::enable_xfloat`], `XFLOAT_LIVE`). It reads the board's prints and clock, the
+    /// float and previous close the market hands [`RocketBoard::xfloat_tick`], and only adds its
+    /// own notices.
+    xfloat: Option<crate::xfloat_live::XFloatLive>,
     /// The running entry's facts for `running_facts_date` ([`running::facts`]), and the date
     /// whose facts the market should load (once per date).
     running_facts: HashMap<String, running::Fact>,
@@ -1147,6 +1162,7 @@ impl RocketBoard {
             n1: None,
             c4: None,
             xhalt: None,
+            xfloat: None,
             running_facts: HashMap::new(),
             running_facts_date: None,
             running_facts_wanted: None,
@@ -1213,6 +1229,7 @@ impl RocketBoard {
             "n1": self.n1.as_ref().map(|n| n.cost()),
             "f1u": self.c4.as_ref().map(|n| n.cost()),
             "x_halt": self.xhalt.as_ref().map(|n| n.cost()),
+            "xfloat": self.xfloat.as_ref().map(|n| n.cost()),
         })
     }
 
@@ -1318,19 +1335,53 @@ impl RocketBoard {
         self.xhalt.as_ref()
     }
 
-    /// The trading date whose N1 / F1u / x-halt-1 facts the market should load (once per date;
-    /// the three share one table).
+    /// Turns on research v2's x-float-1 ([`crate::xfloat_live`]); a no-op on a disabled board.
+    /// Only the live market calls this (`XFLOAT_LIVE`, on by default).
+    pub fn enable_xfloat(&mut self) {
+        if self.enabled {
+            self.xfloat = Some(crate::xfloat_live::XFloatLive::new());
+        }
+    }
+
+    pub fn xfloat(&self) -> Option<&crate::xfloat_live::XFloatLive> {
+        self.xfloat.as_ref()
+    }
+
+    /// x-float-1 decides on the clock (each bar 50 ms after it ends), against the float and
+    /// previous close `inputs` gives for a symbol with a bar due (`crate::xfloat_live::inputs`).
+    /// Apart from [`RocketBoard::tick`] because those come from the stock-context engine and the
+    /// quote board, which the board does not own; the market calls it right after the tick.
+    pub fn xfloat_tick(&mut self, now: i64, inputs: impl Fn(&str) -> crate::xfloat_live::Inputs) {
+        if !self.enabled {
+            return;
+        }
+        if let Some(n) = self.xfloat.as_mut() {
+            n.tick(now, inputs);
+            for x in n.take_notices() {
+                if self.notices.len() < MAX_NOTICES {
+                    self.notices.push(x);
+                }
+            }
+        }
+    }
+
+    /// The trading date whose N1 / F1u / x-halt-1 / x-float-1 facts the market should load (once
+    /// per date; they share one table: x-halt-1 its C1 and types, x-float-1 its types).
     pub fn take_n1_facts_request(&mut self) -> Option<NaiveDate> {
         let a = self.n1.as_mut().and_then(|n| n.take_facts_request());
         let b = self.c4.as_mut().and_then(|n| n.take_facts_request());
         let c = self.xhalt.as_mut().and_then(|n| n.take_facts_request());
-        a.or(b).or(c)
+        let d = self.xfloat.as_mut().and_then(|n| n.take_facts_request());
+        a.or(b).or(c).or(d)
     }
 
     pub fn set_n1_facts(&mut self, table: crate::n1_live::FactsTable) {
         let table = Arc::new(table);
         if let Some(n) = self.n1.as_mut() {
             n.set_facts_shared(table.clone());
+        }
+        if let Some(n) = self.xfloat.as_mut() {
+            n.set_facts(table.clone());
         }
         if let Some(n) = self.c4.as_mut() {
             n.set_facts(table.clone());
@@ -1453,6 +1504,9 @@ impl RocketBoard {
                 n.apply_trade(t, counted);
             }
             if let Some(n) = self.xhalt.as_mut() {
+                n.apply_trade(t, counted);
+            }
+            if let Some(n) = self.xfloat.as_mut() {
                 n.apply_trade(t, counted);
             }
         }

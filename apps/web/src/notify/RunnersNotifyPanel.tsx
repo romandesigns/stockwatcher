@@ -1,7 +1,8 @@
-import type { AlertSwitch, RunnersNotifyKinds } from "@stockwatcher/shared";
+import { DETECTOR_SWITCHES, type AlertSwitch, type DetectorSwitch, type RunnersNotifyKinds } from "@stockwatcher/shared";
 import { Icon } from "@stockwatcher/chart-web";
 import { Button, Switch, cn } from "@stockwatcher/chart-web/ui";
 import { useId, useState, useSyncExternalStore } from "react";
+import { useApp } from "../state/store.ts";
 import { HaltRows } from "./HaltRows.tsx";
 import type { RunnersNotifier } from "./runnersNotify.ts";
 import { RUNNERS_SWITCH_SECTIONS } from "./runnersSwitches.ts";
@@ -10,7 +11,9 @@ import { RUNNERS_SWITCH_SECTIONS } from "./runnersSwitches.ts";
  * Settings → Alerts panel (runnersSection.tsx): the master switch (on the web, the "Turn on
  * desktop alerts" button that asks for permission, from a click only) and the phone's switches,
  * by panel (Runners, Ross, Signals, Halt watcher), then Halts (HaltRows: a sound per event; they
- * work without the master switch, so that section is never dimmed by it).
+ * work without the master switch, so that section is never dimmed by it), then Detectors: the
+ * runtime switches of the shipped research-v2 detectors (packages/shared detectors.ts). Those are
+ * for every device at once, synced, and never dimmed either: the owner's kill switch.
  */
 export function RunnersNotifyPanel({ notifier }: { notifier: RunnersNotifier }) {
   const prefs = useSyncExternalStore(notifier.subscribe, notifier.prefs, notifier.prefs);
@@ -25,6 +28,8 @@ export function RunnersNotifyPanel({ notifier }: { notifier: RunnersNotifier }) 
     void notifier.enable().finally(() => setBusy(false));
   };
   const setKind = (key: keyof RunnersNotifyKinds, v: boolean) => notifier.setPrefs({ ...prefs, kinds: { ...prefs.kinds, [key]: v } });
+  const detectors = useApp((s) => s.detectors);
+  const setDetectorOn = useApp((s) => s.setDetectorOn);
 
   const status =
     permission === "unsupported"
@@ -71,7 +76,32 @@ export function RunnersNotifyPanel({ notifier }: { notifier: RunnersNotifier }) 
           <HaltRows items={section.items} prefs={prefs} notifier={notifier} />
         </div>
       ))}
+      <div role="group" aria-label="Detectors, every device" className="mt-3 flex flex-col gap-0.5">
+        <span className="px-2 pb-0.5 text-[11px] font-medium uppercase tracking-wide text-text-faint">Detectors · every device</span>
+        {DETECTOR_SWITCHES.map((d) => (
+          <DetectorRow key={d.id} item={d} checked={detectors[d.id] !== false} onChange={(v) => setDetectorOn(d.id, v)} />
+        ))}
+      </div>
     </div>
+  );
+}
+
+/** A shipped detector's runtime switch: synced, the server holds its alerts the moment it is off. */
+function DetectorRow({ item, checked, onChange }: { item: DetectorSwitch; checked: boolean; onChange: (v: boolean) => void }) {
+  const descId = useId();
+  return (
+    <label className="flex min-h-11 cursor-pointer items-center gap-3 rounded-lg px-2 py-1.5 transition-colors hover:bg-bg-row">
+      <span className={cn("grid size-8 shrink-0 place-items-center rounded-lg bg-bg-row transition-[opacity,color] duration-150 [&_svg]:size-4", checked ? "text-foreground" : "text-muted-foreground opacity-50")}>
+        <Icon name="insights" />
+      </span>
+      <span className="flex min-w-0 flex-1 flex-col">
+        <span className={cn("text-[13px] transition-colors", checked ? "text-foreground" : "text-foreground/70")}>{item.name}</span>
+        <span id={descId} className="truncate text-[11px] text-text-faint">
+          {item.description}
+        </span>
+      </span>
+      <Switch checked={checked} onCheckedChange={onChange} aria-label={`${item.name} detector`} aria-describedby={descId} />
+    </label>
   );
 }
 

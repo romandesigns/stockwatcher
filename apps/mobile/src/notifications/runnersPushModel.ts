@@ -28,6 +28,8 @@ export interface RunnersPushPrefs {
   pushHaltBull: boolean;
   /** Research v2's x-halt-1, resumed up after a halt (crates/server/src/xhalt_live, 2026-11-22). */
   pushResumedUp: boolean;
+  /** Research v2's x-float-1 "rotation ignition" (crates/server/src/xfloat_live, 2026-11-22). */
+  pushXFloat: boolean;
 }
 
 export const RUNNERS_PUSH_DEFAULTS: RunnersPushPrefs = {
@@ -57,6 +59,8 @@ export const RUNNERS_PUSH_DEFAULTS: RunnersPushPrefs = {
   pushHaltBull: true,
   // Research v2's proven wins: on (owner, 2026-11-22; the server's default too).
   pushResumedUp: true,
+  // Research v2 x-float-1: on (owner, 2026-11-22; the server's default too).
+  pushXFloat: true,
 };
 
 /** The phone pref behind each shared switch (packages/shared `ALERT_SWITCH_SECTIONS`). */
@@ -81,6 +85,7 @@ export const PUSH_PREF_OF: Readonly<Record<keyof RunnersNotifyKinds, keyof Runne
   f1u: "pushF1u",
   haltBull: "pushHaltBull",
   resumedUp: "pushResumedUp",
+  xFloat: "pushXFloat",
 };
 
 /**
@@ -116,6 +121,7 @@ export interface RunnersRegisterFields {
   f1u: boolean;
   haltBull: boolean;
   resumedUp: boolean;
+  xFloat: boolean;
 }
 
 export function registerFieldsOf(p: RunnersPushPrefs): RunnersRegisterFields {
@@ -140,5 +146,6 @@ export function registerFieldsOf(p: RunnersPushPrefs): RunnersRegisterFields {
     f1u: p.pushF1u,
     haltBull: p.pushHaltBull,
     resumedUp: p.pushResumedUp,
+    xFloat: p.pushXFloat,
   };
 }

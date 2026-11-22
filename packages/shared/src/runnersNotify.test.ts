@@ -35,6 +35,7 @@ describe("runners notices", () => {
 
   test("the defaults are the phone's: every evidence kind on; breakouts, at-trigger and the Halt watcher off", () => {
     expect(DEFAULT_RUNNERS_NOTIFY).toEqual({ new: true, breakout: false, burst: true, running: true, run: true, fast: true, shelf: true, followUp: true, rossCrossing: true, signalsCrossing: true, rossTrigger: false, signalsTrigger: false, halt: false, pullback: true, halted: true, resumed: true, n1: true, f1u: true, haltBull: true, resumedUp: true });
+    expect(DEFAULT_RUNNERS_NOTIFY).toEqual({ new: true, breakout: false, burst: true, running: true, run: true, fast: true, shelf: true, followUp: true, rossCrossing: true, signalsCrossing: true, rossTrigger: false, signalsTrigger: false, halt: false, pullback: true, halted: true, resumed: true, n1: true, f1u: true, haltBull: true, xFloat: true });
     expect(runnersNotifyKinds(undefined)).toEqual({ ...DEFAULT_RUNNERS_NOTIFY });
     // A value stored before the new kinds existed: the new switches take their defaults.
     expect(runnersNotifyKinds({ new: false, breakout: true, burst: true, running: true, run: true, fast: true })).toEqual({ ...DEFAULT_RUNNERS_NOTIFY, new: false, breakout: true });
@@ -77,6 +78,7 @@ describe("runners notices", () => {
       ["shadow.f1u", "f1u"],
       ["halt.bull", "haltBull"],
       ["halt.resumed_up", "resumedUp"],
+      ["v2.xfloat", "xFloat"],
     ]);
     for (const k of RUNNERS_NOTICE_KINDS) expect(runnersNotifyKey(k) in DEFAULT_RUNNERS_NOTIFY).toBe(true);
   });
@@ -229,6 +231,19 @@ describe("research v2 x-halt-1 and the run cut", () => {
   test("the Run +20% switch says it is cut", () => {
     const run = ALERT_SWITCH_SECTIONS.find((s) => s.id === "runners")!.items.find((i) => i.key === "run")!;
     expect(run.description).toContain("Cut since Nov 22");
+describe("research v2 x-float-1", () => {
+  const mk = (kind: string) => parseRunnersNotice({ type: "runners.notice", id: `runners-${kind}-x`, alertId: "x", symbol: "ABCD", kind, title: "ABCD · Float rotation · $2.71", body: "b", at: 1 })!;
+
+  test("its own switch, on by default, listed with the Runners paths; a stored value from before takes the default", () => {
+    expect(mk("v2.xfloat").kind).toBe("v2.xfloat");
+    expect(runnersNotifyKey(mk("v2.xfloat").kind)).toBe("xFloat");
+    expect(wantsNotice(mk("v2.xfloat"), DEFAULT_RUNNERS_NOTIFY)).toBe(true);
+    expect(wantsNotice(mk("v2.xfloat"), { ...DEFAULT_RUNNERS_NOTIFY, xFloat: false })).toBe(false);
+    expect(runnersNotifyKinds({ n1: false })).toMatchObject({ n1: false, xFloat: true });
+    const runners = ALERT_SWITCH_SECTIONS.find((s) => s.id === "runners")!;
+    const x = runners.items.find((i) => i.key === "xFloat")!;
+    expect(x).toMatchObject({ name: "Float rotation", icon: "pathRunning" });
+    expect(x.description).toContain("On by default");
   });
 });
 

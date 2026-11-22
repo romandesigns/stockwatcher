@@ -353,6 +353,7 @@ pub fn kind_label(notice: &str) -> &str {
         "shadow.f1u" => "F1 · first pullback",
         "halt.bull" => "Halt risk · buying",
         "halt.resumed_up" => "Resumed up",
+        "v2.xfloat" => "Float rotation",
         "price.alert" => "Price alert",
         other => other,
     }
