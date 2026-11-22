@@ -8,7 +8,7 @@
 # - The GHCR token arrives on stdin, never in argv, so it can't show up in
 #   `ps`, shell history or this log. It is a short-lived GITHUB_TOKEN.
 # - Success means /api/health answers "ok" with commit == that sha within
-#   60 s. Anything else rolls back to the previous tag and exits non-zero,
+#   180 s. Anything else rolls back to the previous tag and exits non-zero,
 #   which fails the CI job.
 set -Eeuo pipefail
 umask 077
@@ -16,7 +16,7 @@ umask 077
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGE="ghcr.io/romandesigns/stockwatcher-server"
 HEALTH_URL="http://127.0.0.1:8790/api/health"
-HEALTH_TIMEOUT=60
+HEALTH_TIMEOUT=180
 KEEP_IMAGES=3
 LOG="$APP_DIR/deploy.log"
 TAG_FILE="$APP_DIR/image.env"
