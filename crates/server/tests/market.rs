@@ -3101,21 +3101,35 @@ async fn levels_and_zones_follow_the_replay_and_match_a_fresh_snapshot() {
     }
     zones = next(&mut ws, is("chart.zones")).await;
     let (mut n_levels, mut n_zones) = (0, 0);
+    // A socket that falls behind the broadcast (RecvError::Lagged in ws.rs) is resynced: a fresh
+    // chart.snapshot, then the whole levels and zones state, which may well equal the last frame.
+    // That resend is the contract, not a repeat. It only happens on a slow machine: CI failed
+    // here twice on 2026-11-22 (and a build from that morning fails the same way pinned to two
+    // cores), so the frames right after a resync snapshot are allowed to equal the last ones.
+    let (mut lvl_resync, mut zone_resync) = (false, false);
     loop {
-        let m = next(&mut ws, |m| is_context(m) || m["type"] == "replay.clock").await;
+        let m = next(&mut ws, |m| {
+            is_context(m) || m["type"] == "replay.clock" || m["type"] == "chart.snapshot"
+        })
+        .await;
         match m["type"].as_str() {
             Some("replay.clock") => {
                 if m["clock"]["now"].as_i64().unwrap() >= open + 70 * 60_000 {
                     break;
                 }
             }
+            Some("chart.snapshot") => (lvl_resync, zone_resync) = (true, true),
             Some("chart.levels") => {
-                assert_ne!(m, levels, "only a change is sent");
+                if !std::mem::take(&mut lvl_resync) {
+                    assert_ne!(m, levels, "only a change is sent");
+                }
                 levels = m;
                 n_levels += 1;
             }
             _ => {
-                assert_ne!(m, zones, "only a change is sent");
+                if !std::mem::take(&mut zone_resync) {
+                    assert_ne!(m, zones, "only a change is sent");
+                }
                 zones = m;
                 n_zones += 1;
             }
