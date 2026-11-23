@@ -1058,3 +1058,49 @@ mod filing_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod source_news_tests {
+    use super::*;
+
+    fn rec(kind: &str) -> SourceNewsRecord {
+        SourceNewsRecord {
+            v: 1,
+            provider: "press_wire".into(),
+            source: "globenewswire".into(),
+            id: "r1".into(),
+            version: 1,
+            symbols: vec!["ACME".into(), "ACMEW".into()],
+            published_at: 10,
+            first_observed_at: 20,
+            headline: Some("Acme Announces Positive Topline Results".into()),
+            url: Some("https://www.globenewswire.com/x".into()),
+            kind: kind.into(),
+            event_type: None,
+            rules: "wire-rules-v1".into(),
+        }
+    }
+
+    #[test]
+    fn stored_wire_items_go_through_the_seam() {
+        let items = source_news_items(&[rec("catalyst"), rec("nonsense")], None);
+        assert_eq!(
+            items.len(),
+            2,
+            "the unknown kind is skipped, both tickers kept"
+        );
+        let n = &items[0];
+        assert_eq!(n.id, "news:press_wire:r1");
+        assert_eq!(n.source, "press_wire/globenewswire");
+        assert!(n.substantive && n.relevant && n.credible_source);
+        assert_eq!((n.published_at, n.observed_at), (Some(10), 20));
+        assert_eq!(
+            n.headline.as_deref(),
+            Some("Acme Announces Positive Topline Results")
+        );
+        let off = source_news_items(&[rec("offering")], None);
+        assert!(!off[0].substantive && off[0].event_type == stock_context::OFFERING_EVENT);
+        let only: BTreeSet<String> = ["ACMEW".to_string()].into();
+        assert_eq!(source_news_items(&[rec("catalyst")], Some(&only)).len(), 1);
+    }
+}

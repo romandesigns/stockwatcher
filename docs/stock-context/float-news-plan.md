@@ -353,3 +353,27 @@ the market-wide **Benzinga** coverage: EDGAR only adds passes. A row names the s
 files, so a restart repeats nothing and pages the feed back to where it stopped. A gap the feed
 cannot reach (60 pages, 6,000 filings) is filled from the daily indexes with the dating above;
 coverage is claimed only for what the feed itself read.
+
+## 11. One news seam, press wires and T1 halts (pillars-v6, owner 2026-11-22)
+
+Every news source other than Benzinga hands the pillar its items through one seam,
+`stock_context::SourceNews` and `NewsItem::from_source` (provider, sub-source, id, symbol, event
+time, first sighting, headline, URL, kind `catalyst | offering | pending | recorded`). One rule
+classifies them all: relevant, credible and `IssuerAnnounced`; substantive for catalyst and
+pending only. pillars-v6 lists the providers that may pass: `alpaca`, `sec_edgar`, `press_wire`,
+`halt_t1`.
+
+- **SEC EDGAR** (section 10) goes through it in `evidence_load::filing_items`.
+- **Press wires** (a separate collector) append `market_archive::SourceNewsRecord` lines to
+  `evidence/source-news/`; the server's loader tails that directory and converts them with
+  `evidence_load::source_news_items`.
+- **T1 halts** (`halt_t1`): a halt with reason `T1` ("news pending") is the exchange saying a
+  catalyst is coming. `stockwatcher_server::context::t1_news_item` makes it a `pending` item from
+  the chart engine's halt update, on the live board and in a restore's replay of the same tape:
+  published and observed at the halt's exchange time, fresh for 24 h from it, a second version at
+  the resume (observed then) with the resume time. The row labels it "News pending (T1 halt 09:42)",
+  never as a headline. It carries the halt time, code and resume time for a later dedicated view.
+  Not carried: the halt price (the halt message has none; the chart's last print would have to be
+  joined) and later codes of the same halt (T2 news released, T3): the chart engine keeps one
+  reason per halt span. A replay seek rebuilds its board from candles without re-reading halts, so
+  a T1 before the seek point is missing from that replay board.

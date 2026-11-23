@@ -3379,4 +3379,50 @@ mod tests {
             vec!["float"]
         );
     }
+
+    fn halt(start_ns: i64, end_ns: Option<i64>, reason: &str) -> chart_engine::wire::HaltUpdate {
+        chart_engine::wire::HaltUpdate {
+            symbol: SYM.into(),
+            halt: chart_engine::wire::HaltWire {
+                start: start_ns / 1_000_000,
+                start_ns,
+                end: end_ns.map(|e| e / 1_000_000),
+                end_ns,
+                reason: reason.into(),
+                code: "H".into(),
+            },
+        }
+    }
+
+    #[test]
+    fn a_t1_halt_passes_the_news_pillar_as_news_pending_from_the_halt_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = archive(dir.path());
+        write_daily_world(&a);
+        write_without_news(&a);
+        let log = Mutex::new(EvidenceLog::default());
+        let mut cx = board();
+        load(&a, &log, &mut cx);
+        // Any other halt reason is not news.
+        assert!(crate::context::t1_news_item(&halt(t(9, 31, 0), None, "LUDP")).is_none());
+        trade(&mut cx, t(9, 30, 0), t(9, 31, 0));
+        assert_ne!(state(&cx, SYM, PillarId::News).0, Tri::Pass);
+        cx.apply_halt_news(&halt(t(9, 31, 5), None, "T1"));
+        trade(&mut cx, t(9, 31, 0), t(9, 32, 0));
+        assert_eq!(state(&cx, SYM, PillarId::News).0, Tri::Pass);
+        let frame: serde_json::Value =
+            serde_json::from_str(&cx.panel_frame("ross.snapshot", None)).expect("json");
+        let ev = &frame["panel"]["rows"][0]["news_evidence"];
+        assert_eq!(ev["source"], "halt_t1");
+        assert_eq!(ev["channel"], "T1");
+        assert_eq!(ev["pending"], true);
+        assert_eq!(ev["published_at"], t(9, 31, 5));
+        assert_eq!(ev["halt"]["halted_at"], t(9, 31, 5));
+        assert!(ev["halt"]["resumed_at"].is_null());
+        // The resume restates it (version 2, observed at the resume) with the resume time.
+        let resumed =
+            crate::context::t1_news_item(&halt(t(9, 31, 5), Some(t(9, 36, 5)), "T1")).unwrap();
+        assert_eq!((resumed.version, resumed.observed_at), (2, t(9, 36, 5)));
+        assert_eq!(resumed.halt.unwrap().resumed_at, Some(t(9, 36, 5)));
+    }
 }
