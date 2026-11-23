@@ -27,6 +27,7 @@ pub mod notice_memory;
 pub mod notices;
 pub mod observe;
 pub mod oplog;
+pub mod pending;
 pub mod pressure;
 pub mod prior_sessions;
 pub mod profile_frames;

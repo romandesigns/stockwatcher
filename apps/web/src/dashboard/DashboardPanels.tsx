@@ -3,6 +3,7 @@ import {
   BOTTOM_PANELS,
   detectionItemCount,
   hodItemCount,
+  pendingItemCount,
   moversCount,
   panelsSettled,
   rocketItemCount,
@@ -15,6 +16,7 @@ import {
   type DetectionChannel,
   type FavoritesChannel,
   type HodChannel,
+  type PendingChannel,
   type PressureChannel,
   type MoversChannel,
   type RocketChannel,
@@ -38,6 +40,7 @@ import { useFavoriteList } from "../favorites/useFavoriteList.ts";
 import { useDetection } from "../feed/useDetection.ts";
 import { useFavorites } from "../feed/useFavorites.ts";
 import { useHod } from "../feed/useHod.ts";
+import { usePending } from "../feed/usePending.ts";
 import {
   usePressureBoard,
   usePressureStatus,
@@ -49,6 +52,7 @@ import { useHeld } from "../lib/useHeld.ts";
 import { DetectionPanelView } from "./DetectionPanel.tsx";
 import { HaltWatcherView } from "./HaltWatcher.tsx";
 import { HodPanelView } from "./HodPanel.tsx";
+import { PendingPanelView } from "./PendingPanel.tsx";
 import { MoversPanelView } from "./MoversPanel.tsx";
 import { RocketPanelView } from "./RocketPanel.tsx";
 import { RossPanelView } from "./RossPanel.tsx";
@@ -128,6 +132,8 @@ export interface DashboardPanelsProps {
   movers?: MoversChannel;
   /** The HOD Momentum scanner (bottom row, beside the Ross Panel). */
   hod?: HodChannel;
+  /** The News pending card (bottom row, first: a halt for news is the most time-sensitive item). */
+  pending?: PendingChannel;
   onPick: (symbol: string) => void;
   onEpisodePick: (symbol: string, episodeId: string, runEpoch: string) => void;
   onEpisodeClear?: () => void;
@@ -171,6 +177,7 @@ export function DashboardPanels({
   pressure,
   movers,
   hod,
+  pending,
   onPick,
   onEpisodePick,
   onEpisodeClear,
@@ -186,6 +193,7 @@ export function DashboardPanels({
   const pressureStatus = usePressureStatus(pressure);
   const moversState = useMovers(movers);
   const hodState = useHod(hod);
+  const pendingState = usePending(pending);
   // No wall-clock tick: the ages are market ages, and useRocket re-renders on each of the
   // server's clock frames (clock.v1, rocket.ts CLOCK_RENDER_STEP_MS), which the panels read.
   const runners = rocket ? rocketState : undefined;
@@ -199,6 +207,7 @@ export function DashboardPanels({
     halt: pressure ? pressureBoard.length : 0,
     hot: movers ? moversCount(moversState, "hot") : 0,
     hod: hod ? hodItemCount(hodState) : 0,
+    pending: pending ? pendingItemCount(pendingState) : 0,
   };
   // The movers and the Halt watcher have no on/off: they have answered once their first frame
   // landed (the movers hold rows; the pressure status records a frame).
@@ -211,6 +220,7 @@ export function DashboardPanels({
     movers && (moversState.rows !== null ? true : null),
     // An older server without the scanner never answers: it is off, not pending.
     hod && (!hodState.available ? true : hodState.policy !== null ? true : null),
+    pending && (!pendingState.available ? true : pendingState.snapshot ? true : null),
   ]);
   const timedOut = useSettleTimeout(settled);
   const side = useSettled(
@@ -257,6 +267,8 @@ export function DashboardPanels({
         onEpisodePick={onEpisodePick}
         runners={runners}
       />
+    ) : p === "pending" ? (
+      <PendingPanelView state={pendingState} onPick={onPick} />
     ) : p === "hod" ? (
       <HodPanelView state={hodState} onPick={onPick} />
     ) : p === "rocket" ? (
@@ -419,6 +431,7 @@ const SIDE_LABEL: Record<SidePanel, string> = {
 };
 
 const BOTTOM_LABEL: Record<BottomPanel, string> = {
+  pending: "News pending",
   ross: "Ross Panel",
   hod: "HOD Momentum",
   rocket: "Runners",
