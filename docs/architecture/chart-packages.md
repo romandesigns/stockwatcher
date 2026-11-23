@@ -48,7 +48,7 @@ The reference for a screen with several charts. Web `apps/web/src/dashboard/`, p
   three columns wide, two narrower, one on a phone, by container queries). Phone: the region under
   the charts, a `Segmented` "Halt watcher | Most active" (one column folded, two unfolded by
   `maxChartsFor`'s sw600dp rule). Data: `pressure.subscribe` on the dashboard's own socket, so it
-  follows Settings → Data like the charts. The gauge is the shared `GAUGE` geometry and colours in
+  reads the live market like the charts (the practice page reads its own replay connection). The gauge is the shared `GAUGE` geometry and colours in
   `@stockwatcher/shared` `pressure.ts`, drawn by `PressureGauge` on each platform, and is wavykit's
   `pressure-gauge`.
   - **Pressure** (server, `crates/server/src/pressure.rs`, trades only: the feed has no quotes):

@@ -14,13 +14,14 @@ bun run --filter @stockwatcher/web build
 cargo run -p stockwatcher-server --example detection_fixture --locked -- micro_retracted --until-event crossing_retracted --serve --static apps/web/dist
 ```
 
-Open `http://127.0.0.1:8792`. In Settings → Data choose **Replay**, then close Settings.
+Open `http://127.0.0.1:8792/#/chart` (the practice page: the dashboard reads live only since
+2026-11-23, so the replayed fixture shows there).
 The live slot remains idle. The fixture server binds loopback and starts no live provider.
 Its synthetic logical clock is paused after the requested real core transition; later expiry
 inputs have not been applied. Every detector view is labeled fixture / synthetic.
 
 1. MPXC is armed, below its $3.40 trigger, with fixed $3.32 invalidation. Select its row to load
-   that exact episode on the selected dashboard chart. Its first recognition and latest
+   that exact episode on the practice chart. Its first recognition and latest
    material transition have separate millisecond timestamps.
 2. Open Evidence & timeline. Inspect the frozen $3.00 → $3.40 impulse anchors, 20% depth,
    mandatory PASS checks, optional participation measurement, arming time and level version.
