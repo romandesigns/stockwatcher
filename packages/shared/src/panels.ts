@@ -68,10 +68,10 @@ export function detectionView(pickedRecent: boolean, c: { active: number; recent
  * this fixed order; a panel shows only while it has items, and a group with none closes.
  */
 export type SidePanel = "favorites" | "signals" | "gainers";
-export type BottomPanel = "ross" | "hod" | "rocket" | "halt" | "hot";
+export type BottomPanel = "pending" | "ross" | "hod" | "rocket" | "halt" | "hot";
 export type DashboardPanel = SidePanel | BottomPanel;
 export const SIDE_PANELS: readonly SidePanel[] = ["favorites", "signals", "gainers"];
-export const BOTTOM_PANELS: readonly BottomPanel[] = ["ross", "hod", "rocket", "halt", "hot"];
+export const BOTTOM_PANELS: readonly BottomPanel[] = ["pending", "ross", "hod", "rocket", "halt", "hot"];
 
 /** The panels of one group that have items, in the group's fixed order. */
 export function visiblePanels<P extends DashboardPanel>(order: readonly P[], counts: Readonly<Partial<Record<DashboardPanel, number>>>): P[] {

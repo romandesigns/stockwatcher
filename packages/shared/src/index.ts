@@ -13,6 +13,7 @@ export * from "./ross.ts";
 export * from "./favorites.ts";
 export * from "./rocket.ts";
 export * from "./hod.ts";
+export * from "./pending.ts";
 export * from "./rowMarks.ts";
 export * from "./zones.ts";
 export * from "./detection.ts";

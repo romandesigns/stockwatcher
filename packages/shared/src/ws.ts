@@ -4,6 +4,7 @@ import type { SettingsSync } from "./settingsSync.ts";
 import type { DetectionMessage } from "./detection.ts";
 import type { RocketMessage } from "./rocket.ts";
 import { HOD_FEATURE, type HodMessage } from "./hod.ts";
+import { PENDING_FEATURE, type PendingMessage } from "./pending.ts";
 import type { RunnersNoticeMessage, RunnersNotifyMessage } from "./runnersNotify.ts";
 import { SYMBOLS_FEATURE, type SymbolsMessage } from "./symbols.ts";
 import { NOTICES_FEATURE, type NoticesMessage } from "./noticeFeed.ts";
@@ -54,6 +55,8 @@ export interface WsClientOptions {
   onDetection?: (message: DetectionMessage) => void;
   /** `hod.snapshot` / `hod.update` frames, while subscribed (see `subscribeHod`). */
   onHod?: (message: HodMessage) => void;
+  /** `pending.snapshot` / `pending.update` frames (the News pending card), while subscribed (see `subscribePending`). */
+  onPending?: (message: PendingMessage) => void;
   onDetectionError?: (reason: string) => void;
   /** The price alerts' frames (`alerts.history`, `alert.fired`, …): every connection gets them. */
   onAlerts?: (message: AlertsServerMessage) => void;
@@ -153,6 +156,9 @@ export interface WsClient {
   /** The HOD Momentum scanner (`hod.*`), gated on `hod.v1` like `subscribeSymbols` and sent again after every reconnect. */
   subscribeHod(): void;
   unsubscribeHod(): void;
+  /** The News pending card (`pending.*`), gated on `pending.v1` and sent again after every reconnect. */
+  subscribePending(): void;
+  unsubscribePending(): void;
   /** Sends `runnersNotify()` now (or `enabled: false` when it is null): the switches changed. */
   refreshRunnersNotify(): void;
   close(): void;
@@ -211,6 +217,7 @@ export function createWsClient(opts: WsClientOptions): WsClient {
   let features: readonly string[] = [];
   let detectionWanted = false;
   let hodWanted = false;
+  let pendingWanted = false;
 
   const setStatus = (s: ConnectionStatus) => opts.onStatus?.(s);
 
@@ -304,6 +311,7 @@ export function createWsClient(opts: WsClientOptions): WsClient {
         if (tickerWanted) tickerSubscribe(tickerWanted);
         if (detectionWanted) send({ type: "detection.subscribe" });
         if (hodWanted && features.includes(HOD_FEATURE)) send({ type: "hod.subscribe" });
+        if (pendingWanted && features.includes(PENDING_FEATURE)) send({ type: "pending.subscribe" });
         const notify = opts.runnersNotify?.();
         if (notify) send(notify);
       } else if (msg.type === "runners.notice") {
@@ -336,6 +344,8 @@ export function createWsClient(opts: WsClientOptions): WsClient {
         opts.onDetection?.(msg);
       } else if ((msg.type === "hod.snapshot" || msg.type === "hod.update") && hodWanted) {
         opts.onHod?.(msg);
+      } else if ((msg.type === "pending.snapshot" || msg.type === "pending.update") && pendingWanted) {
+        opts.onPending?.(msg);
       } else if (msg.type === "settings.snapshot" || msg.type === "settings.changed" || msg.type === "settings.rejected") {
         opts.settings?.handle(msg);
       } else if (isAlertsMessage(msg)) {
@@ -476,6 +486,14 @@ export function createWsClient(opts: WsClientOptions): WsClient {
     unsubscribeHod() {
       hodWanted = false;
       if (features.includes(HOD_FEATURE)) send({ type: "hod.unsubscribe" });
+    },
+    subscribePending() {
+      pendingWanted = true;
+      if (features.includes(PENDING_FEATURE)) send({ type: "pending.subscribe" });
+    },
+    unsubscribePending() {
+      pendingWanted = false;
+      if (features.includes(PENDING_FEATURE)) send({ type: "pending.unsubscribe" });
     },
     unsubscribePressure() {
       pressureWanted = false;
