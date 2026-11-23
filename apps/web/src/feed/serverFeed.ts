@@ -1,5 +1,5 @@
 import { createChartRouter, createSnapshotWatch, parseChartMessage, parsePaperMessage, createServerIndicators, type ChartIndicatorsSet, type ChartSubscribe, type ChartUnsubscribe, type PaperMessage, type PaperState, type ReplayControl } from "@stockwatcher/chart-core";
-import { createDetectionChannel, createFavoritesChannel, createHodChannel, HOD_FEATURE, createPendingChannel, PENDING_FEATURE, createPrewatchChannel, PREWATCH_FEATURE, createMoversChannel, createPressureChannel, createQuoteSearchChannel, createRocketChannel, createRossChannel, createNoticesChannel, createSymbolsChannel, createTickerChannel, createWsClient, hasFeature, CLOCK_FEATURE, INDICATORS_FEATURE, INSIGHTS_TICKER_FEATURE, INSIGHTS_TICKER_INDICATORS_FEATURE, INDICATORS_LIMIT_FEATURE, LEVELS_FEATURE, MACD_STYLES_FEATURE, NOTICES_FEATURE, QUOTE_SEARCH_FEATURE, serverWsUrl, SYMBOLS_FEATURE, ZONES_FEATURE, type AlertsServerMessage, type ConnectionStatus, type MarketSource, type SettingsSync, type WebSocketLike } from "@stockwatcher/shared";
+import { createDetectionChannel, createFavoritesChannel, createHodChannel, HOD_FEATURE, createPendingChannel, PENDING_FEATURE, createPrewatchChannel, PREWATCH_FEATURE, createMoversChannel, createPressureChannel, createQuoteSearchChannel, createRocketChannel, createRossChannel, createNoticesChannel, createSymbolsChannel, createTickerChannel, createWsClient, hasFeature, isPracticeNoticeFrame, parsePracticeNotice, type PracticeNoticeMessage, type RunnersNoticeMessage, CLOCK_FEATURE, INDICATORS_FEATURE, INSIGHTS_TICKER_FEATURE, INSIGHTS_TICKER_INDICATORS_FEATURE, INDICATORS_LIMIT_FEATURE, LEVELS_FEATURE, MACD_STYLES_FEATURE, NOTICES_FEATURE, QUOTE_SEARCH_FEATURE, serverWsUrl, SYMBOLS_FEATURE, ZONES_FEATURE, type AlertsServerMessage, type ConnectionStatus, type MarketSource, type SettingsSync, type WebSocketLike } from "@stockwatcher/shared";
 import { webNoticeCards } from "../notify/noticeCards.ts";
 import type { RunnersNotifier } from "../notify/runnersNotify.ts";
 import type { ChartFeed, PaperCommand, ReplayCommand } from "./types.ts";
@@ -41,6 +41,15 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
   let raw: WebSocketLike | null = null;
   const paperListeners = new Set<(m: PaperMessage) => void>();
   let paperState: PaperState | null = null;
+  // The practice page's toasts (feed/types.ts `practiceNotices`, `liveNotices`).
+  const practiceListeners = new Set<(m: PracticeNoticeMessage) => void>();
+  const liveListeners = new Set<(m: RunnersNoticeMessage) => void>();
+  const stream = <T>(set: Set<(m: T) => void>) => ({
+    subscribe(fn: (m: T) => void) {
+      set.add(fn);
+      return () => void set.delete(fn);
+    },
+  });
 
   // Late-bound: the channel is built before the client it drives.
   // The ticker search ranked on the server (quotes.search.v1): only the top rows and the pinned
@@ -153,8 +162,10 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
     runnersNotify: () => opts.notifier?.notifyMessage() ?? null,
     onRunnersNotice: (m) => {
       // Every notice, sent or grouped, updates its stock's card first (notify/noticeCards.ts); a
-      // grouped one never notifies (shared shouldShowNotice).
+      // grouped one never notifies (shared shouldShowNotice). Live listeners (the practice page's
+      // "Live" toast) get it too and apply the same rule themselves.
       webNoticeCards.record(m);
+      for (const l of liveListeners) l(m);
       return opts.notifier?.handle(m);
     },
     settings: opts.settings,
@@ -165,6 +176,19 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
       // accessor shadows the native one, so the browser never calls it.
       let inner: WebSocketLike["onmessage"] = null;
       socket.addEventListener("message", (ev) => {
+        // A replay's practice notice (practice.notice.v1) goes to the practice page's toasts and
+        // nowhere else: taken here, before the shared client (and so the live notifier, which
+        // shows system notifications) could read it.
+        if (typeof ev.data === "string" && isPracticeNoticeFrame(ev.data)) {
+          let m: PracticeNoticeMessage | null = null;
+          try {
+            m = parsePracticeNotice(JSON.parse(ev.data));
+          } catch {
+            m = null;
+          }
+          if (m) for (const l of practiceListeners) l(m);
+          return;
+        }
         // A quotes.snapshot is hundreds of KB: hand it to shared's parser without first
         // parsing it twice as a chart or paper frame. The server writes `type` first. The
         // settings.*, pressure.* and alert frames (shared's own too) take the same shortcut.
@@ -260,6 +284,8 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
     pending,
     prewatch,
     indicators: serverIndicators.channel,
+    practiceNotices: stream(practiceListeners),
+    liveNotices: stream(liveListeners),
     close() {
       detachNotifier?.();
       if (hasDocument) document.removeEventListener("visibilitychange", onVisibility);
@@ -270,6 +296,8 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
       current.clear();
       serverIndicators.clear();
       paperListeners.clear();
+      practiceListeners.clear();
+      liveListeners.clear();
     },
   };
 }

@@ -22,11 +22,13 @@ import { Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } fr
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { DetectionEpisodeDetails } from "../dashboard/DetectionPanel";
+import { PracticePanels } from "../dashboard/PracticePanels";
 import { ZoneNote } from "../dashboard/ZoneNote";
 import { useCandidates, useChartFeed, useDetection, usePaperTrading, useReplayAlerts, useReplayDays, useZones } from "../feed/hooks";
 import type { MobileFeed } from "../feed/serverFeed";
 import { useConnection } from "../feed/useConnection";
 import { useReducedMotion } from "../motion/useReducedMotion";
+import { usePracticeToasts } from "../notifications/practiceToasts";
 import { TickerSearchSheet } from "../search/TickerSearchSheet";
 import { getPreference, setPreference } from "../storage/preferences";
 import { appActions, useApp } from "../state/store";
@@ -42,8 +44,16 @@ const SCREEN_PAD = 6;
 const NO_CANDLES: readonly Candle[] = [];
 /** How long a picked day may read "Loading…" (a refused switch never changes the day). */
 const PENDING_DAY_TIMEOUT_MS = 5 * 60_000;
+/** From this window width (the Fold unfolded, sw600dp) the dashboard's cards sit beside the chart. */
+const PANELS_BESIDE_MIN = 600;
 
-/** The chart screen: connects once (useConnection: token, app store, its own socket), then renders the chart. */
+/**
+ * The practice screen (the Chart tab; replay parity plan Phase 1, owner 2026-11-23): the chart on
+ * the REPLAY market with the replay bar and the order ticket, plus the dashboard's cards on the
+ * same replay connection (beside the chart unfolded, in a sheet on the cover screen), and the
+ * replay's own alerts as in-app "Practice" toasts. The only screen with replay data: the
+ * dashboard reads live only. It connects once (useConnection: token, app store, its own socket).
+ */
 export function ChartScreen() {
   const { ready, status, signIn } = useConnection("mobile", "replay");
   if (!ready) return <View style={styles.screen} />;
@@ -61,6 +71,10 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
   // and the inspected candle are this session's.
   // The store's actions (the same functions in every state, so read once; values come through useApp).
   const [app] = useState(appActions);
+  // The replay's own alerts as "Practice" toasts, real live ones meanwhile as "Live" toasts.
+  usePracticeToasts(feed, app.openTicker);
+  // The dashboard's cards on the cover screen: a sheet over the chart.
+  const [panelsOpen, setPanelsOpen] = useState(false);
   // The trading day the replay clock is on; it changes on a day switch (and once a night while playing).
   const [clockDay, setClockDay] = useState<string | null>(null);
   const [detectionDetail, setDetectionDetail] = useState<{ id: string; epoch: string } | null>(null);
@@ -133,6 +147,7 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
   const live = clock?.mode === "live";
   // The Fold's cover screen or unfolded: the replay bar picks its artboard from this width.
   const { width: windowWidth } = useWindowDimensions();
+  const panelsBeside = windowWidth >= PANELS_BESIDE_MIN;
   const offline = status !== "open";
   const replayDay = currentReplayDay(replayDays.state, clock);
   // The date is the day picker only when there is something to pick (replay mode, days offered).
@@ -184,17 +199,27 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
         <Pressable accessibilityRole="button" accessibilityLabel="Time and sales" accessibilityState={{ expanded: tapeOpen }} onPress={() => app.setTapeOpen(true)} hitSlop={6} style={({ pressed }) => [styles.tapeButton, (pressed || tapeOpen) && { backgroundColor: colors.bgRow }]}>
           <Icon name="menu" color={colors.textDim} size={15} />
         </Pressable>
-        {/* An icon, not words (owner, 2026-10-17): replay clock or live broadcast; offline still says so in words. */}
+        {/* The dashboard's cards, on the cover screen (unfolded they sit beside the chart). */}
+        {!panelsBeside && (
+          <Pressable accessibilityRole="button" accessibilityLabel="Practice panels" accessibilityState={{ expanded: panelsOpen }} onPress={() => setPanelsOpen(true)} hitSlop={6} style={({ pressed }) => [styles.roundButton, (pressed || panelsOpen) && { backgroundColor: colors.bgRow }]}>
+            <Icon name="dashboard" color={panelsOpen ? colors.accent : colors.textDim} size={15} />
+          </Pressable>
+        )}
+        {/* The practice marker (owner, 2026-11-23: never to be mistaken for live): the replay clock
+            and "Practice" in the quiet neutral chip; offline still says so in words. */}
         <View
           style={[styles.chip, offline ? { backgroundColor: colors.criticalBg } : live ? { backgroundColor: colors.goodBg } : null]}
           accessible
           accessibilityRole="image"
-          accessibilityLabel={offline ? `Connection ${status}` : `${live ? "Live market" : "Replay"}, simulated trading`}
+          accessibilityLabel={offline ? `Connection ${status}` : live ? "Live market, simulated trading" : `Practice${replayDay ? `, ${formatDayKey(replayDay)}` : ""}: replay, not live`}
         >
           {offline ? (
             <Text style={[styles.chipText, { color: colors.critical }]}>{status}</Text>
           ) : (
-            <Icon name={live ? "live" : "replay"} color={live ? colors.good : colors.textDim} size={15} />
+            <>
+              <Icon name={live ? "live" : "replay"} color={live ? colors.good : colors.textDim} size={15} />
+              {!live && <Text style={styles.chipText}>Practice</Text>}
+            </>
           )}
         </View>
         {/* Settings (owner request 2026-10-18), at the header's right edge as on the web: the search button's
@@ -221,6 +246,7 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
       </View>
       ) : null}
 
+      <View style={styles.body}>
       <CandleChart
         style={styles.chart}
         toolbar
@@ -267,6 +293,8 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
         detection={detectionAnnotations}
         volumeShelves={zones.bands}
       />
+      {panelsBeside && <PracticePanels feed={feed} onPick={app.openTicker} reducedMotion={reducedMotion} style={styles.side} />}
+      </View>
 
       {/* The compact replay bar (owner, 2026-10-24: the two-tier bar took half the cover screen):
           one row, the thin scrubber over it on the cover screen and inside it unfolded
@@ -326,6 +354,18 @@ function ChartView({ feed, token, status }: { feed: MobileFeed; token: string | 
         }}
         reducedMotion={reducedMotion}
       />
+      {!panelsBeside && (
+        <Sheet open={panelsOpen} onClose={() => setPanelsOpen(false)} title={`Practice${replayDay ? ` · ${formatDayKey(replayDay)}` : ""}`} reducedMotion={reducedMotion} tall>
+          <PracticePanels
+            feed={feed}
+            onPick={(symbol) => {
+              setPanelsOpen(false);
+              app.openTicker(symbol);
+            }}
+            reducedMotion={reducedMotion}
+          />
+        </Sheet>
+      )}
       <Sheet open={detectionDetail !== null} onClose={() => setDetectionDetail(null)} title="Replay detection details" reducedMotion={reducedMotion} tall>
         <ScrollView showsVerticalScrollIndicator={false} showsHorizontalScrollIndicator={false}>
           {detailedEpisode && detection.snapshot ? <DetectionEpisodeDetails episode={detailedEpisode} snapshot={detection.snapshot} currentAvailable={detection.connected && !detection.resyncing} /> : <Text style={styles.detectionMeta}>The replay run changed or the selected episode left bounded history. Select a current detection to inspect.</Text>}
@@ -347,7 +387,10 @@ const styles = StyleSheet.create({
   change: { fontSize: 11, fontVariant: ["tabular-nums"] },
   chip: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: colors.bgPanel, borderRadius: 999, paddingHorizontal: 10, paddingVertical: 4, alignSelf: "center" },
   chipText: { color: colors.textDim, fontSize: 11, fontWeight: "500" },
+  // The chart, and unfolded the cards beside it (about 40 % of the width, at most 380 pt).
+  body: { flex: 1, flexDirection: "row", gap: SCREEN_GAP },
   chart: { flex: 1 },
+  side: { flex: 0, width: "40%", maxWidth: 380 },
   detectionSummary: { gap: 2 },
   detectionMeta: { color: colors.textFaint, fontFamily: fonts.regular, fontSize: 10, lineHeight: 14 },
   detectionButton: { minHeight: 34, justifyContent: "center" },

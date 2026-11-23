@@ -215,6 +215,13 @@ describe("alert dots", () => {
 });
 
 describe("speed and layout", () => {
+  test("Max is never offered (owner, 2026-11-23: hidden on the practice page)", () => {
+    // Above about 30× the Runners board skips seconds: the segments stop at 30×, and the compact
+    // chip's cycle never lands on Max (0), even from Max set by another client.
+    expect(REPLAY_SPEEDS).not.toContain(0 as never);
+    for (const s of [0, ...REPLAY_SPEEDS, 60, 3600]) expect(nextReplaySpeed(s)).not.toBe(0);
+  });
+
   test("speeds 1× 2× 5× 10× 30×", () => {
     expect(REPLAY_SPEEDS.map(replaySpeedLabel)).toEqual(["1×", "2×", "5×", "10×", "30×"]);
     expect(replaySpeedLabel(0)).toBe("Max");

@@ -39,8 +39,9 @@ const SPAN_THIRD = "@3xl/panel:col-span-2 @6xl/panel:col-span-1";
 /**
  * The main page (owner, 2026-10-18): a panel of 1–4 charts in their own containers, a multi-view
  * control for how many, and the ticker quick-open centred in the header. Select a chart by
- * pressing it, then pick a ticker from the search to load it there. It reads the server's LIVE
- * market (ConnectionGate source="live"); replay is the chart page's practice feature. What each
+ * pressing it, then pick a ticker from the search to load it there. It reads ONLY the server's
+ * LIVE market (pages/DashboardPage.tsx pins its gate; owner, 2026-11-23); replay data appears
+ * only on the practice page (App.tsx), which reuses DashboardPanels on its own replay feed. What each
  * chart shows syncs across devices (app-state `dashboard`); the selection is this device's.
  * One socket carries every chart (up to 4 slots per connection).
  */
@@ -209,7 +210,7 @@ export function Dashboard({ choice, feed }: Connection) {
               <p className="m-0 max-w-sm text-xs text-text-faint">
                 {liveStatus === "not_configured"
                   ? "The server has no Alpaca credentials, so it cannot stream the live market."
-                  : "The dashboard shows the live market (Settings → Data). Charts appear with the session's first trades: overnight from 20:00 ET Sunday to Thursday, then 4:00 to 20:00 ET."}
+                  : "The dashboard shows the live market. Charts appear with the session's first trades: overnight from 20:00 ET Sunday to Thursday, then 4:00 to 20:00 ET."}
               </p>
             </div>
           ) : (

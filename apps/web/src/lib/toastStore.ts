@@ -14,6 +14,11 @@ export interface Toast {
   id: number;
   text: string;
   icon?: "check" | "bell";
+  /**
+   * The practice page's source chip before the text (owner, 2026-11-23): "Practice" for what the
+   * replay decided, "Live" for a real alert arriving meanwhile, so the two are never confused.
+   */
+  tag?: "practice" | "live";
   action?: ToastAction;
   /** How long it is fully visible (ms); defaults by kind. */
   ms?: number;

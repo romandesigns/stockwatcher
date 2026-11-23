@@ -1,5 +1,5 @@
 import type { ChartMessage, IndicatorDemand, OrderCancel, ServerIndicatorsChannel, OrderModify, OrderPlace, PaperMessage, PaperState, ReplayControl, Timeframe } from "@stockwatcher/chart-core";
-import type { DetectionChannel, FavoritesChannel, HodChannel, PendingChannel, PrewatchChannel, MoversChannel, PressureChannel, QuoteSearchChannel, RocketChannel, RossChannel, NoticesChannel, SymbolsChannel, TickerChannel } from "@stockwatcher/shared";
+import type { DetectionChannel, FavoritesChannel, HodChannel, PendingChannel, PrewatchChannel, MoversChannel, NoticeStream, PracticeNoticeMessage, PressureChannel, QuoteSearchChannel, RocketChannel, RossChannel, NoticesChannel, RunnersNoticeMessage, SymbolsChannel, TickerChannel } from "@stockwatcher/shared";
 
 export interface ChartSubscription {
   symbol: string;
@@ -63,6 +63,14 @@ export interface ChartFeed {
   readonly prewatch?: PrewatchChannel;
   /** Server-computed chart indicators (`indicators.v1`). */
   readonly indicators?: ServerIndicatorsChannel;
+  /**
+   * The replay market's `practice.notice` frames (server feed on a replay connection: the
+   * practice page). In-app toasts only: the feed takes them off the socket before anything else
+   * reads it, so the live notifier (notify/runnersNotify.ts) never sees one.
+   */
+  readonly practiceNotices?: NoticeStream<PracticeNoticeMessage>;
+  /** Every real `runners.notice` as it arrives on this connection (the practice page labels them "Live"). */
+  readonly liveNotices?: NoticeStream<RunnersNoticeMessage>;
   close(): void;
 }
 

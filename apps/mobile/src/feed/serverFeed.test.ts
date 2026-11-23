@@ -298,3 +298,28 @@ test("an older server (no runners.notice.v1): no opt-in, and the Runners card ke
   expect(notices.serverSends()).toBe(false);
   expect(socket.sent.some((m) => (m as { type: string }).type === "runners.notify")).toBe(false);
 });
+
+test("a practice notice reaches the practice toasts only, never the phone's notice handler; a live notice reaches both", () => {
+  globalThis.WebSocket = Socket as unknown as typeof WebSocket;
+  token = null;
+  const handled: unknown[] = [];
+  const notices = { setServerSends: () => {}, serverSends: () => true, notifyMessage: () => null, handle: (m: unknown) => (handled.push(m), true) };
+  const feed = createMobileFeed(null, undefined, undefined, "mobile", "replay", undefined, notices as never);
+  cleanup = () => feed.close();
+  const practice: unknown[] = [];
+  const live: unknown[] = [];
+  feed.practiceNotices.subscribe((m) => practice.push(m));
+  feed.liveNotices.subscribe((m) => live.push(m));
+  const socket = Socket.instances[0]!;
+  socket.open();
+  socket.receive({ ...welcome, features: ["runners.notice.v1", "practice.notice.v1"] });
+  const notice = { alertId: "2026-11-17-CJMB-1", symbol: "CJMB", kind: "runners.new", title: "CJMB · Runners", body: "$120k in 5 min", at: 1 };
+  socket.receive({ type: "practice.notice", practice: true, id: "practice-runners-new-2026-11-17-CJMB-1", day: "2026-11-17", ...notice });
+  expect(practice).toHaveLength(1);
+  expect(handled).toEqual([]);
+  expect(live).toEqual([]);
+  socket.receive({ type: "runners.notice", id: "runners-new-2026-11-17-CJMB-1", ...notice });
+  expect(handled).toHaveLength(1);
+  expect(live).toHaveLength(1);
+  expect(practice).toHaveLength(1);
+});

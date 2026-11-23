@@ -56,6 +56,13 @@ export function Toaster({ bottom = "1.25rem" }: { bottom?: string }) {
           style={{ transitionDuration: `${FADE_MS}ms` }}
         >
           <Icon name={toast.icon ?? "check"} />
+          {toast.tag && (
+            // Quiet neutral for practice, the live market's own green for a real alert (the
+            // pages' source chips use the same two tones): never the accent.
+            <span className={cn("shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold", toast.tag === "live" ? "bg-good-bg text-good" : "bg-bg-row text-muted-foreground")}>
+              {toast.tag === "live" ? "Live" : "Practice"}
+            </span>
+          )}
           <span className="min-w-0 truncate">{toast.text}</span>
           {toast.action && (
             <button

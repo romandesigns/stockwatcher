@@ -18,7 +18,7 @@ import {
   type ServerIndicatorsChannel,
   type Timeframe,
 } from "@stockwatcher/chart-core";
-import { createDetectionChannel, createHodChannel, HOD_FEATURE, type HodChannel, createPendingChannel, PENDING_FEATURE, type PendingChannel, createPrewatchChannel, PREWATCH_FEATURE, type PrewatchChannel, createFavoritesChannel, createMoversChannel, createPressureChannel, createQuoteChannel, createQuoteSearchChannel, createRocketChannel, createRossChannel, createNoticesChannel, createSymbolsChannel, createTickerChannel, createWsClient, hasFeature, CLOCK_FEATURE, INDICATORS_FEATURE, INSIGHTS_TICKER_FEATURE, INSIGHTS_TICKER_INDICATORS_FEATURE, INDICATORS_LIMIT_FEATURE, LEVELS_FEATURE, MACD_STYLES_FEATURE, NOTICES_FEATURE, QUOTE_SEARCH_FEATURE, RUNNERS_NOTICE_FEATURE, SYMBOLS_FEATURE, ZONES_FEATURE, type AlertsServerMessage, type ConnectionStatus, type DetectionChannel, type FavoritesChannel, type MarketSource, type MoversChannel, type PressureChannel, type QuoteChannel, type QuoteSearchChannel, type RocketChannel, type RossChannel, type NoticesChannel, type SettingsSync, type SymbolsChannel, type TickerChannel, type WebSocketLike } from "@stockwatcher/shared";
+import { createDetectionChannel, createHodChannel, HOD_FEATURE, type HodChannel, createPendingChannel, PENDING_FEATURE, type PendingChannel, createPrewatchChannel, PREWATCH_FEATURE, type PrewatchChannel, isPracticeNoticeFrame, parsePracticeNotice, type NoticeStream, type PracticeNoticeMessage, type RunnersNoticeMessage, createFavoritesChannel, createMoversChannel, createPressureChannel, createQuoteChannel, createQuoteSearchChannel, createRocketChannel, createRossChannel, createNoticesChannel, createSymbolsChannel, createTickerChannel, createWsClient, hasFeature, CLOCK_FEATURE, INDICATORS_FEATURE, INSIGHTS_TICKER_FEATURE, INSIGHTS_TICKER_INDICATORS_FEATURE, INDICATORS_LIMIT_FEATURE, LEVELS_FEATURE, MACD_STYLES_FEATURE, NOTICES_FEATURE, QUOTE_SEARCH_FEATURE, RUNNERS_NOTICE_FEATURE, SYMBOLS_FEATURE, ZONES_FEATURE, type AlertsServerMessage, type ConnectionStatus, type DetectionChannel, type FavoritesChannel, type MarketSource, type MoversChannel, type PressureChannel, type QuoteChannel, type QuoteSearchChannel, type RocketChannel, type RossChannel, type NoticesChannel, type SettingsSync, type SymbolsChannel, type TickerChannel, type WebSocketLike } from "@stockwatcher/shared";
 
 import { deviceInfo, pushToken, subscribePushToken } from "../notifications/push";
 import type { PhoneNotices } from "../notifications/runnersNoticeModel";
@@ -97,6 +97,14 @@ export interface MobileFeed {
    * chart keeps computing them itself, as every APK installed before it still does.
    */
   indicators: ServerIndicatorsChannel;
+  /**
+   * The replay market's `practice.notice` frames (the Chart tab's practice connection): in-app
+   * toasts only. Taken off the socket before anything else reads it, so the phone's notice handler
+   * (notifications/runnersNotices.ts), which rings local notifications, never sees one.
+   */
+  practiceNotices: NoticeStream<PracticeNoticeMessage>;
+  /** Every real `runners.notice` as it arrives on this connection (the practice screen labels them "Live"). */
+  liveNotices: NoticeStream<RunnersNoticeMessage>;
   close(): void;
 }
 
@@ -120,6 +128,15 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
   const paperListeners = new Set<(m: PaperMessage) => void>();
   let raw: WebSocketLike | null = null;
   let paper: PaperState | null = null;
+  // The practice screen's toasts (MobileFeed `practiceNotices`, `liveNotices`).
+  const practiceListeners = new Set<(m: PracticeNoticeMessage) => void>();
+  const liveListeners = new Set<(m: RunnersNoticeMessage) => void>();
+  const stream = <T,>(set: Set<(m: T) => void>): NoticeStream<T> => ({
+    subscribe(fn) {
+      set.add(fn);
+      return () => void set.delete(fn);
+    },
+  });
 
   // Late-bound: the channel is built before the client it drives.
   const quotes = createQuoteChannel({ subscribe: () => client.subscribeQuotes(), unsubscribe: () => client.unsubscribeQuotes() });
@@ -196,6 +213,7 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
     runnersNotify: () => runnersNotices?.notifyMessage() ?? null,
     onRunnersNotice: (m) => {
       runnersNotices?.handle(m);
+      for (const l of liveListeners) l(m);
     },
     onStatus: (s) => {
       onStatus?.(s);
@@ -251,6 +269,19 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
       const socket = new WebSocket(url);
       let inner: WebSocketLike["onmessage"] = null;
       socket.addEventListener("message", (ev: { data: unknown }) => {
+        // A replay's practice notice (practice.notice.v1) goes to the practice screen's toasts and
+        // nowhere else: taken here, before the shared client (and so the phone's notice handler,
+        // which rings local notifications) could read it.
+        if (typeof ev.data === "string" && isPracticeNoticeFrame(ev.data)) {
+          let m: PracticeNoticeMessage | null = null;
+          try {
+            m = parsePracticeNotice(JSON.parse(ev.data));
+          } catch {
+            m = null;
+          }
+          if (m) for (const l of practiceListeners) l(m);
+          return;
+        }
         // A quotes.snapshot is hundreds of KB: skip the chart/paper parsers (the server writes
         // `type` first), which would each JSON.parse it again on the phone's JS thread. The
         // settings.* and pressure.* frames are shared's own too and take the same shortcut.
@@ -327,6 +358,8 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
     pending,
     prewatch,
     indicators: serverIndicators.channel,
+    practiceNotices: stream(practiceListeners),
+    liveNotices: stream(liveListeners),
     close() {
       for (const u of unsubPush) u();
       runnersNotices?.setServerSends(false);
@@ -336,6 +369,8 @@ export function createMobileFeed(token: string | null, onStatus?: (s: Connection
       current.clear();
       serverIndicators.clear();
       paperListeners.clear();
+      practiceListeners.clear();
+      liveListeners.clear();
     },
   };
 }

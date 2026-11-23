@@ -3,6 +3,7 @@ import {
   changeReference,
   currentReplayDay,
   formatChange,
+  formatDayKey,
   formatEtDateKey,
   formatPrice,
   indicatorDemand,
@@ -13,14 +14,21 @@ import {
   type ChartOptions,
 } from "@stockwatcher/chart-core";
 import { PROFILE_BINS } from "@stockwatcher/app-state";
-import { CandleChart, Icon, ReplayBar, Tape, VolumeProfile } from "@stockwatcher/chart-web";
-import { Tip, ToggleGroup, ToggleGroupItem, cn } from "@stockwatcher/chart-web/ui";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { detectionOverlays } from "@stockwatcher/shared";
+import { CandleChart, Icon, ReplayBar, Tape } from "@stockwatcher/chart-web";
+import { ScrollArea, Tip, ToggleGroup, ToggleGroupItem, cn } from "@stockwatcher/chart-web/ui";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ConnectionGate } from "./ConnectionGate.tsx";
+import { DashboardPanels } from "./dashboard/DashboardPanels.tsx";
+import { ZoneNote } from "./dashboard/ZoneNote.tsx";
 import { DEFAULT_SYMBOL, followCandidates, followServer, initialSymbol, type SourceChoice } from "./feed/source.ts";
 import { useCandidates } from "./feed/useCandidates.ts";
 import type { ChartFeed } from "./feed/types.ts";
 import { useChartFeed } from "./feed/useChartFeed.ts";
+import { useDetection } from "./feed/useDetection.ts";
+import { useHod } from "./feed/useHod.ts";
+import { usePending } from "./feed/usePending.ts";
+import { useZones } from "./feed/useZones.ts";
 import { TickerLabel } from "./lib/TickerLabel.tsx";
 import { NavToggle } from "./nav/NavToggle.tsx";
 import { SettingsButton } from "./nav/settings.tsx";
@@ -28,16 +36,19 @@ import { usePaperTrading } from "./feed/usePaperTrading.ts";
 import { useReplayDays } from "./feed/useReplayDays.ts";
 import { useReplayAlerts } from "./feed/useReplayAlerts.ts";
 import { useMediaQuery } from "./lib/useMediaQuery.ts";
+import { offPanels } from "./practice/offPanels.ts";
+import { NotInPractice, PaperSummary, PracticeBadge } from "./practice/PracticeMarker.tsx";
+import { usePracticeToasts } from "./practice/practiceToasts.ts";
 import { SearchPill } from "./search/SearchPill.tsx";
 import { TickerSearch } from "./search/TickerSearch.tsx";
 import { getAppStore, useApp } from "./state/store.ts";
 import { StarButton } from "./favorites/StarButton.tsx";
 
-
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 
 const PHONE_CHART: Partial<ChartOptions> = { priceAxisWidth: 42, volumeHeight: 36, timeAxisHeight: 18, paneGap: 4, fontSize: 9, showProfile: true, profileWidth: 0.2, timeLabelSpacing: 60 };
-const DESKTOP_CHART: Partial<ChartOptions> = {};
+/** The session volume profile sits inside the chart (the phone's way): the panels took its side column. */
+const DESKTOP_CHART: Partial<ChartOptions> = { showProfile: true, profileWidth: 0.18 };
 
 /** One line saying where the chart's data comes from, and whether it is fixture data. */
 function sourceText(choice: SourceChoice): string {
@@ -86,16 +97,23 @@ function SourceChip({ choice, mode, className }: { choice: SourceChoice; mode: "
 }
 
 
-/** The chart page: the shared connection gate (ConnectionGate.tsx), then the chart app. */
+/**
+ * The practice page (the Chart nav item; replay parity plan Phase 1, owner 2026-11-23): the live
+ * dashboard's panels around one chart, all read from the REPLAY market, with the replay bar, the
+ * order ticket on the chart and the practice account. The only page that shows replay data; the
+ * dashboard reads live only.
+ */
 export default function App() {
-  return <ConnectionGate source="replay">{(c) => <ChartApp choice={c.choice} feed={c.feed} />}</ConnectionGate>;
+  return <ConnectionGate source="replay">{(c) => <PracticeApp choice={c.choice} feed={c.feed} />}</ConnectionGate>;
 }
 
-function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
+function PracticeApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
   // App state lives in the one store (state/store.ts, @stockwatcher/app-state). The ticker,
   // timeframe, bin, trade size, search recents, indicators, levels, chart and drawing settings
   // and drawings are synced live with every other client (desktop, web, phone) and kept on the
-  // server; dialogs and the inspected candle are this page's own.
+  // server; dialogs and the inspected candle are this page's own. The ticker and timeframe are
+  // the chart page's own (`view`), never the dashboard's slots: picking a ticker here does not
+  // move the live dashboard.
   // The store's actions (the same functions in every state, so read once; values come through useApp).
   const [app] = useState(() => getAppStore().getState());
   const syncedSymbol = useApp((s) => s.symbol);
@@ -129,12 +147,41 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
   const trading = usePaperTrading(feed);
   const replayDays = useReplayDays(clockDay);
   const dayOptions = useMemo(() => replayDayOptions(replayDays.state?.days ?? []), [replayDays.state]);
+  // Volume shelves for this symbol from the replay's Runners channel, as a dashboard chart has them.
+  const zones = useZones(feed.rocket, symbol);
+
+  // A Signals (or Ross) row picked in the panels: its ticker opens here and its episode is drawn
+  // (the dashboard's ChartCell rule: only the picked row's episode, and only from the current run).
+  const discovery = useDetection(feed.detection);
+  const [episode, setEpisode] = useState<{ symbol: string; episodeId: string; runEpoch: string } | null>(null);
+  const pickEpisode = useCallback(
+    (s: string, episodeId: string, runEpoch: string) => {
+      setEpisode(runEpoch === feed.detection?.get().frame?.runEpoch ? { symbol: s, episodeId, runEpoch } : null);
+      app.openTicker(s);
+    },
+    [app, feed],
+  );
+  const clearEpisode = useCallback(() => setEpisode(null), []);
+  const annotations = useMemo(() => {
+    if (!episode || episode.symbol !== symbol || episode.runEpoch !== discovery.frame?.runEpoch) return [];
+    return detectionOverlays(discovery.snapshot, symbol, episode.episodeId).map((x) => (discovery.connected && !discovery.resyncing ? x : { ...x, stale: true, label: `Last known · ${x.label}` }));
+  }, [discovery, symbol, episode]);
+  // A panel row loads its ticker into the practice chart (never the live dashboard's slots).
+  const pick = useCallback((s: string) => app.openTicker(s), [app]);
+  // The replay's own alerts as "Practice" toasts, real live ones meanwhile as "Live" toasts.
+  usePracticeToasts(feed, pick);
+  // The dashboard panels that do not run on the replay clock yet, said once.
+  const hodState = useHod(feed.hod);
+  const pendingState = usePending(feed.pending);
+  const off = offPanels(hodState, pendingState);
 
   const phone = useMediaQuery("(max-width: 600px)");
+  // Where the panels stack under the chart (about the dashboard layout's @4xl/panel), the tape is
+  // under the chart too and keeps to a few rows.
+  const stacked = useMediaQuery("(max-width: 1099px)");
   // A finger (phones, tablets; owner 2026-10-19). The floating drawing tools start hidden there
   // (they covered a third of a phone's plot; the toolbar's pencil shows them, and that choice is
-  // kept), and a tablet's toolbar moves out of the chart into its own row with the ticker: at
-  // touch size it no longer fits beside the candle readout in the chart's top corners.
+  // kept).
   const coarse = useMediaQuery("(pointer: coarse)");
   const chartSettingsFromRemote = useApp((s) => s.chartSettingsFromRemote);
   // The Settings dialog's Drawing tab: which buttons the chart's drawing toolbox shows.
@@ -159,6 +206,8 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
     onDrawingsChange: app.setDrawings,
     tradeQty,
     onTradeQtyChange: app.setTradeQty,
+    detection: annotations,
+    volumeShelves: zones.bands,
   };
   // Settings: one dialog for every page, rendered by the Shell (nav/settings.tsx). Wider screens
   // open it from the rail's footer; the phone layout (no rail) keeps a gear in this header.
@@ -176,7 +225,6 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [app]);
-  // On the desktop the panel drops down right under the header's search pill, at its width.
   // The header pill the quick-open panel drops into (wider layouts).
   const pillRef = useRef<HTMLButtonElement>(null);
   const search = <TickerSearch open={searchOpen} onOpenChange={app.setSearchOpen} symbols={candidates.symbols} search={feed.quoteSearch} mock={current.fixtureData} current={symbol} recents={recents} onSelect={app.openTicker} />;
@@ -218,6 +266,8 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
   }, [pendingDay]);
   // The day's Runners entries: the scrubber's alert dots and the Prev/Next alert jumps.
   const replayAlerts = useReplayAlerts(replayDay ?? clockDay);
+  // The speed segments are 1× to 30× (chart-core REPLAY_SPEEDS): the server's Max is never offered
+  // here (owner, 2026-11-23), since above about 30× the Runners board skips seconds.
   const replay = {
     clock,
     onPlayPause: (play: boolean) => feed.control({ action: play ? "play" : "pause" }),
@@ -245,15 +295,18 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
     },
     onDayMenuOpenChange: (open: boolean) => open && replayDays.refresh(),
   };
+  const shownDay = replayDay ?? clockDay;
+  const dayLabel = shownDay ? (dayOptions.find((d) => d.value === shownDay)?.label ?? formatDayKey(shownDay)) : null;
+  const dayShort = shownDay ? formatDayKey(shownDay) : null;
   const price = last ? formatPrice(last.c) : "—";
   const change = last && reference ? formatChange(reference.price, last.c) : "";
   const changeColor = change.startsWith("-") ? "text-critical" : "text-good";
-  const chartLabel = `${symbol} ${timeframe} candles, ${current.fixtureData ? "fixture data" : "market data"} from the server`;
+  const chartLabel = `Practice chart: ${symbol} ${timeframe} candles, ${current.fixtureData ? "fixture data" : "recorded market data"} on the replay clock`;
   const tapeNote = current.fixtureData ? "Fixture data" : current.label;
   const mode = clock?.mode === "live" ? "live" : "replay";
 
   const binSelector = (
-    <>
+    <div className="flex items-center gap-1.5 text-[11px] text-text-faint">
       <span>Bin</span>
       <ToggleGroup aria-label="Profile bin width" size="sm" spacing={0.5} variant="segmented" value={[String(bin)]} onValueChange={(v) => v[0] && app.setBin(Number(v[0]))}>
         {PROFILE_BINS.map((b) => (
@@ -262,102 +315,110 @@ function ChartApp({ choice, feed }: { choice: SourceChoice; feed: ChartFeed }) {
           </ToggleGroupItem>
         ))}
       </ToggleGroup>
-    </>
+    </div>
   );
 
-  if (phone) {
-    return (
-      // min-h-full: the Shell's page area already stops above the tab bar (a dvh here overshot it).
-      <div className="flex min-h-full flex-col gap-2.5 bg-background p-3 text-foreground">
-        <header className="flex items-center gap-2">
-          <div className="flex min-w-0 items-center gap-1">
-            <div className="flex shrink-0 items-baseline gap-2">
-              {tickerButton("text-base")}
-              <span className="font-mono text-base tabular-nums">{price}</span>
-              <span className={cn("font-mono text-[11px]", changeColor)}>{change}</span>
-            </div>
-            {symbol && <StarButton symbol={symbol} />}
-          </div>
-          <SourceChip className="ml-auto" choice={current} mode={mode} />
-          <SettingsButton />
-          {search}
-        </header>
-        {/* The timeframe in the toolbar row as the wheel (as on the native phone app), not four
-            segments floating over the chart's top-right, where they ran into the candle readout. */}
-        <CandleChart className="min-h-[360px] flex-1" toolbar inspector headingInToolbar timeframeControl="wheel" defaultToolsVisible={false} symbol={symbol} persistKey={CHART_KEY} {...synced} trading={trading} now={clock?.now ?? null} onTimeframeChange={app.setTimeframe} series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={app.setInspectT} options={PHONE_CHART} barSpacing={10} label={chartLabel} />
-        {/* The compact replay bar (one row; "more" opens the rest over the chart). It pads itself
-            per layout, so the section only gives it its surface. */}
-        <section aria-label="Replay" className="rounded-[18px] bg-card">
-          <ReplayBar {...replay} />
-        </section>
-        <section aria-label="Time and sales" className="flex flex-col gap-1.5 rounded-xl bg-card p-3">
-          <div className="flex items-baseline">
-            <h2 className="panel-title flex-1">Time &amp; sales</h2>
-            <span className="text-[10px] text-text-faint">{tapeNote}</span>
-          </div>
-          <Tape trades={tape} variant="compact" maxRows={8} />
-        </section>
+  const heading = (size: string) => (
+    <div className="flex items-center gap-1">
+      <div className="flex shrink-0 items-baseline gap-2">
+        {tickerButton(size)}
+        <span className={cn("font-mono tabular-nums", size)}>{price}</span>
+        <Tip label="Change since the previous close">
+          <span className={cn("pointer-events-auto font-mono text-[11px]", changeColor)}>{change}</span>
+        </Tip>
       </div>
-    );
-  }
+      {symbol && <StarButton symbol={symbol} className="pointer-events-auto" />}
+    </div>
+  );
+
+  // The chart and its tape: the dashboard layout's main area (DashboardPanels' children). The tape
+  // sits beside the chart where the panel is wide, under it otherwise (container queries: the
+  // panel's own width, so the rail and the right column both count).
+  const main = (
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2 @5xl/panel:flex-row">
+      <section aria-label={`Practice chart: ${symbol}`} className="flex min-h-[18rem] min-w-0 flex-1 flex-col overflow-hidden rounded-xl bg-card p-1.5">
+        <ZoneNote note={layers.shelves ? zones.note : null} className="px-2 py-1" />
+        <CandleChart
+          className="min-h-0 flex-1"
+          toolbar
+          inspector
+          toolbarInChart={false}
+          headingInToolbar
+          timeframeControl={phone ? "wheel" : "segments"}
+          defaultToolsVisible={!coarse && !phone}
+          heading={heading(phone ? "text-base" : "text-[15px]")}
+          symbol={symbol}
+          persistKey={CHART_KEY}
+          {...synced}
+          trading={trading}
+          now={clock?.now ?? null}
+          onTimeframeChange={app.setTimeframe}
+          series={series}
+          timeframe={timeframe}
+          inspectT={inspectT}
+          onInspectChange={app.setInspectT}
+          options={phone ? PHONE_CHART : DESKTOP_CHART}
+          barSpacing={phone ? 10 : undefined}
+          label={chartLabel}
+        />
+      </section>
+      <section aria-label="Time and sales" className="flex min-h-0 shrink-0 flex-col gap-1.5 rounded-xl bg-card p-3 @5xl/panel:w-60">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <h2 className="panel-title flex-1">Time &amp; sales</h2>
+          <span className="text-[10px] text-text-faint">{tapeNote}</span>
+        </div>
+        <Tape trades={tape} variant={phone ? "compact" : undefined} maxRows={stacked ? 6 : 12} />
+        {binSelector}
+      </section>
+    </div>
+  );
 
   return (
-    <div className="flex min-h-full flex-col bg-background text-foreground">
-      {/* Three columns (logo | search | data source): equal side columns put the search pill at the
-          page's exact centre, where the quick-open panel drops down, at the same width. */}
-      <header className="grid grid-cols-[1fr_auto_1fr] items-center gap-4 px-4 py-2.5">
-        {/* The rail's collapse toggle, far left (the brand is in the rail); the first column still
-            balances the third, so the search pill stays centred. */}
-        <div className="flex items-center">
-          <NavToggle />
-        </div>
-
-        <SearchPill ref={pillRef} onOpen={() => app.setSearchOpen(true)} />
-        <div className="flex items-center gap-2 justify-self-end">
-          <SourceChip choice={current} mode={mode} />
-        </div>
-        {search}
-      </header>
-
-      <div className="flex min-h-0 flex-1 flex-col gap-2 px-4 pb-3 min-[901px]:flex-row">
-        <main className="flex min-w-0 flex-1 flex-col gap-2">
-          <div className="flex min-h-[360px] flex-1 flex-col gap-1">
-            <CandleChart
-              className="min-h-[360px] flex-1"
-              toolbar
-              inspector
-              toolbarInChart={!coarse}
-              headingInToolbar={coarse}
-              defaultToolsVisible={!coarse}
-              heading={
-                <div className="flex items-center gap-1">
-                  <div className="flex shrink-0 items-baseline gap-2">
-                    {tickerButton("text-[15px]")}
-                    <span className="font-mono text-[15px] tabular-nums">{price}</span>
-                    <Tip label="Change since the session's first candle">
-                      <span className={cn("pointer-events-auto font-mono text-[11px]", changeColor)}>{change}</span>
-                    </Tip>
-                  </div>
-                  {symbol && <StarButton symbol={symbol} className="pointer-events-auto" />}
-                </div>
-              } symbol={symbol} persistKey={CHART_KEY} {...synced} trading={trading} now={clock?.now ?? null} onTimeframeChange={app.setTimeframe} series={series} timeframe={timeframe} inspectT={inspectT} onInspectChange={app.setInspectT} options={DESKTOP_CHART} label={chartLabel} />
+    <div className="flex h-full min-h-0 flex-col gap-2 p-3 text-foreground">
+      {phone ? (
+        // Phone layout (no rail): the practice marker and the Settings gear; the ticker is in the chart's toolbar.
+        <header className="flex min-w-0 flex-col gap-1">
+          <div className="flex items-center gap-2">
+            <PracticeBadge day={dayLabel} dayShort={dayShort} off={off} />
+            <PaperSummary state={trading?.state ?? null} className="ml-auto" />
+            <SourceChip choice={current} mode={mode} />
+            <SettingsButton />
           </div>
-        </main>
+          <NotInPractice panels={off} />
+          {search}
+        </header>
+      ) : (
+        // Three parts, as on the dashboard: equal side parts put the search pill at the content's
+        // exact centre, where the quick-open panel drops down. Here the sides never give way (the
+        // Practice marker must always read in full); the pill gives up width first instead.
+        <header className="flex items-center gap-4">
+          <div className="flex min-w-max flex-1 basis-0 items-center gap-2">
+            {/* The rail's collapse toggle at the far left. */}
+            <NavToggle />
+            <PracticeBadge day={dayLabel} dayShort={dayShort} off={off} />
+            <NotInPractice panels={off} className="hidden min-[1800px]:inline" />
+          </div>
+          <SearchPill ref={pillRef} className="min-w-0 overflow-hidden" onOpen={() => app.setSearchOpen(true)} />
+          <div className="flex min-w-max flex-1 basis-0 items-center justify-end gap-3">
+            <PaperSummary state={trading?.state ?? null} />
+            <SourceChip choice={current} mode={mode} />
+          </div>
+          {search}
+        </header>
+      )}
 
-        <aside className="grid gap-2 min-[601px]:max-[900px]:grid-cols-2 min-[901px]:flex min-[901px]:w-[300px] min-[901px]:shrink-0 min-[901px]:flex-col">
-          <section aria-label="Session volume profile" className="rounded-xl bg-card p-3">
-            <VolumeProfile className="h-[210px]" profile={series?.profile} actions={binSelector} />
-          </section>
-          <section aria-label="Time and sales" className="flex min-h-0 flex-1 flex-col gap-1.5 rounded-xl bg-card p-3">
-            <h2 className="panel-title">Time &amp; sales</h2>
-            <Tape trades={tape} maxRows={12} />
-          </section>
-        </aside>
-      </div>
-      {/* The replay bar spans the page under the chart and the side panels, as the approved
-          two-tier design draws it: its one-row top tier needs the full width (ReplayBar picks
-          the compact one-row bar itself when the window is narrower). It pads itself. */}
-      <section aria-label="Replay" className="mx-4 mb-3 rounded-[14px] bg-card">
+      {/* The live dashboard's panels around the chart (DashboardPanels: the right column and the
+          bottom row, each panel shown while it has items), every one on the replay market. */}
+      <ScrollArea className="flex-1" viewportClassName="@container/panel flex flex-col">
+        <DashboardPanels ross={feed.ross} rocket={feed.rocket} detection={feed.detection} favorites={feed.favorites} pressure={feed.pressure} movers={feed.movers} hod={feed.hod} pending={feed.pending} onPick={pick} onEpisodePick={pickEpisode} onEpisodeClear={clearEpisode}>
+          {main}
+        </DashboardPanels>
+      </ScrollArea>
+
+      {/* The replay bar spans the page under the chart and the panels, as the approved two-tier
+          design draws it (ReplayBar picks the compact one-row bar itself when the window is
+          narrower). It pads itself. Outside the scroll, so it stays in reach. */}
+      <section aria-label="Replay" className="shrink-0 rounded-[14px] bg-card">
         <ReplayBar {...replay} />
       </section>
     </div>
