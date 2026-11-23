@@ -176,6 +176,19 @@ pub fn t1_news_item(h: &chart_engine::wire::HaltUpdate) -> Option<stock_context:
     }
     let ns = |n: i64, ms: i64| if n != 0 { n } else { ms * 1_000_000 };
     let start = ns(h.halt.start_ns, h.halt.start);
+    // A T1 at exactly 19:50:00 ET is a scheduled corporate-action halt the evening before a
+    // reverse split (309 of them in band in the T1 study's Train data), not news: the status
+    // stream gives it the same code, so the time is what tells them apart.
+    let et =
+        chrono::DateTime::from_timestamp_nanos(start).with_timezone(&chrono_tz::America::New_York);
+    if (
+        chrono::Timelike::hour(&et),
+        chrono::Timelike::minute(&et),
+        chrono::Timelike::second(&et),
+    ) == (19, 50, 0)
+    {
+        return None;
+    }
     let end = h.halt.end.map(|e| ns(h.halt.end_ns.unwrap_or(0), e));
     Some(stock_context::NewsItem::from_source(
         &stock_context::SourceNews {

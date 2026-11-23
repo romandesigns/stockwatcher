@@ -3405,6 +3405,9 @@ mod tests {
         load(&a, &log, &mut cx);
         // Any other halt reason is not news.
         assert!(crate::context::t1_news_item(&halt(t(9, 31, 0), None, "LUDP")).is_none());
+        // Nor is the scheduled 19:50:00 ET T1 the evening before a reverse split.
+        assert!(crate::context::t1_news_item(&halt(t(19, 50, 0), None, "T1")).is_none());
+        assert!(crate::context::t1_news_item(&halt(t(19, 50, 1), None, "T1")).is_some());
         trade(&mut cx, t(9, 30, 0), t(9, 31, 0));
         assert_ne!(state(&cx, SYM, PillarId::News).0, Tri::Pass);
         cx.apply_halt_news(&halt(t(9, 31, 5), None, "T1"));

@@ -372,7 +372,8 @@ pending only. pillars-v6 lists the providers that may pass: `alpaca`, `sec_edgar
   the chart engine's halt update, on the live board and in a restore's replay of the same tape:
   published and observed at the halt's exchange time, fresh for 24 h from it, a second version at
   the resume (observed then) with the resume time. The row labels it "News pending (T1 halt 09:42)",
-  never as a headline. It carries the halt time, code and resume time for a later dedicated view.
+  never as a headline. A T1 starting at exactly 19:50:00 ET is excluded: the T1 study found those
+  are scheduled corporate-action halts the evening before a reverse split, not news. It carries the halt time, code and resume time for a later dedicated view.
   Not carried: the halt price (the halt message has none; the chart's last print would have to be
   joined) and later codes of the same halt (T2 news released, T3): the chart engine keeps one
   reason per halt span. A replay seek rebuilds its board from candles without re-reading halts, so

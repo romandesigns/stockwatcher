@@ -9,10 +9,11 @@ Done (committed):
 Audit 2026-11-20 (upper bound, local daily indexes):
 - v5: 36 passed price+gain+RVOL, 0 passed news, 0 on panel
 - v6 + EDGAR, news required: 9 passed news, 7 on panel (FTHAW GOVX MEDS SEGG TRUG UONE VWAV; IPFXU TDACU blocked by float unknown)
-- v6 + EDGAR, news optional / v6 news optional without EDGAR: running
+- v6 + EDGAR, news optional (ross-panel-v2): 26 on panel (news no longer counted; 9 still pass news)
+- v6 news optional without EDGAR: 26 on panel, 0 pass news
 
-In progress / next:
-- full check suite (cargo fmt/clippy -D warnings, cargo test --workspace --all-targets, JS typecheck/lint/tests, web build)
+Checks (all green): cargo fmt --check, clippy --workspace --all-targets -D warnings, cargo test --workspace --all-targets (92 test binaries, 0 failures; no doctests locally), JS typecheck 8/8, lint, tests (shared 338, web 101, mobile 122, app-state 71, desktop 6, chart-core 564, chart-web 17), web build.
+- T1 halts at exactly 19:50:00 ET (scheduled reverse-split halts) excluded, with a test.
 
 Known issues:
 - alerts::tests::a_detector_switched_off_at_runtime_is_held_and_ledgered failed once under full-suite load, passes alone (timing; untouched code)
