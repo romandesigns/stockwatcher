@@ -1,6 +1,6 @@
 import { formatEtTime } from "@stockwatcher/chart-core";
-import { cn, ScrollArea, Tip } from "@stockwatcher/chart-web/ui";
-import { detectionFamilyLabel, detectionStateLabel, groupDetections, rocketServerNow, rossAttention, rossFreshness, rossRowMarks, rossRowView, runnersBySymbol, type DetectionChannel, type RocketState, type RossRowView, type RossTone, type RowMarks } from "@stockwatcher/shared";
+import { cn, Collapsible, CollapsibleContent, CollapsibleTrigger, ScrollArea, Tip } from "@stockwatcher/chart-web/ui";
+import { detectionFamilyLabel, detectionStateLabel, groupDetections, rocketServerNow, ROSS_NEAR_PREVIEW, rossAttention, rossFreshness, rossNearView, rossRowMarks, rossRowView, runnersBySymbol, type DetectionChannel, type RocketState, type RossNearRowView, type RossRowView, type RossTone, type RowMarks } from "@stockwatcher/shared";
 import { memo } from "react";
 import type { RossDemoState } from "../feed/useRossState.ts";
 import { useDetection } from "../feed/useDetection.ts";
@@ -54,6 +54,7 @@ export function RossPanelView({ state, onPick, detection, onEpisodePick, runners
   const attention = panel ? rossAttention(panel) : 0;
   // A dropped socket keeps the last rows and says so: they are the last known state, not now.
   const fresh = rossFreshness(state, hhmm);
+  const near = rossNearView(state.readiness);
   return (
     <aside aria-labelledby="ross-title" className="flex min-h-0 min-w-0 flex-col gap-2 rounded-xl bg-card p-2.5">
       <div className="flex items-center gap-2 px-1">
@@ -89,6 +90,7 @@ export function RossPanelView({ state, onPick, detection, onEpisodePick, runners
           </li>
         ))}
       </ul>
+      {near.rows.length > 0 && <NearSection rows={near.rows} total={near.total} onPick={onPick} />}
       </ScrollArea>
     </aside>
   );
@@ -143,3 +145,61 @@ export function TriggerMeter({ value, tone, inset = true }: { value: number; ton
     </svg>
   );
 }
+
+/**
+ * Near-qualifying (owner, 2026-11-22): stocks passing price, gain and RVOL whose only non-passes
+ * are UNKNOWN float or news, under the members and quieter than them. Each says which pillar is
+ * missing with a warning-toned badge on a neutral surface (never the accent: these are not on
+ * the panel). The first few show; the rest open from a disclosure, closed by default.
+ */
+function NearSection({ rows, total, onPick }: { rows: RossNearRowView[]; total: number; onPick: (symbol: string) => void }) {
+  const head = rows.slice(0, ROSS_NEAR_PREVIEW);
+  const rest = rows.slice(ROSS_NEAR_PREVIEW);
+  const more = total - head.length;
+  return (
+    <section aria-labelledby="ross-near-title" className="flex flex-col gap-1 pt-3">
+      <h3 id="ross-near-title" className="m-0 flex items-baseline gap-1.5 px-1 text-[11px] font-medium text-muted-foreground">
+        Near · evidence missing
+        <span className="font-mono text-text-faint">{total}</span>
+      </h3>
+      <ul className="m-0 flex list-none flex-col gap-1 p-0">
+        {head.map((r) => <NearRow key={r.symbol} row={r} onPick={onPick} />)}
+      </ul>
+      {rest.length > 0 && (
+        <Collapsible>
+          <CollapsibleTrigger className="min-h-11 px-1 text-[11px] text-muted-foreground hover:text-foreground">{more} more</CollapsibleTrigger>
+          <CollapsibleContent>
+            <ul className="m-0 flex list-none flex-col gap-1 p-0">
+              {rest.map((r) => <NearRow key={r.symbol} row={r} onPick={onPick} />)}
+            </ul>
+          </CollapsibleContent>
+        </Collapsible>
+      )}
+    </section>
+  );
+}
+
+const NearRow = memo(function NearRow({ row: r, onPick }: { row: RossNearRowView; onPick: (symbol: string) => void }) {
+  const press = useTickerPress(r.symbol, () => onPick(r.symbol));
+  return (
+    <li className="@container/near">
+      <button
+        type="button"
+        {...press}
+        aria-label={`${r.aria}. Load into the selected chart`}
+        className="flex min-h-11 w-full cursor-pointer touch-manipulation flex-wrap items-center gap-x-2 gap-y-1 rounded bg-bg-row/60 px-2.5 py-1.5 text-left font-mono outline-none select-none transition-colors duration-150 hover:bg-bg-raised focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none"
+      >
+        <span className="text-[13px] font-semibold text-muted-foreground">{r.symbol}</span>
+        <span className="text-xs tabular-nums text-muted-foreground">{r.price}</span>
+        <span className="text-xs tabular-nums text-good">{r.gain}</span>
+        <span className="hidden text-[11px] tabular-nums text-text-faint @[14rem]/near:inline">{r.rvol}</span>
+        <span className="ml-auto flex gap-1">
+          {/* The reason is in the row's label: a tooltip trigger cannot sit inside this button. */}
+          {r.badges.map((b) => (
+            <span key={b.label} className="rounded bg-bg-raised px-1.5 py-px font-sans text-[10px] font-semibold text-warning">{b.label}</span>
+          ))}
+        </span>
+      </button>
+    </li>
+  );
+});

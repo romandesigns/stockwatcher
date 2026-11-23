@@ -14,7 +14,8 @@
 use crate::evidence::{FloatRecord, NewsCoverageRecord, NewsVersionRecord};
 use std::collections::{BTreeMap, BTreeSet};
 use stock_context::{
-    Authenticity, Favorability, FloatObservation, InstrumentId, NewsCoverage, NewsItem, Tag,
+    Authenticity, Favorability, FloatObservation, InstrumentId, NewsCoverage, NewsItem,
+    OutstandingObservation, Tag,
 };
 
 pub const FLOAT_RULES_VERSION: &str = "float-rules-v1";
@@ -131,6 +132,49 @@ pub fn float_observations(records: &[FloatRecord]) -> Vec<FloatObservation> {
                 shares,
                 provider: r.provider.clone(),
                 effective_as_of: r.effective_as_of,
+                observed_at: r.retrieved_at,
+                quality,
+            });
+        }
+    }
+    out
+}
+
+pub const OUTSTANDING_RULES_VERSION: &str = "outstanding-rules-v1";
+
+/// Every usable shares-outstanding figure as an observation (`outstanding-rules-v1`), versioned
+/// per symbol in retrieval order, for the float pillar's pillars-v5 fallback. Never a float.
+///
+/// Usable: a positive figure on a record whose float does not exceed it. A record with
+/// `float_exceeds_outstanding` is internally inconsistent, so neither number bounds the other and
+/// the outstanding figure is dropped with the float. A `no_row` record (null float) keeps its
+/// outstanding figure: that is exactly the case the fallback is for (2026-11-20: 1,026 of 3,409
+/// FMP rows had a null float, many with an outstanding figure).
+pub fn outstanding_observations(records: &[FloatRecord]) -> Vec<OutstandingObservation> {
+    let mut by_symbol: BTreeMap<&str, Vec<&FloatRecord>> = BTreeMap::new();
+    for r in records {
+        by_symbol.entry(r.symbol.as_str()).or_default().push(r);
+    }
+    let mut out = Vec::new();
+    for (symbol, mut rows) in by_symbol {
+        rows.sort_by_key(|r| r.retrieved_at);
+        for (i, r) in rows.into_iter().enumerate() {
+            let Some(shares) = r.outstanding_shares.filter(|&o| o > 0) else {
+                continue;
+            };
+            if r.float_shares.is_some_and(|f| f > shares) {
+                continue;
+            }
+            let mut quality = vec![OUTSTANDING_RULES_VERSION.to_string()];
+            if r.float_shares.is_none() {
+                quality.push("float_missing".into());
+            }
+            out.push(OutstandingObservation {
+                id: format!("outstanding:{}:{symbol}", r.provider),
+                version: i as u32 + 1,
+                instrument: InstrumentId::symbol(symbol),
+                shares,
+                provider: r.provider.clone(),
                 observed_at: r.retrieved_at,
                 quality,
             });
@@ -694,5 +738,59 @@ impl LoadedEvidence {
         for c in self.coverage {
             engine.add_coverage(c);
         }
+    }
+}
+
+#[cfg(test)]
+mod outstanding_tests {
+    use super::*;
+
+    fn rec(sym: &str, float: Option<u64>, out: Option<u64>, at: i64) -> FloatRecord {
+        FloatRecord {
+            v: crate::evidence::EVIDENCE_SCHEMA,
+            symbol: sym.into(),
+            provider: "fmp".into(),
+            endpoint: "/stable/shares-float-all?page=0&limit=1000".into(),
+            float_shares: float,
+            outstanding_shares: out,
+            free_float_pct: None,
+            source_url: None,
+            provider_date: None,
+            effective_as_of: None,
+            retrieved_at: at,
+            response_sha256: "x".into(),
+            quality: vec![],
+        }
+    }
+
+    #[test]
+    fn a_null_float_keeps_its_outstanding_figure_and_nothing_inconsistent_is_used() {
+        let rows = [
+            rec("NULL", None, Some(7_000_000), 1),
+            rec("ZERO", Some(0), Some(0), 1),
+            rec("NONE", None, None, 1),
+            rec("BAD", Some(9_000_000), Some(5_000_000), 1),
+            rec("OK", Some(4_000_000), Some(6_000_000), 1),
+            rec("OK", None, Some(6_500_000), 2),
+        ];
+        let obs = outstanding_observations(&rows);
+        let got: Vec<_> = obs
+            .iter()
+            .map(|o| (o.instrument.0.as_str(), o.shares, o.version))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("sym:NULL", 7_000_000, 1),
+                ("sym:OK", 6_000_000, 1),
+                ("sym:OK", 6_500_000, 2)
+            ]
+        );
+        assert!(obs[0].quality.contains(&"float_missing".to_string()));
+        assert_eq!(obs[0].id, "outstanding:fmp:NULL");
+        // The float loader is unchanged: a null float is still not a float (the zero row stays
+        // as it was, a record the pillar calls `nonpositive_float`).
+        let floats = float_observations(&rows);
+        assert!(floats.iter().all(|f| f.instrument.0 != "sym:NULL"));
     }
 }

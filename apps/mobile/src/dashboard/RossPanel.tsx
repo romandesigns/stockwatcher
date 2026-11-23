@@ -1,6 +1,6 @@
 import { formatEtTime } from "@stockwatcher/chart-core";
 import { UI } from "@stockwatcher/chart-native";
-import { detectionFamilyLabel, detectionStateLabel, groupDetections, rocketNow, rossAttention, rossFreshness, rossItemCount, rossRowMarks, rossRowView, runnersBySymbol, type DetectionChannel, type DetectionEpisode, type RocketChannel, type RossChannel, type RossRowView, type RossTone, type RowMarks, type TailMark } from "@stockwatcher/shared";
+import { detectionFamilyLabel, detectionStateLabel, groupDetections, rocketNow, ROSS_NEAR_PREVIEW, rossAttention, rossFreshness, rossItemCount, rossNearView, rossRowMarks, rossRowView, runnersBySymbol, type DetectionChannel, type DetectionEpisode, type RocketChannel, type RossChannel, type RossNearRowView, type RossRowView, type RossTone, type RowMarks, type TailMark } from "@stockwatcher/shared";
 import { memo, useEffect, useState } from "react";
 import { Animated, Pressable, StyleSheet, Text, View } from "react-native";
 
@@ -47,6 +47,7 @@ export function RossPanel({ channel, detection, runners, onPick, reducedMotion, 
   const attention = panel ? rossAttention(panel) : 0;
   // A dropped socket keeps the last rows and says so: they are the last known state, not now.
   const fresh = rossFreshness(state, hhmm);
+  const near = rossNearView(state.readiness);
   // No rows, no card (owner, 2026-10-22): off, not yet known and empty all hide it. It opens and
   // closes by its real height; a reconnect keeps the last rows, so it does not flash.
   return (
@@ -74,10 +75,64 @@ export function RossPanel({ channel, detection, runners, onPick, reducedMotion, 
           <Row key={r.symbol} row={r} episode={bySymbol.get(r.symbol)} detectionCurrent={detections.connected && !detections.resyncing} onPick={(symbol) => onPick(symbol, bySymbol.get(symbol)?.episode_id, detectionEpoch)} reducedMotion={reducedMotion} />
         ))}
       </View>
+      {near.rows.length > 0 && <NearSection rows={near.rows} total={near.total} onPick={(symbol) => onPick(symbol)} reducedMotion={reducedMotion} dimmed={fresh.stale} />}
     </View>
     </Collapse>
   );
 }
+
+/**
+ * Near-qualifying (owner, 2026-11-22): price, gain and RVOL pass and only float or news is
+ * UNKNOWN, so not on the panel. Under the members, quieter than them, each with a warning-toned
+ * badge on a neutral surface ("Float ?" / "News ?"), never the accent. The first few show; the
+ * rest open from a "more" row, closed by default, by their real height (Collapse).
+ */
+function NearSection({ rows, total, onPick, reducedMotion, dimmed }: { rows: RossNearRowView[]; total: number; onPick: (symbol: string) => void; reducedMotion: boolean; dimmed: boolean }) {
+  const [open, setOpen] = useState(false);
+  const head = rows.slice(0, ROSS_NEAR_PREVIEW);
+  const rest = rows.slice(ROSS_NEAR_PREVIEW);
+  const more = total - head.length;
+  return (
+    <View style={[styles.near, dimmed && styles.dimmed]} accessibilityLabel="Near-qualifying, evidence missing">
+      <View style={styles.nearHead}>
+        <Text accessibilityRole="header" style={styles.nearTitle}>
+          Near · evidence missing
+        </Text>
+        <Text style={styles.nearCount}>{total}</Text>
+      </View>
+      {head.map((r) => <NearRow key={r.symbol} row={r} onPick={onPick} />)}
+      {rest.length > 0 && (
+        <>
+          <Collapse open={open} reducedMotion={reducedMotion} gap={6}>
+            <View style={styles.rows}>{rest.map((r) => <NearRow key={r.symbol} row={r} onPick={onPick} />)}</View>
+          </Collapse>
+          <Pressable accessibilityRole="button" accessibilityState={{ expanded: open }} accessibilityLabel={open ? "Show fewer near-qualifying stocks" : `Show ${more} more near-qualifying stocks`} onPress={() => setOpen((o) => !o)} style={({ pressed }) => [styles.more, pressed && { backgroundColor: UI.raised }]}>
+            <Text style={styles.moreText}>{open ? "Fewer" : `${more} more`}</Text>
+          </Pressable>
+        </>
+      )}
+    </View>
+  );
+}
+
+const NearRow = memo(function NearRow({ row: r, onPick }: { row: RossNearRowView; onPick: (symbol: string) => void }) {
+  const press = useTickerPress(r.symbol, () => onPick(r.symbol));
+  return (
+    <Pressable accessibilityRole="button" accessibilityLabel={r.aria} accessibilityHint="Opens its chart" {...press} style={({ pressed }) => [styles.nearRow, pressed && { backgroundColor: UI.raised }]}>
+      <Text style={styles.nearSymbol}>{r.symbol}</Text>
+      <Text style={styles.nearPrice}>{r.price}</Text>
+      <Text style={[styles.small, { color: UI.good }]}>{r.gain}</Text>
+      <Text style={styles.nearRvol}>{r.rvol}</Text>
+      <View style={styles.nearBadges}>
+        {r.badges.map((b) => (
+          <View key={b.label} style={styles.nearBadge}>
+            <Text style={styles.nearBadgeText}>{b.label}</Text>
+          </View>
+        ))}
+      </View>
+    </Pressable>
+  );
+});
 
 /** Only a crossing in progress (accent) and a price at the trigger (amber) earn an edge: a broke-trigger is a past stage, never a green "go". */
 const EDGE: Partial<Record<RossRowView["setup"]["state"], string>> = { crossing: UI.accent, near: UI.warning };
@@ -209,4 +264,19 @@ const styles = StyleSheet.create({
   setup: { flexShrink: 1, fontSize: 11 },
   note: { color: UI.textDim, fontFamily: fonts.regular, fontVariant: ["tabular-nums"] },
   tag: { marginLeft: "auto", fontSize: 11 },
+  near: { gap: 6, paddingTop: 8 },
+  nearHead: { flexDirection: "row", alignItems: "baseline", gap: 6, paddingHorizontal: 4 },
+  nearTitle: { color: UI.textDim, fontSize: 11, fontFamily: fonts.semibold },
+  nearCount: { color: UI.textFaint, fontSize: 11, fontVariant: ["tabular-nums"] },
+  // 44 dp touch target; quieter than a member row (no fill of its own beyond the row tone).
+  nearRow: { minHeight: 44, flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 8, rowGap: 4, paddingVertical: 6, paddingHorizontal: 10, borderRadius: 10, backgroundColor: UI.row },
+  nearSymbol: { color: UI.textDim, fontSize: 13, fontFamily: fonts.semibold },
+  nearPrice: { color: UI.textDim, fontSize: 12, fontVariant: ["tabular-nums"] },
+  nearRvol: { color: UI.textFaint, fontSize: 11, fontVariant: ["tabular-nums"] },
+  nearBadges: { marginLeft: "auto", flexDirection: "row", gap: 4 },
+  // Warning text on a raised neutral surface: a missing-evidence state, never the accent.
+  nearBadge: { borderRadius: 4, paddingHorizontal: 6, paddingVertical: 1, backgroundColor: UI.raised },
+  nearBadgeText: { color: UI.warning, fontSize: 10, fontFamily: fonts.semibold },
+  more: { minHeight: 44, justifyContent: "center", paddingHorizontal: 10, borderRadius: 10 },
+  moreText: { color: UI.textDim, fontSize: 12 },
 });

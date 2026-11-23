@@ -2,7 +2,7 @@
 // server's `ross.*` channel (protocol.ts, crates/server/src/context.rs) and ONE row view model,
 // so the web side panel and the phone card format a member identically.
 
-import type { RossMessage, RossPanelWire, RossReadinessWire, RossRowWire, RossSetupState } from "./protocol.ts";
+import type { RossMessage, RossNearRowWire, RossPanelWire, RossReadinessWire, RossRowWire, RossSetupState } from "./protocol.ts";
 
 export interface RossState {
   /** null until the first snapshot; false when the server does not run stock context. */
@@ -78,6 +78,7 @@ const REASON_LABEL: Record<string, string> = {
   float_stale: "float figure out of date",
   nonpositive_float: "float figure unusable",
   news_coverage_unknown: "news not searched yet",
+  news_revision_order_unknown: "news version order unclear",
   price_unknown: "no price yet",
   price_stale: "price out of date",
 };
@@ -328,7 +329,10 @@ const DAY_NS = 86_400 * 1_000_000_000;
 /** `Float 3.1M`, plus its age once the figure is a day old or more (pillars-v4 keeps it 4 days). */
 function floatTag(r: RossRowWire, cutoff: number): string {
   const days = r.float_as_of ? Math.floor((cutoff - r.float_as_of) / DAY_NS) : 0;
-  return `Float ${shares(r.float_shares ?? 0)}${days >= 1 ? ` · ${days}d old` : ""}`;
+  const age = days >= 1 ? ` · ${days}d old` : "";
+  // pillars-v5: no float figure, but the shares outstanding bound it from above.
+  if (!r.float_shares && r.outstanding_shares) return `Float ≤ ${shares(r.outstanding_shares)} (shares out)${age}`;
+  return `Float ${shares(r.float_shares ?? 0)}${age}`;
 }
 
 const PILLAR_LABEL: Record<string, string> = { price: "Price", gain: "Gain", rvol: "Volume", float: "Float", news: "News" };
@@ -376,7 +380,7 @@ export function rossRowView(r: RossRowWire, cutoff: number, formatTime: (epochNs
       tag = `${name} ?`;
       tagTone = "warning";
     }
-  } else if (r.float_shares) {
+  } else if (r.float_shares || r.outstanding_shares) {
     tag = floatTag(r, cutoff);
   }
   const trigger = setupWire?.trigger?.price ?? null;
@@ -417,9 +421,66 @@ export function rossRowView(r: RossRowWire, cutoff: number, formatTime: (epochNs
   return view;
 }
 
+/** One near-qualifying row as both apps show it. */
+export interface RossNearRowView {
+  symbol: string;
+  price: string;
+  gain: string;
+  rvol: string;
+  /** "Float ?" / "News ?", each with the reason as a phrase (the badge's title). Neutral/warning, never the accent. */
+  badges: { label: string; reason: string }[];
+  aria: string;
+}
+
+export interface RossNearView {
+  rows: RossNearRowView[];
+  /** All near-qualifying symbols the server counted (more than `rows` when it bounded them). */
+  total: number;
+}
+
+/** Rows a near section shows before it is opened (it starts collapsed beyond this). */
+export const ROSS_NEAR_PREVIEW = 3;
+
+/** The near-qualifying section's view model (readiness `near`, owner 2026-11-22). */
+export function rossNearView(r: RossReadinessWire | null | undefined): RossNearView {
+  const near: RossNearRowWire[] = r?.near ?? [];
+  const label = (reason: string) => REASON_LABEL[reason] ?? reason.replace(/_/g, " ");
+  const rows = near.map((n) => {
+    const badges = n.unknown.map((u) => ({ label: `${PILLAR_LABEL[u.pillar] ?? u.pillar} ?`, reason: label(u.reason) }));
+    const row: RossNearRowView = {
+      symbol: n.symbol,
+      price: n.price !== null ? rossPrice(n.price) : "—",
+      gain: n.gain_bp !== null ? pct(n.gain_bp) : "—",
+      rvol: n.rvol_milli ? `${(n.rvol_milli / 1000).toFixed(1)}×` : "—",
+      badges,
+      aria: "",
+    };
+    row.aria = `${row.symbol} ${row.price} ${row.gain}, volume ${row.rvol}, not on the panel: ${badges.map((b) => `${b.label.replace(" ?", "")} unknown, ${b.reason}`).join("; ")}`;
+    return row;
+  });
+  return { rows, total: Math.max(r?.near_total ?? 0, rows.length) };
+}
+
 /** Rows needing attention (at trigger, crossing): the panel's count, or derived from the rows. */
 export function rossAttention(panel: RossPanelWire): number {
   return panel.attention ?? panel.rows.filter((r) => r.setup && SETUP[r.setup.state]?.attention).length;
+}
+
+/**
+ * A synthetic readiness for the labelled demo mode (dev builds only, `?rossDemo`) and tests,
+ * carrying near-qualifying rows so the section can be seen: never shown as live data.
+ */
+export function rossDemoReadiness(cutoff: number): RossReadinessWire {
+  const f = (reason: string) => ({ pillar: "float", reason });
+  const n = (reason: string) => ({ pillar: "news", reason });
+  const near = [
+    { symbol: "GGGG", price: 3_420_000, gain_bp: 8800, rvol_milli: 31_000, unknown: [f("no_float_evidence")], float_shares: null },
+    { symbol: "HHHH", price: 1_180_000, gain_bp: 4600, rvol_milli: 12_400, unknown: [n("news_coverage_unknown")], float_shares: 6_200_000 },
+    { symbol: "IIII", price: 742_000, gain_bp: 2900, rvol_milli: 8_100, unknown: [f("float_stale"), n("news_coverage_unknown")], float_shares: 4_400_000 },
+    { symbol: "JJJJ", price: 12_350_000, gain_bp: 1700, rvol_milli: 6_300, unknown: [f("nonpositive_float")], float_shares: 0 },
+    { symbol: "KKKK", price: 205_000, gain_bp: 1240, rvol_milli: 5_100, unknown: [f("no_float_evidence")], float_shares: null },
+  ].map((r) => ({ ...r, cutoff }));
+  return { symbols: 1_204, qualified: 3, members: 5, pillars: [], blocking: [], evidence_records: 0, observed_at: cutoff, near, near_total: near.length };
 }
 
 /**

@@ -491,6 +491,12 @@ export interface RossRowWire {
   float_shares?: number | null;
   /** When that float figure was observed (epoch ns); pillars-v4 keeps one for 4 days. */
   float_as_of?: number | null;
+  /**
+   * pillars-v5: the shares outstanding the float pillar passed on when no usable float was
+   * visible (`below_max_via_outstanding`). An upper bound on the float, never the float, so it
+   * is not in `float_shares`. Absent otherwise and from older servers.
+   */
+  outstanding_shares?: number | null;
   news_first_seen?: number | null;
   /** That story's headline class (`financing` = offering / dilution; stock-context `NewsItem::event_type`). */
   news_kind?: string | null;
@@ -535,6 +541,27 @@ export interface RossPillarReadinessWire {
   unknown: number;
 }
 
+/** A pillar a near-qualifying symbol could not decide, with the engine's reason. */
+export interface RossNearPillarWire {
+  pillar: "float" | "news" | string;
+  reason: string;
+}
+
+/**
+ * A near-qualifying symbol (crates/server/src/context.rs `NearRow`, owner 2026-11-22): price,
+ * gain and RVOL PASS, nothing FAILS, and float and/or news is UNKNOWN, so the Ross rules would
+ * show it if the missing evidence arrived. Descriptive only: not a member, never a notice.
+ */
+export interface RossNearRowWire {
+  symbol: string;
+  price: number | null;
+  gain_bp: number | null;
+  rvol_milli: number | null;
+  unknown: RossNearPillarWire[];
+  float_shares: number | null;
+  cutoff: number;
+}
+
 export interface RossReasonCountWire {
   pillar: string;
   reason: string;
@@ -565,6 +592,10 @@ export interface RossReadinessWire {
    * the contenders only: a symbol another pillar already fails is not blocked by evidence.
    */
   blocking: RossReasonCountWire[];
+  /** Near-qualifying symbols, strongest gain first, bounded (servers from 2026-11-22). */
+  near?: RossNearRowWire[];
+  /** How many were near-qualifying before the bound. */
+  near_total?: number;
   evidence_records: number;
   warmups?: {
     candidates: number;

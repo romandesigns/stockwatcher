@@ -29,7 +29,7 @@ use crate::evaluate::{
 };
 use crate::evidence::{
     DailyBaseline, EvidenceStore, FloatObservation, InstrumentId, IntradayBaseline, NewsCoverage,
-    NewsItem, PrevClose,
+    NewsItem, OutstandingObservation, PrevClose,
 };
 use crate::output::{BoundedLog, OutputTelemetry, PANEL_LOG_MAX};
 use crate::panel::{
@@ -517,8 +517,13 @@ pub struct PanelRow {
     /// The float pillar's shares, when a float record is visible (even stale).
     pub float_shares: Option<u64>,
     /// That float record's `observed_at` (ns), so a row can say how old the figure is (pillars-v4
-    /// keeps one for 4 days).
+    /// keeps one for 4 days). Under pillars-v5's fallback, the outstanding figure's.
     pub float_as_of: Option<i64>,
+    /// The shares outstanding the float pillar passed on (`below_max_via_outstanding`,
+    /// pillars-v5) when no usable float was visible: an upper bound on the float, never the float
+    /// itself, so it is not put in `float_shares`. Absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outstanding_shares: Option<u64>,
     /// When StockWatcher first saw a currently qualifying news item (its `observed_at`).
     pub news_first_seen: Option<i64>,
     /// That item's headline class (`NewsItem::event_type`), so a row can mark dilution news.
@@ -1272,6 +1277,12 @@ impl Engine {
         self.evidence.add_float(r);
         self.mark(&i);
     }
+    /// A shares-outstanding figure: read only by a policy with `float.outstanding_fallback`.
+    pub fn add_outstanding(&mut self, r: OutstandingObservation) {
+        let i = r.instrument.clone();
+        self.evidence.add_outstanding(r);
+        self.mark(&i);
+    }
     pub fn add_news(&mut self, r: NewsItem) {
         let i = r.instrument.clone();
         self.evidence.add_news(r);
@@ -1927,11 +1938,16 @@ impl Engine {
                 prev_rank: None,
                 rvol_milli: pillar(PillarId::Rvol).and_then(|p| p.value),
                 float_shares: pillar(PillarId::Float)
+                    .filter(|p| p.reason != evaluate::BELOW_MAX_VIA_OUTSTANDING)
                     .and_then(|p| p.value)
                     .map(|v| v as u64),
                 float_as_of: pillar(PillarId::Float)
                     .filter(|p| p.value.is_some())
                     .and_then(|p| p.as_of),
+                outstanding_shares: pillar(PillarId::Float)
+                    .filter(|p| p.reason == evaluate::BELOW_MAX_VIA_OUTSTANDING)
+                    .and_then(|p| p.value)
+                    .map(|v| v as u64),
                 news_first_seen: s.news_first_seen,
                 news_kind: s.news_kind.clone(),
                 missing: s

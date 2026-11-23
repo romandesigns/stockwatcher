@@ -8,8 +8,9 @@
 //! not lose it, and must not count it again when it is applied later). The admission time is the
 //! print's receive time when the feed knows it (live, recorded live), else its execution time.
 //!
-//! Policies: `pillars-v4` ([`Policy::current`]: discovery and price on the app's own $0.10–$25 band,
-//! 120 s news coverage lag, a float usable for 4 days), `ross-panel-v1`, and the EXPERIMENTAL `detection-v2` whose
+//! Policies: `pillars-v5` ([`Policy::current`]: discovery and price on the app's own $0.10–$25 band,
+//! 120 s news coverage lag, a float usable for 4 days, shares outstanding below the float maximum
+//! passing the float pillar when no usable float is visible), `ross-panel-v1`, and the EXPERIMENTAL `detection-v2` whose
 //! micro-pullback (variant MP5) is each row's `setup` cue (`stock_context::cue`, owner decision
 //! 2026-10-21: one pullback detector, so the Ross and Detection panels cannot disagree). With
 //! `DETECTION_PANEL` off the engine runs that one family for the panel's members only. A cue
@@ -228,6 +229,16 @@ impl ContextBoard {
         })
     }
 
+    /// The same board deciding under another pillar policy (the completeness audit compares
+    /// pillars-v4 with v5 over one recorded day, `crate::ross_audit`).
+    #[cfg(test)]
+    pub(crate) fn with_pillar_policy(mut self, policy: Policy) -> Self {
+        let run = self.engine.run_info().clone();
+        let panel = self.engine.panel_policy().clone();
+        self.engine = production_engine(policy, panel, run);
+        self
+    }
+
     /// The same board with other engine output bounds (tests; production keeps the defaults).
     #[cfg(test)]
     pub(crate) fn with_output_bounds(self, panels: usize, setup_entries: usize) -> Self {
@@ -348,7 +359,18 @@ impl ContextBoard {
             if undecided {
                 r.contenders += 1;
             }
+            if let Some(n) = near_row(d) {
+                r.near.push(n);
+            }
         }
+        // Strongest gain first: the near rows are the ones closest to being missed entirely.
+        r.near.sort_by(|a, b| {
+            b.gain_bp
+                .cmp(&a.gain_bp)
+                .then_with(|| a.symbol.cmp(&b.symbol))
+        });
+        r.near_total = r.near.len() as u32;
+        r.near.truncate(NEAR_MAX);
         let mut blocking: Vec<ReasonCount> = reasons
             .into_iter()
             .map(|((pillar, reason), symbols)| ReasonCount {
@@ -528,6 +550,9 @@ impl ContextBoard {
         }
         for r in b.floats {
             self.engine.add_float(r);
+        }
+        for r in b.outstanding {
+            self.engine.add_outstanding(r);
         }
         for r in b.intraday {
             // Diagnostic only: the same-time and recent-window measures beside the pillar, never
@@ -1128,6 +1153,14 @@ pub(crate) struct Readiness {
     /// [`Readiness::contenders`] only (a symbol another pillar already fails is not blocked by
     /// missing evidence).
     pub(crate) blocking: Vec<ReasonCount>,
+    /// Near-qualifying symbols (owner, 2026-11-22): price, gain and RVOL all PASS, and every
+    /// other pillar either passes or is UNKNOWN, at least one UNKNOWN (float or news), and not a
+    /// panel member. These are the stocks the Ross rules would show if the missing evidence
+    /// arrived; a FAIL anywhere keeps a symbol out. Strongest gain first, at most [`NEAR_MAX`].
+    /// Descriptive only: never membership, never a notice.
+    pub(crate) near: Vec<NearRow>,
+    /// How many symbols were near-qualifying before the cut to [`NEAR_MAX`].
+    pub(crate) near_total: u32,
     /// Evidence records the engine holds.
     pub(crate) evidence_records: usize,
     /// What the warmup requester has done (`crate::evidence`).
@@ -1184,6 +1217,71 @@ impl Readiness {
             }
         )
     }
+}
+
+/// Near-qualifying rows the frame carries at most ([`Readiness::near`]).
+pub(crate) const NEAR_MAX: usize = 50;
+
+/// One near-qualifying symbol ([`Readiness::near`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct NearRow {
+    pub(crate) symbol: String,
+    /// Last qualifying price, micros.
+    pub(crate) price: Option<i64>,
+    pub(crate) gain_bp: Option<i64>,
+    /// Daily-denominator RVOL, thousandths.
+    pub(crate) rvol_milli: Option<i64>,
+    /// The pillars that could not be decided, with the reason (`float` / `news`).
+    pub(crate) unknown: Vec<NearPillar>,
+    /// The float figure when one is visible (even stale), for the row.
+    pub(crate) float_shares: Option<i64>,
+    /// The decision's cutoff (UTC ns).
+    pub(crate) cutoff: i64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct NearPillar {
+    pub(crate) pillar: &'static str,
+    pub(crate) reason: &'static str,
+}
+
+/// A decision's near-qualifying row ([`Readiness::near`]), or `None`.
+pub(crate) fn near_row(d: &Decision) -> Option<NearRow> {
+    if d.membership.active().is_some() {
+        return None;
+    }
+    let state = |p: PillarId| d.pillars.iter().find(|x| x.pillar == p);
+    for p in [PillarId::Price, PillarId::Gain, PillarId::Rvol] {
+        if state(p)?.state != Tri::Pass {
+            return None;
+        }
+    }
+    let mut unknown = Vec::new();
+    for p in [PillarId::Float, PillarId::News] {
+        let r = state(p)?;
+        match r.state {
+            Tri::Pass => {}
+            Tri::Fail => return None,
+            Tri::Unknown => unknown.push(NearPillar {
+                pillar: p.as_str(),
+                reason: r.reason,
+            }),
+        }
+    }
+    if unknown.is_empty() {
+        // All five pass: a member at the next barrier, not a near row.
+        return None;
+    }
+    let value = |p: PillarId| state(p).and_then(|r| r.value);
+    Some(NearRow {
+        symbol: d.symbol.clone(),
+        price: value(PillarId::Price),
+        gain_bp: value(PillarId::Gain),
+        rvol_milli: value(PillarId::Rvol),
+        unknown,
+        float_shares: value(PillarId::Float),
+        cutoff: d.cutoff,
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]

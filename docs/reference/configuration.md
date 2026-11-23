@@ -172,13 +172,34 @@ the Ross Panel. The server keeps float records from 5 days before the session
 (`FLOAT_LOOKBACK` in `crates/server/src/evidence.rs`), and a Ross row whose
 figure is a day old or more shows its age (`Float 3.1M · 2d old`).
 
+### Float fallback on shares outstanding (owner, 2026-11-22)
+
+`pillars-v5` is `pillars-v4` plus one rule: where no usable float is visible (no
+record, a null or zero figure, or one older than 4 days) but a usable
+shares-outstanding figure is, and it is **below** 20M, the float pillar PASSes
+with reason `below_max_via_outstanding`. The public float can never exceed the
+shares outstanding, so this is a proof, not an estimate; an outstanding figure at
+or above 20M proves nothing and the pillar stays UNKNOWN, and a null or zero never
+passes. The figure comes from the same FMP retrieval (`outstandingShares`), obeys
+the same 4-day window, and a Ross row shows it as `Float ≤ 8.0M (shares out)`,
+never as the float. On 2026-11-20 FMP returned a null float for 1,026 of 3,409
+symbols. `pillars-v1` to `pillars-v4` remain frozen.
+
+### Near-qualifying section (owner, 2026-11-22)
+
+The readiness summary in every `ross.*` frame carries `near` (at most 50) and
+`near_total`: symbols passing price, gain and RVOL with no pillar failing and float
+and/or news UNKNOWN. The web and phone Ross panels list them under the members
+with a `Float ?` / `News ?` badge; the first three show and the rest open from a
+disclosure. Descriptive only: no membership, no notice.
+
 ### Current entry price minimum (owner, 2026-10-26)
 
 All current live entry paths use an inclusive **$0.10–$25** band: precursor
 scoring (R0/R2/placeholder), Buying bursts, volume shelves, Running, Run +20%,
-Fast and stock-context discovery. Discovery uses `pillars-v4` (`pillars-v3` with
-the float window below); `pillars-v1` to `pillars-v3` remain unchanged historical
-policies. MP5's active band was already
+Fast and stock-context discovery. Discovery uses `pillars-v5` (`pillars-v3` with
+the float window above and the shares-outstanding fallback); `pillars-v1` to
+`pillars-v4` remain unchanged historical policies. MP5's active band was already
 $0.10–$25, so no pullback geometry or wick filter changed.
 
 Precursor, burst and shelf eligibility use `market_events::PriceBand::DEFAULT`.

@@ -586,7 +586,7 @@ fn current_discovery_eligibility_starts_at_ten_cents() {
         let ds = e.advance_to(UnixNanos(t(9, 30, 18)));
         let d = ds.iter().rfind(|d| d.symbol == "PENY").unwrap();
         assert_eq!(d.in_discovery_band, Some(eligible), "price {price}");
-        assert!(d.policy.starts_with("pillars-v4@"));
+        assert!(d.policy.starts_with("pillars-v5@"));
     }
 }
 
