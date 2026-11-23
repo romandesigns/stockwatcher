@@ -355,14 +355,24 @@ fn the_seam_reads_a_news_item() {
         content_key: String::new(),
         revision_at: None,
         rules: "news-rules-v2".into(),
+        url: Some("https://example.test/story".into()),
+        headline: Some("XLAB announces trial results".into()),
+        halt: None,
     };
     let (sym, h) = hit_from_item(&item).unwrap();
     assert_eq!(sym, "XLAB");
     assert_eq!(h.kind, HitKind::Offering);
     assert_eq!(h.at_ms, T0);
     assert_eq!(h.seen_ms, T0 + 5_000);
+    // The seam's headline and url reach the card.
+    assert_eq!(h.headline.as_deref(), Some("XLAB announces trial results"));
+    assert_eq!(h.url.as_deref(), Some("https://example.test/story"));
     item.event_type = "clinical_result".into();
     assert_eq!(hit_from_item(&item).unwrap().1.kind, HitKind::Catalyst);
+    // An offering headline flags the card even when the class does not.
+    item.headline = Some("XLAB Announces Pricing of $5 Million Registered Direct Offering".into());
+    assert_eq!(hit_from_item(&item).unwrap().1.kind, HitKind::Offering);
+    item.headline = Some("XLAB announces trial results".into());
     item.source = "halt_t1/T1".into();
     assert!(hit_from_item(&item).is_none(), "our own T1 echo");
     item.source = "alpaca/benzinga".into();
