@@ -1689,6 +1689,19 @@ mod tests {
             "Fold",
             RunnersOptIn::default()
         ));
+        // The register goes to the task as a command, the notice below on its own channel, and
+        // the task's select! takes whichever is ready: on a slow runner both are queued and the
+        // notice can win, find no phone and be held `no_device` (CI failed here twice on
+        // 2026-11-23). The alerts.status frame says the task has the device.
+        loop {
+            let f = tokio::time::timeout(Duration::from_secs(5), frames.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if f.starts_with("{\"type\":\"alerts.status\"") {
+                break;
+            }
+        }
         let notice = |kind: crate::rocket::NoticeKind, sym: &str| crate::rocket::Notice {
             at_ns: now_ms() * 1_000_000,
             ..crate::rocket::Notice::test(kind, sym)
