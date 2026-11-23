@@ -109,7 +109,7 @@ fn evidence_float_at(e: &mut Engine, sym: &str, close: i64, float_at: i64) {
         version: 1,
         instrument: inst(sym),
         event_type: "other".into(),
-        source: "issuer".into(),
+        source: "alpaca/benzinga".into(),
         credible_source: true,
         relevant: true,
         substantive: true,
@@ -121,6 +121,9 @@ fn evidence_float_at(e: &mut Engine, sym: &str, close: i64, float_at: i64) {
         content_key: "fixture".into(),
         revision_at: Some(0),
         rules: "fixture".into(),
+        url: None,
+        headline: None,
+        halt: None,
     });
 }
 
@@ -586,7 +589,7 @@ fn current_discovery_eligibility_starts_at_ten_cents() {
         let ds = e.advance_to(UnixNanos(t(9, 30, 18)));
         let d = ds.iter().rfind(|d| d.symbol == "PENY").unwrap();
         assert_eq!(d.in_discovery_band, Some(eligible), "price {price}");
-        assert!(d.policy.starts_with("pillars-v5@"));
+        assert!(d.policy.starts_with("pillars-v6@"));
     }
 }
 

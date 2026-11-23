@@ -10,6 +10,7 @@
 //! |---|---|---|
 //! | float observations | `swimport evidence` (`evidence/float/`) | `evidence_load::float_observations` |
 //! | news items | `swimport evidence` (`evidence/news/`) | `evidence_load::news_items` |
+//! | SEC filings, as news items (pillars-v6) | `swimport evidence`'s EDGAR worker (`evidence/filings/`) | `evidence_load::filing_items` |
 //! | news coverage, market-wide | `swimport evidence` (`evidence/news-coverage/`) | `evidence_load::market_news_coverage` |
 //! | previous close + daily baseline | `swimport maintain` (`daily-bars/`, `corporate-actions/`) | `baseline::load` |
 //!
@@ -63,11 +64,12 @@ use crate::market::{Inner, Market};
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use market_archive::baseline::{self, Inputs};
 use market_archive::evidence_load::{
-    float_observations, market_news_coverage, news_coverage, news_items, outstanding_observations,
-    scoped_symbols,
+    filing_items, float_observations, market_news_coverage, news_coverage, news_items,
+    outstanding_observations, scoped_symbols, source_news_items,
 };
 use market_archive::{
-    Archive, CoveragePolicy, EvidenceTail, FloatRecord, NewsCoverageRecord, NewsVersionRecord,
+    Archive, CoveragePolicy, EvidenceTail, FilingRecord, FloatRecord, NewsCoverageRecord,
+    NewsVersionRecord, SourceNewsRecord,
 };
 use market_events::session::{previous_trading_day, sessions_for, trading_date};
 use market_events::{Price, UnixNanos};
@@ -376,6 +378,13 @@ pub struct EvidenceLoader {
     float_from: i64,
     floats_raw: Vec<FloatRecord>,
     news_raw: Vec<NewsVersionRecord>,
+    /// SEC filings (`evidence/filings/`), delivered as news items beside the Benzinga stories.
+    /// Their coverage records are the EDGAR collector's own and are not read: a news FAIL rests
+    /// on the market-wide Benzinga searches (pillars-v6).
+    filings_raw: Vec<FilingRecord>,
+    /// Any other source's items (`evidence/source-news/`: the press wires), through the same
+    /// seam (`stock_context::SourceNews`).
+    sources_raw: Vec<SourceNewsRecord>,
     coverage_raw: Vec<NewsCoverageRecord>,
     baseline_stamp: Option<Stamp>,
     /// The run-clock `as_of` the last baseline build used.
@@ -474,6 +483,8 @@ impl EvidenceLoader {
             float_from: 0,
             floats_raw: Vec::new(),
             news_raw: Vec::new(),
+            filings_raw: Vec::new(),
+            sources_raw: Vec::new(),
             coverage_raw: Vec::new(),
             baseline_stamp: None,
             baseline_as_of: None,
@@ -514,6 +525,8 @@ impl EvidenceLoader {
                 self.tail = EvidenceTail::default();
                 self.floats_raw.clear();
                 self.news_raw.clear();
+                self.filings_raw.clear();
+                self.sources_raw.clear();
                 self.coverage_raw.clear();
             }
             self.window = (from, end);
@@ -521,6 +534,8 @@ impl EvidenceLoader {
             self.day = Some(day);
             self.floats_raw.retain(|r| r.retrieved_at >= float_from);
             self.news_raw.retain(|r| r.first_observed_at >= from);
+            self.filings_raw.retain(|r| r.first_observed_at >= from);
+            self.sources_raw.retain(|r| r.first_observed_at >= from);
             self.coverage_raw.retain(|r| r.observed_at >= from);
             self.baseline_stamp = None;
             self.baseline_as_of = None;
@@ -550,14 +565,32 @@ impl EvidenceLoader {
         let f = self.tail.float(&self.archive, Some(float_from));
         let n = self.tail.news(&self.archive, Some(from));
         let c = self.tail.news_coverage(&self.archive, Some(from));
+        let g = self.tail.filings(&self.archive, Some(from));
+        let w = self.tail.source_news(&self.archive, Some(from));
         rep.errors.extend(
             f.errors
                 .iter()
                 .chain(&n.errors)
                 .chain(&c.errors)
+                .chain(&g.errors)
+                .chain(&w.errors)
                 .map(|e| e.to_string()),
         );
         let (mut new_f, mut new_n, mut new_c) = (new_day, new_day, new_day);
+        let mut new_g = new_day;
+        let mut new_w = new_day;
+        for r in w.records {
+            if inside(r.first_observed_at) {
+                self.sources_raw.push(r);
+                new_w = true;
+            }
+        }
+        for r in g.records {
+            if inside(r.first_observed_at) {
+                self.filings_raw.push(r);
+                new_g = true;
+            }
+        }
         for r in f.records {
             if float_inside(r.retrieved_at) {
                 self.floats_raw.push(r);
@@ -586,11 +619,17 @@ impl EvidenceLoader {
         } else {
             (Vec::new(), Vec::new())
         };
-        let news = if new_n {
+        let mut news = if new_n {
             news_items(&self.news_raw, None)
         } else {
             Vec::new()
         };
+        if new_g {
+            news.extend(filing_items(&self.filings_raw, None));
+        }
+        if new_w {
+            news.extend(source_news_items(&self.sources_raw, None));
+        }
         let coverage = if new_c {
             let named: Vec<String> = scoped_symbols(&self.coverage_raw).into_iter().collect();
             let mut v = market_news_coverage(&self.coverage_raw, 0);
@@ -1795,7 +1834,7 @@ mod tests {
         trade(&mut cx, t(9, 30, 0), t(9, 32, 0));
 
         let d = cx.decision(SYM).unwrap();
-        assert!(d.policy.starts_with("pillars-v5@"), "{}", d.policy);
+        assert!(d.policy.starts_with("pillars-v6@"), "{}", d.policy);
         for p in [
             PillarId::Price,
             PillarId::Gain,
@@ -1826,7 +1865,7 @@ mod tests {
             frame["pillarPolicy"]
                 .as_str()
                 .unwrap()
-                .starts_with("pillars-v5@")
+                .starts_with("pillars-v6@")
         );
         let panel = &frame["panel"];
         assert!(
@@ -3182,5 +3221,162 @@ mod tests {
         assert_eq!(d.volume.shares, 5_000, "counted once, not twice");
         assert_eq!(d.volume.trades, 1);
         assert_eq!(cx.revision_telemetry().duplicates_dropped, 1);
+    }
+
+    /// SYM's floats and the market-wide Benzinga search, but no Benzinga story: only what the test
+    /// adds can pass its news pillar.
+    fn write_without_news(a: &Archive) {
+        a.append_float(&[
+            float(SYM, 5_000_000, t(7, 0, 0)),
+            float(OTHER, 4_000_000, t(7, 0, 0)),
+        ])
+        .unwrap();
+        a.append_news_coverage(&[NewsCoverageRecord {
+            v: 1,
+            id: "cov-1".into(),
+            provider: "alpaca".into(),
+            sources: vec!["benzinga".into()],
+            scope: CoverageScope::All,
+            covered_from: t(8, 0, 0) - 86_400 * SEC,
+            covered_through: t(9, 30, 0),
+            observed_at: t(9, 30, 30),
+            requests: 1,
+            stories: 0,
+        }])
+        .unwrap();
+    }
+
+    fn filing(acc: &str, form: &str, accepted: i64, observed: i64) -> market_archive::FilingRecord {
+        market_archive::FilingRecord {
+            v: 1,
+            provider: "sec_edgar".into(),
+            source: "current_feed".into(),
+            accession: acc.into(),
+            cik: 1234567,
+            company: "XYZ CORP".into(),
+            form: form.into(),
+            accepted_at: None,
+            accepted_at_ns: accepted,
+            dated_by: market_archive::DATED_BY_ACCEPTANCE.into(),
+            filed: Some(dd()),
+            items: vec![],
+            symbols: vec![SYM.into()],
+            url: format!("https://www.sec.gov/Archives/edgar/data/1234567/{acc}-index.htm"),
+            first_observed_at: observed,
+        }
+    }
+
+    #[test]
+    fn an_sec_8k_in_the_archive_passes_the_news_pillar_and_the_row_names_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = archive(dir.path());
+        write_daily_world(&a);
+        write_without_news(&a);
+        a.append_filings(&[
+            filing("0001234567-26-000001", "8-K", t(7, 12, 0), t(7, 12, 40)),
+            filing("0001234567-26-000002", "424B5", t(7, 40, 0), t(7, 40, 30)),
+        ])
+        .unwrap();
+        let log = Mutex::new(EvidenceLog::default());
+        let mut cx = board();
+        let rep = load(&a, &log, &mut cx);
+        assert!(rep.errors.is_empty(), "{:?}", rep.errors);
+        assert_eq!(rep.news, 2, "both filings, as news items");
+        trade(&mut cx, t(9, 30, 0), t(9, 32, 0));
+        assert_eq!(state(&cx, SYM, PillarId::News).0, Tri::Pass);
+        let frame: serde_json::Value =
+            serde_json::from_str(&cx.panel_frame("ross.snapshot", None)).expect("json");
+        let row = &frame["panel"]["rows"][0];
+        assert_eq!(row["symbol"], SYM);
+        assert_eq!(row["news_evidence"]["source"], "sec_edgar");
+        assert_eq!(row["news_evidence"]["form"], "8-K");
+        assert_eq!(row["news_evidence"]["published_at"], t(7, 12, 0));
+        assert_eq!(row["offering"]["form"], "424B5");
+        assert!(row.get("news_unconfirmed").is_none());
+        assert_eq!(frame["panel"]["news_optional"], false);
+    }
+
+    #[test]
+    fn with_news_optional_a_symbol_without_news_is_a_member_and_leaves_the_near_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = archive(dir.path());
+        write_daily_world(&a);
+        write_without_news(&a);
+        let log = Mutex::new(EvidenceLog::default());
+        let mut cx = board();
+        load(&a, &log, &mut cx);
+        trade(&mut cx, t(9, 30, 0), t(9, 32, 0));
+        // News required: four pass, the Benzinga search found nothing (FAIL): not a member, and
+        // not near either (a FAIL keeps a symbol out of that list).
+        assert_eq!(state(&cx, SYM, PillarId::News).0, Tri::Fail);
+        assert!(cx.decision(SYM).unwrap().membership.active().is_none());
+        assert!(
+            !cx.readiness(t(9, 32, 5))
+                .summary_line()
+                .contains("news optional")
+        );
+
+        // The owner's switch off: the next barrier admits it on the other four.
+        assert!(cx.set_news_required(false));
+        trade(&mut cx, t(9, 32, 0), t(9, 32, 30));
+        let d = cx.decision(SYM).unwrap();
+        assert!(d.membership.active().is_some(), "{:?}", d.membership);
+        let r = cx.readiness(t(9, 32, 35));
+        assert!(r.news_optional && r.summary_line().contains("(news optional)"));
+        assert!(r.near.iter().all(|n| n.symbol != SYM));
+        let frame: serde_json::Value =
+            serde_json::from_str(&cx.panel_frame("ross.snapshot", Some(&r))).expect("json");
+        assert_eq!(frame["panel"]["news_optional"], true);
+        assert!(
+            frame["panelPolicy"]
+                .as_str()
+                .unwrap()
+                .starts_with("ross-panel-v2@")
+        );
+        let row = &frame["panel"]["rows"][0];
+        assert_eq!(row["news_unconfirmed"], true);
+        assert!(row.get("news_evidence").is_none());
+    }
+
+    #[test]
+    fn the_news_switch_reads_the_detectors_document_like_the_clients() {
+        use crate::context::news_required;
+        use serde_json::json;
+        assert!(news_required(None), "absent: required (today's rule)");
+        assert!(news_required(Some(&json!({}))));
+        assert!(!news_required(Some(
+            &json!({"ross-require-news": {"on": false}})
+        )));
+        assert!(!news_required(Some(&json!({"ross-require-news": false}))));
+        assert!(news_required(Some(
+            &json!({"ross-require-news": {"on": true}})
+        )));
+        assert!(
+            news_required(Some(&json!({"ross-require-news": "off"}))),
+            "a bad shape is the default"
+        );
+    }
+
+    #[test]
+    fn near_rows_ignore_the_news_pillar_when_it_is_optional() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = archive(dir.path());
+        write_daily_world(&a);
+        // No float and no news searched: float and news UNKNOWN.
+        let log = Mutex::new(EvidenceLog::default());
+        let mut cx = board();
+        load(&a, &log, &mut cx);
+        trade(&mut cx, t(9, 30, 0), t(9, 32, 0));
+        let d = cx.decision(SYM).unwrap().clone();
+        let req = crate::context::near_row(&d, false).expect("near with news required");
+        assert_eq!(
+            req.unknown.iter().map(|u| u.pillar).collect::<Vec<_>>(),
+            vec!["float", "news"]
+        );
+        let opt = crate::context::near_row(&d, true).expect("still near on its float");
+        assert_eq!(
+            opt.unknown.iter().map(|u| u.pillar).collect::<Vec<_>>(),
+            vec!["float"]
+        );
     }
 }

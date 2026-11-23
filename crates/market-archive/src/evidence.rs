@@ -5,7 +5,16 @@
 //!   float/2026-10.jsonl          # FloatRecord, one per retrieval (month of retrieved_at, UTC)
 //!   news/2026-10.jsonl           # NewsVersionRecord, one per new version (month of first_observed_at)
 //!   news-coverage/2026-10.jsonl  # NewsCoverageRecord, one per window searched successfully
+//!   filings/2026-11.jsonl        # FilingRecord, one per SEC filing first seen (month of first_observed_at)
+//!   filings-coverage/2026-11.jsonl  # NewsCoverageRecord (provider sec_edgar), the EDGAR collector's own
+//!   source-news/2026-11.jsonl    # SourceNewsRecord: any other source's items (press wires, ...)
 //! ```
+//!
+//! Filings have their own directories, not `news/` and `news-coverage/`: the Benzinga collector
+//! rebuilds its version index and its covered-through point from those, and an EDGAR record there
+//! would be read as a Benzinga story or move its search window. The server reads `filings/` only;
+//! EDGAR's coverage is the EDGAR collector's restart state and never reaches the news pillar (a
+//! FAIL rests on the market-wide Benzinga searches, pillars-v6).
 //!
 //! **Append-only.** A record is never rewritten or deleted: a newer retrieval or an edited story is
 //! a new line. This is what lets a decision at an earlier cutoff be rebuilt exactly later (the
@@ -38,6 +47,9 @@ pub const EVIDENCE_DIR: &str = "evidence";
 pub const FLOAT_DIR: &str = "float";
 pub const NEWS_DIR: &str = "news";
 pub const NEWS_COVERAGE_DIR: &str = "news-coverage";
+pub const FILINGS_DIR: &str = "filings";
+pub const FILINGS_COVERAGE_DIR: &str = "filings-coverage";
+pub const SOURCE_NEWS_DIR: &str = "source-news";
 /// Schema of every record below; a reader refuses another.
 pub const EVIDENCE_SCHEMA: u32 = 1;
 
@@ -102,6 +114,88 @@ pub struct NewsVersionRecord {
     /// rewriting it would change the identity of records already on disk. It is not the right
     /// thing to *compare*, though — see [`NewsVersionRecord::content_key`].
     pub version_key: String,
+}
+
+/// How a [`FilingRecord`]'s `accepted_at_ns` was obtained.
+pub const DATED_BY_ACCEPTANCE: &str = "acceptance";
+/// A daily-index row: the index has a filing date and no time, so the record is dated by the
+/// **earliest** acceptance that filing date allows (17:30 ET on the previous SEC business day,
+/// `market_providers::import::edgar::earliest_acceptance`). Earliest, because the pillar's
+/// freshness runs from it: a row goes stale no later than the real filing would have. It can
+/// never count before the real acceptance either, because a record joins a decision only from
+/// its `first_observed_at`, and a daily index is only published after its day.
+pub const DATED_BY_DAILY_INDEX: &str = "daily_index_earliest";
+
+/// One SEC EDGAR filing as first seen (`market_providers::import::edgar`). Filings are immutable
+/// (an amendment is its own accession), so there is one record per accession, never versions.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FilingRecord {
+    pub v: u32,
+    /// `sec_edgar`.
+    pub provider: String,
+    /// `current_feed` (the EDGAR "latest filings" Atom feed) or `daily_index`.
+    pub source: String,
+    /// `0001234567-26-000123`.
+    pub accession: String,
+    pub cik: u64,
+    pub company: String,
+    /// The form type exactly as EDGAR lists it (`8-K`, `8-K/A`, `424B5`).
+    pub form: String,
+    /// The acceptance time as delivered (the feed's `<updated>`, RFC 3339 with offset); `None`
+    /// for a daily-index row, which has none.
+    pub accepted_at: Option<String>,
+    /// The time the filing is dated by (UTC ns): the acceptance time, or [`DATED_BY_DAILY_INDEX`].
+    pub accepted_at_ns: i64,
+    /// [`DATED_BY_ACCEPTANCE`] or [`DATED_BY_DAILY_INDEX`].
+    pub dated_by: String,
+    /// The EDGAR filing date, when given.
+    pub filed: Option<chrono::NaiveDate>,
+    /// 8-K items as listed in the feed (`1.01`, `7.01`); empty when not listed.
+    pub items: Vec<String>,
+    /// The tickers SEC's `company_tickers.json` listed for the CIK when the filing was first
+    /// seen, in the app's notation (`BRK-B` as `BRK.B`), never split into bare tickers.
+    pub symbols: Vec<String>,
+    /// The filing's index page on sec.gov.
+    pub url: String,
+    /// When StockWatcher first received this filing (UTC ns). Never the acceptance time.
+    pub first_observed_at: i64,
+}
+
+/// One item from any news source beyond Benzinga and EDGAR, stored as the seam carries it
+/// (`stock_context::SourceNews`; `crate::evidence_load::source_news_items` makes it a news item).
+/// A press-wire collector appends these with [`Archive::append_source_news`]; the server reads
+/// `evidence/source-news/` with the other evidence. One line per item version, append-only.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SourceNewsRecord {
+    pub v: u32,
+    /// The pillar policy's source name (`press_wire`).
+    pub provider: String,
+    /// The sub-source (`globenewswire`, `prnewswire`, `businesswire`, `accesswire`, `newsfile`).
+    pub source: String,
+    /// Stable within the provider (the wire's release id or URL hash).
+    pub id: String,
+    /// 1, or higher for a restatement of the same id.
+    #[serde(default = "one")]
+    pub version: u32,
+    /// The app's symbols the item is about (never split class tickers).
+    pub symbols: Vec<String>,
+    /// The event time (UTC ns): the wire's publication time.
+    pub published_at: i64,
+    /// When StockWatcher first had it (UTC ns).
+    pub first_observed_at: i64,
+    pub headline: Option<String>,
+    pub url: Option<String>,
+    /// `catalyst`, `offering`, `pending` or `recorded` (`stock_context::SourceKind`).
+    pub kind: String,
+    /// A finer display class, when the source gives one.
+    #[serde(default)]
+    pub event_type: Option<String>,
+    /// The rules that classified it (`wire-rules-v1`).
+    pub rules: String,
+}
+
+fn one() -> u32 {
+    1
 }
 
 impl NewsVersionRecord {
@@ -209,6 +303,44 @@ impl Archive {
         append_grouped(&self.evidence_dir().join(NEWS_COVERAGE_DIR), rows, |r| {
             r.observed_at
         })
+    }
+
+    pub fn append_filings(&self, rows: &[FilingRecord]) -> Result<(), ArchiveError> {
+        append_grouped(&self.evidence_dir().join(FILINGS_DIR), rows, |r| {
+            r.first_observed_at
+        })
+    }
+
+    pub fn append_filings_coverage(&self, rows: &[NewsCoverageRecord]) -> Result<(), ArchiveError> {
+        append_grouped(&self.evidence_dir().join(FILINGS_COVERAGE_DIR), rows, |r| {
+            r.observed_at
+        })
+    }
+
+    pub fn append_source_news(&self, rows: &[SourceNewsRecord]) -> Result<(), ArchiveError> {
+        append_grouped(&self.evidence_dir().join(SOURCE_NEWS_DIR), rows, |r| {
+            r.first_observed_at
+        })
+    }
+
+    pub fn read_source_news(
+        &self,
+        since: Option<i64>,
+    ) -> Result<Vec<SourceNewsRecord>, ArchiveError> {
+        read_all(&self.evidence_dir().join(SOURCE_NEWS_DIR), since)
+    }
+
+    /// SEC filings, optionally only from files for months at or after `since` (UTC ns).
+    pub fn read_filings(&self, since: Option<i64>) -> Result<Vec<FilingRecord>, ArchiveError> {
+        read_all(&self.evidence_dir().join(FILINGS_DIR), since)
+    }
+
+    /// The EDGAR collector's coverage records (never read by the news pillar).
+    pub fn read_filings_coverage(
+        &self,
+        since: Option<i64>,
+    ) -> Result<Vec<NewsCoverageRecord>, ArchiveError> {
+        read_all(&self.evidence_dir().join(FILINGS_COVERAGE_DIR), since)
     }
 
     /// Every float record, in file order (append order). Missing directory: none.
@@ -389,6 +521,14 @@ impl EvidenceTail {
         since: Option<i64>,
     ) -> TailRead<NewsCoverageRecord> {
         self.read(&a.evidence_dir().join(NEWS_COVERAGE_DIR), since)
+    }
+
+    pub fn filings(&mut self, a: &Archive, since: Option<i64>) -> TailRead<FilingRecord> {
+        self.read(&a.evidence_dir().join(FILINGS_DIR), since)
+    }
+
+    pub fn source_news(&mut self, a: &Archive, since: Option<i64>) -> TailRead<SourceNewsRecord> {
+        self.read(&a.evidence_dir().join(SOURCE_NEWS_DIR), since)
     }
 
     fn read<T: for<'de> Deserialize<'de>>(

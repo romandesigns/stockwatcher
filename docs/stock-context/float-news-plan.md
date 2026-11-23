@@ -290,3 +290,66 @@ Original checklist:
 3. One Alpaca news request without `symbols`, to confirm it returns stories for many symbols.
 4. One manual connect to Alpaca's news stream, to decide on streaming (section 3).
 5. Decide on the coverage lag (section 7).
+
+## 10. SEC EDGAR filings (pillars-v6, owner decision 2026-11-22)
+
+**Why.** The 2026-11-20 completeness audit (`crates/server/src/ross_audit.rs`) found 36 symbols
+passing price, gain and RVOL and none on the Ross Panel: the news pillar held every one off, and
+Benzinga was its only source. Small caps announce through SEC filings first, which Benzinga often
+does not carry. EDGAR is the regulator's own free, keyless record.
+
+**Collector.** A third worker of `swimport evidence` (`crates/market-providers/src/import/edgar.rs`),
+with its own HTTP client and pacer, so an SEC outage cannot delay a Benzinga poll. The server still
+calls no provider: it reads `evidence/filings/` like the other records.
+
+| Use | Endpoint | Cadence |
+|---|---|---|
+| ticker → CIK | `/files/company_tickers.json` (~1 MB) | at start, then every 24 h |
+| new filings | `/cgi-bin/browse-edgar?action=getcurrent&owner=exclude&count=100&start=N&output=atom` | every 60 s 06:00–22:00 ET on SEC business days, 600 s otherwise; pages `start=0,100,…` until it reaches the previous poll's end minus 5 min (accessions dedupe the overlap) |
+| back-fill | `/Archives/edgar/daily-index/YYYY/QTRn/form.YYYYMMDD.idx`, then each relevant filing's `-index.htm` for its `Accepted` time | once per start, for the dates of the 25 h window the feed could not reach (today's index is published only at night) |
+
+One pacer for all of it: 60 requests a minute at most, retries included (SEC's fair-access limit is
+10 a **second**). A normal minute is one request. `owner=exclude` drops Forms 3/4/5. The
+`User-Agent` is `EDGAR_USER_AGENT`, required: unset, the worker does not start and says so once.
+
+**Which forms** (`evidence_load::filing_class`, `filing-rules-v1`):
+
+| Forms | Class | Pillar |
+|---|---|---|
+| 8-K, 6-K | current report | PASS (relevant, substantive, `IssuerAnnounced`; adverse reports count, as adverse stories do) |
+| 8-K/A, 6-K/A | amendment | recorded, never a pass: it restates an earlier report whose news passed on its own date |
+| S-1, S-3, F-1, F-3 (with /A, ASR, MEF), 424B* | offering | recorded, never a pass; the row shows "Offering filed" |
+| everything else (Form 4, 13D/G, 10-Q, 8-K12B, S-8, …) | — | not collected |
+
+The 2026-11-20 simulation counted 8-K, 6-K, S-1, S-3, F-1, F-3 and 424B* (with /A) as qualifying,
+an upper bound; here offerings and amendments never pass.
+
+**Point in time.** A filing's event time is its EDGAR **acceptance** (`<updated>` in the feed,
+"Accepted" on the index page), stored as `accepted_at_ns` and used as the item's `published_at`:
+the pillar never counts it before then, nor before `first_observed_at` (our sighting). A daily-index
+row whose index page could not be read is dated by the **earliest** acceptance its filing date
+allows, `earliest_acceptance`: 17:30 ET on the previous SEC business day (EDGAR dates later
+filings with the next business day; Columbus and Veterans Day count as closed). Earliest, so its 24 h
+freshness ends no later than the real filing's; it cannot count early because the index exists only
+after its day and the record joins decisions from `first_observed_at`. `dated_by` records which.
+
+**Tickers.** SEC's `BRK-B` becomes `BRK.B`, `USB-PA` becomes `USB.PRA`, `KCAC-UN` becomes `KCAC.U`;
+any other notation is dropped whole (`app_symbol`). A ticker is never split: research once read
+`FHN PR E` and `MS/PL` as bare tickers and mapped the real `F`, `PR` and `PL` to banks' filings.
+Symbols are mapped when the filing is first seen and stored on the record.
+
+**Storage.** `evidence/filings/YYYY-MM.jsonl` (`FilingRecord`, one per accession, append-only) and
+`evidence/filings-coverage/YYYY-MM.jsonl` (the collector's restart state). Apart from `news/` and
+`news-coverage/` on purpose: the Benzinga collector rebuilds its version index and covered-through
+point from those. A day is roughly 300–800 kept filings at ~600 B.
+
+**Pillar (pillars-v6).** `news.sources: ["alpaca", "sec_edgar"]` lists who may pass; v1–v5 have no
+list and read every provider but `sec_edgar`, so their decisions are unchanged. A FAIL still needs
+the market-wide **Benzinga** coverage: EDGAR only adds passes. A row names the source that passed it
+(`news_evidence`: "8-K 09:12 (SEC)" with the filing index link), and an offering within 24 h is
+`offering` ("Offering filed").
+
+**Restart.** The collector rebuilds its kept accessions (3 days) and covered-through point from the
+files, so a restart repeats nothing and pages the feed back to where it stopped. A gap the feed
+cannot reach (60 pages, 6,000 filings) is filled from the daily indexes with the dating above;
+coverage is claimed only for what the feed itself read.

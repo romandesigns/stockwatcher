@@ -802,6 +802,11 @@ pub(crate) struct Inner {
     rocket_subs: AtomicUsize,
     /// Connections subscribed to the HOD scanner (`hod.subscribe`).
     hod_subs: AtomicUsize,
+    /// The synced switch "Ross Panel: require a news catalyst" (`detectors."ross-require-news"`,
+    /// default on; `crate::context::follow_news_switch`): which panel policy every context board
+    /// runs, ross-panel-v1 (on) or ross-panel-v2 (news optional). Held here so a board built later
+    /// (a replay seek, a day switch, a Detection Panel toggle) starts under the owner's choice.
+    ross_news_required: AtomicBool,
     /// The body of the last `rocket.*` frame broadcast (an unchanged panel sends nothing).
     rocket_published: Mutex<Option<serde_json::Value>>,
     /// The Runners rows' day lines the last `rocket.update` carried (`crate::day_line`).
@@ -1110,6 +1115,7 @@ impl Market {
             rocket_policy: Mutex::new(crate::rocket::Policy::default()),
             rocket_subs: AtomicUsize::new(0),
             hod_subs: AtomicUsize::new(0),
+            ross_news_required: AtomicBool::new(true),
             rocket_published: Mutex::new(None),
             rocket_lines: Mutex::new(crate::day_line::Published::default()),
             runner_events: Mutex::new(crate::time_marks::Events::default()),
@@ -1413,6 +1419,35 @@ impl Market {
             tracing::info!(on, "hod: runtime switch");
         }
         core.hod.set_runtime_on(on);
+    }
+
+    /// The `detectors."ross-require-news"` switch (`crate::context::follow_news_switch`): the
+    /// running board takes the matching panel policy now and decides every symbol again at the
+    /// next 15 s barrier; boards built later start under it.
+    pub fn set_ross_news_required(&self, required: bool) {
+        let before = self.0.ross_news_required.swap(required, Ordering::Relaxed);
+        let mut core = self.0.core.lock().expect("core lock");
+        let changed = core
+            .context
+            .as_mut()
+            .is_some_and(|cx| cx.set_news_required(required));
+        if changed || before != required {
+            tracing::info!(
+                required,
+                panel_policy = if required {
+                    "ross-panel-v1"
+                } else {
+                    "ross-panel-v2"
+                },
+                "ross: news catalyst {} for the Ross Panel (synced switch ross-require-news)",
+                if required { "required" } else { "optional" }
+            );
+        }
+    }
+
+    /// Whether the Ross Panel requires a news catalyst (the synced switch).
+    pub fn ross_news_required(&self) -> bool {
+        self.0.ross_news_required.load(Ordering::Relaxed)
     }
 
     /// The HOD panel as a `hod.snapshot` frame.
@@ -1911,6 +1946,8 @@ impl Market {
         for symbol in pending {
             board.set_history_pending(&symbol, true);
         }
+        // The owner's news switch, before any barrier is decided.
+        board.set_news_required(self.0.ross_news_required.load(Ordering::Relaxed));
         // A board built after startup (a Detection Panel toggle) starts with fresh episode
         // counters and notice memory: give it what this run already announced today.
         if let Some(m) = self.notice_memory(board.run_id()) {
@@ -3363,6 +3400,8 @@ impl Market {
                                 core.pressure.apply_halt(&h.symbol, &h.halt);
                                 if let Some(cx) = core.context.as_mut() {
                                     cx.set_halted(&h.symbol, h.halt.end.is_none());
+                                    // A T1 halt is news evidence (pillars-v6 `halt_t1`).
+                                    cx.apply_halt_news(h);
                                 }
                                 let (halted, resumed_at) = core.pressure.halt_state(&h.symbol);
                                 core.rocket.set_halted(&h.symbol, halted, resumed_at);

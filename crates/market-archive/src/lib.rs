@@ -130,8 +130,9 @@ pub use daily_bars::{
 };
 pub use error::ArchiveError;
 pub use evidence::{
-    CoverageScope, EVIDENCE_DIR, EvidenceTail, FloatRecord, NewsCoverageRecord, NewsVersionRecord,
-    TailRead, sha256_hex,
+    CoverageScope, DATED_BY_ACCEPTANCE, DATED_BY_DAILY_INDEX, EVIDENCE_DIR, EvidenceTail,
+    FilingRecord, FloatRecord, NewsCoverageRecord, NewsVersionRecord, SourceNewsRecord, TailRead,
+    sha256_hex,
 };
 pub use evidence_load::LoadedEvidence;
 pub use intraday::{

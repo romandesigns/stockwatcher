@@ -242,6 +242,18 @@ async fn serve(config: Config) -> std::io::Result<()> {
     let settings = Settings::open(config.data_dir.join("settings"))?;
     // Live and replay side by side (the dashboard reads live, the chart page practises on replay).
     let (markets, sim) = Markets::start(&config.market);
+    // The Ross Panel's news switch before anything is restored or decided: a restore is adopted
+    // only into a board under the same panel policy, so the follower below must not be the
+    // first to set it.
+    {
+        let doc = settings
+            .get(stockwatcher_server::alerts::DETECTORS_NS)
+            .await
+            .map(|(_, v)| v);
+        let required = stockwatcher_server::context::news_required(doc.as_ref());
+        markets.live.set_ross_news_required(required);
+        markets.replay.set_ross_news_required(required);
+    }
     spawn_memory_stats(&markets);
     // The Insights log's pushed copy of the ledger (crate::notices, `notices.v1`), primed with
     // today's file so a restart mid-day still shows the whole day.
@@ -280,6 +292,12 @@ async fn serve(config: Config) -> std::io::Result<()> {
     );
     // The HOD scanner's runtime switch (`detectors` -> hod-1, crate::hod), no restart.
     stockwatcher_server::hod::follow(settings.clone(), markets.live.clone());
+    // The Ross Panel's "require a news catalyst" switch (`detectors` -> ross-require-news,
+    // ross-panel-v1 on / v2 off), on both markets: a replayed day's panel follows the same rule.
+    stockwatcher_server::context::follow_news_switch(
+        settings.clone(),
+        vec![markets.live.clone(), markets.replay.clone()],
+    );
     // Chart orders on the live market can go to the owner's Alpaca PAPER account (synced
     // setting `tradingAccount`; crate::trading). Paper host only, keys from this environment.
     stockwatcher_server::trading::start(settings.clone(), markets.live.clone(), |k| {

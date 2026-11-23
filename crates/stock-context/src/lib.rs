@@ -42,22 +42,26 @@ pub use detect::{
     SymbolDetections, TradeEvidence, WickStatus,
 };
 pub use engine::{
-    Adoption, Decision, Engine, Fidelity, MissingPillar, PanelRow, PanelSnapshot, RestoreTelemetry,
-    RunInfo, SPARK_BARS, Timeline, Verdict, VolumeFacts,
+    Adoption, Decision, Engine, Fidelity, MissingPillar, NewsEvidence, OFFERING_EVENT, Offering,
+    PanelRow, PanelSnapshot, RestoreTelemetry, RunInfo, SPARK_BARS, Timeline, Verdict, VolumeFacts,
 };
 pub use evaluate::{Coverage, Integrity, NewsSummary, RvolDiagnostics};
 pub use evidence::{
     ActionsEvidence, ActionsSource, Authenticity, CloseBasis, CoverageState, DailyBaseline,
-    EvidenceStore, Favorability, FloatObservation, InstrumentId, IntradayBaseline, IntradayCurve,
-    NewsCoverage, NewsItem, OutstandingObservation, PrevClose, SessionVolume, SplitRatio, Tag,
+    EvidenceStore, Favorability, FloatObservation, HaltFacts, InstrumentId, IntradayBaseline,
+    IntradayCurve, NewsCoverage, NewsItem, OutstandingObservation, PENDING_EVENT, PrevClose,
+    SessionVolume, SourceKind, SourceNews, SplitRatio, Tag,
 };
 pub use output::{BoundedLog, OutputTelemetry, PANEL_LOG_MAX, SETUP_LOG_MAX};
 pub use panel::{
     Episode, ExitReason, MemberStatus, Membership, Momentum, MomentumStatus, PanelPolicy,
-    ROSS_PANEL_V1,
+    ROSS_PANEL_V1, ROSS_PANEL_V2,
 };
 pub use pillar::{Counts, PillarId, PillarResult, Qualification, Tri, aggregate};
-pub use policy::{PILLARS_V1, PILLARS_V2, PILLARS_V5, Policy};
+pub use policy::{
+    NEWS_PROVIDER_ALPACA, NEWS_PROVIDER_HALT_T1, NEWS_PROVIDER_PRESS_WIRE, NEWS_PROVIDER_SEC_EDGAR,
+    PILLARS_V1, PILLARS_V2, PILLARS_V5, PILLARS_V6, Policy,
+};
 pub use revision::{
     CorrectedPrint, DEDUP_WINDOW_SECS, DayHigh, LastPrint, PrintRevision, REVISION_WINDOW_SECS,
     RevisionTarget, RevisionTelemetry,

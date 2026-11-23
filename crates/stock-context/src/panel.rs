@@ -20,6 +20,10 @@ use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 
 pub const ROSS_PANEL_V1: &str = include_str!("../policy/ross-panel-v1.json");
+/// v1 with the news pillar optional (owner, 2026-11-22): 4/4 of the other pillars to enter, 3/4
+/// to stay. The server runs it while the synced switch "Ross Panel: require a news catalyst" is
+/// off, and v1 otherwise; both stay frozen by id.
+pub const ROSS_PANEL_V2: &str = include_str!("../policy/ross-panel-v2.json");
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct PlatformBand {
@@ -31,9 +35,22 @@ pub struct PlatformBand {
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct MembershipRules {
     pub id: String,
+    /// The news pillar is not counted for membership (`ross-panel-v2`): admission and retention
+    /// count passes among the other four pillars only. Absent from v1, so its bytes, hash and
+    /// decisions are unchanged. The news pillar is still decided, kept in `nonpassing` and shown.
+    #[serde(default)]
+    pub news_optional: bool,
+    /// Passes needed to enter, among the pillars counted (5 of 5, or 4 of 4 with news optional).
     pub admit_passes: u8,
     pub retain_passes: u8,
     pub platform_band: PlatformBand,
+}
+
+impl MembershipRules {
+    /// How many pillars membership counts.
+    pub fn counted(&self) -> u8 {
+        if self.news_optional { 4 } else { 5 }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -65,8 +82,9 @@ impl PanelPolicy {
         let body: PanelPolicyBody =
             serde_json::from_str(text).map_err(|e| format!("panel policy: {e}"))?;
         let m = &body.membership;
+        // Admission is always every counted pillar passing in one decision: no partial entry.
         if body.schema != 1
-            || m.admit_passes != 5
+            || m.admit_passes != m.counted()
             || m.retain_passes == 0
             || m.retain_passes > m.admit_passes
         {
@@ -89,6 +107,25 @@ impl PanelPolicy {
 
     pub fn v1() -> PanelPolicy {
         PanelPolicy::parse(ROSS_PANEL_V1).expect("embedded ross-panel-v1.json parses")
+    }
+
+    /// The news-optional panel (owner switch off).
+    pub fn v2() -> PanelPolicy {
+        PanelPolicy::parse(ROSS_PANEL_V2).expect("embedded ross-panel-v2.json parses")
+    }
+
+    /// The panel the owner's switch selects: v1 while news is required, v2 while it is optional.
+    pub fn for_news_required(required: bool) -> PanelPolicy {
+        if required {
+            PanelPolicy::v1()
+        } else {
+            PanelPolicy::v2()
+        }
+    }
+
+    /// Whether this panel admits without a passing news pillar.
+    pub fn news_optional(&self) -> bool {
+        self.body.membership.news_optional
     }
 
     pub fn tag(&self) -> String {
@@ -174,6 +211,22 @@ pub fn update_membership(
     episode_prefix: &str,
 ) -> bool {
     let before = m.clone();
+    // With news optional (ross-panel-v2) the news pillar is left out of the count, so admission
+    // is 4/4 and retention 3/4 of the others; `nonpassing` still names it, so a row can say its
+    // catalyst is unconfirmed.
+    let counts = if rules.news_optional {
+        let mut c = Counts::default();
+        for p in pillars.iter().filter(|p| p.pillar != PillarId::News) {
+            match p.state {
+                Tri::Pass => c.pass += 1,
+                Tri::Fail => c.fail += 1,
+                Tri::Unknown => c.unknown += 1,
+            }
+        }
+        c
+    } else {
+        counts
+    };
     m.nonpassing = pillars
         .iter()
         .filter(|p| p.state != Tri::Pass)
@@ -404,11 +457,21 @@ mod tests {
     }
 
     fn step(m: &mut Membership, states: [Tri; 5], elig: Eligibility, t: i64) -> bool {
+        step_under(&PanelPolicy::v1(), m, states, elig, t)
+    }
+
+    fn step_under(
+        policy: &PanelPolicy,
+        m: &mut Membership,
+        states: [Tri; 5],
+        elig: Eligibility,
+        t: i64,
+    ) -> bool {
         let p = pillars(states);
         let (_, c) = aggregate(p.iter().map(|x| x.state));
         update_membership(
             m,
-            &PanelPolicy::v1().body.membership,
+            &policy.body.membership,
             &p,
             c,
             elig,
@@ -427,6 +490,70 @@ mod tests {
         assert_eq!(p.body.membership.id, "five_pillars_membership_v1");
         assert_eq!(p.body.momentum.id, "bullish_momentum_order_v1");
         assert!(p.tag().starts_with("ross-panel-v1@"));
+    }
+
+    #[test]
+    fn policy_v2_is_v1_with_news_optional_and_both_are_frozen() {
+        let (v1, v2) = (PanelPolicy::v1(), PanelPolicy::v2());
+        assert!(!v1.news_optional() && v2.news_optional());
+        assert_eq!(
+            (
+                v2.body.membership.admit_passes,
+                v2.body.membership.retain_passes
+            ),
+            (4, 3)
+        );
+        assert_eq!(v2.body.momentum, v1.body.momentum);
+        assert_eq!(
+            v2.body.membership.platform_band,
+            v1.body.membership.platform_band
+        );
+        assert!(v2.tag().starts_with("ross-panel-v2@"));
+        assert_ne!(v1.hash, v2.hash);
+        assert_eq!(PanelPolicy::for_news_required(true), v1);
+        assert_eq!(PanelPolicy::for_news_required(false), v2);
+        // Admission is every counted pillar: a news-optional file asking for 3 is refused, and so
+        // is a news-required one asking for 4.
+        let bad = ROSS_PANEL_V2.replacen("\"admit_passes\": 4", "\"admit_passes\": 3", 1);
+        assert!(PanelPolicy::parse(&bad).is_err());
+        let bad = ROSS_PANEL_V1.replacen("\"admit_passes\": 5", "\"admit_passes\": 4", 1);
+        assert!(PanelPolicy::parse(&bad).is_err());
+    }
+
+    #[test]
+    fn news_optional_enters_at_four_of_four_and_stays_at_three() {
+        // Pillar order: price, gain, rvol, float, news.
+        let v2 = PanelPolicy::v2();
+        let mut m = Membership::default();
+        // Three of the four others is not enough, whatever news says.
+        step_under(&v2, &mut m, [Pass, Pass, Pass, Unknown, Pass], Eligible, 1);
+        assert_eq!(m.status, Some(MemberStatus::NotMember));
+        // All four others pass, news FAILs: admitted, Qualified (4/4), news named as non-passing.
+        step_under(&v2, &mut m, [Pass, Pass, Pass, Pass, Fail], Eligible, 2);
+        assert_eq!(m.status, Some(MemberStatus::Qualified));
+        assert_eq!(m.active().unwrap().admitted_at, 2);
+        assert_eq!(m.nonpassing, vec![(PillarId::News, Fail, "x")]);
+        // Three of four (float unknown) and news unknown: retained at 3/4.
+        step_under(
+            &v2,
+            &mut m,
+            [Pass, Pass, Pass, Unknown, Unknown],
+            Eligible,
+            3,
+        );
+        assert_eq!(m.status, Some(MemberStatus::Retained));
+        assert_eq!(m.active().unwrap().retained_since, Some(3));
+        // News passing does not make up for a second missing pillar: 2/4 leaves.
+        step_under(&v2, &mut m, [Pass, Fail, Pass, Unknown, Pass], Eligible, 4);
+        assert_eq!(m.status, Some(MemberStatus::Exited));
+        assert_eq!(
+            m.episodes[0].exit_reason,
+            Some(ExitReason::FailuresAndUnknowns)
+        );
+        // Under v1 the same 4 + news FAIL never admits.
+        let mut v1m = Membership::default();
+        step(&mut v1m, [Pass, Pass, Pass, Pass, Fail], Eligible, 5);
+        assert_eq!(v1m.status, Some(MemberStatus::NotMember));
     }
 
     #[test]

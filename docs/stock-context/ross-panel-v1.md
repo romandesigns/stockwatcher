@@ -4,7 +4,10 @@ Owner product policy (Roman, 2026-10-19), implemented in `crates/stock-context` 
 `engine.rs`), policy `crates/stock-context/policy/ross-panel-v1.json`, tagged
 `ross-panel-v1@<sha256>` on every panel snapshot. Not a sourced Ross rule, not a validated
 ranking. On the server behind `STOCK_CONTEXT=1` (section "On the server"); the five pillars it
-uses are `pillars-v2` ([pillars-v1.md](pillars-v1.md) documents both).
+uses are `pillars-v2` ([pillars-v1.md](pillars-v1.md) documents both); since 2026-11-22 the server
+runs `pillars-v6` (SEC EDGAR filings as a second news source, [float-news-plan.md](float-news-plan.md)
+section 10) and, while the owner's switch makes news optional, `ross-panel-v2` (section "News
+optional" below).
 
 ## Membership: `five_pillars_membership_v1`
 
@@ -29,6 +32,30 @@ Pillar qualification and panel membership are separate outputs.
   a current 4/5 snapshot.
 - No score-based entry, no grace periods, no mandatory pillar, no rank-based removal, no relaxed
   admission when the panel is empty.
+
+## News optional: `ross-panel-v2` (owner decision 2026-11-22)
+
+The synced switch **"Ross Panel: require a news catalyst"** (`detectors` entry
+`ross-require-news`, default **on**; Settings on web and phone, every device, no restart) picks the
+panel policy every context board runs: on, `ross-panel-v1` above; off,
+`crates/stock-context/policy/ross-panel-v2.json` (`four_pillars_news_optional_membership_v1`,
+`membership.news_optional: true`). Both are frozen by id and the snapshot names the one in force
+(`panel_policy`, `news_optional`; the panel header says "news optional").
+
+- **Counting.** The news pillar is left out: admit when price, gain, RVOL and float all PASS in one
+  decision (4/4), stay while at least 3 of those 4 pass. Removal reasons are judged over the same
+  four. The news pillar is still decided and stays in `nonpassing`.
+- **Rows.** A member whose news pillar is not passing carries `news_unconfirmed` and shows
+  "No news confirmed": its catalyst is the owner's to check. An SEC offering filing still shows
+  "Offering filed".
+- **Near-qualifying.** News no longer makes a symbol near or keeps it out: one blocked only by
+  news is a member and leaves the list; float-only near misses stay.
+- **Switching.** `Engine::set_panel_policy` marks every symbol for a fresh decision, so the change
+  applies at the next 15 s barrier to the membership as it stands: an active episode continues
+  under the new rule. Switching back on, a member admitted without news stays while 4/5 pass (v1's
+  retention: its four other pillars), with its news pillar shown as missing; a new entry needs 5/5.
+- **Restart.** A restart's replay of the day runs the policy in force at restart for the whole
+  day; a switch flipped mid-day is not replayed at its own time.
 
 ## Order: `bullish_momentum_order_v1`
 
@@ -143,7 +170,7 @@ entry. The wire keeps the earlier coarse tokens so an older client still decodes
 
 ## Not here yet
 
-Append-only decision log on disk, ignition. Each row carries `setup` (above), plus `move_1m_bp`, `from_high_bp`, `rvol_milli`, `float_shares`, `news_first_seen`, `missing`
+Append-only decision log on disk, ignition. Each row carries `setup` (above), plus `move_1m_bp`, `from_high_bp`, `rvol_milli`, `float_shares`, `news_first_seen`, `news_evidence` (the source that passed news: Benzinga, or an SEC 8-K/6-K with its acceptance time and filing link; pillars-v6), `offering` (an SEC offering filing within 24 h), `news_unconfirmed` (news-optional panel only), `missing`
 (non-passing pillars) and `spark` (the last 20 completed 15 s bar closes); the snapshot carries
 `setup_policy` and `attention`. With `pillars-v2` the price pillar uses the app's own $0.10–$25
 band, so the reference $2–$20 price failure described above applies to v1 only.

@@ -107,6 +107,99 @@ pub(crate) struct ContextBoard {
     favorites: Vec<String>,
 }
 
+/// The `detectors` settings entry that keeps the Ross Panel's news pillar required (owner,
+/// 2026-11-22; clients: `packages/shared/src/detectors.ts` `ROSS_REQUIRE_NEWS`). Not an alert:
+/// a membership rule, kept in the same synced document as the detector switches so it is
+/// written, validated and broadcast the same way (an entry patch, no restart).
+pub const ROSS_REQUIRE_NEWS: &str = "ross-require-news";
+
+/// Whether the `detectors` document keeps a news catalyst required: the entry's `on` (or a bare
+/// boolean); absent or any other shape is the default, **on** (today's rule, ross-panel-v1).
+pub fn news_required(v: Option<&Value>) -> bool {
+    match v.and_then(|v| v.get(ROSS_REQUIRE_NEWS)) {
+        Some(Value::Bool(b)) => *b,
+        Some(Value::Object(e)) => e.get("on").and_then(Value::as_bool).unwrap_or(true),
+        _ => true,
+    }
+}
+
+/// Follows the switch into the markets' context boards (no restart), like `crate::hod::follow`:
+/// at start, on every `settings.changed` for the `detectors` namespace, and after a lagged
+/// receiver (it may have missed one).
+pub fn follow_news_switch(
+    settings: crate::settings::Settings,
+    markets: Vec<crate::market::Market>,
+) {
+    const NS: &str = crate::alerts::detectors::NS;
+    tokio::spawn(async move {
+        let mut rx = settings.subscribe();
+        let apply = |v: Option<Value>| {
+            let required = news_required(v.as_ref());
+            for m in &markets {
+                m.set_ross_news_required(required);
+            }
+        };
+        apply(settings.get(NS).await.map(|(_, v)| v));
+        loop {
+            match rx.recv().await {
+                Ok(frame) => {
+                    let ours = serde_json::from_str::<Value>(&frame)
+                        .is_ok_and(|v| v["type"] == "settings.changed" && v["ns"] == NS);
+                    if ours {
+                        apply(settings.get(NS).await.map(|(_, v)| v));
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    apply(settings.get(NS).await.map(|(_, v)| v));
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+}
+
+/// A T1 "news pending" halt as news evidence (pillars-v6 source `halt_t1`, owner 2026-11-22): the
+/// exchange halted the stock because news is coming, which is evidence of a catalyst before any
+/// headline exists. Built from the chart engine's halt update through the news seam
+/// (`stock_context::SourceNews`), so the live board and a restore's replay of the same tape
+/// (`crate::history`) derive the same item: id `<symbol>:<halt ns>`, published and observed at
+/// the halt's exchange time (it reaches us with the halt message), version 1 at the halt and 2
+/// once a resume is seen (observed then, carrying the resume time). `None` for any other reason
+/// code.
+///
+/// Not carried, because the stream does not give them per halt: the halt price (the chart has the
+/// last print, the halt message does not) and the later codes of the same halt (T2 "news
+/// released", T3): the chart engine keeps one reason per halt span.
+pub fn t1_news_item(h: &chart_engine::wire::HaltUpdate) -> Option<stock_context::NewsItem> {
+    if !h.halt.reason.trim().eq_ignore_ascii_case("T1") {
+        return None;
+    }
+    let ns = |n: i64, ms: i64| if n != 0 { n } else { ms * 1_000_000 };
+    let start = ns(h.halt.start_ns, h.halt.start);
+    let end = h.halt.end.map(|e| ns(h.halt.end_ns.unwrap_or(0), e));
+    Some(stock_context::NewsItem::from_source(
+        &stock_context::SourceNews {
+            provider: stock_context::NEWS_PROVIDER_HALT_T1.into(),
+            source: "T1".into(),
+            id: format!("{}:{start}", h.symbol),
+            symbol: h.symbol.clone(),
+            published_at: start,
+            observed_at: end.unwrap_or(start),
+            version: if end.is_some() { 2 } else { 1 },
+            headline: Some("News pending (T1 halt)".into()),
+            url: None,
+            kind: stock_context::SourceKind::Pending,
+            event_type: None,
+            rules: "halt-t1-v1".into(),
+            halt: Some(stock_context::HaltFacts {
+                halted_at: start,
+                reason: h.halt.reason.trim().to_string(),
+                resumed_at: end,
+            }),
+        },
+    ))
+}
+
 /// The context engine exactly as the live board builds it: the pillar policy, the Ross Panel's
 /// policy and the micro-pullback (setup) detector. One constructor, so the ticker page's replay of
 /// a past day (`crate::insights`) runs the detector the live market ran, never a lookalike.
@@ -229,6 +322,20 @@ impl ContextBoard {
         })
     }
 
+    /// Selects the Ross Panel policy the owner's switch asks for (`ross-panel-v1` while a news
+    /// catalyst is required, `ross-panel-v2` while it is optional). The engine decides every
+    /// symbol again at its next barrier under it ([`stock_context::Engine::set_panel_policy`]).
+    /// Returns whether the policy changed.
+    pub(crate) fn set_news_required(&mut self, required: bool) -> bool {
+        self.engine
+            .set_panel_policy(PanelPolicy::for_news_required(required))
+    }
+
+    /// Whether this board's panel admits without a passing news pillar.
+    pub(crate) fn news_optional(&self) -> bool {
+        self.engine.panel_policy().news_optional()
+    }
+
     /// The same board deciding under another pillar policy (the completeness audit compares
     /// pillars-v4 with v5 over one recorded day, `crate::ross_audit`).
     #[cfg(test)]
@@ -317,7 +424,9 @@ impl ContextBoard {
             })
             .collect();
         let mut reasons: HashMap<(&'static str, &'static str), u32> = HashMap::new();
+        let news_optional = self.news_optional();
         let mut r = Readiness {
+            news_optional,
             evidence_records: self.engine.evidence_len(),
             revisions: self.engine.revision_telemetry(),
             restores: self.engine.restore_telemetry(),
@@ -359,7 +468,7 @@ impl ContextBoard {
             if undecided {
                 r.contenders += 1;
             }
-            if let Some(n) = near_row(d) {
+            if let Some(n) = near_row(d, news_optional) {
                 r.near.push(n);
             }
         }
@@ -733,6 +842,13 @@ impl ContextBoard {
 
     pub(crate) fn set_halted(&mut self, symbol: &str, halted: bool) {
         self.engine.set_halted(symbol, halted);
+    }
+
+    /// A halt update's news evidence (a T1 halt: [`t1_news_item`]), straight into the engine.
+    pub(crate) fn apply_halt_news(&mut self, h: &chart_engine::wire::HaltUpdate) {
+        if let Some(n) = t1_news_item(h) {
+            self.engine.add_news(n);
+        }
     }
 
     /// The Runners' flagged symbols (`crate::rocket`): the engine also runs the micro-pullback
@@ -1143,8 +1259,12 @@ pub(crate) struct Readiness {
     pub(crate) symbols: u32,
     /// Symbols at five passes now.
     pub(crate) qualified: u32,
-    /// Ross Panel members now (five to enter, four to stay).
+    /// Ross Panel members now (five to enter, four to stay; four of the non-news pillars to
+    /// enter and three to stay while news is optional).
     pub(crate) members: u32,
+    /// The owner switched "require a news catalyst" off (`ross-panel-v2`): said in the summary
+    /// so a reader knows which membership rule the counts are under.
+    pub(crate) news_optional: bool,
     pub(crate) pillars: Vec<PillarReadiness>,
     /// Symbols no pillar FAILS that still have a pillar UNKNOWN: the ones evidence could still
     /// put on the panel, and the only ones [`Readiness::blocking`] counts.
@@ -1199,10 +1319,15 @@ impl Readiness {
         };
         let rev = self.revisions;
         format!(
-            "{} symbols, {} qualified, {} members, {} restored; {} awaiting evidence: {blocking}; revisions {} applied, {} duplicates dropped{}",
+            "{} symbols, {} qualified, {} members{}, {} restored; {} awaiting evidence: {blocking}; revisions {} applied, {} duplicates dropped{}",
             self.symbols,
             self.qualified,
             self.members,
+            if self.news_optional {
+                " (news optional)"
+            } else {
+                ""
+            },
             self.restores.adopted,
             self.contenders,
             rev.applied,
@@ -1246,7 +1371,11 @@ pub(crate) struct NearPillar {
 }
 
 /// A decision's near-qualifying row ([`Readiness::near`]), or `None`.
-pub(crate) fn near_row(d: &Decision) -> Option<NearRow> {
+///
+/// With news optional (`ross-panel-v2`) the news pillar no longer decides membership, so it
+/// neither makes a symbol near nor keeps one out: a symbol blocked only by news is a member then
+/// and leaves this list, and a float-only near miss stays whatever its news says.
+pub(crate) fn near_row(d: &Decision, news_optional: bool) -> Option<NearRow> {
     if d.membership.active().is_some() {
         return None;
     }
@@ -1257,7 +1386,12 @@ pub(crate) fn near_row(d: &Decision) -> Option<NearRow> {
         }
     }
     let mut unknown = Vec::new();
-    for p in [PillarId::Float, PillarId::News] {
+    let open: &[PillarId] = if news_optional {
+        &[PillarId::Float]
+    } else {
+        &[PillarId::Float, PillarId::News]
+    };
+    for &p in open {
         let r = state(p)?;
         match r.state {
             Tri::Pass => {}

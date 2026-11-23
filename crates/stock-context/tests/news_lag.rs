@@ -59,6 +59,9 @@ fn news_at(policy: Policy, gap_secs: i64, item_observed: Option<i64>) -> PillarR
             content_key: "fixture".into(),
             revision_at: Some(0),
             rules: "fixture".into(),
+            url: None,
+            headline: None,
+            halt: None,
         });
     }
     e.apply(

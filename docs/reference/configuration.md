@@ -148,6 +148,13 @@ off, and the start line says `NOT SET`. Also reads `PRICE_BAND_*` (its watch uni
 | `EVIDENCE_NEWS_EDIT_WINDOW_MINS` | `180` | that trailing window |
 | `EVIDENCE_ALPACA_PER_MINUTE` | `60` | Alpaca news request ceiling for this process |
 | `ALPACA_DATA_BASE` / `FMP_BASE` | `https://data.alpaca.markets` / `https://financialmodelingprep.com` | API bases |
+| `EDGAR_USER_AGENT` | **unset: the EDGAR worker is off** | SEC's required descriptive User-Agent with a contact (placeholder: `ExampleCo market-data admin@example.com`). Set, a third worker collects SEC filings into `ARCHIVE_ROOT/evidence/filings/` (`crates/market-providers/src/import/edgar.rs`; pillars-v6 reads 8-K and 6-K as news, offerings as a row flag). Unset, the start log says `SEC EDGAR filings OFF` once |
+| `EDGAR_POLL_SECS` / `EDGAR_IDLE_POLL_SECS` | `60` / `600` | EDGAR feed poll interval in filing hours (06:00–22:00 ET weekdays) / otherwise (min 10) |
+| `EDGAR_PER_MINUTE` | `60` | EDGAR request ceiling, retries included (SEC's fair-access limit is 10 a second; this is 1) |
+| `EDGAR_POLL_MAX_PAGES` / `EDGAR_BACKFILL_MAX_PAGES` | `10` / `60` | feed pages (100 filings each) a forward poll / the first poll after a start may read |
+| `EDGAR_BACKFILL_DETAIL_MAX` | `600` | filing index pages a start's daily-index back-fill may read for acceptance times |
+| `EDGAR_TICKERS_REFRESH_HOURS` | `24` | how often SEC's `company_tickers.json` is fetched again |
+| `EDGAR_BASE` | `https://www.sec.gov` | API base |
 
 `swimport`'s one-off commands (`crates/market-providers/src/bin/swimport.rs`) also read
 `FMP_API_KEY` and `FMP_BASE` (default `https://financialmodelingprep.com`) for FMP comparison bars.

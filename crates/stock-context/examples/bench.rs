@@ -106,6 +106,9 @@ fn main() {
                 content_key: format!("bench:{s}"),
                 revision_at: Some(pre),
                 rules: "bench".into(),
+                url: None,
+                headline: None,
+                halt: None,
             });
         }
     }

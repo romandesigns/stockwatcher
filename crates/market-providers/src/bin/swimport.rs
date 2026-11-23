@@ -1107,7 +1107,63 @@ fn evidence(args: &[String]) -> Result<ExitCode, String> {
     // waits on it. Joining them in a fixed order let a failure in one sit unnoticed while its
     // peer looped on, which is a silent half-dead collector.
     let mut failure: Option<String> = None;
+    // The third worker: SEC EDGAR filings (pillars-v6's second news source). Off, with one line
+    // saying so, until EDGAR_USER_AGENT is set: SEC requires a User-Agent with a contact, and
+    // none is invented here. Its own collector, client and pacer, like the other two, so an SEC
+    // outage cannot delay a Benzinga poll.
+    let edgar_worker = match market_providers::import::edgar::EdgarConfig::from_lookup(env)? {
+        None => {
+            println!("{} {}", stamp(), market_providers::import::edgar::OFF_LINE);
+            None
+        }
+        Some(ecfg) => {
+            println!(
+                "{} evidence: SEC EDGAR filings ON: feed every {}s ({}s outside filing hours), <= {}/min, tickers every {}h, back-fill <= {} pages",
+                stamp(),
+                ecfg.poll_secs,
+                ecfg.idle_poll_secs,
+                ecfg.per_minute,
+                ecfg.tickers_refresh_secs / 3600,
+                ecfg.backfill_max_pages
+            );
+            let (archive, stop) = (archive.clone(), stop.clone());
+            Some(
+                std::thread::Builder::new()
+                    .name("evidence-edgar".into())
+                    .spawn(move || -> Result<(), String> {
+                        let mut c = market_providers::import::edgar::EdgarCollector::open(
+                            ecfg,
+                            &archive,
+                            Utc::now(),
+                        )?;
+                        let mut http = ReqwestHttp::new()?;
+                        while !stop.load(Ordering::Relaxed) {
+                            let r = c.tick(
+                                &archive,
+                                &mut http,
+                                &mut Utc::now,
+                                &mut |d| {
+                                    sleep_or_stop(&stop, d);
+                                },
+                                &mut |l| println!("{} {l}", stamp()),
+                            );
+                            if r.filings > 0 || !r.errors.is_empty() || (r.polled && !r.complete) {
+                                println!("{} {}", stamp(), r.summary());
+                            }
+                            if !sleep_or_stop(&stop, Duration::from_secs(15)) {
+                                break;
+                            }
+                        }
+                        Ok(())
+                    })
+                    .map_err(|e| format!("evidence edgar worker: {e}"))?,
+            )
+        }
+    };
     let mut pending = vec![("float", float_worker), ("news", news_worker)];
+    if let Some(w) = edgar_worker {
+        pending.push(("edgar", w));
+    }
     while !pending.is_empty() {
         let ready = pending.iter().position(|(_, h)| h.is_finished());
         let (name, handle) = match ready {

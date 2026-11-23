@@ -520,6 +520,9 @@ pub fn news(
             && n.relevant
             && n.substantive
             && n.credible_source
+            // A provider the policy does not read cannot pass it (pillars-v6 adds `sec_edgar`;
+            // v1..v5 read Benzinga only, so their decisions are unchanged by EDGAR records).
+            && policy.body.news.reads(&n.source)
             && n.authenticity != Authenticity::Unsupported
             && n.published_at
                 .is_some_and(|p| p <= cutoff && cutoff - p <= fresh)

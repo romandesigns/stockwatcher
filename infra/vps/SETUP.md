@@ -306,6 +306,23 @@ Do this **after** the release that adds the `evidence` service to the compose fi
    containing `STOCK_CONTEXT:` and `context disabled` means `PRICE_BAND_*` is not $0.10–$25:
    remove the override or the panel stays off.
 
+4. Optional, SEC EDGAR filings as a second news source (pillars-v6, owner decision 2026-11-22).
+   SEC requires a descriptive User-Agent with a contact; until it is set the collector logs
+   `SEC EDGAR filings OFF` once and the news pillar reads Benzinga only. Use your own
+   organisation name and a monitored address (typed on the VPS, never committed):
+   ```sh
+   cd ~/apps/stockwatcher
+   read -rp 'EDGAR_USER_AGENT (e.g. ExampleCo market-data admin@example.com): ' u
+   printf 'EDGAR_USER_AGENT=%s
+' "$u" >> .env
+   unset u
+   docker compose --env-file image.env up -d
+   docker compose --env-file image.env logs --tail 20 evidence | grep -i edgar   # "SEC EDGAR filings ON"
+   ```
+   It polls SEC once a minute in filing hours (at most one request a second) and writes
+   `archive/evidence/filings/`. The Ross Panel's "require a news catalyst" switch is in Settings
+   on web and phone (no restart).
+
 Checking on it later:
 
 ```sh

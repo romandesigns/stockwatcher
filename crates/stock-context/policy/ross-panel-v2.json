@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "id": "ross-panel-v2",
+  "note": "ross-panel-v1 with the news pillar optional (owner decision 2026-11-22, the switch \"Ross Panel: require a news catalyst\" turned off). Membership counts the other four pillars only: enter when all four pass in one decision, stay while at least three of them pass. The news pillar is still decided and shown; a member whose news pillar is not passing is marked \"No news confirmed\" so the owner checks the catalyst. Ordering and the platform band are v1's. With the switch on the server runs ross-panel-v1 unchanged. See docs/stock-context/ross-panel-v1.md.",
+  "membership": {
+    "id": "four_pillars_news_optional_membership_v1",
+    "news_optional": true,
+    "admit_passes": 4,
+    "retain_passes": 3,
+    "platform_band": {
+      "min_micros": 100000,
+      "max_micros": 25000000,
+      "source": "production quote band ($0.10-$25, server config); the server checks it matches at start"
+    }
+  },
+  "momentum": {
+    "id": "bullish_momentum_order_v1",
+    "short_secs": 30,
+    "primary_secs": 60,
+    "context_secs": 300,
+    "endpoint_max_age_secs": 15
+  }
+}

@@ -82,7 +82,7 @@ fn evidence(e: &mut Engine, sym: &str) {
         version: 1,
         instrument: inst,
         event_type: "other".into(),
-        source: "issuer".into(),
+        source: "alpaca/benzinga".into(),
         credible_source: true,
         relevant: true,
         substantive: true,
@@ -94,6 +94,9 @@ fn evidence(e: &mut Engine, sym: &str) {
         content_key: "fixture".into(),
         revision_at: Some(0),
         rules: "fixture".into(),
+        url: None,
+        headline: None,
+        halt: None,
     });
 }
 

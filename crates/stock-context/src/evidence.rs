@@ -335,6 +335,123 @@ pub struct NewsItem {
     /// `news-rules-v2`, …). Carried on the record like a policy hash is carried on a decision:
     /// a changed rule is a new identity over the same stored stories, never an edit of them.
     pub rules: String,
+    /// Where the item can be read: the story's URL, or an SEC filing's index page. Display only;
+    /// nothing is decided on it.
+    pub url: Option<String>,
+    /// The headline (a story's or wire release's title; an SEC filing's form and company).
+    /// Display only.
+    pub headline: Option<String>,
+    /// A T1 "news pending" halt's lifecycle, for a `halt_t1` item ([`HaltFacts`]). Display only.
+    pub halt: Option<HaltFacts>,
+}
+
+/// What a news source says an item is ([`SourceNews::kind`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceKind {
+    /// A catalyst: may pass the news pillar (an 8-K, a wire press release).
+    Catalyst,
+    /// Dilution (an offering registration or prospectus): recorded and flagged, never a pass.
+    Offering,
+    /// Exchange-issued evidence that news is coming (a T1 halt): passes, labelled apart from a
+    /// headline ("News pending").
+    Pending,
+    /// Recorded for the record only, never a pass (an 8-K/A).
+    Recorded,
+}
+
+/// `NewsItem::event_type` of a [`SourceKind::Pending`] item.
+pub const PENDING_EVENT: &str = "news_pending";
+
+/// A T1 halt's lifecycle as the status stream gave it (UTC ns).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct HaltFacts {
+    pub halted_at: i64,
+    /// The exchange's reason code as delivered (`T1`).
+    pub reason: String,
+    /// When trading resumed, once a resume was seen.
+    pub resumed_at: Option<i64>,
+}
+
+/// **The seam every news source uses** (owner brief 2026-11-22): one item from one source, made
+/// into the engine's [`NewsItem`] by [`NewsItem::from_source`]. SEC filings
+/// (`market_archive::evidence_load::filing_items`), T1 halts (`stockwatcher_server::context`) and
+/// press-release wires all hand the pillar their items through it, so classification is one rule:
+/// `relevant`, `credible_source` and `IssuerAnnounced` for every item that names its own symbol,
+/// `substantive` for [`SourceKind::Catalyst`] and [`SourceKind::Pending`] only. Whether an item
+/// may pass is still the policy's: its `provider` must be in `news.sources` (pillars-v6:
+/// `alpaca`, `sec_edgar`, `press_wire`, `halt_t1`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceNews {
+    /// `sec_edgar`, `press_wire`, `halt_t1` (the policy's `news.sources` names).
+    pub provider: String,
+    /// The sub-source, shown with the item: an SEC form (`8-K`), a wire (`globenewswire`), `T1`.
+    pub source: String,
+    /// Stable within the provider: an accession, a wire's release id, `<symbol>:<halt ns>`.
+    pub id: String,
+    pub symbol: String,
+    /// The event time (UTC ns): SEC acceptance, wire publication, halt start. The pillar never
+    /// counts the item before it, and its 24 h freshness runs from it.
+    pub published_at: i64,
+    /// When StockWatcher first had the item (UTC ns): decisions join it from here, never earlier.
+    pub observed_at: i64,
+    /// Bumped when the same `id` is restated (a halt's resume); 1 for an item never revised.
+    pub version: u32,
+    pub headline: Option<String>,
+    pub url: Option<String>,
+    pub kind: SourceKind,
+    /// A finer class for display (`current_report`, `clinical_result`); `None` takes the kind's.
+    pub event_type: Option<String>,
+    /// The rules that classified it (`filing-rules-v1`, `wire-rules-v1`, `halt-t1-v1`).
+    pub rules: String,
+    pub halt: Option<HaltFacts>,
+}
+
+impl NewsItem {
+    /// The seam ([`SourceNews`]): one source item as the engine's news item.
+    pub fn from_source(s: &SourceNews) -> NewsItem {
+        let event_type = s.event_type.clone().unwrap_or_else(|| {
+            match s.kind {
+                SourceKind::Catalyst => "catalyst",
+                SourceKind::Offering => crate::engine::OFFERING_EVENT,
+                SourceKind::Pending => PENDING_EVENT,
+                SourceKind::Recorded => "recorded",
+            }
+            .to_string()
+        });
+        let content = format!(
+            "{}\n{}\n{}\n{}\n{:?}\n{}\n{:?}",
+            s.provider,
+            s.id,
+            s.version,
+            s.published_at,
+            s.kind,
+            s.headline.as_deref().unwrap_or(""),
+            s.halt
+        );
+        NewsItem {
+            id: format!("news:{}:{}", s.provider, s.id),
+            version: s.version,
+            instrument: InstrumentId::symbol(&s.symbol),
+            event_type,
+            source: format!("{}/{}", s.provider, s.source),
+            credible_source: true,
+            relevant: true,
+            substantive: matches!(s.kind, SourceKind::Catalyst | SourceKind::Pending),
+            authenticity: Authenticity::IssuerAnnounced,
+            favorability: Favorability::Undetermined,
+            published_at: Some(s.published_at),
+            observed_at: s.observed_at,
+            tag: Tag::Present,
+            content_key: content,
+            // A restatement (a resume) orders after the item it restates.
+            revision_at: Some(s.published_at.max(s.observed_at)),
+            rules: s.rules.clone(),
+            url: s.url.clone(),
+            headline: s.headline.clone(),
+            halt: s.halt.clone(),
+        }
+    }
 }
 
 /// One news story as of a cutoff.
@@ -726,6 +843,9 @@ mod tests {
             content_key: "fixture".into(),
             revision_at: Some(0),
             rules: "fixture".into(),
+            url: None,
+            headline: None,
+            halt: None,
         }
     }
 

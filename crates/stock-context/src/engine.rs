@@ -322,6 +322,10 @@ struct Sym {
     /// That earliest qualifying story's headline class (`NewsItem::event_type`: `financing`,
     /// `regulatory_decision`, …), so a row can mark dilution news without the headline text.
     news_kind: Option<String>,
+    /// That story's source, form, publication (an SEC filing's acceptance) time and URL.
+    news_evidence: Option<NewsEvidence>,
+    /// The latest SEC offering filing visible at the latest decision ([`Offering`]).
+    offering: Option<Offering>,
     /// How completely this symbol's own prints were collected today, when something is known
     /// about it that the run-wide figure does not say.
     ///
@@ -385,6 +389,8 @@ impl Sym {
             first_bar: None,
             news_first_seen: None,
             news_kind: None,
+            news_evidence: None,
+            offering: None,
             coverage: None,
             integrity: Integrity::default(),
             quarantine_through: None,
@@ -494,6 +500,69 @@ pub struct MissingPillar {
 /// Closes kept in a row's sparkline.
 pub const SPARK_BARS: usize = 20;
 
+/// The news item behind a passing news pillar, as a row shows it: which source passed it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct NewsEvidence {
+    /// `benzinga` (an Alpaca story) or `sec_edgar` (an issuer's filing); another provider's name
+    /// as given.
+    pub source: String,
+    /// The SEC form type (`8-K`, `6-K`, `8-K/A`); `None` for a story.
+    pub form: Option<String>,
+    /// A story's creation time, a filing's EDGAR acceptance time, a wire's publication, a halt's
+    /// start (UTC ns).
+    pub published_at: Option<i64>,
+    pub url: Option<String>,
+    /// The sub-source of a `press_wire` item (`globenewswire`) or a halt's code (`T1`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
+    /// Display only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub headline: Option<String>,
+    /// Exchange-issued "news pending" (a T1 halt), not a headline: shown apart from one.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub pending: bool,
+    /// The T1 halt's lifecycle (halt time, code, resume), for a `halt_t1` item.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub halt: Option<crate::evidence::HaltFacts>,
+}
+
+impl NewsEvidence {
+    fn of(n: &NewsItem) -> NewsEvidence {
+        let (provider, rest) = n.source.split_once('/').unwrap_or((n.source.as_str(), ""));
+        let alpaca = provider == crate::policy::NEWS_PROVIDER_ALPACA;
+        let edgar = provider == crate::policy::NEWS_PROVIDER_SEC_EDGAR;
+        NewsEvidence {
+            source: if alpaca && !rest.is_empty() {
+                rest.to_string()
+            } else {
+                provider.to_string()
+            },
+            form: (edgar && !rest.is_empty()).then(|| rest.to_string()),
+            published_at: n.published_at,
+            url: n.url.clone(),
+            channel: (!alpaca && !edgar && !rest.is_empty()).then(|| rest.to_string()),
+            headline: n.headline.clone(),
+            pending: n.event_type == crate::evidence::PENDING_EVENT,
+            halt: n.halt.clone(),
+        }
+    }
+}
+
+/// An SEC offering filing (registration statement or prospectus: S-1, S-3, F-1, F-3, 424B*) on
+/// a symbol within the news freshness window. Dilution, not a catalyst: it never passes the news
+/// pillar (`market_archive::evidence_load::filing_items` marks it not substantive); a row flags
+/// it on its own ("Offering filed").
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Offering {
+    pub form: String,
+    /// EDGAR acceptance time (UTC ns), when the record has one.
+    pub published_at: Option<i64>,
+    pub url: Option<String>,
+}
+
+/// `NewsItem::event_type` of an SEC offering filing.
+pub const OFFERING_EVENT: &str = "offering_filed";
+
 /// One Ross Panel member at one barrier.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct PanelRow {
@@ -528,6 +597,16 @@ pub struct PanelRow {
     pub news_first_seen: Option<i64>,
     /// That item's headline class (`NewsItem::event_type`), so a row can mark dilution news.
     pub news_kind: Option<String>,
+    /// That item's source (pillars-v6: Benzinga or SEC EDGAR), form, time and link.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub news_evidence: Option<NewsEvidence>,
+    /// An SEC offering filing within the news freshness window ([`Offering`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub offering: Option<Offering>,
+    /// The panel is news-optional (`ross-panel-v2`) and this member's news pillar is not
+    /// passing: it was admitted or kept on the other four, so its catalyst is unconfirmed.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub news_unconfirmed: bool,
     /// The pillars not passing at the latest decision.
     pub missing: Vec<MissingPillar>,
     /// Closes (micros) of the last 20 completed 15 s setup bars that had an OHLC print, oldest
@@ -547,6 +626,8 @@ pub struct PanelSnapshot {
     pub run_id: String,
     pub source: String,
     pub panel_policy: String,
+    /// The panel policy counts membership without the news pillar (`ross-panel-v2`).
+    pub news_optional: bool,
     pub pillar_policy: String,
     pub bar_end: i64,
     pub cutoff: i64,
@@ -887,6 +968,22 @@ impl Engine {
         &self.panel_policy
     }
 
+    /// Switches the Ross Panel policy of a running engine (the owner's "require a news catalyst"
+    /// switch: `ross-panel-v1` on, `ross-panel-v2` off). Nothing already decided changes: every
+    /// symbol is marked for a fresh decision, so the next barrier applies the new rule to the
+    /// membership as it stands (an active episode continues under it; an admission still needs
+    /// every counted pillar in one decision). Returns whether the policy changed.
+    pub fn set_panel_policy(&mut self, p: PanelPolicy) -> bool {
+        if p.hash == self.panel_policy.hash {
+            return false;
+        }
+        self.panel_policy = p;
+        for s in self.syms.values_mut() {
+            s.dirty = true;
+        }
+        true
+    }
+
     /// Panel snapshots held now (each one a change), oldest first; the journal is empty
     /// afterwards. Bounded ([`PANEL_LOG_MAX`]): a caller that stops taking loses the oldest
     /// snapshots, counted in [`Engine::output_telemetry`]. The latest snapshot is kept apart
@@ -1071,6 +1168,8 @@ impl Engine {
                 sym.last = None;
                 sym.news_first_seen = None;
                 sym.news_kind = None;
+                sym.news_evidence = None;
+                sym.offering = None;
                 sym.det = SymDetect {
                     returns: std::mem::take(&mut sym.det.returns),
                     last_seen: sym.det.last_seen,
@@ -1881,6 +1980,7 @@ impl Engine {
     /// Ranks the active members at barrier `b` and logs the panel when it changed.
     fn publish_panel(&mut self, b: i64, tau: i64) {
         let rules = &self.panel_policy.body.momentum;
+        let news_optional = self.panel_policy.news_optional();
         let date = trading_date(UnixNanos(b));
         let mut rows: Vec<PanelRow> = Vec::new();
         for s in self.syms.values_mut() {
@@ -1950,6 +2050,10 @@ impl Engine {
                     .map(|v| v as u64),
                 news_first_seen: s.news_first_seen,
                 news_kind: s.news_kind.clone(),
+                news_evidence: s.news_evidence.clone(),
+                offering: s.offering.clone(),
+                news_unconfirmed: news_optional
+                    && pillar(PillarId::News).is_none_or(|p| p.state != Tri::Pass),
                 missing: s
                     .member
                     .nonpassing
@@ -1985,9 +2089,10 @@ impl Engine {
                 .and_then(|p| p.rows.iter().find(|x| x.symbol == r.symbol))
                 .and_then(|x| x.rank);
         }
+        // A policy switch with the same rows is still news: the header says which rule is on.
         let changed = match prev {
             None => !rows.is_empty(),
-            Some(p) => p.rows != rows,
+            Some(p) => p.rows != rows || p.panel_policy != self.panel_policy.tag(),
         };
         if !changed {
             return;
@@ -1997,6 +2102,7 @@ impl Engine {
             run_id: self.run.run_id.clone(),
             source: self.run.source.clone(),
             panel_policy: self.panel_policy.tag(),
+            news_optional,
             pillar_policy: self.policy.tag(),
             bar_end: b,
             cutoff: tau,
@@ -2033,6 +2139,8 @@ impl Engine {
             s.first_bar = None;
             s.news_first_seen = None;
             s.news_kind = None;
+            s.news_evidence = None;
+            s.offering = None;
             // The ledger is deliberately **not** cleared here. Clearing it after a date's first
             // prints had already been queued is what lost their identities, so a later
             // redelivery of one counted twice; its entries carry their own session date and the
@@ -2187,6 +2295,13 @@ impl Engine {
             .min_by_key(|n| n.observed_at);
         s.news_first_seen = first.map(|n| n.observed_at);
         s.news_kind = first.map(|n| n.event_type.clone());
+        s.news_evidence = first.map(NewsEvidence::of);
+        s.offering = offering(
+            ev,
+            &s.inst,
+            tau,
+            policy.body.reference_profile.news_freshness_secs,
+        );
         let pillars = vec![price_r, g.pillar, rvol_r, float_r, news_r];
         let (qualification, counts) = aggregate(pillars.iter().map(|p| p.state));
 
@@ -2392,4 +2507,32 @@ impl Engine {
     pub fn seq(&self) -> u64 {
         self.seq
     }
+}
+
+/// The latest SEC offering filing visible to `inst` at `cutoff` within the freshness window.
+fn offering(
+    ev: &EvidenceStore,
+    inst: &InstrumentId,
+    cutoff: i64,
+    fresh_secs: i64,
+) -> Option<Offering> {
+    let fresh = fresh_secs * SEC;
+    ev.news_stories(inst, cutoff)
+        .into_iter()
+        .map(|st| st.current)
+        .filter(|n| {
+            n.tag == crate::evidence::Tag::Present
+                && n.event_type == OFFERING_EVENT
+                && n.published_at
+                    .is_some_and(|p| p <= cutoff && cutoff - p <= fresh)
+        })
+        .max_by_key(|n| (n.published_at, n.observed_at))
+        .map(|n| Offering {
+            form: n
+                .source
+                .split_once('/')
+                .map_or_else(String::new, |(_, f)| f.to_string()),
+            published_at: n.published_at,
+            url: n.url.clone(),
+        })
 }

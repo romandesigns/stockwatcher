@@ -1,0 +1,53 @@
+{
+  "schema": 1,
+  "id": "pillars-v6",
+  "note": "pillars-v5 with three more news sources (owner decisions 2026-11-22). news.sources names the providers whose items may PASS the news pillar: alpaca (Benzinga stories, as in v1..v5), sec_edgar (the issuer's own current reports, forms 8-K and 6-K, dated by their EDGAR acceptance time), press_wire (issuer press releases from the public wire feeds, dated by publication) and halt_t1 (a T1 'news pending' trading halt: exchange-issued evidence that a catalyst is coming, dated by the halt, labelled apart from a headline). Every non-Benzinga source reaches the engine through one seam (stock_context::SourceNews). Offering registrations and prospectuses (S-1, S-3, F-1, F-3, 424B*) are recorded and flagged on the row, never a pass. A FAIL still rests on the market-wide Benzinga search coverage, exactly as in v5: the new sources only ever add passes. On 2026-11-20 all 36 symbols that passed price, gain and RVOL were kept off the panel by the news pillar. pillars-v1 to v5 remain frozen historical policies (they read none of the new sources).",
+  "reference_profile": {
+    "id": "stockwatcher_band_v1",
+    "price_min_micros": 100000,
+    "price_max_micros": 25000000,
+    "gain_min_bp": 1000,
+    "rvol_daily_min_milli": 5000,
+    "rvol_daily_sessions": 30,
+    "float_max_exclusive_shares": 20000000,
+    "news_freshness_secs": 86400
+  },
+  "discovery_band": {
+    "min_micros": 100000,
+    "max_micros": 25000000,
+    "source": "current discovery eligibility ($0.10-$25 inclusive, owner decision 2026-10-26); historical research definitions are unchanged"
+  },
+  "grid": {
+    "bar_secs": 15,
+    "settle_ms": 2000
+  },
+  "price_staleness": {
+    "regular_secs": 600,
+    "extended_secs": 1800,
+    "source": "eligibility-research-v1 (research/foundation)"
+  },
+  "volume": {
+    "day_start": "04:00 America/New_York",
+    "exclude_overnight_boats": true,
+    "counted": "chart engine volume verdict (conditions policy of the run)"
+  },
+  "diagnostics": {
+    "validated": false,
+    "same_time_min_sessions": 10,
+    "recent_window_secs": 300,
+    "recent_min_sessions": 10
+  },
+  "float": {
+    "stale_after_secs": 345600,
+    "outstanding_fallback": true
+  },
+  "news": {
+    "coverage_max_lag_secs": 120,
+    "sources": [
+      "alpaca",
+      "sec_edgar",
+      "press_wire",
+      "halt_t1"
+    ]
+  }
+}
