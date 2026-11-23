@@ -28,6 +28,7 @@ pub mod notices;
 pub mod observe;
 pub mod oplog;
 pub mod pending;
+pub mod practice;
 pub mod pressure;
 pub mod prewatch;
 pub mod prior_sessions;

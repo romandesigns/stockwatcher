@@ -593,6 +593,11 @@ pub enum OutKind {
     /// `rocket.subscribe`, whatever their snapshot's seq: a toast is a moment, never contained in
     /// a snapshot, and the events memory is primed afresh for a first subscriber.
     RunnersEvent(String),
+    /// A pre-serialized `practice.notice` (`crate::practice`): a notice the REPLAY market decided,
+    /// for every connection reading this market (the practice page). Only the replay market ever
+    /// sends one, and only on its own channel, so a live connection never sees it. A moment, never
+    /// in a snapshot; `Outbound::seq` is the engine seq when it was offered.
+    Practice(String),
     /// A pre-serialized `favorites.update` (`crate::favorites`) for the connections that sent
     /// `favorites.subscribe`. `Outbound::seq` is the favorites generation, not the engine seq.
     Favorites(String),
@@ -889,9 +894,13 @@ pub(crate) struct Inner {
     zones_on: AtomicBool,
     /// Live: the volume shelves' forward log (`ARCHIVE_ROOT/zones`), set once at start.
     zones_log: std::sync::OnceLock<Arc<crate::rocket::RocketLog>>,
-    /// Live with bursts on: the archive the burst detector's ADV30 is read from, once a day
-    /// (`crate::rocket::burst::facts`).
+    /// Bursts on: the archive the burst detector's ADV30 is read from, once a day
+    /// (`crate::rocket::burst::facts`; read only, and only days before the one decided).
     burst_archive: std::sync::OnceLock<Archive>,
+    /// Bursts on: the policy every Runners board built later gets ([`Market::new_rocket_board`]).
+    /// A replay builds a new board on every seek and day switch (`FeedItem::Reset`), which would
+    /// otherwise drop the detector after the first one.
+    burst_policy: std::sync::OnceLock<crate::rocket::burst::BurstPolicy>,
     /// The archive the N1 shadow reads its daily facts from (`crate::n1_live::load_facts`).
     n1_archive: std::sync::OnceLock<Archive>,
     /// The archive x-gap-1 / x-ctx-1 read their facts and ToD files from and write the
@@ -1182,6 +1191,7 @@ impl Market {
             zones_on: AtomicBool::new(true),
             zones_log: std::sync::OnceLock::new(),
             burst_archive: std::sync::OnceLock::new(),
+            burst_policy: std::sync::OnceLock::new(),
             n1_archive: std::sync::OnceLock::new(),
             gap_ctx_archive: std::sync::OnceLock::new(),
             rw2_archive: std::sync::OnceLock::new(),
@@ -1253,7 +1263,11 @@ impl Market {
         }
         let policy = self.0.rocket_policy.lock().expect("rocket policy").clone();
         let scorer = crate::rocket::production_scorer(policy.scorer);
-        crate::rocket::RocketBoard::new(true, Arc::from(scorer), policy)
+        let mut board = crate::rocket::RocketBoard::new(true, Arc::from(scorer), policy);
+        if let Some(burst) = self.0.burst_policy.get() {
+            board.enable_burst(burst.clone());
+        }
+        board
     }
 
     /// Turns Rocket watch on or off with a policy from now (production reads `ROCKET_WATCH` once
@@ -1272,25 +1286,29 @@ impl Market {
         *self.0.rocket_lines.lock().expect("rocket lines") = Default::default();
     }
 
-    /// Live: turns on the buying-burst detector on the Runners board (`crate::rocket::burst`),
-    /// with `archive` for its daily ADV30. Call after `set_rocket_watch` (which rebuilds the
-    /// board) and before `init_rocket_log` (which restores today's burst rows into it). A replay
-    /// never calls this: bursts are a live-market alert.
+    /// Turns on the buying-burst detector on the Runners board (`crate::rocket::burst`), with
+    /// `archive` for its daily ADV30, and on every board built after it (a replay's seeks). Call
+    /// after `set_rocket_watch` (which rebuilds the board) and, live, before `init_rocket_log`
+    /// (which restores today's burst rows into it).
+    ///
+    /// The replay market runs it too (practice parity, owner 2026-11-23), with no file writes:
+    /// the forward log is `init_rocket_log`'s, which a replay never calls, so nothing restores
+    /// into or appends to the archive, and ADV30 reads only the days before the replayed one. Its
+    /// notices become practice frames (`Market::offer_practice`), never a push.
     pub fn enable_burst(
         &self,
         policy: crate::rocket::burst::BurstPolicy,
         archive: Option<Archive>,
     ) {
-        if !policy.enabled
-            || !self.0.rocket_on.load(Ordering::Relaxed)
-            || self.0.mode != ClockMode::Live
-        {
+        if !policy.enabled || !self.0.rocket_on.load(Ordering::Relaxed) {
             return;
         }
         if let Some(a) = archive {
             let _ = self.0.burst_archive.set(a);
         }
+        let _ = self.0.burst_policy.set(policy.clone());
         tracing::info!(
+            mode = self.0.mode.as_str(),
             per_day = policy.per_day,
             threshold = policy.threshold,
             "buying bursts: detector on ({} {})",
@@ -2746,7 +2764,8 @@ impl Market {
                 crate::history::wall_now(),
             );
         }
-        if mode == ClockMode::Live && cfg.rocket_watch {
+        if cfg.rocket_watch {
+            // Both markets: the replay's bursts are practice notices (enable_burst's docs).
             market.enable_burst(cfg.burst_policy.clone(), Some(archive.clone()));
         }
         if mode == ClockMode::Live && cfg.rocket_watch && cfg.n1_live {
@@ -4810,9 +4829,14 @@ impl Market {
 
     /// Push notices (Runners, Ross, Signals, Halt watcher) to the alerts task
     /// (`crate::alerts::runners`): on the LIVE market only, called after the core lock is
-    /// released, never waited on. A replay's are dropped.
+    /// released, never waited on. A replay's go to [`Market::offer_practice`] instead, which has
+    /// no way to reach the alerts task.
     fn offer_notices(&self, notices: Vec<crate::rocket::Notice>) {
-        if notices.is_empty() || self.0.mode != ClockMode::Live {
+        if notices.is_empty() {
+            return;
+        }
+        if self.0.mode != ClockMode::Live {
+            self.offer_practice(&notices);
             return;
         }
         // research v2 b-good reads every notice offered (all sources): its alert context and
@@ -4828,6 +4852,40 @@ impl Market {
                 sink.offer_runner(n);
             }
         }
+    }
+
+    /// A replay's notices as `practice.notice` frames on this market's own channel
+    /// (`crate::practice`, "Where they go, and where they cannot"). Deliberately takes no alert
+    /// sink and calls nothing on the alerts side: no phone push, ntfy, desk frame, ledger or
+    /// Insights row can come from here, whatever a later edit to the live branch does. Dropped
+    /// while a seek rebuilds the day (the re-read's decisions are the past, not news). Tests:
+    /// `replay_notices_are_practice_frames_and_never_reach_the_alert_sink`.
+    fn offer_practice(&self, notices: &[crate::rocket::Notice]) {
+        if self.0.mode == ClockMode::Live || notices.is_empty() {
+            return;
+        }
+        let (seq, rebuilding) = {
+            let core = self.0.core.lock().expect("core lock");
+            (core.seq, core.rebuilding)
+        };
+        if rebuilding {
+            return;
+        }
+        let day = self.clock().and_then(|c| c.day);
+        for n in notices {
+            let _ = self.0.tx.send(Arc::new(Outbound {
+                seq,
+                kind: OutKind::Practice(crate::practice::frame(n, day)),
+            }));
+        }
+    }
+
+    /// Tests (the wire tests in `tests/`): offers `notices` exactly as a detector would, through
+    /// the one routing function ([`Market::offer_notices`]): the live market's go to the alerts
+    /// task, a replay's become practice frames.
+    #[doc(hidden)]
+    pub fn test_offer_notices(&self, notices: Vec<crate::rocket::Notice>) {
+        self.offer_notices(notices);
     }
 
     /// A Runners row's fire-time spread (`crate::spread`'s stage, after its notice was priced):
@@ -6684,8 +6742,8 @@ mod tests {
     }
 
     /// The Runners board's notices reach the phone push from the LIVE market only, after the
-    /// lock, without waiting: a replay's are taken and dropped, and a full sink costs the
-    /// notice, never the board.
+    /// lock, without waiting: a replay's are taken and become practice frames (never the sink),
+    /// and a full sink costs the notice, never the board.
     #[test]
     fn runners_notices_leave_the_live_market_only() {
         let notice = |s: &str| crate::rocket::Notice {
@@ -6743,14 +6801,120 @@ mod tests {
         }
     }
 
-    /// Buying bursts are a live-market alert: a replay market never turns the detector on, so
-    /// it never makes a burst row or a burst push; `BURST_ALERTS=0` keeps it off live too.
+    /// A replay's notices, whatever detector offered them, become `practice.notice` frames on
+    /// the replay market's own channel and never reach the alert sink (phone push, ntfy, desk
+    /// frames, the notices ledger and the Insights log all hang off it). The live market's never
+    /// become practice frames. A seek's rebuild offers none at all.
     #[test]
-    fn burst_detector_runs_on_the_live_market_only() {
+    fn replay_notices_are_practice_frames_and_never_reach_the_alert_sink() {
+        let notice = |s: &str| crate::rocket::Notice::test(crate::rocket::NoticeKind::New, s);
+        let kinds = [
+            crate::rocket::NoticeKind::New,
+            crate::rocket::NoticeKind::Breakout,
+            crate::rocket::NoticeKind::Burst,
+            crate::rocket::NoticeKind::Running,
+            crate::rocket::NoticeKind::Run,
+            crate::rocket::NoticeKind::Fast,
+        ];
+        for mode in [ClockMode::Live, ClockMode::Replay] {
+            let market = Market::idle(mode, "test", None);
+            market.set_rocket_watch(true, crate::rocket::Policy::default());
+            market.bench_set_clock(UnixNanos(1_792_670_400_000_000_000));
+            let (sink, _inputs, mut offered) = crate::alerts::AlertSink::for_test();
+            market.attach_alerts(sink.clone());
+            let mut rx = market.subscribe();
+            let sent: Vec<_> = kinds
+                .iter()
+                .map(|k| crate::rocket::Notice::test(*k, "PRAC"))
+                .collect();
+            market.offer_notices(sent);
+            let mut practice = Vec::new();
+            while let Ok(o) = rx.try_recv() {
+                if let OutKind::Practice(f) = &o.kind {
+                    practice.push(serde_json::from_str::<Value>(f).unwrap());
+                }
+            }
+            let mut pushed = 0;
+            while offered.try_recv().is_ok() {
+                pushed += 1;
+            }
+            if mode == ClockMode::Live {
+                assert!(practice.is_empty(), "live never sends practice frames");
+                assert!(pushed > 0, "live notices still reach the sink");
+            } else {
+                assert_eq!(pushed, 0, "a replay never offers to the sink");
+                assert_eq!(sink.runners_dropped(), 0);
+                assert_eq!(practice.len(), kinds.len());
+                for f in &practice {
+                    assert_eq!(f["type"], "practice.notice");
+                    assert_eq!(f["practice"], true);
+                }
+                // Mid-seek: the re-read's decisions are the past, so nothing is offered.
+                market.0.core.lock().expect("core lock").rebuilding = true;
+                market.offer_notices(vec![notice("LATE")]);
+                assert!(rx.try_recv().is_err(), "a rebuild sends no practice frame");
+                assert!(offered.try_recv().is_err());
+            }
+        }
+    }
+
+    /// Buying bursts run on both markets (practice parity, owner 2026-11-23): the replay's are
+    /// practice notices. A replay builds a new Runners board on every seek and day switch, and
+    /// the detector must survive it. `BURST_ALERTS=0` keeps it off.
+    #[test]
+    fn burst_detector_runs_on_both_markets_and_survives_a_replay_seek() {
+        let market = Market::idle(ClockMode::Replay, "test", None);
+        market.set_rocket_watch(true, crate::rocket::Policy::default());
+        market.enable_burst(crate::rocket::burst::BurstPolicy::default(), None);
+        assert!(
+            market
+                .0
+                .core
+                .lock()
+                .expect("core lock")
+                .rocket
+                .burst()
+                .is_some()
+        );
+        let clock = ClockState {
+            mode: ClockMode::Replay,
+            now: UnixNanos(1_792_670_400_000_000_000),
+            speed: market_providers::Speed::Times(1),
+            playing: false,
+            day: None,
+            start: None,
+            end: None,
+            finished: false,
+            events: 0,
+        };
+        market.apply(FeedItem::Reset(clock));
+        assert!(
+            market
+                .0
+                .core
+                .lock()
+                .expect("core lock")
+                .rocket
+                .burst()
+                .is_some(),
+            "a seek's new board keeps the burst detector"
+        );
+    }
+
+    #[test]
+    fn burst_detector_follows_its_policy() {
         use crate::rocket::burst::BurstPolicy;
         for (mode, policy, on) in [
             (ClockMode::Live, BurstPolicy::default(), true),
-            (ClockMode::Replay, BurstPolicy::default(), false),
+            (ClockMode::Replay, BurstPolicy::default(), true),
+            (
+                ClockMode::Replay,
+                BurstPolicy {
+                    enabled: false,
+                    ..BurstPolicy::default()
+                },
+                false,
+            ),
             (
                 ClockMode::Live,
                 BurstPolicy {

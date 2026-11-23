@@ -349,6 +349,15 @@
 //!   `runners.notice.v1` in `welcome.features` (crate::alerts::runners::NOTICE_FEATURE) says so:
 //!   a phone without a push token then opts in and rings from these frames rather than diffing
 //!   Runners panels itself.
+//! - server `practice.notice {id, practice: true, alertId, symbol, kind, title, body, data, at, day}`
+//!   to every connection on the REPLAY market (`hello.source: "replay"`, the practice page) when
+//!   one of its detectors decides a notice (crate::practice): the live push's own text, `at` on
+//!   the replay clock, `day` the replayed day. Never on a live connection, never through the
+//!   alerts task (no phone push, ntfy, desk frame, ledger or Insights row), never during a seek's
+//!   rebuild, never in a snapshot. Clients show it as an in-app toast labelled "Practice", never
+//!   as a system notification. `practice.notice.v1` in `welcome.features` says so. A replay
+//!   connection still gets the live `runners.notice` frames above (they are process-wide): the
+//!   practice page labels those "Live".
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -1453,6 +1462,7 @@ async fn session(mut socket: WebSocket, state: AppState) {
             crate::hod::FEATURE,
             crate::pending::FEATURE,
             crate::prewatch::FEATURE,
+            crate::practice::FEATURE,
         ],
     };
     // Subscribed before the paper snapshot below, so no change can fall between the two (at
@@ -1611,6 +1621,9 @@ async fn session(mut socket: WebSocket, state: AppState) {
                             Some(q) if o.seq > q.seq => send_text(&mut socket, frame.clone()).await,
                             _ => true,
                         },
+                        // Every connection on this market: only the replay market sends them
+                        // (crate::practice), so only replay connections ever do.
+                        OutKind::Practice(frame) => send_text(&mut socket, frame.clone()).await,
                         OutKind::RunnersEvent(frame) => match rocket.as_ref() {
                             Some(_) => send_text(&mut socket, frame.clone()).await,
                             None => true,
