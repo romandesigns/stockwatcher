@@ -119,6 +119,7 @@
 //! ~16M candles, ~3.1 GB of heap after the close, 3.7 GB at the peak (`examples/memory.rs`).
 
 mod config;
+mod deferred_drop;
 mod engine;
 pub mod indicators;
 pub mod levels;

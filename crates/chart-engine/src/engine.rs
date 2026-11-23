@@ -904,16 +904,33 @@ impl SymbolState {
         if wm < open {
             return;
         }
+        // Detach, don't free: at 09:30 every symbol does this in the same clock advance, under
+        // the server's core lock, and freeing a whole-market day of buckets in place stalled the
+        // live ingest for seconds (crate::deferred_drop). `split_off` copies only today's buckets
+        // (premarket, so far) into a right-sized ring, which also gives back the buffer the ring
+        // had grown to for both days; the earlier date's buckets leave whole with the old buffer.
+        let mut old_buckets = Vec::new();
         for s in &mut self.series {
-            while s.buckets.front().is_some_and(|b| b.session.date < newest) {
-                s.buckets.pop_front();
+            let k = s
+                .buckets
+                .iter()
+                .position(|b| b.session.date >= newest)
+                .unwrap_or(s.buckets.len());
+            if k == 0 {
+                continue;
             }
-            // The ring's buffer was sized for both days; give the difference back.
-            if s.buckets.capacity() > 2 * s.buckets.len().max(64) {
-                s.buckets.shrink_to(s.buckets.len().max(64));
-            }
+            let today = s.buckets.split_off(k);
+            old_buckets.push(std::mem::replace(&mut s.buckets, today));
         }
-        self.profiles.retain(|k, _| k.date >= newest);
+        // Keys order by date first, so this keeps exactly what `retain(date >= newest)` kept.
+        let old_profiles = match self.profiles.keys().find(|k| k.date >= newest).copied() {
+            Some(first) => {
+                let keep = self.profiles.split_off(&first);
+                std::mem::replace(&mut self.profiles, keep)
+            }
+            None => std::mem::take(&mut self.profiles),
+        };
+        crate::deferred_drop::later((old_buckets, old_profiles));
     }
 
     fn index_add(&mut self, key: &OrderKey) {
