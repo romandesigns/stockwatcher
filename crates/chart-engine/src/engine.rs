@@ -169,6 +169,12 @@ enum Venue {
 
 const VENUE_INLINE: usize = 22;
 
+/// `prune` releases at most `retained / PRUNE_SPREAD` prints per pass (and at least
+/// [`PRUNE_MIN`]), so the five minutes a cutoff move releases leave over the next passes rather
+/// than in one clock advance for every symbol at once.
+const PRUNE_SPREAD: usize = 32;
+const PRUNE_MIN: usize = 256;
+
 impl Venue {
     fn new(s: &str) -> Self {
         if s.len() <= VENUE_INLINE {
@@ -854,7 +860,8 @@ impl SymbolState {
     fn resolve(&self, r: &TradeRef) -> Resolution<OrderKey> {
         let id = IdKey::of(&r.id);
         let times = self.index.get(&id).map_or(&[][..], Times::as_slice);
-        let held = times.iter().filter_map(|&ts| {
+        // A print below the cutoff is released even while it waits to be popped (`prune`).
+        let held = times.iter().filter(|&&ts| ts >= self.released_through).filter_map(|&ts| {
             let k = OrderKey::with_id(ts, &id);
             let rec = self.trades.get(&k)?;
             Some((k, rec.price, rec.size))
@@ -959,7 +966,11 @@ impl SymbolState {
     fn high_of(&self, session: SessionId) -> Option<DayHigh> {
         let date = session.date;
         let mut high: Option<Price> = None;
-        for r in self.trades.values() {
+        for (k, r) in self.trades.range(..) {
+            // Released prints still waiting to be popped (`prune`) are not retained any more.
+            if k.ts < self.released_through {
+                continue;
+            }
             if r.session.date == date && r.ohlc {
                 high = Some(high.map_or(r.price, |h: Price| h.max(r.price)));
             }
@@ -991,7 +1002,8 @@ impl SymbolState {
     fn last_print_of(&self, session: SessionId) -> Option<(Price, UnixNanos)> {
         let date = session.date;
         for (k, r) in self.trades.iter().rev() {
-            if r.session.date < date {
+            // From here back every print is released (`prune` pops the oldest first).
+            if r.session.date < date || k.ts < self.released_through {
                 break;
             }
             if r.session.date == date && r.ohlc {
@@ -1414,7 +1426,8 @@ impl ChartEngine {
             exchange: Venue::new(&t.exchange),
             source: t.source,
         };
-        if st.trades.contains_key(&key) {
+        // A released print waiting to be popped (`prune`) is not retained: not a duplicate.
+        if key.ts >= st.released_through && st.trades.contains_key(&key) {
             st.q(t.session).duplicates += 1;
             out.push(tape("excluded:duplicate".into()));
             return out;
@@ -1676,11 +1689,24 @@ impl ChartEngine {
     ) {
         let Some(wm) = wm else { return };
         let cutoff = max_tf.start_of(UnixNanos(wm - retention)).0;
-        while let Some((k, _)) = st.trades.first_key_value()
+        // Spread the release over the symbol's next deadlines instead of doing it all at once.
+        // The cutoff moves once per largest timeframe (5 m), so every symbol used to pop five
+        // minutes of prints in the same clock advance: under the server's core lock that is
+        // 0.3 s pre-market and more with midday volume, and on 2026-11-23 the 11:00:03 and
+        // 13:50:03 feed drops started exactly there (5 m boundary + the 2 s settle). A pass now
+        // pops at most a 1/PRUNE_SPREAD share of what is retained (at least PRUNE_MIN); an
+        // active symbol has a deadline at least every 10 s, so the backlog is gone long before
+        // the next move. Nothing observable changes: everything that reads the retained prints
+        // (`resolve`, the duplicate check, `high_of`, `last_print_of`) ignores those below
+        // `released_through`, exactly as if they had already been removed.
+        let mut budget = (st.trades.len() / PRUNE_SPREAD).max(PRUNE_MIN);
+        while budget > 0
+            && let Some((k, _)) = st.trades.first_key_value()
             && k.ts < cutoff
         {
             let (k, _) = st.trades.pop_first().expect("non-empty");
             st.index_remove(&k);
+            budget -= 1;
         }
         // Buckets wholly before the cutoff can take no trade and no revision any more: release
         // their last keys (`Bucket::last_key`). The cutoff moves once per largest timeframe, so

@@ -137,3 +137,33 @@ fn shared_ids_and_long_venue_codes_resolve_exactly() {
         assert!(candles(&e, Timeframe::S15).is_empty(), "{venue}");
     }
 }
+
+/// `prune` releases a cutoff move's prints over several passes (a whole market popping five
+/// minutes of prints in one clock advance stalled the live server, 2026-11-23). A print past the
+/// cutoff that is still waiting to be popped must already behave as gone: a cancel of it changes
+/// nothing, and a resend of it is not called a duplicate.
+#[test]
+fn a_released_print_waiting_to_be_popped_is_already_gone() {
+    let mut e = ChartEngine::default();
+    // 50,000 prints 10:00:00-10:03:20, far more than a few passes release.
+    let mut evs = Vec::new();
+    for i in 0..50_000u64 {
+        let ts = UnixNanos(at(10, 0, 0, 0).0 + i as i64 * 4_000_000);
+        evs.push(ev(trade(ts, "3.00", 100, i + 1)));
+    }
+    apply_all(&mut e, &evs);
+    // 10:16: the cutoff (5 m start of wm - 10 min) is 10:05, so all 50,000 are released.
+    e.apply(&ev(trade(at(10, 16, 0, 0), "3.10", 100, 9001)));
+    e.advance_clock(at(10, 16, 5, 0));
+    let before: Vec<_> = candles(&e, Timeframe::M1).iter().map(ohlcv).collect();
+    // A print from the middle of the run, released but (with a spread release) maybe not popped.
+    let mid = UnixNanos(at(10, 0, 0, 0).0 + 40_000 * 4_000_000);
+    e.apply(&cancel(mid, 40_001));
+    let after: Vec<_> = candles(&e, Timeframe::M1).iter().map(ohlcv).collect();
+    assert_eq!(before, after, "a cancel of a released print changes no candle");
+    let up = e.apply(&ev(trade(mid, "3.00", 100, 40_001)));
+    let dup = up.iter().any(|u| {
+        matches!(u, chart_engine::wire::ChartUpdate::Tape(r) if r.reason.as_deref() == Some("excluded:duplicate"))
+    });
+    assert!(!dup, "a released print is not retained, so its resend is no duplicate: {up:?}");
+}
