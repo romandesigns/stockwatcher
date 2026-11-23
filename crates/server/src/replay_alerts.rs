@@ -17,7 +17,7 @@
 //!
 //! A day with no log (before the logs existed, a day the live server was down, a fixture day) is
 //! an empty list, not an error. A malformed line is skipped: a file is append-only and a crash can
-//! leave a torn last line. Each file is capped by its writer (`MAX_FILE_BYTES`, 2 MB), so reading
+//! leave a torn last line. Each file is capped by its writer (`MAX_FILE_BYTES`, 8 MiB), so reading
 //! it whole per request is bounded; requests come once per day switch.
 
 use std::path::Path;

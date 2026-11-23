@@ -74,7 +74,11 @@ use chrono::NaiveDate;
 use serde_json::Value;
 
 /// A day's file stops growing here (a runaway would otherwise fill the archive volume).
-pub const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
+///
+/// 8 MiB, was 2 MiB: busy days outgrew it. 2026-11-23 filled 2 MiB by 12:45 ET (from 04:00) and
+/// lost the afternoon's forward record; 11-12 and 11-13 hit it in the evening. At that day's
+/// rate a full 04:00-20:00 session is ~3.7 MiB, so this is twice the busiest day seen.
+pub const MAX_FILE_BYTES: u64 = 8 * 1024 * 1024;
 /// Days of track record kept in memory and sent to the panel.
 pub const HISTORY_DAYS: usize = 20;
 /// Exact tracking is replaceable state, separate from the capped append-only event journal.
