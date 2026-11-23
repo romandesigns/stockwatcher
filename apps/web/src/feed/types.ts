@@ -1,5 +1,5 @@
 import type { ChartMessage, IndicatorDemand, OrderCancel, ServerIndicatorsChannel, OrderModify, OrderPlace, PaperMessage, PaperState, ReplayControl, Timeframe } from "@stockwatcher/chart-core";
-import type { DetectionChannel, FavoritesChannel, MoversChannel, PressureChannel, QuoteSearchChannel, RocketChannel, RossChannel, NoticesChannel, SymbolsChannel, TickerChannel } from "@stockwatcher/shared";
+import type { DetectionChannel, FavoritesChannel, HodChannel, MoversChannel, PressureChannel, QuoteSearchChannel, RocketChannel, RossChannel, NoticesChannel, SymbolsChannel, TickerChannel } from "@stockwatcher/shared";
 
 export interface ChartSubscription {
   symbol: string;
@@ -55,6 +55,8 @@ export interface ChartFeed {
   readonly rocket?: RocketChannel;
   /** Independent Rust event discovery; subscribing never changes its monitored universe. */
   readonly detection?: DetectionChannel;
+  /** The HOD Momentum scanner (server feed with `hod.v1`); subscribing opts the connection in. */
+  readonly hod?: HodChannel;
   /** Server-computed chart indicators (`indicators.v1`). */
   readonly indicators?: ServerIndicatorsChannel;
   close(): void;

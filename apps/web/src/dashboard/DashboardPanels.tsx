@@ -2,6 +2,7 @@ import { cn, TOUCH_HIT_Y } from "@stockwatcher/chart-web/ui";
 import {
   BOTTOM_PANELS,
   detectionItemCount,
+  hodItemCount,
   moversCount,
   panelsSettled,
   rocketItemCount,
@@ -13,6 +14,7 @@ import {
   type DashboardPanel,
   type DetectionChannel,
   type FavoritesChannel,
+  type HodChannel,
   type PressureChannel,
   type MoversChannel,
   type RocketChannel,
@@ -35,6 +37,7 @@ import { FavoritesPanelView } from "../favorites/FavoritesPanel.tsx";
 import { useFavoriteList } from "../favorites/useFavoriteList.ts";
 import { useDetection } from "../feed/useDetection.ts";
 import { useFavorites } from "../feed/useFavorites.ts";
+import { useHod } from "../feed/useHod.ts";
 import {
   usePressureBoard,
   usePressureStatus,
@@ -45,6 +48,7 @@ import { useRossState } from "../feed/useRossState.ts";
 import { useHeld } from "../lib/useHeld.ts";
 import { DetectionPanelView } from "./DetectionPanel.tsx";
 import { HaltWatcherView } from "./HaltWatcher.tsx";
+import { HodPanelView } from "./HodPanel.tsx";
 import { MoversPanelView } from "./MoversPanel.tsx";
 import { RocketPanelView } from "./RocketPanel.tsx";
 import { RossPanelView } from "./RossPanel.tsx";
@@ -122,6 +126,8 @@ export interface DashboardPanelsProps {
   favorites?: FavoritesChannel;
   pressure?: PressureChannel;
   movers?: MoversChannel;
+  /** The HOD Momentum scanner (bottom row, beside the Ross Panel). */
+  hod?: HodChannel;
   onPick: (symbol: string) => void;
   onEpisodePick: (symbol: string, episodeId: string, runEpoch: string) => void;
   onEpisodeClear?: () => void;
@@ -164,6 +170,7 @@ export function DashboardPanels({
   favorites,
   pressure,
   movers,
+  hod,
   onPick,
   onEpisodePick,
   onEpisodeClear,
@@ -178,6 +185,7 @@ export function DashboardPanels({
   const pressureBoard = usePressureBoard(pressure);
   const pressureStatus = usePressureStatus(pressure);
   const moversState = useMovers(movers);
+  const hodState = useHod(hod);
   // No wall-clock tick: the ages are market ages, and useRocket re-renders on each of the
   // server's clock frames (clock.v1, rocket.ts CLOCK_RENDER_STEP_MS), which the panels read.
   const runners = rocket ? rocketState : undefined;
@@ -190,6 +198,7 @@ export function DashboardPanels({
     rocket: rocket ? rocketItemCount(rocketState) : 0,
     halt: pressure ? pressureBoard.length : 0,
     hot: movers ? moversCount(moversState, "hot") : 0,
+    hod: hod ? hodItemCount(hodState) : 0,
   };
   // The movers and the Halt watcher have no on/off: they have answered once their first frame
   // landed (the movers hold rows; the pressure status records a frame).
@@ -200,6 +209,8 @@ export function DashboardPanels({
     pressure &&
       (pressureStatus.connected || pressureStatus.asOf !== null ? true : null),
     movers && (moversState.rows !== null ? true : null),
+    // An older server without the scanner never answers: it is off, not pending.
+    hod && (!hodState.available ? true : hodState.policy !== null ? true : null),
   ]);
   const timedOut = useSettleTimeout(settled);
   const side = useSettled(
@@ -246,6 +257,8 @@ export function DashboardPanels({
         onEpisodePick={onEpisodePick}
         runners={runners}
       />
+    ) : p === "hod" ? (
+      <HodPanelView state={hodState} onPick={onPick} />
     ) : p === "rocket" ? (
       <RocketPanelView state={rocketState} onPick={onPick} />
     ) : p === "halt" ? (
@@ -407,6 +420,7 @@ const SIDE_LABEL: Record<SidePanel, string> = {
 
 const BOTTOM_LABEL: Record<BottomPanel, string> = {
   ross: "Ross Panel",
+  hod: "HOD Momentum",
   rocket: "Runners",
   halt: "Halt watcher",
   hot: "Hot stocks",

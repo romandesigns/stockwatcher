@@ -6,6 +6,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { HaltWatcher } from "../dashboard/HaltWatcher";
+import { HodPanel } from "../dashboard/HodPanel";
 import { DetectionPanel } from "../dashboard/DetectionPanel";
 import { FavoritesPanel } from "../dashboard/FavoritesPanel";
 import { MoversPanel } from "../dashboard/MoversPanel";
@@ -82,6 +83,8 @@ function DashboardView({ feed, token, source }: { feed: MobileFeed; token: strin
             above the scroll (owner, 2026-10-19). Every card hides while it has 0 items and opens
             or closes by its real height; a tapped row opens the chart modal. */}
         <RossPanel channel={feed.ross} detection={feed.detection} runners={feed.rocket} onPick={open} reducedMotion={reducedMotion} gap={GAP} />
+        {/* The HOD Momentum scanner (owner, 2026-11-22): new highs of day by category, not alerts. */}
+        <HodPanel channel={feed.hod} onPick={open} reducedMotion={reducedMotion} gap={GAP} />
         {/* Rocket watch (owner, 2026-10-21; experimental): same row gestures. */}
         <RocketPanel channel={feed.rocket} onPick={open} reducedMotion={reducedMotion} gap={GAP} />
         {/* The owner's own list (owner, 2026-10-26). */}

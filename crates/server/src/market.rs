@@ -282,6 +282,7 @@ mod tick_phase_tests {
 /// | `XFLOAT_LIVE` | `1` | live market with `ROCKET_WATCH`: research v2's x-float-1 "rotation ignition" (`crate::xfloat_live`): its own notice kind `v2.xfloat` beside production (push/desktop switch `xFloat`, on by default; runtime switch `detectors."x-float-1"`, no restart). Needs `STOCK_CONTEXT` for the float; `0` turns it off |
 /// | `GAP_CTX_LIVE` | `1` | live market with `ROCKET_WATCH`: the v2 finalists x-gap-1 (`v2.xgap`, switch `xGap`) and x-ctx-1 (`v2.xctx`, switch `xCtx`), both on by default (`crate::gap_ctx`); they also write the per-session time-of-day baselines under `ARCHIVE_ROOT/tod/`. Held without a restart by the synced `detectors` settings (`{"x-gap-1": {"on": false}}`); `0` removes them |
 /// | `RW2_LIVE` | `1` | live market with `ROCKET_WATCH`: the v2 rework-2 finalists rw2-vwapr-1 "VWAP reclaim" (`v2.vwapr`, switch `vwapReclaim`) and rw2-level-1 "20-day high break" (`v2.level`, switch `levelBreak`), both on by default (`crate::rw2_live`); they read x-gap-1's time-of-day files (so need `GAP_CTX_LIVE`) and write the per-session HI20 presence under `ARCHIVE_ROOT/rw2/`. Held without a restart by the synced `detectors` settings (`{"rw2-vwapr-1": {"on": false}}`); `0` removes them |
+/// | `HOD_SCANNER` | `1` | live market with `ROCKET_WATCH`: the HOD Momentum scanner (`crate::hod`): a row for every new high of day that matches one of its categories, to the HOD panel only (`hod.subscribe`); no notice, push or alert. Held without a restart by the synced `detectors` settings (`{"hod-1": {"on": false}}`); `0` removes it |
 /// | `BGOOD_LIVE` | `1` | live market with `ROCKET_WATCH`: research v2 b-good (`crate::bgood`): b-good-2's model picks (`model.pick`, switch `modelPick`, on by default) and b-good-1's high-confidence tag on B0-kind alerts 30 s after them (`runners.confidence`). Each also has a runtime switch in the synced `detectors` settings (`b-good-1`, `b-good-2`; no restart). It sends nothing until its inputs are complete (`crate::bgood` docs: `DAILY_BARS_KEEP_DAYS=0` with ≥ 826 dates, 20 time-of-day sessions). `0` turns it off (a restart) |
 /// | `BURST_THRESHOLD` | unset | a burst model probability threshold in (0, 1), overriding `BURST_ALERTS_PER_DAY`'s |
 /// | `ADMISSION_JOURNAL` | `0` | live with a recorder: write the admission journal beside the recording (`crate::admit`; ~190–270 B per print, so off for whole-market SIP: see `Market::init_history`) |
@@ -336,6 +337,10 @@ pub struct MarketConfig {
     /// finalists rw2-vwapr-1 and rw2-level-1 (`crate::rw2_live`); `0` removes them (the
     /// `detectors` settings hold them without a restart).
     pub rw2_live: bool,
+    /// `HOD_SCANNER` (on by default, needs `ROCKET_WATCH`, live market only): the HOD Momentum
+    /// scanner (`crate::hod`); `0` removes it (the `detectors` entry `hod-1` holds it without a
+    /// restart).
+    pub hod_scanner: bool,
     /// `BGOOD_LIVE` (on by default, needs `ROCKET_WATCH`, live market only): research v2 b-good
     /// (`crate::bgood`); `0` turns it off at the next start (the runtime switches are in the
     /// `detectors` settings, `crate::alerts`).
@@ -375,6 +380,7 @@ impl Default for MarketConfig {
             xfloat_live: true,
             gap_ctx_live: true,
             rw2_live: true,
+            hod_scanner: true,
             bgood_live: true,
             admission_journal: false,
             detection_quiet_references: None,
@@ -431,6 +437,9 @@ impl MarketConfig {
         }
         if let Some(v) = var("GAP_CTX_LIVE") {
             c.gap_ctx_live = on(&v);
+        }
+        if let Some(v) = var("HOD_SCANNER") {
+            c.hod_scanner = on(&v);
         }
         if let Some(v) = var("RW2_LIVE") {
             c.rw2_live = on(&v);
@@ -555,6 +564,9 @@ pub enum OutKind {
     /// A pre-serialized `symbols.update` (`crate::symbols`) for the connections that sent
     /// `symbols.subscribe`. `Outbound::seq` is the list's `rev`, not the engine seq.
     Symbols(String),
+    /// A pre-serialized `hod.update` (the HOD Momentum scanner's new rows, `crate::hod`) for the
+    /// connections that sent `hod.subscribe`. `Outbound::seq` is the scanner's row generation.
+    Hod(String),
     /// Full bounded replacement; its cursor is independent of the chart engine sequence.
     Detection {
         epoch: String,
@@ -592,6 +604,9 @@ pub(crate) struct Core {
     /// rw-mp5-1's per-bucket shares and its daily table (`crate::mp5_gate`): fed the same
     /// prints as `rocket`, ticked with it; off unless the live market runs the Detection Panel.
     pub(crate) mp5: crate::mp5_gate::Mp5Live,
+    /// The HOD Momentum scanner (`crate::hod`): fed the same prints as `rocket`, ticked with it;
+    /// off unless the live market runs it (`HOD_SCANNER`).
+    pub(crate) hod: crate::hod::HodScanner,
     /// The chart indicators the connected charts asked for (crate::indicators), fed every
     /// engine increment under this lock. Unlike the boards above it survives a `Reset` (the
     /// slots' demand does), with its series cleared.
@@ -672,6 +687,7 @@ impl Core {
             rocket: crate::rocket::RocketBoard::disabled(),
             zones: crate::zones::ZoneBoard::disabled(),
             mp5: crate::mp5_gate::Mp5Live::new(),
+            hod: crate::hod::HodScanner::new(),
             indicators: IndicatorRegistry::default(),
             chart_context: ContextRegistry::default(),
         }
@@ -784,6 +800,8 @@ pub(crate) struct Inner {
     rocket_policy: Mutex<crate::rocket::Policy>,
     /// Connections that sent `rocket.subscribe`.
     rocket_subs: AtomicUsize,
+    /// Connections subscribed to the HOD scanner (`hod.subscribe`).
+    hod_subs: AtomicUsize,
     /// The body of the last `rocket.*` frame broadcast (an unchanged panel sends nothing).
     rocket_published: Mutex<Option<serde_json::Value>>,
     /// The Runners rows' day lines the last `rocket.update` carried (`crate::day_line`).
@@ -825,6 +843,8 @@ pub(crate) struct Inner {
     /// The archive rw2-vwapr-1 / rw2-level-1 read their facts, ToD and presence files from and
     /// write the session's presence file to (`crate::rw2_live`).
     rw2_archive: std::sync::OnceLock<Archive>,
+    /// The archive the HOD scanner reads its daily facts from and writes its ledger under.
+    hod_archive: std::sync::OnceLock<Archive>,
     /// The archive rw-mp5-1 reads its table from and writes its day files under
     /// (`crate::mp5_gate`).
     mp5_archive: std::sync::OnceLock<Archive>,
@@ -1089,6 +1109,7 @@ impl Market {
             rocket_on: AtomicBool::new(true),
             rocket_policy: Mutex::new(crate::rocket::Policy::default()),
             rocket_subs: AtomicUsize::new(0),
+            hod_subs: AtomicUsize::new(0),
             rocket_published: Mutex::new(None),
             rocket_lines: Mutex::new(crate::day_line::Published::default()),
             runner_events: Mutex::new(crate::time_marks::Events::default()),
@@ -1104,6 +1125,7 @@ impl Market {
             n1_archive: std::sync::OnceLock::new(),
             gap_ctx_archive: std::sync::OnceLock::new(),
             rw2_archive: std::sync::OnceLock::new(),
+            hod_archive: std::sync::OnceLock::new(),
             mp5_archive: std::sync::OnceLock::new(),
             bgood_archive: std::sync::OnceLock::new(),
             running_archive: std::sync::OnceLock::new(),
@@ -1365,6 +1387,83 @@ impl Market {
             "rw2: v2 finalists rw2-vwapr-1 and rw2-level-1 on (switch them in the `detectors` settings; RW2_LIVE=0 removes them)"
         );
         self.0.core.lock().expect("core lock").rocket.enable_rw2();
+    }
+
+    /// Live: turns on the HOD Momentum scanner (`crate::hod`) with `archive` for its daily facts
+    /// and ledger. Call after `set_rocket_watch` (it ticks on the Runners board's clock). A
+    /// replay never calls this.
+    pub fn enable_hod(&self, archive: Archive) {
+        if !self.0.rocket_on.load(Ordering::Relaxed) || self.0.mode != ClockMode::Live {
+            return;
+        }
+        let _ = self.0.hod_archive.set(archive);
+        let mut core = self.0.core.lock().expect("core lock");
+        core.hod.enable();
+        tracing::info!(
+            policy = core.hod.policy().id.as_str(),
+            version = core.hod.policy().version,
+            "hod: HOD Momentum scanner on (rows to the HOD panel only; `detectors` -> hod-1 holds it; HOD_SCANNER=0 removes it)"
+        );
+    }
+
+    /// The `detectors."hod-1"` runtime switch (`crate::hod::follow`).
+    pub fn set_hod_runtime_on(&self, on: bool) {
+        let mut core = self.0.core.lock().expect("core lock");
+        if core.hod.enabled() {
+            tracing::info!(on, "hod: runtime switch");
+        }
+        core.hod.set_runtime_on(on);
+    }
+
+    /// The HOD panel as a `hod.snapshot` frame.
+    pub fn hod_snapshot(&self) -> String {
+        self.0.core.lock().expect("core lock").hod.snapshot_frame()
+    }
+
+    pub fn hod_subscribe(&self) -> HodGuard {
+        self.0.hod_subs.fetch_add(1, Ordering::Relaxed);
+        HodGuard(self.0.clone())
+    }
+
+    /// What one decide step of the HOD scanner left to do off the lock: read the day's facts,
+    /// append its ledger lines, broadcast its new rows.
+    fn hod_work(&self, w: (Option<NaiveDate>, Vec<(NaiveDate, String)>, Option<String>)) {
+        let (wanted, ledger, update) = w;
+        if let Some(frame) = update
+            && self.0.hod_subs.load(Ordering::Relaxed) > 0
+        {
+            let _ = self.0.tx.send(Arc::new(Outbound {
+                seq: 0,
+                kind: OutKind::Hod(frame),
+            }));
+        }
+        let Some(archive) = self.0.hod_archive.get().cloned() else {
+            return;
+        };
+        if !ledger.is_empty() {
+            let root = archive.root().to_path_buf();
+            std::thread::spawn(move || {
+                if let Err(e) = crate::hod::append_ledger(&root, &ledger) {
+                    tracing::warn!(error = %e, lines = ledger.len(), "hod: ledger lines NOT written");
+                }
+            });
+        }
+        if let Some(date) = wanted {
+            let market = self.clone();
+            std::thread::spawn(move || {
+                let t = std::time::Instant::now();
+                let policy = crate::hod::Policy::shipped();
+                let table = crate::hod::load_table(&archive, &policy, date);
+                tracing::info!(%date, ms = t.elapsed().as_millis() as u64, "hod: facts read");
+                market
+                    .0
+                    .core
+                    .lock()
+                    .expect("core lock")
+                    .hod
+                    .set_table(table);
+            });
+        }
     }
 
     /// Loads a trading date's rw2 table (`crate::rw2_live::load_table`) on a blocking thread,
@@ -2471,6 +2570,11 @@ impl Market {
         } else if mode == ClockMode::Live && !cfg.gap_ctx_live {
             tracing::info!("gap/ctx: off (GAP_CTX_LIVE=0)");
         }
+        if mode == ClockMode::Live && cfg.rocket_watch && cfg.hod_scanner {
+            market.enable_hod(archive.clone());
+        } else if mode == ClockMode::Live && !cfg.hod_scanner {
+            tracing::info!("hod: off (HOD_SCANNER=0)");
+        }
         if mode == ClockMode::Live && cfg.rocket_watch && cfg.rw2_live {
             market.enable_rw2(archive.clone());
         } else if mode == ClockMode::Live && !cfg.rw2_live {
@@ -3246,6 +3350,7 @@ impl Market {
                             core.rocket.apply_trade(t, counted);
                             core.zones.apply_trade(t, counted);
                             core.mp5.apply_trade(t, counted);
+                            core.hod.apply_trade(t, counted);
                             self.wake_rocket(t.event_ts.0);
                             if let (Some(closes), Some(cx)) =
                                 (context_closes.as_ref(), core.context.as_mut())
@@ -3373,8 +3478,11 @@ impl Market {
                     chart_context.clear_computed();
                     // rw-mp5-1's shares are the live day's (a replay never turns it on): kept.
                     let mp5 = std::mem::take(&mut core.mp5);
+                    // So are the HOD scanner's (live only too).
+                    let hod = std::mem::take(&mut core.hod);
                     *core = Core::new(closes, self.luld_inputs());
                     core.mp5 = mp5;
+                    core.hod = hod;
                     core.indicators = indicators;
                     core.chart_context = chart_context;
                     core.context = board;
@@ -4160,7 +4268,7 @@ impl Market {
             return false;
         };
         let now = self.decision_now(&clock);
-        let (log, notices, adv_wanted, facts_wanted, n1_wanted, zones_log, mp5, bgood) = {
+        let (log, notices, adv_wanted, facts_wanted, n1_wanted, zones_log, mp5_hod, bgood) = {
             let mut core = self.0.core.lock().expect("core lock");
             if core.rebuilding || !core.rocket.enabled() {
                 return false;
@@ -4209,6 +4317,29 @@ impl Market {
             );
             core.mp5.tick(now);
             let mp5 = (core.mp5.take_table_request(), core.mp5.take_finished());
+            // The HOD scanner (crate::hod): float from the stock-context engine, the quote board's
+            // previous close and rw-mp5-1's time-of-day baseline, read only for a pending high.
+            let hod = if core.hod.enabled() {
+                let Core {
+                    hod,
+                    quotes,
+                    context,
+                    mp5,
+                    ..
+                } = &mut *core;
+                hod.tick(now, |s| crate::hod::Inputs {
+                    c1: quotes.get(s).and_then(|r| r.prev_close).map(|p| p.to_f64()),
+                    float: context.as_ref().and_then(|cx| cx.float_shares(s)),
+                    tod5_base: mp5.tod_base(s, now),
+                });
+                (
+                    hod.take_table_request(),
+                    hod.take_ledger(),
+                    hod.take_update(),
+                )
+            } else {
+                (None, Vec::new(), None)
+            };
             let bgood = core.rocket.take_bgood_work();
             (
                 log,
@@ -4217,10 +4348,11 @@ impl Market {
                 facts_wanted,
                 (n1_wanted, gap_ctx_wanted, gap_ctx_tod, rw2),
                 zones_log,
-                mp5,
+                (mp5, hod),
                 bgood,
             )
         };
+        let (mp5, hod) = mp5_hod;
         // First, before the file appends and the once-a-day archive reads: seconds matter on a
         // +20 % leg.
         self.offer_notices(notices);
@@ -4261,6 +4393,7 @@ impl Market {
         if let Some(date) = mp5.0 {
             self.load_mp5_table(date);
         }
+        self.hod_work(hod);
         if let Some(f) = mp5.1 {
             self.write_mp5_day(f);
         }
@@ -5456,6 +5589,15 @@ impl Drop for QuotesGuard {
 }
 
 /// Decrements the Rocket watch subscriber count when dropped.
+/// Decrements the HOD scanner subscriber count when dropped.
+pub struct HodGuard(Arc<Inner>);
+
+impl Drop for HodGuard {
+    fn drop(&mut self) {
+        self.0.hod_subs.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 pub struct RocketGuard(Arc<Inner>);
 
 impl Drop for RocketGuard {

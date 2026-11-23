@@ -3,6 +3,7 @@ import { serverUrl } from "./http.ts";
 import type { SettingsSync } from "./settingsSync.ts";
 import type { DetectionMessage } from "./detection.ts";
 import type { RocketMessage } from "./rocket.ts";
+import { HOD_FEATURE, type HodMessage } from "./hod.ts";
 import type { RunnersNoticeMessage, RunnersNotifyMessage } from "./runnersNotify.ts";
 import { SYMBOLS_FEATURE, type SymbolsMessage } from "./symbols.ts";
 import { NOTICES_FEATURE, type NoticesMessage } from "./noticeFeed.ts";
@@ -51,6 +52,8 @@ export interface WsClientOptions {
   /** `insights.ticker.indicators` frames (`insights.ticker.indicators.v1`), while a ticker page is open. */
   onTickerIndicators?: (message: TickerIndicatorsMessage) => void;
   onDetection?: (message: DetectionMessage) => void;
+  /** `hod.snapshot` / `hod.update` frames, while subscribed (see `subscribeHod`). */
+  onHod?: (message: HodMessage) => void;
   onDetectionError?: (reason: string) => void;
   /** The price alerts' frames (`alerts.history`, `alert.fired`, …): every connection gets them. */
   onAlerts?: (message: AlertsServerMessage) => void;
@@ -147,6 +150,9 @@ export interface WsClient {
   setTickerIndicators(demand: TickerIndicatorDemand): void;
   subscribeDetection(): void;
   unsubscribeDetection(): void;
+  /** The HOD Momentum scanner (`hod.*`), gated on `hod.v1` like `subscribeSymbols` and sent again after every reconnect. */
+  subscribeHod(): void;
+  unsubscribeHod(): void;
   /** Sends `runnersNotify()` now (or `enabled: false` when it is null): the switches changed. */
   refreshRunnersNotify(): void;
   close(): void;
@@ -204,6 +210,7 @@ export function createWsClient(opts: WsClientOptions): WsClient {
   // The current connection's welcome.features (empty before a welcome and for older servers).
   let features: readonly string[] = [];
   let detectionWanted = false;
+  let hodWanted = false;
 
   const setStatus = (s: ConnectionStatus) => opts.onStatus?.(s);
 
@@ -296,6 +303,7 @@ export function createWsClient(opts: WsClientOptions): WsClient {
         if (noticesWanted && features.includes(NOTICES_FEATURE)) send({ type: "notices.subscribe" });
         if (tickerWanted) tickerSubscribe(tickerWanted);
         if (detectionWanted) send({ type: "detection.subscribe" });
+        if (hodWanted && features.includes(HOD_FEATURE)) send({ type: "hod.subscribe" });
         const notify = opts.runnersNotify?.();
         if (notify) send(notify);
       } else if (msg.type === "runners.notice") {
@@ -326,6 +334,8 @@ export function createWsClient(opts: WsClientOptions): WsClient {
         opts.onTickerIndicators?.(msg);
       } else if ((msg.type === "detection.snapshot" || msg.type === "detection.update") && detectionWanted) {
         opts.onDetection?.(msg);
+      } else if ((msg.type === "hod.snapshot" || msg.type === "hod.update") && hodWanted) {
+        opts.onHod?.(msg);
       } else if (msg.type === "settings.snapshot" || msg.type === "settings.changed" || msg.type === "settings.rejected") {
         opts.settings?.handle(msg);
       } else if (isAlertsMessage(msg)) {
@@ -458,6 +468,14 @@ export function createWsClient(opts: WsClientOptions): WsClient {
     unsubscribeDetection() {
       detectionWanted = false;
       send({ type: "detection.unsubscribe" });
+    },
+    subscribeHod() {
+      hodWanted = true;
+      if (features.includes(HOD_FEATURE)) send({ type: "hod.subscribe" });
+    },
+    unsubscribeHod() {
+      hodWanted = false;
+      if (features.includes(HOD_FEATURE)) send({ type: "hod.unsubscribe" });
     },
     unsubscribePressure() {
       pressureWanted = false;

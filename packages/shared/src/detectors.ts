@@ -35,6 +35,7 @@ export const DETECTOR_SWITCHES: readonly DetectorSwitch[] = [
   { id: "rw2-level-1", name: "20-day high break", description: `Research v2's rw2-level-1. ${KEEPS}`, defaultOn: true },
   { id: "b-good-2", name: "Model picks", description: `Research v2's b-good-2. ${KEEPS}`, defaultOn: true },
   { id: "b-good-1", name: "High confidence tag", description: "Research v2's b-good-1. Off hides the tag on every device; it is still scored and logged.", defaultOn: true },
+  { id: "hod-1", name: "HOD Momentum scanner", description: "The HOD panel's rows (not an alert). Off stops new rows for every device at once; the rows already shown stay.", defaultOn: true },
   { id: "run", name: "Run +20% (cut)", description: "Cut by research v2 (no extra movers, lower precision), so off by default and only recorded. On sends it again for every device.", defaultOn: false },
 ];
 

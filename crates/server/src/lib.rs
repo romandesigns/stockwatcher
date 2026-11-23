@@ -16,6 +16,7 @@ pub mod evidence;
 pub mod favorites;
 pub mod gap_ctx;
 pub mod history;
+pub mod hod;
 pub mod indicators;
 pub mod insights;
 pub mod market;

@@ -1,5 +1,5 @@
 import { createChartRouter, createSnapshotWatch, parseChartMessage, parsePaperMessage, createServerIndicators, type ChartIndicatorsSet, type ChartSubscribe, type ChartUnsubscribe, type PaperMessage, type PaperState, type ReplayControl } from "@stockwatcher/chart-core";
-import { createDetectionChannel, createFavoritesChannel, createMoversChannel, createPressureChannel, createQuoteSearchChannel, createRocketChannel, createRossChannel, createNoticesChannel, createSymbolsChannel, createTickerChannel, createWsClient, hasFeature, CLOCK_FEATURE, INDICATORS_FEATURE, INSIGHTS_TICKER_FEATURE, INSIGHTS_TICKER_INDICATORS_FEATURE, INDICATORS_LIMIT_FEATURE, LEVELS_FEATURE, MACD_STYLES_FEATURE, NOTICES_FEATURE, QUOTE_SEARCH_FEATURE, serverWsUrl, SYMBOLS_FEATURE, ZONES_FEATURE, type AlertsServerMessage, type ConnectionStatus, type MarketSource, type SettingsSync, type WebSocketLike } from "@stockwatcher/shared";
+import { createDetectionChannel, createFavoritesChannel, createHodChannel, HOD_FEATURE, createMoversChannel, createPressureChannel, createQuoteSearchChannel, createRocketChannel, createRossChannel, createNoticesChannel, createSymbolsChannel, createTickerChannel, createWsClient, hasFeature, CLOCK_FEATURE, INDICATORS_FEATURE, INSIGHTS_TICKER_FEATURE, INSIGHTS_TICKER_INDICATORS_FEATURE, INDICATORS_LIMIT_FEATURE, LEVELS_FEATURE, MACD_STYLES_FEATURE, NOTICES_FEATURE, QUOTE_SEARCH_FEATURE, serverWsUrl, SYMBOLS_FEATURE, ZONES_FEATURE, type AlertsServerMessage, type ConnectionStatus, type MarketSource, type SettingsSync, type WebSocketLike } from "@stockwatcher/shared";
 import type { RunnersNotifier } from "../notify/runnersNotify.ts";
 import type { ChartFeed, PaperCommand, ReplayCommand } from "./types.ts";
 
@@ -61,6 +61,8 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
   const ticker = createTickerChannel({ subscribe: (w) => client.subscribeTicker(w), unsubscribe: () => client.unsubscribeTicker(), setIndicators: (d) => client.setTickerIndicators(d) });
   // Rocket watch (experimental), opted in while its tab is open.
   const rocket = createRocketChannel({ subscribe: () => client.subscribeRocket(), unsubscribe: () => client.unsubscribeRocket() });
+  // The HOD Momentum scanner (hod.*), opted in while its panel is mounted.
+  const hod = createHodChannel({ subscribe: () => client.subscribeHod(), unsubscribe: () => client.unsubscribeHod() });
   const detection = createDetectionChannel({ source: opts.source, subscribe: () => client.subscribeDetection(), unsubscribe: () => client.unsubscribeDetection(), resync: () => client.subscribeDetection() });
 
   const sendRaw = (msg: ChartSubscribe | ChartUnsubscribe | ChartIndicatorsSet | ReplayControl | PaperCommand) => {
@@ -97,6 +99,7 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
       notices.setAvailable(hasFeature(w, NOTICES_FEATURE));
       ticker.setAvailable(hasFeature(w, INSIGHTS_TICKER_FEATURE), hasFeature(w, INSIGHTS_TICKER_INDICATORS_FEATURE), hasFeature(w, MACD_STYLES_FEATURE));
       quoteSearch.setAvailable(hasFeature(w, QUOTE_SEARCH_FEATURE));
+      hod.setAvailable(hasFeature(w, HOD_FEATURE));
       // The server decides time (clock.v1): the Runners panel's ages follow its clock frames and
       // its toasts come as `runners.event`.
       rocket.setServerClock(hasFeature(w, CLOCK_FEATURE));
@@ -113,6 +116,7 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
       pressure.setConnected(s === "open");
       rocket.setConnected(s === "open");
       detection.setConnected(s === "open");
+      hod.setConnected(s === "open");
       if (s === "open") {
         resubscribe(); // subscriptions do not survive a reconnect
         quoteSearch.resend();
@@ -132,6 +136,7 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
     onTickerIndicators: (m) => ticker.applyIndicators(m),
     onRocket: (m) => rocket.apply(m),
     onDetection: (m) => detection.apply(m),
+    onHod: (m) => hod.apply(m),
     onDetectionError: (reason) => detection.reject(reason),
     onAlerts: opts.onAlerts,
     runnersNotify: () => opts.notifier?.notifyMessage() ?? null,
@@ -147,7 +152,7 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
         // A quotes.snapshot is hundreds of KB: hand it to shared's parser without first
         // parsing it twice as a chart or paper frame. The server writes `type` first. The
         // settings.*, pressure.* and alert frames (shared's own too) take the same shortcut.
-        if (typeof ev.data === "string" && (ev.data.startsWith('{"type":"quotes.') || ev.data.startsWith('{"type":"settings.') || ev.data.startsWith('{"type":"pressure.') || ev.data.startsWith('{"type":"ross.') || ev.data.startsWith('{"type":"favorites.') || ev.data.startsWith('{"type":"movers.') || ev.data.startsWith('{"type":"symbols.') || ev.data.startsWith('{"type":"notices.') || ev.data.startsWith('{"type":"insights.') || ev.data.startsWith('{"type":"rocket.') || ev.data.startsWith('{"type":"alert') || ev.data.startsWith('{"type":"runners.') || /"type"\s*:\s*"detection\.(snapshot|update)"/.test(ev.data))) {
+        if (typeof ev.data === "string" && (ev.data.startsWith('{"type":"quotes.') || ev.data.startsWith('{"type":"settings.') || ev.data.startsWith('{"type":"pressure.') || ev.data.startsWith('{"type":"ross.') || ev.data.startsWith('{"type":"favorites.') || ev.data.startsWith('{"type":"movers.') || ev.data.startsWith('{"type":"symbols.') || ev.data.startsWith('{"type":"notices.') || ev.data.startsWith('{"type":"insights.') || ev.data.startsWith('{"type":"rocket.') || ev.data.startsWith('{"type":"hod.') || ev.data.startsWith('{"type":"alert') || ev.data.startsWith('{"type":"runners.') || /"type"\s*:\s*"detection\.(snapshot|update)"/.test(ev.data))) {
           inner?.({ data: ev.data });
           return;
         }
@@ -235,6 +240,7 @@ export function createServerFeed(opts: ServerFeedOptions = {}): ChartFeed {
     ticker,
     rocket,
     detection,
+    hod,
     indicators: serverIndicators.channel,
     close() {
       detachNotifier?.();

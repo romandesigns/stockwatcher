@@ -526,6 +526,10 @@ enum ClientMessage {
     RocketSubscribe,
     #[serde(rename = "rocket.unsubscribe")]
     RocketUnsubscribe,
+    #[serde(rename = "hod.subscribe")]
+    HodSubscribe,
+    #[serde(rename = "hod.unsubscribe")]
+    HodUnsubscribe,
     #[serde(rename = "detection.subscribe")]
     DetectionSubscribe,
     #[serde(rename = "detection.unsubscribe")]
@@ -1394,6 +1398,7 @@ async fn session(mut socket: WebSocket, state: AppState) {
             crate::time_marks::FEATURE,
             crate::time_marks::NS_FEATURE,
             crate::pressure::ETA_FEATURE,
+            crate::hod::FEATURE,
         ],
     };
     // Subscribed before the paper snapshot below, so no change can fall between the two (at
@@ -1443,6 +1448,8 @@ async fn session(mut socket: WebSocket, state: AppState) {
     let mut ticker: Option<TickerSub> = None;
     let mut rocket: Option<RocketSub> = None;
     let mut detection: Option<DetectionSub> = None;
+    // The HOD Momentum scanner (crate::hod): its snapshot, then every `hod.update`.
+    let mut hod: Option<crate::market::HodGuard> = None;
     // Listed among the Runners notification desks while held (`runners.notify`).
     let mut desk: Option<crate::alerts::DeskGuard> = None;
     // A live connection's chart symbols: part of the halt notices' coverage
@@ -1506,6 +1513,10 @@ async fn session(mut socket: WebSocket, state: AppState) {
                         OutKind::Symbols(frame) => match symbols.as_ref() {
                             Some(q) if o.seq > q.rev => send_text(&mut socket, frame.clone()).await,
                             _ => true,
+                        },
+                        OutKind::Hod(frame) => match hod.as_ref() {
+                            Some(_) => send_text(&mut socket, frame.clone()).await,
+                            None => true,
                         },
                         OutKind::Rocket(frame) => match rocket.as_ref() {
                             Some(q) if o.seq > q.seq => send_text(&mut socket, frame.clone()).await,
@@ -2277,6 +2288,19 @@ async fn session(mut socket: WebSocket, state: AppState) {
                     }
                     Ok(ClientMessage::RocketUnsubscribe) => {
                         rocket = None;
+                        None
+                    }
+                    Ok(ClientMessage::HodSubscribe) => {
+                        if hod.is_none() {
+                            hod = Some(market.hod_subscribe());
+                        }
+                        if !send_text(&mut socket, market.hod_snapshot()).await {
+                            break;
+                        }
+                        None
+                    }
+                    Ok(ClientMessage::HodUnsubscribe) => {
+                        hod = None;
                         None
                     }
                     Ok(ClientMessage::DetectionSubscribe) => {

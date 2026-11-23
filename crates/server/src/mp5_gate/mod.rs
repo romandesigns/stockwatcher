@@ -329,6 +329,15 @@ impl Mp5Live {
             t.base.get(symbol).map(|b| &**b),
         )
     }
+
+    /// The time-of-day baseline (normal shares) of the 5-minute bucket holding `a`, for the HOD
+    /// scanner's "rel vol 5 min" (`crate::hod`). Read only; `None` without today's table.
+    pub fn tod_base(&self, symbol: &str, a: i64) -> Option<f64> {
+        let d = self.day.filter(|d| trading_date(UnixNanos(a)) == d.date)?;
+        let t = self.table.as_deref().filter(|t| t.date == Some(d.date))?;
+        let b = logic::bucket_of(d.t0, a)?;
+        t.base.get(symbol).map(|v| v[b] as f64)
+    }
 }
 
 // ---------------------------------------------------------------------------------------------

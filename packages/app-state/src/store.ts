@@ -26,7 +26,7 @@ import {
   type Timeframe,
   type ToolboxPlacement,
 } from "@stockwatcher/chart-core";
-import { DETECTORS_NS, detectorPatch, parseDetectorSwitches, parseNoticeChartContext, pushRecentTicker, type NoticeChartContext, type AlertEventWire, type AlertsServerMessage, type AlertsStatusWire, type SettingsSync } from "@stockwatcher/shared";
+import { DETECTORS_NS, HOD_FILTER_NS, detectorPatch, parseDetectorSwitches, parseNoticeChartContext, pushRecentTicker, type NoticeChartContext, type AlertEventWire, type AlertsServerMessage, type AlertsStatusWire, type SettingsSync } from "@stockwatcher/shared";
 import { createStore, type StoreApi } from "zustand/vanilla";
 import { parseBrokerStatus, parseTradingAccount, TRADING_NS, type BrokerStatus, type LiveAccount, type TradingAccount } from "./trading.ts";
 import { ALERTS_NS, editedAlert, mergeActivity, parseAlertPrefs, parseAlertRules, parseAlertStates, type AlertPrefs, type AlertRule, type AlertStateWire } from "./alerts.ts";
@@ -117,6 +117,8 @@ export interface AppState {
   alertPrefs: AlertPrefs;
   /** The runtime detector switches (packages/shared detectors.ts): id → on, for every device. */
   detectors: Record<string, boolean>;
+  /** The HOD panel's category filter as stored (packages/shared hod.ts `parseHodFilter` reads it with the policy). */
+  hodFilter: unknown;
   /** Which account the live market's orders go to (Settings → Trading), and the server's word on Alpaca paper. */
   tradingAccount: TradingAccount;
   brokerStatus: BrokerStatus;
@@ -223,6 +225,7 @@ export interface AppState {
   setAlertPrefs(next: AlertPrefs): void;
   /** Switches a shipped detector on or off for every device (the server holds its alerts at once). */
   setDetectorOn(id: string, on: boolean): void;
+  setHodFilter(next: { on: string[] }): void;
   /** A frame from the alerts service (the feed routes them here, whatever page is open). */
   applyAlertsMessage(m: AlertsServerMessage): void;
   /** Clears a drawing alert's fire marker (the toast's or banner's acknowledge, the alerts list). */
@@ -302,6 +305,7 @@ function syncedFrom(sync: SettingsSync, shownSymbol: string) {
     alertStates: parseAlertStates(sync.get(ALERTS_NS.state)),
     alertPrefs: parseAlertPrefs(sync.get(ALERTS_NS.prefs)),
     detectors: parseDetectorSwitches(sync.get(DETECTORS_NS)),
+    hodFilter: sync.get(HOD_FILTER_NS) ?? null,
     tradingAccount: parseTradingAccount(sync.get(TRADING_NS.account)),
     brokerStatus: parseBrokerStatus(sync.get(TRADING_NS.status)),
   };
@@ -515,6 +519,7 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
     setAlertPrefs: (next) => sync.set(ALERTS_NS.prefs, next),
     // An entry patch: another device's flip of another detector survives.
     setDetectorOn: (id, on) => sync.patch(DETECTORS_NS, detectorPatch(id, on)),
+    setHodFilter: (next) => sync.set(HOD_FILTER_NS, next),
     applyAlertsMessage: (m) => {
       switch (m.type) {
         case "alerts.history": {
@@ -633,6 +638,8 @@ export function createAppStore({ sync, device, legacy }: AppStoreOptions): AppSt
         return store.setState({ alertPrefs: parseAlertPrefs(sync.get(ns)) });
       case DETECTORS_NS:
         return store.setState({ detectors: parseDetectorSwitches(sync.get(ns)) });
+      case HOD_FILTER_NS:
+        return store.setState({ hodFilter: sync.get(ns) ?? null });
       case APP_NS.dashboard: {
         const dashboard = coloredDashboard(parseDashboard(sync.get(ns)), colorsNow());
         // Fewer charts (from any device): the selection stays on a chart that is still shown.

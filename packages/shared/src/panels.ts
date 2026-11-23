@@ -11,6 +11,11 @@ import { groupDetections, type DetectionState } from "./detection.ts";
 import { isBurstRow, isShownRocketRow, type RocketState } from "./rocket.ts";
 import type { RossState } from "./ross.ts";
 
+/** The HOD Momentum scanner's rows today, unfiltered: the category menu narrows what is listed but never hides the panel. */
+export function hodItemCount(s: import("./hod.ts").HodState): number {
+  return s.enabled ? s.rows.length : 0;
+}
+
 /** The Ross Panel's rows (its five-pillar members). */
 export function rossItemCount(s: RossState): number {
   return s.enabled === true ? (s.panel?.rows.length ?? 0) : 0;
@@ -61,10 +66,10 @@ export function detectionView(pickedRecent: boolean, c: { active: number; recent
  * this fixed order; a panel shows only while it has items, and a group with none closes.
  */
 export type SidePanel = "favorites" | "signals" | "gainers";
-export type BottomPanel = "ross" | "rocket" | "halt" | "hot";
+export type BottomPanel = "ross" | "hod" | "rocket" | "halt" | "hot";
 export type DashboardPanel = SidePanel | BottomPanel;
 export const SIDE_PANELS: readonly SidePanel[] = ["favorites", "signals", "gainers"];
-export const BOTTOM_PANELS: readonly BottomPanel[] = ["ross", "rocket", "halt", "hot"];
+export const BOTTOM_PANELS: readonly BottomPanel[] = ["ross", "hod", "rocket", "halt", "hot"];
 
 /** The panels of one group that have items, in the group's fixed order. */
 export function visiblePanels<P extends DashboardPanel>(order: readonly P[], counts: Readonly<Partial<Record<DashboardPanel, number>>>): P[] {

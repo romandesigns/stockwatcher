@@ -278,6 +278,8 @@ async fn serve(config: Config) -> std::io::Result<()> {
         settings.clone(),
         vec![markets.live.clone(), markets.replay.clone()],
     );
+    // The HOD scanner's runtime switch (`detectors` -> hod-1, crate::hod), no restart.
+    stockwatcher_server::hod::follow(settings.clone(), markets.live.clone());
     // Chart orders on the live market can go to the owner's Alpaca PAPER account (synced
     // setting `tradingAccount`; crate::trading). Paper host only, keys from this environment.
     stockwatcher_server::trading::start(settings.clone(), markets.live.clone(), |k| {
@@ -297,6 +299,10 @@ async fn serve(config: Config) -> std::io::Result<()> {
                 DurableSource {
                     name: "zones",
                     dir: archive.join("zones"),
+                },
+                DurableSource {
+                    name: "hod",
+                    dir: archive.join(stockwatcher_server::hod::LEDGER_DIR),
                 },
                 DurableSource {
                     name: oplog::NOTICES_DIR,

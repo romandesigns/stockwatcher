@@ -1,0 +1,85 @@
+{
+  "id": "hod-1",
+  "version": 1,
+  "note": "HOD Momentum scanner: our own categories and thresholds. A row is emitted when a stock in the band prints a new session high (04:00 ET on) and at least one category matches. Thresholds are starting values; calibration on Train only (outputs/stockwatcher-research-v2/55-hod/HOD-CALIBRATION.md) is advisory.",
+  "calibration": "Train only (2021-10-29..2024-06-28, 669 days, frozen good-v1 label): of 12 declared configs, medium rel vol 3x (start 2x) and a former-momo run of +30% (start +50%) caught the most GOOD symbol-days (7589 vs 7568) at a higher GOOD share (17.9% vs 17.3%), 185 default-on rows a day. Advisory. outputs/stockwatcher-research-v2/55-hod/HOD-CALIBRATION.md",
+  "band": {
+    "min": 0.1,
+    "max": 25.0
+  },
+  "cooldown_secs": 60,
+  "min_day_gain": 0.0,
+  "float": {
+    "low_max": 10000000,
+    "medium_max": 50000000
+  },
+  "rvol": {
+    "high_min": 5.0,
+    "medium_min": 3.0,
+    "sessions": 30,
+    "base_min": 1.0
+  },
+  "price_high_min": 20.0,
+  "momo": {
+    "run_min": 0.3,
+    "sessions": 90
+  },
+  "hi52_sessions": 252,
+  "categories": [
+    {
+      "id": "lf_momo",
+      "name": "Low Float - Former Momo Stock",
+      "default_on": true
+    },
+    {
+      "id": "lf_hrv",
+      "name": "Low Float - High Rel Vol",
+      "default_on": true
+    },
+    {
+      "id": "lf_hrv_20",
+      "name": "Low Float - High Rel Vol - Price $20+",
+      "default_on": true
+    },
+    {
+      "id": "lf_mrv",
+      "name": "Low Float - Med Rel Vol",
+      "default_on": true
+    },
+    {
+      "id": "mf_hrv_20",
+      "name": "Medium Float - High Rel Vol - Price $20+",
+      "default_on": false
+    },
+    {
+      "id": "mf_hrv_u20",
+      "name": "Medium Float - High Rel Vol - Price under $20",
+      "default_on": false
+    },
+    {
+      "id": "mf_mrv_20",
+      "name": "Medium Float - Med Rel Vol - Price $20+",
+      "default_on": false
+    },
+    {
+      "id": "sq_10_10",
+      "name": "Squeeze Alert - Up 10% in 10min",
+      "default_on": true,
+      "pct": 0.1,
+      "minutes": 10
+    },
+    {
+      "id": "sq_5_5",
+      "name": "Squeeze Alert - Up 5% in 5min",
+      "default_on": true,
+      "pct": 0.05,
+      "minutes": 5
+    },
+    {
+      "id": "sq_52wk",
+      "name": "Squeeze Alert - 52wk Breakout",
+      "default_on": false,
+      "needs_history": true
+    }
+  ]
+}
